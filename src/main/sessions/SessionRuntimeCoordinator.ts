@@ -48,6 +48,7 @@ export interface SessionCatalogGateway {
 export interface SessionAgentGateway {
 	list(): AgentTab[];
 	getMessages(agentId: string): ChatMessage[];
+	isMessageCacheStale?(agentId: string): boolean;
 	create(input: CreateAgentInput): Promise<AgentTab>;
 	restart(agentId: string): Promise<AgentTab>;
 	stop(agentId: string): Promise<void>;
@@ -278,6 +279,7 @@ export class SessionRuntimeCoordinator {
 	getRuntimeMessages(sessionId: string): SessionTargetedValue<ChatMessage[]> | undefined {
 		const target = this.getTarget(sessionId);
 		if (!target) return undefined;
+		if (this.agents.isMessageCacheStale?.(target.agentId)) return undefined;
 		const messages = this.agents.getMessages(target.agentId);
 		// Message reads are synchronous, but the gateway can re-enter coordinator code.
 		// Revalidate after the read so an A -> B replacement cannot label A's messages as B's Session state.

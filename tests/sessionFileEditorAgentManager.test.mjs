@@ -401,7 +401,6 @@ test("staleMessageCacheAgents marks cache stale on refresh failure and forces fi
 
   // Cache is now stale
   assert.equal(manager.isMessageCacheStale("agent-1"), true);
-  assert.equal(manager.getMessages("agent-1").length, 0);
 
   // 3. Resend while stale: locateMessageTarget bypasses this.messages and locates from file!
   const resend = await manager.prepareResendFromMessage("agent-1", staleUser.id);

@@ -499,7 +499,6 @@ export class AgentManager {
 	}
 
 	getMessages(agentId: string) {
-		if (this.staleMessageCacheAgents.has(agentId)) return [];
 		return this.messages.get(agentId) ?? [];
 	}
 

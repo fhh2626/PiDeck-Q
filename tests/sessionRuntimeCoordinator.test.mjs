@@ -223,6 +223,10 @@ function createHarness(options = {}) {
     publishRuntimeState: async () => {
       calls.publishRuntimeState += 1;
     },
+    isMessageCacheStale: (agentId) => {
+      if (options.isMessageCacheStale) return options.isMessageCacheStale(agentId);
+      return false;
+    },
 	refreshSessionIdentity: async (agentId) => {
 	  calls.refreshSessionIdentity += 1;
 	  const tab = tabs.find((candidate) => candidate.id === agentId);
@@ -1080,6 +1084,30 @@ test("runtime message snapshots fail closed when the runtime is replaced during 
 
   assert.equal(coordinator.getRuntimeMessages("session-1"), undefined);
   assert.equal(coordinator.getTarget("session-1").agentId, "agent-b");
+});
+
+test("runtime message snapshots return undefined when message cache is marked stale", () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  let isStale = true;
+  const harness = createHarness({
+    tabs: [{ id: "agent-a", projectId: "project-1", cwd: "C:/project", status: "idle", createdAt: 1 }],
+    isMessageCacheStale: (agentId) => {
+      assert.equal(agentId, "agent-a");
+      return isStale;
+    },
+  });
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  // While stale, getRuntimeMessages returns undefined (not { value: [] })
+  assert.equal(coordinator.getRuntimeMessages("session-1"), undefined);
+
+  // Once not stale, getRuntimeMessages returns the snapshot
+  isStale = false;
+  assert.deepEqual(JSON.parse(JSON.stringify(coordinator.getRuntimeMessages("session-1"))), {
+    target: { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    value: [{ id: "message-1", role: "assistant", text: "agent-a", timestamp: 1 }],
+  });
 });
 
 test("runtime thinking persists the level actually accepted by Pi", async () => {
