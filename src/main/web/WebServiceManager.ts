@@ -842,7 +842,18 @@ export class WebServiceManager {
 			if (refreshing) return;
 			refreshing = true;
 			try {
-				state = await api("/api/state");
+				// 合并旧 messagesBySession：运行时消息缓存被标 stale（如历史修改提交后刷新失败）时
+				// /api/state 会省略该会话 key，直接整体替换会把已有消息误显示为空会话；
+				// 正常 snapshot 仍覆盖旧值，会话删除由下方 sessions 校验兜底。
+				const previousMessagesBySession = state.messagesBySession;
+				const next = await api("/api/state");
+				state = {
+					...next,
+					messagesBySession: {
+						...previousMessagesBySession,
+						...next.messagesBySession,
+					},
+				};
 				if (!state.sessions.some(session => session.id === activeSessionId)) {
 					activeSessionId = state.sessions[0]?.id || "";
 				}
