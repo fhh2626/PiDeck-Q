@@ -26,6 +26,7 @@ import type {
 	MessageItem,
 } from "../timeline/types";
 import { sameAgentRunForRender } from "../../app/AppUtils";
+import { createTrackedEditSubmit } from "../../../utils/trackedEditSubmit";
 import { FinalAnswer } from "./FinalAnswer";
 import { AskQuestionResultCard } from "../AskQuestionResultCard";
 import { InterimAnswer } from "./InterimAnswer";
@@ -90,6 +91,10 @@ export const TurnRow = memo(
 	const [editing, setEditing] = useState(false);
 	const [editText, setEditText] = useState("");
 	const editAreaRef = useRef<HTMLDivElement | null>(null);
+	// 编辑是跨渲染周期的长时操作：进入编辑时捕获当次提交回调，保存时用捕获值。
+	// 若保存时才读最新 props，Agent 重启后回调已换绑新 generation target，会把旧
+	// 编辑重定向到新 runtime、绕过 freshness 校验（见 trackedEditSubmit.ts 注释）。
+	const trackedEditSubmit = useRef(createTrackedEditSubmit());
 	// 激活编辑时自动滚动到编辑区（避免 textarea 超出可视区域）
 	useEffect(() => {
 		if (editing && editAreaRef.current) {
@@ -271,13 +276,17 @@ export const TurnRow = memo(
 	if (displayItems.length === 0 && allImages.length === 0) return null;
 
 	const startEditing = () => {
+		// 捕获当前 onEditMessage（绑定进入编辑时的 runtime target），保存时使用该捕获值。
+		trackedEditSubmit.current.begin(props.onEditMessage);
 		setEditText(mergedText);
 		setEditing(true);
 	};
 	const saveEdit = () => {
 		const targetId = assistantMessages.at(-1)?.message.id;
-		if (targetId && props.onEditMessage) {
-			props.onEditMessage(targetId, editText);
+		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
+		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
+		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
+		if (targetId && trackedEditSubmit.current.submit(targetId, editText)) {
 			setEditing(false);
 		}
 	};

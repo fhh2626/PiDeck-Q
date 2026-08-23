@@ -48,3 +48,15 @@ export function toSessionRuntimeTarget(
 		runtimeGeneration: runtime.runtimeGeneration,
 	};
 }
+
+export function isSameSessionRuntimeTarget(
+	left: SessionRuntimeTarget | undefined,
+	right: SessionRuntimeTarget | undefined,
+): boolean {
+	if (!left || !right) return false;
+	return (
+		left.sessionId === right.sessionId &&
+		left.agentId === right.agentId &&
+		left.runtimeGeneration === right.runtimeGeneration
+	);
+}

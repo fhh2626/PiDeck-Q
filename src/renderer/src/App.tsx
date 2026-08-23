@@ -170,6 +170,7 @@ import type {
   SessionRecord,
   SessionSummary,
   ComposerAgentMode,
+  SessionRuntimeTarget,
   TerminalTarget,
 } from "../../shared/types";
 
@@ -1962,6 +1963,12 @@ export function App() {
     }
   }
 
+  function isRuntimeTargetBusy(target: SessionRuntimeTarget): boolean {
+    const rt = store.get(sessionRuntimeBySessionIdAtomFamily(target.sessionId));
+    if (!rt || rt.agentId !== target.agentId) return false;
+    return rt.status === "running" || Boolean((rt.state as { isStreaming?: boolean } | undefined)?.isStreaming);
+  }
+
   // isAgentBusy: synchronous store read (steer logic is callback-only, not render-time).
   function isAgentCurrentlyBusy(): boolean {
     if (!currentSessionId) return false;
@@ -2060,13 +2067,11 @@ export function App() {
     forkFromUserMessage,
     forkingMessageId,
   } = useSessionMessageCommands({
-    activeAgentId,
     activeAgentStatus: activeAgent?.status,
     activeProjectId,
-    currentSessionId,
     agents,
-    isAgentCurrentlyBusy,
-    getRuntimeTargetForAgent,
+    isRuntimeTargetBusy,
+    getRuntimeTargetForSession,
     submitPromptSnapshot,
     openReplacedRuntimeSession,
     currentSessionIdRef,

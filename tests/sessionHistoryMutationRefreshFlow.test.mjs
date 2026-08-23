@@ -322,6 +322,14 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
     "../i18n": env.i18n,
     "../utils/sessionCommands": {
       requireSessionCommand: (res) => res,
+      isSameSessionRuntimeTarget: (left, right) =>
+        Boolean(
+          left &&
+          right &&
+          left.sessionId === right.sessionId &&
+          left.agentId === right.agentId &&
+          left.runtimeGeneration === right.runtimeGeneration,
+        ),
     },
     "./useSessionTimelineController": {},
     react: {
@@ -334,14 +342,18 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
   const capturedSnapshots = [];
   const refreshedSnapshots = [];
 
+  const target = {
+    sessionId: "session-1",
+    agentId: "agent-1",
+    runtimeGeneration: 1,
+  };
+
   const mockCommands = commandsModule.useSessionMessageCommands({
-    activeAgentId: "agent-1",
     activeAgentStatus: "running",
     activeProjectId: "proj-1",
-    currentSessionId: "session-1",
     agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }],
-    isAgentCurrentlyBusy: () => false,
-    getRuntimeTargetForAgent: (agentId) => ({ agentId, sessionId: "session-1", runtimeGeneration: 1 }),
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? target : undefined),
     submitPromptSnapshot: async () => true,
     openReplacedRuntimeSession: async () => {},
     currentSessionIdRef: { current: "session-1" },
@@ -364,19 +376,21 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
   });
 
   // 1. 测试 editMessage
-  await mockCommands.editMessage("msg-1", "new content");
+  await mockCommands.editMessage(target, "msg-1", "new content");
   assert.equal(commandEvents[0].type, "capture", "capture must be called before api call");
   assert.equal(commandEvents[1].type, "api:edit");
+  assert.deepEqual(commandEvents[1].target, target);
   assert.equal(commandEvents[2].type, "refresh", "refresh must be called after api call");
 
   commandEvents.length = 0;
 
   // 2. 测试 deleteMessage
-  mockCommands.deleteMessage("msg-2");
+  mockCommands.deleteMessage(target, "msg-2");
   // deleteMessage 的 onConfirm 是 async，等待微任务清空
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(commandEvents[0].type, "capture", "delete must also capture before api call");
   assert.equal(commandEvents[1].type, "api:delete");
+  assert.deepEqual(commandEvents[1].target, target);
   assert.equal(commandEvents[2].type, "refresh", "delete must refresh after api call");
 });
 

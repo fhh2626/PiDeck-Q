@@ -41,6 +41,14 @@ const webTimeline = readFileSync(
   "utf8",
 );
 const webChatApp = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
+const turnRow = readFileSync(
+  "src/renderer/src/components/session/turn/TurnRow.tsx",
+  "utf8",
+);
+const surfaceComponents = readFileSync(
+  "src/renderer/src/components/session/SurfaceComponents.tsx",
+  "utf8",
+);
 
 test("catalog scans attach matching existing runtimes in the main process", () => {
   assert.match(coordinator, /attachCatalogRuntimes\(/);
@@ -114,4 +122,27 @@ test("replacement restore is gated by full origin identity in main", () => {
   assert.match(sessionBridge, /canRestoreOrigin: \(\) => \{[\s\S]*buildSessionOriginKey[\s\S]*\) === originKey;/);
   assert.match(coordinator, /failClosedRuntimeReplacement/);
   assert.match(coordinator, /replacementBySession/);
+});
+
+test("message mutation commands in SessionRuntimeInjector bind pane runtime target", () => {
+  assert.match(runtimeInjector, /messageCommandTarget = runtime\.runtimeTarget/);
+  assert.match(runtimeInjector, /canDispatchMessageMutation/);
+  assert.match(runtimeInjector, /services\.deleteMessage\?\.\(\s*messageCommandTarget,\s*messageId\s*\)/);
+  assert.match(runtimeInjector, /services\.editMessage\?\.\(\s*messageCommandTarget,\s*messageId,\s*newText\s*\)/);
+  assert.match(runtimeInjector, /services\.resendUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
+  assert.match(runtimeInjector, /services\.forkFromUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
+  assert.doesNotMatch(runtimeInjector, /onDeleteMessage=\{canMutateActiveMessages \? services\.deleteMessage : undefined\}/);
+});
+
+test("edit save dispatches captured callback and never gates on the current onEditMessage prop", () => {
+  // 保存路径必须走 trackedEditSubmit（开始编辑时捕获的回调），
+  // 不得用当前 props.onEditMessage 拦截保存：runtime 消失时该 prop 为 undefined，
+  // 会把已打开的编辑框保存变成静默无效（无 toast、编辑框永远开着）。
+  for (const [name, source] of [["TurnRow", turnRow], ["SurfaceComponents", surfaceComponents]]) {
+    assert.match(source, /trackedEditSubmit\.current\.submit\(/, `${name} save must dispatch via trackedEditSubmit`);
+    assert.doesNotMatch(source, /if \(props\.onEditMessage &&[\s\S]{0,200}trackedEditSubmit\.current\.submit\(/, `${name} save must not gate on current props.onEditMessage`);
+  }
+  // 进入编辑必须捕获当次回调（绑定当时 target）
+  assert.match(turnRow, /trackedEditSubmit\.current\.begin\(props\.onEditMessage\)/);
+  assert.match(surfaceComponents, /trackedEditSubmit\.current\.begin\(props\.onEditMessage\)/);
 });

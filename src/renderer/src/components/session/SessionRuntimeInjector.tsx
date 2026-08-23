@@ -1,6 +1,6 @@
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import type { TerminalTarget } from "../../../../shared/types";
+import type { ChatMessage, TerminalTarget } from "../../../../shared/types";
 import { settingsOpenAtom } from "../../atoms";
 import {
   claimSessionRuntimeUiResponseAtom,
@@ -132,6 +132,47 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
     ? services.agents.find((a) => a.id === runtime.activeAgentId)
     : undefined;
   const canMutateActiveMessages = runtime.canMutateActiveMessages;
+  const messageCommandTarget = runtime.runtimeTarget;
+  const canDispatchMessageMutation =
+    canMutateActiveMessages && messageCommandTarget !== undefined;
+
+  const messageActions = React.useMemo(() => {
+    if (!canDispatchMessageMutation || !messageCommandTarget) {
+      return {
+        onResendUserMessage: undefined,
+        onEditMessage: undefined,
+        onDeleteMessage: undefined,
+        onForkMessage: undefined,
+      };
+    }
+    return {
+      onResendUserMessage: services.resendUserMessage
+        ? (message: ChatMessage) =>
+            services.resendUserMessage?.(messageCommandTarget, message)
+        : undefined,
+      onEditMessage: services.editMessage
+        ? (messageId: string, newText: string) =>
+            services.editMessage?.(messageCommandTarget, messageId, newText)
+        : undefined,
+      onDeleteMessage: services.deleteMessage
+        ? (messageId: string) =>
+            services.deleteMessage?.(messageCommandTarget, messageId)
+        : undefined,
+      onForkMessage: services.forkFromUserMessage
+        ? (message: ChatMessage) =>
+            services.forkFromUserMessage?.(messageCommandTarget, message)
+        : undefined,
+    };
+  }, [
+    canDispatchMessageMutation,
+    messageCommandTarget?.sessionId,
+    messageCommandTarget?.agentId,
+    messageCommandTarget?.runtimeGeneration,
+    services.resendUserMessage,
+    services.editMessage,
+    services.deleteMessage,
+    services.forkFromUserMessage,
+  ]);
 
   return (
     <SessionView
@@ -159,10 +200,10 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
       onPreviewImage={services.onPreviewImage}
       onOpenFile={services.onOpenFile}
       onDiffFile={services.onDiffFile}
-      onResendUserMessage={canMutateActiveMessages ? services.resendUserMessage : undefined}
-      onEditMessage={canMutateActiveMessages ? services.editMessage : undefined}
-      onDeleteMessage={canMutateActiveMessages ? services.deleteMessage : undefined}
-      onForkMessage={canMutateActiveMessages ? services.forkFromUserMessage : undefined}
+      onResendUserMessage={messageActions.onResendUserMessage}
+      onEditMessage={messageActions.onEditMessage}
+      onDeleteMessage={messageActions.onDeleteMessage}
+      onForkMessage={messageActions.onForkMessage}
       forkingMessageId={services.forkingMessageId}
       onToast={(message: string) => services.showToast(message)}
       onQuickPrompt={(message) => services.insertQuickPrompt(currentSessionId, message)}

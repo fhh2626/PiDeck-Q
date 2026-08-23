@@ -6,7 +6,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { AgentTab, AgentUiResponse, ChatMessage, GitBranchInfo, ImageContent, Project, TerminalTarget } from "../../../../shared/types";
+import type { AgentTab, AgentUiResponse, ChatMessage, GitBranchInfo, ImageContent, Project, SessionRuntimeTarget, TerminalTarget } from "../../../../shared/types";
 import type { QueuedPrompt } from "../../hooks/useQueuedPrompt";
 import type { NoticeId } from "../../utils/notice";
 
@@ -46,10 +46,10 @@ export type SessionPaneActions = {
   ) => boolean;
   insertQuickPrompt: (sessionId: string, message: string) => void;
   ensureSessionId?: (sessionId: string) => Promise<string>;
-  resendUserMessage?: (message: ChatMessage) => void;
-  editMessage?: (messageId: string, newText: string) => void;
-  deleteMessage?: (messageId: string) => void;
-  forkFromUserMessage?: (message: ChatMessage) => void;
+  resendUserMessage?: (target: SessionRuntimeTarget, message: ChatMessage) => void;
+  editMessage?: (target: SessionRuntimeTarget, messageId: string, newText: string) => void;
+  deleteMessage?: (target: SessionRuntimeTarget, messageId: string) => void;
+  forkFromUserMessage?: (target: SessionRuntimeTarget, message: ChatMessage) => void;
   openSidebarSessionById?: (projectId: string, sessionId: string) => Promise<void>;
   queueRetract: (sessionId: string, prompt: QueuedPrompt) => void;
   queueDiscard: (sessionId: string, promptId: string) => void;

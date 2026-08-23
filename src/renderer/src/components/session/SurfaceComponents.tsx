@@ -117,6 +117,7 @@ import type {
 	VisionEventsInfo,
 } from "../../../../shared/types";
 import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
+import { createTrackedEditSubmit } from "../../utils/trackedEditSubmit";
 import removeMarkdown from "remove-markdown";
 
 import type { WorkspaceDrawerPanel } from "../../hooks/useWorkspacePanels";
@@ -572,6 +573,16 @@ export const UserBubble = memo(function UserBubble(props: {
 	const [editing, setEditing] = useState(false);
 	const [editText, setEditText] = useState("");
 	const editAreaRef = useRef<HTMLDivElement | null>(null);
+	// 编辑是跨渲染周期的长时操作：进入编辑时捕获当次提交回调，保存时用捕获值。
+	// 若保存时才读最新 props，Agent 重启后回调已换绑新 generation target，会把旧
+	// 编辑重定向到新 runtime、绕过 freshness 校验（见 trackedEditSubmit.ts 注释）。
+	const trackedEditSubmit = useRef(createTrackedEditSubmit());
+	/** 进入编辑模式：捕获当前 onEditMessage（绑定当时的 runtime target）。 */
+	const startEditingWithCurrentTarget = () => {
+		trackedEditSubmit.current.begin(props.onEditMessage);
+		setEditText(cleanText);
+		setEditing(true);
+	};
 	// 长消息折叠（2026-08）：超过 8 行（line-clamp-8）折叠为预览，避免超长发送全量铺开；
 	// 溢出检测用 ResizeObserver 对比 scrollHeight/clientHeight，折叠态下才测量（展开态保持按钮可见）。
 	const [messageExpanded, setMessageExpanded] = useState(false);
@@ -687,8 +698,10 @@ export const UserBubble = memo(function UserBubble(props: {
 				: null;
 	/** 原地编辑不影响输入框；先提交给确认弹窗。 */
 	const handleSaveEdit = () => {
-		if (props.onEditMessage && editText.trim()) {
-			props.onEditMessage(message.id, editText);
+		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
+		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
+		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
+		if (editText.trim() && trackedEditSubmit.current.submit(message.id, editText)) {
 			setEditing(false);
 		}
 	};
@@ -959,10 +972,7 @@ export const UserBubble = memo(function UserBubble(props: {
 								variant="ghost"
 								size="icon-sm"
 								className="user-turn-action-btn size-7 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-								onClick={() => {
-									setEditText(cleanText);
-									setEditing(true);
-								}}
+								onClick={startEditingWithCurrentTarget}
 								title={t("common.edit")}
 							>
 								<SquarePen size={14} />

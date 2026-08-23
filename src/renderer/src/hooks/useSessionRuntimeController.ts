@@ -171,7 +171,12 @@ export function useSessionRuntimeController(
       ? activeAgent.id
       : undefined;
 
-  const canMutateActiveMessages = Boolean(currentSessionLiveAgentId);
+  const canMutateActiveMessages = Boolean(
+    currentSessionId &&
+    currentSession &&
+    runtimeTarget &&
+    currentSessionLiveAgentId,
+  );
 
   // ── SessionView shortcuts ──
 
