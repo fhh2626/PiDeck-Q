@@ -127,6 +127,7 @@ test("captureHistoryMutationRefresh & refreshHistoryAfterMutation flow: editing 
   const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-1");
   assert.ok(snapshot, "snapshot should be captured when history is present");
   assert.equal(snapshot.sessionId, "session-1");
+  assert.equal(snapshot.expectedMutationSequence, 1);
   assert.equal(snapshot.loadedHistoryTurnCount, 1);
   assert.equal(snapshot.loadedHistoryMessageCount, 2);
 
@@ -348,7 +349,7 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
       clearConfirm: () => {},
     },
     captureHistoryMutationRefresh: (sessionId) => {
-      const snap = { sessionId, expectedRevision: 1, expectedMutationSequence: 1, loadedHistoryTurnCount: 2, loadedHistoryMessageCount: 4 };
+      const snap = { sessionId, expectedMutationSequence: 1, loadedHistoryTurnCount: 2, loadedHistoryMessageCount: 4 };
       capturedSnapshots.push(snap);
       commandEvents.push({ type: "capture", sessionId });
       return snap;
@@ -374,5 +375,75 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
   assert.equal(commandEvents[0].type, "capture", "delete must also capture before api call");
   assert.equal(commandEvents[1].type, "api:delete");
   assert.equal(commandEvents[2].type, "refresh", "delete must refresh after api call");
+});
+
+test("refreshHistoryAfterMutation survives runtime flushes that arrive while awaiting API", async () => {
+  const env = setupTestEnvironment();
+  const store = createStore();
+
+  const fakeDesktopApi = {
+    desktopApi: {
+      sessions: {
+        readRecordMessagePage: async () => ({
+          messages: [{ id: "h1", role: "user", text: "UPDATED_HISTORY" }],
+          total: 1,
+          nextBefore: null,
+          indexVersion: "300:1000",
+        }),
+      },
+    },
+  };
+
+  const controllerModule = compileModule("src/renderer/src/hooks/useSessionTimelineController.ts", {
+    "../atoms": env.atoms,
+    "../i18n": env.i18n,
+    "../utils/notice": env.noticeUtils,
+    "../desktopApi": fakeDesktopApi,
+    "../components/agents/message-scroller": {},
+    "../components/session/timeline/turnRenderWindow": {
+      TIMELINE_SCROLLED_TURN_LIMIT: 20,
+      TIMELINE_WINDOW_EXPAND_STEP: 5,
+    },
+  });
+
+  // 1. 初始缓存状态
+  store.set(env.atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-flush-interleave",
+    source: "runtime",
+    messages: [{ id: "r1", role: "user", text: "recent-window", meta: { entryId: "e1" } }],
+    history: {
+      messages: [{ id: "h1", role: "user", text: "old-history", meta: { entryId: "e0" } }],
+      nextBefore: null,
+    },
+  });
+  const initialRevision = store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"].revision;
+
+  // 2. await 前捕获快照（写入 mutationSequence = 1）
+  const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-flush-interleave");
+  assert.ok(snapshot);
+  assert.equal(snapshot.expectedMutationSequence, 1);
+
+  // 3. 模拟在 await 期间后端推送 runtime flush（增量/全量流式更新），revision 递增，mutationSequence 继承
+  store.set(env.atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-flush-interleave",
+    source: "runtime",
+    messages: [
+      { id: "r1", role: "user", text: "recent-window", meta: { entryId: "e1" } },
+      { id: "r2", role: "assistant", text: "streamed-token", meta: { entryId: "e2" } },
+    ],
+    history: store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"].history,
+  });
+
+  const intermediateEntry = store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"];
+  assert.equal(intermediateEntry.revision, initialRevision + 1, "revision must bump");
+  assert.equal(intermediateEntry.mutationSequence, 1, "mutationSequence must be preserved");
+
+  // 4. 重读完成并落地
+  await controllerModule.refreshHistoryAfterMutation({ store }, snapshot);
+
+  // 5. 验证新历史成功替换，窗口消息保持
+  const finalEntry = store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"];
+  assert.equal(finalEntry.history.messages[0].text, "UPDATED_HISTORY", "history must be refreshed despite revision bump");
+  assert.equal(finalEntry.messages.length, 2, "runtime window messages must be retained");
 });
 

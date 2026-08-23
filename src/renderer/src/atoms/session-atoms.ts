@@ -881,7 +881,8 @@ export const prependSessionHistoryPageAtom = atom(
  */
 export type ReplaceSessionHistoryAfterMutationInput = {
 	sessionId: string;
-	expectedRevision: number;
+	/** mutation refresh 的会话内序号；由 captureHistoryMutationRefresh 发放并由 runtime flush 继承 */
+	expectedMutationSequence: number;
 	messages: ChatMessage[];
 	nextBefore: number | null;
 	nextBeforeEntryId?: string | null;
@@ -895,7 +896,7 @@ export const replaceSessionHistoryAfterMutationAtom = atom(
 		const current = get(sessionMessagesCacheAtom)[input.sessionId];
 		if (!current) return false;
 		if (current.source !== "runtime") return false;
-		if (current.revision !== input.expectedRevision) return false;
+		if (current.mutationSequence !== input.expectedMutationSequence) return false;
 		set(sessionMessagesCacheAtom, {
 			...get(sessionMessagesCacheAtom),
 			[input.sessionId]: {

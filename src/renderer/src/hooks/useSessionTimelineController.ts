@@ -210,7 +210,6 @@ export function isLatestTimelineRunBusy(
 /** 编辑/删除成功后的历史重读快照：await 前捕获，固定原 session 与已加载深度。 */
 export type HistoryMutationRefreshSnapshot = {
 	sessionId: string;
-	expectedRevision: number;
 	expectedMutationSequence: number;
 	loadedHistoryTurnCount: number;
 	loadedHistoryMessageCount: number;
@@ -253,9 +252,16 @@ export function captureHistoryMutationRefresh(
 	const anchor = store.get(sessionScrollAnchorByIdAtom)[sessionId] ?? undefined;
 	const nextSequence = (mutationSequenceBySession.get(sessionId) ?? 0) + 1;
 	mutationSequenceBySession.set(sessionId, nextSequence);
+	// 写入 entry.mutationSequence，供普通 runtime flush 继承并在 replace atom 中校验
+	store.set(sessionMessagesCacheAtom, {
+		...store.get(sessionMessagesCacheAtom),
+		[sessionId]: {
+			...entry,
+			mutationSequence: nextSequence,
+		},
+	});
 	return {
 		sessionId,
-		expectedRevision: entry.revision,
 		expectedMutationSequence: nextSequence,
 		loadedHistoryTurnCount: countLoadedHistoryTurns(entry.history.messages),
 		loadedHistoryMessageCount: entry.history.messages.length,
@@ -327,7 +333,7 @@ export async function refreshHistoryAfterMutation(
 		const lastPage = freshPages[freshPages.length - 1];
 		const applied = store.set(replaceSessionHistoryAfterMutationAtom, {
 			sessionId,
-			expectedRevision: snapshot.expectedRevision,
+			expectedMutationSequence: snapshot.expectedMutationSequence,
 			messages: merged,
 			nextBefore: lastPage?.nextBefore ?? null,
 			nextBeforeEntryId: lastPage?.nextBeforeEntryId,

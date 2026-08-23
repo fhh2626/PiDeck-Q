@@ -87,7 +87,7 @@ test("replaceSessionHistoryAfterMutationAtom: replaces history while keeping run
   // 执行 mutation 原子替换（编辑了 h1 消息）
   const success = store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
     sessionId: "session-a",
-    expectedRevision: aRevision,
+    expectedMutationSequence: 1,
     messages: [
       { id: "h1", role: "user", text: "old-q-EDITED", meta: { entryId: "e1" } },
       { id: "h2", role: "assistant", text: "old-a-original", meta: { entryId: "e2" } },
@@ -137,7 +137,7 @@ test("replaceSessionHistoryAfterMutationAtom: handles deletion (fewer history me
 
   const success = store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
     sessionId: "session-a",
-    expectedRevision: entry().revision,
+    expectedMutationSequence: 2,
     messages: [{ id: "h2", role: "assistant", text: "keep-me", meta: { entryId: "e2" } }],
     nextBefore: null,
     exhausted: true,
@@ -165,16 +165,16 @@ test("replaceSessionHistoryAfterMutationAtom: guards reject invalid requests", (
   // 1. 不存在的会话
   assert.equal(store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
     sessionId: "non-existent",
-    expectedRevision: 0,
+    expectedMutationSequence: 1,
     messages: [],
     nextBefore: null,
   }), false);
 
-  // 2. expectedRevision 不匹配
+  // 2. expectedMutationSequence 不匹配（已被更新的 mutation 取代）
   assert.equal(store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
     sessionId: "session-a",
-    expectedRevision: entry().revision + 99,
-    messages: [{ id: "h1", role: "user", text: "bad" }],
+    expectedMutationSequence: 4, // 已经到了 5
+    messages: [{ id: "h1", role: "user", text: "stale" }],
     nextBefore: null,
   }), false);
 
@@ -186,8 +186,77 @@ test("replaceSessionHistoryAfterMutationAtom: guards reject invalid requests", (
   });
   assert.equal(store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
     sessionId: "session-disk",
-    expectedRevision: store.get(atoms.sessionMessagesCacheAtom)["session-disk"].revision,
+    expectedMutationSequence: 1,
     messages: [{ id: "d0", role: "user", text: "disk-old" }],
     nextBefore: null,
   }), false);
+});
+
+test("replaceSessionHistoryAfterMutationAtom: survives intermediate runtime flush (revision +1, mutationSequence inherited)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+
+  // 1. 初始状态：revision = 10, mutationSequence = 1, 已有旧历史
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [{ id: "r1", role: "user", text: "recent-1", meta: { entryId: "e1" } }],
+    mutationSequence: 1,
+    history: {
+      messages: [{ id: "h1", role: "user", text: "old-before-edit", meta: { entryId: "e0" } }],
+      nextBefore: null,
+    },
+  });
+  const initialRevision = entry().revision;
+
+  // 2. 模拟在 await 期间后端发出正常 runtime flush（更新了窗口段消息），
+  //    使得 revision 递增 (+1)，但 mutationSequence 保持继承
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      { id: "r1", role: "user", text: "recent-1", meta: { entryId: "e1" } },
+      { id: "r2", role: "assistant", text: "streamed-chunk", meta: { entryId: "e2" } },
+    ],
+    history: entry().history,
+    // 不显式传 mutationSequence，由 cacheSessionMessagesAtom 自动继承
+  });
+
+  assert.equal(entry().revision, initialRevision + 1, "revision must have incremented on runtime flush");
+  assert.equal(entry().mutationSequence, 1, "mutationSequence must be inherited across runtime flush");
+
+  // 3. 磁盘重读拿到修改后的历史，尝试落地替换
+  const success = store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
+    sessionId: "session-a",
+    expectedMutationSequence: 1,
+    messages: [{ id: "h1", role: "user", text: "old-AFTER-EDIT", meta: { entryId: "e0" } }],
+    nextBefore: null,
+    exhausted: true,
+    version: "101:2000",
+  });
+
+  assert.equal(success, true, "replace must succeed even though revision incremented");
+  assert.equal(entry().history.messages[0].text, "old-AFTER-EDIT");
+  assert.equal(entry().messages.length, 2, "runtime window messages must not be overwritten");
+
+  // 4. 若又有新的 mutation 发生，使 mutationSequence 递增到 2
+  store.set(atoms.sessionMessagesCacheAtom, {
+    ...store.get(atoms.sessionMessagesCacheAtom),
+    "session-a": {
+      ...entry(),
+      mutationSequence: 2,
+    },
+  });
+
+  // 旧 mutation (sequence=1) 的迟到响应必须被拒绝
+  const staleSuccess = store.set(atoms.replaceSessionHistoryAfterMutationAtom, {
+    sessionId: "session-a",
+    expectedMutationSequence: 1,
+    messages: [{ id: "h1", role: "user", text: "stale-mutation-result", meta: { entryId: "e0" } }],
+    nextBefore: null,
+  });
+
+  assert.equal(staleSuccess, false, "stale mutation refresh must be rejected by mutationSequence mismatch");
+  assert.equal(entry().history.messages[0].text, "old-AFTER-EDIT", "history must remain from the winning mutation");
 });
