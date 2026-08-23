@@ -299,14 +299,13 @@ export async function refreshHistoryAfterMutation(
 	}
 
 	try {
-		// 首页锚点：复用 loadMoreMessages 首次补历史的同一接缝计算 ——
-		// 以当前 runtime 窗口首条有 entryId 的消息为锚，而不是旧缓存里的游标。
+		// 首页锚点：以当前 runtime 窗口首条有 entryId 的消息为锚（接缝），
+		// 不能看已加载的 history.messages（否则会错选成已加载历史的最老一条）。
 		const currentEntryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
 		if (!currentEntryAtStart || currentEntryAtStart.source !== "runtime") return; // 会话已卸载
-		const anchorMessage = [
-			...(currentEntryAtStart.history?.messages ?? []),
-			...currentEntryAtStart.messages,
-		].find((m) => typeof m.meta?.entryId === "string");
+		const anchorMessage = currentEntryAtStart.messages.find(
+			(m) => typeof m.meta?.entryId === "string",
+		);
 		const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
 			? anchorMessage.meta.entryId
 			: undefined;

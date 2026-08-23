@@ -67,11 +67,13 @@ test("captureHistoryMutationRefresh & refreshHistoryAfterMutation flow: editing 
   const store = createStore();
 
   let readPageCallCount = 0;
+  let receivedBeforeEntryId = null;
   const fakeDesktopApi = {
     desktopApi: {
       sessions: {
         readRecordMessagePage: async (sessionId, requestBefore, pageSize, options) => {
           readPageCallCount += 1;
+          receivedBeforeEntryId = options?.beforeEntryId;
           // 返回修改后的历史消息
           return {
             messages: [
@@ -134,9 +136,10 @@ test("captureHistoryMutationRefresh & refreshHistoryAfterMutation flow: editing 
   // 3. 模拟 mutation 成功后执行刷新
   await controllerModule.refreshHistoryAfterMutation({ store }, snapshot);
 
-  // 4. 验证历史消息已被新内容替换
+  // 4. 验证历史消息已被新内容替换，且首页锚点严格使用 runtime window 第一条消息（e3），而非旧历史开头（e1）
   const entry = store.get(env.atoms.sessionMessagesCacheAtom)["session-1"];
   assert.equal(readPageCallCount, 1);
+  assert.equal(receivedBeforeEntryId, "e3", "initial history page must anchor on first runtime message (e3), not history head (e1)");
   assert.equal(entry.history.messages[0].text, "question-1-EDITED");
   assert.equal(entry.history.version, "200:1000");
   assert.equal(entry.messages[0].text, "recent-q");
@@ -220,7 +223,7 @@ test("concurrency & race: later mutation supersedes earlier in-flight refresh", 
   store.set(env.atoms.cacheSessionMessagesAtom, {
     sessionId: "session-race",
     source: "runtime",
-    messages: [{ id: "r1", role: "user", text: "recent" }],
+    messages: [{ id: "r1", role: "user", text: "recent", meta: { entryId: "e2" } }],
     history: {
       messages: [{ id: "h1", role: "user", text: "ORIGINAL", meta: { entryId: "e1" } }],
       nextBefore: null,
@@ -278,7 +281,7 @@ test("error handling: page read failure marks stale history invalid without thro
   store.set(env.atoms.cacheSessionMessagesAtom, {
     sessionId: "session-err",
     source: "runtime",
-    messages: [{ id: "r1", role: "user", text: "recent" }],
+    messages: [{ id: "r1", role: "user", text: "recent", meta: { entryId: "e2" } }],
     history: {
       messages: [{ id: "h1", role: "user", text: "stale-content", meta: { entryId: "e1" } }],
       nextBefore: null,
