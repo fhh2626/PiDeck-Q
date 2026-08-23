@@ -381,11 +381,16 @@ test("incremental message flush merges tail upserts and discards non-contiguous 
   ] });
   assert.equal(readMessages()[2].text, "tool-done", "totalLength mismatch must be discarded");
 
-  // 6) 终态全量校准：一次 full 覆盖所有中间态
+  // 6) 终态全量校准：一次 full 覆盖所有中间态（旧消息 m3 进 slidingOut，清理后只留全量消息）
   emit({ agentId: "agent-a", messages: [
     { id: "m1", role: "user", text: "q" },
     { id: "m2", role: "assistant", text: "final" },
   ] });
+  assert.equal(readMessages().find((m) => m.id === "m3")?.meta?.slidingOut, true);
+  store.set(atoms.removeSessionSlidingOutMessagesAtom, {
+    sessionId: "session-a",
+    messageIds: ["m3"],
+  });
   assert.deepEqual([...readMessages().map((m) => m.text)], ["q", "final"]);
 });
 

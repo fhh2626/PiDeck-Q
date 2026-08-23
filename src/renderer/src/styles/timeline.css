@@ -2618,6 +2618,29 @@ body.ask-dialog-open .ask-question-card.pending {
     opacity: 1;
   }
 }
+
+/* ── 被压缩旧消息 slide-out 退出动画 ──
+ * 压缩完成后，旧运行期消息淡出并轻微向上滑出，动画结束后由 renderer 自行从 state 中清理。 */
+.timeline-message-slide-out {
+  animation: timeline-message-slide-out 260ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+@keyframes timeline-message-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timeline-message-slide-out {
+    animation: none;
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .timeline-content-enter {
     animation: none;

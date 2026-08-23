@@ -33,7 +33,6 @@ import type { RpcResponse } from "./PiRpcClient";
 import { formatBashToolMessage } from "./bashResult";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import {
-	buildCompactionSlideOut,
 	mergeHistoryWithPreservedMessages,
 	stabilizeReloadedMessageIds,
 } from "./historyMessages";
@@ -120,8 +119,6 @@ type MessageLoadOptions = {
 	preserveHistory?: boolean;
 	/** 压缩完成后的前缀在本次回底清理周期内保持可见。 */
 	stickyHistory?: boolean;
-	/** 把压缩前运行期窗口并入 renderer 历史前缀。 */
-	preserveRuntimeMessages?: boolean;
 };
 
 type CreateAgentInputWithHistory = CreateAgentInput & {
@@ -973,15 +970,6 @@ export class AgentManager {
 				options?.preserveMessagesAfter,
 			),
 		);
-		if (options?.preserveRuntimeMessages && currentMessages.length > 0) {
-			// 只把新投影没有覆盖的旧消息送入 slideOut；同一条保留消息即使
-			// 压缩后换了 entryId，也由内容指纹消耗，避免时间线出现双份。
-			const previousRuntimeMessages = buildCompactionSlideOut(currentMessages, messages);
-			if (previousRuntimeMessages.length > 0) {
-				const pending = this.pendingSlideOutByAgent.get(agentId) ?? [];
-				this.pendingSlideOutByAgent.set(agentId, [...pending, ...previousRuntimeMessages]);
-			}
-		}
 		// 重载后把进行中的消息身份（activeAssistantMessageIds/toolMessageIds）从
 		// 运行期副本重定向到投影版：后续事件继续更新投影版（位置正确、单份），
 		// 避免「投影 partial + 运行期完整版」双份或事件 append 到错误轮次。
@@ -1880,7 +1868,6 @@ export class AgentManager {
 				await this.loadMessages(agentId, false, undefined, {
 					preserveHistory: true,
 					stickyHistory: true,
-					preserveRuntimeMessages: true,
 				}).catch(() => undefined);
 			} finally {
 				this.consumeManualCompactionReloadClaim(agentId);
@@ -1910,7 +1897,6 @@ export class AgentManager {
 				await this.reattachProcess(agentId, runtime.tab.sessionPath, {
 					preserveHistory: true,
 					stickyHistory: true,
-					preserveRuntimeMessages: true,
 				});
 				runtime.tab.status = "idle";
 				this.addLocalizedMessage(
@@ -3256,7 +3242,6 @@ export class AgentManager {
 			this.reattachProcess(agentId, tab.sessionPath, {
 				preserveHistory: true,
 				stickyHistory: true,
-				preserveRuntimeMessages: true,
 			})
 				.then(() => {
 					tab.status = "idle";
@@ -3327,7 +3312,6 @@ export class AgentManager {
 			this.reattachProcess(agentId, runtime.tab.sessionPath, {
 				preserveHistory: true,
 				stickyHistory: true,
-				preserveRuntimeMessages: true,
 			})
 				.then(() => {
 					runtime.tab.status = "idle";
@@ -3565,7 +3549,6 @@ export class AgentManager {
 					void this.loadMessages(agentId, false, undefined, {
 						preserveHistory: true,
 						stickyHistory: true,
-						preserveRuntimeMessages: true,
 					}).catch(() => undefined);
 				}
 				// 用户已主动中止或出错时不重新激活 running 状态
@@ -5455,8 +5438,7 @@ export class AgentManager {
 		if (newWindowStartInList > oldWindowStart) {
 			const slideOut = list.slice(oldWindowStart, newWindowStartInList);
 			if (slideOut.length > 0) {
-				// 压缩重载可能已经登记了尚未 flush 的旧运行期消息。
-				// 这里只能追加，不能覆盖，否则压缩刚保住的中间回复会在下一轮 trim 时丢失。
+				// trim 窗口滑出轮登记到待发队列，随下一次全量 flush 下发给渲染层并入 history prefix。
 				const pending = this.pendingSlideOutByAgent.get(agentId) ?? [];
 				this.pendingSlideOutByAgent.set(agentId, [...pending, ...slideOut]);
 			}

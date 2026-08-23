@@ -1,4 +1,4 @@
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { selectAtom } from "jotai/utils";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
@@ -22,6 +22,7 @@ import {
 } from "../app/AppUtils";
 import {
   liveThinkingIdBySessionIdAtomFamily,
+  removeSessionSlidingOutMessagesAtom,
   sessionMessageCacheBySessionIdAtomFamily,
   sessionMessageLoadStateAtom,
   sessionRecordByIdAtomFamily,
@@ -115,6 +116,21 @@ function showFailureToast(message: ChatMessage): void {
 		isRetry ? "info" : "error",
 		t(isRetry ? "diagnostic.retryToastTitle" : "diagnostic.failureToastTitle"),
 	);
+}
+
+function isItemSlidingOut(item: RenderMessage): boolean {
+  if (item.kind === "agent-run") {
+    return item.items.some((sub) => {
+      if (sub.kind === "message") return sub.message.meta?.slidingOut === true;
+      if (sub.kind === "thinking-group") return sub.messages.some((m) => m.meta?.slidingOut === true);
+      if (sub.kind === "tool-group") return sub.messages.some((m) => m.meta?.slidingOut === true);
+      return false;
+    });
+  }
+  if (item.kind === "message") {
+    return item.message.meta?.slidingOut === true;
+  }
+  return false;
 }
 
 type TimelineInteractionProps = {
@@ -212,6 +228,37 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   const isAgentBusy = modernSurfaceState.isBusy;
   const cancellingUi = false;
   const loadMoreMessages = controller.loadMoreMessages;
+
+  // ── 被压缩旧消息 slide-out 退出动画与生命周期清理 ──
+  const removeSlidingOut = useSetAtom(removeSessionSlidingOutMessagesAtom);
+  const slidingTimersRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    const slidingIds: string[] = [];
+    for (const msg of activeMessages) {
+      if (msg.meta?.slidingOut === true) {
+        slidingIds.push(msg.id);
+      }
+    }
+    if (slidingIds.length === 0) return;
+
+    for (const id of slidingIds) {
+      if (!slidingTimersRef.current.has(id)) {
+        const timer = window.setTimeout(() => {
+          slidingTimersRef.current.delete(id);
+          removeSlidingOut({ sessionId, messageIds: [id] });
+        }, 280);
+        slidingTimersRef.current.set(id, timer);
+      }
+    }
+  }, [activeMessages, removeSlidingOut, sessionId]);
+
+  useEffect(() => () => {
+    for (const timer of slidingTimersRef.current.values()) {
+      window.clearTimeout(timer);
+    }
+    slidingTimersRef.current.clear();
+  }, [sessionId]);
   // ── 滚动接近顶部自动加载历史（2026-11 轮次模型）──
   // 监听器已迁移到 useSessionTimelineController（程序化滚动抑制在同一 owner）：
   // 用户上滚到距顶部 240px 内即按轮补历史，prepend 补偿不会连锁触发下一页。
@@ -661,6 +708,8 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
         activeMessages.length > 0 && (
           <div className="message-list min-w-0 w-full mx-auto transition-opacity duration-150">
             {displayRuns.map((item, index) => {
+              const isSliding = isItemSlidingOut(item);
+              let node: ReactNode = null;
               if (item.kind === "agent-run") {
                 // Controls：忙碌中的末行 run 视为 live（isStreaming 补丁可能略滞后于正文 atom）。
                 const isRunStreaming = isLatestTimelineRunBusy(
@@ -668,7 +717,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                   index,
                   displayRuns.length,
                 );
-                return (
+                node = (
                   <TurnRow
                     key={item.id}
                     run={item}
@@ -691,53 +740,62 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                     onEnterMultiSelect={() => setMultiSelectOpen(true)}
                   />
                 );
+              } else if (item.kind === "message") {
+                const message = item.message;
+                if (message.role === "user") {
+                  node = (
+                    <UserBubble
+                      key={message.id}
+                      message={message}
+                      fresh={freshMessageIds.has(message.id)}
+                      onPreviewImage={props.onPreviewImage}
+                      onOpenFile={props.onOpenFile}
+                      onResendUserMessage={props.onResendUserMessage}
+                      onEditMessage={props.onEditMessage}
+                      onDeleteMessage={props.onDeleteMessage}
+                      onForkMessage={props.onForkMessage}
+                      forking={props.forkingMessageId === message.id}
+                      agentRunning={isAgentBusy}
+                      isLastUserMessage={message.id === lastUserMessageId}
+                      showResendButton={resendableMessageIds.has(message.id)}
+                      validCommandNames={props.validCommandNames}
+                      validFilePaths={props.validFilePaths}
+                      onEnterMultiSelect={() => setMultiSelectOpen(true)}
+                    />
+                  );
+                } else if (message.role === "error") {
+                  // 失败/重试类提示已转 toast（见 FLOATING_FAILURE_KEYS），
+                  // 时间线不再渲染卡片；pi 启动失败/运行时诊断仍走诊断卡片。
+                  if (isFloatingFailureMessage(message)) return null;
+                  node = <DiagnosticMessageCard key={message.id} message={message} />;
+                } else if (message.role === "system") {
+                  const meta = message.meta as any;
+                  if (meta?.type === "askQuestion") {
+                    // Pending extension UI is rendered once in the timeline footer.
+                    // Legacy in-memory messages may still contain this placeholder.
+                    return null;
+                  }
+                  if (meta?.type === "compaction") {
+                    node = <CompactionCard key={message.id} message={message} sessionId={sessionId} onOpenExternal={props.onOpenExternal} onOpenFile={props.onOpenFile} />;
+                  } else {
+                    // 自动重试状态（retryScheduled/retrySucceeded/retryFailed 等）
+                    // 属于「重试提示」，与失败类一样转 toast、不占时间线。
+                    if (isFloatingFailureMessage(message)) return null;
+                    node = <DiagnosticMessageCard key={message.id} message={message} />;
+                  }
+                }
               }
-              if (item.kind !== "message") return null;
-              const message = item.message;
-              if (message.role === "user") {
+
+              if (!node) return null;
+              if (isSliding) {
+                const itemId = item.kind === "message" ? item.message.id : item.id;
                 return (
-                  <UserBubble
-                    key={message.id}
-                    message={message}
-                    fresh={freshMessageIds.has(message.id)}
-                    onPreviewImage={props.onPreviewImage}
-                    onOpenFile={props.onOpenFile}
-                    onResendUserMessage={props.onResendUserMessage}
-                    onEditMessage={props.onEditMessage}
-                    onDeleteMessage={props.onDeleteMessage}
-                    onForkMessage={props.onForkMessage}
-                    forking={props.forkingMessageId === message.id}
-                    agentRunning={isAgentBusy}
-                    isLastUserMessage={message.id === lastUserMessageId}
-                    showResendButton={resendableMessageIds.has(message.id)}
-                    validCommandNames={props.validCommandNames}
-                    validFilePaths={props.validFilePaths}
-                    onEnterMultiSelect={() => setMultiSelectOpen(true)}
-                  />
+                  <div key={`slideout-${itemId}`} className="timeline-message-slide-out">
+                    {node}
+                  </div>
                 );
               }
-              if (message.role === "error") {
-                // 失败/重试类提示已转 toast（见 FLOATING_FAILURE_KEYS），
-                // 时间线不再渲染卡片；pi 启动失败/运行时诊断仍走诊断卡片。
-                if (isFloatingFailureMessage(message)) return null;
-                return <DiagnosticMessageCard key={message.id} message={message} />;
-              }
-              if (message.role === "system") {
-                const meta = message.meta as any;
-                if (meta?.type === "askQuestion") {
-                  // Pending extension UI is rendered once in the timeline footer.
-                  // Legacy in-memory messages may still contain this placeholder.
-                  return null;
-                }
-                if (meta?.type === "compaction") {
-                  return <CompactionCard key={message.id} message={message} sessionId={sessionId} onOpenExternal={props.onOpenExternal} onOpenFile={props.onOpenFile} />;
-                }
-                // 自动重试状态（retryScheduled/retrySucceeded/retryFailed 等）
-                // 属于「重试提示」，与失败类一样转 toast、不占时间线。
-                if (isFloatingFailureMessage(message)) return null;
-                return <DiagnosticMessageCard key={message.id} message={message} />;
-              }
-              return null;
+              return node;
             })}
 
             {hasActiveConversation &&

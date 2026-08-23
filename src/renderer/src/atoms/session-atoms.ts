@@ -99,6 +99,7 @@ export type SessionMessageCacheEntry = {
 	revision: number;
 	source: "disk" | "runtime";
 	updatedAt: number;
+	agentId?: string;
 	/** Present only for paged historical reads; runtime owns an authoritative full snapshot. */
 	page?: Pick<SessionMessagePage, "total" | "nextBefore">;
 	/** 激活显示窗口起点（runtime 数组下标空间，2026-08 激活分页）；>0 表示窗口前还有历史。 */
@@ -523,6 +524,7 @@ export const cacheSessionMessagesAtom = atom(
 		messages: ChatMessage[];
 		source: "disk" | "runtime";
 		expectedRevision?: number;
+		agentId?: string;
 		page?: Pick<SessionMessagePage, "total" | "nextBefore">;
 		/** runtime 窗口协议字段（2026-08 激活分页） */
 		windowStart?: number;
@@ -572,6 +574,7 @@ export const cacheSessionMessagesAtom = atom(
 			revision,
 			source: input.source,
 			updatedAt: Date.now(),
+			...(input.agentId ? { agentId: input.agentId } : (current?.agentId ? { agentId: current.agentId } : {})),
 			...(input.source === "disk" && input.page ? { page: input.page } : {}),
 			// runtime 窗口语义（2026-08 激活分页）：entry 每次整体重建，
 			// 调用方必须显式给出 windowStart/history（undefined = 清除，如版本失效丢前缀）；
@@ -717,6 +720,140 @@ function findCoveredMessageIndexes(
   }
   return covered;
 }
+
+/**
+ * 比较当前已展示的运行期消息与新的权威 canonical snapshot：
+ * - 旧数组中存在但新 canonical 数组中不存在的消息，标记为 meta.slidingOut = true 并保留在数组中；
+ * - 新 canonical 消息正常插入/更新；
+ * - 保持消息的原始顺序（旧消息在前、新消息在后，原有相对时序不变）；
+ * - 如果某个 message ID 重新出现在新的 canonical 消息中，清除 slidingOut 标记（以 canonical 为准，避免双份）；
+ * - 如果第二次 snapshot 到达时已有消息仍在 slide-out，继续保留它们。
+ */
+export function mergeCanonicalSnapshotWithSlidingOut(
+  previousMessages: ChatMessage[],
+  canonicalMessages: ChatMessage[],
+  slideOut?: ChatMessage[],
+): ChatMessage[] {
+  if (previousMessages.length === 0) {
+    return canonicalMessages;
+  }
+  if (canonicalMessages.length === 0) {
+    return previousMessages.map((m) =>
+      m.meta?.slidingOut === true ? m : { ...m, meta: { ...m.meta, slidingOut: true } }
+    );
+  }
+
+  const canonicalById = new Map<string, ChatMessage>();
+  for (const msg of canonicalMessages) {
+    canonicalById.set(msg.id, msg);
+  }
+
+  // trim 窗口右移滑出轮已被 reconcileHistoryPrefix 并入 history.messages，
+  // 不应在 messages 中重复保留为 slidingOut
+  const slideOutIds = new Set<string>();
+  const slideOutEntryIds = new Set<string>();
+  if (Array.isArray(slideOut)) {
+    for (const msg of slideOut) {
+      slideOutIds.add(msg.id);
+      if (typeof msg.meta?.entryId === "string") {
+        slideOutEntryIds.add(msg.meta.entryId);
+      }
+    }
+  }
+
+  const emittedCanonicalIds = new Set<string>();
+  const result: ChatMessage[] = [];
+
+  for (const prevMsg of previousMessages) {
+    const canonicalMsg = canonicalById.get(prevMsg.id);
+    if (canonicalMsg) {
+      // 重新出现在 canonical 中：使用最新的 canonical 版本，清除 slidingOut
+      if (!emittedCanonicalIds.has(canonicalMsg.id)) {
+        emittedCanonicalIds.add(canonicalMsg.id);
+        if (canonicalMsg.meta?.slidingOut) {
+          const meta = { ...canonicalMsg.meta };
+          delete meta.slidingOut;
+          result.push({ ...canonicalMsg, meta });
+        } else {
+          result.push(canonicalMsg);
+        }
+      }
+    } else {
+      // 如果该消息已被 slideOut 并入 history 前缀，跳过，不在此处保留为 slidingOut
+      if (
+        slideOutIds.has(prevMsg.id) ||
+        (typeof prevMsg.meta?.entryId === "string" && slideOutEntryIds.has(prevMsg.meta.entryId))
+      ) {
+        continue;
+      }
+      // 在 canonical 中不存在：保留并标记 slidingOut
+      if (prevMsg.meta?.slidingOut === true) {
+        result.push(prevMsg);
+      } else {
+        result.push({
+          ...prevMsg,
+          meta: { ...prevMsg.meta, slidingOut: true },
+        });
+      }
+    }
+  }
+
+  // 追加之前未遍历到的全新 canonical 消息
+  for (const canonicalMsg of canonicalMessages) {
+    if (!emittedCanonicalIds.has(canonicalMsg.id)) {
+      emittedCanonicalIds.add(canonicalMsg.id);
+      if (canonicalMsg.meta?.slidingOut) {
+        const meta = { ...canonicalMsg.meta };
+        delete meta.slidingOut;
+        result.push({ ...canonicalMsg, meta });
+      } else {
+        result.push(canonicalMsg);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * 动画结束后按 message ID 清理已滑出的旧消息。
+ * 严格守卫：只删除 meta.slidingOut === true 的消息，绝对不修改或删除 canonical 消息。
+ */
+export function removeSlidingOutMessages(
+  messages: ChatMessage[],
+  targetIds: Set<string> | string[],
+): ChatMessage[] {
+  const idSet = targetIds instanceof Set ? targetIds : new Set(targetIds);
+  let changed = false;
+  const result = messages.filter((msg) => {
+    if (idSet.has(msg.id) && msg.meta?.slidingOut === true) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  return changed ? result : messages;
+}
+
+export const removeSessionSlidingOutMessagesAtom = atom(
+  null,
+  (get, set, input: { sessionId: string; messageIds: string[] }) => {
+    const cache = get(sessionMessagesCacheAtom);
+    const current = cache[input.sessionId];
+    if (!current || !current.messages) return false;
+    const nextMessages = removeSlidingOutMessages(current.messages, input.messageIds);
+    if (nextMessages === current.messages) return false;
+    set(sessionMessagesCacheAtom, {
+      ...cache,
+      [input.sessionId]: {
+        ...current,
+        messages: nextMessages,
+        updatedAt: Date.now(),
+      },
+    });
+    return true;
+  },
+);
 
 /**
  * 运行时窗口段更新时调和 disk 历史前缀（2026-08 激活分页）：
@@ -1473,15 +1610,16 @@ export const applySessionRuntimeEventAtom = atom(
           // 为本轮回答内的显示延迟，终态到达后完全纠正。
           const W = current?.windowStart ?? 0;
           const cardCount = current?.cardCount ?? 0;
-          const offset = upsertFrom - W + cardCount;
+          const slidingCount = current?.messages.filter((m) => m.meta?.slidingOut === true).length ?? 0;
+          const offset = upsertFrom - W + cardCount + slidingCount;
           if (current?.source === "runtime" && offset >= 0 && current.messages.length >= offset) {
             const merged = [
               ...current.messages.slice(0, offset),
               ...(messages as ChatMessage[]),
             ];
-            // 长度校验：合并后本地长度 = 卡片 + (totalLength − W)；不满足说明增量已失序
+            // 长度校验：合并后本地长度 = 卡片 + (totalLength − W) + slidingCount；不满足说明增量已失序
             // （漏事件/trim 未校准），丢弃等待全量
-            if (merged.length === totalLength - W + cardCount) {
+            if (merged.length === totalLength - W + cardCount + slidingCount) {
               set(cacheSessionMessagesAtom, {
                 sessionId: event.sessionId,
                 messages: merged,
@@ -1512,7 +1650,8 @@ export const applySessionRuntimeEventAtom = atom(
           }
         } else {
           // 窗口化全量 / 传统全量：替换运行时窗口段；
-          // disk 前缀经版本守卫（压缩改写即失效）+ 接缝去重（窗口右移与前缀重叠）后保留
+          // 方案 B：对当前展示的 messages 与新 canonical snapshot 做 diff，
+          // 被压缩移出的旧消息标记 slidingOut 并继续保留在 renderer state 中，由 renderer 自行管理退出动画生命周期。
           const segment = messages as ChatMessage[];
           // 卡片数推导：全量载荷 = [卡片(c), 窗口段]，本地长度 = c + (totalLength − W)
           const W = payloadWindowStart ?? 0;
@@ -1522,9 +1661,10 @@ export const applySessionRuntimeEventAtom = atom(
           const slideOut = Array.isArray(payload.slideOut)
             ? (payload.slideOut as ChatMessage[])
             : undefined;
-          // restart / 重开同一会话时，主进程已经丢掉旧 agent 的窗口段，
-          // 不会再带 slideOut。压缩路径会显式下发 slideOut，不能把旧窗口再并一次。
-          const previousWindow = preserveHistory &&
+          // restart / 重开同一会话时，主进程已经丢掉旧 agent 的窗口段。
+          // 仅在 bindingChanged 且显式 preserveHistory 时，把旧窗口并入 history 前缀。
+          const previousWindow = bindingChanged &&
+            preserveHistory &&
             stickyHistory &&
             (!slideOut || slideOut.length === 0) &&
             current?.source === "runtime"
@@ -1533,10 +1673,16 @@ export const applySessionRuntimeEventAtom = atom(
           const combinedSlideOut = previousWindow && previousWindow.length > 0
             ? previousWindow
             : slideOut;
+          const mergedMessages = !bindingChanged &&
+            current?.source === "runtime" &&
+            (!current.agentId || current.agentId === event.agentId)
+            ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, slideOut)
+            : segment;
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
-            messages: segment,
+            messages: mergedMessages,
             source: "runtime",
+            agentId: event.agentId,
             windowStart: payloadWindowStart,
             cardCount,
             history: reconcileHistoryPrefix(
