@@ -436,14 +436,147 @@ test("refreshHistoryAfterMutation survives runtime flushes that arrive while awa
 
   const intermediateEntry = store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"];
   assert.equal(intermediateEntry.revision, initialRevision + 1, "revision must bump");
-  assert.equal(intermediateEntry.mutationSequence, 1, "mutationSequence must be preserved");
 
-  // 4. 重读完成并落地
+  // 4. 重读完成并落地（refresh 启动时激活 mutationSequence 并重读页面）
   await controllerModule.refreshHistoryAfterMutation({ store }, snapshot);
 
   // 5. 验证新历史成功替换，窗口消息保持
   const finalEntry = store.get(env.atoms.sessionMessagesCacheAtom)["session-flush-interleave"];
   assert.equal(finalEntry.history.messages[0].text, "UPDATED_HISTORY", "history must be refreshed despite revision bump");
   assert.equal(finalEntry.messages.length, 2, "runtime window messages must be retained");
+});
+
+test("failed subsequent mutation does not block earlier successful mutation from refreshing", async () => {
+  const env = setupTestEnvironment();
+  const store = createStore();
+
+  const fakeDesktopApi = {
+    desktopApi: {
+      sessions: {
+        readRecordMessagePage: async () => ({
+          messages: [{ id: "h1", role: "user", text: "MUTATION_A_SUCCESS", meta: { entryId: "e0" } }],
+          total: 1,
+          nextBefore: null,
+          indexVersion: "101:1000",
+        }),
+      },
+    },
+  };
+
+  const controllerModule = compileModule("src/renderer/src/hooks/useSessionTimelineController.ts", {
+    "../atoms": env.atoms,
+    "../i18n": env.i18n,
+    "../utils/notice": env.noticeUtils,
+    "../desktopApi": fakeDesktopApi,
+    "../components/agents/message-scroller": {},
+    "../components/session/timeline/turnRenderWindow": {
+      TIMELINE_SCROLLED_TURN_LIMIT: 20,
+      TIMELINE_WINDOW_EXPAND_STEP: 5,
+    },
+  });
+
+  store.set(env.atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-failed-subsequent",
+    source: "runtime",
+    messages: [{ id: "r1", role: "user", text: "recent", meta: { entryId: "e1" } }],
+    history: {
+      messages: [{ id: "h1", role: "user", text: "ORIGINAL_HISTORY", meta: { entryId: "e0" } }],
+      nextBefore: null,
+    },
+  });
+
+  // 1. 发起 Mutation A -> 捕获快照 (seq = 1)
+  const snapshotA = controllerModule.captureHistoryMutationRefresh(store, "session-failed-subsequent");
+  assert.equal(snapshotA.expectedMutationSequence, 1);
+
+  // 2. 很快又发起 Mutation B -> 捕获快照 (seq = 2)
+  const snapshotB = controllerModule.captureHistoryMutationRefresh(store, "session-failed-subsequent");
+  assert.equal(snapshotB.expectedMutationSequence, 2);
+
+  // 3. Mutation B 失败了（API 报错），因此 refresh B 根本没有被调用
+  // 4. Mutation A 成功完成，调用 refresh A
+  await controllerModule.refreshHistoryAfterMutation({ store }, snapshotA);
+
+  // 5. 断言：A 的历史刷新必须成功落地，不能被失败的 B 取消
+  const entry = store.get(env.atoms.sessionMessagesCacheAtom)["session-failed-subsequent"];
+  assert.equal(entry.history.messages[0].text, "MUTATION_A_SUCCESS", "A must succeed even if subsequent B failed");
+});
+
+test("stale refresh failure does not clear history from a newer successful mutation", async () => {
+  const env = setupTestEnvironment();
+  const store = createStore();
+
+  let rejectFirstPage;
+  const firstPagePromise = new Promise((_, reject) => {
+    rejectFirstPage = reject;
+  });
+
+  let callCount = 0;
+  const fakeDesktopApi = {
+    desktopApi: {
+      sessions: {
+        readRecordMessagePage: async (sessionId, requestBefore, pageSize, options) => {
+          callCount += 1;
+          if (callCount === 1) {
+            // 第一个 refresh 挂起，等待被 reject 模拟读取错误
+            await firstPagePromise;
+          }
+          // 第二个 refresh 正常返回成功
+          return {
+            messages: [{ id: "h1", role: "user", text: "MUTATION_B_SUCCESS", meta: { entryId: "e0" } }],
+            total: 1,
+            nextBefore: null,
+            indexVersion: "200:1000",
+          };
+        },
+      },
+    },
+  };
+
+  const controllerModule = compileModule("src/renderer/src/hooks/useSessionTimelineController.ts", {
+    "../atoms": env.atoms,
+    "../i18n": env.i18n,
+    "../utils/notice": env.noticeUtils,
+    "../desktopApi": fakeDesktopApi,
+    "../components/agents/message-scroller": {},
+    "../components/session/timeline/turnRenderWindow": {
+      TIMELINE_SCROLLED_TURN_LIMIT: 20,
+      TIMELINE_WINDOW_EXPAND_STEP: 5,
+    },
+  });
+
+  store.set(env.atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-catch-guard",
+    source: "runtime",
+    messages: [{ id: "r1", role: "user", text: "recent", meta: { entryId: "e1" } }],
+    history: {
+      messages: [{ id: "h1", role: "user", text: "ORIGINAL_HISTORY", meta: { entryId: "e0" } }],
+      nextBefore: null,
+    },
+  });
+
+  // 1. Mutation A 捕获快照并启动 refresh A
+  const snapshotA = controllerModule.captureHistoryMutationRefresh(store, "session-catch-guard");
+  const refreshAPromise = controllerModule.refreshHistoryAfterMutation({ store }, snapshotA);
+
+  // 2. Mutation B 捕获快照并成功完成 refresh B
+  const snapshotB = controllerModule.captureHistoryMutationRefresh(store, "session-catch-guard");
+  await controllerModule.refreshHistoryAfterMutation({ store }, snapshotB);
+
+  // 确认 B 已经成功落地
+  assert.equal(
+    store.get(env.atoms.sessionMessagesCacheAtom)["session-catch-guard"].history.messages[0].text,
+    "MUTATION_B_SUCCESS",
+  );
+
+  // 3. 此时 refresh A 发生磁盘读取错误（reject）
+  rejectFirstPage(new Error("Disk read error"));
+  await refreshAPromise;
+
+  // 4. 断言：B 已经刷好的正确 history 不能被 A 的 catch 清空，也不应弹出 A 的失败提示
+  const entry = store.get(env.atoms.sessionMessagesCacheAtom)["session-catch-guard"];
+  assert.ok(entry.history, "history must NOT be cleared by stale refresh failure");
+  assert.equal(entry.history.messages[0].text, "MUTATION_B_SUCCESS");
+  assert.equal(env.notices.length, 0, "no spurious error notice should be shown for superseded failure");
 });
 

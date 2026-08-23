@@ -221,8 +221,10 @@ export type HistoryMutationRefreshSnapshot = {
 // fileVersion 兑底要等下一次全量 flush 才生效，用户看到的是残留旧文案。
 // 修复：mutation 成功后按「修改前已加载轮数」重读历史页，一次性原子替换 history 前缀。
 
-/** per-session mutation 代际：连续两次 mutation 时旧 refresh 响应必须被丢弃 */
-const mutationSequenceBySession = new Map<string, number>();
+/** 发放给 mutation 快照的递增序号 */
+const issuedMutationSequenceBySession = new Map<string, number>();
+/** 当前已确认成功并处于活跃状态的 mutation sequence（只有成功 mutation 才能占用此代际） */
+const activeMutationSequenceBySession = new Map<string, number>();
 
 /** 计算 history.messages 覆盖的轮数：复用渲染层 agent-run 分组的同一约定
  * （user 消息 = 轮次起点），与主进程 findTurnPageStart / 轮次分页口径一致。 */
@@ -250,16 +252,10 @@ export function captureHistoryMutationRefresh(
 	if (!entry.history || entry.history.messages.length === 0) return null;
 	// 锚点行 id：优先当前滚动锚点；删除锚点本身时由 refresh 完成后找替代锚点。
 	const anchor = store.get(sessionScrollAnchorByIdAtom)[sessionId] ?? undefined;
-	const nextSequence = (mutationSequenceBySession.get(sessionId) ?? 0) + 1;
-	mutationSequenceBySession.set(sessionId, nextSequence);
-	// 写入 entry.mutationSequence，供普通 runtime flush 继承并在 replace atom 中校验
-	store.set(sessionMessagesCacheAtom, {
-		...store.get(sessionMessagesCacheAtom),
-		[sessionId]: {
-			...entry,
-			mutationSequence: nextSequence,
-		},
-	});
+	const nextSequence = (issuedMutationSequenceBySession.get(sessionId) ?? 0) + 1;
+	issuedMutationSequenceBySession.set(sessionId, nextSequence);
+	// 注意：此处仅发放快照序号，不写 entry.mutationSequence，也不更新 activeMutationSequence；
+	// 只有 mutation API 真正成功并进入 refreshHistoryAfterMutation 时才激活该 sequence。
 	return {
 		sessionId,
 		expectedMutationSequence: nextSequence,
@@ -284,6 +280,24 @@ export async function refreshHistoryAfterMutation(
 	if (!snapshot) return;
 	const { store } = deps;
 	const { sessionId } = snapshot;
+
+	// 若已有更新的 mutation 成功激活，此较旧 mutation 视为过时直接放弃
+	const currentActive = activeMutationSequenceBySession.get(sessionId) ?? 0;
+	if (snapshot.expectedMutationSequence < currentActive) return;
+
+	// 激活本 mutation sequence，并写入 cache entry 供后续 runtime flush 继承
+	activeMutationSequenceBySession.set(sessionId, snapshot.expectedMutationSequence);
+	const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
+	if (entryAtStart?.source === "runtime") {
+		store.set(sessionMessagesCacheAtom, {
+			...store.get(sessionMessagesCacheAtom),
+			[sessionId]: {
+				...entryAtStart,
+				mutationSequence: snapshot.expectedMutationSequence,
+			},
+		});
+	}
+
 	try {
 		// 首页锚点：复用 loadMoreMessages 首次补历史的同一接缝计算 ——
 		// 以当前 runtime 窗口首条有 entryId 的消息为锚，而不是旧缓存里的游标。
@@ -309,9 +323,9 @@ export async function refreshHistoryAfterMutation(
 			? { requestBefore: anchorFilePos }
 			: { anchorEntryId };
 		while (freshTurns < snapshot.loadedHistoryTurnCount && !exhausted) {
-			if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
 			const page = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
-			if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
 			if (store.get(sessionMessagesCacheAtom)[sessionId]?.source !== "runtime") return; // 会话已卸载/降级
 			freshPages.push(page);
 			for (const message of page.messages) {
@@ -326,7 +340,7 @@ export async function refreshHistoryAfterMutation(
 			}
 		}
 
-		if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+		if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
 
 		// 时间顺序合并（每页内部已有序、页间由旧到新）：直接拼接。
 		const merged = freshPages.flatMap((page) => page.messages);
@@ -358,10 +372,17 @@ export async function refreshHistoryAfterMutation(
 			}
 		}
 	} catch {
-		// 重读失败 ≠ 操作失败：保留后端已推送的新 runtime 数据，
-		// 只把可能陈旧的历史前缀清掉（下次上翻必然从新文件读取），并提示用户。
+		// 防御：若当前 entry 已被更新的成功 mutation 接管，不得清空新 mutation 刚刷好的历史
 		const entry = store.get(sessionMessagesCacheAtom)[sessionId];
-		if (entry?.source === "runtime" && entry.history) {
+		if (
+			entry?.source !== "runtime" ||
+			entry.mutationSequence !== snapshot.expectedMutationSequence ||
+			activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence
+		) {
+			return;
+		}
+
+		if (entry.history) {
 			store.set(clearSessionHistoryAtom, sessionId);
 		}
 		showNotice(t("message.mutationHistoryRefreshFailed"), 5000, "warning");
