@@ -1,6 +1,6 @@
-import { app, shell } from "electron";
-import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { AppLogEntry, AppLogLevel, AppLogPage, AppLogQuery } from "../../shared/types";
 import {
 	DEFAULT_PAGE_SIZE,
@@ -28,13 +28,17 @@ function normalizeDetail(detail: unknown) {
 	return detail;
 }
 
+export interface AppLoggerOptions {
+	directory?: string;
+}
+
 /**
  * 主进程应用日志服务。
  * 日志按天写入 userData/logs,既避免 renderer 崩溃丢失关键诊断信息,
  * 也避免记录到项目目录导致用户代码仓库被污染。
  */
 export class AppLogger {
-	private readonly dir = join(app.getPath("userData"), "logs");
+	private readonly dir: string;
 	private writeQueue: Promise<void> = Promise.resolve();
 	/** 历史日志文件行缓存：查询只重读指纹变化的文件（当天 append 文件），避免每次进设置日志 tab 全量读盘 */
 	private readonly lineCache = new LogLineCache(
@@ -42,6 +46,18 @@ export class AppLogger {
 		32,
 		MAX_FILE_LINES,
 	);
+
+	constructor(options: AppLoggerOptions = {}) {
+		this.dir = options.directory ?? join(homedir(), ".pi-desktop", "logs");
+	}
+
+	getDirectory(): string {
+		return this.dir;
+	}
+
+	async ensureDirectory(): Promise<void> {
+		await mkdir(this.dir, { recursive: true });
+	}
 
 	log(level: AppLogLevel, scope: string, message: string, detail?: unknown) {
 		const entry: AppLogEntry = {
@@ -85,7 +101,7 @@ export class AppLogger {
 	 * - 单文件读取有行数防御上限（MAX_FILE_LINES），防畸形超大文件拖垮查询。
 	 */
 	async listPage(query: AppLogQuery = {}): Promise<AppLogPage> {
-		await mkdir(this.dir, { recursive: true });
+		await this.ensureDirectory();
 		const files = filterLogFiles(
 			(await readdir(this.dir)).filter((file) => LOG_FILE_PATTERN.test(file)).sort().slice(-MAX_LOG_FILES),
 			query.from,
@@ -107,7 +123,7 @@ export class AppLogger {
 	}
 
 	async clear() {
-		await mkdir(this.dir, { recursive: true });
+		await this.ensureDirectory();
 		const files = await readdir(this.dir);
 		const before = files.filter((file) => LOG_FILE_PATTERN.test(file));
 		await Promise.all(
@@ -121,7 +137,7 @@ export class AppLogger {
 
 	/** 计算所有应用日志文件的总字节数 */
 	async getSize(): Promise<number> {
-		await mkdir(this.dir, { recursive: true });
+		await this.ensureDirectory();
 		const files = (await readdir(this.dir))
 			.filter((file) => LOG_FILE_PATTERN.test(file));
 		let total = 0;
@@ -131,13 +147,12 @@ export class AppLogger {
 		return total;
 	}
 
-	async openFolder() {
-		await mkdir(this.dir, { recursive: true });
-		await shell.openPath(this.dir);
+	getDir(): string {
+		return this.dir;
 	}
 
 	private async writeEntry(entry: AppLogEntry) {
-		await mkdir(this.dir, { recursive: true });
+		await this.ensureDirectory();
 		await this.cleanupOldFiles();
 		const filePath = join(this.dir, `app-${formatDate(new Date(entry.time))}.log`);
 		await appendFile(filePath, `${JSON.stringify(entry)}\n`, "utf8");

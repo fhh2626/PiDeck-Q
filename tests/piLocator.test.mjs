@@ -149,7 +149,7 @@ test("getSearchDirs scans fnm node-versions and scoop dirs on Windows", () => {
 			{ LOCALAPPDATA: join(root, "Local"), APPDATA: join(root, "Roaming") },
 			root,
 		);
-		const dirs = new PiLocator().getSearchDirs();
+		const dirs = new PiLocator(undefined, root).getSearchDirs();
 		assert.ok(dirs.includes(fnmInstall));
 		assert.ok(dirs.includes(join(root, "scoop", "shims")));
 		assert.ok(dirs.includes(join(root, "scoop", "apps", "nodejs", "current")));
@@ -163,7 +163,7 @@ test("getSearchDirs uses ~/.local/share/mise on darwin and linux", () => {
 		const root = join(tmpdir(), `pi-desktop-locator-mise-${platform}-${process.pid}-${Date.now()}`);
 		try {
 			const { PiLocator } = loadPiLocatorModule(platform, {}, root);
-			const dirs = new PiLocator().getSearchDirs();
+			const dirs = new PiLocator(undefined, root).getSearchDirs();
 			assert.ok(
 				dirs.includes(join(root, ".local", "share", "mise", "shims")),
 				`${platform} should scan ~/.local/share/mise`,

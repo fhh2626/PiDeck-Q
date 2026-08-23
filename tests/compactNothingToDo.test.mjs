@@ -57,11 +57,12 @@ test("compaction_end 后主动检查 idle，避免状态卡在 running", () => {
   // pi 压缩结束不保证发 agent_settled：不主动检查会永远 stuck 在 running，
   // 渲染层表现：最后回复耗时继续走（LiveDuration）、加载动画常驻、
   // 思考/工具折叠保持展开（2026-08 用户反馈）。
+  // 同时绑定 settledProcess + settledGeneration 避免竞态关闭新一轮任务。
   assert.match(agentManager, /typed\.type === "compaction_end"/);
   assert.match(
     agentManager,
-    /markIdleIfPiReportsNoWork\(agentId\)[\s\S]{0,200}Compaction ended/,
+    /markIdleIfPiReportsNoWork\([\s\S]{0,100}settledProcess[\s\S]{0,100}settledGeneration[\s\S]{0,200}Compaction ended/,
   );
   // idle 检查必须延迟到 pi 压缩收尾之后（文件写入/状态刷新）
-  assert.match(agentManager, /setTimeout\(\(\) => \{\s*\n\s*void this\.markIdleIfPiReportsNoWork\(agentId\);\s*\n\s*\}, 300\)/);
+  assert.match(agentManager, /setTimeout\(\(\) => \{\s*\n\s*void this\.markIdleIfPiReportsNoWork\(\s*agentId,\s*settledProcess,\s*settledGeneration,?\s*\);\s*\n\s*\}, 300\)/);
 });

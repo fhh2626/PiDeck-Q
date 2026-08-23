@@ -29,7 +29,14 @@ const composerAtoms = compile("src/renderer/src/atoms/composer-atoms.ts", {
   "./session-atoms": sessionAtoms,
 });
 const timeline = compile("src/renderer/src/hooks/useSessionTimelineController.ts", {
-  react: {}, jotai: { atom: (value) => ({ _mockInit: value }) }, "jotai/utils": {}, "../atoms": {}, "../desktopApi": {},  "../components/session/timeline/turnRenderWindow": {
+  react: {},
+  jotai: { atom: (value) => ({ _mockInit: value }) },
+  "jotai/utils": {},
+  "../atoms": {},
+  "../desktopApi": {},
+  "../i18n": { t: (key) => key },
+  "../utils/notice": { showNotice: () => {} },
+  "../components/session/timeline/turnRenderWindow": {
     TIMELINE_SCROLLED_TURN_LIMIT: 15,
     TIMELINE_WINDOW_EXPAND_STEP: 10,
   },

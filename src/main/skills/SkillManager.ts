@@ -1,4 +1,3 @@
-import { shell } from "electron";
 import { existsSync, type Dirent } from "node:fs";
 import {
 	mkdir,
@@ -12,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { trashPath } from "../fs/trash";
+import type { TrashPath } from "../fs/trash";
 import type {
 	CreatePiSkillInput,
 	PiSkillListResult,
@@ -29,23 +28,35 @@ type SkillCopy = (
 	params?: Record<string, string | number>,
 ) => string;
 
+export type SkillPlatformOps = {
+	openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
+	trashPath?: TrashPath;
+};
+
 /**
  * 管理 pi 全局 Skill 目录。
  * 第一版仅操作全局目录，不触碰项目级 .pi/.agents skills，避免误删项目资产或绕过 trusted project 规则。
  */
 export class SkillManager {
 	private locations: PiSkillLocation[];
+	/**
+	 * 构造时注入的本地基准 home。
+	 * configureWsl(null) 恢复的是该值，而不是重新读取 os.homedir()。
+	 */
+	private readonly localHome: string;
 
 	constructor(
 		home?: string,
 		private readonly translate: SkillCopy = () => "Skill operation failed.",
+		private readonly platformOps?: SkillPlatformOps,
 	) {
-		this.locations = this.buildLocations(home ?? homedir());
+		this.localHome = home ?? homedir();
+		this.locations = this.buildLocations(this.localHome);
 	}
 
-	/** 将 skill 目录切换到统一解析出的 WSL HOME；null 恢复 Windows home。 */
+	/** 将 skill 目录切换到统一解析出的 WSL HOME；null 恢复构造时注入的本地 home。 */
 	configureWsl(environment: WslEnvironment | null) {
-		this.locations = this.buildLocations(environment?.windowsHome ?? homedir());
+		this.locations = this.buildLocations(environment?.windowsHome ?? this.localHome);
 	}
 
 	private buildLocations(home: string): PiSkillLocation[] {
@@ -115,19 +126,26 @@ export class SkillManager {
 
 	async delete(skillPath: string): Promise<void> {
 		const skill = await this.findByPath(skillPath);
+		if (!this.platformOps?.trashPath) {
+			throw new Error("Trash service unavailable");
+		}
 		// 目录型 skill 删除整个目录；根 markdown skill 仅删除单个 md 文件。
 		// 用户 skill 是内容资产：走系统回收站（可恢复）并记审计日志，拒绝 rm 硬删。
-		await trashPath(skill.type === "directory" ? skill.dir : skill.path, { source: "skills:delete" });
+		await this.platformOps.trashPath(skill.type === "directory" ? skill.dir : skill.path, { source: "skills:delete" });
 	}
 
 	async openFolder(skillPath?: string): Promise<void> {
 		if (!skillPath) {
 			await mkdir(this.locations[0].path, { recursive: true });
-			await shell.openPath(this.locations[0].path);
+			if (this.platformOps?.openPath) {
+				await this.platformOps.openPath(this.locations[0].path);
+			}
 			return;
 		}
 		const skill = await this.findByPath(skillPath);
-		await shell.openPath(skill.dir);
+		if (this.platformOps?.openPath) {
+			await this.platformOps.openPath(skill.dir);
+		}
 	}
 
 	private async scanLocation(location: PiSkillLocation): Promise<PiSkillSummary[]> {

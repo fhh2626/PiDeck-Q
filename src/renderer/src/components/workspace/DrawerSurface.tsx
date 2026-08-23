@@ -1,13 +1,103 @@
+import { memo, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { SquarePen } from "lucide-react";
 import { BrowserSurface } from "./BrowserSurface";
-import { GitPanel } from "../app/GitPanel";
-import { DrawerContent } from "../app/AppParts";
 import { LazyWrapper } from "../../hooks/useLazyComponent";
 import type { WorkspaceDrawerPanel } from "../../hooks/useWorkspacePanels";
 import { t } from "../../i18n";
 import { Button } from "../ui-shadcn/button";
 
 // ── port objects (typed loosely — type tightening is a follow-up task) ──
+
+/**
+ * 重 Drawer 面板按需 import：静态 import 只会「延迟 mount」，这些大模块仍进初始 bundle；
+ * 改成动态 import 后，Git drawer 第一次真正打开才加载 GitPanel 的 JS chunk，
+ * DrawerContent（files/sessions，含 file-icons 等重依赖）同样按需加载。
+ *
+ * 采用 MarkdownStream 的「全局 Promise 缓存 + 失败清缓存」模式：
+ * - 模块级 promise 缓存：未打开 drawer 时 chunk 不下载；打开后组件缓存到模块级，
+ *   后续切走/再开立即命中，不再闪一次加载占位。
+ * - import 失败清缓存：重新打开 drawer 可重试，不会永久卡在失败态。
+ *
+ * 注意：这里 props 用 any，是为了在「面板未加载」时不强制把 GitPanel/DrawerContent 的
+ * props 类型静态拉进来（它们内部 type 未导出，内联 props 更直接）。
+ */
+type DrawerPanelComponent = ComponentType<any>;
+let gitPanelPromise: Promise<DrawerPanelComponent> | undefined;
+let cachedGitPanel: DrawerPanelComponent | null = null;
+function loadGitPanel(): Promise<DrawerPanelComponent> {
+  if (cachedGitPanel) return Promise.resolve(cachedGitPanel);
+  if (!gitPanelPromise) {
+    gitPanelPromise = import("../app/GitPanel")
+      .then((m) => {
+        cachedGitPanel = m.GitPanel;
+        return cachedGitPanel;
+      })
+      .catch((error: unknown) => {
+        gitPanelPromise = undefined;
+        throw error;
+      });
+  }
+  return gitPanelPromise;
+}
+let drawerContentPromise: Promise<DrawerPanelComponent> | undefined;
+let cachedDrawerContent: DrawerPanelComponent | null = null;
+function loadDrawerContent(): Promise<DrawerPanelComponent> {
+  if (cachedDrawerContent) return Promise.resolve(cachedDrawerContent);
+  if (!drawerContentPromise) {
+    drawerContentPromise = import("../session/DrawerContent")
+      .then((m) => {
+        cachedDrawerContent = m.DrawerContent;
+        return cachedDrawerContent;
+      })
+      .catch((error: unknown) => {
+        drawerContentPromise = undefined;
+        throw error;
+      });
+  }
+  return drawerContentPromise;
+}
+
+/**
+ * 按需加载的面板宿主：import 中显示 loading 占位，import 后渲染真实面板；
+ * 失败时显示错误占位（不 crash 整个 App），重新打开 drawer 会重试。
+ */
+const LazyPanel = memo(function LazyPanel(props: {
+  loader: () => Promise<DrawerPanelComponent>;
+  placeholder: ReactNode;
+  children: (Component: DrawerPanelComponent) => ReactNode;
+}) {
+  const [Component, setComponent] = useState<DrawerPanelComponent | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    props
+      .loader()
+      .then((Component) => {
+        if (active) setComponent(Component);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [props.loader]);
+
+  if (failed) {
+    return (
+      <div className="drawer-content-frame grid min-h-0 flex-1 place-items-center text-body text-muted-foreground">
+        {t("drawer.lazyFailed")}
+      </div>
+    );
+  }
+  if (!Component) {
+    return (
+      <div className="drawer-content-frame min-h-0 flex-1">{props.placeholder}</div>
+    );
+  }
+  return <>{props.children(Component)}</>;
+});
 
 export interface DrawerEditorPort {
   editorMode: string;
@@ -102,6 +192,21 @@ export interface DrawerSurfaceProps {
 export function DrawerSurface(props: DrawerSurfaceProps) {
   const { drawer, drawerCollapsed, editor, git, chrome, browser, files } = props;
 
+  // 面板 import 中/未就绪的加载占位（git 与 files/sessions 共用），与下方 LazyWrapper
+  // 的 placeholder 同文案，保持视觉一致。
+  const panelPlaceholder = (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      height: "100%",
+      color: "var(--text-secondary)",
+      fontSize: "14px"
+    }}>
+      {t("drawer.lazyLoading")}
+    </div>
+  );
+
   return (
     <>
       {/* 各面板不再挂「标题 + ×」顶栏：关闭/切换改走会话 Tab 栏右侧活动图标。 */}
@@ -129,42 +234,49 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
           />
         </div>
       ) : git.enableGitManagement && drawer === "git" && !drawerCollapsed && git.activeProjectId ? (
-        <div className="drawer-content-frame flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="git-drawer-stack">
-            <div className="git-drawer-source">
-              <GitPanel
-                projectId={git.activeProjectId}
-                projectRoot={files.projects.find((project: any) => project.id === git.activeProjectId)?.path}
-                commitLog={git.gitApi.commitLog}
-                commitDetail={git.gitApi.commitDetail}
-                onOpenCommitFileDiff={git.openCommitFileDiff}
-                onOpenWorkspaceFileDiff={git.openWorkspaceFileDiff}
-                onOpenFile={files.openEditorTab}
-                branchCompare={git.gitApi.branchCompare}
-                getStatus={git.gitApi.status}
-                stageFiles={git.gitApi.stage}
-                unstageFiles={git.gitApi.unstage}
-                discardFile={git.gitApi.discard}
-                commit={git.gitApi.commit}
-                branches={git.gitInfo.branches}
-                currentBranch={git.gitInfo.current}
-                onSwitchBranch={git.switchBranch}
-                onCreateBranch={git.createBranch}
-                cherryPick={git.gitApi.cherryPick}
-                revert={git.gitApi.revert}
-                reset={git.gitApi.reset}
-                dropCommit={git.gitApi.dropCommit}
-                generateCommitMessage={git.gitApi.generateCommitMessage}
-                gitInit={git.gitApi.init}
-                push={git.gitApi.push}
-                pull={git.gitApi.pull}
-                fetch={git.gitApi.fetch}
-                aheadBehind={git.gitApi.aheadBehind}
-                deleteFiles={git.gitApi.deleteFiles}
-              />
+        <LazyPanel
+          loader={loadGitPanel}
+          placeholder={panelPlaceholder}
+        >
+          {(Component) => (
+            <div className="drawer-content-frame flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="git-drawer-stack">
+                <div className="git-drawer-source">
+                  <Component
+                    projectId={git.activeProjectId}
+                    projectRoot={files.projects.find((project: any) => project.id === git.activeProjectId)?.path}
+                    commitLog={git.gitApi.commitLog}
+                    commitDetail={git.gitApi.commitDetail}
+                    onOpenCommitFileDiff={git.openCommitFileDiff}
+                    onOpenWorkspaceFileDiff={git.openWorkspaceFileDiff}
+                    onOpenFile={files.openEditorTab}
+                    branchCompare={git.gitApi.branchCompare}
+                    getStatus={git.gitApi.status}
+                    stageFiles={git.gitApi.stage}
+                    unstageFiles={git.gitApi.unstage}
+                    discardFile={git.gitApi.discard}
+                    commit={git.gitApi.commit}
+                    branches={git.gitInfo.branches}
+                    currentBranch={git.gitInfo.current}
+                    onSwitchBranch={git.switchBranch}
+                    onCreateBranch={git.createBranch}
+                    cherryPick={git.gitApi.cherryPick}
+                    revert={git.gitApi.revert}
+                    reset={git.gitApi.reset}
+                    dropCommit={git.gitApi.dropCommit}
+                    generateCommitMessage={git.gitApi.generateCommitMessage}
+                    gitInit={git.gitApi.init}
+                    push={git.gitApi.push}
+                    pull={git.gitApi.pull}
+                    fetch={git.gitApi.fetch}
+                    aheadBehind={git.gitApi.aheadBehind}
+                    deleteFiles={git.gitApi.deleteFiles}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+        </LazyPanel>
       ) : drawer && drawer !== "browser" && drawer !== "editor" && drawer !== "git" ? (
         <LazyWrapper
           // 滚动层上移到这里：files/sessions 面板自身不再滚动（见 timeline.css
@@ -176,77 +288,73 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
           enabled={true}
           threshold={0}
           rootMargin="50px"
-          placeholder={
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-              color: "var(--text-secondary)",
-              fontSize: "14px"
-            }}>
-              {t("drawer.lazyLoading")}
-            </div>
-          }
+          placeholder={panelPlaceholder}
         >
-          <DrawerContent
-            panel={drawer}
-            project={drawer === "sessions" ? files.sessionsProject : undefined}
-            files={files.files}
-            sessions={(files.sessionsProjectId && files.sessionSourceFilter[files.sessionsProjectId as string]) ? files.sessions.filter(
-              (s: any) => !s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"),
-            ).concat(files.sessions.filter((s: any) => s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"))) : files.sessions}
-            sessionsLoading={files.sessionHistoryLoading}
-            expandedDirs={files.expandedDirs}
-            onToggleDirectory={files.onToggleDirectory}
-            onCollapseAllDirectories={files.onCollapseAllDirectories}
-            onClose={chrome.onCloseDrawer}
-            onFileContextMenu={(node: any, x: number, y: number) => files.setFileMenu({ node, x, y })}
-            onRefreshFiles={() => {
-              files.refreshFiles(git.activeProjectId);
-            }}
-            onOpenFolder={() => {
-              const p = files.projects.find((p: any) => p.id === git.activeProjectId);
-              if (p) void files.api.files.open(p.path);
-            }}
-            projectRoot={files.projectRoot}
-            onDropFiles={files.onDropFiles}
-            onPasteFiles={files.onPasteFiles}
-            onMoveFiles={files.onMoveFiles}
-            onRefreshSessions={() => {
-              const projectId = files.sessionsProjectId ?? git.activeProjectId;
-              if (projectId) void files.refreshProjectSessions(projectId, true);
-            }}
-            onOpenSession={(session: any) =>
-              void files.runOpenSidebarSession(
-                files.sessionsProjectId ?? git.activeProjectId ?? "",
-                session,
-              )
-            }
-            onRenameSession={async (filePath: string, newName: string) => {
-              const session = files.sessions.find((candidate: any) =>
-                files.isSameSessionPath(
-                  candidate.filePath,
-                  filePath,
-                  candidate.wsl ? "wsl" : "native",
-                ),
-              );
-              if (!session) return;
-              await files.api.sessions.updateRecord(session.id, { title: newName });
-              const projectId = files.sessionsProjectId ?? git.activeProjectId;
-              if (projectId) await files.refreshProjectSessions(projectId, true);
-            }}
-            onCopySession={(session: any) =>
-              files.runCopySession(
-                session.id,
-                files.sessionsProjectId ?? git.activeProjectId,
-              )
-            }
-            onExportSession={files.runExportHistorySession}
-            onDeleteSession={files.runDeleteHistorySession}
-            onViewFile={files.viewFilePath}
-            onOpenFile={files.openFilePath}
-          />
+          <LazyPanel
+            loader={loadDrawerContent}
+            placeholder={panelPlaceholder}
+          >
+            {(Component) => (
+              <Component
+                panel={drawer}
+                project={drawer === "sessions" ? files.sessionsProject : undefined}
+                files={files.files}
+                sessions={(files.sessionsProjectId && files.sessionSourceFilter[files.sessionsProjectId as string]) ? files.sessions.filter(
+                  (s: any) => !s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"),
+                ).concat(files.sessions.filter((s: any) => s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"))) : files.sessions}
+                sessionsLoading={files.sessionHistoryLoading}
+                expandedDirs={files.expandedDirs}
+                onToggleDirectory={files.onToggleDirectory}
+                onCollapseAllDirectories={files.onCollapseAllDirectories}
+                onClose={chrome.onCloseDrawer}
+                onFileContextMenu={(node: any, x: number, y: number) => files.setFileMenu({ node, x, y })}
+                onRefreshFiles={() => {
+                  files.refreshFiles(git.activeProjectId);
+                }}
+                onOpenFolder={() => {
+                  const p = files.projects.find((p: any) => p.id === git.activeProjectId);
+                  if (p) void files.api.files.open(p.path);
+                }}
+                projectRoot={files.projectRoot}
+                onDropFiles={files.onDropFiles}
+                onPasteFiles={files.onPasteFiles}
+                onMoveFiles={files.onMoveFiles}
+                onRefreshSessions={() => {
+                  const projectId = files.sessionsProjectId ?? git.activeProjectId;
+                  if (projectId) void files.refreshProjectSessions(projectId, true);
+                }}
+                onOpenSession={(session: any) =>
+                  void files.runOpenSidebarSession(
+                    files.sessionsProjectId ?? git.activeProjectId ?? "",
+                    session,
+                  )
+                }
+                onRenameSession={async (filePath: string, newName: string) => {
+                  const session = files.sessions.find((candidate: any) =>
+                    files.isSameSessionPath(
+                      candidate.filePath,
+                      filePath,
+                      candidate.wsl ? "wsl" : "native",
+                    ),
+                  );
+                  if (!session) return;
+                  await files.api.sessions.updateRecord(session.id, { title: newName });
+                  const projectId = files.sessionsProjectId ?? git.activeProjectId;
+                  if (projectId) await files.refreshProjectSessions(projectId, true);
+                }}
+                onCopySession={(session: any) =>
+                  files.runCopySession(
+                    session.id,
+                    files.sessionsProjectId ?? git.activeProjectId,
+                  )
+                }
+                onExportSession={files.runExportHistorySession}
+                onDeleteSession={files.runDeleteHistorySession}
+                onViewFile={files.viewFilePath}
+                onOpenFile={files.openFilePath}
+              />
+            )}
+          </LazyPanel>
         </LazyWrapper>
       ) : null}
     </>

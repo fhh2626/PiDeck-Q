@@ -151,54 +151,6 @@ test("resolves HOME once and exposes an observable compatibility fallback", asyn
 	assert.equal(warnings[0].details.fallback, "/root");
 });
 
-test("opens the WSL project picker at the active HOME and canonicalizes its selection", async () => {
-	const dialogCalls = [];
-	const dialog = {
-		showOpenDialog: async (options) => {
-			dialogCalls.push(options);
-			return {
-				canceled: false,
-				filePaths: ["//wsl.localhost/Ubuntu-24.04/root/ba_cli/"],
-			};
-		},
-	};
-	const { ProjectStore } = loadProjectStore(paths, dialog);
-	const store = new ProjectStore();
-	let added;
-	store.add = async (...args) => {
-		added = args;
-		return { id: "project", path: args[0] };
-	};
-
-	const project = await store.chooseAndAdd("wsl", rootEnvironment);
-
-	assert.equal(dialogCalls[0].defaultPath, rootEnvironment.windowsHome);
-	assert.deepEqual(Array.from(dialogCalls[0].properties), ["openDirectory"]);
-	assert.equal(project.path, "\\\\wsl.localhost\\Ubuntu-24.04\\root\\ba_cli");
-	assert.equal(added[2], "wsl");
-});
-
-test("rejects a project from another distro before adding it", async () => {
-	const dialog = {
-		showOpenDialog: async () => ({
-			canceled: false,
-			filePaths: ["\\\\wsl.localhost\\Debian\\root\\ba_cli"],
-		}),
-	};
-	const { ProjectStore } = loadProjectStore(paths, dialog);
-	const store = new ProjectStore();
-	let addCalled = false;
-	store.add = async () => {
-		addCalled = true;
-	};
-
-	await assert.rejects(
-		store.chooseAndAdd("wsl", rootEnvironment),
-		(error) => error.code === "WSL_DISTRO_MISMATCH",
-	);
-	assert.equal(addCalled, false);
-});
-
 test("matches WSL UNC aliases without folding Linux path case", () => {
 	const { ProjectStore } = loadProjectStore(paths, {});
 	const store = new ProjectStore();

@@ -143,9 +143,11 @@ test("streaming and first paint stay on the split plain-text fallback", () => {
   assert.match(policy, /export const STREAM_LIGHT_MAX_CHARS = 40_000/);
   assert.match(policy, /export const SETTLE_FULL_MAX_CHARS = 150_000/);
   assert.match(stream, /export \{ STREAM_LIGHT_MAX_CHARS \} from "\.\/markdownStreamPolicy"/);
-  // 所有流式内容及异步加载期都复用同一个可读 fallback，不创建 Markdown 解析树。
+  // 流式内容及 renderer 未加载的异步期都复用同一个可读 fallback，不创建 Markdown 解析树。
+  // 富 Markdown 只在静态（settle）且 renderer 已解析后启用；流式永远走 PlainStreamSplit 轻量路径。
   assert.match(stream, /const displayText = isStreamingNow \? displayedContent : props\.text/);
-  assert.match(stream, /const renderRichMarkdown = !isStreamingNow && rendererRequested && Renderer/);
+  assert.match(stream, /const renderRichMarkdown =\s*!isStreamingNow && Renderer != null/);
+  assert.doesNotMatch(stream, /rendererRequested/);
   assert.match(stream, /<PlainStreamSplit text=\{displayText\} \/>/);
   assert.doesNotMatch(stream, /IncrementalMarkdownFrontier|FrozenMarkdownChunk|<Streamdown/);
   // settle 全量渲染上限：超大内容保持轻量插件。
@@ -156,17 +158,26 @@ test("streaming and first paint stay on the split plain-text fallback", () => {
   assert.match(thinking, /<MarkdownStream/);
 });
 
-test("static and settled rich rendering is deferred to idle with plain-text failure fallback", () => {
+test("loaded renderer is cached per-process: new static instances skip the plain-text fallback", () => {
 	const stream = readFileSync("src/renderer/src/components/session/MarkdownStream.tsx", "utf8");
-	// 静态首帧和 settle 都必须延迟到空闲；不能在首次 render 直接请求重库。
-	assert.match(stream, /requestIdleCallback\(schedule, \{ timeout: 1500 \}\)/);
-	assert.match(stream, /const \[rendererRequested, setRendererRequested\] = useState\(false\)/);
-	assert.match(stream, /if \(isStreamingNow\) \{\s*setRendererRequested\(false\)/);
-	assert.match(stream, /cancelIdleCallback\(id\)/);
-	// 异步失败不能清空消息；promise 缓存复位供后续挂载重试，当前保持 PlainStreamSplit。
+	// 已解析出的 renderer 组件在模块级缓存（loadedMarkdownRenderer），
+	// 新实例的初始 state 直接取该缓存：renderer 已加载时首帧即富渲染，
+	// 不再先走 PlainStreamSplit 再等空闲切 Streamdown（修正切换会话时的“先松后紧”闪动）。
+	assert.match(stream, /let loadedMarkdownRenderer: MarkdownRendererComponent \| null = null/);
+	assert.match(stream, /\(\s*\) => loadedMarkdownRenderer,/);
+	assert.match(stream, /if \(loadedMarkdownRenderer\) \{\s*return Promise\.resolve\(loadedMarkdownRenderer\);/);
+	// 首次加载仍保持懒加载 + 单并发去重；失败保持纯文本，promise 缓存复位供后续挂载重试。
+	assert.match(stream, /import\("\.\/MarkdownStreamRenderer"\)/);
+	assert.match(stream, /loadedMarkdownRenderer = module\.MarkdownStreamRenderer/);
 	assert.match(stream, /rendererLoadPromise = undefined/);
 	assert.match(stream, /\.catch\(\(\) => \{/);
-	assert.match(stream, /<PlainStreamSplit text=\{displayText\} \/>/);
+	// 首次静态 Markdown 延迟到浏览器空闲再加载（timeout 兜底），不与首帧争抢主线程；
+	// 卸载后取消调度不得 setState：cancelIdleCallback + active 双保险。
+	assert.match(stream, /requestIdleCallback\(load, \{ timeout: 1500 \}\)/);
+	assert.match(stream, /window\.setTimeout\(load, 50\)/);
+	assert.match(stream, /window\.cancelIdleCallback\(id\)/);
+	assert.match(stream, /active = false;/);
+	assert.match(stream, /if \(active\) setRenderer\(\(\) => component\)/);
 });
 
 test("AnswerOutput live path renders through MarkdownStream (no dual typewriter)", () => {

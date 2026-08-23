@@ -114,7 +114,8 @@ async function withTempSession(entries, options, run) {
     await writeFile(path, original);
     return await run({ directory, path, original: Buffer.from(original) });
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    // Windows 病毒扫描器/索引器可能在原子替换后短暂持有目录项；内建重试避免并行套件偶发 ENOTEMPTY。
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 }
 
@@ -713,7 +714,7 @@ test("different physical files can mutate concurrently", async () => {
     release.resolve();
     await Promise.all([first, second]);
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 });
 

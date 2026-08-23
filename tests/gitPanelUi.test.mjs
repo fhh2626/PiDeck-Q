@@ -137,7 +137,7 @@ assert.doesNotMatch(twistie, /ChevronDown|ChevronRight|GitBranch|GitCommit|GitCo
   });
 
   test("prefers Electron system language data while preserving explicit locale choices", () => {
-    assert.match(systemIpc, /app\.getPreferredSystemLanguages\(\)/);
+    assert.match(systemIpc, /getPreferredSystemLanguages/);
     assert.match(preload, /preferredSystemLanguages/);
     assert.match(app, /api\.app\s*\.preferredSystemLanguages\(\)/);
     assert.match(i18n, /navigator\.languages\?\.\[0\]/);

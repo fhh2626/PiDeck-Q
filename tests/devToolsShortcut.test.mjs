@@ -199,7 +199,7 @@ test("main window and webview guest both route devtools shortcuts through the sh
 	assert.match(webviewHost, /guest\.on\("before-input-event"/);
 	assert.match(webviewHost, /toggleMainWindowDevTools\(window\)/);
 	// 设置页 IPC 与快捷键共用同一开关入口
-	assert.match(systemIpc, /toggleMainWindowDevTools\(getMainWindow\(\)\)/);
+	assert.match(systemIpc, /toggleDevTools\?\.\(\)/);
 	// 旧的内联重复实现已删除
 	assert.doesNotMatch(main, /openDevTools\(\{ mode: "detach" \}\)/);
 });

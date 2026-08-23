@@ -473,6 +473,10 @@ test("embedded web client and HTTP surface are Session-first", async () => {
 		assert.match(page, /activeSessionId/);
 		assert.match(page, /runtimeGeneration/);
 		assert.match(page, /\/api\/sessions\//);
+		// 轮询必须合并旧 messagesBySession：运行时消息缓存被标 stale 时 /api/state
+		// 会省略该会话 key，整体替换会把已有消息误显示为空会话。
+		assert.match(page, /previousMessagesBySession/);
+		assert.doesNotMatch(page, /state = await api\("\/api\/state"\)/);
 		assert.doesNotMatch(page, /\/api\/agents/);
 		assert.doesNotMatch(page, /activeAgentId|messagesByAgent|data-agent/);
 

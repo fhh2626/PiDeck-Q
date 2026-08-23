@@ -59,10 +59,49 @@ test("main process: message_end pushes final text with done flag", () => {
   assert.match(agentManager, /emitTextStreamNow\(agentId: string, text: string, done = false\)/);
 });
 
+test("contract: agents:text-stream payload carries messageId (per-message binding)", () => {
+  // 回归背景：live 正文按 assistantMessageId 精确绑定消息，不再用「最后一个
+  // agent-run」猜测归属。若主进程移除 messageId 下发，渲染层拿不到 id，
+  // liveInterimId 判定永远不匹配 → live 正文静默不显示（安全降级但功能失效）。
+  // 此契约测试直接锁定下发链路，防止未来回归到 sessionId 级单槽。
+  const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
+
+  // emitTextStreamNow 必须从 activeAssistantMessageIds 取当前 assistant id 并入帧
+  const emitIdx = agentManager.indexOf("private emitTextStreamNow");
+  assert.ok(emitIdx >= 0, "emitTextStreamNow must exist");
+  const emitBlock = agentManager.slice(emitIdx, emitIdx + 1200);
+  assert.match(emitBlock, /activeAssistantMessageIds\.get\(agentId\)/);
+  assert.match(emitBlock, /messageId \? \{ messageId \}/);
+  assert.match(emitBlock, /payload: TextStreamUpdate/);
+
+  // 共享类型必须声明可选 messageId 字段
+  const agentTypes = readFileSync("src/shared/types/agent.ts", "utf8");
+  const typeIdx = agentTypes.indexOf("export type TextStreamUpdate");
+  assert.ok(typeIdx >= 0, "TextStreamUpdate type must exist");
+  const typeBlock = agentTypes.slice(typeIdx, typeIdx + 300);
+  assert.match(typeBlock, /messageId\?: string;/);
+
+  // 渲染层事件分支必须解析 messageId 并写入 streamingTextByIdAtom 条目
+  const atoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "utf8");
+  const streamIdx = atoms.indexOf('event.sourceChannel === "agents:text-stream"');
+  assert.ok(streamIdx >= 0, "text-stream branch must exist");
+  const messagesBranchIdx = atoms.indexOf('event.sourceChannel === "agents:message"');
+  const branch = atoms.slice(streamIdx, messagesBranchIdx > streamIdx ? messagesBranchIdx : undefined);
+  assert.match(branch, /typeof payload\.messageId === "string" \? payload\.messageId : \(prev\?\.messageId \?\? ""\)/);
+  assert.match(branch, /messageId, content: text, streaming \}/);
+
+  // TurnRow 挂载判定必须消费 streamingMessageId（id 不匹配不挂）
+  const liveMount = readFileSync(
+    "src/renderer/src/components/session/timeline/liveMount.ts",
+    "utf8",
+  );
+  assert.match(liveMount, /input\.lastInterimId !== input\.streamingMessageId/);
+});
+
 test("renderer: streamingTextByIdAtom updates from agents:text-stream without runtime bump", () => {
   const atoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "utf8");
   assert.match(atoms, /export const streamingTextByIdAtom = atom/);
-  assert.match(atoms, /Record<string, \{ content: string; streaming: boolean \}>/);
+  assert.match(atoms, /Record<string, StreamingTextState>/);
   assert.match(atoms, /event\.sourceChannel === "agents:text-stream"/);
   assert.match(atoms, /const streaming = !done && text\.length > 0/);
   assert.match(atoms, /delete nextMap\[event\.sessionId\]/);
@@ -94,7 +133,8 @@ test("UI: AnswerOutput live path; TurnRow does not subscribe streaming atom", ()
   assert.match(turnRow, /mode="live"/);
   assert.doesNotMatch(turnRow, /StreamingAnswerBubble/);
   assert.doesNotMatch(turnRow, /streamingTextByIdAtom/);
-  assert.match(turnRow, /if \(prev\.isStreaming \|\| next\.isStreaming\) return false;/);
+  assert.match(turnRow, /if \(prev\.isStreaming !== next\.isStreaming\) return false;/);
+  assert.doesNotMatch(turnRow, /if \(prev\.isStreaming \|\| next\.isStreaming\) return false;/);
 
   const answer = readFileSync(
     "src/renderer/src/components/session/AnswerOutput.tsx",

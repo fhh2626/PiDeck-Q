@@ -275,9 +275,5 @@ test("main-process user surfaces use stable copy and keep caught details in logs
   assert.match(source, /"webService\.startFailed"/);
   assert.match(source, /throw sessionCommandIpcError\(/);
   assert.doesNotMatch(source, /throw new Error\([^\n]*debugDetails \|\|[^\n]*code/);
-
-  const projectStore = readFileSync("src/main/projects/ProjectStore.ts", "utf8");
-  assert.match(projectStore, /title: this\.chooseProjectTitle\(\)/);
-  assert.doesNotMatch(projectStore, /title:\s*"选择项目目录"/);
-
+  assert.match(source, /"dialog\.chooseProjectFolder"/);
 });

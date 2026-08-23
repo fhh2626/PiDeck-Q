@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
-import { trashPath } from "../fs/trash";
+import type { TrashPath } from "../fs/trash";
 import { getAppLogger } from "../logging/sharedLogger";
 import type { AppSettings, PiCliUpdateResult, PiExtensionListResult, PiExtensionSummary, PiUpdateCheckResult } from "../../shared/types";
 import type { PiLocator } from "../pi/PiLocator";
@@ -62,6 +62,7 @@ export class ExtensionManager {
 			patch: Partial<AppSettings>,
 		) => Promise<AppSettings> = async () => getSettings(),
 		private readonly translate: ExtensionCopy = () => "Extension operation failed.",
+		private readonly trashPath?: TrashPath,
 	) {}
 
 	/** 将扩展文件边界切换到统一解析出的 WSL HOME；null 恢复 Windows home。 */
@@ -302,8 +303,9 @@ export class ExtensionManager {
 			throw new Error(this.translate("mainExtension.invalidPath"));
 		}
 		const targetPath = join(extensionsDir, name);
+		if (!this.trashPath) throw new Error("Trash service unavailable");
 		// 本地扩展是用户安装的代码：删除走系统回收站（可恢复）；回收站不可用时抛错，拒绝硬删。
-		await trashPath(targetPath, { source: "extension:uninstall" });
+		await this.trashPath(targetPath, { source: "extension:uninstall" });
 	}
 
 	/** 卸载后从 disabledExtensions 清掉对应项，避免残留无效禁用记录。 */

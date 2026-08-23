@@ -2,7 +2,7 @@ export { detectPiRuntimeKind } from "../../shared/piCompatibility";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { delimiter, dirname, extname, join } from "node:path";
-import { app } from "electron";
+import { homedir } from "node:os";
 import type { AppSettings, PiInstallStatus } from "../../shared/types";
 import { detectPiRuntimeKind, type PiRuntimePreference } from "../../shared/piCompatibility";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
@@ -40,9 +40,14 @@ export type PiCommandInvocation = {
 
 /** Resolves the pi CLI across packaged Electron environments where shell PATH is often incomplete. */
 export class PiLocator {
+  private readonly homeDir: string;
+
   constructor(
     private readonly translate: PiLocatorCopy = () => "Could not run pi CLI.",
-  ) {}
+    homeDir?: string,
+  ) {
+    this.homeDir = homeDir ?? homedir();
+  }
 
   /**
    * Resolves the pi CLI across packaged Electron environments where shell PATH is often incomplete.
@@ -91,7 +96,7 @@ export class PiLocator {
   }
 
   getSearchDirs() {
-    const home = app.getPath("home");
+    const home = this.homeDir;
     const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
     const localAppData = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
     // mise 数据目录可被 MISE_DATA_DIR 覆盖，工具版本目录由 MISE_INSTALLS_DIR 覆盖。
@@ -589,7 +594,7 @@ export class PiLocator {
     const binDir = dirname(command);
     // npm/nvm/asdf/mise shims resolve Node through env/PATH. Prepending the shim's own
     // bin directory keeps that lookup on the Node version that installed pi, instead
-    // of a different Node inherited from Finder/Explorer/Electron.
+    // of a different Node inherited from desktop host environment.
     const nodeName = process.platform === "win32" ? "node.exe" : "node";
     return existsSync(join(binDir, nodeName)) ? binDir : undefined;
   }

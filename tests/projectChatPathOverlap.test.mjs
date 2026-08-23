@@ -63,7 +63,7 @@ async function withStore(run) {
   await mkdir(userData, { recursive: true });
   try {
     const { ProjectStore } = loadProjectStore(userData);
-    const store = new ProjectStore();
+    const store = new ProjectStore(userData);
     await run(store, { userData, userFolder: join(userData, "x-prd") });
   } finally {
     await rm(userData, { recursive: true, force: true });

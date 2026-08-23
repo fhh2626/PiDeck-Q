@@ -1,8 +1,8 @@
-import { app } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, stat, writeFile, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import type {
 	OpenCodeImportReport,
@@ -41,10 +41,17 @@ type ParsedOpenCodeSession = {
 };
 
 export class OpenCodeSessionImporter {
-	private readonly openCodeDb = join(app.getPath("home"), ".local", "share", "opencode", "opencode.db");
-	private readonly piRoot = join(app.getPath("home"), ".pi", "agent", "sessions");
+	private readonly openCodeDb: string;
+	private readonly piRoot: string;
 
-	constructor(private readonly translate: SessionImportCopy = defaultSessionImportCopy) {}
+	constructor(
+		private readonly translate: SessionImportCopy = defaultSessionImportCopy,
+		homeDir?: string,
+	) {
+		const home = homeDir ?? homedir();
+		this.openCodeDb = join(home, ".local", "share", "opencode", "opencode.db");
+		this.piRoot = join(home, ".pi", "agent", "sessions");
+	}
 
 	async scan(projectPath: string): Promise<OpenCodeSessionSummary[]> {
 		if (!existsSync(this.openCodeDb)) return [];

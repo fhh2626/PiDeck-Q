@@ -4,7 +4,7 @@ import { projectByIdAtomFamily, sessionRecordByIdAtomFamily } from "../../atoms"
 import { t } from "../../i18n";
 import { isChatProject } from "../../rendererUtils";
 import { Button } from "../ui-shadcn/button";
-import { useSessionPaneServices } from "./SessionPaneServices";
+import { useSessionPaneActions } from "./SessionPaneServices";
 
 /**
  * 内置对话区（Chat）会话头部的「切换聊天记录目录」入口。
@@ -19,7 +19,8 @@ import { useSessionPaneServices } from "./SessionPaneServices";
 export function ChatDirectoryButton(props: { sessionId: string }) {
   const session = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
   const project = useAtomValue(projectByIdAtomFamily(session?.projectId ?? ""));
-  const { changeChatPath, showNotice } = useSessionPaneServices();
+  // 只订 actions 轨：changeChatPath / showNotice 都是稳定回调，不随 terminal / gitInfo 变化
+  const { changeChatPath, showNotice } = useSessionPaneActions();
 
   // 非内置聊天会话（普通项目/匿名）不渲染：普通项目有自己更完整的目录管理入口
   if (!session || !isChatProject(project)) return null;

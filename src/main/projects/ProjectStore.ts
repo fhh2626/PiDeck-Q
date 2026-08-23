@@ -1,26 +1,47 @@
-import { app, dialog } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join, normalize, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Project } from "../../shared/types";
 import {
   normalizeSelectedWslProjectPath,
   parseWslUncPath,
-  WslPathError,
   type WslEnvironment,
 } from "../wsl/WslPaths";
 
 const CHAT_PROJECT_ID = "builtin-chat";
 const CHAT_PROJECT_NAME = "Chat";
 
+export interface ProjectStoreDeps {
+  projectsFile?: string;
+  chatPathFile?: string;
+  defaultChatProjectPath?: string;
+  userDataDir?: string;
+}
+
 export class ProjectStore {
-  private readonly filePath = join(app.getPath("userData"), "projects.json");
-  private readonly chatPathFile = join(app.getPath("userData"), "chat-path.json");
+  private readonly filePath: string;
+  private readonly chatPathFile: string;
   // 聊天工作区目录：默认在 userData 下，用户可在侧栏聊天项目设置中改为任意目录并持久化。
-  private chatProjectPath = join(app.getPath("userData"), "chat-workspace");
+  private chatProjectPath: string;
   private projects: Project[] = [];
 
-  constructor(private readonly chooseProjectTitle: () => string = () => "Choose project folder") {}
+  constructor(
+    deps?: ProjectStoreDeps | string,
+  ) {
+    const home = homedir();
+    let defaultBase = join(home, ".pi-desktop");
+    if (typeof deps === "string") {
+      defaultBase = deps;
+    }
+    const options = typeof deps === "object" && deps !== null ? deps : undefined;
+    if (options?.userDataDir) {
+      defaultBase = options.userDataDir;
+    }
+    this.filePath = options?.projectsFile ?? join(defaultBase, "projects.json");
+    this.chatPathFile = options?.chatPathFile ?? join(defaultBase, "chat-path.json");
+    this.chatProjectPath = options?.defaultChatProjectPath ?? join(defaultBase, "chat-workspace");
+  }
 
   async load() {
     try {
@@ -73,17 +94,21 @@ export class ProjectStore {
       throw new Error("CHAT_PATH_OVERLAPS_PROJECT");
     }
     this.chatProjectPath = normalized;
-    await writeFile(this.chatPathFile, JSON.stringify({ path: normalized }), "utf8");
-    const chat = this.projects.find(
-      (project) => this.isChatProject(project) || project.id === CHAT_PROJECT_ID,
-    );
-    if (chat) chat.path = normalized;
-    await mkdir(normalized, { recursive: true });
+    const chat = this.projects.find(project => this.isChatProject(project));
+    if (chat) {
+      chat.path = normalized;
+    }
+    await mkdir(this.chatProjectPath, { recursive: true });
+    await this.saveChatProjectPath(normalized);
     await this.save();
     return chat ?? null;
   }
 
-  /** 读取用户自定义的聊天目录；不存在或解析失败时回退到默认 chat-workspace。 */
+  private async saveChatProjectPath(path: string) {
+    await mkdir(dirname(this.chatPathFile), { recursive: true });
+    await writeFile(this.chatPathFile, JSON.stringify({ path }, null, 2), "utf8");
+  }
+
   private async loadChatProjectPath() {
     try {
       const raw = await readFile(this.chatPathFile, "utf8");
@@ -92,30 +117,6 @@ export class ProjectStore {
     } catch {
       // 无自定义路径时保持默认 userData/chat-workspace
     }
-  }
-
-  async chooseAndAdd(
-    environment?: "windows" | "wsl",
-    wslEnvironment?: WslEnvironment | null,
-  ) {
-    if (environment === "wsl" && !wslEnvironment) {
-      throw new WslPathError("INVALID_WSL_PATH", "The active WSL environment is unavailable.");
-    }
-    const result = await dialog.showOpenDialog({
-      title: this.chooseProjectTitle(),
-      ...(environment === "wsl" ? { defaultPath: wslEnvironment!.windowsHome } : {}),
-      properties: ["openDirectory"],
-    });
-
-    if (result.canceled || result.filePaths.length === 0) return null;
-    let projectPath = result.filePaths[0];
-
-    // WSL 盘符项目沿用 /mnt 存储格式；WSL 内部项目保留为可供 Windows 主进程访问的规范 UNC。
-    if (environment === "wsl") {
-      projectPath = normalizeSelectedWslProjectPath(projectPath, wslEnvironment!);
-    }
-
-    return this.add(projectPath, undefined, environment);
   }
 
   /** 添加项目，可指定所属环境（缺省 windows） */
@@ -158,41 +159,39 @@ export class ProjectStore {
   async remove(id: string) {
     // 删除父项目时同步移除子项目记录，避免留下不可见的孤儿 worktree 项目。
     this.projects = this.projects.filter(project =>
-      (project.id !== id && project.worktreeParentId !== id) || this.isChatProject(project),
+      project.id !== id && project.worktreeParentId !== id
     );
+    this.ensureChatProject();
+    this.ensureSortOrder();
     await this.save();
+    return this.list();
   }
 
   async reorder(projectIds: string[]) {
-    const movableProjectIds = projectIds.filter((id) => id !== CHAT_PROJECT_ID);
-    const orderById = new Map(movableProjectIds.map((id, index) => [id, index]));
-    const tailStart = movableProjectIds.length;
-    const currentOrder = this.list()
-      .filter((project) => !this.isChatProject(project))
-      .map((project) => project.id);
+    // 置顶项优先保留在顶部，其余按传入的拖拽顺序赋予递增 sortOrder
+    const chatProject = this.projects.find((project) => this.isChatProject(project));
+    if (chatProject) chatProject.sortOrder = -1;
 
-    this.projects.forEach((project) => {
-      if (this.isChatProject(project)) {
-        project.sortOrder = -1;
-        return;
+    let order = 0;
+    for (const id of projectIds) {
+      const project = this.projects.find((item) => item.id === id && !this.isChatProject(item));
+      if (project) {
+        project.sortOrder = order++;
       }
-      const explicitOrder = orderById.get(project.id);
-      project.sortOrder = explicitOrder ?? tailStart + currentOrder.indexOf(project.id);
-    });
+    }
+    // 未在传入列表中的项目（如新发现的 worktree）排在末尾
+    for (const project of this.projects) {
+      if (!this.isChatProject(project) && !projectIds.includes(project.id)) {
+        project.sortOrder = order++;
+      }
+    }
 
     await this.save();
     return this.list();
   }
 
   private ensureChatProject() {
-    // 只按身份定位聊天项目（kind/id），不按路径匹配（issue #149）：聊天目录被设为某项目
-    // 目录后，路径相同的普通项目会被误判为聊天项目，整条覆盖（id/name/kind 被改写）并
-    // 从列表中删除——用户的项目区从此只剩聊天区，重启后仍被持久化。
-    const existing = this.projects.find(
-      (project) =>
-        this.isChatProject(project) ||
-        project.id === CHAT_PROJECT_ID,
-    );
+    const existing = this.projects.find((project) => this.isChatProject(project));
     const nextChatProject: Project = {
       id: CHAT_PROJECT_ID,
       name: CHAT_PROJECT_NAME,
@@ -322,7 +321,7 @@ export class ProjectStore {
 
   private async save() {
     // 项目列表是桌面端自己的轻量状态，不写入 pi session，避免影响 pi 原生会话格式。
-    await mkdir(app.getPath("userData"), { recursive: true });
+    await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, JSON.stringify(this.projects, null, 2), "utf8");
   }
 }

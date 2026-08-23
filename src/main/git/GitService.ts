@@ -3,7 +3,7 @@ import { constants, realpathSync } from "node:fs";
 import { lstat, open, readlink, realpath, unlink } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { trashPath } from "../fs/trash";
+import type { TrashPath } from "../fs/trash";
 import type { GitBranchInfo, CommitDetail, CommitEntry, GitRef, BranchDiffResult, GitChangedFile, GitFileStatus, GitCommitFileDiff, GitResourceGroupType, GitWorkspaceFileDiff, GitAheadBehind } from "../../shared/types";
 import { GitStatus } from "../../shared/types";
 import type { GitResource, GitResourceGroups } from "../../shared/types";
@@ -12,6 +12,8 @@ const execFileAsync = promisify(execFile);
 const GIT_MUTATION_TIMEOUT_MS = 30_000;
 
 export class GitService {
+	constructor(private readonly trashPath?: TrashPath) {}
+
 	/** 只缓存轻量 commit 元数据/文件清单；正文永不缓存，且 LRU 总预算不超过 2MB。 */
 	private readonly commitDetailCache = new Map<string, { detail: CommitDetail; bytes: number }>();
 	private readonly commitDetailCacheLimit = 16;
@@ -746,7 +748,8 @@ export class GitService {
 				await unlink(resource.path);
 				return;
 			}
-			await trashPath(resource.path, { source: "git:discard-file" });
+			if (!this.trashPath) throw new Error("Trash service unavailable");
+			await this.trashPath(resource.path, { source: "git:discard-file" });
 			return;
 		}
 
@@ -861,7 +864,8 @@ export class GitService {
 			}
 			// 统一走回收站：删除可恢复，避免误删用户内容（与 discard untracked 同一策略）；
 			// 逐文件记录审计日志（路径 + 来源），批量误删时可按路径检索回溯。
-			await trashPath(resource.path, { source: "git:delete-files" });
+			if (!this.trashPath) throw new Error("Trash service unavailable");
+			await this.trashPath(resource.path, { source: "git:delete-files" });
 		}
 	}
 }

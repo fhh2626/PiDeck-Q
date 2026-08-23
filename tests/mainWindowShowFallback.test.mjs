@@ -37,16 +37,18 @@ test("Windows taskbar can read a non-empty app title", () => {
 
 test("first window is created before WSL and pi startup probes", () => {
 	const createIndex = source.indexOf("await createWindow();");
-	const wslIndex = source.indexOf("void syncWslConfig()");
-	const migrateIndex = source.indexOf("void migrateLegacyBuiltInExtensions()");
-	const defaultsIndex = source.indexOf("void ensureAllPiSettingsDefaults()");
+	const startTasksIndex = source.indexOf("backend.startAfterWindowCreated();");
 	assert.notEqual(createIndex, -1);
+	assert.notEqual(startTasksIndex, -1);
+	assert.ok(createIndex < startTasksIndex);
+
+	const startupTasks = readFileSync("src/main/backend/backendStartupTasks.ts", "utf8");
+	const wslIndex = startupTasks.indexOf("void syncWslConfig()");
+	const migrateIndex = startupTasks.indexOf("void migrateLegacyBuiltInExtensions(");
+	const defaultsIndex = startupTasks.indexOf("void ensureAllPiSettingsDefaults(");
 	assert.notEqual(wslIndex, -1);
 	assert.notEqual(migrateIndex, -1);
 	assert.notEqual(defaultsIndex, -1);
-	assert.ok(createIndex < wslIndex);
-	assert.ok(createIndex < migrateIndex);
-	assert.ok(createIndex < defaultsIndex);
 });
 
 test("linux display workaround opens the main window without hidden pre-map", () => {

@@ -4,6 +4,7 @@ import test from "node:test";
 import { mainIpcSource } from "./helpers/mainIpcSources.mjs";
 
 const main = readFileSync("src/main/index.ts", "utf8");
+const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const preload = readFileSync("src/preload/index.ts", "utf8");
 const terminalDock = readFileSync(
 	"src/renderer/src/components/terminal/TerminalDock.tsx",
@@ -84,8 +85,8 @@ test("Session file operations resolve stable Session IDs before touching paths",
 	assert.match(preload, /copyRecord: \(sessionId: string\)/);
 	assert.match(preload, /exportRecordHtml: \(sessionId: string\)/);
 	assert.match(preload, /readReferenceMessages: \(sessionId: string\)/);
-	assert.match(main, /async function copyCatalogSession\(sessionId: string\)/);
-	assert.match(main, /const entry = sessionCatalog\.get\(sessionId\)/);
+	assert.match(sessionBridge, /async function copyCatalogSession\(\s*sessionId: string/);
+	assert.match(sessionBridge, /const entry = sessionCatalog\.get\(sessionId\)/);
 	assert.match(sessionActions, /copyRecord\(sessionId\)/);
 	assert.match(sessionActions, /exportRecordHtml\(session\.id\)/);
 	assert.match(sessionReferenceModal, /props\.loadMessages\(props\.session\.id\)/);

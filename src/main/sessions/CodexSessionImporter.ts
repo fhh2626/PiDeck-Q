@@ -1,8 +1,8 @@
-import { app } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import type {
 	CodexImportReport,
@@ -35,10 +35,17 @@ type ParsedCodexSession = {
 };
 
 export class CodexSessionImporter {
-	private readonly codexRoot = join(app.getPath("home"), ".codex", "sessions");
-	private readonly piRoot = join(app.getPath("home"), ".pi", "agent", "sessions");
+	private readonly codexRoot: string;
+	private readonly piRoot: string;
 
-	constructor(private readonly translate: SessionImportCopy = defaultSessionImportCopy) {}
+	constructor(
+		private readonly translate: SessionImportCopy = defaultSessionImportCopy,
+		homeDir?: string,
+	) {
+		const home = homeDir ?? homedir();
+		this.codexRoot = join(home, ".codex", "sessions");
+		this.piRoot = join(home, ".pi", "agent", "sessions");
+	}
 
 	async scan(projectPath: string): Promise<CodexSessionSummary[]> {
 		const files = await this.collectJsonl(this.codexRoot).catch(() => []);

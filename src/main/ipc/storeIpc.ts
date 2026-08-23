@@ -3,7 +3,6 @@
  * Phase 3.5: extracted from src/main/index.ts registerIpc().
  */
 
-import { ipcMain } from "electron";
 import { ipcChannels } from "../../shared/ipc";
 import type {
 	CreatePiPromptTemplateInput,
@@ -20,6 +19,7 @@ import type { ExtensionManager } from "../extensions/ExtensionManager";
 import { isBuiltInExtensionName } from "../extensions/builtInExtensions";
 import { createUniquePrompt } from "../prompts/createUniquePrompt";
 import { isPromptAlreadyExistsError } from "../prompts/PromptManager";
+import type { RpcRouter } from "../transport/RpcRouter";
 
 export type StoreIpcDeps = {
 	promptManager: PromptManager;
@@ -30,41 +30,44 @@ export type StoreIpcDeps = {
 	mainCopy: (key: string, params?: Record<string, string | number>) => string;
 };
 
-export function registerStoreIpc({
-	promptManager,
-	skillManager,
-	xuePromptManager,
-	extensionManager,
-	appLogger,
-	mainCopy,
-}: StoreIpcDeps): void {
+export function registerStoreIpc(
+	router: RpcRouter,
+	{
+		promptManager,
+		skillManager,
+		xuePromptManager,
+		extensionManager,
+		appLogger,
+		mainCopy,
+	}: StoreIpcDeps,
+): void {
 	// ── Prompt Templates ──
-	ipcMain.handle(ipcChannels.promptsList, () => promptManager.list());
-	ipcMain.handle(ipcChannels.promptsCreate, async (_event, input: CreatePiPromptTemplateInput) => {
+	router.handle(ipcChannels.promptsList, () => promptManager.list());
+	router.handle(ipcChannels.promptsCreate, async (input: CreatePiPromptTemplateInput) => {
 		const result = await promptManager.create(input);
 		void appLogger.info("prompt", "Prompt template created", { name: input.name });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.promptsDelete, async (_event, filePath: string) => {
+	router.handle(ipcChannels.promptsDelete, async (filePath: string) => {
 		await promptManager.delete(filePath);
 		void appLogger.info("prompt", "Prompt template deleted", { filePath });
 	});
-	ipcMain.handle(ipcChannels.promptsOpenFolder, () => promptManager.openFolder());
-	ipcMain.handle(ipcChannels.promptsRestoreBuiltins, async () => {
+	router.handle(ipcChannels.promptsOpenFolder, () => promptManager.openFolder());
+	router.handle(ipcChannels.promptsRestoreBuiltins, async () => {
 		await promptManager.restoreHiddenBuiltins();
 		void appLogger.info("prompt", "Built-in prompt templates restored");
 	});
-	ipcMain.handle(ipcChannels.promptsEdit, async (_event, filePath: string, content?: string) => {
+	router.handle(ipcChannels.promptsEdit, async (filePath: string, content?: string) => {
 		if (content !== undefined) {
 			await promptManager.writeContent(filePath, content);
 			return;
 		}
 		return promptManager.readContent(filePath);
 	});
-	ipcMain.handle(ipcChannels.promptsListByProject, async (_event, projectPath: string) => {
+	router.handle(ipcChannels.promptsListByProject, async (projectPath: string) => {
 		return promptManager.listByProject(projectPath);
 	});
-	ipcMain.handle(ipcChannels.promptsCreateInProject, async (_event, projectPath: string, input: CreatePiPromptTemplateInput) => {
+	router.handle(ipcChannels.promptsCreateInProject, async (projectPath: string, input: CreatePiPromptTemplateInput) => {
 		const result = await promptManager.createInProject(projectPath, input);
 		void appLogger.info("prompt", "Project prompt template created", {
 			projectPath,
@@ -72,16 +75,16 @@ export function registerStoreIpc({
 		});
 		return result;
 	});
-	ipcMain.handle(ipcChannels.promptsDeleteInProject, async (_event, projectPath: string, fileName: string) => {
+	router.handle(ipcChannels.promptsDeleteInProject, async (projectPath: string, fileName: string) => {
 		await promptManager.deleteFromProject(projectPath, fileName);
 		void appLogger.info("prompt", "Project prompt template deleted", { projectPath, fileName });
 	});
-	ipcMain.handle(ipcChannels.promptsRename, async (_event, oldName: string, newName: string) => {
+	router.handle(ipcChannels.promptsRename, async (oldName: string, newName: string) => {
 		const result = await promptManager.rename(oldName, newName);
 		void appLogger.info("prompt", "Prompt template renamed", { oldName, newName });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.promptsRenameInProject, async (_event, projectPath: string, oldName: string, newName: string) => {
+	router.handle(ipcChannels.promptsRenameInProject, async (projectPath: string, oldName: string, newName: string) => {
 		const result = await promptManager.renameInProject(projectPath, oldName, newName);
 		void appLogger.info("prompt", "Project prompt template renamed", { projectPath, oldName, newName });
 		return result;
@@ -150,7 +153,7 @@ export function registerStoreIpc({
 		return { converted, argumentHint, varCount: varMap.size };
 	}
 
-	ipcMain.handle(ipcChannels.promptStoreSearch, async (_event, query: string, options?: {
+	router.handle(ipcChannels.promptStoreSearch, async (query: string, options?: {
 		limit?: number;
 		type?: string;
 		category?: string;
@@ -184,7 +187,7 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.promptStoreGet, async (_event, id: string) => {
+	router.handle(ipcChannels.promptStoreGet, async (id: string) => {
 		try {
 			const url = `${PROMPT_STORE_BASE}/prompts/${encodeURIComponent(id)}`;
 			const response = await fetch(url, {
@@ -202,7 +205,7 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.promptStoreImport, async (_event, {
+	router.handle(ipcChannels.promptStoreImport, async ({
 		title,
 		description,
 		content,
@@ -245,7 +248,7 @@ export function registerStoreIpc({
 	});
 
 	// ── Skill Store ─────────────────────────────
-	ipcMain.handle(ipcChannels.skillStoreSearch, async (_event, query: string) => {
+	router.handle(ipcChannels.skillStoreSearch, async (query: string) => {
 		try {
 			const params = new URLSearchParams({ q: query, perPage: "20" });
 			const url = `https://prompts.chat/api/prompts?${params.toString()}`;
@@ -265,7 +268,7 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.skillStoreImport, async (_event, item: PromptStoreItem, locationId: "pi-global" | "agents-global" = "pi-global") => {
+	router.handle(ipcChannels.skillStoreImport, async (item: PromptStoreItem, locationId: "pi-global" | "agents-global" = "pi-global") => {
 		try {
 			const name = item.title
 				.trim()
@@ -296,7 +299,7 @@ export function registerStoreIpc({
 	});
 
 	// ── Skills.sh ─────────────────────────
-	ipcMain.handle(ipcChannels.skillHubSearch, async (_event, opts: { query: string; limit?: number }) => {
+	router.handle(ipcChannels.skillHubSearch, async (opts: { query: string; limit?: number }) => {
 		const { query, limit = 50 } = opts;
 		try {
 			const response = await fetch(
@@ -331,9 +334,9 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.skillHubDetail, async () => null);
+	router.handle(ipcChannels.skillHubDetail, async () => null);
 
-	ipcMain.handle(ipcChannels.skillHubInstall, async (_event, slug: string) => {
+	router.handle(ipcChannels.skillHubInstall, async (slug: string) => {
 		const lastSlash = slug.lastIndexOf("/");
 		const pkg = lastSlash > 0 ? slug.slice(0, lastSlash) : slug;
 		const skillName = lastSlash > 0 ? slug.slice(lastSlash + 1) : "";
@@ -361,7 +364,7 @@ export function registerStoreIpc({
 	});
 
 	// ── Xue Prompts ─────────────────────────────
-	ipcMain.handle(ipcChannels.yaoPromptsList, async (_event, opts?: {
+	router.handle(ipcChannels.yaoPromptsList, async (opts?: {
 		category?: string;
 		search?: string;
 		page?: number;
@@ -377,7 +380,7 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.yaoPromptsDetail, async (_event, slug: string, category: string) => {
+	router.handle(ipcChannels.yaoPromptsDetail, async (slug: string, category: string) => {
 		try {
 			const result = await xuePromptManager.detail(slug, category);
 			if (!result) throw new Error(`未找到提示词: ${slug}`);
@@ -389,7 +392,7 @@ export function registerStoreIpc({
 		}
 	});
 
-	ipcMain.handle(ipcChannels.yaoPromptsImport, async (_event, slug: string, category: string) => {
+	router.handle(ipcChannels.yaoPromptsImport, async (slug: string, category: string) => {
 		try {
 			const result = await xuePromptManager.importToPi(slug, category);
 			void appLogger.info("yao-prompts", "Imported to pi templates", { slug, localName: result.name });
@@ -402,9 +405,9 @@ export function registerStoreIpc({
 	});
 
 	// ── Extensions ──────────────────────────────
-	ipcMain.handle(ipcChannels.extensionsList, (_event, forceRefresh?: boolean) =>
+	router.handle(ipcChannels.extensionsList, (forceRefresh?: boolean) =>
 		extensionManager.list(Boolean(forceRefresh)));
-	ipcMain.handle(ipcChannels.extensionsRemoveBuiltIn, async (_event, source: string) => {
+	router.handle(ipcChannels.extensionsRemoveBuiltIn, async (source: string) => {
 		try {
 			await extensionManager.removeBuiltIn(source);
 			void appLogger.info("extension", "Built-in extension removed", { source });
@@ -416,11 +419,11 @@ export function registerStoreIpc({
 			throw error;
 		}
 	});
-	ipcMain.handle(ipcChannels.extensionsRestoreBuiltIn, async (_event, source: string) => {
+	router.handle(ipcChannels.extensionsRestoreBuiltIn, async (source: string) => {
 		await extensionManager.restoreBuiltIn(source);
 		void appLogger.info("extension", "Built-in extension restored", { source });
 	});
-	ipcMain.handle(ipcChannels.extensionsUninstall, async (_event, source: string, scope?: "user" | "project" | "unknown") => {
+	router.handle(ipcChannels.extensionsUninstall, async (source: string, scope?: "user" | "project" | "unknown") => {
 		try {
 			const result = await extensionManager.uninstall(source, scope);
 			void appLogger.info("extension", "Extension uninstalled", { source, scope });
@@ -434,12 +437,12 @@ export function registerStoreIpc({
 			throw error;
 		}
 	});
-	ipcMain.handle(ipcChannels.extensionsInstall, async (_event, source: string) => {
+	router.handle(ipcChannels.extensionsInstall, async (source: string) => {
 		const result = await extensionManager.install(source);
 		void appLogger.info("extension", "Extension installed", { source });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.extensionsToggle, async (_event, source: string, enabled: boolean) => {
+	router.handle(ipcChannels.extensionsToggle, async (source: string, enabled: boolean) => {
 		// 内置扩展走 removedBuiltInExtensions + RPC -e，不再写用户扩展目录 / pi disabledExtensions。
 		if (isBuiltInExtensionName(source)) {
 			if (enabled) await extensionManager.restoreBuiltIn(source);
@@ -449,12 +452,12 @@ export function registerStoreIpc({
 		}
 		void appLogger.info("extension", "Extension toggled", { source, enabled });
 	});
-	ipcMain.handle(ipcChannels.extensionsUpdate, async () => {
+	router.handle(ipcChannels.extensionsUpdate, async () => {
 		const result = await extensionManager.updateExtensions();
 		void appLogger.info("extension", "Extensions update command completed", { updated: result.updated, bytes: result.output.length });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.extensionsUpdateOne, async (_event, source: string) => {
+	router.handle(ipcChannels.extensionsUpdateOne, async (source: string) => {
 		const result = await extensionManager.updateExtension(source);
 		void appLogger.info("extension", "Extension update-one command completed", { source, updated: result.updated, bytes: result.output.length });
 		return result;

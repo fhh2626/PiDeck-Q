@@ -196,7 +196,7 @@ test("incremental rescan recovers from non-append replacement", () => {
 test("MarkdownStream streaming path no longer imports the incremental Markdown parser", () => {
 	const stream = readFileSync("src/renderer/src/components/session/MarkdownStream.tsx", "utf8");
 	assert.doesNotMatch(stream, /IncrementalMarkdownFrontier|FrozenMarkdownChunk|UNSTABLE_TAIL_BLOCKS/);
-	assert.match(stream, /const renderRichMarkdown = !isStreamingNow/);
+	assert.match(stream, /const renderRichMarkdown =\s*!isStreamingNow && Renderer != null/);
 	assert.match(stream, /<PlainStreamSplit text=\{displayText\} \/>/);
 });
 

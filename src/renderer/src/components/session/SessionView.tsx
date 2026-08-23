@@ -23,7 +23,7 @@ import { SessionSurfaceStage } from "./SessionSurfaceStage";
 import { ComposerArea } from "./ComposerArea";
 import { SessionRuntimeDock } from "./SessionRuntimeDock";
 import { QueuedPromptPanel } from "./ComposerPanels";
-import { useSessionPaneServices } from "./SessionPaneServices";
+import { useSessionPaneActions } from "./SessionPaneServices";
 import { COMPOSER_DEFAULT_HEIGHT, COMPOSER_MIN_HEIGHT, TIMELINE_MIN_HEIGHT, growComposerWithinTimelineBudget, displayProjectDirectoryName } from "../../rendererUtils";
 import { projectByIdAtomFamily, sessionRecordByIdAtomFamily } from "../../atoms";
 import type { EnqueuePromptSnapshot } from "../../hooks/useSessionSend";
@@ -171,7 +171,9 @@ export function SessionView({
   runCreateSessionDraft,
   abortAgent,
 }: SessionViewProps) {
-  const paneServices = useSessionPaneServices();
+  // 只订 actions 轨：SessionView 自身只用 exitSessionSplit（稳定回调），
+  // 其余 services 字段由 SessionRuntimeInjector 消费后作为 props 传进来。
+  const paneServices = useSessionPaneActions();
   // 会话身份面包屑的项目名：多 Tab/分屏时提醒当前会话属于哪个项目。
   // 从会话记录解析 projectId → 项目目录名；无记录（匿名会话等）时省略。
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(sessionId));

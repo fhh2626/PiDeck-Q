@@ -3,6 +3,7 @@
  */
 
 import { ipcChannels } from "../../shared/ipc";
+import type { RpcRouter } from "../transport/RpcRouter";
 import type { UsageStatsService } from "../usageStats/UsageStatsService";
 
 /** 校验 service 可用性：装配失败时返回结构化错误而非抛裸异常。 */
@@ -11,7 +12,7 @@ function serviceError(): never {
 }
 
 export function registerUsageStatsIpc(
-  ipc: Electron.IpcMain,
+  router: RpcRouter,
   service: UsageStatsService | null,
 ): void {
   const requireService = (): UsageStatsService => {
@@ -19,17 +20,17 @@ export function registerUsageStatsIpc(
     return service;
   };
 
-  ipc.handle(ipcChannels.usageStatsDetect, async () => {
+  router.handle(ipcChannels.usageStatsDetect, async () => {
     const s = requireService();
     return s.detect();
   });
 
-  ipc.handle(ipcChannels.usageStatsRefresh, async () => {
+  router.handle(ipcChannels.usageStatsRefresh, async () => {
     const s = requireService();
     return s.refresh();
   });
 
-  ipc.handle(ipcChannels.usageStatsGet, async () => {
+  router.handle(ipcChannels.usageStatsGet, async () => {
     const s = requireService();
     return s.getAggregated();
   });

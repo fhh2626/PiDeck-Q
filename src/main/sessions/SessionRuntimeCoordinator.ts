@@ -48,6 +48,7 @@ export interface SessionCatalogGateway {
 export interface SessionAgentGateway {
 	list(): AgentTab[];
 	getMessages(agentId: string): ChatMessage[];
+	isMessageCacheStale?(agentId: string): boolean;
 	create(input: CreateAgentInput): Promise<AgentTab>;
 	restart(agentId: string): Promise<AgentTab>;
 	stop(agentId: string): Promise<void>;
@@ -167,6 +168,7 @@ export class SessionRuntimeCoordinator {
 	private readonly replacementBySession = new Map<string, RuntimeReplacement>();
 	private readonly dispatchLeasesByAgent = new Map<string, Set<DispatchLease>>();
 	private readonly dispatchLeasesBySession = new Map<string, Set<DispatchLease>>();
+	private readonly historyMutationTails = new Map<string, Promise<void>>();
 	private replacementSequence = 0;
 	private dispatchLeaseSequence = 0;
 	/** 渲染层当前聚焦的会话 id；为 undefined 时视为全部会话都需要通知 */
@@ -277,6 +279,7 @@ export class SessionRuntimeCoordinator {
 	getRuntimeMessages(sessionId: string): SessionTargetedValue<ChatMessage[]> | undefined {
 		const target = this.getTarget(sessionId);
 		if (!target) return undefined;
+		if (this.agents.isMessageCacheStale?.(target.agentId)) return undefined;
 		const messages = this.agents.getMessages(target.agentId);
 		// Message reads are synchronous, but the gateway can re-enter coordinator code.
 		// Revalidate after the read so an A -> B replacement cannot label A's messages as B's Session state.
@@ -390,7 +393,7 @@ export class SessionRuntimeCoordinator {
 		messageId: string,
 		newText: string,
 	): Promise<SessionCommandResult<SessionTargetedValue<void>>> {
-		return this.runTargetCommand(
+		return this.runHistoryMutationCommand(
 			target,
 			(agentId) => this.agents.editMessage(agentId, messageId, newText),
 		);
@@ -400,7 +403,7 @@ export class SessionRuntimeCoordinator {
 		target: SessionRuntimeTarget,
 		messageId: string,
 	): Promise<SessionCommandResult<SessionTargetedValue<void>>> {
-		return this.runTargetCommand(
+		return this.runHistoryMutationCommand(
 			target,
 			(agentId) => this.agents.deleteMessage(agentId, messageId),
 		);
@@ -410,7 +413,7 @@ export class SessionRuntimeCoordinator {
 		target: SessionRuntimeTarget,
 		messageId: string,
 	): Promise<SessionCommandResult<SessionTargetedValue<{ text: string; images?: ImageContent[] }>>> {
-		return this.runTargetCommand(
+		return this.runHistoryMutationCommand(
 			target,
 			(agentId) => this.agents.prepareResendFromMessage(agentId, messageId),
 		);
@@ -1331,6 +1334,29 @@ export class SessionRuntimeCoordinator {
 			);
 		}
 		return { ...target };
+	}
+
+	private async runHistoryMutationCommand<T>(
+		target: SessionRuntimeTarget,
+		operation: (agentId: string) => Promise<T>,
+	): Promise<SessionCommandResult<SessionTargetedValue<T>>> {
+		const sessionId = target.sessionId;
+		const previous = this.historyMutationTails.get(sessionId) ?? Promise.resolve();
+
+		const current = previous
+			.catch(() => undefined)
+			.then(() => this.runTargetCommand(target, operation));
+
+		const tail = current.then(() => undefined, () => undefined);
+		this.historyMutationTails.set(sessionId, tail);
+
+		try {
+			return await current;
+		} finally {
+			if (this.historyMutationTails.get(sessionId) === tail) {
+				this.historyMutationTails.delete(sessionId);
+			}
+		}
 	}
 
 	private async runTargetCommand<T>(

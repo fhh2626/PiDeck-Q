@@ -17,20 +17,32 @@ export type { MarkdownStreamProps } from "./MarkdownStreamProps";
 type MarkdownRendererComponent = ComponentType<MarkdownStreamProps>;
 
 let rendererLoadPromise: Promise<MarkdownRendererComponent> | undefined;
+/** 已成功解析出的 renderer 组件：全局缓存，后续新实例首帧即可直接富渲染，
+ * 避免切换会话时每个新 MarkdownStream 都先走纯文本再切 Streamdown 造成纵向闪动。 */
+let loadedMarkdownRenderer: MarkdownRendererComponent | null = null;
 
 /**
  * 全局复用 Markdown renderer 的异步加载，避免同屏多条消息分别创建下载请求。
- * 加载失败时清掉缓存，让后续重新挂载仍有重试机会；当前消息保持纯文本可读。
+ * renderer 已加载时同步返回；加载失败时清掉 promise 缓存，让后续重新挂载仍有重试机会。
+ * 当前消息保持纯文本可读。
  */
 function loadMarkdownRenderer(): Promise<MarkdownRendererComponent> {
+	if (loadedMarkdownRenderer) {
+		return Promise.resolve(loadedMarkdownRenderer);
+	}
+
 	if (!rendererLoadPromise) {
 		rendererLoadPromise = import("./MarkdownStreamRenderer")
-			.then((module) => module.MarkdownStreamRenderer)
+			.then((module) => {
+				loadedMarkdownRenderer = module.MarkdownStreamRenderer;
+				return loadedMarkdownRenderer;
+			})
 			.catch((error: unknown) => {
 				rendererLoadPromise = undefined;
 				throw error;
 			});
 	}
+
 	return rendererLoadPromise;
 }
 
@@ -60,8 +72,10 @@ const PlainStreamSplit = memo(function PlainStreamSplit(props: { text: string })
 /**
  * Markdown 首屏壳层。
  *
- * 流式期间只更新轻量纯文本；静态内容也先提交同一 fallback，再于浏览器空闲时
- * 动态加载完整 Streamdown 管线。这样重库既不进入入口同步图，也不与首帧争抢主线程。
+ * 流式期间只更新轻量纯文本；静态内容在 renderer 尚未加载过时先提交同一 fallback，
+ * 再于浏览器空闲时动态加载完整 Streamdown 管线，重库既不进入入口同步图也不与首帧争抢主线程。
+ * renderer 一旦加载成功（模块级 loadedMarkdownRenderer 缓存），新实例首帧即直接富渲染，
+ * 切换会话不再出现“纯文本 → Streamdown”的段距/行高闪动。
  */
 export const MarkdownStream = memo(function MarkdownStream(props: MarkdownStreamProps) {
 	const isStreamingNow = Boolean(props.isStreaming);
@@ -70,41 +84,40 @@ export const MarkdownStream = memo(function MarkdownStream(props: MarkdownStream
 		isStreaming: isStreamingNow,
 	});
 	const displayText = isStreamingNow ? displayedContent : props.text;
-	const [rendererRequested, setRendererRequested] = useState(false);
-	const [Renderer, setRenderer] = useState<MarkdownRendererComponent | null>(null);
+	// 初始值直接取模块级已缓存 renderer：已加载时不等待空闲回调即可富渲染。
+	const [Renderer, setRenderer] =
+		useState<MarkdownRendererComponent | null>(
+			() => loadedMarkdownRenderer,
+		);
 
 	useEffect(() => {
-		if (isStreamingNow) {
-			setRendererRequested(false);
-			return;
-		}
+		if (isStreamingNow || Renderer) return;
 
-		const schedule = () => setRendererRequested(true);
+		// 首次遇到静态 Markdown 时延迟到浏览器空闲再异步加载完整 Streamdown 管线，
+		// 避免重 chunk 与首帧争抢主线程；renderer 一旦加载成功（模块级缓存），
+		// 后续新实例因 useState 初始值直接命中缓存，根本不会进入本 effect 的加载路径。
+		let active = true;
+		const load = () => {
+			void loadMarkdownRenderer()
+				.then((component) => {
+					if (active) setRenderer(() => component);
+				})
+				.catch(() => {
+					// 异步 chunk 失败时保留纯文本；缓存已清空，后续挂载可重新尝试。
+				});
+		};
 		const id = typeof window.requestIdleCallback === "function"
-			? window.requestIdleCallback(schedule, { timeout: 1500 })
-			: window.setTimeout(schedule, 50);
+			? window.requestIdleCallback(load, { timeout: 1500 })
+			: window.setTimeout(load, 50);
 		return () => {
+			active = false;
 			if (typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(id);
 			else window.clearTimeout(id);
 		};
-	}, [isStreamingNow]);
+	}, [isStreamingNow, Renderer]);
 
-	useEffect(() => {
-		if (!rendererRequested || Renderer) return;
-		let active = true;
-		void loadMarkdownRenderer()
-			.then((component) => {
-				if (active) setRenderer(() => component);
-			})
-			.catch(() => {
-				// 异步 chunk 失败时保留纯文本；缓存已清空，后续挂载可重新尝试。
-			});
-		return () => {
-			active = false;
-		};
-	}, [Renderer, rendererRequested]);
-
-	const renderRichMarkdown = !isStreamingNow && rendererRequested && Renderer;
+	const renderRichMarkdown =
+		!isStreamingNow && Renderer != null;
 	return (
 		<>
 			{renderRichMarkdown ? (

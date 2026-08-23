@@ -190,7 +190,13 @@ function loadSessionScanner(homePath) {
 	vm.runInNewContext(outputText, sandbox, {
 		filename: "SessionScanner.ts",
 	});
-	return sandbox.exports;
+	const RawSessionScanner = sandbox.exports.SessionScanner;
+	class WrappedSessionScanner extends RawSessionScanner {
+		constructor(translate, home, ...rest) {
+			super(translate, home ?? homePath, ...rest);
+		}
+	}
+	return { ...sandbox.exports, SessionScanner: WrappedSessionScanner };
 }
 
 test("backfills Codex subagent metadata for sessions imported before grouping fields existed", async () => {

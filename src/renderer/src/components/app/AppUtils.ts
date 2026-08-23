@@ -180,7 +180,8 @@ export function sameChatMessageForRender(previous: ChatMessage, next: ChatMessag
 		previous.timestamp !== next.timestamp ||
 		// 空文本消息（纯工具回合骨架）的 stopReason 可能是唯一变化（pending→stop/toolUse），
 		// 漏比较会导致 reconcileRuns 复用旧引用、最终/中间分类不更新。
-		previous.stopReason !== next.stopReason
+		previous.stopReason !== next.stopReason ||
+		(previous.meta?.slidingOut === true) !== (next.meta?.slidingOut === true)
 	) {
 		return false;
 	}
@@ -218,7 +219,11 @@ export function sameAgentRunForRender(previous: AgentRunItem, next: AgentRunItem
 				item.id === other.id &&
 				item.text === other.text &&
 				item.startedAt === other.startedAt &&
-				item.endedAt === other.endedAt
+				item.endedAt === other.endedAt &&
+				item.messages.length === other.messages.length &&
+				item.messages.every((message, messageIndex) =>
+					sameChatMessageForRender(message, other.messages[messageIndex]),
+				)
 			);
 		}
 		if (item.kind === "tool-group" && other.kind === "tool-group") {
@@ -524,21 +529,29 @@ function isSessionTriggerQuery(query: string, validSessionRefs: Set<string>): bo
 	return false;
 }
 
+/**
+ * 从光标向前限制固定搜索窗口，避免大 draft 全文扫描的性能保护。
+ */
+export const MAX_TRIGGER_LOOKBACK = 2048;
+
 export function detectTrigger(
 	text: string,
 	cursor: number,
 	validSessionRefs?: Set<string>,
 ): ComposerTrigger | null {
 	if (cursor < 0 || cursor > text.length) cursor = text.length;
-	const before = text.slice(0, cursor);
+	const windowStart = Math.max(0, cursor - MAX_TRIGGER_LOOKBACK);
+	const before = text.slice(windowStart, cursor);
 	const atIdx = before.lastIndexOf("@");
 	const slashIdx = before.lastIndexOf("/");
 	const ampIdx = before.lastIndexOf("&");
-	const start = Math.max(atIdx, slashIdx, ampIdx);
-	if (start < 0) return null;
-	const char = before[start];
-	const segment = before.slice(start + 1);
-	const prev = start > 0 ? before[start - 1] : "";
+	const localStart = Math.max(atIdx, slashIdx, ampIdx);
+	if (localStart < 0) return null;
+	const char = before[localStart];
+	const segment = before.slice(localStart + 1);
+	const prev = localStart > 0
+		? before[localStart - 1]
+		: (windowStart > 0 ? text[windowStart - 1] : "");
 	if (char === "&") {
 		if (/\n/.test(segment)) return null;
 		if (!isComposerTriggerBoundary(prev, "&")) return null;
@@ -549,25 +562,27 @@ export function detectTrigger(
 		} else if (segment.length > 0) {
 			return null;
 		}
-		return { start, char, query: segment };
+		return { start: windowStart + localStart, char, query: segment };
 	}
 	if (char === "/") {
 		// 检查 / 是否属于 @file 路径（@ 在前且路径段内无空白），是则当作 @ 触发而非命令。
 		// 关键：路径完成后光标后有空格/后续文本时（@src/ 说明…），必须关闭，
 		// 否则路径中的每个 / 都会把建议框永久钉住。
-		const beforeSlash = before.slice(0, start);
+		const beforeSlash = before.slice(0, localStart);
 		const atBefore = beforeSlash.lastIndexOf("@");
 		if (atBefore >= 0 && !/\s/.test(beforeSlash.slice(atBefore))) {
 			const fileSegment = before.slice(atBefore + 1);
 			if (/\s/.test(fileSegment)) return null;
-			const atPrev = atBefore > 0 ? before[atBefore - 1] : "";
+			const atPrev = atBefore > 0
+				? before[atBefore - 1]
+				: (windowStart > 0 ? text[windowStart - 1] : "");
 			if (!isComposerTriggerBoundary(atPrev, "@")) return null;
-			return { start: atBefore, char: "@", query: fileSegment };
+			return { start: windowStart + atBefore, char: "@", query: fileSegment };
 		}
 	}
 	if (/[\s@/&]/.test(segment)) return null;
 	if (!isComposerTriggerBoundary(prev, char)) return null;
-	return { start, char, query: segment };
+	return { start: windowStart + localStart, char, query: segment };
 }
 
 export function applySuggestion(

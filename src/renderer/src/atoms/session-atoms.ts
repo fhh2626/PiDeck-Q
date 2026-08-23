@@ -99,6 +99,7 @@ export type SessionMessageCacheEntry = {
 	revision: number;
 	source: "disk" | "runtime";
 	updatedAt: number;
+	agentId?: string;
 	/** Present only for paged historical reads; runtime owns an authoritative full snapshot. */
 	page?: Pick<SessionMessagePage, "total" | "nextBefore">;
 	/** 激活显示窗口起点（runtime 数组下标空间，2026-08 激活分页）；>0 表示窗口前还有历史。 */
@@ -126,6 +127,12 @@ export type SessionMessageCacheEntry = {
 		/** 压缩刚完成时暂缓自动回底清理，避免用户看到的历史立即消失。 */
 		sticky?: boolean;
 	};
+	/**
+	 * mutation 刷新代际（2026-11）：编辑/删除成功后的历史重读用 per-session 序号
+	 * 做乱序保护；每次 captureHistoryMutationRefresh 递增。普通 runtime flush
+	 * 必须原样继承（见 cacheSessionMessagesAtom），否则刷新响应会被误判为陈旧。
+	 */
+	mutationSequence?: number;
 };
 
 export type SessionRuntimeUiRequestState = {
@@ -250,12 +257,18 @@ export const saveSessionScrollAnchorAtom = atom(
 );
 /**
  * 会话级独立流式正文（阶段1：学 Proma 独立存储）。
- * key: sessionId，value: { content, streaming }。
+ * key: sessionId，value: { messageId, content, streaming }。
  * 流式期间 content 由 agents:text-stream 通道实时更新；
  * message_end 后由历史消息（sessionMessagesCacheAtom）接管，此处清空。
  */
+export type StreamingTextState = {
+  messageId: string;
+  content: string;
+  streaming: boolean;
+};
+
 export const streamingTextByIdAtom = atom<
-	Record<string, { content: string; streaming: boolean }>
+	Record<string, StreamingTextState>
 >({});
 /**
  * Live 思考正文通道（镜像 text-stream）：key = msg-thinking-${assistantMessageId}。
@@ -314,14 +327,26 @@ export const liveTextStreamingBySessionAtom = atomFamily((sessionId: string) =>
   ),
 );
 
-/** 正文流条目同值比较：content 与 streaming 位都相等才算同值。 */
+/**
+ * 本会话当前流式正文绑定的 assistant messageId。
+ * 流式期间同一条 assistant 消息的 messageId 保持稳定不变，零额外重渲染。
+ */
+export const liveTextStreamingMessageIdBySessionAtom = atomFamily((sessionId: string) =>
+  selectAtom(
+    streamingTextByIdAtom,
+    (map) => (map[sessionId]?.streaming ? map[sessionId]?.messageId ?? "" : ""),
+    Object.is,
+  ),
+);
+
+/** 正文流条目同值比较：messageId、content 与 streaming 位都相等才算同值。 */
 function sameStreamingTextEntry(
-  a: { content: string; streaming: boolean } | undefined,
-  b: { content: string; streaming: boolean } | undefined,
+  a: StreamingTextState | undefined,
+  b: StreamingTextState | undefined,
 ): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
-  return a.content === b.content && a.streaming === b.streaming;
+  return a.messageId === b.messageId && a.content === b.content && a.streaming === b.streaming;
 }
 
 /**
@@ -499,6 +524,7 @@ export const cacheSessionMessagesAtom = atom(
 		messages: ChatMessage[];
 		source: "disk" | "runtime";
 		expectedRevision?: number;
+		agentId?: string;
 		page?: Pick<SessionMessagePage, "total" | "nextBefore">;
 		/** runtime 窗口协议字段（2026-08 激活分页） */
 		windowStart?: number;
@@ -507,6 +533,8 @@ export const cacheSessionMessagesAtom = atom(
 		/** 窗口首条消息的文件消息下标（2026-11）：窗口缺 entryId 时作为首次补历史的数值游标 */
 		windowStartFilePos?: number;
 		history?: SessionMessageCacheEntry["history"];
+		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
+		mutationSequence?: number;
   }) => {
     const cache = get(sessionMessagesCacheAtom);
     const current = cache[input.sessionId];
@@ -546,6 +574,7 @@ export const cacheSessionMessagesAtom = atom(
 			revision,
 			source: input.source,
 			updatedAt: Date.now(),
+			...(input.agentId ? { agentId: input.agentId } : (current?.agentId ? { agentId: current.agentId } : {})),
 			...(input.source === "disk" && input.page ? { page: input.page } : {}),
 			// runtime 窗口语义（2026-08 激活分页）：entry 每次整体重建，
 			// 调用方必须显式给出 windowStart/history（undefined = 清除，如版本失效丢前缀）；
@@ -553,6 +582,9 @@ export const cacheSessionMessagesAtom = atom(
 			...(input.source === "runtime" ? {
 				windowStart: input.windowStart && input.windowStart > 0 ? input.windowStart : undefined,
 				history: input.history,
+				// mutation 代际：runtime flush 不改变它，只有显式传入（refresh 落地）才更新。
+				// 缺省继承旧值，保证在途 refresh 不因无关 runtime 更新被误判为陈旧。
+				mutationSequence: input.mutationSequence ?? current?.mutationSequence,
 				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
 				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
 				// 未显式提供时保留旧值（增量 flush 不携带该字段，不应清掉有效游标）
@@ -688,6 +720,161 @@ function findCoveredMessageIndexes(
   }
   return covered;
 }
+
+/**
+ * 比较当前已展示的运行期消息与新的权威 canonical snapshot：
+ * - 权威 canonical 消息之间的相对顺序 100% 保持 canonicalMessages 中的原始顺序不变；
+ * - 旧数组中存在但新 canonical 数组中不存在的消息，标记为 meta.slidingOut = true 并保留在数组中；
+ * - 相对位置按原有位置锚定（在第一个幸存 canonical 前面的旧消息放在 HEAD；在两个幸存消息之间的旧消息放在其后一个幸存消息之前；在全部幸存消息之后的放在 TAIL）；
+ * - 如果某个 message ID 重新出现在新的 canonical 消息中，清除 slidingOut 标记（以 canonical 为准，避免双份）；
+ * - 如果第二次 snapshot 到达时已有消息仍在 slide-out，继续保留它们。
+ */
+export function mergeCanonicalSnapshotWithSlidingOut(
+  previousMessages: ChatMessage[],
+  canonicalMessages: ChatMessage[],
+  slideOut?: ChatMessage[],
+): ChatMessage[] {
+  if (previousMessages.length === 0) {
+    return canonicalMessages;
+  }
+  if (canonicalMessages.length === 0) {
+    return previousMessages.map((m) =>
+      m.meta?.slidingOut === true ? m : { ...m, meta: { ...m.meta, slidingOut: true } }
+    );
+  }
+
+  const canonicalById = new Map<string, ChatMessage>();
+  for (const msg of canonicalMessages) {
+    canonicalById.set(msg.id, msg);
+  }
+
+  // trim 窗口右移滑出轮已被 reconcileHistoryPrefix 并入 history.messages，
+  // 不应在 messages 中重复保留为 slidingOut
+  const slideOutIds = new Set<string>();
+  const slideOutEntryIds = new Set<string>();
+  if (Array.isArray(slideOut)) {
+    for (const msg of slideOut) {
+      slideOutIds.add(msg.id);
+      if (typeof msg.meta?.entryId === "string") {
+        slideOutEntryIds.add(msg.meta.entryId);
+      }
+    }
+  }
+
+  // 1. 找出 previousMessages 中所有需要保留为 slidingOut 的消息，并为它们确定在 canonical 序列中的相对插槽
+  const headSliding: ChatMessage[] = [];
+  const slidingBeforeCanonicalId = new Map<string, ChatMessage[]>();
+  const tailSliding: ChatMessage[] = [];
+
+  // 预先反向扫描 previousMessages 计算每个位置之后第一个幸存的 canonical id
+  const nextSurvivorIdAt = new Array<string | null>(previousMessages.length);
+  let nextSurvivor: string | null = null;
+  for (let i = previousMessages.length - 1; i >= 0; i--) {
+    nextSurvivorIdAt[i] = nextSurvivor;
+    const msg = previousMessages[i];
+    if (canonicalById.has(msg.id)) {
+      nextSurvivor = msg.id;
+    }
+  }
+
+  let hasSeenAnySurvivor = false;
+  for (let i = 0; i < previousMessages.length; i++) {
+    const prevMsg = previousMessages[i];
+    if (canonicalById.has(prevMsg.id)) {
+      hasSeenAnySurvivor = true;
+      continue;
+    }
+
+    // 已被 slideOut 并入 history 前缀的跳过
+    if (
+      slideOutIds.has(prevMsg.id) ||
+      (typeof prevMsg.meta?.entryId === "string" && slideOutEntryIds.has(prevMsg.meta.entryId))
+    ) {
+      continue;
+    }
+
+    const slidingMsg = prevMsg.meta?.slidingOut === true
+      ? prevMsg
+      : { ...prevMsg, meta: { ...prevMsg.meta, slidingOut: true } };
+
+    const nextSurvivorId = nextSurvivorIdAt[i];
+    if (!hasSeenAnySurvivor) {
+      // 位于所有幸存 canonical 消息之前 -> 锚定在 HEAD（summary 等卡片之前）
+      headSliding.push(slidingMsg);
+    } else if (nextSurvivorId) {
+      // 位于已幸存消息之后、下一个幸存消息之前 -> 锚定在下一个幸存消息之前
+      const list = slidingBeforeCanonicalId.get(nextSurvivorId);
+      if (list) list.push(slidingMsg);
+      else slidingBeforeCanonicalId.set(nextSurvivorId, [slidingMsg]);
+    } else {
+      // 位于所有幸存 canonical 消息之后 -> 锚定在 TAIL
+      tailSliding.push(slidingMsg);
+    }
+  }
+
+  // 2. 按 canonicalMessages 的权威顺序组装结果（保证 canonical 顺序 100% 权威）
+  const result: ChatMessage[] = [...headSliding];
+
+  for (const canonicalMsg of canonicalMessages) {
+    const beforeList = slidingBeforeCanonicalId.get(canonicalMsg.id);
+    if (beforeList && beforeList.length > 0) {
+      result.push(...beforeList);
+    }
+
+    // 确保 canonical 消息上的 slidingOut 标志被清除（若有旧残留）
+    if (canonicalMsg.meta?.slidingOut) {
+      const meta = { ...canonicalMsg.meta };
+      delete meta.slidingOut;
+      result.push({ ...canonicalMsg, meta });
+    } else {
+      result.push(canonicalMsg);
+    }
+  }
+
+  result.push(...tailSliding);
+
+  return result;
+}
+
+/**
+ * 动画结束后按 message ID 清理已滑出的旧消息。
+ * 严格守卫：只删除 meta.slidingOut === true 的消息，绝对不修改或删除 canonical 消息。
+ */
+export function removeSlidingOutMessages(
+  messages: ChatMessage[],
+  targetIds: Set<string> | string[],
+): ChatMessage[] {
+  const idSet = targetIds instanceof Set ? targetIds : new Set(targetIds);
+  let changed = false;
+  const result = messages.filter((msg) => {
+    if (idSet.has(msg.id) && msg.meta?.slidingOut === true) {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+  return changed ? result : messages;
+}
+
+export const removeSessionSlidingOutMessagesAtom = atom(
+  null,
+  (get, set, input: { sessionId: string; messageIds: string[] }) => {
+    const cache = get(sessionMessagesCacheAtom);
+    const current = cache[input.sessionId];
+    if (!current || !current.messages) return false;
+    const nextMessages = removeSlidingOutMessages(current.messages, input.messageIds);
+    if (nextMessages === current.messages) return false;
+    set(sessionMessagesCacheAtom, {
+      ...cache,
+      [input.sessionId]: {
+        ...current,
+        messages: nextMessages,
+        updatedAt: Date.now(),
+      },
+    });
+    return true;
+  },
+);
 
 /**
  * 运行时窗口段更新时调和 disk 历史前缀（2026-08 激活分页）：
@@ -835,6 +1022,57 @@ export const prependSessionHistoryPageAtom = atom(
     });
     return true;
   },
+);
+
+/**
+ * 编辑/删除成功后的历史前缀原子替换（2026-11 mutation 刷新路径）。
+ *
+ * 职责边界：只负责把某个 runtime session 的旧 history（用户上翻加载的旧消息）
+ * 用重新读取到的新历史一次性替换；runtime 窗口段（current.messages）由后端的
+ * 实时全量 flush 负责，本 atom 绝不触碰。
+ *
+ * 守卫语义（与 prependSessionHistoryPageAtom 同源，但多一层 mutation 序号）：
+ * - source !== "runtime" / revision 不匹配 → 拒绝（缓存已被其他路径改写）；
+ * - expectedMutationSequence 不匹配 → 拒绝（乱序的旧 refresh 响应不得覆盖新响应）。
+ * revision 允许「变大」：等待期间正常的 runtime flush 会递增 revision 并更新
+ * 窗口段，这不影响历史前缀替换的正确性；只有 entry 整体缺失/来源变化才拒绝。
+ */
+export type ReplaceSessionHistoryAfterMutationInput = {
+	sessionId: string;
+	/** mutation refresh 的会话内序号；由 captureHistoryMutationRefresh 发放并由 runtime flush 继承 */
+	expectedMutationSequence: number;
+	messages: ChatMessage[];
+	nextBefore: number | null;
+	nextBeforeEntryId?: string | null;
+	exhausted?: boolean;
+	version?: string;
+};
+
+export const replaceSessionHistoryAfterMutationAtom = atom(
+	null,
+	(get, set, input: ReplaceSessionHistoryAfterMutationInput): boolean => {
+		const current = get(sessionMessagesCacheAtom)[input.sessionId];
+		if (!current) return false;
+		if (current.source !== "runtime") return false;
+		if (current.mutationSequence !== input.expectedMutationSequence) return false;
+		set(sessionMessagesCacheAtom, {
+			...get(sessionMessagesCacheAtom),
+			[input.sessionId]: {
+				...current,
+				// 只替换历史前缀：messages/windowStart/cardCount 等窗口段字段原引用保留，
+				// 后端实时 flush 仍拥有 runtime window 的唯一写权。
+				history: {
+					messages: input.messages,
+					nextBefore: input.nextBefore,
+					...(input.nextBeforeEntryId !== undefined ? { nextBeforeEntryId: input.nextBeforeEntryId } : {}),
+					...(input.exhausted ? { exhausted: true } : {}),
+					...(input.version ? { version: input.version } : {}),
+				},
+				updatedAt: Date.now(),
+			},
+		});
+		return true;
+	},
 );
 
 /**
@@ -1330,6 +1568,7 @@ export const applySessionRuntimeEventAtom = atom(
       // Live 正文：只更新 streamingTextByIdAtom。
       // 绑定未变时不写 sessionRuntimeByIdAtom，避免每帧戳醒 timeline/composer 订阅者。
       const prev = get(streamingTextByIdAtom)[event.sessionId];
+      const messageId = typeof payload.messageId === "string" ? payload.messageId : (prev?.messageId ?? "");
       // 增量协议（2026-08 治理）：主进程正常 append 只推 delta，渲染层追加到
       // 本地累积；text 全量快照（非 append 重置 / 2.5s 自愈）整体替换。
       const text = typeof payload.delta === "string"
@@ -1339,10 +1578,10 @@ export const applySessionRuntimeEventAtom = atom(
           : prev?.content ?? "";
       const done = payload.done === true;
       const streaming = !done && text.length > 0;
-      if (!prev || prev.content !== text || prev.streaming !== streaming) {
+      if (!prev || prev.messageId !== messageId || prev.content !== text || prev.streaming !== streaming) {
         set(streamingTextByIdAtom, {
           ...get(streamingTextByIdAtom),
-          [event.sessionId]: { content: text, streaming },
+          [event.sessionId]: { messageId, content: text, streaming },
         });
       }
       if (done) {
@@ -1392,15 +1631,16 @@ export const applySessionRuntimeEventAtom = atom(
           // 为本轮回答内的显示延迟，终态到达后完全纠正。
           const W = current?.windowStart ?? 0;
           const cardCount = current?.cardCount ?? 0;
-          const offset = upsertFrom - W + cardCount;
+          const slidingCount = current?.messages.filter((m) => m.meta?.slidingOut === true).length ?? 0;
+          const offset = upsertFrom - W + cardCount + slidingCount;
           if (current?.source === "runtime" && offset >= 0 && current.messages.length >= offset) {
             const merged = [
               ...current.messages.slice(0, offset),
               ...(messages as ChatMessage[]),
             ];
-            // 长度校验：合并后本地长度 = 卡片 + (totalLength − W)；不满足说明增量已失序
+            // 长度校验：合并后本地长度 = 卡片 + (totalLength − W) + slidingCount；不满足说明增量已失序
             // （漏事件/trim 未校准），丢弃等待全量
-            if (merged.length === totalLength - W + cardCount) {
+            if (merged.length === totalLength - W + cardCount + slidingCount) {
               set(cacheSessionMessagesAtom, {
                 sessionId: event.sessionId,
                 messages: merged,
@@ -1409,11 +1649,30 @@ export const applySessionRuntimeEventAtom = atom(
                 history: current.history,
                 cardCount,
               });
+            } else {
+              console.warn("[messages] incremental update dropped", {
+                sessionId: event.sessionId,
+                upsertFrom,
+                totalLength,
+                windowStart: W,
+                offset,
+                currentLength: current.messages.length,
+              });
             }
+          } else {
+            console.warn("[messages] incremental update dropped", {
+              sessionId: event.sessionId,
+              upsertFrom,
+              totalLength,
+              windowStart: W,
+              offset,
+              currentLength: current?.messages?.length ?? 0,
+            });
           }
         } else {
           // 窗口化全量 / 传统全量：替换运行时窗口段；
-          // disk 前缀经版本守卫（压缩改写即失效）+ 接缝去重（窗口右移与前缀重叠）后保留
+          // 方案 B：对当前展示的 messages 与新 canonical snapshot 做 diff，
+          // 被压缩移出的旧消息标记 slidingOut 并继续保留在 renderer state 中，由 renderer 自行管理退出动画生命周期。
           const segment = messages as ChatMessage[];
           // 卡片数推导：全量载荷 = [卡片(c), 窗口段]，本地长度 = c + (totalLength − W)
           const W = payloadWindowStart ?? 0;
@@ -1423,9 +1682,10 @@ export const applySessionRuntimeEventAtom = atom(
           const slideOut = Array.isArray(payload.slideOut)
             ? (payload.slideOut as ChatMessage[])
             : undefined;
-          // restart / 重开同一会话时，主进程已经丢掉旧 agent 的窗口段，
-          // 不会再带 slideOut。压缩路径会显式下发 slideOut，不能把旧窗口再并一次。
-          const previousWindow = preserveHistory &&
+          // restart / 重开同一会话时，主进程已经丢掉旧 agent 的窗口段。
+          // 仅在 bindingChanged 且显式 preserveHistory 时，把旧窗口并入 history 前缀。
+          const previousWindow = bindingChanged &&
+            preserveHistory &&
             stickyHistory &&
             (!slideOut || slideOut.length === 0) &&
             current?.source === "runtime"
@@ -1434,10 +1694,16 @@ export const applySessionRuntimeEventAtom = atom(
           const combinedSlideOut = previousWindow && previousWindow.length > 0
             ? previousWindow
             : slideOut;
+          const mergedMessages = !bindingChanged &&
+            current?.source === "runtime" &&
+            (!current.agentId || current.agentId === event.agentId)
+            ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, slideOut)
+            : segment;
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
-            messages: segment,
+            messages: mergedMessages,
             source: "runtime",
+            agentId: event.agentId,
             windowStart: payloadWindowStart,
             cardCount,
             history: reconcileHistoryPrefix(
@@ -1635,6 +1901,7 @@ export const removeSessionStateAtom = atom(null, (get, set, sessionId: string) =
   set(sessionMessagesCacheAtom, cache);
   clearSessionLiveThinking(get, set, sessionId);
   liveTextStreamingBySessionAtom.remove(sessionId);
+  liveTextStreamingMessageIdBySessionAtom.remove(sessionId);
   // atomFamily 无自动 GC：会话删除时必须同步 remove 各 family 实例，否则长期泄漏（2026-10）。
   liveThinkingIdBySessionIdAtomFamily.remove(sessionId);
   newTurnCollapseTickBySessionIdAtomFamily.remove(sessionId);

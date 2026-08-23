@@ -70,6 +70,8 @@ test("Shared model picker keeps one model line and supports collapse and selecte
 });
 
 
+const registerBackendRpc = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
+
 test("Git summary settings expose the shared command model picker", () => {
   // Git 分区与模型选择器位于常用设置 tab（CommonTab）；数据源 hook 独立成文件（gitModels.ts，
   // 以便 CommonTab lazy 加载）——listModels 调用在 hook 里
@@ -88,5 +90,5 @@ test("Git summary settings expose the shared command model picker", () => {
 
 test("Git IPC receives the localized settings guidance from the main process", () => {
   assert.match(gitIpc, /mainCopy: \(key: string/);
-  assert.match(mainIndex, /registerGitIpc\(\{[\s\S]*mainCopy: mainCopy/);
+  assert.match(registerBackendRpc, /registerGitIpc\(router,\s*\{[\s\S]*mainCopy: mainCopy/);
 });

@@ -7,9 +7,9 @@
  * - 写盘采用 debounce + 原子 rename，失败静默（缓存失效只是慢，不能影响主流程）
  */
 
-import { app } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { renameWithRetry } from "../utils/fsRetry";
 
 export interface SessionFileVersion {
@@ -42,7 +42,7 @@ export class SessionSummaryCache<V> {
   private saving: Promise<void> | null = null;
 
   constructor(fileName = "session-summary-cache.json", userDataDir?: string) {
-    this.filePath = join(userDataDir ?? app.getPath("userData"), fileName);
+    this.filePath = join(userDataDir ?? join(homedir(), ".pi-desktop"), fileName);
   }
 
   /** 启动时加载磁盘缓存；可重复调用，只执行一次 */

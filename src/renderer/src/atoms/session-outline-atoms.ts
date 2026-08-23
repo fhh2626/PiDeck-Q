@@ -2,12 +2,14 @@
  * 会话大纲 / 修改文件清单的派生 atom。
  *
  * 背景：这两份数据原本在 App 根组件里用 useMemo 计算，而 App 为了拿到消息数组
- * 直接订阅了 currentSessionMessagesAtom —— agent 流式输出时每追加一个 token，
- * App 整棵树（含设置弹窗等重组件）就重渲染一次。把计算下沉为派生 atom 后，
- * 只有真正消费它们的组件（OutlinePanel / useFileEditor 事件路径）才订阅，
- * App 根组件不再随消息流更新。
+ * 直接订阅了 currentSessionMessagesAtom —— canonical 消息缓存一变引用（主进程 50ms
+ * 节流 flush 的消息边界：message_start 空骨架 / message_end），App 整棵树（含设置弹窗
+ * 等重组件）就重渲染一次、还要就地重算 buildOutline/modifiedFiles。逐 token 的流式
+ * 正文走的是另一条独立通道（text-stream → streamingTextByIdAtom，直落叶子 AnswerOutput），
+ * 并不经过这两份派生 atom。把计算下沉为派生 atom 后，只有真正消费它们的组件
+ * （OutlinePanel / useFileEditor）才订阅，App 根组件不再持有原始消息数组、不再就地重算。
  *
- * 注意：派生 atom 每次消息链变化都会重算（流式输出时长度每次都在变，
+ * 注意：派生 atom 每次消息缓存变引用都会重算（消息边界 flush 时长度在变，
  * 与原 useMemo 依赖 [messages.length] 的开销相当）；非流式的低频内容替换
  * （重启重生成、编辑消息）会多算一次，可接受。
  */

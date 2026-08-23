@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { app, shell } from "electron";
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { mkdir, open as openFile, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { basename as posixBasename, dirname as posixDirname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
+import { homedir } from "node:os";
+import { basename as posixBasename, dirname as posixDirname, extname as posixExtname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
+import type { TrashPath } from "../fs/trash";
 import type { ChatMessage, ChatRole, SessionSummary } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { getCodexSessionThreadInfo } from "../../shared/codexSessionMeta";
@@ -63,13 +64,17 @@ function hasLegacySessionNameLine(text: string): boolean {
 }
 
 export class SessionScanner {
-  private readonly root = join(app.getPath("home"), ".pi", "agent", "sessions");
-  private readonly codexRoot = join(app.getPath("home"), ".codex", "sessions");
+  private readonly translate: SessionScannerCopy;
+  private readonly homeDir: string;
+  private readonly downloadsDir: string;
+  private readonly trashPath?: TrashPath;
+  private readonly root: string;
+  private readonly codexRoot: string;
   /** WSL 配置由主进程统一解析；内部保留 home 字段以维持扫描代码的单一 Linux 路径语义。 */
   private wslConfig: { distro: string; user: string; home: string } | null = null;
   /** 比 renderer watchdog 更短，确保超时前先终止实际扫描，避免后台请求堆积。 */
   private scanTimeoutMs = 18_000;
-  private readonly summaryCache = new SessionSummaryCache<SessionSummary | null>();
+  private readonly summaryCache: SessionSummaryCache<SessionSummary | null>;
   private summaryCacheFileSetKey = "";
   /**
    * 最近一次 list() 解析出的会话扫描根目录。
@@ -78,7 +83,22 @@ export class SessionScanner {
    */
   private activeScanRoots: string[] = [];
 
-  constructor(private readonly translate: SessionScannerCopy = defaultTranslate) {}
+  constructor(
+    translate: SessionScannerCopy = defaultTranslate,
+    homeDir?: string,
+    trashPath?: TrashPath,
+    downloadsDir?: string,
+    userDataDir?: string,
+  ) {
+    this.translate = translate;
+    this.homeDir = homeDir ?? homedir();
+    this.downloadsDir = downloadsDir ?? join(this.homeDir, "Downloads");
+    this.trashPath = trashPath;
+    this.summaryCache = new SessionSummaryCache<SessionSummary | null>("session-summary-cache.json", userDataDir);
+    this.root = join(this.homeDir, ".pi", "agent", "sessions");
+    this.codexRoot = join(this.homeDir, ".codex", "sessions");
+    this.activeScanRoots = [this.root];
+  }
 
   /**
    * wsl.exe 命令与启动模式。优先绝对路径，
@@ -109,6 +129,9 @@ export class SessionScanner {
       : null;
     // 环境切换时只重置“本轮扫描键”，并从磁盘重新装载缓存；不要把另一环境的磁盘缓存清空。
     this.summaryCacheFileSetKey = "";
+    // 环境切换后旧环境的 activeScanRoots 已失效：清空使 listArchived() 等回退到
+    // 当前环境的默认根（WSL 用 wslSessionsDir，本地用 this.root），等下一次 list() 再解析。
+    this.activeScanRoots = [];
     await this.summaryCache.reloadFromDisk();
   }
 
@@ -116,6 +139,7 @@ export class SessionScanner {
   clearWsl(): void {
     this.wslConfig = null;
     this.summaryCacheFileSetKey = "";
+    this.activeScanRoots = [];
     void this.summaryCache.reloadFromDisk();
   }
 
@@ -381,7 +405,7 @@ export class SessionScanner {
 
     const globalRaw = this.wslConfig
       ? await this.readSessionDirSettingWsl(`${this.wslConfig.home}/.pi/agent/settings.json`)
-      : await this.readSessionDirSettingLocal(join(app.getPath("home"), ".pi", "agent", "settings.json"));
+      : await this.readSessionDirSettingLocal(join(this.homeDir, ".pi", "agent", "settings.json"));
 
     const raw = projectRaw ?? globalRaw;
     if (!raw) return undefined;
@@ -435,7 +459,7 @@ export class SessionScanner {
 
   /** 展开 `~` / `~/...`；WSL 下使用 WSL home */
   private expandHomePrefix(input: string): string {
-    const home = this.wslConfig?.home ?? app.getPath("home");
+    const home = this.wslConfig?.home ?? this.homeDir;
     if (input === "~") return home;
     if (input.startsWith("~/") || input.startsWith("~\\")) {
       return this.wslConfig
@@ -651,7 +675,10 @@ export class SessionScanner {
 
     // 删除会话是用户主动操作：统一移入系统回收站（可恢复）。
     // 回收站不可用时直接抛错——拒绝静默硬删，错误由 IPC 层呈现给用户。
-    await shell.trashItem(filePath);
+    if (!this.trashPath) {
+      throw new Error("Trash service unavailable");
+    }
+    await this.trashPath(filePath, { source: "sessions:delete" });
   }
 
   // ── 会话归档：移动到 <扫描根>/.pideck-archive/ 并记录原路径 ──
@@ -662,11 +689,16 @@ export class SessionScanner {
   /** 归档索引文件名：记录 归档路径 → 原始路径 映射，恢复时据此移回 */
   private static readonly ARCHIVE_INDEX_NAME = "index.json";
 
+  /** WSL 路径必须保持 POSIX 分隔符；本地路径继续使用当前平台语义。 */
+  private joinArchivePath(wsl: boolean, ...parts: string[]): string {
+    return wsl ? posixJoin(...parts) : join(...parts);
+  }
+
   /** 取 filePath 所在扫描根的归档目录；非扫描根内文件返回 undefined */
   private archiveDirFor(filePath: string): string | undefined {
     const root = this.findSessionsRootForFile(filePath);
     if (!root) return undefined;
-    return join(root, SessionScanner.ARCHIVE_DIR_NAME);
+    return this.joinArchivePath(this.isWslPath(filePath), root, SessionScanner.ARCHIVE_DIR_NAME);
   }
 
   /**
@@ -677,10 +709,16 @@ export class SessionScanner {
     const wsl = this.isWslPath(filePath);
     const archiveDir = this.archiveDirFor(filePath);
     if (!archiveDir) throw new Error("会话不在可扫描目录内，无法归档");
+    const fileBasename = wsl ? posixBasename(filePath) : basename(filePath);
+    const fileExtname = wsl ? posixExtname(filePath) : extname(filePath);
     // 归档目标 = 归档目录 + 原文件名；重名时追加时间戳避免覆盖已有归档。
-    const target = join(archiveDir, basename(filePath));
+    const target = this.joinArchivePath(wsl, archiveDir, fileBasename);
     const finalTarget = existsSync(target) || (wsl && await this.existsWslFile(target))
-      ? join(archiveDir, `${basename(filePath, extname(filePath))}.${Date.now()}${extname(filePath)}`)
+      ? this.joinArchivePath(
+          wsl,
+          archiveDir,
+          `${wsl ? posixBasename(filePath, fileExtname) : basename(filePath, fileExtname)}.${Date.now()}${fileExtname}`,
+        )
       : target;
 
     if (wsl) {
@@ -692,7 +730,8 @@ export class SessionScanner {
     // 同级子会话目录（<stem>/）一并移入归档，保持子会话归属。
     const siblingDir = this.getSiblingDir(filePath);
     if (siblingDir) {
-      const targetSibling = join(archiveDir, basename(siblingDir));
+      const siblingBasename = wsl ? posixBasename(siblingDir) : basename(siblingDir);
+      const targetSibling = this.joinArchivePath(wsl, archiveDir, siblingBasename);
       if (wsl) {
         if (await this.existsWslDir(siblingDir)) await this.moveWsl(siblingDir, targetSibling);
       } else if (existsSync(siblingDir)) {
@@ -746,8 +785,9 @@ export class SessionScanner {
     const results: SessionSummary[] = [];
     const seen = new Set<string>();
     for (const root of roots) {
-      const archiveDir = join(root, SessionScanner.ARCHIVE_DIR_NAME);
-      const files = this.wslConfig
+      const wsl = Boolean(this.wslConfig);
+      const archiveDir = this.joinArchivePath(wsl, root, SessionScanner.ARCHIVE_DIR_NAME);
+      const files = wsl
         ? await this.collectJsonlFromDirWsl(archiveDir).catch(() => [] as string[])
         : await this.collectJsonl(archiveDir).catch(() => [] as string[]);
       for (const file of files) {
@@ -777,7 +817,12 @@ export class SessionScanner {
     const roots = wsl ? [this.wslSessionsDir] : [this.root];
     const merged: Record<string, string> = {};
     for (const root of roots) {
-      const indexPath = join(root, SessionScanner.ARCHIVE_DIR_NAME, SessionScanner.ARCHIVE_INDEX_NAME);
+      const indexPath = this.joinArchivePath(
+        wsl,
+        root,
+        SessionScanner.ARCHIVE_DIR_NAME,
+        SessionScanner.ARCHIVE_INDEX_NAME,
+      );
       try {
         const raw = wsl ? await this.readWslFile(indexPath) : await readFile(indexPath, "utf8");
         Object.assign(merged, JSON.parse(raw) as Record<string, string>);
@@ -790,15 +835,18 @@ export class SessionScanner {
 
   /** 写入归档索引（合并现有条目 + 新增/删除） */
   private async writeArchiveIndex(entries: Record<string, string>, wsl: boolean): Promise<void> {
-    const archiveDir = wsl
-      ? join(this.wslSessionsDir, SessionScanner.ARCHIVE_DIR_NAME)
-      : join(this.root, SessionScanner.ARCHIVE_DIR_NAME);
+    const archiveDir = this.joinArchivePath(
+      wsl,
+      wsl ? this.wslSessionsDir : this.root,
+      SessionScanner.ARCHIVE_DIR_NAME,
+    );
+    const indexPath = this.joinArchivePath(wsl, archiveDir, SessionScanner.ARCHIVE_INDEX_NAME);
     const content = JSON.stringify(entries, null, 2);
     if (wsl) {
-      await this.writeWslFile(join(archiveDir, SessionScanner.ARCHIVE_INDEX_NAME), content);
+      await this.writeWslFile(indexPath, content);
     } else {
       await mkdir(archiveDir, { recursive: true });
-      await writeFile(join(archiveDir, SessionScanner.ARCHIVE_INDEX_NAME), content, "utf8");
+      await writeFile(indexPath, content, "utf8");
     }
   }
 
@@ -858,7 +906,10 @@ export class SessionScanner {
     const siblingDir = this.getSiblingDir(filePath);
     if (!siblingDir || !existsSync(siblingDir)) return;
     // 同级子会话目录同样走系统回收站；失败抛错（拒绝静默硬删）。
-    await shell.trashItem(siblingDir);
+    if (!this.trashPath) {
+      throw new Error("Trash service unavailable");
+    }
+    await this.trashPath(siblingDir, { source: "sessions:delete-sibling" });
   }
 
   /** 删除 WSL 同级子会话目录（如果存在） */
@@ -934,7 +985,7 @@ export class SessionScanner {
     const title = summary.name || this.translate("session.untitled");
     const html = `<!doctype html><html><head><meta charset=\"utf-8\"><title>${this.escapeHtml(title)}</title><style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:920px;margin:32px auto;padding:0 20px;color:#1f2937}.msg{border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin:12px 0;background:#fff}.msg h2{margin:0 0 8px;font-size:13px;color:#64748b}.msg pre{white-space:pre-wrap;margin:0;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}</style></head><body><h1>${this.escapeHtml(title)}</h1><p>${new Date(summary.updatedAt).toLocaleString()} · ${summary.messageCount} messages</p>${rows}</body></html>`;
     const safeName = title.replace(/[\\/:*?\"<>|]/g, "_").slice(0, 80) || "session";
-    const targetPath = join(app.getPath("downloads"), `${safeName}-${Date.now()}.html`);
+    const targetPath = join(this.downloadsDir, `${safeName}-${Date.now()}.html`);
     await writeFile(targetPath, html, "utf8");
     return { path: targetPath };
   }

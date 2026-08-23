@@ -197,8 +197,8 @@ test("AgentManager 与 index.ts 完成修复回调装配", () => {
   const agentSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
   assert.match(agentSource, /repairSessionFile\?: \(sessionPath: string\) => Promise<boolean>/);
   assert.match(agentSource, /repairSessionFileBeforeStart: this\.repairSessionFile/);
-  const indexSource = readFileSync("src/main/index.ts", "utf8");
-  assert.match(indexSource, /repairCorruptSessionHeader/);
+  const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
+  assert.match(createBackendSource, /repairCorruptSessionHeader/);
 });
 
 test("rename 与修复共用同一剔除判定（无重复私有行判定实现）", () => {

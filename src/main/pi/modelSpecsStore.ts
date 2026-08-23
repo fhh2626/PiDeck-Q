@@ -12,7 +12,6 @@
  * 查询优先级由 UI 层决定：本 store 查不到时，调用方可兜底 pi --list-models。
  */
 
-import { app } from "electron";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import initSqlJs from "sql.js";
@@ -103,6 +102,8 @@ export class ModelSpecsStore {
 	constructor(
 		private readonly dbPath: string,
 		private readonly sqlLoader: typeof initSqlJs = initSqlJs,
+		private readonly wasmLocateDir?: string,
+		private readonly isPackaged = false,
 	) {}
 
 	/** 查询模型规格（懒加载索引；未命中返回 undefined） */
@@ -139,17 +140,10 @@ export class ModelSpecsStore {
 		const SQL = await this.sqlLoader({
 			locateFile: (file: string) => {
 				// 打包后 sql-wasm.wasm 经 asarUnpack 解压，不能从 asar 内加载 WASM
-				if (app.isPackaged) {
-					return join(
-						process.resourcesPath,
-						"app.asar.unpacked",
-						"node_modules",
-						"sql.js",
-						"dist",
-						file,
-					);
+				if (this.wasmLocateDir) {
+					return join(this.wasmLocateDir, file);
 				}
-				return join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
+				return join(process.cwd(), "node_modules", "sql.js", "dist", file);
 			},
 		});
 		const db = new SQL.Database(readFileSync(this.dbPath));

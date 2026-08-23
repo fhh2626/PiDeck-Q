@@ -387,6 +387,8 @@ export function ConfirmDialog(props: {
 	onCancel: () => void;
 	confirmLabel?: string;
 	danger?: boolean;
+	/** 透传给 AlertDialogDescription 的样式（如长 URL 换行 break-all）。 */
+	messageClassName?: string;
 }) {
 	// 实现已收敛到 ui-shadcn/ConfirmDialog（AlertDialog），此处仅保留兼容转发。
 	return <ShadcnConfirmDialog {...props} />;

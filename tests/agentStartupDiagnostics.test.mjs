@@ -4,6 +4,7 @@ import test from "node:test";
 
 const mainSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
 const indexSource = readFileSync("src/main/index.ts", "utf8");
+const sessionBridgeSource = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const systemIpcSource = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 const sessionIpcSource = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
 const preloadSource = readFileSync("src/preload/index.ts", "utf8");
@@ -51,7 +52,7 @@ test("renderer startup reports bootstrap mount and global errors", () => {
 });
 
 test("agent create IPC and process handlers keep structured crash diagnostics", () => {
-	assert.match(indexSource, /Agent create IPC failed/);
+	assert.match(sessionBridgeSource, /Agent create IPC failed/);
 	assert.match(indexSource, /Child process gone/);
 	assert.match(indexSource, /platform: process\.platform/);
 	assert.match(mainSource, /attachPiProcessLifecycle/);

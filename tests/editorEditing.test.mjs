@@ -38,8 +38,11 @@ test("editors bind Ctrl+/ comment toggle and JSON lint", () => {
   // Ctrl+/ 注释/取消注释（@codemirror/commands 的 toggleComment）
   assert.match(editor, /import \{[^}]*toggleComment/);
   assert.match(editor, /Mod-\//);
-  // JSON 语法错误即时提示（lintGutter + jsonParseLinter，仅 json/jsonc）
-  assert.match(editor, /lintGutter\(\), linter\(jsonParseLinter\(\)\)/);
+  // JSON 语法错误即时提示（lintGutter + jsonParseLinter，仅 json/jsonc）。
+  // 异步 loader 后 jsonParseLinter 单独 import 成 linter 扩展（jsonLinter 变量），
+  // 再与 lintGutter 一起装入 JSON 分支；两者分属不同行，断言各自存在即可。
+  assert.match(editor, /linter\(jsonParseLinter\(\)\)/);
+  assert.match(editor, /lintGutter\(\),\s*jsonLinter/);
   assert.match(editor, /resolvedLanguage\.language\.name === "json"/);
 });
 

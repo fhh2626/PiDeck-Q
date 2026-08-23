@@ -651,6 +651,8 @@ export function createPreviewApi(): PiDesktopApi {
 			installUpdate: async () => undefined,
 			onUpdateProgress: () => () => undefined,
 			onOpenInBrowser: () => () => undefined,
+			onConfirmExternalProtocol: () => () => undefined,
+			respondExternalProtocol: async () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,
 			openExternal: async () => undefined,

@@ -499,6 +499,35 @@
   border-color: var(--color-accent);
 }
 
+/* Skills 快捷入口按钮：视觉与 editors-entry 完全一致，保持悬浮工具条统一；
+   disabled 态用于「全局 Agent 正在工作」门控，真 HTML disabled + 视觉降级。 */
+.skills-entry {
+  position: static;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-panel);
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-lg);
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.skills-entry:hover,
+.skills-entry.active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.skills-entry:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.skills-entry:disabled:hover {
+  color: var(--color-text-tertiary);
+  border-color: var(--color-border-subtle);
+}
+
 /* 内置浏览器入口按钮，样式与 editors-entry 一致，保持视觉统一 */
 .browser-entry {
   position: static;

@@ -176,22 +176,22 @@ test("built-in extension removal has a registered IPC handler", () => {
 });
 
 test("AgentManager no longer deploys built-ins via ensurePiDeckExtension", () => {
-	const index = readFileSync("src/main/index.ts", "utf8");
+	const startupTasks = readFileSync("src/main/backend/backendStartupTasks.ts", "utf8");
 	const storeIpc = readFileSync("src/main/ipc/storeIpc.ts", "utf8");
 	const processSource = readFileSync("src/main/pi/PiProcess.ts", "utf8");
-	assert.doesNotMatch(index, /async function ensurePiDeckExtension/);
+	assert.doesNotMatch(startupTasks, /async function ensurePiDeckExtension/);
 	assert.doesNotMatch(storeIpc, /ensurePiDeckExtension/);
-	assert.match(index, /migrateLegacyBuiltInExtensions/);
-	assert.match(index, /\.\.\.LEGACY_BUILT_IN_EXTENSION_NAMES/);
+	assert.match(startupTasks, /migrateLegacyBuiltInExtensions/);
+	assert.match(startupTasks, /\.\.\.LEGACY_BUILT_IN_EXTENSION_NAMES/);
 	assert.match(processSource, /appendBuiltInExtensionArgs/);
 	assert.match(processSource, /--extension/);
 });
 
 test("main uses the already-eager built-in extension catalog without a fake dynamic import", () => {
-	const index = readFileSync("src/main/index.ts", "utf8");
+	const startupTasks = readFileSync("src/main/backend/backendStartupTasks.ts", "utf8");
 	assert.match(
-		index,
-		/import \{[\s\S]*?BUILT_IN_EXTENSIONS,[\s\S]*?\} from "\.\/extensions\/builtInExtensions"/,
+		startupTasks,
+		/import \{[\s\S]*?BUILT_IN_EXTENSIONS,[\s\S]*?\} from "\.\.\/extensions\/builtInExtensions"/,
 	);
-	assert.doesNotMatch(index, /await import\("\.\/extensions\/builtInExtensions"\)/);
+	assert.doesNotMatch(startupTasks, /await import\("\.\/extensions\/builtInExtensions"\)/);
 });

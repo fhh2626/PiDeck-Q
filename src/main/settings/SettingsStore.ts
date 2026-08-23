@@ -1,7 +1,7 @@
-import { app, BrowserWindow, Menu } from "electron";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import {
 	getDefaultGitCommitMessagePrompt,
 	isDefaultGitCommitMessagePrompt,
@@ -15,45 +15,10 @@ import {
 	migrateBuiltInExtensionDefaults,
 } from "../extensions/builtInExtensions";
 
-/** 桌面端 settings.json（userData），与 pi agent settings 分离 */
-function desktopSettingsPath() {
-	return join(app.getPath("userData"), "settings.json");
-}
-
-/** pi agent 的 settings.json 路径（~/.pi/agent/settings.json） */
-function piAgentSettingsPath() {
-	return join(app.getPath("home"), ".pi", "agent", "settings.json");
-}
-
-/** 同步读取桌面 settings.json（app.ready 前可用）。文件缺失时返回空对象。 */
-function readDesktopSettingsSync(): Partial<AppSettings> {
-	try {
-		const raw = readFileSync(desktopSettingsPath(), "utf8");
-		return JSON.parse(raw) as Partial<AppSettings>;
-	} catch {
-		return {};
-	}
-}
-
-/**
- * 在 app.ready 之前同步读取 Chromium 沙箱偏好。
- * `no-sandbox` 必须在 ready 前 append，否则本进程已无法改 Chromium 启动参数。
- * 缺省 false：保持历史兼容（Windows 安全软件/旧驱动）。
- */
-export function readElectronChromiumSandboxPreference(): boolean {
-	return readDesktopSettingsSync().electronChromiumSandbox === true;
-}
-
-/**
- * 在 app.ready 之前同步读取单实例偏好。
- * 版本级单实例锁必须在 ready 前申请（见 main/singleInstance.ts）。
- * 缺省 true：同一版本再次打开时复用窗口；不同版本始终可并行。
- */
-export function readSingleInstancePreference(): boolean {
-	const value = readDesktopSettingsSync().singleInstance;
-	// 未配置时默认开启单实例；只有显式 false 才允许同版本多开。
-	return value !== false;
-}
+export {
+	readElectronChromiumSandboxPreference,
+	readSingleInstancePreference,
+} from "./startupPreferences";
 
 /**
  * 读取 pi agent 的 settings.json 并从中提取 showThinking（取 hideThinkingBlock 的反值）。
@@ -62,9 +27,9 @@ export function readSingleInstancePreference(): boolean {
  * 映射：showThinking = !hideThinkingBlock
  * 若 pi agent 文件不存在或 hideThinkingBlock 未设置，返回 undefined。
  */
-function readPiAgentShowThinking(): boolean | undefined {
+export function readPiAgentShowThinking(filePath: string): boolean | undefined {
 	try {
-		const agentRaw = readFileSync(piAgentSettingsPath(), "utf8");
+		const agentRaw = readFileSync(filePath, "utf8");
 		const agentSettings = JSON.parse(agentRaw) as Record<string, unknown>;
 		if (typeof agentSettings.hideThinkingBlock === "boolean") {
 			return !agentSettings.hideThinkingBlock;
@@ -106,7 +71,7 @@ const defaultSettings: AppSettings = {
   enableNotifications: true,
   // 人文关怀提醒默认开启：用户可在设置中随时关闭
   agentCountReminderEnabled: true,
-  showThinking: readPiAgentShowThinking() ?? true,
+  showThinking: true,
   // 流式对话设置：默认不自动展开中间过程（省渲染资源，手动展开不受影响）；
   // 新一轮开始默认收起非最新轮（含手动展开的），用户可在设置中关闭。
   expandInterimDuringStream: false,
@@ -172,9 +137,29 @@ const defaultSettings: AppSettings = {
   fontFamilyMonoCustom: "",
 };
 
+export interface SettingsStoreDeps {
+	desktopSettingsFile?: string;
+	piAgentSettingsFile?: string;
+	getSystemLocale?: () => string | undefined;
+}
+
 export class SettingsStore {
-  private readonly filePath = desktopSettingsPath();
-  private settings: AppSettings = { ...defaultSettings };
+  private readonly filePath: string;
+  private readonly piAgentSettingsFile: string;
+  private readonly getSystemLocale: () => string | undefined;
+  private settings: AppSettings;
+
+  constructor(deps: SettingsStoreDeps = {}) {
+    const home = homedir();
+    this.filePath = deps.desktopSettingsFile ?? join(home, ".pi-desktop", "settings.json");
+    this.piAgentSettingsFile = deps.piAgentSettingsFile ?? join(home, ".pi", "agent", "settings.json");
+    this.getSystemLocale = deps.getSystemLocale ?? (() => undefined);
+    const showThinking = readPiAgentShowThinking(this.piAgentSettingsFile) ?? true;
+    this.settings = {
+      ...defaultSettings,
+      showThinking,
+    };
+  }
 
   async load() {
     let migratedBuiltInExtensionDefaults = false;
@@ -229,14 +214,11 @@ export class SettingsStore {
     }
     // showThinking 不再作为可持久化的独立配置项，完全跟随 pi agent 的 hideThinkingBlock。
     // 启动时重新读取以确保每次启动都使用最新值，而非缓存的 defaultSettings。
-    const computedShowThinking = readPiAgentShowThinking();
-    if (computedShowThinking !== undefined) {
-      this.settings.showThinking = computedShowThinking;
-    }
+    const computedShowThinking = readPiAgentShowThinking(this.piAgentSettingsFile);
+    this.settings.showThinking = computedShowThinking ?? true;
     // 每次启动都校准安装类型：Windows 便携版由 electron-builder 注入运行时环境变量,
     // 该信号比旧 settings 更可信,可修正用户从安装版/旧版本迁移后残留的 installed 记录。
     await this.detectAndSaveInstallationType();
-    this.applyMenu();
     return this.get();
   }
 
@@ -252,7 +234,7 @@ export class SettingsStore {
     }
 
     const localizedPrompt = getDefaultGitCommitMessagePrompt(
-      resolveGitCommitMessagePromptLocale(this.settings.language, getSystemLanguage()),
+      resolveGitCommitMessagePromptLocale(this.settings.language, this.getSystemLocale()),
     );
     if (this.settings.gitCommitMessagePrompt === localizedPrompt) return false;
     this.settings.gitCommitMessagePrompt = localizedPrompt;
@@ -279,11 +261,8 @@ export class SettingsStore {
 
   get() {
     // showThinking 由 pi agent 的 hideThinkingBlock 动态决定，每次 get() 都重新读取
-    const computed = readPiAgentShowThinking();
-    if (computed !== undefined) {
-      return { ...this.settings, showThinking: computed };
-    }
-    return { ...this.settings };
+    const computed = readPiAgentShowThinking(this.piAgentSettingsFile);
+    return { ...this.settings, showThinking: computed ?? true };
   }
 
   async update(patch: Partial<AppSettings>) {
@@ -296,41 +275,14 @@ export class SettingsStore {
     // 用户只切换语言且仍使用内置模板时，同步模板语言；自定义模板不随语言变化。
     if (languageChanged && !promptProvided && promptWasDefault) {
       this.settings.gitCommitMessagePrompt = getDefaultGitCommitMessagePrompt(
-        resolveGitCommitMessagePromptLocale(this.settings.language, getSystemLanguage()),
+        resolveGitCommitMessagePromptLocale(this.settings.language, this.getSystemLocale()),
       );
     }
     await this.save();
-    this.applyMenu();
     // 配置变更审计（统一在此留痕，覆盖 IPC 与 pet/extension/editors 等所有直写路径）：
     // 只记变更的 key 列表，不记值——避免 proxyUrl 等敏感内容落盘；值变更回查用 save 前的内存态
     void getAppLogger()?.info("settings", "Settings updated", { keys: Object.keys(safePatch) });
     return this.get();
-  }
-
-  applyMenu() {
-    // 菜单属于 Electron 外壳设置，不影响 pi agent；默认隐藏以获得更接近独立工具的观感。
-    Menu.setApplicationMenu(null);
-  }
-
-  createWindowOptions() {
-    const useNative = this.settings.useNativeTitleBar;
-    const isMac = process.platform === "darwin";
-    return {
-      frame: useNative,
-      titleBarStyle: useNative
-        ? "default" as const
-        : isMac
-          ? "hiddenInset" as const
-          : "hidden" as const,
-      // 系统标题栏模式下红绿灯由 macOS 控制，不设置避免与侧栏 logo 重叠。
-      ...(!useNative && isMac ? { trafficLightPosition: { x: 14, y: 14 } as const } : {}),
-    };
-  }
-
-  notifyTitleBarChange(window: BrowserWindow | null) {
-    if (!window || window.isDestroyed()) return;
-    // Electron 的 frame 不能运行时无刷新切换；设置页保存后提示用户重启生效。
-    window.webContents.send("settings:apply-window", this.get());
   }
 
   /**
@@ -344,7 +296,7 @@ export class SettingsStore {
   }
 
   private async save() {
-    await mkdir(app.getPath("userData"), { recursive: true });
+    await mkdir(dirname(this.filePath), { recursive: true });
     // showThinking 由 pi agent 的 hideThinkingBlock 决定，不持久化到桌面 settings.json
     const { showThinking: _unused, ...persistable } = this.settings;
     await writeFile(this.filePath, JSON.stringify(persistable, null, 2), "utf8");
@@ -382,12 +334,4 @@ export class SettingsStore {
     this.settings.installationType = installationType;
     await this.save();
   }
-}
-
-function getSystemLanguage(): string | undefined {
-	try {
-		return app.getLocale();
-	} catch {
-		return undefined;
-	}
 }

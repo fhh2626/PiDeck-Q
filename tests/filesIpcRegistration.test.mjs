@@ -25,7 +25,7 @@ test("every files:* channel in shared/ipc.ts has a handler registered in filesIp
 test("files:show-in-folder handler authorizes a Windows-converted path", () => {
   // 具体断言修复目标：handler 仍经过共享路径转换和边界校验（WSL 路径可用）
   const block = filesIpc.match(
-    /ipcMain\.handle\(\s*ipcChannels\.filesShowInFolder,[\s\S]*?shell\.showItemInFolder\(authorizePath\(path, "show-in-folder"\)\);/,
+    /router\.handle\(\s*ipcChannels\.filesShowInFolder,[\s\S]*?showItemInFolder\(authorizePath\(path, "show-in-folder"\)\);/,
   );
   assert.ok(block, "filesShowInFolder handler must authorize the path before opening its folder");
   assert.match(filesIpc, /const toHostPath = \(path: string\): string => toWindowsPath\(path\)/);

@@ -27,7 +27,7 @@ import {
   toSessionRuntimeTarget,
 } from "../../utils/sessionCommands";
 import { ConfirmDialog } from "../app/AppParts";
-import { useSessionPaneServices } from "./SessionPaneServices";
+import { useSessionPaneActions } from "./SessionPaneServices";
 import { usePendingModelApply } from "../../hooks/usePendingModelApply";
 import type { ComposerPickerKind } from "../../hooks/useSessionComposerController";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY, readWelcomeModelPreference, readWelcomeThinkingPreference } from "../../utils/chatSessionBootstrap";
@@ -65,7 +65,8 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   // 与 Tab 栏「重启」共用 App.restartActiveAgent：置 restartingAgentId，
   // SessionView overlay（loader + 文案）才会亮。选择器自己调 restartRuntime
   // 能换进程，但不会驱动那套 UI 状态。
-  const { restartActiveAgent } = useSessionPaneServices();
+  // 只订 actions 轨：restartActiveAgent 是稳定回调，不随 terminal / gitInfo / agents 变化
+  const { restartActiveAgent } = useSessionPaneActions();
   // 不跟 restartTarget state 同步：ConfirmDialog 点确定会先 onOpenChange(false)
   // 走 onCancel 清掉 state；确认意图放 ref，避免当成取消后丢数据。
   const restartIntentRef = useRef<{

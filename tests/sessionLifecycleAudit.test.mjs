@@ -76,7 +76,8 @@ test("sensitive operations leave audit traces", () => {
   assert.match(piProcess, /getAppLogger\(\)\?\.error\("pi-process", "Spawn error \(pre-listener sink\)"/);
   assert.match(piProcess, /getAppLogger\(\)\?\.debug\("pi-process", "Pi process spawn"/);
   // 背景图删除留痕
-  assert.match(backgroundsIpc, /getAppLogger\(\)\?\.info\("backgrounds", "Background image removed", \{ name \}\)/);
+  const bgService = read("main/backgrounds/BackgroundImageService.ts");
+  assert.match(bgService, /"Background image removed", \{ name \}/);
   // 会话级安全级别变更留痕（含 from/to）
   assert.match(securityStore, /"Session security level changed", \{\s*sessionId,\s*from: prev,\s*to:/);
 });
@@ -88,7 +89,7 @@ test("second-wave audit: proxy, single-instance, catalog, clone/fork", () => {
   const sessionScanner = read("main/sessions/SessionScanner.ts");
   const visionConfig = read("main/settings/visionBridgeConfig.ts");
   const gitIpc = read("main/ipc/gitIpc.ts");
-  const index = read("main/index.ts");
+  const startupTasks = read("main/backend/backendStartupTasks.ts");
   // 桌面代理：只记 mode 不记 proxyRules（URL 可能内嵌凭据）
   assert.match(desktopProxy, /"Desktop proxy applied", \{ mode: config\.mode \}\)/);
   assert.match(desktopProxy, /"Desktop proxy apply failed"/);
@@ -106,5 +107,5 @@ test("second-wave audit: proxy, single-instance, catalog, clone/fork", () => {
   assert.match(visionConfig, /hasApiKey: Boolean/);
   // git init / web 服务回退留痕
   assert.match(gitIpc, /"Repository initialized", \{ projectId, path: project\.path \}\)/);
-  assert.match(index, /"Web service disabled after apply failure"/);
+  assert.match(startupTasks, /"Web service disabled after apply failure"/);
 });

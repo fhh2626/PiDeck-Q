@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const main = readFileSync("src/main/index.ts", "utf8");
+const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
+const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
 const projectsIpc = readFileSync("src/main/ipc/projectsIpc.ts", "utf8");
 const timeline = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
@@ -12,15 +14,15 @@ const sessionAtoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "ut
 
 test("web session mutations notify the desktop catalog instead of leaving PC stale", () => {
   assert.match(
-    main,
+    createBackend,
     /deleteSessionRecord: async \(sessionId\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId/,
   );
   assert.match(
-    main,
+    createBackend,
     /createSessionDraft: async \(input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: input\.projectId/,
   );
   assert.match(
-    main,
+    sessionBridge,
     /void activateAnonymousRuntime\(session, project, input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: session\.projectId/,
   );
   assert.match(
@@ -32,11 +34,11 @@ test("web session mutations notify the desktop catalog instead of leaving PC sta
 test("web project deletion broadcasts the same visible project list as desktop IPC", () => {
   assert.match(projectsIpc, /export function listVisibleProjects\(/);
   assert.match(
-    main,
+    createBackend,
     /deleteProject: async \(projectId\)[\s\S]*projectsChanged[\s\S]*listVisibleProjects\(projectStore, settingsStore\)/,
   );
   assert.doesNotMatch(
-    main,
+    createBackend,
     /deleteProject: async \(projectId\)[\s\S]*kind !== "chat"/,
   );
 });

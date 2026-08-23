@@ -23,8 +23,8 @@ const TRASH_CALLERS = [
   ["main/git/GitService.ts", "git:discard-file"],
   ["main/git/GitService.ts", "git:delete-files"],
   ["main/git/WorktreeService.ts", "git:worktree-remove"],
-  ["main/ipc/backgroundsIpc.ts", "backgrounds:cleanup"],
-  ["main/ipc/backgroundsIpc.ts", "backgrounds:remove"],
+  ["main/backgrounds/BackgroundImageService.ts", "backgrounds:cleanup"],
+  ["main/backgrounds/BackgroundImageService.ts", "backgrounds:remove"],
   ["main/ipc/scratchPadIpc.ts", "scratchPad:delete"],
   ["main/projects/ProjectResourceManager.ts", "projects:delete-skill"],
   ["main/projects/ProjectResourceManager.ts", "projects:delete-extension"],
@@ -34,10 +34,10 @@ const TRASH_CALLERS = [
 ];
 
 test("trashPath records success (warn) and failure (error) audit entries with path+source", () => {
-  assert.match(trash, /getAppLogger\(\)\?\.warn\("fs:trash", "文件移入回收站"/);
-  assert.match(trash, /getAppLogger\(\)\?\.error\("fs:trash", "移入回收站失败"/);
+  assert.match(trash, /deps\?\.logger\?\.warn\("fs:trash", "文件移入回收站"/);
+  assert.match(trash, /deps\?\.logger\?\.error\("fs:trash", "回收站删除失败"/);
   assert.match(trash, /path: targetPath/);
-  assert.match(trash, /source: context\.source/);
+  assert.match(trash, /source: context\?\.source/);
   // 失败必须继续抛错：删除失败比永久丢失安全
   assert.match(trash, /throw error/);
 });

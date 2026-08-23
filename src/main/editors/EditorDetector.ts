@@ -1,7 +1,6 @@
 import { access } from "node:fs/promises";
 import { basename, delimiter, dirname, extname, join } from "node:path";
 import { spawn } from "node:child_process";
-import { shell } from "electron";
 import {
 	SUPPORTED_EXTERNAL_EDITORS,
 	createDefaultExternalEditorSettings,
@@ -411,7 +410,11 @@ function toWindowsCompatiblePath(path: string): string {
 	return path;
 }
 
-export async function openProjectInEditor(editor: ExternalEditor, projectPath: string) {
+export async function openProjectInEditor(
+	editor: ExternalEditor,
+	projectPath: string,
+	openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>,
+) {
 	// 防御性解析:即便 listConfiguredExternalEditors 把 stored command 修好了,
 	// 也兜底处理从历史 settings.json 直接传过来的 legacy editor 对象,避免
 	// spawn 走 ENOENT 再回退打开资源管理器。
@@ -450,10 +453,20 @@ export async function openProjectInEditor(editor: ExternalEditor, projectPath: s
 				args,
 				error,
 			});
-			// 部分 GUI 应用不适合 spawn 时,回退到系统打开路径,避免用户点击后无反馈。
-			const fallbackError = await shell.openPath(projectPath);
-			if (fallbackError) reject(error);
-			else resolve();
+			// 部分 GUI 应用不适合 spawn 时，回退到系统打开路径，避免用户点击后无反馈。
+			// shell adapter 既可能返回失败结果，也可能直接 reject；两种失败都保留更有诊断价值的原始 spawn 错误。
+			if (openPath) {
+				try {
+					const fallback = await openPath(projectPath);
+					if (fallback.ok) {
+						resolve();
+						return;
+					}
+				} catch {
+					// fallback 仅用于恢复用户操作，不应让异步事件监听器产生未处理 rejection。
+				}
+			}
+			reject(error);
 		});
 		child.once("spawn", () => {
 			console.log("[EditorDetector] editor process spawned", {

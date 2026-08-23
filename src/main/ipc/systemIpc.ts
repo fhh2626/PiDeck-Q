@@ -1,9 +1,4 @@
-/**
- * System IPC handlers: pi check/exec, WSL, model list, logging, config, app update, dev tools.
- * Phase 3.7: extracted from src/main/index.ts registerIpc().
- */
-
-import { app, ipcMain } from "electron";
+import type { RpcRouter } from "../transport/RpcRouter";
 import { ipcChannels } from "../../shared/ipc";
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
 import type {
@@ -18,7 +13,12 @@ import type {
 } from "../../shared/types";
 import type { PiLocator } from "../pi/PiLocator";
 import type { SettingsStore } from "../settings/SettingsStore";
-import type { ConfigManager } from "../config/ConfigManager";
+import type {
+	ConfigManager,
+	PiAuthFile,
+	PiModelsFile,
+	PiSettings,
+} from "../config/ConfigManager";
 import type { AgentManager } from "../pi/AgentManager";
 import type { AppLogger } from "../logging/AppLogger";
 import type { RpcLogger } from "../logging/RpcLogger";
@@ -30,7 +30,14 @@ import { getProcessSnapshot } from "../process/ProcessMonitor";
 import type { ProcessMetricsSnapshot } from "../../shared/types";
 import { getWslExe } from "../wsl/wslExe";
 import { listWebNetworkAddresses } from "../web/WebNetwork";
-import { toggleMainWindowDevTools } from "../devTools";
+import type { MainWindowControls } from "../window/MainWindowControls";
+import type {
+	PlatformApplication,
+	PlatformPaths,
+	PlatformProxy,
+	PlatformShell,
+	PlatformTheme,
+} from "../platform/PlatformServices";
 
 /**
  * IPC 边界校验：RPC 日志条目必须字段齐全，防止渲染层传伪造对象写盘。
@@ -62,7 +69,13 @@ export type SystemIpcDeps = {
 	) => Promise<SessionCommandResult<SessionRuntimeTarget | undefined>>;
 	/** 模型规格存储（resources/model-specs.db 只读，发版前由 sync-model-specs.mjs 同步） */
 	modelSpecsStore: ModelSpecsStore;
-	getMainWindow: () => Electron.BrowserWindow | null;
+	mainWindowControls: MainWindowControls;
+	platformApplication: PlatformApplication;
+	platformPaths: PlatformPaths;
+	platformShell: PlatformShell;
+	platformTheme: PlatformTheme;
+	toggleDevTools?: () => void;
+	sendToRenderer?: (channel: string, ...args: unknown[]) => void;
 	mainCopy: (key: string, params?: Record<string, string | number>) => string;
 	/** Check for app update; implemented by the update domain service. */
 	checkForAppUpdate: (installationType?: "portable" | "installed") => Promise<import("../../shared/types").AppUpdateInfo | null>;
@@ -88,7 +101,7 @@ export type SystemIpcDeps = {
 	/** Refresh tray context menu */
 	refreshTrayContextMenu?: () => void;
 	/** Notify title bar change */
-	notifyTitleBarChange?: (window: Electron.BrowserWindow) => void;
+	notifyTitleBarChange?: () => void;
 	/** Apply native theme source */
 	applyNativeThemeSource?: (settings: AppSettings) => void;
 	/** Apply desktop proxy settings */
@@ -109,6 +122,8 @@ export type SystemIpcDeps = {
 	configureXuePromptManagerWsl?: (env: import("../wsl/WslPaths").WslEnvironment | null) => void;
 	/** Session command IPC error converter */
 	sessionCommandIpcError?: (error: import("../../shared/types").SessionCommandError) => Error;
+	/** Restart the application */
+	restartApplication: () => void;
 	/** Extension manager for pi update */
 	extensionManager?: {
 		checkPiUpdate: () => Promise<import("../../shared/types").PiUpdateCheckResult>;
@@ -118,13 +133,11 @@ export type SystemIpcDeps = {
 	webServiceManager?: { stop: () => Promise<void> };
 	/** Terminal manager for restart */
 	terminalManager?: { closeAll: () => void };
-	/** Is quitting flag (for restart) */
-	isQuitting?: { value: boolean };
 	/** Releases URL */
 	RELEASES_URL?: string;
 };
 
-export function registerSystemIpc(deps: SystemIpcDeps): void {
+export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void {
 	const {
 		piLocator,
 		settingsStore,
@@ -135,7 +148,13 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		rpcLogger,
 		sessionRuntimeCoordinator,
 		modelSpecsStore,
-		getMainWindow,
+		mainWindowControls,
+		platformApplication,
+		platformPaths,
+		platformShell,
+		platformTheme,
+		toggleDevTools,
+		sendToRenderer,
 		mainCopy,
 		checkForAppUpdate,
 		downloadUpdateAsset,
@@ -159,15 +178,13 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		configureXuePromptManagerWsl,
 		sessionCommandIpcError,
 		extensionManager,
-		webServiceManager,
-		terminalManager,
-		isQuitting,
 		RELEASES_URL,
+		restartApplication,
 	} = deps;
 
 	// ── Pi 检测 ──────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.piCheck, async () => {
+	router.handle(ipcChannels.piCheck, async () => {
 		const settings = settingsStore.get();
 		const status = await piLocator.check(
 			settings.customPiPath,
@@ -187,7 +204,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		return status;
 	});
 
-	ipcMain.handle(ipcChannels.piCheckCustom, async (_event, customPath: string) => {
+	router.handle(ipcChannels.piCheckCustom, async (customPath: string) => {
 		const status = await piLocator.validateCustomPath(customPath);
 		if (status.installed && status.command) {
 			await settingsStore.update({ customPiPath: status.command });
@@ -203,7 +220,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── 模型列表 ────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.projectsListModels, async (_event, _projectId?: string) => {
+	router.handle(ipcChannels.projectsListModels, async (_projectId?: string) => {
 		try {
 			// 读缓存；无缓存时优先通过 Pi RPC 获取模型，失败再回退 --list-models。
 			const models = await fetchModelList(piLocator, settingsStore);
@@ -223,9 +240,9 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── 模型规格（resources/model-specs.db，发版前由 sync-model-specs.mjs 同步）──
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.projectsGetModelSpec,
-		async (_event, providerName: unknown, modelId: unknown) => {
+		async (providerName: unknown, modelId: unknown) => {
 			// 边界校验：渲染层输入不可信，拒绝非字符串/超长输入
 			if (
 				typeof providerName !== "string" ||
@@ -252,7 +269,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 	const wslExePath = wslExe.command;
 	const wslShell = wslExe.shell;
 
-	ipcMain.handle(ipcChannels.wslListDistros, async () => {
+	router.handle(ipcChannels.wslListDistros, async () => {
 		if (process.platform !== "win32") return [] as string[];
 		try {
 			const { execFile } = await import("node:child_process");
@@ -269,36 +286,35 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		} catch { return [] as string[]; }
 	});
 
-	ipcMain.handle(ipcChannels.wslValidateConnection, async (_event, distro: string, user: string) => {
+	router.handle(ipcChannels.wslValidateConnection, async (distro: string, user: string) => {
 		if (process.platform !== "win32") {
 			return { ok: false, whoami: "", piVersion: "", error: mainCopy("wsl.windowsOnly") };
 		}
 		try {
 			const { execFile } = await import("node:child_process");
-			const whoami = await new Promise<string>((resolve, reject) => {
-				execFile(wslExePath, ["-d", distro, "-u", user, "whoami"],
-					{ encoding: "utf8", timeout: 10_000, windowsHide: true, shell: wslShell },
-					(err, stdout) => {
-						if (err) { reject(err); return; }
-						resolve(stdout.trim());
-					});
-			});
-			let piVersion = "";
-			try {
-				piVersion = await new Promise<string>((resolve, reject) => {
-					execFile(wslExePath, ["-d", distro, "-u", user, "pi", "--version"],
+			const [whoamiRes, piVersionRes] = await Promise.all([
+				new Promise<string>((resolve, reject) => {
+					execFile(wslExePath, ["-d", distro, "-u", user, "whoami"],
 						{ encoding: "utf8", timeout: 10_000, windowsHide: true, shell: wslShell },
 						(err, stdout) => {
 							if (err) { reject(err); return; }
 							resolve(stdout.trim());
 						});
-				});
-			} catch { /* pi 未安装，piVersion 保持空 */ }
+				}),
+				new Promise<string>((resolve) => {
+					execFile(wslExePath, ["-d", distro, "-u", user, "pi", "--version"],
+						{ encoding: "utf8", timeout: 10_000, windowsHide: true, shell: wslShell },
+						(err, stdout) => {
+							if (err) { resolve(""); return; }
+							resolve(stdout.trim());
+						});
+				}),
+			]);
 			return {
 				ok: true,
-				whoami,
-				piVersion,
-				error: piVersion ? "" : mainCopy("wsl.piNotInstalled"),
+				whoami: whoamiRes,
+				piVersion: piVersionRes,
+				error: piVersionRes ? "" : mainCopy("wsl.piNotInstalled"),
 			};
 		} catch (err) {
 			void appLogger.warn("wsl", "WSL connection validation failed", {
@@ -317,7 +333,9 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── Pi 安装 / NPM ────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.piExecInstall, async (_event, command: string): Promise<import("../../shared/types").PiInstallExecResult> => {
+	const userHomeDir = platformPaths?.home ?? process.cwd();
+
+	router.handle(ipcChannels.piExecInstall, async (command: string): Promise<import("../../shared/types").PiInstallExecResult> => {
 		void appLogger.info("pi", "Executing install command", { command });
 		try {
 			const { execFile } = await import("node:child_process");
@@ -328,7 +346,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 						process.env.ComSpec || "cmd.exe",
 						["/d", "/s", "/c", command],
 						{
-							cwd: app.getPath("home"),
+							cwd: userHomeDir,
 							timeout: 120_000,
 							// 复用 PiLocator 搜索目录拼 PATH：桌面端继承的注册表 PATH 不含版本管理器
 							// （mise/fnm/volta/scoop 等）在 shell 会话里动态注入的目录，终端可用而
@@ -353,7 +371,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 						"/bin/sh",
 						["-c", command],
 						{
-							cwd: app.getPath("home"),
+							cwd: userHomeDir,
 							timeout: 120_000,
 							env: { ...piLocator.createProcessEnv(), npm_config_fund: "false", npm_config_audit: "false" },
 							encoding: "utf8",
@@ -384,7 +402,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		}
 	});
 
-	ipcMain.handle(ipcChannels.piCheckNpm, async (): Promise<import("../../shared/types").NpmAvailabilityResult> => {
+	router.handle(ipcChannels.piCheckNpm, async (): Promise<import("../../shared/types").NpmAvailabilityResult> => {
 		try {
 			const { execFile } = await import("node:child_process");
 			const result = await new Promise<import("../../shared/types").NpmAvailabilityResult>((resolve) => {
@@ -437,12 +455,12 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 	// ── Pi 更新 ──────────────────────────────────────────────────────
 
 	if (extensionManager) {
-		ipcMain.handle(ipcChannels.piUpdateCheck, async () => {
+		router.handle(ipcChannels.piUpdateCheck, async () => {
 			const result = await extensionManager.checkPiUpdate();
 			void appLogger.info("pi", "Pi update check completed", { currentVersion: result.currentVersion, latestVersion: result.latestVersion, hasUpdate: result.hasUpdate, error: result.error });
 			return result;
 		});
-		ipcMain.handle(ipcChannels.piUpdate, async () => {
+		router.handle(ipcChannels.piUpdate, async () => {
 			const result = await extensionManager.updatePi();
 			void appLogger.info("pi", "Pi update command completed", { updated: result.updated, bytes: result.output.length });
 			return result;
@@ -451,34 +469,34 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── 应用信息 ─────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.appInfo, () => ({
-		version: app.getVersion(),
+	router.handle(ipcChannels.appInfo, () => ({
+		version: platformApplication?.version ?? "0.0.0",
 		releasesUrl: RELEASES_URL ?? "https://github.com/ayuayue/pi-desktop/releases",
 		platform: process.platform,
 	}));
 
-	ipcMain.handle(ipcChannels.appNetworkAddresses, () => listWebNetworkAddresses());
+	router.handle(ipcChannels.appNetworkAddresses, () => listWebNetworkAddresses());
 
-	ipcMain.handle(ipcChannels.appPreferredSystemLanguages, () => {
-		try { return app.getPreferredSystemLanguages(); } catch { return []; }
+	router.handle(ipcChannels.appPreferredSystemLanguages, () => {
+		return platformApplication?.getPreferredSystemLanguages?.() ?? [];
 	});
 
 	// ── 应用更新 ─────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.appCheckUpdate, () =>
+	router.handle(ipcChannels.appCheckUpdate, () =>
 		checkForAppUpdate(settingsStore.get().installationType),
 	);
-	ipcMain.handle(ipcChannels.appDownloadUpdate, async (_event, asset: AppUpdateAsset) =>
+	router.handle(ipcChannels.appDownloadUpdate, async (asset: AppUpdateAsset) =>
 		downloadUpdateAsset(asset),
 	);
-	ipcMain.handle(ipcChannels.appInstallUpdate, async (_event, filePath: string) =>
+	router.handle(ipcChannels.appInstallUpdate, async (filePath: string) =>
 		installDownloadedUpdate(filePath),
 	);
 
 	// ── 应用日志 ─────────────────────────────────────────────────────
 
 	// 进程监控：Electron 各进程 + pi agent 子进程内存/CPU 快照（手动刷新，不做高频轮询）
-	ipcMain.handle(ipcChannels.processMetrics, async (): Promise<ProcessMetricsSnapshot> => {
+	router.handle(ipcChannels.processMetrics, async (): Promise<ProcessMetricsSnapshot> => {
 		const agents = deps.agentManager.listAgentPids().map((agent) => {
 			// 进程监控表展示会话身份：按 agentId 反查关联的会话 id/标题，
 			// 让用户知道每个 agent 对应哪个会话（而不是只看到内部 id）
@@ -490,7 +508,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		return getProcessSnapshot(agents);
 	});
 
-	ipcMain.handle(ipcChannels.stopAgent, async (_event, agentId: unknown) => {
+	router.handle(ipcChannels.stopAgent, async (agentId: unknown) => {
 		// 输入校验：agentId 必须是字符串，否则拒绝（渲染层数据不可信）
 		if (typeof agentId !== "string" || !agentId) {
 			throw new Error("invalid agentId");
@@ -503,27 +521,26 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		}
 	});
 
-	ipcMain.handle(ipcChannels.logsList, async (_event, query: AppLogQuery) =>
+	router.handle(ipcChannels.logsList, async (query: AppLogQuery) =>
 		appLogger.list(query),
 	);
-	ipcMain.handle(ipcChannels.logsListPage, async (_event, query: AppLogQuery) =>
+	router.handle(ipcChannels.logsListPage, async (query: AppLogQuery) =>
 		appLogger.listPage(query),
 	);
-	ipcMain.handle(ipcChannels.rendererLog, async (
-		_event, level: AppLogLevel, scope: string, message: string, detail?: unknown,
+	router.handle(ipcChannels.rendererLog, async (
+		level: AppLogLevel, scope: string, message: string, detail?: unknown,
 	) => {
 		const safeLevel = ["debug", "info", "warn", "error"].includes(level) ? level : "info";
 		await appLogger.log(safeLevel as AppLogLevel, scope, message, detail);
 	});
-	ipcMain.on(ipcChannels.preloadReady, (event) => {
-		void appLogger.info("app", "Preload API exposed", { url: event.sender.getURL() });
+	router.handle(ipcChannels.logsClear, async () => appLogger.clear());
+	router.handle(ipcChannels.logsOpenFolder, async () => {
+		await appLogger.ensureDirectory();
+		if (platformShell) {
+			await platformShell.openPath(appLogger.getDirectory());
+		}
 	});
-	ipcMain.on(ipcChannels.preloadError, (event, detail) => {
-		void appLogger.error("app", "Preload API expose failed", { url: event.sender.getURL(), detail });
-	});
-	ipcMain.handle(ipcChannels.logsClear, async () => appLogger.clear());
-	ipcMain.handle(ipcChannels.logsOpenFolder, async () => appLogger.openFolder());
-	ipcMain.handle(ipcChannels.logsSize, async () => appLogger.getSize());
+	router.handle(ipcChannels.logsSize, async () => appLogger.getSize());
 
 	// ── RPC 日志 ─────────────────────────────────────────────────────
 
@@ -537,21 +554,21 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		return target.agentId;
 	};
 
-	ipcMain.handle(ipcChannels.rpcLogsGetSize, async (_event, target?: SessionRuntimeTarget) =>
+	router.handle(ipcChannels.rpcLogsGetSize, async (target?: SessionRuntimeTarget) =>
 		rpcLogger.getSize(resolveRpcRuntimeAgent(target)),
 	);
-	ipcMain.handle(ipcChannels.rpcLogsGet, async (_event, options?: { target?: SessionRuntimeTarget; days?: number; limit?: number }) =>
+	router.handle(ipcChannels.rpcLogsGet, async (options?: { target?: SessionRuntimeTarget; days?: number; limit?: number }) =>
 		rpcLogger.getFromFile({ agentId: resolveRpcRuntimeAgent(options?.target), days: options?.days, limit: options?.limit }),
 	);
 	// 实时查看弹窗的初始历史：直接读主进程环形缓冲，不读磁盘
-	ipcMain.handle(ipcChannels.rpcLogsGetLive, async (_event, agentId?: string) =>
+	router.handle(ipcChannels.rpcLogsGetLive, async (agentId?: string) =>
 		rpcLogger.getLive(typeof agentId === "string" ? agentId : undefined),
 	);
 	// 实时查看弹窗“保存到文件”：直接合并写入该 agent 的自动日志文件（按 id 去重），
 	// 不再弹目录选择——开启记录后日志本就自动落盘，保存只是把弹窗内容对齐到文件。
 	// 返回实际写入的文件路径列表，供渲染层 toast 提示用户保存位置。
 	// 渲染层传来的条目不可信，数量与字段都要校验。
-	ipcMain.handle(ipcChannels.rpcLogsSave, async (_event, options?: { entries?: unknown }) => {
+	router.handle(ipcChannels.rpcLogsSave, async (options?: { entries?: unknown }) => {
 		const rawEntries = Array.isArray(options?.entries) ? options.entries : [];
 		const entries = rawEntries
 			.slice(0, 10_000) // 上限：防止一次 IPC 携带超大批次
@@ -559,103 +576,54 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		if (entries.length === 0) return [];
 		return rpcLogger.appendEntries(entries);
 	});
-	ipcMain.handle(ipcChannels.rpcLogsClear, async (_event, target?: SessionRuntimeTarget) =>
+	router.handle(ipcChannels.rpcLogsClear, async (target?: SessionRuntimeTarget) =>
 		rpcLogger.clear(resolveRpcRuntimeAgent(target)),
 	);
-	ipcMain.handle(ipcChannels.rpcLoggingSet, async (_event, target: SessionRuntimeTarget, enabled: boolean) => {
+	router.handle(ipcChannels.rpcLoggingSet, async (target: SessionRuntimeTarget, enabled: boolean) => {
 		agentManager.setRpcLogging(resolveRpcRuntimeAgent(target)!, enabled);
 		return enabled;
 	});
-	ipcMain.handle(ipcChannels.rpcLoggingGet, async (_event, target: SessionRuntimeTarget) =>
+	router.handle(ipcChannels.rpcLoggingGet, async (target: SessionRuntimeTarget) =>
 		agentManager.isRpcLogging(resolveRpcRuntimeAgent(target)!),
 	);
 
 	// ── 外部链接 / 重启 / 窗口控制 ──────────────────────────────────
 
-	ipcMain.handle(ipcChannels.appOpenExternal, async (_event, url: string, forceSystem?: boolean) => {
+	router.handle(ipcChannels.appOpenExternal, async (url: string, forceSystem?: boolean) => {
 		await doOpenExternalUrl(url, forceSystem);
 	});
 
-	ipcMain.handle(ipcChannels.appRestart, async () => {
-		if (isQuitting) isQuitting.value = true;
-		await webServiceManager?.stop();
-		terminalManager?.closeAll();
-		agentManager?.stopAll();
-		app.relaunch();
-		app.quit();
+	router.handle(ipcChannels.appRestart, () => {
+		restartApplication();
 	});
 
-	const mainWindow = getMainWindow();
+	router.handle(ipcChannels.appWindowMinimize, () => {
+		mainWindowControls.minimize();
+	});
 
-	ipcMain.handle(ipcChannels.appWindowMinimize, () => {
-		const win = getMainWindow();
-		if (!win || win.isDestroyed()) return;
-		win.minimize();
+	router.handle(ipcChannels.appWindowToggleMaximize, () => {
+		return mainWindowControls.toggleMaximize();
 	});
-	/**
-	 * 最大化态以本进程跟踪为准，不用「调用后立刻 isMaximized()」。
-	 * Windows + 无边框上 maximize/unmaximize 后同步读 isMaximized() 常仍是旧值；
-	 * 若再把该旧值经 IPC/事件推回渲染层，会与按钮意图互踩 → 表现为要点两次。
-	 */
-	const wiredMaximizeWindows = new WeakSet<Electron.BrowserWindow>();
-	const maximizedByWindow = new WeakMap<Electron.BrowserWindow, boolean>();
-	const emitMaximizedState = (win: Electron.BrowserWindow, maximized: boolean) => {
-		if (win.isDestroyed()) return;
-		maximizedByWindow.set(win, maximized);
-		win.webContents.send(ipcChannels.appWindowMaximizedChanged, maximized);
-	};
-	const wireMaximizeEvents = (win: Electron.BrowserWindow) => {
-		if (wiredMaximizeWindows.has(win)) return;
-		wiredMaximizeWindows.add(win);
-		maximizedByWindow.set(win, win.isMaximized());
-		// 信事件名，不信事件回调里再读 isMaximized()（同一帧可能仍为旧值）。
-		win.on("maximize", () => emitMaximizedState(win, true));
-		win.on("unmaximize", () => emitMaximizedState(win, false));
-	};
-	const readMaximized = (win: Electron.BrowserWindow): boolean =>
-		maximizedByWindow.get(win) ?? win.isMaximized();
-	ipcMain.handle(ipcChannels.appWindowToggleMaximize, () => {
-		const win = getMainWindow();
-		if (!win || win.isDestroyed()) return false;
-		wireMaximizeEvents(win);
-		const nextMaximized = !readMaximized(win);
-		if (nextMaximized) win.maximize();
-		else win.unmaximize();
-		// 先写入意图态并推送：不依赖异步事件到达顺序，一次点击即可对齐图标。
-		emitMaximizedState(win, nextMaximized);
-		return nextMaximized;
+	router.handle(ipcChannels.appWindowIsMaximized, () => {
+		return mainWindowControls.getWindowState().isMaximized;
 	});
-	ipcMain.handle(ipcChannels.appWindowIsMaximized, () => {
-		const win = getMainWindow();
-		if (!win || win.isDestroyed()) return false;
-		wireMaximizeEvents(win);
-		return readMaximized(win);
+	router.handle(ipcChannels.appWindowToggleAlwaysOnTop, () => {
+		return mainWindowControls.toggleAlwaysOnTop();
 	});
-	{
-		const win = getMainWindow();
-		if (win && !win.isDestroyed()) wireMaximizeEvents(win);
-	}
-	ipcMain.handle(ipcChannels.appWindowToggleAlwaysOnTop, () => {
-		const win = getMainWindow();
-		if (!win || win.isDestroyed()) return false;
-		const next = !win.isAlwaysOnTop();
-		win.setAlwaysOnTop(next, "floating");
-		return next;
-	});
-	ipcMain.handle(ipcChannels.appWindowClose, () => {
-		const win = getMainWindow();
-		if (!win || win.isDestroyed()) return;
-		win.close();
+	router.handle(ipcChannels.appWindowClose, () => {
+		mainWindowControls.close();
 	});
 
 	// ── 设置 ─────────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.settingsGet, () => settingsStore.get());
+	router.handle(ipcChannels.settingsGet, () => settingsStore.get());
 
-	ipcMain.handle(ipcChannels.settingsUpdate, async (_event, patch: Partial<AppSettings>) => {
+	router.handle(ipcChannels.settingsUpdate, async (patch: Partial<AppSettings>) => {
 		const prevSettings = settingsStore.get();
 		const settings = await settingsStore.update(patch);
 		// 设置变更审计已下沉到 SettingsStore.update 内部统一留痕（覆盖所有直写路径），此处不重复记录
+
+		platformApplication.hideApplicationMenu();
 
 		if (
 			"desktopProxyEnabled" in patch ||
@@ -665,16 +633,20 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 			if (applyDesktopProxy) await applyDesktopProxy(settings);
 		}
 		if ("theme" in patch) {
-			if (applyNativeThemeSource) applyNativeThemeSource(settings);
+			if (patch.theme && (patch.theme === "system" || patch.theme === "light" || patch.theme === "dark")) {
+				platformTheme.setSource(patch.theme);
+			} else if (applyNativeThemeSource) {
+				applyNativeThemeSource(settings);
+			}
 		}
 		if ("language" in patch) {
 			if (refreshTrayContextMenu) refreshTrayContextMenu();
 		}
 		if ("useNativeTitleBar" in patch) {
-			if (notifyTitleBarChange) notifyTitleBarChange(getMainWindow()!);
+			mainWindowControls.notifyTitleBarChange(settings);
 		}
-		if ("zoomFactor" in patch) {
-			getMainWindow()?.webContents.setZoomFactor(settings.zoomFactor);
+		if ("zoomFactor" in patch && typeof settings.zoomFactor === "number") {
+			mainWindowControls.setZoomFactor(settings.zoomFactor);
 		}
 		if (
 			"webServiceEnabled" in patch ||
@@ -735,12 +707,12 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		return settings;
 	});
 
-	ipcMain.handle(ipcChannels.settingsRestartWebService, async () => {
+	router.handle(ipcChannels.settingsRestartWebService, async () => {
 		if (!restartWebService) throw new Error("restartWebService not available");
 		await restartWebService(settingsStore.get());
 	});
 
-	ipcMain.handle(ipcChannels.settingsTestPiProxy, async () => {
+	router.handle(ipcChannels.settingsTestPiProxy, async () => {
 		if (!testPiProxy) throw new Error("testPiProxy not available");
 		const result = await testPiProxy(settingsStore.get(), undefined, mainCopy);
 		void appLogger.info("settings", "Pi proxy tested", {
@@ -754,45 +726,45 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── Skills CRUD ──────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.skillsList, () => skillManager.list());
-	ipcMain.handle(ipcChannels.skillsCreate, async (_event, input: CreatePiSkillInput) => {
+	router.handle(ipcChannels.skillsList, () => skillManager.list());
+	router.handle(ipcChannels.skillsCreate, async (input: CreatePiSkillInput) => {
 		const result = await skillManager.create(input);
 		void appLogger.info("skill", "Skill created", { name: input.name, locationId: input.locationId });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.skillsToggle, async (_event, path: string, enabled: boolean) => {
+	router.handle(ipcChannels.skillsToggle, async (path: string, enabled: boolean) => {
 		const result = await skillManager.toggle(path, enabled);
 		void appLogger.info("skill", "Skill toggled", { path, enabled });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.skillsDelete, async (_event, path: string) => {
+	router.handle(ipcChannels.skillsDelete, async (path: string) => {
 		const result = await skillManager.delete(path);
 		void appLogger.info("skill", "Skill deleted", { path });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.skillsOpenFolder, (_event, path?: string) =>
+	router.handle(ipcChannels.skillsOpenFolder, (path?: string) =>
 		skillManager.openFolder(path),
 	);
 
 	// ── 配置管理 ─────────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.configGetModels, () =>
+	router.handle(ipcChannels.configGetModels, () =>
 		configManager.getModelsConfig(),
 	);
-	ipcMain.handle(ipcChannels.configGetAuth, () =>
+	router.handle(ipcChannels.configGetAuth, () =>
 		configManager.getAuthConfig(),
 	);
-	ipcMain.handle(ipcChannels.configGetSettings, () =>
+	router.handle(ipcChannels.configGetSettings, () =>
 		configManager.getSettingsConfig(),
 	);
-	ipcMain.handle(ipcChannels.configGetTrust, () =>
+	router.handle(ipcChannels.configGetTrust, () =>
 		configManager.getTrustConfig(),
 	);
-	ipcMain.handle(ipcChannels.projectsTrustResponse,
-		(_event, requestId: string, choice: "trust-remember" | "trust-session" | "deny") =>
+	router.handle(ipcChannels.projectsTrustResponse,
+		(requestId: string, choice: "trust-remember" | "trust-session" | "deny") =>
 			agentManager.respondTrustRequest(requestId, choice),
 	);
-	ipcMain.handle(ipcChannels.configSaveModels, async (_event, data) => {
+	router.handle(ipcChannels.configSaveModels, async (data: PiModelsFile) => {
 		const result = await configManager.saveModelsConfig(data);
 		invalidateModelListCache();
 		// 配置保存后立即后台重取，下次打开选择器直接命中新缓存。
@@ -800,7 +772,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		void appLogger.info("config", "Models config saved", { providerCount: Object.keys(data?.providers ?? {}).length });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configSaveAuth, async (_event, data) => {
+	router.handle(ipcChannels.configSaveAuth, async (data: PiAuthFile) => {
 		const result = await configManager.saveAuthConfig(data);
 		invalidateModelListCache();
 		// auth 影响「可用模型」过滤（pi 只列已认证 provider），保存后同样后台重取。
@@ -808,26 +780,25 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		void appLogger.info("config", "Auth config saved", { authCount: Object.keys(data ?? {}).length });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configSaveSettings, async (_event, settings) => {
+	router.handle(ipcChannels.configSaveSettings, async (settings: PiSettings) => {
 		const result = await configManager.saveSettingsConfig(settings);
 		void appLogger.info("config", "Pi settings config saved", { keys: Object.keys(settings ?? {}) });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configSaveRaw, async (_event, fileName, rawJson) => {
+	router.handle(ipcChannels.configSaveRaw, async (fileName: string, rawJson: string) => {
 		const result = await configManager.saveRawConfig(fileName, rawJson);
 		void appLogger.info("config", "Raw config saved", { fileName, bytes: Buffer.byteLength(rawJson, "utf8") });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configExport, () =>
+	router.handle(ipcChannels.configExport, () =>
 		configManager.exportConfig(),
 	);
-	ipcMain.handle(ipcChannels.configImport, async (_event, packageJson: string) => {
+	router.handle(ipcChannels.configImport, async (packageJson: string) => {
 		const result = await configManager.importConfig(packageJson);
 		void appLogger.info("config", "Config imported", { bytes: Buffer.byteLength(packageJson, "utf8"), valid: result.valid });
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configFetchModels, async (
-		_event,
+	router.handle(ipcChannels.configFetchModels, async (
 		payload: { baseUrl: string; apiKey: string; apiType?: string },
 	) => {
 		const result = await configManager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
@@ -838,8 +809,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 		});
 		return result;
 	});
-	ipcMain.handle(ipcChannels.configTestProvider, async (
-		_event,
+	router.handle(ipcChannels.configTestProvider, async (
 		payload: { baseUrl: string; apiKey: string; modelId: string; apiType?: string; headers?: Record<string, string> },
 	) => {
 		const result = await configManager.testProviderConnection(
@@ -857,5 +827,11 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
 
 	// ── 开发者控制台 ─────────────────────────────────────────────────
 
-	ipcMain.handle(ipcChannels.appToggleDevTools, () => toggleMainWindowDevTools(getMainWindow()));
+	router.handle(ipcChannels.appToggleDevTools, () => {
+		if (mainWindowControls) {
+			mainWindowControls.toggleDevTools();
+		} else {
+			toggleDevTools?.();
+		}
+	});
 }

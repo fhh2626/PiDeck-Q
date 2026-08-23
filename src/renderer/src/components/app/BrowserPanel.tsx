@@ -14,115 +14,36 @@ import {
 import { t } from "../../i18n";
 import { Button } from "../ui-shadcn/button";
 import { Input } from "../ui-shadcn/input";
+import type {
+	BrowserDeviceProfile,
+	BrowserHostApi,
+	BrowserHostEvent,
+	BrowserHostSurface,
+} from "../../browser/BrowserHostApi";
+import {
+	createBrowserTabInSession,
+	DEFAULT_HOME,
+	ensureInitialBrowserTab,
+	getBrowserPanelSessionSnapshot,
+	resetBrowserPanelSession,
+	subscribeBrowserNavigation,
+	updateBrowserPanelSession,
+	type BrowserTab,
+} from "../../browser/BrowserPanelSession";
 
 // Button 收口状态（P0）：工具栏/导航/UA 菜单按钮已换 shadcn Button（ghost/outline + 原尺寸 class 保留）。
 // 保留原生：.browser-tab-close（16px 微型关闭钮，Button 最小档 icon-xs 24px 无法替代）。
 
-const DEFAULT_HOME = "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust";
-
-type DeviceType = "pc" | "mobile" | "tablet";
-
-interface TabEntry {
-	id: string;
-	title: string;
-	url: string;
-}
-
 interface DevicePreset {
-	id: DeviceType;
+	id: BrowserDeviceProfile;
 	label: string;
-	userAgent: string | null;
 }
 
 const DEVICE_PRESETS: DevicePreset[] = [
-	{ id: "pc", label: "browser.devicePC", userAgent: null },
-	{
-		id: "mobile",
-		label: "browser.deviceMobile",
-		userAgent:
-			"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-	},
-	{
-		id: "tablet",
-		label: "browser.deviceTablet",
-		userAgent:
-			"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-	},
+	{ id: "pc", label: "browser.devicePC" },
+	{ id: "mobile", label: "browser.deviceMobile" },
+	{ id: "tablet", label: "browser.deviceTablet" },
 ];
-
-let nextTabId = 1;
-function genTabId(): string {
-	return `tab-${nextTabId++}`;
-}
-
-/** Chromium 用 -3 表示旧导航被新导航替换，这是 webview 正常生命周期，不应冒泡成全局异常。 */
-export function isExpectedNavigationAbort(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
-	return /ERR_ABORTED|error code:?\s*-3|\(-3\)/i.test(message);
-}
-
-/**
- * 浏览器状态要跨"抽屉模式/弹框模式"保留。
- * 这里用模块级状态保存轻量 tab 元数据，避免切换容器时丢 URL/标题/设备模式。
- * 真正的 WebContents 仍随组件挂载重建，避免同时运行两个 webview 实例。
- */
-export const moduleState: { tabs: TabEntry[]; activeTabId: string | null; device: DeviceType; navigateKey: number } = {
-	tabs: [],
-	activeTabId: null,
-	device: "pc",
-	navigateKey: 0,
-};
-
-function ensureInitialTab() {
-	if (moduleState.tabs.length > 0) return;
-	const id = genTabId();
-	moduleState.tabs = [{ id, title: "PiDeck-Q", url: DEFAULT_HOME }];
-	moduleState.activeTabId = id;
-}
-
-function getInitialActiveTab(): TabEntry {
-	ensureInitialTab();
-	return (
-		moduleState.tabs.find((tab) => tab.id === moduleState.activeTabId) ??
-		moduleState.tabs[0]
-	);
-}
-
-/**
- * 供外部（App.tsx）调用：在浏览器侧栏/弹框中导航到指定 URL。
- * 如果没有标签页则创建一个，然后切换到该标签页并加载 URL。
- */
-/**
- * 供外部（App.tsx）调用：在浏览器侧栏/弹框中导航到指定 URL。
- * 每次都新建 tab，避免多个外部链接复用同一个 tab。
- */
-/** 待消费的外部导航 URL，BrowserPanel 通过轮询检测。 */
-let pendingNavigateUrl: string | null = null;
-
-export function navigateTo(url: string) {
-	// 每次外部导航创建新 tab，避免多个链接复用同一个 tab
-	const id = genTabId();
-	// 初始 title 留空，tab 渲染 fallback 到 url，等 page-title-updated 更新真实标题
-	moduleState.tabs.push({ id, title: "", url });
-	moduleState.activeTabId = id;
-	moduleState.navigateKey += 1;
-	// 直接设 pendingUrl，轮询会立即检测到，无需等 re-render
-	pendingNavigateUrl = url;
-}
-
-type WebviewEvent<T extends string> = T extends "did-fail-load"
-	? { errorCode: number; errorDescription: string; validatedURL: string; isMainFrame: boolean }
-	: T extends "did-navigate"
-	? { url: string }
-	: T extends "did-navigate-in-page"
-		? { url: string; isMainFrame: boolean }
-		: T extends "page-title-updated"
-			? { title: string }
-			: T extends "new-window"
-				? { url: string; preventDefault: () => void }
-				: T extends "load-progress"
-					? { progress: number }
-					: Event;
 
 export function BrowserPanel(props: {
 	isFullscreen?: boolean;
@@ -132,171 +53,68 @@ export function BrowserPanel(props: {
 	onMinimize?: () => void;
 	/** 嵌入右侧统一 Tab 栏时隐藏关闭按钮，避免与 drawer-chrome 重复 */
 	hideChromeClose?: boolean;
+	/** 宿主 adapter 由 composition root（BrowserSurface）注入，BrowserPanel 不固定 Electron。 */
+	hostSurface: BrowserHostSurface;
 }) {
 	const { onClose, onMinimize, onToggleFullscreen } = props;
-	const [initialTab] = useState(() => getInitialActiveTab());
-	const webviewRef = useRef<any>(null);
-	const defaultUARef = useRef<string | null>(null);
-	const [tabs, setTabs] = useState<TabEntry[]>(() => [...moduleState.tabs]);
+	const [initialTab] = useState(() => ensureInitialBrowserTab());
+	const hostRef = useRef<BrowserHostApi | null>(null);
+	const [tabs, setTabs] = useState<BrowserTab[]>(() => [...getBrowserPanelSessionSnapshot().tabs]);
 	const [activeTabId, setActiveTabId] = useState<string | null>(
-		() => moduleState.activeTabId,
+		() => getBrowserPanelSessionSnapshot().activeTabId,
 	);
 	const [url, setUrl] = useState(initialTab.url);
 	const [inputValue, setInputValue] = useState(initialTab.url);
 	const [canGoBack, setCanGoBack] = useState(false);
 	const [canGoForward, setCanGoForward] = useState(false);
 	const [isLoading, setIsLoading] = useState(false);
-	const [loadProgress, setLoadProgress] = useState(0);
-	const [device, setDevice] = useState<DeviceType>(() => moduleState.device);
+	const [device, setDevice] = useState<BrowserDeviceProfile>(() => getBrowserPanelSessionSnapshot().device);
 	const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
 	const deviceMenuRef = useRef<HTMLDivElement | null>(null);
 
-	const persistTabs = useCallback((nextTabs: TabEntry[], nextActiveId: string | null) => {
-		moduleState.tabs = nextTabs;
-		moduleState.activeTabId = nextActiveId;
+	const persistTabs = useCallback((nextTabs: BrowserTab[], nextActiveId: string | null) => {
+		updateBrowserPanelSession({ tabs: nextTabs, activeTabId: nextActiveId });
 		setTabs([...nextTabs]);
 		setActiveTabId(nextActiveId);
 	}, []);
 
-	const applyDeviceUserAgent = useCallback((wv: any, nextDevice: DeviceType) => {
-		const preset = DEVICE_PRESETS.find((item) => item.id === nextDevice);
-		if (preset?.userAgent) {
-			wv.setUserAgent(preset.userAgent);
-		} else if (defaultUARef.current) {
-			wv.setUserAgent(defaultUARef.current);
-		}
-	}, []);
-
 	const updateActiveTab = useCallback(
-		(patch: Partial<TabEntry>) => {
-			if (!moduleState.activeTabId) return;
-			const nextTabs = moduleState.tabs.map((tab) =>
-				tab.id === moduleState.activeTabId ? { ...tab, ...patch } : tab,
+		(patch: Partial<BrowserTab>) => {
+			if (!getBrowserPanelSessionSnapshot().activeTabId) return;
+			const activeId = getBrowserPanelSessionSnapshot().activeTabId;
+			const nextTabs = getBrowserPanelSessionSnapshot().tabs.map((tab) =>
+				tab.id === activeId ? { ...tab, ...patch } : tab,
 			);
-			moduleState.tabs = nextTabs;
+			updateBrowserPanelSession({ tabs: nextTabs });
 			setTabs([...nextTabs]);
 		},
 		[],
 	);
 
 	const loadUrl = useCallback(
-		(targetUrl: string, nextDevice = moduleState.device) => {
-			const wv = webviewRef.current;
-			if (!wv) return;
-			applyDeviceUserAgent(wv, nextDevice);
+		async (targetUrl: string, deviceOverride?: BrowserDeviceProfile) => {
+			const host = hostRef.current;
+			if (!host) return;
+
+			// 导航意图立即反映到地址栏与 url state（重构前 loadUrl 的不变量）：
+			// 若等宿主导航确认事件才回填，「加载中」窗口期内 selectDevice 会读到旧 url，
+			// 把刚发起的导航打回旧页面（慢网络下窗口更长）。所有导航入口经此函数自动安全。
 			setUrl(targetUrl);
 			setInputValue(targetUrl);
-			// loadURL 返回 Promise；切 tab、刷新或连续跳转会让旧请求以 ERR_ABORTED reject。
-			// 这里必须在 webview 边界消费该可预期取消，否则会触发 renderer unhandledrejection。
-			void wv.loadURL(targetUrl).catch((error: unknown) => {
-				if (!isExpectedNavigationAbort(error)) {
-					setIsLoading(false);
-				}
-			});
-		},
-		[applyDeviceUserAgent],
-	);
 
-	useEffect(() => {
-		const wv = webviewRef.current;
-		if (!wv) return;
+			setIsLoading(true);
 
-		if (!defaultUARef.current) {
+			host.setDeviceProfile(deviceOverride ?? device);
+
 			try {
-				defaultUARef.current = wv.getUserAgent();
-			} catch {
-				defaultUARef.current = null;
-			}
-		}
-		applyDeviceUserAgent(wv, moduleState.device);
-
-		const onDomReady = () => {
-			webviewReadyRef.current = true;
-		};
-		wv.addEventListener("dom-ready", onDomReady);
-
-		const onDidNavigate = (event: Event) => {
-			const nextUrl = (event as unknown as WebviewEvent<"did-navigate">).url;
-			setUrl(nextUrl);
-			setInputValue(nextUrl);
-			setCanGoBack(wv.canGoBack());
-			setCanGoForward(wv.canGoForward());
-			updateActiveTab({ url: nextUrl });
-		};
-		const onDidNavigateInPage = (event: Event) => {
-			const evt = event as unknown as WebviewEvent<"did-navigate-in-page">;
-			if (!evt.isMainFrame) return;
-			setUrl(evt.url);
-			setInputValue(evt.url);
-			updateActiveTab({ url: evt.url });
-		};
-		const onDidStartLoading = () => setIsLoading(true);
-		const onDidStopLoading = () => {
-			setIsLoading(false);
-			setLoadProgress(0);
-			setCanGoBack(wv.canGoBack());
-			setCanGoForward(wv.canGoForward());
-		};
-		const onDidFailLoad = (event: Event) => {
-			const failure = event as unknown as WebviewEvent<"did-fail-load">;
-			if (!failure.isMainFrame) return;
-			// -3 是导航被替换/取消，不展示错误页，也不向全局异常处理器传播。
-			if (failure.errorCode === -3) {
+				await host.loadUrl(targetUrl);
+			} catch (error) {
+				console.warn("Browser navigation failed", error);
 				setIsLoading(false);
-				setLoadProgress(0);
 			}
-		};
-		const onProgress = (event: Event) => {
-			const progress = (event as unknown as WebviewEvent<"load-progress">).progress;
-			setLoadProgress(progress);
-		};
-		// page-title-updated 只接收真实 title，不 fallback 到 url/DEFAULT_HOME，
-		// 避免 tab 标题闪烁。初始空 title 由 tab 渲染 fallback 到 url。
-		const onPageTitleUpdated = (event: Event) => {
-			const title = (event as unknown as WebviewEvent<"page-title-updated">).title;
-			if (title) {
-				updateActiveTab({ title });
-			}
-		};
-		const onNewWindow = (event: Event) => {
-			const evt = event as unknown as WebviewEvent<"new-window">;
-			// 始终阻止默认弹窗行为，由我们接管分发
-			evt.preventDefault();
-			if (evt.url.startsWith("http://") || evt.url.startsWith("https://")) {
-				// 页面内 target="_blank" 或 window.open 链接在浏览器新 tab 中打开
-				navigateTo(evt.url);
-			} else {
-				// 非 http 协议（mailto: 等）走系统默认浏览器
-				void window.piDesktop.browser.openExternal(evt.url);
-			}
-		};
-
-		wv.addEventListener("did-navigate", onDidNavigate);
-		wv.addEventListener("did-navigate-in-page", onDidNavigateInPage);
-		wv.addEventListener("did-start-loading", onDidStartLoading);
-		wv.addEventListener("did-stop-loading", onDidStopLoading);
-		wv.addEventListener("did-fail-load", onDidFailLoad);
-		wv.addEventListener("load-progress", onProgress);
-		wv.addEventListener("page-title-updated", onPageTitleUpdated);
-		wv.addEventListener("new-window", onNewWindow);
-
-		return () => {
-			wv.removeEventListener("dom-ready", onDomReady);
-			wv.removeEventListener("did-navigate", onDidNavigate);
-			wv.removeEventListener("did-navigate-in-page", onDidNavigateInPage);
-			wv.removeEventListener("did-start-loading", onDidStartLoading);
-			wv.removeEventListener("did-stop-loading", onDidStopLoading);
-			wv.removeEventListener("did-fail-load", onDidFailLoad);
-			wv.removeEventListener("load-progress", onProgress);
-			wv.removeEventListener("page-title-updated", onPageTitleUpdated);
-			wv.removeEventListener("new-window", onNewWindow);
-			webviewReadyRef.current = false;
-		};
-	}, [applyDeviceUserAgent, updateActiveTab, url]);
-
-	// 不再在卸载时清空 moduleState：折叠抽屉、切换面板后重新打开仍保留之前的 tab 状态。
-	// 关闭最后一个 tab 时 closeTab 已处理 moduleState 清理并调用 onClose。
-	// 组件首次挂载时如果 tabs 为空，ensureInitialTab 会创建默认页面。
+		},
+		[device],
+	);
 
 	const navigate = useCallback(
 		(targetUrl?: string) => {
@@ -305,93 +123,123 @@ export function BrowserPanel(props: {
 			if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(finalUrl)) {
 				finalUrl = `https://${finalUrl}`;
 			}
-			loadUrl(finalUrl);
+			void loadUrl(finalUrl);
 		},
 		[inputValue, loadUrl],
 	);
 
 	const switchTab = useCallback(
 		(tabId: string) => {
-			const tab = moduleState.tabs.find((item) => item.id === tabId);
+			if (getBrowserPanelSessionSnapshot().activeTabId === tabId) return;
+			const tab = getBrowserPanelSessionSnapshot().tabs.find((item) => item.id === tabId);
 			if (!tab) return;
-			moduleState.activeTabId = tabId;
+			updateBrowserPanelSession({ activeTabId: tabId });
 			setActiveTabId(tabId);
-			loadUrl(tab.url);
+			void loadUrl(tab.url);
 		},
 		[loadUrl],
 	);
 
 	const addTab = useCallback(() => {
-		const id = genTabId();
-		const newTab = { id, title: t("browser.newTab"), url: DEFAULT_HOME };
-		persistTabs([...moduleState.tabs, newTab], id);
-		loadUrl(DEFAULT_HOME);
+		const newTab = createBrowserTabInSession(DEFAULT_HOME, t("browser.newTab"));
+		persistTabs([...getBrowserPanelSessionSnapshot().tabs], newTab.id);
+		void loadUrl(DEFAULT_HOME);
 	}, [loadUrl, persistTabs]);
 
-	// webview 是否已触发 dom-ready，用于延迟外部导航直到 webview 就绪。
-	const webviewReadyRef = useRef(false);
-
-	// 轮询检测 navigateTo 设置的 pendingNavigateUrl（module 变量不触发 React 重渲染）
-	useEffect(() => {
-		const interval = window.setInterval(() => {
-			if (!pendingNavigateUrl) return;
-			const url = pendingNavigateUrl;
-			moduleState.navigateKey = 0;
-			const wv = webviewRef.current;
-			if (!wv) return;
-			// 如果 webview 正在加载中，跳过本次轮询保留 pendingNavigateUrl，
-			// 下次轮询会重试，避免 URL 被静默丢弃
-			if (wv.isLoading && wv.isLoading()) return;
-			// 通过加载检查后才消费 URL，防止加载中时丢请求
-			pendingNavigateUrl = null;
-			const activeTab = moduleState.tabs.find((t) => t.id === moduleState.activeTabId);
-			if (activeTab) {
-				applyDeviceUserAgent(wv, moduleState.device);
-				setTabs([...moduleState.tabs]);
-				setActiveTabId(moduleState.activeTabId);
-				wv.loadURL(url).catch(() => {});
+	/**
+	 * 统一接收 adapter 的 neutral 事件；产品策略（地址栏/tab/popup 分发）都在这里，
+	 * Electron 事件 shape 与错误格式不进入本组件。
+	 */
+	const handleHostEvent = useCallback(
+		(event: BrowserHostEvent) => {
+			switch (event.type) {
+				case "navigated": {
+					setUrl(event.url);
+					setInputValue(event.url);
+					setCanGoBack(event.canGoBack);
+					setCanGoForward(event.canGoForward);
+					// 只更新 URL；title 由 title-updated 更新，避免标题闪烁。
+					updateActiveTab({ url: event.url });
+					break;
+				}
+				case "loading-started": {
+					setIsLoading(true);
+					break;
+				}
+				case "loading-stopped": {
+					setIsLoading(false);
+					setCanGoBack(event.canGoBack);
+					setCanGoForward(event.canGoForward);
+					break;
+				}
+				case "load-failed": {
+					// 无论 aborted/failed 都确保 loading 态复位；不新增 error page/modal/toast。
+					setIsLoading(false);
+					break;
+				}
+				case "title-updated": {
+					// 只在真实 page title 到达时才替换 tab 标题（adapter 已过滤空值）。
+					updateActiveTab({ title: event.title });
+					break;
+				}
 			}
-		}, 50);
-		return () => window.clearInterval(interval);
-	}, [applyDeviceUserAgent, isLoading, loadUrl]);
+		},
+		[updateActiveTab],
+	);
+
+	// 订阅外部导航请求：当外部（如 App.tsx / IPC）调用 requestBrowserNavigation 时，
+	// 直接收到通知并实时加载新 tab，替代原 50ms 轮询方案。导航统一经 loadUrl()
+	// 中心入口（地址栏/isLoading/device/错误处理自动一致），本回调只同步 tab 列表。
+	useEffect(() => {
+		const unsubscribe = subscribeBrowserNavigation((tab) => {
+			if (!hostRef.current) return;
+			const snapshot = getBrowserPanelSessionSnapshot();
+			setTabs([...snapshot.tabs]);
+			setActiveTabId(tab.id);
+			void loadUrl(tab.url, snapshot.device);
+		});
+		return unsubscribe;
+	}, [loadUrl]);
 
 	const closeTab = useCallback(
 		(tabId: string, event: React.MouseEvent) => {
 			event.stopPropagation();
-			const current = moduleState.tabs;
+			const current = getBrowserPanelSessionSnapshot().tabs;
 			if (current.length <= 1) {
-				// 关闭最后一个 tab：清空 moduleState 与本地 tabs 状态，避免旧 tab 残留显示
+				// 关闭最后一个 tab：清空 session 与本地 tabs 状态，避免旧 tab 残留显示
 				// （onClose 触发的 state 更新可能是同值 no-op，React 会跳过重渲染，必须显式同步）。
 				// onClose 语义 = 关闭整个浏览器面板：抽屉模式收起侧边栏，全屏模式退出全屏并收起侧边栏。
-				moduleState.tabs = [];
-				moduleState.activeTabId = null;
-				moduleState.navigateKey = 0;
-				pendingNavigateUrl = null;
+				resetBrowserPanelSession();
 				setTabs([]);
 				setActiveTabId(null);
 				onClose?.();
 				return;
 			}
+			const currentActiveId = getBrowserPanelSessionSnapshot().activeTabId;
+			const wasActive = currentActiveId === tabId;
 			const index = current.findIndex((tab) => tab.id === tabId);
 			const nextTabs = current.filter((tab) => tab.id !== tabId);
-			let nextActiveId = moduleState.activeTabId;
-			if (nextActiveId === tabId) {
+			let nextActiveId = currentActiveId;
+			if (wasActive) {
 				nextActiveId = nextTabs[Math.min(index, nextTabs.length - 1)]?.id ?? null;
 			}
 			persistTabs(nextTabs, nextActiveId);
-			const nextTab = nextTabs.find((tab) => tab.id === nextActiveId);
-			if (nextTab) loadUrl(nextTab.url);
+			if (wasActive) {
+				const nextTab = nextTabs.find((tab) => tab.id === nextActiveId);
+				if (nextTab) void loadUrl(nextTab.url);
+			}
 		},
 		[loadUrl, onClose, persistTabs],
 	);
 
 	const selectDevice = useCallback(
-		(nextDevice: DeviceType) => {
-			moduleState.device = nextDevice;
+		(nextDevice: BrowserDeviceProfile) => {
+			updateBrowserPanelSession({ device: nextDevice });
 			setDevice(nextDevice);
 			setDeviceMenuOpen(false);
 			// 仅改 UA 不会触发布局变化；同时切换 browser-panel 的 device class 限制 webview 视口宽度。
-			loadUrl(url || DEFAULT_HOME, nextDevice);
+			// loadUrl 内部先 setDeviceProfile 再导航，保持「切设备会 reload 页面」的现有行为。
+			void loadUrl(url || DEFAULT_HOME, nextDevice);
 		},
 		[loadUrl, url],
 	);
@@ -416,6 +264,7 @@ export function BrowserPanel(props: {
 		[navigate],
 	);
 
+	const HostSurface = props.hostSurface;
 	const panelClass = `browser-panel${props.isFullscreen ? " is-fullscreen" : ""} device-${device}`;
 	const activeDevicePreset = DEVICE_PRESETS.find((preset) => preset.id === device) ?? DEVICE_PRESETS[0];
 	const deviceIcon = device === "mobile" ? <Smartphone size={13} /> : device === "tablet" ? <Tablet size={13} /> : null;
@@ -454,16 +303,16 @@ export function BrowserPanel(props: {
 			</div>
 
 			<div className="flex shrink-0 items-center gap-1 border-b border-border/40 px-2 py-1.5">
-<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" disabled={!canGoBack} onClick={() => webviewRef.current?.goBack()} title={t("browser.back")}>
+<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" disabled={!canGoBack} onClick={() => hostRef.current?.goBack()} title={t("browser.back")}>
 					<ArrowLeft size={15} />
 				</Button>
-<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" disabled={!canGoForward} onClick={() => webviewRef.current?.goForward()} title={t("browser.forward")}>
+<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" disabled={!canGoForward} onClick={() => hostRef.current?.goForward()} title={t("browser.forward")}>
 					<ArrowRight size={15} />
 				</Button>
-<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" onClick={() => webviewRef.current?.reload()} title={t("browser.reload")}>
+<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" onClick={() => hostRef.current?.reload()} title={t("browser.reload")}>
 					<RefreshCw size={15} />
 				</Button>
-<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" onClick={() => loadUrl(DEFAULT_HOME)} title={t("browser.home")}>
+<Button variant="ghost" size="icon-sm" className="size-[30px] rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-30" onClick={() => void loadUrl(DEFAULT_HOME)} title={t("browser.home")}>
 					<Home size={15} />
 				</Button>
 				<div className="min-w-0 flex-1">
@@ -520,13 +369,22 @@ export function BrowserPanel(props: {
 			</div>
 
 			{isLoading && (
+				// 宿主无渐进进度事件（webview 标签无 load-progress），只做不确定动画。
 				<div className="h-0.5 shrink-0 overflow-hidden bg-bg-subtle">
-					<div className="h-full bg-[var(--color-accent)] transition-[width] duration-150" style={{ width: `${Math.max(5, loadProgress * 100)}%` }} />
+					<div className="h-full w-1/3 animate-[browser-load-slide_1s_ease-in-out_infinite] bg-[var(--color-accent)] rounded-full" />
 				</div>
 			)}
 
 			<div className="flex min-h-0 flex-1 justify-center overflow-hidden bg-bg-subtle">
-				<webview ref={(el) => { (webviewRef as React.MutableRefObject<any>).current = el; if (el) el.setAttribute("allowfileaccess", "true"); }} className="browser-webview" src={initialTab.url} allowpopups={"true" as any} />
+				<HostSurface
+					initialUrl={initialTab.url}
+					initialDevice={device}
+					className="browser-webview"
+					onApiChange={(api) => {
+						hostRef.current = api;
+					}}
+					onEvent={handleHostEvent}
+				/>
 			</div>
 		</div>
 	);

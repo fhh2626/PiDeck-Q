@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { trashPath } from "../fs/trash";
+import type { TrashPath } from "../fs/trash";
 import type { WorktreeEntry } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 
@@ -22,6 +22,7 @@ type WorktreeCopy = (
 export class WorktreeService {
 	constructor(
 		private readonly translate: WorktreeCopy = () => "Worktree operation failed.",
+		private readonly trashPath?: TrashPath,
 	) {}
 
 	/**
@@ -126,7 +127,8 @@ export class WorktreeService {
 		// 目录已被外部删除时无需回收站，直接返回成功（残留记录清理路径）。
 		if (!existsSync(worktreePath)) return true;
 		// 回收站不可用时 trashPath 抛错：删除失败比永久丢失安全（历史教训：误删 40G）。
-		await trashPath(worktreePath, { source: "git:worktree-remove" });
+		if (!this.trashPath) throw new Error("Trash unavailable");
+		await this.trashPath(worktreePath, { source: "git:worktree-remove" });
 
 		// 删除 PiDeck 创建的分支：旧版本使用 pideck/{slug}，新版本使用与目录名一致的 {slug}。
 		// 对外部 worktree 尽量保守，只在“分支名等于目录名”时认为是 PiDeck 创建的同名工作区。

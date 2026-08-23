@@ -55,7 +55,14 @@ before(() => {
     join(stubElectronDir, "index.js"),
     `exports.shell = { trashItem: async (p) => { await require("node:fs/promises").rm(p, { recursive: true, force: true }); } };`,
   );
+  const serviceFactory = (trash) => new GitService(trash ?? (async (p) => { await require("node:fs/promises").rm(p, { recursive: true, force: true }); }));
   ({ GitService } = require(join(buildDir, "main/git/GitService.js")));
+  const OriginalGitService = GitService;
+  GitService = class extends OriginalGitService {
+    constructor(trash) {
+      super(trash ?? (async (p) => { await require("node:fs/promises").rm(p, { recursive: true, force: true }); }));
+    }
+  };
 
   git("init");
   // Windows 开发机常配 core.autocrlf=true，会把 checkout 内容转成 CRLF，

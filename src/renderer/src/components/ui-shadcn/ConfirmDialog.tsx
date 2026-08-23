@@ -25,13 +25,15 @@ export function ConfirmDialog(props: {
   onCancel: () => void;
   confirmLabel?: string;
   danger?: boolean;
+  /** 透传给 AlertDialogDescription 的样式（如长 URL 换行 break-all）。 */
+  messageClassName?: string;
 }) {
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) props.onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{props.title}</AlertDialogTitle>
-          <AlertDialogDescription>{props.message}</AlertDialogDescription>
+          <AlertDialogDescription className={props.messageClassName}>{props.message}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={props.onCancel}>

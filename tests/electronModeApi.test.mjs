@@ -38,6 +38,8 @@ test("packaged main window never loads the dev server URL", () => {
 	);
 });
 
+const electronPreloadLifecycleIpcSource = readFileSync("src/main/ipc/electronPreloadLifecycleIpc.ts", "utf8");
+
 test("main window logs configured preload file and preload reports initialization", () => {
 	assert.match(mainSource, /async function prepareMainPreloadPath\(/);
 	assert.match(preloadPathSource, /export async function preparePreloadPath\(/);
@@ -47,8 +49,8 @@ test("main window logs configured preload file and preload reports initializatio
 	assert.match(mainSource, /existsSync\(mainPreloadPath\)/);
 	assert.match(mainSource, /Main window preload failed/);
 	assert.match(mainSource, /webContents\.on\("preload-error"/);
-	assert.match(systemIpcSource, /ipcMain\.on\(ipcChannels\.preloadReady/);
-	assert.match(systemIpcSource, /ipcMain\.on\(ipcChannels\.preloadError/);
+	assert.match(electronPreloadLifecycleIpcSource, /ipc\.on\(ipcChannels\.preloadReady/);
+	assert.match(electronPreloadLifecycleIpcSource, /ipc\.on\(ipcChannels\.preloadError/);
 	assert.match(preloadSource, /ipcChannels\.preloadReady/);
 	assert.match(preloadSource, /ipcChannels\.preloadError/);
 	assert.match(preloadSource, /contextBridge\.exposeInMainWorld\("piDesktop", api\)/);

@@ -1,7 +1,7 @@
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
-import { app } from "electron";
 import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { createGzip, createGunzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -24,6 +24,10 @@ function formatDate(value: Date) {
   return `${year}-${month}-${day}`;
 }
 
+export interface RpcLoggerOptions {
+  directory?: string;
+}
+
 /**
  * RPC 日志服务。
  * - 按 Agent 分文件：userData/logs/rpc/rpc-<agentId>-YYYY-MM-DD.jsonl
@@ -34,11 +38,19 @@ function formatDate(value: Date) {
  */
 export class RpcLogger {
   /** RPC 日志独立子目录，不和 app 日志混在一起 */
-  private readonly dir = join(app.getPath("userData"), "logs", "rpc");
+  private readonly dir: string;
   private live: RpcLogEntry[] = [];
   /** 最近写入的日期，用于触发跨日 gzip */
   private lastWriteDate = "";
   private writeQueue: Promise<void> = Promise.resolve();
+
+  constructor(options: RpcLoggerOptions = {}) {
+    this.dir = options.directory ?? join(homedir(), ".pi-desktop", "logs", "rpc");
+  }
+
+  getDirectory(): string {
+    return this.dir;
+  }
 
   /** 写入一条 RPC 日志，同时追加到文件与环形缓冲区 */
   push(entry: RpcLogEntry) {

@@ -1,9 +1,9 @@
-import { ipcMain } from "electron";
 import { ipcChannels } from "../../shared/ipc";
 import type { SessionCommandError, SessionRuntimeTarget, TerminalTarget } from "../../shared/types";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
+import type { RpcRouter } from "../transport/RpcRouter";
 
 export type TerminalIpcDeps = {
 	appLogger: Pick<AppLogger, "info">;
@@ -12,12 +12,15 @@ export type TerminalIpcDeps = {
 	toSessionCommandIpcError: (error: SessionCommandError) => Error;
 };
 
-export function registerTerminalIpc({
-	appLogger,
-	sessionRuntimeCoordinator,
-	terminalManager,
-	toSessionCommandIpcError,
-}: TerminalIpcDeps): void {
+export function registerTerminalIpc(
+	router: RpcRouter,
+	{
+		appLogger,
+		sessionRuntimeCoordinator,
+		terminalManager,
+		toSessionCommandIpcError,
+	}: TerminalIpcDeps,
+): void {
 	/**
 	 * 终端目标必须可落地：agent 目标校验 runtime 绑定（session/agent/generation 一致）；
 	 * project 目标（引导页/未激活 agent/历史会话）不依赖 runtime，直接以 cwd 隔离。
@@ -32,15 +35,15 @@ export function registerTerminalIpc({
 		return validated;
 	};
 
-	ipcMain.handle(ipcChannels.terminalList, (_event, target: TerminalTarget) => {
+	router.handle(ipcChannels.terminalList, (target: TerminalTarget) => {
 		requireTerminalTarget(target);
 		return terminalManager.list(target);
 	});
-	ipcMain.handle(ipcChannels.terminalEnsure, (_event, target: TerminalTarget) => {
+	router.handle(ipcChannels.terminalEnsure, (target: TerminalTarget) => {
 		requireTerminalTarget(target);
 		return terminalManager.ensure(target);
 	});
-	ipcMain.handle(ipcChannels.terminalCreate, async (_event, target: TerminalTarget) => {
+	router.handle(ipcChannels.terminalCreate, async (target: TerminalTarget) => {
 		requireTerminalTarget(target);
 		const result = await terminalManager.create(target);
 		void appLogger.info("terminal", "Terminal created", {
@@ -51,19 +54,19 @@ export function registerTerminalIpc({
 		});
 		return result;
 	});
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.terminalInput,
-		(_event, tabId: string, data: string) => {
+		(tabId: string, data: string) => {
 			terminalManager.input(tabId, data);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.terminalResize,
-		(_event, tabId: string, cols: number, rows: number) => {
+		(tabId: string, cols: number, rows: number) => {
 			terminalManager.resize(tabId, cols, rows);
 		},
 	);
-	ipcMain.handle(ipcChannels.terminalClose, (_event, tabId: string) => {
+	router.handle(ipcChannels.terminalClose, (tabId: string) => {
 		terminalManager.close(tabId);
 		void appLogger.info("terminal", "Terminal closed", { tabId });
 	});

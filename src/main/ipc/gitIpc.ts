@@ -1,4 +1,3 @@
-import { ipcMain } from "electron";
 import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
@@ -14,6 +13,7 @@ import { PiRpcClient } from "../pi/PiRpcClient";
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { WorktreeService } from "../git/WorktreeService";
+import type { RpcRouter } from "../transport/RpcRouter";
 
 export type GitIpcDeps = {
 	appLogger: Pick<AppLogger, "warn" | "info" | "error">;
@@ -218,25 +218,28 @@ async function quickGenerate(
 
 // ── IPC 注册 ────────────────────────────────────────────────────────
 
-export function registerGitIpc({
-	appLogger,
-	mainCopy,
-	getLocale,
-	gitService,
-	piLocator,
-	projectStore,
-	settingsStore,
-	worktreeService,
-}: GitIpcDeps): void {
-	ipcMain.handle(ipcChannels.gitBranches, async (_event, projectId: string) => {
+export function registerGitIpc(
+	router: RpcRouter,
+	{
+		appLogger,
+		mainCopy,
+		getLocale,
+		gitService,
+		piLocator,
+		projectStore,
+		settingsStore,
+		worktreeService,
+	}: GitIpcDeps,
+): void {
+	router.handle(ipcChannels.gitBranches, async (projectId: string) => {
 		const project = projectStore.get(projectId);
 		if (!project) throw new Error(`Project not found: ${projectId}`);
 		return gitService.getBranches(project.path);
 	});
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCheckout,
-		async (_event, projectId: string, branch: string) => {
+		async (projectId: string, branch: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await gitService.checkout(project.path, branch);
@@ -246,9 +249,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCreateBranch,
-		async (_event, projectId: string, branchName: string) => {
+		async (projectId: string, branchName: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			return gitService.createBranch(project.path, branchName);
@@ -256,17 +259,17 @@ export function registerGitIpc({
 	);
 
 	// 差异查看需要文件的 Git HEAD 原始内容作为对比基准；参数是绝对文件路径，后端自行定位仓库根。
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitOriginalContent,
-		async (_event, filePath: string) => {
+		async (filePath: string) => {
 			const maxBytes = Math.max(1, settingsStore.get().maxEditorFileSizeMB) * 1024 * 1024;
 			return gitService.getOriginalContent(filePath, maxBytes);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitWorktreeList,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const entries = await worktreeService.list(project.path);
@@ -278,9 +281,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitWorktreeCreate,
-		async (_event, projectId: string, branchName: string) => {
+		async (projectId: string, branchName: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const info = await worktreeService.create(project.path, projectId, branchName);
@@ -289,9 +292,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitWorktreeRemove,
-		async (_event, projectId: string, worktreePath: string) => {
+		async (projectId: string, worktreePath: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			try {
@@ -335,45 +338,45 @@ export function registerGitIpc({
 	);
 
 	// -- Git 增强：提交历史 / 分支对比 / Graph
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCommitLog,
-		async (_event, projectId: string, options?: { maxEntries?: number; ref?: string; path?: string; allBranches?: boolean }) => {
+		async (projectId: string, options?: { maxEntries?: number; ref?: string; path?: string; allBranches?: boolean }) => {
 			const project = projectStore.get(projectId);
 			if (!project) return [];
 			return gitService.getCommitLog(project.path, options);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitRefs,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return [];
 			return gitService.getRefs(project.path);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitBranchCompare,
-		async (_event, projectId: string, base: string, target: string) => {
+		async (projectId: string, base: string, target: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			return gitService.compareBranches(project.path, base, target);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCommitDetail,
-		async (_event, projectId: string, ref: string) => {
+		async (projectId: string, ref: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return null;
 			return gitService.getCommitDetail(project.path, ref);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCommitFileDiff,
-		async (_event, projectId: string, ref: string, filePath: string, originalPath?: string) => {
+		async (projectId: string, ref: string, filePath: string, originalPath?: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return null;
 			const maxBytes = Math.max(1, settingsStore.get().maxEditorFileSizeMB) * 1024 * 1024;
@@ -381,9 +384,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitDiffFileBetween,
-		async (_event, projectId: string, ref1: string, ref2: string, filePath: string) => {
+		async (projectId: string, ref1: string, ref2: string, filePath: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return "";
 			return gitService.diffFileBetweenRefs(project.path, ref1, ref2, filePath);
@@ -392,18 +395,18 @@ export function registerGitIpc({
 
 
 	// Git 工作区状态 + Stage/Unstage
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitStatus,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return { merge: [], index: [], workingTree: [], untracked: [] };
 			return gitService.getStatus(project.path);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitWorkspaceFileDiff,
-		async (_event, projectId: string, group: GitWorkspaceDiffGroup, filePath: string) => {
+		async (projectId: string, group: GitWorkspaceDiffGroup, filePath: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) return null;
 			const maxBytes = Math.max(1, settingsStore.get().maxEditorFileSizeMB) * 1024 * 1024;
@@ -411,27 +414,27 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitStage,
-		async (_event, projectId: string, paths: string[]) => {
+		async (projectId: string, paths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.stageFiles(project.path, paths);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitUnstage,
-		async (_event, projectId: string, paths: string[]) => {
+		async (projectId: string, paths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.unstageFiles(project.path, paths);
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitDiscard,
-		async (_event, projectId: string, group: "workingTree" | "untracked", filePath: string) => {
+		async (projectId: string, group: "workingTree" | "untracked", filePath: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			try {
@@ -450,9 +453,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCommit,
-		async (_event, projectId: string, message: string) => {
+		async (projectId: string, message: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.commit(project.path, message);
@@ -460,9 +463,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitCherryPick,
-		async (_event, projectId: string, hash: string) => {
+		async (projectId: string, hash: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.cherryPick(project.path, hash);
@@ -470,9 +473,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitRevert,
-		async (_event, projectId: string, hash: string) => {
+		async (projectId: string, hash: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.revertCommit(project.path, hash);
@@ -480,9 +483,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitPush,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.push(project.path);
@@ -490,9 +493,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitPull,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.pull(project.path);
@@ -500,9 +503,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitReset,
-		async (_event, projectId: string, hash: string, mode: "soft" | "mixed" | "hard") => {
+		async (projectId: string, hash: string, mode: "soft" | "mixed" | "hard") => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.resetToCommit(project.path, hash, mode);
@@ -511,9 +514,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitDropCommit,
-		async (_event, projectId: string, hash: string) => {
+		async (projectId: string, hash: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.dropCommit(project.path, hash);
@@ -521,9 +524,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitGenerateCommitMessage,
-		async (_event, projectId: string): Promise<GitGenerateCommitMessageResult> => {
+		async (projectId: string): Promise<GitGenerateCommitMessageResult> => {
 			const project = projectStore.get(projectId);
 			if (!project) return { ok: true, message: "" };
 
@@ -574,9 +577,9 @@ export function registerGitIpc({
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitInit,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const { execFile } = await import("node:child_process");
@@ -586,9 +589,9 @@ export function registerGitIpc({
 	);
 
 	// Fetch：刷新远程跟踪引用（定时轮询 ahead/behind 的前置步骤）
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitFetch,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			await gitService.fetch(project.path);
@@ -596,9 +599,9 @@ export function registerGitIpc({
 	);
 
 	// ahead/behind：驱动 push/pull 角标；无上游返回 null（不显示角标）
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitAheadBehind,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			return gitService.getAheadBehind(project.path);
@@ -606,9 +609,9 @@ export function registerGitIpc({
 	);
 
 	// 删除变更文件（移入回收站）：路径由 GitService 按 status 白名单校验
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.gitDeleteFiles,
-		async (_event, projectId: string, paths: string[]) => {
+		async (projectId: string, paths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			// 入参不可信：必须是非空字符串数组，防注入

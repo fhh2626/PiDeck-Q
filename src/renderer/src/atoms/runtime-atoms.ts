@@ -44,6 +44,21 @@ export const agentInventoryAtom = atom((get) => {
     });
 });
 
+/**
+ * 全局是否存在「正在工作」的 runtime：任意项目任意 Agent starting/running、流式输出或执行工具都算。
+ * 全局门控（如 Skills 快捷修改）必须以权威 sessionRuntimeByIdAtom 为准，
+ * 不能用 activeProjectRuntimeCapabilities（只覆盖当前项目）或 activeAgentId（只看聚焦 Agent）判断。
+ * detached/closed 不命中 working 条件；有 Agent 打开但全部 idle 时为 false（允许进入 Skills 修改）。
+ */
+export const anyAgentRuntimeWorkingAtom = atom((get) =>
+  Object.values(get(sessionRuntimeByIdAtom)).some((runtime) =>
+    runtime.status === "starting" ||
+    runtime.status === "running" ||
+    Boolean(runtime.state?.isStreaming) ||
+    Boolean(runtime.state?.isExecutingTool),
+  ),
+);
+
 export const agentByIdAtomFamily = atomFamily((agentId: string) =>
   atom((get) => get(agentInventoryAtom).find((agent) => agent.id === agentId)),
 );

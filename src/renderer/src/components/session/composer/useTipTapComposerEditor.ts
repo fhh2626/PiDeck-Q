@@ -16,7 +16,7 @@ import { createComposerExtensions } from "./tiptap/createComposerExtensions";
 import { buildComposerEditorProps } from "./tiptap/buildComposerEditorProps";
 import {
 	plainTextToComposerDoc,
-	serializeComposerEditorJson,
+	serializeComposerDoc,
 } from "./tiptap/plainTextCodec";
 import {
 	plainOffsetToPos,
@@ -98,7 +98,7 @@ export function useTipTapComposerEditor(
 	const lastEmittedRef = useRef(value);
 
 	const emitPlainText = (editor: Editor) => {
-		const next = serializeComposerEditorJson(editor.getJSON());
+		const next = serializeComposerDoc(editor.state.doc);
 		lastEmittedRef.current = next;
 		onChangeRef.current(next, posToPlainOffset(editor, editor.state.selection.from));
 	};

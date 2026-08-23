@@ -1,19 +1,11 @@
 /**
  * Live 正文挂载判定（纯函数，可单测）。
  *
- * 语义：Live 正文（streamingTextByIdAtom 会话级单槽）只能由「时间线上最后一个
- * agent-run」挂载。
- *
- * 背景（2026-08 回归）：steer 打断后，上一轮没有最终回答，其尾部常是空文本 interim
- * （纯工具调用消息的骨架挂载点）。旧逻辑只看「会话存在活动正文流 + 尾部是空骨架」，
- * 不看本轮是否最后一个 agent-run——新一轮开始流式时，旧轮也挂上 live，读同一个
- * 会话级流式槽，把新一轮正文在旧轮底部再打印一遍：同一个中间回复前后同时出现两份。
+ * 语义：Live 正文按 assistantMessageId 精确绑定当前 assistant 消息/骨架。
  *
  * 判定：
- * - isLastAgentRun（按 agent-run 判定，不是按显示条目判定）→ 非最后一个 agent-run
- *   一律不挂；steer 排队期显示数组以用户消息结尾，最后一个 agent-run 仍是流式轮，
- *   挂载不受影响；
  * - 无会话 / 无挂载点 / 无活动流 → 不挂；
+ * - 挂载点 id 与当前流式 messageId 不一致（或 streamingMessageId 尚未就绪）→ 不挂（严禁挂到旧 run）；
  * - 空文本骨架（正文走独立通道，message 文本尚未落定）→ 挂载；
  * - 流式中 / agentRunning（正文已部分落定但仍在活动）→ 保持挂载；
  * - 其余（已 settled）→ 不挂，落回容器内渲染。
@@ -25,16 +17,18 @@ export function resolveLiveInterimId(input: {
 	lastInterimId?: string;
 	/** 会话是否存在活动正文流（liveTextStreamingBySessionAtom 的派生位） */
 	liveTextActive: boolean;
+	/** 当前流式正文绑定的 assistant messageId */
+	streamingMessageId?: string;
 	/** 本轮最后一条 interim 的正文（空 = 骨架挂载点） */
 	lastMessageText: string;
 	agentRunning?: boolean;
 	isStreaming?: boolean;
-	/** 是否为时间线上最后一个 agent-run（live 挂载门） */
-	isLastAgentRun?: boolean;
 }): string | undefined {
-	if (!input.isLastAgentRun) return undefined;
 	if (!input.sessionId || !input.lastInterimId) return undefined;
 	if (!input.liveTextActive) return undefined;
+	if (!input.streamingMessageId || input.lastInterimId !== input.streamingMessageId) {
+		return undefined;
+	}
 	const emptySkeleton = !input.lastMessageText.trim();
 	if (emptySkeleton || input.agentRunning || input.isStreaming) return input.lastInterimId;
 	return undefined;

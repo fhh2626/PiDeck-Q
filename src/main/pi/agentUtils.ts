@@ -66,14 +66,13 @@ export function clampPercent(value: number | undefined): number | undefined {
 
 /**
  * 解析系统通知点击的会话跳转目标。
- * record.id（coordinator 绑定维护）优先：renderer 的 sessionRecordByIdAtomFamily
- * 只按 record.id 索引会话；tab.sessionId 是 pi 侧会话 id（两套体系），仅作兜底。
+ * renderer 的 sessionRecordByIdAtomFamily 只按稳定的 SessionRecord.id 索引；
+ * pi sessionId 属于另一套身份体系，缺少 record.id 时必须回到应用根页。
  */
 export function resolveNotificationSessionId(
 	resolveRecordId: (() => string | undefined) | undefined,
-	piSessionId: string | undefined,
 ): string | undefined {
-	return resolveRecordId?.() ?? piSessionId;
+	return resolveRecordId?.();
 }
 
 /**

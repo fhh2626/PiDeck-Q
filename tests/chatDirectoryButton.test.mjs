@@ -17,7 +17,8 @@ test("ChatDirectoryButton exists and gates on chat projects only", () => {
 
 test("ChatDirectoryButton reuses the App-level changeChatPath service", () => {
 	const source = readFileSync("src/renderer/src/components/session/ChatDirectoryButton.tsx", "utf8");
-	assert.match(source, /useSessionPaneServices\(\)/);
+	// changeChatPath/showNotice 是稳定回调，只订 actions 轨（拆分后不再被 terminal/gitInfo 变化唤醒）
+	assert.match(source, /useSessionPaneActions\(\)/);
 	assert.match(source, /\{ changeChatPath, showNotice \}/);
 	assert.match(source, /void changeChatPath\(project\)\.catch/);
 	// 图标入口语义：目录图标 + i18n 文案

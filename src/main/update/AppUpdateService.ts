@@ -1,4 +1,3 @@
-import { app, net, shell } from "electron";
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -10,6 +9,12 @@ import type {
 } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
+import type {
+	PlatformApplication,
+	PlatformDownloads,
+	PlatformPaths,
+	PlatformShell,
+} from "../platform/PlatformServices";
 
 export const RELEASES_URL = "https://github.com/ayuayue/pi-desktop/releases";
 const LATEST_RELEASE_API = "https://api.github.com/repos/ayuayue/pi-desktop/releases/latest";
@@ -27,6 +32,11 @@ type AppUpdateServiceDeps = {
 	logger: AppLogger;
 	translate: (key: MainProcessTranslationKey) => string;
 	emitProgress: (progress: AppUpdateDownloadProgress) => void;
+	platformApp: PlatformApplication;
+	platformPaths: PlatformPaths;
+	platformShell: Pick<PlatformShell, "openPath">;
+	platformDownloads: PlatformDownloads;
+	fetchFn?: typeof globalThis.fetch;
 };
 
 function parseGitHubRelease(value: unknown): GitHubRelease {
@@ -127,10 +137,12 @@ function selectRecommendedAsset(
 
 /** Owns update discovery, download progress, and handing packages to the OS. */
 export function createAppUpdateService(deps: AppUpdateServiceDeps) {
+	const currentVersion = deps.platformApp.version;
+	const fetchImpl = deps.fetchFn ?? globalThis.fetch;
+
 	async function checkForAppUpdate(installationType?: "portable" | "installed"): Promise<AppUpdateInfo> {
-		const currentVersion = app.getVersion();
 		void deps.logger.info("update", "Check for app update", { currentVersion, installationType });
-		const response = await fetch(LATEST_RELEASE_API, {
+		const response = await fetchImpl(LATEST_RELEASE_API, {
 			headers: { Accept: "application/vnd.github+json", "User-Agent": `pi-desktop/${currentVersion}` },
 		});
 		if (!response.ok) {
@@ -172,36 +184,28 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 		}
 
 		const safeName = basename(asset.name).replace(/[<>:"/\\|?*]+/g, "-");
-		const downloadDir = join(app.getPath("userData"), "updates");
+		const userDataDir = deps.platformPaths.userData;
+		const downloadDir = join(userDataDir, "updates");
 		await mkdir(downloadDir, { recursive: true });
 		const filePath = join(downloadDir, safeName);
 		const startedAt = Date.now();
 		let receivedBytes = 0;
 		let totalBytes = asset.size > 0 ? asset.size : undefined;
 
-		// Electron net 继承 Chromium 的 TLS/代理配置；模块只通过回调推送进度。
-		return new Promise((resolve, reject) => {
-			void deps.logger.info("update", "Download update asset started", { assetName: asset.name, url: asset.url });
-			const request = net.request({ method: "GET", url: asset.url });
-			request.setHeader("User-Agent", `pi-desktop/${app.getVersion()}`);
-			request.on("redirect", (_statusCode, _method, redirectUrl) => {
-				request.followRedirect();
-				void deps.logger.debug("update", "Follow update download redirect", { redirectUrl });
-			});
-			request.on("response", (response) => {
-				if (response.statusCode < 200 || response.statusCode >= 300) {
-					const publicError = new Error(deps.translate("update.downloadFailed"));
-					void deps.logger.warn("update", "Update download returned an error status", { assetName: asset.name, statusCode: response.statusCode });
-					deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, state: "failed", error: publicError.message });
-					reject(publicError);
-					return;
-				}
-				const contentLength = Number(response.headers["content-length"]);
-				if (Number.isFinite(contentLength) && contentLength > 0) totalBytes = contentLength;
-				const output = createWriteStream(filePath);
-				response.on("data", (chunk: Buffer) => {
-					receivedBytes += chunk.length;
-					output.write(chunk);
+		void deps.logger.info("update", "Download update asset started", { assetName: asset.name, url: asset.url });
+
+		try {
+			const downloaded = await deps.platformDownloads.downloadToFile({
+				url: asset.url,
+				filePath,
+				headers: { "User-Agent": `pi-desktop/${currentVersion}` },
+				expectedBytes: asset.size > 0 ? asset.size : undefined,
+				onRedirect: (redirectUrl) => {
+					void deps.logger.debug("update", "Follow update download redirect", { redirectUrl });
+				},
+				onProgress: (progress) => {
+					receivedBytes = progress.receivedBytes;
+					if (progress.totalBytes) totalBytes = progress.totalBytes;
 					const elapsedSeconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
 					deps.emitProgress({
 						assetName: asset.name,
@@ -211,37 +215,33 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 						bytesPerSecond: receivedBytes / elapsedSeconds,
 						state: "downloading",
 					});
-				});
-				response.on("end", () => output.end());
-				output.on("finish", () => {
-					output.close(() => {
-						deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, percent: 100, state: "completed", filePath });
-						void deps.logger.info("update", "Download update asset completed", { assetName: asset.name, filePath, receivedBytes });
-						resolve({ filePath, assetName: asset.name });
-					});
-				});
-				output.on("error", (error) => {
-					void deps.logger.warn("update", "Failed to write update package", { assetName: asset.name, error: error.message });
-					const publicError = new Error(deps.translate("update.downloadFailed"));
-					deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, state: "failed", error: publicError.message });
-					reject(publicError);
-				});
+				},
 			});
-			request.on("error", (error) => {
-				void deps.logger.warn("update", "Update download request failed", { assetName: asset.name, error: error.message });
-				const publicError = new Error(deps.translate("update.downloadFailed"));
-				deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, state: "failed", error: publicError.message });
-				reject(publicError);
-			});
-			request.end();
-		});
+			// 下载完成：以 downloader 的返回值为最终权威字节统计。
+			// onProgress 是实时回调，最后一次 callback 可能早于最终写入，
+			// 或某些实现根本不调用 onProgress；返回值才是最终收到的字节数。
+			receivedBytes = downloaded.receivedBytes;
+			// 仅当 downloader 报告了总字节数时才覆盖，
+			// 否则保留 asset.size / onProgress 解析出的 totalBytes。
+			if (downloaded.totalBytes !== undefined) {
+				totalBytes = downloaded.totalBytes;
+			}
+			deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, percent: 100, state: "completed", filePath });
+			void deps.logger.info("update", "Download update asset completed", { assetName: asset.name, filePath, receivedBytes });
+			return { filePath, assetName: asset.name };
+		} catch (error: unknown) {
+			void deps.logger.warn("update", "Update download request failed", { assetName: asset.name, error: error instanceof Error ? error.message : String(error) });
+			const publicError = new Error(deps.translate("update.downloadFailed"));
+			deps.emitProgress({ assetName: asset.name, receivedBytes, totalBytes, state: "failed", error: publicError.message });
+			throw publicError;
+		}
 	}
 
 	async function installDownloadedUpdate(filePath: string): Promise<void> {
 		await deps.logger.info("update", "Open downloaded update package", { filePath });
-		const openError = await shell.openPath(filePath);
-		if (!openError) return;
-		await deps.logger.warn("update", "Failed to open downloaded update package", { filePath, error: openError });
+		const result = await deps.platformShell.openPath(filePath);
+		if (result.ok) return;
+		await deps.logger.warn("update", "Failed to open downloaded update package", { filePath, error: result.error });
 		throw new Error(deps.translate("update.openFailed"));
 	}
 

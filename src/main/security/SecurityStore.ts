@@ -10,9 +10,9 @@
  * 快照 key 用同样的键，扩展通过 PIDECK_SESSION_ID 环境变量拿当前会话身份。
  */
 
-import { app } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { renameWithRetry } from "../utils/fsRetry";
 import {
 	createDefaultSecurityConfig,
@@ -28,23 +28,26 @@ const SNAPSHOT_FILE = "security-policy.json";
 /** 由 SettingsStore 提供配置读写（依赖注入，便于测试与替换） */
 export type SecurityStoreDeps = {
 	settingsStore: SettingsStore;
+	userDataDir?: string;
 	/** 日志回调（与 appLogger.info 同签名；不强制，缺省静默） */
 	log?: (domain: string, message: string, details?: Record<string, unknown>) => void;
 };
 
 export class SecurityStore {
 	private readonly settingsStore: SettingsStore;
+	private readonly userDataDir: string;
 	private readonly log: (domain: string, message: string, details?: Record<string, unknown>) => void;
 	private snapshotPromise: Promise<void> | null = null;
 
 	constructor(deps: SecurityStoreDeps) {
 		this.settingsStore = deps.settingsStore;
+		this.userDataDir = deps.userDataDir ?? join(homedir(), ".pi-desktop");
 		this.log = deps.log ?? (() => undefined);
 	}
 
-	/** 快照绝对路径（Windows 用户数据目录；WSL 下由 PiProcess 转 Linux 路径后注入） */
+	/** 快照绝对路径（Windows 用户数据目录；WSL 下由 PiProcess 转 Linux路径后注入） */
 	getSnapshotPath(): string {
-		return join(app.getPath("userData"), SNAPSHOT_FILE);
+		return join(this.userDataDir, SNAPSHOT_FILE);
 	}
 
 	/**
@@ -157,7 +160,7 @@ export class SecurityStore {
 		const target = this.getSnapshotPath();
 		const tmp = `${target}.tmp`;
 		try {
-			await mkdir(app.getPath("userData"), { recursive: true });
+			await mkdir(dirname(target), { recursive: true });
 			await writeFile(tmp, JSON.stringify(snapshot, null, 2), "utf8");
 			// 杀软扫描可能瞬时锁住刚写出的 tmp，rename 走退避重试；仍失败则由外层 catch 降级日志
 			await renameWithRetry(tmp, target);

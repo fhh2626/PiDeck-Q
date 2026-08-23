@@ -4,6 +4,7 @@
  */
 
 import type { JSONContent } from "@tiptap/core";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import {
 	parseRichInputChips,
 	type ComposerChip,
@@ -120,6 +121,38 @@ export function composerDocToPlainText(doc: JSONContent): string {
 	if (parts[0] === "\n" && doc.content?.length === 1) {
 		// no-op: hardBreaks only inside paragraph
 	}
+	return parts.join("");
+}
+
+/** 从 ProseMirror Node 得到的 doc 序列化（直接遍历，避免 getJSON 创建 JSON tree 开销）。 */
+export function serializeComposerDoc(doc: ProseMirrorNode): string {
+	const parts: string[] = [];
+	const walk = (node: ProseMirrorNode): void => {
+		if (node.isText && typeof node.text === "string") {
+			parts.push(node.text);
+			return;
+		}
+		const typeName = node.type.name;
+		if (typeName === "hardBreak") {
+			parts.push("\n");
+			return;
+		}
+		if (typeName === "mentionChip") {
+			const raw = node.attrs?.raw;
+			if (typeof raw === "string") parts.push(raw);
+			return;
+		}
+		if (typeName === "paragraph") {
+			// 多段落时段落之间补换行（防御；当前 schema 只用单段）
+			if (parts.length > 0 && !parts[parts.length - 1]?.endsWith("\n")) {
+				parts.push("\n");
+			}
+			node.forEach(walk);
+			return;
+		}
+		node.forEach(walk);
+	};
+	walk(doc);
 	return parts.join("");
 }
 

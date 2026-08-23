@@ -3,7 +3,7 @@
  * Phase 3.7: extracted from src/main/index.ts registerIpc().
  */
 
-import { ipcMain, type BrowserWindow } from "electron";
+
 import { ipcChannels } from "../../shared/ipc";
 import { canonicalizeSessionPath } from "../../shared/sessionIdentity";
 import type {
@@ -30,6 +30,7 @@ import {
 	DEFAULT_CONTEXT_CONTROLLER_STATE,
 	parseContextControllerStateFromJsonl,
 } from "../sessions/contextControllerStateReader";
+import type { RpcRouter } from "../transport/RpcRouter";
 
 /**
  * 已扫描过项目的集合（模块级）：决定 catalogList 走「首次同步扫描」还是
@@ -76,7 +77,7 @@ export type SessionIpcDeps = {
 	appLogger: AppLogger;
 	terminalManager: TerminalSessionManager;
 	mainCopy: (key: string, params?: Record<string, string | number>) => string;
-	getMainWindow: () => BrowserWindow | null;
+	sendToRenderer: (channel: string, ...args: unknown[]) => void;
 	emitSessionRuntimeEvent: (agentId: string, channel: string, payload: unknown) => boolean;
 	emitSessionRuntimeDetach: (target: SessionRuntimeTarget) => void;
 	createAnonymousSession: (input: CreateAnonymousSessionInput) => Promise<CreateAnonymousSessionResult>;
@@ -104,7 +105,7 @@ function sessionCommandIpcError(
 	return new SessionCommandIpcError(error, mainCopy);
 }
 
-export function registerSessionIpc(deps: SessionIpcDeps): void {
+export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): void {
 	const {
 		projectStore,
 		settingsStore,
@@ -119,7 +120,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 		appLogger,
 		terminalManager,
 		mainCopy,
-		getMainWindow,
+		sendToRenderer,
 		emitSessionRuntimeEvent,
 		emitSessionRuntimeDetach,
 		createAnonymousSession,
@@ -131,9 +132,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 		replaceAgentSession,
 	} = deps;
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsList,
-		async (_event, projectId?: string) => {
+		async (projectId?: string) => {
 			const project = projectId ? projectStore.get(projectId) : undefined;
 			let projectPath = project?.path;
 			// WSL 模式：将 Windows 项目路径转为 WSL /mnt/ 格式，
@@ -146,9 +147,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return sessionScanner.list(projectPath);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogList,
-		async (_event, projectId: string, options?: { scan?: boolean }) => {
+		async (projectId: string, options?: { scan?: boolean }) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(mainCopy("project.notFound"));
 			let projectPath = project.path;
@@ -197,10 +198,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			catalogScanCoordinator.schedule(projectId, async () => {
 				try {
 					await runScanAndMerge();
-					const window = getMainWindow();
-					if (window && !window.isDestroyed()) {
-						window.webContents.send(ipcChannels.sessionsCatalogRefreshed, { projectId });
-					}
+					sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId });
 				} catch (error) {
 					void appLogger.warn("session", "Background catalog scan failed", {
 						projectId,
@@ -211,9 +209,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return cachedRecords;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogCreateDraft,
-		async (_event, input: CreateSessionDraftInput) => {
+		async (input: CreateSessionDraftInput) => {
 			const project = projectStore.get(input.projectId);
 			if (!project) throw new Error(mainCopy("project.notFound"));
 			// Auto-fill model / thinkingLevel from pi config when the caller hasn't
@@ -274,9 +272,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return draft;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCreateAnonymous,
-		async (_event, input: CreateAnonymousSessionInput) => {
+		async (input: CreateAnonymousSessionInput) => {
 			const result = await createAnonymousSession(input);
 			void appLogger.info("session", "Anonymous session created", {
 				sessionId: result.session.id,
@@ -285,9 +283,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogUpdate,
-		async (_event, sessionId: string, patch: UpdateSessionRecordInput) => {
+		async (sessionId: string, patch: UpdateSessionRecordInput) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry) throw new Error(mainCopy("session.notFound"));
 			const title = patch.title?.trim();
@@ -311,9 +309,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			});
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogDelete,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry) return false;
 			// A draft may be promoted while a renderer click is in flight. Never delete
@@ -346,10 +344,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 				}
 				await sessionCatalog.remove(sessionId);
 				void appLogger.info("session", "Catalog session deleted", { sessionId, filePath: entry.filePath });
-				const window = getMainWindow();
-				if (window && !window.isDestroyed()) {
-					window.webContents.send(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
-				}
+				sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
 				return true;
 			} catch (error) {
 				// 会话删除失败（文件删除失败/记录移除失败/会话使用中拦截）也要留痕，便于事后追踪。
@@ -362,9 +357,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			}
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogArchive,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return false;
 			// 运行中的会话不能归档（同删除）：移动文件会破坏 pi 对当前写入位置的引用。
@@ -380,9 +375,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return true;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogUnarchive,
-		async (_event, archivedPath: string) => {
+		async (archivedPath: string) => {
 			// 校验入参：归档路径必须是 .pideck-archive 目录内的 JSONL，防路径穿越。
 			if (typeof archivedPath !== "string" || !archivedPath.endsWith(".jsonl")) {
 				throw new Error(mainCopy("session.invalidArchivePath"));
@@ -392,22 +387,22 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return true;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogListArchived,
 		async () => sessionScanner.listArchived(),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogReadMessages,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return [];
 			const content = await sessionScanner.readSessionRawText(entry.filePath);
 			return agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogReadMessagePage,
-		async (_event, sessionId: string, before?: number, pageSize?: number, options?: { unit?: "message" | "turn"; beforeEntryId?: string }) => {
+		async (sessionId: string, before?: number, pageSize?: number, options?: { unit?: "message" | "turn"; beforeEntryId?: string }) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
 			// unit=turn（2026-08 激活分页）：页边界对齐完整轮次，pageSize 复用为轮次数（上限 10）；
@@ -434,9 +429,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return agentManager.readSessionDisplayMessagePage(entry.filePath, sessionId, before, pageSize);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogReadProcessEvents,
-		async (_event, sessionId: string): Promise<SessionProcessEvent[]> => {
+		async (sessionId: string): Promise<SessionProcessEvent[]> => {
 			if (typeof sessionId !== "string" || !sessionId.trim()) return [];
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return [];
@@ -444,13 +439,13 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return parseSessionProcessEvents(content);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogReadReferenceMessages,
-		(_event, sessionId: string) => readCatalogSessionReferenceMessages(sessionId),
+		(sessionId: string) => readCatalogSessionReferenceMessages(sessionId),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogGetContextControllerState,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			if (typeof sessionId !== "string" || !sessionId.trim()) {
 				return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
 			}
@@ -468,10 +463,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 	// 入参校验在边界（渲染层数据不可信），agentId/messageId 必须为非空字符串。
 	// 运行期路径（agentId 绑定）不可用时（历史会话 _viewer 投影 / agent 已退出）
 	// 回退会话文件定位（sessionId → catalog filePath），保证历史浏览同样可展开全文。
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogReadMessageFullText,
 		async (
-			_event,
 			sessionId: unknown,
 			agentId: unknown,
 			messageId: unknown,
@@ -512,9 +506,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			}
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogCopy,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const result = await copyCatalogSession(sessionId);
 			void appLogger.info("session", "Session copied", {
 				sessionId,
@@ -523,9 +517,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsCatalogExportHtml,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const result = await exportCatalogSessionHtml(sessionId);
 			void appLogger.info("session", "Session exported (catalog HTML)", {
 				sessionId,
@@ -534,9 +528,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsSendPrompt,
-		async (_event, input: SendSessionPromptInput) => {
+		async (input: SendSessionPromptInput) => {
 			const startedAt = Date.now();
 			void appLogger.info("session", "Session prompt IPC received", {
 				sessionId: input.sessionId,
@@ -569,17 +563,17 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			}
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsUiResponse,
-		(_event, input: SessionUiResponseInput) => sessionRuntimeCoordinator.respondToUi(input),
+		(input: SessionUiResponseInput) => sessionRuntimeCoordinator.respondToUi(input),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeList,
 		() => sessionRuntimeCoordinator.listRuntimes(),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeActivate,
-		async (_event, sessionId: string) => {
+		async (sessionId: string) => {
 			const startedAt = Date.now();
 			void appLogger.info("session-perf", "Runtime activation IPC started", { sessionId });
 			const result = await sessionRuntimeCoordinator.activateRuntime(sessionId);
@@ -592,9 +586,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 		},
 	);
 	// 渲染层切换会话时汇报聚焦会话；主进程据此判断 Ask 类请求是否需要桌面通知
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsSetFocusedSession,
-		(_event, sessionId: unknown) => {
+		(sessionId: unknown) => {
 			sessionRuntimeCoordinator.setFocusedSession(
 				typeof sessionId === "string" && sessionId.trim()
 					? sessionId.trim()
@@ -602,17 +596,17 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			);
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeStop,
-		(_event, target: SessionRuntimeTarget) => stopSessionRuntime(target),
+		(target: SessionRuntimeTarget) => stopSessionRuntime(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeAbort,
-		(_event, target: SessionRuntimeTarget) => sessionRuntimeCoordinator.abortRuntime(target),
+		(target: SessionRuntimeTarget) => sessionRuntimeCoordinator.abortRuntime(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeRestart,
-		async (_event, target: SessionRuntimeTarget) => {
+		async (target: SessionRuntimeTarget) => {
 			terminalManager.closeAgent(target.agentId);
 			const result = await sessionRuntimeCoordinator.restartRuntime(target);
 			if (result.ok) {
@@ -625,29 +619,29 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeCompact,
-		(_event, target: SessionRuntimeTarget, prompt?: string) =>
+		(target: SessionRuntimeTarget, prompt?: string) =>
 			sessionRuntimeCoordinator.compactRuntime(target, prompt),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeState,
-		(_event, target: SessionRuntimeTarget) =>
+		(target: SessionRuntimeTarget) =>
 			sessionRuntimeCoordinator.getRuntimeState(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeCommands,
-		(_event, target: SessionRuntimeTarget) =>
+		(target: SessionRuntimeTarget) =>
 			sessionRuntimeCoordinator.listRuntimeCommands(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeListModels,
-		(_event, target: SessionRuntimeTarget) =>
+		(target: SessionRuntimeTarget) =>
 			sessionRuntimeCoordinator.listRuntimeModels(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeExportHtml,
-		async (_event, target: SessionRuntimeTarget) => {
+		async (target: SessionRuntimeTarget) => {
 			const result = await sessionRuntimeCoordinator.exportRuntimeHtml(target);
 			void appLogger.info("session", "Session exported (runtime HTML)", {
 				sessionId: target.sessionId,
@@ -656,38 +650,37 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeEditMessage,
-		(_event, target: SessionRuntimeTarget, messageId: string, newText: string) =>
+		(target: SessionRuntimeTarget, messageId: string, newText: string) =>
 			sessionRuntimeCoordinator.editRuntimeMessage(target, messageId, newText),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeDeleteMessage,
-		(_event, target: SessionRuntimeTarget, messageId: string) =>
+		(target: SessionRuntimeTarget, messageId: string) =>
 			sessionRuntimeCoordinator.deleteRuntimeMessage(target, messageId),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimePrepareResend,
-		(_event, target: SessionRuntimeTarget, messageId: string) =>
+		(target: SessionRuntimeTarget, messageId: string) =>
 			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeSetModel,
 		(
-			_event,
 			target: SessionRuntimeTarget,
 			provider: string,
 			modelId: string,
 		) => sessionRuntimeCoordinator.setRuntimeModel(target, provider, modelId),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeSetThinking,
-		(_event, target: SessionRuntimeTarget, level: string) =>
+		(target: SessionRuntimeTarget, level: string) =>
 				sessionRuntimeCoordinator.setRuntimeThinking(target, level),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeClone,
-		async (_event, target: SessionRuntimeTarget) => {
+		async (target: SessionRuntimeTarget) => {
 			const validated = sessionRuntimeCoordinator.validateTarget(target);
 			if (!validated.ok) return validated;
 			try {
@@ -712,14 +705,14 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 		},
 	);
 	// fork 与 clone 共用 replaceAgentSession：RPC 成功后刷新 sessionPath / 消息投影
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeGetForkMessages,
-		(_event, target: SessionRuntimeTarget) =>
+		(target: SessionRuntimeTarget) =>
 			sessionRuntimeCoordinator.getRuntimeForkMessages(target),
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.sessionsRuntimeFork,
-		async (_event, target: SessionRuntimeTarget, entryId: string) => {
+		async (target: SessionRuntimeTarget, entryId: string) => {
 			const validated = sessionRuntimeCoordinator.validateTarget(target);
 			if (!validated.ok) return validated;
 			try {
@@ -743,9 +736,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			}
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.codexSessionsScan,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await codexSessionImporter.scan(project.path);
@@ -753,9 +746,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.codexSessionsImport,
-		async (_event, projectId: string, sourcePaths: string[]) => {
+		async (projectId: string, sourcePaths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await codexSessionImporter.import(project.path, sourcePaths);
@@ -766,9 +759,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.claudeSessionsScan,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await claudeSessionImporter.scan(project.path);
@@ -776,9 +769,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.claudeSessionsImport,
-		async (_event, projectId: string, sourcePaths: string[]) => {
+		async (projectId: string, sourcePaths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await claudeSessionImporter.import(project.path, sourcePaths);
@@ -789,9 +782,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.openCodeSessionsScan,
-		async (_event, projectId: string) => {
+		async (projectId: string) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await openCodeSessionImporter.scan(project.path);
@@ -799,9 +792,9 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
 			return result;
 		},
 	);
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.openCodeSessionsImport,
-		async (_event, projectId: string, sourcePaths: string[]) => {
+		async (projectId: string, sourcePaths: string[]) => {
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
 			const result = await openCodeSessionImporter.import(project.path, sourcePaths);

@@ -2,7 +2,12 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } 
 import { ChevronUp, Clock, Share, SquarePen, Trash } from "lucide-react";
 import { atom, useAtomValue } from "jotai";
 import type { ImageContent } from "../../../../../shared/types";
-import { liveTextStreamingBySessionAtom, newTurnCollapseTickBySessionIdAtomFamily, type SessionRuntimeUiState } from "../../../atoms/session-atoms";
+import {
+	liveTextStreamingBySessionAtom,
+	liveTextStreamingMessageIdBySessionAtom,
+	newTurnCollapseTickBySessionIdAtomFamily,
+	type SessionRuntimeUiState,
+} from "../../../atoms/session-atoms";
 import { sessionRuntimeUiBySessionIdAtomFamily } from "../../../atoms/session-selectors";
 import { turnFlowSettingsAtom } from "../../../atoms/app-ui-atoms";
 import { t } from "../../../i18n";
@@ -21,6 +26,7 @@ import type {
 	MessageItem,
 } from "../timeline/types";
 import { sameAgentRunForRender } from "../../app/AppUtils";
+import { createTrackedEditSubmit } from "../../../utils/trackedEditSubmit";
 import { FinalAnswer } from "./FinalAnswer";
 import { AskQuestionResultCard } from "../AskQuestionResultCard";
 import { InterimAnswer } from "./InterimAnswer";
@@ -33,6 +39,8 @@ import type { DiffFileHandler } from "../ToolCallComponents";
 
 /** sessionId 为空时的占位 atom：恒 false（无会话不挂 live）。 */
 const NO_LIVE_TEXT_ATOM = atom(false);
+/** sessionId 为空时的占位 atom：恒 ""（无会话不订阅流式消息 ID）。 */
+const NO_STREAMING_MSG_ID_ATOM = atom("");
 /** sessionId 为空时的占位 atom：恒 0（无会话不订阅新一轮信号）。 */
 const NO_TURN_TICK_ATOM = atom(0);
 /** sessionId 为空时的占位 atom：恒 undefined（无会话不订阅 UI 请求）。 */
@@ -83,6 +91,10 @@ export const TurnRow = memo(
 	const [editing, setEditing] = useState(false);
 	const [editText, setEditText] = useState("");
 	const editAreaRef = useRef<HTMLDivElement | null>(null);
+	// 编辑是跨渲染周期的长时操作：进入编辑时捕获当次提交回调，保存时用捕获值。
+	// 若保存时才读最新 props，Agent 重启后回调已换绑新 generation target，会把旧
+	// 编辑重定向到新 runtime、绕过 freshness 校验（见 trackedEditSubmit.ts 注释）。
+	const trackedEditSubmit = useRef(createTrackedEditSubmit());
 	// 激活编辑时自动滚动到编辑区（避免 textarea 超出可视区域）
 	useEffect(() => {
 		if (editing && editAreaRef.current) {
@@ -150,15 +162,19 @@ export const TurnRow = memo(
 	}, [displayItems]);
 
 	// 末条 Live 正文：挂在折叠容器外常显（避免 Radix Collapsible 卸载/收起导致无 DOM）。
-	// 要求「存在活动正文流」且「本轮是最后一个 agent-run」才挂 live：
+	// 要求「存在活动正文流」且「interim 骨架 id 与当前 streamingMessageId 精确匹配」才挂 live：
 	// - 中间回复 message_end 后槽删（streaming=false）立即落回容器内 settled，
 	//   消除双失明消失窗口（live 读空 + 容器内被跳过）；
-	// - 被 steer 打断的旧轮尾部是空文本 interim（骨架挂载点），若允许旧轮挂 live，
-	//   新一轮流式时旧轮会把会话槽里的新一轮正文再打印一遍——同一中间回复前后双份
-	//   （2026-08 回归：判定逻辑见 resolveLiveInterimId，按轮级门控）。
-	// 流式期间 content 每 50ms 变化但 streaming 不变 → 派生 boolean 引用稳定 → 零额外重渲染。
+	// - 被 steer 打断的旧轮或前序轮次 id 不匹配，绝不挂载新一轮流式正文；
+	// - 新一轮 assistant skeleton 尚未进入前端消息列表时，宁可短暂等待骨架到达，绝不挂错位置。
+	// 流式期间 content 每 50ms 变化但 streaming 位与 messageId 不变 → 派生 selector 引用稳定 → 零额外重渲染。
 	const liveTextActive = useAtomValue(
 		props.sessionId ? liveTextStreamingBySessionAtom(props.sessionId) : NO_LIVE_TEXT_ATOM,
+	);
+	const streamingMessageId = useAtomValue(
+		props.sessionId
+			? liveTextStreamingMessageIdBySessionAtom(props.sessionId)
+			: NO_STREAMING_MSG_ID_ATOM,
 	);
 	const liveInterimId = useMemo(() => {
 		const last = displayItems.find(
@@ -169,19 +185,19 @@ export const TurnRow = memo(
 			sessionId: props.sessionId,
 			lastInterimId,
 			liveTextActive,
+			streamingMessageId,
 			lastMessageText: last.message.text,
 			agentRunning: props.agentRunning,
 			isStreaming: props.isStreaming,
-			isLastAgentRun: props.isLastAgentRun,
 		});
 	}, [
 		props.sessionId,
 		props.agentRunning,
 		props.isStreaming,
-		props.isLastAgentRun,
 		lastInterimId,
 		displayItems,
 		liveTextActive,
+		streamingMessageId,
 	]);
 
 	// live plain 卸下 → settled Markdown 挂上：只给刚卸下的那条 id 打一次 settle 淡入。
@@ -260,13 +276,17 @@ export const TurnRow = memo(
 	if (displayItems.length === 0 && allImages.length === 0) return null;
 
 	const startEditing = () => {
+		// 捕获当前 onEditMessage（绑定进入编辑时的 runtime target），保存时使用该捕获值。
+		trackedEditSubmit.current.begin(props.onEditMessage);
 		setEditText(mergedText);
 		setEditing(true);
 	};
 	const saveEdit = () => {
 		const targetId = assistantMessages.at(-1)?.message.id;
-		if (targetId && props.onEditMessage) {
-			props.onEditMessage(targetId, editText);
+		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
+		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
+		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
+		if (targetId && trackedEditSubmit.current.submit(targetId, editText)) {
 			setEditing(false);
 		}
 	};
@@ -501,14 +521,18 @@ turnRowPropsEqual,
  * TurnRow 自定义 memo 比较（阶段 0：历史 run 跳过重渲染）。
  *
  * 比较项：
+ * - isStreaming 边沿（!==）：false→true / true→false 需要 render（折叠态切换）；
+ *   true→true 不强制 render——live 正文由 AnswerOutput 自订 atom，
+ *   token 更新不需要父 TurnRow 更新（旧写法 `||` 会让流式中每次父级 render 都穿透）。
  * - run：深度比较内容（sameAgentRunForRender），未变化的 run 不重渲染；
- * - 标量 props（fresh/showThinking/isStreaming/liveThinkingId/agentRunning）：=== 比较；
+ * - 标量 props（fresh/showThinking/liveThinkingId/agentRunning/isLatestRun/isLastAgentRun）：=== 比较；
  * - 回调函数（onPreviewImage/onOpenExternal/onOpenFile/onDiffFile/onEditMessage/onDeleteMessage/
  *   onEnterMultiSelect）：行为稳定（读 ref/setState），引用变化不影响渲染结果，忽略（同 FinalAnswer 惯例）。
  */
 function turnRowPropsEqual(prev: TurnRowProps, next: TurnRowProps): boolean {
-	// 流式 run：Live AnswerOutput 随 atom 更新；父级仍需在 isStreaming 边沿重渲染折叠态。
-	if (prev.isStreaming || next.isStreaming) return false;
+	// isStreaming 只在边沿（false↔true）触发重渲染；持续 streaming 期间由 live 正文
+	// 叶子自订 atom 驱动，父级不需要每次 render 都穿透 TurnRow。
+	if (prev.isStreaming !== next.isStreaming) return false;
 	if (!sameAgentRunForRender(prev.run, next.run)) return false;
 	return (
 		prev.sessionId === next.sessionId &&

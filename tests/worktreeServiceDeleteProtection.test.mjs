@@ -77,7 +77,7 @@ function loadService(execFileImpl, trashImpl) {
 		"../fs/trash": { trashPath: trashImpl },
 		"../logging/sharedLogger": { getAppLogger: () => null },
 	};
-	return new (compile(servicePath, stubs).WorktreeService)();
+	return new (compile(servicePath, stubs).WorktreeService)(undefined, trashImpl);
 }
 
 /** 默认 trashPath：模拟回收站真实移动（删除源），记录调用。 */

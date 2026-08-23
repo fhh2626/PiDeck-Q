@@ -10,4 +10,4 @@ export { AssistantText } from "./SurfaceComponents";
 export { ToolCard, ToolGroupCard } from "./ToolCallComponents";
 export { ImagePreviewModal } from "./MessageImage";
 export { PromptSuggestions } from "./SurfaceComponents";
-export { DrawerContent, SessionFileSummary, FileContextMenu } from "./SurfaceComponents";
+export { SessionFileSummary, FileContextMenu } from "./SurfaceComponents";

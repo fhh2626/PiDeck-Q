@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { join } from "node:path";
-import { app } from "electron";
 import initSqlJs from "sql.js";
 import { isPromptAlreadyExistsError, PromptManager } from "./PromptManager";
 import { createUniquePrompt } from "./createUniquePrompt";
+import type { WslEnvironment } from "../wsl/WslPaths";
 import type {
 	YaoPromptCategory,
 	YaoPromptItem,
@@ -22,13 +22,14 @@ import type {
  */
 export class XuePromptManager {
 	private readonly dbPath: string;
+	private readonly wasmLocateDir?: string;
+	private readonly isPackaged: boolean;
 	private readonly promptManager: PromptManager;
 
-	constructor(home?: string) {
-		const base = app.isPackaged
-			? process.resourcesPath
-			: join(app.getAppPath(), "resources");
-		this.dbPath = join(base, "xueprompts.db");
+	constructor(home?: string, dbPath?: string, wasmLocateDir?: string, isPackaged = false) {
+		this.dbPath = dbPath ?? join(process.cwd(), "resources", "xueprompts.db");
+		this.wasmLocateDir = wasmLocateDir;
+		this.isPackaged = isPackaged;
 		this.promptManager = new PromptManager(home);
 	}
 
@@ -45,26 +46,19 @@ export class XuePromptManager {
 		if (!this.sqlPromise) {
 			this.sqlPromise = initSqlJs({
 				locateFile: (file: string) => {
-					if (app.isPackaged) {
-						return join(
-							process.resourcesPath,
-							"app.asar.unpacked",
-							"node_modules",
-							"sql.js",
-							"dist",
-							file
-						);
+					if (this.wasmLocateDir) {
+						return join(this.wasmLocateDir, file);
 					}
-					return join(app.getAppPath(), "node_modules", "sql.js", "dist", file);
+					return join(process.cwd(), "node_modules", "sql.js", "dist", file);
 				},
 			});
 		}
 		return this.sqlPromise;
 	}
 
-	// configureWsl deferred until WSL infrastructure is ported
-	configureWsl(_wsl: any) {
-		this.promptManager.configureWsl(null);
+	// configureWsl 转发给内部 PromptManager；null 恢复构造时注入的本地 home。
+	configureWsl(environment: WslEnvironment | null) {
+		this.promptManager.configureWsl(environment);
 	}
 
 	/**

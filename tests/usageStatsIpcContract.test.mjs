@@ -34,7 +34,7 @@ test("usage-stats channels are declared in shared/ipc.ts with domain:action name
 
 test("main handler registers every usage-stats channel", () => {
   for (const key of CHANNELS) {
-    assert.match(handler, new RegExp(`ipc\\.handle\\(ipcChannels\\.${key}`), key);
+    assert.match(handler, new RegExp(`router\\.handle\\(ipcChannels\\.${key}`), key);
   }
 });
 

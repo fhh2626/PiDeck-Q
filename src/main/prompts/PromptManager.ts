@@ -1,9 +1,4 @@
-import { shell } from "electron";
-import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join, basename } from "node:path";
-import { homedir } from "node:os";
-import { trashPath } from "../fs/trash";
+import type { TrashPath } from "../fs/trash";
 import type {
 	CreatePiPromptTemplateInput,
 	PiPromptTemplateListResult,
@@ -12,8 +7,17 @@ import type {
 import type { WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 
-export const PROMPT_ALREADY_EXISTS_CODE = "PROMPT_ALREADY_EXISTS";
+import { existsSync } from "node:fs";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join, basename } from "node:path";
+import { homedir } from "node:os";
 
+export type PromptPlatformOps = {
+	openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
+	trashPath?: TrashPath;
+};
+
+export const PROMPT_ALREADY_EXISTS_CODE = "PROMPT_ALREADY_EXISTS";
 export class PromptAlreadyExistsError extends Error {
 	readonly code = PROMPT_ALREADY_EXISTS_CODE;
 
@@ -199,19 +203,27 @@ when appropriate. If unsure whether a skill is needed, follow the rule:
  */
 export class PromptManager {
 	private promptsDir: string;
+	/**
+	 * 构造时注入的本地基准 home。
+	 * configureWsl(null) 恢复的是该值，而不是重新读取 os.homedir()，
+	 * 这样测试/CLI host 注入的隔离 HOME 不会被启动任务覆盖。
+	 */
+	private readonly localHome: string;
 
 	constructor(
 		home?: string,
 		private readonly translate: PromptCopy = () => "Prompt operation failed.",
 		private readonly getSettings: () => PromptSettingsSlice = () => ({ hiddenBuiltinPromptNames: [] }),
 		private readonly patchSettings: (patch: PromptSettingsSlice) => Promise<unknown> = async () => undefined,
+		private readonly platformOps?: PromptPlatformOps,
 	) {
-		this.promptsDir = join(home ?? homedir(), ".pi", "agent", "prompts");
+		this.localHome = home ?? homedir();
+		this.promptsDir = join(this.localHome, ".pi", "agent", "prompts");
 	}
 
-	/** 将 prompt 目录切换到统一解析出的 WSL HOME；null 恢复 Windows home。 */
+	/** 将 prompt 目录切换到统一解析出的 WSL HOME；null 恢复构造时注入的本地 home。 */
 	configureWsl(environment: WslEnvironment | null) {
-		this.promptsDir = join(environment?.windowsHome ?? homedir(), ".pi", "agent", "prompts");
+		this.promptsDir = join(environment?.windowsHome ?? this.localHome, ".pi", "agent", "prompts");
 	}
 
 	getDir(): string {
@@ -307,8 +319,11 @@ export class PromptManager {
 		if (!existsSync(filePath)) {
 			throw new Error(this.translate("mainPrompt.fileNotFound"));
 		}
+		if (!this.platformOps?.trashPath) {
+			throw new Error("Trash service unavailable");
+		}
 		// 提示词模板是用户内容：删除走系统回收站（可恢复）；回收站不可用时抛错，拒绝硬删。
-		await trashPath(filePath, { source: "prompts:delete" });
+		await this.platformOps.trashPath(filePath, { source: "prompts:delete" });
 	}
 
 	/** 是否还有被用户删除、可被「找回默认模板」恢复的内置项。 */
@@ -410,13 +425,18 @@ export class PromptManager {
 	async deleteFromProject(projectPath: string, fileName: string): Promise<void> {
 		const filePath = join(projectPath, ".pi", "prompts", fileName);
 		if (!existsSync(filePath)) throw new Error(this.translate("mainPrompt.fileNotFound"));
+		if (!this.platformOps?.trashPath) {
+			throw new Error("Trash service unavailable");
+		}
 		// 项目内模板同样走回收站，避免误删后无法恢复。
-		await trashPath(filePath, { source: "prompts:delete-project" });
+		await this.platformOps.trashPath(filePath, { source: "prompts:delete-project" });
 	}
 
 	async openFolder(): Promise<void> {
 		await mkdir(this.promptsDir, { recursive: true });
-		await shell.openPath(this.promptsDir);
+		if (this.platformOps?.openPath) {
+			await this.platformOps.openPath(this.promptsDir);
+		}
 	}
 
 	/**

@@ -5,45 +5,55 @@ import { resolveLiveInterimId } from "../src/renderer/src/components/session/tim
 /**
  * Live 正文挂载判定测试。
  *
- * 回归背景（2026-08）：steer 打断后，上一轮没有最终回答、尾部是空文本 interim
- * （纯工具调用消息的骨架挂载点）。旧判定只看「会话存在活动正文流 + 尾部空骨架」，
- * 不看本轮是否最后一个 agent-run——新一轮流式时旧轮也挂 live，读同一个会话级
- * 流式槽，把新一轮正文在旧轮底部再打印一遍：同一个中间回复前后同时出现两份。
+ * 核心规则：流式正文必须按 assistantMessageId 精确绑定消息，不能再通过“最后一个 agent-run”猜它属于哪一轮。
+ * - assistant skeleton id === live stream messageId 才允许显示；
+ * - live text 已到但对应 skeleton 还没进入 history 时，绝不挂到旧 run（宁可短暂等待 skeleton，也不挂到错误轮次）；
+ * - skeleton 到达后，新 assistant 正确挂载 live text。
  */
 
 const base = {
 	sessionId: "s1",
 	lastInterimId: "msg-1",
+	streamingMessageId: "msg-1",
 	liveTextActive: true,
 	lastMessageText: "",
 	agentRunning: false,
 	isStreaming: false,
-	isLastAgentRun: true,
 };
 
-test("最后一个 agent-run + 空文本骨架 + 活动流 → 挂载 live（正常流式挂载点）", () => {
+test("skeleton id === streamingMessageId + 空文本骨架 + 活动流 → 挂载 live", () => {
 	assert.equal(resolveLiveInterimId(base), "msg-1");
 });
 
-test("非最后一个 agent-run + 空文本骨架 + 活动流 → 不挂载（steer 打断后的旧轮不得挂会话级流式槽）", () => {
-	assert.equal(resolveLiveInterimId({ ...base, isLastAgentRun: false }), undefined);
-});
-
-test("非最后一个 agent-run 即使 agentRunning/isStreaming 也不挂载", () => {
+test("skeleton id !== streamingMessageId → 不挂载（新一轮流式绝不挂到旧轮 assistant）", () => {
 	assert.equal(
-		resolveLiveInterimId({ ...base, isLastAgentRun: false, agentRunning: true, isStreaming: true }),
+		resolveLiveInterimId({
+			...base,
+			lastInterimId: "msg-old",
+			streamingMessageId: "msg-new",
+		}),
 		undefined,
 	);
 });
 
-test("最后一个 agent-run + 已落定正文 + 流式中 → 保持挂载", () => {
+test("streamingMessageId 缺失或未就绪 → 不挂载", () => {
+	assert.equal(
+		resolveLiveInterimId({
+			...base,
+			streamingMessageId: undefined,
+		}),
+		undefined,
+	);
+});
+
+test("skeleton id === streamingMessageId + 已落定正文 + 流式中 → 保持挂载", () => {
 	assert.equal(
 		resolveLiveInterimId({ ...base, lastMessageText: "已落定的正文", isStreaming: true }),
 		"msg-1",
 	);
 });
 
-test("最后一个 agent-run + 已落定正文 + 无流式 → 不挂载（settled，落回容器内渲染）", () => {
+test("skeleton id === streamingMessageId + 已落定正文 + 无流式 → 不挂载（settled，落回容器内渲染）", () => {
 	assert.equal(
 		resolveLiveInterimId({ ...base, lastMessageText: "已落定的正文" }),
 		undefined,
@@ -59,6 +69,38 @@ test("无会话 / 无挂载点 → 不挂载", () => {
 	assert.equal(resolveLiveInterimId({ ...base, lastInterimId: undefined }), undefined);
 });
 
-test("isLastAgentRun 缺省（旧调用方未传）→ 不挂载，防御性拒绝", () => {
-	assert.equal(resolveLiveInterimId({ ...base, isLastAgentRun: undefined }), undefined);
+test("核心回归：new user 已发送，新流式已到达但 new skeleton 尚未进入 history 时，新 live text 不能挂到 old assistant", () => {
+	// 时序 1：新问题刚发送，history 仅有 [old assistant, new user]
+	// streamingText 已经收到新 assistant 的流式正文 (messageId: "new-assistant-id")
+	// 此时 old assistant run 计算 liveInterimId
+	// （即使它仍是历史里的最后一个 agent-run，也绝不挂载——归属只由 id 精确匹配决定）
+	const oldAssistantRunLiveId = resolveLiveInterimId({
+		sessionId: "session-1",
+		lastInterimId: "old-assistant-id",
+		streamingMessageId: "new-assistant-id",
+		liveTextActive: true,
+		lastMessageText: "",
+		isStreaming: true,
+	});
+	assert.equal(
+		oldAssistantRunLiveId,
+		undefined,
+		"新 live text 绝不能挂到 old assistant",
+	);
+
+	// 时序 2：new assistant skeleton 到达前端消息列表
+	// 新轮次计算 liveInterimId
+	const newAssistantRunLiveId = resolveLiveInterimId({
+		sessionId: "session-1",
+		lastInterimId: "new-assistant-id",
+		streamingMessageId: "new-assistant-id",
+		liveTextActive: true,
+		lastMessageText: "",
+		isStreaming: true,
+	});
+	assert.equal(
+		newAssistantRunLiveId,
+		"new-assistant-id",
+		"skeleton 到达后，新 assistant 正常挂载 live text",
+	);
 });

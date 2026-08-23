@@ -2,7 +2,6 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { normalize, join, dirname } from "node:path";
 import { dirname as posixDirname, normalize as posixNormalize } from "node:path/posix";
 import { homedir } from "node:os";
-import { net } from "electron";
 import type { ConfigFileDiagnostic, ConfigFileReadResult } from "../../shared/types";
 import {
 	ensureOpenAiVersionPath,
@@ -92,19 +91,32 @@ type TestRequest = {
  */
 export class ConfigManager {
 	private configDir: string;
+	/**
+	 * 构造时注入的本地基准 configDir（完整目录，不是 home）。
+	 * configureWsl(null) 恢复的是该值，而不是回退到模块级 PI_AGENT_DIR，
+	 * 这样 createBackend 注入的平台 configDir 不会被启动任务覆盖。
+	 */
+	private readonly localConfigDir: string;
 
 	constructor(
 		configDir?: string,
 		private readonly translate: ConfigCopy = (key, params) => mainProcessT("zh-CN", key, params),
+		private readonly fetchFn: typeof globalThis.fetch = globalThis.fetch,
 	) {
-		this.configDir = configDir ?? PI_AGENT_DIR;
+		this.localConfigDir = configDir ?? PI_AGENT_DIR;
+		this.configDir = this.localConfigDir;
 	}
 
-	/** 将配置目录切换到统一解析出的 WSL HOME；null 恢复 Windows home。 */
+	/** 将配置目录切换到统一解析出的 WSL HOME；null 恢复构造时注入的本地 configDir。 */
 	configureWsl(environment: WslEnvironment | null) {
 		this.configDir = environment
 			? join(environment.windowsHome, ".pi", "agent")
-			: PI_AGENT_DIR;
+			: this.localConfigDir;
+	}
+
+	/** 当前配置目录（本地或 WSL 基准目录）。 */
+	getDir(): string {
+		return this.configDir;
 	}
 
 	// ── 读取 ──────────────────────────────────────────────
@@ -388,8 +400,8 @@ export class ConfigManager {
 				const timeout = setTimeout(() => controller.abort(), 10_000);
 
 				try {
-					// 桌面端配置检测属于 Electron 主进程自身请求；使用 net.fetch 才能走 defaultSession 的代理配置。
-					const res = await net.fetch(request.url, {
+					// 桌面端配置检测属于自身请求；走注入的 fetchFn（Electron 下注入 net.fetch 以遵循 defaultSession 代理）
+					const res = await this.fetchFn(request.url, {
 						method: request.method ?? "GET",
 						headers: request.headers,
 						signal: controller.signal,
@@ -926,9 +938,9 @@ export class ConfigManager {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), PROVIDER_TEST_TIMEOUT_MS);
 
-			let res: Awaited<ReturnType<typeof net.fetch>>;
+			let res: Response;
 			try {
-				res = await net.fetch(requestUrl, {
+				res = await this.fetchFn(requestUrl, {
 					method: "POST",
 					headers,
 					body: requestBody,

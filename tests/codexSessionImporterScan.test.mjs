@@ -40,6 +40,7 @@ function loadImporter(homePath) {
 		exports: {},
 		process,
 		require: (id) => {
+			if (id === "node:os" || id === "os") return { ...require("node:os"), homedir: () => homePath };
 			if (id === "electron") return { app: { getPath: () => homePath }, shell: {} };
 			if (id === "../../shared/codexSessionMeta") return codexMeta;
 			if (id === "./SessionImportCopy") return importCopy;

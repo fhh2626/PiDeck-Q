@@ -193,6 +193,12 @@ export const ipcChannels = {
 	appUpdateProgress: "app:update-progress",
 	appOpenExternal: "app:open-external",
 	appOpenInBrowser: "app:open-in-browser",
+	/** 主进程 → 主窗口：内置浏览器 guest 页面请求打开 mailto/tel/sms 等系统协议，
+	 *  交由受信渲染层弹确认框，用户同意后才经 browserOpenExternal 网关启动系统处理器。 */
+	appConfirmExternalProtocol: "app:confirm-external-protocol",
+	/** 渲染层 → 主进程：用户对外部协议确认请求的应答（只回传 id，
+	 *  URL 权威值在主进程 pending 注册表）。 */
+	appRespondExternalProtocol: "app:respond-external-protocol",
 	appRestart: "app:restart",
 	/** 进程监控：拉取 Electron 各进程 + pi agent 子进程的内存/CPU 快照 */
 	processMetrics: "system:process-metrics",

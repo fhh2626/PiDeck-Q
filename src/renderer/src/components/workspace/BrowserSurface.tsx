@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { BrowserPanel } from "../app/BrowserPanel";
+import { ElectronWebviewHost } from "../../browser/electron/ElectronWebviewHost";
 
 export type BrowserSurfaceProps = {
   fullscreen: boolean;
@@ -23,6 +24,7 @@ export function BrowserSurface(props: BrowserSurfaceProps) {
             isFullscreen
             onClose={props.onClose}
             onMinimize={props.onMinimize}
+            hostSurface={ElectronWebviewHost}
           />
           {props.children}
         </div>
@@ -38,6 +40,7 @@ export function BrowserSurface(props: BrowserSurfaceProps) {
         hideChromeClose
         onClose={props.onClose}
         onToggleFullscreen={props.onEnterFullscreen}
+        hostSurface={ElectronWebviewHost}
       />
       {props.children}
     </div>

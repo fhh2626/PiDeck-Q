@@ -1,7 +1,7 @@
-import { app } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { homedir } from "node:os";
 import type {
 	ClaudeImportReport,
 	ClaudeImportResult,
@@ -27,10 +27,17 @@ type ParsedClaudeSession = {
 };
 
 export class ClaudeSessionImporter {
-	private readonly claudeRoot = join(app.getPath("home"), ".claude", "projects");
-	private readonly piRoot = join(app.getPath("home"), ".pi", "agent", "sessions");
+	private readonly claudeRoot: string;
+	private readonly piRoot: string;
 
-	constructor(private readonly translate: SessionImportCopy = defaultSessionImportCopy) {}
+	constructor(
+		private readonly translate: SessionImportCopy = defaultSessionImportCopy,
+		homeDir?: string,
+	) {
+		const home = homeDir ?? homedir();
+		this.claudeRoot = join(home, ".claude", "projects");
+		this.piRoot = join(home, ".pi", "agent", "sessions");
+	}
 
 	async scan(projectPath: string): Promise<ClaudeSessionSummary[]> {
 		const projectDir = this.getClaudeProjectDir(projectPath);

@@ -6,10 +6,10 @@
  * - 返回结构化结果：业务错误转 { ok:false, error }，不裸抛异常跨 IPC。
  */
 
-import { ipcMain } from "electron";
 import { ipcChannels } from "../../shared/ipc";
 import type { SecurityConfig } from "../../shared/types";
 import type { SecurityStore } from "../security/SecurityStore";
+import type { RpcRouter } from "../transport/RpcRouter";
 
 export type SecurityIpcDeps = {
 	securityStore: SecurityStore;
@@ -36,12 +36,12 @@ function sanitizePatch(value: unknown): Partial<SecurityConfig> | null {
 	return patch;
 }
 
-export function registerSecurityIpc({ securityStore, log }: SecurityIpcDeps): void {
-	ipcMain.handle(ipcChannels.securityGetConfig, () => securityStore.getConfig());
+export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: SecurityIpcDeps): void {
+	router.handle(ipcChannels.securityGetConfig, () => securityStore.getConfig());
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.securityUpdateConfig,
-		async (_event, value: unknown): Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }> => {
+		async (value: unknown): Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }> => {
 			const patch = sanitizePatch(value);
 			if (!patch) {
 				return { ok: false, error: "安全配置补丁格式非法" };
@@ -57,10 +57,9 @@ export function registerSecurityIpc({ securityStore, log }: SecurityIpcDeps): vo
 		},
 	);
 
-	ipcMain.handle(
+	router.handle(
 		ipcChannels.securitySetSessionLevel,
 		async (
-			_event,
 			sessionId: unknown,
 			levelId: unknown,
 		): Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }> => {

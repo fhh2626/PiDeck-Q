@@ -67,8 +67,8 @@ test("auto-collapse does not steal follow or show the jump-to-bottom button", ()
   assert.doesNotMatch(timeline, /onProcessAutoCollapsed/);
   assert.doesNotMatch(controller, /clientHeight \* 0\.35/);
   // isLatestRun（自动收起）保持按「最后一条显示条目」判定；
-  // live 挂载门用单独的 isLastAgentRun（最后一个 agent-run）判定——
-  // 两者语义不同，不能合并（见 liveMountDecision 回归）
+  // isLastAgentRun（最后一个 agent-run）用于 ask_question 门控（pickActiveAskRequest）——
+  // live 正文挂载已改为 streamingMessageId 精确匹配（见 liveMountDecision 回归），与二者无关。
   assert.match(timeline, /isLatestRun=\{index === displayRuns\.length - 1\}/);
   assert.match(timeline, /isLastAgentRun=\{index === lastAgentRunIndex\}/);
   assert.match(timeline, /lastAgentRunIndex/);

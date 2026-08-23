@@ -14,7 +14,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
  */
 
 const webServiceSource = readFileSync("src/main/web/WebServiceManager.ts", "utf8");
-const indexSource = readFileSync("src/main/index.ts", "utf8");
+const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
 
 const {
 	PiEventToUiMessageStream,
@@ -221,10 +221,10 @@ test("WebServiceManager registers /stream SSE endpoint with protocol header", ()
 });
 
 test("index.ts wires pi event source + agent-to-session router to WebServiceManager", () => {
-	assert.match(indexSource, /subscribePiEvents:/);
-	assert.match(indexSource, /addLocalEventListener/);
-	assert.match(indexSource, /getSessionIdForAgent:/);
-	assert.match(indexSource, /getSessionId\(agentId\)/);
+	assert.match(createBackendSource, /subscribePiEvents:/);
+	assert.match(createBackendSource, /addLocalEventListener/);
+	assert.match(createBackendSource, /getSessionIdForAgent:/);
+	assert.match(createBackendSource, /getSessionId\(agentId\)/);
 });
 
 test("web frontend preserves streaming block during polling refresh", () => {

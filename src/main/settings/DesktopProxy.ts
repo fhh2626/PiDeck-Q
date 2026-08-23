@@ -1,17 +1,19 @@
-import { app, session } from "electron";
 import type { AppSettings } from "../../shared/types";
 import { getAppLogger } from "../logging/sharedLogger";
+import type { PlatformProxy } from "../platform/PlatformServices";
 
 type DesktopProxySettings = Pick<
 	AppSettings,
 	"desktopProxyEnabled" | "desktopProxyUrl" | "desktopProxyBypass"
 >;
 
-export async function applyDesktopProxy(settings: DesktopProxySettings) {
+export async function applyDesktopProxy(
+	settings: DesktopProxySettings,
+	platformProxy: PlatformProxy,
+) {
 	const config = buildDesktopProxyConfig(settings);
 	try {
-		await session.defaultSession.setProxy(config);
-		await app.setProxy(config);
+		await platformProxy.apply(config);
 		// 桌面代理属全局网络配置：只记 mode，不记 proxyRules（URL 可能内嵌凭据）
 		void getAppLogger()?.info("settings", "Desktop proxy applied", { mode: config.mode });
 	} catch (error) {
@@ -23,7 +25,7 @@ export async function applyDesktopProxy(settings: DesktopProxySettings) {
 	}
 }
 
-function buildDesktopProxyConfig(settings: DesktopProxySettings) {
+export function buildDesktopProxyConfig(settings: DesktopProxySettings) {
 	if (!settings.desktopProxyEnabled) return { mode: "direct" as const };
 
 	const proxyRules = normalizeProxyRules(settings.desktopProxyUrl);

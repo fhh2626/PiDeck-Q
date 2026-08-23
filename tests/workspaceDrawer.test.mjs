@@ -187,9 +187,9 @@ test("closing the last browser tab syncs local state and collapses the sidebar",
   // closeBrowser 语义：关闭整个浏览器面板（退出全屏 + 关抽屉），区别于 minimizeBrowser
   assert.match(hook, /const closeBrowser = useCallback\(\(\) => \{\s*setBrowserFullscreen\(false\);\s*closeDrawer\(\);\s*\}, \[closeDrawer\]\);/);
   assert.match(hook, /const minimizeBrowser = useCallback/);
-  // closeTab 最后 tab 分支：moduleState 与本地 state 同时清空，再调用 onClose
+  // closeTab 最后 tab 分支：session module 与本地 state 同时清空，再调用 onClose
   assert.match(panel, /if \(current\.length <= 1\) \{/);
-  assert.match(panel, /moduleState\.tabs = \[\];/);
+  assert.match(panel, /resetBrowserPanelSession\(\);/);
   assert.match(panel, /setTabs\(\[\]\);/);
   assert.match(panel, /setActiveTabId\(null\);/);
   assert.match(panel, /onClose\?\.\(\);/);

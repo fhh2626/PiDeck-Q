@@ -99,3 +99,29 @@ test("renderer/App default settings seed all four modes to default", () => {
     assert.match(app, new RegExp(field + ': "default"'));
   }
 });
+
+test("chat typography token injection is a useLayoutEffect kept on the existing visual-token effect", () => {
+  const app = readFileSync("src/renderer/src/App.tsx", "utf8");
+  // 视觉 token（字号/行距/块距/列表密度/代码密度/自定义字体）必须用 useLayoutEffect：
+  // 这些 CSS 变量要在 paint 前写入，否则首帧先展示 CSS 默认值再切到用户值（行距 1.35 → 1.2 收缩闪动）。
+  assert.match(app, /\s*useLayoutEffect\(\(\) => \{\n    const root = document\.documentElement/);
+  // 依赖数组必须覆盖全部行距/字号/字体来源设置项。
+  const deps = [
+    "settings.fontSize",
+    "settings.uiFontSize",
+    "settings.chatFontSize",
+    "settings.inputFontSize",
+    "settings.chatBodyLineHeight",
+    "settings.chatBlockGap",
+    "settings.chatListDensity",
+    "settings.chatCodeDensity",
+    "settings.fontFamilyBase",
+    "settings.fontFamilyBaseCustom",
+    "settings.fontFamilyMono",
+    "settings.fontFamilyMonoCustom",
+  ];
+  for (const dep of deps) {
+    assert.ok(app.includes(dep), "typography effect deps must include " + dep);
+  }
+  assert.match(app, /root\.style\.setProperty\(name, value\)/);
+});

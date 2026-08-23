@@ -156,6 +156,16 @@ export type ThinkingUpdate = {
 	done: boolean;
 };
 
+/** 实时流式正文更新。
+ *  messageId 与当前 assistant 消息/骨架 id 一致，用于按消息精确绑定 live 正文。 */
+export type TextStreamUpdate = {
+	agentId: string;
+	messageId?: string;
+	text?: string;
+	delta?: string;
+	done: boolean;
+};
+
 /** 输入框发送模式，决定消息直接执行还是以只读方式触发生成计划。 */
 export type ComposerAgentMode = "normal" | "plan";
 

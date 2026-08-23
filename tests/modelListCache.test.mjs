@@ -23,7 +23,8 @@ const { normalizePiRpcModels } = loadTsCommonJs("src/shared/piCompatibility.ts")
 const cacheSource = readFileSync("src/main/pi/modelListCache.ts", "utf8");
 const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-const indexSource = readFileSync("src/main/index.ts", "utf8");
+const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
+const registerBackendRpcSource = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
 const pickerHost = readFileSync(
   "src/renderer/src/components/session/ComposerPickerHost.tsx",
   "utf8",
@@ -189,8 +190,8 @@ test("agent spawn refreshes model cache via onBeforeAgentSpawn hook", () => {
   assert.match(agentManager, /onBeforeAgentSpawn/);
   // createUnlocked spawn 前调用
   assert.match(agentManager, /this\.onBeforeAgentSpawn\?\.\(\)/);
-  // index.ts 装配时传 refreshModelList
-  assert.match(indexSource, /refreshModelList\(piLocator, settingsStore\)/);
+  // createBackend 装配时传 refreshModelList
+  assert.match(createBackendSource, /refreshModelList\(piLocator, settingsStore\)/);
 });
 
 test("compact sends the shared customInstructions RPC field", () => {
@@ -199,8 +200,8 @@ test("compact sends the shared customInstructions RPC field", () => {
 });
 
 test("startup prefetch still present", () => {
-  assert.match(indexSource, /fetchModelList\(piLocator, settingsStore\)/);
-  assert.match(indexSource, /getCachedModelList\(\)/);
+  assert.match(registerBackendRpcSource, /fetchModelList\(piLocator, settingsStore\)/);
+  assert.match(registerBackendRpcSource, /getCachedModelList\(\)/);
 });
 
 test("AgentManager.setModel detects Model not found with local model present", () => {

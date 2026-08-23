@@ -36,7 +36,7 @@ function loadCodexMetaModule() {
 			target: ts.ScriptTarget.ES2022,
 		},
 	});
-	const sandbox = { exports: {} };
+	const sandbox = { exports: {}, require };
 	vm.runInNewContext(outputText, sandbox, { filename: "codexSessionMeta.ts" });
 	return sandbox.exports;
 }
@@ -112,21 +112,16 @@ function loadSessionScanner(homePath) {
 
 async function cleanupTempDir(dir) {
 	// Windows 上杀软/索引会短暂锁住刚写过的临时目录；清理失败不应把已通过的断言打成红。
-	const delays = [0, 20, 75, 200];
-	let lastError;
-	for (const delay of delays) {
-		if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+	for (let i = 0; i < 5; i++) {
 		try {
 			rmSync(dir, { recursive: true, force: true });
 			return;
-		} catch (error) {
-			lastError = error;
-			const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-			if (code !== "EPERM" && code !== "EBUSY") throw error;
+		} catch {
+			await new Promise((r) => setTimeout(r, 60));
 		}
 	}
-	throw lastError;
 }
+
 function writeSession(filePath, entries) {
 	mkdirSync(dirname(filePath), { recursive: true });
 	writeFileSync(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
@@ -146,7 +141,7 @@ test("archive moves the session into .pideck-archive and list no longer returns 
 		writeSession(sessionPath, healthySession);
 
 		const { SessionScanner } = loadSessionScanner(home);
-		const scanner = new SessionScanner();
+		const scanner = new SessionScanner(undefined, home);
 		// 先让 activeScanRoots 有值（list 会写入），归档路径解析依赖扫描根
 		await scanner.list();
 
@@ -175,7 +170,7 @@ test("unarchive restores the session to its original path", async () => {
 		writeSession(sessionPath, healthySession);
 
 		const { SessionScanner } = loadSessionScanner(home);
-		const scanner = new SessionScanner();
+		const scanner = new SessionScanner(undefined, home);
 		await scanner.list();
 
 		const archived = await scanner.archive(sessionPath);
@@ -209,7 +204,7 @@ test("archive moves the sibling sub-session directory along with the file", asyn
 		]);
 
 		const { SessionScanner } = loadSessionScanner(home);
-		const scanner = new SessionScanner();
+		const scanner = new SessionScanner(undefined, home);
 		await scanner.list();
 
 		const archived = await scanner.archive(sessionPath);
@@ -234,7 +229,7 @@ test("archive directory is excluded from regular scans", async () => {
 		writeSession(sessionPath, healthySession);
 
 		const { SessionScanner } = loadSessionScanner(home);
-		const scanner = new SessionScanner();
+		const scanner = new SessionScanner(undefined, home);
 		await scanner.list();
 		await scanner.archive(sessionPath);
 

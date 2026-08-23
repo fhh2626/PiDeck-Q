@@ -512,7 +512,7 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
   }
 });
 
-test("trimRuntimeCache appends window slide-out onto a pending compaction slideOut", async () => {
+test("trimRuntimeCache appends window slide-out onto an existing pending slideOut", async () => {
   const { manager, directory } = await createHarness();
   try {
     const many = [];
@@ -523,7 +523,7 @@ test("trimRuntimeCache appends window slide-out onto a pending compaction slideO
     manager.messages.set("agent-1", many);
     manager.displayWindowStartByAgent.set("agent-1", 18);
     manager.pendingSlideOutByAgent.set("agent-1", [
-      { id: "kept", agentId: "agent-1", role: "assistant", text: "compaction-kept", timestamp: 1, meta: { entryId: "kept" } },
+      { id: "pending-old", agentId: "agent-1", role: "assistant", text: "pending-old", timestamp: 1, meta: { entryId: "pending-old" } },
     ]);
     const payloads = [];
     manager.onOutput((channel, payload) => {
@@ -534,7 +534,7 @@ test("trimRuntimeCache appends window slide-out onto a pending compaction slideO
     assert.ok(slidePayload, "full flush must carry the combined slideOut");
     assert.deepEqual(
       Array.from(slidePayload.slideOut, (m) => m.meta.entryId),
-      ["kept", "u10", "a10", "u11", "a11", "u12", "a12"],
+      ["pending-old", "u10", "a10", "u11", "a11", "u12", "a12"],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -806,7 +806,7 @@ test("manual compact claim is consumed by delayed compaction_end and cleared aft
   assert.equal(reloads, 2, "automatic compaction after the claim window must reload");
 });
 
-test("automatic compaction reload preserves history and runtime messages", () => {
+test("automatic compaction reload preserves history and sticky flags", () => {
   const runtime = {
     tab: {
       id: "agent-auto-compact-reload",
@@ -837,7 +837,6 @@ test("automatic compaction reload preserves history and runtime messages", () =>
       try {
         assert.equal(loadOptions?.preserveHistory, true);
         assert.equal(loadOptions?.stickyHistory, true);
-        assert.equal(loadOptions?.preserveRuntimeMessages, true);
         resolve();
       } catch (error) {
         reject(error);

@@ -28,7 +28,8 @@ function loadAppUtils() {
 	return sandbox.exports;
 }
 
-const { detectTrigger, applySuggestion, clearSuggestionTrigger } = loadAppUtils();
+const { detectTrigger, applySuggestion, clearSuggestionTrigger, MAX_TRIGGER_LOOKBACK } =
+	loadAppUtils();
 
 const sessions = new Set(["alpha", "beta long"]);
 
@@ -100,4 +101,68 @@ test("clearSuggestionTrigger only strips a fresh empty trigger", () => {
 		text: prose,
 		cursor: prose.length,
 	});
+});
+
+test("P1: detectTrigger triggers at start and middle of document", () => {
+	assertJsonEqual(atEnd("@foo"), { start: 0, char: "@", query: "foo" });
+	assertJsonEqual(atEnd("hello @foo"), { start: 6, char: "@", query: "foo" });
+	assertJsonEqual(atEnd("/command"), { start: 0, char: "/", query: "command" });
+	assertJsonEqual(atEnd("@src/path"), { start: 0, char: "@", query: "src/path" });
+	assert.equal(atEnd("@src/path trailing text"), null);
+	assertJsonEqual(atEnd("&alpha"), { start: 0, char: "&", query: "alpha" });
+	assert.equal(atEnd("https://site.org/docs/page"), null);
+	assert.equal(atEnd("a/b"), null);
+});
+
+test("P1: detectTrigger with >100KB prefix text triggers with accurate absolute offset", () => {
+	const prefix = "Some regular text without triggers. ".repeat(3000); // ~108 KB
+	const offset = prefix.length;
+
+	// @foo at end
+	const atText = `${prefix}@foo`;
+	assertJsonEqual(detectTrigger(atText, atText.length, sessions), {
+		start: offset,
+		char: "@",
+		query: "foo",
+	});
+
+	// /command at end
+	const slashText = `${prefix}/command`;
+	assertJsonEqual(detectTrigger(slashText, slashText.length, sessions), {
+		start: offset,
+		char: "/",
+		query: "command",
+	});
+
+	// &session at end
+	const ampText = `${prefix}&alpha`;
+	assertJsonEqual(detectTrigger(ampText, ampText.length, sessions), {
+		start: offset,
+		char: "&",
+		query: "alpha",
+	});
+
+	// @src/path at end
+	const pathText = `${prefix}@src/path`;
+	assertJsonEqual(detectTrigger(pathText, pathText.length, sessions), {
+		start: offset,
+		char: "@",
+		query: "src/path",
+	});
+});
+
+test("P1: detectTrigger implementation does not full-slice and has MAX_TRIGGER_LOOKBACK constant", () => {
+	assert.equal(typeof MAX_TRIGGER_LOOKBACK, "number");
+	assert.ok(MAX_TRIGGER_LOOKBACK >= 512, "MAX_TRIGGER_LOOKBACK should be sufficiently large");
+
+	const appUtilsSource = readFileSync("src/renderer/src/components/app/AppUtils.ts", "utf8");
+	assert.equal(
+		appUtilsSource.includes("text.slice(0, cursor)"),
+		false,
+		"detectTrigger must not call text.slice(0, cursor)",
+	);
+	assert.ok(
+		appUtilsSource.includes("Math.max(0, cursor - MAX_TRIGGER_LOOKBACK)"),
+		"detectTrigger must constrain slice window using MAX_TRIGGER_LOOKBACK",
+	);
 });

@@ -167,6 +167,13 @@ export type AppUpdateDownloadResult = {
 	assetName: string;
 };
 
+/** 主进程 → 渲染层：guest 外部协议确认请求（URL 权威值在主进程 pending 注册表）。 */
+export type ExternalProtocolRequestPayload = {
+	/** 确认时只回传 id，主进程按自己保存的 targetUrl 执行打开。 */
+	id: string;
+	url: string;
+};
+
 export type AppLogLevel = "debug" | "info" | "warn" | "error";
 
 export type AppLogEntry = {

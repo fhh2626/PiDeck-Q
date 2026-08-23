@@ -21,6 +21,7 @@ import {
   SquarePen,
   Terminal,
   GitBranch,
+  Sparkles,
 } from "lucide-react";
 import { showNotice } from "./utils/notice";
 import {
@@ -43,6 +44,7 @@ import { useAgentLoadNotice } from "./hooks/useAgentLoadNotice";
 import { useSessionLayout } from "./hooks/useSessionLayout";
 import { useFileEditor , resolveFileLinkPath } from "./hooks/useFileEditor";
 import { useOverlayActions } from "./hooks/useOverlayActions";
+import { useExternalProtocolConfirm } from "./hooks/useExternalProtocolConfirm";
 import { useWorkspacePanels, type WorkspaceDrawerPanel, type WorkspaceExternalEditorAdapter } from "./hooks/useWorkspacePanels";
 import { useDrawerPorts } from "./hooks/useDrawerPorts";
 import { useTerminalDock } from "./hooks/useTerminalDock";
@@ -64,11 +66,14 @@ import { useProjectSync } from "./hooks/useProjectSync";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
+  captureHistoryMutationRefresh,
+  refreshHistoryAfterMutation,
+} from "./hooks/useSessionTimelineController";
+import {
   agentInventoryAtom,
   applySessionRuntimeEventAtom,
   currentSessionAtom,
   currentSessionIdAtom,
-  currentSessionMessagesAtom,
   currentSessionRuntimeAtom,
   projectInventoryAtom,
   removeSessionComposerStateAtom,
@@ -86,7 +91,9 @@ import {
   setSessionAttachmentsAtom,
   setSessionCatalogLoadStateAtom,
   setSessionDraftAtom,
+  settingsOpenAtom,
   upsertSessionAtom,
+  anyAgentRuntimeWorkingAtom,
 } from "./atoms";
 import {
   buildComposerPromptSubmission,
@@ -113,6 +120,8 @@ import { useSessionActions } from "./hooks/useSessionActions";
 import { useScratchPad } from "./hooks/useScratchPad";
 import { useWorktreeActions } from "./hooks/useWorktreeActions";
 import { ChatSessionPane } from "./components/session/ChatSessionPane";
+import { OutlinePanel } from "./components/session/OutlinePanel";
+import { SkillsQuickDialog } from "./components/session/SkillsQuickDialog";
 import { SessionSplitStage } from "./components/session/SessionSplitStage";
 import { canStopBoundAgent } from "./utils/canStopBoundAgent";
 import { splitLayoutSessionIds } from "./utils/sessionSplitEdge";
@@ -134,22 +143,16 @@ import { AppUpdateOverlay } from "./components/overlays/AppUpdateOverlay";
 import { ImportOverlayHost } from "./components/overlays/ImportOverlayHost";
 import { EnvironmentOverlay } from "./components/overlays/EnvironmentOverlay";
 import {
-  ConversationOutline,
   EnvironmentDialog,
   FileContextMenu,
   ImagePreviewModal,
   LogoMark,
-  type SessionModifiedFile,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
-import { navigateTo } from "./components/app/BrowserPanel";
+import { requestBrowserNavigation } from "./browser/BrowserPanelSession";
 import {
-  buildOutline,
   flattenFiles,
   mergeCommands,
-  getToolFilePath,
-  getToolNewContent,
-  getToolChangedLineCount,
 } from "./components/app/AppUtils";
 // ProjectResourcesModal 仅在打开资源弹层时加载
 const ProjectResourcesModal = lazy(() => import("./components/app/ProjectResourcesModal").then((m) => ({ default: m.ProjectResourcesModal })));
@@ -167,6 +170,7 @@ import type {
   SessionRecord,
   SessionSummary,
   ComposerAgentMode,
+  SessionRuntimeTarget,
   TerminalTarget,
 } from "../../shared/types";
 
@@ -204,8 +208,10 @@ export function App() {
   const currentSession = useAtomValue(currentSessionAtom);
   // currentSessionRuntime / currentSessionRuntimeUi / currentSessionSendState: sync store.get() only.
   // Streaming subscriptions are in SessionRuntimeInjector.
-  // Timeline 由各 ChatSessionPane 自持；大纲只读当前聚焦会话的消息缓存。
-  const activeMessages = useAtomValue(currentSessionMessagesAtom);
+  // Timeline 由各 ChatSessionPane 自持；大纲/修改文件下沉到叶子（OutlinePanel/useFileEditor），
+  // App 不再直订 currentSessionMessagesAtom：canonical 消息缓存只在消息边界
+  // （message_start 空骨架 / message_end，主进程 50ms 节流 flush）变引用；逐 token 的流式
+  // 正文走独立 text-stream 通道直接落到叶子 AnswerOutput，不经过 App 根组件。
   const projects = useAtomValue(projectInventoryAtom);
   const agents = useAtomValue(agentInventoryAtom);
   const setCurrentSessionId = useSetAtom(currentSessionIdAtom);
@@ -694,6 +700,13 @@ export function App() {
     (project) => project.id === activeProjectId,
   );
   const overlays = useOverlayActions();
+  // 浏览器 guest 外部协议确认流（独立于通用 overlay 域）。
+  const externalProtocolConfirm = useExternalProtocolConfirm();
+  // Modal 仲裁 blocker：settings（settingsOpenAtom，SettingsFeatureRoot 独立 root）
+  // 或通用 confirm/trust 打开时，外部协议确认暂缓渲染（状态保留，弹框结束后出现）。
+  const settingsModalOpen = useAtomValue(settingsOpenAtom);
+  const externalProtocolModalBlocked =
+    settingsModalOpen || overlays.confirmDialog !== null || overlays.trustRequest !== null;
   const sessionsProject = projects.find(
     (project) => project.id === sessionsProjectId,
   );
@@ -805,6 +818,30 @@ export function App() {
   const activeQueuedPrompts = currentSessionId
     ? (queue.queuedPrompts[currentSessionId] ?? [])
     : [];
+
+  // ── Skills 快捷修改入口的全局安全门控 ──────────────────────────────
+  // Skills 是全局 ~/.pi/agent/skills 与 ~/.agents/skills，门控必须全局判断：
+  // anyAgentRuntimeWorkingAtom 覆盖任意项目任意 runtime 的 working 状态（含流式/执行工具），
+  // 不能用 activeProjectHasBusyAgent（只覆盖当前项目）。
+  const anyAgentRuntimeWorking = useAtomValue(anyAgentRuntimeWorkingAtom);
+  // pending Agent（新建/重启）在真实 runtime 进入 sessionRuntimeByIdAtom 前也要算 working。
+  const hasPendingWorkingAgent = pendingAgents.some(
+    (agent) => agent.status === "starting" || agent.status === "running",
+  );
+  // 待发送队列是全局按 sessionId 保存的：Agent 刚变 idle 但已有 follow-up/steer 排队时，
+  // 随后会自动继续工作，此时修改 Skills 会产生 race，也必须禁止。
+  const hasQueuedAgentWork = Object.values(queue.queuedPrompts).some(
+    (items) => items.length > 0,
+  );
+  // 关闭前的「有没有工作中的 Agent」单独计算：不能包含 skillsStoppingAgents 自身，
+  // 否则 stop 过程中 handleSkillsQuickClose 的 busy 判断会永远为 true。
+  const skillsRuntimeBusy =
+    anyAgentRuntimeWorking ||
+    hasPendingWorkingAgent ||
+    hasQueuedAgentWork;
+  // Skills 快捷修改期间（stop all 进行中）同样禁止重新打开弹窗/修改。
+  const [skillsStoppingAgents, setSkillsStoppingAgents] = useState(false);
+  const skillsQuickLocked = skillsRuntimeBusy || skillsStoppingAgents;
 
   const enqueueSessionPrompt = useCallback((
     sessionId: string,
@@ -1009,7 +1046,9 @@ export function App() {
   }, [settings.themeSkin, settings.theme, settings.customThemeOverrides, settings.backgroundImage, settings.backgroundImageOpacity]);
 
   // 字号与命名字体预设由 data 属性选择 CSS token；只有 custom 字体需要注入用户输入。
-  useEffect(() => {
+  // 这一组是纯视觉的 DOM/CSS token 同步，必须用 useLayoutEffect 在 paint 前写入，
+  // 否则 useEffect 在 paint 后执行会让首帧先使用 CSS 默认值再切到用户设置（如行距 1.35 → 1.2 收缩闪动）。
+  useLayoutEffect(() => {
     const root = document.documentElement;
     const uiFontSize = settings.uiFontSize ?? settings.fontSize;
     const chatFontSize = settings.chatFontSize ?? settings.fontSize;
@@ -1057,44 +1096,10 @@ export function App() {
     settings.fontFamilyMonoCustom,
   ]);
 
-  /** 当前会话中 agent 修改过的文件(从 tool 消息 meta 中提取) */
-  // 依赖当前会话和消息数组引用：消息数量不变的 tool 状态/参数更新也必须重算。
-  const modifiedFiles = useMemo(() => {
-    const byPath = new Map<string, SessionModifiedFile>();
-    for (const msg of activeMessages) {
-      if (msg.role !== "tool") continue;
-      const toolName: string | undefined = msg.meta?.toolName as
-        | string
-        | undefined;
-      const args: any = msg.meta?.args;
-      const status: string = String(msg.meta?.status ?? "done");
-      // 只收集文件写入/编辑类的工具调用，作为右侧 Files 与会话结束摘要的统一数据源。
-      if (!toolName || !/write|edit|create|patch/i.test(toolName)) continue;
-      const filePath = getToolFilePath(args);
-      if (!filePath) continue;
-      const previous = byPath.get(filePath);
-      // 同一路径再次被修改时移动到 Map 末尾，右侧修改清单才能按"最新修改"展示。
-      if (previous) byPath.delete(filePath);
-      // originalContent 不再存储到消息 meta 中（full file 会使会话体积过大）。
-      // diff 展示时使用工具参数（oldText/newText）显示变动区域。
-      byPath.set(filePath, {
-        path: filePath,
-        toolName,
-        status: status === "running" ? "running" : (previous?.status ?? status),
-        changedLines:
-          (previous?.changedLines ?? 0) +
-          getToolChangedLineCount(toolName, args),
-        originalContent: "",
-        content: getToolNewContent(toolName, args) ?? previous?.content,
-      });
-    }
-    return Array.from(byPath.values());
-  }, [activeAgentId, activeMessages, currentSessionId]);
-  // 会话切换或消息内容引用变化时重算，避免同长度历史会话复用旧大纲。
-  const outlineItems = useMemo(
-    () => buildOutline(activeMessages),
-    [activeAgentId, activeMessages, currentSessionId],
-  );
+  // 大纲与修改文件清单不再由 App 根组件持有原始消息数组并就地计算（消息边界 flush 时
+  // 要重算 buildOutline/modifiedFiles）：大纲下沉到 OutlinePanel（自订 outlineItemsAtom），
+  // 修改文件下沉到 useFileEditor（自订 modifiedFilesAtom）。这里只保留与消息无关的
+  // 文件树扁平化。
   const flatFiles = useMemo(() => flattenFiles(files), [files]);
   // === file editor hook ===
   const {
@@ -1129,7 +1134,6 @@ export function App() {
     activeAgent: activeAgent ?? null,
     activeProject: activeProject ?? null,
     drawer,
-    modifiedFiles,
     setDrawer,
     setDrawerCollapsed,
     contentOpenMode: settings.workspaceContentOpenMode ?? "split",
@@ -1368,7 +1372,7 @@ export function App() {
       // 外部链接必须强制打开 browser 面板（openDrawer 是 toggle 语义，
       // 已是 browser 展开时会关抽屉，导致首次点击关抽屉、二次重复入栈）
       workspace.openDrawerForce("browser");
-      navigateTo(url);
+      requestBrowserNavigation(url);
     },
     onTrustRequest: overlays.setTrustRequest,
     onFocusTarget: (target: { sessionId: string }) => {
@@ -1601,7 +1605,7 @@ export function App() {
       }
       agentStatusByAgentRef.current[agent.id] = agent.status;
     }
-  }, [activeAgentId, displayAgents, modifiedFiles]);
+  }, [activeAgentId, displayAgents]);
 
   // 汇报聚焦会话给主进程：非聚焦会话收到 Ask 请求时触发桌面通知（Task 9）
   useEffect(() => {
@@ -1803,6 +1807,62 @@ export function App() {
     requireSessionCommand(await api.sessions.stopRuntime(target));
   }
 
+  // ── Skills 快捷修改后的自动收尾 ────────────────────────────────
+  // 弹窗状态：changed 用 ref（toggle 回调只置位，不触发重渲染）；open/stopping 用 state。
+  const [skillsQuickOpen, setSkillsQuickOpen] = useState(false);
+  const skillsQuickChangedRef = useRef(false);
+
+  /**
+   * Skills 修改完成后停止所有当前真实 Agent runtime。
+   * 只从 agentsRef（agentInventoryAtom，已绑定真实 runtime）取 ID；
+   * displayAgents 混有 pendingAgents（无 runtime target），直接 closeAgent 会报 runtime unavailable。
+   * Promise.allSettled：一个 Agent stop 失败不能阻止其他 Agent 被关闭。
+   * closeAgent 只 stopRuntime：不 delete SessionRecord、不 removeSessionState、不关 Tab、不 restart。
+   */
+  async function stopAllAgentsAfterSkillsChange() {
+    const agentIds = agentsRef.current.map((agent) => agent.id);
+    if (agentIds.length === 0) return;
+
+    setSkillsStoppingAgents(true);
+    try {
+      const results = await Promise.allSettled(
+        agentIds.map((agentId) => closeAgent(agentId)),
+      );
+
+      const failed = results.filter((result) => result.status === "rejected");
+      if (failed.length > 0) {
+        showToast(t("skills.quickStopFailed", { count: failed.length }), 5000);
+      } else {
+        showToast(t("skills.quickAgentsStopped", { count: agentIds.length }), 2500);
+      }
+    } finally {
+      setSkillsStoppingAgents(false);
+    }
+  }
+
+  /**
+   * Skills 弹窗关闭入口：Dialog 的 X 与 onOpenChange 都走这里。
+   * - 本次没改过：直接关，不动任何 Agent。
+   * - 改过且此刻仍有 working Agent：拒绝本次关闭请求（保留弹窗 + 提示），绝不能强杀正在生成/执行工具的 Agent；等全部 idle 后用户再点关闭才执行 stop all。
+   */
+  const handleSkillsQuickClose = useCallback(() => {
+    if (skillsStoppingAgents) return;
+
+    // 弹窗打开期间理论上主 UI 不能启动 Agent，但后台队列/runtime 仍可能变化。
+    if (skillsQuickChangedRef.current && skillsRuntimeBusy) {
+      showToast(t("skills.quickWaitIdle"), 3500);
+      return;
+    }
+
+    const changed = skillsQuickChangedRef.current;
+    skillsQuickChangedRef.current = false;
+    setSkillsQuickOpen(false);
+
+    if (changed) {
+      void stopAllAgentsAfterSkillsChange();
+    }
+  }, [skillsStoppingAgents, skillsRuntimeBusy]);
+
   function requestCloseAgent(agent: AgentTab): Promise<void> {
     if (!agent.noSession) {
       return closeAgent(agent.id).catch((error) => {
@@ -1903,6 +1963,12 @@ export function App() {
     }
   }
 
+  function isRuntimeTargetBusy(target: SessionRuntimeTarget): boolean {
+    const rt = store.get(sessionRuntimeBySessionIdAtomFamily(target.sessionId));
+    if (!rt || rt.agentId !== target.agentId) return false;
+    return rt.status === "running" || Boolean((rt.state as { isStreaming?: boolean } | undefined)?.isStreaming);
+  }
+
   // isAgentBusy: synchronous store read (steer logic is callback-only, not render-time).
   function isAgentCurrentlyBusy(): boolean {
     if (!currentSessionId) return false;
@@ -2001,19 +2067,19 @@ export function App() {
     forkFromUserMessage,
     forkingMessageId,
   } = useSessionMessageCommands({
-    activeAgentId,
     activeAgentStatus: activeAgent?.status,
     activeProjectId,
-    currentSessionId,
     agents,
-    isAgentCurrentlyBusy,
-    getRuntimeTargetForAgent,
+    isRuntimeTargetBusy,
+    getRuntimeTargetForSession,
     submitPromptSnapshot,
     openReplacedRuntimeSession,
     currentSessionIdRef,
     setPromptForAgent,
     showToast,
     overlays,
+    captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
+    refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
   });
   /**
    * 打开系统原生文件/文件夹选择器，将选中路径以 @path 引用格式插入到消息中。
@@ -2463,6 +2529,19 @@ export function App() {
     [composerOffsetHeight, terminalRowHeight],
   );
 
+  // Actions 轨稳定入口：sessionPaneServices 因 terminal/git 等 State 变化重算时，
+  // 这两个回调引用保持不变，SessionPaneActionsContext 才不会跟着更新。
+  // 原为 useMemo 内的 inline function，每次 services 重算都会产生新函数引用。
+  const runCreateSessionDraftForPane = useCallback(async () => {
+    await createSessionDraftWithTab();
+  }, [createSessionDraftWithTab]);
+
+  const openSidebarSessionByIdForPane = useCallback(
+    (projectId: string, sessionId: string) =>
+      openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
+    [openSidebarSessionByIdWithTab],
+  );
+
   const sessionPaneServices = useMemo(
     () => ({
       isLanWeb,
@@ -2473,9 +2552,7 @@ export function App() {
       onPreviewImage: setPreviewImage,
       abortAgent,
       restartActiveAgent,
-      runCreateSessionDraft: async () => {
-        await createSessionDraftWithTab();
-      },
+      runCreateSessionDraft: runCreateSessionDraftForPane,
       enqueueSessionPrompt,
       insertQuickPrompt,
       ensureSessionId: ensureSessionForSend,
@@ -2484,8 +2561,7 @@ export function App() {
       deleteMessage,
       forkFromUserMessage,
       forkingMessageId,
-      openSidebarSessionById: (projectId: string, sessionId: string) =>
-        openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
+      openSidebarSessionById: openSidebarSessionByIdForPane,
       agents: displayAgents,
       queuedPromptsBySession: queue.queuedPrompts,
       queueRetract: queue.retractQueuedPromptForEdit,
@@ -2523,9 +2599,8 @@ export function App() {
       abortAgent,
       activeProjectId,
       availableTerminalHeight,
-      configOpen,
-      createSessionDraftWithTab,
       changeChatPath,
+      configOpen,
       deleteMessage,
       diffFilePath,
       displayAgents,
@@ -2540,7 +2615,7 @@ export function App() {
       insertQuickPrompt,
       isLanWeb,
       jumpToMessageRef,
-      openSidebarSessionByIdWithTab,
+      openSidebarSessionByIdForPane,
       paneLayoutRefs,
       queue.discardQueuedPrompt,
       queue.queuedPrompts,
@@ -2548,6 +2623,7 @@ export function App() {
       queueFlushBySessionRef,
       restartActiveAgent,
       restartingAgentId,
+      runCreateSessionDraftForPane,
       resendUserMessage,
       sessionDurationByAgent,
       settings.showThinking,
@@ -2888,8 +2964,7 @@ export function App() {
       outlineContent={
         /* 悬浮工具条常驻：引导页（无会话）/未激活 agent 也保留草稿纸、终端、编辑器入口。
            大纲导航列表在无消息时自动 disabled，不影响工具按钮使用。 */
-        <ConversationOutline
-          items={outlineItems}
+        <OutlinePanel
           // 分屏下由聚焦 pane 的 timeline 注入 jump 回调（ChatSessionPane 写入 services）
           onJump={(messageId) => jumpToMessageRef.current?.(messageId)}
           extraAction={{
@@ -2927,6 +3002,22 @@ export function App() {
             },
             icon: <Code size={14} />,
           }}
+          // Skills 快捷入口：仅 Native 显示（LAN Web 不允许直接操作宿主机全局 ~/.pi 与 ~/.agents Skills）。
+          // 全局门控：任意项目任意 Agent working / pending working / 有排队消息 / stop all 进行中时禁用。
+          skillsAction={!isLanWeb ? {
+            active: skillsQuickOpen,
+            disabled: skillsQuickLocked,
+            label: skillsQuickLocked
+              ? t("skills.quickUnavailable")
+              : t("config.nav.skills"),
+            onClick: () => {
+              // 点击瞬间再次检查 busy，防止状态变化与点击之间的 race。
+              if (skillsQuickLocked) return;
+              skillsQuickChangedRef.current = false;
+              setSkillsQuickOpen(true);
+            },
+            icon: <Sparkles size={14} />,
+          } : undefined}
           browserAction={undefined}
         />
       }
@@ -3135,7 +3226,19 @@ export function App() {
       onChange={updateSettings}
       onCurrentVersion={setUpToDateVersion}
     />
-    <SessionActionOverlays {...overlays.overlayProps} />
+    <SessionActionOverlays
+      {...overlays.overlayProps}
+      externalProtocol={
+        externalProtocolConfirm.pending && !externalProtocolModalBlocked
+          ? {
+              open: true as const,
+              url: externalProtocolConfirm.pending.url,
+              onConfirm: externalProtocolConfirm.confirm,
+              onCancel: externalProtocolConfirm.dismiss,
+            }
+          : undefined
+      }
+    />
     <AppUpdateOverlay
       controller={appUpdate}
       releasesUrl={appInfo.releasesUrl}
@@ -3164,6 +3267,19 @@ export function App() {
 
     {/* Scratch Pad（草稿本）：根级渲染，避免受 chat-pane grid 影响定位 */}
     <ScratchPadOverlay controller={scratchPad} />
+
+    {/* Skills 快捷管理小窗口：全局配置，根级渲染，不随某个 session pane 的 mount/unmount 卸载。
+        locked 用 skillsRuntimeBusy（不含 skillsStoppingAgents 自身）+ stopping，保证 stop 过程中 toggle 全禁。 */}
+    {!isLanWeb && (
+      <SkillsQuickDialog
+        open={skillsQuickOpen}
+        locked={skillsRuntimeBusy || skillsStoppingAgents}
+        onChanged={() => {
+          skillsQuickChangedRef.current = true;
+        }}
+        onRequestClose={handleSkillsQuickClose}
+      />
+    )}
 
     {/* 并行问询结果弹框（AskPanel）：独立匿名会话的结果展示，根级渲染 */}
     <AskPanelOverlay />
