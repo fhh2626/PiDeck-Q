@@ -1380,6 +1380,56 @@ test("history mutations for the same session serialize delete + edit and edit + 
     "start:edit:msg-2:text-2",
     "end:edit:msg-2:text-2",
   ]);
+
+  // 2. edit + delete
+  const deferred3 = deferred();
+  const deferred4 = deferred();
+  timeline.length = 0;
+
+  const harnessEditFirst = createHarness({
+    tabs: [{ ...baseTab }],
+    deleteMessage: async (_agentId, messageId) => {
+      timeline.push(`start:delete:${messageId}`);
+      await deferred4.promise;
+      timeline.push(`end:delete:${messageId}`);
+    },
+    editMessage: async (_agentId, messageId, newText) => {
+      timeline.push(`start:edit:${messageId}:${newText}`);
+      await deferred3.promise;
+      timeline.push(`end:edit:${messageId}:${newText}`);
+    },
+  });
+
+  const coordinator2 = new SessionRuntimeCoordinator(
+    harnessEditFirst.catalog,
+    harnessEditFirst.agents,
+    harnessEditFirst.sender,
+  );
+  const runtimeGeneration2 = coordinator2.bindExistingAgent("session-1", "agent-a");
+  const target2 = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration: runtimeGeneration2 };
+
+  const editPromise2 = coordinator2.editRuntimeMessage(target2, "msg-3", "text-3");
+  const delPromise2 = coordinator2.deleteRuntimeMessage(target2, "msg-4");
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(timeline, ["start:edit:msg-3:text-3"]);
+
+  deferred3.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(timeline, [
+    "start:edit:msg-3:text-3",
+    "end:edit:msg-3:text-3",
+    "start:delete:msg-4",
+  ]);
+
+  deferred4.resolve();
+  await Promise.all([editPromise2, delPromise2]);
+  assert.deepEqual(timeline, [
+    "start:edit:msg-3:text-3",
+    "end:edit:msg-3:text-3",
+    "start:delete:msg-4",
+    "end:delete:msg-4",
+  ]);
 });
 
 test("history mutations for different sessions execute concurrently", async () => {

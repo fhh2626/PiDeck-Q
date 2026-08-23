@@ -167,6 +167,18 @@ function createHarness(editor, options = {}) {
     undefined,
     editor,
   );
+  manager.sessionHistoryReader = options.sessionHistoryReader ?? {
+    readMessageByMessageId: async (_path, messageId) => {
+      const msg = (options.messages ?? [chatMessage()]).find((m) => m.id === messageId);
+      if (!msg) return undefined;
+      return {
+        entryId: msg.meta?.entryId ?? "a1",
+        role: msg.role,
+        text: msg.text,
+        images: msg.images,
+      };
+    },
+  };
   manager.agents.set("agent-1", runtime);
   manager.messages.set("agent-1", options.messages ?? [chatMessage()]);
   const loads = [];
@@ -341,6 +353,71 @@ test("editMessage and prepareResendFromMessage succeed even if subsequent loadMe
   assert.equal(resend.text, "question");
   assert.equal(warnings.length, 2);
   assert.equal(warnings[1].msg, "Prepare resend committed but message refresh failed");
+});
+
+test("staleMessageCacheAgents marks cache stale on refresh failure and forces file location until fresh load", async () => {
+  const editor = {
+    editMessage: async (input) => {
+      await input.reload();
+    },
+    truncateForResend: async (input) => {
+      await input.reload();
+    },
+  };
+  const staleUser = chatMessage({
+    id: "agent-1-history-u1",
+    role: "user",
+    text: "old-stale-text",
+    meta: { entryId: "u1" },
+  });
+  const { manager, runtime } = createHarness(editor, {
+    messages: [staleUser],
+    leafId: "a1",
+  });
+
+  // Mock sessionHistoryReader to return updated text from file
+  manager.sessionHistoryReader = {
+    readMessageByMessageId: async (_path, messageId) => {
+      if (messageId === "agent-1-history-u1") {
+        return {
+          entryId: "u1",
+          role: "user",
+          text: "new-file-text",
+        };
+      }
+      return undefined;
+    },
+  };
+
+  // 1. Initial state: not stale, getMessages returns staleUser
+  assert.equal(manager.isMessageCacheStale("agent-1"), false);
+  assert.equal(manager.getMessages("agent-1").length, 1);
+
+  // 2. Perform edit where loadMessages fails
+  manager.loadMessages = async () => {
+    throw new Error("refresh memory failed");
+  };
+  await manager.editMessage("agent-1", staleUser.id, "new-file-text");
+
+  // Cache is now stale
+  assert.equal(manager.isMessageCacheStale("agent-1"), true);
+  assert.equal(manager.getMessages("agent-1").length, 0);
+
+  // 3. Resend while stale: locateMessageTarget bypasses this.messages and locates from file!
+  const resend = await manager.prepareResendFromMessage("agent-1", staleUser.id);
+  // Must return the text read from file ("new-file-text"), NOT the stale memory text ("old-stale-text")!
+  assert.equal(resend.text, "new-file-text");
+
+  // 4. Now a successful loadMessages updates memory and clears stale state
+  const freshMessages = [
+    chatMessage({ id: "agent-1-history-u1", role: "user", text: "new-file-text", meta: { entryId: "u1" } }),
+  ];
+  // Restore real loadMessages behavior or assign and invoke
+  manager.messages.set("agent-1", freshMessages);
+  manager.staleMessageCacheAgents.delete("agent-1");
+
+  assert.equal(manager.isMessageCacheStale("agent-1"), false);
+  assert.equal(manager.getMessages("agent-1")[0].text, "new-file-text");
 });
 
 function loadSessionFileEditor() {

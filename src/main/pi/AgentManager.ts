@@ -132,6 +132,8 @@ type CreateAgentInputWithHistory = CreateAgentInput & {
 export class AgentManager {
 	private readonly agents = new Map<string, AgentRuntime>();
 	private readonly messages = new Map<string, ChatMessage[]>();
+	/** 历史修改提交后 refresh 失败的 agent 集合，命中时禁用内存消息快速路径、强制读文件。 */
+	private readonly staleMessageCacheAgents = new Set<string>();
 	/** 工具完整结果 LRU 缓存：按 agent 隔离，避免停止一个会话清空其他会话的结果。 */
 	private readonly toolFullTextByAgent = new Map<string, Map<string, string>>();
 
@@ -497,7 +499,12 @@ export class AgentManager {
 	}
 
 	getMessages(agentId: string) {
+		if (this.staleMessageCacheAgents.has(agentId)) return [];
 		return this.messages.get(agentId) ?? [];
+	}
+
+	isMessageCacheStale(agentId: string): boolean {
+		return this.staleMessageCacheAgents.has(agentId);
 	}
 
 	/**
@@ -981,6 +988,7 @@ export class AgentManager {
 		// 避免「投影 partial + 运行期完整版」双份或事件 append 到错误轮次。
 		this.rebindInFlightMessages(agentId, nextMessages, messages);
 		this.messages.set(agentId, nextMessages);
+		this.staleMessageCacheAgents.delete(agentId);
 		// 显示窗口 = 尾部 3 轮（轮次起点对齐 user 消息，与 disk 轮次分页同一约定；
 		// 字节预算不参与窗口计算——单轮再大也整轮显示，折叠完整性优先）
 		this.displayWindowStartByAgent.set(
@@ -2474,7 +2482,9 @@ export class AgentManager {
 		messageId: string,
 		activeLeafId?: string,
 	): Promise<{ target: SessionEntryTarget; resend?: { text: string; images?: ImageContent[] } }> {
-		const message = this.messages.get(agentId)?.find((candidate) => candidate.id === messageId);
+		const message = !this.staleMessageCacheAgents.has(agentId)
+			? this.messages.get(agentId)?.find((candidate) => candidate.id === messageId)
+			: undefined;
 		if (message) {
 			return { target: this.createSessionEntryTarget(message, activeLeafId) };
 		}
@@ -2529,6 +2539,7 @@ export class AgentManager {
 			);
 		} catch (error) {
 			this.invalidateMessageLoads(agentId);
+			this.staleMessageCacheAgents.add(agentId);
 			void this.appLogger?.warn(
 				"agent",
 				"Edit committed but message refresh failed",
@@ -2570,6 +2581,7 @@ export class AgentManager {
 			);
 		} catch (error) {
 			this.invalidateMessageLoads(agentId);
+			this.staleMessageCacheAgents.add(agentId);
 			void this.appLogger?.warn(
 				"agent",
 				"Delete committed but message refresh failed",
@@ -2596,8 +2608,10 @@ export class AgentManager {
 		const runtime = this.requireRuntime(agentId);
 		const sessionPath = runtime.tab.sessionPath;
 		if (!sessionPath) throw new Error("Session not persisted");
-		// 缓存命中时先校验角色（重发仅限用户消息）；缓存未命中时由 SessionFileEditor 的 inputRole 校验兜底
-		const cached = this.messages.get(agentId)?.find((candidate) => candidate.id === messageId);
+		// 缓存命中且未 stale 时先校验角色（重发仅限用户消息）；缓存未命中或 stale 时由 SessionFileEditor 的 inputRole 校验兜底
+		const cached = !this.staleMessageCacheAgents.has(agentId)
+			? this.messages.get(agentId)?.find((candidate) => candidate.id === messageId)
+			: undefined;
 		if (cached && cached.role !== "user") throw new Error("Only user messages can be resent");
 
 		const file = this.createSessionFileRef(runtime, sessionPath);
@@ -2617,6 +2631,7 @@ export class AgentManager {
 			);
 		} catch (error) {
 			this.invalidateMessageLoads(agentId);
+			this.staleMessageCacheAgents.add(agentId);
 			void this.appLogger?.warn(
 				"agent",
 				"Prepare resend committed but message refresh failed",
@@ -2697,6 +2712,7 @@ export class AgentManager {
 		this.messageDirtyFromByAgent.delete(agentId);
 		this.displayWindowStartByAgent.delete(agentId);
 		this.messageHeadOffsetByAgent.delete(agentId);
+		this.staleMessageCacheAgents.delete(agentId);
 		this.pendingSlideOutByAgent.delete(agentId);
 		this.preserveHistoryOnNextFlush.delete(agentId);
 		this.stickyHistoryOnNextFlush.delete(agentId);
