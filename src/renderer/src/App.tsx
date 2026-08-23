@@ -66,6 +66,10 @@ import { useProjectSync } from "./hooks/useProjectSync";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
+  captureHistoryMutationRefresh,
+  refreshHistoryAfterMutation,
+} from "./hooks/useSessionTimelineController";
+import {
   agentInventoryAtom,
   applySessionRuntimeEventAtom,
   currentSessionAtom,
@@ -2069,6 +2073,8 @@ export function App() {
     setPromptForAgent,
     showToast,
     overlays,
+    captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
+    refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
   });
   /**
    * 打开系统原生文件/文件夹选择器，将选中路径以 @path 引用格式插入到消息中。

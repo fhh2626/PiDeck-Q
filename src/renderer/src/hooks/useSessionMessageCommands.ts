@@ -8,6 +8,7 @@ import type {
 import { desktopApi as api } from "../desktopApi";
 import { t } from "../i18n";
 import { requireSessionCommand } from "../utils/sessionCommands";
+import type { HistoryMutationRefreshSnapshot } from "./useSessionTimelineController";
 
 type SessionMessageCommandsInput = {
 	activeAgentId: string | undefined;
@@ -39,6 +40,8 @@ type SessionMessageCommandsInput = {
 		}) => void;
 		clearConfirm: () => void;
 	};
+	captureHistoryMutationRefresh?: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
+	refreshHistoryAfterMutation?: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
 };
 
 function translateAgentErrorMessage(message: string): string {
@@ -89,7 +92,11 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		try {
 			const target = input.getRuntimeTargetForAgent(input.activeAgentId);
 			if (!target) return;
+			const refreshSnapshot = input.captureHistoryMutationRefresh?.(target.sessionId) ?? null;
 			requireSessionCommand(await api.sessions.editRuntimeMessage(target, messageId, newText));
+			if (refreshSnapshot && input.refreshHistoryAfterMutation) {
+				await input.refreshHistoryAfterMutation(refreshSnapshot);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			input.showToast(`${t("message.editFailed")}: ${translateAgentErrorMessage(message)}`, 5000);
@@ -109,7 +116,11 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 				try {
 					const target = input.getRuntimeTargetForAgent(agentId);
 					if (!target) return;
+					const refreshSnapshot = input.captureHistoryMutationRefresh?.(target.sessionId) ?? null;
 					requireSessionCommand(await api.sessions.deleteRuntimeMessage(target, messageId));
+					if (refreshSnapshot && input.refreshHistoryAfterMutation) {
+						await input.refreshHistoryAfterMutation(refreshSnapshot);
+					}
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					input.showToast(`${t("message.deleteFailed")}: ${translateAgentErrorMessage(message)}`, 5000);

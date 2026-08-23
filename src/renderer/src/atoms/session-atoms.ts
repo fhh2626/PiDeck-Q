@@ -126,6 +126,12 @@ export type SessionMessageCacheEntry = {
 		/** 压缩刚完成时暂缓自动回底清理，避免用户看到的历史立即消失。 */
 		sticky?: boolean;
 	};
+	/**
+	 * mutation 刷新代际（2026-11）：编辑/删除成功后的历史重读用 per-session 序号
+	 * 做乱序保护；每次 captureHistoryMutationRefresh 递增。普通 runtime flush
+	 * 必须原样继承（见 cacheSessionMessagesAtom），否则刷新响应会被误判为陈旧。
+	 */
+	mutationSequence?: number;
 };
 
 export type SessionRuntimeUiRequestState = {
@@ -525,6 +531,8 @@ export const cacheSessionMessagesAtom = atom(
 		/** 窗口首条消息的文件消息下标（2026-11）：窗口缺 entryId 时作为首次补历史的数值游标 */
 		windowStartFilePos?: number;
 		history?: SessionMessageCacheEntry["history"];
+		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
+		mutationSequence?: number;
   }) => {
     const cache = get(sessionMessagesCacheAtom);
     const current = cache[input.sessionId];
@@ -571,6 +579,9 @@ export const cacheSessionMessagesAtom = atom(
 			...(input.source === "runtime" ? {
 				windowStart: input.windowStart && input.windowStart > 0 ? input.windowStart : undefined,
 				history: input.history,
+				// mutation 代际：runtime flush 不改变它，只有显式传入（refresh 落地）才更新。
+				// 缺省继承旧值，保证在途 refresh 不因无关 runtime 更新被误判为陈旧。
+				mutationSequence: input.mutationSequence ?? current?.mutationSequence,
 				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
 				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
 				// 未显式提供时保留旧值（增量 flush 不携带该字段，不应清掉有效游标）
@@ -853,6 +864,56 @@ export const prependSessionHistoryPageAtom = atom(
     });
     return true;
   },
+);
+
+/**
+ * 编辑/删除成功后的历史前缀原子替换（2026-11 mutation 刷新路径）。
+ *
+ * 职责边界：只负责把某个 runtime session 的旧 history（用户上翻加载的旧消息）
+ * 用重新读取到的新历史一次性替换；runtime 窗口段（current.messages）由后端的
+ * 实时全量 flush 负责，本 atom 绝不触碰。
+ *
+ * 守卫语义（与 prependSessionHistoryPageAtom 同源，但多一层 mutation 序号）：
+ * - source !== "runtime" / revision 不匹配 → 拒绝（缓存已被其他路径改写）；
+ * - expectedMutationSequence 不匹配 → 拒绝（乱序的旧 refresh 响应不得覆盖新响应）。
+ * revision 允许「变大」：等待期间正常的 runtime flush 会递增 revision 并更新
+ * 窗口段，这不影响历史前缀替换的正确性；只有 entry 整体缺失/来源变化才拒绝。
+ */
+export type ReplaceSessionHistoryAfterMutationInput = {
+	sessionId: string;
+	expectedRevision: number;
+	messages: ChatMessage[];
+	nextBefore: number | null;
+	nextBeforeEntryId?: string | null;
+	exhausted?: boolean;
+	version?: string;
+};
+
+export const replaceSessionHistoryAfterMutationAtom = atom(
+	null,
+	(get, set, input: ReplaceSessionHistoryAfterMutationInput): boolean => {
+		const current = get(sessionMessagesCacheAtom)[input.sessionId];
+		if (!current) return false;
+		if (current.source !== "runtime") return false;
+		if (current.revision !== input.expectedRevision) return false;
+		set(sessionMessagesCacheAtom, {
+			...get(sessionMessagesCacheAtom),
+			[input.sessionId]: {
+				...current,
+				// 只替换历史前缀：messages/windowStart/cardCount 等窗口段字段原引用保留，
+				// 后端实时 flush 仍拥有 runtime window 的唯一写权。
+				history: {
+					messages: input.messages,
+					nextBefore: input.nextBefore,
+					...(input.nextBeforeEntryId !== undefined ? { nextBeforeEntryId: input.nextBeforeEntryId } : {}),
+					...(input.exhausted ? { exhausted: true } : {}),
+					...(input.version ? { version: input.version } : {}),
+				},
+				updatedAt: Date.now(),
+			},
+		});
+		return true;
+	},
 );
 
 /**

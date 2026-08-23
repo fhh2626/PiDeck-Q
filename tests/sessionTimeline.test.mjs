@@ -38,7 +38,10 @@ function loadTimelineHelpers() {
     jotai: { atom: (value) => ({ _mockInit: value }) },
     "jotai/utils": {},
     "../atoms": {},
-    "../desktopApi": {},    "../components/session/timeline/turnRenderWindow": {
+    "../desktopApi": {},
+    "../i18n": { t: (key) => key },
+    "../utils/notice": { showNotice: () => {} },
+    "../components/session/timeline/turnRenderWindow": {
       TIMELINE_SCROLLED_TURN_LIMIT: 15,
       TIMELINE_WINDOW_EXPAND_STEP: 10,
     },

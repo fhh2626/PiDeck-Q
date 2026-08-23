@@ -16,15 +16,18 @@ import {
 	clearSessionHistoryAtom,
 	prependSessionHistoryPageAtom,
 	prependSessionMessagePageAtom,
-  sessionMessagesCacheAtom,
-  sessionMessageCacheBySessionIdAtomFamily,
-  sessionMessageLoadStateBySessionIdAtomFamily,
-  saveSessionScrollAnchorAtom,
-  sessionScrollAnchorByIdAtom,
-  setSessionMessageLoadStateAtom,
-  touchSessionMessagesAtom,
+	replaceSessionHistoryAfterMutationAtom,
+	sessionMessagesCacheAtom,
+	sessionMessageCacheBySessionIdAtomFamily,
+	sessionMessageLoadStateBySessionIdAtomFamily,
+	saveSessionScrollAnchorAtom,
+	sessionScrollAnchorByIdAtom,
+	setSessionMessageLoadStateAtom,
+	touchSessionMessagesAtom,
 	type SessionScrollAnchor,
 } from "../atoms";
+import { t } from "../i18n";
+import { showNotice } from "../utils/notice";
 import type { MessageScrollerScrollApi } from "../components/agents/message-scroller";
 import {
   TIMELINE_SCROLLED_TURN_LIMIT,
@@ -59,7 +62,28 @@ const NO_LOAD_STATE_ATOM = atom(undefined);
 const BOTTOM_THRESHOLD = 16;
 const LEGACY_OWNER_KEY = "legacy";
 /** runtime 窗口会话「加载更多对话」的单页轮数（与主进程 DEFAULT_TURN_PAGE_SIZE 对齐） */
-const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
+export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
+
+/**
+ * runtime 窗口会话的磁盘轮次页读取（2026-11 mutation 历史刷新抽出）：
+ * 「正常加载更多」与「编辑/删除成功后的历史重读」共用同一 API 调用与锚点参数形状，
+ * 避免两条路径各自复制一份 readRecordMessagePage 调用后行为漂移。
+ * beforeEntryId：页最旧条目 entryId（续页游标）；requestBefore：数值游标兜底
+ * （windowStartFilePos 场景）。两者都缺省时读首页。
+ */
+export function readRuntimeHistoryTurnPage(
+	sessionId: string,
+	pageSize: number,
+	params: { requestBefore?: number; anchorEntryId?: string } = {},
+) {
+	const { requestBefore, anchorEntryId } = params;
+	return desktopApi.sessions.readRecordMessagePage(
+		sessionId,
+		requestBefore,
+		pageSize,
+		{ unit: "turn", beforeEntryId: anchorEntryId },
+	);
+}
 
 type Tagged<T> = { ownerKey: string; value: T };
 type TimelineAnchor = { height: number; top: number };
@@ -183,6 +207,161 @@ export function isLatestTimelineRunBusy(
   return isAgentBusy && index === runCount - 1;
 }
 
+/** 编辑/删除成功后的历史重读快照：await 前捕获，固定原 session 与已加载深度。 */
+export type HistoryMutationRefreshSnapshot = {
+	sessionId: string;
+	expectedRevision: number;
+	expectedMutationSequence: number;
+	loadedHistoryTurnCount: number;
+	loadedHistoryMessageCount: number;
+	anchorMessageId?: string;
+};
+
+// ── 编辑/删除成功后的历史重读（2026-11 mutation 刷新路径）──
+// 根因：旧消息通常已进入 cache.history.messages，后端重发的 runtime 全量只刷窗口段；
+// fileVersion 兑底要等下一次全量 flush 才生效，用户看到的是残留旧文案。
+// 修复：mutation 成功后按「修改前已加载轮数」重读历史页，一次性原子替换 history 前缀。
+
+/** per-session mutation 代际：连续两次 mutation 时旧 refresh 响应必须被丢弃 */
+const mutationSequenceBySession = new Map<string, number>();
+
+/** 计算 history.messages 覆盖的轮数：复用渲染层 agent-run 分组的同一约定
+ * （user 消息 = 轮次起点），与主进程 findTurnPageStart / 轮次分页口径一致。 */
+export function countLoadedHistoryTurns(historyMessages: ChatMessage[]): number {
+	let turns = 0;
+	for (const message of historyMessages) {
+		if (message.role === "user") turns += 1;
+	}
+	// 无 user 消息的开头碎片也算一轮（与 findTurnPageStart 的「开头碎片归入首轮」一致）
+	return turns > 0 ? turns : (historyMessages.length > 0 ? 1 : 0);
+}
+
+/**
+ * mutation 发起前捕获刷新快照：固定 sessionId + 当前 revision + 已加载深度。
+ * 必须在 await 前调用——API 等待期间切走 session 后仍能正确刷新原会话。
+ * 未加载任何历史（或非 runtime 缓存）时返回 null：跳过重读，后端 immediate emit 已足够。
+ */
+export function captureHistoryMutationRefresh(
+	store: ReturnType<typeof useStore>,
+	sessionId: string | undefined,
+): HistoryMutationRefreshSnapshot | null {
+	if (!sessionId) return null;
+	const entry = store.get(sessionMessagesCacheAtom)[sessionId];
+	if (!entry || entry.source !== "runtime") return null;
+	if (!entry.history || entry.history.messages.length === 0) return null;
+	// 锚点行 id：优先当前滚动锚点；删除锚点本身时由 refresh 完成后找替代锚点。
+	const anchor = store.get(sessionScrollAnchorByIdAtom)[sessionId] ?? undefined;
+	const nextSequence = (mutationSequenceBySession.get(sessionId) ?? 0) + 1;
+	mutationSequenceBySession.set(sessionId, nextSequence);
+	return {
+		sessionId,
+		expectedRevision: entry.revision,
+		expectedMutationSequence: nextSequence,
+		loadedHistoryTurnCount: countLoadedHistoryTurns(entry.history.messages),
+		loadedHistoryMessageCount: entry.history.messages.length,
+		anchorMessageId: anchor?.messageId,
+	};
+}
+
+/**
+ * mutation 成功后的历史重读：从新的 runtime/history 接缝重新建立分页，
+ * 连续读到不低于修改前深度（或到顶），一次性原子替换。全程不写中间态 UI。
+ *
+ * 乱序保护：per-session sequence + expectedRevision 双守卫（atom 内再验一次）。
+ * 失败处理：编辑/删除本身已成功，不清 runtime 数据、不报「操作失败」，
+ * 只清掉可能陈旧的历史前缀并提示重新上翻（下次读取必然从新文件获取）。
+ */
+export async function refreshHistoryAfterMutation(
+	deps: { store: ReturnType<typeof useStore> },
+	snapshot: HistoryMutationRefreshSnapshot | null,
+): Promise<void> {
+	if (!snapshot) return;
+	const { store } = deps;
+	const { sessionId } = snapshot;
+	try {
+		// 首页锚点：复用 loadMoreMessages 首次补历史的同一接缝计算 ——
+		// 以当前 runtime 窗口首条有 entryId 的消息为锚，而不是旧缓存里的游标。
+		const currentEntryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
+		if (!currentEntryAtStart || currentEntryAtStart.source !== "runtime") return; // 会话已卸载
+		const anchorMessage = [
+			...(currentEntryAtStart.history?.messages ?? []),
+			...currentEntryAtStart.messages,
+		].find((m) => typeof m.meta?.entryId === "string");
+		const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
+			? anchorMessage.meta.entryId
+			: undefined;
+		const anchorFilePos = !anchorEntryId && typeof currentEntryAtStart.windowStartFilePos === "number"
+			? currentEntryAtStart.windowStartFilePos
+			: undefined;
+		if (!anchorEntryId && anchorFilePos === undefined) throw new Error("no-history-anchor");
+
+		const freshPages: Awaited<ReturnType<typeof readRuntimeHistoryTurnPage>>[] = [];
+		let freshTurns = 0;
+		let exhausted = false;
+		// 续页游标来自新读取到的页（不能继承旧缓存的 nextBefore/nextBeforeEntryId）
+		let cursor: { requestBefore?: number; anchorEntryId?: string } = anchorFilePos !== undefined
+			? { requestBefore: anchorFilePos }
+			: { anchorEntryId };
+		while (freshTurns < snapshot.loadedHistoryTurnCount && !exhausted) {
+			if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			const page = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
+			if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			if (store.get(sessionMessagesCacheAtom)[sessionId]?.source !== "runtime") return; // 会话已卸载/降级
+			freshPages.push(page);
+			for (const message of page.messages) {
+				if (message.role === "user") freshTurns += 1;
+			}
+			if (page.nextBefore === null) {
+				exhausted = true;
+			} else if (page.nextBeforeEntryId) {
+				cursor = { anchorEntryId: page.nextBeforeEntryId };
+			} else {
+				cursor = { requestBefore: page.nextBefore };
+			}
+		}
+
+		if (mutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+
+		// 时间顺序合并（每页内部已有序、页间由旧到新）：直接拼接。
+		const merged = freshPages.flatMap((page) => page.messages);
+		const lastPage = freshPages[freshPages.length - 1];
+		const applied = store.set(replaceSessionHistoryAfterMutationAtom, {
+			sessionId,
+			expectedRevision: snapshot.expectedRevision,
+			messages: merged,
+			nextBefore: lastPage?.nextBefore ?? null,
+			nextBeforeEntryId: lastPage?.nextBeforeEntryId,
+			exhausted,
+			version: lastPage?.indexVersion,
+		});
+		if (applied) {
+			// 锚点维护：原锚点消息仍在 → 不动（滚动位置自然保持）；
+			// 锚点被删 → 用新历史中最接近窗口接缝的存活消息替代，避免下次恢复失败。
+			const anchorId = snapshot.anchorMessageId;
+			if (anchorId && !merged.some((m) => m.id === anchorId)) {
+				const replacement = [...merged].reverse().find((m) => m.id);
+				store.set(saveSessionScrollAnchorAtom, {
+					sessionId,
+					anchor: replacement ? {
+						messageId: replacement.id,
+						offsetTop: 0,
+						visibleCount: 0,
+						savedAt: Date.now(),
+					} : null,
+				});
+			}
+		}
+	} catch {
+		// 重读失败 ≠ 操作失败：保留后端已推送的新 runtime 数据，
+		// 只把可能陈旧的历史前缀清掉（下次上翻必然从新文件读取），并提示用户。
+		const entry = store.get(sessionMessagesCacheAtom)[sessionId];
+		if (entry?.source === "runtime" && entry.history) {
+			store.set(clearSessionHistoryAtom, sessionId);
+		}
+		showNotice(t("message.mutationHistoryRefreshFailed"), 5000, "warning");
+	}
+}
+
 export type SessionTimelineController = {
   timelineRef: RefObject<HTMLElement | null>;
   messages: ChatMessage[];
@@ -213,6 +392,10 @@ export type SessionTimelineController = {
   scrolledWindowTurns: number;
   /** 扩大上滚渲染窗口（+TIMELINE_WINDOW_EXPAND_STEP 轮）；数据翻页仍由滚动到顶自动加载负责。 */
   expandWindow: () => void;
+  /** 编辑/删除发起前捕获刷新快照：await 前调用，固定原 sessionId/revision/已加载深度。 */
+  captureHistoryMutationRefresh: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
+  /** mutation 成功后的历史重读 + 原子替换（编辑/删除共用同一路径）。null 快照直接跳过。 */
+  refreshHistoryAfterMutation: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
 };
 
 export function useSessionTimelineController(options: {
@@ -557,11 +740,10 @@ export function useSessionTimelineController(options: {
 			trackLatestLoad(sessionId, sequence);
 			const expectedRevision = cachedEntry?.revision ?? 0;
 			setIsLoadingMessagePage(true);
-			void desktopApi.sessions
-				.readRecordMessagePage(sessionId, requestBefore, RUNTIME_HISTORY_TURN_PAGE_SIZE, {
-					unit: "turn",
-					beforeEntryId: anchorEntryId,
-				})
+			void readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, {
+				requestBefore,
+				anchorEntryId,
+			})
 				.then((page) => {
 					if (latestLoadBySession.get(sessionId) !== sequence) return;
 					if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
@@ -615,6 +797,18 @@ export function useSessionTimelineController(options: {
   const markProgrammaticScroll = useCallback(() => {
     programmaticScrollRef.current = true;
   }, []);
+
+  const captureHistoryMutationRefreshCallback = useCallback(
+    (targetSessionId: string | undefined) =>
+      captureHistoryMutationRefresh(store, targetSessionId ?? options.sessionId),
+    [options.sessionId, store],
+  );
+
+  const refreshHistoryAfterMutationCallback = useCallback(
+    (snapshot: HistoryMutationRefreshSnapshot | null) =>
+      refreshHistoryAfterMutation({ store }, snapshot),
+    [store],
+  );
 
   const jumpToMessage = useCallback((messageId: string) => {
     const requestOwnerKey = ownerKey;
@@ -852,5 +1046,7 @@ export function useSessionTimelineController(options: {
     scrollerScrollApiRef,
     scrolledWindowTurns,
     expandWindow,
+    captureHistoryMutationRefresh: captureHistoryMutationRefreshCallback,
+    refreshHistoryAfterMutation: refreshHistoryAfterMutationCallback,
   };
 }

@@ -2194,6 +2194,7 @@ export const zhCN = {
   "message.deleteTitle": "删除消息",
   "message.deleteReloadPrompt": "删除后需要重新加载会话才能生效，确定继续？",
   "message.deleteFailed": "删除失败",
+  "message.mutationHistoryRefreshFailed": "消息已修改，但历史记录刷新失败，请重新加载历史",
   "message.busyStreaming": "Agent 正在生成回答，请等待完成后重试",
   "message.busyTool": "Agent 正在执行工具，请等待完成后重试",
   "message.busyGeneric": "Agent 当前忙碌，请稍后重试",

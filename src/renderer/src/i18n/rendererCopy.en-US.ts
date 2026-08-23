@@ -2228,6 +2228,7 @@ export const enUS: Record<TranslationKey, string> = {
   "message.deleteTitle": "Delete Message",
   "message.deleteReloadPrompt": "Deleting requires session reload to take effect. Continue?",
   "message.deleteFailed": "Delete failed",
+  "message.mutationHistoryRefreshFailed": "Message updated, but failed to refresh history. Please reload history.",
   "message.busyStreaming": "Agent is busy generating a response, please wait",
   "message.busyTool": "Agent is executing a tool, please wait",
   "message.busyGeneric": "Agent is currently busy, please try again later",
