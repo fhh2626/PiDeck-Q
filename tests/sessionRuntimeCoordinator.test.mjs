@@ -100,22 +100,33 @@ function createHarness(options = {}) {
     uiResponse: 0,
   };
   const tabs = options.tabs ? [...options.tabs] : [];
+  const entriesMap = options.entries
+    ? new Map(options.entries.map((e) => [e.id, catalogEntry(e)]))
+    : new Map([[entry.id, entry]]);
   const catalog = {
-    get: (sessionId) => sessionId === entry.id ? { ...entry } : undefined,
-    getRecord: (sessionId) => sessionId === entry.id ? {
-      ...entry,
-      preview: "",
-      messageCount: 0,
-    } : undefined,
-    update: async (_sessionId, patch) => {
+    get: (sessionId) => {
+      const e = entriesMap.get(sessionId);
+      return e ? { ...e } : undefined;
+    },
+    getRecord: (sessionId) => {
+      const e = entriesMap.get(sessionId);
+      return e ? {
+        ...e,
+        preview: "",
+        messageCount: 0,
+      } : undefined;
+    },
+    update: async (sessionId, patch) => {
       calls.update += 1;
-      Object.assign(entry, patch);
-      return { ...entry };
+      const e = entriesMap.get(sessionId) ?? entry;
+      Object.assign(e, patch);
+      return { ...e };
     },
     attachRuntime: async (input) => {
       calls.attach += 1;
-      entry.filePath = input.filePath;
-      entry.status = input.filePath ? "active" : entry.status;
+      const e = entriesMap.get(input.sessionId) ?? entry;
+      e.filePath = input.filePath;
+      e.status = input.filePath ? "active" : e.status;
     },
   };
   const agents = {
@@ -187,14 +198,17 @@ function createHarness(options = {}) {
       calls.exportHtml += 1;
       return { path: "C:/export.html" };
     },
-    editMessage: async () => {
+    editMessage: async (...args) => {
       calls.editMessage += 1;
+      if (options.editMessage) return options.editMessage(...args);
     },
-    deleteMessage: async () => {
+    deleteMessage: async (...args) => {
       calls.deleteMessage += 1;
+      if (options.deleteMessage) return options.deleteMessage(...args);
     },
-    prepareResendFromMessage: async () => {
+    prepareResendFromMessage: async (...args) => {
       calls.prepareResend += 1;
+      if (options.prepareResendFromMessage) return options.prepareResendFromMessage(...args);
       return { text: "hello" };
     },
     setModel: async () => {
@@ -1245,4 +1259,240 @@ test("SessionCommandIpcError maps MESSAGE_NOT_FOUND to the dedicated copy key", 
     translate,
   );
   assert.equal(sessionError.message, "sessionCommand.sessionNotFound");
+});
+
+test("history mutations for the same session are serialized: delete A and delete B execute sequentially", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const baseTab = {
+    id: "agent-a",
+    projectId: "project-1",
+    cwd: "C:/project",
+    title: "Session",
+    status: "idle",
+    sessionPath: "C:/sessions/session-1.jsonl",
+    createdAt: 1,
+  };
+
+  const timeline = [];
+  const deleteADeferred = deferred();
+  const deleteBDeferred = deferred();
+
+  const harness = createHarness({
+    tabs: [{ ...baseTab }],
+    deleteMessage: async (_agentId, messageId) => {
+      timeline.push(`start:${messageId}`);
+      if (messageId === "msg-a") {
+        await deleteADeferred.promise;
+      } else if (messageId === "msg-b") {
+        await deleteBDeferred.promise;
+      }
+      timeline.push(`end:${messageId}`);
+    },
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const promiseA = coordinator.deleteRuntimeMessage(target, "msg-a");
+  const promiseB = coordinator.deleteRuntimeMessage(target, "msg-b");
+
+  // Let microtasks tick
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Only msg-a should have started; msg-b should be waiting
+  assert.deepEqual(timeline, ["start:msg-a"]);
+
+  // Resolve msg-a
+  deleteADeferred.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Now msg-a should have ended, and msg-b should have started
+  assert.deepEqual(timeline, ["start:msg-a", "end:msg-a", "start:msg-b"]);
+
+  // Resolve msg-b
+  deleteBDeferred.resolve();
+  const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
+
+  assert.deepEqual(timeline, ["start:msg-a", "end:msg-a", "start:msg-b", "end:msg-b"]);
+  assert.equal(resultA.ok, true);
+  assert.equal(resultB.ok, true);
+});
+
+test("history mutations for the same session serialize delete + edit and edit + delete", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const baseTab = {
+    id: "agent-a",
+    projectId: "project-1",
+    cwd: "C:/project",
+    title: "Session",
+    status: "idle",
+    sessionPath: "C:/sessions/session-1.jsonl",
+    createdAt: 1,
+  };
+
+  const timeline = [];
+  const deferred1 = deferred();
+  const deferred2 = deferred();
+
+  const harness = createHarness({
+    tabs: [{ ...baseTab }],
+    deleteMessage: async (_agentId, messageId) => {
+      timeline.push(`start:delete:${messageId}`);
+      await deferred1.promise;
+      timeline.push(`end:delete:${messageId}`);
+    },
+    editMessage: async (_agentId, messageId, newText) => {
+      timeline.push(`start:edit:${messageId}:${newText}`);
+      await deferred2.promise;
+      timeline.push(`end:edit:${messageId}:${newText}`);
+    },
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  // 1. delete + edit
+  const delPromise = coordinator.deleteRuntimeMessage(target, "msg-1");
+  const editPromise = coordinator.editRuntimeMessage(target, "msg-2", "text-2");
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(timeline, ["start:delete:msg-1"]);
+
+  deferred1.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(timeline, ["start:delete:msg-1", "end:delete:msg-1", "start:edit:msg-2:text-2"]);
+
+  deferred2.resolve();
+  await Promise.all([delPromise, editPromise]);
+  assert.deepEqual(timeline, [
+    "start:delete:msg-1",
+    "end:delete:msg-1",
+    "start:edit:msg-2:text-2",
+    "end:edit:msg-2:text-2",
+  ]);
+});
+
+test("history mutations for different sessions execute concurrently", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const baseTab1 = {
+    id: "agent-1",
+    projectId: "project-1",
+    cwd: "C:/project",
+    title: "Session 1",
+    status: "idle",
+    sessionPath: "C:/sessions/session-1.jsonl",
+    createdAt: 1,
+  };
+  const baseTab2 = {
+    id: "agent-2",
+    projectId: "project-1",
+    cwd: "C:/project",
+    title: "Session 2",
+    status: "idle",
+    sessionPath: "C:/sessions/session-2.jsonl",
+    createdAt: 2,
+  };
+
+  const timeline = [];
+  const deferred1 = deferred();
+  const deferred2 = deferred();
+
+  const harness = createHarness({
+    entries: [
+      { id: "session-1", title: "Session 1" },
+      { id: "session-2", title: "Session 2" },
+    ],
+    tabs: [{ ...baseTab1 }, { ...baseTab2 }],
+    deleteMessage: async (agentId, messageId) => {
+      timeline.push(`start:${agentId}:${messageId}`);
+      if (agentId === "agent-1") {
+        await deferred1.promise;
+      } else {
+        await deferred2.promise;
+      }
+      timeline.push(`end:${agentId}:${messageId}`);
+    },
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+  const gen1 = coordinator.bindExistingAgent("session-1", "agent-1");
+  const gen2 = coordinator.bindExistingAgent("session-2", "agent-2");
+
+  const promise1 = coordinator.deleteRuntimeMessage(
+    { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: gen1 },
+    "msg-1",
+  );
+  const promise2 = coordinator.deleteRuntimeMessage(
+    { sessionId: "session-2", agentId: "agent-2", runtimeGeneration: gen2 },
+    "msg-2",
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Both should have started in parallel!
+  assert.equal(timeline.includes("start:agent-1:msg-1"), true);
+  assert.equal(timeline.includes("start:agent-2:msg-2"), true);
+  assert.equal(timeline.length, 2);
+
+  deferred1.resolve();
+  deferred2.resolve();
+  const [res1, res2] = await Promise.all([promise1, promise2]);
+  assert.equal(res1.ok, true);
+  assert.equal(res2.ok, true);
+});
+
+test("history mutation command fencing: runtime changed during execution returns SESSION_RUNTIME_CHANGED", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const baseTab = {
+    id: "agent-a",
+    projectId: "project-1",
+    cwd: "C:/project",
+    title: "Session",
+    status: "idle",
+    sessionPath: "C:/sessions/session-1.jsonl",
+    createdAt: 1,
+  };
+
+  const deleteDeferred = deferred();
+  let coordinatorRef;
+
+  const harness = createHarness({
+    tabs: [{ ...baseTab }],
+    deleteMessage: async () => {
+      // Mid-command, runtime reaches terminal / unbind
+      coordinatorRef.unbindTerminalAgent("agent-a");
+      await deleteDeferred.promise;
+    },
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+  coordinatorRef = coordinator;
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const promise = coordinator.deleteRuntimeMessage(target, "msg-1");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  deleteDeferred.resolve();
+
+  const result = await promise;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "SESSION_RUNTIME_CHANGED");
 });

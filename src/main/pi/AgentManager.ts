@@ -108,6 +108,10 @@ export interface AgentPlatformDeps {
 	hasLiveWindow?: () => boolean;
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 const SESSION_IDENTITY_RETRY_DELAYS_MS: readonly number[] = [0, 50, 100, 200];
 
 type MessageLoadOptions = {
@@ -2516,7 +2520,25 @@ export class AgentManager {
 			newText,
 			reload: () => this.requestSessionReload(runtime, file),
 		});
-		await this.loadMessages(agentId, false, undefined, { preserveHistory: false });
+		try {
+			await this.loadMessages(
+				agentId,
+				false,
+				undefined,
+				{ preserveHistory: false },
+			);
+		} catch (error) {
+			this.invalidateMessageLoads(agentId);
+			void this.appLogger?.warn(
+				"agent",
+				"Edit committed but message refresh failed",
+				{
+					agentId,
+					messageId,
+					error: errorMessage(error),
+				},
+			);
+		}
 		void this.appLogger?.info("agent", "Edit message completed", {
 			agentId,
 			messageId,
@@ -2539,7 +2561,25 @@ export class AgentManager {
 			target,
 			reload: () => this.requestSessionReload(runtime, file),
 		});
-		await this.loadMessages(agentId, false, undefined, { preserveHistory: false });
+		try {
+			await this.loadMessages(
+				agentId,
+				false,
+				undefined,
+				{ preserveHistory: false },
+			);
+		} catch (error) {
+			this.invalidateMessageLoads(agentId);
+			void this.appLogger?.warn(
+				"agent",
+				"Delete committed but message refresh failed",
+				{
+					agentId,
+					messageId,
+					error: errorMessage(error),
+				},
+			);
+		}
 		void this.appLogger?.info("agent", "Delete message completed", {
 			agentId,
 			messageId,
@@ -2568,7 +2608,25 @@ export class AgentManager {
 			target,
 			reload: () => this.requestSessionReload(runtime, file),
 		});
-		await this.loadMessages(agentId, false, undefined, { preserveHistory: false });
+		try {
+			await this.loadMessages(
+				agentId,
+				false,
+				undefined,
+				{ preserveHistory: false },
+			);
+		} catch (error) {
+			this.invalidateMessageLoads(agentId);
+			void this.appLogger?.warn(
+				"agent",
+				"Prepare resend committed but message refresh failed",
+				{
+					agentId,
+					messageId,
+					error: errorMessage(error),
+				},
+			);
+		}
 		void this.appLogger?.info("agent", "Prepare resend completed", {
 			agentId,
 			messageId,

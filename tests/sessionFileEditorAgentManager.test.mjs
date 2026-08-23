@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
@@ -272,4 +275,200 @@ test("delete, resend and public reload all route through the injected editor and
   assert.equal(resend.images.length, 1);
   assert.equal(commands.filter((command) => command.type === "switch_session").length, 3);
   assert.deepEqual(loads, ["agent-1", "agent-1", "agent-1"]);
+});
+
+test("deleteMessage succeeds even if subsequent loadMessages fails after commit", async () => {
+  const warnings = [];
+  const editor = {
+    deleteMessage: async (input) => {
+      await input.reload();
+    },
+  };
+  const assistant = chatMessage();
+  const { manager } = createHarness(editor, {
+    messages: [assistant],
+    leafId: "a1",
+  });
+  manager.appLogger = {
+    info: () => {},
+    warn: (scope, msg, detail) => { warnings.push({ scope, msg, detail }); },
+  };
+  manager.loadMessages = async () => {
+    throw new Error("refresh memory failed");
+  };
+
+  await manager.deleteMessage("agent-1", assistant.id);
+
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].msg, "Delete committed but message refresh failed");
+  assert.equal(warnings[0].detail.error, "refresh memory failed");
+});
+
+test("editMessage and prepareResendFromMessage succeed even if subsequent loadMessages fails after commit", async () => {
+  const warnings = [];
+  const editor = {
+    editMessage: async (input) => {
+      await input.reload();
+    },
+    truncateForResend: async (input) => {
+      await input.reload();
+    },
+  };
+  const user = chatMessage({
+    id: "agent-1-history-u1",
+    role: "user",
+    text: "question",
+    meta: { entryId: "u1" },
+  });
+  const assistant = chatMessage();
+  const { manager } = createHarness(editor, {
+    messages: [user, assistant],
+    leafId: "a1",
+  });
+  manager.appLogger = {
+    info: () => {},
+    warn: (scope, msg, detail) => { warnings.push({ scope, msg, detail }); },
+  };
+  manager.loadMessages = async () => {
+    throw new Error("refresh memory failed");
+  };
+
+  await manager.editMessage("agent-1", assistant.id, "new answer");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].msg, "Edit committed but message refresh failed");
+
+  const resend = await manager.prepareResendFromMessage("agent-1", user.id);
+  assert.equal(resend.text, "question");
+  assert.equal(warnings.length, 2);
+  assert.equal(warnings[1].msg, "Prepare resend committed but message refresh failed");
+});
+
+function loadSessionFileEditor() {
+  const filePath = "src/main/pi/SessionFileEditor.ts";
+  const output = ts.transpileModule(readFileSync(filePath, "utf8"), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName: filePath,
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(output, {
+    module,
+    exports: module.exports,
+    require: nodeRequire,
+    Buffer,
+    TextDecoder,
+    AggregateError,
+    process,
+    setTimeout,
+    clearTimeout,
+    console,
+  }, { filename: filePath });
+  return module.exports.SessionFileEditor;
+}
+
+test("integrated: delete message on disk and switch_session succeed but loadMessages throws -> API returns success and disk keeps deletion", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pideck-test-del-"));
+  const sessionPath = join(dir, "session.jsonl");
+  const initialContent = [
+    JSON.stringify({ type: "session", version: 3, id: "session-1" }),
+    JSON.stringify({ type: "message", id: "u1", parentId: null, message: { role: "user", content: "hello" } }),
+    JSON.stringify({ type: "message", id: "a1", parentId: "u1", message: { role: "assistant", content: "answer" } }),
+  ].join("\n") + "\n";
+  await writeFile(sessionPath, initialContent, "utf8");
+
+  try {
+    const SessionFileEditorClass = loadSessionFileEditor();
+    const realEditor = new SessionFileEditorClass();
+
+    const assistant = chatMessage({
+      id: "agent-1-history-a1",
+      role: "assistant",
+      text: "answer",
+      meta: { entryId: "a1" },
+    });
+    const { manager, runtime } = createHarness(realEditor, {
+      messages: [assistant],
+      leafId: "a1",
+    });
+    runtime.tab.sessionPath = sessionPath;
+
+    const warnings = [];
+    manager.appLogger = {
+      info: () => {},
+      warn: (scope, msg, detail) => { warnings.push({ scope, msg, detail }); },
+    };
+    manager.loadMessages = async () => {
+      throw new Error("refresh load failed");
+    };
+
+    // deleteMessage must succeed without throwing
+    await manager.deleteMessage("agent-1", assistant.id);
+
+    // Verify warning was logged
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].msg, "Delete committed but message refresh failed");
+
+    // Verify disk content preserves deletion result (a1 message is deleted, replaced by tombstone)
+    const updatedContent = await readFile(sessionPath, "utf8");
+    assert.equal(updatedContent.includes('"role":"assistant"'), false);
+    assert.equal(updatedContent.includes('"type":"deleted"'), true);
+    assert.equal(updatedContent.includes('"u1"'), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("integrated: switch_session fails -> file is rolled back and API returns failure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pideck-test-del-rollback-"));
+  const sessionPath = join(dir, "session.jsonl");
+  const initialContent = [
+    JSON.stringify({ type: "session", version: 3, id: "session-1" }),
+    JSON.stringify({ type: "message", id: "u1", parentId: null, message: { role: "user", content: "hello" } }),
+    JSON.stringify({ type: "message", id: "a1", parentId: "u1", message: { role: "assistant", content: "answer" } }),
+  ].join("\n") + "\n";
+  await writeFile(sessionPath, initialContent, "utf8");
+
+  try {
+    const SessionFileEditorClass = loadSessionFileEditor();
+    const realEditor = new SessionFileEditorClass();
+
+    const assistant = chatMessage({
+      id: "agent-1-history-a1",
+      role: "assistant",
+      text: "answer",
+      meta: { entryId: "a1" },
+    });
+    const { manager, runtime } = createHarness(realEditor, {
+      messages: [assistant],
+      leafId: "a1",
+    });
+    runtime.tab.sessionPath = sessionPath;
+
+    // Simulate switch_session RPC failure on first reload attempt, then success on rollback reload
+    let switchCount = 0;
+    runtime.process.client.request = async (command) => {
+      if (command.type === "get_entries") return { success: true, data: { leafId: "a1" } };
+      if (command.type === "switch_session") {
+        switchCount += 1;
+        if (switchCount === 1) throw new Error("switch_session RPC failed");
+        return { success: true };
+      }
+      return { success: true, data: {} };
+    };
+
+    // deleteMessage must reject because reload failed
+    await assert.rejects(
+      manager.deleteMessage("agent-1", assistant.id),
+      (error) => error.code === "SESSION_RELOAD_FAILED" || /Session reload failed/.test(error.message),
+    );
+
+    // Verify disk content was rolled back to original content
+    const currentContent = await readFile(sessionPath, "utf8");
+    assert.equal(currentContent, initialContent);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
