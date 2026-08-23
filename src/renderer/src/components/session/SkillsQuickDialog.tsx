@@ -138,27 +138,8 @@ export function SkillsQuickDialog(props: {
 					) : (
 						<ul className="flex flex-col divide-y divide-border/60">
 							{data.skills.map((skill) => (
-								<li key={skill.id} className="flex items-start justify-between gap-3 py-2.5">
-									<div className="flex min-w-0 flex-col gap-0.5">
-										<div className="flex min-w-0 items-center gap-2">
-											<strong className="truncate text-control font-medium text-foreground">{skill.name}</strong>
-											<span className={`skill-state ${skill.enabled ? "enabled" : "disabled"}`}>
-												{skill.enabled ? t("common.enabled") : t("common.disabled")}
-											</span>
-											{!skill.valid && <span className="skill-state invalid">{t("config.needsFix")}</span>}
-										</div>
-										{skill.description && (
-											<span className="line-clamp-2 text-caption leading-relaxed text-muted-foreground" title={skill.description}>
-												{skill.description}
-											</span>
-										)}
-										<span className="truncate font-mono text-micro text-muted-foreground">{skill.sourceLabel}</span>
-										{skill.warnings.length > 0 && (
-											<span className="truncate text-caption text-destructive" title={skill.warnings.join("\n")}>
-												{skill.warnings[0]}
-											</span>
-										)}
-									</div>
+								<li key={skill.id} className="flex items-center justify-between gap-3 py-2.5">
+									<strong className="min-w-0 truncate text-control font-medium text-foreground">{skill.name}</strong>
 									<Button
 										variant="ghost"
 										size="icon-sm"
