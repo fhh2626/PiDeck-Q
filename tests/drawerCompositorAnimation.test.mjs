@@ -65,7 +65,7 @@ test("file rows animate their hover highlight like sidebar rows", () => {
   // 文件行 class 必须带与侧栏行同款的 transition-[background-color,border-color,box-shadow]
   // + duration-200；legacy .file-node-row:hover 的颜色变化由此过渡驱动。
   const surface = readFileSync(
-    "src/renderer/src/components/session/WorkspaceSurface.tsx",
+    "src/renderer/src/components/session/DrawerContent.tsx",
     "utf8",
   );
   assert.match(

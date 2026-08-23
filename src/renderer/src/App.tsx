@@ -2518,6 +2518,19 @@ export function App() {
     [composerOffsetHeight, terminalRowHeight],
   );
 
+  // Actions 轨稳定入口：sessionPaneServices 因 terminal/git 等 State 变化重算时，
+  // 这两个回调引用保持不变，SessionPaneActionsContext 才不会跟着更新。
+  // 原为 useMemo 内的 inline function，每次 services 重算都会产生新函数引用。
+  const runCreateSessionDraftForPane = useCallback(async () => {
+    await createSessionDraftWithTab();
+  }, [createSessionDraftWithTab]);
+
+  const openSidebarSessionByIdForPane = useCallback(
+    (projectId: string, sessionId: string) =>
+      openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
+    [openSidebarSessionByIdWithTab],
+  );
+
   const sessionPaneServices = useMemo(
     () => ({
       isLanWeb,
@@ -2528,9 +2541,7 @@ export function App() {
       onPreviewImage: setPreviewImage,
       abortAgent,
       restartActiveAgent,
-      runCreateSessionDraft: async () => {
-        await createSessionDraftWithTab();
-      },
+      runCreateSessionDraft: runCreateSessionDraftForPane,
       enqueueSessionPrompt,
       insertQuickPrompt,
       ensureSessionId: ensureSessionForSend,
@@ -2539,8 +2550,7 @@ export function App() {
       deleteMessage,
       forkFromUserMessage,
       forkingMessageId,
-      openSidebarSessionById: (projectId: string, sessionId: string) =>
-        openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
+      openSidebarSessionById: openSidebarSessionByIdForPane,
       agents: displayAgents,
       queuedPromptsBySession: queue.queuedPrompts,
       queueRetract: queue.retractQueuedPromptForEdit,
@@ -2578,9 +2588,8 @@ export function App() {
       abortAgent,
       activeProjectId,
       availableTerminalHeight,
-      configOpen,
-      createSessionDraftWithTab,
       changeChatPath,
+      configOpen,
       deleteMessage,
       diffFilePath,
       displayAgents,
@@ -2595,7 +2604,7 @@ export function App() {
       insertQuickPrompt,
       isLanWeb,
       jumpToMessageRef,
-      openSidebarSessionByIdWithTab,
+      openSidebarSessionByIdForPane,
       paneLayoutRefs,
       queue.discardQueuedPrompt,
       queue.queuedPrompts,
@@ -2603,6 +2612,7 @@ export function App() {
       queueFlushBySessionRef,
       restartActiveAgent,
       restartingAgentId,
+      runCreateSessionDraftForPane,
       resendUserMessage,
       sessionDurationByAgent,
       settings.showThinking,

@@ -45,7 +45,8 @@ test("empty active sessions render the start surface and put prompts into the co
   assert.match(timeline, /<SessionStartSurface onQuickPrompt=\{props\.onQuickPrompt\}/);
   assert.match(injector, /insertQuickPrompt/);
   assert.match(injector, /onQuickPrompt=\{\(message\) => services\.insertQuickPrompt\(currentSessionId, message\)\}/);
-  assert.match(app, /runCreateSessionDraft: async \(\) => \{[\s\S]*?insertQuickPrompt,/);
+  assert.match(app, /runCreateSessionDraft:\s*runCreateSessionDraftForPane/);
+  assert.match(app, /runCreateSessionDraftForPane[\s\S]*?createSessionDraftWithTab/);
   assert.match(app, /setSessionDraft\(\{ sessionId, value: message \}\)/);
 });
 

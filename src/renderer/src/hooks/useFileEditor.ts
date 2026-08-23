@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useStore } from "jotai";
 import type {
   AgentTab,
   CommitEntry,
@@ -166,9 +166,10 @@ export function useFileEditor(input: UseFileEditorInput): UseFileEditorOutput {
 
   // 修改文件清单从 App 根组件下沉到本 hook（真正消费 modifiedFiles 的最小组件）：
   // diffFilePath 需要按 path 反查 originalContent/content 来打开差异查看器。
-  // 自订 modifiedFilesAtom 后，消息缓存变引用（消息边界 flush）时只重算本 hook 的
-  // diff 闭包，不再由 App 根组件就地计算。
-  const modifiedFiles = useAtomValue(modifiedFilesAtom);
+  // 用 store.get() 在调用时读取，而不是 useAtomValue 订阅：useFileEditor 是 App 调用的
+  // hook（非独立组件），订阅会让消息缓存变引用（消息边界 flush）时唤醒 App 整棵树；
+  // 改为按需读取后，流式期间不再因为这个 hook 唤醒根组件。
+  const store = useStore();
 
   const contentOpenModeRef = useRef(contentOpenMode);
   contentOpenModeRef.current = contentOpenMode;
@@ -451,6 +452,8 @@ export function useFileEditor(input: UseFileEditorInput): UseFileEditorOutput {
 
   const diffFilePath = useCallback(
     (path: string, originalContent?: string, content?: string) => {
+      // 按需读取：diff 打开的瞬间才取最新修改清单，不建立渲染期订阅
+      const modifiedFiles = store.get(modifiedFilesAtom);
       const modified = modifiedFiles.find((f) => f.path === path);
       const resolvedOriginal =
         originalContent ?? modified?.originalContent ?? "";
@@ -472,7 +475,7 @@ export function useFileEditor(input: UseFileEditorInput): UseFileEditorOutput {
         "permanent",
       );
     },
-    [modifiedFiles, dismissGitDiffOnly, openEditorTab],
+    [store, dismissGitDiffOnly, openEditorTab],
   );
 
   const openWorkspaceFileDiffFn = useCallback(

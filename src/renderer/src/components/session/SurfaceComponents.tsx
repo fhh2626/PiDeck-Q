@@ -1286,7 +1286,7 @@ function clampOutlineTop(value: number) {
 	return Math.min(window.innerHeight - 92, Math.max(76, value));
 }
 
-export { DrawerContent, SessionFileSummary, SessionHistoryModal } from "./WorkspaceSurface";
+export { SessionFileSummary, SessionHistoryModal } from "./WorkspaceSurface";
 
 export { FileContextMenu, PromptSuggestions } from "./ComposerOverlayComponents";
 

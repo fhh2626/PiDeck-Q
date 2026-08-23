@@ -44,7 +44,7 @@ let cachedDrawerContent: DrawerPanelComponent | null = null;
 function loadDrawerContent(): Promise<DrawerPanelComponent> {
   if (cachedDrawerContent) return Promise.resolve(cachedDrawerContent);
   if (!drawerContentPromise) {
-    drawerContentPromise = import("../app/AppParts")
+    drawerContentPromise = import("../session/DrawerContent")
       .then((m) => {
         cachedDrawerContent = m.DrawerContent;
         return cachedDrawerContent;

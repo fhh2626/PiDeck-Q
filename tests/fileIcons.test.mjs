@@ -12,6 +12,10 @@ const workspaceSurface = readFileSync(
   "src/renderer/src/components/session/WorkspaceSurface.tsx",
   "utf8",
 );
+const drawerContent = readFileSync(
+  "src/renderer/src/components/session/DrawerContent.tsx",
+  "utf8",
+);
 const surfaceFacade = readFileSync(
   "src/renderer/src/components/session/SurfaceComponents.tsx",
   "utf8",
@@ -58,7 +62,7 @@ describe("Seti file icon integration", () => {
   });
 
   test("file tree renders trusted Seti SVG and file type labels", () => {
-    const source = workspaceSurface;
+    const source = drawerContent;
     assert.match(source, /getFileIconSeti\(name\)/);
     assert.match(source, /dangerouslySetInnerHTML=\{\{ __html: svg \}\}/);
     assert.match(source, /aria-hidden="true"/);
@@ -68,7 +72,7 @@ describe("Seti file icon integration", () => {
   });
 
   test("Git panel and file tree share the same vendored Seti lookup and color mapping", () => {
-    const fileTree = workspaceSurface;
+    const fileTree = drawerContent;
     const gitPanel = gitResourceTree;
     const sharedLookup = readFileSync("src/renderer/src/fileIcons.ts", "utf8");
 
@@ -83,7 +87,7 @@ describe("Seti file icon integration", () => {
   test("workspace drawer symbols retain the SurfaceComponents compatibility export", () => {
     assert.match(
       surfaceFacade,
-      /export \{ DrawerContent, SessionFileSummary, SessionHistoryModal \} from "\.\/WorkspaceSurface";/,
+      /export \{ SessionFileSummary, SessionHistoryModal \} from "\.\/WorkspaceSurface";/,
     );
   });
 
@@ -109,16 +113,16 @@ describe("Seti file icon integration", () => {
 
   test("files drawer drops title chrome and keeps a denser tree", () => {
     // 文件抽屉：无顶栏；工具行压矮；缩进 8px/层；树行原生 button（不套 shadcn Button 抢 SVG 尺寸）
-    assert.match(workspaceSurface, /props\.panel !== "files" && title/);
-    assert.match(workspaceSurface, /panel-action-row flex h-7/);
-    assert.match(workspaceSurface, /depth \* 8/);
-    assert.match(workspaceSurface, /树行用原生 button/);
-    assert.doesNotMatch(workspaceSurface, /\[&_svg\]:!size-/);
-    assert.match(workspaceSurface, /FolderOpen size=\{18\}/);
+    assert.match(drawerContent, /props\.panel !== "files" && title/);
+    assert.match(drawerContent, /panel-action-row flex h-7/);
+    assert.match(drawerContent, /depth \* 8/);
+    assert.match(drawerContent, /树行用原生 button/);
+    assert.doesNotMatch(drawerContent, /\[&_svg\]:!size-/);
+    assert.match(drawerContent, /FolderOpen size=\{18\}/);
     // 滚动层上移到 DrawerSurface 的 LazyWrapper（overflow-y-auto）；files-panel 自身
     // 只保留 overflow-x-hidden，避免滚动条占位导致的宽度摆动（见 DrawerSurface 注释）
-    assert.match(workspaceSurface, /files-panel[^"]*overflow-x-hidden/);
-    assert.doesNotMatch(workspaceSurface, /files-panel[^"]*overflow-y-auto/);
-    assert.doesNotMatch(workspaceSurface, /files-panel[^"]*overflow-hidden"/);
+    assert.match(drawerContent, /files-panel[^"]*overflow-x-hidden/);
+    assert.doesNotMatch(drawerContent, /files-panel[^"]*overflow-y-auto/);
+    assert.doesNotMatch(drawerContent, /files-panel[^"]*overflow-hidden"/);
   });
 });

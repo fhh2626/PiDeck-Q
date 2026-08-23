@@ -435,7 +435,6 @@ export {
   stripMarkdown,
   MultiSelectModal,
   ConversationOutline,
-  DrawerContent,
   SessionFileSummary,
   SessionHistoryModal,
   PromptSuggestions,

@@ -145,7 +145,7 @@ test("file tabs use preview/permanent strategy owned by useFileEditor", () => {
   assert.match(viewer, /aria-label=\{t\("common.close"\)\}/);
 
   const surface = readFileSync(
-    "src/renderer/src/components/session/WorkspaceSurface.tsx",
+    "src/renderer/src/components/session/DrawerContent.tsx",
     "utf8",
   );
   assert.match(surface, /onViewFile\?\.\(node\.path, "permanent"\)/);
