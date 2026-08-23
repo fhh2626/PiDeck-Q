@@ -323,7 +323,7 @@ test("方案 B 回归：meta.slidingOut 的变化会触发 sameChatMessageForRen
 	assert.equal(sameChatMessageForRender(msgWithSliding, msgWithoutSliding), false);
 	assert.equal(sameChatMessageForRender(msgWithSliding, { ...msgWithSliding }), true);
 
-	// 2. reconcileRuns 不会被旧对象缓存吃掉
+	// 2. reconcileRuns 不会被旧对象缓存吃掉（验证 agent-run 槽位）
 	const prevRuns = groupToolMessages([
 		{ id: "u1", role: "user", text: "q", timestamp: 900 },
 		msgWithoutSliding,
@@ -333,7 +333,27 @@ test("方案 B 回归：meta.slidingOut 的变化会触发 sameChatMessageForRen
 		msgWithSliding,
 	]);
 
+	assert.equal(prevRuns[0].kind, "message");
+	assert.equal(prevRuns[1].kind, "agent-run");
+	assert.equal(nextRuns[1].kind, "agent-run");
+
+	// 对照基准：若消息完全没变，reconcileRuns 必须能复用旧 agent-run 引用
+	const identicalRuns = groupToolMessages([
+		{ id: "u1", role: "user", text: "q", timestamp: 900 },
+		{ ...msgWithoutSliding },
+	]);
+	const reused = reconcileRuns(prevRuns, identicalRuns);
+	assert.equal(reused[1], prevRuns[1], "未变化的消息必须复用旧 agent-run 引用");
+
+	// 正式断言：slidingOut 变化后，agent-run 对象引用必须刷新，且能读到 slidingOut 标记
 	const reconciled = reconcileRuns(prevRuns, nextRuns);
-	// agent-run 对象引用必须刷新，不能复用旧的 prevRuns[0]
-	assert.notEqual(reconciled[0], prevRuns[0]);
+	assert.equal(reconciled[1].kind, "agent-run");
+	assert.notEqual(reconciled[1], prevRuns[1], "slidingOut 变化时不得复用旧 agent-run 引用");
+	assert.equal(
+		reconciled[1].items.some(
+			(item) => item.kind === "message" && item.message.meta?.slidingOut === true,
+		),
+		true,
+		"刷新后的 agent-run 内部必须携带 slidingOut 标记",
+	);
 });
