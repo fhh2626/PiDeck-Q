@@ -180,7 +180,8 @@ export function sameChatMessageForRender(previous: ChatMessage, next: ChatMessag
 		previous.timestamp !== next.timestamp ||
 		// 空文本消息（纯工具回合骨架）的 stopReason 可能是唯一变化（pending→stop/toolUse），
 		// 漏比较会导致 reconcileRuns 复用旧引用、最终/中间分类不更新。
-		previous.stopReason !== next.stopReason
+		previous.stopReason !== next.stopReason ||
+		(previous.meta?.slidingOut === true) !== (next.meta?.slidingOut === true)
 	) {
 		return false;
 	}
@@ -218,7 +219,11 @@ export function sameAgentRunForRender(previous: AgentRunItem, next: AgentRunItem
 				item.id === other.id &&
 				item.text === other.text &&
 				item.startedAt === other.startedAt &&
-				item.endedAt === other.endedAt
+				item.endedAt === other.endedAt &&
+				item.messages.length === other.messages.length &&
+				item.messages.every((message, messageIndex) =>
+					sameChatMessageForRender(message, other.messages[messageIndex]),
+				)
 			);
 		}
 		if (item.kind === "tool-group" && other.kind === "tool-group") {

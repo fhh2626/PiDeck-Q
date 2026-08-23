@@ -723,9 +723,9 @@ function findCoveredMessageIndexes(
 
 /**
  * 比较当前已展示的运行期消息与新的权威 canonical snapshot：
+ * - 权威 canonical 消息之间的相对顺序 100% 保持 canonicalMessages 中的原始顺序不变；
  * - 旧数组中存在但新 canonical 数组中不存在的消息，标记为 meta.slidingOut = true 并保留在数组中；
- * - 新 canonical 消息正常插入/更新；
- * - 保持消息的原始顺序（旧消息在前、新消息在后，原有相对时序不变）；
+ * - 相对位置按原有位置锚定（在第一个幸存 canonical 前面的旧消息放在 HEAD；在两个幸存消息之间的旧消息放在其后一个幸存消息之前；在全部幸存消息之后的放在 TAIL）；
  * - 如果某个 message ID 重新出现在新的 canonical 消息中，清除 slidingOut 标记（以 canonical 为准，避免双份）；
  * - 如果第二次 snapshot 到达时已有消息仍在 slide-out，继续保留它们。
  */
@@ -761,56 +761,77 @@ export function mergeCanonicalSnapshotWithSlidingOut(
     }
   }
 
-  const emittedCanonicalIds = new Set<string>();
-  const result: ChatMessage[] = [];
+  // 1. 找出 previousMessages 中所有需要保留为 slidingOut 的消息，并为它们确定在 canonical 序列中的相对插槽
+  const headSliding: ChatMessage[] = [];
+  const slidingBeforeCanonicalId = new Map<string, ChatMessage[]>();
+  const tailSliding: ChatMessage[] = [];
 
-  for (const prevMsg of previousMessages) {
-    const canonicalMsg = canonicalById.get(prevMsg.id);
-    if (canonicalMsg) {
-      // 重新出现在 canonical 中：使用最新的 canonical 版本，清除 slidingOut
-      if (!emittedCanonicalIds.has(canonicalMsg.id)) {
-        emittedCanonicalIds.add(canonicalMsg.id);
-        if (canonicalMsg.meta?.slidingOut) {
-          const meta = { ...canonicalMsg.meta };
-          delete meta.slidingOut;
-          result.push({ ...canonicalMsg, meta });
-        } else {
-          result.push(canonicalMsg);
-        }
-      }
+  // 预先反向扫描 previousMessages 计算每个位置之后第一个幸存的 canonical id
+  const nextSurvivorIdAt = new Array<string | null>(previousMessages.length);
+  let nextSurvivor: string | null = null;
+  for (let i = previousMessages.length - 1; i >= 0; i--) {
+    nextSurvivorIdAt[i] = nextSurvivor;
+    const msg = previousMessages[i];
+    if (canonicalById.has(msg.id)) {
+      nextSurvivor = msg.id;
+    }
+  }
+
+  let hasSeenAnySurvivor = false;
+  for (let i = 0; i < previousMessages.length; i++) {
+    const prevMsg = previousMessages[i];
+    if (canonicalById.has(prevMsg.id)) {
+      hasSeenAnySurvivor = true;
+      continue;
+    }
+
+    // 已被 slideOut 并入 history 前缀的跳过
+    if (
+      slideOutIds.has(prevMsg.id) ||
+      (typeof prevMsg.meta?.entryId === "string" && slideOutEntryIds.has(prevMsg.meta.entryId))
+    ) {
+      continue;
+    }
+
+    const slidingMsg = prevMsg.meta?.slidingOut === true
+      ? prevMsg
+      : { ...prevMsg, meta: { ...prevMsg.meta, slidingOut: true } };
+
+    const nextSurvivorId = nextSurvivorIdAt[i];
+    if (!hasSeenAnySurvivor) {
+      // 位于所有幸存 canonical 消息之前 -> 锚定在 HEAD（summary 等卡片之前）
+      headSliding.push(slidingMsg);
+    } else if (nextSurvivorId) {
+      // 位于已幸存消息之后、下一个幸存消息之前 -> 锚定在下一个幸存消息之前
+      const list = slidingBeforeCanonicalId.get(nextSurvivorId);
+      if (list) list.push(slidingMsg);
+      else slidingBeforeCanonicalId.set(nextSurvivorId, [slidingMsg]);
     } else {
-      // 如果该消息已被 slideOut 并入 history 前缀，跳过，不在此处保留为 slidingOut
-      if (
-        slideOutIds.has(prevMsg.id) ||
-        (typeof prevMsg.meta?.entryId === "string" && slideOutEntryIds.has(prevMsg.meta.entryId))
-      ) {
-        continue;
-      }
-      // 在 canonical 中不存在：保留并标记 slidingOut
-      if (prevMsg.meta?.slidingOut === true) {
-        result.push(prevMsg);
-      } else {
-        result.push({
-          ...prevMsg,
-          meta: { ...prevMsg.meta, slidingOut: true },
-        });
-      }
+      // 位于所有幸存 canonical 消息之后 -> 锚定在 TAIL
+      tailSliding.push(slidingMsg);
     }
   }
 
-  // 追加之前未遍历到的全新 canonical 消息
+  // 2. 按 canonicalMessages 的权威顺序组装结果（保证 canonical 顺序 100% 权威）
+  const result: ChatMessage[] = [...headSliding];
+
   for (const canonicalMsg of canonicalMessages) {
-    if (!emittedCanonicalIds.has(canonicalMsg.id)) {
-      emittedCanonicalIds.add(canonicalMsg.id);
-      if (canonicalMsg.meta?.slidingOut) {
-        const meta = { ...canonicalMsg.meta };
-        delete meta.slidingOut;
-        result.push({ ...canonicalMsg, meta });
-      } else {
-        result.push(canonicalMsg);
-      }
+    const beforeList = slidingBeforeCanonicalId.get(canonicalMsg.id);
+    if (beforeList && beforeList.length > 0) {
+      result.push(...beforeList);
+    }
+
+    // 确保 canonical 消息上的 slidingOut 标志被清除（若有旧残留）
+    if (canonicalMsg.meta?.slidingOut) {
+      const meta = { ...canonicalMsg.meta };
+      delete meta.slidingOut;
+      result.push({ ...canonicalMsg, meta });
+    } else {
+      result.push(canonicalMsg);
     }
   }
+
+  result.push(...tailSliding);
 
   return result;
 }

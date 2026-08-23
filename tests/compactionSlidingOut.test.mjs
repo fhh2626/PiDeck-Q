@@ -236,3 +236,104 @@ test("方案 B 回归：removeSlidingOutMessages 绝不能删除 canonical 消�
 	assert.equal(entry().messages.length, 1);
 	assert.equal(entry().messages[0].id, "canonical-1");
 });
+
+test("方案 B 回归：compaction 包含幸存保留消息时，canonical 相对顺序严格以 canonicalMessages 为准", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const emit = (payload) =>
+		store.set(atoms.applySessionRuntimeEventAtom, {
+			sessionId: "session-1",
+			agentId: "agent-1",
+			runtimeGeneration: 1,
+			sourceChannel: "agents:message",
+			payload,
+		});
+	const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
+
+	// 1. previous: [old1, old2, keep1, keep2]
+	emit({
+		agentId: "agent-1",
+		messages: [
+			{ id: "old1", role: "user", text: "q1", timestamp: 1000 },
+			{ id: "old2", role: "assistant", text: "a1", timestamp: 2000 },
+			{ id: "keep1", role: "user", text: "q2", timestamp: 3000 },
+			{ id: "keep2", role: "assistant", text: "a2", timestamp: 4000 },
+		],
+	});
+
+	// 2. canonical: [summary, keep1, keep2] (keep1/keep2 ID 相同且稳定)
+	emit({
+		agentId: "agent-1",
+		fileVersion: "200:8000",
+		preserveHistory: true,
+		stickyHistory: true,
+		messages: [
+			{ id: "summary", role: "system", text: "已压缩", timestamp: 5000, meta: { type: "compaction" } },
+			{ id: "keep1", role: "user", text: "q2", timestamp: 3000 },
+			{ id: "keep2", role: "assistant", text: "a2", timestamp: 4000 },
+		],
+	});
+
+	// 验证合并结果：[old1(sliding), old2(sliding), summary, keep1, keep2]
+	const merged = entry().messages;
+	assert.equal(merged.length, 5);
+	assert.deepEqual(
+		[...merged.map((m) => m.id)],
+		["old1", "old2", "summary", "keep1", "keep2"],
+	);
+	assert.equal(merged[0].meta?.slidingOut, true);
+	assert.equal(merged[1].meta?.slidingOut, true);
+	assert.equal(merged[2].meta?.slidingOut, undefined);
+	assert.equal(merged[3].meta?.slidingOut, undefined);
+	assert.equal(merged[4].meta?.slidingOut, undefined);
+
+	// 3. 动画结束后清理
+	store.set(atoms.removeSessionSlidingOutMessagesAtom, {
+		sessionId: "session-1",
+		messageIds: ["old1", "old2"],
+	});
+
+	// 最终必须完全等于 canonical 顺序：[summary, keep1, keep2]
+	assert.deepEqual(
+		[...entry().messages.map((m) => m.id)],
+		["summary", "keep1", "keep2"],
+	);
+});
+
+test("方案 B 回归：meta.slidingOut 的变化会触发 sameChatMessageForRender 和 reconcileRuns 刷新", () => {
+	const appUtils = loadTsCommonJs("src/renderer/src/components/app/AppUtils.ts");
+	const { sameChatMessageForRender, reconcileRuns, groupToolMessages } = appUtils;
+
+	const msgWithoutSliding = {
+		id: "a1",
+		role: "assistant",
+		text: "hello",
+		timestamp: 1000,
+	};
+	const msgWithSliding = {
+		id: "a1",
+		role: "assistant",
+		text: "hello",
+		timestamp: 1000,
+		meta: { slidingOut: true },
+	};
+
+	// 1. sameChatMessageForRender 必须识别 slidingOut 变化
+	assert.equal(sameChatMessageForRender(msgWithoutSliding, msgWithSliding), false);
+	assert.equal(sameChatMessageForRender(msgWithSliding, msgWithoutSliding), false);
+	assert.equal(sameChatMessageForRender(msgWithSliding, { ...msgWithSliding }), true);
+
+	// 2. reconcileRuns 不会被旧对象缓存吃掉
+	const prevRuns = groupToolMessages([
+		{ id: "u1", role: "user", text: "q", timestamp: 900 },
+		msgWithoutSliding,
+	]);
+	const nextRuns = groupToolMessages([
+		{ id: "u1", role: "user", text: "q", timestamp: 900 },
+		msgWithSliding,
+	]);
+
+	const reconciled = reconcileRuns(prevRuns, nextRuns);
+	// agent-run 对象引用必须刷新，不能复用旧的 prevRuns[0]
+	assert.notEqual(reconciled[0], prevRuns[0]);
+});
