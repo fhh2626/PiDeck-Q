@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomValue } from "jotai";
 import type {
   AgentTab,
   CommitEntry,
@@ -9,7 +10,8 @@ import type {
 import type {
   WorkspaceContentOpenMode,
 } from "../../../shared/types/settings";
-import type { DrawerPanel, SessionModifiedFile } from "../components/app/AppParts";
+import type { DrawerPanel } from "../components/app/AppParts";
+import { modifiedFilesAtom } from "../atoms";
 import {
   openPermanentEditorTab,
   openPreviewEditorTab,
@@ -57,7 +59,6 @@ export interface UseFileEditorInput {
   activeAgent: AgentTab | null;
   activeProject: Project | null;
   drawer: DrawerPanel | null;
-  modifiedFiles: SessionModifiedFile[];
   setDrawer: (panel: DrawerPanel | null) => void;
   setDrawerCollapsed: (collapsed: boolean) => void;
   /** 设置中的默认打开方式；每次新打开文件/Diff 时采用 */
@@ -150,7 +151,6 @@ export function useFileEditor(input: UseFileEditorInput): UseFileEditorOutput {
     activeAgent,
     activeProject,
     drawer,
-    modifiedFiles,
     setDrawer,
     setDrawerCollapsed,
     contentOpenMode,
@@ -163,6 +163,12 @@ export function useFileEditor(input: UseFileEditorInput): UseFileEditorOutput {
     commitFileDiff,
     t,
   } = input;
+
+  // 修改文件清单从 App 根组件下沉到本 hook（真正消费 modifiedFiles 的最小组件）：
+  // diffFilePath 需要按 path 反查 originalContent/content 来打开差异查看器。
+  // 自订 modifiedFilesAtom 后，消息缓存变引用（消息边界 flush）时只重算本 hook 的
+  // diff 闭包，不再由 App 根组件就地计算。
+  const modifiedFiles = useAtomValue(modifiedFilesAtom);
 
   const contentOpenModeRef = useRef(contentOpenMode);
   contentOpenModeRef.current = contentOpenMode;

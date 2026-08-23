@@ -3,81 +3,166 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 
-// 官方语言包：常用语言用 Lezer 解析器，高亮质量与折叠能力最好。
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { css } from "@codemirror/lang-css";
-import { sass } from "@codemirror/lang-sass";
-import { less } from "@codemirror/lang-less";
-import { html } from "@codemirror/lang-html";
-import { yaml } from "@codemirror/lang-yaml";
-import { xml } from "@codemirror/lang-xml";
-import { python } from "@codemirror/lang-python";
-import { go } from "@codemirror/lang-go";
-import { rust } from "@codemirror/lang-rust";
-import { java } from "@codemirror/lang-java";
-import { cpp } from "@codemirror/lang-cpp";
-import { sql } from "@codemirror/lang-sql";
-
-// legacy-modes：冷门语言用经典 CodeMirror 5 模式（StreamLanguage 包装）。
-// 官方 Lezer 包没有 shell/ruby/toml/dockerfile 等，legacy-modes 一个包覆盖，避免引入多个社区包。
-import { shell as shellMode } from "@codemirror/legacy-modes/mode/shell";
-import { ruby as rubyMode } from "@codemirror/legacy-modes/mode/ruby";
-import { dockerFile as dockerfileMode } from "@codemirror/legacy-modes/mode/dockerfile";
-import { protobuf as protobufMode } from "@codemirror/legacy-modes/mode/protobuf";
-import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
-import { properties as propertiesMode } from "@codemirror/legacy-modes/mode/properties";
-
-const shell = StreamLanguage.define(shellMode);
-const ruby = StreamLanguage.define(rubyMode);
-const dockerfile = StreamLanguage.define(dockerfileMode);
-const protobuf = StreamLanguage.define(protobufMode);
-const toml = StreamLanguage.define(tomlMode);
-const properties = StreamLanguage.define(propertiesMode);
+// 官方语言包与 legacy-modes 改为按需动态 import（见下方 loadEditorLanguage）：
+// 用户只聊天时不再把十几个 CodeMirror parser 拉进 renderer 初始模块图。
+// core（language/state/view/lezer）仍静态，因为 baseEditorExtensions 首帧就要用。
 
 /** 语言包类型：官方包返回 LanguageSupport，legacy-modes 的 StreamLanguage 返回 Language，
  * 两者都能直接作为 extension 安装，统一用联合类型避免各自强转。 */
 export type EditorLanguage = Language | LanguageSupport;
 
-/** 扩展名 → 语言。null 表示无对应模式（降级纯文本）。
- * 说明：graphql/makefile/dotenv 等冷门类型无官方/稳定包，先降级 plaintext，
- * 后续需要时再补社区包（如 codemirror-lang-graphql）。 */
-const EXT_LANGUAGES: Record<string, EditorLanguage | null> = {
-  ts: javascript({ typescript: true }), tsx: javascript({ jsx: true, typescript: true }),
-  js: javascript(), jsx: javascript({ jsx: true }), mjs: javascript(), cjs: javascript(),
-  json: json(), jsonc: json(),
-  md: markdown(), mdx: markdown(),
-  css: css(), scss: sass({ indented: false }), less: less(),
-  html: html(), htm: html(),
-  yaml: yaml(), yml: yaml(),
-  xml: xml(), svg: xml(),
-  sh: shell, bash: shell, zsh: shell,
-  py: python(), rb: ruby,
-  go: go(), rs: rust(), java: java(),
-  c: cpp(), "c++": cpp(), cpp: cpp(), h: cpp(), hpp: cpp(),
-  sql: sql(), proto: protobuf,
-  toml: toml, ini: properties, cfg: properties, env: properties,
-  dockerfile: dockerfile, makefile: null,
-  graphql: null, gql: null,
-};
+/** 语言 loader 的 Promise 缓存：同一 key 并发打开多文件时只 import/创建一次 parser。
+ * 与 Markdown renderer 的「全局 Promise + 失败清缓存」同思路：失败时删掉缓存项，
+ * 下次重试可重新 import，不会永久卡在失败态。 */
+const languagePromiseCache = new Map<string, Promise<EditorLanguage | null>>();
 
-/** 旧 Monaco 语言 id 兼容表：历史调用点可能传 "markdown"/"typescript" 等 id。 */
-const ID_LANGUAGES: Record<string, EditorLanguage | null> = {
-  markdown: markdown(), typescript: javascript({ typescript: true }), javascript: javascript(),
-  json: json(), css: css(), scss: sass({ indented: false }), less: less(),
-  html: html(), yaml: yaml(), xml: xml(), shell: shell,
-  python: python(), ruby: ruby, go: go(), rust: rust(), java: java(),
-  cpp: cpp(), c: cpp(), sql: sql(), plaintext: null,
-};
+/** 真正加载某个归一化 key 的语言解析器：按需 import 对应包。
+ * 冷门 legacy 语言用 StreamLanguage 包装经典 CM5 模式（官方 Lezer 包没有 shell/ruby/toml 等）。 */
+async function actuallyLoadLanguage(key: string): Promise<EditorLanguage | null> {
+  switch (key) {
+    case "js":
+    case "mjs":
+    case "cjs":
+    case "javascript": {
+      const { javascript } = await import("@codemirror/lang-javascript");
+      return javascript();
+    }
+    case "jsx": {
+      const { javascript } = await import("@codemirror/lang-javascript");
+      return javascript({ jsx: true });
+    }
+    case "ts":
+    case "typescript": {
+      const { javascript } = await import("@codemirror/lang-javascript");
+      return javascript({ typescript: true });
+    }
+    case "tsx": {
+      const { javascript } = await import("@codemirror/lang-javascript");
+      return javascript({ jsx: true, typescript: true });
+    }
+    case "json":
+    case "jsonc": {
+      const { json } = await import("@codemirror/lang-json");
+      return json();
+    }
+    case "md":
+    case "mdx":
+    case "markdown": {
+      const { markdown } = await import("@codemirror/lang-markdown");
+      return markdown();
+    }
+    case "css": {
+      const { css } = await import("@codemirror/lang-css");
+      return css();
+    }
+    case "scss": {
+      const { sass } = await import("@codemirror/lang-sass");
+      return sass({ indented: false });
+    }
+    case "less": {
+      const { less } = await import("@codemirror/lang-less");
+      return less();
+    }
+    case "html":
+    case "htm": {
+      const { html } = await import("@codemirror/lang-html");
+      return html();
+    }
+    case "yaml":
+    case "yml": {
+      const { yaml } = await import("@codemirror/lang-yaml");
+      return yaml();
+    }
+    case "xml":
+    case "svg": {
+      const { xml } = await import("@codemirror/lang-xml");
+      return xml();
+    }
+    case "py":
+    case "python": {
+      const { python } = await import("@codemirror/lang-python");
+      return python();
+    }
+    case "go": {
+      const { go } = await import("@codemirror/lang-go");
+      return go();
+    }
+    case "rs":
+    case "rust": {
+      const { rust } = await import("@codemirror/lang-rust");
+      return rust();
+    }
+    case "java": {
+      const { java } = await import("@codemirror/lang-java");
+      return java();
+    }
+    case "c":
+    case "c++":
+    case "cpp":
+    case "h":
+    case "hpp": {
+      const { cpp } = await import("@codemirror/lang-cpp");
+      return cpp();
+    }
+    case "sql": {
+      const { sql } = await import("@codemirror/lang-sql");
+      return sql();
+    }
+    // legacy-modes：冷门语言用经典 CodeMirror 5 模式（StreamLanguage 包装），
+    // 官方 Lezer 包没有 shell/ruby/toml/dockerfile 等，一个包覆盖，避免引多个社区包。
+    case "sh":
+    case "bash":
+    case "zsh":
+    case "shell": {
+      const { shell: shellMode } = await import("@codemirror/legacy-modes/mode/shell");
+      return StreamLanguage.define(shellMode);
+    }
+    case "rb":
+    case "ruby": {
+      const { ruby: rubyMode } = await import("@codemirror/legacy-modes/mode/ruby");
+      return StreamLanguage.define(rubyMode);
+    }
+    case "proto": {
+      const { protobuf: protobufMode } = await import("@codemirror/legacy-modes/mode/protobuf");
+      return StreamLanguage.define(protobufMode);
+    }
+    case "toml": {
+      const { toml: tomlMode } = await import("@codemirror/legacy-modes/mode/toml");
+      return StreamLanguage.define(tomlMode);
+    }
+    case "ini":
+    case "cfg":
+    case "env": {
+      const { properties: propertiesMode } = await import("@codemirror/legacy-modes/mode/properties");
+      return StreamLanguage.define(propertiesMode);
+    }
+    case "dockerfile": {
+      const { dockerFile: dockerfileMode } = await import("@codemirror/legacy-modes/mode/dockerfile");
+      return StreamLanguage.define(dockerfileMode);
+    }
+    default:
+      // 无官方/稳定包的冷门类型（makefile/graphql/gql/plaintext 等）明确降级纯文本
+      return null;
+  }
+}
 
-/** 解析编辑器语言：优先按扩展名，再按语言 id，最后降级纯文本（null）。 */
-export function resolveEditorLanguage(input?: string): EditorLanguage | null {
-  if (!input) return null;
-  const ext = input.trim().toLowerCase();
-  if (ext in EXT_LANGUAGES) return EXT_LANGUAGES[ext] ?? null;
-  if (ext in ID_LANGUAGES) return ID_LANGUAGES[ext] ?? null;
-  return null;
+/**
+ * 按需加载编辑器语言：先 normalize（trim + lowercase），命中 Promise 缓存直接返回；
+ * 否则真正 import 对应包并缓存。扩展名（"ts"）与旧 Monaco 语言 id（"typescript"/"markdown"）
+ * 都支持。null 表示无对应模式（降级纯文本）。
+ */
+export function loadEditorLanguage(input?: string): Promise<EditorLanguage | null> {
+  const key = input?.trim().toLowerCase();
+  if (!key) return Promise.resolve(null);
+  const cached = languagePromiseCache.get(key);
+  if (cached) return cached;
+  const promise = actuallyLoadLanguage(key).catch((error) => {
+    // 失败清缓存：下次重试可重新 import，不永久卡在失败态
+    languagePromiseCache.delete(key);
+    throw error;
+  });
+  languagePromiseCache.set(key, promise);
+  return promise;
 }
 
 /** 编辑器 UI 主题：全部引用应用 CSS 变量，随 data-theme 明暗自动切换，

@@ -83,6 +83,49 @@ function stripReplayBuffer(tab: TerminalTab): TerminalTab {
 	return rest;
 }
 
+// ── replay buffer 上限（内存治理）──────────────────────────────
+// xterm 自身的 scrollback(5000) 只约束已挂载终端的行数；外围 buffersRef
+// 还要把每个 tab 的完整输出攒下来，供「重建 xterm 时 replay」使用。
+// 长时间跑日志时这个 JS 缓存无上限增长、切 tab 时还要整段重写 xterm，
+// 因此给它一个硬上限：约 2MB 触发截断，截断后保留约 1.5MB。
+const TERMINAL_REPLAY_MAX_CHARS = 2 * 1024 * 1024;
+const TERMINAL_REPLAY_TARGET_CHARS = 1536 * 1024;
+
+/**
+ * 追加一段 PTY 输出到 replay buffer，超过硬上限时按换行边界裁剪旧历史。
+ * 优先从换行处截断，降低把一行 ANSI 序列拦腰截断（半截转义码）的概率；
+ * 找不到换行时退化为按目标长度直接切。只裁剪「重建 xterm 时回放」用的
+ * JS 缓存，不影响当前活动 xterm 已展示的内容。
+ */
+function appendTerminalReplayBuffer(current: string, chunk: string): string {
+	const next = current + chunk;
+	if (next.length <= TERMINAL_REPLAY_MAX_CHARS) {
+		return next;
+	}
+	const targetStart = next.length - TERMINAL_REPLAY_TARGET_CHARS;
+	const newline = next.indexOf("\n", targetStart);
+	if (newline >= 0) {
+		return next.slice(newline + 1);
+	}
+	return next.slice(targetStart);
+}
+
+/**
+ * 归一化一段可能已超限的 replay 初始数据（来自 preload 的 tab.buffer），
+ * 与 append 共享同一套上限/换行边界裁剪，避免 ensure 回来的大 buffer 绕过上限。
+ */
+function normalizeTerminalReplayBuffer(buffer: string): string {
+	if (buffer.length <= TERMINAL_REPLAY_MAX_CHARS) {
+		return buffer;
+	}
+	const targetStart = buffer.length - TERMINAL_REPLAY_TARGET_CHARS;
+	const newline = buffer.indexOf("\n", targetStart);
+	if (newline >= 0) {
+		return buffer.slice(newline + 1);
+	}
+	return buffer.slice(targetStart);
+}
+
 export function TerminalDock(props: {
 	target: TerminalTarget;
 	open: boolean;
@@ -214,7 +257,10 @@ export function TerminalDock(props: {
 				buffersRef.current = nextTabs.reduce<Record<string, string>>(
 					(current, tab) => ({
 						...current,
-						[tab.id]: tab.buffer ?? current[tab.id] ?? "",
+						// ensure 回来的初始 buffer 可能已超限，统一经 normalize 收进上限
+						[tab.id]: normalizeTerminalReplayBuffer(
+							tab.buffer ?? current[tab.id] ?? "",
+						),
 					}),
 					{ ...buffersRef.current },
 				);
@@ -269,8 +315,10 @@ export function TerminalDock(props: {
 
 	useEffect(() => {
 		const offData = props.terminal.onData((payload) => {
-			buffersRef.current[payload.tabId] =
-				(buffersRef.current[payload.tabId] ?? "") + payload.data;
+			buffersRef.current[payload.tabId] = appendTerminalReplayBuffer(
+				buffersRef.current[payload.tabId] ?? "",
+				payload.data,
+			);
 			if (payload.tabId === activeTabIdRef.current) {
 				xtermRef.current?.write(payload.data);
 			}
@@ -284,8 +332,10 @@ export function TerminalDock(props: {
 				),
 			);
 			const exitText = `\r\n[process exited${payload.exitCode != null ? ` with code ${payload.exitCode}` : ""}]\r\n`;
-			buffersRef.current[payload.tabId] =
-				(buffersRef.current[payload.tabId] ?? "") + exitText;
+			buffersRef.current[payload.tabId] = appendTerminalReplayBuffer(
+				buffersRef.current[payload.tabId] ?? "",
+				exitText,
+			);
 			if (payload.tabId === activeTabIdRef.current) xtermRef.current?.write(exitText);
 		});
 		return () => {

@@ -63,6 +63,43 @@ function segmentText(text: string): string[] {
 	return Array.from(segmenter.segment(text)).map((s) => s.segment);
 }
 
+/**
+ * 头部索引队列：长时间流式下避免 Array.splice(0, n) 的线性搬移成本。
+ * 消费只推进 head 指针，偶尔（head 越过 4096 且已消费过半）整体前移回收，
+ * 摊还 O(1) 入队/出队，回答越长队列越大时越明显地省成本。
+ */
+type StreamQueue = {
+	items: string[];
+	head: number;
+};
+
+function queueLength(queue: StreamQueue): number {
+	return queue.items.length - queue.head;
+}
+
+function clearQueue(queue: StreamQueue) {
+	queue.items = [];
+	queue.head = 0;
+}
+
+function pushQueue(queue: StreamQueue, chars: string[]) {
+	queue.items.push(...chars);
+}
+
+function takeQueue(queue: StreamQueue, count: number): string[] {
+	const end = Math.min(queue.head + count, queue.items.length);
+	const result = queue.items.slice(queue.head, end);
+	queue.head = end;
+
+	// head 增长到 4096 以上且已消费过半时整体前移回收，避免 items 无限增长
+	if (queue.head > 4096 && queue.head * 2 >= queue.items.length) {
+		queue.items = queue.items.slice(queue.head);
+		queue.head = 0;
+	}
+
+	return result;
+}
+
 export function useSmoothStream({
 	content,
 	isStreaming,
@@ -87,8 +124,7 @@ export function useSmoothStream({
 	);
 	const effectiveMaxStepPerFrame = Math.max(maxStepPerFrame, content.length > 8_000 ? 12 : 6);
 
-	// ????????
-	const chunkQueueRef = useRef<string[]>([]);
+	const chunkQueueRef = useRef<StreamQueue>({ items: [], head: 0 });
 	// rAF ID
 	const rafRef = useRef<number | null>(null);
 	// ???? UI ???
@@ -126,13 +162,13 @@ export function useSmoothStream({
 			const delta = newContent.slice(prevContent.length);
 			if (delta) {
 				const chars = segmentText(delta);
-				chunkQueueRef.current.push(...chars);
+				pushQueue(chunkQueueRef.current, chars);
 				// 空转停帧后新 delta 到达：重启打字机
 				if (!rafRef.current) renderLoopRef.current(performance.now());
 			}
 		} else {
 			// ?????????/???????????????
-			chunkQueueRef.current = [];
+			clearQueue(chunkQueueRef.current);
 			displayedRef.current = newContent;
 			setDisplayedContent(newContent);
 		}
@@ -144,9 +180,9 @@ export function useSmoothStream({
 	useEffect(() => {
 		if (isStreaming) return;
 		if (rafRef.current) return; // rAF ????????????
-		if (chunkQueueRef.current.length > 0) {
-			displayedRef.current += chunkQueueRef.current.join("");
-			chunkQueueRef.current = [];
+		if (queueLength(chunkQueueRef.current) > 0) {
+			displayedRef.current += chunkQueueRef.current.items.slice(chunkQueueRef.current.head).join("");
+			clearQueue(chunkQueueRef.current);
 		}
 		if (displayedRef.current !== content) {
 			displayedRef.current = content;
@@ -158,7 +194,7 @@ export function useSmoothStream({
 	const renderLoop = useCallback(
 		(currentTime: number) => {
 			const queue = chunkQueueRef.current;
-			if (queue.length === 0) {
+			if (queueLength(queue) === 0) {
 				if (streamDoneRef.current) {
 					// ??? + ?????????????
 					if (displayedRef.current !== prevContentRef.current) {
@@ -192,12 +228,12 @@ export function useSmoothStream({
 			// ? queue ??????????? ? maxStep????????
 			const divisor = streamDoneRef.current ? drainDivisor : streamingDivisor;
 			const maxStep = streamDoneRef.current ? maxDrainStepPerFrame : effectiveMaxStepPerFrame;
-			const count = Math.min(Math.max(1, Math.floor(queue.length / divisor)), maxStep);
-			const chars = queue.splice(0, count);
+			const count = Math.min(Math.max(1, Math.floor(queueLength(queue) / divisor)), maxStep);
+			const chars = takeQueue(queue, count);
 			displayedRef.current += chars.join("");
 			setDisplayedContent(displayedRef.current);
 
-			if (queue.length > 0 || !streamDoneRef.current) {
+			if (queueLength(queue) > 0 || !streamDoneRef.current) {
 				rafRef.current = requestAnimationFrame(renderLoop);
 			} else {
 				// ????? + ??????????????
@@ -215,7 +251,7 @@ export function useSmoothStream({
 	// ??/???????????????????????
 	useEffect(() => {
 		if (disabled) return; // 折叠态：不启动 rAF，避免不可见内容逐字推进
-		if ((isStreaming || chunkQueueRef.current.length > 0) && !rafRef.current) {
+		if ((isStreaming || queueLength(chunkQueueRef.current) > 0) && !rafRef.current) {
 			rafRef.current = requestAnimationFrame(renderLoop);
 		}
 		return () => {

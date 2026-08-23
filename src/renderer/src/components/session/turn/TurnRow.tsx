@@ -512,14 +512,18 @@ turnRowPropsEqual,
  * TurnRow 自定义 memo 比较（阶段 0：历史 run 跳过重渲染）。
  *
  * 比较项：
+ * - isStreaming 边沿（!==）：false→true / true→false 需要 render（折叠态切换）；
+ *   true→true 不强制 render——live 正文由 AnswerOutput 自订 atom，
+ *   token 更新不需要父 TurnRow 更新（旧写法 `||` 会让流式中每次父级 render 都穿透）。
  * - run：深度比较内容（sameAgentRunForRender），未变化的 run 不重渲染；
- * - 标量 props（fresh/showThinking/isStreaming/liveThinkingId/agentRunning）：=== 比较；
+ * - 标量 props（fresh/showThinking/liveThinkingId/agentRunning/isLatestRun/isLastAgentRun）：=== 比较；
  * - 回调函数（onPreviewImage/onOpenExternal/onOpenFile/onDiffFile/onEditMessage/onDeleteMessage/
  *   onEnterMultiSelect）：行为稳定（读 ref/setState），引用变化不影响渲染结果，忽略（同 FinalAnswer 惯例）。
  */
 function turnRowPropsEqual(prev: TurnRowProps, next: TurnRowProps): boolean {
-	// 流式 run：Live AnswerOutput 随 atom 更新；父级仍需在 isStreaming 边沿重渲染折叠态。
-	if (prev.isStreaming || next.isStreaming) return false;
+	// isStreaming 只在边沿（false↔true）触发重渲染；持续 streaming 期间由 live 正文
+	// 叶子自订 atom 驱动，父级不需要每次 render 都穿透 TurnRow。
+	if (prev.isStreaming !== next.isStreaming) return false;
 	if (!sameAgentRunForRender(prev.run, next.run)) return false;
 	return (
 		prev.sessionId === next.sessionId &&

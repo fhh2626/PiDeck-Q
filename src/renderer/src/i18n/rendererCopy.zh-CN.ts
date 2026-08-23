@@ -2232,6 +2232,7 @@ export const zhCN = {
   "timeline.loadMoreHistory": "加载更多历史消息 ({count} 条)",
   "timeline.loadMoreTurns": "加载更多对话",
   "drawer.lazyLoading": "加载中...",
+  "drawer.lazyFailed": "面板加载失败，重新打开可重试",
   "diagnostic.errorTitle": "错误诊断",
   "diagnostic.systemTitle": "系统状态",
   "diagnostic.failureToastTitle": "会话失败",

@@ -70,7 +70,6 @@ import {
   applySessionRuntimeEventAtom,
   currentSessionAtom,
   currentSessionIdAtom,
-  currentSessionMessagesAtom,
   currentSessionRuntimeAtom,
   projectInventoryAtom,
   removeSessionComposerStateAtom,
@@ -117,6 +116,7 @@ import { useSessionActions } from "./hooks/useSessionActions";
 import { useScratchPad } from "./hooks/useScratchPad";
 import { useWorktreeActions } from "./hooks/useWorktreeActions";
 import { ChatSessionPane } from "./components/session/ChatSessionPane";
+import { OutlinePanel } from "./components/session/OutlinePanel";
 import { SkillsQuickDialog } from "./components/session/SkillsQuickDialog";
 import { SessionSplitStage } from "./components/session/SessionSplitStage";
 import { canStopBoundAgent } from "./utils/canStopBoundAgent";
@@ -139,22 +139,16 @@ import { AppUpdateOverlay } from "./components/overlays/AppUpdateOverlay";
 import { ImportOverlayHost } from "./components/overlays/ImportOverlayHost";
 import { EnvironmentOverlay } from "./components/overlays/EnvironmentOverlay";
 import {
-  ConversationOutline,
   EnvironmentDialog,
   FileContextMenu,
   ImagePreviewModal,
   LogoMark,
-  type SessionModifiedFile,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
 import { requestBrowserNavigation } from "./browser/BrowserPanelSession";
 import {
-  buildOutline,
   flattenFiles,
   mergeCommands,
-  getToolFilePath,
-  getToolNewContent,
-  getToolChangedLineCount,
 } from "./components/app/AppUtils";
 // ProjectResourcesModal 仅在打开资源弹层时加载
 const ProjectResourcesModal = lazy(() => import("./components/app/ProjectResourcesModal").then((m) => ({ default: m.ProjectResourcesModal })));
@@ -209,8 +203,10 @@ export function App() {
   const currentSession = useAtomValue(currentSessionAtom);
   // currentSessionRuntime / currentSessionRuntimeUi / currentSessionSendState: sync store.get() only.
   // Streaming subscriptions are in SessionRuntimeInjector.
-  // Timeline 由各 ChatSessionPane 自持；大纲只读当前聚焦会话的消息缓存。
-  const activeMessages = useAtomValue(currentSessionMessagesAtom);
+  // Timeline 由各 ChatSessionPane 自持；大纲/修改文件下沉到叶子（OutlinePanel/useFileEditor），
+  // App 不再直订 currentSessionMessagesAtom：canonical 消息缓存只在消息边界
+  // （message_start 空骨架 / message_end，主进程 50ms 节流 flush）变引用；逐 token 的流式
+  // 正文走独立 text-stream 通道直接落到叶子 AnswerOutput，不经过 App 根组件。
   const projects = useAtomValue(projectInventoryAtom);
   const agents = useAtomValue(agentInventoryAtom);
   const setCurrentSessionId = useSetAtom(currentSessionIdAtom);
@@ -1095,44 +1091,10 @@ export function App() {
     settings.fontFamilyMonoCustom,
   ]);
 
-  /** 当前会话中 agent 修改过的文件(从 tool 消息 meta 中提取) */
-  // 依赖当前会话和消息数组引用：消息数量不变的 tool 状态/参数更新也必须重算。
-  const modifiedFiles = useMemo(() => {
-    const byPath = new Map<string, SessionModifiedFile>();
-    for (const msg of activeMessages) {
-      if (msg.role !== "tool") continue;
-      const toolName: string | undefined = msg.meta?.toolName as
-        | string
-        | undefined;
-      const args: any = msg.meta?.args;
-      const status: string = String(msg.meta?.status ?? "done");
-      // 只收集文件写入/编辑类的工具调用，作为右侧 Files 与会话结束摘要的统一数据源。
-      if (!toolName || !/write|edit|create|patch/i.test(toolName)) continue;
-      const filePath = getToolFilePath(args);
-      if (!filePath) continue;
-      const previous = byPath.get(filePath);
-      // 同一路径再次被修改时移动到 Map 末尾，右侧修改清单才能按"最新修改"展示。
-      if (previous) byPath.delete(filePath);
-      // originalContent 不再存储到消息 meta 中（full file 会使会话体积过大）。
-      // diff 展示时使用工具参数（oldText/newText）显示变动区域。
-      byPath.set(filePath, {
-        path: filePath,
-        toolName,
-        status: status === "running" ? "running" : (previous?.status ?? status),
-        changedLines:
-          (previous?.changedLines ?? 0) +
-          getToolChangedLineCount(toolName, args),
-        originalContent: "",
-        content: getToolNewContent(toolName, args) ?? previous?.content,
-      });
-    }
-    return Array.from(byPath.values());
-  }, [activeAgentId, activeMessages, currentSessionId]);
-  // 会话切换或消息内容引用变化时重算，避免同长度历史会话复用旧大纲。
-  const outlineItems = useMemo(
-    () => buildOutline(activeMessages),
-    [activeAgentId, activeMessages, currentSessionId],
-  );
+  // 大纲与修改文件清单不再由 App 根组件持有原始消息数组并就地计算（消息边界 flush 时
+  // 要重算 buildOutline/modifiedFiles）：大纲下沉到 OutlinePanel（自订 outlineItemsAtom），
+  // 修改文件下沉到 useFileEditor（自订 modifiedFilesAtom）。这里只保留与消息无关的
+  // 文件树扁平化。
   const flatFiles = useMemo(() => flattenFiles(files), [files]);
   // === file editor hook ===
   const {
@@ -1167,7 +1129,6 @@ export function App() {
     activeAgent: activeAgent ?? null,
     activeProject: activeProject ?? null,
     drawer,
-    modifiedFiles,
     setDrawer,
     setDrawerCollapsed,
     contentOpenMode: settings.workspaceContentOpenMode ?? "split",
@@ -1639,7 +1600,7 @@ export function App() {
       }
       agentStatusByAgentRef.current[agent.id] = agent.status;
     }
-  }, [activeAgentId, displayAgents, modifiedFiles]);
+  }, [activeAgentId, displayAgents]);
 
   // 汇报聚焦会话给主进程：非聚焦会话收到 Ask 请求时触发桌面通知（Task 9）
   useEffect(() => {
@@ -2982,8 +2943,7 @@ export function App() {
       outlineContent={
         /* 悬浮工具条常驻：引导页（无会话）/未激活 agent 也保留草稿纸、终端、编辑器入口。
            大纲导航列表在无消息时自动 disabled，不影响工具按钮使用。 */
-        <ConversationOutline
-          items={outlineItems}
+        <OutlinePanel
           // 分屏下由聚焦 pane 的 timeline 注入 jump 回调（ChatSessionPane 写入 services）
           onJump={(messageId) => jumpToMessageRef.current?.(messageId)}
           extraAction={{

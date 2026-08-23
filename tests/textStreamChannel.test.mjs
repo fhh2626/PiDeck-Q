@@ -133,7 +133,8 @@ test("UI: AnswerOutput live path; TurnRow does not subscribe streaming atom", ()
   assert.match(turnRow, /mode="live"/);
   assert.doesNotMatch(turnRow, /StreamingAnswerBubble/);
   assert.doesNotMatch(turnRow, /streamingTextByIdAtom/);
-  assert.match(turnRow, /if \(prev\.isStreaming \|\| next\.isStreaming\) return false;/);
+  assert.match(turnRow, /if \(prev\.isStreaming !== next\.isStreaming\) return false;/);
+  assert.doesNotMatch(turnRow, /if \(prev\.isStreaming \|\| next\.isStreaming\) return false;/);
 
   const answer = readFileSync(
     "src/renderer/src/components/session/AnswerOutput.tsx",

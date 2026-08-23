@@ -2266,6 +2266,7 @@ export const enUS: Record<TranslationKey, string> = {
   "timeline.loadMoreHistory": "Load more history messages ({count})",
   "timeline.loadMoreTurns": "Load more conversations",
   "drawer.lazyLoading": "Loading...",
+  "drawer.lazyFailed": "Panel failed to load; reopen to retry",
   "diagnostic.errorTitle": "Error diagnostics",
   "diagnostic.systemTitle": "System status",
   "diagnostic.failureToastTitle": "Session error",

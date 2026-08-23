@@ -21,7 +21,7 @@ import { SecurityLevelMenu } from "./SecurityLevelMenu";
 import { useAskPanel } from "../../hooks/useAskPanel";
 import { modelPendingByIdAtom, setSessionDraftAtom, thinkingLevelPendingByIdAtom } from "../../atoms/composer-atoms";
 import { sessionRecordByIdAtomFamily } from "../../atoms";
-import { useSessionPaneServices } from "./SessionPaneServices";
+import { useSessionPaneActions } from "./SessionPaneServices";
 import { desktopApi } from "../../desktopApi";
 import { COMPOSER_DEFAULT_HEIGHT } from "../../rendererUtils";
 import { chatContentWidthStyle } from "./chatContentWidth";
@@ -152,7 +152,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     enqueue: props.enqueue,
     ensureSessionId: props.ensureSessionId,
     // 预览 Tab 里发消息 → 自动晋升常驻（由 App 装配的 SessionPaneServices 提供）
-    onPromoteSession: useSessionPaneServices().promoteSessionToPermanent,
+    onPromoteSession: useSessionPaneActions().promoteSessionToPermanent,
   });
 
   // 并行问询：复用发送按钮旁的行为菜单（常显），选择「并行发送」时走后台匿名会话

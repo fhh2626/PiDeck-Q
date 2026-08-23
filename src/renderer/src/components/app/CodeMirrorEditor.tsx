@@ -6,8 +6,8 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } f
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { linter, lintGutter } from "@codemirror/lint";
-import { jsonParseLinter } from "@codemirror/lang-json";
-import { baseEditorExtensions, resolveEditorLanguage } from "../../utils/codemirrorSetup";
+import type { Extension } from "@codemirror/state";
+import { baseEditorExtensions, loadEditorLanguage } from "../../utils/codemirrorSetup";
 import { t } from "../../i18n";
 import {
   DropdownMenu,
@@ -19,7 +19,7 @@ import {
 export type CodeMirrorEditorProps = {
 	value: string;
 	onChange?: (value: string) => void;
-	/** 文件扩展名（"ts"）或旧 Monaco 语言 id（"markdown"），解析见 resolveEditorLanguage。 */
+	/** 文件扩展名（"ts"）或旧 Monaco 语言 id（"markdown"），按需加载见 loadEditorLanguage。 */
 	language?: string;
 	height?: string;
 	readOnly?: boolean;
@@ -70,61 +70,90 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 
 	useEffect(() => {
 		if (!hostRef.current) return;
-		const resolvedLanguage = resolveEditorLanguage(language);
-		// JSON 语言包（LanguageSupport）的 language 字段为 "json"，用于启用 lint
-		const isJson = resolvedLanguage !== null && "language" in resolvedLanguage && resolvedLanguage.language.name === "json";
-		const view = new EditorView({
-			parent: hostRef.current,
-			state: EditorState.create({
-				doc: value,
-				extensions: [
-					...baseEditorExtensions({ readOnly, wordWrap: true, language: resolvedLanguage }),
-					// 与 Monaco 默认一致的编辑体验：行号/折叠/自动换行/括号匹配/补全/查找
-					lineNumbers(),
-					foldGutter(),
-					history(),
-					drawSelection(),
-					dropCursor(),
-					indentOnInput(),
-					bracketMatching(),
-					closeBrackets(),
-					autocompletion(),
-					rectangularSelection(),
-					crosshairCursor(),
-					highlightActiveLine(),
-					highlightActiveLineGutter(),
-					highlightSelectionMatches(),
-					indentUnit.of("  "),
-					// JSON 语法错误即时提示（配置文件编辑高价值；YAML 暂无官方 linter）
-					...(isJson
-						? [lintGutter(), linter(jsonParseLinter())]
-						: []),
-					keymap.of([
-						...closeBracketsKeymap,
-						...defaultKeymap,
-						...searchKeymap,
-						...historyKeymap,
-						...foldKeymap,
-						...completionKeymap,
-						indentWithTab,
-						// Ctrl+/ 注释/取消注释（语言包支持时）
-						{ key: "Mod-/", run: toggleComment },
-					]),
-					EditorView.updateListener.of((update) => {
-						if (update.docChanged) {
-							const next = update.state.doc.toString();
-							lastValueRef.current = next;
-							onChangeRef.current?.(next);
-						}
+
+		let cancelled = false;
+		let createdView: EditorView | null = null;
+
+		// 语言包按需 import：等待异步 loader 返回后再创建 EditorView。
+		// 快速切 tab 时 cancelled 防止旧语言 import 完成后又创建旧编辑器（旧视图被销毁）。
+		void loadEditorLanguage(language)
+			.catch(() => null)
+			.then(async (resolvedLanguage) => {
+				if (cancelled || !hostRef.current) return;
+
+				// JSON 语言包（LanguageSupport）的 language 字段为 "json"，用于启用 lint。
+				// 单独动态 import jsonParseLinter，避免 lang-json 被静态拉回初始 bundle。
+				const isJson =
+					resolvedLanguage !== null && "language" in resolvedLanguage &&
+					resolvedLanguage.language.name === "json";
+				let jsonLinter: Extension | null = null;
+				if (isJson) {
+					const { jsonParseLinter } = await import("@codemirror/lang-json");
+					if (cancelled) return;
+					jsonLinter = linter(jsonParseLinter());
+				}
+
+				const view = new EditorView({
+					parent: hostRef.current,
+					state: EditorState.create({
+						doc: value,
+						extensions: [
+							...baseEditorExtensions({ readOnly, wordWrap: true, language: resolvedLanguage }),
+							// 与 Monaco 默认一致的编辑体验：行号/折叠/自动换行/括号匹配/补全/查找
+							lineNumbers(),
+							foldGutter(),
+							history(),
+							drawSelection(),
+							dropCursor(),
+							indentOnInput(),
+							bracketMatching(),
+							closeBrackets(),
+							autocompletion(),
+							rectangularSelection(),
+							crosshairCursor(),
+							highlightActiveLine(),
+							highlightActiveLineGutter(),
+							highlightSelectionMatches(),
+							indentUnit.of("  "),
+							// JSON 语法错误即时提示（配置文件编辑高价值；YAML 暂无官方 linter）
+							...(jsonLinter ? [lintGutter(), jsonLinter] : []),
+							keymap.of([
+								...closeBracketsKeymap,
+								...defaultKeymap,
+								...searchKeymap,
+								...historyKeymap,
+								...foldKeymap,
+								...completionKeymap,
+								indentWithTab,
+								// Ctrl+/ 注释/取消注释（语言包支持时）
+								{ key: "Mod-/", run: toggleComment },
+							]),
+							EditorView.updateListener.of((update) => {
+								if (update.docChanged) {
+									const next = update.state.doc.toString();
+									lastValueRef.current = next;
+									onChangeRef.current?.(next);
+								}
+							}),
+						],
 					}),
-				],
-			}),
-		});
-		viewRef.current = view;
-		lastValueRef.current = value;
+				});
+
+				createdView = view;
+				viewRef.current = view;
+				lastValueRef.current = value;
+			});
+
 		return () => {
-			view.destroy();
-			viewRef.current = null;
+			cancelled = true;
+
+			if (createdView) {
+				createdView.destroy();
+			}
+
+			if (viewRef.current === createdView) {
+				viewRef.current = null;
+			}
 		};
 	// 语言/只读变化需重建实例（CM6 无热切换语言的标准路径，重建成本低且简单可靠）
 	}, [language, readOnly]);
