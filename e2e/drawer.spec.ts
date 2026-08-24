@@ -65,10 +65,8 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 	const filesTab = window.getByTestId("drawer-rail-files");
 	await toggle.click();
 	await expect(drawer).toHaveAttribute("data-open", "false", { timeout: 3000 });
-	await toggle.click();
-	await expect(drawer).toHaveAttribute("data-open", "true", { timeout: 3000 });
-	await expect(filesTab).toHaveAttribute("aria-selected", "true", { timeout: 3000 });
 
+	// 先启动采样，再触发重新打开，覆盖占位内容、面板挂载和滚动条出现的整个过程。
 	const sampling = window.evaluate(async () => {
 		const aside = document.querySelector(".detail-drawer") as HTMLElement | null;
 		const widths: number[] = [];
@@ -84,6 +82,11 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 		});
 		return widths;
 	});
+
+	await toggle.click();
+	await expect(drawer).toHaveAttribute("data-open", "true", { timeout: 3000 });
+	await expect(filesTab).toHaveAttribute("aria-selected", "true", { timeout: 3000 });
+
 	const widths = await sampling;
 
 	// 内容挂载后宽度必须是单一稳定值：任何两段式（占位宽 → 滚动条宽）都视为回归
