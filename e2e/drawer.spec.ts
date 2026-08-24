@@ -66,19 +66,37 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 	await toggle.click();
 	await expect(drawer).toHaveAttribute("data-open", "false", { timeout: 3000 });
 
-	// 先启动采样，再触发重新打开，覆盖占位内容、面板挂载和滚动条出现的整个过程。
+	// 先安装等待器，只有抽屉真正重新打开后才采样，避免把关闭动画中的宽度记入结果。
 	const sampling = window.evaluate(async () => {
 		const aside = document.querySelector(".detail-drawer") as HTMLElement | null;
+		if (!aside) return [];
+
 		const widths: number[] = [];
 		await new Promise<void>((resolve) => {
-			const start = performance.now();
-			const tick = () => {
-				const panel = aside?.querySelector(".files-panel") as HTMLElement | null;
-				if (panel) widths.push(panel.clientWidth);
-				if (performance.now() - start < 1200) requestAnimationFrame(tick);
-				else resolve();
+			let started = false;
+			let observer: MutationObserver | undefined;
+
+			const startSampling = () => {
+				if (started) return;
+				started = true;
+				observer?.disconnect();
+				const start = performance.now();
+				const tick = () => {
+					const panel = aside.querySelector(".files-panel") as HTMLElement | null;
+					if (panel) widths.push(panel.clientWidth);
+					if (performance.now() - start < 1200) requestAnimationFrame(tick);
+					else resolve();
+				};
+				requestAnimationFrame(tick);
 			};
-			requestAnimationFrame(tick);
+
+			observer = new MutationObserver(() => {
+				if (aside.dataset.open === "true") startSampling();
+			});
+			observer.observe(aside, { attributes: true, attributeFilter: ["data-open"] });
+
+			// 处理 observer 安装前已经完成打开的边界，仍不会采到关闭状态。
+			if (aside.dataset.open === "true") startSampling();
 		});
 		return widths;
 	});
