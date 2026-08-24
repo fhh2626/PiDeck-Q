@@ -1422,25 +1422,56 @@ export class SessionRuntimeCoordinator {
 		const message = errorMessage(error);
 		const lower = message.toLowerCase();
 		const model = this.extractModelFromNotFound(message);
-		const code: SessionCommandErrorCode =
-			// 消息定位失败（编辑/删除/重发缓存与文件都未命中）先于泛化 "not found" 识别：
+
+		const rawCode = typeof (error as { code?: unknown })?.code === "string"
+			? (error as { code: string }).code
+			: undefined;
+
+		let code: SessionCommandErrorCode;
+		if (
+			rawCode === "SESSION_ENTRY_NOT_FOUND" ||
+			rawCode === "SESSION_ENTRY_AMBIGUOUS" ||
+			rawCode === "MESSAGE_NOT_FOUND"
+		) {
+			code = "MESSAGE_NOT_FOUND";
+		} else if (rawCode === "SESSION_MODEL_NOT_FOUND") {
+			code = "SESSION_MODEL_NOT_FOUND";
+		} else if (rawCode === "SESSION_NOT_FOUND") {
+			code = "SESSION_NOT_FOUND";
+		} else if (rawCode === "SESSION_RUNTIME_BUSY") {
+			code = "SESSION_RUNTIME_BUSY";
+		} else if (rawCode === "SESSION_RUNTIME_CHANGED") {
+			code = "SESSION_RUNTIME_CHANGED";
+		} else if (rawCode === "SESSION_RUNTIME_UNAVAILABLE") {
+			code = "SESSION_RUNTIME_UNAVAILABLE";
+		} else if (rawCode === "SESSION_COMMAND_FAILED") {
+			code = "SESSION_COMMAND_FAILED";
+		} else {
+			// 字符串 fallback
+			// 消息定位失败（编辑/删除/重发缓存与文件都未命中、活跃分支未找到条目等）先于泛化 "not found" 识别：
 			// 否则会误报成 SESSION_NOT_FOUND（「会话已不存在」），而会话其实还在。
-			lower.includes("message not found")
-				? "MESSAGE_NOT_FOUND"
-				// set_model 的 "Model not found: provider/model"（本地 models.json 也没有该模型，
-				// 如手误/列表错位产生的假模型）是「模型不存在」而非「会话不存在」——
-				// 若落到泛化 "not found" 分支会误报成「会话已不存在」误导排查。
-				: lower.includes("model not found")
-					? "SESSION_MODEL_NOT_FOUND"
-					: lower.includes("not found")
-						? "SESSION_NOT_FOUND"
-						: lower.includes("busy") || lower.includes("in progress") || lower.includes("stream")
-							? "SESSION_RUNTIME_BUSY"
-							: lower.includes("binding") || lower.includes("generation") || lower.includes("changed")
-								? "SESSION_RUNTIME_CHANGED"
-								: lower.includes("runtime") && lower.includes("available")
-									? "SESSION_RUNTIME_UNAVAILABLE"
-									: "SESSION_COMMAND_FAILED";
+			code =
+				lower.includes("message not found") ||
+				lower.includes("message was not found") ||
+				lower.includes("session_entry_not_found") ||
+				lower.includes("session_entry_ambiguous") ||
+				(lower.includes("entry") && lower.includes("not found"))
+					? "MESSAGE_NOT_FOUND"
+					// set_model 的 "Model not found: provider/model"（本地 models.json 也没有该模型，
+					// 如手误/列表错位产生的假模型）是「模型不存在」而非「会话不存在」——
+					// 若落到泛化 "not found" 分支会误报成「会话已不存在」误导排查。
+					: lower.includes("model not found")
+						? "SESSION_MODEL_NOT_FOUND"
+						: lower.includes("session not found") || (lower.includes("not found") && !lower.includes("message") && !lower.includes("entry"))
+							? "SESSION_NOT_FOUND"
+							: lower.includes("busy") || lower.includes("in progress") || lower.includes("stream")
+								? "SESSION_RUNTIME_BUSY"
+								: lower.includes("binding") || lower.includes("generation") || lower.includes("changed")
+									? "SESSION_RUNTIME_CHANGED"
+									: lower.includes("runtime") && lower.includes("available")
+										? "SESSION_RUNTIME_UNAVAILABLE"
+										: "SESSION_COMMAND_FAILED";
+		}
 		return {
 			ok: false,
 			error: {

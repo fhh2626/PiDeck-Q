@@ -1232,6 +1232,22 @@ test("commandFailure classifies message-not-found separately from session-not-fo
   const messageMiss = coordinator.commandFailure(new Error("Message not found"));
   assert.equal(messageMiss.ok, false);
   assert.equal(messageMiss.error.code, "MESSAGE_NOT_FOUND");
+
+  // 活跃分支未命中消息（"Message was not found on the active session branch"）→ MESSAGE_NOT_FOUND
+  const branchMiss = coordinator.commandFailure(new Error("Message was not found on the active session branch"));
+  assert.equal(branchMiss.ok, false);
+  assert.equal(branchMiss.error.code, "MESSAGE_NOT_FOUND");
+
+  // 结构化 code：SESSION_ENTRY_NOT_FOUND → MESSAGE_NOT_FOUND
+  const entryNotFound = coordinator.commandFailure(Object.assign(new Error("entry missing"), { code: "SESSION_ENTRY_NOT_FOUND" }));
+  assert.equal(entryNotFound.ok, false);
+  assert.equal(entryNotFound.error.code, "MESSAGE_NOT_FOUND");
+
+  // 结构化 code：SESSION_ENTRY_AMBIGUOUS → MESSAGE_NOT_FOUND（绝不能是 SESSION_NOT_FOUND）
+  const entryAmbiguous = coordinator.commandFailure(Object.assign(new Error("multiple entries match"), { code: "SESSION_ENTRY_AMBIGUOUS" }));
+  assert.equal(entryAmbiguous.ok, false);
+  assert.equal(entryAmbiguous.error.code, "MESSAGE_NOT_FOUND");
+
   // 回归：真正的会话不存在仍归 SESSION_NOT_FOUND
   const sessionMiss = coordinator.commandFailure(new Error("Session not found: session-1"));
   assert.equal(sessionMiss.ok, false);

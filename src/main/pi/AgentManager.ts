@@ -111,6 +111,16 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function isUnsupportedCommandError(errText: string): boolean {
+	const lower = errText.toLowerCase();
+	return (
+		lower.includes("unknown command") ||
+		lower.includes("unsupported command") ||
+		lower.includes("not supported") ||
+		lower.includes("unknown method")
+	);
+}
+
 const SESSION_IDENTITY_RETRY_DELAYS_MS: readonly number[] = [0, 50, 100, 200];
 
 type MessageLoadOptions = {
@@ -348,6 +358,12 @@ export class AgentManager {
 	/** 待处理的项目信任确认请求。key 为 requestId，用于在 Agent 启动前等待用户的信任决策。 */
 	private readonly pendingTrustRequests = new Map<string, { resolve: (choice: ProjectTrustChoice) => void }>();
 	private wslEnvironment: WslEnvironment | null = null;
+
+	/**
+	 * 记录 agent 的 entryId 获取源能力（"rpc" 表示支持 get_entries，"file" 表示不支持、直接读 JSONL）。
+	 * 仅在收到明确的 Unknown command 错误时缓存为 "file"，偶发超时/网络错误不永久劣化。
+	 */
+	private readonly entrySourceByAgent = new Map<string, "rpc" | "file">();
 
 	/**
 	 * 用户配置的 RPC 超时（默认 600s，SettingsStore 另有「低于 600s 自动提升」保险）。
@@ -800,18 +816,16 @@ export class AgentManager {
 			type: "get_messages",
 		}, this.rpcTimeoutMs);
 
-		let entriesPromise: Promise<any> | undefined;
+		let entriesPromise: Promise<string[] | undefined> | undefined;
 		if (!skipEntries) {
-			entriesPromise = runtime.process.client.request({
-				type: "get_entries",
-			}, 15_000).catch(() => {
-				// get_entries 失败时不阻塞消息加载；编辑/删除走 fallback（_piDeckMsgSeq 计数）
-				void this.appLogger?.warn("agent", "Failed to get_entries for entryId mapping", { agentId });
+			entriesPromise = this.resolveActiveEntryIds(agentId, runtime).catch(() => {
+				// resolveActiveEntryIds 失败时不阻塞消息加载；编辑/删除走 fallback（_piDeckMsgSeq 计数）
+				void this.appLogger?.warn("agent", "Failed to resolve activeEntryIds for entryId mapping", { agentId });
 				return undefined;
 			});
 		}
 
-		const [response, entriesResult] = await Promise.all([
+		const [response, resolvedEntryIds] = await Promise.all([
 			messagesPromise,
 			entriesPromise ?? Promise.resolve(undefined),
 		]);
@@ -819,17 +833,7 @@ export class AgentManager {
 		const t1 = Date.now();
 
 		const rawMessages = (response.data as { messages?: unknown[] } | undefined)?.messages ?? [];
-
-		// 解析 entryId 列表（需要先于 convertAgentMessages，用于把消息关联到 pi 的会话分支）。
-		let activeEntryIds: string[] | undefined;
-		if (entriesResult) {
-			const entriesData = entriesResult.data as
-				| { entries?: Array<{ id: string; parentId: string | null; type?: string; message?: { role?: string } }>; leafId?: string }
-				| undefined;
-			if (entriesData?.entries && entriesData?.leafId) {
-				activeEntryIds = this.buildActiveBranchEntryIds(entriesData.entries, entriesData.leafId);
-			}
-		}
+		let activeEntryIds = resolvedEntryIds;
 
 		// 按对话轮次截断（保留最近若干轮 user 消息）。压缩摘要不是 user 消息，会被此逻辑保留在尾部，
 		// 因此下方会单独把它插到最前面，确保不被按 user 轮次切掉。
@@ -2372,6 +2376,61 @@ export class AgentManager {
 	}
 
 	/**
+	 * 统一解析活动分支的 entryId 序列：
+	 * 优先通过 RPC get_entries 获取；若 RPC 不支持（如 pi_agent_rust 明确返回 unknown command）
+	 * 或请求失败，则回退从会话 JSONL 读取 canonical entryId。
+	 */
+	private async resolveActiveEntryIds(
+		agentId: string,
+		runtime: AgentRuntime,
+	): Promise<string[] | undefined> {
+		const source = this.entrySourceByAgent.get(agentId);
+		if (source !== "file") {
+			try {
+				const response = await runtime.process.client.request(
+					{ type: "get_entries" },
+					15_000,
+				);
+				if (response.success) {
+					this.entrySourceByAgent.set(agentId, "rpc");
+					const entriesData = response.data as
+						| { entries?: Array<{ id: string; parentId: string | null; type?: string; message?: { role?: string } }>; leafId?: string }
+						| undefined;
+					if (entriesData?.entries && entriesData?.leafId) {
+						return this.buildActiveBranchEntryIds(entriesData.entries, entriesData.leafId);
+					}
+				} else if (response.error && isUnsupportedCommandError(response.error)) {
+					this.entrySourceByAgent.set(agentId, "file");
+				}
+			} catch (error) {
+				const msg = errorMessage(error);
+				if (isUnsupportedCommandError(msg)) {
+					this.entrySourceByAgent.set(agentId, "file");
+				} else {
+					void this.appLogger?.warn("agent", "Failed to get_entries via RPC, falling back to session file", {
+						agentId,
+						error: msg,
+					});
+				}
+			}
+		}
+
+		if (runtime.tab.sessionPath) {
+			try {
+				const identity = await this.sessionHistoryReader.readActiveEntryIdentity(runtime.tab.sessionPath);
+				return identity.entryIds;
+			} catch (error) {
+				void this.appLogger?.warn("agent", "Failed to read entry identity from session file", {
+					agentId,
+					sessionPath: runtime.tab.sessionPath,
+					error: errorMessage(error),
+				});
+			}
+		}
+		return undefined;
+	}
+
+	/**
 	 * A current Pi leaf constrains every locator, including explicit entry IDs.
 	 * If the RPC is unavailable, SessionFileEditor falls back to the last valid leaf.
 	 */
@@ -2379,21 +2438,45 @@ export class AgentManager {
 		agentId: string,
 		runtime: AgentRuntime,
 	): Promise<string | undefined> {
-		try {
-			const response = await runtime.process.client.request(
-				{ type: "get_entries" },
-				15_000,
-			);
-			if (!response.success) return undefined;
-			const leafId = (response.data as { leafId?: unknown } | undefined)?.leafId;
-			return typeof leafId === "string" && leafId ? leafId : undefined;
-		} catch (error) {
-			void this.appLogger?.warn("agent", "Session entry leaf lookup failed", {
-				agentId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return undefined;
+		const source = this.entrySourceByAgent.get(agentId);
+		if (source !== "file") {
+			try {
+				const response = await runtime.process.client.request(
+					{ type: "get_entries" },
+					15_000,
+				);
+				if (response.success) {
+					this.entrySourceByAgent.set(agentId, "rpc");
+					const leafId = (response.data as { leafId?: unknown } | undefined)?.leafId;
+					if (typeof leafId === "string" && leafId) return leafId;
+				} else if (response.error && isUnsupportedCommandError(response.error)) {
+					this.entrySourceByAgent.set(agentId, "file");
+				}
+			} catch (error) {
+				const msg = errorMessage(error);
+				if (isUnsupportedCommandError(msg)) {
+					this.entrySourceByAgent.set(agentId, "file");
+				} else {
+					void this.appLogger?.warn("agent", "Session entry leaf lookup failed", {
+						agentId,
+						error: msg,
+					});
+				}
+			}
 		}
+
+		if (runtime.tab.sessionPath) {
+			try {
+				const identity = await this.sessionHistoryReader.readActiveEntryIdentity(runtime.tab.sessionPath);
+				if (identity.leafId) return identity.leafId;
+			} catch (error) {
+				void this.appLogger?.warn("agent", "Session JSONL leaf lookup failed", {
+					agentId,
+					error: errorMessage(error),
+				});
+			}
+		}
+		return undefined;
 	}
 
 	private createSessionEntryTarget(
@@ -2467,36 +2550,117 @@ export class AgentManager {
 		messageId: string,
 		activeLeafId?: string,
 	): Promise<{ target: SessionEntryTarget; resend?: { text: string; images?: ImageContent[] } }> {
-		const message = !this.staleMessageCacheAgents.has(agentId)
-			? this.messages.get(agentId)?.find((candidate) => candidate.id === messageId)
+		const currentMessages = !this.staleMessageCacheAgents.has(agentId)
+			? this.messages.get(agentId)
 			: undefined;
-		if (message) {
-			return { target: this.createSessionEntryTarget(message, activeLeafId) };
+		const cachedMessage = currentMessages?.find((candidate) => candidate.id === messageId);
+
+		// 1. message.meta.entryId: 缓存中已有有效 entryId，直接走 fast path
+		if (cachedMessage && typeof cachedMessage.meta?.entryId === "string" && cachedMessage.meta.entryId) {
+			return {
+				target: this.createSessionEntryTarget(cachedMessage, activeLeafId),
+				resend: {
+					text: cachedMessage.text,
+					...(cachedMessage.images?.length ? { images: cachedMessage.images } : {}),
+				},
+			};
 		}
+
+		// 2. synthetic history entryId (${agentId}-history-${entryId})
+		// 3. JSONL 中原始 message.id (或 entry.id)
 		const located = await this.sessionHistoryReader.readMessageByMessageId(sessionPath, messageId);
-		if (!located) throw new Error("Message not found");
-		void this.appLogger?.info("agent", "Message located from session file (runtime cache miss)", {
-			agentId,
-			messageId,
-			entryId: located.entryId,
-		});
-		const role: "user" | "assistant" = located.role === "user" ? "user" : "assistant";
-		return {
-			target: {
+		if (located) {
+			void this.appLogger?.info("agent", "Message located from session file by ID", {
+				agentId,
+				messageId,
 				entryId: located.entryId,
-				legacyMessageId: messageId,
-				legacyAgentId: agentId,
-				role,
-				text: located.text,
-				activeLeafId,
-			},
-			// 缓存未命中分支必须恒带回 draft：prepareResendFromMessage 先截断会话再返回草稿，
-			// 若只在有图片时附 resend，纯文本重发会先截断历史再返回空文本（数据不可恢复）。
-			resend: {
-				text: located.text,
-				...(located.images?.length ? { images: located.images } : {}),
-			},
-		};
+			});
+			const role: "user" | "assistant" = located.role === "user" ? "user" : "assistant";
+			if (cachedMessage) {
+				cachedMessage.meta = { ...cachedMessage.meta, entryId: located.entryId };
+			}
+			return {
+				target: {
+					entryId: located.entryId,
+					legacyMessageId: messageId,
+					legacyAgentId: agentId,
+					role,
+					text: located.text,
+					activeLeafId,
+				},
+				resend: {
+					text: located.text,
+					...(located.images?.length ? { images: located.images } : {}),
+				},
+			};
+		}
+
+		// 4. active message sequence 映射得到的 entryId（针对实时消息 UUID 或无 entryId 缓存）
+		if (cachedMessage && (cachedMessage.role === "user" || cachedMessage.role === "assistant")) {
+			try {
+				const identity = await this.sessionHistoryReader.readActiveEntryIdentity(sessionPath);
+				const activeUserAssistantEntries = identity.activeMessageEntries.filter(
+					(entry) => entry.role === "user" || entry.role === "assistant",
+				);
+				const cachedUserAssistantMessages = (currentMessages ?? []).filter(
+					(m) => m.role === "user" || m.role === "assistant",
+				);
+				const cachedIndex = cachedUserAssistantMessages.findIndex((m) => m.id === messageId);
+				if (cachedIndex >= 0) {
+					const offsetFromTail = cachedUserAssistantMessages.length - 1 - cachedIndex;
+					const targetEntryIndex = activeUserAssistantEntries.length - 1 - offsetFromTail;
+					if (targetEntryIndex >= 0 && targetEntryIndex < activeUserAssistantEntries.length) {
+						const candidate = activeUserAssistantEntries[targetEntryIndex];
+						if (candidate.role === cachedMessage.role) {
+							void this.appLogger?.info("agent", "Message located by active sequence mapping", {
+								agentId,
+								messageId,
+								entryId: candidate.id,
+							});
+							cachedMessage.meta = { ...cachedMessage.meta, entryId: candidate.id };
+							return {
+								target: {
+									entryId: candidate.id,
+									legacyMessageId: messageId,
+									legacyAgentId: agentId,
+									role: cachedMessage.role,
+									text: cachedMessage.text,
+									activeLeafId,
+								},
+								resend: {
+									text: cachedMessage.text,
+									...(cachedMessage.images?.length ? { images: cachedMessage.images } : {}),
+								},
+							};
+						}
+					}
+				}
+			} catch (err) {
+				void this.appLogger?.warn("agent", "Sequence mapping lookup failed", {
+					agentId,
+					messageId,
+					error: errorMessage(err),
+				});
+			}
+
+			// 5. role + exact text，仅最后兼容兜底
+			return {
+				target: {
+					entryId: undefined,
+					legacyMessageId: messageId,
+					legacyAgentId: agentId,
+					role: cachedMessage.role,
+					text: cachedMessage.text,
+					activeLeafId,
+				},
+				resend: {
+					text: cachedMessage.text,
+					...(cachedMessage.images?.length ? { images: cachedMessage.images } : {}),
+				},
+			};
+		}
+
+		throw new Error("Message not found");
 	}
 
 	async editMessage(agentId: string, messageId: string, newText: string) {
@@ -2708,6 +2872,7 @@ export class AgentManager {
 		this.messageLoadSequenceByAgent.delete(agentId);
 		this.consumeManualCompactionReloadClaim(agentId);
 		this.promptRequestedAtByAgent.delete(agentId);
+		this.entrySourceByAgent.delete(agentId);
 		this.rpcLoggingAgents.delete(agentId);
 		this.dropPendingLiveRpcLogs(agentId);
 		// 工具完整结果缓存是运行期性能优化（回退读文件等价），只释放当前 agent。
