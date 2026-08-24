@@ -16,7 +16,6 @@ let injectedWallpaperTokens = new Set<string>();
 import {
   Code,
   FolderOpen,
-  Globe,
   Pencil,
   SquarePen,
   Terminal,
@@ -44,7 +43,6 @@ import { useAgentLoadNotice } from "./hooks/useAgentLoadNotice";
 import { useSessionLayout } from "./hooks/useSessionLayout";
 import { useFileEditor , resolveFileLinkPath } from "./hooks/useFileEditor";
 import { useOverlayActions } from "./hooks/useOverlayActions";
-import { useExternalProtocolConfirm } from "./hooks/useExternalProtocolConfirm";
 import { useWorkspacePanels, type WorkspaceDrawerPanel, type WorkspaceExternalEditorAdapter } from "./hooks/useWorkspacePanels";
 import { useDrawerPorts } from "./hooks/useDrawerPorts";
 import { useTerminalDock } from "./hooks/useTerminalDock";
@@ -91,7 +89,6 @@ import {
   setSessionAttachmentsAtom,
   setSessionCatalogLoadStateAtom,
   setSessionDraftAtom,
-  settingsOpenAtom,
   upsertSessionAtom,
   anyAgentRuntimeWorkingAtom,
 } from "./atoms";
@@ -149,7 +146,6 @@ import {
   LogoMark,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
-import { requestBrowserNavigation } from "./browser/BrowserPanelSession";
 import {
   flattenFiles,
   mergeCommands,
@@ -323,7 +319,6 @@ export function App() {
     }
     workspace.openDrawer("files");
   }, [workspace]);
-  const browserFullscreen = workspace.browserFullscreen;
   const externalEditors = workspace.externalEditors;
   const editorsOpen = workspace.externalEditorsOpen;
   const editorsAnchor = workspace.externalEditorsAnchor;
@@ -546,7 +541,6 @@ export function App() {
     webServiceHost: "0.0.0.0",
     webServicePort: 8765,
     rpcTimeout: 600_000,
-    linkOpenMode: "external",
     workspaceContentOpenMode: "split",
     contentMaxWidth: 1800,
     chatContentWidthPct: 80,
@@ -700,13 +694,6 @@ export function App() {
     (project) => project.id === activeProjectId,
   );
   const overlays = useOverlayActions();
-  // 浏览器 guest 外部协议确认流（独立于通用 overlay 域）。
-  const externalProtocolConfirm = useExternalProtocolConfirm();
-  // Modal 仲裁 blocker：settings（settingsOpenAtom，SettingsFeatureRoot 独立 root）
-  // 或通用 confirm/trust 打开时，外部协议确认暂缓渲染（状态保留，弹框结束后出现）。
-  const settingsModalOpen = useAtomValue(settingsOpenAtom);
-  const externalProtocolModalBlocked =
-    settingsModalOpen || overlays.confirmDialog !== null || overlays.trustRequest !== null;
   const sessionsProject = projects.find(
     (project) => project.id === sessionsProjectId,
   );
@@ -1175,7 +1162,7 @@ export function App() {
     [activeAgent?.cwd, activeProject?.path, viewFilePath, showToast],
   );
 
-  // 工具抽屉（files/git/browser）的统一切换语义：当前面板已展开 → 关闭；
+  // 工具抽屉的统一切换语义：当前面板已展开 → 关闭；
   // 其余情况打开/切到目标面板。outline 浮动按钮与抽屉活动栏共用同一套语义，
   // 保证两个入口行为一致。注意必须放在 useFileEditor 之后（依赖 gitDrawerDiff）。
   const handleToolDrawerAction = useCallback((panel: WorkspaceDrawerPanel) => {
@@ -1367,12 +1354,6 @@ export function App() {
     onSettingsApplied: (next: AppSettings) => {
       setSettings(next);
       showToast(t("settings.restartNotice"));
-    },
-    onOpenInBrowser: (url: string) => {
-      // 外部链接必须强制打开 browser 面板（openDrawer 是 toggle 语义，
-      // 已是 browser 展开时会关抽屉，导致首次点击关抽屉、二次重复入栈）
-      workspace.openDrawerForce("browser");
-      requestBrowserNavigation(url);
     },
     onTrustRequest: overlays.setTrustRequest,
     onFocusTarget: (target: { sessionId: string }) => {
@@ -2822,10 +2803,6 @@ export function App() {
     openDrawer: workspace.openDrawer,
     closeDrawer: workspace.closeDrawer,
     collapseDrawer: workspace.collapseDrawer,
-    closeBrowser: () => workspace.closeBrowser(),
-    minimizeBrowser: () => workspace.minimizeBrowser(),
-    enterBrowserFullscreen: () => workspace.enterBrowserFullscreen(),
-    browserFullscreen,
     sessionsProject, sessionsProjectId,
     files, sessions,
     sessionSourceFilter, sessionHistoryLoading,
@@ -2940,13 +2917,6 @@ export function App() {
               active: drawer === "git",
               onClick: () => handleToolDrawerAction("git"),
             }] : []),
-            {
-              id: "browser",
-              label: t("app.browser"),
-              icon: <Globe size={16} />,
-              active: drawer === "browser",
-              onClick: () => handleToolDrawerAction("browser"),
-            },
           ]}
         />
       }
@@ -2957,7 +2927,6 @@ export function App() {
           editor={drawerPorts.editor}
           git={drawerPorts.git}
           chrome={drawerPorts.chrome}
-          browser={drawerPorts.browser}
           files={drawerPorts.files}
         />
       )}
@@ -3018,7 +2987,6 @@ export function App() {
             },
             icon: <Sparkles size={14} />,
           } : undefined}
-          browserAction={undefined}
         />
       }
       setListCollapsed={setListCollapsed}
@@ -3228,16 +3196,6 @@ export function App() {
     />
     <SessionActionOverlays
       {...overlays.overlayProps}
-      externalProtocol={
-        externalProtocolConfirm.pending && !externalProtocolModalBlocked
-          ? {
-              open: true as const,
-              url: externalProtocolConfirm.pending.url,
-              onConfirm: externalProtocolConfirm.confirm,
-              onCancel: externalProtocolConfirm.dismiss,
-            }
-          : undefined
-      }
     />
     <AppUpdateOverlay
       controller={appUpdate}

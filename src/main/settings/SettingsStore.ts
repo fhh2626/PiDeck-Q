@@ -93,7 +93,6 @@ const defaultSettings: AppSettings = {
   webServiceHost: "0.0.0.0",
   webServicePort: 8765,
   rpcTimeout: 600_000,
-  linkOpenMode: "external",
   workspaceContentOpenMode: "split",
   contentMaxWidth: 1800,
   // 内容区宽度默认 80%：轻微留白兼顾阅读舒适（1826px 面板 → 内容 1461px）；
@@ -171,13 +170,15 @@ export class SettingsStore {
         Object.hasOwn(parsedUnknown, "telemetryEnabled") ||
         Object.hasOwn(parsedUnknown, "telemetryInstallId") ||
         Object.hasOwn(parsedUnknown, "telemetryLastHeartbeatDate");
+      const hadLegacyLinkOpenMode = Object.hasOwn(parsedUnknown, "linkOpenMode");
       const {
         telemetryEnabled: _ignoredTelemetryEnabled,
         telemetryInstallId: _ignoredTelemetryInstallId,
         telemetryLastHeartbeatDate: _ignoredTelemetryLastHeartbeatDate,
-        ...parsedWithoutTelemetry
+        linkOpenMode: _ignoredLinkOpenMode,
+        ...parsedClean
       } = parsedUnknown;
-      const parsed = parsedWithoutTelemetry as Partial<AppSettings>;
+      const parsed = parsedClean as Partial<AppSettings>;
       this.settings = {
         ...defaultSettings,
         ...parsed,
@@ -205,7 +206,12 @@ export class SettingsStore {
       // 语义从「最大宽度 px」变为「占面板百分比」，无法精确换算（面板宽度可变），
       // 用线性映射保留旧值感觉：800→60%、1400→84%、1800(不限)→100%。
       this.migrateContentWidth();
-      if (hadLegacyTelemetry || migratedGitCommitMessagePrompt || migratedBuiltInExtensionDefaults) {
+      if (
+        hadLegacyTelemetry ||
+        hadLegacyLinkOpenMode ||
+        migratedGitCommitMessagePrompt ||
+        migratedBuiltInExtensionDefaults
+      ) {
         void this.save().catch(() => undefined);
       }
     } catch {

@@ -361,7 +361,6 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		appLogger,
 		dialogs: platform.dialogs,
 		platformShell: platform.shell,
-		openExternalUrl: host.openExternalUrl,
 		getAuthorizedRoots: () => [
 			...projectStore.list().map((project) => project.path),
 			promptManager.getDir(),

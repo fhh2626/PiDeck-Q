@@ -82,7 +82,6 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	const router = createFakeRouter();
 	let openPathResult = { ok: true };
 	let shownItem = "";
-	let externalOpened = { url: "", forceSystem: false };
 
 	const platformShell = {
 		openPath: async () => openPathResult,
@@ -104,9 +103,6 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 		appLogger: { info: () => {}, error: () => {} },
 		dialogs,
 		platformShell,
-		openExternalUrl: async (url, forceSystem) => {
-			externalOpened = { url, forceSystem: Boolean(forceSystem) };
-		},
 		getAuthorizedRoots: () => ["C:/project"],
 	});
 
@@ -126,11 +122,6 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	dialogPickResult = { canceled: true, filePaths: [] };
 	const canceledFiles = await router.invoke(ipcChannels.dialogPickFiles);
 	assert.equal(canceledFiles.length, 0);
-
-	// CASE 5: browserOpenExternal routes to openExternalUrl with forceSystem=true
-	await router.invoke(ipcChannels.browserOpenExternal, "https://example.com");
-	assert.equal(externalOpened.url, "https://example.com");
-	assert.equal(externalOpened.forceSystem, true);
 });
 
 test("Files IPC: shell only ever receives the authorized canonical host path", async () => {
@@ -161,7 +152,6 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 			showSaveDialog: async () => ({ canceled: true }),
 		},
 		platformShell,
-		openExternalUrl: async () => {},
 		getAuthorizedRoots: () => ["C:\\project"],
 	});
 
@@ -209,7 +199,6 @@ test("Files IPC: unauthorized paths are rejected before any shell side effect", 
 			showSaveDialog: async () => ({ canceled: true }),
 		},
 		platformShell,
-		openExternalUrl: async () => {},
 		getAuthorizedRoots: () => ["C:/project"],
 	});
 

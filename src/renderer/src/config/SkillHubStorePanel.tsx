@@ -292,8 +292,7 @@ export function SkillHubStorePanel() {
 							key={item.slug}
 							className="skillhub-card"
 							onClick={() => {
-								// 弹框（ConfigModal Dialog）内链接强制系统浏览器：内置浏览器面板位于 Dialog 下层不可见，
-								// 跟随 linkOpenMode=internal 打开会被遮挡，用户看到“点了没反应”（与 openDocsInSystemBrowser 同规则）
+								// 外部文档/服务页面通过 desktopApi.app.openExternal 交由系统默认浏览器打开。
 								window.piDesktop.app.openExternal(
 									`https://www.skills.sh/search?q=${encodeURIComponent(item.name)}`,
 									true

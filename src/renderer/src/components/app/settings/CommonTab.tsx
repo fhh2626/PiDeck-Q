@@ -45,10 +45,6 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
     { value: "ctrl-enter-send", label: t("settings.sendShortcut.ctrl") },
     { value: "shift-enter-send", label: t("settings.sendShortcut.shift") },
   ];
-  const linkOpenModeOptions: SelectOption[] = [
-    { value: "external", label: t("settings.linkOpenMode.external") },
-    { value: "internal", label: t("settings.linkOpenMode.internal") },
-  ];
   const workspaceContentOpenModeOptions: SelectOption[] = [
     { value: "split", label: t("settings.workspaceContentOpenMode.split") },
     { value: "maximize", label: t("settings.workspaceContentOpenMode.maximize") },
@@ -127,28 +123,6 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {sendShortcutOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </SettingRow>
-        <SettingRow
-          title={
-            <>
-              <span>{t("settings.linkOpenMode")}</span>
-              <DirtyMarker dirty={isDirty("linkOpenMode")} label={t("settings.linkOpenMode")} />
-            </>
-          }
-          alignEnd={false}
-        >
-          <Select value={draft.linkOpenMode} onValueChange={(value) =>
-              updateDraft({ linkOpenMode: value as AppSettings["linkOpenMode"] })
-            }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {linkOpenModeOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
                   {option.label}
                 </SelectItem>

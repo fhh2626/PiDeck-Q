@@ -16,7 +16,7 @@ export type WorkspaceDrawerRailAction = {
 
 /**
  * 右侧抽屉活动栏（#115 pure official）：横排 tab，shadcn ghost/secondary 按钮。
- * 抽屉打开期间始终可见，无活跃会话时也能切换 files/git/browser。
+ * 抽屉打开期间始终可见，无活跃会话时也能切换当前可用面板。
  * 开/关抽屉按钮留在会话 Tab 栏右侧，不进本栏。
  */
 export function WorkspaceDrawerRail(props: { actions: WorkspaceDrawerRailAction[] }) {

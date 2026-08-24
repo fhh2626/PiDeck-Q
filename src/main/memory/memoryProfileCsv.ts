@@ -13,10 +13,10 @@
 export interface ProfileRowData {
 	/** 采样时间戳（epoch ms） */
 	ts: number;
-	/** 进程类型：Browser / Tab / GPU / Utility / Zygote / Sandbox helper / webview 等 */
+	/** 进程类型：Browser / Tab / GPU / Utility / Zygote / Sandbox helper 等 */
 	type: string;
 	pid: number;
-	/** 可读标识：主进程 / 主窗口 / 浏览器面板#<wcId> 等 */
+	/** 可读标识：主进程 / 渲染窗口#<wcId> 等 */
 	label: string;
 	/** 物理内存占用（RSS，KB） */
 	rssKB: number | null;

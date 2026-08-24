@@ -66,7 +66,7 @@ export interface AppShellProps {
   sidebarContent: ReactNode;
   chatPaneContent: ReactNode;
   drawerContent: (panel: WorkspaceDrawerPanel) => ReactNode;
-  /** 抽屉活动栏（files/git/browser 切换），由 App 注入；抽屉打开时常驻。 */
+  /** 抽屉活动栏，用于切换当前可用工作区面板，由 App 注入；抽屉打开时常驻。 */
   drawerRail?: ReactNode;
   outlineContent: ReactNode;
 

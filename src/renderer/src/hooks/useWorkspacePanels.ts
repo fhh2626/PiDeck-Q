@@ -14,7 +14,7 @@ export const DRAWER_ANIMATION_MS = 120;
 export const EDITOR_TAB_LIMIT = 5;
 export const EDITOR_TAB_TEXT_BUDGET = 24 * 1024 * 1024;
 
-export type WorkspaceDrawerPanel = "files" | "sessions" | "browser" | "editor" | "git";
+export type WorkspaceDrawerPanel = "files" | "sessions" | "editor" | "git";
 export type WorkspaceEditorMode = "view" | "diff";
 
 export type WorkspaceEditorTab = {
@@ -112,7 +112,7 @@ function readDrawerState(storage: WorkspacePanelOptions["storage"], key: string)
     const parsed: unknown = JSON.parse(storage.getItem(key) ?? "null");
     if (!parsed || typeof parsed !== "object") return null;
     const value = parsed as { panel?: unknown; pinned?: unknown };
-    const validPanel = value.panel === null || ["files", "sessions", "browser", "editor", "git"].includes(String(value.panel));
+    const validPanel = value.panel === null || ["files", "sessions", "editor", "git"].includes(String(value.panel));
     return validPanel && typeof value.pinned === "boolean"
       ? { panel: value.panel as WorkspaceDrawerPanel | null, pinned: value.pinned }
       : null;
@@ -254,20 +254,6 @@ export function useWorkspacePanels(options: WorkspacePanelOptions = {}) {
     setDrawerCollapsed(false);
   }, [invalidateGitDiff, saveDrawerState]);
 
-  /**
-   * 强制打开面板（不 toggle）：外部入口（如消息链接“在浏览器打开”）需要确保
-   * browser 面板打开；openDrawer 在已是同一面板且展开时会关闭抽屉，导致
-   * 首次点击关抽屉、二次点击才打开且 tab 重复入栈。
-   */
-  const openDrawerForce = useCallback((panel: WorkspaceDrawerPanel) => {
-    const pinnedPanel = projectIdRef.current ? drawerPinnedByProjectRef.current[projectIdRef.current] : undefined;
-    if (pinnedPanel && pinnedPanel !== panel) return;
-    if (panel !== "git") invalidateGitDiff();
-    if (projectIdRef.current) saveDrawerState(projectIdRef.current, panel, Boolean(pinnedPanel && panel === pinnedPanel));
-    setDrawer(panel);
-    setDrawerCollapsed(false);
-  }, [invalidateGitDiff, saveDrawerState]);
-
   const closeDrawer = useCallback(() => {
     if (drawerPinnedRef.current) return;
     invalidateGitDiff();
@@ -357,27 +343,6 @@ export function useWorkspacePanels(options: WorkspacePanelOptions = {}) {
     commitFileDiff: (...args) => gitRef.current?.commitFileDiff(...args) ?? Promise.reject(new Error("Git service is unavailable")),
   }), []);
 
-  const [browserFullscreen, setBrowserFullscreen] = useState(false);
-  const openBrowser = useCallback(() => {
-    invalidateGitDiff();
-    setDrawer("browser");
-    setDrawerCollapsed(false);
-  }, [invalidateGitDiff]);
-  const enterBrowserFullscreen = useCallback(() => setBrowserFullscreen(true), []);
-  /**
-   * 关闭浏览器面板（全屏 X / 关闭最后一个 tab 统一入口）：
-   * 退出全屏并收起浏览器抽屉。区别于 minimizeBrowser（仅退出全屏、保留抽屉）。
-   * 此前只 setBrowserFullscreen(false)，抽屉模式下是空操作，导致关最后一个 tab 时侧边栏无法收起。
-   */
-  const closeBrowser = useCallback(() => {
-    setBrowserFullscreen(false);
-    closeDrawer();
-  }, [closeDrawer]);
-  const minimizeBrowser = useCallback(() => {
-    setBrowserFullscreen(false);
-    openBrowser();
-  }, [openBrowser]);
-
   const [externalEditors, setExternalEditors] = useState<ExternalEditor[]>([]);
   const [externalEditorsOpen, setExternalEditorsOpen] = useState(false);
   const [externalEditorsAnchor, setExternalEditorsAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -420,7 +385,6 @@ export function useWorkspacePanels(options: WorkspacePanelOptions = {}) {
   useEffect(() => {
     invalidateGitDiff();
     editorRequestRef.current += 1;
-    setBrowserFullscreen(false);
     setExternalEditorsOpen(false);
     setExternalEditorsAnchor(null);
     setExternalEditorsTargetPath(null);
@@ -434,7 +398,6 @@ export function useWorkspacePanels(options: WorkspacePanelOptions = {}) {
     drawerPinned,
     drawerPinnedPanel,
     openDrawer,
-    openDrawerForce,
     closeDrawer,
     collapseDrawer,
     expandDrawer,
@@ -446,11 +409,6 @@ export function useWorkspacePanels(options: WorkspacePanelOptions = {}) {
     openCommitFileDiff,
     toggleGitDiffDisplayMode,
     gitPanelAdapter,
-    browserFullscreen,
-    openBrowser,
-    enterBrowserFullscreen,
-    closeBrowser,
-    minimizeBrowser,
     externalEditors,
     externalEditorsOpen,
     externalEditorsAnchor,

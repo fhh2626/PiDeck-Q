@@ -898,12 +898,6 @@ const api = {
 			subscribe(ipcChannels.appUpdateProgress, callback),
 		openExternal: (url: string, forceSystem?: boolean) =>
 			ipcRenderer.invoke(ipcChannels.appOpenExternal, url, forceSystem) as Promise<void>,
-		onOpenInBrowser: (callback: (url: string) => void) =>
-			subscribe(ipcChannels.appOpenInBrowser, callback),
-		onConfirmExternalProtocol: (callback: (payload: { id: string; url: string }) => void) =>
-			subscribe(ipcChannels.appConfirmExternalProtocol, callback),
-		respondExternalProtocol: (id: string, action: "confirm" | "cancel") =>
-			ipcRenderer.invoke(ipcChannels.appRespondExternalProtocol, { id, action }) as Promise<void>,
 		onFocusSessionTarget: (callback: (target: { sessionId: string }) => void) =>
 			subscribe(ipcChannels.appFocusSessionTarget, callback),
 		getPendingFocusTarget: () =>
@@ -1232,14 +1226,6 @@ const api = {
 			subscribe(ipcChannels.terminalData, callback),
 		onExit: (callback: (payload: TerminalExitEvent) => void) =>
 			subscribe(ipcChannels.terminalExit, callback),
-	},
-
-	// ===== 内置浏览器 =====
-	browser: {
-		/** 在系统默认处理器中打开外部链接（mailto:/tel: 等确认后的回流也走此通道）。
-		 *  主进程侧固定 forceSystem=true：本契约就是「离开应用交给系统」，无路由语义。 */
-		openExternal: (url: string) =>
-			ipcRenderer.invoke(ipcChannels.browserOpenExternal, url) as Promise<void>,
 	},
 
 	scratchPad: {

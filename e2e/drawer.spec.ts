@@ -13,9 +13,9 @@ for (let i = 0; i < MANY_FILES; i++) {
 }
 
 /**
- * 右侧抽屉 + 活动栏（#113 parity 修复的回归守卫）：
- * 打开抽屉默认 files；活动栏可切 browser 并切回。
- * 注：seed 项目无 git 上下文，这里只断言 files/browser。
+ * 右侧抽屉 + 活动栏回归守卫：
+ * 打开抽屉默认 files；已经删除的 browser 入口不应再出现。
+ * 注：seed 项目无 git 上下文，这里只断言 files。
  */
 test("right drawer opens on files and the activity rail switches panels", async ({ window }) => {
 	// 新建会话打开工作台后，头部抽屉开关才出现
@@ -26,19 +26,10 @@ test("right drawer opens on files and the activity rail switches panels", async 
 
 	const drawer = window.locator(".detail-drawer");
 	await expect(drawer).toHaveAttribute("data-open", "true");
-	// 活动栏常驻：files/browser 两个入口
+	// 活动栏只保留 files 等仍存在的工作区入口
 	const filesTab = window.getByTestId("drawer-rail-files");
-	const browserTab = window.getByTestId("drawer-rail-browser");
 	await expect(filesTab).toBeVisible();
-	await expect(browserTab).toBeVisible();
-	await expect(filesTab).toHaveAttribute("aria-selected", "true");
-
-	// 切到浏览器面板
-	await browserTab.click();
-	await expect(browserTab).toHaveAttribute("aria-selected", "true");
-
-	// 切回文件面板
-	await filesTab.click();
+	await expect(window.getByTestId("drawer-rail-browser")).toHaveCount(0);
 	await expect(filesTab).toHaveAttribute("aria-selected", "true");
 });
 
@@ -55,7 +46,8 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 	const projectItem = window.locator(".conversation", { hasText: "pideck-e2e-drawere2e-" }).first();
 	await expect(projectItem).toBeVisible({ timeout: 20_000 });
 	await projectItem.click();
-	await window.locator(".header-drawer-toggle").first().click();
+	const toggle = window.locator(".header-drawer-toggle").first();
+	await toggle.click();
 	const drawer = window.locator(".detail-drawer");
 	await expect(drawer).toHaveAttribute("data-open", "true", { timeout: 5000 });
 	await window.waitForTimeout(1500);
@@ -69,11 +61,13 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 	expect(steady).not.toBeNull();
 	expect(steady!.hasVScroll).toBe(true);
 
-	// 切到 browser 再切回 files，从点击前开始逐帧采样内容宽度
-	const editorTab = window.getByTestId("drawer-rail-browser");
-	await editorTab.click();
-	await expect(editorTab).toHaveAttribute("aria-selected", "true", { timeout: 3000 });
-	await window.waitForTimeout(400);
+	// files → 关闭抽屉 → 重新打开 files，从重新打开开始逐帧采样内容宽度
+	const filesTab = window.getByTestId("drawer-rail-files");
+	await toggle.click();
+	await expect(drawer).toHaveAttribute("data-open", "false", { timeout: 3000 });
+	await toggle.click();
+	await expect(drawer).toHaveAttribute("data-open", "true", { timeout: 3000 });
+	await expect(filesTab).toHaveAttribute("aria-selected", "true", { timeout: 3000 });
 
 	const sampling = window.evaluate(async () => {
 		const aside = document.querySelector(".detail-drawer") as HTMLElement | null;
@@ -90,8 +84,6 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 		});
 		return widths;
 	});
-	await window.getByTestId("drawer-rail-files").click();
-	await expect(window.getByTestId("drawer-rail-files")).toHaveAttribute("aria-selected", "true", { timeout: 3000 });
 	const widths = await sampling;
 
 	// 内容挂载后宽度必须是单一稳定值：任何两段式（占位宽 → 滚动条宽）都视为回归

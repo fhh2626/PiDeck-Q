@@ -327,7 +327,7 @@ test("overlay roots keep controller/import/runtime error visible", () => {
   assert.match(update, /props\.error/);
   assert.match(update, /role="alert"/);
   assert.match(update, /controller\.error/);
-  // 发布说明和浏览器下载必须绕过内置浏览器，避免 webview 拦截安装包跳转。
+  // 发布说明和浏览器下载必须交由系统浏览器，避免安装包跳转被应用内部拦截。
   assert.match(update, /onBrowserDownload=\{\(\) => void openExternal\([^)]*, true\)\}/);
   assert.match(update, /onOpenRelease=\{\(\) => void openExternal\(info\.releaseUrl, true\)\}/);
   assert.match(imports, /controller\.error/);

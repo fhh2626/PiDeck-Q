@@ -1,8 +1,8 @@
 /**
  * DevTools 快捷键与窗口工具。
  *
- * 主窗口 before-input-event、内置浏览器 webview guest 转发、设置页 IPC 三处共用
- * 同一份开关逻辑（isDevToolsShortcut + toggleMainWindowDevTools），避免各自维护
+ * 主窗口 before-input-event、设置页 IPC 两处共用同一份开关逻辑
+ * （isDevToolsShortcut + toggleMainWindowDevTools），避免各自维护
  * 一套快捷键判断；同时兜底 DevTools 窗口落到屏幕外的问题：换屏/分辨率变化后
  * Chromium 会恢复上次的 DevTools 窗口位置，若已不在任何显示器可视区内，
  * 表现为「F12 有反应但看不到窗口」。

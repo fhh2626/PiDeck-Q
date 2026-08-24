@@ -10,7 +10,6 @@ const ALLOWED_EDGE_FILES = new Set([
 	"src/main/singleInstance.ts",
 	"src/main/devTools.ts",
 	"src/main/linuxDisplayBackend.ts",
-	"src/main/browser/browserPanelWebviewHost.ts",
 	"src/main/memory/MemoryMonitor.ts",
 	"src/main/transport/ElectronRpcRouter.ts",
 	"src/main/window/AppTray.ts",

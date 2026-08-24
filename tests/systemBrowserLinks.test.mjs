@@ -2,19 +2,18 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// 弹框（Dialog/Modal/Overlay）内的链接必须强制系统浏览器打开：
-// 内置浏览器面板位于 Dialog 下层不可见，linkOpenMode=internal 时跟随设置打开会被遮挡，
-// 用户表现为“点了没反应”。统一规则与 ConfigShared.openDocsInSystemBrowser 一致（forceSystem=true）。
+// 弹框（Dialog/Modal/Overlay）内的外部网页统一通过受控的 system-browser API 打开。
+// 保留 forceSystem 参数以维持现有 renderer 调用契约。
 
 test("skill hub result cards force system browser", () => {
 	const src = readFileSync("src/renderer/src/config/SkillHubStorePanel.tsx", "utf8");
-	// 技能搜索结果卡片：点击跳 skills.sh 网页，弹框内必须系统浏览器
+	// 技能搜索结果卡片：点击跳 skills.sh 网页，必须使用受控的 system-browser API
 	assert.match(src, /window\.piDesktop\.app\.openExternal\(\s*`https:\/\/www\.skills\.sh\/search\?q=\$\{encodeURIComponent\(item\.name\)\}`,\s*true\s*\)/);
 });
 
 test("extension recommendation cards force system browser", () => {
 	const src = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
-	// 扩展推荐卡片：原来裸 window.open（会走 setWindowOpenHandler 跟随设置，internal 时同样被遮挡）
+	// 扩展推荐卡片：不得绕过受控的 system-browser API 使用裸 window.open
 	assert.doesNotMatch(src, /window\.open\(/);
 	assert.match(src, /window\.piDesktop\.app\.openExternal\(\s*`https:\/\/pi\.dev\/packages\/\$\{pkg\.name\}\?name=\$\{packageName\}`,\s*true\s*\)/);
 });
@@ -37,7 +36,6 @@ test("environment dialog nodejs link forces system browser in both dialog implem
 
 test("settings web service link forces system browser", () => {
 	const src = readFileSync("src/renderer/src/components/app/SettingsFeatureRoot.tsx", "utf8");
-	// forceSystem=true：Web 服务页必须离开内置浏览器面板——面板在 Dialog 下层，
-	// 设置弹窗打开时会被遮挡；且外部端按桌面浏览器视口设计，系统浏览器体验更完整。
+	// Web 服务页必须通过受控的 system-browser API 打开；外部端按桌面浏览器视口设计。
 	assert.match(src, /onOpenWebService: \(port: string\) => api\.app\.openExternal\(`http:\/\/127\.0\.0\.1:\$\{port\}`, true\)/);
 });

@@ -1670,11 +1670,6 @@ select:focus-visible {
   50% { opacity: 0.65; }
 }
 
-/* 内置浏览器加载条：宿主无渐进进度事件，仅不确定动画（滑块往返）。 */
-@keyframes browser-load-slide {
-	0% { transform: translateX(-100%); }
-	100% { transform: translateX(300%); }
-}
 .project-group > .conversation:first-child:active:not(.dragging) {
   background: color-mix(in srgb, var(--color-bg-hover) 70%, var(--color-accent-soft));
   transform: scale(0.985);

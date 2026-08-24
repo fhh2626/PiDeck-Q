@@ -229,14 +229,12 @@
 /* ── 壁纸模式右侧抽屉透明化覆盖 ──────────────────────────────
  * 必须放 utilities 层：legacy 层（foundation.css）的 data-bg-image 规则
  * 压不过 bg-background / bg-bg-subtle 等 utility（层序 legacy < utilities）。
- * Git / 浏览器 / 抽屉头部叠在半透明 detail-drawer 上会形成双层白（更实），
+ * Git / 抽屉头部叠在半透明 detail-drawer 上会形成双层白（更实），
  * 这里统一透明、透出 detail-drawer 一层，与文件面板/聊天区同档。 */
 @layer utilities {
   :root[data-bg-image="on"] .shell-panel-drawer .drawer-header,
   :root[data-bg-image="on"] .shell-panel-drawer .git-panel,
-  :root[data-bg-image="on"] .shell-panel-drawer .git-panel .bg-background,
-  :root[data-bg-image="on"] .shell-panel-drawer .browser-panel,
-  :root[data-bg-image="on"] .shell-panel-drawer .browser-panel .bg-bg-subtle {
+  :root[data-bg-image="on"] .shell-panel-drawer .git-panel .bg-background {
     background: transparent;
   }
 }

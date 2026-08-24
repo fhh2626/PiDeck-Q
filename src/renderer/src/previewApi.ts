@@ -124,7 +124,6 @@ let previewSettings: AppSettings = {
 	webServiceHost: "0.0.0.0",
 	webServicePort: 8765,
 	rpcTimeout: 600_000,
-	linkOpenMode: "external",
 	workspaceContentOpenMode: "split",
 	contentMaxWidth: 1800,
 	chatContentWidthPct: 80,
@@ -650,9 +649,6 @@ export function createPreviewApi(): PiDesktopApi {
 			}),
 			installUpdate: async () => undefined,
 			onUpdateProgress: () => () => undefined,
-			onOpenInBrowser: () => () => undefined,
-			onConfirmExternalProtocol: () => () => undefined,
-			respondExternalProtocol: async () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,
 			openExternal: async () => undefined,
@@ -946,9 +942,6 @@ export function createPreviewApi(): PiDesktopApi {
 				{ shell: "pwsh", label: "pwsh", available: true },
 				{ shell: "cmd", label: "cmd", available: true },
 			],
-		},
-		browser: {
-			openExternal: async () => {},
 		},
 		scratchPad: {
 			list: async () => [],

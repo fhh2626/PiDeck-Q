@@ -1578,7 +1578,7 @@ body.is-git-pane-resizing, body.is-git-pane-resizing * { cursor: row-resize !imp
 }
 
 /* ── 抽屉活动栏（activity rail）──
- * 面板切换入口（files/git/browser）：抽屉打开期间横排在抽屉内容区顶部
+ * 面板切换入口：抽屉打开期间横排在抽屉内容区顶部
  * （pure official 横排 tab，见 WorkspaceDrawerRail），不再依赖会话 outline。 */
 /* pure official P2-4：activity rail 布局由 WorkspaceDrawerRail Tailwind 承担 */
 .drawer-activity-rail-button.active::before {
@@ -1586,11 +1586,4 @@ body.is-git-pane-resizing, body.is-git-pane-resizing * { cursor: row-resize !imp
 }
 .detail-drawer:has(.drawer-activity-rail) .drawer-content-frame {
   min-width: 0;
-}
-
-/* WebContentsView 占位矩形（#115 U4）：实际页面由主进程视图叠加渲染 */
-.browser-view-placeholder {
-  flex: 1;
-  min-height: 0;
-  background: var(--color-bg-panel);
 }

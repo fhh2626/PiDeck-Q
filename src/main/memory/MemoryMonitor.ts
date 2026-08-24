@@ -186,7 +186,6 @@ async function collectSnapshot(streamingProbe?: () => boolean): Promise<ProfileR
 	}
 
 	// webContents 明细：进程级 RSS/private + 渲染 JS 堆。
-	// guest（webview 浏览器面板）也包含在内——它是吃内存大户，必须可观测。
 	// 同 pid 已存在（来自 getAppMetrics 的 Tab 行）时只补 JS 堆与语义化 label，不追加新行。
 	const wcs = webContents.getAllWebContents();
 	await Promise.all(
@@ -201,10 +200,9 @@ async function collectSnapshot(streamingProbe?: () => boolean): Promise<ProfileR
 				if (urls.length) {
 					console.log("[memory-profile] workers:", urls.join(" | "));
 				}
-				const isWebview = wc.getType() === "webview";
 				const existing = rows.get(pid);
 				if (existing) {
-					// 同一渲染进程：补 JS 堆 / DOM 节点 / 图片统计，label 换成语义化名称（渲染窗口/浏览器面板）
+					// 同一渲染进程：补 JS 堆 / DOM 节点 / 图片统计，并设置语义化 label
 					existing.jsHeapKB = jsHeapKB;
 					existing.totalJSHeapKB = totalJSHeapKB;
 					existing.domNodes = domNodes;
@@ -214,13 +212,13 @@ async function collectSnapshot(streamingProbe?: () => boolean): Promise<ProfileR
 					existing.workerCount = workerCount;
 					existing.workerJSHeapKB = workerJSHeapKB;
 					existing.streaming = streaming;
-					existing.label = `${isWebview ? "浏览器面板" : "渲染窗口"}#${wc.id}`;
+					existing.label = `渲染窗口#${wc.id}`;
 				} else {
 					rows.set(pid, {
 						ts,
-						type: isWebview ? "webview" : "Tab",
+						type: "Tab",
 						pid,
-						label: `${isWebview ? "浏览器面板" : "渲染窗口"}#${wc.id}`,
+						label: `渲染窗口#${wc.id}`,
 						rssKB: mem?.workingSetSize ?? null,
 						privateKB: mem?.privateBytes ?? null,
 						sharedKB: null,

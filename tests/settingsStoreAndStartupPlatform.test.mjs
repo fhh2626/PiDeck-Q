@@ -105,3 +105,26 @@ test("SettingsStore: hideThinkingBlock mapping and showThinking persistence safe
 		await rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("SettingsStore: removes legacy linkOpenMode without resetting other settings", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-link-mode-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		await writeFile(
+			desktopSettingsFile,
+			JSON.stringify({ linkOpenMode: "internal", language: "en-US" }),
+			"utf8",
+		);
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await store.load();
+		assert.equal(Object.prototype.hasOwnProperty.call(store.get(), "linkOpenMode"), false);
+		assert.equal(store.get().language, "en-US");
+
+		await store.update({ language: "zh-CN" });
+		const saved = JSON.parse(await readFile(desktopSettingsFile, "utf8"));
+		assert.equal(Object.prototype.hasOwnProperty.call(saved, "linkOpenMode"), false);
+		assert.equal(saved.language, "zh-CN");
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});

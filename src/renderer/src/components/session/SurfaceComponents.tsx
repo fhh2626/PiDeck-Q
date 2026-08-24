@@ -143,7 +143,7 @@ import { MultiSelectModal } from "./MessageShareModal";
 //   （ghost + size-7 + hover:bg-muted，对齐旧透明小钮；避免 hover:bg-accent 绿底）。
 // - 保留原生 button（样式完全由自定义 CSS 驱动，直接换装会被 Tailwind utilities 覆盖默认尺寸
 //   导致回归，需先做 CSS→utility 迁移）：code-copy、execution-summary-toggle/collapse、
-//   image-preview-close、outline-* 系列、scratch/terminal/files/git/editors/browser-entry、
+//   image-preview-close、outline-* 系列、scratch/terminal/files/git/editors、
 //   空状态创建按钮。迁移路径见 P2 CSS 收口。
 //   （copy-menu-popover 菜单项已于 2026-08 迁移到 shadcn DropdownMenu，保留锚点类仅用于
 //   多选导出/截图复制的节点排除。）
@@ -1101,7 +1101,6 @@ export function ConversationOutline(props: {
 	filesAction?: EntryAction;
 	gitAction?: EntryAction;
 	editorsAction?: EntryAction & { anchorRef?: React.RefObject<HTMLButtonElement | null> };
-	browserAction?: EntryAction;
 	skillsAction?: EntryAction;
 }) {
 	const [expanded, setExpanded] = useState(false);
@@ -1266,17 +1265,6 @@ export function ConversationOutline(props: {
 					onClick={props.skillsAction.onClick}
 				>
 					{props.skillsAction.icon}
-				</button>
-			)}
-			{props.browserAction && (
-				<button
-					type="button"
-					className={`browser-entry${props.browserAction.active ? " active" : ""}`}
-					title={props.browserAction.label}
-					aria-label={props.browserAction.label}
-					onClick={props.browserAction.onClick}
-				>
-					{props.browserAction.icon}
 				</button>
 			)}
 		</div>

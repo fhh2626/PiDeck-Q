@@ -186,18 +186,14 @@ test("offscreen devtools window is repositioned to primary display center on ope
 	onceCb();
 });
 
-test("main window and webview guest both route devtools shortcuts through the shared module", () => {
+test("main window routes devtools shortcuts through the shared module", () => {
 	const main = readFileSync("src/main/index.ts", "utf8");
-	const webviewHost = readFileSync("src/main/browser/browserPanelWebviewHost.ts", "utf8");
 	const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 	assert.match(main, /import \{ isDevToolsShortcut, toggleMainWindowDevTools \} from "\.\/devTools"/);
 	// 主窗口 before-input-event 统一走共享判断 + 开关
 	assert.match(main, /mainWindow\.webContents\.on\("before-input-event"/);
 	assert.match(main, /isDevToolsShortcut\(input\)/);
 	assert.match(main, /toggleMainWindowDevTools\(mainWindow\)/);
-	// webview guest（独立 webContents）同样转发，避免内置浏览器里 F12 无响应
-	assert.match(webviewHost, /guest\.on\("before-input-event"/);
-	assert.match(webviewHost, /toggleMainWindowDevTools\(window\)/);
 	// 设置页 IPC 与快捷键共用同一开关入口
 	assert.match(systemIpc, /toggleDevTools\?\.\(\)/);
 	// 旧的内联重复实现已删除

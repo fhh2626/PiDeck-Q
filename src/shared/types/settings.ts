@@ -21,7 +21,6 @@ export type AppSkinId =
 	| "warm-beige"
 	| "custom";
 export type AppLanguageMode = "system" | "zh-CN" | "en-US" | "pseudo";
-export type LinkOpenMode = "external" | "internal";
 
 /** 主进程枚举出的可用于手机访问 Web 服务的局域网入口。 */
 export type WebNetworkAddress = {
@@ -146,8 +145,6 @@ export type StartupWindowMode =
 	installationType?: "portable" | "installed";
 	/** RPC 调用超时时间（毫秒），默认 600000（10 分钟），用于长时间运行的命令 */
 	rpcTimeout: number;
-	/** 外部链接打开方式：external 使用系统默认浏览器，internal 使用应用内独立窗口 */
-	linkOpenMode: LinkOpenMode;
 	/**
 	 * 从文件树 / Git 打开文件或 Diff 时，中间栏默认布局。
 	 * split=与会话分屏；maximize=占满中间栏（会话暂时收起，不进侧栏）。

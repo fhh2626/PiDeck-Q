@@ -16,7 +16,6 @@ export type FilesIpcDeps = {
 	appLogger: Pick<AppLogger, "info" | "error">;
 	dialogs: PlatformDialogs;
 	platformShell: Pick<PlatformShell, "openPath" | "showItemInFolder">;
-	openExternalUrl: (url: string, forceSystem?: boolean) => Promise<void>;
 	getAuthorizedRoots: () => string[];
 };
 
@@ -29,7 +28,6 @@ export function registerFilesIpc(
 		appLogger,
 		dialogs,
 		platformShell,
-		openExternalUrl,
 		getAuthorizedRoots,
 	}: FilesIpcDeps,
 ): void {
@@ -105,12 +103,6 @@ export function registerFilesIpc(
 		// 回归修复（30b6954b 误删）：渲染层「在文件夹中显示」依赖此通道，
 		// 缺失时 invoke 会抛 No handler registered。WSL 路径先转 Windows 再定位。
 		platformShell.showItemInFolder(authorizePath(path, "show-in-folder"));
-	});
-
-	router.handle(ipcChannels.browserOpenExternal, async (url: string) => {
-		// This IPC is renderer-callable, so it must share the protocol gate used by
-		// every other external-link path instead of passing arbitrary schemes to the OS.
-		await openExternalUrl(url, true);
 	});
 
 	router.handle(ipcChannels.filesReadContent, async (path: string, maxBytes?: number) => {

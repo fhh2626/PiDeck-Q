@@ -31,8 +31,7 @@ import { registerBackgroundImageProtocol } from "./platform/electron/backgroundI
 import { resolveBackgroundsDir } from "./backgrounds/BackgroundPaths";
 import { createElectronPlatformServices } from "./platform/electron/createElectronPlatformServices";
 import { createElectronMainWindowControls } from "./window/MainWindowControls";
-import { isHttpLikeExternalUrl, openExternalLink } from "./browser/externalLinks";
-import { createExternalProtocolGateway } from "./browser/externalProtocolRequests";
+import { openExternalLink } from "./browser/externalLinks";
 
 // 构建标记：npm run dist:win:dev 打包时由 vite define 注入 true（构建期替换，非运行时环境变量）。
 declare const __PIDECK_DEV_BUILD__: boolean;
@@ -140,7 +139,6 @@ import { readLastWindowBounds, saveLastWindowBounds } from "./windowState";
 import { createRendererCrashRecoveryGuard } from "./window/rendererCrashRecovery";
 import { registerElectronPreloadLifecycleIpc } from "./ipc/electronPreloadLifecycleIpc";
 import { ElectronRpcRouter } from "./transport/ElectronRpcRouter";
-import { configureBrowserPanelWebviewHost } from "./browser/browserPanelWebviewHost";
 import { preparePreloadPath } from "./preloadPath";
 import { startMemoryProfile, isMemoryProfileEnabled, type MemoryProfileHandle } from "./memory/MemoryMonitor";
 import { createAppTray, refreshAppTrayMenu } from "./window/AppTray";
@@ -286,33 +284,13 @@ function setupTray() {
 	refreshTrayContextMenu();
 }
 
-// 外部 URL 统一入口：协议路由与 linkOpenMode 策略在 externalLinks.ts（可单测），
-// 此处只注入 Electron shell / 主窗口 / 设置读取。
-async function openExternalUrl(url: string, forceSystem = false) {
+// 外部 URL 统一入口：协议安全网关在 externalLinks.ts（可单测），
+// 此处只注入 Electron shell；forceSystem 保留以兼容现有调用者。
+async function openExternalUrl(url: string, _forceSystem = false) {
 	await openExternalLink(url, {
-		openInSystem: (url) => shell.openExternal(url),
-		openInBrowserPanel: openInternalLinkInBrowserPanel,
-		linkOpenMode: () => {
-			if (forceSystem) return "external";
-			return backend?.settingsStore.get().linkOpenMode ?? "external";
-		},
+		openInSystem: (target) => shell.openExternal(target),
 		logger: backend?.appLogger,
 	});
-}
-
-// guest 外部协议请求的 pending 注册表（主进程持有 URL 权威值；去重/cooldown/
-// guest 销毁清理都在 externalProtocolRequests.ts）。模块级单例：webview 宿主与
-// respond IPC handler 共享同一份 pending 状态。
-const externalProtocolGateway = createExternalProtocolGateway();
-
-function openInternalLinkInBrowserPanel(url: string) {
-	// 内部打开：将 URL 发送到渲染进程，由 BrowserPanel 在侧栏/弹框中加载，
-	// 替代之前的独立 BrowserWindow 方案，保持一致的浏览体验。
-	if (!mainWindow || mainWindow.isDestroyed()) {
-		void shell.openExternal(url);
-		return;
-	}
-	mainWindow.webContents.send(ipcChannels.appOpenInBrowser, url);
 }
 
 function printStartupInfo() {
@@ -436,21 +414,9 @@ async function createWindow() {
 			sandbox: false,
 			contextIsolation: true,
 			nodeIntegration: false,
-			webviewTag: true,
 		},
 	});
 	const createdWindow = mainWindow;
-	// 内置浏览器面板的弹窗与外部协议请求走受控确认流（主进程保存待确认请求，由渲染层应答）。
-	configureBrowserPanelWebviewHost(createdWindow, {
-		appLogger: backend.appLogger,
-		sendExternalProtocolRequest: (payload) => {
-			if (!mainWindow || mainWindow.isDestroyed()) {
-				void backend?.appLogger.warn("browser", "Dropped external protocol request: main window unavailable", { url: payload.url });
-				return;
-			}
-			mainWindow.webContents.send(ipcChannels.appConfirmExternalProtocol, payload);
-		},
-	}, externalProtocolGateway);
 	let hasShownMainWindow = false;
 	function showMainWindowOnce() {
 		if (createdWindow.isDestroyed() || hasShownMainWindow) return;
@@ -469,7 +435,7 @@ async function createWindow() {
 		showMainWindowImmediately,
 	);
 
-	// 所有 target="_blank" 或 window.open 的链接统一经同一入口处理，遵守用户设置的打开方式。
+	// 所有 target="_blank" 或 window.open 的链接统一经同一受控外链入口处理。
 	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
 		void openExternalUrl(url);
 		return { action: "deny" };
@@ -597,8 +563,8 @@ async function createWindow() {
 		}
 	});
 
-	// 监听浏览器标准快捷键打开开发者工具（F12 / Ctrl+Shift+I / Ctrl+Shift+J，
-	// macOS 变体与开关逻辑集中在 devTools.ts，主窗口/webview/设置 IPC 共用）
+	// 监听标准快捷键打开开发者工具（F12 / Ctrl+Shift+I / Ctrl+Shift+J，
+	// macOS 变体与开关逻辑集中在 devTools.ts，主窗口/设置 IPC 共用）
 	mainWindow.webContents.on("before-input-event", (event, input) => {
 		if (!mainWindow || mainWindow.isDestroyed()) return;
 		if (isDevToolsShortcut(input)) {
@@ -727,38 +693,6 @@ app.whenReady().then(async () => {
 	registerElectronPreloadLifecycleIpc(ipcMain, {
 		appLogger: backend.appLogger,
 	});
-
-	// 外部协议确认应答：渲染层只回传 { id, action }；主进程按自己保存的
-	// targetUrl 执行打开（渲染层无法伪造/替换目标 URL），cancel 进入 cooldown。
-	router.handle(
-		ipcChannels.appRespondExternalProtocol,
-		async (payload: { id: string; action: "confirm" | "cancel" }) => {
-			if (
-				typeof payload !== "object" ||
-				payload === null ||
-				typeof (payload as { id?: unknown }).id !== "string" ||
-				((payload as { action?: unknown }).action !== "confirm" &&
-					(payload as { action?: unknown }).action !== "cancel")
-			) {
-				void backend?.appLogger.warn("browser", "Rejected malformed external protocol response");
-				return;
-			}
-			const request = payload as { id: string; action: "confirm" | "cancel" };
-			if (request.action === "cancel") {
-				externalProtocolGateway.cancel(request.id);
-				return;
-			}
-			const targetUrl = externalProtocolGateway.confirm(request.id);
-			if (targetUrl == null) {
-				void backend?.appLogger.warn("browser", "External protocol confirm for unknown/expired id", { id: request.id });
-				return;
-			}
-			// 路由与重构前 guest popup 语义一致：http(s) 遵守 linkOpenMode
-			// （internal → 内置浏览器面板新 tab，external → 系统浏览器）；
-			// mailto/tel/sms 等系统协议无论设置如何都交系统默认处理器。
-			await openExternalUrl(targetUrl, isHttpLikeExternalUrl(targetUrl) ? undefined : true);
-		},
-	);
 
 	// 内存分析模式（PIDECK_MEMORY_PROFILE=1）：尽早开始采样，覆盖窗口创建/加载全过程。
 	// 采样失败不阻塞启动（诊断工具降级为不可用）。

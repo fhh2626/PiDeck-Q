@@ -13,7 +13,6 @@ type GlobalAgentListenerCallbacks = {
   onFocusTarget?: (target: { sessionId: string }) => void;
   onSettingsApplied?: (settings: AppSettings) => void;
   onUpdateProgress?: (progress: AppUpdateDownloadProgress) => void;
-  onOpenInBrowser?: (url: string) => void;
   onTrustRequest?: (request: {
     requestId: string;
     cwd: string;
@@ -49,9 +48,6 @@ export function useGlobalAgentListeners(
     const offUpdateProgress = desktopApi.app.onUpdateProgress((progress) => {
       callbacksRef.current.onUpdateProgress?.(progress);
     });
-    const offOpenInBrowser = desktopApi.app.onOpenInBrowser?.((url) => {
-      callbacksRef.current.onOpenInBrowser?.(url);
-    });
     const offTrustRequest = desktopApi.projects.onTrustRequest((request) => {
       callbacksRef.current.onTrustRequest?.(request);
     });
@@ -62,7 +58,6 @@ export function useGlobalAgentListeners(
       offFocusTarget();
       offSettings();
       offUpdateProgress();
-      offOpenInBrowser?.();
       offTrustRequest();
     };
   }, [store]);
