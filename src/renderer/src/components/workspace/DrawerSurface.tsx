@@ -74,7 +74,8 @@ const LazyPanel = memo(function LazyPanel(props: {
     props
       .loader()
       .then((Component) => {
-        if (active) setComponent(Component);
+        // 函数组件必须由 updater 返回，否则 React 会用当前 state 调用它。
+        if (active) setComponent(() => Component);
       })
       .catch(() => {
         if (active) setFailed(true);
