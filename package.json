@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
   "license": "MIT",
