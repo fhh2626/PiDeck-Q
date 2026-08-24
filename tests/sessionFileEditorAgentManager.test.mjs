@@ -64,11 +64,32 @@ function loadAgentManager() {
       if (specifier === "./historyMessages") return { mergeHistoryWithPreservedMessages: (messages) => messages };
       if (specifier === "./agentSessionIdentity") return { buildAgentSessionKey: () => undefined };
       if (specifier === "./SessionFileEditor") return { SessionFileEditor: class {} };
-      if (specifier === "./SessionHistoryReader") return { SessionHistoryReader: class {} };
+      if (specifier === "./SessionHistoryReader") {
+        return {
+          SessionHistoryReader: class {},
+          syntheticHistoryEntryId: (messageId) => {
+            const marker = "-history-";
+            const index = messageId.lastIndexOf(marker);
+            if (index < 0) return undefined;
+            return messageId.slice(index + marker.length) || undefined;
+          },
+        };
+      }
       if (specifier === "./AgentMessageProjector") {
         return {
           AgentMessageProjector: class {},
-          buildActiveBranchEntryIds: () => [],
+          buildActiveBranchEntryIds: (entries, leafId) => {
+            const entryById = new Map();
+            for (const entry of entries) entryById.set(entry.id, entry);
+            const allBranchIds = [];
+            let currentId = leafId;
+            while (currentId) {
+              allBranchIds.unshift(currentId);
+              const entry = entryById.get(currentId);
+              currentId = entry?.parentId ?? null;
+            }
+            return allBranchIds.filter((id) => entryById.get(id)?.type === "message");
+          },
         };
       }
       // Phase B 起 AgentManager 引入 askQuestionResult（ask_question 结果规范化）；
@@ -176,6 +197,18 @@ function createHarness(editor, options = {}) {
         role: msg.role,
         text: msg.text,
         images: msg.images,
+      };
+    },
+    readActiveEntryIdentity: async (_path) => {
+      const msgs = options.messages ?? [chatMessage()];
+      return {
+        entryIds: msgs.map((m) => m.meta?.entryId || "a1"),
+        leafId: options.leafId ?? "a1",
+        activeMessageEntries: msgs.map((m) => ({
+          id: m.meta?.entryId || "a1",
+          role: m.role,
+          messageId: m.id,
+        })),
       };
     },
   };
@@ -547,4 +580,243 @@ test("integrated: switch_session fails -> file is rolled back and API returns fa
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("runtime cache message exists without meta.entryId -> locateMessageTarget continues canonical resolution", async () => {
+  let receivedTarget;
+  const editor = {
+    editMessage: async (input) => {
+      receivedTarget = input.target;
+      await input.reload();
+    },
+  };
+  // 消息存在于内存缓存中，但 meta.entryId 缺失（如实时消息或跳过 entryId 加载的历史）
+  const user = {
+    id: "random-uuid-1234",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello",
+    timestamp: 1,
+    meta: {}, // entryId is undefined
+  };
+  const { manager } = createHarness(editor, {
+    messages: [user],
+    leafId: "entry-u1",
+  });
+  manager.sessionHistoryReader = {
+    readMessageByMessageId: async (_path, _msgId) => undefined,
+    readActiveEntryIdentity: async (_path) => ({
+      entryIds: ["entry-u1"],
+      leafId: "entry-u1",
+      activeMessageEntries: [{ id: "entry-u1", role: "user", messageId: undefined }],
+    }),
+  };
+
+  await manager.editMessage("agent-1", "random-uuid-1234", "hello updated");
+
+  // locateMessageTarget 绝不能返回 entryId: undefined，必须通过序列映射解析到 entry-u1
+  assert.ok(receivedTarget);
+  assert.equal(receivedTarget.entryId, "entry-u1");
+  assert.equal(receivedTarget.role, "user");
+  assert.equal(receivedTarget.text, "hello");
+});
+
+test("resolveActiveEntryIds: get_entries succeeds -> uses RPC returned entryIds and caches rpc capability", async () => {
+  const editor = { editMessage: async () => {} };
+  const { manager, runtime, commands } = createHarness(editor);
+  runtime.process.client.request = async (command) => {
+    commands.push(command);
+    if (command.type === "get_entries") {
+      return {
+        success: true,
+        data: {
+          entries: [
+            { id: "e1", parentId: null, type: "message" },
+            { id: "e2", parentId: "e1", type: "message" },
+          ],
+          leafId: "e2",
+        },
+      };
+    }
+    return { success: true, data: {} };
+  };
+
+  const entryIds = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(entryIds, ["e1", "e2"]);
+  assert.equal(manager.entrySourceByAgent.get("agent-1"), "rpc");
+});
+
+test("resolveActiveEntryIds: get_entries returns Unknown command -> auto fallbacks to JSONL and caches file capability", async () => {
+  const editor = { editMessage: async () => {} };
+  const { manager, runtime, commands } = createHarness(editor);
+  let rpcCalls = 0;
+  runtime.process.client.request = async (command) => {
+    commands.push(command);
+    if (command.type === "get_entries") {
+      rpcCalls += 1;
+      return {
+        success: false,
+        error: "Unknown command: get_entries",
+      };
+    }
+    return { success: true, data: {} };
+  };
+  manager.sessionHistoryReader = {
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["jsonl-e1", "jsonl-e2"],
+      leafId: "jsonl-e2",
+      activeMessageEntries: [
+        { id: "jsonl-e1", role: "user" },
+        { id: "jsonl-e2", role: "assistant" },
+      ],
+    }),
+  };
+
+  // 第一次：尝试 RPC 失败，识别为不支持，回退 JSONL 并缓存 "file"
+  const entryIds1 = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(entryIds1, ["jsonl-e1", "jsonl-e2"]);
+  assert.equal(manager.entrySourceByAgent.get("agent-1"), "file");
+  assert.equal(rpcCalls, 1);
+
+  // 第二次：直接走 "file" 缓存，不再发出不支持的 RPC
+  const entryIds2 = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(entryIds2, ["jsonl-e1", "jsonl-e2"]);
+  assert.equal(rpcCalls, 1); // 没有新增 RPC 调用
+});
+
+test("same active branch has two identical messages -> sequence mapping resolves canonical entryId", async () => {
+  let receivedTarget;
+  const editor = {
+    deleteMessage: async (input) => {
+      receivedTarget = input.target;
+      await input.reload();
+    },
+  };
+  // 两个文本完全相同的 user 消息
+  const user1 = {
+    id: "uuid-msg-1",
+    agentId: "agent-1",
+    role: "user",
+    text: "same text",
+    timestamp: 1,
+    meta: {},
+  };
+  const assistant1 = {
+    id: "uuid-msg-2",
+    agentId: "agent-1",
+    role: "assistant",
+    text: "reply 1",
+    timestamp: 2,
+    meta: {},
+  };
+  const user2 = {
+    id: "uuid-msg-3",
+    agentId: "agent-1",
+    role: "user",
+    text: "same text",
+    timestamp: 3,
+    meta: {},
+  };
+  const assistant2 = {
+    id: "uuid-msg-4",
+    agentId: "agent-1",
+    role: "assistant",
+    text: "reply 2",
+    timestamp: 4,
+    meta: {},
+  };
+
+  const { manager } = createHarness(editor, {
+    messages: [user1, assistant1, user2, assistant2],
+    leafId: "entry-a2",
+  });
+  manager.sessionHistoryReader = {
+    readMessageByMessageId: async () => undefined,
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["entry-u1", "entry-a1", "entry-u2", "entry-a2"],
+      leafId: "entry-a2",
+      activeMessageEntries: [
+        { id: "entry-u1", role: "user" },
+        { id: "entry-a1", role: "assistant" },
+        { id: "entry-u2", role: "user" },
+        { id: "entry-a2", role: "assistant" },
+      ],
+    }),
+  };
+
+  // 删除第二条 "same text" 消息 (user2: uuid-msg-3)
+  await manager.deleteMessage("agent-1", "uuid-msg-3");
+
+  // 必须精确匹配到 entry-u2，而非因为相同正文退化误删 entry-u1
+  assert.ok(receivedTarget);
+  assert.equal(receivedTarget.entryId, "entry-u2");
+  assert.equal(receivedTarget.role, "user");
+  assert.equal(receivedTarget.text, "same text");
+});
+
+test("realtime message with randomUUID and no meta.entryId -> canonical resolve enables successful delete/edit", async () => {
+  let deletedTarget;
+  const editor = {
+    deleteMessage: async (input) => {
+      deletedTarget = input.target;
+      await input.reload();
+    },
+  };
+  const liveUser = {
+    id: "d8c19985-c1b6-455b-9d41-e945e43a9b1c",
+    agentId: "agent-1",
+    role: "user",
+    text: "new live prompt",
+    timestamp: 100,
+    meta: {},
+  };
+  const { manager } = createHarness(editor, {
+    messages: [liveUser],
+    leafId: "entry-live-1",
+  });
+  manager.sessionHistoryReader = {
+    readMessageByMessageId: async () => undefined,
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["entry-live-1"],
+      leafId: "entry-live-1",
+      activeMessageEntries: [{ id: "entry-live-1", role: "user" }],
+    }),
+  };
+
+  await manager.deleteMessage("agent-1", liveUser.id);
+  assert.ok(deletedTarget);
+  assert.equal(deletedTarget.entryId, "entry-live-1");
+  assert.equal(deletedTarget.legacyMessageId, liveUser.id);
+});
+
+test("get_entries transient timeout -> falls back to JSONL for this call, does NOT mark capability as file", async () => {
+  const editor = { editMessage: async () => {} };
+  const { manager, runtime } = createHarness(editor);
+  let rpcAttempts = 0;
+  runtime.process.client.request = async (command) => {
+    if (command.type === "get_entries") {
+      rpcAttempts += 1;
+      throw new Error("RPC command timed out after 15000ms: get_entries");
+    }
+    return { success: true, data: {} };
+  };
+  manager.sessionHistoryReader = {
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["fallback-e1"],
+      leafId: "fallback-e1",
+      activeMessageEntries: [{ id: "fallback-e1", role: "user" }],
+    }),
+  };
+
+  // 第一次：超时失败，允许 JSONL fallback
+  const entryIds1 = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(entryIds1, ["fallback-e1"]);
+  // 超时不是 unsupported，不能永久标记为 file
+  assert.equal(manager.entrySourceByAgent.has("agent-1"), false);
+  assert.equal(rpcAttempts, 1);
+
+  // 第二次：仍会尝试 RPC（而非永久跳过）
+  const entryIds2 = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(entryIds2, ["fallback-e1"]);
+  assert.equal(rpcAttempts, 2);
 });

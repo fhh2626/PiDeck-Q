@@ -150,7 +150,7 @@ function extractResendContent(content: unknown): { text: string; images?: ImageC
  * 与 SessionFileEditor.legacyEntryId 的格式约定一致：agentId/entryId 是 UUID，
  * 不含 "-history-" 分隔符；非合成格式返回 undefined。
  */
-function syntheticHistoryEntryId(messageId: string): string | undefined {
+export function syntheticHistoryEntryId(messageId: string): string | undefined {
 	const marker = "-history-";
 	const index = messageId.lastIndexOf(marker);
 	if (index < 0) return undefined;
@@ -519,6 +519,31 @@ export class SessionHistoryReader {
 	async getSessionIndexVersion(sessionPath: string): Promise<string> {
 		const index = await this.getSessionDisplayIndex(sessionPath);
 		return `${index.mtimeMs}:${index.size}`;
+	}
+
+	/**
+	 * 读取会话当前活动分支的 entryId 序列与叶节点 ID（JSONL canonical identity）。
+	 * 当 RPC get_entries 不支持或不可用时，供 AgentManager 回退获取。
+	 */
+	async readActiveEntryIdentity(
+		sessionPath: string,
+	): Promise<{
+		entryIds: string[];
+		leafId?: string;
+		activeMessageEntries: Array<{ id: string; role?: string; messageId?: string }>;
+	}> {
+		const index = await this.getSessionDisplayIndex(sessionPath);
+		return {
+			entryIds: index.activeMessageEntries.map((entry) => entry.id),
+			leafId: index.activeBranch.length > 0
+				? index.activeBranch[index.activeBranch.length - 1].id
+				: undefined,
+			activeMessageEntries: index.activeMessageEntries.map((entry) => ({
+				id: entry.id,
+				role: entry.role,
+				messageId: entry.messageId,
+			})),
+		};
 	}
 
 	/**
