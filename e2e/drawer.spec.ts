@@ -65,38 +65,40 @@ test("drawer content width stays constant across tab switches (no scrollbar jitt
 	const filesTab = window.getByTestId("drawer-rail-files");
 	await toggle.click();
 	await expect(drawer).toHaveAttribute("data-open", "false", { timeout: 3000 });
+	// 等待延迟卸载完成，确保下一次打开一定会经历 files 面板 remount。
+	await expect(drawer).toHaveAttribute("data-rendered", "false", { timeout: 3000 });
+	await expect(drawer.locator(".files-panel")).toHaveCount(0, { timeout: 3000 });
 
-	// 先安装等待器，只有抽屉真正重新打开后才采样，避免把关闭动画中的宽度记入结果。
+	// 先安装采样器；只有重新打开且 files 面板恢复为非零宽度后才开始记录。
 	const sampling = window.evaluate(async () => {
 		const aside = document.querySelector(".detail-drawer") as HTMLElement | null;
 		if (!aside) return [];
 
 		const widths: number[] = [];
 		await new Promise<void>((resolve) => {
-			let started = false;
-			let observer: MutationObserver | undefined;
+			let startedAt: number | null = null;
 
-			const startSampling = () => {
-				if (started) return;
-				started = true;
-				observer?.disconnect();
-				const start = performance.now();
-				const tick = () => {
-					const panel = aside.querySelector(".files-panel") as HTMLElement | null;
-					if (panel) widths.push(panel.clientWidth);
-					if (performance.now() - start < 1200) requestAnimationFrame(tick);
-					else resolve();
-				};
+			const tick = () => {
+				const panel = aside.querySelector(".files-panel") as HTMLElement | null;
+				const width = panel?.clientWidth ?? 0;
+
+				// data-open 可能先于外层 resize 生效；等面板真正挂载且宽度恢复后再计时。
+				if (startedAt === null && aside.dataset.open === "true" && width > 0) {
+					startedAt = performance.now();
+				}
+
+				if (startedAt !== null) {
+					if (width > 0) widths.push(width);
+					if (performance.now() - startedAt >= 1200) {
+						resolve();
+						return;
+					}
+				}
+
 				requestAnimationFrame(tick);
 			};
 
-			observer = new MutationObserver(() => {
-				if (aside.dataset.open === "true") startSampling();
-			});
-			observer.observe(aside, { attributes: true, attributeFilter: ["data-open"] });
-
-			// 处理 observer 安装前已经完成打开的边界，仍不会采到关闭状态。
-			if (aside.dataset.open === "true") startSampling();
+			requestAnimationFrame(tick);
 		});
 		return widths;
 	});
