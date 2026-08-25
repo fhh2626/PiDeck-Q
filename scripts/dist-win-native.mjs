@@ -1,6 +1,16 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const npmCommand = process.platform === "win32" ? process.execPath : "npm";
+const npmPrefixArgs = process.platform === "win32"
+	? [process.env.npm_execpath ?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")]
+	: [];
+const packageManifest = JSON.parse(await readFile("package.json", "utf8"));
+const buildVersion = packageManifest.version;
+if (typeof buildVersion !== "string" || !/^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/.test(buildVersion)) {
+	throw new Error(`Invalid package version: ${String(buildVersion)}`);
+}
 
 function run(command, args, env = {}) {
 	return new Promise((resolve, reject) => {
@@ -13,9 +23,10 @@ function run(command, args, env = {}) {
 	});
 }
 
-await run(npmCommand, ["run", "make-icon"]);
-await run(npmCommand, ["run", "build"]);
-await run(npmCommand, ["run", "build:native"]);
-await run(npmCommand, ["run", "verify:build-artifacts"]);
+const buildEnv = { PIDECK_VERSION: buildVersion };
+await run(npmCommand, [...npmPrefixArgs, "run", "make-icon"], buildEnv);
+await run(npmCommand, [...npmPrefixArgs, "run", "build"], buildEnv);
+await run(npmCommand, [...npmPrefixArgs, "run", "build:native"], buildEnv);
+await run(npmCommand, [...npmPrefixArgs, "run", "verify:build-artifacts"], buildEnv);
 console.log("Native Windows staging is ready.");
 console.log("Installer compilation is disabled temporarily; release/win-unpacked contains the runnable Native build.");

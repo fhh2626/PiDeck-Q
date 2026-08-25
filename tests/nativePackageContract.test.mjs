@@ -18,6 +18,8 @@ test("native package exposes a complete reproducible build chain", () => {
 	assert.equal(packageJson.devDependencies.esbuild, "^0.25.12");
 	assert.equal(packageLock.packages["node_modules/esbuild"]?.version, "0.25.12");
 
+	assert.match(packageJson.scripts?.["build:native"] ?? "", /build-native\.mjs/);
+
 	const scriptsRoot = "scripts";
 	const scriptFiles = readdirSync(scriptsRoot, { withFileTypes: true })
 		.filter((entry) => entry.isFile() && /\.(mjs|js|ts)$/.test(entry.name))
@@ -40,8 +42,15 @@ test("updates and package metadata use the canonical PiDeck-Q repository", () =>
 	const windowsWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
 	assert.match(identity, /fhh2626\/PiDeck-Q/);
 	assert.match(update, /APP_LATEST_RELEASE_API/);
+	assert.match(update, /knownAssets/);
+	assert.match(update, /portableCandidates/);
+	assert.doesNotMatch(update, /PORTABLE_EXECUTABLE_DIR/);
 	assert.equal(pkg.repository.url, "git+https://github.com/fhh2626/PiDeck-Q.git");
 	assert.match(windowsWorkflow, /repository: fhh2626\/PiDeck-Q/);
+	assert.match(windowsWorkflow, /Compress-Archive/);
+	assert.match(windowsWorkflow, /PiDeck-Q-\$\{\{ needs\.resolve-version\.outputs\.version \}\}-win-x64\.zip/);
+	assert.match(windowsWorkflow, /files: release\/PiDeck-Q-\$\{\{ needs\.resolve-version\.outputs\.version \}\}-win-x64\.zip/);
+	assert.match(windowsWorkflow, /fail_on_unmatched_files: true/);
 });
 
 test("native Windows distribution keeps staging independent from NSIS", () => {
@@ -49,6 +58,7 @@ test("native Windows distribution keeps staging independent from NSIS", () => {
 	assert.match(dist, /build:native/);
 	assert.match(dist, /verify:build-artifacts/);
 	assert.doesNotMatch(dist, /makensis|prepare-nsis|INETC_PLUGIN_DIR|installer\/PiDeck-Q/);
+	assert.match(dist, /PIDECK_VERSION/);
 });
 
 test("packaged built-in extensions receive undici beside their own files", () => {

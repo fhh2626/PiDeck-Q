@@ -59,6 +59,7 @@ export function useSessionWorkspaceChrome(options: {
     focusSession: () => undefined,
     focusProject: () => undefined,
   });
+  const latestFocusTargetIdRef = useRef<string | null>(null);
 
   const [pinnedSessionTabIds, setPinnedSessionTabIds] = useState<string[]>(() => {
     try {
@@ -162,11 +163,16 @@ export function useSessionWorkspaceChrome(options: {
 
   useEffect(() => {
     let disposed = false;
+    // A newer notification supersedes every retry scheduled for an older target.
+    // Without this gate, a late catalog load could focus an obsolete session after
+    // the user has already clicked a second notification.
     const focusByTarget = (target: AppFocusSessionTarget) => {
+      latestFocusTargetIdRef.current = target.id;
       const tryFocus = (attempt: number) => {
-        if (disposed) return;
+        if (disposed || latestFocusTargetIdRef.current !== target.id) return;
         const record = store.get(sessionRecordByIdAtomFamily(target.sessionId));
         if (record) {
+          if (latestFocusTargetIdRef.current !== target.id) return;
           focusHandlersRef.current.focusSession(record.projectId, record.id);
           // ACK only after the stable SessionRecord was found and focus was dispatched.
           // NativeHost compares the id, so a late ACK cannot clear a newer notification.

@@ -4,7 +4,9 @@ import type { HostBridge } from "../host/HostBridge";
 /** Application metadata supplied by the Qt launcher through environment variables. */
 export class NativeApplication implements PlatformApplication {
 	readonly name = process.env.PIDECK_NAME?.trim() || "PiDeck-Q";
-	readonly version = process.env.PIDECK_VERSION?.trim() || "0.1.5";
+	// The Qt launcher always supplies the package-manifest version. Keep a
+	// non-release fallback only for an unconfigured developer invocation.
+	readonly version = process.env.PIDECK_VERSION?.trim() || "0.0.0-dev";
 	readonly isPackaged = process.env.PIDECK_PACKAGED === "1";
 
 	constructor(private readonly host: HostBridge) {}

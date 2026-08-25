@@ -6,6 +6,8 @@
 #include <QJsonObject>
 #include <QMainWindow>
 
+#include <functional>
+
 class HostRpcServer;
 class MainWebSurface;
 class QUrl;
@@ -26,6 +28,7 @@ public:
     bool isMaximizedWindow() const;
     void closeFromHost();
     void setQuitting(bool quitting);
+    void setQuitHandler(std::function<void()> handler);
     void applySettings(const QJsonObject &settings);
     void beginSystemMove();
     void toggleDevTools();
@@ -51,4 +54,5 @@ private:
     bool m_closeToTray = true;
     bool m_quitting = false;
     bool m_loadFinished = false;
+    std::function<void()> m_quitHandler;
 };

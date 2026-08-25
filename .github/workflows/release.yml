@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Resolve version and ref
         id: resolve
@@ -46,6 +48,11 @@ jobs:
             TAG="v${VERSION}"
             REF=""
             TARGET_COMMITISH="${GITHUB_SHA}"
+          fi
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "${VERSION}" != "${PACKAGE_VERSION}" ]; then
+            echo "Release tag ${VERSION} does not match package.json version ${PACKAGE_VERSION}" >&2
+            exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -85,12 +92,26 @@ jobs:
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
 
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $stage = "release/win-unpacked"
+          if (-not (Test-Path "$stage/PiDeck-Q.exe")) { throw "Native staging executable is missing: $stage/PiDeck-Q.exe" }
+          $zip = "release/PiDeck-Q-${{ needs.resolve-version.outputs.version }}-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive `
+            -Path "release/win-unpacked/*" `
+            -DestinationPath $zip `
+            -CompressionLevel Optimal
+          if (-not (Test-Path $zip)) { throw "Portable ZIP was not created: $zip" }
+
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           repository: fhh2626/PiDeck-Q
           tag_name: ${{ needs.resolve-version.outputs.tag }}
           target_commitish: ${{ needs.resolve-version.outputs.target_commitish }}
-          body: Release v${{ needs.resolve-version.outputs.version }} (Qt native Windows host)
-          fail_on_unmatched_files: false
+          body: Release v${{ needs.resolve-version.outputs.version }} (Qt native Windows portable ZIP)
+          files: release/PiDeck-Q-${{ needs.resolve-version.outputs.version }}-win-x64.zip
+          fail_on_unmatched_files: true
           draft: false

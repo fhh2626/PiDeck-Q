@@ -271,13 +271,13 @@ test("update check and download resolve into completed progress and a downloaded
     releaseName: "1.1.0",
     releaseNotes: "notes",
     releaseUrl: "https://example.test/release",
-    assets: [{ name: "PiDeck.exe", url: "https://example.test/PiDeck.exe", size: 10 }],
-    recommendedAsset: { name: "PiDeck.exe", url: "https://example.test/PiDeck.exe", size: 10 },
+    assets: [{ name: "PiDeck-Q-win-x64.zip", url: "https://example.test/PiDeck-Q-win-x64.zip", size: 10 }],
+    recommendedAsset: { name: "PiDeck-Q-win-x64.zip", url: "https://example.test/PiDeck-Q-win-x64.zip", size: 10 },
   };
   const api = {
     checkUpdate: async () => updateInfo,
     downloadUpdate: async () => new Promise((resolve) => { resolveDownload = resolve; }),
-    installUpdate: async () => undefined,
+    openUpdatePackage: async () => undefined,
     onUpdateProgress: (callback) => { onProgress = callback; return () => { onProgress = undefined; }; },
   };
   const harness = createUpdateHookHarness();
@@ -285,19 +285,19 @@ test("update check and download resolve into completed progress and a downloaded
   initial.effects.map((setup) => setup()).filter(Boolean);
   assert.equal(await initial.result.check("manual"), updateInfo);
   const afterCheck = harness.render(api).result;
-  assert.equal(afterCheck.info.recommendedAsset.name, "PiDeck.exe");
+  assert.equal(afterCheck.info.recommendedAsset.name, "PiDeck-Q-win-x64.zip");
 
   const downloadPromise = afterCheck.download();
-  onProgress({ assetName: "PiDeck.exe", receivedBytes: 5, totalBytes: 10, percent: 50, state: "downloading" });
+  onProgress({ assetName: "PiDeck-Q-win-x64.zip", receivedBytes: 5, totalBytes: 10, percent: 50, state: "downloading" });
   assert.equal(harness.render(api).result.progress.percent, 50);
-  resolveDownload({ filePath: "C:/tmp/PiDeck.exe", assetName: "PiDeck.exe" });
-  assert.equal(await downloadPromise, "C:/tmp/PiDeck.exe");
+  resolveDownload({ filePath: "C:/tmp/PiDeck-Q-win-x64.zip", assetName: "PiDeck-Q-win-x64.zip" });
+  assert.equal(await downloadPromise, "C:/tmp/PiDeck-Q-win-x64.zip");
 
   const completed = harness.render(api).result;
-  assert.equal(completed.downloadedPath, "C:/tmp/PiDeck.exe");
+  assert.equal(completed.downloadedPath, "C:/tmp/PiDeck-Q-win-x64.zip");
   assert.equal(completed.progress.state, "completed");
   assert.equal(completed.progress.percent, 100);
-  assert.equal(completed.progress.filePath, "C:/tmp/PiDeck.exe");
+  assert.equal(completed.progress.filePath, "C:/tmp/PiDeck-Q-win-x64.zip");
   assert.equal(completed.downloading, false);
 });
 

@@ -59,9 +59,9 @@ export function useAppUpdate(options: UseAppUpdateOptions) {
     }
   }, [updateInfo, appInfo.releasesUrl, api, showToast]);
 
-  const installDownloadedAppUpdate = useCallback(async () => {
+  const openDownloadedAppUpdate = useCallback(async () => {
     if (!downloadedUpdatePath) return;
-    await api.app.installUpdate(downloadedUpdatePath);
+    await api.app.openUpdatePackage(downloadedUpdatePath);
   }, [downloadedUpdatePath, api]);
 
   const checkAppUpdate = useCallback(
@@ -106,9 +106,9 @@ export function useAppUpdate(options: UseAppUpdateOptions) {
         await downloadAppUpdate();
         return downloadedUpdatePath;
       },
-      install: async () => {
+      openPackage: async () => {
         if (downloadedUpdatePath)
-          await api.app.installUpdate(downloadedUpdatePath);
+          await api.app.openUpdatePackage(downloadedUpdatePath);
       },
       clear: () => {
         setUpdateInfo(null);
@@ -150,6 +150,6 @@ export function useAppUpdate(options: UseAppUpdateOptions) {
     setUpToDateVersion,
     checkAppUpdate,
     downloadAppUpdate,
-    installDownloadedAppUpdate,
+    openDownloadedAppUpdate,
   };
 }

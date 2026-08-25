@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
 	AppUpdateAsset,
 	AppUpdateDownloadProgress,
@@ -35,9 +35,7 @@ type AppUpdateServiceDeps = {
 	emitProgress: (progress: AppUpdateDownloadProgress) => void;
 	platformApp: PlatformApplication;
 	platformPaths: PlatformPaths;
-	platformShell: Pick<PlatformShell, "openPath"> & {
-		installUpdate?: (path: string) => Promise<void>;
-	};
+	platformShell: Pick<PlatformShell, "showItemInFolder">;
 	platformDownloads: PlatformDownloads;
 	fetchFn?: typeof globalThis.fetch;
 };
@@ -85,41 +83,27 @@ function compareVersions(left: string, right: string) {
 	return 0;
 }
 
-function selectRecommendedAsset(
-	assets: AppUpdateAsset[],
-	installationType?: "portable" | "installed",
-) {
+function selectRecommendedAsset(assets: AppUpdateAsset[]) {
 	const platform = process.platform;
 	const arch = process.arch;
-	// Windows 便携版以运行时环境为准，兼容旧设置中残留的安装形态。
-	const isPortable = platform === "win32"
-		? process.env.PORTABLE_EXECUTABLE_DIR !== undefined || installationType === "portable"
-		: installationType === "portable";
 	const candidates = assets.map((asset) => ({ ...asset, lowerName: asset.name.toLowerCase() }));
 	const archKeywords = arch === "arm64" ? ["arm64", "aarch64"] : ["x64", "amd64", "x86_64"];
 	const matchesArch = (name: string) => archKeywords.some((keyword) => name.includes(keyword));
 	const isWrongArch = (name: string) => arch === "arm64"
 		? /\b(x64|amd64|x86_64)\b/i.test(name)
 		: /\b(arm64|aarch64)\b/i.test(name);
-	const isWindowsAsset = (name: string) =>
-		/\.(exe|msi)$/i.test(name) || (name.endsWith(".zip") && !/(mac|darwin|osx|linux|appimage|deb|tar\.gz)/i.test(name));
 	const isMacAsset = (name: string) => /\.(dmg)$/i.test(name) || /(mac|darwin|osx)/i.test(name);
 	const isLinuxAsset = (name: string) => /(appimage|\.deb$|\.tar\.gz$|linux)/i.test(name);
 
 	if (platform === "win32") {
-		const platformCandidates = candidates.filter((asset) => isWindowsAsset(asset.lowerName));
-		if (isPortable) {
-			return platformCandidates.find((asset) => !asset.lowerName.includes("setup") && asset.lowerName.endsWith(".exe") && matchesArch(asset.lowerName))
-				?? platformCandidates.find((asset) => !asset.lowerName.includes("setup") && asset.lowerName.endsWith(".exe") && !isWrongArch(asset.lowerName))
-				?? platformCandidates.find((asset) => asset.lowerName.endsWith(".zip") && matchesArch(asset.lowerName))
-				?? platformCandidates.find((asset) => asset.lowerName.endsWith(".zip") && !isWrongArch(asset.lowerName));
-		}
-		return platformCandidates.find((asset) => asset.lowerName.includes("setup") && asset.lowerName.endsWith(".exe") && matchesArch(asset.lowerName))
-			?? platformCandidates.find((asset) => asset.lowerName.includes("setup") && asset.lowerName.endsWith(".exe") && !isWrongArch(asset.lowerName))
-			?? platformCandidates.find((asset) => asset.lowerName.endsWith(".exe") && matchesArch(asset.lowerName))
-			?? platformCandidates.find((asset) => asset.lowerName.endsWith(".exe") && !isWrongArch(asset.lowerName))
-			?? platformCandidates.find((asset) => asset.lowerName.endsWith(".zip") && matchesArch(asset.lowerName))
-			?? platformCandidates.find((asset) => asset.lowerName.endsWith(".zip") && !isWrongArch(asset.lowerName));
+		// A portable ZIP is the only supported Windows update artifact. Never recommend
+		// Setup.exe or a loose executable that the Qt host cannot install safely.
+		const portableCandidates = candidates.filter((asset) =>
+			asset.lowerName.endsWith(".zip") &&
+			!/(mac|darwin|osx|linux|appimage|deb|tar\.gz)/i.test(asset.lowerName),
+		);
+		return portableCandidates.find((asset) => matchesArch(asset.lowerName))
+			?? portableCandidates.find((asset) => !isWrongArch(asset.lowerName));
 	}
 
 	if (platform === "darwin") {
@@ -147,9 +131,14 @@ function selectRecommendedAsset(
 export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 	const currentVersion = deps.platformApp.version;
 	const fetchImpl = deps.fetchFn ?? globalThis.fetch;
+	/** Assets are accepted for download only after they were returned by GitHub's latest-release response. */
+	const knownAssets = new Map<string, AppUpdateAsset>();
+	const assetKey = (asset: AppUpdateAsset) => `${asset.name}\u0000${asset.url}\u0000${asset.size}`;
 
-	async function checkForAppUpdate(installationType?: "portable" | "installed"): Promise<AppUpdateInfo> {
-		void deps.logger.info("update", "Check for app update", { currentVersion, installationType });
+	async function checkForAppUpdate(_installationType?: "portable" | "installed"): Promise<AppUpdateInfo> {
+		// A failed/expired check must not leave an older release asset downloadable.
+		knownAssets.clear();
+		void deps.logger.info("update", "Check for app update", { currentVersion, installationType: "portable" });
 		const response = await fetchImpl(LATEST_RELEASE_API, {
 			headers: { Accept: "application/vnd.github+json", "User-Agent": `pi-desktop/${currentVersion}` },
 		});
@@ -164,7 +153,8 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 			url: asset.browser_download_url,
 			size: asset.size,
 		}));
-		const recommendedAsset = selectRecommendedAsset(assets, installationType);
+		for (const asset of assets) knownAssets.set(assetKey(asset), asset);
+		const recommendedAsset = selectRecommendedAsset(assets);
 		const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
 		void deps.logger.info("update", "App update check completed", {
 			currentVersion,
@@ -186,12 +176,17 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 	}
 
 	async function downloadUpdateAsset(asset: AppUpdateAsset): Promise<AppUpdateDownloadResult> {
-		if (!asset.url || !/^https:\/\//i.test(asset.url)) {
-			void deps.logger.warn("update", "Rejected invalid update download URL", { assetName: asset.name, url: asset.url });
+		const knownAsset = knownAssets.get(assetKey(asset));
+		const isWindowsPortableZip = process.platform !== "win32" || /\.zip$/i.test(asset.name);
+		if (!knownAsset || !asset.url || !/^https:\/\//i.test(asset.url) || !isWindowsPortableZip) {
+			void deps.logger.warn("update", "Rejected update asset not returned by the latest release", {
+				assetName: asset.name,
+				url: asset.url,
+			});
 			throw new Error(deps.translate("update.invalidDownloadUrl"));
 		}
 
-		const safeName = basename(asset.name).replace(/[<>:"/\\|?*]+/g, "-");
+		const safeName = basename(knownAsset.name).replace(/[<>:"/\\|?*]+/g, "-");
 		const userDataDir = deps.platformPaths.userData;
 		const downloadDir = join(userDataDir, "updates");
 		await mkdir(downloadDir, { recursive: true });
@@ -245,7 +240,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 		}
 	}
 
-	async function installDownloadedUpdate(filePath: string): Promise<void> {
+	async function openDownloadedUpdate(filePath: string): Promise<void> {
 		if (typeof filePath !== "string") {
 			throw new Error(deps.translate("update.openFailed"));
 		}
@@ -263,16 +258,13 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 			void deps.logger.warn("update", "Rejected update package outside managed download directory", { filePath });
 			throw new Error(deps.translate("update.openFailed"));
 		}
-		await deps.logger.info("update", "Open downloaded update package", { filePath: realFilePath });
-		if (deps.platformShell.installUpdate) {
-			await deps.platformShell.installUpdate(realFilePath);
-			return;
+		if (process.platform === "win32" && extname(realFilePath).toLowerCase() !== ".zip") {
+			void deps.logger.warn("update", "Rejected non-portable Windows update package", { filePath: realFilePath });
+			throw new Error(deps.translate("update.openFailed"));
 		}
-		const result = await deps.platformShell.openPath(realFilePath);
-		if (result.ok) return;
-		await deps.logger.warn("update", "Failed to open downloaded update package", { filePath: realFilePath, error: result.error });
-		throw new Error(deps.translate("update.openFailed"));
+		await deps.logger.info("update", "Reveal downloaded portable update package", { filePath: realFilePath });
+		deps.platformShell.showItemInFolder(realFilePath);
 	}
 
-	return { checkForAppUpdate, downloadUpdateAsset, installDownloadedUpdate };
+	return { checkForAppUpdate, downloadUpdateAsset, openDownloadedUpdate };
 }

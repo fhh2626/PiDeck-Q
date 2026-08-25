@@ -82,8 +82,8 @@ export type SystemIpcDeps = {
 	checkForAppUpdate: (installationType?: "portable" | "installed") => Promise<import("../../shared/types").AppUpdateInfo | null>;
 	/** Download update asset */
 	downloadUpdateAsset: (asset: AppUpdateAsset) => Promise<import("../../shared/types").AppUpdateDownloadResult>;
-	/** Install downloaded update */
-	installDownloadedUpdate: (filePath: string) => Promise<void>;
+	/** Open a validated portable ZIP downloaded from the latest GitHub Release. */
+	openDownloadedUpdate: (filePath: string) => Promise<void>;
 	/** Open external URL */
 	openExternalUrl: (url: string, forceSystem?: boolean) => Promise<void>;
 	/**
@@ -159,7 +159,7 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		mainCopy,
 		checkForAppUpdate,
 		downloadUpdateAsset,
-		installDownloadedUpdate,
+		openDownloadedUpdate,
 		openExternalUrl: doOpenExternalUrl,
 		resolveWslEnvironment,
 		configureSessionScannerWsl,
@@ -490,11 +490,11 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.appDownloadUpdate, async (asset: AppUpdateAsset) =>
 		downloadUpdateAsset(asset),
 	);
-	router.handle(ipcChannels.appInstallUpdate, async (filePath: unknown) => {
+	router.handle(ipcChannels.appOpenUpdatePackage, async (filePath: unknown) => {
 		if (typeof filePath !== "string" || filePath.length === 0 || filePath.length > 4096) {
 			throw new Error("Invalid update package path");
 		}
-		return installDownloadedUpdate(filePath);
+		return openDownloadedUpdate(filePath);
 	});
 
 	// ── 应用日志 ─────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ import type { AppUpdateInfo, AppUpdateDownloadProgress } from "../../../../share
 import type { AppUpdateControllerState } from "../../hooks/useAppUpdateController";
 
 export type AppUpdateOverlayProps = {
-	controller: Pick<AppUpdateControllerState, "info" | "error" | "checking" | "downloading" | "progress" | "downloadedPath" | "download" | "install" | "clear">;
+	controller: Pick<AppUpdateControllerState, "info" | "error" | "checking" | "downloading" | "progress" | "downloadedPath" | "download" | "openPackage" | "clear">;
 	releasesUrl: string;
 	openExternal: (url: string, forceSystem?: boolean) => Promise<void> | void;
 	upToDateVersion?: string | null;
@@ -42,7 +42,7 @@ function UpdateDialog(props: {
 	downloadedPath: string | null;
 	onClose: () => void;
 	onDownload: () => void;
-	onInstall: () => void;
+	onOpenPackage: () => void;
 	onBrowserDownload: () => void;
 	error?: string | null;
 	onOpenRelease: () => void;
@@ -86,7 +86,7 @@ function UpdateDialog(props: {
 				<div className="update-actions">
 					<Button variant="outline" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" onClick={props.onOpenRelease}>{t("update.openRelease")}</Button>
 					<Button variant="outline" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" onClick={props.onBrowserDownload}>{t("update.browserDownload")}</Button>
-					{props.downloadedPath ? <Button variant="default" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" onClick={props.onInstall}>{t("update.installDownloaded")}</Button> : <Button variant="default" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" disabled={props.checking || props.downloading || !props.info.recommendedAsset} onClick={props.onDownload}>{props.downloading ? t("update.downloading") : t("update.downloadInApp")}</Button>}
+					{props.downloadedPath ? <Button variant="default" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" onClick={props.onOpenPackage}>{t("update.openDownloaded")}</Button> : <Button variant="default" size="sm" className="h-auto px-3 py-2 text-[13px] shadow-none" disabled={props.checking || props.downloading || !props.info.recommendedAsset} onClick={props.onDownload}>{props.downloading ? t("update.downloading") : t("update.downloadInApp")}</Button>}
 				</div>
 			</section>
 			</DialogContent>
@@ -97,7 +97,7 @@ function UpdateDialog(props: {
 export function AppUpdateOverlay({ controller, releasesUrl, openExternal, upToDateVersion, onDismissUpToDate }: AppUpdateOverlayProps) {
 	const info = controller.info;
 	if (info) {
-		return <UpdateDialog info={info} progress={controller.progress} checking={controller.checking} downloading={controller.downloading} downloadedPath={controller.downloadedPath} onClose={controller.clear} onDownload={() => void controller.download()} onInstall={() => void controller.install()} error={controller.error} onBrowserDownload={() => void openExternal(info.recommendedAsset?.url ?? info.releaseUrl, true)} onOpenRelease={() => void openExternal(info.releaseUrl, true)} />;
+		return <UpdateDialog info={info} progress={controller.progress} checking={controller.checking} downloading={controller.downloading} downloadedPath={controller.downloadedPath} onClose={controller.clear} onDownload={() => void controller.download()} onOpenPackage={() => void controller.openPackage()} error={controller.error} onBrowserDownload={() => void openExternal(info.recommendedAsset?.url ?? info.releaseUrl, true)} onOpenRelease={() => void openExternal(info.releaseUrl, true)} />;
 	}
 	if (controller.error) {
 		return (

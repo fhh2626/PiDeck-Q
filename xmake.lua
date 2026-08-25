@@ -1,5 +1,10 @@
 set_project("PiDeck-Q")
-set_version("0.1.5")
+
+-- dist:win-native.mjs reads package.json once and passes this value through the
+-- environment. Xmake's sandbox intentionally has no filesystem io API, so the
+-- build orchestrator is the source-of-truth bridge instead of a second version file.
+local package_version = os.getenv("PIDECK_VERSION") or "0.0.0-dev"
+set_version(package_version)
 set_languages("c++20")
 
 add_rules("mode.debug", "mode.release")
@@ -15,6 +20,7 @@ target("PiDeck-Q")
     if is_plat("windows") then
         -- Qt 6.11 requires MSVC to expose the standard __cplusplus value.
         add_cxxflags("/Zc:__cplusplus", {force = true})
+        add_defines('PIDECK_BUILD_VERSION="' .. package_version .. '"')
     end
 
     -- The launcher can override this explicitly for dev/staging runs. The

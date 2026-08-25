@@ -481,7 +481,7 @@ export function App() {
   const appUpdate = useAppUpdateController({
     checkUpdate: api.app.checkUpdate,
     downloadUpdate: (asset) => api.app.downloadUpdate(asset),
-    installUpdate: (filePath) => api.app.installUpdate(filePath),
+    openUpdatePackage: (filePath) => api.app.openUpdatePackage(filePath),
     onUpdateProgress: (cb) => api.app.onUpdateProgress(cb),
     openExternal: (url) => api.app.openExternal(url),
   }, false);

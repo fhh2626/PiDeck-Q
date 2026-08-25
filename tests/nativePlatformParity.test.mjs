@@ -36,6 +36,23 @@ test("heartbeat watchdog excludes hidden-to-tray windows", () => {
 test("release and debug native binaries have explicit packaged defaults", () => {
 	assert.match(xmake, /PIDECK_NATIVE_PACKAGED=1/);
 	assert.match(xmake, /PIDECK_NATIVE_PACKAGED=0/);
+	assert.match(xmake, /PIDECK_VERSION/);
+	assert.match(xmake, /PIDECK_BUILD_VERSION/);
+});
+
+test("portable startup explains a missing WebView2 runtime", () => {
+	assert.match(mainSource, /hasWebView2Runtime/);
+	assert.match(mainSource, /F3017226-FE2A-4295-8BDF-00C3A9A7E4C5/);
+	assert.match(mainSource, /developer\.microsoft\.com\/microsoft-edge\/webview2/);
+	assert.match(mainSource, /showMissingWebView2Message/);
+});
+
+test("native quit waits asynchronously for the sidecar ACK", () => {
+	const controller = readFileSync("native/src/NodeProcessController.cpp", "utf8");
+	assert.match(controller, /stopAsync/);
+	assert.match(controller, /m_gracefulStopTimer\.start/);
+	assert.match(controller, /markReadyToExit/);
+	assert.match(mainSource, /node\.stopAsync/);
 });
 
 test("Explorer receives one /select,<path> argument", () => {

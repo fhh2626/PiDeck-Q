@@ -59,7 +59,7 @@
     "build:fast": "npm run build:renderer && npm run build:node",
     "build:renderer": "vite build",
     "build:node": "node scripts/build-native-node.mjs",
-    "build:native": "xmake f -m release -y && xmake -r",
+    "build:native": "node scripts/build-native.mjs",
     "pack": "npm run build && npm run build:native && node scripts/verify-build-artifacts.mjs --out release/win-unpacked",
     "dist:win": "node scripts/dist-win-native.mjs",
     "dist:win:dev": "node scripts/dev-native.mjs",

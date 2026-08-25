@@ -2257,6 +2257,7 @@ export const enUS: Record<TranslationKey, string> = {
   "update.downloadInApp": "Download in app",
   "update.downloading": "Downloading…",
   "update.installDownloaded": "Open update package",
+  "update.openDownloaded": "Show downloaded update in folder",
   "update.checkFailedDescription":
     "Could not connect to GitHub Releases. GitHub may be unreachable on this network. Try again later, or configure the desktop proxy in Settings and check again.",
   "update.checkFailedTitle": "Update check failed",

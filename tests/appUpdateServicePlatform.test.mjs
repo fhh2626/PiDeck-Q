@@ -39,6 +39,23 @@ function createFakePaths() {
 	};
 }
 
+const RELEASE_ASSET_URL = "https://github.com/fhh2626/PiDeck-Q/releases/download/v2.0.0/PiDeck-Q-2.0.0-win-x64.zip";
+const RELEASE_ASSET = {
+	name: "PiDeck-Q-2.0.0-win-x64.zip",
+	url: RELEASE_ASSET_URL,
+	size: 100,
+};
+
+function fakeReleaseFetch(asset = RELEASE_ASSET) {
+	return async () => ({
+		ok: true,
+		json: async () => ({
+			tag_name: "v2.0.0",
+			assets: [{ name: asset.name, browser_download_url: asset.url, size: asset.size }],
+		}),
+	});
+}
+
 test("AppUpdateService rejects invalid non-https url without calling downloads", async () => {
 	let downloadCalled = false;
 	const service = createAppUpdateService({
@@ -54,12 +71,40 @@ test("AppUpdateService rejects invalid non-https url without calling downloads",
 			},
 		},
 		platformShell: {
-			openPath: async () => ({ ok: true }),
+			showItemInFolder: () => {},
 		},
 	});
 
 	await assert.rejects(
 		() => service.downloadUpdateAsset({ name: "app.exe", url: "http://example.com/app.exe", size: 100 }),
+		/update\.invalidDownloadUrl/,
+	);
+	assert.equal(downloadCalled, false);
+});
+
+test("AppUpdateService only accepts assets returned by the latest GitHub release", async () => {
+	let downloadCalled = false;
+	const service = createAppUpdateService({
+		logger: createFakeLogger(),
+		translate: (key) => key,
+		emitProgress: () => {},
+		platformApp: createFakeApp(),
+		platformPaths: createFakePaths(),
+		platformShell: { showItemInFolder: () => {} },
+		platformDownloads: {
+			downloadToFile: async () => {
+				downloadCalled = true;
+				return { receivedBytes: 1 };
+			},
+		},
+		fetchFn: fakeReleaseFetch(),
+	});
+	await service.checkForAppUpdate("portable");
+	await assert.rejects(
+		() => service.downloadUpdateAsset({
+			...RELEASE_ASSET,
+			url: "https://evil.example/update.zip",
+		}),
 		/update\.invalidDownloadUrl/,
 	);
 	assert.equal(downloadCalled, false);
@@ -74,20 +119,46 @@ test("AppUpdateService translates download failure when downloader throws Platfo
 		platformApp: createFakeApp(),
 		platformPaths: createFakePaths(),
 		platformShell: {
-			openPath: async () => ({ ok: true }),
+			showItemInFolder: () => {},
 		},
 		platformDownloads: {
 			downloadToFile: async () => {
 				throw new PlatformDownloadError("HTTP 404", 404);
 			},
 		},
+		fetchFn: fakeReleaseFetch(),
 	});
+	await service.checkForAppUpdate("portable");
 
 	await assert.rejects(
-		() => service.downloadUpdateAsset({ name: "app.exe", url: "https://example.com/app.exe", size: 100 }),
+		() => service.downloadUpdateAsset(RELEASE_ASSET),
 		/update\.downloadFailed/,
 	);
 	assert.equal(progressEvents.some((p) => p.state === "failed"), true);
+});
+
+test("AppUpdateService recommends the Windows portable ZIP instead of an installer", async () => {
+	const service = createAppUpdateService({
+		logger: createFakeLogger(),
+		translate: (key) => key,
+		emitProgress: () => {},
+		platformApp: createFakeApp(),
+		platformPaths: createFakePaths(),
+		platformShell: { showItemInFolder: () => {} },
+		platformDownloads: { downloadToFile: async () => ({ receivedBytes: 0 }) },
+		fetchFn: async () => ({
+			ok: true,
+			json: async () => ({
+				tag_name: "v2.0.0",
+				assets: [
+					{ name: "PiDeck-Q-Setup.exe", browser_download_url: "https://github.com/fhh2626/PiDeck-Q/releases/download/v2.0.0/PiDeck-Q-Setup.exe", size: 10 },
+					{ name: RELEASE_ASSET.name, browser_download_url: RELEASE_ASSET.url, size: RELEASE_ASSET.size },
+				],
+			}),
+		}),
+	});
+	const info = await service.checkForAppUpdate("installed");
+	assert.equal(info.recommendedAsset?.name, RELEASE_ASSET.name);
 });
 
 test("AppUpdateService downloads successfully and emits progress and completed event", async () => {
@@ -107,26 +178,24 @@ test("AppUpdateService downloads successfully and emits progress and completed e
 		platformApp: createFakeApp(),
 		platformPaths: createFakePaths(),
 		platformShell: {
-			openPath: async () => ({ ok: true }),
+			showItemInFolder: () => {},
 		},
 		platformDownloads: {
 			downloadToFile: async (req) => {
-				req.onRedirect?.("https://storage.example.com/app.exe");
+				req.onRedirect?.("https://storage.example.com/app.zip");
 				req.onProgress?.({ receivedBytes: 50, totalBytes: 100 });
 				req.onProgress?.({ receivedBytes: 100, totalBytes: 100 });
 				return { receivedBytes: 100, totalBytes: 100 };
 			},
 		},
+		fetchFn: fakeReleaseFetch(),
 	});
+	await service.checkForAppUpdate("portable");
 
-	const result = await service.downloadUpdateAsset({
-		name: "app.exe",
-		url: "https://example.com/app.exe",
-		size: 100,
-	});
+	const result = await service.downloadUpdateAsset(RELEASE_ASSET);
 
-	assert.match(result.filePath, /app\.exe$/);
-	assert.equal(loggedRedirect, "https://storage.example.com/app.exe");
+	assert.match(result.filePath, /\.zip$/);
+	assert.equal(loggedRedirect, "https://storage.example.com/app.zip");
 
 	const downloading = progressEvents.filter((progress) => progress.state === "downloading");
 	assert.equal(downloading.length, 2);
@@ -151,7 +220,7 @@ test("AppUpdateService downloads successfully and emits progress and completed e
 	assert.equal(completed.filePath, result.filePath);
 });
 
-test("AppUpdateService installDownloadedUpdate opens the original package path once", async () => {
+test("AppUpdateService openDownloadedUpdate opens the original portable package path once", async () => {
 	const openedPaths = [];
 	const service = createAppUpdateService({
 		logger: createFakeLogger(),
@@ -163,17 +232,16 @@ test("AppUpdateService installDownloadedUpdate opens the original package path o
 			downloadToFile: async () => ({ receivedBytes: 0 }),
 		},
 		platformShell: {
-			openPath: async (filePath) => {
+			showItemInFolder: (filePath) => {
 				openedPaths.push(filePath);
-				return { ok: true };
 			},
 		},
 	});
-	const filePath = join(updateTestRoot, "userData", "updates", "PiDeck Setup.exe");
+	const filePath = join(updateTestRoot, "userData", "updates", "PiDeck-Q-2.0.0-win-x64.zip");
 	await mkdir(join(updateTestRoot, "userData", "updates"), { recursive: true });
 	await writeFile(filePath, "installer");
 
-	await service.installDownloadedUpdate(filePath);
+	await service.openDownloadedUpdate(filePath);
 
 	assert.deepEqual(openedPaths, [filePath]);
 });
@@ -187,16 +255,16 @@ test("AppUpdateService rejects update paths outside the managed user-data direct
 		platformApp: createFakeApp(),
 		platformPaths: createFakePaths(),
 		platformDownloads: { downloadToFile: async () => ({ receivedBytes: 0 }) },
-		platformShell: { openPath: async () => { opened = true; return { ok: true }; } },
+		platformShell: { showItemInFolder: () => { opened = true; } },
 	});
 	await assert.rejects(
-		() => service.installDownloadedUpdate(join(updateTestRoot, "outside.exe")),
+		() => service.openDownloadedUpdate(join(updateTestRoot, "outside.zip")),
 		/update\.openFailed/,
 	);
 	assert.equal(opened, false);
 });
 
-test("AppUpdateService installDownloadedUpdate translates failure when openPath fails", async () => {
+test("AppUpdateService openDownloadedUpdate rejects a non-portable Windows package", async () => {
 	const service = createAppUpdateService({
 		logger: createFakeLogger(),
 		translate: (key) => key,
@@ -207,7 +275,7 @@ test("AppUpdateService installDownloadedUpdate translates failure when openPath 
 			downloadToFile: async () => ({ receivedBytes: 0 }),
 		},
 		platformShell: {
-			openPath: async () => ({ ok: false, error: "Access denied" }),
+			showItemInFolder: () => { throw new Error("must not reveal installer"); },
 		},
 	});
 	const filePath = join(updateTestRoot, "userData", "updates", "update.exe");
@@ -215,7 +283,7 @@ test("AppUpdateService installDownloadedUpdate translates failure when openPath 
 	await writeFile(filePath, "installer");
 
 	await assert.rejects(
-		() => service.installDownloadedUpdate(filePath),
+		() => service.openDownloadedUpdate(filePath),
 		/update\.openFailed/,
 	);
 });
@@ -232,13 +300,11 @@ test("AppUpdateService completed event uses downloader return value when onProgr
 			// 不调用 onProgress，只返回最终统计
 			downloadToFile: async () => ({ receivedBytes: 1234, totalBytes: 1234 }),
 		},
+		fetchFn: fakeReleaseFetch({ ...RELEASE_ASSET, size: 0 }),
 	});
+	await service.checkForAppUpdate("portable");
 
-	await service.downloadUpdateAsset({
-		name: "app.exe",
-		url: "https://example.com/app.exe",
-		size: 0,
-	});
+	await service.downloadUpdateAsset({ ...RELEASE_ASSET, size: 0 });
 
 	const completed = progressEvents.find((p) => p.state === "completed");
 	assert.ok(completed, "must emit a completed event");
@@ -261,13 +327,11 @@ test("AppUpdateService completed event prefers returned bytes over stale last on
 				return { receivedBytes: 120, totalBytes: 120 };
 			},
 		},
+		fetchFn: fakeReleaseFetch(),
 	});
+	await service.checkForAppUpdate("portable");
 
-	await service.downloadUpdateAsset({
-		name: "app.exe",
-		url: "https://example.com/app.exe",
-		size: 100,
-	});
+	await service.downloadUpdateAsset(RELEASE_ASSET);
 
 	const completed = progressEvents.find((p) => p.state === "completed");
 	assert.ok(completed, "must emit a completed event");
@@ -287,13 +351,11 @@ test("AppUpdateService completed event keeps asset.size as total when downloader
 			// 返回 receivedBytes 但不带 totalBytes：应保留 asset.size 作为总大小
 			downloadToFile: async () => ({ receivedBytes: 55 }),
 		},
+		fetchFn: fakeReleaseFetch({ ...RELEASE_ASSET, size: 88 }),
 	});
+	await service.checkForAppUpdate("portable");
 
-	await service.downloadUpdateAsset({
-		name: "app.exe",
-		url: "https://example.com/app.exe",
-		size: 88,
-	});
+	await service.downloadUpdateAsset({ ...RELEASE_ASSET, size: 88 });
 
 	const completed = progressEvents.find((p) => p.state === "completed");
 	assert.ok(completed, "must emit a completed event");

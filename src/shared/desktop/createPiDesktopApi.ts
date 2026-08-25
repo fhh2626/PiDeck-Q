@@ -787,8 +787,8 @@ const api = {
 				ipcChannels.appDownloadUpdate,
 				asset,
 			) as Promise<AppUpdateDownloadResult>,
-		installUpdate: (filePath: string) =>
-			transport.invoke(ipcChannels.appInstallUpdate, filePath) as Promise<void>,
+		openUpdatePackage: (filePath: string) =>
+			transport.invoke(ipcChannels.appOpenUpdatePackage, filePath) as Promise<void>,
 		onUpdateProgress: (callback: (progress: AppUpdateDownloadProgress) => void) =>
 			subscribe(ipcChannels.appUpdateProgress, callback),
 		openExternal: (url: string, forceSystem?: boolean) =>

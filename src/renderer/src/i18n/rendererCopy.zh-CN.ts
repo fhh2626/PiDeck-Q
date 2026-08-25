@@ -2223,6 +2223,7 @@ export const zhCN = {
   "update.downloadInApp": "应用内下载",
   "update.downloading": "下载中…",
   "update.installDownloaded": "打开更新包",
+  "update.openDownloaded": "在文件夹中显示更新包",
   "update.checkFailedDescription":
     "无法连接 GitHub Release。国内网络环境下 GitHub 可能不可达，你可以稍后重试，或在设置的代理设置里配置桌面端代理后再次检查。",
   "update.checkFailedTitle": "检查更新失败",

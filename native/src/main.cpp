@@ -10,6 +10,7 @@
 
 #include <QtWebView/QtWebView>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QDesktopServices>
 #include <QDialog>
@@ -24,14 +25,58 @@
 #include <QMenu>
 #include <QMetaObject>
 #include <QPalette>
+#include <QMessageBox>
 #include <QProcess>
+#include <QPushButton>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <functional>
 #include <stdexcept>
 
 namespace {
+#ifdef Q_OS_WIN
+bool hasWebView2Runtime()
+{
+    const QString fixedRuntime = qEnvironmentVariable("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER").trimmed();
+    if (!fixedRuntime.isEmpty() && QFileInfo::exists(QDir(fixedRuntime).filePath(QStringLiteral("msedgewebview2.exe")))) {
+        return true;
+    }
+
+    // Evergreen WebView2 registers the runtime version in both per-user and
+    // machine EdgeUpdate hives. Check the 32-bit machine hive too because the
+    // Qt/WebView2 loader used by x64 applications can still use that entry.
+    const QString clientId = QStringLiteral("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
+    const QStringList registryKeys = {
+        QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\EdgeUpdate\\Clients\\") + clientId,
+        QStringLiteral("HKEY_LOCAL_MACHINE\\Software\\Microsoft\\EdgeUpdate\\Clients\\") + clientId,
+        QStringLiteral("HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\") + clientId,
+    };
+    for (const QString &key : registryKeys) {
+        const QSettings settings(key, QSettings::NativeFormat);
+        if (!settings.value(QStringLiteral("pv")).toString().trimmed().isEmpty()) return true;
+    }
+    return false;
+}
+
+void showMissingWebView2Message()
+{
+    QMessageBox message;
+    message.setIcon(QMessageBox::Critical);
+    message.setWindowTitle(QStringLiteral("PiDeck-Q"));
+    message.setText(QStringLiteral("Microsoft Edge WebView2 Runtime is required to run PiDeck-Q."));
+    message.setInformativeText(QStringLiteral("Install the Evergreen WebView2 Runtime, then start PiDeck-Q again."));
+    QAbstractButton *download = message.addButton(QStringLiteral("Download WebView2"), QMessageBox::AcceptRole);
+    message.addButton(QMessageBox::Close);
+    message.exec();
+    if (message.clickedButton() == download) {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://developer.microsoft.com/microsoft-edge/webview2/")));
+    }
+}
+#endif
+
 QJsonArray stringListToJson(const QStringList &values)
 {
     QJsonArray result;
@@ -161,7 +206,12 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     app.setOrganizationName(QStringLiteral("PiDeck"));
     app.setApplicationName(QStringLiteral("PiDeck-Q"));
-    app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", QStringLiteral("0.1.5")));
+#ifdef PIDECK_BUILD_VERSION
+    const QString nativeBuildVersion = QStringLiteral(PIDECK_BUILD_VERSION);
+#else
+    const QString nativeBuildVersion = QStringLiteral("0.0.0");
+#endif
+    app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", nativeBuildVersion));
     const NativePaths paths = NativePaths::fromEnvironment();
     NativeApplication::configure(paths);
     const QString iconPath = qEnvironmentVariable("PIDECK_ICON_PATH").isEmpty()
@@ -171,6 +221,13 @@ int main(int argc, char **argv)
     app.setApplicationDisplayName(QStringLiteral("PiDeck-Q"));
     app.setQuitOnLastWindowClosed(false);
 
+#ifdef Q_OS_WIN
+    if (!hasWebView2Runtime()) {
+        showMissingWebView2Message();
+        return 1;
+    }
+#endif
+
     HostRpcServer host;
     if (!host.start()) return 1;
     NodeProcessController node(paths, &host);
@@ -178,13 +235,23 @@ int main(int argc, char **argv)
     TrayController *tray = nullptr;
     bool quitting = false;
     bool restartRequested = false;
-    QString pendingInstallerPath;
+    bool quitRequested = false;
+    std::function<void()> requestQuit;
+    requestQuit = [&] {
+        if (quitRequested) return;
+        quitRequested = true;
+        quitting = true;
+        if (mainWindow) mainWindow->setQuitting(true);
+        // Keep the Qt event loop alive until the sidecar has acknowledged that
+        // Backend.dispose and the version-lock cleanup are complete.
+        node.stopAsync([&] { app.quit(); });
+    };
 
     node.setNodeErrorHandler([&](const QString &) {
-        if (!quitting) app.quit();
+        if (!quitting) requestQuit();
     });
     node.setNodeExitHandler([&](int, QProcess::ExitStatus) {
-        if (!quitting) app.quit();
+        if (!quitting) requestQuit();
     });
 
     ClipboardController clipboard([&host](const QJsonObject &snapshot) {
@@ -292,39 +359,19 @@ int main(int argc, char **argv)
         QApplication::setApplicationDisplayName(QStringLiteral("PiDeck-Q"));
         return QJsonValue(QJsonValue::Null);
     });
-    host.registerHandler(QStringLiteral("application.exitSecondary"), [&app](const QJsonObject &) {
-        app.quit();
+    host.registerHandler(QStringLiteral("application.exitSecondary"), [&requestQuit](const QJsonObject &) {
+        requestQuit();
         return QJsonValue(QJsonValue::Null);
     });
-    host.registerHandler(QStringLiteral("application.quit"), [&app, &quitting, &mainWindow](const QJsonObject &) {
-        quitting = true;
-        if (mainWindow) mainWindow->setQuitting(true);
-        app.quit();
+    host.registerHandler(QStringLiteral("application.quit"), [&requestQuit](const QJsonObject &) {
+        requestQuit();
         return QJsonValue(QJsonValue::Null);
     });
-    host.registerHandler(QStringLiteral("application.installUpdate"), [&app, &quitting, &mainWindow, &pendingInstallerPath](const QJsonObject &params) {
-        const QString path = params.value(QStringLiteral("path")).toString();
-        const QFileInfo installer(path);
-#ifdef Q_OS_WIN
-        if (!installer.isAbsolute() || !installer.isFile() || installer.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) != 0) {
-            throw std::runtime_error("Invalid update installer path");
-        }
-#endif
-        pendingInstallerPath = installer.absoluteFilePath();
-        quitting = true;
-        if (mainWindow) mainWindow->setQuitting(true);
-        // The installer must start only after app.exec() returns and the Node
-        // sidecar has released all Qt/Node DLLs and the version lock.
-        app.quit();
-        return QJsonValue(QJsonValue::Null);
-    });
-    host.registerHandler(QStringLiteral("application.restart"), [&app, &quitting, &restartRequested, &mainWindow](const QJsonObject &) {
+    host.registerHandler(QStringLiteral("application.restart"), [&requestQuit, &restartRequested](const QJsonObject &) {
         // The replacement process must start only after the sidecar releases
         // the version lock; otherwise the new sidecar can exit as secondary.
         restartRequested = true;
-        quitting = true;
-        if (mainWindow) mainWindow->setQuitting(true);
-        app.quit();
+        requestQuit();
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("tray.update"), [&tray](const QJsonObject &params) {
@@ -362,6 +409,7 @@ int main(int argc, char **argv)
             const QJsonObject startup = ready.value(QStringLiteral("startup")).toObject();
             applyThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
             mainWindow = new MainWindow(&host, startup);
+            mainWindow->setQuitHandler(requestQuit);
             const QUrl baseUrl(ready.value(QStringLiteral("url")).toString());
             QUrlQuery query;
             query.addQueryItem(QStringLiteral("runtime"), QStringLiteral("native"));
@@ -388,21 +436,19 @@ int main(int argc, char **argv)
     tray = new TrayController(
         QIcon(iconPath),
         [&mainWindow] { if (mainWindow) mainWindow->showWindow(); },
-        [&app, &quitting, &restartRequested, &mainWindow] {
+        [&restartRequested, &requestQuit] {
             restartRequested = true;
-            quitting = true;
-            if (mainWindow) mainWindow->setQuitting(true);
-            app.quit();
+            requestQuit();
         },
-        [&app, &quitting, &mainWindow] {
-            quitting = true;
-            if (mainWindow) mainWindow->setQuitting(true);
-            app.quit();
+        [&requestQuit] {
+            requestQuit();
         },
         &app);
     tray->setVisible(true);
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [&] {
+        // All normal paths use requestQuit()/stopAsync(). This bounded fallback
+        // only covers an OS-level quit event that bypassed those paths.
         quitting = true;
         if (mainWindow) mainWindow->setQuitting(true);
         node.stop();
@@ -415,9 +461,7 @@ int main(int argc, char **argv)
         delete mainWindow;
         mainWindow = nullptr;
     }
-    if (!pendingInstallerPath.isEmpty()) {
-        QProcess::startDetached(pendingInstallerPath, {});
-    } else if (restartRequested) {
+    if (restartRequested) {
         QProcess::startDetached(QCoreApplication::applicationFilePath(),
                                  QCoreApplication::arguments().mid(1));
     }

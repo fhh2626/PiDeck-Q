@@ -13,10 +13,6 @@ export class NativeShell implements PlatformShell {
 		return this.host.request<PlatformOpenPathResult>("shell.openPath", { path });
 	}
 
-	installUpdate(path: string): Promise<void> {
-		return this.host.request("application.installUpdate", { path });
-	}
-
 	showItemInFolder(path: string): void {
 		void this.host.request("shell.showItemInFolder", { path }).catch(() => undefined);
 	}

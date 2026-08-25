@@ -212,7 +212,7 @@ function createDeps(overrides = {}) {
 		mainCopy: (key) => key,
 		checkForAppUpdate: async () => null,
 		downloadUpdateAsset: async (asset) => ({ filePath: `/updates/${asset.name}` }),
-		installDownloadedUpdate: async () => {},
+		openDownloadedUpdate: async () => {},
 		openExternalUrl: async (url, forceSystem) => {
 			calls.openExternalUrl.push({ url, forceSystem });
 		},

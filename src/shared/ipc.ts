@@ -189,7 +189,7 @@ export const ipcChannels = {
 	appPreferredSystemLanguages: "app:preferred-system-languages",
 	appCheckUpdate: "app:check-update",
 	appDownloadUpdate: "app:download-update",
-	appInstallUpdate: "app:install-update",
+	appOpenUpdatePackage: "app:open-update-package",
 	appUpdateProgress: "app:update-progress",
 	appOpenExternal: "app:open-external",
 	appRestart: "app:restart",

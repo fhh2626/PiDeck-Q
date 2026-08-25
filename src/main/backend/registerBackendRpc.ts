@@ -287,7 +287,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
 		checkForAppUpdate: appUpdateService.checkForAppUpdate,
 		downloadUpdateAsset: appUpdateService.downloadUpdateAsset,
-		installDownloadedUpdate: appUpdateService.installDownloadedUpdate,
+		openDownloadedUpdate: appUpdateService.openDownloadedUpdate,
 		openExternalUrl: host.openExternalUrl,
 		extensionManager,
 		// 设置变更副作用（代理 / 主题 / WSL / Web 服务）

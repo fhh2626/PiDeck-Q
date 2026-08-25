@@ -30,7 +30,12 @@ NodeProcessController::NodeProcessController(const NativePaths &paths, HostRpcSe
         // lifecycle callback, not a message to the (possibly dead) sidecar.
         if (m_nodeErrorHandler) m_nodeErrorHandler(m_process.errorString());
     });
+    m_gracefulStopTimer.setSingleShot(true);
+    m_postAckStopTimer.setSingleShot(true);
+    connect(&m_gracefulStopTimer, &QTimer::timeout, this, [this] { forceStop(); });
+    connect(&m_postAckStopTimer, &QTimer::timeout, this, [this] { forceStop(); });
     connect(&m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus status) {
+        if (m_stopRequested) completeAsyncStop();
         if (m_nodeExitHandler) m_nodeExitHandler(exitCode, status);
     });
 }
@@ -135,6 +140,10 @@ bool NodeProcessController::start()
     if (m_process.state() != QProcess::NotRunning) return true;
     m_readyToExit = false;
     m_stopRequested = false;
+    m_asyncStopCompleted = false;
+    m_stopFinishedHandler = {};
+    m_gracefulStopTimer.stop();
+    m_postAckStopTimer.stop();
 
 #ifdef Q_OS_WIN
     // Create the containment boundary before starting Node. The process handle
@@ -181,9 +190,71 @@ bool NodeProcessController::start()
     return true;
 }
 
+void NodeProcessController::stopAsync(StopFinishedHandler handler)
+{
+    if (m_asyncStopCompleted) {
+        if (handler) handler();
+        return;
+    }
+    if (m_stopRequested) return;
+
+    m_stopRequested = true;
+    m_stopFinishedHandler = std::move(handler);
+    if (m_process.state() == QProcess::NotRunning) {
+        completeAsyncStop();
+        return;
+    }
+
+    // The sidecar performs Backend.dispose and lock cleanup asynchronously. The
+    // Qt event loop remains alive while waiting for readyToExit; this avoids the
+    // old nested waitForFinished loop and lets the ACK be the real quit gate.
+    if (m_host) m_host->sendEvent(QStringLiteral("application.prepareQuit"), QJsonObject{});
+    m_gracefulStopTimer.start(1500);
+}
+
+void NodeProcessController::completeAsyncStop()
+{
+    if (!m_stopRequested || m_asyncStopCompleted) return;
+    m_asyncStopCompleted = true;
+    m_gracefulStopTimer.stop();
+    m_postAckStopTimer.stop();
+#ifdef Q_OS_WIN
+    closeJobObject();
+#endif
+    auto handler = std::move(m_stopFinishedHandler);
+    m_stopFinishedHandler = {};
+    if (handler) handler();
+}
+
+void NodeProcessController::forceStop()
+{
+    if (m_process.state() == QProcess::NotRunning) {
+        completeAsyncStop();
+        return;
+    }
+#ifdef Q_OS_WIN
+    // Prefer the kernel-enforced process group. If Job assignment was not
+    // available, terminate only this sidecar PID and its descendants.
+    if (!terminateJobObject()) fallbackTerminateProcessTree();
+#endif
+    if (m_process.state() != QProcess::NotRunning) m_process.kill();
+    // A short bounded wait makes the callback safe for a restart without
+    // holding the UI thread during normal graceful shutdown.
+    if (m_process.state() != QProcess::NotRunning) m_process.waitForFinished(100);
+    completeAsyncStop();
+}
+
 void NodeProcessController::stop()
 {
-    if (m_stopRequested) return;
+    if (m_stopRequested) {
+        // Destruction/startup failure is the emergency path. Do not leave an
+        // asynchronous sidecar alive just because the Qt event loop is gone.
+        m_stopFinishedHandler = {};
+        m_gracefulStopTimer.stop();
+        m_postAckStopTimer.stop();
+        forceStop();
+        return;
+    }
     m_stopRequested = true;
 
     if (m_process.state() == QProcess::NotRunning) {
@@ -195,9 +266,8 @@ void NodeProcessController::stop()
         return;
     }
 
-    // Ask the sidecar to finish its own cleanup and acknowledge readiness. Do
-    // not terminate immediately: backend disposal must release the version lock,
-    // stop the renderer server, save bounds, and close the host bridge first.
+    // Synchronous emergency fallback used only when no asynchronous quit gate
+    // can run (for example, a failed startup or object destruction).
     if (m_host) m_host->sendEvent(QStringLiteral("application.prepareQuit"), QJsonObject{});
     constexpr int gracefulTimeoutMs = 1500;
     constexpr int postAckExitTimeoutMs = 250;
@@ -207,9 +277,6 @@ void NodeProcessController::stop()
         const int remaining = gracefulTimeoutMs - static_cast<int>(gracefulTimer.elapsed());
         m_process.waitForFinished(qMin(50, remaining));
         if (m_readyToExit) {
-            // The ACK is emitted only after Backend.dispose, lock release,
-            // renderer stop, and bounds persistence. Do not spend the full
-            // watchdog window waiting for process.exit(0) after that point.
             if (m_process.state() == QProcess::NotRunning || m_process.waitForFinished(postAckExitTimeoutMs)) {
 #ifdef Q_OS_WIN
                 closeJobObject();
@@ -227,15 +294,8 @@ void NodeProcessController::stop()
     }
 
 #ifdef Q_OS_WIN
-    // Prefer the kernel-enforced process group. If Job assignment was not
-    // available, terminate only this sidecar PID and its descendants.
-    if (!terminateJobObject()) {
-        fallbackTerminateProcessTree();
-    }
+    if (!terminateJobObject()) fallbackTerminateProcessTree();
 #endif
-
-    // Keep the direct kill as a final guard if QProcess still reports Node as
-    // running after the group/tree termination request.
     if (m_process.state() != QProcess::NotRunning) m_process.kill();
     m_process.waitForFinished(100);
 #ifdef Q_OS_WIN
@@ -272,4 +332,13 @@ void NodeProcessController::markReadyToExit()
 {
     m_readyToExit = true;
     if (m_readyToExitHandler) m_readyToExitHandler();
+    if (!m_stopRequested || m_asyncStopCompleted) return;
+    if (m_process.state() == QProcess::NotRunning) {
+        completeAsyncStop();
+        return;
+    }
+    // ACK means all Node-side cleanup is complete. Give process.exit(0) a short
+    // grace window, then use the scoped Job Object/PID-tree fallback.
+    m_gracefulStopTimer.stop();
+    m_postAckStopTimer.start(250);
 }

@@ -647,7 +647,7 @@ export function createPreviewApi(): PiDesktopApi {
 				filePath: asset.name,
 				assetName: asset.name,
 			}),
-			installUpdate: async () => undefined,
+			openUpdatePackage: async () => undefined,
 			onUpdateProgress: () => () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,

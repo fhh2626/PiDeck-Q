@@ -14,6 +14,8 @@
 #include <QUrl>
 #include <QWindow>
 
+#include <utility>
+
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -141,6 +143,11 @@ void MainWindow::setQuitting(bool quitting)
     m_quitting = quitting;
 }
 
+void MainWindow::setQuitHandler(std::function<void()> handler)
+{
+    m_quitHandler = std::move(handler);
+}
+
 void MainWindow::applySettings(const QJsonObject &settings)
 {
     if (settings.contains(QStringLiteral("closeToTray"))) {
@@ -192,9 +199,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (!m_quitting) m_quitting = true;
     emitBounds();
     emitVisible(false);
+    // The host owns the asynchronous sidecar shutdown gate. Sending the event
+    // instead of calling QCoreApplication::quit() keeps the event loop alive
+    // until Node acknowledges Backend.dispose and lock cleanup.
     if (m_host) m_host->sendEvent(QStringLiteral("window.closed"), QJsonObject{});
     event->accept();
-    QCoreApplication::quit();
+    if (m_quitHandler) m_quitHandler();
+    else QCoreApplication::quit();
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)

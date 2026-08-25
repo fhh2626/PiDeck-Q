@@ -4,7 +4,7 @@ import test from "node:test";
 
 test("Windows native packaging stages Qt, Node, renderer and resources without Electron Builder", () => {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-	assert.equal(pkg.scripts?.["build:native"], "xmake f -m release -y && xmake -r");
+	assert.match(pkg.scripts?.["build:native"] ?? "", /build-native\.mjs/);
 	assert.match(pkg.scripts?.["dist:win"] ?? "", /dist-win-native\.mjs/);
 	const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(xmake, /windeployqt/);

@@ -84,6 +84,9 @@ test("SettingsStore: hideThinkingBlock mapping and showThinking persistence safe
 		});
 		await store.load();
 		assert.equal(store.get().showThinking, false);
+		// Native PiDeck-Q is a ZIP-distributed portable app; Electron Builder's
+		// PORTABLE_EXECUTABLE_DIR is intentionally not required.
+		assert.equal(store.get().installationType, "portable");
 
 		// Update another setting and save
 		await store.update({ language: "zh-CN" });
@@ -95,6 +98,23 @@ test("SettingsStore: hideThinkingBlock mapping and showThinking persistence safe
 		await writeFile(piAgentSettingsFile, JSON.stringify({ hideThinkingBlock: false }), "utf8");
 		assert.equal(readPiAgentShowThinking(piAgentSettingsFile), true);
 		assert.equal(store.get().showThinking, true);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("SettingsStore: portable Native startup corrects a legacy installed value", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-portable-migration-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		await writeFile(desktopSettingsFile, JSON.stringify({ installationType: "installed" }), "utf8");
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await store.load();
+		assert.equal(store.get().installationType, "portable");
+		assert.equal(JSON.parse(await readFile(desktopSettingsFile, "utf8")).installationType, "portable");
+		await store.update({ installationType: "installed" });
+		assert.equal(store.get().installationType, "portable");
+		assert.equal(JSON.parse(await readFile(desktopSettingsFile, "utf8")).installationType, "portable");
 	} finally {
 		await rm(tempDir, { recursive: true, force: true });
 	}
