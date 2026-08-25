@@ -226,6 +226,7 @@ export const ipcChannels = {
 	appWindowMaximizedChanged: "app:window-maximized-changed",
 	appWindowToggleAlwaysOnTop: "app:window-toggle-always-on-top",
 	appWindowClose: "app:window-close",
+	appBeginWindowDrag: "app:begin-window-drag",
 	agentsRuntimeState: "agents:runtime-state",
 	agentsState: "agents:state",
 	projectsListModels: "projects:list-models",

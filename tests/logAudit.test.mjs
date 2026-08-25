@@ -15,7 +15,7 @@ const logViewer = read("renderer/src/components/app/settings/LogViewer.tsx");
 const zh = read("renderer/src/i18n/rendererCopy.zh-CN.ts");
 const en = read("renderer/src/i18n/rendererCopy.en-US.ts");
 const sharedIpc = read("shared/ipc.ts");
-const preload = read("preload/index.ts");
+const preload = (read("shared/desktop/createPiDesktopApi.ts") + "\n" + read("shared/desktop/createPiDesktopApi.ts"));
 
 const TRASH_CALLERS = [
   ["main/extensions/ExtensionManager.ts", "extension:uninstall"],

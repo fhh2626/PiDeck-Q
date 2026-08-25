@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const entry = readFileSync("src/main/index.ts", "utf8");
 const registerBackendRpc = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
 const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
 const scratchPadIpc = readFileSync("src/main/ipc/scratchPadIpc.ts", "utf8");

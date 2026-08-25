@@ -5,7 +5,6 @@
   },
   "include": [
     "src/renderer/**/*",
-    "src/shared/**/*",
-    "src/main/env.d.ts"
+    "src/shared/**/*"
   ]
 }

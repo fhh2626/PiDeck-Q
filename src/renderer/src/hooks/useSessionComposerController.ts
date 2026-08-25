@@ -1130,6 +1130,7 @@ export function useSessionComposerController(
       onPaste,
       onPasteClipboard: pasteFromClipboard,
       onDrop,
+      onNativeFileDrop: (paths: string[]) => insertFilePathRefs(paths),
       onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
         // 会话 Tab / 侧栏分屏拖拽交给 SessionSplitStage（capture），composer 不抢落点
         if (event.dataTransfer.types.includes(SESSION_TAB_DRAG_MIME)) return;

@@ -59,7 +59,7 @@ test("契约: 生成中可选模型，快照内只记下一轮，新加模型仍
   const hook = readFileSync("src/renderer/src/hooks/usePendingModelApply.ts", "utf8");
   const ipc = readFileSync("src/shared/ipc.ts", "utf8");
   const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-  const preload = readFileSync("src/preload/index.ts", "utf8");
+  const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 
   assert.match(area, /modelDisabled=\{composer\.isStarting\}/);
   assert.match(area, /modelPending=\{modelPendingMap\[props\.sessionId\]\}/);

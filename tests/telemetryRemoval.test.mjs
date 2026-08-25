@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 const settingsType = readFileSync("src/shared/types/settings.ts", "utf8");
 const settingsStore = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
-const mainIndex = readFileSync("src/main/index.ts", "utf8");
+const mainIndex = readFileSync("src/native-node/index.ts", "utf8");
 const settingsModal = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
 const zh = readFileSync("src/renderer/src/i18n/rendererCopy.zh-CN.ts", "utf8");
 const en = readFileSync("src/renderer/src/i18n/rendererCopy.en-US.ts", "utf8");

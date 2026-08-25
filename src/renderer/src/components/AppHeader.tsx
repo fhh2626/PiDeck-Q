@@ -13,6 +13,7 @@ type Props = {
   isWindowMaximized: () => Promise<boolean>;
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
+  beginWindowDrag: () => void;
 };
 
 /** Windows 风格「还原」图标：前后错位的两个方框（最大化态显示）。 */
@@ -34,6 +35,7 @@ export function AppHeader({
   isWindowMaximized,
   onWindowMaximizedChange,
   closeWindow,
+  beginWindowDrag,
 }: Props) {
   const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -60,7 +62,12 @@ export function AppHeader({
 
   return (
     <>
-      <div className="window-drag-layer" aria-hidden="true" />
+      <div
+        className="window-drag-layer"
+        aria-hidden="true"
+        onPointerDown={() => beginWindowDrag()}
+        onDoubleClick={() => { void toggleMaximizeWindow(); }}
+      />
       {showWinWindowControls ? (
         <div className="window-controls" aria-label={t("app.windowControls")}>
           <button

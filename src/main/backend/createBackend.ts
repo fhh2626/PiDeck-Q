@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ipcChannels } from "../../shared/ipc";
 import {
@@ -142,9 +143,12 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			trashPath,
 		},
 	);
-	const wasmLocateDir = appInfo.isPackaged
-		? join(paths.resourcesPath, "app.asar.unpacked", "node_modules", "sql.js", "dist")
-		: join(paths.appPath, "node_modules", "sql.js", "dist");
+	const nativeWasmLocateDir = join(paths.appPath, "node_modules", "sql.js", "dist");
+	const wasmLocateDir = existsSync(nativeWasmLocateDir)
+		? nativeWasmLocateDir
+		: appInfo.isPackaged
+			? join(paths.resourcesPath, "app.asar.unpacked", "node_modules", "sql.js", "dist")
+			: nativeWasmLocateDir;
 	const xuePromptManager = new XuePromptManager(
 		paths.home,
 		join(appInfo.isPackaged ? paths.resourcesPath : paths.appPath, appInfo.isPackaged ? "" : "resources", "xueprompts.db"),

@@ -1,4 +1,4 @@
-import type { PiDesktopApi } from "../../../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import type { TerminalTarget } from "../../../../shared/types";
 import { TerminalDock } from "../terminal/TerminalDock";
 

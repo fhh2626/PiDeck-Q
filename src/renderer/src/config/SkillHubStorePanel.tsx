@@ -80,15 +80,12 @@ async function getInstalledSlugsSet(searchItems: SkillHubItem[]): Promise<Set<st
 	}
 }
 
-const api = (window as unknown as {
-	piDesktop: {
-		skillHub: {
-			search: (q: string, limit?: number) => Promise<SkillHubSearchResult>;
-			detail: (slug: string) => Promise<SkillHubDetail | null>;
-			install: (slug: string, installDir: string) => Promise<SkillHubInstallResult>;
-		};
-	};
-}).piDesktop;
+// Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
+const api = {
+	get skillHub() {
+		return desktopApi.skillHub;
+	},
+};
 
 const SUGGESTED_SEARCHES = [
 	"pdf", "ocr", "translate", "code review", "react",

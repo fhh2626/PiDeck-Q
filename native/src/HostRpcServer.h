@@ -1,0 +1,44 @@
+#pragma once
+
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QHash>
+#include <QTcpServer>
+#include <QTcpSocket>
+
+#include <functional>
+
+class HostRpcServer final : public QTcpServer {
+public:
+    using Handler = std::function<QJsonValue(const QJsonObject &params)>;
+    using EventHandler = std::function<void(const QString &name, const QJsonValue &payload)>;
+
+    explicit HostRpcServer(QObject *parent = nullptr);
+
+    bool start();
+    quint16 port() const;
+    const QString &token() const;
+
+    void registerHandler(const QString &method, Handler handler);
+    void setEventHandler(EventHandler handler);
+    void sendEvent(const QString &name, const QJsonValue &payload = QJsonValue(QJsonValue::Null));
+
+protected:
+    void incomingConnection(qintptr socketDescriptor) override;
+
+private:
+    void handleData(QTcpSocket *socket, const QByteArray &chunk);
+    void handleFrame(QTcpSocket *socket, const QByteArray &payload);
+    void writeFrame(QTcpSocket *socket, const QJsonObject &frame);
+    void sendResponse(QTcpSocket *socket, const QString &id, bool ok,
+                      const QJsonValue &result = QJsonValue(QJsonValue::Undefined),
+                      const QString &error = {});
+    bool isTokenValid(const QString &candidate) const;
+
+    QTcpSocket *m_socket = nullptr;
+    QByteArray m_receiveBuffer;
+    QHash<QString, Handler> m_handlers;
+    EventHandler m_eventHandler;
+    QString m_token;
+    bool m_authenticated = false;
+};

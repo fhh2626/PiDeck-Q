@@ -24,16 +24,15 @@ async function put(path, content = "content") {
 
 async function createBuildFixture(repo) {
 	const sourceFiles = [
-		join(repo, "src", "main", "index.ts"),
-		join(repo, "src", "preload", "index.ts"),
+		join(repo, "src", "main", "backend.ts"),
+		join(repo, "src", "native-node", "index.ts"),
 		join(repo, "src", "renderer", "src", "main.tsx"),
-		join(repo, "electron.vite.config.ts"),
+		join(repo, "vite.config.ts"),
 		join(repo, "package.json"),
 	];
 	for (const source of sourceFiles) await put(source, "source");
 	const artifactFiles = [
-		join(repo, "out", "main", "index.js"),
-		join(repo, "out", "preload", "index.js"),
+		join(repo, "out", "native-node", "index.cjs"),
 		join(repo, "out", "renderer", "assets", "app.js"),
 		join(repo, "out", "renderer", "assets", "web.js"),
 		join(repo, "out", "renderer", "assets", "style.css"),
@@ -51,14 +50,13 @@ async function createBuildFixture(repo) {
 	return { sourceFiles, artifactFiles, indexHtml, webHtml };
 }
 
-test("an empty build output fails with all required Electron entry points", async () => {
+test("an empty build output fails with all required native entry points", async () => {
 	await withTempRepo(async (repo) => {
 		await mkdir(join(repo, "out"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.equal(result.errors.length, 4);
-		assert.match(result.errors.join("\n"), /main\/index\.js|main\\index\.js/);
-		assert.match(result.errors.join("\n"), /preload\/index\.js|preload\\index\.js/);
+		assert.equal(result.errors.length, 3);
+		assert.match(result.errors.join("\n"), /native-node[/\\]index\.cjs/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]index\.html/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]web\.html/);
 	});
@@ -69,7 +67,7 @@ test("a complete temporary build fixture passes entry, resource, and freshness c
 		await createBuildFixture(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		assert.equal(result.checked.length, 7);
+		assert.equal(result.checked.length, 6);
 	});
 });
 
@@ -104,8 +102,7 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 		await Promise.all(fixture.artifactFiles.map((path) => utimes(path, staleTime, staleTime)));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.match(result.errors.join("\n"), /Stale main artifact/);
-		assert.match(result.errors.join("\n"), /Stale preload artifact/);
+		assert.match(result.errors.join("\n"), /Stale native-node artifact/);
 		assert.match(result.errors.join("\n"), /Stale renderer artifact/);
 	});
 });

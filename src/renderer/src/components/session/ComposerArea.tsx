@@ -155,6 +155,24 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     onPromoteSession: useSessionPaneActions().promoteSessionToPermanent,
   });
 
+  const onNativeFileDrop = composer.editor.onNativeFileDrop;
+  // Qt delivers OS file drops as a host event because ordinary WebView File objects
+  // do not expose absolute paths. Route only the composer under the native drop point;
+  // internal HTML drag/drop remains untouched.
+  useEffect(() => {
+    const handleNativeFileDrop = (event: Event) => {
+      const detail = (event as CustomEvent<{ paths?: string[]; x?: number; y?: number }>).detail;
+      if (!detail || !Array.isArray(detail.paths) || detail.paths.length === 0) return;
+      const target = typeof detail.x === "number" && typeof detail.y === "number"
+        ? document.elementFromPoint(detail.x, detail.y)?.closest("[data-session-id]")
+        : null;
+      if (target?.getAttribute("data-session-id") !== props.sessionId) return;
+      onNativeFileDrop(detail.paths);
+    };
+    window.addEventListener("pideck-native-file-drop", handleNativeFileDrop);
+    return () => window.removeEventListener("pideck-native-file-drop", handleNativeFileDrop);
+  }, [onNativeFileDrop, props.sessionId]);
+
   // 并行问询：复用发送按钮旁的行为菜单（常显），选择「并行发送」时走后台匿名会话
   const askPanel = useAskPanel();
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));

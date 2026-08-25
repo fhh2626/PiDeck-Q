@@ -14,8 +14,6 @@ const composer = readFileSync(
   "src/renderer/src/hooks/useSessionComposerController.ts",
   "utf8",
 );
-const mockPi = readFileSync("e2e/mock-pi.cjs", "utf8");
-
 test("AgentManager.compact throws when RPC returns success:false", () => {
   // 失败路径：读 response.error 后 throw，而不是只记 warn 后当成功
   assert.match(agentManager, /if \(!response\.success\)/);
@@ -45,12 +43,6 @@ test("composer maps compact errors via debugDetails-first friendly helper", () =
     2,
   );
   assert.match(composer, /if \(message\) showNotice\(message, 6000\)/);
-});
-
-test("mock pi supports NOTHING compact failure path", () => {
-  assert.match(mockPi, /function respondFail/);
-  assert.match(mockPi, /NOTHING/);
-  assert.match(mockPi, /nothing to compact/);
 });
 
 test("compaction_end 后主动检查 idle，避免状态卡在 running", () => {

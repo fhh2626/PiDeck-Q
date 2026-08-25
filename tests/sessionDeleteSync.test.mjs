@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const main = readFileSync("src/main/index.ts", "utf8");
+const main = readFileSync("src/native-node/index.ts", "utf8");
 const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
 const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");

@@ -12,16 +12,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, RotateCcw, Shield, ShieldAlert, ShieldCheck, ShieldOff } from "lucide-react";
 import type { SecurityConfig, SecurityLevelConfig } from "../../../../shared/types";
+import { desktopApi } from "../../desktopApi";
 import { Button } from "../ui-shadcn/button";
 import { Dialog, DialogContent } from "../ui-shadcn/dialog";
 import { CommandItem, CommandSeparator } from "../ui-shadcn/command";
 import { CommandPickerPanel } from "../ui-shadcn/command-picker";
 import { t } from "../../i18n";
 
-const api = (window as unknown as { piDesktop: { security: {
-	getConfig: () => Promise<SecurityConfig>;
-	setSessionLevel: (sessionId: string, levelId: string | null) => Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>;
-} } }).piDesktop;
+// Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
+const api = {
+	get security() {
+		return desktopApi.security;
+	},
+};
 
 /** 等级图标：内置三档各用专属盾牌语义，自定义等级用通用盾牌 */
 function levelIcon(level: SecurityLevelConfig) {

@@ -57,6 +57,8 @@ import {
 } from "./utils/sessionCommands";
 import { resolveChatSessionBootstrap } from "./utils/chatSessionBootstrap";
 import { detectRendererPlatform } from "./lib/detectRendererPlatform";
+import { backgroundImageUrl } from "./utils/backgroundImageUrl";
+import { applyRendererZoom } from "./native/rendererZoom";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useAppUpdateController } from "./hooks/useAppUpdateController";
@@ -525,8 +527,6 @@ export function App() {
     expandInterimDuringStream: false,
     collapsePrevRunsOnNewTurn: true,
     showDevTools: false,
-    // Electron Chromium 沙箱默认关，与主进程历史兼容策略一致
-    electronChromiumSandbox: false,
     piProxyEnabled: false,
     piProxyUrl: "http://127.0.0.1:7890",
     piProxyBypass: "localhost,127.0.0.1,::1",
@@ -985,7 +985,7 @@ export function App() {
     if (settings.backgroundImage) {
       root.style.setProperty(
         "--app-bg-image",
-        `url("pideck-bg://local/${encodeURIComponent(settings.backgroundImage)}")`,
+        `url("${backgroundImageUrl(settings.backgroundImage)}")`,
       );
       const alpha = Math.min(1, Math.max(0, 1 - settings.backgroundImageOpacity));
       // 面板不透明度与遮罩同步并加 10% 基础偏移（面板更实一点，可读性更好）：
@@ -1031,6 +1031,15 @@ export function App() {
       root.style.removeProperty("--wallpaper-floating-alpha");
     }
   }, [settings.themeSkin, settings.theme, settings.customThemeOverrides, settings.backgroundImage, settings.backgroundImageOpacity]);
+
+  // Native Qt/WebView and Electron both apply zoom in the renderer so the setting
+  // keeps identical semantics without relying on webContents.setZoomFactor.
+  useLayoutEffect(() => {
+    applyRendererZoom(settings.zoomFactor);
+  }, [settings.zoomFactor]);
+  useEffect(() => api.settings.onApplyWindow((next) => {
+    if (typeof next.zoomFactor === "number") applyRendererZoom(next.zoomFactor);
+  }), [api.settings]);
 
   // 字号与命名字体预设由 data 属性选择 CSS token；只有 custom 字体需要注入用户输入。
   // 这一组是纯视觉的 DOM/CSS token 同步，必须用 useLayoutEffect 在 paint 前写入，
@@ -2132,10 +2141,6 @@ export function App() {
       if ("useNativeTitleBar" in patch) {
         notice = t("app.titleBarSaved");
       }
-      // Chromium 沙箱依赖启动参数与 webPreferences，保存后必须整应用重启才生效。
-      if ("electronChromiumSandbox" in patch) {
-        notice = t("app.settingsSaved"); // sandbox 需重启
-      }
       // 单实例锁在进程启动时申请，修改后需重启才切换多开/复用行为。
       if ("singleInstance" in patch) {
         notice = t("app.settingsSaved"); // 单实例需重启
@@ -3005,6 +3010,7 @@ export function App() {
       isWindowMaximized={api.app.isWindowMaximized}
       onWindowMaximizedChange={api.app.onWindowMaximizedChange}
       closeWindow={api.app.closeWindow}
+      beginWindowDrag={api.app.beginWindowDrag}
     >
 
     {fileMenu && (

@@ -30,7 +30,7 @@ import { getProcessSnapshot } from "../process/ProcessMonitor";
 import type { ProcessMetricsSnapshot } from "../../shared/types";
 import { getWslExe } from "../wsl/wslExe";
 import { listWebNetworkAddresses } from "../web/WebNetwork";
-import type { MainWindowControls } from "../window/MainWindowControls";
+import type { MainWindowControls } from "../window/MainWindowControlsContract";
 import type {
 	PlatformApplication,
 	PlatformPaths,
@@ -613,6 +613,9 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.appWindowClose, () => {
 		mainWindowControls.close();
 	});
+	router.handle(ipcChannels.appBeginWindowDrag, () => {
+		mainWindowControls.beginWindowDrag?.();
+	});
 
 	// ── 设置 ─────────────────────────────────────────────────────────
 
@@ -642,11 +645,11 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		if ("language" in patch) {
 			if (refreshTrayContextMenu) refreshTrayContextMenu();
 		}
-		if ("useNativeTitleBar" in patch) {
+		if ("useNativeTitleBar" in patch || "closeToTray" in patch) {
 			mainWindowControls.notifyTitleBarChange(settings);
 		}
 		if ("zoomFactor" in patch && typeof settings.zoomFactor === "number") {
-			mainWindowControls.setZoomFactor(settings.zoomFactor);
+			mainWindowControls.notifyTitleBarChange(settings);
 		}
 		if (
 			"webServiceEnabled" in patch ||

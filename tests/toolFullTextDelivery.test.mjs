@@ -8,7 +8,7 @@ const agentUtils = readFileSync("src/main/pi/agentUtils.ts", "utf8");
 const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
 const reader = readFileSync("src/main/pi/SessionHistoryReader.ts", "utf8");
 const ipc = readFileSync("src/shared/ipc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const toolCard = readFileSync(
   "src/renderer/src/components/session/ToolCallComponents.tsx",
   "utf8",

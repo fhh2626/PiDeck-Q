@@ -11,7 +11,7 @@ import test from "node:test";
 
 const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 const handler = readFileSync("src/main/ipc/usageStatsIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const previewApi = readFileSync("src/renderer/src/previewApi.ts", "utf8");
 // 新架构 i18n 按语言拆分为 rendererCopy.{zh-CN,en-US}.ts（旧单文件 i18n.ts 只含类型/工具）
 const i18nZh = readFileSync("src/renderer/src/i18n/rendererCopy.zh-CN.ts", "utf8");

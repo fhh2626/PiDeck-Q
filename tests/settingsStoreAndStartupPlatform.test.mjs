@@ -49,24 +49,18 @@ function loadSettingsStore() {
 }
 
 const { SettingsStore, readPiAgentShowThinking } = loadSettingsStore();
-const { readElectronChromiumSandboxPreference, readSingleInstancePreference } = startupPreferences;
+const { readSingleInstancePreference } = startupPreferences;
 
-test("startupPreferences: missing file returns default sandbox=false and singleInstance=true", () => {
+test("startupPreferences: missing file defaults to singleInstance=true", () => {
 	const nonExistent = join(tmpdir(), "non-existent-settings.json");
-	assert.equal(readElectronChromiumSandboxPreference(nonExistent), false);
 	assert.equal(readSingleInstancePreference(nonExistent), true);
 });
 
-test("startupPreferences: explicit values are correctly read", async () => {
+test("startupPreferences: explicit singleInstance=false is read", async () => {
 	const tempDir = await mkdtemp(join(tmpdir(), "pideck-startup-"));
 	const settingsPath = join(tempDir, "settings.json");
 	try {
-		await writeFile(settingsPath, JSON.stringify({
-			electronChromiumSandbox: true,
-			singleInstance: false,
-		}), "utf8");
-
-		assert.equal(readElectronChromiumSandboxPreference(settingsPath), true);
+		await writeFile(settingsPath, JSON.stringify({ singleInstance: false }), "utf8");
 		assert.equal(readSingleInstancePreference(settingsPath), false);
 	} finally {
 		await rm(tempDir, { recursive: true, force: true });
@@ -106,22 +100,24 @@ test("SettingsStore: hideThinkingBlock mapping and showThinking persistence safe
 	}
 });
 
-test("SettingsStore: removes legacy linkOpenMode without resetting other settings", async () => {
-	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-link-mode-"));
+test("SettingsStore: removes Electron sandbox legacy field without resetting other settings", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-native-migration-"));
 	const desktopSettingsFile = join(tempDir, "settings.json");
 	try {
 		await writeFile(
 			desktopSettingsFile,
-			JSON.stringify({ linkOpenMode: "internal", language: "en-US" }),
+			JSON.stringify({ electronChromiumSandbox: true, linkOpenMode: "internal", language: "en-US" }),
 			"utf8",
 		);
 		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
 		await store.load();
+		assert.equal(Object.prototype.hasOwnProperty.call(store.get(), "electronChromiumSandbox"), false);
 		assert.equal(Object.prototype.hasOwnProperty.call(store.get(), "linkOpenMode"), false);
 		assert.equal(store.get().language, "en-US");
 
 		await store.update({ language: "zh-CN" });
 		const saved = JSON.parse(await readFile(desktopSettingsFile, "utf8"));
+		assert.equal(Object.prototype.hasOwnProperty.call(saved, "electronChromiumSandbox"), false);
 		assert.equal(Object.prototype.hasOwnProperty.call(saved, "linkOpenMode"), false);
 		assert.equal(saved.language, "zh-CN");
 	} finally {

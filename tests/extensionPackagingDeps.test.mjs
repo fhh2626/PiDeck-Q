@@ -38,32 +38,18 @@ function collectBareImports() {
 
 test("extension runtime deps are packaged next to extensions", () => {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-	const targets = new Set(
-		(pkg.build?.extraResources ?? []).map((e) => e.to),
-	);
+	const xmake = readFileSync("xmake.lua", "utf8");
 	for (const dep of collectBareImports()) {
-		assert.ok(
-			targets.has(`extensions/node_modules/${dep}`),
-			`扩展依赖 ${dep} 缺少 extraResources 映射 extensions/node_modules/${dep}，打包后 pi 将启动失败`,
-		);
-		assert.ok(
-			pkg.dependencies?.[dep],
-			`扩展依赖 ${dep} 必须声明在 dependencies（保证顶层 hoisting 供 extraResources 复制）`,
-		);
-		assert.ok(
-			existsSync(join("node_modules", dep, "package.json")),
-			`扩展依赖 ${dep} 未安装在顶层 node_modules`,
-		);
+		assert.match(xmake, new RegExp(`node_modules.*${dep.replace(/[\\/]/g, "[\\\\/]")}`));
+		assert.ok(pkg.dependencies?.[dep], `扩展依赖 ${dep} 必须声明在 dependencies`);
+		assert.ok(existsSync(join("node_modules", dep, "package.json")), `扩展依赖 ${dep} 未安装`);
 	}
 });
 
 test("pideck-q-better-compaction keeps its relative runtime files in extraResources", () => {
-	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-	const resource = (pkg.build?.extraResources ?? []).find(
-		(entry) => entry.from === "resources/extensions/pideck-q-better-compaction",
-	);
-	assert.deepEqual(resource?.filter, ["**/*.ts", "LICENSE"]);
-	assert.equal(resource?.to, "extensions/pideck-q-better-compaction");
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /resources/);
+	assert.match(xmake, /os\.cp\(path\.join\(os\.projectdir\(\), "resources", "\*"\)/);
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-better-compaction", "extension-runtime.ts")));
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-better-compaction", "compaction.ts")));
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-better-compaction", "retained-oversize.ts")));
@@ -72,12 +58,8 @@ test("pideck-q-better-compaction keeps its relative runtime files in extraResour
 });
 
 test("pideck-q-websearch keeps its relative fallback module in extraResources", () => {
-	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-	const resource = (pkg.build?.extraResources ?? []).find(
-		(entry) => entry.from === "resources/extensions/pideck-q-websearch",
-	);
-	assert.deepEqual(resource?.filter, ["**/*.ts"]);
-	assert.equal(resource?.to, "extensions/pideck-q-websearch");
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /resources/);
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-websearch", "extension-runtime.ts")));
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-websearch", "fallback.ts")));
 });

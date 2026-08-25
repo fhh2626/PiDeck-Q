@@ -15,10 +15,7 @@ import {
 	migrateBuiltInExtensionDefaults,
 } from "../extensions/builtInExtensions";
 
-export {
-	readElectronChromiumSandboxPreference,
-	readSingleInstancePreference,
-} from "./startupPreferences";
+export { readSingleInstancePreference } from "./startupPreferences";
 
 /**
  * 读取 pi agent 的 settings.json 并从中提取 showThinking（取 hideThinkingBlock 的反值）。
@@ -77,8 +74,6 @@ const defaultSettings: AppSettings = {
   expandInterimDuringStream: false,
   collapsePrevRunsOnNewTurn: true,
   showDevTools: false,
-  // 默认关闭 Chromium 沙箱：与历史 Windows no-sandbox 兼容策略一致
-  electronChromiumSandbox: false,
   piProxyEnabled: false,
   piProxyUrl: "http://127.0.0.1:7890",
   piProxyBypass: "localhost,127.0.0.1,::1",
@@ -171,11 +166,13 @@ export class SettingsStore {
         Object.hasOwn(parsedUnknown, "telemetryInstallId") ||
         Object.hasOwn(parsedUnknown, "telemetryLastHeartbeatDate");
       const hadLegacyLinkOpenMode = Object.hasOwn(parsedUnknown, "linkOpenMode");
+      const hadLegacyElectronChromiumSandbox = Object.hasOwn(parsedUnknown, "electronChromiumSandbox");
       const {
         telemetryEnabled: _ignoredTelemetryEnabled,
         telemetryInstallId: _ignoredTelemetryInstallId,
         telemetryLastHeartbeatDate: _ignoredTelemetryLastHeartbeatDate,
         linkOpenMode: _ignoredLinkOpenMode,
+        electronChromiumSandbox: _ignoredElectronChromiumSandbox,
         ...parsedClean
       } = parsedUnknown;
       const parsed = parsedClean as Partial<AppSettings>;
@@ -209,6 +206,7 @@ export class SettingsStore {
       if (
         hadLegacyTelemetry ||
         hadLegacyLinkOpenMode ||
+        hadLegacyElectronChromiumSandbox ||
         migratedGitCommitMessagePrompt ||
         migratedBuiltInExtensionDefaults
       ) {

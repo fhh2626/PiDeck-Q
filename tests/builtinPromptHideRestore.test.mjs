@@ -13,7 +13,7 @@ const { PromptManager } = loadTsCommonJs("src/main/prompts/PromptManager.ts", {
 
 const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 const storeIpc = readFileSync("src/main/ipc/storeIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const promptsTab = readFileSync("src/renderer/src/config/PromptsTab.tsx", "utf8");
 const configModal = readFileSync("src/renderer/src/ConfigModal.tsx", "utf8");
 const settingsType = readFileSync("src/shared/types/settings.ts", "utf8");

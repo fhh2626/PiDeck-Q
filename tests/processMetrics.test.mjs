@@ -119,7 +119,7 @@ test("PiProcess exposes pid accessor", () => {
 test("IPC channel + systemIpc handler + preload exposure", () => {
 	const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 	const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
-	const preload = readFileSync("src/preload/index.ts", "utf8");
+	const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 	assert.match(ipc, /processMetrics: "system:process-metrics"/);
 	assert.match(systemIpc, /router\.handle\(ipcChannels\.processMetrics/);
 	// handler 先按 agentId 反查会话身份（进程监控表要显示是哪个会话），
@@ -129,13 +129,13 @@ test("IPC channel + systemIpc handler + preload exposure", () => {
 	assert.match(systemIpc, /getProcessSnapshot\(agents\)/);
 	assert.doesNotMatch(systemIpc, /getProcessSnapshot\(deps\.agentManager\.listAgentPids\(\)\)/);
 	assert.match(preload, /getProcessMetrics: \(\) =>/);
-	assert.match(preload, /ipcRenderer\.invoke\(ipcChannels\.processMetrics\)/);
+	assert.match(preload, /transport\.invoke\(ipcChannels\.processMetrics\)/);
 });
 
 test("stop-agent: full session stop chain (coordinator + detach)", () => {
 	const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 	const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
-	const preload = readFileSync("src/preload/index.ts", "utf8");
+	const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 	const coordinator = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
 	const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 	const registerRpc = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
@@ -159,7 +159,7 @@ test("stop-agent: full session stop chain (coordinator + detach)", () => {
 	assert.match(registerRpc, /stopAgentFromMonitor: runtimeBridge\.stopAgentFromMonitor,/);
 	// preload 暴露
 	assert.match(preload, /stopAgent: \(agentId: string\) =>/);
-	assert.match(preload, /ipcRenderer\.invoke\(ipcChannels\.stopAgent, agentId\)/);
+	assert.match(preload, /transport\.invoke\(ipcChannels\.stopAgent, agentId\)/);
 	// 渲染层：停止确认用 shadcn ConfirmDialog（AlertDialog），不用 toast 双按钮；
 	// 停止后刷新快照让该行消失
 	assert.match(tab, /window\.piDesktop\.system\.stopAgent\(agent\.agentId\)/);

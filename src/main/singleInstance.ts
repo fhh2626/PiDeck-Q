@@ -1,4 +1,3 @@
-import { app } from "electron";
 import {
 	closeSync,
 	existsSync,
@@ -55,16 +54,16 @@ function sanitizeVersion(version: string): string {
 	return version.replace(/[^\w.-]+/g, "_") || "unknown";
 }
 
-function locksDir(): string {
-	return join(app.getPath("userData"), "instance-locks");
+function locksDir(userDataDir: string): string {
+	return join(userDataDir, "instance-locks");
 }
 
-function lockPathFor(version: string): string {
-	return join(locksDir(), `${sanitizeVersion(version)}.lock`);
+function lockPathFor(userDataDir: string, version: string): string {
+	return join(locksDir(userDataDir), `${sanitizeVersion(version)}.lock`);
 }
 
-function focusPathFor(version: string): string {
-	return join(locksDir(), `${sanitizeVersion(version)}.focus`);
+function focusPathFor(userDataDir: string, version: string): string {
+	return join(locksDir(userDataDir), `${sanitizeVersion(version)}.focus`);
 }
 
 /** 检测 pid 是否仍存活（Windows/Unix 均可用 signal 0） */
@@ -130,22 +129,25 @@ function tryClaimLock(lockPath: string, version: string): boolean {
 
 /**
  * 尝试成为当前版本的主实例。
- * @param enabled 设置项 singleInstance；false 时允许多开（不写锁）
- * @param version app.getVersion()
- * @param onFocusRequest 同版本次实例请求前置窗口时回调（携带次实例的 argv，可解析通知激活参数）
+ * userData/argv/lifecycle are injected so the lock is reusable by Electron and
+ * the native Node sidecar without importing a host runtime.
  */
-export function acquireVersionSingleInstance(
-	enabled: boolean,
-	version: string,
-	onFocusRequest: (payload: FocusPayload) => void,
-): VersionSingleInstanceResult {
+export function acquireVersionSingleInstance(options: {
+	enabled: boolean;
+	version: string;
+	userDataDir: string;
+	argv: string[];
+	onFocusRequest: (payload: FocusPayload) => void;
+}): VersionSingleInstanceResult {
+	const { enabled, version, userDataDir, argv, onFocusRequest } = options;
 	if (!enabled) {
 		return { isPrimary: true, dispose: () => undefined };
 	}
 
-	mkdirSync(locksDir(), { recursive: true });
-	const lockPath = lockPathFor(version);
-	const focusPath = focusPathFor(version);
+	const instanceLocksDir = locksDir(userDataDir);
+	mkdirSync(instanceLocksDir, { recursive: true });
+	const lockPath = lockPathFor(userDataDir, version);
+	const focusPath = focusPathFor(userDataDir, version);
 	const focusName = basename(focusPath);
 
 	if (!tryClaimLock(lockPath, version)) {
@@ -158,7 +160,7 @@ export function acquireVersionSingleInstance(
 				JSON.stringify({
 					at: Date.now(),
 					fromPid: process.pid,
-					argv: process.argv.slice(1),
+					argv: argv.slice(1),
 				}),
 				"utf8",
 			);
@@ -203,7 +205,7 @@ export function acquireVersionSingleInstance(
 
 	let watcher: FSWatcher | null = null;
 	try {
-		watcher = watch(locksDir(), (_event, filename) => {
+		watcher = watch(instanceLocksDir, (_event, filename) => {
 			// filename 在部分平台可能为 Buffer/null
 			const name = filename == null ? "" : String(filename);
 			if (!name || name === focusName || name.endsWith(".focus")) {
@@ -238,9 +240,6 @@ export function acquireVersionSingleInstance(
 			// ignore
 		}
 	};
-
-	// 正常退出时释放，避免下次启动被当成「仍在运行」
-	app.once("will-quit", dispose);
 
 	return { isPrimary: true, dispose };
 }

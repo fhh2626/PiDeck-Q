@@ -8,7 +8,7 @@ const stylesEntry = readFileSync("src/renderer/src/styles.css", "utf8");
 const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
 const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const brand = readFileSync("src/renderer/src/components/app/AppParts.tsx", "utf8");
 const sidebar = readFileSync("src/renderer/src/components/sidebar/AppSidebar.tsx", "utf8");
 const tabs = readFileSync("src/renderer/src/components/session/SessionTabsBar.tsx", "utf8");
@@ -47,7 +47,7 @@ test("window controls are compact and match drag-layer inset", () => {
   );
 });
 
-const mainWindowControls = readFileSync("src/main/window/MainWindowControls.ts", "utf8");
+const mainWindowControls = readFileSync("src/native-node/host/NativeMainWindowControls.ts", "utf8");
 
 test("maximize button tracks window state with restore icon", () => {
   assert.match(header, /function RestoreIcon/);
@@ -57,10 +57,9 @@ test("maximize button tracks window state with restore icon", () => {
   assert.match(ipc, /appWindowIsMaximized/);
   assert.match(ipc, /appWindowMaximizedChanged/);
   assert.match(systemIpc, /appWindowIsMaximized/);
-  assert.match(mainWindowControls, /win\.on\("maximize"/);
-  assert.match(mainWindowControls, /win\.on\("unmaximize"/);
+  assert.match(mainWindowControls, /window\.maximizedChanged/);
   assert.match(mainWindowControls, /toggleAlwaysOnTop/);
-  assert.match(mainWindowControls, /setZoomFactor/);
+  assert.match(readFileSync("src/renderer/src/native/rendererZoom.ts", "utf8"), /document\.documentElement\.style\.zoom/);
   assert.match(mainWindowControls, /notifyTitleBarChange/);
   assert.match(preload, /isWindowMaximized:/);
   assert.match(preload, /onWindowMaximizedChange:/);
@@ -117,11 +116,9 @@ test("session tabs bar keeps trailing inset for drawer toggle (no px-* override)
 });
 
 test("toggle maximize tracks intent without stale isMaximized reads", () => {
-  assert.match(mainWindowControls, /const nextMaximized = !readMaximized\(win\)/);
-  assert.match(mainWindowControls, /emitMaximizedState\(win,\s*nextMaximized\)/);
-  assert.match(mainWindowControls, /return nextMaximized/);
-  assert.match(mainWindowControls, /win\.on\("maximize",\s*\(\)\s*=>\s*emitMaximizedState\(win,\s*true\)\)/);
-  assert.match(mainWindowControls, /win\.on\("unmaximize",\s*\(\)\s*=>\s*emitMaximizedState\(win,\s*false\)\)/);
+  assert.match(mainWindowControls, /toggleMaximize\(\): Promise<boolean>/);
+  assert.match(mainWindowControls, /window\.maximizedChanged/);
+  assert.match(mainWindowControls, /appWindowMaximizedChanged/);
   assert.doesNotMatch(
     systemIpc,
     /win\.webContents\.send\(ipcChannels\.appWindowMaximizedChanged,\s*win\.isMaximized\(\)\)/,
@@ -150,14 +147,14 @@ test("brand lockup is larger inside the 40px titlebar", () => {
 test("mac custom titlebar uses system traffic lights and insets collapsed tabs", () => {
   const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
-  const windowOptions = readFileSync("src/main/window/windowOptions.ts", "utf8");
+  const nativeWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
   // 右侧 Win 控件只在非 darwin 渲染；mac 靠 hiddenInset 红绿灯。
   assert.match(header, /const showWinWindowControls = platform !== "darwin"/);
   assert.match(shell, /mac-custom-titlebar/);
   assert.match(app, /platform=\{appInfo\.platform\}/);
   assert.match(app, /detectRendererPlatform\(\)/);
-  assert.match(windowOptions, /titleBarStyle: useNative[\s\S]*hiddenInset/);
-  assert.match(windowOptions, /trafficLightPosition: \{ x: 14, y: 14 \}/);
+  assert.match(nativeWindow, /Qt::FramelessWindowHint/);
+  assert.match(nativeWindow, /useNativeTitleBar/);
   assert.match(
     foundation,
     /\.wechat-shell\.custom-titlebar-enabled\.mac-custom-titlebar \{[\s\S]*--window-controls-width:\s*0px;/,

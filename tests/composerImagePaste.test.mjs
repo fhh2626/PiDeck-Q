@@ -47,7 +47,7 @@ test("dataUrlToFile 解码 base64 字节、MIME 与文件名正确", async () =>
 // ── 源码级接线断言：对话框 properties 与粘贴分支 ──
 
 const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const controller = readFileSync(
   "src/renderer/src/hooks/useSessionComposerController.ts",
   "utf8",
@@ -110,6 +110,6 @@ test("右键粘贴：图片/文件路径走 controller，纯文本返回 false �
 
 test("preload 暴露剪贴板位图读取（readImage，空图返回空串）", () => {
   assert.match(preload, /readImage: \(\) => \{/);
-  assert.match(preload, /clipboard\.readImage\(\)/);
-  assert.match(preload, /image\.isEmpty\(\) \? "" : image\.toDataURL\(\)/);
+  assert.match(preload, /syncHost\.readClipboardImage\(\)/);
+  assert.match(preload, /return image;/);
 });

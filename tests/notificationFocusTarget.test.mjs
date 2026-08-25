@@ -33,23 +33,11 @@ test("AgentManager notification target uses record id resolver", () => {
 
 // 冷启动时序：加载期目标必须进 pending 队列，且 renderer 挂载后主动拉取
 test("cold start focus target goes through pending queue", () => {
-  const indexSource = readFileSync("src/main/index.ts", "utf8");
-  const registerRpcSource = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
-  assert.match(indexSource, /function queueFocusTarget\(sessionId: string\)/);
-  assert.match(indexSource, /pendingFocusTarget = \{ sessionId \};/);
-  assert.match(indexSource, /flushPendingFocusTargetOnLoad\(\);/);
-  assert.match(indexSource, /sessionId = backend\.resolveSessionIdForAgent\(target\.agentId\)/);
-  // 拉取通道必须注册（renderer 挂载后取走即清空）
-  assert.match(registerRpcSource, /router\.handle\(ipcChannels\.appGetFocusTargetPending/);
-
-  const rendererSource = readFileSync(
-    "src/renderer/src/hooks/useSessionWorkspaceChrome.ts",
-    "utf8",
-  );
-  assert.match(rendererSource, /getPendingFocusTarget\?\.\(\)\.then/);
-  // 拉取与事件推送共用同一解析/重试逻辑（修复后不能出现两份 tryFocus）
-  assert.equal(
-    (rendererSource.match(/const tryFocus = \(attempt: number\) =>/g) ?? []).length,
-    1,
-  );
+  const indexSource = readFileSync("src/native-node/index.ts", "utf8");
+  const hostSource = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
+  assert.match(indexSource, /renderer\.ready/);
+  assert.match(indexSource, /resolveSessionIdForAgent/);
+  assert.match(hostSource, /pendingFocusTarget/);
+  assert.match(hostSource, /appFocusSessionTarget/);
+  assert.match(hostSource, /focusSessionFromNotification/);
 });

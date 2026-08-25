@@ -318,13 +318,13 @@ test("systemIpc theme patch calls PlatformTheme.setSource", async () => {
 	assert.ok(calls.hideApplicationMenu >= 1);
 });
 
-test("systemIpc zoomFactor patch calls setZoomFactor with the persisted value", async () => {
+test("systemIpc zoomFactor patch notifies the renderer CSS zoom adapter", async () => {
 	const { router, invoke } = createRouterHarness();
 	const { deps, calls } = createDeps();
 	registerSystemIpc(router, deps);
 
 	await invoke(ipcChannels.settingsUpdate, { zoomFactor: 1.1 });
-	assert.deepEqual(calls.setZoomFactor, [1.1]);
+	assert.equal(calls.notifyTitleBarChange, 1);
 });
 
 test("systemIpc useNativeTitleBar patch calls notifyTitleBarChange", async () => {

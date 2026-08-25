@@ -16,7 +16,7 @@ import { writeClipboard } from "../../utils/clipboard";
 import { ChevronDown, ChevronUp, MoreHorizontal, Plus, X } from "lucide-react";
 import { ConfirmDialog } from "../ui-shadcn/ConfirmDialog";
 import { Button } from "../ui-shadcn/button";
-import type { PiDesktopApi } from "../../../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import type { TerminalTab, TerminalTarget } from "../../../../shared/types";
 import { t } from "../../i18n";
 

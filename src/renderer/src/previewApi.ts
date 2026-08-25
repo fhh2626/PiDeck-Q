@@ -1,4 +1,4 @@
-import type { PiDesktopApi } from "../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import {
 	createDefaultExternalEditorSettings,
 	createDefaultSecurityConfig,
@@ -109,7 +109,6 @@ let previewSettings: AppSettings = {
 	expandInterimDuringStream: false,
 	collapsePrevRunsOnNewTurn: true,
 	showDevTools: false,
-	electronChromiumSandbox: false,
 	piProxyEnabled: false,
 	piProxyUrl: "http://127.0.0.1:7890",
 	piProxyBypass: "localhost,127.0.0.1,::1",
@@ -665,6 +664,7 @@ export function createPreviewApi(): PiDesktopApi {
 			onWindowMaximizedChange: () => () => undefined,
 			toggleAlwaysOnTopWindow: async () => false,
 			closeWindow: async () => undefined,
+			beginWindowDrag: async () => undefined,
 			toggleDevTools: async () => false,
 		},
 		skills: {

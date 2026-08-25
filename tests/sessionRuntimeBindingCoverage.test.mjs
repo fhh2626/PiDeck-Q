@@ -6,7 +6,7 @@ const coordinator = readFileSync(
   "src/main/sessions/SessionRuntimeCoordinator.ts",
   "utf8",
 );
-const main = readFileSync("src/main/index.ts", "utf8");
+const main = readFileSync("src/native-node/index.ts", "utf8");
 const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
 const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");

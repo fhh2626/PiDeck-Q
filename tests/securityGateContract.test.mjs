@@ -102,7 +102,7 @@ test("AgentManager passes security snapshot + session id to PiProcess options", 
 });
 
 test("preload exposes security namespace with three IPC methods", () => {
-	const preload = readFileSync("src/preload/index.ts", "utf8");
+	const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 	const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 	assert.match(preload, /security:\s*\{/);
 	assert.match(preload, /securityGetConfig/);

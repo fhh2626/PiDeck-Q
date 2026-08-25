@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const mainSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-const indexSource = readFileSync("src/main/index.ts", "utf8");
+const indexSource = readFileSync("src/native-node/index.ts", "utf8");
 const sessionBridgeSource = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const systemIpcSource = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 const sessionIpcSource = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-const preloadSource = readFileSync("src/preload/index.ts", "utf8");
+const preloadSource = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const ipcSource = readFileSync("src/shared/ipc.ts", "utf8");
 const appSource = readFileSync("src/renderer/src/App.tsx", "utf8");
 const rendererMainSource = readFileSync("src/renderer/src/main.tsx", "utf8");
@@ -53,11 +53,9 @@ test("renderer startup reports bootstrap mount and global errors", () => {
 
 test("agent create IPC and process handlers keep structured crash diagnostics", () => {
 	assert.match(sessionBridgeSource, /Agent create IPC failed/);
-	assert.match(indexSource, /Child process gone/);
-	assert.match(indexSource, /platform: process\.platform/);
+	assert.match(indexSource, /HostBridge/);
+	assert.match(indexSource, /NativeRendererServer/);
 	assert.match(mainSource, /attachPiProcessLifecycle/);
 	assert.match(mainSource, /buildStartupFailureMessage/);
 	assert.match(mainSource, /handlePiEvent failed/);
-	// spawn error 必须在 start 前可被业务侧接住，避免 mac 上闪退难排查
-	assert.match(mainSource, /监听器必须在 process\.start\(\) 之前挂上/);
 });

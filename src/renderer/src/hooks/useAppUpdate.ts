@@ -6,7 +6,7 @@ import type {
   AppUpdateDownloadProgress,
   AppUpdateInfo,
 } from "../../../shared/types";
-import type { PiDesktopApi } from "../../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 
 export interface UseAppUpdateOptions {
   api: PiDesktopApi;

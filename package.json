@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.1.5",
+  "version": "0.1.1",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
   "license": "MIT",
@@ -8,12 +8,6 @@
     "name": "ayuayue",
     "email": "ayuayue@users.noreply.github.com"
   },
-  "contributors": [
-    {
-      "name": "1900EasonJin",
-      "url": "https://github.com/1900EasonJin"
-    }
-  ],
   "homepage": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust#readme",
   "repository": {
     "type": "git",
@@ -22,60 +16,7 @@
   "bugs": {
     "url": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/issues"
   },
-  "keywords": [
-    "pi",
-    "pi-agent",
-    "ai-coding-agent",
-    "coding-agent",
-    "electron",
-    "electron-app",
-    "desktop",
-    "desktop-app",
-    "rpc",
-    "agent",
-    "ai-assistant",
-    "local-ai",
-    "developer-tools",
-    "productivity",
-    "workspace",
-    "session-management",
-    "git",
-    "terminal",
-    "monaco-editor",
-    "claude-code",
-    "codex",
-    "multi-project",
-    "typescript",
-    "windows",
-    "macos",
-    "linux",
-    "open-source"
-  ],
   "main": "out/main/index.js",
-  "scripts": {
-    "dev": "node scripts/dev.js",
-    "build": "tsc --noEmit --skipLibCheck --incremental && electron-vite build",
-    "build:fast": "electron-vite build",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "dist:win": "node scripts/dist-win.js",
-    "dist:win:dev": "node scripts/dist-win-dev.js",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip",
-    "dist:linux": "npm run build && electron-builder --linux AppImage deb tar.gz",
-    "preview": "electron-vite preview",
-    "test": "node --test --test-concurrency=4 \"tests/*.test.mjs\"",
-    "test:serial": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
-    "docs:dev": "vitepress dev docs-site",
-    "docs:build": "vitepress build docs-site",
-    "docs:preview": "vitepress preview docs-site",
-    "postinstall": "node scripts/fix-pty-permissions.js",
-    "typecheck": "tsc --noEmit",
-    "make-icon": "node scripts/make-icon.js",
-    "test:e2e": "npm run build:fast && playwright test",
-    "e2e": "playwright test",
-    "verify": "npm run typecheck && npm test && npm run test:e2e",
-    "sync:model-specs": "node scripts/sync-model-specs.mjs"
-  },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
     "@tiptap/core": "^3.29.2",
@@ -89,177 +30,5 @@
     "shiki": "^4.4.3",
     "sql.js": "^1.14.1",
     "undici": "^6.28.0"
-  },
-  "build": {
-    "appId": "com.ayuayue.pi-desktop",
-    "productName": "PiDeck-Q",
-    "protocols": [
-      {
-        "name": "PiDeck-Q Agent Link",
-        "schemes": [
-          "pideck"
-        ]
-      }
-    ],
-    "asar": true,
-    "compression": "maximum",
-    "afterPack": "./scripts/after-pack-cleanup.js",
-    "npmRebuild": false,
-    "asarUnpack": [
-      "node_modules/sql.js/dist/sql-wasm.wasm"
-    ],
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "icon": "build/icon",
-    "files": [
-      "out/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "resources/extensions",
-        "to": "extensions",
-        "filter": [
-          "*.ts"
-        ]
-      },
-      {
-        "from": "resources/extensions/pideck-q-better-compaction",
-        "to": "extensions/pideck-q-better-compaction",
-        "filter": [
-          "**/*.ts",
-          "LICENSE"
-        ]
-      },
-      {
-        "from": "resources/extensions/pideck-q-websearch",
-        "to": "extensions/pideck-q-websearch",
-        "filter": [
-          "**/*.ts"
-        ]
-      },
-      {
-        "from": "node_modules/undici",
-        "to": "extensions/node_modules/undici"
-      },
-      {
-        "from": "resources/xueprompts.db",
-        "to": "xueprompts.db"
-      },
-      {
-        "from": "resources/model-specs.db",
-        "to": "model-specs.db"
-      }
-    ],
-    "extraMetadata": {
-      "main": "out/main/index.js"
-    },
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        "nsis",
-        "zip"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    },
-    "mac": {
-      "icon": "build/icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.developer-tools"
-    },
-    "linux": {
-      "icon": "build/icons",
-      "target": [
-        "AppImage",
-        "deb",
-        "tar.gz"
-      ],
-      "category": "Development",
-      "maintainer": "ayuayue <ayuayue@users.noreply.github.com>"
-    }
-  },
-  "devDependencies": {
-    "@ai-sdk/react": "^4.0.51",
-    "@astron-team/skillhub": "^0.1.8",
-    "@codemirror/autocomplete": "^6.20.3",
-    "@codemirror/commands": "^6.10.4",
-    "@codemirror/lang-cpp": "^6.0.3",
-    "@codemirror/lang-css": "^6.3.1",
-    "@codemirror/lang-go": "^6.0.1",
-    "@codemirror/lang-html": "^6.4.12",
-    "@codemirror/lang-java": "^6.0.2",
-    "@codemirror/lang-javascript": "^6.2.5",
-    "@codemirror/lang-json": "^6.0.2",
-    "@codemirror/lang-less": "^6.0.2",
-    "@codemirror/lang-markdown": "^6.5.2",
-    "@codemirror/lang-python": "^6.2.1",
-    "@codemirror/lang-rust": "^6.0.2",
-    "@codemirror/lang-sass": "^6.0.2",
-    "@codemirror/lang-sql": "^6.10.0",
-    "@codemirror/lang-xml": "^6.1.0",
-    "@codemirror/lang-yaml": "^6.1.3",
-    "@codemirror/language": "^6.12.4",
-    "@codemirror/legacy-modes": "^6.5.3",
-    "@codemirror/lint": "^6.9.7",
-    "@codemirror/search": "^6.7.1",
-    "@codemirror/state": "^6.7.1",
-    "@codemirror/view": "^6.43.8",
-    "@fiahfy/icns": "^0.0.7",
-    "@lezer/highlight": "^1.2.3",
-    "@pierre/diffs": "^1.3.5",
-    "@playwright/test": "^1.62.0",
-    "@streamdown/code": "^1.1.1",
-    "@streamdown/math": "^1.0.2",
-    "@streamdown/mermaid": "^1.0.2",
-    "@tailwindcss/vite": "^4.3.3",
-    "@types/node": "^24.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/xterm": "^6.0.0",
-    "ai": "^7.0.48",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "cmdk": "^1.1.1",
-    "electron": "^43.4.0",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^4.0.0",
-    "eslint": "^10.6.0",
-    "html-to-image": "^1.11.13",
-    "jotai": "^2.20.2",
-    "katex": "^0.17.0",
-    "lucide-react": "^1.17.0",
-    "mermaid": "^11.15.0",
-    "png-to-ico": "^3.0.1",
-    "radix-ui": "^1.6.7",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-resizable-panels": "^4.12.2",
-    "rehype-katex": "^7.0.1",
-    "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0",
-    "remove-markdown": "^0.6.4",
-    "sharp": "^0.34.5",
-    "sonner": "^2.0.7",
-    "streamdown": "^2.5.0",
-    "tailwind-merge": "^3.6.0",
-    "tailwindcss": "^4.3.3",
-    "tw-animate-css": "^1.4.0",
-    "typescript": "^5.9.0",
-    "vite": "^7.3.5",
-    "vitepress": "^1.6.4"
   }
 }

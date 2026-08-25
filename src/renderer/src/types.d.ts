@@ -1,4 +1,4 @@
-import type { PiDesktopApi } from "../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 
 declare global {
   interface Window {

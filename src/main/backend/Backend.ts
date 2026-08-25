@@ -4,7 +4,7 @@ import type { AppLogger } from "../logging/AppLogger";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { RpcRouter } from "../transport/RpcRouter";
 import type { PlatformServices } from "../platform/PlatformServices";
-import type { MainWindowControls } from "../window/MainWindowControls";
+import type { MainWindowControls } from "../window/MainWindowControlsContract";
 
 export interface BackendHost {
 	mainWindowControls: MainWindowControls;

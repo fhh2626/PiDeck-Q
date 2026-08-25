@@ -114,12 +114,6 @@ export type StartupWindowMode =
 	collapsePrevRunsOnNewTurn: boolean;
 	/** 是否开启开发者控制台（DevTools） */
 	showDevTools: boolean;
-	/**
-	 * Electron Chromium 渲染进程沙箱（与 pi Agent 无关）。
-	 * false（默认）：关闭沙箱，兼容 Windows 安全软件/旧 GPU 驱动；
-	 * true：启用 Chromium 沙箱，需重启 PiDeck 后生效。
-	 */
-	electronChromiumSandbox: boolean;
 	/** 是否给 pi agent 子进程注入代理环境变量，不影响 desktop 自身网络请求 */
 	piProxyEnabled: boolean;
 	/** pi agent 使用的代理地址，例如 http://127.0.0.1:7890 */

@@ -7,10 +7,11 @@ import { TooltipProvider } from "./components/ui-shadcn/tooltip";
 import { Toaster } from "./components/ui-shadcn/sonner";
 import { t } from "./i18n";
 import { showNotice } from "./utils/notice";
+import { desktopApi, initializeDesktopRuntime } from "./desktopApi";
 import "./styles.css";
 
 function writeStartupLog(level: AppLogLevel, message: string, detail?: unknown) {
-  window.piDesktop?.app.rendererLog(level, "renderer", message, detail).catch(() => undefined);
+  void desktopApi.app.rendererLog(level, "renderer", message, detail).catch(() => undefined);
 }
 
 /** 将异常压缩成用户可读的短文案，避免 toast 被超长 stack 淹没。 */
@@ -78,29 +79,6 @@ window.addEventListener("unhandledrejection", (event) => {
   }
 });
 
-writeStartupLog("info", "Renderer bootstrap started", {
-  url: window.location.href,
-});
-
-const rootElement = document.getElementById("root");
-if (!rootElement) {
-  writeStartupLog("error", "Renderer root element missing");
-  throw new Error("Renderer root element missing");
-}
-
-ReactDOM.createRoot(rootElement).render(
-  <React.StrictMode>
-    <AppErrorBoundary>
-      {/* shadcn Tooltip 必须在 Provider 树内使用（#115 U1） */}
-      <TooltipProvider>
-        <App />
-        {/* 全局 toast 出口（#115）：showNotice 经 sonner 在此渲染 */}
-        <Toaster />
-      </TooltipProvider>
-    </AppErrorBoundary>
-  </React.StrictMode>,
-);
-
 function dismissBootOverlay() {
   const overlay = document.getElementById("boot-overlay");
   if (!overlay) return;
@@ -122,13 +100,56 @@ function dismissBootOverlay() {
 }
 
 /**
- * React 首次渲染完成后淡出启动遮罩。前台窗口走双 rAF，保证 transition
- * 有独立的布局帧；独立超时不依赖 rAF，因为 Electron 隐藏或后台窗口可将
- * rAF 长时间节流，不能让已挂载的工作台永久被遮挡。
+ * Native runtime must finish its bootstrap handshake before React mounts. Electron,
+ * LAN Web and preview runtimes resolve immediately and keep their current behavior.
  */
-requestAnimationFrame(() => {
-  writeStartupLog("info", "Renderer React tree mounted");
-  requestAnimationFrame(dismissBootOverlay);
-});
+async function bootstrap() {
+  await initializeDesktopRuntime();
+  writeStartupLog("info", "Renderer bootstrap started", {
+    url: window.location.href,
+  });
 
-window.setTimeout(dismissBootOverlay, 1500);
+  const rootElement = document.getElementById("root");
+  if (!rootElement) {
+    writeStartupLog("error", "Renderer root element missing");
+    throw new Error("Renderer root element missing");
+  }
+
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <AppErrorBoundary>
+        {/* shadcn Tooltip 必须在 Provider 树内使用（#115 U1） */}
+        <TooltipProvider>
+          <App />
+          {/* 全局 toast 出口（#115）：showNotice 经 sonner 在此渲染 */}
+          <Toaster />
+        </TooltipProvider>
+      </AppErrorBoundary>
+    </React.StrictMode>,
+  );
+
+  /**
+   * React 首次渲染完成后淡出启动遮罩。前台窗口走双 rAF，保证 transition
+   * 有独立的布局帧；独立超时不依赖 rAF，因为 Electron 隐藏或后台窗口可将
+   * rAF 长时间节流，不能让已挂载的工作台永久被遮挡。
+   */
+  const isNativeRuntime = new URLSearchParams(window.location.search).get("runtime") === "native";
+  if (isNativeRuntime) {
+    // Qt WebView can defer requestAnimationFrame/timer callbacks while its
+    // native child surface is becoming visible. Do not leave the already
+    // mounted React tree behind the boot overlay in that case.
+    dismissBootOverlay();
+    writeStartupLog("info", "Renderer React tree mounted");
+  } else {
+    requestAnimationFrame(() => {
+      writeStartupLog("info", "Renderer React tree mounted");
+      requestAnimationFrame(dismissBootOverlay);
+    });
+    window.setTimeout(dismissBootOverlay, 1500);
+  }
+}
+
+void bootstrap().catch((error) => {
+  writeStartupLog("error", "Renderer bootstrap failed", error);
+  throw error;
+});

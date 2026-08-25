@@ -37,9 +37,9 @@ import {
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { showNotice } from "./utils/notice";
+import { desktopApi } from "./desktopApi";
 import { collectModelSpecPatches } from "./utils/modelSpecAutoFill";
 import { Component, useRef, useState, useEffect, useCallback, type ReactNode } from "react";
-import type { PiDesktopApi } from "../../preload";
 import { AuthTab } from "./config/AuthTab";
 import { ModelsTab } from "./config/ModelsTab";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
@@ -64,8 +64,27 @@ import type { ConfigFileDiagnostic, CreatePiPromptTemplateInput, PiExtensionList
 import { getProviderHeaders, KNOWN_PROVIDER_ENDPOINTS } from "./config/providerHeaders";
 import { ALL_CONFIG_DIRTY_KEYS, dirtyKeysClearedByReload } from "./config/configDirtyMarks";
 
-const api: PiDesktopApi = (window as unknown as { piDesktop: PiDesktopApi })
-	.piDesktop;
+// Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
+const api = {
+	get app() {
+		return desktopApi.app;
+	},
+	get config() {
+		return desktopApi.config;
+	},
+	get extensions() {
+		return desktopApi.extensions;
+	},
+	get projects() {
+		return desktopApi.projects;
+	},
+	get prompts() {
+		return desktopApi.prompts;
+	},
+	get skills() {
+		return desktopApi.skills;
+	},
+};
 const DEFAULT_MODEL_CONFIG: Pick<
 	ModelItem,
 	"contextWindow" | "maxTokens" | "reasoning" | "input"

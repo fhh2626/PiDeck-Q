@@ -1,11 +1,12 @@
 import { readdirSync, readFileSync } from "node:fs";
 
-const entryPath = "src/main/index.ts";
+const entryPath = "src/native-node/index.ts";
 const ipcDirectory = "src/main/ipc";
 const backendDirectory = "src/main/backend";
 const mainDomainPaths = [
   "src/main/update/AppUpdateService.ts",
-  "src/main/window/AppTray.ts",
+  "src/main/window/MainWindowControlsContract.ts",
+  "src/native-node/host/NativeMainWindowControls.ts",
 ];
 
 export const mainIpcSources = [

@@ -19,7 +19,7 @@ test("Browser Panel implementation files are removed", () => {
 });
 
 test("Browser Panel wiring is absent while controlled external links remain", () => {
-  const main = read("src/main/index.ts");
+  const main = read("src/native-node/index.ts");
   const ipc = read("src/shared/ipc.ts");
   const settings = read("src/shared/types/settings.ts");
   const app = read("src/renderer/src/App.tsx");

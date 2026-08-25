@@ -1,0 +1,50 @@
+#include "MainWebSurface.h"
+
+#include <QtWebView/QWebView>
+#include <QtWebView/QWebViewSettings>
+
+#include <QVBoxLayout>
+
+MainWebSurface::MainWebSurface(QWidget *parent)
+{
+    m_view = new QWebView();
+    auto *settings = m_view->settings();
+    settings->setAttribute(QWebViewSettings::WebAttribute::JavaScriptEnabled, true);
+    settings->setAttribute(QWebViewSettings::WebAttribute::LocalStorageEnabled, true);
+    settings->setAttribute(QWebViewSettings::WebAttribute::AllowFileAccess, false);
+    settings->setAttribute(QWebViewSettings::WebAttribute::LocalContentCanAccessFileUrls, false);
+
+    m_container = QWidget::createWindowContainer(m_view, parent);
+    m_container->setFocusPolicy(Qt::StrongFocus);
+    // QWebView is a QWindow embedded in a QWidget hierarchy. Explicitly show
+    // the native child so WebView2 creates its visual surface before the first
+    // load; relying only on the container visibility leaves a transparent host
+    // window on some Qt 6.11/MSVC builds.
+    m_view->show();
+}
+
+QWebView *MainWebSurface::view() const
+{
+    return m_view;
+}
+
+QWidget *MainWebSurface::container() const
+{
+    return m_container;
+}
+
+void MainWebSurface::load(const QUrl &url)
+{
+    m_view->setUrl(url);
+}
+
+void MainWebSurface::reload()
+{
+    m_view->reload();
+}
+
+void MainWebSurface::focus()
+{
+    m_view->requestActivate();
+    m_container->setFocus();
+}
