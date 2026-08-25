@@ -34,6 +34,36 @@ test("NativeRpcRouter rejects duplicates and unknown channels", async () => {
 	await assert.rejects(() => router.invoke("test:missing", []), /Unknown RPC channel/);
 });
 
+test("NativeRendererServer rejects a body over the shared native budget", async () => {
+	const rendererRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-large-renderer-"));
+	try {
+		writeFileSync(join(rendererRoot, "index.html"), "<html>native</html>");
+		const server = new NativeRendererServer({
+			router: new NativeRpcRouter(),
+			token: "secret-token",
+			rendererRoot,
+			backgroundDirectory: rendererRoot,
+			getBootstrap: async () => ({ clipboard: {}, settings: { zoomFactor: 1 } }),
+		});
+		const address = await server.start();
+		const response = await new Promise((resolveResponse, reject) => {
+			const request = httpRequest({
+				host: "127.0.0.1", port: address.port, path: "/__pideck/rpc", method: "POST",
+				headers: { "content-length": String(33 * 1024 * 1024), "x-pideck-token": "secret-token" },
+			}, (incoming) => {
+				incoming.resume();
+				incoming.on("end", () => resolveResponse(incoming.statusCode));
+			});
+			request.on("error", reject);
+			request.end();
+		});
+		assert.equal(response, 413);
+		await server.stop();
+	} finally {
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
 test("NativeRendererServer authenticates, dispatches RPC, serves bootstrap and protected backgrounds", async () => {
 	const rendererRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-renderer-"));
 	const backgroundRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-bg-"));

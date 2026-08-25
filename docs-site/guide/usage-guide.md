@@ -45,7 +45,7 @@ pi --version
 
 访问 PiDeck 的 GitHub Releases 页面：
 
-[https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases)
+[https://github.com/fhh2626/PiDeck-Q/releases](https://github.com/fhh2626/PiDeck-Q/releases)
 
 找到最新版本，根据你的操作系统选择：
 

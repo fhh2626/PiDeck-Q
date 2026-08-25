@@ -61,8 +61,8 @@ test("RPC logging controls resolve the current Session target before touching Ag
 });
 
 test("application focus requests cross into the renderer as a stable Session ID", () => {
-	assert.match(main, /appFocusSessionTarget, \{ sessionId \}/);
-	assert.match(app, /onFocusTarget: \(target: \{ sessionId: string \}\)/);
+	assert.match(main, /appFocusSessionTarget, target/);
+	assert.match(app, /onFocusTarget: \(target: AppFocusSessionTarget \| undefined|onFocusTarget: \(target: AppFocusSessionTarget\)/);
 	assert.match(app, /sessionRecordByIdAtomFamily\(target\.sessionId\)/);
 });
 

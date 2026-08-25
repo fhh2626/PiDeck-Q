@@ -85,6 +85,14 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.nativeNode))
 		? join(output, "app")
 		: output;
+	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
+	if (await exists(join(output, "resources", "extensions"))) {
+		if (!(await exists(extensionUndiciPackage))) {
+			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
+		} else {
+			checked.push(extensionUndiciPackage);
+		}
+	}
 	const entryPaths = Object.fromEntries(
 		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(artifactRoot, path)]),
 	);

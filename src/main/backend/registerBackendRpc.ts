@@ -370,8 +370,11 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		],
 	});
 
-	// renderer 挂载后拉取 pending 跳转目标（一次性，取走即清空）
-	router.handle(ipcChannels.appGetFocusTargetPending, () => {
-		return host.takePendingFocusTarget();
+	// renderer 挂载后读取 pending 跳转目标；只在 renderer 完成实际聚焦后 ACK，
+	// 防止 live push 后 reload 又重复消费旧通知，也防止旧 ACK 清掉新通知。
+	router.handle(ipcChannels.appGetFocusTargetPending, () => host.peekPendingFocusTarget());
+	router.handle(ipcChannels.appAcknowledgeFocusTarget, (id: string) => {
+		if (typeof id !== "string" || id.length === 0 || id.length > 128) return;
+		host.acknowledgeFocusTarget(id);
 	});
 }

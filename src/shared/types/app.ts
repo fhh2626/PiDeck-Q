@@ -124,6 +124,12 @@ export type PiProxyTestResult = {
 
 // ── App Info / Updates / Logging ───────────────────────────────────────
 
+export type AppFocusSessionTarget = {
+	/** Monotonic delivery identity; ACKs must never clear a newer target. */
+	id: string;
+	sessionId: string;
+};
+
 export type AppInfo = {
 	version: string;
 	releasesUrl: string;

@@ -133,6 +133,9 @@ async function main(): Promise<void> {
 			if (!memoryMonitor || typeof payload !== "object" || payload === null) return;
 			memoryMonitor.updateRendererDiagnostics(payload as NativeRendererDiagnostics);
 		},
+		onOversizedEvent: (channel, bytes) => {
+			void backend?.appLogger.warn("native", "Dropped oversized renderer event", { channel, bytes });
+		},
 	});
 	rendererServer = placeholderServer;
 	host.on<NativeClipboardSnapshot>("native.clipboard", (snapshot) => {

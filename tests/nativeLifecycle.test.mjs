@@ -23,6 +23,9 @@ test("Qt handles sidecar lifecycle locally and uses the graceful ACK event", () 
 	assert.doesNotMatch(nodeController, /sendEvent\(QStringLiteral\("application\.node(?:Error|Exit)"/);
 	assert.match(nodeIndex, /application\.readyToExit/);
 	assert.match(nodeIndex, /closeGracefully/);
+	assert.match(nodeController, /m_readyToExit/);
+	assert.match(nodeController, /postAckExitTimeoutMs/);
+	assert.match(nodeController, /gracefulTimer/);
 });
 
 test("native dev mode explicitly isolates packaged state, user data and toast identity", () => {

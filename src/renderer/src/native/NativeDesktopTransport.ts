@@ -1,4 +1,5 @@
 import type { DesktopRpcTransport } from "@shared/desktop/DesktopRpcTransport";
+import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
 
 interface NativeRpcResponse<T> {
 	ok: boolean;
@@ -40,13 +41,17 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 
 	async invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
 		if (this.disposed) throw new Error("Native desktop transport is disposed");
+		const body = JSON.stringify({ channel, args });
+		if (new TextEncoder().encode(body).byteLength > MAX_NATIVE_RPC_BODY_BYTES) {
+			throw new Error("Native RPC request exceeds 32 MB");
+		}
 		const response = await fetch(new URL("/__pideck/rpc", this.baseUrl), {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
 				"x-pideck-token": this.token,
 			},
-			body: JSON.stringify({ channel, args }),
+			body,
 		});
 		let payload: NativeRpcResponse<T>;
 		try {

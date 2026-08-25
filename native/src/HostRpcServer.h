@@ -29,7 +29,7 @@ protected:
 private:
     void handleData(QTcpSocket *socket, const QByteArray &chunk);
     void handleFrame(QTcpSocket *socket, const QByteArray &payload);
-    void writeFrame(QTcpSocket *socket, const QJsonObject &frame);
+    bool writeFrame(QTcpSocket *socket, const QJsonObject &frame);
     void sendResponse(QTcpSocket *socket, const QString &id, bool ok,
                       const QJsonValue &result = QJsonValue(QJsonValue::Undefined),
                       const QString &error = {});

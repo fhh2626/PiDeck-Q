@@ -20,14 +20,14 @@ pi --mode rpc
 
 Windows、macOS、Linux 的预构建安装包发布在 GitHub Releases：
 
-[打开 GitHub Releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases)
+[打开 GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases)
 
 安装后首次启动时，PiDeck 会尝试自动检测 `pi` 路径。如果检测失败，可以在设置里手动填写 pi 可执行文件路径。
 
 ## 从源码运行
 
 ```bash
-git clone https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git
+git clone https://github.com/fhh2626/PiDeck-Q.git
 cd pi-desktop
 npm install
 npm run make-icon

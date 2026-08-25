@@ -4,6 +4,11 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+const PINNED_NODE_VERSION = "v24.19.0";
+if (process.version !== PINNED_NODE_VERSION) {
+	throw new Error(`Native Node build requires ${PINNED_NODE_VERSION}; got ${process.version}. Use the pinned Node runtime before rebuilding node-pty.`);
+}
+
 const npmCli = process.env.npm_execpath
 	?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 // CI and release builds run this script under the pinned Node 24 toolchain;

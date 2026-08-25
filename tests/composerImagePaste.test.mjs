@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  composerImageBase64Bytes,
   dataUrlToFile,
+  exceedsComposerImagePayloadBudget,
   imageMimeTypeFromPath,
   isImageFilePath,
 } from "../src/renderer/src/utils/composerImages.ts";
@@ -33,6 +35,14 @@ test("imageMimeTypeFromPath 按扩展名推导 MIME", () => {
   assert.equal(imageMimeTypeFromPath("a.gif"), "image/gif");
   assert.equal(imageMimeTypeFromPath("a.webp"), "image/webp");
   assert.equal(imageMimeTypeFromPath("a.unknown"), "image/png");
+});
+
+test("图片总 base64 payload 遵守 Native RPC 预算", () => {
+  const under = [{ type: "image", data: "x".repeat(1024), mimeType: "image/png" }];
+  const over = [{ type: "image", data: "x".repeat(25 * 1024 * 1024), mimeType: "image/png" }];
+  assert.equal(composerImageBase64Bytes(under), 1024);
+  assert.equal(exceedsComposerImagePayloadBudget(under), false);
+  assert.equal(exceedsComposerImagePayloadBudget(over), true);
 });
 
 test("dataUrlToFile 解码 base64 字节、MIME 与文件名正确", async () => {

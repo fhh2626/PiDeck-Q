@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { ipcChannels } from "../../shared/ipc";
+import type { AppFocusSessionTarget } from "../../shared/types";
 import type { HostBridge } from "./HostBridge";
 import { NativeMainWindowControls } from "./NativeMainWindowControls";
 import type { BackendHost } from "../../main/backend/Backend";
@@ -15,7 +17,7 @@ export type NativeTrayLabels = {
 /** BackendHost adapter: routes only host/renderer lifecycle operations to Qt/HTTP. */
 export class NativeBackendHost implements BackendHost {
 	readonly mainWindowControls: NativeMainWindowControls;
-	private pendingFocusTarget: { sessionId: string } | null = null;
+	private pendingFocusTarget: AppFocusSessionTarget | null = null;
 	private liveWindow = false;
 	private windowVisible = false;
 	private logger?: Pick<AppLogger, "warn">;
@@ -32,7 +34,9 @@ export class NativeBackendHost implements BackendHost {
 			(channel, ...args) => this.sendToRenderer(channel, ...args),
 		);
 		host.on<{ sessionId?: string }>("application.focusTarget", (payload) => {
-			if (payload?.sessionId) this.pendingFocusTarget = { sessionId: payload.sessionId };
+			if (payload?.sessionId) {
+				this.pendingFocusTarget = { id: randomUUID(), sessionId: payload.sessionId };
+			}
 		});
 	}
 
@@ -83,14 +87,13 @@ export class NativeBackendHost implements BackendHost {
 		void this.host.request("tray.update", labels).catch(() => undefined);
 	}
 
-	peekPendingFocusTarget(): { sessionId: string } | null {
+	peekPendingFocusTarget(): AppFocusSessionTarget | null {
 		return this.pendingFocusTarget;
 	}
 
-	takePendingFocusTarget(): { sessionId: string } | null {
-		const target = this.pendingFocusTarget;
-		this.pendingFocusTarget = null;
-		return target;
+	/** Clear only the target that the renderer actually handled. */
+	acknowledgeFocusTarget(id: string): void {
+		if (this.pendingFocusTarget?.id === id) this.pendingFocusTarget = null;
 	}
 
 	focusSessionFromNotification(sessionId?: string): boolean {
@@ -99,8 +102,9 @@ export class NativeBackendHost implements BackendHost {
 		if (sessionId) {
 			// Keep a pull-safe copy even when the window is already marked live:
 			// EventSource may still be connecting when a notification arrives.
-			this.pendingFocusTarget = { sessionId };
-			if (this.liveWindow) this.sendToRenderer(ipcChannels.appFocusSessionTarget, { sessionId });
+			const target: AppFocusSessionTarget = { id: randomUUID(), sessionId };
+			this.pendingFocusTarget = target;
+			if (this.liveWindow) this.sendToRenderer(ipcChannels.appFocusSessionTarget, target);
 		}
 		return this.liveWindow;
 	}

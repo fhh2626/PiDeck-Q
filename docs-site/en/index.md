@@ -8,13 +8,13 @@ hero:
   actions:
     - theme: brand
       text: Download Latest
-      link: https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+      link: https://github.com/fhh2626/PiDeck-Q/releases
     - theme: alt
       text: Get Started
       link: /en/guide/getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
+      link: https://github.com/fhh2626/PiDeck-Q
 
 features:
   - title: Multi-Project Workspace

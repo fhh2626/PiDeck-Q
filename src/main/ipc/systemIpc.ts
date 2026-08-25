@@ -1,3 +1,4 @@
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { RpcRouter } from "../transport/RpcRouter";
 import { ipcChannels } from "../../shared/ipc";
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
@@ -471,7 +472,7 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 
 	router.handle(ipcChannels.appInfo, () => ({
 		version: platformApplication?.version ?? "0.0.0",
-		releasesUrl: RELEASES_URL ?? "https://github.com/ayuayue/pi-desktop/releases",
+		releasesUrl: RELEASES_URL ?? APP_RELEASES_URL,
 		platform: process.platform,
 	}));
 
@@ -489,9 +490,12 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.appDownloadUpdate, async (asset: AppUpdateAsset) =>
 		downloadUpdateAsset(asset),
 	);
-	router.handle(ipcChannels.appInstallUpdate, async (filePath: string) =>
-		installDownloadedUpdate(filePath),
-	);
+	router.handle(ipcChannels.appInstallUpdate, async (filePath: unknown) => {
+		if (typeof filePath !== "string" || filePath.length === 0 || filePath.length > 4096) {
+			throw new Error("Invalid update package path");
+		}
+		return installDownloadedUpdate(filePath);
+	});
 
 	// ── 应用日志 ─────────────────────────────────────────────────────
 

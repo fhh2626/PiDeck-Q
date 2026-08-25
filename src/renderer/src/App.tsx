@@ -9,6 +9,7 @@ import {
   useCallback,
 } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import { SKIN_PRESETS } from "./themePresets";
 import { resolveChatTypographyVars } from "./lib/chatTypography";
 // 壁纸模式已注入的 token 键（effect 重跑/清除设置时需要跨运行保留，避免漏清）
@@ -158,6 +159,7 @@ import { createDefaultExternalEditorSettings } from "../../shared/types";
 import type {
   AgentRuntimeState,
   AgentTab,
+  AppFocusSessionTarget,
   AppInfo,
   AppSettings,
   FileTreeNode,
@@ -609,7 +611,7 @@ export function App() {
   const [webServiceChanging, setWebServiceChanging] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo>({
     version: "-",
-    releasesUrl: "https://github.com/ayuayue/pi-desktop/releases",
+    releasesUrl: APP_RELEASES_URL,
     // 同步判定，避免 Mac 首帧在 appInfo IPC 返回前误画 Win 窗口按钮
     platform: detectRendererPlatform(),
     homeDir: "",
@@ -1365,7 +1367,7 @@ export function App() {
       showToast(t("settings.restartNotice"));
     },
     onTrustRequest: overlays.setTrustRequest,
-    onFocusTarget: (target: { sessionId: string }) => {
+    onFocusTarget: (target: AppFocusSessionTarget) => {
       const session = store.get(sessionRecordByIdAtomFamily(target.sessionId));
       if (session) selectSessionCommand(session.projectId, session.id, false);
     },

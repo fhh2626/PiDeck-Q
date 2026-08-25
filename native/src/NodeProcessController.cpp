@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcessEnvironment>
@@ -199,9 +200,27 @@ void NodeProcessController::stop()
     // stop the renderer server, save bounds, and close the host bridge first.
     if (m_host) m_host->sendEvent(QStringLiteral("application.prepareQuit"), QJsonObject{});
     constexpr int gracefulTimeoutMs = 1500;
-    if (m_process.waitForFinished(gracefulTimeoutMs)) {
+    constexpr int postAckExitTimeoutMs = 250;
+    QElapsedTimer gracefulTimer;
+    gracefulTimer.start();
+    while (m_process.state() != QProcess::NotRunning && gracefulTimer.elapsed() < gracefulTimeoutMs) {
+        const int remaining = gracefulTimeoutMs - static_cast<int>(gracefulTimer.elapsed());
+        m_process.waitForFinished(qMin(50, remaining));
+        if (m_readyToExit) {
+            // The ACK is emitted only after Backend.dispose, lock release,
+            // renderer stop, and bounds persistence. Do not spend the full
+            // watchdog window waiting for process.exit(0) after that point.
+            if (m_process.state() == QProcess::NotRunning || m_process.waitForFinished(postAckExitTimeoutMs)) {
 #ifdef Q_OS_WIN
-        // Closing the Job also handles descendants that outlived Node itself.
+                closeJobObject();
+#endif
+                return;
+            }
+            break;
+        }
+    }
+    if (m_process.state() == QProcess::NotRunning) {
+#ifdef Q_OS_WIN
         closeJobObject();
 #endif
         return;

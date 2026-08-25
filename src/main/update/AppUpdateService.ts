@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, realpath } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type {
 	AppUpdateAsset,
 	AppUpdateDownloadProgress,
@@ -9,6 +9,7 @@ import type {
 } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
+import { APP_LATEST_RELEASE_API, APP_RELEASES_URL } from "../../shared/appIdentity.ts";
 import type {
 	PlatformApplication,
 	PlatformDownloads,
@@ -16,8 +17,8 @@ import type {
 	PlatformShell,
 } from "../platform/PlatformServices";
 
-export const RELEASES_URL = "https://github.com/ayuayue/pi-desktop/releases";
-const LATEST_RELEASE_API = "https://api.github.com/repos/ayuayue/pi-desktop/releases/latest";
+export const RELEASES_URL = APP_RELEASES_URL;
+const LATEST_RELEASE_API = APP_LATEST_RELEASE_API;
 
 type GitHubRelease = {
 	tag_name?: string;
@@ -34,7 +35,9 @@ type AppUpdateServiceDeps = {
 	emitProgress: (progress: AppUpdateDownloadProgress) => void;
 	platformApp: PlatformApplication;
 	platformPaths: PlatformPaths;
-	platformShell: Pick<PlatformShell, "openPath">;
+	platformShell: Pick<PlatformShell, "openPath"> & {
+		installUpdate?: (path: string) => Promise<void>;
+	};
 	platformDownloads: PlatformDownloads;
 	fetchFn?: typeof globalThis.fetch;
 };
@@ -64,6 +67,11 @@ function parseGitHubRelease(value: unknown): GitHubRelease {
 
 function normalizeVersion(version: string) {
 	return version.trim().replace(/^v/i, "");
+}
+
+function isWithin(root: string, candidate: string): boolean {
+	const rel = relative(resolve(root), resolve(candidate));
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function compareVersions(left: string, right: string) {
@@ -238,10 +246,31 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 	}
 
 	async function installDownloadedUpdate(filePath: string): Promise<void> {
-		await deps.logger.info("update", "Open downloaded update package", { filePath });
-		const result = await deps.platformShell.openPath(filePath);
+		if (typeof filePath !== "string") {
+			throw new Error(deps.translate("update.openFailed"));
+		}
+		const updatesDir = resolve(join(deps.platformPaths.userData, "updates"));
+		const resolvedFilePath = resolve(filePath);
+		let realUpdatesDir: string;
+		let realFilePath: string;
+		try {
+			realUpdatesDir = await realpath(updatesDir);
+			realFilePath = await realpath(resolvedFilePath);
+		} catch {
+			throw new Error(deps.translate("update.openFailed"));
+		}
+		if (!isWithin(realUpdatesDir, realFilePath) || basename(resolvedFilePath) !== basename(filePath)) {
+			void deps.logger.warn("update", "Rejected update package outside managed download directory", { filePath });
+			throw new Error(deps.translate("update.openFailed"));
+		}
+		await deps.logger.info("update", "Open downloaded update package", { filePath: realFilePath });
+		if (deps.platformShell.installUpdate) {
+			await deps.platformShell.installUpdate(realFilePath);
+			return;
+		}
+		const result = await deps.platformShell.openPath(realFilePath);
 		if (result.ok) return;
-		await deps.logger.warn("update", "Failed to open downloaded update package", { filePath, error: result.error });
+		await deps.logger.warn("update", "Failed to open downloaded update package", { filePath: realFilePath, error: result.error });
 		throw new Error(deps.translate("update.openFailed"));
 	}
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
@@ -14,4 +15,46 @@ test("native package exposes a complete reproducible build chain", () => {
 	assert.equal(packageJson.main, undefined);
 	const packageNames = Object.keys({ ...packageJson.dependencies, ...packageJson.devDependencies });
 	assert.deepEqual(packageNames.filter((name) => name.includes("electron")), []);
+	assert.equal(packageJson.devDependencies.esbuild, "^0.25.12");
+	assert.equal(packageLock.packages["node_modules/esbuild"]?.version, "0.25.12");
+
+	const scriptsRoot = "scripts";
+	const scriptFiles = readdirSync(scriptsRoot, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && /\.(mjs|js|ts)$/.test(entry.name))
+		.map((entry) => join(scriptsRoot, entry.name));
+	for (const scriptPath of scriptFiles) {
+		const source = readFileSync(scriptPath, "utf8");
+		for (const match of source.matchAll(/^\s*import\s+[^\n]*?\sfrom\s+["']([^"']+)["']/gm)) {
+			const imported = match[1];
+			if (imported.startsWith("node:") || imported.startsWith(".") || imported.startsWith("/")) continue;
+			const packageName = imported.startsWith("@") ? imported.split("/").slice(0, 2).join("/") : imported.split("/")[0];
+			assert.ok(packageNames.includes(packageName), `${scriptPath} imports undeclared package ${packageName}`);
+		}
+	}
+});
+
+test("updates and package metadata use the canonical PiDeck-Q repository", () => {
+	const identity = readFileSync("src/shared/appIdentity.ts", "utf8");
+	const update = readFileSync("src/main/update/AppUpdateService.ts", "utf8");
+	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+	const windowsWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+	assert.match(identity, /fhh2626\/PiDeck-Q/);
+	assert.match(update, /APP_LATEST_RELEASE_API/);
+	assert.equal(pkg.repository.url, "git+https://github.com/fhh2626/PiDeck-Q.git");
+	assert.match(windowsWorkflow, /repository: fhh2626\/PiDeck-Q/);
+});
+
+test("native Windows distribution keeps staging independent from NSIS", () => {
+	const dist = readFileSync("scripts/dist-win-native.mjs", "utf8");
+	assert.match(dist, /build:native/);
+	assert.match(dist, /verify:build-artifacts/);
+	assert.doesNotMatch(dist, /makensis|prepare-nsis|INETC_PLUGIN_DIR|installer\/PiDeck-Q/);
+});
+
+test("packaged built-in extensions receive undici beside their own files", () => {
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /resources.*extensions.*node_modules.*undici/s);
+	assert.match(xmake, /stage.*resources.*extensions.*node_modules.*undici/s);
+	const verifier = readFileSync("scripts/verify-build-artifacts.mjs", "utf8");
+	assert.match(verifier, /resources.*extensions.*node_modules.*undici.*package\.json/s);
 });

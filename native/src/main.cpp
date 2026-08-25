@@ -178,6 +178,7 @@ int main(int argc, char **argv)
     TrayController *tray = nullptr;
     bool quitting = false;
     bool restartRequested = false;
+    QString pendingInstallerPath;
 
     node.setNodeErrorHandler([&](const QString &) {
         if (!quitting) app.quit();
@@ -301,6 +302,22 @@ int main(int argc, char **argv)
         app.quit();
         return QJsonValue(QJsonValue::Null);
     });
+    host.registerHandler(QStringLiteral("application.installUpdate"), [&app, &quitting, &mainWindow, &pendingInstallerPath](const QJsonObject &params) {
+        const QString path = params.value(QStringLiteral("path")).toString();
+        const QFileInfo installer(path);
+#ifdef Q_OS_WIN
+        if (!installer.isAbsolute() || !installer.isFile() || installer.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) != 0) {
+            throw std::runtime_error("Invalid update installer path");
+        }
+#endif
+        pendingInstallerPath = installer.absoluteFilePath();
+        quitting = true;
+        if (mainWindow) mainWindow->setQuitting(true);
+        // The installer must start only after app.exec() returns and the Node
+        // sidecar has released all Qt/Node DLLs and the version lock.
+        app.quit();
+        return QJsonValue(QJsonValue::Null);
+    });
     host.registerHandler(QStringLiteral("application.restart"), [&app, &quitting, &restartRequested, &mainWindow](const QJsonObject &) {
         // The replacement process must start only after the sidecar releases
         // the version lock; otherwise the new sidecar can exit as secondary.
@@ -398,7 +415,9 @@ int main(int argc, char **argv)
         delete mainWindow;
         mainWindow = nullptr;
     }
-    if (restartRequested) {
+    if (!pendingInstallerPath.isEmpty()) {
+        QProcess::startDetached(pendingInstallerPath, {});
+    } else if (restartRequested) {
         QProcess::startDetached(QCoreApplication::applicationFilePath(),
                                  QCoreApplication::arguments().mid(1));
     }

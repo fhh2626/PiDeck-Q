@@ -392,6 +392,7 @@ export const zhCN = {
   "app.imagePreviewAlt": "图片预览",
   "app.imageRemove": "移除图片",
   "app.imageTooLarge": "图片过大，最大支持 10MB",
+  "app.imagesTotalTooLarge": "图片附件总大小过大，请减少图片数量或尺寸后再发送",
   "app.imageUnsupported": "不支持的图片格式，请使用 PNG/JPEG/GIF/WebP",
   "app.latestVersion": "当前已是最新版本",
   "app.latestVersionNotice": "当前已是最新版本 v{version}。",

@@ -13,10 +13,8 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository (main)
+      - name: Checkout selected ref
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -32,13 +30,10 @@ jobs:
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
 
-      - name: Install NSIS
-        run: choco install nsis --no-progress -y
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Windows native installer
+      - name: Build Windows native staging
         run: npm run dist:win
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
@@ -48,6 +43,4 @@ jobs:
         with:
           name: pideck-q-windows-x64
           if-no-files-found: error
-          path: |
-            release/PiDeck-Q-Setup.exe
-            release/win-unpacked
+          path: release/win-unpacked

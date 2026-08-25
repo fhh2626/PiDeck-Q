@@ -1,3 +1,4 @@
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import {
 	createDefaultExternalEditorSettings,
@@ -627,7 +628,7 @@ export function createPreviewApi(): PiDesktopApi {
 		app: {
 			info: async () => ({
 				version: "preview",
-				releasesUrl: "https://github.com/ayuayue/pi-desktop/releases",
+				releasesUrl: APP_RELEASES_URL,
 				platform: "win32" as NodeJS.Platform,
 				homeDir: "C:/Users/preview",
 			}),
@@ -639,7 +640,7 @@ export function createPreviewApi(): PiDesktopApi {
 				hasUpdate: false,
 				releaseName: "preview",
 				releaseNotes: "",
-				releaseUrl: "https://github.com/ayuayue/pi-desktop/releases",
+				releaseUrl: APP_RELEASES_URL,
 				assets: [],
 			}),
 			downloadUpdate: async (asset) => ({
@@ -650,6 +651,7 @@ export function createPreviewApi(): PiDesktopApi {
 			onUpdateProgress: () => () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,
+			ackFocusSessionTarget: async () => undefined,
 			openExternal: async () => undefined,
 			restart: async () => undefined,
 			rendererLog: async (level, scope, message, detail) => {

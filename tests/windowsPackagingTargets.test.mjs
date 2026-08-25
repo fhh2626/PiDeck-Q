@@ -11,7 +11,11 @@ test("Windows native packaging stages Qt, Node, renderer and resources without E
 	assert.match(xmake, /win-unpacked/);
 	assert.match(xmake, /out.*native-node/);
 	assert.match(xmake, /node_modules.*node-pty/);
+	assert.match(xmake, /resources.*extensions.*node_modules.*undici/s);
+	assert.match(xmake, /stage.*resources.*extensions.*node_modules.*undici/s);
 	assert.match(xmake, /resources/);
 	const distWin = readFileSync("scripts/dist-win-native.mjs", "utf8");
-	assert.match(distWin, /WebView2 Evergreen Runtime/);
+	assert.match(distWin, /build:native/);
+	assert.match(distWin, /verify:build-artifacts/);
+	assert.doesNotMatch(distWin, /makensis|prepare-nsis|installer\/PiDeck-Q/);
 });

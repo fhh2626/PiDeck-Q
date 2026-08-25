@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - native
   pull_request:
     branches:
       - main
+      - native
 
 permissions:
   contents: read

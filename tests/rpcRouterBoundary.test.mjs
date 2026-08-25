@@ -26,5 +26,5 @@ test("NativeRendererServer is the only renderer transport entrypoint", () => {
 	assert.match(source, /POST.*__pideck\/rpc|__pideck\/rpc/);
 	assert.match(source, /__pideck\/events/);
 	assert.match(source, /127\.0\.0\.1/);
-	assert.match(source, /32 \* 1024 \* 1024/);
+	assert.match(source, /MAX_NATIVE_RPC_BODY_BYTES/);
 });

@@ -391,6 +391,7 @@ export const enUS: Record<TranslationKey, string> = {
   "app.imagePreviewAlt": "Image preview",
   "app.imageRemove": "Remove image",
   "app.imageTooLarge": "Image is too large. Maximum size is 10MB.",
+  "app.imagesTotalTooLarge": "Image attachments are too large in total. Reduce the number or size of images before sending.",
   "app.imageUnsupported": "Unsupported image format. Use PNG/JPEG/GIF/WebP.",
   "app.latestVersion": "You are on the latest version",
   "app.latestVersionNotice": "You are on the latest version v{version}.",

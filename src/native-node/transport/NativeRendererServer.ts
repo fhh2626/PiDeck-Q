@@ -4,9 +4,10 @@ import { readFile } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import type { NativeRpcRouter } from "../../main/transport/NativeRpcRouter";
 import type { NativeClipboardSnapshot } from "../../shared/desktop/NativeHostTypes";
+import { MAX_NATIVE_EVENT_FRAME_BYTES, MAX_NATIVE_RPC_BODY_BYTES } from "../../shared/desktop/nativeLimits.ts";
 
-const MAX_BODY_BYTES = 32 * 1024 * 1024;
-const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
+const MAX_FRAME_BYTES = MAX_NATIVE_EVENT_FRAME_BYTES;
 
 const MIME_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -30,6 +31,13 @@ type NativeBootstrap = {
 	settings: { zoomFactor: number; memoryProfileEnabled: boolean };
 };
 
+class RequestBodyTooLargeError extends Error {
+	constructor() {
+		super("Request body exceeds 32 MB");
+		this.name = "RequestBodyTooLargeError";
+	}
+}
+
 type NativeRendererDependencies = {
 	router: NativeRpcRouter;
 	token: string;
@@ -38,6 +46,7 @@ type NativeRendererDependencies = {
 	getBootstrap: () => Promise<NativeBootstrap>;
 	onHeartbeat?: () => void;
 	onMemoryDiagnostics?: (payload: unknown) => void;
+	onOversizedEvent?: (channel: string, bytes: number) => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -50,7 +59,7 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
 	for await (const chunk of request) {
 		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 		length += buffer.length;
-		if (length > MAX_BODY_BYTES) throw new Error("Request body exceeds 32 MB");
+		if (length > MAX_BODY_BYTES) throw new RequestBodyTooLargeError();
 		chunks.push(buffer);
 	}
 	return Buffer.concat(chunks).toString("utf8");
@@ -97,6 +106,11 @@ export class NativeRendererServer {
 					response.destroy();
 					return;
 				}
+				if (error instanceof RequestBodyTooLargeError) {
+					request.resume();
+					sendJson(response, 413, { ok: false, error: { message: error.message } });
+					return;
+				}
 				sendJson(response, 500, { ok: false, error: { message: error instanceof Error ? error.message : String(error) } });
 			});
 		});
@@ -130,6 +144,12 @@ export class NativeRendererServer {
 
 	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		const url = new URL(request.url ?? "/", "http://127.0.0.1");
+		const declaredLength = Number(request.headers["content-length"] ?? 0);
+		if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+			request.resume();
+			sendJson(response, 413, { ok: false, error: { message: "Request body exceeds 32 MB" } });
+			return;
+		}
 		if (url.pathname.startsWith("/__pideck/") && !this.isAuthorized(request)) {
 			sendJson(response, 401, { ok: false, error: { message: "Unauthorized" } });
 			return;
@@ -242,7 +262,11 @@ export class NativeRendererServer {
 
 	broadcast(channel: string, args: unknown[]): void {
 		const payload = JSON.stringify({ channel, args });
-		if (Buffer.byteLength(payload) > MAX_FRAME_BYTES) return;
+		const bytes = Buffer.byteLength(payload);
+		if (bytes > MAX_FRAME_BYTES) {
+			this.deps.onOversizedEvent?.(channel, bytes);
+			return;
+		}
 		const frame = `data: ${payload}\n\n`;
 		for (const client of [...this.clients]) {
 			try {

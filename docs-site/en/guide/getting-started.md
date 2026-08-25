@@ -4,7 +4,7 @@ There are two ways to use PiDeck: download a pre-built installer or run from sou
 
 ## Download & Install
 
-1. Go to the [GitHub Releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases) page.
+1. Go to the [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) page.
 2. Download the latest installer for your platform:
    - **Windows**: `.exe` installer or `.zip` portable
    - **macOS**: `.dmg` (Apple Silicon / Intel)
@@ -24,7 +24,7 @@ There are two ways to use PiDeck: download a pre-built installer or run from sou
 
 ```bash
 # Clone the repository
-git clone https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git
+git clone https://github.com/fhh2626/PiDeck-Q.git
 cd PiDeck
 
 # Install dependencies

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AppFocusSessionTarget } from "../../../shared/types";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import {
   sessionRecordByIdAtomFamily,
@@ -161,12 +162,15 @@ export function useSessionWorkspaceChrome(options: {
 
   useEffect(() => {
     let disposed = false;
-    const focusBySessionId = (sessionId: string) => {
+    const focusByTarget = (target: AppFocusSessionTarget) => {
       const tryFocus = (attempt: number) => {
         if (disposed) return;
-        const record = store.get(sessionRecordByIdAtomFamily(sessionId));
+        const record = store.get(sessionRecordByIdAtomFamily(target.sessionId));
         if (record) {
           focusHandlersRef.current.focusSession(record.projectId, record.id);
+          // ACK only after the stable SessionRecord was found and focus was dispatched.
+          // NativeHost compares the id, so a late ACK cannot clear a newer notification.
+          void window.piDesktop.app.ackFocusSessionTarget(target.id).catch(() => undefined);
           return;
         }
         if (attempt < 15) {
@@ -176,12 +180,12 @@ export function useSessionWorkspaceChrome(options: {
       tryFocus(0);
     };
 
-    const unsubscribe = window.piDesktop.app.onFocusSessionTarget(({ sessionId }) => {
-      focusBySessionId(sessionId);
+    const unsubscribe = window.piDesktop.app.onFocusSessionTarget((target) => {
+      focusByTarget(target);
     });
     void window.piDesktop.app.getPendingFocusTarget?.().then((target) => {
       if (disposed || !target) return;
-      focusBySessionId(target.sessionId);
+      focusByTarget(target);
     });
     return () => {
       disposed = true;

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "jotai";
 import type {
+  AppFocusSessionTarget,
   AppSettings,
   AppUpdateDownloadProgress,
   Project,
@@ -10,7 +11,7 @@ import { desktopApi } from "../desktopApi";
 
 type GlobalAgentListenerCallbacks = {
   onProjectsChanged?: (projects: Project[]) => void;
-  onFocusTarget?: (target: { sessionId: string }) => void;
+  onFocusTarget?: (target: AppFocusSessionTarget) => void;
   onSettingsApplied?: (settings: AppSettings) => void;
   onUpdateProgress?: (progress: AppUpdateDownloadProgress) => void;
   onTrustRequest?: (request: {

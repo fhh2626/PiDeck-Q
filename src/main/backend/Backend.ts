@@ -1,4 +1,4 @@
-import type { AppSettings } from "../../shared/types";
+import type { AppFocusSessionTarget, AppSettings } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SettingsStore } from "../settings/SettingsStore";
@@ -12,7 +12,8 @@ export interface BackendHost {
 	hasLiveWindow(): boolean;
 	openExternalUrl(url: string, forceSystem?: boolean): Promise<void>;
 	refreshTrayContextMenu(): void;
-	takePendingFocusTarget(): { sessionId: string } | null;
+	peekPendingFocusTarget(): AppFocusSessionTarget | null;
+	acknowledgeFocusTarget(id: string): void;
 	focusSessionFromNotification(sessionId?: string): boolean;
 	restartApplication: () => void;
 }

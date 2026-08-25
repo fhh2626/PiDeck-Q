@@ -3,6 +3,10 @@
   "version": "0.1.5",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
+  "engines": {
+    "node": "24.19.0",
+    "npm": ">=11"
+  },
   "license": "MIT",
   "author": {
     "name": "ayuayue",
@@ -14,13 +18,13 @@
       "url": "https://github.com/1900EasonJin"
     }
   ],
-  "homepage": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust#readme",
+  "homepage": "https://github.com/fhh2626/PiDeck-Q#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git"
+    "url": "git+https://github.com/fhh2626/PiDeck-Q.git"
   },
   "bugs": {
-    "url": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/issues"
+    "url": "https://github.com/fhh2626/PiDeck-Q/issues"
   },
   "keywords": [
     "pi",
@@ -129,6 +133,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "esbuild": "^0.25.12",
     "eslint": "^10.6.0",
     "html-to-image": "^1.11.13",
     "jotai": "^2.20.2",

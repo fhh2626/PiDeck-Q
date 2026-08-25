@@ -3,6 +3,7 @@
 #include <QDataStream>
 #include <QJsonDocument>
 #include <QRandomGenerator>
+#include <QDebug>
 
 #include <utility>
 
@@ -187,12 +188,17 @@ void HostRpcServer::handleFrame(QTcpSocket *socket, const QByteArray &payload)
     }
 }
 
-void HostRpcServer::writeFrame(QTcpSocket *socket, const QJsonObject &frame)
+bool HostRpcServer::writeFrame(QTcpSocket *socket, const QJsonObject &frame)
 {
     const QByteArray payload = QJsonDocument(frame).toJson(QJsonDocument::Compact);
     if (payload.size() > qsizetype(kMaxFrameBytes)) {
+        if (frame.value(QStringLiteral("type")).toString() == QStringLiteral("event")) {
+            qWarning() << "Dropping oversized native host event frame" << payload.size();
+            return false;
+        }
+        qWarning() << "Closing native host socket after oversized response frame" << payload.size();
         socket->disconnectFromHost();
-        return;
+        return false;
     }
     QByteArray packet;
     packet.resize(4);
@@ -203,6 +209,7 @@ void HostRpcServer::writeFrame(QTcpSocket *socket, const QJsonObject &frame)
     packet[3] = char((length >> 24) & 0xff);
     packet.append(payload);
     socket->write(packet);
+    return true;
 }
 
 void HostRpcServer::sendResponse(QTcpSocket *socket, const QString &id, bool ok,

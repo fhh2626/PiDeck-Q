@@ -4,6 +4,7 @@ import type {
 	YaoPromptListResult,
 	YaoPromptDetailResult,
 	AgentRuntimeState,
+	AppFocusSessionTarget,
 	AppInfo,
 	AppLogEntry,
 	AppLogLevel,
@@ -792,10 +793,12 @@ const api = {
 			subscribe(ipcChannels.appUpdateProgress, callback),
 		openExternal: (url: string, forceSystem?: boolean) =>
 			transport.invoke(ipcChannels.appOpenExternal, url, forceSystem) as Promise<void>,
-		onFocusSessionTarget: (callback: (target: { sessionId: string }) => void) =>
+		onFocusSessionTarget: (callback: (target: AppFocusSessionTarget) => void) =>
 			subscribe(ipcChannels.appFocusSessionTarget, callback),
 		getPendingFocusTarget: () =>
-			transport.invoke(ipcChannels.appGetFocusTargetPending) as Promise<{ sessionId: string } | null>,
+			transport.invoke(ipcChannels.appGetFocusTargetPending) as Promise<AppFocusSessionTarget | null>,
+		ackFocusSessionTarget: (id: string) =>
+			transport.invoke(ipcChannels.appAcknowledgeFocusTarget, id) as Promise<void>,
 		restart: () => transport.invoke(ipcChannels.appRestart) as Promise<void>,
 		rendererLog: (
 			level: AppLogLevel,

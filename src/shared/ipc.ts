@@ -312,6 +312,7 @@ export const ipcChannels = {
 	/** 主进程 → 主窗口：系统通知等入口请求聚焦指定会话。 */
 	appFocusSessionTarget: "app:focus-session-target",
 	appGetFocusTargetPending: "app:get-focus-target-pending",
+	appAcknowledgeFocusTarget: "app:ack-focus-target",
 
 	// ===== Scratch Pad（草稿本/多草稿） =====
 	scratchPadList: "scratch-pad:list",

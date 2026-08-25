@@ -1,11 +1,15 @@
 ; PiDeck-Q native installer. Qt WebView2 uses the machine/user Evergreen runtime;
 ; the installer never ships a Fixed Version WebView2 copy.
 !include "LogicLib.nsh"
+!ifdef INETC_PLUGIN_DIR
+  !addplugindir /x86-unicode "${INETC_PLUGIN_DIR}/x86-unicode"
+!endif
 Unicode True
 RequestExecutionLevel user
 Name "PiDeck-Q"
 OutFile "release\PiDeck-Q-Setup.exe"
 InstallDir "$LOCALAPPDATA\PiDeck-Q"
+InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "InstallLocation"
 
 !define WEBVIEW2_BOOTSTRAPPER_URL "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 !define PIDECK_APP_USER_MODEL_ID "com.ayuayue.pi-desktop"
@@ -25,7 +29,11 @@ Function .onInit
     inetc::get "${WEBVIEW2_BOOTSTRAPPER_URL}" "$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe" /END
     Pop $1
     ${If} $1 == "OK"
-      ExecWait '"$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install'
+      ExecWait '"$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install' $2
+      ${If} $2 != 0
+        MessageBox MB_ICONSTOP "Microsoft Edge WebView2 Runtime installation failed (code $2)."
+        Abort
+      ${EndIf}
     ${Else}
       MessageBox MB_ICONSTOP "Microsoft Edge WebView2 Runtime is required to run PiDeck-Q."
       Abort
@@ -52,10 +60,26 @@ Section "PiDeck-Q"
   File /oname=$PLUGINSDIR\SetShortcutAppId.ps1 "installer\SetShortcutAppId.ps1"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\SetShortcutAppId.ps1" -Shortcut "$SMPROGRAMS\PiDeck-Q\PiDeck-Q.lnk" -AppId "${PIDECK_APP_USER_MODEL_ID}"'
   Pop $1
+  ${If} $1 != 0
+    MessageBox MB_ICONSTOP "Failed to configure the Start Menu shortcut notification identity (code $1)."
+    Abort
+  ${EndIf}
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\SetShortcutAppId.ps1" -Shortcut "$DESKTOP\PiDeck-Q.lnk" -AppId "${PIDECK_APP_USER_MODEL_ID}"'
   Pop $1
+  ${If} $1 != 0
+    MessageBox MB_ICONSTOP "Failed to configure the Desktop shortcut notification identity (code $1)."
+    Abort
+  ${EndIf}
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "DisplayName" "PiDeck-Q"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "DisplayVersion" "0.1.5"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "Publisher" "PiDeck-Q"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "URLInfoAbout" "https://github.com/fhh2626/PiDeck-Q"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
@@ -69,5 +93,6 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\PiDeck-Q\PiDeck-Q.lnk"
   RMDir "$SMPROGRAMS\PiDeck-Q"
   Delete "$DESKTOP\PiDeck-Q.lnk"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PiDeck-Q"
   RMDir /r "$INSTDIR"
 SectionEnd

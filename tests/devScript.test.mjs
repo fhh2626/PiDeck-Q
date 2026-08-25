@@ -10,8 +10,10 @@ test("native dev script builds renderer, sidecar and launches Xmake", () => {
 	assert.doesNotMatch(source, /electron-vite|electron\.exe/);
 });
 
-test("native distribution script points at Xmake staging and WebView2 runtime", () => {
+test("native distribution script builds staging without invoking an installer compiler", () => {
 	const source = readFileSync("scripts/dist-win-native.mjs", "utf8");
 	assert.match(source, /npm.*build/);
-	assert.match(source, /WebView2 Evergreen Runtime/);
+	assert.match(source, /build:native/);
+	assert.match(source, /verify:build-artifacts/);
+	assert.doesNotMatch(source, /makensis|prepare-nsis|installer\/PiDeck-Q/);
 });

@@ -76,6 +76,8 @@ export type PlatformOpenPathResult =
 export interface PlatformShell {
 	openExternal(url: string): Promise<void>;
 	openPath(path: string): Promise<PlatformOpenPathResult>;
+	/** Start an installer after the native host has completed its quit handshake. */
+	installUpdate?(path: string): Promise<void>;
 	showItemInFolder(path: string): void;
 	trashItem(path: string): Promise<void>;
 }

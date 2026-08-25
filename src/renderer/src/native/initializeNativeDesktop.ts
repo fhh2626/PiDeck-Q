@@ -9,6 +9,13 @@ import { applyRendererZoom } from "./rendererZoom";
 
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
 
+let nativeRendererToken: string | null = null;
+
+/** Token is retained in memory for protected background requests, never in the URL after bootstrap. */
+export function getNativeRendererToken(): string | null {
+	return nativeRendererToken;
+}
+
 interface NativeBootstrapResponse {
 	clipboard?: Partial<NativeClipboardSnapshot>;
 	settings?: { zoomFactor?: number; memoryProfileEnabled?: boolean };
@@ -28,6 +35,7 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	const query = new URLSearchParams(window.location.search);
 	const token = query.get("token");
 	if (!token) throw new Error("Native runtime token is missing");
+	nativeRendererToken = token;
 
 	const baseUrl = window.location.origin;
 	const bootstrapUrl = new URL("/__pideck/bootstrap", baseUrl);
@@ -39,6 +47,12 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 		throw new Error(`Native bootstrap failed (${response.status})`);
 	}
 	const bootstrap = (await response.json()) as NativeBootstrapResponse;
+	// The token is only needed to complete bootstrap and to authorize protected
+	// background fetches. Remove it from location immediately so renderer logs,
+	// crash diagnostics, and browser history cannot persist the credential.
+	const sanitizedUrl = new URL(window.location.href);
+	sanitizedUrl.searchParams.delete("token");
+	window.history.replaceState(null, "", `${sanitizedUrl.pathname}${sanitizedUrl.search}${sanitizedUrl.hash}`);
 	const syncHost = new NativeDesktopSyncHost(bootstrap.clipboard);
 	const transport = new NativeDesktopTransport(baseUrl, token);
 

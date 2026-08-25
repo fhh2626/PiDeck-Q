@@ -37,6 +37,8 @@ target("PiDeck-Q")
         os.mkdir(path.join(stage, "app"))
         os.mkdir(path.join(stage, "node"))
         os.mkdir(path.join(stage, "resources"))
+        os.mkdir(path.join(stage, "resources", "extensions"))
+        os.mkdir(path.join(stage, "resources", "extensions", "node_modules"))
         os.mkdir(path.join(stage, "app", "native-node"))
         os.mkdir(path.join(stage, "app", "node_modules"))
         os.mkdir(path.join(stage, "app", "renderer"))
@@ -72,5 +74,10 @@ target("PiDeck-Q")
               path.join(stage, "app", "node_modules", "undici"))
 
         os.cp(path.join(os.projectdir(), "resources", "*"), path.join(stage, "resources"))
+        -- Pi resolves bare imports in a built-in extension from the extension's
+        -- directory upward. Keep this copy beside resources/extensions rather
+        -- than relying on the sidecar's sibling app/node_modules tree.
+        os.cp(path.join(os.projectdir(), "node_modules", "undici"),
+              path.join(stage, "resources", "extensions", "node_modules", "undici"))
         os.cp(path.join(os.projectdir(), "build", "icon.png"), path.join(stage, "icon.png"))
     end)

@@ -52,7 +52,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "PiDeck-Q-context-controller",
@@ -62,7 +62,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "pi-deck-plan-mode",
@@ -72,7 +72,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "PiDeck-Q-Ask-Question",
@@ -82,7 +82,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "pi-deck-nul-redirect-fix",
@@ -92,7 +92,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "context-mode",

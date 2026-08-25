@@ -4,6 +4,7 @@ import test from "node:test";
 
 const mainSource = readFileSync("native/src/main.cpp", "utf8");
 const rendererBootstrap = readFileSync("src/renderer/src/native/initializeNativeDesktop.ts", "utf8");
+const rendererMain = readFileSync("src/renderer/src/main.tsx", "utf8");
 const hostSource = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
 const xmake = readFileSync("xmake.lua", "utf8");
 
@@ -12,6 +13,13 @@ const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(mainSource, /QFileDialog::ExistingFiles/);
 	assert.match(mainSource, /QFileDialog::Directory/);
 	assert.match(mainSource, /multi-directory/);
+});
+
+test("native renderer token is removed from history and renderer logs", () => {
+	assert.match(rendererBootstrap, /history\.replaceState/);
+	assert.match(rendererBootstrap, /searchParams\.delete\("token"\)/);
+	assert.match(rendererMain, /redactRendererUrl/);
+	assert.doesNotMatch(rendererMain, /url: window\.location\.href/);
 });
 
 test("native memory diagnostics are enabled by bootstrap state, not a URL guess", () => {

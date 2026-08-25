@@ -1,6 +1,6 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAppUpdateService } from "../src/main/update/AppUpdateService.ts";
@@ -169,11 +169,31 @@ test("AppUpdateService installDownloadedUpdate opens the original package path o
 			},
 		},
 	});
-	const filePath = join(updateTestRoot, "downloads", "PiDeck Setup.exe");
+	const filePath = join(updateTestRoot, "userData", "updates", "PiDeck Setup.exe");
+	await mkdir(join(updateTestRoot, "userData", "updates"), { recursive: true });
+	await writeFile(filePath, "installer");
 
 	await service.installDownloadedUpdate(filePath);
 
 	assert.deepEqual(openedPaths, [filePath]);
+});
+
+test("AppUpdateService rejects update paths outside the managed user-data directory", async () => {
+	let opened = false;
+	const service = createAppUpdateService({
+		logger: createFakeLogger(),
+		translate: (key) => key,
+		emitProgress: () => {},
+		platformApp: createFakeApp(),
+		platformPaths: createFakePaths(),
+		platformDownloads: { downloadToFile: async () => ({ receivedBytes: 0 }) },
+		platformShell: { openPath: async () => { opened = true; return { ok: true }; } },
+	});
+	await assert.rejects(
+		() => service.installDownloadedUpdate(join(updateTestRoot, "outside.exe")),
+		/update\.openFailed/,
+	);
+	assert.equal(opened, false);
 });
 
 test("AppUpdateService installDownloadedUpdate translates failure when openPath fails", async () => {
@@ -190,9 +210,12 @@ test("AppUpdateService installDownloadedUpdate translates failure when openPath 
 			openPath: async () => ({ ok: false, error: "Access denied" }),
 		},
 	});
+	const filePath = join(updateTestRoot, "userData", "updates", "update.exe");
+	await mkdir(join(updateTestRoot, "userData", "updates"), { recursive: true });
+	await writeFile(filePath, "installer");
 
 	await assert.rejects(
-		() => service.installDownloadedUpdate("/path/to/update.exe"),
+		() => service.installDownloadedUpdate(filePath),
 		/update\.openFailed/,
 	);
 });

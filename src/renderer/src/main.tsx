@@ -10,6 +10,16 @@ import { showNotice } from "./utils/notice";
 import { desktopApi, initializeDesktopRuntime } from "./desktopApi";
 import "./styles.css";
 
+function redactRendererUrl(): string {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("token");
+    return url.toString();
+  } catch {
+    return "renderer://unknown";
+  }
+}
+
 function writeStartupLog(level: AppLogLevel, message: string, detail?: unknown) {
   void desktopApi.app.rendererLog(level, "renderer", message, detail).catch(() => undefined);
 }
@@ -39,7 +49,7 @@ console.error = (...args: unknown[]) => {
   writeStartupLog("error", "Renderer React update depth diagnostic", {
     message,
     stack: new Error("React update depth diagnostic").stack,
-    url: window.location.href,
+    url: redactRendererUrl(),
   });
 };
 
@@ -106,7 +116,7 @@ function dismissBootOverlay() {
 async function bootstrap() {
   await initializeDesktopRuntime();
   writeStartupLog("info", "Renderer bootstrap started", {
-    url: window.location.href,
+    url: redactRendererUrl(),
   });
 
   const rootElement = document.getElementById("root");

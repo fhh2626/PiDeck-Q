@@ -17,16 +17,29 @@
 #endif
 
 namespace {
+constexpr qsizetype kMaxClipboardImageBytes = 8 * 1024 * 1024;
+constexpr qint64 kMaxClipboardImagePixels = 32 * 1024 * 1024;
+constexpr qsizetype kMaxClipboardTextChars = 1 * 1024 * 1024;
+
+QString boundedText(const QString &value)
+{
+    return value.size() <= kMaxClipboardTextChars ? value : value.left(kMaxClipboardTextChars);
+}
+
 QString imageDataUrl(const QMimeData *mimeData)
 {
     if (!mimeData || !mimeData->hasImage()) return {};
     const QImage image = qvariant_cast<QImage>(mimeData->imageData());
-    if (image.isNull()) return {};
+    if (image.isNull() || qint64(image.width()) * qint64(image.height()) > kMaxClipboardImagePixels) return {};
     QByteArray bytes;
     QBuffer buffer(&bytes);
     buffer.open(QIODevice::WriteOnly);
-    image.save(&buffer, "PNG");
-    return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(bytes.toBase64());
+    if (!image.save(&buffer, "PNG") || bytes.size() > kMaxClipboardImageBytes) return {};
+    const QByteArray base64 = bytes.toBase64();
+    // The native control channel is framed at 32 MiB. Drop oversized clipboard
+    // images instead of allowing one paste to tear down the sidecar connection.
+    if (base64.size() > kMaxClipboardImageBytes) return {};
+    return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(base64);
 }
 
 QStringList mimeFilePaths(const QMimeData *mimeData)
@@ -87,8 +100,8 @@ QJsonObject ClipboardController::snapshot() const
 {
     const auto *clipboard = QGuiApplication::clipboard();
     const auto *mimeData = clipboard ? clipboard->mimeData() : nullptr;
-    const QString html = mimeData ? mimeData->html() : QString{};
-    const QString text = clipboard ? clipboard->text(QClipboard::Clipboard) : QString{};
+    const QString html = boundedText(mimeData ? mimeData->html() : QString{});
+    const QString text = boundedText(clipboard ? clipboard->text(QClipboard::Clipboard) : QString{});
     const QString image = imageDataUrl(mimeData);
     const QStringList paths = filePaths();
 
