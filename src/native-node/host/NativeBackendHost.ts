@@ -17,6 +17,7 @@ export class NativeBackendHost implements BackendHost {
 	readonly mainWindowControls: NativeMainWindowControls;
 	private pendingFocusTarget: { sessionId: string } | null = null;
 	private liveWindow = false;
+	private windowVisible = false;
 	private logger?: Pick<AppLogger, "warn">;
 
 	constructor(
@@ -41,12 +42,18 @@ export class NativeBackendHost implements BackendHost {
 
 	markWindowCreated(): void {
 		this.liveWindow = true;
+		this.windowVisible = true;
 		this.mainWindowControls.markCreated();
 	}
 
 	markWindowDestroyed(): void {
 		this.liveWindow = false;
+		this.windowVisible = false;
 		this.mainWindowControls.markDestroyed();
+	}
+
+	markWindowVisible(visible: boolean): void {
+		this.windowVisible = visible;
 	}
 
 	// Backend registration passes this callback across domain boundaries; keep the receiver
@@ -57,6 +64,11 @@ export class NativeBackendHost implements BackendHost {
 
 	hasLiveWindow(): boolean {
 		return this.liveWindow;
+	}
+
+	/** Hidden-to-tray pages may have Chromium timers throttled for minutes. */
+	shouldWatchRendererHeartbeat(): boolean {
+		return this.liveWindow && this.windowVisible && !this.mainWindowControls.isMinimized();
 	}
 
 	async openExternalUrl(url: string, _forceSystem = false): Promise<void> {
@@ -71,6 +83,10 @@ export class NativeBackendHost implements BackendHost {
 		void this.host.request("tray.update", labels).catch(() => undefined);
 	}
 
+	peekPendingFocusTarget(): { sessionId: string } | null {
+		return this.pendingFocusTarget;
+	}
+
 	takePendingFocusTarget(): { sessionId: string } | null {
 		const target = this.pendingFocusTarget;
 		this.pendingFocusTarget = null;
@@ -81,8 +97,10 @@ export class NativeBackendHost implements BackendHost {
 		void this.host.request("window.show").catch(() => undefined);
 		void this.host.request("window.focus").catch(() => undefined);
 		if (sessionId) {
-			if (!this.liveWindow) this.pendingFocusTarget = { sessionId };
-			else this.sendToRenderer(ipcChannels.appFocusSessionTarget, { sessionId });
+			// Keep a pull-safe copy even when the window is already marked live:
+			// EventSource may still be connecting when a notification arrives.
+			this.pendingFocusTarget = { sessionId };
+			if (this.liveWindow) this.sendToRenderer(ipcChannels.appFocusSessionTarget, { sessionId });
 		}
 		return this.liveWindow;
 	}
@@ -94,7 +112,10 @@ export class NativeBackendHost implements BackendHost {
 	/** Called by the Qt host after the first window is visible. */
 	onWindowReady(): void {
 		this.markWindowCreated();
-		const target = this.takePendingFocusTarget();
+		// SSE delivery is best-effort. Never consume pending state here: window.ready
+		// can arrive before EventSource connects, and the renderer's pull RPC is the
+		// reliable take-and-clear path.
+		const target = this.peekPendingFocusTarget();
 		if (target) this.sendToRenderer(ipcChannels.appFocusSessionTarget, target);
 	}
 }

@@ -35,9 +35,14 @@ test("AgentManager notification target uses record id resolver", () => {
 test("cold start focus target goes through pending queue", () => {
   const indexSource = readFileSync("src/native-node/index.ts", "utf8");
   const hostSource = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
+  const rendererSource = readFileSync("src/renderer/src/hooks/useSessionWorkspaceChrome.ts", "utf8");
   assert.match(indexSource, /renderer\.ready/);
   assert.match(indexSource, /resolveSessionIdForAgent/);
   assert.match(hostSource, /pendingFocusTarget/);
   assert.match(hostSource, /appFocusSessionTarget/);
   assert.match(hostSource, /focusSessionFromNotification/);
+  assert.match(hostSource, /peekPendingFocusTarget/);
+  assert.match(hostSource, /this\.pendingFocusTarget = \{ sessionId \}/);
+  assert.doesNotMatch(hostSource, /onWindowReady\(\)[\s\S]{0,500}takePendingFocusTarget/);
+  assert.match(rendererSource, /getPendingFocusTarget/);
 });

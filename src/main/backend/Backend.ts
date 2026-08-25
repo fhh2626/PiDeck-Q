@@ -36,5 +36,5 @@ export interface Backend {
 	resolveSessionIdForAgent(agentId: string): string | undefined;
 	hasActiveStreaming(): boolean;
 	startAfterWindowCreated(): void;
-	dispose(): void;
+	dispose(): Promise<void>;
 }

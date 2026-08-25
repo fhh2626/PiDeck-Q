@@ -8,6 +8,11 @@
 MainWebSurface::MainWebSurface(QWidget *parent)
 {
     m_view = new QWebView();
+    // Qt's WebView2 backend creates the QWindow with WindowDoesNotAcceptFocus
+    // because its QML host normally owns focus. This QWidget container is the
+    // desktop host, so clear that flag or browser shortcuts (F12/Ctrl+Shift+I)
+    // never reach WebView2.
+    m_view->setFlag(Qt::WindowDoesNotAcceptFocus, false);
     auto *settings = m_view->settings();
     settings->setAttribute(QWebViewSettings::WebAttribute::JavaScriptEnabled, true);
     settings->setAttribute(QWebViewSettings::WebAttribute::LocalStorageEnabled, true);

@@ -1,6 +1,8 @@
 #include "WindowsToastNotifier.h"
 
 #ifdef Q_OS_WIN
+#include <string>
+
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Data.Xml.Dom.h>
@@ -46,14 +48,22 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
         winrt::Windows::Data::Xml::Dom::XmlDocument document;
         document.LoadXml(xml.toStdWString());
         winrt::Windows::UI::Notifications::ToastNotification notification(document);
-        notification.Activated([handler = std::move(onClick)](auto const &, auto const &) {
-            if (handler) handler();
+        // Keep copies for the asynchronous WinRT event and the synchronous
+        // exception path. Moving the failure callback into Failed() would leave
+        // the catch block unable to report LoadXml/Create/Show failures.
+        const auto clickHandler = onClick;
+        const auto failureHandler = onFailed;
+        notification.Activated([clickHandler](auto const &, auto const &) {
+            if (clickHandler) clickHandler();
         });
-        notification.Failed([handler = std::move(onFailed)](auto const &, auto const &) {
-            if (handler) handler(QStringLiteral("Windows toast failed"));
+        notification.Failed([failureHandler](auto const &, auto const &) {
+            if (failureHandler) failureHandler(QStringLiteral("Windows toast failed"));
         });
+        const QString appUserModelId = qEnvironmentVariable(
+            "PIDECK_APP_USER_MODEL_ID", QStringLiteral("com.ayuayue.pi-desktop"));
+        const std::wstring appUserModelIdWide = appUserModelId.toStdWString();
         const auto notifier = winrt::Windows::UI::Notifications::ToastNotificationManager::CreateToastNotifier(
-            L"com.ayuayue.pi-desktop");
+            appUserModelIdWide.c_str());
         notifier.Show(notification);
         Q_UNUSED(id);
     } catch (const winrt::hresult_error &error) {

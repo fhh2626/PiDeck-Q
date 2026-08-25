@@ -22,8 +22,10 @@ test("native sidecar fallback kills only the tracked PID tree", () => {
 	assert.doesNotMatch(source, /["']\/IM["']\s*,\s*["']node\.exe["']/i);
 });
 
-test("native sidecar keeps graceful cleanup bounded before forced termination", () => {
-	assert.match(source, /constexpr int gracefulTimeoutMs = 250/);
+test("native sidecar waits for graceful ACK before bounded forced termination", () => {
+	assert.match(source, /application\.prepareQuit/);
+	assert.match(source, /constexpr int gracefulTimeoutMs = 1500/);
 	assert.match(source, /waitForFinished\(gracefulTimeoutMs\)/);
 	assert.match(source, /waitForFinished\(100\)/);
+	assert.doesNotMatch(source, /sendEvent\(QStringLiteral\("application\.node(?:Error|Exit)"/);
 });

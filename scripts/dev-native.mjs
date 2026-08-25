@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const xmakeCommand = process.platform === "win32" ? "xmake.exe" : "xmake";
@@ -25,7 +27,14 @@ await run(xmakeCommand, ["-r"]);
 
 const executable = "release/win-unpacked/PiDeck-Q.exe";
 if (existsSync(executable)) {
-	await run(executable, []);
+	const appData = process.env.APPDATA ?? join(homedir(), "AppData", "Roaming");
+	const userData = process.env.PIDECK_DEV_USER_DATA ?? join(appData, "pi-desktop-dev");
+	await run(executable, [], {
+		PIDECK_PACKAGED: "0",
+		PIDECK_USER_DATA: userData,
+		PIDECK_VERSION: `${process.env.PIDECK_VERSION ?? "0.1.5"}-dev`,
+		PIDECK_APP_USER_MODEL_ID: "com.ayuayue.pi-desktop-dev",
+	});
 } else {
 	console.warn("Native debug executable was not found at the default Xmake output path.");
 }

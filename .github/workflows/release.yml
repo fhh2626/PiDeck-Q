@@ -8,7 +8,7 @@ on:
     inputs:
       tag:
         description: >-
-          指定 tag（如 v0.6.7）则按该 tag 的代码打包。
+          指定 tag（如 v0.1.5）则按该 tag 的代码打包。
           留空则用当前分支最新 commit + package.json 版本号正式发布（自动 tag vX.Y.Z）。
         required: false
         default: ""
@@ -24,7 +24,6 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       ref: ${{ steps.resolve.outputs.ref }}
-      # 仅「手动留空 tag」时需要：把 release tag 指到本次构建的分支 HEAD
       target_commitish: ${{ steps.resolve.outputs.target_commitish }}
     steps:
       - name: Checkout repository
@@ -35,64 +34,28 @@ jobs:
         run: |
           TARGET_COMMITISH=""
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            # 手动触发且指定了 tag → 用 tag 的代码（不要用分支 HEAD 覆盖 tag 指向）
             TAG="${{ github.event.inputs.tag }}"
             REF="refs/tags/${TAG}"
             VERSION="${TAG#v}"
-            echo "Using provided tag: ${TAG}"
           elif [ "${{ github.event_name }}" = "push" ]; then
-            # tag push 触发 → 用推送的 tag
             TAG="${GITHUB_REF_NAME}"
             REF="${GITHUB_REF}"
             VERSION="${TAG#v}"
-            echo "Using push tag: ${TAG}"
           else
-            # 手动触发且未指定 tag → 用当前分支最新 commit 打包，
-            # 版本/tag 取 package.json，正式发布（非 draft）
             VERSION=$(node -p "require('./package.json').version")
             TAG="v${VERSION}"
-            # ref 留空：后续 checkout 跟随 workflow_dispatch 所选分支的 HEAD
             REF=""
-            # softprops 创建/更新 tag 时指到本次构建的 commit
             TARGET_COMMITISH="${GITHUB_SHA}"
-            echo "No tag provided: build latest commit as formal release ${TAG} @ ${TARGET_COMMITISH}"
           fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "ref=${REF}" >> $GITHUB_OUTPUT
-          echo "target_commitish=${TARGET_COMMITISH}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "target_commitish=${TARGET_COMMITISH}" >> "$GITHUB_OUTPUT"
 
   build-release:
-    name: Build ${{ matrix.name || matrix.platform }} packages
+    name: Build Windows native release
     needs: [resolve-version]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows
-            os: windows-latest
-            command: npm run build && npx electron-builder --win nsis zip --publish never
-            electron_mirror: https://npmmirror.com/mirrors/electron/
-            electron_builder_binaries_mirror: https://npmmirror.com/mirrors/electron-builder-binaries/
-          - platform: macos
-            name: macOS x64
-            os: macos-latest
-            command: npm run build && npx electron-builder --mac dmg zip --x64 --publish never
-            electron_mirror: ""
-            electron_builder_binaries_mirror: ""
-          - platform: macos
-            name: macOS arm64
-            os: macos-latest
-            command: npm run build && npx electron-builder --mac dmg zip --arm64 --publish never
-            electron_mirror: ""
-            electron_builder_binaries_mirror: ""
-          - platform: linux
-            os: ubuntu-latest
-            command: npm run build && npx electron-builder --linux AppImage deb tar.gz --publish never
-            electron_mirror: https://npmmirror.com/mirrors/electron/
-            electron_builder_binaries_mirror: https://npmmirror.com/mirrors/electron-builder-binaries/
-
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
 
     steps:
       - name: Checkout repository
@@ -103,44 +66,35 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.13.0
+          node-version: 24.19.0
           cache: npm
+
+      - name: Setup Python for node-pty
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate app icon
-        run: npm run make-icon
-
-      - name: Build packages
-        run: ${{ matrix.command }}
+      - name: Build Windows native installer
+        run: npm run dist:win
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GitHub Releases occasionally returns 504 for Electron/electron-builder binaries;
-          # use a stable mirror for CI downloads while keeping publishing on GitHub Releases.
-          # macOS DMG packaging needs dmgbuild bundles that can be missing from npmmirror,
-          # so the matrix intentionally leaves Electron/builder mirrors empty for macOS.
-          ELECTRON_MIRROR: ${{ matrix.electron_mirror }}
-          ELECTRON_BUILDER_BINARIES_MIRROR: ${{ matrix.electron_builder_binaries_mirror }}
 
-      - name: Upload release assets
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          # 始终正式发布：手动留空 tag 时已解析为 v${package.json.version}
           tag_name: ${{ needs.resolve-version.outputs.tag }}
-          # 仅「留空 tag」模式有值，把 tag 指到本次构建的分支 HEAD；其它模式留空不覆盖
           target_commitish: ${{ needs.resolve-version.outputs.target_commitish }}
-          body: Release v${{ needs.resolve-version.outputs.version }}
+          body: Release v${{ needs.resolve-version.outputs.version }} (Qt native Windows host)
           fail_on_unmatched_files: false
           draft: false
           files: |
-            release/*.exe
-            release/*.msi
-            release/*.zip
-            release/*.dmg
-            release/*.AppImage
-            release/*.deb
-            release/*.tar.gz
-            release/*.blockmap
-            release/latest*.yml
+            release/PiDeck-Q-Setup.exe

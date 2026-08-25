@@ -21,7 +21,7 @@ for (const file of backendFiles) {
 test("native sidecar creates the backend and owns host lifecycle", () => {
 	const source = readFileSync("src/native-node/index.ts", "utf8");
 	assert.match(source, /createBackend\(/);
-	assert.match(source, /backend\?\.dispose\(\)/);
+	assert.match(source, /(?:backend\?\.dispose|activeBackend\.dispose)\(\)/);
 	assert.match(source, /NativeRpcRouter/);
 	assert.match(source, /createNativePlatformServices/);
 	assert.doesNotMatch(source, /main\/index/);

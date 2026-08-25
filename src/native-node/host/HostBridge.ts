@@ -170,6 +170,27 @@ export class HostBridge {
 		this.handleClose(new Error("Native host bridge disposed"));
 	}
 
+	/** Flush an already-sent lifecycle ACK before closing the TCP bridge. */
+	async closeGracefully(): Promise<void> {
+		const socket = this.socket;
+		if (!socket || this.closed) return;
+		await new Promise<void>((resolveClose) => {
+			let settled = false;
+			let timeout: NodeJS.Timeout | null = setTimeout(() => settle(), 250);
+			const settle = () => {
+				if (settled) return;
+				settled = true;
+				if (timeout) clearTimeout(timeout);
+				timeout = null;
+				resolveClose();
+			};
+			socket.once("close", settle);
+			socket.once("error", settle);
+			socket.end();
+		});
+		this.handleClose(new Error("Native host bridge disposed"));
+	}
+
 	private handleClose(error: Error): void {
 		if (this.closed) return;
 		this.closed = true;

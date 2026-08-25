@@ -16,6 +16,7 @@
 #endif
 
 #include <limits>
+#include <utility>
 
 NodeProcessController::NodeProcessController(const NativePaths &paths, HostRpcServer *host,
                                              QObject *parent)
@@ -24,18 +25,12 @@ NodeProcessController::NodeProcessController(const NativePaths &paths, HostRpcSe
       m_host(host)
 {
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
-        if (m_host) {
-            m_host->sendEvent(QStringLiteral("application.nodeError"),
-                              QJsonObject{{QStringLiteral("message"), m_process.errorString()}});
-        }
+        // QProcess already knows that the sidecar failed; this is a Qt-local
+        // lifecycle callback, not a message to the (possibly dead) sidecar.
+        if (m_nodeErrorHandler) m_nodeErrorHandler(m_process.errorString());
     });
     connect(&m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus status) {
-        if (m_host) {
-            m_host->sendEvent(QStringLiteral("application.nodeExit"), QJsonObject{
-                {QStringLiteral("exitCode"), exitCode},
-                {QStringLiteral("normal"), status == QProcess::NormalExit},
-            });
-        }
+        if (m_nodeExitHandler) m_nodeExitHandler(exitCode, status);
     });
 }
 
@@ -137,6 +132,8 @@ void NodeProcessController::closeJobObject()
 bool NodeProcessController::start()
 {
     if (m_process.state() != QProcess::NotRunning) return true;
+    m_readyToExit = false;
+    m_stopRequested = false;
 
 #ifdef Q_OS_WIN
     // Create the containment boundary before starting Node. The process handle
@@ -185,6 +182,9 @@ bool NodeProcessController::start()
 
 void NodeProcessController::stop()
 {
+    if (m_stopRequested) return;
+    m_stopRequested = true;
+
     if (m_process.state() == QProcess::NotRunning) {
 #ifdef Q_OS_WIN
         // Node may have exited while a child remains. KILL_ON_JOB_CLOSE still
@@ -194,12 +194,11 @@ void NodeProcessController::stop()
         return;
     }
 
-    // Ask the sidecar to run its own cleanup first, then give it a short
-    // graceful window. aboutToQuit runs on the GUI thread, so the bounded
-    // fallback avoids blocking the close action for the old multi-second wait.
-    if (m_host) m_host->sendEvent(QStringLiteral("application.quit"), QJsonObject{});
-    constexpr int gracefulTimeoutMs = 250;
-    m_process.terminate();
+    // Ask the sidecar to finish its own cleanup and acknowledge readiness. Do
+    // not terminate immediately: backend disposal must release the version lock,
+    // stop the renderer server, save bounds, and close the host bridge first.
+    if (m_host) m_host->sendEvent(QStringLiteral("application.prepareQuit"), QJsonObject{});
+    constexpr int gracefulTimeoutMs = 1500;
     if (m_process.waitForFinished(gracefulTimeoutMs)) {
 #ifdef Q_OS_WIN
         // Closing the Job also handles descendants that outlived Node itself.
@@ -233,4 +232,25 @@ bool NodeProcessController::isRunning() const
 QProcess *NodeProcessController::process()
 {
     return &m_process;
+}
+
+void NodeProcessController::setNodeExitHandler(NodeExitHandler handler)
+{
+    m_nodeExitHandler = std::move(handler);
+}
+
+void NodeProcessController::setNodeErrorHandler(NodeErrorHandler handler)
+{
+    m_nodeErrorHandler = std::move(handler);
+}
+
+void NodeProcessController::setReadyToExitHandler(ReadyToExitHandler handler)
+{
+    m_readyToExitHandler = std::move(handler);
+}
+
+void NodeProcessController::markReadyToExit()
+{
+    m_readyToExit = true;
+    if (m_readyToExitHandler) m_readyToExitHandler();
 }

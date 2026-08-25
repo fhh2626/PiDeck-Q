@@ -27,7 +27,7 @@ const MIME_TYPES: Record<string, string> = {
 
 type NativeBootstrap = {
 	clipboard: Partial<NativeClipboardSnapshot>;
-	settings: { zoomFactor: number };
+	settings: { zoomFactor: number; memoryProfileEnabled: boolean };
 };
 
 type NativeRendererDependencies = {

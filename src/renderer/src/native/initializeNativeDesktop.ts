@@ -11,7 +11,7 @@ const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
 
 interface NativeBootstrapResponse {
 	clipboard?: Partial<NativeClipboardSnapshot>;
-	settings?: { zoomFactor?: number };
+	settings?: { zoomFactor?: number; memoryProfileEnabled?: boolean };
 }
 
 export interface NativeDesktopRuntime {
@@ -55,12 +55,13 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 		if (typeof settings.zoomFactor === "number") applyRendererZoom(settings.zoomFactor);
 	});
 
+	const memoryProfileEnabled = bootstrap.settings?.memoryProfileEnabled === true;
 	const heartbeatTimer = window.setInterval(() => {
 		void fetch(new URL("/__pideck/heartbeat", baseUrl), {
 			method: "POST",
 			headers: { "x-pideck-token": token },
 		}).catch(() => undefined);
-		if (query.get("memoryProfile") === "1") {
+		if (memoryProfileEnabled) {
 			const memory = (performance as Performance & {
 				memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number };
 			}).memory;

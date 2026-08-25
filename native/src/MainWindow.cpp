@@ -14,6 +14,13 @@
 #include <QUrl>
 #include <QWindow>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent)
     : QMainWindow(parent),
       m_host(host),
@@ -158,9 +165,20 @@ void MainWindow::toggleDevTools()
     // backend; synthesize F12 for the IPC toggle and keep this path replaceable
     // by a direct WebView2 surface if the backend ignores it.
     auto *view = m_surface->view();
+    m_surface->focus();
+#ifdef Q_OS_WIN
+    // QWebView is a native QWindow on Windows. Deliver the shortcut to that
+    // HWND as well as posting a Qt event; the latter alone can stop at the Qt
+    // wrapper instead of reaching WebView2's browser controller.
+    const HWND hwnd = reinterpret_cast<HWND>(view->winId());
+    if (hwnd) {
+        SetFocus(hwnd);
+        PostMessageW(hwnd, WM_KEYDOWN, VK_F12, 0);
+        PostMessageW(hwnd, WM_KEYUP, VK_F12, 0);
+    }
+#endif
     QCoreApplication::postEvent(view, new QKeyEvent(QEvent::KeyPress, Qt::Key_F12, Qt::NoModifier));
     QCoreApplication::postEvent(view, new QKeyEvent(QEvent::KeyRelease, Qt::Key_F12, Qt::NoModifier));
-    m_surface->focus();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -213,12 +231,20 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 void MainWindow::changeEvent(QEvent *event)
 {
     QMainWindow::changeEvent(event);
-    if (event->type() == QEvent::WindowStateChange) emitMaximizedState();
+    if (event->type() == QEvent::WindowStateChange) {
+        emitMaximizedState();
+        emitMinimizedState();
+    }
 }
 
 void MainWindow::emitMaximizedState()
 {
     if (m_host) m_host->sendEvent(QStringLiteral("window.maximizedChanged"), isMaximized());
+}
+
+void MainWindow::emitMinimizedState()
+{
+    if (m_host) m_host->sendEvent(QStringLiteral("window.minimizedChanged"), isMinimized());
 }
 
 void MainWindow::emitBounds()

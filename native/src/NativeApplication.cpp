@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QStandardPaths>
 
+#include <string>
+
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <shobjidl.h>
@@ -16,6 +18,12 @@ void NativeApplication::configure(const NativePaths &paths)
     QCoreApplication::setOrganizationName(QStringLiteral("PiDeck"));
     QDir().mkpath(paths.userDataDir);
 #ifdef Q_OS_WIN
-    SetCurrentProcessExplicitAppUserModelID(L"com.ayuayue.pi-desktop");
+    const QString defaultAppUserModelId = paths.packaged
+        ? QStringLiteral("com.ayuayue.pi-desktop")
+        : QStringLiteral("com.ayuayue.pi-desktop-dev");
+    const QString appUserModelId = qEnvironmentVariable("PIDECK_APP_USER_MODEL_ID", defaultAppUserModelId);
+    qputenv("PIDECK_APP_USER_MODEL_ID", appUserModelId.toUtf8());
+    const std::wstring appUserModelIdWide = appUserModelId.toStdWString();
+    SetCurrentProcessExplicitAppUserModelID(appUserModelIdWide.c_str());
 #endif
 }

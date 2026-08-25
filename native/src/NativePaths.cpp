@@ -2,7 +2,6 @@
 
 #include <QCoreApplication>
 #include <QDir>
-#include <QFileInfo>
 #include <QStandardPaths>
 
 NativePaths NativePaths::fromEnvironment()
@@ -35,9 +34,20 @@ NativePaths NativePaths::fromEnvironment()
     if (paths.resourcesDir.isEmpty()) {
         paths.resourcesDir = root.filePath("resources");
     }
+    const QString packagedOverride = qEnvironmentVariable("PIDECK_PACKAGED");
+#ifdef PIDECK_NATIVE_PACKAGED
+    const bool compiledPackaged = PIDECK_NATIVE_PACKAGED != 0;
+#else
+    const bool compiledPackaged = false;
+#endif
+    paths.packaged = packagedOverride.isEmpty()
+        ? compiledPackaged
+        : packagedOverride == QStringLiteral("1");
+
     paths.userDataDir = qEnvironmentVariable("PIDECK_USER_DATA");
     if (paths.userDataDir.isEmpty()) {
         paths.userDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (!paths.packaged) paths.userDataDir += QStringLiteral("-dev");
     }
     paths.downloadsDir = qEnvironmentVariable("PIDECK_DOWNLOADS_PATH");
     if (paths.downloadsDir.isEmpty()) {
@@ -47,7 +57,5 @@ NativePaths NativePaths::fromEnvironment()
     if (paths.version.isEmpty()) {
         paths.version = QCoreApplication::applicationVersion();
     }
-    paths.packaged = qEnvironmentVariableIntValue("PIDECK_PACKAGED") == 1
-        || QFileInfo::exists(paths.nativeNodeEntry);
     return paths;
 }

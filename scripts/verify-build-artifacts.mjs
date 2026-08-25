@@ -76,13 +76,18 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 	const output = resolve(outDir ?? join(root, "out"));
 	const errors = [];
 	const checked = [];
-	const entryPaths = Object.fromEntries(
-		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(output, path)]),
-	);
-
 	if (!(await exists(output))) {
 		return { ok: false, repoRoot: root, outDir: output, checked, errors: [`Build output directory is missing: ${output}`] };
 	}
+	// Xmake stages the same renderer/sidecar tree under win-unpacked/app, while
+	// local Vite/esbuild output uses out directly. Accept both layouts without
+	// weakening the entry/resource/freshness checks.
+	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.nativeNode))
+		? join(output, "app")
+		: output;
+	const entryPaths = Object.fromEntries(
+		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(artifactRoot, path)]),
+	);
 	for (const [name, path] of Object.entries(entryPaths)) {
 		if (!(await exists(path))) errors.push(`Missing ${name} entry: ${path}`);
 		else {
@@ -92,7 +97,7 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		}
 	}
 
-	const rendererRoot = join(output, "renderer");
+	const rendererRoot = join(artifactRoot, "renderer");
 	const resourcePaths = new Set();
 	for (const htmlPath of [entryPaths.index, entryPaths.web]) {
 		if (!(await exists(htmlPath))) continue;

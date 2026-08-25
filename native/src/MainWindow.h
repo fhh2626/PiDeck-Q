@@ -40,6 +40,7 @@ protected:
 
 private:
     void emitMaximizedState();
+    void emitMinimizedState();
     void emitBounds();
     void emitVisible(bool visible);
     void applyStartupMode(const QString &mode, bool hasLastBounds);

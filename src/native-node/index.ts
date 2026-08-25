@@ -34,7 +34,7 @@ let rendererServer: NativeRendererServer | null = null;
 let nativeHost: NativeBackendHost | null = null;
 let backend: Backend | null = null;
 let singleInstance: ReturnType<typeof acquireVersionSingleInstance> | null = null;
-let stopping = false;
+let stopPromise: Promise<void> | null = null;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let lastHeartbeatAt = Date.now();
 let reloadInFlight = false;
@@ -43,22 +43,37 @@ let userDataDirectory = "";
 let memoryMonitor: NativeMemoryMonitor | null = null;
 let pendingStartupFocusSessionId: string | null = null;
 
-async function stop(): Promise<void> {
-	if (stopping) return;
-	stopping = true;
-	backend?.dispose();
-	backend = null;
-	singleInstance?.dispose();
-	singleInstance = null;
-	if (heartbeatTimer) clearInterval(heartbeatTimer);
-	heartbeatTimer = null;
-	memoryMonitor?.stop();
-	memoryMonitor = null;
-	if (pendingBounds && userDataDirectory) saveLastWindowBounds(userDataDirectory, pendingBounds);
-	await rendererServer?.stop().catch(() => undefined);
-	rendererServer = null;
-	bridge?.close();
-	bridge = null;
+async function stop(announceReadyToExit = false): Promise<void> {
+	if (stopPromise) {
+		await stopPromise;
+		return;
+	}
+	stopPromise = (async () => {
+		const activeBackend = backend;
+		backend = null;
+		if (activeBackend) await activeBackend.dispose().catch(() => undefined);
+		singleInstance?.dispose();
+		singleInstance = null;
+		if (heartbeatTimer) clearInterval(heartbeatTimer);
+		heartbeatTimer = null;
+		memoryMonitor?.stop();
+		memoryMonitor = null;
+		if (pendingBounds && userDataDirectory) saveLastWindowBounds(userDataDirectory, pendingBounds);
+		await rendererServer?.stop().catch(() => undefined);
+		rendererServer = null;
+		if (announceReadyToExit && bridge) {
+			try {
+				bridge.emit("application.readyToExit", {});
+				await bridge.closeGracefully();
+			} catch {
+				bridge.close();
+			}
+		} else {
+			bridge?.close();
+		}
+		bridge = null;
+	})();
+	await stopPromise;
 }
 
 async function main(): Promise<void> {
@@ -106,7 +121,10 @@ async function main(): Promise<void> {
 		backgroundDirectory,
 		getBootstrap: async () => ({
 			clipboard: await host.request<NativeClipboardSnapshot>("clipboard.snapshot"),
-			settings: { zoomFactor: backend?.settingsStore.get().zoomFactor ?? 1 },
+			settings: {
+				zoomFactor: backend?.settingsStore.get().zoomFactor ?? 1,
+				memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
+			},
 		}),
 		onHeartbeat: () => {
 			lastHeartbeatAt = Date.now();
@@ -144,12 +162,21 @@ async function main(): Promise<void> {
 		backend?.startAfterWindowCreated();
 	});
 	host.on("window.closed", () => nativeHost?.markWindowDestroyed());
+	host.on<boolean>("window.visibleChanged", (visible) => {
+		nativeHost?.markWindowVisible(visible);
+		if (visible) lastHeartbeatAt = Date.now();
+	});
 	host.on<{ width?: number; height?: number }>("window.normalBoundsChanged", (bounds) => {
 		if (typeof bounds.width !== "number" || typeof bounds.height !== "number") return;
 		pendingBounds = { width: bounds.width, height: bounds.height };
 	});
+	host.on("application.prepareQuit", () => {
+		void stop(true).then(() => process.exit(0));
+	});
+	// Keep accepting the old event for sidecars started by an older host during
+	// upgrades, but the Qt host now uses prepareQuit so cleanup can be ACKed.
 	host.on("application.quit", () => {
-		void stop().then(() => process.exit(0));
+		void stop(true).then(() => process.exit(0));
 	});
 
 	backend = await createBackend({
@@ -178,7 +205,8 @@ async function main(): Promise<void> {
 
 	// Renderer heartbeats preserve Electron's crash-recovery behavior without CDP.
 	heartbeatTimer = setInterval(() => {
-		if (Date.now() - lastHeartbeatAt <= 15_000 || reloadInFlight || !nativeHost?.hasLiveWindow()) return;
+		if (!nativeHost?.shouldWatchRendererHeartbeat()) return;
+		if (Date.now() - lastHeartbeatAt <= 15_000 || reloadInFlight) return;
 		reloadInFlight = true;
 		void host.request("window.reload")
 			.catch(() => undefined)

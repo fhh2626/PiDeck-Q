@@ -16,6 +16,11 @@ target("PiDeck-Q")
         -- Qt 6.11 requires MSVC to expose the standard __cplusplus value.
         add_cxxflags("/Zc:__cplusplus", {force = true})
     end
+
+    -- The launcher can override this explicitly for dev/staging runs. The
+    -- compile-time default keeps a directly launched release binary packaged
+    -- without inferring mode from whether a sidecar file happens to exist.
+    add_defines(is_mode("release") and "PIDECK_NATIVE_PACKAGED=1" or "PIDECK_NATIVE_PACKAGED=0")
     add_files("native/src/**.cpp")
     add_includedirs("native/src")
 

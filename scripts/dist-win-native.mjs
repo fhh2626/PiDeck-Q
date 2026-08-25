@@ -13,7 +13,10 @@ function run(command, args, env = {}) {
 	});
 }
 
+await run(npmCommand, ["run", "make-icon"]);
 await run(npmCommand, ["run", "build"]);
+await run(npmCommand, ["run", "build:native"]);
+await run(npmCommand, ["run", "verify:build-artifacts"]);
 const makensis = process.platform === "win32" ? "makensis.exe" : "makensis";
 await run(makensis, ["installer/PiDeck-Q.nsi"]);
 console.log("Native Windows installer and staging are ready.");

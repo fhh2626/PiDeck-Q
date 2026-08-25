@@ -1,6 +1,6 @@
 name: Build Windows
 
-# 仅手动触发，从最新的 main 分支构建 Windows 安装包
+# Qt/WebView2 native host currently ships Windows x64 only.
 on:
   workflow_dispatch:
 
@@ -9,12 +9,8 @@ permissions:
 
 jobs:
   build-windows:
-    name: Windows ${{ matrix.arch }}
+    name: Windows x64 native package
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
 
     steps:
       - name: Checkout repository (main)
@@ -25,27 +21,33 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.13.0
+          node-version: 24.19.0
           cache: npm
+
+      - name: Setup Python for node-pty
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate app icon
-        run: npm run make-icon
-
-      - name: Build Windows ${{ matrix.arch }} package
-        run: npm run build && npx electron-builder --win nsis zip --${{ matrix.arch }} --publish never
+      - name: Build Windows native installer
+        run: npm run dist:win
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
 
-      - name: Upload Windows ${{ matrix.arch }} artifact
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pi-desktop-windows-${{ matrix.arch }}
+          name: pideck-q-windows-x64
           if-no-files-found: error
           path: |
-            release/*.exe
-            release/*.zip
-            release/*.blockmap
-            release/latest-win.yml
+            release/PiDeck-Q-Setup.exe
+            release/win-unpacked

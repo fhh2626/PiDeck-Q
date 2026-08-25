@@ -587,12 +587,12 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 				},
 			});
 		},
-		dispose: () => {
+		dispose: async () => {
 			if (disposed) return;
 			disposed = true;
-			webServiceManager?.stop().catch(() => undefined);
 			terminalManager?.closeAll();
 			agentManager?.stopAll();
+			await webServiceManager?.stop().catch(() => undefined);
 		},
 	};
 }

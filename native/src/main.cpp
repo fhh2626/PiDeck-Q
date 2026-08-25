@@ -12,6 +12,7 @@
 
 #include <QApplication>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -21,6 +22,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMenu>
+#include <QMetaObject>
 #include <QPalette>
 #include <QProcess>
 #include <QStandardPaths>
@@ -61,23 +63,52 @@ QJsonObject openDialog(const QJsonObject &params, QWidget *parent)
     const QString defaultPath = params.value(QStringLiteral("defaultPath")).toString();
     const QStringList filters = dialogFilters(params.value(QStringLiteral("filters")).toArray());
     const QJsonArray properties = params.value(QStringLiteral("properties")).toArray();
-    bool directory = false;
+    bool openDirectory = false;
+    bool openFile = false;
     bool multiple = false;
     for (const QJsonValue &property : properties) {
-        directory = directory || property.toString() == QStringLiteral("openDirectory");
-        multiple = multiple || property.toString() == QStringLiteral("multiSelections");
+        const QString value = property.toString();
+        openDirectory = openDirectory || value == QStringLiteral("openDirectory");
+        openFile = openFile || value == QStringLiteral("openFile");
+        multiple = multiple || value == QStringLiteral("multiSelections");
     }
 
+    const auto configure = [&](QFileDialog &dialog) {
+        dialog.setWindowTitle(title);
+        dialog.setAcceptMode(QFileDialog::AcceptOpen);
+        if (!filters.isEmpty()) dialog.setNameFilters(filters);
+        if (!defaultPath.isEmpty()) {
+            const QFileInfo info(defaultPath);
+            dialog.setDirectory(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+            if (!info.isDir()) dialog.selectFile(info.fileName());
+        }
+    };
+    const auto selectFiles = [&]() {
+        QFileDialog dialog(parent);
+        configure(dialog);
+        dialog.setFileMode(multiple ? QFileDialog::ExistingFiles : QFileDialog::ExistingFile);
+        return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles() : QStringList{};
+    };
+    const auto selectDirectories = [&]() {
+        QStringList selected;
+        do {
+            QFileDialog dialog(parent);
+            configure(dialog);
+            dialog.setFileMode(QFileDialog::Directory);
+            dialog.setOption(QFileDialog::ShowDirsOnly, true);
+            if (dialog.exec() != QDialog::Accepted) break;
+            selected.append(dialog.selectedFiles());
+        } while (multiple);
+        return selected;
+    };
+
+    // Qt's native Windows dialog cannot express Electron's mixed file+folder
+    // mode in one picker. Preserve the contract by collecting each requested
+    // kind in sequence rather than silently dropping one kind; multi-directory
+    // selection repeats the folder picker until the user cancels.
     QStringList paths;
-    if (directory) {
-        const QString path = QFileDialog::getExistingDirectory(parent, title, defaultPath);
-        if (!path.isEmpty()) paths.append(path);
-    } else if (multiple) {
-        paths = QFileDialog::getOpenFileNames(parent, title, defaultPath, filters.join(";;"));
-    } else {
-        const QString path = QFileDialog::getOpenFileName(parent, title, defaultPath, filters.join(";;"));
-        if (!path.isEmpty()) paths.append(path);
-    }
+    if (openFile || !openDirectory) paths.append(selectFiles());
+    if (openDirectory) paths.append(selectDirectories());
     return QJsonObject{
         {QStringLiteral("canceled"), paths.isEmpty()},
         {QStringLiteral("filePaths"), stringListToJson(paths)},
@@ -86,11 +117,22 @@ QJsonObject openDialog(const QJsonObject &params, QWidget *parent)
 
 QJsonObject saveDialog(const QJsonObject &params, QWidget *parent)
 {
-    const QString path = QFileDialog::getSaveFileName(
-        parent,
-        params.value(QStringLiteral("title")).toString(),
-        params.value(QStringLiteral("defaultPath")).toString(),
-        dialogFilters(params.value(QStringLiteral("filters")).toArray()).join(";;"));
+    QFileDialog dialog(parent);
+    dialog.setWindowTitle(params.value(QStringLiteral("title")).toString());
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    if (const QStringList filters = dialogFilters(params.value(QStringLiteral("filters")).toArray()); !filters.isEmpty()) {
+        dialog.setNameFilters(filters);
+    }
+    const QString defaultPath = params.value(QStringLiteral("defaultPath")).toString();
+    if (!defaultPath.isEmpty()) {
+        const QFileInfo info(defaultPath);
+        dialog.setDirectory(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+        if (!info.isDir()) dialog.selectFile(info.fileName());
+    }
+    const QString path = dialog.exec() == QDialog::Accepted && !dialog.selectedFiles().isEmpty()
+        ? dialog.selectedFiles().constFirst()
+        : QString{};
     return QJsonObject{
         {QStringLiteral("canceled"), path.isEmpty()},
         {QStringLiteral("filePath"), path},
@@ -135,6 +177,14 @@ int main(int argc, char **argv)
     MainWindow *mainWindow = nullptr;
     TrayController *tray = nullptr;
     bool quitting = false;
+    bool restartRequested = false;
+
+    node.setNodeErrorHandler([&](const QString &) {
+        if (!quitting) app.quit();
+    });
+    node.setNodeExitHandler([&](int, QProcess::ExitStatus) {
+        if (!quitting) app.quit();
+    });
 
     ClipboardController clipboard([&host](const QJsonObject &snapshot) {
         host.sendEvent(QStringLiteral("native.clipboard"), snapshot);
@@ -144,10 +194,16 @@ int main(int argc, char **argv)
         return QJsonValue(clipboard.snapshot());
     });
     host.registerHandler(QStringLiteral("dialog.open"), [&mainWindow](const QJsonObject &params) {
-        return QJsonValue(openDialog(params, mainWindow));
+        QWidget *parent = params.value(QStringLiteral("parent")).toString() == QStringLiteral("none")
+            ? nullptr
+            : mainWindow;
+        return QJsonValue(openDialog(params, parent));
     });
     host.registerHandler(QStringLiteral("dialog.save"), [&mainWindow](const QJsonObject &params) {
-        return QJsonValue(saveDialog(params, mainWindow));
+        QWidget *parent = params.value(QStringLiteral("parent")).toString() == QStringLiteral("none")
+            ? nullptr
+            : mainWindow;
+        return QJsonValue(saveDialog(params, parent));
     });
     host.registerHandler(QStringLiteral("shell.openExternal"), [](const QJsonObject &params) {
         const QString url = params.value(QStringLiteral("url")).toString();
@@ -161,7 +217,9 @@ int main(int argc, char **argv)
     host.registerHandler(QStringLiteral("shell.showItemInFolder"), [](const QJsonObject &params) {
         const QString path = params.value(QStringLiteral("path")).toString();
 #ifdef Q_OS_WIN
-        QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,"), QDir::toNativeSeparators(path)});
+        QProcess::startDetached(QStringLiteral("explorer.exe"), {
+            QStringLiteral("/select,%1").arg(QDir::toNativeSeparators(path)),
+        });
 #else
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 #endif
@@ -243,12 +301,12 @@ int main(int argc, char **argv)
         app.quit();
         return QJsonValue(QJsonValue::Null);
     });
-    host.registerHandler(QStringLiteral("application.restart"), [&app, &quitting, &mainWindow](const QJsonObject &) {
+    host.registerHandler(QStringLiteral("application.restart"), [&app, &quitting, &restartRequested, &mainWindow](const QJsonObject &) {
+        // The replacement process must start only after the sidecar releases
+        // the version lock; otherwise the new sidecar can exit as secondary.
+        restartRequested = true;
         quitting = true;
         if (mainWindow) mainWindow->setQuitting(true);
-        const QString program = QCoreApplication::applicationFilePath();
-        const QStringList arguments = QCoreApplication::arguments().mid(1);
-        QProcess::startDetached(program, arguments);
         app.quit();
         return QJsonValue(QJsonValue::Null);
     });
@@ -264,8 +322,16 @@ int main(int argc, char **argv)
         const QString activationUrl = params.value(QStringLiteral("activationUrl")).toString();
         if (WindowsToastNotifier::isSupported()) {
             WindowsToastNotifier::show(id, title, body, silent, activationUrl,
-                [&host, id] { host.sendEvent(QStringLiteral("notification.clicked"), QJsonObject{{QStringLiteral("id"), id}}); },
-                [&host, id](const QString &error) { host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("error"), error}}); });
+                [&host, id] {
+                    QMetaObject::invokeMethod(&host, [&host, id] {
+                        host.sendEvent(QStringLiteral("notification.clicked"), QJsonObject{{QStringLiteral("id"), id}});
+                    }, Qt::QueuedConnection);
+                },
+                [&host, id](const QString &error) {
+                    QMetaObject::invokeMethod(&host, [&host, id, error] {
+                        host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("error"), error}});
+                    }, Qt::QueuedConnection);
+                });
         } else if (tray) {
             tray->showMessage(title, body, QSystemTrayIcon::Information, 5000);
         }
@@ -290,23 +356,25 @@ int main(int argc, char **argv)
             // but leave the native browser surface invisible.
             mainWindow->show();
             mainWindow->load(pageUrl);
-            mainWindow->setAttribute(Qt::WA_DeleteOnClose, true);
-            if (paths.packaged) ProtocolRegistrar::registerProtocol(QCoreApplication::applicationFilePath());
             return;
         }
-        if (name == QStringLiteral("application.nodeExit") && !quitting) {
-            app.quit();
+        if (name == QStringLiteral("application.readyToExit")) {
+            node.markReadyToExit();
         }
     });
+
+    // The installer owns the normal registration path; keep startup registration
+    // as a repair/fallback for portable copies and upgrades.
+    if (paths.packaged) ProtocolRegistrar::registerProtocol(QCoreApplication::applicationFilePath());
 
     if (!node.start()) return 1;
     tray = new TrayController(
         QIcon(iconPath),
         [&mainWindow] { if (mainWindow) mainWindow->showWindow(); },
-        [&app, &quitting, &mainWindow] {
+        [&app, &quitting, &restartRequested, &mainWindow] {
+            restartRequested = true;
             quitting = true;
             if (mainWindow) mainWindow->setQuitting(true);
-            QProcess::startDetached(QCoreApplication::applicationFilePath(), QCoreApplication::arguments().mid(1));
             app.quit();
         },
         [&app, &quitting, &mainWindow] {
@@ -325,8 +393,14 @@ int main(int argc, char **argv)
 
     const int exitCode = app.exec();
     if (mainWindow) {
+        // MainWindow has no Qt delete-on-close ownership. All host callbacks
+        // stop running once the event loop returns, so this is the sole owner.
         delete mainWindow;
         mainWindow = nullptr;
+    }
+    if (restartRequested) {
+        QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                 QCoreApplication::arguments().mid(1));
     }
     return exitCode;
 }
