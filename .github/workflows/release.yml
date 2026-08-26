@@ -8,7 +8,7 @@ on:
     inputs:
       tag:
         description: >-
-          指定 tag（如 v0.1.5）则按该 tag 的代码打包。
+          指定 tag（如 vX.Y.Z）则按该 tag 的代码打包。
           留空则用当前分支最新 commit + package.json 版本号正式发布（自动 tag vX.Y.Z）。
         required: false
         default: ""

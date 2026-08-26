@@ -163,6 +163,8 @@ export function useSessionWorkspaceChrome(options: {
 
   useEffect(() => {
     let disposed = false;
+    let initialPendingPullStarted = false;
+    let receivedPushAfterInitialPullStarted = false;
     // A newer notification supersedes every retry scheduled for an older target.
     // Without this gate, a late catalog load could focus an obsolete session after
     // the user has already clicked a second notification.
@@ -187,10 +189,14 @@ export function useSessionWorkspaceChrome(options: {
     };
 
     const unsubscribe = window.piDesktop.app.onFocusSessionTarget((target) => {
+      if (initialPendingPullStarted) receivedPushAfterInitialPullStarted = true;
       focusByTarget(target);
     });
+    // The pull snapshots the host's pending target. If a push arrives after that
+    // snapshot starts, let the push win rather than replaying the older response.
+    initialPendingPullStarted = true;
     void window.piDesktop.app.getPendingFocusTarget?.().then((target) => {
-      if (disposed || !target) return;
+      if (disposed || !target || receivedPushAfterInitialPullStarted) return;
       focusByTarget(target);
     });
     return () => {

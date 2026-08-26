@@ -50,4 +50,6 @@ test("cold start focus target goes through pending queue", () => {
   assert.match(rendererSource, /ackFocusSessionTarget\(target\.id\)/);
   assert.match(rendererSource, /latestFocusTargetIdRef/);
   assert.match(rendererSource, /latestFocusTargetIdRef\.current !== target\.id/);
+  assert.match(rendererSource, /receivedPushAfterInitialPullStarted/);
+  assert.match(rendererSource, /!target \|\| receivedPushAfterInitialPullStarted/);
 });

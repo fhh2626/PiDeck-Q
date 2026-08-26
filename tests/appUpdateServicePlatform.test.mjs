@@ -348,8 +348,8 @@ test("AppUpdateService completed event keeps asset.size as total when downloader
 		platformApp: createFakeApp(),
 		platformPaths: createFakePaths(),
 		platformDownloads: {
-			// 返回 receivedBytes 但不带 totalBytes：应保留 asset.size 作为总大小
-			downloadToFile: async () => ({ receivedBytes: 55 }),
+			// 返回匹配 asset.size 的 receivedBytes 但不带 totalBytes：应保留 asset.size 作为总大小
+			downloadToFile: async () => ({ receivedBytes: 88 }),
 		},
 		fetchFn: fakeReleaseFetch({ ...RELEASE_ASSET, size: 88 }),
 	});
@@ -359,6 +359,6 @@ test("AppUpdateService completed event keeps asset.size as total when downloader
 
 	const completed = progressEvents.find((p) => p.state === "completed");
 	assert.ok(completed, "must emit a completed event");
-	assert.equal(completed.receivedBytes, 55);
+	assert.equal(completed.receivedBytes, 88);
 	assert.equal(completed.totalBytes, 88, "totalBytes should fall back to asset.size when downloader omits it");
 });

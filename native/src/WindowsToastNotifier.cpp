@@ -31,7 +31,8 @@ bool WindowsToastNotifier::isSupported()
 
 void WindowsToastNotifier::show(const QString &id, const QString &title, const QString &body,
                                 bool silent, const QString &activationUrl,
-                                ClickHandler onClick, FailureHandler onFailed)
+                                ClickHandler onClick, DismissHandler onDismissed,
+                                FailureHandler onFailed)
 {
 #ifdef Q_OS_WIN
     try {
@@ -52,9 +53,13 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
         // exception path. Moving the failure callback into Failed() would leave
         // the catch block unable to report LoadXml/Create/Show failures.
         const auto clickHandler = onClick;
+        const auto dismissHandler = onDismissed;
         const auto failureHandler = onFailed;
         notification.Activated([clickHandler](auto const &, auto const &) {
             if (clickHandler) clickHandler();
+        });
+        notification.Dismissed([dismissHandler](auto const &, auto const &) {
+            if (dismissHandler) dismissHandler();
         });
         notification.Failed([failureHandler](auto const &, auto const &) {
             if (failureHandler) failureHandler(QStringLiteral("Windows toast failed"));
@@ -75,6 +80,8 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
     Q_UNUSED(body);
     Q_UNUSED(silent);
     Q_UNUSED(activationUrl);
+    Q_UNUSED(onClick);
+    Q_UNUSED(onDismissed);
     if (onFailed) onFailed(QStringLiteral("Windows toast is unavailable"));
 #endif
 }

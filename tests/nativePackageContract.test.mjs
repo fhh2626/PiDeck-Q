@@ -7,7 +7,7 @@ const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 
 test("native package exposes a complete reproducible build chain", () => {
-	assert.equal(packageJson.version, "0.1.5");
+	assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 	assert.equal(packageLock.packages[""].version, packageJson.version);
 	for (const script of ["build:renderer", "build:node", "build:native", "test", "typecheck", "dist:win"]) {
 		assert.equal(typeof packageJson.scripts?.[script], "string", `missing npm script: ${script}`);

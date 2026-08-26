@@ -391,6 +391,11 @@ int main(int argc, char **argv)
                         host.sendEvent(QStringLiteral("notification.clicked"), QJsonObject{{QStringLiteral("id"), id}});
                     }, Qt::QueuedConnection);
                 },
+                [&host, id] {
+                    QMetaObject::invokeMethod(&host, [&host, id] {
+                        host.sendEvent(QStringLiteral("notification.dismissed"), QJsonObject{{QStringLiteral("id"), id}});
+                    }, Qt::QueuedConnection);
+                },
                 [&host, id](const QString &error) {
                     QMetaObject::invokeMethod(&host, [&host, id, error] {
                         host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("error"), error}});

@@ -17,6 +17,10 @@ export class NativeNotifications implements PlatformNotifications {
 			this.callbacks.delete(payload.id);
 			options.onClick?.();
 		});
+		host.on<{ id?: string }>("notification.dismissed", (payload) => {
+			if (!payload?.id) return;
+			this.callbacks.delete(payload.id);
+		});
 		host.on<{ id?: string; error?: string }>("notification.failed", (payload) => {
 			if (!payload?.id) return;
 			const options = this.callbacks.get(payload.id);

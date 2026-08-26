@@ -55,6 +55,15 @@ test("native quit waits asynchronously for the sidecar ACK", () => {
 	assert.match(mainSource, /node\.stopAsync/);
 });
 
+test("native notifications release callback state when Windows dismisses a toast", () => {
+	const toast = readFileSync("native/src/WindowsToastNotifier.cpp", "utf8");
+	const main = readFileSync("native/src/main.cpp", "utf8");
+	const notifications = readFileSync("src/native-node/platform/NativeNotifications.ts", "utf8");
+	assert.match(toast, /notification\.Dismissed/);
+	assert.match(main, /notification\.dismissed/);
+	assert.match(notifications, /notification\.dismissed/);
+});
+
 test("Explorer receives one /select,<path> argument", () => {
 	assert.match(mainSource, /QStringLiteral\("\/select,%1"\)/);
 	assert.doesNotMatch(mainSource, /QStringLiteral\("\/select,"\),\s*QDir::toNativeSeparators/);

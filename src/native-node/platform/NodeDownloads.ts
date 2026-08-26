@@ -1,4 +1,5 @@
 import { createWriteStream } from "node:fs";
+import { rm } from "node:fs/promises";
 import type {
 	PlatformDownloadRequest,
 	PlatformDownloads,
@@ -58,6 +59,21 @@ export class NodeDownloads implements PlatformDownloads {
 		} catch (error) {
 			output.destroy();
 			throw error;
+		}
+
+		// GitHub's asset size is a completion invariant, not just a progress hint.
+		// A truncated response can otherwise look successful and leave a corrupt ZIP
+		// for the user to extract manually.
+		if (
+			typeof request.expectedBytes === "number" &&
+			Number.isFinite(request.expectedBytes) &&
+			request.expectedBytes > 0 &&
+			receivedBytes !== request.expectedBytes
+		) {
+			await rm(request.filePath, { force: true });
+			throw new DownloadError(
+				`Download size mismatch: expected ${request.expectedBytes}, got ${receivedBytes}`,
+			);
 		}
 		return { receivedBytes, totalBytes };
 	}
