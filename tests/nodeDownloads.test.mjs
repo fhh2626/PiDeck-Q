@@ -13,6 +13,44 @@ function createDownloads(body) {
 	});
 }
 
+test("NodeDownloads removes a partial file when the network reader fails", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-reader-failure-"));
+	const filePath = join(tempDir, "update.zip");
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode("partial"));
+			controller.error(new Error("network interrupted"));
+		},
+	});
+	try {
+		await assert.rejects(
+			() => new NodeDownloads({ fetch: async () => new Response(body, { status: 200 }) }).downloadToFile({
+				url: "https://example.test/update.zip",
+				filePath,
+			}),
+			/network interrupted/,
+		);
+		await assert.rejects(() => stat(filePath), { code: "ENOENT" });
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("NodeDownloads turns a WriteStream error into a rejected download", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-write-failure-"));
+	try {
+		await assert.rejects(
+			() => createDownloads("content").downloadToFile({
+				url: "https://example.test/update.zip",
+				filePath: join(tempDir, "missing", "update.zip"),
+			}),
+			/ENOENT|no such file|cannot find/i,
+		);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("NodeDownloads rejects a truncated response and removes the partial file", async () => {
 	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-size-mismatch-"));
 	const filePath = join(tempDir, "update.zip");
