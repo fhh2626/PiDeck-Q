@@ -11,7 +11,7 @@ import { HostBridge } from "./host/HostBridge";
 import { NativeBackendHost } from "./host/NativeBackendHost";
 import { createNativePlatformServices } from "./platform/createNativePlatformServices";
 import { NativeRendererServer } from "./transport/NativeRendererServer";
-import type { NativeClipboardSnapshot } from "../shared/desktop/NativeHostTypes";
+import type { NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/desktop/NativeHostTypes";
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
 import { resolveSecondaryFocusSessionId } from "./focusRequest";
 import { nextLoadFailureAction } from "./loadFailureRecovery";
@@ -40,6 +40,8 @@ let stopPromise: Promise<void> | null = null;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let lastHeartbeatAt = Date.now();
 let reloadInFlight = false;
+let eventRecoveryFailureCount = 0;
+const EVENT_RECOVERY_RELOAD_FAILURES = 3;
 let pendingBounds: LastWindowBounds | null = null;
 let userDataDirectory = "";
 let memoryMonitor: NativeMemoryMonitor | null = null;
@@ -147,15 +149,22 @@ async function main(): Promise<void> {
 		}),
 		onHeartbeat: (_payload, state) => {
 			lastHeartbeatAt = Date.now();
-			if (!state.eventChannelHealthy && !reloadInFlight) {
-				reloadInFlight = true;
-				void host.request("window.reload")
-					.catch(() => undefined)
-					.finally(() => {
-						reloadInFlight = false;
-						lastHeartbeatAt = Date.now();
-					});
+			if (state.eventChannelHealthy) {
+				eventRecoveryFailureCount = 0;
+				return;
 			}
+			// Renderer owns the first recovery attempt by reconnecting with its
+			// replay cursor. Native only reloads after several consecutive unhealthy
+			// heartbeats, so a successful replay is not interrupted by a page reload.
+			eventRecoveryFailureCount += 1;
+			if (eventRecoveryFailureCount < EVENT_RECOVERY_RELOAD_FAILURES || reloadInFlight) return;
+			reloadInFlight = true;
+			void host.request("window.reload")
+				.catch(() => undefined)
+				.finally(() => {
+					reloadInFlight = false;
+					lastHeartbeatAt = Date.now();
+				});
 		},
 		onMemoryDiagnostics: (payload) => {
 			if (!memoryMonitor || typeof payload !== "object" || payload === null) return;
@@ -169,7 +178,7 @@ async function main(): Promise<void> {
 	host.on<NativeClipboardSnapshot>("native.clipboard", (snapshot) => {
 		placeholderServer.broadcast("native.clipboard", [snapshot]);
 	});
-	host.on<{ paths: string[]; x: number; y: number }>("native.fileDrop", (payload) => {
+	host.on<NativeFileDropPayload>("native.fileDrop", (payload) => {
 		placeholderServer.broadcast("native.fileDrop", [payload]);
 	});
 
@@ -190,6 +199,7 @@ async function main(): Promise<void> {
 
 	host.on("window.ready", () => {
 		loadFailureCount = 0;
+		eventRecoveryFailureCount = 0;
 		if (loadRetryTimer) clearTimeout(loadRetryTimer);
 		loadRetryTimer = null;
 		nativeHost?.onWindowReady();
@@ -212,7 +222,7 @@ async function main(): Promise<void> {
 		}, action.delayMs);
 	});
 	host.on<{ action?: string }>("window.loadErrorAction", (payload) => {
-		if (payload?.action === "restart") {
+		if (payload?.action === "retry" || payload?.action === "restart") {
 			loadFailureCount = 0;
 			void host.request("window.reload").catch(() => undefined);
 			return;

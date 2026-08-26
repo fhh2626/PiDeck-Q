@@ -20,7 +20,9 @@ public:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     static bool hasLocalFiles(const QMimeData *mimeData);
-    static QJsonObject payload(const QMimeData *mimeData, const QPoint &position);
+    static QPoint toWebViewClientPosition(QWindow *coordinateSurface, QObject *watched,
+                                           const QPoint &localPosition);
+    static QJsonObject payload(const QMimeData *mimeData, const QPoint &clientPosition);
 
 private:
     DropHandler m_handler;

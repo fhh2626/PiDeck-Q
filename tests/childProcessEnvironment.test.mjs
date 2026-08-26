@@ -29,16 +29,15 @@ test("sanitizeChildEnvironment removes native host bridge secrets and private re
 	});
 });
 
-test("sanitizeChildEnvironment preserves safe Node settings while removing Electron injection", () => {
+test("sanitizeChildEnvironment removes NODE_OPTIONS without corrupting quoted arguments", () => {
 	const sanitized = sanitizeChildEnvironment({
-		NODE_OPTIONS: "--max-old-space-size=512 --require electron-vite/register",
+		NODE_OPTIONS: '--require "C:\\Program Files\\private hook.js" --max-old-space-size=512',
 		ELECTRON_RUN_AS_NODE: "1",
 		CHROME_CRASHPAD_PIPE_NAME: "private",
 		LANG: "en_US.UTF-8",
 	});
 
 	assert.deepEqual(sanitized, {
-		NODE_OPTIONS: "--max-old-space-size=512",
 		LANG: "en_US.UTF-8",
 	});
 });

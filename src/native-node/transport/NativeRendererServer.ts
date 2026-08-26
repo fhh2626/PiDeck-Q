@@ -11,7 +11,6 @@ const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
 const MAX_FRAME_BYTES = MAX_NATIVE_EVENT_FRAME_BYTES;
 const MAX_EVENT_HISTORY = 4_096;
 const MAX_PENDING_EVENT_BYTES = 4 * 1024 * 1024;
-const EVENT_LAG_THRESHOLD = 16;
 
 const MIME_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -238,8 +237,13 @@ export class NativeRendererServer {
 			response.on("close", removeClient);
 			this.writeToClient(client, ": connected\n\n");
 
-			const rawLastEventId = request.headers["last-event-id"];
-			const lastEventId = Number(Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId ?? "");
+			const rawHeaderLastEventId = request.headers["last-event-id"];
+			const headerLastEventId = Array.isArray(rawHeaderLastEventId)
+				? rawHeaderLastEventId[0]
+				: rawHeaderLastEventId;
+			const queryLastEventId = url.searchParams.get("lastEventId");
+			const rawLastEventId = headerLastEventId ?? queryLastEventId ?? "";
+			const lastEventId = Number(rawLastEventId);
 			const hasLastEventId = Number.isInteger(lastEventId) && lastEventId >= 0;
 			const oldestSeq = this.eventHistory[0]?.seq ?? this.eventSeq + 1;
 			if (hasLastEventId && lastEventId < oldestSeq - 1) {
@@ -399,7 +403,9 @@ export class NativeRendererServer {
 			const writable = client.response.write(frame);
 			if (!writable) {
 				client.blocked = true;
-				client.pendingBytes = bytes;
+				// The frame has already been accepted by ServerResponse. Only frames
+				// waiting in pendingFrames count against the queued-byte budget.
+				client.pendingBytes = 0;
 				client.response.once("drain", () => this.flushClient(client));
 			}
 			return true;
@@ -412,23 +418,41 @@ export class NativeRendererServer {
 	private flushClient(client: EventClient): void {
 		if (client.response.destroyed) return;
 		client.blocked = false;
-		client.pendingBytes = 0;
-		const queued = client.pendingFrames.splice(0);
-		for (const frame of queued) {
-			if (!this.writeToClient(client, frame)) return;
+		while (client.pendingFrames.length > 0) {
+			// Keep the not-yet-written tail in the queue. A write can transition the
+			// response back to blocked, and the following drain must resume at the
+			// exact next frame instead of losing anything removed into a local array.
+			const frame = client.pendingFrames[0];
+			const bytes = Buffer.byteLength(frame);
+			try {
+				const writable = client.response.write(frame);
+				client.pendingFrames.shift();
+				client.pendingBytes = Math.max(0, client.pendingBytes - bytes);
+				if (!writable) {
+					client.blocked = true;
+					client.response.once("drain", () => this.flushClient(client));
+					return;
+				}
+			} catch {
+				this.clients.delete(client);
+				return;
+			}
 		}
+		client.pendingBytes = 0;
 	}
 
 	private getHeartbeatState(payload: NativeHeartbeatPayload): NativeHeartbeatState {
 		const lastEventSeq = payload.lastEventSeq;
-		const lag = Number.isInteger(lastEventSeq)
-			? Math.max(0, this.eventSeq - Number(lastEventSeq))
-			: EVENT_LAG_THRESHOLD + 1;
+		const hasValidSequence = Number.isInteger(lastEventSeq) && Number(lastEventSeq) >= 0;
+		const rendererSequence = hasValidSequence ? Number(lastEventSeq) : -1;
 		return {
 			eventSeq: this.eventSeq,
 			eventSourceGeneration: this.eventSourceGeneration,
+		// A sequence gap is a correctness failure, not a throughput metric: even
+		// one missed terminal/session event can leave the renderer inconsistent.
 			eventChannelHealthy: payload.eventSourceGeneration === this.eventSourceGeneration
-			&& lag <= EVENT_LAG_THRESHOLD,
+			&& hasValidSequence
+			&& rendererSequence >= this.eventSeq,
 		};
 	}
 

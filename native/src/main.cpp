@@ -109,12 +109,10 @@ QJsonObject openDialog(const QJsonObject &params, QWidget *parent)
     const QStringList filters = dialogFilters(params.value(QStringLiteral("filters")).toArray());
     const QJsonArray properties = params.value(QStringLiteral("properties")).toArray();
     bool openDirectory = false;
-    bool openFile = false;
     bool multiple = false;
     for (const QJsonValue &property : properties) {
         const QString value = property.toString();
         openDirectory = openDirectory || value == QStringLiteral("openDirectory");
-        openFile = openFile || value == QStringLiteral("openFile");
         multiple = multiple || value == QStringLiteral("multiSelections");
     }
 
@@ -135,25 +133,18 @@ QJsonObject openDialog(const QJsonObject &params, QWidget *parent)
         return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles() : QStringList{};
     };
     const auto selectDirectories = [&]() {
-        QStringList selected;
-        do {
-            QFileDialog dialog(parent);
-            configure(dialog);
-            dialog.setFileMode(QFileDialog::Directory);
-            dialog.setOption(QFileDialog::ShowDirsOnly, true);
-            if (dialog.exec() != QDialog::Accepted) break;
-            selected.append(dialog.selectedFiles());
-        } while (multiple);
-        return selected;
+        QFileDialog dialog(parent);
+        configure(dialog);
+        dialog.setFileMode(QFileDialog::Directory);
+        dialog.setOption(QFileDialog::ShowDirsOnly, true);
+        return dialog.exec() == QDialog::Accepted ? dialog.selectedFiles() : QStringList{};
     };
 
     // Qt's native Windows dialog cannot express Electron's mixed file+folder
-    // mode in one picker. Preserve the contract by collecting each requested
-    // kind in sequence rather than silently dropping one kind; multi-directory
-    // selection repeats the folder picker until the user cancels.
-    QStringList paths;
-    if (openFile || !openDirectory) paths.append(selectFiles());
-    if (openDirectory) paths.append(selectDirectories());
+    // mode in one picker. A request must therefore select one kind only; never
+    // open a second picker or repeat a directory picker after the user made a
+    // choice/cancelled it.
+    const QStringList paths = openDirectory ? selectDirectories() : selectFiles();
     return QJsonObject{
         {QStringLiteral("canceled"), paths.isEmpty()},
         {QStringLiteral("filePaths"), stringListToJson(paths)},

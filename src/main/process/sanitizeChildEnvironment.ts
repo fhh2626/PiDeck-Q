@@ -24,31 +24,10 @@ export function sanitizeChildEnvironment(environment: NodeJS.ProcessEnv): NodeJS
 		}
 	}
 
-	const nodeOptions = next.NODE_OPTIONS;
-	if (typeof nodeOptions === "string" && nodeOptions.trim()) {
-		const tokens = nodeOptions.split(/\s+/).filter(Boolean);
-		const safeTokens: string[] = [];
-		for (let index = 0; index < tokens.length; index += 1) {
-			const token = tokens[index];
-			const lower = token.toLowerCase();
-			const unsafe = lower.includes("electron")
-				|| lower.includes("asar")
-				|| lower.includes("app.asar")
-				|| lower.includes("electron-vite");
-			if (unsafe) continue;
-			if ((token === "--require" || token === "-r") && index + 1 < tokens.length) {
-				const required = tokens[index + 1].toLowerCase();
-				if (required.includes("electron") || required.includes("asar") || required.includes("electron-vite")) {
-					index += 1;
-					continue;
-				}
-			}
-			safeTokens.push(token);
-		}
-		const cleaned = safeTokens.join(" ").trim();
-		if (cleaned) next.NODE_OPTIONS = cleaned;
-		else delete next.NODE_OPTIONS;
-	}
+	// NODE_OPTIONS accepts shell-like quoting and escaped paths. Re-tokenizing it
+	// here can corrupt valid arguments, so child processes receive no inherited
+	// Node bootstrap options at all.
+	delete next.NODE_OPTIONS;
 
 	return next;
 }

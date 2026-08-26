@@ -10,7 +10,7 @@
 #include <QWindow>
 
 namespace {
-QPoint screenPosition(QObject *watched, const QPoint &localPosition)
+QPoint globalPosition(QObject *watched, const QPoint &localPosition)
 {
     if (auto *widget = qobject_cast<QWidget *>(watched)) return widget->mapToGlobal(localPosition);
     if (auto *window = qobject_cast<QWindow *>(watched)) return window->mapToGlobal(localPosition);
@@ -38,10 +38,8 @@ bool FileDropController::eventFilter(QObject *watched, QEvent *event)
         auto *drop = static_cast<QDropEvent *>(event);
         if (hasLocalFiles(drop->mimeData())) {
             if (m_handler) {
-                const QPoint globalPosition = screenPosition(watched, drop->position().toPoint());
-                const QPoint clientPosition = m_coordinateSurface
-                    ? m_coordinateSurface->mapFromGlobal(globalPosition)
-                    : globalPosition;
+                const QPoint clientPosition = toWebViewClientPosition(
+                    m_coordinateSurface, watched, drop->position().toPoint());
                 m_handler(payload(drop->mimeData(), clientPosition));
             }
             drop->acceptProposedAction();
@@ -49,6 +47,14 @@ bool FileDropController::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return false;
+}
+
+QPoint FileDropController::toWebViewClientPosition(QWindow *coordinateSurface,
+                                                        QObject *watched,
+                                                        const QPoint &localPosition)
+{
+    const QPoint global = globalPosition(watched, localPosition);
+    return coordinateSurface ? coordinateSurface->mapFromGlobal(global) : global;
 }
 
 bool FileDropController::hasLocalFiles(const QMimeData *mimeData)
@@ -60,7 +66,7 @@ bool FileDropController::hasLocalFiles(const QMimeData *mimeData)
     return false;
 }
 
-QJsonObject FileDropController::payload(const QMimeData *mimeData, const QPoint &screenPosition)
+QJsonObject FileDropController::payload(const QMimeData *mimeData, const QPoint &clientPosition)
 {
     QJsonArray paths;
     if (mimeData) {
@@ -70,7 +76,7 @@ QJsonObject FileDropController::payload(const QMimeData *mimeData, const QPoint 
     }
     return QJsonObject{
         {QStringLiteral("paths"), paths},
-        {QStringLiteral("clientX"), screenPosition.x()},
-        {QStringLiteral("clientY"), screenPosition.y()},
+        {QStringLiteral("clientX"), clientPosition.x()},
+        {QStringLiteral("clientY"), clientPosition.y()},
     };
 }

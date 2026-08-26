@@ -180,13 +180,13 @@ void MainWindow::showLoadError(const QString &url, const QString &error)
     message.setWindowTitle(QStringLiteral("PiDeck-Q"));
     message.setText(QStringLiteral("The renderer could not be loaded."));
     message.setInformativeText(QStringLiteral("%1\n%2").arg(error, url));
-    auto *restart = message.addButton(QStringLiteral("Restart"), QMessageBox::AcceptRole);
+    auto *retry = message.addButton(QStringLiteral("Retry"), QMessageBox::AcceptRole);
     auto *exit = message.addButton(QStringLiteral("Exit"), QMessageBox::RejectRole);
-    message.setDefaultButton(restart);
+    message.setDefaultButton(retry);
     message.exec();
     if (m_host) {
         m_host->sendEvent(QStringLiteral("window.loadErrorAction"), QJsonObject{
-            {QStringLiteral("action"), message.clickedButton() == restart ? QStringLiteral("restart") : QStringLiteral("exit")},
+            {QStringLiteral("action"), message.clickedButton() == retry ? QStringLiteral("retry") : QStringLiteral("exit")},
         });
     } else if (message.clickedButton() == exit) {
         QCoreApplication::quit();
@@ -249,9 +249,10 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
     if (m_host) {
-        const QPoint screenPosition = mapToGlobal(event->position().toPoint());
+        const QPoint clientPosition = FileDropController::toWebViewClientPosition(
+            m_surface->view(), this, event->position().toPoint());
         m_host->sendEvent(QStringLiteral("native.fileDrop"),
-                          FileDropController::payload(event->mimeData(), screenPosition));
+                          FileDropController::payload(event->mimeData(), clientPosition));
     }
     event->acceptProposedAction();
 }

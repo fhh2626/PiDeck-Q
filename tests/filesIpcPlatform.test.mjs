@@ -91,8 +91,12 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	};
 
 	let dialogPickResult = { canceled: true, filePaths: [] };
+	const dialogOptions = [];
 	const dialogs = {
-		showOpenDialog: async () => dialogPickResult,
+		showOpenDialog: async (options) => {
+			dialogOptions.push(options);
+			return dialogPickResult;
+		},
 		showSaveDialog: async () => ({ canceled: true }),
 	};
 
@@ -122,6 +126,10 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	dialogPickResult = { canceled: true, filePaths: [] };
 	const canceledFiles = await router.invoke(ipcChannels.dialogPickFiles);
 	assert.equal(canceledFiles.length, 0);
+	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openFile", "multiSelections"]);
+
+	await router.invoke(ipcChannels.dialogPickFiles, { includeDirectories: true });
+	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openDirectory", "multiSelections"]);
 });
 
 test("Files IPC: shell only ever receives the authorized canonical host path", async () => {

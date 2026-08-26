@@ -30,6 +30,8 @@ export type FocusPayload = {
 	argv?: string[];
 };
 
+const MAX_FOCUS_PAYLOAD_BYTES = 64 * 1024;
+
 type LockPayload = {
 	pid: number;
 	version: string;
@@ -132,20 +134,59 @@ async function listenFocusEndpoint(endpoint: string, onPayload: (payload: FocusP
 	if (process.platform !== "win32" && existsSync(endpoint) && !(await endpointReachable(endpoint))) {
 		try { unlinkSync(endpoint); } catch { /* listen below reports a real failure */ }
 	}
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
 		const server = createServer((socket: Socket) => {
-			const chunks: Buffer[] = [];
-			socket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+			let received = "";
+			let receivedBytes = 0;
+			let rejected = false;
+			let handled = false;
+			const handlePayload = (raw: string) => {
+				if (rejected || handled) return;
+				const payload = parseFocusPayload(raw);
+				if (!payload) {
+					socket.destroy();
+					return;
+				}
+				handled = true;
+				onPayload(payload);
+				// The secondary waits for this ACK, which makes acquire's completion
+				// mean that the primary has actually consumed the focus payload.
+				socket.write("focus-ack");
+				socket.end();
+			};
+			socket.on("data", (chunk) => {
+				if (rejected || handled) return;
+				receivedBytes += chunk.length;
+				if (receivedBytes > MAX_FOCUS_PAYLOAD_BYTES) {
+					rejected = true;
+					socket.destroy();
+					return;
+				}
+				received += chunk.toString("utf8");
+				const delimiter = received.indexOf("\n");
+				if (delimiter >= 0) handlePayload(received.slice(0, delimiter));
+			});
+			// Accept an older sender that closes after writing its JSON, while new
+			// senders use the delimiter so Windows named pipes can return the ACK.
 			socket.once("end", () => {
-				const payload = parseFocusPayload(Buffer.concat(chunks).toString("utf8"));
-				if (payload) onPayload(payload);
+				if (!handled && !rejected) handlePayload(received);
 			});
 			socket.on("error", () => undefined);
 		});
-		const onError = () => {
-			server.removeAllListeners();
+		const onError = (error: NodeJS.ErrnoException) => {
+			server.removeListener("error", onError);
 			server.close();
-			resolve(null);
+			if (error.code === "EADDRINUSE") {
+				// Only an endpoint-busy error means an existing primary owns it.
+				resolve(null);
+				return;
+			}
+			void getAppLogger()?.error("single-instance", "Focus endpoint listen failed", {
+				endpoint,
+				error: error.message,
+				code: error.code,
+			});
+			reject(error);
 		};
 		server.once("error", onError);
 		server.listen(endpoint, () => {
@@ -155,22 +196,36 @@ async function listenFocusEndpoint(endpoint: string, onPayload: (payload: FocusP
 	});
 }
 
-async function sendFocusRequest(endpoint: string, payload: FocusPayload): Promise<void> {
+async function sendFocusRequest(endpoint: string, payload: FocusPayload): Promise<boolean> {
 	const raw = JSON.stringify(payload);
+	if (Buffer.byteLength(raw, "utf8") + 1 > MAX_FOCUS_PAYLOAD_BYTES) return false;
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		const delivered = await new Promise<boolean>((resolve) => {
 			const socket = createConnection(endpoint);
+			let settled = false;
 			const finish = (ok: boolean) => {
+				if (settled) return;
+				settled = true;
 				socket.destroy();
 				resolve(ok);
 			};
-			socket.once("connect", () => socket.end(raw, () => finish(true)));
+			socket.once("connect", () => socket.write(`${raw}\n`));
+			// A response token is the primary's receipt ACK; do not treat the local
+			// socket.end callback as delivery because it only covers the client write.
+			let acknowledgement = "";
+			socket.on("data", (chunk) => {
+				acknowledgement += chunk.toString("utf8");
+				if (acknowledgement.includes("focus-ack")) finish(true);
+			});
+			// The peer may half-close its read side before the ACK data is delivered;
+			// leave the socket alive until the ACK or the bounded timeout arrives.
 			socket.once("error", () => finish(false));
 			socket.setTimeout(300, () => finish(false));
 		});
-		if (delivered) return;
-		await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+		if (delivered) return true;
+		if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
 	}
+	return false;
 }
 
 /**
@@ -194,14 +249,15 @@ export async function acquireVersionSingleInstance(options: {
 	const endpoint = endpointFor(userDataDir, version);
 	const focusServer = await listenFocusEndpoint(endpoint, onFocusRequest);
 	if (!focusServer) {
-		void sendFocusRequest(endpoint, {
+		const delivered = await sendFocusRequest(endpoint, {
 			at: Date.now(),
 			fromPid: process.pid,
 			argv: argv.slice(1),
 		});
-		void getAppLogger()?.info("single-instance", "Secondary instance exiting; focus requested", {
+		void getAppLogger()?.info("single-instance", "Secondary instance exiting after focus request", {
 			version,
 			fromPid: process.pid,
+			delivered,
 		});
 		return { isPrimary: false, dispose: () => undefined };
 	}
@@ -214,7 +270,12 @@ export async function acquireVersionSingleInstance(options: {
 		try { unlinkSync(lockPath); } catch { /* concurrent cleanup */ }
 		if (!writeLockAtomic(lockPath, payload)) {
 			closeServer(focusServer, endpoint);
-			void sendFocusRequest(endpoint, { at: Date.now(), fromPid: process.pid, argv: argv.slice(1) });
+			const delivered = await sendFocusRequest(endpoint, { at: Date.now(), fromPid: process.pid, argv: argv.slice(1) });
+			void getAppLogger()?.info("single-instance", "Secondary instance exiting after focus request", {
+				version,
+				fromPid: process.pid,
+				delivered,
+			});
 			return { isPrimary: false, dispose: () => undefined };
 		}
 	}

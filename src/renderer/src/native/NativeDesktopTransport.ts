@@ -24,6 +24,8 @@ type QueuedEvent = {
 
 type NativeDesktopTransportOptions = {
 	onResyncRequired?: (payload: unknown) => void;
+	/** Bootstrap supplies the snapshot boundary before the first SSE connection. */
+	initialEventSeq?: number;
 };
 
 /** HTTP + replayable SSE transport used by the React page hosted by the native sidecar. */
@@ -37,6 +39,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	private disposed = false;
 	private lastEventSeq = 0;
 	private eventSourceGeneration = "";
+	private hasEventCursor = false;
 
 	constructor(
 		private readonly baseUrl: string,
@@ -46,6 +49,10 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		this.readyPromise = new Promise<void>((resolve) => {
 			this.resolveReady = resolve;
 		});
+		if (options.initialEventSeq !== undefined) {
+			this.lastEventSeq = options.initialEventSeq;
+			this.hasEventCursor = true;
+		}
 		this.connectEventSource();
 	}
 
@@ -53,6 +60,10 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		if (this.disposed) return;
 		const eventsUrl = new URL("/__pideck/events", this.baseUrl);
 		eventsUrl.searchParams.set("token", this.token);
+		// EventSource only carries Last-Event-ID automatically when it reconnects
+		// itself. Manual reconstruction must send the cursor explicitly or replay
+		// starts from the live tail and silently skips the gap.
+		if (this.hasEventCursor) eventsUrl.searchParams.set("lastEventId", String(this.lastEventSeq));
 		const eventSource = new EventSource(eventsUrl);
 		this.eventSource = eventSource;
 		eventSource.onmessage = (event) => this.handleEvent(event);
@@ -61,6 +72,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	private handleEvent(event: MessageEvent<string>): void {
 		const parsedSeq = Number(event.lastEventId);
 		const seq = Number.isInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : this.lastEventSeq;
+		this.hasEventCursor = true;
 		this.lastEventSeq = Math.max(this.lastEventSeq, seq);
 		let frame: NativeEventFrame;
 		try {
@@ -70,7 +82,10 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		}
 		if (frame.channel === "native.eventChannelReady") {
 			const payload = frame.args?.[0] as NativeEventChannelReady | undefined;
-			if (typeof payload?.eventSeq === "number") this.lastEventSeq = Math.max(this.lastEventSeq, payload.eventSeq);
+			if (typeof payload?.eventSeq === "number") {
+				this.hasEventCursor = true;
+				this.lastEventSeq = Math.max(this.lastEventSeq, payload.eventSeq);
+			}
 			if (typeof payload?.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
 			this.resolveReady();
 			return;

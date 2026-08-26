@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { ProxyAgent, type Dispatcher } from "undici";
 import type { PlatformProxy, PlatformProxyConfig } from "../../main/platform/PlatformServices";
 
@@ -34,13 +35,21 @@ export class NodeProxy implements PlatformProxy {
 	};
 
 	private shouldBypass(hostname: string): boolean {
+		const normalizedHostname = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+		// The desktop proxy must never intercept the local host. This is a product
+		// invariant for native RPC/local services, independent of user bypass rules.
+		if (
+			normalizedHostname === "localhost"
+			|| (isIP(normalizedHostname) === 6 && normalizedHostname === "::1")
+			|| (isIP(normalizedHostname) === 4 && normalizedHostname.startsWith("127."))
+		) return true;
 		if (this.config.mode !== "fixed_servers" || !this.config.proxyBypassRules) return false;
 		const rules = this.config.proxyBypassRules.split(/[;,\s]+/).map((rule) => rule.trim()).filter(Boolean);
 		return rules.some((rule) => {
 			const normalized = rule.replace(/^\*\./, "").toLowerCase();
 			return normalized === "<local>"
-				? !hostname.includes(".")
-				: hostname.toLowerCase() === normalized || hostname.toLowerCase().endsWith(`.${normalized}`);
+				? !normalizedHostname.includes(".")
+				: normalizedHostname === normalized || normalizedHostname.endsWith(`.${normalized}`);
 		});
 	}
 }

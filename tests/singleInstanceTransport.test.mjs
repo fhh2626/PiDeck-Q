@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -36,12 +37,45 @@ test("secondary instance sends focus payload through the version endpoint", asyn
 			},
 		});
 		assert.equal(secondary.isPrimary, false);
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		// acquireVersionSingleInstance does not resolve until the focus payload has
+		// been handed to the primary, so secondary shutdown cannot race delivery.
 		assert.equal(received.length, 1);
 		assert.deepEqual(Array.from(received[0].argv), ["secondary", "pideck://session/abc"]);
 		assert.equal(typeof received[0].at, "number");
 	} finally {
 		secondary?.dispose();
+		primary?.dispose();
+		rmSync(userDataDir, { recursive: true, force: true });
+	}
+});
+
+test("focus endpoint rejects payloads larger than 64 KiB", async () => {
+	const userDataDir = mkdtempSync(join(tmpdir(), "pideck-single-limit-"));
+	let primary;
+	try {
+		const received = [];
+		primary = await acquireVersionSingleInstance({
+			enabled: true,
+			version: "1.2.3",
+			userDataDir,
+			argv: ["node"],
+			onFocusRequest: (payload) => received.push(payload),
+		});
+		const lockPath = join(userDataDir, "instance-locks", "1.2.3.lock");
+		const endpoint = JSON.parse(readFileSync(lockPath, "utf8")).endpoint;
+		const socket = createConnection(endpoint);
+		await new Promise((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+		});
+		const closed = new Promise((resolve) => socket.once("close", resolve));
+		socket.end("x".repeat(64 * 1024 + 1));
+		await Promise.race([
+			closed,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("oversized focus payload was not rejected")), 2_000)),
+		]);
+		assert.deepEqual(received, []);
+	} finally {
 		primary?.dispose();
 		rmSync(userDataDir, { recursive: true, force: true });
 	}

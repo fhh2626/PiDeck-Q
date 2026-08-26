@@ -95,7 +95,8 @@ test("second-wave audit: proxy, single-instance, catalog, clone/fork", () => {
   assert.match(desktopProxy, /"Desktop proxy apply failed"/);
   // 单实例生命周期
   assert.match(singleInstance, /"Primary instance lock acquired", \{\s*version,\s*pid: process\.pid,/);
-  assert.match(singleInstance, /"Secondary instance exiting; focus requested"/);
+  assert.match(singleInstance, /"Secondary instance exiting after focus request"/);
+  assert.match(singleInstance, /delivered/);
   // catalog 主文件+备份双损坏必须 error 级留痕
   assert.match(sessionCatalog, /"Catalog and backup both failed to load"/);
   assert.match(sessionCatalog, /getAppLogger\(\)\?\.error\("session-catalog"/);

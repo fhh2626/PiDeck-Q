@@ -63,11 +63,11 @@ const controller = readFileSync(
   "utf8",
 );
 
-test("附件选择器默认仅选文件，includeDirectories 才同时选目录", () => {
-  // 默认 properties 不含 openDirectory（Windows 上并存会退化为「只选文件夹」）
+test("附件选择器默认仅选文件，includeDirectories 切换到明确目录模式", () => {
+  // Qt/Windows 不能在同一个 picker 中混合文件和目录，目录请求必须是单独模式。
   assert.match(
     filesIpc,
-    /properties: options\?\.includeDirectories\s*\?\s*\["openFile", "openDirectory", "multiSelections"\]\s*:\s*\["openFile", "multiSelections"\]/,
+    /properties: options\?\.includeDirectories\s*\?\s*\["openDirectory", "multiSelections"\]\s*:\s*\["openFile", "multiSelections"\]/,
   );
   assert.match(
     preload,

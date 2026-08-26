@@ -40,10 +40,8 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	nativeRendererToken = token;
 
 	const baseUrl = window.location.origin;
-	const transport = new NativeDesktopTransport(baseUrl, token, {
-		onResyncRequired: () => window.location.reload(),
-	});
-	await transport.ready();
+	// Establish the snapshot boundary before opening SSE. The transport then asks
+	// the server to replay every event newer than this exact bootstrap sequence.
 	const bootstrapUrl = new URL("/__pideck/bootstrap", baseUrl);
 	bootstrapUrl.searchParams.set("token", token);
 	const response = await fetch(bootstrapUrl, {
@@ -53,6 +51,11 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 		throw new Error(`Native bootstrap failed (${response.status})`);
 	}
 	const bootstrap = (await response.json()) as NativeBootstrapResponse;
+	const transport = new NativeDesktopTransport(baseUrl, token, {
+		onResyncRequired: () => window.location.reload(),
+		initialEventSeq: bootstrap.eventSeq ?? 0,
+	});
+	await transport.ready();
 	// The token is only needed to complete bootstrap and to authorize protected
 	// background fetches. Remove it from location immediately so renderer logs,
 	// crash diagnostics, and browser history cannot persist the credential.

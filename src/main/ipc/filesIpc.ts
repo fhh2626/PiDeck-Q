@@ -78,10 +78,10 @@ export function registerFilesIpc(
 		const result = await dialogs.showOpenDialog({
 			// 调用方传入经过 i18n 的标题；缺省时交由系统使用平台默认文案。
 			title: options?.title,
-			// Windows 上 openFile 与 openDirectory 并存会退化为「只选文件夹」（FOS_PICKFOLDERS），
-			// 附件引用场景以选文件为主，默认只开文件；目录选择由调用方显式开启。
+			// Qt/Windows 原生选择器不能在一个 picker 中混合文件和目录；
+			// includeDirectories 因此是明确的目录选择模式，避免一次调用连续弹出两个不同 picker。
 			properties: options?.includeDirectories
-				? ["openFile", "openDirectory", "multiSelections"]
+				? ["openDirectory", "multiSelections"]
 				: ["openFile", "multiSelections"],
 			parent: "none",
 		});

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -6,14 +7,42 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { NativeRpcRouter } from "../src/main/transport/NativeRpcRouter.ts";
 import { NativeRendererServer } from "../src/native-node/transport/NativeRendererServer.ts";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-function connectEvents(port, token, lastEventId) {
-	const headers = lastEventId === undefined ? {} : { "last-event-id": String(lastEventId) };
+class FakeEventSource {
+	static instances = [];
+	constructor(url) {
+		this.url = String(url);
+		this.closed = false;
+		FakeEventSource.instances.push(this);
+	}
+	close() {
+		this.closed = true;
+	}
+	emit(channel, seq, args = []) {
+		this.onmessage?.({
+			lastEventId: String(seq),
+			data: JSON.stringify({ channel, args }),
+		});
+	}
+}
+
+const { NativeDesktopTransport } = loadTsCommonJs("src/renderer/src/native/NativeDesktopTransport.ts", {
+	stubs: {
+		"@shared/desktop/DesktopRpcTransport": {},
+		"@shared/desktop/nativeLimits": { MAX_NATIVE_RPC_BODY_BYTES: 32 * 1024 * 1024 },
+	},
+	globals: { EventSource: FakeEventSource },
+});
+
+function connectEvents(port, token, lastEventId, useQuery = false) {
+	const headers = lastEventId === undefined || useQuery ? {} : { "last-event-id": String(lastEventId) };
+	const cursor = lastEventId === undefined || !useQuery ? "" : `&lastEventId=${encodeURIComponent(String(lastEventId))}`;
 	return new Promise((resolveConnection, reject) => {
 		const request = httpRequest({
 			host: "127.0.0.1",
 			port,
-			path: `/__pideck/events?token=${encodeURIComponent(token)}`,
+			path: `/__pideck/events?token=${encodeURIComponent(token)}${cursor}`,
 			headers,
 		}, (response) => {
 			const events = [];
@@ -149,6 +178,86 @@ test("NativeRendererServer assigns event ids and replays events after Last-Event
 	}
 });
 
+test("NativeRendererServer preserves every queued frame when drain blocks again", async () => {
+	const { server, rendererRoot } = await createServerFixture();
+	const response = new EventEmitter();
+	response.destroyed = false;
+	response.end = () => undefined;
+	response.destroy = () => {
+		response.destroyed = true;
+	};
+	const frames = [
+		"id: 1\ndata: A\n\n",
+		"id: 2\ndata: B\n\n",
+		"id: 3\ndata: C\n\n",
+	];
+	const writes = [];
+	let blockNextWrite = true;
+	response.write = (frame) => {
+		writes.push(frame);
+		if (blockNextWrite) {
+			blockNextWrite = false;
+			return false;
+		}
+		return true;
+	};
+	const client = {
+		response,
+		blocked: true,
+		pendingBytes: frames.reduce((sum, frame) => sum + Buffer.byteLength(frame), 0),
+		pendingFrames: frames.slice(),
+	};
+	server.clients.add(client);
+	try {
+		server.flushClient(client);
+		assert.deepEqual(writes, [frames[0]]);
+		assert.deepEqual(client.pendingFrames, [frames[1], frames[2]]);
+		response.emit("drain");
+		assert.deepEqual(writes, frames);
+		assert.deepEqual(client.pendingFrames, []);
+	} finally {
+		server.clients.delete(client);
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeDesktopTransport carries its replay cursor across manual reconnect", () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		initialEventSeq: 10,
+	});
+	try {
+		assert.equal(new URL(FakeEventSource.instances[0].url).searchParams.get("lastEventId"), "10");
+		FakeEventSource.instances[0].emit("test:event", 11, [{ value: 1 }]);
+		transport.reconnect();
+		assert.equal(FakeEventSource.instances[0].closed, true);
+		assert.equal(new URL(FakeEventSource.instances[1].url).searchParams.get("lastEventId"), "11");
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("NativeRendererServer replays an event emitted after bootstrap before SSE connects", async () => {
+	const { server, rendererRoot, address } = await createServerFixture();
+	try {
+		const bootstrapResponse = await fetch(`${server.getUrl()}__pideck/bootstrap?token=secret-token`);
+		const bootstrap = await bootstrapResponse.json();
+		server.broadcast("test:between-bootstrap-and-sse", [{ value: 1 }]);
+		const connection = await connectEvents(address.port, "secret-token", bootstrap.eventSeq, true);
+		try {
+			const event = await connection.waitFor((value) => value.data.channel === "test:between-bootstrap-and-sse");
+			assert.equal(event.data.args[0].value, 1);
+			assert.ok(event.id > bootstrap.eventSeq);
+		} finally {
+			connection.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
 test("NativeRendererServer requests resync when Last-Event-ID is outside the replay ring", async () => {
 	const { server, rendererRoot, address } = await createServerFixture();
 	try {
@@ -191,7 +300,7 @@ test("NativeRendererServer reports an unhealthy event channel when heartbeat seq
 	const connection = await connectEvents(address.port, "secret-token");
 	try {
 		const ready = await connection.waitFor((event) => event.data.channel === "native.eventChannelReady");
-		for (let index = 0; index < 20; index += 1) server.broadcast("test:heartbeat", [{ index }]);
+		server.broadcast("test:heartbeat", [{ index: 0 }]);
 		const heartbeat = await postHeartbeat(address.port, "secret-token", {
 			lastEventSeq: ready.id,
 			eventSourceGeneration: ready.data.args[0].eventSourceGeneration,

@@ -8,11 +8,12 @@ const rendererMain = readFileSync("src/renderer/src/main.tsx", "utf8");
 const hostSource = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
 const xmake = readFileSync("xmake.lua", "utf8");
 
- test("native dialogs honor parent none and preserve file/folder/multi-selection requests", () => {
+ test("native dialogs use one explicit file or directory picker", () => {
 	assert.match(mainSource, /parent.*QStringLiteral\("none"\)/s);
 	assert.match(mainSource, /QFileDialog::ExistingFiles/);
 	assert.match(mainSource, /QFileDialog::Directory/);
-	assert.match(mainSource, /multi-directory/);
+	assert.match(mainSource, /const QStringList paths = openDirectory \? selectDirectories\(\) : selectFiles\(\);/);
+	assert.doesNotMatch(mainSource, /selected\.append\(dialog\.selectedFiles\(\)\)/);
 });
 
 test("native renderer token is removed from history and renderer logs", () => {
