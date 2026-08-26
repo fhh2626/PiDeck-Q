@@ -1,6 +1,8 @@
 import type { DesktopRpcTransport } from "@shared/desktop/DesktopRpcTransport";
 import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
 
+const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
+
 interface NativeRpcResponse<T> {
 	ok: boolean;
 	result?: T;
@@ -45,6 +47,8 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	private lastEventSeq = 0;
 	private eventSourceGeneration = "";
 	private hasEventCursor = false;
+	private heartbeatRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+	private heartbeatRecoveryExpectedSeq: number | null = null;
 
 	constructor(
 		private readonly baseUrl: string,
@@ -79,6 +83,12 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		const seq = Number.isInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : this.lastEventSeq;
 		this.hasEventCursor = true;
 		this.lastEventSeq = Math.max(this.lastEventSeq, seq);
+		if (
+			this.heartbeatRecoveryExpectedSeq !== null &&
+			this.lastEventSeq >= this.heartbeatRecoveryExpectedSeq
+		) {
+			this.cancelHeartbeatRecovery();
+		}
 		let frame: NativeEventFrame;
 		try {
 			frame = JSON.parse(event.data) as NativeEventFrame;
@@ -90,6 +100,12 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			if (typeof payload?.eventSeq === "number") {
 				this.hasEventCursor = true;
 				this.lastEventSeq = Math.max(this.lastEventSeq, payload.eventSeq);
+				if (
+					this.heartbeatRecoveryExpectedSeq !== null &&
+					this.lastEventSeq >= this.heartbeatRecoveryExpectedSeq
+				) {
+					this.cancelHeartbeatRecovery();
+				}
 			}
 			if (typeof payload?.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
 			this.resolveReady();
@@ -136,26 +152,47 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	}
 
 	/**
-	 * Decide from the latest local cursor, not the cursor sampled when the
-	 * heartbeat request was sent. The server's health flag can be stale when an
-	 * SSE frame arrives while the heartbeat is in flight.
+	 * Reconcile a heartbeat snapshot without treating an in-flight SSE frame as
+	 * lost. Generation changes are definitive, while a sequence lag gets one
+	 * short catch-up window so the normal SSE delivery can win the race.
 	 */
-	shouldReconnectAfterHeartbeat(state: NativeHeartbeatState): boolean {
+	handleHeartbeat(state: NativeHeartbeatState): void {
 		const generationMismatch =
 			typeof state.eventSourceGeneration === "string" &&
 			this.eventSourceGeneration !== state.eventSourceGeneration;
-		const serverEventSeq =
+		if (generationMismatch) {
+			this.reconnect();
+			return;
+		}
+		const expectedEventSeq =
 			typeof state.eventSeq === "number" &&
 			Number.isInteger(state.eventSeq) &&
 			state.eventSeq >= 0
 				? state.eventSeq
 				: null;
-		const stillBehind = serverEventSeq !== null && this.lastEventSeq < serverEventSeq;
-		return generationMismatch || stillBehind;
+		if (expectedEventSeq === null || this.lastEventSeq >= expectedEventSeq) return;
+		this.heartbeatRecoveryExpectedSeq = Math.max(
+			this.heartbeatRecoveryExpectedSeq ?? expectedEventSeq,
+			expectedEventSeq,
+		);
+		if (this.heartbeatRecoveryTimer !== null) return;
+		this.heartbeatRecoveryTimer = setTimeout(() => {
+			this.heartbeatRecoveryTimer = null;
+			const expectedSeq = this.heartbeatRecoveryExpectedSeq;
+			this.heartbeatRecoveryExpectedSeq = null;
+			if (expectedSeq !== null && this.lastEventSeq < expectedSeq) this.reconnect();
+		}, NATIVE_HEARTBEAT_CATCHUP_DELAY_MS);
+	}
+
+	private cancelHeartbeatRecovery(): void {
+		if (this.heartbeatRecoveryTimer !== null) clearTimeout(this.heartbeatRecoveryTimer);
+		this.heartbeatRecoveryTimer = null;
+		this.heartbeatRecoveryExpectedSeq = null;
 	}
 
 	reconnect(): void {
 		if (this.disposed) return;
+		this.cancelHeartbeatRecovery();
 		this.eventSource?.close();
 		this.eventSource = null;
 		this.connectEventSource();
@@ -205,6 +242,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.cancelHeartbeatRecovery();
 		this.eventSource?.close();
 		this.eventSource = null;
 		this.queuedEvents.length = 0;

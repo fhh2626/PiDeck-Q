@@ -107,7 +107,7 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 		}).then(async (response) => {
 			if (!response.ok) return;
 			const state = toNativeHeartbeatState(await response.json());
-			if (transport.shouldReconnectAfterHeartbeat(state)) transport.reconnect();
+			transport.handleHeartbeat(state);
 		}).catch(() => undefined);
 		if (memoryProfileEnabled) {
 			const memory = (performance as Performance & {

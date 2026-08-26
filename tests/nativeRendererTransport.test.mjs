@@ -114,6 +114,10 @@ function connectEvents(port, token, lastEventId, useQuery = false) {
 	});
 }
 
+function waitMs(milliseconds) {
+	return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function postHeartbeat(port, token, payload) {
 	const body = JSON.stringify(payload);
 	return new Promise((resolveResponse, reject) => {
@@ -238,29 +242,61 @@ test("NativeDesktopTransport carries its replay cursor across manual reconnect",
 	}
 });
 
-test("NativeDesktopTransport ignores a stale heartbeat result after the local cursor catches up", () => {
+test("NativeDesktopTransport gives an in-flight SSE event time to catch up", async () => {
 	FakeEventSource.instances.length = 0;
 	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
-		initialEventSeq: 10,
+		initialEventSeq: 11,
 	});
 	try {
-		FakeEventSource.instances[0].emit("native.eventChannelReady", 10, [{
-			eventSeq: 10,
+		FakeEventSource.instances[0].emit("native.eventChannelReady", 11, [{
+			eventSeq: 11,
 			eventSourceGeneration: "generation-a",
 		}]);
-		FakeEventSource.instances[0].emit("test:event", 11, [{ value: 1 }]);
-		assert.equal(transport.shouldReconnectAfterHeartbeat({
+		transport.handleHeartbeat({ eventSeq: 12, eventSourceGeneration: "generation-a" });
+		assert.equal(FakeEventSource.instances.length, 1);
+		FakeEventSource.instances[0].emit("test:event", 12, [{ value: 1 }]);
+		await waitMs(450);
+		assert.equal(FakeEventSource.instances.length, 1);
+		assert.equal(FakeEventSource.instances[0].closed, false);
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("NativeDesktopTransport reconnects after a sequence stays behind the catch-up window", async () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		initialEventSeq: 11,
+	});
+	try {
+		FakeEventSource.instances[0].emit("native.eventChannelReady", 11, [{
 			eventSeq: 11,
 			eventSourceGeneration: "generation-a",
-		}), false);
-		assert.equal(transport.shouldReconnectAfterHeartbeat({
-			eventSeq: 12,
-			eventSourceGeneration: "generation-a",
-		}), true);
-		assert.equal(transport.shouldReconnectAfterHeartbeat({
+		}]);
+		transport.handleHeartbeat({ eventSeq: 12, eventSourceGeneration: "generation-a" });
+		transport.handleHeartbeat({ eventSeq: 13, eventSourceGeneration: "generation-a" });
+		assert.equal(FakeEventSource.instances.length, 1);
+		await waitMs(450);
+		assert.equal(FakeEventSource.instances.length, 2);
+		assert.equal(FakeEventSource.instances[0].closed, true);
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("NativeDesktopTransport reconnects immediately when the event source generation changes", () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		initialEventSeq: 11,
+	});
+	try {
+		FakeEventSource.instances[0].emit("native.eventChannelReady", 11, [{
 			eventSeq: 11,
-			eventSourceGeneration: "generation-b",
-		}), true);
+			eventSourceGeneration: "generation-a",
+		}]);
+		transport.handleHeartbeat({ eventSeq: 11, eventSourceGeneration: "generation-b" });
+		assert.equal(FakeEventSource.instances.length, 2);
+		assert.equal(FakeEventSource.instances[0].closed, true);
 	} finally {
 		transport.dispose();
 	}
