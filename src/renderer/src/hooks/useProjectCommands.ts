@@ -80,9 +80,9 @@ export function useProjectCommands(input: ProjectCommandsInput) {
 	}
 
 	async function changeChatPath(project: Project): Promise<void> {
-		const picked = await api.projects.chooseChatPath();
-		if (!picked || picked === project.path) return;
 		try {
+			const picked = await api.projects.chooseChatPath();
+			if (!picked || picked === project.path) return;
 			await api.projects.setChatPath(picked);
 			await input.refreshProjectSessions(project.id);
 			input.showToast(t("app.chatProjectPathUpdated"), 1800);

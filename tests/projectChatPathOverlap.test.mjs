@@ -9,10 +9,10 @@
 // 2. load() 不得吸收/删除路径与聊天目录相同的普通项目。
 // 3. setChatProjectPath() 拒绝把聊天目录指向已注册的普通项目目录。
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
@@ -147,6 +147,33 @@ test("setChatProjectPath 拒绝把聊天目录指向已注册的普通项目目�
       (error) => String(error?.message ?? "").includes("CHAT_PATH_OVERLAPS_PROJECT"),
     );
     assert.equal(store.getChatProjectPath(), before, "拒绝后聊天目录不得被改动");
+  });
+});
+
+test("load and setChatProjectPath accept an existing filesystem root without mkdir", async () => {
+  await withStore(async (store, { userData }) => {
+    const root = parse(process.cwd()).root;
+    await writeFile(join(userData, "chat-path.json"), JSON.stringify({ path: root }), "utf8");
+
+    await store.load();
+    assert.equal(store.getChatProjectPath(), root);
+    await store.setChatProjectPath(root);
+    assert.equal(JSON.parse(await readFile(join(userData, "chat-path.json"), "utf8")).path, root);
+  });
+});
+
+test("setChatProjectPath rejects a file and keeps the previous in-memory path", async () => {
+  await withStore(async (store, { userData }) => {
+    await store.load();
+    const before = store.getChatProjectPath();
+    const filePath = join(userData, "not-a-directory");
+    await writeFile(filePath, "not a directory", "utf8");
+
+    await assert.rejects(
+      store.setChatProjectPath(filePath),
+      (error) => String(error?.message ?? "").includes("Path is not a directory"),
+    );
+    assert.equal(store.getChatProjectPath(), before);
   });
 });
 
