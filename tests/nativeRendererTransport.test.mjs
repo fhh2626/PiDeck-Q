@@ -238,6 +238,34 @@ test("NativeDesktopTransport carries its replay cursor across manual reconnect",
 	}
 });
 
+test("NativeDesktopTransport ignores a stale heartbeat result after the local cursor catches up", () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		initialEventSeq: 10,
+	});
+	try {
+		FakeEventSource.instances[0].emit("native.eventChannelReady", 10, [{
+			eventSeq: 10,
+			eventSourceGeneration: "generation-a",
+		}]);
+		FakeEventSource.instances[0].emit("test:event", 11, [{ value: 1 }]);
+		assert.equal(transport.shouldReconnectAfterHeartbeat({
+			eventSeq: 11,
+			eventSourceGeneration: "generation-a",
+		}), false);
+		assert.equal(transport.shouldReconnectAfterHeartbeat({
+			eventSeq: 12,
+			eventSourceGeneration: "generation-a",
+		}), true);
+		assert.equal(transport.shouldReconnectAfterHeartbeat({
+			eventSeq: 11,
+			eventSourceGeneration: "generation-b",
+		}), true);
+	} finally {
+		transport.dispose();
+	}
+});
+
 test("NativeRendererServer replays an event emitted after bootstrap before SSE connects", async () => {
 	const { server, rendererRoot, address } = await createServerFixture();
 	try {
@@ -263,6 +291,24 @@ test("NativeRendererServer requests resync when Last-Event-ID is outside the rep
 	try {
 		for (let index = 0; index < 4_100; index += 1) server.broadcast("test:bulk", [{ index }]);
 		const connection = await connectEvents(address.port, "secret-token", 1);
+		try {
+			const resync = await connection.waitFor((event) => event.data.channel === "native.resyncRequired");
+			assert.equal(resync.data.args[0].reason, "event-history-truncated");
+		} finally {
+			connection.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeRendererServer truncates replay history by bytes as well as event count", async () => {
+	const { server, rendererRoot, address } = await createServerFixture();
+	try {
+		const chunk = "x".repeat(1024 * 1024);
+		for (let index = 0; index < 33; index += 1) server.broadcast("test:history-budget", [chunk]);
+		const connection = await connectEvents(address.port, "secret-token", 0);
 		try {
 			const resync = await connection.waitFor((event) => event.data.channel === "native.resyncRequired");
 			assert.equal(resync.data.args[0].reason, "event-history-truncated");

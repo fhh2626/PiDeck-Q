@@ -129,7 +129,7 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openFile", "multiSelections"]);
 
 	await router.invoke(ipcChannels.dialogPickFiles, { includeDirectories: true });
-	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openDirectory", "multiSelections"]);
+	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openDirectory"]);
 });
 
 test("Files IPC: shell only ever receives the authorized canonical host path", async () => {

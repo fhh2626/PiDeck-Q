@@ -10,6 +10,7 @@ import { MAX_NATIVE_EVENT_FRAME_BYTES, MAX_NATIVE_RPC_BODY_BYTES } from "../../s
 const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
 const MAX_FRAME_BYTES = MAX_NATIVE_EVENT_FRAME_BYTES;
 const MAX_EVENT_HISTORY = 4_096;
+const MAX_EVENT_HISTORY_BYTES = 32 * 1024 * 1024;
 const MAX_PENDING_EVENT_BYTES = 4 * 1024 * 1024;
 
 const MIME_TYPES: Record<string, string> = {
@@ -38,9 +39,8 @@ export type NativeBootstrap = {
 
 type NativeEventRecord = {
 	seq: number;
-	channel: string;
-	args: unknown[];
 	frame: string;
+	bytes: number;
 };
 
 type EventClient = {
@@ -125,6 +125,7 @@ export class NativeRendererServer {
 	private eventSeq = 0;
 	private eventSourceGeneration = randomUUID();
 	private readonly eventHistory: NativeEventRecord[] = [];
+	private eventHistoryBytes = 0;
 	private readonly deps: NativeRendererDependencies;
 
 	constructor(deps: NativeRendererDependencies) {
@@ -376,8 +377,14 @@ export class NativeRendererServer {
 		const payload = JSON.stringify({ channel, args });
 		const seq = ++this.eventSeq;
 		const frame = `id: ${seq}\ndata: ${payload}\n\n`;
-		this.eventHistory.push({ seq, channel, args, frame });
-		while (this.eventHistory.length > MAX_EVENT_HISTORY) this.eventHistory.shift();
+		const bytes = Buffer.byteLength(frame);
+		this.eventHistory.push({ seq, frame, bytes });
+		this.eventHistoryBytes += bytes;
+		while (this.eventHistory.length > MAX_EVENT_HISTORY || this.eventHistoryBytes > MAX_EVENT_HISTORY_BYTES) {
+			const removed = this.eventHistory.shift();
+			if (!removed) break;
+			this.eventHistoryBytes -= removed.bytes;
+		}
 		for (const client of [...this.clients]) this.writeToClient(client, frame);
 	}
 
@@ -471,6 +478,7 @@ export class NativeRendererServer {
 		this.address = null;
 		this.eventSeq = 0;
 		this.eventHistory.length = 0;
+		this.eventHistoryBytes = 0;
 		if (!server) return;
 		server.closeIdleConnections?.();
 		server.closeAllConnections?.();

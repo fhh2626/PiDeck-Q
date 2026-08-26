@@ -81,7 +81,7 @@ export function registerFilesIpc(
 			// Qt/Windows 原生选择器不能在一个 picker 中混合文件和目录；
 			// includeDirectories 因此是明确的目录选择模式，避免一次调用连续弹出两个不同 picker。
 			properties: options?.includeDirectories
-				? ["openDirectory", "multiSelections"]
+				? ["openDirectory"]
 				: ["openFile", "multiSelections"],
 			parent: "none",
 		});

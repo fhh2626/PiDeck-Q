@@ -4,7 +4,7 @@ import {
 } from "@shared/desktop/createPiDesktopApi";
 import type { NativeClipboardSnapshot, NativeFileDropPayload } from "@shared/desktop/NativeHostTypes";
 import { NativeDesktopSyncHost } from "./NativeDesktopSyncHost";
-import { NativeDesktopTransport } from "./NativeDesktopTransport";
+import { NativeDesktopTransport, type NativeHeartbeatState } from "./NativeDesktopTransport";
 import { applyRendererZoom } from "./rendererZoom";
 
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
@@ -21,6 +21,20 @@ interface NativeBootstrapResponse {
 	settings?: { zoomFactor?: number; memoryProfileEnabled?: boolean };
 	eventSeq?: number;
 	eventSourceGeneration?: string;
+}
+
+function isUnknownRecord(value: unknown): value is { readonly [key: string]: unknown } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toNativeHeartbeatState(value: unknown): NativeHeartbeatState {
+	if (!isUnknownRecord(value)) return {};
+	const state: NativeHeartbeatState = {};
+	if (typeof value.eventSeq === "number" && Number.isInteger(value.eventSeq) && value.eventSeq >= 0) {
+		state.eventSeq = value.eventSeq;
+	}
+	if (typeof value.eventSourceGeneration === "string") state.eventSourceGeneration = value.eventSourceGeneration;
+	return state;
 }
 
 export interface NativeDesktopRuntime {
@@ -92,8 +106,8 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 			}),
 		}).then(async (response) => {
 			if (!response.ok) return;
-			const state = await response.json() as { eventChannelHealthy?: boolean };
-			if (state.eventChannelHealthy === false) transport.reconnect();
+			const state = toNativeHeartbeatState(await response.json());
+			if (transport.shouldReconnectAfterHeartbeat(state)) transport.reconnect();
 		}).catch(() => undefined);
 		if (memoryProfileEnabled) {
 			const memory = (performance as Performance & {

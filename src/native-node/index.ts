@@ -15,6 +15,10 @@ import type { NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/d
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
 import { resolveSecondaryFocusSessionId } from "./focusRequest";
 import { nextLoadFailureAction } from "./loadFailureRecovery";
+import {
+	advanceNativeHeartbeatRecovery,
+	createNativeHeartbeatRecoveryState,
+} from "./transport/nativeHeartbeatRecovery";
 
 const port = Number(process.env.PIDECK_HOST_PORT);
 const token = process.env.PIDECK_HOST_TOKEN?.trim();
@@ -40,8 +44,7 @@ let stopPromise: Promise<void> | null = null;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let lastHeartbeatAt = Date.now();
 let reloadInFlight = false;
-let eventRecoveryFailureCount = 0;
-const EVENT_RECOVERY_RELOAD_FAILURES = 3;
+let heartbeatRecoveryState = createNativeHeartbeatRecoveryState();
 let pendingBounds: LastWindowBounds | null = null;
 let userDataDirectory = "";
 let memoryMonitor: NativeMemoryMonitor | null = null;
@@ -147,17 +150,19 @@ async function main(): Promise<void> {
 				memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
 			},
 		}),
-		onHeartbeat: (_payload, state) => {
+		onHeartbeat: (payload, state) => {
 			lastHeartbeatAt = Date.now();
-			if (state.eventChannelHealthy) {
-				eventRecoveryFailureCount = 0;
-				return;
-			}
+			const recovery = advanceNativeHeartbeatRecovery(
+				heartbeatRecoveryState,
+				payload,
+				state.eventChannelHealthy,
+			);
+			heartbeatRecoveryState = recovery.state;
 			// Renderer owns the first recovery attempt by reconnecting with its
-			// replay cursor. Native only reloads after several consecutive unhealthy
-			// heartbeats, so a successful replay is not interrupted by a page reload.
-			eventRecoveryFailureCount += 1;
-			if (eventRecoveryFailureCount < EVENT_RECOVERY_RELOAD_FAILURES || reloadInFlight) return;
+			// replay cursor. Native only reloads after several unhealthy heartbeats
+			// whose renderer cursor did not advance, so active streaming cannot be
+			// mistaken for a stuck SSE connection.
+			if (!recovery.shouldReload || reloadInFlight) return;
 			reloadInFlight = true;
 			void host.request("window.reload")
 				.catch(() => undefined)
@@ -199,7 +204,7 @@ async function main(): Promise<void> {
 
 	host.on("window.ready", () => {
 		loadFailureCount = 0;
-		eventRecoveryFailureCount = 0;
+		heartbeatRecoveryState = createNativeHeartbeatRecoveryState();
 		if (loadRetryTimer) clearTimeout(loadRetryTimer);
 		loadRetryTimer = null;
 		nativeHost?.onWindowReady();

@@ -12,6 +12,11 @@ interface NativeEventFrame {
 	args?: unknown[];
 }
 
+export interface NativeHeartbeatState {
+	eventSeq?: number;
+	eventSourceGeneration?: string;
+}
+
 interface NativeEventChannelReady {
 	eventSeq?: number;
 	eventSourceGeneration?: string;
@@ -128,6 +133,25 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 
 	getEventSourceGeneration(): string {
 		return this.eventSourceGeneration;
+	}
+
+	/**
+	 * Decide from the latest local cursor, not the cursor sampled when the
+	 * heartbeat request was sent. The server's health flag can be stale when an
+	 * SSE frame arrives while the heartbeat is in flight.
+	 */
+	shouldReconnectAfterHeartbeat(state: NativeHeartbeatState): boolean {
+		const generationMismatch =
+			typeof state.eventSourceGeneration === "string" &&
+			this.eventSourceGeneration !== state.eventSourceGeneration;
+		const serverEventSeq =
+			typeof state.eventSeq === "number" &&
+			Number.isInteger(state.eventSeq) &&
+			state.eventSeq >= 0
+				? state.eventSeq
+				: null;
+		const stillBehind = serverEventSeq !== null && this.lastEventSeq < serverEventSeq;
+		return generationMismatch || stillBehind;
 	}
 
 	reconnect(): void {

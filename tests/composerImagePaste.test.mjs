@@ -67,7 +67,7 @@ test("附件选择器默认仅选文件，includeDirectories 切换到明确目�
   // Qt/Windows 不能在同一个 picker 中混合文件和目录，目录请求必须是单独模式。
   assert.match(
     filesIpc,
-    /properties: options\?\.includeDirectories\s*\?\s*\["openDirectory", "multiSelections"\]\s*:\s*\["openFile", "multiSelections"\]/,
+    /properties: options\?\.includeDirectories\s*\?\s*\["openDirectory"\]\s*:\s*\["openFile", "multiSelections"\]/,
   );
   assert.match(
     preload,
