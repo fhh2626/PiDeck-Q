@@ -28,5 +28,6 @@ await run(npmCommand, [...npmPrefixArgs, "run", "make-icon"], buildEnv);
 await run(npmCommand, [...npmPrefixArgs, "run", "build"], buildEnv);
 await run(npmCommand, [...npmPrefixArgs, "run", "build:native"], buildEnv);
 await run(npmCommand, [...npmPrefixArgs, "run", "verify:build-artifacts"], buildEnv);
+await run(npmCommand, [...npmPrefixArgs, "run", "test:native-host-rpc"], buildEnv);
 console.log("Native Windows staging is ready.");
 console.log("Installer compilation is disabled temporarily; release/win-unpacked contains the runnable Native build.");

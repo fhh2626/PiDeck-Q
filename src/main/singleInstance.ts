@@ -5,38 +5,25 @@ import {
 	openSync,
 	readFileSync,
 	unlinkSync,
-	watch,
 	writeFileSync,
-	type FSWatcher,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { getAppLogger } from "./logging/sharedLogger";
 
 /**
- * 按「应用版本」隔离的单实例锁。
+ * Version-isolated single-instance coordination.
  *
- * 业务规则：
- * - 同一版本只允许一个主实例（再次启动时唤起已有窗口）
- * - 不同版本可并行运行（0.6.7 与 0.6.8 可同时开）
- * - 与 Electron 内置 requestSingleInstanceLock 不同：后者按 userData 全局一把锁，
- *   会导致所有版本互斥，开发态也会被正式版抢走。
- *
- * 实现：userData/instance-locks/<version>.lock 记录主实例 pid；
- * 次实例写入 .focus 文件，主实例 fs.watch 后前置窗口。
+ * The lock file is only metadata. Focus delivery uses a per-version named pipe
+ * (Unix domain socket on POSIX), so a stale PID cannot be mistaken for a live
+ * primary and focus payloads cannot be lost to fs.watch/write races.
  */
-
 export type VersionSingleInstanceResult = {
-	/** true = 本进程应继续启动；false = 应立即退出 */
 	isPrimary: boolean;
-	/** 释放锁与 watcher（主实例退出时调用） */
 	dispose: () => void;
 };
 
-/**
- * 次实例通过 .focus 文件传给主实例的信息。
- * argv：次实例的完整命令行参数，用于识别「点击系统通知」激活场景
- * （通知 toast 的 launch 参数会附加到被唤起实例的 argv 中）。
- */
 export type FocusPayload = {
 	at: number;
 	fromPid: number;
@@ -47,10 +34,11 @@ type LockPayload = {
 	pid: number;
 	version: string;
 	at: number;
+	instanceToken: string;
+	endpoint: string;
 };
 
 function sanitizeVersion(version: string): string {
-	// 文件名安全：保留语义字符，避免路径穿越
 	return version.replace(/[^\w.-]+/g, "_") || "unknown";
 }
 
@@ -62,29 +50,25 @@ function lockPathFor(userDataDir: string, version: string): string {
 	return join(locksDir(userDataDir), `${sanitizeVersion(version)}.lock`);
 }
 
-function focusPathFor(userDataDir: string, version: string): string {
-	return join(locksDir(userDataDir), `${sanitizeVersion(version)}.focus`);
-}
-
-/** 检测 pid 是否仍存活（Windows/Unix 均可用 signal 0） */
-function isPidAlive(pid: number): boolean {
-	if (!Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
+function endpointFor(userDataDir: string, version: string): string {
+	const digest = createHash("sha256")
+		.update(`${userDataDir}\0${version}`)
+		.digest("hex")
+		.slice(0, 32);
+	if (process.platform === "win32") return `\\\\.\\pipe\\pideck-${digest}`;
+	return join(locksDir(userDataDir), `pideck-${digest}.sock`);
 }
 
 function readLock(lockPath: string): LockPayload | null {
 	try {
 		const raw = JSON.parse(readFileSync(lockPath, "utf8")) as Partial<LockPayload>;
-		if (typeof raw.pid !== "number") return null;
+		if (typeof raw.pid !== "number" || typeof raw.endpoint !== "string") return null;
 		return {
 			pid: raw.pid,
 			version: typeof raw.version === "string" ? raw.version : "",
 			at: typeof raw.at === "number" ? raw.at : 0,
+			instanceToken: typeof raw.instanceToken === "string" ? raw.instanceToken : "",
+			endpoint: raw.endpoint,
 		};
 	} catch {
 		return null;
@@ -92,7 +76,6 @@ function readLock(lockPath: string): LockPayload | null {
 }
 
 function writeLockAtomic(lockPath: string, payload: LockPayload): boolean {
-	// wx：文件已存在则失败，避免双主实例竞态
 	try {
 		const fd = openSync(lockPath, "wx");
 		try {
@@ -106,67 +89,116 @@ function writeLockAtomic(lockPath: string, payload: LockPayload): boolean {
 	}
 }
 
-function tryClaimLock(lockPath: string, version: string): boolean {
-	const payload: LockPayload = {
-		pid: process.pid,
-		version,
-		at: Date.now(),
-	};
-	if (writeLockAtomic(lockPath, payload)) return true;
-
-	const existing = readLock(lockPath);
-	// 锁文件损坏或持有者已死：抢占
-	if (!existing || !isPidAlive(existing.pid) || existing.pid === process.pid) {
-		try {
-			unlinkSync(lockPath);
-		} catch {
-			// 并发删除忽略
-		}
-		return writeLockAtomic(lockPath, payload);
+function closeServer(server: Server, endpoint: string): void {
+	server.close();
+	if (process.platform !== "win32") {
+		try { unlinkSync(endpoint); } catch { /* stale endpoint cleanup is best effort */ }
 	}
-	return false;
+}
+
+function endpointReachable(endpoint: string, timeoutMs = 250): Promise<boolean> {
+	return new Promise((resolve) => {
+		let settled = false;
+		const socket = createConnection(endpoint);
+		const finish = (reachable: boolean) => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve(reachable);
+		};
+		socket.once("connect", () => finish(true));
+		socket.once("error", () => finish(false));
+		socket.setTimeout(timeoutMs, () => finish(false));
+	});
+}
+
+function parseFocusPayload(raw: string): FocusPayload | null {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null) return null;
+		const value = parsed as Partial<FocusPayload>;
+		if (typeof value.at !== "number" || typeof value.fromPid !== "number") return null;
+		return {
+			at: value.at,
+			fromPid: value.fromPid,
+			argv: Array.isArray(value.argv) ? value.argv.filter((item): item is string => typeof item === "string") : [],
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function listenFocusEndpoint(endpoint: string, onPayload: (payload: FocusPayload) => void): Promise<Server | null> {
+	if (process.platform !== "win32" && existsSync(endpoint) && !(await endpointReachable(endpoint))) {
+		try { unlinkSync(endpoint); } catch { /* listen below reports a real failure */ }
+	}
+	return new Promise((resolve) => {
+		const server = createServer((socket: Socket) => {
+			const chunks: Buffer[] = [];
+			socket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+			socket.once("end", () => {
+				const payload = parseFocusPayload(Buffer.concat(chunks).toString("utf8"));
+				if (payload) onPayload(payload);
+			});
+			socket.on("error", () => undefined);
+		});
+		const onError = () => {
+			server.removeAllListeners();
+			server.close();
+			resolve(null);
+		};
+		server.once("error", onError);
+		server.listen(endpoint, () => {
+			server.removeListener("error", onError);
+			resolve(server);
+		});
+	});
+}
+
+async function sendFocusRequest(endpoint: string, payload: FocusPayload): Promise<void> {
+	const raw = JSON.stringify(payload);
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const delivered = await new Promise<boolean>((resolve) => {
+			const socket = createConnection(endpoint);
+			const finish = (ok: boolean) => {
+				socket.destroy();
+				resolve(ok);
+			};
+			socket.once("connect", () => socket.end(raw, () => finish(true)));
+			socket.once("error", () => finish(false));
+			socket.setTimeout(300, () => finish(false));
+		});
+		if (delivered) return;
+		await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+	}
 }
 
 /**
- * 尝试成为当前版本的主实例。
- * userData/argv/lifecycle are injected so the lock is reusable by Electron and
- * the native Node sidecar without importing a host runtime.
+ * Become the primary instance or deliver a focus request to the existing one.
+ * The endpoint is claimed before the metadata lock, preventing two processes
+ * from both deciding that a startup window without a listening primary is live.
  */
-export function acquireVersionSingleInstance(options: {
+export async function acquireVersionSingleInstance(options: {
 	enabled: boolean;
 	version: string;
 	userDataDir: string;
 	argv: string[];
 	onFocusRequest: (payload: FocusPayload) => void;
-}): VersionSingleInstanceResult {
+}): Promise<VersionSingleInstanceResult> {
 	const { enabled, version, userDataDir, argv, onFocusRequest } = options;
-	if (!enabled) {
-		return { isPrimary: true, dispose: () => undefined };
-	}
+	if (!enabled) return { isPrimary: true, dispose: () => undefined };
 
 	const instanceLocksDir = locksDir(userDataDir);
 	mkdirSync(instanceLocksDir, { recursive: true });
 	const lockPath = lockPathFor(userDataDir, version);
-	const focusPath = focusPathFor(userDataDir, version);
-	const focusName = basename(focusPath);
-
-	if (!tryClaimLock(lockPath, version)) {
-		// 次实例：通知主实例聚焦后自行退出。
-		// 附带完整 argv：通知激活启动的实例 argv 里有 toast launch 参数，
-		// 主实例据此识别要跳转的 agent（Electron 自身无法完成该转发，因为次实例随即退出）。
-		try {
-			writeFileSync(
-				focusPath,
-				JSON.stringify({
-					at: Date.now(),
-					fromPid: process.pid,
-					argv: argv.slice(1),
-				}),
-				"utf8",
-			);
-		} catch {
-			// 主实例仍在但 focus 写失败时，次实例照常退出，避免双开
-		}
+	const endpoint = endpointFor(userDataDir, version);
+	const focusServer = await listenFocusEndpoint(endpoint, onFocusRequest);
+	if (!focusServer) {
+		void sendFocusRequest(endpoint, {
+			at: Date.now(),
+			fromPid: process.pid,
+			argv: argv.slice(1),
+		});
 		void getAppLogger()?.info("single-instance", "Secondary instance exiting; focus requested", {
 			version,
 			fromPid: process.pid,
@@ -174,70 +206,35 @@ export function acquireVersionSingleInstance(options: {
 		return { isPrimary: false, dispose: () => undefined };
 	}
 
+	const instanceToken = randomUUID();
+	const payload: LockPayload = { pid: process.pid, version, at: Date.now(), instanceToken, endpoint };
+	if (!writeLockAtomic(lockPath, payload)) {
+		// The endpoint was successfully claimed by this process, so an existing
+		// lock cannot belong to a live primary. Reclaim only this version's lock.
+		try { unlinkSync(lockPath); } catch { /* concurrent cleanup */ }
+		if (!writeLockAtomic(lockPath, payload)) {
+			closeServer(focusServer, endpoint);
+			void sendFocusRequest(endpoint, { at: Date.now(), fromPid: process.pid, argv: argv.slice(1) });
+			return { isPrimary: false, dispose: () => undefined };
+		}
+	}
+
 	void getAppLogger()?.info("single-instance", "Primary instance lock acquired", {
 		version,
 		pid: process.pid,
+		instanceToken,
 	});
 
-	const handleFocusSignal = () => {
-		try {
-			if (!existsSync(focusPath)) return;
-			let payload: FocusPayload = { at: Date.now(), fromPid: 0 };
-			try {
-				payload = JSON.parse(readFileSync(focusPath, "utf8")) as FocusPayload;
-			} catch {
-				// 旧格式或损坏时退化为空 payload
-			}
-			void getAppLogger()?.info("single-instance", "Focus request received from secondary instance", {
-				fromPid: payload.fromPid,
-			});
-			// 读完即删，避免重复触发
-			try {
-				unlinkSync(focusPath);
-			} catch {
-				// ignore
-			}
-			onFocusRequest(payload);
-		} catch {
-			// ignore
-		}
-	};
-
-	let watcher: FSWatcher | null = null;
-	try {
-		watcher = watch(instanceLocksDir, (_event, filename) => {
-			// filename 在部分平台可能为 Buffer/null
-			const name = filename == null ? "" : String(filename);
-			if (!name || name === focusName || name.endsWith(".focus")) {
-				handleFocusSignal();
-			}
-		});
-	} catch {
-		// watch 失败时退化为无热唤起（锁仍有效，仅无法 second-instance 聚焦）
-	}
-
-	// 启动时若残留 focus 文件，清一次
-	handleFocusSignal();
-
+	let disposed = false;
 	const dispose = () => {
-		try {
-			watcher?.close();
-		} catch {
-			// ignore
-		}
-		watcher = null;
+		if (disposed) return;
+		disposed = true;
+		closeServer(focusServer, endpoint);
 		try {
 			const current = readLock(lockPath);
-			if (current?.pid === process.pid && existsSync(lockPath)) {
-				unlinkSync(lockPath);
-			}
+			if (current?.instanceToken === instanceToken && existsSync(lockPath)) unlinkSync(lockPath);
 		} catch {
-			// ignore
-		}
-		try {
-			if (existsSync(focusPath)) unlinkSync(focusPath);
-		} catch {
-			// ignore
+			// best effort during process shutdown
 		}
 	};
 

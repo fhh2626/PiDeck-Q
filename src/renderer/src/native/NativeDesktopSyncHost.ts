@@ -10,7 +10,6 @@ export type { NativeClipboardSnapshot } from "@shared/desktop/NativeHostTypes";
  */
 export class NativeDesktopSyncHost implements DesktopSyncHost {
 	private snapshot: NativeClipboardSnapshot;
-	private readonly filePathsByName = new Map<string, string>();
 
 	constructor(snapshot?: Partial<NativeClipboardSnapshot>) {
 		this.snapshot = {
@@ -19,7 +18,6 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 			imageDataUrl: snapshot?.imageDataUrl ?? "",
 			filePaths: snapshot?.filePaths ?? [],
 		};
-		this.rememberFilePaths(this.snapshot.filePaths);
 	}
 
 	update(snapshot: Partial<NativeClipboardSnapshot>): void {
@@ -28,14 +26,6 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 			...snapshot,
 			filePaths: snapshot.filePaths ?? this.snapshot.filePaths,
 		};
-		this.rememberFilePaths(this.snapshot.filePaths);
-	}
-
-	rememberFilePaths(paths: string[]): void {
-		for (const path of paths) {
-			const name = path.split(/[\\/]/).pop();
-			if (name) this.filePathsByName.set(name, path);
-		}
 	}
 
 	readClipboardText(): string {
@@ -50,8 +40,12 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 		return this.snapshot.imageDataUrl;
 	}
 
-	getPathForFile(file: File): string {
-		return this.filePathsByName.get(file.name) ?? "";
+	getPathForFile(_file: File): string {
+		// Native WebView File objects do not expose a reliable absolute path. OS
+		// drops and clipboard file lists are delivered separately with their full
+		// paths; never guess by basename because equal names can come from different
+		// directories.
+		return "";
 	}
 
 	getClipboardPaths(): string[] {

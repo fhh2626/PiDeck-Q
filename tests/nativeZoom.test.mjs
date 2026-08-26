@@ -24,4 +24,8 @@ test("native renderer zoom applies the persisted 80%-150% range to the root", ()
 	assert.equal(document.documentElement.style.zoom, "1.5");
 	applyRendererZoom(2);
 	assert.equal(document.documentElement.style.zoom, "1.5");
+	applyRendererZoom(Number.NaN);
+	assert.equal(document.documentElement.style.zoom, "1");
+	applyRendererZoom(0.1);
+	assert.equal(document.documentElement.style.zoom, "0.8");
 });

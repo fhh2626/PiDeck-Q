@@ -10,6 +10,8 @@
 #include <QApplication>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QScreen>
 #include <QUrl>
 #include <QWindow>
@@ -29,7 +31,7 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
       m_surface(new MainWebSurface(this)),
       m_fileDrop(new FileDropController([host](const QJsonObject &payload) {
           host->sendEvent(QStringLiteral("native.fileDrop"), payload);
-      }, this)),
+      }, m_surface->view(), this)),
       m_closeToTray(startup.value(QStringLiteral("closeToTray")).toBool(true))
 {
     setWindowTitle(QStringLiteral("PiDeck-Q"));
@@ -40,6 +42,9 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     m_surface->container()->setAcceptDrops(true);
     installEventFilter(m_fileDrop);
     m_surface->container()->installEventFilter(m_fileDrop);
+    // WebView2 is a native QWindow child; parent QWidget filters are not
+    // guaranteed to observe drag/drop events intercepted by the browser.
+    m_surface->view()->installEventFilter(m_fileDrop);
 
     const bool useNativeTitleBar = startup.value(QStringLiteral("useNativeTitleBar")).toBool(false);
     if (!useNativeTitleBar) {
@@ -107,6 +112,9 @@ void MainWindow::showWindow()
     show();
     focusWindow();
     emitVisible(true);
+    emitMaximizedState();
+    emitMinimizedState();
+    emitFullScreenState();
 }
 
 bool MainWindow::toggleMaximize()
@@ -165,6 +173,26 @@ void MainWindow::beginSystemMove()
     if (auto *handle = windowHandle()) handle->startSystemMove();
 }
 
+void MainWindow::showLoadError(const QString &url, const QString &error)
+{
+    QMessageBox message(this);
+    message.setIcon(QMessageBox::Critical);
+    message.setWindowTitle(QStringLiteral("PiDeck-Q"));
+    message.setText(QStringLiteral("The renderer could not be loaded."));
+    message.setInformativeText(QStringLiteral("%1\n%2").arg(error, url));
+    auto *restart = message.addButton(QStringLiteral("Restart"), QMessageBox::AcceptRole);
+    auto *exit = message.addButton(QStringLiteral("Exit"), QMessageBox::RejectRole);
+    message.setDefaultButton(restart);
+    message.exec();
+    if (m_host) {
+        m_host->sendEvent(QStringLiteral("window.loadErrorAction"), QJsonObject{
+            {QStringLiteral("action"), message.clickedButton() == restart ? QStringLiteral("restart") : QStringLiteral("exit")},
+        });
+    } else if (message.clickedButton() == exit) {
+        QCoreApplication::quit();
+    }
+}
+
 void MainWindow::toggleDevTools()
 {
     // QWebView intentionally has no private devtools API. On WebView2 the public
@@ -221,8 +249,9 @@ void MainWindow::dropEvent(QDropEvent *event)
         return;
     }
     if (m_host) {
+        const QPoint screenPosition = mapToGlobal(event->position().toPoint());
         m_host->sendEvent(QStringLiteral("native.fileDrop"),
-                          FileDropController::payload(event->mimeData(), event->position().toPoint()));
+                          FileDropController::payload(event->mimeData(), screenPosition));
     }
     event->acceptProposedAction();
 }
@@ -245,6 +274,7 @@ void MainWindow::changeEvent(QEvent *event)
     if (event->type() == QEvent::WindowStateChange) {
         emitMaximizedState();
         emitMinimizedState();
+        emitFullScreenState();
     }
 }
 
@@ -256,6 +286,11 @@ void MainWindow::emitMaximizedState()
 void MainWindow::emitMinimizedState()
 {
     if (m_host) m_host->sendEvent(QStringLiteral("window.minimizedChanged"), isMinimized());
+}
+
+void MainWindow::emitFullScreenState()
+{
+    if (m_host) m_host->sendEvent(QStringLiteral("window.fullscreenChanged"), isFullScreen());
 }
 
 void MainWindow::emitBounds()

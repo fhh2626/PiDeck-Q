@@ -24,6 +24,12 @@ export const SQL_JS_RUNTIME_FILES = Object.freeze([
 	"dist/sql-wasm.wasm",
 ]);
 
+/** semver is imported by the native sidecar update service and is a single-file runtime package. */
+export const SEMVER_RUNTIME_FILES = Object.freeze([
+	"package.json",
+	"semver.js",
+]);
+
 /**
  * Copy only JavaScript implementation files from a dependency library. Source
  * maps and test modules are useful while developing but are not runtime input.
@@ -83,6 +89,13 @@ async function stageSqlJs(projectRoot, stageRoot) {
 	return copyFiles(sourceRoot, destinationRoot, SQL_JS_RUNTIME_FILES, "sql.js");
 }
 
+async function stageSemver(projectRoot, stageRoot) {
+	const sourceRoot = join(projectRoot, "node_modules", "semver");
+	const destinationRoot = join(stageRoot, "app", "node_modules", "semver");
+	await resetDirectory(destinationRoot);
+	return copyFiles(sourceRoot, destinationRoot, SEMVER_RUNTIME_FILES, "semver");
+}
+
 async function stageUndiciAt(projectRoot, destinationRoot) {
 	const sourceRoot = join(projectRoot, "node_modules", "undici");
 	await resetDirectory(destinationRoot);
@@ -102,6 +115,7 @@ export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoo
 	const counts = {
 		nodePty: await stageNodePty(root, output),
 		sqlJs: await stageSqlJs(root, output),
+		semver: await stageSemver(root, output),
 		undici: await stageUndiciAt(root, join(output, "app", "node_modules", "undici")),
 		extensionUndici: await stageUndiciAt(
 			root,

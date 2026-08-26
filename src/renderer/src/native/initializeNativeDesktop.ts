@@ -19,6 +19,8 @@ export function getNativeRendererToken(): string | null {
 interface NativeBootstrapResponse {
 	clipboard?: Partial<NativeClipboardSnapshot>;
 	settings?: { zoomFactor?: number; memoryProfileEnabled?: boolean };
+	eventSeq?: number;
+	eventSourceGeneration?: string;
 }
 
 export interface NativeDesktopRuntime {
@@ -38,6 +40,10 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	nativeRendererToken = token;
 
 	const baseUrl = window.location.origin;
+	const transport = new NativeDesktopTransport(baseUrl, token, {
+		onResyncRequired: () => window.location.reload(),
+	});
+	await transport.ready();
 	const bootstrapUrl = new URL("/__pideck/bootstrap", baseUrl);
 	bootstrapUrl.searchParams.set("token", token);
 	const response = await fetch(bootstrapUrl, {
@@ -54,13 +60,13 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	sanitizedUrl.searchParams.delete("token");
 	window.history.replaceState(null, "", `${sanitizedUrl.pathname}${sanitizedUrl.search}${sanitizedUrl.hash}`);
 	const syncHost = new NativeDesktopSyncHost(bootstrap.clipboard);
-	const transport = new NativeDesktopTransport(baseUrl, token);
 
 	transport.subscribe<Partial<NativeClipboardSnapshot>>("native.clipboard", (snapshot) => {
 		syncHost.update(snapshot);
 	});
 	transport.subscribe<NativeFileDropPayload>("native.fileDrop", (payload) => {
-		syncHost.rememberFilePaths(payload.paths);
+		// Native OS drops already carry absolute paths in the event payload; do not
+		// cache by basename because equal names can come from different directories.
 		window.dispatchEvent(new CustomEvent<NativeFileDropPayload>("pideck-native-file-drop", {
 			detail: payload,
 		}));
@@ -73,7 +79,18 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	const heartbeatTimer = window.setInterval(() => {
 		void fetch(new URL("/__pideck/heartbeat", baseUrl), {
 			method: "POST",
-			headers: { "x-pideck-token": token },
+			headers: {
+				"content-type": "application/json",
+				"x-pideck-token": token,
+			},
+			body: JSON.stringify({
+				lastEventSeq: transport.getLastEventSeq(),
+				eventSourceGeneration: transport.getEventSourceGeneration(),
+			}),
+		}).then(async (response) => {
+			if (!response.ok) return;
+			const state = await response.json() as { eventChannelHealthy?: boolean };
+			if (state.eventChannelHealthy === false) transport.reconnect();
 		}).catch(() => undefined);
 		if (memoryProfileEnabled) {
 			const memory = (performance as Performance & {
@@ -99,6 +116,7 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	}, NATIVE_HEARTBEAT_INTERVAL_MS);
 	window.addEventListener("beforeunload", () => window.clearInterval(heartbeatTimer), { once: true });
 
+	transport.activateAfter(bootstrap.eventSeq ?? transport.getLastEventSeq());
 	const api = createPiDesktopApi(transport, syncHost);
 	window.piDesktop = api;
 	applyRendererZoom(bootstrap.settings?.zoomFactor ?? 1);

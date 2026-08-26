@@ -7,6 +7,7 @@ export interface NativeClipboardSnapshot {
 
 export interface NativeFileDropPayload {
 	paths: string[];
-	x: number;
-	y: number;
+	/** WebView client coordinates in CSS pixels, suitable for elementFromPoint. */
+	clientX: number;
+	clientY: number;
 }

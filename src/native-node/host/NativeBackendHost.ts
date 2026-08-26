@@ -96,9 +96,11 @@ export class NativeBackendHost implements BackendHost {
 		if (this.pendingFocusTarget?.id === id) this.pendingFocusTarget = null;
 	}
 
-	focusSessionFromNotification(sessionId?: string): boolean {
-		void this.host.request("window.show").catch(() => undefined);
-		void this.host.request("window.focus").catch(() => undefined);
+	focusSessionFromNotification(sessionId?: string, focusWindow = true): boolean {
+		if (focusWindow) {
+			void this.host.request("window.show").catch(() => undefined);
+			void this.host.request("window.focus").catch(() => undefined);
+		}
 		if (sessionId) {
 			// Keep a pull-safe copy even when the window is already marked live:
 			// EventSource may still be connecting when a notification arrives.

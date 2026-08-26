@@ -67,12 +67,13 @@ test("NativeRendererServer rejects a body over the shared native budget", async 
 test("NativeRendererServer authenticates, dispatches RPC, serves bootstrap and protected backgrounds", async () => {
 	const rendererRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-renderer-"));
 	const backgroundRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-bg-"));
+	let server;
 	try {
 		writeFileSync(join(rendererRoot, "index.html"), "<html>native</html>");
 		writeFileSync(join(backgroundRoot, "bg-test.png"), "png");
 		const router = new NativeRpcRouter();
 		router.handle("test:echo", (value) => ({ value }));
-		const server = new NativeRendererServer({
+		server = new NativeRendererServer({
 			router,
 			token: "secret-token",
 			rendererRoot,
@@ -86,7 +87,11 @@ test("NativeRendererServer authenticates, dispatches RPC, serves bootstrap and p
 		assert.equal(rpc.status, 200);
 		assert.deepEqual(JSON.parse(rpc.body), { ok: true, result: { value: "x" } });
 		const bootstrap = await fetch(`http://127.0.0.1:${address.port}/__pideck/bootstrap?token=secret-token`);
-		assert.deepEqual(await bootstrap.json(), { clipboard: { text: "hello" }, settings: { zoomFactor: 1 } });
+		const bootstrapPayload = await bootstrap.json();
+		assert.deepEqual(bootstrapPayload.clipboard, { text: "hello" });
+		assert.deepEqual(bootstrapPayload.settings, { zoomFactor: 1 });
+		assert.equal(typeof bootstrapPayload.eventSeq, "number");
+		assert.equal(typeof bootstrapPayload.eventSourceGeneration, "string");
 		const background = await fetch(`http://127.0.0.1:${address.port}/__pideck/background/bg-test.png?token=secret-token`);
 		assert.equal(background.status, 200);
 		assert.equal(background.headers.get("content-type"), "image/png");
@@ -94,6 +99,7 @@ test("NativeRendererServer authenticates, dispatches RPC, serves bootstrap and p
 		assert.equal(traversal.status, 403);
 		await server.stop();
 	} finally {
+		await server.stop().catch(() => undefined);
 		rmSync(rendererRoot, { recursive: true, force: true });
 		rmSync(backgroundRoot, { recursive: true, force: true });
 	}

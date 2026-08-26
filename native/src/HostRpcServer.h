@@ -35,10 +35,14 @@ private:
                       const QString &error = {});
     bool isTokenValid(const QString &candidate) const;
 
-    QTcpSocket *m_socket = nullptr;
-    QByteArray m_receiveBuffer;
+    struct ConnectionState {
+        QByteArray receiveBuffer;
+        bool authenticated = false;
+    };
+
+    QTcpSocket *m_activeSocket = nullptr;
+    QHash<QTcpSocket *, ConnectionState> m_connections;
     QHash<QString, Handler> m_handlers;
     EventHandler m_eventHandler;
     QString m_token;
-    bool m_authenticated = false;
 };

@@ -16,16 +16,24 @@ export class NodeDownloads implements PlatformDownloads {
 	): Promise<{ receivedBytes: number; totalBytes?: number }> {
 		let currentUrl = request.url;
 		let response: Response | null = null;
+		let currentHeaders = { ...(request.headers ?? {}) };
 		for (let redirect = 0; redirect < 10; redirect += 1) {
 			response = await this.proxy.fetch(currentUrl, {
 				method: "GET",
-				headers: request.headers,
+				headers: currentHeaders,
 				redirect: "manual",
 			});
 			if (response.status < 300 || response.status >= 400) break;
 			const location = response.headers.get("location");
 			if (!location) break;
-			currentUrl = new URL(location, currentUrl).toString();
+			const nextUrl = new URL(location, currentUrl);
+			const previousUrl = new URL(currentUrl);
+			if (nextUrl.origin !== previousUrl.origin) {
+				for (const key of Object.keys(currentHeaders)) {
+					if (["authorization", "cookie", "proxy-authorization"].includes(key.toLowerCase())) delete currentHeaders[key];
+				}
+			}
+			currentUrl = nextUrl.toString();
 			request.onRedirect?.(currentUrl);
 		}
 		if (!response) throw new DownloadError("Download did not return a response");
@@ -38,6 +46,15 @@ export class NodeDownloads implements PlatformDownloads {
 		const totalBytes = Number.isFinite(parsedLength) && parsedLength > 0
 			? parsedLength
 			: request.expectedBytes && request.expectedBytes > 0 ? request.expectedBytes : undefined;
+		if (
+			typeof request.expectedBytes === "number" &&
+			request.expectedBytes > 0 &&
+			Number.isFinite(parsedLength) &&
+			parsedLength > request.expectedBytes
+		) {
+			await response.body?.cancel();
+			throw new DownloadError(`Download size exceeds expected bytes: expected ${request.expectedBytes}, got ${parsedLength}`);
+		}
 		if (!response.body) throw new DownloadError("Download response has no body");
 
 		const output = createWriteStream(request.filePath);
@@ -102,6 +119,10 @@ export class NodeDownloads implements PlatformDownloads {
 				if (next.done) break;
 				const buffer = Buffer.from(next.value);
 				receivedBytes += buffer.length;
+				if (typeof request.expectedBytes === "number" && request.expectedBytes > 0 && receivedBytes > request.expectedBytes) {
+					await reader.cancel();
+					throw new DownloadError(`Download size exceeds expected bytes: expected ${request.expectedBytes}, got ${receivedBytes}`);
+				}
 				if (!output.write(buffer)) {
 					await waitForOutputOr(new Promise<void>((resolveDrain) => output.once("drain", resolveDrain)));
 				}

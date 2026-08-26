@@ -69,6 +69,56 @@ test("NodeDownloads rejects a truncated response and removes the partial file", 
 	}
 });
 
+test("NodeDownloads rejects a content-length larger than expected before creating a file", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-oversized-header-"));
+	const filePath = join(tempDir, "update.zip");
+	try {
+		const downloads = new NodeDownloads({
+			fetch: async () => new Response("too-large", {
+				status: 200,
+				headers: { "content-length": "9" },
+			}),
+		});
+		await assert.rejects(
+			() => downloads.downloadToFile({ url: "https://example.test/update.zip", filePath, expectedBytes: 8 }),
+			/size exceeds expected bytes/,
+		);
+		await assert.rejects(() => stat(filePath), { code: "ENOENT" });
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("NodeDownloads strips sensitive headers when a redirect crosses origin", async () => {
+	const calls = [];
+	const downloads = new NodeDownloads({
+		fetch: async (input, init) => {
+			calls.push({ input: String(input), headers: { ...(init?.headers ?? {}) } });
+			if (calls.length === 1) return new Response(null, { status: 302, headers: { location: "https://other.test/update.zip" } });
+			return new Response("complete", { status: 200 });
+		},
+	});
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-redirect-headers-"));
+	try {
+		await downloads.downloadToFile({
+			url: "https://example.test/update.zip",
+			filePath: join(tempDir, "update.zip"),
+			headers: {
+				authorization: "Bearer secret",
+				cookie: "session=secret",
+				"proxy-authorization": "Basic secret",
+				"user-agent": "PiDeck",
+			},
+		});
+		assert.equal(calls[1].headers.authorization, undefined);
+		assert.equal(calls[1].headers.cookie, undefined);
+		assert.equal(calls[1].headers["proxy-authorization"], undefined);
+		assert.equal(calls[1].headers["user-agent"], "PiDeck");
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("NodeDownloads completes when the received size matches expectedBytes", async () => {
 	const tempDir = await mkdtemp(join(tmpdir(), "pideck-download-size-match-"));
 	const filePath = join(tempDir, "update.zip");

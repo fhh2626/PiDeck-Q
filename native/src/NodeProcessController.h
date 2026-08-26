@@ -8,6 +8,7 @@
 #include <QString>
 
 #include <functional>
+#include <vector>
 
 class HostRpcServer;
 
@@ -52,7 +53,7 @@ private:
     NodeExitHandler m_nodeExitHandler;
     NodeErrorHandler m_nodeErrorHandler;
     ReadyToExitHandler m_readyToExitHandler;
-    StopFinishedHandler m_stopFinishedHandler;
+    std::vector<StopFinishedHandler> m_stopFinishedHandlers;
     QTimer m_gracefulStopTimer;
     QTimer m_postAckStopTimer;
     bool m_readyToExit = false;

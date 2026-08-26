@@ -4,7 +4,11 @@ import type {
 } from "../../main/platform/PlatformServices";
 import type { HostBridge } from "../host/HostBridge";
 
-/** Windows toast/desktop notification proxy owned by Qt. */
+/** Native notification support is currently implemented only by the Windows Qt host. */
+export function isNativeNotificationsSupported(platform: NodeJS.Platform = process.platform): boolean {
+	return platform === "win32";
+}
+
 export class NativeNotifications implements PlatformNotifications {
 	private nextId = 0;
 	private readonly callbacks = new Map<string, PlatformNotificationOptions>();
@@ -31,7 +35,7 @@ export class NativeNotifications implements PlatformNotifications {
 	}
 
 	isSupported(): boolean {
-		return process.platform === "win32" || process.platform === "linux" || process.platform === "darwin";
+		return isNativeNotificationsSupported();
 	}
 
 	show(options: PlatformNotificationOptions): void {

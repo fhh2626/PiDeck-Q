@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { ipcChannels } from "../../shared/ipc";
 import type { TerminalShell, TerminalTab, TerminalTarget } from "../../shared/types";
+import { sanitizeChildEnvironment } from "../process/sanitizeChildEnvironment";
 
 // 简单日志，不依赖 appLogger 以避免循环引用
 const log = (msg: string) => {
@@ -302,7 +303,7 @@ export class TerminalSessionManager {
 				// macOS GUI 应用（Electron）不继承登录 shell 的环境变量，
 				// LANG/LC_CTYPE 可能为空或 C，导致 shell 内 UTF-8 输出乱码。
 				// 显式注入 UTF-8 locale，让 shell 知道应以 UTF-8 解释字节流。
-				const env = { ...process.env };
+				const env = sanitizeChildEnvironment(process.env);
 				if (!env.LANG) env.LANG = "en_US.UTF-8";
 				if (!env.LC_ALL) env.LC_ALL = "en_US.UTF-8";
 				const terminal = pty.spawn(candidate.command, candidate.args, {

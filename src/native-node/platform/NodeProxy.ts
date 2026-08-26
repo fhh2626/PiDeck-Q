@@ -2,8 +2,8 @@ import { ProxyAgent, type Dispatcher } from "undici";
 import type { PlatformProxy, PlatformProxyConfig } from "../../main/platform/PlatformServices";
 
 type NativeFetch = (
-	input: string | URL,
-	init?: RequestInit & { dispatcher?: Dispatcher },
+	input: Parameters<typeof globalThis.fetch>[0],
+	init?: Parameters<typeof globalThis.fetch>[1] & { dispatcher?: Dispatcher },
 ) => Promise<Response>;
 
 /** Node-side desktop proxy adapter; unlike Electron it never touches WebView traffic. */
@@ -30,7 +30,7 @@ export class NodeProxy implements PlatformProxy {
 		const requestInit: RequestInit & { dispatcher?: Dispatcher } = dispatcher
 			? { ...init, dispatcher }
 			: { ...init };
-		return this.nativeFetch(target, requestInit);
+		return this.nativeFetch(input, requestInit);
 	};
 
 	private shouldBypass(hostname: string): boolean {

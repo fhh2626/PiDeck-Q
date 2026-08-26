@@ -1,6 +1,7 @@
 #include "WindowsToastNotifier.h"
 
 #ifdef Q_OS_WIN
+#include <mutex>
 #include <string>
 
 #include <winrt/base.h>
@@ -10,6 +11,11 @@
 #endif
 
 namespace {
+#ifdef Q_OS_WIN
+std::once_flag apartmentOnce;
+bool apartmentInitialized = false;
+#endif
+
 QString escapeXml(const QString &value)
 {
     QString result = value;
@@ -29,6 +35,33 @@ bool WindowsToastNotifier::isSupported()
 #endif
 }
 
+bool WindowsToastNotifier::initialize()
+{
+#ifdef Q_OS_WIN
+    std::call_once(apartmentOnce, [] {
+        try {
+            winrt::init_apartment(winrt::apartment_type::single_threaded);
+            apartmentInitialized = true;
+        } catch (...) {
+            apartmentInitialized = false;
+        }
+    });
+    return apartmentInitialized;
+#else
+    return false;
+#endif
+}
+
+void WindowsToastNotifier::uninitialize()
+{
+#ifdef Q_OS_WIN
+    if (apartmentInitialized) {
+        winrt::uninit_apartment();
+        apartmentInitialized = false;
+    }
+#endif
+}
+
 void WindowsToastNotifier::show(const QString &id, const QString &title, const QString &body,
                                 bool silent, const QString &activationUrl,
                                 ClickHandler onClick, DismissHandler onDismissed,
@@ -36,7 +69,10 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
 {
 #ifdef Q_OS_WIN
     try {
-        winrt::init_apartment(winrt::apartment_type::single_threaded);
+        if (!initialize()) {
+            if (onFailed) onFailed(QStringLiteral("Windows toast apartment initialization failed"));
+            return;
+        }
         const QString launch = activationUrl.isEmpty() ? QStringLiteral("pideck://") : activationUrl;
         const QString audio = silent ? QString{} : QStringLiteral(
             "<audio src=\"ms-winsoundevent:Notification.Default\"/>");

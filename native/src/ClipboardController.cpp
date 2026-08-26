@@ -8,7 +8,7 @@
 #include <QMimeData>
 #include <QUrl>
 
-#include <string>
+#include <vector>
 #include <utility>
 
 #ifdef Q_OS_WIN
@@ -65,14 +65,20 @@ QStringList windowsFileDropPaths()
     const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
     for (UINT index = 0; index < count; ++index) {
         const UINT length = DragQueryFileW(drop, index, nullptr, 0);
-        std::wstring value(length + 1, L'\0');
+        std::vector<wchar_t> value(static_cast<size_t>(length) + 1, L'\0');
         DragQueryFileW(drop, index, value.data(), length + 1);
-        paths.append(QString::fromStdWString(value));
+        paths.append(ClipboardController::decodeWindowsDropPath(value.data(), static_cast<int>(length)));
     }
     CloseClipboard();
     return paths;
 }
 #endif
+}
+
+QString ClipboardController::decodeWindowsDropPath(const wchar_t *value, int length)
+{
+    if (!value || length <= 0) return {};
+    return QString::fromWCharArray(value, length);
 }
 
 ClipboardController::ClipboardController(ChangedHandler onChanged)

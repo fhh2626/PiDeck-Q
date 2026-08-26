@@ -12,31 +12,114 @@ interface NativeEventFrame {
 	args?: unknown[];
 }
 
-/** HTTP + SSE transport used by the React page hosted by the native sidecar. */
+interface NativeEventChannelReady {
+	eventSeq?: number;
+	eventSourceGeneration?: string;
+}
+
+type QueuedEvent = {
+	seq: number;
+	frame: NativeEventFrame;
+};
+
+type NativeDesktopTransportOptions = {
+	onResyncRequired?: (payload: unknown) => void;
+};
+
+/** HTTP + replayable SSE transport used by the React page hosted by the native sidecar. */
 export class NativeDesktopTransport implements DesktopRpcTransport {
 	private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
-	private readonly eventSource: EventSource;
+	private eventSource: EventSource | null = null;
+	private readonly readyPromise: Promise<void>;
+	private resolveReady!: () => void;
+	private readonly queuedEvents: QueuedEvent[] = [];
+	private activated = false;
 	private disposed = false;
+	private lastEventSeq = 0;
+	private eventSourceGeneration = "";
 
 	constructor(
 		private readonly baseUrl: string,
 		private readonly token: string,
+		private readonly options: NativeDesktopTransportOptions = {},
 	) {
+		this.readyPromise = new Promise<void>((resolve) => {
+			this.resolveReady = resolve;
+		});
+		this.connectEventSource();
+	}
+
+	private connectEventSource(): void {
+		if (this.disposed) return;
 		const eventsUrl = new URL("/__pideck/events", this.baseUrl);
-		eventsUrl.searchParams.set("token", token);
-		this.eventSource = new EventSource(eventsUrl);
-		this.eventSource.onmessage = (event) => {
-			let frame: NativeEventFrame;
-			try {
-				frame = JSON.parse(event.data) as NativeEventFrame;
-			} catch {
-				return;
-			}
-			if (typeof frame.channel !== "string" || !Array.isArray(frame.args)) return;
-			const listeners = this.listeners.get(frame.channel);
-			if (!listeners) return;
-			for (const listener of [...listeners]) listener(frame.args[0]);
-		};
+		eventsUrl.searchParams.set("token", this.token);
+		const eventSource = new EventSource(eventsUrl);
+		this.eventSource = eventSource;
+		eventSource.onmessage = (event) => this.handleEvent(event);
+	}
+
+	private handleEvent(event: MessageEvent<string>): void {
+		const parsedSeq = Number(event.lastEventId);
+		const seq = Number.isInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : this.lastEventSeq;
+		this.lastEventSeq = Math.max(this.lastEventSeq, seq);
+		let frame: NativeEventFrame;
+		try {
+			frame = JSON.parse(event.data) as NativeEventFrame;
+		} catch {
+			return;
+		}
+		if (frame.channel === "native.eventChannelReady") {
+			const payload = frame.args?.[0] as NativeEventChannelReady | undefined;
+			if (typeof payload?.eventSeq === "number") this.lastEventSeq = Math.max(this.lastEventSeq, payload.eventSeq);
+			if (typeof payload?.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
+			this.resolveReady();
+			return;
+		}
+		if (typeof frame.channel !== "string" || !Array.isArray(frame.args)) return;
+		if (!this.activated) {
+			this.queuedEvents.push({ seq, frame });
+			return;
+		}
+		this.dispatch(frame);
+	}
+
+	private dispatch(frame: NativeEventFrame): void {
+		if (frame.channel === "native.resyncRequired") {
+			this.options.onResyncRequired?.(frame.args?.[0]);
+		}
+		const listeners = this.listeners.get(frame.channel ?? "");
+		if (!listeners || !Array.isArray(frame.args)) return;
+		for (const listener of [...listeners]) listener(frame.args[0]);
+	}
+
+	/** Wait until the server has replayed missed events and announced its sequence. */
+	ready(): Promise<void> {
+		return this.readyPromise;
+	}
+
+	/** Apply the bootstrap snapshot, then deliver only events newer than that snapshot. */
+	activateAfter(eventSeq: number): void {
+		this.activated = true;
+		for (const queued of this.queuedEvents) {
+			if (queued.seq > eventSeq) this.dispatch(queued.frame);
+		}
+		this.queuedEvents.length = 0;
+		this.lastEventSeq = Math.max(this.lastEventSeq, eventSeq);
+	}
+
+	getLastEventSeq(): number {
+		return this.lastEventSeq;
+	}
+
+	getEventSourceGeneration(): string {
+		return this.eventSourceGeneration;
+	}
+
+	reconnect(): void {
+		if (this.disposed) return;
+		this.eventSource?.close();
+		this.eventSource = null;
+		this.connectEventSource();
 	}
 
 	async invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
@@ -83,7 +166,9 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.eventSource.close();
+		this.eventSource?.close();
+		this.eventSource = null;
+		this.queuedEvents.length = 0;
 		this.listeners.clear();
 	}
 }

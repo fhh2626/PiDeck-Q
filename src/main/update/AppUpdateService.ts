@@ -1,4 +1,3 @@
-import { createWriteStream } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
@@ -10,6 +9,7 @@ import type {
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
 import { APP_LATEST_RELEASE_API, APP_RELEASES_URL } from "../../shared/appIdentity.ts";
+import { gt as semverGt, valid as semverValid } from "semver";
 import type {
 	PlatformApplication,
 	PlatformDownloads,
@@ -63,8 +63,8 @@ function parseGitHubRelease(value: unknown): GitHubRelease {
 	return { tag_name: tagName, name, body, html_url: htmlUrl, published_at: publishedAt, assets };
 }
 
-function normalizeVersion(version: string) {
-	return version.trim().replace(/^v/i, "");
+function normalizeVersion(version: string): string | null {
+	return semverValid(version.trim().replace(/^v/i, ""));
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -72,15 +72,11 @@ function isWithin(root: string, candidate: string): boolean {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function compareVersions(left: string, right: string) {
-	const leftParts = normalizeVersion(left).split(/[.-]/).map((part) => Number(part) || 0);
-	const rightParts = normalizeVersion(right).split(/[.-]/).map((part) => Number(part) || 0);
-	const length = Math.max(leftParts.length, rightParts.length);
-	for (let index = 0; index < length; index += 1) {
-		const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-		if (diff !== 0) return diff;
-	}
-	return 0;
+function compareVersions(left: string, right: string): number {
+	const normalizedLeft = normalizeVersion(left);
+	const normalizedRight = normalizeVersion(right);
+	if (!normalizedLeft || !normalizedRight) return 0;
+	return semverGt(normalizedLeft, normalizedRight) ? 1 : normalizedLeft === normalizedRight ? 0 : -1;
 }
 
 function selectRecommendedAsset(assets: AppUpdateAsset[]) {
@@ -148,6 +144,14 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 		}
 		const release = parseGitHubRelease(await response.json());
 		const latestVersion = normalizeVersion(release.tag_name || currentVersion);
+		const normalizedCurrentVersion = normalizeVersion(currentVersion);
+		if (!latestVersion || !normalizedCurrentVersion) {
+			void deps.logger.warn("update", "Invalid release version metadata", {
+				currentVersion,
+				tagName: release.tag_name,
+			});
+			throw new Error(deps.translate("update.checkFailed"));
+		}
 		const assets = (release.assets ?? []).map((asset) => ({
 			name: asset.name,
 			url: asset.browser_download_url,
@@ -155,7 +159,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 		}));
 		for (const asset of assets) knownAssets.set(assetKey(asset), asset);
 		const recommendedAsset = selectRecommendedAsset(assets);
-		const hasUpdate = compareVersions(latestVersion, currentVersion) > 0;
+		const hasUpdate = compareVersions(latestVersion, normalizedCurrentVersion) > 0;
 		void deps.logger.info("update", "App update check completed", {
 			currentVersion,
 			latestVersion,
@@ -163,7 +167,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps) {
 			recommendedAsset: recommendedAsset?.name,
 		});
 		return {
-			currentVersion,
+			currentVersion: normalizedCurrentVersion,
 			latestVersion,
 			hasUpdate,
 			releaseName: release.name || `v${latestVersion}`,

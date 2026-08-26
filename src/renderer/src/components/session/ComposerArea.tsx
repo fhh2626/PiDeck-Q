@@ -161,10 +161,10 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
   // internal HTML drag/drop remains untouched.
   useEffect(() => {
     const handleNativeFileDrop = (event: Event) => {
-      const detail = (event as CustomEvent<{ paths?: string[]; x?: number; y?: number }>).detail;
+      const detail = (event as CustomEvent<{ paths?: string[]; clientX?: number; clientY?: number }>).detail;
       if (!detail || !Array.isArray(detail.paths) || detail.paths.length === 0) return;
-      const target = typeof detail.x === "number" && typeof detail.y === "number"
-        ? document.elementFromPoint(detail.x, detail.y)?.closest("[data-session-id]")
+      const target = typeof detail.clientX === "number" && typeof detail.clientY === "number"
+        ? document.elementFromPoint(detail.clientX, detail.clientY)?.closest("[data-session-id]")
         : null;
       if (target?.getAttribute("data-session-id") !== props.sessionId) return;
       onNativeFileDrop(detail.paths);

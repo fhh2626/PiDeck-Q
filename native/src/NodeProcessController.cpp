@@ -141,7 +141,7 @@ bool NodeProcessController::start()
     m_readyToExit = false;
     m_stopRequested = false;
     m_asyncStopCompleted = false;
-    m_stopFinishedHandler = {};
+    m_stopFinishedHandlers.clear();
     m_gracefulStopTimer.stop();
     m_postAckStopTimer.stop();
 
@@ -196,10 +196,10 @@ void NodeProcessController::stopAsync(StopFinishedHandler handler)
         if (handler) handler();
         return;
     }
+    if (handler) m_stopFinishedHandlers.push_back(std::move(handler));
     if (m_stopRequested) return;
 
     m_stopRequested = true;
-    m_stopFinishedHandler = std::move(handler);
     if (m_process.state() == QProcess::NotRunning) {
         completeAsyncStop();
         return;
@@ -214,16 +214,18 @@ void NodeProcessController::stopAsync(StopFinishedHandler handler)
 
 void NodeProcessController::completeAsyncStop()
 {
-    if (!m_stopRequested || m_asyncStopCompleted) return;
+    if (!m_stopRequested || m_asyncStopCompleted || m_process.state() != QProcess::NotRunning) return;
     m_asyncStopCompleted = true;
     m_gracefulStopTimer.stop();
     m_postAckStopTimer.stop();
 #ifdef Q_OS_WIN
     closeJobObject();
 #endif
-    auto handler = std::move(m_stopFinishedHandler);
-    m_stopFinishedHandler = {};
-    if (handler) handler();
+    auto handlers = std::move(m_stopFinishedHandlers);
+    m_stopFinishedHandlers.clear();
+    for (const auto &handler : handlers) {
+        if (handler) handler();
+    }
 }
 
 void NodeProcessController::forceStop()
@@ -238,10 +240,11 @@ void NodeProcessController::forceStop()
     if (!terminateJobObject()) fallbackTerminateProcessTree();
 #endif
     if (m_process.state() != QProcess::NotRunning) m_process.kill();
-    // A short bounded wait makes the callback safe for a restart without
-    // holding the UI thread during normal graceful shutdown.
+    // A short bounded wait only gives the process a chance to emit finished;
+    // completion must still be gated by QProcess::NotRunning. If it remains
+    // alive, the finished signal will complete all queued callbacks later.
     if (m_process.state() != QProcess::NotRunning) m_process.waitForFinished(100);
-    completeAsyncStop();
+    if (m_process.state() == QProcess::NotRunning) completeAsyncStop();
 }
 
 void NodeProcessController::stop()
@@ -249,7 +252,7 @@ void NodeProcessController::stop()
     if (m_stopRequested) {
         // Destruction/startup failure is the emergency path. Do not leave an
         // asynchronous sidecar alive just because the Qt event loop is gone.
-        m_stopFinishedHandler = {};
+        m_stopFinishedHandlers.clear();
         m_gracefulStopTimer.stop();
         m_postAckStopTimer.stop();
         forceStop();

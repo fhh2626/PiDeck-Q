@@ -2,6 +2,7 @@ import { connect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+const HELLO_TIMEOUT_MS = 5_000;
 
 type HostResponse = {
 	type: "response";
@@ -24,6 +25,12 @@ type PendingRequest = {
 	reject: (reason: Error) => void;
 };
 
+type PendingHello = {
+	resolve: () => void;
+	reject: (reason: Error) => void;
+	timer: NodeJS.Timeout;
+};
+
 /**
  * Length-prefixed JSON bridge between the Node sidecar and the Qt host.
  * The token handshake is completed before any OS request is allowed.
@@ -33,9 +40,14 @@ export class HostBridge {
 	private receiveBuffer = Buffer.alloc(0);
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
+	private pendingHello: PendingHello | null = null;
 	private closed = false;
 
-	private constructor(private readonly token: string) {}
+	private readonly token: string;
+
+	private constructor(token: string) {
+		this.token = token;
+	}
 
 	static async connect(port: number, token: string): Promise<HostBridge> {
 		const bridge = new HostBridge(token);
@@ -63,23 +75,48 @@ export class HostBridge {
 		this.socket.on("error", (error) => this.handleClose(error));
 
 		const hello = this.waitForHello();
-		this.send({ type: "hello", token: this.token });
+		try {
+			this.send({ type: "hello", token: this.token });
+		} catch (error) {
+			this.handleClose(error instanceof Error ? error : new Error(String(error)));
+		}
 		await hello;
 	}
 
 	private waitForHello(): Promise<void> {
 		return new Promise<void>((resolve, reject) => {
-			const handler = (frame: HostFrame) => {
+			const timer = setTimeout(() => {
+				const error = new Error("Native host hello handshake timed out");
+				this.helloHandler = null;
+				this.settleHello(error);
+				this.handleClose(error);
+			}, HELLO_TIMEOUT_MS);
+			this.pendingHello = { resolve, reject, timer };
+			this.helloHandler = (frame: HostFrame) => {
 				if (frame.type !== "hello") return false;
-				if (frame.ok) resolve();
-				else reject(new Error(frame.error?.message ?? "Native host authentication failed"));
+				this.helloHandler = null;
+				if (frame.ok) {
+					this.settleHello();
+				} else {
+					const error = new Error(frame.error?.message ?? "Native host authentication failed");
+					this.settleHello(error);
+					this.handleClose(error);
+				}
 				return true;
 			};
-			this.helloHandler = handler;
 		});
 	}
 
 	private helloHandler: ((frame: HostFrame) => boolean) | null = null;
+
+	private settleHello(error?: Error): void {
+		const pending = this.pendingHello;
+		if (!pending) return;
+		this.pendingHello = null;
+		clearTimeout(pending.timer);
+		if (error) pending.reject(error);
+		else pending.resolve();
+	}
 
 	private receive(chunk: Buffer): void {
 		this.receiveBuffer = Buffer.concat([this.receiveBuffer, chunk]);
@@ -194,6 +231,8 @@ export class HostBridge {
 	private handleClose(error: Error): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.helloHandler = null;
+		this.settleHello(error);
 		this.socket?.destroy();
 		this.socket = null;
 		for (const pending of this.pending.values()) pending.reject(error);

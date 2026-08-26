@@ -52,6 +52,11 @@ async function createRuntimeFixture(projectRoot) {
 	await put(join(sqlRoot, "dist", "sql-wasm-debug.wasm"), "debug wasm");
 	await put(join(sqlRoot, "dist", "sql-asm.js"), "asm build");
 
+	const semverRoot = join(projectRoot, "node_modules", "semver");
+	await put(join(semverRoot, "package.json"), '{"main":"semver.js"}');
+	await put(join(semverRoot, "semver.js"));
+	await put(join(semverRoot, "README.md"), "docs");
+
 	const undiciRoot = join(projectRoot, "node_modules", "undici");
 	await put(join(undiciRoot, "package.json"), '{"main":"index.js"}');
 	await put(join(undiciRoot, "index.js"));
@@ -73,6 +78,7 @@ test("native runtime staging copies only executable node-pty/sql.js/undici files
 		const result = await stageNativeRuntime({ projectRoot, stageRoot });
 		assert.equal(result.counts.nodePty, NODE_PTY_RUNTIME_FILES.length + 3);
 		assert.equal(result.counts.sqlJs, SQL_JS_RUNTIME_FILES.length);
+		assert.equal(result.counts.semver, 2);
 		assert.equal(result.counts.undici, 3);
 		assert.equal(result.counts.extensionUndici, 3);
 

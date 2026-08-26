@@ -56,6 +56,20 @@ function fakeReleaseFetch(asset = RELEASE_ASSET) {
 	});
 }
 
+test("AppUpdateService rejects invalid release SemVer metadata", async () => {
+	const service = createAppUpdateService({
+		logger: createFakeLogger(),
+		translate: (key) => key,
+		emitProgress: () => {},
+		platformApp: createFakeApp(),
+		platformPaths: createFakePaths(),
+		platformShell: { showItemInFolder: () => {} },
+		platformDownloads: { downloadToFile: async () => ({ receivedBytes: 0 }) },
+		fetchFn: async () => ({ ok: true, json: async () => ({ tag_name: "v-not-semver", assets: [] }) }),
+	});
+	await assert.rejects(() => service.checkForAppUpdate("portable"), /update\.checkFailed/);
+});
+
 test("AppUpdateService rejects invalid non-https url without calling downloads", async () => {
 	let downloadCalled = false;
 	const service = createAppUpdateService({

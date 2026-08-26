@@ -8,13 +8,15 @@
 
 class QMimeData;
 class QEvent;
+class QWindow;
 
 /** Converts Qt OS drop events into the authenticated native.fileDrop payload. */
 class FileDropController final : public QObject {
 public:
     using DropHandler = std::function<void(const QJsonObject &payload)>;
 
-    explicit FileDropController(DropHandler handler, QObject *parent = nullptr);
+    explicit FileDropController(DropHandler handler, QWindow *coordinateSurface,
+                                 QObject *parent = nullptr);
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     static bool hasLocalFiles(const QMimeData *mimeData);
@@ -22,4 +24,5 @@ public:
 
 private:
     DropHandler m_handler;
+    QWindow *m_coordinateSurface = nullptr;
 };

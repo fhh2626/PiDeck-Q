@@ -86,3 +86,15 @@ target("PiDeck-Q")
             "--stage-root", stage,
         })
     end)
+
+target("PiDeck-HostRpcTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/HostRpcServerIntegration.cpp", "native/src/HostRpcServer.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/NodeProcessController.cpp")
+    add_includedirs("native/src")
+
+    if is_plat("windows") then
+        add_cxxflags("/Zc:__cplusplus", {force = true})
+        add_syslinks("user32", "shell32", "ole32", "advapi32", "runtimeobject", "windowsapp")
+    end

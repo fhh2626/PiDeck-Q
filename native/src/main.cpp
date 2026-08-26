@@ -204,6 +204,10 @@ int main(int argc, char **argv)
     // Qt WebView must initialize its backend before QApplication/QGuiApplication.
     QtWebView::initialize();
     QApplication app(argc, argv);
+    WindowsToastNotifier::initialize();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
+        WindowsToastNotifier::uninitialize();
+    });
     app.setOrganizationName(QStringLiteral("PiDeck"));
     app.setApplicationName(QStringLiteral("PiDeck-Q"));
 #ifdef PIDECK_BUILD_VERSION
@@ -329,6 +333,14 @@ int main(int argc, char **argv)
     });
     host.registerHandler(QStringLiteral("window.reload"), [&mainWindow](const QJsonObject &) {
         if (mainWindow) mainWindow->reload();
+        return QJsonValue(QJsonValue::Null);
+    });
+    host.registerHandler(QStringLiteral("window.showLoadError"), [&mainWindow](const QJsonObject &params) {
+        if (mainWindow) {
+            mainWindow->showLoadError(
+                params.value(QStringLiteral("url")).toString(),
+                params.value(QStringLiteral("error")).toString());
+        }
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("window.focus"), [&mainWindow](const QJsonObject &) {

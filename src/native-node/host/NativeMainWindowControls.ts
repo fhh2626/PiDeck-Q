@@ -7,6 +7,7 @@ import type { HostBridge } from "./HostBridge";
 export class NativeMainWindowControls implements MainWindowControls {
 	private maximized = false;
 	private minimized = false;
+	private fullscreen = false;
 	private visible = false;
 	private destroyed = false;
 	private alwaysOnTop = false;
@@ -21,6 +22,9 @@ export class NativeMainWindowControls implements MainWindowControls {
 		});
 		host.on<boolean>("window.minimizedChanged", (value) => {
 			this.minimized = value;
+		});
+		host.on<boolean>("window.fullscreenChanged", (value) => {
+			this.fullscreen = value;
 		});
 		host.on<boolean>("window.visibleChanged", (value) => {
 			this.visible = value;
@@ -41,7 +45,7 @@ export class NativeMainWindowControls implements MainWindowControls {
 		return {
 			isMaximized: this.maximized,
 			isMinimized: this.minimized,
-			isFullScreen: false,
+			isFullScreen: this.fullscreen,
 		};
 	}
 

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { createReadStream, existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import type { NativeRpcRouter } from "../../main/transport/NativeRpcRouter";
 import type { NativeClipboardSnapshot } from "../../shared/desktop/NativeHostTypes";
@@ -8,6 +9,9 @@ import { MAX_NATIVE_EVENT_FRAME_BYTES, MAX_NATIVE_RPC_BODY_BYTES } from "../../s
 
 const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
 const MAX_FRAME_BYTES = MAX_NATIVE_EVENT_FRAME_BYTES;
+const MAX_EVENT_HISTORY = 4_096;
+const MAX_PENDING_EVENT_BYTES = 4 * 1024 * 1024;
+const EVENT_LAG_THRESHOLD = 16;
 
 const MIME_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -26,9 +30,36 @@ const MIME_TYPES: Record<string, string> = {
 	".woff2": "font/woff2",
 };
 
-type NativeBootstrap = {
+export type NativeBootstrap = {
 	clipboard: Partial<NativeClipboardSnapshot>;
 	settings: { zoomFactor: number; memoryProfileEnabled: boolean };
+	eventSeq?: number;
+	eventSourceGeneration?: string;
+};
+
+type NativeEventRecord = {
+	seq: number;
+	channel: string;
+	args: unknown[];
+	frame: string;
+};
+
+type EventClient = {
+	response: ServerResponse;
+	blocked: boolean;
+	pendingBytes: number;
+	pendingFrames: string[];
+};
+
+type NativeHeartbeatPayload = {
+	lastEventSeq?: number;
+	eventSourceGeneration?: string;
+};
+
+type NativeHeartbeatState = {
+	eventSeq: number;
+	eventSourceGeneration: string;
+	eventChannelHealthy: boolean;
 };
 
 class RequestBodyTooLargeError extends Error {
@@ -44,7 +75,7 @@ type NativeRendererDependencies = {
 	rendererRoot: string;
 	backgroundDirectory: string;
 	getBootstrap: () => Promise<NativeBootstrap>;
-	onHeartbeat?: () => void;
+	onHeartbeat?: (payload: NativeHeartbeatPayload, state: NativeHeartbeatState) => void;
 	onMemoryDiagnostics?: (payload: unknown) => void;
 	onOversizedEvent?: (channel: string, bytes: number) => void;
 };
@@ -90,8 +121,11 @@ function safeBackgroundPath(root: string, name: string): string | null {
 export class NativeRendererServer {
 	private server: Server | null = null;
 	private address: { host: string; port: number } | null = null;
-	private readonly clients = new Set<ServerResponse>();
+	private readonly clients = new Set<EventClient>();
 	private heartbeatTimer: NodeJS.Timeout | null = null;
+	private eventSeq = 0;
+	private eventSourceGeneration = randomUUID();
+	private readonly eventHistory: NativeEventRecord[] = [];
 	private readonly deps: NativeRendererDependencies;
 
 	constructor(deps: NativeRendererDependencies) {
@@ -100,6 +134,7 @@ export class NativeRendererServer {
 
 	async start(): Promise<{ host: string; port: number }> {
 		if (this.address) return this.address;
+		this.eventSourceGeneration = randomUUID();
 		this.server = createServer((request, response) => {
 			void this.handle(request, response).catch((error) => {
 				if (response.headersSent) {
@@ -115,7 +150,12 @@ export class NativeRendererServer {
 			});
 		});
 		this.server.on("error", (error) => {
-			for (const client of this.clients) client.destroy(error instanceof Error ? error : undefined);
+			const failedServer = this.server;
+			this.server = null;
+			this.address = null;
+			for (const client of [...this.clients]) client.response.destroy(error instanceof Error ? error : undefined);
+			this.clients.clear();
+			failedServer?.close();
 		});
 		this.address = await new Promise<{ host: string; port: number }>((resolveAddress, reject) => {
 			const server = this.server;
@@ -129,7 +169,7 @@ export class NativeRendererServer {
 			});
 		});
 		this.heartbeatTimer = setInterval(() => {
-			for (const client of this.clients) client.write(": heartbeat\n\n");
+			for (const client of [...this.clients]) this.writeToClient(client, ": heartbeat\n\n");
 		}, 15_000);
 		this.heartbeatTimer.unref();
 		return this.address;
@@ -172,7 +212,16 @@ export class NativeRendererServer {
 		}
 
 		if (request.method === "GET" && url.pathname === "/__pideck/bootstrap") {
-			sendJson(response, 200, await this.deps.getBootstrap());
+			// Capture the boundary before the async snapshot. Events produced while
+			// clipboard/settings state is read stay queued and are replayed after the
+			// renderer applies this snapshot instead of being silently dropped.
+			const snapshotBoundary = this.eventSeq;
+			const bootstrap = await this.deps.getBootstrap();
+			sendJson(response, 200, {
+				...bootstrap,
+				eventSeq: snapshotBoundary,
+				eventSourceGeneration: this.eventSourceGeneration,
+			});
 			return;
 		}
 
@@ -182,15 +231,51 @@ export class NativeRendererServer {
 				"cache-control": "no-cache, no-store",
 				connection: "keep-alive",
 			});
-			response.write(": connected\n\n");
-			this.clients.add(response);
-			request.on("close", () => this.clients.delete(response));
+			const client: EventClient = { response, blocked: false, pendingBytes: 0, pendingFrames: [] };
+			this.clients.add(client);
+			const removeClient = () => this.clients.delete(client);
+			request.on("close", removeClient);
+			response.on("close", removeClient);
+			this.writeToClient(client, ": connected\n\n");
+
+			const rawLastEventId = request.headers["last-event-id"];
+			const lastEventId = Number(Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId ?? "");
+			const hasLastEventId = Number.isInteger(lastEventId) && lastEventId >= 0;
+			const oldestSeq = this.eventHistory[0]?.seq ?? this.eventSeq + 1;
+			if (hasLastEventId && lastEventId < oldestSeq - 1) {
+				this.writeControlEvent(client, "native.resyncRequired", {
+					reason: "event-history-truncated",
+					eventSeq: this.eventSeq,
+				});
+			} else if (hasLastEventId) {
+				for (const record of this.eventHistory) {
+					if (record.seq > lastEventId) this.writeToClient(client, record.frame);
+				}
+			}
+			this.writeControlEvent(client, "native.eventChannelReady", {
+				eventSeq: this.eventSeq,
+				eventSourceGeneration: this.eventSourceGeneration,
+			});
 			return;
 		}
 
 		if (request.method === "POST" && url.pathname === "/__pideck/heartbeat") {
-			this.deps.onHeartbeat?.();
-			response.writeHead(204).end();
+			const raw = await readRequestBody(request);
+			let payload: NativeHeartbeatPayload = {};
+			if (raw) {
+				const parsed: unknown = JSON.parse(raw);
+				if (!isRecord(parsed)) {
+					sendJson(response, 400, { ok: false, error: { message: "Invalid heartbeat payload" } });
+					return;
+				}
+				payload = {
+					lastEventSeq: typeof parsed.lastEventSeq === "number" ? parsed.lastEventSeq : undefined,
+					eventSourceGeneration: typeof parsed.eventSourceGeneration === "string" ? parsed.eventSourceGeneration : undefined,
+				};
+			}
+			const state = this.getHeartbeatState(payload);
+			this.deps.onHeartbeat?.(payload, state);
+			sendJson(response, 200, state);
 			return;
 		}
 
@@ -218,13 +303,7 @@ export class NativeRendererServer {
 				sendJson(response, 404, { ok: false, error: { message: "Not found" } });
 				return;
 			}
-			const data = await readFile(filePath);
-			response.writeHead(200, {
-				"content-type": MIME_TYPES[extname(name).toLowerCase()] ?? "application/octet-stream",
-				"cache-control": "public, max-age=86400",
-				"content-length": data.length,
-			});
-			response.end(data);
+			await this.streamFile(response, filePath, MIME_TYPES[extname(name).toLowerCase()] ?? "application/octet-stream", "public, max-age=86400");
 			return;
 		}
 
@@ -242,22 +321,40 @@ export class NativeRendererServer {
 			if (requested !== "/index.html") {
 				const fallback = resolve(this.deps.rendererRoot, "index.html");
 				if (existsSync(fallback)) {
-					const data = await readFile(fallback);
-					response.writeHead(200, { "content-type": MIME_TYPES[".html"] });
-					response.end(data);
+					await this.streamFile(response, fallback, MIME_TYPES[".html"]);
 					return;
 				}
 			}
 			sendJson(response, 404, { ok: false, error: { message: "Not found" } });
 			return;
 		}
-		const data = await readFile(filePath);
-		if (data.length > MAX_FRAME_BYTES) {
+		await this.streamFile(response, filePath, MIME_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream");
+	}
+
+	private async streamFile(response: ServerResponse, filePath: string, contentType: string, cacheControl?: string): Promise<void> {
+		let fileStat;
+		try {
+			fileStat = await stat(filePath);
+		} catch {
+			sendJson(response, 404, { ok: false, error: { message: "Not found" } });
+			return;
+		}
+		if (!fileStat.isFile()) {
+			sendJson(response, 404, { ok: false, error: { message: "Not found" } });
+			return;
+		}
+		if (fileStat.size > MAX_FRAME_BYTES) {
 			sendJson(response, 413, { ok: false, error: { message: "Asset exceeds 32 MB" } });
 			return;
 		}
-		response.writeHead(200, { "content-type": MIME_TYPES[extname(filePath).toLowerCase()] ?? "application/octet-stream" });
-		response.end(data);
+		response.writeHead(200, {
+			"content-type": contentType,
+			...(cacheControl ? { "cache-control": cacheControl } : {}),
+			"content-length": fileStat.size,
+		});
+		const stream = createReadStream(filePath);
+		stream.on("error", () => response.destroy());
+		stream.pipe(response);
 	}
 
 	broadcast(channel: string, args: unknown[]): void {
@@ -265,16 +362,74 @@ export class NativeRendererServer {
 		const bytes = Buffer.byteLength(payload);
 		if (bytes > MAX_FRAME_BYTES) {
 			this.deps.onOversizedEvent?.(channel, bytes);
+			this.appendEvent("native.resyncRequired", [{ channel, bytes }]);
 			return;
 		}
-		const frame = `data: ${payload}\n\n`;
-		for (const client of [...this.clients]) {
-			try {
-				client.write(frame);
-			} catch {
+		this.appendEvent(channel, args);
+	}
+
+	private appendEvent(channel: string, args: unknown[]): void {
+		const payload = JSON.stringify({ channel, args });
+		const seq = ++this.eventSeq;
+		const frame = `id: ${seq}\ndata: ${payload}\n\n`;
+		this.eventHistory.push({ seq, channel, args, frame });
+		while (this.eventHistory.length > MAX_EVENT_HISTORY) this.eventHistory.shift();
+		for (const client of [...this.clients]) this.writeToClient(client, frame);
+	}
+
+	private writeControlEvent(client: EventClient, channel: string, args: unknown): void {
+		const payload = JSON.stringify({ channel, args: [args] });
+		this.writeToClient(client, `id: ${this.eventSeq}\ndata: ${payload}\n\n`);
+	}
+
+	private writeToClient(client: EventClient, frame: string): boolean {
+		if (client.response.destroyed) return false;
+		const bytes = Buffer.byteLength(frame);
+		if (client.blocked) {
+			if (client.pendingBytes + bytes > MAX_PENDING_EVENT_BYTES) {
 				this.clients.delete(client);
+				client.response.destroy(new Error("Native event client backpressure limit exceeded"));
+				return false;
 			}
+			client.pendingFrames.push(frame);
+			client.pendingBytes += bytes;
+			return false;
 		}
+		try {
+			const writable = client.response.write(frame);
+			if (!writable) {
+				client.blocked = true;
+				client.pendingBytes = bytes;
+				client.response.once("drain", () => this.flushClient(client));
+			}
+			return true;
+		} catch {
+			this.clients.delete(client);
+			return false;
+		}
+	}
+
+	private flushClient(client: EventClient): void {
+		if (client.response.destroyed) return;
+		client.blocked = false;
+		client.pendingBytes = 0;
+		const queued = client.pendingFrames.splice(0);
+		for (const frame of queued) {
+			if (!this.writeToClient(client, frame)) return;
+		}
+	}
+
+	private getHeartbeatState(payload: NativeHeartbeatPayload): NativeHeartbeatState {
+		const lastEventSeq = payload.lastEventSeq;
+		const lag = Number.isInteger(lastEventSeq)
+			? Math.max(0, this.eventSeq - Number(lastEventSeq))
+			: EVENT_LAG_THRESHOLD + 1;
+		return {
+			eventSeq: this.eventSeq,
+			eventSourceGeneration: this.eventSourceGeneration,
+			eventChannelHealthy: payload.eventSourceGeneration === this.eventSourceGeneration
+			&& lag <= EVENT_LAG_THRESHOLD,
+		};
 	}
 
 	getUrl(): string {
@@ -285,11 +440,13 @@ export class NativeRendererServer {
 	async stop(): Promise<void> {
 		if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
 		this.heartbeatTimer = null;
-		for (const client of this.clients) client.end();
+		for (const client of this.clients) client.response.end();
 		this.clients.clear();
 		const server = this.server;
 		this.server = null;
 		this.address = null;
+		this.eventSeq = 0;
+		this.eventHistory.length = 0;
 		if (!server) return;
 		server.closeIdleConnections?.();
 		server.closeAllConnections?.();

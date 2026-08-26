@@ -29,11 +29,11 @@ bool constantTimeEquals(const QString &left, const QString &right)
     const QByteArray a = left.toUtf8();
     const QByteArray b = right.toUtf8();
     const int maxLength = qMax(a.size(), b.size());
-    unsigned char difference = static_cast<unsigned char>(a.size() ^ b.size());
+    size_t difference = static_cast<size_t>(a.size()) ^ static_cast<size_t>(b.size());
     for (int i = 0; i < maxLength; ++i) {
         const unsigned char av = i < a.size() ? static_cast<unsigned char>(a.at(i)) : 0;
         const unsigned char bv = i < b.size() ? static_cast<unsigned char>(b.at(i)) : 0;
-        difference = static_cast<unsigned char>(difference | (av ^ bv));
+        difference |= static_cast<size_t>(av ^ bv);
     }
     return difference == 0;
 }
@@ -46,18 +46,13 @@ HostRpcServer::HostRpcServer(QObject *parent)
     connect(this, &QTcpServer::newConnection, this, [this] {
         while (hasPendingConnections()) {
             auto *socket = nextPendingConnection();
-            if (m_socket) {
-                m_socket->disconnectFromHost();
-                m_socket->deleteLater();
-            }
-            m_socket = socket;
-            m_receiveBuffer.clear();
-            m_authenticated = false;
+            m_connections.insert(socket, ConnectionState{});
             connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
                 handleData(socket, socket->readAll());
             });
             connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
-                if (m_socket == socket) m_socket = nullptr;
+                m_connections.remove(socket);
+                if (m_activeSocket == socket) m_activeSocket = nullptr;
                 socket->deleteLater();
             });
         }
@@ -91,12 +86,14 @@ void HostRpcServer::setEventHandler(EventHandler handler)
 
 void HostRpcServer::sendEvent(const QString &name, const QJsonValue &payload)
 {
-    if (!m_socket) return;
+    if (!m_activeSocket) return;
+    const auto connection = m_connections.constFind(m_activeSocket);
+    if (connection == m_connections.constEnd() || !connection->authenticated) return;
     QJsonObject frame;
     frame.insert(QStringLiteral("type"), QStringLiteral("event"));
     frame.insert(QStringLiteral("name"), name);
     frame.insert(QStringLiteral("payload"), payload);
-    writeFrame(m_socket, frame);
+    writeFrame(m_activeSocket, frame);
 }
 
 void HostRpcServer::incomingConnection(qintptr socketDescriptor)
@@ -111,22 +108,40 @@ void HostRpcServer::incomingConnection(qintptr socketDescriptor)
 
 void HostRpcServer::handleData(QTcpSocket *socket, const QByteArray &chunk)
 {
-    m_receiveBuffer.append(chunk);
-    while (m_receiveBuffer.size() >= 4) {
-        const auto *header = reinterpret_cast<const unsigned char *>(m_receiveBuffer.constData());
-        const quint32 frameLength = quint32(header[0])
-            | (quint32(header[1]) << 8)
-            | (quint32(header[2]) << 16)
-            | (quint32(header[3]) << 24);
-        if (frameLength > kMaxFrameBytes) {
+    auto connection = m_connections.find(socket);
+    if (connection == m_connections.end()) return;
+    qsizetype offset = 0;
+    while (offset < chunk.size()) {
+        const qsizetype capacity = qsizetype(kMaxFrameBytes + 4U) - connection->receiveBuffer.size();
+        if (capacity <= 0) {
             socket->disconnectFromHost();
             return;
         }
-        if (m_receiveBuffer.size() < 4 + qsizetype(frameLength)) return;
-        const QByteArray payload = m_receiveBuffer.mid(4, qsizetype(frameLength));
-        m_receiveBuffer.remove(0, 4 + qsizetype(frameLength));
-        handleFrame(socket, payload);
-        if (socket->state() != QAbstractSocket::ConnectedState) return;
+        const qsizetype count = qMin(capacity, chunk.size() - offset);
+        connection->receiveBuffer.append(chunk.constData() + offset, count);
+        offset += count;
+        while (connection->receiveBuffer.size() >= 4) {
+            const auto *header = reinterpret_cast<const unsigned char *>(connection->receiveBuffer.constData());
+            const quint32 frameLength = quint32(header[0])
+                | (quint32(header[1]) << 8)
+                | (quint32(header[2]) << 16)
+                | (quint32(header[3]) << 24);
+            if (frameLength > kMaxFrameBytes) {
+                socket->disconnectFromHost();
+                return;
+            }
+            if (connection->receiveBuffer.size() < 4 + qsizetype(frameLength)) break;
+            const QByteArray payload = connection->receiveBuffer.mid(4, qsizetype(frameLength));
+            connection->receiveBuffer.remove(0, 4 + qsizetype(frameLength));
+            handleFrame(socket, payload);
+            if (socket->state() != QAbstractSocket::ConnectedState) return;
+            connection = m_connections.find(socket);
+            if (connection == m_connections.end()) return;
+        }
+        if (connection->receiveBuffer.size() > qsizetype(kMaxFrameBytes + 4U)) {
+            socket->disconnectFromHost();
+            return;
+        }
     }
 }
 
@@ -140,6 +155,8 @@ void HostRpcServer::handleFrame(QTcpSocket *socket, const QByteArray &payload)
     }
     const QJsonObject frame = document.object();
     const QString type = frame.value(QStringLiteral("type")).toString();
+    auto connection = m_connections.find(socket);
+    if (connection == m_connections.end()) return;
 
     if (type == QStringLiteral("hello")) {
         const bool valid = isTokenValid(frame.value(QStringLiteral("token")).toString());
@@ -149,17 +166,21 @@ void HostRpcServer::handleFrame(QTcpSocket *socket, const QByteArray &payload)
         if (!valid) response.insert(QStringLiteral("error"), QJsonObject{{QStringLiteral("message"), QStringLiteral("Authentication failed")}});
         writeFrame(socket, response);
         if (!valid) {
-            m_authenticated = false;
+            connection->authenticated = false;
             socket->disconnectFromHost();
         } else {
-            m_authenticated = true;
+            connection->authenticated = true;
+            if (m_activeSocket && m_activeSocket != socket) {
+                m_activeSocket->disconnectFromHost();
+            }
+            m_activeSocket = socket;
         }
         return;
     }
 
     // The first non-hello frame is rejected. A connected sidecar is accepted only
     // after the token handshake has completed.
-    if (!m_authenticated) {
+    if (!connection->authenticated || m_activeSocket != socket) {
         socket->disconnectFromHost();
         return;
     }

@@ -32,6 +32,7 @@ public:
     void applySettings(const QJsonObject &settings);
     void beginSystemMove();
     void toggleDevTools();
+    void showLoadError(const QString &url, const QString &error);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -44,6 +45,7 @@ protected:
 private:
     void emitMaximizedState();
     void emitMinimizedState();
+    void emitFullScreenState();
     void emitBounds();
     void emitVisible(bool visible);
     void applyStartupMode(const QString &mode, bool hasLastBounds);

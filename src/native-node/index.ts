@@ -13,6 +13,8 @@ import { createNativePlatformServices } from "./platform/createNativePlatformSer
 import { NativeRendererServer } from "./transport/NativeRendererServer";
 import type { NativeClipboardSnapshot } from "../shared/desktop/NativeHostTypes";
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
+import { resolveSecondaryFocusSessionId } from "./focusRequest";
+import { nextLoadFailureAction } from "./loadFailureRecovery";
 
 const port = Number(process.env.PIDECK_HOST_PORT);
 const token = process.env.PIDECK_HOST_TOKEN?.trim();
@@ -33,7 +35,7 @@ let bridge: HostBridge | null = null;
 let rendererServer: NativeRendererServer | null = null;
 let nativeHost: NativeBackendHost | null = null;
 let backend: Backend | null = null;
-let singleInstance: ReturnType<typeof acquireVersionSingleInstance> | null = null;
+let singleInstance: Awaited<ReturnType<typeof acquireVersionSingleInstance>> | null = null;
 let stopPromise: Promise<void> | null = null;
 let heartbeatTimer: NodeJS.Timeout | null = null;
 let lastHeartbeatAt = Date.now();
@@ -42,6 +44,9 @@ let pendingBounds: LastWindowBounds | null = null;
 let userDataDirectory = "";
 let memoryMonitor: NativeMemoryMonitor | null = null;
 let pendingStartupFocusSessionId: string | null = null;
+let pendingStartupFocusAgentId: string | null = null;
+let loadFailureCount = 0;
+let loadRetryTimer: NodeJS.Timeout | null = null;
 
 async function stop(announceReadyToExit = false): Promise<void> {
 	if (stopPromise) {
@@ -56,6 +61,8 @@ async function stop(announceReadyToExit = false): Promise<void> {
 		singleInstance = null;
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		heartbeatTimer = null;
+		if (loadRetryTimer) clearTimeout(loadRetryTimer);
+		loadRetryTimer = null;
 		memoryMonitor?.stop();
 		memoryMonitor = null;
 		if (pendingBounds && userDataDirectory) saveLastWindowBounds(userDataDirectory, pendingBounds);
@@ -84,16 +91,28 @@ async function main(): Promise<void> {
 	userDataDirectory = userDataDir;
 
 	const singleInstanceEnabled = readSingleInstancePreference(join(userDataDir, "settings.json"));
-	singleInstance = acquireVersionSingleInstance({
+	singleInstance = await acquireVersionSingleInstance({
 		enabled: singleInstanceEnabled,
 		version: process.env.PIDECK_VERSION ?? "unknown",
 		userDataDir,
 		argv: hostArgv.length > 0 ? hostArgv : process.argv,
 		onFocusRequest: (payload) => {
+			// A secondary launch is a focus request even when its argv has no
+			// session/agent target. Restore the hidden-to-tray window first, then
+			// resolve the optional deep-link target without dropping the request.
+			void host.request("window.show").catch(() => undefined);
+			void host.request("window.focus").catch(() => undefined);
 			const target = extractFocusTargetFromArgv(payload.argv);
-			if (!target?.sessionId) return;
-			if (nativeHost) nativeHost.focusSessionFromNotification(target.sessionId);
-			else pendingStartupFocusSessionId = target.sessionId;
+			const sessionId = resolveSecondaryFocusSessionId(
+				target,
+				(agentId) => backend?.resolveSessionIdForAgent(agentId),
+			);
+			if (!sessionId) {
+				if (target?.agentId) pendingStartupFocusAgentId = target.agentId;
+				return;
+			}
+			if (nativeHost) nativeHost.focusSessionFromNotification(sessionId, false);
+			else pendingStartupFocusSessionId = sessionId;
 		},
 	});
 	if (singleInstanceEnabled && !singleInstance.isPrimary) {
@@ -126,8 +145,17 @@ async function main(): Promise<void> {
 				memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
 			},
 		}),
-		onHeartbeat: () => {
+		onHeartbeat: (_payload, state) => {
 			lastHeartbeatAt = Date.now();
+			if (!state.eventChannelHealthy && !reloadInFlight) {
+				reloadInFlight = true;
+				void host.request("window.reload")
+					.catch(() => undefined)
+					.finally(() => {
+						reloadInFlight = false;
+						lastHeartbeatAt = Date.now();
+					});
+			}
 		},
 		onMemoryDiagnostics: (payload) => {
 			if (!memoryMonitor || typeof payload !== "object" || payload === null) return;
@@ -161,8 +189,35 @@ async function main(): Promise<void> {
 	}
 
 	host.on("window.ready", () => {
+		loadFailureCount = 0;
+		if (loadRetryTimer) clearTimeout(loadRetryTimer);
+		loadRetryTimer = null;
 		nativeHost?.onWindowReady();
 		backend?.startAfterWindowCreated();
+	});
+	host.on<{ url?: string; error?: string }>("window.loadFailed", (payload) => {
+		if (loadRetryTimer) return;
+		const action = nextLoadFailureAction(loadFailureCount);
+		if (action.kind === "showError") {
+			void host.request("window.showLoadError", {
+				url: payload?.url ?? "",
+				error: payload?.error ?? "Renderer failed to load",
+			}).catch(() => undefined);
+			return;
+		}
+		loadFailureCount += 1;
+		loadRetryTimer = setTimeout(() => {
+			loadRetryTimer = null;
+			void host.request("window.reload").catch(() => undefined);
+		}, action.delayMs);
+	});
+	host.on<{ action?: string }>("window.loadErrorAction", (payload) => {
+		if (payload?.action === "restart") {
+			loadFailureCount = 0;
+			void host.request("window.reload").catch(() => undefined);
+			return;
+		}
+		if (payload?.action === "exit") void stop(true).then(() => process.exit(1));
 	});
 	host.on("window.closed", () => nativeHost?.markWindowDestroyed());
 	host.on<boolean>("window.visibleChanged", (visible) => {
@@ -188,6 +243,11 @@ async function main(): Promise<void> {
 		host: nativeHost,
 	});
 	nativeHost.setLogger(backend.appLogger);
+	if (pendingStartupFocusAgentId) {
+		const sessionId = backend.resolveSessionIdForAgent(pendingStartupFocusAgentId);
+		pendingStartupFocusAgentId = null;
+		if (sessionId) nativeHost.focusSessionFromNotification(sessionId, false);
+	}
 
 	// Logger-dependent external-link warnings become available after createBackend.
 	// The host adapter remains valid because the logger is optional.

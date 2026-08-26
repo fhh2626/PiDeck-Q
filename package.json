@@ -65,6 +65,7 @@
     "dist:win:dev": "node scripts/dev-native.mjs",
     "test": "node --test --test-concurrency=4 \"tests/*.test.mjs\"",
     "test:serial": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
+    "test:native-host-rpc": "node scripts/test-native-host-rpc.mjs",
     "docs:dev": "vitepress dev docs-site",
     "docs:build": "vitepress build docs-site",
     "docs:preview": "vitepress preview docs-site",
@@ -84,6 +85,7 @@
     "node-pty": "^1.1.0",
     "qrcode": "^1.5.4",
     "react-day-picker": "^10.0.1",
+    "semver": "^6.3.1",
     "shiki": "^4.4.3",
     "sql.js": "^1.14.1",
     "undici": "^6.28.0"
