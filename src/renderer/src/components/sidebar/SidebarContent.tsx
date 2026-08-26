@@ -1,4 +1,4 @@
-import { Search, Settings, Sliders, FolderPlus } from "lucide-react";
+import { Search, Settings, Sliders, FolderPlus, Loader2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { AgentTab, Project, SessionRecord, SessionSummary, WorktreeEntry } from "../../../../shared/types";
 import {
@@ -110,6 +110,16 @@ export function SidebarContent(props: SidebarContentProps) {
     && getBoundSidebarRuntimeAgentByAgentId(controller.catalog, menuAgent.id) !== undefined;
   // “RPC 日志已打开”提醒弹框的打开目标 agent id（null = 关闭）
   const [rpcLogOpenedAgentId, setRpcLogOpenedAgentId] = useState<string | null>(null);
+  const [addingProject, setAddingProject] = useState(false);
+  const handleAddProject = async () => {
+    if (addingProject) return;
+    setAddingProject(true);
+    try {
+      await actions.projects.add();
+    } finally {
+      setAddingProject(false);
+    }
+  };
   const menuSessionRecord = menu?.kind === "session"
     ? controller.catalog.sessionsByProject[menu.projectId]?.find((session) => session.id === menu.sessionId)
     : undefined;
@@ -164,11 +174,13 @@ export function SidebarContent(props: SidebarContentProps) {
             variant="outline"
             size="icon"
             className="round-add size-6 shrink-0"
-            onClick={() => void actions.projects.add()}
+            disabled={addingProject}
+            aria-busy={addingProject}
+            onClick={() => void handleAddProject()}
             title={t("app.addProject")}
             aria-label={t("app.addProject")}
           >
-            <FolderPlus className="size-3.5" />
+            {addingProject ? <Loader2 className="size-3.5 animate-spin" /> : <FolderPlus className="size-3.5" />}
           </Button>
         </div>
 

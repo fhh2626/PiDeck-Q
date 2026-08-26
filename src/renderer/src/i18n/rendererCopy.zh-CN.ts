@@ -457,6 +457,7 @@ export const zhCN = {
   "app.projectCollapseChildren": "收起",
   "app.projectShowMoreSessions": "查看更多 {count} 个历史会话",
   "app.projectSortFailed": "项目排序保存失败：{error}",
+  "app.projectAddFailed": "添加项目失败：{error}",
   "app.codexSubagent": "子代理",
   "app.codexSubagentCount": "Codex 子代理 {count} 个",
   "app.piSubagent": "子会话",

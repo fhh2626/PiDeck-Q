@@ -53,10 +53,16 @@ export function useProjectCommands(input: ProjectCommandsInput) {
 	}
 
 	async function addProject(): Promise<void> {
-		const project = await api.projects.add();
-		if (!project) return;
-		await input.refreshProjects();
-		input.setActiveProjectId(project.id);
+		try {
+			const project = await api.projects.add();
+			// 用户取消目录选择器是正常流程，不需要错误提示。
+			if (!project) return;
+			await input.refreshProjects();
+			input.setActiveProjectId(project.id);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			input.showToast(t("app.projectAddFailed", { error: message }), 5000);
+		}
 	}
 
 	async function removeSidebarProject(project: Project): Promise<void> {

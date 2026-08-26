@@ -460,6 +460,7 @@ export const enUS: Record<TranslationKey, string> = {
   "app.projectCollapseChildren": "Collapse",
   "app.projectShowMoreSessions": "Show {count} more history sessions",
   "app.projectSortFailed": "Failed to save project order: {error}",
+  "app.projectAddFailed": "Failed to add project: {error}",
   "app.codexSubagent": "Subagent",
   "app.codexSubagentCount": "{count} Codex subagents",
   "app.piSubagent": "Child session",
