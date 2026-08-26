@@ -21,11 +21,6 @@ MainWebSurface::MainWebSurface(QWidget *parent)
 
     m_container = QWidget::createWindowContainer(m_view, parent);
     m_container->setFocusPolicy(Qt::StrongFocus);
-    // QWebView is a QWindow embedded in a QWidget hierarchy. Explicitly show
-    // the native child so WebView2 creates its visual surface before the first
-    // load; relying only on the container visibility leaves a transparent host
-    // window on some Qt 6.11/MSVC builds.
-    m_view->show();
 }
 
 QWebView *MainWebSurface::view() const
@@ -50,6 +45,5 @@ void MainWebSurface::reload()
 
 void MainWebSurface::focus()
 {
-    m_view->requestActivate();
-    m_container->setFocus();
+    m_container->setFocus(Qt::ActiveWindowFocusReason);
 }
