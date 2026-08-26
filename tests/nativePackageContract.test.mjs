@@ -63,8 +63,10 @@ test("native Windows distribution keeps staging independent from NSIS", () => {
 
 test("packaged built-in extensions receive undici beside their own files", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
-	assert.match(xmake, /resources.*extensions.*node_modules.*undici/s);
-	assert.match(xmake, /stage.*resources.*extensions.*node_modules.*undici/s);
+	const runtimeStager = readFileSync("scripts/stage-native-runtime.mjs", "utf8");
+	assert.match(xmake, /stage-native-runtime\.mjs/);
+	assert.match(runtimeStager, /resources.*extensions.*node_modules.*undici/s);
+	assert.match(runtimeStager, /node_modules.*node-pty/s);
 	const verifier = readFileSync("scripts/verify-build-artifacts.mjs", "utf8");
 	assert.match(verifier, /resources.*extensions.*node_modules.*undici.*package\.json/s);
 });

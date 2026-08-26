@@ -39,8 +39,9 @@ function collectBareImports() {
 test("extension runtime deps are packaged next to extensions", () => {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 	const xmake = readFileSync("xmake.lua", "utf8");
+	const runtimeStager = readFileSync("scripts/stage-native-runtime.mjs", "utf8");
 	for (const dep of collectBareImports()) {
-		assert.match(xmake, new RegExp(`node_modules.*${dep.replace(/[\\/]/g, "[\\\\/]")}`));
+		assert.match(`${xmake}\n${runtimeStager}`, new RegExp(`node_modules.*${dep.replace(/[\\/]/g, "[\\\\/]")}`));
 		assert.ok(pkg.dependencies?.[dep], `扩展依赖 ${dep} 必须声明在 dependencies`);
 		assert.ok(existsSync(join("node_modules", dep, "package.json")), `扩展依赖 ${dep} 未安装`);
 	}

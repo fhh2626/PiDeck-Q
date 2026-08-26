@@ -58,6 +58,7 @@ target("PiDeck-Q")
         os.vrunv(windeployqt, {
             deployMode,
             "--compiler-runtime",
+            "--no-translations",
             "--dir", stage,
             target:targetfile()
         })
@@ -70,20 +71,18 @@ target("PiDeck-Q")
         os.cp(path.join(os.projectdir(), "out", "renderer", "*"),
               path.join(stage, "app", "renderer"))
 
-        -- Native modules and sql.js resources stay outside the sidecar bundle so
-        -- their ABI/wasm files match the pinned Node 24 runtime.
-        os.cp(path.join(os.projectdir(), "node_modules", "node-pty"),
-              path.join(stage, "app", "node_modules", "node-pty"))
-        os.cp(path.join(os.projectdir(), "node_modules", "sql.js"),
-              path.join(stage, "app", "node_modules", "sql.js"))
-        os.cp(path.join(os.projectdir(), "node_modules", "undici"),
-              path.join(stage, "app", "node_modules", "undici"))
-
         os.cp(path.join(os.projectdir(), "resources", "*"), path.join(stage, "resources"))
-        -- Pi resolves bare imports in a built-in extension from the extension's
-        -- directory upward. Keep this copy beside resources/extensions rather
-        -- than relying on the sidecar's sibling app/node_modules tree.
-        os.cp(path.join(os.projectdir(), "node_modules", "undici"),
-              path.join(stage, "resources", "extensions", "node_modules", "undici"))
         os.cp(path.join(os.projectdir(), "build", "icon.png"), path.join(stage, "icon.png"))
+
+        -- Stage an explicit runtime allowlist instead of copying npm package
+        -- directories wholesale. This keeps node-pty build debris, debug
+        -- symbols, source maps, tests, and unused sql.js variants out of the
+        -- portable release while preserving the Node ABI/native module layout.
+        local runtimeStager = path.join(os.projectdir(), "scripts", "stage-native-runtime.mjs")
+        local nodeCommand = path.join(node:installdir(), "bin", "node.exe")
+        os.vrunv(nodeCommand, {
+            runtimeStager,
+            "--project-root", os.projectdir(),
+            "--stage-root", stage,
+        })
     end)
