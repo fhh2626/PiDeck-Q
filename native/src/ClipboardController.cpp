@@ -3,10 +3,12 @@
 
 #include <QBuffer>
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QGuiApplication>
 #include <QImage>
 #include <QMimeData>
+#include <QThreadPool>
 #include <QUrl>
 
 #include <vector>
@@ -18,8 +20,8 @@
 #endif
 
 namespace {
-constexpr qsizetype kMaxClipboardImageBytes = 8 * 1024 * 1024;
-constexpr qsizetype kMaxClipboardImageBase64Bytes = 12 * 1024 * 1024;
+constexpr qsizetype kMaxClipboardImageBytes = 5 * 1024 * 1024;
+constexpr qsizetype kMaxClipboardImageBase64Bytes = 7 * 1024 * 1024;
 constexpr qint64 kMaxClipboardImagePixels = 32 * 1024 * 1024;
 constexpr qsizetype kMaxClipboardTextChars = 1 * 1024 * 1024;
 
@@ -28,10 +30,8 @@ QString boundedText(const QString &value)
     return value.size() <= kMaxClipboardTextChars ? value : value.left(kMaxClipboardTextChars);
 }
 
-QString imageDataUrl(const QMimeData *mimeData)
+QString imageDataUrl(const QImage &image)
 {
-    if (!mimeData || !mimeData->hasImage()) return {};
-    const QImage image = qvariant_cast<QImage>(mimeData->imageData());
     if (image.isNull() || qint64(image.width()) * qint64(image.height()) > kMaxClipboardImagePixels) return {};
     QByteArray bytes;
     QBuffer buffer(&bytes);
@@ -87,7 +87,10 @@ ClipboardController::ClipboardController(ChangedHandler onChanged)
     auto *clipboard = QGuiApplication::clipboard();
     if (clipboard) {
         m_dataChangedConnection = QObject::connect(clipboard, &QClipboard::dataChanged, [this] {
-            if (m_onChanged) m_onChanged(snapshot());
+            ++m_sequence;
+            // Change notifications stay lightweight: PNG compression is deferred
+            // until a paste requests the current snapshot.
+            if (m_onChanged) m_onChanged(metadataSnapshot());
         });
     }
 }
@@ -107,21 +110,56 @@ QStringList ClipboardController::filePaths() const
     return paths;
 }
 
-QJsonObject ClipboardController::snapshot() const
+QJsonObject ClipboardController::metadataSnapshot() const
 {
     const auto *clipboard = QGuiApplication::clipboard();
     const auto *mimeData = clipboard ? clipboard->mimeData() : nullptr;
-    const QString html = boundedText(mimeData ? mimeData->html() : QString{});
-    const QString text = boundedText(clipboard ? clipboard->text(QClipboard::Clipboard) : QString{});
-    const QString image = imageDataUrl(mimeData);
     const QStringList paths = filePaths();
-
     QJsonArray jsonPaths;
     for (const QString &path : paths) jsonPaths.append(path);
     return QJsonObject{
-        {QStringLiteral("text"), text},
-        {QStringLiteral("html"), html},
-        {QStringLiteral("imageDataUrl"), image},
+        {QStringLiteral("text"), boundedText(clipboard ? clipboard->text(QClipboard::Clipboard) : QString{})},
+        {QStringLiteral("html"), boundedText(mimeData ? mimeData->html() : QString{})},
+        {QStringLiteral("imageDataUrl"), QString{}},
         {QStringLiteral("filePaths"), jsonPaths},
+        {QStringLiteral("hasImage"), mimeData && mimeData->hasImage()},
+        {QStringLiteral("sequence"), static_cast<qint64>(m_sequence)},
     };
+}
+
+QJsonObject ClipboardController::snapshot() const
+{
+    QJsonObject result = metadataSnapshot();
+    const auto *clipboard = QGuiApplication::clipboard();
+    const auto *mimeData = clipboard ? clipboard->mimeData() : nullptr;
+    const QImage image = mimeData && mimeData->hasImage()
+        ? qvariant_cast<QImage>(mimeData->imageData())
+        : QImage{};
+    result.insert(QStringLiteral("imageDataUrl"), imageDataUrl(image));
+    return result;
+}
+
+void ClipboardController::snapshotAsync(ChangedHandler onReady) const
+{
+    QJsonObject result = metadataSnapshot();
+    const auto *clipboard = QGuiApplication::clipboard();
+    const auto *mimeData = clipboard ? clipboard->mimeData() : nullptr;
+    const QImage image = mimeData && mimeData->hasImage()
+        ? qvariant_cast<QImage>(mimeData->imageData())
+        : QImage{};
+    if (image.isNull()) {
+        if (onReady) onReady(result);
+        return;
+    }
+
+    QThreadPool::globalInstance()->start(
+        [image, result = std::move(result), onReady = std::move(onReady)]() mutable {
+            const QString encoded = imageDataUrl(image);
+            QMetaObject::invokeMethod(QCoreApplication::instance(),
+                [result = std::move(result), encoded, onReady = std::move(onReady)]() mutable {
+                    result.insert(QStringLiteral("imageDataUrl"), encoded);
+                    if (onReady) onReady(result);
+                },
+                Qt::QueuedConnection);
+        });
 }

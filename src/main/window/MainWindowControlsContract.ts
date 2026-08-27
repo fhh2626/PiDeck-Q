@@ -1,3 +1,4 @@
+import type { WindowResizeEdge } from "../../shared/desktop/NativeHostTypes";
 import type { AppSettings } from "../../shared/types";
 
 export type WindowState = {
@@ -26,4 +27,5 @@ export interface MainWindowControls {
 	notifyTitleBarChange(settings: AppSettings): void;
 	toggleDevTools(): void;
 	beginWindowDrag?(): void;
+	beginWindowResize?(edge: WindowResizeEdge): void;
 }

@@ -12,6 +12,8 @@ public:
 
     static bool isSupported();
     static bool initialize();
+    static bool registerApplication(const QString &executablePath,
+                                    const QString &shortcutPath = {});
     static void uninitialize();
     static void show(const QString &id, const QString &title, const QString &body,
                      bool silent, const QString &activationUrl,

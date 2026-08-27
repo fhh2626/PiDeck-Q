@@ -53,6 +53,16 @@ test("updates and package metadata use the canonical PiDeck-Q repository", () =>
 	assert.match(windowsWorkflow, /fail_on_unmatched_files: true/);
 });
 
+test("portable native startup repairs Windows toast application registration", () => {
+	const notifier = readFileSync("native/src/WindowsToastNotifier.cpp", "utf8");
+	const startup = readFileSync("native/src/main.cpp", "utf8");
+	assert.match(notifier, /FOLDERID_Programs/);
+	assert.match(notifier, /PKEY_AppUserModel_ID/);
+	assert.match(notifier, /SetCurrentProcessExplicitAppUserModelID/);
+	assert.match(notifier, /PiDeck-Q\.lnk/);
+	assert.match(startup, /WindowsToastNotifier::registerApplication\(QCoreApplication::applicationFilePath\(\)\)/);
+});
+
 test("native Windows distribution keeps staging independent from NSIS", () => {
 	const dist = readFileSync("scripts/dist-win-native.mjs", "utf8");
 	assert.match(dist, /build:native/);

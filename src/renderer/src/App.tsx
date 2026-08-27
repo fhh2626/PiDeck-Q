@@ -27,6 +27,7 @@ import { showNotice } from "./utils/notice";
 import {
   desktopApi as api,
   isLanWeb,
+  isNativeRuntime,
   missingElectronPreload,
 } from "./desktopApi";
 import { contextControllerSettingsAtom, turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
@@ -3019,6 +3020,8 @@ export function App() {
       onWindowMaximizedChange={api.app.onWindowMaximizedChange}
       closeWindow={api.app.closeWindow}
       beginWindowDrag={api.app.beginWindowDrag}
+      beginWindowResize={api.app.beginWindowResize}
+      enableNativeResize={isNativeRuntime}
     >
 
     {fileMenu && (

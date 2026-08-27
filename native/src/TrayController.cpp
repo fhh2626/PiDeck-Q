@@ -47,6 +47,11 @@ void TrayController::setVisible(bool visible)
     m_tray.setVisible(visible);
 }
 
+bool TrayController::isAvailableAndVisible() const
+{
+    return QSystemTrayIcon::isSystemTrayAvailable() && m_tray.isVisible();
+}
+
 bool TrayController::showMessage(const QString &title, const QString &message,
                                   QSystemTrayIcon::MessageIcon icon, int millisecondsTimeoutHint)
 {

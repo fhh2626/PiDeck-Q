@@ -12,6 +12,7 @@
 #include <QMimeData>
 #include <QSize>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QUrl>
 #include <QThread>
 
@@ -19,6 +20,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -157,6 +159,10 @@ int main(int argc, char **argv)
                  "medium startup window preset was not preserved")) return 1;
     if (!require(startupWindowSize(QStringLiteral("normal-large")) == QSize(1480, 960),
                  "large startup window preset was not preserved")) return 1;
+    if (!require(minimumWindowSizeForAvailable(QSize(640, 480)) == QSize(640, 480),
+                 "window minimum exceeded a small available screen")) return 1;
+    if (!require(minimumWindowSizeForAvailable(QSize(1920, 1080)) == QSize(880, 640),
+                 "window minimum changed on a normal available screen")) return 1;
 
     const wchar_t clipboardPath[] = L"C:\\clipboard\\same.txt";
     if (!require(ClipboardController::decodeWindowsDropPath(
@@ -170,6 +176,12 @@ int main(int argc, char **argv)
     server.registerHandler(QStringLiteral("test.echo"), [](const QJsonObject &params) {
         return QJsonValue(params);
     });
+    server.registerAsyncHandler(QStringLiteral("test.async"), [](const QJsonObject &params,
+                                                                  HostRpcServer::AsyncResponder respond) {
+        QTimer::singleShot(1, [params, respond = std::move(respond)] {
+            respond(params, {});
+        });
+    });
     server.setEventHandler([](const QString &, const QJsonValue &) {});
 
     FrameClient active(server.port());
@@ -181,6 +193,16 @@ int main(int argc, char **argv)
         return value.value(QStringLiteral("type")).toString() == QStringLiteral("hello");
     }, &hello), "authenticated hello response missing")) return 1;
     if (!require(hello.value(QStringLiteral("ok")).toBool(), "valid token was rejected")) return 1;
+
+    active.send(QJsonObject{{QStringLiteral("type"), QStringLiteral("request")},
+                            {QStringLiteral("id"), QStringLiteral("async-response")},
+                            {QStringLiteral("method"), QStringLiteral("test.async")},
+                            {QStringLiteral("params"), QJsonObject{{QStringLiteral("value"), 7}}}});
+    if (!require(active.waitFor([](const QJsonObject &value) {
+        return value.value(QStringLiteral("type")).toString() == QStringLiteral("response")
+            && value.value(QStringLiteral("id")).toString() == QStringLiteral("async-response")
+            && value.value(QStringLiteral("result")).toObject().value(QStringLiteral("value")).toInt() == 7;
+    }, nullptr), "asynchronous host response was not delivered")) return 1;
 
     active.send(QJsonObject{{QStringLiteral("type"), QStringLiteral("request")},
                             {QStringLiteral("id"), QStringLiteral("before-attack")},
@@ -271,6 +293,16 @@ int main(int argc, char **argv)
     }, &replacementHello), "replacement hello response missing")) return 1;
     if (!require(replacementHello.value(QStringLiteral("ok")).toBool(), "valid replacement token was rejected")) return 1;
     if (!require(active.waitForDisconnected(), "old authenticated connection was not replaced")) return 1;
+
+    const QString backpressureChunk(256 * 1024, QLatin1Char('x'));
+    for (int index = 0; index < 64; ++index) {
+        server.sendEvent(QStringLiteral("test.backpressure"), QJsonObject{
+            {QStringLiteral("index"), index},
+            {QStringLiteral("chunk"), backpressureChunk},
+        });
+    }
+    if (!require(replacement.waitForDisconnected(),
+                 "host RPC peer that stopped reading exceeded the write budget without disconnecting")) return 1;
 
     return 0;
 }

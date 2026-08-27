@@ -53,6 +53,11 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	const token = query.get("token");
 	if (!token) throw new Error("Native runtime token is missing");
 	nativeRendererToken = token;
+	// Remove the credential before the first await so failed bootstrap/SSE work
+	// cannot leave it in browser history, diagnostics, or copied page URLs.
+	const sanitizedUrl = new URL(window.location.href);
+	sanitizedUrl.searchParams.delete("token");
+	window.history.replaceState(null, "", `${sanitizedUrl.pathname}${sanitizedUrl.search}${sanitizedUrl.hash}`);
 
 	const baseUrl = window.location.origin;
 	// Establish the snapshot boundary before opening SSE. The transport then asks
@@ -70,13 +75,12 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 		onResyncRequired: () => window.location.reload(),
 		initialEventSeq: bootstrap.eventSeq ?? 0,
 	});
-	await transport.ready();
-	// The token is only needed to complete bootstrap and to authorize protected
-	// background fetches. Remove it from location immediately so renderer logs,
-	// crash diagnostics, and browser history cannot persist the credential.
-	const sanitizedUrl = new URL(window.location.href);
-	sanitizedUrl.searchParams.delete("token");
-	window.history.replaceState(null, "", `${sanitizedUrl.pathname}${sanitizedUrl.search}${sanitizedUrl.hash}`);
+	try {
+		await transport.ready();
+	} catch (error) {
+		transport.dispose();
+		throw error;
+	}
 	const syncHost = new NativeDesktopSyncHost(bootstrap.clipboard);
 
 	transport.subscribe<Partial<NativeClipboardSnapshot>>("native.clipboard", (snapshot) => {

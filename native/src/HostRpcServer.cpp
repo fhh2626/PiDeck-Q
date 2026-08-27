@@ -4,12 +4,14 @@
 #include <QJsonDocument>
 #include <QRandomGenerator>
 #include <QDebug>
+#include <QPointer>
 #include <QTimer>
 
 #include <utility>
 
 namespace {
 constexpr quint32 kMaxFrameBytes = 32U * 1024U * 1024U;
+constexpr qint64 kMaxPendingWriteBytes = 8LL * 1024LL * 1024LL;
 constexpr int kHelloTimeoutMs = 5'000;
 constexpr int kMaxUnauthenticatedConnections = 16;
 
@@ -91,6 +93,11 @@ const QString &HostRpcServer::token() const
 void HostRpcServer::registerHandler(const QString &method, Handler handler)
 {
     m_handlers.insert(method, std::move(handler));
+}
+
+void HostRpcServer::registerAsyncHandler(const QString &method, AsyncHandler handler)
+{
+    m_asyncHandlers.insert(method, std::move(handler));
 }
 
 void HostRpcServer::setEventHandler(EventHandler handler)
@@ -218,13 +225,28 @@ void HostRpcServer::handleFrame(QTcpSocket *socket, const QByteArray &payload)
 
     const QString id = frame.value(QStringLiteral("id")).toString();
     const QString method = frame.value(QStringLiteral("method")).toString();
+    const QJsonValue rawParams = frame.value(QStringLiteral("params"));
+    const QJsonObject params = rawParams.isObject() ? rawParams.toObject() : QJsonObject{};
+    const auto asyncIterator = m_asyncHandlers.constFind(method);
+    if (asyncIterator != m_asyncHandlers.constEnd()) {
+        const QPointer<QTcpSocket> guardedSocket(socket);
+        try {
+            asyncIterator.value()(params, [this, guardedSocket, id](const QJsonValue &result, const QString &error) {
+                if (!guardedSocket || guardedSocket != m_activeSocket) return;
+                const auto connection = m_connections.constFind(guardedSocket);
+                if (connection == m_connections.constEnd() || !connection->authenticated) return;
+                sendResponse(guardedSocket, id, error.isEmpty(), result, error);
+            });
+        } catch (...) {
+            sendResponse(socket, id, false, QJsonValue(QJsonValue::Undefined), QStringLiteral("Native host handler failed"));
+        }
+        return;
+    }
     const auto iterator = m_handlers.constFind(method);
     if (iterator == m_handlers.constEnd()) {
         sendResponse(socket, id, false, QJsonValue(QJsonValue::Undefined), QStringLiteral("Unknown native host method: %1").arg(method));
         return;
     }
-    const QJsonValue rawParams = frame.value(QStringLiteral("params"));
-    const QJsonObject params = rawParams.isObject() ? rawParams.toObject() : QJsonObject{};
     try {
         sendResponse(socket, id, true, iterator.value()(params));
     } catch (...) {
@@ -252,7 +274,17 @@ bool HostRpcServer::writeFrame(QTcpSocket *socket, const QJsonObject &frame)
     packet[2] = char((length >> 16) & 0xff);
     packet[3] = char((length >> 24) & 0xff);
     packet.append(payload);
-    socket->write(packet);
+    if (socket->state() != QAbstractSocket::ConnectedState
+        || socket->bytesToWrite() + packet.size() > kMaxPendingWriteBytes) {
+        qWarning() << "Closing native host socket after write backpressure limit";
+        socket->disconnectFromHost();
+        return false;
+    }
+    const qint64 accepted = socket->write(packet);
+    if (accepted != packet.size()) {
+        socket->disconnectFromHost();
+        return false;
+    }
     return true;
 }
 

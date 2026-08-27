@@ -13,6 +13,7 @@
 #include <QElapsedTimer>
 #include <QColor>
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +24,7 @@
 #include <QStyleHints>
 #include <QTcpSocket>
 #include <QThread>
+#include <QTemporaryDir>
 #include <QUrl>
 
 #include <functional>
@@ -99,15 +101,25 @@ int main(int argc, char **argv)
                  "light native theme was not applied")) return 1;
     if (!require(QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light,
                  "light native color-scheme hint was not applied")) return 1;
+    QTemporaryDir toastShortcutDirectory;
+    if (!require(toastShortcutDirectory.isValid(), "toast shortcut temp directory was unavailable")) return 1;
+    const QString toastShortcutPath = toastShortcutDirectory.filePath(QStringLiteral("PiDeck-Q.lnk"));
     const bool firstToastInitialization = WindowsToastNotifier::initialize();
-    if (!require(WindowsToastNotifier::isSupported() == firstToastInitialization,
-                 "toast capability did not reflect initialization state")) return 1;
+    const bool firstToastRegistration = firstToastInitialization
+        && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath(), toastShortcutPath);
+    if (!require(WindowsToastNotifier::isSupported() == firstToastRegistration,
+                 "toast capability did not require application registration")) return 1;
+#ifdef Q_OS_WIN
+    if (!require(!firstToastRegistration || QFileInfo::exists(toastShortcutPath),
+                 "toast registration did not create the Start Menu shortcut")) return 1;
+#endif
     WindowsToastNotifier::uninitialize();
     const bool secondToastInitialization = WindowsToastNotifier::initialize();
-    if (!require(secondToastInitialization == firstToastInitialization,
-                 "toast apartment could not be initialized again after cleanup")) return 1;
+    const bool secondToastRegistration = secondToastInitialization
+        && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath(), toastShortcutPath);
+    if (!require(secondToastRegistration == firstToastRegistration,
+                 "toast application registration could not be repaired after cleanup")) return 1;
     WindowsToastNotifier::uninitialize();
-
     applyNativeThemeSource(QStringLiteral("system"));
     if (!require(QGuiApplication::styleHints()->colorScheme() == systemScheme,
                  "system native color-scheme hint did not unset the override")) return 1;
@@ -154,6 +166,10 @@ int main(int argc, char **argv)
         }},
     };
     MainWindow oversized(nullptr, oversizedBounds);
+    if (!require(oversized.windowFlags().testFlag(Qt::FramelessWindowHint),
+                 "custom titlebar window was not frameless")) return 1;
+    if (!require(!oversized.beginSystemResize(Qt::Edges{}),
+                 "empty resize edge was accepted")) return 1;
     if (!require(oversized.width() <= availableGeometry.width()
                      && oversized.height() <= availableGeometry.height(),
                  "normal window bounds exceeded the available screen")) return 1;
@@ -190,6 +206,34 @@ int main(int argc, char **argv)
     fixed.toggleAlwaysOnTop();
     processGuiEvents();
     if (!require(!fixed.isVisible(), "always-on-top toggle re-shown a hidden window")) return 1;
+
+    bool unavailableTrayQuitRequested = false;
+    MainWindow unavailableTrayWindow(nullptr, fixedBounds);
+    unavailableTrayWindow.setTrayAvailableHandler([] { return false; });
+    unavailableTrayWindow.setQuitHandler([&unavailableTrayQuitRequested] {
+        unavailableTrayQuitRequested = true;
+    });
+    unavailableTrayWindow.show();
+    processGuiEvents();
+    unavailableTrayWindow.close();
+    processGuiEvents();
+    if (!require(unavailableTrayQuitRequested && !unavailableTrayWindow.isVisible(),
+                 "close-to-tray did not quit when the tray was unavailable")) return 1;
+
+    bool availableTrayQuitRequested = false;
+    MainWindow availableTrayWindow(nullptr, fixedBounds);
+    availableTrayWindow.setTrayAvailableHandler([] { return true; });
+    availableTrayWindow.setQuitHandler([&availableTrayQuitRequested] {
+        availableTrayQuitRequested = true;
+    });
+    availableTrayWindow.show();
+    processGuiEvents();
+    availableTrayWindow.close();
+    processGuiEvents();
+    if (!require(!availableTrayQuitRequested && !availableTrayWindow.isVisible(),
+                 "close-to-tray did not hide when the tray was available")) return 1;
+    availableTrayWindow.setQuitting(true);
+    availableTrayWindow.close();
 
     fixed.show();
     fixed.showMaximized();
@@ -282,15 +326,31 @@ int main(int argc, char **argv)
                      "clipboard file path count limit was not applied")) return 1;
     }
 
-    ClipboardController imageClipboard;
+    QJsonObject lightweightImageChange;
+    ClipboardController imageClipboard([&lightweightImageChange](const QJsonObject &snapshot) {
+        lightweightImageChange = snapshot;
+    });
     if (auto *systemClipboard = QGuiApplication::clipboard()) {
         QImage image(32, 32, QImage::Format_ARGB32);
         image.fill(QColor("#2f855a"));
         systemClipboard->setImage(image);
         processGuiEvents();
-        const QString imageDataUrl = imageClipboard.snapshot().value(QStringLiteral("imageDataUrl")).toString();
+        if (!require(lightweightImageChange.value(QStringLiteral("hasImage")).toBool()
+                         && lightweightImageChange.value(QStringLiteral("imageDataUrl")).toString().isEmpty(),
+                     "clipboard change encoded the image on the GUI thread")) return 1;
+
+        QJsonObject asynchronousSnapshot;
+        imageClipboard.snapshotAsync([&asynchronousSnapshot](const QJsonObject &snapshot) {
+            asynchronousSnapshot = snapshot;
+        });
+        QElapsedTimer imageTimer;
+        imageTimer.start();
+        while (asynchronousSnapshot.isEmpty() && imageTimer.elapsed() < 3'000) {
+            processGuiEvents();
+        }
+        const QString imageDataUrl = asynchronousSnapshot.value(QStringLiteral("imageDataUrl")).toString();
         if (!require(imageDataUrl.startsWith(QStringLiteral("data:image/png;base64,")),
-                     "clipboard image snapshot was not encoded as PNG data")) return 1;
+                     "clipboard image snapshot was not encoded asynchronously as PNG data")) return 1;
     }
 
     return 0;

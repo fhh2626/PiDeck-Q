@@ -70,6 +70,36 @@ test("HostBridge settles a hello that never receives a response", { timeout: 8_0
 	}
 });
 
+test("HostBridge disconnects when a native host peer stops reading beyond the write budget", async () => {
+	const sockets = [];
+	const { server, port } = await listen((socket) => {
+		sockets.push(socket);
+		let buffer = Buffer.alloc(0);
+		const onData = (chunk) => {
+			buffer = Buffer.concat([buffer, chunk]);
+			if (buffer.length < 4) return;
+			const length = buffer.readUInt32LE(0);
+			if (buffer.length < length + 4) return;
+			const frame = JSON.parse(buffer.subarray(4, length + 4).toString("utf8"));
+			if (frame.type !== "hello") return;
+			sendFrame(socket, { type: "hello", ok: true });
+			socket.removeListener("data", onData);
+			socket.pause();
+		};
+		socket.on("data", onData);
+	});
+	try {
+		const bridge = await HostBridge.connect(port, "secret");
+		const chunk = "x".repeat(256 * 1024);
+		assert.throws(() => {
+			for (let index = 0; index < 64; index += 1) bridge.emit("test:backpressure", { chunk, index });
+		}, /backpressure limit exceeded/i);
+		bridge.close();
+	} finally {
+		await closeServer(server, sockets);
+	}
+});
+
 test("HostBridge completes the authenticated hello handshake", async () => {
 	const sockets = [];
 	const { server, port } = await listen((socket) => {

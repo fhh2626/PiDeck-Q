@@ -21,6 +21,7 @@ import {
 } from "../../hooks/useWorkspacePanels";
 import { cn } from "../../lib/utils";
 import { shouldCommitPanelPixels } from "../../lib/shellPanelLayout";
+import type { WindowResizeEdge } from "../../../../shared/desktop/NativeHostTypes";
 
 /**
  * 工作台外壳（#115 U5 布局换装）：三栏水平布局由 react-resizable-panels 接管。
@@ -87,6 +88,8 @@ export interface AppShellProps {
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
   beginWindowDrag: () => void;
+  beginWindowResize: (edge: WindowResizeEdge) => void;
+  enableNativeResize: boolean;
 
   children?: ReactNode;
 }
@@ -108,6 +111,7 @@ export function AppShell(props: AppShellProps) {
     onToggleListCollapsed,
     onDrawerCollapse, onDrawerClose, onDrawerRestore, onToggleDrawerPin,
     toggleAlwaysOnTop, minimizeWindow, toggleMaximizeWindow, isWindowMaximized, onWindowMaximizedChange, closeWindow, beginWindowDrag,
+    beginWindowResize, enableNativeResize,
     children,
   } = props;
 
@@ -305,6 +309,8 @@ export function AppShell(props: AppShellProps) {
         onWindowMaximizedChange={onWindowMaximizedChange}
         closeWindow={closeWindow}
         beginWindowDrag={beginWindowDrag}
+        beginWindowResize={beginWindowResize}
+        enableNativeResize={enableNativeResize}
       />
       <ResizablePanelGroup orientation="horizontal" className="shell-panel-group" elementRef={groupRef} onLayoutChanged={handleLayoutChanged}>
         <ResizablePanel

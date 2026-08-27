@@ -9,6 +9,10 @@ import type { AppLogger } from "../logging/AppLogger";
 import type { RpcRouter } from "../transport/RpcRouter";
 import type { PlatformDialogs, PlatformShell } from "../platform/PlatformServices";
 
+function hasNodeErrorCode(error: unknown, code: string): boolean {
+	return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
 export type FilesIpcDeps = {
 	fileSystemService: FileSystemService;
 	projectStore: ProjectStore;
@@ -198,9 +202,9 @@ export function registerFilesIpc(
 					const hostSource = toHostPath(src);
 					const name = basename(hostSource);
 					const dest = join(hostTargetDir, name);
-					// 递归复制目录/文件；同名已存在时跳过覆盖（errorOnExist: false 反而报错，
-					// 这里语义为「已存在则不重复复制」——与资源管理器粘贴行为一致）
-					await cp(hostSource, dest, { recursive: true, errorOnExist: false });
+					// 递归复制目录/文件；同名已存在时跳过覆盖。Node 的 force
+					// 默认为 true，必须显式关闭才能让 errorOnExist:false 生效。
+					await cp(hostSource, dest, { recursive: true, force: false, errorOnExist: false });
 					results.push(dest);
 					void appLogger.info("file", "File/folder copied", { src, dest });
 				} catch (error) {
@@ -225,7 +229,10 @@ export function registerFilesIpc(
 					// 同设备优先 rename（瞬时）；跨设备/跨盘 rename 会报 EXDEV，回退 cp + rm
 					try {
 						await fsRename(hostSource, dest);
-					} catch {
+					} catch (error) {
+						// 仅跨设备 rename 才允许 copy+remove。目标冲突、权限和
+						// sharing violation 必须原样失败，避免覆盖目标后删除源数据。
+						if (!hasNodeErrorCode(error, "EXDEV")) throw error;
 						await cp(hostSource, dest, { recursive: true });
 						await rm(hostSource, { recursive: true, force: true });
 					}

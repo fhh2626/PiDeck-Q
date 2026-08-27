@@ -119,6 +119,7 @@ function createDeps(overrides = {}) {
 		themeSetSource: [],
 		hideApplicationMenu: 0,
 		openExternalUrl: [],
+		beginWindowResize: [],
 	};
 	const toggleMaximizeResult = { value: true };
 	const toggleAlwaysOnTopResult = { value: true };
@@ -144,6 +145,7 @@ function createDeps(overrides = {}) {
 		toggleDevTools: () => {
 			calls.toggleDevTools += 1;
 		},
+		beginWindowResize: (edge) => calls.beginWindowResize.push(edge),
 	};
 
 	const platformTheme = {
@@ -268,6 +270,16 @@ test("systemIpc window minimize/close delegate to MainWindowControls", async () 
 	await invoke(ipcChannels.appWindowClose);
 	assert.equal(calls.minimize, 1);
 	assert.equal(calls.close, 1);
+});
+
+test("systemIpc validates window resize edges before delegating", async () => {
+	const { router, invoke } = createRouterHarness();
+	const { deps, calls } = createDeps();
+	registerSystemIpc(router, deps);
+
+	await invoke(ipcChannels.appBeginWindowResize, "bottom-right");
+	assert.deepEqual(calls.beginWindowResize, ["bottom-right"]);
+	assert.throws(() => invoke(ipcChannels.appBeginWindowResize, "center"), /Invalid window resize edge/);
 });
 
 test("systemIpc window toggle maximize returns the control result and reports maximized state", async () => {

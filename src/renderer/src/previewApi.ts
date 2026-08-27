@@ -161,6 +161,14 @@ export function createPreviewApi(): PiDesktopApi {
 		readText: () => "",
 		readHtml: () => "",
 		readImage: () => "",
+		readNativeSnapshot: async () => ({
+			text: "",
+			html: "",
+			imageDataUrl: "",
+			filePaths: [],
+			hasImage: false,
+			sequence: 0,
+		}),
 	};
 	const createTerminalTab = async (agentId: string, shell?: string, cwd?: string) => {
 		const shellName = shell ?? "powershell";
@@ -667,6 +675,7 @@ export function createPreviewApi(): PiDesktopApi {
 			toggleAlwaysOnTopWindow: async () => false,
 			closeWindow: async () => undefined,
 			beginWindowDrag: async () => undefined,
+			beginWindowResize: async () => undefined,
 			toggleDevTools: async () => false,
 		},
 		skills: {

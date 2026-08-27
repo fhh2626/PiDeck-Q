@@ -1,6 +1,7 @@
 import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { RpcRouter } from "../transport/RpcRouter";
 import { ipcChannels } from "../../shared/ipc";
+import type { WindowResizeEdge } from "../../shared/desktop/NativeHostTypes";
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
 import type {
 	AppLogLevel,
@@ -39,6 +40,12 @@ import type {
 	PlatformShell,
 	PlatformTheme,
 } from "../platform/PlatformServices";
+
+function isWindowResizeEdge(value: unknown): value is WindowResizeEdge {
+	return value === "top" || value === "bottom" || value === "left" || value === "right"
+		|| value === "top-left" || value === "top-right"
+		|| value === "bottom-left" || value === "bottom-right";
+}
 
 /**
  * IPC 边界校验：RPC 日志条目必须字段齐全，防止渲染层传伪造对象写盘。
@@ -619,6 +626,10 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	});
 	router.handle(ipcChannels.appBeginWindowDrag, () => {
 		mainWindowControls.beginWindowDrag?.();
+	});
+	router.handle(ipcChannels.appBeginWindowResize, (edge: unknown) => {
+		if (!isWindowResizeEdge(edge)) throw new Error("Invalid window resize edge");
+		mainWindowControls.beginWindowResize?.(edge);
 	});
 
 	// ── 设置 ─────────────────────────────────────────────────────────

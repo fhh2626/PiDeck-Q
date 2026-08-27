@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Pin, Minus, Square, X } from "lucide-react";
+import type { WindowResizeEdge } from "../../../shared/desktop/NativeHostTypes";
 import { t } from "../i18n";
 
 type Props = {
@@ -14,7 +15,23 @@ type Props = {
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
   beginWindowDrag: () => void;
+  beginWindowResize: (edge: WindowResizeEdge) => void;
+  enableNativeResize: boolean;
 };
+
+const RESIZE_HANDLES: ReadonlyArray<{
+  edge: WindowResizeEdge;
+  className: string;
+}> = [
+  { edge: "top", className: "fixed inset-x-2 top-0 h-1.5 cursor-n-resize" },
+  { edge: "bottom", className: "fixed inset-x-2 bottom-0 h-1.5 cursor-s-resize" },
+  { edge: "left", className: "fixed inset-y-2 left-0 w-1.5 cursor-w-resize" },
+  { edge: "right", className: "fixed inset-y-2 right-0 w-1.5 cursor-e-resize" },
+  { edge: "top-left", className: "fixed left-0 top-0 h-2 w-2 cursor-nw-resize" },
+  { edge: "top-right", className: "fixed right-0 top-0 h-2 w-2 cursor-ne-resize" },
+  { edge: "bottom-left", className: "fixed bottom-0 left-0 h-2 w-2 cursor-sw-resize" },
+  { edge: "bottom-right", className: "fixed bottom-0 right-0 h-2 w-2 cursor-se-resize" },
+];
 
 /** Windows 风格「还原」图标：前后错位的两个方框（最大化态显示）。 */
 function RestoreIcon() {
@@ -36,6 +53,8 @@ export function AppHeader({
   onWindowMaximizedChange,
   closeWindow,
   beginWindowDrag,
+  beginWindowResize,
+  enableNativeResize,
 }: Props) {
   const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -62,6 +81,18 @@ export function AppHeader({
 
   return (
     <>
+      {enableNativeResize && !maximized ? RESIZE_HANDLES.map((handle) => (
+        <div
+          key={handle.edge}
+          aria-hidden="true"
+          className={`${handle.className} z-[1000]`}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            beginWindowResize(handle.edge);
+          }}
+        />
+      )) : null}
       <div
         className="window-drag-layer"
         aria-hidden="true"

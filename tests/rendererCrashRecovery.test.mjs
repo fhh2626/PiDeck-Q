@@ -63,10 +63,13 @@ test("recoveries outside the window do not count toward the limit", () => {
   assert.equal(guard.shouldAutoReload("crashed"), true);
 });
 
-test("native sidecar wires heartbeat timeout to host reload", () => {
+test("native sidecar reloads only after three missed heartbeat windows", () => {
   const source = readFileSync("src/native-node/index.ts", "utf8");
+  const watchdog = readFileSync("src/native-node/transport/nativeHeartbeatWatchdog.ts", "utf8");
   assert.match(source, /lastHeartbeatAt/);
   assert.match(source, /window\.reload/);
-  assert.match(source, /15_000/);
+  assert.match(source, /shouldReloadAfterMissedHeartbeats/);
   assert.match(source, /reloadInFlight/);
+  assert.match(watchdog, /DEFAULT_HEARTBEAT_WINDOW_MS = 15_000/);
+  assert.match(watchdog, /DEFAULT_MISSED_WINDOWS_BEFORE_RELOAD = 3/);
 });

@@ -177,6 +177,11 @@ void MainWindow::setQuitHandler(std::function<void()> handler)
     m_quitHandler = std::move(handler);
 }
 
+void MainWindow::setTrayAvailableHandler(std::function<bool()> handler)
+{
+    m_trayAvailableHandler = std::move(handler);
+}
+
 void MainWindow::applySettings(const QJsonObject &settings)
 {
     if (settings.contains(QStringLiteral("closeToTray"))) {
@@ -200,6 +205,13 @@ void MainWindow::applySettings(const QJsonObject &settings)
 void MainWindow::beginSystemMove()
 {
     if (auto *handle = windowHandle()) handle->startSystemMove();
+}
+
+bool MainWindow::beginSystemResize(Qt::Edges edges)
+{
+    if (edges == Qt::Edges{} || isMaximized() || isFullScreen()) return false;
+    if (auto *handle = windowHandle()) return handle->startSystemResize(edges);
+    return false;
 }
 
 void MainWindow::showLoadError(const QString &url, const QString &error)
@@ -247,7 +259,9 @@ void MainWindow::toggleDevTools()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (!m_quitting && m_closeToTray) {
+    // Hiding is safe only when an actually visible tray icon can restore the
+    // window. Otherwise accept the close so the process cannot become headless.
+    if (!m_quitting && m_closeToTray && m_trayAvailableHandler && m_trayAvailableHandler()) {
         event->ignore();
         hide();
         return;
@@ -359,6 +373,9 @@ void MainWindow::clampNormalGeometry()
     const QRect available = screen->availableGeometry();
     if (!available.isValid()) return;
 
+    // A hard 880×640 minimum defeats clamping on high-DPI, RDP, VM, or small
+    // displays. Lower it only as far as this screen's available work area.
+    setMinimumSize(minimumWindowSizeForAvailable(available.size()));
     QRect bounded = geometry();
     bounded.setWidth(qMin(bounded.width(), available.width()));
     bounded.setHeight(qMin(bounded.height(), available.height()));

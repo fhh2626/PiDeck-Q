@@ -19,6 +19,10 @@ const xmake = readFileSync("xmake.lua", "utf8");
 test("native renderer token is removed from history and renderer logs", () => {
 	assert.match(rendererBootstrap, /history\.replaceState/);
 	assert.match(rendererBootstrap, /searchParams\.delete\("token"\)/);
+	assert.ok(
+		rendererBootstrap.indexOf('searchParams.delete("token")') < rendererBootstrap.indexOf("await fetch(bootstrapUrl"),
+		"native token must leave the URL before the first bootstrap await",
+	);
 	assert.match(rendererMain, /redactRendererUrl/);
 	assert.doesNotMatch(rendererMain, /url: window\.location\.href/);
 });
@@ -55,6 +59,16 @@ test("portable startup explains a missing WebView2 runtime", () => {
 	assert.match(mainSource, /F3017226-FE2A-4295-8BDF-00C3A9A7E4C5/);
 	assert.match(mainSource, /developer\.microsoft\.com\/microsoft-edge\/webview2/);
 	assert.match(mainSource, /showMissingWebView2Message/);
+});
+
+test("frameless native windows expose all renderer resize edges and Qt system resize", () => {
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
+	assert.match(mainWindow, /startSystemResize\(edges\)/);
+	for (const edge of ["top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]) {
+		assert.match(header, new RegExp(`edge: "${edge}"`));
+	}
+	assert.match(header, /enableNativeResize && !maximized/);
 });
 
 test("native startup presets and window flags are handled by production helpers", () => {

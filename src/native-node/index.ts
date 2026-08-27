@@ -12,6 +12,7 @@ import { NativeBackendHost } from "./host/NativeBackendHost";
 import { createNativePlatformServices } from "./platform/createNativePlatformServices";
 import { NativeRendererServer } from "./transport/NativeRendererServer";
 import type { NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/desktop/NativeHostTypes";
+import { ipcChannels } from "../shared/ipc";
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
 import { resolveSecondaryFocusSessionId } from "./focusRequest";
 import { nextLoadFailureAction } from "./loadFailureRecovery";
@@ -19,6 +20,7 @@ import {
 	advanceNativeHeartbeatRecovery,
 	createNativeHeartbeatRecoveryState,
 } from "./transport/nativeHeartbeatRecovery";
+import { shouldReloadAfterMissedHeartbeats } from "./transport/nativeHeartbeatWatchdog";
 
 const port = Number(process.env.PIDECK_HOST_PORT);
 const token = process.env.PIDECK_HOST_TOKEN?.trim();
@@ -127,6 +129,9 @@ async function main(): Promise<void> {
 	}
 
 	const router = new NativeRpcRouter();
+	router.handle(ipcChannels.nativeClipboardSnapshot, () =>
+		host.request<NativeClipboardSnapshot>("clipboard.snapshot"),
+	);
 	const platform = createNativePlatformServices(host);
 	const rendererRoot = process.env.PIDECK_RENDERER_ROOT ?? join(__dirname, "../renderer");
 	const backgroundDirectory = resolveBackgroundsDir(platform.paths.userData);
@@ -323,7 +328,7 @@ async function main(): Promise<void> {
 	// Renderer heartbeats preserve Electron's crash-recovery behavior without CDP.
 	heartbeatTimer = setInterval(() => {
 		if (!nativeHost?.shouldWatchRendererHeartbeat()) return;
-		if (Date.now() - lastHeartbeatAt <= 15_000 || reloadInFlight) return;
+		if (!shouldReloadAfterMissedHeartbeats(Date.now() - lastHeartbeatAt) || reloadInFlight) return;
 		reloadInFlight = true;
 		void host.request("window.reload")
 			.catch(() => undefined)

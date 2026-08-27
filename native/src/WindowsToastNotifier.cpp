@@ -2,18 +2,35 @@
 
 #ifdef Q_OS_WIN
 #include <mutex>
-#include <string>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <propkey.h>
+#include <propvarutil.h>
+#include <shlobj.h>
+#include <shobjidl.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Data.Xml.Dom.h>
 #include <winrt/Windows.UI.Notifications.h>
+
+#include <QDir>
+#include <QFileInfo>
 #endif
 
 namespace {
 #ifdef Q_OS_WIN
 std::mutex apartmentMutex;
 bool apartmentInitialized = false;
+bool applicationRegistered = false;
+
+QString appUserModelId()
+{
+    return qEnvironmentVariable("PIDECK_APP_USER_MODEL_ID", QStringLiteral("com.ayuayue.pi-desktop"));
+}
 #endif
 
 QString escapeXml(const QString &value)
@@ -30,7 +47,7 @@ bool WindowsToastNotifier::isSupported()
 {
 #ifdef Q_OS_WIN
     std::lock_guard lock(apartmentMutex);
-    return apartmentInitialized;
+    return apartmentInitialized && applicationRegistered;
 #else
     return false;
 #endif
@@ -53,6 +70,74 @@ bool WindowsToastNotifier::initialize()
 #endif
 }
 
+bool WindowsToastNotifier::registerApplication(const QString &executablePath,
+                                                const QString &shortcutPath)
+{
+#ifdef Q_OS_WIN
+    if (!initialize() || executablePath.trimmed().isEmpty()) return false;
+    const QString appId = appUserModelId();
+    if (appId.isEmpty() || appId.size() > 128) return false;
+
+    QString resolvedShortcut = shortcutPath;
+    if (resolvedShortcut.isEmpty()) {
+        PWSTR programsPath = nullptr;
+        if (FAILED(SHGetKnownFolderPath(FOLDERID_Programs, KF_FLAG_CREATE, nullptr, &programsPath))) {
+            return false;
+        }
+        resolvedShortcut = QDir(QString::fromWCharArray(programsPath))
+            .filePath(QStringLiteral("PiDeck-Q.lnk"));
+        CoTaskMemFree(programsPath);
+    }
+    if (!QDir().mkpath(QFileInfo(resolvedShortcut).absolutePath())) return false;
+
+    IShellLinkW *shellLink = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_IShellLinkW, reinterpret_cast<void **>(&shellLink));
+    if (SUCCEEDED(result)) {
+        const QString executable = QDir::toNativeSeparators(
+            QFileInfo(executablePath).absoluteFilePath());
+        result = shellLink->SetPath(reinterpret_cast<LPCWSTR>(executable.utf16()));
+    }
+
+    IPropertyStore *propertyStore = nullptr;
+    if (SUCCEEDED(result)) result = shellLink->QueryInterface(
+        IID_IPropertyStore, reinterpret_cast<void **>(&propertyStore));
+    PROPVARIANT appIdValue;
+    PropVariantInit(&appIdValue);
+    if (SUCCEEDED(result)) {
+        result = InitPropVariantFromString(
+            reinterpret_cast<LPCWSTR>(appId.utf16()), &appIdValue);
+        if (SUCCEEDED(result)) result = propertyStore->SetValue(PKEY_AppUserModel_ID, appIdValue);
+        if (SUCCEEDED(result)) result = propertyStore->Commit();
+    }
+    PropVariantClear(&appIdValue);
+    if (propertyStore) propertyStore->Release();
+
+    IPersistFile *persistFile = nullptr;
+    if (SUCCEEDED(result)) result = shellLink->QueryInterface(
+        IID_IPersistFile, reinterpret_cast<void **>(&persistFile));
+    if (SUCCEEDED(result)) {
+        const QString shortcut = QDir::toNativeSeparators(resolvedShortcut);
+        result = persistFile->Save(reinterpret_cast<LPCWSTR>(shortcut.utf16()), TRUE);
+    }
+    if (persistFile) persistFile->Release();
+    if (shellLink) shellLink->Release();
+    if (FAILED(result)) return false;
+
+    const bool registered = SUCCEEDED(SetCurrentProcessExplicitAppUserModelID(
+        reinterpret_cast<LPCWSTR>(appId.utf16())));
+    {
+        std::lock_guard lock(apartmentMutex);
+        applicationRegistered = registered;
+    }
+    return registered;
+#else
+    Q_UNUSED(executablePath);
+    Q_UNUSED(shortcutPath);
+    return false;
+#endif
+}
+
 void WindowsToastNotifier::uninitialize()
 {
 #ifdef Q_OS_WIN
@@ -60,6 +145,7 @@ void WindowsToastNotifier::uninitialize()
     if (apartmentInitialized) {
         winrt::uninit_apartment();
         apartmentInitialized = false;
+        applicationRegistered = false;
     }
 #endif
 }
@@ -85,7 +171,9 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
             .arg(escapeXml(launch), escapeXml(title), escapeXml(body), audio);
 
         winrt::Windows::Data::Xml::Dom::XmlDocument document;
-        document.LoadXml(xml.toStdWString());
+        document.LoadXml(winrt::hstring(
+            reinterpret_cast<const wchar_t *>(xml.utf16()),
+            static_cast<uint32_t>(xml.size())));
         winrt::Windows::UI::Notifications::ToastNotification notification(document);
         // Keep copies for the asynchronous WinRT event and the synchronous
         // exception path. Moving the failure callback into Failed() would leave
@@ -102,15 +190,16 @@ void WindowsToastNotifier::show(const QString &id, const QString &title, const Q
         notification.Failed([failureHandler](auto const &, auto const &) {
             if (failureHandler) failureHandler(QStringLiteral("Windows toast failed"));
         });
-        const QString appUserModelId = qEnvironmentVariable(
-            "PIDECK_APP_USER_MODEL_ID", QStringLiteral("com.ayuayue.pi-desktop"));
-        const std::wstring appUserModelIdWide = appUserModelId.toStdWString();
+        const QString appId = appUserModelId();
         const auto notifier = winrt::Windows::UI::Notifications::ToastNotificationManager::CreateToastNotifier(
-            appUserModelIdWide.c_str());
+            winrt::hstring(reinterpret_cast<const wchar_t *>(appId.utf16()),
+                           static_cast<uint32_t>(appId.size())));
         notifier.Show(notification);
         Q_UNUSED(id);
     } catch (const winrt::hresult_error &error) {
-        if (onFailed) onFailed(QString::fromStdWString(error.message().c_str()));
+        const winrt::hstring message = error.message();
+        if (onFailed) onFailed(QString::fromWCharArray(
+            message.c_str(), static_cast<qsizetype>(message.size())));
     }
 #else
     Q_UNUSED(id);

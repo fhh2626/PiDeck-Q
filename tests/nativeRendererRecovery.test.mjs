@@ -130,7 +130,7 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 					readLastWindowBounds: () => null,
 					saveLastWindowBounds: () => undefined,
 				},
-				"../main/transport/NativeRpcRouter": { NativeRpcRouter: class {} },
+				"../main/transport/NativeRpcRouter": { NativeRpcRouter: class { handle() {} } },
 				"./host/HostBridge": { HostBridge: FakeHostBridge },
 				"./host/NativeBackendHost": { NativeBackendHost: FakeNativeBackendHost },
 				"./platform/createNativePlatformServices": {
@@ -141,6 +141,9 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 				"./focusRequest": { resolveSecondaryFocusSessionId: () => null },
 				"./loadFailureRecovery": {
 					nextLoadFailureAction: () => ({ kind: "showError", delayMs: 0 }),
+				},
+				"./transport/nativeHeartbeatWatchdog": {
+					shouldReloadAfterMissedHeartbeats: () => false,
 				},
 				"./transport/nativeHeartbeatRecovery": {
 					createNativeHeartbeatRecoveryState: () => ({}),

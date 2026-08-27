@@ -1,4 +1,5 @@
 import { ipcChannels } from "../../shared/ipc";
+import type { WindowResizeEdge } from "../../shared/desktop/NativeHostTypes";
 import type { AppSettings } from "../../shared/types";
 import type { MainWindowControls, WindowState } from "../../main/window/MainWindowControlsContract";
 import type { HostBridge } from "./HostBridge";
@@ -121,5 +122,9 @@ export class NativeMainWindowControls implements MainWindowControls {
 
 	beginWindowDrag(): void {
 		void this.host.request("window.beginSystemMove").catch(() => undefined);
+	}
+
+	beginWindowResize(edge: WindowResizeEdge): void {
+		void this.host.request("window.beginSystemResize", { edge }).catch(() => undefined);
 	}
 }

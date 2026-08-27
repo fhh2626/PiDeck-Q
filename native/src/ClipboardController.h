@@ -14,10 +14,13 @@ public:
     ~ClipboardController();
 
     QJsonObject snapshot() const;
+    QJsonObject metadataSnapshot() const;
+    void snapshotAsync(ChangedHandler onReady) const;
     QStringList filePaths() const;
     static QString decodeWindowsDropPath(const wchar_t *value, int length);
 
 private:
     ChangedHandler m_onChanged;
     QMetaObject::Connection m_dataChangedConnection;
+    quint64 m_sequence = 0;
 };

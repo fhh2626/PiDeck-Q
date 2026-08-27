@@ -85,6 +85,7 @@ import type {
 	WebNetworkAddress,
 } from "../types";
 import type { DesktopRpcTransport, DesktopSyncHost } from "./DesktopRpcTransport";
+import type { NativeClipboardSnapshot, WindowResizeEdge } from "./NativeHostTypes";
 
 /**
  * Shared PiDesktopApi factory. Electron preload and the native renderer use this
@@ -107,6 +108,9 @@ const api = {
 			const image = syncHost.readClipboardImage();
 			return image;
 		},
+		/** Native runtime only: read the current OS clipboard without relying on the SSE cache. */
+		readNativeSnapshot: () =>
+			transport.invoke(ipcChannels.nativeClipboardSnapshot) as Promise<NativeClipboardSnapshot>,
 	},
 	editors: {
 		list: () => transport.invoke(ipcChannels.editorsList) as Promise<ExternalEditor[]>,
@@ -829,6 +833,8 @@ const api = {
 			transport.invoke(ipcChannels.appWindowClose) as Promise<void>,
 		beginWindowDrag: () =>
 			transport.invoke(ipcChannels.appBeginWindowDrag) as Promise<void>,
+		beginWindowResize: (edge: WindowResizeEdge) =>
+			transport.invoke(ipcChannels.appBeginWindowResize, edge) as Promise<void>,
 		toggleDevTools: () =>
 			transport.invoke(ipcChannels.appToggleDevTools) as Promise<boolean>,
 	},

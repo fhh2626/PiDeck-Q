@@ -3,6 +3,7 @@ import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
 import { ipcChannels } from "../../../shared/ipc";
 
 const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
+const NATIVE_EVENT_CHANNEL_READY_TIMEOUT_MS = 8_000;
 const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;
 const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.projectsList,
@@ -35,8 +36,8 @@ interface NativeRpcResponse<T> {
 }
 
 interface NativeEventFrame {
-	channel?: string;
-	args?: unknown[];
+	channel: string;
+	args: unknown[];
 }
 
 export interface NativeHeartbeatState {
@@ -58,7 +59,26 @@ type NativeDesktopTransportOptions = {
 	onResyncRequired?: (payload: unknown) => void;
 	/** Bootstrap supplies the snapshot boundary before the first SSE connection. */
 	initialEventSeq?: number;
+	/** Test override; production uses the bounded 8 second startup deadline. */
+	readyTimeoutMs?: number;
 };
+
+function isNativeEventFrame(value: unknown): value is NativeEventFrame {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	return "channel" in value && typeof value.channel === "string"
+		&& "args" in value && Array.isArray(value.args);
+}
+
+function nativeEventChannelReady(value: unknown): NativeEventChannelReady {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+	return {
+		eventSeq: "eventSeq" in value && typeof value.eventSeq === "number" ? value.eventSeq : undefined,
+		eventSourceGeneration:
+			"eventSourceGeneration" in value && typeof value.eventSourceGeneration === "string"
+				? value.eventSourceGeneration
+				: undefined,
+	};
+}
 
 /** HTTP + replayable SSE transport used by the React page hosted by the native sidecar. */
 export class NativeDesktopTransport implements DesktopRpcTransport {
@@ -66,6 +86,10 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	private eventSource: EventSource | null = null;
 	private readonly readyPromise: Promise<void>;
 	private resolveReady!: () => void;
+	private rejectReady!: (error: Error) => void;
+	private readySettled = false;
+	private readyTimer: ReturnType<typeof setTimeout> | null = null;
+	private eventSourceErrored = false;
 	private readonly queuedEvents: QueuedEvent[] = [];
 	private activated = false;
 	private disposed = false;
@@ -80,9 +104,22 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		private readonly token: string,
 		private readonly options: NativeDesktopTransportOptions = {},
 	) {
-		this.readyPromise = new Promise<void>((resolve) => {
+		this.readyPromise = new Promise<void>((resolve, reject) => {
 			this.resolveReady = resolve;
+			this.rejectReady = reject;
 		});
+		this.readyTimer = setTimeout(() => {
+			if (this.readySettled) return;
+			this.readySettled = true;
+			this.readyTimer = null;
+			this.eventSource?.close();
+			this.eventSource = null;
+			this.rejectReady(new Error(
+				this.eventSourceErrored
+					? "Native event channel failed before becoming ready"
+					: "Native event channel timed out before becoming ready",
+			));
+		}, options.readyTimeoutMs ?? NATIVE_EVENT_CHANNEL_READY_TIMEOUT_MS);
 		if (options.initialEventSeq !== undefined) {
 			this.lastEventSeq = options.initialEventSeq;
 			this.hasEventCursor = true;
@@ -101,11 +138,38 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		const eventSource = new EventSource(eventsUrl);
 		this.eventSource = eventSource;
 		eventSource.onmessage = (event) => this.handleEvent(event);
+		eventSource.onerror = () => {
+			// EventSource performs its own retry. Record the failure so the bounded
+			// startup deadline rejects with a diagnostic instead of hanging forever.
+			if (!this.readySettled) this.eventSourceErrored = true;
+		};
 	}
 
 	private handleEvent(event: MessageEvent<string>): void {
 		const parsedSeq = Number(event.lastEventId);
 		const seq = Number.isInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : this.lastEventSeq;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(event.data);
+		} catch {
+			return;
+		}
+		if (!isNativeEventFrame(parsed)) return;
+		const frame = parsed;
+		if (frame.channel === "native.eventChannelReady") {
+			const payload = nativeEventChannelReady(frame.args[0]);
+			if (typeof payload.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
+			const readySeq = typeof payload.eventSeq === "number" ? Math.max(seq, payload.eventSeq) : seq;
+			this.commitEventSeq(readySeq);
+			this.settleReady();
+			return;
+		}
+		if (!this.activated) this.queuedEvents.push({ seq, frame });
+		else this.dispatch(frame);
+		this.commitEventSeq(seq);
+	}
+
+	private commitEventSeq(seq: number): void {
 		this.hasEventCursor = true;
 		this.lastEventSeq = Math.max(this.lastEventSeq, seq);
 		if (
@@ -114,34 +178,14 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		) {
 			this.cancelHeartbeatRecovery();
 		}
-		let frame: NativeEventFrame;
-		try {
-			frame = JSON.parse(event.data) as NativeEventFrame;
-		} catch {
-			return;
-		}
-		if (frame.channel === "native.eventChannelReady") {
-			const payload = frame.args?.[0] as NativeEventChannelReady | undefined;
-			if (typeof payload?.eventSeq === "number") {
-				this.hasEventCursor = true;
-				this.lastEventSeq = Math.max(this.lastEventSeq, payload.eventSeq);
-				if (
-					this.heartbeatRecoveryExpectedSeq !== null &&
-					this.lastEventSeq >= this.heartbeatRecoveryExpectedSeq
-				) {
-					this.cancelHeartbeatRecovery();
-				}
-			}
-			if (typeof payload?.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
-			this.resolveReady();
-			return;
-		}
-		if (typeof frame.channel !== "string" || !Array.isArray(frame.args)) return;
-		if (!this.activated) {
-			this.queuedEvents.push({ seq, frame });
-			return;
-		}
-		this.dispatch(frame);
+	}
+
+	private settleReady(): void {
+		if (this.readySettled) return;
+		this.readySettled = true;
+		if (this.readyTimer !== null) clearTimeout(this.readyTimer);
+		this.readyTimer = null;
+		this.resolveReady();
 	}
 
 	private dispatch(frame: NativeEventFrame): void {
@@ -293,6 +337,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		if (!this.readySettled) this.settleReady();
 		this.cancelHeartbeatRecovery();
 		this.eventSource?.close();
 		this.eventSource = null;

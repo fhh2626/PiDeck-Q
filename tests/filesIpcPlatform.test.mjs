@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import ts from "typescript";
 import vm from "node:vm";
 
@@ -178,6 +180,73 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 	assert.ok(openAuth, "authorization must run before openPath");
 	assert.equal(openAuth.target, "C:\\project\\file.txt");
 	assert.deepEqual(openedPaths, ["C:/project/file.txt"]);
+});
+
+test("Files IPC: copy skips an existing destination instead of overwriting it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-copy-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		writeFileSync(source, "source-content");
+		writeFileSync(destination, "existing-content");
+
+		const authorization = createAuthorizationStub();
+		const { registerFilesIpc } = loadFilesIpc(authorization);
+		const router = createFakeRouter();
+		registerFilesIpc(router, {
+			fileSystemService: {},
+			projectStore: { get: () => ({ path: root }) },
+			settingsStore: { get: () => ({ wslEnabled: false }) },
+			appLogger: { info: () => {}, error: () => {} },
+			dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+			platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+			getAuthorizedRoots: () => [root],
+		});
+
+		await router.invoke(ipcChannels.filesCopy, [source], targetDir);
+		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: move does not copy and delete after a non-EXDEV rename failure", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-"));
+	try {
+		const sourceParent = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceParent, "same-folder");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(source, { recursive: true });
+		mkdirSync(destination, { recursive: true });
+		writeFileSync(join(source, "source-only.txt"), "source");
+		writeFileSync(join(destination, "target-only.txt"), "target");
+
+		const authorization = createAuthorizationStub();
+		const { registerFilesIpc } = loadFilesIpc(authorization);
+		const router = createFakeRouter();
+		registerFilesIpc(router, {
+			fileSystemService: {},
+			projectStore: { get: () => ({ path: root }) },
+			settingsStore: { get: () => ({ wslEnabled: false }) },
+			appLogger: { info: () => {}, error: () => {} },
+			dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+			platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+			getAuthorizedRoots: () => [root],
+		});
+
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir));
+		assert.equal(existsSync(source), true, "source must remain after a non-EXDEV failure");
+		assert.equal(existsSync(join(destination, "target-only.txt")), true);
+		assert.equal(existsSync(join(destination, "source-only.txt")), false, "destination must not be merged or overwritten");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("Files IPC: unauthorized paths are rejected before any shell side effect", async () => {

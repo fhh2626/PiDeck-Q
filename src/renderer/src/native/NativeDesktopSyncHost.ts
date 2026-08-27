@@ -17,6 +17,8 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 			html: snapshot?.html ?? "",
 			imageDataUrl: snapshot?.imageDataUrl ?? "",
 			filePaths: snapshot?.filePaths ?? [],
+			hasImage: snapshot?.hasImage ?? Boolean(snapshot?.imageDataUrl),
+			sequence: snapshot?.sequence ?? 0,
 		};
 	}
 

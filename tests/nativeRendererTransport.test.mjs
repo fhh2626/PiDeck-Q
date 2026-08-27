@@ -20,10 +20,10 @@ class FakeEventSource {
 		this.closed = true;
 	}
 	emit(channel, seq, args = []) {
-		this.onmessage?.({
-			lastEventId: String(seq),
-			data: JSON.stringify({ channel, args }),
-		});
+		this.emitRaw(seq, JSON.stringify({ channel, args }));
+	}
+	emitRaw(seq, data) {
+		this.onmessage?.({ lastEventId: String(seq), data });
 	}
 }
 
@@ -224,6 +224,46 @@ test("NativeRendererServer preserves every queued frame when drain blocks again"
 		server.clients.delete(client);
 		await server.stop();
 		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeDesktopTransport rejects startup after an errored event channel misses its deadline", async () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		readyTimeoutMs: 20,
+	});
+	const ready = transport.ready();
+	FakeEventSource.instances[0].onerror?.(new Error("connection refused"));
+	try {
+		await assert.rejects(ready, /failed before becoming ready/i);
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("NativeDesktopTransport rejects startup when no ready event arrives", async () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		readyTimeoutMs: 20,
+	});
+	try {
+		await assert.rejects(transport.ready(), /timed out before becoming ready/i);
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("NativeDesktopTransport does not advance replay cursor for malformed JSON", () => {
+	FakeEventSource.instances.length = 0;
+	const transport = new NativeDesktopTransport("http://127.0.0.1:43123/", "secret-token", {
+		initialEventSeq: 10,
+	});
+	try {
+		FakeEventSource.instances[0].emitRaw(11, "{malformed");
+		transport.reconnect();
+		assert.equal(new URL(FakeEventSource.instances[1].url).searchParams.get("lastEventId"), "10");
+	} finally {
+		transport.dispose();
 	}
 });
 

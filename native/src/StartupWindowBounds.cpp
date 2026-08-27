@@ -2,6 +2,14 @@
 
 namespace {
 constexpr QSize kLargeWindowSize(1480, 960);
+constexpr QSize kMinimumWindowSize(880, 640);
+}
+
+QSize minimumWindowSizeForAvailable(const QSize &availableSize)
+{
+    return QSize(
+        qMax(1, qMin(kMinimumWindowSize.width(), availableSize.width())),
+        qMax(1, qMin(kMinimumWindowSize.height(), availableSize.height())));
 }
 
 QSize startupWindowSize(const QString &mode)

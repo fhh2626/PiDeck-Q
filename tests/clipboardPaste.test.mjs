@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { shouldRequestNativeClipboardSnapshot } from "../src/renderer/src/native/nativeClipboardPaste.ts";
 
 // 剪贴板粘贴一致性契约：
 // Windows 剪贴板按格式分槽存储，纯文本复制（记事本/终端）只更新 text 槽，
@@ -28,6 +29,34 @@ test("composer and git commit input paste through the consistent html read", () 
 	const gitPanel = readFileSync("src/renderer/src/components/app/GitPanel.tsx", "utf8");
 	assert.match(gitPanel, /readClipboardHtmlConsistent/);
 	assert.doesNotMatch(gitPanel, /readClipboardHtml\(\)/);
+});
+
+test("native paste trusts current text instead of a stale cached file list", () => {
+	const clipboardData = {
+		items: [{ kind: "string" }],
+		getData: (type) => type === "text/plain" ? "hello" : "",
+	};
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), false);
+});
+
+test("native file or image paste requests a live Qt clipboard snapshot", () => {
+	const clipboardData = {
+		items: [{ kind: "file" }],
+		getData: () => "",
+	};
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), true);
+});
+
+test("native empty paste requests a live Qt clipboard snapshot", () => {
+	const clipboardData = { items: [], getData: () => "" };
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), true);
+});
+
+test("native composer bypasses the SSE path cache before handling a current paste event", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /isNativeRuntime && shouldRequestNativeClipboardSnapshot\(event\.clipboardData\)/);
+	assert.match(composer, /desktopApi\.clipboard\.readNativeSnapshot\(\)/);
+	assert.match(composer, /const clipboardPaths = isNativeRuntime\s*\? \[\]/);
 });
 
 test("Ctrl+V composer paste inserts clipboard text/plain, never TipTap HTML", () => {

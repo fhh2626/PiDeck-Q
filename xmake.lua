@@ -32,7 +32,7 @@ target("PiDeck-Q")
 
     if is_plat("windows") then
         add_files("native/PiDeck-Q.rc")
-        add_syslinks("user32", "shell32", "ole32", "advapi32", "runtimeobject", "windowsapp")
+        add_syslinks("user32", "shell32", "ole32", "advapi32", "propsys", "runtimeobject", "windowsapp")
         add_ldflags("/SUBSYSTEM:WINDOWS", {force = true})
     end
 
@@ -96,7 +96,7 @@ target("PiDeck-HostRpcTest")
 
     if is_plat("windows") then
         add_cxxflags("/Zc:__cplusplus", {force = true})
-        add_syslinks("user32", "shell32", "ole32", "advapi32", "runtimeobject", "windowsapp")
+        add_syslinks("user32", "shell32", "ole32", "advapi32", "propsys", "runtimeobject", "windowsapp")
     end
 
 target("PiDeck-NativeGuiTest")
@@ -108,5 +108,5 @@ target("PiDeck-NativeGuiTest")
 
     if is_plat("windows") then
         add_cxxflags("/Zc:__cplusplus", {force = true})
-        add_syslinks("user32", "shell32", "ole32", "advapi32", "runtimeobject", "windowsapp")
+        add_syslinks("user32", "shell32", "ole32", "advapi32", "propsys", "runtimeobject", "windowsapp")
     end

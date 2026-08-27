@@ -2,6 +2,7 @@ import { connect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const HELLO_TIMEOUT_MS = 5_000;
 
 type HostResponse = {
@@ -41,6 +42,9 @@ export class HostBridge {
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
 	private pendingHello: PendingHello | null = null;
+	private writeBlocked = false;
+	private pendingWriteBytes = 0;
+	private readonly pendingWrites: Buffer[] = [];
 	private closed = false;
 
 	private readonly token: string;
@@ -160,12 +164,44 @@ export class HostBridge {
 	}
 
 	private send(frame: Record<string, unknown>): void {
-		if (!this.socket || this.closed) throw new Error("Native host connection is not available");
+		const socket = this.socket;
+		if (!socket || this.closed) throw new Error("Native host connection is not available");
 		const payload = Buffer.from(JSON.stringify(frame), "utf8");
 		if (payload.length > MAX_FRAME_BYTES) throw new Error("Native host frame exceeds 32 MB");
 		const prefix = Buffer.allocUnsafe(4);
 		prefix.writeUInt32LE(payload.length, 0);
-		this.socket.write(Buffer.concat([prefix, payload]));
+		const packet = Buffer.concat([prefix, payload]);
+		if (socket.writableLength + this.pendingWriteBytes + packet.length > MAX_PENDING_WRITE_BYTES) {
+			const error = new Error("Native host write backpressure limit exceeded");
+			this.handleClose(error);
+			throw error;
+		}
+		if (this.writeBlocked) {
+			this.pendingWrites.push(packet);
+			this.pendingWriteBytes += packet.length;
+			return;
+		}
+		if (!socket.write(packet)) {
+			this.writeBlocked = true;
+			socket.once("drain", () => this.flushWrites());
+		}
+	}
+
+	private flushWrites(): void {
+		const socket = this.socket;
+		if (!socket || this.closed) return;
+		this.writeBlocked = false;
+		while (this.pendingWrites.length > 0) {
+			const packet = this.pendingWrites.shift();
+			if (!packet) break;
+			this.pendingWriteBytes -= packet.length;
+			if (!socket.write(packet)) {
+				this.writeBlocked = true;
+				socket.once("drain", () => this.flushWrites());
+				return;
+			}
+		}
+		this.pendingWriteBytes = 0;
 	}
 
 	request<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
@@ -235,6 +271,9 @@ export class HostBridge {
 		this.settleHello(error);
 		this.socket?.destroy();
 		this.socket = null;
+		this.writeBlocked = false;
+		this.pendingWriteBytes = 0;
+		this.pendingWrites.length = 0;
 		for (const pending of this.pending.values()) pending.reject(error);
 		this.pending.clear();
 		this.listeners.clear();

@@ -227,6 +227,8 @@ export const ipcChannels = {
 	appWindowToggleAlwaysOnTop: "app:window-toggle-always-on-top",
 	appWindowClose: "app:window-close",
 	appBeginWindowDrag: "app:begin-window-drag",
+	appBeginWindowResize: "app:begin-window-resize",
+	nativeClipboardSnapshot: "native:clipboard-snapshot",
 	agentsRuntimeState: "agents:runtime-state",
 	agentsState: "agents:state",
 	projectsListModels: "projects:list-models",

@@ -35,6 +35,7 @@
 
 #include <functional>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 #ifdef Q_OS_WIN
@@ -82,6 +83,19 @@ QJsonArray stringListToJson(const QStringList &values)
     QJsonArray result;
     for (const QString &value : values) result.append(value);
     return result;
+}
+
+Qt::Edges resizeEdges(const QString &value)
+{
+    if (value == QStringLiteral("top")) return Qt::TopEdge;
+    if (value == QStringLiteral("bottom")) return Qt::BottomEdge;
+    if (value == QStringLiteral("left")) return Qt::LeftEdge;
+    if (value == QStringLiteral("right")) return Qt::RightEdge;
+    if (value == QStringLiteral("top-left")) return Qt::TopEdge | Qt::LeftEdge;
+    if (value == QStringLiteral("top-right")) return Qt::TopEdge | Qt::RightEdge;
+    if (value == QStringLiteral("bottom-left")) return Qt::BottomEdge | Qt::LeftEdge;
+    if (value == QStringLiteral("bottom-right")) return Qt::BottomEdge | Qt::RightEdge;
+    return {};
 }
 
 QStringList dialogFilters(const QJsonArray &rawFilters)
@@ -182,7 +196,8 @@ int main(int argc, char **argv)
     // Qt WebView must initialize its backend before QApplication/QGuiApplication.
     QtWebView::initialize();
     QApplication app(argc, argv);
-    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize();
+    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
+        && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
     const bool trayNotificationsAvailable = QSystemTrayIcon::isSystemTrayAvailable()
         && QSystemTrayIcon::supportsMessages();
     const bool nativeNotificationRouteAvailable = nativeNotificationsAvailable || trayNotificationsAvailable;
@@ -257,8 +272,11 @@ int main(int argc, char **argv)
         host.sendEvent(QStringLiteral("native.clipboard"), snapshot);
     });
 
-    host.registerHandler(QStringLiteral("clipboard.snapshot"), [&clipboard](const QJsonObject &) {
-        return QJsonValue(clipboard.snapshot());
+    host.registerAsyncHandler(QStringLiteral("clipboard.snapshot"), [&clipboard](
+        const QJsonObject &, HostRpcServer::AsyncResponder respond) {
+        clipboard.snapshotAsync([respond = std::move(respond)](const QJsonObject &snapshot) {
+            respond(snapshot, {});
+        });
     });
     host.registerHandler(QStringLiteral("dialog.open"), [&mainWindow](const QJsonObject &params) {
         QWidget *parent = params.value(QStringLiteral("parent")).toString() == QStringLiteral("none")
@@ -362,6 +380,10 @@ int main(int argc, char **argv)
         if (mainWindow) mainWindow->beginSystemMove();
         return QJsonValue(QJsonValue::Null);
     });
+    host.registerHandler(QStringLiteral("window.beginSystemResize"), [&mainWindow](const QJsonObject &params) {
+        const Qt::Edges edges = resizeEdges(params.value(QStringLiteral("edge")).toString());
+        return QJsonValue(mainWindow && mainWindow->beginSystemResize(edges));
+    });
     host.registerHandler(QStringLiteral("window.toggleDevTools"), [&mainWindow](const QJsonObject &) {
         if (mainWindow) mainWindow->toggleDevTools();
         return QJsonValue(QJsonValue::Null);
@@ -444,6 +466,9 @@ int main(int argc, char **argv)
             setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
             mainWindow = new MainWindow(&host, startup);
             mainWindow->setQuitHandler(requestQuit);
+            mainWindow->setTrayAvailableHandler([&tray] {
+                return tray && tray->isAvailableAndVisible();
+            });
             const QUrl baseUrl(ready.value(QStringLiteral("url")).toString());
             QUrlQuery query;
             query.addQueryItem(QStringLiteral("runtime"), QStringLiteral("native"));

@@ -61,7 +61,7 @@ import {
   getComposerCaretCoords,
   getComposerCaretOffset,
 } from "../components/session/composer/caretCoords";
-import { desktopApi } from "../desktopApi";
+import { desktopApi, isNativeRuntime } from "../desktopApi";
 import { t } from "../i18n";
 import {
   COMPOSER_IMAGE_MAX_BYTES,
@@ -74,6 +74,8 @@ import {
   processComposerImageFile,
 } from "../utils/composerImages";
 import { showNotice } from "../utils/notice";
+import { htmlToPlainText } from "../utils/clipboard";
+import { shouldRequestNativeClipboardSnapshot } from "../native/nativeClipboardPaste";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -801,6 +803,22 @@ export function useSessionComposerController(
     );
   }, [insertRefTexts]);
 
+  /** Native 实时快照降级为文本时，按当前编辑器光标插入纯文本。 */
+  const insertPlainText = useCallback((text: string) => {
+    if (!text) return;
+    const liveDraft = liveDomDraftRef.current.sessionId === sessionId
+      ? liveDomDraftRef.current.value
+      : draft;
+    const liveCursor = editorRef.current ? getComposerCaretOffset(editorRef.current) : cursor;
+    const next = liveDraft.slice(0, liveCursor) + text + liveDraft.slice(liveCursor);
+    const nextCursor = liveCursor + text.length;
+    liveDomDraftRef.current = { sessionId, value: next };
+    setDraft(next);
+    setCursor(nextCursor);
+    caretRef.current = { pos: nextCursor, forValue: next };
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }, [cursor, draft, sessionId, setDraft]);
+
   /**
    * 纯文本路径粘贴：把路径规范化为 @"…" 引用并插入。
    * 若光标前有未完成的 @ 触发（用户先打了 @ 再粘贴路径），替换触发符，
@@ -852,7 +870,12 @@ export function useSessionComposerController(
    * 或过大，位图仍在（否则粘贴会退化成无用的 @path 引用）；实在没有位图才整体回退
    * @path 引用，保证「复制图片」粘贴始终有可用结果。
    */
-  const pasteClipboardImages = useCallback(async (paths: string[], dataTransfer: DataTransfer | null) => {
+  const pasteClipboardImages = useCallback(async (
+    paths: string[],
+    dataTransfer: DataTransfer | null,
+    fallbackImageFiles: File[] = [],
+    liveImageDataUrl?: string,
+  ) => {
     try {
       const files: File[] = [];
       for (const path of paths) {
@@ -864,12 +887,16 @@ export function useSessionComposerController(
       await addImageFiles(files);
     } catch {
       // 位图兜底：事件粘贴优先取 clipboardData 的 image 项；右键粘贴无事件，走 Electron 剪贴板位图
-      const imageFiles = dataTransfer ? getClipboardImageFiles(dataTransfer) : [];
+      const imageFiles = fallbackImageFiles.length > 0
+        ? fallbackImageFiles
+        : dataTransfer
+          ? getClipboardImageFiles(dataTransfer)
+          : [];
       if (imageFiles.length) {
         await addImageFiles(imageFiles);
         return;
       }
-      const imageDataUrl = desktopApi.clipboard.readImage();
+      const imageDataUrl = liveImageDataUrl ?? desktopApi.clipboard.readImage();
       if (imageDataUrl) {
         await addImageFiles([dataUrlToFile(imageDataUrl, "image/png", "clipboard-image.png")]);
         return;
@@ -878,11 +905,39 @@ export function useSessionComposerController(
     }
   }, [addImageFiles, insertFilePathRefs]);
 
+  const pasteNativeSnapshot = useCallback(async (fallbackImageFiles: File[] = []): Promise<boolean> => {
+    const snapshot = await desktopApi.clipboard.readNativeSnapshot();
+    if (snapshot.filePaths.length > 0) {
+      if (snapshot.filePaths.every(isImageFilePath)) {
+        await pasteClipboardImages(snapshot.filePaths, null, fallbackImageFiles, snapshot.imageDataUrl);
+      } else {
+        insertFilePathRefs(snapshot.filePaths);
+      }
+      return true;
+    }
+    if (fallbackImageFiles.length > 0) {
+      await addImageFiles(fallbackImageFiles);
+      return true;
+    }
+    if (snapshot.imageDataUrl) {
+      await addImageFiles([dataUrlToFile(snapshot.imageDataUrl, "image/png", "clipboard-image.png")]);
+      return true;
+    }
+    const text = snapshot.text || (snapshot.html ? htmlToPlainText(snapshot.html) : "");
+    if (text) {
+      insertPlainText(text);
+      return true;
+    }
+    return false;
+  }, [addImageFiles, insertFilePathRefs, insertPlainText, pasteClipboardImages]);
+
   /**
-   * 右键「粘贴」（无 ClipboardEvent）：从 Electron 剪贴板同步读取。
+   * 右键「粘贴」（无 ClipboardEvent）：native 实时读取 Qt 快照；Electron
+   * 继续使用同步 clipboard API。
    * 优先级同 onPaste：文件路径 → 位图；纯文本返回 false，交给编辑器本地插入。
    */
   const pasteFromClipboard = useCallback(async (): Promise<boolean> => {
+    if (isNativeRuntime) return pasteNativeSnapshot();
     const clipboardPaths = desktopApi.files.getClipboardPaths?.() ?? [];
     if (clipboardPaths.length > 0) {
       if (clipboardPaths.every(isImageFilePath)) {
@@ -898,7 +953,7 @@ export function useSessionComposerController(
       return true;
     }
     return false;
-  }, [addImageFiles, insertFilePathRefs, pasteClipboardImages]);
+  }, [addImageFiles, insertFilePathRefs, pasteClipboardImages, pasteNativeSnapshot]);
 
   /**
    * 粘贴：系统文件路径以 @path 引用插入，位图/截图附加为图片。
@@ -909,9 +964,23 @@ export function useSessionComposerController(
    * 路径为受支持图片时优先附加预览，否则仍按路径引用处理，避免被误当成截图。
    */
   const onPaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (isNativeRuntime && shouldRequestNativeClipboardSnapshot(event.clipboardData)) {
+      // Capture WebView-provided image files synchronously, then ask Qt for the
+      // current OS snapshot. Never let the eventually-consistent SSE cache
+      // override a newer paste event.
+      const fallbackImageFiles = getClipboardImageFiles(event.clipboardData);
+      event.preventDefault();
+      void pasteNativeSnapshot(fallbackImageFiles).catch((error) => {
+        showNotice(error instanceof Error ? error.message : String(error), 3000);
+      });
+      return;
+    }
+
     // 1) 资源管理器复制/剪切的文件：浏览器 ClipboardEvent 通常没有 kind=file，
     //    需通过 preload 同步读取 Electron clipboard（FileNameW / CF_HDROP 等）
-    const clipboardPaths = desktopApi.files.getClipboardPaths?.() ?? [];
+    const clipboardPaths = isNativeRuntime
+      ? []
+      : desktopApi.files.getClipboardPaths?.() ?? [];
     if (clipboardPaths.length > 0) {
       event.preventDefault();
       // 复制的全是受支持图片 → 附加预览；混合/其他文件 → 维持 @path 引用
@@ -963,7 +1032,7 @@ export function useSessionComposerController(
       insertPastedPathRef(pastedPath);
       return;
     }
-  }, [addImageFiles, insertFilePathRefs, insertPastedPathRef, pasteClipboardImages, resolveLocalPathsFromFiles]);
+  }, [addImageFiles, insertFilePathRefs, insertPastedPathRef, pasteClipboardImages, pasteNativeSnapshot, resolveLocalPathsFromFiles]);
 
   /**
    * 拖拽：
