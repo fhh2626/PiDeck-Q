@@ -296,7 +296,8 @@ test("ProjectTree shows the project directory name like the dev reference", () =
   const pathTooltip = readFileSync("src/renderer/src/components/ui-shadcn/PathTooltip.tsx", "utf8");
   assert.match(pathTooltip, /disableHoverableContent/);
   assert.match(pathTooltip, /pointer-events-none/);
-  assert.match(pathTooltip, /hideDelay/);
+  assert.match(pathTooltip, /setOpen\(next\)/);
+  assert.doesNotMatch(pathTooltip, /hideDelay|hideTimerRef|setTimeout/);
   assert.match(pathTooltip, /animate-none/);
   assert.match(projectTree, /PathTooltip content=\{`\$\{projectDirectoryName\}\\n\$\{project\.path\}`\}>[\s\S]*?<button[\s\S]*projectDirectoryName/);
   assert.match(projectTree, /\{projectDirectoryName\}/);

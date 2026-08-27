@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 import { cn } from "@/lib/utils";
 
@@ -16,8 +16,8 @@ import { cn } from "@/lib/utils";
  * - 内容只读：气泡必须 pointer-events-none。默认贴在项目名右侧时，鼠标
  *   移入气泡会先离开很窄的触发区，Radix 立刻关 tooltip，指针又回到触发区，
  *   形成开关闪烁。disableHoverableContent 同步关掉「可悬停内容」语义。
- * - 关闭有短宽限期：快划过触发区边缘时不要立刻关。开关动画关掉，避免
- *   宽限期内仍看到 zoom/fade 闪一下。
+ * - 关闭立即生效：交给 Radix Tooltip 的全局 open 事件在相邻触发器之间切换时
+ *   维护单一可见提示，避免快速划过列表时多个 Portal 同时残留。
  */
 export function PathTooltip(props: {
 	/** 悬浮时展示的完整内容（一般是路径文本） */
@@ -29,8 +29,6 @@ export function PathTooltip(props: {
 	align?: "start" | "center" | "end";
 	sideOffset?: number;
 	delayDuration?: number;
-	/** 指针离开触发区后多久才关；盖住快划过边缘的抖动。 */
-	hideDelay?: number;
 }) {
 	const {
 		content,
@@ -40,19 +38,13 @@ export function PathTooltip(props: {
 		align = "start",
 		sideOffset = 8,
 		delayDuration = 250,
-		hideDelay = 220,
 	} = props;
 	const [open, setOpen] = useState(false);
-	const hideTimerRef = useRef(0);
-	useEffect(() => () => window.clearTimeout(hideTimerRef.current), []);
 
 	const onOpenChange = (next: boolean) => {
-		window.clearTimeout(hideTimerRef.current);
-		if (next) {
-			setOpen(true);
-			return;
-		}
-		hideTimerRef.current = window.setTimeout(() => setOpen(false), hideDelay);
+		// Radix broadcasts tooltip.open so a newly hovered row closes the previous
+		// row; apply that close synchronously instead of leaving an old Portal alive.
+		setOpen(next);
 	};
 
 	return (
