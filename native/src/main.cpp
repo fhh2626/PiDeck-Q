@@ -183,13 +183,9 @@ int main(int argc, char **argv)
     QtWebView::initialize();
     QApplication app(argc, argv);
     const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize();
-    bool nativeNotificationRouteAvailable = nativeNotificationsAvailable;
-#ifdef Q_OS_WIN
-    // A tray notification remains available when WinRT toast initialization is
-    // unavailable, so keep the Node notification capability enabled and let the
-    // host choose the toast-or-tray implementation at show time.
-    nativeNotificationRouteAvailable = true;
-#endif
+    const bool trayNotificationsAvailable = QSystemTrayIcon::isSystemTrayAvailable()
+        && QSystemTrayIcon::supportsMessages();
+    const bool nativeNotificationRouteAvailable = nativeNotificationsAvailable || trayNotificationsAvailable;
     qputenv("PIDECK_NATIVE_NOTIFICATIONS", nativeNotificationRouteAvailable
         ? QByteArrayLiteral("1")
         : QByteArrayLiteral("0"));

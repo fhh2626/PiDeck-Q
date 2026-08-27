@@ -390,6 +390,37 @@ test("NativeRendererServer can restart after a fatal listening error", async () 
 	}
 });
 
+test("NativeRendererServer ignores a stale error from the previous server generation", async () => {
+	let activeServer;
+	let resolveRecovery;
+	const recovered = new Promise((resolve) => {
+		resolveRecovery = resolve;
+	});
+	const fixture = await createServerFixture({
+		onServerError: () => {
+			void activeServer.start().then(resolveRecovery);
+		},
+	});
+	activeServer = fixture.server;
+	const oldServer = activeServer.server;
+	try {
+		oldServer.emit("error", new Error("first renderer server failure"));
+		await Promise.race([
+			recovered,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("renderer server did not recover")), 2_000)),
+		]);
+		const recoveredUrl = activeServer.getUrl();
+		oldServer.emit("error", new Error("stale renderer server failure"));
+		await waitMs(50);
+		assert.equal(activeServer.getUrl(), recoveredUrl);
+		const bootstrap = await fetch(`${recoveredUrl}__pideck/bootstrap?token=secret-token`);
+		assert.equal(bootstrap.status, 200);
+	} finally {
+		await activeServer.stop();
+		rmSync(fixture.rendererRoot, { recursive: true, force: true });
+	}
+});
+
 test("NativeRendererServer disconnects an SSE client that exceeds the backpressure budget", async () => {
 	const { server, rendererRoot, address } = await createServerFixture();
 	const connection = await connectEvents(address.port, "secret-token");

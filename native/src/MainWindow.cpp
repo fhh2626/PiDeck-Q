@@ -10,8 +10,10 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QHideEvent>
 #include <QKeyEvent>
 #include <QMessageBox>
+#include <QShowEvent>
 #include <QPushButton>
 #include <QScreen>
 #include <QSize>
@@ -119,7 +121,6 @@ void MainWindow::showWindow()
 {
     show();
     focusWindow();
-    emitVisible(true);
     emitMaximizedState();
     emitMinimizedState();
     emitFullScreenState();
@@ -142,7 +143,6 @@ bool MainWindow::toggleAlwaysOnTop()
     setWindowState(oldState);
     if (wasVisible) show();
     else hide();
-    emitVisible(isVisible());
     return next;
 }
 
@@ -241,12 +241,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (!m_quitting && m_closeToTray) {
         event->ignore();
         hide();
-        emitVisible(false);
         return;
     }
     if (!m_quitting) m_quitting = true;
     emitBounds();
-    emitVisible(false);
     // The host owns the asynchronous sidecar shutdown gate. Sending the event
     // instead of calling QCoreApplication::quit() keeps the event loop alive
     // until Node acknowledges Backend.dispose and lock cleanup.
@@ -297,6 +295,18 @@ void MainWindow::changeEvent(QEvent *event)
         emitMinimizedState();
         emitFullScreenState();
     }
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    emitVisible(true);
+}
+
+void MainWindow::hideEvent(QHideEvent *event)
+{
+    QMainWindow::hideEvent(event);
+    emitVisible(false);
 }
 
 void MainWindow::emitMaximizedState()

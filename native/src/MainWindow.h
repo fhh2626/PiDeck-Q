@@ -11,6 +11,8 @@
 
 class HostRpcServer;
 class MainWebSurface;
+class QHideEvent;
+class QShowEvent;
 class QUrl;
 class FileDropController;
 
@@ -43,6 +45,8 @@ protected:
     void moveEvent(QMoveEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     void emitMaximizedState();

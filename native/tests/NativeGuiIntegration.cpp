@@ -10,21 +10,64 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QElapsedTimer>
 #include <QColor>
 #include <QCoreApplication>
 #include <QImage>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QMimeData>
 #include <QPalette>
 #include <QSize>
 #include <QStyleHints>
+#include <QTcpSocket>
 #include <QThread>
 #include <QUrl>
 
+#include <functional>
 #include <iostream>
 
 namespace {
+QByteArray hostFrame(const QJsonObject &payload)
+{
+    const QByteArray body = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    QByteArray packet(4, Qt::Uninitialized);
+    const quint32 length = static_cast<quint32>(body.size());
+    packet[0] = char(length & 0xff);
+    packet[1] = char((length >> 8) & 0xff);
+    packet[2] = char((length >> 16) & 0xff);
+    packet[3] = char((length >> 24) & 0xff);
+    packet.append(body);
+    return packet;
+}
+
+bool waitForHostFrame(QTcpSocket &socket, QByteArray &buffer,
+                      const std::function<bool(const QJsonObject &)> &predicate,
+                      int timeoutMs = 3'000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        buffer.append(socket.readAll());
+        while (buffer.size() >= 4) {
+            const auto *header = reinterpret_cast<const unsigned char *>(buffer.constData());
+            const quint32 length = quint32(header[0])
+                | (quint32(header[1]) << 8)
+                | (quint32(header[2]) << 16)
+                | (quint32(header[3]) << 24);
+            if (buffer.size() < 4 + qsizetype(length)) break;
+            const QByteArray body = buffer.mid(4, qsizetype(length));
+            buffer.remove(0, 4 + qsizetype(length));
+            const QJsonDocument document = QJsonDocument::fromJson(body);
+            if (document.isObject() && predicate(document.object())) return true;
+        }
+        QThread::msleep(2);
+    }
+    return false;
+}
+
 bool require(bool condition, const char *message)
 {
     if (condition) return true;
@@ -118,20 +161,46 @@ int main(int argc, char **argv)
     fixed.applySettings(QJsonObject{{QStringLiteral("useNativeTitleBar"), true}});
     processGuiEvents();
     if (!require(fixed.isMaximized(), "titlebar change lost maximized state")) return 1;
+    fixed.hide();
+    processGuiEvents();
 
     HostRpcServer lifecycleHost;
+    if (!require(lifecycleHost.start(), "GUI lifecycle host failed to listen")) return 1;
+    QTcpSocket lifecycleClient;
+    lifecycleClient.connectToHost(QStringLiteral("127.0.0.1"), lifecycleHost.port());
+    if (!require(lifecycleClient.waitForConnected(3'000), "GUI lifecycle client failed to connect")) return 1;
+    lifecycleClient.write(hostFrame(QJsonObject{
+        {QStringLiteral("type"), QStringLiteral("hello")},
+        {QStringLiteral("token"), lifecycleHost.token()},
+    }));
+    lifecycleClient.flush();
+    QByteArray lifecycleBuffer;
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("type")).toString() == QStringLiteral("hello")
+                && frame.value(QStringLiteral("ok")).toBool();
+        }), "GUI lifecycle host handshake failed")) return 1;
+
     MainWindow reloadStateWindow(&lifecycleHost, fixedBounds);
     reloadStateWindow.show();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.visibleChanged")
+                && frame.value(QStringLiteral("payload")).toBool();
+        }), "GUI show event did not report visibility")) return 1;
     reloadStateWindow.load(QUrl(QStringLiteral("data:text/html,<html><body>native</body></html>")));
-    for (int index = 0; index < 100; ++index) processGuiEvents();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.ready");
+        }), "GUI renderer did not report the initial load")) return 1;
     reloadStateWindow.showMinimized();
     processGuiEvents();
     if (!require(reloadStateWindow.isMinimized(),
                  "test window did not enter minimized state")) return 1;
     reloadStateWindow.reload();
-    for (int index = 0; index < 100; ++index) processGuiEvents();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.ready");
+        }), "GUI renderer did not report the reload")) return 1;
     if (!require(reloadStateWindow.isMinimized(),
                  "renderer reload restored a minimized window")) return 1;
+    lifecycleClient.disconnectFromHost();
 
     int clipboardChanges = 0;
     {

@@ -136,7 +136,7 @@ export class NativeRendererServer {
 	async start(): Promise<{ host: string; port: number }> {
 		if (this.address) return this.address;
 		this.eventSourceGeneration = randomUUID();
-		this.server = createServer((request, response) => {
+		const server = createServer((request, response) => {
 			void this.handle(request, response).catch((error) => {
 				if (response.headersSent) {
 					response.destroy();
@@ -150,8 +150,14 @@ export class NativeRendererServer {
 				sendJson(response, 500, { ok: false, error: { message: error instanceof Error ? error.message : String(error) } });
 			});
 		});
-		this.server.on("error", (error) => {
-			const failedServer = this.server;
+		this.server = server;
+		server.on("error", (error) => {
+			// An old generation may emit a delayed error after recovery installed a
+			// new server. It must only close its own listener, never the replacement.
+			if (this.server !== server) {
+				if (server.listening) server.close();
+				return;
+			}
 			const wasRunning = this.address !== null;
 			const normalizedError = error instanceof Error ? error : new Error(String(error));
 			this.server = null;
@@ -163,14 +169,12 @@ export class NativeRendererServer {
 			this.eventSeq = 0;
 			this.eventHistory.length = 0;
 			this.eventHistoryBytes = 0;
-			failedServer?.close();
+			if (server.listening) server.close();
 			// Initial listen failures are rejected by start(); only a server that was
 			// already serving a renderer page needs the asynchronous recovery path.
 			if (wasRunning) this.deps.onServerError?.(normalizedError);
 		});
 		this.address = await new Promise<{ host: string; port: number }>((resolveAddress, reject) => {
-			const server = this.server;
-			if (!server) return reject(new Error("Native renderer server was not created"));
 			server.once("error", reject);
 			server.listen(0, "127.0.0.1", () => {
 				server.removeListener("error", reject);
