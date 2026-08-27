@@ -55,6 +55,7 @@ private:
     void emitBounds();
     void emitVisible(bool visible);
     void applyStartupMode(const QString &mode, bool hasLastBounds);
+    void clampNormalGeometry();
 
     HostRpcServer *m_host = nullptr;
     std::unique_ptr<MainWebSurface> m_surface;

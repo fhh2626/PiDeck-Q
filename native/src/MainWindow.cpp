@@ -66,6 +66,9 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
         ? bounds.value(QStringLiteral("height")).toInt(presetSize.height())
         : presetSize.height();
     resize(qMax(width, minimumWidth()), qMax(height, minimumHeight()));
+    // Persisted bounds may come from a larger monitor or from the old 1480×960
+    // fallback. Clamp before maximizing so Qt's restore geometry is usable too.
+    clampNormalGeometry();
     applyStartupMode(startupMode, hasLastBounds);
 
     connect(m_surface->view(), &QWebView::loadingChanged, this,
@@ -112,8 +115,10 @@ void MainWindow::minimizeWindow()
 
 void MainWindow::restoreWindow()
 {
-    if (isMaximized()) showNormal();
-    if (isMinimized()) showNormal();
+    if (isMaximized() || isMinimized() || isFullScreen()) {
+        showNormal();
+        clampNormalGeometry();
+    }
     focusWindow();
 }
 
@@ -128,8 +133,12 @@ void MainWindow::showWindow()
 
 bool MainWindow::toggleMaximize()
 {
-    if (isMaximized()) showNormal();
-    else showMaximized();
+    if (isMaximized()) {
+        showNormal();
+        clampNormalGeometry();
+    } else {
+        showMaximized();
+    }
     emitMaximizedState();
     return isMaximized();
 }
@@ -294,6 +303,9 @@ void MainWindow::changeEvent(QEvent *event)
         emitMaximizedState();
         emitMinimizedState();
         emitFullScreenState();
+        // Also cover native title-bar restore and OS-level state changes, not
+        // only the custom renderer button's toggleMaximize() path.
+        if (!isMaximized() && !isMinimized() && !isFullScreen()) clampNormalGeometry();
     }
 }
 
@@ -337,6 +349,24 @@ void MainWindow::emitBounds()
 void MainWindow::emitVisible(bool visible)
 {
     if (m_host) m_host->sendEvent(QStringLiteral("window.visibleChanged"), visible);
+}
+
+void MainWindow::clampNormalGeometry()
+{
+    if (isMaximized() || isMinimized() || isFullScreen()) return;
+    QScreen *screen = windowHandle() ? windowHandle()->screen() : QGuiApplication::primaryScreen();
+    if (!screen) return;
+    const QRect available = screen->availableGeometry();
+    if (!available.isValid()) return;
+
+    QRect bounded = geometry();
+    bounded.setWidth(qMin(bounded.width(), available.width()));
+    bounded.setHeight(qMin(bounded.height(), available.height()));
+    const int maxLeft = available.right() - bounded.width() + 1;
+    const int maxTop = available.bottom() - bounded.height() + 1;
+    bounded.moveLeft(qBound(available.left(), bounded.left(), maxLeft));
+    bounded.moveTop(qBound(available.top(), bounded.top(), maxTop));
+    if (bounded != geometry()) setGeometry(bounded);
 }
 
 void MainWindow::applyStartupMode(const QString &mode, bool hasLastBounds)

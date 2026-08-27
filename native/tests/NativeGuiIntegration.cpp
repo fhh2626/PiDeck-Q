@@ -141,6 +141,42 @@ int main(int argc, char **argv)
     if (!require(last.size() == QSize(1200, 760),
                  "last startup mode did not use the saved bounds")) return 1;
 
+    QScreen *primaryScreen = QGuiApplication::primaryScreen();
+    if (!require(primaryScreen != nullptr, "primary screen was not available")) return 1;
+    const QRect availableGeometry = primaryScreen->availableGeometry();
+    if (!require(availableGeometry.isValid(), "primary screen geometry was not valid")) return 1;
+    const QJsonObject oversizedBounds{
+        {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
+        {QStringLiteral("useNativeTitleBar"), false},
+        {QStringLiteral("lastWindowBounds"), QJsonObject{
+            {QStringLiteral("width"), availableGeometry.width() + 200},
+            {QStringLiteral("height"), availableGeometry.height() + 200},
+        }},
+    };
+    MainWindow oversized(nullptr, oversizedBounds);
+    if (!require(oversized.width() <= availableGeometry.width()
+                     && oversized.height() <= availableGeometry.height(),
+                 "normal window bounds exceeded the available screen")) return 1;
+    oversized.show();
+    processGuiEvents();
+    oversized.showMaximized();
+    processGuiEvents();
+    oversized.showNormal();
+    processGuiEvents();
+    const QScreen *restoredScreen = oversized.windowHandle() && oversized.windowHandle()->screen()
+        ? oversized.windowHandle()->screen()
+        : primaryScreen;
+    const QRect restoredAvailable = restoredScreen->availableGeometry();
+    const QRect restoredGeometry = oversized.geometry();
+    if (!require(!oversized.isMaximized(), "window did not leave maximized state")) return 1;
+    if (!require(restoredGeometry.width() <= restoredAvailable.width()
+                     && restoredGeometry.height() <= restoredAvailable.height(),
+                 "restored normal geometry exceeded the available screen")) return 1;
+    if (!require(restoredAvailable.contains(restoredGeometry.topLeft())
+                     && restoredAvailable.contains(restoredGeometry.bottomRight()),
+                 "restored normal geometry was not placed on screen")) return 1;
+    oversized.hide();
+
     fixed.show();
     processGuiEvents();
     fixed.hide();
