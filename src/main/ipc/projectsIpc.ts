@@ -165,7 +165,7 @@ export function registerProjectsIpc(
 			title: mainCopy("dialog.chooseChatHistoryFolder"),
 			defaultPath: projectStore.getChatProjectPath(),
 			properties: ["openDirectory"],
-			parent: "none",
+			parent: "main-window",
 		});
 		if (result.canceled || result.filePaths.length === 0) return null;
 		return result.filePaths[0];
