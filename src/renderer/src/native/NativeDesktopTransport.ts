@@ -2,6 +2,19 @@ import type { DesktopRpcTransport } from "@shared/desktop/DesktopRpcTransport";
 import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
 
 const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
+const NATIVE_RPC_TIMEOUT_MS = 30_000;
+const NATIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
+const NATIVE_FILE_RPC_TIMEOUT_MS = 60_000;
+
+function nativeRpcTimeoutMs(channel: string): number | undefined {
+	// Prompt delivery has its own Pi RPC timeout and may legitimately wait for a
+	// long model/tool run; aborting the HTTP wrapper would turn an accepted prompt
+	// into an artificial renderer-side timeout.
+	if (channel === "sessions:send-prompt") return undefined;
+	if (channel.startsWith("sessions:catalog-")) return NATIVE_HISTORY_RPC_TIMEOUT_MS;
+	if (channel.startsWith("files:")) return NATIVE_FILE_RPC_TIMEOUT_MS;
+	return NATIVE_RPC_TIMEOUT_MS;
+}
 
 interface NativeRpcResponse<T> {
 	ok: boolean;
@@ -210,24 +223,44 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		if (new TextEncoder().encode(body).byteLength > MAX_NATIVE_RPC_BODY_BYTES) {
 			throw new Error("Native RPC request exceeds 32 MB");
 		}
-		const response = await fetch(new URL("/__pideck/rpc", this.baseUrl), {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				"x-pideck-token": this.token,
-			},
-			body,
-		});
-		let payload: NativeRpcResponse<T>;
+		const timeoutMs = nativeRpcTimeoutMs(channel);
+		const controller = new AbortController();
+		let timedOut = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		if (timeoutMs !== undefined) {
+			timer = setTimeout(() => {
+				timedOut = true;
+				controller.abort();
+			}, timeoutMs);
+		}
 		try {
-			payload = (await response.json()) as NativeRpcResponse<T>;
-		} catch {
-			throw new Error(`Native RPC returned non-JSON response (${response.status})`);
+			const response = await fetch(new URL("/__pideck/rpc", this.baseUrl), {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"x-pideck-token": this.token,
+				},
+				body,
+				signal: controller.signal,
+			});
+			let payload: NativeRpcResponse<T>;
+			try {
+				payload = (await response.json()) as NativeRpcResponse<T>;
+			} catch {
+				throw new Error(`Native RPC returned non-JSON response (${response.status})`);
+			}
+			if (!response.ok || !payload.ok) {
+				throw new Error(payload.error?.message || `Native RPC failed (${response.status})`);
+			}
+			return payload.result as T;
+		} catch (error) {
+			if (timedOut && timeoutMs !== undefined) {
+				throw new Error(`Native RPC timed out after ${timeoutMs}ms: ${channel}`);
+			}
+			throw error;
+		} finally {
+			if (timer) clearTimeout(timer);
 		}
-		if (!response.ok || !payload.ok) {
-			throw new Error(payload.error?.message || `Native RPC failed (${response.status})`);
-		}
-		return payload.result as T;
 	}
 
 	subscribe<T>(channel: string, callback: (payload: T) => void): () => void {

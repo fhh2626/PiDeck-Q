@@ -8,6 +8,10 @@ import type {
 } from "../../../shared/types";
 import { replaceProjectInventoryAtom } from "../atoms";
 import { desktopApi } from "../desktopApi";
+import {
+  invalidateProjectInventoryRequests,
+  requestProjectInventory,
+} from "../utils/projectInventoryRequests";
 
 type GlobalAgentListenerCallbacks = {
   onProjectsChanged?: (projects: Project[]) => void;
@@ -31,12 +35,15 @@ export function useGlobalAgentListeners(
   useEffect(() => {
     let disposed = false;
 
-    void desktopApi.projects.list().then((projects) => {
-      if (disposed) return;
+    void requestProjectInventory(desktopApi.projects.list).then((projects) => {
+      if (disposed || !projects) return;
       store.set(replaceProjectInventoryAtom, projects);
       callbacksRef.current.onProjectsChanged?.(projects);
     }).catch(() => undefined);
     const offProjects = desktopApi.projects.onChanged((projects) => {
+      // Push snapshots are authoritative and must invalidate every older list()
+      // response before replacing the inventory.
+      invalidateProjectInventoryRequests();
       store.set(replaceProjectInventoryAtom, projects);
       callbacksRef.current.onProjectsChanged?.(projects);
     });

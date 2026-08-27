@@ -144,23 +144,35 @@ test("preserves request gate, stale records, replace ordering, and canonical sor
   );
 });
 
-test("publishes foreground loading before yielding and clears it in finally", () => {
+test("publishes foreground loading before yielding and clears its owner in finally", () => {
   const block = runProjectSessionRefreshBlock();
+  assert.match(projectSync, /sessionLoadingRequestByProjectRef/);
   assertInOrder(
     block,
     [
       "if (!silent)",
+      "sessionLoadingRequestByProjectRef.current[projectId] = request;",
       "setSessionLoadingByProject(",
       "[projectId]: true",
       'setSessionCatalogLoadState?.({ projectId, state: { status: "loading" } });',
       "await new Promise<void>((r) => setTimeout(r, 0));",
       "} finally {",
-      "sessionRefreshRunningRef.current.delete(projectId);",
-      "if (!silent) setSessionLoadingByProject(",
+      "const ownsForegroundLoading =",
+      "if (isCurrentRequest) sessionRefreshRunningRef.current.delete(projectId);",
+      "if (ownsForegroundLoading)",
+      "setSessionLoadingByProject(",
       "[projectId]: false",
     ],
     "foreground loading lifecycle",
   );
+});
+
+test("catalog-refreshed settles the catalog state without taking foreground loading ownership", () => {
+  assert.match(
+    projectSync,
+    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
+  );
+  assert.match(projectSync, /if \(!isCurrentRequest\) \{[\s\S]*setSessionCatalogLoadState\?\./);
 });
 
 test("publishes canonical ready and request-scoped error states", () => {

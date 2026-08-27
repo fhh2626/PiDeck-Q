@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { Project, FileTreeNode, GitBranchInfo, WorktreeEntry, SessionSummary, SessionRecord } from "../../../shared/types";
 import type { SessionLoadState } from "../atoms/session-atoms";
 import { sessionRecordToSummary } from "../atoms/session-selectors";
+import { requestProjectInventory } from "../utils/projectInventoryRequests";
 
 const SESSION_REFRESH_TIMEOUT_MS = 20_000;
 const SIDEBAR_PROJECT_CHILD_PAGE_SIZE = 5;
@@ -96,12 +97,16 @@ export function useProjectSync(input: UseProjectSyncInput) {
   const fileRequestRef = useRef(0);
   const gitInfoRequestRef = useRef(0);
   const sessionRequestByProjectRef = useRef<Record<string, number>>({});
+  // 数据 generation 与前台 loading 所有权分离：后台 catalog-refreshed 可以推进数据版本，
+  // 但不能让原本显示 spinner 的前台请求失去清理 loading 的机会。
+  const sessionLoadingRequestByProjectRef = useRef<Record<string, number | undefined>>({});
   const sessionRefreshRunningRef = useRef<Set<string>>(new Set());
   const sessionRefreshPendingRef = useRef<Set<string>>(new Set());
   const sessionRefreshCompletionByProjectRef = useRef<Record<string, ProjectSessionRefreshCompletion | undefined>>({});
 
   async function refreshProjects() {
-    const next = await api.projects.list();
+    const next = await requestProjectInventory(api.projects.list);
+    if (!next) return;
     setProjects(next);
     if (!activeProjectId && next.length > 0) setActiveProjectId(next[0].id);
     for (const p of next) { if (p.worktreeEnabled) void refreshWorktrees(p.id); }
@@ -115,8 +120,8 @@ export function useProjectSync(input: UseProjectSyncInput) {
       ]);
       setWorktreesByProject((prev) => ({ ...prev, [projectId]: entries }));
       setBranchByProject((prev) => ({ ...prev, [projectId]: branchInfo.current }));
-      const next = await api.projects.list();
-      setProjects(next);
+      const next = await requestProjectInventory(api.projects.list);
+      if (next) setProjects(next);
     } catch { setWorktreesByProject((prev) => ({ ...prev, [projectId]: [] })); }
   }
 
@@ -144,6 +149,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
     let failed = false;
     try {
       if (!silent) {
+        sessionLoadingRequestByProjectRef.current[projectId] = request;
         setSessionLoadingByProject((c) => ({ ...c, [projectId]: true }));
         setSessionCatalogLoadState?.({ projectId, state: { status: "loading" } });
         await new Promise<void>((r) => setTimeout(r, 0));
@@ -178,9 +184,22 @@ export function useProjectSync(input: UseProjectSyncInput) {
     } finally {
       const isCurrentCompletion = sessionRefreshCompletionByProjectRef.current[projectId] === completion;
       const isCurrentRequest = sessionRequestByProjectRef.current[projectId] === request;
-      if (isCurrentRequest) {
-        sessionRefreshRunningRef.current.delete(projectId);
-        if (!silent) setSessionLoadingByProject((c) => ({ ...c, [projectId]: false }));
+      const ownsForegroundLoading =
+        sessionLoadingRequestByProjectRef.current[projectId] === request;
+      if (isCurrentRequest) sessionRefreshRunningRef.current.delete(projectId);
+      if (ownsForegroundLoading) {
+        delete sessionLoadingRequestByProjectRef.current[projectId];
+        setSessionLoadingByProject((c) => ({ ...c, [projectId]: false }));
+        // 后台刷新推进了 data generation 后，前台请求仍负责结束 spinner；
+        // 同步收口 catalog 状态，避免 SessionTree 永远停在 loading。
+        if (!isCurrentRequest) {
+          setSessionCatalogLoadState?.({
+            projectId,
+            state: failed
+              ? { status: "error", error: error instanceof Error ? error.message : String(error) }
+              : { status: "ready" },
+          });
+        }
       }
       if (!isCurrentCompletion) {
         if (failed) completion.reject(error);
@@ -225,6 +244,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
         .then((records) => {
           if (sessionRequestByProjectRef.current[projectId] !== request) return;
           replaceProjectSessions({ projectId, sessions: records });
+          setSessionCatalogLoadState?.({ projectId, state: { status: "ready" } });
         })
         .catch(() => undefined); // 静默路径失败不打断：下一次轮询/推送仍会纠正
     });
@@ -248,7 +268,8 @@ export function useProjectSync(input: UseProjectSyncInput) {
     await refreshProjectSessions(project.id);
     if (project.worktreeEnabled) {
       await refreshWorktrees(project.id);
-      const latestProjects = await api.projects.list();
+      const latestProjects = await requestProjectInventory(api.projects.list);
+      if (!latestProjects) return;
       setProjects(latestProjects);
       const childProjects = latestProjects.filter((p) => p.worktreeParentId === project.id);
       await Promise.all(childProjects.map((child) => refreshProjectSessions(child.id).catch(() => undefined)));

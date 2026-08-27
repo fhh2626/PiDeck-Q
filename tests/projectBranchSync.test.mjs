@@ -21,6 +21,9 @@ function loadProjectCommands(git, projects = {}, translate = (key) => key) {
 			}
 			if (request === "../i18n") return { t: translate };
 			if (request === "../rendererUtils") return { isChatProject: () => false };
+			if (request === "../utils/projectInventoryRequests") {
+				return { invalidateProjectInventoryRequests: () => undefined };
+			}
 			throw new Error(`Unexpected import: ${request}`);
 		},
 	});

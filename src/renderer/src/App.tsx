@@ -59,6 +59,7 @@ import {
 import { resolveChatSessionBootstrap } from "./utils/chatSessionBootstrap";
 import { detectRendererPlatform } from "./lib/detectRendererPlatform";
 import { backgroundImageUrl } from "./utils/backgroundImageUrl";
+import { requestProjectInventory } from "./utils/projectInventoryRequests";
 import { applyRendererZoom } from "./native/rendererZoom";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
@@ -80,6 +81,7 @@ import {
   removeSessionComposerStateAtom,
   removeSessionStateAtom,
   replaceProjectInventoryAtom,
+  upsertProjectInventoryAtom,
   replaceProjectSessionsAtom,
   sessionRecordByIdAtomFamily,
   sessionRecordsByProjectIdAtomFamily,
@@ -217,6 +219,7 @@ export function App() {
   const setCurrentSessionId = useSetAtom(currentSessionIdAtom);
   const replaceProjectSessions = useSetAtom(replaceProjectSessionsAtom);
   const setProjects = useSetAtom(replaceProjectInventoryAtom);
+  const upsertProject = useSetAtom(upsertProjectInventoryAtom);
   const applyRuntimeEvent = useSetAtom(applySessionRuntimeEventAtom);
   const upsertSession = useSetAtom(upsertSessionAtom);
   const setSessionDraft = useSetAtom(setSessionDraftAtom);
@@ -1747,6 +1750,7 @@ export function App() {
     activeProjectId,
     gitInfo,
     setProjects,
+    upsertProject,
     setActiveProjectId,
     setGitInfo,
     setProjectBranch,
@@ -2154,7 +2158,9 @@ export function App() {
       // WSL/Windows pi 源切换：重新检测 pi 环境、刷新项目和会话列表
       if ("wslEnabled" in patch || "wslDistro" in patch || "wslUser" in patch) {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
-        void api.projects.list().then(setProjects).catch(() => undefined);
+        void requestProjectInventory(api.projects.list)
+          .then((next) => { if (next) setProjects(next); })
+          .catch(() => undefined);
         if (activeProjectId) {
           void refreshProjectSessions(activeProjectId, true).catch(() => undefined);
         }

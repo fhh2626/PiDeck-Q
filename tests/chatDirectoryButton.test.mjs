@@ -52,6 +52,8 @@ test("App extracts changeChatPath once and injects it into the sidebar action", 
 	// 项目命令 hook 只实现一次，App 同时注入侧栏与会话服务。
 	assert.match(projectCommands, /async function changeChatPath\(project: Project\)/);
 	assert.match(projectCommands, /changeChatPath\(project: Project\): Promise<void> \{\s*try \{\s*const picked = await api\.projects\.chooseChatPath\(\)/s);
+	assert.match(projectCommands, /const updatedProject = await api\.projects\.setChatPath\(picked\);/);
+	assert.match(projectCommands, /if \(updatedProject\) input\.upsertProject\(updatedProject\);/);
 	assert.match(source, /changeChatPath,[\s\S]*= useProjectCommands\(/);
 	// 侧边栏 projects action 引用同一实现
 	assert.match(source, /changeChatPath,\n    \},/);

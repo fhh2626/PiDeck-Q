@@ -9,6 +9,7 @@ import type { AgentTab } from "../../../shared/types";
 import { desktopApi as api } from "../desktopApi";
 import { showNotice } from "../utils/notice";
 import { t } from "../i18n";
+import { requestProjectInventory } from "../utils/projectInventoryRequests";
 
 export interface WorktreeActionsDeps {
 	projects: Project[];
@@ -39,8 +40,8 @@ export function useWorktreeActions(deps: WorktreeActionsDeps) {
 		try {
 			const result = await api.git.worktreeCreate(projectId, branchName);
 			// 刷新项目列表（新 worktree 已注册为项目）
-			const next = await api.projects.list();
-			setProjects(next);
+			const next = await requestProjectInventory(api.projects.list);
+			if (next) setProjects(next);
 			// 刷新 worktree 列表
 			await refreshWorktrees(projectId);
 			showNotice(t("app.worktreeCreated") + result.branch);
@@ -61,8 +62,8 @@ export function useWorktreeActions(deps: WorktreeActionsDeps) {
 			if (!removed) {
 				throw new Error(t("app.worktreeRemoveNotFound"));
 			}
-			const next = await api.projects.list();
-			setProjects(next);
+			const next = await requestProjectInventory(api.projects.list);
+			if (next) setProjects(next);
 			await refreshWorktrees(parentProjectId);
 			showNotice(t("app.worktreeRemoved"));
 		} catch (e) {
@@ -119,7 +120,8 @@ export function useWorktreeActions(deps: WorktreeActionsDeps) {
 		try {
 			const updated = await api.projects.toggleWorktreeEnabled(project.id);
 			if (!updated) return;
-			setProjects(await api.projects.list());
+			const next = await requestProjectInventory(api.projects.list);
+			if (next) setProjects(next);
 			if (updated.worktreeEnabled) void refreshWorktrees(updated.id);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);

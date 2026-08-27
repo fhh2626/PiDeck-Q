@@ -1013,11 +1013,13 @@ export class AgentManager {
 		const sessionKey = buildAgentSessionKey(input, this.getAgentSessionIdentityDefaults());
 		if (!sessionKey) return this.createUnlocked(input);
 
-		const existingForSession = this.findRuntimeBySessionKey(sessionKey);
-		if (existingForSession) return existingForSession.tab;
-
+		// 先复用同一 session 的 in-flight 创建 Promise；createUnlocked 会很早把
+		// starting runtime 放进 agents，若先查 agents，第二次调用会绕过真正的去重等待。
 		const pendingCreate = this.creatingSessionAgents.get(sessionKey);
 		if (pendingCreate) return pendingCreate;
+
+		const existingForSession = this.findRuntimeBySessionKey(sessionKey);
+		if (existingForSession) return existingForSession.tab;
 
 		// 历史会话激活属于“一个 sessionPath 只能对应一个 Agent”的业务规则；
 		// 先登记 in-flight Promise，再启动真实创建，防止第二次点击绕过 agents map 检查。

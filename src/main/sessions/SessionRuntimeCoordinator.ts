@@ -990,7 +990,14 @@ export class SessionRuntimeCoordinator {
 		const mappedAgentId = this.getAgentId(sessionId);
 		if (mappedAgentId) {
 			const mappedTab = this.agents.list().find((candidate) => candidate.id === mappedAgentId);
-			if (mappedTab) return this.waitUntilReady(mappedTab);
+			if (mappedTab && isTerminalAgent(mappedTab)) {
+				// Prompt/RPC 失败会把已绑定 runtime 标成 error；解绑后才能按同一
+				// SessionRecord 重新创建，而不是每次发送都复用这个终态 runtime。
+				await this.agents.stop(mappedTab.id).catch(() => undefined);
+				this.unbindAgentUnchecked(mappedTab.id);
+			} else if (mappedTab) {
+				return this.waitUntilReady(mappedTab);
+			}
 		}
 
 		let tab = entry.filePath ? this.findAgentBySessionPath(entry) : undefined;
@@ -1088,21 +1095,32 @@ export class SessionRuntimeCoordinator {
 	}
 
 	private async waitUntilReady(initialTab: AgentTab): Promise<AgentTab> {
-		const startedAt = Date.now();
 		let tab = initialTab;
-		while (tab.status === "starting") {
-			if (Date.now() - startedAt >= AGENT_READY_TIMEOUT_MS) {
-				throw new Error("Timed out while starting session runtime");
+		try {
+			const startedAt = Date.now();
+			while (tab.status === "starting") {
+				if (Date.now() - startedAt >= AGENT_READY_TIMEOUT_MS) {
+					throw new Error("Timed out while starting session runtime");
+				}
+				await new Promise<void>((resolve) => setTimeout(resolve, 50));
+				const current = this.agents.list().find((candidate) => candidate.id === tab.id);
+				if (!current) throw new Error("Session runtime stopped while starting");
+				tab = current;
 			}
-			await new Promise<void>((resolve) => setTimeout(resolve, 50));
-			const current = this.agents.list().find((candidate) => candidate.id === tab.id);
-			if (!current) throw new Error("Session runtime stopped while starting");
-			tab = current;
+			if (isTerminalAgent(tab)) {
+				throw this.startupFailure(tab);
+			}
+			return tab;
+		} catch (error) {
+			// A starting runtime that times out (or reaches a terminal state while
+			// being polled) must not remain discoverable by sessionPath on retry.
+			// Otherwise every later send waits on the same dead runtime forever.
+			if (tab.status === "starting" || isTerminalAgent(tab)) {
+				await this.agents.stop(initialTab.id).catch(() => undefined);
+				this.unbindAgentUnchecked(initialTab.id);
+			}
+			throw error;
 		}
-		if (isTerminalAgent(tab)) {
-			throw this.startupFailure(tab);
-		}
-		return tab;
 	}
 
 	/** 保留 pi 启动阶段的 stderr/路径等诊断，避免 Web 端只能看到无意义的 status。 */

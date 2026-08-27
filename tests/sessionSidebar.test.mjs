@@ -279,7 +279,7 @@ test("narrow project tree keeps root names from losing avoidable width", () => {
 
   // 工作区根节点需要保留折叠层级，但不应把标题栏和名称再向右推一档；
   // 展开后的 SessionTree 不在这里断言，避免改变会话层级的视觉语义。
-  assert.match(projectTree, /treeRowClass =\n  "[^"]*items-center[^\"]*px-1 /);
+  assert.match(projectTree, /treeRowClass =\n  "[^"]*items-center[^\"]*pl-1 pr-16 /);
   assert.match(projectTree, /className="flex min-w-0 flex-1 items-center gap-1 py-0 pr-1 text-left"/);
   // 标题栏整行可点击（切换全部展开/折叠），但保持 px-1 pb-1 布局：不把名称向右推一档
   assert.match(projectTree, /className="flex cursor-pointer select-none items-center justify-between rounded-md px-1 pb-1/);

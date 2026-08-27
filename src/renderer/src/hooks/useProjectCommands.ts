@@ -2,12 +2,14 @@ import type { GitBranchInfo, Project } from "../../../shared/types";
 import { desktopApi as api } from "../desktopApi";
 import { t } from "../i18n";
 import { isChatProject } from "../rendererUtils";
+import { invalidateProjectInventoryRequests } from "../utils/projectInventoryRequests";
 
 type ProjectCommandsInput = {
 	projects: Project[];
 	activeProjectId: string | undefined;
 	gitInfo: GitBranchInfo;
 	setProjects: (projects: Project[]) => void;
+	upsertProject: (project: Project) => void;
 	setActiveProjectId: (projectId: string) => void;
 	setGitInfo: (info: GitBranchInfo) => void;
 	setProjectBranch: (projectId: string, branch: string | null) => void;
@@ -43,9 +45,12 @@ export function useProjectCommands(input: ProjectCommandsInput) {
 		const targetIndexAfterRemoval = nextProjects.findIndex((project) => project.id === targetProjectId);
 		const insertIndex = sourceIndex < targetIndex ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval;
 		nextProjects.splice(insertIndex, 0, movedProject);
+		invalidateProjectInventoryRequests();
 		input.setProjects(nextProjects);
 		try {
-			input.setProjects(await api.projects.reorder(nextProjects.map((project) => project.id)));
+			const reordered = await api.projects.reorder(nextProjects.map((project) => project.id));
+			invalidateProjectInventoryRequests();
+			input.setProjects(reordered);
 		} catch (error) {
 			input.setProjects(previousProjects);
 			input.showToast(t("app.projectSortFailed", { error: error instanceof Error ? error.message : String(error) }), 4000);
@@ -68,6 +73,7 @@ export function useProjectCommands(input: ProjectCommandsInput) {
 	async function removeSidebarProject(project: Project): Promise<void> {
 		try {
 			const next = await api.projects.remove(project.id);
+			invalidateProjectInventoryRequests();
 			input.setProjects(next);
 			input.onProjectRemoved(project.id, next);
 		} catch (error) {
@@ -89,7 +95,11 @@ export function useProjectCommands(input: ProjectCommandsInput) {
 		try {
 			const picked = await api.projects.chooseChatPath();
 			if (!picked || picked === project.path) return;
-			await api.projects.setChatPath(picked);
+			const updatedProject = await api.projects.setChatPath(picked);
+			// IPC 已返回持久化后的权威项目对象，先更新本地 inventory，
+			// 不等待 projects:changed 事件，避免旧 list() snapshot 抢先回写。
+			invalidateProjectInventoryRequests();
+			if (updatedProject) input.upsertProject(updatedProject);
 			await input.refreshProjectSessions(project.id);
 			input.showToast(t("app.chatProjectPathUpdated"), 1800);
 		} catch (error) {

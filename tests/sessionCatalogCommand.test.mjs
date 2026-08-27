@@ -47,6 +47,9 @@ function createHookForRuntimeTest() {
           } : undefined,
         };
       }
+      if (request === "../utils/projectInventoryRequests") {
+        return { requestProjectInventory: (list) => list() };
+      }
       throw new Error(`Unexpected runtime import: ${request}`);
     },
     setTimeout,

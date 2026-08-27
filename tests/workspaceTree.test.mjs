@@ -60,6 +60,12 @@ test("worktree model deduplicates Windows path variants and keeps the project bi
   assert.equal(rows[0].branch, "T6");
 });
 
+test("project rows reserve the action hitbox instead of overlaying project text", () => {
+  assert.match(projectTree, /const treeRowClass =\s*\n\s*"[^"]*pl-1 pr-16/);
+  assert.match(projectTree, /pointer-events-none absolute/);
+  assert.match(projectTree, /group-hover:pointer-events-auto/);
+});
+
 test("main workspace owns root history and worktree presentation has no connector rail", () => {
   assert.match(worktree, /sessions: readonly SessionRecord\[\]/);
   assert.match(worktree, /<SessionTree[\s\S]*project=\{props\.project\}/);

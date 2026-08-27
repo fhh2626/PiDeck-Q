@@ -16,7 +16,7 @@ import { cn } from "../../lib/utils";
 // 只有当前资源使用 inset surface，避免每个项目都变成独立卡片。
 // 根项目行保留折叠层级，但收窄左右留白，给窄侧栏中的目录名多留出可用宽度。
 const treeRowClass =
-  "group conversation relative flex min-h-8 w-full items-center gap-1.5 rounded-lg border border-transparent px-1 py-0 text-body text-foreground shadow-none transition-[background-color,border-color,box-shadow] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
+  "group conversation relative flex min-h-8 w-full items-center gap-1.5 rounded-lg border border-transparent pl-1 pr-16 py-0 text-body text-foreground shadow-none transition-[background-color,border-color,box-shadow] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
 
 /** 项目行右侧操作按钮的虚化模式：absolute 浮层，不参与布局（不挤压项目名文字），
  * 默认隐藏（pointer-events 一并关闭防误触），行 hover / 行内聚焦时显现。
