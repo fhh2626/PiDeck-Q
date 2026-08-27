@@ -57,7 +57,5 @@ private:
     FileDropController *m_fileDrop = nullptr;
     bool m_closeToTray = true;
     bool m_quitting = false;
-    bool m_loadFinished = false;
-    bool m_showOnLoadSuccess = true;
     std::function<void()> m_quitHandler;
 };

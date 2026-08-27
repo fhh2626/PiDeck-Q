@@ -8,9 +8,14 @@
 
 void applyNativeThemeSource(const QString &source)
 {
+    auto *hints = QGuiApplication::styleHints();
+    if (source == QStringLiteral("dark")) hints->setColorScheme(Qt::ColorScheme::Dark);
+    else if (source == QStringLiteral("light")) hints->setColorScheme(Qt::ColorScheme::Light);
+    else hints->unsetColorScheme();
+
     const bool dark = source == QStringLiteral("dark")
         || (source != QStringLiteral("light")
-            && QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark);
+            && hints->colorScheme() == Qt::ColorScheme::Dark);
     QPalette palette = QApplication::style()->standardPalette();
     if (dark) {
         palette.setColor(QPalette::Window, QColor("#121212"));

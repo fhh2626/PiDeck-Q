@@ -1,4 +1,5 @@
 #include "FileDropController.h"
+#include "NativeFilePathLimits.h"
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -68,12 +69,11 @@ bool FileDropController::hasLocalFiles(const QMimeData *mimeData)
 
 QJsonObject FileDropController::payload(const QMimeData *mimeData, const QPoint &clientPosition)
 {
+    const QStringList boundedPaths = mimeData
+        ? NativeFilePathLimits::fromUrls(mimeData->urls())
+        : QStringList{};
     QJsonArray paths;
-    if (mimeData) {
-        for (const QUrl &url : mimeData->urls()) {
-            if (url.isLocalFile()) paths.append(url.toLocalFile());
-        }
-    }
+    for (const QString &path : boundedPaths) paths.append(path);
     return QJsonObject{
         {QStringLiteral("paths"), paths},
         {QStringLiteral("clientX"), clientPosition.x()},

@@ -94,6 +94,10 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	});
 
 	const memoryProfileEnabled = bootstrap.settings?.memoryProfileEnabled === true;
+	const heartbeatScheduler = {
+		setTimeout: (callback: () => void, delayMs: number) => window.setTimeout(callback, delayMs),
+		clearTimeout: (timer: number) => window.clearTimeout(timer),
+	};
 	const heartbeatRequest = createNativeHeartbeatRequest(
 		async (signal) => {
 			const response = await fetch(new URL("/__pideck/heartbeat", baseUrl), {
@@ -112,21 +116,17 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 			const state = toNativeHeartbeatState(await response.json());
 			transport.handleHeartbeat(state);
 		},
-		{
-			setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
-			clearTimeout: (timer) => window.clearTimeout(timer),
-		},
+		heartbeatScheduler,
 		10_000,
 	);
-	const heartbeatTimer = window.setInterval(() => {
-		heartbeatRequest.run();
-		if (memoryProfileEnabled) {
+	const memoryDiagnosticsRequest = createNativeHeartbeatRequest(
+		async (signal) => {
 			const memory = (performance as Performance & {
 				memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number };
 			}).memory;
 			const images = [...document.images];
 			const canvases = [...document.querySelectorAll("canvas")];
-			void fetch(new URL("/__pideck/diagnostics/memory", baseUrl), {
+			await fetch(new URL("/__pideck/diagnostics/memory", baseUrl), {
 				method: "POST",
 				headers: { "content-type": "application/json", "x-pideck-token": token },
 				body: JSON.stringify({
@@ -139,12 +139,20 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 					workerCount: null,
 					workerJSHeapKB: null,
 				}),
-			}).catch(() => undefined);
-		}
+				signal,
+			});
+		},
+		heartbeatScheduler,
+		10_000,
+	);
+	const heartbeatTimer = window.setInterval(() => {
+		heartbeatRequest.run();
+		if (memoryProfileEnabled) memoryDiagnosticsRequest.run();
 	}, NATIVE_HEARTBEAT_INTERVAL_MS);
 	window.addEventListener("beforeunload", () => {
 		window.clearInterval(heartbeatTimer);
 		heartbeatRequest.dispose();
+		memoryDiagnosticsRequest.dispose();
 	}, { once: true });
 
 	transport.activateAfter(bootstrap.eventSeq ?? transport.getLastEventSeq());

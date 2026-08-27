@@ -18,7 +18,7 @@ public:
 
     void update(const QJsonObject &labels);
     void setVisible(bool visible);
-    void showMessage(const QString &title, const QString &message,
+    bool showMessage(const QString &title, const QString &message,
                      QSystemTrayIcon::MessageIcon icon, int millisecondsTimeoutHint);
 
 private:

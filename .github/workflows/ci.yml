@@ -42,6 +42,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test native Host RPC
+        run: npm run test:native-host-rpc
+
+      - name: Test native Qt GUI lifecycle
+        run: npm run test:native-gui
+
       - name: Generate app icon
         run: npm run make-icon
 

@@ -1,4 +1,5 @@
 #include "ClipboardController.h"
+#include "NativeFilePathLimits.h"
 
 #include <QBuffer>
 #include <QClipboard>
@@ -45,12 +46,7 @@ QString imageDataUrl(const QMimeData *mimeData)
 
 QStringList mimeFilePaths(const QMimeData *mimeData)
 {
-    QStringList paths;
-    if (!mimeData) return paths;
-    for (const QUrl &url : mimeData->urls()) {
-        if (url.isLocalFile()) paths.append(url.toLocalFile());
-    }
-    return paths;
+    return mimeData ? NativeFilePathLimits::fromUrls(mimeData->urls()) : QStringList{};
 }
 
 #ifdef Q_OS_WIN
@@ -64,11 +60,14 @@ QStringList windowsFileDropPaths()
         return paths;
     }
     const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
-    for (UINT index = 0; index < count; ++index) {
+    qsizetype totalBytes = 0;
+    for (UINT index = 0; index < count && paths.size() < NativeFilePathLimits::kMaxFilePathCount; ++index) {
         const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+        if (length > static_cast<UINT>(NativeFilePathLimits::kMaxFilePathUtf8Bytes / sizeof(wchar_t))) break;
         std::vector<wchar_t> value(static_cast<size_t>(length) + 1, L'\0');
         DragQueryFileW(drop, index, value.data(), length + 1);
-        paths.append(ClipboardController::decodeWindowsDropPath(value.data(), static_cast<int>(length)));
+        const QString path = ClipboardController::decodeWindowsDropPath(value.data(), static_cast<int>(length));
+        if (!path.isEmpty() && !NativeFilePathLimits::append(paths, path, totalBytes)) break;
     }
     CloseClipboard();
     return paths;

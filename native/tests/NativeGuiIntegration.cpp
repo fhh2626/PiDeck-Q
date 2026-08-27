@@ -1,5 +1,8 @@
 #include "ClipboardController.h"
+#include "FileDropController.h"
+#include "HostRpcServer.h"
 #include "MainWindow.h"
+#include "NativeFilePathLimits.h"
 #include "NativeTheme.h"
 #include "WindowsToastNotifier.h"
 
@@ -10,11 +13,14 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QMimeData>
 #include <QPalette>
 #include <QSize>
 #include <QStyleHints>
 #include <QThread>
+#include <QUrl>
 
 #include <iostream>
 
@@ -39,12 +45,17 @@ int main(int argc, char **argv)
     QtWebView::initialize();
     QApplication application(argc, argv);
 
+    const Qt::ColorScheme systemScheme = QGuiApplication::styleHints()->colorScheme();
     applyNativeThemeSource(QStringLiteral("dark"));
     if (!require(QApplication::palette().color(QPalette::Window) == QColor("#121212"),
                  "dark native theme was not applied")) return 1;
+    if (!require(QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark,
+                 "dark native color-scheme hint was not applied")) return 1;
     applyNativeThemeSource(QStringLiteral("light"));
     if (!require(QApplication::palette().color(QPalette::Window) == QColor("#f8f8f5"),
                  "light native theme was not applied")) return 1;
+    if (!require(QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light,
+                 "light native color-scheme hint was not applied")) return 1;
     const bool firstToastInitialization = WindowsToastNotifier::initialize();
     if (!require(WindowsToastNotifier::isSupported() == firstToastInitialization,
                  "toast capability did not reflect initialization state")) return 1;
@@ -55,6 +66,8 @@ int main(int argc, char **argv)
     WindowsToastNotifier::uninitialize();
 
     applyNativeThemeSource(QStringLiteral("system"));
+    if (!require(QGuiApplication::styleHints()->colorScheme() == systemScheme,
+                 "system native color-scheme hint did not unset the override")) return 1;
     const bool systemIsDark = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
     const QColor systemWindow = QApplication::palette().color(QPalette::Window);
     if (!require(systemWindow == (systemIsDark ? QColor("#121212") : QColor("#f8f8f5")),
@@ -106,6 +119,20 @@ int main(int argc, char **argv)
     processGuiEvents();
     if (!require(fixed.isMaximized(), "titlebar change lost maximized state")) return 1;
 
+    HostRpcServer lifecycleHost;
+    MainWindow reloadStateWindow(&lifecycleHost, fixedBounds);
+    reloadStateWindow.show();
+    reloadStateWindow.load(QUrl(QStringLiteral("data:text/html,<html><body>native</body></html>")));
+    for (int index = 0; index < 100; ++index) processGuiEvents();
+    reloadStateWindow.showMinimized();
+    processGuiEvents();
+    if (!require(reloadStateWindow.isMinimized(),
+                 "test window did not enter minimized state")) return 1;
+    reloadStateWindow.reload();
+    for (int index = 0; index < 100; ++index) processGuiEvents();
+    if (!require(reloadStateWindow.isMinimized(),
+                 "renderer reload restored a minimized window")) return 1;
+
     int clipboardChanges = 0;
     {
         ClipboardController clipboard([&clipboardChanges](const QJsonObject &) {
@@ -123,6 +150,32 @@ int main(int argc, char **argv)
     }
     if (!require(clipboardChanges == changesAfterDestroy,
                  "destroyed ClipboardController still received clipboard signals")) return 1;
+
+    QMimeData pathMimeData;
+    QList<QUrl> manyPaths;
+    for (int index = 0; index < NativeFilePathLimits::kMaxFilePathCount + 1; ++index) {
+        manyPaths.append(QUrl::fromLocalFile(QStringLiteral("C:/pideck-test/%1").arg(index)));
+    }
+    pathMimeData.setUrls(manyPaths);
+    const QJsonArray countBoundedPaths = FileDropController::payload(&pathMimeData, {}).value(QStringLiteral("paths")).toArray();
+    if (!require(countBoundedPaths.size() == NativeFilePathLimits::kMaxFilePathCount,
+                 "file path count limit was not applied")) return 1;
+
+    QMimeData byteLimitedPathMimeData;
+    byteLimitedPathMimeData.setUrls({QUrl::fromLocalFile(
+        QStringLiteral("C:/") + QString(NativeFilePathLimits::kMaxFilePathUtf8Bytes + 1, QLatin1Char('x')))});
+    const QJsonArray byteBoundedPaths = FileDropController::payload(&byteLimitedPathMimeData, {}).value(QStringLiteral("paths")).toArray();
+    if (!require(byteBoundedPaths.isEmpty(), "file path byte limit was not applied")) return 1;
+
+    if (auto *systemClipboard = QGuiApplication::clipboard()) {
+        auto *clipboardPathData = new QMimeData();
+        clipboardPathData->setUrls(manyPaths);
+        systemClipboard->setMimeData(clipboardPathData);
+        processGuiEvents();
+        ClipboardController boundedClipboard;
+        if (!require(boundedClipboard.filePaths().size() == NativeFilePathLimits::kMaxFilePathCount,
+                     "clipboard file path count limit was not applied")) return 1;
+    }
 
     ClipboardController imageClipboard;
     if (auto *systemClipboard = QGuiApplication::clipboard()) {

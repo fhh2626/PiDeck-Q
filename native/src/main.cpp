@@ -399,6 +399,12 @@ int main(int argc, char **argv)
         const QString body = params.value(QStringLiteral("body")).toString();
         const bool silent = params.value(QStringLiteral("silent")).toBool(false);
         const QString activationUrl = params.value(QStringLiteral("activationUrl")).toString();
+        const auto result = [](const QString &backend, bool interactive) {
+            return QJsonValue(QJsonObject{
+                {QStringLiteral("backend"), backend},
+                {QStringLiteral("interactive"), interactive},
+            });
+        };
         if (WindowsToastNotifier::isSupported()) {
             WindowsToastNotifier::show(id, title, body, silent, activationUrl,
                 [&host, id] {
@@ -413,14 +419,25 @@ int main(int argc, char **argv)
                 },
                 [&host, &tray, id, title, body](const QString &error) {
                     QMetaObject::invokeMethod(&host, [&host, &tray, id, title, body, error] {
-                        if (tray) tray->showMessage(title, body, QSystemTrayIcon::Information, 5000);
-                        host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("error"), error}});
+                        if (tray && tray->showMessage(title, body, QSystemTrayIcon::Information, 5000)) {
+                            // Tray fallback has no event carrying a stable notification
+                            // id, so report it as non-interactive and release the Node
+                            // callback instead of misreporting a display failure.
+                            host.sendEvent(QStringLiteral("notification.fallback"), QJsonObject{{QStringLiteral("id"), id}});
+                        } else {
+                            host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{
+                                {QStringLiteral("id"), id},
+                                {QStringLiteral("error"), error},
+                            });
+                        }
                     }, Qt::QueuedConnection);
                 });
-        } else if (tray) {
-            tray->showMessage(title, body, QSystemTrayIcon::Information, 5000);
+            return result(QStringLiteral("toast"), true);
         }
-        return QJsonValue(QJsonValue::Null);
+        if (tray && tray->showMessage(title, body, QSystemTrayIcon::Information, 5000)) {
+            return result(QStringLiteral("tray"), false);
+        }
+        return result(QStringLiteral("none"), false);
     });
 
     host.setEventHandler([&](const QString &name, const QJsonValue &payload) {

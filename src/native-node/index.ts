@@ -154,9 +154,10 @@ async function main(): Promise<void> {
 				if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 				try {
 					await placeholderServer.start();
-					if (nativeHost?.hasLiveWindow()) {
-						await host.request("window.load", { url: createRendererPageUrl(placeholderServer.getUrl()) });
-					}
+					// The Qt window is created before renderer.ready, so liveWindow only
+					// becomes true after a successful page load. Always hand the new URL to
+					// the host: its no-op-before-window behavior also covers that race.
+					await host.request("window.load", { url: createRendererPageUrl(placeholderServer.getUrl()) });
 					return;
 				} catch (error) {
 					serverError = error instanceof Error ? error : serverError;

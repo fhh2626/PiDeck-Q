@@ -69,7 +69,6 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     connect(m_surface->view(), &QWebView::loadingChanged, this,
             [this](const QWebViewLoadingInfo &info) {
         if (info.status() == QWebViewLoadingInfo::LoadStatus::Failed) {
-            m_loadFinished = false;
             m_host->sendEvent(QStringLiteral("window.loadFailed"), QJsonObject{
                 {QStringLiteral("url"), info.url().toString()},
                 {QStringLiteral("error"), info.errorString()},
@@ -77,8 +76,8 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
             return;
         }
         if (info.status() != QWebViewLoadingInfo::LoadStatus::Succeeded) return;
-        m_loadFinished = true;
-        if (m_showOnLoadSuccess) showWindow();
+        // Initial visibility is decided by the Qt host before the first load;
+        // reloads and server recovery must preserve minimized/background state.
         m_host->sendEvent(QStringLiteral("window.ready"), QJsonObject{});
     });
 }
@@ -87,15 +86,11 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::load(const QUrl &url)
 {
-    // Initial loads must reveal the window, while server-recovery loads preserve
-    // a previously hidden-to-tray state after the renderer becomes ready again.
-    m_showOnLoadSuccess = !m_loadFinished || isVisible();
     m_surface->load(url);
 }
 
 void MainWindow::reload()
 {
-    m_showOnLoadSuccess = isVisible();
     m_surface->reload();
 }
 
@@ -336,8 +331,8 @@ void MainWindow::emitVisible(bool visible)
 
 void MainWindow::applyStartupMode(const QString &mode, bool hasLastBounds)
 {
-    // Keep the first frame hidden until QWebView reports a successful load; only
-    // set the state here so maximize/fullscreen never causes a visible layout jump.
+    // Startup visibility is controlled by the host immediately before navigation;
+    // only set the presentation state here so maximize/fullscreen is deterministic.
     if (mode == QStringLiteral("fullscreen")) {
         setWindowState(windowState() | Qt::WindowFullScreen);
     } else if (mode == QStringLiteral("maximized") || (mode == QStringLiteral("last") && !hasLastBounds)) {
