@@ -244,7 +244,6 @@ export function useProjectSync(input: UseProjectSyncInput) {
       void api.sessions
         .listCatalog(projectId, { scan: false })
         .then((records) => {
-          if (sessionRequestByProjectRef.current[projectId] !== request) return;
           const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];
           if (latestAppliedRequest !== undefined && request < latestAppliedRequest) return;
           replaceProjectSessions({ projectId, sessions: records });

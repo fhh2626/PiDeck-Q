@@ -501,6 +501,14 @@ export class AgentManager {
 	}
 
 	/**
+	 * 与 create/reattach 的 get_state 使用同一设置值，供 SessionRuntimeCoordinator
+	 * 等待 starting runtime 时共享 deadline，避免慢机器被第二套硬编码 timeout 提前清理。
+	 */
+	getStartupTimeoutMs(): number {
+		return this.rpcTimeoutMs;
+	}
+
+	/**
 	 * 判断指定项目是否仍有运行中的 Agent（pi 子进程未退出）。
 	 * 用于删除项目前拦截，避免删除后 pi 进程悬挂后台继续占用资源。
 	 */

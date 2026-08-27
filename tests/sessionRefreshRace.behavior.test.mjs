@@ -171,3 +171,23 @@ test("a foreground success remains authoritative when the newer refresh fails", 
   assert.deepEqual(runtime.catalogStates.map((entry) => entry.state.status), ["loading", "ready"]);
   assert.deepEqual(runtime.loadingWrites.map((entry) => entry["project-1"]), [true, false]);
 });
+
+test("an older background success is accepted after a newer foreground failure", async () => {
+  const runtime = createRuntime();
+  runtime.emitCatalogRefreshed();
+  await waitForCalls(runtime, 1);
+
+  const foreground = runtime.sync.refreshProjectSessions("project-1", false);
+  await waitForCalls(runtime, 2);
+  runtime.catalogCalls[1].request.reject(new Error("newer foreground failure"));
+  await assert.rejects(foreground, /newer foreground failure/);
+
+  runtime.catalogCalls[0].request.resolve([recordB]);
+  await settle();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.sessionReplacements)), [
+    { projectId: "project-1", sessions: [recordB] },
+  ]);
+  assert.deepEqual(runtime.catalogStates.map((entry) => entry.state.status), ["loading", "error", "ready"]);
+  assert.deepEqual(runtime.loadingWrites.map((entry) => entry["project-1"]), [true, false]);
+});

@@ -32,11 +32,15 @@ test("same-session creation waits for the in-flight Promise before reusing a run
   );
 });
 
-test("startup timeout cleanup and terminal runtime recreation are present", () => {
+test("startup timeout follows AgentManager RPC timeout and cleans failed runtimes", () => {
+  assert.match(agentManager, /getStartupTimeoutMs\(\): number \{\s*return this\.rpcTimeoutMs;\s*\}/s);
+  assert.match(coordinator, /getStartupTimeoutMs\(\): number;/);
+  assert.match(coordinator, /const startupTimeoutMs = this\.agents\.getStartupTimeoutMs\(\) \+ AGENT_READY_POLLING_GRACE_MS;/);
+  assert.doesNotMatch(coordinator, /AGENT_READY_TIMEOUT_MS/);
   assert.match(coordinator, /if \(tab\.status === "starting" \|\| isTerminalAgent\(tab\)\)/);
   assert.match(coordinator, /await this\.agents\.stop\(initialTab\.id\)\.catch\(\(\) => undefined\);/);
-  assert.doesNotMatch(coordinator, /if \(mappedTab && isTerminalAgent\(mappedTab\)\)/);
   assert.match(coordinator, /this\.unbindAgentUnchecked\(initialTab\.id\);/);
+  assert.doesNotMatch(coordinator, /if \(mappedTab && isTerminalAgent\(mappedTab\)/);
 });
 
 test("renderer has no direct Agent creation path", () => {

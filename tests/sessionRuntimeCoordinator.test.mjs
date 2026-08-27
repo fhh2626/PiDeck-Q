@@ -131,6 +131,7 @@ function createHarness(options = {}) {
   };
   const agents = {
     list: () => tabs,
+    getStartupTimeoutMs: () => options.startupTimeoutMs ?? 60_000,
 	getMessages: (agentId) => {
 	  calls.messages += 1;
 	  if (options.getMessages) return options.getMessages(agentId);

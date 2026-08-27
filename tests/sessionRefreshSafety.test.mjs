@@ -170,12 +170,17 @@ test("publishes foreground loading before yielding and clears its owner in final
   );
 });
 
-test("catalog-refreshed settles the catalog state without taking foreground loading ownership", () => {
+test("catalog-refreshed accepts older success after a newer request fails", () => {
+  const block = projectSync.match(
+    /const unsubscribe = api\.sessions\.onCatalogRefreshed\(\(\{ projectId \}\) => \{[\s\S]*?\n    \}\);/,
+  )?.[0] ?? "";
+  assert.match(block, /const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef\.current\[projectId\];/);
+  assert.doesNotMatch(block, /if \(sessionRequestByProjectRef\.current\[projectId\] !== request\) return;/);
   assert.match(
-    projectSync,
+    block,
     /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
   );
-  assert.doesNotMatch(projectSync, /if \(!isCurrentRequest\) \{[\s\S]*setSessionCatalogLoadState\?\./);
+  assert.match(block, /sessionRequestByProjectRef\.current\[projectId\] !== request/);
 });
 
 test("publishes canonical ready and request-scoped error states", () => {
