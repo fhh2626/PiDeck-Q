@@ -990,14 +990,7 @@ export class SessionRuntimeCoordinator {
 		const mappedAgentId = this.getAgentId(sessionId);
 		if (mappedAgentId) {
 			const mappedTab = this.agents.list().find((candidate) => candidate.id === mappedAgentId);
-			if (mappedTab && isTerminalAgent(mappedTab)) {
-				// Prompt/RPC 失败会把已绑定 runtime 标成 error；解绑后才能按同一
-				// SessionRecord 重新创建，而不是每次发送都复用这个终态 runtime。
-				await this.agents.stop(mappedTab.id).catch(() => undefined);
-				this.unbindAgentUnchecked(mappedTab.id);
-			} else if (mappedTab) {
-				return this.waitUntilReady(mappedTab);
-			}
+			if (mappedTab) return this.waitUntilReady(mappedTab);
 		}
 
 		let tab = entry.filePath ? this.findAgentBySessionPath(entry) : undefined;

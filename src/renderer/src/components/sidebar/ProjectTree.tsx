@@ -16,16 +16,12 @@ import { cn } from "../../lib/utils";
 // 只有当前资源使用 inset surface，避免每个项目都变成独立卡片。
 // 根项目行保留折叠层级，但收窄左右留白，给窄侧栏中的目录名多留出可用宽度。
 const treeRowClass =
-  "group conversation relative flex min-h-8 w-full items-center gap-1.5 rounded-lg border border-transparent pl-1 pr-16 py-0 text-body text-foreground shadow-none transition-[background-color,border-color,box-shadow] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
+  "group conversation relative flex min-h-8 w-full items-center gap-1.5 rounded-lg border border-transparent pl-1 py-0 text-body text-foreground shadow-none transition-[background-color,border-color,box-shadow] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
 
-/** 项目行右侧操作按钮的虚化模式：absolute 浮层，不参与布局（不挤压项目名文字），
- * 默认隐藏（pointer-events 一并关闭防误触），行 hover / 行内聚焦时显现。
- * 窄侧栏（<256px）时按钮会盖住项目名：conversation-body 上
- * @max-[255px]:group-hover:pr-29 在 hover 时压出 116px 右侧留白（4 个按钮宽），
- * 文本截断让位但保持可见——2027-01 用户反馈：整行淡出到透明会导致标题不可读，
- * 必须点击激活才能看到文字；压缩+截断只损失尾部文字，不影响辨认。 */
+/** 项目行右侧操作按钮的虚化模式：作为独立 flex item 参与布局，不与项目主按钮重叠。
+ * 默认仅降低可见度，行 hover / 行内聚焦时显现；右侧 action 区始终保留自己的完整命中区域。 */
 const dimmedActionsClass =
-	"pointer-events-none absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100";
+	"ml-auto shrink-0 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100";
 
 function isChatProject(project: Project) {
   return project.kind === "chat";
@@ -111,7 +107,7 @@ export function ProjectTree(props: {
           >
             <ChevronRight size={14} className={cn("transition-transform", !collapsed && "rotate-90")} />
           </button>
-          {/* 触发区包整行选择按钮：只包截断的 <strong> 时，快划过右侧气泡会立刻离开关闭。 */}
+          {/* 主按钮只占剩余 flex 空间；右侧 actions 是同级、非重叠的命中区域。 */}
           <PathTooltip content={`${projectDirectoryName}\n${project.path}`}>
             <button
               type="button"
@@ -131,7 +127,7 @@ export function ProjectTree(props: {
               <span className="grid size-5 shrink-0 place-items-center text-muted-foreground" aria-hidden="true">
                 {collapsed ? <Folder size={14} /> : <FolderOpen size={14} />}
               </span>
-              <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover:pr-29 @max-[255px]:group-focus-within:pr-29">
+              <div className="conversation-body min-w-0 flex-1">
                 <div className="conversation-title flex min-w-0 items-center">
                   <strong className="min-w-0 flex-1 truncate font-medium">{projectDirectoryName}</strong>
                 </div>

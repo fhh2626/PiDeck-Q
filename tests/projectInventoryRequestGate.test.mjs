@@ -25,10 +25,12 @@ function loadGate() {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((resolvePromise) => {
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 test("newer project snapshots invalidate older list responses", async () => {
@@ -54,4 +56,19 @@ test("an authoritative push invalidates an in-flight project list", async () => 
   pending.resolve([{ id: "chat", path: "C:/old-chat" }]);
 
   assert.equal(await request, undefined);
+});
+
+test("a newer failed list does not discard an older successful list", async () => {
+  const { requestProjectInventory } = loadGate();
+  const older = deferred();
+  const newer = deferred();
+  const oldRequest = requestProjectInventory(() => older.promise);
+  const newRequest = requestProjectInventory(() => newer.promise);
+
+  newer.reject(new Error("temporary list failure"));
+  await assert.rejects(newRequest, /temporary list failure/);
+
+  const projects = [{ id: "chat", path: "C:/chat" }];
+  older.resolve(projects);
+  assert.deepEqual(await oldRequest, projects);
 });

@@ -12,11 +12,17 @@ test("native RPC aborts bounded calls and clears the timeout", () => {
   assert.match(source, /Native RPC timed out after \$\{timeoutMs\}ms/);
 });
 
-test("native RPC keeps prompt delivery unbounded but bounds history and file calls", () => {
-  assert.match(source, /if \(channel === "sessions:send-prompt"\) return undefined;/);
-  assert.match(source, /if \(channel\.startsWith\("sessions:catalog-"\)\) return NATIVE_HISTORY_RPC_TIMEOUT_MS;/);
-  assert.match(source, /if \(channel\.startsWith\("files:"\)\) return NATIVE_FILE_RPC_TIMEOUT_MS;/);
-  assert.match(source, /const NATIVE_RPC_TIMEOUT_MS = 30_000;/);
-  assert.match(source, /const NATIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;/);
-  assert.match(source, /const NATIVE_FILE_RPC_TIMEOUT_MS = 60_000;/);
+test("native RPC bounds only the explicit read-only allowlist", () => {
+  assert.match(source, /const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;/);
+  assert.match(source, /const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set\(\[/);
+  assert.match(source, /ipcChannels\.projectsList/);
+  assert.match(source, /ipcChannels\.sessionsCatalogList/);
+  assert.match(source, /ipcChannels\.sessionsCatalogReadMessagePage/);
+  assert.match(source, /ipcChannels\.filesList/);
+  assert.match(source, /ipcChannels\.filesReadContent/);
+  assert.match(source, /return NATIVE_READONLY_RPC_CHANNELS\.has\(channel\)/);
+  assert.match(source, /: undefined;/);
+  assert.doesNotMatch(source, /channel\.startsWith\("sessions:catalog-"\)/);
+  assert.doesNotMatch(source, /channel\.startsWith\("files:"\)/);
+  assert.doesNotMatch(source, /NATIVE_RPC_TIMEOUT_MS/);
 });

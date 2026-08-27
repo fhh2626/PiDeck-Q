@@ -96,8 +96,10 @@ export function useProjectSync(input: UseProjectSyncInput) {
   activeProjectIdRef.current = activeProjectId;
   const fileRequestRef = useRef(0);
   const gitInfoRequestRef = useRef(0);
+  // request sequence 只记录启动顺序；只有成功应用的请求才能推进数据 authority。
   const sessionRequestByProjectRef = useRef<Record<string, number>>({});
-  // 数据 generation 与前台 loading 所有权分离：后台 catalog-refreshed 可以推进数据版本，
+  const sessionLatestAppliedRequestByProjectRef = useRef<Record<string, number | undefined>>({});
+  // 数据 authority 与前台 loading 所有权分离：后台 catalog-refreshed 可以推进数据版本，
   // 但不能让原本显示 spinner 的前台请求失去清理 loading 的机会。
   const sessionLoadingRequestByProjectRef = useRef<Record<string, number | undefined>>({});
   const sessionRefreshRunningRef = useRef<Set<string>>(new Set());
@@ -159,10 +161,13 @@ export function useProjectSync(input: UseProjectSyncInput) {
         SESSION_REFRESH_TIMEOUT_MS,
         t("app.sessionRefreshTimeout"),
       );
-      if (sessionRequestByProjectRef.current[projectId] !== request) {
+      const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];
+      if (latestAppliedRequest !== undefined && request < latestAppliedRequest) {
+        // 新请求已经成功应用时，旧请求只能完成自己的 Promise，不能回写数据或状态。
         result = records;
       } else {
         replaceProjectSessions({ projectId, sessions: records });
+        sessionLatestAppliedRequestByProjectRef.current[projectId] = request;
         setSessionCatalogLoadState?.({ projectId, state: { status: "ready" } });
         const sorted = records
           .map(sessionRecordToSummary)
@@ -174,7 +179,12 @@ export function useProjectSync(input: UseProjectSyncInput) {
     } catch (caughtError) {
       failed = true;
       error = caughtError;
-      if (sessionRequestByProjectRef.current[projectId] === request) {
+      // 失败请求不能覆盖已经成功应用的数据；只有没有任何成功 authority，
+      // 且该请求仍是最新启动请求时，才把 catalog 置为 error。
+      if (
+        sessionRequestByProjectRef.current[projectId] === request &&
+        sessionLatestAppliedRequestByProjectRef.current[projectId] === undefined
+      ) {
         const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
         setSessionCatalogLoadState?.({
           projectId,
@@ -190,16 +200,8 @@ export function useProjectSync(input: UseProjectSyncInput) {
       if (ownsForegroundLoading) {
         delete sessionLoadingRequestByProjectRef.current[projectId];
         setSessionLoadingByProject((c) => ({ ...c, [projectId]: false }));
-        // 后台刷新推进了 data generation 后，前台请求仍负责结束 spinner；
-        // 同步收口 catalog 状态，避免 SessionTree 永远停在 loading。
-        if (!isCurrentRequest) {
-          setSessionCatalogLoadState?.({
-            projectId,
-            state: failed
-              ? { status: "error", error: error instanceof Error ? error.message : String(error) }
-              : { status: "ready" },
-          });
-        }
+        // stale foreground 请求只负责结束自己创建的 spinner；ready/error 必须由
+        // 成功应用数据的 authority 或当前失败请求写入，避免旧请求反向覆盖状态。
       }
       if (!isCurrentCompletion) {
         if (failed) completion.reject(error);
@@ -243,10 +245,25 @@ export function useProjectSync(input: UseProjectSyncInput) {
         .listCatalog(projectId, { scan: false })
         .then((records) => {
           if (sessionRequestByProjectRef.current[projectId] !== request) return;
+          const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];
+          if (latestAppliedRequest !== undefined && request < latestAppliedRequest) return;
           replaceProjectSessions({ projectId, sessions: records });
+          sessionLatestAppliedRequestByProjectRef.current[projectId] = request;
           setSessionCatalogLoadState?.({ projectId, state: { status: "ready" } });
         })
-        .catch(() => undefined); // 静默路径失败不打断：下一次轮询/推送仍会纠正
+        .catch((caughtError) => {
+          // 没有任何成功数据时，当前后台刷新负责结束 loading/error 状态；
+          // 不弹 toast，下一次轮询/推送仍可纠正。
+          if (
+            sessionRequestByProjectRef.current[projectId] !== request ||
+            sessionLatestAppliedRequestByProjectRef.current[projectId] !== undefined
+          ) return;
+          const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
+          setSessionCatalogLoadState?.({
+            projectId,
+            state: { status: "error", error: message },
+          });
+        });
     });
     return unsubscribe;
     // replaceProjectSessions/api 由 App 以稳定引用提供（useCallback/useMemo），依赖安全

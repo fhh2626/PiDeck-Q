@@ -126,16 +126,19 @@ test("bounds catalog requests and retains timeout cleanup", () => {
   assert.match(scanner, /clearTimeout\(scanTimer\)/);
 });
 
-test("preserves request gate, stale records, replace ordering, and canonical sorting", () => {
+test("uses request sequence plus latest-applied authority for catalog data", () => {
   const block = runProjectSessionRefreshBlock();
+  assert.match(projectSync, /const sessionLatestAppliedRequestByProjectRef = useRef<Record<string, number \| undefined>>\(\{\}\);/);
   assertInOrder(
     block,
     [
       "const request = (sessionRequestByProjectRef.current[projectId] ?? 0) + 1;",
       "sessionRequestByProjectRef.current[projectId] = request;",
-      "if (sessionRequestByProjectRef.current[projectId] !== request)",
+      "const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];",
+      "if (latestAppliedRequest !== undefined && request < latestAppliedRequest)",
       "result = records;",
       "replaceProjectSessions({ projectId, sessions: records });",
+      "sessionLatestAppliedRequestByProjectRef.current[projectId] = request;",
       ".map(sessionRecordToSummary)",
       ".filter((session): session is SessionSummary => Boolean(session))",
       ".sort((a, b) => b.updatedAt - a.updatedAt);",
@@ -170,14 +173,18 @@ test("publishes foreground loading before yielding and clears its owner in final
 test("catalog-refreshed settles the catalog state without taking foreground loading ownership", () => {
   assert.match(
     projectSync,
-    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
+    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
   );
-  assert.match(projectSync, /if \(!isCurrentRequest\) \{[\s\S]*setSessionCatalogLoadState\?\./);
+  assert.doesNotMatch(projectSync, /if \(!isCurrentRequest\) \{[\s\S]*setSessionCatalogLoadState\?\./);
 });
 
 test("publishes canonical ready and request-scoped error states", () => {
   const block = runProjectSessionRefreshBlock();
   assert.match(projectSync, /setSessionCatalogLoadState\?: \(input: \{ projectId: string; state: SessionLoadState \}\) => void;/);
+  assert.match(
+    block,
+    /if \(\s*sessionRequestByProjectRef\.current\[projectId\] === request &&\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] === undefined\s*\)/,
+  );
   assertInOrder(
     block,
     [
@@ -185,7 +192,6 @@ test("publishes canonical ready and request-scoped error states", () => {
       "} catch (caughtError) {",
       "failed = true;",
       "error = caughtError;",
-      "if (sessionRequestByProjectRef.current[projectId] === request)",
       "const message = caughtError instanceof Error ? caughtError.message : String(caughtError);",
       'state: { status: "error", error: message },',
     ],

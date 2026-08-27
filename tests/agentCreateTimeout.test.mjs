@@ -33,10 +33,9 @@ test("same-session creation waits for the in-flight Promise before reusing a run
 });
 
 test("startup timeout cleanup and terminal runtime recreation are present", () => {
-  assert.match(coordinator, /if \(mappedTab && isTerminalAgent\(mappedTab\)/);
-  assert.match(coordinator, /await this\.agents\.stop\(mappedTab\.id\)\.catch\(\(\) => undefined\);/);
   assert.match(coordinator, /if \(tab\.status === "starting" \|\| isTerminalAgent\(tab\)\)/);
   assert.match(coordinator, /await this\.agents\.stop\(initialTab\.id\)\.catch\(\(\) => undefined\);/);
+  assert.doesNotMatch(coordinator, /if \(mappedTab && isTerminalAgent\(mappedTab\)\)/);
   assert.match(coordinator, /this\.unbindAgentUnchecked\(initialTab\.id\);/);
 });
 

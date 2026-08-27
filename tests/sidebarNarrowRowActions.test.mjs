@@ -4,13 +4,12 @@ import test from "node:test";
 import { twMerge } from "tailwind-merge";
 
 // 窄侧栏行操作按钮防重叠契约（2027-01 用户反馈）：
-// 三个树（ProjectTree/SessionTree/WorktreeTree）的行操作按钮是 absolute 浮层，
-// 侧栏窄（<256px）时 hover 显现会盖住行文本。修复策略：侧栏容器（SidebarContent
-// 的 aside）挂 @container，行文本用 @max-[255px]:group-hover:pr-* 在 hover 时压出
-// 按钮宽度的右侧留白，文本截断让位但保持可见。
+// ProjectTree 的项目选择按钮与 actions 已改为同级 flex item，永不重叠；
+// SessionTree/WorktreeTree 仍使用 absolute 浮层，侧栏窄（<256px）时由
+// @max-[255px]:group-hover:pr-* 为行文本压出按钮宽度的右侧留白。
 // 注意：v1 曾用 opacity-0 整行淡出，用户反馈「文字变白不可读、须点击激活才能看到」，
 // 已弃用（见本文件 doesNotMatch 断言防回退）。
-// 本测试锁定：容器基准、统一断点、三棵树的让位宽度与按钮浮层模式不被破坏。
+// 本测试锁定：容器基准、统一断点、项目 flex 命中区及其余两棵树的浮层兼容路径。
 
 const read = (p) => readFileSync(p, "utf8");
 
@@ -23,17 +22,12 @@ test("sidebar host declares the container query anchor", () => {
 	assert.match(src, /chat-list-pane v3-braun @container flex/);
 });
 
-test("project row text yields to the hover action buttons on narrow sidebar", () => {
+test("project row selection and actions have non-overlapping hit areas", () => {
 	const src = read("src/renderer/src/components/sidebar/ProjectTree.tsx");
-	// 项目名 conversation-body：hover 压出 116px 留白（4 个 size-6 按钮 + 间距 + 锚定偏移），
-	// 聚焦态（键盘导航）同样让位；transition 只动画 padding-right
-	assert.match(
-		src,
-		/conversation-body min-w-0 flex-1 transition-\[padding-right\] @max-\[255px\]:group-hover:pr-29 @max-\[255px\]:group-focus-within:pr-29/,
-	);
-	// 按钮浮层模式不变：absolute 不占位 + group-hover 显现
-	assert.match(src, /pointer-events-none absolute top-1\/2 right-1 flex/);
-	assert.match(src, /group-hover:pointer-events-auto group-hover:opacity-100/);
+	assert.match(src, /conversation-body min-w-0 flex-1/);
+	assert.match(src, /const dimmedActionsClass =\s*\n\s*"ml-auto shrink-0 flex/);
+	assert.doesNotMatch(src, /pointer-events-none absolute top-1\/2 right-1 flex/);
+	assert.doesNotMatch(src, /group-hover:pointer-events-auto/);
 	// 淡出方案已弃用：文本不得再整行变透明
 	assert.doesNotMatch(src, /conversation-body[^\n]*opacity-0/);
 });

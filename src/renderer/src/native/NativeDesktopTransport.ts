@@ -1,19 +1,31 @@
 import type { DesktopRpcTransport } from "@shared/desktop/DesktopRpcTransport";
 import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
+import { ipcChannels } from "../../../shared/ipc";
 
 const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
-const NATIVE_RPC_TIMEOUT_MS = 30_000;
-const NATIVE_HISTORY_RPC_TIMEOUT_MS = 60_000;
-const NATIVE_FILE_RPC_TIMEOUT_MS = 60_000;
+const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;
+const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
+	ipcChannels.projectsList,
+	ipcChannels.sessionsCatalogList,
+	ipcChannels.sessionsCatalogListArchived,
+	ipcChannels.sessionsCatalogReadMessages,
+	ipcChannels.sessionsCatalogReadMessagePage,
+	ipcChannels.sessionsCatalogReadProcessEvents,
+	ipcChannels.sessionsCatalogReadReferenceMessages,
+	ipcChannels.sessionsCatalogGetContextControllerState,
+	ipcChannels.sessionsCatalogReadMessageFullText,
+	ipcChannels.filesList,
+	ipcChannels.filesReadContent,
+	ipcChannels.filesReadBase64,
+]);
 
 function nativeRpcTimeoutMs(channel: string): number | undefined {
-	// Prompt delivery has its own Pi RPC timeout and may legitimately wait for a
-	// long model/tool run; aborting the HTTP wrapper would turn an accepted prompt
-	// into an artificial renderer-side timeout.
-	if (channel === "sessions:send-prompt") return undefined;
-	if (channel.startsWith("sessions:catalog-")) return NATIVE_HISTORY_RPC_TIMEOUT_MS;
-	if (channel.startsWith("files:")) return NATIVE_FILE_RPC_TIMEOUT_MS;
-	return NATIVE_RPC_TIMEOUT_MS;
+	// Only idempotent reads get a transport deadline. Writes and long-running
+	// commands may continue in the host after the HTTP client disconnects, so a
+	// local abort must not report an ambiguous mutation as an ordinary failure.
+	return NATIVE_READONLY_RPC_CHANNELS.has(channel)
+		? NATIVE_READ_RPC_TIMEOUT_MS
+		: undefined;
 }
 
 interface NativeRpcResponse<T> {
