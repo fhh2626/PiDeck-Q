@@ -18,6 +18,7 @@
 
 namespace {
 constexpr qsizetype kMaxClipboardImageBytes = 8 * 1024 * 1024;
+constexpr qsizetype kMaxClipboardImageBase64Bytes = 12 * 1024 * 1024;
 constexpr qint64 kMaxClipboardImagePixels = 32 * 1024 * 1024;
 constexpr qsizetype kMaxClipboardTextChars = 1 * 1024 * 1024;
 
@@ -38,7 +39,7 @@ QString imageDataUrl(const QMimeData *mimeData)
     const QByteArray base64 = bytes.toBase64();
     // The native control channel is framed at 32 MiB. Drop oversized clipboard
     // images instead of allowing one paste to tear down the sidecar connection.
-    if (base64.size() > kMaxClipboardImageBytes) return {};
+    if (base64.size() > kMaxClipboardImageBase64Bytes) return {};
     return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(base64);
 }
 
@@ -86,10 +87,15 @@ ClipboardController::ClipboardController(ChangedHandler onChanged)
 {
     auto *clipboard = QGuiApplication::clipboard();
     if (clipboard) {
-        QObject::connect(clipboard, &QClipboard::dataChanged, [this] {
+        m_dataChangedConnection = QObject::connect(clipboard, &QClipboard::dataChanged, [this] {
             if (m_onChanged) m_onChanged(snapshot());
         });
     }
+}
+
+ClipboardController::~ClipboardController()
+{
+    QObject::disconnect(m_dataChangedConnection);
 }
 
 QStringList ClipboardController::filePaths() const

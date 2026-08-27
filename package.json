@@ -66,6 +66,7 @@
     "test": "node --test --test-concurrency=4 \"tests/*.test.mjs\"",
     "test:serial": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
     "test:native-host-rpc": "node scripts/test-native-host-rpc.mjs",
+    "test:native-gui": "node scripts/test-native-gui.mjs",
     "docs:dev": "vitepress dev docs-site",
     "docs:build": "vitepress build docs-site",
     "docs:preview": "vitepress preview docs-site",

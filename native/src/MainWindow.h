@@ -7,6 +7,7 @@
 #include <QMainWindow>
 
 #include <functional>
+#include <memory>
 
 class HostRpcServer;
 class MainWebSurface;
@@ -16,6 +17,7 @@ class FileDropController;
 class MainWindow final : public QMainWindow {
 public:
     MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     void load(const QUrl &url);
     void reload();
@@ -51,10 +53,11 @@ private:
     void applyStartupMode(const QString &mode, bool hasLastBounds);
 
     HostRpcServer *m_host = nullptr;
-    MainWebSurface *m_surface = nullptr;
+    std::unique_ptr<MainWebSurface> m_surface;
     FileDropController *m_fileDrop = nullptr;
     bool m_closeToTray = true;
     bool m_quitting = false;
     bool m_loadFinished = false;
+    bool m_showOnLoadSuccess = true;
     std::function<void()> m_quitHandler;
 };

@@ -12,7 +12,7 @@
 
 namespace {
 #ifdef Q_OS_WIN
-std::once_flag apartmentOnce;
+std::mutex apartmentMutex;
 bool apartmentInitialized = false;
 #endif
 
@@ -29,7 +29,8 @@ QString escapeXml(const QString &value)
 bool WindowsToastNotifier::isSupported()
 {
 #ifdef Q_OS_WIN
-    return true;
+    std::lock_guard lock(apartmentMutex);
+    return apartmentInitialized;
 #else
     return false;
 #endif
@@ -38,14 +39,14 @@ bool WindowsToastNotifier::isSupported()
 bool WindowsToastNotifier::initialize()
 {
 #ifdef Q_OS_WIN
-    std::call_once(apartmentOnce, [] {
-        try {
-            winrt::init_apartment(winrt::apartment_type::single_threaded);
-            apartmentInitialized = true;
-        } catch (...) {
-            apartmentInitialized = false;
-        }
-    });
+    std::lock_guard lock(apartmentMutex);
+    if (apartmentInitialized) return true;
+    try {
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+        apartmentInitialized = true;
+    } catch (...) {
+        apartmentInitialized = false;
+    }
     return apartmentInitialized;
 #else
     return false;
@@ -55,6 +56,7 @@ bool WindowsToastNotifier::initialize()
 void WindowsToastNotifier::uninitialize()
 {
 #ifdef Q_OS_WIN
+    std::lock_guard lock(apartmentMutex);
     if (apartmentInitialized) {
         winrt::uninit_apartment();
         apartmentInitialized = false;

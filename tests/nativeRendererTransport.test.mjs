@@ -141,7 +141,7 @@ function postHeartbeat(port, token, payload) {
 	});
 }
 
-async function createServerFixture() {
+async function createServerFixture(overrides = {}) {
 	const rendererRoot = mkdtempSync(resolve(tmpdir(), "pideck-native-renderer-transport-"));
 	writeFileSync(join(rendererRoot, "index.html"), "<html>native</html>");
 	const server = new NativeRendererServer({
@@ -150,6 +150,7 @@ async function createServerFixture() {
 		rendererRoot,
 		backgroundDirectory: rendererRoot,
 		getBootstrap: async () => ({ clipboard: {}, settings: { zoomFactor: 1, memoryProfileEnabled: false } }),
+		...overrides,
 	});
 	const address = await server.start();
 	return { server, rendererRoot, address };
@@ -295,8 +296,10 @@ test("NativeDesktopTransport reconnects immediately when the event source genera
 			eventSourceGeneration: "generation-a",
 		}]);
 		transport.handleHeartbeat({ eventSeq: 11, eventSourceGeneration: "generation-b" });
+		assert.equal(transport.getLastEventSeq(), 0);
 		assert.equal(FakeEventSource.instances.length, 2);
 		assert.equal(FakeEventSource.instances[0].closed, true);
+		assert.equal(new URL(FakeEventSource.instances[1].url).searchParams.get("lastEventId"), "0");
 	} finally {
 		transport.dispose();
 	}
@@ -354,6 +357,36 @@ test("NativeRendererServer truncates replay history by bytes as well as event co
 	} finally {
 		await server.stop();
 		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeRendererServer can restart after a fatal listening error", async () => {
+	let activeServer;
+	let resolveRestart;
+	const restarted = new Promise((resolve) => {
+		resolveRestart = resolve;
+	});
+	const fixture = await createServerFixture({
+		onServerError: () => {
+			void activeServer.start().then(() => resolveRestart(activeServer.getUrl()));
+		},
+	});
+	activeServer = fixture.server;
+	const previousUrl = activeServer.getUrl();
+	activeServer.broadcast("test:before-server-failure", [{ value: 1 }]);
+	try {
+		activeServer.server.emit("error", new Error("simulated renderer server failure"));
+		const nextUrl = await Promise.race([
+			restarted,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("renderer server did not recover")), 2_000)),
+		]);
+		assert.notEqual(nextUrl, previousUrl);
+		const bootstrap = await fetch(`${nextUrl}__pideck/bootstrap?token=secret-token`);
+		assert.equal(bootstrap.status, 200);
+		assert.equal((await bootstrap.json()).eventSeq, 0);
+	} finally {
+		await activeServer.stop();
+		rmSync(fixture.rendererRoot, { recursive: true, force: true });
 	}
 });
 

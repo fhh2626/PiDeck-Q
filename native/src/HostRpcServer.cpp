@@ -4,11 +4,14 @@
 #include <QJsonDocument>
 #include <QRandomGenerator>
 #include <QDebug>
+#include <QTimer>
 
 #include <utility>
 
 namespace {
 constexpr quint32 kMaxFrameBytes = 32U * 1024U * 1024U;
+constexpr int kHelloTimeoutMs = 5'000;
+constexpr int kMaxUnauthenticatedConnections = 16;
 
 QString randomToken()
 {
@@ -46,7 +49,18 @@ HostRpcServer::HostRpcServer(QObject *parent)
     connect(this, &QTcpServer::newConnection, this, [this] {
         while (hasPendingConnections()) {
             auto *socket = nextPendingConnection();
+            if (unauthenticatedConnectionCount() >= kMaxUnauthenticatedConnections) {
+                socket->disconnectFromHost();
+                socket->deleteLater();
+                continue;
+            }
             m_connections.insert(socket, ConnectionState{});
+            QTimer::singleShot(kHelloTimeoutMs, socket, [this, socket] {
+                const auto connection = m_connections.constFind(socket);
+                if (connection != m_connections.constEnd() && !connection->authenticated) {
+                    socket->disconnectFromHost();
+                }
+            });
             connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
                 handleData(socket, socket->readAll());
             });
@@ -94,6 +108,15 @@ void HostRpcServer::sendEvent(const QString &name, const QJsonValue &payload)
     frame.insert(QStringLiteral("name"), name);
     frame.insert(QStringLiteral("payload"), payload);
     writeFrame(m_activeSocket, frame);
+}
+
+int HostRpcServer::unauthenticatedConnectionCount() const
+{
+    int count = 0;
+    for (auto iterator = m_connections.constBegin(); iterator != m_connections.constEnd(); ++iterator) {
+        if (!iterator->authenticated) ++count;
+    }
+    return count;
 }
 
 void HostRpcServer::incomingConnection(qintptr socketDescriptor)

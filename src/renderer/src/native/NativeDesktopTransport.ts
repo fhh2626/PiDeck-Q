@@ -161,6 +161,12 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			typeof state.eventSourceGeneration === "string" &&
 			this.eventSourceGeneration !== state.eventSourceGeneration;
 		if (generationMismatch) {
+			// A new server starts a fresh sequence namespace. Do not send the old
+			// server's cursor to it, or future low-numbered events could be skipped.
+			this.cancelHeartbeatRecovery();
+			this.lastEventSeq = 0;
+			this.hasEventCursor = true;
+			this.eventSourceGeneration = state.eventSourceGeneration ?? "";
 			this.reconnect();
 			return;
 		}

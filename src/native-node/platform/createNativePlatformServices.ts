@@ -10,6 +10,11 @@ import { NodeDownloads } from "./NodeDownloads";
 import { NodeProxy } from "./NodeProxy";
 import type { HostBridge } from "../host/HostBridge";
 
+/** Resolve the native download directory without allowing an empty environment value. */
+export function resolveNativeDownloadsPath(userData: string, configuredPath?: string): string {
+	return configuredPath?.trim() || join(userData, "Downloads");
+}
+
 /** Assemble the Electron-free PlatformServices implementation for createBackend. */
 export function createNativePlatformServices(host: HostBridge): PlatformServices {
 	const userData = process.env.PIDECK_USER_DATA;
@@ -24,7 +29,7 @@ export function createNativePlatformServices(host: HostBridge): PlatformServices
 		userData,
 		appPath,
 		resourcesPath,
-		downloads: process.env.PIDECK_DOWNLOADS_PATH ?? join(userData, "Downloads"),
+		downloads: resolveNativeDownloadsPath(userData, process.env.PIDECK_DOWNLOADS_PATH),
 	};
 	return {
 		paths,

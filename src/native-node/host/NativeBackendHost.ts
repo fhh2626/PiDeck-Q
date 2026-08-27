@@ -46,7 +46,8 @@ export class NativeBackendHost implements BackendHost {
 
 	markWindowCreated(): void {
 		this.liveWindow = true;
-		this.windowVisible = true;
+		// Visibility is reported independently by Qt. Keeping the current value is
+		// essential when a renderer server recovery completes while hidden to tray.
 		this.mainWindowControls.markCreated();
 	}
 
@@ -115,7 +116,7 @@ export class NativeBackendHost implements BackendHost {
 		void this.host.request("application.restart").catch(() => undefined);
 	};
 
-	/** Called by the Qt host after the first window is visible. */
+	/** Called by the Qt host after the renderer load completes. */
 	onWindowReady(): void {
 		this.markWindowCreated();
 		// SSE delivery is best-effort. Never consume pending state here: window.ready

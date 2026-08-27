@@ -27,6 +27,7 @@ protected:
     void incomingConnection(qintptr socketDescriptor) override;
 
 private:
+    int unauthenticatedConnectionCount() const;
     void handleData(QTcpSocket *socket, const QByteArray &chunk);
     void handleFrame(QTcpSocket *socket, const QByteArray &payload);
     bool writeFrame(QTcpSocket *socket, const QJsonObject &frame);

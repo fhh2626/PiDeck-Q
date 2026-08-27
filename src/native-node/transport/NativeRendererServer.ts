@@ -75,6 +75,7 @@ type NativeRendererDependencies = {
 	backgroundDirectory: string;
 	getBootstrap: () => Promise<NativeBootstrap>;
 	onHeartbeat?: (payload: NativeHeartbeatPayload, state: NativeHeartbeatState) => void;
+	onServerError?: (error: Error) => void;
 	onMemoryDiagnostics?: (payload: unknown) => void;
 	onOversizedEvent?: (channel: string, bytes: number) => void;
 };
@@ -151,11 +152,21 @@ export class NativeRendererServer {
 		});
 		this.server.on("error", (error) => {
 			const failedServer = this.server;
+			const wasRunning = this.address !== null;
+			const normalizedError = error instanceof Error ? error : new Error(String(error));
 			this.server = null;
 			this.address = null;
-			for (const client of [...this.clients]) client.response.destroy(error instanceof Error ? error : undefined);
+			if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+			this.heartbeatTimer = null;
+			for (const client of [...this.clients]) client.response.destroy(normalizedError);
 			this.clients.clear();
+			this.eventSeq = 0;
+			this.eventHistory.length = 0;
+			this.eventHistoryBytes = 0;
 			failedServer?.close();
+			// Initial listen failures are rejected by start(); only a server that was
+			// already serving a renderer page needs the asynchronous recovery path.
+			if (wasRunning) this.deps.onServerError?.(normalizedError);
 		});
 		this.address = await new Promise<{ host: string; port: number }>((resolveAddress, reject) => {
 			const server = this.server;

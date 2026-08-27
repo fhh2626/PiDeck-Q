@@ -138,11 +138,49 @@ async function main(): Promise<void> {
 		await memoryMonitor.start();
 	}
 
+	let rendererServerRecoveryInFlight = false;
+	const createRendererPageUrl = (rendererUrl: string): string => {
+		const pageUrl = new URL(rendererUrl);
+		pageUrl.searchParams.set("runtime", "native");
+		pageUrl.searchParams.set("token", nativeToken);
+		return pageUrl.toString();
+	};
+	const recoverRendererServer = async (serverError: Error): Promise<void> => {
+		if (rendererServerRecoveryInFlight) return;
+		rendererServerRecoveryInFlight = true;
+		try {
+			const retryDelays = [0, 500, 1_000];
+			for (const delayMs of retryDelays) {
+				if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+				try {
+					await placeholderServer.start();
+					if (nativeHost?.hasLiveWindow()) {
+						await host.request("window.load", { url: createRendererPageUrl(placeholderServer.getUrl()) });
+					}
+					return;
+				} catch (error) {
+					serverError = error instanceof Error ? error : serverError;
+				}
+			}
+			void backend?.appLogger.error("native", "Renderer server recovery failed", {
+				error: serverError.message,
+			});
+			void host.request("window.showLoadError", {
+				url: "native renderer server",
+				error: "The native renderer server could not be restarted.",
+			}).catch(() => undefined);
+		} finally {
+			rendererServerRecoveryInFlight = false;
+		}
+	};
 	const placeholderServer = new NativeRendererServer({
 		router,
 		token: nativeToken,
 		rendererRoot,
 		backgroundDirectory,
+		onServerError: (error) => {
+			void recoverRendererServer(error);
+		},
 		getBootstrap: async () => ({
 			clipboard: await host.request<NativeClipboardSnapshot>("clipboard.snapshot"),
 			settings: {

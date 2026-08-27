@@ -36,6 +36,16 @@ test("native dev mode explicitly isolates packaged state, user data and toast id
 	assert.match(devScript, /com\.ayuayue\.pi-desktop-dev/);
 });
 
+test("native GUI integration target covers window, theme, clipboard and toast lifecycles", () => {
+	const xmakeSource = readFileSync("xmake.lua", "utf8");
+	const guiTest = readFileSync("native/tests/NativeGuiIntegration.cpp", "utf8");
+	assert.match(xmakeSource, /PiDeck-NativeGuiTest/);
+	assert.match(guiTest, /applyNativeThemeSource/);
+	assert.match(guiTest, /toggleAlwaysOnTop/);
+	assert.match(guiTest, /ClipboardController/);
+	assert.match(guiTest, /WindowsToastNotifier::initialize/);
+});
+
 test("installer owns protocol cleanup and the toast shortcut AppUserModelID", () => {
 	assert.match(installer, /!include\s+"LogicLib\.nsh"/);
 	assert.match(installer, /Software\\Classes\\pideck\\shell\\open\\command/);

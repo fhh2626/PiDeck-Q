@@ -9,8 +9,17 @@ const { isNativeNotificationsSupported } = loadTsCommonJs("src/native-node/platf
 	},
 });
 
-test("native notifications report support only for the implemented Windows host", () => {
-	assert.equal(isNativeNotificationsSupported("win32"), true);
-	assert.equal(isNativeNotificationsSupported("linux"), false);
-	assert.equal(isNativeNotificationsSupported("darwin"), false);
+test("native notifications report support only when the Windows toast capability is available", () => {
+	const previous = process.env.PIDECK_NATIVE_NOTIFICATIONS;
+	try {
+		delete process.env.PIDECK_NATIVE_NOTIFICATIONS;
+		assert.equal(isNativeNotificationsSupported("win32"), true);
+		process.env.PIDECK_NATIVE_NOTIFICATIONS = "0";
+		assert.equal(isNativeNotificationsSupported("win32"), false);
+		assert.equal(isNativeNotificationsSupported("linux"), false);
+		assert.equal(isNativeNotificationsSupported("darwin"), false);
+	} finally {
+		if (previous === undefined) delete process.env.PIDECK_NATIVE_NOTIFICATIONS;
+		else process.env.PIDECK_NATIVE_NOTIFICATIONS = previous;
+	}
 });

@@ -2,6 +2,7 @@
 #include "FileDropController.h"
 #include "HostRpcServer.h"
 #include "NodeProcessController.h"
+#include "StartupWindowBounds.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -9,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMimeData>
+#include <QSize>
 #include <QTcpSocket>
 #include <QUrl>
 #include <QThread>
@@ -16,6 +18,8 @@
 #include <cwchar>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <vector>
 
 namespace {
 constexpr int kTimeoutMs = 2'000;
@@ -86,6 +90,11 @@ public:
         return false;
     }
 
+    void disconnect()
+    {
+        m_socket.disconnectFromHost();
+    }
+
     bool waitForDisconnected(int timeoutMs = kTimeoutMs)
     {
         QElapsedTimer timer;
@@ -142,6 +151,13 @@ int main(int argc, char **argv)
     if (!require(drop.value(QStringLiteral("paths")).toArray().size() == 2,
                  "file drop absolute paths were not preserved")) return 1;
 
+    if (!require(startupWindowSize(QStringLiteral("normal-compact")) == QSize(1100, 720),
+                 "compact startup window preset was not preserved")) return 1;
+    if (!require(startupWindowSize(QStringLiteral("normal-medium")) == QSize(1280, 840),
+                 "medium startup window preset was not preserved")) return 1;
+    if (!require(startupWindowSize(QStringLiteral("normal-large")) == QSize(1480, 960),
+                 "large startup window preset was not preserved")) return 1;
+
     const wchar_t clipboardPath[] = L"C:\\clipboard\\same.txt";
     if (!require(ClipboardController::decodeWindowsDropPath(
                      clipboardPath, static_cast<int>(wcslen(clipboardPath)))
@@ -186,6 +202,26 @@ int main(int argc, char **argv)
     }, &rejected), "invalid token response missing")) return 1;
     if (!require(!rejected.value(QStringLiteral("ok")).toBool(), "invalid token was accepted")) return 1;
     if (!require(candidate.waitForDisconnected(), "invalid candidate remained connected")) return 1;
+
+    FrameClient pending(server.port());
+    if (!require(pending.connect(), "pending authentication client failed to connect")) return 1;
+    if (!require(pending.waitForDisconnected(6'000),
+                 "unauthenticated client was not closed after the handshake timeout")) return 1;
+
+    std::vector<std::unique_ptr<FrameClient>> pendingClients;
+    for (int index = 0; index < 16; ++index) {
+        pendingClients.push_back(std::make_unique<FrameClient>(server.port()));
+        if (!require(pendingClients.back()->connect(), "authentication cap client failed to connect")) return 1;
+    }
+    FrameClient overflow(server.port());
+    if (!require(overflow.connect(), "authentication overflow client failed to connect")) return 1;
+    if (!require(overflow.waitForDisconnected(),
+                 "authentication cap did not reject the overflow client")) return 1;
+    for (const auto &client : pendingClients) {
+        client->disconnect();
+        if (!require(client->waitForDisconnected(),
+                     "authentication cap client did not disconnect cleanly")) return 1;
+    }
 
     FrameClient oversized(server.port());
     if (!require(oversized.connect(), "oversized-frame client failed to connect")) return 1;

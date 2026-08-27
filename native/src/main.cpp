@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "NativeApplication.h"
 #include "NativePaths.h"
+#include "NativeTheme.h"
 #include "NodeProcessController.h"
 #include "ProtocolRegistrar.h"
 #include "TrayController.h"
@@ -24,12 +25,11 @@
 #include <QJsonObject>
 #include <QMenu>
 #include <QMetaObject>
-#include <QPalette>
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
-#include <QStandardPaths>
+#include <QStyleHints>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -175,19 +175,6 @@ QJsonObject saveDialog(const QJsonObject &params, QWidget *parent)
     };
 }
 
-void applyThemeSource(const QString &source)
-{
-    if (source == QStringLiteral("dark")) {
-        QPalette palette;
-        palette.setColor(QPalette::Window, QColor("#121212"));
-        palette.setColor(QPalette::WindowText, QColor("#f4f4f5"));
-        QApplication::setPalette(palette);
-    } else if (source == QStringLiteral("light")) {
-        QApplication::setPalette(QPalette{});
-    } else {
-        QApplication::setPalette(QPalette{});
-    }
-}
 }
 
 int main(int argc, char **argv)
@@ -195,7 +182,28 @@ int main(int argc, char **argv)
     // Qt WebView must initialize its backend before QApplication/QGuiApplication.
     QtWebView::initialize();
     QApplication app(argc, argv);
-    WindowsToastNotifier::initialize();
+    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize();
+    bool nativeNotificationRouteAvailable = nativeNotificationsAvailable;
+#ifdef Q_OS_WIN
+    // A tray notification remains available when WinRT toast initialization is
+    // unavailable, so keep the Node notification capability enabled and let the
+    // host choose the toast-or-tray implementation at show time.
+    nativeNotificationRouteAvailable = true;
+#endif
+    qputenv("PIDECK_NATIVE_NOTIFICATIONS", nativeNotificationRouteAvailable
+        ? QByteArrayLiteral("1")
+        : QByteArrayLiteral("0"));
+    QString nativeThemeSource = QStringLiteral("system");
+    const auto setNativeThemeSource = [&nativeThemeSource](const QString &source) {
+        nativeThemeSource = source == QStringLiteral("dark") || source == QStringLiteral("light")
+            ? source
+            : QStringLiteral("system");
+        applyNativeThemeSource(nativeThemeSource);
+    };
+    QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, &app,
+                     [&nativeThemeSource] {
+        if (nativeThemeSource == QStringLiteral("system")) applyNativeThemeSource(nativeThemeSource);
+    });
     QObject::connect(&app, &QCoreApplication::aboutToQuit, [] {
         WindowsToastNotifier::uninitialize();
     });
@@ -293,8 +301,8 @@ int main(int argc, char **argv)
         if (!ok) throw std::runtime_error("Unable to move item to trash");
         return QJsonValue(QJsonValue::Null);
     });
-    host.registerHandler(QStringLiteral("theme.setSource"), [](const QJsonObject &params) {
-        applyThemeSource(params.value(QStringLiteral("source")).toString());
+    host.registerHandler(QStringLiteral("theme.setSource"), [&setNativeThemeSource](const QJsonObject &params) {
+        setNativeThemeSource(params.value(QStringLiteral("source")).toString());
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("window.minimize"), [&mainWindow](const QJsonObject &) {
@@ -324,6 +332,10 @@ int main(int argc, char **argv)
     });
     host.registerHandler(QStringLiteral("window.reload"), [&mainWindow](const QJsonObject &) {
         if (mainWindow) mainWindow->reload();
+        return QJsonValue(QJsonValue::Null);
+    });
+    host.registerHandler(QStringLiteral("window.load"), [&mainWindow](const QJsonObject &params) {
+        if (mainWindow) mainWindow->load(QUrl(params.value(QStringLiteral("url")).toString()));
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("window.showLoadError"), [&mainWindow](const QJsonObject &params) {
@@ -399,8 +411,9 @@ int main(int argc, char **argv)
                         host.sendEvent(QStringLiteral("notification.dismissed"), QJsonObject{{QStringLiteral("id"), id}});
                     }, Qt::QueuedConnection);
                 },
-                [&host, id](const QString &error) {
-                    QMetaObject::invokeMethod(&host, [&host, id, error] {
+                [&host, &tray, id, title, body](const QString &error) {
+                    QMetaObject::invokeMethod(&host, [&host, &tray, id, title, body, error] {
+                        if (tray) tray->showMessage(title, body, QSystemTrayIcon::Information, 5000);
                         host.sendEvent(QStringLiteral("notification.failed"), QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("error"), error}});
                     }, Qt::QueuedConnection);
                 });
@@ -415,7 +428,7 @@ int main(int argc, char **argv)
             const QJsonObject ready = payload.toObject();
             if (mainWindow) return;
             const QJsonObject startup = ready.value(QStringLiteral("startup")).toObject();
-            applyThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
+            setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
             mainWindow = new MainWindow(&host, startup);
             mainWindow->setQuitHandler(requestQuit);
             const QUrl baseUrl(ready.value(QStringLiteral("url")).toString());

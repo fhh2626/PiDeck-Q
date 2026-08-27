@@ -3,6 +3,7 @@
 #include "FileDropController.h"
 #include "HostRpcServer.h"
 #include "MainWebSurface.h"
+#include "StartupWindowBounds.h"
 
 #include <QtWebView/QWebView>
 #include <QtWebView/QWebViewLoadingInfo>
@@ -13,6 +14,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
+#include <QSize>
 #include <QUrl>
 #include <QWindow>
 
@@ -28,7 +30,7 @@
 MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent)
     : QMainWindow(parent),
       m_host(host),
-      m_surface(new MainWebSurface(this)),
+      m_surface(std::make_unique<MainWebSurface>(this)),
       m_fileDrop(new FileDropController([host](const QJsonObject &payload) {
           host->sendEvent(QStringLiteral("native.fileDrop"), payload);
       }, m_surface->view(), this)),
@@ -52,12 +54,17 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     }
 
     const QJsonObject bounds = startup.value(QStringLiteral("lastWindowBounds")).toObject();
-    const int width = bounds.value(QStringLiteral("width")).toInt(1480);
-    const int height = bounds.value(QStringLiteral("height")).toInt(960);
+    const QString startupMode = startup.value(QStringLiteral("startupWindowMode")).toString(QStringLiteral("last"));
+    const bool hasLastBounds = !bounds.isEmpty();
+    const QSize presetSize = startupWindowSize(startupMode);
+    const int width = startupMode == QStringLiteral("last") && hasLastBounds
+        ? bounds.value(QStringLiteral("width")).toInt(presetSize.width())
+        : presetSize.width();
+    const int height = startupMode == QStringLiteral("last") && hasLastBounds
+        ? bounds.value(QStringLiteral("height")).toInt(presetSize.height())
+        : presetSize.height();
     resize(qMax(width, minimumWidth()), qMax(height, minimumHeight()));
-    applyStartupMode(
-        startup.value(QStringLiteral("startupWindowMode")).toString(QStringLiteral("last")),
-        !bounds.isEmpty());
+    applyStartupMode(startupMode, hasLastBounds);
 
     connect(m_surface->view(), &QWebView::loadingChanged, this,
             [this](const QWebViewLoadingInfo &info) {
@@ -71,18 +78,24 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
         }
         if (info.status() != QWebViewLoadingInfo::LoadStatus::Succeeded) return;
         m_loadFinished = true;
-        showWindow();
+        if (m_showOnLoadSuccess) showWindow();
         m_host->sendEvent(QStringLiteral("window.ready"), QJsonObject{});
     });
 }
 
+MainWindow::~MainWindow() = default;
+
 void MainWindow::load(const QUrl &url)
 {
+    // Initial loads must reveal the window, while server-recovery loads preserve
+    // a previously hidden-to-tray state after the renderer becomes ready again.
+    m_showOnLoadSuccess = !m_loadFinished || isVisible();
     m_surface->load(url);
 }
 
 void MainWindow::reload()
 {
+    m_showOnLoadSuccess = isVisible();
     m_surface->reload();
 }
 
@@ -128,9 +141,13 @@ bool MainWindow::toggleMaximize()
 bool MainWindow::toggleAlwaysOnTop()
 {
     const bool next = !(windowFlags() & Qt::WindowStaysOnTopHint);
+    const bool wasVisible = isVisible();
+    const Qt::WindowStates oldState = windowState();
     setWindowFlag(Qt::WindowStaysOnTopHint, next);
-    show();
-    emitVisible(true);
+    setWindowState(oldState);
+    if (wasVisible) show();
+    else hide();
+    emitVisible(isVisible());
     return next;
 }
 
@@ -163,8 +180,16 @@ void MainWindow::applySettings(const QJsonObject &settings)
     }
     if (settings.contains(QStringLiteral("useNativeTitleBar"))) {
         const bool nativeTitleBar = settings.value(QStringLiteral("useNativeTitleBar")).toBool(false);
-        setWindowFlag(Qt::FramelessWindowHint, !nativeTitleBar);
-        show();
+        const bool frameless = windowFlags() & Qt::FramelessWindowHint;
+        const bool desiredFrameless = !nativeTitleBar;
+        if (frameless != desiredFrameless) {
+            const bool wasVisible = isVisible();
+            const Qt::WindowStates oldState = windowState();
+            setWindowFlag(Qt::FramelessWindowHint, desiredFrameless);
+            setWindowState(oldState);
+            if (wasVisible) show();
+            else hide();
+        }
     }
 }
 

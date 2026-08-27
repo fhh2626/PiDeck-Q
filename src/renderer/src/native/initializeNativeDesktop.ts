@@ -5,6 +5,7 @@ import {
 import type { NativeClipboardSnapshot, NativeFileDropPayload } from "@shared/desktop/NativeHostTypes";
 import { NativeDesktopSyncHost } from "./NativeDesktopSyncHost";
 import { NativeDesktopTransport, type NativeHeartbeatState } from "./NativeDesktopTransport";
+import { createNativeHeartbeatRequest } from "./nativeHeartbeat";
 import { applyRendererZoom } from "./rendererZoom";
 
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
@@ -93,22 +94,32 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	});
 
 	const memoryProfileEnabled = bootstrap.settings?.memoryProfileEnabled === true;
-	const heartbeatTimer = window.setInterval(() => {
-		void fetch(new URL("/__pideck/heartbeat", baseUrl), {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				"x-pideck-token": token,
-			},
-			body: JSON.stringify({
-				lastEventSeq: transport.getLastEventSeq(),
-				eventSourceGeneration: transport.getEventSourceGeneration(),
-			}),
-		}).then(async (response) => {
+	const heartbeatRequest = createNativeHeartbeatRequest(
+		async (signal) => {
+			const response = await fetch(new URL("/__pideck/heartbeat", baseUrl), {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"x-pideck-token": token,
+				},
+				body: JSON.stringify({
+					lastEventSeq: transport.getLastEventSeq(),
+					eventSourceGeneration: transport.getEventSourceGeneration(),
+				}),
+				signal,
+			});
 			if (!response.ok) return;
 			const state = toNativeHeartbeatState(await response.json());
 			transport.handleHeartbeat(state);
-		}).catch(() => undefined);
+		},
+		{
+			setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+			clearTimeout: (timer) => window.clearTimeout(timer),
+		},
+		10_000,
+	);
+	const heartbeatTimer = window.setInterval(() => {
+		heartbeatRequest.run();
 		if (memoryProfileEnabled) {
 			const memory = (performance as Performance & {
 				memory?: { usedJSHeapSize?: number; totalJSHeapSize?: number };
@@ -131,7 +142,10 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 			}).catch(() => undefined);
 		}
 	}, NATIVE_HEARTBEAT_INTERVAL_MS);
-	window.addEventListener("beforeunload", () => window.clearInterval(heartbeatTimer), { once: true });
+	window.addEventListener("beforeunload", () => {
+		window.clearInterval(heartbeatTimer);
+		heartbeatRequest.dispose();
+	}, { once: true });
 
 	transport.activateAfter(bootstrap.eventSeq ?? transport.getLastEventSeq());
 	const api = createPiDesktopApi(transport, syncHost);

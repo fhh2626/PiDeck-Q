@@ -113,6 +113,7 @@ function createDeps(overrides = {}) {
 		setZoomFactor: [],
 		toggleAlwaysOnTop: 0,
 		notifyTitleBarChange: 0,
+		sendToRenderer: [],
 		toggleDevTools: 0,
 		restartApplication: 0,
 		themeSetSource: [],
@@ -208,7 +209,7 @@ function createDeps(overrides = {}) {
 		toggleDevTools: () => {
 			calls.toggleDevTools += 1;
 		},
-		sendToRenderer: () => {},
+		sendToRenderer: (channel, ...args) => calls.sendToRenderer.push({ channel, args }),
 		mainCopy: (key) => key,
 		checkForAppUpdate: async () => null,
 		downloadUpdateAsset: async (asset) => ({ filePath: `/updates/${asset.name}` }),
@@ -318,13 +319,17 @@ test("systemIpc theme patch calls PlatformTheme.setSource", async () => {
 	assert.ok(calls.hideApplicationMenu >= 1);
 });
 
-test("systemIpc zoomFactor patch notifies the renderer CSS zoom adapter", async () => {
+test("systemIpc zoomFactor patch notifies the renderer without changing native window flags", async () => {
 	const { router, invoke } = createRouterHarness();
 	const { deps, calls } = createDeps();
 	registerSystemIpc(router, deps);
 
 	await invoke(ipcChannels.settingsUpdate, { zoomFactor: 1.1 });
-	assert.equal(calls.notifyTitleBarChange, 1);
+	assert.equal(calls.notifyTitleBarChange, 0);
+	assert.deepEqual(calls.sendToRenderer, [{
+		channel: ipcChannels.settingsApplyWindow,
+		args: [{ theme: "dark", zoomFactor: 1.1 }],
+	}]);
 });
 
 test("systemIpc useNativeTitleBar patch calls notifyTitleBarChange", async () => {

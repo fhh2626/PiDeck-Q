@@ -653,7 +653,9 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 			mainWindowControls.notifyTitleBarChange(settings);
 		}
 		if ("zoomFactor" in patch && typeof settings.zoomFactor === "number") {
-			mainWindowControls.notifyTitleBarChange(settings);
+			// Zoom is a renderer setting; do not route it through the native window
+			// flag update, which would otherwise re-show a hidden-to-tray window.
+			sendToRenderer?.(ipcChannels.settingsApplyWindow, settings);
 		}
 		if (
 			"webServiceEnabled" in patch ||

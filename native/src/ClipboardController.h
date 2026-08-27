@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QStringList>
 
 #include <functional>
@@ -10,6 +11,7 @@ public:
     using ChangedHandler = std::function<void(const QJsonObject &snapshot)>;
 
     explicit ClipboardController(ChangedHandler onChanged = {});
+    ~ClipboardController();
 
     QJsonObject snapshot() const;
     QStringList filePaths() const;
@@ -17,4 +19,5 @@ public:
 
 private:
     ChangedHandler m_onChanged;
+    QMetaObject::Connection m_dataChangedConnection;
 };

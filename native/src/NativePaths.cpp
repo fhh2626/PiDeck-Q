@@ -49,9 +49,12 @@ NativePaths NativePaths::fromEnvironment()
         paths.userDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         if (!paths.packaged) paths.userDataDir += QStringLiteral("-dev");
     }
-    paths.downloadsDir = qEnvironmentVariable("PIDECK_DOWNLOADS_PATH");
+    paths.downloadsDir = qEnvironmentVariable("PIDECK_DOWNLOADS_PATH").trimmed();
     if (paths.downloadsDir.isEmpty()) {
         paths.downloadsDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    }
+    if (paths.downloadsDir.isEmpty()) {
+        paths.downloadsDir = QDir(paths.userDataDir).filePath(QStringLiteral("Downloads"));
     }
     paths.version = qEnvironmentVariable("PIDECK_VERSION");
     if (paths.version.isEmpty()) {

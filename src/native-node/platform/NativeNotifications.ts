@@ -6,7 +6,7 @@ import type { HostBridge } from "../host/HostBridge";
 
 /** Native notification support is currently implemented only by the Windows Qt host. */
 export function isNativeNotificationsSupported(platform: NodeJS.Platform = process.platform): boolean {
-	return platform === "win32";
+	return platform === "win32" && process.env.PIDECK_NATIVE_NOTIFICATIONS !== "0";
 }
 
 export class NativeNotifications implements PlatformNotifications {

@@ -91,7 +91,19 @@ target("PiDeck-HostRpcTest")
     set_kind("binary")
     set_default(false)
     add_packages("pideck-qt")
-    add_files("native/tests/HostRpcServerIntegration.cpp", "native/src/HostRpcServer.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/NodeProcessController.cpp")
+    add_files("native/tests/HostRpcServerIntegration.cpp", "native/src/HostRpcServer.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/NodeProcessController.cpp", "native/src/StartupWindowBounds.cpp")
+    add_includedirs("native/src")
+
+    if is_plat("windows") then
+        add_cxxflags("/Zc:__cplusplus", {force = true})
+        add_syslinks("user32", "shell32", "ole32", "advapi32", "runtimeobject", "windowsapp")
+    end
+
+target("PiDeck-NativeGuiTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/NativeGuiIntegration.cpp", "native/src/MainWindow.cpp", "native/src/MainWebSurface.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/HostRpcServer.cpp", "native/src/NativeTheme.cpp", "native/src/WindowsToastNotifier.cpp", "native/src/StartupWindowBounds.cpp")
     add_includedirs("native/src")
 
     if is_plat("windows") then

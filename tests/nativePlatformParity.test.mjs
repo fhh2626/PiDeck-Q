@@ -28,6 +28,15 @@ test("native memory diagnostics are enabled by bootstrap state, not a URL guess"
 	assert.doesNotMatch(rendererBootstrap, /query\.get\("memoryProfile"\)/);
 });
 
+test("native renderer server has an explicit restart-and-reload recovery path", () => {
+	const server = readFileSync("src/native-node/transport/NativeRendererServer.ts", "utf8");
+	const node = readFileSync("src/native-node/index.ts", "utf8");
+	assert.match(server, /onServerError/);
+	assert.match(server, /eventHistoryBytes = 0/);
+	assert.match(node, /recoverRendererServer/);
+	assert.match(node, /window\.load/);
+});
+
 test("heartbeat watchdog excludes hidden-to-tray windows", () => {
 	assert.match(hostSource, /shouldWatchRendererHeartbeat/);
 	assert.match(hostSource, /windowVisible/);
@@ -46,6 +55,21 @@ test("portable startup explains a missing WebView2 runtime", () => {
 	assert.match(mainSource, /F3017226-FE2A-4295-8BDF-00C3A9A7E4C5/);
 	assert.match(mainSource, /developer\.microsoft\.com\/microsoft-edge\/webview2/);
 	assert.match(mainSource, /showMissingWebView2Message/);
+});
+
+test("native startup presets and window flags are handled by production helpers", () => {
+	const startupBounds = readFileSync("native/src/StartupWindowBounds.cpp", "utf8");
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	assert.match(startupBounds, /normal-compact/);
+	assert.match(startupBounds, /QSize\(1100, 720\)/);
+	assert.match(startupBounds, /normal-medium/);
+	assert.match(startupBounds, /QSize\(1280, 840\)/);
+	assert.match(startupBounds, /normal-large/);
+	assert.match(mainWindow, /startupMode == QStringLiteral\("last"\) && hasLastBounds/);
+	assert.match(mainWindow, /const bool wasVisible = isVisible\(\)/);
+	assert.match(mainWindow, /setWindowState\(oldState\)/);
+	assert.match(mainWindow, /if \(wasVisible\) show\(\)/);
+	assert.match(mainWindow, /else hide\(\)/);
 });
 
 test("native quit waits asynchronously for the sidecar ACK", () => {

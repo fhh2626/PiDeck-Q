@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocale>
 #include <QProcessEnvironment>
 
 #ifdef Q_OS_WIN
@@ -164,6 +165,16 @@ bool NodeProcessController::start()
     environment.insert(QStringLiteral("PIDECK_PACKAGED"), m_paths.packaged ? QStringLiteral("1") : QStringLiteral("0"));
     environment.insert(QStringLiteral("PIDECK_RENDERER_ROOT"), m_paths.rendererDir);
     environment.insert(QStringLiteral("PIDECK_NATIVE_NODE_ENTRY"), m_paths.nativeNodeEntry);
+    const QLocale systemLocale = QLocale::system();
+    QStringList preferredLanguages = systemLocale.uiLanguages();
+    if (preferredLanguages.isEmpty()) {
+        const QString fallbackLanguage = systemLocale.bcp47Name();
+        if (!fallbackLanguage.isEmpty()) preferredLanguages.append(fallbackLanguage);
+    }
+    if (preferredLanguages.isEmpty()) preferredLanguages.append(QStringLiteral("en-US"));
+    environment.insert(QStringLiteral("PIDECK_LOCALE"), preferredLanguages.constFirst());
+    environment.insert(QStringLiteral("PIDECK_PREFERRED_LANGUAGES_JSON"),
+                       QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(preferredLanguages)).toJson(QJsonDocument::Compact)));
     environment.insert(QStringLiteral("PIDECK_HOME"), QDir::homePath());
     environment.insert(QStringLiteral("PIDECK_ARGV_JSON"),
                       QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(QCoreApplication::arguments())).toJson(QJsonDocument::Compact)));

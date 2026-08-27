@@ -33,7 +33,6 @@ export class NativeMainWindowControls implements MainWindowControls {
 
 	markCreated(): void {
 		this.destroyed = false;
-		this.visible = true;
 	}
 
 	markDestroyed(): void {
