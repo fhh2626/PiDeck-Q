@@ -397,6 +397,42 @@ int main(int argc, char **argv)
         if (!require(highResolutionSnapshot.value(QStringLiteral("imageDataUrl")).toString()
                          .startsWith(QStringLiteral("data:image/png;base64,")),
                      "clipboard image above 32 MP was rejected before resize")) return 1;
+
+        // A noisy photo-like image exercises the PNG budget rather than the
+        // highly compressible solid-color path above. The encoder must reduce
+        // the edge again when a 2000px PNG is larger than 5 MiB.
+        QImage complexImage(2000, 1500, QImage::Format_RGB32);
+        quint32 noise = 0x12345678u;
+        for (int y = 0; y < complexImage.height(); ++y) {
+            auto *line = reinterpret_cast<QRgb *>(complexImage.scanLine(y));
+            for (int x = 0; x < complexImage.width(); ++x) {
+                noise = noise * 1664525u + 1013904223u;
+                line[x] = qRgb((noise >> 24) & 0xff, (noise >> 16) & 0xff, (noise >> 8) & 0xff);
+            }
+        }
+        systemClipboard->setImage(complexImage);
+        processGuiEvents();
+        QJsonObject complexSnapshot;
+        imageClipboard.snapshotAsync([&complexSnapshot](const QJsonObject &snapshot) {
+            complexSnapshot = snapshot;
+        });
+        QElapsedTimer complexTimer;
+        complexTimer.start();
+        while (complexSnapshot.isEmpty() && complexTimer.elapsed() < 3'000) {
+            processGuiEvents();
+        }
+        const QString complexDataUrl = complexSnapshot.value(QStringLiteral("imageDataUrl")).toString();
+        if (!require(complexDataUrl.startsWith(QStringLiteral("data:image/png;base64,")),
+                     "complex clipboard image exceeded the adaptive PNG budget")) return 1;
+        const QByteArray complexPng = QByteArray::fromBase64(
+            complexDataUrl.mid(QStringLiteral("data:image/png;base64,").size()).toLatin1());
+        QImage encodedComplexImage;
+        if (!require(encodedComplexImage.loadFromData(complexPng, "PNG"),
+                     "adaptive clipboard PNG could not be decoded")) return 1;
+        if (!require(encodedComplexImage.width() < 2000,
+                     "complex clipboard image was not reduced after exceeding the PNG budget")) return 1;
+        if (!require(complexPng.size() <= 5 * 1024 * 1024,
+                     "adaptive clipboard PNG still exceeded the byte budget")) return 1;
     }
 
     return 0;

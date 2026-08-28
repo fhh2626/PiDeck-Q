@@ -40,6 +40,20 @@ test("clipboard capabilities can be reused until the clipboard sequence changes"
 	assert.deepEqual(Array.from(store.consumeCopy(replacementId)), ["C:\\outside\\b.txt"]);
 });
 
+test("clipboard capabilities do not expire while their sequence stays unchanged", () => {
+	let now = 1_000_000;
+	const { ExternalFileCapabilityStore: ClockedExternalFileCapabilityStore } = loadTsCommonJs(
+		"src/main/fs/ExternalFileCapabilityStore.ts",
+		{ globals: { Date: { now: () => now } } },
+	);
+	const store = new ClockedExternalFileCapabilityStore();
+	const capabilityId = store.issueClipboard(["C:\\outside\\long-lived.txt"], 7);
+	assert.ok(capabilityId);
+	now += 11 * 60_000;
+	assert.deepEqual(Array.from(store.consumeCopy(capabilityId)), ["C:\\outside\\long-lived.txt"]);
+	assert.equal(store.issueClipboard(["C:\\outside\\long-lived.txt"], 7), capabilityId);
+});
+
 test("drop capabilities return trusted paths once and never accept renderer paths", () => {
 	const store = new ExternalFileCapabilityStore();
 	const capabilityId = store.issueDrop(["C:\\outside\\id_rsa"]);

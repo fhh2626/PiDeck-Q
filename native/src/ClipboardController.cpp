@@ -42,15 +42,25 @@ QString imageDataUrl(const QImage &image)
                                  Qt::KeepAspectRatio, Qt::SmoothTransformation);
     }
     if (bounded.isNull() || qint64(bounded.width()) * qint64(bounded.height()) > kMaxClipboardImagePixels) return {};
-    QByteArray bytes;
-    QBuffer buffer(&bytes);
-    buffer.open(QIODevice::WriteOnly);
-    if (!bounded.save(&buffer, "PNG") || bytes.size() > kMaxClipboardImageBytes) return {};
-    const QByteArray base64 = bytes.toBase64();
-    // The native control channel is framed at 32 MiB. Drop oversized clipboard
-    // images instead of allowing one paste to tear down the sidecar connection.
-    if (base64.size() > kMaxClipboardImageBase64Bytes) return {};
-    return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(base64);
+
+    // Complex photographs may still exceed the fixed transport budget at 2000px.
+    // Keep the budget intact and retry smaller bounded images before giving up.
+    for (const int edge : {2000, 1800, 1600, 1400, 1200}) {
+        if (bounded.width() > edge || bounded.height() > edge) {
+            bounded = bounded.scaled(QSize(edge, edge),
+                                     Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        }
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::WriteOnly);
+        if (!bounded.save(&buffer, "PNG") || bytes.size() > kMaxClipboardImageBytes) continue;
+        const QByteArray base64 = bytes.toBase64();
+        // The native control channel is framed at 32 MiB. Drop oversized clipboard
+        // images instead of allowing one paste to tear down the sidecar connection.
+        if (base64.size() > kMaxClipboardImageBase64Bytes) continue;
+        return QStringLiteral("data:image/png;base64,") + QString::fromLatin1(base64);
+    }
+    return {};
 }
 
 QStringList mimeFilePaths(const QMimeData *mimeData)

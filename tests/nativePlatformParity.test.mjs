@@ -119,6 +119,7 @@ test("native clipboard image snapshots bound the edge before the PNG budget and 
 	const clipboard = readFileSync("native/src/ClipboardController.cpp", "utf8");
 	assert.match(clipboard, /kMaxClipboardImageEdge = 2000/);
 	assert.match(clipboard, /bounded\.scaled/);
+	assert.match(clipboard, /for \(const int edge : \{2000, 1800, 1600, 1400, 1200\}\)/);
 	assert.match(clipboard, /state->encoding/);
 	assert.match(clipboard, /state->cachedImageReady/);
 });
