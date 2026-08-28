@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 export const EXTERNAL_FILE_CAPABILITY_NOT_AUTHORIZED_CODE = "EXTERNAL_FILE_CAPABILITY_NOT_AUTHORIZED";
 
-const CAPABILITY_TTL_MS = 30_000;
+const CLIPBOARD_CAPABILITY_TTL_MS = 10 * 60_000;
+const DROP_CAPABILITY_TTL_MS = 30_000;
 const MAX_CAPABILITIES = 256;
 const MAX_PATHS_PER_CAPABILITY = 128;
 
@@ -15,9 +16,13 @@ export class ExternalFileCapabilityError extends Error {
 	}
 }
 
+export type CapabilityKind = "clipboard" | "drop";
+
 type CapabilityEntry = {
 	paths: string[];
+	sequence?: number;
 	expiresAt: number;
+	kind: CapabilityKind;
 };
 
 function normalizePath(path: string): string {
@@ -36,8 +41,65 @@ function validCapabilityId(capabilityId: string): boolean {
  */
 export class ExternalFileCapabilityStore {
 	private readonly capabilities = new Map<string, CapabilityEntry>();
+	private currentClipboardCapabilityId: string | null = null;
 
-	issue(paths: readonly string[]): string | null {
+	/**
+	 * Issue or reuse the capability for one clipboard sequence. The OS clipboard
+	 * is reusable; sequence changes revoke the previous capability immediately.
+	 */
+	issueClipboard(paths: readonly string[], sequence?: number): string | null {
+		this.pruneExpired();
+		const currentId = this.currentClipboardCapabilityId;
+		const current = currentId ? this.capabilities.get(currentId) : undefined;
+		if (current && current.sequence === sequence) return currentId;
+		if (currentId) this.deleteCapability(currentId);
+		return this.createCapability(paths, "clipboard", sequence, CLIPBOARD_CAPABILITY_TTL_MS);
+	}
+
+	/** Issue a short-lived capability for one trusted native OS drop. */
+	issueDrop(paths: readonly string[]): string | null {
+		return this.createCapability(paths, "drop", undefined, DROP_CAPABILITY_TTL_MS);
+	}
+
+	consumeCopy(capabilityId: string): string[] {
+		const entry = this.getEntry(capabilityId);
+		if (entry.kind === "drop") this.deleteCapability(capabilityId);
+		return [...entry.paths];
+	}
+
+	/**
+	 * Redeem one exact trusted path; the path supplied by the renderer is only a
+	 * selector. Clipboard capabilities remain reusable for the same sequence,
+	 * while drop capabilities retain the previous one-read-per-path behavior.
+	 */
+	consumeRead(capabilityId: string, requestedPath: string): string {
+		const entry = this.getEntry(capabilityId);
+		const requestedKey = normalizePath(requestedPath);
+		const index = entry.paths.findIndex((path) => normalizePath(path) === requestedKey);
+		if (index < 0) throw new ExternalFileCapabilityError();
+		const trustedPath = entry.paths[index];
+		if (entry.kind === "drop") {
+			entry.paths.splice(index, 1);
+			if (entry.paths.length === 0) this.deleteCapability(capabilityId);
+		}
+		return trustedPath;
+	}
+
+	revoke(capabilityId: string): void {
+		if (validCapabilityId(capabilityId)) this.deleteCapability(capabilityId);
+	}
+
+	clear(): void {
+		this.capabilities.clear();
+		this.currentClipboardCapabilityId = null;
+	}
+
+	private createCapability(
+		paths: readonly string[],
+		kind: CapabilityKind,
+		sequence: number | undefined,
+		ttlMs: number,
+	): string | null {
 		this.pruneExpired();
 		const uniquePaths: string[] = [];
 		const seen = new Set<string>();
@@ -53,60 +115,38 @@ export class ExternalFileCapabilityStore {
 		while (this.capabilities.size >= MAX_CAPABILITIES) {
 			const oldest = this.capabilities.keys().next().value;
 			if (typeof oldest !== "string") break;
-			this.capabilities.delete(oldest);
+			this.deleteCapability(oldest);
 		}
 		const capabilityId = randomUUID();
 		this.capabilities.set(capabilityId, {
 			paths: uniquePaths,
-			expiresAt: Date.now() + CAPABILITY_TTL_MS,
+			sequence,
+			expiresAt: Date.now() + ttlMs,
+			kind,
 		});
+		if (kind === "clipboard") this.currentClipboardCapabilityId = capabilityId;
 		return capabilityId;
 	}
 
-	consumeCopy(capabilityId: string): string[] {
-		const entry = this.takeEntry(capabilityId);
-		return [...entry.paths];
-	}
-
-	/** Redeem one exact trusted path; the path supplied by the renderer is only a selector. */
-	consumeRead(capabilityId: string, requestedPath: string): string {
-		const entry = this.getEntry(capabilityId);
-		const requestedKey = normalizePath(requestedPath);
-		const index = entry.paths.findIndex((path) => normalizePath(path) === requestedKey);
-		if (index < 0) throw new ExternalFileCapabilityError();
-		const [trustedPath] = entry.paths.splice(index, 1);
-		if (entry.paths.length === 0) this.capabilities.delete(capabilityId);
-		return trustedPath;
-	}
-
-	revoke(capabilityId: string): void {
-		if (validCapabilityId(capabilityId)) this.capabilities.delete(capabilityId);
-	}
-
-	clear(): void {
-		this.capabilities.clear();
+	private deleteCapability(capabilityId: string): void {
+		this.capabilities.delete(capabilityId);
+		if (this.currentClipboardCapabilityId === capabilityId) this.currentClipboardCapabilityId = null;
 	}
 
 	private getEntry(capabilityId: string): CapabilityEntry {
 		if (!validCapabilityId(capabilityId)) throw new ExternalFileCapabilityError();
 		const entry = this.capabilities.get(capabilityId);
 		if (!entry || entry.expiresAt <= Date.now()) {
-			this.capabilities.delete(capabilityId);
+			this.deleteCapability(capabilityId);
 			throw new ExternalFileCapabilityError();
 		}
-		return entry;
-	}
-
-	private takeEntry(capabilityId: string): CapabilityEntry {
-		const entry = this.getEntry(capabilityId);
-		this.capabilities.delete(capabilityId);
 		return entry;
 	}
 
 	private pruneExpired(): void {
 		const now = Date.now();
 		for (const [capabilityId, entry] of this.capabilities) {
-			if (entry.expiresAt <= now) this.capabilities.delete(capabilityId);
+			if (entry.expiresAt <= now) this.deleteCapability(capabilityId);
 		}
 	}
 }

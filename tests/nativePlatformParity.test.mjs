@@ -100,7 +100,7 @@ test("native bootstrap requests clipboard metadata instead of encoding an image"
 	assert.match(mainSource, /clipboard\.metadataSnapshot/);
 	assert.match(clipboard, /QJsonObject ClipboardController::metadataSnapshot\(\) const/);
 	assert.doesNotMatch(clipboard.slice(clipboard.indexOf("QJsonObject ClipboardController::metadataSnapshot"), clipboard.indexOf("QJsonObject ClipboardController::snapshot")), /imageDataUrl/);
-	assert.match(node, /externalFileCapabilities\.issue\(snapshot\.filePaths\)/);
+	assert.match(node, /externalFileCapabilities\.issueClipboard\(snapshot\.filePaths, snapshot\.sequence\)/);
 	assert.match(node, /issueClipboardCapability\(clipboard\)/);
 });
 
@@ -108,7 +108,7 @@ test("native external file events carry capabilities while copy IPC redeems only
 	const node = readFileSync("src/native-node/index.ts", "utf8");
 	const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
 	assert.match(node, /native\.fileDrop/);
-	assert.match(node, /externalFileCapabilities\.issue\(payload\.paths\)/);
+	assert.match(node, /externalFileCapabilities\.issueDrop\(payload\.paths\)/);
 	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
 	assert.match(filesIpc, /consumeCopy\(capabilityId\)/);
 	assert.match(filesIpc, /copyInternal/);

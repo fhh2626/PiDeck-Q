@@ -35,7 +35,7 @@ QString boundedText(const QString &value)
 
 QString imageDataUrl(const QImage &image)
 {
-    if (image.isNull() || qint64(image.width()) * qint64(image.height()) > kMaxClipboardImagePixels) return {};
+    if (image.isNull()) return {};
     QImage bounded = image;
     if (bounded.width() > kMaxClipboardImageEdge || bounded.height() > kMaxClipboardImageEdge) {
         bounded = bounded.scaled(QSize(kMaxClipboardImageEdge, kMaxClipboardImageEdge),

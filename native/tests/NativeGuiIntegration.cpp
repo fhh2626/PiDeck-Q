@@ -377,6 +377,26 @@ int main(int argc, char **argv)
         });
         if (!require(cachedSnapshot.value(QStringLiteral("imageDataUrl")).toString() == imageDataUrl,
                      "clipboard image snapshot cache was not reused for the same sequence")) return 1;
+
+        // A common high-resolution phone photo can exceed 32 MP. It must be
+        // bounded before the transport-budget checks, rather than rejected by
+        // its original pixel count.
+        QImage highResolutionImage(8000, 5000, QImage::Format_ARGB32);
+        highResolutionImage.fill(QColor("#2f855a"));
+        systemClipboard->setImage(highResolutionImage);
+        processGuiEvents();
+        QJsonObject highResolutionSnapshot;
+        imageClipboard.snapshotAsync([&highResolutionSnapshot](const QJsonObject &snapshot) {
+            highResolutionSnapshot = snapshot;
+        });
+        QElapsedTimer highResolutionTimer;
+        highResolutionTimer.start();
+        while (highResolutionSnapshot.isEmpty() && highResolutionTimer.elapsed() < 3'000) {
+            processGuiEvents();
+        }
+        if (!require(highResolutionSnapshot.value(QStringLiteral("imageDataUrl")).toString()
+                         .startsWith(QStringLiteral("data:image/png;base64,")),
+                     "clipboard image above 32 MP was rejected before resize")) return 1;
     }
 
     return 0;

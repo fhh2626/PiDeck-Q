@@ -58,7 +58,7 @@ let loadRetryTimer: NodeJS.Timeout | null = null;
 const externalFileCapabilities = new ExternalFileCapabilityStore();
 
 function issueClipboardCapability(snapshot: NativeClipboardMetadata): string {
-	return externalFileCapabilities.issue(snapshot.filePaths) ?? "";
+	return externalFileCapabilities.issueClipboard(snapshot.filePaths, snapshot.sequence) ?? "";
 }
 
 async function stop(announceReadyToExit = false): Promise<void> {
@@ -138,9 +138,9 @@ async function main(): Promise<void> {
 	const router = new NativeRpcRouter();
 	router.handle(ipcChannels.nativeClipboardSnapshot, async () => {
 		const snapshot = await host.request<NativeClipboardSnapshot>("clipboard.snapshot");
-		// A live image read is a separate one-shot capability so consuming it does
-		// not invalidate the clipboard-file paste action shown in the file drawer.
-		const externalFileCapabilityId = externalFileCapabilities.issue(snapshot.filePaths) ?? "";
+		// Reuse the sequence-bound clipboard capability so image reads do not
+		// invalidate later file-drawer pastes for the same OS clipboard contents.
+		const externalFileCapabilityId = issueClipboardCapability(snapshot);
 		return {
 			...snapshot,
 			externalFileCapabilityId,
@@ -255,7 +255,7 @@ async function main(): Promise<void> {
 		}]);
 	});
 	host.on<NativeFileDropPayload>("native.fileDrop", (payload) => {
-		const externalFileCapabilityId = externalFileCapabilities.issue(payload.paths);
+		const externalFileCapabilityId = externalFileCapabilities.issueDrop(payload.paths) ?? "";
 		placeholderServer.broadcast("native.fileDrop", [{
 			...payload,
 			externalFileCapabilityId,

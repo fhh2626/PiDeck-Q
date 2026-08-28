@@ -6,9 +6,9 @@ const { ExternalFileCapabilityError, ExternalFileCapabilityStore } = loadTsCommo
 	"src/main/fs/ExternalFileCapabilityStore.ts",
 );
 
-test("external file capabilities redeem exact paths once for reads", () => {
+test("drop capabilities redeem exact paths once for reads", () => {
 	const store = new ExternalFileCapabilityStore();
-	const capabilityId = store.issue(["C:\\outside\\passport.png", "C:\\outside\\notes.txt"]);
+	const capabilityId = store.issueDrop(["C:\\outside\\passport.png", "C:\\outside\\notes.txt"]);
 	assert.ok(capabilityId);
 	assert.equal(store.consumeRead(capabilityId, "c:/outside/passport.png"), "C:\\outside\\passport.png");
 	assert.throws(
@@ -22,9 +22,27 @@ test("external file capabilities redeem exact paths once for reads", () => {
 	);
 });
 
-test("external file copy capabilities return trusted paths once and never accept renderer paths", () => {
+test("clipboard capabilities can be reused until the clipboard sequence changes", () => {
 	const store = new ExternalFileCapabilityStore();
-	const capabilityId = store.issue(["C:\\outside\\id_rsa"]);
+	const capabilityId = store.issueClipboard(["C:\\outside\\a.txt"], 42);
+	assert.ok(capabilityId);
+	assert.deepEqual(Array.from(store.consumeCopy(capabilityId)), ["C:\\outside\\a.txt"]);
+	assert.deepEqual(Array.from(store.consumeCopy(capabilityId)), ["C:\\outside\\a.txt"]);
+	assert.equal(store.issueClipboard(["C:\\outside\\a.txt"], 42), capabilityId);
+
+	const replacementId = store.issueClipboard(["C:\\outside\\b.txt"], 43);
+	assert.ok(replacementId);
+	assert.notEqual(replacementId, capabilityId);
+	assert.throws(
+		() => store.consumeCopy(capabilityId),
+		(error) => error instanceof ExternalFileCapabilityError,
+	);
+	assert.deepEqual(Array.from(store.consumeCopy(replacementId)), ["C:\\outside\\b.txt"]);
+});
+
+test("drop capabilities return trusted paths once and never accept renderer paths", () => {
+	const store = new ExternalFileCapabilityStore();
+	const capabilityId = store.issueDrop(["C:\\outside\\id_rsa"]);
 	assert.ok(capabilityId);
 	assert.deepEqual(Array.from(store.consumeCopy(capabilityId)), ["C:\\outside\\id_rsa"]);
 	assert.throws(
