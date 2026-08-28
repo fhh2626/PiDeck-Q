@@ -2000,6 +2000,7 @@ export const zhCN = {
   "settings.localWebHint": "本机预览地址；局域网访问请替换为本机 IP",
   "settings.nativeMenu": "显示原生菜单",
   "settings.nativeTitleBar": "使用系统标题栏",
+  "settings.nativeTitleBarMacDesc": "macOS 原生版本需要系统标题栏，以保留红绿灯按钮和可靠的窗口缩放。",
   "settings.zoomFactor": "窗口缩放",
   "settings.zoomIn": "放大窗口",
   "settings.zoomOut": "缩小窗口",

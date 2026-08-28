@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 #include "NativeFilePathLimits.h"
 #include "NativeTheme.h"
+#include "NativeWindowPolicy.h"
 #include "WindowsToastNotifier.h"
 
 #include <QtWebView/QtWebView>
@@ -209,7 +210,7 @@ int main(int argc, char **argv)
 
     bool unavailableTrayQuitRequested = false;
     MainWindow unavailableTrayWindow(nullptr, fixedBounds);
-    unavailableTrayWindow.setTrayAvailableHandler([] { return false; });
+    unavailableTrayWindow.setCloseHideAvailableHandler([] { return false; });
     unavailableTrayWindow.setQuitHandler([&unavailableTrayQuitRequested] {
         unavailableTrayQuitRequested = true;
     });
@@ -222,7 +223,7 @@ int main(int argc, char **argv)
 
     bool availableTrayQuitRequested = false;
     MainWindow availableTrayWindow(nullptr, fixedBounds);
-    availableTrayWindow.setTrayAvailableHandler([] { return true; });
+    availableTrayWindow.setCloseHideAvailableHandler([] { return true; });
     availableTrayWindow.setQuitHandler([&availableTrayQuitRequested] {
         availableTrayQuitRequested = true;
     });
@@ -234,6 +235,18 @@ int main(int argc, char **argv)
                  "close-to-tray did not hide when the tray was available")) return 1;
     availableTrayWindow.setQuitting(true);
     availableTrayWindow.close();
+
+#ifdef Q_OS_MACOS
+    if (!require(nativeWindowUsesSystemTitleBar(false),
+                 "macOS did not preserve system window decorations")) return 1;
+    if (!require(!nativeWindowSupportsCustomResize(),
+                 "macOS exposed unsupported frameless system resize")) return 1;
+#else
+    if (!require(!nativeWindowUsesSystemTitleBar(false),
+                 "custom titlebar preference was ignored")) return 1;
+    if (!require(nativeWindowSupportsCustomResize(),
+                 "platform unexpectedly disabled custom system resize")) return 1;
+#endif
 
     fixed.show();
     fixed.showMaximized();

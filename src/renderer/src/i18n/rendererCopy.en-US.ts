@@ -2029,6 +2029,8 @@ export const enUS: Record<TranslationKey, string> = {
     "Local preview address. Replace with this computer's IP for LAN access.",
   "settings.nativeMenu": "Show native menu",
   "settings.nativeTitleBar": "Use system title bar",
+  "settings.nativeTitleBarMacDesc":
+    "The native macOS build requires the system title bar for traffic lights and reliable window resizing.",
   "settings.zoomFactor": "Window Zoom",
   "settings.zoomIn": "Zoom in",
   "settings.zoomOut": "Zoom out",

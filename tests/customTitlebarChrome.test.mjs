@@ -144,12 +144,18 @@ test("brand lockup is larger inside the 40px titlebar", () => {
   assert.doesNotMatch(sidebar, /list-toggle-native floating/);
 });
 
-test("mac custom titlebar uses system traffic lights and insets collapsed tabs", () => {
+test("mac window chrome keeps one platform-owned traffic-light set", () => {
   const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
   const nativeWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
-  // 右侧 Win 控件只在非 darwin 渲染；mac 靠 hiddenInset 红绿灯。
-  assert.match(header, /const showWinWindowControls = platform !== "darwin"/);
+  const nativePolicy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
+  const appearance = readFileSync("src/renderer/src/components/app/settings/AppearanceTab.tsx", "utf8");
+  // Electron hiddenInset and native Qt both suppress renderer window buttons;
+  // Qt additionally forces system decorations because macOS frameless resize is unsupported.
+  assert.match(header, /const showCustomWindowControls = platform !== "darwin"/);
+  assert.match(nativePolicy, /#ifdef Q_OS_MACOS[\s\S]*return true/);
+  assert.match(appearance, /nativeTitleBarRequired = isNativeRuntime && props\.platform === "darwin"/);
+  assert.match(appearance, /disabled=\{nativeTitleBarRequired\}/);
   assert.match(shell, /mac-custom-titlebar/);
   assert.match(app, /platform=\{appInfo\.platform\}/);
   assert.match(app, /detectRendererPlatform\(\)/);

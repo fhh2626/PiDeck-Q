@@ -17,10 +17,12 @@ target("PiDeck-Q")
     set_kind("binary")
     add_packages("pideck-qt", "pideck-node-runtime")
 
+    -- Keep application metadata available on every platform even though the
+    -- current prebuilt native SDK and staging pipeline are Windows-first.
+    add_defines('PIDECK_BUILD_VERSION="' .. package_version .. '"')
     if is_plat("windows") then
         -- Qt 6.11 requires MSVC to expose the standard __cplusplus value.
         add_cxxflags("/Zc:__cplusplus", {force = true})
-        add_defines('PIDECK_BUILD_VERSION="' .. package_version .. '"')
     end
 
     -- The launcher can override this explicitly for dev/staging runs. The
@@ -36,7 +38,10 @@ target("PiDeck-Q")
         add_ldflags("/SUBSYSTEM:WINDOWS", {force = true})
     end
 
+    -- Portable Windows staging is intentionally platform-scoped. A plain
+    -- macOS/Linux compile must never try to execute windeployqt.exe/node.exe.
     after_build(function (target)
+        if not is_plat("windows") then return end
         local stage = path.join(os.projectdir(), "release", "win-unpacked")
         os.rm(stage)
         os.mkdir(stage)
@@ -103,7 +108,7 @@ target("PiDeck-NativeGuiTest")
     set_kind("binary")
     set_default(false)
     add_packages("pideck-qt")
-    add_files("native/tests/NativeGuiIntegration.cpp", "native/src/MainWindow.cpp", "native/src/MainWebSurface.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/HostRpcServer.cpp", "native/src/NativeTheme.cpp", "native/src/WindowsToastNotifier.cpp", "native/src/StartupWindowBounds.cpp")
+    add_files("native/tests/NativeGuiIntegration.cpp", "native/src/MainWindow.cpp", "native/src/MainWebSurface.cpp", "native/src/FileDropController.cpp", "native/src/ClipboardController.cpp", "native/src/HostRpcServer.cpp", "native/src/NativeTheme.cpp", "native/src/NativeWindowPolicy.cpp", "native/src/WindowsToastNotifier.cpp", "native/src/StartupWindowBounds.cpp")
     add_includedirs("native/src")
 
     if is_plat("windows") then

@@ -3,6 +3,7 @@
 #include "FileDropController.h"
 #include "HostRpcServer.h"
 #include "MainWebSurface.h"
+#include "NativeWindowPolicy.h"
 #include "StartupWindowBounds.h"
 
 #include <QtWebView/QWebView>
@@ -46,11 +47,12 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     m_surface->container()->setAcceptDrops(true);
     installEventFilter(m_fileDrop);
     m_surface->container()->installEventFilter(m_fileDrop);
-    // WebView2 is a native QWindow child; parent QWidget filters are not
+    // The web surface is a native QWindow child; parent QWidget filters are not
     // guaranteed to observe drag/drop events intercepted by the browser.
     m_surface->view()->installEventFilter(m_fileDrop);
 
-    const bool useNativeTitleBar = startup.value(QStringLiteral("useNativeTitleBar")).toBool(false);
+    const bool useNativeTitleBar = nativeWindowUsesSystemTitleBar(
+        startup.value(QStringLiteral("useNativeTitleBar")).toBool(false));
     if (!useNativeTitleBar) {
         setWindowFlag(Qt::FramelessWindowHint, true);
     }
@@ -177,9 +179,9 @@ void MainWindow::setQuitHandler(std::function<void()> handler)
     m_quitHandler = std::move(handler);
 }
 
-void MainWindow::setTrayAvailableHandler(std::function<bool()> handler)
+void MainWindow::setCloseHideAvailableHandler(std::function<bool()> handler)
 {
-    m_trayAvailableHandler = std::move(handler);
+    m_closeHideAvailableHandler = std::move(handler);
 }
 
 void MainWindow::applySettings(const QJsonObject &settings)
@@ -188,7 +190,8 @@ void MainWindow::applySettings(const QJsonObject &settings)
         m_closeToTray = settings.value(QStringLiteral("closeToTray")).toBool(m_closeToTray);
     }
     if (settings.contains(QStringLiteral("useNativeTitleBar"))) {
-        const bool nativeTitleBar = settings.value(QStringLiteral("useNativeTitleBar")).toBool(false);
+        const bool nativeTitleBar = nativeWindowUsesSystemTitleBar(
+            settings.value(QStringLiteral("useNativeTitleBar")).toBool(false));
         const bool frameless = windowFlags() & Qt::FramelessWindowHint;
         const bool desiredFrameless = !nativeTitleBar;
         if (frameless != desiredFrameless) {
@@ -209,7 +212,8 @@ void MainWindow::beginSystemMove()
 
 bool MainWindow::beginSystemResize(Qt::Edges edges)
 {
-    if (edges == Qt::Edges{} || isMaximized() || isFullScreen()) return false;
+    if (!nativeWindowSupportsCustomResize()
+        || edges == Qt::Edges{} || isMaximized() || isFullScreen()) return false;
     if (auto *handle = windowHandle()) return handle->startSystemResize(edges);
     return false;
 }
@@ -259,9 +263,10 @@ void MainWindow::toggleDevTools()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    // Hiding is safe only when an actually visible tray icon can restore the
-    // window. Otherwise accept the close so the process cannot become headless.
-    if (!m_quitting && m_closeToTray && m_trayAvailableHandler && m_trayAvailableHandler()) {
+    // Hiding is safe only when the platform has a real restoration route: an
+    // actually visible tray icon on Windows/Linux, or the macOS Dock activation
+    // handler. Otherwise quit so the process cannot become unreachable.
+    if (!m_quitting && m_closeToTray && m_closeHideAvailableHandler && m_closeHideAvailableHandler()) {
         event->ignore();
         hide();
         return;

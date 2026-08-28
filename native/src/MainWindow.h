@@ -33,7 +33,7 @@ public:
     void closeFromHost();
     void setQuitting(bool quitting);
     void setQuitHandler(std::function<void()> handler);
-    void setTrayAvailableHandler(std::function<bool()> handler);
+    void setCloseHideAvailableHandler(std::function<bool()> handler);
     void applySettings(const QJsonObject &settings);
     void beginSystemMove();
     bool beginSystemResize(Qt::Edges edges);
@@ -65,5 +65,5 @@ private:
     bool m_closeToTray = true;
     bool m_quitting = false;
     std::function<void()> m_quitHandler;
-    std::function<bool()> m_trayAvailableHandler;
+    std::function<bool()> m_closeHideAvailableHandler;
 };

@@ -62,6 +62,7 @@ import { detectRendererPlatform } from "./lib/detectRendererPlatform";
 import { backgroundImageUrl } from "./utils/backgroundImageUrl";
 import { requestProjectInventory } from "./utils/projectInventoryRequests";
 import { applyRendererZoom } from "./native/rendererZoom";
+import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useAppUpdateController } from "./hooks/useAppUpdateController";
@@ -2889,6 +2890,12 @@ export function App() {
   });
 
 
+  const nativeWindowChrome = resolveNativeWindowChrome(
+    settings.useNativeTitleBar,
+    appInfo.platform,
+    isNativeRuntime,
+  );
+
   return (
     <>
       <AppBootstrap {...bootstrapProps} />
@@ -2898,7 +2905,7 @@ export function App() {
       drawer={drawer}
       drawerCollapsed={drawerCollapsed}
       drawerWidth={drawerWidth}
-      useNativeTitleBar={settings.useNativeTitleBar}
+      useNativeTitleBar={nativeWindowChrome.useNativeTitleBar}
       platform={appInfo.platform}
       chatPaneRef={chatPaneRef}
       terminalRowHeight={terminalRowHeight}
@@ -3021,7 +3028,7 @@ export function App() {
       closeWindow={api.app.closeWindow}
       beginWindowDrag={api.app.beginWindowDrag}
       beginWindowResize={api.app.beginWindowResize}
-      enableNativeResize={isNativeRuntime}
+      enableNativeResize={nativeWindowChrome.enableCustomResize}
     >
 
     {fileMenu && (

@@ -71,6 +71,23 @@ test("frameless native windows expose all renderer resize edges and Qt system re
 	assert.match(header, /enableNativeResize && !maximized/);
 });
 
+test("macOS native chrome keeps system resize and a Dock restoration route", () => {
+	const policy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
+	const main = readFileSync("native/src/main.cpp", "utf8");
+	assert.match(policy, /#ifdef Q_OS_MACOS[\s\S]*return true/);
+	assert.match(policy, /#ifdef Q_OS_MACOS[\s\S]*return false/);
+	assert.match(main, /QGuiApplication::applicationStateChanged/);
+	assert.match(main, /setCloseHideAvailableHandler/);
+	assert.match(main, /#ifdef Q_OS_MACOS[\s\S]*return true/);
+});
+
+test("native build helpers do not force Windows runtime tools on other platforms", () => {
+	const guiTest = readFileSync("scripts/test-native-gui.mjs", "utf8");
+	assert.match(guiTest, /process\.platform === "win32"/);
+	assert.doesNotMatch(guiTest, /QT_QPA_PLATFORM: process\.env\.QT_QPA_PLATFORM \?\? "windows"/);
+	assert.match(xmake, /after_build\(function \(target\)\s+if not is_plat\("windows"\) then return end/);
+});
+
 test("native startup presets and window flags are handled by production helpers", () => {
 	const startupBounds = readFileSync("native/src/StartupWindowBounds.cpp", "utf8");
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");

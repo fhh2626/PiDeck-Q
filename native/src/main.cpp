@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -247,6 +248,16 @@ int main(int argc, char **argv)
     NodeProcessController node(paths, &host);
     MainWindow *mainWindow = nullptr;
     TrayController *tray = nullptr;
+#ifdef Q_OS_MACOS
+    // A close-to-background window remains reachable from the Dock even when
+    // the platform has no status-tray implementation. Restore it on activation.
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &app,
+                     [&mainWindow](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive && mainWindow && !mainWindow->isVisible()) {
+            mainWindow->showWindow();
+        }
+    });
+#endif
     bool quitting = false;
     bool restartRequested = false;
     bool quitRequested = false;
@@ -466,8 +477,13 @@ int main(int argc, char **argv)
             setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
             mainWindow = new MainWindow(&host, startup);
             mainWindow->setQuitHandler(requestQuit);
-            mainWindow->setTrayAvailableHandler([&tray] {
+            mainWindow->setCloseHideAvailableHandler([&tray] {
+#ifdef Q_OS_MACOS
+                // The application activation handler above restores from Dock.
+                return true;
+#else
                 return tray && tray->isAvailableAndVisible();
+#endif
             });
             const QUrl baseUrl(ready.value(QStringLiteral("url")).toString());
             QUrlQuery query;
@@ -475,7 +491,7 @@ int main(int argc, char **argv)
             query.addQueryItem(QStringLiteral("token"), ready.value(QStringLiteral("token")).toString());
             QUrl pageUrl = baseUrl;
             pageUrl.setQuery(query);
-            // Qt WebView2 must have its QWindow host mapped before navigation;
+            // The Qt web surface must have its QWindow host mapped before navigation;
             // loading while the QMainWindow is hidden can complete the DOM load
             // but leave the native browser surface invisible.
             mainWindow->show();

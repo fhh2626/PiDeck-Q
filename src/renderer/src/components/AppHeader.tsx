@@ -5,7 +5,7 @@ import { t } from "../i18n";
 
 type Props = {
   useNativeTitleBar: boolean;
-  /** mac 用系统红绿灯，不再渲染右侧 Win 风格 min/max/close。 */
+  /** macOS native runtime uses system traffic lights and native resizing. */
   platform: NodeJS.Platform;
   toggleAlwaysOnTop: () => Promise<boolean>;
   minimizeWindow: () => void;
@@ -33,7 +33,7 @@ const RESIZE_HANDLES: ReadonlyArray<{
   { edge: "bottom-right", className: "fixed bottom-0 right-0 h-2 w-2 cursor-se-resize" },
 ];
 
-/** Windows 风格「还原」图标：前后错位的两个方框（最大化态显示）。 */
+/** Custom titlebar restore icon: overlapping windows while maximized. */
 function RestoreIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none">
@@ -76,8 +76,9 @@ export function AppHeader({
 
   if (useNativeTitleBar) return null;
 
-  // hiddenInset 已经画了系统红绿灯；再画一套 Win 控件就是「左右都有关闭键」。
-  const showWinWindowControls = platform !== "darwin";
+  // macOS native runtime never reaches this branch; keep the guard for the
+  // Electron hidden-inset host so it cannot render duplicate traffic lights.
+  const showCustomWindowControls = platform !== "darwin";
 
   return (
     <>
@@ -99,7 +100,7 @@ export function AppHeader({
         onPointerDown={() => beginWindowDrag()}
         onDoubleClick={() => { void toggleMaximizeWindow(); }}
       />
-      {showWinWindowControls ? (
+      {showCustomWindowControls ? (
         <div className="window-controls" aria-label={t("app.windowControls")}>
           <button
             type="button"
