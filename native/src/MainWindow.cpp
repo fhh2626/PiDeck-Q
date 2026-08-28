@@ -93,12 +93,16 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::load(const QUrl &url)
 {
+    // Keep the authenticated navigation URL separately because the renderer
+    // removes its token from the visible WebView history after bootstrap.
+    m_reloadUrl = url;
     m_surface->load(url);
 }
 
 void MainWindow::reload()
 {
-    m_surface->reload();
+    if (!m_reloadUrl.isValid() || m_reloadUrl.isEmpty()) return;
+    m_surface->load(m_reloadUrl);
 }
 
 void MainWindow::focusWindow()

@@ -71,6 +71,21 @@ test("frameless native windows expose all renderer resize edges and Qt system re
 	assert.match(header, /enableNativeResize && !maximized/);
 });
 
+test("native reload restores the last authenticated WebView URL", () => {
+	const header = readFileSync("native/src/MainWindow.h", "utf8");
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	assert.match(header, /#include <QUrl>/);
+	assert.match(header, /QUrl m_reloadUrl;/);
+	const loadStart = mainWindow.indexOf("void MainWindow::load(const QUrl &url)");
+	const reloadStart = mainWindow.indexOf("void MainWindow::reload()");
+	const focusStart = mainWindow.indexOf("void MainWindow::focusWindow()");
+	assert.ok(loadStart >= 0 && reloadStart > loadStart && focusStart > reloadStart);
+	assert.match(mainWindow.slice(loadStart, reloadStart), /m_reloadUrl = url/);
+	const reload = mainWindow.slice(reloadStart, focusStart);
+	assert.match(reload, /m_surface->load\(m_reloadUrl\)/);
+	assert.doesNotMatch(reload, /m_surface->reload\(\)/);
+});
+
 test("macOS native chrome keeps system resize and uses the Dock reopen delegate", () => {
 	const policy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
 	const main = readFileSync("native/src/main.cpp", "utf8");

@@ -5,6 +5,7 @@
 #include <QDropEvent>
 #include <QJsonObject>
 #include <QMainWindow>
+#include <QUrl>
 
 #include <functional>
 #include <memory>
@@ -13,7 +14,6 @@ class HostRpcServer;
 class MainWebSurface;
 class QHideEvent;
 class QShowEvent;
-class QUrl;
 class FileDropController;
 
 class MainWindow final : public QMainWindow {
@@ -60,6 +60,7 @@ private:
     void clampNormalGeometry();
 
     HostRpcServer *m_host = nullptr;
+    QUrl m_reloadUrl;
     std::unique_ptr<MainWebSurface> m_surface;
     FileDropController *m_fileDrop = nullptr;
     bool m_closeToTray = true;

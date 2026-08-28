@@ -6,7 +6,10 @@ import type { NativeClipboardMetadata, NativeFileDropPayload } from "@shared/des
 import { NativeDesktopSyncHost } from "./NativeDesktopSyncHost";
 import { NativeDesktopTransport, type NativeHeartbeatState } from "./NativeDesktopTransport";
 import { createNativeHeartbeatRequest } from "./nativeHeartbeat";
+import { createNativeReloadUrl } from "./nativeReloadUrl";
 import { applyRendererZoom } from "./rendererZoom";
+
+export { createNativeReloadUrl } from "./nativeReloadUrl";
 
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
 
@@ -15,6 +18,10 @@ let nativeRendererToken: string | null = null;
 /** Token is retained in memory for protected background requests, never in the URL after bootstrap. */
 export function getNativeRendererToken(): string | null {
 	return nativeRendererToken;
+}
+
+function reloadNativeRenderer(token: string): void {
+	window.location.replace(createNativeReloadUrl(window.location.href, token));
 }
 
 interface NativeBootstrapResponse {
@@ -72,7 +79,7 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	}
 	const bootstrap = (await response.json()) as NativeBootstrapResponse;
 	const transport = new NativeDesktopTransport(baseUrl, token, {
-		onResyncRequired: () => window.location.reload(),
+		onResyncRequired: () => reloadNativeRenderer(token),
 		initialEventSeq: bootstrap.eventSeq ?? 0,
 	});
 	try {
