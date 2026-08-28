@@ -27,7 +27,7 @@ class FakeEventSource {
 	}
 }
 
-const { NativeDesktopTransport } = loadTsCommonJs("src/renderer/src/native/NativeDesktopTransport.ts", {
+const { NativeDesktopTransport, NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS, nativeRpcTimeoutMs } = loadTsCommonJs("src/renderer/src/native/NativeDesktopTransport.ts", {
 	stubs: {
 		"@shared/desktop/DesktopRpcTransport": {},
 		"@shared/desktop/nativeLimits": { MAX_NATIVE_RPC_BODY_BYTES: 32 * 1024 * 1024 },
@@ -224,6 +224,52 @@ test("NativeRendererServer preserves every queued frame when drain blocks again"
 		server.clients.delete(client);
 		await server.stop();
 		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeDesktopTransport gives live clipboard snapshots a short read deadline", () => {
+	assert.equal(NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS, 5_000);
+	assert.equal(nativeRpcTimeoutMs("native:clipboard-snapshot"), 5_000);
+	assert.equal(nativeRpcTimeoutMs("files:read-content"), 60_000);
+	assert.equal(nativeRpcTimeoutMs("sessions:send-prompt"), undefined);
+});
+
+test("NativeDesktopTransport aborts a stuck live clipboard snapshot at its deadline", async () => {
+	const timers = [];
+	const transportModule = loadTsCommonJs("src/renderer/src/native/NativeDesktopTransport.ts", {
+		stubs: {
+			"@shared/desktop/DesktopRpcTransport": {},
+			"@shared/desktop/nativeLimits": { MAX_NATIVE_RPC_BODY_BYTES: 32 * 1024 * 1024 },
+		},
+		globals: {
+			EventSource: FakeEventSource,
+			setTimeout: (callback, delayMs) => {
+				const timer = { callback, delayMs, cancelled: false };
+				timers.push(timer);
+				return timer;
+			},
+			clearTimeout: (timer) => {
+				if (timer) timer.cancelled = true;
+			},
+			fetch: (_input, init = {}) => new Promise((_, reject) => {
+				init.signal?.addEventListener("abort", () => reject(new Error("fetch aborted")), { once: true });
+			}),
+		},
+	});
+	FakeEventSource.instances.length = 0;
+	const transport = new transportModule.NativeDesktopTransport(
+		"http://127.0.0.1:43123/",
+		"secret-token",
+		{ readyTimeoutMs: 10_000 },
+	);
+	try {
+		const pending = transport.invoke("native:clipboard-snapshot");
+		const snapshotTimer = timers.at(-1);
+		assert.equal(snapshotTimer?.delayMs, 5_000);
+		snapshotTimer?.callback();
+		await assert.rejects(pending, /timed out after 5000ms: native:clipboard-snapshot/i);
+	} finally {
+		transport.dispose();
 	}
 });
 

@@ -2,7 +2,7 @@ import {
 	createPiDesktopApi,
 	type PiDesktopApi,
 } from "@shared/desktop/createPiDesktopApi";
-import type { NativeClipboardSnapshot, NativeFileDropPayload } from "@shared/desktop/NativeHostTypes";
+import type { NativeClipboardMetadata, NativeFileDropPayload } from "@shared/desktop/NativeHostTypes";
 import { NativeDesktopSyncHost } from "./NativeDesktopSyncHost";
 import { NativeDesktopTransport, type NativeHeartbeatState } from "./NativeDesktopTransport";
 import { createNativeHeartbeatRequest } from "./nativeHeartbeat";
@@ -18,7 +18,7 @@ export function getNativeRendererToken(): string | null {
 }
 
 interface NativeBootstrapResponse {
-	clipboard?: Partial<NativeClipboardSnapshot>;
+	clipboard?: Partial<NativeClipboardMetadata>;
 	settings?: { zoomFactor?: number; memoryProfileEnabled?: boolean };
 	eventSeq?: number;
 	eventSourceGeneration?: string;
@@ -83,7 +83,7 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	}
 	const syncHost = new NativeDesktopSyncHost(bootstrap.clipboard);
 
-	transport.subscribe<Partial<NativeClipboardSnapshot>>("native.clipboard", (snapshot) => {
+	transport.subscribe<Partial<NativeClipboardMetadata>>("native.clipboard", (snapshot) => {
 		syncHost.update(snapshot);
 	});
 	transport.subscribe<NativeFileDropPayload>("native.fileDrop", (payload) => {

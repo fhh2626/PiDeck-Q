@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import type { NativeClipboardSnapshot } from "../../../shared/desktop/NativeHostTypes";
 import type {
   FileTreeNode,
   ImageContent,
@@ -906,7 +907,19 @@ export function useSessionComposerController(
   }, [addImageFiles, insertFilePathRefs]);
 
   const pasteNativeSnapshot = useCallback(async (fallbackImageFiles: File[] = []): Promise<boolean> => {
-    const snapshot = await desktopApi.clipboard.readNativeSnapshot();
+    let snapshot: NativeClipboardSnapshot;
+    try {
+      snapshot = await desktopApi.clipboard.readNativeSnapshot();
+    } catch (error) {
+      // preventDefault already ran for a native file/image paste. If the live Qt
+      // snapshot times out or the host is unavailable, preserve the image bytes
+      // captured synchronously from the browser event instead of swallowing Ctrl+V.
+      if (fallbackImageFiles.length > 0) {
+        await addImageFiles(fallbackImageFiles);
+        return true;
+      }
+      throw error;
+    }
     if (snapshot.filePaths.length > 0) {
       if (snapshot.filePaths.every(isImageFilePath)) {
         await pasteClipboardImages(snapshot.filePaths, null, fallbackImageFiles, snapshot.imageDataUrl);

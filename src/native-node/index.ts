@@ -11,7 +11,7 @@ import { HostBridge } from "./host/HostBridge";
 import { NativeBackendHost } from "./host/NativeBackendHost";
 import { createNativePlatformServices } from "./platform/createNativePlatformServices";
 import { NativeRendererServer } from "./transport/NativeRendererServer";
-import type { NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/desktop/NativeHostTypes";
+import type { NativeClipboardMetadata, NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/desktop/NativeHostTypes";
 import { ipcChannels } from "../shared/ipc";
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
 import { resolveSecondaryFocusSessionId } from "./focusRequest";
@@ -188,7 +188,9 @@ async function main(): Promise<void> {
 			void recoverRendererServer(error);
 		},
 		getBootstrap: async () => ({
-			clipboard: await host.request<NativeClipboardSnapshot>("clipboard.snapshot"),
+			// Bootstrap only needs clipboard metadata. PNG encoding is reserved for
+			// the live snapshot requested by an actual paste operation.
+			clipboard: await host.request<NativeClipboardMetadata>("clipboard.metadataSnapshot"),
 			settings: {
 				zoomFactor: backend?.settingsStore.get().zoomFactor ?? 1,
 				memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
@@ -224,7 +226,7 @@ async function main(): Promise<void> {
 		},
 	});
 	rendererServer = placeholderServer;
-	host.on<NativeClipboardSnapshot>("native.clipboard", (snapshot) => {
+	host.on<NativeClipboardMetadata>("native.clipboard", (snapshot) => {
 		placeholderServer.broadcast("native.clipboard", [snapshot]);
 	});
 	host.on<NativeFileDropPayload>("native.fileDrop", (payload) => {

@@ -8,13 +8,16 @@ export type WindowResizeEdge =
 	| "bottom-left"
 	| "bottom-right";
 
-export interface NativeClipboardSnapshot {
+export interface NativeClipboardMetadata {
 	text: string;
 	html: string;
-	imageDataUrl: string;
 	filePaths: string[];
 	hasImage: boolean;
 	sequence: number;
+}
+
+export interface NativeClipboardSnapshot extends NativeClipboardMetadata {
+	imageDataUrl: string;
 }
 
 export interface NativeFileDropPayload {

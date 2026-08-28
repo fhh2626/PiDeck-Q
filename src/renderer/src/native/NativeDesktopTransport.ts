@@ -5,6 +5,7 @@ import { ipcChannels } from "../../../shared/ipc";
 const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
 const NATIVE_EVENT_CHANNEL_READY_TIMEOUT_MS = 8_000;
 const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;
+export const NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS = 5_000;
 const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.projectsList,
 	ipcChannels.sessionsCatalogList,
@@ -18,12 +19,15 @@ const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.filesList,
 	ipcChannels.filesReadContent,
 	ipcChannels.filesReadBase64,
+	ipcChannels.nativeClipboardSnapshot,
 ]);
 
-function nativeRpcTimeoutMs(channel: string): number | undefined {
-	// Only idempotent reads get a transport deadline. Writes and long-running
-	// commands may continue in the host after the HTTP client disconnects, so a
-	// local abort must not report an ambiguous mutation as an ordinary failure.
+export function nativeRpcTimeoutMs(channel: string): number | undefined {
+	// Clipboard paste has already cancelled the browser default action, so it
+	// gets a short deadline and can still use the event's image fallback. Other
+	// idempotent reads keep the longer deadline; mutations remain unbounded so a
+	// local abort cannot report an ambiguous mutation as an ordinary failure.
+	if (channel === ipcChannels.nativeClipboardSnapshot) return NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS;
 	return NATIVE_READONLY_RPC_CHANNELS.has(channel)
 		? NATIVE_READ_RPC_TIMEOUT_MS
 		: undefined;

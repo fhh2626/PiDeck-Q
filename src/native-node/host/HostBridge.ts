@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
 const HELLO_TIMEOUT_MS = 5_000;
+const GRACEFUL_CLOSE_TIMEOUT_MS = 250;
 
 type HostResponse = {
 	type: "response";
@@ -45,6 +46,7 @@ export class HostBridge {
 	private writeBlocked = false;
 	private pendingWriteBytes = 0;
 	private readonly pendingWrites: Buffer[] = [];
+	private readonly writeDrainWaiters = new Set<() => void>();
 	private closed = false;
 
 	private readonly token: string;
@@ -202,6 +204,33 @@ export class HostBridge {
 			}
 		}
 		this.pendingWriteBytes = 0;
+		this.notifyWriteDrain();
+	}
+
+	private notifyWriteDrain(): void {
+		if (this.writeBlocked || this.pendingWrites.length > 0 || this.pendingWriteBytes > 0) return;
+		for (const waiter of [...this.writeDrainWaiters]) waiter();
+	}
+
+	private waitForWriteDrain(socket: Socket, timeoutMs: number): Promise<boolean> {
+		if (this.closed || this.socket !== socket) return Promise.resolve(false);
+		if (!this.writeBlocked && this.pendingWrites.length === 0 && this.pendingWriteBytes === 0) {
+			return Promise.resolve(true);
+		}
+		return new Promise<boolean>((resolve) => {
+			let timer: NodeJS.Timeout | null = null;
+			const waiter = () => {
+				if (timer) clearTimeout(timer);
+				timer = null;
+				this.writeDrainWaiters.delete(waiter);
+				resolve(!this.closed && this.socket === socket);
+			};
+			timer = setTimeout(() => {
+				this.writeDrainWaiters.delete(waiter);
+				resolve(false);
+			}, timeoutMs);
+			this.writeDrainWaiters.add(waiter);
+		});
 	}
 
 	request<TResult = unknown>(method: string, params: unknown = {}): Promise<TResult> {
@@ -243,23 +272,44 @@ export class HostBridge {
 		this.handleClose(new Error("Native host bridge disposed"));
 	}
 
-	/** Flush an already-sent lifecycle ACK before closing the TCP bridge. */
+	/** Flush the lifecycle ACK and all custom queued packets before closing the TCP bridge. */
 	async closeGracefully(): Promise<void> {
 		const socket = this.socket;
 		if (!socket || this.closed) return;
+		const startedAt = Date.now();
+		const drained = await this.waitForWriteDrain(socket, GRACEFUL_CLOSE_TIMEOUT_MS);
+		if (!drained || this.closed || this.socket !== socket) {
+			if (!this.closed) socket.destroy();
+			this.handleClose(new Error("Native host bridge graceful close timed out"));
+			return;
+		}
+
+		const remainingMs = Math.max(1, GRACEFUL_CLOSE_TIMEOUT_MS - (Date.now() - startedAt));
 		await new Promise<void>((resolveClose) => {
 			let settled = false;
-			let timeout: NodeJS.Timeout | null = setTimeout(() => settle(), 250);
+			let timeout: NodeJS.Timeout | null = null;
+			const onClose = () => settle();
+			const onError = () => settle();
 			const settle = () => {
 				if (settled) return;
 				settled = true;
 				if (timeout) clearTimeout(timeout);
 				timeout = null;
+				socket.removeListener("close", onClose);
+				socket.removeListener("error", onError);
 				resolveClose();
 			};
-			socket.once("close", settle);
-			socket.once("error", settle);
-			socket.end();
+			timeout = setTimeout(() => {
+				socket.destroy();
+				settle();
+			}, remainingMs);
+			socket.once("close", onClose);
+			socket.once("error", onError);
+			try {
+				socket.end();
+			} catch {
+				settle();
+			}
 		});
 		this.handleClose(new Error("Native host bridge disposed"));
 	}
@@ -269,6 +319,8 @@ export class HostBridge {
 		this.closed = true;
 		this.helloHandler = null;
 		this.settleHello(error);
+		for (const waiter of [...this.writeDrainWaiters]) waiter();
+		this.writeDrainWaiters.clear();
 		this.socket?.destroy();
 		this.socket = null;
 		this.writeBlocked = false;

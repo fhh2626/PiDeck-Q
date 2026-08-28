@@ -13,6 +13,12 @@ function hasNodeErrorCode(error: unknown, code: string): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+export type FilesIpcFileOperations = {
+	rename: typeof fsRename;
+	copy: typeof cp;
+	remove: typeof rm;
+};
+
 export type FilesIpcDeps = {
 	fileSystemService: FileSystemService;
 	projectStore: ProjectStore;
@@ -21,6 +27,8 @@ export type FilesIpcDeps = {
 	dialogs: PlatformDialogs;
 	platformShell: Pick<PlatformShell, "openPath" | "showItemInFolder">;
 	getAuthorizedRoots: () => string[];
+	/** Optional seam for deterministic cross-device move tests. */
+	fileOperations?: Partial<FilesIpcFileOperations>;
 };
 
 export function registerFilesIpc(
@@ -33,8 +41,14 @@ export function registerFilesIpc(
 		dialogs,
 		platformShell,
 		getAuthorizedRoots,
+		fileOperations,
 	}: FilesIpcDeps,
 ): void {
+	const fsOperations: FilesIpcFileOperations = {
+		rename: fileOperations?.rename ?? fsRename,
+		copy: fileOperations?.copy ?? cp,
+		remove: fileOperations?.remove ?? rm,
+	};
 	// 将 WSL Linux 路径转为 Windows 可访问的路径（/mnt/c → C:\，/home/... → \\wsl$\<distro>\...）
 	const toWindowsPath = (linuxPath: string): string => {
 		if (!linuxPath || /^[A-Za-z]:/.test(linuxPath)) return linuxPath; // 已是 Windows 路径
@@ -228,13 +242,19 @@ export function registerFilesIpc(
 					const dest = join(hostTargetDir, name);
 					// 同设备优先 rename（瞬时）；跨设备/跨盘 rename 会报 EXDEV，回退 cp + rm
 					try {
-						await fsRename(hostSource, dest);
+						await fsOperations.rename(hostSource, dest);
 					} catch (error) {
 						// 仅跨设备 rename 才允许 copy+remove。目标冲突、权限和
 						// sharing violation 必须原样失败，避免覆盖目标后删除源数据。
 						if (!hasNodeErrorCode(error, "EXDEV")) throw error;
-						await cp(hostSource, dest, { recursive: true });
-						await rm(hostSource, { recursive: true, force: true });
+						// force 默认是 true；关闭它并要求 errorOnExist，保证目标在
+						// copy 前已存在或在竞态中出现时都不会覆盖后删除源文件。
+						await fsOperations.copy(hostSource, dest, {
+							recursive: true,
+							force: false,
+							errorOnExist: true,
+						});
+						await fsOperations.remove(hostSource, { recursive: true, force: true });
 					}
 					results.push(dest);
 					void appLogger.info("file", "File/folder moved", { src, dest });

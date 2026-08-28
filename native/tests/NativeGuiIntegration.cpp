@@ -349,8 +349,8 @@ int main(int argc, char **argv)
         systemClipboard->setImage(image);
         processGuiEvents();
         if (!require(lightweightImageChange.value(QStringLiteral("hasImage")).toBool()
-                         && lightweightImageChange.value(QStringLiteral("imageDataUrl")).toString().isEmpty(),
-                     "clipboard change encoded the image on the GUI thread")) return 1;
+                         && !lightweightImageChange.contains(QStringLiteral("imageDataUrl")),
+                     "clipboard metadata change carried encoded image bytes")) return 1;
 
         QJsonObject asynchronousSnapshot;
         imageClipboard.snapshotAsync([&asynchronousSnapshot](const QJsonObject &snapshot) {

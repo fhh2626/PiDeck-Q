@@ -18,3 +18,9 @@ test("native OS drop paths are consumed as an explicit batch, not cached globall
 	assert.deepEqual(sync.getClipboardPaths(), ["D:\\two\\same.txt"]);
 	assert.equal(sync.getPathForFile(new File([], "same.txt")), "");
 });
+
+test("native clipboard metadata updates clear an older encoded image", () => {
+	const sync = new NativeDesktopSyncHost({ imageDataUrl: "data:image/png;base64,old" });
+	sync.update({ text: "new clipboard", hasImage: false, filePaths: [], sequence: 2 });
+	assert.equal(sync.readClipboardImage(), "");
+});

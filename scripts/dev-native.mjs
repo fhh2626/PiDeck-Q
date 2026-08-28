@@ -35,6 +35,7 @@ if (existsSync(executable)) {
 		PIDECK_USER_DATA: userData,
 		PIDECK_VERSION: `${process.env.PIDECK_VERSION ?? packageVersion}-dev`,
 		PIDECK_APP_USER_MODEL_ID: "com.ayuayue.pi-desktop-dev",
+		PIDECK_TOAST_SHORTCUT_NAME: "PiDeck-Q Dev.lnk",
 	});
 } else {
 	console.warn("Native debug executable was not found at the default Xmake output path.");

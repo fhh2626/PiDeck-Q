@@ -36,6 +36,9 @@ target("PiDeck-Q")
         add_files("native/PiDeck-Q.rc")
         add_syslinks("user32", "shell32", "ole32", "advapi32", "propsys", "runtimeobject", "windowsapp")
         add_ldflags("/SUBSYSTEM:WINDOWS", {force = true})
+    elseif is_plat("macosx") then
+        add_files("native/src/MacDockReopenHandler.mm")
+        add_frameworks("AppKit")
     end
 
     -- Portable Windows staging is intentionally platform-scoped. A plain

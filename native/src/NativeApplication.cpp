@@ -23,6 +23,12 @@ void NativeApplication::configure(const NativePaths &paths)
         : QStringLiteral("com.ayuayue.pi-desktop-dev");
     const QString appUserModelId = qEnvironmentVariable("PIDECK_APP_USER_MODEL_ID", defaultAppUserModelId);
     qputenv("PIDECK_APP_USER_MODEL_ID", appUserModelId.toUtf8());
+    qputenv("PIDECK_PACKAGED", paths.packaged ? QByteArrayLiteral("1") : QByteArrayLiteral("0"));
+    // Windows associates toast activation with both the AUMID and the Start
+    // Menu shortcut. Keep the dev shortcut separate so a debug run cannot
+    // rewrite the release shortcut's executable/AUMID pair.
+    qputenv("PIDECK_TOAST_SHORTCUT_NAME",
+            (paths.packaged ? QStringLiteral("PiDeck-Q.lnk") : QStringLiteral("PiDeck-Q Dev.lnk")).toUtf8());
     const std::wstring appUserModelIdWide = appUserModelId.toStdWString();
     SetCurrentProcessExplicitAppUserModelID(appUserModelIdWide.c_str());
 #endif

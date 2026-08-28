@@ -4,7 +4,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import type { NativeRpcRouter } from "../../main/transport/NativeRpcRouter";
-import type { NativeClipboardSnapshot } from "../../shared/desktop/NativeHostTypes";
+import type { NativeClipboardMetadata } from "../../shared/desktop/NativeHostTypes";
 import { MAX_NATIVE_EVENT_FRAME_BYTES, MAX_NATIVE_RPC_BODY_BYTES } from "../../shared/desktop/nativeLimits.ts";
 
 const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
@@ -31,7 +31,7 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 export type NativeBootstrap = {
-	clipboard: Partial<NativeClipboardSnapshot>;
+	clipboard: Partial<NativeClipboardMetadata>;
 	settings: { zoomFactor: number; memoryProfileEnabled: boolean };
 	eventSeq?: number;
 	eventSourceGeneration?: string;

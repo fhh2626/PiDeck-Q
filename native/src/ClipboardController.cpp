@@ -120,7 +120,6 @@ QJsonObject ClipboardController::metadataSnapshot() const
     return QJsonObject{
         {QStringLiteral("text"), boundedText(clipboard ? clipboard->text(QClipboard::Clipboard) : QString{})},
         {QStringLiteral("html"), boundedText(mimeData ? mimeData->html() : QString{})},
-        {QStringLiteral("imageDataUrl"), QString{}},
         {QStringLiteral("filePaths"), jsonPaths},
         {QStringLiteral("hasImage"), mimeData && mimeData->hasImage()},
         {QStringLiteral("sequence"), static_cast<qint64>(m_sequence)},

@@ -59,6 +59,18 @@ test("native composer bypasses the SSE path cache before handling a current past
 	assert.match(composer, /const clipboardPaths = isNativeRuntime\s*\? \[\]/);
 });
 
+test("native paste restores event image files when the live snapshot rejects", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	const start = composer.indexOf("const pasteNativeSnapshot");
+	const end = composer.indexOf("/**", start + 1);
+	assert.ok(start >= 0 && end > start, "native snapshot paste handler must exist");
+	const handler = composer.slice(start, end);
+	assert.match(handler, /catch \(error\)/);
+	assert.match(handler, /fallbackImageFiles\.length > 0/);
+	assert.match(handler, /await addImageFiles\(fallbackImageFiles\)/);
+	assert.match(handler, /throw error/);
+});
+
 test("Ctrl+V composer paste inserts clipboard text/plain, never TipTap HTML", () => {
 	const props = readFileSync(
 		"src/renderer/src/components/session/composer/tiptap/buildComposerEditorProps.ts",

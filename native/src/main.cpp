@@ -1,6 +1,7 @@
 #include "ClipboardController.h"
 #include "HostRpcServer.h"
 #include "MainWindow.h"
+#include "MacDockReopenHandler.h"
 #include "NativeApplication.h"
 #include "NativePaths.h"
 #include "NativeTheme.h"
@@ -197,14 +198,6 @@ int main(int argc, char **argv)
     // Qt WebView must initialize its backend before QApplication/QGuiApplication.
     QtWebView::initialize();
     QApplication app(argc, argv);
-    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
-        && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
-    const bool trayNotificationsAvailable = QSystemTrayIcon::isSystemTrayAvailable()
-        && QSystemTrayIcon::supportsMessages();
-    const bool nativeNotificationRouteAvailable = nativeNotificationsAvailable || trayNotificationsAvailable;
-    qputenv("PIDECK_NATIVE_NOTIFICATIONS", nativeNotificationRouteAvailable
-        ? QByteArrayLiteral("1")
-        : QByteArrayLiteral("0"));
     QString nativeThemeSource = QStringLiteral("system");
     const auto setNativeThemeSource = [&nativeThemeSource](const QString &source) {
         nativeThemeSource = source == QStringLiteral("dark") || source == QStringLiteral("light")
@@ -229,6 +222,14 @@ int main(int argc, char **argv)
     app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", nativeBuildVersion));
     const NativePaths paths = NativePaths::fromEnvironment();
     NativeApplication::configure(paths);
+    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
+        && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
+    const bool trayNotificationsAvailable = QSystemTrayIcon::isSystemTrayAvailable()
+        && QSystemTrayIcon::supportsMessages();
+    const bool nativeNotificationRouteAvailable = nativeNotificationsAvailable || trayNotificationsAvailable;
+    qputenv("PIDECK_NATIVE_NOTIFICATIONS", nativeNotificationRouteAvailable
+        ? QByteArrayLiteral("1")
+        : QByteArrayLiteral("0"));
     const QString iconPath = qEnvironmentVariable("PIDECK_ICON_PATH").isEmpty()
         ? QDir(paths.applicationDir).filePath("icon.png")
         : qEnvironmentVariable("PIDECK_ICON_PATH");
@@ -248,16 +249,6 @@ int main(int argc, char **argv)
     NodeProcessController node(paths, &host);
     MainWindow *mainWindow = nullptr;
     TrayController *tray = nullptr;
-#ifdef Q_OS_MACOS
-    // A close-to-background window remains reachable from the Dock even when
-    // the platform has no status-tray implementation. Restore it on activation.
-    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &app,
-                     [&mainWindow](Qt::ApplicationState state) {
-        if (state == Qt::ApplicationActive && mainWindow && !mainWindow->isVisible()) {
-            mainWindow->showWindow();
-        }
-    });
-#endif
     bool quitting = false;
     bool restartRequested = false;
     bool quitRequested = false;
@@ -283,6 +274,9 @@ int main(int argc, char **argv)
         host.sendEvent(QStringLiteral("native.clipboard"), snapshot);
     });
 
+    host.registerHandler(QStringLiteral("clipboard.metadataSnapshot"), [&clipboard](const QJsonObject &) {
+        return QJsonValue(clipboard.metadataSnapshot());
+    });
     host.registerAsyncHandler(QStringLiteral("clipboard.snapshot"), [&clipboard](
         const QJsonObject &, HostRpcServer::AsyncResponder respond) {
         clipboard.snapshotAsync([respond = std::move(respond)](const QJsonObject &snapshot) {
@@ -477,9 +471,14 @@ int main(int argc, char **argv)
             setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
             mainWindow = new MainWindow(&host, startup);
             mainWindow->setQuitHandler(requestQuit);
+#ifdef Q_OS_MACOS
+            installMacDockReopenHandler([&mainWindow] {
+                if (mainWindow && !mainWindow->isVisible()) mainWindow->showWindow();
+            });
+#endif
             mainWindow->setCloseHideAvailableHandler([&tray] {
 #ifdef Q_OS_MACOS
-                // The application activation handler above restores from Dock.
+                // The NSApplication reopen delegate restores a hidden window from the Dock.
                 return true;
 #else
                 return tray && tray->isAvailableAndVisible();
@@ -530,6 +529,9 @@ int main(int argc, char **argv)
     });
 
     const int exitCode = app.exec();
+#ifdef Q_OS_MACOS
+    uninstallMacDockReopenHandler();
+#endif
     if (mainWindow) {
         // MainWindow has no Qt delete-on-close ownership. All host callbacks
         // stop running once the event loop returns, so this is the sole owner.

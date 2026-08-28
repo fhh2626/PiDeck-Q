@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import test from "node:test";
 import { HostBridge } from "../src/native-node/host/HostBridge.ts";
@@ -98,6 +99,42 @@ test("HostBridge disconnects when a native host peer stops reading beyond the wr
 	} finally {
 		await closeServer(server, sockets);
 	}
+});
+
+test("HostBridge flushes a queued readyToExit event before graceful close", async () => {
+	class FakeSocket extends EventEmitter {
+		writes = [];
+		ended = false;
+		destroyed = false;
+		write(packet) {
+			this.writes.push(Buffer.from(packet));
+			return this.writes.length > 1;
+		}
+		end() {
+			this.ended = true;
+			this.emit("close");
+		}
+		destroy() {
+			this.destroyed = true;
+		}
+	}
+
+	const bridge = new HostBridge("secret");
+	const socket = new FakeSocket();
+	bridge.socket = socket;
+	bridge.emit("test:before-close", { value: 1 });
+	bridge.emit("application.readyToExit", {});
+	const closing = bridge.closeGracefully();
+	await Promise.resolve();
+	assert.equal(socket.ended, false, "close must wait while the custom write queue is blocked");
+
+	socket.emit("drain");
+	await closing;
+	assert.equal(socket.ended, true);
+	assert.equal(socket.writes.length, 2);
+	const readyPacket = JSON.parse(socket.writes[1].subarray(4).toString("utf8"));
+	assert.equal(readyPacket.type, "event");
+	assert.equal(readyPacket.name, "application.readyToExit");
 });
 
 test("HostBridge completes the authenticated hello handshake", async () => {

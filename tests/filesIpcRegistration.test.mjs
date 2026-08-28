@@ -38,4 +38,5 @@ test("file mutation handlers normalize host paths and use authorization checks",
 	assert.match(filesIpc, /const hostTargetDir = authorizePath\(targetDir, "copy-target"\)/);
 	assert.match(filesIpc, /const hostTargetDir = authorizePath\(targetDir, "move-target"\)/);
 	assert.match(filesIpc, /const hostSource = authorizePath\(src, "move-source"\)/);
+	assert.match(filesIpc, /fsOperations\.copy\(hostSource, dest, \{[\s\S]*?force: false,[\s\S]*?errorOnExist: true/);
 });

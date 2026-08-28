@@ -6,6 +6,7 @@ const mainSource = readFileSync("native/src/main.cpp", "utf8");
 const nodeController = readFileSync("native/src/NodeProcessController.cpp", "utf8");
 const nodeIndex = readFileSync("src/native-node/index.ts", "utf8");
 const pathsSource = readFileSync("native/src/NativePaths.cpp", "utf8");
+const applicationSource = readFileSync("native/src/NativeApplication.cpp", "utf8");
 const devScript = readFileSync("scripts/dev-native.mjs", "utf8");
 const installer = readFileSync("installer/PiDeck-Q.nsi", "utf8");
 const toast = readFileSync("native/src/WindowsToastNotifier.cpp", "utf8");
@@ -34,6 +35,14 @@ test("native dev mode explicitly isolates packaged state, user data and toast id
 	assert.match(devScript, /PIDECK_PACKAGED:\s*"0"/);
 	assert.match(devScript, /pi-desktop-dev/);
 	assert.match(devScript, /com\.ayuayue\.pi-desktop-dev/);
+	assert.match(devScript, /PIDECK_TOAST_SHORTCUT_NAME:\s*"PiDeck-Q Dev\.lnk"/);
+	assert.match(applicationSource, /PiDeck-Q Dev\.lnk/);
+	assert.match(applicationSource, /PIDECK_TOAST_SHORTCUT_NAME/);
+	assert.match(toast, /PIDECK_TOAST_SHORTCUT_NAME/);
+	assert.ok(
+		mainSource.indexOf("NativeApplication::configure(paths)") < mainSource.indexOf("registerApplication"),
+		"toast registration must use the configured packaged/dev identity",
+	);
 });
 
 test("native GUI integration target covers window, theme, clipboard and toast lifecycles", () => {

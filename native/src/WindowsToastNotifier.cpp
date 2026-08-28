@@ -84,8 +84,9 @@ bool WindowsToastNotifier::registerApplication(const QString &executablePath,
         if (FAILED(SHGetKnownFolderPath(FOLDERID_Programs, KF_FLAG_CREATE, nullptr, &programsPath))) {
             return false;
         }
+        const QString shortcutName = qEnvironmentVariable("PIDECK_TOAST_SHORTCUT_NAME").trimmed();
         resolvedShortcut = QDir(QString::fromWCharArray(programsPath))
-            .filePath(QStringLiteral("PiDeck-Q.lnk"));
+            .filePath(shortcutName.isEmpty() ? QStringLiteral("PiDeck-Q.lnk") : shortcutName);
         CoTaskMemFree(programsPath);
     }
     if (!QDir().mkpath(QFileInfo(resolvedShortcut).absolutePath())) return false;

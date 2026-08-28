@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cp as realCp, rm as realRm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -76,6 +77,23 @@ function createFakeRouter() {
 			return fn(...args);
 		},
 	};
+}
+
+function registerMoveRouter(root, fileOperations) {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: root }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => [root],
+		fileOperations,
+	});
+	return router;
 }
 
 test("Files IPC: platformShell openPath rejection and success behavior", async () => {
@@ -227,23 +245,95 @@ test("Files IPC: move does not copy and delete after a non-EXDEV rename failure"
 		writeFileSync(join(source, "source-only.txt"), "source");
 		writeFileSync(join(destination, "target-only.txt"), "target");
 
-		const authorization = createAuthorizationStub();
-		const { registerFilesIpc } = loadFilesIpc(authorization);
-		const router = createFakeRouter();
-		registerFilesIpc(router, {
-			fileSystemService: {},
-			projectStore: { get: () => ({ path: root }) },
-			settingsStore: { get: () => ({ wslEnabled: false }) },
-			appLogger: { info: () => {}, error: () => {} },
-			dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
-			platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
-			getAuthorizedRoots: () => [root],
-		});
-
+		const router = registerMoveRouter(root);
 		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir));
 		assert.equal(existsSync(source), true, "source must remain after a non-EXDEV failure");
 		assert.equal(existsSync(join(destination, "target-only.txt")), true);
 		assert.equal(existsSync(join(destination, "source-only.txt")), false, "destination must not be merged or overwritten");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move refuses an existing destination file", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-file-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		writeFileSync(source, "source-content");
+		writeFileSync(destination, "existing-content");
+
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move refuses an existing destination directory", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-dir-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same-folder");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(source, { recursive: true });
+		mkdirSync(destination, { recursive: true });
+		writeFileSync(join(source, "source-only.txt"), "source");
+		writeFileSync(join(destination, "target-only.txt"), "target");
+
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(existsSync(source), true);
+		assert.equal(existsSync(join(destination, "source-only.txt")), false);
+		assert.equal(readFileSync(join(destination, "target-only.txt"), "utf8"), "target");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move keeps the source when the destination appears during copy", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-race-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		writeFileSync(source, "source-content");
+		let removeCalled = false;
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+			copy: async (from, to, options) => {
+				writeFileSync(to, "appeared-during-copy");
+				return realCp(from, to, options);
+			},
+			remove: async (...args) => {
+				removeCalled = true;
+				return realRm(...args);
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(removeCalled, false, "source removal must wait for a successful copy");
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.equal(readFileSync(destination, "utf8"), "appeared-during-copy");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

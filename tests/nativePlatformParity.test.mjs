@@ -71,14 +71,40 @@ test("frameless native windows expose all renderer resize edges and Qt system re
 	assert.match(header, /enableNativeResize && !maximized/);
 });
 
-test("macOS native chrome keeps system resize and a Dock restoration route", () => {
+test("macOS native chrome keeps system resize and uses the Dock reopen delegate", () => {
 	const policy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
 	const main = readFileSync("native/src/main.cpp", "utf8");
+	const dockDelegate = readFileSync("native/src/MacDockReopenHandler.mm", "utf8");
 	assert.match(policy, /#ifdef Q_OS_MACOS[\s\S]*return true/);
 	assert.match(policy, /#ifdef Q_OS_MACOS[\s\S]*return false/);
-	assert.match(main, /QGuiApplication::applicationStateChanged/);
+	assert.doesNotMatch(main, /QGuiApplication::applicationStateChanged/);
+	assert.match(main, /installMacDockReopenHandler/);
+	assert.match(main, /uninstallMacDockReopenHandler/);
 	assert.match(main, /setCloseHideAvailableHandler/);
 	assert.match(main, /#ifdef Q_OS_MACOS[\s\S]*return true/);
+	assert.match(dockDelegate, /applicationShouldHandleReopen/);
+	assert.match(dockDelegate, /hasVisibleWindows/);
+	assert.match(dockDelegate, /setDelegate/);
+	assert.match(dockDelegate, /forwardingTargetForSelector/);
+});
+
+test("native bootstrap requests clipboard metadata instead of encoding an image", () => {
+	const node = readFileSync("src/native-node/index.ts", "utf8");
+	const clipboard = readFileSync("native/src/ClipboardController.cpp", "utf8");
+	const bootstrapStart = node.indexOf("getBootstrap:");
+	const bootstrapEnd = node.indexOf("onHeartbeat:", bootstrapStart);
+	assert.ok(bootstrapStart >= 0 && bootstrapEnd > bootstrapStart, "native bootstrap handler must exist");
+	const bootstrap = node.slice(bootstrapStart, bootstrapEnd);
+	assert.match(bootstrap, /clipboard\.metadataSnapshot/);
+	assert.doesNotMatch(bootstrap, /clipboard\.snapshot/);
+	assert.match(mainSource, /clipboard\.metadataSnapshot/);
+	assert.match(clipboard, /QJsonObject ClipboardController::metadataSnapshot\(\) const/);
+	assert.doesNotMatch(clipboard.slice(clipboard.indexOf("QJsonObject ClipboardController::metadataSnapshot"), clipboard.indexOf("QJsonObject ClipboardController::snapshot")), /imageDataUrl/);
+});
+
+test("macOS Dock reopen support is compiled only with the macOS Objective-C++ source", () => {
+	assert.match(xmake, /is_plat\("macosx"\)[\s\S]*MacDockReopenHandler\.mm/);
+	assert.match(xmake, /add_frameworks\("AppKit"\)/);
 });
 
 test("native build helpers do not force Windows runtime tools on other platforms", () => {
