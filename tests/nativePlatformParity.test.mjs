@@ -100,6 +100,27 @@ test("native bootstrap requests clipboard metadata instead of encoding an image"
 	assert.match(mainSource, /clipboard\.metadataSnapshot/);
 	assert.match(clipboard, /QJsonObject ClipboardController::metadataSnapshot\(\) const/);
 	assert.doesNotMatch(clipboard.slice(clipboard.indexOf("QJsonObject ClipboardController::metadataSnapshot"), clipboard.indexOf("QJsonObject ClipboardController::snapshot")), /imageDataUrl/);
+	assert.match(node, /externalFileCapabilities\.issue\(snapshot\.filePaths\)/);
+	assert.match(node, /issueClipboardCapability\(clipboard\)/);
+});
+
+test("native external file events carry capabilities while copy IPC redeems only the token", () => {
+	const node = readFileSync("src/native-node/index.ts", "utf8");
+	const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
+	assert.match(node, /native\.fileDrop/);
+	assert.match(node, /externalFileCapabilities\.issue\(payload\.paths\)/);
+	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
+	assert.match(filesIpc, /consumeCopy\(capabilityId\)/);
+	assert.match(filesIpc, /copyInternal/);
+	assert.match(filesIpc, /copy-source/);
+});
+
+test("native clipboard image snapshots bound the edge before the PNG budget and coalesce work", () => {
+	const clipboard = readFileSync("native/src/ClipboardController.cpp", "utf8");
+	assert.match(clipboard, /kMaxClipboardImageEdge = 2000/);
+	assert.match(clipboard, /bounded\.scaled/);
+	assert.match(clipboard, /state->encoding/);
+	assert.match(clipboard, /state->cachedImageReady/);
 });
 
 test("macOS Dock reopen support is compiled only with the macOS Objective-C++ source", () => {

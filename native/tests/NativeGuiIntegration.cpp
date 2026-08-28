@@ -341,7 +341,7 @@ int main(int argc, char **argv)
 
     QJsonObject lightweightImageChange;
     ClipboardController imageClipboard([&lightweightImageChange](const QJsonObject &snapshot) {
-        lightweightImageChange = snapshot;
+        if (snapshot.value(QStringLiteral("hasImage")).toBool()) lightweightImageChange = snapshot;
     });
     if (auto *systemClipboard = QGuiApplication::clipboard()) {
         QImage image(32, 32, QImage::Format_ARGB32);
@@ -353,17 +353,30 @@ int main(int argc, char **argv)
                      "clipboard metadata change carried encoded image bytes")) return 1;
 
         QJsonObject asynchronousSnapshot;
+        QJsonObject coalescedSnapshot;
         imageClipboard.snapshotAsync([&asynchronousSnapshot](const QJsonObject &snapshot) {
             asynchronousSnapshot = snapshot;
         });
+        imageClipboard.snapshotAsync([&coalescedSnapshot](const QJsonObject &snapshot) {
+            coalescedSnapshot = snapshot;
+        });
         QElapsedTimer imageTimer;
         imageTimer.start();
-        while (asynchronousSnapshot.isEmpty() && imageTimer.elapsed() < 3'000) {
+        while ((asynchronousSnapshot.isEmpty() || coalescedSnapshot.isEmpty()) && imageTimer.elapsed() < 3'000) {
             processGuiEvents();
         }
         const QString imageDataUrl = asynchronousSnapshot.value(QStringLiteral("imageDataUrl")).toString();
         if (!require(imageDataUrl.startsWith(QStringLiteral("data:image/png;base64,")),
                      "clipboard image snapshot was not encoded asynchronously as PNG data")) return 1;
+        if (!require(coalescedSnapshot.value(QStringLiteral("imageDataUrl")).toString() == imageDataUrl,
+                     "concurrent clipboard image snapshots were not coalesced")) return 1;
+
+        QJsonObject cachedSnapshot;
+        imageClipboard.snapshotAsync([&cachedSnapshot](const QJsonObject &snapshot) {
+            cachedSnapshot = snapshot;
+        });
+        if (!require(cachedSnapshot.value(QStringLiteral("imageDataUrl")).toString() == imageDataUrl,
+                     "clipboard image snapshot cache was not reused for the same sequence")) return 1;
     }
 
     return 0;

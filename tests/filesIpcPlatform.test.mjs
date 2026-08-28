@@ -47,6 +47,7 @@ function createAuthorizationStub() {
 		},
 		isPathWithinAuthorizedRoots: () => true,
 	};
+
 	stub.calls = calls;
 	stub.canonicalize = canonicalize;
 	return stub;
@@ -337,6 +338,57 @@ test("Files IPC: EXDEV move keeps the source when the destination appears during
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("Files IPC: internal copy and base64 reads reject renderer-supplied external paths", async () => {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	let copied = false;
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: "C:/project" }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => ["C:/project"],
+		fileOperations: { copy: async () => { copied = true; } },
+	});
+	await assert.rejects(
+		() => router.invoke(ipcChannels.filesCopy, ["C:/outside/id_rsa"], "C:/project"),
+		/File path is not authorized for copy-source/,
+	);
+	await assert.rejects(
+		() => router.invoke(ipcChannels.filesReadBase64, "C:/outside/passport.png", 10 * 1024 * 1024),
+		/File path is not authorized for read-base64/,
+	);
+	assert.equal(copied, false, "internal copy must not invoke filesystem operations for external paths");
+});
+
+test("Files IPC: external copy uses only the trusted capability paths", async () => {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	let copiedFrom = "";
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: "C:/project" }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => ["C:/project"],
+		externalFileCapabilities: {
+			consumeCopy: (capabilityId) => capabilityId === "trusted-capability" ? ["C:/Users/user/.ssh/id_rsa"] : null,
+			consumeRead: () => { throw new Error("not used"); },
+		},
+		fileOperations: {
+			copy: async (source) => { copiedFrom = source; },
+		},
+	});
+	await router.invoke(ipcChannels.filesCopyExternal, "trusted-capability", "C:/project");
+	assert.equal(copiedFrom, "C:/Users/user/.ssh/id_rsa");
 });
 
 test("Files IPC: unauthorized paths are rejected before any shell side effect", async () => {

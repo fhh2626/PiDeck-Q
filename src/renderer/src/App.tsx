@@ -67,6 +67,7 @@ import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useAppUpdateController } from "./hooks/useAppUpdateController";
 import { useProjectSync } from "./hooks/useProjectSync";
+import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
@@ -2828,7 +2829,10 @@ export function App() {
       setFileMenu(menu);
       if (!menu) return;
       try {
-        setHasClipboardFiles(api.files.getClipboardPaths().length > 0);
+        setHasClipboardFiles(
+          api.files.getClipboardPaths().length > 0
+          && (!isNativeRuntime || Boolean(api.files.getClipboardCapability?.())),
+        );
       } catch {
         setHasClipboardFiles(false);
       }
@@ -2846,7 +2850,8 @@ export function App() {
     api, t,
     projectRoot: activeProject?.path,
     onDropFiles: (targetDir, fileList) => {
-      // 从 OS 拖入：解析本地路径后复制到目标目录（目录不支持跨源复制时跳过）
+      // Electron can resolve a genuine OS File object through the trusted preload;
+      // native Qt drops are delivered separately with an external capability.
       const paths: string[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList.item(i);
@@ -2856,7 +2861,7 @@ export function App() {
         }
       }
       if (paths.length > 0) {
-        void api.files.copy(paths, targetDir).then(() => {
+        void api.files.copyInternal(paths, targetDir).then(() => {
           void refreshFiles();
           showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
         }).catch((error) => {
@@ -2865,11 +2870,15 @@ export function App() {
       }
     },
     onPasteFiles: (targetDir) => {
-      // 粘贴：从系统剪贴板读取资源管理器复制的文件路径，复制到目标目录
+      // Native clipboard paths are usable only with the capability issued by Qt.
       try {
         const paths = api.files.getClipboardPaths();
-        if (paths.length > 0) {
-          void api.files.copy(paths, targetDir).then(() => {
+        const capabilityId = api.files.getClipboardCapability?.() ?? "";
+        if (paths.length > 0 && (!isNativeRuntime || capabilityId)) {
+          const copyPromise = isNativeRuntime
+            ? api.files.copyExternal(capabilityId, targetDir)
+            : api.files.copyInternal(paths, targetDir);
+          void copyPromise.then(() => {
             void refreshFiles();
             showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
           }).catch((error) => {
@@ -2889,6 +2898,8 @@ export function App() {
     },
   });
 
+
+  useNativeFileDropCopy({ api, refreshFiles, showToast });
 
   const nativeWindowChrome = resolveNativeWindowChrome(
     settings.useNativeTitleBar,
@@ -3036,11 +3047,15 @@ export function App() {
         menu={fileMenu}
         hasClipboardFiles={hasClipboardFiles}
         onPaste={(targetDir) => {
-          // 右键菜单「粘贴文件到此处」：读剪贴板路径复制到目标目录
+          // 右键菜单「粘贴文件到此处」：native 只提交 Qt 签发的 capability
           try {
             const paths = api.files.getClipboardPaths();
-            if (paths.length > 0) {
-              void api.files.copy(paths, targetDir).then(() => {
+            const capabilityId = api.files.getClipboardCapability?.() ?? "";
+            if (paths.length > 0 && (!isNativeRuntime || capabilityId)) {
+              const copyPromise = isNativeRuntime
+                ? api.files.copyExternal(capabilityId, targetDir)
+                : api.files.copyInternal(paths, targetDir);
+              void copyPromise.then(() => {
                 void refreshFiles();
                 showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
               }).catch((error) => {

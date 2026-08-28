@@ -83,8 +83,8 @@ test("readBase64 支持 maxBytes 预检，粘贴图片超大时主进程拦截",
 
 test("onPaste 图片文件走预览分支，失败回退 @path 引用", () => {
   assert.match(controller, /clipboardPaths\.every\(isImageFilePath\)/);
-  assert.match(controller, /pasteClipboardImages\(clipboardPaths, event\.clipboardData\)/);
-  assert.match(controller, /readBase64\(path, COMPOSER_IMAGE_MAX_BYTES\)/);
+  assert.match(controller, /pasteClipboardImages\(\s*clipboardPaths,\s*event\.clipboardData,[\s\S]*?getClipboardCapability/);
+  assert.match(controller, /readBase64External\(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES\)/);
   assert.match(controller, /insertFilePathRefs\(paths\)/);
 });
 

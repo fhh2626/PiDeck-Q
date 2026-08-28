@@ -24,6 +24,7 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 			filePaths: snapshot?.filePaths ?? [],
 			hasImage: snapshot?.hasImage ?? Boolean(snapshot?.imageDataUrl),
 			sequence: snapshot?.sequence ?? 0,
+			externalFileCapabilityId: snapshot?.externalFileCapabilityId,
 		};
 	}
 
@@ -35,6 +36,7 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 			// encoded image so a later synchronous read cannot return stale data.
 			imageDataUrl: snapshot.imageDataUrl ?? "",
 			filePaths: snapshot.filePaths ?? this.snapshot.filePaths,
+			externalFileCapabilityId: snapshot.externalFileCapabilityId,
 		};
 	}
 
@@ -60,5 +62,9 @@ export class NativeDesktopSyncHost implements DesktopSyncHost {
 
 	getClipboardPaths(): string[] {
 		return [...this.snapshot.filePaths];
+	}
+
+	getClipboardCapability(): string {
+		return this.snapshot.externalFileCapabilityId ?? "";
 	}
 }

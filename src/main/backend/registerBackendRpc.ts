@@ -56,6 +56,7 @@ import type { PlatformServices } from "../platform/PlatformServices";
 import { resolveBackgroundsDir } from "../backgrounds/BackgroundPaths";
 import { BackgroundImageService } from "../backgrounds/BackgroundImageService";
 import { createTrashPath } from "../fs/trash";
+import type { ExternalFileCapabilityStore } from "../fs/ExternalFileCapabilityStore";
 
 export interface RegisterBackendRpcDeps {
 	router: RpcRouter;
@@ -67,6 +68,7 @@ export interface RegisterBackendRpcDeps {
 	) => string;
 	getLocale: () => MainProcessLocale;
 	runtimeBridge: SessionRuntimeBridge;
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
 	services: {
 		projectStore: ProjectStore;
 		fileSystemService: FileSystemService;
@@ -100,7 +102,7 @@ export interface RegisterBackendRpcDeps {
 }
 
 export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
-	const { router, host, platform, mainCopy, getLocale, runtimeBridge, services } = deps;
+	const { router, host, platform, mainCopy, getLocale, runtimeBridge, externalFileCapabilities, services } = deps;
 	const paths = platform.paths;
 	const {
 		projectStore,
@@ -368,6 +370,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 			join(paths.home, ".pi", "agent"),
 			paths.userData,
 		],
+		externalFileCapabilities,
 	});
 
 	// renderer 挂载后读取 pending 跳转目标；只在 renderer 完成实际聚焦后 ACK，

@@ -5,6 +5,7 @@ import type { SettingsStore } from "../settings/SettingsStore";
 import type { RpcRouter } from "../transport/RpcRouter";
 import type { PlatformServices } from "../platform/PlatformServices";
 import type { MainWindowControls } from "../window/MainWindowControlsContract";
+import type { ExternalFileCapabilityStore } from "../fs/ExternalFileCapabilityStore";
 
 export interface BackendHost {
 	mainWindowControls: MainWindowControls;
@@ -25,6 +26,7 @@ export interface CreateBackendOptions {
 	runtime?: {
 		devRendererUrl?: string;
 	};
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
 }
 
 export interface Backend {

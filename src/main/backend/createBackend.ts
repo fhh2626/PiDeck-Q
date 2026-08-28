@@ -525,6 +525,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		mainCopy,
 		getLocale: currentMainProcessLocale,
 		runtimeBridge,
+		externalFileCapabilities: options.externalFileCapabilities,
 		services: {
 			projectStore,
 			fileSystemService,

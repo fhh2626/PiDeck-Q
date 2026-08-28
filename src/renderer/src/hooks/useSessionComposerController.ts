@@ -761,15 +761,18 @@ export function useSessionComposerController(
     suggestionsOpen,
   ]);
 
-  const addImageFiles = useCallback(async (imageFiles: File[]) => {
+  const addImageFiles = useCallback(async (imageFiles: File[]): Promise<boolean> => {
+    let addedAny = false;
     for (const file of imageFiles) {
       try {
         const image = await processComposerImageFile(file);
         setAttachments((current) => [...current, image]);
+        addedAny = true;
       } catch (error) {
         showNotice(composerImageNotice(error), 3000);
       }
     }
+    return addedAny;
   }, [setAttachments]);
 
   /**
@@ -876,11 +879,14 @@ export function useSessionComposerController(
     dataTransfer: DataTransfer | null,
     fallbackImageFiles: File[] = [],
     liveImageDataUrl?: string,
+    capabilityId?: string,
   ) => {
     try {
       const files: File[] = [];
       for (const path of paths) {
-        const dataUrl = await desktopApi.files.readBase64(path, COMPOSER_IMAGE_MAX_BYTES);
+        const dataUrl = capabilityId
+          ? await desktopApi.files.readBase64External(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES)
+          : await desktopApi.files.readBase64(path, COMPOSER_IMAGE_MAX_BYTES);
         if (!dataUrl) throw new Error(`Cannot read image: ${path}`);
         const fileName = path.split(/[\\/]/).pop() || path;
         files.push(dataUrlToFile(dataUrl, imageMimeTypeFromPath(path), fileName));
@@ -893,47 +899,56 @@ export function useSessionComposerController(
         : dataTransfer
           ? getClipboardImageFiles(dataTransfer)
           : [];
-      if (imageFiles.length) {
-        await addImageFiles(imageFiles);
-        return;
-      }
+      if (imageFiles.length && await addImageFiles(imageFiles)) return;
       const imageDataUrl = liveImageDataUrl ?? desktopApi.clipboard.readImage();
-      if (imageDataUrl) {
-        await addImageFiles([dataUrlToFile(imageDataUrl, "image/png", "clipboard-image.png")]);
-        return;
-      }
+      if (imageDataUrl && await addImageFiles([dataUrlToFile(imageDataUrl, "image/png", "clipboard-image.png")])) return;
       insertFilePathRefs(paths);
     }
   }, [addImageFiles, insertFilePathRefs]);
 
-  const pasteNativeSnapshot = useCallback(async (fallbackImageFiles: File[] = []): Promise<boolean> => {
+  const pasteNativeSnapshot = useCallback(async (options: {
+    fallbackImageFiles?: File[];
+    fallbackText?: string;
+    fallbackHtml?: string;
+  } = {}): Promise<boolean> => {
+    const fallbackImageFiles = options.fallbackImageFiles ?? [];
+    const fallbackText = options.fallbackText ?? "";
+    const fallbackHtml = options.fallbackHtml ?? "";
     let snapshot: NativeClipboardSnapshot;
     try {
       snapshot = await desktopApi.clipboard.readNativeSnapshot();
     } catch (error) {
       // preventDefault already ran for a native file/image paste. If the live Qt
-      // snapshot times out or the host is unavailable, preserve the image bytes
-      // captured synchronously from the browser event instead of swallowing Ctrl+V.
-      if (fallbackImageFiles.length > 0) {
-        await addImageFiles(fallbackImageFiles);
+      // snapshot times out or the host is unavailable, preserve every synchronous
+      // browser fallback in priority order instead of swallowing the clipboard.
+      if (fallbackImageFiles.length > 0 && await addImageFiles(fallbackImageFiles)) return true;
+      const text = fallbackText || (fallbackHtml ? htmlToPlainText(fallbackHtml) : "");
+      if (text) {
+        insertPlainText(text);
         return true;
       }
       throw error;
     }
     if (snapshot.filePaths.length > 0) {
       if (snapshot.filePaths.every(isImageFilePath)) {
-        await pasteClipboardImages(snapshot.filePaths, null, fallbackImageFiles, snapshot.imageDataUrl);
+        await pasteClipboardImages(
+          snapshot.filePaths,
+          null,
+          fallbackImageFiles,
+          snapshot.imageDataUrl,
+          snapshot.externalFileCapabilityId,
+        );
       } else {
         insertFilePathRefs(snapshot.filePaths);
       }
       return true;
     }
-    if (fallbackImageFiles.length > 0) {
-      await addImageFiles(fallbackImageFiles);
-      return true;
-    }
-    if (snapshot.imageDataUrl) {
-      await addImageFiles([dataUrlToFile(snapshot.imageDataUrl, "image/png", "clipboard-image.png")]);
+    if (fallbackImageFiles.length > 0 && await addImageFiles(fallbackImageFiles)) return true;
+    if (snapshot.imageDataUrl && await addImageFiles([dataUrlToFile(snapshot.imageDataUrl, "image/png", "clipboard-image.png")])) return true;
+    if (snapshot.hasImage) {
+      // Do not silently fall through to URL/text metadata when Qt could not
+      // encode the image (for example, because the native image budget was hit).
+      showNotice(t("app.clipboardImageUnavailable"), 3000);
       return true;
     }
     const text = snapshot.text || (snapshot.html ? htmlToPlainText(snapshot.html) : "");
@@ -950,11 +965,24 @@ export function useSessionComposerController(
    * 优先级同 onPaste：文件路径 → 位图；纯文本返回 false，交给编辑器本地插入。
    */
   const pasteFromClipboard = useCallback(async (): Promise<boolean> => {
-    if (isNativeRuntime) return pasteNativeSnapshot();
+    if (isNativeRuntime) {
+      try {
+        return await pasteNativeSnapshot();
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : String(error), 3000);
+        return false;
+      }
+    }
     const clipboardPaths = desktopApi.files.getClipboardPaths?.() ?? [];
     if (clipboardPaths.length > 0) {
       if (clipboardPaths.every(isImageFilePath)) {
-        await pasteClipboardImages(clipboardPaths, null);
+        await pasteClipboardImages(
+          clipboardPaths,
+          null,
+          [],
+          undefined,
+          desktopApi.files.getClipboardCapability?.() || undefined,
+        );
       } else {
         insertFilePathRefs(clipboardPaths);
       }
@@ -982,8 +1010,10 @@ export function useSessionComposerController(
       // current OS snapshot. Never let the eventually-consistent SSE cache
       // override a newer paste event.
       const fallbackImageFiles = getClipboardImageFiles(event.clipboardData);
+      const fallbackText = event.clipboardData.getData("text/plain");
+      const fallbackHtml = event.clipboardData.getData("text/html");
       event.preventDefault();
-      void pasteNativeSnapshot(fallbackImageFiles).catch((error) => {
+      void pasteNativeSnapshot({ fallbackImageFiles, fallbackText, fallbackHtml }).catch((error) => {
         showNotice(error instanceof Error ? error.message : String(error), 3000);
       });
       return;
@@ -998,7 +1028,13 @@ export function useSessionComposerController(
       event.preventDefault();
       // 复制的全是受支持图片 → 附加预览；混合/其他文件 → 维持 @path 引用
       if (clipboardPaths.every(isImageFilePath)) {
-        void pasteClipboardImages(clipboardPaths, event.clipboardData);
+        void pasteClipboardImages(
+          clipboardPaths,
+          event.clipboardData,
+          [],
+          undefined,
+          desktopApi.files.getClipboardCapability?.() || undefined,
+        );
       } else {
         insertFilePathRefs(clipboardPaths);
       }

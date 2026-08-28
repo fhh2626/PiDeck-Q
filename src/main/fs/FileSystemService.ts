@@ -88,8 +88,9 @@ export class FileSystemService {
 	/** 创建文件或目录，返回完整路径 */
 	async create(parentDir: string, name: string, type: "file" | "directory"): Promise<string> {
 		const fullPath = join(parentDir, name);
-		// P0 security: prevent path traversal via ../ in name
-		if (name.includes("..") || !fullPath.startsWith(parentDir)) {
+		// Names are single directory entries. Reject separators/traversal here as
+		// defense in depth in case a non-IPC caller bypasses the parent authorization.
+		if (!name || name === "." || name === ".." || name.includes("..") || name.includes("/") || name.includes("\\") || !fullPath.startsWith(parentDir)) {
 			throw new Error(`Invalid path: "${name}" escapes parent directory`);
 		}
 		if (type === "directory") {

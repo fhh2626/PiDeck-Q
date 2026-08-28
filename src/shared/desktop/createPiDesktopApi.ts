@@ -213,16 +213,22 @@ const api = {
 			transport.invoke(ipcChannels.filesShowInFolder, path) as Promise<void>,
 		readContent: (path: string, maxBytes?: number) =>
 			transport.invoke(ipcChannels.filesReadContent, path, maxBytes) as Promise<string>,
-		/** 读取二进制文件为 data URL（粘贴资源管理器图片文件时用；maxBytes 可预检拦截超大文件） */
+		/** Read a binary file inside the authorized roots as base64. */
 		readBase64: (path: string, maxBytes?: number) =>
 			transport.invoke(ipcChannels.filesReadBase64, path, maxBytes) as Promise<string>,
+		/** Read one image path from a trusted clipboard/drop capability. */
+		readBase64External: (capabilityId: string, path: string, maxBytes?: number) =>
+			transport.invoke(ipcChannels.filesReadBase64External, capabilityId, path, maxBytes) as Promise<string>,
 		writeContent: (path: string, content: string) =>
 			transport.invoke(ipcChannels.filesWriteContent, path, content) as Promise<void>,
 		delete: (path: string, recursive?: boolean) =>
 			transport.invoke(ipcChannels.filesDelete, path, recursive) as Promise<void>,
-		/** 复制来源路径到目标目录（支持文件和目录递归），返回目标路径列表 */
-		copy: (sourcePaths: string[], targetDir: string) =>
-			transport.invoke(ipcChannels.filesCopy, sourcePaths, targetDir) as Promise<string[]>,
+		/** Copy paths already authorized by the workspace boundary. */
+		copyInternal: (sourcePaths: string[], targetDir: string) =>
+			transport.invoke(ipcChannels.filesCopyInternal, sourcePaths, targetDir) as Promise<string[]>,
+		/** Copy paths supplied by a trusted native clipboard/drop capability. */
+		copyExternal: (capabilityId: string, targetDir: string) =>
+			transport.invoke(ipcChannels.filesCopyExternal, capabilityId, targetDir) as Promise<string[]>,
 		/** 移动来源路径到目标目录（同设备 rename，跨设备 cp+rm） */
 		move: (sourcePaths: string[], targetDir: string) =>
 			transport.invoke(ipcChannels.filesMove, sourcePaths, targetDir) as Promise<string[]>,
@@ -246,6 +252,7 @@ const api = {
 		 * 浏览器 ClipboardEvent 通常暴露不出 kind=file，粘贴文件引用依赖此同步 API。
 		 */
 		getClipboardPaths: () => syncHost.getClipboardPaths(),
+		getClipboardCapability: () => syncHost.getClipboardCapability?.() ?? "",
 	},
 	dialog: {
 		/**

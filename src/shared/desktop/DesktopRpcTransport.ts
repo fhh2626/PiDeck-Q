@@ -19,4 +19,6 @@ export interface DesktopSyncHost {
 	readClipboardImage(): string;
 	getPathForFile(file: File): string;
 	getClipboardPaths(): string[];
+	/** Capability issued by a trusted host for the current external clipboard paths. */
+	getClipboardCapability?(): string;
 }

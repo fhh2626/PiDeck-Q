@@ -25,18 +25,20 @@ test("every files:* channel in shared/ipc.ts has a handler registered in filesIp
 test("files:show-in-folder handler authorizes a Windows-converted path", () => {
   // 具体断言修复目标：handler 仍经过共享路径转换和边界校验（WSL 路径可用）
   const block = filesIpc.match(
-    /router\.handle\(\s*ipcChannels\.filesShowInFolder,[\s\S]*?showItemInFolder\(authorizePath\(path, "show-in-folder"\)\);/,
+    /router\.handle\(\s*ipcChannels\.filesShowInFolder,[\s\S]*?showItemInFolder\(await authorizePath\(path, "show-in-folder", "read"\)\);/,
   );
   assert.ok(block, "filesShowInFolder handler must authorize the path before opening its folder");
   assert.match(filesIpc, /const toHostPath = \(path: string\): string => toWindowsPath\(path\)/);
 });
 
 test("file mutation handlers normalize host paths and use authorization checks", () => {
-	assert.match(filesIpc, /writeFile\(authorizePath\(path, "write"\)/);
+	assert.match(filesIpc, /const hostPath = await authorizePath\(path, "write", "write"\)/);
 	assert.match(filesIpc, /fileSystemService\.delete\(hostPath, recursive\)/);
 	assert.match(filesIpc, /fileSystemService\.rename\(hostPath, newName\)/);
-	assert.match(filesIpc, /const hostTargetDir = authorizePath\(targetDir, "copy-target"\)/);
-	assert.match(filesIpc, /const hostTargetDir = authorizePath\(targetDir, "move-target"\)/);
-	assert.match(filesIpc, /const hostSource = authorizePath\(src, "move-source"\)/);
+	assert.match(filesIpc, /const hostTargetDir = await authorizePath\(targetDir, "copy-target", "read"\)/);
+	assert.match(filesIpc, /const hostTargetDir = await authorizePath\(targetDir, "move-target", "read"\)/);
+	assert.match(filesIpc, /const hostSource = await authorizePath\(src, "move-source", "link"\)/);
+	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
+	assert.match(filesIpc, /externalFileCapabilities\?\.consumeRead/);
 	assert.match(filesIpc, /fsOperations\.copy\(hostSource, dest, \{[\s\S]*?force: false,[\s\S]*?errorOnExist: true/);
 });

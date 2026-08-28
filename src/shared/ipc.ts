@@ -31,12 +31,17 @@ export const ipcChannels = {
 	filesCreate: "files:create",
 	filesDelete: "files:delete",
 	filesRename: "files:rename",
-	/** 复制来源路径到目标目录（支持文件和目录递归） */
+	/** Copy paths already authorized by the workspace boundary. */
 	filesCopy: "files:copy",
+	/** Copy paths issued by a trusted native clipboard/drop capability. */
+	filesCopyInternal: "files:copy-internal",
+	filesCopyExternal: "files:copy-external",
 	/** 移动来源路径到目标目录（同设备 rename，跨设备 cp+rm） */
 	filesMove: "files:move",
-	/** 读取文件返回 base64 编码的数据 URL，用于图片等二进制文件 */
+	/** Read a file inside authorized roots as base64. */
 	filesReadBase64: "files:read-base64",
+	/** Read one path redeemed from a trusted external file capability. */
+	filesReadBase64External: "files:read-base64-external",
 	sessionsList: "sessions:list",
 	/** Session-first catalog APIs. */
 	sessionsCatalogList: "sessions:catalog-list",

@@ -7,6 +7,7 @@ import { createBackend } from "../main/backend/createBackend";
 import { resolveBackgroundsDir } from "../main/backgrounds/BackgroundPaths";
 import { readLastWindowBounds, saveLastWindowBounds, type LastWindowBounds } from "../main/windowState";
 import { NativeRpcRouter } from "../main/transport/NativeRpcRouter";
+import { ExternalFileCapabilityStore } from "../main/fs/ExternalFileCapabilityStore";
 import { HostBridge } from "./host/HostBridge";
 import { NativeBackendHost } from "./host/NativeBackendHost";
 import { createNativePlatformServices } from "./platform/createNativePlatformServices";
@@ -54,6 +55,11 @@ let pendingStartupFocusSessionId: string | null = null;
 let pendingStartupFocusAgentId: string | null = null;
 let loadFailureCount = 0;
 let loadRetryTimer: NodeJS.Timeout | null = null;
+const externalFileCapabilities = new ExternalFileCapabilityStore();
+
+function issueClipboardCapability(snapshot: NativeClipboardMetadata): string {
+	return externalFileCapabilities.issue(snapshot.filePaths) ?? "";
+}
 
 async function stop(announceReadyToExit = false): Promise<void> {
 	if (stopPromise) {
@@ -66,6 +72,7 @@ async function stop(announceReadyToExit = false): Promise<void> {
 		if (activeBackend) await activeBackend.dispose().catch(() => undefined);
 		singleInstance?.dispose();
 		singleInstance = null;
+		externalFileCapabilities.clear();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		heartbeatTimer = null;
 		if (loadRetryTimer) clearTimeout(loadRetryTimer);
@@ -129,9 +136,16 @@ async function main(): Promise<void> {
 	}
 
 	const router = new NativeRpcRouter();
-	router.handle(ipcChannels.nativeClipboardSnapshot, () =>
-		host.request<NativeClipboardSnapshot>("clipboard.snapshot"),
-	);
+	router.handle(ipcChannels.nativeClipboardSnapshot, async () => {
+		const snapshot = await host.request<NativeClipboardSnapshot>("clipboard.snapshot");
+		// A live image read is a separate one-shot capability so consuming it does
+		// not invalidate the clipboard-file paste action shown in the file drawer.
+		const externalFileCapabilityId = externalFileCapabilities.issue(snapshot.filePaths) ?? "";
+		return {
+			...snapshot,
+			externalFileCapabilityId,
+		};
+	});
 	const platform = createNativePlatformServices(host);
 	const rendererRoot = process.env.PIDECK_RENDERER_ROOT ?? join(__dirname, "../renderer");
 	const backgroundDirectory = resolveBackgroundsDir(platform.paths.userData);
@@ -187,15 +201,22 @@ async function main(): Promise<void> {
 		onServerError: (error) => {
 			void recoverRendererServer(error);
 		},
-		getBootstrap: async () => ({
+		getBootstrap: async () => {
 			// Bootstrap only needs clipboard metadata. PNG encoding is reserved for
 			// the live snapshot requested by an actual paste operation.
-			clipboard: await host.request<NativeClipboardMetadata>("clipboard.metadataSnapshot"),
-			settings: {
-				zoomFactor: backend?.settingsStore.get().zoomFactor ?? 1,
-				memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
-			},
-		}),
+			const clipboard = await host.request<NativeClipboardMetadata>("clipboard.metadataSnapshot");
+			const externalFileCapabilityId = issueClipboardCapability(clipboard);
+			return {
+				clipboard: {
+					...clipboard,
+					externalFileCapabilityId,
+				},
+				settings: {
+					zoomFactor: backend?.settingsStore.get().zoomFactor ?? 1,
+					memoryProfileEnabled: process.env.PIDECK_MEMORY_PROFILE === "1",
+				},
+			};
+		},
 		onHeartbeat: (payload, state) => {
 			lastHeartbeatAt = Date.now();
 			const recovery = advanceNativeHeartbeatRecovery(
@@ -227,10 +248,18 @@ async function main(): Promise<void> {
 	});
 	rendererServer = placeholderServer;
 	host.on<NativeClipboardMetadata>("native.clipboard", (snapshot) => {
-		placeholderServer.broadcast("native.clipboard", [snapshot]);
+		const externalFileCapabilityId = issueClipboardCapability(snapshot);
+		placeholderServer.broadcast("native.clipboard", [{
+			...snapshot,
+			externalFileCapabilityId,
+		}]);
 	});
 	host.on<NativeFileDropPayload>("native.fileDrop", (payload) => {
-		placeholderServer.broadcast("native.fileDrop", [payload]);
+		const externalFileCapabilityId = externalFileCapabilities.issue(payload.paths);
+		placeholderServer.broadcast("native.fileDrop", [{
+			...payload,
+			externalFileCapabilityId,
+		}]);
 	});
 
 	nativeHost = new NativeBackendHost(
@@ -302,6 +331,7 @@ async function main(): Promise<void> {
 		router,
 		platform,
 		host: nativeHost,
+		externalFileCapabilities,
 	});
 	nativeHost.setLogger(backend.appLogger);
 	if (pendingStartupFocusAgentId) {

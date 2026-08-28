@@ -71,6 +71,32 @@ test("native paste restores event image files when the live snapshot rejects", (
 	assert.match(handler, /throw error/);
 });
 
+test("native paste restores event text when a file-bearing snapshot rejects", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /fallbackText = options\.fallbackText/);
+	assert.match(composer, /fallbackHtml = options\.fallbackHtml/);
+	assert.match(composer, /const text = fallbackText \|\| \(fallbackHtml \? htmlToPlainText\(fallbackHtml\) : ""\)/);
+	assert.match(composer, /pasteNativeSnapshot\(\{ fallbackImageFiles, fallbackText, fallbackHtml \}\)/);
+});
+
+test("native paste reads external clipboard image paths with the trusted capability", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /readBase64External\(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES\)/);
+	assert.match(composer, /snapshot\.externalFileCapabilityId/);
+});
+
+test("native paste reports an unavailable oversized image instead of inserting companion text", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /if \(snapshot\.hasImage\)/);
+	assert.match(composer, /clipboardImageUnavailable/);
+});
+
+test("native right-click paste catches provider failures and restores focus", () => {
+	const composer = readFileSync("src/renderer/src/components/session/composer/TipTapComposer.tsx", "utf8");
+	assert.match(composer, /try \{[\s\S]*?props\.onPasteClipboard\?\.\(\)/);
+	assert.match(composer, /finally \{[\s\S]*?editor\.commands\.focus\(\)/);
+});
+
 test("Ctrl+V composer paste inserts clipboard text/plain, never TipTap HTML", () => {
 	const props = readFileSync(
 		"src/renderer/src/components/session/composer/tiptap/buildComposerEditorProps.ts",

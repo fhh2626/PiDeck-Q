@@ -19,6 +19,7 @@ const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.filesList,
 	ipcChannels.filesReadContent,
 	ipcChannels.filesReadBase64,
+	ipcChannels.filesReadBase64External,
 	ipcChannels.nativeClipboardSnapshot,
 ]);
 

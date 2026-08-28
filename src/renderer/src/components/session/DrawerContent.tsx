@@ -217,6 +217,7 @@ function FilesPanel(props: {
 	return (
 		<div
 			className="files-panel flex min-h-0 flex-1 flex-col overflow-x-hidden"
+			data-native-file-drop-root={props.projectRoot ?? undefined}
 			tabIndex={-1}
 			onDragOver={handlePanelDragOver}
 			onDragLeave={() => { setDragOverDir(null); dragCountRef.current = 0; }}
@@ -408,6 +409,7 @@ function FileNode(props: {
 					<button
 						type="button"
 						className={cn("directory group", fileRowButtonClass, isDragOver && "bg-muted ring-1 ring-border")}
+						data-native-file-drop-target={node.path}
 						style={rowStyle}
 						title={node.relativePath}
 						draggable

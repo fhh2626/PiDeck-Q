@@ -9,13 +9,17 @@ test("native sync host never maps browser Files by basename", () => {
 	const file = new File(["content"], "same.txt");
 	assert.equal(sync.getPathForFile(file), "");
 	assert.deepEqual(sync.getClipboardPaths(), ["C:\\one\\same.txt", "D:\\two\\same.txt"]);
+	assert.equal(sync.getClipboardCapability(), "");
 });
 
 test("native OS drop paths are consumed as an explicit batch, not cached globally", () => {
 	const sync = new NativeDesktopSyncHost();
-	sync.update({ filePaths: ["C:\\one\\same.txt"] });
-	sync.update({ filePaths: ["D:\\two\\same.txt"] });
+	sync.update({ filePaths: ["C:\\one\\same.txt"], externalFileCapabilityId: "cap-1" });
+	sync.update({ filePaths: ["D:\\two\\same.txt"], externalFileCapabilityId: "cap-2" });
 	assert.deepEqual(sync.getClipboardPaths(), ["D:\\two\\same.txt"]);
+	assert.equal(sync.getClipboardCapability(), "cap-2");
+	sync.update({ filePaths: [], externalFileCapabilityId: undefined });
+	assert.equal(sync.getClipboardCapability(), "");
 	assert.equal(sync.getPathForFile(new File([], "same.txt")), "");
 });
 
