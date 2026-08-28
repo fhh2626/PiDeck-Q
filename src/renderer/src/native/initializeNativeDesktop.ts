@@ -9,8 +9,6 @@ import { createNativeHeartbeatRequest } from "./nativeHeartbeat";
 import { createNativeReloadUrl } from "./nativeReloadUrl";
 import { applyRendererZoom } from "./rendererZoom";
 
-export { createNativeReloadUrl } from "./nativeReloadUrl";
-
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
 
 let nativeRendererToken: string | null = null;
