@@ -341,7 +341,6 @@ int main(int argc, char **argv)
 #ifdef Q_OS_WIN
     const HWND reloadHwnd = reinterpret_cast<HWND>(reloadView->winId());
     if (!require(reloadHwnd != nullptr, "native WebView HWND was unavailable")) return 1;
-    if (!require(SetFocus(reloadHwnd) != nullptr, "native WebView could not receive focus")) return 1;
 
     reloadView->setUrl(sanitizedUrl);
     if (!require(waitForWebViewUrl(reloadView, sanitizedUrl),

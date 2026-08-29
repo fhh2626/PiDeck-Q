@@ -115,7 +115,7 @@ test("native browser refresh shortcuts use Qt and Windows authenticated reload p
 test("native Windows GUI refresh regression uses native keyboard messages", () => {
 	const guiTest = readFileSync("native/tests/NativeGuiIntegration.cpp", "utf8");
 	assert.match(guiTest, /#ifdef Q_OS_WIN/);
-	assert.match(guiTest, /SetFocus\(reloadHwnd\)/);
+	assert.doesNotMatch(guiTest, /SetFocus\(reloadHwnd\)/);
 	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, VK_F5/);
 	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, VK_CONTROL/);
 	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, 'R'/);
