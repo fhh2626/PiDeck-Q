@@ -12,6 +12,8 @@
 
 class HostRpcServer;
 class MainWebSurface;
+class QObject;
+class QEvent;
 class QHideEvent;
 class QShowEvent;
 class FileDropController;
@@ -41,6 +43,7 @@ public:
     void showLoadError(const QString &url, const QString &error);
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;

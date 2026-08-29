@@ -86,6 +86,24 @@ test("native reload restores the last authenticated WebView URL", () => {
 	assert.doesNotMatch(reload, /m_surface->reload\(\)/);
 });
 
+test("native browser refresh shortcuts use the authenticated reload path", () => {
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	const webSurface = readFileSync("native/src/MainWebSurface.cpp", "utf8");
+	assert.match(mainWindow, /m_surface->container\(\)->installEventFilter\(this\)/);
+	assert.match(mainWindow, /m_surface->view\(\)->installEventFilter\(this\)/);
+	const shortcutStart = mainWindow.indexOf("bool isNativeRefreshShortcut");
+	const filterStart = mainWindow.indexOf("bool MainWindow::eventFilter");
+	const loadStart = mainWindow.indexOf("void MainWindow::load(const QUrl &url)");
+	assert.ok(shortcutStart >= 0 && filterStart > shortcutStart && loadStart > filterStart);
+	const filter = mainWindow.slice(shortcutStart, loadStart);
+	assert.match(filter, /QEvent::KeyPress/);
+	assert.match(filter, /Qt::Key_F5/);
+	assert.match(filter, /Qt::Key_R/);
+	assert.match(filter, /reload\(\)/);
+	assert.match(filter, /return true/);
+	assert.doesNotMatch(webSurface, /m_view->reload\(\)/);
+});
+
 test("macOS native chrome keeps system resize and uses the Dock reopen delegate", () => {
 	const policy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
 	const main = readFileSync("native/src/main.cpp", "utf8");

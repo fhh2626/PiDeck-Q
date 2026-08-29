@@ -12,7 +12,6 @@ public:
     QWebView *view() const;
     QWidget *container() const;
     void load(const QUrl &url);
-    void reload();
     void focus();
 
 private:

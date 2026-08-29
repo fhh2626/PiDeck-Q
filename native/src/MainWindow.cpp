@@ -30,6 +30,19 @@
 #include <windows.h>
 #endif
 
+namespace {
+bool isNativeRefreshShortcut(const QKeyEvent &event)
+{
+    if (event.key() == Qt::Key_F5) return true;
+    if (event.key() != Qt::Key_R) return false;
+
+    const Qt::KeyboardModifiers modifiers = event.modifiers();
+    const bool hasRefreshModifier = modifiers.testFlag(Qt::ControlModifier)
+        || modifiers.testFlag(Qt::MetaModifier);
+    return hasRefreshModifier && !modifiers.testFlag(Qt::AltModifier);
+}
+}
+
 MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent)
     : QMainWindow(parent),
       m_host(host),
@@ -50,6 +63,11 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     // The web surface is a native QWindow child; parent QWidget filters are not
     // guaranteed to observe drag/drop events intercepted by the browser.
     m_surface->view()->installEventFilter(m_fileDrop);
+    // Qt WebView handles browser refresh shortcuts against its current URL. The
+    // renderer removes the token from that URL after bootstrap, so route F5,
+    // Ctrl+R, and the macOS Command+R equivalent through authenticated reload.
+    m_surface->container()->installEventFilter(this);
+    m_surface->view()->installEventFilter(this);
 
     const bool useNativeTitleBar = nativeWindowUsesSystemTitleBar(
         startup.value(QStringLiteral("useNativeTitleBar")).toBool(false));
@@ -90,6 +108,23 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
 }
 
 MainWindow::~MainWindow() = default;
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    const bool isWebSurface = watched == m_surface->view()
+        || watched == m_surface->container();
+    if (isWebSurface && event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (isNativeRefreshShortcut(*keyEvent)) {
+            // Consume auto-repeat too, otherwise holding the key would hand
+            // repeated refreshes back to WebView2 after the first event.
+            if (!keyEvent->isAutoRepeat()) reload();
+            keyEvent->accept();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
 
 void MainWindow::load(const QUrl &url)
 {

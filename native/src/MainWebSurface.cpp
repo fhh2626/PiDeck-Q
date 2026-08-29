@@ -38,11 +38,6 @@ void MainWebSurface::load(const QUrl &url)
     m_view->setUrl(url);
 }
 
-void MainWebSurface::reload()
-{
-    m_view->reload();
-}
-
 void MainWebSurface::focus()
 {
     m_container->setFocus(Qt::ActiveWindowFocusReason);

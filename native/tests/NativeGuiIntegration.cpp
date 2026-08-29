@@ -7,6 +7,7 @@
 #include "NativeWindowPolicy.h"
 #include "WindowsToastNotifier.h"
 
+#include <QtWebView/QWebView>
 #include <QtWebView/QtWebView>
 
 #include <QApplication>
@@ -19,6 +20,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QMimeData>
 #include <QPalette>
 #include <QSize>
@@ -27,6 +29,7 @@
 #include <QThread>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QWindow>
 
 #include <functional>
 #include <iostream>
@@ -293,6 +296,36 @@ int main(int argc, char **argv)
         }), "GUI renderer did not report the reload")) return 1;
     if (!require(reloadStateWindow.isMinimized(),
                  "renderer reload restored a minimized window")) return 1;
+
+    // Browser refresh shortcuts must not reload the sanitized URL that the
+    // renderer keeps visible after bootstrap. Locate this window's QWebView by
+    // its unique requested URL and exercise the same key events WebView2 sees.
+    const QUrl authenticatedUrl(QStringLiteral(
+        "https://pideck.invalid/?runtime=native&token=secret"));
+    const QUrl sanitizedUrl(QStringLiteral("https://pideck.invalid/?runtime=native"));
+    reloadStateWindow.load(authenticatedUrl);
+    QWebView *reloadView = nullptr;
+    for (QWindow *window : QGuiApplication::allWindows()) {
+        auto *candidate = qobject_cast<QWebView *>(window);
+        if (candidate && candidate->url() == authenticatedUrl) {
+            reloadView = candidate;
+            break;
+        }
+    }
+    if (!require(reloadView != nullptr, "authenticated QWebView was not found")) return 1;
+
+    reloadView->setUrl(sanitizedUrl);
+    QKeyEvent f5(QEvent::KeyPress, Qt::Key_F5, Qt::NoModifier);
+    QCoreApplication::sendEvent(reloadView, &f5);
+    if (!require(reloadView->url() == authenticatedUrl,
+                 "F5 reloaded the sanitized WebView URL")) return 1;
+
+    reloadView->setUrl(sanitizedUrl);
+    QKeyEvent ctrlR(QEvent::KeyPress, Qt::Key_R, Qt::ControlModifier);
+    QCoreApplication::sendEvent(reloadView, &ctrlR);
+    if (!require(reloadView->url() == authenticatedUrl,
+                 "Ctrl+R reloaded the sanitized WebView URL")) return 1;
+
     lifecycleClient.disconnectFromHost();
 
     int clipboardChanges = 0;
