@@ -86,22 +86,40 @@ test("native reload restores the last authenticated WebView URL", () => {
 	assert.doesNotMatch(reload, /m_surface->reload\(\)/);
 });
 
-test("native browser refresh shortcuts use the authenticated reload path", () => {
+test("native browser refresh shortcuts use Qt and Windows authenticated reload paths", () => {
+	const header = readFileSync("native/src/MainWindow.h", "utf8");
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	const webSurface = readFileSync("native/src/MainWebSurface.cpp", "utf8");
+	assert.match(header, /QAbstractNativeEventFilter/);
+	assert.match(header, /nativeEventFilter\(/);
 	assert.match(mainWindow, /m_surface->container\(\)->installEventFilter\(this\)/);
 	assert.match(mainWindow, /m_surface->view\(\)->installEventFilter\(this\)/);
+	assert.match(mainWindow, /installNativeEventFilter\(this\)/);
 	const shortcutStart = mainWindow.indexOf("bool isNativeRefreshShortcut");
+	const nativeFilterStart = mainWindow.indexOf("bool MainWindow::nativeEventFilter");
 	const filterStart = mainWindow.indexOf("bool MainWindow::eventFilter");
 	const loadStart = mainWindow.indexOf("void MainWindow::load(const QUrl &url)");
-	assert.ok(shortcutStart >= 0 && filterStart > shortcutStart && loadStart > filterStart);
-	const filter = mainWindow.slice(shortcutStart, loadStart);
-	assert.match(filter, /QEvent::KeyPress/);
-	assert.match(filter, /Qt::Key_F5/);
-	assert.match(filter, /Qt::Key_R/);
-	assert.match(filter, /reload\(\)/);
-	assert.match(filter, /return true/);
+	assert.ok(shortcutStart >= 0 && nativeFilterStart > shortcutStart && filterStart > nativeFilterStart && loadStart > filterStart);
+	const filters = mainWindow.slice(shortcutStart, loadStart);
+	assert.match(filters, /QEvent::KeyPress/);
+	assert.match(filters, /Qt::Key_F5/);
+	assert.match(filters, /Qt::Key_R/);
+	assert.match(filters, /WM_KEYDOWN/);
+	assert.match(filters, /VK_F5/);
+	assert.match(filters, /reload\(\)/);
+	assert.match(filters, /return true/);
+	assert.match(filters, /IsChild/);
 	assert.doesNotMatch(webSurface, /m_view->reload\(\)/);
+});
+
+test("native Windows GUI refresh regression uses native keyboard messages", () => {
+	const guiTest = readFileSync("native/tests/NativeGuiIntegration.cpp", "utf8");
+	assert.match(guiTest, /#ifdef Q_OS_WIN/);
+	assert.match(guiTest, /SetFocus\(reloadHwnd\)/);
+	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, VK_F5/);
+	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, VK_CONTROL/);
+	assert.match(guiTest, /PostMessageW\(reloadHwnd, WM_KEYDOWN, 'R'/);
+	assert.match(guiTest, /waitForWebViewUrl\(reloadView, authenticatedUrl\)/);
 });
 
 test("macOS native chrome keeps system resize and uses the Dock reopen delegate", () => {

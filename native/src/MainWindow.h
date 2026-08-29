@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAbstractNativeEventFilter>
 #include <QCloseEvent>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -18,10 +19,12 @@ class QHideEvent;
 class QShowEvent;
 class FileDropController;
 
-class MainWindow final : public QMainWindow {
+class MainWindow final : public QMainWindow, public QAbstractNativeEventFilter {
 public:
     MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
 
     void load(const QUrl &url);
     void reload();
@@ -70,4 +73,9 @@ private:
     bool m_quitting = false;
     std::function<void()> m_quitHandler;
     std::function<bool()> m_closeHideAvailableHandler;
+#ifdef Q_OS_WIN
+    quintptr m_nativeWebViewWinId = 0;
+    bool m_nativeControlDown = false;
+    bool m_nativeAltDown = false;
+#endif
 };

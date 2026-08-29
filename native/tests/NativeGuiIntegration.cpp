@@ -10,6 +10,13 @@
 #include <QtWebView/QWebView>
 #include <QtWebView/QtWebView>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <QApplication>
 #include <QClipboard>
 #include <QElapsedTimer>
@@ -79,6 +86,18 @@ bool require(bool condition, const char *message)
     if (condition) return true;
     std::cerr << message << std::endl;
     return false;
+}
+
+bool waitForWebViewUrl(QWebView *view, const QUrl &expected, int timeoutMs = 3'000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (view && view->url() == expected) return true;
+        QThread::msleep(2);
+    }
+    return view && view->url() == expected;
 }
 
 void processGuiEvents()
@@ -304,6 +323,7 @@ int main(int argc, char **argv)
         "https://pideck.invalid/?runtime=native&token=secret"));
     const QUrl sanitizedUrl(QStringLiteral("https://pideck.invalid/?runtime=native"));
     reloadStateWindow.load(authenticatedUrl);
+    processGuiEvents();
     QWebView *reloadView = nullptr;
     for (QWindow *window : QGuiApplication::allWindows()) {
         auto *candidate = qobject_cast<QWebView *>(window);
@@ -313,7 +333,36 @@ int main(int argc, char **argv)
         }
     }
     if (!require(reloadView != nullptr, "authenticated QWebView was not found")) return 1;
+    reloadStateWindow.showNormal();
+    reloadStateWindow.show();
+    reloadStateWindow.focusWindow();
+    processGuiEvents();
 
+#ifdef Q_OS_WIN
+    const HWND reloadHwnd = reinterpret_cast<HWND>(reloadView->winId());
+    if (!require(reloadHwnd != nullptr, "native WebView HWND was unavailable")) return 1;
+    if (!require(SetFocus(reloadHwnd) != nullptr, "native WebView could not receive focus")) return 1;
+
+    reloadView->setUrl(sanitizedUrl);
+    if (!require(waitForWebViewUrl(reloadView, sanitizedUrl),
+                 "WebView did not enter the sanitized URL before F5")) return 1;
+    if (!require(PostMessageW(reloadHwnd, WM_KEYDOWN, VK_F5, 0)
+                     && PostMessageW(reloadHwnd, WM_KEYUP, VK_F5, 0),
+                 "could not post native F5 messages")) return 1;
+    if (!require(waitForWebViewUrl(reloadView, authenticatedUrl),
+                 "native F5 reloaded the sanitized WebView URL")) return 1;
+
+    reloadView->setUrl(sanitizedUrl);
+    if (!require(waitForWebViewUrl(reloadView, sanitizedUrl),
+                 "WebView did not enter the sanitized URL before Ctrl+R")) return 1;
+    if (!require(PostMessageW(reloadHwnd, WM_KEYDOWN, VK_CONTROL, 0)
+                     && PostMessageW(reloadHwnd, WM_KEYDOWN, 'R', 0)
+                     && PostMessageW(reloadHwnd, WM_KEYUP, 'R', 0)
+                     && PostMessageW(reloadHwnd, WM_KEYUP, VK_CONTROL, 0),
+                 "could not post native Ctrl+R messages")) return 1;
+    if (!require(waitForWebViewUrl(reloadView, authenticatedUrl),
+                 "native Ctrl+R reloaded the sanitized WebView URL")) return 1;
+#else
     reloadView->setUrl(sanitizedUrl);
     QKeyEvent f5(QEvent::KeyPress, Qt::Key_F5, Qt::NoModifier);
     QCoreApplication::sendEvent(reloadView, &f5);
@@ -325,6 +374,7 @@ int main(int argc, char **argv)
     QCoreApplication::sendEvent(reloadView, &ctrlR);
     if (!require(reloadView->url() == authenticatedUrl,
                  "Ctrl+R reloaded the sanitized WebView URL")) return 1;
+#endif
 
     lifecycleClient.disconnectFromHost();
 

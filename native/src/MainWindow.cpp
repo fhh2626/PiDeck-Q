@@ -41,6 +41,23 @@ bool isNativeRefreshShortcut(const QKeyEvent &event)
         || modifiers.testFlag(Qt::MetaModifier);
     return hasRefreshModifier && !modifiers.testFlag(Qt::AltModifier);
 }
+
+#ifdef Q_OS_WIN
+bool isWebViewWindow(HWND root, HWND candidate)
+{
+    return root && candidate && (root == candidate || IsChild(root, candidate));
+}
+
+bool isControlKey(WPARAM key)
+{
+    return key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL;
+}
+
+bool isAltKey(WPARAM key)
+{
+    return key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
+}
+#endif
 }
 
 MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent)
@@ -68,6 +85,15 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     // Ctrl+R, and the macOS Command+R equivalent through authenticated reload.
     m_surface->container()->installEventFilter(this);
     m_surface->view()->installEventFilter(this);
+#ifdef Q_OS_WIN
+    // Capture the host window before installing the application-wide native
+    // filter. Calling winId() from inside nativeEventFilter can re-enter Qt
+    // while a native child window is being created.
+    m_nativeWebViewWinId = static_cast<quintptr>(m_surface->view()->winId());
+#endif
+    if (auto *application = QCoreApplication::instance()) {
+        application->installNativeEventFilter(this);
+    }
 
     const bool useNativeTitleBar = nativeWindowUsesSystemTitleBar(
         startup.value(QStringLiteral("useNativeTitleBar")).toBool(false));
@@ -107,7 +133,57 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     });
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow()
+{
+    if (auto *application = QCoreApplication::instance()) {
+        application->removeNativeEventFilter(this);
+    }
+}
+
+bool MainWindow::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    if (eventType != QByteArrayLiteral("windows_dispatcher_MSG")
+        && eventType != QByteArrayLiteral("windows_generic_MSG")) return false;
+
+    auto *nativeMessage = static_cast<MSG *>(message);
+    if (!nativeMessage) return false;
+    const HWND webView = reinterpret_cast<HWND>(m_nativeWebViewWinId);
+    if (!isWebViewWindow(webView, nativeMessage->hwnd)) return false;
+
+    if (nativeMessage->message == WM_KILLFOCUS || nativeMessage->message == WM_NCDESTROY) {
+        m_nativeControlDown = false;
+        m_nativeAltDown = false;
+        return false;
+    }
+    if (nativeMessage->message == WM_KEYDOWN || nativeMessage->message == WM_SYSKEYDOWN) {
+        const WPARAM key = nativeMessage->wParam;
+        if (isControlKey(key)) m_nativeControlDown = true;
+        if (isAltKey(key)) m_nativeAltDown = true;
+
+        const bool isRefresh = key == VK_F5
+            || (key == 'R' && m_nativeControlDown && !m_nativeAltDown);
+        if (isRefresh) {
+            // Bit 30 marks an auto-repeated keydown. Consume repeats so
+            // WebView2 never receives the refresh accelerator, but only load
+            // the authenticated URL once for a held key.
+            if ((nativeMessage->lParam & (1LL << 30)) == 0) reload();
+            if (result) *result = 0;
+            return true;
+        }
+    }
+    if (nativeMessage->message == WM_KEYUP || nativeMessage->message == WM_SYSKEYUP) {
+        const WPARAM key = nativeMessage->wParam;
+        if (isControlKey(key)) m_nativeControlDown = false;
+        if (isAltKey(key)) m_nativeAltDown = false;
+    }
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+    Q_UNUSED(result);
+#endif
+    return false;
+}
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
