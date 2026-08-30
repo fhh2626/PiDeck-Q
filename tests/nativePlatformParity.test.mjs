@@ -69,6 +69,7 @@ test("Windows frameless maximize uses the monitor work area and native caption m
 	const nativeFilterStart = mainWindow.indexOf("bool MainWindow::nativeEventFilter(");
 	assert.ok(nativeEventStart >= 0 && nativeFilterStart > nativeEventStart);
 	const nativeEvent = mainWindow.slice(nativeEventStart, nativeFilterStart);
+	assert.match(nativeEvent, /windowFlags\(\) & Qt::FramelessWindowHint/);
 	assert.match(nativeEvent, /WM_GETMINMAXINFO/);
 	assert.match(nativeEvent, /MonitorFromWindow/);
 	assert.match(nativeEvent, /MONITOR_DEFAULTTONEAREST/);
@@ -82,10 +83,12 @@ test("Windows frameless maximize uses the monitor work area and native caption m
 	const resizeStart = mainWindow.indexOf("bool MainWindow::beginSystemResize(");
 	assert.ok(moveStart >= 0 && resizeStart > moveStart);
 	const move = mainWindow.slice(moveStart, resizeStart);
-	assert.match(move, /if \(isMaximized\(\) \|\| isFullScreen\(\)\) return/);
+	assert.match(move, /if \(isFullScreen\(\)\) return/);
+	assert.match(move, /POINT cursor\{\}/);
+	assert.match(move, /GetCursorPos\(&cursor\)/);
 	assert.match(move, /ReleaseCapture\(\)/);
-	assert.match(move, /SendMessageW\(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0\)/);
-	assert.match(move, /#else[\s\S]*startSystemMove\(\)/);
+	assert.match(move, /SendMessageW\([\s\S]*WM_NCLBUTTONDOWN,[\s\S]*HTCAPTION,[\s\S]*MAKELPARAM\(cursor\.x, cursor\.y\)\)/);
+	assert.match(move, /#else[\s\S]*if \(isMaximized\(\)\) return[\s\S]*startSystemMove\(\)/);
 });
 
 test("window.unmaximize restores and clamps through MainWindow", () => {

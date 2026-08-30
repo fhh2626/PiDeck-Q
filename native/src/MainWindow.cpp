@@ -144,7 +144,9 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 {
 #ifdef Q_OS_WIN
     auto *nativeMessage = static_cast<MSG *>(message);
-    if (nativeMessage && nativeMessage->message == WM_GETMINMAXINFO) {
+    if ((windowFlags() & Qt::FramelessWindowHint)
+        && nativeMessage
+        && nativeMessage->message == WM_GETMINMAXINFO) {
         auto *minMaxInfo = reinterpret_cast<MINMAXINFO *>(nativeMessage->lParam);
         const HMONITOR monitor = MonitorFromWindow(
             nativeMessage->hwnd,
@@ -352,13 +354,22 @@ void MainWindow::applySettings(const QJsonObject &settings)
 
 void MainWindow::beginSystemMove()
 {
-    if (isMaximized() || isFullScreen()) return;
+    if (isFullScreen()) return;
 #ifdef Q_OS_WIN
     const HWND hwnd = reinterpret_cast<HWND>(winId());
     if (!hwnd) return;
+
+    POINT cursor{};
+    if (!GetCursorPos(&cursor)) return;
+
     ReleaseCapture();
-    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    SendMessageW(
+        hwnd,
+        WM_NCLBUTTONDOWN,
+        HTCAPTION,
+        MAKELPARAM(cursor.x, cursor.y));
 #else
+    if (isMaximized()) return;
     if (auto *handle = windowHandle()) handle->startSystemMove();
 #endif
 }

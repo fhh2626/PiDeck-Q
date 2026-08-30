@@ -227,6 +227,17 @@ int main(int argc, char **argv)
 #endif
     oversized.showMaximized();
     processGuiEvents();
+#ifdef Q_OS_WIN
+    RECT maximizedRect{};
+    if (!require(GetWindowRect(oversizedHwnd, &maximizedRect),
+                 "maximized window rect was unavailable")) return 1;
+    if (!require(
+            maximizedRect.left >= oversizedWork.left
+                && maximizedRect.top >= oversizedWork.top
+                && maximizedRect.right <= oversizedWork.right
+                && maximizedRect.bottom <= oversizedWork.bottom,
+            "frameless maximized window exceeded the monitor work area")) return 1;
+#endif
     oversized.showNormal();
     processGuiEvents();
     const QScreen *restoredScreen = oversized.windowHandle() && oversized.windowHandle()->screen()
