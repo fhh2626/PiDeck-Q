@@ -7,7 +7,7 @@ function loadAtoms() {
 	return loadTsCommonJs("src/renderer/src/atoms/session-atoms.ts");
 }
 
-test("方案 B 回归：[old1, old2, old3] -> compaction -> [summary, new1] 保持 sliding-out 并能平滑清理", () => {
+test("compaction 后 280ms 内第二个 full snapshot 不重复消息或污染 history", () => {
 	const atoms = loadAtoms();
 	const store = createStore();
 	const emit = (payload) =>
@@ -20,7 +20,6 @@ test("方案 B 回归：[old1, old2, old3] -> compaction -> [summary, new1] 保�
 		});
 	const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
 
-	// 1. 初始状态：展示 3 条旧消息
 	emit({
 		agentId: "agent-1",
 		messages: [
@@ -29,14 +28,6 @@ test("方案 B 回归：[old1, old2, old3] -> compaction -> [summary, new1] 保�
 			{ id: "old3", role: "user", text: "question 2", timestamp: 3000 },
 		],
 	});
-
-	assert.equal(entry().messages.length, 3);
-	assert.deepEqual(
-		entry().messages.map((m) => m.id),
-		["old1", "old2", "old3"],
-	);
-
-	// 2. 发生 compaction：主进程只发送 canonical messages [summary, new1]（不带 slideOut 副本）
 	emit({
 		agentId: "agent-1",
 		fileVersion: "200:5000",
@@ -48,58 +39,35 @@ test("方案 B 回归：[old1, old2, old3] -> compaction -> [summary, new1] 保�
 		],
 	});
 
-	// 验证：renderer 短时间内显示 old1/old2/old3(sliding-out) + summary/new1，且按原有顺序组织
-	const currentMsgs = entry().messages;
-	assert.equal(currentMsgs.length, 5);
-	assert.deepEqual(
-		[...currentMsgs.map((m) => m.id)],
-		["old1", "old2", "old3", "summary", "new1"],
-	);
-	assert.equal(currentMsgs[0].meta?.slidingOut, true);
-	assert.equal(currentMsgs[1].meta?.slidingOut, true);
-	assert.equal(currentMsgs[2].meta?.slidingOut, true);
-	assert.equal(currentMsgs[3].meta?.slidingOut, undefined);
-	assert.equal(currentMsgs[4].meta?.slidingOut, undefined);
+	assert.deepEqual([...entry().history.messages.map((m) => m.id)], ["old1", "old2", "old3"]);
+	assert.deepEqual([...entry().messages.map((m) => m.id)], ["summary", "new1"]);
+	const historyIds = new Set(entry().history.messages.map((m) => m.id));
+	for (const message of entry().messages) {
+		assert.equal(historyIds.has(message.id), false, `${message.id} exists in both history and current`);
+	}
 
-	// 3. 动画未结束时，立刻收到第二次 full snapshot [summary, new1, new2]
+	// 模拟动画清理 timer 到期前紧接着到达另一条 compaction full snapshot。
 	emit({
 		agentId: "agent-1",
 		fileVersion: "200:5000",
+		preserveHistory: true,
+		stickyHistory: true,
 		messages: [
 			{ id: "summary", role: "system", text: "已压缩", timestamp: 4000, meta: { type: "compaction" } },
 			{ id: "new1", role: "assistant", text: "retained answer", timestamp: 3500 },
 			{ id: "new2", role: "user", text: "new question", timestamp: 5000 },
 		],
+		slideOut: [
+			{ id: "old1", role: "user", text: "question 1", timestamp: 1000, meta: { slidingOut: true } },
+			{ id: "old2", role: "assistant", text: "answer 1", timestamp: 2000, meta: { slidingOut: true } },
+			{ id: "old3", role: "user", text: "question 2", timestamp: 3000, meta: { slidingOut: true } },
+		],
 	});
 
-	// 验证：第二次 snapshot 必须继续保留已有的 sliding-out 消息，不能直接清掉
-	const secondMsgs = entry().messages;
-	assert.equal(secondMsgs.length, 6);
-	assert.deepEqual(
-		[...secondMsgs.map((m) => m.id)],
-		["old1", "old2", "old3", "summary", "new1", "new2"],
-	);
-	assert.equal(secondMsgs[0].meta?.slidingOut, true);
-	assert.equal(secondMsgs[1].meta?.slidingOut, true);
-	assert.equal(secondMsgs[2].meta?.slidingOut, true);
-	assert.equal(secondMsgs[3].meta?.slidingOut, undefined);
-	assert.equal(secondMsgs[4].meta?.slidingOut, undefined);
-	assert.equal(secondMsgs[5].meta?.slidingOut, undefined);
-
-	// 4. 动画结束后，renderer 自己根据 message ID 删除旧消息
-	const cleaned = store.set(atoms.removeSessionSlidingOutMessagesAtom, {
-		sessionId: "session-1",
-		messageIds: ["old1", "old2", "old3"],
-	});
-	assert.equal(cleaned, true);
-
-	// 验证：仅 sliding-out 消息被删除，canonical 消息完好保留
-	const finalMsgs = entry().messages;
-	assert.equal(finalMsgs.length, 3);
-	assert.deepEqual(
-		[...finalMsgs.map((m) => m.id)],
-		["summary", "new1", "new2"],
-	);
+	assert.deepEqual([...entry().messages.map((m) => m.id)], ["summary", "new1", "new2"]);
+	for (const message of entry().history.messages) {
+		assert.notEqual(message.meta?.slidingOut, true);
+	}
 });
 
 test("首次 compaction 将退出的 current window 转存到 history 且不重复保留项", () => {
@@ -131,6 +99,7 @@ test("首次 compaction 将退出的 current window 转存到 history 且不重�
 		agentId: "agent-1",
 		fileVersion: "new-version",
 		preserveHistory: true,
+		stickyHistory: true,
 		messages: [
 			{ id: "summary", role: "system", text: "compacted", timestamp: 5000, meta: { type: "compaction" } },
 			{ id: "user-b", role: "user", text: "question B", timestamp: 3000 },
@@ -142,10 +111,10 @@ test("首次 compaction 将退出的 current window 转存到 history 且不重�
 		[...entry().history.messages.map((message) => message.id)],
 		["user-a", "assistant-a"],
 	);
-	store.set(atoms.removeSessionSlidingOutMessagesAtom, {
-		sessionId: "session-1",
-		messageIds: ["user-a", "assistant-a"],
-	});
+	const historyIds = new Set(entry().history.messages.map((message) => message.id));
+	for (const message of entry().messages) {
+		assert.equal(historyIds.has(message.id), false, `${message.id} exists in both history and current`);
+	}
 	assert.deepEqual(
 		[...entry().messages.map((message) => message.id)],
 		["summary", "user-b", "assistant-b"],
@@ -166,7 +135,40 @@ test("首次 compaction 将退出的 current window 转存到 history 且不重�
 	}
 });
 
-test("方案 B 回归：compact 后立即收到新 assistant 消息，旧消息不会瞬间消失", () => {
+test("普通 preserveHistory full flush 不把非 compaction 消失项迁入 history", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const emit = (payload) =>
+		store.set(atoms.applySessionRuntimeEventAtom, {
+			sessionId: "session-1",
+			agentId: "agent-1",
+			runtimeGeneration: 1,
+			sourceChannel: "agents:message",
+			payload,
+		});
+	const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
+
+	emit({
+		agentId: "agent-1",
+		messages: [
+			{ id: "old", role: "user", text: "old question", timestamp: 1000 },
+			{ id: "kept", role: "assistant", text: "kept answer", timestamp: 2000 },
+		],
+	});
+	emit({
+		agentId: "agent-1",
+		preserveHistory: true,
+		stickyHistory: false,
+		messages: [
+			{ id: "kept", role: "assistant", text: "kept answer", timestamp: 2000 },
+		],
+	});
+
+	assert.equal(entry().history, undefined);
+	assert.equal(entry().messages.find((message) => message.id === "old")?.meta?.slidingOut, true);
+});
+
+test("compaction 后立即收到新 assistant 消息时旧消息只保留在 history", () => {
 	const atoms = loadAtoms();
 	const store = createStore();
 	const emit = (payload) =>
@@ -198,12 +200,8 @@ test("方案 B 回归：compact 后立即收到新 assistant 消息，旧消息�
 		],
 	});
 
-	assert.deepEqual(
-		[...entry().messages.map((m) => m.id)],
-		["old1", "old2", "summary"],
-	);
-	assert.equal(entry().messages[0].meta?.slidingOut, true);
-	assert.equal(entry().messages[1].meta?.slidingOut, true);
+	assert.deepEqual([...entry().history.messages.map((m) => m.id)], ["old1", "old2"]);
+	assert.deepEqual([...entry().messages.map((m) => m.id)], ["summary"]);
 
 	// 紧接着新 assistant 消息到来（full flush）
 	emit({
@@ -216,13 +214,14 @@ test("方案 B 回归：compact 后立即收到新 assistant 消息，旧消息�
 		],
 	});
 
-	// 旧消息依然稳稳保留在 state 中进行退出动画
+	assert.deepEqual([...entry().history.messages.map((m) => m.id)], ["old1", "old2"]);
 	assert.deepEqual(
 		[...entry().messages.map((m) => m.id)],
-		["old1", "old2", "summary", "new-user", "new-assistant"],
+		["summary", "new-user", "new-assistant"],
 	);
-	assert.equal(entry().messages[0].meta?.slidingOut, true);
-	assert.equal(entry().messages[1].meta?.slidingOut, true);
+	for (const message of entry().history.messages) {
+		assert.notEqual(message.meta?.slidingOut, true);
+	}
 });
 
 test("方案 B 回归：如果 message ID 重新出现在 canonical 中，应取消 sliding-out 状态避免双份", () => {
@@ -338,26 +337,7 @@ test("方案 B 回归：compaction 包含幸存保留消息时，canonical 相�
 		],
 	});
 
-	// 验证合并结果：[old1(sliding), old2(sliding), summary, keep1, keep2]
-	const merged = entry().messages;
-	assert.equal(merged.length, 5);
-	assert.deepEqual(
-		[...merged.map((m) => m.id)],
-		["old1", "old2", "summary", "keep1", "keep2"],
-	);
-	assert.equal(merged[0].meta?.slidingOut, true);
-	assert.equal(merged[1].meta?.slidingOut, true);
-	assert.equal(merged[2].meta?.slidingOut, undefined);
-	assert.equal(merged[3].meta?.slidingOut, undefined);
-	assert.equal(merged[4].meta?.slidingOut, undefined);
-
-	// 3. 动画结束后清理
-	store.set(atoms.removeSessionSlidingOutMessagesAtom, {
-		sessionId: "session-1",
-		messageIds: ["old1", "old2"],
-	});
-
-	// 最终必须完全等于 canonical 顺序：[summary, keep1, keep2]
+	assert.deepEqual([...entry().history.messages.map((m) => m.id)], ["old1", "old2"]);
 	assert.deepEqual(
 		[...entry().messages.map((m) => m.id)],
 		["summary", "keep1", "keep2"],

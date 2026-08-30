@@ -657,6 +657,14 @@ function isSummaryCard(message: ChatMessage): boolean {
     (message.meta?.type === "compaction" || message.meta?.type === "branchSummary");
 }
 
+/** History 是稳定展示状态，不能携带仅属于退出动画生命周期的标记。 */
+function normalizeHistoryMessage(message: ChatMessage): ChatMessage {
+  if (message.meta?.slidingOut !== true) return message;
+  const meta = { ...message.meta };
+  delete meta.slidingOut;
+  return { ...message, meta };
+}
+
 const COMPACTION_FINGERPRINT_TIME_TOLERANCE_MS = 5_000;
 
 /** 返回旧消息中被新投影覆盖的下标；精确身份优先，指纹按队列一一消耗。 */
@@ -924,7 +932,8 @@ function reconcileHistoryPrefix(
     (message, index) => !coveredPrefixIndexes.has(index) &&
       !(hasCurrentSummaryCard && isSummaryCard(message)),
   );
-  const messages = [...prefixMessages, ...slideMessages];
+  const historyMessages = [...prefixMessages, ...slideMessages];
+  const messages = historyMessages.map(normalizeHistoryMessage);
   if (messages.length === 0) return undefined;
   // 无滑出轮且前缀未被触碰：保留原对象引用，避免无谓的 atom 更新
   if (
@@ -932,7 +941,8 @@ function reconcileHistoryPrefix(
     !versionChanged &&
     !history?.sticky &&
     !stickyHistory &&
-    messages.length === (history?.messages.length ?? 0)
+    messages.length === (history?.messages.length ?? 0) &&
+    messages.every((message, index) => message === historyMessages[index])
   ) {
     return history;
   }
@@ -1684,7 +1694,9 @@ export const applySessionRuntimeEventAtom = atom(
             : undefined;
           // 压缩后的 canonical snapshot 只保留总结与当前窗口；把压缩前的运行期窗口
           // 作为 history candidates，reconcile 会剔除仍被新 segment 覆盖的消息。
-          const previousWindow = preserveHistory && current?.source === "runtime"
+          const previousWindow = preserveHistory &&
+            stickyHistory &&
+            current?.source === "runtime"
             ? current.messages
             : undefined;
           const combinedSlideOut = [
@@ -1698,10 +1710,13 @@ export const applySessionRuntimeEventAtom = atom(
             seenHistoryCandidates.add(key);
             return true;
           });
+          const promotedHistory = historyCandidates.length > 0
+            ? historyCandidates
+            : undefined;
           const mergedMessages = !bindingChanged &&
             current?.source === "runtime" &&
             (!current.agentId || current.agentId === event.agentId)
-            ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, slideOut)
+            ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, promotedHistory)
             : segment;
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
@@ -1714,7 +1729,7 @@ export const applySessionRuntimeEventAtom = atom(
               current?.history,
               segment,
               fileVersion,
-              historyCandidates.length > 0 ? historyCandidates : undefined,
+              promotedHistory,
               preserveHistory,
               stickyHistory,
               payloadWindowStartFilePos,
