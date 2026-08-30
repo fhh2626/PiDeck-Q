@@ -72,10 +72,40 @@ test("thinking_delta/end produces reasoning block with start/delta/end", () => {
 		type: "message_update",
 		assistantMessageEvent: { type: "thinking_end", content: "思考中" },
 	});
-	// thinking_end 带 content 但本次事件无 delta：先补一段 reasoning-delta 再收尾
-	assert.equal(end[0].type, "reasoning-delta");
-	assert.equal(end[0].delta, "思考中");
-	assert.equal(end[1].type, "reasoning-end");
+	// 已经发送过 reasoning delta，thinking_end 的完整 content 不能再次追加。
+	assert.equal(end.length, 1);
+	assert.equal(end[0].type, "reasoning-end");
+});
+
+test("thinking_end without previous delta backfills complete reasoning", () => {
+	const adapter = new PiEventToUiMessageStream();
+	const end = adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_end", content: "完整思考" },
+	});
+	assert.equal(end.length, 3);
+	assert.equal(end[0].type, "reasoning-start");
+	assert.equal(end[1].type, "reasoning-delta");
+	assert.equal(end[1].delta, "完整思考");
+	assert.equal(end[2].type, "reasoning-end");
+});
+
+test("done resets reasoning delta state before the next reasoning block", () => {
+	const adapter = new PiEventToUiMessageStream();
+	adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "第一段" },
+	});
+	adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "done" },
+	});
+	const next = adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_end", content: "第二段完整思考" },
+	});
+	assert.equal(next[1].type, "reasoning-delta");
+	assert.equal(next[1].delta, "第二段完整思考");
 });
 
 test("tool_execution_start/end produces tool-input-available and tool-output-available", () => {
@@ -185,6 +215,53 @@ test("WebEventStreamRouter closes the response after sending the done marker", (
 	});
 	assert.equal(received.at(-1), "data: [DONE]\n\n");
 	assert.equal(finished, 1);
+});
+
+test("WebEventStreamRouter resumes a session with a fresh subscription", () => {
+	let emitPiEvent;
+	const first = [];
+	const resumed = [];
+	const router = new WebEventStreamRouter(() => "session-1");
+	const closeFirst = router.add(
+		"session-1",
+		(wire) => { first.push(wire); return true; },
+		() => {},
+	);
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "before disconnect" },
+	});
+	closeFirst();
+	router.add(
+		"session-1",
+		(wire) => { resumed.push(wire); return true; },
+		() => {},
+	);
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "after reconnect" },
+	});
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "resumed text" },
+	});
+	emitPiEvent("agent-a", {
+		type: "tool_execution_start",
+		toolName: "read",
+		toolCallId: "resumed-tool",
+	});
+	emitPiEvent("agent-a", { type: "agent_settled" });
+
+	assert.match(first.join(""), /before disconnect/);
+	assert.doesNotMatch(first.join(""), /after reconnect/);
+	assert.match(resumed.join(""), /after reconnect/);
+	assert.match(resumed.join(""), /resumed text/);
+	assert.match(resumed.join(""), /resumed-tool/);
+	assert.equal(resumed.at(-1), SSE_DONE);
 });
 
 test("WebEventStreamRouter routes agent events to per-session entries only", () => {

@@ -40,6 +40,7 @@ export type PiEvent = {
 export class PiEventToUiMessageStream {
 	private textBlockId: string | null = null;
 	private reasoningBlockId: string | null = null;
+	private hasReasoningDelta = false;
 	private currentMessageId: string | null = null;
 	private readonly startedToolCallIds = new Set<string>();
 	private readonly finishedToolCallIds = new Set<string>();
@@ -142,18 +143,21 @@ export class PiEventToUiMessageStream {
 				: "";
 			if (!this.reasoningBlockId) {
 				this.reasoningBlockId = `reasoning_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+				this.hasReasoningDelta = false;
 				frames.push({ type: "reasoning-start", id: this.reasoningBlockId });
 			}
 			if (eventType === "thinking_delta" && delta) {
+				this.hasReasoningDelta = true;
 				frames.push({ type: "reasoning-delta", id: this.reasoningBlockId, delta });
 			}
 			if (eventType === "thinking_end") {
-				// 兜底：若 content 提供了完整文本而之前没有增量，补一段 delta，避免前端空白。
-				if (finalContent && !delta) {
+				// 仅在未收到任何流式增量时用完整 content 兜底；否则重复追加会让思考显示两遍。
+				if (!this.hasReasoningDelta && finalContent) {
 					frames.push({ type: "reasoning-delta", id: this.reasoningBlockId, delta: finalContent });
 				}
 				frames.push({ type: "reasoning-end", id: this.reasoningBlockId });
 				this.reasoningBlockId = null;
+				this.hasReasoningDelta = false;
 			}
 			return frames;
 		}
@@ -248,6 +252,7 @@ export class PiEventToUiMessageStream {
 		if (this.reasoningBlockId) {
 			frames.push({ type: "reasoning-end", id: this.reasoningBlockId });
 			this.reasoningBlockId = null;
+			this.hasReasoningDelta = false;
 		}
 		return frames;
 	}

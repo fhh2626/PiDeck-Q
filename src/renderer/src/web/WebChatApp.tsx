@@ -108,19 +108,39 @@ export function WebChatApp() {
 	const historyRequestSequenceRef = useRef<Record<string, number>>({});
 	const activeSessionIdRef = useRef<string>("");
 	const streamingRef = useRef(false);
+	// 同一条断线只启动一次恢复；重新收到实时帧后释放，允许后续独立断线再次恢复。
+	const recoveringStreamSessionRef = useRef<string | null>(null);
 	// 首页直发暂存：新建会话后等 useChat 实例切换完成，再投递首条消息
 	const pendingSendRef = useRef<{ sessionId: string; text: string } | null>(null);
 
-	// useChat：sessionId 作为 chat id；切会话时 id 变化重建 Chat 实例
-	const { messages, sendMessage, status, stop, setMessages, error } = useChat({
+	// useChat：sessionId 作为 chat id；发送仍走 POST /api/chat，断线恢复只订阅
+	// GET /api/sessions/:id/stream，避免重新提交 prompt。
+	const chatTransport = useMemo(() => new DefaultChatTransport({
+		api: "/api/chat",
+		prepareReconnectToStreamRequest: ({ id }) => ({
+			api: `/api/sessions/${encodeURIComponent(id)}/stream`,
+		}),
+	}), []);
+	const { messages, sendMessage, status, stop, setMessages, error, resumeStream } = useChat({
 		id: activeSessionId,
-		transport: new DefaultChatTransport({ api: "/api/chat" }),
+		transport: chatTransport,
 	});
 
 	const streaming = status === "submitted" || status === "streaming";
 
 	activeSessionIdRef.current = activeSessionId;
 	streamingRef.current = streaming;
+
+	useEffect(() => {
+		// 只有真正收到恢复流帧进入 streaming，才允许该会话下一次断线再触发恢复。
+		if (status === "streaming") recoveringStreamSessionRef.current = null;
+	}, [status]);
+
+	useEffect(() => {
+		if (recoveringStreamSessionRef.current !== activeSessionId) {
+			recoveringStreamSessionRef.current = null;
+		}
+	}, [activeSessionId]);
 
 	/** 将主进程运行时尾部快照合并回 Web 缓存，避免轮询覆盖正在显示的流。 */
 	const syncRuntimeMessages = useCallback((nextState: WebState, sessionId: string) => {
@@ -191,21 +211,40 @@ export function WebChatApp() {
 			});
 	}, [activeSessionId, bumpHistory, setMessages]);
 
-	// SSE 异常才回读权威历史。正常 finish+[DONE] 不是失败，不要把侧栏打成断开。
+	// SSE 异常先以权威快照建立新基线；runtime 仍在运行时只重订阅 session stream，
+	// 绝不重试 POST /api/chat，避免同一 prompt 被再次发送。
 	useEffect(() => {
 		if (!error || !activeSessionId) return;
 		const sessionId = activeSessionId;
+		if (recoveringStreamSessionRef.current === sessionId) return;
+		recoveringStreamSessionRef.current = sessionId;
 		const requestSequence = (historyRequestSequenceRef.current[sessionId] ?? 0) + 1;
 		historyRequestSequenceRef.current[sessionId] = requestSequence;
-		void fetchMessagePage(sessionId)
-			.then((page) => {
+		void (async () => {
+			try {
+				const nextState = await fetchState();
 				if (
 					historyRequestSequenceRef.current[sessionId] !== requestSequence ||
 					activeSessionIdRef.current !== sessionId
 				) return;
-				const authoritative = chatMessagesToUiMessages(page.messages);
-				// Recovery only fetches the authoritative tail page. Merge it into the
-				// cached transcript so a stream error cannot discard older loaded pages.
+				setState(nextState);
+				syncRuntimeMessages(nextState, sessionId);
+				const runtimeStillRunning = nextState.runtimes.some(
+					(runtime) => runtime.sessionId === sessionId && runtime.status === "running",
+				);
+
+				const page = await fetchMessagePage(sessionId);
+				if (
+					historyRequestSequenceRef.current[sessionId] !== requestSequence ||
+					activeSessionIdRef.current !== sessionId
+				) return;
+				const history = chatMessagesToUiMessages(page.messages);
+				const runtimeSnapshot = chatMessagesToUiMessages(
+					nextState.messagesBySession[sessionId] ?? [],
+				);
+				// 历史页可能尚未落盘当前 reasoning；把同一次 state 请求拿到的 runtime
+				// 快照叠到历史尾部，形成 reconnect 前的完整 authoritative 基线。
+				const authoritative = mergeAuthoritativeUiMessages(history, runtimeSnapshot);
 				const merged = mergeAuthoritativeUiMessages(
 					messagesBySessionRef.current[sessionId] ?? [],
 					authoritative,
@@ -221,13 +260,23 @@ export function WebChatApp() {
 				};
 				loadedSessionsRef.current.add(sessionId);
 				bumpHistory();
-				if (!streamingRef.current) setMessages(merged);
+				setMessages(merged);
+
+				if (runtimeStillRunning) {
+					setCommandError(null);
+					await resumeStream();
+					return;
+				}
+				recoveringStreamSessionRef.current = null;
 				setCommandError(t("web.streamFailed"));
-			})
-			.catch(() => {
-				if (activeSessionIdRef.current === sessionId) setCommandError(t("web.historyLoadFailed"));
-			});
-	}, [activeSessionId, bumpHistory, error, setMessages]);
+			} catch {
+				if (activeSessionIdRef.current === sessionId) {
+					recoveringStreamSessionRef.current = null;
+					setCommandError(t("web.historyLoadFailed"));
+				}
+			}
+		})();
+	}, [activeSessionId, bumpHistory, error, resumeStream, setMessages, syncRuntimeMessages]);
 
 	// 轮询拿到的运行时快照也要在切换会话/流结束后立即回放，
 	// 否则 Web 只显示自己发出的 SSE，PC 端新增的消息永远要等重新打开页面才出现。
