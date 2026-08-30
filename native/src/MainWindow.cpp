@@ -402,6 +402,16 @@ void MainWindow::showLoadError(const QString &url, const QString &error)
     }
 }
 
+void MainWindow::syncStateToHost()
+{
+    // A restarted Node sidecar has empty state caches, while the existing Qt
+    // window may not emit show/state-change events again until user interaction.
+    emitVisible(isVisible());
+    emitMaximizedState();
+    emitMinimizedState();
+    emitFullScreenState();
+}
+
 void MainWindow::toggleDevTools()
 {
     // QWebView intentionally has no private devtools API. On WebView2 the public

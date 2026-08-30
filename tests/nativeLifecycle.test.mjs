@@ -37,7 +37,11 @@ test("Qt supervisor restarts one unexpected sidecar exit and reloads the existin
 	);
 	assert.match(
 		mainSource,
-		/if \(name == QStringLiteral\("renderer\.ready"\)\)[\s\S]*?mainWindow->load\(pageUrl\);[\s\S]*?sidecarRestartAttempted = false;/,
+		/if \(name == QStringLiteral\("renderer\.ready"\)\)[\s\S]*?mainWindow->load\(pageUrl\);[\s\S]*?mainWindow->syncStateToHost\(\);[\s\S]*?sidecarRestartAttempted = false;/,
+	);
+	assert.match(
+		mainSource,
+		/registerHandler\(QStringLiteral\("application\.quit"\), \[&requestQuit\][\s\S]*?requestQuit\(\);/,
 	);
 	assert.doesNotMatch(mainSource, /if \(mainWindow\) return;/);
 });

@@ -310,7 +310,11 @@ async function main(): Promise<void> {
 			void host.request("window.reload").catch(() => undefined);
 			return;
 		}
-		if (payload?.action === "exit") void stop(true).then(() => process.exit(1));
+		if (payload?.action === "exit") {
+			// Qt owns application shutdown. Going through its quit handler marks the
+			// sidecar exit as intentional before prepareQuit asks us to clean up.
+			void host.request("application.quit").catch(() => undefined);
+		}
 	});
 	host.on("window.closed", () => nativeHost?.markWindowDestroyed());
 	host.on<boolean>("window.visibleChanged", (visible) => {

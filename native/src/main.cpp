@@ -512,6 +512,7 @@ int main(int argc, char **argv)
             // reuses the existing surface and preserves its current visibility.
             if (creatingWindow) mainWindow->show();
             mainWindow->load(pageUrl);
+            mainWindow->syncStateToHost();
             sidecarRestartAttempted = false;
             return;
         }

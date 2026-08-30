@@ -44,6 +44,8 @@ public:
     bool beginSystemResize(Qt::Edges edges);
     void toggleDevTools();
     void showLoadError(const QString &url, const QString &error);
+    /** Re-publish Qt window state after a replacement sidecar connects. */
+    void syncStateToHost();
 
 protected:
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;

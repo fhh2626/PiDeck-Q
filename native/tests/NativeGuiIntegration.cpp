@@ -354,6 +354,33 @@ int main(int argc, char **argv)
     if (!require(reloadStateWindow.isMinimized(),
                  "renderer reload restored a minimized window")) return 1;
 
+    // A replacement sidecar subscribes after the existing window's original
+    // show/state events, so it needs an explicit state snapshot.
+    processGuiEvents();
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
+    const bool expectedVisible = reloadStateWindow.isVisible();
+    const bool expectedMaximized = reloadStateWindow.isMaximized();
+    const bool expectedMinimized = reloadStateWindow.isMinimized();
+    const bool expectedFullScreen = reloadStateWindow.isFullScreen();
+    reloadStateWindow.syncStateToHost();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedVisible](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.visibleChanged")
+                && frame.value(QStringLiteral("payload")).toBool() == expectedVisible;
+        }), "window state sync did not report visibility")) return 1;
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedMaximized](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.maximizedChanged")
+                && frame.value(QStringLiteral("payload")).toBool() == expectedMaximized;
+        }), "window state sync did not report maximized state")) return 1;
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedMinimized](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.minimizedChanged")
+                && frame.value(QStringLiteral("payload")).toBool() == expectedMinimized;
+        }), "window state sync did not report minimized state")) return 1;
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedFullScreen](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.fullscreenChanged")
+                && frame.value(QStringLiteral("payload")).toBool() == expectedFullScreen;
+        }), "window state sync did not report fullscreen state")) return 1;
+
     // Browser refresh shortcuts must not reload the sanitized URL that the
     // renderer keeps visible after bootstrap. Locate this window's QWebView by
     // its unique requested URL and exercise the same key events WebView2 sees.

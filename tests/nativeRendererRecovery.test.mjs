@@ -171,6 +171,15 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 		assert.ok(reloadRequest);
 		assert.match(reloadRequest.params.url, /:43002\/\?runtime=native&token=recovery-test-token/);
 
+		const loadErrorAction = fakeHost.listeners.get("window.loadErrorAction");
+		assert.equal(typeof loadErrorAction, "function");
+		loadErrorAction({ action: "exit" });
+		assert.equal(
+			fakeHost.requests.filter((request) => request.method === "application.quit").length,
+			1,
+			"load-error Exit must ask Qt to own shutdown instead of looking like a sidecar crash",
+		);
+
 		const originalExit = process.exit;
 		let fatalExitCode;
 		try {
