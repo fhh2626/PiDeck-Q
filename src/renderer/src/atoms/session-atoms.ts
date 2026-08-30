@@ -1682,18 +1682,22 @@ export const applySessionRuntimeEventAtom = atom(
           const slideOut = Array.isArray(payload.slideOut)
             ? (payload.slideOut as ChatMessage[])
             : undefined;
-          // restart / 重开同一会话时，主进程已经丢掉旧 agent 的窗口段。
-          // 仅在 bindingChanged 且显式 preserveHistory 时，把旧窗口并入 history 前缀。
-          const previousWindow = bindingChanged &&
-            preserveHistory &&
-            stickyHistory &&
-            (!slideOut || slideOut.length === 0) &&
-            current?.source === "runtime"
+          // 压缩后的 canonical snapshot 只保留总结与当前窗口；把压缩前的运行期窗口
+          // 作为 history candidates，reconcile 会剔除仍被新 segment 覆盖的消息。
+          const previousWindow = preserveHistory && current?.source === "runtime"
             ? current.messages
             : undefined;
-          const combinedSlideOut = previousWindow && previousWindow.length > 0
-            ? previousWindow
-            : slideOut;
+          const combinedSlideOut = [
+            ...(previousWindow ?? []),
+            ...(slideOut ?? []),
+          ];
+          const seenHistoryCandidates = new Set<string>();
+          const historyCandidates = combinedSlideOut.filter((message) => {
+            const key = messageEntryKey(message);
+            if (seenHistoryCandidates.has(key)) return false;
+            seenHistoryCandidates.add(key);
+            return true;
+          });
           const mergedMessages = !bindingChanged &&
             current?.source === "runtime" &&
             (!current.agentId || current.agentId === event.agentId)
@@ -1710,7 +1714,7 @@ export const applySessionRuntimeEventAtom = atom(
               current?.history,
               segment,
               fileVersion,
-              combinedSlideOut,
+              historyCandidates.length > 0 ? historyCandidates : undefined,
               preserveHistory,
               stickyHistory,
               payloadWindowStartFilePos,

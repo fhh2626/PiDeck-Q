@@ -102,6 +102,70 @@ test("方案 B 回归：[old1, old2, old3] -> compaction -> [summary, new1] 保�
 	);
 });
 
+test("首次 compaction 将退出的 current window 转存到 history 且不重复保留项", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const emit = (payload) =>
+		store.set(atoms.applySessionRuntimeEventAtom, {
+			sessionId: "session-1",
+			agentId: "agent-1",
+			runtimeGeneration: 1,
+			sourceChannel: "agents:message",
+			payload,
+		});
+	const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
+
+	emit({
+		agentId: "agent-1",
+		fileVersion: "old-version",
+		messages: [
+			{ id: "user-a", role: "user", text: "question A", timestamp: 1000 },
+			{ id: "assistant-a", role: "assistant", text: "answer A", timestamp: 2000 },
+			{ id: "user-b", role: "user", text: "question B", timestamp: 3000 },
+			{ id: "assistant-b", role: "assistant", text: "answer B", timestamp: 4000 },
+		],
+	});
+	assert.equal(entry().history, undefined);
+
+	emit({
+		agentId: "agent-1",
+		fileVersion: "new-version",
+		preserveHistory: true,
+		messages: [
+			{ id: "summary", role: "system", text: "compacted", timestamp: 5000, meta: { type: "compaction" } },
+			{ id: "user-b", role: "user", text: "question B", timestamp: 3000 },
+			{ id: "assistant-b", role: "assistant", text: "answer B", timestamp: 4000 },
+		],
+	});
+
+	assert.deepEqual(
+		[...entry().history.messages.map((message) => message.id)],
+		["user-a", "assistant-a"],
+	);
+	store.set(atoms.removeSessionSlidingOutMessagesAtom, {
+		sessionId: "session-1",
+		messageIds: ["user-a", "assistant-a"],
+	});
+	assert.deepEqual(
+		[...entry().messages.map((message) => message.id)],
+		["summary", "user-b", "assistant-b"],
+	);
+	assert.deepEqual(
+		[
+			...entry().history.messages.map((message) => message.id),
+			...entry().messages.map((message) => message.id),
+		],
+		["user-a", "assistant-a", "summary", "user-b", "assistant-b"],
+	);
+	for (const retainedId of ["user-b", "assistant-b"]) {
+		const occurrences = [
+			...entry().history.messages,
+			...entry().messages,
+		].filter((message) => message.id === retainedId).length;
+		assert.equal(occurrences, 1, `${retainedId} must not exist in both history and current`);
+	}
+});
+
 test("方案 B 回归：compact 后立即收到新 assistant 消息，旧消息不会瞬间消失", () => {
 	const atoms = loadAtoms();
 	const store = createStore();
