@@ -33,7 +33,6 @@ import type {
 import { serializeWebClientDictionaries, webEnUS } from "./WebI18n";
 import {
 	WebEventStreamRouter,
-	serializeSseFrame,
 	type PiEvent,
 } from "./WebEventStream";
 import { getAppLogger } from "../logging/sharedLogger";
@@ -52,7 +51,9 @@ type WebServiceDependencies = {
 	 */
 	devRendererUrl?: string;
 	/** 订阅主进程内部的 pi agent 事件流（agentId, event），返回退订函数。 */
-	subscribePiEvents: (handler: (agentId: string, event: PiEvent) => void) => () => void;
+	subscribePiEvents: (
+		handler: (agentId: string, event: PiEvent, streamGeneration?: number) => void,
+	) => () => void;
 	/** agentId → sessionId 路由，用于把 pi 事件导向对应 session 的 SSE 连接。 */
 	getSessionIdForAgent: (agentId: string) => string | undefined;
 	listProjects: () => Project[];
@@ -514,7 +515,7 @@ export class WebServiceManager {
 			const streamMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/stream$/);
 			if (streamMatch && request.method === "GET") {
 				const sessionId = decodeURIComponent(streamMatch[1]);
-				this.handleStream(sessionId, request, response);
+				this.handleStream(sessionId, request, response, { finishIfIdle: true });
 				return;
 			}
 
@@ -560,13 +561,11 @@ export class WebServiceManager {
 					error: error instanceof Error ? error.message : String(error),
 				}));
 				if (!result.accepted) {
-					// 预检拒绝：向已建立的流写入 error + finish + [DONE]，
-					// 前端 useChat 会进入 error 状态并可重试。
-					// 无法直接访问 router 的 entry，走响应流写协议帧。
+					// 预检拒绝也走 run 级收尾，避免只关闭 HTTP body 后留下无终止事件的 translator。
 					const errText = typeof result.error === "string"
 						? result.error
 						: "Prompt was rejected";
-					this.writeStreamError(response, errText);
+					this.eventStreamRouter.finishSession(sessionId, errText);
 					return;
 				}
 				return;
@@ -1408,6 +1407,7 @@ export class WebServiceManager {
 		sessionId: string,
 		request: IncomingMessage,
 		response: ServerResponse,
+		options: { finishIfIdle?: boolean } = {},
 	): void {
 		// 写入 SSE 响应头；AI SDK 前端（useChat）靠 x-vercel-ai-ui-message-stream: v1 识别协议。
 		response.writeHead(200, {
@@ -1475,20 +1475,15 @@ export class WebServiceManager {
 			response.removeListener("close", onClientClose);
 			request.removeListener("close", onClientClose);
 		});
-	}
 
-	/**
-	 * 向已打开的 SSE 响应写入 AI SDK 错误帧 + finish + [DONE]。
-	 * 用于 prompt 预检被拒时（useChat 收到 error 帧进入 error 状态）。
-	 */
-	private writeStreamError(response: ServerResponse, errorText: string): void {
-		if (response.writableEnded || response.destroyed) return;
-		try {
-			response.write(serializeSseFrame({ type: "error", errorText }));
-			response.write(serializeSseFrame({ type: "finish" }));
-			response.end("data: [DONE]\n\n");
-		} catch {
-			// 连接已失效则忽略
+		// 必须先注册 subscriber，再同步检查 runtime：settled 在检查前则看到 idle 并立即收尾，
+		// 检查后到达则由已注册 subscriber 收到。这里不能 await，避免再次打开竞态窗口。
+		// POST /api/chat 不做该检查，因为 prompt 发出前 runtime 合法地仍是 idle。
+		if (options.finishIfIdle) {
+			const runtimeRunning = this.deps.listSessionRuntimes().some(
+				(runtime) => runtime.sessionId === sessionId && runtime.status === "running",
+			);
+			if (!runtimeRunning) this.eventStreamRouter.finishSession(sessionId);
 		}
 	}
 

@@ -585,7 +585,8 @@ test("web responses strip desktop diagnostics and raw prompt errors recursively"
 test("SSE /stream endpoint forwards pi agent events as AI SDK UI message frames", async () => {
 	// 捕获 subscribe 的 handler，模拟主进程 pi 事件派发
 	let emitPiEvent = null;
-	await withServer(async ({ baseUrl }) => {
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "running";
 		const controller = new AbortController();
 		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
 			signal: controller.signal,
@@ -646,6 +647,18 @@ test("SSE /stream endpoint forwards pi agent events as AI SDK UI message frames"
 			emitPiEvent = handler;
 			return () => { emitPiEvent = null; };
 		},
+	});
+});
+
+test("SSE reconnect finishes immediately when the runtime settled before subscribe", async () => {
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "idle";
+		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
+			headers: { accept: "text/event-stream" },
+		});
+		const wire = await response.text();
+		assert.match(wire, /data: \{"type":"finish"\}/);
+		assert.match(wire, /data: \[DONE\]/);
 	});
 });
 
@@ -727,6 +740,26 @@ test("web service dev mode falls back to the legacy page when dev server is down
 		assert.match(await page.text(), /PiDeck(-Q)? Web Service/);
 	}, { devRendererUrl: "http://127.0.0.1:1" });
 });
+test("POST /api/chat closes the run-level stream when prompt validation rejects", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const response = await fetch(baseUrl + "/api/chat", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				id: "session-1",
+				messages: [{ role: "user", content: "rejected prompt" }],
+			}),
+		});
+		const wire = await response.text();
+		assert.match(wire, /"type":"error"/);
+		assert.match(wire, /rejected by test/);
+		assert.match(wire, /"type":"finish"/);
+		assert.match(wire, /data: \[DONE\]/);
+	}, {
+		sendSessionPrompt: async () => ({ accepted: false, error: "rejected by test" }),
+	});
+});
+
 test("POST /api/chat uses a unique requestId instead of the session id", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
 		const postChat = async (text, expectedCount) => {

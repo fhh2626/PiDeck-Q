@@ -271,7 +271,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		devRendererUrl: runtime?.devRendererUrl,
 		// 订阅 pi agent 事件流，供 Web SSE 端点转发给浏览器。
 		subscribePiEvents: (handler) => agentManager.addLocalEventListener(
-			(agentId, event) => handler(agentId, event as never),
+			(agentId, event, streamGeneration) => handler(agentId, event as never, streamGeneration),
 		),
 		// agentId → sessionId 路由：pi 事件只有 agentId，SSE 连接按 session 订阅。
 		getSessionIdForAgent: (agentId) => sessionRuntimeCoordinator.getSessionId(agentId),

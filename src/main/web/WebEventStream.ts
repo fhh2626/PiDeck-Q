@@ -17,8 +17,21 @@ export type UiMessageStreamFrame = Record<string, unknown>;
 /** 事件来源 agentId → 目标 sessionId 的路由函数，由装配方注入。 */
 export type AgentToSessionRouter = (agentId: string) => string | undefined;
 
+/** 主进程 pi 事件订阅器；streamGeneration 区分同一 runtime 上连续的 run。 */
+export type PiEventSubscriber = (
+	handler: (agentId: string, event: PiEvent, streamGeneration?: number) => void,
+) => () => void;
+
 /** SSE 帧写出函数；返回 false 表示连接已失效（对方已断开）。 */
 export type SseWriter = (frame: UiMessageStreamFrame) => boolean;
+
+const RUN_OPENING_EVENT_TYPES = new Set([
+	"agent_start",
+	"message_start",
+	"message_update",
+	"tool_execution_start",
+	"tool_execution_end",
+]);
 
 /** 单个 pi 事件（与 AgentManager.handlePiEvent 收到的结构一致）。 */
 export type PiEvent = {
@@ -289,113 +302,175 @@ export function serializeSseFrame(frame: UiMessageStreamFrame): string {
 /** [DONE] 终止标记。 */
 export const SSE_DONE = "data: [DONE]\n\n";
 
-/**
- * 每个 session 一条活跃流的连接状态。
- * 持有翻译器 + 写出函数，连接关闭后标记 dead 并停止写出。
- */
+/** 单条 SSE socket；翻译状态不属于 socket，断线只移除这个 subscriber。 */
 export type SessionStreamEntry = {
-	sessionId: string;
-	adapter: PiEventToUiMessageStream;
-	/** 写出原始 wire 文本（含 data: 前缀）；返回是否成功。 */
 	writeRaw: (wire: string) => boolean;
 	closed: boolean;
+	/** 每条 socket 的 AI SDK parser 都有独立 active-part 表。 */
+	openTextIds: Set<string>;
+	openReasoningIds: Set<string>;
+	onClose: () => void;
 	onFinish?: () => void;
 };
 
+/** 一轮 session stream 的持续状态，可在没有 socket 时继续消费 pi 事件。 */
+type SessionRunStream = {
+	adapter: PiEventToUiMessageStream;
+	streamGeneration?: number;
+	subscribers: Set<SessionStreamEntry>;
+};
+
 /**
- * WebEventStreamRouter — 管理「sessionId → SSE 连接」并接收全量 pi 事件按 agentId 路由。
- * 用法：
- *   1. subscribe 时创建 entry，写响应头并注册到 sessionStreams
- *   2. 全局只订阅一次 pi 事件源，事件到达后按 agentId→sessionId 路由到对应 entry
- *   3. 连接断开（response close）时 remove，最后一个连接断开时取消全局订阅
+ * WebEventStreamRouter — translator 属于 session/run，socket 只是可随时 attach/detach 的 subscriber。
+ * 因此网络重连不会丢失 reasoning、message step 与 tool call 游标。
  */
 export class WebEventStreamRouter {
-	private readonly sessionStreams = new Map<string, Set<SessionStreamEntry>>();
+	private readonly sessionRuns = new Map<string, SessionRunStream>();
 	private unsubscribePi: (() => void) | null = null;
 
 	constructor(private readonly resolveSession: AgentToSessionRouter) {}
 
-	/** 注册一个 session 的 SSE 连接。返回关闭函数。 */
+	/** 注册一个 session 的 SSE socket；返回只 detach 当前 subscriber 的关闭函数。 */
 	add(
 		sessionId: string,
 		writeRaw: (wire: string) => boolean,
 		onClose: () => void,
 		onFinish?: () => void,
 	): () => void {
+		const run = this.getOrCreateRun(sessionId);
 		const entry: SessionStreamEntry = {
-			sessionId,
-			adapter: new PiEventToUiMessageStream(),
 			writeRaw,
 			closed: false,
+			openTextIds: new Set(),
+			openReasoningIds: new Set(),
+			onClose,
 			onFinish,
 		};
-		let set = this.sessionStreams.get(sessionId);
-		if (!set) {
-			set = new Set();
-			this.sessionStreams.set(sessionId, set);
-		}
-		set.add(entry);
+		run.subscribers.add(entry);
+		return () => this.closeEntry(run, entry);
+	}
 
-		const close = () => {
-			if (entry.closed) return;
-			entry.closed = true;
-			set?.delete(entry);
-			if (set && set.size === 0) this.sessionStreams.delete(sessionId);
-			onClose();
-		};
-		return close;
+	/** runtime 已非 running 时同步结束该 session，覆盖 settled 发生在重订阅之前的竞态。 */
+	finishSession(sessionId: string, error?: unknown): void {
+		const run = this.sessionRuns.get(sessionId);
+		if (!run) return;
+		const frames = error === undefined
+			? run.adapter.finish()
+			: run.adapter.push({ type: "agent_end", error });
+		this.broadcast(run, frames);
+		this.sessionRuns.delete(sessionId);
 	}
 
 	/** 供后端绑定：从 pi 事件源订阅全量事件（应只订阅一次）。 */
-	bindPiSource(subscribe: ((handler: (agentId: string, event: PiEvent) => void) => () => void) | undefined): void {
+	bindPiSource(subscribe: PiEventSubscriber | undefined): void {
 		this.unsubscribePi?.();
 		if (!subscribe) {
-			// 装配方未提供订阅器（例如测试/受限环境）：不订阅也不抛错，路由器保持空闲。
 			this.unsubscribePi = null;
 			return;
 		}
-		this.unsubscribePi = subscribe((agentId, event) => this.onPiEvent(agentId, event));
+		this.unsubscribePi = subscribe(
+			(agentId, event, streamGeneration) => this.onPiEvent(agentId, event, streamGeneration),
+		);
 	}
 
 	/** 解绑 pi 事件源（服务停止时调用）。 */
 	unbindPiSource(): void {
 		this.unsubscribePi?.();
 		this.unsubscribePi = null;
+		this.sessionRuns.clear();
 	}
 
-	private onPiEvent(agentId: string, event: PiEvent): void {
+	private getOrCreateRun(sessionId: string): SessionRunStream {
+		let run = this.sessionRuns.get(sessionId);
+		if (!run) {
+			run = { adapter: new PiEventToUiMessageStream(), subscribers: new Set() };
+			this.sessionRuns.set(sessionId, run);
+		}
+		return run;
+	}
+
+	private onPiEvent(agentId: string, event: PiEvent, streamGeneration?: number): void {
 		const sessionId = this.resolveSession(agentId);
 		if (!sessionId) return;
-		const set = this.sessionStreams.get(sessionId);
-		if (!set || set.size === 0) return;
+		let run = this.sessionRuns.get(sessionId);
+		if (!run) {
+			// 非 run 事件不应仅因 Web 服务全局监听而创建长期状态。
+			if (!event.type || !RUN_OPENING_EVENT_TYPES.has(event.type)) return;
+			run = this.getOrCreateRun(sessionId);
+		}
 
-		for (const entry of set) {
-			if (entry.closed) continue;
-			const frames = entry.adapter.push(event);
-			for (const frame of frames) {
-				if (!entry.writeRaw(serializeSseFrame(frame))) {
-					// 写出失败（对方断开）：立即标记关闭，避免持续写已失效的 socket。
-					entry.closed = true;
-					set.delete(entry);
-					break;
-				}
-				// AI SDK 协议：finish 帧后必须跟 [DONE] 终止标记，前端据此关闭连接。
-				if (frame.type === "finish") {
-					if (!entry.writeRaw(SSE_DONE)) {
-						entry.closed = true;
-						set.delete(entry);
-						break;
-					}
-					// [DONE] 是协议终止标记，但 Node response 仍需显式 end，
-					// 否则 useChat 可能继续等待 HTTP body 关闭，界面会一直显示运行中。
-					entry.closed = true;
-					set.delete(entry);
-					entry.onFinish?.();
-					break;
-				}
+		// agent_start 的 generation 是 run 身份。新一轮替换 translator，但保留已经先建立的 socket；
+		// 旧 generation 的迟到 settled/delta 不得结束或污染新一轮。
+		if (streamGeneration !== undefined) {
+			if (run.streamGeneration === undefined) {
+				run.streamGeneration = streamGeneration;
+			} else if (run.streamGeneration !== streamGeneration) {
+				if (event.type !== "agent_start") return;
+				run = {
+					adapter: new PiEventToUiMessageStream(),
+					streamGeneration,
+					subscribers: run.subscribers,
+				};
+				this.sessionRuns.set(sessionId, run);
 			}
 		}
-		if (set.size === 0) this.sessionStreams.delete(sessionId);
+
+		const frames = run.adapter.push(event);
+		this.broadcast(run, frames);
+		if (run.adapter.isFinished()) this.sessionRuns.delete(sessionId);
+	}
+
+	private broadcast(run: SessionRunStream, frames: UiMessageStreamFrame[]): void {
+		for (const frame of frames) {
+			for (const entry of [...run.subscribers]) {
+				if (entry.closed) continue;
+				if (!this.writeFrame(entry, frame)) {
+					this.closeEntry(run, entry);
+					continue;
+				}
+				if (frame.type !== "finish") continue;
+				if (!entry.writeRaw(SSE_DONE)) {
+					this.closeEntry(run, entry);
+					continue;
+				}
+				entry.closed = true;
+				run.subscribers.delete(entry);
+				entry.onFinish?.();
+			}
+		}
+	}
+
+	/**
+	 * 将 run 级帧投影到单条 socket 的 parser 状态。
+	 * 重连后首帧若是 delta，先补 start；若只是 end，则 snapshot 已含完整 block，直接忽略，
+	 * 避免 AI SDK 因孤立 end 报错，也避免 start+end 生成一个空的重复 part。
+	 */
+	private writeFrame(entry: SessionStreamEntry, frame: UiMessageStreamFrame): boolean {
+		const type = frame.type;
+		const id = typeof frame.id === "string" ? frame.id : undefined;
+		if (type === "text-start" && id) entry.openTextIds.add(id);
+		if (type === "reasoning-start" && id) entry.openReasoningIds.add(id);
+		if (type === "text-delta" && id && !entry.openTextIds.has(id)) {
+			if (!entry.writeRaw(serializeSseFrame({ type: "text-start", id }))) return false;
+			entry.openTextIds.add(id);
+		}
+		if (type === "reasoning-delta" && id && !entry.openReasoningIds.has(id)) {
+			if (!entry.writeRaw(serializeSseFrame({ type: "reasoning-start", id }))) return false;
+			entry.openReasoningIds.add(id);
+		}
+		if (type === "text-end" && id && !entry.openTextIds.has(id)) return true;
+		if (type === "reasoning-end" && id && !entry.openReasoningIds.has(id)) return true;
+		if (!entry.writeRaw(serializeSseFrame(frame))) return false;
+		if (type === "text-end" && id) entry.openTextIds.delete(id);
+		if (type === "reasoning-end" && id) entry.openReasoningIds.delete(id);
+		return true;
+	}
+
+	private closeEntry(run: SessionRunStream, entry: SessionStreamEntry): void {
+		if (entry.closed) return;
+		entry.closed = true;
+		run.subscribers.delete(entry);
+		entry.onClose();
 	}
 }
 

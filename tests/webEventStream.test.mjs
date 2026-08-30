@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readUIMessageStream } from "ai";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 /**
@@ -217,7 +218,7 @@ test("WebEventStreamRouter closes the response after sending the done marker", (
 	assert.equal(finished, 1);
 });
 
-test("WebEventStreamRouter resumes a session with a fresh subscription", () => {
+test("WebEventStreamRouter keeps translator state across socket reconnects", () => {
 	let emitPiEvent;
 	const first = [];
 	const resumed = [];
@@ -231,6 +232,7 @@ test("WebEventStreamRouter resumes a session with a fresh subscription", () => {
 		emitPiEvent = handler;
 		return () => {};
 	});
+	emitPiEvent("agent-a", { type: "message_start", message: { role: "assistant", id: "m1" } });
 	emitPiEvent("agent-a", {
 		type: "message_update",
 		assistantMessageEvent: { type: "thinking_delta", delta: "before disconnect" },
@@ -241,27 +243,127 @@ test("WebEventStreamRouter resumes a session with a fresh subscription", () => {
 		(wire) => { resumed.push(wire); return true; },
 		() => {},
 	);
+	// attach 不重放 snapshot 已包含的 delta，也不预建一个空 reasoning part。
+	assert.deepEqual(resumed, []);
 	emitPiEvent("agent-a", {
 		type: "message_update",
-		assistantMessageEvent: { type: "thinking_delta", delta: "after reconnect" },
-	});
-	emitPiEvent("agent-a", {
-		type: "message_update",
-		assistantMessageEvent: { type: "text_delta", delta: "resumed text" },
+		assistantMessageEvent: { type: "thinking_end", content: "before disconnect" },
 	});
 	emitPiEvent("agent-a", {
 		type: "tool_execution_start",
 		toolName: "read",
 		toolCallId: "resumed-tool",
 	});
+	emitPiEvent("agent-a", { type: "message_start", message: { role: "assistant", id: "m2" } });
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "resumed text" },
+	});
 	emitPiEvent("agent-a", { type: "agent_settled" });
 
 	assert.match(first.join(""), /before disconnect/);
-	assert.doesNotMatch(first.join(""), /after reconnect/);
-	assert.match(resumed.join(""), /after reconnect/);
+	assert.doesNotMatch(resumed.join(""), /"delta":"before disconnect"/);
 	assert.match(resumed.join(""), /resumed text/);
 	assert.match(resumed.join(""), /resumed-tool/);
+	assert.match(resumed.join(""), /"type":"start-step"/);
+	assert.doesNotMatch(resumed.join(""), /"type":"start","messageId":"m2"/);
 	assert.equal(resumed.at(-1), SSE_DONE);
+});
+
+test("a resumed reasoning delta gets a socket-local start without replaying old content", () => {
+	let emitPiEvent;
+	const resumed = [];
+	const router = new WebEventStreamRouter(() => "session-1");
+	const closeFirst = router.add("session-1", () => true, () => {});
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "before" },
+	});
+	closeFirst();
+	router.add("session-1", (wire) => { resumed.push(wire); return true; }, () => {});
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "after" },
+	});
+	assert.match(resumed[0], /"type":"reasoning-start"/);
+	assert.match(resumed[1], /"type":"reasoning-delta"/);
+	assert.match(resumed[1], /"delta":"after"/);
+	assert.doesNotMatch(resumed.join(""), /before/);
+});
+
+test("snapshot plus resumed thinking_end does not duplicate reasoning in the AI SDK parser", async () => {
+	let emitPiEvent;
+	const router = new WebEventStreamRouter(() => "session-1");
+	const closeFirst = router.add("session-1", () => true, () => {});
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", { type: "message_start", message: { role: "assistant", id: "m1" } });
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_delta", delta: "abcdef" },
+	});
+	closeFirst();
+
+	const chunks = [];
+	router.add(
+		"session-1",
+		(wire) => {
+			if (wire !== SSE_DONE) chunks.push(JSON.parse(wire.slice(6)));
+			return true;
+		},
+		() => {},
+	);
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "thinking_end", content: "abcdef" },
+	});
+	emitPiEvent("agent-a", { type: "agent_settled" });
+
+	const parserErrors = [];
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(chunk);
+			controller.close();
+		},
+	});
+	const initial = { id: "m1", role: "assistant", parts: [{ type: "reasoning", text: "abcdef" }] };
+	let finalMessage = initial;
+	for await (const message of readUIMessageStream({
+		message: initial,
+		stream,
+		onError: (error) => parserErrors.push(error),
+	})) finalMessage = message;
+
+	assert.deepEqual(parserErrors, []);
+	const reasoningParts = finalMessage.parts.filter((part) => part.type === "reasoning");
+	assert.equal(reasoningParts.length, 1, "resume must not append an empty reasoning part");
+	assert.equal(reasoningParts[0].text, "abcdef");
+});
+
+test("WebEventStreamRouter rejects late events from an older run generation", () => {
+	let emitPiEvent;
+	const received = [];
+	const router = new WebEventStreamRouter(() => "session-1");
+	router.add("session-1", (wire) => { received.push(wire); return true; }, () => {});
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", { type: "agent_start" }, 1);
+	emitPiEvent("agent-a", { type: "agent_start" }, 2);
+	emitPiEvent("agent-a", { type: "agent_settled" }, 1);
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "new run" },
+	}, 2);
+	assert.doesNotMatch(received.join(""), /"type":"finish"/);
+	assert.match(received.join(""), /new run/);
 });
 
 test("WebEventStreamRouter routes agent events to per-session entries only", () => {
