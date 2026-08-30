@@ -198,6 +198,33 @@ int main(int argc, char **argv)
                  "normal window bounds exceeded the available screen")) return 1;
     oversized.show();
     processGuiEvents();
+#ifdef Q_OS_WIN
+    const HWND oversizedHwnd = reinterpret_cast<HWND>(oversized.winId());
+    if (!require(oversizedHwnd != nullptr,
+                 "frameless window HWND was unavailable")) return 1;
+    const HMONITOR oversizedMonitor = MonitorFromWindow(
+        oversizedHwnd,
+        MONITOR_DEFAULTTONEAREST);
+    MONITORINFO oversizedMonitorInfo{};
+    oversizedMonitorInfo.cbSize = sizeof(oversizedMonitorInfo);
+    if (!require(oversizedMonitor != nullptr
+                     && GetMonitorInfoW(oversizedMonitor, &oversizedMonitorInfo),
+                 "frameless window monitor work area was unavailable")) return 1;
+    MINMAXINFO oversizedMinMaxInfo{};
+    SendMessageW(
+        oversizedHwnd,
+        WM_GETMINMAXINFO,
+        0,
+        reinterpret_cast<LPARAM>(&oversizedMinMaxInfo));
+    const RECT &oversizedWork = oversizedMonitorInfo.rcWork;
+    const RECT &oversizedMonitorRect = oversizedMonitorInfo.rcMonitor;
+    if (!require(
+            oversizedMinMaxInfo.ptMaxPosition.x == oversizedWork.left - oversizedMonitorRect.left
+                && oversizedMinMaxInfo.ptMaxPosition.y == oversizedWork.top - oversizedMonitorRect.top
+                && oversizedMinMaxInfo.ptMaxSize.x == oversizedWork.right - oversizedWork.left
+                && oversizedMinMaxInfo.ptMaxSize.y == oversizedWork.bottom - oversizedWork.top,
+            "frameless maximize did not use the Windows monitor work area")) return 1;
+#endif
     oversized.showMaximized();
     processGuiEvents();
     oversized.showNormal();

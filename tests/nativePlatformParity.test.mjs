@@ -61,6 +61,42 @@ test("portable startup explains a missing WebView2 runtime", () => {
 	assert.match(mainSource, /showMissingWebView2Message/);
 });
 
+test("Windows frameless maximize uses the monitor work area and native caption move", () => {
+	const header = readFileSync("native/src/MainWindow.h", "utf8");
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	assert.match(header, /bool nativeEvent\(const QByteArray &eventType, void \*message, qintptr \*result\) override/);
+	const nativeEventStart = mainWindow.indexOf("bool MainWindow::nativeEvent(");
+	const nativeFilterStart = mainWindow.indexOf("bool MainWindow::nativeEventFilter(");
+	assert.ok(nativeEventStart >= 0 && nativeFilterStart > nativeEventStart);
+	const nativeEvent = mainWindow.slice(nativeEventStart, nativeFilterStart);
+	assert.match(nativeEvent, /WM_GETMINMAXINFO/);
+	assert.match(nativeEvent, /MonitorFromWindow/);
+	assert.match(nativeEvent, /MONITOR_DEFAULTTONEAREST/);
+	assert.match(nativeEvent, /GetMonitorInfoW/);
+	assert.match(nativeEvent, /rcWork/);
+	assert.match(nativeEvent, /rcMonitor/);
+	assert.match(nativeEvent, /ptMaxPosition/);
+	assert.match(nativeEvent, /ptMaxSize/);
+
+	const moveStart = mainWindow.indexOf("void MainWindow::beginSystemMove()");
+	const resizeStart = mainWindow.indexOf("bool MainWindow::beginSystemResize(");
+	assert.ok(moveStart >= 0 && resizeStart > moveStart);
+	const move = mainWindow.slice(moveStart, resizeStart);
+	assert.match(move, /if \(isMaximized\(\) \|\| isFullScreen\(\)\) return/);
+	assert.match(move, /ReleaseCapture\(\)/);
+	assert.match(move, /SendMessageW\(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0\)/);
+	assert.match(move, /#else[\s\S]*startSystemMove\(\)/);
+});
+
+test("window.unmaximize restores and clamps through MainWindow", () => {
+	const handlerStart = mainSource.indexOf('host.registerHandler(QStringLiteral("window.unmaximize")');
+	const nextHandler = mainSource.indexOf("host.registerHandler", handlerStart + 1);
+	assert.ok(handlerStart >= 0 && nextHandler > handlerStart);
+	const handler = mainSource.slice(handlerStart, nextHandler);
+	assert.match(handler, /mainWindow->restoreWindow\(\)/);
+	assert.doesNotMatch(handler, /mainWindow->showNormal\(\)/);
+});
+
 test("frameless native windows expose all renderer resize edges and Qt system resize", () => {
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");

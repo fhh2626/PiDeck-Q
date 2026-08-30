@@ -333,7 +333,7 @@ int main(int argc, char **argv)
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("window.unmaximize"), [&mainWindow](const QJsonObject &) {
-        if (mainWindow) mainWindow->showNormal();
+        if (mainWindow) mainWindow->restoreWindow();
         return QJsonValue(QJsonValue::Null);
     });
     host.registerHandler(QStringLiteral("window.toggleMaximize"), [&mainWindow](const QJsonObject &) {

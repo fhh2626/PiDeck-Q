@@ -46,6 +46,7 @@ public:
     void showLoadError(const QString &url, const QString &error);
 
 protected:
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;

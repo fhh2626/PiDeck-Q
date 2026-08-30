@@ -140,6 +140,36 @@ MainWindow::~MainWindow()
     }
 }
 
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    auto *nativeMessage = static_cast<MSG *>(message);
+    if (nativeMessage && nativeMessage->message == WM_GETMINMAXINFO) {
+        auto *minMaxInfo = reinterpret_cast<MINMAXINFO *>(nativeMessage->lParam);
+        const HMONITOR monitor = MonitorFromWindow(
+            nativeMessage->hwnd,
+            MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        if (minMaxInfo && monitor && GetMonitorInfoW(monitor, &monitorInfo)) {
+            const RECT &work = monitorInfo.rcWork;
+            const RECT &monitorRect = monitorInfo.rcMonitor;
+            minMaxInfo->ptMaxPosition.x = work.left - monitorRect.left;
+            minMaxInfo->ptMaxPosition.y = work.top - monitorRect.top;
+            minMaxInfo->ptMaxSize.x = work.right - work.left;
+            minMaxInfo->ptMaxSize.y = work.bottom - work.top;
+            if (result) *result = 0;
+            return true;
+        }
+    }
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+    Q_UNUSED(result);
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
 bool MainWindow::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result)
 {
 #ifdef Q_OS_WIN
@@ -322,7 +352,15 @@ void MainWindow::applySettings(const QJsonObject &settings)
 
 void MainWindow::beginSystemMove()
 {
+    if (isMaximized() || isFullScreen()) return;
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) return;
+    ReleaseCapture();
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+#else
     if (auto *handle = windowHandle()) handle->startSystemMove();
+#endif
 }
 
 bool MainWindow::beginSystemResize(Qt::Edges edges)
