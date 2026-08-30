@@ -101,6 +101,25 @@ test("HostBridge disconnects when a native host peer stops reading beyond the wr
 	}
 });
 
+test("HostBridge reports an unexpected disconnect after authentication as fatal", async () => {
+	const sockets = [];
+	let hostSocket;
+	const { server, port } = await listen((socket) => {
+		sockets.push(socket);
+		hostSocket = socket;
+		respondToHello(socket, "secret");
+	});
+	try {
+		const bridge = await HostBridge.connect(port, "secret");
+		const fatal = new Promise((resolve) => bridge.onFatal(resolve));
+		hostSocket.destroy();
+		const error = await fatal;
+		assert.match(error.message, /connection closed/i);
+	} finally {
+		await closeServer(server, sockets);
+	}
+});
+
 test("HostBridge flushes a queued readyToExit event before graceful close", async () => {
 	class FakeSocket extends EventEmitter {
 		writes = [];
@@ -122,6 +141,11 @@ test("HostBridge flushes a queued readyToExit event before graceful close", asyn
 	const bridge = new HostBridge("secret");
 	const socket = new FakeSocket();
 	bridge.socket = socket;
+	bridge.authenticated = true;
+	let fatalCount = 0;
+	bridge.onFatal(() => {
+		fatalCount += 1;
+	});
 	bridge.emit("test:before-close", { value: 1 });
 	bridge.emit("application.readyToExit", {});
 	const closing = bridge.closeGracefully();
@@ -131,6 +155,7 @@ test("HostBridge flushes a queued readyToExit event before graceful close", asyn
 	socket.emit("drain");
 	await closing;
 	assert.equal(socket.ended, true);
+	assert.equal(fatalCount, 0, "intentional graceful close must not be reported as fatal");
 	assert.equal(socket.writes.length, 2);
 	const readyPacket = JSON.parse(socket.writes[1].subarray(4).toString("utf8"));
 	assert.equal(readyPacket.type, "event");

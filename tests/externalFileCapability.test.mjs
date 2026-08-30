@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
@@ -63,4 +64,15 @@ test("drop capabilities return trusted paths once and never accept renderer path
 		() => store.consumeCopy(capabilityId),
 		(error) => error instanceof ExternalFileCapabilityError,
 	);
+});
+
+test("native file payloads and capabilities share the 128-path batch limit", () => {
+	const nativeLimits = readFileSync("native/src/NativeFilePathLimits.h", "utf8");
+	assert.match(nativeLimits, /kMaxFilePathCount = 128;/);
+
+	const store = new ExternalFileCapabilityStore();
+	const paths = Array.from({ length: 129 }, (_, index) => `C:\\outside\\${index}.txt`);
+	const capabilityId = store.issueDrop(paths);
+	assert.ok(capabilityId);
+	assert.deepEqual(Array.from(store.consumeCopy(capabilityId)), paths.slice(0, 128));
 });

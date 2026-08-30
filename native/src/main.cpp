@@ -252,6 +252,7 @@ int main(int argc, char **argv)
     bool quitting = false;
     bool restartRequested = false;
     bool quitRequested = false;
+    bool sidecarRestartAttempted = false;
     std::function<void()> requestQuit;
     requestQuit = [&] {
         if (quitRequested) return;
@@ -263,11 +264,26 @@ int main(int argc, char **argv)
         node.stopAsync([&] { app.quit(); });
     };
 
-    node.setNodeErrorHandler([&](const QString &) {
-        if (!quitting) requestQuit();
+    node.setNodeErrorHandler([](const QString &) {
+        // Runtime process failures are recovered from QProcess::finished below.
+        // Failed starts are handled synchronously by NodeProcessController::start().
     });
     node.setNodeExitHandler([&](int, QProcess::ExitStatus) {
-        if (!quitting) requestQuit();
+        if (quitting) return;
+        if (sidecarRestartAttempted) {
+            // A sidecar that cannot reach renderer.ready after one restart must
+            // not enter a tight crash loop. Fall back to a clean application exit.
+            requestQuit();
+            return;
+        }
+        sidecarRestartAttempted = true;
+        if (node.start()) return;
+
+        // start() already performed its emergency process cleanup, so there is
+        // no asynchronous sidecar work left to gate application shutdown on.
+        quitting = true;
+        if (mainWindow) mainWindow->setQuitting(true);
+        app.quit();
     });
 
     ClipboardController clipboard([&host](const QJsonObject &snapshot) {
@@ -466,35 +482,37 @@ int main(int argc, char **argv)
     host.setEventHandler([&](const QString &name, const QJsonValue &payload) {
         if (name == QStringLiteral("renderer.ready")) {
             const QJsonObject ready = payload.toObject();
-            if (mainWindow) return;
-            const QJsonObject startup = ready.value(QStringLiteral("startup")).toObject();
-            setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
-            mainWindow = new MainWindow(&host, startup);
-            mainWindow->setQuitHandler(requestQuit);
+            const bool creatingWindow = !mainWindow;
+            if (creatingWindow) {
+                const QJsonObject startup = ready.value(QStringLiteral("startup")).toObject();
+                setNativeThemeSource(startup.value(QStringLiteral("theme")).toString(QStringLiteral("system")));
+                mainWindow = new MainWindow(&host, startup);
+                mainWindow->setQuitHandler(requestQuit);
 #ifdef Q_OS_MACOS
-            installMacDockReopenHandler([&mainWindow] {
-                if (mainWindow && !mainWindow->isVisible()) mainWindow->showWindow();
-            });
+                installMacDockReopenHandler([&mainWindow] {
+                    if (mainWindow && !mainWindow->isVisible()) mainWindow->showWindow();
+                });
 #endif
-            mainWindow->setCloseHideAvailableHandler([&tray] {
+                mainWindow->setCloseHideAvailableHandler([&tray] {
 #ifdef Q_OS_MACOS
-                // The NSApplication reopen delegate restores a hidden window from the Dock.
-                return true;
+                    // The NSApplication reopen delegate restores a hidden window from the Dock.
+                    return true;
 #else
-                return tray && tray->isAvailableAndVisible();
+                    return tray && tray->isAvailableAndVisible();
 #endif
-            });
+                });
+            }
             const QUrl baseUrl(ready.value(QStringLiteral("url")).toString());
             QUrlQuery query;
             query.addQueryItem(QStringLiteral("runtime"), QStringLiteral("native"));
             query.addQueryItem(QStringLiteral("token"), ready.value(QStringLiteral("token")).toString());
             QUrl pageUrl = baseUrl;
             pageUrl.setQuery(query);
-            // The Qt web surface must have its QWindow host mapped before navigation;
-            // loading while the QMainWindow is hidden can complete the DOM load
-            // but leave the native browser surface invisible.
-            mainWindow->show();
+            // The first load needs a mapped QWindow host. A restarted sidecar
+            // reuses the existing surface and preserves its current visibility.
+            if (creatingWindow) mainWindow->show();
             mainWindow->load(pageUrl);
+            sidecarRestartAttempted = false;
             return;
         }
         if (name == QStringLiteral("application.readyToExit")) {

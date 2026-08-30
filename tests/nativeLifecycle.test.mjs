@@ -24,9 +24,22 @@ test("Qt handles sidecar lifecycle locally and uses the graceful ACK event", () 
 	assert.doesNotMatch(nodeController, /sendEvent\(QStringLiteral\("application\.node(?:Error|Exit)"/);
 	assert.match(nodeIndex, /application\.readyToExit/);
 	assert.match(nodeIndex, /closeGracefully/);
+	assert.match(nodeIndex, /host\.onFatal\(\(\) => process\.exit\(1\)\)/);
 	assert.match(nodeController, /m_readyToExit/);
 	assert.match(nodeController, /postAckExitTimeoutMs/);
 	assert.match(nodeController, /gracefulTimer/);
+});
+
+test("Qt supervisor restarts one unexpected sidecar exit and reloads the existing window", () => {
+	assert.match(
+		mainSource,
+		/node\.setNodeExitHandler\([\s\S]*?if \(quitting\) return;[\s\S]*?if \(sidecarRestartAttempted\)[\s\S]*?requestQuit\(\);[\s\S]*?sidecarRestartAttempted = true;[\s\S]*?node\.start\(\)/,
+	);
+	assert.match(
+		mainSource,
+		/if \(name == QStringLiteral\("renderer\.ready"\)\)[\s\S]*?mainWindow->load\(pageUrl\);[\s\S]*?sidecarRestartAttempted = false;/,
+	);
+	assert.doesNotMatch(mainSource, /if \(mainWindow\) return;/);
 });
 
 test("native dev mode explicitly isolates packaged state, user data and toast identity", () => {

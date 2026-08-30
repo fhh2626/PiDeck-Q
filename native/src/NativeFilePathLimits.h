@@ -6,7 +6,7 @@
 
 namespace NativeFilePathLimits {
 inline constexpr qsizetype kMaxFilePathUtf8Bytes = 4 * 1024 * 1024;
-inline constexpr int kMaxFilePathCount = 10'000;
+inline constexpr int kMaxFilePathCount = 128;
 
 /** Keeps native clipboard/drop path payloads below the host frame budget. */
 inline bool append(QStringList &paths, const QString &path, qsizetype &totalBytes)

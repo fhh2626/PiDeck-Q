@@ -47,7 +47,11 @@ export class HostBridge {
 	private pendingWriteBytes = 0;
 	private readonly pendingWrites: Buffer[] = [];
 	private readonly writeDrainWaiters = new Set<() => void>();
+	private readonly fatalListeners = new Set<(error: Error) => void>();
 	private closed = false;
+	private authenticated = false;
+	private closingIntentionally = false;
+	private fatalError: Error | null = null;
 
 	private readonly token: string;
 
@@ -102,6 +106,7 @@ export class HostBridge {
 				if (frame.type !== "hello") return false;
 				this.helloHandler = null;
 				if (frame.ok) {
+					this.authenticated = true;
 					this.settleHello();
 				} else {
 					const error = new Error(frame.error?.message ?? "Native host authentication failed");
@@ -268,12 +273,26 @@ export class HostBridge {
 		};
 	}
 
+	/** Notify the sidecar when an authenticated host connection is lost unexpectedly. */
+	onFatal(listener: (error: Error) => void): () => void {
+		if (this.fatalError) {
+			listener(this.fatalError);
+			return () => undefined;
+		}
+		this.fatalListeners.add(listener);
+		return () => {
+			this.fatalListeners.delete(listener);
+		};
+	}
+
 	close(): void {
+		this.closingIntentionally = true;
 		this.handleClose(new Error("Native host bridge disposed"));
 	}
 
 	/** Flush the lifecycle ACK and all custom queued packets before closing the TCP bridge. */
 	async closeGracefully(): Promise<void> {
+		this.closingIntentionally = true;
 		const socket = this.socket;
 		if (!socket || this.closed) return;
 		const startedAt = Date.now();
@@ -316,6 +335,7 @@ export class HostBridge {
 
 	private handleClose(error: Error): void {
 		if (this.closed) return;
+		const isFatal = this.authenticated && !this.closingIntentionally;
 		this.closed = true;
 		this.helloHandler = null;
 		this.settleHello(error);
@@ -329,5 +349,12 @@ export class HostBridge {
 		for (const pending of this.pending.values()) pending.reject(error);
 		this.pending.clear();
 		this.listeners.clear();
+		if (isFatal) {
+			// Preserve the failure for a listener registered just after connect()
+			// resolves, closing the small socket-close registration race.
+			this.fatalError = error;
+			for (const listener of [...this.fatalListeners]) listener(error);
+		}
+		this.fatalListeners.clear();
 	}
 }

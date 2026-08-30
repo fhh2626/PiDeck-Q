@@ -282,6 +282,10 @@ int main(int argc, char **argv)
     }
     if (!require(stopCallbacks == 2, "all asynchronous stop callbacks were not delivered")) return 1;
     if (!require(!processController.isRunning(), "stop callback fired before sidecar process exit")) return 1;
+    if (!require(processController.start(), "NodeProcessController failed to restart after process exit")) return 1;
+    if (!require(processController.isRunning(), "restarted NodeProcessController is not running")) return 1;
+    processController.stop();
+    if (!require(!processController.isRunning(), "restarted NodeProcessController did not stop")) return 1;
 
     FrameClient replacement(server.port());
     if (!require(replacement.connect(), "replacement client failed to connect")) return 1;

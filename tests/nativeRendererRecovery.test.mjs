@@ -52,6 +52,13 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 			return () => this.listeners.delete(name);
 		}
 
+		onFatal(listener) {
+			this.fatalListener = listener;
+			return () => {
+				this.fatalListener = undefined;
+			};
+		}
+
 		request(method, params) {
 			this.requests.push({ method, params });
 			return Promise.resolve(undefined);
@@ -163,6 +170,18 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 		const reloadRequest = fakeHost.requests.find((request) => request.method === "window.load");
 		assert.ok(reloadRequest);
 		assert.match(reloadRequest.params.url, /:43002\/\?runtime=native&token=recovery-test-token/);
+
+		const originalExit = process.exit;
+		let fatalExitCode;
+		try {
+			process.exit = (code) => {
+				fatalExitCode = code;
+			};
+			fakeHost.fatalListener(new Error("simulated host disconnect"));
+			assert.equal(fatalExitCode, 1);
+		} finally {
+			process.exit = originalExit;
+		}
 	} finally {
 		for (const [key, value] of previousEnvironment) {
 			if (value === undefined) delete process.env[key];
