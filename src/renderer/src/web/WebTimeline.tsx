@@ -30,6 +30,7 @@ import type {
 import { MarkdownStream } from "@/components/session/MarkdownStream";
 import { SingleLinePreview } from "@/components/session/SingleLinePreview";
 import { TimelineMarker } from "../components/session/TimelineMarker";
+import { mergeAdjacentWebMessageParts } from "./webMessageParts";
 
 /** 用户消息右对齐气泡（结构与桌面 UserBubble 一致，去掉操作栏/附件能力）。 */
 export const WebUserBubble = memo(function WebUserBubble(props: { message: UIMessage }) {
@@ -187,9 +188,13 @@ export const WebAssistantMessage = memo(function WebAssistantMessage(props: {
 	// 已完成的 ask_question：主进程投影把结果挂在 metadata（经 webApi 规范化）。
 	// 有结果时把第一个工具 part 替换成常驻问答卡，其余 part（reasoning/text）
 	// 保持原样——与桌面「ask 不再折叠进执行过程」一致。
+	const displayParts = useMemo(
+		() => mergeAdjacentWebMessageParts(message.parts),
+		[message.parts],
+	);
 	const askResult = getWebAskQuestionResult(message);
 	const firstToolIndex = askResult
-		? message.parts.findIndex(
+		? displayParts.findIndex(
 				(part) =>
 					part.type === "dynamic-tool" ||
 					(typeof part.type === "string" && part.type.startsWith("tool-")),
@@ -197,7 +202,7 @@ export const WebAssistantMessage = memo(function WebAssistantMessage(props: {
 		: -1;
 	return (
 		<div className="w-full min-w-0">
-			{message.parts.map((part, index) => {
+			{displayParts.map((part, index) => {
 				if (part.type === "reasoning") {
 					return <WebThinkingBlock key={index} text={part.text} running={isStreaming} />;
 				}
