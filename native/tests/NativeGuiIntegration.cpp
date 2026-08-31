@@ -355,7 +355,12 @@ int main(int argc, char **argv)
                  "renderer reload restored a minimized window")) return 1;
 
     // A replacement sidecar subscribes after the existing window's original
-    // show/state events, so it needs an explicit state snapshot.
+    // show/state events, so it needs an explicit state snapshot. Maximize after
+    // setting a known normal size to verify the restore bounds, not screen bounds.
+    reloadStateWindow.showNormal();
+    reloadStateWindow.resize(1'010, 710);
+    processGuiEvents();
+    reloadStateWindow.showMaximized();
     processGuiEvents();
     lifecycleBuffer.clear();
     lifecycleClient.readAll();
@@ -363,6 +368,7 @@ int main(int argc, char **argv)
     const bool expectedMaximized = reloadStateWindow.isMaximized();
     const bool expectedMinimized = reloadStateWindow.isMinimized();
     const bool expectedFullScreen = reloadStateWindow.isFullScreen();
+    const QRect expectedNormalBounds = reloadStateWindow.normalGeometry();
     reloadStateWindow.syncStateToHost();
     if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedVisible](const QJsonObject &frame) {
             return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.visibleChanged")
@@ -380,6 +386,14 @@ int main(int argc, char **argv)
             return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.fullscreenChanged")
                 && frame.value(QStringLiteral("payload")).toBool() == expectedFullScreen;
         }), "window state sync did not report fullscreen state")) return 1;
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedNormalBounds](const QJsonObject &frame) {
+            if (frame.value(QStringLiteral("name")).toString() != QStringLiteral("window.normalBoundsChanged")) {
+                return false;
+            }
+            const QJsonObject bounds = frame.value(QStringLiteral("payload")).toObject();
+            return bounds.value(QStringLiteral("width")).toInt() == expectedNormalBounds.width()
+                && bounds.value(QStringLiteral("height")).toInt() == expectedNormalBounds.height();
+        }), "window state sync did not report normal restore bounds")) return 1;
 
     // Browser refresh shortcuts must not reload the sanitized URL that the
     // renderer keeps visible after bootstrap. Locate this window's QWebView by

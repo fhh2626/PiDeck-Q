@@ -114,10 +114,13 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 		focusSessionFromNotification() { return false; }
 	}
 
+	let backendDisposeCount = 0;
 	const fakeBackend = {
 		settingsStore: { get: () => ({ zoomFactor: 1 }) },
 		appLogger: { error: async () => undefined, warn: async () => undefined },
-		dispose: async () => undefined,
+		dispose: async () => {
+			backendDisposeCount += 1;
+		},
 		startAfterWindowCreated: () => undefined,
 		resolveSessionIdForAgent: () => undefined,
 		hasActiveStreaming: () => false,
@@ -187,7 +190,8 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 				fatalExitCode = code;
 			};
 			fakeHost.fatalListener(new Error("simulated host disconnect"));
-			assert.equal(fatalExitCode, 1);
+			await waitFor(() => fatalExitCode === 1);
+			assert.equal(backendDisposeCount, 1, "fatal disconnect must run backend cleanup before exit");
 		} finally {
 			process.exit = originalExit;
 		}

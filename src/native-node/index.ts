@@ -100,9 +100,15 @@ async function stop(announceReadyToExit = false): Promise<void> {
 async function main(): Promise<void> {
 	bridge = await HostBridge.connect(port, nativeToken);
 	const host = bridge;
-	// The Qt supervisor is the single owner of sidecar recovery. An authenticated
-	// host bridge cannot recover in place, so exit instead of serving a half-live UI.
-	host.onFatal(() => process.exit(1));
+	// The Qt supervisor is the single owner of sidecar recovery. Give normal
+	// resource cleanup a bounded window, then exit so recovery cannot hang.
+	host.onFatal(() => {
+		const hardExit = setTimeout(() => process.exit(1), 1_500);
+		void stop().finally(() => {
+			clearTimeout(hardExit);
+			process.exit(1);
+		});
+	});
 	const userDataDir = process.env.PIDECK_USER_DATA;
 	if (!userDataDir) throw new Error("PIDECK_USER_DATA is missing");
 	userDataDirectory = userDataDir;

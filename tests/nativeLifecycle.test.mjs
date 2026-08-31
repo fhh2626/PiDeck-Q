@@ -24,7 +24,9 @@ test("Qt handles sidecar lifecycle locally and uses the graceful ACK event", () 
 	assert.doesNotMatch(nodeController, /sendEvent\(QStringLiteral\("application\.node(?:Error|Exit)"/);
 	assert.match(nodeIndex, /application\.readyToExit/);
 	assert.match(nodeIndex, /closeGracefully/);
-	assert.match(nodeIndex, /host\.onFatal\(\(\) => process\.exit\(1\)\)/);
+	assert.match(nodeIndex, /host\.onFatal\(\(\) => \{/);
+	assert.match(nodeIndex, /setTimeout\(\(\) => process\.exit\(1\), 1_500\)/);
+	assert.match(nodeIndex, /void stop\(\)\.finally\(\(\) => \{/);
 	assert.match(nodeController, /m_readyToExit/);
 	assert.match(nodeController, /postAckExitTimeoutMs/);
 	assert.match(nodeController, /gracefulTimer/);
