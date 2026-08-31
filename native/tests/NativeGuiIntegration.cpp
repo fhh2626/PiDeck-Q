@@ -395,6 +395,23 @@ int main(int argc, char **argv)
                 && bounds.value(QStringLiteral("height")).toInt() == expectedNormalBounds.height();
         }), "window state sync did not report normal restore bounds")) return 1;
 
+    reloadStateWindow.showNormal();
+    reloadStateWindow.resize(1'010, 710);
+    processGuiEvents();
+    reloadStateWindow.showMinimized();
+    processGuiEvents();
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
+    reloadStateWindow.syncStateToHost();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            if (frame.value(QStringLiteral("name")).toString() != QStringLiteral("window.normalBoundsChanged")) {
+                return false;
+            }
+            const QJsonObject bounds = frame.value(QStringLiteral("payload")).toObject();
+            return bounds.value(QStringLiteral("width")).toInt() == 1'010
+                && bounds.value(QStringLiteral("height")).toInt() == 710;
+        }), "minimized window state sync did not preserve normal restore bounds")) return 1;
+
     // Browser refresh shortcuts must not reload the sanitized URL that the
     // renderer keeps visible after bootstrap. Locate this window's QWebView by
     // its unique requested URL and exercise the same key events WebView2 sees.

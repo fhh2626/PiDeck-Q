@@ -411,7 +411,8 @@ void MainWindow::syncStateToHost()
     emitMinimizedState();
     emitFullScreenState();
     if (!m_host) return;
-    const QRect rect = (isMaximized() || isFullScreen()) ? normalGeometry() : geometry();
+    QRect rect = normalGeometry();
+    if (!rect.isValid() || rect.isEmpty()) rect = geometry();
     m_host->sendEvent(QStringLiteral("window.normalBoundsChanged"), QJsonObject{
         {QStringLiteral("width"), rect.width()},
         {QStringLiteral("height"), rect.height()},
