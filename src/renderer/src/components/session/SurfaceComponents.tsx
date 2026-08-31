@@ -21,22 +21,6 @@ import { EmptyState } from "./EmptyState";
 export { ImagePreviewModal } from "./MessageImage";
 export { CopyMenu } from "./MessageCopyMenu";
 export { EmptyState } from "./EmptyState";
-import {
-	summarizeMessage,
-	type RenderMessage,
-	type ComposerSuggestionResult,
-	type ComposerTrigger,
-	groupToolMessages,
-	buildOutline,
-	detectTrigger,
-	applySuggestion,
-	clearSuggestionTrigger,
-	buildSuggestionItems,
-	mergeCommands,
-	matches,
-	displayPath,
-	flattenFiles,
-} from "../app/AppUtils";
 import { Textarea } from "../ui-shadcn/textarea";
 import {
   Tooltip,

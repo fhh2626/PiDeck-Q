@@ -1650,8 +1650,9 @@ export const enUS: Record<TranslationKey, string> = {
   "prompt.command.tree.description":
     "Navigate the session tree and jump to any node",
   "prompt.commands": "Commands",
-  "prompt.confirmHint": "Enter Confirm",
+  "prompt.confirmHint": "Tab Confirm",
   "prompt.files": "Files",
+  "prompt.referencePath": "Reference this path",
   "prompt.sessions": "Sessions",
   "prompt.selectHint": "↑↓ Select",
   "rpc.copyJson": "Copy JSON",

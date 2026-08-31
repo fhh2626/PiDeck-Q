@@ -25,6 +25,8 @@ export type ComposerCaretRequest = { pos: number; forValue: string };
 export type ComposerEditorProps = {
 	value: string;
 	onChange: (value: string, cursor: number) => void;
+	/** TipTap 真实文本输入（不含 paste），用于创建显式 completion session。 */
+	onTextInput?: (text: string) => void;
 	onCursorChange: (cursor: number) => void;
 	onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
 	onPaste?: (event: ClipboardEvent<HTMLDivElement>) => void;

@@ -1,6 +1,6 @@
 /**
  * Composer / 时间线共用的 chip 解析与路径格式化。
- * 纯函数模块：无 React / 无编辑器依赖；与 detectTrigger 规则对齐。
+ * 纯函数模块：无 React / 无编辑器依赖；与显式 completion 边界对齐。
  */
 
 export type ComposerChip = {
@@ -32,6 +32,71 @@ function overlapsUrl(
 	urlSpans: { start: number; end: number }[],
 ): boolean {
 	return urlSpans.some((s) => start < s.end && end > s.start);
+}
+
+/** 判断触发符位置是否已经落在 URL 中，供输入期 completion 与展示期 parser 共用。 */
+export function isInsideComposerUrl(text: string, position: number): boolean {
+	return overlapsUrl(position, position + 1, findUrlSpans(text));
+}
+
+/**
+ * 绝对路径 completion 的规范化结果。end 是原 query 中路径 token 的结束偏移；
+ * 未加引号的路径遇到无法确认属于路径的普通正文时，end 会停在正文之前，
+ * 这样候选提交只替换路径，不会删除后面的用户文字。
+ */
+export type AbsolutePathCompletionQuery = {
+	path: string;
+	end: number;
+};
+
+function isAbsolutePath(value: string): boolean {
+	return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/");
+}
+
+/**
+ * 解析 @ 后的绝对路径 query。
+ * 引号提供明确边界；未加引号的带空格路径沿用展示 parser 的规则：只有后续
+ * segment 自身含路径分隔符才继续并入，避免把普通正文或 URL 吞进 raw-path 候选。
+ */
+export function getAbsolutePathCompletionQuery(
+	query: string,
+): AbsolutePathCompletionQuery | null {
+	if (!query) return null;
+
+	if (query.startsWith('"')) {
+		const closingQuote = query.indexOf('"', 1);
+		if (closingQuote >= 0 && closingQuote !== query.length - 1) return null;
+		const path = closingQuote === query.length - 1
+			? query.slice(1, -1)
+			: query.slice(1);
+		return isAbsolutePath(path) ? { path, end: query.length } : null;
+	}
+
+	const firstToken = /^[^\s]+/.exec(query)?.[0];
+	if (!firstToken || !isAbsolutePath(firstToken)) return null;
+
+	let end = firstToken.length;
+	while (end < query.length) {
+		const whitespace = /^[ \t]+/.exec(query.slice(end));
+		if (!whitespace) break;
+		const segmentStart = end + whitespace[0].length;
+		if (segmentStart >= query.length) break;
+		const segment = /^[^\s]+/.exec(query.slice(segmentStart))?.[0];
+		// A slash immediately after a separator is more likely a new /command
+		// (`@path /compact`) than a Windows-valid path segment; preserve the old
+		// command boundary and avoid pinning @ completion over the command.
+		if (!segment || /^https?:\/\//i.test(segment) || /^[\\/]/.test(segment) || !/[\\/]/.test(segment)) break;
+		end = segmentStart + segment.length;
+	}
+
+	return { path: query.slice(0, end), end };
+}
+
+/** 去除 quoted @ query 的语法引号，供文件候选的模糊搜索使用。 */
+export function getCompletionSearchQuery(query: string): string {
+	if (!query.startsWith('"')) return query;
+	const body = query.slice(1);
+	return body.endsWith('"') ? body.slice(0, -1) : body;
 }
 
 /**
@@ -74,8 +139,8 @@ export function formatFilePathRef(
 /**
  * 从粘贴文本中识别「单条本地绝对路径」：trim 后整段即为一条绝对路径
  * （允许前缀 @、外层成对引号——兼容 Windows 资源管理器「复制为路径」）。
- * 用于 onPaste 拦截：把 QQ「复制路径」等复制的路径文本转成 @"…" 引用插入，
- * 而不是让裸路径留在输入框里（带拼写波浪线且无法形成 chip）。
+ * 仅供明确的路径来源消费者识别单条绝对路径；普通 text/plain composer 粘贴
+ * 不调用它，而是保留原文交给编辑器插入。
  * 非纯路径（多行 / 夹杂正文）返回 null，不拦截普通文本粘贴。
  */
 export function extractPastedPath(text: string): string | null {
@@ -93,7 +158,7 @@ export function extractPastedPath(text: string): string | null {
 }
 
 /**
- * 将 prompt 字符串解析为 chip 列表（展示层，与 detectTrigger 规则对齐）。
+ * 将 prompt 字符串解析为 chip 列表（展示层，与 completion 边界规则对齐）。
  *
  * 规则：
  * - /skill 触发符 / 前一个字符不能是 : / 或字母/数字/下划线（\w），
@@ -149,11 +214,11 @@ export function parseRichInputChips(
 			const isAbsPrefix = /^[a-zA-Z]:[\\/]/.test(body) || /^\//.test(body);
 			if (isAbsPrefix) {
 				while (end < text.length) {
-					const segMatch = /^ ([^\s]+)/.exec(text.slice(end));
+					const segMatch = /^([ \t]+)([^\s]+)/.exec(text.slice(end));
 					if (!segMatch) break;
-					const seg = segMatch[1];
-					if (!/[\\/]/.test(seg) || /^https?:\/\//i.test(seg)) break;
-					rawToken += ` ${seg}`;
+					const seg = segMatch[2];
+					if (!/[\\/]/.test(seg) || /^[\\/]/.test(seg) || /^https?:\/\//i.test(seg)) break;
+					rawToken += `${segMatch[1]}${seg}`;
 					end += segMatch[0].length;
 				}
 			}
@@ -188,15 +253,23 @@ export function parseRichInputChips(
 
 	// &session：逐个 & 起点匹配，命中后把 lastIndex 推到 chip 末尾，
 	// 避免旧版 (&[^\n]+) 贪婪吃掉整行导致一行只能出一个 session chip。
-	const ampStartRe = /(?<![:/.#!~?=&])&/gu;
+	// \w 还要排除 cmd&name 这类正文中的内嵌 ampersand。
+	const ampStartRe = /(?<![:/.#!~?=&\w])&/gu;
 	while ((m = ampStartRe.exec(text)) !== null) {
 		const start = m.index;
 		const captured = text.slice(start + 1);
 		let name = "";
 		if (validSessionRefs !== undefined) {
 			// Composer：传入 Set（可为 empty）= 严格白名单，未命中不成 chip。
+			// 与 completion/发送解析一致，session 名比较不区分大小写。
+			const capturedLower = captured.toLowerCase();
 			for (const ref of validSessionRefs) {
-				if (captured === ref || captured.startsWith(`${ref} `) || captured.startsWith(`${ref}\n`)) {
+				const refLower = ref.toLowerCase();
+				if (
+					capturedLower === refLower ||
+					capturedLower.startsWith(`${refLower} `) ||
+					capturedLower.startsWith(`${refLower}\n`)
+				) {
 					if (ref.length > name.length) name = ref;
 				}
 			}

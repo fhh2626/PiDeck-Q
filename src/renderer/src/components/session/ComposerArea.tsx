@@ -303,6 +303,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
                 }
                 onFocus={composer.editor.onFocus}
                 onChange={composer.editor.onChange}
+                onTextInput={composer.editor.onTextInput}
                 onCursorChange={composer.editor.onCursorChange}
                 onKeyDown={composer.editor.onKeyDown}
                 onPaste={composer.editor.onPaste}
@@ -314,7 +315,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
               />
               {composer.suggestions.open && !composer.isStarting ? (
                 <PromptSuggestions
-                  prompt={composer.draft}
+                  completionId={composer.suggestions.completionId ?? 0}
                   items={composer.suggestions.items}
                   selectedIndex={composer.suggestions.selectedIndex}
                   anchorStyle={composer.suggestions.anchorStyle}
