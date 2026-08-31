@@ -40,6 +40,15 @@ export function isInsideComposerUrl(text: string, position: number): boolean {
 }
 
 /**
+ * 判断 active @ completion 是否已经进入绝对路径前缀。
+ * 这里故意不判断空格后的 token：用户明确输入了 @，编辑期应允许路径末级
+ * 名称含空格；静态 chip parser 仍使用 getAbsolutePathCompletionQuery 的边界启发式。
+ */
+export function isAbsolutePathCompletionPrefix(query: string): boolean {
+	return /^[A-Za-z]:[\\/]/.test(query) || /^\/[^/]/.test(query);
+}
+
+/**
  * 绝对路径 completion 的规范化结果。end 是原 query 中路径 token 的结束偏移；
  * 未加引号的路径遇到无法确认属于路径的普通正文时，end 会停在正文之前，
  * 这样候选提交只替换路径，不会删除后面的用户文字。

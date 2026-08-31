@@ -12,6 +12,7 @@ export {
 	formatFilePathRef,
 	getAbsolutePathCompletionQuery,
 	getCompletionSearchQuery,
+	isAbsolutePathCompletionPrefix,
 	isInsideComposerUrl,
 	parseRichInputChips,
 	unwrapFileChipPath,

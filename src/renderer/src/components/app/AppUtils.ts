@@ -14,8 +14,8 @@ import { t } from "../../i18n";
 import type { CompletionSession } from "../session/composer/completion";
 import {
 	formatFilePathRef,
-	getAbsolutePathCompletionQuery,
 	getCompletionSearchQuery,
+	isAbsolutePathCompletionPrefix,
 } from "../session/composer/chips";
 
 /* ── 文件树拖拽负载 ── */
@@ -667,10 +667,11 @@ export function buildCompletionSuggestionItems(
 	sessions?: SessionSummary[],
 ): SuggestionItem[] {
 	const allCommands = mergeCommands(commands);
-	const absolutePath = completion.char === "@"
-		? getAbsolutePathCompletionQuery(completion.query)
+	const searchQuery = getCompletionSearchQuery(completion.query);
+	const rawPath = completion.char === "@" && isAbsolutePathCompletionPrefix(searchQuery)
+		? searchQuery
 		: null;
-	const keyword = (absolutePath?.path ?? getCompletionSearchQuery(completion.query)).toLowerCase();
+	const keyword = (rawPath ?? searchQuery).toLowerCase();
 	if (completion.char === "/") {
 		return allCommands
 			.map((command, index) => ({ command, index }))
@@ -689,7 +690,6 @@ export function buildCompletionSuggestionItems(
 			}));
 	}
 	if (completion.char === "@") {
-		const rawPath = absolutePath?.path;
 		const rawPathItem: SuggestionItem[] = rawPath
 			? [{
 					key: `raw-path:${rawPath}`,

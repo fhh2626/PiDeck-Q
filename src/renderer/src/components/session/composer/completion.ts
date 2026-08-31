@@ -6,7 +6,8 @@
  */
 
 import {
-	getAbsolutePathCompletionQuery,
+	getCompletionSearchQuery,
+	isAbsolutePathCompletionPrefix,
 	isInsideComposerUrl,
 } from "./chips";
 
@@ -66,10 +67,11 @@ export function isValidCompletionQuery(
 	if (char === "@") {
 		if (/[\r\n@&]/.test(query)) return false;
 
-		// Absolute paths use the same segment-aware boundary as chip parsing. A
-		// trailing ordinary phrase is handled by updateCompletion, which keeps only
-		// the path portion replaceable instead of allowing raw-path to swallow it.
-		if (getAbsolutePathCompletionQuery(query)) return true;
+		// Once an explicit @ query has an absolute-path prefix, spaces are part of
+		// the path while it is being edited. Static chip parsing uses a stricter
+		// boundary heuristic; active completion must not guess where a final
+		// directory name ends.
+		if (isAbsolutePathCompletionPrefix(getCompletionSearchQuery(query))) return true;
 
 		// Relative quoted paths have an explicit boundary; an unclosed quote is
 		// allowed while the user is still typing it.
@@ -100,9 +102,9 @@ export function isValidCompletionQuery(
 }
 
 /**
- * 依据创建 session 的固定区间更新查询。
- * 光标只能在 token 尾部继续向前；一旦回到 token 中间或触发符被删除，
- * session 结束，避免后续候选替换到用户已经离开的正文位置。
+ * 依据创建 session 的起点和当前文档光标重新计算查询。
+ * 这是文档变更路径，允许插入和删除让 end 双向变化；纯光标移动由
+ * canKeepCompletionAtCursor 单独校验，避免两种事件语义混在一起。
  */
 export function updateCompletion(
 	session: CompletionSession | null,
@@ -114,59 +116,34 @@ export function updateCompletion(
 	if (session.start < 0 || session.end < session.start || text[session.start] !== session.char) {
 		return null;
 	}
-	if (cursor < session.start + 1 || cursor < session.end || cursor > text.length) {
-		return null;
-	}
+	// This function runs after a document mutation, not after a bare selection
+	// move. The mutation may be insertion or deletion, so end must be allowed to
+	// move in either direction; onCursorChange owns the separate caret-movement
+	// guard.
+	if (cursor < session.start + 1 || cursor > text.length) return null;
 
-	const fullQuery = text.slice(session.start + 1, cursor);
-	if (!isValidCompletionQuery(session.char, fullQuery, validSessionRefs)) return null;
-
-	let end = cursor;
-	let query = fullQuery;
-	if (session.char === "@") {
-		const absolutePath = getAbsolutePathCompletionQuery(fullQuery);
-		if (absolutePath) {
-			end = session.start + 1 + absolutePath.end;
-			const trailingText = text.slice(end, cursor);
-			// A path may be followed by a separator while the menu remains open, but
-			// once ordinary text starts the completion is dismissed. This prevents a
-			// raw-path candidate from replacing `@path` plus the user's explanation.
-			if (/\S/.test(trailingText)) return null;
-			query = text.slice(session.start + 1, end);
-		}
-	}
+	const query = text.slice(session.start + 1, cursor);
+	if (!isValidCompletionQuery(session.char, query, validSessionRefs)) return null;
 
 	return {
 		...session,
-		end,
+		end: cursor,
 		query,
 	};
 }
 
 /**
- * TipTap may emit selectionUpdate after the document update. Absolute paths with
- * spaces intentionally have a replacement range shorter than the live caret, so
- * that event must not dismiss the session when the gap contains only whitespace.
+ * TipTap may emit selectionUpdate independently of document updates. A bare caret
+ * move is allowed to keep completion alive only at the exact session end; unlike
+ * updateCompletion, it must never expand or shrink the replacement range.
  */
 export function canKeepCompletionAtCursor(
 	session: CompletionSession,
 	text: string,
 	cursor: number,
 ): boolean {
-	if (cursor === session.end) return true;
-	if (session.char !== "@" || cursor < session.end) return false;
-
-	const currentQuery = text.slice(session.start + 1, session.end);
-	const currentPath = getAbsolutePathCompletionQuery(currentQuery);
-	if (!currentPath || currentPath.end !== currentQuery.length) return false;
-
-	const nextQuery = text.slice(session.start + 1, cursor);
-	const nextPath = getAbsolutePathCompletionQuery(nextQuery);
-	return Boolean(
-		nextPath &&
-		nextPath.end === currentQuery.length &&
-		!/\S/.test(nextQuery.slice(nextPath.end)),
-	);
+	return cursor === session.end &&
+		text.slice(session.start, session.end) === session.char + session.query;
 }
 
 /**

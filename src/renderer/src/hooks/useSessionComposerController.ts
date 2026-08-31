@@ -759,10 +759,9 @@ export function useSessionComposerController(
     const liveDraft = liveDomDraftRef.current.sessionId === sessionId
       ? liveDomDraftRef.current.value
       : draft;
-    const canKeep =
-      nextCursor === current.end ||
-      canKeepCompletionAtCursor(current, liveDraft, nextCursor);
-    const nextCompletion = canKeep ? current : null;
+    const nextCompletion = canKeepCompletionAtCursor(current, liveDraft, nextCursor)
+      ? current
+      : null;
     if (!nextCompletion) pendingTriggerRef.current = null;
     completionRef.current = nextCompletion;
     setCompletion(nextCompletion);

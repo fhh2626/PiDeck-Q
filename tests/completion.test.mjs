@@ -130,24 +130,41 @@ test("updating a session follows its own range and keeps dismissed state dismiss
 		query: "abc",
 	});
 	assert.equal(updateCompletion(active, "x@abc", 5), null);
-	assert.equal(updateCompletion({ ...active, end: 4, query: "abc" }, "@abc", 2), null);
+	assertJsonEqual(updateCompletion({ ...active, end: 4, query: "abc" }, "@abc", 2), {
+		...active,
+		end: 2,
+		query: "a",
+	});
+	assert.equal(canKeepCompletionAtCursor({ ...active, end: 4, query: "abc" }, "@abc", 2), false);
 
 	const absolutePath = session({ end: 1 });
-	assertJsonEqual(updateCompletion(absolutePath, "@C:/work ", 9), {
+	const pathText = "@C:/Program Files";
+	const pathSession = updateCompletion(absolutePath, pathText, pathText.length);
+	assertJsonEqual(pathSession, {
 		...absolutePath,
-		end: 8,
-		query: "C:/work",
+		end: pathText.length,
+		query: "C:/Program Files",
 	});
-	assert.equal(updateCompletion(absolutePath, "@C:/work please inspect", 24), null);
-	assert.equal(updateCompletion(absolutePath, "@C:/work /compact", 17), null);
-	assert.equal(canStartCompletion("@C:/work /", 9, "/"), true);
-	const pathWithTrailingSpace = updateCompletion(absolutePath, "@C:/work ", 9);
-	assert.equal(canKeepCompletionAtCursor(pathWithTrailingSpace, "@C:/work ", 9), true);
-	assert.equal(canKeepCompletionAtCursor(pathWithTrailingSpace, "@C:/work please", 16), false);
-	assertJsonEqual(applyCompletion("@C:/work please", pathWithTrailingSpace, "@C:/other"), {
-		text: "@C:/other please",
-		cursor: "@C:/other".length,
+	assertJsonEqual(applyCompletion(pathText, pathSession, '@"C:/Program Files"'), {
+		text: '@"C:/Program Files" ',
+		cursor: '@"C:/Program Files" '.length,
 	});
+	const pathWithFollowingText = "@C:/Program Files please inspect";
+	const pathWithFollowingTextSession = updateCompletion(
+		absolutePath,
+		pathWithFollowingText,
+		pathWithFollowingText.length,
+	);
+	assert.equal(pathWithFollowingTextSession.query, "C:/Program Files please inspect");
+	assert.equal(
+		canKeepCompletionAtCursor(
+			pathWithFollowingTextSession,
+			pathWithFollowingText,
+			pathWithFollowingText.length,
+		),
+		true,
+	);
+
 	const quotedPath = updateCompletion(
 		absolutePath,
 		'@"C:/Program Files/app.exe"',
@@ -163,6 +180,29 @@ test("updating a session follows its own range and keeps dismissed state dismiss
 	const stillDismissed = updateCompletion(dismissed, "@abcd", 5);
 	assert.equal(stillDismissed.dismissed, true);
 	assert.equal(stillDismissed.query, "abcd");
+});
+
+test("document edits can shrink a completion session after Backspace", () => {
+	const at = session({ end: 5, query: "srcx" });
+	assertJsonEqual(updateCompletion(at, "@src", "@src".length), {
+		...at,
+		end: 4,
+		query: "src",
+	});
+
+	const slash = session({ char: "/", start: 3, end: 9, query: "compa" });
+	assertJsonEqual(updateCompletion(slash, "go /comp", "go /comp".length), {
+		...slash,
+		end: 8,
+		query: "comp",
+	});
+
+	const amp = session({ char: "&", start: 3, end: 12, query: "sessionx" });
+	assertJsonEqual(updateCompletion(amp, "go &session", "go &session".length, new Set(["sessionx"])), {
+		...amp,
+		end: 11,
+		query: "session",
+	});
 });
 
 test("Esc/X dismissal changes only lifecycle state, never text", () => {
@@ -237,6 +277,22 @@ test("absolute @ paths expose a raw-path candidate before scanned files", () => 
 	);
 	assert.equal(items[0].key, "raw-path:C:\\foo\\part");
 	assert.equal(items[0].value, "@C:\\foo\\part");
+
+	const spacedItems = appUtils.buildCompletionSuggestionItems(
+		{
+			id: 5,
+			char: "@",
+			start: 0,
+			end: "@C:\\Program Files".length,
+			query: "C:\\Program Files",
+			dismissed: false,
+		},
+		[],
+		[],
+		[],
+	);
+	assert.equal(spacedItems[0].key, "raw-path:C:\\Program Files");
+	assert.equal(spacedItems[0].value, '@"C:\\Program Files"');
 
 	const quotedItems = appUtils.buildCompletionSuggestionItems(
 		{
