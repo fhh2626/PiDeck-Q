@@ -235,6 +235,10 @@ export type SessionRuntimeInfo = SessionRuntimeTarget & {
 	createdAt: number;
 	compactionCount?: number;
 	noSession?: boolean;
+	/** 本地流式标志：思考/正文 token 仍在推。旧客户端可忽略。 */
+	isStreaming?: boolean;
+	/** 本地工具执行标志。旧客户端可忽略。 */
+	isExecutingTool?: boolean;
 };
 
 export type SessionCommandErrorCode =

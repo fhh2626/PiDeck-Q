@@ -4,7 +4,7 @@
  * 复用桌面 .composer / .composer-box 样式类 + shadcn Button：
  * - textarea 由 .composer textarea 统一样式（透明底、内边距、随内容撑高）
  * - Enter 发送、Shift/Ctrl+Enter 换行
- * - 无会话时禁用；流式期间提交按钮转为停止
+ * - 无会话时禁用；忙碌期间提交按钮转为停止（useChat 流式或 runtime 权威忙碌）
  */
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui-shadcn/button";
@@ -13,7 +13,7 @@ import { isComposingKeyboardEvent } from "../composerBehavior";
 
 export function WebComposer(props: {
 	disabled: boolean;
-	streaming: boolean;
+	busy: boolean;
 	onSend: (text: string) => void;
 	onStop: () => void;
 }) {
@@ -22,7 +22,7 @@ export function WebComposer(props: {
 
 	const submit = () => {
 		const text = draft.trim();
-		if (!text || props.disabled || props.streaming) return;
+		if (!text || props.disabled || props.busy) return;
 		props.onSend(text);
 		setDraft("");
 	};
@@ -56,7 +56,7 @@ export function WebComposer(props: {
 					<span className="composer-hint min-w-0 truncate text-caption text-muted-foreground">
 						{t("web.composerHint")}
 					</span>
-					{props.streaming ? (
+					{props.busy ? (
 						<Button
 							type="button"
 							variant="destructive"

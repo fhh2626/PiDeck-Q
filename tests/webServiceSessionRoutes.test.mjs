@@ -465,6 +465,13 @@ test("web polling cannot read runtime messages directly by Agent ID", () => {
 	assert.doesNotMatch(source, /getMessages\(runtime\.agentId\)/);
 });
 
+test("web polling runtime info carries local streaming flags", () => {
+	const coordinator = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
+	assert.match(coordinator, /getLocalStreamingFlags\?\(agentId: string\)/);
+	assert.match(coordinator, /isStreaming: streamingFlags\?\.isStreaming/);
+	assert.match(coordinator, /isExecutingTool: streamingFlags\?\.isExecutingTool/);
+});
+
 test("embedded web client and HTTP surface are Session-first", async () => {
 	await withServer(async ({ baseUrl }) => {
 		const page = await (await fetch(baseUrl)).text();

@@ -500,6 +500,17 @@ export class AgentManager {
 			.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 	}
 
+	/** 本地流式/工具标志，不发 get_state RPC；供 Web /api/state 轮询。 */
+	getLocalStreamingFlags(agentId: string): {
+		isStreaming: boolean;
+		isExecutingTool: boolean;
+	} {
+		return {
+			isStreaming: this.streamingAgents.has(agentId),
+			isExecutingTool: !!this.toolExecutingByAgent.get(agentId),
+		};
+	}
+
 	/**
 	 * 与 create/reattach 的 get_state 使用同一设置值，供 SessionRuntimeCoordinator
 	 * 等待 starting runtime 时共享 deadline，避免慢机器被第二套硬编码 timeout 提前清理。

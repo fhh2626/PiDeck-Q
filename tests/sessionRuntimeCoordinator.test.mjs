@@ -228,6 +228,10 @@ function createHarness(options = {}) {
       if (options.isMessageCacheStale) return options.isMessageCacheStale(agentId);
       return false;
     },
+    getLocalStreamingFlags: (agentId) => {
+      if (options.getLocalStreamingFlags) return options.getLocalStreamingFlags(agentId);
+      return { isStreaming: false, isExecutingTool: false };
+    },
 	refreshSessionIdentity: async (agentId) => {
 	  calls.refreshSessionIdentity += 1;
 	  const tab = tabs.find((candidate) => candidate.id === agentId);
@@ -968,7 +972,30 @@ test("session runtime inventory and target expose the stable binding triple", ()
     status: "idle",
     sessionPath: "C:/sessions/session-1.jsonl",
     createdAt: 10,
+    isStreaming: false,
+    isExecutingTool: false,
   }]);
+});
+
+test("session runtime inventory includes local streaming flags from the agent gateway", () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    tabs: [{
+      id: "agent-a",
+      projectId: "project-1",
+      cwd: "C:/project",
+      status: "running",
+      sessionPath: "C:/sessions/session-1.jsonl",
+      createdAt: 10,
+    }],
+    getLocalStreamingFlags: () => ({ isStreaming: true, isExecutingTool: true }),
+  });
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  coordinator.bindExistingAgent("session-1", "agent-a");
+  const runtime = coordinator.listRuntimes()[0];
+  assert.equal(runtime.status, "running");
+  assert.equal(runtime.isStreaming, true);
+  assert.equal(runtime.isExecutingTool, true);
 });
 
 test("anonymous runtime binds an existing --no-session process without attaching a file", async () => {

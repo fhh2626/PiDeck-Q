@@ -49,6 +49,11 @@ export interface SessionAgentGateway {
 	list(): AgentTab[];
 	getMessages(agentId: string): ChatMessage[];
 	isMessageCacheStale?(agentId: string): boolean;
+	/** 本地流式/工具标志；缺省时 Web 只看 status。 */
+	getLocalStreamingFlags?(agentId: string): {
+		isStreaming: boolean;
+		isExecutingTool: boolean;
+	};
 	create(input: CreateAgentInput): Promise<AgentTab>;
 	restart(agentId: string): Promise<AgentTab>;
 	stop(agentId: string): Promise<void>;
@@ -1313,6 +1318,7 @@ export class SessionRuntimeCoordinator {
 				"Session runtime binding changed while building runtime state",
 			);
 		}
+		const streamingFlags = this.agents.getLocalStreamingFlags?.(tab.id);
 		return {
 			...target,
 			projectId: tab.projectId,
@@ -1322,6 +1328,8 @@ export class SessionRuntimeCoordinator {
 			createdAt: tab.createdAt,
 			compactionCount: tab.compactionCount,
 			noSession: tab.noSession,
+			isStreaming: streamingFlags?.isStreaming,
+			isExecutingTool: streamingFlags?.isExecutingTool,
 		};
 	}
 
