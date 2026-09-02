@@ -57,6 +57,14 @@ let loadFailureCount = 0;
 let loadRetryTimer: NodeJS.Timeout | null = null;
 const externalFileCapabilities = new ExternalFileCapabilityStore();
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
 function issueClipboardCapability(snapshot: NativeClipboardMetadata): string {
 	return externalFileCapabilities.issueClipboard(snapshot.filePaths, snapshot.sequence) ?? "";
 }
@@ -327,9 +335,24 @@ async function main(): Promise<void> {
 		nativeHost?.markWindowVisible(visible);
 		if (visible) lastHeartbeatAt = Date.now();
 	});
-	host.on<{ width?: number; height?: number }>("window.normalBoundsChanged", (bounds) => {
-		if (typeof bounds.width !== "number" || typeof bounds.height !== "number") return;
-		pendingBounds = { width: bounds.width, height: bounds.height };
+	host.on<unknown>("window.normalBoundsChanged", (payload) => {
+		if (!isRecord(payload) || !isFiniteNumber(payload.width) || !isFiniteNumber(payload.height)) return;
+
+		const nextBounds: LastWindowBounds = {
+			width: payload.width,
+			height: payload.height,
+		};
+		// x/y were added after the original size-only format. Require both before
+		// replacing the position; preserve a previously known pair when an older
+		// native host sends only width/height during a mixed-version upgrade.
+		if (isFiniteNumber(payload.x) && isFiniteNumber(payload.y)) {
+			nextBounds.x = payload.x;
+			nextBounds.y = payload.y;
+		} else if (isFiniteNumber(pendingBounds?.x) && isFiniteNumber(pendingBounds?.y)) {
+			nextBounds.x = pendingBounds.x;
+			nextBounds.y = pendingBounds.y;
+		}
+		pendingBounds = nextBounds;
 	});
 	host.on("application.prepareQuit", () => {
 		void stop(true).then(() => process.exit(0));

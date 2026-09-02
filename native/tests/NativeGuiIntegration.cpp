@@ -151,6 +151,15 @@ int main(int argc, char **argv)
     if (!require(systemWindow == (systemIsDark ? QColor("#121212") : QColor("#f8f8f5")),
                  "system native theme did not follow the Qt color scheme")) return 1;
 
+    QScreen *primaryScreen = QGuiApplication::primaryScreen();
+    if (!require(primaryScreen != nullptr, "primary screen was not available")) return 1;
+    const QRect availableGeometry = primaryScreen->availableGeometry();
+    if (!require(availableGeometry.isValid(), "primary screen geometry was not valid")) return 1;
+    const int savedX = availableGeometry.left() + 24;
+    // 1200×760 leaves little vertical slack on the Windows test desktop;
+    // choose a position that remains inside the available work area after clamp.
+    const int savedY = availableGeometry.top() + 5;
+
     const QJsonObject fixedBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("normal-compact")},
         {QStringLiteral("useNativeTitleBar"), true},
@@ -168,6 +177,8 @@ int main(int argc, char **argv)
         {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
         {QStringLiteral("useNativeTitleBar"), true},
         {QStringLiteral("lastWindowBounds"), QJsonObject{
+            {QStringLiteral("x"), savedX},
+            {QStringLiteral("y"), savedY},
             {QStringLiteral("width"), 1200},
             {QStringLiteral("height"), 760},
         }},
@@ -175,11 +186,8 @@ int main(int argc, char **argv)
     MainWindow last(nullptr, lastBounds);
     if (!require(last.size() == QSize(1200, 760),
                  "last startup mode did not use the saved bounds")) return 1;
-
-    QScreen *primaryScreen = QGuiApplication::primaryScreen();
-    if (!require(primaryScreen != nullptr, "primary screen was not available")) return 1;
-    const QRect availableGeometry = primaryScreen->availableGeometry();
-    if (!require(availableGeometry.isValid(), "primary screen geometry was not valid")) return 1;
+    if (!require(last.x() == savedX && last.y() == savedY,
+                 "last startup mode did not restore the saved position")) return 1;
     const QJsonObject oversizedBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
         {QStringLiteral("useNativeTitleBar"), false},
@@ -391,7 +399,9 @@ int main(int argc, char **argv)
                 return false;
             }
             const QJsonObject bounds = frame.value(QStringLiteral("payload")).toObject();
-            return bounds.value(QStringLiteral("width")).toInt() == expectedNormalBounds.width()
+            return bounds.value(QStringLiteral("x")).toInt() == expectedNormalBounds.x()
+                && bounds.value(QStringLiteral("y")).toInt() == expectedNormalBounds.y()
+                && bounds.value(QStringLiteral("width")).toInt() == expectedNormalBounds.width()
                 && bounds.value(QStringLiteral("height")).toInt() == expectedNormalBounds.height();
         }), "window state sync did not report normal restore bounds")) return 1;
 
@@ -400,17 +410,45 @@ int main(int argc, char **argv)
     processGuiEvents();
     reloadStateWindow.showMinimized();
     processGuiEvents();
+    const QRect expectedMinimizedNormalBounds = reloadStateWindow.normalGeometry();
     lifecycleBuffer.clear();
     lifecycleClient.readAll();
     reloadStateWindow.syncStateToHost();
-    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [expectedMinimizedNormalBounds](const QJsonObject &frame) {
             if (frame.value(QStringLiteral("name")).toString() != QStringLiteral("window.normalBoundsChanged")) {
                 return false;
             }
             const QJsonObject bounds = frame.value(QStringLiteral("payload")).toObject();
-            return bounds.value(QStringLiteral("width")).toInt() == 1'010
-                && bounds.value(QStringLiteral("height")).toInt() == 710;
+            return bounds.value(QStringLiteral("x")).toInt() == expectedMinimizedNormalBounds.x()
+                && bounds.value(QStringLiteral("y")).toInt() == expectedMinimizedNormalBounds.y()
+                && bounds.value(QStringLiteral("width")).toInt() == expectedMinimizedNormalBounds.width()
+                && bounds.value(QStringLiteral("height")).toInt() == expectedMinimizedNormalBounds.height();
         }), "minimized window state sync did not preserve normal restore bounds")) return 1;
+
+    // A real move event must publish the complete normal rectangle, including
+    // x/y; this is the runtime half of the persistence contract.
+    reloadStateWindow.showNormal();
+    processGuiEvents();
+    const QRect moveArea = reloadStateWindow.windowHandle() && reloadStateWindow.windowHandle()->screen()
+        ? reloadStateWindow.windowHandle()->screen()->availableGeometry()
+        : availableGeometry;
+    const int moveX = moveArea.left() + 24;
+    const int moveY = moveArea.top() + 24;
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
+    reloadStateWindow.move(moveX, moveY);
+    processGuiEvents();
+    const QRect movedNormalBounds = reloadStateWindow.geometry();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [movedNormalBounds](const QJsonObject &frame) {
+            if (frame.value(QStringLiteral("name")).toString() != QStringLiteral("window.normalBoundsChanged")) {
+                return false;
+            }
+            const QJsonObject bounds = frame.value(QStringLiteral("payload")).toObject();
+            return bounds.value(QStringLiteral("x")).toInt() == movedNormalBounds.x()
+                && bounds.value(QStringLiteral("y")).toInt() == movedNormalBounds.y()
+                && bounds.value(QStringLiteral("width")).toInt() == movedNormalBounds.width()
+                && bounds.value(QStringLiteral("height")).toInt() == movedNormalBounds.height();
+        }), "moving the native window did not publish x/y bounds")) return 1;
 
     // Browser refresh shortcuts must not reload the sanitized URL that the
     // renderer keeps visible after bootstrap. Locate this window's QWebView by

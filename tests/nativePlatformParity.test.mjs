@@ -61,7 +61,7 @@ test("portable startup explains a missing WebView2 runtime", () => {
 	assert.match(mainSource, /showMissingWebView2Message/);
 });
 
-test("Windows frameless maximize uses the monitor work area and native caption move", () => {
+test("Windows frameless maximize uses the monitor work area and Qt system move", () => {
 	const header = readFileSync("native/src/MainWindow.h", "utf8");
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	assert.match(header, /bool nativeEvent\(const QByteArray &eventType, void \*message, qintptr \*result\) override/);
@@ -84,11 +84,16 @@ test("Windows frameless maximize uses the monitor work area and native caption m
 	assert.ok(moveStart >= 0 && resizeStart > moveStart);
 	const move = mainWindow.slice(moveStart, resizeStart);
 	assert.match(move, /if \(isFullScreen\(\)\) return/);
-	assert.match(move, /POINT cursor\{\}/);
+	const qtMoveStart = move.indexOf("if (auto *handle = windowHandle())");
+	const windowsFallbackStart = move.indexOf("#ifdef Q_OS_WIN");
+	assert.ok(qtMoveStart >= 0 && windowsFallbackStart > qtMoveStart,
+		"Qt system move must be attempted before the Windows fallback");
+	assert.match(move, /if \(handle->startSystemMove\(\)\) return;/);
+	assert.match(move, /#ifdef Q_OS_WIN[\s\S]*POINT cursor\{\}/);
 	assert.match(move, /GetCursorPos\(&cursor\)/);
 	assert.match(move, /ReleaseCapture\(\)/);
 	assert.match(move, /SendMessageW\([\s\S]*WM_NCLBUTTONDOWN,[\s\S]*HTCAPTION,[\s\S]*MAKELPARAM\(cursor\.x, cursor\.y\)\)/);
-	assert.match(move, /#else[\s\S]*if \(isMaximized\(\)\) return[\s\S]*startSystemMove\(\)/);
+	assert.doesNotMatch(move, /#else[\s\S]*startSystemMove\(\)/);
 });
 
 test("window.unmaximize restores and clamps through MainWindow", () => {
@@ -104,6 +109,14 @@ test("frameless native windows expose all renderer resize edges and Qt system re
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
 	assert.match(mainWindow, /startSystemResize\(edges\)/);
+	const dragStart = header.indexOf('className="window-drag-layer"');
+	const controlsStart = header.indexOf('className="window-controls"', dragStart);
+	assert.ok(dragStart >= 0 && controlsStart > dragStart);
+	const dragLayer = header.slice(dragStart, controlsStart);
+	assert.match(dragLayer, /onPointerDown=\{\(event\) => \{/);
+	assert.match(dragLayer, /if \(event\.button !== 0\) return;/);
+	assert.match(dragLayer, /event\.preventDefault\(\);/);
+	assert.match(dragLayer, /beginWindowDrag\(\);/);
 	for (const edge of ["top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]) {
 		assert.match(header, new RegExp(`edge: "${edge}"`));
 	}
@@ -239,6 +252,27 @@ test("native startup presets and window flags are handled by production helpers"
 	assert.match(mainWindow, /setWindowState\(oldState\)/);
 	assert.match(mainWindow, /if \(wasVisible\) show\(\)/);
 	assert.match(mainWindow, /else hide\(\)/);
+});
+
+test("native normal bounds carry and restore the saved window position", () => {
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	const node = readFileSync("src/native-node/index.ts", "utf8");
+	const state = readFileSync("src/main/windowState.ts", "utf8");
+	assert.match(mainWindow, /\{QStringLiteral\("x"\), rect\.x\(\)\}/);
+	assert.match(mainWindow, /\{QStringLiteral\("y"\), rect\.y\(\)\}/);
+	assert.match(mainWindow, /hasLastPosition/);
+	assert.match(mainWindow, /bounds\.value\(QStringLiteral\("x"\)\)\.isDouble\(\)/);
+	assert.match(mainWindow, /move\(bounds\.value\(QStringLiteral\("x"\)\)\.toInt\(\)/);
+	assert.match(node, /host\.on<unknown>\("window\.normalBoundsChanged"/);
+	assert.match(node, /isFiniteNumber\(payload\.x\)/);
+	assert.match(node, /nextBounds\.x = payload\.x/);
+	assert.match(node, /nextBounds\.y = payload\.y/);
+	assert.match(node, /isFiniteNumber\(pendingBounds\?\.x\)/);
+	assert.match(node, /nextBounds\.x = pendingBounds\.x/);
+	assert.match(node, /nextBounds\.y = pendingBounds\.y/);
+	assert.match(state, /x\?: number/);
+	assert.match(state, /y\?: number/);
+	assert.match(state, /parsed\.x/);
 });
 
 test("native quit waits asynchronously for the sidecar ACK", () => {

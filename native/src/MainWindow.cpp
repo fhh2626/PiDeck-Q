@@ -104,6 +104,10 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
     const QJsonObject bounds = startup.value(QStringLiteral("lastWindowBounds")).toObject();
     const QString startupMode = startup.value(QStringLiteral("startupWindowMode")).toString(QStringLiteral("last"));
     const bool hasLastBounds = !bounds.isEmpty();
+    const bool hasLastPosition = startupMode == QStringLiteral("last")
+        && hasLastBounds
+        && bounds.value(QStringLiteral("x")).isDouble()
+        && bounds.value(QStringLiteral("y")).isDouble();
     const QSize presetSize = startupWindowSize(startupMode);
     const int width = startupMode == QStringLiteral("last") && hasLastBounds
         ? bounds.value(QStringLiteral("width")).toInt(presetSize.width())
@@ -112,6 +116,13 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget 
         ? bounds.value(QStringLiteral("height")).toInt(presetSize.height())
         : presetSize.height();
     resize(qMax(width, minimumWidth()), qMax(height, minimumHeight()));
+    // Older files contain only width/height. Restore x/y when both coordinates
+    // are present, then clamp the complete normal rectangle in case the saved
+    // monitor is no longer connected or its work area has changed.
+    if (hasLastPosition) {
+        move(bounds.value(QStringLiteral("x")).toInt(),
+             bounds.value(QStringLiteral("y")).toInt());
+    }
     // Persisted bounds may come from a larger monitor or from the old 1480×960
     // fallback. Clamp before maximizing so Qt's restore geometry is usable too.
     clampNormalGeometry();
@@ -355,7 +366,18 @@ void MainWindow::applySettings(const QJsonObject &settings)
 void MainWindow::beginSystemMove()
 {
     if (isFullScreen()) return;
+
+    // Use Qt's platform-native move path first, matching beginSystemResize().
+    // This is important for a request originating in the native WebView: Qt
+    // can hand the gesture to the window manager without a synthetic caption
+    // message that may be ignored by WebView2/frameless Windows hosts.
+    if (auto *handle = windowHandle()) {
+        if (handle->startSystemMove()) return;
+    }
+
 #ifdef Q_OS_WIN
+    // Keep a Win32 fallback for Qt/platform-plugin combinations that cannot
+    // start a system move from this RPC callback.
     const HWND hwnd = reinterpret_cast<HWND>(winId());
     if (!hwnd) return;
 
@@ -368,9 +390,6 @@ void MainWindow::beginSystemMove()
         WM_NCLBUTTONDOWN,
         HTCAPTION,
         MAKELPARAM(cursor.x, cursor.y));
-#else
-    if (isMaximized()) return;
-    if (auto *handle = windowHandle()) handle->startSystemMove();
 #endif
 }
 
@@ -414,6 +433,8 @@ void MainWindow::syncStateToHost()
     QRect rect = normalGeometry();
     if (!rect.isValid() || rect.isEmpty()) rect = geometry();
     m_host->sendEvent(QStringLiteral("window.normalBoundsChanged"), QJsonObject{
+        {QStringLiteral("x"), rect.x()},
+        {QStringLiteral("y"), rect.y()},
         {QStringLiteral("width"), rect.width()},
         {QStringLiteral("height"), rect.height()},
     });
@@ -539,8 +560,14 @@ void MainWindow::emitFullScreenState()
 void MainWindow::emitBounds()
 {
     if (!m_host || isMaximized() || isFullScreen()) return;
-    const QRect rect = geometry();
+    // Minimized top-level widgets can expose a transient geometry. Persist the
+    // normal restore rectangle instead, just like syncStateToHost(), so closing
+    // from the tray/minimized state cannot overwrite the last usable position.
+    QRect rect = normalGeometry();
+    if (!rect.isValid() || rect.isEmpty()) rect = geometry();
     m_host->sendEvent(QStringLiteral("window.normalBoundsChanged"), QJsonObject{
+        {QStringLiteral("x"), rect.x()},
+        {QStringLiteral("y"), rect.y()},
         {QStringLiteral("width"), rect.width()},
         {QStringLiteral("height"), rect.height()},
     });
@@ -554,7 +581,14 @@ void MainWindow::emitVisible(bool visible)
 void MainWindow::clampNormalGeometry()
 {
     if (isMaximized() || isMinimized() || isFullScreen()) return;
-    QScreen *screen = windowHandle() ? windowHandle()->screen() : QGuiApplication::primaryScreen();
+    // During startup the top-level handle may still report the primary screen,
+    // even after a saved secondary-monitor position has been applied. Resolve
+    // the work area from the normal rectangle first so valid multi-monitor
+    // positions are retained; fall back to the window/primary screen only when
+    // the rectangle is fully off-screen.
+    QScreen *screen = QGuiApplication::screenAt(geometry().center());
+    if (!screen && windowHandle()) screen = windowHandle()->screen();
+    if (!screen) screen = QGuiApplication::primaryScreen();
     if (!screen) return;
     const QRect available = screen->availableGeometry();
     if (!available.isValid()) return;

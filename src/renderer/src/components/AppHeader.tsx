@@ -97,7 +97,11 @@ export function AppHeader({
       <div
         className="window-drag-layer"
         aria-hidden="true"
-        onPointerDown={() => beginWindowDrag()}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          beginWindowDrag();
+        }}
         onDoubleClick={() => { void toggleMaximizeWindow(); }}
       />
       {showCustomWindowControls ? (
