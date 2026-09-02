@@ -5,6 +5,7 @@
 #include "NativeFilePathLimits.h"
 #include "NativeTheme.h"
 #include "NativeWindowPolicy.h"
+#include "StartupWindowBounds.h"
 #include "WindowsToastNotifier.h"
 
 #include <QtWebView/QWebView>
@@ -26,6 +27,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QList>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QMimeData>
@@ -155,6 +157,23 @@ int main(int argc, char **argv)
     if (!require(primaryScreen != nullptr, "primary screen was not available")) return 1;
     const QRect availableGeometry = primaryScreen->availableGeometry();
     if (!require(availableGeometry.isValid(), "primary screen geometry was not valid")) return 1;
+
+    // Keep screen selection deterministic even on a single-monitor CI desktop:
+    // the window center falls into a synthetic gap, while the second screen has
+    // the larger overlap and must win over the first one.
+    const QList<QRect> syntheticWorkAreas{
+        QRect(-1920, 0, 1920, 1080),
+        QRect(80, 0, 1920, 1080),
+    };
+    const QRect gapCenteredWindow(-1000, 100, 2100, 700);
+    if (!require(!syntheticWorkAreas.at(0).contains(gapCenteredWindow.center())
+                     && !syntheticWorkAreas.at(1).contains(gapCenteredWindow.center()),
+                 "synthetic screen test window was not centered in the monitor gap")) return 1;
+    if (!require(screenIndexWithLargestIntersection(gapCenteredWindow, syntheticWorkAreas) == 1,
+                 "largest screen intersection did not win over center-based selection")) return 1;
+    if (!require(screenIndexWithLargestIntersection(QRect(3'000, 0, 100, 100), syntheticWorkAreas) == -1,
+                 "screen intersection selected a screen for a fully off-screen window")) return 1;
+
     const int savedX = availableGeometry.left() + 24;
     // 1200×760 leaves little vertical slack on the Windows test desktop;
     // choose a position that remains inside the available work area after clamp.
@@ -341,7 +360,19 @@ int main(int argc, char **argv)
                 && frame.value(QStringLiteral("ok")).toBool();
         }), "GUI lifecycle host handshake failed")) return 1;
 
-    MainWindow reloadStateWindow(&lifecycleHost, fixedBounds);
+    int systemMoveCalls = 0;
+    QJsonObject lifecycleBounds = fixedBounds;
+    lifecycleBounds.insert(QStringLiteral("useNativeTitleBar"), false);
+    MainWindow reloadStateWindow(&lifecycleHost, lifecycleBounds, nullptr, [&systemMoveCalls] {
+        ++systemMoveCalls;
+        return true;
+    });
+    if (!require(reloadStateWindow.windowFlags().testFlag(Qt::FramelessWindowHint),
+                 "system move RPC test window was not frameless")) return 1;
+    lifecycleHost.registerHandler(QStringLiteral("window.beginSystemMove"), [&reloadStateWindow](const QJsonObject &) {
+        reloadStateWindow.beginSystemMove();
+        return QJsonValue(QJsonValue::Null);
+    });
     reloadStateWindow.show();
     if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
             return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.visibleChanged")
@@ -361,6 +392,29 @@ int main(int argc, char **argv)
         }), "GUI renderer did not report the reload")) return 1;
     if (!require(reloadStateWindow.isMinimized(),
                  "renderer reload restored a minimized window")) return 1;
+
+    // Exercise the production RPC shape without invoking OS input APIs. The
+    // injected starter returns success, so a fallback would not move the real
+    // desktop cursor; this still verifies request dispatch reaches the method.
+    reloadStateWindow.showNormal();
+    processGuiEvents();
+    systemMoveCalls = 0;
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
+    lifecycleClient.write(hostFrame(QJsonObject{
+        {QStringLiteral("type"), QStringLiteral("request")},
+        {QStringLiteral("id"), QStringLiteral("begin-system-move")},
+        {QStringLiteral("method"), QStringLiteral("window.beginSystemMove")},
+        {QStringLiteral("params"), QJsonObject{}},
+    }));
+    lifecycleClient.flush();
+    if (!require(waitForHostFrame(lifecycleClient, lifecycleBuffer, [](const QJsonObject &frame) {
+            return frame.value(QStringLiteral("type")).toString() == QStringLiteral("response")
+                && frame.value(QStringLiteral("id")).toString() == QStringLiteral("begin-system-move")
+                && frame.value(QStringLiteral("ok")).toBool();
+        }), "window.beginSystemMove RPC did not complete successfully")) return 1;
+    if (!require(systemMoveCalls == 1,
+                 "window.beginSystemMove RPC did not invoke the system move starter")) return 1;
 
     // A replacement sidecar subscribes after the existing window's original
     // show/state events, so it needs an explicit state snapshot. Maximize after

@@ -65,6 +65,7 @@ test("Windows frameless maximize uses the monitor work area and Qt system move",
 	const header = readFileSync("native/src/MainWindow.h", "utf8");
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	assert.match(header, /bool nativeEvent\(const QByteArray &eventType, void \*message, qintptr \*result\) override/);
+	assert.match(header, /using SystemMoveStarter = std::function<bool\(\)>;/);
 	const nativeEventStart = mainWindow.indexOf("bool MainWindow::nativeEvent(");
 	const nativeFilterStart = mainWindow.indexOf("bool MainWindow::nativeEventFilter(");
 	assert.ok(nativeEventStart >= 0 && nativeFilterStart > nativeEventStart);
@@ -88,7 +89,8 @@ test("Windows frameless maximize uses the monitor work area and Qt system move",
 	const windowsFallbackStart = move.indexOf("#ifdef Q_OS_WIN");
 	assert.ok(qtMoveStart >= 0 && windowsFallbackStart > qtMoveStart,
 		"Qt system move must be attempted before the Windows fallback");
-	assert.match(move, /if \(handle->startSystemMove\(\)\) return;/);
+	assert.match(move, /m_systemMoveStarter/);
+	assert.match(move, /handle->startSystemMove\(\)/);
 	assert.match(move, /#ifdef Q_OS_WIN[\s\S]*POINT cursor\{\}/);
 	assert.match(move, /GetCursorPos\(&cursor\)/);
 	assert.match(move, /ReleaseCapture\(\)/);
@@ -252,6 +254,21 @@ test("native startup presets and window flags are handled by production helpers"
 	assert.match(mainWindow, /setWindowState\(oldState\)/);
 	assert.match(mainWindow, /if \(wasVisible\) show\(\)/);
 	assert.match(mainWindow, /else hide\(\)/);
+});
+
+test("native restore picks the screen with the largest normal-bounds intersection", () => {
+	const startupBounds = readFileSync("native/src/StartupWindowBounds.cpp", "utf8");
+	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+	const nativeMain = readFileSync("native/src/main.cpp", "utf8");
+	const guiTest = readFileSync("native/tests/NativeGuiIntegration.cpp", "utf8");
+	assert.match(startupBounds, /screenIndexWithLargestIntersection/);
+	assert.match(mainWindow, /QGuiApplication::screens\(\)/);
+	assert.match(mainWindow, /availableGeometries/);
+	assert.match(mainWindow, /screenIndexWithLargestIntersection\(normal, availableGeometries\)/);
+	assert.match(nativeMain, /window\.beginSystemMove/);
+	assert.match(nativeMain, /mainWindow->beginSystemMove\(\)/);
+	assert.match(guiTest, /gapCenteredWindow/);
+	assert.match(guiTest, /largest screen intersection did not win/);
 });
 
 test("native normal bounds carry and restore the saved window position", () => {

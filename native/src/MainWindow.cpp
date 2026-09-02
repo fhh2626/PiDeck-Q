@@ -13,6 +13,7 @@
 #include <QEvent>
 #include <QHideEvent>
 #include <QKeyEvent>
+#include <QList>
 #include <QMessageBox>
 #include <QShowEvent>
 #include <QPushButton>
@@ -60,14 +61,16 @@ bool isAltKey(WPARAM key)
 #endif
 }
 
-MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent)
+MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup,
+                         QWidget *parent, SystemMoveStarter systemMoveStarter)
     : QMainWindow(parent),
       m_host(host),
       m_surface(std::make_unique<MainWebSurface>(this)),
       m_fileDrop(new FileDropController([host](const QJsonObject &payload) {
           host->sendEvent(QStringLiteral("native.fileDrop"), payload);
       }, m_surface->view(), this)),
-      m_closeToTray(startup.value(QStringLiteral("closeToTray")).toBool(true))
+      m_closeToTray(startup.value(QStringLiteral("closeToTray")).toBool(true)),
+      m_systemMoveStarter(std::move(systemMoveStarter))
 {
     setWindowTitle(QStringLiteral("PiDeck-Q"));
     setWindowIcon(QApplication::windowIcon());
@@ -371,9 +374,13 @@ void MainWindow::beginSystemMove()
     // This is important for a request originating in the native WebView: Qt
     // can hand the gesture to the window manager without a synthetic caption
     // message that may be ignored by WebView2/frameless Windows hosts.
-    if (auto *handle = windowHandle()) {
-        if (handle->startSystemMove()) return;
+    bool systemMoveStarted = false;
+    if (m_systemMoveStarter) {
+        systemMoveStarted = m_systemMoveStarter();
+    } else if (auto *handle = windowHandle()) {
+        systemMoveStarted = handle->startSystemMove();
     }
+    if (systemMoveStarted) return;
 
 #ifdef Q_OS_WIN
     // Keep a Win32 fallback for Qt/platform-plugin combinations that cannot
@@ -582,13 +589,23 @@ void MainWindow::clampNormalGeometry()
 {
     if (isMaximized() || isMinimized() || isFullScreen()) return;
     // During startup the top-level handle may still report the primary screen,
-    // even after a saved secondary-monitor position has been applied. Resolve
-    // the work area from the normal rectangle first so valid multi-monitor
-    // positions are retained; fall back to the window/primary screen only when
-    // the rectangle is fully off-screen.
-    QScreen *screen = QGuiApplication::screenAt(geometry().center());
+    // even after a saved secondary-monitor position has been applied. Pick the
+    // work area containing the largest part of the normal rectangle so a large
+    // window centered in a gap between monitors is not moved to the primary
+    // screen by accident.
+    QRect normal = normalGeometry();
+    if (!normal.isValid() || normal.isEmpty()) normal = geometry();
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    QList<QRect> availableGeometries;
+    availableGeometries.reserve(screens.size());
+    for (QScreen *candidate : screens) {
+        availableGeometries.append(candidate ? candidate->availableGeometry() : QRect{});
+    }
+    const int screenIndex = screenIndexWithLargestIntersection(normal, availableGeometries);
+    QScreen *screen = screenIndex >= 0 && screenIndex < screens.size()
+        ? screens.at(screenIndex)
+        : QGuiApplication::primaryScreen();
     if (!screen && windowHandle()) screen = windowHandle()->screen();
-    if (!screen) screen = QGuiApplication::primaryScreen();
     if (!screen) return;
     const QRect available = screen->availableGeometry();
     if (!available.isValid()) return;
@@ -596,7 +613,7 @@ void MainWindow::clampNormalGeometry()
     // A hard 880×640 minimum defeats clamping on high-DPI, RDP, VM, or small
     // displays. Lower it only as far as this screen's available work area.
     setMinimumSize(minimumWindowSizeForAvailable(available.size()));
-    QRect bounded = geometry();
+    QRect bounded = normal;
     bounded.setWidth(qMin(bounded.width(), available.width()));
     bounded.setHeight(qMin(bounded.height(), available.height()));
     const int maxLeft = available.right() - bounded.width() + 1;

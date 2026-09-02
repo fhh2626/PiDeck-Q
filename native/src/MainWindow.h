@@ -21,7 +21,12 @@ class FileDropController;
 
 class MainWindow final : public QMainWindow, public QAbstractNativeEventFilter {
 public:
-    MainWindow(HostRpcServer *host, const QJsonObject &startup, QWidget *parent = nullptr);
+    // The optional starter is a deterministic seam for exercising the RPC and
+    // dispatch path without moving the user's real desktop cursor in tests.
+    using SystemMoveStarter = std::function<bool()>;
+
+    MainWindow(HostRpcServer *host, const QJsonObject &startup,
+               QWidget *parent = nullptr, SystemMoveStarter systemMoveStarter = {});
     ~MainWindow() override;
 
     bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
@@ -73,6 +78,7 @@ private:
     std::unique_ptr<MainWebSurface> m_surface;
     FileDropController *m_fileDrop = nullptr;
     bool m_closeToTray = true;
+    SystemMoveStarter m_systemMoveStarter;
     bool m_quitting = false;
     std::function<void()> m_quitHandler;
     std::function<bool()> m_closeHideAvailableHandler;
