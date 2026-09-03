@@ -6,6 +6,18 @@ import type { UIMessage } from "ai";
  * 因此这里只在渲染前拼接相邻 part，保持一段回复的视觉连续性。工具等其他 part 是边界，
  * 不能跨越合并，否则会破坏真实的 reasoning/text/tool 时序。
  */
+function isWebToolPart(part: UIMessage["parts"][number]): boolean {
+	return part.type === "dynamic-tool"
+		|| (typeof part.type === "string" && part.type.startsWith("tool-"));
+}
+
+function mergeAdjacentReasoningText(previous: string, next: string): string {
+	if (previous === next) return previous;
+	if (previous.startsWith(next)) return previous;
+	if (next.startsWith(previous)) return next;
+	return previous + next;
+}
+
 export function mergeAdjacentWebMessageParts(
 	parts: UIMessage["parts"],
 ): UIMessage["parts"] {
@@ -15,7 +27,7 @@ export function mergeAdjacentWebMessageParts(
 		if (part.type === "reasoning" && previous?.type === "reasoning") {
 			merged[merged.length - 1] = {
 				...previous,
-				text: previous.text + part.text,
+				text: mergeAdjacentReasoningText(previous.text, part.text),
 			};
 			continue;
 		}
@@ -29,4 +41,20 @@ export function mergeAdjacentWebMessageParts(
 		merged.push(part);
 	}
 	return merged;
+}
+
+/** 消息仍在流时，只有最后一段未完成 reasoning 扫光；前面的思考卡保持结束态。 */
+export function isWebReasoningPartRunning(
+	parts: UIMessage["parts"],
+	index: number,
+	messageStreaming: boolean,
+): boolean {
+	if (!messageStreaming) return false;
+	const part = parts[index];
+	if (!part || part.type !== "reasoning") return false;
+	const rest = parts.slice(index + 1);
+	if (rest.some((item) => item.type === "reasoning")) return false;
+	if (rest.some((item) => isWebToolPart(item))) return false;
+	if (rest.some((item) => item.type === "text" && item.text.trim())) return false;
+	return true;
 }

@@ -30,7 +30,7 @@ import type {
 import { MarkdownStream } from "@/components/session/MarkdownStream";
 import { SingleLinePreview } from "@/components/session/SingleLinePreview";
 import { TimelineMarker } from "../components/session/TimelineMarker";
-import { mergeAdjacentWebMessageParts } from "./webMessageParts";
+import { isWebReasoningPartRunning, mergeAdjacentWebMessageParts } from "./webMessageParts";
 
 /** 用户消息右对齐气泡（结构与桌面 UserBubble 一致，去掉操作栏/附件能力）。 */
 export const WebUserBubble = memo(function WebUserBubble(props: { message: UIMessage }) {
@@ -204,7 +204,13 @@ export const WebAssistantMessage = memo(function WebAssistantMessage(props: {
 		<div className="w-full min-w-0">
 			{displayParts.map((part, index) => {
 				if (part.type === "reasoning") {
-					return <WebThinkingBlock key={index} text={part.text} running={isStreaming} />;
+					return (
+						<WebThinkingBlock
+							key={index}
+							text={part.text}
+							running={isWebReasoningPartRunning(displayParts, index, isStreaming)}
+						/>
+					);
 				}
 				if (
 					part.type === "dynamic-tool" ||

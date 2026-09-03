@@ -45,7 +45,13 @@ import {
 	type WebConnectionSnapshot,
 } from "./webConnection";
 import { canRequestWebHistoryPage, hasMoreWebHistory, type WebHistoryMeta } from "./webHistory";
-import { isWebChatStreaming, isWebComposerBusy, shouldResumeWebStream } from "./webRuntimeBusy";
+import {
+	isWebChatStreaming,
+	isWebComposerBusy,
+	isWebRuntimeBusy,
+	shouldApplyWebRuntimeSnapshotToChat,
+	shouldResumeWebStream,
+} from "./webRuntimeBusy";
 
 export function WebChatApp() {
 	const [state, setState] = useState<WebState>({
@@ -158,16 +164,18 @@ export function WebChatApp() {
 		if (!snapshot) return;
 		const authoritative = chatMessagesToUiMessages(snapshot);
 		const current = messagesBySessionRef.current[sessionId] ?? [];
-		const idle = !streamingRef.current;
+		const runtime = nextState.runtimes.find((item) => item.sessionId === sessionId);
+		const applySnapshot = shouldApplyWebRuntimeSnapshotToChat({
+			chatStreaming: streamingRef.current,
+			runtime,
+		});
 		const merged = mergeAuthoritativeUiMessages(current, authoritative, {
-			dropUnmatchedTrailingPlaceholders: idle,
+			dropUnmatchedTrailingPlaceholders: applySnapshot,
 		});
 		messagesBySessionRef.current[sessionId] = merged;
-		// 流式期间由 SSE/useChat 保持逐 token 画面；状态快照只更新缓存，
-		// 等状态变为空闲后再替换为主进程的最终消息。
-		// 主进程运行时快照只含尾部窗口。空闲后如果直接整表替换，
-		// 刚结束的 SSE 回复可能被更早的投影片段覆盖，表现为“这条没回、下一条回了两次”。
-		if (idle && activeSessionIdRef.current === sessionId && merged !== current) {
+		// SSE 或 runtime 仍忙时不要把拆开的尾部快照推进 useChat，否则旧思考/工具会垫底。
+		// 缓存仍合并，等双方空闲后再替换为主进程的最终消息。
+		if (applySnapshot && activeSessionIdRef.current === sessionId && merged !== current) {
 			setMessages(merged);
 		}
 	}, [setMessages]);

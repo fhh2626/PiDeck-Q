@@ -8,6 +8,7 @@ const {
 	isWebRuntimeBusy,
 	isWebComposerBusy,
 	shouldResumeWebStream,
+	shouldApplyWebRuntimeSnapshotToChat,
 } = loadTsCommonJs("src/renderer/src/web/webRuntimeBusy.ts");
 
 test("useChat ready + runtime running is composer busy", () => {
@@ -140,4 +141,49 @@ test("WebChatApp wires composerBusy into composer and timeline chrome", () => {
 	assert.match(silent, /recoveringStreamSessionRef\.current = null/);
 	assert.doesNotMatch(silent, /if \(!composerBusy\) return/);
 	assert.doesNotMatch(silent, /status !== "running" && !activeRuntime\?\.isStreaming/);
+});
+
+test("ready chat does not apply a runtime snapshot while the agent is running", () => {
+	assert.equal(shouldApplyWebRuntimeSnapshotToChat({
+		chatStreaming: false,
+		runtime: { status: "running" },
+	}), false);
+});
+
+test("ready chat applies a runtime snapshot once the agent is idle", () => {
+	assert.equal(shouldApplyWebRuntimeSnapshotToChat({
+		chatStreaming: false,
+		runtime: { status: "idle" },
+	}), true);
+});
+
+test("streaming chat does not apply a runtime snapshot even when idle", () => {
+	assert.equal(shouldApplyWebRuntimeSnapshotToChat({
+		chatStreaming: true,
+		runtime: { status: "idle" },
+	}), false);
+});
+
+test("ready chat does not apply a snapshot while a tool is executing", () => {
+	assert.equal(shouldApplyWebRuntimeSnapshotToChat({
+		chatStreaming: false,
+		runtime: { isExecutingTool: true },
+	}), false);
+});
+
+test("ready chat applies a snapshot when no runtime is listed", () => {
+	assert.equal(shouldApplyWebRuntimeSnapshotToChat({
+		chatStreaming: false,
+	}), true);
+});
+
+test("WebChatApp only setMessages runtime snapshots when applySnapshot is true", () => {
+	const app = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
+	const syncStart = app.indexOf("将主进程运行时尾部快照");
+	const syncEnd = app.indexOf("切换会话：优先从缓存恢复", syncStart);
+	assert.ok(syncStart >= 0 && syncEnd > syncStart);
+	const sync = app.slice(syncStart, syncEnd);
+	assert.match(sync, /shouldApplyWebRuntimeSnapshotToChat/);
+	assert.match(sync, /if \(applySnapshot && activeSessionIdRef\.current === sessionId && merged !== current\)/);
+	assert.doesNotMatch(sync, /const idle = !streamingRef\.current/);
 });

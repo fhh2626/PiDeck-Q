@@ -56,3 +56,14 @@ export function shouldResumeWebStream(input: {
 	if (input.runtime?.status !== "running") return false;
 	return input.runtime.isStreaming === true || input.runtime.isExecutingTool === true;
 }
+
+/**
+ * 把运行时快照推进 useChat 必须 SSE 空闲且 runtime 不 busy。
+ * 停止键可以更保守地显示忙碌；写时间线不能在思考/工具仍在跑时用拆开的尾部快照盖直播。
+ */
+export function shouldApplyWebRuntimeSnapshotToChat(input: {
+	chatStreaming: boolean;
+	runtime?: WebRuntimeBusyInfo;
+}): boolean {
+	return !input.chatStreaming && !isWebRuntimeBusy(input.runtime);
+}

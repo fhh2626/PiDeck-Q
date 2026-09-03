@@ -333,6 +333,37 @@ test("drops a trailing local thinking/tool placeholder after the authoritative t
 	assert.equal(merged.at(-1)?.parts.find((part) => part.type === "text")?.text, "真正最新的回复");
 });
 
+test("idle merge drops a leftover combined SSE assistant after the split snapshot timeline", () => {
+	const current = [
+		{ id: "web-u-1", role: "user", parts: [{ type: "text", text: "继续" }] },
+		{
+			id: "web-live",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "旧思考" },
+				{ type: "dynamic-tool", toolName: "bash", toolCallId: "old-tool", state: "output-available", input: {}, output: "done" },
+				{ type: "text", text: "真正最新" },
+			],
+		},
+	];
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "rt-u-1", role: "user", text: "继续", timestamp: 100 }),
+		message({ id: "rt-think", role: "assistant", text: "", thinking: "旧思考", timestamp: 110 }),
+		message({ id: "rt-tool", role: "tool", text: "done", timestamp: 120, meta: { toolCallId: "old-tool", toolName: "bash" } }),
+		message({ id: "rt-latest", role: "assistant", text: "真正最新的回复", timestamp: 130 }),
+	]);
+
+	const streaming = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.equal(streaming.some((item) => item.id === "web-live"), true);
+
+	const idle = mergeAuthoritativeUiMessages(current, authoritative, {
+		dropUnmatchedTrailingPlaceholders: true,
+	});
+	assert.equal(idle.length, 4);
+	assert.equal(idle.some((item) => item.id === "web-live"), false);
+	assert.equal(idle.at(-1)?.parts.find((part) => part.type === "text")?.text, "真正最新的回复");
+});
+
 test("reorders matched cached messages to the authoritative timeline after reconnect", () => {
 	const current = chatMessagesToUiMessages([
 		message({ id: "cached-user", role: "user", text: "继续", timestamp: 100, meta: { entryId: "entry-user" } }),
