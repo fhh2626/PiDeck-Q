@@ -82,7 +82,11 @@ export class HostBridge {
 
 		this.socket.on("data", (chunk: Buffer) => this.receive(chunk));
 		this.socket.on("close", () => this.handleClose(new Error("Native host connection closed")));
-		this.socket.on("error", (error) => this.handleClose(error));
+		this.socket.on("error", (error) => {
+			// Windows commonly reports an abrupt peer shutdown as ECONNRESET before "close".
+			// Normalize the public bridge error while retaining the transport failure for diagnostics.
+			this.handleClose(new Error(`Native host connection closed: ${error.message}`, { cause: error }));
+		});
 
 		const hello = this.waitForHello();
 		try {
