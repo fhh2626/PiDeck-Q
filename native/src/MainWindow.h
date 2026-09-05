@@ -6,6 +6,7 @@
 #include <QDropEvent>
 #include <QJsonObject>
 #include <QMainWindow>
+#include <QRect>
 #include <QUrl>
 
 #include <functional>
@@ -71,7 +72,11 @@ private:
     void emitBounds();
     void emitVisible(bool visible);
     void applyStartupMode(const QString &mode, bool hasLastBounds);
+    void rememberNormalGeometry();
     void clampNormalGeometry();
+    void scheduleRestoredGeometryClamp();
+    QRect currentNormalGeometry() const;
+    bool isUsableNormalGeometry(const QRect &rect) const;
 
     HostRpcServer *m_host = nullptr;
     QUrl m_reloadUrl;
@@ -82,6 +87,9 @@ private:
     bool m_quitting = false;
     std::function<void()> m_quitHandler;
     std::function<bool()> m_closeHideAvailableHandler;
+    QRect m_lastUsableNormalGeometry;
+    bool m_systemMoveActive = false;
+    bool m_restoringNormalGeometry = false;
 #ifdef Q_OS_WIN
     quintptr m_nativeWebViewWinId = 0;
     bool m_nativeControlDown = false;

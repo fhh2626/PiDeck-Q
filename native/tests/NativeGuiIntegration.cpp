@@ -174,6 +174,19 @@ int main(int argc, char **argv)
     if (!require(screenIndexWithLargestIntersection(QRect(3'000, 0, 100, 100), syntheticWorkAreas) == -1,
                  "screen intersection selected a screen for a fully off-screen window")) return 1;
 
+    const QRect workArea(0, 0, 1920, 1080);
+    const QRect onScreenRestore = clampRestoredNormalGeometry(QRect(80, 60, 1200, 760), workArea);
+    if (!require(onScreenRestore == QRect(80, 60, 1200, 760),
+                 "visible restore bounds were moved unnecessarily")) return 1;
+    const QRect bottomLeftPin = clampRestoredNormalGeometry(QRect(0, 4000, 1463, 775), workArea);
+    if (!require(bottomLeftPin.left() > workArea.left()
+                     && bottomLeftPin.top() > workArea.top()
+                     && bottomLeftPin.right() < workArea.right()
+                     && bottomLeftPin.bottom() < workArea.bottom(),
+                 "off-screen restore recentered instead of pinning to the bottom-left")) return 1;
+    if (!require(bottomLeftPin.size() == QSize(1463, 775),
+                 "off-screen restore changed the restored window size")) return 1;
+
     const int savedX = availableGeometry.left() + 24;
     // 1200×760 leaves little vertical slack on the Windows test desktop;
     // choose a position that remains inside the available work area after clamp.
@@ -252,6 +265,16 @@ int main(int argc, char **argv)
                 && oversizedMinMaxInfo.ptMaxSize.y == oversizedWork.bottom - oversizedWork.top,
             "frameless maximize did not use the Windows monitor work area")) return 1;
 #endif
+    const QRect knownNormal(
+        availableGeometry.left() + 48,
+        availableGeometry.top() + 36,
+        qMin(1100, availableGeometry.width() - 96),
+        qMin(720, availableGeometry.height() - 72));
+    oversized.setGeometry(knownNormal);
+    processGuiEvents();
+    const QRect preMaximizeGeometry = oversized.geometry();
+    if (!require(preMaximizeGeometry.size() == knownNormal.size(),
+                 "frameless window did not keep a distinct normal size before maximize")) return 1;
     oversized.showMaximized();
     processGuiEvents();
 #ifdef Q_OS_WIN
@@ -267,6 +290,7 @@ int main(int argc, char **argv)
 #endif
     oversized.showNormal();
     processGuiEvents();
+    processGuiEvents();
     const QScreen *restoredScreen = oversized.windowHandle() && oversized.windowHandle()->screen()
         ? oversized.windowHandle()->screen()
         : primaryScreen;
@@ -279,7 +303,77 @@ int main(int argc, char **argv)
     if (!require(restoredAvailable.contains(restoredGeometry.topLeft())
                      && restoredAvailable.contains(restoredGeometry.bottomRight()),
                  "restored normal geometry was not placed on screen")) return 1;
+    if (!require(restoredGeometry.size() == preMaximizeGeometry.size(),
+                 "frameless maximize/restore did not restore the last usable size")) return 1;
+    if (!require(qAbs(restoredGeometry.x() - preMaximizeGeometry.x()) <= 16
+                     && qAbs(restoredGeometry.y() - preMaximizeGeometry.y()) <= 16,
+                 "frameless maximize/restore forgot the last usable normal position")) return 1;
+    const int pinnedY = restoredAvailable.bottom() - restoredGeometry.height() + 1;
+    if (!require(restoredGeometry.y() != pinnedY
+                     || qAbs(preMaximizeGeometry.y() - pinnedY) <= 16,
+                 "frameless maximize/restore pinned to the work-area bottom")) return 1;
+
+    oversized.toggleMaximize();
+    processGuiEvents();
+    if (!require(oversized.isMaximized(), "toggleMaximize did not maximize the restored window")) return 1;
+    oversized.toggleMaximize();
+    processGuiEvents();
+    processGuiEvents();
+    const QRect toggleRestored = oversized.geometry();
+    if (!require(!oversized.isMaximized(), "toggleMaximize did not restore the window")) return 1;
+    if (!require(toggleRestored.size() == preMaximizeGeometry.size(),
+                 "toggleMaximize restore did not keep the last usable size")) return 1;
+    if (!require(qAbs(toggleRestored.x() - preMaximizeGeometry.x()) <= 16
+                     && qAbs(toggleRestored.y() - preMaximizeGeometry.y()) <= 16,
+                 "toggleMaximize restore forgot the last usable normal position")) return 1;
+    if (!require(toggleRestored.y() != pinnedY
+                     || qAbs(preMaximizeGeometry.y() - pinnedY) <= 16,
+                 "toggleMaximize restore pinned to the work-area bottom")) return 1;
     oversized.hide();
+
+    const QJsonObject sizeOnlyBounds{
+        {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
+        {QStringLiteral("useNativeTitleBar"), false},
+        {QStringLiteral("lastWindowBounds"), QJsonObject{
+            {QStringLiteral("width"), 1100},
+            {QStringLiteral("height"), 720},
+        }},
+    };
+    MainWindow sizeOnly(nullptr, sizeOnlyBounds);
+    sizeOnly.show();
+    processGuiEvents();
+    sizeOnly.showNormal();
+    processGuiEvents();
+    const QRect sizeOnlyKnownNormal(
+        availableGeometry.left() + 64,
+        availableGeometry.top() + 48,
+        qMin(1100, availableGeometry.width() - 128),
+        qMin(720, availableGeometry.height() - 96));
+    sizeOnly.setGeometry(sizeOnlyKnownNormal);
+    processGuiEvents();
+    const QRect sizeOnlyBeforeMaximize = sizeOnly.geometry();
+    if (!require(sizeOnlyBeforeMaximize.size() == sizeOnlyKnownNormal.size(),
+                 "size-only last bounds did not keep a distinct normal size before maximize")) return 1;
+    sizeOnly.showMaximized();
+    processGuiEvents();
+    sizeOnly.showNormal();
+    processGuiEvents();
+    processGuiEvents();
+    const QRect sizeOnlyRestored = sizeOnly.geometry();
+    const QRect sizeOnlyAvailable = sizeOnly.windowHandle() && sizeOnly.windowHandle()->screen()
+        ? sizeOnly.windowHandle()->screen()->availableGeometry()
+        : availableGeometry;
+    if (!require(!sizeOnly.isMaximized(), "size-only last bounds did not leave maximized state")) return 1;
+    if (!require(sizeOnlyRestored.size() == sizeOnlyBeforeMaximize.size(),
+                 "size-only last bounds restore did not restore the last usable size")) return 1;
+    if (!require(qAbs(sizeOnlyRestored.x() - sizeOnlyBeforeMaximize.x()) <= 16
+                     && qAbs(sizeOnlyRestored.y() - sizeOnlyBeforeMaximize.y()) <= 16,
+                 "size-only last bounds restore forgot the last usable normal position")) return 1;
+    const int sizeOnlyPinnedY = sizeOnlyAvailable.bottom() - sizeOnlyRestored.height() + 1;
+    if (!require(sizeOnlyRestored.y() != sizeOnlyPinnedY
+                     || qAbs(sizeOnlyBeforeMaximize.y() - sizeOnlyPinnedY) <= 16,
+                 "size-only last bounds restore pinned to the work-area bottom")) return 1;
+    sizeOnly.hide();
 
     fixed.show();
     processGuiEvents();
@@ -703,6 +797,51 @@ int main(int argc, char **argv)
                      "complex clipboard image was not reduced after exceeding the PNG budget")) return 1;
         if (!require(complexPng.size() <= 5 * 1024 * 1024,
                      "adaptive clipboard PNG still exceeded the byte budget")) return 1;
+    }
+
+    {
+        bool systemMoveStarted = false;
+        MainWindow dragFromMax(nullptr, oversizedBounds, nullptr, [&] {
+            systemMoveStarted = true;
+            return true;
+        });
+        dragFromMax.show();
+        processGuiEvents();
+        dragFromMax.showNormal();
+        processGuiEvents();
+        dragFromMax.setGeometry(knownNormal);
+        processGuiEvents();
+        const QRect dragPreMax = dragFromMax.geometry();
+        if (!require(dragPreMax.size() == knownNormal.size(),
+                     "drag-from-max window did not keep a distinct normal size before maximize")) return 1;
+        dragFromMax.showMaximized();
+        processGuiEvents();
+        dragFromMax.beginSystemMove();
+        if (!require(systemMoveStarted, "beginSystemMove starter was not invoked")) return 1;
+        dragFromMax.showNormal();
+        processGuiEvents();
+#ifdef Q_OS_WIN
+        const HWND dragHwnd = reinterpret_cast<HWND>(dragFromMax.winId());
+        if (!require(dragHwnd != nullptr, "drag-from-max HWND was unavailable")) return 1;
+        SendMessageW(dragHwnd, WM_EXITSIZEMOVE, 0, 0);
+#endif
+        processGuiEvents();
+        processGuiEvents();
+        const QRect dragRestored = dragFromMax.geometry();
+        const QRect dragAvailable = dragFromMax.windowHandle() && dragFromMax.windowHandle()->screen()
+            ? dragFromMax.windowHandle()->screen()->availableGeometry()
+            : availableGeometry;
+        const int dragPinnedY = dragAvailable.bottom() - dragRestored.height() + 1;
+        if (!require(!dragFromMax.isMaximized(), "drag-from-max restore stayed maximized")) return 1;
+        if (!require(dragRestored.size() == dragPreMax.size(),
+                     "drag-from-max restore did not keep the last usable size")) return 1;
+        if (!require(qAbs(dragRestored.x() - dragPreMax.x()) <= 16
+                         && qAbs(dragRestored.y() - dragPreMax.y()) <= 16,
+                     "drag-from-max restore forgot the last usable normal position")) return 1;
+        if (!require(dragRestored.y() != dragPinnedY
+                         || qAbs(dragPreMax.y() - dragPinnedY) <= 16,
+                     "drag-from-max restore pinned to the work-area bottom")) return 1;
+        dragFromMax.hide();
     }
 
     return 0;

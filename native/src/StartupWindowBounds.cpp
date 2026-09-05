@@ -39,3 +39,33 @@ int screenIndexWithLargestIntersection(const QRect &windowGeometry,
     }
     return largestIndex;
 }
+
+QRect clampRestoredNormalGeometry(const QRect &normal, const QRect &available)
+{
+    if (!available.isValid() || available.isEmpty()) return normal;
+
+    QRect bounded = normal.isValid() && !normal.isEmpty() ? normal : available;
+    bounded.setWidth(qBound(1, bounded.width(), available.width()));
+    bounded.setHeight(qBound(1, bounded.height(), available.height()));
+
+    const QRect overlap = bounded.intersected(available);
+    const qint64 boundedArea = qint64(bounded.width()) * qint64(bounded.height());
+    const qint64 overlapArea = overlap.isValid() && !overlap.isEmpty()
+        ? qint64(overlap.width()) * qint64(overlap.height())
+        : 0;
+    // Qt can briefly report a restored rectangle that barely intersects the
+    // work area (or sits entirely below it). Clamping that rectangle blindly
+    // pins the window to the bottom-left. Recentre when less than half of the
+    // restored window would remain visible.
+    if (boundedArea <= 0 || overlapArea * 2 < boundedArea) {
+        bounded.moveLeft(available.left() + (available.width() - bounded.width()) / 2);
+        bounded.moveTop(available.top() + (available.height() - bounded.height()) / 2);
+        return bounded;
+    }
+
+    const int maxLeft = available.right() - bounded.width() + 1;
+    const int maxTop = available.bottom() - bounded.height() + 1;
+    bounded.moveLeft(qBound(available.left(), bounded.left(), maxLeft));
+    bounded.moveTop(qBound(available.top(), bounded.top(), maxTop));
+    return bounded;
+}

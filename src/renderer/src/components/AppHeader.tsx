@@ -14,7 +14,6 @@ type Props = {
   isWindowMaximized: () => Promise<boolean>;
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
-  beginWindowDrag: () => void;
   beginWindowResize: (edge: WindowResizeEdge) => void;
   enableNativeResize: boolean;
 };
@@ -52,7 +51,6 @@ export function AppHeader({
   isWindowMaximized,
   onWindowMaximizedChange,
   closeWindow,
-  beginWindowDrag,
   beginWindowResize,
   enableNativeResize,
 }: Props) {
@@ -97,12 +95,6 @@ export function AppHeader({
       <div
         className="window-drag-layer"
         aria-hidden="true"
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          beginWindowDrag();
-        }}
-        onDoubleClick={() => { void toggleMaximizeWindow(); }}
       />
       {showCustomWindowControls ? (
         <div className="window-controls" aria-label={t("app.windowControls")}>

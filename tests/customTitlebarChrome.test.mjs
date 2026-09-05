@@ -72,6 +72,13 @@ test("window controls stay above session tabs so close is never covered", () => 
     foundation,
     /\.custom-titlebar-enabled \.session-tabs-bar \{[\s\S]*?z-index:\s*930;/,
   );
+  // Transparent drag layer must stay below tabs/logo (930). Raising it would
+  // swallow clicks; Qt drag is forwarded from AppShell capture instead.
+  assert.match(foundation, /\.window-drag-layer \{[\s\S]*?z-index:\s*900;/);
+  assert.match(shell, /onPointerDownCapture/);
+  assert.match(shell, /onDoubleClickCapture/);
+  assert.match(shell, /enableNativeResize/);
+  assert.match(shell, /shouldBeginWindowDrag\(event\.target\)/);
 });
 
 test("workbench content sits below shared tabs chrome (no double drag padding)", () => {
@@ -179,7 +186,8 @@ test("collapsed sidebar keeps 14px gutter; restore lives in tab bar", () => {
   assert.doesNotMatch(foundation, /list-toggle-native\.floating/);
   assert.match(tabs, /listCollapsed && props\.onToggleListCollapsed/);
   assert.match(tabs, /PanelLeft/);
-  // Tab 栏必须压过透明拖拽层，否则展开按钮点不到
+  // Tab 栏必须压过透明拖拽层，否则展开按钮点不到。拖动改由外壳捕获阶段转发，
+  // 不能把透明层抬到 930 以上，否则会挡住 Tab 和按钮。
   assert.match(
     foundation,
     /\.custom-titlebar-enabled \.session-tabs-bar \{[\s\S]*?z-index:\s*930;/,

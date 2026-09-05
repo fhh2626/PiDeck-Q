@@ -95,7 +95,11 @@ test("Windows frameless maximize uses the monitor work area and Qt system move",
 	assert.match(move, /GetCursorPos\(&cursor\)/);
 	assert.match(move, /ReleaseCapture\(\)/);
 	assert.match(move, /SendMessageW\([\s\S]*WM_NCLBUTTONDOWN,[\s\S]*HTCAPTION,[\s\S]*MAKELPARAM\(cursor\.x, cursor\.y\)\)/);
+	assert.match(move, /Leave m_systemMoveActive set/);
+	assert.doesNotMatch(move, /m_systemMoveActive = false;\s*\n#ifdef Q_OS_WIN/);
 	assert.doesNotMatch(move, /#else[\s\S]*startSystemMove\(\)/);
+	assert.match(nativeEvent, /WM_EXITSIZEMOVE/);
+	assert.match(mainWindow, /scheduleRestoredGeometryClamp\(\)/);
 });
 
 test("window.unmaximize restores and clamps through MainWindow", () => {
@@ -110,15 +114,20 @@ test("window.unmaximize restores and clamps through MainWindow", () => {
 test("frameless native windows expose all renderer resize edges and Qt system resize", () => {
 	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
 	const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
+	const shell = readFileSync("src/renderer/src/components/app/AppShell.tsx", "utf8");
 	assert.match(mainWindow, /startSystemResize\(edges\)/);
 	const dragStart = header.indexOf('className="window-drag-layer"');
 	const controlsStart = header.indexOf('className="window-controls"', dragStart);
 	assert.ok(dragStart >= 0 && controlsStart > dragStart);
 	const dragLayer = header.slice(dragStart, controlsStart);
-	assert.match(dragLayer, /onPointerDown=\{\(event\) => \{/);
-	assert.match(dragLayer, /if \(event\.button !== 0\) return;/);
-	assert.match(dragLayer, /event\.preventDefault\(\);/);
-	assert.match(dragLayer, /beginWindowDrag\(\);/);
+	assert.doesNotMatch(dragLayer, /beginWindowDrag\(\);/);
+	assert.doesNotMatch(dragLayer, /onDoubleClick/);
+	assert.match(shell, /onPointerDownCapture=\{\(event\) => \{/);
+	assert.match(shell, /enableNativeResize/);
+	assert.match(shell, /shouldBeginWindowDrag\(event\.target\)/);
+	assert.match(shell, /beginWindowDrag\(\);/);
+	assert.match(shell, /onDoubleClickCapture=\{\(event\) => \{/);
+	assert.match(shell, /toggleMaximizeWindow\(\);/);
 	for (const edge of ["top", "bottom", "left", "right", "top-left", "top-right", "bottom-left", "bottom-right"]) {
 		assert.match(header, new RegExp(`edge: "${edge}"`));
 	}
@@ -262,13 +271,20 @@ test("native restore picks the screen with the largest normal-bounds intersectio
 	const nativeMain = readFileSync("native/src/main.cpp", "utf8");
 	const guiTest = readFileSync("native/tests/NativeGuiIntegration.cpp", "utf8");
 	assert.match(startupBounds, /screenIndexWithLargestIntersection/);
+	assert.match(startupBounds, /clampRestoredNormalGeometry/);
 	assert.match(mainWindow, /QGuiApplication::screens\(\)/);
 	assert.match(mainWindow, /availableGeometries/);
 	assert.match(mainWindow, /screenIndexWithLargestIntersection\(normal, availableGeometries\)/);
+	assert.match(mainWindow, /clampRestoredNormalGeometry\(normal, available\)/);
 	assert.match(nativeMain, /window\.beginSystemMove/);
 	assert.match(nativeMain, /mainWindow->beginSystemMove\(\)/);
 	assert.match(guiTest, /gapCenteredWindow/);
 	assert.match(guiTest, /largest screen intersection did not win/);
+	assert.match(guiTest, /off-screen restore recentered instead of pinning to the bottom-left/);
+	assert.match(guiTest, /frameless maximize\/restore forgot the last usable normal position/);
+	assert.match(guiTest, /size-only last bounds restore forgot the last usable normal position/);
+	assert.match(mainWindow, /m_lastUsableNormalGeometry/);
+	assert.match(mainWindow, /QTimer::singleShot\(0, this/);
 });
 
 test("native normal bounds carry and restore the saved window position", () => {

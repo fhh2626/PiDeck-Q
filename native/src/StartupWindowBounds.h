@@ -17,3 +17,10 @@ QSize minimumWindowSizeForAvailable(const QSize &availableSize);
  */
 int screenIndexWithLargestIntersection(const QRect &windowGeometry,
                                        const QList<QRect> &availableGeometries);
+
+/**
+ * Fits a restored normal rectangle onto a work area without forcing every
+ * restore to the bottom-left corner. Keep a still-visible window on-screen;
+ * only recentre windows whose overlap with the work area is under half.
+ */
+QRect clampRestoredNormalGeometry(const QRect &normal, const QRect &available);

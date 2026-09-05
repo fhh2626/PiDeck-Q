@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { resolveNativeWindowChrome } from "../src/renderer/src/native/nativeWindowChrome.ts";
@@ -33,4 +34,9 @@ test("non-native runtimes do not receive Qt resize handles", () => {
     useNativeTitleBar: false,
     enableCustomResize: false,
   });
+});
+
+test("custom titlebar system-move RPC is reserved for native frameless hosts", () => {
+  const shell = readFileSync(new URL("../src/renderer/src/components/app/AppShell.tsx", import.meta.url), "utf8");
+  assert.match(shell, /if \(useNativeTitleBar \|\| !enableNativeResize\) return/);
 });

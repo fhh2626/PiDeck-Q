@@ -19,6 +19,7 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QSize>
+#include <QTimer>
 #include <QUrl>
 #include <QWindow>
 
@@ -129,6 +130,7 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup,
     // Persisted bounds may come from a larger monitor or from the old 1480×960
     // fallback. Clamp before maximizing so Qt's restore geometry is usable too.
     clampNormalGeometry();
+    rememberNormalGeometry();
     applyStartupMode(startupMode, hasLastBounds);
 
     connect(m_surface->view(), &QWebView::loadingChanged, this,
@@ -158,6 +160,16 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 {
 #ifdef Q_OS_WIN
     auto *nativeMessage = static_cast<MSG *>(message);
+    if (nativeMessage && nativeMessage->message == WM_EXITSIZEMOVE && m_systemMoveActive) {
+        // The nested Win32 move loop (Qt startSystemMove or the HTCAPTION
+        // fallback) posts this when the user releases the mouse. Clamp only
+        // after the drag ends so a restore-while-dragging gesture is not
+        // pinned to the work-area rectangle mid-move.
+        m_systemMoveActive = false;
+        if (!isMaximized() && !isMinimized() && !isFullScreen()) {
+            scheduleRestoredGeometryClamp();
+        }
+    }
     if ((windowFlags() & Qt::FramelessWindowHint)
         && nativeMessage
         && nativeMessage->message == WM_GETMINMAXINFO) {
@@ -280,7 +292,7 @@ void MainWindow::restoreWindow()
 {
     if (isMaximized() || isMinimized() || isFullScreen()) {
         showNormal();
-        clampNormalGeometry();
+        scheduleRestoredGeometryClamp();
     }
     focusWindow();
 }
@@ -298,8 +310,9 @@ bool MainWindow::toggleMaximize()
 {
     if (isMaximized()) {
         showNormal();
-        clampNormalGeometry();
+        scheduleRestoredGeometryClamp();
     } else {
+        rememberNormalGeometry();
         showMaximized();
     }
     emitMaximizedState();
@@ -370,6 +383,12 @@ void MainWindow::beginSystemMove()
 {
     if (isFullScreen()) return;
 
+    rememberNormalGeometry();
+    // Only a restore-while-dragging gesture needs the clamp suppressed. A
+    // normal-window move must keep emitting bounds and must not leave this
+    // flag stuck on when Windows never sends a state change.
+    m_systemMoveActive = isMaximized();
+
     // Use Qt's platform-native move path first, matching beginSystemResize().
     // This is important for a request originating in the native WebView: Qt
     // can hand the gesture to the window manager without a synthetic caption
@@ -384,12 +403,20 @@ void MainWindow::beginSystemMove()
 
 #ifdef Q_OS_WIN
     // Keep a Win32 fallback for Qt/platform-plugin combinations that cannot
-    // start a system move from this RPC callback.
+    // start a system move from this RPC callback. Leave m_systemMoveActive set
+    // so a restore-while-dragging gesture is not clamped to the work-area
+    // rectangle before WM_EXITSIZEMOVE / WindowStateChange settles.
     const HWND hwnd = reinterpret_cast<HWND>(winId());
-    if (!hwnd) return;
+    if (!hwnd) {
+        m_systemMoveActive = false;
+        return;
+    }
 
     POINT cursor{};
-    if (!GetCursorPos(&cursor)) return;
+    if (!GetCursorPos(&cursor)) {
+        m_systemMoveActive = false;
+        return;
+    }
 
     ReleaseCapture();
     SendMessageW(
@@ -397,6 +424,14 @@ void MainWindow::beginSystemMove()
         WM_NCLBUTTONDOWN,
         HTCAPTION,
         MAKELPARAM(cursor.x, cursor.y));
+    if (m_systemMoveActive) {
+        m_systemMoveActive = false;
+        if (!isMaximized() && !isMinimized() && !isFullScreen()) {
+            scheduleRestoredGeometryClamp();
+        }
+    }
+#else
+    m_systemMoveActive = false;
 #endif
 }
 
@@ -437,8 +472,8 @@ void MainWindow::syncStateToHost()
     emitMinimizedState();
     emitFullScreenState();
     if (!m_host) return;
-    QRect rect = normalGeometry();
-    if (!rect.isValid() || rect.isEmpty()) rect = geometry();
+    QRect rect = currentNormalGeometry();
+    rememberNormalGeometry();
     m_host->sendEvent(QStringLiteral("window.normalBoundsChanged"), QJsonObject{
         {QStringLiteral("x"), rect.x()},
         {QStringLiteral("y"), rect.y()},
@@ -515,12 +550,14 @@ void MainWindow::dropEvent(QDropEvent *event)
 void MainWindow::moveEvent(QMoveEvent *event)
 {
     QMainWindow::moveEvent(event);
+    rememberNormalGeometry();
     emitBounds();
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
+    rememberNormalGeometry();
     emitBounds();
 }
 
@@ -532,8 +569,18 @@ void MainWindow::changeEvent(QEvent *event)
         emitMinimizedState();
         emitFullScreenState();
         // Also cover native title-bar restore and OS-level state changes, not
-        // only the custom renderer button's toggleMaximize() path.
-        if (!isMaximized() && !isMinimized() && !isFullScreen()) clampNormalGeometry();
+        // only the custom renderer button's toggleMaximize() path. A restore-
+        // while-dragging gesture on Windows keeps m_systemMoveActive until
+        // WM_EXITSIZEMOVE so this path does not clamp mid-move. Other platforms
+        // have no equivalent nested-loop message, so settle on the state change.
+        if (!isMaximized() && !isMinimized() && !isFullScreen()) {
+#ifdef Q_OS_WIN
+            if (m_systemMoveActive) return;
+#else
+            m_systemMoveActive = false;
+#endif
+            scheduleRestoredGeometryClamp();
+        }
     }
 }
 
@@ -566,12 +613,13 @@ void MainWindow::emitFullScreenState()
 
 void MainWindow::emitBounds()
 {
-    if (!m_host || isMaximized() || isFullScreen()) return;
+    if (!m_host || isMaximized() || isFullScreen()
+        || m_systemMoveActive || m_restoringNormalGeometry) return;
     // Minimized top-level widgets can expose a transient geometry. Persist the
     // normal restore rectangle instead, just like syncStateToHost(), so closing
     // from the tray/minimized state cannot overwrite the last usable position.
-    QRect rect = normalGeometry();
-    if (!rect.isValid() || rect.isEmpty()) rect = geometry();
+    QRect rect = currentNormalGeometry();
+    rememberNormalGeometry();
     m_host->sendEvent(QStringLiteral("window.normalBoundsChanged"), QJsonObject{
         {QStringLiteral("x"), rect.x()},
         {QStringLiteral("y"), rect.y()},
@@ -585,16 +633,69 @@ void MainWindow::emitVisible(bool visible)
     if (m_host) m_host->sendEvent(QStringLiteral("window.visibleChanged"), visible);
 }
 
+QRect MainWindow::currentNormalGeometry() const
+{
+    QRect rect = normalGeometry();
+    if (!rect.isValid() || rect.isEmpty()) rect = geometry();
+    return rect;
+}
+
+bool MainWindow::isUsableNormalGeometry(const QRect &rect) const
+{
+    if (!rect.isValid() || rect.isEmpty()) return false;
+    QScreen *screen = windowHandle() ? windowHandle()->screen() : QGuiApplication::primaryScreen();
+    if (!screen) return true;
+    const QRect available = screen->availableGeometry();
+    if (!available.isValid() || available.isEmpty()) return true;
+    if (rect.width() >= available.width() - 2 && rect.height() >= available.height() - 2) {
+        return false;
+    }
+    const QRect overlap = rect.intersected(available);
+    const qint64 area = qint64(rect.width()) * qint64(rect.height());
+    const qint64 overlapArea = overlap.isValid() && !overlap.isEmpty()
+        ? qint64(overlap.width()) * qint64(overlap.height())
+        : 0;
+    return area > 0 && overlapArea * 2 >= area;
+}
+
+void MainWindow::rememberNormalGeometry()
+{
+    if (isMaximized() || isMinimized() || isFullScreen()
+        || m_systemMoveActive || m_restoringNormalGeometry) return;
+    const QRect rect = currentNormalGeometry();
+    if (isUsableNormalGeometry(rect)) m_lastUsableNormalGeometry = rect;
+}
+
+void MainWindow::scheduleRestoredGeometryClamp()
+{
+    // Wait one event-loop turn so Qt can publish the restored rectangle after
+    // WM_EXITSIZEMOVE / showNormal, instead of clamping a transient
+    // maximized-sized geometry into the bottom-left corner.
+    m_restoringNormalGeometry = true;
+    QTimer::singleShot(0, this, [this] {
+        m_restoringNormalGeometry = false;
+        if (!isMaximized() && !isMinimized() && !isFullScreen()) {
+            clampNormalGeometry();
+            rememberNormalGeometry();
+        }
+    });
+}
+
 void MainWindow::clampNormalGeometry()
 {
-    if (isMaximized() || isMinimized() || isFullScreen()) return;
+    if (isMaximized() || isMinimized() || isFullScreen() || m_systemMoveActive) return;
     // During startup the top-level handle may still report the primary screen,
     // even after a saved secondary-monitor position has been applied. Pick the
     // work area containing the largest part of the normal rectangle so a large
     // window centered in a gap between monitors is not moved to the primary
     // screen by accident.
-    QRect normal = normalGeometry();
-    if (!normal.isValid() || normal.isEmpty()) normal = geometry();
+    QRect normal = currentNormalGeometry();
+    if (m_lastUsableNormalGeometry.isValid() && !isUsableNormalGeometry(normal)) {
+        // showNormal() can briefly report the maximized work-area rectangle.
+        // Prefer the last usable normal bounds instead of clamping that
+        // transient size into the bottom-left of the work area.
+        normal = m_lastUsableNormalGeometry;
+    }
     const QList<QScreen *> screens = QGuiApplication::screens();
     QList<QRect> availableGeometries;
     availableGeometries.reserve(screens.size());
@@ -613,14 +714,8 @@ void MainWindow::clampNormalGeometry()
     // A hard 880×640 minimum defeats clamping on high-DPI, RDP, VM, or small
     // displays. Lower it only as far as this screen's available work area.
     setMinimumSize(minimumWindowSizeForAvailable(available.size()));
-    QRect bounded = normal;
-    bounded.setWidth(qMin(bounded.width(), available.width()));
-    bounded.setHeight(qMin(bounded.height(), available.height()));
-    const int maxLeft = available.right() - bounded.width() + 1;
-    const int maxTop = available.bottom() - bounded.height() + 1;
-    bounded.moveLeft(qBound(available.left(), bounded.left(), maxLeft));
-    bounded.moveTop(qBound(available.top(), bounded.top(), maxTop));
-    if (bounded != geometry()) setGeometry(bounded);
+    const QRect bounded = clampRestoredNormalGeometry(normal, available);
+    if (bounded.isValid() && bounded != geometry()) setGeometry(bounded);
 }
 
 void MainWindow::applyStartupMode(const QString &mode, bool hasLastBounds)
