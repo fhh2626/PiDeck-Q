@@ -45,6 +45,13 @@ import {
 	type WebConnectionSnapshot,
 } from "./webConnection";
 import { canRequestWebHistoryPage, hasMoreWebHistory, type WebHistoryMeta } from "./webHistory";
+import {
+	isWebChatStreaming,
+	isWebComposerBusy,
+	isWebRuntimeBusy,
+	shouldApplyWebRuntimeSnapshotToChat,
+	shouldResumeWebStream,
+} from "./webRuntimeBusy";
 
 export function WebChatApp() {
 	const [state, setState] = useState<WebState>({
@@ -108,19 +115,47 @@ export function WebChatApp() {
 	const historyRequestSequenceRef = useRef<Record<string, number>>({});
 	const activeSessionIdRef = useRef<string>("");
 	const streamingRef = useRef(false);
+	// 同一条断线只启动一次恢复；重新收到实时帧后释放，允许后续独立断线再次恢复。
+	const recoveringStreamSessionRef = useRef<string | null>(null);
 	// 首页直发暂存：新建会话后等 useChat 实例切换完成，再投递首条消息
 	const pendingSendRef = useRef<{ sessionId: string; text: string } | null>(null);
 
-	// useChat：sessionId 作为 chat id；切会话时 id 变化重建 Chat 实例
-	const { messages, sendMessage, status, stop, setMessages, error } = useChat({
+	// useChat：sessionId 作为 chat id；发送仍走 POST /api/chat，断线恢复只订阅
+	// GET /api/sessions/:id/stream，避免重新提交 prompt。
+	const chatTransport = useMemo(() => new DefaultChatTransport({
+		api: "/api/chat",
+		prepareReconnectToStreamRequest: ({ id }) => ({
+			api: `/api/sessions/${encodeURIComponent(id)}/stream`,
+		}),
+	}), []);
+	const { messages, sendMessage, status, stop, setMessages, error, resumeStream } = useChat({
 		id: activeSessionId,
-		transport: new DefaultChatTransport({ api: "/api/chat" }),
+		transport: chatTransport,
 	});
 
-	const streaming = status === "submitted" || status === "streaming";
+	const chatStreaming = isWebChatStreaming(status);
+	const runtimeFor = (sessionId: string) =>
+		state.runtimes.find((runtime) => runtime.sessionId === sessionId);
+	const activeSession = state.sessions.find((session) => session.id === activeSessionId);
+	const activeRuntime = activeSessionId ? runtimeFor(activeSessionId) : undefined;
+	const composerBusy = isWebComposerBusy({
+		chatStatus: status,
+		runtime: activeRuntime,
+	});
 
 	activeSessionIdRef.current = activeSessionId;
-	streamingRef.current = streaming;
+	streamingRef.current = chatStreaming;
+
+	useEffect(() => {
+		// 只有真正收到恢复流帧进入 streaming，才允许该会话下一次断线再触发恢复。
+		if (status === "streaming") recoveringStreamSessionRef.current = null;
+	}, [status]);
+
+	useEffect(() => {
+		if (recoveringStreamSessionRef.current !== activeSessionId) {
+			recoveringStreamSessionRef.current = null;
+		}
+	}, [activeSessionId]);
 
 	/** 将主进程运行时尾部快照合并回 Web 缓存，避免轮询覆盖正在显示的流。 */
 	const syncRuntimeMessages = useCallback((nextState: WebState, sessionId: string) => {
@@ -129,24 +164,21 @@ export function WebChatApp() {
 		if (!snapshot) return;
 		const authoritative = chatMessagesToUiMessages(snapshot);
 		const current = messagesBySessionRef.current[sessionId] ?? [];
-		const idle = !streamingRef.current;
+		const runtime = nextState.runtimes.find((item) => item.sessionId === sessionId);
+		const applySnapshot = shouldApplyWebRuntimeSnapshotToChat({
+			chatStreaming: streamingRef.current,
+			runtime,
+		});
 		const merged = mergeAuthoritativeUiMessages(current, authoritative, {
-			dropUnmatchedTrailingPlaceholders: idle,
+			dropUnmatchedTrailingPlaceholders: applySnapshot,
 		});
 		messagesBySessionRef.current[sessionId] = merged;
-		// 流式期间由 SSE/useChat 保持逐 token 画面；状态快照只更新缓存，
-		// 等状态变为空闲后再替换为主进程的最终消息。
-		// 主进程运行时快照只含尾部窗口。空闲后如果直接整表替换，
-		// 刚结束的 SSE 回复可能被更早的投影片段覆盖，表现为“这条没回、下一条回了两次”。
-		if (idle && activeSessionIdRef.current === sessionId && merged !== current) {
+		// SSE 或 runtime 仍忙时不要把拆开的尾部快照推进 useChat，否则旧思考/工具会垫底。
+		// 缓存仍合并，等双方空闲后再替换为主进程的最终消息。
+		if (applySnapshot && activeSessionIdRef.current === sessionId && merged !== current) {
 			setMessages(merged);
 		}
 	}, [setMessages]);
-
-	const runtimeFor = (sessionId: string) =>
-		state.runtimes.find((runtime) => runtime.sessionId === sessionId);
-	const activeSession = state.sessions.find((session) => session.id === activeSessionId);
-	const activeRuntime = activeSessionId ? runtimeFor(activeSessionId) : undefined;
 
 	// 切换会话：优先从缓存恢复；未加载过则拉取历史页注入
 	useEffect(() => {
@@ -191,21 +223,40 @@ export function WebChatApp() {
 			});
 	}, [activeSessionId, bumpHistory, setMessages]);
 
-	// SSE 异常才回读权威历史。正常 finish+[DONE] 不是失败，不要把侧栏打成断开。
+	// SSE 异常先以权威快照建立新基线；runtime 仍在运行时只重订阅 session stream，
+	// 绝不重试 POST /api/chat，避免同一 prompt 被再次发送。
 	useEffect(() => {
 		if (!error || !activeSessionId) return;
 		const sessionId = activeSessionId;
+		if (recoveringStreamSessionRef.current === sessionId) return;
+		recoveringStreamSessionRef.current = sessionId;
 		const requestSequence = (historyRequestSequenceRef.current[sessionId] ?? 0) + 1;
 		historyRequestSequenceRef.current[sessionId] = requestSequence;
-		void fetchMessagePage(sessionId)
-			.then((page) => {
+		void (async () => {
+			try {
+				const nextState = await fetchState();
 				if (
 					historyRequestSequenceRef.current[sessionId] !== requestSequence ||
 					activeSessionIdRef.current !== sessionId
 				) return;
-				const authoritative = chatMessagesToUiMessages(page.messages);
-				// Recovery only fetches the authoritative tail page. Merge it into the
-				// cached transcript so a stream error cannot discard older loaded pages.
+				setState(nextState);
+				syncRuntimeMessages(nextState, sessionId);
+				const runtimeStillRunning = nextState.runtimes.some(
+					(runtime) => runtime.sessionId === sessionId && runtime.status === "running",
+				);
+
+				const page = await fetchMessagePage(sessionId);
+				if (
+					historyRequestSequenceRef.current[sessionId] !== requestSequence ||
+					activeSessionIdRef.current !== sessionId
+				) return;
+				const history = chatMessagesToUiMessages(page.messages);
+				const runtimeSnapshot = chatMessagesToUiMessages(
+					nextState.messagesBySession[sessionId] ?? [],
+				);
+				// 历史页可能尚未落盘当前 reasoning；把同一次 state 请求拿到的 runtime
+				// 快照叠到历史尾部，形成 reconnect 前的完整 authoritative 基线。
+				const authoritative = mergeAuthoritativeUiMessages(history, runtimeSnapshot);
 				const merged = mergeAuthoritativeUiMessages(
 					messagesBySessionRef.current[sessionId] ?? [],
 					authoritative,
@@ -221,20 +272,53 @@ export function WebChatApp() {
 				};
 				loadedSessionsRef.current.add(sessionId);
 				bumpHistory();
-				if (!streamingRef.current) setMessages(merged);
+				setMessages(merged);
+
+				if (runtimeStillRunning) {
+					setCommandError(null);
+					await resumeStream();
+					return;
+				}
+				recoveringStreamSessionRef.current = null;
 				setCommandError(t("web.streamFailed"));
-			})
-			.catch(() => {
-				if (activeSessionIdRef.current === sessionId) setCommandError(t("web.historyLoadFailed"));
-			});
-	}, [activeSessionId, bumpHistory, error, setMessages]);
+			} catch {
+				if (activeSessionIdRef.current === sessionId) {
+					recoveringStreamSessionRef.current = null;
+					setCommandError(t("web.historyLoadFailed"));
+				}
+			}
+		})();
+	}, [activeSessionId, bumpHistory, error, resumeStream, setMessages, syncRuntimeMessages]);
 
 	// 轮询拿到的运行时快照也要在切换会话/流结束后立即回放，
 	// 否则 Web 只显示自己发出的 SSE，PC 端新增的消息永远要等重新打开页面才出现。
 	useEffect(() => {
-		if (!activeSessionId || streaming) return;
+		if (!activeSessionId || chatStreaming) return;
 		syncRuntimeMessages(state, activeSessionId);
-	}, [activeSessionId, state, streaming, syncRuntimeMessages]);
+	}, [activeSessionId, state, chatStreaming, syncRuntimeMessages]);
+
+	// useChat 已 ready 但 runtime 仍在跑：只在客户端已空闲、runtime 仍 running 且本地仍在生成时重订阅；stale running / starting 不 resume。
+	useEffect(() => {
+		if (!activeSessionId || chatStreaming || error) return;
+		if (!shouldResumeWebStream({
+			chatStatus: status,
+			hasChatError: Boolean(error),
+			runtime: activeRuntime,
+		})) return;
+		if (recoveringStreamSessionRef.current === activeSessionId) return;
+		const sessionId = activeSessionId;
+		recoveringStreamSessionRef.current = sessionId;
+		void resumeStream()
+			.then(() => {
+				if (recoveringStreamSessionRef.current !== sessionId) return;
+				if (!streamingRef.current) recoveringStreamSessionRef.current = null;
+			})
+			.catch(() => {
+				if (recoveringStreamSessionRef.current === sessionId) {
+					recoveringStreamSessionRef.current = null;
+				}
+			});
+	}, [activeSessionId, activeRuntime, chatStreaming, error, resumeStream, status]);
 
 	// 流式期间同步缓存：仅 streaming 时合并（空闲时 setMessages 来自历史恢复/分页，
 	// 对应逻辑已各自写缓存）。运行时 useChat 可能只保留尾部窗口，不能直接覆盖缓存，
@@ -242,12 +326,12 @@ export function WebChatApp() {
 	// 不要把会话标成 loaded：那是「首页已经成功」的语义。流式先标 loaded
 	// 会让 handleLoadMore 在还没拿到 nextBefore 时直接 return，点按钮没反应。
 	useEffect(() => {
-		if (!activeSessionId || !streaming) return;
+		if (!activeSessionId || !chatStreaming) return;
 		messagesBySessionRef.current[activeSessionId] = mergeAuthoritativeUiMessages(
 			messagesBySessionRef.current[activeSessionId] ?? [],
 			messages,
 		);
-	}, [messages, activeSessionId, streaming]);
+	}, [messages, activeSessionId, chatStreaming]);
 
 	// 首页直发：useChat 随 activeSessionId 切换在渲染期重建实例（@ai-sdk/react 在 render 中
 	// 直接替换 chatRef.current），因此本 effect 里拿到的 sendMessage 已属于新会话；
@@ -255,10 +339,10 @@ export function WebChatApp() {
 	useEffect(() => {
 		const pending = pendingSendRef.current;
 		if (!pending || pending.sessionId !== activeSessionId) return;
-		if (streaming) return; // 新实例就绪（空闲）后才投递
+		if (chatStreaming) return; // 新实例就绪（空闲）后才投递
 		pendingSendRef.current = null;
 		void sendMessage({ text: pending.text });
-	}, [activeSessionId, streaming, sendMessage]);
+	}, [activeSessionId, chatStreaming, sendMessage]);
 
 	// 模型列表是全局 pi 配置，草稿会话也需要先选模型再发送第一条消息。
 	useEffect(() => {
@@ -347,6 +431,7 @@ export function WebChatApp() {
 
 	const handleSend = (text: string) => {
 		if (!text.trim()) return;
+		if (composerBusy) return;
 		if (!activeSessionId) {
 			// 首页直发：无会话时自动新建会话（携带已选模型/思考级别）再投递首条消息
 			void sendFromHome(text);
@@ -589,13 +674,12 @@ export function WebChatApp() {
 		}
 	};
 
-	// 头部运行态：流式优先；否则用轮询到的 runtime 状态兜底
+	// 头部运行态：与 composer 同一套忙碌判定，避免 SSE 已空闲、runtime 仍在跑时状态分叉。
 	const headerStatus: WebHeaderStatus = (() => {
-		if (streaming) return "running";
-		const runtimeStatus = activeRuntime?.status;
-		if (runtimeStatus === "starting") return "starting";
-		if (runtimeStatus === "running") return "running";
-		if (runtimeStatus === "error") return "error";
+		if (composerBusy) {
+			return activeRuntime?.status === "starting" && !chatStreaming ? "starting" : "running";
+		}
+		if (activeRuntime?.status === "error") return "error";
 		return "idle";
 	})();
 
@@ -645,7 +729,7 @@ export function WebChatApp() {
 					hasMoreHistory={hasMoreHistory}
 					moreCount={moreCount}
 					loadingMore={loadingMore}
-					streaming={streaming}
+					streaming={composerBusy}
 					error={error?.message ?? commandError}
 					pendingUiRequest={activePendingUiRequest}
 					onRespondUi={handleRespondUi}
@@ -653,7 +737,7 @@ export function WebChatApp() {
 				/>
 				<WebComposer
 					disabled={Boolean(creatingProjectId)}
-					streaming={streaming}
+					busy={composerBusy}
 					onSend={handleSend}
 					onStop={handleStop}
 				/>

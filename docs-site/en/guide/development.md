@@ -6,7 +6,7 @@ This guide covers building PiDeck from source and creating distribution packages
 
 ```bash
 # Clone
-git clone https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git
+git clone https://github.com/fhh2626/PiDeck-Q.git
 cd PiDeck
 
 # Install
@@ -82,4 +82,4 @@ Packaged files are written to the `release/` directory. The output includes:
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/blob/main/CONTRIBUTING.md) for contribution guidelines. All contributions are welcome!
+See [CONTRIBUTING.md](https://github.com/fhh2626/PiDeck-Q/blob/main/CONTRIBUTING.md) for contribution guidelines. All contributions are welcome!

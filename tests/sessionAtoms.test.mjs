@@ -541,8 +541,12 @@ test("windowed full reconciles disk history prefix and preserves it across compa
   emit({ agentId: "agent-a", windowStart: 1, totalLength: 3, fileVersion: "200:800", messages: [
     { id: "c1", role: "user", text: "after-compaction", meta: { entryId: "n1" } },
     { id: "c2", role: "assistant", text: "a", meta: { entryId: "n2" } },
-  ], preserveHistory: true });
-  assert.deepEqual([...entry().history.messages.map((m) => m.meta.entryId)], ["e1"]);
+  ], preserveHistory: true, stickyHistory: true });
+  assert.deepEqual(
+    [...entry().history.messages.map((m) => m.meta.entryId)],
+    ["e1", "e2", "e3"],
+    "compaction moves messages no longer covered by the canonical window into history",
+  );
   assert.equal(entry().windowStart, 1);
 });
 

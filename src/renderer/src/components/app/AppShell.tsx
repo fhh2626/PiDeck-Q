@@ -21,6 +21,8 @@ import {
 } from "../../hooks/useWorkspacePanels";
 import { cn } from "../../lib/utils";
 import { shouldCommitPanelPixels } from "../../lib/shellPanelLayout";
+import type { WindowResizeEdge } from "../../../../shared/desktop/NativeHostTypes";
+import { shouldBeginWindowDrag } from "../../utils/windowChromeDrag";
 
 /**
  * 工作台外壳（#115 U5 布局换装）：三栏水平布局由 react-resizable-panels 接管。
@@ -66,7 +68,7 @@ export interface AppShellProps {
   sidebarContent: ReactNode;
   chatPaneContent: ReactNode;
   drawerContent: (panel: WorkspaceDrawerPanel) => ReactNode;
-  /** 抽屉活动栏（files/git/browser 切换），由 App 注入；抽屉打开时常驻。 */
+  /** 抽屉活动栏，用于切换当前可用工作区面板，由 App 注入；抽屉打开时常驻。 */
   drawerRail?: ReactNode;
   outlineContent: ReactNode;
 
@@ -86,6 +88,9 @@ export interface AppShellProps {
   isWindowMaximized: () => Promise<boolean>;
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
+  beginWindowDrag: () => void;
+  beginWindowResize: (edge: WindowResizeEdge) => void;
+  enableNativeResize: boolean;
 
   children?: ReactNode;
 }
@@ -106,7 +111,8 @@ export function AppShell(props: AppShellProps) {
     setListCollapsed, setListWidth, setDrawerCollapsed, setDrawerWidth,
     onToggleListCollapsed,
     onDrawerCollapse, onDrawerClose, onDrawerRestore, onToggleDrawerPin,
-    toggleAlwaysOnTop, minimizeWindow, toggleMaximizeWindow, isWindowMaximized, onWindowMaximizedChange, closeWindow,
+    toggleAlwaysOnTop, minimizeWindow, toggleMaximizeWindow, isWindowMaximized, onWindowMaximizedChange, closeWindow, beginWindowDrag,
+    beginWindowResize, enableNativeResize,
     children,
   } = props;
 
@@ -293,6 +299,22 @@ export function AppShell(props: AppShellProps) {
           "--drawer-splitter-w": `${drawer && !drawerCollapsed ? 6 : 0}px`,
         } as CSSProperties
       }
+      onPointerDownCapture={(event) => {
+        // Electron still honors -webkit-app-region: drag. Only the Qt host
+        // needs an explicit system-move RPC, and preventDefault there would
+        // steal Chromium's drag on the Electron custom titlebar.
+        if (useNativeTitleBar || !enableNativeResize) return;
+        if (event.button !== 0) return;
+        if (!shouldBeginWindowDrag(event.target)) return;
+        event.preventDefault();
+        beginWindowDrag();
+      }}
+      onDoubleClickCapture={(event) => {
+        if (useNativeTitleBar || !enableNativeResize) return;
+        if (!shouldBeginWindowDrag(event.target)) return;
+        event.preventDefault();
+        void toggleMaximizeWindow();
+      }}
     >
       <AppHeader
         useNativeTitleBar={useNativeTitleBar}
@@ -303,6 +325,8 @@ export function AppShell(props: AppShellProps) {
         isWindowMaximized={isWindowMaximized}
         onWindowMaximizedChange={onWindowMaximizedChange}
         closeWindow={closeWindow}
+        beginWindowResize={beginWindowResize}
+        enableNativeResize={enableNativeResize}
       />
       <ResizablePanelGroup orientation="horizontal" className="shell-panel-group" elementRef={groupRef} onLayoutChanged={handleLayoutChanged}>
         <ResizablePanel

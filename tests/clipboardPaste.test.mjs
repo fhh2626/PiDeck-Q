@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { shouldRequestNativeClipboardSnapshot } from "../src/renderer/src/native/nativeClipboardPaste.ts";
 
 // 剪贴板粘贴一致性契约：
 // Windows 剪贴板按格式分槽存储，纯文本复制（记事本/终端）只更新 text 槽，
@@ -28,6 +29,72 @@ test("composer and git commit input paste through the consistent html read", () 
 	const gitPanel = readFileSync("src/renderer/src/components/app/GitPanel.tsx", "utf8");
 	assert.match(gitPanel, /readClipboardHtmlConsistent/);
 	assert.doesNotMatch(gitPanel, /readClipboardHtml\(\)/);
+});
+
+test("native paste trusts current text instead of a stale cached file list", () => {
+	const clipboardData = {
+		items: [{ kind: "string" }],
+		getData: (type) => type === "text/plain" ? "hello" : "",
+	};
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), false);
+});
+
+test("native file or image paste requests a live Qt clipboard snapshot", () => {
+	const clipboardData = {
+		items: [{ kind: "file" }],
+		getData: () => "",
+	};
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), true);
+});
+
+test("native empty paste requests a live Qt clipboard snapshot", () => {
+	const clipboardData = { items: [], getData: () => "" };
+	assert.equal(shouldRequestNativeClipboardSnapshot(clipboardData), true);
+});
+
+test("native composer bypasses the SSE path cache before handling a current paste event", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /isNativeRuntime && shouldRequestNativeClipboardSnapshot\(event\.clipboardData\)/);
+	assert.match(composer, /desktopApi\.clipboard\.readNativeSnapshot\(\)/);
+	assert.match(composer, /const clipboardPaths = isNativeRuntime\s*\? \[\]/);
+});
+
+test("native paste restores event image files when the live snapshot rejects", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	const start = composer.indexOf("const pasteNativeSnapshot");
+	const end = composer.indexOf("/**", start + 1);
+	assert.ok(start >= 0 && end > start, "native snapshot paste handler must exist");
+	const handler = composer.slice(start, end);
+	assert.match(handler, /catch \(error\)/);
+	assert.match(handler, /fallbackImageFiles\.length > 0/);
+	assert.match(handler, /await addImageFiles\(fallbackImageFiles\)/);
+	assert.match(handler, /throw error/);
+});
+
+test("native paste restores event text when a file-bearing snapshot rejects", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /fallbackText = options\.fallbackText/);
+	assert.match(composer, /fallbackHtml = options\.fallbackHtml/);
+	assert.match(composer, /const text = fallbackText \|\| \(fallbackHtml \? htmlToPlainText\(fallbackHtml\) : ""\)/);
+	assert.match(composer, /pasteNativeSnapshot\(\{ fallbackImageFiles, fallbackText, fallbackHtml \}\)/);
+});
+
+test("native paste reads external clipboard image paths with the trusted capability", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /readBase64External\(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES\)/);
+	assert.match(composer, /snapshot\.externalFileCapabilityId/);
+});
+
+test("native paste reports an unavailable oversized image instead of inserting companion text", () => {
+	const composer = readFileSync("src/renderer/src/hooks/useSessionComposerController.ts", "utf8");
+	assert.match(composer, /if \(snapshot\.hasImage\)/);
+	assert.match(composer, /clipboardImageUnavailable/);
+});
+
+test("native right-click paste catches provider failures and restores focus", () => {
+	const composer = readFileSync("src/renderer/src/components/session/composer/TipTapComposer.tsx", "utf8");
+	assert.match(composer, /try \{[\s\S]*?props\.onPasteClipboard\?\.\(\)/);
+	assert.match(composer, /finally \{[\s\S]*?editor\.commands\.focus\(\)/);
 });
 
 test("Ctrl+V composer paste inserts clipboard text/plain, never TipTap HTML", () => {

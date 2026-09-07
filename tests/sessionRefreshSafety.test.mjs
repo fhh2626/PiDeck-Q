@@ -126,16 +126,19 @@ test("bounds catalog requests and retains timeout cleanup", () => {
   assert.match(scanner, /clearTimeout\(scanTimer\)/);
 });
 
-test("preserves request gate, stale records, replace ordering, and canonical sorting", () => {
+test("uses request sequence plus latest-applied authority for catalog data", () => {
   const block = runProjectSessionRefreshBlock();
+  assert.match(projectSync, /const sessionLatestAppliedRequestByProjectRef = useRef<Record<string, number \| undefined>>\(\{\}\);/);
   assertInOrder(
     block,
     [
       "const request = (sessionRequestByProjectRef.current[projectId] ?? 0) + 1;",
       "sessionRequestByProjectRef.current[projectId] = request;",
-      "if (sessionRequestByProjectRef.current[projectId] !== request)",
+      "const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];",
+      "if (latestAppliedRequest !== undefined && request < latestAppliedRequest)",
       "result = records;",
       "replaceProjectSessions({ projectId, sessions: records });",
+      "sessionLatestAppliedRequestByProjectRef.current[projectId] = request;",
       ".map(sessionRecordToSummary)",
       ".filter((session): session is SessionSummary => Boolean(session))",
       ".sort((a, b) => b.updatedAt - a.updatedAt);",
@@ -144,28 +147,49 @@ test("preserves request gate, stale records, replace ordering, and canonical sor
   );
 });
 
-test("publishes foreground loading before yielding and clears it in finally", () => {
+test("publishes foreground loading before yielding and clears its owner in finally", () => {
   const block = runProjectSessionRefreshBlock();
+  assert.match(projectSync, /sessionLoadingRequestByProjectRef/);
   assertInOrder(
     block,
     [
       "if (!silent)",
+      "sessionLoadingRequestByProjectRef.current[projectId] = request;",
       "setSessionLoadingByProject(",
       "[projectId]: true",
       'setSessionCatalogLoadState?.({ projectId, state: { status: "loading" } });',
       "await new Promise<void>((r) => setTimeout(r, 0));",
       "} finally {",
-      "sessionRefreshRunningRef.current.delete(projectId);",
-      "if (!silent) setSessionLoadingByProject(",
+      "const ownsForegroundLoading =",
+      "if (isCurrentRequest) sessionRefreshRunningRef.current.delete(projectId);",
+      "if (ownsForegroundLoading)",
+      "setSessionLoadingByProject(",
       "[projectId]: false",
     ],
     "foreground loading lifecycle",
   );
 });
 
+test("catalog-refreshed accepts older success after a newer request fails", () => {
+  const block = projectSync.match(
+    /const unsubscribe = api\.sessions\.onCatalogRefreshed\(\(\{ projectId \}\) => \{[\s\S]*?\n    \}\);/,
+  )?.[0] ?? "";
+  assert.match(block, /const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef\.current\[projectId\];/);
+  assert.doesNotMatch(block, /if \(sessionRequestByProjectRef\.current\[projectId\] !== request\) return;/);
+  assert.match(
+    block,
+    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
+  );
+  assert.match(block, /sessionRequestByProjectRef\.current\[projectId\] !== request/);
+});
+
 test("publishes canonical ready and request-scoped error states", () => {
   const block = runProjectSessionRefreshBlock();
   assert.match(projectSync, /setSessionCatalogLoadState\?: \(input: \{ projectId: string; state: SessionLoadState \}\) => void;/);
+  assert.match(
+    block,
+    /if \(\s*sessionRequestByProjectRef\.current\[projectId\] === request &&\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] === undefined\s*\)/,
+  );
   assertInOrder(
     block,
     [
@@ -173,7 +197,6 @@ test("publishes canonical ready and request-scoped error states", () => {
       "} catch (caughtError) {",
       "failed = true;",
       "error = caughtError;",
-      "if (sessionRequestByProjectRef.current[projectId] === request)",
       "const message = caughtError instanceof Error ? caughtError.message : String(caughtError);",
       'state: { status: "error", error: message },',
     ],

@@ -37,6 +37,9 @@ export type WebRuntime = {
 	status: string;
 	cwd?: string;
 	runtimeGeneration?: number;
+	/** /api/state 增量字段；旧服务端可缺省。 */
+	isStreaming?: boolean;
+	isExecutingTool?: boolean;
 };
 
 /**

@@ -9,6 +9,7 @@ import {
   useCallback,
 } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import { SKIN_PRESETS } from "./themePresets";
 import { resolveChatTypographyVars } from "./lib/chatTypography";
 // 壁纸模式已注入的 token 键（effect 重跑/清除设置时需要跨运行保留，避免漏清）
@@ -16,7 +17,6 @@ let injectedWallpaperTokens = new Set<string>();
 import {
   Code,
   FolderOpen,
-  Globe,
   Pencil,
   SquarePen,
   Terminal,
@@ -27,6 +27,7 @@ import { showNotice } from "./utils/notice";
 import {
   desktopApi as api,
   isLanWeb,
+  isNativeRuntime,
   missingElectronPreload,
 } from "./desktopApi";
 import { contextControllerSettingsAtom, turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
@@ -44,7 +45,6 @@ import { useAgentLoadNotice } from "./hooks/useAgentLoadNotice";
 import { useSessionLayout } from "./hooks/useSessionLayout";
 import { useFileEditor , resolveFileLinkPath } from "./hooks/useFileEditor";
 import { useOverlayActions } from "./hooks/useOverlayActions";
-import { useExternalProtocolConfirm } from "./hooks/useExternalProtocolConfirm";
 import { useWorkspacePanels, type WorkspaceDrawerPanel, type WorkspaceExternalEditorAdapter } from "./hooks/useWorkspacePanels";
 import { useDrawerPorts } from "./hooks/useDrawerPorts";
 import { useTerminalDock } from "./hooks/useTerminalDock";
@@ -59,10 +59,15 @@ import {
 } from "./utils/sessionCommands";
 import { resolveChatSessionBootstrap } from "./utils/chatSessionBootstrap";
 import { detectRendererPlatform } from "./lib/detectRendererPlatform";
+import { backgroundImageUrl } from "./utils/backgroundImageUrl";
+import { requestProjectInventory } from "./utils/projectInventoryRequests";
+import { applyRendererZoom } from "./native/rendererZoom";
+import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useAppUpdateController } from "./hooks/useAppUpdateController";
 import { useProjectSync } from "./hooks/useProjectSync";
+import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
@@ -79,6 +84,7 @@ import {
   removeSessionComposerStateAtom,
   removeSessionStateAtom,
   replaceProjectInventoryAtom,
+  upsertProjectInventoryAtom,
   replaceProjectSessionsAtom,
   sessionRecordByIdAtomFamily,
   sessionRecordsByProjectIdAtomFamily,
@@ -91,7 +97,6 @@ import {
   setSessionAttachmentsAtom,
   setSessionCatalogLoadStateAtom,
   setSessionDraftAtom,
-  settingsOpenAtom,
   upsertSessionAtom,
   anyAgentRuntimeWorkingAtom,
 } from "./atoms";
@@ -149,7 +154,6 @@ import {
   LogoMark,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
-import { requestBrowserNavigation } from "./browser/BrowserPanelSession";
 import {
   flattenFiles,
   mergeCommands,
@@ -160,6 +164,7 @@ import { createDefaultExternalEditorSettings } from "../../shared/types";
 import type {
   AgentRuntimeState,
   AgentTab,
+  AppFocusSessionTarget,
   AppInfo,
   AppSettings,
   FileTreeNode,
@@ -217,6 +222,7 @@ export function App() {
   const setCurrentSessionId = useSetAtom(currentSessionIdAtom);
   const replaceProjectSessions = useSetAtom(replaceProjectSessionsAtom);
   const setProjects = useSetAtom(replaceProjectInventoryAtom);
+  const upsertProject = useSetAtom(upsertProjectInventoryAtom);
   const applyRuntimeEvent = useSetAtom(applySessionRuntimeEventAtom);
   const upsertSession = useSetAtom(upsertSessionAtom);
   const setSessionDraft = useSetAtom(setSessionDraftAtom);
@@ -323,7 +329,6 @@ export function App() {
     }
     workspace.openDrawer("files");
   }, [workspace]);
-  const browserFullscreen = workspace.browserFullscreen;
   const externalEditors = workspace.externalEditors;
   const editorsOpen = workspace.externalEditorsOpen;
   const editorsAnchor = workspace.externalEditorsAnchor;
@@ -482,7 +487,7 @@ export function App() {
   const appUpdate = useAppUpdateController({
     checkUpdate: api.app.checkUpdate,
     downloadUpdate: (asset) => api.app.downloadUpdate(asset),
-    installUpdate: (filePath) => api.app.installUpdate(filePath),
+    openUpdatePackage: (filePath) => api.app.openUpdatePackage(filePath),
     onUpdateProgress: (cb) => api.app.onUpdateProgress(cb),
     openExternal: (url) => api.app.openExternal(url),
   }, false);
@@ -530,8 +535,6 @@ export function App() {
     expandInterimDuringStream: false,
     collapsePrevRunsOnNewTurn: true,
     showDevTools: false,
-    // Electron Chromium 沙箱默认关，与主进程历史兼容策略一致
-    electronChromiumSandbox: false,
     piProxyEnabled: false,
     piProxyUrl: "http://127.0.0.1:7890",
     piProxyBypass: "localhost,127.0.0.1,::1",
@@ -546,7 +549,6 @@ export function App() {
     webServiceHost: "0.0.0.0",
     webServicePort: 8765,
     rpcTimeout: 600_000,
-    linkOpenMode: "external",
     workspaceContentOpenMode: "split",
     contentMaxWidth: 1800,
     chatContentWidthPct: 80,
@@ -615,7 +617,7 @@ export function App() {
   const [webServiceChanging, setWebServiceChanging] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo>({
     version: "-",
-    releasesUrl: "https://github.com/ayuayue/pi-desktop/releases",
+    releasesUrl: APP_RELEASES_URL,
     // 同步判定，避免 Mac 首帧在 appInfo IPC 返回前误画 Win 窗口按钮
     platform: detectRendererPlatform(),
     homeDir: "",
@@ -700,13 +702,6 @@ export function App() {
     (project) => project.id === activeProjectId,
   );
   const overlays = useOverlayActions();
-  // 浏览器 guest 外部协议确认流（独立于通用 overlay 域）。
-  const externalProtocolConfirm = useExternalProtocolConfirm();
-  // Modal 仲裁 blocker：settings（settingsOpenAtom，SettingsFeatureRoot 独立 root）
-  // 或通用 confirm/trust 打开时，外部协议确认暂缓渲染（状态保留，弹框结束后出现）。
-  const settingsModalOpen = useAtomValue(settingsOpenAtom);
-  const externalProtocolModalBlocked =
-    settingsModalOpen || overlays.confirmDialog !== null || overlays.trustRequest !== null;
   const sessionsProject = projects.find(
     (project) => project.id === sessionsProjectId,
   );
@@ -998,7 +993,7 @@ export function App() {
     if (settings.backgroundImage) {
       root.style.setProperty(
         "--app-bg-image",
-        `url("pideck-bg://local/${encodeURIComponent(settings.backgroundImage)}")`,
+        `url("${backgroundImageUrl(settings.backgroundImage)}")`,
       );
       const alpha = Math.min(1, Math.max(0, 1 - settings.backgroundImageOpacity));
       // 面板不透明度与遮罩同步并加 10% 基础偏移（面板更实一点，可读性更好）：
@@ -1044,6 +1039,15 @@ export function App() {
       root.style.removeProperty("--wallpaper-floating-alpha");
     }
   }, [settings.themeSkin, settings.theme, settings.customThemeOverrides, settings.backgroundImage, settings.backgroundImageOpacity]);
+
+  // Native Qt/WebView and Electron both apply zoom in the renderer so the setting
+  // keeps identical semantics without relying on webContents.setZoomFactor.
+  useLayoutEffect(() => {
+    applyRendererZoom(settings.zoomFactor);
+  }, [settings.zoomFactor]);
+  useEffect(() => api.settings.onApplyWindow((next) => {
+    if (typeof next.zoomFactor === "number") applyRendererZoom(next.zoomFactor);
+  }), [api.settings]);
 
   // 字号与命名字体预设由 data 属性选择 CSS token；只有 custom 字体需要注入用户输入。
   // 这一组是纯视觉的 DOM/CSS token 同步，必须用 useLayoutEffect 在 paint 前写入，
@@ -1175,7 +1179,7 @@ export function App() {
     [activeAgent?.cwd, activeProject?.path, viewFilePath, showToast],
   );
 
-  // 工具抽屉（files/git/browser）的统一切换语义：当前面板已展开 → 关闭；
+  // 工具抽屉的统一切换语义：当前面板已展开 → 关闭；
   // 其余情况打开/切到目标面板。outline 浮动按钮与抽屉活动栏共用同一套语义，
   // 保证两个入口行为一致。注意必须放在 useFileEditor 之后（依赖 gitDrawerDiff）。
   const handleToolDrawerAction = useCallback((panel: WorkspaceDrawerPanel) => {
@@ -1368,14 +1372,8 @@ export function App() {
       setSettings(next);
       showToast(t("settings.restartNotice"));
     },
-    onOpenInBrowser: (url: string) => {
-      // 外部链接必须强制打开 browser 面板（openDrawer 是 toggle 语义，
-      // 已是 browser 展开时会关抽屉，导致首次点击关抽屉、二次重复入栈）
-      workspace.openDrawerForce("browser");
-      requestBrowserNavigation(url);
-    },
     onTrustRequest: overlays.setTrustRequest,
-    onFocusTarget: (target: { sessionId: string }) => {
+    onFocusTarget: (target: AppFocusSessionTarget) => {
       const session = store.get(sessionRecordByIdAtomFamily(target.sessionId));
       if (session) selectSessionCommand(session.projectId, session.id, false);
     },
@@ -1755,6 +1753,7 @@ export function App() {
     activeProjectId,
     gitInfo,
     setProjects,
+    upsertProject,
     setActiveProjectId,
     setGitInfo,
     setProjectBranch,
@@ -2151,10 +2150,6 @@ export function App() {
       if ("useNativeTitleBar" in patch) {
         notice = t("app.titleBarSaved");
       }
-      // Chromium 沙箱依赖启动参数与 webPreferences，保存后必须整应用重启才生效。
-      if ("electronChromiumSandbox" in patch) {
-        notice = t("app.settingsSaved"); // sandbox 需重启
-      }
       // 单实例锁在进程启动时申请，修改后需重启才切换多开/复用行为。
       if ("singleInstance" in patch) {
         notice = t("app.settingsSaved"); // 单实例需重启
@@ -2166,7 +2161,9 @@ export function App() {
       // WSL/Windows pi 源切换：重新检测 pi 环境、刷新项目和会话列表
       if ("wslEnabled" in patch || "wslDistro" in patch || "wslUser" in patch) {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
-        void api.projects.list().then(setProjects).catch(() => undefined);
+        void requestProjectInventory(api.projects.list)
+          .then((next) => { if (next) setProjects(next); })
+          .catch(() => undefined);
         if (activeProjectId) {
           void refreshProjectSessions(activeProjectId, true).catch(() => undefined);
         }
@@ -2822,10 +2819,6 @@ export function App() {
     openDrawer: workspace.openDrawer,
     closeDrawer: workspace.closeDrawer,
     collapseDrawer: workspace.collapseDrawer,
-    closeBrowser: () => workspace.closeBrowser(),
-    minimizeBrowser: () => workspace.minimizeBrowser(),
-    enterBrowserFullscreen: () => workspace.enterBrowserFullscreen(),
-    browserFullscreen,
     sessionsProject, sessionsProjectId,
     files, sessions,
     sessionSourceFilter, sessionHistoryLoading,
@@ -2836,7 +2829,10 @@ export function App() {
       setFileMenu(menu);
       if (!menu) return;
       try {
-        setHasClipboardFiles(api.files.getClipboardPaths().length > 0);
+        setHasClipboardFiles(
+          api.files.getClipboardPaths().length > 0
+          && (!isNativeRuntime || Boolean(api.files.getClipboardCapability?.())),
+        );
       } catch {
         setHasClipboardFiles(false);
       }
@@ -2854,7 +2850,8 @@ export function App() {
     api, t,
     projectRoot: activeProject?.path,
     onDropFiles: (targetDir, fileList) => {
-      // 从 OS 拖入：解析本地路径后复制到目标目录（目录不支持跨源复制时跳过）
+      // Electron can resolve a genuine OS File object through the trusted preload;
+      // native Qt drops are delivered separately with an external capability.
       const paths: string[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList.item(i);
@@ -2864,7 +2861,7 @@ export function App() {
         }
       }
       if (paths.length > 0) {
-        void api.files.copy(paths, targetDir).then(() => {
+        void api.files.copyInternal(paths, targetDir).then(() => {
           void refreshFiles();
           showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
         }).catch((error) => {
@@ -2873,11 +2870,15 @@ export function App() {
       }
     },
     onPasteFiles: (targetDir) => {
-      // 粘贴：从系统剪贴板读取资源管理器复制的文件路径，复制到目标目录
+      // Native clipboard paths are usable only with the capability issued by Qt.
       try {
         const paths = api.files.getClipboardPaths();
-        if (paths.length > 0) {
-          void api.files.copy(paths, targetDir).then(() => {
+        const capabilityId = api.files.getClipboardCapability?.() ?? "";
+        if (paths.length > 0 && (!isNativeRuntime || capabilityId)) {
+          const copyPromise = isNativeRuntime
+            ? api.files.copyExternal(capabilityId, targetDir)
+            : api.files.copyInternal(paths, targetDir);
+          void copyPromise.then(() => {
             void refreshFiles();
             showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
           }).catch((error) => {
@@ -2898,6 +2899,14 @@ export function App() {
   });
 
 
+  useNativeFileDropCopy({ api, refreshFiles, showToast });
+
+  const nativeWindowChrome = resolveNativeWindowChrome(
+    settings.useNativeTitleBar,
+    appInfo.platform,
+    isNativeRuntime,
+  );
+
   return (
     <>
       <AppBootstrap {...bootstrapProps} />
@@ -2907,7 +2916,7 @@ export function App() {
       drawer={drawer}
       drawerCollapsed={drawerCollapsed}
       drawerWidth={drawerWidth}
-      useNativeTitleBar={settings.useNativeTitleBar}
+      useNativeTitleBar={nativeWindowChrome.useNativeTitleBar}
       platform={appInfo.platform}
       chatPaneRef={chatPaneRef}
       terminalRowHeight={terminalRowHeight}
@@ -2940,13 +2949,6 @@ export function App() {
               active: drawer === "git",
               onClick: () => handleToolDrawerAction("git"),
             }] : []),
-            {
-              id: "browser",
-              label: t("app.browser"),
-              icon: <Globe size={16} />,
-              active: drawer === "browser",
-              onClick: () => handleToolDrawerAction("browser"),
-            },
           ]}
         />
       }
@@ -2957,7 +2959,6 @@ export function App() {
           editor={drawerPorts.editor}
           git={drawerPorts.git}
           chrome={drawerPorts.chrome}
-          browser={drawerPorts.browser}
           files={drawerPorts.files}
         />
       )}
@@ -3018,7 +3019,6 @@ export function App() {
             },
             icon: <Sparkles size={14} />,
           } : undefined}
-          browserAction={undefined}
         />
       }
       setListCollapsed={setListCollapsed}
@@ -3037,6 +3037,9 @@ export function App() {
       isWindowMaximized={api.app.isWindowMaximized}
       onWindowMaximizedChange={api.app.onWindowMaximizedChange}
       closeWindow={api.app.closeWindow}
+      beginWindowDrag={api.app.beginWindowDrag}
+      beginWindowResize={api.app.beginWindowResize}
+      enableNativeResize={nativeWindowChrome.enableCustomResize}
     >
 
     {fileMenu && (
@@ -3044,11 +3047,15 @@ export function App() {
         menu={fileMenu}
         hasClipboardFiles={hasClipboardFiles}
         onPaste={(targetDir) => {
-          // 右键菜单「粘贴文件到此处」：读剪贴板路径复制到目标目录
+          // 右键菜单「粘贴文件到此处」：native 只提交 Qt 签发的 capability
           try {
             const paths = api.files.getClipboardPaths();
-            if (paths.length > 0) {
-              void api.files.copy(paths, targetDir).then(() => {
+            const capabilityId = api.files.getClipboardCapability?.() ?? "";
+            if (paths.length > 0 && (!isNativeRuntime || capabilityId)) {
+              const copyPromise = isNativeRuntime
+                ? api.files.copyExternal(capabilityId, targetDir)
+                : api.files.copyInternal(paths, targetDir);
+              void copyPromise.then(() => {
                 void refreshFiles();
                 showToast(t("app.fileCopyDone", { count: paths.length }), 2000);
               }).catch((error) => {
@@ -3228,16 +3235,6 @@ export function App() {
     />
     <SessionActionOverlays
       {...overlays.overlayProps}
-      externalProtocol={
-        externalProtocolConfirm.pending && !externalProtocolModalBlocked
-          ? {
-              open: true as const,
-              url: externalProtocolConfirm.pending.url,
-              onConfirm: externalProtocolConfirm.confirm,
-              onCancel: externalProtocolConfirm.dismiss,
-            }
-          : undefined
-      }
     />
     <AppUpdateOverlay
       controller={appUpdate}

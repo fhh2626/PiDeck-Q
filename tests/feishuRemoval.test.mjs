@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 test("Feishu bot integration is removed from runtime contracts and menus", () => {
-	const main = readFileSync("src/main/index.ts", "utf8");
-	const preload = readFileSync("src/preload/index.ts", "utf8");
+	const main = readFileSync("src/native-node/index.ts", "utf8");
+	const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 	const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 	const settings = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
 	const packageJson = readFileSync("package.json", "utf8");

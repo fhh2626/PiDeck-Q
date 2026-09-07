@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ipcChannels } from "../../shared/ipc";
 import {
@@ -142,9 +143,12 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			trashPath,
 		},
 	);
-	const wasmLocateDir = appInfo.isPackaged
-		? join(paths.resourcesPath, "app.asar.unpacked", "node_modules", "sql.js", "dist")
-		: join(paths.appPath, "node_modules", "sql.js", "dist");
+	const nativeWasmLocateDir = join(paths.appPath, "node_modules", "sql.js", "dist");
+	const wasmLocateDir = existsSync(nativeWasmLocateDir)
+		? nativeWasmLocateDir
+		: appInfo.isPackaged
+			? join(paths.resourcesPath, "app.asar.unpacked", "node_modules", "sql.js", "dist")
+			: nativeWasmLocateDir;
 	const xuePromptManager = new XuePromptManager(
 		paths.home,
 		join(appInfo.isPackaged ? paths.resourcesPath : paths.appPath, appInfo.isPackaged ? "" : "resources", "xueprompts.db"),
@@ -267,7 +271,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		devRendererUrl: runtime?.devRendererUrl,
 		// 订阅 pi agent 事件流，供 Web SSE 端点转发给浏览器。
 		subscribePiEvents: (handler) => agentManager.addLocalEventListener(
-			(agentId, event) => handler(agentId, event as never),
+			(agentId, event, streamGeneration) => handler(agentId, event as never, streamGeneration),
 		),
 		// agentId → sessionId 路由：pi 事件只有 agentId，SSE 连接按 session 订阅。
 		getSessionIdForAgent: (agentId) => sessionRuntimeCoordinator.getSessionId(agentId),
@@ -521,6 +525,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		mainCopy,
 		getLocale: currentMainProcessLocale,
 		runtimeBridge,
+		externalFileCapabilities: options.externalFileCapabilities,
 		services: {
 			projectStore,
 			fileSystemService,
@@ -583,12 +588,12 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 				},
 			});
 		},
-		dispose: () => {
+		dispose: async () => {
 			if (disposed) return;
 			disposed = true;
-			webServiceManager?.stop().catch(() => undefined);
 			terminalManager?.closeAll();
 			agentManager?.stopAll();
+			await webServiceManager?.stop().catch(() => undefined);
 		},
 	};
 }

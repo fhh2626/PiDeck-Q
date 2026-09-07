@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -55,7 +55,7 @@ export class ProjectStore {
     const chatChanged = this.ensureChatProject();
     const orderChanged = this.ensureSortOrder();
     const changed = chatChanged || orderChanged;
-    await mkdir(this.chatProjectPath, { recursive: true });
+    await this.ensureDirectory(this.chatProjectPath);
     if (changed) await this.save();
     return this.list();
   }
@@ -93,15 +93,37 @@ export class ProjectStore {
     if (occupied) {
       throw new Error("CHAT_PATH_OVERLAPS_PROJECT");
     }
+
+    // Validate/create the destination before mutating the in-memory catalog. In
+    // particular, Windows rejects mkdir(root, { recursive: true }) even though
+    // an existing drive root is a valid directory.
+    await this.ensureDirectory(normalized);
+
     this.chatProjectPath = normalized;
     const chat = this.projects.find(project => this.isChatProject(project));
     if (chat) {
       chat.path = normalized;
     }
-    await mkdir(this.chatProjectPath, { recursive: true });
     await this.saveChatProjectPath(normalized);
     await this.save();
     return chat ?? null;
+  }
+
+  private async ensureDirectory(path: string): Promise<void> {
+    try {
+      const info = await stat(path);
+      if (!info.isDirectory()) {
+        throw new Error(`Path is not a directory: ${path}`);
+      }
+      return;
+    } catch (error: unknown) {
+      const code = error && typeof error === "object" && "code" in error && typeof error.code === "string"
+        ? error.code
+        : undefined;
+      if (code !== "ENOENT") throw error;
+    }
+
+    await mkdir(path, { recursive: true });
   }
 
   private async saveChatProjectPath(path: string) {

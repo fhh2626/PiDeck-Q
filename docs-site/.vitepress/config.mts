@@ -26,7 +26,7 @@ export default defineConfig({
           { text: "FAQ", link: "/guide/faq" },
           { text: "产品对比", link: "/guide/comparison" },
           { text: "更新日志", link: "/changelog" },
-          { text: "下载", link: "https://github.com/ayuayue/PiDeck/releases" },
+          { text: "下载", link: "https://github.com/fhh2626/PiDeck-Q/releases" },
         ],
         sidebar: {
           "/guide/": [
@@ -52,7 +52,7 @@ export default defineConfig({
           formatOptions: { dateStyle: "medium", timeStyle: "short" },
         },
         editLink: {
-          pattern: "https://github.com/ayuayue/PiDeck/edit/main/docs-site/:path",
+          pattern: "https://github.com/fhh2626/PiDeck-Q/edit/main/docs-site/:path",
           text: "在 GitHub 上编辑此页",
         },
         footer: {
@@ -76,7 +76,7 @@ export default defineConfig({
           { text: "FAQ", link: "/en/guide/faq" },
           { text: "Comparison", link: "/en/guide/comparison" },
           { text: "Changelog", link: "/en/changelog" },
-          { text: "Download", link: "https://github.com/ayuayue/PiDeck/releases" },
+          { text: "Download", link: "https://github.com/fhh2626/PiDeck-Q/releases" },
         ],
         sidebar: {
           "/en/guide/": [
@@ -102,7 +102,7 @@ export default defineConfig({
           formatOptions: { dateStyle: "medium", timeStyle: "short" },
         },
         editLink: {
-          pattern: "https://github.com/ayuayue/PiDeck/edit/main/docs-site/:path",
+          pattern: "https://github.com/fhh2626/PiDeck-Q/edit/main/docs-site/:path",
           text: "Edit this page on GitHub",
         },
         footer: {
@@ -117,7 +117,7 @@ export default defineConfig({
   themeConfig: {
     logo: "/icon.svg",
     siteTitle: "PiDeck",
-    socialLinks: [{ icon: "github", link: "https://github.com/ayuayue/PiDeck" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/fhh2626/PiDeck-Q" }],
     search: {
       provider: "local",
       options: {
@@ -176,8 +176,8 @@ export default defineConfig({
         "operatingSystem": "Windows, macOS, Linux",
         "description": "Open-source desktop workbench for managing multiple pi AI coding agents across local project folders.",
         "url": siteOrigin,
-        "downloadUrl": "https://github.com/ayuayue/PiDeck/releases",
-        "sourceCodeRepository": "https://github.com/ayuayue/PiDeck",
+        "downloadUrl": "https://github.com/fhh2626/PiDeck-Q/releases",
+        "sourceCodeRepository": "https://github.com/fhh2626/PiDeck-Q",
         "license": "https://opensource.org/licenses/MIT",
         "author": {
           "@type": "Organization",

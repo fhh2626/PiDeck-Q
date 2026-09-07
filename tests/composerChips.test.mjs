@@ -81,6 +81,25 @@ test("session chip with whitelist Set only matches known names", () => {
 	);
 });
 
+test("known session names do not turn embedded ampersands into chips", () => {
+	const sessions = new Set(["alpha"]);
+	assertJsonEqual(
+		parseRichInputChips("cmd&alpha && &alpha", undefined, undefined, sessions)
+			.map((chip) => chip.raw),
+		["&alpha"],
+	);
+	assertJsonEqual(
+		parseRichInputChips("CMD&ALPHA", undefined, undefined, sessions)
+			.map((chip) => chip.raw),
+		[],
+	);
+	assertJsonEqual(
+		parseRichInputChips("https://example.test/?x=&alpha", undefined, undefined, sessions)
+			.map((chip) => chip.raw),
+		[],
+	);
+});
+
 test("session chip with empty whitelist creates no session chips", () => {
 	const chips = parseRichInputChips("&& &oops cmd&x", undefined, undefined, new Set());
 	assert.equal(chips.filter((c) => c.kind === "session").length, 0);
@@ -104,6 +123,12 @@ test("URL path segments are not parsed as chips", () => {
 		chips.map((c) => c.raw),
 		["@src/a.ts"],
 	);
+});
+
+test("session references may use absolute file paths", () => {
+	const ref = "C:/Users/me/.pi/session file.json";
+	const chips = parseRichInputChips(`open &${ref}`, undefined, undefined, new Set([ref]));
+	assertJsonEqual(chips.map((chip) => chip.raw), [`&${ref}`]);
 });
 
 test("unquoted absolute path with spaces is extended into one file chip", () => {
@@ -133,6 +158,14 @@ test("unquoted spaced absolute path stops before following text and URLs", () =>
 	assertJsonEqual(
 		withUrl.map((c) => ({ raw: c.raw, label: c.label })),
 		[{ raw: "@C:/foo", label: "C:/foo" }],
+	);
+	const pathThenCommand = parseRichInputChips("@C:/foo /compact", new Set(["compact"]));
+	assertJsonEqual(
+		pathThenCommand.map((c) => ({ raw: c.raw, kind: c.kind })),
+		[
+			{ raw: "@C:/foo", kind: "file" },
+			{ raw: "/compact", kind: "skill" },
+		],
 	);
 });
 

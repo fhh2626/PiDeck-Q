@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Pin, Minus, Square, X } from "lucide-react";
+import type { WindowResizeEdge } from "../../../shared/desktop/NativeHostTypes";
 import { t } from "../i18n";
 
 type Props = {
   useNativeTitleBar: boolean;
-  /** mac 用系统红绿灯，不再渲染右侧 Win 风格 min/max/close。 */
+  /** macOS native runtime uses system traffic lights and native resizing. */
   platform: NodeJS.Platform;
   toggleAlwaysOnTop: () => Promise<boolean>;
   minimizeWindow: () => void;
@@ -13,9 +14,25 @@ type Props = {
   isWindowMaximized: () => Promise<boolean>;
   onWindowMaximizedChange: (callback: (maximized: boolean) => void) => () => void;
   closeWindow: () => void;
+  beginWindowResize: (edge: WindowResizeEdge) => void;
+  enableNativeResize: boolean;
 };
 
-/** Windows 风格「还原」图标：前后错位的两个方框（最大化态显示）。 */
+const RESIZE_HANDLES: ReadonlyArray<{
+  edge: WindowResizeEdge;
+  className: string;
+}> = [
+  { edge: "top", className: "fixed inset-x-2 top-0 h-1.5 cursor-n-resize" },
+  { edge: "bottom", className: "fixed inset-x-2 bottom-0 h-1.5 cursor-s-resize" },
+  { edge: "left", className: "fixed inset-y-2 left-0 w-1.5 cursor-w-resize" },
+  { edge: "right", className: "fixed inset-y-2 right-0 w-1.5 cursor-e-resize" },
+  { edge: "top-left", className: "fixed left-0 top-0 h-2 w-2 cursor-nw-resize" },
+  { edge: "top-right", className: "fixed right-0 top-0 h-2 w-2 cursor-ne-resize" },
+  { edge: "bottom-left", className: "fixed bottom-0 left-0 h-2 w-2 cursor-sw-resize" },
+  { edge: "bottom-right", className: "fixed bottom-0 right-0 h-2 w-2 cursor-se-resize" },
+];
+
+/** Custom titlebar restore icon: overlapping windows while maximized. */
 function RestoreIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none">
@@ -34,6 +51,8 @@ export function AppHeader({
   isWindowMaximized,
   onWindowMaximizedChange,
   closeWindow,
+  beginWindowResize,
+  enableNativeResize,
 }: Props) {
   const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(false);
   const [maximized, setMaximized] = useState(false);
@@ -55,13 +74,29 @@ export function AppHeader({
 
   if (useNativeTitleBar) return null;
 
-  // hiddenInset 已经画了系统红绿灯；再画一套 Win 控件就是「左右都有关闭键」。
-  const showWinWindowControls = platform !== "darwin";
+  // macOS native runtime never reaches this branch; keep the guard for the
+  // Electron hidden-inset host so it cannot render duplicate traffic lights.
+  const showCustomWindowControls = platform !== "darwin";
 
   return (
     <>
-      <div className="window-drag-layer" aria-hidden="true" />
-      {showWinWindowControls ? (
+      {enableNativeResize && !maximized ? RESIZE_HANDLES.map((handle) => (
+        <div
+          key={handle.edge}
+          aria-hidden="true"
+          className={`${handle.className} z-[1000]`}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            beginWindowResize(handle.edge);
+          }}
+        />
+      )) : null}
+      <div
+        className="window-drag-layer"
+        aria-hidden="true"
+      />
+      {showCustomWindowControls ? (
         <div className="window-controls" aria-label={t("app.windowControls")}>
           <button
             type="button"

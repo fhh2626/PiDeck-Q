@@ -113,11 +113,13 @@ function createDeps(overrides = {}) {
 		setZoomFactor: [],
 		toggleAlwaysOnTop: 0,
 		notifyTitleBarChange: 0,
+		sendToRenderer: [],
 		toggleDevTools: 0,
 		restartApplication: 0,
 		themeSetSource: [],
 		hideApplicationMenu: 0,
 		openExternalUrl: [],
+		beginWindowResize: [],
 	};
 	const toggleMaximizeResult = { value: true };
 	const toggleAlwaysOnTopResult = { value: true };
@@ -143,6 +145,7 @@ function createDeps(overrides = {}) {
 		toggleDevTools: () => {
 			calls.toggleDevTools += 1;
 		},
+		beginWindowResize: (edge) => calls.beginWindowResize.push(edge),
 	};
 
 	const platformTheme = {
@@ -208,11 +211,11 @@ function createDeps(overrides = {}) {
 		toggleDevTools: () => {
 			calls.toggleDevTools += 1;
 		},
-		sendToRenderer: () => {},
+		sendToRenderer: (channel, ...args) => calls.sendToRenderer.push({ channel, args }),
 		mainCopy: (key) => key,
 		checkForAppUpdate: async () => null,
 		downloadUpdateAsset: async (asset) => ({ filePath: `/updates/${asset.name}` }),
-		installDownloadedUpdate: async () => {},
+		openDownloadedUpdate: async () => {},
 		openExternalUrl: async (url, forceSystem) => {
 			calls.openExternalUrl.push({ url, forceSystem });
 		},
@@ -269,6 +272,16 @@ test("systemIpc window minimize/close delegate to MainWindowControls", async () 
 	assert.equal(calls.close, 1);
 });
 
+test("systemIpc validates window resize edges before delegating", async () => {
+	const { router, invoke } = createRouterHarness();
+	const { deps, calls } = createDeps();
+	registerSystemIpc(router, deps);
+
+	await invoke(ipcChannels.appBeginWindowResize, "bottom-right");
+	assert.deepEqual(calls.beginWindowResize, ["bottom-right"]);
+	assert.throws(() => invoke(ipcChannels.appBeginWindowResize, "center"), /Invalid window resize edge/);
+});
+
 test("systemIpc window toggle maximize returns the control result and reports maximized state", async () => {
 	const { router, invoke } = createRouterHarness();
 	const { deps, calls, results } = createDeps();
@@ -318,13 +331,17 @@ test("systemIpc theme patch calls PlatformTheme.setSource", async () => {
 	assert.ok(calls.hideApplicationMenu >= 1);
 });
 
-test("systemIpc zoomFactor patch calls setZoomFactor with the persisted value", async () => {
+test("systemIpc zoomFactor patch notifies the renderer without changing native window flags", async () => {
 	const { router, invoke } = createRouterHarness();
 	const { deps, calls } = createDeps();
 	registerSystemIpc(router, deps);
 
 	await invoke(ipcChannels.settingsUpdate, { zoomFactor: 1.1 });
-	assert.deepEqual(calls.setZoomFactor, [1.1]);
+	assert.equal(calls.notifyTitleBarChange, 0);
+	assert.deepEqual(calls.sendToRenderer, [{
+		channel: ipcChannels.settingsApplyWindow,
+		args: [{ theme: "dark", zoomFactor: 1.1 }],
+	}]);
 });
 
 test("systemIpc useNativeTitleBar patch calls notifyTitleBarChange", async () => {

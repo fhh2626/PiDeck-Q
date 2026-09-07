@@ -9,7 +9,6 @@ const typescript = require("typescript");
 const host = readFileSync("src/renderer/src/components/workspace/WorkspaceDrawerHost.tsx", "utf8");
 const hook = readFileSync("src/renderer/src/hooks/useWorkspacePanels.ts", "utf8");
 const editor = readFileSync("src/renderer/src/components/workspace/EditorSurface.tsx", "utf8");
-const browser = readFileSync("src/renderer/src/components/workspace/BrowserSurface.tsx", "utf8");
 const external = readFileSync("src/renderer/src/components/workspace/ExternalEditorOverlay.tsx", "utf8");
 
 async function loadPureExports(source, startMarker, endMarker) {
@@ -78,14 +77,13 @@ test("all Git leave paths invalidate the request and clear the snapshot", () => 
   assert.match(openDrawer, /if \(next !== "git"\) invalidateGitDiff\(\)/);
   assert.match(closeDrawer, /invalidateGitDiff\(\)/);
   assert.match(hook, /const closeGitDiff = useCallback\(\(\) => \{\s*invalidateGitDiff\(\);/);
-  assert.match(hook, /const openBrowser = useCallback\(\(\) => \{\s*invalidateGitDiff\(\);/);
   assert.match(hook, /useEffect\(\(\) => \{\s*invalidateGitDiff\(\);/);
 });
 
 test("drawer visible-panel helper renders first opens and switches immediately but retains close content", () => {
   assert.equal(drawerState.getVisibleDrawerPanel(true, "files", null), "files");
-  assert.equal(drawerState.getVisibleDrawerPanel(true, "browser", "files"), "browser");
-  assert.equal(drawerState.getVisibleDrawerPanel(false, null, "browser"), "browser");
+  assert.equal(drawerState.getVisibleDrawerPanel(true, "git", "files"), "git");
+  assert.equal(drawerState.getVisibleDrawerPanel(false, null, "git"), "git");
   assert.equal(drawerState.getVisibleDrawerPanel(false, null, null), null);
 });
 
@@ -121,17 +119,8 @@ test("Git diff and external editor flows reject stale project responses", () => 
   assert.match(external, /onOpenProject/);
 });
 
-test("browser surface has explicit fullscreen and minimize paths", () => {
-  assert.match(browser, /isFullscreen/);
-  assert.match(browser, /onMinimize=\{props\.onMinimize\}/);
-  assert.match(browser, /onToggleFullscreen=\{props\.onEnterFullscreen\}/);
-  assert.match(hook, /browserFullscreen/);
-  assert.match(hook, /const minimizeBrowser = useCallback/);
-  assert.match(hook, /openBrowser\(\)/);
-});
-
 // 回归（#113 parity）：抽屉面板切换入口必须挂在抽屉自身（activity rail），
-// 不能只在会话 outline 浮动按钮里 —— 否则无活跃会话时无法切到 git/browser。
+// 不能只在会话 outline 浮动按钮里 —— 否则无活跃会话时无法切到 git。
 test("drawer host renders an injected activity rail while open", () => {
   const rail = readFileSync("src/renderer/src/components/workspace/WorkspaceDrawerRail.tsx", "utf8");
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
@@ -175,22 +164,4 @@ test("drawer defaults closed on project load; pin restores per project", () => {
   const surface = readFileSync("src/renderer/src/components/session/WorkspaceSurface.tsx", "utf8");
   assert.doesNotMatch(surface, /drawer\.pin/);
   assert.doesNotMatch(surface, /onTogglePin/);
-});
-
-// 回归（点叉无法关闭 tab / 最后 tab 不收起侧边栏）：
-// 1) closeBrowser 是全屏 X 与关闭最后 tab 的统一入口，必须退出全屏并收起抽屉
-//    （仅 setBrowserFullscreen(false) 在抽屉模式下是空操作，侧边栏永远关不掉）；
-// 2) BrowserPanel 关闭最后 tab 时必须同步本地 tabs 状态，否则 React 因同值更新
-//    跳过重渲染，旧 tab 残留显示。
-test("closing the last browser tab syncs local state and collapses the sidebar", () => {
-  const panel = readFileSync("src/renderer/src/components/app/BrowserPanel.tsx", "utf8");
-  // closeBrowser 语义：关闭整个浏览器面板（退出全屏 + 关抽屉），区别于 minimizeBrowser
-  assert.match(hook, /const closeBrowser = useCallback\(\(\) => \{\s*setBrowserFullscreen\(false\);\s*closeDrawer\(\);\s*\}, \[closeDrawer\]\);/);
-  assert.match(hook, /const minimizeBrowser = useCallback/);
-  // closeTab 最后 tab 分支：session module 与本地 state 同时清空，再调用 onClose
-  assert.match(panel, /if \(current\.length <= 1\) \{/);
-  assert.match(panel, /resetBrowserPanelSession\(\);/);
-  assert.match(panel, /setTabs\(\[\]\);/);
-  assert.match(panel, /setActiveTabId\(null\);/);
-  assert.match(panel, /onClose\?\.\(\);/);
 });

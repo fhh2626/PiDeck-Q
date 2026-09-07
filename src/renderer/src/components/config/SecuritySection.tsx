@@ -28,11 +28,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Switch } from "../ui-shadcn/switch";
 import { Textarea } from "../ui-shadcn/textarea";
 import { t } from "../../i18n";
+import { desktopApi } from "../../desktopApi";
 
-const api = (window as unknown as { piDesktop: { security: {
-	getConfig: () => Promise<SecurityConfig>;
-	updateConfig: (patch: Partial<SecurityConfig>) => Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>;
-} } }).piDesktop;
+// Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
+const api = {
+	get security() {
+		return desktopApi.security;
+	},
+};
 
 const TOOL_ORDER: SecurityToolName[] = ["read", "write", "edit", "bash", "grep", "find", "ls", "ask_question"];
 

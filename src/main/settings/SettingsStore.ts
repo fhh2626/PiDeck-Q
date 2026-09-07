@@ -15,10 +15,7 @@ import {
 	migrateBuiltInExtensionDefaults,
 } from "../extensions/builtInExtensions";
 
-export {
-	readElectronChromiumSandboxPreference,
-	readSingleInstancePreference,
-} from "./startupPreferences";
+export { readSingleInstancePreference } from "./startupPreferences";
 
 /**
  * 读取 pi agent 的 settings.json 并从中提取 showThinking（取 hideThinkingBlock 的反值）。
@@ -77,8 +74,6 @@ const defaultSettings: AppSettings = {
   expandInterimDuringStream: false,
   collapsePrevRunsOnNewTurn: true,
   showDevTools: false,
-  // 默认关闭 Chromium 沙箱：与历史 Windows no-sandbox 兼容策略一致
-  electronChromiumSandbox: false,
   piProxyEnabled: false,
   piProxyUrl: "http://127.0.0.1:7890",
   piProxyBypass: "localhost,127.0.0.1,::1",
@@ -93,7 +88,6 @@ const defaultSettings: AppSettings = {
   webServiceHost: "0.0.0.0",
   webServicePort: 8765,
   rpcTimeout: 600_000,
-  linkOpenMode: "external",
   workspaceContentOpenMode: "split",
   contentMaxWidth: 1800,
   // 内容区宽度默认 80%：轻微留白兼顾阅读舒适（1826px 面板 → 内容 1461px）；
@@ -171,13 +165,17 @@ export class SettingsStore {
         Object.hasOwn(parsedUnknown, "telemetryEnabled") ||
         Object.hasOwn(parsedUnknown, "telemetryInstallId") ||
         Object.hasOwn(parsedUnknown, "telemetryLastHeartbeatDate");
+      const hadLegacyLinkOpenMode = Object.hasOwn(parsedUnknown, "linkOpenMode");
+      const hadLegacyElectronChromiumSandbox = Object.hasOwn(parsedUnknown, "electronChromiumSandbox");
       const {
         telemetryEnabled: _ignoredTelemetryEnabled,
         telemetryInstallId: _ignoredTelemetryInstallId,
         telemetryLastHeartbeatDate: _ignoredTelemetryLastHeartbeatDate,
-        ...parsedWithoutTelemetry
+        linkOpenMode: _ignoredLinkOpenMode,
+        electronChromiumSandbox: _ignoredElectronChromiumSandbox,
+        ...parsedClean
       } = parsedUnknown;
-      const parsed = parsedWithoutTelemetry as Partial<AppSettings>;
+      const parsed = parsedClean as Partial<AppSettings>;
       this.settings = {
         ...defaultSettings,
         ...parsed,
@@ -205,7 +203,13 @@ export class SettingsStore {
       // 语义从「最大宽度 px」变为「占面板百分比」，无法精确换算（面板宽度可变），
       // 用线性映射保留旧值感觉：800→60%、1400→84%、1800(不限)→100%。
       this.migrateContentWidth();
-      if (hadLegacyTelemetry || migratedGitCommitMessagePrompt || migratedBuiltInExtensionDefaults) {
+      if (
+        hadLegacyTelemetry ||
+        hadLegacyLinkOpenMode ||
+        hadLegacyElectronChromiumSandbox ||
+        migratedGitCommitMessagePrompt ||
+        migratedBuiltInExtensionDefaults
+      ) {
         void this.save().catch(() => undefined);
       }
     } catch {
@@ -262,16 +266,18 @@ export class SettingsStore {
   get() {
     // showThinking 由 pi agent 的 hideThinkingBlock 动态决定，每次 get() 都重新读取
     const computed = readPiAgentShowThinking(this.piAgentSettingsFile);
-    return { ...this.settings, showThinking: computed ?? true };
+    // Portable is a product invariant, not a renderer-controlled preference.
+    return { ...this.settings, installationType: "portable" as const, showThinking: computed ?? true };
   }
 
   async update(patch: Partial<AppSettings>) {
-    // showThinking 完全由 pi agent 的 hideThinkingBlock 控制，不允许通过桌面设置修改
-    const { showThinking: _, ...safePatch } = patch;
+    // showThinking 和 installationType 都由宿主决定，不允许通过桌面设置修改。
+    const { showThinking: _, installationType: __, ...safePatch } = patch;
+    this.settings.installationType = "portable";
     const languageChanged = Object.hasOwn(safePatch, "language");
     const promptWasDefault = isDefaultGitCommitMessagePrompt(this.settings.gitCommitMessagePrompt);
     const promptProvided = Object.hasOwn(safePatch, "gitCommitMessagePrompt");
-    this.settings = { ...this.settings, ...safePatch };
+    this.settings = { ...this.settings, ...safePatch, installationType: "portable" };
     // 用户只切换语言且仍使用内置模板时，同步模板语言；自定义模板不随语言变化。
     if (languageChanged && !promptProvided && promptWasDefault) {
       this.settings.gitCommitMessagePrompt = getDefaultGitCommitMessagePrompt(
@@ -303,32 +309,15 @@ export class SettingsStore {
   }
 
   /**
-   * 检测并保存安装类型。
-   * 
-   * Windows:
-   *   - PORTABLE_EXECUTABLE_DIR 存在 → portable（便携版 .exe）
-   *   - 否则 → installed（NSIS 安装版或其他）
-   * 
-   * macOS/Linux:
-   *   - 由于 electron-builder 不为 dmg/AppImage 等设置特殊环境变量，
-   *     且解压后的应用无法判断原始分发格式，统一标记为 installed。
-   *   - 用户从 ZIP 手动解压的情况无法区分，视为已安装。
-   * 
-   * Windows 便携版的环境变量是运行时事实,必须允许覆盖旧的持久化值；
-   * 否则用户曾经被记录为 installed 后,便携版会一直推荐安装版更新包。
+   * 检测并保存当前发行形态。
+   *
+   * PiDeck-Q 当前只发布从 ZIP 解压后直接运行的 Native portable 版本。
+   * 不再读取 Electron Builder 遗留的 PORTABLE_EXECUTABLE_DIR：Qt 启动的绿色版
+   * 不会注入该变量，读取它会把所有正式绿色版错误标成 installed。
+   * 保留字段只是为了兼容旧 settings.json 和更新服务的历史契约。
    */
   private async detectAndSaveInstallationType() {
-    let installationType: "portable" | "installed";
-
-    // Windows: electron-builder portable 目标会在运行时注入 PORTABLE_EXECUTABLE_DIR。
-    if (process.platform === "win32") {
-      const isPortable = process.env.PORTABLE_EXECUTABLE_DIR !== undefined;
-      installationType = isPortable ? "portable" : "installed";
-    } else {
-      // macOS 和 Linux: electron-builder 不提供统一环境变量区分原始分发格式。
-      installationType = "installed";
-    }
-
+    const installationType = "portable" as const;
     if (this.settings.installationType === installationType) return;
 
     this.settings.installationType = installationType;

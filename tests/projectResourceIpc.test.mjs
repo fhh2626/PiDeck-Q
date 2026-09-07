@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const entry = readFileSync("src/main/index.ts", "utf8");
+const entry = readFileSync("src/native-node/index.ts", "utf8");
 const projectsIpc = readFileSync("src/main/ipc/projectsIpc.ts", "utf8");
 const projectResourceIpc = readFileSync("src/main/ipc/projectResourceIpc.ts", "utf8");
 

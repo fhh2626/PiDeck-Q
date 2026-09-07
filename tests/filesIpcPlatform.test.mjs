@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cp as realCp, rm as realRm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import ts from "typescript";
 import vm from "node:vm";
 
@@ -44,6 +47,7 @@ function createAuthorizationStub() {
 		},
 		isPathWithinAuthorizedRoots: () => true,
 	};
+
 	stub.calls = calls;
 	stub.canonicalize = canonicalize;
 	return stub;
@@ -76,13 +80,29 @@ function createFakeRouter() {
 	};
 }
 
+function registerMoveRouter(root, fileOperations) {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: root }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => [root],
+		fileOperations,
+	});
+	return router;
+}
+
 test("Files IPC: platformShell openPath rejection and success behavior", async () => {
 	// 该用例只关注 openPath 结果语义，授权边界用透传 stub 即可。
 	const { registerFilesIpc } = loadFilesIpc(createAuthorizationStub());
 	const router = createFakeRouter();
 	let openPathResult = { ok: true };
 	let shownItem = "";
-	let externalOpened = { url: "", forceSystem: false };
 
 	const platformShell = {
 		openPath: async () => openPathResult,
@@ -92,8 +112,12 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	};
 
 	let dialogPickResult = { canceled: true, filePaths: [] };
+	const dialogOptions = [];
 	const dialogs = {
-		showOpenDialog: async () => dialogPickResult,
+		showOpenDialog: async (options) => {
+			dialogOptions.push(options);
+			return dialogPickResult;
+		},
 		showSaveDialog: async () => ({ canceled: true }),
 	};
 
@@ -104,9 +128,6 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 		appLogger: { info: () => {}, error: () => {} },
 		dialogs,
 		platformShell,
-		openExternalUrl: async (url, forceSystem) => {
-			externalOpened = { url, forceSystem: Boolean(forceSystem) };
-		},
 		getAuthorizedRoots: () => ["C:/project"],
 	});
 
@@ -126,11 +147,10 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 	dialogPickResult = { canceled: true, filePaths: [] };
 	const canceledFiles = await router.invoke(ipcChannels.dialogPickFiles);
 	assert.equal(canceledFiles.length, 0);
+	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openFile", "multiSelections"]);
 
-	// CASE 5: browserOpenExternal routes to openExternalUrl with forceSystem=true
-	await router.invoke(ipcChannels.browserOpenExternal, "https://example.com");
-	assert.equal(externalOpened.url, "https://example.com");
-	assert.equal(externalOpened.forceSystem, true);
+	await router.invoke(ipcChannels.dialogPickFiles, { includeDirectories: true });
+	assert.deepEqual(Array.from(dialogOptions.at(-1).properties), ["openDirectory"]);
 });
 
 test("Files IPC: shell only ever receives the authorized canonical host path", async () => {
@@ -161,7 +181,6 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 			showSaveDialog: async () => ({ canceled: true }),
 		},
 		platformShell,
-		openExternalUrl: async () => {},
 		getAuthorizedRoots: () => ["C:\\project"],
 	});
 
@@ -180,6 +199,196 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 	assert.ok(openAuth, "authorization must run before openPath");
 	assert.equal(openAuth.target, "C:\\project\\file.txt");
 	assert.deepEqual(openedPaths, ["C:/project/file.txt"]);
+});
+
+test("Files IPC: copy skips an existing destination instead of overwriting it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-copy-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		writeFileSync(source, "source-content");
+		writeFileSync(destination, "existing-content");
+
+		const authorization = createAuthorizationStub();
+		const { registerFilesIpc } = loadFilesIpc(authorization);
+		const router = createFakeRouter();
+		registerFilesIpc(router, {
+			fileSystemService: {},
+			projectStore: { get: () => ({ path: root }) },
+			settingsStore: { get: () => ({ wslEnabled: false }) },
+			appLogger: { info: () => {}, error: () => {} },
+			dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+			platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+			getAuthorizedRoots: () => [root],
+		});
+
+		await router.invoke(ipcChannels.filesCopy, [source], targetDir);
+		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: move does not copy and delete after a non-EXDEV rename failure", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-"));
+	try {
+		const sourceParent = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceParent, "same-folder");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(source, { recursive: true });
+		mkdirSync(destination, { recursive: true });
+		writeFileSync(join(source, "source-only.txt"), "source");
+		writeFileSync(join(destination, "target-only.txt"), "target");
+
+		const router = registerMoveRouter(root);
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir));
+		assert.equal(existsSync(source), true, "source must remain after a non-EXDEV failure");
+		assert.equal(existsSync(join(destination, "target-only.txt")), true);
+		assert.equal(existsSync(join(destination, "source-only.txt")), false, "destination must not be merged or overwritten");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move refuses an existing destination file", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-file-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		writeFileSync(source, "source-content");
+		writeFileSync(destination, "existing-content");
+
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move refuses an existing destination directory", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-dir-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same-folder");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(source, { recursive: true });
+		mkdirSync(destination, { recursive: true });
+		writeFileSync(join(source, "source-only.txt"), "source");
+		writeFileSync(join(destination, "target-only.txt"), "target");
+
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(existsSync(source), true);
+		assert.equal(existsSync(join(destination, "source-only.txt")), false);
+		assert.equal(readFileSync(join(destination, "target-only.txt"), "utf8"), "target");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: EXDEV move keeps the source when the destination appears during copy", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-race-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, basename(source));
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		writeFileSync(source, "source-content");
+		let removeCalled = false;
+		const router = registerMoveRouter(root, {
+			rename: async () => {
+				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
+			},
+			copy: async (from, to, options) => {
+				writeFileSync(to, "appeared-during-copy");
+				return realCp(from, to, options);
+			},
+			remove: async (...args) => {
+				removeCalled = true;
+				return realRm(...args);
+			},
+		});
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(removeCalled, false, "source removal must wait for a successful copy");
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.equal(readFileSync(destination, "utf8"), "appeared-during-copy");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: internal copy and base64 reads reject renderer-supplied external paths", async () => {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	let copied = false;
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: "C:/project" }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => ["C:/project"],
+		fileOperations: { copy: async () => { copied = true; } },
+	});
+	await assert.rejects(
+		() => router.invoke(ipcChannels.filesCopy, ["C:/outside/id_rsa"], "C:/project"),
+		/File path is not authorized for copy-source/,
+	);
+	await assert.rejects(
+		() => router.invoke(ipcChannels.filesReadBase64, "C:/outside/passport.png", 10 * 1024 * 1024),
+		/File path is not authorized for read-base64/,
+	);
+	assert.equal(copied, false, "internal copy must not invoke filesystem operations for external paths");
+});
+
+test("Files IPC: external copy uses only the trusted capability paths", async () => {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+	let copiedFrom = "";
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: "C:/project" }) },
+		settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+		getAuthorizedRoots: () => ["C:/project"],
+		externalFileCapabilities: {
+			consumeCopy: (capabilityId) => capabilityId === "trusted-capability" ? ["C:/Users/user/.ssh/id_rsa"] : null,
+			consumeRead: () => { throw new Error("not used"); },
+		},
+		fileOperations: {
+			copy: async (source) => { copiedFrom = source; },
+		},
+	});
+	await router.invoke(ipcChannels.filesCopyExternal, "trusted-capability", "C:/project");
+	assert.equal(copiedFrom, "C:/Users/user/.ssh/id_rsa");
 });
 
 test("Files IPC: unauthorized paths are rejected before any shell side effect", async () => {
@@ -209,7 +418,6 @@ test("Files IPC: unauthorized paths are rejected before any shell side effect", 
 			showSaveDialog: async () => ({ canceled: true }),
 		},
 		platformShell,
-		openExternalUrl: async () => {},
 		getAuthorizedRoots: () => ["C:/project"],
 	});
 

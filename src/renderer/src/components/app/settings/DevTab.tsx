@@ -526,14 +526,6 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
             }}
           />
         </SettingRow>
-        <SettingSwitchRow
-          title={t("settings.electronSandbox")}
-          description={t("settings.electronSandboxDesc")}
-          checked={draft.electronChromiumSandbox}
-          onChange={(checked) =>
-            updateDraft({ electronChromiumSandbox: checked })
-          }
-        />
         <div className="px-0.5 pb-1 pt-3">
           <span className="text-caption font-semibold tracking-[0.06em] text-muted-foreground">{t("settings.piRpcStartup")}</span>
           <p className="mt-0.5 text-caption text-muted-foreground">{t("settings.piRpcStartupDesc")}</p>

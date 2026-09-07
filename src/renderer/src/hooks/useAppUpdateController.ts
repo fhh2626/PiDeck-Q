@@ -8,7 +8,7 @@ import type {
 export type AppUpdateControllerApi = {
 	checkUpdate: () => Promise<AppUpdateInfo>;
 	downloadUpdate: (asset: NonNullable<AppUpdateInfo["recommendedAsset"]>) => Promise<AppUpdateDownloadResult>;
-	installUpdate: (filePath: string) => Promise<void>;
+	openUpdatePackage: (filePath: string) => Promise<void>;
 	onUpdateProgress?: (callback: (progress: AppUpdateDownloadProgress) => void) => () => void;
 	openExternal?: (url: string) => Promise<void>;
 };
@@ -22,7 +22,7 @@ export type AppUpdateControllerState = {
 	downloadedPath: string | null;
 	check: (source?: "auto" | "manual") => Promise<AppUpdateInfo | null>;
 	download: () => Promise<string | null>;
-	install: () => Promise<void>;
+	openPackage: () => Promise<void>;
 	clear: () => void;
 };
 
@@ -148,10 +148,10 @@ export function useAppUpdateController(
 		}
 	}, [api, downloading, info]);
 
-	const install = useCallback(async () => {
+	const openPackage = useCallback(async () => {
 		if (!downloadedPath) return;
 		try {
-			await api.installUpdate(downloadedPath);
+			await api.openUpdatePackage(downloadedPath);
 		} catch (reason) {
 			if (mounted.current) setError(errorMessage(reason));
 		}
@@ -168,5 +168,5 @@ export function useAppUpdateController(
 		setDownloadedPath(null);
 	}, []);
 
-	return { info, error, checking, downloading, progress, downloadedPath, check, download, install, clear };
+	return { info, error, checking, downloading, progress, downloadedPath, check, download, openPackage, clear };
 }

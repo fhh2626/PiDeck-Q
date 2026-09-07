@@ -16,11 +16,11 @@ PiDeck 原生支持 **原版 Pi Agent** 和 **Pi_Agent_Rust**。通过会话导�
 
 ## 支持哪些平台？
 
-PiDeck 提供 **Windows**、**macOS**、**Linux** 的预构建安装包，通过 [GitHub Releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases) 发布。源码开发环境要求 Node.js 20+ 和 npm。
+PiDeck 提供 **Windows**、**macOS**、**Linux** 的预构建安装包，通过 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 发布。源码开发环境要求 Node.js 20+ 和 npm。
 
 ## 如何下载安装 PiDeck？
 
-前往 [GitHub Releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases) 下载对应平台的安装包。安装后首次启动时，PiDeck 会尝试自动检测 `pi` 路径；如果检测失败，可以在设置里手动填写 pi 可执行文件路径。
+前往 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 下载对应平台的安装包。安装后首次启动时，PiDeck 会尝试自动检测 `pi` 路径；如果检测失败，可以在设置里手动填写 pi 可执行文件路径。
 
 ## 从源码运行需要什么环境？
 
@@ -54,7 +54,7 @@ pi --mode rpc
 ## 如何从源码开发 PiDeck？
 
 ```bash
-git clone https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git
+git clone https://github.com/fhh2626/PiDeck-Q.git
 cd pi-desktop
 npm install
 npm run make-icon
@@ -80,5 +80,5 @@ npm run dev
 
 ## 遇到问题怎么办？
 
-- 查看 [GitHub Issues](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/issues)
+- 查看 [GitHub Issues](https://github.com/fhh2626/PiDeck-Q/issues)
 - 加入 **QQ 群：1026218644** 进行交流

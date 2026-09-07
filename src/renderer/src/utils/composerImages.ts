@@ -1,6 +1,8 @@
 import type { ImageContent } from "../../../shared/types";
+import { MAX_COMPOSER_TOTAL_IMAGE_BASE64_BYTES } from "../../../shared/desktop/nativeLimits.ts";
 
 export const COMPOSER_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const COMPOSER_TOTAL_IMAGE_BASE64_MAX_BYTES = MAX_COMPOSER_TOTAL_IMAGE_BASE64_BYTES;
 export const COMPOSER_IMAGE_MAX_EDGE = 2000;
 export const COMPOSER_IMAGE_QUALITY = 0.86;
 export const COMPOSER_IMAGE_MIME_TYPES = new Set([
@@ -20,6 +22,14 @@ export class ComposerImageError extends Error {
     this.name = "ComposerImageError";
     this.code = code;
   }
+}
+
+export function composerImageBase64Bytes(images: ImageContent[] | undefined): number {
+  return images?.reduce((total, image) => total + image.data.length, 0) ?? 0;
+}
+
+export function exceedsComposerImagePayloadBudget(images: ImageContent[] | undefined): boolean {
+  return composerImageBase64Bytes(images) > COMPOSER_TOTAL_IMAGE_BASE64_MAX_BYTES;
 }
 
 export function dataUrlToImageContent(

@@ -21,7 +21,6 @@ export type AppSkinId =
 	| "warm-beige"
 	| "custom";
 export type AppLanguageMode = "system" | "zh-CN" | "en-US" | "pseudo";
-export type LinkOpenMode = "external" | "internal";
 
 /** 主进程枚举出的可用于手机访问 Web 服务的局域网入口。 */
 export type WebNetworkAddress = {
@@ -115,12 +114,6 @@ export type StartupWindowMode =
 	collapsePrevRunsOnNewTurn: boolean;
 	/** 是否开启开发者控制台（DevTools） */
 	showDevTools: boolean;
-	/**
-	 * Electron Chromium 渲染进程沙箱（与 pi Agent 无关）。
-	 * false（默认）：关闭沙箱，兼容 Windows 安全软件/旧 GPU 驱动；
-	 * true：启用 Chromium 沙箱，需重启 PiDeck 后生效。
-	 */
-	electronChromiumSandbox: boolean;
 	/** 是否给 pi agent 子进程注入代理环境变量，不影响 desktop 自身网络请求 */
 	piProxyEnabled: boolean;
 	/** pi agent 使用的代理地址，例如 http://127.0.0.1:7890 */
@@ -142,12 +135,10 @@ export type StartupWindowMode =
 	webServiceHost: string;
 	/** Web 服务监听端口 */
 	webServicePort: number;
-	/** 应用安装类型：portable（便携版）或 installed（安装版），启动时自动检测并持久化 */
+	/** 兼容旧 settings.json 的发行形态字段；当前 PiDeck-Q 固定为 portable。 */
 	installationType?: "portable" | "installed";
 	/** RPC 调用超时时间（毫秒），默认 600000（10 分钟），用于长时间运行的命令 */
 	rpcTimeout: number;
-	/** 外部链接打开方式：external 使用系统默认浏览器，internal 使用应用内独立窗口 */
-	linkOpenMode: LinkOpenMode;
 	/**
 	 * 从文件树 / Git 打开文件或 Diff 时，中间栏默认布局。
 	 * split=与会话分屏；maximize=占满中间栏（会话暂时收起，不进侧栏）。

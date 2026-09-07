@@ -4,7 +4,6 @@ import type {
   DrawerEditorPort,
   DrawerGitPort,
   DrawerChromePort,
-  DrawerBrowserPort,
   DrawerFilesPort,
 } from "../components/workspace/DrawerSurface";
 
@@ -43,12 +42,6 @@ interface UseDrawerPortsInput {
   openDrawer: (panel: WorkspaceDrawerPanel) => void;
   closeDrawer: () => void;
   collapseDrawer: () => void;
-  closeBrowser: () => void;
-  minimizeBrowser: () => void;
-  enterBrowserFullscreen: () => void;
-
-  // Browser
-  browserFullscreen: boolean;
 
   // Files/History
   sessionsProject: any;
@@ -126,13 +119,6 @@ export function useDrawerPorts(input: UseDrawerPortsInput) {
       onCollapseDrawer: input.closeDrawer,
     };
 
-    const browser: DrawerBrowserPort = {
-      browserFullscreen: input.browserFullscreen,
-      onCloseBrowser: input.closeBrowser,
-      onMinimizeBrowser: input.minimizeBrowser,
-      onEnterBrowserFullscreen: input.enterBrowserFullscreen,
-    };
-
     const files: DrawerFilesPort = {
       sessionsProject: input.sessionsProject,
       sessionsProjectId: input.sessionsProjectId,
@@ -165,7 +151,7 @@ export function useDrawerPorts(input: UseDrawerPortsInput) {
       onMoveFiles: input.onMoveFiles,
     };
 
-    return { editor, git, chrome, browser, files };
+    return { editor, git, chrome, files };
   }, [
     input.editorMode, input.activeTab, input.activeTabId,
     input.editorTabs, input.toggleEditorMode, input.selectEditorTab,
@@ -178,8 +164,6 @@ export function useDrawerPorts(input: UseDrawerPortsInput) {
     input.toggleGitDiffDisplayMode, input.closeGitDiff,
     input.gitApi, input.gitInfo, input.switchBranch, input.createBranch,
     input.openDrawer, input.closeDrawer, input.collapseDrawer,
-    input.closeBrowser, input.minimizeBrowser, input.enterBrowserFullscreen,
-    input.browserFullscreen,
     input.sessionsProject, input.sessionsProjectId,
     input.files, input.sessions, input.sessionSourceFilter, input.sessionHistoryLoading,
     input.expandedDirs, input.onToggleDirectory, input.onCollapseAllDirectories,

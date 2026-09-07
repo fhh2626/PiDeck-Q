@@ -441,6 +441,27 @@ function leftoverReasoningText(message: UIMessage): string {
 		.join("\n");
 }
 
+function leftoverVisibleText(message: UIMessage): string {
+	return message.parts
+		.filter((part) => part.type === "text")
+		.map((part) => part.text.trim())
+		.filter(Boolean)
+		.join("\n");
+}
+
+function isLocalSseAssistant(message: UIMessage): boolean {
+	return uiMessageRole(message) === "assistant" && !readWebMessageMetadata(message);
+}
+
+/** 直播合泡（思考+工具/正文）不能按拼接文本去对单条快照，否则会被思考前缀整段替换。 */
+function isCombinedLocalSseAssistant(message: UIMessage): boolean {
+	if (!isLocalSseAssistant(message)) return false;
+	const hasReasoning = leftoverReasoningText(message).length > 0;
+	const hasTool = leftoverPlaceholderToolIds(message).length > 0;
+	const hasText = leftoverVisibleText(message).length > 0;
+	return (hasReasoning && hasText) || (hasReasoning && hasTool) || (hasTool && hasText);
+}
+
 function hasVisibleAssistantText(message: UIMessage): boolean {
 	return message.parts.some((part) => part.type === "text" && part.text.trim());
 }
@@ -452,11 +473,12 @@ function snapshotHasSettledAssistant(authoritative: UIMessage[]): boolean {
 	);
 }
 
-/** 权威快照已经包含同一段思考/同一工具时，本地 SSE 占位才是重复的队尾锁。 */
-function isCoveredLocalPlaceholder(leftover: UIMessage, authoritative: UIMessage[]): boolean {
-	if (!isLocalOnlyAssistantPlaceholder(leftover)) return false;
+/** 权威快照已经包含同一段思考/同一工具/同一正文时，本地 SSE 气泡才是重复的队尾锁。 */
+function isCoveredLocalSseAssistant(leftover: UIMessage, authoritative: UIMessage[]): boolean {
+	if (!isLocalSseAssistant(leftover)) return false;
 	const leftoverText = leftoverReasoningText(leftover);
 	const leftoverToolIds = leftoverPlaceholderToolIds(leftover);
+	const leftoverAnswer = leftoverVisibleText(leftover);
 	return authoritative.some((incoming) => {
 		if (leftoverText) {
 			const incomingText = leftoverReasoningText(incoming);
@@ -467,12 +489,25 @@ function isCoveredLocalPlaceholder(leftover: UIMessage, authoritative: UIMessage
 					|| leftoverText.startsWith(incomingText))
 			) return true;
 		}
-		if (leftoverToolIds.length === 0) return false;
-		const incomingIdentity = uiMessageIdentity(incoming);
-		if (incomingIdentity && leftoverToolIds.some((id) => incomingIdentity === `tool:${id}`)) {
-			return true;
+		if (leftoverToolIds.length > 0) {
+			const incomingIdentity = uiMessageIdentity(incoming);
+			if (incomingIdentity && leftoverToolIds.some((id) => incomingIdentity === `tool:${id}`)) {
+				return true;
+			}
+			if (leftoverPlaceholderToolIds(incoming).some((id) => leftoverToolIds.includes(id))) {
+				return true;
+			}
 		}
-		return leftoverPlaceholderToolIds(incoming).some((id) => leftoverToolIds.includes(id));
+		if (leftoverAnswer) {
+			const incomingAnswer = leftoverVisibleText(incoming);
+			if (
+				incomingAnswer
+				&& (incomingAnswer === leftoverAnswer
+					|| incomingAnswer.startsWith(leftoverAnswer)
+					|| leftoverAnswer.startsWith(incomingAnswer))
+			) return true;
+		}
+		return false;
 	});
 }
 
@@ -551,6 +586,7 @@ export function mergeAuthoritativeUiMessages(
 					|| uiMessageRole(merged[index]) !== incomingRole
 					|| !candidateText
 					|| isLocalOnlyAssistantPlaceholder(merged[index])
+					|| isCombinedLocalSseAssistant(merged[index])
 					|| !(incomingText.startsWith(candidateText) || candidateText.startsWith(incomingText))
 				) continue;
 				matchIndex = index;
@@ -622,13 +658,15 @@ export function mergeAuthoritativeUiMessages(
 		if (matchedCurrent.has(index)) continue;
 		const leftover = merged[index];
 		const dropEmptyUser = uiMessageRole(leftover) === "user" && isEmptyUiMessage(leftover);
-		// 流式：只删快照已覆盖的重复卡。
-		// 空闲且快照已有最终正文：清掉未匹配的本地思考/工具占位（含卡在中间的孤儿）。
+		const covered = isCoveredLocalSseAssistant(leftover, authoritative);
+		// 流式：只删快照已覆盖的无字占位。
+		// 空闲且快照已有最终正文：清掉未匹配的本地思考/工具占位，以及已被快照覆盖的带字 SSE 合泡。
 		const dropPlaceholder = isLocalOnlyAssistantPlaceholder(leftover) && (
-			isCoveredLocalPlaceholder(leftover, authoritative)
+			covered
 			|| canDropUnmatchedPlaceholders
 		);
-		if (!dropEmptyUser && !dropPlaceholder) continue;
+		const dropCoveredSseWithText = canDropUnmatchedPlaceholders && covered && isLocalSseAssistant(leftover);
+		if (!dropEmptyUser && !dropPlaceholder && !dropCoveredSseWithText) continue;
 		merged.splice(index, 1);
 		changed = true;
 	}

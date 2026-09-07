@@ -500,6 +500,25 @@ export class AgentManager {
 			.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 	}
 
+	/** 本地流式/工具标志，不发 get_state RPC；供 Web /api/state 轮询。 */
+	getLocalStreamingFlags(agentId: string): {
+		isStreaming: boolean;
+		isExecutingTool: boolean;
+	} {
+		return {
+			isStreaming: this.streamingAgents.has(agentId),
+			isExecutingTool: !!this.toolExecutingByAgent.get(agentId),
+		};
+	}
+
+	/**
+	 * 与 create/reattach 的 get_state 使用同一设置值，供 SessionRuntimeCoordinator
+	 * 等待 starting runtime 时共享 deadline，避免慢机器被第二套硬编码 timeout 提前清理。
+	 */
+	getStartupTimeoutMs(): number {
+		return this.rpcTimeoutMs;
+	}
+
 	/**
 	 * 判断指定项目是否仍有运行中的 Agent（pi 子进程未退出）。
 	 * 用于删除项目前拦截，避免删除后 pi 进程悬挂后台继续占用资源。
@@ -1013,11 +1032,13 @@ export class AgentManager {
 		const sessionKey = buildAgentSessionKey(input, this.getAgentSessionIdentityDefaults());
 		if (!sessionKey) return this.createUnlocked(input);
 
-		const existingForSession = this.findRuntimeBySessionKey(sessionKey);
-		if (existingForSession) return existingForSession.tab;
-
+		// 先复用同一 session 的 in-flight 创建 Promise；createUnlocked 会很早把
+		// starting runtime 放进 agents，若先查 agents，第二次调用会绕过真正的去重等待。
 		const pendingCreate = this.creatingSessionAgents.get(sessionKey);
 		if (pendingCreate) return pendingCreate;
+
+		const existingForSession = this.findRuntimeBySessionKey(sessionKey);
+		if (existingForSession) return existingForSession.tab;
 
 		// 历史会话激活属于“一个 sessionPath 只能对应一个 Agent”的业务规则；
 		// 先登记 in-flight Promise，再启动真实创建，防止第二次点击绕过 agents map 检查。

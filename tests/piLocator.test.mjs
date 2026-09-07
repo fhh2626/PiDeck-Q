@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
+const { sanitizeChildEnvironment } = loadTsCommonJs("src/main/process/sanitizeChildEnvironment.ts");
 
 const require = createRequire(import.meta.url);
 
@@ -33,6 +36,7 @@ function loadPiLocatorModule(platform = process.platform, envOverrides = {}, hom
 			if (id.includes("piCompatibility")) {
 				return require("../src/shared/piCompatibility.ts");
 			}
+			if (id === "../process/sanitizeChildEnvironment") return { sanitizeChildEnvironment };
 			return require(id);
 		},
 	};

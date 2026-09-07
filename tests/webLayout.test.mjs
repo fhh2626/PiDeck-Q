@@ -137,6 +137,25 @@ test("Web stream-error recovery preserves pages that were already loaded", () =>
 	);
 });
 
+test("Web stream recovery refreshes a running session without reposting the prompt", () => {
+	assert.match(webChatApp, /prepareReconnectToStreamRequest:\s*\(\{ id \}\) => \(\{/);
+	assert.match(webChatApp, /api: `\/api\/sessions\/\$\{encodeURIComponent\(id\)\}\/stream`/);
+	const recoveryStart = webChatApp.indexOf("// SSE 异常先以权威快照建立新基线");
+	const recoveryEnd = webChatApp.indexOf("// 轮询拿到的运行时快照", recoveryStart);
+	assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart);
+	const recovery = webChatApp.slice(recoveryStart, recoveryEnd);
+	const stateFetch = recovery.indexOf("await fetchState()");
+	const pageFetch = recovery.indexOf("await fetchMessagePage(sessionId)");
+	const runtimeBaseline = recovery.indexOf("nextState.messagesBySession[sessionId]");
+	const resume = recovery.indexOf("await resumeStream()");
+	assert.ok(stateFetch >= 0 && pageFetch > stateFetch && runtimeBaseline > pageFetch && resume > runtimeBaseline);
+	assert.match(recovery, /runtime\.sessionId === sessionId && runtime\.status === "running"/);
+	assert.match(recovery, /mergeAuthoritativeUiMessages\(history, runtimeSnapshot\)/);
+	assert.match(recovery, /setMessages\(merged\)/);
+	assert.doesNotMatch(recovery, /sendMessage\(/);
+	assert.doesNotMatch(recovery, /fetch\("\/api\/chat"/);
+});
+
 test("Web tool cards stay compact and keep a visible settled status", () => {
 	assert.match(webTimeline, /tool-card inline-flex w-fit max-w-full/);
 	assert.match(webTimeline, /t\("tool\.statusDone"\)/);

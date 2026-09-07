@@ -30,7 +30,7 @@ function linkify(text) {
 }
 
 test("real paths still linkify (relative, absolute, unicode)", () => {
-	assert.deepEqual(linkify("看 src/main/index.ts"), ["file://src/main/index.ts"]);
+	assert.deepEqual(linkify("看 src/native-node/index.ts"), ["file://src/native-node/index.ts"]);
 	// 中文/反斜杠经 encodeURIComponent 编码（解码后还原原路径）
 	const absLinks = linkify("路径 D:\\项目\\文件.ts");
 	assert.equal(absLinks.length, 1);

@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - native
   pull_request:
     branches:
       - main
+      - native
 
 permissions:
   contents: read
@@ -23,8 +25,16 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24.13.0
+          node-version: 24.19.0
           cache: npm
+
+      - name: Setup Python for node-pty
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
 
       - name: Install dependencies
         run: npm ci
@@ -32,43 +42,17 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test native Host RPC
+        run: npm run test:native-host-rpc
+
+      - name: Test native Qt GUI lifecycle
+        run: npm run test:native-gui
+
       - name: Generate app icon
         run: npm run make-icon
 
       - name: Type-check
         run: npm run typecheck
 
-      - name: Build
-        run: npm run build
-
-      - name: Verify packaging config
+      - name: Build renderer, Node sidecar and Qt host
         run: npm run pack
-
-  pet-linux-smoke:
-    name: Pet Linux smoke (xvfb)
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.0
-          cache: npm
-
-      - name: Install Electron system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            xvfb libgtk-3-0 libnss3 libgbm1 libxss1 \
-            libxshmfence1 libgl1 libxtst6
-          sudo apt-get install -y --no-install-recommends libasound2t64 \
-            || sudo apt-get install -y --no-install-recommends libasound2
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build

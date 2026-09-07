@@ -237,14 +237,15 @@ test("Projects IPC: dialog cancel returns null and chat path operations notify r
 	const chooseSuccess = await router.invoke(ipcChannels.projectsChooseChatPath);
 	assert.equal(chooseSuccess, "C:/new-chat");
 
-	// 计划 43 节：chat path dialog options 必须逐字段锁定（title/defaultPath/properties/parent）。
-	// projectsAdd 也调用过 dialogs，因此取最后一次（即 chat path）调用的 options。
+	// Chat history selection is a modal operation owned by the main window. Without
+	// an owner, the Windows native folder picker can minimize PiDeck-Q when it closes.
+	// projectsAdd also called dialogs, so take the last (chat path) invocation.
 	const chatOptions = chatDialogCalls[chatDialogCalls.length - 1];
 	assert.ok(chatOptions, "chat path picker must open a dialog");
 	assert.equal(chatOptions.title, "dialog.chooseChatHistoryFolder");
 	assert.equal(chatOptions.defaultPath, "C:/chat", "must default to the current chat workspace directory");
 	assert.deepEqual(Array.from(chatOptions.properties), ["openDirectory"]);
-	assert.equal(chatOptions.parent, "none", "chat path dialog must not be parented to the main window");
+	assert.equal(chatOptions.parent, "main-window", "chat path dialog must be owned by the main window");
 
 	// set chat path
 	const setRes = await router.invoke(ipcChannels.projectsSetChatPath, "C:/new-chat");

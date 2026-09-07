@@ -8,7 +8,7 @@ const stylesEntry = readFileSync("src/renderer/src/styles.css", "utf8");
 const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
 const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const brand = readFileSync("src/renderer/src/components/app/AppParts.tsx", "utf8");
 const sidebar = readFileSync("src/renderer/src/components/sidebar/AppSidebar.tsx", "utf8");
 const tabs = readFileSync("src/renderer/src/components/session/SessionTabsBar.tsx", "utf8");
@@ -47,7 +47,7 @@ test("window controls are compact and match drag-layer inset", () => {
   );
 });
 
-const mainWindowControls = readFileSync("src/main/window/MainWindowControls.ts", "utf8");
+const mainWindowControls = readFileSync("src/native-node/host/NativeMainWindowControls.ts", "utf8");
 
 test("maximize button tracks window state with restore icon", () => {
   assert.match(header, /function RestoreIcon/);
@@ -57,10 +57,9 @@ test("maximize button tracks window state with restore icon", () => {
   assert.match(ipc, /appWindowIsMaximized/);
   assert.match(ipc, /appWindowMaximizedChanged/);
   assert.match(systemIpc, /appWindowIsMaximized/);
-  assert.match(mainWindowControls, /win\.on\("maximize"/);
-  assert.match(mainWindowControls, /win\.on\("unmaximize"/);
+  assert.match(mainWindowControls, /window\.maximizedChanged/);
   assert.match(mainWindowControls, /toggleAlwaysOnTop/);
-  assert.match(mainWindowControls, /setZoomFactor/);
+  assert.match(readFileSync("src/renderer/src/native/rendererZoom.ts", "utf8"), /document\.documentElement\.style\.zoom/);
   assert.match(mainWindowControls, /notifyTitleBarChange/);
   assert.match(preload, /isWindowMaximized:/);
   assert.match(preload, /onWindowMaximizedChange:/);
@@ -73,6 +72,13 @@ test("window controls stay above session tabs so close is never covered", () => 
     foundation,
     /\.custom-titlebar-enabled \.session-tabs-bar \{[\s\S]*?z-index:\s*930;/,
   );
+  // Transparent drag layer must stay below tabs/logo (930). Raising it would
+  // swallow clicks; Qt drag is forwarded from AppShell capture instead.
+  assert.match(foundation, /\.window-drag-layer \{[\s\S]*?z-index:\s*900;/);
+  assert.match(shell, /onPointerDownCapture/);
+  assert.match(shell, /onDoubleClickCapture/);
+  assert.match(shell, /enableNativeResize/);
+  assert.match(shell, /shouldBeginWindowDrag\(event\.target\)/);
 });
 
 test("workbench content sits below shared tabs chrome (no double drag padding)", () => {
@@ -117,11 +123,9 @@ test("session tabs bar keeps trailing inset for drawer toggle (no px-* override)
 });
 
 test("toggle maximize tracks intent without stale isMaximized reads", () => {
-  assert.match(mainWindowControls, /const nextMaximized = !readMaximized\(win\)/);
-  assert.match(mainWindowControls, /emitMaximizedState\(win,\s*nextMaximized\)/);
-  assert.match(mainWindowControls, /return nextMaximized/);
-  assert.match(mainWindowControls, /win\.on\("maximize",\s*\(\)\s*=>\s*emitMaximizedState\(win,\s*true\)\)/);
-  assert.match(mainWindowControls, /win\.on\("unmaximize",\s*\(\)\s*=>\s*emitMaximizedState\(win,\s*false\)\)/);
+  assert.match(mainWindowControls, /toggleMaximize\(\): Promise<boolean>/);
+  assert.match(mainWindowControls, /window\.maximizedChanged/);
+  assert.match(mainWindowControls, /appWindowMaximizedChanged/);
   assert.doesNotMatch(
     systemIpc,
     /win\.webContents\.send\(ipcChannels\.appWindowMaximizedChanged,\s*win\.isMaximized\(\)\)/,
@@ -147,17 +151,23 @@ test("brand lockup is larger inside the 40px titlebar", () => {
   assert.doesNotMatch(sidebar, /list-toggle-native floating/);
 });
 
-test("mac custom titlebar uses system traffic lights and insets collapsed tabs", () => {
+test("mac window chrome keeps one platform-owned traffic-light set", () => {
   const header = readFileSync("src/renderer/src/components/AppHeader.tsx", "utf8");
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
-  const windowOptions = readFileSync("src/main/window/windowOptions.ts", "utf8");
-  // 右侧 Win 控件只在非 darwin 渲染；mac 靠 hiddenInset 红绿灯。
-  assert.match(header, /const showWinWindowControls = platform !== "darwin"/);
+  const nativeWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
+  const nativePolicy = readFileSync("native/src/NativeWindowPolicy.cpp", "utf8");
+  const appearance = readFileSync("src/renderer/src/components/app/settings/AppearanceTab.tsx", "utf8");
+  // Electron hiddenInset and native Qt both suppress renderer window buttons;
+  // Qt additionally forces system decorations because macOS frameless resize is unsupported.
+  assert.match(header, /const showCustomWindowControls = platform !== "darwin"/);
+  assert.match(nativePolicy, /#ifdef Q_OS_MACOS[\s\S]*return true/);
+  assert.match(appearance, /nativeTitleBarRequired = isNativeRuntime && props\.platform === "darwin"/);
+  assert.match(appearance, /disabled=\{nativeTitleBarRequired\}/);
   assert.match(shell, /mac-custom-titlebar/);
   assert.match(app, /platform=\{appInfo\.platform\}/);
   assert.match(app, /detectRendererPlatform\(\)/);
-  assert.match(windowOptions, /titleBarStyle: useNative[\s\S]*hiddenInset/);
-  assert.match(windowOptions, /trafficLightPosition: \{ x: 14, y: 14 \}/);
+  assert.match(nativeWindow, /Qt::FramelessWindowHint/);
+  assert.match(nativeWindow, /useNativeTitleBar/);
   assert.match(
     foundation,
     /\.wechat-shell\.custom-titlebar-enabled\.mac-custom-titlebar \{[\s\S]*--window-controls-width:\s*0px;/,
@@ -176,7 +186,8 @@ test("collapsed sidebar keeps 14px gutter; restore lives in tab bar", () => {
   assert.doesNotMatch(foundation, /list-toggle-native\.floating/);
   assert.match(tabs, /listCollapsed && props\.onToggleListCollapsed/);
   assert.match(tabs, /PanelLeft/);
-  // Tab 栏必须压过透明拖拽层，否则展开按钮点不到
+  // Tab 栏必须压过透明拖拽层，否则展开按钮点不到。拖动改由外壳捕获阶段转发，
+  // 不能把透明层抬到 930 以上，否则会挡住 Tab 和按钮。
   assert.match(
     foundation,
     /\.custom-titlebar-enabled \.session-tabs-bar \{[\s\S]*?z-index:\s*930;/,

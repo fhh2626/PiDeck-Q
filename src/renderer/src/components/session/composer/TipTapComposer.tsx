@@ -18,6 +18,7 @@ import {
 import { htmlToPlainText, readClipboardHtmlConsistent, readClipboardText } from "../../../utils/clipboard";
 import { insertComposerPlainTextFromEditor } from "./tiptap/insertComposerPlainText";
 import { t } from "../../../i18n";
+import { showNotice } from "../../../utils/notice";
 
 export type TipTapComposerProps = ComposerEditorProps;
 
@@ -72,12 +73,19 @@ export const TipTapComposer = forwardRef<HTMLDivElement, TipTapComposerProps>(
 						onSelect={() => {
 							if (!editor) return;
 							void (async () => {
-								// 图片/文件路径由 controller 统一处理（与 Ctrl+V 同一优先级链）；
-								// 纯文本返回 false，走本地纯文本插入（不解析 HTML）
-								const handled = await props.onPasteClipboard?.();
-								if (!handled) insertClipboard(editor);
-								// 菜单点击会让编辑器失焦，无论哪条路径都恢复焦点保证后续输入/光标可见
-								editor.commands.focus();
+								try {
+									// 图片/文件路径由 controller 统一处理（与 Ctrl+V 同一优先级链）；
+									// 纯文本返回 false，走本地纯文本插入（不解析 HTML）
+									const handled = await props.onPasteClipboard?.();
+									if (!handled) insertClipboard(editor);
+								} catch (error) {
+									// Clipboard providers are asynchronous; a timeout must not become
+									// an unhandled rejection or skip the menu's focus cleanup.
+									showNotice(error instanceof Error ? error.message : String(error), 3000);
+								} finally {
+									// 菜单点击会让编辑器失焦，无论哪条路径都恢复焦点保证后续输入/光标可见
+									editor.commands.focus();
+								}
 							})();
 						}}
 					>

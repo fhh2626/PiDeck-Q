@@ -155,6 +155,24 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     onPromoteSession: useSessionPaneActions().promoteSessionToPermanent,
   });
 
+  const onNativeFileDrop = composer.editor.onNativeFileDrop;
+  // Qt delivers OS file drops as a host event because ordinary WebView File objects
+  // do not expose absolute paths. Route only the composer under the native drop point;
+  // internal HTML drag/drop remains untouched.
+  useEffect(() => {
+    const handleNativeFileDrop = (event: Event) => {
+      const detail = (event as CustomEvent<{ paths?: string[]; clientX?: number; clientY?: number }>).detail;
+      if (!detail || !Array.isArray(detail.paths) || detail.paths.length === 0) return;
+      const target = typeof detail.clientX === "number" && typeof detail.clientY === "number"
+        ? document.elementFromPoint(detail.clientX, detail.clientY)?.closest("[data-session-id]")
+        : null;
+      if (target?.getAttribute("data-session-id") !== props.sessionId) return;
+      onNativeFileDrop(detail.paths);
+    };
+    window.addEventListener("pideck-native-file-drop", handleNativeFileDrop);
+    return () => window.removeEventListener("pideck-native-file-drop", handleNativeFileDrop);
+  }, [onNativeFileDrop, props.sessionId]);
+
   // 并行问询：复用发送按钮旁的行为菜单（常显），选择「并行发送」时走后台匿名会话
   const askPanel = useAskPanel();
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
@@ -285,6 +303,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
                 }
                 onFocus={composer.editor.onFocus}
                 onChange={composer.editor.onChange}
+                onTextInput={composer.editor.onTextInput}
                 onCursorChange={composer.editor.onCursorChange}
                 onKeyDown={composer.editor.onKeyDown}
                 onPaste={composer.editor.onPaste}
@@ -296,7 +315,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
               />
               {composer.suggestions.open && !composer.isStarting ? (
                 <PromptSuggestions
-                  prompt={composer.draft}
+                  completionId={composer.suggestions.completionId ?? 0}
                   items={composer.suggestions.items}
                   selectedIndex={composer.suggestions.selectedIndex}
                   anchorStyle={composer.suggestions.anchorStyle}

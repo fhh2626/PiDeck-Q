@@ -3,9 +3,17 @@ node_modules/
 
 # Build outputs
 out/
+.xmake/
 dist/
 release/
 release-test/
+# xmake writes objects/binaries under build/; keep tracked packager icons
+# (build/icon.* and build/icons/) while ignoring compile artifacts.
+build/.deps/
+build/.objs/
+build/windows/
+build/macosx/
+build/linux/
 docs-site/.vitepress/cache/
 docs-site/.vitepress/dist/
 *.asar

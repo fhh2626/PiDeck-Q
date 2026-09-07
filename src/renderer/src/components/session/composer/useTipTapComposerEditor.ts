@@ -28,6 +28,7 @@ export type UseTipTapComposerEditorArgs = Pick<
 	ComposerEditorProps,
 	| "value"
 	| "onChange"
+	| "onTextInput"
 	| "onCursorChange"
 	| "onKeyDown"
 	| "onPaste"
@@ -55,6 +56,7 @@ export function useTipTapComposerEditor(
 	const {
 		value,
 		onChange,
+		onTextInput,
 		onCursorChange,
 		onKeyDown,
 		onPaste,
@@ -80,6 +82,8 @@ export function useTipTapComposerEditor(
 
 	const onChangeRef = useRef(onChange);
 	onChangeRef.current = onChange;
+	const onTextInputRef = useRef(onTextInput);
+	onTextInputRef.current = onTextInput;
 	const onCursorChangeRef = useRef(onCursorChange);
 	onCursorChangeRef.current = onCursorChange;
 	const onKeyDownRef = useRef(onKeyDown);
@@ -111,6 +115,9 @@ export function useTipTapComposerEditor(
 		editorProps: buildComposerEditorProps(
 			{
 				composingRef,
+				onTextInput: (text) => {
+					onTextInputRef.current?.(text);
+				},
 				onKeyDown: (event) => {
 					onKeyDownRef.current?.(
 						event as unknown as React.KeyboardEvent<HTMLDivElement>,
@@ -140,8 +147,12 @@ export function useTipTapComposerEditor(
 			if (composingRef.current) return;
 			emitPlainText(ed);
 		},
-		onSelectionUpdate: ({ editor: ed }) => {
+		onSelectionUpdate: ({ editor: ed, transaction }) => {
 			if (composingRef.current) return;
+			// 用户文档变更时 ProseMirror 先发 selectionUpdate、后发 update；
+			// onChange 会用新文档和新光标更新 completion，不能在这里按旧 end 提前关闭。
+			// setContent(emitUpdate:false) 则带 preventUpdate，需要同步外部光标。
+			if (transaction.docChanged && !transaction.getMeta("preventUpdate")) return;
 			onCursorChangeRef.current(posToPlainOffset(ed, ed.state.selection.from));
 		},
 		onCreate: ({ editor: ed }) => {
@@ -168,6 +179,9 @@ export function useTipTapComposerEditor(
 			editorProps: buildComposerEditorProps(
 				{
 					composingRef,
+					onTextInput: (text) => {
+						onTextInputRef.current?.(text);
+					},
 					onKeyDown: (event) => {
 						onKeyDownRef.current?.(
 							event as unknown as React.KeyboardEvent<HTMLDivElement>,

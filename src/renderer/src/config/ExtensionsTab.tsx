@@ -52,7 +52,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "PiDeck-Q-context-controller",
@@ -62,7 +62,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "pi-deck-plan-mode",
@@ -72,7 +72,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "PiDeck-Q-Ask-Question",
@@ -82,7 +82,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "pi-deck-nul-redirect-fix",
@@ -92,7 +92,7 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		downloads: "",
 		updated: "",
 		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust",
+		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
 	},
 	{
 		name: "context-mode",
@@ -387,8 +387,7 @@ export function ExtensionsTab(props: {
 							onClick={() => {
 								// pi.dev 的详情路由使用 npm 包名,但查询参数可能是扩展内部展示名。
 								const packageName = pkg.piPackageName ?? pkg.name;
-								// 弹框内链接强制系统浏览器：window.open 会走 setWindowOpenHandler → 跟随 linkOpenMode，
-								// internal 时内置浏览器在 Dialog 下层不可见同样被遮挡（与 openDocsInSystemBrowser 同规则）
+								// 外部文档/服务页面通过 desktopApi.app.openExternal 交由系统默认浏览器打开。
 								window.piDesktop.app.openExternal(
 									`https://pi.dev/packages/${pkg.name}?name=${packageName}`,
 									true

@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { NativeDesktopSyncHost } from "../src/renderer/src/native/NativeDesktopSyncHost.ts";
+
+test("native sync host never maps browser Files by basename", () => {
+	const sync = new NativeDesktopSyncHost({
+		filePaths: ["C:\\one\\same.txt", "D:\\two\\same.txt"],
+	});
+	const file = new File(["content"], "same.txt");
+	assert.equal(sync.getPathForFile(file), "");
+	assert.deepEqual(sync.getClipboardPaths(), ["C:\\one\\same.txt", "D:\\two\\same.txt"]);
+	assert.equal(sync.getClipboardCapability(), "");
+});
+
+test("native OS drop paths are consumed as an explicit batch, not cached globally", () => {
+	const sync = new NativeDesktopSyncHost();
+	sync.update({ filePaths: ["C:\\one\\same.txt"], externalFileCapabilityId: "cap-1" });
+	sync.update({ filePaths: ["D:\\two\\same.txt"], externalFileCapabilityId: "cap-2" });
+	assert.deepEqual(sync.getClipboardPaths(), ["D:\\two\\same.txt"]);
+	assert.equal(sync.getClipboardCapability(), "cap-2");
+	sync.update({ filePaths: [], externalFileCapabilityId: undefined });
+	assert.equal(sync.getClipboardCapability(), "");
+	assert.equal(sync.getPathForFile(new File([], "same.txt")), "");
+});
+
+test("native clipboard metadata updates clear an older encoded image", () => {
+	const sync = new NativeDesktopSyncHost({ imageDataUrl: "data:image/png;base64,old" });
+	sync.update({ text: "new clipboard", hasImage: false, filePaths: [], sequence: 2 });
+	assert.equal(sync.readClipboardImage(), "");
+});

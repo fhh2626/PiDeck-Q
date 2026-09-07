@@ -8,13 +8,13 @@ hero:
   actions:
     - theme: brand
       text: 下载最新版本
-      link: https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+      link: https://github.com/fhh2626/PiDeck-Q/releases
     - theme: alt
       text: 快速开始
       link: /guide/getting-started
     - theme: alt
       text: 查看 GitHub
-      link: https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
+      link: https://github.com/fhh2626/PiDeck-Q
 
 features:
   - title: 多项目工作区

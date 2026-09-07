@@ -1,5 +1,7 @@
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { RpcRouter } from "../transport/RpcRouter";
 import { ipcChannels } from "../../shared/ipc";
+import type { WindowResizeEdge } from "../../shared/desktop/NativeHostTypes";
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
 import type {
 	AppLogLevel,
@@ -30,7 +32,7 @@ import { getProcessSnapshot } from "../process/ProcessMonitor";
 import type { ProcessMetricsSnapshot } from "../../shared/types";
 import { getWslExe } from "../wsl/wslExe";
 import { listWebNetworkAddresses } from "../web/WebNetwork";
-import type { MainWindowControls } from "../window/MainWindowControls";
+import type { MainWindowControls } from "../window/MainWindowControlsContract";
 import type {
 	PlatformApplication,
 	PlatformPaths,
@@ -38,6 +40,12 @@ import type {
 	PlatformShell,
 	PlatformTheme,
 } from "../platform/PlatformServices";
+
+function isWindowResizeEdge(value: unknown): value is WindowResizeEdge {
+	return value === "top" || value === "bottom" || value === "left" || value === "right"
+		|| value === "top-left" || value === "top-right"
+		|| value === "bottom-left" || value === "bottom-right";
+}
 
 /**
  * IPC 边界校验：RPC 日志条目必须字段齐全，防止渲染层传伪造对象写盘。
@@ -81,8 +89,8 @@ export type SystemIpcDeps = {
 	checkForAppUpdate: (installationType?: "portable" | "installed") => Promise<import("../../shared/types").AppUpdateInfo | null>;
 	/** Download update asset */
 	downloadUpdateAsset: (asset: AppUpdateAsset) => Promise<import("../../shared/types").AppUpdateDownloadResult>;
-	/** Install downloaded update */
-	installDownloadedUpdate: (filePath: string) => Promise<void>;
+	/** Open a validated portable ZIP downloaded from the latest GitHub Release. */
+	openDownloadedUpdate: (filePath: string) => Promise<void>;
 	/** Open external URL */
 	openExternalUrl: (url: string, forceSystem?: boolean) => Promise<void>;
 	/**
@@ -158,7 +166,7 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		mainCopy,
 		checkForAppUpdate,
 		downloadUpdateAsset,
-		installDownloadedUpdate,
+		openDownloadedUpdate,
 		openExternalUrl: doOpenExternalUrl,
 		resolveWslEnvironment,
 		configureSessionScannerWsl,
@@ -471,7 +479,7 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 
 	router.handle(ipcChannels.appInfo, () => ({
 		version: platformApplication?.version ?? "0.0.0",
-		releasesUrl: RELEASES_URL ?? "https://github.com/ayuayue/pi-desktop/releases",
+		releasesUrl: RELEASES_URL ?? APP_RELEASES_URL,
 		platform: process.platform,
 	}));
 
@@ -489,9 +497,12 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.appDownloadUpdate, async (asset: AppUpdateAsset) =>
 		downloadUpdateAsset(asset),
 	);
-	router.handle(ipcChannels.appInstallUpdate, async (filePath: string) =>
-		installDownloadedUpdate(filePath),
-	);
+	router.handle(ipcChannels.appOpenUpdatePackage, async (filePath: unknown) => {
+		if (typeof filePath !== "string" || filePath.length === 0 || filePath.length > 4096) {
+			throw new Error("Invalid update package path");
+		}
+		return openDownloadedUpdate(filePath);
+	});
 
 	// ── 应用日志 ─────────────────────────────────────────────────────
 
@@ -613,6 +624,13 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.appWindowClose, () => {
 		mainWindowControls.close();
 	});
+	router.handle(ipcChannels.appBeginWindowDrag, () => {
+		mainWindowControls.beginWindowDrag?.();
+	});
+	router.handle(ipcChannels.appBeginWindowResize, (edge: unknown) => {
+		if (!isWindowResizeEdge(edge)) throw new Error("Invalid window resize edge");
+		mainWindowControls.beginWindowResize?.(edge);
+	});
 
 	// ── 设置 ─────────────────────────────────────────────────────────
 
@@ -642,11 +660,13 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		if ("language" in patch) {
 			if (refreshTrayContextMenu) refreshTrayContextMenu();
 		}
-		if ("useNativeTitleBar" in patch) {
+		if ("useNativeTitleBar" in patch || "closeToTray" in patch) {
 			mainWindowControls.notifyTitleBarChange(settings);
 		}
 		if ("zoomFactor" in patch && typeof settings.zoomFactor === "number") {
-			mainWindowControls.setZoomFactor(settings.zoomFactor);
+			// Zoom is a renderer setting; do not route it through the native window
+			// flag update, which would otherwise re-show a hidden-to-tray window.
+			sendToRenderer?.(ipcChannels.settingsApplyWindow, settings);
 		}
 		if (
 			"webServiceEnabled" in patch ||

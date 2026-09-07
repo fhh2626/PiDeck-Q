@@ -5,8 +5,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_ENTRIES = {
-	main: "main/index.js",
-	preload: "preload/index.js",
+	nativeNode: "native-node/index.cjs",
 	index: "renderer/index.html",
 	// Web 服务入口：外部端（浏览器访问 http://host:port）加载的就是它。
 	// 产物缺失时 WebServiceManager 会静默回退到 A1 旧内嵌页（功能可用但体验是旧版），
@@ -77,13 +76,26 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 	const output = resolve(outDir ?? join(root, "out"));
 	const errors = [];
 	const checked = [];
-	const entryPaths = Object.fromEntries(
-		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(output, path)]),
-	);
-
 	if (!(await exists(output))) {
 		return { ok: false, repoRoot: root, outDir: output, checked, errors: [`Build output directory is missing: ${output}`] };
 	}
+	// Xmake stages the same renderer/sidecar tree under win-unpacked/app, while
+	// local Vite/esbuild output uses out directly. Accept both layouts without
+	// weakening the entry/resource/freshness checks.
+	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.nativeNode))
+		? join(output, "app")
+		: output;
+	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
+	if (await exists(join(output, "resources", "extensions"))) {
+		if (!(await exists(extensionUndiciPackage))) {
+			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
+		} else {
+			checked.push(extensionUndiciPackage);
+		}
+	}
+	const entryPaths = Object.fromEntries(
+		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(artifactRoot, path)]),
+	);
 	for (const [name, path] of Object.entries(entryPaths)) {
 		if (!(await exists(path))) errors.push(`Missing ${name} entry: ${path}`);
 		else {
@@ -93,7 +105,7 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		}
 	}
 
-	const rendererRoot = join(output, "renderer");
+	const rendererRoot = join(artifactRoot, "renderer");
 	const resourcePaths = new Set();
 	for (const htmlPath of [entryPaths.index, entryPaths.web]) {
 		if (!(await exists(htmlPath))) continue;
@@ -124,10 +136,9 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		}
 	}
 
-	const commonInputs = [join(root, "electron.vite.config.ts"), join(root, "package.json")];
+	const commonInputs = [join(root, "vite.config.ts"), join(root, "xmake.lua"), join(root, "package.json")];
 	const freshnessGroups = [
-		{ name: "main", inputs: [join(root, "src", "main"), ...commonInputs], artifacts: [entryPaths.main] },
-		{ name: "preload", inputs: [join(root, "src", "preload"), ...commonInputs], artifacts: [entryPaths.preload] },
+		{ name: "native-node", inputs: [join(root, "src", "main"), join(root, "src", "native-node"), ...commonInputs], artifacts: [entryPaths.nativeNode] },
 		{
 			name: "renderer",
 			inputs: [join(root, "src", "renderer"), ...commonInputs],

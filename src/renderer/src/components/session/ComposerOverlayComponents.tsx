@@ -12,12 +12,12 @@ import {
 	DropdownMenuTrigger,
 } from "../ui-shadcn/dropdown-menu";
 export function PromptSuggestions(props: {
-	prompt: string;
+	completionId: number;
 	items: SuggestionItem[];
 	selectedIndex: number;
 	onSelectedIndexChange: (index: number) => void;
 	onClose: () => void;
-	onPick: (value: string) => void;
+	onPick: (completionId: number, value: string) => void;
 	/** 菜单锚定位置（屏幕坐标）。由 controller 统一计算（含无坐标时的居中兜底），
 	 *  定位只用 left/top/bottom，transform 不参与定位——入场动画只动 opacity/translateY，
 	 *  与锚点模式天然解耦，不会出现动画期间横跳。 */
@@ -65,7 +65,7 @@ export function PromptSuggestions(props: {
 						key={item.key}
 						className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors${index === props.selectedIndex ? " bg-accent-soft" : " hover:bg-bg-active"}`}
 						onMouseEnter={() => props.onSelectedIndexChange(index)}
-						onClick={() => props.onPick(item.value)}
+						onClick={() => props.onPick(props.completionId, item.value)}
 					>
 						<span className="min-w-[140px] max-w-[200px] flex-none truncate font-mono text-control font-semibold text-text-primary">{item.label}</span>
 						<span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{item.description}</span>

@@ -46,7 +46,7 @@ export function FileDiffViewer(props: {
 	/** 读取文件的 Git HEAD 原始内容，供差异模式左侧基准列使用。 */
 	readOriginalContent?: (path: string) => Promise<string>;
 	saveContent?: (path: string, content: string) => Promise<void>;
-	/** HTML 文件点击预览时，切换到内置浏览器面板预览。 */
+	/** HTML 文件点击预览时，切换到内置 HTML 预览。 */
 	onPreviewHtml?: (filePath: string) => void;
 	theme?: "light" | "dark";
 	/** 单个文件超过此大小（MB）时不加载编辑器。默认 5MB。 */

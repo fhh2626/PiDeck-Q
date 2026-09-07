@@ -122,6 +122,9 @@ function createSendHarness(initial = {}) {
       expandPromptTemplates: (message) => ({ message }),
       buildComposerPromptSubmission: (message) => ({ message }),
     },
+    "../utils/composerImages": {
+      exceedsComposerImagePayloadBudget: () => false,
+    },
     "../i18n": { translateI18nDescriptor: (_descriptor, fallback) => fallback },
   });
   return {

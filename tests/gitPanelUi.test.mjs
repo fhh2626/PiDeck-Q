@@ -29,8 +29,7 @@ const app = [
   readFileSync("src/renderer/src/components/app/AppShell.tsx", "utf8"),
   readFileSync("src/renderer/src/components/workspace/DrawerSurface.tsx", "utf8"),
 ].join("\n");
-const preload = readFileSync("src/preload/index.ts", "utf8");
-const main = readFileSync("src/main/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 const gitIpc = readFileSync("src/main/ipc/gitIpc.ts", "utf8");
 const gitService = readFileSync("src/main/git/GitService.ts", "utf8");
@@ -369,8 +368,8 @@ assert.doesNotMatch(twistie, /ChevronDown|ChevronRight|GitBranch|GitCommit|GitCo
     assert.match(panel, /htmlToPlainText\(html\)/);
     assert.doesNotMatch(panel, /pasteAsPlainText|pasteAsIs/);
     // 剪贴板读取走 preload 同步 API，不依赖 document focus
-    assert.match(preload, /clipboard: \{[\s\S]*?readText: \(\) => clipboard\.readText\(\)/);
-    assert.match(preload, /readHtml: \(\) => clipboard\.readHTML\(\)/);
+    assert.match(preload, /readText: \(\) => syncHost\.readClipboardText\(\)/);
+    assert.match(preload, /readHtml: \(\) => syncHost\.readClipboardHtml\(\)/);
     assert.match(i18n, /"common\.paste"/);
     assert.doesNotMatch(i18n, /"common\.pasteAsPlainText"|"common\.pasteAsIs"/);
   });

@@ -1,10 +1,11 @@
-import type { AppSettings } from "../../shared/types";
+import type { AppFocusSessionTarget, AppSettings } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { RpcRouter } from "../transport/RpcRouter";
 import type { PlatformServices } from "../platform/PlatformServices";
-import type { MainWindowControls } from "../window/MainWindowControls";
+import type { MainWindowControls } from "../window/MainWindowControlsContract";
+import type { ExternalFileCapabilityStore } from "../fs/ExternalFileCapabilityStore";
 
 export interface BackendHost {
 	mainWindowControls: MainWindowControls;
@@ -12,7 +13,8 @@ export interface BackendHost {
 	hasLiveWindow(): boolean;
 	openExternalUrl(url: string, forceSystem?: boolean): Promise<void>;
 	refreshTrayContextMenu(): void;
-	takePendingFocusTarget(): { sessionId: string } | null;
+	peekPendingFocusTarget(): AppFocusSessionTarget | null;
+	acknowledgeFocusTarget(id: string): void;
 	focusSessionFromNotification(sessionId?: string): boolean;
 	restartApplication: () => void;
 }
@@ -24,6 +26,7 @@ export interface CreateBackendOptions {
 	runtime?: {
 		devRendererUrl?: string;
 	};
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
 }
 
 export interface Backend {
@@ -36,5 +39,5 @@ export interface Backend {
 	resolveSessionIdForAgent(agentId: string): string | undefined;
 	hasActiveStreaming(): boolean;
 	startAfterWindowCreated(): void;
-	dispose(): void;
+	dispose(): Promise<void>;
 }

@@ -23,7 +23,6 @@ test("global listener owner handles non-runtime application events only", () => 
     "projects.onTrustRequest",
     "settings.onApplyWindow",
     "app.onUpdateProgress",
-    "app.onOpenInBrowser",
   ]) {
     assert.match(source, new RegExp(listener.replace(".", "\\.")), listener);
   }

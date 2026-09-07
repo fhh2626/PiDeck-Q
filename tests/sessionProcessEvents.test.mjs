@@ -37,7 +37,7 @@ test("parseSessionProcessEvents keeps session/model/thinking/custom and skips me
 test("process-event IPC is wired on channel, handler, and preload", () => {
 	const ipc = readFileSync("src/shared/ipc.ts", "utf8");
 	const handler = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-	const preload = readFileSync("src/preload/index.ts", "utf8");
+	const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 	assert.match(ipc, /sessionsCatalogReadProcessEvents: "sessions:catalog-read-process-events"/);
 	assert.match(handler, /sessionsCatalogReadProcessEvents/);
 	assert.match(handler, /parseSessionProcessEvents/);

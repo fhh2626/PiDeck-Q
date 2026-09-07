@@ -279,7 +279,8 @@ test("narrow project tree keeps root names from losing avoidable width", () => {
 
   // 工作区根节点需要保留折叠层级，但不应把标题栏和名称再向右推一档；
   // 展开后的 SessionTree 不在这里断言，避免改变会话层级的视觉语义。
-  assert.match(projectTree, /treeRowClass =\n  "[^"]*items-center[^\"]*px-1 /);
+  assert.match(projectTree, /treeRowClass =\n  "[^"]*items-center[^\"]*pl-1 py-0 /);
+  assert.match(projectTree, /const dimmedActionsClass =\n\t"ml-auto shrink-0 flex items-center/);
   assert.match(projectTree, /className="flex min-w-0 flex-1 items-center gap-1 py-0 pr-1 text-left"/);
   // 标题栏整行可点击（切换全部展开/折叠），但保持 px-1 pb-1 布局：不把名称向右推一档
   assert.match(projectTree, /className="flex cursor-pointer select-none items-center justify-between rounded-md px-1 pb-1/);
@@ -295,7 +296,8 @@ test("ProjectTree shows the project directory name like the dev reference", () =
   const pathTooltip = readFileSync("src/renderer/src/components/ui-shadcn/PathTooltip.tsx", "utf8");
   assert.match(pathTooltip, /disableHoverableContent/);
   assert.match(pathTooltip, /pointer-events-none/);
-  assert.match(pathTooltip, /hideDelay/);
+  assert.match(pathTooltip, /setOpen\(next\)/);
+  assert.doesNotMatch(pathTooltip, /hideDelay|hideTimerRef|setTimeout/);
   assert.match(pathTooltip, /animate-none/);
   assert.match(projectTree, /PathTooltip content=\{`\$\{projectDirectoryName\}\\n\$\{project\.path\}`\}>[\s\S]*?<button[\s\S]*projectDirectoryName/);
   assert.match(projectTree, /\{projectDirectoryName\}/);

@@ -1,6 +1,5 @@
 import { memo, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { SquarePen } from "lucide-react";
-import { BrowserSurface } from "./BrowserSurface";
 import { LazyWrapper } from "../../hooks/useLazyComponent";
 import type { WorkspaceDrawerPanel } from "../../hooks/useWorkspacePanels";
 import { t } from "../../i18n";
@@ -138,13 +137,6 @@ export interface DrawerChromePort {
   onCollapseDrawer: () => void;
 }
 
-export interface DrawerBrowserPort {
-  browserFullscreen: boolean;
-  onCloseBrowser: () => void;
-  onMinimizeBrowser: () => void;
-  onEnterBrowserFullscreen: () => void;
-}
-
 export interface DrawerFilesPort {
   sessionsProject: any;
   sessionsProjectId: string | undefined;
@@ -186,12 +178,11 @@ export interface DrawerSurfaceProps {
   editor: DrawerEditorPort;
   git: DrawerGitPort;
   chrome: DrawerChromePort;
-  browser: DrawerBrowserPort;
   files: DrawerFilesPort;
 }
 
 export function DrawerSurface(props: DrawerSurfaceProps) {
-  const { drawer, drawerCollapsed, editor, git, chrome, browser, files } = props;
+  const { drawer, drawerCollapsed, editor, git, chrome, files } = props;
 
   // 面板 import 中/未就绪的加载占位（git 与 files/sessions 共用），与下方 LazyWrapper
   // 的 placeholder 同文案，保持视觉一致。
@@ -224,15 +215,6 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
           >
             {t("editor.emptyOpenFiles")}
           </Button>
-        </div>
-      ) : drawer === "browser" && !drawerCollapsed ? (
-        <div className="drawer-content-frame flex min-h-0 flex-1 flex-col overflow-hidden">
-          <BrowserSurface
-            fullscreen={browser.browserFullscreen}
-            onClose={browser.onCloseBrowser}
-            onMinimize={browser.onMinimizeBrowser}
-            onEnterFullscreen={browser.onEnterBrowserFullscreen}
-          />
         </div>
       ) : git.enableGitManagement && drawer === "git" && !drawerCollapsed && git.activeProjectId ? (
         <LazyPanel
@@ -278,7 +260,7 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
             </div>
           )}
         </LazyPanel>
-      ) : drawer && drawer !== "browser" && drawer !== "editor" && drawer !== "git" ? (
+      ) : drawer && drawer !== "editor" && drawer !== "git" ? (
         <LazyWrapper
           // 滚动层上移到这里：files/sessions 面板自身不再滚动（见 timeline.css
           // .files-panel/.sessions-panel 注释），占位与内容共用同一滚动容器，配合

@@ -4,6 +4,8 @@ import test from "node:test";
 
 const source = readFileSync("src/renderer/src/hooks/useSessionActions.ts", "utf8");
 const app = readFileSync("src/renderer/src/App.tsx", "utf8");
+const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
+const coordinator = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
 
 test("new conversation creates a metadata-only Session draft", () => {
   const createDraftSource = source.match(
@@ -16,6 +18,29 @@ test("new conversation creates a metadata-only Session draft", () => {
   );
   assert.doesNotMatch(createDraftSource, /setActiveAgentId/);
   assert.doesNotMatch(createDraftSource, /api\.agents\.create/);
+});
+
+test("same-session creation waits for the in-flight Promise before reusing a runtime", () => {
+  const createBlock = agentManager.match(
+    /async create\(rawInput:[\s\S]*?\n\t\treturn createPromise;\n\t\}/,
+  )?.[0] ?? "";
+  assert.match(createBlock, /const pendingCreate = this\.creatingSessionAgents\.get\(sessionKey\);/);
+  assert.match(createBlock, /if \(pendingCreate\) return pendingCreate;/);
+  assert.ok(
+    createBlock.indexOf("pendingCreate") < createBlock.indexOf("findRuntimeBySessionKey"),
+    "in-flight creation must be checked before the starting runtime map",
+  );
+});
+
+test("startup timeout follows AgentManager RPC timeout and cleans failed runtimes", () => {
+  assert.match(agentManager, /getStartupTimeoutMs\(\): number \{\s*return this\.rpcTimeoutMs;\s*\}/s);
+  assert.match(coordinator, /getStartupTimeoutMs\(\): number;/);
+  assert.match(coordinator, /const startupTimeoutMs = this\.agents\.getStartupTimeoutMs\(\) \+ AGENT_READY_POLLING_GRACE_MS;/);
+  assert.doesNotMatch(coordinator, /AGENT_READY_TIMEOUT_MS/);
+  assert.match(coordinator, /if \(tab\.status === "starting" \|\| isTerminalAgent\(tab\)\)/);
+  assert.match(coordinator, /await this\.agents\.stop\(initialTab\.id\)\.catch\(\(\) => undefined\);/);
+  assert.match(coordinator, /this\.unbindAgentUnchecked\(initialTab\.id\);/);
+  assert.doesNotMatch(coordinator, /if \(mappedTab && isTerminalAgent\(mappedTab\)/);
 });
 
 test("renderer has no direct Agent creation path", () => {

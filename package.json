@@ -3,6 +3,10 @@
   "version": "0.1.5",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
+  "engines": {
+    "node": "24.19.0",
+    "npm": ">=11"
+  },
   "license": "MIT",
   "author": {
     "name": "ayuayue",
@@ -14,21 +18,19 @@
       "url": "https://github.com/1900EasonJin"
     }
   ],
-  "homepage": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust#readme",
+  "homepage": "https://github.com/fhh2626/PiDeck-Q#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fhh2626/PiDeck-Pi_Agent_Rust.git"
+    "url": "git+https://github.com/fhh2626/PiDeck-Q.git"
   },
   "bugs": {
-    "url": "https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/issues"
+    "url": "https://github.com/fhh2626/PiDeck-Q/issues"
   },
   "keywords": [
     "pi",
     "pi-agent",
     "ai-coding-agent",
     "coding-agent",
-    "electron",
-    "electron-app",
     "desktop",
     "desktop-app",
     "rpc",
@@ -51,33 +53,31 @@
     "linux",
     "open-source"
   ],
-  "main": "out/main/index.js",
   "scripts": {
-    "dev": "node scripts/dev.js",
-    "build": "tsc --noEmit --skipLibCheck --incremental && electron-vite build",
-    "build:fast": "electron-vite build",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "dist:win": "node scripts/dist-win.js",
-    "dist:win:dev": "node scripts/dist-win-dev.js",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip",
-    "dist:linux": "npm run build && electron-builder --linux AppImage deb tar.gz",
-    "preview": "electron-vite preview",
+    "dev": "node scripts/dev-native.mjs",
+    "build": "npm run typecheck && npm run build:renderer && npm run build:node",
+    "build:fast": "npm run build:renderer && npm run build:node",
+    "build:renderer": "vite build",
+    "build:node": "node scripts/build-native-node.mjs",
+    "build:native": "node scripts/build-native.mjs",
+    "pack": "npm run build && npm run build:native && node scripts/verify-build-artifacts.mjs --out release/win-unpacked",
+    "dist:win": "node scripts/dist-win-native.mjs",
+    "dist:win:dev": "node scripts/dev-native.mjs",
     "test": "node --test --test-concurrency=4 \"tests/*.test.mjs\"",
     "test:serial": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
+    "test:native-host-rpc": "node scripts/test-native-host-rpc.mjs",
+    "test:native-gui": "node scripts/test-native-gui.mjs",
     "docs:dev": "vitepress dev docs-site",
     "docs:build": "vitepress build docs-site",
     "docs:preview": "vitepress preview docs-site",
     "postinstall": "node scripts/fix-pty-permissions.js",
     "typecheck": "tsc --noEmit",
     "make-icon": "node scripts/make-icon.js",
-    "test:e2e": "npm run build:fast && playwright test",
-    "e2e": "playwright test",
-    "verify": "npm run typecheck && npm test && npm run test:e2e",
-    "sync:model-specs": "node scripts/sync-model-specs.mjs"
+    "verify": "npm run typecheck && npm test && npm run build && npm run build:native",
+    "sync:model-specs": "node scripts/sync-model-specs.mjs",
+    "verify:build-artifacts": "node scripts/verify-build-artifacts.mjs --out release/win-unpacked"
   },
   "dependencies": {
-    "@electron-toolkit/utils": "^4.0.0",
     "@tiptap/core": "^3.29.2",
     "@tiptap/pm": "^3.29.2",
     "@tiptap/react": "^3.29.2",
@@ -86,107 +86,10 @@
     "node-pty": "^1.1.0",
     "qrcode": "^1.5.4",
     "react-day-picker": "^10.0.1",
+    "semver": "^6.3.1",
     "shiki": "^4.4.3",
     "sql.js": "^1.14.1",
     "undici": "^6.28.0"
-  },
-  "build": {
-    "appId": "com.ayuayue.pi-desktop",
-    "productName": "PiDeck-Q",
-    "protocols": [
-      {
-        "name": "PiDeck-Q Agent Link",
-        "schemes": [
-          "pideck"
-        ]
-      }
-    ],
-    "asar": true,
-    "compression": "maximum",
-    "afterPack": "./scripts/after-pack-cleanup.js",
-    "npmRebuild": false,
-    "asarUnpack": [
-      "node_modules/sql.js/dist/sql-wasm.wasm"
-    ],
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "icon": "build/icon",
-    "files": [
-      "out/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "resources/extensions",
-        "to": "extensions",
-        "filter": [
-          "*.ts"
-        ]
-      },
-      {
-        "from": "resources/extensions/pideck-q-better-compaction",
-        "to": "extensions/pideck-q-better-compaction",
-        "filter": [
-          "**/*.ts",
-          "LICENSE"
-        ]
-      },
-      {
-        "from": "resources/extensions/pideck-q-websearch",
-        "to": "extensions/pideck-q-websearch",
-        "filter": [
-          "**/*.ts"
-        ]
-      },
-      {
-        "from": "node_modules/undici",
-        "to": "extensions/node_modules/undici"
-      },
-      {
-        "from": "resources/xueprompts.db",
-        "to": "xueprompts.db"
-      },
-      {
-        "from": "resources/model-specs.db",
-        "to": "model-specs.db"
-      }
-    ],
-    "extraMetadata": {
-      "main": "out/main/index.js"
-    },
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        "nsis",
-        "zip"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    },
-    "mac": {
-      "icon": "build/icon.icns",
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.developer-tools"
-    },
-    "linux": {
-      "icon": "build/icons",
-      "target": [
-        "AppImage",
-        "deb",
-        "tar.gz"
-      ],
-      "category": "Development",
-      "maintainer": "ayuayue <ayuayue@users.noreply.github.com>"
-    }
   },
   "devDependencies": {
     "@ai-sdk/react": "^4.0.51",
@@ -233,9 +136,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "electron": "^43.4.0",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^4.0.0",
+    "esbuild": "^0.25.12",
     "eslint": "^10.6.0",
     "html-to-image": "^1.11.13",
     "jotai": "^2.20.2",

@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
+const { sanitizeChildEnvironment } = loadTsCommonJs("src/main/process/sanitizeChildEnvironment.ts");
 
 // .mjs 没有 CJS require；vm 沙箱内的 fallback require 必须显式创建。
 const require = createRequire(import.meta.url);
@@ -36,6 +39,7 @@ function loadTerminalSessionManagerModule() {
 			if (name === "node:child_process") {
 				return { execSync: () => { throw new Error("not available in test sandbox"); } };
 			}
+			if (name === "../process/sanitizeChildEnvironment") return { sanitizeChildEnvironment };
 			return require(name);
 		},
 	};
@@ -116,6 +120,7 @@ function loadWithPty() {
 			if (name === "node:child_process") {
 				return { execSync: () => { throw new Error("not available in test sandbox"); } };
 			}
+			if (name === "../process/sanitizeChildEnvironment") return { sanitizeChildEnvironment };
 			return require(name);
 		},
 	};

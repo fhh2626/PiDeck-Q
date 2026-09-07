@@ -18,12 +18,12 @@ test("desktop pet runtime, renderer, and bundled resources are removed", () => {
 
 test("desktop pet is absent from cross-process APIs, settings menu, and build inputs", () => {
 	const sources = [
-		read("src/main/index.ts"),
-		read("src/preload/index.ts"),
+		read("src/native-node/index.ts"),
+		read("src/shared/desktop/createPiDesktopApi.ts"),
 		read("src/shared/ipc.ts"),
 		read("src/shared/types/settings.ts"),
 		read("src/renderer/src/components/app/SettingsModal.tsx"),
-		read("electron.vite.config.ts"),
+		read("vite.config.ts"),
 		read("package.json"),
 	];
 	for (const source of sources) {

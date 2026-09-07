@@ -12,6 +12,7 @@ import { insertComposerPlainText } from "./insertComposerPlainText";
 export type ComposerEditorDomHandlers = {
 	composingRef: { current: boolean };
 	onKeyDown?: (event: KeyboardEvent) => void;
+	onTextInput?: (text: string) => void;
 	onPaste?: (event: ClipboardEvent) => void;
 	onDrop?: (event: DragEvent) => void;
 	onDragOver?: (event: DragEvent) => void;
@@ -47,8 +48,12 @@ export function buildComposerEditorProps(
 			handlers.onKeyDown?.(toComposerDomKeyboardEvent(event));
 			return event.defaultPrevented;
 		},
+		handleTextInput: (_view, _from, _to, text) => {
+			if (!handlers.composingRef.current) handlers.onTextInput?.(text);
+			return false;
+		},
 		handlePaste: (view, event) => {
-			// 先给 controller：文件路径 / 位图 / 单条绝对路径由上层接管
+			// 先给 controller：明确文件来源与位图由上层接管
 			handlers.onPaste?.(event);
 			if (event.defaultPrevented) return true;
 			// 普通文本一律按纯文本插入。TipTap 默认会解析 text/html，

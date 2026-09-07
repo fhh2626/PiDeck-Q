@@ -1,4 +1,5 @@
-import type { PiDesktopApi } from "../../preload";
+import { APP_RELEASES_URL } from "../../shared/appIdentity";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import {
 	createDefaultExternalEditorSettings,
 	createDefaultSecurityConfig,
@@ -109,7 +110,6 @@ let previewSettings: AppSettings = {
 	expandInterimDuringStream: false,
 	collapsePrevRunsOnNewTurn: true,
 	showDevTools: false,
-	electronChromiumSandbox: false,
 	piProxyEnabled: false,
 	piProxyUrl: "http://127.0.0.1:7890",
 	piProxyBypass: "localhost,127.0.0.1,::1",
@@ -124,7 +124,6 @@ let previewSettings: AppSettings = {
 	webServiceHost: "0.0.0.0",
 	webServicePort: 8765,
 	rpcTimeout: 600_000,
-	linkOpenMode: "external",
 	workspaceContentOpenMode: "split",
 	contentMaxWidth: 1800,
 	chatContentWidthPct: 80,
@@ -162,6 +161,14 @@ export function createPreviewApi(): PiDesktopApi {
 		readText: () => "",
 		readHtml: () => "",
 		readImage: () => "",
+		readNativeSnapshot: async () => ({
+			text: "",
+			html: "",
+			imageDataUrl: "",
+			filePaths: [],
+			hasImage: false,
+			sequence: 0,
+		}),
 	};
 	const createTerminalTab = async (agentId: string, shell?: string, cwd?: string) => {
 		const shellName = shell ?? "powershell";
@@ -287,14 +294,17 @@ export function createPreviewApi(): PiDesktopApi {
 			showInFolder: async () => undefined,
 			readContent: async () => "",
 			readBase64: async () => "",
+			readBase64External: async () => "",
 			create: async () => "/mock/created",
 			writeContent: async () => undefined,
 			delete: async () => undefined,
 			rename: async () => "",
-			copy: async () => [],
+			copyInternal: async () => [],
+			copyExternal: async () => [],
 			move: async () => [],
 			getPathForFile: () => "",
 			getClipboardPaths: () => [],
+			getClipboardCapability: () => "",
 		},
 		dialog: {
 			pickFiles: async () => [],
@@ -629,7 +639,7 @@ export function createPreviewApi(): PiDesktopApi {
 		app: {
 			info: async () => ({
 				version: "preview",
-				releasesUrl: "https://github.com/ayuayue/pi-desktop/releases",
+				releasesUrl: APP_RELEASES_URL,
 				platform: "win32" as NodeJS.Platform,
 				homeDir: "C:/Users/preview",
 			}),
@@ -641,20 +651,18 @@ export function createPreviewApi(): PiDesktopApi {
 				hasUpdate: false,
 				releaseName: "preview",
 				releaseNotes: "",
-				releaseUrl: "https://github.com/ayuayue/pi-desktop/releases",
+				releaseUrl: APP_RELEASES_URL,
 				assets: [],
 			}),
 			downloadUpdate: async (asset) => ({
 				filePath: asset.name,
 				assetName: asset.name,
 			}),
-			installUpdate: async () => undefined,
+			openUpdatePackage: async () => undefined,
 			onUpdateProgress: () => () => undefined,
-			onOpenInBrowser: () => () => undefined,
-			onConfirmExternalProtocol: () => () => undefined,
-			respondExternalProtocol: async () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,
+			ackFocusSessionTarget: async () => undefined,
 			openExternal: async () => undefined,
 			restart: async () => undefined,
 			rendererLog: async (level, scope, message, detail) => {
@@ -669,6 +677,8 @@ export function createPreviewApi(): PiDesktopApi {
 			onWindowMaximizedChange: () => () => undefined,
 			toggleAlwaysOnTopWindow: async () => false,
 			closeWindow: async () => undefined,
+			beginWindowDrag: async () => undefined,
+			beginWindowResize: async () => undefined,
 			toggleDevTools: async () => false,
 		},
 		skills: {
@@ -946,9 +956,6 @@ export function createPreviewApi(): PiDesktopApi {
 				{ shell: "pwsh", label: "pwsh", available: true },
 				{ shell: "cmd", label: "cmd", available: true },
 			],
-		},
-		browser: {
-			openExternal: async () => {},
 		},
 		scratchPad: {
 			list: async () => [],

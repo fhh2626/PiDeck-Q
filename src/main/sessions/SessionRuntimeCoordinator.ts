@@ -49,6 +49,11 @@ export interface SessionAgentGateway {
 	list(): AgentTab[];
 	getMessages(agentId: string): ChatMessage[];
 	isMessageCacheStale?(agentId: string): boolean;
+	/** 本地流式/工具标志；缺省时 Web 只看 status。 */
+	getLocalStreamingFlags?(agentId: string): {
+		isStreaming: boolean;
+		isExecutingTool: boolean;
+	};
 	create(input: CreateAgentInput): Promise<AgentTab>;
 	restart(agentId: string): Promise<AgentTab>;
 	stop(agentId: string): Promise<void>;
@@ -71,6 +76,8 @@ export interface SessionAgentGateway {
 	publishRuntimeState(agentId: string): Promise<void>;
 	/** 首条 prompt 后补取可能延迟创建的持久会话文件身份。 */
 	refreshSessionIdentity(agentId: string): Promise<AgentTab>;
+	/** AgentManager get_state 使用的启动/重连 RPC timeout，避免 Coordinator 维护第二套上限。 */
+	getStartupTimeoutMs(): number;
 	getForkMessages(agentId: string): Promise<Array<{ entryId: string; text: string }>>;
 	forkSession(agentId: string, entryId: string): Promise<unknown>;
 	sendUIResponse(
@@ -135,7 +142,8 @@ class SessionRuntimeCommandError extends Error {
 
 const DELIVERY_CACHE_TTL_MS = 10 * 60_000;
 const DELIVERY_CACHE_MAX_ENTRIES = 500;
-const AGENT_READY_TIMEOUT_MS = 60_000;
+/** 轮询间隔之外的少量余量，避免刚过 RPC deadline 就误杀仍在收尾的启动流程。 */
+const AGENT_READY_POLLING_GRACE_MS = 1_000;
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -1088,21 +1096,33 @@ export class SessionRuntimeCoordinator {
 	}
 
 	private async waitUntilReady(initialTab: AgentTab): Promise<AgentTab> {
-		const startedAt = Date.now();
 		let tab = initialTab;
-		while (tab.status === "starting") {
-			if (Date.now() - startedAt >= AGENT_READY_TIMEOUT_MS) {
-				throw new Error("Timed out while starting session runtime");
+		try {
+			const startedAt = Date.now();
+			const startupTimeoutMs = this.agents.getStartupTimeoutMs() + AGENT_READY_POLLING_GRACE_MS;
+			while (tab.status === "starting") {
+				if (Date.now() - startedAt >= startupTimeoutMs) {
+					throw new Error("Timed out while starting session runtime");
+				}
+				await new Promise<void>((resolve) => setTimeout(resolve, 50));
+				const current = this.agents.list().find((candidate) => candidate.id === tab.id);
+				if (!current) throw new Error("Session runtime stopped while starting");
+				tab = current;
 			}
-			await new Promise<void>((resolve) => setTimeout(resolve, 50));
-			const current = this.agents.list().find((candidate) => candidate.id === tab.id);
-			if (!current) throw new Error("Session runtime stopped while starting");
-			tab = current;
+			if (isTerminalAgent(tab)) {
+				throw this.startupFailure(tab);
+			}
+			return tab;
+		} catch (error) {
+			// A starting runtime that times out (or reaches a terminal state while
+			// being polled) must not remain discoverable by sessionPath on retry.
+			// Otherwise every later send waits on the same dead runtime forever.
+			if (tab.status === "starting" || isTerminalAgent(tab)) {
+				await this.agents.stop(initialTab.id).catch(() => undefined);
+				this.unbindAgentUnchecked(initialTab.id);
+			}
+			throw error;
 		}
-		if (isTerminalAgent(tab)) {
-			throw this.startupFailure(tab);
-		}
-		return tab;
 	}
 
 	/** 保留 pi 启动阶段的 stderr/路径等诊断，避免 Web 端只能看到无意义的 status。 */
@@ -1298,6 +1318,7 @@ export class SessionRuntimeCoordinator {
 				"Session runtime binding changed while building runtime state",
 			);
 		}
+		const streamingFlags = this.agents.getLocalStreamingFlags?.(tab.id);
 		return {
 			...target,
 			projectId: tab.projectId,
@@ -1307,6 +1328,8 @@ export class SessionRuntimeCoordinator {
 			createdAt: tab.createdAt,
 			compactionCount: tab.compactionCount,
 			noSession: tab.noSession,
+			isStreaming: streamingFlags?.isStreaming,
+			isExecutingTool: streamingFlags?.isExecutingTool,
 		};
 	}
 

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  composerImageBase64Bytes,
   dataUrlToFile,
+  exceedsComposerImagePayloadBudget,
   imageMimeTypeFromPath,
   isImageFilePath,
 } from "../src/renderer/src/utils/composerImages.ts";
@@ -35,6 +37,14 @@ test("imageMimeTypeFromPath 按扩展名推导 MIME", () => {
   assert.equal(imageMimeTypeFromPath("a.unknown"), "image/png");
 });
 
+test("图片总 base64 payload 遵守 Native RPC 预算", () => {
+  const under = [{ type: "image", data: "x".repeat(1024), mimeType: "image/png" }];
+  const over = [{ type: "image", data: "x".repeat(25 * 1024 * 1024), mimeType: "image/png" }];
+  assert.equal(composerImageBase64Bytes(under), 1024);
+  assert.equal(exceedsComposerImagePayloadBudget(under), false);
+  assert.equal(exceedsComposerImagePayloadBudget(over), true);
+});
+
 test("dataUrlToFile 解码 base64 字节、MIME 与文件名正确", async () => {
   // base64("ABC") = QUJD
   const file = dataUrlToFile("data:image/png;base64,QUJD", "image/png", "shot.png");
@@ -47,17 +57,17 @@ test("dataUrlToFile 解码 base64 字节、MIME 与文件名正确", async () =>
 // ── 源码级接线断言：对话框 properties 与粘贴分支 ──
 
 const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const controller = readFileSync(
   "src/renderer/src/hooks/useSessionComposerController.ts",
   "utf8",
 );
 
-test("附件选择器默认仅选文件，includeDirectories 才同时选目录", () => {
-  // 默认 properties 不含 openDirectory（Windows 上并存会退化为「只选文件夹」）
+test("附件选择器默认仅选文件，includeDirectories 切换到明确目录模式", () => {
+  // Qt/Windows 不能在同一个 picker 中混合文件和目录，目录请求必须是单独模式。
   assert.match(
     filesIpc,
-    /properties: options\?\.includeDirectories\s*\?\s*\["openFile", "openDirectory", "multiSelections"\]\s*:\s*\["openFile", "multiSelections"\]/,
+    /properties: options\?\.includeDirectories\s*\?\s*\["openDirectory"\]\s*:\s*\["openFile", "multiSelections"\]/,
   );
   assert.match(
     preload,
@@ -73,8 +83,8 @@ test("readBase64 支持 maxBytes 预检，粘贴图片超大时主进程拦截",
 
 test("onPaste 图片文件走预览分支，失败回退 @path 引用", () => {
   assert.match(controller, /clipboardPaths\.every\(isImageFilePath\)/);
-  assert.match(controller, /pasteClipboardImages\(clipboardPaths, event\.clipboardData\)/);
-  assert.match(controller, /readBase64\(path, COMPOSER_IMAGE_MAX_BYTES\)/);
+  assert.match(controller, /pasteClipboardImages\(\s*clipboardPaths,\s*event\.clipboardData,[\s\S]*?getClipboardCapability/);
+  assert.match(controller, /readBase64External\(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES\)/);
   assert.match(controller, /insertFilePathRefs\(paths\)/);
 });
 
@@ -85,16 +95,12 @@ test("粘贴图片读取失败时兜底剪贴板位图，不直接退化成 @pat
   assert.match(controller, /clipboard-image\.png/);
 });
 
-test("位图分支优先于纯文本路径提取（微信/QQ 复制图片 text 槽是缓存路径）", () => {
-  // 微信等复制图片：剪贴板=位图+text 槽缓存路径（无 CF_HDROP）。若路径提取在前，
-  // Ctrl+V 会把附带路径粘成 @C:\... 引用、位图分支永远轮不到（右键粘贴却正常）。
+test("位图分支优先于普通 text/plain 粘贴（微信/QQ 复制图片 text 槽是缓存路径）", () => {
+  // 微信等复制图片：剪贴板=位图+text 槽缓存路径（无 CF_HDROP）。图片分支先消费，
+  // 没有明确文件来源的 text/plain 则交给 TipTap 作为普通文字，不再猜测路径引用。
   const imageBranch = controller.indexOf("getClipboardImageFiles(event.clipboardData)");
-  const pathExtract = controller.indexOf("extractPastedPath(");
-  assert.ok(imageBranch >= 0 && pathExtract >= 0, "两个分支都应存在");
-  assert.ok(
-    imageBranch < pathExtract,
-    `位图检查应在路径提取之前（实际 image=${imageBranch} path=${pathExtract}）`,
-  );
+  assert.ok(imageBranch >= 0, "图片分支应存在");
+  assert.equal(controller.indexOf("extractPastedPath("), -1, "普通粘贴不得提取路径");
   assert.match(controller, /paths\.every\(isImageFilePath\)/);
   assert.match(controller, /位图才是用户要的内容/);
 });
@@ -110,6 +116,6 @@ test("右键粘贴：图片/文件路径走 controller，纯文本返回 false �
 
 test("preload 暴露剪贴板位图读取（readImage，空图返回空串）", () => {
   assert.match(preload, /readImage: \(\) => \{/);
-  assert.match(preload, /clipboard\.readImage\(\)/);
-  assert.match(preload, /image\.isEmpty\(\) \? "" : image\.toDataURL\(\)/);
+  assert.match(preload, /syncHost\.readClipboardImage\(\)/);
+  assert.match(preload, /return image;/);
 });

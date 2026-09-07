@@ -2,7 +2,7 @@
 
 ## Latest Release
 
-See the [GitHub Releases](https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases) page for the latest version and download links.
+See the [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) page for the latest version and download links.
 
 ## v0.6.7 (highlights)
 

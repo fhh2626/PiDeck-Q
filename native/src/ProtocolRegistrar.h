@@ -1,0 +1,9 @@
+#pragma once
+
+#include <QString>
+
+class ProtocolRegistrar final {
+public:
+    static bool registerProtocol(const QString &executablePath);
+    static bool unregisterProtocol(const QString &executablePath);
+};

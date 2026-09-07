@@ -41,9 +41,8 @@ export function MarkdownLink(
 				void onOpenFile(props.href);
 			}
 		} else {
-			// 普通 URL 链接：修饰键点击（Ctrl/Cmd）强制走系统浏览器。
-			// 全局设置「内置浏览器」时，用户可临时用默认浏览器打开，无需改设置；
-			// external 模式下 forceSystem 与默认行为一致，结果不变。
+			// 普通 URL 链接统一交给受控的 system-browser API；保留修饰键参数
+			// 以兼容现有调用者，但不再改变打开目的地。
 			void onOpenExternal(props.href, e.ctrlKey || e.metaKey || undefined);
 		}
 	};

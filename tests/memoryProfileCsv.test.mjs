@@ -63,9 +63,9 @@ test("parseMemoryCsv 兼容 10 列旧格式（domNodes 缺省为 null）", () =>
 test("toProfileCsvRow 对 label 中的逗号/引号做 CSV 转义", () => {
 	const row = {
 		ts: 1,
-		type: "webview",
+		type: "Tab",
 		pid: 1,
-		label: '浏览器面板, "主", #2',
+		label: '渲染窗口, "主", #2',
 		rssKB: null,
 		privateKB: null,
 		sharedKB: null,
@@ -79,10 +79,10 @@ test("toProfileCsvRow 对 label 中的逗号/引号做 CSV 转义", () => {
 	};
 	const csv = toProfileCsvRow(row);
 	// 引号包裹 + 内部引号翻倍
-	assert.ok(csv.includes('"浏览器面板, ""主"", #2"'), `实际输出: ${csv}`);
+	assert.ok(csv.includes('"渲染窗口, ""主"", #2"'), `实际输出: ${csv}`);
 	// 往返一致
 	const parsed = parseMemoryCsv(MEMORY_PROFILE_HEADER + "\n" + csv);
-	assert.equal(parsed[0].label, '浏览器面板, "主", #2');
+	assert.equal(parsed[0].label, '渲染窗口, "主", #2');
 });
 
 test("parseMemoryCsv 跳过表头/空行，null 字段还原", () => {

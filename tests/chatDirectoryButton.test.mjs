@@ -15,6 +15,20 @@ test("ChatDirectoryButton exists and gates on chat projects only", () => {
 	assert.match(source, /if \(!session \|\| !isChatProject\(project\)\) return null/);
 });
 
+test("Sidebar add-project action shows loading state and prevents duplicate clicks", () => {
+	const source = readFileSync("src/renderer/src/components/sidebar/SidebarContent.tsx", "utf8");
+	assert.match(source, /const \[addingProject, setAddingProject\] = useState\(false\)/);
+	assert.match(source, /const handleAddProject = async \(\) =>/);
+	assert.match(source, /if \(addingProject\) return/);
+	assert.match(source, /setAddingProject\(true\)/);
+	assert.match(source, /setAddingProject\(false\)/);
+	assert.match(source, /disabled=\{addingProject\}/);
+	assert.match(source, /aria-busy=\{addingProject\}/);
+	assert.match(source, /<Loader2 className="size-3\.5 animate-spin" \/>/);
+	assert.match(source, /onClick=\{\(\) => void handleAddProject\(\)\}/);
+	assert.doesNotMatch(source, /onClick=\{\(\) => void actions\.projects\.add\(\)\}/);
+});
+
 test("ChatDirectoryButton reuses the App-level changeChatPath service", () => {
 	const source = readFileSync("src/renderer/src/components/session/ChatDirectoryButton.tsx", "utf8");
 	// changeChatPath/showNotice 是稳定回调，只订 actions 轨（拆分后不再被 terminal/gitInfo 变化唤醒）
@@ -37,6 +51,9 @@ test("App extracts changeChatPath once and injects it into the sidebar action", 
 	const projectCommands = readFileSync("src/renderer/src/hooks/useProjectCommands.ts", "utf8");
 	// 项目命令 hook 只实现一次，App 同时注入侧栏与会话服务。
 	assert.match(projectCommands, /async function changeChatPath\(project: Project\)/);
+	assert.match(projectCommands, /changeChatPath\(project: Project\): Promise<void> \{\s*try \{\s*const picked = await api\.projects\.chooseChatPath\(\)/s);
+	assert.match(projectCommands, /const updatedProject = await api\.projects\.setChatPath\(picked\);/);
+	assert.match(projectCommands, /if \(updatedProject\) input\.upsertProject\(updatedProject\);/);
 	assert.match(source, /changeChatPath,[\s\S]*= useProjectCommands\(/);
 	// 侧边栏 projects action 引用同一实现
 	assert.match(source, /changeChatPath,\n    \},/);
@@ -53,7 +70,7 @@ test("SessionPaneServices declares changeChatPath contract", () => {
 test("chat directory i18n keys exist in zh-CN and en-US", () => {
 	const zh = readFileSync("src/renderer/src/i18n/rendererCopy.zh-CN.ts", "utf8");
 	const en = readFileSync("src/renderer/src/i18n/rendererCopy.en-US.ts", "utf8");
-	for (const key of ["app.chatProjectSettings", "app.chatProjectPathUpdated"]) {
+	for (const key of ["app.chatProjectSettings", "app.chatProjectPathUpdated", "app.projectAddFailed"]) {
 		assert.match(zh, new RegExp(`"${key}":`), `zh-CN missing ${key}`);
 		assert.match(en, new RegExp(`"${key}":`), `en-US missing ${key}`);
 	}

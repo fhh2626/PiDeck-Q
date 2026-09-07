@@ -60,7 +60,10 @@ function makeHarness() {
     get: (sessionId) => records.has(sessionId) ? { id: sessionId } : undefined,
     attachRuntime: async () => undefined,
   };
-  const agents = { list: () => tabs };
+  const agents = {
+    list: () => tabs,
+    getStartupTimeoutMs: () => 60_000,
+  };
   return { catalog, agents, records, tabs };
 }
 

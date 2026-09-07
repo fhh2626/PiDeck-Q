@@ -94,10 +94,9 @@ test("the dev workspace toolbar persists for inactive agents and the empty state
   assert.match(appSource, /outlineContent=\{\s*\/\*/);
   // 悬浮栏的终端入口绑定可用目标（agent 或项目），未激活 agent / 引导页同样可用
   assert.match(appSource, /terminalAction=\{!isLanWeb && terminalTarget \? \{/);
-  // 悬浮栏不再暴露 files/git/browser（入口收进抽屉活动栏，files 由标题栏抽屉开关打开）
+  // 悬浮栏不再暴露 files/git（入口收进抽屉活动栏，files 由标题栏抽屉开关打开）
   assert.match(appSource, /filesAction=\{undefined\}/);
   assert.match(appSource, /gitAction=\{undefined\}/);
-  assert.match(appSource, /browserAction=\{undefined\}/);
 });
 
 

@@ -60,6 +60,13 @@ test("worktree model deduplicates Windows path variants and keeps the project bi
   assert.equal(rows[0].branch, "T6");
 });
 
+test("project rows keep selection and actions in non-overlapping flex areas", () => {
+  assert.match(projectTree, /const treeRowClass =\s*\n\s*"[^"]*pl-1 py-0/);
+  assert.match(projectTree, /const dimmedActionsClass =\s*\n\s*"ml-auto shrink-0 flex/);
+  assert.doesNotMatch(projectTree, /pointer-events-none absolute/);
+  assert.doesNotMatch(projectTree, /group-hover:pointer-events-auto/);
+});
+
 test("main workspace owns root history and worktree presentation has no connector rail", () => {
   assert.match(worktree, /sessions: readonly SessionRecord\[\]/);
   assert.match(worktree, /<SessionTree[\s\S]*project=\{props\.project\}/);

@@ -60,6 +60,9 @@ function createRuntime(options = {}) {
 			if (request === "../atoms/session-selectors") {
 				return { sessionRecordToSummary: (session) => session };
 			}
+			if (request === "../utils/projectInventoryRequests") {
+				return { requestProjectInventory: (list) => list() };
+			}
 			throw new Error(`Unexpected runtime import: ${request}`);
 		},
 		setTimeout,

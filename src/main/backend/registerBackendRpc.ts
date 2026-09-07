@@ -56,6 +56,7 @@ import type { PlatformServices } from "../platform/PlatformServices";
 import { resolveBackgroundsDir } from "../backgrounds/BackgroundPaths";
 import { BackgroundImageService } from "../backgrounds/BackgroundImageService";
 import { createTrashPath } from "../fs/trash";
+import type { ExternalFileCapabilityStore } from "../fs/ExternalFileCapabilityStore";
 
 export interface RegisterBackendRpcDeps {
 	router: RpcRouter;
@@ -67,6 +68,7 @@ export interface RegisterBackendRpcDeps {
 	) => string;
 	getLocale: () => MainProcessLocale;
 	runtimeBridge: SessionRuntimeBridge;
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
 	services: {
 		projectStore: ProjectStore;
 		fileSystemService: FileSystemService;
@@ -100,7 +102,7 @@ export interface RegisterBackendRpcDeps {
 }
 
 export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
-	const { router, host, platform, mainCopy, getLocale, runtimeBridge, services } = deps;
+	const { router, host, platform, mainCopy, getLocale, runtimeBridge, externalFileCapabilities, services } = deps;
 	const paths = platform.paths;
 	const {
 		projectStore,
@@ -287,7 +289,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
 		checkForAppUpdate: appUpdateService.checkForAppUpdate,
 		downloadUpdateAsset: appUpdateService.downloadUpdateAsset,
-		installDownloadedUpdate: appUpdateService.installDownloadedUpdate,
+		openDownloadedUpdate: appUpdateService.openDownloadedUpdate,
 		openExternalUrl: host.openExternalUrl,
 		extensionManager,
 		// 设置变更副作用（代理 / 主题 / WSL / Web 服务）
@@ -361,7 +363,6 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		appLogger,
 		dialogs: platform.dialogs,
 		platformShell: platform.shell,
-		openExternalUrl: host.openExternalUrl,
 		getAuthorizedRoots: () => [
 			...projectStore.list().map((project) => project.path),
 			promptManager.getDir(),
@@ -369,10 +370,14 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 			join(paths.home, ".pi", "agent"),
 			paths.userData,
 		],
+		externalFileCapabilities,
 	});
 
-	// renderer 挂载后拉取 pending 跳转目标（一次性，取走即清空）
-	router.handle(ipcChannels.appGetFocusTargetPending, () => {
-		return host.takePendingFocusTarget();
+	// renderer 挂载后读取 pending 跳转目标；只在 renderer 完成实际聚焦后 ACK，
+	// 防止 live push 后 reload 又重复消费旧通知，也防止旧 ACK 清掉新通知。
+	router.handle(ipcChannels.appGetFocusTargetPending, () => host.peekPendingFocusTarget());
+	router.handle(ipcChannels.appAcknowledgeFocusTarget, (id: string) => {
+		if (typeof id !== "string" || id.length === 0 || id.length > 128) return;
+		host.acknowledgeFocusTarget(id);
 	});
 }

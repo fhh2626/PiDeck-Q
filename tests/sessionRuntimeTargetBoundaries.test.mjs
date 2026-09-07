@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { mainIpcSource } from "./helpers/mainIpcSources.mjs";
 
-const main = readFileSync("src/main/index.ts", "utf8");
+const main = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
 const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
-const preload = readFileSync("src/preload/index.ts", "utf8");
+const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const terminalDock = readFileSync(
 	"src/renderer/src/components/terminal/TerminalDock.tsx",
 	"utf8",
@@ -48,7 +48,7 @@ test("terminal creation and listing cross IPC with an owner-validated target", (
 		mainIpcSource,
 		/terminalCreate[\s\S]*requireTerminalTarget\(target\)[\s\S]*terminalManager\.create\(target\)/,
 	);
-	assert.doesNotMatch(main, /ipcMain\.handle\(ipcChannels\.terminal/);
+	assert.doesNotMatch(main, /ipcMain|ipcRenderer/);
 });
 
 test("RPC logging controls resolve the current Session target before touching AgentManager", () => {
@@ -61,8 +61,8 @@ test("RPC logging controls resolve the current Session target before touching Ag
 });
 
 test("application focus requests cross into the renderer as a stable Session ID", () => {
-	assert.match(main, /appFocusSessionTarget, \{ sessionId \}/);
-	assert.match(app, /onFocusTarget: \(target: \{ sessionId: string \}\)/);
+	assert.match(main, /appFocusSessionTarget, target/);
+	assert.match(app, /onFocusTarget: \(target: AppFocusSessionTarget \| undefined|onFocusTarget: \(target: AppFocusSessionTarget\)/);
 	assert.match(app, /sessionRecordByIdAtomFamily\(target\.sessionId\)/);
 });
 
@@ -74,7 +74,7 @@ test("renderer and preload expose no legacy agents command namespace", () => {
 		app,
 		/(?:api|desktopApi|piDesktop)\.agents\.|window\.piDesktop!?\.agents/,
 	);
-	assert.doesNotMatch(main, /ipcMain\.handle\(ipcChannels\.agents/);
+	assert.doesNotMatch(main, /ipcMain|ipcRenderer/);
 	assert.doesNotMatch(
 		ipc,
 		/agents(List|Create|Rename|Stop|Prompt|Abort|ExportHtml|ForkMessages|ForkSession|CloneSession|PrepareResend|SwitchSession|Reload|EditMessage|DeleteMessage|Restart|Compact|CycleModel|AvailableModels|SetModel|RefreshModels|CycleThinking|SetThinking|UiResponse):/,

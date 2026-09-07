@@ -423,6 +423,7 @@ function SettingsModalContent(props: SettingsModalProps) {
 								isDirty={isDirty}
 								perAreaFontSize={perAreaFontSize}
 								setPerAreaFontSize={setPerAreaFontSize}
+								platform={props.appInfo.platform}
 							/>
 							</Suspense>
 						</TabsContent>

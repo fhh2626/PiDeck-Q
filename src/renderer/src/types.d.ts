@@ -1,4 +1,4 @@
-import type { PiDesktopApi } from "../../preload";
+import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 
 declare global {
   interface Window {
@@ -7,16 +7,3 @@ declare global {
 }
 
 export {};
-
-/** <webview> 是 Electron 的自定义元素，React JSX 需要显式声明类型。 */
-declare namespace JSX {
-	interface IntrinsicElements {
-		webview: React.DetailedHTMLProps<
-			React.HTMLAttributes<HTMLElement> & {
-				src?: string;
-				partition?: string;
-			},
-			HTMLElement
-		>;
-	}
-}

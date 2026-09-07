@@ -1,13 +1,12 @@
 import React from "react";
 import { useGlobalAgentListeners } from "../../hooks/useGlobalAgentListeners";
-import type { AppSettings, Project } from "../../../../shared/types";
+import type { AppFocusSessionTarget, AppSettings, Project } from "../../../../shared/types";
 
 interface AppBootstrapProps {
   onProjectsChanged: (projects: Project[]) => void;
   onSettingsApplied: (settings: AppSettings) => void;
-  onOpenInBrowser: (url: string) => void;
   onTrustRequest: (req: { requestId: string; cwd: string; projectName: string }) => void;
-  onFocusTarget: (target: { sessionId: string }) => void;
+  onFocusTarget: (target: AppFocusSessionTarget) => void;
 }
 
 /** Bootstrap — sets up global IPC listeners, renders nothing. */
@@ -16,7 +15,6 @@ export const AppBootstrap = React.memo(function AppBootstrap(props: AppBootstrap
     onProjectsChanged: props.onProjectsChanged,
     onSettingsApplied: props.onSettingsApplied,
     onUpdateProgress: () => undefined,
-    onOpenInBrowser: props.onOpenInBrowser,
     onTrustRequest: props.onTrustRequest,
     onFocusTarget: props.onFocusTarget,
   });

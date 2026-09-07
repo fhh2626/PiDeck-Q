@@ -25,6 +25,7 @@ import {
   buildComposerPromptSubmission,
   expandPromptTemplates,
 } from "../composerBehavior";
+import { exceedsComposerImagePayloadBudget } from "../utils/composerImages";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -176,6 +177,15 @@ export function useSessionSend(options: UseSessionSendOptions) {
       ? [...attachmentSnapshot]
       : undefined;
     if (!hasComposerSubmission(message, imageSnapshot)) return;
+    if (exceedsComposerImagePayloadBudget(imageSnapshot)) {
+      const errorMessage = t("app.imagesTotalTooLarge");
+      setSendState({
+        sessionId: sourceSessionId,
+        state: { status: "error", error: errorMessage },
+      });
+      options.showError?.(errorMessage, 4500);
+      return;
+    }
 
     sendingSessionIdsRef.current.add(sourceSessionId);
     const requestId = crypto.randomUUID();

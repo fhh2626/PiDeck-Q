@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import type { AppSettings, PiInstallStatus } from "../../shared/types";
 import { detectPiRuntimeKind, type PiRuntimePreference } from "../../shared/piCompatibility";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
+import { sanitizeChildEnvironment } from "../process/sanitizeChildEnvironment";
 
 type PiLocatorCopy = (
   key: MainProcessTranslationKey,
@@ -193,39 +194,7 @@ export class PiLocator {
    * 原样继承后 jiti 加载扩展或子进程行为可能与终端 CLI 不一致。
    */
   sanitizePiChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    const next: NodeJS.ProcessEnv = { ...env };
-
-    for (const key of Object.keys(next)) {
-      if (key.startsWith("ELECTRON_") || key === "ELECTRON_RUN_AS_NODE") {
-        delete next[key];
-        continue;
-      }
-      if (key.startsWith("CHROME_") || key.startsWith("GOOGLE_API_")) {
-        delete next[key];
-      }
-    }
-
-    const nodeOptions = next.NODE_OPTIONS;
-    if (typeof nodeOptions === "string" && nodeOptions.trim()) {
-      const cleaned = nodeOptions
-        .split(/\s+/)
-        .filter((token) => {
-          if (!token) return false;
-          const lower = token.toLowerCase();
-          return !(
-            lower.includes("electron") ||
-            lower.includes("asar") ||
-            lower.includes("app.asar") ||
-            lower.includes("electron-vite")
-          );
-        })
-        .join(" ")
-        .trim();
-      if (cleaned) next.NODE_OPTIONS = cleaned;
-      else delete next.NODE_OPTIONS;
-    }
-
-    return next;
+    return sanitizeChildEnvironment(env);
   }
 
   createInvocation(command: string, args: string[], options: { wslCwd?: string } = {}): PiCommandInvocation {

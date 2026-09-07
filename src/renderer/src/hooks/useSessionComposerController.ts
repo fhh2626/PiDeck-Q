@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import type { NativeClipboardSnapshot } from "../../../shared/desktop/NativeHostTypes";
 import type {
   FileTreeNode,
   ImageContent,
@@ -38,10 +39,7 @@ import {
   type PromptTemplateInfo,
 } from "../composerBehavior";
 import {
-  applySuggestion,
-  buildSuggestionItems,
-  clearSuggestionTrigger,
-  detectTrigger,
+  buildCompletionSuggestionItems,
   fileNodeDragPayloadToRef,
   flattenFiles,
   mergeCommands,
@@ -51,17 +49,25 @@ import {
 } from "../components/app/AppUtils";
 import { SESSION_TAB_DRAG_MIME } from "../utils/sessionSplitEdge";
 import {
-  extractPastedPath,
   formatFilePathRef,
+  parseRichInputChips,
   unwrapFileChipPath,
   type ComposerChip,
 } from "../components/session/composer/chips";
+import {
+  applyCompletion,
+  canKeepCompletionAtCursor,
+  canStartCompletion,
+  updateCompletion,
+  type CompletionChar,
+  type CompletionSession,
+} from "../components/session/composer/completion";
 import type { ComposerCaretRequest } from "../components/session/composer/types";
 import {
   getComposerCaretCoords,
   getComposerCaretOffset,
 } from "../components/session/composer/caretCoords";
-import { desktopApi } from "../desktopApi";
+import { desktopApi, isNativeRuntime } from "../desktopApi";
 import { t } from "../i18n";
 import {
   COMPOSER_IMAGE_MAX_BYTES,
@@ -74,6 +80,8 @@ import {
   processComposerImageFile,
 } from "../utils/composerImages";
 import { showNotice } from "../utils/notice";
+import { htmlToPlainText } from "../utils/clipboard";
+import { shouldRequestNativeClipboardSnapshot } from "../native/nativeClipboardPaste";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -286,7 +294,11 @@ export function useSessionComposerController(
   const sendBehaviorCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEditorTextEnvelopeRef = useRef("");
   const [cursor, setCursor] = useState(0);
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [completion, setCompletion] = useState<CompletionSession | null>(null);
+  const completionRef = useRef<CompletionSession | null>(null);
+  const nextCompletionIdRef = useRef(1);
+  const pendingTriggerRef = useRef<CompletionChar | null>(null);
+  completionRef.current = completion;
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedDraft, setSavedDraft] = useState("");
@@ -309,6 +321,20 @@ export function useSessionComposerController(
   const [sessionReferenceSelections, setSessionReferenceSelections] = useState<
     Record<string, SessionReferenceSelection>
   >({});
+
+  const clearCompletion = useCallback(() => {
+    pendingTriggerRef.current = null;
+    completionRef.current = null;
+    setCompletion(null);
+  }, []);
+
+  const dismissCompletion = useCallback(() => {
+    pendingTriggerRef.current = null;
+    const current = completionRef.current;
+    const dismissed = current ? { ...current, dismissed: true } : null;
+    completionRef.current = dismissed;
+    setCompletion(dismissed);
+  }, []);
 
   const markDraftMutation = useCallback((targetSessionId = sessionId) => {
     if (targetSessionId !== sessionId) return;
@@ -363,7 +389,7 @@ export function useSessionComposerController(
   useEffect(() => {
     liveDomDraftRef.current = { sessionId, value: draft };
     setCursor(draft.length);
-    setSuggestionsOpen(false);
+    clearCompletion();
     setSelectedSuggestionIndex(0);
     setHistoryIndex(-1);
     setSavedDraft("");
@@ -380,7 +406,7 @@ export function useSessionComposerController(
       draft,
     });
     lastEditorTextEnvelopeRef.current = "";
-  }, [sessionId]);
+  }, [clearCompletion, sessionId]);
 
   useEffect(() => {
     const currentDraft = store.get(sessionDraftByIdAtom)[sessionId] ?? "";
@@ -398,9 +424,13 @@ export function useSessionComposerController(
       liveDomDraftRef.current.sessionId === sessionId &&
       liveDomDraftRef.current.value !== draft
     ) {
+      // 外部 draft 写入（例如并行问询直接清空 atom）没有经过 onChange；
+      // 同步时一并结束 completion，防止旧区间映射到新文本。
+      clearCompletion();
       liveDomDraftRef.current = { sessionId, value: draft };
+      setCursor(draft.length);
     }
-  }, [draft, sessionId]);
+  }, [clearCompletion, draft, sessionId]);
 
   useEffect(() => {
     const editorText = runtimeUi?.editorText;
@@ -424,11 +454,12 @@ export function useSessionComposerController(
     })) {
       return;
     }
+    clearCompletion();
     liveDomDraftRef.current = { sessionId, value: editorText.text };
     setDraft(editorText.text);
     setCursor(editorText.text.length);
     caretRef.current = { pos: editorText.text.length, forValue: editorText.text };
-  }, [runtime, runtimeUi, sessionId, setDraft, store]);
+  }, [clearCompletion, runtime, runtimeUi, sessionId, setDraft, store]);
 
   useEffect(() => {
     void desktopApi.settings.get().then((settings) => {
@@ -495,12 +526,22 @@ export function useSessionComposerController(
     () => new Set(projectSessions.map((session) => session.name ?? session.filePath)),
     [projectSessions],
   );
-  const suggestionItems = useMemo(
-    () => suggestionsOpen
-      ? buildSuggestionItems(draft, cursor, commands, flatFiles, projectSessions)
-      : [],
-    [commands, cursor, draft, flatFiles, projectSessions, suggestionsOpen],
+  const suggestionItems = useMemo(() => {
+    if (!completion || completion.dismissed) return [];
+    return buildCompletionSuggestionItems(
+      completion,
+      commands,
+      flatFiles,
+      projectSessions,
+    );
+  }, [commands, completion, flatFiles, projectSessions]);
+  const suggestionsOpen = Boolean(
+    completion && !completion.dismissed && suggestionItems.length > 0,
   );
+
+  useEffect(() => {
+    setSelectedSuggestionIndex(0);
+  }, [completion?.id, completion?.query]);
   const suggestionAnchorStyle = useMemo<CSSProperties | undefined>(() => {
     if (!suggestionsOpen) return undefined;
     const menuWidth = Math.min(520, window.innerWidth - 120);
@@ -544,11 +585,11 @@ export function useSessionComposerController(
   const resetEphemeralUi = useCallback(() => {
     setHistoryIndex(-1);
     setSavedDraft("");
-    setSuggestionsOpen(false);
+    clearCompletion();
     setSendBehaviorMenuOpen(false);
     setBusyDraftLocked(false);
     liveDomDraftRef.current = { sessionId, value: "" };
-  }, [sessionId]);
+  }, [clearCompletion, sessionId]);
 
   const resolveSessionReferences = useCallback(async (message: string) => {
     let resolved = message;
@@ -558,10 +599,18 @@ export function useSessionComposerController(
     );
     for (const referencedSession of sessionsByLongestName) {
       const sessionName = referencedSession.name ?? referencedSession.filePath;
+      // Use the shared parser rather than a substring replacement: `cmd&name` and
+      // URL/query text are ordinary prose, while only a boundary-valid &name is a
+      // session reference. This also keeps case-insensitive completion behavior.
+      const sessionChips = parseRichInputChips(
+        resolved,
+        undefined,
+        undefined,
+        new Set([sessionName]),
+      ).filter((chip) => chip.kind === "session" && chip.label.toLowerCase() === sessionName.toLowerCase());
+      if (sessionChips.length === 0) continue;
+
       const raw = `&${sessionName}`;
-      if (!resolved.toLowerCase().includes(raw.toLowerCase())) continue;
-      const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const pattern = new RegExp(escaped, "gi");
       const saved = sessionReferenceSelections[raw];
       const selectedMessages = saved
         ? selectedSessionReferenceMessages(saved)
@@ -569,12 +618,13 @@ export function useSessionComposerController(
       const context = selectedMessages
         .map((item) => `[${item.role === "user" ? "User" : "Assistant"}]: ${item.content}`)
         .join("\n");
-      resolved = resolved.replace(
-        pattern,
-        context
-          ? `<referenced_session name="${sessionName}">\n${context}\n</referenced_session>`
-          : "",
-      );
+      const replacement = context
+        ? `<referenced_session name="${sessionName}">\n${context}\n</referenced_session>`
+        : "";
+      // Replace from right to left so all parser offsets remain valid.
+      for (const chip of [...sessionChips].sort((left, right) => right.start - left.start)) {
+        resolved = resolved.slice(0, chip.start) + replacement + resolved.slice(chip.end);
+      }
     }
     return resolved;
   }, [projectSessions, sessionReferenceSelections]);
@@ -623,39 +673,76 @@ export function useSessionComposerController(
     [options.onPromoteSession, send, sessionId],
   );
 
-  const selectSuggestion = useCallback((value: string) => {
-    const liveDraft = liveDomDraftRef.current.sessionId === sessionId
-      ? liveDomDraftRef.current.value
-      : draft;
-    const liveCursor = editorRef.current ? getComposerCaretOffset(editorRef.current) : cursor;
-    const result = applySuggestion(liveDraft, liveCursor, value, validSessionRefs);
-    liveDomDraftRef.current = { sessionId, value: result.text };
-    setDraft(result.text);
-    setCursor(result.cursor);
-    caretRef.current = { pos: result.cursor, forValue: result.text };
-    setSuggestionsOpen(false);
-    requestAnimationFrame(() => editorRef.current?.focus());
-  }, [cursor, draft, sessionId, setDraft, validSessionRefs]);
+  const commitCompletion = useCallback((completionId: number, value: string) => {
+    const active = completionRef.current;
+    if (!active || active.id !== completionId || active.dismissed) return;
 
-  const closeSuggestions = useCallback(() => {
     const liveDraft = liveDomDraftRef.current.sessionId === sessionId
       ? liveDomDraftRef.current.value
       : draft;
-    const liveCursor = editorRef.current ? getComposerCaretOffset(editorRef.current) : cursor;
-    const result = clearSuggestionTrigger(liveDraft, liveCursor, validSessionRefs);
+    const result = applyCompletion(liveDraft, active, value);
+    if (!result) {
+      clearCompletion();
+      return;
+    }
+
     liveDomDraftRef.current = { sessionId, value: result.text };
     setDraft(result.text);
     setCursor(result.cursor);
     caretRef.current = { pos: result.cursor, forValue: result.text };
-    setSuggestionsOpen(false);
+    clearCompletion();
     requestAnimationFrame(() => editorRef.current?.focus());
-  }, [cursor, draft, sessionId, setDraft, validSessionRefs]);
+  }, [clearCompletion, draft, sessionId, setDraft]);
+
+  const onTextInput = useCallback((text: string) => {
+    if (text !== "@" && text !== "/" && text !== "&") return;
+    // 先记录所有真实触发符；onChange 会优先尝试把它作为当前 @/路径或
+    // &/会话 query 的一部分，再用边界判断决定是否开启新 session。这样
+    // `@C:/foo/` 不会被截成 slash command，同时 `@C:/foo &name` 仍能
+    // 在旧 path session 结束后开启新的会话补全。
+    pendingTriggerRef.current = text;
+  }, []);
 
   const onChange = useCallback((value: string, nextCursor: number) => {
     liveDomDraftRef.current = { sessionId, value };
     setDraft(value);
     setCursor(nextCursor);
-    setSuggestionsOpen(detectTrigger(value, nextCursor, validSessionRefs) !== null);
+
+    const triggerChar = pendingTriggerRef.current;
+    pendingTriggerRef.current = null;
+    const currentCompletion = completionRef.current;
+    const continuedCompletion = triggerChar && currentCompletion && !currentCompletion.dismissed
+      ? updateCompletion(currentCompletion, value, nextCursor, validSessionRefs)
+      : null;
+    const startsNewCompletion = triggerChar
+      ? canStartCompletion(
+          value,
+          nextCursor - triggerChar.length,
+          triggerChar,
+          triggerChar === "&" ? validSessionRefs : undefined,
+        )
+      : false;
+    const nextCompletion = continuedCompletion ?? (
+      triggerChar && startsNewCompletion
+        ? {
+            id: nextCompletionIdRef.current++,
+            char: triggerChar,
+            start: nextCursor - triggerChar.length,
+            end: nextCursor,
+            query: "",
+            dismissed: false,
+          }
+        : triggerChar
+          ? null
+          : updateCompletion(
+              currentCompletion,
+              value,
+              nextCursor,
+              validSessionRefs,
+            )
+    );
+    completionRef.current = nextCompletion;
+    setCompletion(nextCompletion);
     if (historyIndex >= 0) {
       const history = getPromptHistory();
       if (value !== history[historyIndex]) {
@@ -665,31 +752,48 @@ export function useSessionComposerController(
     }
   }, [getPromptHistory, historyIndex, sessionId, setDraft, validSessionRefs]);
 
+  const onCursorChange = useCallback((nextCursor: number) => {
+    setCursor(nextCursor);
+    const current = completionRef.current;
+    if (!current) return;
+    const liveDraft = liveDomDraftRef.current.sessionId === sessionId
+      ? liveDomDraftRef.current.value
+      : draft;
+    const nextCompletion = canKeepCompletionAtCursor(current, liveDraft, nextCursor)
+      ? current
+      : null;
+    if (!nextCompletion) pendingTriggerRef.current = null;
+    completionRef.current = nextCompletion;
+    setCompletion(nextCompletion);
+  }, [draft, sessionId]);
+
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (suggestionsOpen && suggestionItems.length > 0) {
-      if (event.key === "ArrowDown") {
+    if (completion && !completion.dismissed) {
+      if (suggestionsOpen && event.key === "ArrowDown") {
         event.preventDefault();
         setSelectedSuggestionIndex((index) => Math.min(index + 1, suggestionItems.length - 1));
         return;
       }
-      if (event.key === "ArrowUp") {
+      if (suggestionsOpen && event.key === "ArrowUp") {
         event.preventDefault();
         setSelectedSuggestionIndex((index) => Math.max(index - 1, 0));
         return;
       }
-      if (event.key === "Enter") {
-        // IME 合成中的回车属于输入法确认候选，不能拿去选建议项
+      if (suggestionsOpen && event.key === "Tab") {
         if (isComposingKeyboardEvent(event)) return;
-        event.preventDefault();
         const selected = suggestionItems[
           Math.min(selectedSuggestionIndex, suggestionItems.length - 1)
         ];
-        if (selected) selectSuggestion(selected.value);
+        if (selected) {
+          event.preventDefault();
+          commitCompletion(completion.id, selected.value);
+        }
         return;
       }
+      // Enter 继续交给 composer 原有的发送/换行职责；只有 Tab 提交候选。
       if (event.key === "Escape") {
         event.preventDefault();
-        closeSuggestions();
+        dismissCompletion();
         return;
       }
     }
@@ -706,6 +810,7 @@ export function useSessionComposerController(
 
     if (event.key === "ArrowUp" && firstLine && history.length > 0) {
       event.preventDefault();
+      clearCompletion();
       const nextIndex = historyIndex < 0
         ? 0
         : Math.min(historyIndex + 1, history.length - 1);
@@ -718,6 +823,7 @@ export function useSessionComposerController(
     }
     if (event.key === "ArrowDown" && lastLine && historyIndex >= 0) {
       event.preventDefault();
+      clearCompletion();
       const nextIndex = historyIndex - 1;
       const nextDraft = nextIndex >= 0 ? history[nextIndex] : savedDraft;
       setHistoryIndex(nextIndex);
@@ -728,6 +834,7 @@ export function useSessionComposerController(
       return;
     }
     if (event.key === "Escape" && historyIndex >= 0) {
+      clearCompletion();
       liveDomDraftRef.current = { sessionId, value: savedDraft };
       setDraft(savedDraft);
       setHistoryIndex(-1);
@@ -742,7 +849,10 @@ export function useSessionComposerController(
       void promoteAndSend(isBusy ? "steer" : undefined);
     }
   }, [
-    closeSuggestions,
+    clearCompletion,
+    commitCompletion,
+    completion,
+    dismissCompletion,
     draft,
     getPromptHistory,
     historyIndex,
@@ -750,7 +860,6 @@ export function useSessionComposerController(
     promoteAndSend,
     savedDraft,
     selectedSuggestionIndex,
-    selectSuggestion,
     sendShortcut,
     sessionId,
     setDraft,
@@ -758,15 +867,18 @@ export function useSessionComposerController(
     suggestionsOpen,
   ]);
 
-  const addImageFiles = useCallback(async (imageFiles: File[]) => {
+  const addImageFiles = useCallback(async (imageFiles: File[]): Promise<boolean> => {
+    let addedAny = false;
     for (const file of imageFiles) {
       try {
         const image = await processComposerImageFile(file);
         setAttachments((current) => [...current, image]);
+        addedAny = true;
       } catch (error) {
         showNotice(composerImageNotice(error), 3000);
       }
     }
+    return addedAny;
   }, [setAttachments]);
 
   /**
@@ -781,6 +893,22 @@ export function useSessionComposerController(
       : draft;
     const liveCursor = editorRef.current ? getComposerCaretOffset(editorRef.current) : cursor;
     const refText = refTexts.join(" ");
+    const active = completionRef.current;
+    // 明确文件来源可以收口一个仍在编辑中的 @ token；与候选提交一样只操作
+    // 该 session 的固定区间，Esc dismiss 后则保留原文字并按普通引用插入。
+    if (active && active.char === "@") {
+      const replaced = applyCompletion(liveDraft, active, refText);
+      if (replaced) {
+        liveDomDraftRef.current = { sessionId, value: replaced.text };
+        setDraft(replaced.text);
+        setCursor(replaced.cursor);
+        caretRef.current = { pos: replaced.cursor, forValue: replaced.text };
+        clearCompletion();
+        requestAnimationFrame(() => editorRef.current?.focus());
+        return;
+      }
+    }
+    clearCompletion();
     const previous = liveDraft[liveCursor - 1];
     const spacer = liveCursor > 0 && previous !== " " && previous !== "\n" ? " " : "";
     const next = liveDraft.slice(0, liveCursor) + spacer + refText + liveDraft.slice(liveCursor);
@@ -790,7 +918,7 @@ export function useSessionComposerController(
     setCursor(nextCursor);
     caretRef.current = { pos: nextCursor, forValue: next };
     requestAnimationFrame(() => editorRef.current?.focus());
-  }, [cursor, draft, sessionId, setDraft]);
+  }, [clearCompletion, cursor, draft, sessionId, setDraft]);
 
   /** 本地路径以 @path 引用插入（OS 文件拖入/粘贴/文件选择器共用）；含空格路径自动加引号 */
   const insertFilePathRefs = useCallback((paths: string[]) => {
@@ -801,32 +929,31 @@ export function useSessionComposerController(
     );
   }, [insertRefTexts]);
 
-  /**
-   * 纯文本路径粘贴：把路径规范化为 @"…" 引用并插入。
-   * 若光标前有未完成的 @ 触发（用户先打了 @ 再粘贴路径），替换触发符，
-   * 避免残留孤立的 @；否则与拖拽/选择器插入走同一规则。
-   */
-  const insertPastedPathRef = useCallback((path: string) => {
+  /** Native 实时快照降级为文本时，按当前编辑器光标插入纯文本。 */
+  const insertPlainText = useCallback((text: string) => {
+    if (!text) return;
+    // 这是普通文本来源，不允许残留的 DOM trigger 记录参与下一次变更。
+    pendingTriggerRef.current = null;
     const liveDraft = liveDomDraftRef.current.sessionId === sessionId
       ? liveDomDraftRef.current.value
       : draft;
-    const liveCursor = editorRef.current
-      ? getComposerCaretOffset(editorRef.current)
-      : cursor;
-    const refText = formatFilePathRef(path);
-    const trigger = detectTrigger(liveDraft, liveCursor, validSessionRefs);
-    if (trigger && trigger.char === "@") {
-      const result = applySuggestion(liveDraft, liveCursor, refText, validSessionRefs);
-      liveDomDraftRef.current = { sessionId, value: result.text };
-      setDraft(result.text);
-      setCursor(result.cursor);
-      caretRef.current = { pos: result.cursor, forValue: result.text };
-    } else {
-      insertRefTexts([refText]);
-    }
-    setSuggestionsOpen(false);
+    const liveCursor = editorRef.current ? getComposerCaretOffset(editorRef.current) : cursor;
+    const next = liveDraft.slice(0, liveCursor) + text + liveDraft.slice(liveCursor);
+    const nextCursor = liveCursor + text.length;
+    const nextCompletion = updateCompletion(
+      completionRef.current,
+      next,
+      nextCursor,
+      validSessionRefs,
+    );
+    completionRef.current = nextCompletion;
+    liveDomDraftRef.current = { sessionId, value: next };
+    setDraft(next);
+    setCursor(nextCursor);
+    setCompletion(nextCompletion);
+    caretRef.current = { pos: nextCursor, forValue: next };
     requestAnimationFrame(() => editorRef.current?.focus());
-  }, [cursor, draft, insertRefTexts, sessionId, setDraft, validSessionRefs]);
+  }, [cursor, draft, sessionId, setDraft, validSessionRefs]);
 
   /** 从 File 列表解析本地路径（Electron 32+ 必须走 webUtils，不能用已移除的 File.path） */
   const resolveLocalPathsFromFiles = useCallback((files: File[]) => {
@@ -852,11 +979,19 @@ export function useSessionComposerController(
    * 或过大，位图仍在（否则粘贴会退化成无用的 @path 引用）；实在没有位图才整体回退
    * @path 引用，保证「复制图片」粘贴始终有可用结果。
    */
-  const pasteClipboardImages = useCallback(async (paths: string[], dataTransfer: DataTransfer | null) => {
+  const pasteClipboardImages = useCallback(async (
+    paths: string[],
+    dataTransfer: DataTransfer | null,
+    fallbackImageFiles: File[] = [],
+    liveImageDataUrl?: string,
+    capabilityId?: string,
+  ) => {
     try {
       const files: File[] = [];
       for (const path of paths) {
-        const dataUrl = await desktopApi.files.readBase64(path, COMPOSER_IMAGE_MAX_BYTES);
+        const dataUrl = capabilityId
+          ? await desktopApi.files.readBase64External(capabilityId, path, COMPOSER_IMAGE_MAX_BYTES)
+          : await desktopApi.files.readBase64(path, COMPOSER_IMAGE_MAX_BYTES);
         if (!dataUrl) throw new Error(`Cannot read image: ${path}`);
         const fileName = path.split(/[\\/]/).pop() || path;
         files.push(dataUrlToFile(dataUrl, imageMimeTypeFromPath(path), fileName));
@@ -864,29 +999,95 @@ export function useSessionComposerController(
       await addImageFiles(files);
     } catch {
       // 位图兜底：事件粘贴优先取 clipboardData 的 image 项；右键粘贴无事件，走 Electron 剪贴板位图
-      const imageFiles = dataTransfer ? getClipboardImageFiles(dataTransfer) : [];
-      if (imageFiles.length) {
-        await addImageFiles(imageFiles);
-        return;
-      }
-      const imageDataUrl = desktopApi.clipboard.readImage();
-      if (imageDataUrl) {
-        await addImageFiles([dataUrlToFile(imageDataUrl, "image/png", "clipboard-image.png")]);
-        return;
-      }
+      const imageFiles = fallbackImageFiles.length > 0
+        ? fallbackImageFiles
+        : dataTransfer
+          ? getClipboardImageFiles(dataTransfer)
+          : [];
+      if (imageFiles.length && await addImageFiles(imageFiles)) return;
+      const imageDataUrl = liveImageDataUrl ?? desktopApi.clipboard.readImage();
+      if (imageDataUrl && await addImageFiles([dataUrlToFile(imageDataUrl, "image/png", "clipboard-image.png")])) return;
       insertFilePathRefs(paths);
     }
   }, [addImageFiles, insertFilePathRefs]);
 
+  const pasteNativeSnapshot = useCallback(async (options: {
+    fallbackImageFiles?: File[];
+    fallbackText?: string;
+    fallbackHtml?: string;
+  } = {}): Promise<boolean> => {
+    const fallbackImageFiles = options.fallbackImageFiles ?? [];
+    const fallbackText = options.fallbackText ?? "";
+    const fallbackHtml = options.fallbackHtml ?? "";
+    let snapshot: NativeClipboardSnapshot;
+    try {
+      snapshot = await desktopApi.clipboard.readNativeSnapshot();
+    } catch (error) {
+      // preventDefault already ran for a native file/image paste. If the live Qt
+      // snapshot times out or the host is unavailable, preserve every synchronous
+      // browser fallback in priority order instead of swallowing the clipboard.
+      if (fallbackImageFiles.length > 0 && await addImageFiles(fallbackImageFiles)) return true;
+      const text = fallbackText || (fallbackHtml ? htmlToPlainText(fallbackHtml) : "");
+      if (text) {
+        insertPlainText(text);
+        return true;
+      }
+      throw error;
+    }
+    if (snapshot.filePaths.length > 0) {
+      if (snapshot.filePaths.every(isImageFilePath)) {
+        await pasteClipboardImages(
+          snapshot.filePaths,
+          null,
+          fallbackImageFiles,
+          snapshot.imageDataUrl,
+          snapshot.externalFileCapabilityId,
+        );
+      } else {
+        insertFilePathRefs(snapshot.filePaths);
+      }
+      return true;
+    }
+    if (fallbackImageFiles.length > 0 && await addImageFiles(fallbackImageFiles)) return true;
+    if (snapshot.imageDataUrl && await addImageFiles([dataUrlToFile(snapshot.imageDataUrl, "image/png", "clipboard-image.png")])) return true;
+    if (snapshot.hasImage) {
+      // Do not silently fall through to URL/text metadata when Qt could not
+      // encode the image (for example, because the native image budget was hit).
+      showNotice(t("app.clipboardImageUnavailable"), 3000);
+      return true;
+    }
+    const text = snapshot.text || (snapshot.html ? htmlToPlainText(snapshot.html) : "");
+    if (text) {
+      insertPlainText(text);
+      return true;
+    }
+    return false;
+  }, [addImageFiles, insertFilePathRefs, insertPlainText, pasteClipboardImages]);
+
   /**
-   * 右键「粘贴」（无 ClipboardEvent）：从 Electron 剪贴板同步读取。
+   * 右键「粘贴」（无 ClipboardEvent）：native 实时读取 Qt 快照；Electron
+   * 继续使用同步 clipboard API。
    * 优先级同 onPaste：文件路径 → 位图；纯文本返回 false，交给编辑器本地插入。
    */
   const pasteFromClipboard = useCallback(async (): Promise<boolean> => {
+    if (isNativeRuntime) {
+      try {
+        return await pasteNativeSnapshot();
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : String(error), 3000);
+        return false;
+      }
+    }
     const clipboardPaths = desktopApi.files.getClipboardPaths?.() ?? [];
     if (clipboardPaths.length > 0) {
       if (clipboardPaths.every(isImageFilePath)) {
-        await pasteClipboardImages(clipboardPaths, null);
+        await pasteClipboardImages(
+          clipboardPaths,
+          null,
+          [],
+          undefined,
+          desktopApi.files.getClipboardCapability?.() || undefined,
+        );
       } else {
         insertFilePathRefs(clipboardPaths);
       }
@@ -898,25 +1099,47 @@ export function useSessionComposerController(
       return true;
     }
     return false;
-  }, [addImageFiles, insertFilePathRefs, pasteClipboardImages]);
+  }, [addImageFiles, insertFilePathRefs, pasteClipboardImages, pasteNativeSnapshot]);
 
   /**
-   * 粘贴：系统文件路径以 @path 引用插入，位图/截图附加为图片。
-   * 未处理时不 preventDefault，交给 RichInput 做纯文本粘贴。
+   * 粘贴：明确的系统文件来源以 @path 引用插入，位图/截图附加为图片。
+   * 普通 text/plain 未处理、不 preventDefault，交给 TipTap 做纯文本粘贴。
    * preventDefault 必须在任何 await 之前同步调用，否则浏览器会先插入默认内容。
    *
    * 顺序说明：资源管理器复制图片文件时，剪贴板常同时带路径 + 缩略图；
    * 路径为受支持图片时优先附加预览，否则仍按路径引用处理，避免被误当成截图。
    */
   const onPaste = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (isNativeRuntime && shouldRequestNativeClipboardSnapshot(event.clipboardData)) {
+      // Capture WebView-provided image files synchronously, then ask Qt for the
+      // current OS snapshot. Never let the eventually-consistent SSE cache
+      // override a newer paste event.
+      const fallbackImageFiles = getClipboardImageFiles(event.clipboardData);
+      const fallbackText = event.clipboardData.getData("text/plain");
+      const fallbackHtml = event.clipboardData.getData("text/html");
+      event.preventDefault();
+      void pasteNativeSnapshot({ fallbackImageFiles, fallbackText, fallbackHtml }).catch((error) => {
+        showNotice(error instanceof Error ? error.message : String(error), 3000);
+      });
+      return;
+    }
+
     // 1) 资源管理器复制/剪切的文件：浏览器 ClipboardEvent 通常没有 kind=file，
     //    需通过 preload 同步读取 Electron clipboard（FileNameW / CF_HDROP 等）
-    const clipboardPaths = desktopApi.files.getClipboardPaths?.() ?? [];
+    const clipboardPaths = isNativeRuntime
+      ? []
+      : desktopApi.files.getClipboardPaths?.() ?? [];
     if (clipboardPaths.length > 0) {
       event.preventDefault();
       // 复制的全是受支持图片 → 附加预览；混合/其他文件 → 维持 @path 引用
       if (clipboardPaths.every(isImageFilePath)) {
-        void pasteClipboardImages(clipboardPaths, event.clipboardData);
+        void pasteClipboardImages(
+          clipboardPaths,
+          event.clipboardData,
+          [],
+          undefined,
+          desktopApi.files.getClipboardCapability?.() || undefined,
+        );
       } else {
         insertFilePathRefs(clipboardPaths);
       }
@@ -942,9 +1165,9 @@ export function useSessionComposerController(
       }
     }
 
-    // 3) 剪贴板位图（截图/微信QQ/网页复制图片）：必须优先于纯文本路径提取——
+    // 3) 剪贴板位图（截图/微信QQ/网页复制图片）：必须优先于普通文本处理——
     //    这类复制常同时写位图 + text 槽（微信写图片缓存路径、网页写图片 URL），
-    //    位图才是用户要的内容，把附带文本提取成 @path 引用是错的；
+    //    位图才是用户要的内容，不能把附带文本当作文件来源；
     //    文件路径场景已在前两步处理，这里只剩纯位图。
     const imageFiles = getClipboardImageFiles(event.clipboardData);
     if (imageFiles.length) {
@@ -953,17 +1176,7 @@ export function useSessionComposerController(
       return;
     }
 
-    // 4) 纯文本绝对路径粘贴（QQ「复制路径」/ 资源管理器地址栏 / Windows「复制为路径」）：
-    //    规范化为 @"path" 引用插入，而不是留下带拼写波浪线的裸路径文本。
-    const pastedPath = extractPastedPath(
-      event.clipboardData.getData("text/plain"),
-    );
-    if (pastedPath) {
-      event.preventDefault();
-      insertPastedPathRef(pastedPath);
-      return;
-    }
-  }, [addImageFiles, insertFilePathRefs, insertPastedPathRef, pasteClipboardImages, resolveLocalPathsFromFiles]);
+  }, [addImageFiles, insertFilePathRefs, pasteClipboardImages, pasteNativeSnapshot, resolveLocalPathsFromFiles]);
 
   /**
    * 拖拽：
@@ -1066,6 +1279,7 @@ export function useSessionComposerController(
     const target = toSessionRuntimeTarget(sessionId, runtime);
     if (!target) {
       // No Agent yet: write /compact to draft and send → starts Agent + compacts
+      clearCompletion();
       setDraft("/compact");
       caretRef.current = { pos: "/compact".length, forValue: "/compact" };
       void promoteAndSend();
@@ -1079,7 +1293,7 @@ export function useSessionComposerController(
       const message = friendlyCompactError(error);
       if (message) showNotice(message, 6000);
     }
-  }, [runtime?.agentId, runtime?.runtimeGeneration, sessionId, setDraft, promoteAndSend]);
+  }, [clearCompletion, runtime?.agentId, runtime?.runtimeGeneration, sessionId, setDraft, promoteAndSend]);
 
   const openPicker = useCallback((kind: ComposerPickerKind) => {
     if (kind === "template") void loadTemplates();
@@ -1090,12 +1304,13 @@ export function useSessionComposerController(
     const next = draft.trimEnd()
       ? `${draft.trimEnd()} /${template.name} `
       : `/${template.name} `;
+    clearCompletion();
     liveDomDraftRef.current = { sessionId, value: next };
     setDraft(next);
     caretRef.current = { pos: next.length, forValue: next };
     setPicker(null);
     requestAnimationFrame(() => editorRef.current?.focus());
-  }, [draft, sessionId, setDraft]);
+  }, [clearCompletion, draft, sessionId, setDraft]);
 
   return {
     sessionId,
@@ -1125,11 +1340,13 @@ export function useSessionComposerController(
       validFilePaths,
       validSessionRefs,
       onChange,
-      onCursorChange: setCursor,
+      onTextInput,
+      onCursorChange,
       onKeyDown,
       onPaste,
       onPasteClipboard: pasteFromClipboard,
       onDrop,
+      onNativeFileDrop: (paths: string[]) => insertFilePathRefs(paths),
       onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
         // 会话 Tab / 侧栏分屏拖拽交给 SessionSplitStage（capture），composer 不抢落点
         if (event.dataTransfer.types.includes(SESSION_TAB_DRAG_MIME)) return;
@@ -1143,19 +1360,20 @@ export function useSessionComposerController(
           event.dataTransfer.dropEffect = "copy";
         }
       },
-      onFocus: () => setSuggestionsOpen(detectTrigger(draft, cursor, validSessionRefs) !== null),
-      onBlur: () => setSuggestionsOpen(false),
+      onFocus: undefined,
+      onBlur: dismissCompletion,
       onChipClick,
       attachFile,
     },
     suggestions: {
       open: suggestionsOpen,
+      completionId: completion?.id,
       items: suggestionItems,
       selectedIndex: selectedSuggestionIndex,
       anchorStyle: suggestionAnchorStyle,
       setSelectedIndex: setSelectedSuggestionIndex,
-      close: closeSuggestions,
-      pick: selectSuggestion,
+      close: dismissCompletion,
+      pick: commitCompletion,
     },
     images: {
       preview: setPreviewImage,

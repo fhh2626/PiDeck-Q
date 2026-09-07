@@ -80,15 +80,12 @@ async function getInstalledSlugsSet(searchItems: SkillHubItem[]): Promise<Set<st
 	}
 }
 
-const api = (window as unknown as {
-	piDesktop: {
-		skillHub: {
-			search: (q: string, limit?: number) => Promise<SkillHubSearchResult>;
-			detail: (slug: string) => Promise<SkillHubDetail | null>;
-			install: (slug: string, installDir: string) => Promise<SkillHubInstallResult>;
-		};
-	};
-}).piDesktop;
+// Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
+const api = {
+	get skillHub() {
+		return desktopApi.skillHub;
+	},
+};
 
 const SUGGESTED_SEARCHES = [
 	"pdf", "ocr", "translate", "code review", "react",
@@ -292,8 +289,7 @@ export function SkillHubStorePanel() {
 							key={item.slug}
 							className="skillhub-card"
 							onClick={() => {
-								// 弹框（ConfigModal Dialog）内链接强制系统浏览器：内置浏览器面板位于 Dialog 下层不可见，
-								// 跟随 linkOpenMode=internal 打开会被遮挡，用户看到“点了没反应”（与 openDocsInSystemBrowser 同规则）
+								// 外部文档/服务页面通过 desktopApi.app.openExternal 交由系统默认浏览器打开。
 								window.piDesktop.app.openExternal(
 									`https://www.skills.sh/search?q=${encodeURIComponent(item.name)}`,
 									true

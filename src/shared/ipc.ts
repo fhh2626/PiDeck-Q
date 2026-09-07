@@ -31,12 +31,17 @@ export const ipcChannels = {
 	filesCreate: "files:create",
 	filesDelete: "files:delete",
 	filesRename: "files:rename",
-	/** 复制来源路径到目标目录（支持文件和目录递归） */
+	/** Copy paths already authorized by the workspace boundary. */
 	filesCopy: "files:copy",
+	/** Copy paths issued by a trusted native clipboard/drop capability. */
+	filesCopyInternal: "files:copy-internal",
+	filesCopyExternal: "files:copy-external",
 	/** 移动来源路径到目标目录（同设备 rename，跨设备 cp+rm） */
 	filesMove: "files:move",
-	/** 读取文件返回 base64 编码的数据 URL，用于图片等二进制文件 */
+	/** Read a file inside authorized roots as base64. */
 	filesReadBase64: "files:read-base64",
+	/** Read one path redeemed from a trusted external file capability. */
+	filesReadBase64External: "files:read-base64-external",
 	sessionsList: "sessions:list",
 	/** Session-first catalog APIs. */
 	sessionsCatalogList: "sessions:catalog-list",
@@ -189,16 +194,9 @@ export const ipcChannels = {
 	appPreferredSystemLanguages: "app:preferred-system-languages",
 	appCheckUpdate: "app:check-update",
 	appDownloadUpdate: "app:download-update",
-	appInstallUpdate: "app:install-update",
+	appOpenUpdatePackage: "app:open-update-package",
 	appUpdateProgress: "app:update-progress",
 	appOpenExternal: "app:open-external",
-	appOpenInBrowser: "app:open-in-browser",
-	/** 主进程 → 主窗口：内置浏览器 guest 页面请求打开 mailto/tel/sms 等系统协议，
-	 *  交由受信渲染层弹确认框，用户同意后才经 browserOpenExternal 网关启动系统处理器。 */
-	appConfirmExternalProtocol: "app:confirm-external-protocol",
-	/** 渲染层 → 主进程：用户对外部协议确认请求的应答（只回传 id，
-	 *  URL 权威值在主进程 pending 注册表）。 */
-	appRespondExternalProtocol: "app:respond-external-protocol",
 	appRestart: "app:restart",
 	/** 进程监控：拉取 Electron 各进程 + pi agent 子进程的内存/CPU 快照 */
 	processMetrics: "system:process-metrics",
@@ -233,6 +231,9 @@ export const ipcChannels = {
 	appWindowMaximizedChanged: "app:window-maximized-changed",
 	appWindowToggleAlwaysOnTop: "app:window-toggle-always-on-top",
 	appWindowClose: "app:window-close",
+	appBeginWindowDrag: "app:begin-window-drag",
+	appBeginWindowResize: "app:begin-window-resize",
+	nativeClipboardSnapshot: "native:clipboard-snapshot",
 	agentsRuntimeState: "agents:runtime-state",
 	agentsState: "agents:state",
 	projectsListModels: "projects:list-models",
@@ -318,6 +319,7 @@ export const ipcChannels = {
 	/** 主进程 → 主窗口：系统通知等入口请求聚焦指定会话。 */
 	appFocusSessionTarget: "app:focus-session-target",
 	appGetFocusTargetPending: "app:get-focus-target-pending",
+	appAcknowledgeFocusTarget: "app:ack-focus-target",
 
 	// ===== Scratch Pad（草稿本/多草稿） =====
 	scratchPadList: "scratch-pad:list",
@@ -333,9 +335,6 @@ export const ipcChannels = {
 	pickBackgroundImage: "backgrounds:pick",
 	/** 删除背景图文件 */
 	removeBackgroundImage: "backgrounds:remove",
-
-	// ===== 内置浏览器 =====
-	browserOpenExternal: "browser:open-external",
 
 	// ===== 用量统计（usage-stats） =====
 	usageStatsDetect: "usage-stats:detect",

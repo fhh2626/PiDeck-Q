@@ -2,7 +2,7 @@ import { ChatTypographySection } from './ChatTypographySection';
 import { memo } from "react";
 import type { AppSettings } from "../../../../../shared/types";
 import { t } from "../../../i18n";
-import { desktopApi } from "../../../desktopApi";
+import { desktopApi, isNativeRuntime } from "../../../desktopApi";
 import { ACCENT_PRESETS } from "../../../themePresets";
 import { Button } from "../../ui-shadcn/button";
 import { Input } from "../../ui-shadcn/input";
@@ -28,6 +28,7 @@ type AppearanceTabProps = {
   /** 是否启用了分区字号（任一区域字号非空） */
   perAreaFontSize: boolean;
   setPerAreaFontSize: (checked: boolean) => void;
+  platform: NodeJS.Platform;
 };
 
 /** 下拉选项：disabled 可选（SelectItem 透传） */
@@ -39,6 +40,7 @@ type SelectOption = { value: string; label: string; disabled?: boolean };
  */
 export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabProps) {
   const { draft, updateDraft, isDirty } = props;
+  const nativeTitleBarRequired = isNativeRuntime && props.platform === "darwin";
   const themeOptions: SelectOption[] = [
     { value: "system", label: t("settings.themeSystem") },
     { value: "light", label: t("settings.themeLight") },
@@ -430,7 +432,9 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
       <SettingsSection title={t("settings.sectionWindowStyle")}>
         <SettingSwitchRow
           title={t("settings.nativeTitleBar")}
-          checked={draft.useNativeTitleBar}
+          description={nativeTitleBarRequired ? t("settings.nativeTitleBarMacDesc") : undefined}
+          checked={nativeTitleBarRequired || draft.useNativeTitleBar}
+          disabled={nativeTitleBarRequired}
           onChange={(checked) =>
             updateDraft({ useNativeTitleBar: checked })
           }
