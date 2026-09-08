@@ -22,7 +22,7 @@ export function DirtyMarker(props: { dirty: boolean; label: string }) {
  */
 export function SettingBox(props: { children: ReactNode }) {
 	return (
-		<div className="rounded-lg border border-border-subtle/70 bg-bg-muted/30 px-1 pb-1">
+		<div className="rounded-md border border-border-subtle/70 bg-bg-muted/30 px-0.5 pb-0.5">
 			{props.children}
 		</div>
 	);
@@ -52,11 +52,11 @@ export function SettingRow(props: {
 	return (
 		<div
 			className={cn(
-				"grid gap-6 border-t border-border-subtle/60 py-1.5 first:border-t-0",
+				"grid gap-4 border-t border-border-subtle/60 py-1 first:border-t-0",
 				level === 1 ? "px-0.5" : "px-1",
 				props.stacked
 					? "min-h-0 grid-cols-1 items-start"
-					: "min-h-[54px] grid-cols-[minmax(0,1fr)_260px] items-center",
+					: "min-h-9 grid-cols-[minmax(0,1fr)_260px] items-center",
 			)}
 		>
 			<span className="min-w-0">
@@ -71,7 +71,7 @@ export function SettingRow(props: {
 					{props.title}
 				</span>
 				{props.description && (
-					<small className="mt-0.5 block text-caption leading-relaxed text-muted-foreground">
+					<small className="mt-0.5 block text-caption leading-normal text-muted-foreground">
 						{props.description}
 					</small>
 				)}
@@ -120,7 +120,7 @@ export function SettingTextarea(props: {
 				value={props.value}
 				rows={8}
 				onChange={(event) => props.onChange(event.target.value)}
-				className="min-h-24 w-full resize-y border-border-subtle bg-bg-input px-3 py-2 font-mono text-sm leading-relaxed text-foreground"
+				className="min-h-24 w-full resize-y border-border-subtle bg-bg-input px-2.5 py-1.5 font-mono text-sm leading-relaxed text-foreground"
 			/>
 		</SettingRow>
 	);

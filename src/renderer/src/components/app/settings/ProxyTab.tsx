@@ -63,14 +63,14 @@ export const ProxyTab = memo(function ProxyTab(props: ProxyTabProps) {
               title={<span>{t("settings.proxyUrl")}</span>}
               stacked
             >
-              <Input type="text" value={draft.piProxyUrl} placeholder={"http://127.0.0.1:7890"} onChange={(event) => updateDraft({ piProxyUrl: event.target.value })} />
+              <Input className="h-8" type="text" value={draft.piProxyUrl} placeholder={"http://127.0.0.1:7890"} onChange={(event) => updateDraft({ piProxyUrl: event.target.value })} />
             </SettingRow>
             <SettingRow
               title={<span>{t("settings.proxyBypass")}</span>}
               description={t("settings.noProxyHint")}
               stacked
             >
-              <Input type="text" value={draft.piProxyBypass} placeholder={"localhost,127.0.0.1,::1"} onChange={(event) => updateDraft({ piProxyBypass: event.target.value })} />
+              <Input className="h-8" type="text" value={draft.piProxyBypass} placeholder={"localhost,127.0.0.1,::1"} onChange={(event) => updateDraft({ piProxyBypass: event.target.value })} />
             </SettingRow>
             <SettingRow
               title={<span>{t("settings.proxyTest")}</span>}
@@ -85,7 +85,7 @@ export const ProxyTab = memo(function ProxyTab(props: ProxyTabProps) {
                 </>
               }
             >
-              <Button variant="secondary"
+              <Button size="sm" variant="secondary"
                 onClick={props.onTestPiProxy}
                 disabled={props.piProxyChecking}
               >
@@ -115,14 +115,14 @@ export const ProxyTab = memo(function ProxyTab(props: ProxyTabProps) {
               title={<span>{t("settings.proxyUrl")}</span>}
               stacked
             >
-              <Input type="text" value={draft.desktopProxyUrl} placeholder={"http://127.0.0.1:7890"} onChange={(event) => updateDraft({ desktopProxyUrl: event.target.value })} />
+              <Input className="h-8" type="text" value={draft.desktopProxyUrl} placeholder={"http://127.0.0.1:7890"} onChange={(event) => updateDraft({ desktopProxyUrl: event.target.value })} />
             </SettingRow>
             <SettingRow
               title={<span>{t("settings.proxyBypass")}</span>}
               description={t("settings.electronProxyHint")}
               stacked
             >
-              <Input type="text" value={draft.desktopProxyBypass} placeholder={"localhost,127.0.0.1,::1"} onChange={(event) => updateDraft({ desktopProxyBypass: event.target.value })} />
+              <Input className="h-8" type="text" value={draft.desktopProxyBypass} placeholder={"localhost,127.0.0.1,::1"} onChange={(event) => updateDraft({ desktopProxyBypass: event.target.value })} />
             </SettingRow>
           </div>
         )}

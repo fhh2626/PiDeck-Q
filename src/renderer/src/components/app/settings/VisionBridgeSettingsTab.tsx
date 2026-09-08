@@ -183,7 +183,7 @@ export function VisionBridgeSettingsTab(props: {
 						) : undefined
 					}
 				>
-					<Button
+					<Button size="sm"
 						type="button"
 						variant="outline"
 						className="w-full justify-between font-mono text-control"
@@ -206,7 +206,7 @@ export function VisionBridgeSettingsTab(props: {
 						value={draft?.api ?? "auto"}
 						onValueChange={(api) => updateDraft({ api: api === "auto" ? undefined : (api as VisionBridgeConfig["api"]) })}
 					>
-						<SelectTrigger className="w-full">
+						<SelectTrigger size="sm" className="w-full">
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
@@ -224,7 +224,7 @@ export function VisionBridgeSettingsTab(props: {
 					description={t("settings.vision.baseUrlDesc")}
 					stacked
 				>
-					<Input
+					<Input className="h-8"
 						value={draft?.baseUrl ?? ""}
 						placeholder="https://open.bigmodel.cn/api/paas/v4"
 						onChange={(event) => updateDraft({ baseUrl: event.target.value || undefined })}
@@ -236,7 +236,7 @@ export function VisionBridgeSettingsTab(props: {
 					description={t("settings.vision.apiKeyDesc")}
 					stacked
 				>
-					<Input
+					<Input className="h-8"
 						type="password"
 						value={draft?.apiKey ?? ""}
 						onChange={(event) => updateDraft({ apiKey: event.target.value || undefined })}
@@ -268,7 +268,7 @@ export function VisionBridgeSettingsTab(props: {
 											}
 										}}
 									>
-										<SelectTrigger className="w-full">
+										<SelectTrigger size="sm" className="w-full">
 											<SelectValue />
 										</SelectTrigger>
 										<SelectContent>
@@ -281,7 +281,7 @@ export function VisionBridgeSettingsTab(props: {
 											type="number"
 											min={1}
 											max={32768}
-											className="w-32 shrink-0"
+											className="h-8 w-32 shrink-0"
 											value={maxTokens}
 											onChange={(event) => updateDraft({ maxTokens: Number(event.target.value) || undefined })}
 										/>
@@ -295,7 +295,7 @@ export function VisionBridgeSettingsTab(props: {
 					title={<span>{t("settings.vision.concurrency")}</span>}
 					alignEnd={false}
 				>
-					<Input
+					<Input className="h-8"
 						type="number"
 						min={1}
 						max={16}
@@ -311,7 +311,7 @@ export function VisionBridgeSettingsTab(props: {
 					description={t("settings.vision.timeoutDesc")}
 					alignEnd={false}
 				>
-					<Input
+					<Input className="h-8"
 						type="number"
 						min={1}
 						max={300}

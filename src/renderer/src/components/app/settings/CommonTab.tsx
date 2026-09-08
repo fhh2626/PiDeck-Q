@@ -75,7 +75,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
           <Select value={draft.language} onValueChange={(value) =>
               updateDraft({ language: value as AppSettings["language"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {languageOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -101,7 +101,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
           <Select value={draft.sessionTabOpenMode} onValueChange={(value) =>
               updateDraft({ sessionTabOpenMode: value as AppSettings["sessionTabOpenMode"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="preview">{t("settings.sessionTabOpenModePreview")}</SelectItem>
               <SelectItem value="permanent">{t("settings.sessionTabOpenModePermanent")}</SelectItem>
@@ -120,7 +120,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
           <Select value={draft.sendShortcut} onValueChange={(value) =>
               updateDraft({ sendShortcut: value as AppSettings["sendShortcut"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {sendShortcutOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -148,7 +148,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
               })
             }
           >
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {workspaceContentOpenModeOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
@@ -212,7 +212,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
                 startupWindowMode: value as AppSettings["startupWindowMode"],
               })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {startupWindowModeOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -260,7 +260,7 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
               }
               description={t("settings.gitCommitMessageModelDesc")}
             >
-              <Button
+              <Button size="sm"
                 variant="outline"
                 className="w-full justify-start font-mono text-xs"
                 onClick={props.onOpenGitModelPicker}

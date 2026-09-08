@@ -39,3 +39,46 @@ test("session/agent sidebar rows use fill-available width, not content-sized aut
     }
   }
 });
+
+/**
+ * 侧边栏资源行统一 28px（min-h-7）：Project / Session / Agent / Worktree
+ * 全部用同一行高，层级差异靠缩进/图标/字号/状态点表达，而不是靠行高差。
+ * 28px 是桌面工作台的导航行基线——比 32px 更紧凑，又不至于 24px 那样拥挤。
+ */
+test("sidebar project/session/agent/worktree rows all use min-h-7 (28px)", () => {
+  const projectTree = readFileSync(
+    "src/renderer/src/components/sidebar/ProjectTree.tsx",
+    "utf8",
+  );
+  const sessionTree = readFileSync(
+    "src/renderer/src/components/sidebar/SessionTree.tsx",
+    "utf8",
+  );
+  const worktreeTree = readFileSync(
+    "src/renderer/src/components/sidebar/WorktreeTree.tsx",
+    "utf8",
+  );
+
+  // 项目行：treeRowClass 常量（跨行字符串）
+  const treeRow = projectTree.match(/treeRowClass\s*=\s*\n\s*"([^"]*)"/);
+  assert.ok(treeRow, "treeRowClass constant not found");
+  assert.match(treeRow[1], /min-h-7/, "project row should be min-h-7");
+  assert.doesNotMatch(treeRow[1], /min-h-8/, "project row should not be min-h-8");
+
+  // 会话/agent 行：sessionRowClass 常量
+  const sessionRow = sessionTree.match(/sessionRowClass\s*=\s*\n\s*"([^"]*)"/);
+  assert.ok(sessionRow, "sessionRowClass constant not found");
+  assert.match(sessionRow[1], /min-h-7/, "session/agent row should be min-h-7");
+  assert.doesNotMatch(sessionRow[1], /min-h-8/, "session/agent row should not be min-h-8");
+
+  // 行容器（rowContainerClass）也统一到 28px
+  const rowContainer = sessionTree.match(/rowContainerClass\s*=\s*"([^"]*)"/);
+  assert.ok(rowContainer, "rowContainerClass constant not found");
+  assert.match(rowContainer[1], /min-h-7/, "row container should be min-h-7");
+
+  // worktree 外层行
+  const workspaceRow = worktreeTree.match(/workspaceRowClass\s*=\s*\n\s*"([^"]*)"/);
+  assert.ok(workspaceRow, "workspaceRowClass constant not found");
+  assert.match(workspaceRow[1], /min-h-7/, "worktree row should be min-h-7");
+  assert.doesNotMatch(workspaceRow[1], /min-h-8/, "worktree row should not be min-h-8");
+});

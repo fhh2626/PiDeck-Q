@@ -98,7 +98,7 @@ export function ExternalEditorsSection(props: {
 								{t("editors.enabled")}
 							</Label>
 							<Input
-								className="w-56 min-w-0"
+								className="h-8 w-56 min-w-0"
 								value={setting.command}
 								onChange={(event) => setEditor(editor.id, { command: event.target.value })}
 								placeholder={t("editors.pathPlaceholder")}

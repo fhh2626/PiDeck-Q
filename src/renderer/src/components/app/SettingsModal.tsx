@@ -378,9 +378,9 @@ function SettingsModalContent(props: SettingsModalProps) {
 					</div>
 				</DialogHeader>
 			<Tabs orientation="vertical" value={activeTab} onValueChange={(v) => { const match = tabs.find((t) => t.id === v); if (!match) return; setActiveTab(match.id); try { localStorage.setItem(SETTINGS_LAST_TAB_KEY, match.id); } catch { /* localStorage 不可用时静默失败，仅本次会话内不记忆 */ } }} className="settings-layout flex min-h-0 flex-1 flex-row gap-0 bg-transparent">
-					<TabsList className="settings-tabs flex min-h-0 shrink-0 flex-col items-stretch gap-2.5 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-2.5 data-[orientation=vertical]:w-[196px]" aria-label={t("settings.title")}>
+					<TabsList className="settings-tabs flex min-h-0 shrink-0 flex-col items-stretch gap-1 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-1.5 data-[orientation=vertical]:w-[196px]" aria-label={t("settings.title")}>
 						{tabs.map((tab) => (
-							<TabsTrigger key={tab.id} value={tab.id} className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+							<TabsTrigger key={tab.id} value={tab.id} className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 								<span className="settings-tab-icon">{tab.icon}</span>
 								<strong>{tab.label}</strong>
 							</TabsTrigger>

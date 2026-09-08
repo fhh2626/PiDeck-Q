@@ -974,7 +974,7 @@
   min-height: 0;
   overflow-y: auto;
   flex: 1;
-  padding: var(--space-4);
+  padding: var(--space-3);
   color: var(--color-text-primary);
   /* 与 config-main 统一：内容区用面板白 */
   background: var(--color-bg-panel);

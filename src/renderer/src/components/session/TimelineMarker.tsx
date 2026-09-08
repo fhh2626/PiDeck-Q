@@ -54,7 +54,7 @@ export function TimelineMarker(props: {
   const statusIcon = getStatusIcon(props.kind, tone);
   return (
     <div
-      className={cn("timeline-marker-row flex min-w-0 items-stretch", !props.hideRail && "gap-2.5", props.className)}
+      className={cn("timeline-marker-row flex min-w-0 items-stretch", !props.hideRail && "gap-2", props.className)}
       data-marker-kind={props.kind}
       data-marker-tone={tone}
     >
@@ -67,7 +67,7 @@ export function TimelineMarker(props: {
             "timeline-marker-node relative z-[1] grid size-2 place-items-center rounded-full",
             // 思考 trigger 行较高（min-h-8 + p-1.5），节点下移 3 对齐行内容中心；
             // 工具行已收紧（20px）保持基线偏移即可；其他事件维持原偏移
-            props.kind === "thinking" ? "mt-3" : "mt-1.5",
+            props.kind === "thinking" ? "mt-2" : "mt-1.5",
             // ✓/✗ 节点放大为 14px 并微调基线，与首行文字视觉对齐
             statusIcon && "mt-1 size-3.5",
             TONE_CLASSES[tone],
@@ -77,7 +77,7 @@ export function TimelineMarker(props: {
         </span>
       </div>
       )}
-      <div className={cn("timeline-marker-content min-w-0 flex-1 pb-2", props.contentClassName)}>{props.children}</div>
+      <div className={cn("timeline-marker-content min-w-0 flex-1 pb-1", props.contentClassName)}>{props.children}</div>
     </div>
   );
 }

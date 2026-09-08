@@ -22,7 +22,7 @@ test("shared SectionHeading defines one title and description hierarchy", () => 
 
 test("settings and Pi management sections use the shared heading", () => {
   assert.match(storage, /import \{ SectionHeading \} from "\.\.\/\.\.\/ui-shadcn\/section-heading"/);
-  assert.match(storage, /className="settings-section-header pb-2"/);
+  assert.match(storage, /className="settings-section-header pb-1"/);
   assert.match(piSettings, /import \{ SectionHeading \} from "\.\.\/components\/ui-shadcn\/section-heading"/);
   assert.equal((piSettings.match(/<SectionHeading/g) ?? []).length, 3);
   assert.doesNotMatch(piSettings, /config-settings-section-title/);

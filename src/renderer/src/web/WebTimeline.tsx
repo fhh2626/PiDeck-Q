@@ -64,7 +64,7 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 		<TimelineMarker kind="thinking" tone="neutral" contentClassName="pb-0">
 		<section className="w-full min-w-0 overflow-hidden rounded-md border-0">
 			<button
-				className="flex min-h-6 w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2 py-0.5 text-left text-control leading-5 text-text-secondary transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]"
+				className="flex min-h-6 w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent px-1 py-0.5 text-left text-control leading-5 text-text-secondary transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]"
 				onClick={() => setExpanded((value) => !value)}
 				aria-expanded={expanded}
 				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
@@ -82,7 +82,8 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 			    折叠态单行预览在标题行下方独立一行，不与标题挤在一起 */}
 			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
 				{expanded ? (
-					<div className="markdown-body px-3 pt-2 pb-1 text-text-tertiary">
+					<>
+					<div className="markdown-body px-2 py-1 text-text-tertiary">
 						<MarkdownStream
 							text={props.text}
 							onOpenExternal={(url: string) => {
@@ -90,24 +91,25 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 								window.open(url, "_blank", "noopener");
 							}}
 						/>
-						{/* 长思考展开后，内容尾部提供收起入口（与桌面端 ThinkingBlock 一致）：
-						    滚动到内容末尾即可收起，不必滚回顶部标题行 */}
-						<div className="mt-1.5">
-							<button
-								type="button"
-								className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-text-tertiary transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_45%,transparent)] hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
-								onClick={() => setExpanded(false)}
-							>
-								<ChevronUp size={12} aria-hidden="true" />
-								{t("thinking.collapse")}
-							</button>
-						</div>
 					</div>
+					{/* 长思考展开后，内容尾部提供收起入口（与桌面端 ThinkingBlock 一致）：
+					    滚动到内容末尾即可收起，不必滚回顶部标题行 */}
+					<div className="flex px-1.5 pb-1">
+						<button
+							type="button"
+							className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-text-tertiary transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_45%,transparent)] hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+							onClick={() => setExpanded(false)}
+						>
+							<ChevronUp size={12} aria-hidden="true" />
+							{t("thinking.collapse")}
+						</button>
+					</div>
+					</>
 				) : (
 					<SingleLinePreview
 						text={props.text}
 						running={props.running}
-						className="px-3 pt-2 pb-1 font-mono text-caption text-text-tertiary"
+						className="px-2 py-1 font-mono text-caption text-text-tertiary"
 					/>
 				)}
 			</div>

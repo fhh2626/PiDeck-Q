@@ -42,7 +42,7 @@ function DensitySelect(props: {
       value={props.value}
       onValueChange={(value) => props.onChange(value as DensityValue)}
     >
-      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+      <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
       <SelectContent>
         {densityOptions.map((option) => (
           <SelectItem key={option.value} value={option.value}>
@@ -63,7 +63,7 @@ function LineHeightSelect(props: {
       value={props.value}
       onValueChange={(value) => props.onChange(value as LineHeightValue)}
     >
-      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+      <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
       <SelectContent>
         {lineHeightOptions.map((option) => (
           <SelectItem key={option.value} value={option.value}>

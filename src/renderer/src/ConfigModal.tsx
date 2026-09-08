@@ -1723,7 +1723,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 				className="config-layout flex min-h-0 flex-1 flex-row gap-0 bg-transparent max-[820px]:flex-col"
 			>
 				<TabsList
-					className="config-sidebar flex min-h-0 shrink-0 flex-col items-stretch gap-2.5 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-2.5 data-[orientation=vertical]:w-[160px] max-[820px]:flex-row max-[820px]:gap-3 max-[820px]:overflow-x-auto max-[820px]:overflow-y-hidden max-[820px]:border-r-0 max-[820px]:border-b"
+					className="config-sidebar flex min-h-0 shrink-0 flex-col items-stretch gap-1 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-1.5 data-[orientation=vertical]:w-[160px] max-[820px]:flex-row max-[820px]:gap-3 max-[820px]:overflow-x-auto max-[820px]:overflow-y-hidden max-[820px]:border-r-0 max-[820px]:border-b"
 					aria-label={t("config.title")}
 				>
 					<div className="config-sidebar-group grid gap-0.5">
@@ -1732,7 +1732,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 							<TabsTrigger
 								key={item.id}
 								value={`config:${item.id}`}
-								className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium"
+								className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium"
 							>
 								<span className="config-nav-icon">{item.icon}</span>
 								{item.label}
@@ -1741,19 +1741,19 @@ function ConfigModalContent(props: ConfigModalProps) {
 					</div>
 					<div className="config-sidebar-group grid gap-0.5">
 						<span className="px-2 pb-1 text-micro font-semibold text-muted-foreground">{t("config.group.agent")}</span>
-						<TabsTrigger value="security" className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+						<TabsTrigger value="security" className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 							<span className="config-nav-icon"><Shield size={14} aria-hidden="true" /></span>
 							{t("config.nav.security")}
 						</TabsTrigger>
-						<TabsTrigger value="extensions" className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+						<TabsTrigger value="extensions" className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 							<span className="config-nav-icon"><Puzzle size={14} aria-hidden="true" /></span>
 							{t("config.nav.extensions")}
 						</TabsTrigger>
-						<TabsTrigger value="skills" className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+						<TabsTrigger value="skills" className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 							<span className="config-nav-icon"><Sparkles size={14} aria-hidden="true" /></span>
 							{t("config.nav.skills")}
 						</TabsTrigger>
-						<TabsTrigger value="prompts" className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+						<TabsTrigger value="prompts" className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 							<span className="config-nav-icon"><FileText size={14} aria-hidden="true" /></span>
 							{t("config.nav.prompts")}
 						</TabsTrigger>

@@ -116,7 +116,7 @@ export function LogViewer() {
 			{/* 工具栏（UI 2.0）：级别 + 搜索 + 起止时间 + 刷新，一行左对齐，窄时自动换行 */}
 			<div className="mb-3.5 flex flex-wrap items-center gap-2">
 				<Select value={level} onValueChange={(value) => { setLevel(value as AppLogLevel | "all"); resetPage(); }}>
-					<SelectTrigger className="w-28" aria-label={t("logs.levelFilter")}>
+					<SelectTrigger size="sm" className="w-28" aria-label={t("logs.levelFilter")}>
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
@@ -128,7 +128,7 @@ export function LogViewer() {
 					</SelectContent>
 				</Select>
 				<Input
-					className="w-64 max-w-full"
+					className="h-8 w-64 max-w-full"
 					value={search}
 					onChange={(event) => { setSearch(event.target.value); resetPage(); }}
 					placeholder={t("logs.searchPlaceholder")}

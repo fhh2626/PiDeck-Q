@@ -229,13 +229,13 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
             </div>
           </div>
           <div className="setting-inline-actions">
-            <Button variant="secondary" onClick={props.onCheckPi} disabled={props.piChecking}>
+            <Button size="sm" variant="secondary" onClick={props.onCheckPi} disabled={props.piChecking}>
               {props.piChecking
                 ? t("settings.detecting")
                 : t("settings.detectEnvironment")}
             </Button>
             {props.onClearCheckFlag && (
-              <Button variant="secondary"
+              <Button size="sm" variant="secondary"
                 onClick={props.onClearCheckFlag}
               >
                 {t("environment.clearCheckFlag")}
@@ -256,7 +256,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                   updateDraft({ wslEnabled: value === "wsl" });
                   setWslValidation(null);
                 }}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {piSourceOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -277,7 +277,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                         updateDraft({ wslDistro: value });
                         setWslValidation(null);
                       }}>
-                        <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                        <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {distroOptions.map((option) => (
                             <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -290,7 +290,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                   ) : (
                     <div className="grid min-w-[160px] flex-1 gap-1.5">
                       <span className="text-control font-medium text-foreground">{t("settings.wsl.distro")}</span>
-                      <Input type="text" value={draft.wslDistro} placeholder={"Ubuntu"} onChange={(event) => {
+                      <Input className="h-8" type="text" value={draft.wslDistro} placeholder={"Ubuntu"} onChange={(event) => {
                         updateDraft({ wslDistro: event.target.value });
                         setWslValidation(null);
                       }} />
@@ -302,7 +302,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                   <div className="setting-wsl-user-row">
                     <div className="grid min-w-[160px] flex-1 gap-1.5">
                       <span className="text-control font-medium text-foreground">{t("settings.wsl.user")}</span>
-                      <Input type="text" value={wslUserInput} placeholder={"root"} onChange={(event) => {
+                      <Input className="h-8" type="text" value={wslUserInput} placeholder={"root"} onChange={(event) => {
                         setWslUserInput(event.target.value);
                         setWslValidation(null);
                       }} />
@@ -355,7 +355,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
         <div className="setting-pi-runtime-panel">
           <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
             <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
                 <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
@@ -364,10 +364,10 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
             </Select>
           </SettingRow>
           <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
-            <Input type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
+            <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
           </SettingRow>
           <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
-            <Input type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
+            <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
           </SettingRow>
         </div>
 
@@ -378,13 +378,13 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
             description={t("settings.customPiPathHint")}
             stacked
           >
-            <Input type="text" value={props.customPiPath} placeholder={
+            <Input className="h-8" type="text" value={props.customPiPath} placeholder={
               piPath ||
               "D:\\mise-data\\installs\\node\\24 13 0\\pi.cmd"
             } disabled={props.customPathValidating} onChange={(event) => props.onCustomPathChange(event.target.value)} />
           </SettingRow>
           <div className="setting-pi-path-actions">
-            <Button variant="secondary"
+            <Button size="sm" variant="secondary"
               onClick={props.onValidateCustomPath}
               disabled={!props.customPiPath.trim() || props.customPathValidating}
             >
@@ -392,7 +392,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                 ? t("settings.validating")
                 : t("settings.validatePiPath")}
             </Button>
-            <Button variant="secondary"
+            <Button size="sm" variant="secondary"
               onClick={props.onClearCustomPath}
               disabled={!props.customPiPath || props.customPathValidating}
             >
@@ -429,7 +429,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           }
           description={t("settings.sectionAboutDesc")}
         >
-          <Button variant="secondary" onClick={() => void desktopApi.app.openExternal(APP_RELEASES_URL, true)}>
+          <Button size="sm" variant="secondary" onClick={() => void desktopApi.app.openExternal(APP_RELEASES_URL, true)}>
             <ExternalLink className="mr-1.5 size-3.5" aria-hidden="true" />
             {t("settings.viewReleases")}
           </Button>
@@ -450,7 +450,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
         >
           <Input
             type="number"
-            className="max-w-80"
+            className="h-8 max-w-80"
             value={String(Math.round(draft.rpcTimeout / 1000))}
             onChange={(e) => {
               const seconds = Math.max(600, parseInt(e.target.value) || 600);
@@ -470,7 +470,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
         >
           <Input
             type="number"
-            className="max-w-80"
+            className="h-8 max-w-80"
             value={String(draft.maxEditorFileSizeMB)}
             onChange={(e) => {
               const mb = Math.max(1, parseInt(e.target.value) || 5);
@@ -526,7 +526,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
               <Input
                 value={draft.webServiceHost}
                 readOnly
-                className="mt-1 font-mono text-sm tabular-nums"
+                className="h-8 mt-1 font-mono text-sm tabular-nums"
               />
             </div>
             <div className="min-w-0">
@@ -537,7 +537,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                 max={65535}
                 value={webPortDraft}
                 disabled={props.webServiceChanging}
-                className="mt-1 font-mono text-sm tabular-nums"
+                className="h-8 mt-1 font-mono text-sm tabular-nums"
                 onChange={(event) => setWebPortDraft(event.target.value)}
                 onBlur={applyWebPortDraft}
                 onKeyDown={(event) => {
@@ -599,7 +599,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
               <div className="grid gap-1.5">
                 <Label className="text-xs font-bold text-text-tertiary">{t("settings.webQrAddress")}</Label>
                 <Select value={selectedWebAddress} onValueChange={setSelectedWebAddress}>
-                  <SelectTrigger className="font-mono text-sm tabular-nums">
+                  <SelectTrigger size="sm" className="font-mono text-sm tabular-nums">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -651,7 +651,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           title={<span>{t("settings.restartApp")}</span>}
           description={t("settings.restartAppDesc")}
         >
-          <Button variant="secondary" onClick={props.onRestartApp}>
+          <Button size="sm" variant="secondary" onClick={props.onRestartApp}>
             {t("settings.restartAppButton")}
           </Button>
         </SettingRow>
@@ -659,7 +659,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           title={<span>{t("settings.devTools")}</span>}
           description={t("settings.devToolsDesc")}
         >
-          <Button variant="secondary" onClick={props.onToggleDevTools}>
+          <Button size="sm" variant="secondary" onClick={props.onToggleDevTools}>
             {t("settings.toggle")}
           </Button>
         </SettingRow>

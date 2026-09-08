@@ -54,7 +54,7 @@ export const CompactionCard = memo(function CompactionCard(props: {
 		<TimelineMarker kind="compaction" tone="active">
 		<section data-message-id={props.message.id} className="w-full min-w-0 overflow-hidden rounded-md border-0">
 			{/* 标签行：纯展示，不可点击；展开/收起走左下角按钮（与思考卡片同构） */}
-			<div className="flex min-h-6 flex-wrap items-center gap-2 px-1">
+			<div className="flex min-h-6 flex-wrap items-center gap-1.5 px-1">
 				<Minimize size={15} className="shrink-0 text-text-secondary" aria-hidden="true" />
 				{typeof compactionCount === "number" && compactionCount > 0 && (
 					<span className="inline-flex items-center rounded-full border border-[color:color-mix(in_srgb,var(--color-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_8%,transparent)] px-1.5 font-mono text-micro text-text-tertiary">
@@ -72,7 +72,7 @@ export const CompactionCard = memo(function CompactionCard(props: {
 			    第 8 行切半提示还有内容；展开态挂 Markdown 全文 */}
 			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
 				{expanded ? (
-					<div className="markdown-body px-3 pt-2 pb-1 text-text-tertiary">
+					<div className="markdown-body px-2 py-1 text-text-tertiary">
 						<MarkdownStream
 							text={summaryText}
 							onOpenExternal={props.onOpenExternal}
@@ -81,7 +81,7 @@ export const CompactionCard = memo(function CompactionCard(props: {
 					</div>
 				) : (
 					// 折叠态轻渲染：只显示截断纯文本预览，不跑 streamdown、不建全文 DOM
-					<div className="max-h-[calc(var(--font-size-chat)*7.56)] overflow-hidden whitespace-pre-wrap break-words px-3 pt-2 pb-1 text-text-tertiary">
+					<div className="max-h-[calc(var(--font-size-chat)*7.56)] overflow-hidden whitespace-pre-wrap break-words px-2 py-1 text-text-tertiary">
 						{overflowing ? summaryText.slice(0, PREVIEW_CHARS) + "…" : summaryText}
 					</div>
 				)}
@@ -350,7 +350,7 @@ export const ThinkingBlock = memo(
 		    chevron 旋转过渡。预览内容在下方虚线框内独立一行，不与「思考了」挤在同一行。 */}
 			<button
 				type="button"
-				className="group relative flex min-h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-1 py-0.5 text-left transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,transparent)] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+				className="group relative flex min-h-6 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,transparent)] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
 				onClick={() => setExpanded((v) => !v)}
 				aria-expanded={expanded}
 				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
@@ -392,7 +392,7 @@ export const ThinkingBlock = memo(
 			    是时间线内存最大单项的根治）；展开态 markdown 全文，字号随 --font-size-chat 联动 */}
 			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
 				{expanded ? (
-					<div className="markdown-body px-3 pt-2 pb-1 text-text-tertiary">
+					<div className="markdown-body px-2 py-1 text-text-tertiary">
 						<MarkdownStream
 							text={props.text}
 							isStreaming={props.isStreaming}
@@ -404,13 +404,13 @@ export const ThinkingBlock = memo(
 					<SingleLinePreview
 						text={props.text}
 						running={props.isStreaming}
-						className="px-3 pt-2 pb-1 font-mono text-caption text-text-tertiary"
+						className="px-2 py-1 font-mono text-caption text-text-tertiary"
 					/>
 				)}
 				{/* 收起入口：长思考展开后滚到底即可收起（不用滚回顶部思考栏）。
 				    左下角纯文本按钮，无外框、不抢视觉 */}
 				{expanded && (
-					<div className="flex px-2 pb-1.5">
+					<div className="flex px-1.5 pb-1">
 						<button
 							type="button"
 							className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-text-tertiary transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_45%,transparent)] hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
