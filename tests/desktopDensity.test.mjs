@@ -249,21 +249,27 @@ test("Worktree row uses px-0.5 py-0 (not p-0.5, which would exceed 28px)", () =>
 });
 
 // ── 设置 wrapper CSS：外围旧值不允许回潮 ────────────────────────────────────────
-test("DevTab does not stack consecutive dividers", () => {
+test("DevTab section boundaries never stack divider + SettingRow border", () => {
   const src = read("components/app/settings/DevTab.tsx");
-  // 一个 section 边界最多一条 divider：任意两条 divider 之间必须夹着真实内容（>3 行）。
+  // 一个 section boundary = 一条 border：manual divider 后不允许再出现 SettingRow
+  // 自带的 border-t（运行参数区已改为 wrapper border-t + first:border-t-0）。
   const dividerLines = src
     .split("\n")
     .map((line, i) => (line.includes("my-2 border-0 border-t") ? i : -1))
     .filter((i) => i >= 0);
-  for (let i = 1; i < dividerLines.length; i++) {
-    assert.ok(
-      dividerLines[i] - dividerLines[i - 1] > 3,
-      `DevTab has stacked dividers at lines ${dividerLines[i - 1] + 1} and ${dividerLines[i] + 1}`,
-    );
-  }
-  // 至少存在 divider（防止选择器改名后测试恒真）。
-  assert.ok(dividerLines.length >= 1, "DevTab divider selector not found");
+  // 手写 divider 只允许出现在「下一行也是手写 divider 或注释/纯文本」的场景；
+  // 简化约束：DevTab 禁止再出现 manual divider（现有 boundary 已全部迁到 wrapper border-t）。
+  assert.equal(
+    dividerLines.length,
+    0,
+    `DevTab must not use manual dividers (found at lines ${dividerLines.map((i) => i + 1).join(", ")}); use a wrapper border-t + first:border-t-0 instead`,
+  );
+  // 锁住运行参数 wrapper：自带 border + 8px spacing，首行命中 first:border-t-0。
+  assert.match(
+    src,
+    /运行参数[\s\S]*?<div className="mt-2 border-t border-border-subtle pt-2">[\s\S]*?<SettingRow /,
+    "runtime section should own the boundary border (no adjacent SettingRow border)",
+  );
 });
 
 test("Pi settings wrapper CSS stays on the 2/4/6/8px rhythm", () => {
@@ -309,6 +315,8 @@ test("Pi Config SettingsTab is a separator list (no gap-2, no per-row card borde
   // 普通 row 不允许回到四边框卡片；Input 的边框不在此约束内。
   const rowCards = src.match(/flex items-center gap-3\.5 rounded-sm border border-border-subtle px-2 py-0\.5/g) || [];
   assert.equal(rowCards.length, 0, "config rows must not use rounded card borders: " + rowCards.length);
+  // 专用 UI 已覆盖 compaction（开关 + 两个 token 数），不允许再进 generic entries 重复渲染。
+  assert.match(src, /key !== "compaction"/, "dedicated compaction config must not also render as a generic row");
 });
 
 // ── 二级 UI：SkillHub / Outline / Codex import ────────────────────────────────

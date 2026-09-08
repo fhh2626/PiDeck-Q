@@ -250,11 +250,10 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           </div>
         </SettingRow>
 
-        <div className="my-2 border-0 border-t border-border-subtle" />
-
-        {/* Pi 来源：Windows 原生 / WSL（仅 Windows 可见） */}
+        {/* Pi 来源：Windows 原生 / WSL（仅 Windows 可见）。wrapper 自带 boundary border（8px spacing），
+            首个 SettingRow 命中 first:border-t-0，不再与 manual divider 叠出双线。 */}
         {props.appInfo.platform === "win32" && (
-          <div className="setting-pi-source-block">
+          <div className="setting-pi-source-block mt-2 border-t border-border-subtle pt-2">
             {/* 「Label | Control」语义：走共享 SettingRow；控件列保留内部 grid（Select 撑满 260px 列） */}
             <SettingRow title={t("settings.piSource.label")} alignEnd={false}>
               <Select value={draft.wslEnabled ? "wsl" : "windows"} onValueChange={(value) => {
@@ -351,25 +350,27 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           </div>
         )}
 
-        <div className="my-2 border-0 border-t border-border-subtle" />
-
-        {/* 运行参数：旧 setting-pi-runtime-panel 无 CSS 规则（仅占位），三个 SettingRow 直接挂在 SettingsSection 下 */}
-        <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
-          <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
-            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
-              <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
-              <SelectItem value="rust">{t("settings.piRuntimePreferenceRust")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingRow>
-        <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
-          <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
-        </SettingRow>
-        <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
-          <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
-        </SettingRow>
+        {/* 运行参数：一个 section boundary = 一条 border + 8px spacing。
+            wrapper 自带 border-t，三个 SettingRow 进入后第一行命中 first:border-t-0，
+            避免「manual divider + row 自带 border」双重分隔线。 */}
+        <div className="mt-2 border-t border-border-subtle pt-2">
+          <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
+            <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
+              <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
+                <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
+                <SelectItem value="rust">{t("settings.piRuntimePreferenceRust")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
+            <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
+          </SettingRow>
+          <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
+            <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
+          </SettingRow>
+        </div>
 
         {/* 自定义 Pi 路径 */}
         <div className="setting-pi-path-panel">

@@ -359,8 +359,8 @@ export function SettingsTab(props: {
 				</div>
 
 				{entries
-					// sessionDir / retry / enabledModels 已有专用区块，避免列表里重复一行
-					.filter(([key]) => key !== "enabledModels" && key !== "retry" && key !== "sessionDir")
+					// sessionDir / retry / enabledModels / compaction 已有专用区块，避免列表里重复一行
+					.filter(([key]) => key !== "enabledModels" && key !== "retry" && key !== "sessionDir" && key !== "compaction")
 					.map(([key, value]) => (
 					<ConfigSettingRow key={key} label={configLabel(key)}>
 						<SettingsValueInput
