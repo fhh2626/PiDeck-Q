@@ -24,6 +24,9 @@ import type {
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
+// 只依赖屏障的契约（类型）：具体实现由 createBackend 注入。这样既避免 pi 层依赖
+// utils 的运行时代码，也让只桩化少量模块的现有测试不用连屏障实现一起加载。
+import type { StartupBarrier } from "../utils/StartupBarrier";
 import type {
 	PlatformNotifications,
 	PlatformApplication,
@@ -105,6 +108,11 @@ export interface AgentPlatformDeps {
 	notifications: PlatformNotifications;
 	focusSessionFromNotification: (sessionId?: string) => boolean;
 	hasLiveWindow?: () => boolean;
+	/**
+	 * 启动屏障：首次 spawn pi 前必须 await 的启动期工作（当前为内置扩展入口迁移）。
+	 * 缺省（单测/独立宿主）视为无需等待。
+	 */
+	startupBarrier?: StartupBarrier;
 }
 
 function errorMessage(error: unknown): string {
@@ -430,12 +438,27 @@ export class AgentManager {
 	}
 
 	/**
-	 * 统一构造 PiProcess：注入 PiDeck 内置扩展路径解析 + 安全管理快照/会话身份。
+	 * 统一构造 PiProcess：先等启动屏障，再注入 PiDeck 内置扩展路径解析 + 安全管理快照/会话身份。
 	 * 内置扩展以 -e 从 app resources 加载，不再依赖用户扩展目录副本。
 	 * 安全管理：确保策略快照已落盘（小 JSON 写，等完成后启动，保证扩展首次拦截即可读到）。
+	 *
+	 * 为何在这里 await 屏障：旧全局扩展入口的迁移是启动期异步任务，若它在首个
+	 * Agent spawn 之后才完成，同一轮里旧入口（pi 自动发现）与内置 `-e` 版会双加载。
+	 * 屏障自带超时且失败不抛，所以不会把启动路径卡住。
 	 */
-	private createPiProcess(cwd: string, sessionPath?: string, securitySessionKey?: string): PiProcess {
+	private async createPiProcess(cwd: string, sessionPath?: string, securitySessionKey?: string): Promise<PiProcess> {
 		const settings = this.settingsStore.get();
+		if (this.platformDeps?.startupBarrier) {
+			// 等待上限由屏障自己定（默认 10s），超时返回 false 不抛异常。
+			const settled = await this.platformDeps.startupBarrier.wait();
+			if (!settled) {
+				// 超时不能阻止用户启动 Agent：让日志可查，继续照常 spawn。
+				void this.appLogger?.warn("agent", "Startup barrier not settled before pi spawn", {
+					cwd,
+					sessionPath,
+				});
+			}
+		}
 		if (this.securityStore) {
 			void this.securityStore.ensureSnapshotWritten();
 		}
@@ -1161,7 +1184,7 @@ export class AgentManager {
 		// 每次 spawn 前异步刷新模型列表缓存（不等完成，避免阻塞 Agent 启动）：
 		// 用户直接编辑 models.json/auth.json 后，下一次启动的 Agent 即能看到新模型。
 		this.onBeforeAgentSpawn?.();
-		const process = this.createPiProcess(project.path, input.sessionPath, input.deckSessionId);
+		const process = await this.createPiProcess(project.path, input.sessionPath, input.deckSessionId);
 		process.on("version-check", (payload) => {
 			void this.appLogger?.info("agent", "Pi version check completed", {
 				agentId: id,
@@ -1998,7 +2021,7 @@ export class AgentManager {
 			sessionPath,
 		});
 
-		const process = this.createPiProcess(project.path, sessionPath, runtime.tab.deckSessionId);
+		const process = await this.createPiProcess(project.path, sessionPath, runtime.tab.deckSessionId);
 		this.invalidateMessageLoads(agentId);
 		// 先登记新 process，再等待 start/get_state；旧 process 的迟到事件会因身份检查
 		// 被丢弃，新 process 在启动窗口内产生的有效事件也不会被误判为旧 runtime。
@@ -3028,7 +3051,7 @@ export class AgentManager {
 	): Promise<T> {
 		const project = this.getProject(projectId);
 		if (!project) throw new Error(`Project not found: ${projectId}`);
-		const process = this.createPiProcess(project.path, sessionPath);
+		const process = await this.createPiProcess(project.path, sessionPath);
 		await process.start(sessionPath);
 		try {
 			return await run(process);
