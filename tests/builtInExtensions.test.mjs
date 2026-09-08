@@ -67,8 +67,8 @@ test("listActiveBuiltInExtensionPaths respects removedBuiltIn and missing files"
 		);
 		assert.equal(paths.length, 1);
 		assert.ok(String(paths[0]).endsWith("pideck-q-ask-question.ts"));
-		// 内置扩展清单随版本增长：ask/context-controller/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction
-		assert.equal(BUILT_IN_EXTENSIONS.length, 9);
+		// 内置扩展清单随版本增长：ask/context-controller/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction/change-pi-prompt
+		assert.equal(BUILT_IN_EXTENSIONS.length, 10);
 		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-context-controller.ts"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -102,6 +102,37 @@ test("pideck-q-better-compaction is packaged as a built-in and disabled by defau
 	assert.match(
 		readFileSync("resources/extensions/pideck-q-better-compaction/types.ts", "utf8"),
 		/EXTENSION_ID = "PiDeck-Q-Better-Compaction"/,
+	);
+});
+
+test("change-pi-prompt ships disabled for fresh installs and upgrades, but respects later enablement", () => {
+	const {
+		BUILT_IN_EXTENSIONS,
+		DEFAULT_DISABLED_BUILT_IN_EXTENSIONS,
+		BUILT_IN_EXTENSION_DEFAULTS_VERSION,
+		migrateBuiltInExtensionDefaults,
+		listActiveBuiltInExtensionPaths,
+	} = loadBuiltInExtensionsModule();
+	const name = "pideck-q-change-pi-prompt.ts";
+	assert.ok(BUILT_IN_EXTENSIONS.includes(name));
+	assert.ok(DEFAULT_DISABLED_BUILT_IN_EXTENSIONS.includes(name));
+	for (const version of [undefined, 1, 2]) {
+		const migrated = migrateBuiltInExtensionDefaults([], version);
+		assert.ok(migrated.removedBuiltInExtensions.includes(name));
+		if (version === 2) {
+			assert.equal(migrated.removedBuiltInExtensions.includes("pideck-q-websearch.ts"), false);
+			assert.equal(migrated.removedBuiltInExtensions.includes("pideck-q-better-compaction.ts"), false);
+		}
+	}
+	const roots = { appPath: process.cwd(), resourcesPath: process.cwd(), isDev: true };
+	const disabled = migrateBuiltInExtensionDefaults([], 2);
+	assert.equal(listActiveBuiltInExtensionPaths(roots, disabled.removedBuiltInExtensions).some(path => path.endsWith(name)), false);
+	const restored = migrateBuiltInExtensionDefaults([], BUILT_IN_EXTENSION_DEFAULTS_VERSION);
+	assert.equal(restored.migrated, false);
+	assert.ok(listActiveBuiltInExtensionPaths(roots, restored.removedBuiltInExtensions).some(path => path.endsWith(name)));
+	assert.match(
+		readFileSync("resources/extensions/pideck-q-change-pi-prompt.ts", "utf8"),
+		/pideck-q-change-pi-prompt\/runtime\.ts/,
 	);
 });
 
@@ -183,6 +214,7 @@ test("AgentManager no longer deploys built-ins via ensurePiDeckExtension", () =>
 	assert.doesNotMatch(storeIpc, /ensurePiDeckExtension/);
 	assert.match(startupTasks, /migrateLegacyBuiltInExtensions/);
 	assert.match(startupTasks, /\.\.\.LEGACY_BUILT_IN_EXTENSION_NAMES/);
+	assert.match(startupTasks, /"change-pi-prompt\.ts"/);
 	assert.match(processSource, /appendBuiltInExtensionArgs/);
 	assert.match(processSource, /--extension/);
 });

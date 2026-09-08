@@ -69,6 +69,8 @@ async function migrateLegacyBuiltInExtensions(
 		...LEGACY_BUILT_IN_EXTENSION_NAMES,
 		"pi-deck-project-trust.ts",
 		"pi-deck-file-capture.ts",
+		// 自用全局入口，迁入随包内置后必须清掉，避免与 -e 重复加载。
+		"change-pi-prompt.ts",
 	];
 	const homes = [homeDir];
 	const wslSettings = settingsStore.get();
