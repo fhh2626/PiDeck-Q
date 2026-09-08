@@ -3,21 +3,20 @@ import test from 'node:test';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from '../defaults.ts';
 import { transformSystemPrompt } from '../transform.ts';
 
 /**
- * 用「真实安装的 Pi」验证转换在 0.84.4 的 system-prompt 上成立。
+ * 用测试准备阶段安装的 npm latest Pi 验证 system-prompt 兼容性。
  *
  * 解析顺序：
- *  1. CHANGE_PI_PROMPT_TEST_PI_DIR（手动指向某个 Pi 安装，便于对比不同版本）；
+ *  1. CHANGE_PI_PROMPT_TEST_PI_DIR（开发者显式指定一个 Pi 安装做额外兼容测试）；
  *  2. 从本测试文件向上找 node_modules/@earendil-works/pi-coding-agent，
  *     以「dist/core/system-prompt.js 存在」为判定锚点（该包的 exports 表只暴露
  *     入口，子路径 require/import 都会被拦，所以不能直接按子路径解析）。
  *
- * 这个包现在是项目的 devDependency（只用于类型与测试，不进运行时打包），因此
- * 默认就能解析到；解析不到才退化为 skip。
+ * `npm test` 会先跑 prepare:pi-latest，因此默认路径必须能解析到 latest fixture。
+ * 解析不到 = 包结构变了，测试失败而不是 skip。
  */
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -52,12 +51,16 @@ function makeInput(overrides = {}) {
 	};
 }
 
-/** 真实 Pi 默认布局的完整工具快照（与 Pi 0.84.4 buildSystemPrompt 的内置规则对齐）。 */
 function defaultTools() {
 	const readRule = 'Use read to examine files instead of cat or sed.';
 	return [
 		{ name: 'read', promptGuidelines: [readRule], sourceInfo: { source: 'builtin' } },
 	];
+}
+
+function requireBuilder() {
+	assert.ok(builderEntry, 'latest Pi fixture is missing dist/core/system-prompt.js; prepare:pi-latest must have installed npm latest');
+	return builderEntry;
 }
 
 // ---- 纯用例：不依赖真实 Pi 包，发版验证永远执行 -----------------------------
@@ -95,13 +98,10 @@ test('an already-transformed prompt is idempotent', () => {
 	assert.match(again.diagnostics[0], /already-transformed/);
 });
 
-// ---- 集成用例：走真实 Pi 0.84.4 的 buildSystemPrompt ------------------------
+// ---- 集成用例：走真实 latest Pi 的 buildSystemPrompt ------------------------
 
-test('real Pi builder: default layout is transformed', { skip: !builderEntry }, async () => {
-	const { buildSystemPrompt } = await import(pathToFileURL(builderEntry).href);
-	const version = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')).version;
-	// 该测试对 0.84.x 的默认布局敏感；大版本漂移时先在这里报警。
-	assert.match(version, /^0\.84\./, `unexpected Pi version ${version}`);
+test('real latest Pi builder: default layout is transformed', async () => {
+	const { buildSystemPrompt } = await import(pathToFileURL(requireBuilder()).href);
 
 	for (const contextFiles of [
 		[],
@@ -130,8 +130,8 @@ test('real Pi builder: default layout is transformed', { skip: !builderEntry }, 
 	}
 });
 
-test('real Pi builder: customPrompt path stays unmodified end-to-end', { skip: !builderEntry }, async () => {
-	const { buildSystemPrompt } = await import(pathToFileURL(builderEntry).href);
+test('real latest Pi builder: customPrompt path stays unmodified end-to-end', async () => {
+	const { buildSystemPrompt } = await import(pathToFileURL(requireBuilder()).href);
 	const customPrompt = 'You are a compact subagent for this repo.\n- stay focused';
 	const options = { cwd: '/project', selectedTools: ['read', 'edit'], toolSnippets: { read: 'Read file contents', edit: 'Edit files' }, customPrompt, appendSystemPrompt: 'Extra child note' };
 	const input = buildSystemPrompt(options);

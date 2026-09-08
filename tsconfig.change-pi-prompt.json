@@ -6,8 +6,8 @@
   // 构建管线，编译选项不能跟主工程共用（例如 `.ts` 后缀的相对 import 在
   // NodeNext 下会直接报错，但 pi 侧要求保留后缀）。
   //
-  // 该配置由 `npm run typecheck` 链式调用，缺依赖类型即失败——见
-  // tsconfig 引用的 `@earendil-works/pi-coding-agent` devDependency（版本固定）。
+  // 该配置由 `npm run typecheck` 链式调用。类型来自 prepare:pi-latest 临时安装到
+  // node_modules 的 npm latest `@earendil-works/pi-coding-agent`，不钉死版本。
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
