@@ -163,7 +163,7 @@ test("Web tool cards stay compact and keep a visible settled status", () => {
 });
 
 test("Web timeline does not double-space tool and thinking steps", () => {
-	assert.match(webTimeline, /message-list flex flex-col gap-2 p-4/);
+	assert.match(webTimeline, /message-list flex flex-col gap-1 p-3/);
 	assert.match(webTimeline, /<div key=\{message\.id\} className="mt-0">/);
 	assert.doesNotMatch(webTimeline, /user-turn group\/user mb-4/);
 	assert.match(webTimeline, /<TimelineMarker kind="thinking" tone="neutral" contentClassName="pb-0">/);

@@ -346,7 +346,7 @@ const WebPendingAskInner = memo(function WebPendingAskInner(props: {
 	);
 
 	return (
-		<div className="mt-3 w-full">
+		<div className="mt-2 w-full">
 			<SessionRuntimeUiOverlay
 				sessionId={request.sessionId}
 				runtime={runtimeView}
@@ -422,7 +422,7 @@ export function WebTimeline(props: {
 			ref={timelineRef}
 			onScroll={updateScrollState}
 		>
-			<div className="message-list flex flex-col gap-2 p-4">
+			<div className="message-list flex flex-col gap-1 p-3">
 				{hasMoreHistory && (
 					<div className="flex justify-center py-1">
 						<Button
@@ -495,7 +495,7 @@ export function WebTimeline(props: {
 
 				{/* 错误诊断卡 */}
 				{error ? (
-					<div className="diagnostic-card tone-error p-3 text-control text-danger">
+					<div className="diagnostic-card tone-error p-2 text-control text-danger">
 						{error}
 					</div>
 				) : null}
