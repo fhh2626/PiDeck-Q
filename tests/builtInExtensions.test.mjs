@@ -214,7 +214,9 @@ test("AgentManager no longer deploys built-ins via ensurePiDeckExtension", () =>
 	assert.doesNotMatch(storeIpc, /ensurePiDeckExtension/);
 	assert.match(startupTasks, /migrateLegacyBuiltInExtensions/);
 	assert.match(startupTasks, /\.\.\.LEGACY_BUILT_IN_EXTENSION_NAMES/);
-	assert.match(startupTasks, /"change-pi-prompt\.ts"/);
+	// 旧同名入口不再无条件 rm，而是走内容指纹备份迁移（见 legacyBuiltInMigration）。
+	assert.match(startupTasks, /migrateLegacyBuiltInEntries/);
+	assert.doesNotMatch(startupTasks, /"change-pi-prompt\.ts"/);
 	assert.match(processSource, /appendBuiltInExtensionArgs/);
 	assert.match(processSource, /--extension/);
 });

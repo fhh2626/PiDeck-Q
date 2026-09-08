@@ -558,6 +558,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			startBackendStartupTasks({
 				paths,
 				host,
+				appVersion: appInfo.version,
 				services: {
 					projectStore,
 					sessionScanner,

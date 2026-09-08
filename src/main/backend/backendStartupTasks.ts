@@ -14,6 +14,7 @@ import {
 	BUILT_IN_EXTENSIONS,
 	LEGACY_BUILT_IN_EXTENSION_NAMES,
 } from "../extensions/builtInExtensions";
+import { migrateLegacyBuiltInEntries } from "../extensions/legacyBuiltInMigration";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { WebServiceManager } from "../web/WebServiceManager";
 import {
@@ -26,6 +27,8 @@ import type { PlatformPaths } from "../platform/PlatformServices";
 export interface BackendStartupTasksDeps {
 	paths: PlatformPaths;
 	host: BackendHost;
+	/** 应用版本，用于旧入口备份目录按版本分档。 */
+	appVersion: string;
 	services: {
 		projectStore: ProjectStore;
 		sessionScanner: SessionScanner;
@@ -42,26 +45,30 @@ export interface BackendStartupTasksDeps {
 }
 
 /**
- * 删除用户扩展目录中的 PiDeck 扩展文件（历史部署或已下线扩展）。
+ * 删除用户扩展目录中的 PiDeck 自有扩展文件（历史部署或已下线扩展）。
  * 内置扩展现改为 -e 从 app resources 加载，用户目录不应再有 pi-deck-* 副本。
+ *
+ * 注意：这里只处理**确定由 PiDeck 生成**的文件名（pi-deck-* / 内置扩展名）。
+ * 与用户可能自有的同名文件（如 change-pi-prompt.ts）走不同的路径，
+ * 见 legacyBuiltInMigration。
  */
 async function removeStalePiDeckExtension(
 	extensionName: string,
-	homeDir: string,
+	agentDir: string,
 	appLogger: AppLogger,
 ): Promise<void> {
-	const targetPath = join(homeDir, ".pi", "agent", "extensions", extensionName);
+	const targetPath = join(agentDir, "extensions", extensionName);
 	await rm(targetPath, { force: true });
 	appLogger.info("extension", "Removed legacy/stale extension", { path: targetPath });
 }
 
 /**
- * 升级迁移：清掉历史版本复制到 ~/.pi/agent/extensions 的内置扩展与已下线扩展。
- * 覆盖 Windows home；WSL 启用时同步清理 \\wsl$ 映射 home。
+ * 升级迁移：清掉历史版本复制到 `<agentDir>/extensions` 的内置扩展与已下线扩展，
+ * 并把「曾是自用全局入口、现已内置」的扩展按指纹备份后移除。
  */
 async function migrateLegacyBuiltInExtensions(
-	homeDir: string,
-	settingsStore: SettingsStore,
+	agentDirs: readonly string[],
+	appVersion: string,
 	appLogger: AppLogger,
 ): Promise<void> {
 	const legacyNames = [
@@ -69,19 +76,35 @@ async function migrateLegacyBuiltInExtensions(
 		...LEGACY_BUILT_IN_EXTENSION_NAMES,
 		"pi-deck-project-trust.ts",
 		"pi-deck-file-capture.ts",
-		// 自用全局入口，迁入随包内置后必须清掉，避免与 -e 重复加载。
-		"change-pi-prompt.ts",
 	];
-	const homes = [homeDir];
-	const wslSettings = settingsStore.get();
-	if (wslSettings.wslEnabled && wslSettings.wslDistro && wslSettings.wslUser) {
-		homes.push(`\\\\wsl$\\${wslSettings.wslDistro}\\home\\${wslSettings.wslUser}`);
-	}
-	for (const home of homes) {
+	// PiDeck 自有文件：名字由我们控制，残留直接清。
+	for (const agentDir of agentDirs) {
 		for (const name of legacyNames) {
-			await removeStalePiDeckExtension(name, home, appLogger).catch(() => undefined);
+			await removeStalePiDeckExtension(name, agentDir, appLogger).catch(() => undefined);
 		}
 	}
+	// 同名的自用/用户入口：只在正面识别后备份迁移，识别不了则保留。
+	const result = await migrateLegacyBuiltInEntries(agentDirs, appVersion);
+	for (const moved of result.moved) {
+		void appLogger.info("extension", "Backed up legacy built-in extension entry", {
+			file: moved.fileName,
+			fingerprint: moved.fingerprint,
+			backup: moved.backup,
+		});
+	}
+	for (const warning of result.warnings) {
+		void appLogger.warn("extension", "Legacy extension entry left in place", { detail: warning });
+	}
+}
+
+/** 本机 +（启用时）手拼 WSL UNC home 下的 agent 目录。 */
+function agentDirsOf(homeDir: string, settingsStore: SettingsStore): string[] {
+	const dirs = [join(homeDir, ".pi", "agent")];
+	const { wslEnabled, wslDistro, wslUser } = settingsStore.get();
+	if (wslEnabled && wslDistro && wslUser) {
+		dirs.push(join(`\\\\wsl$\\${wslDistro}\\home\\${wslUser}`, ".pi", "agent"));
+	}
+	return dirs;
 }
 
 /** 补齐指定 configDir 下 settings.json 的缺失默认项 */
@@ -123,9 +146,9 @@ async function ensurePiSettingsDefaults(configDir: string, piVersionHint?: strin
 
 /** 对当前环境和 WSL 环境（如果启用）都补齐 settings.json 默认项 */
 async function ensureAllPiSettingsDefaults(
-	homeDir: string,
-	settingsStore: SettingsStore,
+	agentDirs: readonly string[],
 	piLocator: PiLocator,
+	settingsStore: SettingsStore,
 ): Promise<void> {
 	const s = settingsStore.get();
 	let piVersion = "";
@@ -141,14 +164,8 @@ async function ensureAllPiSettingsDefaults(
 		).catch(() => null))?.version ?? "";
 	}
 
-	// Windows 本地
-	const winDir = join(homeDir, ".pi", "agent");
-	await ensurePiSettingsDefaults(winDir, piVersion).catch(() => {});
-
-	// WSL（如果已配置）
-	if (s.wslEnabled && s.wslDistro && s.wslUser) {
-		const wslDir = join(`\\\\wsl$\\${s.wslDistro}\\home\\${s.wslUser}`, ".pi", "agent");
-		await ensurePiSettingsDefaults(wslDir, piVersion).catch(() => {});
+	for (const agentDir of agentDirs) {
+		await ensurePiSettingsDefaults(agentDir, piVersion).catch(() => {});
 	}
 }
 
@@ -167,7 +184,7 @@ async function detectExternalEditorsOnFirstLaunch(
 }
 
 export function startBackendStartupTasks(deps: BackendStartupTasksDeps): void {
-	const { paths, host, services } = deps;
+	const { paths, host, appVersion, services } = deps;
 	const {
 		projectStore,
 		sessionScanner,
@@ -181,6 +198,8 @@ export function startBackendStartupTasks(deps: BackendStartupTasksDeps): void {
 		webServiceManager,
 		appLogger,
 	} = services;
+
+	const agentDirs = agentDirsOf(paths.home, settingsStore);
 
 	// 根据已加载的 WSL 设置配置会话扫描器，使其能同时扫描 WSL 中的 pi 会话目录
 	const syncWslConfig = async () => {
@@ -210,11 +229,11 @@ export function startBackendStartupTasks(deps: BackendStartupTasksDeps): void {
 		console.error("Failed to sync WSL config:", error);
 	});
 
-	void migrateLegacyBuiltInExtensions(paths.home, settingsStore, appLogger).catch((error) => {
+	void migrateLegacyBuiltInExtensions(agentDirs, appVersion, appLogger).catch((error) => {
 		console.error("Failed to migrate legacy built-in extensions:", error);
 	});
 
-	void ensureAllPiSettingsDefaults(paths.home, settingsStore, piLocator).catch((error) => {
+	void ensureAllPiSettingsDefaults(agentDirs, piLocator, settingsStore).catch((error) => {
 		console.error("Failed to ensure pi settings defaults:", error);
 	});
 
