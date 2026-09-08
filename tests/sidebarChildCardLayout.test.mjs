@@ -35,13 +35,18 @@ const sourceBadge = readFileSync(
 );
 
 test("sidebar child rows use shared official hover/active classes", () => {
-  assert.match(sessionTree, /hover:border-border-subtle hover:bg-muted\/60 hover:text-foreground/);
-  assert.match(sessionTree, /active border-border-strong bg-accent\/20 text-foreground/);
+  // Density Contract: hover = bg only; active = bg + text（不要强边框 / shadow）
+  assert.match(sessionTree, /hover:bg-muted\/60 hover:text-foreground/);
+  assert.match(sessionTree, /active bg-accent\/20 text-foreground/);
   assert.match(sessionTree, /sessionRowClass/);
   assert.match(projectTree, /treeRowClass/);
   assert.match(projectTree, /flex min-h-7 w-full/);
   assert.match(projectTree, /project-fold grid size-6/);
-  assert.match(projectTree, /hover:border-border-subtle hover:bg-muted\/60 hover:text-foreground/);
+  assert.match(projectTree, /hover:bg-muted\/60 hover:text-foreground/);
+  assert.doesNotMatch(sessionTree, /shadow-sm/, "sidebar rows should not use shadow-sm");
+  assert.doesNotMatch(projectTree, /shadow-sm/, "project rows should not use shadow-sm");
+  assert.doesNotMatch(sessionTree, /active border-border-strong/, "active rows should not use a strong border");
+  assert.doesNotMatch(projectTree, /active border-border-strong/, "active project rows should not use a strong border");
 });
 
 test("sidebar workspace wrapper stays transparent", () => {

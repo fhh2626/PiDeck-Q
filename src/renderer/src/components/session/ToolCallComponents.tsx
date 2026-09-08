@@ -309,9 +309,6 @@ export const ToolCard = memo(function ToolCard(props: {
 		<TimelineMarker
 			kind="tool"
 			tone={tone === "error" ? "error" : tone === "running" ? "active" : "success"}
-			// 工具行紧凑化：压扁 trigger 行后底距同步收紧（pb-2 → pb-1），
-			// 让工具调用在时间线上保持低调、不喧宾夺主，思考块仍用默认 pb-2
-			contentClassName="pb-1"
 		>
 		<section
 			// 圆角不走 Tailwind rounded-md（6px 会压过 .tool-card 的 token 圆角，
@@ -378,7 +375,7 @@ export const ToolCard = memo(function ToolCard(props: {
 				</button>
 			</div>
 			{expanded && (
-				<div className="relative ml-5 mt-1 mb-2 rounded-b-sm border-l-2 border-border-subtle bg-transparent pl-3 animate-in fade-in slide-in-from-top-1 duration-150">
+				<div className="relative ml-5 mt-0.5 mb-1 rounded-b-sm border-l-2 border-border-subtle bg-transparent pl-2 animate-in fade-in slide-in-from-top-1 duration-150">
 				{/* 已完成 ask_question 已拆成常驻 AskQuestionResultCard（buildTurnDisplay），
 				    ToolCard 这里只保留 running / 损坏 ask 的普通工具详情。 */}
 					<ToolResult

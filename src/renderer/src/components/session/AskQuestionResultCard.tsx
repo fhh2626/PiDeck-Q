@@ -49,7 +49,7 @@ export const AskQuestionResultCard = memo(function AskQuestionResultCard(
 		: "ml-auto gap-1 px-1.5 py-0 text-micro text-text-secondary";
 
 	return (
-		<TimelineMarker kind="ask" tone="success" contentClassName="pb-1">
+		<TimelineMarker kind="ask" tone="success">
 			<section
 				className="w-full min-w-0 rounded-md border border-border-subtle bg-bg-panel px-3 py-2"
 				data-ask-question-result=""

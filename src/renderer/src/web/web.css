@@ -175,6 +175,18 @@ body {
     min-width: 36px;
     min-height: 36px;
   }
+  /* Density Contract：视觉密度与桌面 Web 一致（6px 消息间距），
+     但移动端左右留白多 4px，给手指留出边缘安全区。 */
+  .app.wechat-shell .message-list {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  /* 触控区 vs 视觉高度：思考卡 trigger 桌面视觉 24px（min-h-6，可点展开/收起），
+     移动端把自身行高抬到 44px 作为真实点击区（不靠伪元素，避开 section overflow-hidden 裁切）。
+     工具卡是纯状态行（span 不可点），不需要命中区。 */
+  .app.wechat-shell .message-list button.min-h-6 {
+    min-height: 44px;
+  }
   .app.wechat-shell .composer {
     padding-right: 8px;
     padding-left: 8px;

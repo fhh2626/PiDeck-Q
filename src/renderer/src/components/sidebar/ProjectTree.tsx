@@ -16,7 +16,7 @@ import { cn } from "../../lib/utils";
 // 只有当前资源使用 inset surface，避免每个项目都变成独立卡片。
 // 根项目行保留折叠层级，但收窄左右留白，给窄侧栏中的目录名多留出可用宽度。
 const treeRowClass =
-  "group conversation relative flex min-h-7 w-full items-center gap-1.5 rounded-md border border-transparent pl-1 py-0 text-body text-foreground shadow-none transition-[background-color,border-color,box-shadow] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
+  "group conversation relative flex min-h-7 w-full items-center gap-1.5 rounded-sm border border-transparent pl-1 py-0 text-body text-foreground shadow-none transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground";
 
 /** 项目行右侧操作按钮的虚化模式：作为独立 flex item 参与布局，不与项目主按钮重叠。
  * 默认仅降低可见度，行 hover / 行内聚焦时显现；右侧 action 区始终保留自己的完整命中区域。 */
@@ -86,14 +86,14 @@ export function ProjectTree(props: {
       const rootProjectSessions = props.controller.catalog.sessionsByProject[project.id] ?? [];
       // 运行态属于具体会话，而不是项目容器；项目行只负责导航，避免多个 Agent 同时运行时
       // 项目头像出现无法指向目标会话的聚合动画。
-      return <div key={project.id} className={cn("project-group mb-1", project.worktreeEnabled && "worktree-enabled")}>
+      return <div key={project.id} className={cn("project-group mb-0.5", project.worktreeEnabled && "worktree-enabled")}>
         <div
           className={cn(
             treeRowClass,
             !props.controller.search.trim() && "project-draggable",
             dragging && "dragging opacity-60",
             dragOver && "drag-over ring-1 ring-border",
-            isCurrent && "active border-border-strong bg-accent/20 text-foreground shadow-sm",
+            isCurrent && "active bg-accent/20 text-foreground",
           )}
           data-active={isCurrent || undefined}
           onContextMenu={(event) => { event.preventDefault(); void props.controller.openMenu({ kind: "project", projectId: project.id, x: event.clientX, y: event.clientY }); }}
@@ -178,7 +178,7 @@ export function ProjectTree(props: {
           </div>
         </div>
         {!collapsed && (
-          <div className="relative ml-3 mt-1 mr-1 space-y-px pl-2 pb-1">
+          <div className="relative ml-3 mt-0.5 mr-1 space-y-px pl-2">
             {/* 展开内容不依赖当前选中项，项目切换只改变高亮，避免两棵会话树同时伸缩造成布局抖动。 */}
             {project.worktreeEnabled ? (
               <WorktreeTree
@@ -219,7 +219,7 @@ export function ProjectTree(props: {
       const collapsed = props.controller.isProjectCollapsed(project.id);
       const sessions = props.controller.catalog.sessionsByProject[project.id] ?? [];
       return (
-        <section key={project.id} className="mb-2" aria-label={t("app.chatProject")} role="treeitem" aria-expanded={!collapsed}>
+        <section key={project.id} className="mb-0.5" aria-label={t("app.chatProject")} role="treeitem" aria-expanded={!collapsed}>
           {/* 与下方「项目」标题栏共用：同 px-2 + text-caption，避免 section p-1 / 标题 px-1 叠出明显错位。
               整行可点击切换折叠：折叠态下只看到标题栏时，点标题区即可展开，避免「不知道下面还有会话」；
               行为与右侧折叠按钮一致（右侧按钮需 stopPropagation 防止二次触发）。 */}

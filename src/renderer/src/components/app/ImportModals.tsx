@@ -141,7 +141,7 @@ export function CodexImportModal(props: {
 	return (
 		<Dialog open onOpenChange={(next) => !next && props.onClose()}>
 			<DialogContent showCloseButton={false} className={cn("flex flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(800px,calc(100vw-48px))]", "codex-import-modal")}>
-				<DialogHeader className="flex-row items-center justify-between px-4 py-3">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<DialogTitle>{t("codex.title")}</DialogTitle>
 					<DialogClose asChild>
 						<Button variant="ghost" size="icon" aria-label={t("common.close")} title={t("common.close")}>
@@ -286,7 +286,7 @@ export function ClaudeImportModal(props: {
 	return (
 		<Dialog open onOpenChange={(next) => !next && props.onClose()}>
 			<DialogContent showCloseButton={false} className={cn("flex flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(800px,calc(100vw-48px))]", "codex-import-modal")}>
-				<DialogHeader className="flex-row items-center justify-between px-4 py-3">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<DialogTitle>{t("claude.title")}</DialogTitle>
 					<DialogClose asChild>
 						<Button variant="ghost" size="icon" aria-label={t("common.close")} title={t("common.close")}>
@@ -412,7 +412,7 @@ export function OpenCodeImportModal(props: {
 	return (
 		<Dialog open onOpenChange={(next) => !next && props.onClose()}>
 			<DialogContent showCloseButton={false} className={cn("flex flex-col gap-0 overflow-hidden p-0 sm:max-w-[min(800px,calc(100vw-48px))]", "codex-import-modal")}>
-				<DialogHeader className="flex-row items-center justify-between px-4 py-3">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<DialogTitle>{t("opencode.title")}</DialogTitle>
 					<DialogClose asChild>
 						<Button variant="ghost" size="icon" aria-label={t("common.close")} title={t("common.close")}>

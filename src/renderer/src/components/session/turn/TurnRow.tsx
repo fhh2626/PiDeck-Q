@@ -298,7 +298,7 @@ export const TurnRow = memo(
 	return (
 		<article
 			ref={rowRef}
-			className={`turn-row mb-6 w-full min-w-0 max-w-full ${
+			className={`turn-row mb-3 w-full min-w-0 max-w-full ${
 				props.agentRunning && !isComplete
 					? "turn-row--running"
 					: isComplete
@@ -307,11 +307,13 @@ export const TurnRow = memo(
 			} ${props.fresh ? "turn-row--fresh" : ""}`}
 			data-message-id={run.id}
 		>
-			<div className="flex min-w-0 flex-col gap-3">
+			{/* turn 内部只保留一层 block gap（6px）：时间戳→过程→思考/工具→回答→actions 全部靠它，
+			    不再叠加各自的 mt/mb（Density Contract：turn 级只允许 turn-gap + block-gap 两层）。 */}
+			<div className="flex min-w-0 flex-col gap-1.5">
 				{/* 行头：logo 用字号 token（text-brand 18px），随 data-ui-font-size 整体缩放；
 				    时间用 text-body（14px）。耗时不放行头——回复生成时用户视线在底部，
 				    统一显示在 turn 尾部（见底部耗时行），不用翻回开头看跑了多久。 */}
-				<div className="mb-1 inline-flex items-center gap-2 text-muted-foreground tabular-nums">
+				<div className="inline-flex items-center gap-2 text-muted-foreground tabular-nums">
 					<span className="shrink-0 font-mono text-brand font-semibold leading-none text-foreground/80">pi</span>
 					<time className="shrink-0 font-mono text-body leading-none">{formatTime(run.endedAt)}</time>
 				</div>

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { assertConsumes, getRecipe } from "./_densityRecipe.mjs";
 
 /**
  * 桌面密度契约测试：锁定 24/28/32 三档节奏，防止后续改动把行高/间距打散。
@@ -17,7 +18,7 @@ function read(rel) {
 }
 
 // ── 时间线 Marker ────────────────────────────────────────────────────────────
-test("TimelineMarker uses gap-2 and pb-1 (not gap-2.5 / pb-2)", () => {
+test("TimelineMarker uses gap-2 and pb-0.5 (2px step gap)", () => {
   const src = read("components/session/TimelineMarker.tsx");
   assert.match(src, /timeline-marker-row/, "marker row class not found");
   assert.doesNotMatch(src, /gap-2\.5/, "marker row should not use gap-2.5");
@@ -27,100 +28,95 @@ test("TimelineMarker uses gap-2 and pb-1 (not gap-2.5 / pb-2)", () => {
     /timeline-marker-content[^"]*pb-2(?!\.)/,
     "marker content should not use pb-2",
   );
-  assert.match(src, /timeline-marker-content[^"]*pb-1\b/, "marker content should use pb-1");
+  assert.match(src, /timeline-marker-content[^"]*pb-0\.5\b/, "marker content should use pb-0.5 (2px)");
+  assert.doesNotMatch(src, /timeline-marker-content[^"]*pb-1\b/, "marker content must not stay at pb-1");
 });
 
 // ── Thinking / Compaction 卡片 ──────────────────────────────────────────────
-test("Thinking/Compaction preview and body use px-2 py-1 (not px-3 pt-2 pb-1)", () => {
+test("Thinking/Compaction consume the shared card recipes (body px-2 py-0.5)", () => {
   const src = read("components/session/TimelineEventCards.tsx");
 
-  // 展开态 markdown body
-  assert.doesNotMatch(
-    src,
-    /markdown-body px-3 pt-2 pb-1/,
-    "expanded body should not use px-3 pt-2 pb-1",
-  );
-  assert.match(
-    src,
-    /markdown-body px-2 py-1/,
-    "expanded body should use px-2 py-1",
-  );
+  // 值住在共享 recipe（lib/density.ts），组件只消费常量。
+  assert.equal(getRecipe("CARD_BODY_PADDING"), "px-2 py-0.5", "card body recipe changed");
+  assert.equal(getRecipe("CARD_PREVIEW_PADDING"), "px-2 py-0.5 font-mono text-caption text-text-tertiary");
 
-  // 折叠态预览（SingleLinePreview）
-  assert.doesNotMatch(
-    src,
-    /px-3 pt-2 pb-1 font-mono/,
-    "collapsed preview should not use px-3 pt-2 pb-1",
-  );
-  assert.match(
-    src,
-    /px-2 py-1 font-mono/,
-    "collapsed preview should use px-2 py-1",
-  );
+  assertConsumes(src, "CARD_BODY_PADDING");
+  assertConsumes(src, "CARD_PREVIEW_PADDING");
+
+  // 旧的大 padding 字面量不再散落在组件里。
+  assert.doesNotMatch(src, /markdown-body px-3 pt-2 pb-1/, "expanded body must not revert to px-3 pt-2 pb-1");
+  assert.doesNotMatch(src, /px-3 pt-2 pb-1 font-mono/, "collapsed preview must not revert to px-3 pt-2 pb-1");
 
   // 收起入口 footer
-  assert.doesNotMatch(
-    src,
-    /flex px-2 pb-1\.5/,
-    "collapse footer should not use px-2 pb-1.5",
-  );
-  assert.match(
-    src,
-    /flex px-1\.5 pb-1/,
-    "collapse footer should use px-1.5 pb-1",
-  );
+  assert.doesNotMatch(src, /flex px-2 pb-1\.5/, "collapse footer should not use px-2 pb-1.5");
+  assert.match(src, /flex px-1\.5 pb-1/, "collapse footer should use px-1.5 pb-1");
 });
 
-test("Thinking trigger header uses gap-1.5 (not gap-2)", () => {
+test("Thinking trigger header consumes the shared THINKING_HEADER recipe (gap-1.5)", () => {
   const src = read("components/session/TimelineEventCards.tsx");
-  // 思考栏 trigger button 的 gap
-  assert.match(
-    src,
-    /min-h-6 w-full[^"]*gap-1\.5/,
-    "thinking trigger should use gap-1.5",
-  );
+  const header = getRecipe("THINKING_HEADER");
+  assert.match(header, /gap-1\.5/, "shared header recipe should use gap-1.5");
+  assert.match(header, /min-h-6/, "shared header recipe should stay 24px");
+  assert.match(header, /px-1 py-0\.5/, "shared header recipe should use 4px x 2px padding");
+  assertConsumes(src, "THINKING_HEADER");
 });
 
-test("WebThinkingBlock stays in sync with desktop Thinking density", () => {
+test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", () => {
   const src = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
   const block = src.slice(
     src.indexOf("export const WebThinkingBlock"),
     src.indexOf("type WebToolPart"),
   );
   assert.ok(block.length > 0, "WebThinkingBlock source not found");
-  assert.match(
-    block,
-    /min-h-6 w-full[^"]*gap-1\.5/,
-    "Web thinking trigger should use gap-1.5",
-  );
-  assert.doesNotMatch(
-    block,
-    /markdown-body px-3 pt-2 pb-1/,
-    "Web expanded body should not use px-3 pt-2 pb-1",
-  );
-  assert.match(
-    block,
-    /markdown-body px-2 py-1/,
-    "Web expanded body should use px-2 py-1",
-  );
-  assert.doesNotMatch(
-    block,
-    /px-3 pt-2 pb-1 font-mono/,
-    "Web collapsed preview should not use px-3 pt-2 pb-1",
-  );
-  assert.match(
-    block,
-    /px-2 py-1 font-mono/,
-    "Web collapsed preview should use px-2 py-1",
-  );
-  assert.match(
-    block,
-    /flex px-1\.5 pb-1/,
-    "Web collapse footer should use px-1.5 pb-1",
-  );
+  // Web 与桌面消费同一份 recipe，值天然一致；只断言消费关系 + 旧大 padding 不回归。
+  assertConsumes(src, "THINKING_HEADER");
+  assertConsumes(src, "CARD_BODY_PADDING");
+  assertConsumes(src, "CARD_PREVIEW_PADDING");
+  assert.ok(block.includes("THINKING_HEADER"), "web thinking block renders the shared header");
+  assert.doesNotMatch(block, /markdown-body px-3 pt-2 pb-1/, "Web expanded body must not revert");
+  assert.doesNotMatch(block, /px-3 pt-2 pb-1 font-mono/, "Web collapsed preview must not revert");
+  assert.match(block, /flex px-1\.5 pb-1/, "Web collapse footer should use px-1.5 pb-1");
 });
 
 // ── 文件修改列表 ─────────────────────────────────────────────────────────────
+test("TurnRow keeps exactly two spacing layers (turn-gap + block-gap)", () => {
+  const src = read("components/session/turn/TurnRow.tsx");
+  const foundation = read("styles/foundation.css");
+  // turn 自身外间距 mb-3（12px）+ 列表层 margin-top 12px = turn-gap，
+  // 不再叠加 mb-6（24px）。
+  assert.match(src, /turn-row mb-3 w-full/, "turn outer margin should be mb-3");
+  assert.doesNotMatch(src, /turn-row mb-6 w-full/, "turn must not stay at mb-6");
+  // turn 内部只有一层 block gap（gap-1.5 = 6px）：时间戳→过程→思考/工具→回答。
+  assert.match(src, /flex min-w-0 flex-col gap-1\.5/, "turn inner should be a single gap-1.5");
+  assert.doesNotMatch(src, /flex min-w-0 flex-col gap-3/, "turn inner should not be gap-3");
+  // 时间戳行不再自带 mb-1（交给父级 gap 统一）。
+  assert.doesNotMatch(src, /mb-1 inline-flex items-center gap-2 text-muted-foreground/, "timestamp row must not add its own mb");
+  // 列表层 turn-gap 走 density token（12px），不是 16px。
+  assert.match(foundation, /\.message-list\.message-list > \* \+ \*\s*\{\s*margin-top:\s*var\(--density-turn-gap/, "message-list gap should consume --density-turn-gap");
+});
+
+test("execution process details sit 6px below the toggle (not 12px)", () => {
+  const css = read("styles/timeline.css");
+  assert.match(
+    css,
+    /\.execution-summary-details \{[\s\S]*?margin-top:\s*var\(--density-block-gap\)/,
+    "process → thinking/tools should use --density-block-gap (6px)",
+  );
+  assert.doesNotMatch(
+    css,
+    /\.execution-summary-details \{[\s\S]*?margin-top:\s*var\(--space-3\)/,
+    "process details must not stay at --space-3 (12px)",
+  );
+});
+
+test("Tool expanded content uses 2px/4px/8px (not 4/8/12)", () => {
+  const src = read("components/session/ToolCallComponents.tsx");
+  assert.match(src, /ml-5 mt-0\.5 mb-1[^"]*pl-2/,
+    "tool expanded should be mt-0.5 mb-1 pl-2");
+  assert.doesNotMatch(src, /ml-5 mt-1 mb-2[^"]*pl-3/,
+    "tool expanded must not stay at mt-1 mb-2 pl-3");
+});
+
 test("FileDiff trigger uses min-h-7 py-0.5 gap-1.5 (not min-h-9 py-1 gap-2)", () => {
   const src = read("components/agents/file-diff.tsx");
   const trigger = src.match(/group flex min-h-\d+ w-full[^"]*"/);
@@ -147,11 +143,15 @@ test("TurnFileChanges uses mb-1 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () =>
 });
 
 // ── 设置共享布局 ─────────────────────────────────────────────────────────────
-test("SettingRow uses min-h-9 gap-4 py-0.5 (not min-h-[54px] gap-6 py-1.5)", () => {
+test("SettingRow uses two-layer gap (normal gap-x-4 gap-y-0 / stacked gap-y-1)", () => {
   const src = read("components/app/settings/SettingRows.tsx");
-  assert.match(src, /min-h-9 grid-cols/, "SettingRow should use min-h-9");
+  // display:grid 必须是独立 class：grid-cols / gap-x 不会自己带 display。
+  assert.match(src, /"grid border-t border-border-subtle\/60 px-2 py-0\.5 first:border-t-0"/, "SettingRow must set display:grid and px-2");
+  assert.match(src, /min-h-9 grid-cols/, "SettingRow normal should use min-h-9");
   assert.doesNotMatch(src, /min-h-\[54px\]/, "SettingRow should not use min-h-[54px]");
-  assert.match(src, /gap-4 border-t/, "SettingRow should use gap-4");
+  // 两层 gap：normal 只走横向 16px（gap-x-4），纵向 0；stacked 单列走 4px 纵向。
+  assert.match(src, /gap-x-4 gap-y-0 items-center/, "SettingRow normal should use gap-x-4 gap-y-0");
+  assert.match(src, /grid-cols-1 gap-y-1 items-start/, "SettingRow stacked should use gap-y-1");
   assert.doesNotMatch(src, /gap-6 border-t/, "SettingRow should not use gap-6");
   assert.match(src, /py-0\.5 first:border-t-0/, "SettingRow should use py-0.5");
   assert.doesNotMatch(src, /py-1 first:border-t-0/, "SettingRow should not use py-1");
@@ -159,11 +159,11 @@ test("SettingRow uses min-h-9 gap-4 py-0.5 (not min-h-[54px] gap-6 py-1.5)", () 
   assert.match(src, /leading-normal/, "description should use leading-normal");
 });
 
-test("SettingBox uses rounded-md px-0.5 pb-0.5 (not rounded-lg px-1 pb-1)", () => {
+test("SettingBox is flat (border-y, transparent, no rounded card)", () => {
   const src = read("components/app/settings/SettingRows.tsx");
-  assert.match(src, /rounded-md border border-border-subtle\/70/, "SettingBox should use rounded-md");
-  assert.doesNotMatch(src, /rounded-lg border border-border-subtle\/70/, "SettingBox should not use rounded-lg");
-  assert.match(src, /px-0\.5 pb-0\.5/, "SettingBox should use px-0.5 pb-0.5");
+  // Density Contract 去 Card 化：上下分隔线 + 透明底，不再圆角卡片。
+  assert.match(src, /border-y border-border-subtle\/60 bg-transparent px-0\.5/, "SettingBox should be flat with border-y");
+  assert.doesNotMatch(src, /rounded-md border border-border-subtle\/70 bg-bg-muted\/30/, "SettingBox should not be a rounded muted card");
 });
 
 test("SettingsSection uses mt-2 pt-2 pb-1 (not mt-4 pt-4 pb-2)", () => {
@@ -221,17 +221,18 @@ test("sidebar body uses gap-1 (not gap-2)", () => {
   assert.doesNotMatch(src, /sidebar-body[^"]*gap-2\b/, "sidebar-body should not use gap-2");
 });
 
-test("project group spacing uses mb-1 space-y-px (not mb-1.5 space-y-0.5)", () => {
+test("project group spacing uses mb-0.5 space-y-px (2px between projects)", () => {
   const src = read("components/sidebar/ProjectTree.tsx");
-  assert.match(src, /project-group mb-1\b/, "project group should use mb-1");
-  assert.doesNotMatch(src, /project-group mb-1\.5/, "project group should not use mb-1.5");
+  assert.match(src, /project-group mb-0\.5\b/, "project group should use mb-0.5");
+  assert.doesNotMatch(src, /project-group mb-1\b/, "project group should not stay at mb-1");
   assert.match(src, /space-y-px/, "expanded content should use space-y-px");
 });
 
-test("Chat section uses mb-2 (8px section gap, not mb-4)", () => {
+test("Chat section uses mb-0.5 (2px to next project, not mb-2/mb-4)", () => {
   const src = read("components/sidebar/ProjectTree.tsx");
-  assert.match(src, /section key=\{project\.id\} className="mb-2"/, "Chat section should use mb-2");
+  assert.match(src, /section key=\{project\.id\} className="mb-0\.5"/, "Chat section should use mb-0.5");
   assert.doesNotMatch(src, /section[^>]*mb-4/, "Chat section should not use mb-4");
+  assert.doesNotMatch(src, /section key=\{project\.id\} className="mb-2"/, "Chat section should not stay at mb-2");
 });
 
 test("Worktree row uses px-0.5 py-0 (not p-0.5, which would exceed 28px)", () => {

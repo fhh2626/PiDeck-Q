@@ -73,6 +73,7 @@ import { getFileIconSeti, getFileIconColor, getFileTypeLabel } from "../../fileI
 import { normalizeSessionPathForCompare } from "../../agentListDisplay";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
+import { USER_TURN_BUBBLE } from "@/lib/density";
 import { Button } from "../ui-shadcn/button";
 import type {
 	AgentRuntimeState,
@@ -851,7 +852,7 @@ export const UserBubble = memo(function UserBubble(props: {
 				</div>
 			)}
 			{cleanText && !editing && (
-				<div className="user-turn-bubble w-fit min-w-0 max-w-[min(82%,64ch)] rounded-[14px] border border-border bg-muted/60 px-3 py-2 text-sm text-foreground [overflow-wrap:anywhere] break-words">
+				<div className={`${USER_TURN_BUBBLE}`}>
 					<div
 						ref={userTextRef}
 						className={`text-chat leading-[1.6] text-text-primary whitespace-pre-wrap break-words ${messageExpanded ? "" : "line-clamp-8"}`}

@@ -17,12 +17,15 @@ export function DirtyMarker(props: { dirty: boolean; label: string }) {
 }
 
 /**
- * 设置内容淡色框：包住一级标题下的二级内容行。
- * 四角圆弧、极淡底色（bg-muted 30%）+ 淡边框；行间分隔线由 SettingRow 自身提供。
+ * 设置内容分组框（Density Contract：去 Card 化）。
+ * 不再用圆角+淡底+边框的卡片观感，改为平铺的上下分隔线；
+ * 层级靠 section heading + 行分隔线 + 缩进建立，而不是很多淡灰圆角盒。
+ * 行与行之间的分隔线由 SettingRow 的 border-t 提供；
+ * 首行 border-t 与 box border-t 重合，视觉上仍是一条线（同色同位置）。
  */
 export function SettingBox(props: { children: ReactNode }) {
 	return (
-		<div className="rounded-md border border-border-subtle/70 bg-bg-muted/30 px-0.5 pb-0.5">
+		<div className="border-y border-border-subtle/60 bg-transparent px-0.5">
 			{props.children}
 		</div>
 	);
@@ -52,11 +55,13 @@ export function SettingRow(props: {
 	return (
 		<div
 			className={cn(
-				"grid gap-4 border-t border-border-subtle/60 py-0.5 first:border-t-0",
-				level === 1 ? "px-0.5" : "px-1",
+				// Density Contract：normal = 两列 16px 横向 gap + 0 纵向 gap；
+				// stacked = 单列 4px 纵向 gap（title→desc→control）。
+				// `grid` 必须单独存在：grid-cols / gap-x 不会自己带 display:grid。
+				"grid border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0",
 				props.stacked
-					? "min-h-0 grid-cols-1 items-start"
-					: "min-h-9 grid-cols-[minmax(0,1fr)_260px] items-center",
+					? "min-h-0 grid-cols-1 gap-y-1 items-start"
+					: "min-h-9 grid-cols-[minmax(0,1fr)_260px] gap-x-4 gap-y-0 items-center",
 			)}
 		>
 			<span className="min-w-0">

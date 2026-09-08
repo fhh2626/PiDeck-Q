@@ -77,7 +77,7 @@ export function TimelineMarker(props: {
         </span>
       </div>
       )}
-      <div className={cn("timeline-marker-content min-w-0 flex-1 pb-1", props.contentClassName)}>{props.children}</div>
+      <div className={cn("timeline-marker-content min-w-0 flex-1 pb-0.5", props.contentClassName)}>{props.children}</div>
     </div>
   );
 }

@@ -75,9 +75,11 @@ export function ExternalEditorsSection(props: {
 			{SUPPORTED_EXTERNAL_EDITORS.map((editor) => {
 				const setting = props.editors[editor.id];
 				return (
+					// 语义上是「Label | Control」，但控件簇（checkbox + w-56 路径输入 + 浏览/清除两按钮）
+					// 超过 260px 固定列宽，保留手写 grid；数值对齐 SettingRow 节奏（gap-x-4 / py-0.5 / px-1）。
 					<div
 						key={editor.id}
-						className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border-subtle/60 px-0.5 py-1.5 first:border-t-0"
+						className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 border-t border-border-subtle/60 px-1 py-0.5 first:border-t-0"
 					>
 						<div className="min-w-0">
 							<span className="block truncate text-control font-medium text-foreground">

@@ -104,11 +104,11 @@ test("Web desktop search is 32px (input h-8, add button size-8)", () => {
 });
 
 // ── Desktop：Web Timeline ───────────────────────────────────────────────────
-test("Web timeline uses 4px message gap and 12px outer padding", () => {
+test("Web timeline uses 6px message gap and 12px/10px padding (desktop density)", () => {
   assert.match(
     webTimeline,
-    /message-list flex flex-col gap-1 p-3/,
-    "message list should use gap-1 p-3",
+    /message-list flex flex-col gap-1\.5 px-3 py-2\.5/,
+    "message list should use gap-1.5 px-3 py-2.5 (6px gap, 12px x / 10px y)",
   );
   assert.doesNotMatch(
     webTimeline,
@@ -172,5 +172,17 @@ test("mobile web media query keeps 36px touch targets", () => {
     mobile,
     /\.project-row-actions \.project-action\s*\{[^}]*min-width:\s*32px;[^}]*min-height:\s*32px/,
     "mobile project action buttons keep 32px minimum",
+  );
+  // 视觉密度 = 桌面 Web（6px gap），但移动端左右留白多 4px 给手指边缘安全区。
+  assert.match(
+    mobile,
+    /\.message-list\s*\{[^}]*padding-left:\s*16px;[^}]*padding-right:\s*16px/,
+    "mobile message list should widen left/right to 16px",
+  );
+  // 思考卡 trigger（桌面 24px 可点）移动端抬到 44px 真实点击区。
+  assert.match(
+    mobile,
+    /\.message-list button\.min-h-6\s*\{[^}]*min-height:\s*44px/,
+    "mobile thinking trigger should expand to 44px touch target",
   );
 });

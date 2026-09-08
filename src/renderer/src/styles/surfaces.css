@@ -26,8 +26,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px 16px;
+  gap: 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-subtle);
   background: var(--color-bg-muted);
 }
@@ -79,7 +79,7 @@
 .codex-import-body {
   min-height: 260px;
   overflow: auto;
-  padding: 12px;
+  padding: 8px 12px;
 }
 .codex-import-empty {
   min-height: 240px;
@@ -103,12 +103,12 @@
 .codex-session-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
-  gap: 9px;
+  gap: 8px;
   align-items: start;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--color-bg-panel);
-  padding: 10px;
+  padding: 8px 10px;
   cursor: pointer;
 }
 .codex-session-row:hover {
@@ -983,9 +983,9 @@
 /* 设置分区与设置行已迁移 UI 2.0（Tailwind + shadcn，见 settings/SettingRows.tsx）：
    去卡片化 + 行式布局，旧手写规则全部删除，不再在此维护。 */
 
-/* 代理面板 */
+/* 代理面板：视觉分组单位（内部已走 SettingRow），外层只控制与上下行的分区节奏（同组 4px / 分区 8px） */
 .setting-proxy-panel {
-  margin: 2px 0 6px;
+  margin: 4px 0 8px;
 }
 
 /* 代理设置未保存提示栏 */
@@ -1139,29 +1139,16 @@
 }
 /* WSL 面板操作按钮（应用/取消） */
 
-/* Pi CLI 状态与来源选择：这些规则随设置组件拆分时遗漏，会导致状态内容失去横向布局。 */
-.setting-pi-status {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 52px;
-  margin: 6px 0;
-}
-.setting-pi-status-indicator {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  flex: 1;
-}
+/* Pi CLI 状态行已迁入共享 SettingRow（DevTab）：外层 flex/min-height 删除；
+   指示灯与文字样式保留，节奏改由 SettingRow 的 min-h-9 + gap-x-4 提供。 */
 .pi-status-dot {
   display: inline-block;
   width: 10px;
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-top: 4px;
+  /* 旧版在 flex-start 布局里靠 margin-top 对齐 strong；现在在 SettingRow 标题槽里
+     items-center 垂直居中，不再需要额外偏移。 */
 }
 .pi-status-dot.online {
   background: var(--color-success, #22c55e);
@@ -1175,6 +1162,7 @@
   gap: 2px;
   min-width: 0;
 }
+/* 主标签（「Pi CLI」）已进 SettingRow 标题槽；strong 规则保留给 status 文本内部的主状态行（如外部复用） */
 .setting-pi-status-text strong {
   color: var(--color-text-primary);
   font-size: var(--font-size-control);
@@ -1194,17 +1182,8 @@
 .setting-pi-source-block {
   margin: 6px 0;
 }
-.setting-pi-source-row {
-  display: grid;
-  grid-template-columns: auto minmax(160px, 240px);
-  gap: 12px;
-  align-items: center;
-  min-height: 40px;
-}
-.setting-pi-source-row > span {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-control);
-}
+/* Pi 来源行已迁入共享 SettingRow（DevTab）：auto minmax(160px,240px) 两列 + 12px gap + 40px 行高
+   被 min-h-9 + gap-x-4 + 260px 控件列取代。 */
 .setting-pi-wsl-config {
   margin: 8px 0 4px 0;
   padding: 10px 12px;
@@ -1371,10 +1350,10 @@
 }
 
 /* Pi 管理导航是高频小字号中文：14px 比 13px 更容易落在清晰的像素栅格上。
-   !important 用于压过按钮上的通用 text-control utility，避免组件改 class 后又退回 13px。 */
+   !important 用于压过按钮上的通用 text-control utility，避免组件改 class 后又退回 13px。
+   Density Contract：行高由 React utility（h-7 = 28px）唯一决定，CSS 不再写死 height，
+   避免「TSX h-7 + CSS height 2rem」两套系统互相抢。 */
 .config-nav-btn {
-  min-height: 2rem; /* 32px = h-8 */
-  height: 2rem;
   font-family: var(--font-family-sans, ui-sans-serif, system-ui, sans-serif) !important;
   font-size: 14px !important;
   line-height: var(--line-height-control);
@@ -1401,7 +1380,8 @@
 .config-content {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-5);
+  /* Density Contract：内容区 padding 与 Settings 面板对齐（--space-3 = 12px），不再 20px */
+  padding: var(--space-3);
   position: relative;
   min-height: 320px;
   /* 内容区与顶栏/侧栏同底，卡片自身再靠 border 分层 */

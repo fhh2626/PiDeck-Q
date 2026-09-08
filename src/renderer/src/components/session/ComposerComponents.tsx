@@ -386,7 +386,7 @@ function PickerDialog(props: {
 					props.className,
 				)}
 			>
-				<DialogHeader className="flex-row items-center justify-between px-4 py-3">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<div className="grid gap-0.5">
 						<DialogTitle>{props.title}</DialogTitle>
 						{props.hint && (

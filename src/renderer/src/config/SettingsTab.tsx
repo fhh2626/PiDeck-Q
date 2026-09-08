@@ -226,7 +226,7 @@ export function SettingsTab(props: {
 			</div>
 			<div className="flex flex-col gap-2">
 				{/* enabledModels 始终显示在最前面 */}
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 					<span className="min-w-[180px] text-control font-medium text-text-primary">{configLabel("enabledModels")}</span>
 					<EnabledModelsInput
 						value={
@@ -239,14 +239,14 @@ export function SettingsTab(props: {
 
 				{/* ── 全局会话目录（仅编辑 ~/.pi/agent/settings.json 的 sessionDir） ── */}
 				<div className="config-retry-group">
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong flex flex-col items-start gap-0.5 rounded-none border-none px-4 pb-1 pt-2.5 hover:border-transparent">
+					<div className="flex flex-col items-start gap-0.5 rounded-none border-none px-2 pb-1 pt-1.5 transition-colors hover:border-transparent">
 						<SectionHeading
 						className="config-settings-section-heading"
 						title={t("config.sessionDir.title")}
 						description={t("config.sessionDir.hint")}
 					/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 						<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.label.sessionDir")}</span>
 						<Input
 							className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]"
@@ -260,18 +260,18 @@ export function SettingsTab(props: {
 
 				{/* ── 重试配置 ── */}
 				<div className="config-retry-group">
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong flex flex-col items-start gap-0.5 rounded-none border-none px-4 pb-1 pt-2.5 hover:border-transparent">
+					<div className="flex flex-col items-start gap-0.5 rounded-none border-none px-2 pb-1 pt-1.5 transition-colors hover:border-transparent">
 					<SectionHeading
 						className="config-settings-section-heading"
 						title={t("config.retry.title")}
 						description={t("config.retry.hint")}
 					/>
 				</div>
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 					<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.retry.maxRetries")}</span>
 					<Input className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]" type="number" min={0} max={50} value={retryConfig.maxRetries} onChange={(e) => updateRetry({ maxRetries: Number(e.target.value) })} />
 				</div>
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 					<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.retry.baseDelayMs")}</span>
 					<Input className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]" type="number" min={100} step={100} value={retryConfig.baseDelayMs} onChange={(e) => updateRetry({ baseDelayMs: Number(e.target.value) })} />
 				</div>
@@ -279,14 +279,14 @@ export function SettingsTab(props: {
 
 				{/* ── 会话压缩：拆成开关 + 两个 token 数，避免用户直接改 JSON 对象 ── */}
 				<div className="config-retry-group">
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong flex flex-col items-start gap-0.5 rounded-none border-none px-4 pb-1 pt-2.5 hover:border-transparent">
+					<div className="flex flex-col items-start gap-0.5 rounded-none border-none px-2 pb-1 pt-1.5 transition-colors hover:border-transparent">
 						<SectionHeading
 						className="config-settings-section-heading"
 						title={t("config.compaction.title")}
 						description={t("config.compaction.hint")}
 					/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 						<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.compaction.enabled")}</span>
 						<Label className="config-checkbox-label">
 							<Checkbox
@@ -300,7 +300,7 @@ export function SettingsTab(props: {
 							</span>
 						</Label>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 						<span className="min-w-[180px] text-control font-medium text-text-primary" title={t("config.compaction.reserveTokensHint")}>
 							{t("config.compaction.reserveTokens")}
 						</span>
@@ -317,7 +317,7 @@ export function SettingsTab(props: {
 							}
 						/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 						<span className="min-w-[180px] text-control font-medium text-text-primary" title={t("config.compaction.keepRecentTokensHint")}>
 							{t("config.compaction.keepRecentTokens")}
 						</span>
@@ -334,7 +334,7 @@ export function SettingsTab(props: {
 							}
 						/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong flex flex-col items-start gap-0.5 rounded-none border-none px-4 pb-1 pt-2.5 hover:border-transparent">
+					<div className="flex flex-col items-start gap-0.5 rounded-none border-none px-2 pb-1 pt-1.5 transition-colors hover:border-transparent">
 						<span className="config-settings-section-hint">{t("config.compaction.manualHint")}</span>
 					</div>
 				</div>
@@ -343,7 +343,7 @@ export function SettingsTab(props: {
 					// sessionDir / retry / enabledModels 已有专用区块，避免列表里重复一行
 					.filter(([key]) => key !== "enabledModels" && key !== "retry" && key !== "sessionDir")
 					.map(([key, value]) => (
-					<div key={key} className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong">
+					<div key={key} className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
 						<span className="min-w-[180px] text-control font-medium text-text-primary">{configLabel(key)}</span>
 						<SettingsValueInput
 							value={value}
@@ -366,7 +366,7 @@ export function SettingsTab(props: {
 					</div>
 				))}
 				{!hasEnabledModels && (
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-4 py-2 transition-colors hover:border-border-strong justify-center border-dashed opacity-70 hover:opacity-100">
+					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong justify-center border-dashed opacity-70 hover:opacity-100">
 						<Button size="sm" variant="outline"
 							onClick={() => props.onChange({ ...data, enabledModels: [] })}
 						>

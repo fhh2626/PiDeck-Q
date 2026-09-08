@@ -233,10 +233,10 @@ test("streamdown code-block and table chrome share utilities-layer card skin", (
   );
   assert.match(
     streamdownChrome,
-    /\[data-streamdown="table-wrapper"\] \{[\s\S]*?border-radius:\s*12px;/,
+    /\[data-streamdown="table-wrapper"\] \{[\s\S]*?border-radius:\s*var\(--density-radius-surface\);/,
   );
   assert.match(
     streamdownChrome,
-    /\[data-streamdown="code-block-header"\] \{[\s\S]*?height:\s*34px;/,
+    /\[data-streamdown="code-block-header"\] \{[\s\S]*?height:\s*var\(--density-code-header-height\);/,
   );
 });

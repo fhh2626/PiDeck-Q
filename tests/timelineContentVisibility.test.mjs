@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { assertConsumes } from "./_densityRecipe.mjs";
 
 // 长会话渲染治理契约（2026-08 调整）：
 // 移除 content-visibility 估算高度（旧方案对屏外行用 240px 估算，展开/折叠工具卡
@@ -77,7 +78,8 @@ test("compaction card matches the thinking-card visual language", () => {
   );
   assert.doesNotMatch(cards, /📁|📂/);
   assert.match(cards, /Minimize size=\{15\}/);
-  assert.match(cards, /border-dashed border-border-subtle/);
+  // 虚线框 surface 住在共享 recipe（DASHED_SURFACE），组件消费它。
+  assertConsumes(cards, "DASHED_SURFACE");
   assert.match(cards, /max-h-\[calc\(var\(--font-size-chat\)\*7\.56\)\]/);
   assert.match(cards, /t\("app\.compactionExpand"\)/);
   // 展开/收起走左下角按钮，不再整卡可点（与思考卡一致）

@@ -13,6 +13,7 @@ import { ShimmerText } from "./ShimmerText";
 import { ReasoningText } from "../agents/loading-states/reasoning-text";
 import { Loader } from "../motion/loader";
 import { SingleLinePreview } from "./SingleLinePreview";
+import { CARD_BODY_PADDING, CARD_PREVIEW_PADDING, DASHED_SURFACE, THINKING_HEADER } from "@/lib/density";
 
 // Button 收口状态（P0）：本文件按钮全部保留原生——
 // compaction-card-header / thinking-card-trigger 是折叠触发器 + 内容排版容器（内部 span/small/em 结构）；
@@ -70,9 +71,9 @@ export const CompactionCard = memo(function CompactionCard(props: {
 			</div>
 			{/* 虚线框内容区（与思考卡片同款）：折叠态最多 7.56 行（按 --font-size-chat 联动），
 			    第 8 行切半提示还有内容；展开态挂 Markdown 全文 */}
-			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
+			<div className={DASHED_SURFACE}>
 				{expanded ? (
-					<div className="markdown-body px-2 py-1 text-text-tertiary">
+					<div className={`markdown-body ${CARD_BODY_PADDING} text-text-tertiary`}>
 						<MarkdownStream
 							text={summaryText}
 							onOpenExternal={props.onOpenExternal}
@@ -81,7 +82,7 @@ export const CompactionCard = memo(function CompactionCard(props: {
 					</div>
 				) : (
 					// 折叠态轻渲染：只显示截断纯文本预览，不跑 streamdown、不建全文 DOM
-					<div className="max-h-[calc(var(--font-size-chat)*7.56)] overflow-hidden whitespace-pre-wrap break-words px-2 py-1 text-text-tertiary">
+					<div className="max-h-[calc(var(--font-size-chat)*7.56)] overflow-hidden whitespace-pre-wrap break-words px-2 py-0.5 text-text-tertiary">
 						{overflowing ? summaryText.slice(0, PREVIEW_CHARS) + "…" : summaryText}
 					</div>
 				)}
@@ -350,7 +351,7 @@ export const ThinkingBlock = memo(
 		    chevron 旋转过渡。预览内容在下方虚线框内独立一行，不与「思考了」挤在同一行。 */}
 			<button
 				type="button"
-				className="group relative flex min-h-6 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,transparent)] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+				className={`${THINKING_HEADER} group relative min-w-0 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,transparent)]`}
 				onClick={() => setExpanded((v) => !v)}
 				aria-expanded={expanded}
 				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
@@ -390,9 +391,9 @@ export const ThinkingBlock = memo(
 			{/* 虚线框内容区（折叠/展开共用容器，内容切换）：
 			    折叠态单行静态预览（不跑 streamdown、不建全文 DOM，长思考折叠时只有一行纯文本，
 			    是时间线内存最大单项的根治）；展开态 markdown 全文，字号随 --font-size-chat 联动 */}
-			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
+			<div className={DASHED_SURFACE}>
 				{expanded ? (
-					<div className="markdown-body px-2 py-1 text-text-tertiary">
+					<div className={`markdown-body ${CARD_BODY_PADDING} text-text-tertiary`}>
 						<MarkdownStream
 							text={props.text}
 							isStreaming={props.isStreaming}
@@ -404,7 +405,7 @@ export const ThinkingBlock = memo(
 					<SingleLinePreview
 						text={props.text}
 						running={props.isStreaming}
-						className="px-2 py-1 font-mono text-caption text-text-tertiary"
+						className={CARD_PREVIEW_PADDING}
 					/>
 				)}
 				{/* 收起入口：长思考展开后滚到底即可收起（不用滚回顶部思考栏）。

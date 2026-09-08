@@ -163,11 +163,13 @@ test("Web tool cards stay compact and keep a visible settled status", () => {
 });
 
 test("Web timeline does not double-space tool and thinking steps", () => {
-	assert.match(webTimeline, /message-list flex flex-col gap-1 p-3/);
+	assert.match(webTimeline, /message-list flex flex-col gap-1\.5 px-3 py-2\.5/);
 	assert.match(webTimeline, /<div key=\{message\.id\} className="mt-0">/);
 	assert.doesNotMatch(webTimeline, /user-turn group\/user mb-4/);
-	assert.match(webTimeline, /<TimelineMarker kind="thinking" tone="neutral" contentClassName="pb-0">/);
-	assert.match(webTimeline, /<TimelineMarker[\s\S]*?kind="tool"[\s\S]*?contentClassName="pb-0"/);
+	// step 间距唯一真源是 TimelineMarker 默认 pb-1；Web 不再逐卡 override pb-0。
+	assert.match(webTimeline, /<TimelineMarker kind="thinking" tone="neutral">/);
+	assert.match(webTimeline, /<TimelineMarker[\s\S]*?kind="tool"[\s\S]*?tone=\{error \? "error" : running \? "active" : "success"\}>/);
+	assert.doesNotMatch(webTimeline, /contentClassName="pb-0"/, "Web cards must not override the marker bottom gap");
 	assert.match(webTimeline, /flex min-h-6 max-w-full items-center px-2 py-0\.5/);
 });
 

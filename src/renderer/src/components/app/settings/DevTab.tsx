@@ -199,23 +199,28 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
       {/* 开发设置 tab 不自动检测 pi：检测结果缓存在 settings.piInstall（打开时直接显示），
           只有用户手动点「检测环境」才重新 spawn 探测（曾因自动检测在打开设置时触发双弹窗）。 */}
       <SettingsSection title={t("settings.environment")}>
-        {/* Pi CLI 状态：安装检测 + 路径信息 + 重新检测 */}
-        <div className="setting-pi-status">
-          <div className="setting-pi-status-indicator">
-            <span
-              className={"pi-status-dot " + (props.piStatus?.installed ? "online" : "offline")}
-            />
-            <div className="setting-pi-status-text">
-              <strong>Pi CLI</strong>
-              <span>
-                {props.piStatus
-                  ? props.piStatus.installed
-                    ? t("settings.foundPi", {
-                        version: props.piStatus.version ?? "pi",
-                      })
-                    : t("settings.piMissing")
-                  : t("settings.piCliAvailable")}
-              </span>
+        {/* Pi CLI 状态：语义是「Label(带指示灯) | status text + actions」，走共享 SettingRow；
+            指示灯进 title 槽，路径/错误进 description 槽（mt-0.5 节奏），控件列放操作按钮 */}
+        <SettingRow
+          title={
+            <>
+              <span
+                className={"pi-status-dot " + (props.piStatus?.installed ? "online" : "offline")}
+              />
+              <span>Pi CLI</span>
+            </>
+          }
+          description={
+            // 路径/错误行与主状态行一起进 .setting-pi-status-text 的 2px gap grid，
+            // 保持旧版三行等间距节奏。
+            <span className="setting-pi-status-text">
+              {props.piStatus
+                ? props.piStatus.installed
+                  ? t("settings.foundPi", {
+                      version: props.piStatus.version ?? "pi",
+                    })
+                  : t("settings.piMissing")
+                : t("settings.piCliAvailable")}
               {piPath && (
                 <span className="setting-path">
                   {piPath}
@@ -226,8 +231,9 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                   {props.piStatus.error}
                 </span>
               )}
-            </div>
-          </div>
+            </span>
+          }
+        >
           <div className="setting-inline-actions">
             <Button size="sm" variant="secondary" onClick={props.onCheckPi} disabled={props.piChecking}>
               {props.piChecking
@@ -242,31 +248,29 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
               </Button>
             )}
           </div>
-        </div>
+        </SettingRow>
 
-        <div className="my-3 border-0 border-t border-border-subtle" />
+        <div className="my-2 border-0 border-t border-border-subtle" />
 
         {/* Pi 来源：Windows 原生 / WSL（仅 Windows 可见） */}
         {props.appInfo.platform === "win32" && (
           <div className="setting-pi-source-block">
-            <div className="setting-pi-source-row">
-              <span>{t("settings.piSource.label")}</span>
-              <div className="grid gap-1.5">
-                <Select value={draft.wslEnabled ? "wsl" : "windows"} onValueChange={(value) => {
-                  updateDraft({ wslEnabled: value === "wsl" });
-                  setWslValidation(null);
-                }}>
-                  <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {piSourceOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            {/* 「Label | Control」语义：走共享 SettingRow；控件列保留内部 grid（Select 撑满 260px 列） */}
+            <SettingRow title={t("settings.piSource.label")} alignEnd={false}>
+              <Select value={draft.wslEnabled ? "wsl" : "windows"} onValueChange={(value) => {
+                updateDraft({ wslEnabled: value === "wsl" });
+                setWslValidation(null);
+              }}>
+                <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {piSourceOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </SettingRow>
             {draft.wslEnabled && (
               <div className="setting-pi-wsl-config">
                 <div className="setting-wsl-fields">
@@ -347,29 +351,28 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
           </div>
         )}
 
-        <div className="my-3 border-0 border-t border-border-subtle" />
+        <div className="my-2 border-0 border-t border-border-subtle" />
 
         
-        <div className="my-3 border-0 border-t border-border-subtle" />
+        <div className="my-2 border-0 border-t border-border-subtle" />
 
-        <div className="setting-pi-runtime-panel">
-          <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
-            <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
-              <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
-                <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
-                <SelectItem value="rust">{t("settings.piRuntimePreferenceRust")}</SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingRow>
-          <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
-            <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
-          </SettingRow>
-          <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
-            <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
-          </SettingRow>
-        </div>
+        {/* 运行参数：旧 setting-pi-runtime-panel 无 CSS 规则（仅占位），三个 SettingRow 直接挂在 SettingsSection 下 */}
+        <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
+          <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
+              <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
+              <SelectItem value="rust">{t("settings.piRuntimePreferenceRust")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
+        <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
+          <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
+        </SettingRow>
+        <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
+          <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
+        </SettingRow>
 
         {/* 自定义 Pi 路径 */}
         <div className="setting-pi-path-panel">

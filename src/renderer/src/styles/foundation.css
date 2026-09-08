@@ -57,7 +57,7 @@
   --chat-list-block-gap-bottom: 6px;
   --chat-list-item-gap: 3px;
   --chat-code-line-height: 1.6;
-  --chat-code-block-gap: 0.85rem;
+  --chat-code-block-gap: 10px;
   --chat-table-cell-padding-y: 0.45rem;
   /*
    * 主题色板：纯白基底（浅色下大面积背景为中性白/灰，不带色相），accent 为可切换主题色。
@@ -132,6 +132,27 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  /*
+   * Density Contract（UI Density & Desktop-feel Unification）：
+   * Native 与 Web 共用的密度真源。相同语义的间距/行高/radius 只在这里定义，
+   * 组件消费 Tailwind utility 或这些变量，禁止在组件里另起一套数值。
+   * 三层节奏：meta 行 ~24px / 资源行 ~28px / 设置控件 ~32px。
+   * 注意：--space-* 是通用间距轴（1/2/3/4/5/6/8），28px 无对应档位，
+   * 所以 28px 行高必须走 min-h-7 或 --density-row-compact，不要退回 --space-*。
+   */
+  --density-list-gap: 2px;
+  --density-block-gap: 6px;
+  --density-turn-gap: 12px;
+  --density-row-compact: 28px;
+  --density-control-height: 32px;
+  --density-panel-padding: 12px;
+  --density-surface-px: 8px;
+  --density-surface-py: 4px;
+  --density-code-header-height: 28px;
+  --density-code-padding-x: 10px;
+  --density-code-padding-y: 8px;
+  --density-radius-small: 4px;
+  --density-radius-surface: 6px;
   /*
    * 浮层层级语义 token（z-index）。自定义标题栏体系占 900–940：
    * 拖拽条 900 / 窗口控件与折叠恢复钮 920 / 侧栏品牌区 930 / 旧 modal-backdrop 940。
@@ -2945,9 +2966,10 @@ select:focus-visible {
   display: none;
 }
 /* 消息间间距：每条用户/助手/工具/诊断卡片之间留出呼吸空间
-   双类名提升特异性，确保不被组件自身 margin 覆盖 */
+   双类名提升特异性，确保不被组件自身 margin 覆盖
+   Density Contract：turn-gap = 12px（--density-turn-gap），不再 16px */
 .message-list.message-list > * + * {
-  margin-top: var(--space-4);
+  margin-top: var(--density-turn-gap, var(--space-3));
 }
 /* 会话定位跳转命中时的短暂高亮，帮助用户在长会话中识别落点。 */
 @keyframes messageJumpHighlight {

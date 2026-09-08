@@ -12,9 +12,9 @@ import { mergeWorkspaceTreeRows, type WorkspaceTreeRow } from "./workspaceTreeMo
 // 主工作区是根项目展开后的首个导航项，字号需要与父项目保持一致；
 // 其他 worktree 只是该项目的分支入口，渲染时会覆写为较小的 text-control，避免子项抢占层级。
 const workspaceRowClass =
-  "workspace-tree-row group relative flex min-h-7 min-w-0 items-center gap-0.5 rounded-md px-0.5 py-0 text-body text-foreground transition-[background-color,border-color,box-shadow] duration-fast hover:bg-muted/60";
+  "workspace-tree-row group relative flex min-h-7 min-w-0 items-center gap-0.5 rounded-sm px-0.5 py-0 text-body text-foreground transition-[background-color,box-shadow] duration-fast hover:bg-muted/60";
 const workspaceSelectClass =
-  "flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-0 text-left text-body text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
+  "flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 py-0 text-left text-body text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const workspaceActionClass = "text-muted-foreground hover:bg-muted hover:text-foreground";
 const workspaceSessionsClass = "min-w-0 basis-[calc(100%-24px)] ml-6 pl-2";
 
@@ -81,7 +81,7 @@ export function WorktreeTree(props: {
             className={cn(
               "conversation worktree-workspace-header h-7 justify-start text-left",
               workspaceSelectClass,
-              props.currentProjectId === props.project.id && "active border border-border-strong bg-accent/60 text-foreground shadow-sm",
+              props.currentProjectId === props.project.id && "active bg-accent/60 text-foreground",
             )}
             onClick={() => props.actions.projects.select(props.project.id)}
             title={t("app.worktreeMainWorkspace")}
@@ -221,7 +221,7 @@ function WorkspaceTreeRowView(props: {
               "text-control",
               // 窄侧栏 hover 压出 3 按钮（78px）留白；transition-all 让压缩动画与配色过渡共存
               "transition-all @max-[255px]:group-hover:pr-[78px] @max-[255px]:group-focus-within:pr-[78px]",
-              isActive && "bg-accent/60 border border-border-strong text-foreground",
+              isActive && "bg-accent/60 text-foreground",
             )}
             disabled={!childProject}
             onClick={() => childProject && props.actions.projects.select(childProject.id)}
