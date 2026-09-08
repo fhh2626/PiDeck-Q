@@ -81,4 +81,8 @@ test("sidebar project/session/agent/worktree rows all use min-h-7 (28px)", () =>
   assert.ok(workspaceRow, "workspaceRowClass constant not found");
   assert.match(workspaceRow[1], /min-h-7/, "worktree row should be min-h-7");
   assert.doesNotMatch(workspaceRow[1], /min-h-8/, "worktree row should not be min-h-8");
+  // p-0.5 会把 28px 行再加上下各 2px，实际约 30px；纵向必须 py-0。
+  assert.match(workspaceRow[1], /px-0\.5/, "worktree row should keep 2px horizontal padding");
+  assert.match(workspaceRow[1], /py-0/, "worktree row should use py-0");
+  assert.doesNotMatch(workspaceRow[1], /\bp-0\.5\b/, "worktree row should not use p-0.5");
 });

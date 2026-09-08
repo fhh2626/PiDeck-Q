@@ -147,13 +147,14 @@ test("TurnFileChanges uses mb-1 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () =>
 });
 
 // ── 设置共享布局 ─────────────────────────────────────────────────────────────
-test("SettingRow uses min-h-9 gap-4 py-1 (not min-h-[54px] gap-6 py-1.5)", () => {
+test("SettingRow uses min-h-9 gap-4 py-0.5 (not min-h-[54px] gap-6 py-1.5)", () => {
   const src = read("components/app/settings/SettingRows.tsx");
   assert.match(src, /min-h-9 grid-cols/, "SettingRow should use min-h-9");
   assert.doesNotMatch(src, /min-h-\[54px\]/, "SettingRow should not use min-h-[54px]");
   assert.match(src, /gap-4 border-t/, "SettingRow should use gap-4");
   assert.doesNotMatch(src, /gap-6 border-t/, "SettingRow should not use gap-6");
-  assert.match(src, /py-1 first:border-t-0/, "SettingRow should use py-1");
+  assert.match(src, /py-0\.5 first:border-t-0/, "SettingRow should use py-0.5");
+  assert.doesNotMatch(src, /py-1 first:border-t-0/, "SettingRow should not use py-1");
   assert.doesNotMatch(src, /py-1\.5 first:border-t-0/, "SettingRow should not use py-1.5");
   assert.match(src, /leading-normal/, "description should use leading-normal");
 });
@@ -214,7 +215,7 @@ test("ConfigModal sidebar uses h-7 gap-1 p-1.5 (not h-8 gap-2.5 p-2.5)", () => {
 });
 
 // ── 侧边栏资源行 ─────────────────────────────────────────────────────────────
-test("sidebar body and search row use gap-1 (not gap-2)", () => {
+test("sidebar body uses gap-1 (not gap-2)", () => {
   const src = read("components/sidebar/SidebarContent.tsx");
   assert.match(src, /sidebar-body[^"]*gap-1\b/, "sidebar-body should use gap-1");
   assert.doesNotMatch(src, /sidebar-body[^"]*gap-2\b/, "sidebar-body should not use gap-2");
@@ -225,4 +226,19 @@ test("project group spacing uses mb-1 space-y-px (not mb-1.5 space-y-0.5)", () =
   assert.match(src, /project-group mb-1\b/, "project group should use mb-1");
   assert.doesNotMatch(src, /project-group mb-1\.5/, "project group should not use mb-1.5");
   assert.match(src, /space-y-px/, "expanded content should use space-y-px");
+});
+
+test("Chat section uses mb-2 (8px section gap, not mb-4)", () => {
+  const src = read("components/sidebar/ProjectTree.tsx");
+  assert.match(src, /section key=\{project\.id\} className="mb-2"/, "Chat section should use mb-2");
+  assert.doesNotMatch(src, /section[^>]*mb-4/, "Chat section should not use mb-4");
+});
+
+test("Worktree row uses px-0.5 py-0 (not p-0.5, which would exceed 28px)", () => {
+  const src = read("components/sidebar/WorktreeTree.tsx");
+  const workspaceRow = src.match(/workspaceRowClass\s*=\s*\n\s*"([^"]*)"/);
+  assert.ok(workspaceRow, "workspaceRowClass constant not found");
+  assert.match(workspaceRow[1], /px-0\.5/, "worktree row should keep 2px horizontal padding");
+  assert.match(workspaceRow[1], /py-0/, "worktree row should use py-0 so height stays 28px");
+  assert.doesNotMatch(workspaceRow[1], /\bp-0\.5\b/, "worktree row should not use p-0.5");
 });

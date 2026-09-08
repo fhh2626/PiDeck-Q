@@ -52,7 +52,7 @@ export function SettingRow(props: {
 	return (
 		<div
 			className={cn(
-				"grid gap-4 border-t border-border-subtle/60 py-1 first:border-t-0",
+				"grid gap-4 border-t border-border-subtle/60 py-0.5 first:border-t-0",
 				level === 1 ? "px-0.5" : "px-1",
 				props.stacked
 					? "min-h-0 grid-cols-1 items-start"

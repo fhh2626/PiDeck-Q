@@ -219,7 +219,7 @@ export function ProjectTree(props: {
       const collapsed = props.controller.isProjectCollapsed(project.id);
       const sessions = props.controller.catalog.sessionsByProject[project.id] ?? [];
       return (
-        <section key={project.id} className="mb-4" aria-label={t("app.chatProject")} role="treeitem" aria-expanded={!collapsed}>
+        <section key={project.id} className="mb-2" aria-label={t("app.chatProject")} role="treeitem" aria-expanded={!collapsed}>
           {/* 与下方「项目」标题栏共用：同 px-2 + text-caption，避免 section p-1 / 标题 px-1 叠出明显错位。
               整行可点击切换折叠：折叠态下只看到标题栏时，点标题区即可展开，避免「不知道下面还有会话」；
               行为与右侧折叠按钮一致（右侧按钮需 stopPropagation 防止二次触发）。 */}
