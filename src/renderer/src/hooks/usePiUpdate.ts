@@ -5,10 +5,8 @@ import { settingsOpenAtom } from "../atoms";
 import type {
   AppSettings,
   NpmAvailabilityResult,
-  PiCliUpdateResult,
   PiInstallExecResult,
   PiInstallStatus,
-  PiUpdateCheckResult,
 } from "../../../shared/types";
 import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 
@@ -46,14 +44,6 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
       });
     }
   }, [settings.piInstall, piStatus]);
-
-  // ---- Pi 更新相关 state ----
-  const [piUpdating, setPiUpdating] = useState(false);
-  const [piUpdateChecking, setPiUpdateChecking] = useState(false);
-  const [piUpdateCheck, setPiUpdateCheck] =
-    useState<PiUpdateCheckResult | null>(null);
-  const [piUpdateResult, setPiUpdateResult] =
-    useState<PiCliUpdateResult | null>(null);
 
   // ---- Pi 代理相关 state ----
   const [piProxyNotice, setPiProxyNotice] = useState("");
@@ -250,69 +240,6 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
     }
   }, [installCommand, api]);
 
-  // ---- Pi CLI 更新 ----
-  // 启动检查只执行一次：StrictMode 下 useEffect([]) 在 dev 双执行、settings.get
-  // 的 .then 回调也会跑两遍，不加闸门会弹两次「Pi 不是最新版本」toast。
-  // ref 置位在函数开头同步完成，两个并发回调先后到达时第二个直接跳过。
-  const startupUpdateCheckDoneRef = useRef(false);
-  const checkPiCliUpdateOnStartup = useCallback(async () => {
-    if (settings.disableUpdateCheck) return;
-    if (startupUpdateCheckDoneRef.current) return;
-    startupUpdateCheckDoneRef.current = true;
-    try {
-      const result = await api.pi.checkUpdate();
-      setPiUpdateCheck(result);
-      if (result.hasUpdate) {
-        const message = t("settings.piUpdateStartupNotice");
-        showToast(message, 6500);
-      }
-    } catch {
-      // 后台检查失败不打扰用户
-    }
-  }, [settings.disableUpdateCheck, api]);
-
-  const checkPiCliUpdate = useCallback(async () => {
-    if (settings.disableUpdateCheck) return;
-    setPiUpdateChecking(true);
-    try {
-      const result = await api.pi.checkUpdate();
-      setPiUpdateCheck(result);
-      showToast(
-        result.error
-          ? t("settings.piUpdateFailed", { error: result.error })
-          : result.hasUpdate
-            ? t("settings.piUpdateAvailable")
-            : t("settings.piUpdateChecked"),
-      );
-    } finally {
-      setPiUpdateChecking(false);
-    }
-  }, [settings.disableUpdateCheck, api]);
-
-  const updatePiCli = useCallback(async () => {
-    setPiUpdating(true);
-    setPiUpdateResult(null);
-    try {
-      const result = await api.pi.update();
-      setPiUpdateResult(result);
-      await checkPiInstallInline();
-      setPiUpdateCheck(await api.pi.checkUpdate());
-      showToast(
-        result.updated
-          ? t("settings.piUpdateDone")
-          : t("settings.piUpdateChecked"),
-      );
-    } catch (error) {
-      showToast(
-        t("settings.piUpdateFailed", {
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    } finally {
-      setPiUpdating(false);
-    }
-  }, [api, checkPiInstallInline]);
-
   // ---- Pi 代理测试 ----
   const testPiProxy = useCallback(async () => {
     setPiProxyChecking(true);
@@ -350,10 +277,6 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
     piChecking,
     environmentDialog,
     setEnvironmentDialog,
-    piUpdating,
-    piUpdateChecking,
-    piUpdateCheck,
-    piUpdateResult,
     piProxyNotice,
     piProxyNoticeTone,
     piProxyChecking,
@@ -383,10 +306,6 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
     setPiProxyNotice,
     setPiProxyNoticeTone,
     setPiProxyChecking,
-    setPiUpdating,
-    setPiUpdateChecking,
-    setPiUpdateCheck,
-    setPiUpdateResult,
     // functions
     checkPiInstall,
     checkPiInstallInline,
@@ -395,9 +314,6 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
     clearCustomPiPath,
     checkNpm,
     execInstallCommand,
-    checkPiCliUpdateOnStartup,
-    checkPiCliUpdate,
-    updatePiCli,
     testPiProxy,
   };
 }

@@ -23,13 +23,25 @@ test("catalog session loading remains owned by the registered session IPC module
 
 const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 
-test("system IPC still registers pi update channels when extensionManager is provided", () => {
-  // 回归：Phase 3.7 拆分后若漏传 extensionManager，pi:update-check 会静默不注册。
-  assert.match(systemIpc, /ipcChannels\.piUpdateCheck/);
-  assert.match(systemIpc, /if \(extensionManager\)/);
-  assert.match(
-    registerBackendRpc,
-    /registerSystemIpc\(router,\s*\{[\s\S]*extensionManager,[\s\S]*testPiProxy,[\s\S]*RELEASES_URL,[\s\S]*\}\)/,
+test("system IPC no longer carries the pi update channels", () => {
+  // 回归：0.2.1 移除内置更新系统后，systemIpc 不再注册 pi:update-check / pi:update，
+  // 也不再依赖 extensionManager（那是给更新用的）。
+  // 守门：后人若想把更新塞回 systemIpc，应先看这条断言。
+  assert.doesNotMatch(systemIpc, /ipcChannels\.piUpdateCheck/);
+  assert.doesNotMatch(systemIpc, /ipcChannels\.piUpdate\b/);
+  assert.doesNotMatch(systemIpc, /checkForAppUpdate/);
+  assert.doesNotMatch(systemIpc, /downloadUpdateAsset/);
+  // registerSystemIpc 不再吃 extensionManager（它改由 storeIpc 拥有扩展 CRUD）
+  // 从 registerSystemIpc(router, {...}) 块内抽取文本，断言块内没有裸 extensionManager, 简写
+  const systemIpcBlock = registerBackendRpc.slice(
+    registerBackendRpc.indexOf("registerSystemIpc(router, {"),
+    registerBackendRpc.indexOf("registerStoreIpc(router, {"),
+  );
+  assert.ok(systemIpcBlock.length > 0, "registerSystemIpc block must exist");
+  assert.doesNotMatch(
+    systemIpcBlock,
+    /\n\t\textensionManager,\n/,
+    "extensionManager must not be a direct dep of registerSystemIpc",
   );
   assert.doesNotMatch(systemIpc, /from\s+["']\.\.\/index["']/);
 });

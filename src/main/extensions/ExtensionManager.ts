@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import type { TrashPath } from "../fs/trash";
 import { getAppLogger } from "../logging/sharedLogger";
-import type { AppSettings, PiCliUpdateResult, PiExtensionListResult, PiExtensionSummary, PiUpdateCheckResult } from "../../shared/types";
+import type { AppSettings, PiCliUpdateResult, PiExtensionListResult, PiExtensionSummary } from "../../shared/types";
 import type { PiLocator } from "../pi/PiLocator";
 import { toWindowsHostPath, type WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
@@ -417,54 +417,6 @@ export class ExtensionManager {
 		const result = await this.runPi(["install", normalized], 60_000);
 		this.invalidateListCache();
 		return result;
-	}
-
-	async checkPiUpdate(): Promise<PiUpdateCheckResult> {
-		try {
-			const settings = this.getSettings();
-			const status = await this.locator.check(
-				settings.customPiPath,
-				settings.wslEnabled,
-				settings.wslDistro,
-				settings.wslUser,
-				settings.piRuntimePreference,
-				settings.piTypescriptPath,
-				settings.piRustPath,
-			);
-			if (!status.installed) return { hasUpdate: false, error: this.translate("mainExtension.piNotInstalled") };
-			if (status.runtimeKind === "rust") {
-				return {
-					hasUpdate: false,
-					currentVersion: status.version,
-					error: this.translate("mainExtension.rustUpdateUnsupported"),
-				};
-			}
-			const latestVersion = await this.npmViewVersion("@earendil-works/pi-coding-agent");
-			return {
-				currentVersion: status.version,
-				latestVersion,
-				hasUpdate: this.compareVersions(latestVersion, status.version ?? "0.0.0") > 0,
-			};
-		} catch (error) {
-			console.error("[ExtensionManager] Pi update check failed", error);
-			return { hasUpdate: false, error: this.translate("mainExtension.updateCheckFailed") };
-		}
-	}
-
-	async updatePi(): Promise<PiCliUpdateResult> {
-		const check = await this.checkPiUpdate();
-		if (!check.hasUpdate) {
-			return {
-				command: "pi update pi",
-				output: check.error ?? this.translate("mainExtension.noUpdate", {
-					current: check.currentVersion ?? "unknown",
-					latest: check.latestVersion ?? "unknown",
-				}),
-				updated: false,
-			};
-		}
-		const output = await this.runPi(["update", "pi"], 120_000, { offline: false });
-		return this.toUpdateResult("pi update pi", output, true);
 	}
 
 	async updateExtensions(): Promise<PiCliUpdateResult> {

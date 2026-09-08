@@ -105,9 +105,6 @@ const defaultSettings: AppSettings = {
   /** 用户删除的内置 Prompt 模板名称；找回默认模板时清空 */
   hiddenBuiltinPromptNames: [],
 
-  // ── 更新检测：默认正常检测，用户可手动关闭忽略更新 ──
-  disableUpdateCheck: false,
-
   // ── Agent 启动诊断/加速：offline 默认开；扩展/技能默认加载 ──
   piRpcOffline: true,
   piRpcNoExtensions: false,
@@ -173,6 +170,8 @@ export class SettingsStore {
         telemetryLastHeartbeatDate: _ignoredTelemetryLastHeartbeatDate,
         linkOpenMode: _ignoredLinkOpenMode,
         electronChromiumSandbox: _ignoredElectronChromiumSandbox,
+        // 0.2.1 移除内置更新系统：旧 settings.json 的 disableUpdateCheck 只读兼容，加载时剥离后不再写回。
+        disableUpdateCheck: _ignoredDisableUpdateCheck,
         ...parsedClean
       } = parsedUnknown;
       const parsed = parsedClean as Partial<AppSettings>;

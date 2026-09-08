@@ -3,7 +3,6 @@ import { useAtomValue, useSetAtom } from "jotai";
 import type { AppInfo, AppSettings } from "../../../../shared/types";
 import { settingsOpenAtom } from "../../atoms";
 import { desktopApi as api } from "../../desktopApi";
-import type { AppUpdateControllerState } from "../../hooks/useAppUpdateController";
 import type { PiUpdateController } from "../../hooks/usePiUpdate";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
@@ -15,12 +14,10 @@ const SettingsModal = lazy(() =>
 type SettingsFeatureRootProps = {
   settings: AppSettings;
   piUpdate: PiUpdateController;
-  appUpdate: Pick<AppUpdateControllerState, "checking" | "error" | "check">;
   webServiceChanging: boolean;
   onRestartWebService: () => void;
   appInfo: AppInfo;
   onChange: (patch: Partial<AppSettings>) => void | Promise<void>;
-  onCurrentVersion: (version: string) => void;
 };
 
 /** Owns Settings overlay visibility and modal-only commands without mirroring AppSettings. */
@@ -44,11 +41,6 @@ export function SettingsFeatureRoot(props: SettingsFeatureRootProps) {
       customPiPath: props.piUpdate.customPiPath,
       customPathValidating: props.piUpdate.customPathValidating,
       customPathResult: props.piUpdate.customPathResult,
-      updateChecking: props.appUpdate.checking,
-      piUpdating: props.piUpdate.piUpdating,
-      piUpdateChecking: props.piUpdate.piUpdateChecking,
-      piUpdateCheck: props.piUpdate.piUpdateCheck,
-      piUpdateResult: props.piUpdate.piUpdateResult,
       onCustomPathChange: (path: string) => {
         props.piUpdate.setCustomPiPath(path);
         props.piUpdate.setCustomPathResult(null);
@@ -57,18 +49,6 @@ export function SettingsFeatureRoot(props: SettingsFeatureRootProps) {
       onClearCustomPath: props.piUpdate.clearCustomPiPath,
       onCheckPi: props.piUpdate.checkPiInstallInline,
       onTestPiProxy: props.piUpdate.testPiProxy,
-      onCheckUpdate: () => {
-        void props.appUpdate.check("manual").then((info) => {
-          if (info && !info.hasUpdate) {
-            props.onCurrentVersion(info.currentVersion);
-            showNotice(t("app.latestVersionNotice", { version: info.currentVersion }));
-          } else if (!info && props.appUpdate.error) {
-            showNotice(t("app.updateFailedNotice", { error: props.appUpdate.error }));
-          }
-        });
-      },
-      onCheckPiUpdate: props.piUpdate.checkPiCliUpdate,
-      onUpdatePi: props.piUpdate.updatePiCli,
       onToggleDevTools: () => {
         void api.app.toggleDevTools().then((opened) => {
           showNotice(opened ? t("app.devToolsOpened") : t("app.devToolsClosed"));
@@ -97,22 +77,12 @@ export function SettingsFeatureRoot(props: SettingsFeatureRootProps) {
       props.piUpdate.customPiPath,
       props.piUpdate.customPathValidating,
       props.piUpdate.customPathResult,
-      props.appUpdate.checking,
-      props.piUpdate.piUpdating,
-      props.piUpdate.piUpdateChecking,
-      props.piUpdate.piUpdateCheck,
-      props.piUpdate.piUpdateResult,
       props.piUpdate.setCustomPiPath,
       props.piUpdate.setCustomPathResult,
       props.piUpdate.validateCustomPiPath,
       props.piUpdate.clearCustomPiPath,
       props.piUpdate.checkPiInstallInline,
       props.piUpdate.testPiProxy,
-      props.appUpdate.check,
-      props.appUpdate.error,
-      props.onCurrentVersion,
-      props.piUpdate.checkPiCliUpdate,
-      props.piUpdate.updatePiCli,
       props.onRestartWebService,
       props.onChange,
     ],

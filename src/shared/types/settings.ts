@@ -197,11 +197,6 @@ export type StartupWindowMode =
 	/** fontFamilyMono=custom 时的自定义字体族栈，原样写入 CSS font-family */
 	fontFamilyMonoCustom: string;
 
-	// ── 更新检测 ──
-	/** 是否禁用版本更新检测（PiDeck + Pi CLI），默认 false 表示正常检测；
-	 *  开启后自动跳过启动和定时检测，设置页中检测按钮也禁用。 */
-	disableUpdateCheck: boolean;
-
 	// ── Agent 启动诊断/加速（开发设置） ──
 	/**
 	 * 启动 pi RPC 时附加 --offline，跳过 pi 启动期模型目录网络刷新。

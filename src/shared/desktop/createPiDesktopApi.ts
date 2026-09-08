@@ -12,9 +12,6 @@ import type {
 	AppLogQuery,
 	ProcessMetricsSnapshot,
 	AppSettings,
-	AppUpdateDownloadProgress,
-	AppUpdateDownloadResult,
-	AppUpdateInfo,
 	AvailableModel,
 	ChatMessage,
 	ModelSpec,
@@ -60,7 +57,6 @@ import type {
 	PiPromptTemplateSummary,
 	CreatePiPromptTemplateInput,
 	PiProxyTestResult,
-	PiUpdateCheckResult,
 	PiSkillListResult,
 	PiSkillSummary,
 	Project,
@@ -721,10 +717,6 @@ const api = {
 				ipcChannels.piCheckCustom,
 				customPath,
 			) as Promise<PiInstallStatus>,
-		checkUpdate: () =>
-			transport.invoke(ipcChannels.piUpdateCheck) as Promise<PiUpdateCheckResult>,
-		update: () =>
-			transport.invoke(ipcChannels.piUpdate) as Promise<PiCliUpdateResult>,
 		/** 执行安装命令（如 npm install -g pi）并返回执行结果 */
 		execInstall: (command: string) =>
 			transport.invoke(ipcChannels.piExecInstall, command) as Promise<PiInstallExecResult>,
@@ -791,17 +783,6 @@ const api = {
 			transport.invoke(ipcChannels.appNetworkAddresses) as Promise<WebNetworkAddress[]>,
 		preferredSystemLanguages: () =>
 			transport.invoke(ipcChannels.appPreferredSystemLanguages) as Promise<string[]>,
-		checkUpdate: () =>
-			transport.invoke(ipcChannels.appCheckUpdate) as Promise<AppUpdateInfo>,
-		downloadUpdate: (asset: { name: string; url: string }) =>
-			transport.invoke(
-				ipcChannels.appDownloadUpdate,
-				asset,
-			) as Promise<AppUpdateDownloadResult>,
-		openUpdatePackage: (filePath: string) =>
-			transport.invoke(ipcChannels.appOpenUpdatePackage, filePath) as Promise<void>,
-		onUpdateProgress: (callback: (progress: AppUpdateDownloadProgress) => void) =>
-			subscribe(ipcChannels.appUpdateProgress, callback),
 		openExternal: (url: string, forceSystem?: boolean) =>
 			transport.invoke(ipcChannels.appOpenExternal, url, forceSystem) as Promise<void>,
 		onFocusSessionTarget: (callback: (target: AppFocusSessionTarget) => void) =>

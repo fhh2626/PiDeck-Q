@@ -34,8 +34,6 @@ import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporte
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
 import type { UsageStatsService } from "../usageStats/UsageStatsService";
 import type { WebServiceManager } from "../web/WebServiceManager";
-import type { createAppUpdateService } from "../update/AppUpdateService";
-import { RELEASES_URL } from "../update/AppUpdateService";
 import type { RpcRouter } from "../transport/RpcRouter";
 import type { BackendHost } from "./Backend";
 import type { SessionRuntimeBridge } from "./sessionRuntimeBridge";
@@ -97,7 +95,6 @@ export interface RegisterBackendRpcDeps {
 		usageStatsService: UsageStatsService | null;
 		modelSpecsStore: ModelSpecsStore;
 		visionBridge: VisionBridgeConfigManager;
-		appUpdateService: ReturnType<typeof createAppUpdateService>;
 	};
 }
 
@@ -132,7 +129,6 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		usageStatsService,
 		modelSpecsStore,
 		visionBridge,
-		appUpdateService,
 	} = services;
 
 	// 用量统计：业务在 UsageStatsService，handler 薄层只校验/适配
@@ -287,11 +283,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		toggleDevTools: () => host.mainWindowControls.toggleDevTools(),
 		sendToRenderer: host.sendToRenderer,
 		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
-		checkForAppUpdate: appUpdateService.checkForAppUpdate,
-		downloadUpdateAsset: appUpdateService.downloadUpdateAsset,
-		openDownloadedUpdate: appUpdateService.openDownloadedUpdate,
 		openExternalUrl: host.openExternalUrl,
-		extensionManager,
 		// 设置变更副作用（代理 / 主题 / WSL / Web 服务）
 		applyDesktopProxy: (settings) => applyDesktopProxy(settings, platform.proxy),
 		testPiProxy,
@@ -319,7 +311,6 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		restartApplication: host.restartApplication,
 		webServiceManager,
 		terminalManager,
-		RELEASES_URL,
 	});
 
 	registerStoreIpc(router, {

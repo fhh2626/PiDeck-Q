@@ -1,4 +1,3 @@
-import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { RpcRouter } from "../transport/RpcRouter";
 import { ipcChannels } from "../../shared/ipc";
 import type { WindowResizeEdge } from "../../shared/desktop/NativeHostTypes";
@@ -7,7 +6,6 @@ import type {
 	AppLogLevel,
 	AppLogQuery,
 	AppSettings,
-	AppUpdateAsset,
 	AvailableModel,
 	CreatePiSkillInput,
 	SessionCommandResult,
@@ -85,12 +83,6 @@ export type SystemIpcDeps = {
 	toggleDevTools?: () => void;
 	sendToRenderer?: (channel: string, ...args: unknown[]) => void;
 	mainCopy: (key: string, params?: Record<string, string | number>) => string;
-	/** Check for app update; implemented by the update domain service. */
-	checkForAppUpdate: (installationType?: "portable" | "installed") => Promise<import("../../shared/types").AppUpdateInfo | null>;
-	/** Download update asset */
-	downloadUpdateAsset: (asset: AppUpdateAsset) => Promise<import("../../shared/types").AppUpdateDownloadResult>;
-	/** Open a validated portable ZIP downloaded from the latest GitHub Release. */
-	openDownloadedUpdate: (filePath: string) => Promise<void>;
 	/** Open external URL */
 	openExternalUrl: (url: string, forceSystem?: boolean) => Promise<void>;
 	/**
@@ -132,17 +124,10 @@ export type SystemIpcDeps = {
 	sessionCommandIpcError?: (error: import("../../shared/types").SessionCommandError) => Error;
 	/** Restart the application */
 	restartApplication: () => void;
-	/** Extension manager for pi update */
-	extensionManager?: {
-		checkPiUpdate: () => Promise<import("../../shared/types").PiUpdateCheckResult>;
-		updatePi: () => Promise<import("../../shared/types").PiCliUpdateResult>;
-	};
 	/** Web service manager for restart */
 	webServiceManager?: { stop: () => Promise<void> };
 	/** Terminal manager for restart */
 	terminalManager?: { closeAll: () => void };
-	/** Releases URL */
-	RELEASES_URL?: string;
 };
 
 export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void {
@@ -164,9 +149,6 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		toggleDevTools,
 		sendToRenderer,
 		mainCopy,
-		checkForAppUpdate,
-		downloadUpdateAsset,
-		openDownloadedUpdate,
 		openExternalUrl: doOpenExternalUrl,
 		resolveWslEnvironment,
 		configureSessionScannerWsl,
@@ -185,8 +167,6 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		configureConfigManagerWsl,
 		configureXuePromptManagerWsl,
 		sessionCommandIpcError,
-		extensionManager,
-		RELEASES_URL,
 		restartApplication,
 	} = deps;
 
@@ -460,26 +440,10 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		}
 	});
 
-	// ── Pi 更新 ──────────────────────────────────────────────────────
-
-	if (extensionManager) {
-		router.handle(ipcChannels.piUpdateCheck, async () => {
-			const result = await extensionManager.checkPiUpdate();
-			void appLogger.info("pi", "Pi update check completed", { currentVersion: result.currentVersion, latestVersion: result.latestVersion, hasUpdate: result.hasUpdate, error: result.error });
-			return result;
-		});
-		router.handle(ipcChannels.piUpdate, async () => {
-			const result = await extensionManager.updatePi();
-			void appLogger.info("pi", "Pi update command completed", { updated: result.updated, bytes: result.output.length });
-			return result;
-		});
-	}
-
-	// ── 应用信息 ─────────────────────────────────────────────────────
+	// ── 应用信息 ─────────────────────────────────────────────────
 
 	router.handle(ipcChannels.appInfo, () => ({
 		version: platformApplication?.version ?? "0.0.0",
-		releasesUrl: RELEASES_URL ?? APP_RELEASES_URL,
 		platform: process.platform,
 	}));
 
@@ -487,21 +451,6 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 
 	router.handle(ipcChannels.appPreferredSystemLanguages, () => {
 		return platformApplication?.getPreferredSystemLanguages?.() ?? [];
-	});
-
-	// ── 应用更新 ─────────────────────────────────────────────────────
-
-	router.handle(ipcChannels.appCheckUpdate, () =>
-		checkForAppUpdate(settingsStore.get().installationType),
-	);
-	router.handle(ipcChannels.appDownloadUpdate, async (asset: AppUpdateAsset) =>
-		downloadUpdateAsset(asset),
-	);
-	router.handle(ipcChannels.appOpenUpdatePackage, async (filePath: unknown) => {
-		if (typeof filePath !== "string" || filePath.length === 0 || filePath.length > 4096) {
-			throw new Error("Invalid update package path");
-		}
-		return openDownloadedUpdate(filePath);
 	});
 
 	// ── 应用日志 ─────────────────────────────────────────────────────

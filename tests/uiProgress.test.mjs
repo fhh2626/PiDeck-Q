@@ -6,10 +6,6 @@ const progress = readFileSync(
   "src/renderer/src/components/ui-shadcn/progress.tsx",
   "utf8",
 );
-const overlay = readFileSync(
-  "src/renderer/src/components/overlays/AppUpdateOverlay.tsx",
-  "utf8",
-);
 const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
 
 test("shadcn Progress exposes value through aria semantics", () => {
@@ -20,14 +16,11 @@ test("shadcn Progress exposes value through aria semantics", () => {
   assert.match(progress, /`translateX\(-\$\{100 - \(value \|\| 0\)\}%\)`/);
 });
 
-test("update overlay uses the shared Progress with an accessible label", () => {
-  assert.match(overlay, /<Progress value=\{percent\} aria-label=\{t\("update\.downloadProgress"\)\}/);
-  assert.doesNotMatch(overlay, /update-progress-bar/);
-  assert.doesNotMatch(overlay, /style=\{\{ width: `\$\{Math\.max\(0, Math\.min\(100, percent\)\)\}%` \}\}/);
-});
-
 test("legacy update progress track CSS is removed", () => {
+  // AppUpdateOverlay 已随 0.2.1 移除，手写进度条 class 全部随之清掉；
+  // 守门：新组件若要进度条，应引 shadcn Progress 而不是重新手写一套。
   assert.doesNotMatch(surfaces, /\.update-progress-track/);
   assert.doesNotMatch(surfaces, /\.update-progress-bar/);
-  assert.match(surfaces, /\.update-progress-header,/);
+  assert.doesNotMatch(surfaces, /\.update-progress-header/);
+  assert.doesNotMatch(surfaces, /\.update-download-progress/);
 });

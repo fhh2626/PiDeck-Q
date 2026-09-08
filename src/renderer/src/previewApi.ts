@@ -1,4 +1,3 @@
-import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
 import {
 	createDefaultExternalEditorSettings,
@@ -147,7 +146,6 @@ let previewSettings: AppSettings = {
 	fontFamilyMonoCustom: "",
 	removedBuiltInExtensions: ["pideck-q-better-compaction.ts"],
 	hiddenBuiltinPromptNames: [],
-	disableUpdateCheck: false,
 	piRpcOffline: true,
 	piRpcNoExtensions: false,
 	piRpcNoSkills: false,
@@ -606,16 +604,6 @@ export function createPreviewApi(): PiDesktopApi {
 				version: "preview",
 				searchedDirs: [],
 			}),
-			checkUpdate: async () => ({
-				currentVersion: "preview",
-				latestVersion: "preview",
-				hasUpdate: false,
-			}),
-			update: async () => ({
-				command: "pi update pi --no-approve",
-				output: "Preview mode: pi update output",
-				updated: false,
-			}),
 			execInstall: async (_command) => ({
 				success: true,
 				exitCode: 0,
@@ -639,27 +627,10 @@ export function createPreviewApi(): PiDesktopApi {
 		app: {
 			info: async () => ({
 				version: "preview",
-				releasesUrl: APP_RELEASES_URL,
 				platform: "win32" as NodeJS.Platform,
-				homeDir: "C:/Users/preview",
 			}),
 			preferredSystemLanguages: async () => navigator.languages?.length ? [...navigator.languages] : [navigator.language],
 			networkAddresses: async () => [{ address: "192.168.1.100", interfaceName: "Wi-Fi", cidr: "192.168.1.100/24", isPrivate: true }],
-			checkUpdate: async () => ({
-				currentVersion: "preview",
-				latestVersion: "preview",
-				hasUpdate: false,
-				releaseName: "preview",
-				releaseNotes: "",
-				releaseUrl: APP_RELEASES_URL,
-				assets: [],
-			}),
-			downloadUpdate: async (asset) => ({
-				filePath: asset.name,
-				assetName: asset.name,
-			}),
-			openUpdatePackage: async () => undefined,
-			onUpdateProgress: () => () => undefined,
 			onFocusSessionTarget: () => () => undefined,
 			getPendingFocusTarget: async () => null,
 			ackFocusSessionTarget: async () => undefined,

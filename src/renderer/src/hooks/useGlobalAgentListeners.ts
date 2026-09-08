@@ -3,7 +3,6 @@ import { useStore } from "jotai";
 import type {
   AppFocusSessionTarget,
   AppSettings,
-  AppUpdateDownloadProgress,
   Project,
 } from "../../../shared/types";
 import { replaceProjectInventoryAtom } from "../atoms";
@@ -17,7 +16,6 @@ type GlobalAgentListenerCallbacks = {
   onProjectsChanged?: (projects: Project[]) => void;
   onFocusTarget?: (target: AppFocusSessionTarget) => void;
   onSettingsApplied?: (settings: AppSettings) => void;
-  onUpdateProgress?: (progress: AppUpdateDownloadProgress) => void;
   onTrustRequest?: (request: {
     requestId: string;
     cwd: string;
@@ -53,9 +51,6 @@ export function useGlobalAgentListeners(
     const offSettings = desktopApi.settings.onApplyWindow((settings) => {
       callbacksRef.current.onSettingsApplied?.(settings);
     });
-    const offUpdateProgress = desktopApi.app.onUpdateProgress((progress) => {
-      callbacksRef.current.onUpdateProgress?.(progress);
-    });
     const offTrustRequest = desktopApi.projects.onTrustRequest((request) => {
       callbacksRef.current.onTrustRequest?.(request);
     });
@@ -65,7 +60,6 @@ export function useGlobalAgentListeners(
       offProjects();
       offFocusTarget();
       offSettings();
-      offUpdateProgress();
       offTrustRequest();
     };
   }, [store]);

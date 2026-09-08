@@ -50,7 +50,6 @@ import { AgentManager } from "../pi/AgentManager";
 import { fetchModelList, refreshModelList } from "../pi/modelListCache";
 import { ModelSpecsStore } from "../pi/modelSpecsStore";
 import { VisionBridgeConfigManager } from "../settings/visionBridgeConfig";
-import { createAppUpdateService } from "../update/AppUpdateService";
 import { WebServiceManager } from "../web/WebServiceManager";
 import type { Backend, CreateBackendOptions } from "./Backend";
 import { createSessionRuntimeBridge } from "./sessionRuntimeBridge";
@@ -490,7 +489,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		version: appInfo.version,
 		platform: process.platform,
 		arch: process.arch,
-		installationType: settingsStore.get().installationType,
 	});
 
 	await applyDesktopProxy(settingsStore.get(), platform.proxy);
@@ -505,18 +503,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 	);
 
 	const visionBridge = new VisionBridgeConfigManager(configManager);
-
-	const appUpdateService = createAppUpdateService({
-		logger: appLogger,
-		translate: mainCopy,
-		emitProgress: (progress) => {
-			host.sendToRenderer(ipcChannels.appUpdateProgress, progress);
-		},
-		platformApp: platform.application,
-		platformPaths: platform.paths,
-		platformShell: platform.shell,
-		platformDownloads: platform.downloads,
-	});
 
 	registerBackendRpc({
 		router,
@@ -554,7 +540,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			usageStatsService,
 			modelSpecsStore,
 			visionBridge,
-			appUpdateService,
 		},
 	});
 

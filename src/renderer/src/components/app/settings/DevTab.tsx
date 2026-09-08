@@ -1,14 +1,13 @@
 import { memo, useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { RotateCw } from "lucide-react";
+import { RotateCw, ExternalLink } from "lucide-react";
 import type {
   AppInfo,
   AppSettings,
-  PiCliUpdateResult,
   PiInstallStatus,
-  PiUpdateCheckResult,
   WebNetworkAddress,
 } from "../../../../../shared/types";
+import { APP_RELEASES_URL } from "../../../../../shared/appIdentity";
 import { t } from "../../../i18n";
 import { desktopApi } from "../../../desktopApi";
 import { Button } from "../../ui-shadcn/button";
@@ -41,14 +40,6 @@ type DevTabProps = {
   onClearCustomPath: () => void;
   onCheckPi: () => void;
   onClearCheckFlag?: () => void;
-  piUpdateChecking: boolean;
-  onCheckPiUpdate: () => void;
-  piUpdating: boolean;
-  onUpdatePi: () => void;
-  piUpdateCheck: PiUpdateCheckResult | null;
-  piUpdateResult: PiCliUpdateResult | null;
-  updateChecking: boolean;
-  onCheckUpdate: () => void;
   webServiceChanging: boolean;
   onOpenWebService: (port: string) => void;
   onRestartWebService: () => void;
@@ -197,8 +188,6 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
     setWebPortDraft(String(draft.webServicePort));
   }, [props.resetKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const disableUpdateCheck = draft.disableUpdateCheck;
-
   const piSourceOptions: SelectOption[] = [
     { value: "windows", label: t("settings.piSource.windows") },
     { value: "wsl", label: t("settings.piSource.wsl") },
@@ -252,32 +241,8 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
                 {t("environment.clearCheckFlag")}
               </Button>
             )}
-            <Button variant="secondary"
-              onClick={props.onCheckPiUpdate}
-              loading={props.piUpdateChecking}
-              disabled={disableUpdateCheck}
-            >
-              {t("settings.checkPiUpdate")}
-            </Button>
-            <Button variant="secondary"
-              onClick={props.onUpdatePi}
-              loading={props.piUpdating}
-              disabled={
-                disableUpdateCheck ||
-                !props.piUpdateCheck?.hasUpdate
-              }
-            >
-              {t("settings.updatePi")}
-            </Button>
           </div>
         </div>
-        {props.piUpdateResult && (
-          <pre className="setting-update-output">
-            {props.piUpdateResult.command}
-            {"\n"}
-            {props.piUpdateResult.output}
-          </pre>
-        )}
 
         <div className="my-3 border-0 border-t border-border-subtle" />
 
@@ -453,8 +418,8 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
         </div>
       </SettingsSection>
 
-      {/* 版本与更新 */}
-      <SettingsSection title={t("settings.sectionUpdates")}>
+      {/* 版本与更新：0.2.1 起内置更新系统移除，只保留版本展示 + GitHub 普通外链 */}
+      <SettingsSection title={t("settings.sectionAbout")}>
         <SettingRow
           title={
             <>
@@ -462,26 +427,13 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
               <span className="text-caption font-normal text-muted-foreground">v{props.appInfo.version}</span>
             </>
           }
+          description={t("settings.sectionAboutDesc")}
         >
-          <Button variant="secondary"
-            onClick={disableUpdateCheck ? undefined : props.onCheckUpdate}
-            // 禁用时不再显示 loading：检查可能已被禁用拦下，但状态未及落定时仍会转圈
-            loading={props.updateChecking && !disableUpdateCheck}
-            disabled={disableUpdateCheck}
-          >
-            {disableUpdateCheck
-              ? t("settings.updateCheckDisabled")
-              : t("settings.checkUpdate")}
+          <Button variant="secondary" onClick={() => void desktopApi.app.openExternal(APP_RELEASES_URL, true)}>
+            <ExternalLink className="mr-1.5 size-3.5" aria-hidden="true" />
+            {t("settings.viewReleases")}
           </Button>
         </SettingRow>
-        <SettingSwitchRow
-          title={t("settings.disableUpdateCheck")}
-          description={t("settings.disableUpdateCheckDesc")}
-          checked={draft.disableUpdateCheck}
-          onChange={(checked) =>
-            updateDraft({ disableUpdateCheck: checked })
-          }
-        />
       </SettingsSection>
 
       {/* 运行 */}

@@ -2,21 +2,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-test("startup Pi update check is guarded against double invocation", () => {
+test("startup no longer auto-runs a Pi version update check", () => {
   const hook = readFileSync("src/renderer/src/hooks/usePiUpdate.ts", "utf8");
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
-  const main = readFileSync("src/renderer/src/main.tsx", "utf8");
 
-  // 回归：StrictMode 下 useEffect([]) 在 dev 双执行，settings.get().then 回调跑两遍，
-  // 未加闸门时「Pi 不是最新版本」toast 会弹两次。
-  assert.match(main, /<React\.StrictMode>/);
-  assert.match(app, /checkPiCliUpdateOnStartup\(\), 1200\)/);
-  // 防重入：ref 置位必须在函数开头同步完成（并发回调先后到达时第二个直接跳过）
-  assert.match(hook, /startupUpdateCheckDoneRef/);
-  assert.match(hook, /useRef\(false\)/);
-  assert.match(hook, /if \(startupUpdateCheckDoneRef\.current\) return;\n\s*startupUpdateCheckDoneRef\.current = true;/);
-  // 注释说明为什么需要闸门（防回归：后人删 ref 时应看到业务规则）
-  assert.match(hook, /StrictMode 下 useEffect/);
+  // 回归：0.2.1 移除了内置更新系统后，启动路径不再触发「Pi 版本检测 + 更新提示」。
+  // 环境检测（checkPiInstall）仍保留，但那是「pi 装没装」，不是「pi 是不是最新版」。
+  // 这里守住 usePiUpdate 不再暴露启动期版本检查入口，避免后人把它加回来。
+  assert.doesNotMatch(hook, /checkPiCliUpdateOnStartup/);
+  assert.doesNotMatch(hook, /startupUpdateCheckDoneRef/);
+  assert.doesNotMatch(app, /checkPiCliUpdateOnStartup\(\), 1200\)/);
 });
 
 test("opening dev settings does not auto-detect pi; cached result is shown directly", () => {
