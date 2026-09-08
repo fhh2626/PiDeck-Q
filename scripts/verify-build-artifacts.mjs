@@ -13,6 +13,24 @@ const EXPECTED_ENTRIES = {
 	web: "renderer/web.html",
 };
 
+/**
+ * PiDeck-Q-Change-Pi-Prompt 打包产物清单（运行时文件）。
+ *
+ * 这些文件由 pi 扩展加载器按相对路径 require，任何一个缺失/为空，打包版里
+ * 该内置扩展在启用时才会崩（默认关闭，所以源码侧门禁测不出——必须在产物上测）。
+ * 注意：这里只列运行时文件；tests/ 是否随包走由源码侧
+ * tests/extensionPackagingDeps.test.mjs 单独把关，不在此处强制。
+ */
+const CHANGE_PROMPT_FILES = [
+	"extensions/pideck-q-change-pi-prompt.ts",
+	"extensions/pideck-q-change-pi-prompt/runtime.ts",
+	"extensions/pideck-q-change-pi-prompt/transform.ts",
+	"extensions/pideck-q-change-pi-prompt/config.ts",
+	"extensions/pideck-q-change-pi-prompt/defaults.ts",
+	"extensions/pideck-q-change-pi-prompt/layout.ts",
+	"extensions/pideck-q-change-pi-prompt/contributions.ts",
+];
+
 async function exists(path) {
 	try {
 		await access(path);
@@ -91,6 +109,17 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
 		} else {
 			checked.push(extensionUndiciPackage);
+		}
+		// PiDeck-Q-Change-Pi-Prompt 的运行时文件必须完整落进产物；缺一个 = 启用即崩。
+		for (const file of CHANGE_PROMPT_FILES) {
+			const path = join(output, "resources", file);
+			if (!(await exists(path))) {
+				errors.push(`Missing packaged change-pi-prompt file: ${relative(root, path)}`);
+				continue;
+			}
+			const info = await stat(path);
+			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid change-pi-prompt file: ${relative(root, path)}`);
+			else checked.push(path);
 		}
 	}
 	const entryPaths = Object.fromEntries(

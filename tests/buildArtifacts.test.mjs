@@ -107,6 +107,65 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 	});
 });
 
+// ---- change-pi-prompt 打包门禁（Phase 6）----
+//
+// 内置扩展默认关闭，所以「缺文件」在源码侧测不出——只有启用后 pi 加载时才发现。
+// 这道门禁在产物上把缺文件/空文件提前到发版前暴露。
+
+async function putChangePromptFiles(repo, { withUndici = true } = {}) {
+	const base = join(repo, "out", "resources", "extensions");
+	if (withUndici) {
+		await put(join(base, "node_modules", "undici", "package.json"), "{}");
+	}
+	for (const file of [
+		"pideck-q-change-pi-prompt.ts",
+		"pideck-q-change-pi-prompt/runtime.ts",
+		"pideck-q-change-pi-prompt/transform.ts",
+		"pideck-q-change-pi-prompt/config.ts",
+		"pideck-q-change-pi-prompt/defaults.ts",
+		"pideck-q-change-pi-prompt/layout.ts",
+		"pideck-q-change-pi-prompt/contributions.ts",
+	]) {
+		await put(join(base, file), "// packaged");
+	}
+}
+
+test("a build with resources/extensions but no change-pi-prompt files fails", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		// 只造 undici，不造扩展文件：应当被本门禁抓到
+		await put(join(repo, "out", "resources", "extensions", "node_modules", "undici", "package.json"), "{}");
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false, result.errors.join("\n"));
+		assert.match(result.errors.join("\n"), /change-pi-prompt/);
+		assert.match(result.errors.join("\n"), /pideck-q-change-pi-prompt\.ts/);
+		assert.match(result.errors.join("\n"), /runtime\.ts/);
+	});
+});
+
+test("a build with the full change-pi-prompt runtime set passes", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, true, result.errors.join("\n"));
+		// 7 个扩展文件 + 3 个入口 + 3 个 HTML 资源 + 1 个 undici = 14
+		assert.equal(result.checked.length, 14, JSON.stringify(result.checked));
+	});
+});
+
+test("an empty change-pi-prompt runtime file fails verification", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		// 把 runtime.ts 打成 0 字节：应当报 Empty or invalid
+		await put(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "runtime.ts"), "");
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false, result.errors.join("\n"));
+		assert.match(result.errors.join("\n"), /Empty or invalid change-pi-prompt file.*runtime\.ts/);
+	});
+});
+
 test("HTML reference extraction ignores remote, data, and fragment URLs", () => {
 	assert.deepEqual(extractHtmlResourceReferences(`
 		<script src="/assets/app.js"></script>

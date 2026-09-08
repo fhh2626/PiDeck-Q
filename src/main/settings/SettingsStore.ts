@@ -164,6 +164,11 @@ export class SettingsStore {
         Object.hasOwn(parsedUnknown, "telemetryLastHeartbeatDate");
       const hadLegacyLinkOpenMode = Object.hasOwn(parsedUnknown, "linkOpenMode");
       const hadLegacyElectronChromiumSandbox = Object.hasOwn(parsedUnknown, "electronChromiumSandbox");
+      // 0.2.1 移除内置更新系统：disableUpdateCheck 只读兼容——
+      // 上面解构剥离后不再写回，但它自己必须能触发一次 save() 把磁盘文件里的
+      // 残留字段清掉；否则如果用户 settings.json 里只剩这一个 legacy 字段，
+      // 它会永远留在那里（无害但干扰后续 diff / 调试）。
+      const hadLegacyDisableUpdateCheck = Object.hasOwn(parsedUnknown, "disableUpdateCheck");
       const {
         telemetryEnabled: _ignoredTelemetryEnabled,
         telemetryInstallId: _ignoredTelemetryInstallId,
@@ -206,6 +211,7 @@ export class SettingsStore {
         hadLegacyTelemetry ||
         hadLegacyLinkOpenMode ||
         hadLegacyElectronChromiumSandbox ||
+        hadLegacyDisableUpdateCheck ||
         migratedGitCommitMessagePrompt ||
         migratedBuiltInExtensionDefaults
       ) {
