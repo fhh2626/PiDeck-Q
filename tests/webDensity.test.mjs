@@ -122,6 +122,16 @@ test("Web timeline uses 6px message gap and 12px/10px padding (desktop density)"
   );
 });
 
+test("Web message-list spacing is owned by gap-1.5, not the shared adjacent margin-top", () => {
+  // 共享 CSS 的 .message-list > * + * margin-top 是 Native turn-gap（12px）；
+  // Web 必须用 wechat-shell override 清零，否则每条消息双重间距（12px margin + 6px gap）。
+  assert.match(
+    webCss,
+    /\.app\.wechat-shell \.message-list\.message-list > \* \+ \*\s*\{\s*margin-top:\s*0;/,
+    "web.css must zero the adjacent message margin-top",
+  );
+});
+
 test("Web pending UI request keeps 8px top gap (not 12px)", () => {
   assert.match(webTimeline, /className="mt-2 w-full"/, "pending ask should use mt-2");
   assert.doesNotMatch(webTimeline, /className="mt-3 w-full"/, "pending ask should not use mt-3");

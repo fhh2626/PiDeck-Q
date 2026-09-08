@@ -94,21 +94,21 @@
 }
 .codex-session-list {
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 .codex-session-group {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 .codex-session-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
-  gap: 8px;
+  gap: 6px;
   align-items: start;
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-sm);
   background: var(--color-bg-panel);
-  padding: 8px 10px;
+  padding: 6px 8px;
   cursor: pointer;
 }
 .codex-session-row:hover {
@@ -362,10 +362,11 @@
 .outline-expand {
   width: 100%;
   border: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-sm);
   background: var(--color-bg-active);
   color: var(--color-accent);
-  padding: 6px 8px;
+  min-height: 28px;
+  padding: 2px 6px;
   font-size: var(--font-size-caption);
   cursor: pointer;
   margin-bottom: 4px;
@@ -377,11 +378,12 @@
   width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  min-height: 28px;
+  gap: 6px;
   border: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-sm);
   background: transparent;
-  padding: 7px 8px;
+  padding: 2px 6px;
   text-align: left;
   color: var(--color-text-secondary);
 }
@@ -985,7 +987,7 @@
 
 /* 代理面板：视觉分组单位（内部已走 SettingRow），外层只控制与上下行的分区节奏（同组 4px / 分区 8px） */
 .setting-proxy-panel {
-  margin: 4px 0 8px;
+  margin: 2px 0 4px;
 }
 
 /* 代理设置未保存提示栏 */
@@ -1099,20 +1101,20 @@
 
 /* pi 路径管理面板 */
 .setting-pi-path-panel {
-  margin: 4px 0 8px;
+  margin: 2px 0 4px;
 }
 /* pi 路径 / WSL 字段的旧 setting-field 布局规则已随 UI 2.0 迁移删除 */
 .setting-pi-path-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 4px;
+  margin-top: 4px;
 }
 .setting-wsl-fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 4px;
+  margin-top: 4px;
 }
 /* WSL 用户验证行：输入框 + 验证按钮 */
 .setting-wsl-user-row {
@@ -1180,15 +1182,15 @@
   word-break: break-all;
 }
 .setting-pi-source-block {
-  margin: 6px 0;
+  margin: 0;
 }
 /* Pi 来源行已迁入共享 SettingRow（DevTab）：auto minmax(160px,240px) 两列 + 12px gap + 40px 行高
    被 min-h-9 + gap-x-4 + 260px 控件列取代。 */
 .setting-pi-wsl-config {
-  margin: 8px 0 4px 0;
-  padding: 10px 12px;
+  margin: 4px 0 2px;
+  padding: 6px 8px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: var(--color-bg-muted);
 }
 
@@ -1406,13 +1408,13 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: var(--space-4);
-  gap: var(--space-3);
+  padding: var(--density-panel-padding); /* 12px */
+  gap: 8px;
 }
 .skillhub-search-bar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 4px;
 }
 .skillhub-search-input-wrap {
   display: flex;
@@ -1421,8 +1423,8 @@
 }
 .skillhub-search-input-wrap input {
   flex: 1;
-  height: 34px;
-  padding: 0 var(--space-3);
+  height: var(--density-control-height); /* 32px */
+  padding: 0 8px;
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
   background: var(--color-bg-muted);
@@ -1463,8 +1465,8 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding-right: var(--space-2);
+  gap: 4px;
+  padding-right: 4px;
 }
 .skillhub-result-count {
   color: var(--color-text-tertiary);
@@ -1473,10 +1475,10 @@
 .skillhub-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 6px 8px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }

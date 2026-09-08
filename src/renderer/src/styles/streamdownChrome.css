@@ -60,7 +60,7 @@
   min-height: var(--density-code-header-height);
   max-height: var(--density-code-header-height);
   align-items: center;
-  padding: 0 4.75rem 0 0.85rem;
+  padding: 0 4.75rem 0 8px;
   border: 0;
   border-bottom: 1px solid var(--color-border-subtle);
   border-radius: 0;
@@ -71,9 +71,9 @@
 
 [data-streamdown="code-block-header"] > span {
   margin-left: 0;
-  padding: 0.1rem 0.45rem;
+  padding: 1px 4px;
   border-radius: var(--density-radius-small);
-  background: color-mix(in srgb, var(--color-bg-hover) 80%, transparent);
+  background: transparent;
   font-family: var(--font-family-mono);
   font-size: var(--text-micro);
   letter-spacing: 0.03em;

@@ -61,6 +61,13 @@ body {
   height: auto;
 }
 
+/* Density Contract：Web 消息间距只由 WebTimeline 的 gap-1.5（6px）管理；
+   共享 CSS 的 .message-list adjacent margin-top 是 Native turn-gap（12px），
+   Web 不叠加，否则每条消息双重间距。 */
+.app.wechat-shell .message-list.message-list > * + * {
+  margin-top: 0;
+}
+
 .app.wechat-shell > .chat-pane > .composer {
   flex: 0 0 auto;
   min-height: 0;

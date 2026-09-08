@@ -212,6 +212,10 @@ test("ConfigModal sidebar uses h-7 gap-1 p-1.5 (not h-8 gap-2.5 p-2.5)", () => {
   const triggers = src.match(/config-nav-btn h-7/g);
   assert.ok(triggers && triggers.length >= 3, "ConfigModal should have at least 3 h-7 nav triggers");
   assert.doesNotMatch(src, /config-nav-btn h-8/, "ConfigModal triggers should not be h-8");
+
+  // Header density：主界面与错误兑底一致（px-3 py-2），错误态不回退到大 Dialog header。
+  assert.doesNotMatch(src, /px-4 py-2\.5/, "ConfigModal header must not stay at px-4 py-2.5");
+  assert.doesNotMatch(src, /px-4 py-3/, "ConfigModal error fallback header must not use px-4 py-3");
 });
 
 // ── 侧边栏资源行 ─────────────────────────────────────────────────────────────
@@ -242,4 +246,127 @@ test("Worktree row uses px-0.5 py-0 (not p-0.5, which would exceed 28px)", () =>
   assert.match(workspaceRow[1], /px-0\.5/, "worktree row should keep 2px horizontal padding");
   assert.match(workspaceRow[1], /py-0/, "worktree row should use py-0 so height stays 28px");
   assert.doesNotMatch(workspaceRow[1], /\bp-0\.5\b/, "worktree row should not use p-0.5");
+});
+
+// ── 设置 wrapper CSS：外围旧值不允许回潮 ────────────────────────────────────────
+test("DevTab does not stack consecutive dividers", () => {
+  const src = read("components/app/settings/DevTab.tsx");
+  // 一个 section 边界最多一条 divider：任意两条 divider 之间必须夹着真实内容（>3 行）。
+  const dividerLines = src
+    .split("\n")
+    .map((line, i) => (line.includes("my-2 border-0 border-t") ? i : -1))
+    .filter((i) => i >= 0);
+  for (let i = 1; i < dividerLines.length; i++) {
+    assert.ok(
+      dividerLines[i] - dividerLines[i - 1] > 3,
+      `DevTab has stacked dividers at lines ${dividerLines[i - 1] + 1} and ${dividerLines[i] + 1}`,
+    );
+  }
+  // 至少存在 divider（防止选择器改名后测试恒真）。
+  assert.ok(dividerLines.length >= 1, "DevTab divider selector not found");
+});
+
+test("Pi settings wrapper CSS stays on the 2/4/6/8px rhythm", () => {
+  const css = read("styles/surfaces.css");
+  const pick = (sel) => {
+    const m = css.match(new RegExp("\\." + sel + "\\s*\\{[^}]*\\}"));
+    assert.ok(m, "." + sel + " rule not found");
+    return m[0];
+  };
+  const sourceBlock = pick("setting-pi-source-block");
+  assert.match(sourceBlock, /margin:\s*0;/, "setting-pi-source-block should have margin 0");
+  assert.doesNotMatch(sourceBlock, /margin:\s*6px/, "setting-pi-source-block must not use 6px margin");
+
+  const wsl = pick("setting-pi-wsl-config");
+  assert.doesNotMatch(wsl, /padding:\s*10px 12px/, "setting-pi-wsl-config must not use 10px 12px padding");
+  assert.match(wsl, /padding:\s*6px 8px;/, "setting-pi-wsl-config should use 6px 8px padding");
+  assert.match(wsl, /border-radius:\s*var\(--radius-sm\);/, "setting-pi-wsl-config should use radius-sm");
+
+  const fields = pick("setting-wsl-fields");
+  assert.match(fields, /gap:\s*4px;/, "setting-wsl-fields should use 4px gap");
+  assert.doesNotMatch(fields, /margin-top:\s*8px/, "setting-wsl-fields must not use margin-top 8px");
+
+  const actions = pick("setting-pi-path-actions");
+  assert.match(actions, /gap:\s*4px;/, "setting-pi-path-actions should use 4px gap");
+  assert.doesNotMatch(actions, /margin-top:\s*8px/, "setting-pi-path-actions must not use margin-top 8px");
+
+  const proxy = pick("setting-proxy-panel");
+  assert.match(proxy, /margin:\s*2px 0 4px;/, "setting-proxy-panel should use 2px 0 4px");
+});
+
+// ── Pi Config 设置页：separator 列表 ────────────────────────────────────────
+test("Pi Config SettingsTab is a separator list (no gap-2, no per-row card borders)", () => {
+  const src = read("config/SettingsTab.tsx");
+  assert.match(src, /flex flex-col gap-0/, "settings list container should use gap-0");
+  assert.doesNotMatch(src, /flex flex-col gap-2/, "settings list container must not use gap-2");
+  // ConfigSettingRow 是共享行组件：separator 风格 + 28px 行高 + 180px label 列。
+  assert.match(src, /function ConfigSettingRow/, "ConfigSettingRow helper must exist");
+  assert.match(
+    src,
+    /grid min-h-9 grid-cols-\[180px_minmax\(0,1fr\)\] items-center gap-x-4 border-t border-border-subtle\/60 px-2 py-0\.5 first:border-t-0/,
+    "ConfigSettingRow should use the separator row class",
+  );
+  // 普通 row 不允许回到四边框卡片；Input 的边框不在此约束内。
+  const rowCards = src.match(/flex items-center gap-3\.5 rounded-sm border border-border-subtle px-2 py-0\.5/g) || [];
+  assert.equal(rowCards.length, 0, "config rows must not use rounded card borders: " + rowCards.length);
+});
+
+// ── 二级 UI：SkillHub / Outline / Codex import ────────────────────────────────
+test("SkillHub panel and cards use the compact card rhythm", () => {
+  const css = read("styles/surfaces.css");
+  const pick = (sel) => {
+    const m = css.match(new RegExp("\\." + sel + "\\s*\\{[^}]*\\}"));
+    assert.ok(m, "." + sel + " rule not found");
+    return m[0];
+  };
+  const panel = pick("skillhub-panel");
+  assert.match(panel, /padding:\s*var\(--density-panel-padding\)/, "skillhub-panel should use --density-panel-padding");
+  assert.doesNotMatch(panel, /padding:\s*var\(--space-4\)/, "skillhub-panel must not use --space-4 padding");
+  assert.match(panel, /gap:\s*8px;/, "skillhub-panel should use 8px gap");
+
+  const card = pick("skillhub-card");
+  assert.doesNotMatch(card, /padding:\s*10px 12px/, "skillhub-card must not use 10px 12px padding");
+  assert.match(card, /padding:\s*6px 8px;/, "skillhub-card should use 6px 8px padding");
+  assert.match(card, /border-radius:\s*var\(--radius-sm\);/, "skillhub-card should use radius-sm");
+
+  const results = pick("skillhub-results");
+  assert.match(results, /gap:\s*4px;/, "skillhub-results should use 4px gap");
+
+  const input = css.match(/\.skillhub-search-input-wrap input\s*\{[^}]*\}/);
+  assert.ok(input, "skillhub input rule not found");
+  assert.match(input[0], /height:\s*var\(--density-control-height\)/, "skillhub input should use 32px control height");
+  assert.doesNotMatch(input[0], /height:\s*34px/, "skillhub input must not stay at 34px");
+});
+
+test("Conversation outline rows look like an IDE navigation list", () => {
+  const css = read("styles/surfaces.css");
+  const btn = css.match(/\.conversation-outline button\s*\{[^}]*\}/);
+  assert.ok(btn, ".conversation-outline button rule not found");
+  assert.match(btn[0], /min-height:\s*28px;/, "outline row should be 28px");
+  assert.doesNotMatch(btn[0], /padding:\s*7px 8px/, "outline row must not use 7px 8px padding");
+  assert.doesNotMatch(btn[0], /border-radius:\s*var\(--radius-lg\)/, "outline row must not use radius-lg");
+  assert.match(btn[0], /padding:\s*2px 6px;/, "outline row should use 2px 6px padding");
+
+  const expand = css.match(/\.outline-expand\s*\{[^}]*\}/);
+  assert.ok(expand, ".outline-expand rule not found");
+  assert.match(expand[0], /min-height:\s*28px;/, "outline expand should be 28px");
+  assert.match(expand[0], /padding:\s*2px 6px;/, "outline expand should use 2px 6px padding");
+});
+
+test("Codex import list is compact (no 8px list gap, no radius-lg rows)", () => {
+  const css = read("styles/surfaces.css");
+  const list = css.match(/\.codex-session-list\s*\{[^}]*\}/);
+  assert.ok(list, ".codex-session-list rule not found");
+  assert.match(list[0], /gap:\s*4px;/, "codex-session-list should use 4px gap");
+  assert.doesNotMatch(list[0], /gap:\s*8px/, "codex-session-list must not use 8px gap");
+
+  const group = css.match(/\.codex-session-group\s*\{[^}]*\}/);
+  assert.ok(group, ".codex-session-group rule not found");
+  assert.match(group[0], /gap:\s*4px;/, "codex-session-group should use 4px gap");
+
+  const row = css.match(/\.codex-session-row\s*\{[^}]*\}/);
+  assert.ok(row, ".codex-session-row rule not found");
+  assert.doesNotMatch(row[0], /padding:\s*8px 10px/, "codex-session-row must not use 8px 10px padding");
+  assert.match(row[0], /padding:\s*6px 8px;/, "codex-session-row should use 6px 8px padding");
+  assert.match(row[0], /border-radius:\s*var\(--radius-sm\);/, "codex-session-row should use radius-sm");
 });

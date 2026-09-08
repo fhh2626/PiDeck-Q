@@ -9,6 +9,26 @@ import { Checkbox } from "../components/ui-shadcn/checkbox";
 import { Label } from "../components/ui-shadcn/label";
 import { SectionHeading } from "../components/ui-shadcn/section-heading";
 
+/**
+ * Pi Config 设置项行：separator 列表风格（水平分隔线，不做四边框圆角卡），
+ * 与主设置弹框 SettingRow 的密度契约对齐（min-h-9 / px-2 / py-0.5）。
+ * label 固定 180px 列，控件占满剩余宽度。
+ */
+function ConfigSettingRow({
+	label,
+	children,
+}: {
+	label: ReactNode;
+	children: ReactNode;
+}) {
+	return (
+		<div className="grid min-h-9 grid-cols-[180px_minmax(0,1fr)] items-center gap-x-4 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
+			<span className="text-control font-medium text-text-primary">{label}</span>
+			<div className="min-w-0">{children}</div>
+		</div>
+	);
+}
+
 // ── 可用模型列表聚合（含供应商信息，供 enabledModels 多选用） ──
 
 interface ModelRecord {
@@ -224,10 +244,9 @@ export function SettingsTab(props: {
 					{t("config.count.configItems", { count: entries.length })}
 				</span>
 			</div>
-			<div className="flex flex-col gap-2">
+			<div className="flex flex-col gap-0">
 				{/* enabledModels 始终显示在最前面 */}
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
-					<span className="min-w-[180px] text-control font-medium text-text-primary">{configLabel("enabledModels")}</span>
+				<ConfigSettingRow label={configLabel("enabledModels")}>
 					<EnabledModelsInput
 						value={
 							Array.isArray(data.enabledModels) ? data.enabledModels : undefined
@@ -235,7 +254,7 @@ export function SettingsTab(props: {
 						models={collectModels(props.modelsData, props.discoveredModels)}
 						onChange={(v) => props.onChange({ ...data, enabledModels: v })}
 					/>
-				</div>
+				</ConfigSettingRow>
 
 				{/* ── 全局会话目录（仅编辑 ~/.pi/agent/settings.json 的 sessionDir） ── */}
 				<div className="config-retry-group">
@@ -246,7 +265,7 @@ export function SettingsTab(props: {
 						description={t("config.sessionDir.hint")}
 					/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 						<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.label.sessionDir")}</span>
 						<Input
 							className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]"
@@ -267,11 +286,11 @@ export function SettingsTab(props: {
 						description={t("config.retry.hint")}
 					/>
 				</div>
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+				<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 					<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.retry.maxRetries")}</span>
 					<Input className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]" type="number" min={0} max={50} value={retryConfig.maxRetries} onChange={(e) => updateRetry({ maxRetries: Number(e.target.value) })} />
 				</div>
-				<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+				<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 					<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.retry.baseDelayMs")}</span>
 					<Input className="h-8 min-w-0 flex-1 rounded-sm border border-border-subtle bg-bg-panel px-3 text-control text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[var(--focus-ring)]" type="number" min={100} step={100} value={retryConfig.baseDelayMs} onChange={(e) => updateRetry({ baseDelayMs: Number(e.target.value) })} />
 				</div>
@@ -286,7 +305,7 @@ export function SettingsTab(props: {
 						description={t("config.compaction.hint")}
 					/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 						<span className="min-w-[180px] text-control font-medium text-text-primary">{t("config.compaction.enabled")}</span>
 						<Label className="config-checkbox-label">
 							<Checkbox
@@ -300,7 +319,7 @@ export function SettingsTab(props: {
 							</span>
 						</Label>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 						<span className="min-w-[180px] text-control font-medium text-text-primary" title={t("config.compaction.reserveTokensHint")}>
 							{t("config.compaction.reserveTokens")}
 						</span>
@@ -317,7 +336,7 @@ export function SettingsTab(props: {
 							}
 						/>
 					</div>
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
+					<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0">
 						<span className="min-w-[180px] text-control font-medium text-text-primary" title={t("config.compaction.keepRecentTokensHint")}>
 							{t("config.compaction.keepRecentTokens")}
 						</span>
@@ -343,8 +362,7 @@ export function SettingsTab(props: {
 					// sessionDir / retry / enabledModels 已有专用区块，避免列表里重复一行
 					.filter(([key]) => key !== "enabledModels" && key !== "retry" && key !== "sessionDir")
 					.map(([key, value]) => (
-					<div key={key} className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong">
-						<span className="min-w-[180px] text-control font-medium text-text-primary">{configLabel(key)}</span>
+					<ConfigSettingRow key={key} label={configLabel(key)}>
 						<SettingsValueInput
 							value={value}
 							fieldKey={key}
@@ -363,10 +381,10 @@ export function SettingsTab(props: {
 								props.onChange({ ...data, [key]: v });
 							}}
 						/>
-					</div>
+					</ConfigSettingRow>
 				))}
 				{!hasEnabledModels && (
-					<div className="flex items-center gap-3.5 rounded-sm border border-border-subtle px-2 py-0.5 transition-colors hover:border-border-strong justify-center border-dashed opacity-70 hover:opacity-100">
+					<div className="flex items-center gap-3.5 border-t border-border-subtle/60 px-2 py-0.5 first:border-t-0 justify-center border-dashed opacity-70 hover:opacity-100">
 						<Button size="sm" variant="outline"
 							onClick={() => props.onChange({ ...data, enabledModels: [] })}
 						>

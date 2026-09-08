@@ -257,7 +257,7 @@ class ConfigModalErrorBoundary extends Component<
 		return (
 			<Dialog open={this.props.open} onOpenChange={(next) => !next && this.props.onClose()}>
 			<DialogContent showCloseButton={false} className={cn("flex flex-col gap-0 overflow-hidden p-0", configModalSizeClass, "config-modal", "[--wallpaper-dialog-alpha:var(--wallpaper-panel-alpha,30%)]")}>
-				<DialogHeader className="flex-row items-center justify-between px-4 py-3">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<DialogTitle>{t("config.loadFailed")}</DialogTitle>
 					<DialogClose asChild>
 						<Button variant="ghost" size="icon" aria-label={t("common.close")} title={t("common.close")}>
@@ -1669,7 +1669,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		<Dialog open={open} onOpenChange={(next) => !next && handleClose()}>
 			<DialogContent showCloseButton={false} className={cn("flex flex-col gap-0 overflow-hidden p-0", configModalSizeClass, "config-modal", "[--wallpaper-dialog-alpha:var(--wallpaper-panel-alpha,30%)]")}>
 				{/* 顶栏/侧栏控件与设置弹窗、会话顶栏统一到 sm / text-sm 密度 */}
-				<DialogHeader className="flex-row items-center justify-between px-4 py-2.5">
+				<DialogHeader className="flex-row items-center justify-between px-3 py-2">
 					<DialogTitle className="text-sm font-semibold tracking-tight">{t("config.title")}</DialogTitle>
 					<div className="flex items-center gap-1.5">
 						{/* 顶部统一保存：各 tab 内部保存按钮可能被滚动藏住，这里常驻可见；

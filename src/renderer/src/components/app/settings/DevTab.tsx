@@ -353,9 +353,6 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
 
         <div className="my-2 border-0 border-t border-border-subtle" />
 
-        
-        <div className="my-2 border-0 border-t border-border-subtle" />
-
         {/* 运行参数：旧 setting-pi-runtime-panel 无 CSS 规则（仅占位），三个 SettingRow 直接挂在 SettingsSection 下 */}
         <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
           <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
