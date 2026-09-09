@@ -26,6 +26,24 @@ const SENSITIVE_PATH_PATTERNS: string[] = [
 	"(\\.pem|\\.key|\\.p12)$",
 ];
 
+/**
+ * 默认 PowerShell 危险命令模式（本地副本，与 shared/types/security.ts 对齐）
+ */
+const DEFAULT_DENY_POWERSHELL_PATTERNS: string[] = [
+	"\\b(Remove-Item|rm|del|erase|rmdir)\\b",
+	"\\b(Set-Content|Add-Content|Clear-Content|Out-File)\\b",
+	"\\b(New-Item|mkdir|ni)\\b",
+	"\\b(Move-Item|mv|Copy-Item|cp|Rename-Item)\\b",
+	"\\b(Set-Item|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|Set-Acl)\\b",
+	"\\b(Invoke-Expression|Start-Process|Stop-Process)\\b",
+	"(^|[^<])>(?!>)",
+	">>",
+	"\\bgit\\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|branch\\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)\\b",
+	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
+	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
+	"\\byarn\\s+(add|install|remove|publish)\\b",
+];
+
 /** 路径分隔符归一化：Windows 反斜杠 → 正斜杠，便于统一比较 */
 export function normalizePathForCompare(p: string): string {
 	return p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -97,7 +115,7 @@ export function validateSecurityConfig(config: SecurityConfig): string[] {
 			errors.push(`内置等级 id 非法: ${level.id}`);
 		}
 		for (const [tool, action] of Object.entries(level.toolActions)) {
-			if (!["read", "write", "edit", "bash", "grep", "find", "ls", "ask_question"].includes(tool)) {
+			if (!["read", "write", "edit", "bash", "powershell", "grep", "find", "ls", "ask_question"].includes(tool)) {
 				errors.push(`等级 ${level.id} 包含未知工具: ${tool}`);
 			}
 			if (action !== "allow" && action !== "ask" && action !== "deny") {
@@ -109,6 +127,15 @@ export function validateSecurityConfig(config: SecurityConfig): string[] {
 				new RegExp(pattern);
 			} catch {
 				errors.push(`等级 ${level.id} 危险命令正则无法编译: ${pattern}`);
+			}
+		}
+		if (level.denyPowerShellPatterns) {
+			for (const pattern of level.denyPowerShellPatterns) {
+				try {
+					new RegExp(pattern, "i");
+				} catch {
+					errors.push(`等级 ${level.id} PowerShell 危险命令正则无法编译: ${pattern}`);
+				}
 			}
 		}
 	}
@@ -142,6 +169,24 @@ export function matchBashDenyPatterns(
 			if (new RegExp(pattern).test(command)) return pattern;
 		} catch {
 			// 非法正则已在校验阶段拦截；这里静默跳过保证扩展不因配置崩溃
+		}
+	}
+	return null;
+}
+
+/**
+ * 求值 powershell 命令：命中危险模式 → 返回命中规则模式；未命中返回 null。
+ */
+export function matchPowerShellDenyPatterns(
+	level: SecurityLevelConfig,
+	command: string,
+): string | null {
+	const patterns = level.denyPowerShellPatterns ?? DEFAULT_DENY_POWERSHELL_PATTERNS;
+	for (const pattern of patterns) {
+		try {
+			if (new RegExp(pattern, "i").test(command)) return pattern;
+		} catch {
+			// 静默跳过
 		}
 	}
 	return null;

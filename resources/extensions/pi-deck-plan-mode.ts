@@ -15,11 +15,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 const PI_DECK_PLAN_MODE_MARKER = "__PI_DECK_PLAN_MODE__";
 
-// Plan 模式只保留只读能力和桌面提问工具；恢复时会合并用户原本启用的其它自定义工具。
-const PLAN_MODE_TOOLS = ["read", "bash", "ask_question"];
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write", "ask_question"];
+// Plan 模式基础只读工具；edit 与 write 始终禁用；shell (bash/powershell) 保留用户原有的，不额外臆造。
+const PLAN_MODE_BASE_TOOLS = ["read", "ask_question"];
 const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write"]);
-const PLAN_MANAGED_TOOLS = new Set<string>([...PLAN_MODE_TOOLS, ...NORMAL_MODE_TOOLS]);
 
 interface TodoItem {
 	step: number;
@@ -105,7 +103,99 @@ const SAFE_PATTERNS = [
 	/^\s*eza\b/,
 ];
 
-function isSafeCommand(command: string): boolean {
+export const POWERSHELL_DESTRUCTIVE_PATTERNS = [
+	/\b(Remove-Item|rm|del|erase|rmdir|ri)\b/i,
+	/\b(Set-Content|sc)\b/i,
+	/\b(Add-Content|ac)\b/i,
+	/\b(Clear-Content|clc)\b/i,
+	/\bOut-File\b/i,
+	/\b(New-Item|ni|mkdir|md)\b/i,
+	/\b(Copy-Item|cp|cpi|copy)\b/i,
+	/\b(Move-Item|mv|mi|move)\b/i,
+	/\b(Rename-Item|rni|ren)\b/i,
+	/\b(Set-Item|si)\b/i,
+	/\b(Set-ItemProperty|sp)\b/i,
+	/\b(New-ItemProperty|Remove-ItemProperty|Clear-ItemProperty|Clear-Item)\b/i,
+	/\bSet-Acl\b/i,
+	/\b(Invoke-Expression|iex)\b/i,
+	/\b(Invoke-Command|icm)\b/i,
+	/\b(Start-Process|saps)\b/i,
+	/\b(Stop-Process|spps|kill)\b/i,
+	/(^|[^<])>(?!>)/,
+	/>>/,
+	/\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)\b/i,
+	/\bnpm\s+(install|uninstall|update|ci|link|publish)\b/i,
+	/\byarn\s+(add|remove|install|publish)\b/i,
+	/\bpnpm\s+(add|remove|install|publish)\b/i,
+	/\bpip\s+(install|uninstall)\b/i,
+];
+
+export const POWERSHELL_SAFE_PATTERNS = [
+	/^\s*(Get-Content|gc|cat|type)\b/i,
+	/^\s*(Get-ChildItem|gci|ls|dir)\b/i,
+	/^\s*(Select-String|sls)\b/i,
+	/^\s*(Get-Location|gl|pwd)\b/i,
+	/^\s*(Write-Output|echo)\b/i,
+	/^\s*Write-Host\b/i,
+	/^\s*(Measure-Object|measure)\b/i,
+	/^\s*(Sort-Object|sort)\b/i,
+	/^\s*(Select-Object|select)\b/i,
+	/^\s*(Where-Object|where|\?)\b/i,
+	/^\s*(ForEach-Object|%)\b/i,
+	/^\s*(Get-Command|gcm)\b/i,
+	/^\s*(Get-Help|help|man)\b/i,
+	/^\s*(Get-Item|gi)\b/i,
+	/^\s*(Get-ItemProperty|gp)\b/i,
+	/^\s*Test-Path\b/i,
+	/^\s*(Compare-Object|diff)\b/i,
+	/^\s*(Format-Table|ft)\b/i,
+	/^\s*(Format-List|fl)\b/i,
+	/^\s*(Format-Wide|fw)\b/i,
+	/^\s*(Out-String|Out-Host|Out-Null|Out-Default)\b/i,
+	/^\s*(Get-Process|gps|ps)\b/i,
+	/^\s*Get-Date\b/i,
+	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
+	/^\s*git\s+ls-/i,
+	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
+	/^\s*yarn\s+(list|info|why|audit)/i,
+	/^\s*node\s+--version/i,
+	/^\s*python\s+--version/i,
+	/^\s*jq\b/i,
+	/^\s*rg\b/i,
+	/^\s*fd\b/i,
+	/^\s*bat\b/i,
+];
+
+export function isSafePowerShellCommand(command: string): boolean {
+	const trimmed = command.trim();
+	if (!trimmed) return false;
+
+	// 1. 全局破坏性检查（命令任意位置命中破坏性模式均拦截）
+	if (POWERSHELL_DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+		return false;
+	}
+
+	// 2. 管道与复合命令切分（| ; &&）
+	const segments = trimmed
+		.split(/[|;&]+/)
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+
+	if (segments.length === 0) return false;
+
+	for (const segment of segments) {
+		if (POWERSHELL_DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(segment))) {
+			return false;
+		}
+		if (!POWERSHELL_SAFE_PATTERNS.some((pattern) => pattern.test(segment))) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+export function isSafeCommand(command: string): boolean {
 	return !DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command)) &&
 		SAFE_PATTERNS.some((pattern) => pattern.test(command));
 }
@@ -162,8 +252,33 @@ function markCompletedSteps(text: string, items: TodoItem[]): number {
 	return changed;
 }
 
-function uniqueToolNames(toolNames: string[]): string[] {
+export function uniqueToolNames(toolNames: string[]): string[] {
 	return [...new Set(toolNames)];
+}
+
+export function getPlanModeTools(activeToolNames: string[]): string[] {
+	const tools: string[] = [];
+	for (const tool of activeToolNames) {
+		if (!PLAN_MODE_DISABLED_TOOLS.has(tool)) {
+			tools.push(tool);
+		}
+	}
+	for (const base of PLAN_MODE_BASE_TOOLS) {
+		if (!tools.includes(base)) {
+			tools.push(base);
+		}
+	}
+	return uniqueToolNames(tools);
+}
+
+export function getNormalModeTools(activeToolNames: string[]): string[] {
+	const tools = [...activeToolNames];
+	for (const writeTool of ["edit", "write"]) {
+		if (!tools.includes(writeTool)) {
+			tools.push(writeTool);
+		}
+	}
+	return uniqueToolNames(tools);
 }
 
 export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
@@ -196,20 +311,6 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 			executing: executionMode,
 			toolsBeforePlanMode,
 		});
-	}
-
-	function getPlanModeTools(activeToolNames: string[]): string[] {
-		return uniqueToolNames([
-			...activeToolNames.filter((name) => !PLAN_MODE_DISABLED_TOOLS.has(name)),
-			...PLAN_MODE_TOOLS,
-		]);
-	}
-
-	function getNormalModeTools(activeToolNames: string[]): string[] {
-		return uniqueToolNames([
-			...NORMAL_MODE_TOOLS,
-			...activeToolNames.filter((name) => !PLAN_MANAGED_TOOLS.has(name)),
-		]);
 	}
 
 	function enablePlanModeTools(): void {
@@ -286,13 +387,23 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event) => {
-		if (!planModeEnabled || event.toolName !== "bash") return;
-		const command = String(event.input.command ?? "");
-		if (!isSafeCommand(command)) {
-			return {
-				block: true,
-				reason: `PiDeck Plan Mode blocked a non-read-only command. Choose Execute after plan confirmation to allow writes.\nCommand: ${command}`,
-			};
+		if (!planModeEnabled) return;
+		if (event.toolName === "bash") {
+			const command = String(event.input.command ?? "");
+			if (!isSafeCommand(command)) {
+				return {
+					block: true,
+					reason: `PiDeck Plan Mode blocked a non-read-only command. Choose Execute after plan confirmation to allow writes.\nCommand: ${command}`,
+				};
+			}
+		} else if (event.toolName === "powershell") {
+			const command = String(event.input.command ?? "");
+			if (!isSafePowerShellCommand(command)) {
+				return {
+					block: true,
+					reason: `PiDeck Plan Mode blocked a non-read-only command. Choose Execute after plan confirmation to allow writes.\nCommand: ${command}`,
+				};
+			}
 		}
 	});
 
@@ -312,10 +423,21 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async () => {
 		if (planModeEnabled) {
+			const active = pi.getActiveTools();
+			const hasBash = active.includes("bash");
+			const hasPwsh = active.includes("powershell");
+			let shellRule = "";
+			if (hasBash && hasPwsh) {
+				shellRule = "- Shell commands (bash/powershell) are restricted to read-only commands.\n";
+			} else if (hasBash) {
+				shellRule = "- Bash is restricted to read-only commands.\n";
+			} else if (hasPwsh) {
+				shellRule = "- PowerShell is restricted to read-only commands.\n";
+			}
 			return {
 				message: {
 					customType: "pi-deck-plan-mode-context",
-					content: `[PLAN MODE ACTIVE]\nYou are in PiDeck Plan Mode.\n\nRules:\n- Only inspect and reason. Do not edit or write files.\n- Bash is restricted to read-only commands.\n- Ask the user with ask_question when a requirement is ambiguous.\n- End your response with a numbered plan under an exact \"Plan:\" heading.\n\nPlan:\n1. First concrete step\n2. Second concrete step`,
+					content: `[PLAN MODE ACTIVE]\nYou are in PiDeck Plan Mode.\n\nRules:\n- Only inspect and reason. Do not edit or write files.\n${shellRule}- Ask the user with ask_question when a requirement is ambiguous.\n- End your response with a numbered plan under an exact \"Plan:\" heading.\n\nPlan:\n1. First concrete step\n2. Second concrete step`,
 					display: false,
 				},
 			};

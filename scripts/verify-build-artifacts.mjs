@@ -31,6 +31,11 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-change-pi-prompt/contributions.ts",
 ];
 
+const WEBFETCH_FILES = [
+	"extensions/pideck-q-webfetch.ts",
+	"extensions/pideck-q-webfetch/dist/index.mjs",
+];
+
 async function exists(path) {
 	try {
 		await access(path);
@@ -119,6 +124,17 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 			}
 			const info = await stat(path);
 			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid change-pi-prompt file: ${relative(root, path)}`);
+			else checked.push(path);
+		}
+		// PiDeck-Q-WebFetch 运行时文件必须完整落进产物，离线环境下必不可少
+		for (const file of WEBFETCH_FILES) {
+			const path = join(output, "resources", file);
+			if (!(await exists(path))) {
+				errors.push(`Missing packaged webfetch file: ${relative(root, path)}`);
+				continue;
+			}
+			const info = await stat(path);
+			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid webfetch file: ${relative(root, path)}`);
 			else checked.push(path);
 		}
 	}

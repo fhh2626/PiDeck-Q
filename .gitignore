@@ -5,6 +5,8 @@ node_modules/
 out/
 .xmake/
 dist/
+!resources/extensions/pideck-q-webfetch/dist/
+!resources/extensions/pideck-q-webfetch/dist/**
 release/
 release-test/
 # xmake writes objects/binaries under build/; keep tracked packager icons

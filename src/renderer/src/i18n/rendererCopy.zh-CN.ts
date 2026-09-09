@@ -841,6 +841,7 @@ export const zhCN = {
   "security.tool.write": "写入文件",
   "security.tool.edit": "编辑文件",
   "security.tool.bash": "执行命令",
+  "security.tool.powershell": "PowerShell 命令",
   "security.tool.grep": "搜索内容",
   "security.tool.find": "查找文件",
   "security.tool.ls": "列目录",

@@ -76,8 +76,14 @@ test("pideck-q-websearch keeps its relative fallback module in extraResources", 
 test("pideck-q-webfetch keeps its runtime files in extraResources", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(xmake, /resources/);
-	assert.ok(existsSync(join("resources", "extensions", "pideck-q-webfetch", "dist", "index.mjs")));
+	const distFile = join("resources", "extensions", "pideck-q-webfetch", "dist", "index.mjs");
+	assert.ok(existsSync(distFile));
+	assert.ok(readFileSync(distFile).length > 10000, "dist/index.mjs must be complete and non-empty");
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-webfetch.ts")));
+
+	// 确认 .gitignore 显式排除该文件，确保离线打包时不被忽略
+	const gitignore = readFileSync(".gitignore", "utf8");
+	assert.match(gitignore, /!resources\/extensions\/pideck-q-webfetch\/dist\//);
 });
 
 test("pideck-q-subagents keeps its runtime files in extraResources", () => {

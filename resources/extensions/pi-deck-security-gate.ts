@@ -43,6 +43,7 @@ type SecurityLevelConfig = {
 	builtin?: boolean;
 	toolActions: Partial<Record<string, SecurityAction>>;
 	denyBashPatterns: string[];
+	denyPowerShellPatterns?: string[];
 	pathPolicy: SecurityPathPolicy;
 	customAllowDirs: string[];
 	denyDirs: string[];
@@ -67,11 +68,27 @@ const MANAGED_TOOLS = new Set([
 	"write",
 	"edit",
 	"bash",
+	"powershell",
 	"grep",
 	"find",
 	"ls",
 	"ask_question",
 ]);
+/** 默认危险 PowerShell 命令模式（Windows cmdlet 与别名） */
+const DEFAULT_POWERSHELL_DENY_PATTERNS = [
+	"\\b(Remove-Item|rm|del|erase|rmdir)\\b",
+	"\\b(Set-Content|Add-Content|Clear-Content|Out-File)\\b",
+	"\\b(New-Item|mkdir|ni)\\b",
+	"\\b(Move-Item|mv|Copy-Item|cp|Rename-Item)\\b",
+	"\\b(Set-Item|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|Set-Acl)\\b",
+	"\\b(Invoke-Expression|Start-Process|Stop-Process)\\b",
+	"(^|[^<])>(?!>)",
+	">>",
+	"\\bgit\\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|branch\\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)\\b",
+	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
+	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
+	"\\byarn\\s+(add|install|remove|publish)\\b",
+];
 /** 敏感路径模式（与主进程 DEFAULT_SENSITIVE_PATH_PATTERNS 对齐） */
 const SENSITIVE_PATH_PATTERNS = [
 	"(^|[\\\\/])\\.env([.$]|$)",
@@ -179,7 +196,7 @@ function evaluatePathAction(
 	return "deny";
 }
 
-/** bash 危险命令求值：命中返回 true（动作组合见 filePolicy 注释 / 下方 bashAction） */
+/** bash 危险命令求值：命中返回 true（动作组合见 filePolicy 注释 / 下方 shellAction） */
 function matchesBashDeny(level: SecurityLevelConfig, command: string): boolean {
 	return level.denyBashPatterns.some((pattern) => {
 		try {
@@ -190,12 +207,30 @@ function matchesBashDeny(level: SecurityLevelConfig, command: string): boolean {
 	});
 }
 
-/** 计算 bash 命令最终动作 */
-function bashAction(level: SecurityLevelConfig, command: string): SecurityAction {
-	const dangerous = matchesBashDeny(level, command);
-	const toolAction = level.toolActions["bash"] ?? level.defaultAction;
+/** powershell 危险命令求值：命中返回 true */
+function matchesPowerShellDeny(level: SecurityLevelConfig, command: string): boolean {
+	const patterns = level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS;
+	return patterns.some((pattern) => {
+		try {
+			return new RegExp(pattern, "i").test(command);
+		} catch {
+			return false;
+		}
+	});
+}
+
+/** 计算 shell (bash / powershell) 命令最终动作 */
+function shellAction(
+	level: SecurityLevelConfig,
+	tool: "bash" | "powershell",
+	command: string,
+): SecurityAction {
+	const dangerous = tool === "powershell"
+		? matchesPowerShellDeny(level, command)
+		: matchesBashDeny(level, command);
+	const toolAction = level.toolActions[tool] ?? level.defaultAction;
 	if (!dangerous) return toolAction;
-	// 危险命令：显式放行 bash → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
+	// 危险命令：显式放行该 shell → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
 	if (toolAction === "allow") return "allow";
 	if (level.defaultAction === "deny") return "deny";
 	return "ask";
@@ -222,7 +257,9 @@ function extractFilePath(tool: string, input: Record<string, unknown>): string |
 			return typeof input.path === "string" ? input.path : undefined;
 		case "write":
 		case "edit":
-			return typeof input.filePath === "string" ? input.filePath : undefined;
+			if (typeof input.path === "string") return input.path;
+			if (typeof input.filePath === "string") return input.filePath;
+			return undefined;
 		case "grep":
 		case "find":
 		case "ls":
@@ -276,8 +313,8 @@ function buildSecurityHint(level: SecurityLevelConfig): string | undefined {
 	if (level.pathPolicy === "workspace" || level.pathPolicy === "custom") {
 		lines.push("文件读写仅限工作目录" + (level.pathPolicy === "custom" ? "及显式允许的目录" : "") + "，工作目录之外的文件访问会被拒绝。");
 	}
-	if (level.denyBashPatterns.length > 0) {
-		lines.push("部分危险命令（如 rm -rf、chmod 777、sudo、git push 等）会被拦截或要求用户确认。");
+	if (level.denyBashPatterns.length > 0 || (level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS).length > 0) {
+		lines.push("部分危险 shell 命令会被拦截或要求用户确认。");
 	}
 	if (level.protectSensitivePaths) {
 		lines.push(".env / .git / 密钥文件等敏感路径受保护，读写会被拒绝。");
@@ -323,9 +360,9 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 		const input = event.input as Record<string, unknown>;
 		let action: SecurityAction;
 
-		if (tool === "bash") {
+		if (tool === "bash" || tool === "powershell") {
 			const command = typeof input.command === "string" ? input.command : "";
-			action = bashAction(level, command);
+			action = shellAction(level, tool, command);
 		} else {
 			const filePath = extractFilePath(tool, input);
 			action = fileToolAction(
@@ -338,12 +375,13 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 		if (action === "allow") return undefined;
 
+		const target = (tool === "bash" || tool === "powershell")
+			? (typeof input.command === "string" ? input.command.slice(0, 200) : "")
+			: (typeof input.path === "string" || typeof input.filePath === "string"
+				? String(input.path ?? input.filePath)
+				: "");
+
 		if (action === "deny") {
-			const target = tool === "bash"
-				? (typeof input.command === "string" ? input.command.slice(0, 200) : "")
-				: (typeof input.filePath === "string" || typeof input.path === "string"
-					? String(input.filePath ?? input.path)
-					: "");
 			return {
 				block: true,
 				reason: `[安全管理·${level.name}] ${tool} 调用被拒绝${target ? `: ${target}` : ""}`,
@@ -351,11 +389,6 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 		}
 
 		// action === "ask"：弹窗确认
-		const target = tool === "bash"
-			? (typeof input.command === "string" ? input.command : "")
-			: (typeof input.filePath === "string" || typeof input.path === "string"
-				? String(input.filePath ?? input.path)
-				: "");
 		const allowed = await confirmAction(
 			ctx,
 			`PiDeck 安全确认：允许 ${tool} 调用吗？`,

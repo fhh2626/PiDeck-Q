@@ -112,10 +112,14 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 // 内置扩展默认关闭，所以「缺文件」在源码侧测不出——只有启用后 pi 加载时才发现。
 // 这道门禁在产物上把缺文件/空文件提前到发版前暴露。
 
-async function putChangePromptFiles(repo, { withUndici = true } = {}) {
+async function putChangePromptFiles(repo, { withUndici = true, withWebfetch = true } = {}) {
 	const base = join(repo, "out", "resources", "extensions");
 	if (withUndici) {
 		await put(join(base, "node_modules", "undici", "package.json"), "{}");
+	}
+	if (withWebfetch) {
+		await put(join(base, "pideck-q-webfetch.ts"), "// webfetch");
+		await put(join(base, "pideck-q-webfetch", "dist", "index.mjs"), "// webfetch dist");
 	}
 	for (const file of [
 		"pideck-q-change-pi-prompt.ts",
@@ -150,8 +154,8 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 7 个扩展文件 + 3 个入口 + 3 个 HTML 资源 + 1 个 undici = 14
-		assert.equal(result.checked.length, 14, JSON.stringify(result.checked));
+		// 7 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 1 个 undici = 16
+		assert.equal(result.checked.length, 16, JSON.stringify(result.checked));
 	});
 });
 
@@ -162,8 +166,27 @@ test("an empty change-pi-prompt runtime file fails verification", async () => {
 		// 把 runtime.ts 打成 0 字节：应当报 Empty or invalid
 		await put(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "runtime.ts"), "");
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
-		assert.equal(result.ok, false, result.errors.join("\n"));
+		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /Empty or invalid change-pi-prompt file.*runtime\.ts/);
+	});
+});
+
+test("missing or empty webfetch runtime file fails verification", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo, { withWebfetch: false });
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /Missing packaged webfetch file.*pideck-q-webfetch\.ts/);
+	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await put(join(repo, "out", "resources", "extensions", "pideck-q-webfetch", "dist", "index.mjs"), "");
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /Empty or invalid webfetch file.*dist.*index\.mjs/);
 	});
 });
 

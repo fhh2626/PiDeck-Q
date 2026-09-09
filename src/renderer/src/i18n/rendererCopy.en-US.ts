@@ -847,6 +847,7 @@ export const enUS: Record<TranslationKey, string> = {
   "security.tool.write": "Write file",
   "security.tool.edit": "Edit file",
   "security.tool.bash": "Run command",
+  "security.tool.powershell": "PowerShell command",
   "security.tool.grep": "Search content",
   "security.tool.find": "Find files",
   "security.tool.ls": "List directory",

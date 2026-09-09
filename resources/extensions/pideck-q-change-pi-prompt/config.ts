@@ -82,7 +82,7 @@ export function isPiSubagentsSkillPath(path: string | undefined): boolean {
 	normalized = normalized.replace(/^file:\/\/\/([a-zA-Z]:)/, '$1').replace(/^file:\/\//, '');
 	normalized = normalized.replace(/^\/\/\?(?:[a-z]\/)?/, '').replace(/^\/\/\.\//, '');
 	normalized = normalized.toLowerCase().replace(/\/+$/, '');
-	return /(?:^|\/)(?:node_modules\/)?pi-subagents\/skills(?:\/|$)/.test(normalized);
+	return /(?:^|\/)(?:node_modules\/)?(?:pi-subagents|pideck-q-subagents)\/skills(?:\/|$)/.test(normalized);
 }
 
 function rewriteContentValue(value: unknown): { value: unknown; changed: boolean } {
