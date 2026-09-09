@@ -188,6 +188,19 @@ test("missing or empty webfetch runtime file fails verification", async () => {
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /Empty or invalid webfetch file.*dist.*index\.mjs/);
 	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		// 模拟泄露的未打包依赖（例如有 bare import linkedom）
+		await put(
+			join(repo, "out", "resources", "extensions", "pideck-q-webfetch", "dist", "index.mjs"),
+			'import { parseHTML } from "linkedom";\nexport default function() {}',
+		);
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /Unbundled external import in packaged webfetch: linkedom/);
+	});
 });
 
 test("HTML reference extraction ignores remote, data, and fragment URLs", () => {

@@ -15,9 +15,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 const PI_DECK_PLAN_MODE_MARKER = "__PI_DECK_PLAN_MODE__";
 
-// Plan 模式基础只读工具；edit 与 write 始终禁用；shell (bash/powershell) 保留用户原有的，不额外臆造。
+// Plan 模式禁止直接写工具和 subagent。
+// subagent 可能拥有自己的 edit/write/bash，因此不能在只读规划阶段继续暴露。
 const PLAN_MODE_BASE_TOOLS = ["read", "ask_question"];
-const PLAN_MODE_DISABLED_TOOLS = new Set<string>(["edit", "write"]);
+const PLAN_MODE_DISABLED_TOOLS = new Set<string>([
+	"edit",
+	"write",
+	"subagent",
+]);
 
 interface TodoItem {
 	step: number;

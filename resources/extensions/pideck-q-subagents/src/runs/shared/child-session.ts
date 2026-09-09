@@ -215,7 +215,13 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
 			});
 			const open = async () => {
-				applyProcessEnv(launch.processEnv);
+				const envSnapshot: Record<string, string | undefined> = {};
+				if (launch.processEnv) {
+					for (const key of Object.keys(launch.processEnv)) {
+						envSnapshot[key] = process.env[key];
+					}
+					applyProcessEnv(launch.processEnv);
+				}
 				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
 				observeReadonly?.loadingHooks(true);
 				try { await loader.reload(); } finally { observeReadonly?.loadingHooks(false); }
@@ -234,29 +240,36 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					? pi.resolveCliModel({ cliModel: launch.model, modelRuntime })
 					: undefined;
 				if (resolvedModel?.error) throw new Error(resolvedModel.error);
-				const { session } = await pi.createAgentSession({
-					cwd: launch.cwd,
-					agentDir,
-					modelRuntime,
-					...(resolvedModel?.model ? { model: resolvedModel.model } : {}),
-					...(resolvedModel?.thinkingLevel ? { thinkingLevel: resolvedModel.thinkingLevel } : {}),
-					...(launch.tools ? { tools: launch.tools } : {}),
-					...(launch.excludeTools?.length ? { excludeTools: launch.excludeTools } : {}),
-					resourceLoader: loader,
-					sessionManager,
-					settingsManager,
-					sessionStartEvent: { type: "session_start", reason: "startup" },
-				});
+				let sessionInstance;
 				try {
+					const { session } = await pi.createAgentSession({
+						cwd: launch.cwd,
+						agentDir,
+						modelRuntime,
+						...(resolvedModel?.model ? { model: resolvedModel.model } : {}),
+						...(resolvedModel?.thinkingLevel ? { thinkingLevel: resolvedModel.thinkingLevel } : {}),
+						...(launch.tools ? { tools: launch.tools } : {}),
+						...(launch.excludeTools?.length ? { excludeTools: launch.excludeTools } : {}),
+						resourceLoader: loader,
+						sessionManager,
+						settingsManager,
+						sessionStartEvent: { type: "session_start", reason: "startup" },
+					});
+					sessionInstance = session;
 					await session.bindExtensions({
 						mode: "print",
 						onError: (error) => launch.onExtensionError?.({ extensionPath: error.extensionPath, event: error.event, error: error.error }),
 					});
 				} catch (error) {
-					session.dispose();
+					sessionInstance?.dispose();
 					throw error;
+				} finally {
+					// In foreground parent process, restore original env keys after loading and binding extensions
+					if (launch.processEnv && !launch.ambientExtensions) {
+						applyProcessEnv(envSnapshot);
+					}
 				}
-				return session;
+				return sessionInstance;
 			};
 			const opened = loading.catch(() => {}).then(open);
 			loading = opened;

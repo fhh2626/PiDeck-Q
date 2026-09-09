@@ -114,20 +114,20 @@ const RELOAD_THROTTLE_MS = 2000;
  * - mtime 变化 → 立即重读（会话等级切换 ≤2s 生效）；
  * - 文件缺失 / schema 不匹配 / 解析失败 → 返回 null（调用方按 fail-safe 处理）。
  */
-function loadSnapshot(): SecurityPolicySnapshot | null {
+function loadSnapshot(targetPath = snapshotPath): SecurityPolicySnapshot | null {
 	const now = Date.now();
 	try {
-		if (!snapshotPath || !existsSync(snapshotPath)) {
+		if (!targetPath || !existsSync(targetPath)) {
 			snapshot = null;
 			return null;
 		}
-		const mtime = statSync(snapshotPath).mtimeMs;
+		const mtime = statSync(targetPath).mtimeMs;
 		if (snapshot && mtime === lastLoadedMtime && now - lastLoadedAt < RELOAD_THROTTLE_MS) {
 			return snapshot;
 		}
 		lastLoadedAt = now;
 		lastLoadedMtime = mtime;
-		const raw = readFileSync(snapshotPath, "utf8");
+		const raw = readFileSync(targetPath, "utf8");
 		const parsed = JSON.parse(raw) as SecurityPolicySnapshot;
 		if (parsed.schemaVersion !== SCHEMA_VERSION) {
 			// schema 升级：旧快照不再可信，fail-safe 放行（配置语义由主进程迁移保证）
@@ -325,18 +325,23 @@ function buildSecurityHint(level: SecurityLevelConfig): string | undefined {
 // ── 入口 ──
 
 export default async function securityGateExtension(pi: ExtensionAPI) {
-	snapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? "";
-	sessionId = process.env.PIDECK_SESSION_ID ?? "";
+	// Bundled child sessions inherit the parent PiDeck security policy.
+	// Security must be enforced on child tools themselves; gating only the
+	// parent `subagent` call would not protect edit/write/bash inside the child.
+	const currentSnapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? snapshotPath;
+	const currentSessionId = process.env.PIDECK_SESSION_ID ?? sessionId;
+	snapshotPath = currentSnapshotPath;
+	sessionId = currentSessionId;
 
-	if (!snapshotPath) {
+	if (!currentSnapshotPath) {
 		// 桌面端未注入配置路径（旧版本 PiDeck / 独立 CLI 运行）：完全放行
 		return;
 	}
 
 	pi.on("before_agent_start", (_event, ctx) => {
-		const config = loadSnapshot();
+		const config = loadSnapshot(currentSnapshotPath);
 		if (!config?.enabled) return undefined;
-		const levelId = config.sessionLevels[sessionId] ?? config.defaultLevelId;
+		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level) return undefined;
 		const hint = buildSecurityHint(level);
@@ -346,14 +351,14 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
 		// 热更新：快照 mtime 变化即重读（≤2s），会话等级切换无需重启
-		const config = loadSnapshot();
+		const config = loadSnapshot(currentSnapshotPath);
 		if (!config?.enabled) return undefined;
 
 		const tool = event.toolName;
 		// 只管控内置工具；自定义工具（web_search/todo/vision 等）放行，避免破坏用户扩展
 		if (!MANAGED_TOOLS.has(tool)) return undefined;
 
-		const levelId = config.sessionLevels[sessionId] ?? config.defaultLevelId;
+		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level || level.id === "off") return undefined;
 

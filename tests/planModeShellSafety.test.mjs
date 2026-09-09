@@ -22,6 +22,102 @@ function loadPlanModeModule() {
 	return sandbox.exports;
 }
 
+test("getPlanModeTools disables subagent, edit and write while preserving shell and read tools", () => {
+	const { getPlanModeTools } = loadPlanModeModule();
+
+	const toolsWithSubagent = [
+		"read",
+		"powershell",
+		"edit",
+		"write",
+		"subagent",
+	];
+	const planTools = getPlanModeTools(toolsWithSubagent);
+
+	assert.ok(planTools.includes("read"), "Plan tools must include read");
+	assert.ok(planTools.includes("powershell"), "Plan tools must keep existing powershell");
+	assert.ok(!planTools.includes("edit"), "Plan tools must not include edit");
+	assert.ok(!planTools.includes("write"), "Plan tools must not include write");
+	assert.ok(!planTools.includes("subagent"), "Plan tools must not include subagent to prevent indirect writes");
+	assert.ok(!planTools.includes("bash"), "Plan tools must not hallucinate bash");
+
+	const inputWithGrep = [
+		"read",
+		"grep",
+		"powershell",
+		"edit",
+		"write",
+		"subagent",
+	];
+	const resultWithGrep = getPlanModeTools(inputWithGrep);
+	assert.equal(resultWithGrep.includes("read"), true);
+	assert.equal(resultWithGrep.includes("grep"), true);
+	assert.equal(resultWithGrep.includes("powershell"), true);
+	assert.equal(resultWithGrep.includes("edit"), false);
+	assert.equal(resultWithGrep.includes("write"), false);
+	assert.equal(resultWithGrep.includes("subagent"), false);
+	assert.equal(resultWithGrep.includes("bash"), false);
+
+	// 保留 bash（如果原本就有）
+	const inputWithBash = ["read", "bash", "edit", "write", "subagent"];
+	const resultWithBash = getPlanModeTools(inputWithBash);
+	assert.equal(resultWithBash.includes("read"), true);
+	assert.equal(resultWithBash.includes("bash"), true);
+	assert.equal(resultWithBash.includes("subagent"), false);
+	assert.equal(resultWithBash.includes("edit"), false);
+	assert.equal(resultWithBash.includes("write"), false);
+});
+
+test("entering and exiting plan mode preserves and restores subagent via toolsBeforePlanMode", async () => {
+	const { default: planModeExtension } = loadPlanModeModule();
+
+	const handlers = new Map();
+	const commands = new Map();
+	let currentTools = ["read", "grep", "powershell", "edit", "write", "subagent"];
+	const fakePi = {
+		on: (event, handler) => {
+			handlers.set(event, handler);
+		},
+		registerCommand: (name, def) => {
+			commands.set(name, def.handler);
+		},
+		appendEntry: () => {},
+		getActiveTools: () => currentTools,
+		setActiveTools: (tools) => {
+			currentTools = tools;
+		},
+	};
+
+	planModeExtension(fakePi);
+
+	const inputHandler = handlers.get("input");
+	const planCommandHandler = commands.get("plan");
+	assert.ok(planCommandHandler, "plan command must be registered");
+
+	const ctx = {
+		ui: {
+			setWidget: () => {},
+			notify: () => {},
+			select: async () => "stay",
+		},
+	};
+
+	// 进入 plan 模式
+	await inputHandler({ text: "__PI_DECK_PLAN_MODE__ explore things" }, ctx);
+	assert.ok(!currentTools.includes("subagent"), "subagent must be removed in plan mode");
+	assert.ok(!currentTools.includes("edit"), "edit must be removed in plan mode");
+	assert.ok(!currentTools.includes("write"), "write must be removed in plan mode");
+	assert.ok(currentTools.includes("read"), "read must remain");
+	assert.ok(currentTools.includes("powershell"), "powershell must remain");
+
+	// 关闭 plan mode
+	await planCommandHandler("off", ctx);
+	assert.ok(currentTools.includes("subagent"), "subagent must be restored upon exiting plan mode");
+	assert.ok(currentTools.includes("edit"), "edit must be restored upon exiting plan mode");
+	assert.ok(currentTools.includes("write"), "write must be restored upon exiting plan mode");
+	assert.ok(currentTools.includes("powershell"), "powershell must be restored upon exiting plan mode");
+});
+
 test("getPlanModeTools preserves active shell without hallucinating bash", () => {
 	const { getPlanModeTools, getNormalModeTools } = loadPlanModeModule();
 

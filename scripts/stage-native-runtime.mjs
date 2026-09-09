@@ -95,6 +95,10 @@ async function stageUndiciAt(projectRoot, destinationRoot) {
  * Stage only runtime files for the Node sidecar and built-in extensions.
  * Keeping this boundary explicit prevents a local npm build directory from
  * silently becoming part of the portable release.
+ *
+ * WebFetch 的普通 npm 依赖（如 @mozilla/readability, linkedom, lru-cache, turndown）
+ * 已完全内联打包进 dist/index.mjs，此处仅需复制仍需外部解析的 undici，避免 packaged extension
+ * 依赖仓库根 node_modules。
  */
 export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoot } = {}) {
 	const root = resolve(projectRoot);

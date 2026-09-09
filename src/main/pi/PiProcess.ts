@@ -363,6 +363,12 @@ export class PiProcess extends EventEmitter {
       env.PIDECK_SECURITY_CONFIG = command.startsWith("wsl://")
         ? toWslLinuxPath(this.options.securitySnapshotPath, { distro: this.settings?.wslDistro ?? "" })
         : this.options.securitySnapshotPath;
+      const gatePath = builtInPaths.find((p) => p.endsWith("pi-deck-security-gate.ts"));
+      if (gatePath) {
+        env.PIDECK_SECURITY_GATE_EXTENSION = command.startsWith("wsl://")
+          ? toWslLinuxPath(gatePath, { distro: this.settings?.wslDistro ?? "" })
+          : gatePath;
+      }
     }
     if (this.options.securitySessionId) {
       env.PIDECK_SESSION_ID = command.startsWith("wsl://")

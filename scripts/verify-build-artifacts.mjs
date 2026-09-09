@@ -36,6 +36,13 @@ const WEBFETCH_FILES = [
 	"extensions/pideck-q-webfetch/dist/index.mjs",
 ];
 
+const WEBFETCH_ALLOWED_EXTERNALS = new Set([
+	"@earendil-works/pi-coding-agent",
+	"@earendil-works/pi-tui",
+	"@sinclair/typebox",
+	"undici",
+]);
+
 async function exists(path) {
 	try {
 		await access(path);
@@ -134,8 +141,24 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 				continue;
 			}
 			const info = await stat(path);
-			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid webfetch file: ${relative(root, path)}`);
-			else checked.push(path);
+			if (!info.isFile() || info.size === 0) {
+				errors.push(`Empty or invalid webfetch file: ${relative(root, path)}`);
+				continue;
+			}
+			if (file.endsWith("dist/index.mjs")) {
+				const content = await readFile(path, "utf8");
+				const importMatches = [
+					...content.matchAll(/^\s*(?:import|export)\s+(?:[\w*\s{},]*from\s+)?["']([^"']+)["']/gm),
+				].map((m) => m[1]);
+				for (const specifier of importMatches) {
+					if (specifier.startsWith("node:")) continue;
+					if (WEBFETCH_ALLOWED_EXTERNALS.has(specifier)) continue;
+					errors.push(
+						`Unbundled external import in packaged webfetch: ${specifier}. All normal npm dependencies must be bundled.`,
+					);
+				}
+			}
+			checked.push(path);
 		}
 	}
 	const entryPaths = Object.fromEntries(

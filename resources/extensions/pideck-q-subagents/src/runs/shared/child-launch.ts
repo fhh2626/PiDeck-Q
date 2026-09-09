@@ -6,6 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ChildWatchdogConfig, ChildWatchdogStatusEvent } from "../../watchdog/child-status.ts";
 import type { ThinkingLevel } from "../../shared/model-info.ts";
@@ -105,6 +106,9 @@ export interface BuildInProcessChildLaunchInput {
 	runtimeSnapshotHost?: McpRuntimeSnapshotHost;
 	/** The launching executor's own child runtime when it is itself an in-process child. */
 	inherited?: InheritedChildRuntime;
+	securityConfigPath?: string;
+	securitySessionId?: string;
+	securityGateExtensionPath?: string;
 	/**
 	 * Which process hosts the session. The parent never loads ambient extensions
 	 * or writes child environment values (it shares its process with the parent
@@ -147,6 +151,38 @@ function escapeXmlAttr(value: string): string {
 
 function inheritedCapabilityCeiling(inherited: InheritedChildRuntime | undefined): ResolvedSubagentCapabilityCeiling | undefined {
 	return inherited?.capabilityCeiling;
+}
+
+// Bundled child sessions inherit the parent PiDeck security policy.
+// Security must be enforced on child tools themselves; gating only the
+// parent `subagent` call would not protect edit/write/bash inside the child.
+
+export function resolveSecurityGateExtensionPath(): string | undefined {
+	const fromEnv = process.env.PIDECK_SECURITY_GATE_EXTENSION;
+	if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+	try {
+		const currentDir = typeof __dirname !== "undefined"
+			? __dirname
+			: path.dirname(fileURLToPath(import.meta.url));
+		const candidate = path.resolve(currentDir, "../../../../../pi-deck-security-gate.ts");
+		if (fs.existsSync(candidate)) return candidate;
+	} catch {
+		// ignore
+	}
+	const cwdCandidate = path.resolve(process.cwd(), "resources/extensions/pi-deck-security-gate.ts");
+	if (fs.existsSync(cwdCandidate)) return cwdCandidate;
+	return undefined;
+}
+
+export function isSecurityPolicyActive(configPath: string | undefined): boolean {
+	if (!configPath || !fs.existsSync(configPath)) return false;
+	try {
+		const raw = fs.readFileSync(configPath, "utf8");
+		const parsed = JSON.parse(raw) as { enabled?: boolean };
+		return Boolean(parsed.enabled);
+	} catch {
+		return false;
+	}
 }
 
 /** Environment values external child extensions read; only the runner applies them. */
@@ -273,7 +309,20 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	};
 	const capturedHooks = createCapturedChildHooks(config, input.host === "runner");
 
+	const securityConfigPath = input.securityConfigPath ?? process.env.PIDECK_SECURITY_CONFIG;
+	const securitySessionId = input.securitySessionId ?? input.parentSessionId ?? process.env.PIDECK_SESSION_ID;
+	const securityGateExtensionPath = input.securityGateExtensionPath ?? resolveSecurityGateExtensionPath();
+	const securityActive = isSecurityPolicyActive(securityConfigPath);
+
 	const extensionPaths = toolPlan.extensionArgs.filter((extensionPath) => !isSubagentRuntimeExtensionPath(extensionPath));
+	if (securityActive && securityGateExtensionPath) {
+		const normGate = path.normalize(securityGateExtensionPath).toLowerCase();
+		const alreadyPresent = extensionPaths.some((p) => path.normalize(p).toLowerCase() === normGate);
+		if (!alreadyPresent) {
+			extensionPaths.push(securityGateExtensionPath);
+		}
+	}
+
 	const ambientExtensions = input.host === "runner" && !toolPlan.disableAmbientExtensions;
 	const launchResolvedExtensions = projectLaunchResolvedChildExtensions({
 		runtimeExtensions: toolPlan.runtimeExtensions,
@@ -284,6 +333,25 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	const taggedPrompt = input.systemPrompt !== undefined && input.systemPrompt !== null
 		? `<active_agent name="${escapeXmlAttr(input.childAgentName)}"/>\n\n${input.systemPrompt}`
 		: undefined;
+
+	const securityEnv: Record<string, string | undefined> = {};
+	if (securityActive && securityConfigPath) {
+		securityEnv.PIDECK_SECURITY_CONFIG = securityConfigPath;
+		if (securitySessionId) {
+			securityEnv.PIDECK_SESSION_ID = securitySessionId;
+		}
+		if (securityGateExtensionPath) {
+			securityEnv.PIDECK_SECURITY_GATE_EXTENSION = securityGateExtensionPath;
+		}
+	}
+
+	const baseProcessEnv = input.host === "runner" ? childProcessEnv(input, toolPlan) : {};
+	const effectiveProcessEnv = {
+		...baseProcessEnv,
+		...securityEnv,
+	};
+	const processEnv = Object.keys(effectiveProcessEnv).length > 0 ? effectiveProcessEnv : undefined;
+
 	const session: Omit<ChildSessionLaunch, "onExtensionError"> = {
 		cwd: input.cwd,
 		storage: childStorage(input),
@@ -293,7 +361,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		extensionPaths,
 		ambientExtensions,
 		hooks: capturedHooks.hooks,
-		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : {}),
+		...(processEnv ? { processEnv } : {}),
 		runtime: config,
 		noSkills: !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,

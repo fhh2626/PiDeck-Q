@@ -48,6 +48,6 @@
     "turndown": "^7.2.0"
   },
   "scripts": {
-    "build": "tsdown"
+    "build": "node ../../../scripts/bundle-webfetch.mjs"
   }
 }
