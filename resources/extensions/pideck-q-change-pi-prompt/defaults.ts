@@ -25,9 +25,10 @@ export const DEFAULT_PROMPTS = {
 - Use \`todo\` for multi-step work: add items before starting and update them as work progresses.
 - Use IDs from the current list rather than guessing; clear completed tracking when the task is finished.`,
 	delegation: `## Delegation
-- Use \`Agent\` for bounded tasks matching an available agent type, independent research, or substantial exploration; use direct tools for known targets.
-- Do not duplicate delegated work. Background completion is notified automatically; do not poll or sleep.
-- Verify actual changes before reporting delegated implementation as complete, and summarize useful results for the user.`,
+- Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, use Agent for multi-step exploration/research, large intermediate results best kept out of the main context, or independent tasks that can run in parallel. Known paths do not rule out delegation.
+- Match the agent type to the task. Run independent tasks in parallel using multiple Agent calls in one message with run_in_background: true; use foreground when the result is needed next.
+- Do not duplicate delegated work or poll for background completion; continue independent work.
+- Verify actual changes before reporting success, and summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
 - Do not fix unrelated failures or weaken tests just to make them pass; report such failures.
@@ -67,7 +68,7 @@ export const DEFAULT_CONFIG: Config = {
 };
 
 /** Native pi-subagents template: never interpolate these placeholders ourselves. */
-export const AGENT_DESCRIPTION = `Delegate a bounded task to an agent whose capabilities match it. Use direct tools for known files or simple lookups; delegate independent research, substantial exploration, or clearly scoped implementation work.
+export const AGENT_DESCRIPTION = `Delegate tasks to specialized agents using the system's Delegation guidelines.
 
 Available agent types:
 {{typeList}}

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_PROMPTS } from '../defaults.ts';
+import { AGENT_DESCRIPTION, DEFAULT_PROMPTS } from '../defaults.ts';
 import { loadSettings, initializeSettings, initializeAgentDescription } from '../config.ts';
 
 async function withDir(fn) {
@@ -21,6 +21,24 @@ test('init is non-overwriting and Markdown overrides remain literal', () => with
   await writeFile(file, 'Custom $& $1 identity');
   await initializeSettings(dir);
   assert.equal((await loadSettings(dir)).prompts.identity, 'Custom $& $1 identity');
+}));
+test('init creates coordinated delegation guidelines and native Agent description', () => withDir(async dir => {
+  await initializeSettings(dir);
+  await initializeAgentDescription(dir);
+  const delegation = await readFile(join(dir, 'change-pi-prompt/prompts/delegation.md'), 'utf8');
+  const description = await readFile(join(dir, 'agent-tool-description.md'), 'utf8');
+  assert.equal(delegation.trim(), DEFAULT_PROMPTS.delegation);
+  assert.match(delegation, /simple lookups/);
+  assert.match(delegation, /multi-step exploration\/research/);
+  assert.match(delegation, /intermediate results best kept out of the main context/);
+  assert.match(delegation, /Known paths do not rule out delegation/);
+  assert.match(delegation, /multiple Agent calls in one message with run_in_background: true/);
+  assert.equal(description.trim(), AGENT_DESCRIPTION.trim());
+  assert.match(description, /^Delegate tasks to specialized agents using the system's Delegation guidelines\./);
+  assert.doesNotMatch(description, /Use direct tools for known files/);
+  for (const placeholder of ['{{typeList}}', '{{agentDir}}', '{{scheduleGuideline}}']) {
+    assert.ok(description.includes(placeholder));
+  }
 }));
 test('invalid config fails rather than silently enabling defaults', () => withDir(async dir => {
   await initializeSettings(dir);
