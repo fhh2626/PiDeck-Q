@@ -25,10 +25,9 @@ export const DEFAULT_PROMPTS = {
 - Use \`todo\` for multi-step work: add items before starting and update them as work progresses.
 - Use IDs from the current list rather than guessing; clear completed tracking when the task is finished.`,
 	delegation: `## Delegation
-- Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, use Agent for multi-step exploration/research, large intermediate results best kept out of the main context, or independent tasks that can run in parallel. Known paths do not rule out delegation.
-- Match the agent type to the task. Run independent tasks in parallel using multiple Agent calls in one message with run_in_background: true; use foreground when the result is needed next.
-- Do not duplicate delegated work or poll for background completion; continue independent work.
-- Verify actual changes before reporting success, and summarize results for the user.`,
+- Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, delegate multi-step exploration/research, work with large intermediate results best kept out of the main context, or independent parallel tasks. Known paths do not rule out delegation.
+- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Background children are not available in this environment.
+- Do not duplicate delegated work. Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
 - Do not fix unrelated failures or weaken tests just to make them pass; report such failures.
@@ -67,19 +66,27 @@ export const DEFAULT_CONFIG: Config = {
 	unknownGuidelines: "preserve",
 };
 
-/** Native pi-subagents template: never interpolate these placeholders ourselves. */
-export const AGENT_DESCRIPTION = `Delegate tasks to specialized agents using the system's Delegation guidelines.
+/** pi-subagents 0.66 custom description; upstream appends its mandatory safety guidance. */
+export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
 
-Available agent types:
-{{typeList}}
+## Execution
+- Choose one input: {agent,task?}, workflowScript, workflowScriptPath, or {workflow,args}. Never combine them. Omit action for execution; use action only for management/control.
+- SINGLE: {agent:"worker",task:"..."}. Request options apply to that child.
+- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Background children are not available in this environment.
+- SCRIPT: workflowScript is a JavaScript statement body. Use an explicit return for useful output. It has no filesystem, shell, arbitrary Pi tools, or host globals outside authorized runs.host calls.
+- Use runs.run("key",{agent,task}) for one child; await runs.all([{key,agent,task},...]) for parallel children. runs.all returns an ordered array, not a key map.
+- Await results before reading them. Every stored runs.run promise must eventually be observed with await, Promise.race, or Promise.all.
+- Use top-level await, plain helper functions returning promises, or explicit Promise chains. Nested async function, arrow, and method helpers are rejected.
+- For parallel sequential chains, use runs.lanes([{key,stages:[{key,agent,task},{key,resume:"previous",task},...]}]). First stages run together; later stages sequence per lane. Failures are lane-local. Only structuredOutput.verdict === "blocked" blocks an otherwise successful stage; reviewer prose is not parsed.
+- FILE: workflowScriptPath resolves against the request cwd and is read by the host before sandbox execution.
+- RESOURCE: {workflow:"resource-name",args:{...}} uses an extension-owned script and authority for permission/policy integration. args must be bounded plain data.
+- Use action:"validate" with workflowScript or workflowScriptPath to check syntax and statically decidable structure without launching children.
 
-Custom agents: .pi/agents/<name>.md (project) or {{agentDir}}/agents/<name>.md (global). Project definitions take precedence.
+## Isolation and runners
+- For managed Git isolation, set worktree:true on the workflow or child; parallel children receive separate worktrees. The source checkout must be clean.
+- baseRef accepts HEAD or supported named refs such as refs/heads/main, not commit hashes or expressions such as HEAD~1. Omitted baseRef resolves HEAD at worktree allocation.
+- External CLI agents use their runner contract. Unless explicitly supported, native Pi options do not apply: model override, structured output, acceptance/agent contract, tool budget, fast mode, fork context, skills, or native Pi tools.
 
-## Delegation
-- Provide the goal, relevant context, constraints, expected output, and whether changes are allowed. New agents do not inherit conversation history unless requested.
-- Use foreground execution when the result is needed next. For independent parallel work, issue multiple Agent calls in one message with run_in_background: true.
-- Background completion is notified automatically. Do not poll or sleep; continue independent work without duplicating the delegated task.
-- Use resume to continue a previous agent and steer_subagent to redirect a running one.
-- Inspect actual changes and relevant checks before reporting delegated implementation as complete. Summarize useful results for the user.
-- isolation: "worktree" creates an isolated Git worktree and may create branches; use it only when appropriate and permitted by the task.{{scheduleGuideline}}
+## Reference
+Use {action:"guide",topic:"workflows"} or the pi-subagents skill for advanced workflows; use topic:"tool-reference" for management actions.
 `;

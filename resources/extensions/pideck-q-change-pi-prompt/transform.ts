@@ -34,6 +34,22 @@ function applyPatches(original: string, patches: Patch[]): string {
 	return result + original.slice(end);
 }
 
+function joinGuidelineParts(parts: string[]): string {
+	let out = '';
+	for (const part of parts) {
+		const text = part.trim();
+		if (!text) continue;
+		if (!out) {
+			out = text;
+			continue;
+		}
+		const previousLine = out.slice(out.lastIndexOf('\n') + 1);
+		const continueList = text.startsWith('- ') && (previousLine.startsWith('- ') || previousLine.startsWith('## '));
+		out += (continueList ? '\n' : '\n\n') + text;
+	}
+	return out;
+}
+
 /** Render only sections supported by the active tool set. Runtime facts stay with providers. */
 function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string {
 	const p = input.prompts;
@@ -52,7 +68,7 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);
 	sections.push(p.validation, p.communication);
 	sections.push(p.environment.replace(/\{\{(hostOs|today)\}\}/g, (_, key: string) => key === 'hostOs' ? input.hostOs : input.today));
-	return sections.join('\n\n');
+	return joinGuidelineParts(sections);
 }
 
 /** Unknown layouts and custom/child prompts never receive partially applied transformations. */

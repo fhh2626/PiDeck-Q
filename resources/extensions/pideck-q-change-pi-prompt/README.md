@@ -1,7 +1,7 @@
 # PiDeck-Q-Change-Pi-Prompt
 
 PiDeck-Q 随包内置扩展。默认关闭；在设置 → 扩展中启用。
-接管 Pi 的基础身份、Guidelines 和文档提示，按工具来源替换 pwsh / pi-subagents 的系统指南。
+接管 Pi 的基础身份、Guidelines 和文档提示，按来源替换 pwsh 指南并为 pi-subagents 增补委派策略。
 不修改工具执行、参数 schema、项目 AGENTS.md、技能、记忆或子代理角色。
 
 ## 安装结构
@@ -48,9 +48,9 @@ Windows 默认目录：`C:\Users\<user>\.pi\agent\change-pi-prompt`。
 }
 ```
 
-- pwsh/subagent：是否接管目标提供者的指南，不代表安装或启用这些插件。
+- pwsh：是否替换目标 Shell 指南；subagent：是否添加原生 subagent 委派策略；均不代表安装或启用插件。
 - unknownGuidelines：`preserve` 保留无法归属的规则；`skip` 撤销整个本次转换。
-- 目标工具的当前指南通过元数据接管，因此措辞更新不依赖旧文本正则。
+- 接管规则通过工具来源元数据识别，不依赖旧文本正则。原生 subagent 默认模式的执行指南始终保留，避免其短 description 未覆盖的安全规则丢失。
 - 多个来源共有的规则，只要其中有未接管来源，就保留。
 - 新增的未知 Pi core 规则默认保留；不模糊猜测语义。
 
@@ -58,18 +58,20 @@ Windows 默认目录：`C:\Users\<user>\.pi\agent\change-pi-prompt`。
 
 systemPrompt hook 不能修改工具 description。使用 pi-subagents 自带 custom 接口：
 
-1. 确认已安装 `@tintinweb/pi-subagents`。
-2. `/change-pi-prompt init-subagent`：只创建缺失的 `<agentDir>/agent-tool-description.md`。
-3. 在 `/agents` 设置中将 Tool description 设为 `custom`（或自行设置 subagents.json 的 toolDescriptionMode）。
-4. 开启新会话，使 Agent 工具重新注册。
+1. 确认已安装 `pi-subagents`（Nico Bailon，适配 0.66.0），工具名为 `subagent`。
+2. `/change-pi-prompt init-subagent`：只创建缺失的 `<agentDir>/subagent-tool-description.md`。
+3. 在 `<agentDir>/extensions/subagent/config.json` 顶层设置 `"toolDescriptionMode": "custom"` 和 `"asyncByDefault": false`。每次 `before_agent_start` 都会检查后者；缺省或 true 会警告，因为独立 Pi 二进制无法启动后台子 agent。`before_agent_start`、`context`、`before_provider_request` 和 `tool_result` 会把上游强制安全段、工具描述、已注入 skill，以及对 `pi-subagents/skills/` 的 `read` 结果中的默认后台说明改写为：插件默认是 `asyncByDefault:true`，本环境必须 `async:false`。不修改 pi-subagents 源码或磁盘文件。用语义窗口匹配，而不是整段原文；用户自己的 `async: true` 不替换。
+4. 开启新会话，使 subagent 工具重新注册。
 
-命令不会修改 subagents.json，不覆盖已有 description；未检测到目标 Agent 工具时不写任何文件。
-项目 `.pi/agent-tool-description.md` 会优先于全局文件。
-模板保留原生 `{{typeList}}` / `{{agentDir}}` / `{{scheduleGuideline}}`，由 subagent 插件渲染。
-默认保留完整类型描述，以免 compactTypeList 丢掉 Explore 等类型的使用边界。
-本插件默认仍提供简短 Delegation 指南，因此未启用 custom description 时也不会丢失基本指引。
-
-Explore/Plan 自身角色、append 子代理 bridge 不在本版转换范围。可通过 subagent 原生 agent 文件另行定制。
+命令不修改 pi-subagents 配置，不覆盖已有 description；未检测到目标工具时不写任何文件。
+项目配置目录（标准 Pi 为 `.pi`）中的 `subagent-tool-description.md` 优先于全局文件。
+默认模板不使用占位符；上游 custom 接口会自动追加完整安全指南，不应重复粘贴或移除。
+上游支持 `{{full}}` / `{{compact}}` / `{{safety}}` 等原生占位符，由 pi-subagents 自行渲染。
+custom 模式下上游不提供 promptSnippet/promptGuidelines；本插件仍按活动工具的名称和来源生成 Delegation，不依赖这些字段存在。默认模式则保留上游指南；custom 模式使用自动追加的安全段，减少重复而不删除执行约束。
+多步或并行任务只允许一个顶层前台 workflow（async:false），子任务通过 runs.run/runs.all 编排；模板保留调用契约，模型选择沿用上游默认行为。
+自定义描述也保留单 workflow 约束，避免关闭系统指南替换后丢失该约束。
+bg_wait、subagent_supervisor、外部 CLI 行为和子代理角色均不改写。
+旧提供者不再适配；旧的用户模板不会被初始化命令自动迁移或删除，升级时应手动检查并替换 delegation.md。
 自定义 SYSTEM.md 与子代理 customPrompt 整体跳过；父 prompt 已转换的继承前缀不重复转换。
 
 ## 诊断
@@ -82,7 +84,7 @@ Explore/Plan 自身角色、append 子代理 bridge 不在本版转换范围。�
 ## 兼容性与安全边界
 
 已验证原版 Pi 0.84.4 实际构建器与公开 ExtensionAPI 类型。
-pwsh 1.1.1、pi-subagents 0.15.0 的来源契约已核对；规则归属测试使用可控替身。
+pwsh 1.1.1、pi-subagents 0.66.0 的来源契约已核对；规则归属测试使用可控替身。
 未进行真实模型会话或 Pi_Agent_Rust 端到端验证，不宣称所有版本兼容。
 
 转换仅接受有序的基础头：身份 / Available tools / Guidelines / Pi documentation。

@@ -3,7 +3,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { initializeAgentDescription, initializeSettings, loadSettings, type Settings } from './config.ts';
+import { initializeSubagentDescription, initializeSettings, inspectNativeSubagentAsyncDefault, isPiSubagentsSkillPath, loadSettings, rewriteJsonStrings, rewriteSystemPromptTools, rewriteToolResultContent, type Settings } from './config.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
 import { transformSystemPrompt } from './transform.ts';
 
@@ -85,14 +85,22 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 			const tools = snapshotTools(pi);
 			const activeTools = typeof pi.getActiveTools === 'function'
 				? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])];
+			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
+			const nativeAsync = nativeTools.length ? await inspectNativeSubagentAsyncDefault(agentDir) : undefined;
+			const rewritten = rewriteSystemPromptTools(event.systemPrompt, nativeTools);
 			const result = transformSystemPrompt({
-				systemPrompt: event.systemPrompt,
+				systemPrompt: rewritten.systemPrompt,
 				options: event.systemPromptOptions,
 				tools, activeTools,
 				...settings,
 				hostOs: hostOs(), today: localDate(),
 			});
 			lastStatus = [...result.diagnostics];
+			if (nativeAsync) {
+				lastStatus.push(nativeAsync.message);
+				if (!nativeAsync.ok) warnOnce(ctx, nativeAsync.message);
+			}
+			if (rewritten.rewritten.length) lastStatus.push(`rewrote upstream async default in: ${rewritten.rewritten.join(', ')}`);
 			for (const tool of tools.filter(tool => activeTools.includes(tool.name) && (isPwsh(tool) || isSubagent(tool)))) {
 				const hash = createHash('sha256').update(JSON.stringify(tool.promptGuidelines ?? [])).digest('hex').slice(0, 12);
 				const previous = contributionHashes.get(tool.name);
@@ -115,6 +123,28 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 		}
 	});
 
+	pi.on('context', (event) => {
+		const rewritten = rewriteJsonStrings(event.messages);
+		if (!rewritten.changed) return;
+		lastStatus.push('rewrote upstream async default in context messages');
+		return { messages: rewritten.value };
+	});
+	pi.on('before_provider_request', (event) => {
+		const rewritten = rewriteJsonStrings(event.payload);
+		if (!rewritten.changed) return;
+		lastStatus.push('rewrote upstream async default in provider payload');
+		return rewritten.value;
+	});
+	pi.on('tool_result', (event) => {
+		if (event.toolName !== 'read' || event.isError) return;
+		const path = isRecord(event.input) && typeof event.input.path === 'string' ? event.input.path : undefined;
+		if (!isPiSubagentsSkillPath(path)) return;
+		const rewritten = rewriteToolResultContent(event.content);
+		if (!rewritten.changed) return;
+		lastStatus.push('rewrote upstream async default in pi-subagents skill read');
+		return { content: rewritten.content };
+	});
+
 	pi.registerCommand('change-pi-prompt', {
 		description: '提示词替换：status | reload | init | init-subagent | preview',
 		handler: async (args, ctx) => {
@@ -130,7 +160,7 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 						warned.clear();
 						lastPreview = undefined;
 						lastStatus = ['配置已重载，等待下一次用户请求'];
-						report(ctx, '配置已重载；下一次用户请求生效。Agent 工具描述须在新会话注册后生效。');
+						report(ctx, '配置已重载；下一次用户请求生效。subagent 工具描述须在新会话注册后生效。');
 						break;
 					case 'init': {
 						const count = await initializeSettings(agentDir);
@@ -139,11 +169,11 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 					}
 					case 'init-subagent': {
 						if (!snapshotTools(pi).some(isSubagent)) {
-							report(ctx, '未检测到 @tintinweb/pi-subagents 的 Agent 工具；未创建任何文件。', true);
+							report(ctx, '未检测到 pi-subagents 的 subagent 工具；未创建任何文件。', true);
 							break;
 						}
-						const created = await initializeAgentDescription(agentDir);
-						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'agent-tool-description.md')}。请在 /agents 设置中将 Tool description 设为 custom，随后开启新会话。项目 .pi/agent-tool-description.md 会优先于全局模板；本命令不修改 subagents.json。`);
+						const created = await initializeSubagentDescription(agentDir);
+						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'subagent-tool-description.md')}。请在 ${join(agentDir, 'extensions', 'subagent', 'config.json')} 顶层设置 toolDescriptionMode 为 custom，并设置 asyncByDefault 为 false，随后开启新会话。项目配置目录中的 subagent-tool-description.md 优先；本命令不修改 pi-subagents 配置。上游会自动追加安全指南。独立二进制环境必须显式关闭后台子 agent。`);
 						break;
 					}
 					case 'preview':

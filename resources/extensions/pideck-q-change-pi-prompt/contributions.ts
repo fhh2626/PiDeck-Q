@@ -26,7 +26,7 @@ export function isPwsh(tool: ToolSnapshot): boolean {
 }
 
 export function isSubagent(tool: ToolSnapshot): boolean {
-	return tool.name === 'Agent' && fromPackage(tool, '@tintinweb/pi-subagents');
+	return tool.name === 'subagent' && fromPackage(tool, 'pi-subagents');
 }
 
 /** Schema shape gates batch-specific guidance; names alone do not establish semantics. */
@@ -54,7 +54,9 @@ export function normalizeRule(text: string): string {
 /** Only claim built-ins whose replacement is emitted; preserve all other sources. */
 function claimed(tool: ToolSnapshot, config: Config): boolean {
 	if (config.pwsh && isPwsh(tool)) return true;
-	if (config.subagent && isSubagent(tool)) return true;
+	// Native default-mode guidelines contain execution safeguards absent from its short description.
+	// Preserve them; custom mode omits this metadata and appends safety in the description instead.
+	if (isSubagent(tool)) return false;
 	if (tool.sourceInfo?.source !== 'builtin') return false;
 	if (tool.name === 'edit') return hasBatchEdit(tool);
 	return ['read', 'write', 'bash', 'powershell'].includes(tool.name);

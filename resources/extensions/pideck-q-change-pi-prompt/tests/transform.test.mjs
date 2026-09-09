@@ -25,6 +25,14 @@ test('Pi-only installation needs neither optional plugin nor interactive tools',
   assert.doesNotMatch(result.systemPrompt, /Pi documentation|ask_question|`todo`|PowerShell|## Delegation/);
   assert.ok(result.systemPrompt.endsWith('\n\n<project_context>KEEP EXACTLY\r\n</project_context>\nCurrent working directory: /project'));
 });
+test('tool bullets stay in one list without blank lines', () => {
+  const edit = tool('edit');
+  edit.parameters = { type: 'object', properties: { edits: { type: 'array', items: { type: 'object', properties: { oldText: { type: 'string' }, newText: { type: 'string' } } } } } };
+  const result = run(fixture(), [tool('read'), edit, tool('write'), tool('bash')]);
+  assert.match(result.systemPrompt, /## Tools\n- Follow the active tools' schemas[^]*?- Use `read` to inspect files instead of shell commands\.\n- Use `edit` for focused changes[^]*?- Use one `edit` call[^]*?- Use `write` only for new files or complete rewrites\.\n- For shell commands/);
+  assert.doesNotMatch(result.systemPrompt, /## Tools[^]*?\n\n-/);
+  assert.match(result.systemPrompt, /## Tools\n- Follow[^]*?\n\n## Validation/);
+});
 test('custom system prompts with matching keywords are not modified', () => {
   assert.equal(run(fixture(), [], { options: { customPrompt: fixture() } }).systemPrompt, fixture());
 });
@@ -54,20 +62,51 @@ test('same-name bash supplied by another extension is not treated as pwsh', () =
   const result = run(fixture([...coreRules, rule]), [tool('bash', [rule], 'npm:other', '/other/index.ts')]);
   assert.ok(result.systemPrompt.includes(rule));
 });
-test('subagent updated guidelines are replaced only for the target provider', () => {
+test('native default-mode safeguards survive while delegation is added', () => {
   const rule = 'UPDATED delegation guidance';
-  const tools = [tool('Agent', [rule], 'npm:@tintinweb/pi-subagents', '/npm/@tintinweb/pi-subagents/src/index.ts')];
+  const tools = [tool('subagent', [rule], 'npm:pi-subagents@0.66.0', '/npm/pi-subagents/src/index.ts')];
   const result = run(fixture([...coreRules, rule]), tools);
-  assert.doesNotMatch(result.systemPrompt, /UPDATED delegation/);
+  assert.match(result.systemPrompt, /UPDATED delegation/);
   assert.match(result.systemPrompt, /## Delegation/);
-  assert.ok(run(fixture([...coreRules, rule]), [tool('Agent', [rule], 'npm:other')]).systemPrompt.includes(rule));
+  assert.ok(run(fixture([...coreRules, rule]), [tool('subagent', [rule], 'npm:other')]).systemPrompt.includes(rule));
 });
 test('disabled optional tools neither contribute replacements nor lose their rules', () => {
   const rule = 'optional plugin constraint';
-  const tools = [tool('Agent', [rule], 'npm:@tintinweb/pi-subagents')];
+  const tools = [tool('subagent', [rule], 'npm:pi-subagents')];
   const result = run(fixture([...coreRules, rule]), tools, { activeTools: [] });
   assert.ok(result.systemPrompt.includes(rule));
   assert.doesNotMatch(result.systemPrompt, /## Delegation/);
+});
+test('custom mode without prompt metadata still receives delegation by provenance', () => {
+  const native = { name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } };
+  const result = run(fixture(), [native]);
+  assert.match(result.systemPrompt, /exactly one top-level subagent call with async:false/);
+  assert.doesNotMatch(result.systemPrompt, /run_in_background|subagent_type/);
+});
+test('installed package paths establish provenance without a package source label', () => {
+  const native = tool('subagent', [], 'path', 'C:\\node_modules\\pi-subagents\\index.ts');
+  assert.match(run(fixture(), [native]).systemPrompt, /## Delegation/);
+});
+test('legacy provider and lookalike package names are never adapted', () => {
+  for (const candidate of [
+    tool('Agent', ['KEEP'], 'npm:@tintinweb/pi-subagents'),
+    tool('subagent', ['KEEP'], 'npm:@tintinweb/pi-subagents'),
+    tool('subagent', ['KEEP'], 'npm:pi-subagents-other'),
+    tool('Agent', ['KEEP'], 'npm:pi-subagents'),
+  ]) {
+    const result = run(fixture([...coreRules, 'KEEP']), [candidate]);
+    assert.match(result.systemPrompt, /KEEP/);
+    assert.doesNotMatch(result.systemPrompt, /## Delegation/);
+  }
+});
+test('disabled subagent adaptation and companion tools preserve upstream guidance', () => {
+  const tools = [tool('subagent', ['NATIVE'], 'npm:pi-subagents'), tool('bg_wait', ['WAIT'], 'npm:pi-subagents'), tool('subagent_supervisor', ['SUPERVISOR'], 'npm:pi-subagents')];
+  const result = run(fixture([...coreRules, 'NATIVE', 'WAIT', 'SUPERVISOR']), tools, { config: { ...DEFAULT_CONFIG, subagent: false } });
+  assert.doesNotMatch(result.systemPrompt, /## Delegation/);
+  for (const rule of ['NATIVE', 'WAIT', 'SUPERVISOR']) assert.ok(result.systemPrompt.includes(rule));
+  const enabled = run(fixture([...coreRules, 'NATIVE', 'WAIT', 'SUPERVISOR']), tools);
+  assert.ok(enabled.systemPrompt.includes('WAIT'));
+  assert.ok(enabled.systemPrompt.includes('SUPERVISOR'));
 });
 test('rules co-owned by untargeted tools are preserved', () => {
   const rule = 'SHARED guidance';
