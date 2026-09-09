@@ -2,6 +2,7 @@
 import { type Config, type Prompts } from './defaults.ts';
 import { classifyRules, CORE_RULES, hasBatchEdit, isPwsh, isSubagent, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
+import { filterUnavailableShellToolLines } from './shellAvailability.ts';
 
 export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
 export interface TransformInput {
@@ -97,6 +98,14 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 		patches.push({ start, end, replacement, expected: original.slice(start, end) });
 	};
 	if (input.config.replaceIdentity) add(0, layout.identityEnd, input.prompts.identity);
+	if (input.config.pruneUnavailableShells) {
+		const originalTools = original.slice(layout.toolsStart, layout.toolsEnd);
+		const filtered = filterUnavailableShellToolLines(originalTools, input.activeTools);
+		if (filtered !== originalTools) {
+			add(layout.toolsStart, layout.toolsEnd, filtered);
+			diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
+		}
+	}
 	if (input.config.replaceGuidelines) {
 		const ownership = classifyRules(tools, input.config);
 		const preserved: string[] = [];

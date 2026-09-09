@@ -125,6 +125,7 @@ async function putChangePromptFiles(repo, { withUndici = true } = {}) {
 		"pideck-q-change-pi-prompt/defaults.ts",
 		"pideck-q-change-pi-prompt/layout.ts",
 		"pideck-q-change-pi-prompt/contributions.ts",
+		"pideck-q-change-pi-prompt/shellAvailability.ts",
 	]) {
 		await put(join(base, file), "// packaged");
 	}

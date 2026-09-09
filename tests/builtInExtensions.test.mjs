@@ -67,9 +67,11 @@ test("listActiveBuiltInExtensionPaths respects removedBuiltIn and missing files"
 		);
 		assert.equal(paths.length, 1);
 		assert.ok(String(paths[0]).endsWith("pideck-q-ask-question.ts"));
-		// 内置扩展清单随版本增长：ask/context-controller/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction/change-pi-prompt
-		assert.equal(BUILT_IN_EXTENSIONS.length, 10);
+		// 内置扩展清单随版本增长：ask/context-controller/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction/change-pi-prompt/webfetch/subagents
+		assert.equal(BUILT_IN_EXTENSIONS.length, 12);
 		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-context-controller.ts"));
+		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-webfetch.ts"));
+		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-subagents.ts"));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -229,3 +231,36 @@ test("main uses the already-eager built-in extension catalog without a fake dyna
 	);
 	assert.doesNotMatch(startupTasks, /await import\("\.\/extensions\/builtInExtensions"\)/);
 });
+
+test("pideck-q-webfetch and pideck-q-subagents are registered default-on built-ins", () => {
+	const { BUILT_IN_EXTENSIONS, DEFAULT_DISABLED_BUILT_IN_EXTENSIONS } = loadBuiltInExtensionsModule();
+	assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-webfetch.ts"));
+	assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-subagents.ts"));
+	assert.equal(DEFAULT_DISABLED_BUILT_IN_EXTENSIONS.includes("pideck-q-webfetch.ts"), false);
+	assert.equal(DEFAULT_DISABLED_BUILT_IN_EXTENSIONS.includes("pideck-q-subagents.ts"), false);
+
+	const extensionsTab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
+	assert.match(extensionsTab, /"pideck-q-webfetch\.ts": "PiDeck-Q-WebFetch"/);
+	assert.match(extensionsTab, /"pideck-q-subagents\.ts": "PiDeck-Q-Subagents"/);
+});
+
+test("appendBuiltInExtensionArgs injects bundled skills and prompts for subagents", () => {
+	const { appendBuiltInExtensionArgs } = loadBuiltInExtensionsModule();
+	const subagentsPath = join(process.cwd(), "resources", "extensions", "pideck-q-subagents.ts");
+	const expectedSkillsDir = join(process.cwd(), "resources", "extensions", "pideck-q-subagents", "skills");
+	const expectedPromptsDir = join(process.cwd(), "resources", "extensions", "pideck-q-subagents", "prompts");
+
+	const args = appendBuiltInExtensionArgs(["--mode", "rpc"], [subagentsPath]);
+	assert.ok(args.includes("--extension"));
+	assert.ok(args.includes(subagentsPath));
+	assert.ok(args.includes("--skill"));
+	assert.ok(args.includes(expectedSkillsDir));
+	assert.ok(args.includes("--prompt-template"));
+	assert.ok(args.includes(expectedPromptsDir));
+
+	// 当 noSkills 为 true 时，不注入 --skill，但保留扩展和提示词
+	const argsNoSkills = appendBuiltInExtensionArgs(["--mode", "rpc"], [subagentsPath], { noSkills: true });
+	assert.equal(argsNoSkills.includes("--skill"), false);
+	assert.ok(argsNoSkills.includes("--prompt-template"));
+});
+

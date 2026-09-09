@@ -223,6 +223,7 @@ function parseConfig(text: string | undefined): Config {
 		removeDocumentation: boolean('removeDocumentation', DEFAULT_CONFIG.removeDocumentation),
 		pwsh: boolean('pwsh', DEFAULT_CONFIG.pwsh),
 		subagent: boolean('subagent', DEFAULT_CONFIG.subagent),
+		pruneUnavailableShells: boolean('pruneUnavailableShells', DEFAULT_CONFIG.pruneUnavailableShells),
 		unknownGuidelines: unknown,
 	};
 }

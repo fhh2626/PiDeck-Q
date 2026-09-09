@@ -718,6 +718,8 @@ export const BUILT_IN_CONFLICT_KEYWORDS = [
 	["pi-deck-todo.ts", "todo"],
 	["pi-deck-plan-mode.ts", "plan"],
 	["pideck-q-ask-question.ts", "ask"],
+	["pideck-q-webfetch.ts", "webfetch"],
+	["pideck-q-subagents.ts", "subagents"],
 ] as const;
 
 /**

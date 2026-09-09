@@ -1,0 +1,53 @@
+{
+  "name": "@pi-lab/webfetch",
+  "version": "1.1.0",
+  "description": "WebFetch tool extension for pi coding agent",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/anthod0/pi-lab/tree/main/packages/webfetch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthod0/pi-lab.git",
+    "directory": "packages/webfetch"
+  },
+  "bugs": {
+    "url": "https://github.com/anthod0/pi-lab/issues"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.mjs"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-tui": "^0.80.3",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/mozilla__readability": "^0.4.0",
+    "@types/node": "^25.9.4",
+    "@types/turndown": "^5.0.6",
+    "tsdown": "^0.22.3",
+    "@pi-lab/utils": "0.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.3 <1",
+    "@earendil-works/pi-tui": ">=0.80.3 <1",
+    "@sinclair/typebox": "^0.34.49"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "fflate": "^0.8.3",
+    "linkedom": "^0.18.10",
+    "lru-cache": "^11.5.1",
+    "turndown": "^7.2.0"
+  },
+  "scripts": {
+    "build": "tsdown"
+  }
+}

@@ -51,3 +51,15 @@ test("change-pi-prompt is a default-off built-in shown as PiDeck-Q-Change-Pi-Pro
 	assert.match(tab, /"pideck-q-change-pi-prompt\.ts": "PiDeck-Q-Change-Pi-Prompt"/);
 	assert.match(tab, /"pideck-q-change-pi-prompt": "PiDeck-Q-Change-Pi-Prompt"/);
 });
+
+test("webfetch and subagents are default-on built-ins with display names", () => {
+	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
+	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
+	assert.match(builtIns, /"pideck-q-webfetch\.ts"/);
+	assert.match(builtIns, /"pideck-q-subagents\.ts"/);
+	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-webfetch/);
+	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-subagents/);
+	assert.match(tab, /"pideck-q-webfetch\.ts": "PiDeck-Q-WebFetch"/);
+	assert.match(tab, /"pideck-q-subagents\.ts": "PiDeck-Q-Subagents"/);
+});
+

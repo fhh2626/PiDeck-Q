@@ -1,10 +1,18 @@
 /** Extension lifecycle and commands. Configuration is loaded once, then explicitly reloaded. */
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type { ContextEvent, ExtensionAPI, ExtensionContext, ToolResultEvent } from '@earendil-works/pi-coding-agent';
 import { initializeSubagentDescription, initializeSettings, inspectNativeSubagentAsyncDefault, isPiSubagentsSkillPath, loadSettings, rewriteJsonStrings, rewriteSystemPromptTools, rewriteToolResultContent, type Settings } from './config.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
+import {
+	defaultShellProbeHost,
+	hideUnavailableShellTools,
+	parseShellPathFromSettings,
+	probeShellAvailability,
+	type ShellProbeHost,
+} from './shellAvailability.ts';
 import { transformSystemPrompt } from './transform.ts';
 
 /** Local facts are labeled as local, never treated as the shell execution backend. */
@@ -36,11 +44,20 @@ function errorSummary(error: unknown): string {
 	return error instanceof Error ? error.message : 'Unknown extension error';
 }
 
-export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): void {
+/** rewriteJsonStrings preserves array structure; only string leaves may change. */
+function isMessageArray(value: unknown): value is ContextEvent['messages'] {
+	return Array.isArray(value);
+}
+function isContentArray(value: unknown): value is ToolResultEvent['content'] {
+	return Array.isArray(value);
+}
+
+export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, probeHost: ShellProbeHost = defaultShellProbeHost()): void {
 	let settings: Settings | undefined;
 	let loading: Promise<void> | undefined;
 	let lastStatus = ['尚未转换提示词'];
 	let lastPreview: string | undefined;
+	let lastShellStatus: string[] = [];
 	const warned = new Set<string>();
 	const contributionHashes = new Map<string, string>();
 	const report = (ctx: ExtensionContext, message: string, error = false) => {
@@ -66,12 +83,41 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 		await loading;
 	};
 
+	const readConfiguredShellPath = async (): Promise<string | undefined> => {
+		try {
+			return parseShellPathFromSettings(await readFile(join(agentDir, 'settings.json'), 'utf8'));
+		} catch {
+			return undefined;
+		}
+	};
+
+	/** Hide bash/powershell with no backend before the model sees the catalog.
+	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell. */
+	const pruneUnavailableShells = async (ctx: ExtensionContext): Promise<string[] | undefined> => {
+		if (!settings?.config.enabled || !settings.config.pruneUnavailableShells) return undefined;
+		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
+		const availability = probeShellAvailability(probeHost, await readConfiguredShellPath());
+		lastShellStatus = [`shell: bash=${availability.bash ? 'available' : 'missing'}, powershell=${availability.powershell ? 'available' : 'missing'}`];
+		const active = [...pi.getActiveTools()];
+		const { next, hidden } = hideUnavailableShellTools(active, availability, { keepBash: snapshotTools(pi).some(isPwsh) });
+		if (hidden.length === 0) return next;
+		pi.setActiveTools(next);
+		lastShellStatus.push(`shell-tools: hid ${hidden.join(', ')}`);
+		for (const name of hidden) {
+			warnOnce(ctx, `${name} 后端不可用，已对本会话隐藏该工具并省略对应提示。`);
+		}
+		return next;
+	};
+
 	pi.on('session_start', async (_event, ctx) => {
 		warned.clear();
 		contributionHashes.clear();
 		lastPreview = undefined;
+		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
 		await ensureLoaded(ctx);
+		await pruneUnavailableShells(ctx);
+		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
 	pi.on('session_shutdown', async () => {
 		lastPreview = undefined;
@@ -82,9 +128,11 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 		await ensureLoaded(ctx);
 		if (!settings) return;
 		try {
+			const pruned = await pruneUnavailableShells(ctx);
 			const tools = snapshotTools(pi);
-			const activeTools = typeof pi.getActiveTools === 'function'
-				? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])];
+			const activeTools = pruned
+				?? (typeof pi.getActiveTools === 'function'
+					? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])]);
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
 			const nativeAsync = nativeTools.length ? await inspectNativeSubagentAsyncDefault(agentDir) : undefined;
 			const rewritten = rewriteSystemPromptTools(event.systemPrompt, nativeTools);
@@ -95,7 +143,7 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 				...settings,
 				hostOs: hostOs(), today: localDate(),
 			});
-			lastStatus = [...result.diagnostics];
+			lastStatus = [...result.diagnostics, ...lastShellStatus];
 			if (nativeAsync) {
 				lastStatus.push(nativeAsync.message);
 				if (!nativeAsync.ok) warnOnce(ctx, nativeAsync.message);
@@ -125,7 +173,7 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 
 	pi.on('context', (event) => {
 		const rewritten = rewriteJsonStrings(event.messages);
-		if (!rewritten.changed) return;
+		if (!rewritten.changed || !isMessageArray(rewritten.value)) return;
 		lastStatus.push('rewrote upstream async default in context messages');
 		return { messages: rewritten.value };
 	});
@@ -140,9 +188,10 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 		const path = isRecord(event.input) && typeof event.input.path === 'string' ? event.input.path : undefined;
 		if (!isPiSubagentsSkillPath(path)) return;
 		const rewritten = rewriteToolResultContent(event.content);
-		if (!rewritten.changed) return;
+		const nextContent = rewritten.content;
+		if (!rewritten.changed || !isContentArray(nextContent)) return;
 		lastStatus.push('rewrote upstream async default in pi-subagents skill read');
-		return { content: rewritten.content };
+		return { content: [...nextContent] };
 	});
 
 	pi.registerCommand('change-pi-prompt', {

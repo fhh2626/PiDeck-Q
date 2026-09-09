@@ -16,6 +16,8 @@ export const BUILT_IN_EXTENSIONS = [
 	"pideck-q-websearch.ts",
 	"pideck-q-better-compaction.ts",
 	"pideck-q-change-pi-prompt.ts",
+	"pideck-q-webfetch.ts",
+	"pideck-q-subagents.ts",
 ] as const;
 
 export type BuiltInExtensionName = (typeof BUILT_IN_EXTENSIONS)[number];
@@ -150,7 +152,7 @@ export function listActiveBuiltInExtensionPaths(
 export function appendBuiltInExtensionArgs(
 	args: readonly string[],
 	extensionPaths: readonly string[],
-	options: { noExtensions?: boolean } = {},
+	options: { noExtensions?: boolean; noSkills?: boolean } = {},
 ): string[] {
 	if (options.noExtensions || extensionPaths.length === 0) return [...args];
 	const next = [...args];
@@ -158,6 +160,19 @@ export function appendBuiltInExtensionArgs(
 		const trimmed = extensionPath.trim();
 		if (!trimmed) continue;
 		next.push("--extension", trimmed);
+
+		// 如果是 subagents 扩展，顺带挂载它自带的 package skills 和 prompt templates
+		if (basename(trimmed) === "pideck-q-subagents.ts") {
+			const pkgDir = join(trimmed, "..", "pideck-q-subagents");
+			const skillsDir = join(pkgDir, "skills");
+			const promptsDir = join(pkgDir, "prompts");
+			if (!options.noSkills && existsSync(skillsDir)) {
+				next.push("--skill", skillsDir);
+			}
+			if (existsSync(promptsDir)) {
+				next.push("--prompt-template", promptsDir);
+			}
+		}
 	}
 	return next;
 }

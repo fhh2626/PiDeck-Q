@@ -25,6 +25,27 @@ test('Pi-only installation needs neither optional plugin nor interactive tools',
   assert.doesNotMatch(result.systemPrompt, /Pi documentation|ask_question|`todo`|PowerShell|## Delegation/);
   assert.ok(result.systemPrompt.endsWith('\n\n<project_context>KEEP EXACTLY\r\n</project_context>\nCurrent working directory: /project'));
 });
+test('inactive bash and powershell rows disappear with their shell guidelines', () => {
+  const prompt = fixture(coreRules).replace(
+    'Available tools:\n- read: Read file contents',
+    'Available tools:\n- bash: Execute a bash command\n- powershell: Execute a PowerShell command\n- read: Read file contents',
+  );
+  const result = run(prompt, [tool('bash'), tool('powershell'), tool('read')], { activeTools: ['read'] });
+  assert.doesNotMatch(result.systemPrompt, /- bash: |- powershell: /);
+  assert.match(result.systemPrompt, /- read: Read file contents/);
+  assert.doesNotMatch(result.systemPrompt, /For shell commands|For `bash`/);
+  assert.match(result.diagnostics.join('\n'), /shell-tools: pruned/);
+});
+test('active powershell keeps the generic shell guideline and its catalog row', () => {
+  const prompt = fixture(coreRules).replace(
+    'Available tools:\n- read: Read file contents',
+    'Available tools:\n- bash: Execute a bash command\n- powershell: Execute a PowerShell command\n- read: Read file contents',
+  );
+  const result = run(prompt, [tool('bash'), tool('powershell'), tool('read')], { activeTools: ['powershell', 'read'] });
+  assert.doesNotMatch(result.systemPrompt, /- bash: /);
+  assert.match(result.systemPrompt, /- powershell: Execute a PowerShell command/);
+  assert.match(result.systemPrompt, /For shell commands/);
+});
 test('tool bullets stay in one list without blank lines', () => {
   const edit = tool('edit');
   edit.parameters = { type: 'object', properties: { edits: { type: 'array', items: { type: 'object', properties: { oldText: { type: 'string' }, newText: { type: 'string' } } } } } };
@@ -134,4 +155,13 @@ test('missing metadata preserves tool instructions rather than guessing ownershi
 });
 test('configuration can disable all rewriting', () => {
   assert.equal(run(fixture(), undefined, { config: { ...DEFAULT_CONFIG, enabled: false } }).systemPrompt, fixture());
+});
+test('pruneUnavailableShells false leaves catalog rows even when shells are inactive', () => {
+  const prompt = fixture(coreRules).replace(
+    'Available tools:\n- read: Read file contents',
+    'Available tools:\n- bash: Execute a bash command\n- read: Read file contents',
+  );
+  const result = run(prompt, [tool('bash'), tool('read')], { activeTools: ['read'], config: { ...DEFAULT_CONFIG, pruneUnavailableShells: false } });
+  assert.match(result.systemPrompt, /- bash: Execute a bash command/);
+  assert.doesNotMatch(result.diagnostics.join('\n'), /shell-tools/);
 });

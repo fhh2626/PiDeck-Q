@@ -53,6 +53,8 @@ export interface Config {
 	removeDocumentation: boolean;
 	pwsh: boolean;
 	subagent: boolean;
+	/** Hide bash/powershell whose backends are missing, and omit their prompt sections. */
+	pruneUnavailableShells: boolean;
 	unknownGuidelines: "preserve" | "skip";
 }
 export const DEFAULT_CONFIG: Config = {
@@ -63,6 +65,7 @@ export const DEFAULT_CONFIG: Config = {
 	removeDocumentation: true,
 	pwsh: true,
 	subagent: true,
+	pruneUnavailableShells: true,
 	unknownGuidelines: "preserve",
 };
 

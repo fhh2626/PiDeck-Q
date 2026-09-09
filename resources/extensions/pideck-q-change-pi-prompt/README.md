@@ -2,7 +2,8 @@
 
 PiDeck-Q 随包内置扩展。默认关闭；在设置 → 扩展中启用。
 接管 Pi 的基础身份、Guidelines 和文档提示，按来源替换 pwsh 指南并为 pi-subagents 增补委派策略。
-不修改工具执行、参数 schema、项目 AGENTS.md、技能、记忆或子代理角色。
+探测 bash / powershell 后端是否存在；缺失则对本会话 `setActiveTools` 隐藏对应工具，并删掉 Available tools 行与 shell/pwsh 指南。
+不修改工具执行实现、参数 schema、项目 AGENTS.md、技能、记忆或子代理角色。
 
 ## 安装结构
 
@@ -15,7 +16,7 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - 同名工具由其他扩展提供：不误认为目标插件。
 - 缺少元数据 API：保留无法归属的规则，不猜测提供者。
 - 没有 ask_question / todo：不输出对应使用要求。
-- 不探测本地 Shell；运行时事实以实际工具描述为准。
+- `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽。
 
 ## 用户修改文案
 
@@ -44,11 +45,13 @@ Windows 默认目录：`C:\Users\<user>\.pi\agent\change-pi-prompt`。
   "removeDocumentation": true,
   "pwsh": true,
   "subagent": true,
+  "pruneUnavailableShells": true,
   "unknownGuidelines": "preserve"
 }
 ```
 
 - pwsh：是否替换目标 Shell 指南；subagent：是否添加原生 subagent 委派策略；均不代表安装或启用插件。
+- pruneUnavailableShells：是否按后端探测隐藏不可用的 bash/powershell；`false` 时既不 `setActiveTools` 也不裁剪 prompt 中的 Shell 行。
 - unknownGuidelines：`preserve` 保留无法归属的规则；`skip` 撤销整个本次转换。
 - 接管规则通过工具来源元数据识别，不依赖旧文本正则。原生 subagent 默认模式的执行指南始终保留，避免其短 description 未覆盖的安全规则丢失。
 - 多个来源共有的规则，只要其中有未接管来源，就保留。

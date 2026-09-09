@@ -3,6 +3,8 @@ export interface Line { text: string; start: number; end: number }
 export interface Rule { text: string; raw: string }
 export interface Layout {
 	identityEnd: number;
+	toolsStart: number;
+	toolsEnd: number;
 	guidelinesStart: number;
 	guidelinesEnd: number;
 	docsStart: number;
@@ -37,7 +39,8 @@ export function parseLayout(prompt: string): Layout | undefined {
 	if (identityEnd === undefined) return;
 	const skipBlank = () => { while (lines[i] && !lines[i].text.trim()) i++; };
 	skipBlank();
-	if (!/^(?:#{1,2} )?Available tools:$/.test(lines[i++]?.text ?? '')) return;
+	const toolsStart = lines[i]?.start;
+	if (toolsStart === undefined || !/^(?:#{1,2} )?Available tools:$/.test(lines[i++]?.text ?? '')) return;
 	let toolCount = 0;
 	while (lines[i]?.text) {
 		if (!/^(?:- [\w.-]+: .+|\(none\))$/.test(lines[i].text)) return;
@@ -45,6 +48,8 @@ export function parseLayout(prompt: string): Layout | undefined {
 		toolCount++;
 	}
 	if (!toolCount) return;
+	const toolsEnd = lines[i - 1]?.end;
+	if (toolsEnd === undefined) return;
 	skipBlank();
 	if (lines[i]?.text === 'In addition to the tools above, you may have access to other custom tools depending on the project.') {
 		i++;
@@ -79,5 +84,5 @@ export function parseLayout(prompt: string): Layout | undefined {
 	}
 	const docsEnd = lines[i - 1]?.end;
 	if (docsEnd === undefined || docsEnd >= 128 * 1024) return;
-	return { identityEnd, guidelinesStart, guidelinesEnd, docsStart, docsEnd, rules };
+	return { identityEnd, toolsStart, toolsEnd, guidelinesStart, guidelinesEnd, docsStart, docsEnd, rules };
 }
