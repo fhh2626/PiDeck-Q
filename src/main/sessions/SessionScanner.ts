@@ -1183,6 +1183,14 @@ export class SessionScanner {
    *
    * 深度限制 10 层，且不超出 sessions 根目录，避免误判和性能问题。
    */
+  /** pi-subagents 标准布局：.../<parent-stem>/<run-id>/run-N/session.jsonl */
+  private isPiSubagentLayoutPath(filePath: string, isWsl: boolean): boolean {
+    const fileName = isWsl ? posixBasename(filePath) : basename(filePath);
+    if (fileName !== "session.jsonl") return false;
+    const runDir = isWsl ? posixBasename(posixDirname(filePath)) : basename(dirname(filePath));
+    return /^run-\d+$/i.test(runDir);
+  }
+
   private inferParentSessionFromPath(filePath: string): string | undefined {
     // 仅处理 .jsonl 文件
     if (!filePath.toLowerCase().endsWith(".jsonl")) return undefined;
@@ -1388,36 +1396,36 @@ export class SessionScanner {
       thinkingLevel = "off";
     }
 
-    // 检测子会话：任意扩展产生的内部 worker/reviewer 会话。
-    // 不在顶层列表显示，而是设置 parentSessionPath 供 UI 嵌套渲染。
+    // 检测内部 worker/reviewer：isInternalSubagent 与 parentSessionPath 独立。
+    // 结构信号命中即内部会话；父路径仅在能解析到现存父文件时才写入。
     //
-    // 采用分层信号打分机制，兼容不同扩展的子会话存储方式：
-    //   强信号（2分）：路径布局匹配、显式 customType 标记
-    //   弱信号（1分）：子会话命名模式
-    //   header 引用（2分）：Rust 的 branchedFrom/原版 Pi 的 parentSession
-    //   置信度阈值：≥ 2 分判定为子会话
-    const subagentScore = {
-      pathInferred: 0,       // 路径布局 ← 新泛化算法
-      customMarker: 0,       // customType: "*.child-session"
-      namePattern: 0,        // sessionName 以 "subagent-" 开头
-		parentHeader: forkParentSession ? 2 : 0,
-    };
-
+    // 采用分层信号打分机制：
+    //   强信号（2分）：标准布局+生成名、显式 customType、header 引用
+    //   弱信号（1分）：仅生成名，不足以单独判定
+    //   置信度阈值：≥ 2 分判定为内部会话
     const pathInferredParent = isWsl
       ? await this.inferWslParentSessionFromPath(filePath, signal)
       : this.inferParentSessionFromPath(filePath);
-    subagentScore.pathInferred = pathInferredParent ? 2 : 0;
-    subagentScore.customMarker = hasSubagentChildMarker ? 2 : 0;
-    subagentScore.namePattern = latestSessionInfoName?.startsWith("subagent-") ? 1 : 0;
+    const hasStandardLayout = this.isPiSubagentLayoutPath(filePath, isWsl);
+    const namedLikeGeneratedChild = latestSessionInfoName?.startsWith("subagent-") === true;
+    const subagentScore = {
+      // 标准布局 + 生成名：父文件缺失时仍能识别 orphan worker。
+      // 不把“同级偶然存在 <dir>.jsonl”当成内部身份，避免普通嵌套会话误伤。
+      pathLayout: hasStandardLayout && namedLikeGeneratedChild ? 2 : 0,
+      customMarker: hasSubagentChildMarker ? 2 : 0,
+      namePattern: namedLikeGeneratedChild ? 1 : 0,
+      parentHeader: forkParentSession ? 2 : 0,
+    };
 
     const confidenceScore =
-      subagentScore.pathInferred +
+      subagentScore.pathLayout +
       subagentScore.customMarker +
       subagentScore.namePattern +
       subagentScore.parentHeader;
 
+    const isInternalSubagent = source === "pi" && confidenceScore >= 2;
     let parentSessionPath: string | undefined;
-    if (source === "pi" && confidenceScore >= 2) {
+    if (isInternalSubagent) {
       // 优先复用上面已完成的路径推断，避免重复遍历文件系统/WSL。
       parentSessionPath = pathInferredParent;
       // 路径推断失败时，尝试使用 forkParentSession header 引用的父路径
@@ -1439,7 +1447,6 @@ export class SessionScanner {
         );
         if (resolvedExists) {
           parentSessionPath = resolved;
-        } else {
         }
       }
     }
@@ -1472,6 +1479,7 @@ export class SessionScanner {
       codexParentThreadId,
       codexAgentRole,
       codexAgentNickname,
+      isInternalSubagent: isInternalSubagent || undefined,
       parentSessionPath,
       model: modelProvider && modelId ? { provider: modelProvider, modelId } : undefined,
       thinkingLevel,

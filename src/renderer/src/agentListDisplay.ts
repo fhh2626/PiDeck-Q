@@ -111,6 +111,10 @@ function getSummaryKey(session: SessionSummary) {
 	return getSessionKey(session.filePath, getSessionEnvironment(session));
 }
 
+function isInternalListChild(session: SessionSummary) {
+	return session.isInternalSubagent === true || session.codexThreadSource === "subagent";
+}
+
 /**
  * Session rows are owned by the catalog record, never by a transient runtime.
  * Keep this helper at the display boundary so every Sidebar tree uses the
@@ -222,36 +226,42 @@ export function getProjectAgentSessionDisplay({
 	const piSubagentsByParent = new Map<string, SessionSummary[]>();
 
 	const parentCandidateSessions = sessions.filter(
-		(session) => session.codexThreadSource !== "subagent",
+		(session) => !isInternalListChild(session),
 	);
 	const parentCodexIds = new Set(
 		parentCandidateSessions.map(getCodexParentKey).filter(Boolean),
 	);
+	const hiddenInternalSessionKeys = new Set<string>();
 	for (const session of sessions) {
-		// Codex 子会话：按 codexParentThreadId 分组
-		if (
-			session.codexThreadSource === "subagent" &&
-			session.codexParentThreadId &&
-			parentCodexIds.has(session.codexParentThreadId)
-		) {
-			const children = codexSubagentsByParent.get(session.codexParentThreadId) ?? [];
-			children.push(session);
-			codexSubagentsByParent.set(session.codexParentThreadId, children);
+		// Codex 内部子会话：父节点可见才挂到父下；否则暂时隐藏，不升为顶层。
+		if (session.codexThreadSource === "subagent") {
+			if (session.codexParentThreadId && parentCodexIds.has(session.codexParentThreadId)) {
+				const children = codexSubagentsByParent.get(session.codexParentThreadId) ?? [];
+				children.push(session);
+				codexSubagentsByParent.set(session.codexParentThreadId, children);
+			}
+			const sessionKey = getSummaryKey(session);
+			if (sessionKey) hiddenInternalSessionKeys.add(sessionKey);
 			continue;
 		}
 
-		// pi 原生子会话（pi-subagents 等）：按 parentSessionPath 分组，从主列表移除
-		if (session.parentSessionPath) {
-			const parentKey = getSessionKey(
-				session.parentSessionPath,
-				getSessionEnvironment(session),
-			);
-			if (parentKey) {
-				const children = piSubagentsByParent.get(parentKey) ?? [];
-				children.push(session);
-				piSubagentsByParent.set(parentKey, children);
-				continue;
+		// pi 内部子会话：永远不进顶层 sessionByKey；父路径可解析时才挂到父下。
+		// 旧 catalog 可能只有 parentSessionPath、尚未带 isInternalSubagent，同样不得升为顶层。
+		if (session.isInternalSubagent || session.parentSessionPath) {
+			if (session.parentSessionPath) {
+				const parentKey = getSessionKey(
+					session.parentSessionPath,
+					getSessionEnvironment(session),
+				);
+				if (parentKey) {
+					const children = piSubagentsByParent.get(parentKey) ?? [];
+					children.push(session);
+					piSubagentsByParent.set(parentKey, children);
+				}
 			}
+			const sessionKey = getSummaryKey(session);
+			if (sessionKey) hiddenInternalSessionKeys.add(sessionKey);
+			continue;
 		}
 
 		const sessionKey = getSummaryKey(session);
@@ -262,8 +272,15 @@ export function getProjectAgentSessionDisplay({
 	const agentBySessionKey = new Map<string, AgentTab>();
 	const unkeyedAgents: AgentTab[] = [];
 	for (const agent of agents) {
-		const sessionKey = findSessionKeyForAgent(agent.sessionPath, sessionByKey) ??
-			getSessionKey(agent.sessionPath, "native");
+		const linkedKey = findSessionKeyForAgent(agent.sessionPath, sessionByKey);
+		const nativeKey = getSessionKey(agent.sessionPath, "native");
+		const wslKey = getSessionKey(agent.sessionPath, "wsl");
+		const hiddenByIdentity = Boolean(
+			(nativeKey && hiddenInternalSessionKeys.has(nativeKey)) ||
+			(wslKey && hiddenInternalSessionKeys.has(wslKey)),
+		);
+		if (hiddenByIdentity) continue;
+		const sessionKey = linkedKey ?? nativeKey;
 		if (!sessionKey) {
 			unkeyedAgents.push(agent);
 			continue;
@@ -275,11 +292,9 @@ export function getProjectAgentSessionDisplay({
 		);
 	}
 
-	// 子会话启动后也会产生 Agent，但它的唯一视觉入口仍应留在父会话下面。
-	// 仅当父条目确实可见时隐藏对应顶层 Agent；父会话缺失/被搜索过滤时仍允许孤儿 Agent 平铺，避免入口消失。
-	const nestedAgentSessionKeys = new Set<string>();
-	for (const [parentKey, subagents] of piSubagentsByParent) {
-		if (!sessionByKey.has(parentKey) && !agentBySessionKey.has(parentKey)) continue;
+	// 内部子会话启动后也会产生 Agent，但它不得进入顶层列表。
+	const nestedAgentSessionKeys = new Set<string>(hiddenInternalSessionKeys);
+	for (const subagents of piSubagentsByParent.values()) {
 		for (const subagent of subagents) {
 			const sessionKey = getSummaryKey(subagent);
 			if (sessionKey) nestedAgentSessionKeys.add(sessionKey);
@@ -375,47 +390,6 @@ export function getProjectAgentSessionDisplay({
 			),
 		})),
 	];
-
-	// 孤儿恢复：父会话缺失（被删除/过滤/搜索排除）时，将子会话降级回顶层。
-	// 先收集已被嵌套展示的子会话路径，避免孤儿恢复与嵌套展示同时命中导致重复显示。
-	const nestedSubagentPaths = new Set<string>();
-	for (const child of children) {
-		for (const sa of child.piSubagents) {
-			nestedSubagentPaths.add(getSummaryKey(sa) ?? sa.filePath);
-		}
-		for (const sa of child.codexSubagents) {
-			nestedSubagentPaths.add(getSummaryKey(sa) ?? sa.filePath);
-		}
-	}
-
-	const visibleParentKeys = new Set<string>();
-	for (const child of children) {
-		if (child.type === "agent") {
-			const sessionPath = child.agent.sessionPath;
-			const key = findSessionKeyForAgent(sessionPath, sessionByKey) ??
-				getSessionKey(sessionPath, "native");
-			if (key) visibleParentKeys.add(key);
-		} else {
-			visibleParentKeys.add(getSummaryKey(child.session) ?? child.session.filePath);
-		}
-	}
-	for (const [parentKey, orphanSubagents] of piSubagentsByParent) {
-		if (!visibleParentKeys.has(parentKey) && orphanSubagents.length > 0) {
-			for (const orphan of orphanSubagents) {
-				const orphanKey = getSummaryKey(orphan) ?? orphan.filePath;
-				// 防御性去重：已嵌套展示，或已有同 sessionPath 的孤儿 Agent 顶层入口时，不再追加第二行。
-				if (nestedSubagentPaths.has(orphanKey) || visibleParentKeys.has(orphanKey)) continue;
-				children.push({
-					type: "session",
-					key: getSessionRowKey(orphan),
-					session: orphan,
-					sortAt: orphan.updatedAt,
-					codexSubagents: [],
-					piSubagents: [],
-				});
-			}
-		}
-	}
 
 	children.sort((left, right) => right.sortAt - left.sortAt);
 

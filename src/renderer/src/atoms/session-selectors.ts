@@ -18,6 +18,7 @@ export function sessionRecordToSummary(
     filePath: session.filePath,
     projectPath: session.projectPath,
     name: session.title,
+    isInternalSubagent: session.isInternalSubagent,
     parentSessionPath: session.parentSessionPath,
     preview: session.preview,
     updatedAt: session.updatedAt,

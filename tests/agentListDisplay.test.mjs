@@ -255,7 +255,7 @@ test("keeps a started Pi child session nested under its parent without a duplica
 	assert.equal(getAgentForSessionPath([pendingChildAgent], childSession.filePath).id, "pending-child");
 });
 
-test("does not duplicate an orphan Pi child when its Agent is already the top-level fallback", () => {
+test("hides an orphan internal Pi child instead of exposing it as a top-level Agent", () => {
 	const { getProjectAgentSessionDisplay } = loadModule();
 	const childPath = "/sessions/missing-parent/run/run-0/session.jsonl";
 	const display = getProjectAgentSessionDisplay({
@@ -273,13 +273,108 @@ test("does not duplicate an orphan Pi child when its Agent is already the top-le
 			name: "Worker",
 			source: "pi",
 			updatedAt: 12,
+			isInternalSubagent: true,
 			parentSessionPath: "/sessions/missing-parent.jsonl",
 		})],
 		visibleChildCount: 5,
 	});
 
+	assert.equal(display.children.length, 0);
+});
+
+test("nests an internal Pi child under its parent without a duplicate top-level Agent", () => {
+	const { getProjectAgentSessionDisplay } = loadModule();
+	const parentPath = "C:\\sessions\\parent.jsonl";
+	const childPath = "C:\\sessions\\parent\\run\\run-0\\session.jsonl";
+	const display = getProjectAgentSessionDisplay({
+		agents: [{
+			id: "agent-child",
+			projectId: "p1",
+			cwd: "C:\\project",
+			title: "Worker",
+			status: "running",
+			sessionPath: childPath,
+			createdAt: 20,
+		}],
+		sessions: [
+			session({ filePath: parentPath, name: "Parent", source: "pi", updatedAt: 10 }),
+			session({
+				filePath: childPath,
+				name: "Worker",
+				source: "pi",
+				updatedAt: 12,
+				isInternalSubagent: true,
+				parentSessionPath: parentPath,
+			}),
+		],
+		visibleChildCount: 5,
+	});
+
 	assert.equal(display.children.length, 1);
-	assert.equal(display.children[0].type, "agent");
+	assert.equal(display.children[0].type, "session");
+	assert.equal(display.children[0].session.name, "Parent");
+	assert.equal(display.children[0].piSubagents.length, 1);
+	assert.equal(display.children[0].piSubagents[0].name, "Worker");
+});
+
+test("hides an internal Pi child when parentSessionPath is still unresolved", () => {
+	const { getProjectAgentSessionDisplay } = loadModule();
+	const childPath = "C:\\sessions\\parent\\run\\run-0\\session.jsonl";
+	const display = getProjectAgentSessionDisplay({
+		agents: [{
+			id: "agent-child",
+			sessionPath: childPath,
+			createdAt: 20,
+			status: "running",
+		}],
+		sessions: [session({
+			filePath: childPath,
+			name: "Worker",
+			source: "pi",
+			isInternalSubagent: true,
+		})],
+		visibleChildCount: 5,
+	});
+
+	assert.equal(display.children.length, 0);
+});
+
+test("hides a Codex subagent when its parent is temporarily missing", () => {
+	const { getProjectAgentSessionDisplay } = loadModule();
+	const display = getProjectAgentSessionDisplay({
+		agents: [{
+			id: "codex-child-runtime",
+			sessionPath: "/sessions/codex_child.jsonl",
+			createdAt: 20,
+			status: "running",
+		}],
+		sessions: [session({
+			filePath: "/sessions/codex_child.jsonl",
+			name: "Reviewer",
+			codexThreadSource: "subagent",
+			codexParentThreadId: "missing-parent",
+		})],
+		visibleChildCount: 5,
+	});
+
+	assert.equal(display.children.length, 0);
+});
+
+test("keeps a user session named like a worker in the top-level list", () => {
+	const { getProjectAgentSessionDisplay } = loadModule();
+	const display = getProjectAgentSessionDisplay({
+		agents: [],
+		sessions: [session({
+			filePath: "C:\\sessions\\subagent-worker-manual-0.jsonl",
+			name: "subagent-worker-manual-0",
+			source: "pi",
+		})],
+		visibleChildCount: 5,
+	});
+
+	assert.equal(display.children.length, 1);
+	assert.equal(display.children[0].type, "session");
+	assert.equal(display.children[0].session.name, "subagent-worker-manual-0");
 });
 
 test("groups Pi child sessions under an agent whose linked session was filtered out", () => {

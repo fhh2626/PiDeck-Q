@@ -304,9 +304,16 @@ test("hides persisted pi-subagents runs without deleting them or unrelated neste
 		assert.equal(existsSync(reviewerFile), true);
 		// 验证子会话的 parentSessionPath 指向正确的父会话文件
 		const workerSummary = summaries.find(s => s.filePath === workerFile);
+		assert.equal(workerSummary.isInternalSubagent, true);
 		assert.equal(workerSummary.parentSessionPath, parentFile);
 		const reviewerSummary = summaries.find(s => s.filePath === reviewerFile);
+		assert.equal(reviewerSummary.isInternalSubagent, true);
 		assert.equal(reviewerSummary.parentSessionPath, parentFile);
+		const lookalikeSummary = summaries.find(s => s.filePath === lookalikeFile);
+		assert.notEqual(lookalikeSummary.isInternalSubagent, true);
+		const namedLikeWorker = summaries.find(s => s.name === "subagent-worker-manual-0");
+		assert.ok(namedLikeWorker);
+		assert.notEqual(namedLikeWorker.isInternalSubagent, true);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
@@ -357,7 +364,9 @@ test("groups WSL child sessions with POSIX parent paths", async () => {
 
 		const summaries = await scanner.list(selectedProjectPath);
 		assert.equal(summaries.length, 4);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
+		assert.equal(summaries.find((item) => item.filePath === forkChildFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === forkChildFile)?.parentSessionPath, forkParentFile);
 		assert.equal(summaries.some((item) => item.parentSessionPath?.includes("\\")), false);
 		assert.equal(fullReadCount.get(parentFile), 1);
@@ -387,7 +396,9 @@ test("uses a valid renamed parent session and ignores false-positive path owners
 
 		const { SessionScanner } = loadSessionScanner(home);
 		const summaries = await new SessionScanner().list(projectPath);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
+		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.isInternalSubagent, undefined);
 		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.parentSessionPath, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -445,15 +456,19 @@ test("handles orphan, fork, rename and imported-session compatibility without fa
 		assert.equal(visiblePaths.has(importedFile), true);
 		// 父文件不存在时不能把路径形似扩展产物的 JSONL 静默挂到虚构父会话下。
 		const orphanSummary = summaries.find(s => s.filePath === orphanFile);
+		assert.equal(orphanSummary.isInternalSubagent, true);
 		assert.equal(orphanSummary.parentSessionPath, undefined);
 		// renamedChild: 父文件不存在，不能挂到虚构父会话下。
 		const renamedSummary = summaries.find(s => s.filePath === renamedChildFile);
+		assert.equal(renamedSummary.isInternalSubagent, true);
 		assert.equal(renamedSummary.parentSessionPath, undefined);
 		// legacyFork: 标准 .jsonl 文件路径不可推断父会话，fork parent 文件不存在
 		const forkSummary = summaries.find(s => s.filePath === legacyForkFile);
+		assert.equal(forkSummary.isInternalSubagent, true);
 		assert.equal(forkSummary.parentSessionPath, undefined);
 		// markedCustomFile: 显式标记，路径不可推断父会话（无 parentSessionPath）
 		const customSummary = summaries.find(s => s.filePath === markedCustomFile);
+		assert.equal(customSummary.isInternalSubagent, true);
 		assert.equal(customSummary.parentSessionPath, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -479,6 +494,7 @@ test("resolves fork child with absolute Windows parent path via parentSession he
 		const summaries = await new SessionScanner().list(projectPath);
 		assert.equal(summaries.length, 2);
 		const forkSummary = summaries.find(s => s.filePath === forkChildFile);
+		assert.equal(forkSummary.isInternalSubagent, true);
 		assert.equal(forkSummary.parentSessionPath, parentFile);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -501,6 +517,7 @@ test("resolves Rust Pi branchedFrom headers as parent sessions", async () => {
 
 		const { SessionScanner } = loadSessionScanner(home);
 		const summaries = await new SessionScanner().list(projectPath);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -582,6 +599,28 @@ test("model_change takes precedence over message-level model", async () => {
 		assert.equal(summaries[0].model?.provider, "anthropic");
 		assert.equal(summaries[0].model?.modelId, "claude-sonnet-4");
 		assert.equal(summaries[0].thinkingLevel, "high");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("marks a custom-location child as internal even when the parent path cannot be resolved", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-unresolved-parent-subagent-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const piDir = join(home, ".pi", "agent", "sessions", "--C--repo-project--");
+		const childFile = join(piDir, "custom-child-location.jsonl");
+		writeSession(childFile, [
+			{ type: "session_info", name: undefined, cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "[prompt redacted]..." } },
+			{ type: "custom", customType: "pi-subagents.child-session", data: { schemaVersion: 1 } },
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const summaries = await new SessionScanner().list(projectPath);
+		const childSummary = summaries.find((item) => item.filePath === childFile);
+		assert.equal(childSummary.isInternalSubagent, true);
+		assert.equal(childSummary.parentSessionPath, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}

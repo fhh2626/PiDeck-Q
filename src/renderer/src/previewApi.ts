@@ -318,6 +318,7 @@ export function createPreviewApi(): PiDesktopApi {
 				source: session.source || "pi",
 				environment: session.wsl ? "wsl" : "native",
 				filePath: session.filePath,
+				isInternalSubagent: session.isInternalSubagent,
 				parentSessionPath: session.parentSessionPath,
 				projectPath: session.projectPath,
 				preview: session.preview,

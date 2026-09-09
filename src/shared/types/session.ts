@@ -68,7 +68,9 @@ export type SessionSummary = {
 	filePath: string;
 	projectPath?: string;
 	name?: string;
-	/** 子会话：关联的父会话文件路径。有该字段时不在会话列表顶层显示，而是嵌套在父会话下。 */
+	/** 内部 worker/reviewer/subagent：决定它是否允许出现在顶层列表。与 parentSessionPath 独立。 */
+	isInternalSubagent?: boolean;
+	/** 子会话应挂到哪个父会话文件；缺失时内部 subagent 只隐藏，不升为顶层。 */
 	parentSessionPath?: string;
 	preview: string;
 	updatedAt: number;
@@ -104,6 +106,8 @@ export type SessionRecord = {
 	wslUser?: string;
 	importedSourceId?: string;
 	parentSessionId?: string;
+	/** 内部 worker/reviewer/subagent：决定它是否允许出现在顶层列表。 */
+	isInternalSubagent?: boolean;
 	parentSessionPath?: string;
 	projectPath?: string;
 	preview: string;

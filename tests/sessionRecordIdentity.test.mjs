@@ -55,6 +55,7 @@ test("detects the fields that actually change during a poll", () => {
   assert.equal(sameSessionRecord(base, makeRecord({ preview: "changed" })), false);
   assert.equal(sameSessionRecord(base, makeRecord({ messageCount: 4 })), false);
   assert.equal(sameSessionRecord(base, makeRecord({ status: "draft" })), false);
+  assert.equal(sameSessionRecord(base, makeRecord({ isInternalSubagent: true })), false);
 });
 
 test("compares model by value, not by reference", () => {

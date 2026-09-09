@@ -680,6 +680,7 @@ test("parentSessionPath survives reload: getRecord/listEntries rebuild keeps the
         filePath: "C:/sessions/parent/child.jsonl",
         id: "C:/sessions/parent/child.jsonl",
         name: "Child",
+        isInternalSubagent: true,
         parentSessionPath: "c:/sessions/parent.jsonl",
       }),
     ]);
@@ -691,8 +692,9 @@ test("parentSessionPath survives reload: getRecord/listEntries rebuild keeps the
     const childEntry = entries.find((entry) => entry.title === "Child");
     assert.ok(childEntry, "child entry restored from disk");
     const record = childEntry ? reloaded.getRecord(childEntry.id) : undefined;
-    // 回归：entry 必须持久化 parentSessionPath，否则缓存回显时子会话降级为顶层孤儿
+    // 回归：entry 必须持久化内部身份与 parentSessionPath，否则缓存回显时子会话降级为顶层孤儿
     // 大小写不敏感断言：渲染层 normalizeSessionPathForCompare 比较，功能不受大小写影响
+    assert.equal(record?.isInternalSubagent, true);
     assert.ok(record?.parentSessionPath);
     assert.equal(
       record?.parentSessionPath?.toLowerCase().replace(/\\/g, "/"),

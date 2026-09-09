@@ -30,6 +30,7 @@ export function sameSessionRecord(a: SessionRecord, b: SessionRecord): boolean {
     a.wslUser === b.wslUser &&
     a.importedSourceId === b.importedSourceId &&
     a.parentSessionId === b.parentSessionId &&
+    a.isInternalSubagent === b.isInternalSubagent &&
     a.parentSessionPath === b.parentSessionPath &&
     a.projectPath === b.projectPath &&
     a.preview === b.preview &&
