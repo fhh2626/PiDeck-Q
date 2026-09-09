@@ -103,12 +103,38 @@ async function loadChildSecurityGate(processEnvOverrides = {}) {
 	};
 }
 
+test("child-launch: sibling fallback uses four parents from shared/, not five", () => {
+	const source = readFileSync(
+		"resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts",
+		"utf8",
+	);
+	assert.match(
+		source,
+		/"\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
+		"fallback must be ../../../../pi-deck-security-gate.ts (shared -> runs -> src -> pideck-q-subagents -> extensions)",
+	);
+	assert.doesNotMatch(
+		source,
+		/"\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
+		"five-parent fallback overshoots resources/ and must not remain",
+	);
+});
+
 test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive", () => {
 	const { resolveSecurityGateExtensionPath, isSecurityPolicyActive } = loadChildLaunchModule();
-	const gatePath = resolveSecurityGateExtensionPath();
+	const previousGateEnv = process.env.PIDECK_SECURITY_GATE_EXTENSION;
+	delete process.env.PIDECK_SECURITY_GATE_EXTENSION;
+	let gatePath;
+	try {
+		gatePath = resolveSecurityGateExtensionPath();
+	} finally {
+		if (previousGateEnv === undefined) delete process.env.PIDECK_SECURITY_GATE_EXTENSION;
+		else process.env.PIDECK_SECURITY_GATE_EXTENSION = previousGateEnv;
+	}
+	const expectedGate = resolve("resources/extensions/pi-deck-security-gate.ts");
 	assert.ok(gatePath, "Security Gate extension path must resolve");
 	assert.ok(existsSync(gatePath), "Security Gate extension file must exist on disk");
-	assert.ok(gatePath.endsWith("pi-deck-security-gate.ts"));
+	assert.equal(normalize(gatePath), normalize(expectedGate));
 
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-sec-active-"));
 	try {

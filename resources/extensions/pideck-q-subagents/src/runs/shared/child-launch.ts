@@ -161,10 +161,11 @@ export function resolveSecurityGateExtensionPath(): string | undefined {
 	const fromEnv = process.env.PIDECK_SECURITY_GATE_EXTENSION;
 	if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
 	try {
+		// 本文件位于 pideck-q-subagents/src/runs/shared/，四级上溯到 resources/extensions/
 		const currentDir = typeof __dirname !== "undefined"
 			? __dirname
 			: path.dirname(fileURLToPath(import.meta.url));
-		const candidate = path.resolve(currentDir, "../../../../../pi-deck-security-gate.ts");
+		const candidate = path.resolve(currentDir, "../../../../pi-deck-security-gate.ts");
 		if (fs.existsSync(candidate)) return candidate;
 	} catch {
 		// ignore
