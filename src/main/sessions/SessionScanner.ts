@@ -741,9 +741,7 @@ export class SessionScanner {
   // 归档与删除的区别：文件不销毁，随时可从归档恢复；归档目录内不再被扫描。
 
   /** 归档目录名（各扫描根下的隐藏子目录） */
-  public static readonly ARCHIVE_DIR_NAME = ARCHIVE_DIR_NAME;
-  public static readonly isIgnoredSessionScanDirectory = isIgnoredSessionScanDirectory;
-  public readonly isIgnoredSessionScanDirectory = isIgnoredSessionScanDirectory;
+  private static readonly ARCHIVE_DIR_NAME = ARCHIVE_DIR_NAME;
   /** 归档索引文件名：记录 归档路径 → 原始路径 映射，恢复时据此移回 */
   private static readonly ARCHIVE_INDEX_NAME = "index.json";
 

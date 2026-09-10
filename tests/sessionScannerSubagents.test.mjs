@@ -691,10 +691,6 @@ test("isIgnoredSessionScanDirectory correctly identifies artifact directories ac
 		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents"), false);
 		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/run-abc/run-0/session.jsonl"), false);
 		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/sessions/normal.jsonl"), false);
-
-		// 静态属性挂载验证
-		assert.equal(SessionScanner.isIgnoredSessionScanDirectory("subagent-artifacts"), true);
-		assert.equal(new SessionScanner().isIgnoredSessionScanDirectory("subagent-artifacts"), true);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
@@ -703,7 +699,7 @@ test("isIgnoredSessionScanDirectory correctly identifies artifact directories ac
 test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts without content filtering", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-artifact-filter-native-"));
 	try {
-		const projectPath = "C:\\repo\\project";
+		const projectPath = join(home, "project");
 		const piDir = join(home, ".pi", "agent", "sessions", "--C--repo-project--");
 		const parentFile = join(piDir, "parent.jsonl");
 		const ordinaryFile = join(piDir, "ordinary.jsonl");
@@ -712,8 +708,15 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 		// 1. subagent-artifacts 下的 transcript.jsonl（包含 [prompt redacted] 文本）
 		const artifactTranscriptFile = join(piDir, "parent", "subagent-artifacts", "run-abc_worker_transcript.jsonl");
 
-		// 2. .pi/subagents/artifacts 下的 transcript.jsonl（包含 Prompt Audit 文本）
-		const projectArtifactFile = join(home, ".pi", "subagents", "artifacts", "run-xyz_reviewer_transcript.jsonl");
+		// 2. 项目 .pi 目录下配置 sessionDir: ".pi"，让扫描根真实覆盖 .pi
+		//    并在 .pi 下同时放置合法会话和 .pi/subagents/artifacts/transcript.jsonl
+		const projectPiDir = join(projectPath, ".pi");
+		const projectSettingsFile = join(projectPiDir, "settings.json");
+		const projectSessionFile = join(projectPiDir, "project-session.jsonl");
+		const projectArtifactFile = join(projectPiDir, "subagents", "artifacts", "run-xyz_reviewer_transcript.jsonl");
+
+		mkdirSync(projectPiDir, { recursive: true });
+		writeFileSync(projectSettingsFile, JSON.stringify({ sessionDir: ".pi" }), "utf8");
 
 		// 3. 用户合法会话，正文恰好包含 [prompt redacted]（用于验证不依赖内容做过滤）
 		const legitWithRedactedTextFile = join(piDir, "legit-redacted-text.jsonl");
@@ -729,6 +732,7 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 			{ type: "message", message: { role: "user", content: "[prompt redacted] Please review code." } },
 			{ type: "message", message: { role: "assistant", content: "Done." } },
 		]);
+		writeSession(projectSessionFile, session("Project Session in .pi", projectPath));
 		writeSession(projectArtifactFile, [
 			{ type: "session_info", name: "[prompt redacted]", cwd: projectPath },
 			{ type: "message", message: { role: "user", content: "Prompt A: [prompt redacted]" } },
@@ -741,12 +745,20 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 		]);
 
 		const { SessionScanner } = loadSessionScanner(home);
-		const summaries = await new SessionScanner().list(projectPath);
+		const scanner = new SessionScanner();
+
+		// 直接验证 collectJsonl 在扫描覆盖 .pi 的目录时跳过 .pi/subagents/artifacts
+		const directPiFiles = await scanner.collectJsonl(projectPiDir);
+		assert.equal(directPiFiles.includes(projectSessionFile), true, "collectJsonl must find project-session.jsonl in .pi");
+		assert.equal(directPiFiles.includes(projectArtifactFile), false, "collectJsonl must ignore .pi/subagents/artifacts/*");
+
+		const summaries = await scanner.list(projectPath);
 		const scannedPaths = new Set(summaries.map(s => s.filePath));
 
-		// 验证普通会话正常被扫描
+		// 验证普通会话和 .pi 配置扫描根下的会话正常被扫描
 		assert.equal(scannedPaths.has(parentFile), true, "Parent session must be scanned");
 		assert.equal(scannedPaths.has(ordinaryFile), true, "Ordinary session must be scanned");
+		assert.equal(scannedPaths.has(projectSessionFile), true, "Project session in configured .pi sessionDir must be scanned");
 		assert.equal(scannedPaths.has(legitWithRedactedTextFile), true, "Legit session with [prompt redacted] in text must NOT be filtered out");
 
 		// 验证真实 subagent child session 正常被扫描且挂载到父会话
@@ -757,7 +769,7 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 
 		// 验证 subagent-artifacts 与 .pi/subagents/artifacts 下的文件绝不进入 SessionScanner
 		assert.equal(scannedPaths.has(artifactTranscriptFile), false, "subagent-artifacts transcript must not enter SessionScanner");
-		assert.equal(scannedPaths.has(projectArtifactFile), false, ".pi/subagents/artifacts transcript must not enter SessionScanner");
+		assert.equal(scannedPaths.has(projectArtifactFile), false, ".pi/subagents/artifacts transcript must not enter SessionScanner even when scan root covers .pi");
 
 		// 磁盘上的文件并未被误删，只是被扫描器忽略
 		assert.equal(existsSync(artifactTranscriptFile), true, "Artifact file remains safely on disk");
