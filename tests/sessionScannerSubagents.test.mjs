@@ -876,12 +876,11 @@ test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via 
 
 test("distinguishes regular /fork session from subagent using run records and names", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-fork-vs-subagent-"));
+	const tempSubagentsDir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
 	try {
 		const projectPath = "C:\\repo\\project";
 		const sessionsRoot = join(home, ".pi", "agent", "sessions");
 		const projDir = join(sessionsRoot, "--C--repo-project--");
-		const subagentRunsDir = join(home, ".pi", "agent", "subagent-runs");
-		mkdirSync(subagentRunsDir, { recursive: true });
 
 		const parentFile = join(projDir, "parent.jsonl");
 		const normalForkFile = join(projDir, "user-fork-feature.jsonl");
@@ -907,15 +906,17 @@ test("distinguishes regular /fork session from subagent using run records and na
 			...session("subagent-reviewer-code-check-0", projectPath),
 		]);
 
-		// 5. UUID 命名的 subagent (以 UUID 命名，有 parentSession，记录在 subagent-runs 中)
+		// 5. UUID 命名的 subagent (以 UUID 命名，有 parentSession，记录在临时目录 pi-subagents-* 的 status.json 中)
 		writeSession(uuidSubagentFile, [
 			{ type: "session", parentSession: parentFile, cwd: projectPath },
 			...session("worker: implement task", projectPath),
 		]);
 
-		// 写入 pi-subagents 的 run record
+		// 写入 pi-subagents 运行期临时 run record
+		const runDir = join(tempSubagentsDir, "async-subagent-runs", "run-123");
+		mkdirSync(runDir, { recursive: true });
 		writeFileSync(
-			join(subagentRunsDir, "run-123.json"),
+			join(runDir, "status.json"),
 			JSON.stringify({
 				runId: "run-123",
 				agent: "worker",
@@ -946,7 +947,97 @@ test("distinguishes regular /fork session from subagent using run records and na
 		// 4. UUID 命名 subagent: run record 命中 -> Agent (isInternalSubagent = true)
 		const uuidSummary = summaries.find(s => s.filePath === uuidSubagentFile);
 		assert.ok(uuidSummary);
-		assert.equal(uuidSummary.isInternalSubagent, true, "UUID session found in subagent-runs must be internal subagent");
+		assert.equal(uuidSummary.isInternalSubagent, true, "UUID session found in pi-subagents tmp records must be internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(tempSubagentsDir, { recursive: true, force: true });
+	}
+});
+
+test("distinguishes WSL regular /fork session from subagent using WSL run records", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-wsl-fork-vs-subagent-"));
+	try {
+		const projectPath = "/home/dev/repo/project";
+		const parentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/parent.jsonl";
+		const normalForkFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/user-fork.jsonl";
+		const legacyNamedSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/subagent-reviewer-0.jsonl";
+		const uuidSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/01a089f3-subagent.jsonl";
+		const regularSessionFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/regular.jsonl";
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[regularSessionFile, `${session("Regular WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[normalForkFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("Feature exploration in WSL", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+			[legacyNamedSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("subagent-reviewer-wsl-check", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+			[uuidSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("worker: implement WSL task", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args)) {
+					// 模拟 WSL find
+					if (args.includes("find")) {
+						cb(null, [parentFile, regularSessionFile, normalForkFile, legacyNamedSubagentFile, uuidSubagentFile].join("\n"));
+						return;
+					}
+					// 模拟 WSL 运行记录 grep 反查
+					if (args.includes("sh") && typeof args[args.indexOf("sh") + 2] === "string") {
+						const script = args[args.indexOf("sh") + 2];
+						if (script.includes("sessionFile")) {
+							cb(null, `"sessionFile": "${uuidSubagentFile}"\n`);
+							return;
+						}
+					}
+				}
+				cb(null, "");
+			},
+		};
+
+		const { SessionScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new SessionScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+
+		// 1. 普通 WSL session: 无 parentSession，无 run record
+		const regularSummary = summaries.find(s => s.filePath === regularSessionFile);
+		assert.ok(regularSummary);
+		assert.equal(regularSummary.isInternalSubagent, undefined, "WSL regular session must not be internal subagent");
+
+		// 2. 用户手动 /fork session: 有 parentSession，无 WSL run record -> 普通/fork 会话，不应被标为 internal subagent
+		const forkSummary = summaries.find(s => s.filePath === normalForkFile);
+		assert.ok(forkSummary);
+		assert.equal(forkSummary.isInternalSubagent, undefined, "WSL user /fork session must NOT be marked as internal subagent");
+
+		// 3. 旧式 subagent-* 命名: 有 parentSession，subagent-* 命名 -> Agent (isInternalSubagent = true)
+		const legacySummary = summaries.find(s => s.filePath === legacyNamedSubagentFile);
+		assert.ok(legacySummary);
+		assert.equal(legacySummary.isInternalSubagent, true, "WSL subagent-* named session must be internal subagent");
+
+		// 4. UUID 命名 subagent: WSL run record 命中 -> Agent (isInternalSubagent = true)
+		const uuidSummary = summaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(uuidSummary);
+		assert.equal(uuidSummary.isInternalSubagent, true, "WSL UUID session found in WSL pi-subagents records must be internal subagent");
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}

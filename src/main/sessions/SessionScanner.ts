@@ -176,6 +176,8 @@ export class SessionScanner {
     this.wslConfig = environment
       ? { distro: environment.distro, user: environment.user, home: environment.linuxHome }
       : null;
+    this.knownSubagentSessionFiles = null;
+    this.knownSubagentScanTimestamp = 0;
     // 环境切换时只重置“本轮扫描键”，并从磁盘重新装载缓存；不要把另一环境的磁盘缓存清空。
     this.summaryCacheFileSetKey = "";
     // 环境切换后旧环境的 activeScanRoots 已失效：清空使 listArchived() 等回退到
@@ -187,6 +189,8 @@ export class SessionScanner {
   /** 清除 WSL 配置 */
   clearWsl(): void {
     this.wslConfig = null;
+    this.knownSubagentSessionFiles = null;
+    this.knownSubagentScanTimestamp = 0;
     this.summaryCacheFileSetKey = "";
     this.activeScanRoots = [];
     void this.summaryCache.reloadFromDisk();
@@ -396,6 +400,11 @@ export class SessionScanner {
         // 仅修剪当前环境下已消失文件，保留未变化会话的摘要命中（含磁盘恢复的条目）。
         this.summaryCache.prune(files, this.wslConfig ? "wsl" : "local");
         this.summaryCacheFileSetKey = fileSetKey;
+      }
+
+      if (files.length > 0) {
+        // 在解析会话文件前，提前加载当前环境下的已知 subagent 运行记录快照
+        await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), signal).catch(rethrowAbort(new Set<string>()));
       }
 
       const summaries = await Promise.all(files.map(file =>
@@ -842,6 +851,7 @@ export class SessionScanner {
         : [this.root];
     const results: SessionSummary[] = [];
     const seen = new Set<string>();
+    await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig));
     for (const root of roots) {
       const wsl = Boolean(this.wslConfig);
       const archiveDir = this.joinArchivePath(wsl, root, SessionScanner.ARCHIVE_DIR_NAME);
@@ -1251,15 +1261,75 @@ export class SessionScanner {
   private knownSubagentScanTimestamp = 0;
 
   /**
-   * 从 pi-subagents 运行记录（~/.pi/agent/subagent-runs/、临时目录 async-subagent-results 等）
-   * 反查所有已知 subagent 的 sessionFile 路径。
+   * 在每轮扫描开始前异步加载已知 subagent 运行记录快照。
+   * 支持 WSL 模式（通过 wsl.exe 扫描 Linux /tmp/pi-subagents-*）与本地模式（扫描 tmpdir/pi-subagents-*）。
    */
-  public getKnownSubagentSessionFiles(forceRefresh = false): Set<string> {
+  public async loadKnownSubagentSessionFiles(wsl: boolean, signal?: AbortSignal): Promise<Set<string>> {
+    if (signal?.aborted) throw signal.reason;
     const now = Date.now();
-    if (!forceRefresh && this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
+    if (this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
       return this.knownSubagentSessionFiles;
     }
 
+    if (wsl && this.wslConfig) {
+      return this.loadKnownSubagentSessionFilesWsl(signal);
+    }
+    return this.loadKnownSubagentSessionFilesLocal();
+  }
+
+  /** 通过 wsl.exe 扫描 WSL 环境临时目录中的 pi-subagents 运行记录 */
+  private async loadKnownSubagentSessionFilesWsl(signal?: AbortSignal): Promise<Set<string>> {
+    const set = new Set<string>();
+    if (!this.wslConfig) {
+      this.knownSubagentSessionFiles = set;
+      this.knownSubagentScanTimestamp = Date.now();
+      return set;
+    }
+
+    try {
+      const script =
+        'ROOTS="/tmp"; [ -n "$PI_SUBAGENTS_TEMP_ROOT" ] && [ -d "$PI_SUBAGENTS_TEMP_ROOT" ] && ROOTS="$ROOTS $PI_SUBAGENTS_TEMP_ROOT"; ' +
+        'find $ROOTS -maxdepth 4 -path "*/pi-subagents-*/*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true';
+
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(
+          this.wslExePath,
+          ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "sh", "-c", script],
+          {
+            shell: this.wslShell,
+            encoding: "utf8",
+            timeout: 5_000,
+            signal,
+            windowsHide: true,
+            maxBuffer: 8 * 1024 * 1024,
+          },
+          (err, output) => {
+            if (err) reject(err);
+            else resolve(output);
+          },
+        );
+      });
+
+      const lines = stdout.split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const match = trimmed.match(/"sessionFile"\s*:\s*"([^"]+)"/);
+        if (match?.[1]) {
+          set.add(this.normalize(match[1]));
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+    }
+
+    this.knownSubagentSessionFiles = set;
+    this.knownSubagentScanTimestamp = Date.now();
+    return set;
+  }
+
+  /** 从本地宿主机临时目录扫描 pi-subagents 运行记录 */
+  private loadKnownSubagentSessionFilesLocal(): Set<string> {
     const set = new Set<string>();
 
     const extractSessionFiles = (val: unknown) => {
@@ -1299,11 +1369,7 @@ export class SessionScanner {
       }
     };
 
-    // 1. ~/.pi/agent/subagent-runs 与 subagents
-    scanDirForJson(join(this.homeDir, ".pi", "agent", "subagent-runs"));
-    scanDirForJson(join(this.homeDir, ".pi", "agent", "subagents"));
-
-    // 2. tmpdir() 中的 pi-subagents-* 运行目录
+    // 1. tmpdir() 中的 pi-subagents-* 运行目录
     try {
       const tempRoot = tmpdir();
       if (existsSync(tempRoot)) {
@@ -1318,20 +1384,26 @@ export class SessionScanner {
       // 忽略临时目录读取异常
     }
 
-    // 3. PI_SUBAGENTS_TEMP_ROOT 环境变量指定目录（若有）
+    // 2. PI_SUBAGENTS_TEMP_ROOT 环境变量指定目录（若有）
     const customTemp = typeof process !== "undefined" ? process.env?.PI_SUBAGENTS_TEMP_ROOT?.trim() : undefined;
     if (customTemp && existsSync(customTemp)) {
       scanDirForJson(customTemp, 3);
     }
 
     this.knownSubagentSessionFiles = set;
-    this.knownSubagentScanTimestamp = now;
+    this.knownSubagentScanTimestamp = Date.now();
     return set;
   }
 
+  /**
+   * 同步查询给定 sessionFile 是否在已知 subagent 运行记录集合中。
+   * 未加载过时自动从本地临时目录加载兜底。
+   */
   public isKnownSubagentSession(sessionFile: string): boolean {
-    const known = this.getKnownSubagentSessionFiles();
-    return known.has(this.normalize(sessionFile));
+    if (!this.knownSubagentSessionFiles) {
+      this.loadKnownSubagentSessionFilesLocal();
+    }
+    return this.knownSubagentSessionFiles?.has(this.normalize(sessionFile)) ?? false;
   }
 
   /** pi-subagents 标准布局：.../<parent-stem>/<run-id>/run-N/session.jsonl */
@@ -1578,7 +1650,7 @@ export class SessionScanner {
       subagentScore.namePattern +
       subagentScore.parentHeader;
 
-    const isInternalSubagent = source === "pi" && (confidenceScore >= 2 || isKnownSubagent);
+    const isInternalSubagent = source === "pi" && confidenceScore >= 2;
     let parentSessionPath: string | undefined;
     if (isInternalSubagent) {
       // 优先复用上面已完成的路径推断，避免重复遍历文件系统/WSL。
