@@ -353,6 +353,40 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		assert.match(resExternal.reason, /external runner/);
 		assert.equal(existsSync(configPath), false, "external runner 不应触发 native subagent config.json 创建");
 		assert.equal(externalInput.foregroundOnly, undefined, "external runner 绝不能被注入 foregroundOnly: true");
+
+		// 5. direct unknown agent: standalone 下必须被 fail-closed 阻断
+		const unknownInput = { agent: "custom-unknown-agent", task: "unknown task" };
+		const resUnknown = await toolCallHandler({ toolName: "subagent", input: unknownInput });
+		assert.ok(resUnknown && resUnknown.block === true);
+		assert.match(resUnknown.reason, /无法确认 Agent "custom-unknown-agent" 的 runner 类型/);
+
+		// 6. workflowScriptPath: standalone 下必须被阻断，且 input.async 与 input.foregroundOnly 未被篡改
+		const scriptPathInput = { workflowScriptPath: "./workflow.js" };
+		const resPath = await toolCallHandler({ toolName: "subagent", input: scriptPathInput });
+		assert.ok(resPath && resPath.block === true);
+		assert.match(resPath.reason, /standalone Pi 环境暂不支持 workflowScriptPath/);
+		assert.equal(scriptPathInput.async, undefined);
+		assert.equal(scriptPathInput.foregroundOnly, undefined);
+
+		// 7. workflowScriptPath: 非 standalone 下放行
+		isStandalone = false;
+		const resPathNonStandalone = await toolCallHandler({ toolName: "subagent", input: scriptPathInput });
+		assert.equal(resPathNonStandalone, undefined);
+		isStandalone = true;
+
+		// 8. named workflow resource: standalone 下必须被阻断，且 input.async 与 input.foregroundOnly 未被篡改
+		const namedWorkflowInput = { workflow: "review-workflow", args: {} };
+		const resNamed = await toolCallHandler({ toolName: "subagent", input: namedWorkflowInput });
+		assert.ok(resNamed && resNamed.block === true);
+		assert.match(resNamed.reason, /standalone Pi 环境暂不支持 named workflow resource/);
+		assert.equal(namedWorkflowInput.async, undefined);
+		assert.equal(namedWorkflowInput.foregroundOnly, undefined);
+
+		// 9. named workflow resource: 非 standalone 下放行
+		isStandalone = false;
+		const resNamedNonStandalone = await toolCallHandler({ toolName: "subagent", input: namedWorkflowInput });
+		assert.equal(resNamedNonStandalone, undefined);
+		isStandalone = true;
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -686,4 +720,69 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	`, fakeCatalog);
 	assert.equal(r24.ok, false);
 	assert.match(r24.reason, /不在 catalog 中/);
+
+	// 25. globalThis.runs / this.runs bypass -> fail-closed 阻断
+	const r25a = validateStandaloneWorkflowScript(`
+		return await globalThis.runs.run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r25a.ok, false);
+	assert.match(r25a.reason, /禁止通过 globalThis\/this 间接访问 runs/);
+
+	const r25b = validateStandaloneWorkflowScript(`
+		return await globalThis['runs'].run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r25b.ok, false);
+	assert.match(r25b.reason, /禁止通过 globalThis\/this 间接访问 runs/);
+
+	const r25c = validateStandaloneWorkflowScript(`
+		return await this.runs.run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r25c.ok, false);
+	assert.match(r25c.reason, /禁止通过 globalThis\/this 间接访问 runs/);
+
+	const r25d = validateStandaloneWorkflowScript(`
+		return await this['runs'].run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r25d.ok, false);
+	assert.match(r25d.reason, /禁止通过 globalThis\/this 间接访问 runs/);
+
+	// 26. safe runs methods directly called -> 放行
+	const r26a = validateStandaloneWorkflowScript("return await runs.status('abc');", fakeCatalog);
+	assert.equal(r26a.ok, true);
+
+	const r26b = validateStandaloneWorkflowScript("return runs.ref(result);", fakeCatalog);
+	assert.equal(r26b.ok, true);
+
+	const r26c = validateStandaloneWorkflowScript("return runs.refs(results);", fakeCatalog);
+	assert.equal(r26c.ok, true);
+
+	const r26d = validateStandaloneWorkflowScript("return await runs.steer('worker', 'continue');", fakeCatalog);
+	assert.equal(r26d.ok, true);
+
+	// 27. alias safe runs methods -> fail-closed 阻断
+	const r27a = validateStandaloneWorkflowScript(`
+		const status = runs.status;
+		return status('abc');
+	`, fakeCatalog);
+	assert.equal(r27a.ok, false);
+	assert.match(r27a.reason, /runs\.status 必须直接调用/);
+
+	const r27b = validateStandaloneWorkflowScript(`
+		const { steer } = runs;
+		return steer('worker', 'msg');
+	`, fakeCatalog);
+	assert.equal(r27b.ok, false);
+	assert.match(r27b.reason, /runs 只能用于直接方法调用/);
+
+	const r27c = validateStandaloneWorkflowScript(`
+		return await runs.status.call(null, 'abc');
+	`, fakeCatalog);
+	assert.equal(r27c.ok, false);
+	assert.match(r27c.reason, /runs\.status 必须直接调用/);
+
+	const r27d = validateStandaloneWorkflowScript(`
+		return await Reflect.apply(runs.status, null, ['abc']);
+	`, fakeCatalog);
+	assert.equal(r27d.ok, false);
+	assert.match(r27d.reason, /runs\.status 必须直接调用/);
 });

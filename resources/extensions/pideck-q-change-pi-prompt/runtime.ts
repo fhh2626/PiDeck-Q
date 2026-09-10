@@ -399,6 +399,22 @@ export function registerPromptExtension(
 		}
 
 		const standalone = isStandalone();
+
+		// Standalone Pi: reject workflowScriptPath and named workflow resources
+		if (standalone && typeof input.workflowScriptPath === 'string' && input.workflowScriptPath.trim().length > 0) {
+			return {
+				block: true,
+				reason: '[change-pi-prompt] standalone Pi 环境暂不支持 workflowScriptPath；请使用 inline workflowScript，以便执行 foreground AST 校验。',
+			};
+		}
+
+		if (standalone && typeof input.workflow === 'string' && input.workflow.trim().length > 0) {
+			return {
+				block: true,
+				reason: '[change-pi-prompt] standalone Pi 环境暂不支持 named workflow resource；请使用 inline workflowScript。',
+			};
+		}
+
 		const targetAgentName = typeof input.agent === 'string' ? input.agent.trim() : undefined;
 		const catalogEntry = targetAgentName && catalog ? getAgentFromCatalog(catalog, targetAgentName) : undefined;
 		const runnerType = catalogEntry?.runnerType ?? (targetAgentName ? 'unknown' : 'native');
@@ -412,6 +428,14 @@ export function registerPromptExtension(
 				};
 			}
 			return;
+		}
+
+		// Standalone direct agent: unknown runner must be blocked fail-closed
+		if (standalone && targetAgentName && runnerType === 'unknown') {
+			return {
+				block: true,
+				reason: `[change-pi-prompt] 无法确认 Agent "${targetAgentName}" 的 runner 类型；standalone Pi 下拒绝执行。`,
+			};
 		}
 
 		// Native direct agent: verify required tool providers

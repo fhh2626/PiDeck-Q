@@ -131,7 +131,18 @@ function getProperty(obj: AstNode, name: string): AstNode | undefined {
 	return undefined;
 }
 
-function directRunsCall(node: AstNode, method: 'run' | 'all' | 'lanes' | 'host'): boolean {
+const ALLOWED_DIRECT_RUNS_METHODS = new Set([
+	'run',
+	'all',
+	'lanes',
+	'host',
+	'steer',
+	'status',
+	'ref',
+	'refs',
+]);
+
+function directRunsCall(node: AstNode, method: string): boolean {
 	if (node.type !== 'CallExpression') return false;
 	const callee = node.callee as AstNode | undefined;
 	if (!astNode(callee) || callee.type !== 'MemberExpression') return false;
@@ -172,6 +183,26 @@ export function validateStandaloneWorkflowScript(
 	walkAstWithParents(root, (node, parents) => {
 		if (structureError) return;
 
+		// 0. 禁止通过 globalThis.runs 或 this.runs 间接引用
+		if (node.type === 'MemberExpression') {
+			const obj = node.object as AstNode | undefined;
+			if (obj) {
+				const isGlobalThis = obj.type === 'Identifier' && obj.name === 'globalThis';
+				const isThis = obj.type === 'ThisExpression';
+				if (isGlobalThis || isThis) {
+					const prop = node.property as AstNode | undefined;
+					const isRunsProp = prop && (
+						(!node.computed && prop.type === 'Identifier' && prop.name === 'runs')
+						|| (node.computed && prop.type === 'Literal' && prop.value === 'runs')
+					);
+					if (isRunsProp) {
+						structureError = 'standalone Pi 环境下禁止通过 globalThis/this 间接访问 runs；必须直接使用 runs.<method>(...)。';
+						return;
+					}
+				}
+			}
+		}
+
 		// 1. 严格限制 runs 全局变量的使用：只能以 runs.<method>(...) 直接调用
 		if (node.type === 'Identifier' && node.name === 'runs') {
 			const parent = parents[0];
@@ -199,7 +230,7 @@ export function validateStandaloneWorkflowScript(
 			}
 
 			const methodName = ((parent.property as AstNode).name as string) ?? '';
-			if (!['run', 'all', 'lanes', 'host'].includes(methodName)) {
+			if (!ALLOWED_DIRECT_RUNS_METHODS.has(methodName)) {
 				structureError = `standalone Pi 环境下不支持 runs.${methodName} 方法调用`;
 				return;
 			}

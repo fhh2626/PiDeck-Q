@@ -27,7 +27,8 @@ export const DEFAULT_PROMPTS = {
 	delegation: `## Delegation
 - Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, delegate multi-step exploration/research, work with large intermediate results best kept out of the main context, or independent parallel tasks. Known paths do not rule out delegation.
 - In this environment, native Pi subagents must run foreground with async:false. Never omit async for native Pi children and never pass async:true. External CLI/job agents follow their runner contract and must not be converted to foreground; if background execution is unavailable in this standalone environment, treat that runner as unavailable.
-- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false.
+- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false. Inside workflowScript, every native child launch (runs.run, runs.all, and runs.lanes stage) must explicitly declare async:false; never omit async (resume-only stages do not require async).
+- In standalone Pi, use inline workflowScript only; workflowScriptPath and named workflow resources are not supported. External CLI/job runners are unavailable in standalone Pi.
 - Do not duplicate delegated work. Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
@@ -75,21 +76,22 @@ export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
 
 ## Execution
 - Choose one input: {agent,task?}, workflowScript, workflowScriptPath, or {workflow,args}. Never combine them. Omit action for execution; use action only for management/control.
-- SINGLE: {agent:"worker",task:"..."}. Request options apply to that child. Native Pi subagents must run foreground with async:false; never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground.
+- SINGLE: {agent:"worker",task:"...",async:false}. Request options apply to that child. Native Pi subagents must run foreground with async:false; never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground; in standalone Pi, external runners are unavailable.
 - For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false. Background native children are not available in this environment.
 - SCRIPT: workflowScript is a JavaScript statement body. Use an explicit return for useful output. It has no filesystem, shell, arbitrary Pi tools, or host globals outside authorized runs.host calls.
-- Use runs.run("key",{agent,task}) for one child; await runs.all([{key,agent,task},...]) for parallel children. runs.all returns an ordered array, not a key map.
+- Use runs.run("key", { agent: "worker", task: "...", async: false }) for one child.
+- For parallel children: await runs.all([{ key: "implement", agent: "worker", task: "...", async: false }, { key: "review", agent: "reviewer", task: "...", async: false }]). runs.all returns an ordered array, not a key map.
 - Await results before reading them. Every stored runs.run promise must eventually be observed with await, Promise.race, or Promise.all.
 - Use top-level await, plain helper functions returning promises, or explicit Promise chains. Nested async function, arrow, and method helpers are rejected.
-- For parallel sequential chains, use runs.lanes([{key,stages:[{key,agent,task},{key,resume:"previous",task},...]}]). First stages run together; later stages sequence per lane. Failures are lane-local. Only structuredOutput.verdict === "blocked" blocks an otherwise successful stage; reviewer prose is not parsed.
-- FILE: workflowScriptPath resolves against the request cwd and is read by the host before sandbox execution.
-- RESOURCE: {workflow:"resource-name",args:{...}} uses an extension-owned script and authority for permission/policy integration. args must be bounded plain data.
+- For parallel sequential chains: await runs.lanes([{ key: "lane", stages: [{ key: "first", agent: "worker", task: "...", async: false }, { key: "second", resume: "previous", task: "..." }] }]). First stages run together; later stages sequence per lane. Failures are lane-local. Only structuredOutput.verdict === "blocked" blocks an otherwise successful stage; reviewer prose is not parsed.
+- FILE: workflowScriptPath resolves against the request cwd and is read by the host before sandbox execution. (In standalone Pi, use inline workflowScript instead).
+- RESOURCE: {workflow:"resource-name",args:{...}} uses an extension-owned script and authority for permission/policy integration. args must be bounded plain data. (In standalone Pi, use inline workflowScript instead).
 - Use action:"validate" with workflowScript or workflowScriptPath to check syntax and statically decidable structure without launching children.
 
 ## Isolation and runners
 - For managed Git isolation, set worktree:true on the workflow or child; parallel children receive separate worktrees. The source checkout must be clean.
 - baseRef accepts HEAD or supported named refs such as refs/heads/main, not commit hashes or expressions such as HEAD~1. Omitted baseRef resolves HEAD at worktree allocation.
-- External CLI agents follow their runner contract and must not be converted to foreground. Unless explicitly supported, native Pi options do not apply: model override, structured output, acceptance/agent contract, tool budget, fast mode, fork context, skills, or native Pi tools.
+- External CLI agents follow their runner contract and must not be converted to foreground; in standalone Pi, external runners are unavailable. Unless explicitly supported, native Pi options do not apply: model override, structured output, acceptance/agent contract, tool budget, fast mode, fork context, skills, or native Pi tools.
 
 ## Reference
 Use {action:"guide",topic:"workflows"} or the pi-subagents skill for advanced workflows; use topic:"tool-reference" for management actions.

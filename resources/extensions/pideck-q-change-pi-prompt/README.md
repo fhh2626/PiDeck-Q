@@ -2,7 +2,10 @@
 
 PiDeck-Q 随包内置扩展。PiDeck 默认启用，用户可在设置 → 扩展中关闭。
 接管 Pi 的基础身份、Guidelines 和文档提示，按来源替换 pwsh 指南并为 pi-subagents 增补委派与前台执行策略。
-在 standalone Pi（如 `pi.exe`）环境下硬性执行 Native 子代理前台策略（direct 与 workflowScript 顶层均强制 `async: false` 与 `foregroundOnly: true`；workflowScript 内部通过 AST 静态证明所有 native child 显式声明 `async: false`；无法静态证明或未知 agent 均 fail closed；external runner 在 standalone 下不可用）。
+在 standalone Pi（如 `pi.exe`）环境下硬性执行 Native 子代理前台策略：
+- 支持：direct native 前台调用与 inline `workflowScript` 前台编排（顶层强制 `async: false` 与 `foregroundOnly: true`；内部通过 AST 静态证明每个 native child 显式声明 `async: false`）。
+- 暂不支持：`workflowScriptPath` 与 named workflow resource（`{ workflow, args }`）。这些入口的真实脚本在 pi-subagents 内部解析，change-pi-prompt 无法在 `tool_call` 拦截边界完成相同的 AST 前台验证，因此 standalone 下直接 fail closed 阻断（非 standalone 环境不受此限制）。
+- 外部 Runner（`external-cli` / `external-job`）在 standalone 下不可用并直接阻断；无法确认 runner 类型的未知 Agent 同样 fail closed 阻断。
 探测 bash / powershell 后端是否存在；缺失则对本会话 `setActiveTools` 隐藏对应工具，并删掉 Available tools 行与 shell/pwsh 指南。
 不修改 pi-subagents 上游源码；通过 upstream 原生支持的 `subagentOnlyExtensions` 接口配置 child tool 兼容层。
 父 Agent 与 native child 均做工具环境对齐；native child 角色 prompt 保持完全一致，不被替换为父 Agent 身份。
