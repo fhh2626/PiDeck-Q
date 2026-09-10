@@ -63,6 +63,55 @@ function hasLegacySessionNameLine(text: string): boolean {
   return false;
 }
 
+/** 归档目录名（各扫描根下的隐藏子目录） */
+export const ARCHIVE_DIR_NAME = ".pideck-archive";
+
+/**
+ * 判断目录或文件路径是否属于会话扫描应忽略的路径。
+ *
+ * 忽略项：
+ *   1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身
+ *   2. subagent-artifacts（以及其内部的 transcript/artifact JSONL）
+ *   3. .pi/subagents/artifacts（以及其内部的 transcript/artifact JSONL）
+ *
+ * 语义规范：
+ *   - 纯路径/名称结构判定，绝不读取或依赖文件内容
+ *   - 绝不使用 "[prompt redacted]"、"Prompt Audit"、"Prompt A" 等文本内容做过滤
+ *   - Local 扫描与 WSL 扫描使用同一套语义判定，避免两端行为分歧
+ *   - 保留真正的 subagent session（如 <stem>/<run-id>/run-N/session.jsonl）
+ */
+export function isIgnoredSessionScanDirectory(pathOrName: string): boolean {
+  if (!pathOrName) return false;
+  const normalized = pathOrName.replace(/\\/g, "/").replace(/\/+$/, "");
+  const lower = normalized.toLowerCase();
+  const base = lower.split("/").pop() ?? "";
+
+  // 1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身
+  if (base === ARCHIVE_DIR_NAME.toLowerCase()) {
+    return true;
+  }
+
+  // 2. subagent-artifacts 目录（以及该目录下的任意嵌套路径）
+  if (
+    base === "subagent-artifacts" ||
+    lower.includes("/subagent-artifacts/") ||
+    lower.endsWith("/subagent-artifacts")
+  ) {
+    return true;
+  }
+
+  // 3. .pi/subagents/artifacts 目录（以及该目录下的任意嵌套路径）
+  if (
+    lower === ".pi/subagents/artifacts" ||
+    lower.endsWith("/.pi/subagents/artifacts") ||
+    lower.includes("/.pi/subagents/artifacts/")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export class SessionScanner {
   private readonly translate: SessionScannerCopy;
   private readonly homeDir: string;
@@ -285,8 +334,11 @@ export class SessionScanner {
       execFile(this.wslExePath, [
         "-d", this.wslConfig!.distro, "-u", this.wslConfig!.user,
         // 跳过归档目录（.pideck-archive）与回收目录（.trash）：归档会话不参与常规扫描。
+        // 跳过 subagent 的 transcript/artifact 目录，避免非会话 JSONL 进入会话列表。
         "find", sessionsDir, "-name", "*.jsonl", "-type", "f",
-        "-not", "-path", `*/${SessionScanner.ARCHIVE_DIR_NAME}/*`
+        "-not", "-path", `*/${SessionScanner.ARCHIVE_DIR_NAME}/*`,
+        "-not", "-path", "*/subagent-artifacts/*",
+        "-not", "-path", "*/.pi/subagents/artifacts/*",
       ], {
         encoding: "utf8",
         timeout: 15_000,
@@ -297,7 +349,11 @@ export class SessionScanner {
         maxBuffer: 16 * 1024 * 1024,
       }, (err, stdout) => {
         if (err) { reject(err); return; }
-        const files = stdout.trim().split(/\r?\n/).filter(Boolean);
+        const files = stdout
+          .trim()
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .filter((file) => !isIgnoredSessionScanDirectory(file));
         resolve(files);
       });
     });
@@ -685,7 +741,9 @@ export class SessionScanner {
   // 归档与删除的区别：文件不销毁，随时可从归档恢复；归档目录内不再被扫描。
 
   /** 归档目录名（各扫描根下的隐藏子目录） */
-  private static readonly ARCHIVE_DIR_NAME = ".pideck-archive";
+  public static readonly ARCHIVE_DIR_NAME = ARCHIVE_DIR_NAME;
+  public static readonly isIgnoredSessionScanDirectory = isIgnoredSessionScanDirectory;
+  public readonly isIgnoredSessionScanDirectory = isIgnoredSessionScanDirectory;
   /** 归档索引文件名：记录 归档路径 → 原始路径 映射，恢复时据此移回 */
   private static readonly ARCHIVE_INDEX_NAME = "index.json";
 
@@ -1161,10 +1219,14 @@ export class SessionScanner {
 
     for (const entry of entries) {
       const path = join(dir, entry.name);
-      // 跳过归档目录：归档会话不参与常规扫描（.trash 同理不扫）。
-      if (entry.isDirectory() && entry.name === SessionScanner.ARCHIVE_DIR_NAME) continue;
-      if (entry.isDirectory()) files.push(...await this.collectJsonl(path));
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+      // 跳过归档目录与 subagent artifacts 目录：避免非会话 JSONL 进入会话列表。
+      if (entry.isDirectory()) {
+        if (isIgnoredSessionScanDirectory(path) || isIgnoredSessionScanDirectory(entry.name)) continue;
+        files.push(...await this.collectJsonl(path));
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        if (isIgnoredSessionScanDirectory(path)) continue;
+        files.push(path);
+      }
     }
 
     return files;

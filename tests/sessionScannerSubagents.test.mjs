@@ -157,7 +157,7 @@ function loadPiCompatibilityModule() {
 	return loadTranspiledModule("src/shared/piCompatibility.ts");
 }
 
-function loadSessionScanner(homePath, fsOverrides = {}) {
+function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}) {
 	const source = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
 	const { outputText } = ts.transpileModule(source, {
 		compilerOptions: {
@@ -189,6 +189,7 @@ function loadSessionScanner(homePath, fsOverrides = {}) {
 			if (id === "./sessionNameLine") return loadSessionNameLineModule();
 			// sharedLogger 未注册时 getAppLogger 返回 null，SessionScanner 埋点静默跳过
 			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
+			if (id === "node:child_process") return { ...require(id), ...childProcessOverrides };
 			if (id === "node:fs") return { ...require(id), ...fsOverrides };
 			return require(id);
 		},
@@ -649,6 +650,201 @@ test("only user messages yield undefined model and undefined thinking", async ()
 		assert.equal(summaries.length, 1);
 		assert.equal(summaries[0].model, undefined);
 		assert.equal(summaries[0].thinkingLevel, undefined);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("isIgnoredSessionScanDirectory correctly identifies artifact directories across Windows and POSIX paths", () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-ignored-dirs-"));
+	try {
+		const { isIgnoredSessionScanDirectory, SessionScanner } = loadSessionScanner(home);
+
+		// 1. subagent-artifacts 目录及内部文件判定
+		assert.equal(isIgnoredSessionScanDirectory("subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("subagent-artifacts/"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\subagent-artifacts\\run-1_worker_transcript.jsonl"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/subagent-artifacts/run-1_worker_transcript.jsonl"), true);
+
+		// 2. .pi/subagents/artifacts 目录及内部文件判定
+		assert.equal(isIgnoredSessionScanDirectory(".pi/subagents/artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory(".pi\\subagents\\artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents\\artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents\\artifacts\\review_transcript.jsonl"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/subagents/artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/subagents/artifacts/review_transcript.jsonl"), true);
+
+		// 3. 归档目录（.pideck-archive）判定
+		assert.equal(isIgnoredSessionScanDirectory(".pideck-archive"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\.pideck-archive"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/.pideck-archive"), true);
+
+		// 4. 合法会话文件与目录绝不误判
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\run-abc\\run-0\\session.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\run-abc\\run-0"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\subagent-worker-manual-0.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\sessions"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents"), false);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/run-abc/run-0/session.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/sessions/normal.jsonl"), false);
+
+		// 静态属性挂载验证
+		assert.equal(SessionScanner.isIgnoredSessionScanDirectory("subagent-artifacts"), true);
+		assert.equal(new SessionScanner().isIgnoredSessionScanDirectory("subagent-artifacts"), true);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts without content filtering", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-artifact-filter-native-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const piDir = join(home, ".pi", "agent", "sessions", "--C--repo-project--");
+		const parentFile = join(piDir, "parent.jsonl");
+		const ordinaryFile = join(piDir, "ordinary.jsonl");
+		const realChildFile = join(piDir, "parent", "run-abc", "run-0", "session.jsonl");
+
+		// 1. subagent-artifacts 下的 transcript.jsonl（包含 [prompt redacted] 文本）
+		const artifactTranscriptFile = join(piDir, "parent", "subagent-artifacts", "run-abc_worker_transcript.jsonl");
+
+		// 2. .pi/subagents/artifacts 下的 transcript.jsonl（包含 Prompt Audit 文本）
+		const projectArtifactFile = join(home, ".pi", "subagents", "artifacts", "run-xyz_reviewer_transcript.jsonl");
+
+		// 3. 用户合法会话，正文恰好包含 [prompt redacted]（用于验证不依赖内容做过滤）
+		const legitWithRedactedTextFile = join(piDir, "legit-redacted-text.jsonl");
+
+		writeSession(parentFile, session("Parent Session", projectPath));
+		writeSession(ordinaryFile, session("Ordinary Session", projectPath));
+		// 真实 subagent child session
+		writeSession(realChildFile, session("subagent-worker-run-abc-0", projectPath));
+
+		// 伪造 artifact 目录下的 transcript 文件（格式也是有效 JSONL，且包含 [prompt redacted]）
+		writeSession(artifactTranscriptFile, [
+			{ type: "session_info", name: "Prompt Audit: [prompt redacted]", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "[prompt redacted] Please review code." } },
+			{ type: "message", message: { role: "assistant", content: "Done." } },
+		]);
+		writeSession(projectArtifactFile, [
+			{ type: "session_info", name: "[prompt redacted]", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "Prompt A: [prompt redacted]" } },
+		]);
+
+		// 合法会话包含 [prompt redacted] 字符，必须正常呈现，绝不能被文本规则误杀
+		writeSession(legitWithRedactedTextFile, [
+			{ type: "session_info", name: "Legit Session With Prompt Audit", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "Here is [prompt redacted] text in normal chat." } },
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const summaries = await new SessionScanner().list(projectPath);
+		const scannedPaths = new Set(summaries.map(s => s.filePath));
+
+		// 验证普通会话正常被扫描
+		assert.equal(scannedPaths.has(parentFile), true, "Parent session must be scanned");
+		assert.equal(scannedPaths.has(ordinaryFile), true, "Ordinary session must be scanned");
+		assert.equal(scannedPaths.has(legitWithRedactedTextFile), true, "Legit session with [prompt redacted] in text must NOT be filtered out");
+
+		// 验证真实 subagent child session 正常被扫描且挂载到父会话
+		assert.equal(scannedPaths.has(realChildFile), true, "Real subagent child session must be scanned");
+		const childSummary = summaries.find(s => s.filePath === realChildFile);
+		assert.equal(childSummary?.isInternalSubagent, true, "Real child session must have isInternalSubagent = true");
+		assert.equal(childSummary?.parentSessionPath, parentFile, "Real child session must point to parentSessionPath");
+
+		// 验证 subagent-artifacts 与 .pi/subagents/artifacts 下的文件绝不进入 SessionScanner
+		assert.equal(scannedPaths.has(artifactTranscriptFile), false, "subagent-artifacts transcript must not enter SessionScanner");
+		assert.equal(scannedPaths.has(projectArtifactFile), false, ".pi/subagents/artifacts transcript must not enter SessionScanner");
+
+		// 磁盘上的文件并未被误删，只是被扫描器忽略
+		assert.equal(existsSync(artifactTranscriptFile), true, "Artifact file remains safely on disk");
+		assert.equal(existsSync(projectArtifactFile), true, "Project artifact file remains safely on disk");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via find args and path filter", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-artifact-filter-wsl-"));
+	try {
+		const projectPath = "/mnt/c/repo/project";
+		const sessionsRoot = "/home/dev/.pi/agent/sessions";
+		const parentFile = `${sessionsRoot}/--mnt-c-repo-project--/parent.jsonl`;
+		const childFile = `${sessionsRoot}/--mnt-c-repo-project--/parent/run-abc/run-0/session.jsonl`;
+		const artifactFile = `${sessionsRoot}/--mnt-c-repo-project--/parent/subagent-artifacts/run-abc_worker_transcript.jsonl`;
+		const projectArtifactFile = `${sessionsRoot}/--mnt-c-repo-project--/.pi/subagents/artifacts/reviewer_transcript.jsonl`;
+		const promptRedactedFile = `${sessionsRoot}/--mnt-c-repo-project--/redacted-in-content.jsonl`;
+
+		let capturedFindArgs = [];
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args) && args.includes("find")) {
+					capturedFindArgs = [...args];
+					// 模拟 find 输出：即使底层 find 返回了所有文件，JS 层 filter 也必须双重守卫
+					const output = [
+						parentFile,
+						childFile,
+						artifactFile,
+						projectArtifactFile,
+						promptRedactedFile,
+					].join("\n");
+					cb(null, output);
+					return;
+				}
+				cb(null, "");
+			},
+		};
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[childFile, `${session("subagent-worker-wsl-0", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[artifactFile, `${session("Prompt Audit: [prompt redacted]", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[projectArtifactFile, `${session("[prompt redacted]", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[promptRedactedFile, `${[
+				{ type: "session_info", name: "User Prompt Audit", cwd: projectPath },
+				{ type: "message", message: { role: "user", content: "[prompt redacted] Normal user query" } },
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new SessionScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+		const scannedPaths = new Set(summaries.map(s => s.filePath));
+
+		// 1. 验证 find 命令参数中包含了排除规则
+		assert.ok(capturedFindArgs.includes("*/subagent-artifacts/*"), "WSL find args must exclude */subagent-artifacts/*");
+		assert.ok(capturedFindArgs.includes("*/.pi/subagents/artifacts/*"), "WSL find args must exclude */.pi/subagents/artifacts/*");
+		assert.ok(capturedFindArgs.includes("*/.pideck-archive/*"), "WSL find args must exclude */.pideck-archive/*");
+
+		// 2. 验证 artifact 文件被排除在 summaries 外
+		assert.equal(scannedPaths.has(artifactFile), false, "WSL subagent-artifacts transcript must not enter summaries");
+		assert.equal(scannedPaths.has(projectArtifactFile), false, "WSL .pi/subagents/artifacts transcript must not enter summaries");
+
+		// 3. 验证真实父会话和子会话正常保留
+		assert.equal(scannedPaths.has(parentFile), true, "WSL parent session must be scanned");
+		assert.equal(scannedPaths.has(childFile), true, "WSL real child session must be scanned");
+		const childSummary = summaries.find(s => s.filePath === childFile);
+		assert.equal(childSummary?.isInternalSubagent, true, "WSL real child session must be internal subagent");
+		assert.equal(childSummary?.parentSessionPath, parentFile, "WSL real child session must point to parent file");
+
+		// 4. 验证内容中包含 [prompt redacted] 的合法会话正常保留（不依赖内容过滤）
+		assert.equal(scannedPaths.has(promptRedactedFile), true, "WSL legit session with [prompt redacted] must be scanned");
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
