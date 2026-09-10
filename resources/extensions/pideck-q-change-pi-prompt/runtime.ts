@@ -452,9 +452,7 @@ export function registerPromptExtension(
 				};
 			}
 			input.async = false;
-			if (typeof input.workflowScript !== 'string') {
-				input.foregroundOnly = true;
-			}
+			input.foregroundOnly = true;
 		}
 	});
 

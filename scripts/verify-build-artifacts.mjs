@@ -17,7 +17,7 @@ const EXPECTED_ENTRIES = {
  * PiDeck-Q-Change-Pi-Prompt 打包产物清单（运行时文件）。
  *
  * 这些文件由 pi 扩展加载器按相对路径 require，任何一个缺失/为空，打包版里
- * 该内置扩展在启用时才会崩（默认关闭，所以源码侧门禁测不出——必须在产物上测）。
+ * 该内置扩展在运行时就会崩溃（内置扩展默认开启，因此所有运行时文件必须完整随包发布）。
  * 注意：这里只列运行时文件；tests/ 是否随包走由源码侧
  * tests/extensionPackagingDeps.test.mjs 单独把关，不在此处强制。
  */
@@ -29,6 +29,10 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-change-pi-prompt/defaults.ts",
 	"extensions/pideck-q-change-pi-prompt/layout.ts",
 	"extensions/pideck-q-change-pi-prompt/contributions.ts",
+	"extensions/pideck-q-change-pi-prompt/shellAvailability.ts",
+	"extensions/pideck-q-change-pi-prompt/childReconciliation.ts",
+	"extensions/pideck-q-change-pi-prompt/subagentCatalog.ts",
+	"extensions/pideck-q-change-pi-prompt/workflowValidation.ts",
 ];
 
 const WEBFETCH_FILES = [
@@ -117,6 +121,7 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		: output;
 	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
 	const extensionAcornPackage = join(output, "resources", "extensions", "node_modules", "acorn", "package.json");
+	const extensionAcornDist = join(output, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js");
 	if (await exists(join(output, "resources", "extensions"))) {
 		if (!(await exists(extensionUndiciPackage))) {
 			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
@@ -127,6 +132,16 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 			errors.push(`Missing packaged extension dependency: ${extensionAcornPackage}`);
 		} else {
 			checked.push(extensionAcornPackage);
+		}
+		if (!(await exists(extensionAcornDist))) {
+			errors.push(`Missing packaged extension dependency: ${extensionAcornDist}`);
+		} else {
+			const acornDistInfo = await stat(extensionAcornDist);
+			if (!acornDistInfo.isFile() || acornDistInfo.size === 0) {
+				errors.push(`Empty or invalid acorn runtime file: ${extensionAcornDist}`);
+			} else {
+				checked.push(extensionAcornDist);
+			}
 		}
 		// PiDeck-Q-Change-Pi-Prompt 的运行时文件必须完整落进产物；缺一个 = 启用即崩。
 		for (const file of CHANGE_PROMPT_FILES) {

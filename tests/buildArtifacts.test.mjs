@@ -119,6 +119,7 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 	}
 	if (withAcorn) {
 		await put(join(base, "node_modules", "acorn", "package.json"), "{}");
+		await put(join(base, "node_modules", "acorn", "dist", "acorn.js"), "// acorn");
 	}
 	if (withWebfetch) {
 		await put(join(base, "pideck-q-webfetch.ts"), "// webfetch");
@@ -133,6 +134,9 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 		"pideck-q-change-pi-prompt/layout.ts",
 		"pideck-q-change-pi-prompt/contributions.ts",
 		"pideck-q-change-pi-prompt/shellAvailability.ts",
+		"pideck-q-change-pi-prompt/childReconciliation.ts",
+		"pideck-q-change-pi-prompt/subagentCatalog.ts",
+		"pideck-q-change-pi-prompt/workflowValidation.ts",
 	]) {
 		await put(join(base, file), "// packaged");
 	}
@@ -157,8 +161,48 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 7 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 2 个 extension deps (undici + acorn) = 17
-		assert.equal(result.checked.length, 17, JSON.stringify(result.checked));
+		// 11 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 22
+		assert.equal(result.checked.length, 22, JSON.stringify(result.checked));
+	});
+});
+
+test("missing workflowValidation.ts or subagentCatalog.ts fails verification", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "workflowValidation.ts"));
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /workflowValidation\.ts/);
+	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "subagentCatalog.ts"));
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /subagentCatalog\.ts/);
+	});
+});
+
+test("missing or empty acorn dist/acorn.js fails verification", async () => {
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await rm(join(repo, "out", "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js"));
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /Missing packaged extension dependency.*dist.*acorn\.js/);
+	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await put(join(repo, "out", "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js"), "");
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /Empty or invalid acorn runtime file.*dist.*acorn\.js/);
 	});
 });
 

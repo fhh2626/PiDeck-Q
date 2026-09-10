@@ -352,6 +352,7 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		assert.ok(resExternal && resExternal.block === true);
 		assert.match(resExternal.reason, /external runner/);
 		assert.equal(existsSync(configPath), false, "external runner 不应触发 native subagent config.json 创建");
+		assert.equal(externalInput.foregroundOnly, undefined, "external runner 绝不能被注入 foregroundOnly: true");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -461,14 +462,14 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		assert.match(resTrue.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
 
 		// 4. workflowScript 内 native child 显式声明 async: false：
-		// 必须放行，且顶层 workflowScript 也被设为 async: false（但不设 foregroundOnly）
+		// 必须放行，且顶层 workflowScript 也被设为 async: false + foregroundOnly: true
 		const safeWorkflow = {
 			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile', async: false });`,
 		};
 		const resSafe = await toolCallHandler({ toolName: "subagent", input: safeWorkflow });
 		assert.equal(resSafe, undefined);
 		assert.equal(safeWorkflow.async, false);
-		assert.equal(safeWorkflow.foregroundOnly, undefined, "workflowScript 顶层调用不应被注入 foregroundOnly");
+		assert.equal(safeWorkflow.foregroundOnly, true, "workflowScript 顶层调用也必须被注入 foregroundOnly: true");
 
 		// 5. runs.all 包含省略 async 的 native child：
 		// 必须 block
@@ -605,4 +606,84 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 		return await runs.run('a', { agent: 'worker', async: false });
 	`, fakeCatalog);
 	assert.equal(r14.ok, true, "无关对象的 async: true 不得误杀合法的 runs.run 调用");
+
+	// 15. duplicate keys -> fail-closed 阻断
+	const r15a = validateStandaloneWorkflowScript(`
+		return await runs.run('a', { agent: 'worker', async: false, async: false });
+	`, fakeCatalog);
+	assert.equal(r15a.ok, false);
+	assert.match(r15a.reason, /重复静态键 "async"/);
+
+	const r15b = validateStandaloneWorkflowScript(`
+		return await runs.run('a', { agent: 'worker', async: false, async: true });
+	`, fakeCatalog);
+	assert.equal(r15b.ok, false);
+	assert.match(r15b.reason, /重复静态键 "async"/);
+
+	// 16. computed property 字符串字面量 -> fail-closed 阻断
+	const r16 = validateStandaloneWorkflowScript(`
+		return await runs.run('a', { agent: 'worker', ["async"]: true });
+	`, fakeCatalog);
+	assert.equal(r16.ok, false);
+	assert.match(r16.reason, /计算属性/);
+
+	// 17. computed property 变量 -> fail-closed 阻断
+	const r17 = validateStandaloneWorkflowScript(`
+		const k = 'async';
+		return await runs.run('a', { agent: 'worker', async: false, [k]: true });
+	`, fakeCatalog);
+	assert.equal(r17.ok, false);
+	assert.match(r17.reason, /计算属性/);
+
+	// 18. alias runs.run -> fail-closed 阻断
+	const r18 = validateStandaloneWorkflowScript(`
+		const launch = runs.run;
+		return await launch('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r18.ok, false);
+	assert.match(r18.reason, /runs\.run 必须直接调用/);
+
+	// 19. destructuring runs -> fail-closed 阻断
+	const r19 = validateStandaloneWorkflowScript(`
+		const { run } = runs;
+		return await run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r19.ok, false);
+	assert.match(r19.reason, /runs 只能用于直接方法调用/);
+
+	// 20. runs.run.call -> fail-closed 阻断
+	const r20 = validateStandaloneWorkflowScript(`
+		return await runs.run.call(null, 'a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r20.ok, false);
+	assert.match(r20.reason, /runs\.run 必须直接调用/);
+
+	// 21. Reflect.apply(runs.run, ...) -> fail-closed 阻断
+	const r21 = validateStandaloneWorkflowScript(`
+		return await Reflect.apply(runs.run, null, ['a', { agent: 'worker', async: false }]);
+	`, fakeCatalog);
+	assert.equal(r21.ok, false);
+	assert.match(r21.reason, /runs\.run 必须直接调用/);
+
+	// 22. computed callee runs["run"] -> fail-closed 阻断
+	const r22 = validateStandaloneWorkflowScript(`
+		return await runs['run']('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r22.ok, false);
+	assert.match(r22.reason, /runs 只能用于直接方法调用/);
+
+	// 23. dynamic agent name -> fail-closed 阻断
+	const r23 = validateStandaloneWorkflowScript(`
+		const target = 'worker';
+		return await runs.run('a', { agent: target, async: false });
+	`, fakeCatalog);
+	assert.equal(r23.ok, false);
+	assert.match(r23.reason, /agent 必须为静态字符串/);
+
+	// 24. agent not in catalog -> fail-closed 阻断
+	const r24 = validateStandaloneWorkflowScript(`
+		return await runs.run('a', { agent: 'not-in-catalog', async: false });
+	`, fakeCatalog);
+	assert.equal(r24.ok, false);
+	assert.match(r24.reason, /不在 catalog 中/);
 });

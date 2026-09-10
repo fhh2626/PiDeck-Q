@@ -64,6 +64,8 @@ async function createRuntimeFixture(projectRoot) {
 	await put(join(acornRoot, "package.json"), '{"main":"dist/acorn.js"}');
 	await put(join(acornRoot, "dist", "acorn.js"));
 	await put(join(acornRoot, "dist", "acorn.d.ts"), "types");
+	await put(join(acornRoot, "dist", "acorn.test.js"), "test");
+	await put(join(acornRoot, "dist", "acorn.js.map"), "source map");
 
 	return { nodePtyRoot, sqlRoot, undiciRoot, acornRoot };
 }
@@ -106,6 +108,9 @@ test("native runtime staging copies only executable node-pty/sql.js/undici files
 			await readFile(join(fixture.undiciRoot, "package.json"), "utf8"),
 		);
 		assert.equal(await exists(join(stageRoot, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js")), true);
+		assert.equal(await exists(join(stageRoot, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.d.ts")), false);
+		assert.equal(await exists(join(stageRoot, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.test.js")), false);
+		assert.equal(await exists(join(stageRoot, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js.map")), false);
 		assert.equal(
 			await readFile(join(stageRoot, "resources", "extensions", "node_modules", "acorn", "package.json"), "utf8"),
 			await readFile(join(fixture.acornRoot, "package.json"), "utf8"),

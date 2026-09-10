@@ -34,59 +34,119 @@ function astNode(value: unknown): value is AstNode {
 	return Boolean(value && typeof value === 'object' && typeof (value as AstNode).type === 'string');
 }
 
-function walkAst(node: unknown, visit: (node: AstNode) => void): void {
+function walkAstWithParents(
+	node: unknown,
+	visit: (node: AstNode, parents: AstNode[]) => void,
+	parents: AstNode[] = [],
+): void {
 	if (Array.isArray(node)) {
-		for (const item of node) walkAst(item, visit);
+		for (const item of node) walkAstWithParents(item, visit, parents);
 		return;
 	}
 	if (!astNode(node)) return;
-	visit(node);
+	visit(node, parents);
+	const nextParents = [node, ...parents];
 	for (const [key, child] of Object.entries(node)) {
-		if (key !== 'loc' && key !== 'range') walkAst(child, visit);
+		if (key !== 'loc' && key !== 'range') walkAstWithParents(child, visit, nextParents);
 	}
 }
 
-function directRunsCall(node: AstNode, method: 'run' | 'all' | 'lanes'): boolean {
-	if (node.type !== 'CallExpression') return false;
-	const callee = node.callee as AstNode | undefined;
-	if (!astNode(callee) || callee.type !== 'MemberExpression') return false;
-	const obj = callee.object as AstNode | undefined;
-	if (!astNode(obj) || obj.type !== 'Identifier' || obj.name !== 'runs') return false;
-	const prop = callee.property as AstNode | undefined;
-	if (!astNode(prop)) return false;
-	if (callee.computed === true) {
-		return prop.type === 'Literal' && prop.value === method;
+/** Fail-closed check ensuring an object literal has only static, uncomputed, unique keys without spread elements. */
+export function inspectStaticObject(obj: AstNode): { ok: boolean; reason?: string } {
+	if (obj.type !== 'ObjectExpression' || !Array.isArray(obj.properties)) {
+		return {
+			ok: false,
+			reason: '[change-pi-prompt] standalone Pi 环境下子代理调用参数必须为对象字面量。',
+		};
 	}
-	return prop.type === 'Identifier' && prop.name === method;
+
+	const seenKeys = new Set<string>();
+
+	for (const prop of obj.properties) {
+		if (!prop || typeof prop !== 'object') continue;
+		const p = prop as AstNode;
+
+		if (p.type === 'SpreadElement' || p.type === 'ExperimentalSpreadProperty') {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数不支持对象展开运算符（SpreadElement），必须显式声明静态属性。',
+			};
+		}
+
+		if (p.type !== 'Property') {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数必须为常规对象属性。',
+			};
+		}
+
+		if (p.computed === true) {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数不支持计算属性（computed property），必须显式声明静态属性。',
+			};
+		}
+
+		const key = p.key as AstNode | undefined;
+		let keyName: string | undefined;
+		if (key) {
+			if (key.type === 'Identifier' && typeof key.name === 'string') {
+				keyName = key.name;
+			} else if (key.type === 'Literal' && typeof key.value === 'string') {
+				keyName = key.value;
+			}
+		}
+
+		if (typeof keyName !== 'string') {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数键必须为静态标识符或字符串字面量。',
+			};
+		}
+
+		if (seenKeys.has(keyName)) {
+			return {
+				ok: false,
+				reason: `[change-pi-prompt] standalone Pi 环境下子代理参数存在重复静态键 "${keyName}"，必须唯一。`,
+			};
+		}
+		seenKeys.add(keyName);
+	}
+
+	return { ok: true };
 }
 
-function hasSpreadElement(obj: AstNode): boolean {
-	if (!Array.isArray(obj.properties)) return false;
-	return obj.properties.some(
-		p => p && typeof p === 'object' && ((p as AstNode).type === 'SpreadElement' || (p as AstNode).type === 'ExperimentalSpreadProperty')
-	);
-}
-
+/** Retrieve property value from an object that has passed inspectStaticObject. */
 function getProperty(obj: AstNode, name: string): AstNode | undefined {
 	if (obj.type !== 'ObjectExpression' || !Array.isArray(obj.properties)) return undefined;
 	for (const prop of obj.properties) {
-		if (prop && typeof prop === 'object' && prop.type === 'Property') {
-			const key = prop.key as AstNode | undefined;
-			if (!key) continue;
-			if (prop.computed) {
-				if (key.type === 'Literal' && key.value === name) return prop.value as AstNode;
-			} else {
-				if (key.type === 'Identifier' && key.name === name) return prop.value as AstNode;
-				if (key.type === 'Literal' && key.value === name) return prop.value as AstNode;
-			}
+		if (prop && typeof prop === 'object' && (prop as AstNode).type === 'Property') {
+			const p = prop as AstNode;
+			const key = p.key as AstNode | undefined;
+			if (!key || p.computed) continue;
+			if (key.type === 'Identifier' && key.name === name) return p.value as AstNode;
+			if (key.type === 'Literal' && key.value === name) return p.value as AstNode;
 		}
 	}
 	return undefined;
 }
 
+function directRunsCall(node: AstNode, method: 'run' | 'all' | 'lanes' | 'host'): boolean {
+	if (node.type !== 'CallExpression') return false;
+	const callee = node.callee as AstNode | undefined;
+	if (!astNode(callee) || callee.type !== 'MemberExpression') return false;
+	if (callee.computed === true) return false;
+	const obj = callee.object as AstNode | undefined;
+	if (!astNode(obj) || obj.type !== 'Identifier' || obj.name !== 'runs') return false;
+	const prop = callee.property as AstNode | undefined;
+	if (!astNode(prop) || prop.type !== 'Identifier') return false;
+	return prop.name === method;
+}
+
 /** Bounded AST parser for standalone workflowScript execution.
  *  Enforces that all native child launches explicitly declare async:false.
- *  Fails closed on spread elements, non-literal arrays, or non-static stage objects. */
+ *  Fails closed on spread elements, non-literal arrays, computed properties,
+ *  duplicate keys, runs method aliasing/destructuring, or unknown agents. */
 export function validateStandaloneWorkflowScript(
 	script: string,
 	catalog?: SubagentCatalog,
@@ -106,78 +166,132 @@ export function validateStandaloneWorkflowScript(
 		};
 	}
 
-	// 收集所有子代理调用的配置对象
 	const childConfigs: AstNode[] = [];
 	let structureError: string | undefined;
 
-	walkAst(root, (node) => {
+	walkAstWithParents(root, (node, parents) => {
 		if (structureError) return;
 
+		// 1. 严格限制 runs 全局变量的使用：只能以 runs.<method>(...) 直接调用
+		if (node.type === 'Identifier' && node.name === 'runs') {
+			const parent = parents[0];
+			const grandParent = parents[1];
+
+			// 排除对象字面量键 { runs: 123 }
+			if (parent && parent.type === 'Property' && parent.key === node && !parent.computed) {
+				return;
+			}
+			// 排除其他对象属性访问 obj.runs
+			if (parent && parent.type === 'MemberExpression' && parent.property === node && !parent.computed) {
+				return;
+			}
+
+			if (
+				!parent
+				|| parent.type !== 'MemberExpression'
+				|| parent.object !== node
+				|| parent.computed === true
+				|| !parent.property
+				|| (parent.property as AstNode).type !== 'Identifier'
+			) {
+				structureError = 'standalone Pi 环境下 runs 只能用于直接方法调用（如 runs.run(...)），禁止解构、赋值或取引用';
+				return;
+			}
+
+			const methodName = ((parent.property as AstNode).name as string) ?? '';
+			if (!['run', 'all', 'lanes', 'host'].includes(methodName)) {
+				structureError = `standalone Pi 环境下不支持 runs.${methodName} 方法调用`;
+				return;
+			}
+
+			if (
+				!grandParent
+				|| grandParent.type !== 'CallExpression'
+				|| grandParent.callee !== parent
+			) {
+				structureError = `standalone Pi 环境下 runs.${methodName} 必须直接调用，禁止赋值、取引用、使用 .call/.apply 或间接调用`;
+				return;
+			}
+		}
+
+		// 2. 识别并收集 runs.run / runs.all / runs.lanes 子代理配置
 		if (directRunsCall(node, 'run')) {
 			const args = Array.isArray(node.arguments) ? (node.arguments as AstNode[]) : [];
 			const paramsArg = args[1];
 			if (!paramsArg || paramsArg.type !== 'ObjectExpression') {
 				structureError = 'runs.run 子代理参数必须为对象字面量以供静态前台策略校验';
-			} else if (hasSpreadElement(paramsArg)) {
-				structureError = 'runs.run 参数不支持对象展开运算符（SpreadElement），必须显式声明静态属性';
 			} else {
-				childConfigs.push(paramsArg);
+				const safety = inspectStaticObject(paramsArg);
+				if (!safety.ok) {
+					structureError = safety.reason;
+				} else {
+					childConfigs.push(paramsArg);
+				}
 			}
 		} else if (directRunsCall(node, 'all')) {
 			const args = Array.isArray(node.arguments) ? (node.arguments as AstNode[]) : [];
 			const arrayArg = args[0];
-			if (arrayArg && arrayArg.type === 'ArrayExpression' && Array.isArray(arrayArg.elements)) {
+			if (!arrayArg || arrayArg.type !== 'ArrayExpression' || !Array.isArray(arrayArg.elements)) {
+				structureError = 'runs.all 必须传入字面量数组以供静态前台策略校验';
+			} else {
 				for (const elem of arrayArg.elements) {
 					if (!elem || (elem as AstNode).type !== 'ObjectExpression') {
 						structureError = 'runs.all 每个项必须为对象字面量以供静态前台策略校验';
 						break;
 					}
-					if (hasSpreadElement(elem as AstNode)) {
-						structureError = 'runs.all 项不支持对象展开运算符（SpreadElement），必须显式声明静态属性';
+					const safety = inspectStaticObject(elem as AstNode);
+					if (!safety.ok) {
+						structureError = safety.reason;
 						break;
 					}
 					childConfigs.push(elem as AstNode);
 				}
-			} else {
-				structureError = 'runs.all 必须传入字面量数组以供静态前台策略校验';
 			}
 		} else if (directRunsCall(node, 'lanes')) {
 			const args = Array.isArray(node.arguments) ? (node.arguments as AstNode[]) : [];
 			const arrayArg = args[0];
-			if (arrayArg && arrayArg.type === 'ArrayExpression' && Array.isArray(arrayArg.elements)) {
+			if (!arrayArg || arrayArg.type !== 'ArrayExpression' || !Array.isArray(arrayArg.elements)) {
+				structureError = 'runs.lanes 必须传入字面量数组以供静态前台策略校验';
+			} else {
 				for (const lane of arrayArg.elements) {
 					if (!lane || (lane as AstNode).type !== 'ObjectExpression') {
 						structureError = 'runs.lanes 每个 lane 必须为对象字面量以供静态前台策略校验';
 						break;
 					}
-					if (hasSpreadElement(lane as AstNode)) {
-						structureError = 'runs.lanes lane 对象不支持对象展开运算符（SpreadElement）';
+					const laneSafety = inspectStaticObject(lane as AstNode);
+					if (!laneSafety.ok) {
+						structureError = laneSafety.reason;
 						break;
 					}
 					const stages = getProperty(lane as AstNode, 'stages');
-					if (stages && stages.type === 'ArrayExpression' && Array.isArray(stages.elements)) {
-						for (const stage of stages.elements) {
-							if (!stage || (stage as AstNode).type !== 'ObjectExpression') {
-								structureError = 'runs.lanes stage 必须为对象字面量以供静态前台策略校验';
-								break;
-							}
-							if (hasSpreadElement(stage as AstNode)) {
-								structureError = 'runs.lanes stage 对象不支持对象展开运算符（SpreadElement）';
-								break;
-							}
-							const hasResume = Boolean(getProperty(stage as AstNode, 'resume'));
-							const hasAgent = Boolean(getProperty(stage as AstNode, 'agent'));
-							if (hasAgent || !hasResume) {
-								childConfigs.push(stage as AstNode);
-							}
-						}
-					} else {
+					if (!stages || stages.type !== 'ArrayExpression' || !Array.isArray(stages.elements)) {
 						structureError = 'runs.lanes stages 必须传入字面量数组以供静态前台策略校验';
 						break;
 					}
+					for (const stage of stages.elements) {
+						if (!stage || (stage as AstNode).type !== 'ObjectExpression') {
+							structureError = 'runs.lanes stage 必须为对象字面量以供静态前台策略校验';
+							break;
+						}
+						const stageSafety = inspectStaticObject(stage as AstNode);
+						if (!stageSafety.ok) {
+							structureError = stageSafety.reason;
+							break;
+						}
+						const hasResume = Boolean(getProperty(stage as AstNode, 'resume'));
+						const hasAgent = Boolean(getProperty(stage as AstNode, 'agent'));
+						if (hasResume && !hasAgent) {
+							const resumeVal = getProperty(stage as AstNode, 'resume')!;
+							if (resumeVal.type !== 'Literal' || typeof resumeVal.value !== 'string') {
+								structureError = 'runs.lanes stage 的 resume 属性必须为静态字符串字面量';
+								break;
+							}
+							continue;
+						}
+						childConfigs.push(stage as AstNode);
+					}
+					if (structureError) break;
 				}
-			} else {
-				structureError = 'runs.lanes 必须传入字面量数组以供静态前台策略校验';
 			}
 		}
 	});
@@ -189,44 +303,48 @@ export function validateStandaloneWorkflowScript(
 		};
 	}
 
-	// 对每个 childConfig 进行校验
+	// 3. 对每个子代理配置进行前台策略与 Agent Runner 类型校验
 	for (const cfg of childConfigs) {
-		if (cfg.type !== 'ObjectExpression' || !Array.isArray(cfg.properties)) {
-			return {
-				ok: false,
-				reason: '[change-pi-prompt] standalone Pi 环境下子代理调用参数必须为对象字面量，且必须显式声明 async:false。',
-			};
-		}
-
-		if (hasSpreadElement(cfg)) {
-			return {
-				ok: false,
-				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数不支持对象展开运算符（SpreadElement），必须显式声明静态属性。',
-			};
-		}
-
-		// 检查 agent 类型
+		// 检查 agent
 		const agentVal = getProperty(cfg, 'agent');
-		let isExternal = false;
-		let agentName: string | undefined;
-		if (agentVal && agentVal.type === 'Literal' && typeof agentVal.value === 'string') {
-			agentName = agentVal.value;
-			if (catalog) {
-				const entry = getAgentFromCatalog(catalog, agentName);
-				if (entry?.runnerType === 'external-cli' || entry?.runnerType === 'external-job') {
-					isExternal = true;
-				}
-			}
-		}
-
-		if (isExternal) {
+		if (!agentVal) {
 			return {
 				ok: false,
-				reason: `[change-pi-prompt] Agent "${agentName}" 使用 external runner，只支持 async/background，当前 standalone Pi 环境不可在 workflowScript 中执行。`,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理调用必须声明 agent。',
 			};
 		}
 
-		// native child: 必须明确具有 async: false
+		if (agentVal.type !== 'Literal' || typeof agentVal.value !== 'string') {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] agent 必须为静态字符串，才能验证 native/external runner 类型。',
+			};
+		}
+
+		const agentName = agentVal.value.trim();
+		if (!catalog) {
+			return {
+				ok: false,
+				reason: `[change-pi-prompt] 无法获取 agent catalog，无法在 standalone Pi 环境下验证 agent "${agentName}" 的 runner 类型。`,
+			};
+		}
+
+		const entry = getAgentFromCatalog(catalog, agentName);
+		if (!entry) {
+			return {
+				ok: false,
+				reason: `[change-pi-prompt] 未知的子代理 "${agentName}"，不在 catalog 中，无法验证 runner 类型。`,
+			};
+		}
+
+		if (entry.runnerType !== 'native') {
+			return {
+				ok: false,
+				reason: `[change-pi-prompt] Agent "${agentName}" 使用 external runner (${entry.runnerType})，只支持 async/background，当前 standalone Pi 环境不可在 workflowScript 中执行。`,
+			};
+		}
+
+		// 检查 native child 的 async 属性：必须显式声明字面量 false
 		const asyncVal = getProperty(cfg, 'async');
 		if (!asyncVal) {
 			return {
