@@ -153,6 +153,7 @@ function createHarness(options = {}) {
         sessionPath: input.sessionPath ?? "C:/sessions/session-1.jsonl",
         sessionEnvironment: input.environment,
         sessionSource: input.source,
+        isInternalSubagent: input.isInternalSubagent,
         wslDistro: input.wslDistro,
         wslUser: input.wslUser,
         importedSourceId: input.importedSourceId,
@@ -303,6 +304,29 @@ test("session security override key = catalog session id, distinct from sessionP
 	assert.equal(createInput.deckSessionId, sessionId);
 	assert.equal(createInput.sessionPath, filePath);
 	assert.notEqual(createInput.deckSessionId, createInput.sessionPath);
+});
+
+test("activation copies catalog internal-subagent identity onto the created runtime", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      id: "child-1",
+      title: "subagent-worker-abc-0",
+      filePath: "C:/sessions/parent/run/run-0/session.jsonl",
+      isInternalSubagent: true,
+    },
+  });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+
+  const result = await coordinator.activateRuntime("child-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.createInputs[0].isInternalSubagent, true);
+  assert.equal(harness.tabs[0].isInternalSubagent, true);
 });
 
 test("explicit activation creates a runtime that is bound to the requested Session", async () => {

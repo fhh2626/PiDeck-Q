@@ -1019,11 +1019,15 @@ export class SessionRuntimeCoordinator {
 				sessionPath: entry.filePath,
 				environment: entry.environment,
 				source: entry.source,
+				isInternalSubagent: entry.isInternalSubagent,
 				wslDistro: entry.wslDistro,
 				wslUser: entry.wslUser,
 				importedSourceId: entry.importedSourceId,
 				noSession: entry.noSession,
 			});
+		} else if (entry.isInternalSubagent && !tab.isInternalSubagent) {
+			// 扫描后才确认内部身份时，回填到已有 runtime，避免下一轮列表仍把它当顶层 Agent。
+			tab.isInternalSubagent = true;
 		}
 		if (tab.status === "starting") tab = await this.waitUntilReady(tab);
 		if (isTerminalAgent(tab)) {

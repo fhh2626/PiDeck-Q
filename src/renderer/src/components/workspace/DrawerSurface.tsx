@@ -283,8 +283,8 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
                 project={drawer === "sessions" ? files.sessionsProject : undefined}
                 files={files.files}
                 sessions={(files.sessionsProjectId && files.sessionSourceFilter[files.sessionsProjectId as string]) ? files.sessions.filter(
-                  (s: any) => !s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"),
-                ).concat(files.sessions.filter((s: any) => s.parentSessionPath && (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"))) : files.sessions}
+                  (s: { source?: string }) => (files.sessionSourceFilter[files.sessionsProjectId as string]!)!.has(s.source ?? "pi"),
+                ) : files.sessions}
                 sessionsLoading={files.sessionHistoryLoading}
                 expandedDirs={files.expandedDirs}
                 onToggleDirectory={files.onToggleDirectory}

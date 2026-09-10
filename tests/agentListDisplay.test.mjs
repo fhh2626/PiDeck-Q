@@ -255,6 +255,40 @@ test("keeps a started Pi child session nested under its parent without a duplica
 	assert.equal(getAgentForSessionPath([pendingChildAgent], childSession.filePath).id, "pending-child");
 });
 
+test("hides a child runtime marked internal even before its SessionSummary exists", () => {
+	const { getProjectAgentSessionDisplay } = loadModule();
+	const childPath = "C:\\sessions\\parent\\run\\run-0\\session.jsonl";
+	const display = getProjectAgentSessionDisplay({
+		agents: [{
+			id: "agent-child",
+			projectId: "p1",
+			cwd: "C:\\project",
+			title: "subagent-worker-abc-0",
+			status: "running",
+			sessionPath: childPath,
+			isInternalSubagent: true,
+			createdAt: 20,
+		}],
+		sessions: [],
+		visibleChildCount: 5,
+	});
+
+	assert.equal(display.children.length, 0);
+});
+
+test("isTopLevelListSession hides unresolved internal children", () => {
+	const { isTopLevelListSession } = loadModule();
+	assert.equal(isTopLevelListSession({
+		isInternalSubagent: true,
+	}), false);
+	assert.equal(isTopLevelListSession({
+		parentSessionPath: "C:/sessions/parent.jsonl",
+	}), false);
+	assert.equal(isTopLevelListSession({
+		name: "subagent-worker-manual-0",
+	}), true);
+});
+
 test("hides an orphan internal Pi child instead of exposing it as a top-level Agent", () => {
 	const { getProjectAgentSessionDisplay } = loadModule();
 	const childPath = "/sessions/missing-parent/run/run-0/session.jsonl";

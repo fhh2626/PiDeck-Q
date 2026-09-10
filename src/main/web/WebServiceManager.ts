@@ -676,7 +676,12 @@ export class WebServiceManager {
 		}
 		return {
 			projects: this.deps.listProjects(),
-			sessions,
+			// Web 侧栏没有嵌套 child 行：内部 worker/reviewer 不得作为顶层会话返回。
+			sessions: sessions.filter((session) => (
+				session.isInternalSubagent !== true &&
+				session.codexThreadSource !== "subagent" &&
+				!session.parentSessionPath
+			)),
 			runtimes,
 			messagesBySession,
 			pendingUiRequests: this.deps.listPendingUiRequests(),

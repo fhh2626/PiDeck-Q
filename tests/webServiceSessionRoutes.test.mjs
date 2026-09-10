@@ -421,6 +421,40 @@ test("web polling state includes Session records, runtimes, and Session-keyed me
 	});
 });
 
+test("web polling state hides internal subagent sessions from the top-level list", async () => {
+	const parent = {
+		id: "parent-1",
+		projectId: "project-1",
+		title: "Parent",
+		source: "pi",
+		environment: "native",
+		preview: "",
+		messageCount: 1,
+		status: "active",
+		createdAt: 1,
+		updatedAt: 2,
+	};
+	const orphanChild = {
+		...parent,
+		id: "child-1",
+		title: "subagent-worker-abc-0",
+		isInternalSubagent: true,
+	};
+	const nestedChild = {
+		...parent,
+		id: "child-2",
+		title: "Worker",
+		isInternalSubagent: true,
+		parentSessionPath: "C:/sessions/parent.jsonl",
+	};
+	await withServer(async ({ baseUrl }) => {
+		const state = await (await fetch(`${baseUrl}/api/state`)).json();
+		assert.deepEqual(state.sessions.map((session) => session.id), ["parent-1"]);
+	}, {
+		listCatalogSessions: async () => [parent, orphanChild, nestedChild],
+	});
+});
+
 test("the browser client accepts the real Session-first web-state contract", async () => {
 	await withServer(async ({ baseUrl }) => {
 		const createBrowserApi = loadBrowserApi((path, init) =>

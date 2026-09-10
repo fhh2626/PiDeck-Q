@@ -115,6 +115,12 @@ function isInternalListChild(session: SessionSummary) {
 	return session.isInternalSubagent === true || session.codexThreadSource === "subagent";
 }
 
+/** 内部会话不得出现在顶层；有 parentSessionPath 的才允许作为子节点挂到父下。 */
+export function isTopLevelListSession(session: Pick<SessionSummary, "isInternalSubagent" | "parentSessionPath" | "codexThreadSource">) {
+	if (session.isInternalSubagent || session.codexThreadSource === "subagent") return false;
+	return !session.parentSessionPath;
+}
+
 /**
  * Session rows are owned by the catalog record, never by a transient runtime.
  * Keep this helper at the display boundary so every Sidebar tree uses the
@@ -272,6 +278,8 @@ export function getProjectAgentSessionDisplay({
 	const agentBySessionKey = new Map<string, AgentTab>();
 	const unkeyedAgents: AgentTab[] = [];
 	for (const agent of agents) {
+		// child runtime 自身带内部身份时，即使 SessionSummary 还没扫到也不能升为顶层。
+		if (agent.isInternalSubagent) continue;
 		const linkedKey = findSessionKeyForAgent(agent.sessionPath, sessionByKey);
 		const nativeKey = getSessionKey(agent.sessionPath, "native");
 		const wslKey = getSessionKey(agent.sessionPath, "wsl");

@@ -1165,6 +1165,7 @@ export class AgentManager {
 			sessionPath: input.sessionPath,
 			sessionEnvironment,
 			sessionSource: input.source ?? "pi",
+			isInternalSubagent: input.isInternalSubagent,
 			wslDistro: input.wslDistro ?? (
 				sessionEnvironment === "wsl" ? sessionIdentityDefaults.wslDistro : undefined
 			),
@@ -2943,6 +2944,7 @@ export class AgentManager {
 			title,
 			sessionEnvironment: environment,
 			sessionSource: source,
+			isInternalSubagent,
 			wslDistro,
 			wslUser,
 			importedSourceId,
@@ -2987,6 +2989,7 @@ export class AgentManager {
 			title,
 			environment,
 			source,
+			isInternalSubagent,
 			wslDistro,
 			wslUser,
 			importedSourceId,
