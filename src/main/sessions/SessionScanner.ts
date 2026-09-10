@@ -1219,10 +1219,9 @@ export class SessionScanner {
       const path = join(dir, entry.name);
       // 跳过归档目录与 subagent artifacts 目录：避免非会话 JSONL 进入会话列表。
       if (entry.isDirectory()) {
-        if (isIgnoredSessionScanDirectory(path) || isIgnoredSessionScanDirectory(entry.name)) continue;
+        if (isIgnoredSessionScanDirectory(path)) continue;
         files.push(...await this.collectJsonl(path));
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        if (isIgnoredSessionScanDirectory(path)) continue;
         files.push(path);
       }
     }
