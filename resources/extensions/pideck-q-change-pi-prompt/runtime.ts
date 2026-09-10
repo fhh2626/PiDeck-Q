@@ -8,14 +8,13 @@ import {
 	hasExplicitAsyncTrueInScript,
 	initializeSubagentDescription,
 	initializeSettings,
-	ensureStandaloneSubagentConfig,
 	ensureStandaloneSubagentForegroundSafe,
-	inspectNativeSubagentAsyncDefault,
 	isPiSubagentsSkillPath,
 	loadSettings,
 	rewriteJsonStrings,
 	rewriteSystemPromptTools,
 	rewriteToolResultContent,
+	validateStandaloneWorkflowScript,
 	type Settings,
 } from './config.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
@@ -433,12 +432,13 @@ export function registerPromptExtension(
 			}
 		}
 
-		// Workflow script: validate bounded async:true in standalone
+		// Workflow script: validate bounded async in standalone
 		if (standalone && typeof input.workflowScript === 'string') {
-			if (hasExplicitAsyncTrueInScript(input.workflowScript)) {
+			const validation = validateStandaloneWorkflowScript(input.workflowScript, catalog);
+			if (!validation.ok) {
 				return {
 					block: true,
-					reason: '[change-pi-prompt] standalone Pi 环境不支持在 workflowScript 内部调用中使用 async:true。请移除 async:true 或改为 async:false。',
+					reason: validation.reason ?? '[change-pi-prompt] standalone Pi 环境拒绝不安全的 workflowScript。',
 				};
 			}
 		}
@@ -453,6 +453,9 @@ export function registerPromptExtension(
 				};
 			}
 			input.async = false;
+			if (typeof input.workflowScript !== 'string') {
+				input.foregroundOnly = true;
+			}
 		}
 	});
 

@@ -96,6 +96,8 @@ function replaceAll(text: string, from: string, to: string): string {
 	return text.split(from).join(to);
 }
 
+export { validateStandaloneWorkflowScript, type WorkflowValidationResult } from './workflowValidation.ts';
+
 export function hasExplicitAsyncTrueInScript(script: string): boolean {
 	let stripped = script.replace(/\/\*[\s\S]*?\*\//g, ' ');
 	stripped = stripped.replace(/\/\/.*$/gm, ' ');

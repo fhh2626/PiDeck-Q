@@ -10,6 +10,7 @@ import {
 	nativeSubagentConfigPath,
 	rewriteUpstreamAsyncDefault,
 	SUBAGENT_SCHEMA_ASYNC_SENTENCE,
+	validateStandaloneWorkflowScript,
 } from "../resources/extensions/pideck-q-change-pi-prompt/config.ts";
 import { registerPromptExtension } from "../resources/extensions/pideck-q-change-pi-prompt/runtime.ts";
 
@@ -172,8 +173,8 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		assert.equal(res2, undefined);
 		assert.equal(inputWithoutAsync.async, false, "Omitted async must be set to false");
 
-		// C3: 模型传入 workflowScript -> 强制设为 async: false
-		const workflowInput = { workflowScript: "return await runs.run('a', { agent: 'worker', task: 'hi' });" };
+		// C3: 模型传入 workflowScript (显式 async: false) -> 强制设为 async: false
+		const workflowInput = { workflowScript: "return await runs.run('a', { agent: 'worker', task: 'hi', async: false });" };
 		const res3 = await toolCallHandler({ toolName: "subagent", input: workflowInput });
 		assert.equal(res3, undefined);
 		assert.equal(workflowInput.async, false, "WorkflowScript call must have async: false");
@@ -316,11 +317,12 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		// 1. 初始状态：config.json 完全不存在
 		assert.equal(existsSync(configPath), false);
 
-		// 2. 首次 native tool_call -> 不 block，自动创建安全配置，且 input.async 被设为 false
+		// 2. 首次 native tool_call -> 不 block，自动创建安全配置，且 input.async 被设为 false, foregroundOnly 为 true
 		const nativeInput = { agent: "worker", task: "initial call" };
 		const resFirst = await toolCallHandler({ toolName: "subagent", input: nativeInput });
 		assert.equal(resFirst, undefined, "首次调用不应被阻断");
 		assert.equal(nativeInput.async, false, "native subagent input.async 必须强制为 false");
+		assert.equal(nativeInput.foregroundOnly, true, "native direct call 必须设置 foregroundOnly: true");
 		assert.equal(existsSync(configPath), true, "应当自动创建 config.json");
 		const createdJson = JSON.parse(readFileSync(configPath, "utf8"));
 		assert.deepEqual(createdJson, {
@@ -388,4 +390,180 @@ test("ensureStandaloneSubagentForegroundSafe handles write race conditions grace
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
+});
+
+test("standalone Pi workflowScript and direct subagent enforce foreground-only and lock down in-memory asyncByDefault drift", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-captured-async-"));
+	const configPath = nativeSubagentConfigPath(tempDir);
+
+	try {
+		const handlers = new Map();
+		const tools = [
+			{
+				name: "subagent",
+				description: "Official subagent",
+				sourceInfo: { source: "npm:pi-subagents", path: "C:/node_modules/pi-subagents/index.js" },
+			},
+			{
+				name: "bash",
+				description: "Bash tool",
+				sourceInfo: { source: "builtin" },
+			},
+		];
+
+		const mockPi = {
+			on: (event, fn) => { handlers.set(event, fn); },
+			getAllTools: () => tools,
+			getActiveTools: () => ["subagent", "bash"],
+			setActiveTools: () => {},
+			registerCommand: () => {},
+		};
+
+		const probeHost = {
+			hasCommand: () => true,
+			hasPowerShell: () => true,
+		};
+
+		registerPromptExtension(mockPi, tempDir, {
+			probeHost,
+			isStandalone: () => true,
+		});
+		const toolCallHandler = handlers.get("tool_call");
+
+		// 模拟上游 pi-subagents 启动时 config.json 尚不存在（内存中 captured asyncByDefault = true）
+		assert.equal(existsSync(configPath), false);
+
+		// 1. Direct native call：
+		// 自动创建 config.json，且输入参数最终必须被硬锁为 async=false 且 foregroundOnly=true
+		const directCall = { agent: "worker", task: "fix something" };
+		const resDirect = await toolCallHandler({ toolName: "subagent", input: directCall });
+		assert.equal(resDirect, undefined);
+		assert.equal(directCall.async, false);
+		assert.equal(directCall.foregroundOnly, true, "native direct call 必须设置 foregroundOnly: true 以免疫上游 forceTopLevelAsync");
+		assert.equal(existsSync(configPath), true, "磁盘上自动补齐了 config.json");
+
+		// 2. workflowScript 内 native child 省略 async：
+		// 因为此时当前进程内存中上游默认仍为 asyncByDefault=true，必须 block，提示必须显式 async:false
+		const omitWorkflow = {
+			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile' });`,
+		};
+		const resOmit = await toolCallHandler({ toolName: "subagent", input: omitWorkflow });
+		assert.ok(resOmit && resOmit.block === true);
+		assert.match(resOmit.reason, /必须显式声明 async:false/);
+
+		// 3. workflowScript 内 native child 显式声明 async: true：
+		// 必须 block
+		const trueWorkflow = {
+			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile', async: true });`,
+		};
+		const resTrue = await toolCallHandler({ toolName: "subagent", input: trueWorkflow });
+		assert.ok(resTrue && resTrue.block === true);
+		assert.match(resTrue.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
+
+		// 4. workflowScript 内 native child 显式声明 async: false：
+		// 必须放行，且顶层 workflowScript 也被设为 async: false（但不设 foregroundOnly）
+		const safeWorkflow = {
+			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile', async: false });`,
+		};
+		const resSafe = await toolCallHandler({ toolName: "subagent", input: safeWorkflow });
+		assert.equal(resSafe, undefined);
+		assert.equal(safeWorkflow.async, false);
+		assert.equal(safeWorkflow.foregroundOnly, undefined, "workflowScript 顶层调用不应被注入 foregroundOnly");
+
+		// 5. runs.all 包含省略 async 的 native child：
+		// 必须 block
+		const omitAllWorkflow = {
+			workflowScript: `return await runs.all([
+				{ key: 'a', agent: 'worker', task: 't1', async: false },
+				{ key: 'b', agent: 'worker', task: 't2' }
+			]);`,
+		};
+		const resAllOmit = await toolCallHandler({ toolName: "subagent", input: omitAllWorkflow });
+		assert.ok(resAllOmit && resAllOmit.block === true);
+		assert.match(resAllOmit.reason, /必须显式声明 async:false/);
+
+		// 6. runs.all 全部显式声明 async: false：
+		// 必须放行
+		const safeAllWorkflow = {
+			workflowScript: `return await runs.all([
+				{ key: 'a', agent: 'worker', task: 't1', async: false },
+				{ key: 'b', agent: 'worker', task: 't2', async: false }
+			]);`,
+		};
+		const resAllSafe = await toolCallHandler({ toolName: "subagent", input: safeAllWorkflow });
+		assert.equal(resAllSafe, undefined);
+		assert.equal(safeAllWorkflow.async, false);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("validateStandaloneWorkflowScript parses AST and enforces bounded async rules", () => {
+	const fakeCatalog = {
+		packageRoot: "/dummy",
+		agents: new Map([
+			["worker", { name: "worker", aliases: [], runnerType: "native", tools: ["read", "write"], filePath: "/dummy/worker.md" }],
+			["codex-exec", { name: "codex-exec", aliases: [], runnerType: "external-cli", tools: [], filePath: "/dummy/codex.md" }],
+		]),
+	};
+
+	// 1. 无子调用的普通 JS 脚本 -> 允许
+	const r1 = validateStandaloneWorkflowScript("return 1 + 2;", fakeCatalog);
+	assert.equal(r1.ok, true);
+
+	// 2. 语法错误脚本 -> 失败闭合
+	const r2 = validateStandaloneWorkflowScript("return await (;", fakeCatalog);
+	assert.equal(r2.ok, false);
+	assert.match(r2.reason, /语法校验失败/);
+
+	// 3. runs.run 显式 async: false -> 允许
+	const r3 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: false });", fakeCatalog);
+	assert.equal(r3.ok, true);
+
+	// 4. runs.run 省略 async -> 阻断
+	const r4 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker' });", fakeCatalog);
+	assert.equal(r4.ok, false);
+	assert.match(r4.reason, /必须显式声明 async:false/);
+
+	// 5. runs.run 显式 async: true -> 阻断
+	const r5 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: true });", fakeCatalog);
+	assert.equal(r5.ok, false);
+	assert.match(r5.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
+
+	// 6. 字符串或注释内出现 async: true，但代码 AST 中没有 async: true 属性
+	const r6 = validateStandaloneWorkflowScript(`
+		// Comment mentioning async: true
+		const note = "Don't use async: true";
+		return await runs.run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r6.ok, true);
+
+	// 7. runs.lanes 带有 agent 启动的 stage 显式 async: false -> 允许
+	const r7 = validateStandaloneWorkflowScript(`
+		return await runs.lanes([{
+			key: 'l1',
+			stages: [
+				{ key: 's1', agent: 'worker', task: 't1', async: false },
+				{ key: 's2', resume: 'previous', task: 't2' }
+			]
+		}]);
+	`, fakeCatalog);
+	assert.equal(r7.ok, true);
+
+	// 8. runs.lanes 带有 agent 启动的 stage 省略 async -> 阻断
+	const r8 = validateStandaloneWorkflowScript(`
+		return await runs.lanes([{
+			key: 'l1',
+			stages: [
+				{ key: 's1', agent: 'worker', task: 't1' }
+			]
+		}]);
+	`, fakeCatalog);
+	assert.equal(r8.ok, false);
+	assert.match(r8.reason, /必须显式声明 async:false/);
+
+	// 9. runs.run 尝试启动 external-cli runner -> 在 standalone 下被阻断
+	const r9 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'codex-exec', async: false });", fakeCatalog);
+	assert.equal(r9.ok, false);
+	assert.match(r9.reason, /external runner/);
 });
