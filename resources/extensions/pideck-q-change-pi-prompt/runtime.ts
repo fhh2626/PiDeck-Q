@@ -2,10 +2,32 @@
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { ContextEvent, ExtensionAPI, ExtensionContext, ToolResultEvent } from '@earendil-works/pi-coding-agent';
-import { initializeSubagentDescription, initializeSettings, inspectNativeSubagentAsyncDefault, isPiSubagentsSkillPath, loadSettings, rewriteJsonStrings, rewriteSystemPromptTools, rewriteToolResultContent, type Settings } from './config.ts';
+import {
+	hasExplicitAsyncTrueInScript,
+	initializeSubagentDescription,
+	initializeSettings,
+	inspectNativeSubagentAsyncDefault,
+	isPiSubagentsSkillPath,
+	loadSettings,
+	rewriteJsonStrings,
+	rewriteSystemPromptTools,
+	rewriteToolResultContent,
+	type Settings,
+} from './config.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
+import {
+	findSubagentsPackageRoot,
+	getAgentFromCatalog,
+	loadSubagentCatalog,
+	type SubagentCatalog,
+} from './subagentCatalog.ts';
+import {
+	reconcileChildEnvironments,
+	resolveCurrentChangePiPromptPath,
+	type ReconciliationResult,
+} from './childReconciliation.ts';
 import {
 	defaultShellProbeHost,
 	hideUnavailableShellTools,
@@ -14,6 +36,65 @@ import {
 	type ShellProbeHost,
 } from './shellAvailability.ts';
 import { transformSystemPrompt } from './transform.ts';
+
+export function isStandalonePiExecutable(execPath: string = process.execPath): boolean {
+	const name = basename(execPath);
+	return /^pi(?:\.exe)?$/i.test(name);
+}
+
+export interface PromptExtensionOptions {
+	probeHost?: ShellProbeHost;
+	isStandalone?: () => boolean;
+	changePiPromptPath?: string;
+}
+
+export const CHILD_TOOL_MARKER_START = '<!-- change-pi-prompt:child-tools:v1 -->';
+export const CHILD_TOOL_MARKER_END = '<!-- /change-pi-prompt:child-tools:v1 -->';
+
+export function isChildSession(systemPrompt: string, options?: { customPrompt?: string }): boolean {
+	if (/<active_agent\s+name=["'][^"']+["']\s*\/?>/i.test(systemPrompt)) return true;
+	if (systemPrompt.includes(CHILD_TOOL_MARKER_START)) return true;
+	if (typeof options?.customPrompt === 'string' && options.customPrompt.length > 0) return true;
+	return false;
+}
+
+export function buildChildToolEnvironmentBlock(activeTools: readonly string[]): string {
+	const hasBash = activeTools.includes('bash');
+	const hasPowerShell = activeTools.includes('powershell');
+
+	const lines = [
+		CHILD_TOOL_MARKER_START,
+		'## Child Tool Environment',
+		'- Available tools are authoritative; do not call tools that are not active.',
+	];
+
+	if (hasBash) {
+		lines.push('- `bash` currently uses the runtime described by its tool description.');
+	}
+	if (hasPowerShell) {
+		lines.push('- `powershell` is available.');
+	}
+	if (!hasBash && !hasPowerShell) {
+		lines.push('- No shell tool is available; use read/grep/find/ls/edit/write instead.');
+	}
+
+	lines.push(CHILD_TOOL_MARKER_END);
+	return lines.join('\n');
+}
+
+export function injectChildToolEnvironment(systemPrompt: string, activeTools: readonly string[]): string {
+	const block = buildChildToolEnvironmentBlock(activeTools);
+	const startIdx = systemPrompt.indexOf(CHILD_TOOL_MARKER_START);
+	const endIdx = systemPrompt.indexOf(CHILD_TOOL_MARKER_END);
+
+	if (startIdx >= 0 && endIdx >= startIdx) {
+		const before = systemPrompt.slice(0, startIdx).trimEnd();
+		const after = systemPrompt.slice(endIdx + CHILD_TOOL_MARKER_END.length).trimStart();
+		return before + (before ? '\n\n' : '') + block + (after ? '\n\n' + after : '');
+	}
+
+	return systemPrompt.trimEnd() + '\n\n' + block;
+}
 
 /** Local facts are labeled as local, never treated as the shell execution backend. */
 function hostOs(): string {
@@ -52,7 +133,23 @@ function isContentArray(value: unknown): value is ToolResultEvent['content'] {
 	return Array.isArray(value);
 }
 
-export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, probeHost: ShellProbeHost = defaultShellProbeHost()): void {
+export function registerPromptExtension(
+	pi: ExtensionAPI,
+	agentDir: string,
+	optionsOrProbeHost?: ShellProbeHost | PromptExtensionOptions,
+): void {
+	const options: PromptExtensionOptions = optionsOrProbeHost && ('hasCommand' in optionsOrProbeHost || 'platform' in optionsOrProbeHost)
+		? {
+			probeHost: optionsOrProbeHost as ShellProbeHost,
+			isStandalone: 'isStandalone' in optionsOrProbeHost ? (optionsOrProbeHost as { isStandalone?: () => boolean }).isStandalone : undefined,
+			changePiPromptPath: 'changePiPromptPath' in optionsOrProbeHost ? (optionsOrProbeHost as { changePiPromptPath?: string }).changePiPromptPath : undefined,
+		}
+		: ((optionsOrProbeHost as PromptExtensionOptions | undefined) ?? {});
+
+	const probeHost: ShellProbeHost = options.probeHost ?? defaultShellProbeHost();
+	const isStandalone = options.isStandalone ?? (() => isStandalonePiExecutable());
+	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
+
 	let settings: Settings | undefined;
 	let loading: Promise<void> | undefined;
 	let lastStatus = ['尚未转换提示词'];
@@ -62,6 +159,17 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	const contributionHashes = new Map<string, string>();
 	const confirmedSubagentToolNames = new Set<string>();
 
+	let catalog: SubagentCatalog | undefined;
+	let reconciliationResult: ReconciliationResult | undefined;
+
+	function promptExtensionEnabled(): boolean {
+		return settings ? settings.config.enabled === true : true;
+	}
+
+	function subagentAdaptationEnabled(): boolean {
+		return settings ? (settings.config.enabled === true && settings.config.subagent === true) : true;
+	}
+
 	const updateConfirmedSubagentTools = () => {
 		confirmedSubagentToolNames.clear();
 		for (const tool of snapshotTools(pi)) {
@@ -70,6 +178,29 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 			}
 		}
 	};
+
+	const runReconciliation = () => {
+		if (!subagentAdaptationEnabled()) return;
+		try {
+			const tools = snapshotTools(pi);
+			const pkgRoot = findSubagentsPackageRoot(tools);
+			catalog = loadSubagentCatalog(pkgRoot);
+			reconciliationResult = reconcileChildEnvironments({
+				agentDir,
+				catalog,
+				parentTools: tools,
+				changePiPromptPath,
+			});
+			for (const [name, status] of reconciliationResult.compatibilityStatus) {
+				if (!status.ok) {
+					lastStatus.push(`child-compat: ${name} missing [${status.missingTools.join(', ')}]`);
+				}
+			}
+		} catch (error) {
+			lastStatus.push(`child-reconciliation-error: ${errorSummary(error)}`);
+		}
+	};
+
 	const report = (ctx: ExtensionContext, message: string, error = false) => {
 		if (ctx.hasUI) ctx.ui.notify(message, error ? 'warning' : 'info');
 		else process.stderr.write(`[change-pi-prompt] ${message}\n`);
@@ -83,6 +214,9 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	const reload = async () => {
 		// Assign only after the whole snapshot validates, retaining last-good settings on errors.
 		settings = await loadSettings(agentDir);
+		if (subagentAdaptationEnabled()) {
+			runReconciliation();
+		}
 	};
 	const ensureLoaded = async (ctx: ExtensionContext) => {
 		if (!loading) {
@@ -104,7 +238,7 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	/** Hide bash/powershell with no backend before the model sees the catalog.
 	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell. */
 	const pruneUnavailableShells = async (ctx: ExtensionContext): Promise<string[] | undefined> => {
-		if (!settings?.config.enabled || !settings.config.pruneUnavailableShells) return undefined;
+		if (!promptExtensionEnabled() || !settings?.config.pruneUnavailableShells) return undefined;
 		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
 		const availability = probeShellAvailability(probeHost, await readConfiguredShellPath());
 		lastShellStatus = [`shell: bash=${availability.bash ? 'available' : 'missing'}, powershell=${availability.powershell ? 'available' : 'missing'}`];
@@ -128,18 +262,24 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
 		await ensureLoaded(ctx);
+		if (!promptExtensionEnabled()) return;
 		await pruneUnavailableShells(ctx);
+		if (subagentAdaptationEnabled()) {
+			runReconciliation();
+		}
 		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
+
 	pi.on('session_shutdown', async () => {
 		lastPreview = undefined;
 		warned.clear();
 		contributionHashes.clear();
 		confirmedSubagentToolNames.clear();
 	});
+
 	pi.on('before_agent_start', async (event, ctx) => {
 		await ensureLoaded(ctx);
-		if (!settings) return;
+		if (!promptExtensionEnabled()) return;
 		try {
 			updateConfirmedSubagentTools();
 			const pruned = await pruneUnavailableShells(ctx);
@@ -147,14 +287,33 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 			const activeTools = pruned
 				?? (typeof pi.getActiveTools === 'function'
 					? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])]);
+
+			// Child session: do not replace role prompt or transform into "You are Pi"; only inject tool compatibility
+			if (isChildSession(event.systemPrompt, event.systemPromptOptions)) {
+				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, activeTools);
+				lastStatus = ['child-subagent-mode: preserved role prompt, injected tool environment', ...lastShellStatus];
+				if (nextPrompt !== event.systemPrompt) {
+					return { systemPrompt: nextPrompt };
+				}
+				return;
+			}
+
+			// Parent session: full prompt transformation
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
-			const nativeAsync = nativeTools.length ? await inspectNativeSubagentAsyncDefault(agentDir) : undefined;
-			const rewritten = rewriteSystemPromptTools(event.systemPrompt, nativeTools);
+			const standalone = isStandalone();
+			const nativeAsync = (subagentAdaptationEnabled() && standalone && nativeTools.length)
+				? await inspectNativeSubagentAsyncDefault(agentDir)
+				: undefined;
+
+			const rewritten = subagentAdaptationEnabled()
+				? rewriteSystemPromptTools(event.systemPrompt, nativeTools, { standalone })
+				: { systemPrompt: event.systemPrompt, rewritten: [] };
+
 			const result = transformSystemPrompt({
 				systemPrompt: rewritten.systemPrompt,
 				options: event.systemPromptOptions,
 				tools, activeTools,
-				...settings,
+				...settings!,
 				hostOs: hostOs(), today: localDate(),
 			});
 			lastStatus = [...result.diagnostics, ...lastShellStatus];
@@ -186,22 +345,27 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	});
 
 	pi.on('context', (event) => {
-		const rewritten = rewriteJsonStrings(event.messages);
+		if (!promptExtensionEnabled() || !subagentAdaptationEnabled()) return;
+		const rewritten = rewriteJsonStrings(event.messages, { standalone: isStandalone() });
 		if (!rewritten.changed || !isMessageArray(rewritten.value)) return;
 		lastStatus.push('rewrote upstream async default in context messages');
 		return { messages: rewritten.value };
 	});
+
 	pi.on('before_provider_request', (event) => {
-		const rewritten = rewriteJsonStrings(event.payload);
+		if (!promptExtensionEnabled() || !subagentAdaptationEnabled()) return;
+		const rewritten = rewriteJsonStrings(event.payload, { standalone: isStandalone() });
 		if (!rewritten.changed) return;
 		lastStatus.push('rewrote upstream async default in provider payload');
 		return rewritten.value;
 	});
+
 	pi.on('tool_result', (event) => {
+		if (!promptExtensionEnabled() || !subagentAdaptationEnabled()) return;
 		if (event.toolName !== 'read' || event.isError) return;
 		const path = isRecord(event.input) && typeof event.input.path === 'string' ? event.input.path : undefined;
 		if (!isPiSubagentsSkillPath(path)) return;
-		const rewritten = rewriteToolResultContent(event.content);
+		const rewritten = rewriteToolResultContent(event.content, { standalone: isStandalone() });
 		const nextContent = rewritten.content;
 		if (!rewritten.changed || !isContentArray(nextContent)) return;
 		lastStatus.push('rewrote upstream async default in pi-subagents skill read');
@@ -209,6 +373,14 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	});
 
 	pi.on('tool_call', async (event) => {
+		if (!settings) {
+			try {
+				settings = await loadSettings(agentDir);
+			} catch {
+				// keep undefined
+			}
+		}
+		if (!promptExtensionEnabled() || !subagentAdaptationEnabled()) return;
 		if (confirmedSubagentToolNames.size === 0) {
 			updateConfirmedSubagentTools();
 		}
@@ -217,24 +389,69 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 		const input = (isRecord(event.input) ? event.input : undefined) as Record<string, unknown> | undefined;
 		if (!input) return;
 
-		// management action 不需要改 async (例如 action: 'list' | 'status' | 'guide' 等)
+		// Management action: not an execution call (e.g. action: 'list' | 'status' | 'guide')
 		if (typeof input.action === 'string' && input.action.trim().length > 0) {
 			return;
 		}
 
-		// A. 如果 subagent config 不安全：
-		//    - asyncByDefault !== false 或 forceTopLevelAsync === true
-		//    则 block: true，给出明确 reason，要求修正 config。不允许继续执行。
-		const check = await inspectNativeSubagentAsyncDefault(agentDir);
-		if (!check.ok) {
-			return {
-				block: true,
-				reason: `[change-pi-prompt] 阻止 subagent 调用：独立 Pi 环境要求 asyncByDefault=false 且 forceTopLevelAsync!=true。请检查 ${check.path}。（${check.message}）`,
-			};
+		if (!catalog || !reconciliationResult) {
+			runReconciliation();
 		}
 
-		// B. 如果配置安全：强制 event.input.async = false
-		input.async = false;
+		const standalone = isStandalone();
+		const targetAgentName = typeof input.agent === 'string' ? input.agent.trim() : undefined;
+		const catalogEntry = targetAgentName && catalog ? getAgentFromCatalog(catalog, targetAgentName) : undefined;
+		const runnerType = catalogEntry?.runnerType ?? (targetAgentName ? 'unknown' : 'native');
+
+		// External runners: must not be converted to async:false
+		if (runnerType === 'external-cli' || runnerType === 'external-job') {
+			if (standalone) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] Agent "${targetAgentName}" 使用 external runner (${runnerType})，只支持 async/background，当前 standalone Pi 环境不可执行。`,
+				};
+			}
+			return;
+		}
+
+		// Native direct agent: verify required tool providers
+		if (targetAgentName && reconciliationResult) {
+			const compat = reconciliationResult.compatibilityStatus.get(targetAgentName);
+			if (compat && !compat.ok) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] Agent "${targetAgentName}" requires ${compat.missingTools.join(', ')}, but no child-loadable provider was found for that active tool.`,
+				};
+			}
+			if (reconciliationResult.incompatibleAgents.includes(targetAgentName)) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] Agent "${targetAgentName}" has subagentOnlyExtensions disabled in settings.json, preventing child tool environment reconciliation.`,
+				};
+			}
+		}
+
+		// Workflow script: validate bounded async:true in standalone
+		if (standalone && typeof input.workflowScript === 'string') {
+			if (hasExplicitAsyncTrueInScript(input.workflowScript)) {
+				return {
+					block: true,
+					reason: '[change-pi-prompt] standalone Pi 环境不支持在 workflowScript 内部调用中使用 async:true。请移除 async:true 或改为 async:false。',
+				};
+			}
+		}
+
+		// Standalone native child: enforce foreground execution
+		if (standalone) {
+			const check = await inspectNativeSubagentAsyncDefault(agentDir);
+			if (!check.ok) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] 阻止 subagent 调用：独立 Pi 环境要求 asyncByDefault=false 且 forceTopLevelAsync!=true。请检查 ${check.path}。（${check.message}）`,
+				};
+			}
+			input.async = false;
+		}
 	});
 
 	pi.registerCommand('change-pi-prompt', {

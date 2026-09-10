@@ -1,5 +1,5 @@
 // PiDeck-bundled entrypoint for PiDeck-Q-Change-Pi-Prompt.
-// Disabled by default; enable it from Settings → Extensions.
+// Enabled by default in PiDeck; manage it from Settings → Extensions.
 // Implementation stays in a sibling directory so relative imports remain intact
 // when pi loads the extension from extraResources.
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";

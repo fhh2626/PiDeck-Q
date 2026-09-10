@@ -62,8 +62,11 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 		if (tools.some(hasBatchEdit)) sections.push(p.batchEdit);
 	}
 	if (has('write')) sections.push(p.write);
-	if (input.config.pwsh && tools.some(isPwsh)) sections.push(p.pwsh);
-	else if (has('bash') || has('powershell')) sections.push(p.shell);
+	const hasPwshAdapterBash = input.config.pwsh && tools.some(isPwsh) && has('bash');
+	const hasBuiltinOrOtherBash = has('bash') && (!input.config.pwsh || !tools.some(isPwsh));
+	const hasPowerShell = has('powershell');
+	if (hasPwshAdapterBash) sections.push(p.pwsh);
+	if (hasBuiltinOrOtherBash || hasPowerShell) sections.push(p.shell);
 	if (has('ask_question')) sections.push(p.userInput);
 	if (has('todo')) sections.push(p.taskTracking);
 	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { UPSTREAM_ASYNC_DEFAULT_SENTENCE } from '../config.ts';
 import { registerPromptExtension } from '../runtime.ts';
 
-async function harness(fn, host = { platform: 'win32', env: { Path: '' }, exists: () => false }) {
+async function harness(fn, host = { platform: 'win32', env: { Path: '' }, exists: () => false, isStandalone: () => true }) {
   const dir = await mkdtemp(join(tmpdir(), 'change-pi-runtime-'));
   const handlers = new Map();
   const commands = new Map();

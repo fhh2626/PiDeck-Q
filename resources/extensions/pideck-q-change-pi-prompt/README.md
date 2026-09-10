@@ -1,9 +1,11 @@
 # PiDeck-Q-Change-Pi-Prompt
 
-PiDeck-Q 随包内置扩展。默认关闭；在设置 → 扩展中启用。
-接管 Pi 的基础身份、Guidelines 和文档提示，按来源替换 pwsh 指南并为 pi-subagents 增补委派策略。
+PiDeck-Q 随包内置扩展。PiDeck 默认启用，用户可在设置 → 扩展中关闭。
+接管 Pi 的基础身份、Guidelines 和文档提示，按来源替换 pwsh 指南并为 pi-subagents 增补委派与前台执行策略。
 探测 bash / powershell 后端是否存在；缺失则对本会话 `setActiveTools` 隐藏对应工具，并删掉 Available tools 行与 shell/pwsh 指南。
-不修改工具执行实现、参数 schema、项目 AGENTS.md、技能、记忆或子代理角色。
+不修改 pi-subagents 上游源码；通过 upstream 原生支持的 `subagentOnlyExtensions` 接口配置 child tool 兼容层。
+父 Agent 与 native child 均做工具环境对齐；native child 角色 prompt 保持完全一致，不被替换为父 Agent 身份。
+enabled=false 时真正完全停用（不修改 prompt、provider payload、tool call、active tools 或 child settings）。
 
 ## 安装结构
 

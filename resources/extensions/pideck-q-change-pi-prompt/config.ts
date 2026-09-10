@@ -68,7 +68,7 @@ export const LOCAL_ASYNC_DEFAULT_SENTENCE = 'Plugin default is asyncByDefault:tr
 const LOCAL_ASYNC_WAIT_SENTENCE = 'Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.';
 const LOCAL_ASYNC_POLICY = `${LOCAL_ASYNC_DEFAULT_SENTENCE} ${LOCAL_ASYNC_WAIT_SENTENCE}`;
 
-export const SUBAGENT_SCHEMA_ASYNC_SENTENCE = 'This environment only supports foreground native subagents. Always set async:false. Never omit async and never use async:true.';
+export const SUBAGENT_SCHEMA_ASYNC_SENTENCE = 'Native Pi subagents must run foreground with async:false. Never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground; if background execution is unavailable in this standalone environment, treat that runner as unavailable.';
 
 /** Semantic upstream policy matches; wording drift inside a bounded window still rewrites. */
 const POLICY_PATTERNS: Array<{ test: RegExp; to: string }> = [
@@ -96,7 +96,19 @@ function replaceAll(text: string, from: string, to: string): string {
 	return text.split(from).join(to);
 }
 
-export function rewriteUpstreamAsyncDefault(text: string): { text: string; changed: boolean } {
+export function hasExplicitAsyncTrueInScript(script: string): boolean {
+	let stripped = script.replace(/\/\*[\s\S]*?\*\//g, ' ');
+	stripped = stripped.replace(/\/\/.*$/gm, ' ');
+	stripped = stripped.replace(/`([^`\\]|\\.)*`/g, '""');
+	stripped = stripped.replace(/'([^'\\]|\\.)*'/g, '""');
+	stripped = stripped.replace(/"([^"\\]|\\.)*"/g, '""');
+	return /\basync\s*:\s*true\b/.test(stripped);
+}
+
+export function rewriteUpstreamAsyncDefault(text: string, options?: { standalone?: boolean }): { text: string; changed: boolean } {
+	if (options?.standalone === false) {
+		return { text, changed: false };
+	}
 	let next = text;
 	for (const { test, to } of POLICY_PATTERNS) next = next.replace(new RegExp(test.source, 'gi'), to);
 	next = replaceAll(next, 'make exactly one top-level subagent call with async:true', 'make exactly one top-level subagent call with async:false');
@@ -118,42 +130,42 @@ export function isPiSubagentsSkillPath(path: string | undefined): boolean {
 	return /(?:^|\/)(?:node_modules\/)?(?:pi-subagents|pideck-q-subagents)\/skills(?:\/|$)/.test(normalized);
 }
 
-function rewriteContentValue(value: unknown): { value: unknown; changed: boolean } {
+function rewriteContentValue(value: unknown, options?: { standalone?: boolean }): { value: unknown; changed: boolean } {
 	if (typeof value === 'string') {
-		const next = rewriteUpstreamAsyncDefault(value);
+		const next = rewriteUpstreamAsyncDefault(value, options);
 		return { value: next.text, changed: next.changed };
 	}
 	if (Array.isArray(value)) {
 		let changed = false;
 		const next = value.map(item => {
-			const rewritten = rewriteContentValue(item);
+			const rewritten = rewriteContentValue(item, options);
 			changed = changed || rewritten.changed;
 			return rewritten.value;
 		});
 		return { value: next, changed };
 	}
 	if (isRecord(value) && typeof value.text === 'string') {
-		const next = rewriteUpstreamAsyncDefault(value.text);
+		const next = rewriteUpstreamAsyncDefault(value.text, options);
 		if (!next.changed) return { value, changed: false };
 		return { value: { ...value, text: next.text }, changed: true };
 	}
 	return { value, changed: false };
 }
 
-export function rewriteToolResultContent(content: unknown): { content: unknown; changed: boolean } {
-	const rewritten = rewriteContentValue(content);
+export function rewriteToolResultContent(content: unknown, options?: { standalone?: boolean }): { content: unknown; changed: boolean } {
+	const rewritten = rewriteContentValue(content, options);
 	return { content: rewritten.value, changed: rewritten.changed };
 }
 
-export function rewriteJsonStrings(value: unknown): { value: unknown; changed: boolean } {
+export function rewriteJsonStrings(value: unknown, options?: { standalone?: boolean }): { value: unknown; changed: boolean } {
 	if (typeof value === 'string') {
-		const next = rewriteUpstreamAsyncDefault(value);
+		const next = rewriteUpstreamAsyncDefault(value, options);
 		return { value: next.text, changed: next.changed };
 	}
 	if (Array.isArray(value)) {
 		let changed = false;
 		const next = value.map(item => {
-			const rewritten = rewriteJsonStrings(item);
+			const rewritten = rewriteJsonStrings(item, options);
 			changed = changed || rewritten.changed;
 			return rewritten.value;
 		});
@@ -163,7 +175,7 @@ export function rewriteJsonStrings(value: unknown): { value: unknown; changed: b
 		let changed = false;
 		const next: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value)) {
-			const rewritten = rewriteJsonStrings(item);
+			const rewritten = rewriteJsonStrings(item, options);
 			changed = changed || rewritten.changed;
 			next[key] = rewritten.value;
 		}
@@ -172,12 +184,16 @@ export function rewriteJsonStrings(value: unknown): { value: unknown; changed: b
 	return { value, changed: false };
 }
 
-export function rewriteSystemPromptTools(systemPrompt: string, tools: Array<{ name: string; description?: string }>): { systemPrompt: string; rewritten: string[] } {
+export function rewriteSystemPromptTools(
+	systemPrompt: string,
+	tools: Array<{ name: string; description?: string }>,
+	options?: { standalone?: boolean },
+): { systemPrompt: string; rewritten: string[] } {
 	let next = systemPrompt;
 	const rewritten: string[] = [];
 	for (const tool of tools) {
 		if (!tool.description) continue;
-		const updated = rewriteUpstreamAsyncDefault(tool.description);
+		const updated = rewriteUpstreamAsyncDefault(tool.description, options);
 		if (!updated.changed) continue;
 		const from = tool.description;
 		const to = updated.text;
@@ -185,7 +201,7 @@ export function rewriteSystemPromptTools(systemPrompt: string, tools: Array<{ na
 		next = next.split(from).join(to);
 		rewritten.push(tool.name);
 	}
-	const promptRewrite = rewriteUpstreamAsyncDefault(next);
+	const promptRewrite = rewriteUpstreamAsyncDefault(next, options);
 	return { systemPrompt: promptRewrite.text, rewritten: promptRewrite.changed && rewritten.length === 0 ? ['systemPrompt'] : rewritten };
 }
 

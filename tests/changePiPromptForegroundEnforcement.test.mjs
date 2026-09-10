@@ -128,7 +128,10 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 			hasPowerShell: () => true,
 		};
 
-		registerPromptExtension(mockPi, tempDir, probeHost);
+		registerPromptExtension(mockPi, tempDir, {
+			probeHost,
+			isStandalone: () => true,
+		});
 		const toolCallHandler = handlers.get("tool_call");
 		assert.ok(typeof toolCallHandler === "function", "tool_call handler must be registered");
 
