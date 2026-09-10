@@ -60,6 +60,16 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	let lastShellStatus: string[] = [];
 	const warned = new Set<string>();
 	const contributionHashes = new Map<string, string>();
+	const confirmedSubagentToolNames = new Set<string>();
+
+	const updateConfirmedSubagentTools = () => {
+		confirmedSubagentToolNames.clear();
+		for (const tool of snapshotTools(pi)) {
+			if (isSubagent(tool)) {
+				confirmedSubagentToolNames.add(tool.name);
+			}
+		}
+	};
 	const report = (ctx: ExtensionContext, message: string, error = false) => {
 		if (ctx.hasUI) ctx.ui.notify(message, error ? 'warning' : 'info');
 		else process.stderr.write(`[change-pi-prompt] ${message}\n`);
@@ -112,6 +122,8 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 	pi.on('session_start', async (_event, ctx) => {
 		warned.clear();
 		contributionHashes.clear();
+		confirmedSubagentToolNames.clear();
+		updateConfirmedSubagentTools();
 		lastPreview = undefined;
 		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
@@ -123,11 +135,13 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 		lastPreview = undefined;
 		warned.clear();
 		contributionHashes.clear();
+		confirmedSubagentToolNames.clear();
 	});
 	pi.on('before_agent_start', async (event, ctx) => {
 		await ensureLoaded(ctx);
 		if (!settings) return;
 		try {
+			updateConfirmedSubagentTools();
 			const pruned = await pruneUnavailableShells(ctx);
 			const tools = snapshotTools(pi);
 			const activeTools = pruned
@@ -192,6 +206,35 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string, prob
 		if (!rewritten.changed || !isContentArray(nextContent)) return;
 		lastStatus.push('rewrote upstream async default in pi-subagents skill read');
 		return { content: [...nextContent] };
+	});
+
+	pi.on('tool_call', async (event) => {
+		if (confirmedSubagentToolNames.size === 0) {
+			updateConfirmedSubagentTools();
+		}
+		if (!confirmedSubagentToolNames.has(event.toolName)) return;
+
+		const input = (isRecord(event.input) ? event.input : undefined) as Record<string, unknown> | undefined;
+		if (!input) return;
+
+		// management action 不需要改 async (例如 action: 'list' | 'status' | 'guide' 等)
+		if (typeof input.action === 'string' && input.action.trim().length > 0) {
+			return;
+		}
+
+		// A. 如果 subagent config 不安全：
+		//    - asyncByDefault !== false 或 forceTopLevelAsync === true
+		//    则 block: true，给出明确 reason，要求修正 config。不允许继续执行。
+		const check = await inspectNativeSubagentAsyncDefault(agentDir);
+		if (!check.ok) {
+			return {
+				block: true,
+				reason: `[change-pi-prompt] 阻止 subagent 调用：独立 Pi 环境要求 asyncByDefault=false 且 forceTopLevelAsync!=true。请检查 ${check.path}。（${check.message}）`,
+			};
+		}
+
+		// B. 如果配置安全：强制 event.input.async = false
+		input.async = false;
 	});
 
 	pi.registerCommand('change-pi-prompt', {

@@ -26,11 +26,10 @@ export type BuiltInExtensionName = (typeof BUILT_IN_EXTENSIONS)[number];
 export const DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = [
 	"pideck-q-websearch.ts",
 	"pideck-q-better-compaction.ts",
-	"pideck-q-change-pi-prompt.ts",
 ] as const satisfies readonly BuiltInExtensionName[];
 
 /** 每次新增默认关闭的内置扩展时递增，用于老配置的一次性迁移。 */
-export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = 3;
+export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = 4;
 
 /** 每个版本只登记当次新增的默认关闭项，避免升级时重新关闭用户已恢复的旧扩展。 */
 const DEFAULT_DISABLED_MIGRATIONS: ReadonlyArray<{
@@ -39,7 +38,8 @@ const DEFAULT_DISABLED_MIGRATIONS: ReadonlyArray<{
 }> = [
 	{ version: 1, extensions: ["pideck-q-better-compaction.ts"] },
 	{ version: 2, extensions: ["pideck-q-websearch.ts"] },
-	{ version: 3, extensions: ["pideck-q-change-pi-prompt.ts"] },
+	{ version: 3, extensions: [] },
+	{ version: 4, extensions: [] },
 ];
 
 /** 文件更名只迁移持久化身份，不改变用户此前的启用/禁用选择。 */

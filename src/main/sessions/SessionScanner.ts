@@ -80,14 +80,14 @@ export const ARCHIVE_DIR_NAME = ".pideck-archive";
  *   - Local 扫描与 WSL 扫描使用同一套语义判定，避免两端行为分歧
  *   - 保留真正的 subagent session（如 <stem>/<run-id>/run-N/session.jsonl）
  */
-export function isIgnoredSessionScanDirectory(pathOrName: string): boolean {
+export function isIgnoredSessionScanDirectory(pathOrName: string, options?: { allowArchive?: boolean }): boolean {
   if (!pathOrName) return false;
   const normalized = pathOrName.replace(/\\/g, "/").replace(/\/+$/, "");
   const lower = normalized.toLowerCase();
   const base = lower.split("/").pop() ?? "";
 
-  // 1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身
-  if (base === ARCHIVE_DIR_NAME.toLowerCase()) {
+  // 1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身（归档扫描时放行）
+  if (!options?.allowArchive && base === ARCHIVE_DIR_NAME.toLowerCase()) {
     return true;
   }
 
@@ -847,7 +847,7 @@ export class SessionScanner {
       const archiveDir = this.joinArchivePath(wsl, root, SessionScanner.ARCHIVE_DIR_NAME);
       const files = wsl
         ? await this.collectJsonlFromDirWsl(archiveDir).catch(() => [] as string[])
-        : await this.collectJsonl(archiveDir).catch(() => [] as string[]);
+        : await this.collectJsonl(archiveDir, { allowArchive: true }).catch(() => [] as string[]);
       for (const file of files) {
         if (seen.has(this.normalize(file))) continue;
         seen.add(this.normalize(file));
@@ -1213,8 +1213,8 @@ export class SessionScanner {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
   }
 
-  private async collectJsonl(dir: string): Promise<string[]> {
-    if (isIgnoredSessionScanDirectory(dir)) return [];
+  private async collectJsonl(dir: string, options?: { allowArchive?: boolean }): Promise<string[]> {
+    if (isIgnoredSessionScanDirectory(dir, options)) return [];
 
     const entries = await readdir(dir, { withFileTypes: true });
     const files: string[] = [];
@@ -1223,8 +1223,8 @@ export class SessionScanner {
       const path = join(dir, entry.name);
       // 跳过归档目录与 subagent artifacts 目录：避免非会话 JSONL 进入会话列表。
       if (entry.isDirectory()) {
-        if (isIgnoredSessionScanDirectory(path)) continue;
-        files.push(...await this.collectJsonl(path));
+        if (isIgnoredSessionScanDirectory(path, options)) continue;
+        files.push(...await this.collectJsonl(path, options));
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         files.push(path);
       }

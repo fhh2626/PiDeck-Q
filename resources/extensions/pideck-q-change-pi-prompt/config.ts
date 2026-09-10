@@ -8,6 +8,7 @@ export interface Settings { config: Config; prompts: Prompts }
 export interface NativeSubagentConfigCheck {
 	path: string;
 	asyncByDefault: boolean | undefined;
+	forceTopLevelAsync?: boolean | undefined;
 	ok: boolean;
 	message: string;
 }
@@ -17,21 +18,48 @@ export function nativeSubagentConfigPath(agentDir: string): string {
 	return join(agentDir, 'extensions', 'subagent', 'config.json');
 }
 
-/** Native default is async:true; standalone Pi binaries cannot spawn background children. */
+/** Native default is async:true; standalone Pi binaries cannot spawn background children.
+ *  Requires BOTH asyncByDefault === false AND forceTopLevelAsync !== true. */
 export function inspectNativeAsyncByDefault(text: string | undefined, configPath: string): NativeSubagentConfigCheck {
 	if (text === undefined) {
-		return { path: configPath, asyncByDefault: undefined, ok: false, message: `未找到 ${configPath}，或缺少顶层 asyncByDefault:false。独立 Pi 二进制无法启动后台子 agent。` };
+		return {
+			path: configPath,
+			asyncByDefault: undefined,
+			forceTopLevelAsync: undefined,
+			ok: false,
+			message: `未找到 ${configPath}。独立 Pi 环境要求 asyncByDefault=false 且 forceTopLevelAsync!=true。`,
+		};
 	}
 	let value: unknown;
 	try { value = JSON.parse(text); } catch { throw new Error('Invalid native subagent config JSON'); }
 	if (!isRecord(value)) throw new Error('Native subagent config must be an object');
 	const asyncByDefault = value.asyncByDefault;
-	if (asyncByDefault === false) return { path: configPath, asyncByDefault, ok: true, message: `${configPath}: asyncByDefault=false` };
-	if (asyncByDefault === undefined) {
-		return { path: configPath, asyncByDefault, ok: false, message: `${configPath} 未设置 asyncByDefault；上游默认 true，独立 Pi 二进制会启动后台子 agent 并失败。请设为 false。` };
+	const forceTopLevelAsync = value.forceTopLevelAsync;
+	if (asyncByDefault !== undefined && typeof asyncByDefault !== 'boolean') throw new Error('Native asyncByDefault must be boolean');
+	if (forceTopLevelAsync !== undefined && typeof forceTopLevelAsync !== 'boolean') throw new Error('Native forceTopLevelAsync must be boolean');
+
+	const isAsyncSafe = asyncByDefault === false;
+	const isForceSafe = forceTopLevelAsync !== true;
+	const ok = isAsyncSafe && isForceSafe;
+
+	const forceInfo = forceTopLevelAsync === undefined ? 'absent' : String(forceTopLevelAsync);
+	if (ok) {
+		return {
+			path: configPath,
+			asyncByDefault,
+			forceTopLevelAsync: forceTopLevelAsync as boolean | undefined,
+			ok: true,
+			message: `subagent-config: asyncByDefault=false, forceTopLevelAsync=${forceInfo}, foreground-safe`,
+		};
 	}
-	if (typeof asyncByDefault !== 'boolean') throw new Error('Native asyncByDefault must be boolean');
-	return { path: configPath, asyncByDefault, ok: false, message: `${configPath} 的 asyncByDefault=${String(asyncByDefault)}；独立 Pi 二进制无法启动后台子 agent。请改为 false。` };
+
+	return {
+		path: configPath,
+		asyncByDefault: typeof asyncByDefault === 'boolean' ? asyncByDefault : undefined,
+		forceTopLevelAsync: typeof forceTopLevelAsync === 'boolean' ? forceTopLevelAsync : undefined,
+		ok: false,
+		message: `${configPath}: 独立 Pi 环境要求 asyncByDefault=false 且 forceTopLevelAsync!=true。（当前: asyncByDefault=${String(asyncByDefault)}, forceTopLevelAsync=${String(forceTopLevelAsync)}）`,
+	};
 }
 
 export const UPSTREAM_ASYNC_DEFAULT_SENTENCE = 'Async/background runs are the normal default unless config sets asyncByDefault:false; set async:true explicitly when async behavior matters.';
@@ -40,8 +68,13 @@ export const LOCAL_ASYNC_DEFAULT_SENTENCE = 'Plugin default is asyncByDefault:tr
 const LOCAL_ASYNC_WAIT_SENTENCE = 'Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.';
 const LOCAL_ASYNC_POLICY = `${LOCAL_ASYNC_DEFAULT_SENTENCE} ${LOCAL_ASYNC_WAIT_SENTENCE}`;
 
+export const SUBAGENT_SCHEMA_ASYNC_SENTENCE = 'This environment only supports foreground native subagents. Always set async:false. Never omit async and never use async:true.';
+
 /** Semantic upstream policy matches; wording drift inside a bounded window still rewrites. */
 const POLICY_PATTERNS: Array<{ test: RegExp; to: string }> = [
+	{ test: /Run in background unless asyncByDefault:false[\s\S]{0,180}?parent must block(?: until completion)?\.?/gi, to: SUBAGENT_SCHEMA_ASYNC_SENTENCE },
+	{ test: /Normally async unless asyncByDefault:false;?[\s\S]{0,240}?parent must block(?: until completion)?\.?/gi, to: SUBAGENT_SCHEMA_ASYNC_SENTENCE },
+	{ test: /Set false only when the parent must block(?: until completion)?\.?/gi, to: SUBAGENT_SCHEMA_ASYNC_SENTENCE },
 	{ test: /Use async\/background by default[\s\S]{0,280}?stay async\.?/gi, to: 'This environment requires `async:false` on every subagent launch; background children are unavailable. Final reviews, validation gates, oracle checks, and publication checks also use `async:false`.' },
 	{ test: /Prefer async mode for every subagent launch[\s\S]{0,420}?even when the run is async\.?/gi, to: 'Use `async:false` for every subagent launch; background children are unavailable. This applies to scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, final review gates, publication gates, and scripted workflows. Keep the write path single-threaded.' },
 	{ test: /In an ordinary interactive session, yield after launching[\s\S]{0,700}?if only async lanes are running[\s\S]{0,80}?yield\.?/gi, to: 'Do not yield for a background subagent completion. Launch with `async:false` and await the foreground result. Use blocking `bg_wait()` only for provider, detached, or other background work without a native notification when this turn must receive its result.' },

@@ -26,7 +26,8 @@ export const DEFAULT_PROMPTS = {
 - Use IDs from the current list rather than guessing; clear completed tracking when the task is finished.`,
 	delegation: `## Delegation
 - Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, delegate multi-step exploration/research, work with large intermediate results best kept out of the main context, or independent parallel tasks. Known paths do not rule out delegation.
-- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Background children are not available in this environment.
+- Every native subagent execution must explicitly pass async:false. Never omit async and never pass async:true; background native children are unavailable in this environment.
+- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false.
 - Do not duplicate delegated work. Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
@@ -74,8 +75,8 @@ export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
 
 ## Execution
 - Choose one input: {agent,task?}, workflowScript, workflowScriptPath, or {workflow,args}. Never combine them. Omit action for execution; use action only for management/control.
-- SINGLE: {agent:"worker",task:"..."}. Request options apply to that child.
-- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Background children are not available in this environment.
+- SINGLE: {agent:"worker",task:"..."}. Request options apply to that child. Every native subagent execution must explicitly pass async:false. Never omit async and never use async:true.
+- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false. Background children are not available in this environment.
 - SCRIPT: workflowScript is a JavaScript statement body. Use an explicit return for useful output. It has no filesystem, shell, arbitrary Pi tools, or host globals outside authorized runs.host calls.
 - Use runs.run("key",{agent,task}) for one child; await runs.all([{key,agent,task},...]) for parallel children. runs.all returns an ordered array, not a key map.
 - Await results before reading them. Every stored runs.run promise must eventually be observed with await, Promise.race, or Promise.all.

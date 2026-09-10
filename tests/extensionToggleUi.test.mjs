@@ -44,10 +44,11 @@ test("better compaction is shown as PiDeck-Q-Better-Compaction", () => {
 	assert.match(tab, /"pideck-q-better-compaction\.ts": "PiDeck-Q-Better-Compaction"/);
 });
 
-test("change-pi-prompt is a default-off built-in shown as PiDeck-Q-Change-Pi-Prompt", () => {
+test("change-pi-prompt is a default-on built-in shown as PiDeck-Q-Change-Pi-Prompt", () => {
 	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
 	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
-	assert.match(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[\s\S]*?"pideck-q-change-pi-prompt\.ts"/);
+	assert.match(builtIns, /"pideck-q-change-pi-prompt\.ts"/);
+	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-change-pi-prompt/);
 	assert.match(tab, /"pideck-q-change-pi-prompt\.ts": "PiDeck-Q-Change-Pi-Prompt"/);
 	assert.match(tab, /"pideck-q-change-pi-prompt": "PiDeck-Q-Change-Pi-Prompt"/);
 });

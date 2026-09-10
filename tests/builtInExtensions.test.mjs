@@ -107,7 +107,7 @@ test("pideck-q-better-compaction is packaged as a built-in and disabled by defau
 	);
 });
 
-test("change-pi-prompt ships disabled for fresh installs and upgrades, but respects later enablement", () => {
+test("change-pi-prompt ships enabled by default for fresh installs and upgrades, but respects later disablement", () => {
 	const {
 		BUILT_IN_EXTENSIONS,
 		DEFAULT_DISABLED_BUILT_IN_EXTENSIONS,
@@ -117,21 +117,23 @@ test("change-pi-prompt ships disabled for fresh installs and upgrades, but respe
 	} = loadBuiltInExtensionsModule();
 	const name = "pideck-q-change-pi-prompt.ts";
 	assert.ok(BUILT_IN_EXTENSIONS.includes(name));
-	assert.ok(DEFAULT_DISABLED_BUILT_IN_EXTENSIONS.includes(name));
-	for (const version of [undefined, 1, 2]) {
+	assert.equal(DEFAULT_DISABLED_BUILT_IN_EXTENSIONS.includes(name), false);
+	for (const version of [undefined, 1, 2, 3]) {
 		const migrated = migrateBuiltInExtensionDefaults([], version);
-		assert.ok(migrated.removedBuiltInExtensions.includes(name));
+		assert.equal(migrated.removedBuiltInExtensions.includes(name), false);
 		if (version === 2) {
 			assert.equal(migrated.removedBuiltInExtensions.includes("pideck-q-websearch.ts"), false);
 			assert.equal(migrated.removedBuiltInExtensions.includes("pideck-q-better-compaction.ts"), false);
 		}
 	}
 	const roots = { appPath: process.cwd(), resourcesPath: process.cwd(), isDev: true };
-	const disabled = migrateBuiltInExtensionDefaults([], 2);
-	assert.equal(listActiveBuiltInExtensionPaths(roots, disabled.removedBuiltInExtensions).some(path => path.endsWith(name)), false);
-	const restored = migrateBuiltInExtensionDefaults([], BUILT_IN_EXTENSION_DEFAULTS_VERSION);
-	assert.equal(restored.migrated, false);
-	assert.ok(listActiveBuiltInExtensionPaths(roots, restored.removedBuiltInExtensions).some(path => path.endsWith(name)));
+	const enabled = migrateBuiltInExtensionDefaults([], BUILT_IN_EXTENSION_DEFAULTS_VERSION);
+	assert.equal(enabled.migrated, false);
+	assert.ok(listActiveBuiltInExtensionPaths(roots, enabled.removedBuiltInExtensions).some(path => path.endsWith(name)));
+	// Explicitly disabled by user is preserved
+	const userDisabled = migrateBuiltInExtensionDefaults([name], 2);
+	assert.ok(userDisabled.removedBuiltInExtensions.includes(name));
+	assert.equal(listActiveBuiltInExtensionPaths(roots, userDisabled.removedBuiltInExtensions).some(path => path.endsWith(name)), false);
 	assert.match(
 		readFileSync("resources/extensions/pideck-q-change-pi-prompt.ts", "utf8"),
 		/pideck-q-change-pi-prompt\/runtime\.ts/,
