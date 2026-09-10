@@ -144,7 +144,7 @@ test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive"
 
 		const disabledPath = join(tempDir, "disabled.json");
 		writeFileSync(disabledPath, JSON.stringify({ enabled: false }));
-		assert.equal(isSecurityPolicyActive(disabledPath), false);
+		assert.equal(isSecurityPolicyActive(disabledPath), true, "disabled snapshots still inject the gate so handlers can hot-reload");
 
 		assert.equal(isSecurityPolicyActive(join(tempDir, "nonexistent.json")), false);
 	} finally {
@@ -224,7 +224,7 @@ test("child-launch: inherits security policy into foreground (parent) and runner
 		);
 		assert.equal(gateOccurrences.length, 1, "Security Gate extension must not be duplicated");
 
-		// 4. Security disabled: does not inject security gate
+		// 4. Security currently disabled: still inject gate + config so child tools can hot-reload if the parent later enables it.
 		const disabledConfigPath = join(tempDir, "disabled-policy.json");
 		writeFileSync(disabledConfigPath, JSON.stringify({ enabled: false, defaultLevelId: "standard" }));
 
@@ -242,10 +242,11 @@ test("child-launch: inherits security policy into foreground (parent) and runner
 		});
 
 		assert.ok(
-			!disabledLaunch.session.extensionPaths.some((p) => normalize(p) === normalize(gatePath)),
-			"Disabled security must not inject Security Gate",
+			disabledLaunch.session.extensionPaths.some((p) => normalize(p) === normalize(gatePath)),
+			"Disabled security still injects Security Gate so tool_call can honor later enablement",
 		);
-		assert.equal(disabledLaunch.session.processEnv?.PIDECK_SECURITY_CONFIG, undefined);
+		assert.equal(disabledLaunch.session.processEnv?.PIDECK_SECURITY_CONFIG, disabledConfigPath);
+		assert.equal(disabledLaunch.session.processEnv?.PIDECK_SESSION_ID, "parent-session-123");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}

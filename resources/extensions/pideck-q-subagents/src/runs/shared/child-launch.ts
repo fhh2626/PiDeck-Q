@@ -179,8 +179,9 @@ export function isSecurityPolicyActive(configPath: string | undefined): boolean 
 	if (!configPath || !fs.existsSync(configPath)) return false;
 	try {
 		const raw = fs.readFileSync(configPath, "utf8");
-		const parsed = JSON.parse(raw) as { enabled?: boolean };
-		return Boolean(parsed.enabled);
+		JSON.parse(raw);
+		// 有可读快照就注入 gate；enabled=false 由 handler 热读后放行，避免子进程启动后无法打开安全管理。
+		return true;
 	} catch {
 		return false;
 	}
