@@ -747,6 +747,12 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 		const { SessionScanner } = loadSessionScanner(home);
 		const scanner = new SessionScanner();
 
+		// 验证当 artifact 目录本身作为扫描根传入时，入口守卫直接返回空数组
+		const directArtifactDirFiles = await scanner.collectJsonl(join(piDir, "parent", "subagent-artifacts"));
+		assert.deepEqual([...directArtifactDirFiles], [], "collectJsonl on subagent-artifacts root must return empty array");
+		const directProjectArtifactDirFiles = await scanner.collectJsonl(join(projectPiDir, "subagents", "artifacts"));
+		assert.deepEqual([...directProjectArtifactDirFiles], [], "collectJsonl on .pi/subagents/artifacts root must return empty array");
+
 		// 直接验证 collectJsonl 在扫描覆盖 .pi 的目录时跳过 .pi/subagents/artifacts
 		const directPiFiles = await scanner.collectJsonl(projectPiDir);
 		assert.equal(directPiFiles.includes(projectSessionFile), true, "collectJsonl must find project-session.jsonl in .pi");
@@ -838,6 +844,12 @@ test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via 
 
 		const summaries = await scanner.list(projectPath);
 		const scannedPaths = new Set(summaries.map(s => s.filePath));
+
+		// 验证 WSL 模式下若直接以 artifact 目录为 sessionsDir，入口守卫直接返回空数组
+		const directWslArtifactFiles = await scanner.collectWslJsonl(
+			`${sessionsRoot}/--mnt-c-repo-project--/parent/subagent-artifacts`,
+		);
+		assert.deepEqual([...directWslArtifactFiles], [], "collectWslJsonl on subagent-artifacts root must return empty array");
 
 		// 1. 验证 find 命令参数中包含了排除规则
 		assert.ok(capturedFindArgs.includes("*/subagent-artifacts/*"), "WSL find args must exclude */subagent-artifacts/*");

@@ -330,6 +330,8 @@ export class SessionScanner {
 
   /** 通过 wsl.exe 在指定目录递归查找 *.jsonl，返回 Linux 绝对路径 */
   private async collectWslJsonl(sessionsDir: string, signal?: AbortSignal): Promise<string[]> {
+    if (isIgnoredSessionScanDirectory(sessionsDir)) return [];
+
     return new Promise((resolve, reject) => {
       execFile(this.wslExePath, [
         "-d", this.wslConfig!.distro, "-u", this.wslConfig!.user,
@@ -1212,6 +1214,8 @@ export class SessionScanner {
   }
 
   private async collectJsonl(dir: string): Promise<string[]> {
+    if (isIgnoredSessionScanDirectory(dir)) return [];
+
     const entries = await readdir(dir, { withFileTypes: true });
     const files: string[] = [];
 
