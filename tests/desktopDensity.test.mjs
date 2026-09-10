@@ -95,9 +95,15 @@ test("TurnRow keeps exactly two spacing layers (turn-gap + block-gap)", () => {
   assert.match(foundation, /\.message-list\.message-list > \* \+ \*\s*\{\s*margin-top:\s*var\(--density-turn-gap/, "message-list gap should consume --density-turn-gap");
   assert.match(
     foundation,
-    /\.message-list\.message-list > \.responding-indicator \{\s*margin-top: 4px;/
+    /\.message-timeline-host \.message-list\.message-list > \.responding-indicator \{\s*margin-top:\s*var\(--space-1\);/
     ,
-    "responding indicator should sit 4px below the previous turn",
+    "desktop responding indicator should sit 4px below the previous turn",
+  );
+  assert.match(
+    foundation,
+    /\.message-timeline-host \.message-timeline \{\s*padding-block: 12px 8px;/
+    ,
+    "desktop timeline padding override should stay on the native host",
   );
 });
 

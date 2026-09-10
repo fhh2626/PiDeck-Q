@@ -2893,7 +2893,7 @@ select:focus-visible {
   /* 只留上下呼吸空间。左右必须由组件 utility 的百分比留白变量接管；
      若这里写 padding 简写带左右 24px，会在变量失效时把「百分比留白」盖成恒定 24px，
      表现为设置滑块怎么拖都不生效。 */
-  padding-block: 12px 8px;
+  padding-block: 18px 24px;
   padding-inline: 0;
   min-height: 0;
   scroll-padding-top: 28px;
@@ -2971,9 +2971,12 @@ select:focus-visible {
 .message-list.message-list > * + * {
   margin-top: var(--density-turn-gap, var(--space-3));
 }
-/* RespondingIndicator 不再叠 turn 外边距；只保留紧贴上一轮的 4px。 */
-.message-list.message-list > .responding-indicator {
-  margin-top: 4px;
+/* Native 会话：RespondingIndicator 不再叠 turn 外边距，只保留 4px。Web 时间线不受影响。 */
+.message-timeline-host .message-list.message-list > .responding-indicator {
+  margin-top: var(--space-1);
+}
+.message-timeline-host .message-timeline {
+  padding-block: 12px 8px;
 }
 /* 会话定位跳转命中时的短暂高亮，帮助用户在长会话中识别落点。 */
 @keyframes messageJumpHighlight {
