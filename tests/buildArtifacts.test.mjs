@@ -112,10 +112,13 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 // 内置扩展默认关闭，所以「缺文件」在源码侧测不出——只有启用后 pi 加载时才发现。
 // 这道门禁在产物上把缺文件/空文件提前到发版前暴露。
 
-async function putChangePromptFiles(repo, { withUndici = true, withWebfetch = true } = {}) {
+async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true, withWebfetch = true } = {}) {
 	const base = join(repo, "out", "resources", "extensions");
 	if (withUndici) {
 		await put(join(base, "node_modules", "undici", "package.json"), "{}");
+	}
+	if (withAcorn) {
+		await put(join(base, "node_modules", "acorn", "package.json"), "{}");
 	}
 	if (withWebfetch) {
 		await put(join(base, "pideck-q-webfetch.ts"), "// webfetch");
@@ -154,8 +157,8 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 7 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 1 个 undici = 16
-		assert.equal(result.checked.length, 16, JSON.stringify(result.checked));
+		// 7 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 2 个 extension deps (undici + acorn) = 17
+		assert.equal(result.checked.length, 17, JSON.stringify(result.checked));
 	});
 });
 

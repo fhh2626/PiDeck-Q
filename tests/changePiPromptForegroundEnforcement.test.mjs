@@ -566,4 +566,43 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const r9 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'codex-exec', async: false });", fakeCatalog);
 	assert.equal(r9.ok, false);
 	assert.match(r9.reason, /external runner/);
+
+	// 10. runs.run 使用 SpreadElement -> fail-closed 阻断
+	const r10 = validateStandaloneWorkflowScript(`
+		const opts = { task: 'test' };
+		return await runs.run('a', { agent: 'worker', async: false, ...opts });
+	`, fakeCatalog);
+	assert.equal(r10.ok, false);
+	assert.match(r10.reason, /SpreadElement/);
+
+	// 11. runs.all 项中使用 SpreadElement -> fail-closed 阻断
+	const r11 = validateStandaloneWorkflowScript(`
+		const extra = { task: 't' };
+		return await runs.all([{ key: 'a', agent: 'worker', async: false, ...extra }]);
+	`, fakeCatalog);
+	assert.equal(r11.ok, false);
+	assert.match(r11.reason, /SpreadElement/);
+
+	// 12. runs.lanes stages 动态变量而非字面量 -> fail-closed 阻断
+	const r12 = validateStandaloneWorkflowScript(`
+		const stage = makeStage();
+		return await runs.lanes([{ key: 'l', stages: [stage] }]);
+	`, fakeCatalog);
+	assert.equal(r12.ok, false);
+	assert.match(r12.reason, /stage 必须为对象字面量/);
+
+	// 13. runs.lanes stages 中使用 SpreadElement -> fail-closed 阻断
+	const r13 = validateStandaloneWorkflowScript(`
+		const extra = { task: 't' };
+		return await runs.lanes([{ key: 'l', stages: [{ key: 's1', agent: 'worker', async: false, ...extra }] }]);
+	`, fakeCatalog);
+	assert.equal(r13.ok, false);
+	assert.match(r13.reason, /SpreadElement/);
+
+	// 14. 无关变量包含 { async: true } -> 不误杀，只要 runs.run 子代理显式声明 async: false 即放行
+	const r14 = validateStandaloneWorkflowScript(`
+		const metadata = { async: true };
+		return await runs.run('a', { agent: 'worker', async: false });
+	`, fakeCatalog);
+	assert.equal(r14.ok, true, "无关对象的 async: true 不得误杀合法的 runs.run 调用");
 });

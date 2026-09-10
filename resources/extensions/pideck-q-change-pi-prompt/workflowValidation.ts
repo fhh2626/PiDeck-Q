@@ -60,6 +60,13 @@ function directRunsCall(node: AstNode, method: 'run' | 'all' | 'lanes'): boolean
 	return prop.type === 'Identifier' && prop.name === method;
 }
 
+function hasSpreadElement(obj: AstNode): boolean {
+	if (!Array.isArray(obj.properties)) return false;
+	return obj.properties.some(
+		p => p && typeof p === 'object' && ((p as AstNode).type === 'SpreadElement' || (p as AstNode).type === 'ExperimentalSpreadProperty')
+	);
+}
+
 function getProperty(obj: AstNode, name: string): AstNode | undefined {
 	if (obj.type !== 'ObjectExpression' || !Array.isArray(obj.properties)) return undefined;
 	for (const prop of obj.properties) {
@@ -78,7 +85,8 @@ function getProperty(obj: AstNode, name: string): AstNode | undefined {
 }
 
 /** Bounded AST parser for standalone workflowScript execution.
- *  Enforces that all native child launches explicitly declare async:false. */
+ *  Enforces that all native child launches explicitly declare async:false.
+ *  Fails closed on spread elements, non-literal arrays, or non-static stage objects. */
 export function validateStandaloneWorkflowScript(
 	script: string,
 	catalog?: SubagentCatalog,
@@ -98,49 +106,37 @@ export function validateStandaloneWorkflowScript(
 		};
 	}
 
-	// 1. 全局检查：AST 中是否有任何 async: true 属性
-	let hasAsyncTrue = false;
-	walkAst(root, (node) => {
-		if (node.type === 'Property') {
-			const key = node.key as AstNode | undefined;
-			const isAsyncKey = key && (
-				(node.computed ? (key.type === 'Literal' && key.value === 'async') : (key.type === 'Identifier' && key.name === 'async'))
-				|| (key.type === 'Literal' && key.value === 'async')
-			);
-			if (isAsyncKey) {
-				const val = node.value as AstNode | undefined;
-				if (val && val.type === 'Literal' && val.value === true) {
-					hasAsyncTrue = true;
-				}
-			}
-		}
-	});
-
-	if (hasAsyncTrue) {
-		return {
-			ok: false,
-			reason: '[change-pi-prompt] standalone Pi 环境不支持在 workflowScript 内部调用中使用 async:true。请移除 async:true 或改为 async:false。',
-		};
-	}
-
-	// 2. 收集所有子代理调用的配置对象
+	// 收集所有子代理调用的配置对象
 	const childConfigs: AstNode[] = [];
 	let structureError: string | undefined;
 
 	walkAst(root, (node) => {
+		if (structureError) return;
+
 		if (directRunsCall(node, 'run')) {
 			const args = Array.isArray(node.arguments) ? (node.arguments as AstNode[]) : [];
-			if (args[1]) {
-				childConfigs.push(args[1]);
+			const paramsArg = args[1];
+			if (!paramsArg || paramsArg.type !== 'ObjectExpression') {
+				structureError = 'runs.run 子代理参数必须为对象字面量以供静态前台策略校验';
+			} else if (hasSpreadElement(paramsArg)) {
+				structureError = 'runs.run 参数不支持对象展开运算符（SpreadElement），必须显式声明静态属性';
 			} else {
-				structureError = 'runs.run 缺少子代理参数对象';
+				childConfigs.push(paramsArg);
 			}
 		} else if (directRunsCall(node, 'all')) {
 			const args = Array.isArray(node.arguments) ? (node.arguments as AstNode[]) : [];
 			const arrayArg = args[0];
 			if (arrayArg && arrayArg.type === 'ArrayExpression' && Array.isArray(arrayArg.elements)) {
 				for (const elem of arrayArg.elements) {
-					if (elem) childConfigs.push(elem as AstNode);
+					if (!elem || (elem as AstNode).type !== 'ObjectExpression') {
+						structureError = 'runs.all 每个项必须为对象字面量以供静态前台策略校验';
+						break;
+					}
+					if (hasSpreadElement(elem as AstNode)) {
+						structureError = 'runs.all 项不支持对象展开运算符（SpreadElement），必须显式声明静态属性';
+						break;
+					}
+					childConfigs.push(elem as AstNode);
 				}
 			} else {
 				structureError = 'runs.all 必须传入字面量数组以供静态前台策略校验';
@@ -150,19 +146,38 @@ export function validateStandaloneWorkflowScript(
 			const arrayArg = args[0];
 			if (arrayArg && arrayArg.type === 'ArrayExpression' && Array.isArray(arrayArg.elements)) {
 				for (const lane of arrayArg.elements) {
-					if (lane && lane.type === 'ObjectExpression') {
-						const stages = getProperty(lane as AstNode, 'stages');
-						if (stages && stages.type === 'ArrayExpression' && Array.isArray(stages.elements)) {
-							for (const stage of stages.elements) {
-								if (stage && stage.type === 'ObjectExpression') {
-									if (getProperty(stage as AstNode, 'agent')) {
-										childConfigs.push(stage as AstNode);
-									}
-								}
+					if (!lane || (lane as AstNode).type !== 'ObjectExpression') {
+						structureError = 'runs.lanes 每个 lane 必须为对象字面量以供静态前台策略校验';
+						break;
+					}
+					if (hasSpreadElement(lane as AstNode)) {
+						structureError = 'runs.lanes lane 对象不支持对象展开运算符（SpreadElement）';
+						break;
+					}
+					const stages = getProperty(lane as AstNode, 'stages');
+					if (stages && stages.type === 'ArrayExpression' && Array.isArray(stages.elements)) {
+						for (const stage of stages.elements) {
+							if (!stage || (stage as AstNode).type !== 'ObjectExpression') {
+								structureError = 'runs.lanes stage 必须为对象字面量以供静态前台策略校验';
+								break;
+							}
+							if (hasSpreadElement(stage as AstNode)) {
+								structureError = 'runs.lanes stage 对象不支持对象展开运算符（SpreadElement）';
+								break;
+							}
+							const hasResume = Boolean(getProperty(stage as AstNode, 'resume'));
+							const hasAgent = Boolean(getProperty(stage as AstNode, 'agent'));
+							if (hasAgent || !hasResume) {
+								childConfigs.push(stage as AstNode);
 							}
 						}
+					} else {
+						structureError = 'runs.lanes stages 必须传入字面量数组以供静态前台策略校验';
+						break;
 					}
 				}
+			} else {
+				structureError = 'runs.lanes 必须传入字面量数组以供静态前台策略校验';
 			}
 		}
 	});
@@ -174,12 +189,19 @@ export function validateStandaloneWorkflowScript(
 		};
 	}
 
-	// 3. 对每个 childConfig 进行校验
+	// 对每个 childConfig 进行校验
 	for (const cfg of childConfigs) {
 		if (cfg.type !== 'ObjectExpression' || !Array.isArray(cfg.properties)) {
 			return {
 				ok: false,
 				reason: '[change-pi-prompt] standalone Pi 环境下子代理调用参数必须为对象字面量，且必须显式声明 async:false。',
+			};
+		}
+
+		if (hasSpreadElement(cfg)) {
+			return {
+				ok: false,
+				reason: '[change-pi-prompt] standalone Pi 环境下子代理参数不支持对象展开运算符（SpreadElement），必须显式声明静态属性。',
 			};
 		}
 
@@ -213,15 +235,15 @@ export function validateStandaloneWorkflowScript(
 			};
 		}
 
-		if (asyncVal.type === 'Literal' && asyncVal.value === false) {
-			continue;
-		}
-
 		if (asyncVal.type === 'Literal' && asyncVal.value === true) {
 			return {
 				ok: false,
 				reason: '[change-pi-prompt] standalone Pi 环境不支持在 workflowScript 内部调用中使用 async:true。请移除 async:true 或改为 async:false。',
 			};
+		}
+
+		if (asyncVal.type === 'Literal' && asyncVal.value === false) {
+			continue;
 		}
 
 		return {

@@ -5,7 +5,6 @@ import { readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { ContextEvent, ExtensionAPI, ExtensionContext, ToolResultEvent } from '@earendil-works/pi-coding-agent';
 import {
-	hasExplicitAsyncTrueInScript,
 	initializeSubagentDescription,
 	initializeSettings,
 	ensureStandaloneSubagentForegroundSafe,

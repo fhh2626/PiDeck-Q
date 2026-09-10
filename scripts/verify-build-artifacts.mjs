@@ -116,11 +116,17 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		? join(output, "app")
 		: output;
 	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
+	const extensionAcornPackage = join(output, "resources", "extensions", "node_modules", "acorn", "package.json");
 	if (await exists(join(output, "resources", "extensions"))) {
 		if (!(await exists(extensionUndiciPackage))) {
 			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
 		} else {
 			checked.push(extensionUndiciPackage);
+		}
+		if (!(await exists(extensionAcornPackage))) {
+			errors.push(`Missing packaged extension dependency: ${extensionAcornPackage}`);
+		} else {
+			checked.push(extensionAcornPackage);
 		}
 		// PiDeck-Q-Change-Pi-Prompt 的运行时文件必须完整落进产物；缺一个 = 启用即崩。
 		for (const file of CHANGE_PROMPT_FILES) {

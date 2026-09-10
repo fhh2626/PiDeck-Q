@@ -91,6 +91,14 @@ async function stageUndiciAt(projectRoot, destinationRoot) {
 	return copied;
 }
 
+async function stageAcornAt(projectRoot, destinationRoot) {
+	const sourceRoot = join(projectRoot, "node_modules", "acorn");
+	await resetDirectory(destinationRoot);
+	let copied = await copyFiles(sourceRoot, destinationRoot, ["package.json"], "acorn");
+	copied += await copyJavaScriptTree(join(sourceRoot, "dist"), join(destinationRoot, "dist"));
+	return copied;
+}
+
 /**
  * Stage only runtime files for the Node sidecar and built-in extensions.
  * Keeping this boundary explicit prevents a local npm build directory from
@@ -99,6 +107,7 @@ async function stageUndiciAt(projectRoot, destinationRoot) {
  * WebFetch 的普通 npm 依赖（如 @mozilla/readability, linkedom, lru-cache, turndown）
  * 已完全内联打包进 dist/index.mjs，此处仅需复制仍需外部解析的 undici，避免 packaged extension
  * 依赖仓库根 node_modules。
+ * acorn 供 change-pi-prompt 与 pi-subagents 的 workflowScript AST parser 使用。
  */
 export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoot } = {}) {
 	const root = resolve(projectRoot);
@@ -110,6 +119,10 @@ export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoo
 		extensionUndici: await stageUndiciAt(
 			root,
 			join(output, "resources", "extensions", "node_modules", "undici"),
+		),
+		extensionAcorn: await stageAcornAt(
+			root,
+			join(output, "resources", "extensions", "node_modules", "acorn"),
 		),
 	};
 	return { projectRoot: root, stageRoot: output, counts };

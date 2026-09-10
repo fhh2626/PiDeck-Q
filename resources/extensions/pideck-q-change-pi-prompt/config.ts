@@ -98,15 +98,6 @@ function replaceAll(text: string, from: string, to: string): string {
 
 export { validateStandaloneWorkflowScript, type WorkflowValidationResult } from './workflowValidation.ts';
 
-export function hasExplicitAsyncTrueInScript(script: string): boolean {
-	let stripped = script.replace(/\/\*[\s\S]*?\*\//g, ' ');
-	stripped = stripped.replace(/\/\/.*$/gm, ' ');
-	stripped = stripped.replace(/`([^`\\]|\\.)*`/g, '""');
-	stripped = stripped.replace(/'([^'\\]|\\.)*'/g, '""');
-	stripped = stripped.replace(/"([^"\\]|\\.)*"/g, '""');
-	return /\basync\s*:\s*true\b/.test(stripped);
-}
-
 export function rewriteUpstreamAsyncDefault(text: string, options?: { standalone?: boolean }): { text: string; changed: boolean } {
 	if (options?.standalone === false) {
 		return { text, changed: false };
