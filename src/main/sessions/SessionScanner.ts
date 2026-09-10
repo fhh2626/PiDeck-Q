@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { mkdir, open as openFile, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename as posixBasename, dirname as posixDirname, extname as posixExtname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
 import type { TrashPath } from "../fs/trash";
 import type { ChatMessage, ChatRole, SessionSummary } from "../../shared/types";
@@ -1246,6 +1246,94 @@ export class SessionScanner {
    *
    * 深度限制 10 层，且不超出 sessions 根目录，避免误判和性能问题。
    */
+  /** 已知 subagent 运行记录中记录的标准 sessionFile 缓存集合 */
+  private knownSubagentSessionFiles: Set<string> | null = null;
+  private knownSubagentScanTimestamp = 0;
+
+  /**
+   * 从 pi-subagents 运行记录（~/.pi/agent/subagent-runs/、临时目录 async-subagent-results 等）
+   * 反查所有已知 subagent 的 sessionFile 路径。
+   */
+  public getKnownSubagentSessionFiles(forceRefresh = false): Set<string> {
+    const now = Date.now();
+    if (!forceRefresh && this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
+      return this.knownSubagentSessionFiles;
+    }
+
+    const set = new Set<string>();
+
+    const extractSessionFiles = (val: unknown) => {
+      if (!val || typeof val !== "object") return;
+      if (typeof (val as { sessionFile?: unknown }).sessionFile === "string") {
+        const sf = (val as { sessionFile: string }).sessionFile.trim();
+        if (sf) set.add(this.normalize(sf));
+      }
+      if (Array.isArray(val)) {
+        for (const item of val) extractSessionFiles(item);
+      } else {
+        for (const k of Object.keys(val)) {
+          extractSessionFiles((val as Record<string, unknown>)[k]);
+        }
+      }
+    };
+
+    const scanDirForJson = (dir: string, maxDepth = 3) => {
+      if (!existsSync(dir) || maxDepth < 0) return;
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = join(dir, entry.name);
+          if (entry.isFile() && entry.name.endsWith(".json")) {
+            try {
+              const content = readFileSync(full, "utf8");
+              extractSessionFiles(JSON.parse(content));
+            } catch {
+              // 忽略损坏的 JSON 记录
+            }
+          } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
+            scanDirForJson(full, maxDepth - 1);
+          }
+        }
+      } catch {
+        // 忽略无权限或已删除目录
+      }
+    };
+
+    // 1. ~/.pi/agent/subagent-runs 与 subagents
+    scanDirForJson(join(this.homeDir, ".pi", "agent", "subagent-runs"));
+    scanDirForJson(join(this.homeDir, ".pi", "agent", "subagents"));
+
+    // 2. tmpdir() 中的 pi-subagents-* 运行目录
+    try {
+      const tempRoot = tmpdir();
+      if (existsSync(tempRoot)) {
+        const entries = readdirSync(tempRoot, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name.startsWith("pi-subagents-")) {
+            scanDirForJson(join(tempRoot, entry.name), 3);
+          }
+        }
+      }
+    } catch {
+      // 忽略临时目录读取异常
+    }
+
+    // 3. PI_SUBAGENTS_TEMP_ROOT 环境变量指定目录（若有）
+    const customTemp = typeof process !== "undefined" ? process.env?.PI_SUBAGENTS_TEMP_ROOT?.trim() : undefined;
+    if (customTemp && existsSync(customTemp)) {
+      scanDirForJson(customTemp, 3);
+    }
+
+    this.knownSubagentSessionFiles = set;
+    this.knownSubagentScanTimestamp = now;
+    return set;
+  }
+
+  public isKnownSubagentSession(sessionFile: string): boolean {
+    const known = this.getKnownSubagentSessionFiles();
+    return known.has(this.normalize(sessionFile));
+  }
+
   /** pi-subagents 标准布局：.../<parent-stem>/<run-id>/run-N/session.jsonl */
   private isPiSubagentLayoutPath(filePath: string, isWsl: boolean): boolean {
     const fileName = isWsl ? posixBasename(filePath) : basename(filePath);
@@ -1471,22 +1559,26 @@ export class SessionScanner {
       : this.inferParentSessionFromPath(filePath);
     const hasStandardLayout = this.isPiSubagentLayoutPath(filePath, isWsl);
     const namedLikeGeneratedChild = latestSessionInfoName?.startsWith("subagent-") === true;
+    const isKnownSubagent = this.isKnownSubagentSession(filePath);
     const subagentScore = {
       // 标准布局 + 生成名：父文件缺失时仍能识别 orphan worker。
       // 不把“同级偶然存在 <dir>.jsonl”当成内部身份，避免普通嵌套会话误伤。
       pathLayout: hasStandardLayout && namedLikeGeneratedChild ? 2 : 0,
       customMarker: hasSubagentChildMarker ? 2 : 0,
+      knownRunRecord: isKnownSubagent ? 2 : 0,
       namePattern: namedLikeGeneratedChild ? 1 : 0,
-      parentHeader: forkParentSession ? 2 : 0,
+      // parentHeader 单独不作为 subagent 判据；仅在配合 subagent- 生成名或标准布局时提供佐证（给1分）
+      parentHeader: forkParentSession && (namedLikeGeneratedChild || hasStandardLayout) ? 1 : 0,
     };
 
     const confidenceScore =
       subagentScore.pathLayout +
       subagentScore.customMarker +
+      subagentScore.knownRunRecord +
       subagentScore.namePattern +
       subagentScore.parentHeader;
 
-    const isInternalSubagent = source === "pi" && confidenceScore >= 2;
+    const isInternalSubagent = source === "pi" && (confidenceScore >= 2 || isKnownSubagent);
     let parentSessionPath: string | undefined;
     if (isInternalSubagent) {
       // 优先复用上面已完成的路径推断，避免重复遍历文件系统/WSL。

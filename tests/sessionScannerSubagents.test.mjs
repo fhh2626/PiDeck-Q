@@ -873,3 +873,81 @@ test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via 
 		rmSync(home, { recursive: true, force: true });
 	}
 });
+
+test("distinguishes regular /fork session from subagent using run records and names", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-fork-vs-subagent-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const projDir = join(sessionsRoot, "--C--repo-project--");
+		const subagentRunsDir = join(home, ".pi", "agent", "subagent-runs");
+		mkdirSync(subagentRunsDir, { recursive: true });
+
+		const parentFile = join(projDir, "parent.jsonl");
+		const normalForkFile = join(projDir, "user-fork-feature.jsonl");
+		const legacyNamedSubagentFile = join(projDir, "legacy-subagent.jsonl");
+		const uuidSubagentFile = join(projDir, "2026-09-10T10-00-00-000Z_01a089f3-uuid-agent.jsonl");
+		const regularSessionFile = join(projDir, "regular.jsonl");
+
+		// 1. 父会话
+		writeSession(parentFile, session("Parent Session", projectPath));
+
+		// 2. 普通 session (无 parentSession，无 run record)
+		writeSession(regularSessionFile, session("Regular Session", projectPath));
+
+		// 3. 用户手动 /fork session (有 parentSession，无 run record，无 subagent- 命名)
+		writeSession(normalForkFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("Feature branch exploration", projectPath),
+		]);
+
+		// 4. 旧式 subagent-reviewer-* (有 parentSession，以 subagent- 命名)
+		writeSession(legacyNamedSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("subagent-reviewer-code-check-0", projectPath),
+		]);
+
+		// 5. UUID 命名的 subagent (以 UUID 命名，有 parentSession，记录在 subagent-runs 中)
+		writeSession(uuidSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("worker: implement task", projectPath),
+		]);
+
+		// 写入 pi-subagents 的 run record
+		writeFileSync(
+			join(subagentRunsDir, "run-123.json"),
+			JSON.stringify({
+				runId: "run-123",
+				agent: "worker",
+				sessionFile: uuidSubagentFile,
+			}, null, 2),
+			"utf8",
+		);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const summaries = await new SessionScanner().list(projectPath);
+
+		// 1. 普通 session
+		const regularSummary = summaries.find(s => s.filePath === regularSessionFile);
+		assert.ok(regularSummary);
+		assert.equal(regularSummary.isInternalSubagent, undefined, "Regular session must not be internal subagent");
+		assert.equal(regularSummary.parentSessionPath, undefined);
+
+		// 2. 用户手动 /fork session: parentSession 是，run record 否 -> 普通/fork session (isInternalSubagent = undefined)
+		const forkSummary = summaries.find(s => s.filePath === normalForkFile);
+		assert.ok(forkSummary);
+		assert.equal(forkSummary.isInternalSubagent, undefined, "User /fork session must NOT be marked as internal subagent");
+
+		// 3. 旧式 subagent-reviewer-*: parentSession 是，名字像 subagent -> Agent (isInternalSubagent = true)
+		const legacySummary = summaries.find(s => s.filePath === legacyNamedSubagentFile);
+		assert.ok(legacySummary);
+		assert.equal(legacySummary.isInternalSubagent, true, "subagent-* named session with parent must be internal subagent");
+
+		// 4. UUID 命名 subagent: run record 命中 -> Agent (isInternalSubagent = true)
+		const uuidSummary = summaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(uuidSummary);
+		assert.equal(uuidSummary.isInternalSubagent, true, "UUID session found in subagent-runs must be internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
