@@ -1155,8 +1155,7 @@ test("invalidates cached summary classification when a subagent run record appea
 			"utf8",
 		);
 
-		// 3. 强制刷新 subagent 记录快照后进行第二次扫描
-		await scanner.loadKnownSubagentSessionFiles(false, undefined, true);
+		// 3. 直接进行第二次扫描（生产代码在 list 开始时会自动 forceRefresh 运行记录快照）
 		const secondSummaries = await scanner.list(projectPath);
 		const secondSummary = secondSummaries.find(s => s.filePath === uuidSubagentFile);
 

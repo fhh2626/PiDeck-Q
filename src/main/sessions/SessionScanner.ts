@@ -403,8 +403,8 @@ export class SessionScanner {
       }
 
       if (files.length > 0) {
-        // 在解析会话文件前，提前加载当前环境下的已知 subagent 运行记录快照
-        await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), signal).catch(rethrowAbort(new Set<string>()));
+        // 在解析会话文件前，提前加载当前环境下的已知 subagent 运行记录快照（每轮 list 强制刷新，杜绝识别窗口延迟）
+        await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), signal, true).catch(rethrowAbort(new Set<string>()));
       }
 
       const summaries = await Promise.all(files.map(file =>
@@ -851,7 +851,7 @@ export class SessionScanner {
         : [this.root];
     const results: SessionSummary[] = [];
     const seen = new Set<string>();
-    await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig));
+    await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), undefined, true);
     for (const root of roots) {
       const wsl = Boolean(this.wslConfig);
       const archiveDir = this.joinArchivePath(wsl, root, SessionScanner.ARCHIVE_DIR_NAME);
