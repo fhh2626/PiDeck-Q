@@ -298,7 +298,7 @@ export const TurnRow = memo(
 	return (
 		<article
 			ref={rowRef}
-			className={`turn-row mb-3 w-full min-w-0 max-w-full ${
+			className={`turn-row w-full min-w-0 max-w-full ${
 				props.agentRunning && !isComplete
 					? "turn-row--running"
 					: isComplete

@@ -82,9 +82,9 @@ test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", ()
 test("TurnRow keeps exactly two spacing layers (turn-gap + block-gap)", () => {
   const src = read("components/session/turn/TurnRow.tsx");
   const foundation = read("styles/foundation.css");
-  // turn 自身外间距 mb-3（12px）+ 列表层 margin-top 12px = turn-gap，
-  // 不再叠加 mb-6（24px）。
-  assert.match(src, /turn-row mb-3 w-full/, "turn outer margin should be mb-3");
+  // turn 间距只由列表层 --density-turn-gap 负责，不再叠 mb-3/mb-6。
+  assert.match(src, /turn-row w-full min-w-0 max-w-full/, "turn should not own outer margin");
+  assert.doesNotMatch(src, /turn-row mb-3 w-full/, "turn must not keep mb-3");
   assert.doesNotMatch(src, /turn-row mb-6 w-full/, "turn must not stay at mb-6");
   // turn 内部只有一层 block gap（gap-1.5 = 6px）：时间戳→过程→思考/工具→回答。
   assert.match(src, /flex min-w-0 flex-col gap-1\.5/, "turn inner should be a single gap-1.5");
@@ -93,6 +93,12 @@ test("TurnRow keeps exactly two spacing layers (turn-gap + block-gap)", () => {
   assert.doesNotMatch(src, /mb-1 inline-flex items-center gap-2 text-muted-foreground/, "timestamp row must not add its own mb");
   // 列表层 turn-gap 走 density token（12px），不是 16px。
   assert.match(foundation, /\.message-list\.message-list > \* \+ \*\s*\{\s*margin-top:\s*var\(--density-turn-gap/, "message-list gap should consume --density-turn-gap");
+  assert.match(
+    foundation,
+    /\.message-list\.message-list > \.responding-indicator \{\s*margin-top: 4px;/
+    ,
+    "responding indicator should sit 4px below the previous turn",
+  );
 });
 
 test("execution process details sit 6px below the toggle (not 12px)", () => {

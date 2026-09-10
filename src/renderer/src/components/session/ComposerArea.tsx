@@ -127,7 +127,7 @@ function ComposerMeasuredExtras(props: ComposerMeasuredExtrasProps) {
     <>
       <div
         ref={widgetsRef}
-        className="flex shrink-0 min-h-0 min-w-0 flex-col gap-2"
+        className="flex shrink-0 min-h-0 min-w-0 flex-col gap-2 empty:hidden"
       >
         {props.widgets}
         {props.queuePanel}

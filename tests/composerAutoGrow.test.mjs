@@ -86,6 +86,8 @@ test("image attachment bar stays glued to the input box", () => {
   // 图片栏仅在存在图片时传入：空 div 占位会多出一个 gap，
   // 导致有图/无图时输入区高度不一致
   assert.match(composerArea, /composer\.attachments\.length > 0 \? \(/);
+  // 空 extras 必须 hidden，否则 gap-2 会在「组织回答」和输入框之间再垫 8px。
+  assert.match(composerArea, /flex shrink-0 min-h-0 min-w-0 flex-col gap-2 empty:hidden/);
   // gap 实测：Tailwind gap-2 是 rem，随根字号变化，用 rowGap 拿真实 px
   assert.match(composerArea, /getComputedStyle\(footerEl\)\.rowGap/);
   assert.match(composerArea, /imageBarH > 0 \? gapPx : 0/);
