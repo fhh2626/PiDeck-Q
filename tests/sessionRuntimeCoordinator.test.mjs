@@ -255,7 +255,7 @@ function createHarness(options = {}) {
     if (options.sender) return options.sender(input);
     return options.sendResult ?? { accepted: true };
   };
-  return { entry, calls, tabs, catalog, agents, sender };
+  return { entry, calls, tabs, catalog, agents, sender, entriesMap };
 }
 
 function prompt(overrides = {}) {
@@ -326,6 +326,36 @@ test("activation copies catalog internal-subagent identity onto the created runt
 
   assert.equal(result.ok, true);
   assert.equal(harness.calls.createInputs[0].isInternalSubagent, true);
+  assert.equal(harness.tabs[0].isInternalSubagent, true);
+});
+
+test("re-activating a bound runtime backfills catalog internal-subagent identity", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      id: "child-1",
+      title: "Worker",
+      filePath: "C:/sessions/parent/run/run-0/session.jsonl",
+    },
+  });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+
+  const first = await coordinator.activateRuntime("child-1");
+  assert.equal(first.ok, true);
+  assert.equal(harness.tabs[0].isInternalSubagent, undefined);
+
+  const boundEntry = harness.entriesMap.get("child-1");
+  assert.ok(boundEntry);
+  boundEntry.isInternalSubagent = true;
+
+  const second = await coordinator.activateRuntime("child-1");
+  assert.equal(second.ok, true);
+  assert.equal(harness.calls.create, 1);
+  assert.equal(harness.tabs[0].id, first.value.agentId);
   assert.equal(harness.tabs[0].isInternalSubagent, true);
 });
 

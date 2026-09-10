@@ -153,6 +153,13 @@ function isTerminalAgent(tab: AgentTab): boolean {
 	return tab.status === "error" || tab.status === "closed";
 }
 
+/** Scanner 后置确认内部身份时，回填到已绑定 runtime，避免 mapped 分支提前返回漏掉。 */
+function syncInternalSubagentIdentity(tab: AgentTab, entry: SessionCatalogEntry): void {
+	if (entry.isInternalSubagent === true && tab.isInternalSubagent !== true) {
+		tab.isInternalSubagent = true;
+	}
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -998,7 +1005,10 @@ export class SessionRuntimeCoordinator {
 		const mappedAgentId = this.getAgentId(sessionId);
 		if (mappedAgentId) {
 			const mappedTab = this.agents.list().find((candidate) => candidate.id === mappedAgentId);
-			if (mappedTab) return this.waitUntilReady(mappedTab);
+			if (mappedTab) {
+				syncInternalSubagentIdentity(mappedTab, entry);
+				return this.waitUntilReady(mappedTab);
+			}
 		}
 
 		let tab = entry.filePath ? this.findAgentBySessionPath(entry) : undefined;
@@ -1025,9 +1035,8 @@ export class SessionRuntimeCoordinator {
 				importedSourceId: entry.importedSourceId,
 				noSession: entry.noSession,
 			});
-		} else if (entry.isInternalSubagent && !tab.isInternalSubagent) {
-			// 扫描后才确认内部身份时，回填到已有 runtime，避免下一轮列表仍把它当顶层 Agent。
-			tab.isInternalSubagent = true;
+		} else {
+			syncInternalSubagentIdentity(tab, entry);
 		}
 		if (tab.status === "starting") tab = await this.waitUntilReady(tab);
 		if (isTerminalAgent(tab)) {

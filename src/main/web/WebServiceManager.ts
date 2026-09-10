@@ -662,8 +662,16 @@ export class WebServiceManager {
 	private async getState() {
 		const sessions = await this.deps.listCatalogSessions();
 		const runtimes = this.deps.listSessionRuntimes();
+		// Web 没有嵌套 child 行：内部 worker/reviewer 及其 runtime/消息/待答请求都不进 /api/state。
+		const visibleSessions = sessions.filter((session) => (
+			session.isInternalSubagent !== true &&
+			session.codexThreadSource !== "subagent" &&
+			!session.parentSessionPath
+		));
+		const visibleSessionIds = new Set(visibleSessions.map((session) => session.id));
+		const visibleRuntimes = runtimes.filter((runtime) => visibleSessionIds.has(runtime.sessionId));
 		const messagesBySession: Record<string, ChatMessage[]> = {};
-		for (const runtime of runtimes) {
+		for (const runtime of visibleRuntimes) {
 			const snapshot = this.deps.getSessionRuntimeMessages(runtime.sessionId);
 			if (!snapshot) continue;
 			const { target } = snapshot;
@@ -676,15 +684,12 @@ export class WebServiceManager {
 		}
 		return {
 			projects: this.deps.listProjects(),
-			// Web 侧栏没有嵌套 child 行：内部 worker/reviewer 不得作为顶层会话返回。
-			sessions: sessions.filter((session) => (
-				session.isInternalSubagent !== true &&
-				session.codexThreadSource !== "subagent" &&
-				!session.parentSessionPath
-			)),
-			runtimes,
+			sessions: visibleSessions,
+			runtimes: visibleRuntimes,
 			messagesBySession,
-			pendingUiRequests: this.deps.listPendingUiRequests(),
+			pendingUiRequests: this.deps.listPendingUiRequests().filter(
+				(request) => visibleSessionIds.has(request.sessionId),
+			),
 		};
 	}
 

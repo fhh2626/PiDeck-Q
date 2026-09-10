@@ -447,11 +447,54 @@ test("web polling state hides internal subagent sessions from the top-level list
 		isInternalSubagent: true,
 		parentSessionPath: "C:/sessions/parent.jsonl",
 	};
+	const parentRuntime = {
+		sessionId: parent.id,
+		agentId: "agent-parent",
+		runtimeGeneration: 1,
+		projectId: parent.projectId,
+		cwd: "C:/project",
+		status: "idle",
+		createdAt: 2,
+	};
+	const childRuntime = {
+		...parentRuntime,
+		sessionId: orphanChild.id,
+		agentId: "agent-child",
+		runtimeGeneration: 2,
+	};
+	const messageSessions = [];
 	await withServer(async ({ baseUrl }) => {
 		const state = await (await fetch(`${baseUrl}/api/state`)).json();
 		assert.deepEqual(state.sessions.map((session) => session.id), ["parent-1"]);
+		assert.deepEqual(state.runtimes.map((runtime) => runtime.sessionId), ["parent-1"]);
+		assert.equal(state.messagesBySession["parent-1"][0].text, "parent-ready");
+		assert.equal(state.messagesBySession["child-1"], undefined);
+		assert.deepEqual(state.pendingUiRequests, []);
+		assert.deepEqual(messageSessions, ["parent-1"]);
 	}, {
 		listCatalogSessions: async () => [parent, orphanChild, nestedChild],
+		listSessionRuntimes: () => [parentRuntime, childRuntime],
+		getSessionRuntimeMessages: (sessionId) => {
+			messageSessions.push(sessionId);
+			const target = sessionId === parent.id ? parentRuntime : childRuntime;
+			return {
+				target,
+				value: [{
+					id: `${sessionId}-m1`,
+					role: "assistant",
+					text: sessionId === parent.id ? "parent-ready" : "child-ready",
+					timestamp: 1,
+				}],
+			};
+		},
+		listPendingUiRequests: () => [{
+			sessionId: orphanChild.id,
+			agentId: childRuntime.agentId,
+			runtimeGeneration: childRuntime.runtimeGeneration,
+			requestId: "ask-child",
+			method: "confirm",
+			title: "Continue?",
+		}],
 	});
 });
 
