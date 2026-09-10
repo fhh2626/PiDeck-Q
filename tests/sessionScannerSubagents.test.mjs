@@ -1113,3 +1113,58 @@ test("WSL subagents script handles custom PI_SUBAGENTS_TEMP_ROOT and spaces corr
 		rmSync(home, { recursive: true, force: true });
 	}
 });
+
+test("invalidates cached summary classification when a subagent run record appears later without modifying the session file", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-cache-invalidation-"));
+	const tempSubagentsDir = mkdtempSync(join(tmpdir(), "pi-subagents-cache-test-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const projDir = join(sessionsRoot, "--C--repo-project--");
+
+		const parentFile = join(projDir, "parent.jsonl");
+		const uuidSubagentFile = join(projDir, "2026-09-10T12-00-00-000Z_uuid-child.jsonl");
+
+		// 写入初始会话文件
+		writeSession(parentFile, session("Parent Session", projectPath));
+		writeSession(uuidSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("task execution in progress", projectPath),
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner();
+
+		// 1. 第一次扫描：此时 run record 尚未出现，UUID 会话按普通/fork 会话分类
+		const firstSummaries = await scanner.list(projectPath);
+		const firstSummary = firstSummaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(firstSummary);
+		assert.equal(firstSummary.isInternalSubagent, undefined, "First scan must treat session as regular/fork because no run record exists");
+
+		// 2. 绝对不修改 uuidSubagentFile（保持相同的 mtime 和 size）
+		// 外部 pi-subagents 随后写入 status.json / sessionFile
+		const runDir = join(tempSubagentsDir, "async-subagent-runs", "run-999");
+		mkdirSync(runDir, { recursive: true });
+		writeFileSync(
+			join(runDir, "status.json"),
+			JSON.stringify({
+				runId: "run-999",
+				agent: "worker",
+				sessionFile: uuidSubagentFile,
+			}, null, 2),
+			"utf8",
+		);
+
+		// 3. 强制刷新 subagent 记录快照后进行第二次扫描
+		await scanner.loadKnownSubagentSessionFiles(false, undefined, true);
+		const secondSummaries = await scanner.list(projectPath);
+		const secondSummary = secondSummaries.find(s => s.filePath === uuidSubagentFile);
+
+		// 4. 验证：由于外部 run record 提供了新的强身份信息，缓存必须被突破并重新分类为内部 subagent
+		assert.ok(secondSummary);
+		assert.equal(secondSummary.isInternalSubagent, true, "Second scan must update classification to internal subagent without session file modification");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(tempSubagentsDir, { recursive: true, force: true });
+	}
+});

@@ -1267,10 +1267,10 @@ export class SessionScanner {
    * 在每轮扫描开始前异步加载已知 subagent 运行记录快照。
    * 支持 WSL 模式（通过 wsl.exe 扫描 Linux /tmp/pi-subagents-*）与本地模式（扫描 tmpdir/pi-subagents-*）。
    */
-  public async loadKnownSubagentSessionFiles(wsl: boolean, signal?: AbortSignal): Promise<Set<string>> {
+  public async loadKnownSubagentSessionFiles(wsl: boolean, signal?: AbortSignal, forceRefresh = false): Promise<Set<string>> {
     if (signal?.aborted) throw signal.reason;
     const now = Date.now();
-    if (this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
+    if (!forceRefresh && this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
       return this.knownSubagentSessionFiles;
     }
 
@@ -1525,7 +1525,13 @@ export class SessionScanner {
       : await stat(filePath);
     const version = { mtimeMs: info.mtimeMs, size: info.size };
     const cached = this.summaryCache.get(filePath, version);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      const nowKnownSubagent = this.isKnownSubagentSession(filePath);
+      // 外部 run record 提供了新的强身份信息时，不能直接复用旧的普通会话缓存
+      if (!nowKnownSubagent || !cached || cached.isInternalSubagent === true) {
+        return cached;
+      }
+    }
 
     const raw = isWsl
       ? await this.readWslFile(filePath, signal)
