@@ -8,6 +8,8 @@ import {
 	hasExplicitAsyncTrueInScript,
 	initializeSubagentDescription,
 	initializeSettings,
+	ensureStandaloneSubagentConfig,
+	ensureStandaloneSubagentForegroundSafe,
 	inspectNativeSubagentAsyncDefault,
 	isPiSubagentsSkillPath,
 	loadSettings,
@@ -302,7 +304,7 @@ export function registerPromptExtension(
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
 			const standalone = isStandalone();
 			const nativeAsync = (subagentAdaptationEnabled() && standalone && nativeTools.length)
-				? await inspectNativeSubagentAsyncDefault(agentDir)
+				? await ensureStandaloneSubagentForegroundSafe(agentDir)
 				: undefined;
 
 			const rewritten = subagentAdaptationEnabled()
@@ -443,7 +445,7 @@ export function registerPromptExtension(
 
 		// Standalone native child: enforce foreground execution
 		if (standalone) {
-			const check = await inspectNativeSubagentAsyncDefault(agentDir);
+			const check = await ensureStandaloneSubagentForegroundSafe(agentDir);
 			if (!check.ok) {
 				return {
 					block: true,
@@ -482,7 +484,7 @@ export function registerPromptExtension(
 							break;
 						}
 						const created = await initializeSubagentDescription(agentDir);
-						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'subagent-tool-description.md')}。请在 ${join(agentDir, 'extensions', 'subagent', 'config.json')} 顶层设置 toolDescriptionMode 为 custom，并设置 asyncByDefault 为 false，随后开启新会话。项目配置目录中的 subagent-tool-description.md 优先；本命令不修改 pi-subagents 配置。上游会自动追加安全指南。独立二进制环境必须显式关闭后台子 agent。`);
+						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'subagent-tool-description.md')}。请在 ${join(agentDir, 'extensions', 'subagent', 'config.json')} 顶层设置 toolDescriptionMode 为 custom。standalone Pi 下，如果 subagent config 不存在，change-pi-prompt 会自动创建最小 foreground-safe 配置。已有配置不会自动修改。项目配置目录中的 subagent-tool-description.md 优先；本命令不修改 pi-subagents 配置。上游会自动追加安全指南。独立二进制环境必须显式关闭后台子 agent。`);
 						break;
 					}
 					case 'preview':

@@ -207,7 +207,93 @@ export function rewriteSystemPromptTools(
 
 export async function inspectNativeSubagentAsyncDefault(agentDir: string): Promise<NativeSubagentConfigCheck> {
 	const configPath = nativeSubagentConfigPath(agentDir);
-	return inspectNativeAsyncByDefault(await readOptional(configPath), configPath);
+	try {
+		const text = await readOptional(configPath);
+		return inspectNativeAsyncByDefault(text, configPath);
+	} catch (error) {
+		return {
+			path: configPath,
+			asyncByDefault: undefined,
+			forceTopLevelAsync: undefined,
+			ok: false,
+			message: `${configPath}: 配置检查失败（${error instanceof Error ? error.message : String(error)}）`,
+		};
+	}
+}
+
+/** Standalone Pi minimal foreground-safe configuration auto-provisioning.
+ *  Only creates when completely absent; existing configurations are never modified. */
+export async function ensureStandaloneSubagentConfig(agentDir: string): Promise<NativeSubagentConfigCheck> {
+	return ensureStandaloneSubagentForegroundSafe(agentDir);
+}
+
+export async function ensureStandaloneSubagentForegroundSafe(agentDir: string): Promise<NativeSubagentConfigCheck> {
+	const configPath = nativeSubagentConfigPath(agentDir);
+	const extensionsDir = join(agentDir, 'extensions');
+	const subagentDir = join(extensionsDir, 'subagent');
+
+	let existingText: string | undefined;
+	try {
+		existingText = await readOptional(configPath);
+	} catch (error) {
+		return {
+			path: configPath,
+			asyncByDefault: undefined,
+			forceTopLevelAsync: undefined,
+			ok: false,
+			message: `${configPath}: 配置检查失败（${error instanceof Error ? error.message : String(error)}）`,
+		};
+	}
+
+	if (existingText !== undefined) {
+		try {
+			return inspectNativeAsyncByDefault(existingText, configPath);
+		} catch (error) {
+			return {
+				path: configPath,
+				asyncByDefault: undefined,
+				forceTopLevelAsync: undefined,
+				ok: false,
+				message: `${configPath}: 配置解析失败（${error instanceof Error ? error.message : String(error)}）`,
+			};
+		}
+	}
+
+	// config.json does not exist. Verify parent directories are real directories (not symlinks).
+	try {
+		await checkDirectory(extensionsDir);
+		await mkdir(extensionsDir, { recursive: true });
+		await checkDirectory(subagentDir);
+		await mkdir(subagentDir, { recursive: true });
+
+		const minimalConfig = {
+			asyncByDefault: false,
+			forceTopLevelAsync: false,
+		};
+		const content = JSON.stringify(minimalConfig, null, 2) + '\n';
+		await writeFile(configPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+
+		const verified = await inspectNativeSubagentAsyncDefault(agentDir);
+		if (verified.ok) {
+			return {
+				...verified,
+				message: `subagent-config: created foreground-safe config at ${configPath}`,
+			};
+		}
+		return verified;
+	} catch (error) {
+		if (hasCode(error, 'EEXIST')) {
+			// Concurrent creation race: another process created it, re-inspect existing file without overwriting
+			return inspectNativeSubagentAsyncDefault(agentDir);
+		}
+		return {
+			path: configPath,
+			asyncByDefault: undefined,
+			forceTopLevelAsync: undefined,
+			ok: false,
+			message: `${configPath}: 自动创建安全配置失败（${error instanceof Error ? error.message : String(error)}）`,
+		};
+	}
 }
 
 function hasCode(error: unknown, code: string): boolean {

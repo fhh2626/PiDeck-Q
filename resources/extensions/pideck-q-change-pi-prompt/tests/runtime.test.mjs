@@ -40,7 +40,7 @@ test('init-subagent recognizes native custom-mode tools and points at native con
   await command('init-subagent');
   assert.equal(await readFile(join(dir, 'subagent-tool-description.md'), 'utf8'), 'USER CONTENT');
 }));
-test('before_agent_start warns unless native asyncByDefault is false', () => harness(async ({ dir, handlers, notices, ctx, pi }) => {
+test('before_agent_start auto-provisions foreground-safe config when absent and warns if unsafe', () => harness(async ({ dir, handlers, notices, ctx, pi }) => {
   await mkdir(join(dir, 'change-pi-prompt'), { recursive: true });
   await writeFile(join(dir, 'change-pi-prompt/config.json'), JSON.stringify({ schemaVersion: 1, enabled: true, replaceIdentity: true, replaceGuidelines: true, removeDocumentation: true, pwsh: true, subagent: true, unknownGuidelines: 'preserve' }));
   pi.getAllTools = () => [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
@@ -48,9 +48,16 @@ test('before_agent_start warns unless native asyncByDefault is false', () => har
   const prompt = 'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n- subagent: Delegate\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- Be concise in your responses\n\nPi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples\n';
   await handlers.get('session_start')({}, ctx);
   await handlers.get('before_agent_start')({ systemPrompt: prompt, systemPromptOptions: { selectedTools: ['subagent'] } }, ctx);
-  assert.ok(notices.some(x => x.includes('asyncByDefault')));
+  assert.equal(notices.some(x => x.includes('asyncByDefault')), false);
+  const created = JSON.parse(await readFile(join(dir, 'extensions/subagent/config.json'), 'utf8'));
+  assert.deepEqual(created, { asyncByDefault: false, forceTopLevelAsync: false });
+
   notices.length = 0;
-  await mkdir(join(dir, 'extensions/subagent'), { recursive: true });
+  await writeFile(join(dir, 'extensions/subagent/config.json'), '{"asyncByDefault":true}');
+  await handlers.get('before_agent_start')({ systemPrompt: prompt, systemPromptOptions: { selectedTools: ['subagent'] } }, ctx);
+  assert.ok(notices.some(x => x.includes('asyncByDefault')));
+
+  notices.length = 0;
   await writeFile(join(dir, 'extensions/subagent/config.json'), '{"asyncByDefault":false}');
   await handlers.get('before_agent_start')({ systemPrompt: prompt, systemPromptOptions: { selectedTools: ['subagent'] } }, ctx);
   assert.equal(notices.some(x => x.includes('asyncByDefault')), false);

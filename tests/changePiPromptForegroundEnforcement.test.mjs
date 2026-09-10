@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	ensureStandaloneSubagentConfig,
+	ensureStandaloneSubagentForegroundSafe,
 	inspectNativeAsyncByDefault,
+	nativeSubagentConfigPath,
 	rewriteUpstreamAsyncDefault,
 	SUBAGENT_SCHEMA_ASYNC_SENTENCE,
 } from "../resources/extensions/pideck-q-change-pi-prompt/config.ts";
@@ -191,6 +194,197 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		const bashInput = { command: "ls -la" };
 		const resBash = await toolCallHandler({ toolName: "bash", input: bashInput });
 		assert.equal(resBash, undefined);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("ensureStandaloneSubagentForegroundSafe auto-creates minimal foreground-safe config when absent and never overwrites existing config", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-ensure-config-"));
+	const configPath = nativeSubagentConfigPath(tempDir);
+
+	try {
+		// 1. 配置文件不存在 -> 自动创建最小配置 (asyncByDefault=false, forceTopLevelAsync=false) -> ok=true
+		assert.equal(existsSync(configPath), false);
+		const created = await ensureStandaloneSubagentForegroundSafe(tempDir);
+		assert.equal(created.ok, true);
+		assert.equal(created.asyncByDefault, false);
+		assert.equal(created.forceTopLevelAsync, false);
+		assert.match(created.message, /created foreground-safe config/);
+		assert.equal(existsSync(configPath), true);
+
+		const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+		assert.deepEqual(parsed, {
+			asyncByDefault: false,
+			forceTopLevelAsync: false,
+		});
+
+		// ensureStandaloneSubagentConfig 别名函数行为一致
+		const aliasCheck = await ensureStandaloneSubagentConfig(tempDir);
+		assert.equal(aliasCheck.ok, true);
+
+		// 2. 已有 asyncByDefault=false 且 forceTopLevelAsync 缺失 -> 允许，且不重写文件
+		const customSafe = { asyncByDefault: false, customSetting: "preserved" };
+		writeFileSync(configPath, JSON.stringify(customSafe), "utf8");
+		const safeCheck = await ensureStandaloneSubagentForegroundSafe(tempDir);
+		assert.equal(safeCheck.ok, true);
+		assert.equal(safeCheck.asyncByDefault, false);
+		assert.equal(safeCheck.forceTopLevelAsync, undefined);
+		const rawAfterSafe = readFileSync(configPath, "utf8");
+		assert.equal(rawAfterSafe, JSON.stringify(customSafe), "已存在文件绝不能被重写");
+
+		// 3. 已有 asyncByDefault=true -> block 且文件原样不变
+		const unsafeAsync = { asyncByDefault: true, userChoice: "do not overwrite" };
+		writeFileSync(configPath, JSON.stringify(unsafeAsync), "utf8");
+		const unsafeAsyncCheck = await ensureStandaloneSubagentForegroundSafe(tempDir);
+		assert.equal(unsafeAsyncCheck.ok, false);
+		assert.equal(unsafeAsyncCheck.asyncByDefault, true);
+		assert.equal(readFileSync(configPath, "utf8"), JSON.stringify(unsafeAsync), "已有不安全文件不得被覆盖");
+
+		// 4. 已有 forceTopLevelAsync=true -> block 且文件原样不变
+		const unsafeForce = { asyncByDefault: false, forceTopLevelAsync: true };
+		writeFileSync(configPath, JSON.stringify(unsafeForce), "utf8");
+		const unsafeForceCheck = await ensureStandaloneSubagentForegroundSafe(tempDir);
+		assert.equal(unsafeForceCheck.ok, false);
+		assert.equal(unsafeForceCheck.forceTopLevelAsync, true);
+		assert.equal(readFileSync(configPath, "utf8"), JSON.stringify(unsafeForce), "已有配置不得被覆盖");
+
+		// 5. malformed JSON -> block 且不覆盖
+		const malformed = "{ invalid json content ...";
+		writeFileSync(configPath, malformed, "utf8");
+		const malformedCheck = await ensureStandaloneSubagentForegroundSafe(tempDir);
+		assert.equal(malformedCheck.ok, false);
+		assert.match(malformedCheck.message, /配置检查失败|配置解析失败/);
+		assert.equal(readFileSync(configPath, "utf8"), malformed, "畸形配置文件不得被覆盖");
+
+		// 6. symlink config -> block 且不覆盖
+		rmSync(configPath, { force: true });
+		const realFile = join(tempDir, "real-config.json");
+		writeFileSync(realFile, JSON.stringify({ asyncByDefault: false }), "utf8");
+		try {
+			symlinkSync(realFile, configPath);
+			const symlinkCheck = await ensureStandaloneSubagentForegroundSafe(tempDir);
+			assert.equal(symlinkCheck.ok, false);
+			assert.match(symlinkCheck.message, /配置检查失败/);
+		} catch (err) {
+			if (err.code !== "EPERM") throw err;
+		}
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("runtime handles missing config on first tool_call, non-standalone, and external runners", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-prompt-firstcall-"));
+	const configPath = nativeSubagentConfigPath(tempDir);
+
+	try {
+		const handlers = new Map();
+		const tools = [
+			{
+				name: "subagent",
+				description: "Official subagent",
+				sourceInfo: { source: "npm:pi-subagents", path: "C:/node_modules/pi-subagents/index.js" },
+			},
+			{
+				name: "bash",
+				description: "Bash tool",
+				sourceInfo: { source: "builtin" },
+			},
+		];
+
+		const mockPi = {
+			on: (event, fn) => { handlers.set(event, fn); },
+			getAllTools: () => tools,
+			getActiveTools: () => ["subagent", "bash"],
+			setActiveTools: () => {},
+			registerCommand: () => {},
+		};
+
+		const probeHost = {
+			hasCommand: () => true,
+			hasPowerShell: () => true,
+		};
+
+		let isStandalone = true;
+		registerPromptExtension(mockPi, tempDir, {
+			probeHost,
+			isStandalone: () => isStandalone,
+		});
+		const toolCallHandler = handlers.get("tool_call");
+
+		// 1. 初始状态：config.json 完全不存在
+		assert.equal(existsSync(configPath), false);
+
+		// 2. 首次 native tool_call -> 不 block，自动创建安全配置，且 input.async 被设为 false
+		const nativeInput = { agent: "worker", task: "initial call" };
+		const resFirst = await toolCallHandler({ toolName: "subagent", input: nativeInput });
+		assert.equal(resFirst, undefined, "首次调用不应被阻断");
+		assert.equal(nativeInput.async, false, "native subagent input.async 必须强制为 false");
+		assert.equal(existsSync(configPath), true, "应当自动创建 config.json");
+		const createdJson = JSON.parse(readFileSync(configPath, "utf8"));
+		assert.deepEqual(createdJson, {
+			asyncByDefault: false,
+			forceTopLevelAsync: false,
+		});
+
+		// 3. 非 standalone Pi 环境下：即使 config.json 不存在，也不应自动创建 config.json，不应强制 async: false
+		rmSync(configPath, { force: true });
+		assert.equal(existsSync(configPath), false);
+		isStandalone = false;
+
+		const nonStandaloneInput = { agent: "worker", task: "call in node pi", async: true };
+		const resNonStandalone = await toolCallHandler({ toolName: "subagent", input: nonStandaloneInput });
+		assert.equal(resNonStandalone, undefined);
+		assert.equal(nonStandaloneInput.async, true, "非 standalone Pi 环境下不得篡改 async 为 false");
+		assert.equal(existsSync(configPath), false, "非 standalone Pi 环境下不得自动创建 config.json");
+
+		// 4. external-cli / external-job runner 不触发 native config.json 自动创建
+		isStandalone = true;
+		assert.equal(existsSync(configPath), false);
+
+		// 模拟向 external-cli 类型的 subagent 调用（例如 codex-exec）
+		const externalInput = { agent: "codex-exec", task: "external job", async: true };
+		const resExternal = await toolCallHandler({ toolName: "subagent", input: externalInput });
+		// standalone 下 external runner 无法在后台运行，会以明确 reason 阻断，但绝不应触发 native config.json 创建
+		assert.ok(resExternal && resExternal.block === true);
+		assert.match(resExternal.reason, /external runner/);
+		assert.equal(existsSync(configPath), false, "external runner 不应触发 native subagent config.json 创建");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("ensureStandaloneSubagentForegroundSafe handles write race conditions gracefully", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-race-config-"));
+	const configPath = nativeSubagentConfigPath(tempDir);
+
+	try {
+		// 并发调用 ensureStandaloneSubagentForegroundSafe，两者均应成功且不冲突
+		assert.equal(existsSync(configPath), false);
+		const [res1, res2] = await Promise.all([
+			ensureStandaloneSubagentForegroundSafe(tempDir),
+			ensureStandaloneSubagentForegroundSafe(tempDir),
+		]);
+
+		assert.equal(res1.ok, true);
+		assert.equal(res2.ok, true);
+		assert.equal(existsSync(configPath), true);
+		const content = JSON.parse(readFileSync(configPath, "utf8"));
+		assert.equal(content.asyncByDefault, false);
+		assert.equal(content.forceTopLevelAsync, false);
+
+		// 如果竞态写入由外部进程先写入了不安全的配置（如 asyncByDefault: true）
+		// ensureStandaloneSubagentForegroundSafe 重新 inspect 时必须判定为 unsafe 并返回 ok=false
+		const tempDir2 = mkdtempSync(join(tmpdir(), "pideck-race-unsafe-"));
+		const configPath2 = nativeSubagentConfigPath(tempDir2);
+		mkdirSync(join(tempDir2, "extensions", "subagent"), { recursive: true });
+		writeFileSync(configPath2, JSON.stringify({ asyncByDefault: true }), "utf8");
+
+		const resUnsafe = await ensureStandaloneSubagentForegroundSafe(tempDir2);
+		assert.equal(resUnsafe.ok, false);
+		assert.equal(resUnsafe.asyncByDefault, true);
+		rmSync(tempDir2, { recursive: true, force: true });
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
