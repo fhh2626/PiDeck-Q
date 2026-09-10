@@ -1012,7 +1012,9 @@ export class SessionScanner {
    * 这不是 CLI 的 fork：不裁剪会话树，只生成一个可独立打开/继续的新历史会话文件。
    * 支持 WSL 路径。
    */
-  async copy(filePath: string): Promise<SessionSummary> {    const wsl = this.isWslPath(filePath);
+  async copy(filePath: string): Promise<SessionSummary> {
+    const wsl = this.isWslPath(filePath);
+    await this.loadKnownSubagentSessionFiles(wsl);
     const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
     const current = await this.readSummary(filePath).catch(() => null);
     const copyName = this.translate("session.copyTitle", {
@@ -1035,6 +1037,7 @@ export class SessionScanner {
   /** 将历史 JSONL 会话直接导出为基础 HTML，支持 WSL 路径 */
   async exportHtml(filePath: string): Promise<{ path: string }> {
     const wsl = this.isWslPath(filePath);
+    await this.loadKnownSubagentSessionFiles(wsl);
     const summary = await this.readSummary(filePath);
     if (!summary) throw new Error("会话文件无法读取");
     const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
@@ -1277,6 +1280,16 @@ export class SessionScanner {
     return this.loadKnownSubagentSessionFilesLocal();
   }
 
+  /** 构建在 WSL 环境中查找 subagent 运行记录的 shell 脚本 */
+  public static buildWslSubagentsScript(): string {
+    return (
+      'find /tmp -maxdepth 4 -path "*/pi-subagents-*/*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true; ' +
+      'if [ -n "$PI_SUBAGENTS_TEMP_ROOT" ] && [ -d "$PI_SUBAGENTS_TEMP_ROOT" ]; then ' +
+      'find "$PI_SUBAGENTS_TEMP_ROOT" -maxdepth 3 -name "*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true; ' +
+      'fi'
+    );
+  }
+
   /** 通过 wsl.exe 扫描 WSL 环境临时目录中的 pi-subagents 运行记录 */
   private async loadKnownSubagentSessionFilesWsl(signal?: AbortSignal): Promise<Set<string>> {
     const set = new Set<string>();
@@ -1287,9 +1300,7 @@ export class SessionScanner {
     }
 
     try {
-      const script =
-        'ROOTS="/tmp"; [ -n "$PI_SUBAGENTS_TEMP_ROOT" ] && [ -d "$PI_SUBAGENTS_TEMP_ROOT" ] && ROOTS="$ROOTS $PI_SUBAGENTS_TEMP_ROOT"; ' +
-        'find $ROOTS -maxdepth 4 -path "*/pi-subagents-*/*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true';
+      const script = SessionScanner.buildWslSubagentsScript();
 
       const stdout = await new Promise<string>((resolve, reject) => {
         execFile(
@@ -1397,12 +1408,9 @@ export class SessionScanner {
 
   /**
    * 同步查询给定 sessionFile 是否在已知 subagent 运行记录集合中。
-   * 未加载过时自动从本地临时目录加载兜底。
+   * 纯内存查找，由 loadKnownSubagentSessionFiles 预加载。
    */
   public isKnownSubagentSession(sessionFile: string): boolean {
-    if (!this.knownSubagentSessionFiles) {
-      this.loadKnownSubagentSessionFilesLocal();
-    }
     return this.knownSubagentSessionFiles?.has(this.normalize(sessionFile)) ?? false;
   }
 
@@ -1507,8 +1515,11 @@ export class SessionScanner {
   }
 
   private async readSummary(filePath: string, signal?: AbortSignal): Promise<SessionSummary | null> {
-    // 先读取轻量文件指纹；未变化时复用摘要，避免周期扫描反复读取和解析全部 JSONL。
     const isWsl = this.isWslPath(filePath);
+    if (!this.knownSubagentSessionFiles) {
+      await this.loadKnownSubagentSessionFiles(isWsl, signal);
+    }
+    // 先读取轻量文件指纹；未变化时复用摘要，避免周期扫描反复读取和解析全部 JSONL。
     const info = isWsl
       ? await this.readWslFileVersion(filePath, signal)
       : await stat(filePath);

@@ -1042,3 +1042,74 @@ test("distinguishes WSL regular /fork session from subagent using WSL run record
 		rmSync(home, { recursive: true, force: true });
 	}
 });
+
+test("WSL subagents script handles custom PI_SUBAGENTS_TEMP_ROOT and spaces correctly", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-wsl-custom-temp-"));
+	try {
+		const { SessionScanner } = loadSessionScanner(home);
+
+		// 1. 验证静态脚本构造
+		const script = SessionScanner.buildWslSubagentsScript();
+		assert.ok(script.includes('find /tmp -maxdepth 4 -path "*/pi-subagents-*/*.json"'), "/tmp must scan pi-subagents-*");
+		assert.ok(script.includes('find "$PI_SUBAGENTS_TEMP_ROOT" -maxdepth 3 -name "*.json"'), "custom root must scan *.json directly and be quoted");
+		assert.ok(!script.includes('find $ROOTS'), "must not combine roots into unquoted $ROOTS");
+
+		// 2. 模拟 WSL 环境下自定义目录带空格的场景（如 /home/dev/my custom subagent runtime）
+		const customWslDir = "/home/dev/my custom subagent runtime";
+		const projectPath = "/home/dev/repo/project";
+		const parentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/parent.jsonl";
+		const customSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/custom-uuid-agent.jsonl";
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[customSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("worker: task from custom root", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		let capturedScript = "";
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args)) {
+					if (args.includes("find") && !args.includes("sh")) {
+						cb(null, [parentFile, customSubagentFile].join("\n"));
+						return;
+					}
+					if (args.includes("sh") && typeof args[args.indexOf("sh") + 2] === "string") {
+						capturedScript = args[args.indexOf("sh") + 2];
+						// 模拟在 custom root 中匹配到了 sessionFile
+						cb(null, `"sessionFile": "${customSubagentFile}"\n`);
+						return;
+					}
+				}
+				cb(null, "");
+			},
+		};
+
+		const { SessionScanner: MockedScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new MockedScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+		assert.ok(capturedScript.length > 0, "WSL subagent script must have been executed");
+		assert.ok(capturedScript.includes('find "$PI_SUBAGENTS_TEMP_ROOT"'), "script must quote PI_SUBAGENTS_TEMP_ROOT");
+
+		const subagentSummary = summaries.find(s => s.filePath === customSubagentFile);
+		assert.ok(subagentSummary);
+		assert.equal(subagentSummary.isInternalSubagent, true, "Session recorded in custom WSL root must be identified as internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
