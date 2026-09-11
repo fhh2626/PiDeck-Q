@@ -20,6 +20,18 @@ export interface EffectiveShellPolicy {
 	powershellProviderPath?: string;
 }
 
+/**
+ * The parent's final shell ceiling, published for child runtimes.
+ * A child session's tool allowlist comes from the agent definition only, so the child cannot
+ * observe the parent's active shell tools on its own; the parent publishes, the child consumes.
+ */
+export interface ShellPolicySnapshot {
+	version: 1;
+	platform: string;
+	bash: boolean;
+	powershell: boolean;
+}
+
 export interface ChildShellSlots {
 	/** Canonical shell set the child ends up with. */
 	bash: boolean;
@@ -32,6 +44,12 @@ export interface ChildShellSlots {
 
 export function isShellToolName(name: string): boolean {
 	return name === 'bash' || name === 'powershell';
+}
+
+/** Narrow an already-validated snapshot to the ceiling shape used by the child mapping. */
+export function toShellCeiling(snapshot: ShellPolicySnapshot | undefined): { bash: boolean; powershell: boolean } | undefined {
+	if (!snapshot) return undefined;
+	return { bash: snapshot.bash, powershell: snapshot.powershell };
 }
 
 /**
@@ -145,21 +163,35 @@ export function resolveChildShellSlots(options: {
  * re-applied after the child starts. `wantsShell` must come from the agent definition (the
  * child's own list may already be pruned). `pruneOnly` is used when the child identity cannot
  * be resolved: prune unavailable shells, but never broaden the child's tool set.
+ *
+ * `ceiling` is the parent's published final shell set. It is authoritative: a shell the parent
+ * did not expose must not come back just because the local host still has that backend.
  */
 export function reconcileChildActiveShellTools(options: {
 	platform: NodeJS.Platform;
 	availability: ShellAvailability;
-	registeredTools: readonly string[];
+	registeredTools: readonly ToolSnapshot[];
 	activeTools: readonly string[];
 	wantsShell: boolean;
 	pruneOnly?: boolean;
+	ceiling?: { bash: boolean; powershell: boolean };
 }): string[] {
-	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly } = options;
+	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
 	const next = new Set(activeTools);
 
+	// A slot is usable only when the backend exists, the parent exposed it, the child runtime
+	// actually registers it, and it is not a pwsh adapter squatting on the bash name.
+	const permitted = (name: 'bash' | 'powershell'): boolean => {
+		if (!availability[name]) return false;
+		if (ceiling && ceiling[name] === false) return false;
+		const tool = registeredTools.find(candidate => candidate.name === name);
+		if (!tool) return false;
+		return !(name === 'bash' && isPwsh(tool));
+	};
+
 	const prune = (): string[] => {
-		if (!availability.bash) next.delete('bash');
-		if (!availability.powershell) next.delete('powershell');
+		if (!permitted('bash')) next.delete('bash');
+		if (!permitted('powershell')) next.delete('powershell');
 		return [...next];
 	};
 
@@ -167,11 +199,10 @@ export function reconcileChildActiveShellTools(options: {
 	if (!wantsShell) return [...next];
 
 	if (platform === 'win32') {
-		if (availability.bash) next.add('bash');
+		if (permitted('bash')) next.add('bash');
 		else next.delete('bash');
 
-		const powerShellRegistered = registeredTools.includes('powershell');
-		if (availability.powershell && powerShellRegistered) next.add('powershell');
+		if (permitted('powershell')) next.add('powershell');
 		else next.delete('powershell');
 		return [...next];
 	}

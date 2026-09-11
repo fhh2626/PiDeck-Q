@@ -3,6 +3,7 @@ import test from 'node:test';
 import { join } from 'node:path';
 import {
   bashAvailable,
+  classifyConfiguredShellKind,
   filterUnavailableShellToolLines,
   hideUnavailableShellTools,
   parseShellPathFromSettings,
@@ -38,6 +39,41 @@ test('configured shellPath wins over missing Git Bash', () => {
   const windows = host('win32', ['D:\\tools\\bash.exe']);
   assert.equal(bashAvailable(windows, 'D:\\tools\\bash.exe'), true);
   assert.equal(bashAvailable(windows, 'D:\\missing\\bash.exe'), false);
+});
+
+test('a configured shellPath is classified by file name and never assumed to be bash', () => {
+  const windows = host('win32', [
+    'D:\\tools\\pwsh.exe',
+    'D:\\tools\\powershell.exe',
+    'D:\\tools\\bash.exe',
+    'D:\\tools\\sh.exe',
+    'C:\\Windows\\System32\\cmd.exe',
+  ]);
+
+  // pwsh.exe / powershell.exe -> powershell only
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\pwsh.exe'), { bash: false, powershell: true });
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\powershell.exe'), { bash: false, powershell: true });
+  assert.equal(bashAvailable(windows, 'D:\\tools\\pwsh.exe'), false, 'pwsh.exe must not make bash available');
+
+  // bash.exe / sh.exe -> bash only
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\bash.exe'), { bash: true, powershell: false });
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\sh.exe'), { bash: true, powershell: false });
+  assert.equal(powershellAvailable(windows, 'D:\\tools\\bash.exe'), false);
+
+  // unknown shells contribute to neither backend
+  assert.equal(classifyConfiguredShellKind(windows, 'C:\\Windows\\System32\\cmd.exe'), undefined);
+  assert.deepEqual(probeShellAvailability(windows, 'C:\\Windows\\System32\\cmd.exe'), { bash: false, powershell: false });
+
+  // a missing configured path never invents a backend
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\missing.exe'), { bash: false, powershell: false });
+});
+
+test('a configured shellPath does not hide a real backend that is also present', () => {
+  const windows = host('win32', [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'D:\\tools\\pwsh.exe',
+  ]);
+  assert.deepEqual(probeShellAvailability(windows, 'D:\\tools\\pwsh.exe'), { bash: true, powershell: true });
 });
 
 test('Linux keeps bash at /bin/bash and only accepts pwsh, not Windows powershell.exe', () => {

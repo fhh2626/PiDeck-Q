@@ -18,6 +18,12 @@ export interface ShellAvailability {
 	powershell: boolean;
 }
 
+/** Which backend a configured `settings.shellPath` actually is. */
+export type ConfiguredShellKind = 'bash' | 'powershell';
+
+const BASH_BASENAMES = new Set(['bash.exe', 'bash', 'sh.exe', 'sh']);
+const POWERSHELL_BASENAMES = new Set(['pwsh.exe', 'pwsh', 'powershell.exe', 'powershell']);
+
 const WINDOWS_BASH_FILES = [
 	'C:\\Program Files\\Git\\bin\\bash.exe',
 	'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
@@ -84,25 +90,53 @@ export function resolveShellPath(shellPath: string | undefined, home = homedir()
 }
 
 export function bashAvailable(host: ShellProbeHost, shellPath?: string): boolean {
-	const configured = resolveShellPath(shellPath, host.env.HOME ?? host.env.USERPROFILE ?? homedir());
-	if (configured && host.exists(configured)) return true;
+	if (classifyConfiguredShellKind(host, shellPath) === 'bash') return true;
+	return bashBackendPresent(host);
+}
+
+/** Only the well-known bash executables count; any configured shell is never assumed to be bash. */
+function bashBackendPresent(host: ShellProbeHost): boolean {
 	if (host.platform === 'win32') {
 		return anyFile(host, WINDOWS_BASH_FILES) || onPath(host, ['bash.exe', 'bash']);
 	}
 	return anyFile(host, POSIX_BASH_FILES) || onPath(host, ['bash']);
 }
 
-export function powershellAvailable(host: ShellProbeHost): boolean {
+export function powershellAvailable(host: ShellProbeHost, shellPath?: string): boolean {
+	if (classifyConfiguredShellKind(host, shellPath) === 'powershell') return true;
+	return powershellBackendPresent(host);
+}
+
+function powershellBackendPresent(host: ShellProbeHost): boolean {
 	if (host.platform === 'win32') {
 		return anyFile(host, WINDOWS_POWERSHELL_FILES) || onPath(host, ['pwsh.exe', 'powershell.exe', 'pwsh', 'powershell']);
 	}
 	return anyFile(host, POSIX_PWSH_FILES) || onPath(host, ['pwsh']);
 }
 
+/**
+ * Classify a configured `shellPath` by its file name.
+ * A configured shell contributes only to the backend it really is: `pwsh.exe` is PowerShell,
+ * it must never make bash appear available. Unknown names contribute to neither backend.
+ */
+export function classifyConfiguredShellKind(
+	host: ShellProbeHost,
+	shellPath?: string,
+): ConfiguredShellKind | undefined {
+	const configured = resolveShellPath(shellPath, host.env.HOME ?? host.env.USERPROFILE ?? homedir());
+	if (!configured || !host.exists(configured)) return undefined;
+	const name = (host.platform === 'win32' ? win32Path.basename(configured) : posixPath.basename(configured)).toLowerCase();
+	if (BASH_BASENAMES.has(name)) return 'bash';
+	if (POWERSHELL_BASENAMES.has(name)) return 'powershell';
+	return undefined;
+}
+
 export function probeShellAvailability(host: ShellProbeHost, shellPath?: string): ShellAvailability {
+	// Resolve the configured shell once, then let it contribute to exactly one backend.
+	const configuredKind = classifyConfiguredShellKind(host, shellPath);
 	return {
-		bash: bashAvailable(host, shellPath),
-		powershell: powershellAvailable(host),
+		bash: configuredKind === 'bash' || bashBackendPresent(host),
+		powershell: configuredKind === 'powershell' || powershellBackendPresent(host),
 	};
 }
 

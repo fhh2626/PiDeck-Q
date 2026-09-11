@@ -6,7 +6,12 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isRecord, type ToolSnapshot } from './contributions.ts';
-import { isShellToolName, resolveChildShellSlots, type EffectiveShellPolicy } from './childShellPolicy.ts';
+import {
+	isShellToolName,
+	resolveChildShellSlots,
+	type EffectiveShellPolicy,
+	type ShellPolicySnapshot,
+} from './childShellPolicy.ts';
 import type { SubagentCatalog } from './subagentCatalog.ts';
 
 export interface ChildAgentCompatibility {
@@ -83,6 +88,48 @@ export function resolveToolProviderExtension(
 interface ManagedStateFile {
 	version: number;
 	managedPaths: string[];
+}
+
+/** Parent-published file name inside the change-pi-prompt state directory. */
+const SHELL_POLICY_FILE = 'effective-shell-policy.json';
+
+/**
+ * Read the parent's last published shell ceiling.
+ * Child runtimes only consume it; a missing, malformed, or foreign-platform snapshot is ignored
+ * so the caller falls back to availability-only pruning.
+ */
+export function readEffectiveShellPolicySnapshot(
+	agentDir: string,
+	platform: NodeJS.Platform,
+): ShellPolicySnapshot | undefined {
+	const snapshotPath = join(agentDir, 'change-pi-prompt', SHELL_POLICY_FILE);
+	if (!existsSync(snapshotPath)) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+		if (!isRecord(parsed)) return undefined;
+		if (parsed.version !== 1) return undefined;
+		if (parsed.platform !== platform) return undefined;
+		if (typeof parsed.bash !== 'boolean' || typeof parsed.powershell !== 'boolean') return undefined;
+		return { version: 1, platform, bash: parsed.bash, powershell: parsed.powershell };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Only the parent runtime writes the ceiling; children never produce global state. */
+function writeEffectiveShellPolicySnapshot(stateDir: string, platform: NodeJS.Platform, policy: EffectiveShellPolicy): void {
+	try {
+		mkdirSync(stateDir, { recursive: true });
+		const snapshot: ShellPolicySnapshot = {
+			version: 1,
+			platform,
+			bash: policy.bash,
+			powershell: policy.powershell,
+		};
+		writeFileSync(join(stateDir, SHELL_POLICY_FILE), JSON.stringify(snapshot, null, 2) + '\n', 'utf8');
+	} catch {
+		// A missing snapshot only widens the child's fallback checks; never fail the reconciliation.
+	}
 }
 
 function readManagedState(statePath: string): string[] {
@@ -250,6 +297,9 @@ export function reconcileChildEnvironments(options: {
 	} catch {
 		// Ignore state file write errors
 	}
+
+	// Publish the parent's final shell ceiling for child runtimes (see readEffectiveShellPolicySnapshot).
+	writeEffectiveShellPolicySnapshot(stateDir, platform, shellPolicy);
 
 	return {
 		compatibilityStatus,

@@ -22,6 +22,7 @@ import {
 	isShellToolName,
 	reconcileChildActiveShellTools,
 	resolveEffectiveShellPolicy,
+	toShellCeiling,
 } from './childShellPolicy.ts';
 import {
 	findSubagentsPackageRoot,
@@ -31,6 +32,7 @@ import {
 } from './subagentCatalog.ts';
 import {
 	reconcileChildEnvironments,
+	readEffectiveShellPolicySnapshot,
 	resolveCurrentChangePiPromptPath,
 	type ReconciliationResult,
 } from './childReconciliation.ts';
@@ -76,7 +78,8 @@ export function buildChildToolEnvironmentBlock(activeTools: readonly string[]): 
 	];
 
 	if (!hasBash && !hasPowerShell) {
-		lines.push('- No shell tool is available; use read/grep/find/ls/edit/write instead.');
+		// Never name specific tools here: each agent declares its own allowlist (reviewer has no edit/write).
+		lines.push('- No shell tool is available; use only the non-shell tools that are active in this child.');
 		lines.push(CHILD_TOOL_MARKER_END);
 		return lines.join('\n');
 	}
@@ -182,6 +185,8 @@ export function registerPromptExtension(
 
 	let catalog: SubagentCatalog | undefined;
 	let reconciliationResult: ReconciliationResult | undefined;
+	/** Set on every before_agent_start; true while this runtime is a native child session. */
+	let childSessionActive = false;
 
 	function promptExtensionEnabled(): boolean {
 		return settings ? settings.config.enabled === true : true;
@@ -200,9 +205,15 @@ export function registerPromptExtension(
 		}
 	};
 
+	/**
+	 * Global child-environment reconciliation. Only the parent runtime may run this: a child session
+	 * shares the same settings.json, and its own active tools are not the parent's, so a child that
+	 * reconciled would rewrite (and degrade) the overrides every other child depends on.
+	 */
 	const runReconciliation = async (activeTools?: readonly string[]): Promise<string[]> => {
 		const diagnostics: string[] = [];
 		if (!subagentAdaptationEnabled()) return diagnostics;
+		if (childSessionActive) return diagnostics;
 		try {
 			const tools = snapshotTools(pi);
 			// Registered tools are not the parent's truth; the final active set decides what a child may keep.
@@ -249,12 +260,16 @@ export function registerPromptExtension(
 		warned.add(message);
 		report(ctx, message, true);
 	};
+	/** Read-only catalog load. Safe in child sessions: it never touches shared settings. */
+	const loadCatalogSnapshot = () => {
+		catalog = loadSubagentCatalog(findSubagentsPackageRoot(snapshotTools(pi)));
+	};
+
 	const reload = async () => {
 		// Assign only after the whole snapshot validates, retaining last-good settings on errors.
+		// Reconciliation is deliberately not run here: global child overrides are owned by the
+		// parent's before_agent_start pass, never by a config reload or a child session.
 		settings = await loadSettings(agentDir);
-		if (subagentAdaptationEnabled()) {
-			await runReconciliation();
-		}
 	};
 	const ensureLoaded = async (ctx: ExtensionContext) => {
 		if (!loading) {
@@ -312,12 +327,11 @@ export function registerPromptExtension(
 		lastPreview = undefined;
 		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
+		childSessionActive = false;
 		await ensureLoaded(ctx);
 		if (!promptExtensionEnabled()) return;
-		const pruned = await pruneUnavailableShells(ctx);
-		if (subagentAdaptationEnabled()) {
-			await runReconciliation(pruned?.next);
-		}
+		// Session-local only: shell pruning never writes shared state, so it stays here.
+		await pruneUnavailableShells(ctx);
 		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
 
@@ -326,6 +340,7 @@ export function registerPromptExtension(
 		warned.clear();
 		contributionHashes.clear();
 		confirmedSubagentToolNames.clear();
+		childSessionActive = false;
 	});
 
 	pi.on('before_agent_start', async (event, ctx) => {
@@ -334,6 +349,7 @@ export function registerPromptExtension(
 		try {
 			updateConfirmedSubagentTools();
 			const childSession = isChildSession(event.systemPrompt, event.systemPromptOptions);
+			childSessionActive = childSession;
 			const pruned = await pruneUnavailableShells(ctx, { forChild: childSession });
 			const tools = snapshotTools(pi);
 			const activeTools = pruned?.next
@@ -348,12 +364,15 @@ export function registerPromptExtension(
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
 				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
+				// The parent publishes its final shell set; the child only consumes it.
+				const ceiling = toShellCeiling(readEffectiveShellPolicySnapshot(agentDir, probeHost.platform));
 				const reconciled = reconcileChildActiveShellTools({
 					platform: probeHost.platform,
 					availability,
-					registeredTools: tools.map(tool => tool.name),
+					registeredTools: tools,
 					activeTools,
 					wantsShell,
+					ceiling,
 					// Unknown identity: prune only, never widen the child's tool set.
 					pruneOnly: !childAgent,
 				});
@@ -472,7 +491,11 @@ export function registerPromptExtension(
 			return;
 		}
 
-		if (!catalog || !reconciliationResult) {
+		if (!catalog) {
+			// Read-only: children need the catalog for standalone AST validation but must not reconcile.
+			loadCatalogSnapshot();
+		}
+		if (!reconciliationResult && !childSessionActive) {
 			await runReconciliation();
 		}
 

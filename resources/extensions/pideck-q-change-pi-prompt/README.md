@@ -23,19 +23,30 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - 缺少元数据 API：保留无法归属的规则，不猜测提供者。
 - 没有 ask_question / todo：不输出对应使用要求。
 - `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽（仅父 Agent）。
+- `settings.shellPath` 按文件名分类：`bash.exe` / `bash` / `sh.exe` / `sh` 计入 bash；`pwsh.exe` / `pwsh` / `powershell.exe` / `powershell` 计入 powershell；其它名字（如 `cmd.exe`）不计入任何后端。配置的 shell 路径绝不再被当作 bash 的同义词。
 
 ## 子 Agent shell 环境规范化（canonical shell）
 
 `getAllTools()` 是「已注册能力」，`getActiveTools()` 是「当前真正暴露给模型的能力」。子 Agent 的工具环境以父 Agent 的**最终 active tools** 为准，不能只凭注册表判断。
 
 - `bash` 与 `powershell` 不再按工具名判断：真实后端 + 父 Agent 最终 active + 子 Agent 自身工具清单共同决定。
-- Windows：父环境最终只有 PowerShell 时，声明了 `bash` 的 shell-capable 子 Agent（worker / scout / oracle / delegate）得到 `powershell`，不再保留一个名为 `bash` 的伪 shell；pwsh adapter 占用 `bash` 名称也不会让子 Agent 的 `bash` 变为 active。
+- Windows：父环境最终只有 PowerShell 时，声明了 `bash` 的 shell-capable 子 Agent（worker / scout / oracle / delegate）得到 `powershell`，不再保留一个名为 `bash` 的伪 shell；pwsh adapter 占用 `bash` 名称也不会让子 Agent 的 `bash` 变为 active（即使本机真有 Git Bash）。
 - Linux/macOS：只按真实 availability 裁剪，不把 `bash` 自动替换成 `powershell`。
 - 不扩权：原本不声明 shell 的子 Agent（如 reviewer）不会被自动追加 `powershell`；child 身份无法解析时只做 prune，绝不主动加工具。
 - 父 Agent 未激活的 extension tool 不再注入子 Agent（避免借用 `getAllTools` 把 inactive provider 塞给 child）；builtin 与 pi-subagents 内部工具（`contact_supervisor` / `structured_output`）不受父 active 限制。
 - 归一化在 child 自身启动后再次执行：`before_agent_start` 中先按 canonical 结果 `setActiveTools`，再生成 Child Tool Environment 块（`<!-- change-pi-prompt:child-tools:v1 -->`），因此块内文案与实际 active tools 一致。
-- 角色 prompt 永不重写：仅追加/替换 child-tools 块，并在 Windows 上显式声明角色 prompt 里的 `bash` 说明已被取代（`Do not call it, even if the role prompt mentions bash.`）。
+- 角色 prompt 永不重写：仅追加/替换 child-tools 块，并在 Windows 上显式声明角色 prompt 里的 `bash` 说明已被取代（`Do not call it, even if the role prompt mentions bash.`）；无 shell 时不列举具体工具名（每个 agent 的 allowlist 不同）。
 - 不修改 `pideck-q-subagents/**`：platform adaptation 全部在本扩展内完成。
+
+### 全局 reconciliation 只由 parent 执行
+
+子 Agent 与父 Agent 共用同一份 `settings.json`，但子 Agent 的 active tools **不是**父 Agent 的 active tools（pi-subagents 只按 agent frontmatter + capability ceiling 生成 child allowlist）。因此：
+
+- `reload()` 只加载配置，不再触发 reconciliation。
+- `session_start` 只做 session-local 的 shell prune，不写任何共享 override。
+- `before_agent_start` 先判定 child session：child 只处理本会话 active tools 与 prompt；只有 parent 会执行 `reconcileChildEnvironments(parentActiveTools)`。
+- `tool_call` 在 child session 中只做只读 catalog 加载，不再重写共享 override（避免「第一只 child 正常、下一只不同步」）。
+- parent 会把最终 shell ceiling 发布成 `<agentDir>/change-pi-prompt/effective-shell-policy.json`，child 只读取它作为上界（缺失/损坏/跨平台快照一律忽略，回退到 availability + 注册表判定）。
 
 ## 用户修改文案
 
