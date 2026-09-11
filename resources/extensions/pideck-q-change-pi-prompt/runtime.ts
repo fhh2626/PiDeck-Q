@@ -18,6 +18,12 @@ import {
 } from './config.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
 import {
+	getActiveAgentName,
+	isShellToolName,
+	reconcileChildActiveShellTools,
+	resolveEffectiveShellPolicy,
+} from './childShellPolicy.ts';
+import {
 	findSubagentsPackageRoot,
 	getAgentFromCatalog,
 	loadSubagentCatalog,
@@ -33,6 +39,7 @@ import {
 	hideUnavailableShellTools,
 	parseShellPathFromSettings,
 	probeShellAvailability,
+	type ShellAvailability,
 	type ShellProbeHost,
 } from './shellAvailability.ts';
 import { transformSystemPrompt } from './transform.ts';
@@ -52,7 +59,7 @@ export const CHILD_TOOL_MARKER_START = '<!-- change-pi-prompt:child-tools:v1 -->
 export const CHILD_TOOL_MARKER_END = '<!-- /change-pi-prompt:child-tools:v1 -->';
 
 export function isChildSession(systemPrompt: string, options?: { customPrompt?: string }): boolean {
-	if (/<active_agent\s+name=["'][^"']+["']\s*\/?>/i.test(systemPrompt)) return true;
+	if (getActiveAgentName(systemPrompt) !== undefined) return true;
 	if (systemPrompt.includes(CHILD_TOOL_MARKER_START)) return true;
 	if (typeof options?.customPrompt === 'string' && options.customPrompt.length > 0) return true;
 	return false;
@@ -65,17 +72,26 @@ export function buildChildToolEnvironmentBlock(activeTools: readonly string[]): 
 	const lines = [
 		CHILD_TOOL_MARKER_START,
 		'## Child Tool Environment',
-		'- Available tools are authoritative; do not call tools that are not active.',
+		'- Available tools below are authoritative for this runtime.',
 	];
 
-	if (hasBash) {
-		lines.push('- `bash` currently uses the runtime described by its tool description.');
-	}
-	if (hasPowerShell) {
-		lines.push('- `powershell` is available.');
-	}
 	if (!hasBash && !hasPowerShell) {
 		lines.push('- No shell tool is available; use read/grep/find/ls/edit/write instead.');
+		lines.push(CHILD_TOOL_MARKER_END);
+		return lines.join('\n');
+	}
+
+	// A role prompt may still tell the child to use bash; when the canonical shell is PowerShell
+	// the tool environment must explicitly supersede that instruction instead of contradicting it.
+	lines.push(hasBash
+		? '- `bash` is available.'
+		: '- `bash` is unavailable. Do not call it, even if the role prompt mentions bash.');
+	if (hasPowerShell) {
+		lines.push(hasBash
+			? '- `powershell` is available.'
+			: '- `powershell` is available; use `powershell` for shell commands.');
+	} else {
+		lines.push('- `powershell` is unavailable.');
 	}
 
 	lines.push(CHILD_TOOL_MARKER_END);
@@ -133,6 +149,11 @@ function isContentArray(value: unknown): value is ToolResultEvent['content'] {
 	return Array.isArray(value);
 }
 
+/** Order-preserving comparison used to skip redundant setActiveTools calls. */
+function sameToolList(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
 export function registerPromptExtension(
 	pi: ExtensionAPI,
 	agentDir: string,
@@ -179,26 +200,43 @@ export function registerPromptExtension(
 		}
 	};
 
-	const runReconciliation = () => {
-		if (!subagentAdaptationEnabled()) return;
+	const runReconciliation = async (activeTools?: readonly string[]): Promise<string[]> => {
+		const diagnostics: string[] = [];
+		if (!subagentAdaptationEnabled()) return diagnostics;
 		try {
 			const tools = snapshotTools(pi);
+			// Registered tools are not the parent's truth; the final active set decides what a child may keep.
+			const effectiveActive = activeTools
+				?? (typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : tools.map(tool => tool.name));
 			const pkgRoot = findSubagentsPackageRoot(tools);
 			catalog = loadSubagentCatalog(pkgRoot);
 			reconciliationResult = reconcileChildEnvironments({
 				agentDir,
 				catalog,
 				parentTools: tools,
+				parentActiveTools: effectiveActive,
+				platform: probeHost.platform,
+				shellPolicy: resolveEffectiveShellPolicy({
+					platform: probeHost.platform,
+					availability: await probeShells(),
+					parentTools: tools,
+					parentActiveTools: effectiveActive,
+				}),
 				changePiPromptPath,
 			});
 			for (const [name, status] of reconciliationResult.compatibilityStatus) {
 				if (!status.ok) {
-					lastStatus.push(`child-compat: ${name} missing [${status.missingTools.join(', ')}]`);
+					const line = `child-compat: ${name} missing [${status.missingTools.join(', ')}]`;
+					lastStatus.push(line);
+					diagnostics.push(line);
 				}
 			}
 		} catch (error) {
-			lastStatus.push(`child-reconciliation-error: ${errorSummary(error)}`);
+			const line = `child-reconciliation-error: ${errorSummary(error)}`;
+			lastStatus.push(line);
+			diagnostics.push(line);
 		}
+		return diagnostics;
 	};
 
 	const report = (ctx: ExtensionContext, message: string, error = false) => {
@@ -215,7 +253,7 @@ export function registerPromptExtension(
 		// Assign only after the whole snapshot validates, retaining last-good settings on errors.
 		settings = await loadSettings(agentDir);
 		if (subagentAdaptationEnabled()) {
-			runReconciliation();
+			await runReconciliation();
 		}
 	};
 	const ensureLoaded = async (ctx: ExtensionContext) => {
@@ -235,22 +273,35 @@ export function registerPromptExtension(
 		}
 	};
 
-	/** Hide bash/powershell with no backend before the model sees the catalog.
-	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell. */
-	const pruneUnavailableShells = async (ctx: ExtensionContext): Promise<string[] | undefined> => {
-		if (!promptExtensionEnabled() || !settings?.config.pruneUnavailableShells) return undefined;
-		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
+	/** Probe the real shell backends once per pass and record the status line. */
+	const probeShells = async (): Promise<ShellAvailability> => {
 		const availability = probeShellAvailability(probeHost, await readConfiguredShellPath());
 		lastShellStatus = [`shell: bash=${availability.bash ? 'available' : 'missing'}, powershell=${availability.powershell ? 'available' : 'missing'}`];
+		return availability;
+	};
+
+	/** Hide bash/powershell with no backend before the model sees the catalog.
+	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell.
+	 *  Children never keep a pwsh-adapter bash slot: that historical naming is canonicalized away, not copied. */
+	const pruneUnavailableShells = async (
+		ctx: ExtensionContext,
+		options: { forChild?: boolean } = {},
+	): Promise<{ next: string[]; availability: ShellAvailability } | undefined> => {
+		if (!promptExtensionEnabled() || !settings?.config.pruneUnavailableShells) return undefined;
+		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
+		const availability = await probeShells();
 		const active = [...pi.getActiveTools()];
-		const { next, hidden } = hideUnavailableShellTools(active, availability, { keepBash: snapshotTools(pi).some(isPwsh) });
-		if (hidden.length === 0) return next;
+		const { next, hidden } = hideUnavailableShellTools(active, availability, {
+			// The parent keeps its pwsh-adapter bash slot; a child gets the canonical shell set instead.
+			keepBash: options.forChild ? false : snapshotTools(pi).some(isPwsh),
+		});
+		if (hidden.length === 0) return { next, availability };
 		pi.setActiveTools(next);
 		lastShellStatus.push(`shell-tools: hid ${hidden.join(', ')}`);
 		for (const name of hidden) {
 			warnOnce(ctx, `${name} 后端不可用，已对本会话隐藏该工具并省略对应提示。`);
 		}
-		return next;
+		return { next, availability };
 	};
 
 	pi.on('session_start', async (_event, ctx) => {
@@ -263,9 +314,9 @@ export function registerPromptExtension(
 		lastStatus = ['尚未转换提示词'];
 		await ensureLoaded(ctx);
 		if (!promptExtensionEnabled()) return;
-		await pruneUnavailableShells(ctx);
+		const pruned = await pruneUnavailableShells(ctx);
 		if (subagentAdaptationEnabled()) {
-			runReconciliation();
+			await runReconciliation(pruned?.next);
 		}
 		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
@@ -282,15 +333,39 @@ export function registerPromptExtension(
 		if (!promptExtensionEnabled()) return;
 		try {
 			updateConfirmedSubagentTools();
-			const pruned = await pruneUnavailableShells(ctx);
+			const childSession = isChildSession(event.systemPrompt, event.systemPromptOptions);
+			const pruned = await pruneUnavailableShells(ctx, { forChild: childSession });
 			const tools = snapshotTools(pi);
-			const activeTools = pruned
+			const activeTools = pruned?.next
 				?? (typeof pi.getActiveTools === 'function'
 					? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])]);
 
 			// Child session: do not replace role prompt or transform into "You are Pi"; only inject tool compatibility
-			if (isChildSession(event.systemPrompt, event.systemPromptOptions)) {
-				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, activeTools);
+			if (childSession) {
+				const availability = pruned?.availability ?? await probeShells();
+				const childCatalog = catalog ?? loadSubagentCatalog(findSubagentsPackageRoot(tools));
+				const agentName = getActiveAgentName(event.systemPrompt);
+				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
+				// Shell capability must come from the agent definition: the child's own list may already be pruned.
+				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
+				const reconciled = reconcileChildActiveShellTools({
+					platform: probeHost.platform,
+					availability,
+					registeredTools: tools.map(tool => tool.name),
+					activeTools,
+					wantsShell,
+					// Unknown identity: prune only, never widen the child's tool set.
+					pruneOnly: !childAgent,
+				});
+
+				let childActiveTools = activeTools;
+				if (!sameToolList(reconciled, activeTools) && typeof pi.setActiveTools === 'function') {
+					pi.setActiveTools(reconciled);
+					childActiveTools = reconciled;
+				}
+
+				// The tool environment block is rendered from the final active tools, never before them.
+				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, childActiveTools);
 				lastStatus = ['child-subagent-mode: preserved role prompt, injected tool environment', ...lastShellStatus];
 				if (nextPrompt !== event.systemPrompt) {
 					return { systemPrompt: nextPrompt };
@@ -298,7 +373,10 @@ export function registerPromptExtension(
 				return;
 			}
 
-			// Parent session: full prompt transformation
+			// Parent session: full prompt transformation. Reconciliation must run after pruning so
+			// the child tool environment follows the final active tools, not the registered registry.
+			const reconciliationStatus = await runReconciliation(activeTools);
+
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
 			const standalone = isStandalone();
 			const nativeAsync = (subagentAdaptationEnabled() && standalone && nativeTools.length)
@@ -316,7 +394,7 @@ export function registerPromptExtension(
 				...settings!,
 				hostOs: hostOs(), today: localDate(),
 			});
-			lastStatus = [...result.diagnostics, ...lastShellStatus];
+			lastStatus = [...result.diagnostics, ...reconciliationStatus, ...lastShellStatus];
 			if (nativeAsync) {
 				lastStatus.push(nativeAsync.message);
 				if (!nativeAsync.ok) warnOnce(ctx, nativeAsync.message);
@@ -395,7 +473,7 @@ export function registerPromptExtension(
 		}
 
 		if (!catalog || !reconciliationResult) {
-			runReconciliation();
+			await runReconciliation();
 		}
 
 		const standalone = isStandalone();

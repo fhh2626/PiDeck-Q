@@ -30,6 +30,7 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-change-pi-prompt/layout.ts",
 	"extensions/pideck-q-change-pi-prompt/contributions.ts",
 	"extensions/pideck-q-change-pi-prompt/shellAvailability.ts",
+	"extensions/pideck-q-change-pi-prompt/childShellPolicy.ts",
 	"extensions/pideck-q-change-pi-prompt/childReconciliation.ts",
 	"extensions/pideck-q-change-pi-prompt/subagentCatalog.ts",
 	"extensions/pideck-q-change-pi-prompt/workflowValidation.ts",

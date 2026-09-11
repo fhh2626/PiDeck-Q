@@ -22,7 +22,20 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - 同名工具由其他扩展提供：不误认为目标插件。
 - 缺少元数据 API：保留无法归属的规则，不猜测提供者。
 - 没有 ask_question / todo：不输出对应使用要求。
-- `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽。
+- `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽（仅父 Agent）。
+
+## 子 Agent shell 环境规范化（canonical shell）
+
+`getAllTools()` 是「已注册能力」，`getActiveTools()` 是「当前真正暴露给模型的能力」。子 Agent 的工具环境以父 Agent 的**最终 active tools** 为准，不能只凭注册表判断。
+
+- `bash` 与 `powershell` 不再按工具名判断：真实后端 + 父 Agent 最终 active + 子 Agent 自身工具清单共同决定。
+- Windows：父环境最终只有 PowerShell 时，声明了 `bash` 的 shell-capable 子 Agent（worker / scout / oracle / delegate）得到 `powershell`，不再保留一个名为 `bash` 的伪 shell；pwsh adapter 占用 `bash` 名称也不会让子 Agent 的 `bash` 变为 active。
+- Linux/macOS：只按真实 availability 裁剪，不把 `bash` 自动替换成 `powershell`。
+- 不扩权：原本不声明 shell 的子 Agent（如 reviewer）不会被自动追加 `powershell`；child 身份无法解析时只做 prune，绝不主动加工具。
+- 父 Agent 未激活的 extension tool 不再注入子 Agent（避免借用 `getAllTools` 把 inactive provider 塞给 child）；builtin 与 pi-subagents 内部工具（`contact_supervisor` / `structured_output`）不受父 active 限制。
+- 归一化在 child 自身启动后再次执行：`before_agent_start` 中先按 canonical 结果 `setActiveTools`，再生成 Child Tool Environment 块（`<!-- change-pi-prompt:child-tools:v1 -->`），因此块内文案与实际 active tools 一致。
+- 角色 prompt 永不重写：仅追加/替换 child-tools 块，并在 Windows 上显式声明角色 prompt 里的 `bash` 说明已被取代（`Do not call it, even if the role prompt mentions bash.`）。
+- 不修改 `pideck-q-subagents/**`：platform adaptation 全部在本扩展内完成。
 
 ## 用户修改文案
 

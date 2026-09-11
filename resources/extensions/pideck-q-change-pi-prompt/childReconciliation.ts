@@ -5,7 +5,8 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isPwsh, isRecord, type ToolSnapshot } from './contributions.ts';
+import { isRecord, type ToolSnapshot } from './contributions.ts';
+import { isShellToolName, resolveChildShellSlots, type EffectiveShellPolicy } from './childShellPolicy.ts';
 import type { SubagentCatalog } from './subagentCatalog.ts';
 
 export interface ChildAgentCompatibility {
@@ -22,9 +23,11 @@ export interface ReconciliationResult {
 	changed: boolean;
 }
 
+// Builtins and pi-subagents child internals are resolved by the child runtime itself;
+// they must not be judged missing just because the parent session has them inactive.
+// Shell tools are deliberately absent here: they follow the canonical shell policy.
 const BUILTIN_OR_INTERNAL_TOOLS = new Set([
 	'read', 'write', 'edit', 'grep', 'find', 'ls',
-	'powershell',
 	'subagent', 'contact_supervisor', 'structured_output', 'bg_wait', 'subagent_supervisor',
 ]);
 
@@ -45,27 +48,22 @@ export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
 	return candidates[0];
 }
 
+/**
+ * Resolve the provider extension a child needs for one non-shell tool.
+ * Active tools are the authoritative truth: a tool the parent already hid must not be handed
+ * to a child. Builtin and pi-subagents internal tools bypass that check by design.
+ */
 export function resolveToolProviderExtension(
 	toolName: string,
 	parentTools: readonly ToolSnapshot[],
+	parentActiveTools: readonly string[],
 ): { available: boolean; providerPath?: string } {
-	if (toolName === 'bash') {
-		const bashTool = parentTools.find(t => t.name === 'bash');
-		if (!bashTool) {
-			return { available: false };
-		}
-		if (isPwsh(bashTool)) {
-			const path = bashTool.sourceInfo?.path;
-			if (path && isAbsolute(path) && existsSync(path)) {
-				return { available: true, providerPath: path };
-			}
-			return { available: false };
-		}
+	if (BUILTIN_OR_INTERNAL_TOOLS.has(toolName)) {
 		return { available: true };
 	}
 
-	if (BUILTIN_OR_INTERNAL_TOOLS.has(toolName)) {
-		return { available: true };
+	if (!parentActiveTools.includes(toolName)) {
+		return { available: false };
 	}
 
 	// Extension-provided tool
@@ -104,9 +102,13 @@ export function reconcileChildEnvironments(options: {
 	agentDir: string;
 	catalog: SubagentCatalog | undefined;
 	parentTools: readonly ToolSnapshot[];
+	/** Final active tools of the parent session (getActiveTools), never getAllTools. */
+	parentActiveTools: readonly string[];
+	platform: NodeJS.Platform;
+	shellPolicy: EffectiveShellPolicy;
 	changePiPromptPath?: string;
 }): ReconciliationResult {
-	const { agentDir, catalog, parentTools } = options;
+	const { agentDir, catalog, parentTools, parentActiveTools, platform, shellPolicy } = options;
 	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
 	const compatibilityStatus = new Map<string, ChildAgentCompatibility>();
 	const incompatibleAgents: string[] = [];
@@ -161,13 +163,25 @@ export function reconcileChildEnvironments(options: {
 			}
 
 			for (const toolName of agent.tools) {
-				const resolution = resolveToolProviderExtension(toolName, parentTools);
+				// Shell slots are canonicalized separately: a pwsh adapter named bash is not a bash backend.
+				if (isShellToolName(toolName)) continue;
+				const resolution = resolveToolProviderExtension(toolName, parentTools, parentActiveTools);
 				if (!resolution.available) {
 					missingTools.push(toolName);
 				} else if (resolution.providerPath) {
 					agentExtensions.add(resolution.providerPath);
 					currentManagedPaths.add(resolution.providerPath);
 				}
+			}
+
+			// Shell: declare the canonical backend set, not the historical tool name.
+			const shellSlots = resolveChildShellSlots({ platform, policy: shellPolicy, declaredTools: agent.tools });
+			if (!shellSlots.available) {
+				missingTools.push(...agent.tools.filter(isShellToolName));
+			}
+			for (const providerPath of shellSlots.providerPaths) {
+				agentExtensions.add(providerPath);
+				currentManagedPaths.add(providerPath);
 			}
 
 			compatibilityStatus.set(name, {

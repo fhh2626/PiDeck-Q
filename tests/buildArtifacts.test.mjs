@@ -134,6 +134,7 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 		"pideck-q-change-pi-prompt/layout.ts",
 		"pideck-q-change-pi-prompt/contributions.ts",
 		"pideck-q-change-pi-prompt/shellAvailability.ts",
+		"pideck-q-change-pi-prompt/childShellPolicy.ts",
 		"pideck-q-change-pi-prompt/childReconciliation.ts",
 		"pideck-q-change-pi-prompt/subagentCatalog.ts",
 		"pideck-q-change-pi-prompt/workflowValidation.ts",
@@ -161,8 +162,8 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 11 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 22
-		assert.equal(result.checked.length, 22, JSON.stringify(result.checked));
+		// 12 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 23
+		assert.equal(result.checked.length, 23, JSON.stringify(result.checked));
 	});
 });
 
