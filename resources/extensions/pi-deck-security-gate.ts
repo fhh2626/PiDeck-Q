@@ -15,11 +15,10 @@
  *
  * 动作语义（与主进程 policy.ts 保持一致）：
  * - 工具动作：level.toolActions[tool] ?? level.defaultAction
- * - 危险 bash 命令（命中 denyBashPatterns）：
- *   toolActions.bash === "allow" → 放行；defaultAction === "deny" → 直接拒绝；
- *   其余 → 弹窗询问（先确认再放行）。
+ * - shell 工具按真实执行后端选择 Bash / PowerShell 策略；child 兼容槽即使公开名为 bash，
+ *   只要真实后端是 PowerShell，就使用 powershell action 与 denyPowerShellPatterns。
  * - 文件访问：denyDirs 黑名单 > 敏感文件保护 > pathPolicy 目录边界，命中即拒绝。
- * - 只管控内置工具（read/write/edit/bash/grep/find/ls）+ ask_question，
+ * - 只管控受支持的工具名（read/write/edit/bash/powershell/grep/find/ls/ask_question），
  *   其它自定义工具（web_search/todo 等）不受影响，避免破坏用户其它扩展。
  */
 
@@ -66,7 +65,7 @@ const SCHEMA_VERSION = 1;
 /** change-pi-prompt 的 child 兼容槽：公开名是 bash，真实执行后端是 PowerShell。 */
 const CHILD_POWERSHELL_BRIDGE_MARKER = "[change-pi-prompt:child-powershell-bridge]";
 const PWSH_ADAPTER_PACKAGE = "@99percentpeople/pi-pwsh-adapter";
-/** 受管控的内置工具（其它自定义工具一律放行） */
+/** 受管控的工具名（其它自定义工具一律放行） */
 const MANAGED_TOOLS = new Set([
 	"read",
 	"write",
@@ -382,7 +381,7 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 		if (!config?.enabled) return undefined;
 
 		const tool = event.toolName;
-		// 只管控内置工具；自定义工具（web_search/todo/vision 等）放行，避免破坏用户扩展
+		// 只管控受支持的工具名；其它自定义工具（web_search/todo/vision 等）放行
 		if (!MANAGED_TOOLS.has(tool)) return undefined;
 
 		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
@@ -391,12 +390,12 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 		const input = event.input as Record<string, unknown>;
 		let action: SecurityAction;
-		let policyTool = tool;
+		let semanticShellTool: ShellTool | undefined;
 
 		if (tool === "bash" || tool === "powershell") {
 			const command = typeof input.command === "string" ? input.command : "";
-			policyTool = resolveSecurityShellTool(pi, tool);
-			action = shellAction(level, policyTool, command);
+			semanticShellTool = resolveSecurityShellTool(pi, tool);
+			action = shellAction(level, semanticShellTool, command);
 		} else {
 			const filePath = extractFilePath(tool, input);
 			action = fileToolAction(
@@ -414,7 +413,7 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 			: (typeof input.path === "string" || typeof input.filePath === "string"
 				? String(input.path ?? input.filePath)
 				: "");
-		const displayTool = tool === "bash" && policyTool === "powershell"
+		const displayTool = tool === "bash" && semanticShellTool === "powershell"
 			? "powershell (bash compatibility slot)"
 			: tool;
 
