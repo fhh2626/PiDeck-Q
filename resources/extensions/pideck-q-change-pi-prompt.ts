@@ -30,7 +30,7 @@ export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 		ensureChildPowerShellTool(pi, agentDir, {
 			platform: process.platform,
 			systemPrompt: event.systemPrompt,
-			cwd: event.systemPromptOptions?.cwd ?? ctx.cwd,
+			cwd: ctx.cwd,
 			enabled: bridgeEnabled,
 		});
 	});
