@@ -158,11 +158,18 @@ test('subagent=false leaves child before_agent_start prompt and active tools unt
   assert.deepEqual(pi.getActiveTools(), ['read', 'bash']);
 }));
 
-test('child shell authority fails closed when the owning parent policy snapshot is missing', () => harness(async ({ dir, handlers, ctx, pi }) => {
+test('child shell authority obeys an explicit parent deny-all snapshot', () => harness(async ({ dir, handlers, ctx, pi }) => {
   const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
+  const ownerKey = 'runtime-deny-parent';
   try {
-    delete process.env[SHELL_POLICY_OWNER_ENV];
+    process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
     await writeConfig(dir);
+    await writeFile(shellPolicySnapshotPath(dir, ownerKey), JSON.stringify({
+      version: 2,
+      platform: 'win32',
+      shell: { bash: false, powershell: false },
+      parentActiveTools: ['read'],
+    }));
     pi._tools = [
       { name: 'read', sourceInfo: { source: 'builtin' } },
       { name: 'bash', sourceInfo: { source: 'builtin' } },
