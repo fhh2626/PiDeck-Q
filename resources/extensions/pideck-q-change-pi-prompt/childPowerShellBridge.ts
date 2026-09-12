@@ -1,17 +1,13 @@
 /**
  * Bridge the native child allowlist gap for PowerShell on Windows.
  *
- * Native subagent definitions historically declare `bash`. Pi now also has a distinct built-in
- * `powershell` tool, but a child created from an allowlist containing only `bash` may never register
- * that built-in. The shell canonicalizer can only activate a tool that exists in the child registry,
- * so a PowerShell-only Windows child could otherwise end up with neither shell even though its
- * owning parent exposes PowerShell.
+ * Native subagent definitions historically declare `bash`. Pi's child `tools` list becomes a hard
+ * allowlist, so registering a new tool named `powershell` after launch is filtered out when the
+ * child only allowed `bash`. To stay inside that real runtime contract, this bridge uses Pi's own
+ * PowerShell tool implementation but exposes it through the already-authorized `bash` compatibility
+ * slot. The main runtime recognizes the marker and treats that slot as a PowerShell backend.
  *
- * This helper is called from change-pi-prompt's existing before_agent_start hook, before shell
- * pruning. For a known shell-capable native child, and only when the owning parent's published shell
- * ceiling allows PowerShell, it dynamically registers Pi's own PowerShell tool definition. The normal
- * runtime then performs availability probing, ceiling enforcement, active-tool reconciliation and
- * prompt rendering. No pi-subagents runtime or agent definition is modified.
+ * No pi-subagents runtime or agent definition is modified.
  */
 import {
 	createPowerShellToolDefinition,
@@ -26,7 +22,10 @@ import {
 	isShellToolName,
 	toShellCeiling,
 } from './childShellPolicy.ts';
-import { type ToolSnapshot } from './contributions.ts';
+import {
+	CHILD_POWERSHELL_BRIDGE_MARKER,
+	type ToolSnapshot,
+} from './contributions.ts';
 import {
 	findSubagentsPackageRoot,
 	getAgentFromCatalog,
@@ -56,8 +55,8 @@ function snapshotTools(pi: ExtensionAPI): ToolSnapshot[] {
 }
 
 /**
- * Ensure a Windows native child can materialize the PowerShell backend authorized by its parent.
- * Returns true only when this call registered the missing tool.
+ * Ensure a Windows native child can use the PowerShell backend authorized by its parent.
+ * Returns true only when this call replaced the child's `bash` slot with the PowerShell-backed slot.
  */
 export function ensureChildPowerShellTool(
 	pi: ExtensionAPI,
@@ -71,6 +70,7 @@ export function ensureChildPowerShellTool(
 	if (!agentName) return false;
 
 	const tools = snapshotTools(pi);
+	// A real `powershell` tool already present is preferable; the normal canonicalizer can activate it.
 	if (tools.some(tool => tool.name === 'powershell')) return false;
 
 	const catalog = options.catalog ?? loadSubagentCatalog(findSubagentsPackageRoot(tools));
@@ -78,11 +78,25 @@ export function ensureChildPowerShellTool(
 	// Fail closed for unknown/custom child identities. Only an agent definition that explicitly
 	// declares a shell requirement may receive the bridge tool.
 	if (!childAgent || !childAgent.tools.some(isShellToolName)) return false;
+	// The compatibility slot only makes sense when this child actually authorizes the historical
+	// `bash` name. An agent that declares only `powershell` should not be widened under another name.
+	if (!childAgent.tools.includes('bash')) return false;
 
 	const ownerKey = options.ownerKey ?? resolveShellPolicyOwnerKey();
 	const snapshot = readEffectiveShellPolicySnapshot(agentDir, options.platform, ownerKey);
 	if (toShellCeiling(snapshot)?.powershell !== true) return false;
 
-	pi.registerTool(createPowerShellToolDefinition(options.cwd));
+	const powerShell = createPowerShellToolDefinition(options.cwd);
+	pi.registerTool({
+		...powerShell,
+		name: 'bash',
+		label: 'bash (PowerShell)',
+		description: `${CHILD_POWERSHELL_BRIDGE_MARKER} Compatibility shell slot backed by PowerShell. Use PowerShell syntax; this tool does not execute GNU Bash.\n\n${powerShell.description}`,
+		promptSnippet: 'Execute PowerShell commands through the child `bash` compatibility slot',
+		promptGuidelines: [
+			'The `bash` tool in this child is backed by PowerShell. Use PowerShell syntax and semantics, not GNU Bash syntax.',
+			...(powerShell.promptGuidelines ?? []),
+		],
+	});
 	return true;
 }
