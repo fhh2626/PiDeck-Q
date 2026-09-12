@@ -45,6 +45,9 @@ export interface EnsureChildPowerShellOptions {
 	catalog?: SubagentCatalog;
 }
 
+export const CHILD_POWERSHELL_PROMPT_START = '<!-- change-pi-prompt:child-powershell-slot:v1 -->';
+export const CHILD_POWERSHELL_PROMPT_END = '<!-- /change-pi-prompt:child-powershell-slot:v1 -->';
+
 function snapshotTools(pi: ExtensionAPI): ToolSnapshot[] {
 	if (typeof pi.getAllTools !== 'function') return [];
 	return pi.getAllTools().map(tool => ({
@@ -54,6 +57,32 @@ function snapshotTools(pi: ExtensionAPI): ToolSnapshot[] {
 		promptGuidelines: tool.promptGuidelines ? [...tool.promptGuidelines] : [],
 		sourceInfo: tool.sourceInfo ? { source: tool.sourceInfo.source, path: tool.sourceInfo.path } : undefined,
 	}));
+}
+
+/** True when the child-visible `bash` name is actually backed by PowerShell. */
+export function hasPowerShellBackedBashTool(pi: ExtensionAPI): boolean {
+	const bash = snapshotTools(pi).find(tool => tool.name === 'bash');
+	return !!bash && (isChildPowerShellBridge(bash) || isPwsh(bash));
+}
+
+/** Make the backend/name mismatch explicit to the model without rewriting the agent role prompt. */
+export function injectPowerShellBackedBashPrompt(systemPrompt: string): string {
+	const block = [
+		CHILD_POWERSHELL_PROMPT_START,
+		'## Child Shell Backend',
+		'- The active tool is named `bash` only because this child allowlist uses the historical shell slot.',
+		'- This `bash` tool executes PowerShell, not GNU Bash. Use PowerShell syntax and semantics for every command.',
+		'- Do not infer Bash syntax from the tool name or from older role-prompt wording.',
+		CHILD_POWERSHELL_PROMPT_END,
+	].join('\n');
+	const start = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_START);
+	const end = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_END);
+	if (start >= 0 && end >= start) {
+		const before = systemPrompt.slice(0, start).trimEnd();
+		const after = systemPrompt.slice(end + CHILD_POWERSHELL_PROMPT_END.length).trimStart();
+		return before + (before ? '\n\n' : '') + block + (after ? '\n\n' + after : '');
+	}
+	return systemPrompt.trimEnd() + '\n\n' + block;
 }
 
 /**
