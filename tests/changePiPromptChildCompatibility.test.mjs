@@ -1167,6 +1167,56 @@ test("an inactive parent session never evicts another session's provider", async
 	}
 });
 
+// 21b. 最强形式：Parent B 的注册表里根本没有这个 provider（不只是 inactive）。
+//      provider 的存在性不能由“当前 parent 能否看到它”来推断，否则 B 会把自己看不见的 superset 条目删掉。
+test("a parent whose registry lacks the provider still does not evict it", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-absent-"));
+	try {
+		const webSearchPath = join(tempDir, "web-search.ts");
+		writeFileSync(webSearchPath, "// web search", "utf8");
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+
+		// Parent A：注册并启用了 web_search，于是它把 provider 写进共享 superset。
+		await reconcileChildEnvironments({
+			...base,
+			parentTools: [
+				{ name: "read", sourceInfo: { source: "builtin" } },
+				{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
+			],
+			parentActiveTools: ["read", "web_search"],
+			shellPolicyOwnerKey: "session-a",
+		});
+		const afterA = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.ok(afterA.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath));
+
+		// Parent B：注册表里完全没有 web_search（工具未安装/未加载），而且当前 inactive。
+		// 此时 resolveLoadableToolProvider 返回 loadable=false；但 superset 的既有条目必须原样保留，
+		// 因为“本 session 看不见”并不等于“文件不存在，可以删”。
+		const resB = await reconcileChildEnvironments({
+			...base,
+			parentTools: [{ name: "read", sourceInfo: { source: "builtin" } }],
+			parentActiveTools: ["read"],
+			shellPolicyOwnerKey: "session-b",
+		});
+
+		// B 自己：provider 不可加载，因此它的 researcher 确实缺少 web_search。
+		assert.equal(resB.compatibilityStatus.get("researcher").missingTools.includes("web_search"), true);
+
+		// 但共享 superset 与 managed state 都不得因为 B 看不见而丢弃这个仍然存在的文件。
+		const afterB = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.ok(
+			afterB.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath),
+			"a parent that cannot see the provider must not evict it from the shared superset",
+		);
+		const managedB = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		assert.ok(managedB.managedPaths.includes(webSearchPath), "managed superset keeps the still-existing provider file");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
 // 22. 两个 parent 各自发现不同 provider：无论写入顺序，最终必须是并集（不能 last-writer-wins）
 test("provider discoveries from parallel parents union instead of overwriting", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-union-"));
