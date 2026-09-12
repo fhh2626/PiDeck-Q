@@ -266,13 +266,14 @@ export function reconcileChildActiveShellTools(options: {
 	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
 	const next = new Set(activeTools);
 	const bashTool = registeredTools.find(candidate => candidate.name === 'bash');
-	const bridgedPowerShellInBash = platform === 'win32' && isChildPowerShellBridge(bashTool);
+	const powerShellBackedBash = platform === 'win32'
+		&& (isChildPowerShellBridge(bashTool) || (!!bashTool && isPwsh(bashTool)));
 
 	// A normal slot is usable only when its own backend exists and the parent exposed it. The one
-	// deliberate exception is change-pi-prompt's child-only `bash` compatibility slot: its actual
-	// backend is PowerShell, so it follows the PowerShell availability/ceiling instead of Git Bash.
+	// deliberate Windows compatibility case is a `bash`-named slot whose actual backend is PowerShell
+	// (our bridge, or an already-loaded pwsh adapter). It follows PowerShell availability/ceiling.
 	const permitted = (name: 'bash' | 'powershell'): boolean => {
-		if (name === 'bash' && bridgedPowerShellInBash) {
+		if (name === 'bash' && powerShellBackedBash) {
 			if (!availability.powershell) return false;
 			if (ceiling && ceiling.powershell === false) return false;
 			return true;
