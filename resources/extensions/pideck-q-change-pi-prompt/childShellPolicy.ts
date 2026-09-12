@@ -14,7 +14,7 @@
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { isPwsh, type ToolSnapshot } from './contributions.ts';
+import { isChildPowerShellBridge, isPwsh, type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
@@ -265,10 +265,18 @@ export function reconcileChildActiveShellTools(options: {
 }): string[] {
 	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
 	const next = new Set(activeTools);
+	const bashTool = registeredTools.find(candidate => candidate.name === 'bash');
+	const bridgedPowerShellInBash = platform === 'win32' && isChildPowerShellBridge(bashTool);
 
-	// A slot is usable only when the backend exists, the parent exposed it, the child runtime
-	// actually registers it, and it is not a pwsh adapter squatting on the bash name.
+	// A normal slot is usable only when its own backend exists and the parent exposed it. The one
+	// deliberate exception is change-pi-prompt's child-only `bash` compatibility slot: its actual
+	// backend is PowerShell, so it follows the PowerShell availability/ceiling instead of Git Bash.
 	const permitted = (name: 'bash' | 'powershell'): boolean => {
+		if (name === 'bash' && bridgedPowerShellInBash) {
+			if (!availability.powershell) return false;
+			if (ceiling && ceiling.powershell === false) return false;
+			return true;
+		}
 		if (!availability[name]) return false;
 		if (ceiling && ceiling[name] === false) return false;
 		const tool = registeredTools.find(candidate => candidate.name === name);
