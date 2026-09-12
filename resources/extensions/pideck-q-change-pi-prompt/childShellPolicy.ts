@@ -1,12 +1,11 @@
 /**
- * Canonical tool policy for native child environments.
+ * Child tool policy: prune only. Never invent a shell name the child did not already have.
  *
  * Registered tools (`getAllTools`) are not the same fact as the parent's final active tools
- * (`getActiveTools`): a shell already pruned from the parent session, or a pwsh adapter that
- * only *claims* the `bash` tool name, must never leak into a child as a fake `bash` slot.
- * Children therefore receive a canonicalized shell set — a real bash backend stays `bash`,
- * PowerShell stays `powershell` — decided by the real backend, the parent's final active
- * shell tools, and the child's own tool list.
+ * (`getActiveTools`). A shell the parent already hid, or a pwsh adapter that only *claims*
+ * the `bash` name, must not leak into a child as a real bash slot. Child allowlists stay
+ * authoritative: this module hides unavailable/unauthorized shells and never rewrites `bash`
+ * into `powershell`.
  *
  * The same parent/child split decides extension-provided tools: the shared settings.json only
  * guarantees which providers a child *can* load (a superset), while the owner-scoped snapshot
@@ -14,7 +13,7 @@
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { isChildPowerShellBridge, isPwsh, type ToolSnapshot } from './contributions.ts';
+import { isPwsh, type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
@@ -77,17 +76,55 @@ export interface LegacyShellPolicySnapshot {
 export type EffectiveChildPolicy = ShellPolicySnapshot | LegacyShellPolicySnapshot;
 
 export interface ChildShellSlots {
-	/** Canonical shell set the child ends up with. */
+	/** Declared shell names that this parent can actually provide. */
 	bash: boolean;
 	powershell: boolean;
-	/** false when a declared shell slot cannot be satisfied in the child (fail closed). */
+	/** false when a declared shell slot has no matching parent backend. */
 	available: boolean;
-	/** Extension paths the child needs injected to expose the canonical shell set. */
+	/** Extension paths needed to load a declared, parent-authorized shell provider. */
 	providerPaths: string[];
 }
 
 export function isShellToolName(name: string): boolean {
 	return name === 'bash' || name === 'powershell';
+}
+
+export function sameToolList(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/**
+ * Rewrite a shell-capable agent's declared tools to the host's real backends.
+ * Agents that never declared a shell are returned unchanged.
+ * Host availability, not the current session's active tools, decides the names:
+ * this list is written to shared settings and must not follow one parent tab.
+ */
+export function mapDeclaredToolsToHostShells(
+	declaredTools: readonly string[],
+	hostShells: { bash: boolean; powershell: boolean },
+): string[] {
+	const declaredBash = declaredTools.includes('bash');
+	const declaredPowerShell = declaredTools.includes('powershell');
+	if (!declaredBash && !declaredPowerShell) return [...declaredTools];
+
+	const nextShells: string[] = [];
+	if (hostShells.bash) nextShells.push('bash');
+	if (hostShells.powershell) nextShells.push('powershell');
+
+	const result: string[] = [];
+	let inserted = false;
+	for (const name of declaredTools) {
+		if (!isShellToolName(name)) {
+			result.push(name);
+			continue;
+		}
+		if (!inserted) {
+			result.push(...nextShells);
+			inserted = true;
+		}
+	}
+	if (!inserted) result.push(...nextShells);
+	return result;
 }
 
 /** Narrow an already-validated snapshot to the shell ceiling shape used by the child mapping. */
@@ -131,7 +168,7 @@ function injectableProviderPath(tool: ToolSnapshot | undefined): string | undefi
 
 /**
  * Decide the parent's real shell backends. A tool name alone never establishes a backend:
- * the pwsh adapter exposes `bash` while running PowerShell.
+ * the pwsh adapter exposes `bash` while running PowerShell, and that is not a bash backend.
  */
 export function resolveEffectiveShellPolicy(options: {
 	platform: NodeJS.Platform;
@@ -144,61 +181,38 @@ export function resolveEffectiveShellPolicy(options: {
 	const bashTool = parentTools.find(tool => tool.name === 'bash');
 	const powerShellTool = parentTools.find(tool => tool.name === 'powershell');
 
-	// The pwsh adapter is a Windows-only adapter for a `bash` slot backed by PowerShell;
-	// it must never make the child's canonical `bash` slot active. Treat it as evidence that the
-	// parent authorizes PowerShell, but do NOT inject the adapter itself into child settings: it
-	// squats on the same `bash` name as real Bash and a shared provider superset could otherwise
-	// override Bash in children owned by another session. Child PowerShell is supplied by our bridge.
+	// The adapter squats on `bash`. It must not make the child's bash slot look real, and it is
+	// never injected into shared child settings (that would override another session's real Bash).
 	const adapterOccupiesBash = platform === 'win32' && !!bashTool && isPwsh(bashTool);
-	const adapterProvidesPowerShell = adapterOccupiesBash && active.has('bash') && availability.powershell;
 	const bash = availability.bash && active.has('bash') && !adapterOccupiesBash;
 
-	// Native/custom `powershell` providers are safe to inject because they do not collide with the
-	// historical `bash` slot. An active pwsh adapter contributes capability only, not a provider path.
 	const nativePowerShellProviderPath = injectableProviderPath(powerShellTool);
 	const nativePowerShellLoadable = isBuiltinTool(powerShellTool) || !!nativePowerShellProviderPath;
-	const nativePowerShell = availability.powershell && active.has('powershell') && nativePowerShellLoadable;
-	const powershell = adapterProvidesPowerShell || nativePowerShell;
-	const powershellProviderPath = nativePowerShell ? nativePowerShellProviderPath : undefined;
+	const powershell = availability.powershell && active.has('powershell') && nativePowerShellLoadable;
 
 	return {
 		bash,
 		powershell,
 		bashProviderPath: bash ? injectableProviderPath(bashTool) : undefined,
-		powershellProviderPath,
+		powershellProviderPath: powershell ? nativePowerShellProviderPath : undefined,
 	};
 }
 
 /**
- * Map an agent's declared shell slots onto the canonical shell set.
- *
- * Windows replaces the historical `bash` slot with the real backend set, so a shell-capable
- * agent that declares `bash` receives `powershell` when PowerShell is the only real backend.
- * Linux/macOS keep real availability only and never rewrite bash into powershell.
+ * Keep only the shell names the agent actually declared and this parent can provide.
+ * Never rewrite `bash` into `powershell`; child allowlists stay authoritative.
  */
 export function resolveChildShellSlots(options: {
 	platform: NodeJS.Platform;
 	policy: EffectiveShellPolicy;
 	declaredTools: readonly string[];
 }): ChildShellSlots {
-	const { platform, policy, declaredTools } = options;
+	const { policy, declaredTools } = options;
 	const declaredBash = declaredTools.includes('bash');
 	const declaredPowerShell = declaredTools.includes('powershell');
 
-	// No shell requirement in the agent definition: never widen it.
 	if (!declaredBash && !declaredPowerShell) {
 		return { bash: false, powershell: false, available: true, providerPaths: [] };
-	}
-
-	if (platform === 'win32') {
-		const providerPaths = [policy.bashProviderPath, policy.powershellProviderPath]
-			.filter((path): path is string => typeof path === 'string');
-		return {
-			bash: policy.bash,
-			powershell: policy.powershell,
-			available: policy.bash || policy.powershell,
-			providerPaths,
-		};
 	}
 
 	const providerPaths: string[] = [];
@@ -227,8 +241,7 @@ export function resolveChildShellSlots(options: {
  * child keeps only the extension tools this parent actually allows.
  *
  * Deliberately prune-only: a plain extension tool is never added here, because the child's own
- * allowlist stays authoritative. Windows shell replacement is the one exception and lives in
- * `reconcileChildActiveShellTools`.
+ * allowlist stays authoritative. Host-shell names are rewritten only in shared `agentOverrides.tools`.
  *
  * `parentActiveTools` undefined means no version 2 snapshot was available (an older parent, or a
  * missing file); the child then keeps its own list rather than guessing a ceiling.
@@ -251,15 +264,14 @@ export function reconcileChildExtensionTools(options: {
 }
 
 /**
- * Canonicalize the *final* active shell tools of a running child session.
+ * Prune the *final* active shell tools of a running child session.
  *
- * The child knows its own registry and its own active list, so the same mapping rule can be
- * re-applied after the child starts. `wantsShell` must come from the agent definition (the
- * child's own list may already be pruned). `pruneOnly` is used when the child identity cannot
- * be resolved: prune unavailable shells, but never broaden the child's tool set.
+ * `wantsShell` must come from the agent definition (the child's own list may already be pruned).
+ * `pruneOnly` is used when the child identity cannot be resolved: hide unavailable shells, but
+ * never strip a declared shell that is still permitted, and never add a name.
  *
- * `ceiling` is the parent's published final shell set. It is authoritative: a shell the parent
- * did not expose must not come back just because the local host still has that backend.
+ * `ceiling` is the parent's published final shell set. A shell the parent did not expose must
+ * not come back just because the local host still has that backend.
  */
 export function reconcileChildActiveShellTools(options: {
 	platform: NodeJS.Platform;
@@ -270,24 +282,10 @@ export function reconcileChildActiveShellTools(options: {
 	pruneOnly?: boolean;
 	ceiling?: { bash: boolean; powershell: boolean };
 }): string[] {
-	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
+	const { availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
 	const next = new Set(activeTools);
-	const bashTool = registeredTools.find(candidate => candidate.name === 'bash');
-	const powerShellTool = registeredTools.find(candidate => candidate.name === 'powershell');
-	const powerShellBackedBash = platform === 'win32'
-		&& (isChildPowerShellBridge(bashTool) || (!!bashTool && isPwsh(bashTool)));
 
-	// A normal slot is usable only when its own backend exists and the parent exposed it. A
-	// PowerShell-backed `bash` compatibility slot is only needed when the child hard allowlist did
-	// not register the canonical `powershell` name. If the real `powershell` slot exists, prefer it
-	// and never expose the same backend twice under both names.
 	const permitted = (name: 'bash' | 'powershell'): boolean => {
-		if (name === 'bash' && powerShellBackedBash) {
-			if (powerShellTool) return false;
-			if (!availability.powershell) return false;
-			if (ceiling && ceiling.powershell === false) return false;
-			return true;
-		}
 		if (!availability[name]) return false;
 		if (ceiling && ceiling[name] === false) return false;
 		const tool = registeredTools.find(candidate => candidate.name === name);
@@ -303,22 +301,12 @@ export function reconcileChildActiveShellTools(options: {
 
 	if (pruneOnly) return prune();
 	if (!wantsShell) {
-		// A known agent definition with no shell declaration is a hard capability ceiling. Even if
-		// an ambient/stale provider somehow makes a shell visible, do not let it survive canonicalization.
+		// A known agent definition with no shell declaration is a hard capability ceiling.
 		next.delete('bash');
 		next.delete('powershell');
 		return [...next];
 	}
 
-	if (platform === 'win32') {
-		if (permitted('bash')) next.add('bash');
-		else next.delete('bash');
-
-		if (permitted('powershell')) next.add('powershell');
-		else next.delete('powershell');
-		return [...next];
-	}
-
-	// Linux/macOS: prune to real availability; never rewrite bash into powershell.
+	// Never add a shell name the child did not already have. Child allowlists stay authoritative.
 	return prune();
 }

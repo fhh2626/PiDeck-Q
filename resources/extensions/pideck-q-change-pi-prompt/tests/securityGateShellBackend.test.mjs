@@ -5,13 +5,12 @@ import { join } from "node:path";
 import test from "node:test";
 
 import securityGateExtension, { resolveSecurityShellTool } from "../../pi-deck-security-gate.ts";
-import { CHILD_POWERSHELL_BRIDGE_MARKER } from "../contributions.ts";
 
-function bridgeTool() {
+function adapterTool() {
 	return {
 		name: "bash",
-		description: `${CHILD_POWERSHELL_BRIDGE_MARKER} PowerShell backend`,
-		sourceInfo: { source: "file", path: "change-pi-prompt/childPowerShellBridge.ts" },
+		description: "PowerShell adapter",
+		sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter@1.0.0" },
 	};
 }
 
@@ -55,20 +54,13 @@ async function withSecurityEnv(configPath, fn) {
 }
 
 test("security shell resolver follows the real backend behind a bash slot", () => {
-	assert.equal(resolveSecurityShellTool({ getAllTools: () => [bridgeTool()] }, "bash"), "powershell");
-	assert.equal(resolveSecurityShellTool({
-		getAllTools: () => [{
-			name: "bash",
-			description: "PowerShell adapter",
-			sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter@1.0.0" },
-		}],
-	}, "bash"), "powershell");
+	assert.equal(resolveSecurityShellTool({ getAllTools: () => [adapterTool()] }, "bash"), "powershell");
 	assert.equal(resolveSecurityShellTool({
 		getAllTools: () => [{ name: "bash", description: "Execute bash", sourceInfo: { source: "builtin" } }],
 	}, "bash"), "bash");
 });
 
-test("security gate applies PowerShell policy exactly to the bash compatibility slot", async () => {
+test("security gate applies PowerShell policy to a pwsh-adapter bash slot", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "pideck-security-shell-backend-"));
 	try {
 		const configPath = join(dir, "security.json");
@@ -78,7 +70,7 @@ test("security gate applies PowerShell policy exactly to the bash compatibility 
 			const handlers = new Map();
 			const pi = {
 				on: (name, handler) => handlers.set(name, handler),
-				getAllTools: () => [bridgeTool()],
+				getAllTools: () => [adapterTool()],
 			};
 			await securityGateExtension(pi);
 			const toolCall = handlers.get("tool_call");
@@ -92,7 +84,6 @@ test("security gate applies PowerShell policy exactly to the bash compatibility 
 			assert.equal(denied?.block, true);
 			assert.match(denied.reason, /powershell \(bash compatibility slot\)/i);
 
-			// Reverse the policies: a PowerShell-backed slot must not inherit a stricter Bash action.
 			writeSecurityConfig(configPath, { bash: "deny", powershell: "allow" }, 10_000);
 			const allowed = await toolCall({ toolName: "bash", input: { command: "Get-ChildItem" } }, ctx);
 			assert.equal(allowed, undefined);

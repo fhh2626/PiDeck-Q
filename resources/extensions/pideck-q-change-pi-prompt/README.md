@@ -7,8 +7,8 @@ PiDeck-Q 随包内置扩展。PiDeck 默认启用，用户可在设置 → 扩�
 - 暂不支持：`workflowScriptPath` 与 named workflow resource（`{ workflow, args }`）。这些入口的真实脚本在 pi-subagents 内部解析，change-pi-prompt 无法在 `tool_call` 拦截边界完成相同的 AST 前台验证，因此 standalone 下直接 fail closed 阻断（非 standalone 环境不受此限制）。
 - 外部 Runner（`external-cli` / `external-job`）在 standalone 下不可用并直接阻断；无法确认 runner 类型的未知 Agent 同样 fail closed 阻断。
 探测 bash / powershell 后端是否存在；缺失则对本会话 `setActiveTools` 隐藏对应工具，并删掉 Available tools 行与 shell/pwsh 指南。
-不修改 pi-subagents 上游源码；通过 upstream 原生支持的 `subagentOnlyExtensions` 接口配置 child tool 兼容层。
-父 Agent 与 native child 均做工具环境对齐；native child 角色 prompt 保持完全一致，不被替换为父 Agent 身份。
+不修改 pi-subagents 上游源码；不改写 child 的 `tools` allowlist，也不把 PowerShell 挂到名为 `bash` 的槽上。
+父 Agent 与 native child 均按真实工具名 prune；native child 角色 prompt 保持完全一致，不被替换为父 Agent 身份。
 enabled=false 时真正完全停用（不修改 prompt、provider payload、tool call、active tools 或 child settings）。
 
 ## 安装结构
@@ -25,18 +25,20 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽（仅父 Agent）。
 - `settings.shellPath` 按文件名分类：`bash.exe` / `bash` / `sh.exe` / `sh` 计入 bash；`pwsh.exe` / `pwsh` / `powershell.exe` / `powershell` 计入 powershell；其它名字（如 `cmd.exe`）不计入任何后端。配置的 shell 路径绝不再被当作 bash 的同义词。
 
-## 子 Agent shell 环境规范化（canonical shell）
+## 子 Agent shell 环境（只 prune，不改名）
 
-`getAllTools()` 是「已注册能力」，`getActiveTools()` 是「当前真正暴露给模型的能力」。子 Agent 的工具环境以父 Agent 的**最终 active tools** 为准，不能只凭注册表判断。
+`getAllTools()` 是「已注册能力」，`getActiveTools()` 是「当前真正暴露给模型的能力」。子 Agent 的工具名单来自 pi-subagents 的硬 allowlist，本扩展不能按真实环境补上未声明的工具名。
 
-- `bash` 与 `powershell` 不再按工具名判断：真实后端 + 父 Agent 最终 active + 子 Agent 自身工具清单共同决定。
-- Windows：父环境最终只有 PowerShell 时，声明了 `bash` 的 shell-capable 子 Agent（worker / scout / oracle / delegate）得到 `powershell`，不再保留一个名为 `bash` 的伪 shell；pwsh adapter 占用 `bash` 名称也不会让子 Agent 的 `bash` 变为 active（即使本机真有 Git Bash）。
-- Linux/macOS：只按真实 availability 裁剪，不把 `bash` 自动替换成 `powershell`。
-- 不扩权：原本不声明 shell 的子 Agent（如 reviewer）不会被自动追加 `powershell`；child 身份无法解析时只做 prune，绝不主动加工具。
+- 真实后端缺失、或父 Agent 最终未激活的 `bash` / `powershell`：从 child 的 active tools 里隐藏。
+- 父会话 reconciliation 会按本机探测结果，把 shell-capable agent 的 `subagents.agentOverrides.<name>.tools` 写成真名 allowlist（只有 PowerShell 就把 `bash` 换成 `powershell`；两个都有就都留；都没有就都去掉）。这是共享 settings，跟当前 tab 是否激活无关。
+- 不覆盖用户已经手写的 `tools`；本扩展上次写入且未被改过的 allowlist 才会随探测结果更新。reviewer 等未声明 shell 的 agent 不写 `tools`。
+- 不改 `pideck-q-subagents/agents/*.md`，也不把 PowerShell 挂到名为 `bash` 的槽。本次会话里 pi-subagents 若已读完 catalog，新 allowlist 从下一次会话或 `/reload` 生效。
+- pwsh adapter 占用 `bash` 名称时：父会话可保留该槽；child 不把它当成真实 bash，也不把它注入共享 child settings。
+- 不扩权：原本不声明 shell 的子 Agent（如 reviewer）不会被追加 `powershell`；child 身份无法解析时只做 prune，绝不主动加工具。
 - 父 Agent 未激活的 extension tool 不再注入子 Agent（避免借用 `getAllTools` 把 inactive provider 塞给 child）；builtin 与 pi-subagents 内部工具（`contact_supervisor` / `structured_output`）不受父 active 限制。
-- 归一化在 child 自身启动后再次执行：`before_agent_start` 中先按 canonical 结果 `setActiveTools`，再生成 Child Tool Environment 块（`<!-- change-pi-prompt:child-tools:v1 -->`），因此块内文案与实际 active tools 一致。
-- 角色 prompt 永不重写：仅追加/替换 child-tools 块，并在 Windows 上显式声明角色 prompt 里的 `bash` 说明已被取代（`Do not call it, even if the role prompt mentions bash.`）；无 shell 时不列举具体工具名（每个 agent 的 allowlist 不同）。
-- 不修改 `pideck-q-subagents/**`：platform adaptation 全部在本扩展内完成。
+- child 启动后再次 prune：`before_agent_start` 中先 `setActiveTools`，再生成 Child Tool Environment 块（`<!-- change-pi-prompt:child-tools:v1 -->`），因此块内文案与实际 active tools 一致。
+- 角色 prompt 永不重写：仅追加/替换 child-tools 块；无 shell 时不列举具体工具名（每个 agent 的 allowlist 不同）。
+- 不修改 `pideck-q-subagents/**`。
 
 ### 全局 reconciliation 只由 parent 执行
 
@@ -63,7 +65,7 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - 反过来，当前 parent 是否需要该工具由 `resolveToolProviderExtension()` 单独判定，反映在 `compatibilityStatus[agent].missingTools` 里。
 - child 侧的 `reconcileChildExtensionTools()` 只做 prune：extension tool 不在 `parentActiveTools` 就移除，**不会**因为 parent 有就主动加入。
 - builtin / pi-subagents 内部工具（`read`/`write`/`edit`/`grep`/`find`/`ls`/`subagent`/`contact_supervisor`/`structured_output`/`bg_wait`/`subagent_supervisor`，共享常量 `BUILTIN_OR_INTERNAL_CHILD_TOOLS`）不受 ceiling 影响；无 `version 2` 快照时（旧 parent 或文件缺失）保持旧行为，不做新的 extension prune。
-- child 最终顺序：读 owner policy → extension prune → shell canonicalization → `setActiveTools()` → 生成 Child Tool Environment。prompt 必须在最终 active tools 之后生成。
+- child 最终顺序：读 owner policy → extension prune → shell prune → `setActiveTools()` → 生成 Child Tool Environment。prompt 必须在最终 active tools 之后生成。
 
 ### reconciliation 跨进程锁
 

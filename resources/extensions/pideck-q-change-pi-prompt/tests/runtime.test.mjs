@@ -190,9 +190,9 @@ test('child shell authority obeys an explicit parent deny-all snapshot', () => h
   exists: path => path.endsWith('bash.exe') || path.endsWith('powershell.exe'),
 }));
 
-test('PowerShell-only Windows child uses the historical bash allowlist slot end-to-end', () => harness(async ({ dir, handlers, ctx, pi }) => {
+test('PowerShell-only Windows child does not keep bash or invent powershell', () => harness(async ({ dir, handlers, ctx, pi }) => {
   const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
-  const ownerKey = 'runtime-bridge-parent';
+  const ownerKey = 'runtime-prune-parent';
   try {
     process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
     await writeConfig(dir);
@@ -209,11 +209,10 @@ test('PowerShell-only Windows child uses the historical bash allowlist slot end-
     pi._active = ['read', 'bash'];
     const prompt = '<active_agent name="worker"/>\n\nYou are worker. Use `bash` for validation.';
     const result = await handlers.get('before_agent_start')({ systemPrompt: prompt, systemPromptOptions: {} }, ctx);
-    assert.deepEqual(pi.getActiveTools(), ['read', 'bash']);
+    assert.deepEqual(pi.getActiveTools(), ['read']);
     assert.equal(pi.getAllTools().some(tool => tool.name === 'powershell'), false);
-    assert.match(result.systemPrompt, /executes PowerShell, not GNU Bash/);
-    assert.match(result.systemPrompt, /`bash` is available/);
-    assert.match(result.systemPrompt, /`powershell` is unavailable/);
+    assert.match(result.systemPrompt, /No shell tool is available/);
+    assert.doesNotMatch(result.systemPrompt, /executes PowerShell, not GNU Bash/);
   } finally {
     if (previousOwner === undefined) delete process.env[SHELL_POLICY_OWNER_ENV];
     else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;

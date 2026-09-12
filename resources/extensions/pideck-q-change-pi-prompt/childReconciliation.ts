@@ -1,6 +1,7 @@
 /**
  * Non-destructive reconciliation of child tool environments in settings.json.
- * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions for native subagents.
+ * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions and, when the host
+ * shell set differs from a native agent's declared shells, a managed `tools` allowlist.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
@@ -10,7 +11,9 @@ import { isRecord, type ToolSnapshot } from './contributions.ts';
 import {
 	BUILTIN_OR_INTERNAL_CHILD_TOOLS,
 	isShellToolName,
+	mapDeclaredToolsToHostShells,
 	resolveChildShellSlots,
+	sameToolList,
 	type EffectiveChildPolicy,
 	type EffectiveShellPolicy,
 	type ShellPolicySnapshot,
@@ -106,6 +109,8 @@ export function resolveToolProviderExtension(
 interface ManagedStateFile {
 	version: number;
 	managedPaths: string[];
+	/** Last tools allowlists this extension wrote; used to avoid clobbering user edits. */
+	managedTools?: Record<string, string[]>;
 }
 
 /**
@@ -256,17 +261,35 @@ function writeJsonAtomic(filePath: string, payload: unknown): void {
 	}
 }
 
-function readManagedState(statePath: string): string[] {
-	if (!existsSync(statePath)) return [];
+function readManagedStateFile(statePath: string): { managedPaths: string[]; managedTools: Record<string, string[]> } {
+	if (!existsSync(statePath)) return { managedPaths: [], managedTools: {} };
 	try {
 		const parsed = JSON.parse(readFileSync(statePath, 'utf8'));
-		if (isRecord(parsed) && Array.isArray(parsed.managedPaths)) {
-			return parsed.managedPaths.filter((p): p is string => typeof p === 'string');
+		if (!isRecord(parsed) || !Array.isArray(parsed.managedPaths)) {
+			return { managedPaths: [], managedTools: {} };
 		}
+		const managedPaths = parsed.managedPaths.filter((p): p is string => typeof p === 'string');
+		const managedTools: Record<string, string[]> = {};
+		if (isRecord(parsed.managedTools)) {
+			for (const [name, tools] of Object.entries(parsed.managedTools)) {
+				if (!Array.isArray(tools)) continue;
+				managedTools[name] = tools.filter((tool): tool is string => typeof tool === 'string');
+			}
+		}
+		return { managedPaths, managedTools };
 	} catch {
 		// Ignore corrupted state file
 	}
-	return [];
+	return { managedPaths: [], managedTools: {} };
+}
+
+function readManagedState(statePath: string): string[] {
+	return readManagedStateFile(statePath).managedPaths;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	return value.filter((item): item is string => typeof item === 'string');
 }
 
 const PWSH_ADAPTER_PACKAGE = '@99percentpeople/pi-pwsh-adapter';
@@ -415,6 +438,8 @@ export async function reconcileChildEnvironments(options: {
 	parentActiveTools: readonly string[];
 	platform: NodeJS.Platform;
 	shellPolicy: EffectiveShellPolicy;
+	/** Host backends from PATH/probe. Shared tools overrides follow this, not one session's active set. */
+	hostShells?: { bash: boolean; powershell: boolean };
 	/** Identity of this parent runtime; scopes the published shell policy to this session/process. */
 	shellPolicyOwnerKey?: string;
 	changePiPromptPath?: string;
@@ -436,17 +461,21 @@ function reconcileChildEnvironmentsLocked(options: {
 	parentActiveTools: readonly string[];
 	platform: NodeJS.Platform;
 	shellPolicy: EffectiveShellPolicy;
+	hostShells?: { bash: boolean; powershell: boolean };
 	shellPolicyOwnerKey?: string;
 	changePiPromptPath?: string;
 }): ReconciliationResult {
-	const { agentDir, catalog, parentTools, parentActiveTools, platform, shellPolicy } = options;
+	const { agentDir, catalog, parentTools, parentActiveTools, platform, shellPolicy, hostShells } = options;
 	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
 	const compatibilityStatus = new Map<string, ChildAgentCompatibility>();
 	const incompatibleAgents: string[] = [];
 
 	const stateDir = join(agentDir, 'change-pi-prompt');
 	const statePath = join(stateDir, 'managed-child-extensions.json');
-	const previousManagedPaths = new Set(readManagedState(statePath));
+	const previousState = readManagedStateFile(statePath);
+	const previousManagedPaths = new Set(previousState.managedPaths);
+	const previousManagedTools = previousState.managedTools;
+	const nextManagedTools: Record<string, string[]> = { ...previousManagedTools };
 	const obsoleteManagedPwshAdapterPaths = new Set(
 		[...previousManagedPaths].filter(isPwshAdapterProviderPath),
 	);
@@ -526,7 +555,7 @@ function reconcileChildEnvironmentsLocked(options: {
 			}
 
 			for (const toolName of agent.tools) {
-				// Shell slots are canonicalized separately: a pwsh adapter named bash is not a bash backend.
+				// Shell backends are pruned at runtime; they are not missing providers.
 				if (isShellToolName(toolName)) continue;
 				// Two separate questions, deliberately answered separately:
 				//  - resolveToolProviderExtension: does this parent allow the tool? (builtin/internal bypass it)
@@ -544,11 +573,11 @@ function reconcileChildEnvironmentsLocked(options: {
 				}
 			}
 
-			// Shell: declare the canonical backend set, not the historical tool name.
-			const shellSlots = resolveChildShellSlots({ platform, policy: shellPolicy, declaredTools: agent.tools });
-			if (!shellSlots.available) {
-				missingTools.push(...agent.tools.filter(isShellToolName));
-			}
+			const desiredTools = hostShells
+				? mapDeclaredToolsToHostShells(agent.tools, hostShells)
+				: [...agent.tools];
+			// Inject a shell provider only for names this host allowlist actually keeps.
+			const shellSlots = resolveChildShellSlots({ platform, policy: shellPolicy, declaredTools: desiredTools });
 			for (const providerPath of shellSlots.providerPaths) {
 				agentExtensions.add(providerPath);
 				nextManagedPaths.add(providerPath);
@@ -591,15 +620,42 @@ function reconcileChildEnvironmentsLocked(options: {
 			const isSame = existingList.length === mergedList.length
 				&& existingList.every((val, idx) => val === mergedList[idx]);
 
-			if (!isSame) {
+			const ensureOverride = (): Record<string, unknown> => {
 				if (!isRecord(settingsObj.subagents)) settingsObj.subagents = {};
 				const sub = settingsObj.subagents as Record<string, unknown>;
 				if (!isRecord(sub.agentOverrides)) sub.agentOverrides = {};
 				const ov = sub.agentOverrides as Record<string, unknown>;
 				if (!isRecord(ov[name])) ov[name] = {};
-				const target = ov[name] as Record<string, unknown>;
-				target.subagentOnlyExtensions = mergedList;
+				return ov[name] as Record<string, unknown>;
+			};
+
+			if (!isSame) {
+				ensureOverride().subagentOnlyExtensions = mergedList;
 				settingsDirty = true;
+			}
+
+			// Host-shell allowlist: only when the caller probed backends, and never over user-owned tools.
+			if (hostShells && agent.tools.some(isShellToolName)) {
+				const existingTools = agentOverride?.tools;
+				const lastManaged = previousManagedTools[name];
+				const existingArray = asStringArray(existingTools);
+				const weOwnTools = existingTools === undefined
+					|| (existingArray !== undefined && lastManaged !== undefined && sameToolList(existingArray, lastManaged));
+				if (!weOwnTools) {
+					delete nextManagedTools[name];
+				} else if (sameToolList(desiredTools, agent.tools)) {
+					if (existingArray !== undefined) {
+						delete ensureOverride().tools;
+						settingsDirty = true;
+					}
+					delete nextManagedTools[name];
+				} else {
+					if (existingArray === undefined || !sameToolList(existingArray, desiredTools)) {
+						ensureOverride().tools = desiredTools;
+						settingsDirty = true;
+					}
+					nextManagedTools[name] = [...desiredTools];
+				}
 			}
 		}
 	}
@@ -627,6 +683,7 @@ function reconcileChildEnvironmentsLocked(options: {
 		const stateData: ManagedStateFile = {
 			version: 1,
 			managedPaths: [...nextManagedPaths],
+			managedTools: settingsWriteSucceeded ? nextManagedTools : previousManagedTools,
 		};
 		writeJsonAtomic(statePath, stateData);
 	} catch {

@@ -62,8 +62,6 @@ type SecurityPolicySnapshot = {
 // ── 常量 ──
 
 const SCHEMA_VERSION = 1;
-/** change-pi-prompt 的 child 兼容槽：公开名是 bash，真实执行后端是 PowerShell。 */
-const CHILD_POWERSHELL_BRIDGE_MARKER = "[change-pi-prompt:child-powershell-bridge]";
 const PWSH_ADAPTER_PACKAGE = "@99percentpeople/pi-pwsh-adapter";
 /** 受管控的工具名（其它自定义工具一律放行） */
 const MANAGED_TOOLS = new Set([
@@ -241,16 +239,12 @@ function shellAction(
 
 /**
  * Resolve the shell policy by execution backend rather than the public tool name.
- * change-pi-prompt and pi-pwsh-adapter may intentionally expose PowerShell through a `bash` slot
- * so native child hard allowlists can keep their historical tool name.
+ * pi-pwsh-adapter occupies the public `bash` name while executing PowerShell.
  */
 export function resolveSecurityShellTool(pi: ExtensionAPI, tool: ShellTool): ShellTool {
 	if (tool !== "bash" || typeof pi.getAllTools !== "function") return tool;
 	const bash = pi.getAllTools().find((candidate) => candidate.name === "bash");
 	if (!bash) return tool;
-	if (typeof bash.description === "string" && bash.description.includes(CHILD_POWERSHELL_BRIDGE_MARKER)) {
-		return "powershell";
-	}
 	const source = bash.sourceInfo?.source ?? "";
 	if (source === `npm:${PWSH_ADAPTER_PACKAGE}` || source.startsWith(`npm:${PWSH_ADAPTER_PACKAGE}@`)) {
 		return "powershell";

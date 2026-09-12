@@ -16,11 +16,6 @@ import {
 	validateStandaloneWorkflowScript,
 	type Settings,
 } from './config.ts';
-import {
-	ensureChildPowerShellTool,
-	hasPowerShellBackedBashTool,
-	syncPowerShellBackedBashPrompt,
-} from './childPowerShellBridge.ts';
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
 import {
 	getActiveAgentName,
@@ -93,8 +88,7 @@ export function buildChildToolEnvironmentBlock(activeTools: readonly string[]): 
 		return lines.join('\n');
 	}
 
-	// A role prompt may still tell the child to use bash; when the canonical shell is PowerShell
-	// the tool environment must explicitly supersede that instruction instead of contradicting it.
+	// A role prompt may still tell the child to use bash after this runtime hid that tool.
 	lines.push(hasBash
 		? '- `bash` is available.'
 		: '- `bash` is unavailable. Do not call it, even if the role prompt mentions bash.');
@@ -244,6 +238,7 @@ export function registerPromptExtension(
 				?? (typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : tools.map(tool => tool.name));
 			const pkgRoot = findSubagentsPackageRoot(tools);
 			catalog = loadSubagentCatalog(pkgRoot);
+			const availability = await probeShells();
 			const next = await reconcileChildEnvironments({
 				agentDir,
 				catalog,
@@ -252,10 +247,11 @@ export function registerPromptExtension(
 				platform: probeHost.platform,
 				shellPolicy: resolveEffectiveShellPolicy({
 					platform: probeHost.platform,
-					availability: await probeShells(),
+					availability,
 					parentTools: tools,
 					parentActiveTools: effectiveActive,
 				}),
+				hostShells: { bash: availability.bash, powershell: availability.powershell },
 				changePiPromptPath,
 				shellPolicyOwnerKey,
 			});
@@ -329,8 +325,7 @@ export function registerPromptExtension(
 	};
 
 	/** Hide bash/powershell with no backend before the model sees the catalog.
-	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell.
-	 *  A bash-named PowerShell adapter/bridge follows its real PowerShell backend during child reconciliation. */
+	 *  Run on session_start and again on before_agent_start so later setActiveTools (plan-mode, /reload) cannot resurrect a missing shell. */
 	const pruneUnavailableShells = async (
 		ctx: ExtensionContext,
 		_options: { forChild?: boolean } = {},
@@ -339,10 +334,10 @@ export function registerPromptExtension(
 		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
 		const availability = await probeShells();
 		const active = [...pi.getActiveTools()];
+		const bashTool = snapshotTools(pi).find(tool => tool.name === 'bash');
 		const { next, hidden } = hideUnavailableShellTools(active, availability, {
-			// A PowerShell-backed compatibility slot must not be removed merely because Git Bash is absent.
-			// The child canonicalizer below applies PowerShell availability and the parent ceiling to it.
-			keepBash: hasPowerShellBackedBashTool(pi),
+			// A parent-session pwsh adapter still works without Git Bash; do not hide that slot.
+			keepBash: !!bashTool && isPwsh(bashTool),
 		});
 		if (hidden.length === 0) return { next, availability };
 		pi.setActiveTools(next);
@@ -388,25 +383,12 @@ export function registerPromptExtension(
 			childSessionActive = childSession;
 
 			// `subagent:false` means no child-specific prompt/tool adaptation. Ordinary session_start
-			// shell pruning remains an extension-wide behavior, but this hook must not canonicalize,
-			// widen, bridge, or inject child guidance when subagent adaptation is disabled.
+			// shell pruning remains an extension-wide behavior, but this hook must not prune child
+			// shells or inject child guidance when subagent adaptation is disabled.
 			if (childSession && !subagentAdaptationEnabled()) return;
 
-			// A child consumes an owner-scoped policy when its parent published one. Freeze the owner key
-			// before bridge registration so every later step in this turn observes the same snapshot.
 			if (childSession) {
 				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
-				const preBridgeTools = snapshotTools(pi);
-				const childCatalog = catalog ?? loadSubagentCatalog(findSubagentsPackageRoot(preBridgeTools));
-				catalog = childCatalog;
-				ensureChildPowerShellTool(pi, agentDir, {
-					platform: probeHost.platform,
-					systemPrompt: event.systemPrompt,
-					cwd: ctx.cwd,
-					enabled: true,
-					ownerKey: childShellPolicyOwnerKey,
-					catalog: childCatalog,
-				});
 			}
 
 			const pruned = await pruneUnavailableShells(ctx, { forChild: childSession });
@@ -445,7 +427,7 @@ export function registerPromptExtension(
 					activeTools: extensionPruned,
 					wantsShell,
 					ceiling,
-					// Unknown identity: prune only, never widen the child's tool set.
+					// Unknown identity: prune only, never strip a still-permitted declared shell.
 					pruneOnly: !childAgent,
 				});
 
@@ -455,13 +437,7 @@ export function registerPromptExtension(
 					childActiveTools = reconciled;
 				}
 
-				// Render guidance only after the final tool set is known. The alias block exists exactly when
-				// `bash` is the active PowerShell-backed compatibility slot; canonical `powershell` removes it.
-				const compatibilitySlotActive = childActiveTools.includes('bash')
-					&& !childActiveTools.includes('powershell')
-					&& hasPowerShellBackedBashTool(pi);
-				let nextPrompt = syncPowerShellBackedBashPrompt(event.systemPrompt, compatibilitySlotActive);
-				nextPrompt = injectChildToolEnvironment(nextPrompt, childActiveTools);
+				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, childActiveTools);
 				lastStatus = ['child-subagent-mode: preserved role prompt, injected tool environment', ...lastShellStatus];
 				if (nextPrompt !== event.systemPrompt) {
 					return { systemPrompt: nextPrompt };
