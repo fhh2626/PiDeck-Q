@@ -91,7 +91,11 @@ export function ensureChildPowerShellTool(
 
 	const ownerKey = options.ownerKey ?? resolveShellPolicyOwnerKey();
 	const snapshot = readEffectiveShellPolicySnapshot(agentDir, options.platform, ownerKey);
-	if (toShellCeiling(snapshot)?.powershell !== true) return false;
+	const ceiling = toShellCeiling(snapshot);
+	// Preserve a real Bash backend when the parent exposes one. The bridge is only the fallback for
+	// the common Windows case where Bash is unavailable but PowerShell is authorized.
+	if (ceiling?.bash === true) return false;
+	if (ceiling?.powershell !== true) return false;
 
 	const powerShell = createPowerShellToolDefinition(options.cwd);
 	pi.registerTool({
