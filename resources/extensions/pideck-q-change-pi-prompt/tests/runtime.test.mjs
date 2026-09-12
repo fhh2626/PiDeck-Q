@@ -80,20 +80,23 @@ test('before_agent_start auto-provisions foreground-safe config when absent and 
   assert.equal(notices.some(x => x.includes('asyncByDefault')), false);
 }));
 
-test('before_provider_request rewrites tool descriptions in the payload', () => harness(async ({ handlers }) => {
+test('before_provider_request rewrites tool descriptions in the payload', () => harness(async ({ handlers, ctx }) => {
+  await handlers.get('session_start')({}, ctx);
   const payload = { tools: [{ function: { name: 'subagent', description: UPSTREAM_ASYNC_DEFAULT_SENTENCE } }] };
   const next = handlers.get('before_provider_request')({ payload });
   assert.match(JSON.stringify(next), /asyncByDefault:true/);
   assert.equal(JSON.stringify(next).includes(UPSTREAM_ASYNC_DEFAULT_SENTENCE), false);
 }));
 
-test('context rewrites skill messages that recommend background children', () => harness(async ({ handlers }) => {
+test('context rewrites skill messages that recommend background children', () => harness(async ({ handlers, ctx }) => {
+  await handlers.get('session_start')({}, ctx);
   const next = handlers.get('context')({ messages: [{ role: 'user', content: 'Use async/background by default. Set `async:false` only when the parent must\nblock. Final reviews, validation gates, oracle checks, and publication checks\nstay async.' }] });
   assert.match(JSON.stringify(next.messages), /This environment requires `async:false`/);
   assert.doesNotMatch(JSON.stringify(next.messages), /Use async\/background by default/);
 }));
 
-test('tool_result rewrites only pi-subagents skill reads', () => harness(async ({ handlers }) => {
+test('tool_result rewrites only pi-subagents skill reads', () => harness(async ({ handlers, ctx }) => {
+  await handlers.get('session_start')({}, ctx);
   const content = [{ type: 'text', text: 'Use async/background by default. Final reviews and gate checks stay async.' }];
   const skill = handlers.get('tool_result')({ toolName: 'read', isError: false, input: { path: 'C:\\npm\\node_modules\\pi-subagents\\skills\\pi-subagents\\SKILL.md' }, content });
   assert.match(JSON.stringify(skill.content), /This environment requires `async:false`/);
