@@ -34,6 +34,7 @@ import {
 	reconcileChildEnvironments,
 	readEffectiveShellPolicySnapshot,
 	resolveCurrentChangePiPromptPath,
+	resolveShellPolicyOwnerKey,
 	type ReconciliationResult,
 } from './childReconciliation.ts';
 import {
@@ -126,6 +127,16 @@ function localDate(): string {
 	return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
+/** Stable identity of the runtime owning this session, used to scope parent-published state. */
+function readSessionIdentity(ctx: ExtensionContext): string | undefined {
+	try {
+		const id = ctx.sessionManager?.getSessionId?.();
+		return typeof id === 'string' && id.length > 0 ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Copy metadata at the event boundary; never mutate the host's tool or options objects. */
 function snapshotTools(pi: ExtensionAPI): ToolSnapshot[] {
 	if (typeof pi.getAllTools !== 'function') return [];
@@ -187,6 +198,10 @@ export function registerPromptExtension(
 	let reconciliationResult: ReconciliationResult | undefined;
 	/** Set on every before_agent_start; true while this runtime is a native child session. */
 	let childSessionActive = false;
+	/** Parent-owned key that scopes the published shell ceiling to this runtime. */
+	let shellPolicyOwnerKey: string | undefined;
+	/** Resolved once per child session so a later parent-session switch cannot re-point this child. */
+	let childShellPolicyOwnerKey: string | undefined;
 
 	function promptExtensionEnabled(): boolean {
 		return settings ? settings.config.enabled === true : true;
@@ -234,6 +249,7 @@ export function registerPromptExtension(
 					parentActiveTools: effectiveActive,
 				}),
 				changePiPromptPath,
+				shellPolicyOwnerKey,
 			});
 			for (const [name, status] of reconciliationResult.compatibilityStatus) {
 				if (!status.ok) {
@@ -328,6 +344,7 @@ export function registerPromptExtension(
 		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
 		childSessionActive = false;
+		childShellPolicyOwnerKey = undefined;
 		await ensureLoaded(ctx);
 		if (!promptExtensionEnabled()) return;
 		// Session-local only: shell pruning never writes shared state, so it stays here.
@@ -341,6 +358,7 @@ export function registerPromptExtension(
 		contributionHashes.clear();
 		confirmedSubagentToolNames.clear();
 		childSessionActive = false;
+		childShellPolicyOwnerKey = undefined;
 	});
 
 	pi.on('before_agent_start', async (event, ctx) => {
@@ -364,8 +382,11 @@ export function registerPromptExtension(
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
 				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
+				// Freeze the owning parent's key on the first child turn so a later parent-session switch
+				// in the same process cannot re-point this child at another session's ceiling.
+				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
 				// The parent publishes its final shell set; the child only consumes it.
-				const ceiling = toShellCeiling(readEffectiveShellPolicySnapshot(agentDir, probeHost.platform));
+				const ceiling = toShellCeiling(readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey));
 				const reconciled = reconcileChildActiveShellTools({
 					platform: probeHost.platform,
 					availability,
@@ -394,6 +415,9 @@ export function registerPromptExtension(
 
 			// Parent session: full prompt transformation. Reconciliation must run after pruning so
 			// the child tool environment follows the final active tools, not the registered registry.
+			// Scope the published ceiling to this parent so parallel sessions sharing one agentDir
+			// cannot overwrite each other's shell policy.
+			shellPolicyOwnerKey = readSessionIdentity(ctx) ?? shellPolicyOwnerKey;
 			const reconciliationStatus = await runReconciliation(activeTools);
 
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));

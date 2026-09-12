@@ -2,8 +2,9 @@
  * Non-destructive reconciliation of child tool environments in settings.json.
  * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions for native subagents.
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isRecord, type ToolSnapshot } from './contributions.ts';
 import {
@@ -90,19 +91,57 @@ interface ManagedStateFile {
 	managedPaths: string[];
 }
 
-/** Parent-published file name inside the change-pi-prompt state directory. */
-const SHELL_POLICY_FILE = 'effective-shell-policy.json';
+/**
+ * Parent-published shell ceilings live inside the change-pi-prompt state directory.
+ *
+ * PiDeck runs one pi process per Agent session against a shared agentDir, so a single global file
+ * would let two sessions overwrite each other's ceiling and make a child read the other session's
+ * shells. Every parent therefore publishes to its own owner-scoped file.
+ */
+const SHELL_POLICY_FILE_PREFIX = 'effective-shell-policy';
+/**
+ * Carries the owning parent's key to child runtimes. Foreground native children share the parent
+ * process, but detached runner children are separate processes; propagating the key keeps both
+ * reading the same scoped snapshot instead of falling back to the wider availability/registry
+ * policy the parent already narrowed.
+ */
+export const SHELL_POLICY_OWNER_ENV = 'CHANGE_PI_PROMPT_SHELL_POLICY_OWNER';
+/** Keys are usually session ids (UUIDv7); anything else is hashed so it can never escape the state dir. */
+const SHELL_POLICY_OWNER_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Owner snapshots are ephemeral; files left behind by long-gone sessions are pruned on write. */
+const SHELL_POLICY_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Filesystem-safe token for an owner key; unvalidated keys are hashed instead of used as a path. */
+export function shellPolicyOwnerToken(ownerKey: string): string {
+	if (SHELL_POLICY_OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
+	return `h-${createHash('sha256').update(ownerKey).digest('hex').slice(0, 32)}`;
+}
+
+/** Path of the parent-owned shell ceiling consumed by that parent's children. */
+export function shellPolicySnapshotPath(agentDir: string, ownerKey: string): string {
+	return join(agentDir, 'change-pi-prompt', `${SHELL_POLICY_FILE_PREFIX}.${shellPolicyOwnerToken(ownerKey)}.json`);
+}
+
+/** Owner key published for child runtimes, or undefined when this runtime has no parent context. */
+export function resolveShellPolicyOwnerKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env[SHELL_POLICY_OWNER_ENV];
+	if (typeof value !== 'string') return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
 
 /**
- * Read the parent's last published shell ceiling.
- * Child runtimes only consume it; a missing, malformed, or foreign-platform snapshot is ignored
- * so the caller falls back to availability-only pruning.
+ * Read the shell ceiling published by the parent that owns this runtime.
+ * Child runtimes only consume it; a missing owner, missing file, or malformed/foreign-platform
+ * snapshot is ignored so the caller falls back to conservative availability-only pruning.
  */
 export function readEffectiveShellPolicySnapshot(
 	agentDir: string,
 	platform: NodeJS.Platform,
+	ownerKey: string | undefined = resolveShellPolicyOwnerKey(),
 ): ShellPolicySnapshot | undefined {
-	const snapshotPath = join(agentDir, 'change-pi-prompt', SHELL_POLICY_FILE);
+	if (!ownerKey) return undefined;
+	const snapshotPath = shellPolicySnapshotPath(agentDir, ownerKey);
 	if (!existsSync(snapshotPath)) return undefined;
 	try {
 		const parsed = JSON.parse(readFileSync(snapshotPath, 'utf8'));
@@ -116,20 +155,59 @@ export function readEffectiveShellPolicySnapshot(
 	}
 }
 
-/** Only the parent runtime writes the ceiling; children never produce global state. */
-function writeEffectiveShellPolicySnapshot(stateDir: string, platform: NodeJS.Platform, policy: EffectiveShellPolicy): void {
+/**
+ * Only the parent runtime writes the ceiling; children never produce shared state.
+ * The owner env var is published *after* the atomic write so a concurrent child either sees no
+ * owner (conservative fallback) or a complete snapshot, never a half-written file.
+ */
+function writeEffectiveShellPolicySnapshot(
+	stateDir: string,
+	platform: NodeJS.Platform,
+	policy: EffectiveShellPolicy,
+	ownerKey: string,
+): void {
 	try {
-		mkdirSync(stateDir, { recursive: true });
 		const snapshot: ShellPolicySnapshot = {
 			version: 1,
 			platform,
 			bash: policy.bash,
 			powershell: policy.powershell,
 		};
-		writeFileSync(join(stateDir, SHELL_POLICY_FILE), JSON.stringify(snapshot, null, 2) + '\n', 'utf8');
+		const snapshotPath = join(stateDir, `${SHELL_POLICY_FILE_PREFIX}.${shellPolicyOwnerToken(ownerKey)}.json`);
+		writeJsonAtomic(snapshotPath, snapshot);
+		process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
+		pruneStaleShellPolicySnapshots(stateDir, snapshotPath);
 	} catch {
 		// A missing snapshot only widens the child's fallback checks; never fail the reconciliation.
 	}
+}
+
+/** Remove owner snapshots left behind by sessions that ended long ago; never touch the live one. */
+function pruneStaleShellPolicySnapshots(stateDir: string, keepPath: string): void {
+	try {
+		const keep = basename(keepPath);
+		const now = Date.now();
+		for (const entry of readdirSync(stateDir)) {
+			if (entry === keep) continue;
+			if (!entry.startsWith(`${SHELL_POLICY_FILE_PREFIX}.`) || !entry.endsWith('.json')) continue;
+			try {
+				const filePath = join(stateDir, entry);
+				if (now - statSync(filePath).mtimeMs > SHELL_POLICY_SNAPSHOT_TTL_MS) rmSync(filePath, { force: true });
+			} catch {
+				// Best effort: a file we cannot stat/remove is not worth failing reconciliation over.
+			}
+		}
+	} catch {
+		// Best effort cleanup only.
+	}
+}
+
+/** Temp-file-then-rename JSON write, so a concurrent reader never observes a half-written file. */
+function writeJsonAtomic(filePath: string, payload: unknown): void {
+	mkdirSync(dirname(filePath), { recursive: true });
+	const tmpPath = `${filePath}.tmp.${Date.now()}.${process.pid}`;
+	writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+	renameSync(tmpPath, filePath);
 }
 
 function readManagedState(statePath: string): string[] {
@@ -153,6 +231,8 @@ export function reconcileChildEnvironments(options: {
 	parentActiveTools: readonly string[];
 	platform: NodeJS.Platform;
 	shellPolicy: EffectiveShellPolicy;
+	/** Identity of this parent runtime; scopes the published shell ceiling to this session/process. */
+	shellPolicyOwnerKey?: string;
 	changePiPromptPath?: string;
 }): ReconciliationResult {
 	const { agentDir, catalog, parentTools, parentActiveTools, platform, shellPolicy } = options;
@@ -277,10 +357,7 @@ export function reconcileChildEnvironments(options: {
 
 	if (canWriteSettings && settingsDirty) {
 		try {
-			mkdirSync(dirname(settingsPath), { recursive: true });
-			const tmpPath = join(agentDir, `settings.json.tmp.${Date.now()}.${process.pid}`);
-			writeFileSync(tmpPath, JSON.stringify(settingsObj, null, 2) + '\n', 'utf8');
-			renameSync(tmpPath, settingsPath);
+			writeJsonAtomic(settingsPath, settingsObj);
 		} catch {
 			// Fail conservative on write error
 		}
@@ -288,18 +365,18 @@ export function reconcileChildEnvironments(options: {
 
 	// Persist managed paths state
 	try {
-		mkdirSync(stateDir, { recursive: true });
 		const stateData: ManagedStateFile = {
 			version: 1,
 			managedPaths: [...currentManagedPaths],
 		};
-		writeFileSync(statePath, JSON.stringify(stateData, null, 2) + '\n', 'utf8');
+		writeJsonAtomic(statePath, stateData);
 	} catch {
 		// Ignore state file write errors
 	}
 
 	// Publish the parent's final shell ceiling for child runtimes (see readEffectiveShellPolicySnapshot).
-	writeEffectiveShellPolicySnapshot(stateDir, platform, shellPolicy);
+	// The owner key scopes the snapshot so parallel sessions sharing one agentDir never overwrite it.
+	writeEffectiveShellPolicySnapshot(stateDir, platform, shellPolicy, options.shellPolicyOwnerKey ?? `pid-${process.pid}`);
 
 	return {
 		compatibilityStatus,

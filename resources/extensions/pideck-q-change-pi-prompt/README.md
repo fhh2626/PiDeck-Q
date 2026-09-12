@@ -46,7 +46,10 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - `session_start` 只做 session-local 的 shell prune，不写任何共享 override。
 - `before_agent_start` 先判定 child session：child 只处理本会话 active tools 与 prompt；只有 parent 会执行 `reconcileChildEnvironments(parentActiveTools)`。
 - `tool_call` 在 child session 中只做只读 catalog 加载，不再重写共享 override（避免「第一只 child 正常、下一只不同步」）。
-- parent 会把最终 shell ceiling 发布成 `<agentDir>/change-pi-prompt/effective-shell-policy.json`，child 只读取它作为上界（缺失/损坏/跨平台快照一律忽略，回退到 availability + 注册表判定）。
+- parent 会把最终 shell ceiling 发布成 `<agentDir>/change-pi-prompt/effective-shell-policy.<owner>.json`（`<owner>` 是 parent 的 session 身份，缺失时退化为 `pid-<pid>`），并原子写入（tmp → rename）；child 只读取属于自己 parent 的那个文件作为上界（没有 owner、缺失/损坏/跨平台快照一律忽略，回退到 availability + 注册表判定）。
+  - 之所以按 owner 分文件：PiDeck 允许多个 Agent session 共享同一个 agentDir，全局单文件会让 Parent B 覆盖 Parent A 的 ceiling，导致 A 的 child 读到别人的 shell 上界。
+  - owner key 通过环境变量 `CHANGE_PI_PROMPT_SHELL_POLICY_OWNER` 传给 child：foreground native child 与 parent 同进程，detached runner child 是独立进程，靠继承到的环境变量仍能解析到同一个 owner 文件；child 在第一次 `before_agent_start` 时冻结 owner key。
+  - 超过 7 天未更新的 owner 快照会在 parent 写入时顺带清理，避免文件无限积累。
 
 ## 用户修改文案
 

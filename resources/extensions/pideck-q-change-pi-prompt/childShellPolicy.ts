@@ -24,6 +24,8 @@ export interface EffectiveShellPolicy {
  * The parent's final shell ceiling, published for child runtimes.
  * A child session's tool allowlist comes from the agent definition only, so the child cannot
  * observe the parent's active shell tools on its own; the parent publishes, the child consumes.
+ * Because several sessions share one agentDir, the snapshot is scoped to the owning parent runtime
+ * (see readEffectiveShellPolicySnapshot) rather than being a single global file.
  */
 export interface ShellPolicySnapshot {
 	version: 1;

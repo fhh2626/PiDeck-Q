@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,11 @@ import {
 import {
 	reconcileChildEnvironments,
 	readEffectiveShellPolicySnapshot,
+	resolveShellPolicyOwnerKey,
 	resolveToolProviderExtension,
+	shellPolicyOwnerToken,
+	shellPolicySnapshotPath,
+	SHELL_POLICY_OWNER_ENV,
 } from "../resources/extensions/pideck-q-change-pi-prompt/childReconciliation.ts";
 import {
 	getActiveAgentName,
@@ -912,7 +916,9 @@ test("configured shellPath contributes only to the backend it really is", () => 
 // 16. 全局 reconciliation 只能由 parent 执行：child session 不得写 settings.json / 不得改 overrides
 test("a child session never runs global reconciliation", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-no-reconcile-"));
+	const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
 	try {
+		delete process.env[SHELL_POLICY_OWNER_ENV];
 		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
 		const subagentTool = {
 			name: "subagent",
@@ -928,6 +934,7 @@ test("a child session never runs global reconciliation", async () => {
 			isStandalone: () => true,
 			changePiPromptPath,
 		});
+		// mock ctx 没有 sessionManager，owner key 退化为进程级 "pid-<pid>"。
 		const ctx = { hasUI: true, ui: { notify: () => {}, editor: async () => undefined } };
 
 		// session_start 本身不得写共享 override（它只做 session-local 的 shell prune）
@@ -939,6 +946,13 @@ test("a child session never runs global reconciliation", async () => {
 		await getHandler("before_agent_start")({ systemPrompt: childPrompt, systemPromptOptions: {} }, ctx);
 		assert.equal(existsSync(join(tempDir, "settings.json")), false, "child before_agent_start must not write shared child overrides");
 
+		// 模拟一个早已结束的 session 留下的 owner 快照，验证写入时的过期清理
+		const stalePath = shellPolicySnapshotPath(tempDir, "old-session");
+		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		writeFileSync(stalePath, JSON.stringify({ version: 1, platform: "win32", bash: true, powershell: true }), "utf8");
+		const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+		utimesSync(stalePath, past, past);
+
 		// parent session 才写（loadSubagentCatalog 能找到 bundled agents）
 		const parentPrompt = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n";
 		await getHandler("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: { selectedTools: ["subagent", "read", "bash"] } }, ctx);
@@ -947,8 +961,10 @@ test("a child session never runs global reconciliation", async () => {
 		const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
 		assert.ok(settings.subagents?.agentOverrides?.worker?.subagentOnlyExtensions?.includes(changePiPromptPath));
 
-		// parent 同时发布 shell ceiling 快照，供 child 消费
-		const snapshotPath = join(tempDir, "change-pi-prompt", "effective-shell-policy.json");
+		// parent 发布的是 owner-scoped 快照，而不是所有 session 共用一个全局文件
+		const ownerKey = `pid-${process.pid}`;
+		assert.equal(process.env[SHELL_POLICY_OWNER_ENV], ownerKey, "the parent must publish its owner key for child runtimes");
+		const snapshotPath = shellPolicySnapshotPath(tempDir, ownerKey);
 		assert.equal(existsSync(snapshotPath), true, "the parent must publish the effective shell policy");
 		assert.deepEqual(JSON.parse(readFileSync(snapshotPath, "utf8")), {
 			version: 1,
@@ -956,41 +972,101 @@ test("a child session never runs global reconciliation", async () => {
 			bash: false,
 			powershell: false,
 		});
+		assert.equal(existsSync(join(tempDir, "change-pi-prompt", "effective-shell-policy.json")), false, "no single global ceiling file may be written");
+		// 原子写入不得留下半截 temp 文件
+		assert.deepEqual(readdirSync(join(tempDir, "change-pi-prompt")).filter((name) => name.includes(".tmp.")), [], "atomic writes must not leave temp files behind");
+		// 过期 owner 快照在写入时被清理，避免文件无限积累
+		assert.equal(existsSync(stalePath), false, "stale owner snapshots must be pruned on write");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
+		if (previousOwner === undefined) delete process.env[SHELL_POLICY_OWNER_ENV];
+		else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;
 	}
 });
 
-// 17. ceiling 快照的读取边界：缺失/损坏/跨平台一律忽略（回退到保守判定）
+// 17. ceiling 快照的读取边界：缺失/损坏/跨平台/无 owner 一律忽略（回退到保守判定）
 test("effective shell policy snapshots are consumed conservatively", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-snapshot-"));
 	try {
-		const stateDir = join(tempDir, "change-pi-prompt");
-		const snapshotPath = join(stateDir, "effective-shell-policy.json");
-		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32"), undefined);
+		const owner = "owner-a";
+		const snapshotPath = shellPolicySnapshotPath(tempDir, owner);
+		// 无 owner 上下文时不得猜测任何文件
+		assert.equal(resolveShellPolicyOwnerKey({}), undefined);
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", ""), undefined);
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined);
 
-		mkdirSync(stateDir, { recursive: true });
+		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
 		writeFileSync(snapshotPath, "not json", "utf8");
-		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32"), undefined);
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined);
 
 		writeFileSync(snapshotPath, JSON.stringify({ version: 2, platform: "win32", bash: true, powershell: true }), "utf8");
-		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32"), undefined, "unknown versions must be ignored");
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "unknown versions must be ignored");
 
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "win32", bash: "yes", powershell: true }), "utf8");
-		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32"), undefined, "non-boolean fields must be ignored");
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "non-boolean fields must be ignored");
 
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "linux", bash: true, powershell: true }), "utf8");
-		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32"), undefined, "a foreign-platform snapshot must be ignored");
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "a foreign-platform snapshot must be ignored");
 
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "win32", bash: false, powershell: true }), "utf8");
-		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32"), {
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), {
 			version: 1,
 			platform: "win32",
 			bash: false,
 			powershell: true,
 		});
-		assert.deepEqual(toShellCeiling(readEffectiveShellPolicySnapshot(tempDir, "win32")), { bash: false, powershell: true });
+		assert.deepEqual(toShellCeiling(readEffectiveShellPolicySnapshot(tempDir, "win32", owner)), { bash: false, powershell: true });
 		assert.equal(toShellCeiling(undefined), undefined);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 19. 并行 session 隔离：一个 parent 的 ceiling 不能被另一个 session 覆盖（owner 文件必须不同）
+test("a parent shell ceiling is scoped to its owning session", () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-owner-"));
+	try {
+		const parentA = "session-a";
+		const parentB = "session-b";
+		const pathA = shellPolicySnapshotPath(tempDir, parentA);
+		const pathB = shellPolicySnapshotPath(tempDir, parentB);
+		assert.notEqual(pathA, pathB);
+
+		// Parent A: bash=false, powershell=true；Parent B 随后覆盖自己的文件
+		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		writeFileSync(pathA, JSON.stringify({ version: 1, platform: "win32", bash: false, powershell: true }), "utf8");
+		writeFileSync(pathB, JSON.stringify({ version: 1, platform: "win32", bash: true, powershell: false }), "utf8");
+
+		// A 的 child 必须读到 A 的 ceiling，而不是 B 的
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentA), { version: 1, platform: "win32", bash: false, powershell: true });
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentB), { version: 1, platform: "win32", bash: true, powershell: false });
+
+		const registeredTools = registered(...WORKER_TOOLS, "powershell");
+		const aTools = reconcileChildActiveShellTools({
+			platform: "win32",
+			availability: { bash: true, powershell: true },
+			registeredTools,
+			activeTools: WORKER_TOOLS,
+			wantsShell: true,
+			ceiling: toShellCeiling(readEffectiveShellPolicySnapshot(tempDir, "win32", parentA)),
+		});
+		assert.equal(aTools.includes("bash"), false, "parent A's ceiling must survive parent B's write");
+		assert.equal(aTools.includes("powershell"), true);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 20. owner key 不能逃出 state 目录：非法字符的 key 被 hash 成安全文件名
+test("shell policy owner keys cannot escape the state directory", () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-owner-path-"));
+	try {
+		const traversal = shellPolicySnapshotPath(tempDir, "../../evil");
+		assert.equal(traversal.startsWith(join(tempDir, "change-pi-prompt")), true, "a traversal owner key must stay inside the state directory");
+		assert.equal(shellPolicyOwnerToken("../../evil").startsWith("h-"), true);
+		assert.notEqual(shellPolicyOwnerToken(".."), "..");
+		assert.equal(shellPolicyOwnerToken("..").startsWith("h-"), true, "reserved names are hashed, not used verbatim");
+		assert.equal(shellPolicyOwnerToken("11111111-2222-3333-4444-555555555555"), "11111111-2222-3333-4444-555555555555");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
