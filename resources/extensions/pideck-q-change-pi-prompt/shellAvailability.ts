@@ -1,7 +1,7 @@
 /** Host-side bash/powershell existence checks. No process spawn; PATH and well-known files only. */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter as pathDelimiter, join, win32 as win32Path, posix as posixPath } from 'node:path';
+import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 import { isRecord } from './contributions.ts';
 
 export const SHELL_TOOL_NAMES = ['bash', 'powershell'] as const;
@@ -46,7 +46,9 @@ export function defaultShellProbeHost(): ShellProbeHost {
 
 function pathEntries(host: ShellProbeHost): string[] {
 	const raw = host.env.PATH ?? host.env.Path ?? '';
-	return raw.split(host.platform === 'win32' ? pathDelimiter : ':').filter(Boolean);
+	// Use the probed host's platform, not node:path.delimiter from the process running the tests.
+	// A Linux CI process simulating Windows must still split Windows PATH with `;`.
+	return raw.split(host.platform === 'win32' ? ';' : ':').filter(Boolean);
 }
 
 function joinPath(host: ShellProbeHost, dir: string, name: string): string {
