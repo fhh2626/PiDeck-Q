@@ -4,6 +4,7 @@
 // when pi loads the extension from extraResources.
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ensureChildPowerShellTool } from "./pideck-q-change-pi-prompt/childPowerShellBridge.ts";
+import { enforcePowerShellBackedBashSecurity } from "./pideck-q-change-pi-prompt/childPowerShellSecurity.ts";
 import { loadSettings } from "./pideck-q-change-pi-prompt/config.ts";
 import { registerPromptExtension } from "./pideck-q-change-pi-prompt/runtime.ts";
 
@@ -33,6 +34,16 @@ export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 			enabled: bridgeEnabled,
 		});
 	});
+
+	// A PowerShell backend may intentionally occupy the historical `bash` child slot. PiDeck's
+	// security gate chooses shell policy by tool name, so supplement it only when PowerShell rules
+	// are stricter than the Bash-name rules. The normal security gate still runs afterwards.
+	pi.on("tool_call", async (event, ctx) => enforcePowerShellBackedBashSecurity(
+		pi,
+		event,
+		ctx,
+		{ enabled: bridgeEnabled },
+	));
 
 	registerPromptExtension(pi, agentDir);
 }
