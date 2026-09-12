@@ -273,14 +273,17 @@ export function reconcileChildActiveShellTools(options: {
 	const { platform, availability, registeredTools, activeTools, wantsShell, pruneOnly, ceiling } = options;
 	const next = new Set(activeTools);
 	const bashTool = registeredTools.find(candidate => candidate.name === 'bash');
+	const powerShellTool = registeredTools.find(candidate => candidate.name === 'powershell');
 	const powerShellBackedBash = platform === 'win32'
 		&& (isChildPowerShellBridge(bashTool) || (!!bashTool && isPwsh(bashTool)));
 
-	// A normal slot is usable only when its own backend exists and the parent exposed it. The one
-	// deliberate Windows compatibility case is a `bash`-named slot whose actual backend is PowerShell
-	// (our bridge, or an already-loaded pwsh adapter). It follows PowerShell availability/ceiling.
+	// A normal slot is usable only when its own backend exists and the parent exposed it. A
+	// PowerShell-backed `bash` compatibility slot is only needed when the child hard allowlist did
+	// not register the canonical `powershell` name. If the real `powershell` slot exists, prefer it
+	// and never expose the same backend twice under both names.
 	const permitted = (name: 'bash' | 'powershell'): boolean => {
 		if (name === 'bash' && powerShellBackedBash) {
+			if (powerShellTool) return false;
 			if (!availability.powershell) return false;
 			if (ceiling && ceiling.powershell === false) return false;
 			return true;
