@@ -123,16 +123,20 @@ export async function enforcePowerShellBackedBashSecurity(
 	pi: ExtensionAPI,
 	event: ToolCallEvent,
 	ctx: ExtensionContext,
-	options: { enabled: boolean },
+	options: {
+		enabled: boolean;
+		securityConfigPath?: string;
+		securitySessionId?: string;
+	},
 ): Promise<{ block: true; reason: string } | undefined> {
 	if (!options.enabled || event.toolName !== 'bash') return undefined;
 	if (!hasPowerShellBackedBash(pi)) return undefined;
 
 	const input = event.input as Record<string, unknown>;
 	const command = typeof input.command === 'string' ? input.command : '';
-	const config = loadSecuritySnapshot(process.env.PIDECK_SECURITY_CONFIG);
+	const config = loadSecuritySnapshot(options.securityConfigPath ?? process.env.PIDECK_SECURITY_CONFIG);
 	if (!config) return undefined;
-	const level = resolveLevel(config, process.env.PIDECK_SESSION_ID ?? '');
+	const level = resolveLevel(config, options.securitySessionId ?? process.env.PIDECK_SESSION_ID ?? '');
 	if (!level || level.id === 'off') return undefined;
 
 	const bashAction = shellAction(level, 'bash', command);
