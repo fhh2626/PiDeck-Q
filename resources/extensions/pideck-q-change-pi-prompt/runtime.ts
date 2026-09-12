@@ -392,7 +392,7 @@ export function registerPromptExtension(
 			// widen, bridge, or inject child guidance when subagent adaptation is disabled.
 			if (childSession && !subagentAdaptationEnabled()) return;
 
-			// A child must consume the exact policy published by its owning parent. Freeze the owner key
+			// A child consumes an owner-scoped policy when its parent published one. Freeze the owner key
 			// before bridge registration so every later step in this turn observes the same snapshot.
 			if (childSession) {
 				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
@@ -423,16 +423,16 @@ export function registerPromptExtension(
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
 				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
-				// The parent publishes its final child policy; the child only consumes it. A genuinely missing
-				// owner/snapshot must fail closed rather than deriving new authority from this machine.
+				// A valid owner snapshot is authoritative. If no usable snapshot exists, preserve the established
+				// conservative fallback: never add extension tools, and map shell slots only within the agent's
+				// declared capability, the child registry, and the locally available backend set.
 				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);
-				const ceiling = toShellCeiling(snapshot) ?? { bash: false, powershell: false };
-				// Version 1 snapshots predate extension-tool ceilings and keep legacy behavior. No snapshot at
-				// all is different: known extension tools are denied rather than inherited accidentally.
-				const parentActiveTools = snapshot ? toParentActiveTools(snapshot) : [];
+				const ceiling = toShellCeiling(snapshot);
+				const parentActiveTools = toParentActiveTools(snapshot);
 
 				// Extension tools first: the shared settings.json only decides which providers the child
-				// can load, so the parent's active tools remain the ceiling. Prune-only, never add.
+				// can load, so the parent's active tools remain the ceiling when a v2 snapshot is available.
+				// Without that snapshot this remains prune-only and does not invent new extension tools.
 				const extensionPruned = reconcileChildExtensionTools({
 					registeredTools: tools,
 					activeTools,
