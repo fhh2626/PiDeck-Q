@@ -38,6 +38,8 @@ export interface EnsureChildPowerShellOptions {
 	platform: NodeJS.Platform;
 	systemPrompt: string;
 	cwd: string;
+	/** Explicit extension gate. False means zero bridge behavior. */
+	enabled?: boolean;
 	ownerKey?: string;
 	catalog?: SubagentCatalog;
 }
@@ -62,6 +64,7 @@ export function ensureChildPowerShellTool(
 	agentDir: string,
 	options: EnsureChildPowerShellOptions,
 ): boolean {
+	if (options.enabled === false) return false;
 	if (options.platform !== 'win32') return false;
 
 	const agentName = getActiveAgentName(options.systemPrompt);
