@@ -145,22 +145,21 @@ export function resolveEffectiveShellPolicy(options: {
 	const powerShellTool = parentTools.find(tool => tool.name === 'powershell');
 
 	// The pwsh adapter is a Windows-only adapter for a `bash` slot backed by PowerShell;
-	// it must never make the child's canonical `bash` slot active. When that adapter is the
-	// parent's active shell, publish it as PowerShell capability so a child can either load the
-	// same provider or use change-pi-prompt's PowerShell-backed compatibility slot.
+	// it must never make the child's canonical `bash` slot active. Treat it as evidence that the
+	// parent authorizes PowerShell, but do NOT inject the adapter itself into child settings: it
+	// squats on the same `bash` name as real Bash and a shared provider superset could otherwise
+	// override Bash in children owned by another session. Child PowerShell is supplied by our bridge.
 	const adapterOccupiesBash = platform === 'win32' && !!bashTool && isPwsh(bashTool);
 	const adapterProvidesPowerShell = adapterOccupiesBash && active.has('bash') && availability.powershell;
 	const bash = availability.bash && active.has('bash') && !adapterOccupiesBash;
 
-	// Native PowerShell is loadable when it is builtin or has an injectable provider. An active
-	// pwsh adapter is also a real PowerShell backend even though its public tool name is `bash`.
+	// Native/custom `powershell` providers are safe to inject because they do not collide with the
+	// historical `bash` slot. An active pwsh adapter contributes capability only, not a provider path.
 	const nativePowerShellProviderPath = injectableProviderPath(powerShellTool);
 	const nativePowerShellLoadable = isBuiltinTool(powerShellTool) || !!nativePowerShellProviderPath;
 	const nativePowerShell = availability.powershell && active.has('powershell') && nativePowerShellLoadable;
 	const powershell = adapterProvidesPowerShell || nativePowerShell;
-	const powershellProviderPath = adapterProvidesPowerShell
-		? injectableProviderPath(bashTool)
-		: (nativePowerShell ? nativePowerShellProviderPath : undefined);
+	const powershellProviderPath = nativePowerShell ? nativePowerShellProviderPath : undefined;
 
 	return {
 		bash,
