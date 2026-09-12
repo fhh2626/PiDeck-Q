@@ -11,14 +11,18 @@ import { isChildPowerShellBridge } from "../contributions.ts";
 
 const WORKER_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "contact_supervisor", "bash"];
 
-function createChildPi(initialTools) {
+function createChildPi(initialTools, allowedToolNames = initialTools.map((tool) => tool.name)) {
 	const tools = [...initialTools];
 	const registered = [];
+	const allowed = new Set(allowedToolNames);
 	return {
 		pi: {
 			getAllTools: () => tools,
 			registerTool: (tool) => {
 				registered.push(tool);
+				// Mirror Pi's hard child allowlist: a dynamically registered new name is invisible when
+				// createAgentSession({ tools }) did not authorize that name.
+				if (!allowed.has(tool.name)) return;
 				const snapshot = {
 					...tool,
 					sourceInfo: { source: "file", path: "change-pi-prompt/childPowerShellBridge.ts" },
@@ -45,7 +49,7 @@ function publishPolicy(agentDir, ownerKey, powershell) {
 	}), "utf8");
 }
 
-test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibility slot", () => {
+test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibility slot through its hard allowlist", () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-powershell-bridge-"));
 	try {
 		const ownerKey = "parent-test";
@@ -62,7 +66,7 @@ test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibi
 			{ name: "write", sourceInfo: { source: "builtin" } },
 			{ name: "contact_supervisor", sourceInfo: { source: "builtin" } },
 			{ name: "bash", sourceInfo: { source: "builtin" } },
-		]);
+		], WORKER_TOOLS);
 
 		const changed = ensureChildPowerShellTool(pi, agentDir, {
 			platform: "win32",
