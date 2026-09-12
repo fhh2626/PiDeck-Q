@@ -21,7 +21,9 @@ import {
 	getActiveAgentName,
 	isShellToolName,
 	reconcileChildActiveShellTools,
+	reconcileChildExtensionTools,
 	resolveEffectiveShellPolicy,
+	toParentActiveTools,
 	toShellCeiling,
 } from './childShellPolicy.ts';
 import {
@@ -236,7 +238,7 @@ export function registerPromptExtension(
 				?? (typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : tools.map(tool => tool.name));
 			const pkgRoot = findSubagentsPackageRoot(tools);
 			catalog = loadSubagentCatalog(pkgRoot);
-			reconciliationResult = reconcileChildEnvironments({
+			const next = await reconcileChildEnvironments({
 				agentDir,
 				catalog,
 				parentTools: tools,
@@ -251,6 +253,15 @@ export function registerPromptExtension(
 				changePiPromptPath,
 				shellPolicyOwnerKey,
 			});
+			if (!next) {
+				// The reconciliation lock could not be acquired: shared files are left untouched, and the
+				// last known-good result is kept so a transient lock miss cannot drop the compatibility gate.
+				const line = 'child-reconciliation-skipped: reconciliation lock unavailable';
+				lastStatus.push(line);
+				diagnostics.push(line);
+				return diagnostics;
+			}
+			reconciliationResult = next;
 			for (const [name, status] of reconciliationResult.compatibilityStatus) {
 				if (!status.ok) {
 					const line = `child-compat: ${name} missing [${status.missingTools.join(', ')}]`;
@@ -383,15 +394,24 @@ export function registerPromptExtension(
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
 				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
 				// Freeze the owning parent's key on the first child turn so a later parent-session switch
-				// in the same process cannot re-point this child at another session's ceiling.
+				// in the same process cannot re-point this child at another session's policy.
 				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
-				// The parent publishes its final shell set; the child only consumes it.
-				const ceiling = toShellCeiling(readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey));
+				// The parent publishes its final child policy; the child only consumes it.
+				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);
+				const ceiling = toShellCeiling(snapshot);
+
+				// Extension tools first: the shared settings.json only decides which providers the child
+				// can load, so the parent's active tools remain the ceiling. Prune-only, never add.
+				const extensionPruned = reconcileChildExtensionTools({
+					registeredTools: tools,
+					activeTools,
+					parentActiveTools: toParentActiveTools(snapshot),
+				});
 				const reconciled = reconcileChildActiveShellTools({
 					platform: probeHost.platform,
 					availability,
 					registeredTools: tools,
-					activeTools,
+					activeTools: extensionPruned,
 					wantsShell,
 					ceiling,
 					// Unknown identity: prune only, never widen the child's tool set.

@@ -3,13 +3,15 @@
  * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions for native subagents.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isRecord, type ToolSnapshot } from './contributions.ts';
 import {
+	BUILTIN_OR_INTERNAL_CHILD_TOOLS,
 	isShellToolName,
 	resolveChildShellSlots,
+	type EffectiveChildPolicy,
 	type EffectiveShellPolicy,
 	type ShellPolicySnapshot,
 } from './childShellPolicy.ts';
@@ -29,13 +31,10 @@ export interface ReconciliationResult {
 	changed: boolean;
 }
 
-// Builtins and pi-subagents child internals are resolved by the child runtime itself;
+// Builtin and pi-subagents internal tools are resolved by the child runtime itself;
 // they must not be judged missing just because the parent session has them inactive.
-// Shell tools are deliberately absent here: they follow the canonical shell policy.
-const BUILTIN_OR_INTERNAL_TOOLS = new Set([
-	'read', 'write', 'edit', 'grep', 'find', 'ls',
-	'subagent', 'contact_supervisor', 'structured_output', 'bg_wait', 'subagent_supervisor',
-]);
+// The shared list lives in childShellPolicy so the child-side ceiling cannot drift from it.
+const BUILTIN_OR_INTERNAL_TOOLS = BUILTIN_OR_INTERNAL_CHILD_TOOLS;
 
 export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
 	const currentDir = baseDir
@@ -55,9 +54,37 @@ export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
 }
 
 /**
- * Resolve the provider extension a child needs for one non-shell tool.
- * Active tools are the authoritative truth: a tool the parent already hid must not be handed
- * to a child. Builtin and pi-subagents internal tools bypass that check by design.
+ * Resolve the provider extension that can supply one non-shell tool, ignoring whether the current
+ * parent exposes it. This answers only "can a child load this provider?": the shared settings.json
+ * is a provider superset that must survive a session where the tool happens to be inactive.
+ * Builtin and pi-subagents internal tools need no provider by design.
+ */
+export function resolveLoadableToolProvider(
+	toolName: string,
+	parentTools: readonly ToolSnapshot[],
+): { loadable: boolean; providerPath?: string } {
+	if (BUILTIN_OR_INTERNAL_TOOLS.has(toolName)) {
+		return { loadable: true };
+	}
+
+	const extTool = parentTools.find(t => t.name === toolName);
+	if (!extTool) {
+		return { loadable: false };
+	}
+
+	const path = extTool.sourceInfo?.path;
+	if (path && isAbsolute(path) && existsSync(path) && extTool.sourceInfo?.source !== 'builtin') {
+		return { loadable: true, providerPath: path };
+	}
+
+	return { loadable: false };
+}
+
+/**
+ * Resolve the provider extension a child needs for one non-shell tool, including whether the
+ * current parent session actually allows it. Provider availability and tool permission are two
+ * separate facts (resolveLoadableToolProvider answers the first), combined here for callers that
+ * need the parent's own view.
  */
 export function resolveToolProviderExtension(
 	toolName: string,
@@ -72,18 +99,8 @@ export function resolveToolProviderExtension(
 		return { available: false };
 	}
 
-	// Extension-provided tool
-	const extTool = parentTools.find(t => t.name === toolName);
-	if (!extTool) {
-		return { available: false };
-	}
-
-	const path = extTool.sourceInfo?.path;
-	if (path && isAbsolute(path) && existsSync(path) && extTool.sourceInfo?.source !== 'builtin') {
-		return { available: true, providerPath: path };
-	}
-
-	return { available: false };
+	const loadable = resolveLoadableToolProvider(toolName, parentTools);
+	return loadable.loadable ? { available: true, providerPath: loadable.providerPath } : { available: false };
 }
 
 interface ManagedStateFile {
@@ -131,47 +148,64 @@ export function resolveShellPolicyOwnerKey(env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
- * Read the shell ceiling published by the parent that owns this runtime.
+ * Read the child policy published by the parent that owns this runtime.
  * Child runtimes only consume it; a missing owner, missing file, or malformed/foreign-platform
- * snapshot is ignored so the caller falls back to conservative availability-only pruning.
+ * snapshot is ignored so the caller falls back to conservative pruning.
+ * Version 1 snapshots stay readable: they carry the shell ceiling but no extension tool ceiling.
  */
 export function readEffectiveShellPolicySnapshot(
 	agentDir: string,
 	platform: NodeJS.Platform,
 	ownerKey: string | undefined = resolveShellPolicyOwnerKey(),
-): ShellPolicySnapshot | undefined {
+): EffectiveChildPolicy | undefined {
 	if (!ownerKey) return undefined;
 	const snapshotPath = shellPolicySnapshotPath(agentDir, ownerKey);
 	if (!existsSync(snapshotPath)) return undefined;
 	try {
 		const parsed = JSON.parse(readFileSync(snapshotPath, 'utf8'));
 		if (!isRecord(parsed)) return undefined;
-		if (parsed.version !== 1) return undefined;
 		if (parsed.platform !== platform) return undefined;
-		if (typeof parsed.bash !== 'boolean' || typeof parsed.powershell !== 'boolean') return undefined;
-		return { version: 1, platform, bash: parsed.bash, powershell: parsed.powershell };
+		if (parsed.version === 1) {
+			if (typeof parsed.bash !== 'boolean' || typeof parsed.powershell !== 'boolean') return undefined;
+			return { version: 1, platform, bash: parsed.bash, powershell: parsed.powershell };
+		}
+		if (parsed.version === 2) {
+			if (!isRecord(parsed.shell)) return undefined;
+			const { bash, powershell } = parsed.shell;
+			if (typeof bash !== 'boolean' || typeof powershell !== 'boolean') return undefined;
+			if (!Array.isArray(parsed.parentActiveTools)) return undefined;
+			return {
+				version: 2,
+				platform,
+				shell: { bash, powershell },
+				parentActiveTools: parsed.parentActiveTools.filter((name): name is string => typeof name === 'string'),
+			};
+		}
+		return undefined;
 	} catch {
 		return undefined;
 	}
 }
 
 /**
- * Only the parent runtime writes the ceiling; children never produce shared state.
+ * Only the parent runtime writes the policy; children never produce shared state.
  * The owner env var is published *after* the atomic write so a concurrent child either sees no
  * owner (conservative fallback) or a complete snapshot, never a half-written file.
+ * `parentActiveTools` must be the parent's final `getActiveTools()` result, never `getAllTools()`.
  */
 function writeEffectiveShellPolicySnapshot(
 	stateDir: string,
 	platform: NodeJS.Platform,
 	policy: EffectiveShellPolicy,
 	ownerKey: string,
+	parentActiveTools: readonly string[],
 ): void {
 	try {
 		const snapshot: ShellPolicySnapshot = {
-			version: 1,
+			version: 2,
 			platform,
-			bash: policy.bash,
-			powershell: policy.powershell,
+			shell: { bash: policy.bash, powershell: policy.powershell },
+			parentActiveTools: [...new Set(parentActiveTools)],
 		};
 		const snapshotPath = join(stateDir, `${SHELL_POLICY_FILE_PREFIX}.${shellPolicyOwnerToken(ownerKey)}.json`);
 		writeJsonAtomic(snapshotPath, snapshot);
@@ -202,12 +236,24 @@ function pruneStaleShellPolicySnapshots(stateDir: string, keepPath: string): voi
 	}
 }
 
-/** Temp-file-then-rename JSON write, so a concurrent reader never observes a half-written file. */
+/**
+ * Temp-file-then-rename JSON write, so a concurrent reader never observes a half-written file.
+ * The temp file is always removed: on Windows a failed rename can otherwise leave one locked
+ * behind, and a leftover temp file must never be mistaken for a published snapshot.
+ */
 function writeJsonAtomic(filePath: string, payload: unknown): void {
 	mkdirSync(dirname(filePath), { recursive: true });
 	const tmpPath = `${filePath}.tmp.${Date.now()}.${process.pid}`;
-	writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-	renameSync(tmpPath, filePath);
+	try {
+		writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+		renameSync(tmpPath, filePath);
+	} finally {
+		try {
+			if (existsSync(tmpPath)) rmSync(tmpPath, { force: true });
+		} catch {
+			// Best effort: the write/rename outcome is what the caller needs.
+		}
+	}
 }
 
 function readManagedState(statePath: string): string[] {
@@ -223,7 +269,115 @@ function readManagedState(statePath: string): string[] {
 	return [];
 }
 
-export function reconcileChildEnvironments(options: {
+/**
+ * Cross-process lock guarding reconciliation's read-merge-write of shared files.
+ *
+ * Atomic rename prevents a torn file, but not a lost update: two parents sharing one agentDir can
+ * both read the old settings.json and then each write only its own discovery. Holding this lock
+ * around the whole read-merge-write makes the merge span both writers.
+ */
+const RECONCILIATION_LOCK_FILE = 'reconciliation.lock';
+const RECONCILIATION_LOCK_RETRY_MS = 50;
+const RECONCILIATION_LOCK_TIMEOUT_MS = 2_000;
+/** A lock older than this is presumed abandoned by a crashed runtime and may be reclaimed. */
+const RECONCILIATION_LOCK_STALE_MS = 30_000;
+
+export interface ReconciliationLockOptions {
+	timeoutMs?: number;
+	retryMs?: number;
+	staleMs?: number;
+	/** Injected for deterministic tests; defaults to a real timer. */
+	wait?: (delayMs: number) => Promise<void>;
+	/** Injected for deterministic tests; defaults to Date.now. */
+	now?: () => number;
+}
+
+/** Path of the reconciliation lock inside the shared state directory. */
+export function reconciliationLockPath(agentDir: string): string {
+	return join(agentDir, 'change-pi-prompt', RECONCILIATION_LOCK_FILE);
+}
+
+function defaultLockWait(delayMs: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+function tryTakeLock(lockPath: string, now: () => number, staleMs: number): boolean {
+	try {
+		mkdirSync(dirname(lockPath), { recursive: true });
+		const fd = openSync(lockPath, 'wx');
+		try {
+			writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: now() }));
+		} finally {
+			closeSync(fd);
+		}
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
+	}
+
+	// An abandoned lock (crashed runtime, killed process) must not wedge every later session forever.
+	try {
+		const raw = JSON.parse(readFileSync(lockPath, 'utf8'));
+		const createdAt = isRecord(raw) && typeof raw.createdAt === 'number' ? raw.createdAt : undefined;
+		const age = createdAt === undefined ? Number.POSITIVE_INFINITY : now() - createdAt;
+		if (age <= staleMs) return false;
+		rmSync(lockPath, { force: true });
+	} catch {
+		// Unreadable lock: treat it as stale rather than waiting on it forever.
+		try {
+			rmSync(lockPath, { force: true });
+		} catch {
+			return false;
+		}
+	}
+	return tryTakeLock(lockPath, now, staleMs);
+}
+
+/**
+ * Run `fn` while holding the reconciliation lock. Returns undefined when the lock could not be
+ * acquired within the timeout: the caller then fails conservative and leaves shared files alone.
+ */
+export async function withReconciliationLock<T>(
+	agentDir: string,
+	fn: () => T | Promise<T>,
+	options: ReconciliationLockOptions = {},
+): Promise<T | undefined> {
+	const now = options.now ?? Date.now;
+	const wait = options.wait ?? defaultLockWait;
+	const timeoutMs = options.timeoutMs ?? RECONCILIATION_LOCK_TIMEOUT_MS;
+	const retryMs = options.retryMs ?? RECONCILIATION_LOCK_RETRY_MS;
+	const staleMs = options.staleMs ?? RECONCILIATION_LOCK_STALE_MS;
+	const lockPath = reconciliationLockPath(agentDir);
+	const deadline = now() + timeoutMs;
+
+	while (!tryTakeLock(lockPath, now, staleMs)) {
+		if (now() >= deadline) return undefined;
+		await wait(retryMs);
+	}
+
+	try {
+		return await fn();
+	} finally {
+		try {
+			rmSync(lockPath, { force: true });
+		} catch {
+			// A lock we cannot remove is reclaimed by the stale check on the next attempt.
+		}
+	}
+}
+
+/**
+ * Reconcile child tool environments against the shared agentDir.
+ *
+ * The whole read-merge-write runs under the cross-process reconciliation lock, so a parallel
+ * session cannot lose this session's provider discoveries. Returns undefined when the lock could
+ * not be acquired (fail conservative: shared files stay untouched).
+ *
+ * Shared settings.json holds the provider *superset*: a provider that is loadable may be added,
+ * but an inactive parent session never removes one another session may still need. The real
+ * per-session ceiling is published separately to the owner-scoped snapshot.
+ */
+export async function reconcileChildEnvironments(options: {
 	agentDir: string;
 	catalog: SubagentCatalog | undefined;
 	parentTools: readonly ToolSnapshot[];
@@ -231,7 +385,27 @@ export function reconcileChildEnvironments(options: {
 	parentActiveTools: readonly string[];
 	platform: NodeJS.Platform;
 	shellPolicy: EffectiveShellPolicy;
-	/** Identity of this parent runtime; scopes the published shell ceiling to this session/process. */
+	/** Identity of this parent runtime; scopes the published shell policy to this session/process. */
+	shellPolicyOwnerKey?: string;
+	changePiPromptPath?: string;
+	lock?: ReconciliationLockOptions;
+}): Promise<ReconciliationResult | undefined> {
+	const locked = await withReconciliationLock(
+		options.agentDir,
+		// Read settings/state only after the lock is held, so the merge observes the latest writers.
+		() => reconcileChildEnvironmentsLocked(options),
+		options.lock,
+	);
+	return locked;
+}
+
+function reconcileChildEnvironmentsLocked(options: {
+	agentDir: string;
+	catalog: SubagentCatalog | undefined;
+	parentTools: readonly ToolSnapshot[];
+	parentActiveTools: readonly string[];
+	platform: NodeJS.Platform;
+	shellPolicy: EffectiveShellPolicy;
 	shellPolicyOwnerKey?: string;
 	changePiPromptPath?: string;
 }): ReconciliationResult {
@@ -243,9 +417,15 @@ export function reconcileChildEnvironments(options: {
 	const stateDir = join(agentDir, 'change-pi-prompt');
 	const statePath = join(stateDir, 'managed-child-extensions.json');
 	const previousManagedPaths = new Set(readManagedState(statePath));
-	const currentManagedPaths = new Set<string>();
+	/** Managed paths still worth keeping: the union of previous and newly discovered ones. */
+	const nextManagedPaths = new Set<string>();
 	if (changePiPromptPath && existsSync(changePiPromptPath)) {
-		currentManagedPaths.add(changePiPromptPath);
+		nextManagedPaths.add(changePiPromptPath);
+	}
+	// A previously managed path survives unless its file is really gone. An inactive tool in this
+	// session must never evict a provider another session still loads from the shared superset.
+	for (const path of previousManagedPaths) {
+		if (existsSync(path)) nextManagedPaths.add(path);
 	}
 
 	const settingsPath = join(agentDir, 'settings.json');
@@ -292,12 +472,19 @@ export function reconcileChildEnvironments(options: {
 			for (const toolName of agent.tools) {
 				// Shell slots are canonicalized separately: a pwsh adapter named bash is not a bash backend.
 				if (isShellToolName(toolName)) continue;
+				// Two separate questions, deliberately answered separately:
+				//  - resolveToolProviderExtension: does this parent allow the tool? (builtin/internal bypass it)
+				//  - resolveLoadableToolProvider: can a child load its provider? (the shared superset)
+				// Only the second decides the shared settings.json, so an inactive parent never evicts a
+				// provider another session still needs.
 				const resolution = resolveToolProviderExtension(toolName, parentTools, parentActiveTools);
 				if (!resolution.available) {
 					missingTools.push(toolName);
-				} else if (resolution.providerPath) {
-					agentExtensions.add(resolution.providerPath);
-					currentManagedPaths.add(resolution.providerPath);
+				}
+				const loadable = resolveLoadableToolProvider(toolName, parentTools);
+				if (loadable.providerPath) {
+					agentExtensions.add(loadable.providerPath);
+					nextManagedPaths.add(loadable.providerPath);
 				}
 			}
 
@@ -308,7 +495,7 @@ export function reconcileChildEnvironments(options: {
 			}
 			for (const providerPath of shellSlots.providerPaths) {
 				agentExtensions.add(providerPath);
-				currentManagedPaths.add(providerPath);
+				nextManagedPaths.add(providerPath);
 			}
 
 			compatibilityStatus.set(name, {
@@ -335,9 +522,14 @@ export function reconcileChildEnvironments(options: {
 				? (agentOverride!.subagentOnlyExtensions as unknown[]).filter((p): p is string => typeof p === 'string')
 				: [];
 
-			// Prune previous managed paths that are no longer needed or stale
+			// Merge to a provider superset: user paths and still-existing managed paths survive, this
+			// session's discoveries are added. Nothing is dropped merely because it is inactive here.
 			const userCustomPaths = existingList.filter(p => !previousManagedPaths.has(p));
-			const mergedList = [...new Set([...userCustomPaths, ...agentExtensions])];
+			const survivingManagedPaths = existingList.filter(p => {
+				if (!previousManagedPaths.has(p)) return false;
+				return nextManagedPaths.has(p) || existsSync(p);
+			});
+			const mergedList = [...new Set([...userCustomPaths, ...survivingManagedPaths, ...agentExtensions])];
 
 			const isSame = existingList.length === mergedList.length
 				&& existingList.every((val, idx) => val === mergedList[idx]);
@@ -363,25 +555,31 @@ export function reconcileChildEnvironments(options: {
 		}
 	}
 
-	// Persist managed paths state
+	// Persist managed paths state: the superset, not just what this session used.
 	try {
 		const stateData: ManagedStateFile = {
 			version: 1,
-			managedPaths: [...currentManagedPaths],
+			managedPaths: [...nextManagedPaths],
 		};
 		writeJsonAtomic(statePath, stateData);
 	} catch {
 		// Ignore state file write errors
 	}
 
-	// Publish the parent's final shell ceiling for child runtimes (see readEffectiveShellPolicySnapshot).
+	// Publish this parent's final child policy for its own children (see readEffectiveShellPolicySnapshot).
 	// The owner key scopes the snapshot so parallel sessions sharing one agentDir never overwrite it.
-	writeEffectiveShellPolicySnapshot(stateDir, platform, shellPolicy, options.shellPolicyOwnerKey ?? `pid-${process.pid}`);
+	writeEffectiveShellPolicySnapshot(
+		stateDir,
+		platform,
+		shellPolicy,
+		options.shellPolicyOwnerKey ?? `pid-${process.pid}`,
+		parentActiveTools,
+	);
 
 	return {
 		compatibilityStatus,
 		incompatibleAgents,
-		managedPaths: [...currentManagedPaths],
+		managedPaths: [...nextManagedPaths],
 		changed: settingsDirty,
 	};
 }

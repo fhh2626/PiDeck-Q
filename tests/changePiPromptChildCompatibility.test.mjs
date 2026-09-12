@@ -11,17 +11,23 @@ import {
 import {
 	reconcileChildEnvironments,
 	readEffectiveShellPolicySnapshot,
+	resolveLoadableToolProvider,
 	resolveShellPolicyOwnerKey,
 	resolveToolProviderExtension,
+	reconciliationLockPath,
 	shellPolicyOwnerToken,
 	shellPolicySnapshotPath,
 	SHELL_POLICY_OWNER_ENV,
+	withReconciliationLock,
 } from "../resources/extensions/pideck-q-change-pi-prompt/childReconciliation.ts";
 import {
 	getActiveAgentName,
+	isBuiltinOrInternalChildTool,
 	reconcileChildActiveShellTools,
+	reconcileChildExtensionTools,
 	resolveChildShellSlots,
 	resolveEffectiveShellPolicy,
+	toParentActiveTools,
 	toShellCeiling,
 } from "../resources/extensions/pideck-q-change-pi-prompt/childShellPolicy.ts";
 import {
@@ -242,10 +248,14 @@ test("child tool provider resolution follows parent active tools and internal to
 		assert.equal(webSearchRes.available, true);
 		assert.equal(webSearchRes.providerPath, fakeWebSearchPath);
 
-		// 2. 父 Agent 最终已经把 web_search 隐藏（不在 active tools）：不得判 available，更不得注入 provider
+		// 2. 父 Agent 最终已经把 web_search 隐藏（不在 active tools）：
+		//    当前 parent 不允许（available=false），但 provider 本身仍可加载（全局 superset 保留）
 		const inactiveRes = resolveToolProviderExtension("web_search", parentTools, ["read", "write"]);
-		assert.equal(inactiveRes.available, false, "Inactive parent extension tools must not be injected into children");
+		assert.equal(inactiveRes.available, false, "Inactive parent extension tools must not be handed to children of this parent");
 		assert.equal(inactiveRes.providerPath, undefined);
+		const inactiveLoadable = resolveLoadableToolProvider("web_search", parentTools);
+		assert.equal(inactiveLoadable.loadable, true, "A loadable provider stays in the shared superset even when this parent is inactive");
+		assert.equal(inactiveLoadable.providerPath, fakeWebSearchPath);
 
 		// 3. builtin 工具不受父 active 限制（child runtime 自己提供）
 		const grepRes = resolveToolProviderExtension("grep", parentTools, ["read"]);
@@ -259,6 +269,12 @@ test("child tool provider resolution follows parent active tools and internal to
 		// 5. researcher 还需要 source_check：父环境缺失 -> 判 missing
 		const sourceCheckRes = resolveToolProviderExtension("source_check", parentTools, parentActiveTools);
 		assert.equal(sourceCheckRes.available, false, "source_check provider is missing in parentTools");
+		assert.equal(resolveLoadableToolProvider("source_check", parentTools).loadable, false, "A missing provider is not loadable");
+
+		// 6. builtin / internal 工具无需 provider，也不受父 active 影响
+		assert.equal(resolveLoadableToolProvider("grep", parentTools).loadable, true);
+		assert.equal(resolveLoadableToolProvider("contact_supervisor", parentTools).loadable, true);
+		assert.equal(resolveLoadableToolProvider("grep", parentTools).providerPath, undefined, "Builtin tools must not have providerPath");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -335,7 +351,7 @@ Pi documentation (online):
 });
 
 // 11. settings.json non-destructive reconciliation
-test("reconcileChildEnvironments preserves user settings and updates subagentOnlyExtensions cleanly", () => {
+test("reconcileChildEnvironments preserves user settings and updates subagentOnlyExtensions cleanly", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-reconcile-"));
 	try {
 		const settingsPath = join(tempDir, "settings.json");
@@ -365,7 +381,7 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 		];
 		const parentActiveTools = ["read", "bash"];
 
-		const res = reconcileChildEnvironments({
+		const res = await reconcileChildEnvironments({
 			agentDir: tempDir,
 			catalog,
 			parentTools,
@@ -396,7 +412,7 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 		assert.equal(updated.subagents.agentOverrides.delegate.subagentOnlyExtensions, false);
 
 		// 再次 reconciliation（无变化），changed 应为 false，不重写文件
-		const secondRes = reconcileChildEnvironments({
+		const secondRes = await reconcileChildEnvironments({
 			agentDir: tempDir,
 			catalog,
 			parentTools,
@@ -690,7 +706,7 @@ test("extension-provided powershell is injected into the child shell environment
 
 // 21. 端到端：Windows 无 Git Bash 场景下的 child reconciliation
 // （worker/scout/oracle/delegate 应可用，reviewer 不被打扰，inactive extension provider 不注入）
-test("reconcileChildEnvironments canonicalizes shell-capable agents on a PowerShell-only Windows host", () => {
+test("reconcileChildEnvironments canonicalizes shell-capable agents on a PowerShell-only Windows host", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-shell-e2e-"));
 	try {
 		const dormantWebSearchPath = join(tempDir, "web-search.ts");
@@ -711,7 +727,7 @@ test("reconcileChildEnvironments canonicalizes shell-capable agents on a PowerSh
 		const parentActiveTools = ["read", "write", "edit", "grep", "find", "ls", "powershell"];
 
 		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
-		const res = reconcileChildEnvironments({
+		const res = await reconcileChildEnvironments({
 			agentDir: tempDir,
 			catalog,
 			parentTools,
@@ -739,11 +755,12 @@ test("reconcileChildEnvironments canonicalizes shell-capable agents on a PowerSh
 		assert.ok(reviewer);
 		assert.equal(reviewer.ok, true, reviewer.missingTools.join(","));
 
-		// inactive 的 parent extension provider 不得被注入，且必须报告为 missing
+		// inactive 的 parent extension provider：仍会进入全局 superset（其他 session 可能需要），
+		// 但当前 parent 的 compatibility 必须报告为 missing。
 		const researcher = res.compatibilityStatus.get("researcher");
 		assert.ok(researcher);
-		assert.equal(researcher.missingTools.includes("web_search"), true, "Inactive parent extension tools must be reported missing");
-		assert.equal(researcher.injectedExtensions.includes(dormantWebSearchPath), false);
+		assert.equal(researcher.missingTools.includes("web_search"), true, "Inactive parent extension tools must be reported missing for this parent");
+		assert.equal(researcher.injectedExtensions.includes(dormantWebSearchPath), true, "A loadable provider belongs to the shared superset");
 
 		// settings.json 不得出现 pwsh-adapter 类的 bash provider 注入
 		const settings = existsSync(join(tempDir, "settings.json"))
@@ -914,8 +931,7 @@ test("configured shellPath contributes only to the backend it really is", () => 
 });
 
 // 16. 全局 reconciliation 只能由 parent 执行：child session 不得写 settings.json / 不得改 overrides
-test("a child session never runs global reconciliation", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-no-reconcile-"));
+test("a child session never runs global reconciliation", async () => {	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-no-reconcile-"));
 	const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
 	try {
 		delete process.env[SHELL_POLICY_OWNER_ENV];
@@ -965,12 +981,13 @@ test("a child session never runs global reconciliation", async () => {
 		const ownerKey = `pid-${process.pid}`;
 		assert.equal(process.env[SHELL_POLICY_OWNER_ENV], ownerKey, "the parent must publish its owner key for child runtimes");
 		const snapshotPath = shellPolicySnapshotPath(tempDir, ownerKey);
-		assert.equal(existsSync(snapshotPath), true, "the parent must publish the effective shell policy");
+		assert.equal(existsSync(snapshotPath), true, "the parent must publish the effective child policy");
 		assert.deepEqual(JSON.parse(readFileSync(snapshotPath, "utf8")), {
-			version: 1,
+			version: 2,
 			platform: "win32",
-			bash: false,
-			powershell: false,
+			shell: { bash: false, powershell: false },
+			// bash 已因本机无后端被 prune，快照记录的是最终的 getActiveTools() 结果
+			parentActiveTools: ["subagent", "read"],
 		});
 		assert.equal(existsSync(join(tempDir, "change-pi-prompt", "effective-shell-policy.json")), false, "no single global ceiling file may be written");
 		// 原子写入不得留下半截 temp 文件
@@ -999,15 +1016,23 @@ test("effective shell policy snapshots are consumed conservatively", () => {
 		writeFileSync(snapshotPath, "not json", "utf8");
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined);
 
-		writeFileSync(snapshotPath, JSON.stringify({ version: 2, platform: "win32", bash: true, powershell: true }), "utf8");
+		// 未知版本忽略；version 1 仍可读（只有 shell ceiling，没有 extension tool ceiling）
+		writeFileSync(snapshotPath, JSON.stringify({ version: 3, platform: "win32" }), "utf8");
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "unknown versions must be ignored");
 
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "win32", bash: "yes", powershell: true }), "utf8");
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "non-boolean fields must be ignored");
 
+		writeFileSync(snapshotPath, JSON.stringify({ version: 2, platform: "win32", shell: { bash: "yes", powershell: true }, parentActiveTools: [] }), "utf8");
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "v2 non-boolean shell fields must be ignored");
+
+		writeFileSync(snapshotPath, JSON.stringify({ version: 2, platform: "win32", shell: { bash: true, powershell: true } }), "utf8");
+		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "v2 without parentActiveTools must be ignored");
+
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "linux", bash: true, powershell: true }), "utf8");
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined, "a foreign-platform snapshot must be ignored");
 
+		// version 1：只提供 shell ceiling，不提供 extension tool ceiling
 		writeFileSync(snapshotPath, JSON.stringify({ version: 1, platform: "win32", bash: false, powershell: true }), "utf8");
 		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), {
 			version: 1,
@@ -1016,6 +1041,19 @@ test("effective shell policy snapshots are consumed conservatively", () => {
 			powershell: true,
 		});
 		assert.deepEqual(toShellCeiling(readEffectiveShellPolicySnapshot(tempDir, "win32", owner)), { bash: false, powershell: true });
+		assert.equal(toParentActiveTools(readEffectiveShellPolicySnapshot(tempDir, "win32", owner)), undefined, "version 1 carries no extension tool ceiling");
+
+		// version 2：shell + parentActiveTools 同时提供（非字符串项被丢弃）
+		writeFileSync(snapshotPath, JSON.stringify({ version: 2, platform: "win32", shell: { bash: false, powershell: true }, parentActiveTools: ["read", 7, "web_search"] }), "utf8");
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), {
+			version: 2,
+			platform: "win32",
+			shell: { bash: false, powershell: true },
+			parentActiveTools: ["read", "web_search"],
+		});
+		assert.deepEqual(toShellCeiling(readEffectiveShellPolicySnapshot(tempDir, "win32", owner)), { bash: false, powershell: true });
+		assert.deepEqual(toParentActiveTools(readEffectiveShellPolicySnapshot(tempDir, "win32", owner)), ["read", "web_search"]);
+		assert.equal(toParentActiveTools(undefined), undefined);
 		assert.equal(toShellCeiling(undefined), undefined);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -1034,12 +1072,12 @@ test("a parent shell ceiling is scoped to its owning session", () => {
 
 		// Parent A: bash=false, powershell=true；Parent B 随后覆盖自己的文件
 		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
-		writeFileSync(pathA, JSON.stringify({ version: 1, platform: "win32", bash: false, powershell: true }), "utf8");
-		writeFileSync(pathB, JSON.stringify({ version: 1, platform: "win32", bash: true, powershell: false }), "utf8");
+		writeFileSync(pathA, JSON.stringify({ version: 2, platform: "win32", shell: { bash: false, powershell: true }, parentActiveTools: ["read", "powershell"] }), "utf8");
+		writeFileSync(pathB, JSON.stringify({ version: 2, platform: "win32", shell: { bash: true, powershell: false }, parentActiveTools: ["read", "bash"] }), "utf8");
 
 		// A 的 child 必须读到 A 的 ceiling，而不是 B 的
-		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentA), { version: 1, platform: "win32", bash: false, powershell: true });
-		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentB), { version: 1, platform: "win32", bash: true, powershell: false });
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentA), { version: 2, platform: "win32", shell: { bash: false, powershell: true }, parentActiveTools: ["read", "powershell"] });
+		assert.deepEqual(readEffectiveShellPolicySnapshot(tempDir, "win32", parentB), { version: 2, platform: "win32", shell: { bash: true, powershell: false }, parentActiveTools: ["read", "bash"] });
 
 		const registeredTools = registered(...WORKER_TOOLS, "powershell");
 		const aTools = reconcileChildActiveShellTools({
@@ -1068,6 +1106,370 @@ test("shell policy owner keys cannot escape the state directory", () => {
 		assert.equal(shellPolicyOwnerToken("..").startsWith("h-"), true, "reserved names are hashed, not used verbatim");
 		assert.equal(shellPolicyOwnerToken("11111111-2222-3333-4444-555555555555"), "11111111-2222-3333-4444-555555555555");
 	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 21. 全局 provider superset：Parent B inactive 某工具，不得从共享 settings.json 删掉 Parent A 需要的 provider
+test("an inactive parent session never evicts another session's provider", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-superset-"));
+	try {
+		const webSearchPath = join(tempDir, "web-search.ts");
+		writeFileSync(webSearchPath, "// web search", "utf8");
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		const parentTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
+		];
+
+		// Parent A：web_search active -> researcher 注入 provider
+		const resA = await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read", "web_search"],
+			platform: "linux",
+			shellPolicy: { bash: false, powershell: false },
+			shellPolicyOwnerKey: "session-a",
+			changePiPromptPath,
+		});
+		// researcher 还声明了 fetch_content / get_search_content / source_check，本例只关心 web_search：
+		// 以 web_search 是否进入 injectedExtensions 为准，不断言整个 agent 的 ok。
+		assert.equal(resA.compatibilityStatus.get("researcher").missingTools.includes("web_search"), false);
+		assert.equal(resA.compatibilityStatus.get("researcher").injectedExtensions.includes(webSearchPath), true);
+		const afterA = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.ok(afterA.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath));
+
+		// Parent B：同一个注册表但 web_search inactive -> 不得删除 A 的 provider
+		const resB = await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read"],
+			platform: "linux",
+			shellPolicy: { bash: false, powershell: false },
+			shellPolicyOwnerKey: "session-b",
+			changePiPromptPath,
+		});
+		// 对 B 自己来说 web_search 不可用（permission ceiling 生效）
+		assert.equal(resB.compatibilityStatus.get("researcher").missingTools.includes("web_search"), true);
+		// 但共享 superset 仍然保留 provider，A 后续启动 researcher 仍能加载
+		const afterB = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.ok(
+			afterB.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath),
+			"an inactive parent must not evict a provider other sessions need",
+		);
+		const managedB = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		assert.ok(managedB.managedPaths.includes(webSearchPath), "the managed superset must keep the still-existing provider");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 22. 两个 parent 各自发现不同 provider：无论写入顺序，最终必须是并集（不能 last-writer-wins）
+test("provider discoveries from parallel parents union instead of overwriting", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-union-"));
+	try {
+		const providerA = join(tempDir, "provider-a.ts");
+		const providerB = join(tempDir, "provider-b.ts");
+		writeFileSync(providerA, "// a", "utf8");
+		writeFileSync(providerB, "// b", "utf8");
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		const toolsA = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "web_search", sourceInfo: { source: "file", path: providerA } }];
+		const toolsB = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "fetch_content", sourceInfo: { source: "file", path: providerB } }];
+		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+
+		// A 写，然后 B 写
+		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
+		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "fetch_content"], shellPolicyOwnerKey: "session-b" });
+		let settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		let researcher = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
+		assert.ok(researcher.includes(providerA), "A's provider must survive B's write");
+		assert.ok(researcher.includes(providerB), "B's provider must be added");
+
+		// 反向：B 先写、A 后写（回到空目录）也一样得到并集
+		rmSync(join(tempDir, "settings.json"), { force: true });
+		rmSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), { force: true });
+		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "fetch_content"], shellPolicyOwnerKey: "session-b" });
+		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
+		settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		researcher = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
+		assert.ok(researcher.includes(providerA));
+		assert.ok(researcher.includes(providerB));
+		const managed = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		assert.ok(managed.managedPaths.includes(providerA));
+		assert.ok(managed.managedPaths.includes(providerB));
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 23. 全局加载 provider != 每个 session 都获得该工具：inactive parent 的 child 必须 prune
+//     并且 Parent A 自己的 child 仍然保留同一个工具
+test("a globally loaded provider does not become active in a session that did not enable it", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-ceiling-"));
+	try {
+		const webSearchPath = join(tempDir, "web-search.ts");
+		writeFileSync(webSearchPath, "// web search", "utf8");
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		const parentTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "grep", sourceInfo: { source: "builtin" } },
+			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
+		];
+		const base = { agentDir: tempDir, catalog, parentTools, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+
+		// 共享 settings 已包含 provider（因为全局 superset 保留它）
+		await reconcileChildEnvironments({ ...base, parentActiveTools: ["read", "grep", "web_search"], shellPolicyOwnerKey: "session-a" });
+		await reconcileChildEnvironments({ ...base, parentActiveTools: ["read", "grep"], shellPolicyOwnerKey: "session-b" });
+
+		// child 已经因为全局 superset 注册了 web_search，但 B 的 owner policy 不允许它
+		const registeredTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "grep", sourceInfo: { source: "builtin" } },
+			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
+		];
+		const childActive = ["read", "grep", "web_search"];
+
+		const bPolicy = readEffectiveShellPolicySnapshot(tempDir, "linux", "session-b");
+		const bPruned = reconcileChildExtensionTools({
+			registeredTools,
+			activeTools: childActive,
+			parentActiveTools: toParentActiveTools(bPolicy),
+		});
+		assert.equal(bPruned.includes("web_search"), false, "parent B's child must not keep a tool B did not enable");
+		assert.deepEqual(bPruned, ["read", "grep"]);
+
+		// 同一个 child 形态，但 Parent A 允许 web_search -> 保留
+		const aPolicy = readEffectiveShellPolicySnapshot(tempDir, "linux", "session-a");
+		const aPruned = reconcileChildExtensionTools({
+			registeredTools,
+			activeTools: childActive,
+			parentActiveTools: toParentActiveTools(aPolicy),
+		});
+		assert.deepEqual(aPruned, ["read", "grep", "web_search"]);
+
+		// 没有 version 2 snapshot（旧 parent / 文件缺失）：保持旧行为，不误删
+		assert.deepEqual(
+			reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: undefined }),
+			childActive,
+		);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 24. builtin / pi-subagents 内部工具不会被 parent activeTools 误 prune
+test("builtin and pi-subagents internal child tools survive the parent ceiling", () => {
+	const registeredTools = [
+		{ name: "read", sourceInfo: { source: "builtin" } },
+		{ name: "grep", sourceInfo: { source: "builtin" } },
+		{ name: "find", sourceInfo: { source: "builtin" } },
+		{ name: "ls", sourceInfo: { source: "builtin" } },
+		{ name: "contact_supervisor", sourceInfo: { source: "npm:pi-subagents" } },
+	];
+	const childActive = ["read", "grep", "find", "ls", "contact_supervisor"];
+
+	// parent 只 active 了 read：其余全部仍是 child runtime 自己提供的工具
+	const pruned = reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: ["read"] });
+	assert.deepEqual(pruned, childActive);
+
+	assert.equal(isBuiltinOrInternalChildTool("contact_supervisor"), true);
+	assert.equal(isBuiltinOrInternalChildTool("structured_output"), true);
+	assert.equal(isBuiltinOrInternalChildTool("bg_wait"), true);
+	assert.equal(isBuiltinOrInternalChildTool("subagent_supervisor"), true);
+	assert.equal(isBuiltinOrInternalChildTool("web_search"), false);
+
+	// registry 标记为 builtin 的工具同样不受 ceiling 影响；未知工具不猜、不删
+	assert.deepEqual(
+		reconcileChildExtensionTools({ registeredTools, activeTools: ["read", "mystery"], parentActiveTools: [] }),
+		["read", "mystery"],
+	);
+});
+
+// 25. managed state / settings 只清理“文件真正不存在”的 provider，不因 inactive 而删
+test("stale managed provider paths are pruned only when the file is really gone", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-provider-stale-"));
+	try {
+		const alivePath = join(tempDir, "alive-provider.ts");
+		const gonePath = join(tempDir, "gone-provider.ts");
+		writeFileSync(alivePath, "// alive", "utf8");
+		writeFileSync(gonePath, "// gone", "utf8");
+		const stateDir = join(tempDir, "change-pi-prompt");
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "managed-child-extensions.json"),
+			JSON.stringify({ version: 1, managedPaths: [alivePath, gonePath] }),
+			"utf8",
+		);
+		writeFileSync(
+			join(tempDir, "settings.json"),
+			JSON.stringify({ subagents: { agentOverrides: { researcher: { subagentOnlyExtensions: [alivePath, gonePath] } } } }),
+			"utf8",
+		);
+
+		// gone-provider.ts 已删除，alive-provider.ts 仍在但本 session inactive
+		rmSync(gonePath, { force: true });
+
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const res = await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools: [{ name: "read", sourceInfo: { source: "builtin" } }],
+			parentActiveTools: ["read"],
+			platform: "linux",
+			shellPolicy: { bash: false, powershell: false },
+			shellPolicyOwnerKey: "session-a",
+			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
+		});
+
+		const managed = JSON.parse(readFileSync(join(stateDir, "managed-child-extensions.json"), "utf8"));
+		assert.ok(managed.managedPaths.includes(alivePath), "an existing provider must survive even when inactive");
+		assert.equal(managed.managedPaths.includes(gonePath), false, "a provider whose file is gone must be pruned");
+		assert.equal(res.managedPaths.includes(gonePath), false);
+
+		const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		const kept = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
+		assert.ok(kept.includes(alivePath), "settings must keep the still-existing managed provider");
+		assert.equal(kept.includes(gonePath), false, "settings must drop the deleted managed provider");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 26. reconciliation lock：串行化的 read-merge-write 不丢失并发写，且 stale lock 可回收
+test("the reconciliation lock serializes shared writes and reclaims stale locks", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-reconcile-lock-"));
+	try {
+		const lockPath = reconciliationLockPath(tempDir);
+
+		// 逻辑层：B 在 A 之后读取最新 settings -> 并集
+		const seen = [];
+		const order = [];
+		let shared = { providers: [] };
+		const writer = (label, provider) => withReconciliationLock(tempDir, () => {
+			// 模拟“锁内重新 read 最新文件”
+			const current = JSON.parse(JSON.stringify(shared));
+			seen.push({ label, current: [...current.providers] });
+			shared = { providers: [...new Set([...current.providers, provider])] };
+			order.push(label);
+		});
+		await writer("a", "provider-a");
+		await writer("b", "provider-b");
+		assert.deepEqual(order, ["a", "b"]);
+		assert.deepEqual(seen[1].current, ["provider-a"], "the second writer must observe the first writer's result");
+		assert.deepEqual(shared.providers, ["provider-a", "provider-b"]);
+
+		// 锁在 fn 结束后必须释放
+		assert.equal(existsSync(lockPath), false, "the lock must be released after the callback");
+
+		// stale lock 可回收：createdAt 远早于阈值
+		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		writeFileSync(lockPath, JSON.stringify({ pid: 999999, createdAt: Date.now() - 120_000 }), "utf8");
+		let reclaimed = false;
+		await withReconciliationLock(tempDir, () => { reclaimed = true; });
+		assert.equal(reclaimed, true, "an abandoned lock must be reclaimed");
+
+		// 新鲜 lock：不抢占，超时后 fail conservative（返回 undefined），且不破坏锁
+		writeFileSync(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() }), "utf8");
+		let ranWhileHeld = false;
+		const waited = [];
+		const result = await withReconciliationLock(tempDir, () => { ranWhileHeld = true; }, {
+			timeoutMs: 120,
+			retryMs: 40,
+			wait: async (delay) => { waited.push(delay); },
+		});
+		assert.equal(result, undefined, "a held lock must fail conservative instead of running the merge");
+		assert.equal(ranWhileHeld, false, "a held lock must never let another writer inside");
+		assert.ok(waited.length > 0, "the lock must retry instead of giving up immediately");
+		assert.equal(existsSync(lockPath), true, "a lock owned by someone else must not be removed");
+
+		// reconciliation 拿不到锁时必须返回 undefined（不写任何共享文件）
+		const res = await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog: undefined,
+			parentTools: [],
+			parentActiveTools: [],
+			platform: "linux",
+			shellPolicy: { bash: false, powershell: false },
+			shellPolicyOwnerKey: "session-a",
+			lock: { timeoutMs: 60, retryMs: 30, wait: async () => {} },
+		});
+		assert.equal(res, undefined, "reconciliation must fail conservative when the lock is unavailable");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 27. child 的 extension ceiling 是 prune-only：不会因为 parent active 而新增工具
+test("the child extension ceiling only prunes and never adds tools", () => {
+	const registeredTools = [
+		{ name: "read", sourceInfo: { source: "builtin" } },
+		{ name: "web_search", sourceInfo: { source: "file", path: "C:\\tools\\web-search.ts" } },
+	];
+	// parent 允许 web_search，但 child 自己没 active 它 -> 不得主动添加
+	const pruned = reconcileChildExtensionTools({
+		registeredTools,
+		activeTools: ["read"],
+		parentActiveTools: ["read", "web_search"],
+	});
+	assert.deepEqual(pruned, ["read"], "a plain extension tool must never be added by the ceiling");
+});
+
+// 28. 端到端：child before_agent_start 先 prun 掉 parent 未启用的 extension tool，再做 shell canonicalization，
+//     最后根据最终 active tools 生成 Child Tool Environment（顺序不得颠倒）
+test("child before_agent_start applies the owner extension ceiling before rendering the tool environment", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-extension-ceiling-"));
+	const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
+	try {
+		const webSearchPath = join(tempDir, "web-search.ts");
+		writeFileSync(webSearchPath, "// web search", "utf8");
+		const owner = "session-b";
+		// Parent B 的 owner policy：允许 read/grep，不允许 web_search
+		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		writeFileSync(
+			shellPolicySnapshotPath(tempDir, owner),
+			JSON.stringify({ version: 2, platform: "linux", shell: { bash: false, powershell: false }, parentActiveTools: ["read", "grep"] }),
+			"utf8",
+		);
+		process.env[SHELL_POLICY_OWNER_ENV] = owner;
+
+		const registeredTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "grep", sourceInfo: { source: "builtin" } },
+			{ name: "contact_supervisor", sourceInfo: { source: "npm:pi-subagents" } },
+			// 全局 superset 已注册，所以 child 确实看得见 web_search
+			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
+		];
+
+		const { mockPi, setTools, getHandler } = createMockPi();
+		setTools(registeredTools);
+		mockPi.setActiveTools(["read", "grep", "contact_supervisor", "web_search"]);
+		registerPromptExtension(mockPi, tempDir, {
+			probeHost: { platform: "linux", env: {}, exists: () => false },
+			isStandalone: () => true,
+		});
+		const ctx = { hasUI: true, ui: { notify: () => {}, editor: async () => undefined } };
+
+		const childPrompt = `<active_agent name="reviewer"/>\n\nYou are a disciplined review subagent.`;
+		const result = await getHandler("before_agent_start")({ systemPrompt: childPrompt, systemPromptOptions: {} }, ctx);
+
+		// parent 未启用的 extension tool 被 prune，builtin/internal 不受影响
+		const active = mockPi.getActiveTools();
+		assert.equal(active.includes("web_search"), false, "the child must not keep a tool its parent did not enable");
+		assert.equal(active.includes("contact_supervisor"), true, "internal tools must survive the ceiling");
+		assert.equal(active.includes("read"), true);
+
+		// prompt 必须在最终 active tools 之后生成，且角色 prompt 保留
+		assert.ok(result, "child prompt must be injected");
+		assert.ok(result.systemPrompt.startsWith(childPrompt), "role prompt must be byte-preserved");
+		assert.ok(result.systemPrompt.includes("No shell tool is available"));
+	} finally {
+		if (previousOwner === undefined) delete process.env[SHELL_POLICY_OWNER_ENV];
+		else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });

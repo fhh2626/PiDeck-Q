@@ -1,5 +1,5 @@
 /**
- * Canonical shell policy for native child environments.
+ * Canonical tool policy for native child environments.
  *
  * Registered tools (`getAllTools`) are not the same fact as the parent's final active tools
  * (`getActiveTools`): a shell already pruned from the parent session, or a pwsh adapter that
@@ -7,11 +7,36 @@
  * Children therefore receive a canonicalized shell set — a real bash backend stays `bash`,
  * PowerShell stays `powershell` — decided by the real backend, the parent's final active
  * shell tools, and the child's own tool list.
+ *
+ * The same parent/child split decides extension-provided tools: the shared settings.json only
+ * guarantees which providers a child *can* load (a superset), while the owner-scoped snapshot
+ * carries the ceiling of what this parent actually allows (see reconcileChildExtensionTools).
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { isPwsh, type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
+
+/**
+ * Builtins and pi-subagents child internals are resolved by the child runtime itself;
+ * they must not be judged missing just because the parent session has them inactive, and the
+ * parent's extension-tool ceiling must never prune them. Shell tools are deliberately absent:
+ * they follow the canonical shell policy instead.
+ */
+export const BUILTIN_OR_INTERNAL_CHILD_TOOLS = new Set([
+	'read', 'write', 'edit', 'grep', 'find', 'ls',
+	'subagent', 'contact_supervisor', 'structured_output', 'bg_wait', 'subagent_supervisor',
+]);
+
+/** Builtin or pi-subagents internal tool that no parent-side ceiling may revoke. */
+export function isBuiltinOrInternalChildTool(
+	name: string,
+	registeredTools: readonly ToolSnapshot[] = [],
+): boolean {
+	if (BUILTIN_OR_INTERNAL_CHILD_TOOLS.has(name)) return true;
+	// A tool the registry reports as builtin is runtime-provided even when it is not on the list above.
+	return registeredTools.some(tool => tool.name === name && tool.sourceInfo?.source === 'builtin');
+}
 
 export interface EffectiveShellPolicy {
 	bash: boolean;
@@ -21,18 +46,35 @@ export interface EffectiveShellPolicy {
 }
 
 /**
- * The parent's final shell ceiling, published for child runtimes.
+ * The parent's final child policy, published for child runtimes.
  * A child session's tool allowlist comes from the agent definition only, so the child cannot
- * observe the parent's active shell tools on its own; the parent publishes, the child consumes.
+ * observe the parent's active tools on its own; the parent publishes, the child consumes.
  * Because several sessions share one agentDir, the snapshot is scoped to the owning parent runtime
  * (see readEffectiveShellPolicySnapshot) rather than being a single global file.
+ *
+ * Version 2 carries both ceilings: the canonical shell backend set and the parent's final active
+ * tools, which gate extension-provided child tools (provider availability != tool permission).
  */
 export interface ShellPolicySnapshot {
+	version: 2;
+	platform: string;
+	shell: {
+		bash: boolean;
+		powershell: boolean;
+	};
+	parentActiveTools: string[];
+}
+
+/** Version 1 snapshot published by an older parent: shell ceiling only, no extension tool ceiling. */
+export interface LegacyShellPolicySnapshot {
 	version: 1;
 	platform: string;
 	bash: boolean;
 	powershell: boolean;
 }
+
+/** Any snapshot a child may read; version 1 stays readable so an old parent never breaks a new child. */
+export type EffectiveChildPolicy = ShellPolicySnapshot | LegacyShellPolicySnapshot;
 
 export interface ChildShellSlots {
 	/** Canonical shell set the child ends up with. */
@@ -48,10 +90,22 @@ export function isShellToolName(name: string): boolean {
 	return name === 'bash' || name === 'powershell';
 }
 
-/** Narrow an already-validated snapshot to the ceiling shape used by the child mapping. */
-export function toShellCeiling(snapshot: ShellPolicySnapshot | undefined): { bash: boolean; powershell: boolean } | undefined {
+/** Narrow an already-validated snapshot to the shell ceiling shape used by the child mapping. */
+export function toShellCeiling(snapshot: EffectiveChildPolicy | undefined): { bash: boolean; powershell: boolean } | undefined {
 	if (!snapshot) return undefined;
-	return { bash: snapshot.bash, powershell: snapshot.powershell };
+	// Version 1 keeps its historical top-level shape; version 2 nests the ceiling under `shell`.
+	return snapshot.version === 2
+		? { bash: snapshot.shell.bash, powershell: snapshot.shell.powershell }
+		: { bash: snapshot.bash, powershell: snapshot.powershell };
+}
+
+/**
+ * The parent's final active tools from a version 2 snapshot.
+ * Undefined for a version 1 snapshot: without an explicit extension tool ceiling the child must
+ * keep the old behavior instead of guessing a ceiling from a snapshot that never carried one.
+ */
+export function toParentActiveTools(snapshot: EffectiveChildPolicy | undefined): string[] | undefined {
+	return snapshot && snapshot.version === 2 ? [...snapshot.parentActiveTools] : undefined;
 }
 
 /**
@@ -156,6 +210,37 @@ export function resolveChildShellSlots(options: {
 		available,
 		providerPaths,
 	};
+}
+
+/**
+ * Prune extension-provided child tools that the owning parent does not expose.
+ *
+ * The shared settings.json is a provider *superset*: any session may have registered a tool's
+ * provider there. Permission is a separate question answered by the owner-scoped snapshot, so a
+ * child keeps only the extension tools this parent actually allows.
+ *
+ * Deliberately prune-only: a plain extension tool is never added here, because the child's own
+ * allowlist stays authoritative. Windows shell replacement is the one exception and lives in
+ * `reconcileChildActiveShellTools`.
+ *
+ * `parentActiveTools` undefined means no version 2 snapshot was available (an older parent, or a
+ * missing file); the child then keeps its own list rather than guessing a ceiling.
+ */
+export function reconcileChildExtensionTools(options: {
+	registeredTools: readonly ToolSnapshot[];
+	activeTools: readonly string[];
+	parentActiveTools: readonly string[] | undefined;
+}): string[] {
+	const { registeredTools, activeTools, parentActiveTools } = options;
+	if (!parentActiveTools) return [...activeTools];
+	const allowed = new Set(parentActiveTools);
+	return activeTools.filter(name => {
+		if (allowed.has(name)) return true;
+		// Builtin and pi-subagents internal tools are provided by the child runtime, never by a parent provider.
+		if (isBuiltinOrInternalChildTool(name, registeredTools)) return true;
+		// Plain extension tool: prune it, but never prune a tool the registry does not know about.
+		return !registeredTools.some(tool => tool.name === name);
+	});
 }
 
 /**

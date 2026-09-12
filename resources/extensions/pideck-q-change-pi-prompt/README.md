@@ -46,10 +46,32 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - `session_start` 只做 session-local 的 shell prune，不写任何共享 override。
 - `before_agent_start` 先判定 child session：child 只处理本会话 active tools 与 prompt；只有 parent 会执行 `reconcileChildEnvironments(parentActiveTools)`。
 - `tool_call` 在 child session 中只做只读 catalog 加载，不再重写共享 override（避免「第一只 child 正常、下一只不同步」）。
-- parent 会把最终 shell ceiling 发布成 `<agentDir>/change-pi-prompt/effective-shell-policy.<owner>.json`（`<owner>` 是 parent 的 session 身份，缺失时退化为 `pid-<pid>`），并原子写入（tmp → rename）；child 只读取属于自己 parent 的那个文件作为上界（没有 owner、缺失/损坏/跨平台快照一律忽略，回退到 availability + 注册表判定）。
-  - 之所以按 owner 分文件：PiDeck 允许多个 Agent session 共享同一个 agentDir，全局单文件会让 Parent B 覆盖 Parent A 的 ceiling，导致 A 的 child 读到别人的 shell 上界。
+- parent 会把最终 child policy 发布成 `<agentDir>/change-pi-prompt/effective-shell-policy.<owner>.json`（`<owner>` 是 parent 的 session 身份，缺失时退化为 `pid-<pid>`），并原子写入（tmp → rename）；child 只读取属于自己 parent 的那个文件作为上界（没有 owner、缺失/损坏/跨平台快照一律忽略）。
+  - 文件内容为 `version: 2`：`shell: { bash, powershell }` + `parentActiveTools`（来自 parent 最终的 `getActiveTools()`，绝不是 `getAllTools()`）。`version: 1` 旧快照仍可读：只提供 shell ceiling，不提供 extension tool ceiling。
+  - 之所以按 owner 分文件：PiDeck 允许多个 Agent session 共享同一个 agentDir，全局单文件会让 Parent B 覆盖 Parent A 的 ceiling，导致 A 的 child 读到别人的上界。
   - owner key 通过环境变量 `CHANGE_PI_PROMPT_SHELL_POLICY_OWNER` 传给 child：foreground native child 与 parent 同进程，detached runner child 是独立进程，靠继承到的环境变量仍能解析到同一个 owner 文件；child 在第一次 `before_agent_start` 时冻结 owner key。
   - 超过 7 天未更新的 owner 快照会在 parent 写入时顺带清理，避免文件无限积累。
+
+### provider 可加载性 ≠ 工具权限（两层职责）
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 共享 superset | `<agentDir>/settings.json` 的 `subagents.agentOverrides.<agent>.subagentOnlyExtensions` | 「这些 provider 可以被 child 加载」——只增不减（除非文件真的不存在） |
+| per-owner ceiling | `effective-shell-policy.<owner>.json` 的 `parentActiveTools` | 「这个 parent 实际允许 child 使用哪些 extension tools」 |
+
+- 当前 parent inactive 某工具时，只看 `resolveLoadableToolProvider()`（provider 是否存在且可加载）决定 settings：一个仍存在、可加载的 provider 不得因为本 session inactive 而被删除，否则会让另一个 session 后续启动 child 时丢 provider。
+- 反过来，当前 parent 是否需要该工具由 `resolveToolProviderExtension()` 单独判定，反映在 `compatibilityStatus[agent].missingTools` 里。
+- child 侧的 `reconcileChildExtensionTools()` 只做 prune：extension tool 不在 `parentActiveTools` 就移除，**不会**因为 parent 有就主动加入。
+- builtin / pi-subagents 内部工具（`read`/`write`/`edit`/`grep`/`find`/`ls`/`subagent`/`contact_supervisor`/`structured_output`/`bg_wait`/`subagent_supervisor`，共享常量 `BUILTIN_OR_INTERNAL_CHILD_TOOLS`）不受 ceiling 影响；无 `version 2` 快照时（旧 parent 或文件缺失）保持旧行为，不做新的 extension prune。
+- child 最终顺序：读 owner policy → extension prune → shell canonicalization → `setActiveTools()` → 生成 Child Tool Environment。prompt 必须在最终 active tools 之后生成。
+
+### reconciliation 跨进程锁
+
+`settings.json` 与 `managed-child-extensions.json` 是所有 session 共用的，atomic rename 只能防半文件，不能防 lost update（A、B 同时读旧值再各写各的）。因此整段 read-merge-write 都在 `<agentDir>/change-pi-prompt/reconciliation.lock` 内执行（`openSync(..., 'wx')`，退避重试，默认上限 2s）：先拿锁，再重新读最新文件，merge，原子写入，释放。
+
+- 锁内容是 `{ pid, createdAt }`；超过 30s 的锁视为崩溃残留，可回收。
+- 超时拿不到锁时不破坏共享文件，reconciliation 返回 `undefined`，由 runtime 写诊断并**不**重建局部状态。
+- 只有 parent 会拿锁；child session 绝不执行 reconciliation，也不写 settings / managed paths。
 
 ## 用户修改文案
 
