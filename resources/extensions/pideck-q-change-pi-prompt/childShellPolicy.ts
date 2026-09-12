@@ -302,7 +302,13 @@ export function reconcileChildActiveShellTools(options: {
 	};
 
 	if (pruneOnly) return prune();
-	if (!wantsShell) return [...next];
+	if (!wantsShell) {
+		// A known agent definition with no shell declaration is a hard capability ceiling. Even if
+		// an ambient/stale provider somehow makes a shell visible, do not let it survive canonicalization.
+		next.delete('bash');
+		next.delete('powershell');
+		return [...next];
+	}
 
 	if (platform === 'win32') {
 		if (permitted('bash')) next.add('bash');
