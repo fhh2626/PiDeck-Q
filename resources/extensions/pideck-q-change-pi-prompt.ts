@@ -4,10 +4,22 @@
 // when pi loads the extension from extraResources.
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ensureChildPowerShellTool } from "./pideck-q-change-pi-prompt/childPowerShellBridge.ts";
+import { loadSettings } from "./pideck-q-change-pi-prompt/config.ts";
 import { registerPromptExtension } from "./pideck-q-change-pi-prompt/runtime.ts";
 
 export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
+	// Fail closed until session_start successfully loads the same persisted config used by runtime.ts.
+	// This prevents a stale parent policy snapshot from making enabled=false mutate a child registry.
+	let bridgeEnabled = false;
+
+	pi.on("session_start", async () => {
+		try {
+			bridgeEnabled = (await loadSettings(agentDir)).config.enabled === true;
+		} catch {
+			bridgeEnabled = false;
+		}
+	});
 
 	// Native child allowlists may still contain only the historical `bash` slot. Run this bridge
 	// before the main prompt handler so a parent-authorized PowerShell backend exists in the child
@@ -17,6 +29,7 @@ export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 			platform: process.platform,
 			systemPrompt: event.systemPrompt,
 			cwd: event.systemPromptOptions?.cwd ?? ctx.cwd,
+			enabled: bridgeEnabled,
 		});
 	});
 
