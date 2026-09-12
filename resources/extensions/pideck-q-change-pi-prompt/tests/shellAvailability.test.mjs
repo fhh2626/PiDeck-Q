@@ -35,6 +35,16 @@ test('Windows without Git Bash still keeps powershell when pwsh.exe is on PATH',
   assert.equal(powershellAvailable(windows), true);
 });
 
+test('simulated Windows PATH uses semicolons even when tests run on a non-Windows host', () => {
+  const windows = host(
+    'win32',
+    ['D:\\PowerShell\\pwsh.exe', 'E:\\Git\\bash.exe'],
+    'C:\\Nothing;D:\\PowerShell;E:\\Git',
+  );
+  assert.equal(powershellAvailable(windows), true);
+  assert.equal(bashAvailable(windows), true);
+});
+
 test('configured shellPath wins over missing Git Bash', () => {
   const windows = host('win32', ['D:\\tools\\bash.exe']);
   assert.equal(bashAvailable(windows, 'D:\\tools\\bash.exe'), true);
