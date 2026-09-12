@@ -92,13 +92,14 @@ test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibi
 		assert.equal(reconciled.includes("bash"), true);
 		assert.equal(reconciled.includes("powershell"), false);
 
-		// Idempotent across subsequent before_agent_start turns: getAllTools now exposes the bridge slot.
+		// Idempotent across subsequent before_agent_start turns.
 		assert.equal(ensureChildPowerShellTool(pi, agentDir, {
 			platform: "win32",
 			systemPrompt: '<active_agent name="worker"/>\n\nYou are worker.',
 			cwd: process.cwd(),
 			ownerKey,
-		}), true, "same-name slot registration is safe but should be avoided by source detection");
+		}), false);
+		assert.equal(registered.length, 1);
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 	}
