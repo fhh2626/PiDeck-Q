@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveChildShellSlots, resolveEffectiveShellPolicy } from "../childShellPolicy.ts";
+import {
+	reconcileChildActiveShellTools,
+	resolveChildShellSlots,
+	resolveEffectiveShellPolicy,
+} from "../childShellPolicy.ts";
 
 test("active pwsh adapter publishes PowerShell capability without injecting the adapter into children", () => {
 	const dir = mkdtempSync(join(tmpdir(), "pideck-pwsh-policy-"));
@@ -55,4 +59,24 @@ test("inactive pwsh adapter does not widen the child shell ceiling", () => {
 
 	assert.equal(policy.bash, false);
 	assert.equal(policy.powershell, false);
+});
+
+test("canonical powershell wins over a pwsh-adapter bash compatibility slot when both are registered", () => {
+	const active = reconcileChildActiveShellTools({
+		platform: "win32",
+		availability: { bash: true, powershell: true },
+		registeredTools: [
+			{
+				name: "bash",
+				sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter.ts" },
+			},
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		],
+		activeTools: ["read", "bash"],
+		wantsShell: true,
+		ceiling: { bash: false, powershell: true },
+	});
+
+	assert.equal(active.includes("bash"), false, "compatibility alias must disappear once canonical powershell exists");
+	assert.equal(active.includes("powershell"), true);
 });
