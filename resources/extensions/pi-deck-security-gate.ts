@@ -29,12 +29,13 @@ import type {
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 // ── 快照 schema（与 shared/types/security.ts 对齐；扩展侧自包含副本） ──
 
 type SecurityAction = "allow" | "ask" | "deny";
 type SecurityPathPolicy = "unrestricted" | "workspace" | "custom";
+type ShellTool = "bash" | "powershell";
 
 type SecurityLevelConfig = {
 	id: string;
@@ -62,6 +63,9 @@ type SecurityPolicySnapshot = {
 // ── 常量 ──
 
 const SCHEMA_VERSION = 1;
+/** change-pi-prompt 的 child 兼容槽：公开名是 bash，真实执行后端是 PowerShell。 */
+const CHILD_POWERSHELL_BRIDGE_MARKER = "[change-pi-prompt:child-powershell-bridge]";
+const PWSH_ADAPTER_PACKAGE = "@99percentpeople/pi-pwsh-adapter";
 /** 受管控的内置工具（其它自定义工具一律放行） */
 const MANAGED_TOOLS = new Set([
 	"read",
@@ -222,7 +226,7 @@ function matchesPowerShellDeny(level: SecurityLevelConfig, command: string): boo
 /** 计算 shell (bash / powershell) 命令最终动作 */
 function shellAction(
 	level: SecurityLevelConfig,
-	tool: "bash" | "powershell",
+	tool: ShellTool,
 	command: string,
 ): SecurityAction {
 	const dangerous = tool === "powershell"
@@ -234,6 +238,29 @@ function shellAction(
 	if (toolAction === "allow") return "allow";
 	if (level.defaultAction === "deny") return "deny";
 	return "ask";
+}
+
+/**
+ * Resolve the shell policy by execution backend rather than the public tool name.
+ * change-pi-prompt and pi-pwsh-adapter may intentionally expose PowerShell through a `bash` slot
+ * so native child hard allowlists can keep their historical tool name.
+ */
+export function resolveSecurityShellTool(pi: ExtensionAPI, tool: ShellTool): ShellTool {
+	if (tool !== "bash" || typeof pi.getAllTools !== "function") return tool;
+	const bash = pi.getAllTools().find((candidate) => candidate.name === "bash");
+	if (!bash) return tool;
+	if (typeof bash.description === "string" && bash.description.includes(CHILD_POWERSHELL_BRIDGE_MARKER)) {
+		return "powershell";
+	}
+	const source = bash.sourceInfo?.source ?? "";
+	if (source === `npm:${PWSH_ADAPTER_PACKAGE}` || source.startsWith(`npm:${PWSH_ADAPTER_PACKAGE}@`)) {
+		return "powershell";
+	}
+	const providerPath = (bash.sourceInfo?.path ?? "").replace(/\\/g, "/");
+	if (providerPath.includes(`/node_modules/${PWSH_ADAPTER_PACKAGE}/`)) {
+		return "powershell";
+	}
+	return tool;
 }
 
 /** 计算文件工具最终动作：路径边界优先，其次工具动作 */
@@ -364,10 +391,12 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 		const input = event.input as Record<string, unknown>;
 		let action: SecurityAction;
+		let policyTool = tool;
 
 		if (tool === "bash" || tool === "powershell") {
 			const command = typeof input.command === "string" ? input.command : "";
-			action = shellAction(level, tool, command);
+			policyTool = resolveSecurityShellTool(pi, tool);
+			action = shellAction(level, policyTool, command);
 		} else {
 			const filePath = extractFilePath(tool, input);
 			action = fileToolAction(
@@ -385,25 +414,28 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 			: (typeof input.path === "string" || typeof input.filePath === "string"
 				? String(input.path ?? input.filePath)
 				: "");
+		const displayTool = tool === "bash" && policyTool === "powershell"
+			? "powershell (bash compatibility slot)"
+			: tool;
 
 		if (action === "deny") {
 			return {
 				block: true,
-				reason: `[安全管理·${level.name}] ${tool} 调用被拒绝${target ? `: ${target}` : ""}`,
+				reason: `[安全管理·${level.name}] ${displayTool} 调用被拒绝${target ? `: ${target}` : ""}`,
 			};
 		}
 
 		// action === "ask"：弹窗确认
 		const allowed = await confirmAction(
 			ctx,
-			`PiDeck 安全确认：允许 ${tool} 调用吗？`,
+			`PiDeck 安全确认：允许 ${displayTool} 调用吗？`,
 			target.slice(0, 500),
 			level.name,
 		);
 		if (allowed) return undefined;
 		return {
 			block: true,
-			reason: `[安全管理·${level.name}] ${tool} 调用已被用户拒绝${target ? `: ${target}` : ""}`,
+			reason: `[安全管理·${level.name}] ${displayTool} 调用已被用户拒绝${target ? `: ${target}` : ""}`,
 		};
 	});
 }
