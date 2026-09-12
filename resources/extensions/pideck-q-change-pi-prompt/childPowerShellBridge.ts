@@ -24,6 +24,7 @@ import {
 } from './childShellPolicy.ts';
 import {
 	CHILD_POWERSHELL_BRIDGE_MARKER,
+	isChildPowerShellBridge,
 	type ToolSnapshot,
 } from './contributions.ts';
 import {
@@ -70,6 +71,7 @@ export function ensureChildPowerShellTool(
 	if (!agentName) return false;
 
 	const tools = snapshotTools(pi);
+	if (tools.some(isChildPowerShellBridge)) return false;
 	// A real `powershell` tool already present is preferable; the normal canonicalizer can activate it.
 	if (tools.some(tool => tool.name === 'powershell')) return false;
 
