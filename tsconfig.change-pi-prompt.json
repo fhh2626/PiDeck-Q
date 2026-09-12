@@ -30,7 +30,8 @@
   },
   "include": [
     "resources/extensions/pideck-q-change-pi-prompt.ts",
-    "resources/extensions/pideck-q-change-pi-prompt/**/*.ts"
+    "resources/extensions/pideck-q-change-pi-prompt/**/*.ts",
+    "resources/extensions/pi-deck-security-gate.ts"
   ],
   "exclude": ["resources/extensions/pideck-q-change-pi-prompt/tests"]
 }
