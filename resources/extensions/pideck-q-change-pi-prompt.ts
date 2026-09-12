@@ -3,8 +3,13 @@
 // Implementation stays in a sibling directory so relative imports remain intact
 // when pi loads the extension from extraResources.
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ensureChildPowerShellTool } from "./pideck-q-change-pi-prompt/childPowerShellBridge.ts";
+import {
+	ensureChildPowerShellTool,
+	hasPowerShellBackedBashTool,
+	injectPowerShellBackedBashPrompt,
+} from "./pideck-q-change-pi-prompt/childPowerShellBridge.ts";
 import { enforcePowerShellBackedBashSecurity } from "./pideck-q-change-pi-prompt/childPowerShellSecurity.ts";
+import { getActiveAgentName } from "./pideck-q-change-pi-prompt/childShellPolicy.ts";
 import { loadSettings } from "./pideck-q-change-pi-prompt/config.ts";
 import { registerPromptExtension } from "./pideck-q-change-pi-prompt/runtime.ts";
 
@@ -27,12 +32,16 @@ export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 	// before the main prompt handler so a parent-authorized PowerShell backend exists in the child
 	// registry before shell pruning/canonicalization. before_agent_start handlers run in load order.
 	pi.on("before_agent_start", (event, ctx) => {
+		const child = getActiveAgentName(event.systemPrompt) !== undefined;
 		ensureChildPowerShellTool(pi, agentDir, {
 			platform: process.platform,
 			systemPrompt: event.systemPrompt,
 			cwd: ctx.cwd,
 			enabled: bridgeEnabled,
 		});
+		if (!bridgeEnabled || !child || !hasPowerShellBackedBashTool(pi)) return undefined;
+		const systemPrompt = injectPowerShellBackedBashPrompt(event.systemPrompt);
+		return systemPrompt === event.systemPrompt ? undefined : { systemPrompt };
 	});
 
 	// A PowerShell backend may intentionally occupy the historical `bash` child slot. PiDeck's
