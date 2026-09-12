@@ -109,6 +109,43 @@ test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibi
 	}
 });
 
+test("an already-loaded pwsh adapter is reused as the PowerShell-backed bash slot", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-pwsh-existing-"));
+	try {
+		const ownerKey = "parent-test";
+		publishPolicy(agentDir, ownerKey, true);
+		const { pi, tools, registered } = createChildPi([
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{
+				name: "bash",
+				description: "PowerShell adapter",
+				sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter/index.js" },
+			},
+		], ["read", "bash"]);
+
+		// Do not race the adapter with a second same-name registration.
+		assert.equal(ensureChildPowerShellTool(pi, agentDir, {
+			platform: "win32",
+			systemPrompt: '<active_agent name="worker"/>\n\nYou are worker.',
+			cwd: process.cwd(),
+			ownerKey,
+		}), false);
+		assert.equal(registered.length, 0);
+
+		const reconciled = reconcileChildActiveShellTools({
+			platform: "win32",
+			availability: { bash: false, powershell: true },
+			registeredTools: tools,
+			activeTools: ["read"],
+			wantsShell: true,
+			ceiling: { bash: false, powershell: true },
+		});
+		assert.deepEqual(reconciled, ["read", "bash"]);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("bridge never widens shell-less agents or a parent that did not authorize PowerShell", () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-powershell-bridge-deny-"));
 	try {
