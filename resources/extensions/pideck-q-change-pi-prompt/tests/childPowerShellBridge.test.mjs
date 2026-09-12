@@ -108,3 +108,26 @@ test("bridge never widens shell-less agents or a parent that did not authorize P
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("disabled change-pi-prompt never registers PowerShell from a stale parent policy", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-powershell-bridge-disabled-"));
+	try {
+		const ownerKey = "parent-test";
+		publishPolicy(agentDir, ownerKey, true);
+		const { pi, registered } = createChildPi([
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+		]);
+
+		assert.equal(ensureChildPowerShellTool(pi, agentDir, {
+			platform: "win32",
+			systemPrompt: '<active_agent name="worker"/>\n\nYou are worker.',
+			cwd: process.cwd(),
+			ownerKey,
+			enabled: false,
+		}), false);
+		assert.equal(registered.length, 0);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
