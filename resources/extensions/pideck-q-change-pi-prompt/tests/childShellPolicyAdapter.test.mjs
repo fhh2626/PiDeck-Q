@@ -80,3 +80,20 @@ test("canonical powershell wins over a pwsh-adapter bash compatibility slot when
 	assert.equal(active.includes("bash"), false, "compatibility alias must disappear once canonical powershell exists");
 	assert.equal(active.includes("powershell"), true);
 });
+
+test("a known shell-less child drops ambient shell tools even when their backends and parent ceiling allow them", () => {
+	const active = reconcileChildActiveShellTools({
+		platform: "win32",
+		availability: { bash: true, powershell: true },
+		registeredTools: [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		],
+		activeTools: ["read", "bash", "powershell"],
+		wantsShell: false,
+		ceiling: { bash: true, powershell: true },
+	});
+
+	assert.deepEqual(active, ["read"]);
+});
