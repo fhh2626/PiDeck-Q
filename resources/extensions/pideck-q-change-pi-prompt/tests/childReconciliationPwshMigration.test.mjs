@@ -42,7 +42,7 @@ function reconciliationOptions(dir, changePromptPath, catalog, ownerKey) {
 		platform: "win32",
 		shellPolicy: { bash: true, powershell: false },
 		shellPolicyOwnerKey: ownerKey,
-		changePiPromptPath,
+		changePiPromptPath: changePromptPath,
 	};
 }
 
