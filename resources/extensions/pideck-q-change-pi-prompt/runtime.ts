@@ -212,11 +212,11 @@ export function registerPromptExtension(
 	let childShellPolicyOwnerKey: string | undefined;
 
 	function promptExtensionEnabled(): boolean {
-		return settings ? settings.config.enabled === true : true;
+		return settings?.config.enabled === true;
 	}
 
 	function subagentAdaptationEnabled(): boolean {
-		return settings ? (settings.config.enabled === true && settings.config.subagent === true) : true;
+		return settings?.config.enabled === true && settings.config.subagent === true;
 	}
 
 	const updateConfirmedSubagentTools = () => {
