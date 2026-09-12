@@ -145,20 +145,28 @@ export function resolveEffectiveShellPolicy(options: {
 	const powerShellTool = parentTools.find(tool => tool.name === 'powershell');
 
 	// The pwsh adapter is a Windows-only adapter for a `bash` slot backed by PowerShell;
-	// it must never make the child's canonical `bash` slot active.
+	// it must never make the child's canonical `bash` slot active. When that adapter is the
+	// parent's active shell, publish it as PowerShell capability so a child can either load the
+	// same provider or use change-pi-prompt's PowerShell-backed compatibility slot.
 	const adapterOccupiesBash = platform === 'win32' && !!bashTool && isPwsh(bashTool);
+	const adapterProvidesPowerShell = adapterOccupiesBash && active.has('bash') && availability.powershell;
 	const bash = availability.bash && active.has('bash') && !adapterOccupiesBash;
 
-	// Only claim powershell when the child can really load it: builtin, or an injectable provider.
-	const powerShellProviderPath = injectableProviderPath(powerShellTool);
-	const powerShellLoadable = isBuiltinTool(powerShellTool) || !!powerShellProviderPath;
-	const powershell = availability.powershell && active.has('powershell') && powerShellLoadable;
+	// Native PowerShell is loadable when it is builtin or has an injectable provider. An active
+	// pwsh adapter is also a real PowerShell backend even though its public tool name is `bash`.
+	const nativePowerShellProviderPath = injectableProviderPath(powerShellTool);
+	const nativePowerShellLoadable = isBuiltinTool(powerShellTool) || !!nativePowerShellProviderPath;
+	const nativePowerShell = availability.powershell && active.has('powershell') && nativePowerShellLoadable;
+	const powershell = adapterProvidesPowerShell || nativePowerShell;
+	const powershellProviderPath = adapterProvidesPowerShell
+		? injectableProviderPath(bashTool)
+		: (nativePowerShell ? nativePowerShellProviderPath : undefined);
 
 	return {
 		bash,
 		powershell,
 		bashProviderPath: bash ? injectableProviderPath(bashTool) : undefined,
-		powershellProviderPath: powershell ? powerShellProviderPath : undefined,
+		powershellProviderPath,
 	};
 }
 
