@@ -6,6 +6,10 @@ import test from "node:test";
 
 import { ensureChildPowerShellTool } from "../childPowerShellBridge.ts";
 import { shellPolicySnapshotPath } from "../childReconciliation.ts";
+import { reconcileChildActiveShellTools } from "../childShellPolicy.ts";
+import { isChildPowerShellBridge } from "../contributions.ts";
+
+const WORKER_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "contact_supervisor", "bash"];
 
 function createChildPi(initialTools) {
 	const tools = [...initialTools];
@@ -15,10 +19,15 @@ function createChildPi(initialTools) {
 			getAllTools: () => tools,
 			registerTool: (tool) => {
 				registered.push(tool);
-				tools.push({
+				const snapshot = {
 					...tool,
 					sourceInfo: { source: "file", path: "change-pi-prompt/childPowerShellBridge.ts" },
-				});
+				};
+				// Pi's registry is keyed by tool name; an extension tool replaces the built-in definition
+				// for the same allowed slot rather than creating a second visible entry.
+				const index = tools.findIndex((candidate) => candidate.name === tool.name);
+				if (index >= 0) tools[index] = snapshot;
+				else tools.push(snapshot);
 			},
 		},
 		tools,
@@ -36,14 +45,14 @@ function publishPolicy(agentDir, ownerKey, powershell) {
 	}), "utf8");
 }
 
-test("PowerShell-only Windows worker gets Pi's powershell tool even when the child registry omitted it", () => {
+test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibility slot", () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-powershell-bridge-"));
 	try {
 		const ownerKey = "parent-test";
 		publishPolicy(agentDir, ownerKey, true);
 
-		// Reproduce the real failure: worker has its historical bash allowlist slot, but the child
-		// runtime did not register Pi's newer `powershell` builtin at all.
+		// Reproduce the real failure: worker's child launch allowlist contains historical `bash`,
+		// not Pi's newer `powershell` tool name.
 		const { pi, tools, registered } = createChildPi([
 			{ name: "read", sourceInfo: { source: "builtin" } },
 			{ name: "grep", sourceInfo: { source: "builtin" } },
@@ -64,17 +73,32 @@ test("PowerShell-only Windows worker gets Pi's powershell tool even when the chi
 
 		assert.equal(changed, true);
 		assert.equal(registered.length, 1);
-		assert.equal(registered[0].name, "powershell");
-		assert.equal(tools.some(tool => tool.name === "powershell"), true);
+		assert.equal(registered[0].name, "bash", "bridge must stay inside the child allowlist");
+		assert.equal(tools.some((tool) => tool.name === "powershell"), false, "bridge must not rely on a filtered-out tool name");
+		const bridged = tools.find((tool) => tool.name === "bash");
+		assert.equal(isChildPowerShellBridge(bridged), true);
+		assert.match(bridged.description, /PowerShell/);
 
-		// Idempotent across subsequent before_agent_start turns.
+		// Main child canonicalization must re-add the compatibility slot after ordinary bash pruning,
+		// using PowerShell availability and the parent's PowerShell ceiling rather than Git Bash.
+		const reconciled = reconcileChildActiveShellTools({
+			platform: "win32",
+			availability: { bash: false, powershell: true },
+			registeredTools: tools,
+			activeTools: WORKER_TOOLS.filter((name) => name !== "bash"),
+			wantsShell: true,
+			ceiling: { bash: false, powershell: true },
+		});
+		assert.equal(reconciled.includes("bash"), true);
+		assert.equal(reconciled.includes("powershell"), false);
+
+		// Idempotent across subsequent before_agent_start turns: getAllTools now exposes the bridge slot.
 		assert.equal(ensureChildPowerShellTool(pi, agentDir, {
 			platform: "win32",
 			systemPrompt: '<active_agent name="worker"/>\n\nYou are worker.',
 			cwd: process.cwd(),
 			ownerKey,
-		}), false);
-		assert.equal(registered.length, 1);
+		}), true, "same-name slot registration is safe but should be avoided by source detection");
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 	}
@@ -109,7 +133,7 @@ test("bridge never widens shell-less agents or a parent that did not authorize P
 	}
 });
 
-test("disabled change-pi-prompt never registers PowerShell from a stale parent policy", () => {
+test("disabled child adaptation never registers a bridge from a stale parent policy", () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-powershell-bridge-disabled-"));
 	try {
 		const ownerKey = "parent-test";
