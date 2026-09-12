@@ -65,6 +65,19 @@ export function hasPowerShellBackedBashTool(pi: ExtensionAPI): boolean {
 	return !!bash && (isChildPowerShellBridge(bash) || isPwsh(bash));
 }
 
+function replacePowerShellBackedBashPrompt(systemPrompt: string, block: string | undefined): string {
+	const start = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_START);
+	const end = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_END);
+	if (start >= 0 && end >= start) {
+		const before = systemPrompt.slice(0, start).trimEnd();
+		const after = systemPrompt.slice(end + CHILD_POWERSHELL_PROMPT_END.length).trimStart();
+		const middle = block ? (before ? '\n\n' : '') + block : '';
+		return before + middle + (after ? (before || block ? '\n\n' : '') + after : '');
+	}
+	if (!block) return systemPrompt;
+	return systemPrompt.trimEnd() + '\n\n' + block;
+}
+
 /** Make the backend/name mismatch explicit to the model without rewriting the agent role prompt. */
 export function injectPowerShellBackedBashPrompt(systemPrompt: string): string {
 	const block = [
@@ -75,14 +88,17 @@ export function injectPowerShellBackedBashPrompt(systemPrompt: string): string {
 		'- Do not infer Bash syntax from the tool name or from older role-prompt wording.',
 		CHILD_POWERSHELL_PROMPT_END,
 	].join('\n');
-	const start = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_START);
-	const end = systemPrompt.indexOf(CHILD_POWERSHELL_PROMPT_END);
-	if (start >= 0 && end >= start) {
-		const before = systemPrompt.slice(0, start).trimEnd();
-		const after = systemPrompt.slice(end + CHILD_POWERSHELL_PROMPT_END.length).trimStart();
-		return before + (before ? '\n\n' : '') + block + (after ? '\n\n' + after : '');
-	}
-	return systemPrompt.trimEnd() + '\n\n' + block;
+	return replacePowerShellBackedBashPrompt(systemPrompt, block);
+}
+
+/** Remove compatibility guidance once the final child tool set no longer uses the aliased slot. */
+export function removePowerShellBackedBashPrompt(systemPrompt: string): string {
+	return replacePowerShellBackedBashPrompt(systemPrompt, undefined);
+}
+
+/** Keep compatibility guidance synchronized with the final active child tool set. */
+export function syncPowerShellBackedBashPrompt(systemPrompt: string, active: boolean): string {
+	return active ? injectPowerShellBackedBashPrompt(systemPrompt) : removePowerShellBackedBashPrompt(systemPrompt);
 }
 
 /**
