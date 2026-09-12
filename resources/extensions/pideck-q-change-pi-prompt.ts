@@ -10,12 +10,13 @@ import { registerPromptExtension } from "./pideck-q-change-pi-prompt/runtime.ts"
 export default function pideckQChangePiPrompt(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	// Fail closed until session_start successfully loads the same persisted config used by runtime.ts.
-	// This prevents a stale parent policy snapshot from making enabled=false mutate a child registry.
+	// This prevents a stale parent policy snapshot from making disabled subagent adaptation mutate a child registry.
 	let bridgeEnabled = false;
 
 	pi.on("session_start", async () => {
 		try {
-			bridgeEnabled = (await loadSettings(agentDir)).config.enabled === true;
+			const { config } = await loadSettings(agentDir);
+			bridgeEnabled = config.enabled === true && config.subagent === true;
 		} catch {
 			bridgeEnabled = false;
 		}
