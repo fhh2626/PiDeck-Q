@@ -39,13 +39,16 @@ function createChildPi(initialTools, allowedToolNames = initialTools.map((tool) 
 	};
 }
 
-function publishPolicy(agentDir, ownerKey, powershell) {
+function publishPolicy(agentDir, ownerKey, powershell, bash = false) {
 	mkdirSync(join(agentDir, "change-pi-prompt"), { recursive: true });
+	const parentActiveTools = ["read"];
+	if (bash) parentActiveTools.push("bash");
+	if (powershell) parentActiveTools.push("powershell");
 	writeFileSync(shellPolicySnapshotPath(agentDir, ownerKey), JSON.stringify({
 		version: 2,
 		platform: "win32",
-		shell: { bash: false, powershell },
-		parentActiveTools: powershell ? ["read", "powershell"] : ["read"],
+		shell: { bash, powershell },
+		parentActiveTools,
 	}), "utf8");
 }
 
@@ -104,6 +107,29 @@ test("PowerShell-only Windows worker receives a PowerShell-backed bash compatibi
 			ownerKey,
 		}), false);
 		assert.equal(registered.length, 1);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("real Bash remains authoritative when the parent exposes both Bash and PowerShell", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pideck-child-real-bash-"));
+	try {
+		const ownerKey = "parent-test";
+		publishPolicy(agentDir, ownerKey, true, true);
+		const { pi, tools, registered } = createChildPi([
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", description: "Execute bash commands", sourceInfo: { source: "builtin" } },
+		], ["read", "bash"]);
+
+		assert.equal(ensureChildPowerShellTool(pi, agentDir, {
+			platform: "win32",
+			systemPrompt: '<active_agent name="worker"/>\n\nYou are worker.',
+			cwd: process.cwd(),
+			ownerKey,
+		}), false);
+		assert.equal(registered.length, 0);
+		assert.equal(isChildPowerShellBridge(tools.find((tool) => tool.name === "bash")), false);
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 	}
