@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveEffectiveShellPolicy } from "../childShellPolicy.ts";
+import { resolveChildShellSlots, resolveEffectiveShellPolicy } from "../childShellPolicy.ts";
 
-test("active pwsh adapter publishes PowerShell capability to native children", () => {
+test("active pwsh adapter publishes PowerShell capability without injecting the adapter into children", () => {
 	const dir = mkdtempSync(join(tmpdir(), "pideck-pwsh-policy-"));
 	try {
 		const adapterPath = join(dir, "pi-pwsh-adapter.js");
@@ -27,7 +27,16 @@ test("active pwsh adapter publishes PowerShell capability to native children", (
 
 		assert.equal(policy.bash, false);
 		assert.equal(policy.powershell, true);
-		assert.equal(policy.powershellProviderPath, adapterPath);
+		assert.equal(policy.powershellProviderPath, undefined, "adapter must not occupy the shared child bash slot");
+
+		const slots = resolveChildShellSlots({
+			platform: "win32",
+			policy,
+			declaredTools: ["read", "bash"],
+		});
+		assert.equal(slots.available, true);
+		assert.equal(slots.powershell, true);
+		assert.deepEqual(slots.providerPaths, []);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
