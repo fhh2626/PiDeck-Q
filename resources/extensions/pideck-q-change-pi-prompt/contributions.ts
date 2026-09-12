@@ -9,6 +9,9 @@ export interface ToolSnapshot {
 	sourceInfo?: { source?: string; path?: string };
 }
 
+/** Marker carried by the child-only compatibility slot whose tool name is `bash` but backend is PowerShell. */
+export const CHILD_POWERSHELL_BRIDGE_MARKER = '[change-pi-prompt:child-powershell-bridge]';
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -23,6 +26,14 @@ export function fromPackage(tool: ToolSnapshot, packageName: string): boolean {
 
 export function isPwsh(tool: ToolSnapshot): boolean {
 	return tool.name === 'bash' && fromPackage(tool, '@99percentpeople/pi-pwsh-adapter');
+}
+
+/** change-pi-prompt's child-only `bash` compatibility slot backed by Pi's PowerShell tool. */
+export function isChildPowerShellBridge(tool: ToolSnapshot | undefined): boolean {
+	return !!tool
+		&& tool.name === 'bash'
+		&& typeof tool.description === 'string'
+		&& tool.description.includes(CHILD_POWERSHELL_BRIDGE_MARKER);
 }
 
 export function isBundledSubagents(tool: ToolSnapshot): boolean {
