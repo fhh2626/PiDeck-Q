@@ -25,6 +25,7 @@ import {
 import {
 	CHILD_POWERSHELL_BRIDGE_MARKER,
 	isChildPowerShellBridge,
+	isPwsh,
 	type ToolSnapshot,
 } from './contributions.ts';
 import {
@@ -72,6 +73,10 @@ export function ensureChildPowerShellTool(
 
 	const tools = snapshotTools(pi);
 	if (tools.some(isChildPowerShellBridge)) return false;
+	// An already-loaded pwsh adapter occupies the allowed `bash` slot with a PowerShell backend.
+	// The child canonicalizer understands that provenance, so registering a competing same-name
+	// bridge would only make behavior depend on extension load order.
+	if (tools.some(isPwsh)) return false;
 	// A real `powershell` tool already present is preferable; the normal canonicalizer can activate it.
 	if (tools.some(tool => tool.name === 'powershell')) return false;
 
