@@ -331,6 +331,7 @@ function reconcileChildEnvironmentsLocked(options: {
 	}
 
 	let settingsDirty = false;
+	let migrationSettingsDirty = false;
 	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0) {
 		const subagents = isRecord(settingsObj.subagents) ? settingsObj.subagents : undefined;
 		const overrides = subagents && isRecord(subagents.agentOverrides) ? subagents.agentOverrides : undefined;
@@ -342,10 +343,10 @@ function reconcileChildEnvironmentsLocked(options: {
 				if (filtered.length !== existing.length) {
 					override.subagentOnlyExtensions = filtered;
 					settingsDirty = true;
+					migrationSettingsDirty = true;
 				}
 			}
 		}
-		for (const path of obsoleteManagedPwshAdapterPaths) nextManagedPaths.delete(path);
 	}
 
 	if (catalog) {
@@ -412,9 +413,18 @@ function reconcileChildEnvironmentsLocked(options: {
 		}
 	}
 
+	let settingsWriteSucceeded = !settingsDirty;
 	if (canWriteSettings && settingsDirty) {
-		try { writeJsonAtomic(settingsPath, settingsObj); } catch {}
+		try {
+			writeJsonAtomic(settingsPath, settingsObj);
+			settingsWriteSucceeded = true;
+		} catch {}
 	}
+	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0
+		&& (!migrationSettingsDirty || settingsWriteSucceeded)) {
+		for (const path of obsoleteManagedPwshAdapterPaths) nextManagedPaths.delete(path);
+	}
+
 	try {
 		const stateData: ManagedStateFile = { version: 1, managedPaths: [...nextManagedPaths] };
 		writeJsonAtomic(statePath, stateData);
