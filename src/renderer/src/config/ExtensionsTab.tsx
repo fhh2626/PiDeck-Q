@@ -146,6 +146,12 @@ const BUILT_IN_DISPLAY_NAME: Record<string, string> = {
 	"pideck-q-websearch": "PiDeck-Q-WebSearch",
 	"pideck-q-better-compaction.ts": "PiDeck-Q-Better-Compaction",
 	"pideck-q-better-compaction": "PiDeck-Q-Better-Compaction",
+	"pideck-q-change-pi-prompt.ts": "PiDeck-Q-Change-Pi-Prompt",
+	"pideck-q-change-pi-prompt": "PiDeck-Q-Change-Pi-Prompt",
+	"pideck-q-webfetch.ts": "PiDeck-Q-WebFetch",
+	"pideck-q-webfetch": "PiDeck-Q-WebFetch",
+	"pideck-q-subagents.ts": "PiDeck-Q-Subagents",
+	"pideck-q-subagents": "PiDeck-Q-Subagents",
 };
 
 /** 从扩展来源提取简短描述名 */

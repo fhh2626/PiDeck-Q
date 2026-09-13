@@ -35,13 +35,18 @@ const sourceBadge = readFileSync(
 );
 
 test("sidebar child rows use shared official hover/active classes", () => {
-  assert.match(sessionTree, /hover:border-border-subtle hover:bg-muted\/60 hover:text-foreground/);
-  assert.match(sessionTree, /active border-border-strong bg-accent\/20 text-foreground/);
+  // Density Contract: hover = bg only; active = bg + text（不要强边框 / shadow）
+  assert.match(sessionTree, /hover:bg-muted\/60 hover:text-foreground/);
+  assert.match(sessionTree, /active bg-accent\/20 text-foreground/);
   assert.match(sessionTree, /sessionRowClass/);
   assert.match(projectTree, /treeRowClass/);
-  assert.match(projectTree, /flex min-h-8 w-full/);
+  assert.match(projectTree, /flex min-h-7 w-full/);
   assert.match(projectTree, /project-fold grid size-6/);
-  assert.match(projectTree, /hover:border-border-subtle hover:bg-muted\/60 hover:text-foreground/);
+  assert.match(projectTree, /hover:bg-muted\/60 hover:text-foreground/);
+  assert.doesNotMatch(sessionTree, /shadow-sm/, "sidebar rows should not use shadow-sm");
+  assert.doesNotMatch(projectTree, /shadow-sm/, "project rows should not use shadow-sm");
+  assert.doesNotMatch(sessionTree, /active border-border-strong/, "active rows should not use a strong border");
+  assert.doesNotMatch(projectTree, /active border-border-strong/, "active project rows should not use a strong border");
 });
 
 test("sidebar workspace wrapper stays transparent", () => {
@@ -103,9 +108,9 @@ test("sidebar omits the redundant projects heading and tabs shrink to their titl
   assert.doesNotMatch(tabBar, /pinned \? "w-20"/);
   assert.match(tabBar, /session-tabs-scroll (?:relative )?flex min-w-0 flex-1/);
   assert.match(tabBar, /session-tabs-actions flex shrink-0/);
-  assert.match(sidebarContent, /sidebar-body flex min-h-0 flex-1 flex-col gap-2 px-2 pt-1 pb-1/);
-  assert.match(sessionTree, /min-h-8 w-full/);
-  assert.match(sessionTree, /history-session-row mx-0 min-h-8 pl-2 pr-2 py-0/);
+  assert.match(sidebarContent, /sidebar-body flex min-h-0 flex-1 flex-col gap-1 px-2 pt-1 pb-1/);
+  assert.match(sessionTree, /min-h-7 w-full/);
+  assert.match(sessionTree, /history-session-row mx-0 min-h-7 pl-2 pr-2 py-0/);
   assert.match(sessionTree, /历史会话不是运行中的 Agent/);
   assert.match(sessionTree, /flex flex-col gap-0/);
   assert.match(styles, /\.chat-list-pane\.v3-braun \.sidebar-body \.session-row[\s\S]*?margin: 0;/);

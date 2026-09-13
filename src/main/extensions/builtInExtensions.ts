@@ -15,6 +15,9 @@ export const BUILT_IN_EXTENSIONS = [
 	"pi-deck-vision.ts",
 	"pideck-q-websearch.ts",
 	"pideck-q-better-compaction.ts",
+	"pideck-q-change-pi-prompt.ts",
+	"pideck-q-webfetch.ts",
+	"pideck-q-subagents.ts",
 ] as const;
 
 export type BuiltInExtensionName = (typeof BUILT_IN_EXTENSIONS)[number];
@@ -26,7 +29,7 @@ export const DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = [
 ] as const satisfies readonly BuiltInExtensionName[];
 
 /** 每次新增默认关闭的内置扩展时递增，用于老配置的一次性迁移。 */
-export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = 2;
+export const BUILT_IN_EXTENSION_DEFAULTS_VERSION = 4;
 
 /** 每个版本只登记当次新增的默认关闭项，避免升级时重新关闭用户已恢复的旧扩展。 */
 const DEFAULT_DISABLED_MIGRATIONS: ReadonlyArray<{
@@ -35,6 +38,8 @@ const DEFAULT_DISABLED_MIGRATIONS: ReadonlyArray<{
 }> = [
 	{ version: 1, extensions: ["pideck-q-better-compaction.ts"] },
 	{ version: 2, extensions: ["pideck-q-websearch.ts"] },
+	{ version: 3, extensions: [] },
+	{ version: 4, extensions: [] },
 ];
 
 /** 文件更名只迁移持久化身份，不改变用户此前的启用/禁用选择。 */
@@ -147,7 +152,7 @@ export function listActiveBuiltInExtensionPaths(
 export function appendBuiltInExtensionArgs(
 	args: readonly string[],
 	extensionPaths: readonly string[],
-	options: { noExtensions?: boolean } = {},
+	options: { noExtensions?: boolean; noSkills?: boolean } = {},
 ): string[] {
 	if (options.noExtensions || extensionPaths.length === 0) return [...args];
 	const next = [...args];
@@ -155,6 +160,19 @@ export function appendBuiltInExtensionArgs(
 		const trimmed = extensionPath.trim();
 		if (!trimmed) continue;
 		next.push("--extension", trimmed);
+
+		// 如果是 subagents 扩展，顺带挂载它自带的 package skills 和 prompt templates
+		if (basename(trimmed) === "pideck-q-subagents.ts") {
+			const pkgDir = join(trimmed, "..", "pideck-q-subagents");
+			const skillsDir = join(pkgDir, "skills");
+			const promptsDir = join(pkgDir, "prompts");
+			if (!options.noSkills && existsSync(skillsDir)) {
+				next.push("--skill", skillsDir);
+			}
+			if (existsSync(promptsDir)) {
+				next.push("--prompt-template", promptsDir);
+			}
+		}
 	}
 	return next;
 }

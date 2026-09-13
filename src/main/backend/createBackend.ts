@@ -50,12 +50,12 @@ import { AgentManager } from "../pi/AgentManager";
 import { fetchModelList, refreshModelList } from "../pi/modelListCache";
 import { ModelSpecsStore } from "../pi/modelSpecsStore";
 import { VisionBridgeConfigManager } from "../settings/visionBridgeConfig";
-import { createAppUpdateService } from "../update/AppUpdateService";
 import { WebServiceManager } from "../web/WebServiceManager";
 import type { Backend, CreateBackendOptions } from "./Backend";
 import { createSessionRuntimeBridge } from "./sessionRuntimeBridge";
 import { registerBackendRpc } from "./registerBackendRpc";
 import { startBackendStartupTasks } from "./backendStartupTasks";
+import { createStartupBarrier } from "../utils/StartupBarrier";
 import { createTrashPath } from "../fs/trash";
 
 export async function createBackend(options: CreateBackendOptions): Promise<Backend> {
@@ -175,6 +175,10 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 
 	let getSessionIdForAgent: ((agentId: string) => string | undefined) | undefined;
 
+	// 启动屏障：后台启动任务把“必须早于首次 pi spawn”的工作登记进来，AgentManager 在
+	// spawn 前 await。两者共用同一个实例，因此必须在 new AgentManager 之前创建。
+	const startupBarrier = createStartupBarrier();
+
 	const agentManager = new AgentManager(
 		(id) => projectStore.get(id),
 		(channel, ...args) => host.sendToRenderer(channel, ...args),
@@ -202,6 +206,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			notifications: platform.notifications,
 			focusSessionFromNotification: (s) => host.focusSessionFromNotification(s),
 			hasLiveWindow: () => host.hasLiveWindow(),
+			// 内置扩展入口迁移必须在首次 spawn 前完成，否则旧全局版与 -e 内置版双加载。
+			startupBarrier,
 		},
 	);
 
@@ -490,7 +496,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		version: appInfo.version,
 		platform: process.platform,
 		arch: process.arch,
-		installationType: settingsStore.get().installationType,
 	});
 
 	await applyDesktopProxy(settingsStore.get(), platform.proxy);
@@ -505,18 +510,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 	);
 
 	const visionBridge = new VisionBridgeConfigManager(configManager);
-
-	const appUpdateService = createAppUpdateService({
-		logger: appLogger,
-		translate: mainCopy,
-		emitProgress: (progress) => {
-			host.sendToRenderer(ipcChannels.appUpdateProgress, progress);
-		},
-		platformApp: platform.application,
-		platformPaths: platform.paths,
-		platformShell: platform.shell,
-		platformDownloads: platform.downloads,
-	});
 
 	registerBackendRpc({
 		router,
@@ -554,7 +547,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			usageStatsService,
 			modelSpecsStore,
 			visionBridge,
-			appUpdateService,
 		},
 	});
 
@@ -573,6 +565,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			startBackendStartupTasks({
 				paths,
 				host,
+				appVersion: appInfo.version,
+				startupBarrier,
 				services: {
 					projectStore,
 					sessionScanner,

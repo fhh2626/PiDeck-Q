@@ -15,11 +15,10 @@
  *
  * 动作语义（与主进程 policy.ts 保持一致）：
  * - 工具动作：level.toolActions[tool] ?? level.defaultAction
- * - 危险 bash 命令（命中 denyBashPatterns）：
- *   toolActions.bash === "allow" → 放行；defaultAction === "deny" → 直接拒绝；
- *   其余 → 弹窗询问（先确认再放行）。
+ * - shell 工具按真实执行后端选择 Bash / PowerShell 策略；child 兼容槽即使公开名为 bash，
+ *   只要真实后端是 PowerShell，就使用 powershell action 与 denyPowerShellPatterns。
  * - 文件访问：denyDirs 黑名单 > 敏感文件保护 > pathPolicy 目录边界，命中即拒绝。
- * - 只管控内置工具（read/write/edit/bash/grep/find/ls）+ ask_question，
+ * - 只管控受支持的工具名（read/write/edit/bash/powershell/grep/find/ls/ask_question），
  *   其它自定义工具（web_search/todo 等）不受影响，避免破坏用户其它扩展。
  */
 
@@ -29,12 +28,13 @@ import type {
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 
 // ── 快照 schema（与 shared/types/security.ts 对齐；扩展侧自包含副本） ──
 
 type SecurityAction = "allow" | "ask" | "deny";
 type SecurityPathPolicy = "unrestricted" | "workspace" | "custom";
+type ShellTool = "bash" | "powershell";
 
 type SecurityLevelConfig = {
 	id: string;
@@ -43,6 +43,7 @@ type SecurityLevelConfig = {
 	builtin?: boolean;
 	toolActions: Partial<Record<string, SecurityAction>>;
 	denyBashPatterns: string[];
+	denyPowerShellPatterns?: string[];
 	pathPolicy: SecurityPathPolicy;
 	customAllowDirs: string[];
 	denyDirs: string[];
@@ -61,17 +62,34 @@ type SecurityPolicySnapshot = {
 // ── 常量 ──
 
 const SCHEMA_VERSION = 1;
-/** 受管控的内置工具（其它自定义工具一律放行） */
+const PWSH_ADAPTER_PACKAGE = "@99percentpeople/pi-pwsh-adapter";
+/** 受管控的工具名（其它自定义工具一律放行） */
 const MANAGED_TOOLS = new Set([
 	"read",
 	"write",
 	"edit",
 	"bash",
+	"powershell",
 	"grep",
 	"find",
 	"ls",
 	"ask_question",
 ]);
+/** 默认危险 PowerShell 命令模式（Windows cmdlet 与别名） */
+const DEFAULT_POWERSHELL_DENY_PATTERNS = [
+	"\\b(Remove-Item|rm|del|erase|rmdir)\\b",
+	"\\b(Set-Content|Add-Content|Clear-Content|Out-File)\\b",
+	"\\b(New-Item|mkdir|ni)\\b",
+	"\\b(Move-Item|mv|Copy-Item|cp|Rename-Item)\\b",
+	"\\b(Set-Item|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|Set-Acl)\\b",
+	"\\b(Invoke-Expression|Start-Process|Stop-Process)\\b",
+	"(^|[^<])>(?!>)",
+	">>",
+	"\\bgit\\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|branch\\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)\\b",
+	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
+	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
+	"\\byarn\\s+(add|install|remove|publish)\\b",
+];
 /** 敏感路径模式（与主进程 DEFAULT_SENSITIVE_PATH_PATTERNS 对齐） */
 const SENSITIVE_PATH_PATTERNS = [
 	"(^|[\\\\/])\\.env([.$]|$)",
@@ -97,20 +115,20 @@ const RELOAD_THROTTLE_MS = 2000;
  * - mtime 变化 → 立即重读（会话等级切换 ≤2s 生效）；
  * - 文件缺失 / schema 不匹配 / 解析失败 → 返回 null（调用方按 fail-safe 处理）。
  */
-function loadSnapshot(): SecurityPolicySnapshot | null {
+function loadSnapshot(targetPath = snapshotPath): SecurityPolicySnapshot | null {
 	const now = Date.now();
 	try {
-		if (!snapshotPath || !existsSync(snapshotPath)) {
+		if (!targetPath || !existsSync(targetPath)) {
 			snapshot = null;
 			return null;
 		}
-		const mtime = statSync(snapshotPath).mtimeMs;
+		const mtime = statSync(targetPath).mtimeMs;
 		if (snapshot && mtime === lastLoadedMtime && now - lastLoadedAt < RELOAD_THROTTLE_MS) {
 			return snapshot;
 		}
 		lastLoadedAt = now;
 		lastLoadedMtime = mtime;
-		const raw = readFileSync(snapshotPath, "utf8");
+		const raw = readFileSync(targetPath, "utf8");
 		const parsed = JSON.parse(raw) as SecurityPolicySnapshot;
 		if (parsed.schemaVersion !== SCHEMA_VERSION) {
 			// schema 升级：旧快照不再可信，fail-safe 放行（配置语义由主进程迁移保证）
@@ -179,7 +197,7 @@ function evaluatePathAction(
 	return "deny";
 }
 
-/** bash 危险命令求值：命中返回 true（动作组合见 filePolicy 注释 / 下方 bashAction） */
+/** bash 危险命令求值：命中返回 true（动作组合见 filePolicy 注释 / 下方 shellAction） */
 function matchesBashDeny(level: SecurityLevelConfig, command: string): boolean {
 	return level.denyBashPatterns.some((pattern) => {
 		try {
@@ -190,15 +208,52 @@ function matchesBashDeny(level: SecurityLevelConfig, command: string): boolean {
 	});
 }
 
-/** 计算 bash 命令最终动作 */
-function bashAction(level: SecurityLevelConfig, command: string): SecurityAction {
-	const dangerous = matchesBashDeny(level, command);
-	const toolAction = level.toolActions["bash"] ?? level.defaultAction;
+/** powershell 危险命令求值：命中返回 true */
+function matchesPowerShellDeny(level: SecurityLevelConfig, command: string): boolean {
+	const patterns = level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS;
+	return patterns.some((pattern) => {
+		try {
+			return new RegExp(pattern, "i").test(command);
+		} catch {
+			return false;
+		}
+	});
+}
+
+/** 计算 shell (bash / powershell) 命令最终动作 */
+function shellAction(
+	level: SecurityLevelConfig,
+	tool: ShellTool,
+	command: string,
+): SecurityAction {
+	const dangerous = tool === "powershell"
+		? matchesPowerShellDeny(level, command)
+		: matchesBashDeny(level, command);
+	const toolAction = level.toolActions[tool] ?? level.defaultAction;
 	if (!dangerous) return toolAction;
-	// 危险命令：显式放行 bash → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
+	// 危险命令：显式放行该 shell → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
 	if (toolAction === "allow") return "allow";
 	if (level.defaultAction === "deny") return "deny";
 	return "ask";
+}
+
+/**
+ * Resolve the shell policy by execution backend rather than the public tool name.
+ * pi-pwsh-adapter occupies the public `bash` name while executing PowerShell.
+ */
+export function resolveSecurityShellTool(pi: ExtensionAPI, tool: ShellTool): ShellTool {
+	if (tool !== "bash" || typeof pi.getAllTools !== "function") return tool;
+	const bash = pi.getAllTools().find((candidate) => candidate.name === "bash");
+	if (!bash) return tool;
+	const source = bash.sourceInfo?.source ?? "";
+	if (source === `npm:${PWSH_ADAPTER_PACKAGE}` || source.startsWith(`npm:${PWSH_ADAPTER_PACKAGE}@`)) {
+		return "powershell";
+	}
+	const providerPath = (bash.sourceInfo?.path ?? "").replace(/\\/g, "/");
+	if (providerPath.includes(`/node_modules/${PWSH_ADAPTER_PACKAGE}/`)) {
+		return "powershell";
+	}
+	return tool;
 }
 
 /** 计算文件工具最终动作：路径边界优先，其次工具动作 */
@@ -222,7 +277,9 @@ function extractFilePath(tool: string, input: Record<string, unknown>): string |
 			return typeof input.path === "string" ? input.path : undefined;
 		case "write":
 		case "edit":
-			return typeof input.filePath === "string" ? input.filePath : undefined;
+			if (typeof input.path === "string") return input.path;
+			if (typeof input.filePath === "string") return input.filePath;
+			return undefined;
 		case "grep":
 		case "find":
 		case "ls":
@@ -276,8 +333,8 @@ function buildSecurityHint(level: SecurityLevelConfig): string | undefined {
 	if (level.pathPolicy === "workspace" || level.pathPolicy === "custom") {
 		lines.push("文件读写仅限工作目录" + (level.pathPolicy === "custom" ? "及显式允许的目录" : "") + "，工作目录之外的文件访问会被拒绝。");
 	}
-	if (level.denyBashPatterns.length > 0) {
-		lines.push("部分危险命令（如 rm -rf、chmod 777、sudo、git push 等）会被拦截或要求用户确认。");
+	if (level.denyBashPatterns.length > 0 || (level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS).length > 0) {
+		lines.push("部分危险 shell 命令会被拦截或要求用户确认。");
 	}
 	if (level.protectSensitivePaths) {
 		lines.push(".env / .git / 密钥文件等敏感路径受保护，读写会被拒绝。");
@@ -288,18 +345,23 @@ function buildSecurityHint(level: SecurityLevelConfig): string | undefined {
 // ── 入口 ──
 
 export default async function securityGateExtension(pi: ExtensionAPI) {
-	snapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? "";
-	sessionId = process.env.PIDECK_SESSION_ID ?? "";
+	// Bundled child sessions inherit the parent PiDeck security policy.
+	// Security must be enforced on child tools themselves; gating only the
+	// parent `subagent` call would not protect edit/write/bash inside the child.
+	const currentSnapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? snapshotPath;
+	const currentSessionId = process.env.PIDECK_SESSION_ID ?? sessionId;
+	snapshotPath = currentSnapshotPath;
+	sessionId = currentSessionId;
 
-	if (!snapshotPath) {
+	if (!currentSnapshotPath) {
 		// 桌面端未注入配置路径（旧版本 PiDeck / 独立 CLI 运行）：完全放行
 		return;
 	}
 
 	pi.on("before_agent_start", (_event, ctx) => {
-		const config = loadSnapshot();
+		const config = loadSnapshot(currentSnapshotPath);
 		if (!config?.enabled) return undefined;
-		const levelId = config.sessionLevels[sessionId] ?? config.defaultLevelId;
+		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level) return undefined;
 		const hint = buildSecurityHint(level);
@@ -309,23 +371,25 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
 		// 热更新：快照 mtime 变化即重读（≤2s），会话等级切换无需重启
-		const config = loadSnapshot();
+		const config = loadSnapshot(currentSnapshotPath);
 		if (!config?.enabled) return undefined;
 
 		const tool = event.toolName;
-		// 只管控内置工具；自定义工具（web_search/todo/vision 等）放行，避免破坏用户扩展
+		// 只管控受支持的工具名；其它自定义工具（web_search/todo/vision 等）放行
 		if (!MANAGED_TOOLS.has(tool)) return undefined;
 
-		const levelId = config.sessionLevels[sessionId] ?? config.defaultLevelId;
+		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level || level.id === "off") return undefined;
 
 		const input = event.input as Record<string, unknown>;
 		let action: SecurityAction;
+		let semanticShellTool: ShellTool | undefined;
 
-		if (tool === "bash") {
+		if (tool === "bash" || tool === "powershell") {
 			const command = typeof input.command === "string" ? input.command : "";
-			action = bashAction(level, command);
+			semanticShellTool = resolveSecurityShellTool(pi, tool);
+			action = shellAction(level, semanticShellTool, command);
 		} else {
 			const filePath = extractFilePath(tool, input);
 			action = fileToolAction(
@@ -338,34 +402,33 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 		if (action === "allow") return undefined;
 
+		const target = (tool === "bash" || tool === "powershell")
+			? (typeof input.command === "string" ? input.command.slice(0, 200) : "")
+			: (typeof input.path === "string" || typeof input.filePath === "string"
+				? String(input.path ?? input.filePath)
+				: "");
+		const displayTool = tool === "bash" && semanticShellTool === "powershell"
+			? "powershell (bash compatibility slot)"
+			: tool;
+
 		if (action === "deny") {
-			const target = tool === "bash"
-				? (typeof input.command === "string" ? input.command.slice(0, 200) : "")
-				: (typeof input.filePath === "string" || typeof input.path === "string"
-					? String(input.filePath ?? input.path)
-					: "");
 			return {
 				block: true,
-				reason: `[安全管理·${level.name}] ${tool} 调用被拒绝${target ? `: ${target}` : ""}`,
+				reason: `[安全管理·${level.name}] ${displayTool} 调用被拒绝${target ? `: ${target}` : ""}`,
 			};
 		}
 
 		// action === "ask"：弹窗确认
-		const target = tool === "bash"
-			? (typeof input.command === "string" ? input.command : "")
-			: (typeof input.filePath === "string" || typeof input.path === "string"
-				? String(input.filePath ?? input.path)
-				: "");
 		const allowed = await confirmAction(
 			ctx,
-			`PiDeck 安全确认：允许 ${tool} 调用吗？`,
+			`PiDeck 安全确认：允许 ${displayTool} 调用吗？`,
 			target.slice(0, 500),
 			level.name,
 		);
 		if (allowed) return undefined;
 		return {
 			block: true,
-			reason: `[安全管理·${level.name}] ${tool} 调用已被用户拒绝${target ? `: ${target}` : ""}`,
+			reason: `[安全管理·${level.name}] ${displayTool} 调用已被用户拒绝${target ? `: ${target}` : ""}`,
 		};
 	});
 }

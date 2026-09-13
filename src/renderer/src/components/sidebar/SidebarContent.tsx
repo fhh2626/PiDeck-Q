@@ -153,9 +153,9 @@ export function SidebarContent(props: SidebarContentProps) {
     >
       {/* 品牌区提到 body 外：贴侧栏顶边，不被 sidebar-body 的 px/py 顶开（logo 怼左上）。 */}
       {props.chrome}
-      <div className="sidebar-body flex min-h-0 flex-1 flex-col gap-2 px-2 pt-1 pb-1">
+      <div className="sidebar-body flex min-h-0 flex-1 flex-col gap-1 px-2 pt-1 pb-1">
         {/* 搜索只过滤导航和当前项目内容；会话加载仍由 controller/App 的懒加载策略负责。 */}
-        <div className="search-row grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[10px] bg-muted/25 p-1">
+        <div className="search-row grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 rounded-[10px] bg-muted/25 p-1">
           <div className="search-box relative min-w-0">
             <Search
               size={12}

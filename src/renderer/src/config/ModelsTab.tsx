@@ -360,7 +360,7 @@ export function ModelsTab(props: {
 
 			{/* Provider 配置指南 */}
 			{showGuide && (
-				<div className="mb-4 rounded-md border border-border-subtle bg-bg-subtle p-4">
+				<div className="mb-3 rounded-md border border-border-subtle bg-bg-subtle p-4">
 					<div className="mb-2.5 flex items-center justify-between">
 						<strong className="text-sm text-text-primary">{t("config.providerGuideTitle")}</strong>
 						<Button variant="ghost" size="icon-sm" className="size-7" onClick={() => setShowGuide(false)}><X size={14} /></Button>
@@ -418,7 +418,7 @@ export function ModelsTab(props: {
 							<li className="mb-1.5 leading-relaxed">{t("config.providerGuideTip4")}</li>
 						</ul>
 
-						<p className="mt-3 border-t border-border-subtle pt-2.5 text-text-tertiary">
+						<p className="mt-3 border-t border-border-subtle pt-2 text-text-tertiary">
 							{t("config.providerGuideNote")}{" "}
 							<a
 								href="https://pi.dev/docs/latest/models"
@@ -484,7 +484,7 @@ export function ModelsTab(props: {
 							className={`config-provider-card overflow-hidden rounded-lg border border-border-subtle bg-bg-panel transition-[border-color,box-shadow,background-color] duration-150${isExpanded ? " border-[color-mix(in_srgb,var(--color-accent)_32%,var(--color-border-subtle))] shadow-[var(--shadow-border)] overflow-visible" : ""}`}
 						>
 							<div
-								className="flex cursor-pointer items-center justify-between px-3.5 py-2 transition-colors duration-150 hover:bg-bg-hover"
+								className="flex cursor-pointer items-center justify-between px-3 py-2 transition-colors duration-150 hover:bg-bg-hover"
 								onClick={() => {
 									// 重命名模式下点击不折叠展开
 									if (props.renamingProvider === name) return;
@@ -597,7 +597,7 @@ export function ModelsTab(props: {
 
 							{isExpanded && (
 								<div className="config-provider-body border-t border-border-subtle bg-bg-muted pt-3">
-									<div className="config-provider-form mx-4 my-3.5 grid gap-2.5 rounded-lg border border-border-subtle bg-bg-panel p-3.5">
+									<div className="config-provider-form mx-3 my-2.5 grid gap-2.5 rounded-lg border border-border-subtle bg-bg-panel p-3">
 										<div className="grid grid-cols-[90px_1fr] items-center gap-2.5">
 											<Label className="pl-0.5 text-left text-xs font-medium text-text-secondary">{t("config.field.baseUrl")}</Label>
 											<div className="config-base-url-field">

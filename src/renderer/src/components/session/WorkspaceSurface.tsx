@@ -7,7 +7,7 @@ import {
 	useState,
 } from "react";
 import { ChevronDown, ChevronRight, X } from "lucide-react";
-import { normalizeSessionPathForCompare } from "../../agentListDisplay";
+import { isTopLevelListSession, normalizeSessionPathForCompare } from "../../agentListDisplay";
 import { SessionSourceBadge } from "./SessionSourceBadge";
 import { Button } from "../ui-shadcn/button";
 import { ConfirmDialog } from "../ui-shadcn/ConfirmDialog";
@@ -238,6 +238,7 @@ export function SessionsPanel(props: {
 	const parentToChildren = useMemo(() => {
 		const map = new Map<string, SessionSummary[]>();
 		for (const s of props.sessions) {
+			if (!s.parentSessionPath) continue;
 			const parentKey = normalizeSessionPathForCompare(s.parentSessionPath);
 			if (parentKey) {
 				const list = map.get(parentKey) ?? [];
@@ -247,9 +248,9 @@ export function SessionsPanel(props: {
 		}
 		return map;
 	}, [props.sessions]);
-	// 仅显示顶层会话（非子会话）的计数
+	// 仅显示顶层会话；内部 worker 即使暂时没有 parentSessionPath 也不得升为顶层。
 	const parentSessions = useMemo(() =>
-		props.sessions.filter(s => !s.parentSessionPath),
+		props.sessions.filter((s) => isTopLevelListSession(s)),
 		[props.sessions],
 	);
 	const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set());

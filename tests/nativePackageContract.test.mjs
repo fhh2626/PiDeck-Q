@@ -35,16 +35,15 @@ test("native package exposes a complete reproducible build chain", () => {
 	}
 });
 
-test("updates and package metadata use the canonical PiDeck-Q repository", () => {
+test("releases link and package metadata use the canonical PiDeck-Q repository", () => {
 	const identity = readFileSync("src/shared/appIdentity.ts", "utf8");
-	const update = readFileSync("src/main/update/AppUpdateService.ts", "utf8");
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 	const windowsWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+	// 0.2.1 移除内置更新系统：Releases 不再驱动下载，退化为普通外链。
+	// 守门：仓库身份统一走 appIdentity，别处（package.json / CI）不得另写一份。
 	assert.match(identity, /fhh2626\/PiDeck-Q/);
-	assert.match(update, /APP_LATEST_RELEASE_API/);
-	assert.match(update, /knownAssets/);
-	assert.match(update, /portableCandidates/);
-	assert.doesNotMatch(update, /PORTABLE_EXECUTABLE_DIR/);
+	assert.match(identity, /APP_RELEASES_URL/);
+	assert.match(identity, /APP_REPOSITORY_URL\}\/releases`/);
 	assert.equal(pkg.repository.url, "git+https://github.com/fhh2626/PiDeck-Q.git");
 	assert.match(windowsWorkflow, /repository: fhh2626\/PiDeck-Q/);
 	assert.match(windowsWorkflow, /Compress-Archive/);

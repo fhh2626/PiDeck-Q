@@ -20,6 +20,7 @@ export type SecurityToolName =
 	| "write"
 	| "edit"
 	| "bash"
+	| "powershell"
 	| "grep"
 	| "find"
 	| "ls"
@@ -30,6 +31,7 @@ export const SECURITY_TOOLS: readonly SecurityToolName[] = [
 	"write",
 	"edit",
 	"bash",
+	"powershell",
 	"grep",
 	"find",
 	"ls",
@@ -64,6 +66,10 @@ export type SecurityLevelConfig = {
 	 * 为空数组表示该等级不拦截任何 bash 命令。
 	 */
 	denyBashPatterns: string[];
+	/**
+	 * powershell 危险命令正则（可选，不传时扩展内部使用默认规则）。
+	 */
+	denyPowerShellPatterns?: string[];
 	/** 文件访问边界：workspace=仅工作目录；custom=工作目录 + customAllowDirs；unrestricted=不限制 */
 	pathPolicy: SecurityPathPolicy;
 	/** pathPolicy=custom 时的附加允许目录（绝对路径；相对路径视为相对工作目录） */
@@ -88,60 +94,6 @@ export type SecurityConfig = {
 	sessionOverrides: Record<string, string>;
 };
 
-/** 内置默认等级（工厂函数：每次返回全新副本，避免共享引用被 UI 修改） */
-export function createDefaultSecurityLevels(): SecurityLevelConfig[] {
-	return [
-		{
-			id: "off",
-			name: "关闭",
-			description: "完全放行所有工具调用，等同未启用安全管理。",
-			builtin: true,
-			toolActions: {},
-			denyBashPatterns: [],
-			pathPolicy: "unrestricted",
-			customAllowDirs: [],
-			denyDirs: [],
-			protectSensitivePaths: false,
-			defaultAction: "allow",
-		},
-		{
-			id: "standard",
-			name: "标准",
-			description: "危险命令先确认，敏感文件受保护，目录不限制。",
-			builtin: true,
-			toolActions: { bash: "ask" },
-			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
-			pathPolicy: "unrestricted",
-			customAllowDirs: [],
-			denyDirs: [],
-			protectSensitivePaths: true,
-			defaultAction: "allow",
-		},
-		{
-			id: "strict",
-			name: "严格",
-			description: "只读为主，写操作逐一确认；危险命令直接拒绝；文件访问仅限工作目录。",
-			builtin: true,
-			toolActions: {
-				read: "allow",
-				grep: "allow",
-				find: "allow",
-				ls: "allow",
-				write: "ask",
-				edit: "ask",
-				bash: "ask",
-				ask_question: "allow",
-			},
-			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
-			pathPolicy: "workspace",
-			customAllowDirs: [],
-			denyDirs: [],
-			protectSensitivePaths: true,
-			defaultAction: "deny",
-		},
-	];
-}
-
 /** 默认危险 bash 命令模式（正则源字符串；与 plan-mode 的 DESTRUCTIVE_PATTERNS 同源扩展） */
 export const DEFAULT_DENY_BASH_PATTERNS: string[] = [
 	"\\brm\\s+-[a-z]*[rf]",
@@ -163,6 +115,80 @@ export const DEFAULT_DENY_BASH_PATTERNS: string[] = [
 	"\\bkill\\b",
 	"(vim|nano|emacs|code|subl)\\b",
 ];
+
+/** 默认危险 PowerShell 命令模式（针对 Windows cmdlet 与别名） */
+export const DEFAULT_DENY_POWERSHELL_PATTERNS: string[] = [
+	"\\b(Remove-Item|rm|del|erase|rmdir)\\b",
+	"\\b(Set-Content|Add-Content|Clear-Content|Out-File)\\b",
+	"\\b(New-Item|mkdir|ni)\\b",
+	"\\b(Move-Item|mv|Copy-Item|cp|Rename-Item)\\b",
+	"\\b(Set-Item|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|Set-Acl)\\b",
+	"\\b(Invoke-Expression|Start-Process|Stop-Process)\\b",
+	"(^|[^<])>(?!>)",
+	">>",
+	"\\bgit\\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|branch\\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)\\b",
+	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
+	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
+	"\\byarn\\s+(add|install|remove|publish)\\b",
+];
+
+/** 内置默认等级（工厂函数：每次返回全新副本，避免共享引用被 UI 修改） */
+export function createDefaultSecurityLevels(): SecurityLevelConfig[] {
+	return [
+		{
+			id: "off",
+			name: "关闭",
+			description: "完全放行所有工具调用，等同未启用安全管理。",
+			builtin: true,
+			toolActions: {},
+			denyBashPatterns: [],
+			denyPowerShellPatterns: [],
+			pathPolicy: "unrestricted",
+			customAllowDirs: [],
+			denyDirs: [],
+			protectSensitivePaths: false,
+			defaultAction: "allow",
+		},
+		{
+			id: "standard",
+			name: "标准",
+			description: "危险命令先确认，敏感文件受保护，目录不限制。",
+			builtin: true,
+			toolActions: { bash: "ask", powershell: "ask" },
+			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
+			denyPowerShellPatterns: DEFAULT_DENY_POWERSHELL_PATTERNS,
+			pathPolicy: "unrestricted",
+			customAllowDirs: [],
+			denyDirs: [],
+			protectSensitivePaths: true,
+			defaultAction: "allow",
+		},
+		{
+			id: "strict",
+			name: "严格",
+			description: "只读为主，写操作逐一确认；危险命令直接拒绝；文件访问仅限工作目录。",
+			builtin: true,
+			toolActions: {
+				read: "allow",
+				grep: "allow",
+				find: "allow",
+				ls: "allow",
+				write: "ask",
+				edit: "ask",
+				bash: "ask",
+				powershell: "ask",
+				ask_question: "allow",
+			},
+			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
+			denyPowerShellPatterns: DEFAULT_DENY_POWERSHELL_PATTERNS,
+			pathPolicy: "workspace",
+			customAllowDirs: [],
+			denyDirs: [],
+			protectSensitivePaths: true,
+			defaultAction: "deny",
+		},
+	];
+}
 
 /** 默认敏感路径（相对文件名匹配；保护 .env / 密钥 / git 元数据） */
 export const DEFAULT_SENSITIVE_PATH_PATTERNS: string[] = [
@@ -206,6 +232,7 @@ export const SECURITY_TOOL_LABELS: Record<SecurityToolName, string> = {
 	write: "写入文件",
 	edit: "编辑文件",
 	bash: "执行命令",
+	powershell: "PowerShell 命令",
 	grep: "搜索内容",
 	find: "查找文件",
 	ls: "列目录",

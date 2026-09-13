@@ -15,6 +15,8 @@ export type AgentTab = {
 	/** Identity used only for session/runtime matching; agentId remains the process handle. */
 	sessionEnvironment?: SessionEnvironment;
 	sessionSource?: SessionSource;
+	/** 内部 worker/reviewer：runtime 自身即可隐藏，不必等 SessionSummary 扫到。 */
+	isInternalSubagent?: boolean;
 	wslDistro?: string;
 	wslUser?: string;
 	importedSourceId?: string;
@@ -91,6 +93,8 @@ export type CreateAgentInput = {
 	deckSessionId?: string;
 	environment?: SessionEnvironment;
 	source?: SessionSource;
+	/** 内部 worker/reviewer：创建时写入 AgentTab，避免 child runtime 先于扫描泄漏到顶层。 */
+	isInternalSubagent?: boolean;
 	wslDistro?: string;
 	wslUser?: string;
 	importedSourceId?: string;

@@ -149,7 +149,7 @@ export function AuthTab(props: {
 							<li className="mb-1">{t("config.authGuideStep2")}</li>
 							<li className="mb-1">{t("config.authGuideStep3")}</li>
 						</ul>
-						<p className="mt-3 border-t border-border-subtle pt-2.5 text-text-tertiary">
+						<p className="mt-3 border-t border-border-subtle pt-2 text-text-tertiary">
 							{t("config.authGuideNote")}{" "}
 							<a
 								href="https://pi.dev/docs/latest/providers#auth-file"
@@ -218,7 +218,7 @@ export function AuthTab(props: {
 							</>
 						)}
 					</div>
-					<div className="mt-3 border-t border-border-subtle pt-3">
+					<div className="mt-3 border-t border-border-subtle pt-2">
 						<p className="m-0 flex items-center gap-2 text-xs text-text-tertiary">
 							<span className="shrink-0 whitespace-nowrap">{t("config.authCustomHint")}</span>
 							<Input
@@ -241,7 +241,7 @@ export function AuthTab(props: {
 							/>
 						</div>
 					)}
-					<div className="mt-3 flex items-center gap-2 border-t border-border-subtle pt-2.5">
+					<div className="mt-3 flex items-center gap-2 border-t border-border-subtle pt-2">
 						{selectedProvider && presetProvider && (
 							<div className="flex flex-1 items-center gap-1.5 text-xs text-text-tertiary">
 								{t("config.authEnvVar")}: <code className="rounded-[4px] bg-bg-hover px-1.5 py-px font-mono text-[11px]">{presetProvider.env}</code>

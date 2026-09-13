@@ -41,7 +41,7 @@ import { cn } from "../../lib/utils";
 import { buttonVariants } from "../ui-shadcn/button";
 import { useVisionBridgeDraft } from "./settings/visionDraft.ts";
 import { useGitModels } from "./settings/gitModels.ts";
-import type { AppSettings, AppInfo, AvailableModel, PiInstallStatus, PiUpdateCheckResult, PiCliUpdateResult } from "../../../../shared/types";
+import type { AppSettings, AppInfo, AvailableModel, PiInstallStatus } from "../../../../shared/types";
 
 // ── 各 tab 内容 lazy 加载：首开只下载壳 + 当前 tab 的 chunk（qrcode/表格/日志查看器等
 //    重依赖随各自 tab 拆包），切换到某 tab 时才加载其 chunk（本地文件，秒级以内）。──
@@ -93,19 +93,11 @@ type SettingsModalProps = {
 	customPiPath: string;
 	customPathValidating: boolean;
 	customPathResult: PiInstallStatus | null;
-	updateChecking: boolean;
-	piUpdating: boolean;
-	piUpdateChecking: boolean;
-	piUpdateCheck: PiUpdateCheckResult | null;
-	piUpdateResult: PiCliUpdateResult | null;
 	onCustomPathChange: (path: string) => void;
 	onValidateCustomPath: () => void;
 	onClearCustomPath: () => void;
 	onCheckPi: () => void;
 	onTestPiProxy: () => void;
-	onCheckUpdate: () => void;
-	onCheckPiUpdate: () => void;
-	onUpdatePi: () => void;
 	onToggleDevTools: () => void;
 	onRestartApp: () => void;
 	onClearCheckFlag?: () => void;
@@ -386,9 +378,9 @@ function SettingsModalContent(props: SettingsModalProps) {
 					</div>
 				</DialogHeader>
 			<Tabs orientation="vertical" value={activeTab} onValueChange={(v) => { const match = tabs.find((t) => t.id === v); if (!match) return; setActiveTab(match.id); try { localStorage.setItem(SETTINGS_LAST_TAB_KEY, match.id); } catch { /* localStorage 不可用时静默失败，仅本次会话内不记忆 */ } }} className="settings-layout flex min-h-0 flex-1 flex-row gap-0 bg-transparent">
-					<TabsList className="settings-tabs flex min-h-0 shrink-0 flex-col items-stretch gap-2.5 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-2.5 data-[orientation=vertical]:w-[196px]" aria-label={t("settings.title")}>
+					<TabsList className="settings-tabs flex min-h-0 shrink-0 flex-col items-stretch gap-1 overflow-auto border-0 border-r border-border rounded-none bg-transparent p-1.5 data-[orientation=vertical]:w-[196px]" aria-label={t("settings.title")}>
 						{tabs.map((tab) => (
-							<TabsTrigger key={tab.id} value={tab.id} className="config-nav-btn h-8 justify-start gap-1.5 px-2.5 text-control font-medium">
+							<TabsTrigger key={tab.id} value={tab.id} className="config-nav-btn h-7 justify-start gap-1.5 px-2 text-control font-medium">
 								<span className="settings-tab-icon">{tab.icon}</span>
 								<strong>{tab.label}</strong>
 							</TabsTrigger>
@@ -465,14 +457,6 @@ function SettingsModalContent(props: SettingsModalProps) {
 								onClearCustomPath={props.onClearCustomPath}
 								onCheckPi={props.onCheckPi}
 								onClearCheckFlag={props.onClearCheckFlag}
-								piUpdateChecking={props.piUpdateChecking}
-								onCheckPiUpdate={props.onCheckPiUpdate}
-								piUpdating={props.piUpdating}
-								onUpdatePi={props.onUpdatePi}
-								piUpdateCheck={props.piUpdateCheck}
-								piUpdateResult={props.piUpdateResult}
-								updateChecking={props.updateChecking}
-								onCheckUpdate={props.onCheckUpdate}
 								webServiceChanging={props.webServiceChanging}
 								onOpenWebService={props.onOpenWebService}
 								onRestartWebService={props.onRestartWebService}

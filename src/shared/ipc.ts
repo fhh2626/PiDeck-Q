@@ -182,8 +182,6 @@ export const ipcChannels = {
 	wslListDistros: "wsl:list-distros",
 	/** 验证 WSL 连接：检查 distro + user 是否可达，以及 pi 是否已安装 */
 	wslValidateConnection: "wsl:validate-connection",
-	piUpdateCheck: "pi:update-check",
-	piUpdate: "pi:update",
 	/** 在系统终端中执行安装命令（npm install）并返回结果 */
 	piExecInstall: "pi:exec-install",
 	/** 检查 npm 是否可用 */
@@ -192,10 +190,6 @@ export const ipcChannels = {
 	/** 获取当前机器的非回环 IPv4 网卡，供局域网 Web 服务二维码使用 */
 	appNetworkAddresses: "app:network-addresses",
 	appPreferredSystemLanguages: "app:preferred-system-languages",
-	appCheckUpdate: "app:check-update",
-	appDownloadUpdate: "app:download-update",
-	appOpenUpdatePackage: "app:open-update-package",
-	appUpdateProgress: "app:update-progress",
 	appOpenExternal: "app:open-external",
 	appRestart: "app:restart",
 	/** 进程监控：拉取 Electron 各进程 + pi agent 子进程的内存/CPU 快照 */

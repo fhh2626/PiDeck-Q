@@ -96,7 +96,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
           <Select value={draft.theme} onValueChange={(value) =>
               updateDraft({ theme: value as AppSettings["theme"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {themeOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -119,7 +119,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
           <Select value={draft.accent} onValueChange={(value) =>
               updateDraft({ accent: value as AppSettings["accent"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {accentOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -251,7 +251,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
           <Select value={draft.fontSize} onValueChange={(value) =>
               updateDraft({ fontSize: value as AppSettings["fontSize"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {fontSizeOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -286,7 +286,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
               <Select value={draft.uiFontSize ?? draft.fontSize} onValueChange={(value) =>
                   updateDraft({ uiFontSize: value as AppSettings["uiFontSize"] })
                 }>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {fontSizeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -308,7 +308,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
               <Select value={draft.chatFontSize ?? draft.fontSize} onValueChange={(value) =>
                   updateDraft({ chatFontSize: value as AppSettings["chatFontSize"] })
                 }>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {fontSizeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -330,7 +330,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
               <Select value={draft.inputFontSize ?? draft.fontSize} onValueChange={(value) =>
                   updateDraft({ inputFontSize: value as AppSettings["inputFontSize"] })
                 }>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {fontSizeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -354,7 +354,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
           <Select value={draft.fontFamilyBase} onValueChange={(value) =>
               updateDraft({ fontFamilyBase: value as AppSettings["fontFamilyBase"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {fontBaseOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -369,7 +369,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
             title={<span>{t("settings.fontFamilyBaseCustomField")}</span>}
             stacked
           >
-            <Input type="text" value={draft.fontFamilyBaseCustom} placeholder={t("settings.fontFamilyBaseCustomPlaceholder")} onChange={(event) => updateDraft({ fontFamilyBaseCustom: event.target.value })} />
+            <Input className="h-8" type="text" value={draft.fontFamilyBaseCustom} placeholder={t("settings.fontFamilyBaseCustomPlaceholder")} onChange={(event) => updateDraft({ fontFamilyBaseCustom: event.target.value })} />
           </SettingRow>
         )}
         <SettingRow
@@ -384,7 +384,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
           <Select value={draft.fontFamilyMono} onValueChange={(value) =>
               updateDraft({ fontFamilyMono: value as AppSettings["fontFamilyMono"] })
             }>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
               {fontMonoOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
@@ -399,7 +399,7 @@ export const AppearanceTab = memo(function AppearanceTab(props: AppearanceTabPro
             title={<span>{t("settings.fontFamilyMonoCustomField")}</span>}
             stacked
           >
-            <Input type="text" value={draft.fontFamilyMonoCustom} placeholder={t("settings.fontFamilyMonoCustomPlaceholder")} onChange={(event) => updateDraft({ fontFamilyMonoCustom: event.target.value })} />
+            <Input className="h-8" type="text" value={draft.fontFamilyMonoCustom} placeholder={t("settings.fontFamilyMonoCustomPlaceholder")} onChange={(event) => updateDraft({ fontFamilyMonoCustom: event.target.value })} />
           </SettingRow>
         )}
       </SettingsSection>

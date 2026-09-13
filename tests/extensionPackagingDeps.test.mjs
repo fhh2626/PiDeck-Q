@@ -58,9 +58,40 @@ test("pideck-q-better-compaction keeps its relative runtime files in extraResour
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-better-compaction", "LICENSE")));
 });
 
+test("pideck-q-change-pi-prompt keeps its relative runtime files in extraResources", () => {
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /os\.cp\(path\.join\(os\.projectdir\(\), "resources", "\*"\)/);
+	for (const file of ["runtime.ts", "transform.ts", "config.ts", "defaults.ts", "layout.ts", "contributions.ts", "shellAvailability.ts", "tests/transform.test.mjs"]) {
+		assert.ok(existsSync(join("resources", "extensions", "pideck-q-change-pi-prompt", file)));
+	}
+});
+
 test("pideck-q-websearch keeps its relative fallback module in extraResources", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(xmake, /resources/);
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-websearch", "extension-runtime.ts")));
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-websearch", "fallback.ts")));
 });
+
+test("pideck-q-webfetch keeps its runtime files in extraResources", () => {
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /resources/);
+	const distFile = join("resources", "extensions", "pideck-q-webfetch", "dist", "index.mjs");
+	assert.ok(existsSync(distFile));
+	assert.ok(readFileSync(distFile).length > 10000, "dist/index.mjs must be complete and non-empty");
+	assert.ok(existsSync(join("resources", "extensions", "pideck-q-webfetch.ts")));
+
+	// 确认 .gitignore 显式排除该文件，确保离线打包时不被忽略
+	const gitignore = readFileSync(".gitignore", "utf8");
+	assert.match(gitignore, /!resources\/extensions\/pideck-q-webfetch\/dist\//);
+});
+
+test("pideck-q-subagents keeps its runtime files in extraResources", () => {
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /resources/);
+	assert.ok(existsSync(join("resources", "extensions", "pideck-q-subagents", "index.ts")));
+	assert.ok(existsSync(join("resources", "extensions", "pideck-q-subagents", "skills")));
+	assert.ok(existsSync(join("resources", "extensions", "pideck-q-subagents", "prompts")));
+	assert.ok(existsSync(join("resources", "extensions", "pideck-q-subagents.ts")));
+});
+

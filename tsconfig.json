@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // 代码里用了 ES2023 的 Array.findLastIndex（SessionHistoryReader 压缩点定位），
+    // 而 target ES2022 的默认 lib 不含它。显式声明 lib 才能稳定，不依赖 node_modules
+    // 里恰好有个 .d.ts 把 es2023 拉进全局（清一次依赖就会翻车）。
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",

@@ -123,13 +123,10 @@ test("Streamdown is the only markdown engine (switch, settings field, dependency
 
 test("static markdown scenes share the Streamdown engine", () => {
   const diffViewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8");
-  const updateOverlay = readFileSync("src/renderer/src/components/overlays/AppUpdateOverlay.tsx", "utf8");
   const scratchPad = readFileSync("src/renderer/src/components/scratchPad/ScratchPadPanel.tsx", "utf8");
   assert.doesNotMatch(diffViewer, /ReactMarkdown/);
-  assert.doesNotMatch(updateOverlay, /ReactMarkdown/);
   assert.doesNotMatch(scratchPad, /ReactMarkdown/);
   assert.match(diffViewer, /MarkdownStream/);
-  assert.match(updateOverlay, /MarkdownStream/);
   assert.match(scratchPad, /MarkdownStream/);
   // 静态场景保留各自插件（草稿本的高亮 mark 与 GFM task list 覆盖）
   assert.match(scratchPad, /rehypeHighlightMark/);

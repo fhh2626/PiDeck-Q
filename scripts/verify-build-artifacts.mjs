@@ -13,6 +13,41 @@ const EXPECTED_ENTRIES = {
 	web: "renderer/web.html",
 };
 
+/**
+ * PiDeck-Q-Change-Pi-Prompt 打包产物清单（运行时文件）。
+ *
+ * 这些文件由 pi 扩展加载器按相对路径 require，任何一个缺失/为空，打包版里
+ * 该内置扩展在运行时就会崩溃（内置扩展默认开启，因此所有运行时文件必须完整随包发布）。
+ * 注意：这里只列运行时文件；tests/ 是否随包走由源码侧
+ * tests/extensionPackagingDeps.test.mjs 单独把关，不在此处强制。
+ */
+const CHANGE_PROMPT_FILES = [
+	"extensions/pideck-q-change-pi-prompt.ts",
+	"extensions/pideck-q-change-pi-prompt/runtime.ts",
+	"extensions/pideck-q-change-pi-prompt/transform.ts",
+	"extensions/pideck-q-change-pi-prompt/config.ts",
+	"extensions/pideck-q-change-pi-prompt/defaults.ts",
+	"extensions/pideck-q-change-pi-prompt/layout.ts",
+	"extensions/pideck-q-change-pi-prompt/contributions.ts",
+	"extensions/pideck-q-change-pi-prompt/shellAvailability.ts",
+	"extensions/pideck-q-change-pi-prompt/childShellPolicy.ts",
+	"extensions/pideck-q-change-pi-prompt/childReconciliation.ts",
+	"extensions/pideck-q-change-pi-prompt/subagentCatalog.ts",
+	"extensions/pideck-q-change-pi-prompt/workflowValidation.ts",
+];
+
+const WEBFETCH_FILES = [
+	"extensions/pideck-q-webfetch.ts",
+	"extensions/pideck-q-webfetch/dist/index.mjs",
+];
+
+const WEBFETCH_ALLOWED_EXTERNALS = new Set([
+	"@earendil-works/pi-coding-agent",
+	"@earendil-works/pi-tui",
+	"@sinclair/typebox",
+	"undici",
+]);
+
 async function exists(path) {
 	try {
 		await access(path);
@@ -86,11 +121,66 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		? join(output, "app")
 		: output;
 	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
+	const extensionAcornPackage = join(output, "resources", "extensions", "node_modules", "acorn", "package.json");
+	const extensionAcornDist = join(output, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js");
 	if (await exists(join(output, "resources", "extensions"))) {
 		if (!(await exists(extensionUndiciPackage))) {
 			errors.push(`Missing packaged extension dependency: ${extensionUndiciPackage}`);
 		} else {
 			checked.push(extensionUndiciPackage);
+		}
+		if (!(await exists(extensionAcornPackage))) {
+			errors.push(`Missing packaged extension dependency: ${extensionAcornPackage}`);
+		} else {
+			checked.push(extensionAcornPackage);
+		}
+		if (!(await exists(extensionAcornDist))) {
+			errors.push(`Missing packaged extension dependency: ${extensionAcornDist}`);
+		} else {
+			const acornDistInfo = await stat(extensionAcornDist);
+			if (!acornDistInfo.isFile() || acornDistInfo.size === 0) {
+				errors.push(`Empty or invalid acorn runtime file: ${extensionAcornDist}`);
+			} else {
+				checked.push(extensionAcornDist);
+			}
+		}
+		// PiDeck-Q-Change-Pi-Prompt 的运行时文件必须完整落进产物；缺一个 = 启用即崩。
+		for (const file of CHANGE_PROMPT_FILES) {
+			const path = join(output, "resources", file);
+			if (!(await exists(path))) {
+				errors.push(`Missing packaged change-pi-prompt file: ${relative(root, path)}`);
+				continue;
+			}
+			const info = await stat(path);
+			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid change-pi-prompt file: ${relative(root, path)}`);
+			else checked.push(path);
+		}
+		// PiDeck-Q-WebFetch 运行时文件必须完整落进产物，离线环境下必不可少
+		for (const file of WEBFETCH_FILES) {
+			const path = join(output, "resources", file);
+			if (!(await exists(path))) {
+				errors.push(`Missing packaged webfetch file: ${relative(root, path)}`);
+				continue;
+			}
+			const info = await stat(path);
+			if (!info.isFile() || info.size === 0) {
+				errors.push(`Empty or invalid webfetch file: ${relative(root, path)}`);
+				continue;
+			}
+			if (file.endsWith("dist/index.mjs")) {
+				const content = await readFile(path, "utf8");
+				const importMatches = [
+					...content.matchAll(/^\s*(?:import|export)\s+(?:[\w*\s{},]*from\s+)?["']([^"']+)["']/gm),
+				].map((m) => m[1]);
+				for (const specifier of importMatches) {
+					if (specifier.startsWith("node:")) continue;
+					if (WEBFETCH_ALLOWED_EXTERNALS.has(specifier)) continue;
+					errors.push(
+						`Unbundled external import in packaged webfetch: ${specifier}. All normal npm dependencies must be bundled.`,
+					);
+				}
+			}
+			checked.push(path);
 		}
 	}
 	const entryPaths = Object.fromEntries(

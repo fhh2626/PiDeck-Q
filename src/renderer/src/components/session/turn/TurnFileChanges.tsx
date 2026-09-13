@@ -28,7 +28,7 @@ export const TurnFileChanges = memo(function TurnFileChanges(props: {
 	if (files.length === 0) return null;
 	return (
 		<div className="turn-file-changes w-full min-w-0">
-			<div className="mb-1.5 flex items-center gap-1.5 text-micro font-medium uppercase tracking-wider text-muted-foreground/60">
+			<div className="mb-1 flex items-center gap-1.5 text-micro font-medium uppercase tracking-wider text-muted-foreground/60">
 				<Files size={12} aria-hidden="true" className="shrink-0" />
 				<span>{t("session.turnFileChangesTitle")}</span>
 				{/* 折叠/展开按钮：始终显示（有文件即可折叠），点击整体收起/展开列表；
@@ -46,7 +46,7 @@ export const TurnFileChanges = memo(function TurnFileChanges(props: {
 				</Button>
 			</div>
 			{!collapsed && (
-				<div className="flex flex-col gap-0.5">
+				<div className="flex flex-col gap-0">
 					{files.map((entry) => (
 						<div key={entry.path} className="flex items-center gap-1">
 							<FileDiff
@@ -63,7 +63,7 @@ export const TurnFileChanges = memo(function TurnFileChanges(props: {
 								type="button"
 								variant="ghost"
 								size="icon-sm"
-								className="size-7 shrink-0 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+								className="size-6 shrink-0 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
 								title={t("session.openInDiffViewer", { path: entry.path })}
 								onClick={() =>
 									props.onDiffFile?.(

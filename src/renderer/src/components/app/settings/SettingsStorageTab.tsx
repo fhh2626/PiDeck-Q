@@ -22,9 +22,9 @@ export function SettingsSection(props: {
 	boxed?: boolean;
 }) {
 	return (
-		<section className={props.divided ? "mt-2 border-t border-border-subtle pt-4" : "mt-4 first:mt-0"}>
+		<section className={props.divided ? "mt-2 border-t border-border-subtle pt-2" : "mt-2 first:mt-0"}>
 			<SectionHeading
-				className="settings-section-header pb-2"
+				className="settings-section-header pb-1"
 				titleClassName="text-body font-bold text-foreground"
 				title={props.title}
 				description={props.description}
@@ -160,7 +160,7 @@ export function StorageTab(props: {
 					title={<span>{t("settings.storage.clearAll")}</span>}
 					description={t("settings.storage.clearAllDesc")}
 				>
-					<Button
+					<Button size="sm"
 						variant="destructive"
 						loading={clearing === "all"}
 						disabled={clearing !== null}
@@ -176,7 +176,7 @@ export function StorageTab(props: {
 					title={<span>{t("settings.storage.clearLocalStorage")}</span>}
 					description={t("settings.storage.clearLocalStorageDesc")}
 				>
-					<Button
+					<Button size="sm"
 						variant="destructive"
 						disabled={clearing !== null}
 						onClick={confirmClearLocalStorage}
@@ -190,7 +190,7 @@ export function StorageTab(props: {
 					<span className="text-caption text-muted-foreground">
 						{t("settings.storage.rpcLogsSize")}：{rpcLogsSize || t("common.loading")}
 					</span>
-					<Button variant="secondary"
+					<Button size="sm" variant="secondary"
 						loading={clearing === "rpc" || clearing === "all"}
 						disabled={clearing !== null}
 						onClick={() => confirmClear("rpc", t("settings.storage.rpcLogs"))}
@@ -206,10 +206,10 @@ export function StorageTab(props: {
 						{t("settings.storage.appLogsSize")}：{logsSize || t("common.loading")}
 					</span>
 					<div className="flex items-center gap-2">
-						<Button variant="secondary" onClick={handleOpenFolder}>
+						<Button size="sm" variant="secondary" onClick={handleOpenFolder}>
 							{t("common.open")}
 						</Button>
-						<Button variant="secondary"
+						<Button size="sm" variant="secondary"
 							loading={clearing === "app" || clearing === "all"}
 							disabled={clearing !== null}
 							onClick={() => confirmClear("app", t("settings.storage.appLogs"))}

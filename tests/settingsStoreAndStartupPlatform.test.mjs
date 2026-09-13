@@ -144,3 +144,34 @@ test("SettingsStore: removes Electron sandbox legacy field without resetting oth
 		await rm(tempDir, { recursive: true, force: true });
 	}
 });
+
+test("SettingsStore: a lone legacy disableUpdateCheck is cleaned from disk on load", async () => {
+	// 0.2.1 移除内置更新系统：旧 settings.json 里的 disableUpdateCheck 只读兼容——
+	// 加载时剥离、不再写回。关键回归点：如果它单独存在（其他 legacy 字段都已被
+	// 历次启动清掉），它自己必须能触发一次 save() 把磁盘上的残留字段清掉，
+	// 否则该字段会永远留在文件里。
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-update-migration-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		await writeFile(desktopSettingsFile, JSON.stringify({ disableUpdateCheck: true }), "utf8");
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await store.load();
+
+		// 内存态：disableUpdateCheck 不是 AppSettings 的成员，加载后应消失
+		assert.equal(Object.prototype.hasOwnProperty.call(store.get(), "disableUpdateCheck"), false);
+
+		// 磁盘态：load() 里的 fire-and-forget save() 把该字段从文件里清掉。
+		// 因为 save() 是异步且不 await，测试端轮询等待（最多 200 ms）。
+		let onDisk;
+		for (let i = 0; i < 20; i++) {
+			onDisk = JSON.parse(await readFile(desktopSettingsFile, "utf8"));
+			if (!Object.prototype.hasOwnProperty.call(onDisk, "disableUpdateCheck")) break;
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		assert.equal(Object.prototype.hasOwnProperty.call(onDisk, "disableUpdateCheck"), false, JSON.stringify(onDisk));
+		// 其他字段不能被这次清理误伤（这里只有一个字段，所以文件应当只剩安装形态）
+		assert.equal(onDisk.installationType, "portable");
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+});

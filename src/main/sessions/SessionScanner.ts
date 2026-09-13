@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { mkdir, open as openFile, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename as posixBasename, dirname as posixDirname, extname as posixExtname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
 import type { TrashPath } from "../fs/trash";
 import type { ChatMessage, ChatRole, SessionSummary } from "../../shared/types";
@@ -60,6 +60,55 @@ function hasLegacySessionNameLine(text: string): boolean {
     // 首条正常记录之后的区域无需继续探测。
     return false;
   }
+  return false;
+}
+
+/** 归档目录名（各扫描根下的隐藏子目录） */
+export const ARCHIVE_DIR_NAME = ".pideck-archive";
+
+/**
+ * 判断目录或文件路径是否属于会话扫描应忽略的路径。
+ *
+ * 忽略项：
+ *   1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身
+ *   2. subagent-artifacts（以及其内部的 transcript/artifact JSONL）
+ *   3. .pi/subagents/artifacts（以及其内部的 transcript/artifact JSONL）
+ *
+ * 语义规范：
+ *   - 纯路径/名称结构判定，绝不读取或依赖文件内容
+ *   - 绝不使用 "[prompt redacted]"、"Prompt Audit"、"Prompt A" 等文本内容做过滤
+ *   - Local 扫描与 WSL 扫描使用同一套语义判定，避免两端行为分歧
+ *   - 保留真正的 subagent session（如 <stem>/<run-id>/run-N/session.jsonl）
+ */
+export function isIgnoredSessionScanDirectory(pathOrName: string, options?: { allowArchive?: boolean }): boolean {
+  if (!pathOrName) return false;
+  const normalized = pathOrName.replace(/\\/g, "/").replace(/\/+$/, "");
+  const lower = normalized.toLowerCase();
+  const base = lower.split("/").pop() ?? "";
+
+  // 1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身（归档扫描时放行）
+  if (!options?.allowArchive && base === ARCHIVE_DIR_NAME.toLowerCase()) {
+    return true;
+  }
+
+  // 2. subagent-artifacts 目录（以及该目录下的任意嵌套路径）
+  if (
+    base === "subagent-artifacts" ||
+    lower.includes("/subagent-artifacts/") ||
+    lower.endsWith("/subagent-artifacts")
+  ) {
+    return true;
+  }
+
+  // 3. .pi/subagents/artifacts 目录（以及该目录下的任意嵌套路径）
+  if (
+    lower === ".pi/subagents/artifacts" ||
+    lower.endsWith("/.pi/subagents/artifacts") ||
+    lower.includes("/.pi/subagents/artifacts/")
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -127,6 +176,8 @@ export class SessionScanner {
     this.wslConfig = environment
       ? { distro: environment.distro, user: environment.user, home: environment.linuxHome }
       : null;
+    this.knownSubagentSessionFiles = null;
+    this.knownSubagentScanTimestamp = 0;
     // 环境切换时只重置“本轮扫描键”，并从磁盘重新装载缓存；不要把另一环境的磁盘缓存清空。
     this.summaryCacheFileSetKey = "";
     // 环境切换后旧环境的 activeScanRoots 已失效：清空使 listArchived() 等回退到
@@ -138,6 +189,8 @@ export class SessionScanner {
   /** 清除 WSL 配置 */
   clearWsl(): void {
     this.wslConfig = null;
+    this.knownSubagentSessionFiles = null;
+    this.knownSubagentScanTimestamp = 0;
     this.summaryCacheFileSetKey = "";
     this.activeScanRoots = [];
     void this.summaryCache.reloadFromDisk();
@@ -281,12 +334,17 @@ export class SessionScanner {
 
   /** 通过 wsl.exe 在指定目录递归查找 *.jsonl，返回 Linux 绝对路径 */
   private async collectWslJsonl(sessionsDir: string, signal?: AbortSignal): Promise<string[]> {
+    if (isIgnoredSessionScanDirectory(sessionsDir)) return [];
+
     return new Promise((resolve, reject) => {
       execFile(this.wslExePath, [
         "-d", this.wslConfig!.distro, "-u", this.wslConfig!.user,
         // 跳过归档目录（.pideck-archive）与回收目录（.trash）：归档会话不参与常规扫描。
+        // 跳过 subagent 的 transcript/artifact 目录，避免非会话 JSONL 进入会话列表。
         "find", sessionsDir, "-name", "*.jsonl", "-type", "f",
-        "-not", "-path", `*/${SessionScanner.ARCHIVE_DIR_NAME}/*`
+        "-not", "-path", `*/${SessionScanner.ARCHIVE_DIR_NAME}/*`,
+        "-not", "-path", "*/subagent-artifacts/*",
+        "-not", "-path", "*/.pi/subagents/artifacts/*",
       ], {
         encoding: "utf8",
         timeout: 15_000,
@@ -297,7 +355,11 @@ export class SessionScanner {
         maxBuffer: 16 * 1024 * 1024,
       }, (err, stdout) => {
         if (err) { reject(err); return; }
-        const files = stdout.trim().split(/\r?\n/).filter(Boolean);
+        const files = stdout
+          .trim()
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .filter((file) => !isIgnoredSessionScanDirectory(file));
         resolve(files);
       });
     });
@@ -338,6 +400,11 @@ export class SessionScanner {
         // 仅修剪当前环境下已消失文件，保留未变化会话的摘要命中（含磁盘恢复的条目）。
         this.summaryCache.prune(files, this.wslConfig ? "wsl" : "local");
         this.summaryCacheFileSetKey = fileSetKey;
+      }
+
+      if (files.length > 0) {
+        // 在解析会话文件前，提前加载当前环境下的已知 subagent 运行记录快照（每轮 list 强制刷新，杜绝识别窗口延迟）
+        await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), signal, true).catch(rethrowAbort(new Set<string>()));
       }
 
       const summaries = await Promise.all(files.map(file =>
@@ -685,7 +752,7 @@ export class SessionScanner {
   // 归档与删除的区别：文件不销毁，随时可从归档恢复；归档目录内不再被扫描。
 
   /** 归档目录名（各扫描根下的隐藏子目录） */
-  private static readonly ARCHIVE_DIR_NAME = ".pideck-archive";
+  private static readonly ARCHIVE_DIR_NAME = ARCHIVE_DIR_NAME;
   /** 归档索引文件名：记录 归档路径 → 原始路径 映射，恢复时据此移回 */
   private static readonly ARCHIVE_INDEX_NAME = "index.json";
 
@@ -784,12 +851,13 @@ export class SessionScanner {
         : [this.root];
     const results: SessionSummary[] = [];
     const seen = new Set<string>();
+    await this.loadKnownSubagentSessionFiles(Boolean(this.wslConfig), undefined, true);
     for (const root of roots) {
       const wsl = Boolean(this.wslConfig);
       const archiveDir = this.joinArchivePath(wsl, root, SessionScanner.ARCHIVE_DIR_NAME);
       const files = wsl
         ? await this.collectJsonlFromDirWsl(archiveDir).catch(() => [] as string[])
-        : await this.collectJsonl(archiveDir).catch(() => [] as string[]);
+        : await this.collectJsonl(archiveDir, { allowArchive: true }).catch(() => [] as string[]);
       for (const file of files) {
         if (seen.has(this.normalize(file))) continue;
         seen.add(this.normalize(file));
@@ -944,7 +1012,9 @@ export class SessionScanner {
    * 这不是 CLI 的 fork：不裁剪会话树，只生成一个可独立打开/继续的新历史会话文件。
    * 支持 WSL 路径。
    */
-  async copy(filePath: string): Promise<SessionSummary> {    const wsl = this.isWslPath(filePath);
+  async copy(filePath: string): Promise<SessionSummary> {
+    const wsl = this.isWslPath(filePath);
+    await this.loadKnownSubagentSessionFiles(wsl);
     const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
     const current = await this.readSummary(filePath).catch(() => null);
     const copyName = this.translate("session.copyTitle", {
@@ -967,6 +1037,7 @@ export class SessionScanner {
   /** 将历史 JSONL 会话直接导出为基础 HTML，支持 WSL 路径 */
   async exportHtml(filePath: string): Promise<{ path: string }> {
     const wsl = this.isWslPath(filePath);
+    await this.loadKnownSubagentSessionFiles(wsl);
     const summary = await this.readSummary(filePath);
     if (!summary) throw new Error("会话文件无法读取");
     const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
@@ -1155,16 +1226,21 @@ export class SessionScanner {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
   }
 
-  private async collectJsonl(dir: string): Promise<string[]> {
+  private async collectJsonl(dir: string, options?: { allowArchive?: boolean }): Promise<string[]> {
+    if (isIgnoredSessionScanDirectory(dir, options)) return [];
+
     const entries = await readdir(dir, { withFileTypes: true });
     const files: string[] = [];
 
     for (const entry of entries) {
       const path = join(dir, entry.name);
-      // 跳过归档目录：归档会话不参与常规扫描（.trash 同理不扫）。
-      if (entry.isDirectory() && entry.name === SessionScanner.ARCHIVE_DIR_NAME) continue;
-      if (entry.isDirectory()) files.push(...await this.collectJsonl(path));
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+      // 跳过归档目录与 subagent artifacts 目录：避免非会话 JSONL 进入会话列表。
+      if (entry.isDirectory()) {
+        if (isIgnoredSessionScanDirectory(path, options)) continue;
+        files.push(...await this.collectJsonl(path, options));
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        files.push(path);
+      }
     }
 
     return files;
@@ -1183,6 +1259,169 @@ export class SessionScanner {
    *
    * 深度限制 10 层，且不超出 sessions 根目录，避免误判和性能问题。
    */
+  /** 已知 subagent 运行记录中记录的标准 sessionFile 缓存集合 */
+  private knownSubagentSessionFiles: Set<string> | null = null;
+  private knownSubagentScanTimestamp = 0;
+
+  /**
+   * 在每轮扫描开始前异步加载已知 subagent 运行记录快照。
+   * 支持 WSL 模式（通过 wsl.exe 扫描 Linux /tmp/pi-subagents-*）与本地模式（扫描 tmpdir/pi-subagents-*）。
+   */
+  public async loadKnownSubagentSessionFiles(wsl: boolean, signal?: AbortSignal, forceRefresh = false): Promise<Set<string>> {
+    if (signal?.aborted) throw signal.reason;
+    const now = Date.now();
+    if (!forceRefresh && this.knownSubagentSessionFiles && now - this.knownSubagentScanTimestamp < 2000) {
+      return this.knownSubagentSessionFiles;
+    }
+
+    if (wsl && this.wslConfig) {
+      return this.loadKnownSubagentSessionFilesWsl(signal);
+    }
+    return this.loadKnownSubagentSessionFilesLocal();
+  }
+
+  /** 构建在 WSL 环境中查找 subagent 运行记录的 shell 脚本 */
+  public static buildWslSubagentsScript(): string {
+    return (
+      'find /tmp -maxdepth 4 -path "*/pi-subagents-*/*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true; ' +
+      'if [ -n "$PI_SUBAGENTS_TEMP_ROOT" ] && [ -d "$PI_SUBAGENTS_TEMP_ROOT" ]; then ' +
+      'find "$PI_SUBAGENTS_TEMP_ROOT" -maxdepth 3 -name "*.json" -type f -exec grep -o \'"sessionFile"[[:space:]]*:[[:space:]]*"[^"]*"\' {} + 2>/dev/null || true; ' +
+      'fi'
+    );
+  }
+
+  /** 通过 wsl.exe 扫描 WSL 环境临时目录中的 pi-subagents 运行记录 */
+  private async loadKnownSubagentSessionFilesWsl(signal?: AbortSignal): Promise<Set<string>> {
+    const set = new Set<string>();
+    if (!this.wslConfig) {
+      this.knownSubagentSessionFiles = set;
+      this.knownSubagentScanTimestamp = Date.now();
+      return set;
+    }
+
+    try {
+      const script = SessionScanner.buildWslSubagentsScript();
+
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(
+          this.wslExePath,
+          ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "sh", "-c", script],
+          {
+            shell: this.wslShell,
+            encoding: "utf8",
+            timeout: 5_000,
+            signal,
+            windowsHide: true,
+            maxBuffer: 8 * 1024 * 1024,
+          },
+          (err, output) => {
+            if (err) reject(err);
+            else resolve(output);
+          },
+        );
+      });
+
+      const lines = stdout.split(/\r?\n/);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const match = trimmed.match(/"sessionFile"\s*:\s*"([^"]+)"/);
+        if (match?.[1]) {
+          set.add(this.normalize(match[1]));
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) throw signal.reason ?? err;
+    }
+
+    this.knownSubagentSessionFiles = set;
+    this.knownSubagentScanTimestamp = Date.now();
+    return set;
+  }
+
+  /** 从本地宿主机临时目录扫描 pi-subagents 运行记录 */
+  private loadKnownSubagentSessionFilesLocal(): Set<string> {
+    const set = new Set<string>();
+
+    const extractSessionFiles = (val: unknown) => {
+      if (!val || typeof val !== "object") return;
+      if (typeof (val as { sessionFile?: unknown }).sessionFile === "string") {
+        const sf = (val as { sessionFile: string }).sessionFile.trim();
+        if (sf) set.add(this.normalize(sf));
+      }
+      if (Array.isArray(val)) {
+        for (const item of val) extractSessionFiles(item);
+      } else {
+        for (const k of Object.keys(val)) {
+          extractSessionFiles((val as Record<string, unknown>)[k]);
+        }
+      }
+    };
+
+    const scanDirForJson = (dir: string, maxDepth = 3) => {
+      if (!existsSync(dir) || maxDepth < 0) return;
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = join(dir, entry.name);
+          if (entry.isFile() && entry.name.endsWith(".json")) {
+            try {
+              const content = readFileSync(full, "utf8");
+              extractSessionFiles(JSON.parse(content));
+            } catch {
+              // 忽略损坏的 JSON 记录
+            }
+          } else if (entry.isDirectory() && !entry.name.startsWith(".")) {
+            scanDirForJson(full, maxDepth - 1);
+          }
+        }
+      } catch {
+        // 忽略无权限或已删除目录
+      }
+    };
+
+    // 1. tmpdir() 中的 pi-subagents-* 运行目录
+    try {
+      const tempRoot = tmpdir();
+      if (existsSync(tempRoot)) {
+        const entries = readdirSync(tempRoot, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name.startsWith("pi-subagents-")) {
+            scanDirForJson(join(tempRoot, entry.name), 3);
+          }
+        }
+      }
+    } catch {
+      // 忽略临时目录读取异常
+    }
+
+    // 2. PI_SUBAGENTS_TEMP_ROOT 环境变量指定目录（若有）
+    const customTemp = typeof process !== "undefined" ? process.env?.PI_SUBAGENTS_TEMP_ROOT?.trim() : undefined;
+    if (customTemp && existsSync(customTemp)) {
+      scanDirForJson(customTemp, 3);
+    }
+
+    this.knownSubagentSessionFiles = set;
+    this.knownSubagentScanTimestamp = Date.now();
+    return set;
+  }
+
+  /**
+   * 同步查询给定 sessionFile 是否在已知 subagent 运行记录集合中。
+   * 纯内存查找，由 loadKnownSubagentSessionFiles 预加载。
+   */
+  public isKnownSubagentSession(sessionFile: string): boolean {
+    return this.knownSubagentSessionFiles?.has(this.normalize(sessionFile)) ?? false;
+  }
+
+  /** pi-subagents 标准布局：.../<parent-stem>/<run-id>/run-N/session.jsonl */
+  private isPiSubagentLayoutPath(filePath: string, isWsl: boolean): boolean {
+    const fileName = isWsl ? posixBasename(filePath) : basename(filePath);
+    if (fileName !== "session.jsonl") return false;
+    const runDir = isWsl ? posixBasename(posixDirname(filePath)) : basename(dirname(filePath));
+    return /^run-\d+$/i.test(runDir);
+  }
+
   private inferParentSessionFromPath(filePath: string): string | undefined {
     // 仅处理 .jsonl 文件
     if (!filePath.toLowerCase().endsWith(".jsonl")) return undefined;
@@ -1276,14 +1515,23 @@ export class SessionScanner {
   }
 
   private async readSummary(filePath: string, signal?: AbortSignal): Promise<SessionSummary | null> {
-    // 先读取轻量文件指纹；未变化时复用摘要，避免周期扫描反复读取和解析全部 JSONL。
     const isWsl = this.isWslPath(filePath);
+    if (!this.knownSubagentSessionFiles) {
+      await this.loadKnownSubagentSessionFiles(isWsl, signal);
+    }
+    // 先读取轻量文件指纹；未变化时复用摘要，避免周期扫描反复读取和解析全部 JSONL。
     const info = isWsl
       ? await this.readWslFileVersion(filePath, signal)
       : await stat(filePath);
     const version = { mtimeMs: info.mtimeMs, size: info.size };
     const cached = this.summaryCache.get(filePath, version);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      const nowKnownSubagent = this.isKnownSubagentSession(filePath);
+      // 外部 run record 提供了新的强身份信息时，不能直接复用旧的普通会话缓存
+      if (!nowKnownSubagent || !cached || cached.isInternalSubagent === true) {
+        return cached;
+      }
+    }
 
     const raw = isWsl
       ? await this.readWslFile(filePath, signal)
@@ -1388,36 +1636,40 @@ export class SessionScanner {
       thinkingLevel = "off";
     }
 
-    // 检测子会话：任意扩展产生的内部 worker/reviewer 会话。
-    // 不在顶层列表显示，而是设置 parentSessionPath 供 UI 嵌套渲染。
+    // 检测内部 worker/reviewer：isInternalSubagent 与 parentSessionPath 独立。
+    // 结构信号命中即内部会话；父路径仅在能解析到现存父文件时才写入。
     //
-    // 采用分层信号打分机制，兼容不同扩展的子会话存储方式：
-    //   强信号（2分）：路径布局匹配、显式 customType 标记
-    //   弱信号（1分）：子会话命名模式
-    //   header 引用（2分）：Rust 的 branchedFrom/原版 Pi 的 parentSession
-    //   置信度阈值：≥ 2 分判定为子会话
-    const subagentScore = {
-      pathInferred: 0,       // 路径布局 ← 新泛化算法
-      customMarker: 0,       // customType: "*.child-session"
-      namePattern: 0,        // sessionName 以 "subagent-" 开头
-		parentHeader: forkParentSession ? 2 : 0,
-    };
-
+    // 采用分层信号打分机制：
+    //   强信号（2分）：标准布局+生成名、显式 customType、header 引用
+    //   弱信号（1分）：仅生成名，不足以单独判定
+    //   置信度阈值：≥ 2 分判定为内部会话
     const pathInferredParent = isWsl
       ? await this.inferWslParentSessionFromPath(filePath, signal)
       : this.inferParentSessionFromPath(filePath);
-    subagentScore.pathInferred = pathInferredParent ? 2 : 0;
-    subagentScore.customMarker = hasSubagentChildMarker ? 2 : 0;
-    subagentScore.namePattern = latestSessionInfoName?.startsWith("subagent-") ? 1 : 0;
+    const hasStandardLayout = this.isPiSubagentLayoutPath(filePath, isWsl);
+    const namedLikeGeneratedChild = latestSessionInfoName?.startsWith("subagent-") === true;
+    const isKnownSubagent = this.isKnownSubagentSession(filePath);
+    const subagentScore = {
+      // 标准布局 + 生成名：父文件缺失时仍能识别 orphan worker。
+      // 不把“同级偶然存在 <dir>.jsonl”当成内部身份，避免普通嵌套会话误伤。
+      pathLayout: hasStandardLayout && namedLikeGeneratedChild ? 2 : 0,
+      customMarker: hasSubagentChildMarker ? 2 : 0,
+      knownRunRecord: isKnownSubagent ? 2 : 0,
+      namePattern: namedLikeGeneratedChild ? 1 : 0,
+      // parentHeader 单独不作为 subagent 判据；仅在配合 subagent- 生成名或标准布局时提供佐证（给1分）
+      parentHeader: forkParentSession && (namedLikeGeneratedChild || hasStandardLayout) ? 1 : 0,
+    };
 
     const confidenceScore =
-      subagentScore.pathInferred +
+      subagentScore.pathLayout +
       subagentScore.customMarker +
+      subagentScore.knownRunRecord +
       subagentScore.namePattern +
       subagentScore.parentHeader;
 
+    const isInternalSubagent = source === "pi" && confidenceScore >= 2;
     let parentSessionPath: string | undefined;
-    if (source === "pi" && confidenceScore >= 2) {
+    if (isInternalSubagent) {
       // 优先复用上面已完成的路径推断，避免重复遍历文件系统/WSL。
       parentSessionPath = pathInferredParent;
       // 路径推断失败时，尝试使用 forkParentSession header 引用的父路径
@@ -1439,7 +1691,6 @@ export class SessionScanner {
         );
         if (resolvedExists) {
           parentSessionPath = resolved;
-        } else {
         }
       }
     }
@@ -1472,6 +1723,7 @@ export class SessionScanner {
       codexParentThreadId,
       codexAgentRole,
       codexAgentNickname,
+      isInternalSubagent: isInternalSubagent || undefined,
       parentSessionPath,
       model: modelProvider && modelId ? { provider: modelProvider, modelId } : undefined,
       thinkingLevel,

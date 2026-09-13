@@ -9,6 +9,7 @@ import {
 	evaluatePathAction,
 	isPathInsideRoot,
 	matchBashDenyPatterns,
+	matchPowerShellDenyPatterns,
 	matchesSensitivePath,
 	resolveLevel,
 	resolveLevelId,
@@ -179,10 +180,34 @@ test("built-in levels satisfy the strict->standard->off severity order", () => {
 	// 标准：默认放行 + 危险命令确认 + 敏感保护
 	assert.equal(standard.defaultAction, "allow");
 	assert.equal(standard.toolActions.bash, "ask");
+	assert.equal(standard.toolActions.powershell, "ask");
 	assert.equal(standard.protectSensitivePaths, true);
 	assert.ok(standard.denyBashPatterns.length > 0);
+	assert.ok(standard.denyPowerShellPatterns.length > 0);
 	// 严格：默认拒绝 + 工作目录边界
 	assert.equal(strict.defaultAction, "deny");
 	assert.equal(strict.pathPolicy, "workspace");
 	assert.equal(strict.protectSensitivePaths, true);
+});
+
+test("matchPowerShellDenyPatterns: detects dangerous PowerShell commands per level", () => {
+	const config = createDefaultSecurityConfig();
+	const strict = resolveLevel(config, "strict");
+	assert.ok(matchPowerShellDenyPatterns(strict, "Remove-Item -Recurse ./foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "rm ./foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "del ./foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "Set-Content ./a.txt 'hello'"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "New-Item -ItemType File ./a.txt"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "git push origin main"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "git commit -m 'test'"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "npm install foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "pnpm add foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "yarn add foo"));
+
+	// 安全读取命令不命中
+	assert.equal(matchPowerShellDenyPatterns(strict, "Get-Content ./a.txt"), null);
+	assert.equal(matchPowerShellDenyPatterns(strict, "Get-ChildItem -Recurse"), null);
+	assert.equal(matchPowerShellDenyPatterns(strict, "Select-String -Pattern foo bar.txt"), null);
+	assert.equal(matchPowerShellDenyPatterns(strict, "git status"), null);
+	assert.equal(matchPowerShellDenyPatterns(strict, "git diff"), null);
 });

@@ -9,7 +9,6 @@ import {
   useCallback,
 } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
-import { APP_RELEASES_URL } from "../../shared/appIdentity";
 import { SKIN_PRESETS } from "./themePresets";
 import { resolveChatTypographyVars } from "./lib/chatTypography";
 // 壁纸模式已注入的 token 键（effect 重跑/清除设置时需要跨运行保留，避免漏清）
@@ -65,7 +64,6 @@ import { applyRendererZoom } from "./native/rendererZoom";
 import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
-import { useAppUpdateController } from "./hooks/useAppUpdateController";
 import { useProjectSync } from "./hooks/useProjectSync";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useProjectCommands } from "./hooks/useProjectCommands";
@@ -144,7 +142,6 @@ import { WorkbenchStage } from "./components/workspace/WorkbenchStage";
 import { WorkbenchContent } from "./components/workspace/WorkbenchContent";
 import { RenameModals } from "./components/RenameModals";
 import { SessionActionOverlays } from "./components/overlays/SessionActionOverlays";
-import { AppUpdateOverlay } from "./components/overlays/AppUpdateOverlay";
 import { ImportOverlayHost } from "./components/overlays/ImportOverlayHost";
 import { EnvironmentOverlay } from "./components/overlays/EnvironmentOverlay";
 import {
@@ -484,16 +481,6 @@ export function App() {
     return getRuntimeTargetForSession(sessionId);
   };
   const [sessionHistoryLoading, setSessionHistoryLoading] = useState(false);
-  const appUpdate = useAppUpdateController({
-    checkUpdate: api.app.checkUpdate,
-    downloadUpdate: (asset) => api.app.downloadUpdate(asset),
-    openUpdatePackage: (filePath) => api.app.openUpdatePackage(filePath),
-    onUpdateProgress: (cb) => api.app.onUpdateProgress(cb),
-    openExternal: (url) => api.app.openExternal(url),
-  }, false);
-
-  // upToDateVersion: hook does not expose this; used by AppUpdateOverlay for "up to date" toast.
-  const [upToDateVersion, setUpToDateVersion] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
 
   const PROJECT_EXPANDED_DIRS_KEY_PREFIX = "pid:project-expanded-dirs:";
@@ -572,7 +559,6 @@ export function App() {
     fontFamilyMonoCustom: "",
     removedBuiltInExtensions: ["pideck-q-better-compaction.ts"],
     hiddenBuiltinPromptNames: [],
-    disableUpdateCheck: false,
     piRpcOffline: true,
     piRpcNoExtensions: false,
     piRpcNoSkills: false,
@@ -617,10 +603,8 @@ export function App() {
   const [webServiceChanging, setWebServiceChanging] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo>({
     version: "-",
-    releasesUrl: APP_RELEASES_URL,
     // 同步判定，避免 Mac 首帧在 appInfo IPC 返回前误画 Win 窗口按钮
     platform: detectRendererPlatform(),
-    homeDir: "",
   });
   const [systemLanguage, setSystemLanguage] = useState<string | null>(null);
   const resolvedLocale = resolveLocale(settings.language, systemLanguage ?? undefined);
@@ -1409,9 +1393,6 @@ export function App() {
         // 后续启动静默重检，自动发现 PATH/版本变化，同时不打扰用户。
         window.setTimeout(() => void piUpdate.refreshPiStatus(), 300);
       }
-      if (!next.disableUpdateCheck) {
-        window.setTimeout(() => void piUpdate.checkPiCliUpdateOnStartup(), 1200);
-      }
     }).catch(() => {
       // 即使 settings IPC 暂不可用，也要允许侧栏继续使用 localStorage/default 状态。
       setSettingsLoaded(true);
@@ -1488,17 +1469,6 @@ export function App() {
       void refreshProjectSessions(project.id).catch(() => undefined);
     }
   }, [expandedProjects, expandedProjectsReady, projectIdsKey, refreshProjectSessions, store]);
-
-  useEffect(() => {
-    // When update check is disabled, skip periodic and deferred auto-check.
-    if (settings.disableUpdateCheck) return;
-    const timer = window.setInterval(
-      () => void appUpdate.check("auto"),
-      1000 * 60 * 60 * 6,
-    );
-    window.setTimeout(() => void appUpdate.check("auto"), 5000);
-    return () => window.clearInterval(timer);
-  }, [settings.disableUpdateCheck]);
 
   useEffect(() => {
     if (activeAgentId && !isPendingAgentId(activeAgentId))
@@ -3226,22 +3196,13 @@ export function App() {
     <SettingsFeatureRoot
       settings={settings}
       piUpdate={piUpdate}
-      appUpdate={appUpdate}
       webServiceChanging={webServiceChanging}
       onRestartWebService={restartWebService}
       appInfo={appInfo}
       onChange={updateSettings}
-      onCurrentVersion={setUpToDateVersion}
     />
     <SessionActionOverlays
       {...overlays.overlayProps}
-    />
-    <AppUpdateOverlay
-      controller={appUpdate}
-      releasesUrl={appInfo.releasesUrl}
-      openExternal={(url, forceSystem) => api.app.openExternal(url, forceSystem)}
-      upToDateVersion={upToDateVersion}
-      onDismissUpToDate={() => setUpToDateVersion(null)}
     />
     {previewImage && (
       <ImagePreviewModal

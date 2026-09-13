@@ -157,7 +157,7 @@ function loadPiCompatibilityModule() {
 	return loadTranspiledModule("src/shared/piCompatibility.ts");
 }
 
-function loadSessionScanner(homePath, fsOverrides = {}) {
+function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}) {
 	const source = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
 	const { outputText } = ts.transpileModule(source, {
 		compilerOptions: {
@@ -189,6 +189,7 @@ function loadSessionScanner(homePath, fsOverrides = {}) {
 			if (id === "./sessionNameLine") return loadSessionNameLineModule();
 			// sharedLogger 未注册时 getAppLogger 返回 null，SessionScanner 埋点静默跳过
 			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
+			if (id === "node:child_process") return { ...require(id), ...childProcessOverrides };
 			if (id === "node:fs") return { ...require(id), ...fsOverrides };
 			return require(id);
 		},
@@ -304,9 +305,16 @@ test("hides persisted pi-subagents runs without deleting them or unrelated neste
 		assert.equal(existsSync(reviewerFile), true);
 		// 验证子会话的 parentSessionPath 指向正确的父会话文件
 		const workerSummary = summaries.find(s => s.filePath === workerFile);
+		assert.equal(workerSummary.isInternalSubagent, true);
 		assert.equal(workerSummary.parentSessionPath, parentFile);
 		const reviewerSummary = summaries.find(s => s.filePath === reviewerFile);
+		assert.equal(reviewerSummary.isInternalSubagent, true);
 		assert.equal(reviewerSummary.parentSessionPath, parentFile);
+		const lookalikeSummary = summaries.find(s => s.filePath === lookalikeFile);
+		assert.notEqual(lookalikeSummary.isInternalSubagent, true);
+		const namedLikeWorker = summaries.find(s => s.name === "subagent-worker-manual-0");
+		assert.ok(namedLikeWorker);
+		assert.notEqual(namedLikeWorker.isInternalSubagent, true);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
@@ -357,7 +365,9 @@ test("groups WSL child sessions with POSIX parent paths", async () => {
 
 		const summaries = await scanner.list(selectedProjectPath);
 		assert.equal(summaries.length, 4);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
+		assert.equal(summaries.find((item) => item.filePath === forkChildFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === forkChildFile)?.parentSessionPath, forkParentFile);
 		assert.equal(summaries.some((item) => item.parentSessionPath?.includes("\\")), false);
 		assert.equal(fullReadCount.get(parentFile), 1);
@@ -387,7 +397,9 @@ test("uses a valid renamed parent session and ignores false-positive path owners
 
 		const { SessionScanner } = loadSessionScanner(home);
 		const summaries = await new SessionScanner().list(projectPath);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
+		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.isInternalSubagent, undefined);
 		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.parentSessionPath, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -445,15 +457,19 @@ test("handles orphan, fork, rename and imported-session compatibility without fa
 		assert.equal(visiblePaths.has(importedFile), true);
 		// 父文件不存在时不能把路径形似扩展产物的 JSONL 静默挂到虚构父会话下。
 		const orphanSummary = summaries.find(s => s.filePath === orphanFile);
+		assert.equal(orphanSummary.isInternalSubagent, true);
 		assert.equal(orphanSummary.parentSessionPath, undefined);
 		// renamedChild: 父文件不存在，不能挂到虚构父会话下。
 		const renamedSummary = summaries.find(s => s.filePath === renamedChildFile);
+		assert.equal(renamedSummary.isInternalSubagent, true);
 		assert.equal(renamedSummary.parentSessionPath, undefined);
 		// legacyFork: 标准 .jsonl 文件路径不可推断父会话，fork parent 文件不存在
 		const forkSummary = summaries.find(s => s.filePath === legacyForkFile);
+		assert.equal(forkSummary.isInternalSubagent, true);
 		assert.equal(forkSummary.parentSessionPath, undefined);
 		// markedCustomFile: 显式标记，路径不可推断父会话（无 parentSessionPath）
 		const customSummary = summaries.find(s => s.filePath === markedCustomFile);
+		assert.equal(customSummary.isInternalSubagent, true);
 		assert.equal(customSummary.parentSessionPath, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -479,6 +495,7 @@ test("resolves fork child with absolute Windows parent path via parentSession he
 		const summaries = await new SessionScanner().list(projectPath);
 		assert.equal(summaries.length, 2);
 		const forkSummary = summaries.find(s => s.filePath === forkChildFile);
+		assert.equal(forkSummary.isInternalSubagent, true);
 		assert.equal(forkSummary.parentSessionPath, parentFile);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -501,6 +518,7 @@ test("resolves Rust Pi branchedFrom headers as parent sessions", async () => {
 
 		const { SessionScanner } = loadSessionScanner(home);
 		const summaries = await new SessionScanner().list(projectPath);
+		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
@@ -587,6 +605,28 @@ test("model_change takes precedence over message-level model", async () => {
 	}
 });
 
+test("marks a custom-location child as internal even when the parent path cannot be resolved", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-unresolved-parent-subagent-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const piDir = join(home, ".pi", "agent", "sessions", "--C--repo-project--");
+		const childFile = join(piDir, "custom-child-location.jsonl");
+		writeSession(childFile, [
+			{ type: "session_info", name: undefined, cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "[prompt redacted]..." } },
+			{ type: "custom", customType: "pi-subagents.child-session", data: { schemaVersion: 1 } },
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const summaries = await new SessionScanner().list(projectPath);
+		const childSummary = summaries.find((item) => item.filePath === childFile);
+		assert.equal(childSummary.isInternalSubagent, true);
+		assert.equal(childSummary.parentSessionPath, undefined);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
 test("only user messages yield undefined model and undefined thinking", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-user-only-"));
 	try {
@@ -612,5 +652,518 @@ test("only user messages yield undefined model and undefined thinking", async ()
 		assert.equal(summaries[0].thinkingLevel, undefined);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("isIgnoredSessionScanDirectory correctly identifies artifact directories across Windows and POSIX paths", () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-ignored-dirs-"));
+	try {
+		const { isIgnoredSessionScanDirectory, SessionScanner } = loadSessionScanner(home);
+
+		// 1. subagent-artifacts 目录及内部文件判定
+		assert.equal(isIgnoredSessionScanDirectory("subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("subagent-artifacts/"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\subagent-artifacts\\run-1_worker_transcript.jsonl"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/subagent-artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/subagent-artifacts/run-1_worker_transcript.jsonl"), true);
+
+		// 2. .pi/subagents/artifacts 目录及内部文件判定
+		assert.equal(isIgnoredSessionScanDirectory(".pi/subagents/artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory(".pi\\subagents\\artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents\\artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents\\artifacts\\review_transcript.jsonl"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/subagents/artifacts"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/subagents/artifacts/review_transcript.jsonl"), true);
+
+		// 3. 归档目录（.pideck-archive）判定
+		assert.equal(isIgnoredSessionScanDirectory(".pideck-archive"), true);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\.pideck-archive"), true);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/.pideck-archive"), true);
+
+		// 4. 合法会话文件与目录绝不误判
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\run-abc\\run-0\\session.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\parent\\run-abc\\run-0"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\Users\\dev\\.pi\\agent\\sessions\\subagent-worker-manual-0.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\sessions"), false);
+		assert.equal(isIgnoredSessionScanDirectory("C:\\repo\\project\\.pi\\subagents"), false);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/run-abc/run-0/session.jsonl"), false);
+		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/sessions/normal.jsonl"), false);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts without content filtering", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-artifact-filter-native-"));
+	try {
+		const projectPath = join(home, "project");
+		const piDir = join(home, ".pi", "agent", "sessions", "--C--repo-project--");
+		const parentFile = join(piDir, "parent.jsonl");
+		const ordinaryFile = join(piDir, "ordinary.jsonl");
+		const realChildFile = join(piDir, "parent", "run-abc", "run-0", "session.jsonl");
+
+		// 1. subagent-artifacts 下的 transcript.jsonl（包含 [prompt redacted] 文本）
+		const artifactTranscriptFile = join(piDir, "parent", "subagent-artifacts", "run-abc_worker_transcript.jsonl");
+
+		// 2. 项目 .pi 目录下配置 sessionDir: ".pi"，让扫描根真实覆盖 .pi
+		//    并在 .pi 下同时放置合法会话和 .pi/subagents/artifacts/transcript.jsonl
+		const projectPiDir = join(projectPath, ".pi");
+		const projectSettingsFile = join(projectPiDir, "settings.json");
+		const projectSessionFile = join(projectPiDir, "project-session.jsonl");
+		const projectArtifactFile = join(projectPiDir, "subagents", "artifacts", "run-xyz_reviewer_transcript.jsonl");
+
+		mkdirSync(projectPiDir, { recursive: true });
+		writeFileSync(projectSettingsFile, JSON.stringify({ sessionDir: ".pi" }), "utf8");
+
+		// 3. 用户合法会话，正文恰好包含 [prompt redacted]（用于验证不依赖内容做过滤）
+		const legitWithRedactedTextFile = join(piDir, "legit-redacted-text.jsonl");
+
+		writeSession(parentFile, session("Parent Session", projectPath));
+		writeSession(ordinaryFile, session("Ordinary Session", projectPath));
+		// 真实 subagent child session
+		writeSession(realChildFile, session("subagent-worker-run-abc-0", projectPath));
+
+		// 伪造 artifact 目录下的 transcript 文件（格式也是有效 JSONL，且包含 [prompt redacted]）
+		writeSession(artifactTranscriptFile, [
+			{ type: "session_info", name: "Prompt Audit: [prompt redacted]", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "[prompt redacted] Please review code." } },
+			{ type: "message", message: { role: "assistant", content: "Done." } },
+		]);
+		writeSession(projectSessionFile, session("Project Session in .pi", projectPath));
+		writeSession(projectArtifactFile, [
+			{ type: "session_info", name: "[prompt redacted]", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "Prompt A: [prompt redacted]" } },
+		]);
+
+		// 合法会话包含 [prompt redacted] 字符，必须正常呈现，绝不能被文本规则误杀
+		writeSession(legitWithRedactedTextFile, [
+			{ type: "session_info", name: "Legit Session With Prompt Audit", cwd: projectPath },
+			{ type: "message", message: { role: "user", content: "Here is [prompt redacted] text in normal chat." } },
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner();
+
+		// 验证当 artifact 目录本身作为扫描根传入时，入口守卫直接返回空数组
+		const directArtifactDirFiles = await scanner.collectJsonl(join(piDir, "parent", "subagent-artifacts"));
+		assert.deepEqual([...directArtifactDirFiles], [], "collectJsonl on subagent-artifacts root must return empty array");
+		const directProjectArtifactDirFiles = await scanner.collectJsonl(join(projectPiDir, "subagents", "artifacts"));
+		assert.deepEqual([...directProjectArtifactDirFiles], [], "collectJsonl on .pi/subagents/artifacts root must return empty array");
+
+		// 直接验证 collectJsonl 在扫描覆盖 .pi 的目录时跳过 .pi/subagents/artifacts
+		const directPiFiles = await scanner.collectJsonl(projectPiDir);
+		assert.equal(directPiFiles.includes(projectSessionFile), true, "collectJsonl must find project-session.jsonl in .pi");
+		assert.equal(directPiFiles.includes(projectArtifactFile), false, "collectJsonl must ignore .pi/subagents/artifacts/*");
+
+		const summaries = await scanner.list(projectPath);
+		const scannedPaths = new Set(summaries.map(s => s.filePath));
+
+		// 验证普通会话和 .pi 配置扫描根下的会话正常被扫描
+		assert.equal(scannedPaths.has(parentFile), true, "Parent session must be scanned");
+		assert.equal(scannedPaths.has(ordinaryFile), true, "Ordinary session must be scanned");
+		assert.equal(scannedPaths.has(projectSessionFile), true, "Project session in configured .pi sessionDir must be scanned");
+		assert.equal(scannedPaths.has(legitWithRedactedTextFile), true, "Legit session with [prompt redacted] in text must NOT be filtered out");
+
+		// 验证真实 subagent child session 正常被扫描且挂载到父会话
+		assert.equal(scannedPaths.has(realChildFile), true, "Real subagent child session must be scanned");
+		const childSummary = summaries.find(s => s.filePath === realChildFile);
+		assert.equal(childSummary?.isInternalSubagent, true, "Real child session must have isInternalSubagent = true");
+		assert.equal(childSummary?.parentSessionPath, parentFile, "Real child session must point to parentSessionPath");
+
+		// 验证 subagent-artifacts 与 .pi/subagents/artifacts 下的文件绝不进入 SessionScanner
+		assert.equal(scannedPaths.has(artifactTranscriptFile), false, "subagent-artifacts transcript must not enter SessionScanner");
+		assert.equal(scannedPaths.has(projectArtifactFile), false, ".pi/subagents/artifacts transcript must not enter SessionScanner even when scan root covers .pi");
+
+		// 磁盘上的文件并未被误删，只是被扫描器忽略
+		assert.equal(existsSync(artifactTranscriptFile), true, "Artifact file remains safely on disk");
+		assert.equal(existsSync(projectArtifactFile), true, "Project artifact file remains safely on disk");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via find args and path filter", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-artifact-filter-wsl-"));
+	try {
+		const projectPath = "/mnt/c/repo/project";
+		const sessionsRoot = "/home/dev/.pi/agent/sessions";
+		const parentFile = `${sessionsRoot}/--mnt-c-repo-project--/parent.jsonl`;
+		const childFile = `${sessionsRoot}/--mnt-c-repo-project--/parent/run-abc/run-0/session.jsonl`;
+		const artifactFile = `${sessionsRoot}/--mnt-c-repo-project--/parent/subagent-artifacts/run-abc_worker_transcript.jsonl`;
+		const projectArtifactFile = `${sessionsRoot}/--mnt-c-repo-project--/.pi/subagents/artifacts/reviewer_transcript.jsonl`;
+		const promptRedactedFile = `${sessionsRoot}/--mnt-c-repo-project--/redacted-in-content.jsonl`;
+
+		let capturedFindArgs = [];
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args) && args.includes("find")) {
+					capturedFindArgs = [...args];
+					// 模拟 find 输出：即使底层 find 返回了所有文件，JS 层 filter 也必须双重守卫
+					const output = [
+						parentFile,
+						childFile,
+						artifactFile,
+						projectArtifactFile,
+						promptRedactedFile,
+					].join("\n");
+					cb(null, output);
+					return;
+				}
+				cb(null, "");
+			},
+		};
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[childFile, `${session("subagent-worker-wsl-0", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[artifactFile, `${session("Prompt Audit: [prompt redacted]", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[projectArtifactFile, `${session("[prompt redacted]", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[promptRedactedFile, `${[
+				{ type: "session_info", name: "User Prompt Audit", cwd: projectPath },
+				{ type: "message", message: { role: "user", content: "[prompt redacted] Normal user query" } },
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new SessionScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+		const scannedPaths = new Set(summaries.map(s => s.filePath));
+
+		// 验证 WSL 模式下若直接以 artifact 目录为 sessionsDir，入口守卫直接返回空数组
+		const directWslArtifactFiles = await scanner.collectWslJsonl(
+			`${sessionsRoot}/--mnt-c-repo-project--/parent/subagent-artifacts`,
+		);
+		assert.deepEqual([...directWslArtifactFiles], [], "collectWslJsonl on subagent-artifacts root must return empty array");
+
+		// 1. 验证 find 命令参数中包含了排除规则
+		assert.ok(capturedFindArgs.includes("*/subagent-artifacts/*"), "WSL find args must exclude */subagent-artifacts/*");
+		assert.ok(capturedFindArgs.includes("*/.pi/subagents/artifacts/*"), "WSL find args must exclude */.pi/subagents/artifacts/*");
+		assert.ok(capturedFindArgs.includes("*/.pideck-archive/*"), "WSL find args must exclude */.pideck-archive/*");
+
+		// 2. 验证 artifact 文件被排除在 summaries 外
+		assert.equal(scannedPaths.has(artifactFile), false, "WSL subagent-artifacts transcript must not enter summaries");
+		assert.equal(scannedPaths.has(projectArtifactFile), false, "WSL .pi/subagents/artifacts transcript must not enter summaries");
+
+		// 3. 验证真实父会话和子会话正常保留
+		assert.equal(scannedPaths.has(parentFile), true, "WSL parent session must be scanned");
+		assert.equal(scannedPaths.has(childFile), true, "WSL real child session must be scanned");
+		const childSummary = summaries.find(s => s.filePath === childFile);
+		assert.equal(childSummary?.isInternalSubagent, true, "WSL real child session must be internal subagent");
+		assert.equal(childSummary?.parentSessionPath, parentFile, "WSL real child session must point to parent file");
+
+		// 4. 验证内容中包含 [prompt redacted] 的合法会话正常保留（不依赖内容过滤）
+		assert.equal(scannedPaths.has(promptRedactedFile), true, "WSL legit session with [prompt redacted] must be scanned");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("distinguishes regular /fork session from subagent using run records and names", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-fork-vs-subagent-"));
+	const tempSubagentsDir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const projDir = join(sessionsRoot, "--C--repo-project--");
+
+		const parentFile = join(projDir, "parent.jsonl");
+		const normalForkFile = join(projDir, "user-fork-feature.jsonl");
+		const legacyNamedSubagentFile = join(projDir, "legacy-subagent.jsonl");
+		const uuidSubagentFile = join(projDir, "2026-09-10T10-00-00-000Z_01a089f3-uuid-agent.jsonl");
+		const regularSessionFile = join(projDir, "regular.jsonl");
+
+		// 1. 父会话
+		writeSession(parentFile, session("Parent Session", projectPath));
+
+		// 2. 普通 session (无 parentSession，无 run record)
+		writeSession(regularSessionFile, session("Regular Session", projectPath));
+
+		// 3. 用户手动 /fork session (有 parentSession，无 run record，无 subagent- 命名)
+		writeSession(normalForkFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("Feature branch exploration", projectPath),
+		]);
+
+		// 4. 旧式 subagent-reviewer-* (有 parentSession，以 subagent- 命名)
+		writeSession(legacyNamedSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("subagent-reviewer-code-check-0", projectPath),
+		]);
+
+		// 5. UUID 命名的 subagent (以 UUID 命名，有 parentSession，记录在临时目录 pi-subagents-* 的 status.json 中)
+		writeSession(uuidSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("worker: implement task", projectPath),
+		]);
+
+		// 写入 pi-subagents 运行期临时 run record
+		const runDir = join(tempSubagentsDir, "async-subagent-runs", "run-123");
+		mkdirSync(runDir, { recursive: true });
+		writeFileSync(
+			join(runDir, "status.json"),
+			JSON.stringify({
+				runId: "run-123",
+				agent: "worker",
+				sessionFile: uuidSubagentFile,
+			}, null, 2),
+			"utf8",
+		);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const summaries = await new SessionScanner().list(projectPath);
+
+		// 1. 普通 session
+		const regularSummary = summaries.find(s => s.filePath === regularSessionFile);
+		assert.ok(regularSummary);
+		assert.equal(regularSummary.isInternalSubagent, undefined, "Regular session must not be internal subagent");
+		assert.equal(regularSummary.parentSessionPath, undefined);
+
+		// 2. 用户手动 /fork session: parentSession 是，run record 否 -> 普通/fork session (isInternalSubagent = undefined)
+		const forkSummary = summaries.find(s => s.filePath === normalForkFile);
+		assert.ok(forkSummary);
+		assert.equal(forkSummary.isInternalSubagent, undefined, "User /fork session must NOT be marked as internal subagent");
+
+		// 3. 旧式 subagent-reviewer-*: parentSession 是，名字像 subagent -> Agent (isInternalSubagent = true)
+		const legacySummary = summaries.find(s => s.filePath === legacyNamedSubagentFile);
+		assert.ok(legacySummary);
+		assert.equal(legacySummary.isInternalSubagent, true, "subagent-* named session with parent must be internal subagent");
+
+		// 4. UUID 命名 subagent: run record 命中 -> Agent (isInternalSubagent = true)
+		const uuidSummary = summaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(uuidSummary);
+		assert.equal(uuidSummary.isInternalSubagent, true, "UUID session found in pi-subagents tmp records must be internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(tempSubagentsDir, { recursive: true, force: true });
+	}
+});
+
+test("distinguishes WSL regular /fork session from subagent using WSL run records", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-wsl-fork-vs-subagent-"));
+	try {
+		const projectPath = "/home/dev/repo/project";
+		const parentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/parent.jsonl";
+		const normalForkFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/user-fork.jsonl";
+		const legacyNamedSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/subagent-reviewer-0.jsonl";
+		const uuidSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/01a089f3-subagent.jsonl";
+		const regularSessionFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/regular.jsonl";
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[regularSessionFile, `${session("Regular WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[normalForkFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("Feature exploration in WSL", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+			[legacyNamedSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("subagent-reviewer-wsl-check", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+			[uuidSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("worker: implement WSL task", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args)) {
+					// 模拟 WSL find
+					if (args.includes("find")) {
+						cb(null, [parentFile, regularSessionFile, normalForkFile, legacyNamedSubagentFile, uuidSubagentFile].join("\n"));
+						return;
+					}
+					// 模拟 WSL 运行记录 grep 反查
+					if (args.includes("sh") && typeof args[args.indexOf("sh") + 2] === "string") {
+						const script = args[args.indexOf("sh") + 2];
+						if (script.includes("sessionFile")) {
+							cb(null, `"sessionFile": "${uuidSubagentFile}"\n`);
+							return;
+						}
+					}
+				}
+				cb(null, "");
+			},
+		};
+
+		const { SessionScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new SessionScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+
+		// 1. 普通 WSL session: 无 parentSession，无 run record
+		const regularSummary = summaries.find(s => s.filePath === regularSessionFile);
+		assert.ok(regularSummary);
+		assert.equal(regularSummary.isInternalSubagent, undefined, "WSL regular session must not be internal subagent");
+
+		// 2. 用户手动 /fork session: 有 parentSession，无 WSL run record -> 普通/fork 会话，不应被标为 internal subagent
+		const forkSummary = summaries.find(s => s.filePath === normalForkFile);
+		assert.ok(forkSummary);
+		assert.equal(forkSummary.isInternalSubagent, undefined, "WSL user /fork session must NOT be marked as internal subagent");
+
+		// 3. 旧式 subagent-* 命名: 有 parentSession，subagent-* 命名 -> Agent (isInternalSubagent = true)
+		const legacySummary = summaries.find(s => s.filePath === legacyNamedSubagentFile);
+		assert.ok(legacySummary);
+		assert.equal(legacySummary.isInternalSubagent, true, "WSL subagent-* named session must be internal subagent");
+
+		// 4. UUID 命名 subagent: WSL run record 命中 -> Agent (isInternalSubagent = true)
+		const uuidSummary = summaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(uuidSummary);
+		assert.equal(uuidSummary.isInternalSubagent, true, "WSL UUID session found in WSL pi-subagents records must be internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("WSL subagents script handles custom PI_SUBAGENTS_TEMP_ROOT and spaces correctly", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-wsl-custom-temp-"));
+	try {
+		const { SessionScanner } = loadSessionScanner(home);
+
+		// 1. 验证静态脚本构造
+		const script = SessionScanner.buildWslSubagentsScript();
+		assert.ok(script.includes('find /tmp -maxdepth 4 -path "*/pi-subagents-*/*.json"'), "/tmp must scan pi-subagents-*");
+		assert.ok(script.includes('find "$PI_SUBAGENTS_TEMP_ROOT" -maxdepth 3 -name "*.json"'), "custom root must scan *.json directly and be quoted");
+		assert.ok(!script.includes('find $ROOTS'), "must not combine roots into unquoted $ROOTS");
+
+		// 2. 模拟 WSL 环境下自定义目录带空格的场景（如 /home/dev/my custom subagent runtime）
+		const customWslDir = "/home/dev/my custom subagent runtime";
+		const projectPath = "/home/dev/repo/project";
+		const parentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/parent.jsonl";
+		const customSubagentFile = "/home/dev/.pi/agent/sessions/--home-dev-repo-project--/custom-uuid-agent.jsonl";
+
+		const files = new Map([
+			[parentFile, `${session("Parent WSL Session", projectPath).map(e => JSON.stringify(e)).join("\n")}\n`],
+			[customSubagentFile, `${[
+				{ type: "session", parentSession: parentFile, cwd: projectPath },
+				...session("worker: task from custom root", projectPath),
+			].map(e => JSON.stringify(e)).join("\n")}\n`],
+		]);
+
+		let capturedScript = "";
+		const childProcessMock = {
+			execFile: (_cmd, args, _opts, cb) => {
+				if (Array.isArray(args)) {
+					if (args.includes("find") && !args.includes("sh")) {
+						cb(null, [parentFile, customSubagentFile].join("\n"));
+						return;
+					}
+					if (args.includes("sh") && typeof args[args.indexOf("sh") + 2] === "string") {
+						capturedScript = args[args.indexOf("sh") + 2];
+						// 模拟在 custom root 中匹配到了 sessionFile
+						cb(null, `"sessionFile": "${customSubagentFile}"\n`);
+						return;
+					}
+				}
+				cb(null, "");
+			},
+		};
+
+		const { SessionScanner: MockedScanner } = loadSessionScanner(home, {}, childProcessMock);
+		const scanner = new MockedScanner();
+		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
+		scanner.readWslFile = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file: ${filePath}`);
+			return content;
+		};
+		scanner.readWslFileHead = async (filePath) => {
+			const content = files.get(filePath);
+			if (!content) throw new Error(`Missing WSL file head: ${filePath}`);
+			return content.slice(0, 4096);
+		};
+		scanner.existsWslFile = async (filePath) => files.has(filePath);
+
+		const summaries = await scanner.list(projectPath);
+		assert.ok(capturedScript.length > 0, "WSL subagent script must have been executed");
+		assert.ok(capturedScript.includes('find "$PI_SUBAGENTS_TEMP_ROOT"'), "script must quote PI_SUBAGENTS_TEMP_ROOT");
+
+		const subagentSummary = summaries.find(s => s.filePath === customSubagentFile);
+		assert.ok(subagentSummary);
+		assert.equal(subagentSummary.isInternalSubagent, true, "Session recorded in custom WSL root must be identified as internal subagent");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("invalidates cached summary classification when a subagent run record appears later without modifying the session file", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-cache-invalidation-"));
+	const tempSubagentsDir = mkdtempSync(join(tmpdir(), "pi-subagents-cache-test-"));
+	try {
+		const projectPath = "C:\\repo\\project";
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const projDir = join(sessionsRoot, "--C--repo-project--");
+
+		const parentFile = join(projDir, "parent.jsonl");
+		const uuidSubagentFile = join(projDir, "2026-09-10T12-00-00-000Z_uuid-child.jsonl");
+
+		// 写入初始会话文件
+		writeSession(parentFile, session("Parent Session", projectPath));
+		writeSession(uuidSubagentFile, [
+			{ type: "session", parentSession: parentFile, cwd: projectPath },
+			...session("task execution in progress", projectPath),
+		]);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner();
+
+		// 1. 第一次扫描：此时 run record 尚未出现，UUID 会话按普通/fork 会话分类
+		const firstSummaries = await scanner.list(projectPath);
+		const firstSummary = firstSummaries.find(s => s.filePath === uuidSubagentFile);
+		assert.ok(firstSummary);
+		assert.equal(firstSummary.isInternalSubagent, undefined, "First scan must treat session as regular/fork because no run record exists");
+
+		// 2. 绝对不修改 uuidSubagentFile（保持相同的 mtime 和 size）
+		// 外部 pi-subagents 随后写入 status.json / sessionFile
+		const runDir = join(tempSubagentsDir, "async-subagent-runs", "run-999");
+		mkdirSync(runDir, { recursive: true });
+		writeFileSync(
+			join(runDir, "status.json"),
+			JSON.stringify({
+				runId: "run-999",
+				agent: "worker",
+				sessionFile: uuidSubagentFile,
+			}, null, 2),
+			"utf8",
+		);
+
+		// 3. 直接进行第二次扫描（生产代码在 list 开始时会自动 forceRefresh 运行记录快照）
+		const secondSummaries = await scanner.list(projectPath);
+		const secondSummary = secondSummaries.find(s => s.filePath === uuidSubagentFile);
+
+		// 4. 验证：由于外部 run record 提供了新的强身份信息，缓存必须被突破并重新分类为内部 subagent
+		assert.ok(secondSummary);
+		assert.equal(secondSummary.isInternalSubagent, true, "Second scan must update classification to internal subagent without session file modification");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(tempSubagentsDir, { recursive: true, force: true });
 	}
 });

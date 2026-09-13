@@ -19,7 +19,7 @@ import { sessionStatusDotClass } from "@/agentListDisplay";
 import type { WebProject, WebRuntime, WebSession, WebState } from "./webTypes";
 
 const projectRowClass =
-	"conversation relative w-full min-h-9 items-center gap-1.5 rounded-lg border border-transparent bg-background px-3 py-1 text-left text-body text-foreground shadow-none transition-[background-color,border-color] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
+	"conversation relative flex min-h-7 w-full items-center gap-1.5 rounded-md border border-transparent bg-background px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,border-color] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
 
 const sessionRowClass =
 	"conversation agent-row relative flex min-h-7 w-full items-center gap-1.5 rounded-md border border-transparent px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,border-color] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";
@@ -185,27 +185,27 @@ export function WebSidebar(props: {
 					<X className="size-4" aria-hidden="true" />
 				</Button>
 			</div>
-			<div className="sidebar-body flex min-h-0 flex-1 flex-col gap-2 px-2 py-1">
+			<div className="sidebar-body flex min-h-0 flex-1 flex-col gap-1 px-2 py-1">
 				{/* 搜索行 */}
 				<div className="search-row grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
 					<div className="search-box relative min-w-0">
 						<Search
 							size={14}
-							className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+							className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
 							aria-hidden="true"
 						/>
 						<Input
 							value={search}
 							onChange={(event) => setSearch(event.target.value)}
 							placeholder={t("app.search")}
-							className="h-9 pl-8"
+							className="h-8 pl-7"
 						/>
 					</div>
 					<Button
 						type="button"
 						variant="outline"
 						size="icon"
-						className="size-9 shrink-0"
+						className="size-8 shrink-0"
 						onClick={() => setAddingProject((value) => !value)}
 						aria-label={t("web.newProject")}
 						title={t("web.newProject")}
@@ -251,11 +251,11 @@ export function WebSidebar(props: {
 						const projectName = displayProjectName(project);
 						const creating = creatingProjectId === project.id;
 						return (
-							<div key={project.id} className="project-group mb-2">
+							<div key={project.id} className={cn("project-group", project.kind === "chat" ? "mb-2" : "mb-1")}>
 								<div className="project-row flex min-w-0 items-center gap-0.5">
 									<button
 										type="button"
-										className={cn(projectRowClass, "flex min-h-8 min-w-0 flex-1")}
+										className={cn(projectRowClass, "min-w-0 flex-1")}
 										disabled={Boolean(creatingProjectId)}
 										onClick={() => toggleProject(project.id)}
 										title={project.path}
@@ -308,7 +308,7 @@ export function WebSidebar(props: {
 									</div>
 								</div>
 								{expanded && (
-									<div className="project-children mt-2 flex flex-col gap-2 px-1 pb-1">
+									<div className="project-children mt-1 flex flex-col gap-px px-1 pb-1">
 										{visibleSessions.map((session) => {
 											const runtime = runtimeFor(session.id);
 											return (

@@ -105,9 +105,6 @@ const defaultSettings: AppSettings = {
   /** 用户删除的内置 Prompt 模板名称；找回默认模板时清空 */
   hiddenBuiltinPromptNames: [],
 
-  // ── 更新检测：默认正常检测，用户可手动关闭忽略更新 ──
-  disableUpdateCheck: false,
-
   // ── Agent 启动诊断/加速：offline 默认开；扩展/技能默认加载 ──
   piRpcOffline: true,
   piRpcNoExtensions: false,
@@ -167,12 +164,19 @@ export class SettingsStore {
         Object.hasOwn(parsedUnknown, "telemetryLastHeartbeatDate");
       const hadLegacyLinkOpenMode = Object.hasOwn(parsedUnknown, "linkOpenMode");
       const hadLegacyElectronChromiumSandbox = Object.hasOwn(parsedUnknown, "electronChromiumSandbox");
+      // 0.2.1 移除内置更新系统：disableUpdateCheck 只读兼容——
+      // 上面解构剥离后不再写回，但它自己必须能触发一次 save() 把磁盘文件里的
+      // 残留字段清掉；否则如果用户 settings.json 里只剩这一个 legacy 字段，
+      // 它会永远留在那里（无害但干扰后续 diff / 调试）。
+      const hadLegacyDisableUpdateCheck = Object.hasOwn(parsedUnknown, "disableUpdateCheck");
       const {
         telemetryEnabled: _ignoredTelemetryEnabled,
         telemetryInstallId: _ignoredTelemetryInstallId,
         telemetryLastHeartbeatDate: _ignoredTelemetryLastHeartbeatDate,
         linkOpenMode: _ignoredLinkOpenMode,
         electronChromiumSandbox: _ignoredElectronChromiumSandbox,
+        // 0.2.1 移除内置更新系统：旧 settings.json 的 disableUpdateCheck 只读兼容，加载时剥离后不再写回。
+        disableUpdateCheck: _ignoredDisableUpdateCheck,
         ...parsedClean
       } = parsedUnknown;
       const parsed = parsedClean as Partial<AppSettings>;
@@ -207,6 +211,7 @@ export class SettingsStore {
         hadLegacyTelemetry ||
         hadLegacyLinkOpenMode ||
         hadLegacyElectronChromiumSandbox ||
+        hadLegacyDisableUpdateCheck ||
         migratedGitCommitMessagePrompt ||
         migratedBuiltInExtensionDefaults
       ) {

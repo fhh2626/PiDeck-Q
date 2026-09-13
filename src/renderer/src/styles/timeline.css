@@ -183,7 +183,7 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  margin-top: var(--space-3);
+  margin-top: var(--density-block-gap);
   /* 容器级贯穿竖线：思考/工具/中间回答共享一条连续轨道，
      替代各子项（TimelineMarker）自带的独立短竖线，视觉不再断裂。 */
   padding-left: 0;

@@ -62,14 +62,12 @@ test("dialog onOpenChange handlers invoke onClose instead of returning the callb
 
 test("async leaf controllers contain cancellation and stale-result guards", () => {
   const imports = read("hooks/useImportController.ts");
-  const updates = read("hooks/useAppUpdateController.ts");
+  // 0.2.1 移除内置更新后，AppUpdateController 的 downloadGate 一并消失；
+  // 这里只守住仍在使用的 import 控制器的取消/陈旧结果闸门。
   assert.match(imports, /mounted\.current = true/);
   assert.match(imports, /mounted\.current = false/);
   assert.match(imports, /requestSequence/);
   assert.match(imports, /sequence\.current \+= 1/);
-  assert.match(updates, /downloadGate/);
-  assert.match(updates, /acceptsProgress/);
-  assert.match(updates, /downloadGate\.current\.settle/);
 });
 
 test("ScratchPad root preserves shortcut, closing, and timer cleanup", () => {
@@ -215,92 +213,6 @@ test("import controller effect replay restores mounted state and rejects a defer
   assert.equal(harness.render(options(null)).result.sessions.length, 0);
 });
 
-test("update gate blocks B after A clear and rejects A progress until A settles", () => {
-  const { createAppUpdateDownloadGate } = compile("hooks/useAppUpdateController.ts", { react: {} });
-  const gate = createAppUpdateDownloadGate();
-  const a = gate.begin();
-  assert.equal(gate.acceptsProgress(), true);
-  gate.invalidate();
-  assert.equal(gate.acceptsProgress(), false);
-  assert.equal(gate.begin(), null);
-  gate.settle(a);
-  const b = gate.begin();
-  assert.notEqual(b, null);
-  assert.equal(gate.acceptsProgress(), true);
-  gate.settle(b);
-  assert.equal(gate.isInFlight(), false);
-});
-
-function createUpdateHookHarness() {
-  const refs = [];
-  const states = [];
-  let cursor = 0;
-  let effects = [];
-  const react = {
-    useRef(initial) {
-      const index = cursor++;
-      refs[index] ??= { current: initial };
-      return refs[index];
-    },
-    useState(initial) {
-      const index = cursor++;
-      states[index] ??= typeof initial === "function" ? initial() : initial;
-      return [states[index], (next) => { states[index] = typeof next === "function" ? next(states[index]) : next; }];
-    },
-    useCallback(fn) { cursor++; return fn; },
-    useEffect(fn) { cursor++; effects.push(fn); },
-  };
-  const hooks = compile("hooks/useAppUpdateController.ts", { react });
-  return {
-    render(api) {
-      cursor = 0;
-      effects = [];
-      const result = hooks.useAppUpdateController(api, false);
-      return { result, effects };
-    },
-  };
-}
-
-test("update check and download resolve into completed progress and a downloaded path", async () => {
-  let onProgress;
-  let resolveDownload;
-  const updateInfo = {
-    currentVersion: "1.0.0",
-    latestVersion: "1.1.0",
-    hasUpdate: true,
-    releaseName: "1.1.0",
-    releaseNotes: "notes",
-    releaseUrl: "https://example.test/release",
-    assets: [{ name: "PiDeck-Q-win-x64.zip", url: "https://example.test/PiDeck-Q-win-x64.zip", size: 10 }],
-    recommendedAsset: { name: "PiDeck-Q-win-x64.zip", url: "https://example.test/PiDeck-Q-win-x64.zip", size: 10 },
-  };
-  const api = {
-    checkUpdate: async () => updateInfo,
-    downloadUpdate: async () => new Promise((resolve) => { resolveDownload = resolve; }),
-    openUpdatePackage: async () => undefined,
-    onUpdateProgress: (callback) => { onProgress = callback; return () => { onProgress = undefined; }; },
-  };
-  const harness = createUpdateHookHarness();
-  const initial = harness.render(api);
-  initial.effects.map((setup) => setup()).filter(Boolean);
-  assert.equal(await initial.result.check("manual"), updateInfo);
-  const afterCheck = harness.render(api).result;
-  assert.equal(afterCheck.info.recommendedAsset.name, "PiDeck-Q-win-x64.zip");
-
-  const downloadPromise = afterCheck.download();
-  onProgress({ assetName: "PiDeck-Q-win-x64.zip", receivedBytes: 5, totalBytes: 10, percent: 50, state: "downloading" });
-  assert.equal(harness.render(api).result.progress.percent, 50);
-  resolveDownload({ filePath: "C:/tmp/PiDeck-Q-win-x64.zip", assetName: "PiDeck-Q-win-x64.zip" });
-  assert.equal(await downloadPromise, "C:/tmp/PiDeck-Q-win-x64.zip");
-
-  const completed = harness.render(api).result;
-  assert.equal(completed.downloadedPath, "C:/tmp/PiDeck-Q-win-x64.zip");
-  assert.equal(completed.progress.state, "completed");
-  assert.equal(completed.progress.percent, 100);
-  assert.equal(completed.progress.filePath, "C:/tmp/PiDeck-Q-win-x64.zip");
-  assert.equal(completed.downloading, false);
-});
-
 test("Import error renders as a fixed high-z-index alert and disappears when cleared", () => {
   const jsx = (type, props) => ({ type, props: props ?? {} });
   const { renderImportError } = compile("components/overlays/ImportOverlayHost.tsx", {
@@ -321,17 +233,14 @@ test("Import error renders as a fixed high-z-index alert and disappears when cle
   assert.equal(renderImportError(null), null);
 });
 
-test("overlay roots keep controller/import/runtime error visible", () => {
-  const update = read("components/overlays/AppUpdateOverlay.tsx");
+test("overlay roots keep import/runtime error visible", () => {
   const imports = read("components/overlays/ImportOverlayHost.tsx");
-  assert.match(update, /props\.error/);
-  assert.match(update, /role="alert"/);
-  assert.match(update, /controller\.error/);
-  // 发布说明和浏览器下载必须交由系统浏览器，避免安装包跳转被应用内部拦截。
-  assert.match(update, /onBrowserDownload=\{\(\) => void openExternal\([^)]*, true\)\}/);
-  assert.match(update, /onOpenRelease=\{\(\) => void openExternal\(info\.releaseUrl, true\)\}/);
+  const runtime = read("components/overlays/SessionRuntimeUiOverlay.tsx");
+  // AppUpdateOverlay 已随 0.2.1 移除；这里守住 import / runtime 两个常驻 overlay 的错误可见性。
   assert.match(imports, /controller\.error/);
   assert.match(imports, /renderImportError/);
+  assert.match(imports, /role="alert"/);
+  assert.match(runtime, /onError/);
 });
 
 test("allowOther renders a custom input and sends its value through the responder envelope", async () => {

@@ -109,7 +109,7 @@ export function LogsDateRangePicker(props: {
 					<div className="flex items-center gap-1.5 border-t border-border-subtle px-3 py-2">
 						<Input
 							type="time"
-							className="w-[104px] shrink-0"
+							className="h-8 w-[104px] shrink-0"
 							value={fromTime}
 							onChange={(event) => {
 								const base = fromDate ?? new Date();
@@ -120,7 +120,7 @@ export function LogsDateRangePicker(props: {
 						<span className="text-text-tertiary" aria-hidden="true">~</span>
 						<Input
 							type="time"
-							className="w-[104px] shrink-0"
+							className="h-8 w-[104px] shrink-0"
 							value={toTime}
 							onChange={(event) => {
 								const base = toDate ?? new Date();

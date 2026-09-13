@@ -14,6 +14,7 @@ import type { UIMessage } from "ai";
 import { Button } from "@/components/ui-shadcn/button";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { CARD_BODY_PADDING, CARD_PREVIEW_PADDING, DASHED_SURFACE, THINKING_HEADER, USER_TURN_BUBBLE } from "@/lib/density";
 import { WebAssistantText } from "./WebAssistantText";
 import type { WebPendingUiRequest } from "./webTypes";
 import type { AgentUiRequest, AgentUiResponse, SessionUiResponseInput } from "../../../shared/types";
@@ -41,7 +42,7 @@ export const WebUserBubble = memo(function WebUserBubble(props: { message: UIMes
 	if (!text.trim()) return null;
 	return (
 		<article className="user-turn group/user flex w-full min-w-0 max-w-full flex-col items-end">
-			<div className="w-fit min-w-0 max-w-[min(82%,64ch)] rounded-[14px] border border-border bg-muted/60 px-3 py-2 text-sm text-foreground [overflow-wrap:anywhere] break-words">
+			<div className={USER_TURN_BUBBLE}>
 				<div className="text-chat leading-[1.6] text-text-primary whitespace-pre-wrap break-words">
 					{text}
 				</div>
@@ -61,10 +62,10 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 	const [expanded, setExpanded] = useState(false);
 	if (!props.text.trim()) return null;
 	return (
-		<TimelineMarker kind="thinking" tone="neutral" contentClassName="pb-0">
+		<TimelineMarker kind="thinking" tone="neutral">
 		<section className="w-full min-w-0 overflow-hidden rounded-md border-0">
 			<button
-				className="flex min-h-6 w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2 py-0.5 text-left text-control leading-5 text-text-secondary transition-[background-color,transform] duration-150 motion-reduce:transition-none hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] active:scale-[0.99] focus-visible:-outline-offset-2 focus-visible:outline-2 [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]"
+				className={`${THINKING_HEADER} border-0 bg-transparent text-control leading-5 text-text-secondary hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]`}
 				onClick={() => setExpanded((value) => !value)}
 				aria-expanded={expanded}
 				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
@@ -80,9 +81,10 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 			</button>
 			{/* 虚线框内容区（折叠/展开共用容器，与桌面端 ThinkingBlock 一致）：
 			    折叠态单行预览在标题行下方独立一行，不与标题挤在一起 */}
-			<div className="rounded-md border border-dashed border-border-subtle bg-[color:color-mix(in_srgb,var(--color-bg-muted)_45%,transparent)]">
+			<div className={DASHED_SURFACE}>
 				{expanded ? (
-					<div className="markdown-body px-3 pt-2 pb-1 text-text-tertiary">
+					<>
+					<div className={`markdown-body ${CARD_BODY_PADDING} text-text-tertiary`}>
 						<MarkdownStream
 							text={props.text}
 							onOpenExternal={(url: string) => {
@@ -90,24 +92,25 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 								window.open(url, "_blank", "noopener");
 							}}
 						/>
-						{/* 长思考展开后，内容尾部提供收起入口（与桌面端 ThinkingBlock 一致）：
-						    滚动到内容末尾即可收起，不必滚回顶部标题行 */}
-						<div className="mt-1.5">
-							<button
-								type="button"
-								className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-text-tertiary transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_45%,transparent)] hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
-								onClick={() => setExpanded(false)}
-							>
-								<ChevronUp size={12} aria-hidden="true" />
-								{t("thinking.collapse")}
-							</button>
-						</div>
 					</div>
+					{/* 长思考展开后，内容尾部提供收起入口（与桌面端 ThinkingBlock 一致）：
+					    滚动到内容末尾即可收起，不必滚回顶部标题行 */}
+					<div className="flex px-1.5 pb-1">
+						<button
+							type="button"
+							className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-micro text-text-tertiary transition-colors duration-150 hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_45%,transparent)] hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]"
+							onClick={() => setExpanded(false)}
+						>
+							<ChevronUp size={12} aria-hidden="true" />
+							{t("thinking.collapse")}
+						</button>
+					</div>
+					</>
 				) : (
 					<SingleLinePreview
 						text={props.text}
 						running={props.running}
-						className="px-3 pt-2 pb-1 font-mono text-caption text-text-tertiary"
+						className={CARD_PREVIEW_PADDING}
 					/>
 				)}
 			</div>
@@ -141,7 +144,7 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart 
 	const error = state === "output-error" || state === "error" || Boolean(part.errorText);
 	const preview = formatToolPreview(error ? part.errorText : running ? (part as any).input : part.output);
 	return (
-		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : "success"} contentClassName="pb-0">
+		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : "success"}>
 		<section
 			className={cn(
 				"tool-card inline-flex w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel transition-[border-color,background-color] duration-150",
@@ -344,7 +347,7 @@ const WebPendingAskInner = memo(function WebPendingAskInner(props: {
 	);
 
 	return (
-		<div className="mt-3 w-full">
+		<div className="mt-2 w-full">
 			<SessionRuntimeUiOverlay
 				sessionId={request.sessionId}
 				runtime={runtimeView}
@@ -420,7 +423,7 @@ export function WebTimeline(props: {
 			ref={timelineRef}
 			onScroll={updateScrollState}
 		>
-			<div className="message-list flex flex-col gap-2 p-4">
+			<div className="message-list flex flex-col gap-1.5 px-3 py-2.5">
 				{hasMoreHistory && (
 					<div className="flex justify-center py-1">
 						<Button
@@ -493,7 +496,7 @@ export function WebTimeline(props: {
 
 				{/* 错误诊断卡 */}
 				{error ? (
-					<div className="diagnostic-card tone-error p-3 text-control text-danger">
+					<div className="diagnostic-card tone-error p-2 text-control text-danger">
 						{error}
 					</div>
 				) : null}

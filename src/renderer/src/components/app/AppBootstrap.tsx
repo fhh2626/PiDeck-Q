@@ -14,7 +14,6 @@ export const AppBootstrap = React.memo(function AppBootstrap(props: AppBootstrap
   useGlobalAgentListeners({
     onProjectsChanged: props.onProjectsChanged,
     onSettingsApplied: props.onSettingsApplied,
-    onUpdateProgress: () => undefined,
     onTrustRequest: props.onTrustRequest,
     onFocusTarget: props.onFocusTarget,
   });

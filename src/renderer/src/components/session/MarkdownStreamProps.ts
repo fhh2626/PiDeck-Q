@@ -6,7 +6,7 @@ export type MarkdownStreamProps = {
 	isStreaming?: boolean;
 	onOpenExternal: (url: string, forceSystem?: boolean) => void;
 	onOpenFile?: (path: string) => void;
-	/** 静态场景（FileDiffViewer/AppUpdateOverlay/ScratchPad）可覆盖默认插件。 */
+	/** 静态场景（FileDiffViewer/ScratchPad）可覆盖默认插件。0.2.1 移除 AppUpdateOverlay 后剩两个主要静态场景。 */
 	remarkPlugins?: StreamdownProps["remarkPlugins"];
 	rehypePlugins?: StreamdownProps["rehypePlugins"];
 	urlTransform?: (url: string) => string;

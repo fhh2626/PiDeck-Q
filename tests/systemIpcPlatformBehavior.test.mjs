@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
  * 返回了正确的值。
  *
  * 说明：systemIpc.ts 用「无扩展名」的相对 import，Node 原生 strip-types 无法
- * 直接解析（与 AppUpdateService 不同）。这里用 ts.transpileModule 在 vm 沙箱里
+ * 直接解析。这里用 ts.transpileModule 在 vm 沙箱里
  * 编译，并用一个递归的 .ts 解析 require 加载其传递依赖（全部是 node 内置/纯模块）。
  */
 
@@ -213,9 +213,6 @@ function createDeps(overrides = {}) {
 		},
 		sendToRenderer: (channel, ...args) => calls.sendToRenderer.push({ channel, args }),
 		mainCopy: (key) => key,
-		checkForAppUpdate: async () => null,
-		downloadUpdateAsset: async (asset) => ({ filePath: `/updates/${asset.name}` }),
-		openDownloadedUpdate: async () => {},
 		openExternalUrl: async (url, forceSystem) => {
 			calls.openExternalUrl.push({ url, forceSystem });
 		},
@@ -240,7 +237,8 @@ test("systemIpc appInfo returns platform application version and platform", asyn
 	const info = await invoke(ipcChannels.appInfo);
 	assert.equal(info.version, "9.8.7");
 	assert.equal(info.platform, process.platform);
-	assert.equal(typeof info.releasesUrl, "string");
+	// 0.2.1 移除内置更新后：appInfo 不再携带 releasesUrl（GitHub 外链改由渲染层直接引 APP_RELEASES_URL）
+	assert.equal("releasesUrl" in info, false);
 });
 
 test("systemIpc preferred system languages come from the platform adapter", async () => {

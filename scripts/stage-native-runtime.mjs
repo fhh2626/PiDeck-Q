@@ -24,12 +24,6 @@ export const SQL_JS_RUNTIME_FILES = Object.freeze([
 	"dist/sql-wasm.wasm",
 ]);
 
-/** semver is imported by the native sidecar update service and is a single-file runtime package. */
-export const SEMVER_RUNTIME_FILES = Object.freeze([
-	"package.json",
-	"semver.js",
-]);
-
 /**
  * Copy only JavaScript implementation files from a dependency library. Source
  * maps and test modules are useful while developing but are not runtime input.
@@ -89,13 +83,6 @@ async function stageSqlJs(projectRoot, stageRoot) {
 	return copyFiles(sourceRoot, destinationRoot, SQL_JS_RUNTIME_FILES, "sql.js");
 }
 
-async function stageSemver(projectRoot, stageRoot) {
-	const sourceRoot = join(projectRoot, "node_modules", "semver");
-	const destinationRoot = join(stageRoot, "app", "node_modules", "semver");
-	await resetDirectory(destinationRoot);
-	return copyFiles(sourceRoot, destinationRoot, SEMVER_RUNTIME_FILES, "semver");
-}
-
 async function stageUndiciAt(projectRoot, destinationRoot) {
 	const sourceRoot = join(projectRoot, "node_modules", "undici");
 	await resetDirectory(destinationRoot);
@@ -104,10 +91,23 @@ async function stageUndiciAt(projectRoot, destinationRoot) {
 	return copied;
 }
 
+async function stageAcornAt(projectRoot, destinationRoot) {
+	const sourceRoot = join(projectRoot, "node_modules", "acorn");
+	await resetDirectory(destinationRoot);
+	let copied = await copyFiles(sourceRoot, destinationRoot, ["package.json"], "acorn");
+	copied += await copyJavaScriptTree(join(sourceRoot, "dist"), join(destinationRoot, "dist"));
+	return copied;
+}
+
 /**
  * Stage only runtime files for the Node sidecar and built-in extensions.
  * Keeping this boundary explicit prevents a local npm build directory from
  * silently becoming part of the portable release.
+ *
+ * WebFetch 的普通 npm 依赖（如 @mozilla/readability, linkedom, lru-cache, turndown）
+ * 已完全内联打包进 dist/index.mjs，此处仅需复制仍需外部解析的 undici，避免 packaged extension
+ * 依赖仓库根 node_modules。
+ * acorn 供 change-pi-prompt 与 pi-subagents 的 workflowScript AST parser 使用。
  */
 export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoot } = {}) {
 	const root = resolve(projectRoot);
@@ -115,11 +115,14 @@ export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoo
 	const counts = {
 		nodePty: await stageNodePty(root, output),
 		sqlJs: await stageSqlJs(root, output),
-		semver: await stageSemver(root, output),
 		undici: await stageUndiciAt(root, join(output, "app", "node_modules", "undici")),
 		extensionUndici: await stageUndiciAt(
 			root,
 			join(output, "resources", "extensions", "node_modules", "undici"),
+		),
+		extensionAcorn: await stageAcornAt(
+			root,
+			join(output, "resources", "extensions", "node_modules", "acorn"),
 		),
 	};
 	return { projectRoot: root, stageRoot: output, counts };
