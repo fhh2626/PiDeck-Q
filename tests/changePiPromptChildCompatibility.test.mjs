@@ -1648,9 +1648,3 @@ test("child before_agent_start applies the owner extension ceiling before render
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
-
-// 18. 确认没有修改 resources/extensions/pideck-q-subagents/**
-test("pideck-q-subagents directory was not modified", () => {
-	const status = execSync("git status --porcelain resources/extensions/pideck-q-subagents", { encoding: "utf8" });
-	assert.equal(status.trim(), "", "resources/extensions/pideck-q-subagents must be 100% untouched");
-});

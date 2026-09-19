@@ -2341,4 +2341,8 @@ export const enUS: Record<TranslationKey, string> = {
   "config.extensionEnabledToast": "Extension enabled: {name}",
   "config.extensionDisabledToast": "Extension disabled: {name}",
 
+  "security.error.validationFailed": "Security configuration is invalid. Check and try again.",
+  "security.error.snapshotWriteFailed": "Failed to write security policy snapshot. Changes unconfirmed, please try again.",
+  "security.error.unknown": "Failed to update security settings. Please try again.",
+
 };

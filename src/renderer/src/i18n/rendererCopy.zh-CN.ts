@@ -2306,6 +2306,10 @@ export const zhCN = {
   "config.extensionEnabledToast": "已启用扩展：{name}",
   "config.extensionDisabledToast": "已禁用扩展：{name}",
 
+  "security.error.validationFailed": "安全配置无效，请检查后重试",
+  "security.error.snapshotWriteFailed": "安全策略写入失败，本次更改未确认生效，请重试",
+  "security.error.unknown": "更新安全设置失败，请重试",
+
 } as const;
 
 export type TranslationKey = keyof typeof zhCN;

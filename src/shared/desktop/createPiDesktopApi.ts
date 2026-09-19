@@ -64,6 +64,7 @@ import type {
 	PromptStoreItem,
 	ScratchPadData,
 	SecurityConfig,
+	SecurityUpdateResult,
 	SendSessionPromptInput,
 	SendSessionPromptResult,
 	SessionCommandResult,
@@ -940,13 +941,13 @@ const api = {
 			transport.invoke(
 				ipcChannels.securityUpdateConfig,
 				patch,
-			) as Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>,
+			) as Promise<SecurityUpdateResult>,
 		setSessionLevel: (sessionId: string, levelId: string | null) =>
 			transport.invoke(
 				ipcChannels.securitySetSessionLevel,
 				sessionId,
 				levelId,
-			) as Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>,
+			) as Promise<SecurityUpdateResult>,
 	},
 	config: {
 		getModels: () =>

@@ -146,7 +146,10 @@ test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive"
 		writeFileSync(disabledPath, JSON.stringify({ enabled: false }));
 		assert.equal(isSecurityPolicyActive(disabledPath), true, "disabled snapshots still inject the gate so handlers can hot-reload");
 
-		assert.equal(isSecurityPolicyActive(join(tempDir, "nonexistent.json")), false);
+		// 只要配置了路径（即使不存在或非法），isSecurityPolicyActive 都返回 true（fail-closed）
+		assert.equal(isSecurityPolicyActive(join(tempDir, "nonexistent.json")), true);
+		assert.equal(isSecurityPolicyActive(""), false);
+		assert.equal(isSecurityPolicyActive(undefined), false);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -247,6 +250,49 @@ test("child-launch: inherits security policy into foreground (parent) and runner
 		);
 		assert.equal(disabledLaunch.session.processEnv?.PIDECK_SECURITY_CONFIG, disabledConfigPath);
 		assert.equal(disabledLaunch.session.processEnv?.PIDECK_SESSION_ID, "parent-session-123");
+
+		// 5. Config file missing: still inject gate + config so child tools fail-closed
+		const missingConfigPath = join(tempDir, "nonexistent-policy.json");
+		const missingLaunch = buildInProcessChildLaunch({
+			cwd: tempDir,
+			childAgentName: "worker",
+			childIndex: 0,
+			sessionEnabled: true,
+			inheritProjectContext: false,
+			inheritGlobalContext: false,
+			inheritSkills: false,
+			host: "parent",
+			parentSessionId: "parent-session-123",
+			securityConfigPath: missingConfigPath,
+		});
+		assert.ok(
+			missingLaunch.session.extensionPaths.some((p) => normalize(p) === normalize(gatePath)),
+			"Missing config path must still inject Security Gate",
+		);
+		assert.equal(missingLaunch.session.processEnv?.PIDECK_SECURITY_CONFIG, missingConfigPath);
+		assert.equal(missingLaunch.session.processEnv?.PIDECK_SESSION_ID, "parent-session-123");
+
+		// 6. Config file invalid JSON: still inject gate + config so child tools fail-closed
+		const invalidConfigPath = join(tempDir, "invalid-policy.json");
+		writeFileSync(invalidConfigPath, "MALFORMED_JSON{{{");
+		const invalidLaunch = buildInProcessChildLaunch({
+			cwd: tempDir,
+			childAgentName: "worker",
+			childIndex: 0,
+			sessionEnabled: true,
+			inheritProjectContext: false,
+			inheritGlobalContext: false,
+			inheritSkills: false,
+			host: "parent",
+			parentSessionId: "parent-session-123",
+			securityConfigPath: invalidConfigPath,
+		});
+		assert.ok(
+			invalidLaunch.session.extensionPaths.some((p) => normalize(p) === normalize(gatePath)),
+			"Invalid JSON config path must still inject Security Gate",
+		);
+		assert.equal(invalidLaunch.session.processEnv?.PIDECK_SECURITY_CONFIG, invalidConfigPath);
+		assert.equal(invalidLaunch.session.processEnv?.PIDECK_SESSION_ID, "parent-session-123");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -423,7 +469,27 @@ test("Scenario C: Security disabled leaves worker child tools unrestricted", asy
 		schemaVersion: 1,
 		enabled: false, // 安全管理已关闭
 		defaultLevelId: "strict",
-		levels: [],
+		levels: [
+			{
+				id: "strict",
+				name: "Strict",
+				description: "Strict mode",
+				toolActions: {
+					read: "allow",
+					write: "ask",
+					edit: "ask",
+					bash: "deny",
+					powershell: "deny",
+				},
+				denyBashPatterns: [],
+				denyPowerShellPatterns: [],
+				pathPolicy: "workspace",
+				customAllowDirs: [],
+				denyDirs: [],
+				protectSensitivePaths: true,
+				defaultAction: "deny",
+			},
+		],
 		sessionLevels: {},
 	};
 	writeFileSync(configPath, JSON.stringify(snapshot));
@@ -460,6 +526,70 @@ test("Scenario C: Security disabled leaves worker child tools unrestricted", asy
 		assert.equal(bashCall, undefined, "When security is disabled, bash must be unblocked");
 	} finally {
 		gate.cleanup();
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("Scenario E: Missing or corrupted snapshot blocks child tools (fail-closed)", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-sec-scen-e-"));
+	const missingConfigPath = join(tempDir, "missing-policy.json");
+	const invalidConfigPath = join(tempDir, "invalid-policy.json");
+	writeFileSync(invalidConfigPath, "MALFORMED_JSON{{{");
+
+	const { buildInProcessChildLaunch } = loadChildLaunchModule();
+
+	// 1. 缺失快照文件
+	const missingLaunch = buildInProcessChildLaunch({
+		cwd: tempDir,
+		childAgentName: "worker",
+		childIndex: 0,
+		sessionEnabled: true,
+		inheritProjectContext: false,
+		inheritGlobalContext: false,
+		inheritSkills: false,
+		host: "parent",
+		parentSessionId: "parent-session-missing",
+		securityConfigPath: missingConfigPath,
+	});
+	const missingGate = await loadChildSecurityGate(missingLaunch.session.processEnv);
+
+	try {
+		const ctx = { cwd: tempDir, hasUI: false };
+		const res = await missingGate.toolCall({
+			toolName: "bash",
+			input: { command: "echo test" },
+		}, ctx);
+		assert.equal(res?.block, true, "Missing policy must block child tool");
+		assert.match(res?.reason ?? "", /SECURITY_POLICY_UNAVAILABLE/);
+	} finally {
+		missingGate.cleanup();
+	}
+
+	// 2. 损坏快照文件
+	const invalidLaunch = buildInProcessChildLaunch({
+		cwd: tempDir,
+		childAgentName: "worker",
+		childIndex: 0,
+		sessionEnabled: true,
+		inheritProjectContext: false,
+		inheritGlobalContext: false,
+		inheritSkills: false,
+		host: "parent",
+		parentSessionId: "parent-session-invalid",
+		securityConfigPath: invalidConfigPath,
+	});
+	const invalidGate = await loadChildSecurityGate(invalidLaunch.session.processEnv);
+
+	try {
+		const ctx = { cwd: tempDir, hasUI: false };
+		const res = await invalidGate.toolCall({
+			toolName: "write",
+			input: { path: join(tempDir, "a.txt"), content: "x" },
+		}, ctx);
+		assert.equal(res?.block, true, "Corrupted policy must block child tool");
+		assert.match(res?.reason ?? "", /SECURITY_POLICY_UNAVAILABLE/);
+	} finally {
+		invalidGate.cleanup();
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });

@@ -176,15 +176,8 @@ export function resolveSecurityGateExtensionPath(): string | undefined {
 }
 
 export function isSecurityPolicyActive(configPath: string | undefined): boolean {
-	if (!configPath || !fs.existsSync(configPath)) return false;
-	try {
-		const raw = fs.readFileSync(configPath, "utf8");
-		JSON.parse(raw);
-		// 有可读快照就注入 gate；enabled=false 由 handler 热读后放行，避免子进程启动后无法打开安全管理。
-		return true;
-	} catch {
-		return false;
-	}
+	// 配置了非空路径即表示需要继承安全门（fail-closed）；不以此处文件存在或可读性决定是否注入
+	return Boolean(configPath && typeof configPath === "string" && configPath.length > 0);
 }
 
 /** Environment values external child extensions read; only the runner applies them. */

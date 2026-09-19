@@ -460,7 +460,7 @@ export class AgentManager {
 			}
 		}
 		if (this.securityStore) {
-			void this.securityStore.ensureSnapshotWritten();
+			await this.securityStore.ensureSnapshotWritten();
 		}
 		return new PiProcess(cwd, settings, undefined, {
 			resolveBuiltInExtensionPaths: (processSettings) =>

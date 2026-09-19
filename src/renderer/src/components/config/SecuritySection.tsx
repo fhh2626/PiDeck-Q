@@ -9,7 +9,7 @@
  * - 会话级覆盖在会话输入框切换（见 SecurityLevelMenu），不在此处管理。
  *
  * 数据流：本组件只做「草稿编辑 + 保存」；保存走 api.security.updateConfig
- * → SecurityStore 校验/持久化 → 写策略快照 → 运行中的安全门扩展 2s 内热更新。
+ * → SecurityStore 校验/持久化 → 写策略快照 → 安全门在下一次工具调用前读取更新。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
@@ -127,14 +127,19 @@ export const SecuritySection = forwardRef<SecuritySectionHandle, SecuritySection
 				levels: config.levels,
 			});
 			if (!result.ok) {
-				setError(result.error);
+				const localizedKey = result.code === "VALIDATION_FAILED"
+					? "security.error.validationFailed"
+					: result.code === "SNAPSHOT_WRITE_FAILED"
+						? "security.error.snapshotWriteFailed"
+						: "security.error.unknown";
+				setError(t(localizedKey));
 				return false;
 			}
 			setConfig(result.config);
 			setDirty(false);
 			return true;
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			setError(t("security.error.unknown"));
 			return false;
 		} finally {
 			setSaving(false);
