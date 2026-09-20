@@ -181,10 +181,12 @@ function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = 
 		require: (id) => {
 			if (id === "electron") return { app: { getPath: () => homePath }, shell: {} };
 			if (id === "../../shared/codexSessionMeta") return codexMeta;
+			if (id === "../../shared/piCompatibility") return piCompatibility;
+			if (id === "../../shared/imageContent") return loadTranspiledModule("src/shared/imageContent.ts");
+			if (id === "../../shared/imageLimits") return loadTranspiledModule("src/shared/imageLimits.ts");
 			if (id === "../pi/messageContent") return messageContent;
 			if (id === "../wsl/WslPaths") return wslPaths;
 			if (id === "./sessionSummaryCache") return sessionSummaryCache;
-			if (id === "../../shared/piCompatibility") return piCompatibility;
 			// sessionNameLine 为无依赖纯函数模块，直接编译加载真实实现，保证清理口径一致
 			if (id === "./sessionNameLine") return loadSessionNameLineModule();
 			// sharedLogger 未注册时 getAppLogger 返回 null，SessionScanner 埋点静默跳过

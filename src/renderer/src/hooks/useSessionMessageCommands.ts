@@ -101,7 +101,14 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 				requireCurrentRuntimeTarget(currentTarget);
 				return input.submitPromptSnapshot(currentTarget.sessionId, snapshot.text, snapshot.images);
 			})
-			.catch((error) => input.showToast(error instanceof Error ? error.message : String(error), 5000));
+			.catch((error) => {
+				const errMsg = error instanceof Error ? error.message : String(error);
+				if (errMsg.includes("RESEND_IMAGE_BUDGET_EXCEEDED")) {
+					input.showToast(t("composer.images.resendBudgetExceeded"), 5000);
+				} else {
+					input.showToast(errMsg, 5000);
+				}
+			});
 	}
 
 	async function editMessage(expectedTarget: SessionRuntimeTarget, messageId: string, newText: string): Promise<void> {

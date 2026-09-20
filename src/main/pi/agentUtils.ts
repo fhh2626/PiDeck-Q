@@ -5,6 +5,14 @@
 
 import type { AvailableModel, ChatMessage, Project } from "../../shared/types";
 
+import {
+	enforceDeliveryBudgetOnPayload,
+	MAX_MESSAGE_DELIVERY_ENVELOPE_BYTES,
+	type DeliveryPayloadWithMessages,
+} from "./messageDeliveryBudget.ts";
+
+const MAX_MESSAGE_DELIVERY_TOTAL_IMAGE_BASE64_BYTES = 30 * 1024 * 1024;
+
 /** 校验 get_available_models RPC，避免把协议失败伪装成成功的空列表。 */
 export function parseAvailableModelsResponse(response: {
 	success: boolean;
@@ -218,17 +226,72 @@ export function buildMessageFlushPayload(
  * 无 result 时回退 existing.meta.result）。渲染层需要完整输出时走 sessionsCatalogReadMessageFullText。
  */
 export function stripToolResultForDelivery(messages: ChatMessage[]): ChatMessage[] {
-	let stripped = false;
-	const out = messages.map((message) => {
-		if (message.role !== "tool" || !message.meta || typeof message.meta.result === "undefined") {
-			return message;
+	let totalImageBytes = 0;
+	for (const msg of messages) {
+		if (msg.images?.length) {
+			for (const img of msg.images) {
+				totalImageBytes += img.data.length;
+			}
 		}
-		stripped = true;
-		const meta = { ...message.meta };
-		delete meta.result;
-		return { ...message, meta };
+	}
+
+	const budgetExceeded = totalImageBytes > MAX_MESSAGE_DELIVERY_TOTAL_IMAGE_BASE64_BYTES;
+	let currentImageBytes = totalImageBytes;
+
+	const out = messages.map((message) => {
+		let modified = false;
+		let meta = message.meta;
+		if (message.role === "tool" && message.meta && typeof message.meta.result !== "undefined") {
+			meta = { ...message.meta };
+			delete meta.result;
+			modified = true;
+		}
+
+		let images = message.images;
+		let notice = message.imageDisplayNotice;
+
+		// 若超出下发总预算，从较旧的消息开始逐条卸载图片载荷并添加 notice
+		if (budgetExceeded && images?.length && currentImageBytes > MAX_MESSAGE_DELIVERY_TOTAL_IMAGE_BASE64_BYTES) {
+			const freed = images.reduce((acc, img) => acc + img.data.length, 0);
+			currentImageBytes -= freed;
+			notice = { kind: "delivery-budget-exceeded", count: images.length };
+			images = undefined;
+			modified = true;
+		}
+
+		if (!modified) return message;
+		return {
+			...message,
+			...(meta ? { meta } : {}),
+			images,
+			...(notice ? { imageDisplayNotice: notice } : {}),
+		};
 	});
-	return stripped ? out : messages;
+
+	return out;
+}
+
+/**
+ * 完整交付信封预算保护：
+ * 转调 messageDeliveryBudget.enforceDeliveryBudgetOnPayload，wrapper 与主进程真实下发信封一致
+ * （{ channel: "agents:message", args: [payload] }）。
+ * 预算内：返回经 strip/剥图后的下发载荷。
+ * 超限或序列化失败：仍返回「尽力剥图后」的 candidate（Result 失败分支携带），
+ * 交由调用方 emit——listener（sessionRuntimeBridge）会按真实 sessions:runtime-event 外包络
+ * 二次判定并拒绝，emit 据此跳过 sendToRenderer；不得在此静默吞掉或原样放行带图 payload。
+ */
+export function enforceDeliveryEnvelopeBudget<T extends DeliveryPayloadWithMessages>(
+	payload: T,
+	maxEnvelopeBytes: number = MAX_MESSAGE_DELIVERY_ENVELOPE_BYTES,
+): T {
+	const result = enforceDeliveryBudgetOnPayload(
+		payload,
+		(candidate: T) => ({ channel: "agents:message", args: [candidate] }),
+		maxEnvelopeBytes,
+	);
+	if (result.ok) return result.value;
+	if (result.value) return result.value;
+	return payload;
 }
 
 /** 清洗会话标题文本。 */

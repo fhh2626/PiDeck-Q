@@ -1945,3 +1945,6 @@ export const removeSessionStateAtom = atom(null, (get, set, sessionId: string) =
   set(sessionMessageLoadStateAtom, loadState);
   if (get(currentSessionIdAtom) === sessionId) set(currentSessionIdAtom, undefined);
 });
+
+/** Vision bridge 配置版本号（轻量计数器，修改保存后递增触发订阅者刷新） */
+export const visionConfigRevisionAtom = atom(0);

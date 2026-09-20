@@ -10,6 +10,12 @@ export type I18nDescriptor = {
 	debugDetails?: string;
 };
 
+export type ImageDisplayNotice = {
+	kind: "too-large" | "too-many" | "runtime-budget-exceeded" | "delivery-budget-exceeded";
+	count?: number;
+	omitted?: number;
+};
+
 export type ChatMessage = {
 	id: string;
 	agentId: string;
@@ -17,7 +23,8 @@ export type ChatMessage = {
 	text: string;
 	timestamp: number;
 	meta?: Record<string, unknown> & I18nDescriptor;
-	images?: ImageContent[]; // 用户消息中附加的图片
+	images?: ImageContent[]; // 用户消息或工具结果中附加的图片
+	imageDisplayNotice?: ImageDisplayNotice; // 图片预算限制提示
 	/** 思考内容：来自 thinking 内容块，用于展示模型推理过程 */
 	thinking?: string;
 	/** 思考段开始时间（可选；缺省回退 message.timestamp） */

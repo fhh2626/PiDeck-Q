@@ -96,6 +96,8 @@ function loadSessionScanner(homePath) {
 			}
 			if (id === "../../shared/codexSessionMeta") return codexMeta;
 			if (id === "../../shared/piCompatibility") return piCompatibility;
+			if (id === "../../shared/imageContent") return loadTranspiledModule("src/shared/imageContent.ts");
+			if (id === "../../shared/imageLimits") return loadTranspiledModule("src/shared/imageLimits.ts");
 			if (id === "../pi/messageContent") return messageContent;
 			if (id === "./sessionSummaryCache") return sessionSummaryCache;
 			if (id === "../wsl/WslPaths") return wslPaths;

@@ -192,7 +192,10 @@ export function sameChatMessageForRender(previous: ChatMessage, next: ChatMessag
 		// 空文本消息（纯工具回合骨架）的 stopReason 可能是唯一变化（pending→stop/toolUse），
 		// 漏比较会导致 reconcileRuns 复用旧引用、最终/中间分类不更新。
 		previous.stopReason !== next.stopReason ||
-		(previous.meta?.slidingOut === true) !== (next.meta?.slidingOut === true)
+		(previous.meta?.slidingOut === true) !== (next.meta?.slidingOut === true) ||
+		previous.imageDisplayNotice?.kind !== next.imageDisplayNotice?.kind ||
+		previous.imageDisplayNotice?.count !== next.imageDisplayNotice?.count ||
+		previous.imageDisplayNotice?.omitted !== next.imageDisplayNotice?.omitted
 	) {
 		return false;
 	}
@@ -289,7 +292,9 @@ export function groupToolMessages(messages: ChatMessage[]): RenderMessage[] {
 		return (
 			message.role === "assistant" &&
 			Boolean(message.thinking?.trim()) &&
-			!stripThinkingTags(stripAnsi(message.text)).trim()
+			!stripThinkingTags(stripAnsi(message.text)).trim() &&
+			(!message.images || message.images.length === 0) &&
+			!message.imageDisplayNotice
 		);
 	}
 

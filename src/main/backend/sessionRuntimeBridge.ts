@@ -31,6 +31,10 @@ import type {
 import type { SessionScanner } from "../sessions/SessionScanner";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
+import {
+	enforceDeliveryBudgetOnPayload,
+	type DeliveryPayloadWithMessages,
+} from "../pi/messageDeliveryBudget";
 
 export type AgentSessionReplacementResult = {
 	cancelled?: boolean;
@@ -119,13 +123,58 @@ export function createSessionRuntimeBridge(
 	): boolean {
 		const runtimeBinding = sessionRuntimeCoordinator.getRuntimeBinding(agentId);
 		if (!runtimeBinding) return false;
+
+		// 消息信封完整预算（30 MiB 限制）：防止超大消息或图片累积将原生通道打爆
+		let outboundPayload = payload;
+		if (
+			sourceChannel === ipcChannels.agentsMessage &&
+			payload &&
+			typeof payload === "object" &&
+			"messages" in payload &&
+			Array.isArray((payload as { messages?: unknown }).messages)
+		) {
+			const candidatePayload = payload as DeliveryPayloadWithMessages;
+			const buildEnvelope = (candidate: DeliveryPayloadWithMessages) => ({
+				channel: ipcChannels.sessionsRuntimeEvent,
+				args: [
+					{
+						kind: "event",
+						sessionId: runtimeBinding.sessionId,
+						agentId,
+						runtimeGeneration: runtimeBinding.runtimeGeneration,
+						sourceChannel,
+						payload: candidate,
+					},
+				],
+			});
+			const budgetResult = enforceDeliveryBudgetOnPayload(candidatePayload, buildEnvelope);
+			if (budgetResult.ok) {
+				outboundPayload = budgetResult.value;
+			} else {
+				// 删完图片仍超限：通知渲染层阻断状态，不发送超大消息事件
+				const statusEvent: SessionRuntimeEvent = {
+					kind: "event",
+					sessionId: runtimeBinding.sessionId,
+					agentId,
+					runtimeGeneration: runtimeBinding.runtimeGeneration,
+					sourceChannel: "sessions:message-delivery-status",
+					payload: {
+						status: "blocked",
+						code: budgetResult.code,
+					},
+				};
+				sendSessionRuntimeEnvelope(statusEvent);
+				return false;
+			}
+		}
+
 		const event: SessionRuntimeEvent = {
 			kind: "event",
 			sessionId: runtimeBinding.sessionId,
 			agentId,
 			runtimeGeneration: runtimeBinding.runtimeGeneration,
 			sourceChannel,
-			payload,
+			payload: outboundPayload,
 		};
 		sessionRuntimeCoordinator.observeRuntimeEvent(event);
 		if (payload && typeof payload === "object" && !Array.isArray(payload)) {

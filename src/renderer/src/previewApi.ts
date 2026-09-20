@@ -306,6 +306,7 @@ export function createPreviewApi(): PiDesktopApi {
 		},
 		dialog: {
 			pickFiles: async () => [],
+			pickImages: async () => ({ kind: "cancelled" }),
 			pickBackgroundImage: async () => "",
 			removeBackgroundImage: async () => undefined,
 		},

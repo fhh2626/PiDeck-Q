@@ -1,4 +1,4 @@
-import { resolveNotificationSessionId } from "./agentUtils";
+import { resolveNotificationSessionId, enforceDeliveryEnvelopeBudget } from "./agentUtils.ts";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
@@ -13,6 +13,7 @@ import type {
 	ForkMessage,
 	I18nParams,
 	ImageContent,
+	ImageDisplayNotice,
 	Project,
 	SendPromptInput,
 	SendPromptResult,
@@ -24,6 +25,13 @@ import type {
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
+import { extractImageContent } from "../../shared/imageContent.ts";
+import { applyImageDisplayBudget, MAX_RUNTIME_TOTAL_IMAGE_BASE64_BYTES } from "../../shared/imageLimits.ts";
+import {
+	computeTurnImageUsedBytes,
+	applyRuntimeMessageImageBudget,
+	enforceRuntimeImageEviction,
+} from "./runtimeImageBudget.ts";
 // 只依赖屏障的契约（类型）：具体实现由 createBackend 注入。这样既避免 pi 层依赖
 // utils 的运行时代码，也让只桩化少量模块的现有测试不用连屏障实现一起加载。
 import type { StartupBarrier } from "../utils/StartupBarrier";
@@ -79,7 +87,7 @@ import {
 	cleanTitle,
 	inferTitleFromMessages,
 	isDefaultAgentTitle,
-} from "./agentUtils";
+} from "./agentUtils.ts";
 import {
   updateActiveToolCalls,
   type ActiveToolCallState,
@@ -144,6 +152,10 @@ type CreateAgentInputWithHistory = CreateAgentInput & {
 	preserveHistoryOnLoad?: boolean;
 };
 
+const MAX_TOOL_IMAGE_SINGLE_BASE64_BYTES = 4 * 1024 * 1024;
+const MAX_TOOL_IMAGES_PER_MESSAGE = 8;
+const MAX_TOOL_IMAGE_MESSAGE_BASE64_BYTES = 8 * 1024 * 1024;
+
 export class AgentManager {
 	private readonly agents = new Map<string, AgentRuntime>();
 	private readonly messages = new Map<string, ChatMessage[]>();
@@ -195,6 +207,9 @@ export class AgentManager {
 	/** 增量消息 flush 的脏下标：自上次 flush 以来最早的变化位置（取多次标记的最小值）。
 	 *  只在流式 upsert/append 高频路径显式标记；编辑/删除/截断/重载不标记 → flush 回退全量。 */
 	private readonly messageDirtyFromByAgent = new Map<string, number>();
+	/** 记录尚未成功投递的全量窗口校准（如 immediate 终态 flush 或全量投递被拒）。
+	 *  与 dirty 下标独立；全量被拒后，后续尾部更新不能把投递降级成增量。 */
+	private readonly pendingFullMessageEmitAgents = new Set<string>();
 	/**
 	 * 激活显示窗口起点（2026-08 激活分页）：loadMessages 后以「尾部 N 轮」算出，
 	 * flush 只下发窗口段；窗口前历史由渲染层走 disk 轮次分页 prepend。
@@ -279,7 +294,7 @@ export class AgentManager {
 		(agentId: string, event: unknown, streamGeneration: number) => void
 	>();
 	/** 主进程内部观察所有 renderer 输出，用于增量桥接 session-addressed 事件。 */
-	private readonly outputListeners = new Set<(channel: string, payload: unknown) => void>();
+	private readonly outputListeners = new Set<(channel: string, payload: unknown) => boolean | void>();
 	/** 开启了 RPC 日志记录的 agent id 集合 */
 	private readonly rpcLoggingAgents = new Set<string>();
 	/**
@@ -1021,6 +1036,10 @@ export class AgentManager {
 		// 避免「投影 partial + 运行期完整版」双份或事件 append 到错误轮次。
 		this.rebindInFlightMessages(agentId, nextMessages, messages);
 		this.messages.set(agentId, nextMessages);
+		const evictedDirtyIdx = enforceRuntimeImageEviction(nextMessages, this.pendingSlideOutByAgent.get(agentId));
+		if (evictedDirtyIdx >= 0) {
+			this.markMessagesDirtyFrom(agentId, evictedDirtyIdx);
+		}
 		this.staleMessageCacheAgents.delete(agentId);
 		// 显示窗口 = 尾部 3 轮（轮次起点对齐 user 消息，与 disk 轮次分页同一约定；
 		// 字节预算不参与窗口计算——单轮再大也整轮显示，折叠完整性优先）
@@ -2811,6 +2830,19 @@ export class AgentManager {
 		const file = this.createSessionFileRef(runtime, sessionPath);
 		const activeLeafId = await this.getActiveSessionLeafId(agentId, runtime);
 		const { target, resend } = await this.locateMessageTarget(agentId, sessionPath, messageId, activeLeafId);
+
+		// 重发图片预检：在执行任何破坏性会话截断前，检查重发图片的输入预算（24 MiB）
+		const targetImages = resend?.images ?? (cached?.images?.length ? cached.images : undefined);
+		if (targetImages && targetImages.length > 0) {
+			let totalImageBytes = 0;
+			for (const img of targetImages) {
+				totalImageBytes += img.data.length;
+			}
+			if (totalImageBytes > 24 * 1024 * 1024) {
+				throw new Error("RESEND_IMAGE_BUDGET_EXCEEDED: Message image payload exceeds 24 MiB limit");
+			}
+		}
+
 		await this.sessionFileEditor.truncateForResend({
 			file,
 			target,
@@ -2904,6 +2936,7 @@ export class AgentManager {
 		this.activeToolCallsByAgent.delete(agentId);
 		this.toolExecutingByAgent.delete(agentId);
 		this.messageDirtyFromByAgent.delete(agentId);
+		this.pendingFullMessageEmitAgents.delete(agentId);
 		this.displayWindowStartByAgent.delete(agentId);
 		this.messageHeadOffsetByAgent.delete(agentId);
 		this.staleMessageCacheAgents.delete(agentId);
@@ -2975,6 +3008,7 @@ export class AgentManager {
 		this.agents.delete(agentId);
 		this.messages.delete(agentId);
 		this.messageDirtyFromByAgent.delete(agentId);
+		this.pendingFullMessageEmitAgents.delete(agentId);
 		this.activeToolCallsByAgent.delete(agentId);
 		this.toolExecutingByAgent.delete(agentId);
 		this.toolStateSequenceByAgent.delete(agentId);
@@ -3223,6 +3257,7 @@ export class AgentManager {
 		this.agents.delete(agentId);
 		this.messages.delete(agentId);
 		this.messageDirtyFromByAgent.delete(agentId);
+		this.pendingFullMessageEmitAgents.delete(agentId);
 		this.activeToolCallsByAgent.delete(agentId);
 		this.toolExecutingByAgent.delete(agentId);
 		this.toolStateSequenceByAgent.delete(agentId);
@@ -3246,7 +3281,7 @@ export class AgentManager {
 		return () => { this.localEventListeners.delete(listener); };
 	}
 
-	onOutput(listener: (channel: string, payload: unknown) => void): () => void {
+	onOutput(listener: (channel: string, payload: unknown) => boolean | void): () => void {
 		this.outputListeners.add(listener);
 		return () => this.outputListeners.delete(listener);
 	}
@@ -4653,10 +4688,23 @@ export class AgentManager {
 			}
 		}
 		const existing = existingIndex >= 0 ? list[existingIndex] : undefined;
+		const hasContentSnapshot = Boolean(
+			partialMessage && typeof partialMessage === "object" && "content" in partialMessage,
+		);
 		const extractedText =
-			partialMessage && typeof partialMessage === "object"
+			hasContentSnapshot
 				? this.messageProjector.extractText((partialMessage as any).content)
 				: "";
+		let assistantImages: ImageContent[] | undefined;
+		let assistantNotice: ImageDisplayNotice | undefined;
+
+		if (hasContentSnapshot) {
+			const rawImages = extractImageContent((partialMessage as any).content).images;
+			const turnUsed = computeTurnImageUsedBytes(list, messageId);
+			const budget = applyRuntimeMessageImageBudget(rawImages, turnUsed);
+			assistantImages = budget.images.length > 0 ? budget.images : undefined;
+			assistantNotice = budget.notice;
+		}
 		// stopReason（provider 归一化）：message_start 骨架为 pending，message_end 更新为
 		// 真实值（stop/toolUse/aborted/error/length）。渲染层据此精确区分中间/最终回复。
 		// pending 是骨架占位值：不持久化（new 分支）也不覆盖既有值（existing 分支），
@@ -4676,6 +4724,10 @@ export class AgentManager {
 			if (extractedText || fallbackDelta) {
 				existing.text = extractedText || `${existing.text}${fallbackDelta}`;
 			}
+			if (hasContentSnapshot) {
+				existing.images = assistantImages;
+				existing.imageDisplayNotice = assistantNotice;
+			}
 			// 终态（message_end）带真实 stopReason 时更新；骨架占位值（pending）不覆盖旧值。
 			if (finalStopReason) {
 				existing.stopReason = finalStopReason;
@@ -4684,8 +4736,8 @@ export class AgentManager {
 			this.markMessagesDirtyFrom(agentId, existingIndex);
 		} else {
 			const text = extractedText || fallbackDelta;
-			// 默认拒绝空消息；message_start 传 allowEmpty 以建立 Live 挂载点。
-			if (!text && !options?.allowEmpty) return;
+			// 默认拒绝空消息；message_start 传 allowEmpty 以建立 Live 挂载点；有保留图片或超限提示时也必须保留。
+			if (!text && !assistantImages && !assistantNotice && !options?.allowEmpty) return;
 			list.push({
 				id: messageId,
 				agentId,
@@ -4693,8 +4745,15 @@ export class AgentManager {
 				text: text || "",
 				timestamp: Date.now(),
 				...(finalStopReason ? { stopReason: finalStopReason } : {}),
+				...(assistantImages ? { images: assistantImages } : {}),
+				...(assistantNotice ? { imageDisplayNotice: assistantNotice } : {}),
 			});
 			this.markMessagesDirtyFrom(agentId, list.length - 1);
+		}
+
+		const evictedDirtyIdx = enforceRuntimeImageEviction(list, this.pendingSlideOutByAgent.get(agentId));
+		if (evictedDirtyIdx >= 0) {
+			this.markMessagesDirtyFrom(agentId, evictedDirtyIdx);
 		}
 
 		this.messages.set(agentId, list);
@@ -4864,6 +4923,32 @@ export class AgentManager {
 			event.partialResult ??
 			event.output ??
 			existing?.meta?.result;
+		const hasExplicitResult = Boolean(
+			event.result !== undefined ||
+			event.partialResult !== undefined ||
+			event.output !== undefined ||
+			status !== "running",
+		);
+		const rawContent =
+			event.result !== undefined
+				? event.result
+				: event.partialResult !== undefined
+					? event.partialResult
+					: event.output !== undefined
+						? event.output
+						: existing?.meta?.result;
+		const contentForImages =
+			rawContent && typeof rawContent === "object" && "content" in rawContent
+				? (rawContent as { content?: unknown }).content
+				: rawContent;
+		const rawToolImages = hasExplicitResult ? extractImageContent(contentForImages).images : [];
+
+		// 计算当前用户回合已经使用的工具/助手图片字节数（支持每轮 8 MiB 限制，排除目标自身）
+		const currentTurnUsedBytes = computeTurnImageUsedBytes(list, messageId);
+
+		const budget = applyRuntimeMessageImageBudget(rawToolImages, currentTurnUsedBytes);
+		const toolImages = budget.images.length > 0 ? budget.images : undefined;
+		const toolImageNotice = budget.notice;
 		const detailText = this.messageProjector.formatToolDetail(
 			toolName,
 			args,
@@ -4930,6 +5015,18 @@ export class AgentManager {
 		if (existing) {
 			existing.text = text;
 			existing.timestamp = Date.now();
+			// 若本次有明确结果传入（包含终态或非空结果），准确替换展示图片与 notice，清除旧 partial 遗留
+			if (hasExplicitResult) {
+				existing.images = toolImages;
+				existing.imageDisplayNotice = toolImageNotice;
+			} else {
+				if (toolImages && toolImages.length > 0) {
+					existing.images = toolImages;
+				}
+				if (toolImageNotice) {
+					existing.imageDisplayNotice = toolImageNotice;
+				}
+			}
 			// 合并而非替换：重定向到投影版时保留其身份字段（entryId/_piDeckMsgSeq），
 			// 否则渲染层接缝去重与编辑/删除/重发定位会因 entryId 丢失而失效。
 			const mergedMeta: Record<string, unknown> = { ...(existing.meta ?? {}), ...meta };
@@ -4951,9 +5048,17 @@ export class AgentManager {
 				role: "tool",
 				text,
 				timestamp: Date.now(),
+				...(toolImages && toolImages.length > 0 ? { images: toolImages } : {}),
+				...(toolImageNotice ? { imageDisplayNotice: toolImageNotice } : {}),
 				meta,
 			});
 			this.markMessagesDirtyFrom(agentId, list.length - 1);
+		}
+
+		// 检查单 runtime 工具/助手图片内存上限 (32 MiB)，超出时从较旧的输出消息中逐条淘汰图片
+		const evictedDirtyIdx = enforceRuntimeImageEviction(list, this.pendingSlideOutByAgent.get(agentId));
+		if (evictedDirtyIdx >= 0) {
+			this.markMessagesDirtyFrom(agentId, evictedDirtyIdx);
 		}
 
 		this.messages.set(agentId, list);
@@ -5527,7 +5632,8 @@ export class AgentManager {
 		if (immediate) {
 			// 终态 immediate flush 永远全量：作为渲染层增量合并的天然校准点，
 			// 丢弃的增量（长度不连续）由这里的全量纠正（message_end/tool 结束/加载完成）。
-			this.messageDirtyFromByAgent.delete(agentId);
+			// 通过独立标记强制全量，不通过删除 dirty 来实现，避免全量被拒后丢失待投递状态。
+			this.pendingFullMessageEmitAgents.add(agentId);
 			this.flushMessageEmit(agentId);
 			return;
 		}
@@ -5547,32 +5653,48 @@ export class AgentManager {
 		}
 		this.pendingMessageAgents.delete(agentId);
 		const all = this.messages.get(agentId) ?? [];
+		// dirty 下标只在发送成功后清除：emit 前先快照，被拒时保留。
+		// 否则一次被拒的增量会随下次更靠后的 markMessagesDirtyFrom 一起丢掉，
+		// 渲染层直到某次全量校准前都缺中间更新。
 		const dirtyFrom = this.messageDirtyFromByAgent.get(agentId);
-		this.messageDirtyFromByAgent.delete(agentId);
+		const forceFull = this.pendingFullMessageEmitAgents.has(agentId);
 		const windowStart = this.displayWindowStartByAgent.get(agentId) ?? 0;
 		const payload = buildMessageFlushPayload(
 			agentId,
 			all,
-			dirtyFrom,
+			forceFull ? undefined : dirtyFrom,
 			windowStart,
 			this.sessionFileVersionByAgent.get(agentId),
 			this.computeWindowStartFilePos(agentId, all, windowStart),
 			this.preserveHistoryOnNextFlush.get(agentId) ?? true,
 			this.stickyHistoryOnNextFlush.has(agentId),
 		);
-		// trim 窗口右移滑出的旧窗口头部轮次随全量 flush 下发（渲染层并入历史前缀）；
-		// 增量 flush 不携带（新轮还在写），等终态全量校准。
-		if (payload.upsertFrom === undefined) {
+		const isFullPayload = payload.upsertFrom === undefined;
+		const slideOut = this.pendingSlideOutByAgent.get(agentId);
+		if (isFullPayload && slideOut && slideOut.length > 0) {
+			payload.slideOut = stripToolResultForDelivery(slideOut);
+		}
+		const boundedPayload = enforceDeliveryEnvelopeBudget(payload);
+		const accepted = this.emit(ipcChannels.agentsMessage, boundedPayload);
+		if (accepted === false) {
+			if (isFullPayload) {
+				this.pendingFullMessageEmitAgents.add(agentId);
+			}
+			return;
+		}
+
+		// emit 期间可能又有新的 markMessagesDirtyFrom（取最小值语义）：
+		// 只有 dirty 未变化（或本就没有）才清除；出现了更小的新下标则保留，下次 flush 继续补发。
+		const markedDuringEmit = this.messageDirtyFromByAgent.get(agentId);
+		if (markedDuringEmit === dirtyFrom || markedDuringEmit === undefined) {
+			this.messageDirtyFromByAgent.delete(agentId);
+		}
+		if (isFullPayload) {
+			this.pendingFullMessageEmitAgents.delete(agentId);
 			this.preserveHistoryOnNextFlush.delete(agentId);
 			this.stickyHistoryOnNextFlush.delete(agentId);
-			const slideOut = this.pendingSlideOutByAgent.get(agentId);
-			if (slideOut && slideOut.length > 0) {
-				// 与窗口段同口径脱敏（删 tool result 大载荷），避免前缀持有未脱敏副本
-				payload.slideOut = stripToolResultForDelivery(slideOut);
-				this.pendingSlideOutByAgent.delete(agentId);
-			}
+			this.pendingSlideOutByAgent.delete(agentId);
 		}
-		this.emit(ipcChannels.agentsMessage, payload);
 	}
 
 	/** 只在 isStreaming 边沿写 Set 并推轻量补丁；热路径重复 add/delete 不再打 runtime。 */
@@ -5731,9 +5853,18 @@ export class AgentManager {
 		this.emit(ipcChannels.agentsState, tabs);
 	}
 
-	private emit(channel: string, payload: unknown) {
-		for (const listener of this.outputListeners) listener(channel, payload);
-		this.sendToRenderer(channel, payload);
+	private emit(channel: string, payload: unknown): boolean {
+		let accepted = true;
+		for (const listener of this.outputListeners) {
+			const result = listener(channel, payload);
+			if (result === false) accepted = false;
+		}
+		// listener 拒绝（如交付预算阻断）时，agents:message 不得再进原生 32 MiB 帧；
+		// 其余 channel（状态/流式/notice 等）维持原有「始终 sendToRenderer」行为。
+		if (!(accepted === false && channel === ipcChannels.agentsMessage)) {
+			this.sendToRenderer(channel, payload);
+		}
+		return accepted;
 	}
 
 	private emitLocalEvent(agentId: string, event: unknown, streamGeneration?: number) {

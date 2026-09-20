@@ -20,11 +20,14 @@ import {
 } from "./sessionNameLine";
 import { SessionSummaryCache, type SessionFileVersion } from "./sessionSummaryCache";
 import { getPiSessionParent } from "../../shared/piCompatibility";
+import { extractImageContent } from "../../shared/imageContent";
+import { applyImageDisplayBudget } from "../../shared/imageLimits";
 
 type SessionScannerCopyKey = Extract<MainProcessTranslationKey,
   | "session.untitled"
   | "session.emptyPreview"
   | "session.copyTitle"
+  | "session.imagePlaceholder"
 >;
 
 type SessionScannerCopy = (
@@ -36,6 +39,7 @@ const defaultSessionScannerCopy: Record<SessionScannerCopyKey, string> = {
   "session.untitled": "Untitled",
   "session.emptyPreview": "空会话",
   "session.copyTitle": "{title} copy",
+  "session.imagePlaceholder": "[图片]",
 };
 
 function defaultTranslate(
@@ -1130,6 +1134,7 @@ export class SessionScanner {
     // 第二遍：生成 ChatMessage[]
     const messages: ChatMessage[] = [];
     let seq = 0;
+    let turnImageBytes = 0;
 
     for (const line of lines) {
       try {
@@ -1140,9 +1145,11 @@ export class SessionScanner {
         const ts = Number(entry.timestamp ?? msg.timestamp ?? Date.now());
 
         if (msg.role === "user") {
-          const text = extractMessageText(msg.content);
-          if (!text.trim()) continue;
-          const images = this.extractImagesFromContent(msg.content);
+          turnImageBytes = 0;
+          const images = extractImageContent(msg.content).images;
+          const rawText = extractMessageText(msg.content);
+          const text = rawText || (images.length > 0 ? this.translate("session.imagePlaceholder") : "");
+          if (!text.trim() && images.length === 0) continue;
           messages.push({
             id: `sv-u-${seq++}`,
             agentId: "_viewer",
@@ -1152,9 +1159,13 @@ export class SessionScanner {
             ...(images.length > 0 ? { images } : {}),
           });
         } else if (msg.role === "assistant") {
+          const rawImages = extractImageContent(msg.content).images;
+          const budget = applyImageDisplayBudget(rawImages, { currentTurnUsedBytes: turnImageBytes });
+          for (const img of budget.images) turnImageBytes += img.data.length;
+
           const text = extractMessageText(msg.content);
-          if (!text.trim()) continue;
           const thinking = extractThinkingRaw(msg.content);
+          if (!text.trim() && !thinking.trim() && budget.images.length === 0 && !budget.notice) continue;
           messages.push({
             id: `sv-a-${seq++}`,
             agentId: "_viewer",
@@ -1162,6 +1173,8 @@ export class SessionScanner {
             text,
             timestamp: ts,
             ...(thinking ? { thinking } : {}),
+            ...(budget.images.length > 0 ? { images: budget.images } : {}),
+            ...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
           });
         } else if (msg.role === "toolResult") {
           const toolCallId = String(msg.toolCallId ?? `sv-tool-${seq}`);
@@ -1169,12 +1182,18 @@ export class SessionScanner {
           const toolName = String(msg.toolName ?? historicalCall?.name ?? "tool");
           const isError = Boolean(msg.isError);
           const icon = isError ? "✗" : "✓";
+          const toolImagesResult = extractImageContent(msg.content);
+          const budget = applyImageDisplayBudget(toolImagesResult.images, { currentTurnUsedBytes: turnImageBytes });
+          for (const img of budget.images) turnImageBytes += img.data.length;
+
           messages.push({
             id: `sv-t-${seq++}`,
             agentId: "_viewer",
             role: "tool",
             text: `${icon} ${toolName}`,
             timestamp: ts,
+            ...(budget.images.length > 0 ? { images: budget.images } : {}),
+            ...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
             meta: {
               status: isError ? "error" : "done",
               toolName,
@@ -1186,20 +1205,9 @@ export class SessionScanner {
       } catch { /* skip malformed lines */ }
     }
 
-    return messages.filter((m: ChatMessage) => m.text.trim());
-  }
-
-  /** 从 content 数组中提取图片附件 */
-  private extractImagesFromContent(content: unknown): Array<{ type: "image"; data: string; mimeType: string }> {
-    if (!Array.isArray(content)) return [];
-    return content.flatMap((item) => {
-      if (!item || typeof item !== "object") return [];
-      const typed = item as Record<string, unknown>;
-      if (typed.type !== "image") return [];
-      const data = typeof typed.data === "string" ? typed.data : "";
-      const mimeType = typeof typed.mimeType === "string" ? typed.mimeType : "image/png";
-      return data ? [{ type: "image" as const, data, mimeType }] : [];
-    });
+    return messages.filter(
+      (m: ChatMessage) => Boolean(m.text.trim() || m.thinking?.trim() || m.images?.length || m.imageDisplayNotice),
+    );
   }
 
   // ── 内部私有方法 ─────────────────────────────────────────────

@@ -265,7 +265,12 @@ export function App() {
 
   /** 当前正在重启的 Agent，用于仅给对应会话显示 loading，避免切到其他 Agent 后仍被全局禁用。 */
   const [restartingAgentId, setRestartingAgentId] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState<ImageContent | null>(null);
+  const [previewImage, setPreviewImage] = useState<{
+    image: ImageContent;
+    /** 同组图片数组：时间线 Gallery/用户气泡点开时携带，供预览层左右键组内导航；
+     *  磁盘文件预览等单张场景不传 */
+    images?: ImageContent[];
+  } | null>(null);
 
   // composerAgentModes legacy mirror removed — mode restore uses Session atom in useQueuedPrompt.
   /** 客户端队列按 agent 记录 flush 锁，避免 tool-end 与 idle 并发投递。 */
@@ -1152,7 +1157,7 @@ export function App() {
           .readBase64(resolved)
           .then((dataUrl) => {
             const m = dataUrl.match(/^data:(.*?);base64,(.*)$/s);
-            if (m) setPreviewImage({ type: "image", mimeType: m[1], data: m[2] });
+            if (m) setPreviewImage({ image: { type: "image", mimeType: m[1], data: m[2] } });
           })
           .catch(() => showToast(t("app.openFileFailed", { error: ext })));
         return;
@@ -2516,7 +2521,8 @@ export function App() {
       showToast,
       onOpenFile: handleOpenLinkedFile,
       onDiffFile: diffFilePath,
-      onPreviewImage: setPreviewImage,
+      onPreviewImage: (img: ImageContent | null, images?: ImageContent[]) =>
+        setPreviewImage(img ? { image: img, images } : null),
       abortAgent,
       restartActiveAgent,
       runCreateSessionDraft: runCreateSessionDraftForPane,
@@ -3206,7 +3212,8 @@ export function App() {
     />
     {previewImage && (
       <ImagePreviewModal
-        image={previewImage}
+        image={previewImage.image}
+        images={previewImage.images}
         onClose={() => setPreviewImage(null)}
       />
     )}

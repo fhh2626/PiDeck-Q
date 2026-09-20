@@ -307,6 +307,61 @@ test("Files IPC: EXDEV move refuses an existing destination directory", async ()
 	}
 });
 
+test("Files IPC: dialog:pick-images handles cancel, selection, and >16 limits", async () => {
+	const authorization = createAuthorizationStub();
+	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const router = createFakeRouter();
+
+	let dialogResult = { canceled: true, filePaths: [] };
+	const fakeDialogs = {
+		showOpenDialog: async (options) => {
+			assert.equal(options.parent, "none");
+			assert.deepEqual(JSON.parse(JSON.stringify(options.properties)), ["openFile", "multiSelections"]);
+			assert.deepEqual(JSON.parse(JSON.stringify(options.filters)), [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }]);
+			return dialogResult;
+		},
+	};
+
+	let issuedPaths = null;
+	const fakeCapabilities = {
+		consumeCopy: () => [],
+		consumeRead: () => "",
+		issuePicker: (paths) => {
+			issuedPaths = paths;
+			return "test-picker-cap-id";
+		},
+	};
+
+	registerFilesIpc(router, {
+		fileSystemService: {},
+		projectStore: { get: () => ({ path: "C:/project" }) },
+		settingsStore: {},
+		appLogger: { info: () => {}, error: () => {} },
+		dialogs: fakeDialogs,
+		platformShell: {},
+		getAuthorizedRoots: () => ["C:/project"],
+		externalFileCapabilities: fakeCapabilities,
+	});
+
+	// 1. 取消
+	const cancelled = await router.invoke(ipcChannels.dialogPickImages);
+	assert.deepEqual(JSON.parse(JSON.stringify(cancelled)), { kind: "cancelled" });
+
+	// 2. 正常选图
+	dialogResult = { canceled: false, filePaths: ["C:/a.png", "C:/b.jpg", "C:/a.png"] }; // 含重复
+	const selected = await router.invoke(ipcChannels.dialogPickImages);
+	assert.equal(selected.kind, "selected");
+	assert.equal(selected.capabilityId, "test-picker-cap-id");
+	assert.deepEqual(JSON.parse(JSON.stringify(selected.paths)), ["C:/a.png", "C:/b.jpg"]); // 已经保序去重
+	assert.deepEqual(JSON.parse(JSON.stringify(issuedPaths)), ["C:/a.png", "C:/b.jpg"]);
+
+	// 3. 选图超过 16 张
+	const seventeenPaths = Array.from({ length: 17 }, (_, i) => `C:/img-${i}.png`);
+	dialogResult = { canceled: false, filePaths: seventeenPaths };
+	const tooMany = await router.invoke(ipcChannels.dialogPickImages);
+	assert.deepEqual(JSON.parse(JSON.stringify(tooMany)), { kind: "error", code: "TOO_MANY_FILES" });
+});
+
 test("Files IPC: EXDEV move keeps the source when the destination appears during copy", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-race-"));
 	try {

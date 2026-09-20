@@ -33,6 +33,7 @@ import { TimelineMarker } from "./TimelineMarker";
 import { LiveDuration } from "./LiveDuration";
 import { getToolPhraseFromArgs } from "./timeline/toolPhrase";
 import { ToolResult } from "../agents/tool-result";
+import { MessageImageGallery } from "./MessageImageGallery";
 import { desktopApi } from "../../desktopApi";
 import {
   formatDuration,
@@ -349,6 +350,11 @@ export const ToolCard = memo(function ToolCard(props: {
 						<span className="tool-card-kind">{kindLabel}</span>
 					)}
 					{statusBadge}
+					{Boolean(props.message.images?.length) && (
+						<Badge variant="outline" className="gap-1 px-1 py-0 text-micro text-muted-foreground">
+							{t("tool.images.count", { count: props.message.images!.length })}
+						</Badge>
+					)}
 					{showDuration && (
 						<span className="shrink-0 font-mono text-micro tabular-nums text-text-tertiary" title={t("tool.durationTitle")}>
 							{status === "running" ? (
@@ -376,6 +382,10 @@ export const ToolCard = memo(function ToolCard(props: {
 			</div>
 			{expanded && (
 				<div className="relative ml-5 mt-0.5 mb-1 rounded-b-sm border-l-2 border-border-subtle bg-transparent pl-2 animate-in fade-in slide-in-from-top-1 duration-150">
+					<MessageImageGallery
+						images={props.message.images}
+						notice={props.message.imageDisplayNotice}
+					/>
 				{/* 已完成 ask_question 已拆成常驻 AskQuestionResultCard（buildTurnDisplay），
 				    ToolCard 这里只保留 running / 损坏 ask 的普通工具详情。 */}
 					<ToolResult

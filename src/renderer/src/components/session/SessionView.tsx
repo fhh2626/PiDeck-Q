@@ -67,7 +67,7 @@ export type SessionViewProps = {
   showThinking: boolean;
   validCommandNames: Set<string>;
   validFilePaths: Set<string>;
-  onPreviewImage: (image: ImageContent) => void;
+  onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
   onOpenFile?: (path: string) => void;
   onDiffFile?: (path: string) => void;
   onResendUserMessage?: (message: any) => void;

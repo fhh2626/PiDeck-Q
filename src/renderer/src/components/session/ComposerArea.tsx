@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import {
   ComposerBottomBar,
@@ -11,6 +11,10 @@ import {
 import { SessionReferenceModal } from "../app/SessionReferenceModal";
 import { t } from "../../i18n";
 import { useSessionComposerController } from "../../hooks/useSessionComposerController";
+import { useComposerImagePicker } from "../../hooks/useComposerImagePicker";
+import { useVisionBridgeConfig } from "../../hooks/useVisionBridgeConfig";
+import { getModelImageCapabilityNotice } from "../../utils/modelImageCapability";
+import { showNotice } from "../../utils/notice";
 import {
   ComposerAttachmentBar,
   ComposerSendControls,
@@ -25,7 +29,7 @@ import { useSessionPaneActions } from "./SessionPaneServices";
 import { desktopApi } from "../../desktopApi";
 import { COMPOSER_DEFAULT_HEIGHT } from "../../rendererUtils";
 import { chatContentWidthStyle } from "./chatContentWidth";
-import type { GitBranchInfo } from "../../../../shared/types";
+import type { AvailableModel, GitBranchInfo, VisionBridgeConfig } from "../../../../shared/types";
 import type { EnqueuePromptSnapshot } from "../../hooks/useSessionSend";
 
 export type ComposerAreaProps = {
@@ -155,6 +159,65 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     onPromoteSession: useSessionPaneActions().promoteSessionToPermanent,
   });
 
+  const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    void desktopApi.projects.listModels().then((models) => {
+      if (mounted) setAvailableModels(models);
+    }).catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
+  const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
+
+  const visionBridgeConfig = useVisionBridgeConfig({
+    projectPath: sessionRecord?.projectPath,
+    modelId: currentModelId,
+    provider: currentProvider,
+  });
+
+  const imagePicker = useComposerImagePicker({
+    sessionId: props.sessionId,
+    onAddImages: composer.images.attachImages,
+    showNotice,
+    t,
+  });
+
+  const modelNotice = useMemo(() => {
+    if (composer.attachments.length === 0) return undefined;
+    const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
+    const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
+    if (!currentModelId) return undefined;
+
+    const matchedModel = availableModels.find(
+      (m) => m.id === currentModelId && (!currentProvider || m.provider === currentProvider),
+    ) ?? { id: currentModelId, provider: currentProvider ?? "" };
+
+    const notice = getModelImageCapabilityNotice(matchedModel, visionBridgeConfig ?? undefined);
+    if (!notice) return undefined;
+    switch (notice.kind) {
+      case "vision-bridge-active":
+        return t("composer.modelNotice.visionBridge");
+      case "unsupported-suggest-vision":
+        return t("composer.modelNotice.suggestVision");
+      case "unknown-capability":
+        return t("composer.modelNotice.unknownCapability");
+    }
+  }, [
+    composer.attachments.length,
+    composer.runtime?.state?.modelId,
+    composer.runtime?.state?.provider,
+    composer.record?.model?.modelId,
+    composer.record?.model?.provider,
+    availableModels,
+    visionBridgeConfig,
+  ]);
+
   const onNativeFileDrop = composer.editor.onNativeFileDrop;
   // Qt delivers OS file drops as a host event because ordinary WebView File objects
   // do not expose absolute paths. Route only the composer under the native drop point;
@@ -175,7 +238,6 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
 
   // 并行问询：复用发送按钮旁的行为菜单（常显），选择「并行发送」时走后台匿名会话
   const askPanel = useAskPanel();
-  const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
   const store = useStore();
   // 流式生成中切换思考强度产生的「待生效」指示（issue #146）：
   // 飞行中的生成仍用旧档位，新档位下一轮才生效；流式一结束就没有“当前生效”参照，直接清除。
@@ -255,6 +317,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
               attachmentBar={composer.attachments.length > 0 ? (
                 <ComposerAttachmentBar
                   images={composer.attachments}
+                  noticeText={modelNotice}
                   onPreview={composer.images.preview}
                   onRemove={composer.images.remove}
                   onClear={composer.images.clear}
@@ -348,6 +411,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
                 onOpenComposerModePicker={() => composer.pickers.open("mode")}
                 onCancelPlan={() => composer.pickers.setMode("normal")}
                 onAttachFile={composer.editor.attachFile}
+                imageDisabled={imagePicker.isPicking}
+                onAttachImages={imagePicker.pickImages}
                 sendControls={
                   <ComposerSendControls
                     isAgentBusy={composer.isBusy}
@@ -371,7 +436,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
           />
           {composer.previewImage ? (
             <ImagePreviewModal
-              image={composer.previewImage}
+              image={composer.previewImage.image}
+              images={composer.previewImage.images}
               onClose={composer.modals.closePreview}
             />
           ) : null}

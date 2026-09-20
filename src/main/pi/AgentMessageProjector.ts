@@ -3,6 +3,8 @@ import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCop
 import { extractMessageText } from "./messageContent";
 import { takeActiveEntryId } from "./sessionEntryIds";
 import { buildAskQuestionResultSummary } from "./askQuestionResult";
+import { extractImageContent } from "../../shared/imageContent";
+import { applyImageDisplayBudget } from "../../shared/imageLimits";
 
 export type AgentMessageProjectorDeps = {
 	translate: (
@@ -66,21 +68,23 @@ export class AgentMessageProjector {
 		// 因此 currentEntryId 的读取必须放在各个角色块内部，不能在所有条目前统一读取，
 		// 否则非 user/assistant/toolResult 条目会提前消费 entryIndex 槽位。
 		let entryIndex = 0;
+		let turnImageBytes = 0;
 		return rawMessages
 			.flatMap<ChatMessage>((message, index) => {
 				if (!message || typeof message !== "object") return [];
 				const typed = message as any;
 
 				if (typed.role === "user") {
+					turnImageBytes = 0;
 					// 先消费 activeEntryIds 槽位，再决定是否渲染。
 					// 边界：空文本 user 不展示，但 get_entries 仍有对应 entry，
 					// 若不推进 index，后续消息 entryId 会整体前移错位。
 					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
 					entryIndex = taken.nextIndex;
 					const currentEntryId = taken.entryId;
-					const images = this.extractImages(typed.content);
+					const rawImages = extractImageContent(typed.content).images;
 					const text = this.extractText(typed.content) ||
-						(images.length > 0 ? this.deps.translate("session.imagePlaceholder") : "");
+						(rawImages.length > 0 ? this.deps.translate("session.imagePlaceholder") : "");
 					if (!text.trim()) return [];
 					return [{
 						id: `${agentId}-history-${currentEntryId ?? index}`,
@@ -93,7 +97,7 @@ export class AgentMessageProjector {
 							// 保留 _piDeckMsgSeq 作为旧版本回退兼容
 							_piDeckMsgSeq: index,
 						},
-						...(images.length > 0 ? { images } : {}),
+						...(rawImages.length > 0 ? { images: rawImages } : {}),
 					}];
 				}
 				if (typed.role === "assistant") {
@@ -105,10 +109,14 @@ export class AgentMessageProjector {
 					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
 					entryIndex = taken.nextIndex;
 					const currentEntryId = taken.entryId;
+					const rawImages = extractImageContent(typed.content).images;
+					const budget = applyImageDisplayBudget(rawImages, { currentTurnUsedBytes: turnImageBytes });
+					for (const img of budget.images) turnImageBytes += img.data.length;
+
 					const text = this.extractText(typed.content);
 					const thinking = this.extractThinking(typed.content);
-					// 无文本且无 thinking 时才是真正的空消息，跳过。
-					if (!text.trim() && !thinking?.trim()) return [];
+					// 无文本、无 thinking、无图片且无展示提示时才是真正的空消息，跳过。
+					if (!text.trim() && !thinking?.trim() && budget.images.length === 0 && !budget.notice) return [];
 					// stopReason（provider 归一化）：历史 JSONL 已持久化，
 					// 渲染层据此精确区分中间/最终回复（与 live 路径同源）。
 					const stopReason =
@@ -127,6 +135,8 @@ export class AgentMessageProjector {
 						},
 						...(thinking ? { thinking } : {}),
 						...(stopReason ? { stopReason } : {}),
+						...(budget.images.length > 0 ? { images: budget.images } : {}),
+						...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
 					}];
 				}
 				if (typed.role === "toolResult") {
@@ -158,6 +168,9 @@ export class AgentMessageProjector {
 						(filePath
 							? historicalOriginalContentByPath.get(filePath)
 							: undefined);
+					const toolImagesResult = extractImageContent(typed.content);
+					const budget = applyImageDisplayBudget(toolImagesResult.images, { currentTurnUsedBytes: turnImageBytes });
+					for (const img of budget.images) turnImageBytes += img.data.length;
 					const detailText = this.formatToolDetail(
 						toolName,
 						historicalCall?.args,
@@ -187,6 +200,8 @@ export class AgentMessageProjector {
 						role: "tool" as const,
 						text: `${isError ? "✗" : "✓"} ${toolName}`,
 						timestamp: typed.timestamp ?? Date.now(),
+						...(budget.images.length > 0 ? { images: budget.images } : {}),
+						...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
 						meta: {
 							...(currentEntryId ? { entryId: currentEntryId } : {}),
 							_piDeckMsgSeq: index,
@@ -232,9 +247,8 @@ export class AgentMessageProjector {
 				}
 				return [];
 			})
-			// thinking-only assistant turns intentionally carry an empty visible text field.
-			// Keep them so renderer grouping can render the reasoning between tool steps.
-			.filter((message: ChatMessage) => Boolean(message.text.trim() || message.thinking?.trim()));
+			// thinking-only 或 image/notice-bearing assistant turns 保留，供渲染层正常呈现。
+			.filter((message: ChatMessage) => Boolean(message.text.trim() || message.thinking?.trim() || message.images?.length || message.imageDisplayNotice));
 	}
 
 	private collectHistoricalToolCalls(rawMessages: unknown[]) {
@@ -374,17 +388,67 @@ export class AgentMessageProjector {
 
 	extractToolResultText(result: unknown) {
 		if (!result || typeof result !== "object") return "";
-		const content = (result as any).content;
+		const content = (result as any).content ?? (Array.isArray(result) ? result : undefined);
 		if (!Array.isArray(content)) return "";
 		return content
-			.map((item) => (typeof item?.text === "string" ? item.text : ""))
+			.map((item) => {
+				if (typeof item?.text === "string") return item.text;
+				if (item?.type === "image") return `[${this.deps.translate("session.imagePlaceholder") || "图片"}]`;
+				return "";
+			})
 			.filter(Boolean)
 			.join("\n");
 	}
 
+	private sanitizeForJson(value: unknown): unknown {
+		if (!value || typeof value !== "object") return value;
+		if (Array.isArray(value)) return value.map((item) => this.sanitizeForJson(item));
+		const obj = value as Record<string, unknown>;
+
+		// 识别 flat image: { type: "image", data: string, ... }
+		if (obj.type === "image" && typeof obj.data === "string") {
+			const sanitized: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(obj)) {
+				sanitized[k] = k === "data" ? `[base64 image (${obj.data.length} chars)]` : this.sanitizeForJson(v);
+			}
+			return sanitized;
+		}
+
+		// 识别 nested image: { type: "image", source: { type: "base64", data: string, ... } }
+		if (obj.type === "image" && obj.source && typeof obj.source === "object") {
+			const source = obj.source as Record<string, unknown>;
+			if (source.type === "base64" && typeof source.data === "string") {
+				const sanitizedSource: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(source)) {
+					sanitizedSource[k] = k === "data" ? `[base64 image (${source.data.length} chars)]` : this.sanitizeForJson(v);
+				}
+				const sanitized: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(obj)) {
+					sanitized[k] = k === "source" ? sanitizedSource : this.sanitizeForJson(v);
+				}
+				return sanitized;
+			}
+		}
+
+		// 兼容单独 source 块: { type: "base64", data: string }
+		if (obj.type === "base64" && typeof obj.data === "string") {
+			const sanitized: Record<string, unknown> = {};
+			for (const [k, v] of Object.entries(obj)) {
+				sanitized[k] = k === "data" ? `[base64 image (${obj.data.length} chars)]` : this.sanitizeForJson(v);
+			}
+			return sanitized;
+		}
+
+		const copy: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(obj)) {
+			copy[k] = this.sanitizeForJson(v);
+		}
+		return copy;
+	}
+
 	safeJson(value: unknown) {
 		try {
-			return JSON.stringify(value, null, 2);
+			return JSON.stringify(this.sanitizeForJson(value), null, 2);
 		} catch {
 			return String(value);
 		}
@@ -392,24 +456,6 @@ export class AgentMessageProjector {
 
 	extractText(content: unknown): string {
 		return extractMessageText(content);
-	}
-
-	/** 从 pi 历史消息 content 中恢复图片附件，用于历史会话重新打开后的图片展示。 */
-	private extractImages(content: unknown): ImageContent[] {
-		if (!Array.isArray(content)) return [];
-		return content.flatMap<ImageContent>((item) => {
-			if (!item || typeof item !== "object") return [];
-			const typed = item as any;
-			if (typed.type !== "image") return [];
-			const data = typeof typed.data === "string" ? typed.data : "";
-			const mimeType =
-				typeof typed.mimeType === "string"
-					? typed.mimeType
-					: typeof typed.mime_type === "string"
-						? typed.mime_type
-						: "image/png";
-			return data ? [{ type: "image", data, mimeType }] : [];
-		});
 	}
 
 	/** 从历史消息 content 数组中提取 thinking 内容块的文本，清理 ANSI 转义码 */

@@ -24,38 +24,47 @@ import { ExtensionWidgetCard } from "./ComposerParts";
 
 export function ComposerAttachmentBar(props: {
   images: ImageContent[];
-  onPreview: (image: ImageContent) => void;
+  noticeText?: string;
+  /** 第二参携带当前全部附件，供预览弹层在附件组内左右导航 */
+  onPreview: (image: ImageContent, images?: ImageContent[]) => void;
   onRemove: (index: number) => void;
   onClear: () => void;
 }) {
   if (!props.images.length) return null;
   return (
-    <div className="image-preview-area w-full">
-      {props.images.map((image, index) => (
-        <div key={index} className="image-preview-item">
-          <img
-            src={`data:${image.mimeType};base64,${image.data}`}
-            alt={t("app.imageAlt", { index: index + 1 })}
-            onClick={() => props.onPreview(image)}
-            style={{ cursor: "pointer" }}
-          />
-          <Button variant="ghost" size="icon"
-            className="image-remove-btn"
-            aria-label={t("app.imageRemove")} title={t("app.imageRemove")}
-            onClick={() => props.onRemove(index)}
-          >
-            <X size={12} strokeWidth={2.4} aria-hidden="true" />
-          </Button>
+    <div className="image-preview-area w-full flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {props.images.map((image, index) => (
+          <div key={index} className="image-preview-item">
+            <img
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt={t("app.imageAlt", { index: index + 1 })}
+              onClick={() => props.onPreview(image, props.images)}
+              style={{ cursor: "pointer" }}
+            />
+            <Button variant="ghost" size="icon"
+              className="image-remove-btn"
+              aria-label={t("app.imageRemove")} title={t("app.imageRemove")}
+              onClick={() => props.onRemove(index)}
+            >
+              <X size={12} strokeWidth={2.4} aria-hidden="true" />
+            </Button>
+          </div>
+        ))}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="image-clear-btn"
+          onClick={props.onClear}
+        >
+          {t("app.clearImages")}
+        </Button>
+      </div>
+      {props.noticeText ? (
+        <div className="text-micro text-muted-foreground italic px-1">
+          {props.noticeText}
         </div>
-      ))}
-      <Button
-        variant="secondary"
-        size="sm"
-        className="image-clear-btn"
-        onClick={props.onClear}
-      >
-        {t("app.clearImages")}
-      </Button>
+      ) : null}
     </div>
   );
 }

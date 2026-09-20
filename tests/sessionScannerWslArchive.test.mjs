@@ -93,6 +93,8 @@ function loadSessionScanner(homePath, childProcessExports) {
 		if (id === "node:child_process" || id === "child_process") return childProcessExports;
 		if (id.includes("codexSessionMeta")) return codexMeta;
 		if (id.includes("piCompatibility")) return piCompatibility;
+		if (id.includes("imageContent")) return loadModuleInSandbox("src/shared/imageContent.ts", require);
+		if (id.includes("imageLimits")) return loadModuleInSandbox("src/shared/imageLimits.ts", require);
 		if (id.includes("messageContent")) return messageContent;
 		if (id.includes("sessionSummaryCache")) return sessionSummaryCache;
 		if (id.includes("WslPaths")) return wslPaths;

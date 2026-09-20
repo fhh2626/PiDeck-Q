@@ -12,7 +12,7 @@ export const COMPOSER_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-export type ComposerImageErrorCode = "too-large" | "unsupported" | "read-failed";
+export type ComposerImageErrorCode = "too-large" | "unsupported" | "read-failed" | "decode-failed";
 
 export class ComposerImageError extends Error {
   readonly code: ComposerImageErrorCode;
@@ -88,6 +88,28 @@ export function getDroppedImageFiles(data: DataTransfer): File[] {
   return Array.from(data.files).filter((file) => file.type.startsWith("image/"));
 }
 
+/** 校验图片文件是否可被解码，防止伪装或损坏的图片文件流入。验证完毕后立即释放 ObjectURL。 */
+export function verifyImageDecodable(file: File): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof Image === "undefined" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      // 处于无 DOM 环境（如纯 node 单元测试环境）时跳过浏览器解码检查
+      resolve();
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new ComposerImageError("decode-failed", "Failed to decode image file"));
+    };
+    img.src = url;
+  });
+}
+
 export async function processComposerImageFile(file: File): Promise<ImageContent> {
   if (file.size > COMPOSER_IMAGE_MAX_BYTES) {
     throw new ComposerImageError("too-large", "Image exceeds the composer size limit");
@@ -95,6 +117,10 @@ export async function processComposerImageFile(file: File): Promise<ImageContent
   if (!COMPOSER_IMAGE_MIME_TYPES.has(file.type)) {
     throw new ComposerImageError("unsupported", "Unsupported composer image type");
   }
+  // 先验证图片能否正常解码；伪造格式或损坏图片在此处直接拒绝
+  await verifyImageDecodable(file);
+
+  // GIF 格式保留全部原始帧字节，不强制转换为静态 PNG/JPEG
   if (file.type === "image/gif") return fileToImageContent(file);
 
   try {

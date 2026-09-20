@@ -65,6 +65,8 @@
     "dist:win": "node scripts/dist-win-native.mjs",
     "dist:win:dev": "node scripts/dev-native.mjs",
     "prepare:pi-latest": "node scripts/prepare-pi-latest.mjs",
+    "test:browser:server": "vite --config tests/browser/vite.config.ts",
+    "test:browser": "playwright test --config tests/browser/playwright.config.ts",
     "test:raw": "node --test --test-concurrency=4 \"tests/*.test.mjs\" \"resources/extensions/pideck-q-change-pi-prompt/tests/*.test.mjs\"",
     "test": "npm run prepare:pi-latest && npm run test:raw",
     "test:serial:raw": "node --test --test-concurrency=1 \"tests/*.test.mjs\" \"resources/extensions/pideck-q-change-pi-prompt/tests/*.test.mjs\"",

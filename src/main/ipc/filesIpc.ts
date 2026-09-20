@@ -1,6 +1,7 @@
 import { cp, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { ipcChannels } from "../../shared/ipc";
+import type { PickImagesResult } from "../../shared/types";
 import type { FileSystemService } from "../fs/FileSystemService";
 import {
 	assertAuthorizedFilePath,
@@ -50,7 +51,7 @@ export type FilesIpcDeps = {
 	platformShell: Pick<PlatformShell, "openPath" | "showItemInFolder">;
 	getAuthorizedRoots: () => string[];
 	/** Capabilities issued by the trusted native clipboard/drop boundary. */
-	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead" | "issuePicker">;
 	/** Optional seam for deterministic cross-device move tests. */
 	fileOperations?: Partial<FilesIpcFileOperations>;
 };
@@ -117,6 +118,9 @@ export function registerFilesIpc(
 			// 二进制预览（图片/PDF 等）：读为 base64 由渲染层转 Blob URL 显示。
 			// 渲染层对空串（ENOENT）走「不支持」提示。
 			const buffer = await readFile(hostPath);
+			if (typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0 && buffer.byteLength > maxBytes) {
+				throw new Error(`FILE_TOO_LARGE:${buffer.byteLength}:${Math.floor(maxBytes)}`);
+			}
 			return buffer.toString("base64");
 		} catch (error) {
 			if (hasNodeErrorCode(error, "ENOENT")) return "";
@@ -136,6 +140,51 @@ export function registerFilesIpc(
 			parent: "none",
 		});
 		return result.canceled ? [] : result.filePaths;
+	});
+
+	router.handle(ipcChannels.dialogPickImages, async (rawOptions?: unknown): Promise<PickImagesResult> => {
+		try {
+			let title: string | undefined = undefined;
+			if (rawOptions && typeof rawOptions === "object") {
+				const opts = rawOptions as Record<string, unknown>;
+				if (typeof opts.title === "string" && opts.title.trim()) {
+					title = opts.title.trim();
+				}
+			}
+			const result = await dialogs.showOpenDialog({
+				title,
+				properties: ["openFile", "multiSelections"],
+				filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+				parent: "none",
+			});
+			if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+				return { kind: "cancelled" };
+			}
+			const uniquePaths: string[] = [];
+			const seen = new Set<string>();
+			for (const path of result.filePaths) {
+				if (typeof path === "string" && path.length > 0 && !seen.has(path)) {
+					seen.add(path);
+					uniquePaths.push(path);
+				}
+			}
+			if (uniquePaths.length === 0) {
+				return { kind: "cancelled" };
+			}
+			if (uniquePaths.length > 16) {
+				return { kind: "error", code: "TOO_MANY_FILES" };
+			}
+			const capabilityId = externalFileCapabilities?.issuePicker(uniquePaths);
+			if (!capabilityId) {
+				return { kind: "error", code: "PICKER_FAILED" };
+			}
+			return { kind: "selected", capabilityId, paths: uniquePaths };
+		} catch (error) {
+			void appLogger.error("file", "Pick images dialog failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return { kind: "error", code: "PICKER_FAILED" };
+		}
 	});
 
 	router.handle(ipcChannels.filesList, async (projectId: string) => {

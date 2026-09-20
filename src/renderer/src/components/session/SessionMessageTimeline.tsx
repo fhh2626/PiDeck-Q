@@ -139,7 +139,7 @@ type TimelineInteractionProps = {
   showThinking: boolean;
   validCommandNames: Set<string>;
   validFilePaths: Set<string>;
-  onPreviewImage: (image: ImageContent) => void;
+  onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
   onOpenExternal: (url: string, forceSystem?: boolean) => void;
   onOpenFile?: (path: string) => void;
   onDiffFile?: TurnRowProps["onDiffFile"];

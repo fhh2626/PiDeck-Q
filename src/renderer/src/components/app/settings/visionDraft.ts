@@ -6,10 +6,12 @@
  * 壳的静态 import 会把整个 tab（含 ModelPicker 等重依赖）拖进首开 chunk。
  */
 import { useCallback, useEffect, useState } from "react";
+import { useSetAtom } from "jotai";
 import type { VisionBridgeConfig, VisionBridgeState } from "../../../../../shared/types";
 import { desktopApi } from "../../../desktopApi";
 import { t } from "../../../i18n";
 import { showNotice } from "../../../utils/notice";
+import { visionConfigRevisionAtom } from "../../../atoms/session-atoms";
 
 /** 与扩展 DEFAULT_PROMPT 保持一致（恢复默认按钮用）。 */
 export const DEFAULT_PROMPT =
@@ -34,6 +36,7 @@ export function emptyDraft(): VisionBridgeConfig {
  * 因此脏标记单独维护，由弹框头部统一保存/取消/关闭确认一并处理。
  */
 export function useVisionBridgeDraft() {
+	const setVisionConfigRevision = useSetAtom(visionConfigRevisionAtom);
 	const [state, setState] = useState<VisionBridgeState | null>(null);
 	const [draft, setDraft] = useState<VisionBridgeConfig | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -77,6 +80,7 @@ export function useVisionBridgeDraft() {
 			const result = await desktopApi.config.visionSaveConfig(draft);
 			if (result.ok) {
 				setDirty(false);
+				setVisionConfigRevision((c) => c + 1);
 				showNotice(t("settings.vision.saved"), 3000);
 				return true;
 			}

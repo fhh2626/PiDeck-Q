@@ -31,6 +31,12 @@ import {
 	parseContextControllerStateFromJsonl,
 } from "../sessions/contextControllerStateReader";
 import type { RpcRouter } from "../transport/RpcRouter";
+import {
+	enforceDeliveryBudgetOnPage,
+	enforceDeliveryBudgetOnPayload,
+} from "../pi/messageDeliveryBudget";
+import { stripToolResultForDelivery } from "../pi/agentUtils";
+import type { SessionMessagePage } from "../../shared/types/session";
 
 /**
  * 已扫描过项目的集合（模块级）：决定 catalogList 走「首次同步扫描」还是
@@ -397,7 +403,17 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return [];
 			const content = await sessionScanner.readSessionRawText(entry.filePath);
-			return agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
+			const rawMessages = await agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
+			const stripped = stripToolResultForDelivery(rawMessages);
+			const dummyPayload = { messages: stripped };
+			const result = enforceDeliveryBudgetOnPayload(
+				dummyPayload,
+				(p) => ({ ok: true, result: p.messages }),
+			);
+			if (result.ok) {
+				return result.value.messages;
+			}
+			throw new Error("MESSAGE_DELIVERY_TOO_LARGE");
 		},
 	);
 	router.handle(
@@ -408,6 +424,7 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			// unit=turn（2026-08 激活分页）：页边界对齐完整轮次，pageSize 复用为轮次数（上限 10）；
 			// 游标协议不变（before/nextBefore 为绝对消息下标，与运行时数组同一下标空间）；
 			// beforeEntryId 供已激活会话以运行时窗口首条消息为锚点首次补历史。
+			let rawPage: SessionMessagePage | undefined;
 			if (options?.unit === "turn") {
 				// 缓存优先（2026-11）：运行中会话翻历史先在主进程内存缓存切片，命中免文件 IO；
 				// 未命中（缓存未覆盖/非活跃会话）回退 SessionHistoryReader 读文件。
@@ -421,12 +438,21 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 							before,
 							turnCount: pageSize,
 						}).catch(() => null);
-						if (cached) return cached;
+						if (cached) rawPage = cached;
 					}
 				}
-				return agentManager.readSessionDisplayTurnPage(entry.filePath, sessionId, before, pageSize, options.beforeEntryId);
+				if (!rawPage) {
+					rawPage = await agentManager.readSessionDisplayTurnPage(entry.filePath, sessionId, before, pageSize, options.beforeEntryId);
+				}
+			} else {
+				rawPage = await agentManager.readSessionDisplayMessagePage(entry.filePath, sessionId, before, pageSize);
 			}
-			return agentManager.readSessionDisplayMessagePage(entry.filePath, sessionId, before, pageSize);
+
+			const budgetResult = enforceDeliveryBudgetOnPage(rawPage);
+			if (budgetResult.ok) {
+				return budgetResult.value;
+			}
+			throw new Error("MESSAGE_DELIVERY_TOO_LARGE");
 		},
 	);
 	router.handle(

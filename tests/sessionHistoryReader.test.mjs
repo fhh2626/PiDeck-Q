@@ -171,6 +171,19 @@ test("SessionHistoryReader locates message by messageId and reads its content fo
           ],
         },
       }),
+      JSON.stringify({
+        id: "entry-3",
+        parentId: "entry-2",
+        type: "message",
+        message: {
+          id: "msg-3",
+          role: "user",
+          content: [
+            { type: "text", text: "with flat pi image" },
+            { type: "image", data: "BBBB", mimeType: "image/jpeg" },
+          ],
+        },
+      }),
     ].join("\n"), "utf8");
     const reader = createReader((path) => path);
 
@@ -185,6 +198,13 @@ test("SessionHistoryReader locates message by messageId and reads its content fo
     assert.equal(withImage.images.length, 1);
     assert.equal(withImage.images[0].mimeType, "image/png");
     assert.equal(withImage.images[0].data, "AAAA");
+
+    const withFlatImage = await reader.readMessageByMessageId(sessionPath, "msg-3");
+    assert.equal(withFlatImage.entryId, "entry-3");
+    assert.equal(withFlatImage.text, "with flat pi image");
+    assert.equal(withFlatImage.images.length, 1);
+    assert.equal(withFlatImage.images[0].mimeType, "image/jpeg");
+    assert.equal(withFlatImage.images[0].data, "BBBB");
 
     const missing = await reader.readMessageByMessageId(sessionPath, "nope");
     assert.equal(missing, undefined);

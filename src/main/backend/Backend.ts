@@ -26,7 +26,7 @@ export interface CreateBackendOptions {
 	runtime?: {
 		devRendererUrl?: string;
 	};
-	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead" | "issuePicker">;
 }
 
 export interface Backend {

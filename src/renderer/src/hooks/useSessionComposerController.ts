@@ -71,7 +71,9 @@ import { desktopApi, isNativeRuntime } from "../desktopApi";
 import { t } from "../i18n";
 import {
   COMPOSER_IMAGE_MAX_BYTES,
+  COMPOSER_TOTAL_IMAGE_BASE64_MAX_BYTES,
   ComposerImageError,
+  composerImageBase64Bytes,
   dataUrlToFile,
   getClipboardImageFiles,
   getDroppedImageFiles,
@@ -237,6 +239,7 @@ function composerImageNotice(error: unknown): string {
   if (error instanceof ComposerImageError) {
     if (error.code === "too-large") return t("app.imageTooLarge");
     if (error.code === "unsupported") return t("app.imageUnsupported");
+    if (error.code === "decode-failed") return t("composer.images.decodeFailed");
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -304,7 +307,11 @@ export function useSessionComposerController(
   const [savedDraft, setSavedDraft] = useState("");
   const [busyDraftLocked, setBusyDraftLocked] = useState(false);
   const [sendBehaviorMenuOpen, setSendBehaviorMenuOpen] = useState(false);
-  const [previewImage, setPreviewImage] = useState<ImageContent | null>(null);
+  const [previewImage, setPreviewImage] = useState<{
+    image: ImageContent;
+    /** 同组附件数组：附件栏点开时携带，供预览层左右键在全部附件内导航 */
+    images?: ImageContent[];
+  } | null>(null);
   const [picker, setPicker] = useState<ComposerPickerKind | null>(null);
   const [commands, setCommands] = useState<PiCommand[]>([]);
   const [files, setFiles] = useState<FileTreeNode[]>([]);
@@ -881,6 +888,38 @@ export function useSessionComposerController(
     return addedAny;
   }, [setAttachments]);
 
+  const attachImages = useCallback((newImages: ImageContent[]) => {
+    if (newImages.length === 0) return;
+    setAttachments((current) => {
+      let currentBytes = composerImageBase64Bytes(current);
+      const allowed: ImageContent[] = [];
+      let budgetExceeded = false;
+
+      for (const img of newImages) {
+        const nextBytes = currentBytes + img.data.length;
+        if (nextBytes <= COMPOSER_TOTAL_IMAGE_BASE64_MAX_BYTES) {
+          allowed.push(img);
+          currentBytes = nextBytes;
+        } else {
+          budgetExceeded = true;
+          break;
+        }
+      }
+
+      if (budgetExceeded) {
+        showNotice(
+          t("composer.images.budgetExceeded", {
+            added: allowed.length,
+            total: newImages.length,
+          }),
+          4000,
+        );
+      }
+
+      return [...current, ...allowed];
+    });
+  }, [setAttachments]);
+
   /**
    * 把已格式化的引用文本（@path、@"a b/" 等）插入输入框当前光标处。
    * 文件树拖拽、OS 文件拖入/粘贴、「加入对话引用」按钮共用同一插入规则：
@@ -1323,6 +1362,7 @@ export function useSessionComposerController(
     templates,
     picker,
     previewImage,
+    setPreviewImage,
     sessionReference,
     sessionReferenceSelection: sessionReference
       ? sessionReferenceSelections[`&${sessionReference.name ?? sessionReference.filePath}`]
@@ -1376,9 +1416,11 @@ export function useSessionComposerController(
       pick: commitCompletion,
     },
     images: {
-      preview: setPreviewImage,
+      preview: (image: ImageContent | null, images?: ImageContent[]) =>
+        setPreviewImage(image ? { image, images } : null),
       remove: (index: number) => setAttachments((current) => current.filter((_, item) => item !== index)),
       clear: () => setAttachments([]),
+      attachImages,
     },
     delivery: {
       // 发送/追问都算主动交互：先把预览 Tab 晋升常驻，再投递（幂等，非预览无副作用）

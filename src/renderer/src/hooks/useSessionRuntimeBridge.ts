@@ -43,6 +43,10 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
           }
         }
       }
+      if (event.sourceChannel === "sessions:message-delivery-status") {
+        showNotice(t("session.messageDeliveryTooLarge"), Number.POSITIVE_INFINITY, "error");
+        return;
+      }
       // 主进程瞬时状态反馈（如 abort 已请求停止）走 toast，不进会话时间线：
       // 系统卡片太抢眼，且插在 assistant 中间会打断 agent-run 分组。
       if (event.sourceChannel === "agents:notice" && event.payload && typeof event.payload === "object") {
