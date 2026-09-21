@@ -39,10 +39,15 @@ export function parseLayout(prompt: string): Layout | undefined {
 	if (identityEnd === undefined) return;
 	const skipBlank = () => { while (lines[i] && !lines[i].text.trim()) i++; };
 	skipBlank();
-	const toolsStart = lines[i]?.start;
-	if (toolsStart === undefined || !/^(?:#{1,2} )?Available tools:$/.test(lines[i++]?.text ?? '')) return;
+	// Pi 0.86 uses explicit section tags. Keep tool patches inside the wrapper so
+	// shell pruning cannot drop the closing tag or the custom-tool notice.
+	const tagged = lines[i]?.text === '<tools>';
+	const toolHeading = lines[i++];
+	if (!toolHeading || (!tagged && !/^(?:#{1,2} )?Available tools:$/.test(toolHeading.text))) return;
+	const toolsStart = tagged ? lines[i]?.start : toolHeading.start;
+	if (toolsStart === undefined) return;
 	let toolCount = 0;
-	while (lines[i]?.text) {
+	while (lines[i]?.text && (!tagged || lines[i].text !== '</tools>')) {
 		if (!/^(?:- [\w.-]+: .+|\(none\))$/.test(lines[i].text)) return;
 		i++;
 		toolCount++;
@@ -55,10 +60,15 @@ export function parseLayout(prompt: string): Layout | undefined {
 		i++;
 		skipBlank();
 	}
+	if (tagged) {
+		if (lines[i++]?.text !== '</tools>') return;
+		skipBlank();
+	}
 	const guidelinesStart = lines[i]?.start;
-	if (guidelinesStart === undefined || !/^(?:#{1,2} )?Guidelines:$/.test(lines[i++]?.text ?? '')) return;
+	const guidelineHeading = lines[i++]?.text ?? '';
+	if (guidelinesStart === undefined || (tagged ? guidelineHeading !== '<rules>' : !/^(?:#{1,2} )?Guidelines:$/.test(guidelineHeading))) return;
 	const rules: Rule[] = [];
-	while (lines[i]?.text) {
+	while (lines[i]?.text && (!tagged || lines[i].text !== '</rules>')) {
 		const start = i;
 		if (!lines[i].text.startsWith('- ')) return;
 		i++;
@@ -68,20 +78,25 @@ export function parseLayout(prompt: string): Layout | undefined {
 		const raw = prompt.slice(lines[start].start, lines[i - 1].end);
 		rules.push({ raw, text: raw.slice(2).replace(/\r\n/g, '\n').trim() });
 	}
+	if (tagged && lines[i++]?.text !== '</rules>') return;
 	const guidelinesEnd = lines[i - 1]?.end;
 	skipBlank();
 	const docsStart = lines[i]?.start;
+	if (tagged && lines[i++]?.text !== '<docs>') return;
 	if (guidelinesEnd === undefined || docsStart === undefined || !/^Pi documentation \([^\r\n]*\):$/.test(lines[i++]?.text ?? '')) return;
 	// These three source labels identify the documentation block; body wording may drift.
 	for (const label of ['Main documentation', 'Additional docs', 'Examples']) {
 		if (!lines[i]?.text.startsWith(`- ${label}: `)) return;
 		i++;
 	}
-	while (lines[i]?.text) {
-		if (lines[i].text.startsWith('Current working directory: ')) break;
+	while (lines[i]?.text && (!tagged || lines[i].text !== '</docs>')) {
+		if (!tagged && lines[i].text.startsWith('Current working directory: ')) break;
 		if (!/^(?:- |[ \t]+\S)/.test(lines[i].text)) return;
 		i++;
 	}
+	// Never search for a later closing tag in user context; every header section
+	// must close exactly where its recognized body ends or the whole parse fails.
+	if (tagged && lines[i++]?.text !== '</docs>') return;
 	const docsEnd = lines[i - 1]?.end;
 	if (docsEnd === undefined || docsEnd >= 128 * 1024) return;
 	return { identityEnd, toolsStart, toolsEnd, guidelinesStart, guidelinesEnd, docsStart, docsEnd, rules };
