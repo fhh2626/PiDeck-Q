@@ -481,7 +481,9 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	});
 	onRuntimeEvent("agent_start", () => {
 		if (!config.requiredTools) return;
-		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().map((tool) => tool.name));
+		// 校验子 Agent 运行时最终 active tools，确保已注册但被移出 active 集合的工具被正确识别为 missing
+		const activeTools = typeof pi.getActiveTools === "function" ? pi.getActiveTools() : pi.getAllTools().map((tool) => tool.name);
+		const diagnostic = evaluateChildToolDiagnostic(config, activeTools);
 		config.toolDiagnostic?.(diagnostic);
 		if (diagnostic) throw new Error(formatChildToolDiagnostic(diagnostic));
 	});

@@ -15688,7 +15688,10 @@ function getTurndown() {
   return turndownInstance;
 }
 function htmlToMarkdown(html) {
-  return getTurndown().turndown(html).trim();
+  if (!html) return "";
+  const { document } = parseHTML(`<x-turndown id="turndown-root">${html}</x-turndown>`);
+  const root2 = document.getElementById("turndown-root");
+  return getTurndown().turndown(root2 ?? html).trim();
 }
 function extractInlineScripts(document) {
   const results = [];
@@ -16777,13 +16780,24 @@ function registerWebFetchTool(pi, config) {
     ],
     parameters: Type.Object({
       url: Type.String({ description: "The URL to fetch." }),
-      script: Type.Optional(Type.Number({ description: "Index of an inline script to read (from the script index at the end of a previous response). Supports the same `offset` and `max_length` pagination as normal page content." })),
-      offset: Type.Optional(Type.Number({ description: "Starting character position for pagination. Defaults to 0." })),
-      max_length: Type.Optional(Type.Number({ description: `Maximum characters to return in this call. Defaults to ${config.maxPageLength}.` }))
+      script: Type.Optional(Type.Union([
+        Type.Number({ description: "Index of an inline script to read (from the script index at the end of a previous response). Supports the same `offset` and `max_length` pagination as normal page content. Provide only when reading an inline script explicitly listed in a previous response. Omit or pass null for normal page or file content; 0 represents the first inline script, not page content." }),
+        Type.Null({ description: "Explicit null indicates fetching normal page or file content, not an inline script." })
+      ])),
+      offset: Type.Optional(Type.Union([
+        Type.Number({ description: "Starting character position for pagination. Defaults to 0. Omit or pass null to use default." }),
+        Type.Null({ description: "Explicit null uses the default offset 0." })
+      ])),
+      max_length: Type.Optional(Type.Union([
+        Type.Number({ description: `Maximum characters to return in this call. Defaults to ${config.maxPageLength}. Omit or pass null to use default.` }),
+        Type.Null({ description: `Explicit null uses the default maximum page length (${config.maxPageLength}).` })
+      ]))
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const { url, script: scriptIndex, offset = 0, max_length } = params;
-      const maxLength = max_length ?? config.maxPageLength;
+      const { url } = params;
+      const scriptIndex = params.script ?? void 0;
+      const offset = params.offset ?? 0;
+      const maxLength = params.max_length ?? config.maxPageLength;
       let normalizedUrl;
       try {
         normalizedUrl = normalizeUrl(url);
@@ -16873,7 +16887,7 @@ function registerWebFetchTool(pi, config) {
       }
       if (scriptIndex !== void 0) {
         const script = entry.scripts.find((s) => s.index === scriptIndex);
-        if (!script) throw new Error(`Script ${scriptIndex} not found. Available indices: ${entry.scripts.map((s) => s.index).join(", ") || "none"}`);
+        if (!script) throw new Error(`Script ${scriptIndex} not found. Available indices: ${entry.scripts.map((s) => s.index).join(", ") || "none"}. For page or file content, omit script or pass null.`);
         const total = script.content.length;
         const slice2 = script.content.slice(offset, offset + maxLength);
         const output2 = {
