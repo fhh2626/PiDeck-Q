@@ -489,6 +489,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			if (!forwarded && sourceChannel === ipcChannels.agentsUiRequest) {
 				runtimeBridge.cancelUnboundUiRequest(payload);
 			}
+			return forwarded;
 		}
 	});
 

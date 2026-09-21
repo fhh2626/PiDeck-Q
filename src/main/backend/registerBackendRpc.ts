@@ -66,7 +66,7 @@ export interface RegisterBackendRpcDeps {
 	) => string;
 	getLocale: () => MainProcessLocale;
 	runtimeBridge: SessionRuntimeBridge;
-	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead">;
+	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead" | "issuePicker">;
 	services: {
 		projectStore: ProjectStore;
 		fileSystemService: FileSystemService;

@@ -17,6 +17,13 @@ function transpile(filePath) {
 	}).outputText;
 }
 
+function transpileModule(filePath) {
+	const output = transpile(filePath);
+	const m = { exports: {} };
+	vm.runInNewContext(output, { module: m, exports: m.exports, require });
+	return m.exports;
+}
+
 function loadWslPaths() {
 	const sandbox = { exports: {}, require };
 	vm.runInNewContext(transpile("src/main/wsl/WslPaths.ts"), sandbox, { filename: "WslPaths.ts" });
@@ -74,7 +81,11 @@ function loadAgentManager() {
 		exports: historyReaderModule.exports,
 		module: historyReaderModule,
 		Promise,
-		require: (id) => id === "node:fs/promises" ? fsPromises : require(id),
+		require: (id) => {
+			if (id === "node:fs/promises") return fsPromises;
+			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");
+			return require(id);
+		},
 	}, { filename: "SessionHistoryReader.ts" });
 	class SessionFileEditor {
 		async truncateForResend({ file }) {
@@ -95,6 +106,9 @@ function loadAgentManager() {
 		process: { ...process, platform: "win32" },
 		setTimeout,
 		require: (id) => {
+			// AgentManager 源码 import 带 .ts 扩展名（allowImportingTsExtensions）；
+			// 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
+			id = id.replace(/\.ts$/, "");
 			if (id === "electron") return { app: {}, Notification: class {} };
 			if (id === "node:fs/promises") return fsPromises;
 			if (id === "node:fs") {
@@ -123,6 +137,8 @@ function loadAgentManager() {
 			if (id === "./agentSessionIdentity") return { buildAgentSessionKey: () => undefined };
 			if (id === "./SessionFileEditor") return { SessionFileEditor };
 			if (id === "./SessionHistoryReader") return historyReaderModule.exports;
+			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");
+			if (id.includes("imageLimits")) return transpileModule("src/shared/imageLimits.ts");
 			if (id === "./AgentMessageProjector") {
 				return {
 					AgentMessageProjector: class {},
@@ -134,8 +150,15 @@ function loadAgentManager() {
 			if (id === "./askQuestionResult") {
 				return { buildAskQuestionResultSummary: () => undefined };
 			}
+			if (id === "./runtimeImageBudget" || id === "./runtimeImageBudget.ts") {
+				return {
+					computeTurnImageUsedBytes: () => 0,
+					applyRuntimeMessageImageBudget: (images) => ({ images: images ?? [] }),
+					enforceRuntimeImageEviction: () => undefined,
+				};
+			}
 			if (id === "./sessionEntryIds") return sessionEntryIds;
-			if (id === "./agentUtils") {
+			if (id === "./agentUtils" || id === "./agentUtils.ts") {
 				return {
 					stripAnsi: (text) => text,
 					pickNumber: (...values) => { for (const v of values) if (typeof v === "number") return v; },

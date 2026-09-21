@@ -4,7 +4,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from '../defaults.ts';
-import { transformSystemPrompt } from '../transform.ts';
+import { OWN_END, transformSystemPrompt } from '../transform.ts';
 
 /**
  * 用测试准备阶段安装的 npm latest Pi 验证 system-prompt 兼容性。
@@ -123,7 +123,15 @@ test('real latest Pi builder: default layout is transformed', async () => {
 			assert.match(result.systemPrompt, /You are Pi,/);
 			// 文档块被移除，但用户自有的 context/append 必须原样保留
 			assert.doesNotMatch(result.systemPrompt, /- Main documentation:/);
-			assert.ok(result.systemPrompt.endsWith('Current working directory: /project'));
+			// Pi 0.86 tags cwd and user sections. Preserve the exact builder-owned tail,
+			// rather than requiring the obsolete plain-text cwd presentation.
+			const docsEnd = input.includes('\n<docs>\n')
+				? input.indexOf('</docs>') + '</docs>'.length
+				: input.indexOf('\n\n', input.indexOf('- Examples:'));
+			assert.ok(docsEnd > 0, 'builder documentation boundary must exist');
+			const tail = input.slice(docsEnd);
+			assert.match(tail, /(?:Current working directory: \/project|<cwd>\n\/project\n<\/cwd>)/);
+			assert.equal(result.systemPrompt.slice(result.systemPrompt.indexOf(OWN_END) + OWN_END.length), tail);
 			for (const file of contextFiles) assert.ok(result.systemPrompt.includes(file.content));
 			if (appendSystemPrompt) assert.ok(result.systemPrompt.includes(appendSystemPrompt));
 		}

@@ -32,7 +32,11 @@ const ipc = loadModule("src/shared/ipc.ts");
 const askQuestion = loadModule("src/shared/askQuestion.ts");
 const messageFingerprint = loadModule("src/shared/messageFingerprint.ts");
 const sessionIdentity = loadModule("src/shared/sessionIdentity.ts");
-const agentUtils = loadModule("src/main/pi/agentUtils.ts");
+const messageDeliveryBudget = loadModule("src/main/pi/messageDeliveryBudget.ts");
+const agentUtils = loadModule("src/main/pi/agentUtils.ts", (id) => {
+	if (id.includes("messageDeliveryBudget")) return messageDeliveryBudget;
+	return require(id);
+});
 const wslPaths = loadModule("src/main/wsl/WslPaths.ts");
 const piCompatibility = loadModule("src/shared/piCompatibility.ts");
 const hostInstruction = loadModule("src/main/pi/hostInstruction.ts");
@@ -100,6 +104,15 @@ function loadAgentManager() {
 		if (id.includes("SessionFileEditor")) return sessionFileEditor;
 		if (id.includes("AgentMessageProjector")) return agentMessageProjector;
 		if (id.includes("SessionHistoryReader")) return sessionHistoryReader;
+		if (id.includes("imageContent")) return loadModule("src/shared/imageContent.ts");
+		if (id.includes("imageLimits")) return loadModule("src/shared/imageLimits.ts");
+		if (id.includes("runtimeImageBudget")) {
+			return {
+				computeTurnImageUsedBytes: () => 0,
+				applyRuntimeMessageImageBudget: (images) => ({ images: images ?? [] }),
+				enforceRuntimeImageEviction: () => undefined,
+			};
+		}
 		if (id.includes("builtInExtensions")) return builtInExtensions;
 		return require(id);
 	});

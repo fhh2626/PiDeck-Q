@@ -23,7 +23,7 @@ export const FinalAnswer = memo(function FinalAnswer(props: {
 	onStartEdit: () => void;
 	onCancelEdit: () => void;
 	onSaveEdit: () => void;
-	onPreviewImage: (image: ImageContent) => void;
+	onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
 	onOpenExternal: (url: string) => void;
 	onOpenFile?: (path: string) => void;
 }) {

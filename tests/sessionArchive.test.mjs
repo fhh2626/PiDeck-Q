@@ -78,6 +78,8 @@ function loadSessionScanner(homePath) {
 		]),
 	);
 	const wslPaths = loadTranspiledModule("src/main/wsl/WslPaths.ts");
+	const imageContent = loadTranspiledModule("src/shared/imageContent.ts");
+	const imageLimits = loadTranspiledModule("src/shared/imageLimits.ts");
 	const sandbox = {
 		AbortController,
 		AbortSignal,
@@ -96,6 +98,8 @@ function loadSessionScanner(homePath) {
 			}
 			if (id === "../../shared/codexSessionMeta") return codexMeta;
 			if (id === "../../shared/piCompatibility") return piCompatibility;
+			if (id === "../../shared/imageContent") return imageContent;
+			if (id === "../../shared/imageLimits") return imageLimits;
 			if (id === "../pi/messageContent") return messageContent;
 			if (id === "./sessionSummaryCache") return sessionSummaryCache;
 			if (id === "../wsl/WslPaths") return wslPaths;

@@ -54,14 +54,14 @@ test("keeps thinking-only history turns and their entry IDs aligned", () => {
 test("restores image-only history messages with a localized placeholder", () => {
   const messages = createProjector().convert("agent", [{
     role: "user",
-    content: [{ type: "image", data: "base64-data", mime_type: "image/jpeg" }],
+    content: [{ type: "image", data: "YmFzZTY0LWRhdGE=", mime_type: "image/jpeg" }],
     timestamp: 1,
   }], ["entry-image"]);
 
   assert.equal(messages[0].text, "[image]");
   assert.equal(messages[0].images.length, 1);
   assert.equal(messages[0].images[0].type, "image");
-  assert.equal(messages[0].images[0].data, "base64-data");
+  assert.equal(messages[0].images[0].data, "YmFzZTY0LWRhdGE=");
   assert.equal(messages[0].images[0].mimeType, "image/jpeg");
   assert.equal(messages[0].meta.entryId, "entry-image");
 });

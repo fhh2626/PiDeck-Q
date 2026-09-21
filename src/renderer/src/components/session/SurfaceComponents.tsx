@@ -412,7 +412,7 @@ export const AssistantText = memo(
 	function AssistantText(props: {
 		text: string;
 		images?: ImageContent[];
-		onPreviewImage: (image: ImageContent) => void;
+		onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
 		onOpenExternal: (url: string) => void;
 		onOpenFile?: (path: string) => void;
 		/** 当前消息是否正在流式追加。为 true 时走轻量渲染路径，跳过 KaTeX 数学解析与
@@ -439,7 +439,7 @@ export const AssistantText = memo(
 								alt={t("app.imageAlt", { index: index + 1 })}
 								className="message-image"
 								placeholderClass="min-h-24"
-								onClick={() => props.onPreviewImage(img)}
+								onClick={() => props.onPreviewImage(img, props.images)}
 							/>
 						))}
 					</div>
@@ -529,7 +529,7 @@ export const UserBubble = memo(function UserBubble(props: {
 	message: ChatMessage;
 	/** 新消息入场动画：发送后乐观上屏的用户消息播放一次 */
 	fresh?: boolean;
-	onPreviewImage: (image: ImageContent) => void;
+	onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
 	onOpenFile?: (path: string) => void;
 	onResendUserMessage?: (message: ChatMessage) => void;
 	onEditMessage?: (messageId: string, newText: string) => void;
@@ -715,7 +715,7 @@ export const UserBubble = memo(function UserBubble(props: {
 							src={`data:${img.mimeType};base64,${img.data}`}
 							alt={t("app.imageAlt", { index: index + 1 })}
 							className="size-16 max-h-40 cursor-pointer rounded-md border border-border object-cover transition-colors duration-150 hover:border-border-strong"
-							onClick={() => props.onPreviewImage(img)}
+							onClick={() => props.onPreviewImage(img, message.images)}
 						/>
 					))}
 				</div>

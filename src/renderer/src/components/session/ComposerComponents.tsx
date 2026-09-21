@@ -8,6 +8,7 @@ import {
 	FileText,
 	FoldVertical,
 	GitBranch,
+	Image as ImageIcon,
 	ListChecks,
 	Paperclip,
 	Star,
@@ -148,6 +149,8 @@ export function ComposerBottomBar(props: {
 	state?: AgentRuntimeState;
 	compacting: boolean;
 	disabled?: boolean;
+	/** 图片选择按钮专用禁用：读图/处理期间禁用，不借用全工具栏的 busy 条件 */
+	imageDisabled?: boolean;
 	/** thinking 按钮专用禁用：与 disabled 不同，busy（生成进行中）时仍可切换思考强度
 	 *  （issue #146：pi 的 set_thinking_level 支持下一轮生成生效）。 */
 	thinkingDisabled?: boolean;
@@ -171,6 +174,7 @@ export function ComposerBottomBar(props: {
 	onOpenComposerModePicker: () => void;
 	onCancelPlan: () => void;
 	onAttachFile: () => void;
+	onAttachImages?: () => void;
 }) {
 	const ctxPercent = props.state?.contextPercent;
 	const showCompact = ctxPercent != null && ctxPercent > 30;
@@ -277,6 +281,16 @@ export function ComposerBottomBar(props: {
 					>
 						<Paperclip size={15} strokeWidth={2} aria-hidden="true" />
 					</Button>
+					{props.onAttachImages && (
+						<Button variant="ghost" size="icon"
+							className="composer-bar-btn icon size-7 rounded-md text-foreground hover:bg-muted/60"
+							aria-label={t("composer.attachImage")} title={t("composer.attachImage")}
+							disabled={props.imageDisabled ?? false}
+							onClick={props.onAttachImages}
+						>
+							<ImageIcon size={15} strokeWidth={2} aria-hidden="true" />
+						</Button>
+					)}
 					{props.securityControl}
 				</div>
 				<div className="composer-bottom-center flex min-w-0 flex-1 items-center justify-center gap-4 overflow-hidden">

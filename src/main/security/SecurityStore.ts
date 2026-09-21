@@ -6,7 +6,7 @@
  * - 每次配置/会话等级变更后，把「策略快照」写入 userData/security-policy.json，
  *   pi-deck-security-gate 扩展按快照执行拦截（无 IPC 依赖，运行时随时重读）。
  *
- * 会话级覆盖的键 = 会话文件路径（SessionRecord.id），与运行时 tab.sessionId 一致；
+ * 会话级覆盖的键 = 稳定的 SessionRecord.id（UUID），不是文件路径或运行时 agentId；
  * 快照 key 用同样的键，扩展通过 PIDECK_SESSION_ID 环境变量拿当前会话身份。
  */
 
@@ -23,7 +23,26 @@ import type { SettingsStore } from "../settings/SettingsStore";
 import { buildSnapshot, validateSecurityConfig } from "./policy";
 
 /** 快照文件名：扩展经 PIDECK_SECURITY_CONFIG 环境变量读取 */
-const SNAPSHOT_FILE = "security-policy.json";
+export const SNAPSHOT_FILE = "security-policy.json";
+
+export const SECURITY_SNAPSHOT_WRITE_FAILED = "SECURITY_SNAPSHOT_WRITE_FAILED";
+export const SECURITY_CONFIG_VALIDATION_FAILED = "SECURITY_CONFIG_VALIDATION_FAILED";
+
+export class SecurityConfigValidationError extends Error {
+	readonly code = SECURITY_CONFIG_VALIDATION_FAILED;
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "SecurityConfigValidationError";
+	}
+}
+
+export class SecuritySnapshotWriteError extends Error {
+	readonly code = SECURITY_SNAPSHOT_WRITE_FAILED;
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "SecuritySnapshotWriteError";
+	}
+}
 
 /** 由 SettingsStore 提供配置读写（依赖注入，便于测试与替换） */
 export type SecurityStoreDeps = {
@@ -37,7 +56,7 @@ export class SecurityStore {
 	private readonly settingsStore: SettingsStore;
 	private readonly userDataDir: string;
 	private readonly log: (domain: string, message: string, details?: Record<string, unknown>) => void;
-	private snapshotPromise: Promise<void> | null = null;
+	private queueTail: Promise<unknown> = Promise.resolve();
 
 	constructor(deps: SecurityStoreDeps) {
 		this.settingsStore = deps.settingsStore;
@@ -91,50 +110,90 @@ export class SecurityStore {
 	/**
 	 * 更新配置（校验 + 持久化 + 刷新快照）。
 	 * 校验失败时抛错，IPC 层转结构化错误返回。
+	 * settings 先持久化，快照后发布：写快照失败表示未确认生效，不回滚设置；
+	 * getConfig 可读到新设置，后续成功更新或启动屏障会重新发布它。
 	 */
-	async updateConfig(patch: Partial<SecurityConfig>): Promise<SecurityConfig> {
-		const current = this.getConfig();
-		const next: SecurityConfig = {
-			...current,
-			...patch,
-			// 数组/记录字段需要整表替换，避免浅合并丢字段
-			levels: patch.levels ?? current.levels,
-			sessionOverrides: patch.sessionOverrides ?? current.sessionOverrides,
-		};
-		const normalized = this.normalizeConfig(next);
-		const errors = validateSecurityConfig(normalized);
-		if (errors.length > 0) {
-			throw new Error(`安全配置校验失败: ${errors.join("; ")}`);
-		}
-		await this.settingsStore.update({ securityConfig: normalized });
-		await this.writeSnapshot(normalized);
-		this.log("security", "Security config updated", {
-			enabled: normalized.enabled,
-			defaultLevelId: normalized.defaultLevelId,
-			levels: normalized.levels.length,
+	updateConfig(patch: Partial<SecurityConfig>): Promise<SecurityConfig> {
+		return this.enqueue(async () => {
+			const current = this.getConfig();
+
+			// 检查 patch 中明确提供的新字段合法性（不盲目静默丢弃）
+			const next: SecurityConfig = {
+				...current,
+				...patch,
+				levels: patch.levels ?? current.levels,
+			};
+
+			// 先验证等级结构，再读取 id。仅删除从旧配置继承、且本次确实删除了等级的覆盖；
+			// 显式提交的覆盖必须完整校验，不能静默丢弃后回退到较宽松的默认等级。
+			if (patch.levels && !Object.hasOwn(patch, "sessionOverrides")) {
+				const levelErrors = validateSecurityConfig({ ...next, sessionOverrides: {} });
+				if (levelErrors.length > 0) {
+					throw new SecurityConfigValidationError(`安全配置校验失败: ${levelErrors.join("; ")}`);
+				}
+				const activeIds = new Set(next.levels.map((level) => level.id));
+				const removedIds = new Set(current.levels.filter((level) => !activeIds.has(level.id)).map((level) => level.id));
+				next.sessionOverrides = Object.fromEntries(
+					Object.entries(next.sessionOverrides).filter(([, levelId]) => !removedIds.has(levelId)),
+				);
+			}
+
+			const errors = validateSecurityConfig(next);
+			if (errors.length > 0) {
+				throw new SecurityConfigValidationError(`安全配置校验失败: ${errors.join("; ")}`);
+			}
+
+			const normalized = this.normalizeConfig(next);
+			await this.settingsStore.update({ securityConfig: normalized });
+			await this.writeSnapshot(normalized);
+			this.log("security", "Security config updated", {
+				enabled: normalized.enabled,
+				defaultLevelId: normalized.defaultLevelId,
+				levels: normalized.levels.length,
+			});
+			return normalized;
 		});
-		return normalized;
 	}
 
-	/** 设置会话级覆盖：levelId 为空 = 清除覆盖（跟随全局默认）。 */
-	async setSessionLevel(sessionId: string, levelId: string | null): Promise<SecurityConfig> {
-		const current = this.getConfig();
-		const sessionOverrides = { ...current.sessionOverrides };
-		const prev = sessionOverrides[sessionId] ?? null;
-		if (levelId && current.levels.some((level) => level.id === levelId)) {
-			sessionOverrides[sessionId] = levelId;
-		} else {
-			delete sessionOverrides[sessionId];
-		}
-		// 会话级安全覆盖变更属敏感操作，单独留痕（updateConfig 的全局日志不含逐会话明细）
-		if (prev !== (sessionOverrides[sessionId] ?? null)) {
-			this.log("security", "Session security level changed", {
-				sessionId,
-				from: prev,
-				to: sessionOverrides[sessionId] ?? null,
-			});
-		}
-		return this.updateConfig({ sessionOverrides });
+	/** 设置会话级覆盖：levelId 为空/null = 清除覆盖（跟随全局默认）。若请求了非空等级但该等级不存在，抛出校验错误。 */
+	setSessionLevel(sessionId: string, levelId: string | null): Promise<SecurityConfig> {
+		return this.enqueue(async () => {
+			const current = this.getConfig();
+			const sessionOverrides = { ...current.sessionOverrides };
+			const prev = sessionOverrides[sessionId] ?? null;
+
+			if (levelId === null || levelId === undefined || levelId === "") {
+				// 明确请求清除覆盖
+				delete sessionOverrides[sessionId];
+			} else {
+				// 检查最新等级表中是否存在该等级
+				const exists = current.levels.some((level) => level.id === levelId);
+				if (!exists) {
+					throw new SecurityConfigValidationError(`安全等级不存在: ${levelId}`);
+				}
+				sessionOverrides[sessionId] = levelId;
+			}
+
+			if (prev !== (sessionOverrides[sessionId] ?? null)) {
+				this.log("security", "Session security level changed", {
+					sessionId,
+					from: prev,
+					to: sessionOverrides[sessionId] ?? null,
+				});
+			}
+			const next: SecurityConfig = {
+				...current,
+				sessionOverrides,
+			};
+			const errors = validateSecurityConfig(next);
+			if (errors.length > 0) {
+				throw new SecurityConfigValidationError(`安全配置校验失败: ${errors.join("; ")}`);
+			}
+			const normalized = this.normalizeConfig(next);
+			await this.settingsStore.update({ securityConfig: normalized });
+			await this.writeSnapshot(normalized);
+			return normalized;
+		});
 	}
 
 	/** 查询会话当前生效等级 id（覆盖优先，否则全局默认）。 */
@@ -144,14 +203,17 @@ export class SecurityStore {
 		return override ?? config.defaultLevelId;
 	}
 
-	/** 确保快照已写入（Agent 启动前调用；内部合并并发写，幂等）。 */
+	/** 确保快照已写入（Agent 启动前调用；排入统一队列）。 */
 	ensureSnapshotWritten(): Promise<void> {
-		if (!this.snapshotPromise) {
-			this.snapshotPromise = this.writeSnapshot(this.getConfig()).finally(() => {
-				this.snapshotPromise = null;
-			});
-		}
-		return this.snapshotPromise;
+		return this.enqueue(async () => {
+			await this.writeSnapshot(this.getConfig());
+		});
+	}
+
+	private enqueue<T>(task: () => Promise<T>): Promise<T> {
+		const next = this.queueTail.then(task, task);
+		this.queueTail = next.then(() => undefined, () => undefined);
+		return next;
 	}
 
 	/** 写快照文件（原子写：先写临时文件再 rename，避免扩展读到半截 JSON）。 */
@@ -162,13 +224,12 @@ export class SecurityStore {
 		try {
 			await mkdir(dirname(target), { recursive: true });
 			await writeFile(tmp, JSON.stringify(snapshot, null, 2), "utf8");
-			// 杀软扫描可能瞬时锁住刚写出的 tmp，rename 走退避重试；仍失败则由外层 catch 降级日志
+			// 杀软扫描可能瞬时锁住刚写出的 tmp，rename 走退避重试
 			await renameWithRetry(tmp, target);
 		} catch (error) {
-			// 快照写失败不阻塞主流程：Agent 以旧快照继续运行（fail-safe 方向由扩展 defaultAction 兜底）
-			this.log("security", "Snapshot write failed", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+			const msg = error instanceof Error ? error.message : String(error);
+			this.log("security", "Snapshot write failed", { error: msg });
+			throw new SecuritySnapshotWriteError(`Failed to write security policy snapshot: ${msg}`, { cause: error });
 		}
 	}
 }

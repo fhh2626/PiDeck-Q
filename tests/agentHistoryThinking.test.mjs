@@ -10,6 +10,19 @@ import vm from "node:vm";
 
 const nodeRequire = createRequire(import.meta.url);
 
+function loadSharedModule(filePath) {
+  const output = ts.transpileModule(
+    readFileSync(filePath, "utf8"),
+    {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      fileName: filePath,
+    },
+  ).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(output, { module, exports: module.exports, require: nodeRequire }, { filename: filePath });
+  return module.exports;
+}
+
 function extractMessageText(content) {
   return Array.isArray(content)
     ? content
@@ -37,6 +50,8 @@ function loadAgentMessageProjectorModule() {
     exports: module.exports,
     require: (specifier) => {
       if (specifier === "./messageContent") return { extractMessageText };
+      if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+      if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./sessionEntryIds") {
         return {
           takeActiveEntryId: (ids, index) => ({ entryId: ids?.[index], nextIndex: index + 1 }),
@@ -96,7 +111,10 @@ function loadAgentManagerModule() {
 	vm.runInNewContext(historyReaderOutput, {
 		module: historyReaderModule,
 		exports: historyReaderModule.exports,
-		require: nodeRequire,
+		require: (id) => {
+			if (id === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+			return nodeRequire(id);
+		},
 		Buffer,
 		Date,
 		Map,
@@ -125,6 +143,10 @@ function loadAgentManagerModule() {
     module,
     exports: module.exports,
     require: (specifier) => {
+      // AgentManager 源码 import 带 .ts 扩展名（allowImportingTsExtensions）；
+      // 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
+      const normalized = specifier.replace(/\.ts$/, "");
+      specifier = normalized;
       if (specifier === "electron") {
         return { app: { getName: () => "PiDeck" }, Notification: { isSupported: () => false } };
       }
@@ -147,19 +169,22 @@ function loadAgentManagerModule() {
           takeActiveEntryId: (ids, index) => ({ entryId: ids?.[index], nextIndex: index + 1 }),
         };
       }
-      if (specifier === "./agentUtils") {
+      if (specifier === "./agentUtils" || specifier === "./agentUtils.ts") {
         return {
           stripAnsi: (text) => text,
           pickNumber: (...values) => { for (const v of values) if (typeof v === "number") return v; },
           clampPercent: (v) => v,
           trimHistoryMessages: (msgs) => msgs,
           stripToolResultForDelivery: (messages) => messages,
+          enforceDeliveryEnvelopeBudget: (payload) => payload,
           leadingSummaryCards: () => [],
           cleanTitle: (t) => t,
           inferTitleFromMessages: () => undefined,
           isDefaultAgentTitle: () => false,
         };
       }
+      if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+      if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
       if (specifier === "./streamGate") return streamGateModule.exports;
       if (specifier === "./cacheHitStats") return cacheHitStatsModule.exports;
@@ -167,6 +192,13 @@ function loadAgentManagerModule() {
       // AgentManager 也依赖 askQuestionResult（与 Projector 共用同一桩）
       if (specifier === "./askQuestionResult") {
         return { buildAskQuestionResultSummary: () => undefined };
+      }
+      if (specifier === "./runtimeImageBudget" || specifier === "./runtimeImageBudget.ts") {
+        return {
+          computeTurnImageUsedBytes: () => 0,
+          applyRuntimeMessageImageBudget: (images) => ({ images: images ?? [] }),
+          enforceRuntimeImageEviction: () => undefined,
+        };
       }
       if (specifier === "../wsl/WslPaths") {
         return { toWindowsHostPath: (path) => path, toWslLinuxPath: (path) => path };

@@ -3,6 +3,7 @@ import type { ChatMessage, ImageContent, SessionMessagePage } from "../../shared
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { RpcResponse } from "./PiRpcClient";
 import type { AppLogger } from "../logging/AppLogger";
+import { extractImageContent } from "../../shared/imageContent";
 
 type SessionDisplayEntry = {
 	id: string;
@@ -112,34 +113,20 @@ export function findTurnPageStart(
 
 /**
  * 从 pi 消息 content 提取「重发」回填内容：string 或 blocks 数组（text/image）。
- * 图片块格式：{ type: "image", source: { type: "base64", media_type, data } }。
+ * 支持平铺格式 { type: "image", data, mimeType } 与旧嵌套格式 { type: "image", source: { type: "base64", media_type, data } }。
  */
-function extractResendContent(content: unknown): { text: string; images?: ImageContent[] } {
+export function extractResendContent(content: unknown): { text: string; images?: ImageContent[] } {
 	if (typeof content === "string") return { text: content };
 	if (Array.isArray(content)) {
 		const textParts: string[] = [];
-		const images: ImageContent[] = [];
 		for (const block of content) {
-			const typed = block as {
-				type?: string;
-				text?: string;
-				source?: { type?: string; media_type?: string; data?: string };
-			} | null;
-			if (!typed || typeof typed !== "object") continue;
+			if (!block || typeof block !== "object") continue;
+			const typed = block as Record<string, unknown>;
 			if (typed.type === "text" && typeof typed.text === "string") {
 				textParts.push(typed.text);
-			} else if (
-				typed.type === "image" &&
-				typed.source?.type === "base64" &&
-				typeof typed.source.data === "string"
-			) {
-				images.push({
-					type: "image",
-					mimeType: typeof typed.source.media_type === "string" ? typed.source.media_type : "image/png",
-					data: typed.source.data,
-				});
 			}
 		}
+		const { images } = extractImageContent(content);
 		return { text: textParts.join("\n"), ...(images.length > 0 ? { images } : {}) };
 	}
 	return { text: "" };

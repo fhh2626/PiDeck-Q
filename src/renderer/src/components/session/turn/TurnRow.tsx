@@ -28,6 +28,7 @@ import type {
 import { sameAgentRunForRender } from "../../app/AppUtils";
 import { createTrackedEditSubmit } from "../../../utils/trackedEditSubmit";
 import { FinalAnswer } from "./FinalAnswer";
+import { AssistantMessageImages } from "./AssistantMessageImages";
 import { AskQuestionResultCard } from "../AskQuestionResultCard";
 import { InterimAnswer } from "./InterimAnswer";
 import { ProcessSummaryToggle } from "./ProcessSummaryToggle";
@@ -63,7 +64,7 @@ export type TurnRowProps = {
 	sessionId?: string;
 	/** 新消息入场动画：仅发送后尾部新增的消息播放一次 */
 	fresh?: boolean;
-	onPreviewImage: (image: ImageContent) => void;
+	onPreviewImage: (image: ImageContent, images?: ImageContent[]) => void;
 	showThinking?: boolean;
 	isStreaming?: boolean;
 	/** 当前 live 思考段稳定 id（msg-thinking-*），交给 buildTurnDisplay 同身份挂载 */
@@ -262,18 +263,19 @@ export const TurnRow = memo(
 		(item): item is MessageItem =>
 			item.kind === "message" && item.message.role === "assistant",
 	);
-	const allImages: ImageContent[] = [];
-	for (const item of assistantMessages) {
-		if (item.message.images) allImages.push(...item.message.images);
-	}
+	const hasAssistantMediaOrNotice = assistantMessages.some(
+		(item) =>
+			(item.message.images && item.message.images.length > 0) ||
+			Boolean(item.message.imageDisplayNotice),
+	);
 	// 合并后的完整文本仅用于编辑/复制/删除等操作栏，不用于展示
 	const mergedText = assistantMessages
 		.map((item) => stripThinkingTags(stripAnsi(item.message.text)).trim())
 		.filter(Boolean)
 		.join("\n\n");
 
-	// 本轮没有任何可渲染内容时不输出空容器
-	if (displayItems.length === 0 && allImages.length === 0) return null;
+	// 本轮没有任何可渲染内容（无 displayItems 且无 assistant 图片/提示）时不输出空容器
+	if (displayItems.length === 0 && !hasAssistantMediaOrNotice) return null;
 
 	const startEditing = () => {
 		// 捕获当前 onEditMessage（绑定进入编辑时的 runtime target），保存时使用该捕获值。
@@ -420,7 +422,6 @@ export const TurnRow = memo(
 						<div key={item.id} data-final-answer={run.id} data-message-id={item.id}>
 							<FinalAnswer
 								message={item.message}
-								images={allImages}
 								isStreaming={props.isStreaming ?? false}
 								settle={settleId === item.id}
 								editing={editing}
@@ -437,6 +438,12 @@ export const TurnRow = memo(
 						</div>
 					),
 				)}
+
+				{/* Assistant 图片与提示展示（独立于 final-answer 文本槽位，每条消息单独渲染一次） */}
+				<AssistantMessageImages
+					assistantMessages={assistantMessages}
+					onPreviewImage={props.onPreviewImage}
+				/>
 
 				{/* 操作栏 */}
 				{mergedText && !editing && (

@@ -226,6 +226,15 @@ export type SecurityPolicySnapshot = {
 export const SECURITY_ENV_CONFIG_PATH = "PIDECK_SECURITY_CONFIG";
 export const SECURITY_ENV_SESSION_ID = "PIDECK_SESSION_ID";
 
+export type SecurityUpdateErrorCode =
+	| "VALIDATION_FAILED"
+	| "SNAPSHOT_WRITE_FAILED"
+	| "UNKNOWN_ERROR";
+
+export type SecurityUpdateResult =
+	| { ok: true; config: SecurityConfig }
+	| { ok: false; error: string; code: SecurityUpdateErrorCode };
+
 /** 工具中文名（渲染层展示用；i18n key 见 security.*） */
 export const SECURITY_TOOL_LABELS: Record<SecurityToolName, string> = {
 	read: "读取文件",

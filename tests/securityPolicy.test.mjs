@@ -67,13 +67,13 @@ test("matchBashDenyPatterns: detects dangerous commands per level", () => {
 });
 
 test("isPathInsideRoot: containment with Windows case-insensitivity", () => {
-	assert.ok(isPathInsideRoot("C:/proj/src/a.ts", "C:/proj"));
-	assert.ok(isPathInsideRoot("c:\\proj\\a.ts", "C:/proj"));
-	assert.ok(isPathInsideRoot("C:/proj", "C:/proj"));
-	assert.ok(!isPathInsideRoot("C:/proj2/a.ts", "C:/proj"));
-	assert.ok(!isPathInsideRoot("D:/proj/a.ts", "C:/proj"));
-	// 空 root 视为不限制
-	assert.ok(isPathInsideRoot("anything", ""));
+	assert.ok(isPathInsideRoot("C:/proj/src/a.ts", "C:/proj", "win32"));
+	assert.ok(isPathInsideRoot("c:\\proj\\a.ts", "C:/proj", "win32"));
+	assert.ok(isPathInsideRoot("C:/proj", "C:/proj", "win32"));
+	assert.ok(!isPathInsideRoot("C:/proj2/a.ts", "C:/proj", "win32"));
+	assert.ok(!isPathInsideRoot("D:/proj/a.ts", "C:/proj", "win32"));
+	// 空 root 视为不授权
+	assert.ok(!isPathInsideRoot("anything", "", "win32"));
 });
 
 test("matchesSensitivePath: .env / .git / key files", () => {
@@ -90,15 +90,15 @@ test("evaluatePathAction: denyDirs blacklist wins", () => {
 	const config = createDefaultSecurityConfig();
 	const strict = resolveLevel(config, "strict");
 	strict.denyDirs = ["C:/proj/node_modules"];
-	assert.equal(evaluatePathAction(strict, "C:/proj/node_modules/x.js", "C:/proj"), "deny");
+	assert.equal(evaluatePathAction(strict, "C:/proj/node_modules/x.js", "C:/proj", "win32"), "deny");
 });
 
 test("evaluatePathAction: workspace boundary denies outside reads", () => {
 	const config = createDefaultSecurityConfig();
 	const strict = resolveLevel(config, "strict");
 	// strict 默认 pathPolicy=workspace
-	assert.equal(evaluatePathAction(strict, "C:/proj/src/a.ts", "C:/proj"), null);
-	assert.equal(evaluatePathAction(strict, "C:/other/b.ts", "C:/proj"), "deny");
+	assert.equal(evaluatePathAction(strict, "C:/proj/src/a.ts", "C:/proj", "win32"), null);
+	assert.equal(evaluatePathAction(strict, "C:/other/b.ts", "C:/proj", "win32"), "deny");
 });
 
 test("evaluatePathAction: custom allows extra dirs", () => {
@@ -106,22 +106,22 @@ test("evaluatePathAction: custom allows extra dirs", () => {
 	const custom = resolveLevel(config, "strict");
 	custom.pathPolicy = "custom";
 	custom.customAllowDirs = ["C:/shared-data"];
-	assert.equal(evaluatePathAction(custom, "C:/shared-data/x.json", "C:/proj"), null);
-	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj"), "deny");
+	assert.equal(evaluatePathAction(custom, "C:/shared-data/x.json", "C:/proj", "win32"), null);
+	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj", "win32"), "deny");
 	// unrestricted 不限制
 	custom.pathPolicy = "unrestricted";
-	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj"), null);
+	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj", "win32"), null);
 });
 
 test("evaluatePathAction: sensitive protection when enabled", () => {
 	const config = createDefaultSecurityConfig();
 	const standard = resolveLevel(config, "standard");
 	// standard 默认 protectSensitivePaths=true
-	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj"), "deny");
-	assert.equal(evaluatePathAction(standard, "C:/proj/src/a.ts", "C:/proj"), null);
+	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj", "win32"), "deny");
+	assert.equal(evaluatePathAction(standard, "C:/proj/src/a.ts", "C:/proj", "win32"), null);
 	// 关闭保护后放行
 	standard.protectSensitivePaths = false;
-	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj"), null);
+	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj", "win32"), null);
 });
 
 test("validateSecurityConfig: rejects duplicate ids / missing default / bad regex", () => {
@@ -210,4 +210,17 @@ test("matchPowerShellDenyPatterns: detects dangerous PowerShell commands per lev
 	assert.equal(matchPowerShellDenyPatterns(strict, "Select-String -Pattern foo bar.txt"), null);
 	assert.equal(matchPowerShellDenyPatterns(strict, "git status"), null);
 	assert.equal(matchPowerShellDenyPatterns(strict, "git diff"), null);
+});
+
+
+test("POSIX paths retain case sensitivity and workspace/custom boundaries", () => {
+ const level = resolveLevel(createDefaultSecurityConfig(), "strict");
+ assert.equal(isPathInsideRoot("/workspace/src/a", "/workspace", "posix"), true);
+ assert.equal(isPathInsideRoot("/Workspace/a", "/workspace", "posix"), false);
+ assert.equal(evaluatePathAction(level, "src/a", "/workspace", "posix"), null);
+ assert.equal(evaluatePathAction(level, "../outside/a", "/workspace", "posix"), "deny");
+ level.pathPolicy = "custom";
+ level.customAllowDirs = ["/shared"];
+ assert.equal(evaluatePathAction(level, "/shared/a", "/workspace", "posix"), null);
+ assert.equal(evaluatePathAction(level, "/Shared/a", "/workspace", "posix"), "deny");
 });

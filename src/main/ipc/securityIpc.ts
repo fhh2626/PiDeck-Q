@@ -7,8 +7,12 @@
  */
 
 import { ipcChannels } from "../../shared/ipc";
-import type { SecurityConfig } from "../../shared/types";
-import type { SecurityStore } from "../security/SecurityStore";
+import type { SecurityConfig, SecurityUpdateResult } from "../../shared/types";
+import {
+	SecurityConfigValidationError,
+	SecuritySnapshotWriteError,
+	type SecurityStore,
+} from "../security/SecurityStore";
 import type { RpcRouter } from "../transport/RpcRouter";
 
 export type SecurityIpcDeps = {
@@ -30,10 +34,22 @@ function sanitizePatch(value: unknown): Partial<SecurityConfig> | null {
 	if (typeof raw.enabled === "boolean") patch.enabled = raw.enabled;
 	if (typeof raw.defaultLevelId === "string") patch.defaultLevelId = raw.defaultLevelId;
 	if (Array.isArray(raw.levels)) patch.levels = raw.levels as SecurityConfig["levels"];
-	if (raw.sessionOverrides && typeof raw.sessionOverrides === "object" && !Array.isArray(raw.sessionOverrides)) {
-		patch.sessionOverrides = { ...(raw.sessionOverrides as Record<string, string>) };
+	if (Object.hasOwn(raw, "sessionOverrides")) {
+		// An explicit invalid override map must not become an omitted patch (which can clear inherited overrides).
+		if (!raw.sessionOverrides || typeof raw.sessionOverrides !== "object" || Array.isArray(raw.sessionOverrides)) return null;
+		const overrides: Record<string, string> = {};
+		for (const [sessionId, levelId] of Object.entries(raw.sessionOverrides)) {
+			if (typeof levelId !== "string") return null;
+			overrides[sessionId] = levelId;
+		}
+		patch.sessionOverrides = overrides;
 	}
 	return patch;
+}
+
+/** Recognize structured errors across loader/transport boundaries without trusting their shape. */
+function errorCode(error: unknown): unknown {
+	return error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
 }
 
 export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: SecurityIpcDeps): void {
@@ -41,10 +57,12 @@ export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: S
 
 	router.handle(
 		ipcChannels.securityUpdateConfig,
-		async (value: unknown): Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }> => {
+		async (
+			value: unknown,
+		): Promise<SecurityUpdateResult> => {
 			const patch = sanitizePatch(value);
 			if (!patch) {
-				return { ok: false, error: "安全配置补丁格式非法" };
+				return { ok: false, error: "安全配置补丁格式非法", code: "VALIDATION_FAILED" };
 			}
 			try {
 				const config = await securityStore.updateConfig(patch);
@@ -52,7 +70,14 @@ export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: S
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				log("security", "update-config failed", { error: message });
-				return { ok: false, error: message };
+				const isWriteError = (error instanceof SecuritySnapshotWriteError) || errorCode(error) === "SECURITY_SNAPSHOT_WRITE_FAILED";
+				const isValidationError = (error instanceof SecurityConfigValidationError) || errorCode(error) === "SECURITY_CONFIG_VALIDATION_FAILED" || message.includes("校验失败");
+				const code = isWriteError
+					? "SNAPSHOT_WRITE_FAILED"
+					: isValidationError
+						? "VALIDATION_FAILED"
+						: "UNKNOWN_ERROR";
+				return { ok: false, error: message, code };
 			}
 		},
 	);
@@ -62,15 +87,15 @@ export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: S
 		async (
 			sessionId: unknown,
 			levelId: unknown,
-		): Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }> => {
+		): Promise<SecurityUpdateResult> => {
 			if (typeof sessionId !== "string" || !sessionId.trim()) {
-				return { ok: false, error: "会话 id 非法" };
+				return { ok: false, error: "会话 id 非法", code: "VALIDATION_FAILED" };
 			}
 			// levelId 允许为空字符串/null（清除覆盖）；非空时必须存在于配置
 			if (levelId !== null && levelId !== undefined && levelId !== "") {
 				const current = securityStore.getConfig();
 				if (!sanitizeLevelId(current, levelId)) {
-					return { ok: false, error: "等级 id 不存在" };
+					return { ok: false, error: "等级 id 不存在", code: "VALIDATION_FAILED" };
 				}
 			}
 			try {
@@ -79,7 +104,14 @@ export function registerSecurityIpc(router: RpcRouter, { securityStore, log }: S
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				log("security", "set-session-level failed", { error: message });
-				return { ok: false, error: message };
+				const isWriteError = (error instanceof SecuritySnapshotWriteError) || errorCode(error) === "SECURITY_SNAPSHOT_WRITE_FAILED";
+				const isValidationError = (error instanceof SecurityConfigValidationError) || errorCode(error) === "SECURITY_CONFIG_VALIDATION_FAILED" || message.includes("校验失败") || message.includes("不存在");
+				const code = isWriteError
+					? "SNAPSHOT_WRITE_FAILED"
+					: isValidationError
+						? "VALIDATION_FAILED"
+						: "UNKNOWN_ERROR";
+				return { ok: false, error: message, code };
 			}
 		},
 	);

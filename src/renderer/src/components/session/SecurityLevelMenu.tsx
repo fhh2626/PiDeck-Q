@@ -2,7 +2,7 @@
  * 会话安全等级选择器（输入框底栏）
  *
  * 每个会话可独立选择安全等级：会话级覆盖（sessionId → levelId）保存在
- * SecurityStore，选择后主进程写策略快照，安全门扩展热更新（≤2s）即时生效。
+ * SecurityStore，选择后主进程写策略快照，安全门在下一次工具调用前读取更新。
  *
  * 交互样式与「思考级别」选择器（ThinkingPicker）同款：CommandPickerDialog
  * 居中面板 + CommandItem 列表，不自行手搓浮层菜单；自包含组件，按 sessionId
@@ -38,6 +38,7 @@ export function SecurityLevelMenu(props: { sessionId: string; disabled?: boolean
 	const [config, setConfig] = useState<SecurityConfig | null>(null);
 	const [open, setOpen] = useState(false);
 	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const mountedRef = useRef(true);
 
 	useEffect(() => {
@@ -66,14 +67,24 @@ export function SecurityLevelMenu(props: { sessionId: string; disabled?: boolean
 	const handlePick = useCallback(
 		async (levelId: string | null) => {
 			setSaving(true);
+			setError(null);
 			try {
 				const result = await api.security.setSessionLevel(props.sessionId, levelId);
 				if (result.ok && mountedRef.current) {
 					setConfig(result.config);
 					setOpen(false);
+				} else if (!result.ok && mountedRef.current) {
+					const localizedKey = result.code === "VALIDATION_FAILED"
+						? "security.error.validationFailed"
+						: result.code === "SNAPSHOT_WRITE_FAILED"
+							? "security.error.snapshotWriteFailed"
+							: "security.error.unknown";
+					setError(t(localizedKey));
 				}
 			} catch {
-				// 保存失败保持原状
+				if (mountedRef.current) {
+					setError(t("security.error.unknown"));
+				}
 			} finally {
 				if (mountedRef.current) setSaving(false);
 			}
@@ -119,6 +130,11 @@ export function SecurityLevelMenu(props: { sessionId: string; disabled?: boolean
 						value={effectiveLevelId ?? undefined}
 						onClose={() => setOpen(false)}
 					>
+						{error && (
+							<div className="mx-3 mt-2 rounded bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+								{error}
+							</div>
+						)}
 						{config.levels.map((level) => {
 								const selected = effectiveLevelId === level.id;
 								const ItemIcon = levelIcon(level);

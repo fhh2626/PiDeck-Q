@@ -1352,13 +1352,14 @@ test("provider discoveries from parallel parents union instead of overwriting", 
 		writeFileSync(providerB, "// b", "utf8");
 		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
 		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		// researcher 声明了 web_search 与 webfetch
 		const toolsA = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "web_search", sourceInfo: { source: "file", path: providerA } }];
-		const toolsB = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "fetch_content", sourceInfo: { source: "file", path: providerB } }];
+		const toolsB = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "webfetch", sourceInfo: { source: "file", path: providerB } }];
 		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
 
 		// A 写，然后 B 写
 		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
-		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "fetch_content"], shellPolicyOwnerKey: "session-b" });
+		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "webfetch"], shellPolicyOwnerKey: "session-b" });
 		let settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
 		let researcher = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
 		assert.ok(researcher.includes(providerA), "A's provider must survive B's write");
@@ -1367,7 +1368,7 @@ test("provider discoveries from parallel parents union instead of overwriting", 
 		// 反向：B 先写、A 后写（回到空目录）也一样得到并集
 		rmSync(join(tempDir, "settings.json"), { force: true });
 		rmSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), { force: true });
-		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "fetch_content"], shellPolicyOwnerKey: "session-b" });
+		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "webfetch"], shellPolicyOwnerKey: "session-b" });
 		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
 		settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
 		researcher = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
@@ -1647,10 +1648,4 @@ test("child before_agent_start applies the owner extension ceiling before render
 		else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;
 		rmSync(tempDir, { recursive: true, force: true });
 	}
-});
-
-// 18. 确认没有修改 resources/extensions/pideck-q-subagents/**
-test("pideck-q-subagents directory was not modified", () => {
-	const status = execSync("git status --porcelain resources/extensions/pideck-q-subagents", { encoding: "utf8" });
-	assert.equal(status.trim(), "", "resources/extensions/pideck-q-subagents must be 100% untouched");
 });

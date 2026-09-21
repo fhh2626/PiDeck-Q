@@ -2,9 +2,9 @@
 
 ## 项目简介
 
-PiDeck 是一个面向本地开发工作的 Electron 桌面应用，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在多个项目目录之间管理和运行编码 Agent。应用提供多项目工作区、会话时间线、历史会话恢复、文件抽屉、Git 面板、模型选择、工具调用展示、内置浏览器、中文提示词精选、技能/扩展商店以及打包发布能力，目标是让用户可以在桌面端更稳定地管理多个编码助手会话。
+PiDeck 是一个面向本地开发工作的桌面应用，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在多个项目目录之间管理和运行编码 Agent。应用提供多项目工作区、会话时间线、历史会话恢复、文件抽屉、Git 面板、模型选择、工具调用展示、内置浏览器、中文提示词精选、技能/扩展商店以及打包发布能力，目标是让用户可以在桌面端更稳定地管理多个编码助手会话。
 
-技术栈：Electron 38 + React 19 + TypeScript + Vite。
+技术栈：C++20/Qt6（桌面宿主） + Node.js（业务 Sidecar） + React 19 + TypeScript + Vite。
 
 **核心边界（不可逾越）：**
 
@@ -16,18 +16,21 @@ PiDeck 是一个面向本地开发工作的 Electron 桌面应用，同时支持
 
 本项目只维护项目根目录这一份 `AGENTS.md`；除非用户明确要求，不要再在子目录生成同名规则文件。`docs/开发规范.md` 中仍有历史架构表述，若与本文件或实际类型/API 冲突，以本文件和代码为准。
 
+- `native/src/` 是 C++20/Qt6 原生桌面宿主层，负责窗口、Qt WebEngine / WebChannel、原生系统托盘与子进程拉起。
+- `src/native-node/` 是原生架构下的 Node.js 业务 Sidecar 进程入口与宿主桥接（HostBridge / NativeBackendHost）。
 - `src/shared/` 是跨进程纯契约层：共享类型按 `shared/types/*.ts` 拆分，`shared/types.ts` 仅做兼容导出；IPC 名称只定义在 `shared/ipc.ts`。
-- `src/main/` 是唯一可访问 Node/Electron 主进程能力的业务层。`main/<domain>/` 拥有领域行为，`main/ipc/*Ipc.ts` 只做输入校验和适配，`main/index.ts` 只增装配，不新增业务。
-- `src/preload/index.ts` 通过 `contextBridge` 暴露最小 `PiDesktopApi`；新增 IPC 必须同步共享通道、main handler、preload 方法三处，订阅 API 必须返回 unsubscribe。
-- `src/renderer/` 只通过 `desktopApi`/preload 调用桌面能力。跨组件状态使用 Jotai atom，副作用放 hook，视图放 component；不得直接 import Node/Electron 或新增第二种全局状态方案。
-- `SessionRecord.id` 是跨重启的稳定会话身份，`agentId` 仅表示当前 pi 子进程。所有 runtime 命令和事件都必须带 `sessionId + agentId + runtimeGeneration`，拒绝旧 runtime 的迟到结果。
+- `src/main/` 拥有业务领域行为（`main/<domain>/`），`main/ipc/*Ipc.ts` 只做输入校验和适配，`main/backend/` 装配业务后端。
+- `src/renderer/` 是 React 19 前端视图层，通过 `desktopApi`（在原生宿主下通过 WebChannel/WebSocket 与 Node Sidecar RPC 桥接，或测试/兼容桩）调用桌面能力。跨组件状态使用 Jotai atom，副作用放 hook，视图放 component；不得直接 import Node/Electron 或新增第二种全局状态方案。
+- `SessionRecord.id` 是跨重启的稳定会话身份（UUID），`agentId` 仅表示当前 pi 子进程。所有 runtime 命令和事件都必须带 `sessionId + agentId + runtimeGeneration`，拒绝旧 runtime 的迟到结果。
 - pi 只通过 stdio JSON-RPC 与 PiDeck 通信；PiDeck 不复刻 pi 的 Agent/工具/会话行为，也不为访问 pi 引入第二条通信通道。
 - 持久化结构、设置和 session catalog 变更必须兼容旧数据；listener、timer、子进程、terminal 和 watcher 必须在同一模块找到配对清理路径。
 
 
 ```
+native/                # C++20 / Qt6 原生桌面宿主 (Qt WebEngine / WebChannel)
 src/
-├── main/              # Electron 主进程
+├── native-node/       # Node.js 业务 Sidecar 入口与 HostBridge
+├── main/              # 业务主逻辑
 │   ├── pi/            # pi RPC 进程管理、消息解析
 │   ├── sessions/      # 会话扫描、导入、摘要缓存、SessionRuntimeCoordinator
 │   ├── git/           # GitService（status/diff/commit/cherry-pick 等）
@@ -40,7 +43,7 @@ src/
 │   ├── feishu/        # 飞书集成（FeishuBridge + FeishuConnection）
 │   ├── ipc/           # ★ IPC 域注册（sessionIpc/systemIpc/gitIpc/storeIpc/...）
 │   └── web/           # Web 服务管理
-├── preload/           # preload 脚本，经 contextBridge 暴露受限 IPC API
+├── preload/           # 历史/兼容 preload 脚本
 ├── renderer/
 │   └── src/
 │       ├── atoms/         # Jotai 状态（session-first）
@@ -53,7 +56,7 @@ src/
 │       ├── hooks/         # 渲染层 hooks（useWorkspacePanels/useSessionComposerController 等）
 │       ├── i18n/          # 文案（zh-CN / en-US，rendererCopy.*.ts）
 │       └── styles/        # 按域拆分的样式 + 语义 token
-└── shared/            # 主/渲染共享类型（按域拆分）与 IPC 通道定义
+└── shared/            # 共享类型（按域拆分）与 IPC 通道定义
 ```
 
 ## 架构规则（硬性）
@@ -62,7 +65,7 @@ src/
 2. **状态管理用 Jotai**：新增跨组件状态放 `atoms/`，按域建 atom；禁止再引入第二种全局状态方案。
 3. **IPC 按域注册**：主进程 handler 一律放 `src/main/ipc/*Ipc.ts`，`index.ts` 只做装配；通道名集中在 `shared/ipc.ts` 定义，禁止散落字符串字面量。
 4. **类型共享走 `shared/types/`**：按域拆文件；主进程、preload、渲染进程不得各自重复定义同一结构。
-5. **单向依赖**：`main`、`preload`、`renderer` 只能依赖 `shared` 契约；`renderer` 通过 preload 暴露的 API 访问主进程，不能直接 import Node/Electron；main 不得 import renderer 代码；`shared` 不得反向依赖任何运行时层。
+5. **单向依赖**：跨进程契约统一放在 `shared`；`native-node` 作为 Sidecar 装配入口可以依赖 `main` 的后端与领域服务，`main` 不得反向依赖宿主装配层。`renderer` 通过 `desktopApi`（底层由 `src/shared/desktop/createPiDesktopApi.ts` 暴露）访问主进程，不能直接 import Node/Electron 或 main 代码；main 不得 import renderer 代码；`shared` 不得反向依赖任何运行时层。
 6. **文件体量红线**：
    - 组件/模块单文件目标 ≤ 400 行，超过 600 行必须评估拆分。
    - `App.tsx`、`main/index.ts` 只增装配代码，不增业务逻辑；新业务先建新模块。
@@ -120,7 +123,7 @@ src/
 
 ## 安全约束
 
-1. **IPC 最小权限**：preload 只暴露当前页面需要的 API；新增通道必须加进类型定义，禁止 `ipcRenderer` 透传。
+1. **IPC 最小权限**：`desktopApi`（`src/shared/desktop/createPiDesktopApi.ts`）只暴露当前页面需要的 API；新增通道必须加进类型定义，禁止未受控透传。
 2. **输入校验在边界**：所有 IPC handler 的第一行职责是校验入参（类型、路径合法性、枚举范围）；渲染层来的数据一律不可信。
 3. **路径安全**：文件读写必须限制在项目目录或应用数据目录内；拼接路径前做规范化与逃逸检查，禁止直接拼用户输入。
 4. **进程调用**：spawn/exec 的参数必须数组形式传递，禁止字符串插值拼 shell 命令；子进程环境变量经 `sanitizePiChildEnv` 类函数清洗。
@@ -128,9 +131,25 @@ src/
 6. **密钥与令牌**：Auth 配置只经 `config/` 模块读写；日志、错误上报、遥测中禁止输出 token/key。
 7. **依赖引入**：新增依赖需说明理由；优先用已有依赖能力，禁止为一个小功能引重型库。
 
-## Electron 开发规范与经验总结
+## 原生架构开发规范与现行指引
 
-> 本节沉淀本项目在 Electron 上的硬性规范与踩坑经验。改动 `main/index.ts`、窗口创建、preload、打包配置前必读。
+> 本节指导当前 C++20/Qt6 宿主 + Node.js 业务 Sidecar 架构下的开发与 IPC 扩展。
+> - 原生桌面宿主入口：`native/src/`
+> - Node.js 业务 Sidecar 进程入口：`src/native-node/`
+> - 业务主逻辑与领域装配：`src/main/`
+> - 桌面能力统一暴露点：`src/shared/desktop/createPiDesktopApi.ts`（渲染层通过 `desktopApi` 调用）
+
+### IPC 新增与同步规则（硬性）
+
+新增 IPC 通道必须在以下位置成对同步：
+1. `src/shared/ipc.ts`：定义通道名称常量（采用 `domain:action` 格式）。
+2. `src/main/ipc/*Ipc.ts`：实现并注册主进程 handler，负责入参校验与领域错误转换。
+3. `src/shared/desktop/createPiDesktopApi.ts`：在 `desktopApi` 上暴露对应方法并标注强类型。
+4. 涉及跨进程数据结构时同步 `src/shared/types/`，事件订阅接口必须返回 unsubscribe 清理函数。
+
+## 历史 Electron 经验与参考（兼容归档）
+
+> 注：以下条目沉淀自历史 Electron 架构实现或向后兼容路径，供排查兼容性参考，不代表当前 Qt6 原生架构的现行主入口。
 
 ### 启动与进程生命周期
 

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export const EXTERNAL_FILE_CAPABILITY_NOT_AUTHORIZED_CODE = "EXTERNAL_FILE_CAPABILITY_NOT_AUTHORIZED";
 
 const DROP_CAPABILITY_TTL_MS = 30_000;
+const PICKER_CAPABILITY_TTL_MS = 120_000;
 const MAX_CAPABILITIES = 256;
 const MAX_PATHS_PER_CAPABILITY = 128;
 
@@ -15,7 +16,7 @@ export class ExternalFileCapabilityError extends Error {
 	}
 }
 
-export type CapabilityKind = "clipboard" | "drop";
+export type CapabilityKind = "clipboard" | "drop" | "picker";
 
 type CapabilityEntry = {
 	paths: string[];
@@ -43,6 +44,8 @@ export class ExternalFileCapabilityStore {
 	private readonly capabilities = new Map<string, CapabilityEntry>();
 	private currentClipboardCapabilityId: string | null = null;
 
+	constructor(private readonly now: () => number = () => Date.now()) {}
+
 	/**
 	 * Issue or reuse the capability for one clipboard sequence. The OS clipboard
 	 * is reusable; sequence changes revoke the previous capability immediately.
@@ -61,16 +64,21 @@ export class ExternalFileCapabilityStore {
 		return this.createCapability(paths, "drop", undefined, DROP_CAPABILITY_TTL_MS);
 	}
 
+	/** Issue a short-lived capability for paths selected via trusted native open dialog. */
+	issuePicker(paths: readonly string[]): string | null {
+		return this.createCapability(paths, "picker", undefined, PICKER_CAPABILITY_TTL_MS);
+	}
+
 	consumeCopy(capabilityId: string): string[] {
 		const entry = this.getEntry(capabilityId);
-		if (entry.kind === "drop") this.deleteCapability(capabilityId);
+		if (entry.kind === "drop" || entry.kind === "picker") this.deleteCapability(capabilityId);
 		return [...entry.paths];
 	}
 
 	/**
 	 * Redeem one exact trusted path; the path supplied by the renderer is only a
 	 * selector. Clipboard capabilities remain reusable for the same sequence,
-	 * while drop capabilities retain the previous one-read-per-path behavior.
+	 * while drop and picker capabilities retain the one-read-per-path behavior.
 	 */
 	consumeRead(capabilityId: string, requestedPath: string): string {
 		const entry = this.getEntry(capabilityId);
@@ -78,7 +86,7 @@ export class ExternalFileCapabilityStore {
 		const index = entry.paths.findIndex((path) => normalizePath(path) === requestedKey);
 		if (index < 0) throw new ExternalFileCapabilityError();
 		const trustedPath = entry.paths[index];
-		if (entry.kind === "drop") {
+		if (entry.kind === "drop" || entry.kind === "picker") {
 			entry.paths.splice(index, 1);
 			if (entry.paths.length === 0) this.deleteCapability(capabilityId);
 		}
@@ -121,7 +129,7 @@ export class ExternalFileCapabilityStore {
 		this.capabilities.set(capabilityId, {
 			paths: uniquePaths,
 			sequence,
-			expiresAt: ttlMs === undefined ? undefined : Date.now() + ttlMs,
+			expiresAt: ttlMs === undefined ? undefined : this.now() + ttlMs,
 			kind,
 		});
 		if (kind === "clipboard") this.currentClipboardCapabilityId = capabilityId;
@@ -136,7 +144,7 @@ export class ExternalFileCapabilityStore {
 	private getEntry(capabilityId: string): CapabilityEntry {
 		if (!validCapabilityId(capabilityId)) throw new ExternalFileCapabilityError();
 		const entry = this.capabilities.get(capabilityId);
-		if (!entry || (entry.expiresAt !== undefined && entry.expiresAt <= Date.now())) {
+		if (!entry || (entry.expiresAt !== undefined && entry.expiresAt <= this.now())) {
 			this.deleteCapability(capabilityId);
 			throw new ExternalFileCapabilityError();
 		}
@@ -144,7 +152,7 @@ export class ExternalFileCapabilityStore {
 	}
 
 	private pruneExpired(): void {
-		const now = Date.now();
+		const now = this.now();
 		for (const [capabilityId, entry] of this.capabilities) {
 			if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.deleteCapability(capabilityId);
 		}

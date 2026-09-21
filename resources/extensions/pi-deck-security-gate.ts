@@ -8,10 +8,10 @@
  * - 本文件必须自包含：只能依赖 @earendil-works/pi-coding-agent 与 node 内置模块，
  *   不允许 import PiDeck 源码（扩展在 pi 进程内加载，不共享打包产物）。
  * - 与主进程的契约 = 策略快照 schema（src/shared/types/security.ts 的
- *   SecurityPolicySnapshot）。schemaVersion 不匹配时本扩展保守降级：fail-safe 放行
- *   还是拒绝由配置语义决定——enabled=false 放行；快照不可读时放行并记日志。
- * - 运行时热更新：每次 tool_call 前 stat 快照文件，mtime 变化即重读（带节流），
- *   因此输入框切换会话等级无需重启 agent 即可生效。
+ *   SecurityPolicySnapshot）。配置路径未注入时兼容放行；已注入但快照不可读、
+ *   schema 不兼容或结构非法时拒绝全部受管工具。enabled=false 也必须完整校验。
+ * - 运行时热更新：每次 tool_call 重新读取并验证快照，不依赖 mtime 或共享缓存；
+ *   因此策略恢复及会话等级变更无需重启 agent 即可生效。
  *
  * 动作语义（与主进程 policy.ts 保持一致）：
  * - 工具动作：level.toolActions[tool] ?? level.defaultAction
@@ -27,8 +27,8 @@ import type {
 	ExtensionContext,
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { win32, posix } from "node:path";
 
 // ── 快照 schema（与 shared/types/security.ts 对齐；扩展侧自包含副本） ──
 
@@ -99,62 +99,205 @@ const SENSITIVE_PATH_PATTERNS = [
 	"(\\.pem|\\.key|\\.p12)$",
 ];
 
-// ── 快照加载（带 mtime 热更新） ──
-
-let snapshot: SecurityPolicySnapshot | null = null;
-let snapshotPath = "";
-let sessionId = "";
-let lastLoadedAt = 0;
-let lastLoadedMtime = 0;
-/** 节流窗口：快照文件小，stat 每 2s 最多一次，避免高频工具调用时反复读盘 */
-const RELOAD_THROTTLE_MS = 2000;
+export type SnapshotLoadResult =
+	| { kind: "unconfigured" }
+	| { kind: "ready"; snapshot: SecurityPolicySnapshot }
+	| { kind: "unavailable"; reason: "read-failed" | "invalid-json" | "unsupported-schema" | "invalid-shape" };
 
 /**
- * 加载策略快照：
- * - 2s 内且 mtime 未变 → 用缓存（每次 tool_call 只做一次 stat）；
- * - mtime 变化 → 立即重读（会话等级切换 ≤2s 生效）；
- * - 文件缺失 / schema 不匹配 / 解析失败 → 返回 null（调用方按 fail-safe 处理）。
+ * 校验快照结构，收窄类型。
  */
-function loadSnapshot(targetPath = snapshotPath): SecurityPolicySnapshot | null {
-	const now = Date.now();
+export function validateSnapshotShape(data: unknown): SecurityPolicySnapshot | null {
+	if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+	const obj = data as Record<string, unknown>;
+
+	if (obj.schemaVersion !== SCHEMA_VERSION) return null;
+	if (typeof obj.enabled !== "boolean") return null;
+	if (typeof obj.defaultLevelId !== "string" || !obj.defaultLevelId.trim()) return null;
+	if (!Array.isArray(obj.levels) || obj.levels.length === 0) return null;
+	if (!obj.sessionLevels || typeof obj.sessionLevels !== "object" || Array.isArray(obj.sessionLevels)) return null;
+
+	const seenIds = new Set<string>();
+	const levels: SecurityLevelConfig[] = [];
+
+	for (const item of obj.levels) {
+		if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+		const lvl = item as Record<string, unknown>;
+
+		if (typeof lvl.id !== "string" || !lvl.id.trim() || seenIds.has(lvl.id)) return null;
+		seenIds.add(lvl.id);
+
+		if (typeof lvl.name !== "string" || typeof lvl.description !== "string") return null;
+		if (lvl.builtin !== undefined && typeof lvl.builtin !== "boolean") return null;
+		if (lvl.builtin && lvl.id !== "off" && lvl.id !== "standard" && lvl.id !== "strict") return null;
+
+		if (!lvl.toolActions || typeof lvl.toolActions !== "object" || Array.isArray(lvl.toolActions)) return null;
+		for (const [tool, action] of Object.entries(lvl.toolActions as Record<string, unknown>)) {
+			if (!MANAGED_TOOLS.has(tool)) return null;
+			if (action !== "allow" && action !== "ask" && action !== "deny") return null;
+		}
+
+		if (lvl.defaultAction !== "allow" && lvl.defaultAction !== "ask" && lvl.defaultAction !== "deny") return null;
+		if (lvl.pathPolicy !== "unrestricted" && lvl.pathPolicy !== "workspace" && lvl.pathPolicy !== "custom") return null;
+		if (typeof lvl.protectSensitivePaths !== "boolean") return null;
+
+		if (!Array.isArray(lvl.denyBashPatterns)) return null;
+		for (const pat of lvl.denyBashPatterns) {
+			if (typeof pat !== "string") return null;
+			try { new RegExp(pat); } catch { return null; }
+		}
+
+		if (lvl.denyPowerShellPatterns !== undefined) {
+			if (!Array.isArray(lvl.denyPowerShellPatterns)) return null;
+			for (const pat of lvl.denyPowerShellPatterns) {
+				if (typeof pat !== "string") return null;
+				try { new RegExp(pat, "i"); } catch { return null; }
+			}
+		}
+
+		if (!Array.isArray(lvl.customAllowDirs)) return null;
+		for (const dir of lvl.customAllowDirs) {
+			if (typeof dir !== "string" || !dir.trim() || dir.includes("\0")) return null;
+		}
+
+		if (!Array.isArray(lvl.denyDirs)) return null;
+		for (const dir of lvl.denyDirs) {
+			if (typeof dir !== "string" || !dir.trim() || dir.includes("\0")) return null;
+		}
+
+		levels.push(item as SecurityLevelConfig);
+	}
+
+	// 校验默认等级必须存在于 levels 中
+	if (!seenIds.has(obj.defaultLevelId)) return null;
+
+	// 校验 sessionLevels 中的引用必须非空且引用有效等级
+	for (const [sId, lId] of Object.entries(obj.sessionLevels as Record<string, unknown>)) {
+		if (typeof sId !== "string" || typeof lId !== "string" || !lId.trim() || !seenIds.has(lId)) {
+			return null;
+		}
+	}
+
+	return {
+		schemaVersion: SCHEMA_VERSION,
+		enabled: obj.enabled,
+		defaultLevelId: obj.defaultLevelId,
+		levels,
+		sessionLevels: obj.sessionLevels as Record<string, string>,
+	};
+}
+
+/**
+ * 每次调用读取快照并完成校验。
+ */
+export function loadSnapshot(targetPath: string): SnapshotLoadResult {
+	if (!targetPath) return { kind: "unconfigured" };
 	try {
-		if (!targetPath || !existsSync(targetPath)) {
-			snapshot = null;
-			return null;
+		if (!existsSync(targetPath)) {
+			return { kind: "unavailable", reason: "read-failed" };
 		}
-		const mtime = statSync(targetPath).mtimeMs;
-		if (snapshot && mtime === lastLoadedMtime && now - lastLoadedAt < RELOAD_THROTTLE_MS) {
-			return snapshot;
-		}
-		lastLoadedAt = now;
-		lastLoadedMtime = mtime;
 		const raw = readFileSync(targetPath, "utf8");
-		const parsed = JSON.parse(raw) as SecurityPolicySnapshot;
-		if (parsed.schemaVersion !== SCHEMA_VERSION) {
-			// schema 升级：旧快照不再可信，fail-safe 放行（配置语义由主进程迁移保证）
-			snapshot = null;
-			return null;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return { kind: "unavailable", reason: "invalid-json" };
 		}
-		snapshot = parsed;
-		return snapshot;
+
+		if (!parsed || typeof parsed !== "object" || (parsed as Record<string, unknown>).schemaVersion !== SCHEMA_VERSION) {
+			return { kind: "unavailable", reason: "unsupported-schema" };
+		}
+
+		const validated = validateSnapshotShape(parsed);
+		if (!validated) {
+			return { kind: "unavailable", reason: "invalid-shape" };
+		}
+
+		return { kind: "ready", snapshot: validated };
 	} catch {
-		snapshot = null;
-		return null;
+		return { kind: "unavailable", reason: "read-failed" };
 	}
 }
 
 // ── 纯规则求值（与主进程 src/main/security/policy.ts 语义一致） ──
+
+function getPathModule() {
+	return process.platform === "win32" ? win32 : posix;
+}
+
+/** 规范化并基于 cwd 解析路径。非法或无法确定的路径返回 null。 */
+function resolvePolicyPath(input: string | undefined | null, cwd: string | undefined | null): string | null {
+	if (typeof input !== "string" || !input || input.includes("\0")) return null;
+	const pathMod = getPathModule();
+
+	if (process.platform === "win32") {
+		const slashPath = input.replace(/\\/g, "/");
+		// 1. Windows 设备命名空间 \\?\ 或 \\.\ 明确拒绝
+		if (slashPath.startsWith("//?/") || slashPath.startsWith("//./")) {
+			return null;
+		}
+
+		// 2. 盘符相关检查：拒绝裸盘符（如 C:）与盘符相对路径（如 C:foo）
+		if (/^[a-zA-Z]:/.test(slashPath)) {
+			if (!/^[a-zA-Z]:\//.test(slashPath)) {
+				return null;
+			}
+		}
+
+		// 3. 只有完整的 //server/share 才是 UNC；多个前导分隔符不能伪装成 UNC。
+		if (slashPath.startsWith("/") && !/^\/\/[^/]+\/[^/]+(?:\/|$)/.test(slashPath)) {
+			return null;
+		}
+	}
+
+	if (pathMod.isAbsolute(input)) {
+		return pathMod.normalize(input);
+	}
+
+	if (!cwd || typeof cwd !== "string" || cwd.includes("\0") || !pathMod.isAbsolute(cwd)) {
+		return null;
+	}
+
+	if (process.platform === "win32") {
+		const slashCwd = cwd.replace(/\\/g, "/");
+		if (slashCwd.startsWith("//?/") || slashCwd.startsWith("//./")) return null;
+		if (/^[a-zA-Z]:/.test(slashCwd) && !/^[a-zA-Z]:\//.test(slashCwd)) return null;
+		if (slashCwd.startsWith("/") && !/^\/\/[^/]+\/[^/]+(?:\/|$)/.test(slashCwd)) return null;
+	}
+
+	return pathMod.resolve(cwd, input);
+}
 
 function normalizePath(p: string): string {
 	return p.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
 function isPathInsideRoot(target: string, root: string): boolean {
-	const t = normalizePath(target).toLowerCase();
-	const r = normalizePath(root).toLowerCase();
-	if (!r || r === "/") return true;
-	if (t === r) return true;
-	return t.startsWith(r + "/");
+	if (!target || !root) return false;
+	const pathMod = getPathModule();
+	const normTarget = pathMod.isAbsolute(target) ? resolvePolicyPath(target, undefined) : null;
+	const normRoot = pathMod.isAbsolute(root) ? resolvePolicyPath(root, undefined) : null;
+	if (!normTarget || !normRoot) return false;
+
+	const rel = pathMod.relative(normRoot, normTarget);
+	if (rel === "") return true;
+	if (rel === ".." || rel.startsWith(".." + pathMod.sep)) return false;
+	if (pathMod.isAbsolute(rel)) return false;
+
+	if (process.platform === "win32") {
+		const targetDrive = pathMod.parse(normTarget).root.toLowerCase();
+		const rootDrive = pathMod.parse(normRoot).root.toLowerCase();
+		if (targetDrive !== rootDrive) return false;
+		const normTargetLower = normTarget.toLowerCase();
+		const normRootLower = normRoot.toLowerCase();
+		const relLower = pathMod.relative(normRootLower, normTargetLower);
+		if (relLower === "" || (!relLower.startsWith(".." + pathMod.sep) && relLower !== ".." && !pathMod.isAbsolute(relLower))) {
+			return true;
+		}
+		return false;
+	}
+
+	return true;
 }
 
 function matchesSensitivePath(filePath: string): boolean {
@@ -183,15 +326,21 @@ function evaluatePathAction(
 	filePath: string,
 	cwd: string,
 ): SecurityAction | null {
-	for (const dir of level.denyDirs) {
-		if (isPathInsideRoot(filePath, dir)) return "deny";
+	const resolvedTarget = resolvePolicyPath(filePath, cwd);
+	if (!resolvedTarget) return "deny";
+
+	for (const rawDir of level.denyDirs) {
+		const resolvedDenyDir = resolvePolicyPath(rawDir, cwd);
+		if (resolvedDenyDir && isPathInsideRoot(resolvedTarget, resolvedDenyDir)) return "deny";
 	}
-	if (level.protectSensitivePaths && matchesSensitivePath(filePath)) return "deny";
+	if (level.protectSensitivePaths && matchesSensitivePath(resolvedTarget)) return "deny";
 	if (level.pathPolicy === "unrestricted") return null;
-	if (cwd && isPathInsideRoot(filePath, cwd)) return null;
+	const resolvedCwd = resolvePolicyPath(cwd, cwd);
+	if (resolvedCwd && isPathInsideRoot(resolvedTarget, resolvedCwd)) return null;
 	if (level.pathPolicy === "custom") {
-		for (const dir of level.customAllowDirs) {
-			if (isPathInsideRoot(filePath, dir)) return null;
+		for (const rawDir of level.customAllowDirs) {
+			const resolvedAllowDir = resolvePolicyPath(rawDir, cwd);
+			if (resolvedAllowDir && isPathInsideRoot(resolvedTarget, resolvedAllowDir)) return null;
 		}
 	}
 	return "deny";
@@ -263,8 +412,15 @@ function fileToolAction(
 	filePath: string | undefined,
 	cwd: string,
 ): SecurityAction {
-	if (filePath) {
+	if (filePath !== undefined) {
 		const pathAction = evaluatePathAction(level, filePath, cwd);
+		if (pathAction) return pathAction;
+	} else if (tool === "read" || tool === "write" || tool === "edit") {
+		// 必要路径字段缺失或非法，直接拒绝
+		return "deny";
+	} else if (tool === "grep" || tool === "find" || tool === "ls") {
+		// grep/find/ls 未提供 path 时，以 cwd 为检查目标
+		const pathAction = evaluatePathAction(level, cwd, cwd);
 		if (pathAction) return pathAction;
 	}
 	return level.toolActions[tool] ?? level.defaultAction;
@@ -287,12 +443,6 @@ function extractFilePath(tool: string, input: Record<string, unknown>): string |
 		default:
 			return undefined;
 	}
-}
-
-/** 绝对路径化：相对路径基于 cwd 解析（与 pi 工具语义一致） */
-function absolutize(p: string, cwd: string): string {
-	if (isAbsolute(p)) return p;
-	return resolve(cwd, p);
 }
 
 // ── UI 确认 ──
@@ -345,23 +495,16 @@ function buildSecurityHint(level: SecurityLevelConfig): string | undefined {
 // ── 入口 ──
 
 export default async function securityGateExtension(pi: ExtensionAPI) {
-	// Bundled child sessions inherit the parent PiDeck security policy.
-	// Security must be enforced on child tools themselves; gating only the
-	// parent `subagent` call would not protect edit/write/bash inside the child.
-	const currentSnapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? snapshotPath;
-	const currentSessionId = process.env.PIDECK_SESSION_ID ?? sessionId;
-	snapshotPath = currentSnapshotPath;
-	sessionId = currentSessionId;
-
-	if (!currentSnapshotPath) {
-		// 桌面端未注入配置路径（旧版本 PiDeck / 独立 CLI 运行）：完全放行
-		return;
-	}
+	// 每次 extension 注册时捕获独立的 env 变量，不继承前一个实例的值
+	const instanceSnapshotPath = process.env.PIDECK_SECURITY_CONFIG ?? "";
+	const instanceSessionId = process.env.PIDECK_SESSION_ID ?? "";
 
 	pi.on("before_agent_start", (_event, ctx) => {
-		const config = loadSnapshot(currentSnapshotPath);
-		if (!config?.enabled) return undefined;
-		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
+		if (!instanceSnapshotPath) return undefined;
+		const result = loadSnapshot(instanceSnapshotPath);
+		if (result.kind !== "ready" || !result.snapshot.enabled) return undefined;
+		const config = result.snapshot;
+		const levelId = config.sessionLevels[instanceSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level) return undefined;
 		const hint = buildSecurityHint(level);
@@ -370,15 +513,26 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext) => {
-		// 热更新：快照 mtime 变化即重读（≤2s），会话等级切换无需重启
-		const config = loadSnapshot(currentSnapshotPath);
-		if (!config?.enabled) return undefined;
-
 		const tool = event.toolName;
 		// 只管控受支持的工具名；其它自定义工具（web_search/todo/vision 等）放行
 		if (!MANAGED_TOOLS.has(tool)) return undefined;
 
-		const levelId = config.sessionLevels[currentSessionId] ?? config.defaultLevelId;
+		if (!instanceSnapshotPath) return undefined;
+
+		const result = loadSnapshot(instanceSnapshotPath);
+		if (result.kind === "unconfigured") return undefined;
+
+		if (result.kind === "unavailable") {
+			return {
+				block: true,
+				reason: `[SECURITY_POLICY_UNAVAILABLE] 安全策略不可用（${result.reason}），已阻止受管工具调用`,
+			};
+		}
+
+		const config = result.snapshot;
+		if (!config.enabled) return undefined;
+
+		const levelId = config.sessionLevels[instanceSessionId] ?? config.defaultLevelId;
 		const level = resolveLevel(config, levelId);
 		if (!level || level.id === "off") return undefined;
 
@@ -395,7 +549,7 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 			action = fileToolAction(
 				level,
 				tool,
-				filePath ? absolutize(filePath, ctx.cwd) : undefined,
+				filePath,
 				ctx.cwd,
 			);
 		}

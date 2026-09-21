@@ -26,6 +26,7 @@ import type {
 	CreateSessionDraftInput,
 	CreateAnonymousSessionInput,
 	CreateAnonymousSessionResult,
+	PickImagesResult,
 	UpdateSessionRecordInput,
 	SessionRecord,
 	SessionProcessEvent,
@@ -64,6 +65,7 @@ import type {
 	PromptStoreItem,
 	ScratchPadData,
 	SecurityConfig,
+	SecurityUpdateResult,
 	SendSessionPromptInput,
 	SendSessionPromptResult,
 	SessionCommandResult,
@@ -257,6 +259,11 @@ const api = {
 		 */
 		pickFiles: (options?: { title?: string; includeDirectories?: boolean }) =>
 			transport.invoke(ipcChannels.dialogPickFiles, options) as Promise<string[]>,
+		/**
+		 * 打开系统原生图片选择器，支持多选（受信任的外部 picker 授权）。
+		 */
+		pickImages: (options?: { title?: string }) =>
+			transport.invoke(ipcChannels.dialogPickImages, options) as Promise<PickImagesResult>,
 		/** 换肤背景图：选图并复制到 userData/backgrounds/，返回文件名（空串=取消） */
 		pickBackgroundImage: () =>
 			transport.invoke(ipcChannels.pickBackgroundImage) as Promise<string>,
@@ -940,13 +947,13 @@ const api = {
 			transport.invoke(
 				ipcChannels.securityUpdateConfig,
 				patch,
-			) as Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>,
+			) as Promise<SecurityUpdateResult>,
 		setSessionLevel: (sessionId: string, levelId: string | null) =>
 			transport.invoke(
 				ipcChannels.securitySetSessionLevel,
 				sessionId,
 				levelId,
-			) as Promise<{ ok: true; config: SecurityConfig } | { ok: false; error: string }>,
+			) as Promise<SecurityUpdateResult>,
 	},
 	config: {
 		getModels: () =>
