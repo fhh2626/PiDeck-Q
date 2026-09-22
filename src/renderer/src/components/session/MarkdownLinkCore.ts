@@ -43,7 +43,7 @@ export function markdownUrlTransform(url: string): string {
  * - 目录段与扩展名支持 Unicode 字母（中文/日文文件名）
  */
 export const FILE_PATH_RE =
-	/(?:[A-Z]:[\\/]|(?:\.\.?[\\/]|[\\/])|(?:[\p{L}_][\p{L}\p{N}_.-]*[\\/])+)[^\s<>"'`|?*\[\](){}，。；：！？、（）【】《》「」『』“”‘’·…—～￥×÷→←↑↓⇒／\u{FF00}-\u{FFEF}\u{2010}-\u{2027}\u{2030}-\u{205E}]+\.[\p{L}\p{N}]+/gu;
+	/(?:file:\/\/|[A-Za-z]:[\\/]|(?:\.\.?[\\/]|[\\/])|(?:[\p{L}_][\p{L}\p{N}_.-]*[\\/])+)[^\s<>"'`|?*\[\](){}，。；：！？、（）【】《》「」『』“”‘’·…—～￥×÷→←↑↓⇒／\u{FF00}-\u{FFEF}\u{2010}-\u{2027}\u{2030}-\u{205E}]+\.[\p{L}\p{N}]+/gu;
 
 /**
  * mdast 插件：把裸文件路径转成 file:// 链接。
@@ -54,7 +54,15 @@ export const remarkLinkifyPaths = () => {
 		const visit = (node: any) => {
 			if (!node || typeof node !== "object") return;
 			const type: string = node.type;
-			if (type === "code" || type === "inlineCode" || type === "link") return;
+			if (type === "code" || type === "inlineCode") return;
+			if (type === "link") {
+				// Capture the mdast destination before HTML URL encoding. File URLs must
+				// still go through platform validation, not this raw-path escape hatch.
+				if (typeof node.url === "string" && isLocalPathRef(node.url)) {
+					node.data = { ...node.data, hProperties: { ...node.data?.hProperties, "data-local-path": node.url } };
+				}
+				return;
+			}
 			if (type === "text" && typeof node.value === "string") {
 				const text: string = node.value;
 				FILE_PATH_RE.lastIndex = 0;
@@ -66,10 +74,35 @@ export const remarkLinkifyPaths = () => {
 					const start = m.index;
 					const end = start + m[0].length;
 					if (start > last) segs.push({ type: "text", value: text.slice(last, start) });
+					const rawPath = m[0];
+					let linkUrl: string;
+					if (rawPath.startsWith("file://")) {
+						linkUrl = rawPath;
+					} else if (/^[A-Za-z]:[\\/]/.test(rawPath)) {
+						// Windows 盘符路径：如 R:\Temp\example.png -> file:///R:/Temp/example.png
+						const normalized = rawPath.replace(/\\/g, "/");
+						const drive = normalized.slice(0, 2);
+						const rest = normalized.slice(2);
+						const encodedRest = rest.split("/").map(encodeURIComponent).join("/");
+						linkUrl = `file:///${drive}${encodedRest}`;
+					} else if (rawPath.startsWith("/")) {
+						// POSIX 绝对路径
+						const encoded = rawPath.split("/").map(encodeURIComponent).join("/");
+						linkUrl = `file://${encoded}`;
+					} else {
+						// 相对路径：保持相对形式，不带 file:// 避免被误认为 UNC 主机
+						linkUrl = rawPath;
+					}
 					segs.push({
 						type: "link",
-						url: `file://${encodeURIComponent(m[0]).replace(/%2F/g, "/").replace(/%3A/g, ":")}`,
-						children: [{ type: "text", value: m[0] }],
+						url: linkUrl,
+						children: [{ type: "text", value: rawPath }],
+						data: {
+							hProperties: {
+								// A file URI is not a disk path; keep its decoder/security checks.
+								...(isLocalPathRef(rawPath) ? { "data-local-path": rawPath } : {}),
+							},
+						},
 					});
 					last = end;
 					touched = true;

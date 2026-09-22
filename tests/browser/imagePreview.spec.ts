@@ -176,3 +176,35 @@ test("F. 单图兼容：不显示左右切换按钮，基本功能正常", async
 	await page.keyboard.press("Escape");
 	await expect(content).toBeHidden();
 });
+
+
+test("G. real decode failure cannot contaminate equal-prefix equal-length SVG", async ({ page }) => {
+	await page.locator("#collision-preview").click();
+	const content = page.locator("[data-slot='dialog-content']");
+	await expect(content).toBeVisible();
+	await expect(content.locator("img")).toHaveCount(0);
+	await page.keyboard.press("ArrowRight");
+	await expect(content.locator("img")).toBeVisible();
+	await expect.poll(() => content.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(32);
+	await page.keyboard.press("ArrowLeft");
+	await expect(content.locator("img")).toHaveCount(0);
+});
+
+test("H. composer attachment supersedes pending local preview without a second dialog", async ({ page }) => {
+	const errors: string[] = [];
+	page.on("pageerror", (error) => errors.push(error.message));
+	await page.locator("#local-read").click();
+	await page.locator("#composer-preview").click();
+	const content = page.locator("[data-slot='dialog-content']");
+	await expect(content).toHaveCount(1);
+	const source = await content.locator("img").getAttribute("src");
+	// Resolve the mocked IPC while the modal owns pointer input.
+	await page.locator("#resolve-read").evaluate((button: HTMLButtonElement) => button.click());
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	expect(source).not.toBeNull();
+	await expect(content.locator("img")).toHaveAttribute("src", source ?? "");
+	await expect(content).toHaveCount(1);
+	await page.keyboard.press("Escape");
+	await expect(content).toHaveCount(0);
+	expect(errors).toEqual([]);
+});

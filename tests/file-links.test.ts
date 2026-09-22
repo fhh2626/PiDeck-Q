@@ -3,10 +3,12 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import {
 	filePathFromHref,
+	toInternalFileHref,
 	normalizeLocalFilePath,
 	stripFileLocation,
-	toInternalFileHref,
-} from "../src/renderer/src/utils/fileLinks";
+	filePathToUri,
+	normalizeLocalFileTarget,
+} from "../src/renderer/src/utils/fileLinks.ts";
 
 const localTargets = [
 	"C:/Users/Administrator/.pi/agent/settings.json",
@@ -23,9 +25,7 @@ const localTargets = [
 for (const target of localTargets) {
 	const normalized = normalizeLocalFilePath(target);
 	assert.ok(normalized, `expected local file target: ${target}`);
-	const href = toInternalFileHref(target);
-	assert.ok(href?.startsWith("file://"), `expected internal href: ${target}`);
-	assert.equal(filePathFromHref(href), normalized);
+	assert.equal(filePathFromHref(toInternalFileHref(target), "win32"), normalized?.replace(/\\/g, "/"));
 }
 
 const externalTargets = [
@@ -40,15 +40,21 @@ const externalTargets = [
 for (const target of externalTargets) {
 	assert.equal(normalizeLocalFilePath(target), null, `expected external target: ${target}`);
 	assert.equal(toInternalFileHref(target), null);
+	assert.equal(filePathFromHref(target), null);
 }
 
 assert.equal(normalizeLocalFilePath("/C:/Users/Test/file.ts:9"), "C:/Users/Test/file.ts:9");
 assert.equal(stripFileLocation("C:/Users/Test/file.ts:9:3"), "C:/Users/Test/file.ts");
 assert.equal(stripFileLocation("C:/Users/Test/file.ts"), "C:/Users/Test/file.ts");
-assert.equal(
-	filePathFromHref("file://C%3A%2FUsers%2FTest%2FMy%20File.ts%3A9"),
-	"C:/Users/Test/My File.ts:9",
-);
+
+// 标准 URI 转换往返测试
+const winUri = filePathToUri("C:/Users/Test/My File.ts");
+assert.equal(winUri, "file:///C:/Users/Test/My%20File.ts");
+const normWin = normalizeLocalFileTarget(winUri, "win32");
+assert.equal(normWin.ok, true);
+if (normWin.ok) {
+	assert.equal(normWin.path, "C:/Users/Test/My File.ts");
+}
 
 const markdownTargets = [
 	"[settings.json](C:/Users/Administrator/.pi/agent/settings.json)",
@@ -58,10 +64,14 @@ const markdownTargets = [
 ];
 const markdownParser = unified().use(remarkParse);
 for (const markdown of markdownTargets) {
-	const tree = markdownParser.parse(markdown) as any;
-	const link = tree.children[0]?.children[0];
+	const tree = markdownParser.parse(markdown);
+	const paragraph = tree.children[0];
+	assert.equal(paragraph?.type, "paragraph");
+	if (paragraph?.type !== "paragraph") throw new Error("Expected paragraph");
+	const link = paragraph.children[0];
 	assert.equal(link?.type, "link", `expected Markdown link node: ${markdown}`);
-	assert.ok(toInternalFileHref(link.url), `expected Markdown file target: ${link?.url}`);
+	if (link?.type !== "link") throw new Error("Expected link");
+	assert.equal(filePathFromHref(toInternalFileHref(link.url), "win32"), normalizeLocalFilePath(link.url));
 }
 
-console.log(`file link tests passed (${localTargets.length + externalTargets.length + 8} assertions)`);
+console.log("file link roundtrip and rejection assertions passed");

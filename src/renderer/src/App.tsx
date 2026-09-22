@@ -30,8 +30,9 @@ import {
   missingElectronPreload,
 } from "./desktopApi";
 import { contextControllerSettingsAtom, turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
-// 文件链接路由：图片类型走弹窗预览
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]);
+import {
+  useImagePreviewController,
+} from "./hooks/useImagePreviewController";
 const ConfigModal = lazy(() => import("./ConfigModal").then((m) => ({ default: m.ConfigModal })));
 import { type SidebarActions } from "./components/sidebar/SidebarContent";
 import { AppSidebar } from "./components/sidebar/AppSidebar";
@@ -265,12 +266,12 @@ export function App() {
 
   /** 当前正在重启的 Agent，用于仅给对应会话显示 loading，避免切到其他 Agent 后仍被全局禁用。 */
   const [restartingAgentId, setRestartingAgentId] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState<{
-    image: ImageContent;
-    /** 同组图片数组：时间线 Gallery/用户气泡点开时携带，供预览层左右键组内导航；
-     *  磁盘文件预览等单张场景不传 */
-    images?: ImageContent[];
-  } | null>(null);
+  const imagePreview = useImagePreviewController({
+    readBase64: (path, maxBytes) => api.files.readBase64(path, maxBytes),
+    openFile: (path) => api.files.open(path),
+    showToast,
+    log: (level, scope, message, detail) => api.app.rendererLog?.(level, scope, message, detail),
+  });
 
   // composerAgentModes legacy mirror removed — mode restore uses Session atom in useQueuedPrompt.
   /** 客户端队列按 agent 记录 flush 锁，避免 tool-end 与 idle 并发投递。 */
@@ -1146,26 +1147,20 @@ export function App() {
   // 替代原先的"系统默认应用打开"（.md 会被浏览器接管、体验割裂）
   const handleOpenLinkedFile = useCallback(
     (path: string) => {
+      const isHandledImage = imagePreview.openLocalImage(
+        path,
+        activeAgent?.cwd ?? activeProject?.path,
+      );
+      if (isHandledImage) return;
+
       const resolved = resolveFileLinkPath(
         path,
         activeAgent?.cwd ?? activeProject?.path,
       );
-      const ext = resolved.split(".").pop()?.toLowerCase() ?? "";
-      if (IMAGE_EXTENSIONS.has(ext)) {
-        // 图片：读取二进制 → 弹窗预览
-        void api.files
-          .readBase64(resolved)
-          .then((dataUrl) => {
-            const m = dataUrl.match(/^data:(.*?);base64,(.*)$/s);
-            if (m) setPreviewImage({ image: { type: "image", mimeType: m[1], data: m[2] } });
-          })
-          .catch(() => showToast(t("app.openFileFailed", { error: ext })));
-        return;
-      }
       // markdown / html / 其他文本文件：统一抽屉查看
       viewFilePath(resolved);
     },
-    [activeAgent?.cwd, activeProject?.path, viewFilePath, showToast],
+    [activeAgent?.cwd, activeProject?.path, imagePreview.openLocalImage, viewFilePath],
   );
 
   // 工具抽屉的统一切换语义：当前面板已展开 → 关闭；
@@ -2521,8 +2516,7 @@ export function App() {
       showToast,
       onOpenFile: handleOpenLinkedFile,
       onDiffFile: diffFilePath,
-      onPreviewImage: (img: ImageContent | null, images?: ImageContent[]) =>
-        setPreviewImage(img ? { image: img, images } : null),
+      onPreviewImage: imagePreview.openMessageImage,
       abortAgent,
       restartActiveAgent,
       runCreateSessionDraft: runCreateSessionDraftForPane,
@@ -2600,7 +2594,7 @@ export function App() {
       resendUserMessage,
       sessionDurationByAgent,
       settings.showThinking,
-      setPreviewImage,
+      imagePreview.openMessageImage,
       setTerminalCollapsedForOwner,
       setTerminalHeightByOwner,
       setTerminalOpenForOwner,
@@ -3210,11 +3204,13 @@ export function App() {
     <SessionActionOverlays
       {...overlays.overlayProps}
     />
-    {previewImage && (
+    {imagePreview.previewImage && (
       <ImagePreviewModal
-        image={previewImage.image}
-        images={previewImage.images}
-        onClose={() => setPreviewImage(null)}
+        image={imagePreview.previewImage.image}
+        images={imagePreview.previewImage.images}
+        localSourcePath={imagePreview.previewImage.localSourcePath}
+        onOpenInSystem={imagePreview.openInSystem}
+        onClose={imagePreview.closePreview}
       />
     )}
     {codexImportProject && <ImportOverlayHost kind="codex" project={codexImportProject} controller={codexImportController} onClose={() => setCodexImportProject(null)} />}

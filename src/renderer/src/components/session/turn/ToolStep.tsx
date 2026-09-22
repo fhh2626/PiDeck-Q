@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { ImageContent } from "../../../../../shared/types";
 import { ToolGroupCard } from "../ToolCallComponents";
 import type { ToolGroupItem } from "../timeline/types";
 
@@ -13,10 +14,18 @@ export const ToolStep = memo(function ToolStep(props: {
 	stopped: boolean;
 	/** 所属会话 id（转交 ToolCard「查看完整输出」的历史会话文件回退） */
 	sessionId?: string;
+	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
+	mountMedia?: boolean;
 }) {
 	return (
 		<div style={{ display: props.hidden ? "none" : undefined }}>
-			<ToolGroupCard group={props.group} stopped={props.stopped} sessionId={props.sessionId} />
+			<ToolGroupCard
+				group={props.group}
+				stopped={props.stopped}
+				sessionId={props.sessionId}
+				onPreviewImage={props.onPreviewImage}
+				mountMedia={props.mountMedia}
+			/>
 		</div>
 	);
 });

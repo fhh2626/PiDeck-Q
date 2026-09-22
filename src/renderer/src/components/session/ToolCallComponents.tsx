@@ -1,4 +1,5 @@
 import { memo, useState, type ReactNode } from "react";
+import type { ImageContent } from "../../../../shared/types";
 import {
   Brain,
   Check,
@@ -216,6 +217,9 @@ export const ToolCard = memo(function ToolCard(props: {
 	stopped?: boolean;
 	/** 所属会话 id：运行期绑定不可用时（历史会话 _viewer 投影）回退会话文件定位 */
 	sessionId?: string;
+	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
+	/** 控制媒体画廊是否挂载，用于与外层折叠互斥，杜绝短暂双挂载 */
+	mountMedia?: boolean;
 }) {
 	const [expanded, setExpanded] = useState(props.defaultOpen ?? false);
 	const messageStatus = getToolStatus(props.message);
@@ -264,6 +268,7 @@ export const ToolCard = memo(function ToolCard(props: {
 	// 历史会话中从 ask_question 工具结果反推的提问卡片数据
 	const askCard = props.message.meta?._askCard as AskCardSummary | undefined;
 	const isAskCard = Boolean(askCard?.question);
+	const hasImages = Boolean(props.message.images?.length || props.message.imageDisplayNotice);
 	// 状态徽章（借鉴 AI Elements Tool 的 getStatusBadge）：三态图标+文案 pill 一眼可辨。
 	// running 保留琥珀色警示位；error 用 destructive 红；done 用 secondary。
 	// 低强调确认（ask_question 已回答时文案替换为「已回答」）。
@@ -380,12 +385,18 @@ export const ToolCard = memo(function ToolCard(props: {
 					) : null}
 				</button>
 			</div>
-			{expanded && (
-				<div className="relative ml-5 mt-0.5 mb-1 rounded-b-sm border-l-2 border-border-subtle bg-transparent pl-2 animate-in fade-in slide-in-from-top-1 duration-150">
+			{/* 图片区域移出 expanded 折叠详情：工具返回图片即使文本详情折叠也显示缩略图 */}
+			{hasImages && props.mountMedia !== false && (
+				<div className="ml-5 mt-1 mb-1">
 					<MessageImageGallery
 						images={props.message.images}
 						notice={props.message.imageDisplayNotice}
+						onPreviewImage={props.onPreviewImage}
 					/>
+				</div>
+			)}
+			{expanded && (
+				<div className="relative ml-5 mt-0.5 mb-1 rounded-b-sm border-l-2 border-border-subtle bg-transparent pl-2 animate-in fade-in slide-in-from-top-1 duration-150">
 				{/* 已完成 ask_question 已拆成常驻 AskQuestionResultCard（buildTurnDisplay），
 				    ToolCard 这里只保留 running / 损坏 ask 的普通工具详情。 */}
 					<ToolResult
@@ -447,12 +458,21 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 	stopped?: boolean;
 	/** 所属会话 id（转交 ToolCard「查看完整输出」的历史会话文件回退） */
 	sessionId?: string;
+	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
+	mountMedia?: boolean;
 }) {
 	return (
 		<section className="tool-group-card w-full min-w-0 overflow-hidden rounded-none border-0 bg-transparent" data-message-id={props.group.id}>
 			<div className="flex flex-col gap-0 p-0">
 				{props.group.messages.map((message) => (
-					<ToolCard key={message.id} message={message} stopped={props.stopped} sessionId={props.sessionId} />
+					<ToolCard
+						key={message.id}
+						message={message}
+						stopped={props.stopped}
+						sessionId={props.sessionId}
+						onPreviewImage={props.onPreviewImage}
+						mountMedia={props.mountMedia}
+					/>
 				))}
 			</div>
 		</section>

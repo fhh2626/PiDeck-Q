@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, ImageOff, X } from "lucide-react";
 import type { ImageContent } from "../../../../shared/types";
 import { t } from "../../i18n";
 import { Dialog, DialogContent } from "../ui-shadcn/dialog";
+import { Button } from "../ui-shadcn/button";
+import { showNotice } from "../../utils/notice";
 
 function ImageLoader(props: {
 	src: string;
@@ -71,6 +73,8 @@ export function MessageImage(props: {
 export type ImagePreviewModalProps = {
 	image: ImageContent;
 	images?: ImageContent[];
+	localSourcePath?: string;
+	onOpenInSystem?: (path: string) => Promise<void> | void;
 	onClose: () => void;
 	onSelectImage?: (image: ImageContent) => void;
 };
@@ -79,24 +83,34 @@ export type ImagePreviewModalProps = {
 export function ImagePreviewModal(props: ImagePreviewModalProps) {
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
 	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const [isOpeningSystem, setIsOpeningSystem] = useState(false);
+	// Object identity avoids prefix/hash collisions; WeakSet never retains old galleries.
+	const failedImages = useRef(new WeakSet<ImageContent>());
+	const [, refreshFailure] = useState(0);
 
 	const allImages = useMemo(
 		() => (props.images && props.images.length > 0 ? props.images : [props.image]),
 		[props.images, props.image],
 	);
 	const [currentIndex, setCurrentIndex] = useState(() => {
-		const idx = allImages.findIndex((img) => img === props.image || img.data === props.image.data);
+		const idx = allImages.findIndex((img) => img === props.image || (img.mimeType === props.image.mimeType && img.data === props.image.data));
 		return idx >= 0 ? idx : 0;
 	});
 
 	// 若 props.image 发生变化，同步更新 currentIndex
 	useEffect(() => {
-		const idx = allImages.findIndex((img) => img === props.image || img.data === props.image.data);
+		const idx = allImages.findIndex((img) => img === props.image || (img.mimeType === props.image.mimeType && img.data === props.image.data));
 		if (idx >= 0) setCurrentIndex(idx);
 	}, [props.image, allImages]);
 
 	const currentImage = allImages[currentIndex] ?? props.image;
+	const isCurrentFailed = failedImages.current.has(currentImage);
 	const hasMultiple = allImages.length > 1;
+
+	const handleImageError = useCallback(() => {
+		failedImages.current.add(currentImage);
+		refreshFailure((version) => version + 1);
+	}, [currentImage]);
 
 	const handlePrev = useCallback(() => {
 		setCurrentIndex((prev) => (prev > 0 ? prev - 1 : allImages.length - 1));
@@ -193,20 +207,56 @@ export function ImagePreviewModal(props: ImagePreviewModalProps) {
 					className="relative flex items-center justify-center max-w-full max-h-full overflow-hidden"
 					onClick={(e) => e.stopPropagation()}
 				>
-					{hasMultiple ? (
+					{isCurrentFailed ? (
+						<div className="flex flex-col items-center justify-center p-6 text-center text-white bg-black/70 rounded-md border border-white/20">
+							<span className="text-sm font-medium">{t("app.imageCorruptedOrUnsupported")}</span>
+						</div>
+					) : hasMultiple ? (
 						<img
+							key={currentIndex}
 							src={`data:${currentImage.mimeType};base64,${currentImage.data}`}
 							alt={t("app.imagePreviewAlt")}
+							onError={handleImageError}
 							className="max-w-[90vw] max-h-[85vh] object-contain select-none rounded-sm shadow-2xl"
 						/>
 					) : (
 						<img
 							src={`data:${props.image.mimeType};base64,${props.image.data}`}
 							alt={t("app.imagePreviewAlt")}
+							onError={handleImageError}
 							className="max-w-[90vw] max-h-[85vh] object-contain select-none rounded-sm shadow-2xl"
 						/>
 					)}
 				</div>
+
+				{props.localSourcePath && props.onOpenInSystem && (
+					<div className="absolute top-4 left-4 z-50 flex items-center gap-2">
+						<Button
+							type="button"
+							variant="secondary"
+							size="sm"
+							disabled={isOpeningSystem}
+							className="h-8 gap-1.5 px-3 bg-black/60 text-white/90 hover:bg-black/90 hover:text-white border-none shadow-md backdrop-blur-sm"
+							onClick={async (e) => {
+								e.stopPropagation();
+								if (!props.localSourcePath || isOpeningSystem) return;
+								setIsOpeningSystem(true);
+								try {
+									if (props.onOpenInSystem) {
+										await props.onOpenInSystem(props.localSourcePath);
+									}
+								} catch {
+									showNotice(t("app.imagePreviewOpenInSystemFailed"), 3000, "error");
+								} finally {
+									setIsOpeningSystem(false);
+								}
+							}}
+						>
+							<ExternalLink size={14} />
+							<span>{isOpeningSystem ? t("app.imagePreviewOpening") : t("app.imagePreviewOpenInSystem")}</span>
+						</Button>
+					</div>
+				)}
 
 				{hasMultiple && (
 					<div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-black/60 text-xs font-mono text-white/80">

@@ -1,7 +1,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronUp, Clock, Share, SquarePen, Trash } from "lucide-react";
 import { atom, useAtomValue } from "jotai";
-import type { ImageContent } from "../../../../../shared/types";
+import type { ImageContent, ImageDisplayNotice } from "../../../../../shared/types";
 import {
 	liveTextStreamingBySessionAtom,
 	liveTextStreamingMessageIdBySessionAtom,
@@ -29,6 +29,7 @@ import { sameAgentRunForRender } from "../../app/AppUtils";
 import { createTrackedEditSubmit } from "../../../utils/trackedEditSubmit";
 import { FinalAnswer } from "./FinalAnswer";
 import { AssistantMessageImages } from "./AssistantMessageImages";
+import { MessageImageGallery } from "../MessageImageGallery";
 import { AskQuestionResultCard } from "../AskQuestionResultCard";
 import { InterimAnswer } from "./InterimAnswer";
 import { ProcessSummaryToggle } from "./ProcessSummaryToggle";
@@ -268,6 +269,21 @@ export const TurnRow = memo(
 			(item.message.images && item.message.images.length > 0) ||
 			Boolean(item.message.imageDisplayNotice),
 	);
+
+	// 收集本轮工具消息中的图片与提示（用于在执行过程折叠时在外部显示摘要画廊）
+	const toolMessagesWithImages = useMemo(() => {
+		const msgs: Array<{ id: string; images?: ImageContent[]; notice?: ImageDisplayNotice }> = [];
+		for (const item of displayItems) {
+			if (item.kind === "process-entry" && item.entry.kind === "tool-entry") {
+				for (const m of item.entry.group.messages) {
+					if ((m.images && m.images.length > 0) || m.imageDisplayNotice) {
+						msgs.push({ id: m.id, images: m.images, notice: m.imageDisplayNotice });
+					}
+				}
+			}
+		}
+		return msgs;
+	}, [displayItems]);
 	// 合并后的完整文本仅用于编辑/复制/删除等操作栏，不用于展示
 	const mergedText = assistantMessages
 		.map((item) => stripThinkingTags(stripAnsi(item.message.text)).trim())
@@ -336,6 +352,19 @@ export const TurnRow = memo(
 							expanded={stepsVisible}
 							onToggle={toggleSteps}
 						/>
+						{/* 外层折叠时：在折叠栏外部直接显示工具图片与省略提示摘要画廊（避免藏在折叠内容中） */}
+						{!stepsVisible && toolMessagesWithImages.length > 0 && (
+							<div className="flex flex-col gap-1.5 pt-1 pb-1">
+								{toolMessagesWithImages.map((tm) => (
+									<MessageImageGallery
+										key={tm.id}
+										images={tm.images}
+										notice={tm.notice}
+										onPreviewImage={props.onPreviewImage}
+									/>
+								))}
+							</div>
+						)}
 						<CollapsibleContent className="execution-summary-details">
 							{foldableItems.map((item) => {
 								let content: ReactNode;
@@ -359,6 +388,8 @@ export const TurnRow = memo(
 												hidden={!stepsVisible}
 												stopped={props.agentRunning !== true}
 												sessionId={props.sessionId}
+												onPreviewImage={props.onPreviewImage}
+												mountMedia={stepsVisible}
 											/>
 										);
 									}
