@@ -19,9 +19,8 @@ import {
   type EditorTabOpenMode,
 } from "../utils/editorTabs";
 
-function isAbsoluteFilePath(path: string) {
-  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/");
-}
+import { isAbsoluteFilePath, resolveFileLinkPath } from "../utils/fileLinks";
+export { resolveFileLinkPath };
 
 const EDITOR_TAB_LIMIT = 5;
 const EDITOR_TAB_TEXT_BUDGET = 24 * 1024 * 1024;
@@ -45,12 +44,6 @@ interface GitDrawerDiff {
   originalContent: string;
   modifiedContent: string;
   label: string;
-}
-
-export function resolveFileLinkPath(path: string, basePath?: string) {
-  if (!path || isAbsoluteFilePath(path) || !basePath) return path;
-  const separator = basePath.includes("\\") ? "\\" : "/";
-  return `${basePath.replace(/[\\/]+$/, "")}${separator}${path.replace(/^[\\/]+/, "")}`;
 }
 
 export interface UseFileEditorInput {

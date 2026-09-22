@@ -60,11 +60,14 @@ test("main-path preview carries sibling gallery for arrow navigation", () => {
   const modalStart = app.indexOf("<ImagePreviewModal\n");
   assert.ok(modalStart >= 0, "App.tsx 必须挂载 ImagePreviewModal");
   const modalBlock = app.slice(modalStart, app.indexOf("/>", modalStart) + 2);
-  assert.match(modalBlock, /image=\{previewImage\.image\}/);
-  assert.match(modalBlock, /images=\{previewImage\.images\}/);
+  assert.match(modalBlock, /image=\{imagePreview\.previewImage\.image\}/);
+  assert.match(modalBlock, /images=\{imagePreview\.previewImage\.images\}/);
   // 磁盘文件预览：只包单张 image，不伪造 gallery（不携带 images 字段）
-  const fileOpen = app.match(/setPreviewImage\(\{ image: \{ type: "image"/);
-  assert.ok(fileOpen, "文件链接打开图片仍走单张预览");
+  const controller = readFileSync(
+    new URL("../src/renderer/src/hooks/useImagePreviewController.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(controller, /setPreviewImage\(\{\s*image: \{ type: "image"/);
 });
 
 test("i18n: previous/next labels exist in zh-CN and en-US", () => {

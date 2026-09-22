@@ -1,3 +1,4 @@
+import { useComposerImagePreview, type PreviewMessageImage } from "./useComposerImagePreview";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import {
   useCallback,
@@ -124,6 +125,7 @@ function friendlyCompactError(error: unknown): string | null {
 export type ComposerPickerKind = "model" | "mode" | "thinking" | "template";
 
 export type UseSessionComposerControllerOptions = {
+  onPreviewImage?: PreviewMessageImage;
   sessionId: string;
   onOpenFile?: (path: string) => void;
   ensureSessionId?: (sessionId: string) => Promise<string>;
@@ -307,11 +309,7 @@ export function useSessionComposerController(
   const [savedDraft, setSavedDraft] = useState("");
   const [busyDraftLocked, setBusyDraftLocked] = useState(false);
   const [sendBehaviorMenuOpen, setSendBehaviorMenuOpen] = useState(false);
-  const [previewImage, setPreviewImage] = useState<{
-    image: ImageContent;
-    /** 同组附件数组：附件栏点开时携带，供预览层左右键在全部附件内导航 */
-    images?: ImageContent[];
-  } | null>(null);
+  const { previewImage, setPreviewImage, preview, closePreview } = useComposerImagePreview(options.onPreviewImage);
   const [picker, setPicker] = useState<ComposerPickerKind | null>(null);
   const [commands, setCommands] = useState<PiCommand[]>([]);
   const [files, setFiles] = useState<FileTreeNode[]>([]);
@@ -1416,8 +1414,7 @@ export function useSessionComposerController(
       pick: commitCompletion,
     },
     images: {
-      preview: (image: ImageContent | null, images?: ImageContent[]) =>
-        setPreviewImage(image ? { image, images } : null),
+      preview,
       remove: (index: number) => setAttachments((current) => current.filter((_, item) => item !== index)),
       clear: () => setAttachments([]),
       attachImages,
@@ -1448,7 +1445,7 @@ export function useSessionComposerController(
       insertTemplate,
     },
     modals: {
-      closePreview: () => setPreviewImage(null),
+      closePreview,
       closeSessionReference: () => setSessionReference(null),
       confirmSessionReference: (
         sessionName: string,
