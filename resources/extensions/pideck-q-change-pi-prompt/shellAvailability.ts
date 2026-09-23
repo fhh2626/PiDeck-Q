@@ -1,5 +1,5 @@
 /** Host-side bash/powershell existence checks. No process spawn; PATH and well-known files only. */
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 import { isRecord } from './contributions.ts';
@@ -11,11 +11,17 @@ export interface ShellProbeHost {
 	platform: NodeJS.Platform;
 	env: NodeJS.ProcessEnv;
 	exists: (path: string) => boolean;
+	isExecutableFile?: (path: string) => boolean;
 }
 
 export interface ShellAvailability {
 	bash: boolean;
 	powershell: boolean;
+}
+
+export interface SearchAvailability {
+	grep: boolean;
+	find: boolean;
 }
 
 /** Which backend a configured `settings.shellPath` actually is. */
@@ -41,11 +47,23 @@ export function defaultShellProbeHost(): ShellProbeHost {
 		platform: process.platform,
 		env: process.env,
 		exists: existsSync,
+		isExecutableFile: (filePath: string) => {
+			try {
+				const stat = statSync(filePath);
+				if (!stat.isFile()) return false;
+				if (process.platform !== 'win32') {
+					accessSync(filePath, constants.X_OK);
+				}
+				return true;
+			} catch {
+				return false;
+			}
+		},
 	};
 }
 
 function pathEntries(host: ShellProbeHost): string[] {
-	const raw = host.env.PATH ?? host.env.Path ?? '';
+	const raw = host.env?.PATH ?? host.env?.Path ?? '';
 	// Use the probed host's platform, not node:path.delimiter from the process running the tests.
 	// A Linux CI process simulating Windows must still split Windows PATH with `;`.
 	return raw.split(host.platform === 'win32' ? ';' : ':').filter(Boolean);
@@ -125,7 +143,7 @@ export function classifyConfiguredShellKind(
 	host: ShellProbeHost,
 	shellPath?: string,
 ): ConfiguredShellKind | undefined {
-	const configured = resolveShellPath(shellPath, host.env.HOME ?? host.env.USERPROFILE ?? homedir());
+	const configured = resolveShellPath(shellPath, host.env?.HOME ?? host.env?.USERPROFILE ?? homedir());
 	if (!configured || !host.exists(configured)) return undefined;
 	const name = (host.platform === 'win32' ? win32Path.basename(configured) : posixPath.basename(configured)).toLowerCase();
 	if (BASH_BASENAMES.has(name)) return 'bash';
@@ -140,6 +158,89 @@ export function probeShellAvailability(host: ShellProbeHost, shellPath?: string)
 		bash: configuredKind === 'bash' || bashBackendPresent(host),
 		powershell: configuredKind === 'powershell' || powershellBackendPresent(host),
 	};
+}
+
+function checkExecutable(host: ShellProbeHost, filePath: string): boolean {
+	if (typeof host.isExecutableFile === 'function') {
+		return host.isExecutableFile(filePath);
+	}
+	return host.exists(filePath);
+}
+
+function findExecutableOnPath(host: ShellProbeHost, candidateNames: readonly string[]): boolean {
+	for (const name of candidateNames) {
+		for (const dir of pathEntries(host)) {
+			const candidatePath = joinPath(host, dir, name);
+			if (host.exists(candidatePath) && checkExecutable(host, candidatePath)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/** Pi's grep/find tools invoke rg/fd. Check both PATH and Pi's managed binary directory. */
+export function probeSearchAvailability(host: ShellProbeHost, agentDir: string): SearchAvailability {
+	const isWin = host.platform === 'win32';
+	const managedDir = joinPath(host, agentDir, 'bin');
+
+	// Managed binary names: Pi only looks for rg/fd in managed bin (never fdfind).
+	const managedRgName = isWin ? 'rg.exe' : 'rg';
+	const managedFdName = isWin ? 'fd.exe' : 'fd';
+
+	const managedRgPath = joinPath(host, managedDir, managedRgName);
+	const managedFdPath = joinPath(host, managedDir, managedFdName);
+
+	// Probe grep: managed binary takes precedence. If present but not executable, Pi fails to execute it.
+	let grepAvailable = false;
+	if (host.exists(managedRgPath)) {
+		grepAvailable = checkExecutable(host, managedRgPath);
+	} else {
+		const pathCandidates = isWin ? ['rg.exe'] : ['rg'];
+		grepAvailable = findExecutableOnPath(host, pathCandidates);
+	}
+
+	// Probe find: managed binary takes precedence. If present but not executable, Pi fails to execute it.
+	let findAvailable = false;
+	if (host.exists(managedFdPath)) {
+		findAvailable = checkExecutable(host, managedFdPath);
+	} else {
+		// On PATH: fd first, then fdfind
+		const pathCandidates = isWin ? ['fd.exe', 'fdfind.exe'] : ['fd', 'fdfind'];
+		findAvailable = findExecutableOnPath(host, pathCandidates);
+	}
+
+	return { grep: grepAvailable, find: findAvailable };
+}
+
+export function hideUnavailableSearchTools(
+	activeTools: readonly string[],
+	availability: SearchAvailability,
+): { next: string[]; hidden: Array<'grep' | 'find'> } {
+	const hidden: Array<'grep' | 'find'> = [];
+	const next = activeTools.filter(name => {
+		if ((name === 'grep' || name === 'find') && !availability[name]) {
+			hidden.push(name);
+			return false;
+		}
+		return true;
+	});
+	return { next, hidden };
+}
+
+/** Keep the model-facing catalog consistent with tools hidden after backend probing. */
+export function filterUnavailableSearchToolLines(block: string, activeTools: readonly string[]): string {
+	const drop = new Set(['grep', 'find'].filter(name => !activeTools.includes(name)));
+	if (drop.size === 0) return block;
+	const lines = block.split(/\r?\n/).filter(line => {
+		const match = /^- ([\w.-]+): /.exec(line);
+		return !match || !drop.has(match[1]);
+	});
+	if (!lines.some(line => /^- [\w.-]+: /.test(line) || line.trim() === '(none)')) {
+		const heading = lines.find(line => /Available tools:$/.test(line));
+		return heading ? heading + (block.includes('\r\n') ? '\r\n' : '\n') + '(none)' : '(none)';
+	}
+	return lines.join(block.includes('\r\n') ? '\r\n' : '\n');
 }
 
 /** Drop only bash/powershell whose backends are missing; leave every other active tool untouched. */

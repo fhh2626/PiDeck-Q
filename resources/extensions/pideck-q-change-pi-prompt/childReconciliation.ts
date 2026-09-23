@@ -3,7 +3,7 @@
  * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions and, when the host
  * shell set differs from a native agent's declared shells, a managed `tools` allowlist.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,11 +32,13 @@ export interface ReconciliationResult {
 	incompatibleAgents: string[];
 	managedPaths: string[];
 	changed: boolean;
+	snapshotPublished: boolean;
+	settingsWriteSucceeded: boolean;
+	canSafelyDispatch: boolean;
 }
 
-// Builtin and pi-subagents internal tools are resolved by the child runtime itself;
-// they must not be judged missing just because the parent session has them inactive.
-// The shared list lives in childShellPolicy so the child-side ceiling cannot drift from it.
+// Builtin and pi-subagents internal tools need no extension provider. The child-side
+// active-tool ceiling is applied separately, including to builtins.
 const BUILTIN_OR_INTERNAL_TOOLS = BUILTIN_OR_INTERNAL_CHILD_TOOLS;
 
 export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
@@ -198,13 +200,13 @@ export function readEffectiveShellPolicySnapshot(
  * owner (conservative fallback) or a complete snapshot, never a half-written file.
  * `parentActiveTools` must be the parent's final `getActiveTools()` result, never `getAllTools()`.
  */
-function writeEffectiveShellPolicySnapshot(
+export function writeEffectiveShellPolicySnapshot(
 	stateDir: string,
 	platform: NodeJS.Platform,
 	policy: EffectiveShellPolicy,
 	ownerKey: string,
 	parentActiveTools: readonly string[],
-): void {
+): boolean {
 	try {
 		const snapshot: ShellPolicySnapshot = {
 			version: 2,
@@ -216,8 +218,9 @@ function writeEffectiveShellPolicySnapshot(
 		writeJsonAtomic(snapshotPath, snapshot);
 		process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
 		pruneStaleShellPolicySnapshots(stateDir, snapshotPath);
+		return true;
 	} catch {
-		// A missing snapshot only widens the child's fallback checks; never fail the reconciliation.
+		return false;
 	}
 }
 
@@ -354,34 +357,47 @@ function defaultLockWait(delayMs: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
-function tryTakeLock(lockPath: string, now: () => number, staleMs: number): boolean {
+function tryTakeLock(lockPath: string, now: () => number, staleMs: number): string | undefined {
+	const token = randomUUID();
 	try {
 		mkdirSync(dirname(lockPath), { recursive: true });
 		const fd = openSync(lockPath, 'wx');
 		try {
-			writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: now() }));
+			writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: now(), token }));
 		} finally {
 			closeSync(fd);
 		}
-		return true;
+		return token;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
+		if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') return undefined;
 	}
 
 	// An abandoned lock (crashed runtime, killed process) must not wedge every later session forever.
 	try {
-		const raw = JSON.parse(readFileSync(lockPath, 'utf8'));
-		const createdAt = isRecord(raw) && typeof raw.createdAt === 'number' ? raw.createdAt : undefined;
-		const age = createdAt === undefined ? Number.POSITIVE_INFINITY : now() - createdAt;
-		if (age <= staleMs) return false;
+		const stat = statSync(lockPath);
+		let age: number | undefined;
+		try {
+			const raw = JSON.parse(readFileSync(lockPath, 'utf8'));
+			const createdAt = isRecord(raw) && typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)
+				? raw.createdAt
+				: undefined;
+			if (createdAt !== undefined) {
+				age = now() - createdAt;
+			} else {
+				// Parseable JSON but missing or non-finite createdAt: fallback to filesystem time
+				age = Math.max(0, now() - Math.max(stat.mtimeMs, stat.ctimeMs));
+			}
+		} catch {
+			// Unreadable or empty lock (e.g. concurrent openSync before writeSync):
+			// compute age from filesystem mtime/ctime instead of immediately assuming stale.
+			age = Math.max(0, now() - Math.max(stat.mtimeMs, stat.ctimeMs));
+		}
+
+		if (age === undefined || age <= staleMs) return undefined;
 		rmSync(lockPath, { force: true });
 	} catch {
-		// Unreadable lock: treat it as stale rather than waiting on it forever.
-		try {
-			rmSync(lockPath, { force: true });
-		} catch {
-			return false;
-		}
+		// Cannot stat or remove: fail conservative
+		return undefined;
 	}
 	return tryTakeLock(lockPath, now, staleMs);
 }
@@ -403,7 +419,8 @@ export async function withReconciliationLock<T>(
 	const lockPath = reconciliationLockPath(agentDir);
 	const deadline = now() + timeoutMs;
 
-	while (!tryTakeLock(lockPath, now, staleMs)) {
+	let token: string | undefined;
+	while (!(token = tryTakeLock(lockPath, now, staleMs))) {
 		if (now() >= deadline) return undefined;
 		await wait(retryMs);
 	}
@@ -412,9 +429,12 @@ export async function withReconciliationLock<T>(
 		return await fn();
 	} finally {
 		try {
-			rmSync(lockPath, { force: true });
+			const content = JSON.parse(readFileSync(lockPath, 'utf8'));
+			if (isRecord(content) && content.token === token) {
+				rmSync(lockPath, { force: true });
+			}
 		} catch {
-			// A lock we cannot remove is reclaimed by the stale check on the next attempt.
+			// A lock we cannot read or remove is left alone; stale reclaim handles it.
 		}
 	}
 }
@@ -558,7 +578,7 @@ function reconcileChildEnvironmentsLocked(options: {
 				// Shell backends are pruned at runtime; they are not missing providers.
 				if (isShellToolName(toolName)) continue;
 				// Two separate questions, deliberately answered separately:
-				//  - resolveToolProviderExtension: does this parent allow the tool? (builtin/internal bypass it)
+				//  - resolveToolProviderExtension: is a provider available? (builtins need none)
 				//  - resolveLoadableToolProvider: can a child load its provider? (the shared superset)
 				// Only the second decides the shared settings.json, so an inactive parent never evicts a
 				// provider another session still needs.
@@ -667,7 +687,10 @@ function reconcileChildEnvironmentsLocked(options: {
 			settingsWriteSucceeded = true;
 		} catch {
 			// Fail conservative on write error; managed ownership stays for a later retry.
+			settingsWriteSucceeded = false;
 		}
+	} else if (!canWriteSettings && settingsDirty) {
+		settingsWriteSucceeded = false;
 	}
 
 	// Drop obsolete adapter ownership only after its settings migration no longer needs a write,
@@ -692,7 +715,7 @@ function reconcileChildEnvironmentsLocked(options: {
 
 	// Publish this parent's final child policy for its own children (see readEffectiveShellPolicySnapshot).
 	// The owner key scopes the snapshot so parallel sessions sharing one agentDir never overwrite it.
-	writeEffectiveShellPolicySnapshot(
+	const snapshotPublished = writeEffectiveShellPolicySnapshot(
 		stateDir,
 		platform,
 		shellPolicy,
@@ -700,10 +723,15 @@ function reconcileChildEnvironmentsLocked(options: {
 		parentActiveTools,
 	);
 
+	const canSafelyDispatch = snapshotPublished && canWriteSettings && settingsWriteSucceeded;
+
 	return {
 		compatibilityStatus,
 		incompatibleAgents,
 		managedPaths: [...nextManagedPaths],
 		changed: settingsDirty,
+		snapshotPublished,
+		settingsWriteSucceeded,
+		canSafelyDispatch,
 	};
 }

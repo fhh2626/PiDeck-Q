@@ -2,7 +2,7 @@
 import { type Config, type Prompts } from './defaults.ts';
 import { classifyRules, CORE_RULES, hasBatchEdit, isPwsh, isSubagent, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
-import { filterUnavailableShellToolLines } from './shellAvailability.ts';
+import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './shellAvailability.ts';
 
 export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
 export interface TransformInput {
@@ -101,12 +101,16 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 		patches.push({ start, end, replacement, expected: original.slice(start, end) });
 	};
 	if (input.config.replaceIdentity) add(0, layout.identityEnd, input.prompts.identity);
-	if (input.config.pruneUnavailableShells) {
+	if (input.config.pruneUnavailableShells || input.config.pruneUnavailableSearchTools) {
 		const originalTools = original.slice(layout.toolsStart, layout.toolsEnd);
-		const filtered = filterUnavailableShellToolLines(originalTools, input.activeTools);
+		const shellFiltered = input.config.pruneUnavailableShells
+			? filterUnavailableShellToolLines(originalTools, input.activeTools) : originalTools;
+		const filtered = input.config.pruneUnavailableSearchTools
+			? filterUnavailableSearchToolLines(shellFiltered, input.activeTools) : shellFiltered;
 		if (filtered !== originalTools) {
 			add(layout.toolsStart, layout.toolsEnd, filtered);
-			diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
+			if (shellFiltered !== originalTools) diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
+			if (filtered !== shellFiltered) diagnostics.push('search-tools: pruned unavailable grep/find from Available tools');
 		}
 	}
 	if (input.config.replaceGuidelines) {

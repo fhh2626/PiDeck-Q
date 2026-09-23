@@ -924,11 +924,22 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 			const { mockPi, setTools, getHandler } = createMockPi();
 			setTools(registered);
 			mockPi.setActiveTools(activeTools);
+			mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+			writeFileSync(
+				shellPolicySnapshotPath(tempDir, `pid-${process.pid}`),
+				JSON.stringify({
+					version: 2,
+					platform: "win32",
+					shell: { bash: false, powershell: false },
+					parentActiveTools: registered.map(t => t.name),
+				}),
+				"utf8",
+			);
 			registerPromptExtension(mockPi, tempDir, {
 				probeHost: {
 					platform: "win32",
 					env: { Path: "" },
-					exists: path => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					exists: path => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" || path.toLowerCase().includes("rg") || path.toLowerCase().includes("fd"),
 				},
 				isStandalone: () => true,
 			});
@@ -1095,6 +1106,7 @@ test("a child session never runs global reconciliation", async () => {	const tem
 		utimesSync(stalePath, past, past);
 
 		// parent session 才写（loadSubagentCatalog 能找到 bundled agents）
+		mockPi.setActiveTools(["subagent", "read", "bash"]);
 		const parentPrompt = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n";
 		await getHandler("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: { selectedTools: ["subagent", "read", "bash"] } }, ctx);
 		assert.equal(existsSync(join(tempDir, "settings.json")), true, "the parent must still reconcile child overrides");
@@ -1428,18 +1440,18 @@ test("a globally loaded provider does not become active in a session that did no
 		});
 		assert.deepEqual(aPruned, ["read", "grep", "web_search"]);
 
-		// 没有 version 2 snapshot（旧 parent / 文件缺失）：保持旧行为，不误删
+		// 没有 version 2 snapshot（旧 parent / 文件缺失）：fail closed，只保留协调工具
 		assert.deepEqual(
 			reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: undefined }),
-			childActive,
+			[],
 		);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
 
-// 24. builtin / pi-subagents 内部工具不会被 parent activeTools 误 prune
-test("builtin and pi-subagents internal child tools survive the parent ceiling", () => {
+// 24. 只有 child 协调工具和 parent 允许的工具能保留；未授权的 builtin 工具必须被 prune
+test("only coordination tools and parent-active tools survive the parent ceiling", () => {
 	const registeredTools = [
 		{ name: "read", sourceInfo: { source: "builtin" } },
 		{ name: "grep", sourceInfo: { source: "builtin" } },
@@ -1449,9 +1461,9 @@ test("builtin and pi-subagents internal child tools survive the parent ceiling",
 	];
 	const childActive = ["read", "grep", "find", "ls", "contact_supervisor"];
 
-	// parent 只 active 了 read：其余全部仍是 child runtime 自己提供的工具
+	// parent 只 active 了 read：其余未授权 builtin 被 prune，只有 coordination 工具保留
 	const pruned = reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: ["read"] });
-	assert.deepEqual(pruned, childActive);
+	assert.deepEqual(pruned, ["read", "contact_supervisor"]);
 
 	assert.equal(isBuiltinOrInternalChildTool("contact_supervisor"), true);
 	assert.equal(isBuiltinOrInternalChildTool("structured_output"), true);
@@ -1459,10 +1471,10 @@ test("builtin and pi-subagents internal child tools survive the parent ceiling",
 	assert.equal(isBuiltinOrInternalChildTool("subagent_supervisor"), true);
 	assert.equal(isBuiltinOrInternalChildTool("web_search"), false);
 
-	// registry 标记为 builtin 的工具同样不受 ceiling 影响；未知工具不猜、不删
+	// 未授权的工具一律 prune；只有 coordination 工具能例外
 	assert.deepEqual(
 		reconcileChildExtensionTools({ registeredTools, activeTools: ["read", "mystery"], parentActiveTools: [] }),
-		["read", "mystery"],
+		[],
 	);
 });
 

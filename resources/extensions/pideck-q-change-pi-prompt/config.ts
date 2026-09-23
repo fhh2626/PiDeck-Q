@@ -352,6 +352,7 @@ function parseConfig(text: string | undefined): Config {
 		pwsh: boolean('pwsh', DEFAULT_CONFIG.pwsh),
 		subagent: boolean('subagent', DEFAULT_CONFIG.subagent),
 		pruneUnavailableShells: boolean('pruneUnavailableShells', DEFAULT_CONFIG.pruneUnavailableShells),
+		pruneUnavailableSearchTools: boolean('pruneUnavailableSearchTools', DEFAULT_CONFIG.pruneUnavailableSearchTools),
 		unknownGuidelines: unknown,
 	};
 }

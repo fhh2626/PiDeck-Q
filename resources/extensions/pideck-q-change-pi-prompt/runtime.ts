@@ -19,6 +19,7 @@ import {
 import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
 import {
 	getActiveAgentName,
+	isChildCoordinationTool,
 	isShellToolName,
 	reconcileChildActiveShellTools,
 	reconcileChildExtensionTools,
@@ -37,17 +38,27 @@ import {
 	readEffectiveShellPolicySnapshot,
 	resolveCurrentChangePiPromptPath,
 	resolveShellPolicyOwnerKey,
+	type ReconciliationLockOptions,
 	type ReconciliationResult,
 } from './childReconciliation.ts';
 import {
 	defaultShellProbeHost,
 	hideUnavailableShellTools,
+	hideUnavailableSearchTools,
 	parseShellPathFromSettings,
 	probeShellAvailability,
+	probeSearchAvailability,
 	type ShellAvailability,
 	type ShellProbeHost,
 } from './shellAvailability.ts';
 import { transformSystemPrompt } from './transform.ts';
+
+export interface ReconciliationOutcome {
+	ok: boolean;
+	diagnostics: string[];
+	reconciliationResult?: ReconciliationResult;
+	reason?: string;
+}
 
 export function isStandalonePiExecutable(execPath: string = process.execPath): boolean {
 	const name = basename(execPath);
@@ -58,10 +69,18 @@ export interface PromptExtensionOptions {
 	probeHost?: ShellProbeHost;
 	isStandalone?: () => boolean;
 	changePiPromptPath?: string;
+	lock?: ReconciliationLockOptions;
 }
 
 export const CHILD_TOOL_MARKER_START = '<!-- change-pi-prompt:child-tools:v1 -->';
 export const CHILD_TOOL_MARKER_END = '<!-- /change-pi-prompt:child-tools:v1 -->';
+
+const BLOCKED_SCHEDULE_ACTIONS = new Set([
+	'schedule.run',
+	'schedule.run-due',
+	'schedule.resume',
+	'schedule.create',
+]);
 
 export function isChildSession(systemPrompt: string, _options?: { customPrompt?: string }): boolean {
 	// Bundled native children are explicitly tagged by pi-subagents. A generic customPrompt is not
@@ -74,32 +93,29 @@ export function isChildSession(systemPrompt: string, _options?: { customPrompt?:
 export function buildChildToolEnvironmentBlock(activeTools: readonly string[]): string {
 	const hasBash = activeTools.includes('bash');
 	const hasPowerShell = activeTools.includes('powershell');
-
 	const lines = [
 		CHILD_TOOL_MARKER_START,
 		'## Child Tool Environment',
 		'- Available tools below are authoritative for this runtime.',
+		`- Active tools: ${activeTools.join(', ') || '(none)'}. This list overrides tool names in the role prompt.`,
 	];
 
 	if (!hasBash && !hasPowerShell) {
-		// Never name specific tools here: each agent declares its own allowlist (reviewer has no edit/write).
 		lines.push('- No shell tool is available; use only the non-shell tools that are active in this child.');
-		lines.push(CHILD_TOOL_MARKER_END);
-		return lines.join('\n');
-	}
-
-	// A role prompt may still tell the child to use bash after this runtime hid that tool.
-	lines.push(hasBash
-		? '- `bash` is available.'
-		: '- `bash` is unavailable. Do not call it, even if the role prompt mentions bash.');
-	if (hasPowerShell) {
-		lines.push(hasBash
-			? '- `powershell` is available.'
-			: '- `powershell` is available; use `powershell` for shell commands.');
 	} else {
-		lines.push('- `powershell` is unavailable.');
+		lines.push(hasBash
+			? '- `bash` is available.'
+			: '- `bash` is unavailable. Do not call it, even if the role prompt mentions bash.');
+		lines.push(hasPowerShell
+			? (hasBash ? '- `powershell` is available.' : '- `powershell` is available; use `powershell` for shell commands.')
+			: '- `powershell` is unavailable.');
 	}
-
+	for (const name of ['grep', 'find'] as const) {
+		if (!activeTools.includes(name)) lines.push(`- \`${name}\` is unavailable. Do not call it, even if the role prompt mentions it.`);
+	}
+	if ((!activeTools.includes('grep') || !activeTools.includes('find')) && hasPowerShell) {
+		lines.push('- For file discovery/search, use `powershell` with Get-ChildItem and Select-String instead.');
+	}
 	lines.push(CHILD_TOOL_MARKER_END);
 	return lines.join('\n');
 }
@@ -183,7 +199,14 @@ export function registerPromptExtension(
 		}
 		: ((optionsOrProbeHost as PromptExtensionOptions | undefined) ?? {});
 
-	const probeHost: ShellProbeHost = options.probeHost ?? defaultShellProbeHost();
+	const defaultHost = defaultShellProbeHost();
+	const probeHost: ShellProbeHost = options.probeHost
+		? {
+			...defaultHost,
+			isExecutableFile: options.probeHost.isExecutableFile,
+			...options.probeHost,
+		}
+		: defaultHost;
 	const isStandalone = options.isStandalone ?? (() => isStandalonePiExecutable());
 	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
 
@@ -200,6 +223,7 @@ export function registerPromptExtension(
 	let reconciliationResult: ReconciliationResult | undefined;
 	/** Set on every before_agent_start; true while this runtime is a native child session. */
 	let childSessionActive = false;
+	let childPermittedTools: Set<string> | undefined;
 	/** Parent-owned key that scopes the published shell ceiling to this runtime. */
 	let shellPolicyOwnerKey: string | undefined;
 	/** Resolved once per child session so a later parent-session switch cannot re-point this child. */
@@ -227,15 +251,24 @@ export function registerPromptExtension(
 	 * shares the same settings.json, and its own active tools are not the parent's, so a child that
 	 * reconciled would rewrite (and degrade) the overrides every other child depends on.
 	 */
-	const runReconciliation = async (activeTools?: readonly string[]): Promise<string[]> => {
+	const runReconciliation = async (activeTools?: readonly string[]): Promise<ReconciliationOutcome> => {
 		const diagnostics: string[] = [];
-		if (!subagentAdaptationEnabled()) return diagnostics;
-		if (childSessionActive) return diagnostics;
+		if (!subagentAdaptationEnabled()) {
+			return { ok: false, diagnostics, reason: 'subagent adaptation is disabled' };
+		}
+		if (childSessionActive) {
+			return { ok: false, diagnostics, reason: 'child sessions must not reconcile environment' };
+		}
+		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') {
+			const line = 'child-reconciliation-failed: getActiveTools or setActiveTools API unavailable';
+			lastStatus.push(line);
+			diagnostics.push(line);
+			return { ok: false, diagnostics, reason: '环境缺少活动工具 API (getActiveTools/setActiveTools)' };
+		}
 		try {
 			const tools = snapshotTools(pi);
 			// Registered tools are not the parent's truth; the final active set decides what a child may keep.
-			const effectiveActive = activeTools
-				?? (typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : tools.map(tool => tool.name));
+			const effectiveActive = activeTools ?? [...pi.getActiveTools()];
 			const pkgRoot = findSubagentsPackageRoot(tools);
 			catalog = loadSubagentCatalog(pkgRoot);
 			const availability = await probeShells();
@@ -254,14 +287,14 @@ export function registerPromptExtension(
 				hostShells: { bash: availability.bash, powershell: availability.powershell },
 				changePiPromptPath,
 				shellPolicyOwnerKey,
+				lock: options.lock,
 			});
 			if (!next) {
-				// The reconciliation lock could not be acquired: shared files are left untouched, and the
-				// last known-good result is kept so a transient lock miss cannot drop the compatibility gate.
+				// The reconciliation lock could not be acquired: shared files are left untouched.
 				const line = 'child-reconciliation-skipped: reconciliation lock unavailable';
 				lastStatus.push(line);
 				diagnostics.push(line);
-				return diagnostics;
+				return { ok: false, diagnostics, reason: 'reconciliation lock unavailable' };
 			}
 			reconciliationResult = next;
 			for (const [name, status] of reconciliationResult.compatibilityStatus) {
@@ -271,12 +304,24 @@ export function registerPromptExtension(
 					diagnostics.push(line);
 				}
 			}
+			if (!next.canSafelyDispatch) {
+				const line = 'child-reconciliation-failed: policy snapshot or settings write failed';
+				lastStatus.push(line);
+				diagnostics.push(line);
+				return {
+					ok: false,
+					diagnostics,
+					reconciliationResult: next,
+					reason: '未能成功原子发布策略快照或配置写入失败',
+				};
+			}
+			return { ok: true, diagnostics, reconciliationResult: next };
 		} catch (error) {
 			const line = `child-reconciliation-error: ${errorSummary(error)}`;
 			lastStatus.push(line);
 			diagnostics.push(line);
+			return { ok: false, diagnostics, reason: line };
 		}
-		return diagnostics;
 	};
 
 	const report = (ctx: ExtensionContext, message: string, error = false) => {
@@ -348,6 +393,20 @@ export function registerPromptExtension(
 		return { next, availability };
 	};
 
+	/** Prune grep/find when their rg/fd backends are unavailable; recheck on each turn. */
+	const pruneUnavailableSearch = (ctx: ExtensionContext): string[] | undefined => {
+		if (!promptExtensionEnabled() || !settings?.config.pruneUnavailableSearchTools) return undefined;
+		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
+		const availability = probeSearchAvailability(probeHost, agentDir);
+		const { next, hidden } = hideUnavailableSearchTools(pi.getActiveTools(), availability);
+		if (hidden.length > 0) {
+			pi.setActiveTools(next);
+			lastShellStatus.push(`search-tools: hid ${hidden.join(', ')}`);
+			for (const name of hidden) warnOnce(ctx, `${name} 的 rg/fd 后端不可用，已对本会话隐藏该工具。`);
+		}
+		return next;
+	};
+
 	pi.on('session_start', async (_event, ctx) => {
 		warned.clear();
 		contributionHashes.clear();
@@ -357,11 +416,13 @@ export function registerPromptExtension(
 		lastShellStatus = [];
 		lastStatus = ['尚未转换提示词'];
 		childSessionActive = false;
+		childPermittedTools = undefined;
 		childShellPolicyOwnerKey = undefined;
 		await ensureLoaded(ctx);
 		if (!promptExtensionEnabled()) return;
 		// Session-local only: shell pruning never writes shared state, so it stays here.
 		await pruneUnavailableShells(ctx);
+		pruneUnavailableSearch(ctx);
 		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
 
@@ -371,6 +432,7 @@ export function registerPromptExtension(
 		contributionHashes.clear();
 		confirmedSubagentToolNames.clear();
 		childSessionActive = false;
+		childPermittedTools = undefined;
 		childShellPolicyOwnerKey = undefined;
 	});
 
@@ -391,30 +453,36 @@ export function registerPromptExtension(
 				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
 			}
 
-			const pruned = await pruneUnavailableShells(ctx, { forChild: childSession });
+			await pruneUnavailableShells(ctx, { forChild: childSession });
+			const searchPruned = pruneUnavailableSearch(ctx);
 			const tools = snapshotTools(pi);
-			const activeTools = pruned?.next
-				?? (typeof pi.getActiveTools === 'function'
-					? [...pi.getActiveTools()] : [...(event.systemPromptOptions?.selectedTools ?? [])]);
+			const hasActiveToolsApi = typeof pi.getActiveTools === 'function';
+			const activeTools = hasActiveToolsApi
+				? (searchPruned ?? [...pi.getActiveTools()])
+				: tools.map(t => t.name);
 
 			// Child session: do not replace role prompt or transform into "You are Pi"; only inject tool compatibility.
 			if (childSession) {
-				const availability = pruned?.availability ?? await probeShells();
+				if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') {
+					childPermittedTools = new Set();
+					lastStatus = ['child-subagent-mode: getActiveTools or setActiveTools API unavailable, fail closed'];
+					return;
+				}
+				const availability = await probeShells();
 				const childCatalog = catalog ?? loadSubagentCatalog(findSubagentsPackageRoot(tools));
 				const agentName = getActiveAgentName(event.systemPrompt);
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
 				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
-				// A valid owner snapshot is authoritative. If no usable snapshot exists, preserve the established
-				// conservative fallback: never add extension tools, and map shell slots only within the agent's
-				// declared capability, the child registry, and the locally available backend set.
+				// A valid owner snapshot is authoritative. Without one, fail closed: a child
+				// cannot infer the parent's active tools from its own registry or allowlist.
 				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);
 				const ceiling = toShellCeiling(snapshot);
 				const parentActiveTools = toParentActiveTools(snapshot);
 
-				// Extension tools first: the shared settings.json only decides which providers the child
-				// can load, so the parent's active tools remain the ceiling when a v2 snapshot is available.
-				// Without that snapshot this remains prune-only and does not invent new extension tools.
+				// The shared settings.json only decides which providers the child can load;
+				// the parent's active tools ceiling applies to builtins and extensions alike.
+				// Without a snapshot, only child-only coordination tools survive.
 				const extensionPruned = reconcileChildExtensionTools({
 					registeredTools: tools,
 					activeTools,
@@ -431,6 +499,7 @@ export function registerPromptExtension(
 					pruneOnly: !childAgent,
 				});
 
+				childPermittedTools = new Set(reconciled);
 				let childActiveTools = activeTools;
 				if (!sameToolList(reconciled, activeTools) && typeof pi.setActiveTools === 'function') {
 					pi.setActiveTools(reconciled);
@@ -449,7 +518,7 @@ export function registerPromptExtension(
 			// the child tool environment follows the final active tools, not the registered registry.
 			// Scope the published ceiling to this parent so parallel sessions sharing one agentDir
 			// cannot overwrite each other's shell policy.
-			shellPolicyOwnerKey = readSessionIdentity(ctx) ?? shellPolicyOwnerKey;
+			shellPolicyOwnerKey = readSessionIdentity(ctx) ?? resolveShellPolicyOwnerKey() ?? shellPolicyOwnerKey ?? `pid-${process.pid}`;
 			const reconciliationStatus = await runReconciliation(activeTools);
 
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
@@ -462,14 +531,20 @@ export function registerPromptExtension(
 				? rewriteSystemPromptTools(event.systemPrompt, nativeTools, { standalone })
 				: { systemPrompt: event.systemPrompt, rewritten: [] };
 
+			const effectiveConfig = hasActiveToolsApi
+				? settings!.config
+				: { ...settings!.config, pruneUnavailableShells: false, pruneUnavailableSearchTools: false };
+
 			const result = transformSystemPrompt({
 				systemPrompt: rewritten.systemPrompt,
 				options: event.systemPromptOptions,
-				tools, activeTools,
-				...settings!,
+				tools,
+				activeTools,
+				config: effectiveConfig,
+				prompts: settings!.prompts,
 				hostOs: hostOs(), today: localDate(),
 			});
-			lastStatus = [...result.diagnostics, ...reconciliationStatus, ...lastShellStatus];
+			lastStatus = [...result.diagnostics, ...reconciliationStatus.diagnostics, ...lastShellStatus];
 			if (nativeAsync) {
 				lastStatus.push(nativeAsync.message);
 				if (!nativeAsync.ok) warnOnce(ctx, nativeAsync.message);
@@ -534,25 +609,132 @@ export function registerPromptExtension(
 			}
 		}
 		if (!promptExtensionEnabled() || !subagentAdaptationEnabled()) return;
+
+		// --- CHILD SESSION EXECUTION-TIME GATE ---
+		if (childSessionActive) {
+			// Step 4.5: Nested execution delegation boundary:
+			// If child exposes subagent and tries to run an execution-type delegation, block it.
+			if (confirmedSubagentToolNames.has(event.toolName) || event.toolName === 'subagent') {
+				const input = (isRecord(event.input) ? event.input : undefined) as Record<string, unknown> | undefined;
+				const action = typeof input?.action === 'string' ? input.action.trim() : undefined;
+				const hasAction = typeof action === 'string' && action.length > 0;
+				const isBlockedScheduleAction = hasAction && BLOCKED_SCHEDULE_ACTIONS.has(action);
+				const isExecution = !hasAction
+					|| isBlockedScheduleAction
+					|| typeof input?.task === 'string'
+					|| typeof input?.workflowScript === 'string'
+					|| typeof input?.workflow === 'string';
+				if (isExecution) {
+					return {
+						block: true,
+						reason: '[change-pi-prompt] 子 Agent 不支持发起到下一级子 Agent 的执行型委派。',
+					};
+				}
+				return;
+			}
+
+			// Child coordination tools are exempted from parent active tools ceiling
+			if (isChildCoordinationTool(event.toolName)) {
+				return;
+			}
+
+			// Non-coordination tools: fail closed if getActiveTools or setActiveTools API is missing
+			if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') {
+				return {
+					block: true,
+					reason: '[change-pi-prompt] 环境缺少 getActiveTools 或 setActiveTools API，无法保证子 Agent 工具安全边界；阻断普通工具调用。',
+				};
+			}
+
+			if (!childPermittedTools || !childPermittedTools.has(event.toolName)) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] 工具 "${event.toolName}" 不在子 Agent 启动时允许的工具集合中。`,
+				};
+			}
+
+			// Re-read parent owner snapshot freshly from disk
+			const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);
+			if (!snapshot || snapshot.version !== 2) {
+				return {
+					block: true,
+					reason: '[change-pi-prompt] 缺少有效的父会话工具授权快照 (version 2)；子 Agent 拒绝执行普通工具。',
+				};
+			}
+
+			if (!snapshot.parentActiveTools.includes(event.toolName)) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] 工具 "${event.toolName}" 已被父会话撤销或未被父会话启用。`,
+				};
+			}
+
+			// Backend availability checks for shells and search tools
+			if (event.toolName === 'bash') {
+				const avail = await probeShells();
+				if (!snapshot.shell.bash || !avail.bash) {
+					return {
+						block: true,
+						reason: '[change-pi-prompt] bash 后端在父会话中被禁用或在本地不可用。',
+					};
+				}
+			} else if (event.toolName === 'powershell') {
+				const avail = await probeShells();
+				if (!snapshot.shell.powershell || !avail.powershell) {
+					return {
+						block: true,
+						reason: '[change-pi-prompt] powershell 后端在父会话中被禁用或在本地不可用。',
+					};
+				}
+			} else if (event.toolName === 'grep' || event.toolName === 'find') {
+				const searchAvail = probeSearchAvailability(probeHost, agentDir);
+				if (!searchAvail[event.toolName]) {
+					return {
+						block: true,
+						reason: `[change-pi-prompt] ${event.toolName} 后端 (rg/fd) 不可用。`,
+					};
+				}
+			}
+
+			return;
+		}
+
+		// --- PARENT SESSION EXECUTION-TIME GATE ---
 		if (confirmedSubagentToolNames.size === 0) {
 			updateConfirmedSubagentTools();
 		}
-		if (!confirmedSubagentToolNames.has(event.toolName)) return;
+		if (!confirmedSubagentToolNames.has(event.toolName) && event.toolName !== 'subagent') return;
 
 		const input = (isRecord(event.input) ? event.input : undefined) as Record<string, unknown> | undefined;
 		if (!input) return;
 
 		// Management action: not an execution call (e.g. action: 'list' | 'status' | 'guide')
 		if (typeof input.action === 'string' && input.action.trim().length > 0) {
+			const action = input.action.trim();
+			if (typeof input.task === 'string' && input.task.trim().length > 0) {
+				return {
+					block: true,
+					reason: '[change-pi-prompt] 参数错误：action 不能与 task 混用。',
+				};
+			}
+			if (input.action !== 'validate' && (input.workflowScript || input.workflowScriptPath || input.workflow)) {
+				return {
+					block: true,
+					reason: '[change-pi-prompt] 参数错误：非 validate action 不能包含 workflow/workflowScript。',
+				};
+			}
+			if (BLOCKED_SCHEDULE_ACTIONS.has(action)) {
+				return {
+					block: true,
+					reason: `[change-pi-prompt] 安全限制：不支持通过 "${action}" 触发或恢复计划任务执行。`,
+				};
+			}
 			return;
 		}
 
 		if (!catalog) {
 			// Read-only: children need the catalog for standalone AST validation but must not reconcile.
 			loadCatalogSnapshot();
-		}
-		if (!reconciliationResult && !childSessionActive) {
-			await runReconciliation();
 		}
 
 		const standalone = isStandalone();
@@ -595,16 +777,43 @@ export function registerPromptExtension(
 			};
 		}
 
-		// Native direct agent: verify required tool providers
-		if (targetAgentName && reconciliationResult) {
-			const compat = reconciliationResult.compatibilityStatus.get(targetAgentName);
+		// Fail closed if active tools API is unavailable
+		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') {
+			return {
+				block: true,
+				reason: '[change-pi-prompt] 环境缺少 getActiveTools 或 setActiveTools API，无法保证子 Agent 工具安全边界；阻断子 Agent 执行。',
+			};
+		}
+
+		// Fresh reconciliation before launch: re-read parent active tools, reconcile, and publish fresh snapshot
+		const preTools = [...pi.getActiveTools()];
+		const recon = await runReconciliation(preTools);
+		if (!recon.ok || !recon.reconciliationResult) {
+			return {
+				block: true,
+				reason: `[change-pi-prompt] 无法完成子 Agent 环境协调：${recon.reason ?? '协调失败'}。`,
+			};
+		}
+
+		// Check if active tools changed during async reconciliation
+		const postTools = [...pi.getActiveTools()];
+		if (!sameToolList(preTools, postTools)) {
+			return {
+				block: true,
+				reason: '[change-pi-prompt] 父会话活动工具集在委派协调期间发生变化；已中止调用，请重试。',
+			};
+		}
+
+		// Native direct agent: verify required tool providers from fresh reconciliation
+		if (targetAgentName) {
+			const compat = recon.reconciliationResult.compatibilityStatus.get(targetAgentName);
 			if (compat && !compat.ok) {
 				return {
 					block: true,
 					reason: `[change-pi-prompt] Agent "${targetAgentName}" requires ${compat.missingTools.join(', ')}, but no child-loadable provider was found for that active tool.`,
 				};
 			}
-			if (reconciliationResult.incompatibleAgents.includes(targetAgentName)) {
+			if (recon.reconciliationResult.incompatibleAgents.includes(targetAgentName)) {
 				return {
 					block: true,
 					reason: `[change-pi-prompt] Agent "${targetAgentName}" has subagentOnlyExtensions disabled in settings.json, preventing child tool environment reconciliation.`,

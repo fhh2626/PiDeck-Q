@@ -7,6 +7,7 @@ import test from "node:test";
 import {
 	mapDeclaredToolsToHostShells,
 	reconcileChildActiveShellTools,
+	reconcileChildExtensionTools,
 	resolveChildShellSlots,
 	resolveEffectiveShellPolicy,
 } from "../childShellPolicy.ts";
@@ -98,6 +99,20 @@ test("a known shell-less child drops ambient shell tools even when their backend
 	});
 
 	assert.deepEqual(active, ["read"]);
+});
+
+test("parent active tools ceiling also limits child builtins, except child-only coordination", () => {
+	const activeTools = ["read", "grep", "find", "ls", "powershell", "webfetch", "contact_supervisor", "structured_output"];
+	const registeredTools = activeTools.map(name => ({ name, sourceInfo: { source: "builtin" } }));
+	assert.deepEqual(reconcileChildExtensionTools({
+		activeTools, registeredTools, parentActiveTools: ["read", "powershell"],
+	}), ["read", "powershell", "contact_supervisor", "structured_output"]);
+	assert.deepEqual(reconcileChildExtensionTools({
+		activeTools, registeredTools, parentActiveTools: ["read", "grep", "find", "ls", "powershell"],
+	}), ["read", "grep", "find", "ls", "powershell", "contact_supervisor", "structured_output"]);
+	assert.deepEqual(reconcileChildExtensionTools({
+		activeTools, registeredTools, parentActiveTools: undefined,
+	}), ["contact_supervisor", "structured_output"], "missing parent snapshot must fail closed");
 });
 
 test("mapDeclaredToolsToHostShells rewrites only declared shell slots", () => {

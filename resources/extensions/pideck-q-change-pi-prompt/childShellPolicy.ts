@@ -17,17 +17,22 @@ import { isPwsh, type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
- * Builtins and pi-subagents child internals are resolved by the child runtime itself;
- * they must not be judged missing just because the parent session has them inactive, and the
- * parent's extension-tool ceiling must never prune them. Shell tools are deliberately absent:
- * they follow the canonical shell policy instead.
+ * Builtins and pi-subagents child internals need no separately loadable provider.
+ * This is not an exemption from the owning parent's active-tool ceiling.
  */
 export const BUILTIN_OR_INTERNAL_CHILD_TOOLS = new Set([
 	'read', 'write', 'edit', 'grep', 'find', 'ls',
 	'subagent', 'contact_supervisor', 'structured_output', 'bg_wait', 'subagent_supervisor',
 ]);
 
-/** Builtin or pi-subagents internal tool that no parent-side ceiling may revoke. */
+/** Child-only coordination tools have no parent-facing equivalent to inherit. */
+const CHILD_INTERNAL_TOOLS = new Set(['contact_supervisor', 'structured_output', 'subagent_supervisor']);
+
+export function isChildCoordinationTool(name: string): boolean {
+	return CHILD_INTERNAL_TOOLS.has(name);
+}
+
+/** Builtin or pi-subagents internal tool that needs no loadable provider. */
 export function isBuiltinOrInternalChildTool(
 	name: string,
 	registeredTools: readonly ToolSnapshot[] = [],
@@ -234,33 +239,21 @@ export function resolveChildShellSlots(options: {
 }
 
 /**
- * Prune extension-provided child tools that the owning parent does not expose.
- *
- * The shared settings.json is a provider *superset*: any session may have registered a tool's
- * provider there. Permission is a separate question answered by the owner-scoped snapshot, so a
- * child keeps only the extension tools this parent actually allows.
- *
- * Deliberately prune-only: a plain extension tool is never added here, because the child's own
- * allowlist stays authoritative. Host-shell names are rewritten only in shared `agentOverrides.tools`.
- *
- * `parentActiveTools` undefined means no version 2 snapshot was available (an older parent, or a
- * missing file); the child then keeps its own list rather than guessing a ceiling.
+ * Prune child tools, including builtins, that the owning parent does not expose.
+ * Shared settings.json is a provider superset, not a permission grant. Only child-only
+ * coordination tools may exceed the parent's active set. Never add tools to the child allowlist.
+ * Shells have additional backend checks in reconcileChildActiveShellTools.
+ * Without a version 2 parent snapshot, fail closed to child-only coordination tools.
  */
 export function reconcileChildExtensionTools(options: {
 	registeredTools: readonly ToolSnapshot[];
 	activeTools: readonly string[];
 	parentActiveTools: readonly string[] | undefined;
 }): string[] {
-	const { registeredTools, activeTools, parentActiveTools } = options;
-	if (!parentActiveTools) return [...activeTools];
+	const { activeTools, parentActiveTools } = options;
+	if (!parentActiveTools) return activeTools.filter(isChildCoordinationTool);
 	const allowed = new Set(parentActiveTools);
-	return activeTools.filter(name => {
-		if (allowed.has(name)) return true;
-		// Builtin and pi-subagents internal tools are provided by the child runtime, never by a parent provider.
-		if (isBuiltinOrInternalChildTool(name, registeredTools)) return true;
-		// Plain extension tool: prune it, but never prune a tool the registry does not know about.
-		return !registeredTools.some(tool => tool.name === name);
-	});
+	return activeTools.filter(name => allowed.has(name) || isChildCoordinationTool(name));
 }
 
 /**

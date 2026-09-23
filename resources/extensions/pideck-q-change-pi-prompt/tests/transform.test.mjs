@@ -36,6 +36,17 @@ test('inactive bash and powershell rows disappear with their shell guidelines', 
   assert.doesNotMatch(result.systemPrompt, /For shell commands|For `bash`/);
   assert.match(result.diagnostics.join('\n'), /shell-tools: pruned/);
 });
+test('inactive grep/find rows are removed without hiding read or ls', () => {
+  const prompt = fixture().replace(
+    'Available tools:\n- read: Read file contents',
+    'Available tools:\n- read: Read file contents\n- grep: Search files\n- find: Discover paths\n- ls: List files',
+  );
+  const result = run(prompt, [tool('read'), tool('grep'), tool('find'), tool('ls')], { activeTools: ['read', 'ls'] });
+  assert.doesNotMatch(result.systemPrompt, /- grep: |- find: /);
+  assert.match(result.systemPrompt, /- read: Read file contents/);
+  assert.match(result.systemPrompt, /- ls: List files/);
+  assert.match(result.diagnostics.join('\n'), /search-tools: pruned/);
+});
 test('active powershell keeps the generic shell guideline and its catalog row', () => {
   const prompt = fixture(coreRules).replace(
     'Available tools:\n- read: Read file contents',
