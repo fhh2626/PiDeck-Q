@@ -43,3 +43,26 @@ export function shouldRenderStreamPlain(input: {
 export function shouldKeepLightOnSettle(textLength: number): boolean {
 	return textLength > SETTLE_FULL_MAX_CHARS;
 }
+
+/** 流式纯文本按 Markdown 空白行分段，同时保留 4K 冻结前缀。 */
+export function splitPlainStreamParagraphs(text: string, frozenEnd: number): {
+	frozen: string[];
+	live: string[];
+} {
+	const safeFrozenEnd = Math.max(0, Math.min(text.length, frozenEnd));
+	const splitParagraphs = (value: string): string[] => value.split(/\n{2,}/);
+	const frozen = safeFrozenEnd === 0
+		? []
+		: splitParagraphs(text.slice(0, safeFrozenEnd)).filter((paragraph) => paragraph.length > 0);
+	const live = splitParagraphs(text.slice(safeFrozenEnd));
+	const boundaryInsideParagraph = safeFrozenEnd > 0 && !/\n{2,}$/.test(text.slice(0, safeFrozenEnd));
+	if (boundaryInsideParagraph && frozen.length > 0) {
+		const continuation = live[0] ?? "";
+		const newlineAt = continuation.indexOf("\n");
+		const sameParagraph = newlineAt === -1 ? continuation : continuation.slice(0, newlineAt);
+		frozen[frozen.length - 1] = (frozen[frozen.length - 1] + sameParagraph).replace(/\n+$/, "");
+		live[0] = newlineAt === -1 ? "" : continuation.slice(newlineAt + 1).replace(/^\n+/, "");
+		if (!live[0]) live.shift();
+	}
+	return { frozen, live };
+}

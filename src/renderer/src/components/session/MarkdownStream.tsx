@@ -7,7 +7,7 @@ import {
 } from "react";
 import { FormulaCopyLayer } from "./FormulaCopyLayer";
 import { useSmoothStream } from "../../utils/useSmoothStream";
-import { shouldKeepLightOnSettle } from "./markdownStreamPolicy";
+import { shouldKeepLightOnSettle, splitPlainStreamParagraphs } from "./markdownStreamPolicy";
 import type { MarkdownStreamProps } from "./MarkdownStreamProps";
 
 // 兼容既有阈值导出；流式现在始终走分段纯文本，不再同步加载 Markdown 引擎。
@@ -61,10 +61,19 @@ const PlainStreamSplit = memo(function PlainStreamSplit(props: { text: string })
 		frozenText = text.slice(0, split);
 		frozenCacheRef.current = { split, text: frozenText };
 	}
+	const paragraphs = splitPlainStreamParagraphs(frozenText + text.slice(split), frozenText.length);
+	const rendered = [
+		...paragraphs.frozen.map((paragraph) => ({ frozen: paragraph, live: "" })),
+		...paragraphs.live.map((paragraph) => ({ frozen: "", live: paragraph })),
+	];
 	return (
-		<div className="whitespace-pre-wrap break-words">
-			{split > 0 && <span data-md-plain-frozen="1">{frozenText}</span>}
-			<span data-md-plain-live="1">{text.slice(split)}</span>
+		<div data-md-plain-stream="1">
+			{rendered.map((paragraph, index) => (
+				<p key={index} className="whitespace-pre-wrap break-words">
+					{paragraph.frozen && <span data-md-plain-frozen="1">{paragraph.frozen}</span>}
+					<span data-md-plain-live="1">{paragraph.live}</span>
+				</p>
+			))}
 		</div>
 	);
 });
