@@ -7,8 +7,7 @@ import test from "node:test";
  *
  * 与思考强度不同，安全级别不是 pi 的生成参数：
  * - 切换 = 写 security-policy.json 策略快照（SecurityStore.writeSnapshot）；
- * - pi-deck-security-gate 扩展在每次工具调用时按 mtime 重读快照（2s throttle，见
- *   resources/extensions/pi-deck-security-gate.ts loadSnapshot），即「即时生效」；
+ * - pi-deck-security-gate 扩展在每次工具调用时重新读取并验证快照，即「下一次工具调用生效」；
  * - 因此没有「下一轮才生效」的延迟语义，UI 只需放开运行中禁用，无需 pending 指示。
  */
 test("契约: SecurityLevelMenu 运行中不再置灰（仅 Agent 启动中禁用）", () => {

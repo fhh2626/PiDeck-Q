@@ -21,10 +21,6 @@ export function fromPackage(tool: ToolSnapshot, packageName: string): boolean {
 	return path.includes(`/node_modules/${packageName}/`);
 }
 
-export function isPwsh(tool: ToolSnapshot): boolean {
-	return tool.name === 'bash' && fromPackage(tool, '@99percentpeople/pi-pwsh-adapter');
-}
-
 export function isBundledSubagents(tool: ToolSnapshot): boolean {
 	const source = (tool.sourceInfo?.source ?? '').toLowerCase();
 	const path = (tool.sourceInfo?.path ?? '').replace(/\\/g, '/').toLowerCase();
@@ -62,7 +58,6 @@ export function normalizeRule(text: string): string {
 
 /** Only claim built-ins whose replacement is emitted; preserve all other sources. */
 function claimed(tool: ToolSnapshot, config: Config): boolean {
-	if (config.pwsh && isPwsh(tool)) return true;
 	// Native default-mode guidelines contain execution safeguards absent from its short description.
 	// Preserve them; custom mode omits this metadata and appends safety in the description instead.
 	if (isSubagent(tool)) return false;

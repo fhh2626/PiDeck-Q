@@ -15,11 +15,11 @@
  *
  * 动作语义（与主进程 policy.ts 保持一致）：
  * - 工具动作：level.toolActions[tool] ?? level.defaultAction
- * - shell 工具按真实执行后端选择 Bash / PowerShell 策略；child 兼容槽即使公开名为 bash，
- *   只要真实后端是 PowerShell，就使用 powershell action 与 denyPowerShellPatterns。
+ * - shell 工具按公开工具名选择策略：`bash` 使用 Bash 规则，`powershell` 使用 PowerShell 规则。
  * - 文件访问：denyDirs 黑名单 > 敏感文件保护 > pathPolicy 目录边界，命中即拒绝。
  * - 只管控受支持的工具名（read/write/edit/bash/powershell/grep/find/ls/ask_question），
- *   其它自定义工具（web_search/todo 等）不受影响，避免破坏用户其它扩展。
+ *   其它自定义工具（web_search、webfetch、subagent、MCP 等）不受影响。
+ *   目录边界只约束文件类工具，不能限制获准执行的 shell 命令。
  */
 
 import type {
@@ -62,7 +62,6 @@ type SecurityPolicySnapshot = {
 // ── 常量 ──
 
 const SCHEMA_VERSION = 1;
-const PWSH_ADAPTER_PACKAGE = "@99percentpeople/pi-pwsh-adapter";
 /** 受管控的工具名（其它自定义工具一律放行） */
 const MANAGED_TOOLS = new Set([
 	"read",
@@ -89,6 +88,8 @@ const DEFAULT_POWERSHELL_DENY_PATTERNS = [
 	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
 	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
 	"\\byarn\\s+(add|install|remove|publish)\\b",
+	"\\b(winget|choco|scoop|dotnet|cargo|go)\\s+(install|add|remove|uninstall|update|upgrade|publish)\\b",
+	"\\b(cmd|pwsh|powershell)(?:\\.exe)?\\s+.*(?:\\/c|\\/k|-command|-encodedcommand)\\b",
 ];
 /** 敏感路径模式（与主进程 DEFAULT_SENSITIVE_PATH_PATTERNS 对齐） */
 const SENSITIVE_PATH_PATTERNS = [
@@ -386,25 +387,6 @@ function shellAction(
 	return "ask";
 }
 
-/**
- * Resolve the shell policy by execution backend rather than the public tool name.
- * pi-pwsh-adapter occupies the public `bash` name while executing PowerShell.
- */
-export function resolveSecurityShellTool(pi: ExtensionAPI, tool: ShellTool): ShellTool {
-	if (tool !== "bash" || typeof pi.getAllTools !== "function") return tool;
-	const bash = pi.getAllTools().find((candidate) => candidate.name === "bash");
-	if (!bash) return tool;
-	const source = bash.sourceInfo?.source ?? "";
-	if (source === `npm:${PWSH_ADAPTER_PACKAGE}` || source.startsWith(`npm:${PWSH_ADAPTER_PACKAGE}@`)) {
-		return "powershell";
-	}
-	const providerPath = (bash.sourceInfo?.path ?? "").replace(/\\/g, "/");
-	if (providerPath.includes(`/node_modules/${PWSH_ADAPTER_PACKAGE}/`)) {
-		return "powershell";
-	}
-	return tool;
-}
-
 /** 计算文件工具最终动作：路径边界优先，其次工具动作 */
 function fileToolAction(
 	level: SecurityLevelConfig,
@@ -542,7 +524,7 @@ export default async function securityGateExtension(pi: ExtensionAPI) {
 
 		if (tool === "bash" || tool === "powershell") {
 			const command = typeof input.command === "string" ? input.command : "";
-			semanticShellTool = resolveSecurityShellTool(pi, tool);
+			semanticShellTool = tool;
 			action = shellAction(level, semanticShellTool, command);
 		} else {
 			const filePath = extractFilePath(tool, input);

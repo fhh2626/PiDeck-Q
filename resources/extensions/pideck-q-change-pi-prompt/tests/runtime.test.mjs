@@ -240,13 +240,6 @@ test('child retains grep/find when parent enables them and both backends exist',
   exists: path => path.endsWith('powershell.exe') || path === 'D:\\tools\\rg.exe' || path === 'D:\\tools\\fd.exe',
 }));
 
-test('pwsh-adapter bash is not hidden when Git Bash is missing', () => harness(async ({ handlers, ctx, pi }) => {
-  pi._active = ['bash'];
-  pi.getAllTools = () => [{ name: 'bash', sourceInfo: { source: 'npm:@99percentpeople/pi-pwsh-adapter' } }];
-  await handlers.get('session_start')({}, ctx);
-  assert.deepEqual(pi.getActiveTools(), ['bash']);
-}));
-
 test('a generic parent customPrompt is not treated as a child session', () => {
   assert.equal(isChildSession('You are a custom parent.', { customPrompt: 'You are a custom parent.' }), false);
   assert.equal(isChildSession('<active_agent name="worker"/>\n\nYou are worker.', { customPrompt: 'worker' }), true);

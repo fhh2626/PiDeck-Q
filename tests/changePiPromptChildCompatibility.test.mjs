@@ -320,46 +320,6 @@ test("child prompt mode preserves original role text and injects idempotent chil
 	assert.ok(!/read\/grep|edit\/write/.test(injectedNoShell));
 });
 
-// 10. pwsh-adapter bash + powershell 独立判断 bug 修复
-test("transformSystemPrompt handles both pwsh-adapter bash and powershell tool independently", () => {
-	const prompt = `You are Pi, an AI assistant.
-
-Available tools:
-- bash: Execute bash commands
-- powershell: Execute powershell commands
-
-Guidelines:
-- Be concise
-- Use bash for file operations like ls, rg, find
-
-Pi documentation (online):
-- Main documentation: https://...
-- Additional docs: https://...
-- Examples: https://...
-`;
-
-	const tools = [
-		{ name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter.js" } },
-		{ name: "powershell", sourceInfo: { source: "builtin" } },
-	];
-	const activeTools = ["bash", "powershell"];
-
-	const input = {
-		systemPrompt: prompt,
-		tools,
-		activeTools,
-		config: DEFAULT_CONFIG,
-		prompts: DEFAULT_PROMPTS,
-		hostOs: "Windows 11",
-		today: "2026-09-10",
-	};
-
-	const result = transformSystemPrompt(input);
-	// 必须同时包含 pwsh 的解释 与 powershell 的 generic shell 解释
-	assert.ok(result.systemPrompt.includes("Invoke Bash explicitly for Bash-only syntax"), "Must include pwsh guidance");
-	assert.ok(result.systemPrompt.includes("follow the runtime and syntax stated in the active tool description"), "Must include shell guidance for powershell");
-});
-
 // 11. settings.json non-destructive reconciliation
 test("reconcileChildEnvironments preserves user settings and updates subagentOnlyExtensions cleanly", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-reconcile-"));
@@ -461,10 +421,6 @@ test("resolveToolProviderExtension rejects builtin or relative fake paths", () =
 const WORKER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"];
 const REVIEWER_TOOLS = ["read", "grep", "find", "ls", "contact_supervisor"];
 
-function pwshAdapterTool(path) {
-	return { name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path } };
-}
-
 /** Registered-tool snapshots for child-side canonicalization calls. */
 function registered(...names) {
 	return names.map((name) => ({ name, sourceInfo: { source: "builtin" } }));
@@ -508,38 +464,6 @@ test("Windows PowerShell-only parent does not rewrite a bash-only child into pow
 	const block = buildChildToolEnvironmentBlock(childActive);
 	assert.ok(block.includes("- No shell tool is available; use only the non-shell tools that are active in this child."));
 	assert.ok(block.includes("- Available tools below are authoritative for this runtime."));
-});
-
-// 15. pwsh-adapter 回归：adapter 占着 bash 名字也不等于真实 bash 后端
-test("pwsh-adapter bash slot never keeps bash and never blocks the canonical powershell", () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-pwsh-adapter-"));
-	try {
-		const adapterPath = join(tempDir, "pwsh-adapter.ts");
-		writeFileSync(adapterPath, "// pwsh adapter", "utf8");
-
-		const parentTools = [
-			{ name: "read", sourceInfo: { source: "builtin" } },
-			pwshAdapterTool(adapterPath),
-			{ name: "powershell", sourceInfo: { source: "builtin" } },
-		];
-		const parentActiveTools = ["read", "powershell"];
-
-		const policy = resolveEffectiveShellPolicy({
-			platform: "win32",
-			availability: { bash: false, powershell: true },
-			parentTools,
-			parentActiveTools,
-		});
-		assert.equal(policy.bash, false, "a pwsh adapter must not make the child bash slot active");
-		assert.equal(policy.powershell, true);
-
-		const slots = resolveChildShellSlots({ platform: "win32", policy, declaredTools: WORKER_TOOLS });
-		assert.equal(slots.bash, false);
-		assert.equal(slots.powershell, false, "a bash-only agent must not receive undeclared powershell");
-		assert.deepEqual(slots.providerPaths, [], "the adapter must not be injected for the bash slot");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
 });
 
 // 16. 真实 Git Bash + PowerShell 共存
@@ -788,9 +712,6 @@ test("reconcileChildEnvironments does not rewrite bash-only agents on a PowerShe
 			assert.ok(Array.isArray(override?.tools), `${name} must receive a host-shell tools override`);
 			assert.equal(override.tools.includes("bash"), false, `${name} must not keep bash without a bash backend`);
 			assert.equal(override.tools.includes("powershell"), true, `${name} must allow powershell on this host`);
-			for (const entry of override?.subagentOnlyExtensions ?? []) {
-				assert.equal(/pi-pwsh-adapter/.test(entry), false, `${name} must not keep a pwsh-adapter provider`);
-			}
 		}
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -1039,23 +960,6 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
-});
-
-// 13. pwsh-adapter 回归：即使 Git Bash 真的存在，adapter 占着 bash 名字也不能把 bash 重新加回来
-test("a pwsh-adapter bash slot is never re-added even when a real bash backend exists", () => {
-	const childActive = reconcileChildActiveShellTools({
-		platform: "win32",
-		availability: { bash: true, powershell: true },
-		registeredTools: [
-			{ name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter.ts" } },
-			{ name: "powershell", sourceInfo: { source: "builtin" } },
-		],
-		activeTools: WORKER_TOOLS,
-		wantsShell: true,
-		ceiling: { bash: false, powershell: true },
-	});
-	assert.equal(childActive.includes("bash"), false, "adapter-occupied bash must never be treated as a real backend");
-	assert.equal(childActive.includes("powershell"), false, "powershell must not be invented for a bash-only allowlist");
 });
 
 // 14. parent shell ceiling：parent 不开的 shell，child 不能因为本机后端存在而自己加回来

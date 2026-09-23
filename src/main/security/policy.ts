@@ -43,6 +43,8 @@ const DEFAULT_DENY_POWERSHELL_PATTERNS: string[] = [
 	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
 	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
 	"\\byarn\\s+(add|install|remove|publish)\\b",
+	"\\b(winget|choco|scoop|dotnet|cargo|go)\\s+(install|add|remove|uninstall|update|upgrade|publish)\\b",
+	"\\b(cmd|pwsh|powershell)(?:\\.exe)?\\s+.*(?:\\/c|\\/k|-command|-encodedcommand)\\b",
 ];
 
 export type SecurityPathFlavor = "win32" | "posix";
@@ -389,7 +391,7 @@ export function matchPowerShellDenyPatterns(
 	return null;
 }
 
-/** 求值文件访问动作：黑名单/敏感文件 → deny；目录边界外的写 → deny（读放行降级）；否则 null 由工具动作决定 */
+/** 求值文件访问动作：黑名单、敏感文件或目录边界外的访问均拒绝；否则 null，由工具动作决定。 */
 export function evaluatePathAction(
 	level: SecurityLevelConfig,
 	filePath: string,

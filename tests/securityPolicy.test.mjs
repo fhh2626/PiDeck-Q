@@ -203,6 +203,9 @@ test("matchPowerShellDenyPatterns: detects dangerous PowerShell commands per lev
 	assert.ok(matchPowerShellDenyPatterns(strict, "npm install foo"));
 	assert.ok(matchPowerShellDenyPatterns(strict, "pnpm add foo"));
 	assert.ok(matchPowerShellDenyPatterns(strict, "yarn add foo"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "git restore --staged file.ts"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "winget install Git.Git"));
+	assert.ok(matchPowerShellDenyPatterns(strict, "pwsh -Command Remove-Item foo"));
 
 	// 安全读取命令不命中
 	assert.equal(matchPowerShellDenyPatterns(strict, "Get-Content ./a.txt"), null);

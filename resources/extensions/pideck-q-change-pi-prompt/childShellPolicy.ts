@@ -2,8 +2,7 @@
  * Child tool policy: prune only. Never invent a shell name the child did not already have.
  *
  * Registered tools (`getAllTools`) are not the same fact as the parent's final active tools
- * (`getActiveTools`). A shell the parent already hid, or a pwsh adapter that only *claims*
- * the `bash` name, must not leak into a child as a real bash slot. Child allowlists stay
+ * (`getActiveTools`). A shell the parent already hid must not leak into a child. Child allowlists stay
  * authoritative: this module hides unavailable/unauthorized shells and never rewrites `bash`
  * into `powershell`.
  *
@@ -13,7 +12,7 @@
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { isPwsh, type ToolSnapshot } from './contributions.ts';
+import { type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
@@ -193,8 +192,7 @@ function injectableProviderPath(tool: ToolSnapshot | undefined): string | undefi
 }
 
 /**
- * Decide the parent's real shell backends. A tool name alone never establishes a backend:
- * the pwsh adapter exposes `bash` while running PowerShell, and that is not a bash backend.
+ * Decide the parent's real shell backends. A tool name alone never establishes a backend.
  */
 export function resolveEffectiveShellPolicy(options: {
 	platform: NodeJS.Platform;
@@ -202,15 +200,12 @@ export function resolveEffectiveShellPolicy(options: {
 	parentTools: readonly ToolSnapshot[];
 	parentActiveTools: readonly string[];
 }): EffectiveShellPolicy {
-	const { platform, availability, parentTools, parentActiveTools } = options;
+	const { availability, parentTools, parentActiveTools } = options;
 	const active = new Set(parentActiveTools);
 	const bashTool = parentTools.find(tool => tool.name === 'bash');
 	const powerShellTool = parentTools.find(tool => tool.name === 'powershell');
 
-	// The adapter squats on `bash`. It must not make the child's bash slot look real, and it is
-	// never injected into shared child settings (that would override another session's real Bash).
-	const adapterOccupiesBash = platform === 'win32' && !!bashTool && isPwsh(bashTool);
-	const bash = availability.bash && active.has('bash') && !adapterOccupiesBash;
+	const bash = availability.bash && active.has('bash');
 
 	const nativePowerShellProviderPath = injectableProviderPath(powerShellTool);
 	const nativePowerShellLoadable = isBuiltinTool(powerShellTool) || !!nativePowerShellProviderPath;
@@ -304,7 +299,7 @@ export function reconcileChildActiveShellTools(options: {
 		if (ceiling && ceiling[name] === false) return false;
 		const tool = registeredTools.find(candidate => candidate.name === name);
 		if (!tool) return false;
-		return !(name === 'bash' && isPwsh(tool));
+		return !!tool;
 	};
 
 	const prune = (): string[] => {

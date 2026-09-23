@@ -296,36 +296,6 @@ function asStringArray(value: unknown): string[] | undefined {
 	return value.filter((item): item is string => typeof item === 'string');
 }
 
-const PWSH_ADAPTER_PACKAGE = '@99percentpeople/pi-pwsh-adapter';
-
-/**
- * Old change-pi-prompt versions injected pi-pwsh-adapter into native child extension lists.
- * The adapter owns the same public `bash` name as real Bash, so a shared provider superset can
- * make one session's stale adapter override another session's Bash. Only paths already recorded
- * in our managed-state file are migration candidates; unmanaged user paths remain untouched.
- */
-export function isPwshAdapterProviderPath(providerPath: string): boolean {
-	const normalized = providerPath.replace(/\\/g, '/');
-	if (normalized.includes(`/node_modules/${PWSH_ADAPTER_PACKAGE}/`)) return true;
-
-	let current = dirname(providerPath);
-	for (let depth = 0; depth < 8; depth++) {
-		try {
-			const packageJsonPath = join(current, 'package.json');
-			if (existsSync(packageJsonPath)) {
-				const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-				if (isRecord(parsed) && parsed.name === PWSH_ADAPTER_PACKAGE) return true;
-			}
-		} catch {
-			// Keep walking: malformed/unreadable package metadata must not break reconciliation.
-		}
-		const parent = dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return false;
-}
-
 /**
  * Cross-process lock guarding reconciliation's read-merge-write of shared files.
  *
@@ -497,9 +467,6 @@ function reconcileChildEnvironmentsLocked(options: {
 	const previousManagedPaths = new Set(previousState.managedPaths);
 	const previousManagedTools = previousState.managedTools;
 	const nextManagedTools: Record<string, string[]> = { ...previousManagedTools };
-	const obsoleteManagedPwshAdapterPaths = new Set(
-		[...previousManagedPaths].filter(isPwshAdapterProviderPath),
-	);
 	/** Managed paths still worth keeping: the union of previous and newly discovered ones. */
 	const nextManagedPaths = new Set<string>();
 	if (changePiPromptPath && existsSync(changePiPromptPath)) {
@@ -540,29 +507,6 @@ function reconcileChildEnvironmentsLocked(options: {
 	}
 
 	let settingsDirty = false;
-	let migrationSettingsDirty = false;
-
-	// Old versions managed pi-pwsh-adapter as a child provider. Remove only paths that are both
-	// in our managed state and identifiable as that package. If settings cannot be safely rewritten,
-	// keep managed ownership so a later successful reconciliation can retry instead of treating the
-	// stale adapter as user-owned.
-	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0) {
-		const subagents = isRecord(settingsObj.subagents) ? settingsObj.subagents : undefined;
-		const overrides = subagents && isRecord(subagents.agentOverrides) ? subagents.agentOverrides : undefined;
-		if (overrides) {
-			for (const override of Object.values(overrides)) {
-				if (!isRecord(override) || !Array.isArray(override.subagentOnlyExtensions)) continue;
-				const existing = (override.subagentOnlyExtensions as unknown[])
-					.filter((p): p is string => typeof p === 'string');
-				const filtered = existing.filter(p => !obsoleteManagedPwshAdapterPaths.has(p));
-				if (filtered.length !== existing.length) {
-					override.subagentOnlyExtensions = filtered;
-					settingsDirty = true;
-					migrationSettingsDirty = true;
-				}
-			}
-		}
-	}
 
 	if (catalog) {
 		for (const [name, agent] of catalog.agents.entries()) {
@@ -635,7 +579,6 @@ function reconcileChildEnvironmentsLocked(options: {
 			const userCustomPaths = existingList.filter(p => !previousManagedPaths.has(p));
 			const survivingManagedPaths = existingList.filter(p => {
 				if (!previousManagedPaths.has(p)) return false;
-				if (obsoleteManagedPwshAdapterPaths.has(p)) return false;
 				return nextManagedPaths.has(p) || existsSync(p);
 			});
 			const mergedList = [...new Set([...userCustomPaths, ...survivingManagedPaths, ...agentExtensions])];
@@ -694,14 +637,6 @@ function reconcileChildEnvironmentsLocked(options: {
 		}
 	} else if (!canWriteSettings && settingsDirty) {
 		settingsWriteSucceeded = false;
-	}
-
-	// Drop obsolete adapter ownership only after its settings migration no longer needs a write,
-	// or after that write actually succeeded. Otherwise a failed migration could make the next run
-	// misclassify a stale on-disk adapter as a user-owned path and preserve it forever.
-	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0
-		&& (!migrationSettingsDirty || settingsWriteSucceeded)) {
-		for (const path of obsoleteManagedPwshAdapterPaths) nextManagedPaths.delete(path);
 	}
 
 	// Persist managed paths state: the superset, not just what this session used.

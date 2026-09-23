@@ -16,7 +16,7 @@ import {
 	validateStandaloneWorkflowScript,
 	type Settings,
 } from './config.ts';
-import { isRecord, isSubagent, isPwsh, type ToolSnapshot } from './contributions.ts';
+import { isRecord, isSubagent, type ToolSnapshot } from './contributions.ts';
 import {
 	getActiveAgentName,
 	isChildCoordinationTool,
@@ -379,11 +379,7 @@ export function registerPromptExtension(
 		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
 		const availability = await probeShells();
 		const active = [...pi.getActiveTools()];
-		const bashTool = snapshotTools(pi).find(tool => tool.name === 'bash');
-		const { next, hidden } = hideUnavailableShellTools(active, availability, {
-			// A parent-session pwsh adapter still works without Git Bash; do not hide that slot.
-			keepBash: !!bashTool && isPwsh(bashTool),
-		});
+		const { next, hidden } = hideUnavailableShellTools(active, availability);
 		if (hidden.length === 0) return { next, availability };
 		pi.setActiveTools(next);
 		lastShellStatus.push(`shell-tools: hid ${hidden.join(', ')}`);
@@ -550,7 +546,7 @@ export function registerPromptExtension(
 				if (!nativeAsync.ok) warnOnce(ctx, nativeAsync.message);
 			}
 			if (rewritten.rewritten.length) lastStatus.push(`rewrote upstream async default in: ${rewritten.rewritten.join(', ')}`);
-			for (const tool of tools.filter(tool => activeTools.includes(tool.name) && (isPwsh(tool) || isSubagent(tool)))) {
+			for (const tool of tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool))) {
 				const hash = createHash('sha256').update(JSON.stringify(tool.promptGuidelines ?? [])).digest('hex').slice(0, 12);
 				const previous = contributionHashes.get(tool.name);
 				if (previous && previous !== hash) warnOnce(ctx, `${tool.name} 的上游指南在本会话内发生变化；按当前来源规则处理，请检查替代文案。`);
