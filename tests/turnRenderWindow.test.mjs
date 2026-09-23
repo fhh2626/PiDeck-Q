@@ -57,19 +57,14 @@ test("sliceLastAgentRuns returns same reference when under the limit", () => {
   assert.equal(windowing.sliceLastAgentRuns(items, 10), items);
 });
 
-test("sliceLastAgentRuns cuts by item budget without splitting a run", () => {
-  // 尾部两个大 run（各 150 条）+ 一个小 run：轮数上限 3 不够裁，
-  // 条目预算 200 把最老的大 run 完整排除（不切碎 run 边界）。
+test("sliceLastAgentRuns counts each run once regardless of nested tool calls", () => {
   const items = [
     heavyRun("r1", 150),
     heavyRun("r2", 150),
     runs("r3")[0],
   ];
   const sliced = windowing.sliceLastAgentRuns(items, 3, 200);
-  assert.deepEqual(
-    sliced.map((item) => item.id),
-    ["r2", "r3"],
-  );
+  assert.equal(sliced, items);
 });
 
 test("sliceLastAgentRuns item budget keeps only trailing lightweight runs", () => {
@@ -99,11 +94,11 @@ test("selectTimelineTurnWindow returns same reference when under the window", ()
   assert.equal(windowing.selectTimelineTurnWindow(items, 15), items);
 });
 
-test("resolveTimelineTurnWindow reports an item-budget truncation", () => {
+test("resolveTimelineTurnWindow ignores nested tool-call size", () => {
   const items = [heavyRun("r1", 150), heavyRun("r2", 150)];
   const resolved = windowing.resolveTimelineTurnWindow(items, 15, 200);
-  assert.equal(resolved.windowActive, true);
-  assert.deepEqual(resolved.displayItems.map((item) => item.id), ["r2"]);
+  assert.equal(resolved.windowActive, false);
+  assert.equal(resolved.displayItems, items);
 });
 
 test("resolveTimelineTurnWindow reveals the next run after the item budget grows", () => {

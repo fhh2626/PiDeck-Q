@@ -28,7 +28,7 @@ export function countAgentRunItems(items: ReadonlyArray<{ kind: string }>): numb
 /**
  * 从尾部保留最多 maxTurns 个 agent-run，并带上从首个保留 run 起的全部条目
  * （run 之间的 system/compaction 等附属消息一并保留）。
- * maxItems（可选）：展示条目总预算（run 按内部 items 数计，普通条目按 1 计），
+ * maxItems（可选）：展示条目总预算（每个 agent-run 固定计 1，普通条目也计 1），
  * 超预算时同样从该处截断 —— 两者都保证不切碎 run（当前 run 完整保留）。
  * 不足上限时原样返回（引用不变，便于 memo）。
  */
@@ -51,10 +51,9 @@ export function sliceLastAgentRuns<T extends { kind: string } & { items?: readon
 			continue;
 		}
 		runs += 1;
-		// run 的 DOM 规模由其内部展示条目（思考/工具组/消息）决定，按 items.length 计重；
-		// 空 items 的 run（理论边界）至少计 1，避免权重为 0 导致预算失效。
-		// 预算检查先于轮数检查：超预算时当前 run 也排除（cutFrom），轮数上限才完整保留。
-		weight += Array.isArray(item.items) ? Math.max(1, item.items.length) : 1;
+		// 一个 agent-run 在时间线上是一个顶层条目。工具组展开只改变组内 DOM，
+		// 不能改变历史窗口边界，因此内部工具调用不参与条目预算。
+		weight += 1;
 		if (maxItems !== undefined && weight > maxItems) {
 			return cutFrom(items, index);
 		}
