@@ -92,8 +92,19 @@ export function selectTimelineTurnWindow<T extends { kind: string } & { items?: 
 	windowTurns: number,
 	maxItems?: number,
 ): T[] {
-	if (!shouldWindowTimelineTurns(countAgentRunItems(items), windowTurns)) {
-		return items as T[];
-	}
-	return sliceLastAgentRuns(items, windowTurns, maxItems);
+	return resolveTimelineTurnWindow(items, windowTurns, maxItems).displayItems;
+}
+
+/** 同时返回实际渲染内容和「是否仍有更早内容被隐藏」。
+ * 轮数超限与条目预算超限都会让 windowActive 为真，供「显示更早」按钮使用。 */
+export function resolveTimelineTurnWindow<T extends { kind: string } & { items?: readonly unknown[] }>(
+	items: readonly T[],
+	windowTurns: number,
+	maxItems?: number,
+): { displayItems: T[]; windowActive: boolean } {
+	const displayItems = sliceLastAgentRuns(items, windowTurns, maxItems);
+	return {
+		displayItems,
+		windowActive: displayItems.length < items.length,
+	};
 }

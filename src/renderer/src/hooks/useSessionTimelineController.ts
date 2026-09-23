@@ -30,6 +30,7 @@ import { t } from "../i18n";
 import { showNotice } from "../utils/notice";
 import type { MessageScrollerScrollApi } from "../components/agents/message-scroller";
 import {
+  TIMELINE_SCROLLED_MAX_ITEMS,
   TIMELINE_SCROLLED_TURN_LIMIT,
   TIMELINE_WINDOW_EXPAND_STEP,
 } from "../components/session/timeline/turnRenderWindow";
@@ -630,6 +631,7 @@ export function useSessionTimelineController(options: {
   // 贴底时渲染层固定用 3 轮小窗口；上滚看历史用此窗口（初始 15 轮，
   // 「显示更早」按钮逐步扩大）。回底 = 新的浏览周期，窗口重置回基础大小。
   const [scrolledWindowTurns, setScrolledWindowTurns] = useState(TIMELINE_SCROLLED_TURN_LIMIT);
+  const [scrolledWindowItems, setScrolledWindowItems] = useState(TIMELINE_SCROLLED_MAX_ITEMS);
   const expandWindow = useCallback(() => {
     // 跟底状态（内容短于视口、按钮可见）下点击「显示更早」：先解锁跟随，
     // 否则 turnWindowTurns 恒取贴底窗口 3 轮，扩大 scrolledWindowTurns 不生效，
@@ -640,9 +642,12 @@ export function useSessionTimelineController(options: {
       setShowScrollToBottom(true);
     }
     setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
+    setScrolledWindowItems((prev) => prev + TIMELINE_SCROLLED_MAX_ITEMS);
   }, []);
   useEffect(() => {
-    if (autoScroll) setScrolledWindowTurns(TIMELINE_SCROLLED_TURN_LIMIT);
+    if (!autoScroll) return;
+    setScrolledWindowTurns(TIMELINE_SCROLLED_TURN_LIMIT);
+    setScrolledWindowItems(TIMELINE_SCROLLED_MAX_ITEMS);
   }, [autoScroll]);
 
   const clearHighlightTimers = useCallback(() => {
@@ -1071,6 +1076,7 @@ export function useSessionTimelineController(options: {
     setAutoScrollFromScroller,
     scrollerScrollApiRef,
     scrolledWindowTurns,
+    scrolledWindowItems,
     expandWindow,
     captureHistoryMutationRefresh: captureHistoryMutationRefreshCallback,
     refreshHistoryAfterMutation: refreshHistoryAfterMutationCallback,

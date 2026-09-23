@@ -99,9 +99,31 @@ test("selectTimelineTurnWindow returns same reference when under the window", ()
   assert.equal(windowing.selectTimelineTurnWindow(items, 15), items);
 });
 
+test("resolveTimelineTurnWindow reports an item-budget truncation", () => {
+  const items = [heavyRun("r1", 150), heavyRun("r2", 150)];
+  const resolved = windowing.resolveTimelineTurnWindow(items, 15, 200);
+  assert.equal(resolved.windowActive, true);
+  assert.deepEqual(resolved.displayItems.map((item) => item.id), ["r2"]);
+});
+
+test("resolveTimelineTurnWindow reveals the next run after the item budget grows", () => {
+  const items = [heavyRun("r1", 150), heavyRun("r2", 150)];
+  const expanded = windowing.resolveTimelineTurnWindow(items, 15, 400);
+  assert.equal(expanded.windowActive, false);
+  assert.deepEqual(expanded.displayItems.map((item) => item.id), ["r1", "r2"]);
+});
+
+test("resolveTimelineTurnWindow stays inactive when nothing is hidden", () => {
+  const items = runs("r1", "r2");
+  const resolved = windowing.resolveTimelineTurnWindow(items, 15, 200);
+  assert.equal(resolved.windowActive, false);
+  assert.equal(resolved.displayItems, items);
+});
+
 test("timeline wires the turn mount window helper", () => {
   const source = readFileSync("src/renderer/src/components/session/SessionMessageTimeline.tsx", "utf8");
-  assert.match(source, /selectTimelineTurnWindow/);
+  assert.match(source, /resolveTimelineTurnWindow/);
+  assert.match(source, /controller\.scrolledWindowItems/);
   assert.match(source, /TIMELINE_MOUNTED_TURN_LIMIT/);
   assert.match(source, /TIMELINE_SCROLLED_MAX_ITEMS/);
   assert.match(source, /displayRuns\.map/);
