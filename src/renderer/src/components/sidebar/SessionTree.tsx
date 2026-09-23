@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from "react";
-import { ChevronDown, Ellipsis, HatGlasses, Trash2 } from "lucide-react";
+import { ChevronDown, Ellipsis, HatGlasses, Square, Trash2 } from "lucide-react";
 import type { AgentTab, Project, SessionRecord, SessionSummary } from "../../../../shared/types";
 import { collectDisplayedSessionIds, filterAgentsForSidebarDisplay, getProjectAgentSessionDisplay, sessionStatusDotClass, type ProjectChildItem } from "../../agentListDisplay";
 import { sessionRecordToSummary } from "../../atoms";
@@ -280,6 +280,21 @@ export function SessionTree(props: {
             type="button"
             variant="ghost"
             size="icon-xs"
+            className={cn(rowMoreActionsClass, "right-8")}
+            aria-label={t("sidebar.closeAgent")}
+            title={t("sidebar.closeAgent")}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void props.actions.agents.close(child.agent);
+            }}
+          >
+            <Square size={14} aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
             className={rowMoreMenuActiveClass(
               props.controller.menu?.kind === "agent" && props.controller.menu.agentId === child.agent.id,
             )}
@@ -328,6 +343,26 @@ export function SessionTree(props: {
           </div></div>
         </button>
         </PathTooltip>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className={cn(rowMoreActionsClass, "right-8")}
+          aria-label={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
+          title={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (runtime) {
+              void props.actions.agents.close(runtime);
+              return;
+            }
+            if (!window.confirm(t("sidebar.confirmDeleteSession"))) return;
+            void props.actions.sessions.delete(props.project.id, child.session);
+          }}
+        >
+          {runtime ? <Square size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+        </Button>
         <Button
           type="button"
           variant="ghost"
