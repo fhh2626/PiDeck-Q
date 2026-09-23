@@ -126,6 +126,32 @@ test("applyLocalSwitch updates individual switch without interlock", () => {
 	});
 });
 
+test("isKeepRecentApplicable returns false only when both content switches are on", () => {
+	const { isKeepRecentApplicable } = compile(
+		"src/renderer/src/components/session/ContextControllerSwitches.tsx",
+		switchStubs,
+	);
+	assert.equal(isKeepRecentApplicable({ fileContent: true, commandOutput: true, keepRecent: 10 }), false);
+	assert.equal(isKeepRecentApplicable({ fileContent: false, commandOutput: true, keepRecent: 10 }), true);
+	assert.equal(isKeepRecentApplicable({ fileContent: true, commandOutput: false, keepRecent: 10 }), true);
+	assert.equal(isKeepRecentApplicable({ fileContent: false, commandOutput: false, keepRecent: 10 }), true);
+	// Does not depend on keepRecent value
+	assert.equal(isKeepRecentApplicable({ fileContent: true, commandOutput: true, keepRecent: 0 }), false);
+	assert.equal(isKeepRecentApplicable({ fileContent: true, commandOutput: false, keepRecent: 99 }), true);
+});
+
+test("applyLocalSwitch preserves custom keepRecent value across toggles", () => {
+	const { applyLocalSwitch } = compile(
+		"src/renderer/src/components/session/ContextControllerSwitches.tsx",
+		switchStubs,
+	);
+	const custom = { fileContent: true, commandOutput: true, keepRecent: 7 };
+	const oneOff = applyLocalSwitch(custom, "commandOutput", false);
+	sameJson(oneOff, { fileContent: true, commandOutput: false, keepRecent: 7 });
+	const backOn = applyLocalSwitch(oneOff, "commandOutput", true);
+	sameJson(backOn, { fileContent: true, commandOutput: true, keepRecent: 7 });
+});
+
 test("parseContextControllerStateFromJsonl extracts latest state with keepRecentCount", () => {
 	const { parseContextControllerStateFromJsonl } = compile(
 		"src/main/sessions/contextControllerStateReader.ts",
@@ -201,6 +227,7 @@ test("i18n dictionaries contain matching context switch keys in both locales", (
 		"ctx.switches.keepRecent",
 		"ctx.switches.keepRecentUnit",
 		"ctx.switches.keepRecentTooltip",
+		"ctx.switches.keepRecentAllKeptReason",
 		"ctx.switches.fileContent",
 		"ctx.switches.fileContentTooltip",
 		"ctx.switches.commandOutput",
@@ -226,6 +253,21 @@ test("switch component has compact sm size and symmetric translate-x-2", () => {
 	assert.match(source, /data-\[size=sm\]:h-3\s+data-\[size=sm\]:w-5\s+data-\[size=sm\]:min-w-5\s+data-\[size=sm\]:p-0\.5/);
 	assert.match(source, /data-\[size=sm\]:size-2\s+data-\[size=sm\]:data-\[state=checked\]:translate-x-2/);
 	assert.match(source, /data-\[size=default\]:size-4/);
+});
+
+test("PC and Web both compute keepRecentDisabled using isKeepRecentApplicable while keeping content switches independent", () => {
+	const pcSource = readFileSync("src/renderer/src/components/session/ContextControllerSwitches.tsx", "utf8");
+	const webSource = readFileSync("src/renderer/src/web/WebContextChecks.tsx", "utf8");
+
+	// PC checks
+	assert.match(pcSource, /keepRecentDisabled\s*=\s*disabled\s*\|\|\s*!isKeepRecentApplicable\(currentState\)/);
+	assert.match(pcSource, /<ContextKeepSpinBox[\s\S]*?disabled=\{keepRecentDisabled\}[\s\S]*?disabledReason=\{keepRecentDisabledReason\}/);
+	assert.match(pcSource, /<ContextSwitchRow[\s\S]*?disabled=\{disabled\}[\s\S]*?disabledReason=\{disabledReason\}/);
+
+	// Web checks
+	assert.match(webSource, /keepRecentDisabled\s*=\s*disabled\s*\|\|\s*!isKeepRecentApplicable\(state\)/);
+	assert.match(webSource, /<WebKeepSpinBox[\s\S]*?disabled=\{keepRecentDisabled\}[\s\S]*?disabledReason=\{keepRecentDisabledReason\}/);
+	assert.match(webSource, /<ContextCheck[\s\S]*?disabled=\{disabled\}[\s\S]*?disabledReason=\{disabledReason\}/);
 });
 
 test("foundation.css header button rules exclude switch, checkbox, and select triggers from min-width: 60px", () => {

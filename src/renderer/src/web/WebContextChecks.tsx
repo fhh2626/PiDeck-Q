@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui-shadcn/
 import {
 	applyLocalSwitch,
 	DEFAULT_SWITCH_STATE,
+	isKeepRecentApplicable,
 	type ContextSwitchState,
 } from "../components/session/ContextControllerSwitches";
 import { fetchContextControllerState, sendContextControllerCommand } from "./webApi";
@@ -117,12 +118,17 @@ export function WebContextChecks(props: {
 			? t("ctx.switches.busyDisabled")
 			: undefined;
 
+	const keepRecentDisabled = disabled || !isKeepRecentApplicable(state);
+	const keepRecentDisabledReason =
+		disabledReason ??
+		(!isKeepRecentApplicable(state) ? t("ctx.switches.keepRecentAllKeptReason") : undefined);
+
 	return (
 		<div className="chat-context-checks flex min-w-0 flex-wrap items-center gap-2">
 			<WebKeepSpinBox
 				value={state.keepRecent}
-				disabled={disabled}
-				disabledReason={disabledReason}
+				disabled={keepRecentDisabled}
+				disabledReason={keepRecentDisabledReason}
 				onChange={setKeepRecent}
 			/>
 			<ContextCheck
@@ -163,6 +169,10 @@ function WebKeepSpinBox(props: {
 	}, [props.value]);
 
 	const commit = useCallback(() => {
+		if (props.disabled) {
+			setText(String(props.value));
+			return;
+		}
 		const parsed = Number(text.trim());
 		const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(99, Math.floor(parsed))) : props.value;
 		setText(String(clamped));
