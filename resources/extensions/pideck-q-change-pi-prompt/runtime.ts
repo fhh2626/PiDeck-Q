@@ -473,7 +473,7 @@ export function registerPromptExtension(
 				const agentName = getActiveAgentName(event.systemPrompt);
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
-				const wantsShell = !!childAgent && childAgent.tools.some(isShellToolName);
+				const wantsShell = !!childAgent && (childAgent.tools.some(isShellToolName) || childAgent.hostShell === true);
 				// A valid owner snapshot is authoritative. Without one, fail closed: a child
 				// cannot infer the parent's active tools from its own registry or allowlist.
 				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);

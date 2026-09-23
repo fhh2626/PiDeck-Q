@@ -1,7 +1,9 @@
 ---
 name: reviewer
 description: Versatile review specialist for code diffs, plans, proposed solutions, codebase health, and PR/issue validation
-excludeTools: edit, write, ask_question, todo, web_search, webfetch
+tools: read, contact_supervisor
+hostShell: true
+excludeTools: edit, write
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true

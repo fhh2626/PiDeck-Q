@@ -99,6 +99,27 @@ export function sameToolList(a: readonly string[], b: readonly string[]): boolea
 }
 
 /**
+ * Map an agent's declared tools to host shell backends.
+ * If the agent declared hostShell: true, its non-shell base tools receive available host shells.
+ * Otherwise, mapDeclaredToolsToHostShells is used for agents that explicitly declared shell tools.
+ */
+export function mapAgentToolsToHostShells(options: {
+	declaredTools: readonly string[];
+	hostShell?: boolean;
+	hostShells?: { bash: boolean; powershell: boolean };
+}): string[] {
+	const { declaredTools, hostShell, hostShells } = options;
+	if (!hostShells) return [...declaredTools];
+	if (hostShell) {
+		const nextShells: string[] = [];
+		if (hostShells.bash) nextShells.push('bash');
+		if (hostShells.powershell) nextShells.push('powershell');
+		return [...new Set([...declaredTools.filter(t => !isShellToolName(t)), ...nextShells])];
+	}
+	return mapDeclaredToolsToHostShells(declaredTools, hostShells);
+}
+
+/**
  * Rewrite a shell-capable agent's declared tools to the host's real backends.
  * Agents that never declared a shell are returned unchanged.
  * Host availability, not the current session's active tools, decides the names:

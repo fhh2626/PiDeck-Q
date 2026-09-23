@@ -11,6 +11,7 @@ import { isRecord, type ToolSnapshot } from './contributions.ts';
 import {
 	BUILTIN_OR_INTERNAL_CHILD_TOOLS,
 	isShellToolName,
+	mapAgentToolsToHostShells,
 	mapDeclaredToolsToHostShells,
 	resolveChildShellSlots,
 	sameToolList,
@@ -593,9 +594,11 @@ function reconcileChildEnvironmentsLocked(options: {
 				}
 			}
 
-			const desiredTools = hostShells
-				? mapDeclaredToolsToHostShells(agent.tools, hostShells)
-				: [...agent.tools];
+			const desiredTools = mapAgentToolsToHostShells({
+				declaredTools: agent.tools,
+				hostShell: agent.hostShell,
+				hostShells,
+			});
 			// Inject a shell provider only for names this host allowlist actually keeps.
 			const shellSlots = resolveChildShellSlots({ platform, policy: shellPolicy, declaredTools: desiredTools });
 			for (const providerPath of shellSlots.providerPaths) {
@@ -655,7 +658,7 @@ function reconcileChildEnvironmentsLocked(options: {
 			}
 
 			// Host-shell allowlist: only when the caller probed backends, and never over user-owned tools.
-			if (hostShells && agent.tools.some(isShellToolName)) {
+			if (hostShells && (agent.tools.some(isShellToolName) || agent.hostShell)) {
 				const existingTools = agentOverride?.tools;
 				const lastManaged = previousManagedTools[name];
 				const existingArray = asStringArray(existingTools);

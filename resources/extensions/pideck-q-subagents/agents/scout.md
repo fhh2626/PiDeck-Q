@@ -1,7 +1,9 @@
 ---
 name: scout
 description: Fast codebase recon that returns compressed context for handoff
-excludeTools: edit, ask_question, todo, web_search, webfetch
+tools: read, write, contact_supervisor
+hostShell: true
+excludeTools: edit
 thinking: low
 systemPromptMode: replace
 inheritProjectContext: true
