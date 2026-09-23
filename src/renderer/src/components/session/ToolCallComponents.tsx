@@ -452,7 +452,7 @@ export const ToolCard = memo(function ToolCard(props: {
 		</TimelineMarker>
 	);
 });
-/** 工具组直接平铺为工具列表；每个 ToolCard 自己默认折叠，避免外层再占一行。 */
+/** 连续工具调用默认合并为一个折叠工具组；单个工具仍直接显示。 */
 export const ToolGroupCard = memo(function ToolGroupCard(props: {
 	group: ToolGroupItem;
 	stopped?: boolean;
@@ -461,20 +461,40 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
 	mountMedia?: boolean;
 }) {
+	const [expanded, setExpanded] = useState(false);
+	const cards = props.group.messages.map((message) => (
+		<ToolCard
+			key={message.id}
+			message={message}
+			stopped={props.stopped}
+			sessionId={props.sessionId}
+			onPreviewImage={props.onPreviewImage}
+			mountMedia={props.mountMedia}
+		/>
+	));
+	if (props.group.messages.length < 2) {
+		return <section className="tool-group-card w-full min-w-0" data-message-id={props.group.id}>{cards}</section>;
+	}
+	const statuses = props.group.messages.map((message) => getToolStatus(message));
+	const status = props.stopped && statuses.includes("running")
+		? "stopped"
+		: statuses.includes("running") ? "running" : statuses.includes("error") ? "error" : "done";
 	return (
-		<section className="tool-group-card w-full min-w-0 overflow-hidden rounded-none border-0 bg-transparent" data-message-id={props.group.id}>
-			<div className="flex flex-col gap-0 p-0">
-				{props.group.messages.map((message) => (
-					<ToolCard
-						key={message.id}
-						message={message}
-						stopped={props.stopped}
-						sessionId={props.sessionId}
-						onPreviewImage={props.onPreviewImage}
-						mountMedia={props.mountMedia}
-					/>
-				))}
-			</div>
+		<section className="tool-group-card w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel" data-message-id={props.group.id}>
+			<button
+				type="button"
+				className="flex min-h-6 w-full items-center gap-2 border-0 bg-transparent px-1 text-left text-control text-text-secondary"
+				onClick={() => setExpanded((value) => !value)}
+				aria-expanded={expanded}
+			>
+				<Wrench size={16} className="shrink-0 text-text-tertiary" aria-hidden="true" />
+				<span className="font-medium">{t("tool.group.title", { count: props.group.messages.length })}</span>
+				{expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+				<Badge variant={status === "error" ? "outline" : status === "running" ? "outline" : "secondary"} className="px-1 py-0 text-micro">
+					{t(status === "stopped" ? "tool.statusStopped" : status === "running" ? "tool.statusRunning" : status === "error" ? "tool.statusError" : "tool.statusDone")}
+				</Badge>
+			</button>
+			<div className={expanded ? "flex flex-col border-t border-border-subtle" : "hidden"}>{cards}</div>
 		</section>
 	);
 });
