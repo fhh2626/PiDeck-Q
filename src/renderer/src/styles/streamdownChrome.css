@@ -16,6 +16,13 @@
   margin-block-end: var(--chat-block-gap);
 }
 
+/* 非首个标题是章节边界：上面的统一规则会把标题原有上距清零，
+ * 而后续列表首项仍有自己的行间距，导致标题看起来贴着上一段。
+ * 只恢复标题上方的双倍段距；不改下距，也不让消息开头的标题多出空白。 */
+.markdown-body .space-y-4 > :is(h1, h2, h3, h4, h5, h6):not(:first-child) {
+  margin-block-start: calc(var(--chat-block-gap) * 2);
+}
+
 /* Streamdown 列表项默认 py-1 会再增加上下各 4px；列表节奏由
  * timeline.css 的 li margin 单一控制，避免两套垂直间距叠加。 */
 .markdown-body [data-streamdown="list-item"] {
