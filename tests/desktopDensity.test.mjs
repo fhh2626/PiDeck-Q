@@ -38,7 +38,7 @@ test("Thinking/Compaction consume the shared card recipes (body px-2 py-0.5)", (
 
   // 值住在共享 recipe（lib/density.ts），组件只消费常量。
   assert.equal(getRecipe("CARD_BODY_PADDING"), "px-2 py-0.5", "card body recipe changed");
-  assert.equal(getRecipe("CARD_PREVIEW_PADDING"), "px-2 py-0.5 font-mono text-caption text-text-tertiary");
+  assert.equal(getRecipe("CARD_PREVIEW_PADDING"), "px-2 py-0.5 text-chat text-text-tertiary");
 
   assertConsumes(src, "CARD_BODY_PADDING");
   assertConsumes(src, "CARD_PREVIEW_PADDING");
@@ -144,14 +144,17 @@ test("FileDiff trigger uses min-h-7 py-0.5 gap-1.5 (not min-h-9 py-1 gap-2)", ()
   assert.match(src, /rounded-md bg-muted\/80/, "diff container should be rounded-md");
 });
 
-test("TurnFileChanges uses mb-1 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () => {
+test("TurnFileChanges uses mb-0.5 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () => {
   const src = read("components/session/turn/TurnFileChanges.tsx");
-  assert.match(src, /mb-1 flex items-center/, "title should use mb-1");
+  assert.match(src, /mb-0\.5 flex items-center/, "title should use mb-0.5");
+  assert.doesNotMatch(src, /mb-1 flex items-center/, "title must not stay at mb-1");
   assert.doesNotMatch(src, /mb-1\.5 flex items-center/, "title should not use mb-1.5");
   assert.match(src, /flex flex-col gap-0[\s"]/, "file list should use gap-0");
   assert.doesNotMatch(src, /flex flex-col gap-0\.5/, "file list should not use gap-0.5");
   assert.match(src, /size-6 shrink-0/, "open diff button should be size-6");
   assert.doesNotMatch(src, /size-7 shrink-0/, "open diff button should not be size-7");
+  assert.match(src, /\[&>button\]:min-h-6/, "FileDiff trigger in TurnFileChanges should override min-h-6");
+  assert.match(src, /\[&>button\]:py-0/, "FileDiff trigger in TurnFileChanges should override py-0");
 });
 
 // ── 设置共享布局 ─────────────────────────────────────────────────────────────
@@ -237,11 +240,15 @@ test("sidebar body uses gap-1 (not gap-2)", () => {
   assert.doesNotMatch(src, /sidebar-body[^"]*gap-2\b/, "sidebar-body should not use gap-2");
 });
 
-test("project group spacing uses mb-0.5 space-y-px (2px between projects)", () => {
+test("project folders use no extra group gap and their children start immediately below", () => {
   const src = read("components/sidebar/ProjectTree.tsx");
-  assert.match(src, /project-group mb-0\.5\b/, "project group should use mb-0.5");
-  assert.doesNotMatch(src, /project-group mb-1\b/, "project group should not stay at mb-1");
-  assert.match(src, /space-y-px/, "expanded content should use space-y-px");
+  assert.match(src, /project-group mb-0\b/, "project group should not add bottom spacing");
+  assert.match(src, /relative ml-3 mt-0 mr-1 space-y-px pl-2/, "expanded children should not add top spacing");
+});
+
+test("sidebar session list does not add card bottom margin below the last agent", () => {
+  const src = read("components/sidebar/SessionTree.tsx");
+  assert.match(src, /"flex flex-col gap-0 mb-0"/, "sidebar sessions should override the generic session-card bottom margin");
 });
 
 test("Chat section uses mb-0.5 (2px to next project, not mb-2/mb-4)", () => {

@@ -86,7 +86,7 @@ export function ProjectTree(props: {
       const rootProjectSessions = props.controller.catalog.sessionsByProject[project.id] ?? [];
       // 运行态属于具体会话，而不是项目容器；项目行只负责导航，避免多个 Agent 同时运行时
       // 项目头像出现无法指向目标会话的聚合动画。
-      return <div key={project.id} className={cn("project-group mb-0.5", project.worktreeEnabled && "worktree-enabled")}>
+      return <div key={project.id} className={cn("project-group mb-0", project.worktreeEnabled && "worktree-enabled")}>
         <div
           className={cn(
             treeRowClass,
@@ -178,7 +178,7 @@ export function ProjectTree(props: {
           </div>
         </div>
         {!collapsed && (
-          <div className="relative ml-3 mt-0.5 mr-1 space-y-px pl-2">
+          <div className="relative ml-3 mt-0 mr-1 space-y-px pl-2">
             {/* 展开内容不依赖当前选中项，项目切换只改变高亮，避免两棵会话树同时伸缩造成布局抖动。 */}
             {project.worktreeEnabled ? (
               <WorktreeTree

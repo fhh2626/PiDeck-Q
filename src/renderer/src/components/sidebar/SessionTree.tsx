@@ -12,10 +12,9 @@ import { SessionSourceBadge } from "../session/SessionSourceBadge";
 import { cn } from "../../lib/utils";
 import { SESSION_TAB_DRAG_MIME } from "../../utils/sessionSplitEdge";
 
-/** 与 ProjectTree.treeRowClass 同尺寸同圆角：分层后 utility 生效，必须「新学旧」对齐项目行，
- * 不能再用 min-h-11/rounded-xl（会明显高于/圆于项目行）。 */
+/** Agent/会话行比 28px 文件夹行紧凑一档，保留 24px 操作按钮的完整命中区域。 */
 const sessionRowClass =
-	"group/resource conversation agent-row relative flex min-h-7 w-full items-center gap-1.5 rounded-sm border border-transparent px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/70 focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset";
+	"group/resource conversation agent-row relative flex min-h-6 w-full items-center gap-1.5 rounded-sm border border-transparent px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/70 focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset";
 
 /** 行右侧「更多操作（三个点）」按钮：absolute 浮层，不参与布局（不挤压标题文字），
  * 默认隐藏（pointer-events 一并关闭防误触），行 hover / 行内聚焦时显现——
@@ -41,8 +40,8 @@ function rowActionButtonsActiveClass(menuOpen: boolean) {
 
 /** 会话/Agent 行容器：内容行占满 + 三个点按钮浮层（button 不能嵌 button，
  * 且浮层不占位——窄侧栏时标题文字不会被按钮挤窄）。
- * mt-0.5：行间距 2px，参考 dsh-web 会话列表的紧凑行距。 */
-const rowContainerClass = "group/row relative mt-px flex min-h-7 items-center";
+ * 组内无额外顶距，靠文件夹行与 Agent 行的高度区分层级。 */
+const rowContainerClass = "group/row relative mt-0 flex min-h-6 items-center";
 
 function matchesSearch(value: string, search: string) {
   return !search || value.toLowerCase().includes(search.toLowerCase());
@@ -334,7 +333,7 @@ export function SessionTree(props: {
               sessionRowClass,
               // 历史会话不是运行中的 Agent：只给这一类内容增加层级缩进，避免项目标题与历史记录贴在同一列。
               // 历史会话需要比运行中 Agent 更松的点击区域和行间距，避免连续记录挤成一块。
-              "session-row history-session-row mx-0 min-h-7 pl-2 pr-2 py-0",
+              "session-row history-session-row mx-0 min-h-6 pl-2 pr-2 py-0",
               child.session.id === props.currentSessionId && "active bg-accent/20 text-foreground",
             )}
             onClick={() => openSession(child.session.id)}
@@ -393,7 +392,7 @@ export function SessionTree(props: {
   return (
     <div className={cn(
       props.nested ? "worktree-children m-0 border-0 bg-transparent p-0" : "session-card",
-      "flex flex-col gap-0",
+      "flex flex-col gap-0 mb-0",
     )}>
       {draftSessions.map((session) => {
         const runtime = props.controller.catalog.runtimeBySessionId[session.id];

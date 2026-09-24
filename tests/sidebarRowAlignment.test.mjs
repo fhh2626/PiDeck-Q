@@ -41,11 +41,10 @@ test("session/agent sidebar rows use fill-available width, not content-sized aut
 });
 
 /**
- * 侧边栏资源行统一 28px（min-h-7）：Project / Session / Agent / Worktree
- * 全部用同一行高，层级差异靠缩进/图标/字号/状态点表达，而不是靠行高差。
- * 28px 是桌面工作台的导航行基线——比 32px 更紧凑，又不至于 24px 那样拥挤。
+ * 文件夹行保持 28px，归属的 Agent/会话行收至 24px；文件夹之间
+ * 因此比组内行更疏朗，同时右侧 24px 操作按钮仍有完整命中区域。
  */
-test("sidebar project/session/agent/worktree rows all use min-h-7 (28px)", () => {
+test("sidebar folder rows are 28px while their agent/session rows are 24px", () => {
   const projectTree = readFileSync(
     "src/renderer/src/components/sidebar/ProjectTree.tsx",
     "utf8",
@@ -65,16 +64,16 @@ test("sidebar project/session/agent/worktree rows all use min-h-7 (28px)", () =>
   assert.match(treeRow[1], /min-h-7/, "project row should be min-h-7");
   assert.doesNotMatch(treeRow[1], /min-h-8/, "project row should not be min-h-8");
 
-  // 会话/agent 行：sessionRowClass 常量
+  // 会话/agent 行与外层容器均为 24px；历史会话的额外类不能再撑回 28px。
   const sessionRow = sessionTree.match(/sessionRowClass\s*=\s*\n\s*"([^"]*)"/);
   assert.ok(sessionRow, "sessionRowClass constant not found");
-  assert.match(sessionRow[1], /min-h-7/, "session/agent row should be min-h-7");
-  assert.doesNotMatch(sessionRow[1], /min-h-8/, "session/agent row should not be min-h-8");
-
-  // 行容器（rowContainerClass）也统一到 28px
+  assert.match(sessionRow[1], /min-h-6/, "session/agent row should be min-h-6");
+  assert.doesNotMatch(sessionRow[1], /min-h-7/, "session/agent row should not be min-h-7");
   const rowContainer = sessionTree.match(/rowContainerClass\s*=\s*"([^"]*)"/);
   assert.ok(rowContainer, "rowContainerClass constant not found");
-  assert.match(rowContainer[1], /min-h-7/, "row container should be min-h-7");
+  assert.match(rowContainer[1], /mt-0\b/, "agent rows should not add a top gap");
+  assert.match(rowContainer[1], /min-h-6/, "row container should be min-h-6");
+  assert.match(sessionTree, /session-row history-session-row mx-0 min-h-6\b/, "history rows should not restore 28px");
 
   // worktree 外层行
   const workspaceRow = worktreeTree.match(/workspaceRowClass\s*=\s*\n\s*"([^"]*)"/);
