@@ -44,6 +44,21 @@ test("session/agent sidebar rows use fill-available width, not content-sized aut
  * 文件夹行保持 28px，归属的 Agent/会话行收至 24px；文件夹之间
  * 因此比组内行更疏朗，同时右侧 24px 操作按钮仍有完整命中区域。
  */
+test("folder and Agent content move closer without shrinking hit targets or adding a project gap", () => {
+  const projectTree = readFileSync("src/renderer/src/components/sidebar/ProjectTree.tsx", "utf8");
+  const sessionTree = readFileSync("src/renderer/src/components/sidebar/SessionTree.tsx", "utf8");
+
+  assert.match(projectTree, /project-group mb-0\b/, "keep adjacent project groups unchanged");
+  assert.match(projectTree, /relative ml-3 mt-0 mr-1 space-y-px pl-2/, "child rows retain their position");
+  assert.match(projectTree, /project-fold grid size-6/, "folder toggle retains its 24px target");
+  assert.match(projectTree, /translate-y-0\.5 transition-transform/, "folder chevron moves down inside its target");
+  assert.match(projectTree, /relative top-0\.5 grid size-5/, "folder icon moves toward its Agent");
+  assert.match(projectTree, /strong className="relative top-0\.5/, "folder title moves with its icon");
+  assert.match(sessionTree, /\[&_\.conversation-title\]:-translate-y-0\.5/, "Agent title moves up inside its target");
+  assert.match(sessionTree, /size-1\.5 shrink-0 rounded-full relative -top-0\.5/, "status dot stays aligned with title");
+  assert.match(sessionTree, /group\/row relative mt-0 flex min-h-6 items-center/, "Agent keeps its 24px hit target");
+});
+
 test("sidebar folder rows are 28px while their agent/session rows are 24px", () => {
   const projectTree = readFileSync(
     "src/renderer/src/components/sidebar/ProjectTree.tsx",

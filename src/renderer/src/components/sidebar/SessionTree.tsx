@@ -12,9 +12,10 @@ import { SessionSourceBadge } from "../session/SessionSourceBadge";
 import { cn } from "../../lib/utils";
 import { SESSION_TAB_DRAG_MIME } from "../../utils/sessionSplitEdge";
 
-/** Agent/会话行比 28px 文件夹行紧凑一档，保留 24px 操作按钮的完整命中区域。 */
+/** Agent/会话行比 28px 文件夹行紧凑一档，保留 24px 操作按钮的完整命中区域。
+ * 只将标题上移 2px，与文件夹内容下移配对；行盒仍相接，不制造按钮重叠或组间距。 */
 const sessionRowClass =
-	"group/resource conversation agent-row relative flex min-h-6 w-full items-center gap-1.5 rounded-sm border border-transparent px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/70 focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset";
+	"group/resource conversation agent-row relative flex min-h-6 w-full items-center gap-1.5 rounded-sm border border-transparent px-2 py-0 text-left text-body text-foreground shadow-none [&_.conversation-title]:-translate-y-0.5 transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/70 focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset";
 
 /** 行右侧「更多操作（三个点）」按钮：absolute 浮层，不参与布局（不挤压标题文字），
  * 默认隐藏（pointer-events 一并关闭防误触），行 hover / 行内聚焦时显现——
@@ -73,7 +74,7 @@ function renderRuntimeStatusDot(status?: string | null) {
   return (
     <span
       className={cn(
-        "size-1.5 shrink-0 rounded-full",
+        "size-1.5 shrink-0 rounded-full relative -top-0.5",
         dotClass,
         status === "error" ? "" : "animate-pulse",
       )}
