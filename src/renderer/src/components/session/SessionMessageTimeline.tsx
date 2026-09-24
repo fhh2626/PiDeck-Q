@@ -644,9 +644,11 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                 {t("timeline.loadingMore")}
               </>
             ) : turnWindowActive
-                ? t("timeline.loadEarlierTurns", {
-                    count: countAgentRunItems(reconciledRuns) - turnWindowTurns,
-                  })
+                ? turnWindow.hiddenRunCount > 0
+                  ? t("timeline.loadEarlierTurns", {
+                      count: turnWindow.hiddenRunCount,
+                    })
+                  : t("timeline.loadEarlierContent")
                 : controller.nextLoadIsHistory
                   ? t("timeline.loadMoreTurns")
                   : t("timeline.loadMoreHistory", {

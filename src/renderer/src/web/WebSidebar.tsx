@@ -9,7 +9,7 @@
  * 点击会话行 = 打开会话（切 activeSessionId）。
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, FolderPlus, Play, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, FolderPlus, Play, Plus, Search, Square, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui-shadcn/button";
 import { Input } from "@/components/ui-shadcn/input";
 import { t } from "@/i18n";
@@ -68,6 +68,8 @@ export function WebSidebar(props: {
 	onCreateSession: (projectId: string) => void;
 	onCreateProject: (path: string) => Promise<WebProject>;
 	onDeleteProject: (projectId: string) => Promise<void>;
+	onCloseSession?: (sessionId: string) => Promise<void>;
+	onDeleteSession?: (sessionId: string) => Promise<void>;
 }) {
 	const { state, activeSessionId, creatingProjectId, connected, mobileOpen } = props;
 	const [search, setSearch] = useState("");
@@ -311,27 +313,77 @@ export function WebSidebar(props: {
 									<div className="project-children mt-1 flex flex-col gap-px px-1 pb-1">
 										{visibleSessions.map((session) => {
 											const runtime = runtimeFor(session.id);
+											const isStartingOrPending = runtime?.status === "starting" || runtime?.status === "pending";
+											const isActivating = props.state.activatingSessionIds?.includes(session.id) ?? false;
 											return (
-												<button
-													type="button"
-													key={session.id}
-													className={cn(
-														sessionRowClass,
-														"session-row",
-														session.id === activeSessionId && "active border-border-strong bg-accent/20 text-foreground shadow-sm",
-													)}
-													title={session.title}
-													onClick={() => props.onSelectSession(session.id)}
-												>
-													{renderRuntimeStatusDot(runtime?.status)}
-													<div className="conversation-body min-w-0 flex-1">
-														<div className="conversation-title flex min-w-0 items-center gap-1.5">
-															<strong className={cn("min-w-0 flex-1 truncate", runtime ? "font-medium" : "font-normal text-muted-foreground/90")}>
-																{session.title || t("common.untitled")}
-															</strong>
+												<div key={session.id} className="session-row-wrapper group relative flex min-w-0 items-center gap-0.5">
+													<button
+														type="button"
+														className={cn(
+															sessionRowClass,
+															"session-row min-w-0 flex-1 pr-8",
+															session.id === activeSessionId && "active border-border-strong bg-accent/20 text-foreground shadow-sm",
+														)}
+														title={session.title}
+														onClick={() => props.onSelectSession(session.id)}
+													>
+														{renderRuntimeStatusDot(runtime?.status)}
+														<div className="conversation-body min-w-0 flex-1">
+															<div className="conversation-title flex min-w-0 items-center gap-1.5">
+																<strong className={cn("min-w-0 flex-1 truncate", runtime ? "font-medium" : "font-normal text-muted-foreground/90")}>
+																	{session.title || t("common.untitled")}
+																</strong>
+															</div>
 														</div>
+													</button>
+													<div className="session-row-actions absolute right-1 flex shrink-0 items-center">
+														{runtime ? (
+															<Button
+																type="button"
+																variant="ghost"
+																size="icon"
+																className="session-action size-6 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+																disabled={isStartingOrPending}
+																title={t("sidebar.closeAgent")}
+																aria-label={t("sidebar.closeAgent")}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	void props.onCloseSession?.(session.id);
+																}}
+															>
+																<Square className="size-3" aria-hidden="true" />
+															</Button>
+														) : isActivating ? (
+															<Button
+																type="button"
+																variant="ghost"
+																size="icon"
+																className="session-action size-6 text-muted-foreground opacity-50 cursor-not-allowed"
+																disabled
+																title={t("sidebar.sessionActivating")}
+																aria-label={t("sidebar.sessionActivating")}
+															>
+																<Trash2 className="size-3" aria-hidden="true" />
+															</Button>
+														) : (
+															<Button
+																type="button"
+																variant="ghost"
+																size="icon"
+																className="session-action size-6 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+																title={t("sidebar.deleteSession")}
+																aria-label={t("sidebar.deleteSession")}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	if (typeof window !== "undefined" && !window.confirm(t("sidebar.confirmDeleteSession"))) return;
+																	void props.onDeleteSession?.(session.id);
+																}}
+															>
+																<Trash2 className="size-3" aria-hidden="true" />
+															</Button>
+														)}
 													</div>
-												</button>
+												</div>
 											);
 										})}
 										{hiddenSessionCount > 0 && (

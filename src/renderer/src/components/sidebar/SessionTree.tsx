@@ -26,10 +26,17 @@ const sessionRowClass =
 const rowMoreActionsClass =
 	"row-more-actions pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100";
 
+const rowActionButtonsClass =
+	"row-more-actions pointer-events-none absolute top-1/2 right-1 -translate-y-1/2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100";
+
 /** 菜单打开期间保持点亮：菜单弹出后行 hover 会丢失（鼠标移向菜单），
  * 若不加此态按钮会瞬间熄灭，用户会误以为菜单与按钮无关。 */
 function rowMoreMenuActiveClass(menuOpen: boolean) {
 	return cn(rowMoreActionsClass, menuOpen && "pointer-events-auto opacity-100");
+}
+
+function rowActionButtonsActiveClass(menuOpen: boolean) {
+	return cn(rowActionButtonsClass, menuOpen && "pointer-events-auto opacity-100");
 }
 
 /** 会话/Agent 行容器：内容行占满 + 三个点按钮浮层（button 不能嵌 button，
@@ -269,45 +276,45 @@ export function SessionTree(props: {
               {...(agentSession ? sessionDragProps(agentSession.id) : {})}
             >
               {renderRuntimeStatusDot(child.agent.status)}
-              <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-7 @max-[255px]:group-focus-within/row:pr-7"><div className="conversation-title flex min-w-0 items-center gap-1.5">
+              <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-[52px] @max-[255px]:group-focus-within/row:pr-[52px]"><div className="conversation-title flex min-w-0 items-center gap-1.5">
                 <strong className="min-w-0 flex-1 truncate font-medium">{child.agent.title}</strong>
                 {child.agent.noSession && <span className="anonymous-indicator" title={t("app.anonymousChat")}><HatGlasses size={11} aria-hidden="true" /></span>}
                 {renderToggle(groupKey, childCount)}
               </div></div>
             </button>
           </PathTooltip>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className={cn(rowMoreActionsClass, "right-8")}
-            aria-label={t("sidebar.closeAgent")}
-            title={t("sidebar.closeAgent")}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              void props.actions.agents.close(child.agent);
-            }}
-          >
-            <Square size={14} aria-hidden="true" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className={rowMoreMenuActiveClass(
-              props.controller.menu?.kind === "agent" && props.controller.menu.agentId === child.agent.id,
-            )}
-            aria-label={t("sidebar.moreActions")}
-            title={t("sidebar.moreActions")}
-            onClick={(event) => {
-              event.stopPropagation();
-              const rect = event.currentTarget.getBoundingClientRect();
-              void props.controller.openMenu({ kind: "agent", agentId: child.agent.id, x: rect.right, y: rect.bottom });
-            }}
-          >
-            <Ellipsis size={14} aria-hidden="true" />
-          </Button>
+          <div className={rowActionButtonsActiveClass(
+            props.controller.menu?.kind === "agent" && props.controller.menu.agentId === child.agent.id,
+          )}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={t("sidebar.closeAgent")}
+              title={t("sidebar.closeAgent")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void props.actions.agents.close(child.agent);
+              }}
+            >
+              <Square size={14} aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={t("sidebar.moreActions")}
+              title={t("sidebar.moreActions")}
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = event.currentTarget.getBoundingClientRect();
+                void props.controller.openMenu({ kind: "agent", agentId: child.agent.id, x: rect.right, y: rect.bottom });
+              }}
+            >
+              <Ellipsis size={14} aria-hidden="true" />
+            </Button>
+          </div>
         </div>
         {renderSubagents(groupKey, child.codexSubagents, child.piSubagents)}
       </Fragment>;
@@ -335,7 +342,7 @@ export function SessionTree(props: {
             {...sessionDragProps(child.session.id)}
           >
           {renderRuntimeStatusDot(runtimeSnapshot?.status)}
-          <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-7 @max-[255px]:group-focus-within/row:pr-7"><div className="conversation-title flex min-w-0 items-center gap-1.5">
+          <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-[52px] @max-[255px]:group-focus-within/row:pr-[52px]"><div className="conversation-title flex min-w-0 items-center gap-1.5">
             {/* 历史会话（无运行态）文字降一级，与活跃 Agent/运行中会话形成层级差 */}
             <strong className={cn("min-w-0 flex-1 truncate", runtime ? "font-medium" : "font-normal text-muted-foreground/90")}>{child.session.name || t("common.untitled")}</strong>
             {child.session.source && child.session.source !== "pi" && <SessionSourceBadge source={child.session.source} />}
@@ -343,42 +350,41 @@ export function SessionTree(props: {
           </div></div>
         </button>
         </PathTooltip>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className={cn(rowMoreActionsClass, "right-8")}
-          aria-label={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
-          title={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (runtime) {
-              void props.actions.agents.close(runtime);
-              return;
-            }
-            if (!window.confirm(t("sidebar.confirmDeleteSession"))) return;
-            void props.actions.sessions.delete(props.project.id, child.session);
-          }}
-        >
-          {runtime ? <Square size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className={rowMoreMenuActiveClass(
-            props.controller.menu?.kind === "session" && props.controller.menu.sessionId === child.session.id,
-          )}
-          aria-label={t("sidebar.moreActions")}
-          title={t("sidebar.moreActions")}
-          onClick={(event) => {
-            event.stopPropagation();
-            openContext(event, child.session);
-          }}
-        >
-          <Ellipsis size={14} aria-hidden="true" />
-        </Button>
+        <div className={rowActionButtonsActiveClass(
+          props.controller.menu?.kind === "session" && props.controller.menu.sessionId === child.session.id,
+        )}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
+            title={runtime ? t("sidebar.closeAgent") : t("sidebar.deleteSession")}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (runtime) {
+                void props.actions.agents.close(runtime);
+                return;
+              }
+              void props.actions.sessions.delete(props.project.id, child.session);
+            }}
+          >
+            {runtime ? <Square size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={t("sidebar.moreActions")}
+            title={t("sidebar.moreActions")}
+            onClick={(event) => {
+              event.stopPropagation();
+              openContext(event, child.session);
+            }}
+          >
+            <Ellipsis size={14} aria-hidden="true" />
+          </Button>
+        </div>
       </div>
       {renderSubagents(groupKey, child.codexSubagents, child.piSubagents)}
     </Fragment>;

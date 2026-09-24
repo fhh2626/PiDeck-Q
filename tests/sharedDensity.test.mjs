@@ -36,7 +36,7 @@ test("foundation.css defines the density token set (single source of truth)", ()
     "--density-surface-py: 4px",
     "--density-code-header-height: 28px",
     "--density-code-padding-x: 10px",
-    "--density-code-padding-y: 8px",
+    "--density-code-padding-y: 4px",
     "--density-radius-small: 4px",
     "--density-radius-surface: 6px",
   ]) {

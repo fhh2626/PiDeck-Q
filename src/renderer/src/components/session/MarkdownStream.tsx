@@ -7,7 +7,12 @@ import {
 } from "react";
 import { FormulaCopyLayer } from "./FormulaCopyLayer";
 import { useSmoothStream } from "../../utils/useSmoothStream";
-import { shouldKeepLightOnSettle, splitPlainStreamParagraphs } from "./markdownStreamPolicy";
+import {
+	createIncrementalStreamParagraphsSplitter,
+	shouldKeepLightOnSettle,
+	type IncrementalStreamSplitter,
+	type PlainStreamParagraph,
+} from "./markdownStreamPolicy";
 import type { MarkdownStreamProps } from "./MarkdownStreamProps";
 
 // 兼容既有阈值导出；流式现在始终走分段纯文本，不再同步加载 Markdown 引擎。
@@ -52,27 +57,34 @@ function loadMarkdownRenderer(): Promise<MarkdownRendererComponent> {
  */
 const PLAIN_SPLIT_STEP = 4_096;
 
+const PlainParagraphRow = memo(
+	function PlainParagraphRow(props: { paragraph: PlainStreamParagraph }) {
+		const { frozen, live } = props.paragraph;
+		return (
+			<p className="whitespace-pre-wrap break-words">
+				{frozen && <span data-md-plain-frozen="1">{frozen}</span>}
+				<span data-md-plain-live="1">{live}</span>
+			</p>
+		);
+	},
+	(prev, next) =>
+		prev.paragraph === next.paragraph ||
+		(prev.paragraph.frozen === next.paragraph.frozen &&
+			prev.paragraph.live === next.paragraph.live),
+);
+
 const PlainStreamSplit = memo(function PlainStreamSplit(props: { text: string }) {
 	const text = props.text;
-	const frozenCacheRef = useRef<{ split: number; text: string }>({ split: 0, text: "" });
-	const split = Math.floor(text.length / PLAIN_SPLIT_STEP) * PLAIN_SPLIT_STEP;
-	let frozenText = frozenCacheRef.current.text;
-	if (frozenCacheRef.current.split !== split || !text.startsWith(frozenText)) {
-		frozenText = text.slice(0, split);
-		frozenCacheRef.current = { split, text: frozenText };
+	const splitterRef = useRef<IncrementalStreamSplitter | null>(null);
+	if (!splitterRef.current) {
+		splitterRef.current = createIncrementalStreamParagraphsSplitter();
 	}
-	const paragraphs = splitPlainStreamParagraphs(frozenText + text.slice(split), frozenText.length);
-	const rendered = [
-		...paragraphs.frozen.map((paragraph) => ({ frozen: paragraph, live: "" })),
-		...paragraphs.live.map((paragraph) => ({ frozen: "", live: paragraph })),
-	];
+	const split = Math.floor(text.length / PLAIN_SPLIT_STEP) * PLAIN_SPLIT_STEP;
+	const result = splitterRef.current.split(text, split);
 	return (
 		<div data-md-plain-stream="1">
-			{rendered.map((paragraph, index) => (
-				<p key={index} className="whitespace-pre-wrap break-words">
-					{paragraph.frozen && <span data-md-plain-frozen="1">{paragraph.frozen}</span>}
-					<span data-md-plain-live="1">{paragraph.live}</span>
-				</p>
+			{result.paragraphs.map((paragraph, index) => (
+				<PlainParagraphRow key={index} paragraph={paragraph} />
 			))}
 		</div>
 	);

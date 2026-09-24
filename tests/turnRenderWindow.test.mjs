@@ -115,6 +115,28 @@ test("resolveTimelineTurnWindow stays inactive when nothing is hidden", () => {
   assert.equal(resolved.displayItems, items);
 });
 
+test("resolveTimelineTurnWindow accurately reports hiddenRunCount and hiddenItemCount", () => {
+  // 5 个 run，窗口 3 轮：截断 2 轮
+  const items5 = runs("r1", "r2", "r3", "r4", "r5");
+  const resTurns = windowing.resolveTimelineTurnWindow(items5, 3, 200);
+  assert.equal(resTurns.windowActive, true);
+  assert.equal(resTurns.hiddenRunCount, 2);
+  assert.equal(resTurns.hiddenItemCount, 2);
+
+  // 1 个 run 加上 5 个普通消息，预算 3 个条目：run 保留，但前面普通消息被截断
+  const itemsItems = [
+    { kind: "message", id: "m1" },
+    { kind: "message", id: "m2" },
+    { kind: "message", id: "m3" },
+    { kind: "message", id: "m4" },
+    runs("r1")[0],
+  ];
+  const resItems = windowing.resolveTimelineTurnWindow(itemsItems, 10, 3);
+  assert.equal(resItems.windowActive, true);
+  assert.equal(resItems.hiddenRunCount, 0);
+  assert.equal(resItems.hiddenItemCount > 0, true);
+});
+
 test("timeline wires the turn mount window helper", () => {
   const source = readFileSync("src/renderer/src/components/session/SessionMessageTimeline.tsx", "utf8");
   assert.match(source, /resolveTimelineTurnWindow/);
@@ -122,4 +144,5 @@ test("timeline wires the turn mount window helper", () => {
   assert.match(source, /TIMELINE_MOUNTED_TURN_LIMIT/);
   assert.match(source, /TIMELINE_SCROLLED_MAX_ITEMS/);
   assert.match(source, /displayRuns\.map/);
+  assert.match(source, /hiddenRunCount/);
 });

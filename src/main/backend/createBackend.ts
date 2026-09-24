@@ -57,6 +57,10 @@ import { registerBackendRpc } from "./registerBackendRpc";
 import { startBackendStartupTasks } from "./backendStartupTasks";
 import { createStartupBarrier } from "../utils/StartupBarrier";
 import { createTrashPath } from "../fs/trash";
+import {
+	SessionDeleteBlockedError,
+	isSessionDeleteBlocked,
+} from "../sessions/SessionDeleteBlockedError";
 
 export async function createBackend(options: CreateBackendOptions): Promise<Backend> {
 	const { router, host, platform, runtime } = options;
@@ -370,10 +374,13 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry) return false;
 			if (
-				sessionRuntimeCoordinator.getTarget(sessionId) ||
-				sessionRuntimeCoordinator.isActivating(sessionId)
+				isSessionDeleteBlocked(sessionId, {
+					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
+					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
+					isAnonymousActivating: (sessionId) => runtimeBridge.isAnonymousActivating(sessionId),
+				})
 			) {
-				throw new Error(mainCopy("session.stopBeforeDelete"));
+				throw new SessionDeleteBlockedError(mainCopy("session.stopBeforeDelete"));
 			}
 			const projectId = entry.projectId;
 			if (entry.filePath) await sessionScanner.delete(entry.filePath);
@@ -422,6 +429,9 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		respondToUi: (input) => sessionRuntimeCoordinator.respondToUi(input),
 		listSessionRuntimeModels: (target) => sessionRuntimeCoordinator.listRuntimeModels(target),
 		stopSessionRuntime: runtimeBridge.stopSessionRuntime,
+		isSessionActivating: (sessionId) =>
+			sessionRuntimeCoordinator.isActivating(sessionId) ||
+			runtimeBridge.isAnonymousActivating(sessionId),
 		abortSessionRuntime: (target) => sessionRuntimeCoordinator.abortRuntime(target),
 		restartSessionRuntime: async (target) => {
 			terminalManager.closeAgent(target.agentId);

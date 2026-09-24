@@ -462,23 +462,35 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 	mountMedia?: boolean;
 }) {
 	const [expanded, setExpanded] = useState(false);
-	const cards = props.group.messages.map((message) => (
-		<ToolCard
-			key={message.id}
-			message={message}
-			stopped={props.stopped}
-			sessionId={props.sessionId}
-			onPreviewImage={props.onPreviewImage}
-			mountMedia={props.mountMedia}
-		/>
-	));
+
 	if (props.group.messages.length < 2) {
-		return <section className="tool-group-card w-full min-w-0" data-message-id={props.group.id}>{cards}</section>;
+		const singleMessage = props.group.messages[0];
+		return (
+			<section className="tool-group-card w-full min-w-0" data-message-id={props.group.id}>
+				{singleMessage && (
+					<ToolCard
+						key={singleMessage.id}
+						message={singleMessage}
+						stopped={props.stopped}
+						sessionId={props.sessionId}
+						onPreviewImage={props.onPreviewImage}
+						mountMedia={props.mountMedia}
+					/>
+				)}
+			</section>
+		);
 	}
+
 	const statuses = props.group.messages.map((message) => getToolStatus(message));
 	const status = props.stopped && statuses.includes("running")
 		? "stopped"
 		: statuses.includes("running") ? "running" : statuses.includes("error") ? "error" : "done";
+
+	// 收集组内工具消息中的图片与提示（供折叠态下直接预览）
+	const groupImages = props.mountMedia !== false
+		? props.group.messages.filter((m) => (m.images && m.images.length > 0) || m.imageDisplayNotice)
+		: [];
+
 	return (
 		<section className="tool-group-card w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel" data-message-id={props.group.id}>
 			<button
@@ -494,7 +506,32 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 					{t(status === "stopped" ? "tool.statusStopped" : status === "running" ? "tool.statusRunning" : status === "error" ? "tool.statusError" : "tool.statusDone")}
 				</Badge>
 			</button>
-			<div className={expanded ? "flex flex-col border-t border-border-subtle" : "hidden"}>{cards}</div>
+			{!expanded && groupImages.length > 0 && (
+				<div className="flex flex-col gap-1.5 px-2 py-1.5 border-t border-border-subtle">
+					{groupImages.map((m) => (
+						<MessageImageGallery
+							key={m.id}
+							images={m.images}
+							notice={m.imageDisplayNotice}
+							onPreviewImage={props.onPreviewImage}
+						/>
+					))}
+				</div>
+			)}
+			{expanded && (
+				<div className="flex flex-col border-t border-border-subtle">
+					{props.group.messages.map((message) => (
+						<ToolCard
+							key={message.id}
+							message={message}
+							stopped={props.stopped}
+							sessionId={props.sessionId}
+							onPreviewImage={props.onPreviewImage}
+							mountMedia={props.mountMedia}
+						/>
+					))}
+				</div>
+			)}
 		</section>
 	);
 });

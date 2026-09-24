@@ -28,6 +28,7 @@ import {
 	createProject,
 	createSession,
 	deleteProject,
+	deleteSession,
 	fetchMessagePage,
 	fetchModels,
 	fetchState,
@@ -35,6 +36,7 @@ import {
 	abortRuntime,
 	setRuntimeModel,
 	setRuntimeThinking,
+	stopRuntime,
 	updateSessionRecord,
 } from "./webApi";
 import type { WebPendingUiRequest, WebProject, WebState } from "./webTypes";
@@ -545,6 +547,39 @@ export function WebChatApp() {
 		}
 	};
 
+	const handleCloseSession = async (sessionId: string) => {
+		const runtime = state.runtimes.find((r) => r.sessionId === sessionId);
+		if (!runtime) return;
+		setCommandError(null);
+		try {
+			await stopRuntime({
+				sessionId: runtime.sessionId,
+				agentId: runtime.agentId,
+				runtimeGeneration: runtime.runtimeGeneration ?? 0,
+			});
+			await refreshNow();
+		} catch (error) {
+			setCommandError(error instanceof Error ? error.message : String(error));
+		}
+	};
+
+	const handleDeleteSession = async (sessionId: string) => {
+		setCommandError(null);
+		try {
+			await deleteSession(sessionId);
+			delete messagesBySessionRef.current[sessionId];
+			delete historyMetaRef.current[sessionId];
+			loadedSessionsRef.current.delete(sessionId);
+			if (activeSessionId === sessionId) {
+				setActiveSessionId("");
+				setMessages([]);
+			}
+			await refreshNow();
+		} catch (error) {
+			setCommandError(error instanceof Error ? error.message : String(error));
+		}
+	};
+
 	const updateActiveSessionState = (patch: { model?: { provider: string; modelId: string }; thinkingLevel?: string }) => {
 		setState((current) => ({
 			...current,
@@ -710,6 +745,8 @@ export function WebChatApp() {
 				onCreateSession={(projectId) => void handleCreateSession(projectId)}
 				onCreateProject={handleCreateProject}
 				onDeleteProject={handleDeleteProject}
+				onCloseSession={handleCloseSession}
+				onDeleteSession={handleDeleteSession}
 			/>
 			<main className="chat-pane flex h-full min-w-0 flex-1 flex-col overflow-hidden">
 				<WebHeader

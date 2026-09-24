@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { twMerge } from "tailwind-merge";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
+const {
+	buildSidebarSessionDeleteConfirm,
+	buildDraftSessionDeleteConfirm,
+} = loadTsCommonJs("src/renderer/src/components/sidebar/sidebarDeleteConfirm.ts");
 
 // 窄侧栏行操作按钮防重叠契约（2027-01 用户反馈）：
 // ProjectTree 的项目选择按钮与 actions 已改为同级 flex item，永不重叠；
@@ -34,12 +40,18 @@ test("project row selection and actions have non-overlapping hit areas", () => {
 
 test("session rows yield to hover actions on narrow sidebar", () => {
 	const src = read("src/renderer/src/components/sidebar/SessionTree.tsx");
-	// agent 行、运行中会话行、历史会话行、普通会话行共 4 处 conversation-body 全部接入
-	// （一个 size-6 更多按钮 → 28px 留白）
-	const matches = src.match(
+	// agent 行与历史/普通会话行有双操作按钮（关闭/删除 + 更多）→ 52px 留白
+	const doubleMatches = src.match(
+		/conversation-body min-w-0 flex-1 transition-\[padding-right\] @max-\[255px\]:group-hover\/row:pr-\[52px\] @max-\[255px\]:group-focus-within\/row:pr-\[52px\]/g,
+	);
+	assert.ok(doubleMatches && doubleMatches.length === 2, `expected 2 double action row bodies, got ${doubleMatches?.length ?? 0}`);
+
+	// 子 Agent 行与草稿行有单操作按钮 → 28px (pr-7) 留白
+	const singleMatches = src.match(
 		/conversation-body min-w-0 flex-1 transition-\[padding-right\] @max-\[255px\]:group-hover\/row:pr-7 @max-\[255px\]:group-focus-within\/row:pr-7/g,
 	);
-	assert.ok(matches && matches.length === 4, `expected 4 row bodies, got ${matches?.length ?? 0}`);
+	assert.ok(singleMatches && singleMatches.length === 2, `expected 2 single action row bodies, got ${singleMatches?.length ?? 0}`);
+
 	// 浮层模式不变
 	assert.match(src, /row-more-actions pointer-events-none absolute top-1\/2 right-1/);
 	assert.doesNotMatch(src, /conversation-body[^\n]*opacity-0/);
@@ -78,4 +90,76 @@ test("narrow-sidebar variants survive tailwind-merge", () => {
 	assert.match(rowMerged, /transition-all/);
 	assert.doesNotMatch(rowMerged, /transition-colors/);
 	assert.match(rowMerged, prVariant);
+});
+
+test("SessionTree delegates confirmation to App overlays.showConfirm without duplicate window.confirm", () => {
+	const src = read("src/renderer/src/components/sidebar/SessionTree.tsx");
+	// 确认弹窗统一收口在 App.tsx 的 overlays.showConfirm，SessionTree 中不得再有 window.confirm
+	assert.doesNotMatch(src, /window\.confirm/, "SessionTree must not invoke window.confirm");
+	assert.match(src, /props\.actions\.sessions\.delete\(props\.project\.id, child\.session\)/);
+	assert.match(src, /props\.actions\.sessions\.deleteDraft\(session\)/);
+});
+
+test("App handles session delete confirmation with child count awareness and single prompt", () => {
+	const appSrc = read("src/renderer/src/App.tsx");
+	// 验证 App.tsx 实际调用了抽出的生产确认函数
+	assert.match(appSrc, /buildSidebarSessionDeleteConfirm/);
+	assert.match(appSrc, /buildDraftSessionDeleteConfirm/);
+	assert.match(appSrc, /overlays\.showConfirm\(/);
+});
+
+test("buildSidebarSessionDeleteConfirm 生产函数：无子会话、有子会话与确认执行语义", () => {
+	let executed = false;
+	let cleared = false;
+	const mockT = (key, params) => `${key}:${JSON.stringify(params ?? {})}`;
+
+	// 1. 无子会话
+	const cfgNoChild = buildSidebarSessionDeleteConfirm({
+		session: { name: "主会话", filePath: "/path/to/main.jsonl" },
+		childCount: 0,
+		t: mockT,
+		clearConfirm: () => { cleared = true; },
+		onExecuteDelete: () => { executed = true; },
+	});
+	assert.equal(cfgNoChild.danger, true);
+	assert.match(cfgNoChild.message, /drawer\.sessionDeleteBody/);
+	assert.doesNotMatch(cfgNoChild.message, /drawer\.sessionDeleteBodyWithChildren/);
+	assert.equal(executed, false, "unconfirmed must not execute delete");
+
+	// 执行确认
+	cfgNoChild.onConfirm();
+	assert.equal(cleared, true, "onConfirm must clear confirmation overlay");
+	assert.equal(executed, true, "onConfirm must execute deletion");
+
+	// 2. 有 3 个子会话
+	const cfgWithChildren = buildSidebarSessionDeleteConfirm({
+		session: { name: "带子会话的主会话", filePath: "/path/to/parent.jsonl" },
+		childCount: 3,
+		t: mockT,
+		clearConfirm: () => {},
+		onExecuteDelete: () => {},
+	});
+	assert.match(cfgWithChildren.message, /drawer\.sessionDeleteBodyWithChildren/);
+	assert.match(cfgWithChildren.message, /"count":3/);
+});
+
+test("buildDraftSessionDeleteConfirm 生产函数：草稿确认文案与确认执行语义", () => {
+	let executed = false;
+	let cleared = false;
+	const mockT = (key, params) => `${key}:${JSON.stringify(params ?? {})}`;
+
+	const cfgDraft = buildDraftSessionDeleteConfirm({
+		session: { title: "未命名草稿" },
+		t: mockT,
+		clearConfirm: () => { cleared = true; },
+		onExecuteDelete: () => { executed = true; },
+	});
+	assert.equal(cfgDraft.danger, true);
+	assert.match(cfgDraft.message, /drawer\.sessionDeleteBody/);
+	assert.match(cfgDraft.message, /未命名草稿/);
+
+	assert.equal(executed, false);
+	cfgDraft.onConfirm();
+	assert.equal(cleared, true);
+	assert.equal(executed, true);
 });

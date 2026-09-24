@@ -65,7 +65,7 @@ test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", ()
   const src = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
   const block = src.slice(
     src.indexOf("export const WebThinkingBlock"),
-    src.indexOf("type WebToolPart"),
+    src.indexOf("export const WebToolCard"),
   );
   assert.ok(block.length > 0, "WebThinkingBlock source not found");
   // Web 与桌面消费同一份 recipe，值天然一致；只断言消费关系 + 旧大 padding 不回归。

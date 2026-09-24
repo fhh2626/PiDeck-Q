@@ -96,7 +96,7 @@ test("Web history load control stays at the top and can recover from a missing c
 	assert.match(webChatApp, /status: "error"/);
 	assert.match(webChatApp, /不要把会话标成 loaded/);
 	const loadButton = webTimeline.indexOf('t("timeline.loadMoreHistory"');
-	const messageMap = webTimeline.indexOf("messages.map((message)");
+	const messageMap = webTimeline.indexOf("groupedMessages.map((item)");
 	assert.ok(loadButton >= 0, "WebTimeline must render a load-more control");
 	assert.ok(messageMap > loadButton, "load more must sit above the message list, not after it");
 });

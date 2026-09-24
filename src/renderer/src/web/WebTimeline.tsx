@@ -9,8 +9,9 @@
  * - 流式期间底部显示响应指示器；出错显示诊断卡
  */
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Brain, ChevronDown, ChevronUp, Wrench } from "lucide-react";
+import { ArrowDown, Brain, ChevronDown, ChevronRight, ChevronUp, Wrench } from "lucide-react";
 import type { UIMessage } from "ai";
+import { Badge } from "@/components/ui-shadcn/badge";
 import { Button } from "@/components/ui-shadcn/button";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -32,6 +33,11 @@ import { MarkdownStream } from "@/components/session/MarkdownStream";
 import { SingleLinePreview } from "@/components/session/SingleLinePreview";
 import { TimelineMarker } from "../components/session/TimelineMarker";
 import { isWebReasoningPartRunning, mergeAdjacentWebMessageParts } from "./webMessageParts";
+import {
+	groupWebAssistantParts,
+	groupWebTimelineMessages,
+	type WebToolPart,
+} from "./webToolGroups";
 
 /** 用户消息右对齐气泡（结构与桌面 UserBubble 一致，去掉操作栏/附件能力）。 */
 export const WebUserBubble = memo(function WebUserBubble(props: { message: UIMessage }) {
@@ -119,20 +125,11 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 	);
 });
 
-type WebToolPart = {
-	type: string;
-	toolName?: string;
-	toolCallId?: string;
-	state?: string;
-	output?: unknown;
-	errorText?: string;
-};
-
 /** 工具卡片（复用桌面 tool-card 视觉：图标 + 工具名 + 状态）。 */
 function formatToolPreview(value: unknown): string { if (value === undefined || value === null) return ''; const text = typeof value === 'string' ? value : (() => { try { return JSON.stringify(value); } catch { return ''; } })(); if (!text) return ''; const compact = text.replace(/\s+/gu, ' ').trim(); return compact.length > 120 ? compact.slice(0, 117) + '…' : compact; }
 
-export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart }) {
-	const { part } = props;
+export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart; withoutMarker?: boolean }) {
+	const { part, withoutMarker } = props;
 	// 静态工具 part 不携带 toolName，名称嵌在 type 里（`tool-${name}`）；动态工具带 toolName
 	const toolName =
 		part.toolName ||
@@ -143,8 +140,7 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart 
 	const running = state === "input-streaming" || state === "input-available";
 	const error = state === "output-error" || state === "error" || Boolean(part.errorText);
 	const preview = formatToolPreview(error ? part.errorText : running ? (part as any).input : part.output);
-	return (
-		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : "success"}>
+	const cardSection = (
 		<section
 			className={cn(
 				"tool-card inline-flex w-fit max-w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel transition-[border-color,background-color] duration-150",
@@ -178,6 +174,79 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart 
 				</span>
 			</div>
 		</section>
+	);
+
+	if (withoutMarker) {
+		return cardSection;
+	}
+
+	return (
+		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : "success"}>
+			{cardSection}
+		</TimelineMarker>
+	);
+});
+
+/** Web 端连续工具调用合并卡片：默认折叠，展开可查看每个工具。 */
+export const WebToolGroupCard = memo(function WebToolGroupCard(props: {
+	parts: WebToolPart[];
+	groupId: string;
+}) {
+	const { parts, groupId } = props;
+	const [expanded, setExpanded] = useState(false);
+
+	if (parts.length < 2) {
+		return parts[0] ? <WebToolCard part={parts[0]} /> : null;
+	}
+
+	const hasRunning = parts.some((p) => {
+		const s = p.state ?? "input-streaming";
+		return s === "input-streaming" || s === "input-available";
+	});
+	const hasError = parts.some((p) => {
+		const s = p.state ?? "input-streaming";
+		return s === "output-error" || s === "error" || Boolean(p.errorText);
+	});
+	const status = hasRunning ? "running" : hasError ? "error" : "done";
+
+	return (
+		<TimelineMarker kind="tool" tone={hasError ? "error" : hasRunning ? "active" : "success"}>
+			<section
+				className="tool-group-card w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel"
+				data-group-id={groupId}
+			>
+				<button
+					type="button"
+					className="flex min-h-6 w-full items-center gap-2 border-0 bg-transparent px-2 py-1 text-left text-control text-text-secondary cursor-pointer"
+					onClick={() => setExpanded((v) => !v)}
+					aria-expanded={expanded}
+				>
+					<Wrench size={14} className="shrink-0 text-text-tertiary" aria-hidden="true" />
+					<span className="font-medium text-text-primary">
+						{t("tool.group.title", { count: parts.length })}
+					</span>
+					{expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+					<Badge
+						variant={status === "error" ? "outline" : status === "running" ? "outline" : "secondary"}
+						className="px-1 py-0 text-micro"
+					>
+						{t(
+							status === "running"
+								? "tool.statusRunning"
+								: status === "error"
+									? "tool.statusError"
+									: "tool.statusDone"
+						)}
+					</Badge>
+				</button>
+				{expanded && (
+					<div className="flex flex-col gap-1 border-t border-border-subtle p-1.5">
+						{parts.map((part, index) => (
+							<WebToolCard key={part.toolCallId || index} part={part} withoutMarker />
+						))}
+					</div>
+				)}
+			</section>
 		</TimelineMarker>
 	);
 });
@@ -195,50 +264,44 @@ export const WebAssistantMessage = memo(function WebAssistantMessage(props: {
 		() => mergeAdjacentWebMessageParts(message.parts),
 		[message.parts],
 	);
+	const groupedItems = useMemo(
+		() => groupWebAssistantParts(displayParts, message),
+		[displayParts, message],
+	);
 	const askResult = getWebAskQuestionResult(message);
-	const firstToolIndex = askResult
-		? displayParts.findIndex(
-				(part) =>
-					part.type === "dynamic-tool" ||
-					(typeof part.type === "string" && part.type.startsWith("tool-")),
-		  )
-		: -1;
 	return (
 		<div className="w-full min-w-0">
-			{displayParts.map((part, index) => {
-				if (part.type === "reasoning") {
+			{groupedItems.map((item, index) => {
+				if (item.kind === "reasoning") {
 					return (
 						<WebThinkingBlock
 							key={index}
-							text={part.text}
-							running={isWebReasoningPartRunning(displayParts, index, isStreaming)}
+							text={item.part.text ?? ""}
+							running={isWebReasoningPartRunning(displayParts, item.originalIndex, isStreaming)}
 						/>
 					);
 				}
-				if (
-					part.type === "dynamic-tool" ||
-					(typeof part.type === "string" && part.type.startsWith("tool-"))
-				) {
-					// v7：静态工具 part.type 为 `tool-${toolName}`（tool-input-start 无 dynamic 标志），
-					// 动态工具为 "dynamic-tool"；toolName/toolCallId/state 都直接挂在 part 上
-					if (askResult && index === firstToolIndex) {
-						return <AskQuestionResultCard key={index} result={askResult} messageId={message.id} />;
-					}
+				if (item.kind === "tool-single") {
+					return <WebToolCard key={index} part={item.part} />;
+				}
+				if (item.kind === "tool-group") {
 					return (
-						<WebToolCard
-							key={index}
-							part={
-								part as unknown as WebToolPart
-							}
+						<WebToolGroupCard
+							key={item.id}
+							groupId={item.id}
+							parts={item.parts.map((p) => p.part)}
 						/>
 					);
 				}
-				if (part.type === "text") {
+				if (item.kind === "ask-result" && askResult) {
+					return <AskQuestionResultCard key={index} result={askResult} messageId={message.id} />;
+				}
+				if (item.kind === "text") {
 					return (
 						<Fragment key={index}>
-							{part.text ? (
+							{item.text ? (
 								<div className="timeline-inline-text">
-									<WebAssistantText text={part.text} isStreaming={isStreaming} />
+									<WebAssistantText text={item.text} isStreaming={isStreaming} />
 								</div>
 							) : null}
 						</Fragment>
@@ -405,6 +468,11 @@ export function WebTimeline(props: {
 		el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
 	};
 
+	const groupedMessages = useMemo(
+		() => groupWebTimelineMessages(messages),
+		[messages],
+	);
+
 	// 新消息或流式增量到达时，仅在用户原本接近底部时跟随，避免打断用户阅读历史。
 	useEffect(() => {
 		const frame = requestAnimationFrame(() => {
@@ -465,20 +533,30 @@ export function WebTimeline(props: {
 					</div>
 				) : (
 					<>
-						{messages.map((message) => (
-							<div key={message.id} className="mt-0">
-								{message.role === "user" ? (
-									<WebUserBubble message={message} />
-								) : (
-									<WebAssistantMessage
-										message={message}
-										isStreaming={
-											streaming && message === messages[messages.length - 1]
-										}
-									/>
-								)}
-							</div>
-						))}
+						{groupedMessages.map((item) => {
+							if (item.kind === "tool-message-group") {
+								return (
+									<div key={item.id} className="mt-0">
+										<WebToolGroupCard groupId={item.id} parts={item.parts} />
+									</div>
+								);
+							}
+							const message = item.message;
+							return (
+								<div key={message.id} className="mt-0">
+									{message.role === "user" ? (
+										<WebUserBubble message={message} />
+									) : (
+										<WebAssistantMessage
+											message={message}
+											isStreaming={
+												streaming && message === messages[messages.length - 1]
+											}
+										/>
+									)}
+								</div>
+							);
+						})}
 					</>
 				)}
 

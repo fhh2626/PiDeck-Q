@@ -417,6 +417,8 @@ export type SessionTimelineController = {
   /** 上滚查看历史时的渲染窗口轮数（贴底时渲染层用 TIMELINE_MOUNTED_TURN_LIMIT，忽略此值）。
    *  2026-08 黑屏治理：历史不再全量放开挂载，窗口随「显示更早」逐步扩大。 */
   scrolledWindowTurns: number;
+  /** 上滚查看历史时的展示条目预算上限。 */
+  scrolledWindowItems: number;
   /** 扩大上滚渲染窗口（+TIMELINE_WINDOW_EXPAND_STEP 轮）；数据翻页仍由滚动到顶自动加载负责。 */
   expandWindow: () => void;
   /** 编辑/删除发起前捕获刷新快照：await 前调用，固定原 sessionId/revision/已加载深度。 */

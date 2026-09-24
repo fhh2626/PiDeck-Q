@@ -109,6 +109,10 @@ import {
 import {
   isSameSessionPath,
 } from "./agentListDisplay";
+import {
+  buildSidebarSessionDeleteConfirm,
+  buildDraftSessionDeleteConfirm,
+} from "./components/sidebar/sidebarDeleteConfirm";
 import { resolveLocale, setI18nLocale, t, translateI18nDescriptor } from "./i18n";
 import {
   isChatProject,
@@ -2232,23 +2236,30 @@ export function App() {
         session.filePath,
       ),
     ).length;
-    if (childCount === 0) {
-      void deleteSidebarSession(projectId, session);
-      return;
-    }
-    overlays.showConfirm({
-      title: t("drawer.sessionDeleteTitle"),
-      message: t("drawer.sessionDeleteBodyWithChildren", {
-        name: session.name || t("common.untitled"),
-        count: childCount,
+    overlays.showConfirm(
+      buildSidebarSessionDeleteConfirm({
+        session,
+        childCount,
+        t,
+        clearConfirm: overlays.clearConfirm,
+        onExecuteDelete: () => {
+          void deleteSidebarSession(projectId, session);
+        },
       }),
-      danger: true,
-      confirmLabel: t("common.delete"),
-      onConfirm: () => {
-        overlays.clearConfirm();
-        void deleteSidebarSession(projectId, session);
-      },
-    });
+    );
+  }
+
+  async function requestDeleteDraftSession(session: SessionRecord) {
+    overlays.showConfirm(
+      buildDraftSessionDeleteConfirm({
+        session,
+        t,
+        clearConfirm: overlays.clearConfirm,
+        onExecuteDelete: () => {
+          void deleteDraftSession(session);
+        },
+      }),
+    );
   }
 
   const sidebarActions: SidebarActions = {
@@ -2301,7 +2312,7 @@ export function App() {
       createAnonymous: async (projectId) => {
         await createAnonymousSessionWithTab(projectId);
       },
-      deleteDraft: deleteDraftSession,
+      deleteDraft: requestDeleteDraftSession,
       rename: rename.openSessionRename,
       export: runExportSidebarSession,
       copy: runCopySidebarSession,
