@@ -478,13 +478,15 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		assert.equal(existsSync(configPath), true, "磁盘上自动补齐了 config.json");
 
 		// 2. workflowScript 内 native child 省略 async：
-		// 因为此时当前进程内存中上游默认仍为 asyncByDefault=true，必须 block，提示必须显式 async:false
+		// 即使当前进程内存中上游默认仍为 asyncByDefault=true，也要在执行前补全 foreground。
 		const omitWorkflow = {
 			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile' });`,
 		};
 		const resOmit = await toolCallHandler({ toolName: "subagent", input: omitWorkflow });
-		assert.ok(resOmit && resOmit.block === true);
-		assert.match(resOmit.reason, /必须显式声明 async:false/);
+		assert.equal(resOmit, undefined);
+		assert.match(omitWorkflow.workflowScript, /\{async: false,  agent: 'worker', task: 'compile'/);
+		assert.equal(omitWorkflow.async, false);
+		assert.equal(omitWorkflow.foregroundOnly, true);
 
 		// 3. workflowScript 内 native child 显式声明 async: true：
 		// 必须 block
@@ -505,8 +507,7 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		assert.equal(safeWorkflow.async, false);
 		assert.equal(safeWorkflow.foregroundOnly, true, "workflowScript 顶层调用也必须被注入 foregroundOnly: true");
 
-		// 5. runs.all 包含省略 async 的 native child：
-		// 必须 block
+		// 5. runs.all 包含省略 async 的 native child：只给缺失的子项补全。
 		const omitAllWorkflow = {
 			workflowScript: `return await runs.all([
 				{ key: 'a', agent: 'worker', task: 't1', async: false },
@@ -514,8 +515,10 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 			]);`,
 		};
 		const resAllOmit = await toolCallHandler({ toolName: "subagent", input: omitAllWorkflow });
-		assert.ok(resAllOmit && resAllOmit.block === true);
-		assert.match(resAllOmit.reason, /必须显式声明 async:false/);
+		assert.equal(resAllOmit, undefined);
+		assert.match(omitAllWorkflow.workflowScript, /\{async: false,  key: 'b', agent: 'worker', task: 't2'/);
+		assert.equal(omitAllWorkflow.async, false);
+		assert.equal(omitAllWorkflow.foregroundOnly, true);
 
 		// 6. runs.all 全部显式声明 async: false：
 		// 必须放行
@@ -555,10 +558,10 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const r3 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: false });", fakeCatalog);
 	assert.equal(r3.ok, true);
 
-	// 4. runs.run 省略 async -> 阻断
+	// 4. runs.run 省略 async -> 安全补全后执行，不能依赖上游进程内的旧默认值
 	const r4 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker' });", fakeCatalog);
-	assert.equal(r4.ok, false);
-	assert.match(r4.reason, /必须显式声明 async:false/);
+	assert.equal(r4.ok, true);
+	assert.equal(r4.workflowScript, "return await runs.run('a', {async: false,  agent: 'worker' });");
 
 	// 5. runs.run 显式 async: true -> 阻断
 	const r5 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: true });", fakeCatalog);
@@ -585,17 +588,34 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	`, fakeCatalog);
 	assert.equal(r7.ok, true);
 
-	// 8. runs.lanes 带有 agent 启动的 stage 省略 async -> 阻断
+	// 8. runs.lanes 带有 agent 启动的 stage 省略 async -> 补全；resume-only 不补全
 	const r8 = validateStandaloneWorkflowScript(`
 		return await runs.lanes([{
 			key: 'l1',
 			stages: [
-				{ key: 's1', agent: 'worker', task: 't1' }
+				{ key: 's1', agent: 'worker', task: 't1' },
+				{ key: 's2', resume: 'previous', task: 't2' }
 			]
 		}]);
 	`, fakeCatalog);
-	assert.equal(r8.ok, false);
-	assert.match(r8.reason, /必须显式声明 async:false/);
+	assert.equal(r8.ok, true);
+	assert.match(r8.workflowScript, /\{async: false,  key: 's1', agent: 'worker'/);
+	assert.match(r8.workflowScript, /\{ key: 's2', resume: 'previous'/);
+
+	// 多个缺省 child 按源代码位置补全，不改变已有明确 async:false 的项。
+	const multiple = validateStandaloneWorkflowScript(`return await runs.all([
+		{ key: 'a', agent: 'worker' },
+		{ key: 'b', agent: 'worker', async: false },
+		{ key: 'c', agent: 'worker' }
+	]);`, fakeCatalog);
+	assert.equal(multiple.ok, true);
+	assert.equal((multiple.workflowScript.match(/async: false/g) ?? []).length, 3);
+	assert.equal(validateStandaloneWorkflowScript(multiple.workflowScript, fakeCatalog).workflowScript, multiple.workflowScript);
+
+	// 不允许先补全部分 children 再让不安全的启动通过：必须整体失败。
+	const mixedUnsafe = validateStandaloneWorkflowScript("return await runs.all([{key:'a', agent:'worker'}, {key:'b', agent:'worker', async:true}]);", fakeCatalog);
+	assert.equal(mixedUnsafe.ok, false);
+	assert.equal(mixedUnsafe.workflowScript, undefined);
 
 	// 9. runs.run 尝试启动 external-cli runner -> 在 standalone 下被阻断
 	const r9 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'codex-exec', async: false });", fakeCatalog);

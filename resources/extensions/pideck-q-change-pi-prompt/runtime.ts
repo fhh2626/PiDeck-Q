@@ -826,6 +826,9 @@ export function registerPromptExtension(
 					reason: validation.reason ?? '[change-pi-prompt] standalone Pi 环境拒绝不安全的 workflowScript。',
 				};
 			}
+			// The validated script makes omitted native child async:false explicit before
+			// the upstream workflow runner sees it (its in-memory default may still be true).
+			input.workflowScript = validation.workflowScript ?? input.workflowScript;
 		}
 
 		// Standalone native child: enforce foreground execution
