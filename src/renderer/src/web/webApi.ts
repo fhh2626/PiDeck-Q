@@ -165,6 +165,61 @@ export function abortRuntime(target: SessionRuntimeTarget): Promise<unknown> {
 	return callRuntimeCommand(target.sessionId, target, "abort");
 }
 
+/**
+ * 停止指定 Session 的运行时（优雅关闭）。
+ *
+ * stop 的响应是 SessionCommandResult<SessionRuntimeTarget>：value 直接是 target
+ * （见 SessionRuntimeCoordinator.stopRuntime 返回 { ok:true, value: target }），
+ * 没有 SessionTargetedValue 那层嵌套，因此不能走 callRuntimeCommand（它读 value.value，
+ * 会把成功关闭解析成 undefined）。本函数单独按非嵌套形状解析并核对身份。
+ */
+export async function stopRuntime(target: SessionRuntimeTarget): Promise<SessionRuntimeTarget> {
+	const res = await fetch(`/api/sessions/${encodeURIComponent(target.sessionId)}/runtime/stop`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ target }),
+	});
+	if (!res.ok) throw new Error(`runtime stop ${res.status}`);
+	const payload = (await res.json()) as { result?: SessionCommandResult<SessionRuntimeTarget> };
+	const result = payload.result;
+	if (!result || !result.ok) {
+		throw new Error(result?.error.code ?? "runtime stop failed");
+	}
+	const stopped = result.value;
+	// 损坏/串代的成功回包不得当成正常关闭：三元组一致才接受。
+	if (
+		!stopped ||
+		stopped.sessionId !== target.sessionId ||
+		stopped.agentId !== target.agentId ||
+		stopped.runtimeGeneration !== target.runtimeGeneration
+	) {
+		throw new Error("runtime stop returned an unexpected target");
+	}
+	return stopped;
+}
+
+/** 删除指定会话记录；会话若处于运行态需先停止才能删除。 */
+export async function deleteSession(sessionId: string): Promise<boolean> {
+	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, {
+		method: "POST",
+	});
+	if (!res.ok) {
+		let message = `delete session ${res.status}`;
+		try {
+			const body = (await res.json()) as { error?: string };
+			if (body.error) message = body.error;
+		} catch {
+			// ignore json parse error
+		}
+		throw new Error(message);
+	}
+	const payload = (await res.json()) as { deleted?: boolean };
+	if (payload.deleted !== true) {
+		throw new Error("delete session failed");
+	}
+	return true;
+}
+
 export async function fetchMessagePage(
 	sessionId: string,
 	before?: number,

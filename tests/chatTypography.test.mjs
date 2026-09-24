@@ -75,6 +75,13 @@ test("rendered CSS consumes tokens instead of hardcoded values", () => {
   assert.ok(streamdownChrome.includes("--chat-table-cell-padding-y"));
 });
 
+test("Streamdown headings keep a section gap above without adding space to the first heading", () => {
+  const css = readFileSync("src/renderer/src/styles/streamdownChrome.css", "utf8");
+  assert.match(css, /\.markdown-body \.space-y-4 > :not\(:last-child\)\s*\{[^}]*margin-block-start:\s*0;[^}]*margin-block-end:\s*var\(--chat-block-gap\);/);
+  // 普通区块的顶部仍由共享规则清零；后续标题才恢复上方章节间距，且使用同一个用户段距 token。
+  assert.match(css, /\.markdown-body \.space-y-4 > :is\(h1, h2, h3, h4, h5, h6\):not\(:first-child\)\s*\{[^}]*margin-block-start:\s*calc\(var\(--chat-block-gap\) \* 2\);/);
+});
+
 test("streaming Streamdown animation keeps the user chat line-height token", () => {
   const streamdownChrome = readFileSync("src/renderer/src/styles/streamdownChrome.css", "utf8");
   assert.match(streamdownChrome, /\.markdown-body \[data-sd-animate\]/);

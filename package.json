@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
   "engines": {
@@ -77,7 +77,8 @@
     "docs:build": "vitepress build docs-site",
     "docs:preview": "vitepress preview docs-site",
     "postinstall": "node scripts/fix-pty-permissions.js",
-    "typecheck:raw": "tsc --noEmit && tsc -p tsconfig.change-pi-prompt.json",
+    "typecheck:browser": "tsc -p tests/browser/tsconfig.json",
+    "typecheck:raw": "tsc --noEmit && tsc -p tsconfig.change-pi-prompt.json && npm run typecheck:browser",
     "typecheck": "npm run prepare:pi-latest && npm run typecheck:raw",
     "make-icon": "node scripts/make-icon.js",
     "verify": "npm run typecheck && npm test && npm run build && npm run build:native",

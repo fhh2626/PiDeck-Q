@@ -7,6 +7,11 @@ import vm from "node:vm";
 
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
+const {
+	SessionDeleteBlockedError,
+	isSessionDeleteBlocked,
+} = loadTsCommonJs("src/main/sessions/SessionDeleteBlockedError.ts");
+
 function loadWebServiceManager() {
 	return loadTsCommonJs("src/main/web/WebServiceManager.ts", {
 		// VM 沙箱默认没有 fetch（Node 18+ 全局），dev 代理与回退测试需要它
@@ -376,7 +381,25 @@ test("runtime HTTP commands preserve the full generation-validated target", asyn
 });
 
 test("catalog Session file operations are addressed only by stable Session ID", async () => {
-	await withServer(async ({ baseUrl }) => {
+	await withServer(async ({ baseUrl, runtime }) => {
+		const target = {
+			sessionId: runtime.sessionId,
+			agentId: runtime.agentId,
+			runtimeGeneration: runtime.runtimeGeneration,
+		};
+		const stopped = await (await fetch(`${baseUrl}/api/sessions/session-1/runtime/stop`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ target }),
+		})).json();
+		assert.equal(stopped.result.ok, true);
+
+		const deleted = await (await fetch(`${baseUrl}/api/sessions/session-1/delete`, {
+			method: "POST",
+			body: "{}",
+		})).json();
+		assert.equal(deleted.deleted, true);
+
 		const copied = await (await fetch(`${baseUrl}/api/sessions/session-1/copy`, {
 			method: "POST",
 			body: "{}",
@@ -877,4 +900,179 @@ test("POST /api/chat uses a unique requestId instead of the session id", async (
 		assert.equal(calls.send[0].message, "first");
 		assert.equal(calls.send[1].message, "second");
 	});
+});
+
+test("isSessionDeleteBlocked 生产守卫：运行中、普通激活中或匿名激活中均拒绝删除", () => {
+	const sessionId = "session-test";
+
+	// 1. 运行态：getTarget 返回目标
+	assert.equal(
+		isSessionDeleteBlocked(sessionId, {
+			getTarget: (id) => (id === sessionId ? { sessionId } : undefined),
+			isActivating: () => false,
+			isAnonymousActivating: () => false,
+		}),
+		true,
+		"active runtime must block deletion",
+	);
+
+	// 2. 普通会话激活态
+	assert.equal(
+		isSessionDeleteBlocked(sessionId, {
+			getTarget: () => undefined,
+			isActivating: (id) => id === sessionId,
+			isAnonymousActivating: () => false,
+		}),
+		true,
+		"coordinator activating must block deletion",
+	);
+
+	// 3. 匿名会话异步启动态
+	assert.equal(
+		isSessionDeleteBlocked(sessionId, {
+			getTarget: () => undefined,
+			isActivating: () => false,
+			isAnonymousActivating: (id) => id === sessionId,
+		}),
+		true,
+		"anonymous activating must block deletion",
+	);
+
+	// 4. 闲置无激活态：允许删除
+	assert.equal(
+		isSessionDeleteBlocked(sessionId, {
+			getTarget: () => undefined,
+			isActivating: () => false,
+			isAnonymousActivating: () => false,
+		}),
+		false,
+		"idle session must not be blocked",
+	);
+});
+
+test("GET /api/state 暴露 activatingSessionIds 且过滤内部子会话", async () => {
+	let activating = true;
+	const subagentSession = {
+		id: "internal-sub-1",
+		projectId: "project-1",
+		title: "Subagent Task",
+		isInternalSubagent: true,
+	};
+
+	await withServer(
+		async ({ baseUrl }) => {
+			const res = await (await fetch(`${baseUrl}/api/state`)).json();
+			assert.deepEqual(res.activatingSessionIds, ["session-1"]);
+
+			// 激活完成之后，列表清空
+			activating = false;
+			const res2 = await (await fetch(`${baseUrl}/api/state`)).json();
+			assert.deepEqual(res2.activatingSessionIds, []);
+		},
+		{
+			listCatalogSessions: async () => [
+				{ id: "session-1", projectId: "project-1", title: "Main Session" },
+				subagentSession,
+			],
+			listSessionRuntimes: () => [],
+			isSessionActivating: (id) => activating && (id === "session-1" || id === "internal-sub-1"),
+		},
+	);
+});
+
+test("Web 删除路由错误安全：区分 400 业务阻止与 500 内部异常，绝不泄露文件路径或内部错误", async () => {
+	let failureMode = "blocked"; // "blocked" | "internal" | "none"
+
+	await withServer(
+		async ({ baseUrl }) => {
+			// 1. 已知阻止删除：返回 400 业务错误，带用户可见提示
+			failureMode = "blocked";
+			const resBlocked = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(resBlocked.status, 400);
+			const blockedJson = await resBlocked.json();
+			assert.equal(blockedJson.code, "webError.deleteSessionBlocked");
+			assert.equal(blockedJson.error, "Stop the session runtime before deleting the session.");
+
+			// 2. 底层文件/回收站异常：返回 500，且绝对不泄露文件路径或敏感标记
+			failureMode = "internal";
+			const resInternal = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(resInternal.status, 500);
+			const internalRaw = await resInternal.text();
+			assert.doesNotMatch(internalRaw, /TOKEN_SENTINEL/);
+			assert.doesNotMatch(internalRaw, /C:[\\/]private[\\/]session\.jsonl/i);
+			const internalJson = JSON.parse(internalRaw);
+			assert.equal(internalJson.code, "webError.internal");
+			assert.equal(internalJson.error, "The web service encountered an internal error");
+
+			// 3. 正常删除：返回 200 { deleted: true }
+			failureMode = "none";
+			const resOk = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(resOk.status, 200);
+			const okJson = await resOk.json();
+			assert.equal(okJson.deleted, true);
+		},
+		{
+			deleteSessionRecord: async () => {
+				if (failureMode === "blocked") {
+					throw new SessionDeleteBlockedError("Stop the session runtime before deleting the session.");
+				}
+				if (failureMode === "internal") {
+					throw new Error("Failed to move C:\\private\\session.jsonl to trash: TOKEN_SENTINEL");
+				}
+				return true;
+			},
+		},
+	);
+});
+
+test("有状态删除保护：激活中或运行中的会话删除请求被后端拒绝，停止后方可删除", async () => {
+	let runtimeActive = true;
+	let activating = false;
+
+	await withServer(
+		async ({ baseUrl, runtime }) => {
+			// 1. 运行态时删除被拒绝，返回 400 业务错误
+			const delActive = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(delActive.status, 400);
+			const errActive = await delActive.json();
+			assert.match(errActive.error, /stopBeforeDelete|Stop the session runtime/i);
+
+			// 2. 激活中无 runtime 时删除也被拒绝，返回 400 业务错误
+			runtimeActive = false;
+			activating = true;
+			const delActivating = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(delActivating.status, 400);
+			const errActivating = await delActivating.json();
+			assert.match(errActivating.error, /stopBeforeDelete|Stop the session runtime/i);
+
+			// 3. 停止激活且无 runtime 时允许删除
+			activating = false;
+			const delStopped = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			assert.equal(delStopped.status, 200);
+			const okBody = await delStopped.json();
+			assert.equal(okBody.deleted, true);
+		},
+		{
+			listSessionRuntimes: () =>
+				runtimeActive
+					? [
+							{
+								sessionId: "session-1",
+								agentId: "agent-1",
+								runtimeGeneration: 3,
+								projectId: "project-1",
+								cwd: "C:/project",
+								status: "idle",
+								createdAt: 2,
+							},
+						]
+					: [],
+			deleteSessionRecord: async (sessionId) => {
+				if (runtimeActive || activating) {
+					throw new SessionDeleteBlockedError("Cannot delete running session: stopBeforeDelete");
+				}
+				return true;
+			},
+		},
+	);
 });

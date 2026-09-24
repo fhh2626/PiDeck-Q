@@ -25,8 +25,8 @@ export const DASHED_SURFACE =
 /** 卡片展开区内容 padding（Thinking/Compaction 的 markdown body）。 */
 export const CARD_BODY_PADDING = "px-2 py-0.5";
 
-/** Thinking/Compaction 折叠态单行预览 padding。 */
-export const CARD_PREVIEW_PADDING = "px-2 py-0.5 font-mono text-caption text-text-tertiary";
+/** Thinking 折叠态单行预览：显式标注字号类型，避免 cn/tailwind-merge 将 text-chat 误当作文字颜色而删掉。 */
+export const CARD_PREVIEW_PADDING = "px-2 py-0.5 text-[length:var(--font-size-chat)] leading-[var(--chat-body-line-height)] text-text-tertiary";
 
 /** Thinking/Compaction 标题行（两端共用同一节奏）：24px 行高、6px gap、4px 内边距。
  * Native 在此之上叠 `group relative`（扫光锚点）；Web 保持纯展示。 */

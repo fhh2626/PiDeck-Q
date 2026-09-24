@@ -130,6 +130,8 @@ export const DEFAULT_DENY_POWERSHELL_PATTERNS: string[] = [
 	"\\bnpm\\s+(install|uninstall|update|ci|publish)\\b",
 	"\\bpnpm\\s+(add|install|remove|update|publish)\\b",
 	"\\byarn\\s+(add|install|remove|publish)\\b",
+	"\\b(winget|choco|scoop|dotnet|cargo|go)\\s+(install|add|remove|uninstall|update|upgrade|publish)\\b",
+	"\\b(cmd|pwsh|powershell)(?:\\.exe)?\\s+.*(?:\\/c|\\/k|-command|-encodedcommand)\\b",
 ];
 
 /** 内置默认等级（工厂函数：每次返回全新副本，避免共享引用被 UI 修改） */
@@ -152,7 +154,7 @@ export function createDefaultSecurityLevels(): SecurityLevelConfig[] {
 		{
 			id: "standard",
 			name: "标准",
-			description: "危险命令先确认，敏感文件受保护，目录不限制。",
+			description: "所有命令先确认；危险命令和敏感文件受保护，目录不限制。",
 			builtin: true,
 			toolActions: { bash: "ask", powershell: "ask" },
 			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,

@@ -48,7 +48,7 @@ import { MessageScroller } from "../agents/message-scroller";
 import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
 import {
-  selectTimelineTurnWindow,
+  resolveTimelineTurnWindow,
   shouldWindowTimelineTurns,
   TIMELINE_MOUNTED_TURN_LIMIT,
   TIMELINE_SCROLLED_MAX_ITEMS,
@@ -378,14 +378,16 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   const turnWindowTurns = followingForTurnWindow
     ? TIMELINE_MOUNTED_TURN_LIMIT
     : controller.scrolledWindowTurns;
-  const displayRuns = useMemo(
-    () => selectTimelineTurnWindow(
+  const turnWindow = useMemo(
+    () => resolveTimelineTurnWindow(
       reconciledRuns,
       turnWindowTurns,
-      followingForTurnWindow ? undefined : TIMELINE_SCROLLED_MAX_ITEMS,
+      followingForTurnWindow ? undefined : controller.scrolledWindowItems,
     ),
-    [followingForTurnWindow, reconciledRuns, turnWindowTurns],
+    [controller.scrolledWindowItems, followingForTurnWindow, reconciledRuns, turnWindowTurns],
   );
+  const displayRuns = turnWindow.displayItems;
+  const turnWindowActive = turnWindow.windowActive;
   // 「最后一个 agent-run」：live 挂载门的判定基准。不能按最后一条显示条目判定：
   // steer 排队期显示数组以用户消息结尾（新轮尚未产生首条消息），最后一条 agent-run
   // 才是真正的流式轮；反过来若门控放宽到任意轮，被 steer 打断的旧轮（尾部是空文本
@@ -400,10 +402,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     }
     return -1;
   }, [displayRuns]);
-  const turnWindowActive = shouldWindowTimelineTurns(
-    countAgentRunItems(reconciledRuns),
-    turnWindowTurns,
-  );
+  
   // 窗口轮数变化（上滚 3→15、点「显示更早」扩大）会在顶部插入内容，需补偿 scrollTop
   // 保持视口内容不动；数据 prepend 的补偿由 controller 的 loadMoreAnchorRef 负责，
   // 两者按「窗口轮数变化 / 数据变化」分工，不会同帧双重补偿。贴底时由引擎接管不补偿。
@@ -645,9 +644,11 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                 {t("timeline.loadingMore")}
               </>
             ) : turnWindowActive
-                ? t("timeline.loadEarlierTurns", {
-                    count: countAgentRunItems(reconciledRuns) - turnWindowTurns,
-                  })
+                ? turnWindow.hiddenRunCount > 0
+                  ? t("timeline.loadEarlierTurns", {
+                      count: turnWindow.hiddenRunCount,
+                    })
+                  : t("timeline.loadEarlierContent")
                 : controller.nextLoadIsHistory
                   ? t("timeline.loadMoreTurns")
                   : t("timeline.loadMoreHistory", {

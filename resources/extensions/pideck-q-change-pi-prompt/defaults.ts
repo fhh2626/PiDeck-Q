@@ -57,6 +57,8 @@ export interface Config {
 	subagent: boolean;
 	/** Hide bash/powershell whose backends are missing, and omit their prompt sections. */
 	pruneUnavailableShells: boolean;
+	/** Hide grep/find when rg/fd is absent from PATH and Pi's managed bin directory. */
+	pruneUnavailableSearchTools: boolean;
 	unknownGuidelines: "preserve" | "skip";
 }
 export const DEFAULT_CONFIG: Config = {
@@ -68,6 +70,7 @@ export const DEFAULT_CONFIG: Config = {
 	pwsh: true,
 	subagent: true,
 	pruneUnavailableShells: true,
+	pruneUnavailableSearchTools: true,
 	unknownGuidelines: "preserve",
 };
 

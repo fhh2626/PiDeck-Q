@@ -70,6 +70,7 @@ export interface SessionRuntimeBridge {
 	createAnonymousSession(
 		input: CreateAnonymousSessionInput,
 	): Promise<CreateAnonymousSessionResult>;
+	isAnonymousActivating(sessionId: string): boolean;
 	stopSessionRuntime(
 		target: SessionRuntimeTarget,
 	): Promise<SessionCommandResult<SessionRuntimeTarget>>;
@@ -111,6 +112,8 @@ export function createSessionRuntimeBridge(
 		mainCopy,
 		sendToRenderer,
 	} = deps;
+
+	const activatingAnonymousSessions = new Set<string>();
 
 	function sendSessionRuntimeEnvelope(event: SessionRuntimeEvent): void {
 		sendToRenderer(ipcChannels.sessionsRuntimeEvent, event);
@@ -271,6 +274,8 @@ export function createSessionRuntimeBridge(
 				platform: process.platform,
 				arch: process.arch,
 			});
+		} finally {
+			activatingAnonymousSessions.delete(session.id);
 		}
 	}
 
@@ -327,6 +332,7 @@ export function createSessionRuntimeBridge(
 		});
 		// Agent 启动可能包含 spawn/get_state/历史准备；匿名会话先返回可选中的 Session，
 		// 再后台绑定 runtime。这样欢迎页点击后能立即进入输入框，启动失败仍通过 detach/日志收敛。
+		activatingAnonymousSessions.add(session.id);
 		void activateAnonymousRuntime(session, project, input).catch(() => undefined);
 		sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: session.projectId });
 		return { session };
@@ -519,6 +525,7 @@ export function createSessionRuntimeBridge(
 		emitSessionRuntimeDetach,
 		discardAnonymousSession,
 		createAnonymousSession,
+		isAnonymousActivating: (sessionId) => activatingAnonymousSessions.has(sessionId),
 		stopSessionRuntime,
 		stopAgentFromMonitor,
 		emitReplacementState,

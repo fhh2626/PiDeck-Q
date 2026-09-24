@@ -212,7 +212,17 @@ test("bundled agents in pideck-q-subagents match expected runner and tool catego
 		const agent = catalog.agents.get(name);
 		assert.ok(agent, `Agent ${name} must exist in catalog`);
 		assert.equal(agent.runnerType, "native", `Agent ${name} must be native`);
-		assert.ok(Array.isArray(agent.tools) && agent.tools.length > 0, `Agent ${name} must declare tools`);
+		assert.ok(Array.isArray(agent.tools), `Agent ${name} must have a parsed tool list`);
+		if (name === "researcher") assert.ok(agent.tools.length > 0, "Researcher requires explicitly provided search tools");
+		else {
+			assert.ok(agent.tools.includes("read"), `${name} must include read`);
+			assert.equal(agent.tools.includes("grep"), false, `${name} must not require grep`);
+			assert.equal(agent.tools.includes("find"), false, `${name} must not require find`);
+			assert.equal(agent.tools.includes("ls"), false, `${name} must not require ls`);
+			assert.equal(agent.tools.includes("bash"), false, `${name} must not require fixed bash`);
+			assert.equal(agent.tools.includes("powershell"), false, `${name} must not require fixed powershell`);
+			assert.equal(agent.hostShell, true, `${name} must declare hostShell: true`);
+		}
 	}
 
 	// External CLI agents
@@ -308,46 +318,6 @@ test("child prompt mode preserves original role text and injects idempotent chil
 	assert.ok(injectedNoShell.includes("No shell tool is available; use only the non-shell tools that are active in this child."));
 	assert.ok(!injectedNoShell.includes("`bash`"));
 	assert.ok(!/read\/grep|edit\/write/.test(injectedNoShell));
-});
-
-// 10. pwsh-adapter bash + powershell 独立判断 bug 修复
-test("transformSystemPrompt handles both pwsh-adapter bash and powershell tool independently", () => {
-	const prompt = `You are Pi, an AI assistant.
-
-Available tools:
-- bash: Execute bash commands
-- powershell: Execute powershell commands
-
-Guidelines:
-- Be concise
-- Use bash for file operations like ls, rg, find
-
-Pi documentation (online):
-- Main documentation: https://...
-- Additional docs: https://...
-- Examples: https://...
-`;
-
-	const tools = [
-		{ name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter.js" } },
-		{ name: "powershell", sourceInfo: { source: "builtin" } },
-	];
-	const activeTools = ["bash", "powershell"];
-
-	const input = {
-		systemPrompt: prompt,
-		tools,
-		activeTools,
-		config: DEFAULT_CONFIG,
-		prompts: DEFAULT_PROMPTS,
-		hostOs: "Windows 11",
-		today: "2026-09-10",
-	};
-
-	const result = transformSystemPrompt(input);
-	// 必须同时包含 pwsh 的解释 与 powershell 的 generic shell 解释
-	assert.ok(result.systemPrompt.includes("Invoke Bash explicitly for Bash-only syntax"), "Must include pwsh guidance");
-	assert.ok(result.systemPrompt.includes("follow the runtime and syntax stated in the active tool description"), "Must include shell guidance for powershell");
 });
 
 // 11. settings.json non-destructive reconciliation
@@ -451,10 +421,6 @@ test("resolveToolProviderExtension rejects builtin or relative fake paths", () =
 const WORKER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "contact_supervisor"];
 const REVIEWER_TOOLS = ["read", "grep", "find", "ls", "contact_supervisor"];
 
-function pwshAdapterTool(path) {
-	return { name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path } };
-}
-
 /** Registered-tool snapshots for child-side canonicalization calls. */
 function registered(...names) {
 	return names.map((name) => ({ name, sourceInfo: { source: "builtin" } }));
@@ -498,38 +464,6 @@ test("Windows PowerShell-only parent does not rewrite a bash-only child into pow
 	const block = buildChildToolEnvironmentBlock(childActive);
 	assert.ok(block.includes("- No shell tool is available; use only the non-shell tools that are active in this child."));
 	assert.ok(block.includes("- Available tools below are authoritative for this runtime."));
-});
-
-// 15. pwsh-adapter 回归：adapter 占着 bash 名字也不等于真实 bash 后端
-test("pwsh-adapter bash slot never keeps bash and never blocks the canonical powershell", () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-pwsh-adapter-"));
-	try {
-		const adapterPath = join(tempDir, "pwsh-adapter.ts");
-		writeFileSync(adapterPath, "// pwsh adapter", "utf8");
-
-		const parentTools = [
-			{ name: "read", sourceInfo: { source: "builtin" } },
-			pwshAdapterTool(adapterPath),
-			{ name: "powershell", sourceInfo: { source: "builtin" } },
-		];
-		const parentActiveTools = ["read", "powershell"];
-
-		const policy = resolveEffectiveShellPolicy({
-			platform: "win32",
-			availability: { bash: false, powershell: true },
-			parentTools,
-			parentActiveTools,
-		});
-		assert.equal(policy.bash, false, "a pwsh adapter must not make the child bash slot active");
-		assert.equal(policy.powershell, true);
-
-		const slots = resolveChildShellSlots({ platform: "win32", policy, declaredTools: WORKER_TOOLS });
-		assert.equal(slots.bash, false);
-		assert.equal(slots.powershell, false, "a bash-only agent must not receive undeclared powershell");
-		assert.deepEqual(slots.providerPaths, [], "the adapter must not be injected for the bash slot");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
 });
 
 // 16. 真实 Git Bash + PowerShell 共存
@@ -748,7 +682,7 @@ test("reconcileChildEnvironments does not rewrite bash-only agents on a PowerShe
 			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
 		});
 
-		// bash-only agents：缺少 bash 后端不再伪装成 powershell，也不把 builtin shell 当成 missing provider
+		// Ambient tools are selected at child startup; no unavailable shell or search tool is mandatory.
 		for (const name of ["worker", "scout", "oracle", "delegate"]) {
 			const status = res.compatibilityStatus.get(name);
 			assert.ok(status, `${name} must be reconciled`);
@@ -757,7 +691,7 @@ test("reconcileChildEnvironments does not rewrite bash-only agents on a PowerShe
 			assert.equal(status.missingTools.includes("powershell"), false);
 		}
 
-		// 无 shell 需求的 reviewer 不受影响
+		// Reviewer also inherits available tools without a fixed shell requirement.
 		const reviewer = res.compatibilityStatus.get("reviewer");
 		assert.ok(reviewer);
 		assert.equal(reviewer.ok, true, reviewer.missingTools.join(","));
@@ -769,21 +703,16 @@ test("reconcileChildEnvironments does not rewrite bash-only agents on a PowerShe
 		assert.equal(researcher.missingTools.includes("web_search"), true, "Inactive parent extension tools must be reported missing for this parent");
 		assert.equal(researcher.injectedExtensions.includes(dormantWebSearchPath), true, "A loadable provider belongs to the shared superset");
 
-		// settings.json 不得出现 pwsh-adapter 类的 bash provider 注入
+		// Platform-independent agents receive a managed host-shell tools override on Windows.
 		const settings = existsSync(join(tempDir, "settings.json"))
 			? JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"))
 			: { subagents: { agentOverrides: {} } };
-		for (const name of ["worker", "scout", "oracle", "delegate"]) {
-			const list = settings.subagents?.agentOverrides?.[name]?.subagentOnlyExtensions ?? [];
-			for (const entry of list) {
-				assert.equal(/pi-pwsh-adapter/.test(entry), false, `${name} must not keep a pwsh-adapter provider`);
-			}
-			const tools = settings.subagents?.agentOverrides?.[name]?.tools;
-			assert.ok(Array.isArray(tools), `${name} must receive a host-shell tools override`);
-			assert.equal(tools.includes("bash"), false, `${name} must not keep bash without a bash backend`);
-			assert.equal(tools.includes("powershell"), true, `${name} must allow powershell on this host`);
+		for (const name of ["worker", "scout", "oracle", "delegate", "reviewer"]) {
+			const override = settings.subagents?.agentOverrides?.[name];
+			assert.ok(Array.isArray(override?.tools), `${name} must receive a host-shell tools override`);
+			assert.equal(override.tools.includes("bash"), false, `${name} must not keep bash without a bash backend`);
+			assert.equal(override.tools.includes("powershell"), true, `${name} must allow powershell on this host`);
 		}
-		assert.equal(settings.subagents?.agentOverrides?.reviewer?.tools, undefined, "reviewer must not receive a tools override");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -872,27 +801,89 @@ test("managed host-shell tools overrides update when the host backends change", 
 	}
 });
 
+test("matrix: reconcileChildEnvironments manages host shells according to backend availability", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-matrix-"));
+	try {
+		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
+		const parentTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "edit", sourceInfo: { source: "builtin" } },
+			{ name: "write", sourceInfo: { source: "builtin" } },
+			{ name: "contact_supervisor", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		];
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
+		const testScenario = async ({ platform, hostShells, expectedShells }) => {
+			const activeShells = [];
+			if (hostShells.bash) activeShells.push("bash");
+			if (hostShells.powershell) activeShells.push("powershell");
+			await reconcileChildEnvironments({
+				agentDir: tempDir,
+				catalog,
+				parentTools,
+				parentActiveTools: ["read", "edit", "write", "contact_supervisor", ...activeShells],
+				platform,
+				shellPolicy: resolveEffectiveShellPolicy({
+					platform,
+					availability: hostShells,
+					parentTools,
+					parentActiveTools: ["read", "edit", "write", "contact_supervisor", ...activeShells],
+				}),
+				hostShells,
+				changePiPromptPath,
+			});
+			const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+			const workerTools = settings.subagents?.agentOverrides?.worker?.tools ?? catalog.agents.get("worker").tools;
+			for (const shell of expectedShells) {
+				assert.equal(workerTools.includes(shell), true, `Expected ${shell} in ${JSON.stringify(workerTools)}`);
+			}
+			if (!expectedShells.includes("bash")) {
+				assert.equal(workerTools.includes("bash"), false, `Did not expect bash in ${JSON.stringify(workerTools)}`);
+			}
+			if (!expectedShells.includes("powershell")) {
+				assert.equal(workerTools.includes("powershell"), false, `Did not expect powershell in ${JSON.stringify(workerTools)}`);
+			}
+		};
+
+		// 1. Windows with only PowerShell
+		await testScenario({ platform: "win32", hostShells: { bash: false, powershell: true }, expectedShells: ["powershell"] });
+		// 2. Linux with only Bash
+		await testScenario({ platform: "linux", hostShells: { bash: true, powershell: false }, expectedShells: ["bash"] });
+		// 3. Both available
+		await testScenario({ platform: "win32", hostShells: { bash: true, powershell: true }, expectedShells: ["bash", "powershell"] });
+		// 4. Neither available -> tools override omitted, agent keeps base tools without failing
+		await testScenario({ platform: "win32", hostShells: { bash: false, powershell: false }, expectedShells: [] });
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("host-shell tools override is omitted when it matches the agent frontmatter", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-tools-match-"));
 	try {
 		const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
 		const parentTools = [
 			{ name: "read", sourceInfo: { source: "builtin" } },
-			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "edit", sourceInfo: { source: "builtin" } },
+			{ name: "write", sourceInfo: { source: "builtin" } },
+			{ name: "contact_supervisor", sourceInfo: { source: "builtin" } },
 		];
+		// When no shell backend is available, desiredTools matches worker's non-shell base tools, so no override is written.
 		await reconcileChildEnvironments({
 			agentDir: tempDir,
 			catalog,
 			parentTools,
-			parentActiveTools: ["read", "bash"],
+			parentActiveTools: ["read", "edit", "write", "contact_supervisor"],
 			platform: "linux",
 			shellPolicy: resolveEffectiveShellPolicy({
 				platform: "linux",
-				availability: { bash: true, powershell: false },
+				availability: { bash: false, powershell: false },
 				parentTools,
-				parentActiveTools: ["read", "bash"],
+				parentActiveTools: ["read", "edit", "write", "contact_supervisor"],
 			}),
-			hostShells: { bash: true, powershell: false },
+			hostShells: { bash: false, powershell: false },
 			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
 		});
 		const settings = existsSync(join(tempDir, "settings.json"))
@@ -924,11 +915,22 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 			const { mockPi, setTools, getHandler } = createMockPi();
 			setTools(registered);
 			mockPi.setActiveTools(activeTools);
+			mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+			writeFileSync(
+				shellPolicySnapshotPath(tempDir, `pid-${process.pid}`),
+				JSON.stringify({
+					version: 2,
+					platform: "win32",
+					shell: { bash: false, powershell: false },
+					parentActiveTools: registered.map(t => t.name),
+				}),
+				"utf8",
+			);
 			registerPromptExtension(mockPi, tempDir, {
 				probeHost: {
 					platform: "win32",
 					env: { Path: "" },
-					exists: path => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					exists: path => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" || path.toLowerCase().includes("rg") || path.toLowerCase().includes("fd"),
 				},
 				isStandalone: () => true,
 			});
@@ -958,23 +960,6 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
-});
-
-// 13. pwsh-adapter 回归：即使 Git Bash 真的存在，adapter 占着 bash 名字也不能把 bash 重新加回来
-test("a pwsh-adapter bash slot is never re-added even when a real bash backend exists", () => {
-	const childActive = reconcileChildActiveShellTools({
-		platform: "win32",
-		availability: { bash: true, powershell: true },
-		registeredTools: [
-			{ name: "bash", sourceInfo: { source: "npm:@99percentpeople/pi-pwsh-adapter", path: "C:/adapter.ts" } },
-			{ name: "powershell", sourceInfo: { source: "builtin" } },
-		],
-		activeTools: WORKER_TOOLS,
-		wantsShell: true,
-		ceiling: { bash: false, powershell: true },
-	});
-	assert.equal(childActive.includes("bash"), false, "adapter-occupied bash must never be treated as a real backend");
-	assert.equal(childActive.includes("powershell"), false, "powershell must not be invented for a bash-only allowlist");
 });
 
 // 14. parent shell ceiling：parent 不开的 shell，child 不能因为本机后端存在而自己加回来
@@ -1095,6 +1080,7 @@ test("a child session never runs global reconciliation", async () => {	const tem
 		utimesSync(stalePath, past, past);
 
 		// parent session 才写（loadSubagentCatalog 能找到 bundled agents）
+		mockPi.setActiveTools(["subagent", "read", "bash"]);
 		const parentPrompt = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n";
 		await getHandler("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: { selectedTools: ["subagent", "read", "bash"] } }, ctx);
 		assert.equal(existsSync(join(tempDir, "settings.json")), true, "the parent must still reconcile child overrides");
@@ -1428,18 +1414,18 @@ test("a globally loaded provider does not become active in a session that did no
 		});
 		assert.deepEqual(aPruned, ["read", "grep", "web_search"]);
 
-		// 没有 version 2 snapshot（旧 parent / 文件缺失）：保持旧行为，不误删
+		// 没有 version 2 snapshot（旧 parent / 文件缺失）：fail closed，只保留协调工具
 		assert.deepEqual(
 			reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: undefined }),
-			childActive,
+			[],
 		);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
 
-// 24. builtin / pi-subagents 内部工具不会被 parent activeTools 误 prune
-test("builtin and pi-subagents internal child tools survive the parent ceiling", () => {
+// 24. 只有 child 协调工具和 parent 允许的工具能保留；未授权的 builtin 工具必须被 prune
+test("only coordination tools and parent-active tools survive the parent ceiling", () => {
 	const registeredTools = [
 		{ name: "read", sourceInfo: { source: "builtin" } },
 		{ name: "grep", sourceInfo: { source: "builtin" } },
@@ -1449,9 +1435,9 @@ test("builtin and pi-subagents internal child tools survive the parent ceiling",
 	];
 	const childActive = ["read", "grep", "find", "ls", "contact_supervisor"];
 
-	// parent 只 active 了 read：其余全部仍是 child runtime 自己提供的工具
+	// parent 只 active 了 read：其余未授权 builtin 被 prune，只有 coordination 工具保留
 	const pruned = reconcileChildExtensionTools({ registeredTools, activeTools: childActive, parentActiveTools: ["read"] });
-	assert.deepEqual(pruned, childActive);
+	assert.deepEqual(pruned, ["read", "contact_supervisor"]);
 
 	assert.equal(isBuiltinOrInternalChildTool("contact_supervisor"), true);
 	assert.equal(isBuiltinOrInternalChildTool("structured_output"), true);
@@ -1459,10 +1445,10 @@ test("builtin and pi-subagents internal child tools survive the parent ceiling",
 	assert.equal(isBuiltinOrInternalChildTool("subagent_supervisor"), true);
 	assert.equal(isBuiltinOrInternalChildTool("web_search"), false);
 
-	// registry 标记为 builtin 的工具同样不受 ceiling 影响；未知工具不猜、不删
+	// 未授权的工具一律 prune；只有 coordination 工具能例外
 	assert.deepEqual(
 		reconcileChildExtensionTools({ registeredTools, activeTools: ["read", "mystery"], parentActiveTools: [] }),
-		["read", "mystery"],
+		[],
 	);
 });
 

@@ -15,6 +15,7 @@ import { cn } from "../../lib/utils";
 // Be UI AI Sidebar 的资源树强调“容器可展开、资源可选中”：项目行保持轻量，
 // 只有当前资源使用 inset surface，避免每个项目都变成独立卡片。
 // 根项目行保留折叠层级，但收窄左右留白，给窄侧栏中的目录名多留出可用宽度。
+// 图标/标题在各自按钮内下移 2px，配合 Agent 标题上移；不移动按钮或缩小命中区域。
 const treeRowClass =
   "group conversation relative flex min-h-7 w-full items-center gap-1.5 rounded-sm border border-transparent pl-1 py-0 text-body text-foreground shadow-none transition-[background-color,box-shadow] duration-200 hover:bg-muted/60 hover:text-foreground";
 
@@ -86,7 +87,7 @@ export function ProjectTree(props: {
       const rootProjectSessions = props.controller.catalog.sessionsByProject[project.id] ?? [];
       // 运行态属于具体会话，而不是项目容器；项目行只负责导航，避免多个 Agent 同时运行时
       // 项目头像出现无法指向目标会话的聚合动画。
-      return <div key={project.id} className={cn("project-group mb-0.5", project.worktreeEnabled && "worktree-enabled")}>
+      return <div key={project.id} className={cn("project-group mb-0", project.worktreeEnabled && "worktree-enabled")}>
         <div
           className={cn(
             treeRowClass,
@@ -105,7 +106,7 @@ export function ProjectTree(props: {
             aria-label={collapsed ? t("app.projectExpand") : t("app.projectCollapse")}
             onClick={() => props.controller.toggleProject(project.id)}
           >
-            <ChevronRight size={14} className={cn("transition-transform", !collapsed && "rotate-90")} />
+            <ChevronRight size={14} className={cn("translate-y-0.5 transition-transform", !collapsed && "rotate-90")} />
           </button>
           {/* 主按钮只占剩余 flex 空间；右侧 actions 是同级、非重叠的命中区域。 */}
           <PathTooltip content={`${projectDirectoryName}\n${project.path}`}>
@@ -124,12 +125,12 @@ export function ProjectTree(props: {
                 props.actions.projects.select(project.id);
               }}
             >
-              <span className="grid size-5 shrink-0 place-items-center text-muted-foreground" aria-hidden="true">
+              <span className="relative top-0.5 grid size-5 shrink-0 place-items-center text-muted-foreground" aria-hidden="true">
                 {collapsed ? <Folder size={14} /> : <FolderOpen size={14} />}
               </span>
               <div className="conversation-body min-w-0 flex-1">
                 <div className="conversation-title flex min-w-0 items-center">
-                  <strong className="min-w-0 flex-1 truncate font-medium">{projectDirectoryName}</strong>
+                  <strong className="relative top-0.5 min-w-0 flex-1 truncate font-medium">{projectDirectoryName}</strong>
                 </div>
                 {/* 项目名称只承担导航信息；详细会话状态由下方的 Agent/历史会话行承担。 */}
               </div>
@@ -178,7 +179,7 @@ export function ProjectTree(props: {
           </div>
         </div>
         {!collapsed && (
-          <div className="relative ml-3 mt-0.5 mr-1 space-y-px pl-2">
+          <div className="relative ml-3 mt-0 mr-1 space-y-px pl-2">
             {/* 展开内容不依赖当前选中项，项目切换只改变高亮，避免两棵会话树同时伸缩造成布局抖动。 */}
             {project.worktreeEnabled ? (
               <WorktreeTree

@@ -36,6 +36,17 @@ test('inactive bash and powershell rows disappear with their shell guidelines', 
   assert.doesNotMatch(result.systemPrompt, /For shell commands|For `bash`/);
   assert.match(result.diagnostics.join('\n'), /shell-tools: pruned/);
 });
+test('inactive grep/find rows are removed without hiding read or ls', () => {
+  const prompt = fixture().replace(
+    'Available tools:\n- read: Read file contents',
+    'Available tools:\n- read: Read file contents\n- grep: Search files\n- find: Discover paths\n- ls: List files',
+  );
+  const result = run(prompt, [tool('read'), tool('grep'), tool('find'), tool('ls')], { activeTools: ['read', 'ls'] });
+  assert.doesNotMatch(result.systemPrompt, /- grep: |- find: /);
+  assert.match(result.systemPrompt, /- read: Read file contents/);
+  assert.match(result.systemPrompt, /- ls: List files/);
+  assert.match(result.diagnostics.join('\n'), /search-tools: pruned/);
+});
 test('active powershell keeps the generic shell guideline and its catalog row', () => {
   const prompt = fixture(coreRules).replace(
     'Available tools:\n- read: Read file contents',
@@ -70,18 +81,6 @@ test('identity wording changes within the Pi header are supported', () => {
 test('unknown extension guidance survives byte-for-byte, including multiline rules', () => {
   const rule = 'UNRELATED guidance\n  - keep this nested rule';
   assert.ok(run(fixture([...coreRules, rule])).systemPrompt.includes('- ' + rule));
-});
-test('pwsh updated guidelines are recognized from current source metadata', () => {
-  const rule = 'UPDATED shell provider instruction';
-  const tools = [tool('bash', [rule], 'npm:@99percentpeople/pi-pwsh-adapter', '/npm/@99percentpeople/pi-pwsh-adapter/index.min.js')];
-  const result = run(fixture([...coreRules, rule]), tools);
-  assert.doesNotMatch(result.systemPrompt, /UPDATED shell/);
-  assert.match(result.systemPrompt, /runtime.*tool description/);
-});
-test('same-name bash supplied by another extension is not treated as pwsh', () => {
-  const rule = 'REMOTE runtime constraint';
-  const result = run(fixture([...coreRules, rule]), [tool('bash', [rule], 'npm:other', '/other/index.ts')]);
-  assert.ok(result.systemPrompt.includes(rule));
 });
 test('native default-mode safeguards survive while delegation is added', () => {
   const rule = 'UPDATED delegation guidance';
@@ -128,11 +127,6 @@ test('disabled subagent adaptation and companion tools preserve upstream guidanc
   const enabled = run(fixture([...coreRules, 'NATIVE', 'WAIT', 'SUPERVISOR']), tools);
   assert.ok(enabled.systemPrompt.includes('WAIT'));
   assert.ok(enabled.systemPrompt.includes('SUPERVISOR'));
-});
-test('rules co-owned by untargeted tools are preserved', () => {
-  const rule = 'SHARED guidance';
-  const tools = [tool('bash', [rule], 'npm:@99percentpeople/pi-pwsh-adapter'), tool('remote', [rule], 'npm:other')];
-  assert.ok(run(fixture([...coreRules, rule]), tools).systemPrompt.includes(rule));
 });
 test('replacement text with dollar syntax is literal and repeated transformation is stable', () => {
   const prompts = { ...DEFAULT_PROMPTS, identity: 'Custom $& $1 $` identity' };

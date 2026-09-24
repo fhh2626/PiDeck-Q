@@ -3,7 +3,7 @@
  * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions and, when the host
  * shell set differs from a native agent's declared shells, a managed `tools` allowlist.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { isRecord, type ToolSnapshot } from './contributions.ts';
 import {
 	BUILTIN_OR_INTERNAL_CHILD_TOOLS,
 	isShellToolName,
+	mapAgentToolsToHostShells,
 	mapDeclaredToolsToHostShells,
 	resolveChildShellSlots,
 	sameToolList,
@@ -32,11 +33,13 @@ export interface ReconciliationResult {
 	incompatibleAgents: string[];
 	managedPaths: string[];
 	changed: boolean;
+	snapshotPublished: boolean;
+	settingsWriteSucceeded: boolean;
+	canSafelyDispatch: boolean;
 }
 
-// Builtin and pi-subagents internal tools are resolved by the child runtime itself;
-// they must not be judged missing just because the parent session has them inactive.
-// The shared list lives in childShellPolicy so the child-side ceiling cannot drift from it.
+// Builtin and pi-subagents internal tools need no extension provider. The child-side
+// active-tool ceiling is applied separately, including to builtins.
 const BUILTIN_OR_INTERNAL_TOOLS = BUILTIN_OR_INTERNAL_CHILD_TOOLS;
 
 export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
@@ -198,13 +201,13 @@ export function readEffectiveShellPolicySnapshot(
  * owner (conservative fallback) or a complete snapshot, never a half-written file.
  * `parentActiveTools` must be the parent's final `getActiveTools()` result, never `getAllTools()`.
  */
-function writeEffectiveShellPolicySnapshot(
+export function writeEffectiveShellPolicySnapshot(
 	stateDir: string,
 	platform: NodeJS.Platform,
 	policy: EffectiveShellPolicy,
 	ownerKey: string,
 	parentActiveTools: readonly string[],
-): void {
+): boolean {
 	try {
 		const snapshot: ShellPolicySnapshot = {
 			version: 2,
@@ -216,8 +219,9 @@ function writeEffectiveShellPolicySnapshot(
 		writeJsonAtomic(snapshotPath, snapshot);
 		process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
 		pruneStaleShellPolicySnapshots(stateDir, snapshotPath);
+		return true;
 	} catch {
-		// A missing snapshot only widens the child's fallback checks; never fail the reconciliation.
+		return false;
 	}
 }
 
@@ -292,36 +296,6 @@ function asStringArray(value: unknown): string[] | undefined {
 	return value.filter((item): item is string => typeof item === 'string');
 }
 
-const PWSH_ADAPTER_PACKAGE = '@99percentpeople/pi-pwsh-adapter';
-
-/**
- * Old change-pi-prompt versions injected pi-pwsh-adapter into native child extension lists.
- * The adapter owns the same public `bash` name as real Bash, so a shared provider superset can
- * make one session's stale adapter override another session's Bash. Only paths already recorded
- * in our managed-state file are migration candidates; unmanaged user paths remain untouched.
- */
-export function isPwshAdapterProviderPath(providerPath: string): boolean {
-	const normalized = providerPath.replace(/\\/g, '/');
-	if (normalized.includes(`/node_modules/${PWSH_ADAPTER_PACKAGE}/`)) return true;
-
-	let current = dirname(providerPath);
-	for (let depth = 0; depth < 8; depth++) {
-		try {
-			const packageJsonPath = join(current, 'package.json');
-			if (existsSync(packageJsonPath)) {
-				const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-				if (isRecord(parsed) && parsed.name === PWSH_ADAPTER_PACKAGE) return true;
-			}
-		} catch {
-			// Keep walking: malformed/unreadable package metadata must not break reconciliation.
-		}
-		const parent = dirname(current);
-		if (parent === current) break;
-		current = parent;
-	}
-	return false;
-}
-
 /**
  * Cross-process lock guarding reconciliation's read-merge-write of shared files.
  *
@@ -354,34 +328,47 @@ function defaultLockWait(delayMs: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
-function tryTakeLock(lockPath: string, now: () => number, staleMs: number): boolean {
+function tryTakeLock(lockPath: string, now: () => number, staleMs: number): string | undefined {
+	const token = randomUUID();
 	try {
 		mkdirSync(dirname(lockPath), { recursive: true });
 		const fd = openSync(lockPath, 'wx');
 		try {
-			writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: now() }));
+			writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: now(), token }));
 		} finally {
 			closeSync(fd);
 		}
-		return true;
+		return token;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') return false;
+		if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') return undefined;
 	}
 
 	// An abandoned lock (crashed runtime, killed process) must not wedge every later session forever.
 	try {
-		const raw = JSON.parse(readFileSync(lockPath, 'utf8'));
-		const createdAt = isRecord(raw) && typeof raw.createdAt === 'number' ? raw.createdAt : undefined;
-		const age = createdAt === undefined ? Number.POSITIVE_INFINITY : now() - createdAt;
-		if (age <= staleMs) return false;
+		const stat = statSync(lockPath);
+		let age: number | undefined;
+		try {
+			const raw = JSON.parse(readFileSync(lockPath, 'utf8'));
+			const createdAt = isRecord(raw) && typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)
+				? raw.createdAt
+				: undefined;
+			if (createdAt !== undefined) {
+				age = now() - createdAt;
+			} else {
+				// Parseable JSON but missing or non-finite createdAt: fallback to filesystem time
+				age = Math.max(0, now() - Math.max(stat.mtimeMs, stat.ctimeMs));
+			}
+		} catch {
+			// Unreadable or empty lock (e.g. concurrent openSync before writeSync):
+			// compute age from filesystem mtime/ctime instead of immediately assuming stale.
+			age = Math.max(0, now() - Math.max(stat.mtimeMs, stat.ctimeMs));
+		}
+
+		if (age === undefined || age <= staleMs) return undefined;
 		rmSync(lockPath, { force: true });
 	} catch {
-		// Unreadable lock: treat it as stale rather than waiting on it forever.
-		try {
-			rmSync(lockPath, { force: true });
-		} catch {
-			return false;
-		}
+		// Cannot stat or remove: fail conservative
+		return undefined;
 	}
 	return tryTakeLock(lockPath, now, staleMs);
 }
@@ -403,7 +390,8 @@ export async function withReconciliationLock<T>(
 	const lockPath = reconciliationLockPath(agentDir);
 	const deadline = now() + timeoutMs;
 
-	while (!tryTakeLock(lockPath, now, staleMs)) {
+	let token: string | undefined;
+	while (!(token = tryTakeLock(lockPath, now, staleMs))) {
 		if (now() >= deadline) return undefined;
 		await wait(retryMs);
 	}
@@ -412,9 +400,12 @@ export async function withReconciliationLock<T>(
 		return await fn();
 	} finally {
 		try {
-			rmSync(lockPath, { force: true });
+			const content = JSON.parse(readFileSync(lockPath, 'utf8'));
+			if (isRecord(content) && content.token === token) {
+				rmSync(lockPath, { force: true });
+			}
 		} catch {
-			// A lock we cannot remove is reclaimed by the stale check on the next attempt.
+			// A lock we cannot read or remove is left alone; stale reclaim handles it.
 		}
 	}
 }
@@ -476,9 +467,6 @@ function reconcileChildEnvironmentsLocked(options: {
 	const previousManagedPaths = new Set(previousState.managedPaths);
 	const previousManagedTools = previousState.managedTools;
 	const nextManagedTools: Record<string, string[]> = { ...previousManagedTools };
-	const obsoleteManagedPwshAdapterPaths = new Set(
-		[...previousManagedPaths].filter(isPwshAdapterProviderPath),
-	);
 	/** Managed paths still worth keeping: the union of previous and newly discovered ones. */
 	const nextManagedPaths = new Set<string>();
 	if (changePiPromptPath && existsSync(changePiPromptPath)) {
@@ -519,29 +507,6 @@ function reconcileChildEnvironmentsLocked(options: {
 	}
 
 	let settingsDirty = false;
-	let migrationSettingsDirty = false;
-
-	// Old versions managed pi-pwsh-adapter as a child provider. Remove only paths that are both
-	// in our managed state and identifiable as that package. If settings cannot be safely rewritten,
-	// keep managed ownership so a later successful reconciliation can retry instead of treating the
-	// stale adapter as user-owned.
-	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0) {
-		const subagents = isRecord(settingsObj.subagents) ? settingsObj.subagents : undefined;
-		const overrides = subagents && isRecord(subagents.agentOverrides) ? subagents.agentOverrides : undefined;
-		if (overrides) {
-			for (const override of Object.values(overrides)) {
-				if (!isRecord(override) || !Array.isArray(override.subagentOnlyExtensions)) continue;
-				const existing = (override.subagentOnlyExtensions as unknown[])
-					.filter((p): p is string => typeof p === 'string');
-				const filtered = existing.filter(p => !obsoleteManagedPwshAdapterPaths.has(p));
-				if (filtered.length !== existing.length) {
-					override.subagentOnlyExtensions = filtered;
-					settingsDirty = true;
-					migrationSettingsDirty = true;
-				}
-			}
-		}
-	}
 
 	if (catalog) {
 		for (const [name, agent] of catalog.agents.entries()) {
@@ -558,7 +523,7 @@ function reconcileChildEnvironmentsLocked(options: {
 				// Shell backends are pruned at runtime; they are not missing providers.
 				if (isShellToolName(toolName)) continue;
 				// Two separate questions, deliberately answered separately:
-				//  - resolveToolProviderExtension: does this parent allow the tool? (builtin/internal bypass it)
+				//  - resolveToolProviderExtension: is a provider available? (builtins need none)
 				//  - resolveLoadableToolProvider: can a child load its provider? (the shared superset)
 				// Only the second decides the shared settings.json, so an inactive parent never evicts a
 				// provider another session still needs.
@@ -573,9 +538,11 @@ function reconcileChildEnvironmentsLocked(options: {
 				}
 			}
 
-			const desiredTools = hostShells
-				? mapDeclaredToolsToHostShells(agent.tools, hostShells)
-				: [...agent.tools];
+			const desiredTools = mapAgentToolsToHostShells({
+				declaredTools: agent.tools,
+				hostShell: agent.hostShell,
+				hostShells,
+			});
 			// Inject a shell provider only for names this host allowlist actually keeps.
 			const shellSlots = resolveChildShellSlots({ platform, policy: shellPolicy, declaredTools: desiredTools });
 			for (const providerPath of shellSlots.providerPaths) {
@@ -612,7 +579,6 @@ function reconcileChildEnvironmentsLocked(options: {
 			const userCustomPaths = existingList.filter(p => !previousManagedPaths.has(p));
 			const survivingManagedPaths = existingList.filter(p => {
 				if (!previousManagedPaths.has(p)) return false;
-				if (obsoleteManagedPwshAdapterPaths.has(p)) return false;
 				return nextManagedPaths.has(p) || existsSync(p);
 			});
 			const mergedList = [...new Set([...userCustomPaths, ...survivingManagedPaths, ...agentExtensions])];
@@ -635,7 +601,7 @@ function reconcileChildEnvironmentsLocked(options: {
 			}
 
 			// Host-shell allowlist: only when the caller probed backends, and never over user-owned tools.
-			if (hostShells && agent.tools.some(isShellToolName)) {
+			if (hostShells && (agent.tools.some(isShellToolName) || agent.hostShell)) {
 				const existingTools = agentOverride?.tools;
 				const lastManaged = previousManagedTools[name];
 				const existingArray = asStringArray(existingTools);
@@ -667,15 +633,10 @@ function reconcileChildEnvironmentsLocked(options: {
 			settingsWriteSucceeded = true;
 		} catch {
 			// Fail conservative on write error; managed ownership stays for a later retry.
+			settingsWriteSucceeded = false;
 		}
-	}
-
-	// Drop obsolete adapter ownership only after its settings migration no longer needs a write,
-	// or after that write actually succeeded. Otherwise a failed migration could make the next run
-	// misclassify a stale on-disk adapter as a user-owned path and preserve it forever.
-	if (canWriteSettings && obsoleteManagedPwshAdapterPaths.size > 0
-		&& (!migrationSettingsDirty || settingsWriteSucceeded)) {
-		for (const path of obsoleteManagedPwshAdapterPaths) nextManagedPaths.delete(path);
+	} else if (!canWriteSettings && settingsDirty) {
+		settingsWriteSucceeded = false;
 	}
 
 	// Persist managed paths state: the superset, not just what this session used.
@@ -692,7 +653,7 @@ function reconcileChildEnvironmentsLocked(options: {
 
 	// Publish this parent's final child policy for its own children (see readEffectiveShellPolicySnapshot).
 	// The owner key scopes the snapshot so parallel sessions sharing one agentDir never overwrite it.
-	writeEffectiveShellPolicySnapshot(
+	const snapshotPublished = writeEffectiveShellPolicySnapshot(
 		stateDir,
 		platform,
 		shellPolicy,
@@ -700,10 +661,15 @@ function reconcileChildEnvironmentsLocked(options: {
 		parentActiveTools,
 	);
 
+	const canSafelyDispatch = snapshotPublished && canWriteSettings && settingsWriteSucceeded;
+
 	return {
 		compatibilityStatus,
 		incompatibleAgents,
 		managedPaths: [...nextManagedPaths],
 		changed: settingsDirty,
+		snapshotPublished,
+		settingsWriteSucceeded,
+		canSafelyDispatch,
 	};
 }

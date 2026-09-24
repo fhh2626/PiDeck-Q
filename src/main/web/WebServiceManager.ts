@@ -36,6 +36,7 @@ import {
 	type PiEvent,
 } from "./WebEventStream";
 import { getAppLogger } from "../logging/sharedLogger";
+import { SessionDeleteBlockedError } from "../sessions/SessionDeleteBlockedError";
 
 type WebServiceSettings = Pick<
 	AppSettings,
@@ -85,6 +86,7 @@ type WebServiceDependencies = {
 		SessionCommandResult<SessionTargetedValue<AvailableModel[]>>
 	>;
 	stopSessionRuntime: (target: SessionRuntimeTarget) => Promise<SessionCommandResult<SessionRuntimeTarget>>;
+	isSessionActivating?: (sessionId: string) => boolean;
 	abortSessionRuntime: (target: SessionRuntimeTarget) => Promise<SessionCommandResult<SessionTargetedValue<void>>>;
 	restartSessionRuntime: (target: SessionRuntimeTarget) => Promise<SessionCommandResult<SessionRuntimeReplacement>>;
 	compactSessionRuntime: (target: SessionRuntimeTarget, prompt?: string) => Promise<
@@ -409,8 +411,30 @@ export class WebServiceManager {
 					const session = await this.deps.updateSessionRecord(sessionId, patch);
 					this.sendJson(response, { session });
 				} else if (action === "delete") {
-					const deleted = await this.deps.deleteSessionRecord(sessionId);
-					this.sendJson(response, { deleted });
+					try {
+						const deleted = await this.deps.deleteSessionRecord(sessionId);
+						this.sendJson(response, { deleted });
+					} catch (error) {
+						if (SessionDeleteBlockedError.is(error)) {
+							this.sendError(
+								response,
+								400,
+								"webError.deleteSessionBlocked",
+								error.message,
+							);
+							return;
+						}
+						getAppLogger()?.error("web", "Session deletion failed", {
+							sessionId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						this.sendError(
+							response,
+							500,
+							"webError.internal",
+							"The web service encountered an internal error",
+						);
+					}
 				} else if (action === "copy") {
 					const result = await this.deps.copySessionRecord(sessionId);
 					this.sendJson(response, { result });
@@ -670,6 +694,9 @@ export class WebServiceManager {
 		));
 		const visibleSessionIds = new Set(visibleSessions.map((session) => session.id));
 		const visibleRuntimes = runtimes.filter((runtime) => visibleSessionIds.has(runtime.sessionId));
+		const activatingSessionIds = visibleSessions
+			.map((session) => session.id)
+			.filter((id) => this.deps.isSessionActivating?.(id) === true);
 		const messagesBySession: Record<string, ChatMessage[]> = {};
 		for (const runtime of visibleRuntimes) {
 			const snapshot = this.deps.getSessionRuntimeMessages(runtime.sessionId);
@@ -686,6 +713,7 @@ export class WebServiceManager {
 			projects: this.deps.listProjects(),
 			sessions: visibleSessions,
 			runtimes: visibleRuntimes,
+			activatingSessionIds,
 			messagesBySession,
 			pendingUiRequests: this.deps.listPendingUiRequests().filter(
 				(request) => visibleSessionIds.has(request.sessionId),

@@ -6,18 +6,27 @@ import {
   classifyConfiguredShellKind,
   filterUnavailableShellToolLines,
   hideUnavailableShellTools,
+  hideUnavailableSearchTools,
+  filterUnavailableSearchToolLines,
   parseShellPathFromSettings,
   powershellAvailable,
   probeShellAvailability,
+  probeSearchAvailability,
   resolveShellPath,
 } from '../shellAvailability.ts';
 
-function host(platform, files, path = '') {
+function host(platform, files, path = '', options = {}) {
   const set = new Set(files);
+  const execSet = options.executable ? new Set(options.executable) : null;
   return {
     platform,
     env: platform === 'win32' ? { Path: path, USERPROFILE: 'C:\\Users\\me' } : { PATH: path, HOME: '/home/me' },
     exists: file => set.has(file),
+    isExecutableFile: file => {
+      if (options.isExecutableFile) return options.isExecutableFile(file);
+      if (execSet) return execSet.has(file);
+      return set.has(file);
+    },
   };
 }
 
@@ -108,6 +117,55 @@ test('filterUnavailableShellToolLines drops inactive bash/powershell rows and ca
     'Available tools:\n- powershell: Execute a PowerShell command\n- read: Read file contents',
   );
   assert.equal(filterUnavailableShellToolLines('Available tools:\n- bash: Execute a bash command', []), 'Available tools:\n(none)');
+});
+
+test('grep/find require rg/fd on PATH or in the Pi managed bin directory', () => {
+  const windows = host('win32', ['D:\\tools\\rg.exe', 'C:\\Pi\\bin\\fd.exe'], 'D:\\tools');
+  assert.deepEqual(probeSearchAvailability(windows, 'C:\\Pi'), { grep: true, find: true });
+  assert.deepEqual(probeSearchAvailability(host('win32', []), 'C:\\Pi'), { grep: false, find: false });
+  assert.deepEqual(probeSearchAvailability(host('linux', ['/usr/bin/rg', '/usr/bin/fdfind'], '/usr/bin'), '/home/me/.pi/agent'), { grep: true, find: true });
+});
+
+test('Windows PATH recognizes fdfind.exe for find', () => {
+  const windows = host('win32', ['D:\\tools\\fdfind.exe'], 'D:\\tools');
+  assert.deepEqual(probeSearchAvailability(windows, 'C:\\Pi'), { grep: false, find: true });
+});
+
+test('managed bin fdfind is not recognized (only managed rg/fd)', () => {
+  const posix = host('linux', ['/home/me/.pi/bin/fdfind'], '');
+  assert.deepEqual(probeSearchAvailability(posix, '/home/me/.pi'), { grep: false, find: false });
+});
+
+test('non-executable managed binary blocks fallback to PATH', () => {
+  const posix = host('linux', ['/home/me/.pi/bin/fd', '/usr/bin/fd'], '/usr/bin', {
+    executable: ['/usr/bin/fd'], // managed fd is not executable
+  });
+  assert.deepEqual(probeSearchAvailability(posix, '/home/me/.pi'), { grep: false, find: false });
+});
+
+test('PATH candidate that is a directory is rejected', () => {
+  const posix = host('linux', ['/usr/bin/rg'], '/usr/bin', {
+    executable: [], // exists as directory, not executable file
+  });
+  assert.deepEqual(probeSearchAvailability(posix, '/home/me/.pi'), { grep: false, find: false });
+});
+
+test('POSIX candidate without execute permission is rejected', () => {
+  const posix = host('linux', ['/usr/bin/rg', '/usr/bin/fd'], '/usr/bin', {
+    executable: ['/usr/bin/fd'], // rg has no X_OK
+  });
+  assert.deepEqual(probeSearchAvailability(posix, '/home/me/.pi'), { grep: false, find: true });
+});
+
+test('rg and fd can be present independently', () => {
+  assert.deepEqual(probeSearchAvailability(host('win32', ['D:\\tools\\rg.exe'], 'D:\\tools'), 'C:\\Pi'), { grep: true, find: false });
+  assert.deepEqual(probeSearchAvailability(host('win32', ['D:\\tools\\fd.exe'], 'D:\\tools'), 'C:\\Pi'), { grep: false, find: true });
+});
+
+test('unavailable search tools are pruned without hiding ls or read', () => {
+  const result = hideUnavailableSearchTools(['read', 'grep', 'find', 'ls'], { grep: false, find: true });
+  assert.deepEqual(result, { next: ['read', 'find', 'ls'], hidden: ['grep'] });
+  assert.equal(filterUnavailableSearchToolLines('Available tools:\n- grep: Search\n- find: Discover\n- ls: List', result.next), 'Available tools:\n- find: Discover\n- ls: List');
 });
 
 test('parseShellPathFromSettings ignores invalid JSON and non-absolute relative paths', () => {

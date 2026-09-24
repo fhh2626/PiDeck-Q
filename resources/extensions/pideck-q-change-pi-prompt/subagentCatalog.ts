@@ -14,6 +14,7 @@ export interface SubagentCatalogEntry {
 	aliases: string[];
 	runnerType: AgentRunnerType;
 	tools: string[];
+	hostShell?: boolean;
 	systemPromptMode?: string;
 	extensions?: string[];
 	subagentOnlyExtensions?: string[];
@@ -41,6 +42,7 @@ export function parseAgentFrontmatter(content: string, filePath: string): Subage
 	const aliases: string[] = [];
 	let tools: string[] = [];
 	let runnerType: AgentRunnerType = 'native';
+	let hostShell: boolean | undefined;
 	let systemPromptMode: string | undefined;
 	let extensions: string[] | undefined;
 	let subagentOnlyExtensions: string[] | undefined;
@@ -71,6 +73,10 @@ export function parseAgentFrontmatter(content: string, filePath: string): Subage
 					break;
 				case 'systemPromptMode':
 					systemPromptMode = val;
+					break;
+				case 'hostShell':
+					if (val === 'true') hostShell = true;
+					else if (val === 'false') hostShell = false;
 					break;
 				case 'extensions':
 					if (val) extensions = parseCsvOrList(val);
@@ -114,6 +120,7 @@ export function parseAgentFrontmatter(content: string, filePath: string): Subage
 		aliases,
 		runnerType,
 		tools: [...new Set(tools)],
+		hostShell: hostShell === true,
 		systemPromptMode,
 		extensions,
 		subagentOnlyExtensions,

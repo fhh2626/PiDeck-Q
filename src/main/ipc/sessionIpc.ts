@@ -68,6 +68,7 @@ import type { CodexSessionImporter } from "../sessions/CodexSessionImporter";
 import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
 import type { AppLogger } from "../logging/AppLogger";
+import { isSessionDeleteBlocked } from "../sessions/SessionDeleteBlockedError";
 
 export type SessionIpcDeps = {
 	projectStore: ProjectStore;
@@ -87,6 +88,7 @@ export type SessionIpcDeps = {
 	emitSessionRuntimeEvent: (agentId: string, channel: string, payload: unknown) => boolean;
 	emitSessionRuntimeDetach: (target: SessionRuntimeTarget) => void;
 	createAnonymousSession: (input: CreateAnonymousSessionInput) => Promise<CreateAnonymousSessionResult>;
+	isAnonymousActivating?: (sessionId: string) => boolean;
 	stopSessionRuntime: (target: SessionRuntimeTarget) => void;
 	emitReplacementState: (runtime: SessionRuntimeInfo, includeMessages: boolean) => void;
 	readCatalogSessionReferenceMessages: (sessionId: string) => Promise<unknown[]>;
@@ -323,8 +325,11 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			// A draft may be promoted while a renderer click is in flight. Never delete
 			// a catalog record that has acquired, or is acquiring, a Session runtime.
 			if (
-				sessionRuntimeCoordinator.getTarget(sessionId) ||
-				sessionRuntimeCoordinator.isActivating(sessionId)
+				isSessionDeleteBlocked(sessionId, {
+					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
+					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
+					isAnonymousActivating: deps.isAnonymousActivating,
+				})
 			) {
 				throw new Error(mainCopy("session.stopBeforeDelete"));
 			}

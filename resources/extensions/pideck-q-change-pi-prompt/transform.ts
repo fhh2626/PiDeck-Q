@@ -1,8 +1,8 @@
 /** Pure, bounded system-prompt transformation; no filesystem, process, or model calls. */
 import { type Config, type Prompts } from './defaults.ts';
-import { classifyRules, CORE_RULES, hasBatchEdit, isPwsh, isSubagent, type ToolSnapshot } from './contributions.ts';
+import { classifyRules, CORE_RULES, hasBatchEdit, isSubagent, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
-import { filterUnavailableShellToolLines } from './shellAvailability.ts';
+import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './shellAvailability.ts';
 
 export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
 export interface TransformInput {
@@ -62,11 +62,7 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 		if (tools.some(hasBatchEdit)) sections.push(p.batchEdit);
 	}
 	if (has('write')) sections.push(p.write);
-	const hasPwshAdapterBash = input.config.pwsh && tools.some(isPwsh) && has('bash');
-	const hasBuiltinOrOtherBash = has('bash') && (!input.config.pwsh || !tools.some(isPwsh));
-	const hasPowerShell = has('powershell');
-	if (hasPwshAdapterBash) sections.push(p.pwsh);
-	if (hasBuiltinOrOtherBash || hasPowerShell) sections.push(p.shell);
+	if (has('bash') || has('powershell')) sections.push(p.shell);
 	if (has('ask_question')) sections.push(p.userInput);
 	if (has('todo')) sections.push(p.taskTracking);
 	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);
@@ -92,8 +88,9 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 		if (at < 0 || at < layout.docsEnd) return unchanged('ambiguous-append-boundary: original preserved');
 	}
 	const tools = input.tools.filter(tool => input.activeTools.includes(tool.name));
+	const has = (name: string) => input.activeTools.includes(name);
 	const diagnostics = [
-		`pwsh: ${input.config.pwsh && tools.some(isPwsh) ? 'active' : 'absent, inactive, unrecognized or disabled'}`,
+		`powershell: ${has('powershell') ? 'active' : 'absent or inactive'}`,
 		`subagent: ${input.config.subagent && tools.some(isSubagent) ? 'active' : 'absent, inactive, unrecognized or disabled'}`,
 	];
 	const patches: Patch[] = [];
@@ -101,12 +98,16 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 		patches.push({ start, end, replacement, expected: original.slice(start, end) });
 	};
 	if (input.config.replaceIdentity) add(0, layout.identityEnd, input.prompts.identity);
-	if (input.config.pruneUnavailableShells) {
+	if (input.config.pruneUnavailableShells || input.config.pruneUnavailableSearchTools) {
 		const originalTools = original.slice(layout.toolsStart, layout.toolsEnd);
-		const filtered = filterUnavailableShellToolLines(originalTools, input.activeTools);
+		const shellFiltered = input.config.pruneUnavailableShells
+			? filterUnavailableShellToolLines(originalTools, input.activeTools) : originalTools;
+		const filtered = input.config.pruneUnavailableSearchTools
+			? filterUnavailableSearchToolLines(shellFiltered, input.activeTools) : shellFiltered;
 		if (filtered !== originalTools) {
 			add(layout.toolsStart, layout.toolsEnd, filtered);
-			diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
+			if (shellFiltered !== originalTools) diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
+			if (filtered !== shellFiltered) diagnostics.push('search-tools: pruned unavailable grep/find from Available tools');
 		}
 	}
 	if (input.config.replaceGuidelines) {

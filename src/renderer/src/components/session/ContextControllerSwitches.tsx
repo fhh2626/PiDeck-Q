@@ -86,6 +86,11 @@ export function applyLocalSwitch(
 	return { ...state, [key]: include };
 }
 
+/** 只有至少一类旧工具内容会被裁剪时，保留窗口才影响上下文。 */
+export function isKeepRecentApplicable(state: ContextSwitchState): boolean {
+	return !state.fileContent || !state.commandOutput;
+}
+
 function commandForKey(key: "fileContent" | "commandOutput", include: boolean): string {
 	const flag = include ? "on" : "off";
 	if (key === "fileContent") return `/context-files ${flag}`;
@@ -105,6 +110,10 @@ function ContextKeepSpinBox(props: {
 	}, [props.value]);
 
 	const commit = useCallback(() => {
+		if (props.disabled) {
+			setText(String(props.value));
+			return;
+		}
 		const parsed = Number(text.trim());
 		const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(99, Math.floor(parsed))) : props.value;
 		setText(String(clamped));
@@ -329,12 +338,17 @@ export function ContextControllerSwitches(props: { sessionId: string }) {
 			? t("ctx.switches.busyDisabled")
 			: undefined;
 
+	const keepRecentDisabled = disabled || !isKeepRecentApplicable(currentState);
+	const keepRecentDisabledReason =
+		disabledReason ??
+		(!isKeepRecentApplicable(currentState) ? t("ctx.switches.keepRecentAllKeptReason") : undefined);
+
 	return (
 		<div className="flex min-w-0 shrink items-center justify-end gap-2 overflow-hidden pr-1">
 			<ContextKeepSpinBox
 				value={currentState.keepRecent}
-				disabled={disabled}
-				disabledReason={disabledReason}
+				disabled={keepRecentDisabled}
+				disabledReason={keepRecentDisabledReason}
 				onChange={setKeepRecent}
 			/>
 			<ContextSwitchRow

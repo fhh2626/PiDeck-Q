@@ -208,6 +208,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		emitSessionRuntimeEvent: runtimeBridge.emitSessionRuntimeEvent,
 		emitSessionRuntimeDetach: runtimeBridge.emitSessionRuntimeDetach,
 		createAnonymousSession: runtimeBridge.createAnonymousSession,
+		isAnonymousActivating: runtimeBridge.isAnonymousActivating,
 		stopSessionRuntime: runtimeBridge.stopSessionRuntime,
 		emitReplacementState: runtimeBridge.emitReplacementState,
 		readCatalogSessionReferenceMessages: runtimeBridge.readCatalogSessionReferenceMessages,

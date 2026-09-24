@@ -13,6 +13,8 @@ export interface AstNode {
 export interface WorkflowValidationResult {
 	ok: boolean;
 	reason?: string;
+	/** Validated script with omitted native child async values made explicit. */
+	workflowScript?: string;
 }
 
 function getAcornParser(): { parse(source: string, options: Record<string, unknown>): unknown } {
@@ -155,7 +157,7 @@ function directRunsCall(node: AstNode, method: string): boolean {
 }
 
 /** Bounded AST parser for standalone workflowScript execution.
- *  Enforces that all native child launches explicitly declare async:false.
+ *  Injects async:false into omitted native child launches before execution.
  *  Fails closed on spread elements, non-literal arrays, computed properties,
  *  duplicate keys, runs method aliasing/destructuring, or unknown agents. */
 export function validateStandaloneWorkflowScript(
@@ -163,9 +165,10 @@ export function validateStandaloneWorkflowScript(
 	catalog?: SubagentCatalog,
 ): WorkflowValidationResult {
 	let root: AstNode;
+	const wrapperPrefix = '(async () => {\n';
 	try {
 		const parser = getAcornParser();
-		root = parser.parse(`(async () => {\n${script}\n})()`, {
+		root = parser.parse(`${wrapperPrefix}${script}\n})()`, {
 			ecmaVersion: 'latest',
 			sourceType: 'script',
 			locations: true,
@@ -335,6 +338,7 @@ export function validateStandaloneWorkflowScript(
 	}
 
 	// 3. 对每个子代理配置进行前台策略与 Agent Runner 类型校验
+	const omittedAsyncInsertions: number[] = [];
 	for (const cfg of childConfigs) {
 		// 检查 agent
 		const agentVal = getProperty(cfg, 'agent');
@@ -375,13 +379,19 @@ export function validateStandaloneWorkflowScript(
 			};
 		}
 
-		// 检查 native child 的 async 属性：必须显式声明字面量 false
+		// Only catalog-confirmed native launches may inherit foreground mode. Rewrite the
+		// validated literal before execution: upstream may have captured asyncByDefault=true.
 		const asyncVal = getProperty(cfg, 'async');
 		if (!asyncVal) {
-			return {
-				ok: false,
-				reason: '[change-pi-prompt] standalone Pi 环境下 workflowScript 中的每个 native child 调用都必须显式声明 async:false（发现未声明 async:false 的子代理调用）。',
-			};
+			if (typeof cfg.start !== 'number') {
+				return { ok: false, reason: '[change-pi-prompt] 无法定位 native child 参数，拒绝省略 async。' };
+			}
+			const insertion = cfg.start + 1 - wrapperPrefix.length;
+			if (insertion < 1 || insertion >= script.length || script[insertion - 1] !== '{') {
+				return { ok: false, reason: '[change-pi-prompt] native child async 默认值注入位置无效。' };
+			}
+			omittedAsyncInsertions.push(insertion);
+			continue;
 		}
 
 		if (asyncVal.type === 'Literal' && asyncVal.value === true) {
@@ -401,5 +411,10 @@ export function validateStandaloneWorkflowScript(
 		};
 	}
 
-	return { ok: true };
+	// Apply right-to-left so Acorn's UTF-16 offsets remain valid for every child.
+	let workflowScript = script;
+	for (const position of omittedAsyncInsertions.sort((a, b) => b - a)) {
+		workflowScript = `${workflowScript.slice(0, position)}async: false, ${workflowScript.slice(position)}`;
+	}
+	return { ok: true, workflowScript };
 }

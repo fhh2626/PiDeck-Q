@@ -2,8 +2,7 @@
  * Child tool policy: prune only. Never invent a shell name the child did not already have.
  *
  * Registered tools (`getAllTools`) are not the same fact as the parent's final active tools
- * (`getActiveTools`). A shell the parent already hid, or a pwsh adapter that only *claims*
- * the `bash` name, must not leak into a child as a real bash slot. Child allowlists stay
+ * (`getActiveTools`). A shell the parent already hid must not leak into a child. Child allowlists stay
  * authoritative: this module hides unavailable/unauthorized shells and never rewrites `bash`
  * into `powershell`.
  *
@@ -13,21 +12,26 @@
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { isPwsh, type ToolSnapshot } from './contributions.ts';
+import { type ToolSnapshot } from './contributions.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
- * Builtins and pi-subagents child internals are resolved by the child runtime itself;
- * they must not be judged missing just because the parent session has them inactive, and the
- * parent's extension-tool ceiling must never prune them. Shell tools are deliberately absent:
- * they follow the canonical shell policy instead.
+ * Builtins and pi-subagents child internals need no separately loadable provider.
+ * This is not an exemption from the owning parent's active-tool ceiling.
  */
 export const BUILTIN_OR_INTERNAL_CHILD_TOOLS = new Set([
 	'read', 'write', 'edit', 'grep', 'find', 'ls',
 	'subagent', 'contact_supervisor', 'structured_output', 'bg_wait', 'subagent_supervisor',
 ]);
 
-/** Builtin or pi-subagents internal tool that no parent-side ceiling may revoke. */
+/** Child-only coordination tools have no parent-facing equivalent to inherit. */
+const CHILD_INTERNAL_TOOLS = new Set(['contact_supervisor', 'structured_output', 'subagent_supervisor']);
+
+export function isChildCoordinationTool(name: string): boolean {
+	return CHILD_INTERNAL_TOOLS.has(name);
+}
+
+/** Builtin or pi-subagents internal tool that needs no loadable provider. */
 export function isBuiltinOrInternalChildTool(
 	name: string,
 	registeredTools: readonly ToolSnapshot[] = [],
@@ -91,6 +95,27 @@ export function isShellToolName(name: string): boolean {
 
 export function sameToolList(a: readonly string[], b: readonly string[]): boolean {
 	return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/**
+ * Map an agent's declared tools to host shell backends.
+ * If the agent declared hostShell: true, its non-shell base tools receive available host shells.
+ * Otherwise, mapDeclaredToolsToHostShells is used for agents that explicitly declared shell tools.
+ */
+export function mapAgentToolsToHostShells(options: {
+	declaredTools: readonly string[];
+	hostShell?: boolean;
+	hostShells?: { bash: boolean; powershell: boolean };
+}): string[] {
+	const { declaredTools, hostShell, hostShells } = options;
+	if (!hostShells) return [...declaredTools];
+	if (hostShell) {
+		const nextShells: string[] = [];
+		if (hostShells.bash) nextShells.push('bash');
+		if (hostShells.powershell) nextShells.push('powershell');
+		return [...new Set([...declaredTools.filter(t => !isShellToolName(t)), ...nextShells])];
+	}
+	return mapDeclaredToolsToHostShells(declaredTools, hostShells);
 }
 
 /**
@@ -167,8 +192,7 @@ function injectableProviderPath(tool: ToolSnapshot | undefined): string | undefi
 }
 
 /**
- * Decide the parent's real shell backends. A tool name alone never establishes a backend:
- * the pwsh adapter exposes `bash` while running PowerShell, and that is not a bash backend.
+ * Decide the parent's real shell backends. A tool name alone never establishes a backend.
  */
 export function resolveEffectiveShellPolicy(options: {
 	platform: NodeJS.Platform;
@@ -176,15 +200,12 @@ export function resolveEffectiveShellPolicy(options: {
 	parentTools: readonly ToolSnapshot[];
 	parentActiveTools: readonly string[];
 }): EffectiveShellPolicy {
-	const { platform, availability, parentTools, parentActiveTools } = options;
+	const { availability, parentTools, parentActiveTools } = options;
 	const active = new Set(parentActiveTools);
 	const bashTool = parentTools.find(tool => tool.name === 'bash');
 	const powerShellTool = parentTools.find(tool => tool.name === 'powershell');
 
-	// The adapter squats on `bash`. It must not make the child's bash slot look real, and it is
-	// never injected into shared child settings (that would override another session's real Bash).
-	const adapterOccupiesBash = platform === 'win32' && !!bashTool && isPwsh(bashTool);
-	const bash = availability.bash && active.has('bash') && !adapterOccupiesBash;
+	const bash = availability.bash && active.has('bash');
 
 	const nativePowerShellProviderPath = injectableProviderPath(powerShellTool);
 	const nativePowerShellLoadable = isBuiltinTool(powerShellTool) || !!nativePowerShellProviderPath;
@@ -234,33 +255,21 @@ export function resolveChildShellSlots(options: {
 }
 
 /**
- * Prune extension-provided child tools that the owning parent does not expose.
- *
- * The shared settings.json is a provider *superset*: any session may have registered a tool's
- * provider there. Permission is a separate question answered by the owner-scoped snapshot, so a
- * child keeps only the extension tools this parent actually allows.
- *
- * Deliberately prune-only: a plain extension tool is never added here, because the child's own
- * allowlist stays authoritative. Host-shell names are rewritten only in shared `agentOverrides.tools`.
- *
- * `parentActiveTools` undefined means no version 2 snapshot was available (an older parent, or a
- * missing file); the child then keeps its own list rather than guessing a ceiling.
+ * Prune child tools, including builtins, that the owning parent does not expose.
+ * Shared settings.json is a provider superset, not a permission grant. Only child-only
+ * coordination tools may exceed the parent's active set. Never add tools to the child allowlist.
+ * Shells have additional backend checks in reconcileChildActiveShellTools.
+ * Without a version 2 parent snapshot, fail closed to child-only coordination tools.
  */
 export function reconcileChildExtensionTools(options: {
 	registeredTools: readonly ToolSnapshot[];
 	activeTools: readonly string[];
 	parentActiveTools: readonly string[] | undefined;
 }): string[] {
-	const { registeredTools, activeTools, parentActiveTools } = options;
-	if (!parentActiveTools) return [...activeTools];
+	const { activeTools, parentActiveTools } = options;
+	if (!parentActiveTools) return activeTools.filter(isChildCoordinationTool);
 	const allowed = new Set(parentActiveTools);
-	return activeTools.filter(name => {
-		if (allowed.has(name)) return true;
-		// Builtin and pi-subagents internal tools are provided by the child runtime, never by a parent provider.
-		if (isBuiltinOrInternalChildTool(name, registeredTools)) return true;
-		// Plain extension tool: prune it, but never prune a tool the registry does not know about.
-		return !registeredTools.some(tool => tool.name === name);
-	});
+	return activeTools.filter(name => allowed.has(name) || isChildCoordinationTool(name));
 }
 
 /**
@@ -290,7 +299,7 @@ export function reconcileChildActiveShellTools(options: {
 		if (ceiling && ceiling[name] === false) return false;
 		const tool = registeredTools.find(candidate => candidate.name === name);
 		if (!tool) return false;
-		return !(name === 'bash' && isPwsh(tool));
+		return !!tool;
 	};
 
 	const prune = (): string[] => {

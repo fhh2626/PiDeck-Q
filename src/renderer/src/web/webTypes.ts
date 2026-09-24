@@ -53,6 +53,8 @@ export type WebState = {
 	projects: WebProject[];
 	sessions: WebSession[];
 	runtimes: WebRuntime[];
+	/** 正在激活子进程、但尚未生成可见 runtime 的会话 ID 列表。旧服务端可缺省。 */
+	activatingSessionIds?: string[];
 	pendingUiRequests?: WebPendingUiRequest[];
 	/** 运行中 Session 的主进程消息尾部快照，用于补偿 Web SSE/本地缓存。 */
 	messagesBySession: Record<string, ChatMessage[]>;
