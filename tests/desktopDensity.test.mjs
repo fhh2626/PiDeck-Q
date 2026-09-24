@@ -73,6 +73,11 @@ test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", ()
   assertConsumes(src, "CARD_BODY_PADDING");
   assertConsumes(src, "CARD_PREVIEW_PADDING");
   assert.ok(block.includes("THINKING_HEADER"), "web thinking block renders the shared header");
+  // Web 标题原本用 text-body 自带行高（默认 22px）+ 上下各 2px，撑开 24px 共享最小高度。
+  // 局部 [&]:py-0 盖过共享 py-0.5，并让标题文字跟随 20px 控件行高；桌面 recipe 不变。
+  assert.match(block, /\$\{THINKING_HEADER\}[^`]*\[&\]:py-0/, "Web header should remove extra vertical padding locally");
+  assert.match(block, /className="shrink-0 text-body leading-5 font-\[650\] text-text-primary"/, "Web header text should not expand the row with body line height");
+  assert.doesNotMatch(block, /min-h-5/, "Web header should preserve its 24px click target");
   assert.doesNotMatch(block, /markdown-body px-3 pt-2 pb-1/, "Web expanded body must not revert");
   assert.doesNotMatch(block, /px-3 pt-2 pb-1 font-mono/, "Web collapsed preview must not revert");
   assert.match(block, /flex px-1\.5 pb-1/, "Web collapse footer should use px-1.5 pb-1");

@@ -36,7 +36,7 @@ test("foundation.css defines the density token set (single source of truth)", ()
     "--density-surface-py: 4px",
     "--density-code-header-height: 28px",
     "--density-code-padding-x: 10px",
-    "--density-code-padding-y: 4px",
+    "--density-code-padding-y: 8px",
     "--density-radius-small: 4px",
     "--density-radius-surface: 6px",
   ]) {
@@ -92,6 +92,9 @@ test("code block chrome uses the density contract values", () => {
   assert.doesNotMatch(streamdownChrome, /border-radius:\s*12px/, "code/table container must not stay at 12px radius");
   assert.match(streamdownChrome, /height:\s*var\(--density-code-header-height\)/, "code header must use the 28px token");
   assert.doesNotMatch(streamdownChrome, /height:\s*34px/, "code/table header must not stay at 34px");
+  // 旧 .markdown-body pre 的上下 12px 与 body 叠加；仅清零纵向，横向缩进保持不变。
+  assert.match(streamdownChrome, /\[data-streamdown="code-block-body"\]\s*\{[^}]*padding:\s*var\(--density-code-padding-y\) var\(--density-code-padding-x\)/);
+  assert.match(streamdownChrome, /\[data-streamdown="code-block-body"\] > pre\s*\{[^}]*padding-block:\s*0;/);
   // Action 25.6px → 24px（1.5rem）。
   assert.match(streamdownChrome, /\[data-streamdown="code-block-actions"\] button \{[\s\S]*?width:\s*1\.5rem;[\s\S]*?height:\s*1\.5rem;/);
   assert.doesNotMatch(streamdownChrome, /width:\s*1\.6rem/,

@@ -71,13 +71,13 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 		<TimelineMarker kind="thinking" tone="neutral">
 		<section className="w-full min-w-0 overflow-hidden rounded-md border-0">
 			<button
-				className={`${THINKING_HEADER} border-0 bg-transparent text-control leading-5 text-text-secondary hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]`}
+				className={`${THINKING_HEADER} border-0 bg-transparent [&]:py-0 text-control leading-5 text-text-secondary hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]`}
 				onClick={() => setExpanded((value) => !value)}
 				aria-expanded={expanded}
 				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
 			>
 				<Brain size={15} />
-				<span className="shrink-0 text-body font-[650] text-text-primary">{t("thinking.title")}</span>
+				<span className="shrink-0 text-body leading-5 font-[650] text-text-primary">{t("thinking.title")}</span>
 				{/* 整行可点：chevron 旋转过渡表达展开/收起，不依赖文字按钮 */}
 				<ChevronDown
 					size={15}

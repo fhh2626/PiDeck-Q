@@ -173,6 +173,8 @@
 
 [data-streamdown="code-block-body"] > pre {
   margin: 0;
+  /* 旧 .markdown-body pre 的 12px 纵向 padding 与 body 叠加；仅清零纵向，保持横向缩进。 */
+  padding-block: 0;
   overflow: visible;
   border: 0;
   border-radius: 0;
