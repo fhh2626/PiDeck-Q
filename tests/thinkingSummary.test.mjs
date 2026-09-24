@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { twMerge } from "tailwind-merge";
+import { getRecipe } from "./_densityRecipe.mjs";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { firstLine, latestLine } = loadTsCommonJs("src/renderer/src/utils/thinkingSummary.ts");
@@ -22,6 +24,16 @@ test("latestLine 取最新一行（尾部，tail -f 语义）", () => {
 	// 结尾换行被 trimEnd 吃掉，仍取最后一个非空行
 	assert.equal(latestLine("abc\ndef\n"), "def");
 	assert.equal(latestLine("单行思考"), "单行思考");
+});
+
+test("thinking preview retains chat font size and line height after class merging", () => {
+	const recipe = getRecipe("CARD_PREVIEW_PADDING");
+	for (const state of ["text-ellipsis", "text-clip"]) {
+		const classes = twMerge("relative min-w-0 overflow-hidden whitespace-nowrap", state, recipe).split(" ");
+		assert.ok(classes.includes("text-[length:var(--font-size-chat)]"), `chat font size lost in ${state}`);
+		assert.ok(classes.includes("leading-[var(--chat-body-line-height)]"), `chat line height lost in ${state}`);
+		assert.ok(classes.includes("text-text-tertiary"), `preview color lost in ${state}`);
+	}
 });
 
 test("SingleLinePreview does not recreate ResizeObserver for every text delta", () => {

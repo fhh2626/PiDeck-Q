@@ -38,7 +38,7 @@ test("Thinking/Compaction consume the shared card recipes (body px-2 py-0.5)", (
 
   // 值住在共享 recipe（lib/density.ts），组件只消费常量。
   assert.equal(getRecipe("CARD_BODY_PADDING"), "px-2 py-0.5", "card body recipe changed");
-  assert.equal(getRecipe("CARD_PREVIEW_PADDING"), "px-2 py-0.5 text-chat text-text-tertiary");
+  assert.equal(getRecipe("CARD_PREVIEW_PADDING"), "px-2 py-0.5 text-[length:var(--font-size-chat)] leading-[var(--chat-body-line-height)] text-text-tertiary");
 
   assertConsumes(src, "CARD_BODY_PADDING");
   assertConsumes(src, "CARD_PREVIEW_PADDING");
