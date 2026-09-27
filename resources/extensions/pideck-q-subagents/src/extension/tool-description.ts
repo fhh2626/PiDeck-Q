@@ -32,7 +32,7 @@ export const SUBAGENT_SAFETY_GUIDANCE = `SAFETY-CRITICAL SUBAGENT GUIDANCE:
 • ${AGENT_SELECTION_GUIDANCE}
 • ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE}
 • Keep execution and management separate: omit action for structured single-child or workflowScript execution; use action only for management/control.
-• Async/background runs are the normal default unless config sets asyncByDefault:false; set async:true explicitly when async behavior matters. Use async:false only when the parent must block until completion. Async mode still shows progress. Final reviews and gate checks stay async; needing a result is not a blocking reason. After an async launch, continue independent work only until its next dependency barrier; consume the result before work that depends on it. Ordinary async subagents notify this session natively, so return control and do not call bg_wait merely to get a completion wake. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
+• Subagents run in the foreground by default (or with explicit async:false); background children are unavailable in this environment, so do not pass async:true. Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
 • ${WORKFLOW_RESUME_KEY_GUIDANCE}
 • ${WORKFLOW_OUTPUT_BINDING_GUIDANCE}
 • ${WORKFLOW_HOST_GUIDANCE}
@@ -86,7 +86,7 @@ MANAGE / CONTROL:
 
 ASYNC / SAFETY:
 • ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE}
-• Omitted async follows asyncByDefault config; set async:true explicitly when async behavior matters. Continue independent work only until its next dependency barrier; consume the result before work that depends on it. Ordinary async subagents notify this session natively, so return control and do not call bg_wait merely to get a completion wake. Do not sleep or poll merely to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
+• Subagents run in the foreground by default (or with explicit async:false); background children are unavailable in this environment, so do not pass async:true. Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
 • ${WORKFLOW_RESUME_KEY_GUIDANCE}
 • ${WORKFLOW_OUTPUT_BINDING_GUIDANCE}
 • ${WORKFLOW_HOST_GUIDANCE}

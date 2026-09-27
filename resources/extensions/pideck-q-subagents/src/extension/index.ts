@@ -6,10 +6,10 @@
  * - Async: Background execution, emits events when done
  *
  * Public execution mode: workflow (workflowScript)
- * Toggle: async parameter (default: true; set asyncByDefault:false in config.json to opt out)
+ * Toggle: async parameter (default: false / foreground; pass async: true for detached background execution)
  *
  * Config file: ~/.pi/agent/extensions/subagent/config.json
- *   { "asyncByDefault": true, "defaultSubagentContext": "fork", "forkContext": { "mode": "pruned", "model": "provider/model" }, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ *   { "asyncByDefault": false, "defaultSubagentContext": "fork", "forkContext": { "mode": "pruned", "model": "provider/model" }, "forceTopLevelAsync": false, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
 import { randomUUID } from "node:crypto";
