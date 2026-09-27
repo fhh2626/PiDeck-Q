@@ -33,6 +33,7 @@ import {
 	fetchModels,
 	fetchState,
 	mergeAuthoritativeUiMessages,
+	prependOlderHistoryPage,
 	abortRuntime,
 	setRuntimeModel,
 	setRuntimeThinking,
@@ -197,7 +198,9 @@ export function WebChatApp() {
 				if (historyRequestSequenceRef.current[sessionId] !== requestSequence) return;
 				const history = chatMessagesToUiMessages(page.messages);
 				const cached = messagesBySessionRef.current[sessionId] ?? [];
-				const merged = mergeAuthoritativeUiMessages(history, cached);
+				const merged = mergeAuthoritativeUiMessages(cached, history, {
+					dropCoveredLocalSseLeftovers: true,
+				});
 				messagesBySessionRef.current[sessionId] = merged;
 				historyMetaRef.current[sessionId] = {
 					total: page.total,
@@ -686,9 +689,10 @@ export function WebChatApp() {
 				status: "ready",
 			};
 			const older = chatMessagesToUiMessages(page.messages);
+			const current = messagesBySessionRef.current[sessionId] ?? [];
 			const merged = meta?.nextBefore != null
-				? [...older, ...(messagesBySessionRef.current[sessionId] ?? [])]
-				: mergeAuthoritativeUiMessages(older, messagesBySessionRef.current[sessionId] ?? []);
+				? prependOlderHistoryPage(older, current)
+				: mergeAuthoritativeUiMessages(older, current);
 			messagesBySessionRef.current[sessionId] = merged;
 			loadedSessionsRef.current.add(sessionId);
 			bumpHistory();

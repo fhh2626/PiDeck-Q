@@ -70,21 +70,24 @@ export const WebThinkingBlock = memo(function WebThinkingBlock(props: {
 	return (
 		<TimelineMarker kind="thinking" tone="neutral">
 		<section className="w-full min-w-0 overflow-hidden rounded-md border-0">
-			<button
-				className={`${THINKING_HEADER} border-0 bg-transparent [&]:py-0 text-control leading-5 text-text-secondary hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]`}
-				onClick={() => setExpanded((value) => !value)}
-				aria-expanded={expanded}
-				title={expanded ? t("thinking.collapse") : t("thinking.expand")}
-			>
-				<Brain size={15} />
-				<span className="shrink-0 text-body leading-5 font-[650] text-text-primary">{t("thinking.title")}</span>
-				{/* 整行可点：chevron 旋转过渡表达展开/收起，不依赖文字按钮 */}
-				<ChevronDown
-					size={15}
-					className={`shrink-0 text-text-tertiary transition-transform duration-200 motion-reduce:transition-none${expanded ? " rotate-180" : ""}`}
-					aria-hidden="true"
-				/>
-			</button>
+			<div className="relative min-h-6" data-web-thinking-header-slot="" data-web-thinking-expanded={expanded}>
+				<button
+					className={`${THINKING_HEADER} border-0 bg-transparent [&]:py-0 text-control leading-5 text-text-secondary hover:bg-[color:color-mix(in_srgb,var(--color-bg-hover)_50%,var(--color-bg))] [&_svg]:shrink-0 [&_svg]:text-[var(--color-info)]`}
+					data-web-compact-hit-area=""
+					onClick={() => setExpanded((value) => !value)}
+					aria-expanded={expanded}
+					title={expanded ? t("thinking.collapse") : t("thinking.expand")}
+				>
+					<Brain size={15} />
+					<span className="shrink-0 text-body leading-5 font-[650] text-text-primary">{t("thinking.title")}</span>
+					{/* 整行可点：chevron 旋转过渡表达展开/收起，不依赖文字按钮 */}
+					<ChevronDown
+						size={15}
+						className={`shrink-0 text-text-tertiary transition-transform duration-200 motion-reduce:transition-none${expanded ? " rotate-180" : ""}`}
+						aria-hidden="true"
+					/>
+				</button>
+			</div>
 			{/* 虚线框内容区（折叠/展开共用容器，与桌面端 ThinkingBlock 一致）：
 			    折叠态单行预览在标题行下方独立一行，不与标题挤在一起 */}
 			<div className={DASHED_SURFACE}>

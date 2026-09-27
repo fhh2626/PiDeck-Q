@@ -23,6 +23,7 @@ const {
 	SSE_DONE,
 	serializeSseFrame,
 } = loadTsCommonJs("src/main/web/WebEventStream.ts");
+const { mergeAdjacentWebMessageParts } = loadTsCommonJs("src/renderer/src/web/webMessageParts.ts");
 
 test("text_delta produces start/delta/end triple with auto text-start", () => {
 	const adapter = new PiEventToUiMessageStream();
@@ -55,6 +56,31 @@ test("text_delta produces start/delta/end triple with auto text-start", () => {
 	});
 	assert.equal(end[0].type, "text-end");
 	assert.equal(end[0].id, d1[0].id);
+});
+
+test("text_end backfills authoritative content when a block emitted no deltas", () => {
+	const adapter = new PiEventToUiMessageStream();
+	adapter.push({ type: "message_start", message: { role: "assistant", id: "m-text-final" } });
+	const frames = adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "text_end", content: "完整正文" },
+	});
+	assert.deepEqual(Array.from(frames, (frame) => frame.type), ["text-start", "text-delta", "text-end"]);
+	assert.equal(frames[1].delta, "完整正文");
+});
+
+test("text_end does not append full content after deltas already streamed", () => {
+	const adapter = new PiEventToUiMessageStream();
+	const delta = adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "部分正文" },
+	});
+	const end = adapter.push({
+		type: "message_update",
+		assistantMessageEvent: { type: "text_end", content: "部分正文完整" },
+	});
+	assert.equal(delta.at(-1).delta, "部分正文");
+	assert.deepEqual(Array.from(end, (frame) => frame.type), ["text-end"]);
 });
 
 test("thinking_delta/end produces reasoning block with start/delta/end", () => {
@@ -293,6 +319,114 @@ test("a resumed reasoning delta gets a socket-local start without replaying old 
 	assert.match(resumed[1], /"type":"reasoning-delta"/);
 	assert.match(resumed[1], /"delta":"after"/);
 	assert.doesNotMatch(resumed.join(""), /before/);
+});
+
+test("a text_end-only provider event reaches the AI SDK as complete message text", async () => {
+	let emitPiEvent;
+	const chunks = [];
+	const router = new WebEventStreamRouter(() => "session-1");
+	router.add(
+		"session-1",
+		(wire) => {
+			if (wire !== SSE_DONE) chunks.push(JSON.parse(wire.slice(6)));
+			return true;
+		},
+		() => {},
+	);
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", { type: "message_start", message: { role: "assistant", id: "m-text-final" } });
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_end", content: "完整正文来自 text_end" },
+	});
+	emitPiEvent("agent-a", { type: "agent_settled" });
+
+	const parserErrors = [];
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(chunk);
+			controller.close();
+		},
+	});
+	const initial = { id: "m-text-final", role: "assistant", parts: [] };
+	let finalMessage = initial;
+	for await (const message of readUIMessageStream({
+		message: initial,
+		stream,
+		onError: (error) => parserErrors.push(error),
+	})) finalMessage = message;
+
+	assert.deepEqual(parserErrors, []);
+	assert.equal(finalMessage.parts.find((part) => part.type === "text")?.text, "完整正文来自 text_end");
+});
+
+test("snapshot baseline plus resumed text delta preserves content without protocol replay evidence", async () => {
+	let emitPiEvent;
+	const router = new WebEventStreamRouter(() => "session-1");
+	const closeFirst = router.add("session-1", () => true, () => {});
+	router.bindPiSource((handler) => {
+		emitPiEvent = handler;
+		return () => {};
+	});
+	emitPiEvent("agent-a", { type: "message_start", message: { role: "assistant", id: "m-text-resume" } });
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "first " },
+	});
+	closeFirst();
+
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "gap " },
+	});
+	const chunks = [];
+	router.add(
+		"session-1",
+		(wire) => {
+			if (wire !== SSE_DONE) chunks.push(JSON.parse(wire.slice(6)));
+			return true;
+		},
+		() => {},
+	);
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_delta", delta: "last" },
+	});
+	emitPiEvent("agent-a", {
+		type: "message_update",
+		assistantMessageEvent: { type: "text_end", content: "first gap last" },
+	});
+	emitPiEvent("agent-a", { type: "agent_settled" });
+
+	const parserErrors = [];
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(chunk);
+			controller.close();
+		},
+	});
+	const initial = {
+		id: "m-text-resume",
+		role: "assistant",
+		parts: [{ type: "text", text: "first gap last" }],
+	};
+	let finalMessage = initial;
+	for await (const message of readUIMessageStream({
+		message: initial,
+		stream,
+		onError: (error) => parserErrors.push(error),
+	})) finalMessage = message;
+
+	assert.deepEqual(parserErrors, []);
+	const textParts = finalMessage.parts.filter((part) => part.type === "text");
+	assert.equal(textParts.length, 2, "the resumed socket streams only the received delta after the snapshot baseline");
+	const displayParts = mergeAdjacentWebMessageParts(finalMessage.parts);
+	assert.equal(displayParts.filter((part) => part.type === "text").length, 1);
+	// The wire contains no replay identity/offset. Do not guess based on UIMessage part state.
+	assert.equal(displayParts.find((part) => part.type === "text")?.text, "first gap lastlast");
 });
 
 test("snapshot plus resumed thinking_end does not duplicate reasoning in the AI SDK parser", async () => {

@@ -11,13 +11,6 @@ function isWebToolPart(part: UIMessage["parts"][number]): boolean {
 		|| (typeof part.type === "string" && part.type.startsWith("tool-"));
 }
 
-function mergeAdjacentReasoningText(previous: string, next: string): string {
-	if (previous === next) return previous;
-	if (previous.startsWith(next)) return previous;
-	if (next.startsWith(previous)) return next;
-	return previous + next;
-}
-
 export function mergeAdjacentWebMessageParts(
 	parts: UIMessage["parts"],
 ): UIMessage["parts"] {
@@ -25,13 +18,16 @@ export function mergeAdjacentWebMessageParts(
 	for (const part of parts) {
 		const previous = merged.at(-1);
 		if (part.type === "reasoning" && previous?.type === "reasoning") {
+			// Reasoning parts have no replay identity or offset either; never discard by text overlap.
 			merged[merged.length - 1] = {
 				...previous,
-				text: mergeAdjacentReasoningText(previous.text, part.text),
+				text: previous.text + part.text,
 			};
 			continue;
 		}
 		if (part.type === "text" && previous?.type === "text") {
+			// AI SDK part state is not protocol evidence of replay; preserve every streamed
+			// character unless the wire format supplies an identity/offset to prove overlap.
 			merged[merged.length - 1] = {
 				...previous,
 				text: previous.text + part.text,

@@ -173,6 +173,22 @@ test("Web timeline does not double-space tool and thinking steps", () => {
 	assert.match(webTimeline, /flex min-h-6 max-w-full items-center px-2 py-0\.5/);
 });
 
+test("Web thinking header stays visually compact while keeping a mobile tap target", () => {
+	assert.match(webTimeline, /data-web-compact-hit-area=/);
+	assert.match(webTimeline, /data-web-thinking-header-slot=/);
+	assert.match(
+		webCss,
+		/@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?position:\s*absolute;[\s\S]*?min-height:\s*44px;/,
+		"only coarse-pointer devices receive the touch hit-area overlay",
+	);
+	assert.match(webCss, /data-web-thinking-expanded="true"[\s\S]*?min-height:\s*44px;/);
+	assert.match(
+		webCss,
+		/button\.min-h-6:not\(\[data-web-compact-hit-area\]\)[\s\S]*?min-height:\s*44px;/,
+		"other mobile controls retain their 44px target without inflating the compact thinking row",
+	);
+});
+
 test("Project actions are sibling buttons instead of nested controls", () => {
 	assert.match(webSidebar, /project-row-actions[\s\S]*?<Button/);
 	assert.doesNotMatch(webSidebar, /project-row-actions[\s\S]*?<span[\s\S]*?role="button"/);
