@@ -9,9 +9,8 @@
 //   宿主（Header Popover）传入，把官方 text-sm/text-xs 换成 PiDeck 语义字号 token
 //   （字号体系 text-widget > text-widget-item > text-widget-detail：默认 11/10/9px，
 //   均比右侧徽章小且随「界面字号」联动，窄窗口 vw 收缩；计数用 text-caption）并收紧垂直度量
-//   （h-11→h-9、
-//   min-h-9→min-h-8）；compact 头部 pr-8 为宿主层关闭按钮预留右上角空间，
-//   保证叠放的关闭控件不盖住官方折叠 chevron。
+//   （h-11→h-9、单行 min-h-9→min-h-5）；compact 头部 pr-8 为宿主层关闭按钮预留空间。
+// - `embedded` 仅供 Header Popover：去掉内部折叠按钮，直接展示列表；官方默认行为不变。
 // - 已完成的 todo 项去掉官方删除线（横线动画）：状态图标已有对勾标记，删除线
 //   属冗余视觉；仅当“保持官方逐字节一致”与产品取舍冲突时按后者（2026-12 用户要求）。
 // - 共享运动常量来自 @/lib/ease（官方值 SPRING_SWAP/SPRING_PRESS 已并入）。
@@ -61,6 +60,8 @@ export interface TodoListProps {
   maxHeight?: number;
   /** PiDeck 桌面紧凑密度开关；默认 false 保持官方类与行为，仅宿主（Header Popover）传入。 */
   compact?: boolean;
+  /** Popover 已有触发器：嵌入时直接展示内容，不再提供第二个折叠按钮。 */
+  embedded?: boolean;
   className?: string;
 }
 
@@ -230,6 +231,7 @@ export function TodoList({
   collapseOnComplete = true,
   maxHeight = 248,
   compact = false,
+  embedded = false,
   className,
 }: TodoListProps) {
   const reduce = useReducedMotion() ?? false;
@@ -243,6 +245,11 @@ export function TodoList({
   const completed = items.filter((item) => item.status === "completed").length;
   const allComplete = items.length > 0 && completed === items.length;
   const itemCount = items.length;
+  // 嵌入 Popover 时标题按钮不存在；使用宿主传入的文本标题命名区域，
+  // 非文本标题无法安全转成纯文本，沿用已有的本地化通用名称。
+  const accessibleLabel = embedded && typeof title === "string" && title.trim()
+    ? title.trim()
+    : t("app.todoListAriaLabel");
 
   const setOpen = useCallback(
     (next: boolean) => {
@@ -254,6 +261,8 @@ export function TodoList({
 
   // 官方行为：全部完成自动折叠；之后出现新工作（未完成项）自动重新展开。
   useEffect(() => {
+    // Popover 的打开/关闭由外层负责；完成态不能再把内部列表折叠掉。
+    if (embedded) return;
     if (previousComplete.current && !allComplete) {
       setOpen(true);
     }
@@ -261,7 +270,7 @@ export function TodoList({
       setOpen(false);
     }
     previousComplete.current = allComplete;
-  }, [allComplete, collapseOnComplete, setOpen]);
+  }, [allComplete, collapseOnComplete, embedded, setOpen]);
 
   // 新 item 追加后滚动到底（reduced-motion 下直接跳转）。
   useLayoutEffect(() => {
@@ -284,13 +293,13 @@ export function TodoList({
 
   return (
     <section
-      aria-label={t("app.todoListAriaLabel")}
+      aria-label={accessibleLabel}
       className={cn(
         "w-full overflow-hidden rounded-2xl border border-border/70",
         className,
       )}
     >
-      <button
+      {!embedded && <button
         id={triggerId}
         type="button"
         aria-expanded={currentOpen}
@@ -341,17 +350,18 @@ export function TodoList({
         >
           <ChevronDown className={compact ? "size-3" : "size-3.5"} />
         </motion.span>
-      </button>
+      </button>}
 
       <AgentDisclosure
         id={contentId}
         role="region"
-        aria-labelledby={triggerId}
-        open={currentOpen}
+        aria-labelledby={embedded ? undefined : triggerId}
+        aria-label={embedded ? accessibleLabel : undefined}
+        open={embedded || currentOpen}
       >
         <div
           ref={viewportRef}
-          className="overflow-y-auto px-2 pb-2 [scrollbar-width:none]"
+          className={embedded ? "overflow-y-auto px-2 py-1.5 [scrollbar-width:none]" : "overflow-y-auto px-2 pb-2 [scrollbar-width:none]"}
           style={{ maxHeight }}
         >
           {items.length ? (
@@ -378,9 +388,9 @@ export function TodoList({
                     className={cn(
                       // items-start：标题允许多行换行后，状态图标与 detail 顶部对齐首行（items-center
                       // 会把图标/摘要垂直居中在整块多行文字上，视觉会偏下）。
-                      "flex items-start rounded-xl px-1.5 py-1",
-                      // 官方 min-h-9/gap-2.5；compact 收紧垂直与横向间距（不破坏动画/可访问性）
-                      compact ? "min-h-8 gap-2" : "min-h-9 gap-2.5",
+                      "flex items-start rounded-xl px-1.5",
+                      // 官方行距不变；Popover 单行约 20px，长标题换行时自然增高。
+                      compact ? "min-h-5 gap-1.5 py-0.5" : "min-h-9 gap-2.5 py-1",
                     )}
                   >
                     <TodoStatusIcon

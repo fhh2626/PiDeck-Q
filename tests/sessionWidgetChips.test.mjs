@@ -138,11 +138,13 @@ test("chip popover uses the official BeUI TodoList with mapping, not a local imi
   assert.match(chipsSource(), /import \{ TodoList \} from "\.\.\/agents\/todo-list";/);
   assert.match(chipsSource(), /import \{ parseAgentTodoItems \} from "\.\/agentTodoParser";/);
   assert.match(parserSource(), /export function parseAgentTodoItems/);
-  // 官方行为开关照常传递，PiDeck 宿主以 compact 模式适配（默认仍是官方类/行为）
-  assert.match(chipsSource(), /collapseOnComplete/);
-  assert.match(chipsSource(), /maxHeight=\{320\}/);
-  assert.match(chipsSource(), /defaultOpen/);
-  assert.match(chipsSource(), /className="rounded-none border-0"/);
+  // Popover 是唯一展开层：宿主使用无二级按钮的嵌入模式，完成态仍直接可见。
+  const todoUsage = chipsSource().match(/<TodoList[\s\S]*?\/>/)?.[0];
+  assert.ok(todoUsage);
+  assert.match(todoUsage, /\bembedded\b/);
+  assert.doesNotMatch(todoUsage, /collapseOnComplete|defaultOpen/);
+  assert.match(todoUsage, /maxHeight=\{320\}/);
+  assert.match(todoUsage, /className="rounded-none border-0 pr-7"/);
   // 外层 Popover 负责唯一的边框和圆角，避免出现两层不重合的角
   // （className 带 widget-popover 壁纸标记前缀，断言只约束宽度表达式部分）
   assert.match(chipsSource(), /PopoverContent[\s\S]*className="[^"]*w-\[min\(28rem/);

@@ -206,10 +206,9 @@ function WidgetChip(props: {
 				// 的 :root[data-bg-image="on"] .widget-popover 规则），其余浮层保持 92%+ 底色
 				className="widget-popover w-[min(28rem,calc(var(--radix-popover-content-available-width)_-_12px))] p-0"
 			>
-				{/* 官方 BeUI TodoList 不接受 dismiss 语义（避免改动官方结构），
-				    关闭按钮作为宿主层绝对定位叠放在右上角：不占布局空间（移除独立的 h-8 关闭行），
-				    compact 头部右侧的 pr-8 预留区保证它不盖住折叠 chevron；
-				    语义仍是「永久关闭该 widget」（按内容指纹记录）。 */}
+				{/* Popover 本身已是展开层：TodoList 直接展示内容，不再套折叠标题。
+				    关闭按钮仍由宿主负责；列表右侧留白避免它遮挡第一行，
+				    关闭语义仍是按内容指纹永久隐藏该 widget。 */}
 				<div className="relative">
 					<Button
 						type="button"
@@ -235,11 +234,10 @@ function WidgetChip(props: {
 						<TodoList
 							title={title}
 							items={parseAgentTodoItems(props.lines)}
-							defaultOpen
-							collapseOnComplete
+							embedded
 							compact
 							maxHeight={320}
-							className="rounded-none border-0"
+							className="rounded-none border-0 pr-7"
 						/>
 					)}
 				</div>
