@@ -77,6 +77,91 @@ test("sliceLastAgentRuns item budget keeps only trailing lightweight runs", () =
   );
 });
 
+test("timeline turn window defaults keep the last 20 agent-runs (2026-12)", () => {
+  assert.equal(windowing.TIMELINE_MOUNTED_TURN_LIMIT, 20, "贴底挂载窗口 = 20 轮");
+  assert.equal(windowing.TIMELINE_SCROLLED_TURN_LIMIT, 20, "上滚基础窗口 = 20 轮");
+});
+
+test("sliceLastAgentRuns keeps all 20 runs at the default mounted limit", () => {
+  const items = Array.from({ length: 20 }, (_, i) => runs(`r${i + 1}`)[0]);
+  const sliced = windowing.sliceLastAgentRuns(items, windowing.TIMELINE_MOUNTED_TURN_LIMIT);
+  assert.equal(sliced, items);
+});
+
+test("sliceLastAgentRuns hides only the oldest run once the 21st appears", () => {
+  const items = Array.from({ length: 21 }, (_, i) => runs(`r${i + 1}`)[0]);
+  const sliced = windowing.sliceLastAgentRuns(items, windowing.TIMELINE_MOUNTED_TURN_LIMIT);
+  assert.deepEqual(
+    sliced.map((item) => item.id),
+    Array.from({ length: 20 }, (_, i) => `r${i + 2}`),
+  );
+});
+
+test("sliceLastAgentRuns keeps the user question preceding the 20th run", () => {
+  // 顶层序列：userN 紧跟其触发的 runN。裁到 20 轮时必须从 user2 开始保留，
+  // 不能把第 20 轮的用户提问单独裁掉（只显示回复不显示提问）。
+  const items = [];
+  for (let i = 1; i <= 21; i += 1) {
+    items.push({ kind: "message", id: `user${i}` });
+    items.push(runs(`run${i}`)[0]);
+  }
+  const userRun = (id) => ({ kind: "message", message: { id, role: "user" } });
+  const real = items.map((item) => (item.kind === "message" ? userRun(item.id) : item));
+  // MessageItem 的 id 在 message 内（与 groupToolMessages 产出的 RenderMessage 形状一致）
+  const topId = (item) => item.id ?? item.message?.id;
+
+  // 保留第 2..21 轮 = 40 条（每轮 user+run 相邻）：user2,run2,user3,run3,…,user21,run21
+  const expected = [];
+  for (let i = 2; i <= 21; i += 1) {
+    expected.push(`user${i}`, `run${i}`);
+  }
+
+  // 贴底调用不传 maxItems
+  const mounted = windowing.sliceLastAgentRuns(real, windowing.TIMELINE_MOUNTED_TURN_LIMIT);
+  assert.deepEqual(mounted.map(topId), expected);
+  // 上滚调用传 200 条目预算
+  const scrolled = windowing.sliceLastAgentRuns(real, windowing.TIMELINE_MOUNTED_TURN_LIMIT, 200);
+  assert.deepEqual(scrolled.map(topId), expected);
+});
+
+test("sliceLastAgentRuns includes the user and non-boundary system card preceding the cutoff run", () => {
+  const items = [];
+  for (let i = 1; i <= 21; i += 1) {
+    items.push({ kind: "message", message: { id: `user${i}`, role: "user" } });
+    if (i === 2) items.push({ kind: "message", message: { id: "ask-card", role: "system" } });
+    items.push(runs(`run${i}`)[0]);
+  }
+  const sliced = windowing.sliceLastAgentRuns(items, 20, 200);
+  assert.deepEqual(sliced.slice(0, 3).map((item) => item.id ?? item.message?.id), ["user2", "ask-card", "run2"]);
+  assert.equal(windowing.countAgentRunItems(sliced), 20);
+  assert.equal(sliced.length, 41);
+});
+
+test("sliceLastAgentRuns does not pair a run across a compaction boundary", () => {
+  const items = [
+    { kind: "message", message: { id: "old-user", role: "user" } },
+    { kind: "message", message: { id: "summary", role: "system", meta: { type: "compaction" } } },
+    ...runs("run1", "run2"),
+  ];
+  assert.deepEqual(
+    windowing.sliceLastAgentRuns(items, 2).map((item) => item.id ?? item.message?.id),
+    ["run1", "run2"],
+  );
+});
+
+test("sliceLastAgentRuns keeps the item budget instead of orphaning the cutoff reply", () => {
+  const items = [];
+  for (let i = 1; i <= 21; i += 1) {
+    items.push({ kind: "message", message: { id: `user${i}`, role: "user" } });
+    if (i === 2) items.push({ kind: "message", message: { id: "ask-card", role: "system" } });
+    items.push(runs(`run${i}`)[0]);
+  }
+  const sliced = windowing.sliceLastAgentRuns(items, 20, 40);
+  assert.equal(sliced.length <= 40, true);
+  assert.deepEqual(sliced.slice(0, 2).map((item) => item.id ?? item.message?.id), ["user3", "run3"]);
+  assert.equal(windowing.countAgentRunItems(sliced), 19);
+});
+
 test("selectTimelineTurnWindow slices past the window turns regardless of following", () => {
   const items = runs("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k");
   assert.equal(windowing.countAgentRunItems(items), 11);

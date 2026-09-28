@@ -371,8 +371,8 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     prevRenderedRunsRef.current = next;
     return next;
   }, [renderedRuns]);
-  // 渲染窗口（2026-08 黑屏治理）：贴底只挂尾部 3 轮；上滚查看历史也裁剪
-  // （controller.scrolledWindowTurns，初始 15 轮 + 「显示更早」逐步扩大）——
+  // 渲染窗口（2026-08 黑屏治理）：贴底只挂尾部 20 轮；上滚查看历史也裁剪
+  // （controller.scrolledWindowTurns，初始 20 轮 + 「显示更早」逐步扩大）——
   // 历史全量放开挂载是大会话渲染进程内存峰值/黑屏的来源。数据仍在 atoms。
   const followingForTurnWindow = controller.autoScroll;
   const turnWindowTurns = followingForTurnWindow

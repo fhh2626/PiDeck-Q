@@ -5,6 +5,7 @@ import ts from "typescript";
 import vm from "node:vm";
 import { buildTurnDisplay, hasFoldableContent, resolveAskLeadInPin } from "../src/renderer/src/components/session/timeline/buildTurnDisplay.ts";
 import { buildProcessSummary } from "../src/renderer/src/components/session/timeline/segmentSummary.ts";
+import { sliceLastAgentRuns } from "../src/renderer/src/components/session/timeline/turnRenderWindow.ts";
 
 /**
  * 一轮回答（agent-run）扁平展示序列测试。
@@ -306,6 +307,20 @@ test("groupToolMessages 不合并连续 assistant 消息：多段回答各自独
 	// 合并会把 T1/T2 串接到同一条消息上导致思考上移；不合并时各自保留在各自消息里
 	assert.equal(run.items[0].message.thinking, "T1");
 	assert.equal(run.items[1].message.thinking, "T2");
+});
+
+test("a system card between a question and reply stays with the 20th visible turn", () => {
+	const { groupToolMessages } = loadAppUtils();
+	const messages = [];
+	for (let i = 1; i <= 21; i += 1) {
+		messages.push({ id: `u${i}`, agentId: "a", role: "user", text: `q${i}`, timestamp: i * 3 });
+		if (i === 2) messages.push({ id: "ask-card", agentId: "a", role: "system", text: "question", timestamp: i * 3 + 1 });
+		messages.push({ id: `a${i}`, agentId: "a", role: "assistant", text: `a${i}`, timestamp: i * 3 + 2 });
+	}
+	const rendered = groupToolMessages(messages);
+	assert.equal(JSON.stringify(rendered.slice(2, 5).map((item) => item.message?.id ?? item.id)), JSON.stringify(["u2", "ask-card", "a2"]));
+	const visible = sliceLastAgentRuns(rendered, 20);
+	assert.equal(JSON.stringify(visible.slice(0, 3).map((item) => item.message?.id ?? item.id)), JSON.stringify(["u2", "ask-card", "a2"]));
 });
 
 test("groupToolMessages keeps a compaction card after the preceding assistant run", () => {

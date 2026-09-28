@@ -254,8 +254,8 @@ export class AgentManager {
 	private readonly thinkingPushCountByAgent = new Map<string, number>();
 	/** 流式 emit 合并窗口（毫秒）。50ms 兼顾流畅度与传输量，肉眼几乎无延迟。 */
 	private static readonly MESSAGE_FLUSH_INTERVAL_MS = 50;
-	/** 激活显示窗口轮数（2026-08 激活分页）：loadMessages 后只下发尾部 N 轮，更早历史走 disk 轮次分页。 */
-	private static readonly DISPLAY_WINDOW_TURNS = 3;
+	/** 激活显示窗口轮数（2026-08 激活分页，2026-12 3→20）：loadMessages 后只下发尾部 N 轮，更早历史走 disk 轮次分页。 */
+	private static readonly DISPLAY_WINDOW_TURNS = 20;
 	/**
 	 * agent_end 后等待 agent_settled 的超时时间（毫秒）。
 	 * 如果 Pi 在此时间内未发送 agent_settled，桌面端将主动查询 get_state 并尝试恢复 idle。
@@ -276,14 +276,14 @@ export class AgentManager {
 	private static readonly TOOL_FULL_TEXT_LRU_LIMIT = 200;
 	/**
 	 * 大会话直接从文件尾部读取时，最多保留的最近消息轮次（每条 user 消息算一轮）。
-	 * 12 轮 = 4 次 3 轮翻页，覆盖绝大多数回看需求；更早历史走磁盘轮次分页。
+	 * 20 轮 = 激活显示窗口（20 轮）全量覆盖；更早历史走磁盘轮次分页。
 	 */
-	private static readonly MAX_HISTORY_LOAD_TURNS = 12;
+	private static readonly MAX_HISTORY_LOAD_TURNS = 20;
 	/**
 	 * 运行期消息缓存上限（轮）：agent_settled 后把主进程数组裁到最近 N 轮。
-	 * 12 轮覆盖激活窗口（3 轮）+ 三级缓存的回看命中率；头部更早历史随时可从文件分页读回。
+	 * 20 轮覆盖激活窗口（20 轮）+ 三级缓存的回看命中率；头部更早历史随时可从文件分页读回。
 	 */
-	private static readonly MAX_RUNTIME_CACHE_TURNS = 12;
+	private static readonly MAX_RUNTIME_CACHE_TURNS = 20;
 	/**
 	 * 工具结果文本截断阈值（字符数）。工具结果（如 bash 输出、文件读取）可能达数十 KB，
 	 * 若完整存入 ChatMessage.meta 并随流式 emit 反复全量传输，会显著放大 IPC payload
@@ -763,7 +763,7 @@ export class AgentManager {
 	}
 
 	/**
-	 * 缓存优先的历史翻页：运行中会话的「加载更早对话」先在主进程内存缓存（最近 12 轮）里切片，
+	 * 缓存优先的历史翻页：运行中会话的「加载更早对话」先在主进程内存缓存（最近 20 轮）里切片，
 	 * 命中则零文件 IO；未命中返回 null，调用方回退 SessionHistoryReader 读文件。
 	 *
 	 * 游标：beforeEntryId 优先（跨下标空间稳定）；before 为文件绝对下标时先解析成 entryId 再查缓存。
@@ -1041,7 +1041,7 @@ export class AgentManager {
 			this.markMessagesDirtyFrom(agentId, evictedDirtyIdx);
 		}
 		this.staleMessageCacheAgents.delete(agentId);
-		// 显示窗口 = 尾部 3 轮（轮次起点对齐 user 消息，与 disk 轮次分页同一约定；
+		// 显示窗口 = 尾部 20 轮（轮次起点对齐 user 消息，与 disk 轮次分页同一约定；
 		// 字节预算不参与窗口计算——单轮再大也整轮显示，折叠完整性优先）
 		this.displayWindowStartByAgent.set(
 			agentId,
@@ -2603,9 +2603,9 @@ export class AgentManager {
 	}
 
 	/**
-	 * 编辑/删除/重发定位消息条目：优先运行时缓存（最近 12 轮窗口，O(1)），
+	 * 编辑/删除/重发定位消息条目：优先运行时缓存（最近 20 轮窗口，O(1)），
 	 * 缓存未命中时按 messageId 从文件索引定位 —— 使这些操作不再依赖缓存轮数
-	 * （此前 40 轮缓存的一部分意义是保证操作按钮可用，12 轮窗口外也能操作）。
+	 * （20 轮窗口外也能操作，更早历史随时从文件分页读回）。
 	 * 文件定位返回 entryId 精确锚点（SessionFileEditor.locateEntry 优先 entryId 匹配）。
 	 */
 	private async locateMessageTarget(
@@ -3946,7 +3946,7 @@ export class AgentManager {
 				// 若 message_end 未到（边缘路径），仍先落盘再清 live。
 				this.finalizeThinkingIntoMessage(agentId);
 				this.flushMessageEmit(agentId);
-				// 一轮结束：运行期缓存裁剪到最近 12 轮（含本轮），防止长会话数组无界增长
+				// 一轮结束：运行期缓存裁剪到最近 20 轮（含本轮），防止长会话数组无界增长
 				this.trimRuntimeCache(agentId);
 				this.finishThinkingChannel(agentId);
 				this.activeAssistantMessageIds.delete(agentId);
@@ -5734,8 +5734,8 @@ export class AgentManager {
 	/**
 	 * 运行期缓存裁剪：agent 一轮结束后把主进程消息数组裁到最近 N 轮。
 	 * 现状 40 轮 trim 只在 loadMessages 时执行，长会话运行中消息会持续追加、数组无界增长；
-	 * 这里在 agent_settled（及 get_state 兜底确认空闲）后统一裁剪，使 12 轮成为硬上限。
-	 * 裁剪后重算激活显示窗口（尾部 3 轮）并全量 flush——头部整轮被裁，增量下标空间失效，
+	 * 这里在 agent_settled（及 get_state 兜底确认空闲）后统一裁剪，使 20 轮成为硬上限。
+	 * 裁剪后重算激活显示窗口（尾部 20 轮）并全量 flush——头部整轮被裁，增量下标空间失效，
 	 * 渲染层以窗口化全量校准（与 loadMessages 后的窗口协议一致）。
 	 * 头部系统摘要卡片（compaction/branchSummary）不属于 user 轮次，会被 trim 切掉，
 	 * 裁剪前先取出、裁剪后重新 prepend，保证「已压缩 N 次」卡片持续可见。
@@ -5759,7 +5759,7 @@ export class AgentManager {
 				prevHeadOffset + countRoleMessagesBefore(list, trimmedStart),
 			);
 		}
-		// 窗口前移的滑出轮：旧窗口（冻结于上次 loadMessages/trim）与新窗口（裁剪后尾部 3 轮）
+		// 窗口前移的滑出轮：旧窗口（冻结于上次 loadMessages/trim）与新窗口（裁剪后尾部 20 轮）
 		// 的头部会滑出窗口覆盖区；抓取 [oldWindowStart, 新窗口最旧轮次起点) 随全量 flush 下发，
 		// 渲染层并入历史前缀——否则锚点轮从视口消失且翻页翻不回来（2026-12 回归修复）。
 		const oldWindowStart = this.displayWindowStartByAgent.get(agentId) ?? 0;
@@ -5788,7 +5788,10 @@ export class AgentManager {
 			),
 		);
 		this.markMessagesDirtyFrom(agentId, 0);
-		this.flushMessageEmit(agentId);
+		// 强制全量 flush：trim 后窗口起点可能为 0（窗口=整个缓存），此时普通 flush 会走增量分支，
+		// 丢失 windowStartFilePos 与 slideOut（H2 回归修复依赖 slideOut 下发滑出轮）。与 loadMessages 结尾
+		// 的 scheduleMessageEmit(id, true) 同一语义：终态全量校准。
+		this.scheduleMessageEmit(agentId, true);
 	}
 
 	/** 节流推送 live 思考（done=false）；无段身份时丢弃。 */

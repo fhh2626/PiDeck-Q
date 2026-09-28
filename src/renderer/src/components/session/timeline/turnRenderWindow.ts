@@ -4,13 +4,13 @@
  * - 上滚查看历史：挂尾部大窗口（TIMELINE_SCROLLED_TURN_LIMIT + 用户逐步展开），
  *   并在窗口前留「显示更早」按钮 —— 历史全量挂载是渲染进程内存峰值/黑屏的来源
  *   （2026-08 治理：此前上滚 = 取消跟随 = 全量放开，大会话可一次挂载近千条消息）。
- * 与消息分页（100 条）/ 主进程轮次缓存（12 轮）正交——只决定「渲染多少」。
+ * 与消息分页（100 条）/ 主进程轮次缓存（20 轮）正交——只决定「渲染多少」。
  */
 
-/** 贴底时最多挂载的 agent-run 轮数（2026-11 轮次模型：10 → 3，与激活下发窗口对齐）。 */
-export const TIMELINE_MOUNTED_TURN_LIMIT = 3;
-/** 上滚查看历史时的基础渲染窗口轮数（2026-08 黑屏治理新增）。 */
-export const TIMELINE_SCROLLED_TURN_LIMIT = 15;
+/** 贴底时最多挂载的 agent-run 轮数（2026-12：3 → 20，与激活下发窗口对齐）。 */
+export const TIMELINE_MOUNTED_TURN_LIMIT = 20;
+/** 上滚查看历史时的基础渲染窗口轮数（2026-12：15 → 20，与贴底窗口对齐，避免上滚突然缩窗）。 */
+export const TIMELINE_SCROLLED_TURN_LIMIT = 20;
 /** 「显示更早」按钮每次展开的轮数步长。 */
 export const TIMELINE_WINDOW_EXPAND_STEP = 10;
 /** 上滚窗口的展示条目预算：单轮超大（一轮内上百条工具调用）时按轮截断仍会挂载海量 DOM，
@@ -58,10 +58,43 @@ export function sliceLastAgentRuns<T extends { kind: string } & { items?: readon
 			return cutFrom(items, index);
 		}
 		if (runs >= maxTurns) {
+			// system 提问卡片可能夹在用户提问与回答之间；仅跨越这类非摘要卡片。
+			// 压缩/分支摘要是真实轮次边界，不得跨越并错配更早的用户提问。
+			let questionIndex = index - 1;
+			while (questionIndex >= 0 && isNonBoundarySystemMessageItem(items[questionIndex])) {
+				questionIndex -= 1;
+			}
+			if (questionIndex >= 0 && isUserMessageItem(items[questionIndex])) {
+				// weight 已包含当前 run 到末尾的所有顶层条目；补入提问和中间卡片
+				// 若超出上滚条目预算，舍弃当前 run，从下一轮起保留，避免孤立回答。
+				if (maxItems !== undefined && weight + index - questionIndex > maxItems) {
+					return cutFrom(items, index);
+				}
+				return items.slice(questionIndex);
+			}
 			return index === 0 ? (items as T[]) : items.slice(index);
 		}
 	}
 	return items as T[];
+}
+
+/**
+ * 顶层条目是否为「触发某 run 的用户提问」（kind=message 且 message.role=user）。
+ * 泛型 T 只声明 kind，message 字段按运行时结构收窄（对应 groupToolMessages 产出的
+ * MessageItem 形状）。仅在渲染窗口切片起点使用，不影响分组逻辑。
+ */
+function isUserMessageItem(item: { kind: string } & { items?: readonly unknown[] } | undefined): boolean {
+	if (!item || item.kind !== "message") return false;
+	const message = (item as { message?: { role?: unknown } }).message;
+	return message?.role === "user";
+}
+
+/** 非摘要 system 卡片可出现在用户提问与回答之间；摘要必须阻断回溯。 */
+function isNonBoundarySystemMessageItem(item: { kind: string } & { items?: readonly unknown[] } | undefined): boolean {
+	if (!item || item.kind !== "message") return false;
+	const message = (item as { message?: { role?: unknown; meta?: { type?: unknown } } }).message;
+	return message?.role === "system" &&
+		message.meta?.type !== "compaction" && message.meta?.type !== "branchSummary";
 }
 
 /**
@@ -75,7 +108,7 @@ function cutFrom<T>(items: readonly T[], index: number): T[] {
 
 /**
  * 是否对渲染列表启用 turn 窗口裁剪。
- * windowTurns 由调用方按跟随态决定（贴底 3 轮 / 上滚 15+展开轮）；
+ * windowTurns 由调用方按跟随态决定（贴底 20 轮 / 上滚 20+展开轮）；
  * 与旧签名（following 参与判定）不同：非贴底同样裁剪，只是窗口更大。
  */
 export function shouldWindowTimelineTurns(

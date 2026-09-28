@@ -610,7 +610,7 @@ export function useSessionTimelineController(options: {
 	// 窗口前还有历史可加载：已加载前缀看游标，未加载看窗口起点（>0 说明激活时被截断）
 	const historyHasMore = controllerEnabled && hasMoreRuntimeHistory(cachedEntry);
 	// 2026-11 轮次模型：不再按 100 条分页器切片，显示数组 = 已加载全部（历史前缀 + 运行时窗口段）。
-	// 内存预算由主进程 12 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
+	// 内存预算由主进程 20 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
 	const visibleMessages = combinedMessages;
 	const [isLoadingMessagePage, setIsLoadingMessagePage] = useState(false);
   const [autoScroll, setAutoScroll] = useState(() => {
@@ -630,13 +630,13 @@ export function useSessionTimelineController(options: {
   const pendingJumpRef = useRef<Tagged<string> | undefined>(undefined);
   const highlightTimersRef = useRef(new Map<number, number>());
   // ── 上滚渲染窗口（2026-08 黑屏治理）──
-  // 贴底时渲染层固定用 3 轮小窗口；上滚看历史用此窗口（初始 15 轮，
+  // 贴底时渲染层固定用 20 轮小窗口；上滚看历史用此窗口（初始 20 轮，
   // 「显示更早」按钮逐步扩大）。回底 = 新的浏览周期，窗口重置回基础大小。
   const [scrolledWindowTurns, setScrolledWindowTurns] = useState(TIMELINE_SCROLLED_TURN_LIMIT);
   const [scrolledWindowItems, setScrolledWindowItems] = useState(TIMELINE_SCROLLED_MAX_ITEMS);
   const expandWindow = useCallback(() => {
     // 跟底状态（内容短于视口、按钮可见）下点击「显示更早」：先解锁跟随，
-    // 否则 turnWindowTurns 恒取贴底窗口 3 轮，扩大 scrolledWindowTurns 不生效，
+    // 否则 turnWindowTurns 恒取贴底窗口 20 轮，扩大 scrolledWindowTurns 不生效，
     // 按钮点击表现为无反应（2026-02 修复）。
     if (autoScrollRef.current) {
       autoScrollRef.current = false;
@@ -793,7 +793,7 @@ export function useSessionTimelineController(options: {
 
 	// ── 回底清理临时历史（2026-11 轮次模型）──
 	// 贴底稳定 1.5s 后清掉翻过的历史前缀（atom 只留运行时窗口段），渲染层内存回到最小；
-	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 12 轮内命中，无感）。
+	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 20 轮内命中，无感）。
 	// 上滚/加载历史中会取消待执行的清理；清理后 history 置空，后续再翻再拉。
 	const clearHistory = useSetAtom(clearSessionHistoryAtom);
 	const historyClearTimerRef = useRef<number | undefined>(undefined);

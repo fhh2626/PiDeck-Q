@@ -282,7 +282,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
     const messages = [];
     const entries = [];
     let parent = null;
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 23; i += 1) {
       const uid = `u${i}`;
       const aid = `a${i}`;
       messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
@@ -307,7 +307,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
       process: {
         client: {
           request: async ({ type }) => type === "get_entries"
-            ? { success: true, data: { entries, leafId: "a15" } }
+            ? { success: true, data: { entries, leafId: "a23" } }
             : { success: true, data: { messages } },
         },
       },
@@ -326,15 +326,17 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
 
     await manager.loadMessages("agent-1");
     const cached = manager.messages.get("agent-1");
-    // 15 轮裁到 12 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
+    // 23 轮裁到 20 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
+    assert.equal(cached.length, 40);
     assert.equal(cached[0].text, "q4");
     assert.equal(cached[0].meta.entryId, "u4");
-    assert.equal(cached[cached.length - 1].meta.entryId, "a15");
-    // 全量 flush 携带 windowStartFilePos：窗口首条（q13）的文件消息下标 = 24
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    assert.equal(cached[cached.length - 1].meta.entryId, "a23");
+    // 缓存 20 轮 = 显示 20 轮：窗口从缓存头部开始（windowStart = 0，全量 flush 不携带该字段）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    // 全量 flush 携带 windowStartFilePos：窗口首条（q4）的文件消息下标 = 6（u1..a3 被裁）
+    const full = payloads.find((p) => p.windowStartFilePos !== undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 18);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStartFilePos, 6);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -447,7 +449,7 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 21; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
@@ -455,23 +457,32 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
       { id: "sum-1", agentId: "agent-1", role: "system", text: "compacted", timestamp: 1, meta: { type: "compaction" } },
       ...many,
     ]);
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 20 轮）从 q2 起点开始 → 滑出 [卡片, u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     const payloads = [];
     manager.onOutput((channel, payload) => {
       if (channel === "agents:message") payloads.push(payload);
     });
     manager.trimRuntimeCache("agent-1");
     const after = manager.messages.get("agent-1");
-    // 卡片保留在头部且不重复；尾部保留最近 12 轮（24 条）
+    // 21 轮夹具（15 轮在 20 轮缓存下不会触发裁剪）：卡片保留在头部且不重复；尾部保留最近 20 轮（40 条）
     assert.equal(after.filter((m) => m.role === "system").length, 1);
     assert.equal(after[0].meta.type, "compaction");
-    assert.equal(after.length, 25);
-    assert.equal(after[1].text, "q4");
-    assert.equal(after[24].text, "a15");
-    // 数值游标不被卡片污染：窗口首条 q13 的文件消息下标 = 24（headOffset 只按角色消息递增）
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    assert.equal(after.length, 41);
+    assert.equal(after[1].text, "q2");
+    assert.equal(after[40].text, "a21");
+    // 窗口 = 整个缓存（windowStart=0）：全量 flush 不携带 windowStart 字段，改查 manager 状态
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.upsertFrom === undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 19);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStart, undefined);
+    assert.equal(full.messages[0].meta.type, "compaction");
+    assert.equal(full.messages[1].text, "q2");
+    // 滑出 = 旧窗口头部 [卡片, u1, a1]；卡片随滑出随全量 flush 下发，不丢失、不重复
+    assert.deepEqual(
+      Array.from(full.slideOut, (m) => m.meta.entryId ?? m.meta.type),
+      ["compaction", "u1", "a1"],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -481,13 +492,14 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 21; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 旧窗口 = q10 起（旧空间下标 18）；trim 后窗口 = q13 起 → 滑出 [q10..a12]（3 轮 6 条）
-    manager.displayWindowStartByAgent.set("agent-1", 18);
+    // 21 轮夹具（15 轮在 20 轮缓存下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0）；
+    // trim 后新窗口 = q2 起（尾部 20 轮，下标 2）→ 滑出 [u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     // 匿名会话（无文件路径/无 entryId 映射）：headOffset 未知 = -1，trim 后必须保持 -1（M2）
     manager.messageHeadOffsetByAgent.set("agent-1", -1);
     const payloads = [];
@@ -500,10 +512,10 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
     assert.ok(slidePayload, "full flush must carry slideOut");
     assert.deepEqual(
       Array.from(slidePayload.slideOut, (m) => m.meta.entryId),
-      ["u10", "a10", "u11", "a11", "u12", "a12"],
+      ["u1", "a1"],
     );
-    assert.equal(slidePayload.windowStart, 18, "trim 后窗口 = q13 起（新空间下标 18）");
-    assert.equal(slidePayload.messages[0].meta.entryId, "u13");
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    assert.equal(slidePayload.messages[0].meta.entryId, "u2");
     assert.equal(manager.pendingSlideOutByAgent.get("agent-1"), undefined, "flush 后待发滑出已清空");
     // M2：-1 保持 -1（修复前被递增成 5 的伪造游标）
     assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), -1);
@@ -516,12 +528,14 @@ test("trimRuntimeCache appends window slide-out onto an existing pending slideOu
   const { manager, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 21; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    manager.displayWindowStartByAgent.set("agent-1", 18);
+    // 21 轮夹具（15 轮在 20 轮窗口下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0），
+    // 新窗口（尾部 20 轮）从 q2 起点（下标 2）开始 → 滑出 [u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.pendingSlideOutByAgent.set("agent-1", [
       { id: "pending-old", agentId: "agent-1", role: "assistant", text: "pending-old", timestamp: 1, meta: { entryId: "pending-old" } },
     ]);
@@ -534,7 +548,7 @@ test("trimRuntimeCache appends window slide-out onto an existing pending slideOu
     assert.ok(slidePayload, "full flush must carry the combined slideOut");
     assert.deepEqual(
       Array.from(slidePayload.slideOut, (m) => m.meta.entryId),
-      ["pending-old", "u10", "a10", "u11", "a11", "u12", "a12"],
+      ["pending-old", "u1", "a1"],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -545,23 +559,139 @@ test("trimRuntimeCache increments headOffset for file-backed sessions only (M2 r
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 21; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 20 轮）从 q2 起点（下标 2）开始
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.messageHeadOffsetByAgent.set("agent-1", 0);
     const payloads = [];
     manager.onOutput((channel, payload) => {
       if (channel === "agents:message") payloads.push(payload);
     });
     manager.trimRuntimeCache("agent-1");
-    // 被裁 q1..a3 = 6 条角色消息 → 数值游标前移 6；窗口首条 u13 的文件下标 = 6 + 18 = 24
-    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), 6);
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    // 被裁 q1/a1 = 2 条角色消息 → 数值游标前移 2
+    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), 2);
+    // 窗口 = 整个缓存（windowStart=0）：全量 flush 不携带 windowStart 字段（仅 >0 时加）
+    const full = payloads.find((p) => p.upsertFrom === undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 18);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStart, undefined);
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    // 窗口首条 u2 的文件下标 = headOffset(2) + (windowStart(0) - cardCount(0)) = 2
+    assert.equal(full.windowStartFilePos, 2);
+    assert.equal(full.messages[0].meta.entryId, "u2");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("loadMessages keeps the last 20 turns of a 23-turn session (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-20turns-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const messages = [];
+    const entries = [];
+    let parent = null;
+    for (let i = 1; i <= 23; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
+      entries.push({ id: uid, parentId: parent, type: "message", message: { role: "user", id: `msg-u${i}` } });
+      parent = uid;
+      messages.push({ role: "assistant", content: [{ type: "text", text: `a${i}` }], id: `msg-a${i}` });
+      entries.push({ id: aid, parentId: parent, type: "message", message: { role: "assistant", id: `msg-a${i}` } });
+      parent = aid;
+    }
+    const runtime = {
+      tab: {
+        id: "agent-1",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "idle",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: {
+        client: {
+          request: async ({ type }) => type === "get_entries"
+            ? { success: true, data: { entries, leafId: "a23" } }
+            : { success: true, data: { messages } },
+        },
+      },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-1", runtime);
+    const payloads = [];
+    manager.onOutput((channel, payload) => {
+      if (channel === "agents:message") payloads.push(payload);
+    });
+
+    await manager.loadMessages("agent-1");
+    const cached = manager.messages.get("agent-1");
+    // 23 轮裁到最近 20 轮：首条保留 q4（entryId u4），末条 a23
+    assert.equal(cached.length, 40);
+    assert.equal(cached[0].text, "q4");
+    assert.equal(cached[0].meta.entryId, "u4");
+    assert.equal(cached[cached.length - 1].meta.entryId, "a23");
+    // 缓存 20 轮 = 显示 20 轮：窗口从缓存头部开始（windowStart 缺省 = 0）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.windowStartFilePos !== undefined);
+    assert.ok(full, "windowed full flush expected");
+    // 文件消息下标：u1..a3 被裁 = 6 条 → 窗口首条 u4 的文件下标 = 6
+    assert.equal(full.windowStartFilePos, 6);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("trimRuntimeCache keeps the last 20 turns and slides out the oldest (2026-12)", async () => {
+  const { manager, sessionPath, directory } = await createHarness();
+  try {
+    // 21 轮 user/assistant = 42 条；显示窗口冻结在第 2 轮起点（缓存内下标 2）
+    const many = [];
+    for (let i = 1; i <= 21; i += 1) {
+      many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
+      many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
+    }
+    manager.messages.set("agent-1", many);
+    // 显示窗口 = 尾部 20 轮：第 1 轮起点（缓存内下标 2）仍在窗口覆盖区内；
+    // 匿名会话无文件路径：headOffset 未知 = -1，trim 后必须保持 -1（M2）
+    manager.displayWindowStartByAgent.set("agent-1", 2);
+    manager.messageHeadOffsetByAgent.set("agent-1", -1);
+    const payloads = [];
+    manager.onOutput((channel, payload) => {
+      if (channel === "agents:message") payloads.push(payload);
+    });
+    manager.trimRuntimeCache("agent-1");
+    const after = manager.messages.get("agent-1");
+    // 第 21 轮结束触发裁剪：运行时缓存只留第 2..21 轮（40 条）
+    assert.equal(after.length, 40);
+    assert.equal(after[0].meta.entryId, "u2");
+    assert.equal(after[after.length - 1].meta.entryId, "a21");
+    // 新窗口 = 第 2 轮起点 = 缓存内下标 0（20 轮全量下发，窗口从缓存头部开始不携带 windowStart）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.upsertFrom === undefined);
+    assert.ok(full, "windowed full flush expected");
+    // 全量快照下发窗口段 = 全部 40 条（第 2..21 轮）
+    assert.equal(full.messages.length, 40);
+    assert.equal(full.messages[0].meta.entryId, "u2");
+    // 20 轮窗口下第 21 轮结束不产生滑出（旧窗口头部仍在 20 轮窗口内）；
+    // 第 1 轮在运行时缓存中保留，可经历史分页取回，不重复、不丢
+    assert.equal(full.slideOut, undefined);
+    assert.equal(manager.pendingSlideOutByAgent.get("agent-1"), undefined);
+    // M2：-1 保持 -1（匿名会话不得被递增成伪造游标）
+    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), -1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
