@@ -620,7 +620,8 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		if (
 			"webServiceEnabled" in patch ||
 			"webServiceHost" in patch ||
-			"webServicePort" in patch
+			"webServicePort" in patch ||
+			"webServiceAccessToken" in patch
 		) {
 			try {
 				if (applyWebServiceSettings) await applyWebServiceSettings(settings);
@@ -714,6 +715,18 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	router.handle(ipcChannels.skillsOpenFolder, (path?: string) =>
 		skillManager.openFolder(path),
 	);
+	router.handle(ipcChannels.skillsRename, async (skillPath: unknown, newName: unknown) => {
+		// 边界校验：渲染层入参不可信；具体名称规则由 SkillManager 统一执行
+		if (typeof skillPath !== "string" || !skillPath.trim()) {
+			throw new Error(mainCopy("mainSkill.notFound"));
+		}
+		if (typeof newName !== "string" || !newName.trim()) {
+			throw new Error(mainCopy("mainSkill.nameRequired"));
+		}
+		const result = await skillManager.rename(skillPath, newName);
+		void appLogger.info("skill", "Skill renamed", { from: skillPath, to: result.path });
+		return result;
+	});
 
 	// ── 配置管理 ─────────────────────────────────────────────────────
 

@@ -61,7 +61,7 @@ test("pideck-q-better-compaction keeps its relative runtime files in extraResour
 test("pideck-q-change-pi-prompt keeps its relative runtime files in extraResources", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(xmake, /os\.cp\(path\.join\(os\.projectdir\(\), "resources", "\*"\)/);
-	for (const file of ["runtime.ts", "transform.ts", "config.ts", "defaults.ts", "layout.ts", "contributions.ts", "shellAvailability.ts", "tests/transform.test.mjs"]) {
+	for (const file of ["runtime.ts", "transform.ts", "config.ts", "defaults.ts", "layout.ts", "contributions.ts", "shellAvailability.ts", "copy.ts", "tests/transform.test.mjs"]) {
 		assert.ok(existsSync(join("resources", "extensions", "pideck-q-change-pi-prompt", file)));
 	}
 });

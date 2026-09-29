@@ -595,13 +595,15 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
   });
   assert.equal(controller.canMutateActiveMessages, false, "must be false when bound agent status is closed");
 
-  // 5. Agent 状态为 error -> canMutateActiveMessages === false
+  // 5. Agent 状态为 error（如 API 请求失败，进程仍在） -> canMutateActiveMessages === true
+  // 需求变更：error 不再一律视为不可变更。API 失败时 pi 进程仍存活，编辑/删除/重发都应可用；
+  // 进程真的退出时由主进程返回 runtimeUnavailable 并 toast，不在渲染层猜测。
   controller = controllerModule.useSessionRuntimeController({
     ...baseOptions,
     sessionId,
     agents: [{ id: "agent-1", projectId: "proj-1", status: "error" }],
   });
-  assert.equal(controller.canMutateActiveMessages, false, "must be false when bound agent status is error");
+  assert.equal(controller.canMutateActiveMessages, true, "must be true when bound agent status is error");
 
   // 6. sessionId 为空 -> canMutateActiveMessages === false
   controller = controllerModule.useSessionRuntimeController({
@@ -745,14 +747,21 @@ test("resendUserMessage: target changing during prepareRuntimeResend must not su
   currentTargetRef.current = { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 2 };
 
   // 3. 释放 prepare 结果（携带旧消息的 resend snapshot）
-  resolvePrepare({ ok: true, value: { text: "resend-text", images: [] } });
+  //    必须用生产契约形状 SessionCommandResult<SessionTargetedValue<{text, images}>>，
+  //    否则 hook 会因 snapshot 为空而报 TypeError，测试变得“因错误而通过”。
+  resolvePrepare({ ok: true, value: { target: targetV1, value: { text: "resend-text", images: [] } } });
   await flushMicrotasks();
 
   // 4. 断言：快照未被提交到新 runtime，toast 提示 runtimeChanged
   assert.equal(submittedSnapshots.length, 0, "must not submitPromptSnapshot after target changed during prepare");
   const toasts = commandEvents.filter((e) => e.type === "toast");
   assert.ok(toasts.length > 0);
-  assert.match(toasts[toasts.length - 1].msg, /sessionCommand\.runtimeChanged/);
+  // prepare 已截断文件但没重发：除了 runtimeChanged 提示，正文还要回到输入框，
+  // 因此这里断言「存在」而不是「最后一条」（最后一条是恢复提示）。
+  assert.ok(
+    toasts.some((toast) => /sessionCommand\.runtimeChanged/.test(toast.msg)),
+    `runtimeChanged toast must still be shown, got ${JSON.stringify(toasts.map((t) => t.msg))}`,
+  );
 });
 
 test("resendUserMessage: unchanged target submits snapshot after prepare succeeds", async () => {

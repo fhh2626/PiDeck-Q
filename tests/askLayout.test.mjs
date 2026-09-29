@@ -36,6 +36,18 @@ test("ask inline bar uses the reusable BEUI-style ApprovalCard shell", () => {
   assert.match(overlay, /BatchAskInlineBar/);
 });
 
+// 单题提问的正文走 ApprovalCard 的 description：曾被 `truncate` 截成一行，
+// Web/手机端长提问只剩半句且无法悬停查看。正文必须完整换行显示（保留换行符），
+// 并显式覆盖 Button 基础样式里的 whitespace-nowrap。
+test("approval card shows the full question text instead of a single truncated line", () => {
+  const approvalCard = readFileSync("src/renderer/src/components/ui-shadcn/approval-card.tsx", "utf8");
+  const descriptionLine = approvalCard.split("\n").find((line) => line.includes("{props.description}"));
+  assert.ok(descriptionLine, "description must still be rendered");
+  assert.doesNotMatch(descriptionLine, /\btruncate\b|line-clamp/);
+  assert.match(descriptionLine, /whitespace-pre-wrap/);
+  assert.match(descriptionLine, /break-words|overflow-wrap:anywhere/);
+});
+
 test("composer default height stays compact while remaining vertically resizable", () => {
   const rendererUtils = readFileSync("src/renderer/src/rendererUtils.ts", "utf8");
   assert.match(rendererUtils, /COMPOSER_DEFAULT_HEIGHT = 160/);

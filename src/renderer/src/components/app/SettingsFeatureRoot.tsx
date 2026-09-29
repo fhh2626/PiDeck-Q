@@ -1,6 +1,7 @@
 import { lazy, Suspense, useMemo } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { AppInfo, AppSettings } from "../../../../shared/types";
+import { buildWebServiceAccessUrl } from "../../../../shared/webServiceAccess";
 import { settingsOpenAtom } from "../../atoms";
 import { desktopApi as api } from "../../desktopApi";
 import type { PiUpdateController } from "../../hooks/usePiUpdate";
@@ -61,7 +62,7 @@ export function SettingsFeatureRoot(props: SettingsFeatureRootProps) {
         showNotice(t("environment.checkFlagCleared"));
       },
       // 外部文档/服务页面通过 desktopApi.app.openExternal 交由系统默认浏览器打开。
-      onOpenWebService: (port: string) => api.app.openExternal(`http://127.0.0.1:${port}`, true),
+      onOpenWebService: (port: string) => api.app.openExternal(buildWebServiceAccessUrl("127.0.0.1", port, props.settings.webServiceAccessToken), true),
       onClose: () => setOpen(false),
       onChange: props.onChange,
     }),

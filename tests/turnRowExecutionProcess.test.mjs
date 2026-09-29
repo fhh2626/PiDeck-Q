@@ -112,3 +112,32 @@ test("TurnRow uses custom memo compare so unchanged runs skip re-render", () => 
     /export function sameAgentRunForRender/,
   );
 });
+
+// 无可见文字的一轮（纯工具轮、停止后空回复）也必须能删：操作栏只在
+// mergedText 存在时才渲染的话，这类轮次就彻底没有删除入口，用户无法清理失败轮次。
+test("TurnRow action bar shows delete for turns without visible text", () => {
+  // 操作栏在「有文字或可删」时才渲染
+  assert.match(turnRowSource, /\(mergedText \|\| canDeleteTurn\) && !editing/);
+  // 无需正文的删除入口：只依赖本轮最后一条 assistant 的 id
+  assert.match(turnRowSource, /const lastAssistantId = assistantMessages\.at\(-1\)\?\.message\.id;/);
+  assert.match(turnRowSource, /const canDeleteTurn = Boolean\(/);
+  // 编辑/复制/分享依赖正文，无文字时保持隐藏（编辑空文本无意义）
+  assert.match(turnRowSource, /mergedText && props\.onEditMessage/);
+});
+
+// 回调引用必须参与 memo 比较，否则 runtime 从不可变更切到可变更（如 error → idle）时
+// 历史轮次不重渲染，删除按钮永远不出现，旧闭包还会指向过期 target。
+test("TurnRow memo compares mutation callbacks and injector keeps them stable", () => {
+  assert.match(turnRowSource, /^\s*prev\.onDeleteMessage === next\.onDeleteMessage\s*(?:&&)?\s*$/m);
+  assert.match(turnRowSource, /^\s*prev\.onEditMessage === next\.onEditMessage\s*&&\s*$/m);
+
+  const injector = readFileSync(
+    "src/renderer/src/components/session/SessionRuntimeInjector.tsx",
+    "utf8",
+  );
+  // latest-ref：包装函数只在派发能力/目标 runtime 变化时换引用，让上面的引用比较既能生效
+  // 又不会在每个 token 更新时整列重渲染。
+  assert.match(injector, /latestMessageServicesRef\.current = services;/);
+  assert.doesNotMatch(injector, /^\s*services\.deleteMessage,\s*$/m);
+  assert.doesNotMatch(injector, /^\s*services\.editMessage,\s*$/m);
+});

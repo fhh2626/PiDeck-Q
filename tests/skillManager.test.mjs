@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import {
 	mkdtemp,
 	mkdir,
+	readFile,
+	readdir,
 	rm,
 	symlink,
 	writeFile,
@@ -28,6 +30,7 @@ function loadSkillManagerModule() {
 	});
 	const sandbox = {
 		exports: {},
+		process,
 		require: (id) => {
 			if (id === "electron") return { shell: { openPath: async () => "" } };
 			// 删除统一入口：测试环境无回收站，noop stub（本测试不触达删除路径）
@@ -185,5 +188,89 @@ test("does not recurse forever through a directory symlink cycle", async () => {
 			new Promise((_, reject) => setTimeout(() => reject(new Error("scan timed out")), 1000)),
 		]);
 		assert.ok(result.skills.some((item) => item.name === "visible-skill"));
+	});
+});
+
+async function findSkill(home, skillPath) {
+	const { SkillManager } = loadSkillManagerModule();
+	const manager = new SkillManager(home);
+	const { skills } = await manager.list();
+	const skill = skills.find((item) => item.path === skillPath);
+	assert.ok(skill, `skill not discovered: ${skillPath}`);
+	return { manager, skill };
+}
+
+test("renames a directory skill and rewrites a normalized frontmatter name", async () => {
+	await withTemporaryHome(async (home) => {
+		const globalSkills = await createSkillRoot(home);
+		const skillPath = join(globalSkills, "old-skill", "SKILL.md");
+		await createSkillFile(skillPath, "old-skill");
+
+		const { manager, skill } = await findSkill(home, skillPath);
+		const renamed = await manager.rename(skill.path, "New Skill");
+
+		assert.equal(renamed.path, join(globalSkills, "new-skill", "SKILL.md"));
+		assert.equal(renamed.name, "new-skill");
+		assert.equal(existsSync(join(globalSkills, "old-skill")), false);
+		assert.match(await readFile(renamed.path, "utf8"), /name: new-skill/);
+	});
+});
+
+test("renames a root markdown skill without moving the skill root", async () => {
+	await withTemporaryHome(async (home) => {
+		const globalSkills = await createSkillRoot(home);
+		const skillPath = join(globalSkills, "note.md");
+		await createSkillFile(skillPath, "note");
+
+		const { manager, skill } = await findSkill(home, skillPath);
+		assert.equal(skill.type, "markdown");
+		const renamed = await manager.rename(skill.path, "memo");
+
+		assert.equal(renamed.path, join(globalSkills, "memo.md"));
+		assert.equal(existsSync(join(globalSkills, "memo.md")), true);
+		assert.equal(existsSync(join(globalSkills, "note.md")), false);
+		// 关键回归：位置根目录本身绝不能被改名/移动
+		assert.equal(existsSync(globalSkills), true);
+		assert.ok((await readdir(globalSkills)).includes("memo.md"));
+	});
+});
+
+test("rejects rename onto an existing skill", async () => {
+	await withTemporaryHome(async (home) => {
+		const globalSkills = await createSkillRoot(home);
+		const skillPath = join(globalSkills, "a", "SKILL.md");
+		await createSkillFile(skillPath, "a");
+		await createSkillFile(join(globalSkills, "b", "SKILL.md"), "b");
+
+		const { manager, skill } = await findSkill(home, skillPath);
+		await assert.rejects(() => manager.rename(skill.path, "b"));
+		assert.equal(existsSync(join(globalSkills, "a", "SKILL.md")), true);
+	});
+});
+
+test("rejects an unchanged name", async () => {
+	await withTemporaryHome(async (home) => {
+		const globalSkills = await createSkillRoot(home);
+		const skillPath = join(globalSkills, "same", "SKILL.md");
+		await createSkillFile(skillPath, "same");
+
+		const { manager, skill } = await findSkill(home, skillPath);
+		await assert.rejects(() => manager.rename(skill.path, "same"));
+		assert.equal(existsSync(skillPath), true);
+	});
+});
+
+test("adds a missing name line", async () => {
+	await withTemporaryHome(async (home) => {
+		const globalSkills = await createSkillRoot(home);
+		const skillPath = join(globalSkills, "x", "SKILL.md");
+		await mkdir(join(globalSkills, "x"), { recursive: true });
+		await writeFile(skillPath, "---\ndescription: no name here\n---\n\n# x\n", "utf8");
+
+		const { manager, skill } = await findSkill(home, skillPath);
+		const renamed = await manager.rename(skill.path, "y");
+
+		assert.equal(renamed.path, join(globalSkills, "y", "SKILL.md"));
+		assert.match(await readFile(renamed.path, "utf8"), /name: y/);
 	});
 });

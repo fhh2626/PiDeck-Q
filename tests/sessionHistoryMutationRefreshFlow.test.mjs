@@ -298,6 +298,288 @@ test("error handling: page read failure marks stale history invalid without thro
   assert.equal(env.notices[0].msg, "message.mutationHistoryRefreshFailed");
 });
 
+function loadMessageCommands(env, fakeDesktopApi, overrides = {}) {
+  return compileModule("src/renderer/src/hooks/useSessionMessageCommands.ts", {
+    "../desktopApi": fakeDesktopApi,
+    "../i18n": env.i18n,
+    "../utils/sessionCommands": {
+      requireSessionCommand: (res) => res,
+      isSameSessionRuntimeTarget: (left, right) =>
+        Boolean(
+          left &&
+          right &&
+          left.sessionId === right.sessionId &&
+          left.agentId === right.agentId &&
+          left.runtimeGeneration === right.runtimeGeneration,
+        ),
+    },
+    "./useSessionTimelineController": {},
+    react: {
+      useRef: (val) => ({ current: val }),
+      useState: (init) => [init, () => {}],
+      useEffect: () => {},
+    },
+    ...overrides,
+  });
+}
+
+function resendTarget() {
+  return { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 };
+}
+
+// 重发流程：prepare 失败（文件未截断）时不能把正文放回输入框——原消息仍在时间线，
+// 恢复会造成重复发送；但重发锁必须释放，用户才能再次尝试。
+test("resend does not restore text when prepare fails before truncating, but releases the lock", async () => {
+  const env = setupTestEnvironment();
+  const toasts = [];
+  const prompts = [];
+  let prepareCalls = 0;
+  const commandsModule = loadMessageCommands(env, {
+    desktopApi: {
+      sessions: {
+        prepareRuntimeResend: async () => {
+          prepareCalls += 1;
+          throw new Error("prepare boom");
+        },
+      },
+    },
+  });
+  const target = resendTarget();
+  const commands = commandsModule.useSessionMessageCommands({
+    activeAgentStatus: "running",
+    activeProjectId: "proj-1",
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? target : undefined),
+    submitPromptSnapshot: async () => true,
+    openReplacedRuntimeSession: async () => {},
+    currentSessionIdRef: { current: "session-1" },
+    setPromptForAgent: (sessionId, value) => prompts.push({ sessionId, value }),
+    showToast: (msg) => toasts.push(msg),
+    overlays: { showConfirm: ({ onConfirm }) => onConfirm(), clearConfirm: () => {} },
+  });
+
+  commands.resendUserMessage(target, {
+    id: "m1",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello world",
+    timestamp: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(prepareCalls, 1);
+  assert.equal(toasts.length, 1, "only the prepare error toast, no restore toast");
+  assert.match(toasts[0], /prepare boom/);
+  assert.equal(prompts.length, 0, "prepare failed -> file not truncated -> no restore");
+
+  // 锁已释放：再次重发应重新调用 prepare
+  commands.resendUserMessage(target, {
+    id: "m1",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello world",
+    timestamp: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(prepareCalls, 2, "the resend lock must be released after failure");
+});
+
+// prepare 成功（文件已截断）后 runtime 被替换：必须恢复截断后的正文，
+// 且不能把快照提交到新 generation runtime。
+test("resend restores the truncated text when the runtime changes after prepare", async () => {
+  const env = setupTestEnvironment();
+  const toasts = [];
+  const prompts = [];
+  let submitCalls = 0;
+  const originalTarget = resendTarget();
+  const replacedTarget = { sessionId: "session-1", agentId: "agent-2", runtimeGeneration: 2 };
+  let currentTarget = originalTarget;
+  const commandsModule = loadMessageCommands(env, {
+    desktopApi: {
+      sessions: {
+        prepareRuntimeResend: async () => {
+          // prepare 期间 runtime 被替换
+          currentTarget = replacedTarget;
+          return { success: true, value: { text: "truncated text", images: [] } };
+        },
+      },
+    },
+  });
+  const commands = commandsModule.useSessionMessageCommands({
+    activeAgentStatus: "running",
+    activeProjectId: "proj-1",
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }, { id: "agent-2", projectId: "proj-1", status: "running" }],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? currentTarget : undefined),
+    submitPromptSnapshot: async () => {
+      submitCalls += 1;
+      return true;
+    },
+    openReplacedRuntimeSession: async () => {},
+    currentSessionIdRef: { current: "session-1" },
+    setPromptForAgent: (sessionId, value) => prompts.push({ sessionId, value }),
+    showToast: (msg) => toasts.push(msg),
+    overlays: { showConfirm: ({ onConfirm }) => onConfirm(), clearConfirm: () => {} },
+  });
+
+  commands.resendUserMessage(originalTarget, {
+    id: "m1",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello world",
+    timestamp: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(submitCalls, 0, "must not submit to the new runtime");
+  assert.equal(prompts.length, 1, "truncated text must be restored after prepare succeeded");
+  assert.equal(prompts[0].sessionId, "session-1");
+  assert.equal(typeof prompts[0].value, "function");
+  assert.equal(prompts[0].value(""), "truncated text");
+  assert.equal(prompts[0].value("typed later"), "truncated text\n\ntyped later");
+  assert.ok(
+    toasts.some((m) => m.includes("app.resendRestoredToComposer")),
+    `restore toast expected, got ${JSON.stringify(toasts)}`,
+  );
+});
+
+// prepare 成功但提交明确失败（false）时，截断后的正文必须回到输入框；
+// 提交结果未知（"unknown"）不能当作失败，否则用户会重复发送同一内容。
+test("resend restores only on definitive submit failure, not on unknown outcome", async () => {
+  const env = setupTestEnvironment();
+  const prompts = [];
+  let outcome = "unknown";
+  const commandsModule = loadMessageCommands(env, {
+    desktopApi: {
+      sessions: {
+        prepareRuntimeResend: async () => ({ success: true, value: { text: "truncated text", images: [] } }),
+      },
+    },
+  });
+  const target = resendTarget();
+  const commands = commandsModule.useSessionMessageCommands({
+    activeAgentStatus: "running",
+    activeProjectId: "proj-1",
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? target : undefined),
+    submitPromptSnapshot: async () => outcome,
+    openReplacedRuntimeSession: async () => {},
+    currentSessionIdRef: { current: "session-1" },
+    setPromptForAgent: (sessionId, value) => prompts.push({ sessionId, value }),
+    showToast: () => {},
+    overlays: { showConfirm: ({ onConfirm }) => onConfirm(), clearConfirm: () => {} },
+  });
+  const message = { id: "m2", agentId: "agent-1", role: "user", text: "original", timestamp: 1 };
+
+  commands.resendUserMessage(target, message);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(prompts.length, 0, "an unknown outcome must not restore the text");
+
+  outcome = false;
+  commands.resendUserMessage(target, message);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(prompts.length, 1, "a definite submit failure must restore the truncated text");
+  assert.equal(prompts[0].sessionId, "session-1");
+  assert.equal(prompts[0].value(""), "truncated text");
+});
+
+// prepare 提交后文件已截断，必须刷新历史：否则界面还显示已被删掉的回复。
+// 刷新要在提交之前完成，提交之后只负责重新发送。
+test("resend refreshes history after prepare and before submitting again", async () => {
+  const env = setupTestEnvironment();
+  const events = [];
+  const commandsModule = loadMessageCommands(env, {
+    desktopApi: {
+      sessions: {
+        prepareRuntimeResend: async () => {
+          events.push("prepare");
+          return { success: true, value: { text: "retry text", images: [] } };
+        },
+      },
+    },
+  });
+  const target = resendTarget();
+  const commands = commandsModule.useSessionMessageCommands({
+    activeAgentStatus: "running",
+    activeProjectId: "proj-1",
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? target : undefined),
+    submitPromptSnapshot: async (_sessionId, text) => {
+      events.push(`submit:${text}`);
+      return true;
+    },
+    openReplacedRuntimeSession: async () => {},
+    currentSessionIdRef: { current: "session-1" },
+    setPromptForAgent: () => {},
+    showToast: () => {},
+    overlays: { showConfirm: ({ onConfirm }) => onConfirm(), clearConfirm: () => {} },
+    captureHistoryMutationRefresh: (sessionId) => {
+      events.push(`capture:${sessionId}`);
+      return { sessionId, expectedMutationSequence: 1, loadedHistoryTurnCount: 0, loadedHistoryMessageCount: 0 };
+    },
+    refreshHistoryAfterMutation: async () => {
+      events.push("refresh");
+    },
+  });
+
+  commands.resendUserMessage(target, {
+    id: "m3",
+    agentId: "agent-1",
+    role: "user",
+    text: "retry text",
+    timestamp: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.deepEqual(events, ["prepare", "capture:session-1", "refresh", "submit:retry text"]);
+});
+
+// runtime 已被替换（agentId 不再匹配）时不能静默返回：用户会以为按钮坏了。
+test("resend surfaces a toast when the runtime changed instead of silently returning", async () => {
+  const env = setupTestEnvironment();
+  const toasts = [];
+  let prepareCalls = 0;
+  const commandsModule = loadMessageCommands(env, {
+    desktopApi: {
+      sessions: {
+        prepareRuntimeResend: async () => {
+          prepareCalls += 1;
+          return { success: true, value: { text: "x", images: [] } };
+        },
+      },
+    },
+  });
+  const target = resendTarget();
+  const commands = commandsModule.useSessionMessageCommands({
+    activeAgentStatus: "running",
+    activeProjectId: "proj-1",
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "running" }],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: (sessionId) => (sessionId === "session-1" ? target : undefined),
+    submitPromptSnapshot: async () => true,
+    openReplacedRuntimeSession: async () => {},
+    currentSessionIdRef: { current: "session-1" },
+    setPromptForAgent: () => {},
+    showToast: (msg) => toasts.push(msg),
+    overlays: { showConfirm: ({ onConfirm }) => onConfirm(), clearConfirm: () => {} },
+  });
+
+  commands.resendUserMessage(target, {
+    id: "m4",
+    agentId: "agent-old",
+    role: "user",
+    text: "text",
+    timestamp: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(prepareCalls, 0);
+  assert.deepEqual(toasts, ["sessionCommand.runtimeChanged"]);
+});
+
 test("useSessionMessageCommands: editMessage and deleteMessage both capture before await and refresh on success", async () => {
   const env = setupTestEnvironment();
 

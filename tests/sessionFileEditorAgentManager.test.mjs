@@ -8,6 +8,8 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const nodeRequire = createRequire(import.meta.url);
 
 function loadSharedModule(filePath) {
@@ -25,6 +27,9 @@ function loadSharedModule(filePath) {
 
 function loadAgentManager() {
   const filePath = "src/main/pi/AgentManager.ts";
+  // 定位映射/正文规范化用真实实现：它们与 SessionFileEditor 的整轮删除语义直接耦合，
+  // 桩掉会让 step 4 静默退回旧的对位逻辑，掩盖错位 bug。
+  const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
   const output = ts.transpileModule(readFileSync(filePath, "utf8"), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -127,6 +132,10 @@ function loadAgentManager() {
           cleanTitle: (t) => t,
           inferTitleFromMessages: () => undefined,
           isDefaultAgentTitle: () => false,
+          // 定位映射必须用真实实现：桩掉会让 step 4 抛错并退回旧逻辑，
+          // 导致「同分支重复消息」类用例静默失准。
+          mapCachedMessageToEntryCandidates: realAgentUtils.mapCachedMessageToEntryCandidates,
+          normalizeMessageTextForMatch: realAgentUtils.normalizeMessageTextForMatch,
         };
       }
       if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
@@ -779,6 +788,95 @@ test("same active branch has two identical messages -> sequence mapping resolves
   assert.equal(receivedTarget.entryId, "entry-u2");
   assert.equal(receivedTarget.role, "user");
   assert.equal(receivedTarget.text, "same text");
+});
+
+// 用户中止（abort）时 pi 会多写一条空 assistant，缓存里没有对应事件。
+// 旧的「按 user+assistant 总数从尾部对位」会偏移一位，删除 a2a 时命中 a2b（空回复），
+// 表现为「点了删除没反应 / 删错条」。按轮锚定 + 正文择一后必须命中 a2a。
+test("abort leaves an extra empty assistant entry -> assistant delete targets the text-matching entry", async () => {
+  let receivedTarget;
+  const editor = {
+    deleteMessage: async (input) => {
+      receivedTarget = input.target;
+      await input.reload();
+    },
+  };
+  const user1 = { id: "uuid-u1", agentId: "agent-1", role: "user", text: "q1", timestamp: 1, meta: {} };
+  const assistant1 = { id: "uuid-a1", agentId: "agent-1", role: "assistant", text: "r1", timestamp: 2, meta: {} };
+  const user2 = { id: "uuid-u2", agentId: "agent-1", role: "user", text: "q2", timestamp: 3, meta: {} };
+  const assistant2 = { id: "uuid-a2a", agentId: "agent-1", role: "assistant", text: "r2", timestamp: 4, meta: {} };
+
+  const { manager } = createHarness(editor, {
+    messages: [user1, assistant1, user2, assistant2],
+    leafId: "entry-a2b",
+  });
+  manager.sessionHistoryReader = {
+    // 真实实现按「会话文件条目 id」或合成 -history- id 匹配；缓存里的 UUID 一定不就于其中，
+    // 因此这里只命中 entry-* 键，让定位走 step 4 的轮次映射。
+    readMessageByMessageId: async (_path, entryId) => {
+      if (entryId === "entry-a2a") return { id: "entry-a2a", role: "assistant", text: "r2" };
+      if (entryId === "entry-a2b") return { id: "entry-a2b", role: "assistant", text: "" };
+      return undefined;
+    },
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["entry-u1", "entry-a1", "entry-u2", "entry-a2a", "entry-a2b"],
+      leafId: "entry-a2b",
+      activeMessageEntries: [
+        { id: "entry-u1", role: "user" },
+        { id: "entry-a1", role: "assistant" },
+        { id: "entry-u2", role: "user" },
+        { id: "entry-a2a", role: "assistant" },
+        { id: "entry-a2b", role: "assistant" },
+      ],
+    }),
+  };
+
+  await manager.deleteMessage("agent-1", "uuid-a2a");
+
+  assert.ok(receivedTarget);
+  assert.equal(receivedTarget.entryId, "entry-a2a", "must not land on the extra aborted entry");
+  assert.equal(receivedTarget.role, "assistant");
+  assert.equal(receivedTarget.activeLeafId, "entry-a2b");
+});
+
+// 同一轮没有正文相等的候选（缓存文本与文件不一致）时，退而选最后一条非空回复，
+// 而不是选 abort 留下的空条目。
+test("assistant mapping without an exact text match falls back to the last non-empty turn reply", async () => {
+  let receivedTarget;
+  const editor = {
+    deleteMessage: async (input) => {
+      receivedTarget = input.target;
+      await input.reload();
+    },
+  };
+  const user1 = { id: "uuid-u1", agentId: "agent-1", role: "user", text: "q1", timestamp: 1, meta: {} };
+  const assistant1 = { id: "uuid-a1", agentId: "agent-1", role: "assistant", text: "cache text", timestamp: 2, meta: {} };
+
+  const { manager } = createHarness(editor, {
+    messages: [user1, assistant1],
+    leafId: "entry-a1b",
+  });
+  manager.sessionHistoryReader = {
+    readMessageByMessageId: async (_path, entryId) => {
+      if (entryId === "entry-a1a") return { id: "entry-a1a", role: "assistant", text: "file text differs" };
+      if (entryId === "entry-a1b") return { id: "entry-a1b", role: "assistant", text: "" };
+      return undefined;
+    },
+    readActiveEntryIdentity: async () => ({
+      entryIds: ["entry-u1", "entry-a1a", "entry-a1b"],
+      leafId: "entry-a1b",
+      activeMessageEntries: [
+        { id: "entry-u1", role: "user" },
+        { id: "entry-a1a", role: "assistant" },
+        { id: "entry-a1b", role: "assistant" },
+      ],
+    }),
+  };
+
+  await manager.deleteMessage("agent-1", "uuid-a1");
+
+  assert.ok(receivedTarget);
+  assert.equal(receivedTarget.entryId, "entry-a1a", "must skip the empty aborted entry");
 });
 
 test("realtime message with randomUUID and no meta.entryId -> canonical resolve enables successful delete/edit", async () => {

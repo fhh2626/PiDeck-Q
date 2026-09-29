@@ -8,6 +8,8 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const nodeRequire = createRequire(import.meta.url);
 
 function loadSharedModule(filePath) {
@@ -75,6 +77,8 @@ function loadAgentMessageProjectorModule() {
 }
 
 function loadAgentManagerModule() {
+	// 定位映射/正文规范化用真实实现：桩掉会让 step 4 静默退回旧对位逻辑，掩盖 abort 错位 bug。
+	const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
 	// AgentManager 新增 streamGate 依赖（abort 流式封印），真实加载以保持闸门行为。
 	const streamGateModule = { exports: {} };
 	vm.runInNewContext(
@@ -181,6 +185,8 @@ function loadAgentManagerModule() {
           cleanTitle: (t) => t,
           inferTitleFromMessages: () => undefined,
           isDefaultAgentTitle: () => false,
+          mapCachedMessageToEntryCandidates: realAgentUtils.mapCachedMessageToEntryCandidates,
+          normalizeMessageTextForMatch: realAgentUtils.normalizeMessageTextForMatch,
         };
       }
       if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");

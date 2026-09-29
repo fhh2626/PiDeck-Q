@@ -143,12 +143,17 @@ test('failed reload retains last-good settings and reports error', () => harness
   assert.ok(notices.at(-1).includes('有效配置：已加载'));
 }));
 
-test('session_start hides missing Git Bash and keeps Windows PowerShell', () => harness(async ({ handlers, ctx, pi, notices }) => {
+// 需求变更：只要还有其它 shell 工具可用（这里保留了 powershell），
+// 隐藏 bash 必须静默——原有的「每次 reload 都警告」被用户当成报错。
+test('session_start hides missing Git Bash and keeps Windows PowerShell without notifying', () => harness(async ({ handlers, ctx, pi, notices }) => {
   pi._active = ['read', 'bash', 'powershell', 'edit'];
   pi.getAllTools = () => [{ name: 'bash', sourceInfo: { source: 'builtin' } }, { name: 'powershell', sourceInfo: { source: 'builtin' } }];
   await handlers.get('session_start')({}, ctx);
   assert.deepEqual(pi.getActiveTools(), ['read', 'powershell', 'edit']);
-  assert.ok(notices.some(x => x.includes('bash') && x.includes('隐藏')));
+  assert.ok(
+    !notices.some(x => x.includes('bash') || x.includes('shell') || x.includes('Shell')),
+    `hiding bash must be silent while powershell remains, got ${JSON.stringify(notices)}`,
+  );
 }, {
   platform: 'win32',
   env: { Path: '' },

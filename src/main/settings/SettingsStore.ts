@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import {
 	getDefaultGitCommitMessagePrompt,
@@ -14,6 +15,8 @@ import {
 	DEFAULT_DISABLED_BUILT_IN_EXTENSIONS,
 	migrateBuiltInExtensionDefaults,
 } from "../extensions/builtInExtensions";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
+import { isValidWebServiceAccessToken } from "../../shared/webServiceAccess";
 
 export { readSingleInstancePreference } from "./startupPreferences";
 
@@ -87,6 +90,8 @@ const defaultSettings: AppSettings = {
   webServiceEnabled: false,
   webServiceHost: "0.0.0.0",
   webServicePort: 8765,
+  // 空值即由 load() 自动生成真实令牌；声明非空类型以保持 AppSettings 契约稳定
+  webServiceAccessToken: "",
   rpcTimeout: 600_000,
   workspaceContentOpenMode: "split",
   contentMaxWidth: 1800,
@@ -139,6 +144,8 @@ export class SettingsStore {
   private readonly piAgentSettingsFile: string;
   private readonly getSystemLocale: () => string | undefined;
   private settings: AppSettings;
+  /** 串行化 update：避免并发 patch 基于同一旧快照计算，导致后写覆盖前写。 */
+  private updateQueue: Promise<unknown> = Promise.resolve();
 
   constructor(deps: SettingsStoreDeps = {}) {
     const home = homedir();
@@ -207,19 +214,27 @@ export class SettingsStore {
       // 语义从「最大宽度 px」变为「占面板百分比」，无法精确换算（面板宽度可变），
       // 用线性映射保留旧值感觉：800→60%、1400→84%、1800(不限)→100%。
       this.migrateContentWidth();
+      const generatedWebServiceToken = this.ensureWebServiceAccessToken();
       if (
         hadLegacyTelemetry ||
         hadLegacyLinkOpenMode ||
         hadLegacyElectronChromiumSandbox ||
         hadLegacyDisableUpdateCheck ||
         migratedGitCommitMessagePrompt ||
-        migratedBuiltInExtensionDefaults
+        migratedBuiltInExtensionDefaults ||
+        generatedWebServiceToken
       ) {
         void this.save().catch(() => undefined);
       }
     } catch {
       this.settings = { ...defaultSettings };
       this.applyLocalizedDefaultGitCommitMessagePrompt({});
+      // 文件缺失或损坏时也要有令牌，否则 Web 服务无法启动（fail-closed）。
+      // 此处只在内存生成；随后 load() 末尾的 detectAndSaveInstallationType() 会因
+      // 默认设置不含 installationType 而触发 save()，令牌随整份设置一并落盘，
+      // 因此首次启动后令牌即稳定，不会每次启动变化。
+      // 注意：同一次 save 也会覆盖损坏的 settings.json（既有行为，非本处引入）。
+      this.ensureWebServiceAccessToken();
     }
     // showThinking 不再作为可持久化的独立配置项，完全跟随 pi agent 的 hideThinkingBlock。
     // 启动时重新读取以确保每次启动都使用最新值，而非缓存的 defaultSettings。
@@ -250,6 +265,13 @@ export class SettingsStore {
     return true;
   }
 
+  /** 缺失或格式非法时生成新的 Web 访问令牌；返回是否发生变更（需要持久化）。 */
+  private ensureWebServiceAccessToken(): boolean {
+    if (isValidWebServiceAccessToken(this.settings.webServiceAccessToken)) return false;
+    this.settings.webServiceAccessToken = randomBytes(32).toString("base64url");
+    return true;
+  }
+
   /**
    * 旧版 contentMaxWidth(px) → chatContentWidthPct(%) 迁移：
    * - 新字段已存在（已迁移/用户已设置）→ 不动作；
@@ -276,20 +298,43 @@ export class SettingsStore {
   }
 
   async update(patch: Partial<AppSettings>) {
+    return this.enqueueWrite(() => this.applyUpdate(patch));
+  }
+
+  /**
+   * 设置写入串行化：update 与 load/迁移路径的 save 共用同一队列。
+   * load() 中存在 fire-and-forget 的 void save()（旧快照），若不排队，
+   * 原子写（fsync）耗时更长时它可能晚于后续写入落盘，把新值覆盖回旧快照。
+   */
+  private enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.updateQueue
+      .catch(() => undefined)
+      .then(task);
+    this.updateQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** 基于当前快照计算下一份设置；先落盘成功再替换内存，失败时内存保持旧值。 */
+  private async applyUpdate(patch: Partial<AppSettings>) {
     // showThinking 和 installationType 都由宿主决定，不允许通过桌面设置修改。
     const { showThinking: _, installationType: __, ...safePatch } = patch;
-    this.settings.installationType = "portable";
+    // 令牌只允许合法格式写入：渲染层传入空值/弱值时忽略，防止把服务降级为弱鉴权
+    if (Object.hasOwn(safePatch, "webServiceAccessToken") && !isValidWebServiceAccessToken(safePatch.webServiceAccessToken)) {
+      delete safePatch.webServiceAccessToken;
+    }
     const languageChanged = Object.hasOwn(safePatch, "language");
     const promptWasDefault = isDefaultGitCommitMessagePrompt(this.settings.gitCommitMessagePrompt);
     const promptProvided = Object.hasOwn(safePatch, "gitCommitMessagePrompt");
-    this.settings = { ...this.settings, ...safePatch, installationType: "portable" };
+    const next: AppSettings = { ...this.settings, ...safePatch, installationType: "portable" };
     // 用户只切换语言且仍使用内置模板时，同步模板语言；自定义模板不随语言变化。
     if (languageChanged && !promptProvided && promptWasDefault) {
-      this.settings.gitCommitMessagePrompt = getDefaultGitCommitMessagePrompt(
-        resolveGitCommitMessagePromptLocale(this.settings.language, this.getSystemLocale()),
+      next.gitCommitMessagePrompt = getDefaultGitCommitMessagePrompt(
+        resolveGitCommitMessagePromptLocale(next.language, this.getSystemLocale()),
       );
     }
-    await this.save();
+    // 先写盘再改内存：写盘失败时内存仍是旧值，避免 UI 与磁盘不一致
+    await this.writeSettings(next);
+    this.settings = next;
     // 配置变更审计（统一在此留痕，覆盖 IPC 与 pet/extension/editors 等所有直写路径）：
     // 只记变更的 key 列表，不记值——避免 proxyUrl 等敏感内容落盘；值变更回查用 save 前的内存态
     void getAppLogger()?.info("settings", "Settings updated", { keys: Object.keys(safePatch) });
@@ -306,11 +351,16 @@ export class SettingsStore {
     }
   }
 
-  private async save() {
-    await mkdir(dirname(this.filePath), { recursive: true });
+  private async save(snapshot: AppSettings = this.settings) {
+    return this.enqueueWrite(() => this.writeSettings(snapshot));
+  }
+
+  /** 实际落盘：调用方必须在写队列内（update 或 save），以保证写入顺序。 */
+  private async writeSettings(snapshot: AppSettings) {
     // showThinking 由 pi agent 的 hideThinkingBlock 决定，不持久化到桌面 settings.json
-    const { showThinking: _unused, ...persistable } = this.settings;
-    await writeFile(this.filePath, JSON.stringify(persistable, null, 2), "utf8");
+    const { showThinking: _unused, ...persistable } = snapshot;
+    // 原子替换：避免崩溃留下截断的 settings.json（writeFileAtomic 内部会建目录）
+    await writeFileAtomic(this.filePath, JSON.stringify(persistable, null, 2));
   }
 
   /**

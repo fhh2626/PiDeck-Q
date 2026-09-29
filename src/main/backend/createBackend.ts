@@ -212,6 +212,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			hasLiveWindow: () => host.hasLiveWindow(),
 			// 内置扩展入口迁移必须在首次 spawn 前完成，否则旧全局版与 -e 内置版双加载。
 			startupBarrier,
+			// 扩展提示文案跟随界面语言：注入给 pi 子进程的 PIDECK_UI_LANGUAGE 来源。
+			getLocale: currentMainProcessLocale,
 		},
 	);
 

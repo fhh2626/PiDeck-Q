@@ -49,6 +49,8 @@ export const webZhCN = {
 	"webError.runtimeTargetRequired": "需要匹配当前会话的运行目标",
 	"webError.sessionBusy": "当前会话已有 Web 请求正在运行",
 	"webError.apiNotFound": "API 不存在",
+	"webError.unauthorized": "未授权：请在 PiDeck 设置中扫描二维码或点击“打开”访问 Web 服务。",
+	"webError.forbiddenOrigin": "已拒绝跨站请求。",
 	"webError.internal": "Web 服务发生内部错误",
 } as const;
 
@@ -102,6 +104,8 @@ export const webEnUS: Record<WebTranslationKey, string> = {
 	"webError.runtimeTargetRequired": "A matching Session runtime target is required",
 	"webError.sessionBusy": "A Web request is already running for this session",
 	"webError.apiNotFound": "API not found",
+	"webError.unauthorized": "Unauthorized: open the Web service from PiDeck settings (QR code or Open button).",
+	"webError.forbiddenOrigin": "Cross-site request rejected.",
 	"webError.internal": "The web service encountered an internal error",
 };
 

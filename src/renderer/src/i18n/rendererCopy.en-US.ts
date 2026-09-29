@@ -507,6 +507,8 @@ export const enUS: Record<TranslationKey, string> = {
   "app.newChatCreateFailed": "Failed to create the conversation, please try again",
   "app.newChatRuntimeTimeout": "Conversation startup timed out, please try again later",
   "app.resend": "Resend",
+  // The text is put back into the composer so the user can retry directly.
+  "app.resendRestoredToComposer": "Resend failed. The message was put back into the input box so you can send it again.",
   "app.resendTitle": "Send the same user message to AI again",
   "app.editAndResend": "Edit in input",
   "app.editAndResendTitle": "Edit in input box and send manually",
@@ -2219,7 +2221,9 @@ export const enUS: Record<TranslationKey, string> = {
   "message.editReloadPrompt": "Modified messages require session reload to take effect. Continue?",
   "message.editFailed": "Edit failed",
   "message.deleteTitle": "Delete Message",
-  "message.deleteReloadPrompt": "Deleting requires session reload to take effect. Continue?",
+  // Deletion removes the whole turn; the old copy only mentioned a session reload,
+  // which neither described the scope nor matched the automatic reload behaviour.
+  "message.deleteTurnPrompt": "This also deletes the related AI replies, reasoning and tool calls in this turn. Continue?",
   "message.deleteFailed": "Delete failed",
   "message.mutationHistoryRefreshFailed": "Message updated, but failed to refresh history. Please reload history.",
   "message.busyStreaming": "Agent is busy generating a response, please wait",

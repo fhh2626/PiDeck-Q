@@ -54,6 +54,14 @@ type SessionCatalogFile = {
 	sessions: SessionCatalogEntry[];
 };
 
+/** catalog 版本高于当前程序支持的版本：必须中止，不能回退 .bak 或回写，防止降级覆盖新数据。 */
+export class UnsupportedSessionCatalogVersionError extends Error {
+	constructor(readonly filePath: string, readonly version: unknown) {
+		super(`Unsupported Session catalog version ${String(version)}: ${filePath}`);
+		this.name = "UnsupportedSessionCatalogVersionError";
+	}
+}
+
 type SessionCatalogContext = {
 	wslDistro?: string;
 	wslUser?: string;
@@ -148,6 +156,13 @@ export class SessionCatalog {
 			this.entries = await this.readEntries(this.filePath);
 		} catch (error) {
 			primaryError = error;
+			if (error instanceof UnsupportedSessionCatalogVersionError) {
+				// 版本不支持时必须中止：若回退 .bak 并回写，会用旧数据覆盖新版本文件（降级丢数据）
+				void getAppLogger()?.error("session-catalog", "Unsupported catalog version; refusing to load", {
+					version: String(error.version),
+				});
+				throw error;
+			}
 			try {
 				this.entries = await this.readEntries(this.backupFilePath());
 				this.skipNextBackup = true;
@@ -714,6 +729,11 @@ export class SessionCatalog {
 
 	private async readEntries(filePath: string): Promise<SessionCatalogEntry[]> {
 		const parsed = JSON.parse(await readFile(filePath, "utf8")) as Partial<SessionCatalogFile>;
+		// 缺失 version 视为旧 v1 数据兼容；其他值一律拒绝（不猜测格式）
+		const rawVersion: unknown = parsed.version;
+		if (rawVersion !== undefined && rawVersion !== 1) {
+			throw new UnsupportedSessionCatalogVersionError(filePath, rawVersion);
+		}
 		if (!Array.isArray(parsed.sessions)) {
 			throw new Error(`Invalid Session catalog: ${filePath}`);
 		}

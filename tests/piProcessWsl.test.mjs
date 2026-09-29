@@ -232,3 +232,49 @@ test("does not reuse a cached WSL runtime kind from another distro", async () =>
 	await process.start();
 	assert.deepEqual(invocationCalls[0].args, ["--mode", "rpc", "--no-themes"]);
 });
+
+// 界面语言随 env 传给 pi 子进程；WSL 模式必须同时登记 WSLENV，
+// 否则 wsl.exe 不会把 PIDECK_UI_LANGUAGE 传进 Linux 侧，扩展会回退中文。
+test("WSL spawn forwards the UI language through WSLENV", async () => {
+	const spawnCalls = [];
+	const { PiProcess } = loadPiProcess(spawnCalls);
+	const process = new PiProcess(
+		"//wsl.localhost/Ubuntu-24.04/root/ba_cli",
+		settings,
+		createLocator([]),
+		{ uiLocale: "en-US" },
+	);
+
+	await process.start("\\\\wsl$\\Ubuntu-24.04\\root\\.pi\\agent\\sessions\\session.jsonl");
+
+	assert.equal(spawnCalls[0].options.env.PIDECK_UI_LANGUAGE, "en-US");
+	assert.ok(
+		spawnCalls[0].options.env.WSLENV.split(":").includes("PIDECK_UI_LANGUAGE"),
+		`WSLENV must list PIDECK_UI_LANGUAGE, got ${spawnCalls[0].options.env.WSLENV}`,
+	);
+});
+
+test("appendWslEnvName merges, dedupes and keeps existing entries", () => {
+	const { appendWslEnvName } = loadPiProcess([]);
+	assert.equal(appendWslEnvName(undefined, "A"), "A");
+	assert.equal(appendWslEnvName("USERPROFILE/p:A", "A"), "USERPROFILE/p:A", "dedupe by name ignoring /p flag");
+	assert.equal(appendWslEnvName("USERPROFILE/p", "A"), "USERPROFILE/p:A");
+	assert.equal(appendWslEnvName("", "A"), "A");
+});
+
+// 非 WSL 模式：只设 PIDECK_UI_LANGUAGE，不引入 WSLENV。
+test("native spawn sets PIDECK_UI_LANGUAGE without WSLENV", async () => {
+	const spawnCalls = [];
+	const { PiProcess } = loadPiProcess(spawnCalls);
+	const nativeLocator = {
+		resolveCommand: () => "pi",
+		createInvocation: (_command, args) => ({ command: "pi", args, shell: false }),
+		createProcessEnv: () => ({}),
+	};
+	const piProc = new PiProcess(globalThis.process.cwd(), undefined, nativeLocator, { uiLocale: "en-US" });
+
+	await piProc.start();
+
+	assert.equal(spawnCalls[0].options.env.PIDECK_UI_LANGUAGE, "en-US");
+	assert.equal(spawnCalls[0].options.env.WSLENV, undefined);
+});

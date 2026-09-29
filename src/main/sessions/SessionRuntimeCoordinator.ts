@@ -49,6 +49,11 @@ export interface SessionAgentGateway {
 	list(): AgentTab[];
 	getMessages(agentId: string): ChatMessage[];
 	isMessageCacheStale?(agentId: string): boolean;
+	/**
+	 * error runtime 是否仍可使用：仅当 error 来自一轮对话内的 API 失败且 pi 进程仍在时为 true。
+	 * 启动失败 / 进程错误均为 false；未实现时 error 保持终止语义（fail-closed）。
+	 */
+	isRecoverableErrorRuntime?(agentId: string): boolean;
 	/** 本地流式/工具标志；缺省时 Web 只看 status。 */
 	getLocalStreamingFlags?(agentId: string): {
 		isStreaming: boolean;
@@ -149,10 +154,6 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function isTerminalAgent(tab: AgentTab): boolean {
-	return tab.status === "error" || tab.status === "closed";
-}
-
 /** Scanner 后置确认内部身份时，回填到已绑定 runtime，避免 mapped 分支提前返回漏掉。 */
 function syncInternalSubagentIdentity(tab: AgentTab, entry: SessionCatalogEntry): void {
 	if (entry.isInternalSubagent === true && tab.isInternalSubagent !== true) {
@@ -238,11 +239,24 @@ export class SessionRuntimeCoordinator {
 		return cacheEntry.promise;
 	}
 
+	/**
+	 * 是否终止态。closed 一定终止；error 仅在「非轮次级失败」或「进程已退出」时终止。
+	 * 为什么：一轮对话内的 API 请求失败会把 runtime 置为 error 但 pi 进程仍在，
+	 * 此时仍允许编辑/删除/重发与复用进程；若当作终止就会解绑，导致这些操作全部报
+	 * 「runtime 不可用」，下一次发送还会无谓地重建进程。启动失败 / 进程错误不可恢复，
+	 * gateway 未实现该探测时保持旧语义（fail-closed）。
+	 */
+	private isTerminalAgent(tab: AgentTab): boolean {
+		if (tab.status === "closed") return true;
+		if (tab.status !== "error") return false;
+		return this.agents.isRecoverableErrorRuntime?.(tab.id) !== true;
+	}
+
 	getAgentId(sessionId: string): string | undefined {
 		const agentId = this.agentIdBySession.get(sessionId);
 		if (!agentId) return undefined;
 		const tab = this.agents.list().find((candidate) => candidate.id === agentId);
-		if (tab && !isTerminalAgent(tab)) return agentId;
+		if (tab && !this.isTerminalAgent(tab)) return agentId;
 		// A terminal process cannot safely receive a delayed prompt result. Remove
 		// the binding even if its dispatch lease has not unwound yet, which makes
 		// that result fail closed instead of reviving a dead runtime association.
@@ -272,7 +286,7 @@ export class SessionRuntimeCoordinator {
 		const result: SessionRuntimeInfo[] = [];
 		for (const [sessionId, agentId] of this.agentIdBySession) {
 			const tab = this.agents.list().find((candidate) => candidate.id === agentId);
-			if (!tab || isTerminalAgent(tab)) continue;
+			if (!tab || this.isTerminalAgent(tab)) continue;
 			result.push(this.runtimeInfo(sessionId, tab));
 		}
 		return result.sort((left, right) => right.createdAt - left.createdAt);
@@ -327,7 +341,7 @@ export class SessionRuntimeCoordinator {
 		const entry = this.catalog.get(sessionId);
 		if (!entry?.noSession) throw new Error(`Anonymous session not found: ${sessionId}`);
 		const tab = this.agents.list().find((candidate) => candidate.id === agentId);
-		if (!tab?.noSession || isTerminalAgent(tab)) {
+		if (!tab?.noSession || this.isTerminalAgent(tab)) {
 			throw new Error(`Anonymous runtime is not available: ${agentId}`);
 		}
 		const runtimeGeneration = this.bind(sessionId, agentId);
@@ -598,7 +612,7 @@ export class SessionRuntimeCoordinator {
 			runtimeGeneration: number;
 		}> = [];
 		const availableAgents = this.agents.list().filter((tab) => (
-			!isTerminalAgent(tab) &&
+			!this.isTerminalAgent(tab) &&
 			!this.replacementByAgent.has(tab.id) &&
 			!this.hasDispatchLease(undefined, tab.id)
 		));
@@ -825,7 +839,7 @@ export class SessionRuntimeCoordinator {
 		try {
 			let tab = await this.agents.restart(agentId);
 			if (tab.status === "starting") tab = await this.waitUntilReady(tab);
-			if (isTerminalAgent(tab)) {
+			if (this.isTerminalAgent(tab)) {
 				this.unbindAgentUnchecked(agentId);
 				throw new Error(`Failed to restart session runtime (${tab.status})`);
 			}
@@ -930,7 +944,7 @@ export class SessionRuntimeCoordinator {
 				return this.unknownDelivery(input, "Session runtime binding changed during prompt dispatch");
 			}
 			const currentTab = this.agents.list().find((candidate) => (
-				candidate.id === lease.agentId && !isTerminalAgent(candidate)
+				candidate.id === lease.agentId && !this.isTerminalAgent(candidate)
 			));
 			if (!currentTab) {
 				return this.unknownDelivery(input, "Session runtime stopped during prompt dispatch");
@@ -1012,7 +1026,7 @@ export class SessionRuntimeCoordinator {
 		}
 
 		let tab = entry.filePath ? this.findAgentBySessionPath(entry) : undefined;
-		if (tab && isTerminalAgent(tab)) {
+		if (tab && this.isTerminalAgent(tab)) {
 			await this.agents.stop(tab.id);
 			tab = undefined;
 		}
@@ -1039,7 +1053,7 @@ export class SessionRuntimeCoordinator {
 			syncInternalSubagentIdentity(tab, entry);
 		}
 		if (tab.status === "starting") tab = await this.waitUntilReady(tab);
-		if (isTerminalAgent(tab)) {
+		if (this.isTerminalAgent(tab)) {
 			if (created) await this.agents.stop(tab.id).catch(() => undefined);
 			throw this.startupFailure(tab);
 		}
@@ -1122,7 +1136,7 @@ export class SessionRuntimeCoordinator {
 				if (!current) throw new Error("Session runtime stopped while starting");
 				tab = current;
 			}
-			if (isTerminalAgent(tab)) {
+			if (this.isTerminalAgent(tab)) {
 				throw this.startupFailure(tab);
 			}
 			return tab;
@@ -1130,7 +1144,7 @@ export class SessionRuntimeCoordinator {
 			// A starting runtime that times out (or reaches a terminal state while
 			// being polled) must not remain discoverable by sessionPath on retry.
 			// Otherwise every later send waits on the same dead runtime forever.
-			if (tab.status === "starting" || isTerminalAgent(tab)) {
+			if (tab.status === "starting" || this.isTerminalAgent(tab)) {
 				await this.agents.stop(initialTab.id).catch(() => undefined);
 				this.unbindAgentUnchecked(initialTab.id);
 			}

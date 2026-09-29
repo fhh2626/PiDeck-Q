@@ -135,6 +135,8 @@ export type StartupWindowMode =
 	webServiceHost: string;
 	/** Web 服务监听端口 */
 	webServicePort: number;
+	/** Web 服务访问令牌（base64url）；由主进程自动生成，只用于构造访问链接，禁止写日志或经 Web API 返回 */
+	webServiceAccessToken: string;
 	/** 兼容旧 settings.json 的发行形态字段；当前 PiDeck-Q 固定为 portable。 */
 	installationType?: "portable" | "installed";
 	/** RPC 调用超时时间（毫秒），默认 600000（10 分钟），用于长时间运行的命令 */

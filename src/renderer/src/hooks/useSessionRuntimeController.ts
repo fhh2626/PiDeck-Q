@@ -163,11 +163,12 @@ export function useSessionRuntimeController(
       activeRuntimeState?.isStreaming),
   );
 
+  // error 态可能只是一次 API 请求失败（pi 进程仍在），此时仍允许编辑/删除/重发。
+  // 进程真的退出时由主进程返回 runtimeUnavailable 并 toast，不在渲染层猜测进程存活。
   const currentSessionLiveAgentId =
     currentSessionRuntime?.agentId === activeAgentId &&
     activeAgent &&
-    activeAgent.status !== "closed" &&
-    activeAgent.status !== "error"
+    activeAgent.status !== "closed"
       ? activeAgent.id
       : undefined;
 

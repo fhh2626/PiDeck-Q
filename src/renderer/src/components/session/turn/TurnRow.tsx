@@ -289,6 +289,12 @@ export const TurnRow = memo(
 		.map((item) => stripThinkingTags(stripAnsi(item.message.text)).trim())
 		.filter(Boolean)
 		.join("\n\n");
+	// 删除只需本轮最后一条 assistant 的 id（后端按整轮删除），与是否有可见文字无关：
+	// 纯工具调用、停止后的空回复等轮次也必须能删，否则用户无法清理失败轮次。
+	const lastAssistantId = assistantMessages.at(-1)?.message.id;
+	const canDeleteTurn = Boolean(
+		lastAssistantId && props.onDeleteMessage && !props.isStreaming && !props.agentRunning,
+	);
 
 	// 本轮没有任何可渲染内容（无 displayItems 且无 assistant 图片/提示）时不输出空容器
 	if (displayItems.length === 0 && !hasAssistantMediaOrNotice) return null;
@@ -300,7 +306,7 @@ export const TurnRow = memo(
 		setEditing(true);
 	};
 	const saveEdit = () => {
-		const targetId = assistantMessages.at(-1)?.message.id;
+		const targetId = lastAssistantId;
 		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
 		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
 		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
@@ -309,8 +315,7 @@ export const TurnRow = memo(
 		}
 	};
 	const deleteMessage = () => {
-		const targetId = assistantMessages.at(-1)?.message.id;
-		if (targetId) props.onDeleteMessage?.(targetId);
+		if (lastAssistantId) props.onDeleteMessage?.(lastAssistantId);
 	};
 
 	return (
@@ -477,28 +482,34 @@ export const TurnRow = memo(
 				/>
 
 				{/* 操作栏 */}
-				{mergedText && !editing && (
+				{/* 无可见文字时（纯工具轮、停止后的空回复）仍要保留删除入口，否则用户无法清理失败轮次；
+				    复制/分享/编辑依赖正文，无文字时保持隐藏。 */}
+				{(mergedText || canDeleteTurn) && !editing && (
 					<div className="flex min-h-6 items-center gap-1 opacity-55 transition-opacity hover:opacity-100 focus-within:opacity-100">
-						<CopyMenu
-							text={stripMarkdown(mergedText)}
-							markdown={mergedText}
-							targetRef={rowRef}
-						/>
-						<Button
-							type="button"
-							variant="ghost"
-							size="icon-sm"
-							className="turn-row-action-btn size-7 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-							onClick={props.onEnterMultiSelect}
-							title={t("app.multiSelectEnter")}
-						>
-							<Share size={14} />
-						</Button>
+						{mergedText && (
+							<>
+								<CopyMenu
+									text={stripMarkdown(mergedText)}
+									markdown={mergedText}
+									targetRef={rowRef}
+								/>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon-sm"
+									className="turn-row-action-btn size-7 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+									onClick={props.onEnterMultiSelect}
+									title={t("app.multiSelectEnter")}
+								>
+									<Share size={14} />
+								</Button>
+							</>
+						)}
 						{!props.isStreaming &&
 							!props.agentRunning &&
-							assistantMessages.at(-1)?.message.id && (
+							lastAssistantId && (
 								<>
-									{props.onEditMessage && (
+									{mergedText && props.onEditMessage && (
 										<Button
 											type="button"
 											variant="ghost"
@@ -566,8 +577,11 @@ turnRowPropsEqual,
  *   token 更新不需要父 TurnRow 更新（旧写法 `||` 会让流式中每次父级 render 都穿透）。
  * - run：深度比较内容（sameAgentRunForRender），未变化的 run 不重渲染；
  * - 标量 props（fresh/showThinking/liveThinkingId/agentRunning/isLatestRun/isLastAgentRun）：=== 比较；
- * - 回调函数（onPreviewImage/onOpenExternal/onOpenFile/onDiffFile/onEditMessage/onDeleteMessage/
- *   onEnterMultiSelect）：行为稳定（读 ref/setState），引用变化不影响渲染结果，忽略（同 FinalAnswer 惯例）。
+ * - 回调函数（onPreviewImage/onOpenExternal/onOpenFile/onDiffFile/onEnterMultiSelect）：
+ *   行为稳定（读 ref/setState），引用变化不影响渲染结果，忽略（同 FinalAnswer 惯例）。
+ * - onEditMessage/onDeleteMessage 必须比较：它们由 SessionRuntimeInjector 的 latest-ref 包装保证
+ *   引用只在「能否派发 / 目标 runtime 换代 / 能力有无」变化时更换；若忽略，runtime 从不可变更切到
+ *   可变更（如 error → idle）时历史轮次不会重渲染，删除按钮永远不出现，且旧闭包会指向过期 target。
  */
 function turnRowPropsEqual(prev: TurnRowProps, next: TurnRowProps): boolean {
 	// isStreaming 只在边沿（false↔true）触发重渲染；持续 streaming 期间由 live 正文
@@ -581,6 +595,8 @@ function turnRowPropsEqual(prev: TurnRowProps, next: TurnRowProps): boolean {
 		prev.liveThinkingId === next.liveThinkingId &&
 		prev.agentRunning === next.agentRunning &&
 		prev.isLatestRun === next.isLatestRun &&
-		prev.isLastAgentRun === next.isLastAgentRun
+		prev.isLastAgentRun === next.isLastAgentRun &&
+		prev.onEditMessage === next.onEditMessage &&
+		prev.onDeleteMessage === next.onDeleteMessage
 	);
 }

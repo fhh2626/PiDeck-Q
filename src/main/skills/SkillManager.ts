@@ -9,7 +9,7 @@ import {
 	stat,
 	writeFile,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { TrashPath } from "../fs/trash";
 import type {
@@ -275,48 +275,71 @@ export class SkillManager {
 		return warnings;
 	}
 
-	/** 重命名 Skill：重命名目录并更新 SKILL.md 中的 name 字段 */
+	/**
+	 * 重命名 Skill。
+	 * - directory 型：重命名 Skill 自身目录（父目录不变）；
+	 * - markdown 型：只重命名该 .md 文件。它的 dir 是位置根目录，绝不能改名根目录。
+	 * 先改路径再写 frontmatter：改名失败（Windows 占用）时不留下半改状态；
+	 * frontmatter 写失败时尽力回滚路径。
+	 * frontmatter 写规范化名称，与 create() 一致，避免触发 pi 的 name 字符校验。
+	 */
 	async rename(skillPath: string, newName: string): Promise<PiSkillSummary> {
 		const skill = await this.findByPath(skillPath);
 		const normalizedNew = this.normalizeSkillName(newName);
 		if (!normalizedNew) throw new Error(this.translate("mainSkill.nameRequired"));
+		const location = this.requireLocation(skill.sourceId);
 
-		const displayName = newName.trim();
-		const oldDir = skill.dir;
-		const parentDir = skill.dir.split(/[\\/]/).slice(0, -1).join("\\");
-		const newDir = join(parentDir, normalizedNew);
+		const oldEntry = skill.type === "directory" ? skill.dir : skill.path;
+		const newEntry = skill.type === "directory"
+			? join(dirname(skill.dir), normalizedNew)
+			: join(dirname(skill.path), `${normalizedNew}.md`);
+		// 防御：任何情况下都不允许移动位置根目录本身
+		if (this.isSameRenamePath(oldEntry, location.path)) {
+			throw new Error(this.translate("mainSkill.notFound"));
+		}
 
-		if (oldDir === newDir) throw new Error(this.translate("mainSkill.sameName"));
-		if (existsSync(newDir)) throw new Error(this.translate("mainSkill.alreadyExists", { name: normalizedNew }));
-
-		// 更新 SKILL.md 中的 name frontmatter
 		const raw = await readFile(skill.path, "utf8");
-		const updated = this.setFrontmatterName(raw, displayName);
-		await writeFile(skill.path, updated, "utf8");
+		const updated = this.setFrontmatterName(raw, normalizedNew);
+		const sameEntry = this.isSameRenamePath(oldEntry, newEntry);
+		if (sameEntry && updated === raw) throw new Error(this.translate("mainSkill.sameName"));
+		if (!sameEntry && existsSync(newEntry)) {
+			throw new Error(this.translate("mainSkill.alreadyExists", { name: normalizedNew }));
+		}
 
-		await rename(oldDir, newDir);
-
-		// 重命名后路径变为新路径
-		const newSkillPath = join(newDir, skill.path.split(/[\\/]/).pop()!);
-		// 找对应的 location（搜索所有 locations）
-		const { skills } = await this.list();
-		const reloaded = await this.readSkill(
-			newSkillPath,
-			this.locations.find((l) => newSkillPath.startsWith(l.path)) ?? this.locations[0],
-			skill.type,
-		);
-		return reloaded;
+		if (!sameEntry) await rename(oldEntry, newEntry);
+		const newSkillPath = skill.type === "directory"
+			? join(newEntry, basename(skill.path))
+			: newEntry;
+		if (updated !== raw) {
+			try {
+				await writeFile(newSkillPath, updated, "utf8");
+			} catch (error) {
+				// 路径已改但内容未写成功：尽力把路径改回，保持"要么全成功要么原样"
+				if (!sameEntry) await rename(newEntry, oldEntry).catch(() => undefined);
+				throw error;
+			}
+		}
+		return this.readSkill(newSkillPath, location, skill.type);
 	}
 
-	/** 更新 frontmatter 中的 name 字段 */
+	/** 判断两个路径是否指向同一位置；Windows/macOS 默认大小写不敏感，仅大小写不同视为同一路径。 */
+	private isSameRenamePath(left: string, right: string): boolean {
+		if (left === right) return true;
+		return process.platform !== "linux" && left.toLowerCase() === right.toLowerCase();
+	}
+
+	/** 更新 frontmatter 中的 name 字段；缺少 name 行时补到首行。 */
 	private setFrontmatterName(raw: string, name: string): string {
 		const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
 		if (!match) return `---\nname: ${name}\n---\n\n${raw}`;
 		const lines = match[1].split(/\r?\n/);
+		let found = false;
 		const nextLines = lines.map((line) => {
-			if (line.trim().startsWith("name:")) return `name: ${name}`;
-			return line;
+			if (!line.trim().startsWith("name:")) return line;
+			found = true;
+			return `name: ${name}`;
 		});
+		if (!found) nextLines.unshift(`name: ${name}`);
 		return raw.replace(match[0], `---\n${nextLines.join("\n")}\n---`);
 	}
 

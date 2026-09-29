@@ -48,10 +48,12 @@ import {
 	parseShellPathFromSettings,
 	probeShellAvailability,
 	probeSearchAvailability,
+	shouldNotifyHiddenShells,
 	type ShellAvailability,
 	type ShellProbeHost,
 } from './shellAvailability.ts';
 import { transformSystemPrompt } from './transform.ts';
+import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale } from './copy.ts';
 
 export interface ReconciliationOutcome {
 	ok: boolean;
@@ -70,6 +72,8 @@ export interface PromptExtensionOptions {
 	isStandalone?: () => boolean;
 	changePiPromptPath?: string;
 	lock?: ReconciliationLockOptions;
+	/** 显式指定界面语言（测试/独立宿主用）；缺省时读 PIDECK_UI_LANGUAGE 或系统语言。 */
+	locale?: ExtensionLocale;
 }
 
 export const CHILD_TOOL_MARKER_START = '<!-- change-pi-prompt:child-tools:v1 -->';
@@ -209,6 +213,10 @@ export function registerPromptExtension(
 		: defaultHost;
 	const isStandalone = options.isStandalone ?? (() => isStandalonePiExecutable());
 	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
+	// 提示文案跟随界面语言：宿主经 PIDECK_UI_LANGUAGE 注入；未注入时回退系统语言/中文。
+	// 每次 registerPromptExtension 只解析一次：语言变更会导致 pi 子进程重启并重新注册。
+	const locale = options.locale ?? resolveExtensionLocale(probeHost.env);
+	const copy = shellUnavailableCopy(locale);
 
 	let settings: Settings | undefined;
 	let loading: Promise<void> | undefined;
@@ -383,8 +391,10 @@ export function registerPromptExtension(
 		if (hidden.length === 0) return { next, availability };
 		pi.setActiveTools(next);
 		lastShellStatus.push(`shell-tools: hid ${hidden.join(', ')}`);
-		for (const name of hidden) {
-			warnOnce(ctx, `${name} 后端不可用，已对本会话隐藏该工具并省略对应提示。`);
+		// 仍有可用 shell（如 Windows 上的 PowerShell）时静默：缺 Git Bash 是常态，
+		// 且每次删除/编辑/重发触发的 session 重载都会重跑这里，警告会被误认为操作失败。
+		if (shouldNotifyHiddenShells(hidden, next)) {
+			warnOnce(ctx, copy.allShellsHidden);
 		}
 		return { next, availability };
 	};
@@ -398,7 +408,7 @@ export function registerPromptExtension(
 		if (hidden.length > 0) {
 			pi.setActiveTools(next);
 			lastShellStatus.push(`search-tools: hid ${hidden.join(', ')}`);
-			for (const name of hidden) warnOnce(ctx, `${name} 的 rg/fd 后端不可用，已对本会话隐藏该工具。`);
+			for (const name of hidden) warnOnce(ctx, copy.searchHidden(name));
 		}
 		return next;
 	};
@@ -549,7 +559,7 @@ export function registerPromptExtension(
 			for (const tool of tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool))) {
 				const hash = createHash('sha256').update(JSON.stringify(tool.promptGuidelines ?? [])).digest('hex').slice(0, 12);
 				const previous = contributionHashes.get(tool.name);
-				if (previous && previous !== hash) warnOnce(ctx, `${tool.name} 的上游指南在本会话内发生变化；按当前来源规则处理，请检查替代文案。`);
+				if (previous && previous !== hash) warnOnce(ctx, copy.upstreamGuideChanged(tool.name));
 				contributionHashes.set(tool.name, hash);
 				lastStatus.push(`${tool.name} guidelines fingerprint: ${hash}`);
 			}

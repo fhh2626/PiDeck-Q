@@ -504,6 +504,8 @@ export const zhCN = {
   "app.newChatCreateFailed": "创建会话失败，请重试",
   "app.newChatRuntimeTimeout": "会话启动超时，请稍后重试",
   "app.resend": "重发",
+  // 重发失败时正文已放回输入框，提示必须告知用户可以去哪儿重试。
+  "app.resendRestoredToComposer": "重发失败，消息已放回输入框，可直接重新发送。",
   "app.resendTitle": "用同一条用户消息再次发送给 AI",
   "app.editAndResend": "在输入框中编辑",
   "app.editAndResendTitle": "放回输入框编辑，手动发送",
@@ -2184,7 +2186,9 @@ export const zhCN = {
   "message.editReloadPrompt": "修改后需要重新加载会话才能生效，确定继续？",
   "message.editFailed": "编辑失败",
   "message.deleteTitle": "删除消息",
-  "message.deleteReloadPrompt": "删除后需要重新加载会话才能生效，确定继续？",
+  // 删除按「整轮」生效：这一轮的回复/思考/工具调用会一起删。
+  // 原文案只说「需要重新加载会话」，既没说明范围，也把自动重载写得像需要用户手动操作。
+  "message.deleteTurnPrompt": "删除后，这一轮相关的 AI 回复、思考过程和工具调用会一并删除。确定继续？",
   "message.deleteFailed": "删除失败",
   "message.mutationHistoryRefreshFailed": "消息已修改，但历史记录刷新失败，请重新加载历史",
   "message.busyStreaming": "Agent 正在生成回答，请等待完成后重试",

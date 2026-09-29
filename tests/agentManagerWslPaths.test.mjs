@@ -6,6 +6,8 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const require = createRequire(import.meta.url);
 
 function transpile(filePath) {
@@ -32,6 +34,8 @@ function loadWslPaths() {
 
 function loadAgentManager() {
 	const wslPaths = loadWslPaths();
+	// 定位映射/正文规范化用真实实现：桩掉会让 step 4 静默退回旧对位逻辑，掩盖 abort 错位 bug。
+	const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
 	// AgentManager 新增 streamGate 依赖（abort 流式封印）；与 WslPaths 一样显式沙箱加载。
 	const streamGate = (() => {
 		const sandbox = { exports: {}, require };
@@ -167,6 +171,8 @@ function loadAgentManager() {
 					cleanTitle: (t) => t,
 					inferTitleFromMessages: () => undefined,
 					isDefaultAgentTitle: () => false,
+					mapCachedMessageToEntryCandidates: realAgentUtils.mapCachedMessageToEntryCandidates,
+					normalizeMessageTextForMatch: realAgentUtils.normalizeMessageTextForMatch,
 				};
 			}
 			if (id === "./LatestByKeyEmitter") return { LatestByKeyEmitter };

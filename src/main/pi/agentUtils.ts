@@ -324,3 +324,86 @@ export function isDefaultAgentTitle(
 		title === "历史会话"
 	);
 }
+
+export type EntryRoleRef = { id: string; role?: string };
+
+/**
+ * 运行期缓存消息 → 会话文件活动分支条目的映射结果。
+ * - user：文件条目唯一（只按 user 序号对位，不比正文）。
+ * - assistant：同一轮可能有多个候选（含 abort 产生的空 assistant），需要调用方再筛。
+ */
+export type MessageEntryMapping =
+	| { role: "user"; entryId: string }
+	| { role: "assistant"; candidateIds: string[] };
+
+/**
+ * 把缓存中的一条 user/assistant 消息映射到会话文件活动分支条目（按「轮」锚定）。
+ *
+ * 为什么不能沿用「按 user+assistant 总序号从尾部对位」：用户中止（abort）时 pi 会往文件多写
+ * 一条空的 assistant（stopReason: "aborted"），而 PiDeck 的封印闸门丢弃了对应事件，
+ * 于是文件比缓存多一条 assistant，整体序号偏移一位，删除/编辑会命中错条目。
+ * 按「轮」锚定后，user 只数 user 即不受影响；assistant 则返回同一轮的候选列表，由调用方用正文精确择一。
+ *
+ * 不比 user 正文：缓存里的用户文本可能被 host instruction、模式或模板改写，与文件不一致。
+ */
+export function mapCachedMessageToEntryCandidates(
+	cached: ReadonlyArray<{ id: string; role: string }>,
+	entries: ReadonlyArray<EntryRoleRef>,
+	messageId: string,
+): MessageEntryMapping | undefined {
+	const isUser = (role: string | undefined): boolean => role === "user";
+	const isAssistant = (role: string | undefined): boolean => role === "assistant";
+
+	const cachedSequence = cached.filter((message) => isUser(message.role) || isAssistant(message.role));
+	const targetIndex = cachedSequence.findIndex((message) => message.id === messageId);
+	if (targetIndex < 0) return undefined;
+
+	const fileSequence: EntryRoleRef[] = [];
+	const fileUserIndexes: number[] = [];
+	for (const entry of entries) {
+		if (!isUser(entry.role) && !isAssistant(entry.role)) continue;
+		if (isUser(entry.role)) fileUserIndexes.push(fileSequence.length);
+		fileSequence.push(entry);
+	}
+
+	// 缓存里位于 index 之后的 user 条数：用来把「从尾部数第几轮」对齐到文件。
+	const countUsersAfter = (index: number): number =>
+		cachedSequence.slice(index + 1).filter((message) => isUser(message.role)).length;
+
+	/** 文件里第 pos 个 user 条目在 fileSequence 中的下标。 */
+	const fileUserPosition = (pos: number): number | undefined => fileUserIndexes[pos];
+
+	const target = cachedSequence[targetIndex];
+	if (isUser(target.role)) {
+		const pos = fileUserIndexes.length - 1 - countUsersAfter(targetIndex);
+		const sequenceIndex = fileUserPosition(pos);
+		if (sequenceIndex === undefined) return undefined;
+		return { role: "user", entryId: fileSequence[sequenceIndex].id };
+	}
+
+	// assistant：先找到它本轮所属的 user 锚点，再取锚点之后、下一条 user 之前的全部 assistant。
+	let anchorIndex = -1;
+	for (let index = targetIndex - 1; index >= 0; index -= 1) {
+		if (isUser(cachedSequence[index].role)) {
+			anchorIndex = index;
+			break;
+		}
+	}
+	if (anchorIndex < 0) return undefined;
+
+	const anchorPos = fileUserIndexes.length - 1 - countUsersAfter(anchorIndex);
+	const anchorSequenceIndex = fileUserPosition(anchorPos);
+	if (anchorSequenceIndex === undefined) return undefined;
+
+	const candidateIds: string[] = [];
+	for (let index = anchorSequenceIndex + 1; index < fileSequence.length; index += 1) {
+		if (isUser(fileSequence[index].role)) break;
+		if (isAssistant(fileSequence[index].role)) candidateIds.push(fileSequence[index].id);
+	}
+	return { role: "assistant", candidateIds };
+}
+
+/** 文本比对前的规范化：折叠空白并去首尾空白（缓存与文件的分块拼接分隔符可能不同）。 */
+export function normalizeMessageTextForMatch(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}

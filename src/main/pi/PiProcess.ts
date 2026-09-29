@@ -58,6 +58,12 @@ type PiProcessOptions = {
    */
   securitySessionId?: string;
   /**
+   * 生效界面语言（zh-CN / en-US）。
+   * 注入 PIDECK_UI_LANGUAGE 环境变量：pi 子进程内的内置扩展拿不到 PiDeck 设置，
+   * 需要宿主把已解析的语言传进来，扩展才能按用户当前语言显示提示（如 shell 可用性警告）。
+   */
+  uiLocale?: string;
+  /**
    * spawn pi 前对会话文件的预检/修复回调（如剔除旧版 PiDeck 私有 sessionName 头行，
    * 该行会让 pi 报 "Session file is not a valid pi session" 并 exit 1）。
    * 返回是否发生修复；抛错或未注入都不阻塞启动（pi 自身的加载错误更接近事实，留日志即可）。
@@ -68,6 +74,17 @@ type PiProcessOptions = {
 type VersionCacheEntry =
   | { status: "pending"; promise: Promise<boolean> }
   | { status: "done"; ok: boolean; minorVersion: number | null; version?: string };
+
+/**
+ * 把变量名追加进 WSLENV（冒号分隔、去重、保留已有项）。
+ * 为什么：wsl.exe 只把 WSLENV 列出的 Windows 环境变量传进 Linux 进程，
+ * 否则扩展在 WSL 内读不到宿主注入的值（如界面语言）。值是纯字符串，不加 /p 路径转换标志。
+ */
+export function appendWslEnvName(current: string | undefined, name: string): string {
+	const names = (current ?? "").split(":").map((item) => item.trim()).filter(Boolean);
+	const exists = names.some((item) => item.split("/")[0] === name);
+	return exists ? names.join(":") : [...names, name].join(":");
+}
 
 export class PiProcess extends EventEmitter {
   private proc?: ChildProcessWithoutNullStreams;
@@ -375,6 +392,13 @@ export class PiProcess extends EventEmitter {
         ? toWslLinuxPath(this.options.securitySessionId, { distro: this.settings?.wslDistro ?? "" })
         : this.options.securitySessionId;
     }
+    // 界面语言随 env 传给 pi 子进程：扩展的 notify 文案是用户可见文本，必须跟随 PiDeck 语言设置。
+    // 值在子进程内按纯字符串使用，无需路径转换，但 WSL 模式必须登记到 WSLENV，
+    // 否则 Linux 侧的 pi 扩展读不到界面语言而回退中文。
+    if (this.options.uiLocale) {
+      env.PIDECK_UI_LANGUAGE = this.options.uiLocale;
+      if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_UI_LANGUAGE");
+    }
     // 每个 agent 绑定独立 cwd，确保 pi 自己发现项目级 AGENTS.md、settings 和 session 分组。
     // 打包后的 Electron 不一定继承用户终端 PATH；这里补齐跨平台 Node 工具链常见 bin 目录，尽量让已安装 pi 的用户开箱即用。
     // Windows 下通过 PiLocator.createInvocation 显式包裹含空格的 npm shim 路径，避免 cmd 拆分路径导致 agent 启动失败。
@@ -384,7 +408,7 @@ export class PiProcess extends EventEmitter {
         cwd: spawnCwd,
         stdio: ["pipe", "pipe", "pipe"],
         shell: invocation.shell,
-        // env 已在上方合并安全门环境变量（PIDECK_SECURITY_CONFIG / PIDECK_SESSION_ID）
+        // env 已在上方合并安全门环境变量（PIDECK_SECURITY_CONFIG / PIDECK_SESSION_ID / PIDECK_UI_LANGUAGE）
         env,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });

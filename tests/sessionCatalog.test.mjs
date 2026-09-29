@@ -704,3 +704,73 @@ test("parentSessionPath survives reload: getRecord/listEntries rebuild keeps the
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("rejects an unsupported catalog version without writing anything", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pideck-catalog-version-"));
+  const filePath = join(dir, "sessions.json");
+  const raw = JSON.stringify({ version: 2, sessions: [] }, null, 2);
+  try {
+    await writeFile(filePath, raw, "utf8");
+    const { SessionCatalog } = loadCatalog();
+    const catalog = new SessionCatalog(filePath);
+    await assert.rejects(
+      () => catalog.load(),
+      (error) => error.name === "UnsupportedSessionCatalogVersionError",
+    );
+    // 关键回归：不能写回、不能回退 .bak（否则旧数据会覆盖新版本文件）
+    assert.equal(await readFile(filePath, "utf8"), raw);
+    await assert.rejects(() => readFile(`${filePath}.bak`, "utf8"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("does not fall back to backup when the primary version is unsupported", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pideck-catalog-version-backup-"));
+  const filePath = join(dir, "sessions.json");
+  const primary = JSON.stringify({ version: 2, sessions: [] }, null, 2);
+  const backup = JSON.stringify({
+    version: 1,
+    sessions: [{
+      id: "entry-1",
+      projectId: "project-1",
+      originKey: "C:/sessions/legacy.jsonl",
+      title: "Legacy",
+      source: "pi",
+      environment: "native",
+      filePath: "C:/sessions/legacy.jsonl",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 2,
+    }],
+  }, null, 2);
+  try {
+    await writeFile(filePath, primary, "utf8");
+    await writeFile(`${filePath}.bak`, backup, "utf8");
+    const { SessionCatalog } = loadCatalog();
+    const catalog = new SessionCatalog(filePath);
+    await assert.rejects(
+      () => catalog.load(),
+      (error) => error.name === "UnsupportedSessionCatalogVersionError",
+    );
+    assert.equal(await readFile(filePath, "utf8"), primary);
+    assert.equal(await readFile(`${filePath}.bak`, "utf8"), backup);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("accepts a legacy catalog file without a version field", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pideck-catalog-legacy-"));
+  const filePath = join(dir, "sessions.json");
+  try {
+    await writeFile(filePath, JSON.stringify({ sessions: [] }), "utf8");
+    const { SessionCatalog } = loadCatalog();
+    const catalog = new SessionCatalog(filePath);
+    await catalog.load();
+    // 注：返回值来自 vm realm，原型不同，用长度断言而非 deepStrictEqual
+    assert.equal(catalog.listEntries().length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

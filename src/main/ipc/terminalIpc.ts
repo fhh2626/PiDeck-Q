@@ -70,4 +70,6 @@ export function registerTerminalIpc(
 		terminalManager.close(tabId);
 		void appLogger.info("terminal", "Terminal closed", { tabId });
 	});
+	// Shell 候选列表：无入参、只读，不依赖 runtime 目标；供终端 Shell 下拉菜单使用。
+	router.handle(ipcChannels.terminalShells, () => terminalManager.listShells());
 }

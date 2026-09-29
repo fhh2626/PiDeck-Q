@@ -26,7 +26,7 @@ type SessionMessageCommandsInput = {
 		targetSessionId: string | undefined,
 	) => Promise<void>;
 	currentSessionIdRef: { current: string | undefined };
-	setPromptForAgent: (sessionId: string, text: string) => void;
+	setPromptForAgent: (sessionId: string, text: string | ((current: string) => string)) => void;
 	showToast: (message: string, duration?: number) => void;
 	overlays: {
 		showConfirm: (config: {
@@ -74,9 +74,28 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		return latest;
 	}
 
+	function releaseResendLock(messageId: string): void {
+		resendingIdsRef.current.delete(messageId);
+	}
+
+	/**
+	 * 重发失败时把正文还给输入框。
+	 * 为什么不做文件回滚：pi 侧截断已经提交，回滚需要重写会话文件且无法还原图片，
+	 * 代价高于收益；把文字放回输入框让用户直接重试是更小且更可预期的补偿。
+	 */
+	function restoreResendText(sessionId: string, text: string): void {
+		if (!text.trim()) return;
+		input.setPromptForAgent(sessionId, (current) => (current.trim() ? `${text}\n\n${current}` : text));
+		input.showToast(t("app.resendRestoredToComposer"), 6000);
+	}
+
 	function resendUserMessage(expectedTarget: SessionRuntimeTarget, message: ChatMessage): void {
-		if (message.agentId && message.agentId !== expectedTarget.agentId) return;
 		if (resendingIdsRef.current.has(message.id)) return;
+		if (message.agentId && message.agentId !== expectedTarget.agentId) {
+			// runtime 已被替换：静默 return 会表现为「点了没反应」，必须告知用户
+			input.showToast(t("sessionCommand.runtimeChanged"), 5000);
+			return;
+		}
 
 		let currentTarget: SessionRuntimeTarget;
 		try {
@@ -87,28 +106,49 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		}
 
 		resendingIdsRef.current.add(message.id);
+		// 30 秒是递途险：Promise 终结时会在 finally 里释放，定时器只防挂死。
 		const timer = setTimeout(() => {
-			resendingIdsRef.current.delete(message.id);
+			releaseResendLock(message.id);
 			resendTimersRef.current.delete(timer);
 		}, 30_000);
 		resendTimersRef.current.add(timer);
-		void api.sessions.prepareRuntimeResend(currentTarget, message.id)
-			.then((result) => requireSessionCommand(result).value)
-			// resend 是两阶段操作：prepare（旧 target 上完成文件 mutation）→ 重新提交。
-			// 提交前必须重新校验 target：prepare 期间 runtime 可能已被替换，
-			// submitPromptSnapshot 只带 sessionId 会把旧消息投递到新 generation runtime。
-			.then((snapshot) => {
+
+		// 只有 prepare 成功（文件已截断、原消息已从时间线消失）才需要把正文还给用户；
+		// prepare 自身失败时原消息仍在，恢复会造成重复发送。
+		let preparedText: string | undefined;
+		void (async () => {
+			try {
+				const snapshot = requireSessionCommand(
+					await api.sessions.prepareRuntimeResend(currentTarget, message.id),
+				).value;
+				preparedText = snapshot.text;
+				const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
+				// prepare 已完成文件变更；提交前刷新历史，避免截断后界面还显示已删的回复
+				if (refreshSnapshot && input.refreshHistoryAfterMutation) {
+					await input.refreshHistoryAfterMutation(refreshSnapshot);
+				}
+				// resend 是两阶段操作：prepare（旧 target 上完成文件 mutation）→ 重新提交。
+				// 提交前必须重新校验 target：prepare 期间 runtime 可能已被替换，
+				// submitPromptSnapshot 只带 sessionId 会把旧消息投递到新 generation runtime。
 				requireCurrentRuntimeTarget(currentTarget);
-				return input.submitPromptSnapshot(currentTarget.sessionId, snapshot.text, snapshot.images);
-			})
-			.catch((error) => {
+				const submitted = await input.submitPromptSnapshot(currentTarget.sessionId, snapshot.text, snapshot.images);
+				// "unknown" 表示发送已受理但结果未知，不能当作失败把正文再插一遍。
+				if (submitted === false && preparedText !== undefined) restoreResendText(currentTarget.sessionId, preparedText);
+			} catch (error) {
 				const errMsg = error instanceof Error ? error.message : String(error);
 				if (errMsg.includes("RESEND_IMAGE_BUDGET_EXCEEDED")) {
 					input.showToast(t("composer.images.resendBudgetExceeded"), 5000);
 				} else {
 					input.showToast(errMsg, 5000);
 				}
-			});
+				// 仅当文件已被截断（prepare 成功）才恢复正文；prepare 失败时原消息仍在时间线
+				if (preparedText !== undefined) restoreResendText(currentTarget.sessionId, preparedText);
+			} finally {
+				releaseResendLock(message.id);
+				clearTimeout(timer);
+				resendTimersRef.current.delete(timer);
+			}
+		})();
 	}
 
 	async function editMessage(expectedTarget: SessionRuntimeTarget, messageId: string, newText: string): Promise<void> {
@@ -128,7 +168,7 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 	function deleteMessage(expectedTarget: SessionRuntimeTarget, messageId: string): void {
 		input.overlays.showConfirm({
 			title: t("message.deleteTitle"),
-			message: t("message.deleteReloadPrompt"),
+			message: t("message.deleteTurnPrompt"),
 			danger: true,
 			confirmLabel: t("common.delete"),
 			onConfirm: async () => {

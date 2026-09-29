@@ -37,17 +37,20 @@ export function ApprovalCard(props: {
 					<Button
 						variant="ghost"
 						size="sm"
-						className="h-auto min-w-0 flex-1 justify-start gap-1.5 px-0 py-0.5 text-left hover:bg-transparent"
+						className="h-auto min-w-0 flex-1 items-start justify-start gap-1.5 px-0 py-0.5 text-left hover:bg-transparent"
 						aria-label={props.title}
 					>
 						<ChevronDown
-							className={cn("size-3.5 shrink-0 transition-transform duration-200", !props.open && "-rotate-90")}
+							className={cn("mt-0.5 size-3.5 shrink-0 transition-transform duration-200", !props.open && "-rotate-90")}
 							aria-hidden="true"
 						/>
-						<ClipboardCheck className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+						<ClipboardCheck className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
 						<span className="min-w-0 flex-1">
 							<span className="block truncate text-caption font-semibold text-foreground">{props.title}</span>
-							{props.description ? <span className="block truncate text-micro font-normal text-muted-foreground">{props.description}</span> : null}
+							{/* description 承载单题提问的完整正文，用户要据此作答，不能截断：
+							    显式 whitespace-pre-wrap 覆盖 Button 基础样式的 nowrap，并保留提问里的换行；
+							    超长无空格串（路径/URL）在窄屏上也要能折行。标题是固定短文案，仍保持单行。 */}
+							{props.description ? <span className="block whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-micro font-normal text-muted-foreground">{props.description}</span> : null}
 						</span>
 						{props.status ? <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-px text-micro font-medium text-primary">{props.status}</span> : null}
 					</Button>

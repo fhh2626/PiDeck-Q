@@ -195,11 +195,21 @@ function fixture(overrides = {}) {
 	return { session, runtime, calls, deps };
 }
 
+const WEB_TEST_TOKEN = "t".repeat(43);
+
+/** 带上 Bearer 令牌的业务请求；鉴权后 Web 服务不再公开任何 /api 端点。 */
+function authFetch(url, init = {}) {
+	return fetch(url, {
+		...init,
+		headers: { ...(init.headers ?? {}), authorization: `Bearer ${WEB_TEST_TOKEN}` },
+	});
+}
+
 async function withServer(run, overrides = {}) {
 	const WebServiceManager = loadWebServiceManager();
 	const harness = fixture(overrides);
 	const manager = new WebServiceManager(harness.deps);
-	await manager.start("127.0.0.1", 0);
+	await manager.start("127.0.0.1", 0, WEB_TEST_TOKEN);
 	const baseUrl = `http://127.0.0.1:${manager.current.port}`;
 	try {
 		await run({ ...harness, baseUrl });
@@ -212,10 +222,10 @@ test("Web service restart rebinds the configured listener", async () => {
 	const WebServiceManager = loadWebServiceManager();
 	const harness = fixture();
 	const manager = new WebServiceManager(harness.deps);
-	await manager.start("127.0.0.1", 0);
+	await manager.start("127.0.0.1", 0, WEB_TEST_TOKEN);
 	const port = manager.current.port;
 	try {
-		await manager.restart({ webServiceEnabled: true, webServiceHost: "127.0.0.1", webServicePort: port });
+		await manager.restart({ webServiceEnabled: true, webServiceHost: "127.0.0.1", webServicePort: port, webServiceAccessToken: WEB_TEST_TOKEN });
 		const response = await fetch(`http://127.0.0.1:${port}/api/health`);
 		assert.equal(response.status, 200);
 		assert.equal((await response.json()).ok, true);
@@ -226,7 +236,7 @@ test("Web service restart rebinds the configured listener", async () => {
 
 test("native Session HTTP routes create drafts and send by stable Session identity", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
-		const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+		const createResponse = await authFetch(`${baseUrl}/api/sessions`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ projectId: "project-1", title: "From web" }),
@@ -237,7 +247,7 @@ test("native Session HTTP routes create drafts and send by stable Session identi
 		assert.equal(calls.createDraft, 1);
 		assert.equal(calls.createAgent, 0, "native Session creation must not use the legacy Agent facade");
 
-		const promptResponse = await fetch(`${baseUrl}/api/sessions/session-1/prompt`, {
+		const promptResponse = await authFetch(`${baseUrl}/api/sessions/session-1/prompt`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ requestId: "request-1", message: " hello " }),
@@ -252,7 +262,7 @@ test("native Session HTTP routes create drafts and send by stable Session identi
 
 test("web core routes create a project and expose the configured model list", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
-		const projectResponse = await fetch(`${baseUrl}/api/projects`, {
+		const projectResponse = await authFetch(`${baseUrl}/api/projects`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ path: "C:/new-project" }),
@@ -261,7 +271,7 @@ test("web core routes create a project and expose the configured model list", as
 		assert.equal(projectBody.project.id, "project-2");
 		assert.deepEqual(calls.createProject, ["C:/new-project"]);
 
-		const modelsResponse = await fetch(`${baseUrl}/api/models`);
+		const modelsResponse = await authFetch(`${baseUrl}/api/models`);
 		const modelsBody = await modelsResponse.json();
 		assert.equal(modelsBody.models[0].id, "gpt-test");
 	});
@@ -278,11 +288,11 @@ test("web state exposes pending UI requests and ui-response writes them back", a
 	}];
 	const responses = [];
 	await withServer(async ({ baseUrl }) => {
-		const stateResponse = await fetch(`${baseUrl}/api/state`);
+		const stateResponse = await authFetch(`${baseUrl}/api/state`);
 		const state = await stateResponse.json();
 		assert.equal(state.pendingUiRequests[0].requestId, "ask-1");
 
-		const write = await fetch(`${baseUrl}/api/ui-response`, {
+		const write = await authFetch(`${baseUrl}/api/ui-response`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -306,7 +316,7 @@ test("web state exposes pending UI requests and ui-response writes them back", a
 
 test("Web project route deletes a registered project but protects the built-in chat project", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
-		const deleteResponse = await fetch(`${baseUrl}/api/projects/project-1/delete`, { method: "POST" });
+		const deleteResponse = await authFetch(`${baseUrl}/api/projects/project-1/delete`, { method: "POST" });
 		const deleted = await deleteResponse.json();
 		assert.equal(deleted.deleted, true);
 		assert.deepEqual(calls.deleteProject, ["project-1"]);
@@ -314,7 +324,7 @@ test("Web project route deletes a registered project but protects the built-in c
 
 	await withServer(async ({ baseUrl, deps }) => {
 		deps.listProjects = () => [{ id: "builtin-chat", name: "Chat", path: "C:/chat", kind: "chat" }];
-		const response = await fetch(`${baseUrl}/api/projects/builtin-chat/delete`, { method: "POST" });
+		const response = await authFetch(`${baseUrl}/api/projects/builtin-chat/delete`, { method: "POST" });
 		assert.equal(response.status, 400);
 		const body = await response.json();
 		assert.match(body.error, /built-in chat project cannot be deleted/i);
@@ -328,7 +338,7 @@ test("runtime model listing preserves the generation-validated Session target", 
 			agentId: runtime.agentId,
 			runtimeGeneration: runtime.runtimeGeneration,
 		};
-		const response = await fetch(`${baseUrl}/api/sessions/session-1/runtime/models`, {
+		const response = await authFetch(`${baseUrl}/api/sessions/session-1/runtime/models`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target }),
@@ -341,7 +351,7 @@ test("runtime model listing preserves the generation-validated Session target", 
 
 test("anonymous Session HTTP route creates a runtime-only Session record", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
-		const response = await fetch(`${baseUrl}/api/sessions/anonymous`, {
+		const response = await authFetch(`${baseUrl}/api/sessions/anonymous`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ projectId: "project-1", title: "Private work" }),
@@ -362,7 +372,7 @@ test("runtime HTTP commands preserve the full generation-validated target", asyn
 			agentId: runtime.agentId,
 			runtimeGeneration: runtime.runtimeGeneration,
 		};
-		const response = await fetch(`${baseUrl}/api/sessions/session-1/runtime/state`, {
+		const response = await authFetch(`${baseUrl}/api/sessions/session-1/runtime/state`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target }),
@@ -371,7 +381,7 @@ test("runtime HTTP commands preserve the full generation-validated target", asyn
 		assert.equal(body.result.ok, true);
 		assert.equal(JSON.stringify(calls.stateTargets), JSON.stringify([target]));
 
-		const mismatch = await fetch(`${baseUrl}/api/sessions/other/runtime/state`, {
+		const mismatch = await authFetch(`${baseUrl}/api/sessions/other/runtime/state`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target }),
@@ -387,33 +397,33 @@ test("catalog Session file operations are addressed only by stable Session ID", 
 			agentId: runtime.agentId,
 			runtimeGeneration: runtime.runtimeGeneration,
 		};
-		const stopped = await (await fetch(`${baseUrl}/api/sessions/session-1/runtime/stop`, {
+		const stopped = await (await authFetch(`${baseUrl}/api/sessions/session-1/runtime/stop`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target }),
 		})).json();
 		assert.equal(stopped.result.ok, true);
 
-		const deleted = await (await fetch(`${baseUrl}/api/sessions/session-1/delete`, {
+		const deleted = await (await authFetch(`${baseUrl}/api/sessions/session-1/delete`, {
 			method: "POST",
 			body: "{}",
 		})).json();
 		assert.equal(deleted.deleted, true);
 
-		const copied = await (await fetch(`${baseUrl}/api/sessions/session-1/copy`, {
+		const copied = await (await authFetch(`${baseUrl}/api/sessions/session-1/copy`, {
 			method: "POST",
 			body: "{}",
 		})).json();
 		assert.equal(copied.result.targetSessionId, "session-2");
 
-		const exported = await (await fetch(`${baseUrl}/api/sessions/session-1/export-html`, {
+		const exported = await (await authFetch(`${baseUrl}/api/sessions/session-1/export-html`, {
 			method: "POST",
 			body: "{}",
 		})).json();
 		assert.equal(exported.result.path, "session.html");
 
 		const references = await (
-			await fetch(`${baseUrl}/api/sessions/session-1/reference-messages`)
+			await authFetch(`${baseUrl}/api/sessions/session-1/reference-messages`)
 		).json();
 		assert.equal(references.messages[0].content, "reference");
 	});
@@ -421,7 +431,7 @@ test("catalog Session file operations are addressed only by stable Session ID", 
 
 test("historical message pages stay Session-addressed and bounded", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const page = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/page?before=3&pageSize=2`)).json();
+		const page = await (await authFetch(`${baseUrl}/api/sessions/session-1/messages/page?before=3&pageSize=2`)).json();
 		assert.equal(page.total, 3);
 		assert.equal(page.nextBefore, 1);
 	}, {
@@ -435,13 +445,13 @@ test("historical message pages stay Session-addressed and bounded", async () => 
 
 test("turn pages are Session-addressed and honor both cursor parameters", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const first = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
+		const first = await (await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
 		assert.equal(first.total, 120);
 		assert.equal(first.nextBefore, 40);
 
 		// 续页：两个游标（数值 + entryId）都必须传进依赖
 		const older = await (
-			await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=3&before=40&beforeEntryId=e40`)
+			await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=3&before=40&beforeEntryId=e40`)
 		).json();
 		assert.equal(older.total, 120);
 		assert.equal(older.nextBefore, 34);
@@ -462,7 +472,7 @@ test("turn pages are Session-addressed and honor both cursor parameters", async 
 test("turn pages default to three turns and reject malformed parameters", async () => {
 	await withServer(async ({ baseUrl }) => {
 		// 缺省 turnCount 不传值（由读取层取默认 3 轮，与原始消息分页同一契约）
-		const byDefault = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page`)).json();
+		const byDefault = await (await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page`)).json();
 		assert.equal(byDefault.messages[0].text, "default", "必须以便于读取层取默认值的形式转发");
 		// 缺省 before/beforeEntryId 也不得凭空补值
 		assert.equal(
@@ -471,30 +481,30 @@ test("turn pages default to three turns and reject malformed parameters", async 
 		);
 
 		// 显式 turnCount 上限 50：超上限拒绝，不得静默夹紧
-		const tooMany = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=500`);
+		const tooMany = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=500`);
 		assert.equal(tooMany.status, 400);
 		assert.equal((await tooMany.json()).code, "webError.invalidMessagePage");
 
 		// 非法：0 / 负数 / 小数 / 非数字 / 非安全整数 / 空串
 		for (const value of ["0", "-1", "1.5", "abc", "9007199254740992", ""]) {
-			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
+			const response = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
 			assert.equal(response.status, 400, `turnCount=${value} must be rejected`);
 		}
 		for (const value of ["-1", "2.5", "abc", ""]) {
-			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=${value}`);
+			const response = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=${value}`);
 			assert.equal(response.status, 400, `before=${value} must be rejected`);
 		}
 		// beforeEntryId 传入时必须非空
-		const emptyAnchor = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?beforeEntryId=`);
+		const emptyAnchor = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?beforeEntryId=`);
 		assert.equal(emptyAnchor.status, 400);
 
 		// 合法边界值仍可用（1 与上限 50）
 		for (const value of ["1", "50"]) {
-			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
+			const response = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
 			assert.equal(response.status, 200, `turnCount=${value} must be accepted`);
 		}
 		// before=0 是合法的真实游标（历史起点）
-		const zeroCursor = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=0`);
+		const zeroCursor = await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=0`);
 		assert.equal(zeroCursor.status, 200);
 	}, {
 		readSessionTurnPage: async (_sessionId, before, turnCount, beforeEntryId) => ({
@@ -516,7 +526,7 @@ test("turn pages default to three turns and reject malformed parameters", async 
 
 test("turn pages return an empty page for a Session without a persisted file", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const page = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
+		const page = await (await authFetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
 		assert.deepEqual(page, { messages: [], total: 0, nextBefore: null });
 	}, {
 		readSessionTurnPage: async () => ({ messages: [], total: 0, nextBefore: null }),
@@ -525,7 +535,7 @@ test("turn pages return an empty page for a Session without a persisted file", a
 
 test("web polling state includes Session records, runtimes, and Session-keyed messages", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
-		const response = await fetch(`${baseUrl}/api/state`);
+		const response = await authFetch(`${baseUrl}/api/state`);
 		const state = await response.json();
 		assert.equal(state.sessions[0].id, "session-1");
 		assert.equal(state.runtimes[0].runtimeGeneration, 3);
@@ -577,7 +587,7 @@ test("web polling state hides internal subagent sessions from the top-level list
 	};
 	const messageSessions = [];
 	await withServer(async ({ baseUrl }) => {
-		const state = await (await fetch(`${baseUrl}/api/state`)).json();
+		const state = await (await authFetch(`${baseUrl}/api/state`)).json();
 		assert.deepEqual(state.sessions.map((session) => session.id), ["parent-1"]);
 		assert.deepEqual(state.runtimes.map((runtime) => runtime.sessionId), ["parent-1"]);
 		assert.equal(state.messagesBySession["parent-1"][0].text, "parent-ready");
@@ -614,7 +624,7 @@ test("web polling state hides internal subagent sessions from the top-level list
 test("the browser client accepts the real Session-first web-state contract", async () => {
 	await withServer(async ({ baseUrl }) => {
 		const createBrowserApi = loadBrowserApi((path, init) =>
-			fetch(new URL(path, baseUrl), init),
+			authFetch(new URL(path, baseUrl), init),
 		);
 		const api = createBrowserApi();
 		const events = [];
@@ -637,7 +647,7 @@ test("the browser client accepts the real Session-first web-state contract", asy
 
 test("web polling omits a message snapshot whose runtime target no longer matches", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const response = await fetch(`${baseUrl}/api/state`);
+		const response = await authFetch(`${baseUrl}/api/state`);
 		const state = await response.json();
 		assert.equal(state.runtimes[0].agentId, "agent-1");
 		assert.equal("session-1" in state.messagesBySession, false);
@@ -664,7 +674,7 @@ test("web polling runtime info carries local streaming flags", () => {
 
 test("embedded web client and HTTP surface are Session-first", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const page = await (await fetch(baseUrl)).text();
+		const page = await (await authFetch(baseUrl)).text();
 		assert.match(page, /navigator\.languages/);
 		assert.match(page, /localizeDescriptor/);
 		assert.match(page, /activeSessionId/);
@@ -677,7 +687,7 @@ test("embedded web client and HTTP surface are Session-first", async () => {
 		assert.doesNotMatch(page, /\/api\/agents/);
 		assert.doesNotMatch(page, /activeAgentId|messagesByAgent|data-agent/);
 
-		const legacy = await fetch(`${baseUrl}/api/agents`, {
+		const legacy = await authFetch(`${baseUrl}/api/agents`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ projectId: "project-1" }),
@@ -689,7 +699,7 @@ test("embedded web client and HTTP surface are Session-first", async () => {
 
 test("web errors expose stable codes without leaking unknown server exceptions", async () => {
 	await withServer(async ({ baseUrl, runtime }) => {
-		const mismatch = await fetch(`${baseUrl}/api/sessions/other/runtime/state`, {
+		const mismatch = await authFetch(`${baseUrl}/api/sessions/other/runtime/state`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target: runtime }),
@@ -701,7 +711,7 @@ test("web errors expose stable codes without leaking unknown server exceptions",
 	});
 
 	await withServer(async ({ baseUrl }) => {
-		const response = await fetch(`${baseUrl}/api/state`);
+		const response = await authFetch(`${baseUrl}/api/state`);
 		const body = await response.json();
 		assert.equal(response.status, 500);
 		assert.equal(body.code, "webError.internal");
@@ -717,7 +727,7 @@ test("web errors expose stable codes without leaking unknown server exceptions",
 
 test("web responses strip desktop diagnostics and raw prompt errors recursively", async () => {
 	await withServer(async ({ baseUrl, runtime }) => {
-		const state = await (await fetch(`${baseUrl}/api/state`)).json();
+		const state = await (await authFetch(`${baseUrl}/api/state`)).json();
 		const serializedState = JSON.stringify(state);
 		assert.doesNotMatch(serializedState, /SECRET_MESSAGE_DIAGNOSTIC/);
 		assert.equal(
@@ -725,7 +735,7 @@ test("web responses strip desktop diagnostics and raw prompt errors recursively"
 			false,
 		);
 
-		const prompt = await (await fetch(`${baseUrl}/api/sessions/session-1/prompt`, {
+		const prompt = await (await authFetch(`${baseUrl}/api/sessions/session-1/prompt`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ requestId: "request-raw-error", message: "hello" }),
@@ -734,7 +744,7 @@ test("web responses strip desktop diagnostics and raw prompt errors recursively"
 		assert.equal("debugDetails" in prompt.result, false);
 		assert.doesNotMatch(JSON.stringify(prompt), /SECRET_PROMPT_ERROR/);
 
-		const command = await (await fetch(`${baseUrl}/api/sessions/session-1/runtime/state`, {
+		const command = await (await authFetch(`${baseUrl}/api/sessions/session-1/runtime/state`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ target: runtime }),
@@ -785,7 +795,7 @@ test("SSE /stream endpoint forwards pi agent events as AI SDK UI message frames"
 	await withServer(async ({ baseUrl, runtime }) => {
 		runtime.status = "running";
 		const controller = new AbortController();
-		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
+		const response = await authFetch(`${baseUrl}/api/sessions/session-1/stream`, {
 			signal: controller.signal,
 			headers: { accept: "text/event-stream" },
 		});
@@ -850,7 +860,7 @@ test("SSE /stream endpoint forwards pi agent events as AI SDK UI message frames"
 test("SSE reconnect finishes immediately when the runtime settled before subscribe", async () => {
 	await withServer(async ({ baseUrl, runtime }) => {
 		runtime.status = "idle";
-		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
+		const response = await authFetch(`${baseUrl}/api/sessions/session-1/stream`, {
 			headers: { accept: "text/event-stream" },
 		});
 		const wire = await response.text();
@@ -898,22 +908,22 @@ test("web service dev mode proxies static assets to the renderer dev server", as
 	try {
 		await withServer(async ({ baseUrl }) => {
 			// 根路径 → 代理到 /web.html（外部端入口，而非桌面端 index.html）
-			const page = await fetch(baseUrl + "/");
+			const page = await authFetch(baseUrl + "/");
 			assert.equal(page.status, 200);
 			assert.match(page.headers.get("content-type") ?? "", /text\/html/);
 			assert.match(await page.text(), /A2 React page/);
 			// 带扩展名资源 → 原样转发
-			const asset = await fetch(baseUrl + "/assets/web.js");
+			const asset = await authFetch(baseUrl + "/assets/web.js");
 			assert.equal(asset.status, 200);
 			assert.match(asset.headers.get("content-type") ?? "", /text\/javascript/);
 			assert.equal(await asset.text(), 'console.log("dev asset");');
 			// vite 内部模块（无扩展名）必须原样转发，不能被映射成 /web.html 的 HTML
-			const viteClient = await fetch(baseUrl + "/@vite/client");
+			const viteClient = await authFetch(baseUrl + "/@vite/client");
 			assert.equal(viteClient.status, 200);
 			assert.match(viteClient.headers.get("content-type") ?? "", /text\/javascript/);
 			assert.equal(await viteClient.text(), 'console.log("vite client");');
 			// query 参数必须保留（vite 依赖预构建/HMR 依赖 ?v= ?t= ?import）
-			const withQuery = await fetch(baseUrl + "/src/web-main.tsx?v=abc&import");
+			const withQuery = await authFetch(baseUrl + "/src/web-main.tsx?v=abc&import");
 			assert.equal(withQuery.status, 200);
 			assert.match(await withQuery.text(), /entry with query: \/src\/web-main\.tsx\?v=abc&import/);
 			assert.deepEqual(devServer.hits, [
@@ -932,14 +942,14 @@ test("web service dev mode proxies static assets to the renderer dev server", as
 test("web service dev mode falls back to the legacy page when dev server is down", async () => {
 	// 端口 1 通常无服务监听；fetch 连接拒绝后应回退内嵌页而非 500。
 	await withServer(async ({ baseUrl }) => {
-		const page = await fetch(baseUrl + "/");
+		const page = await authFetch(baseUrl + "/");
 		assert.equal(page.status, 200);
 		assert.match(await page.text(), /PiDeck(-Q)? Web Service/);
 	}, { devRendererUrl: "http://127.0.0.1:1" });
 });
 test("POST /api/chat closes the run-level stream when prompt validation rejects", async () => {
 	await withServer(async ({ baseUrl }) => {
-		const response = await fetch(baseUrl + "/api/chat", {
+		const response = await authFetch(baseUrl + "/api/chat", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -961,7 +971,7 @@ test("POST /api/chat uses a unique requestId instead of the session id", async (
 	await withServer(async ({ baseUrl, calls }) => {
 		const postChat = async (text, expectedCount) => {
 			const controller = new AbortController();
-			const pending = fetch(baseUrl + "/api/chat", {
+			const pending = authFetch(baseUrl + "/api/chat", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
@@ -1051,12 +1061,12 @@ test("GET /api/state 暴露 activatingSessionIds 且过滤内部子会话", asyn
 
 	await withServer(
 		async ({ baseUrl }) => {
-			const res = await (await fetch(`${baseUrl}/api/state`)).json();
+			const res = await (await authFetch(`${baseUrl}/api/state`)).json();
 			assert.deepEqual(res.activatingSessionIds, ["session-1"]);
 
 			// 激活完成之后，列表清空
 			activating = false;
-			const res2 = await (await fetch(`${baseUrl}/api/state`)).json();
+			const res2 = await (await authFetch(`${baseUrl}/api/state`)).json();
 			assert.deepEqual(res2.activatingSessionIds, []);
 		},
 		{
@@ -1077,7 +1087,7 @@ test("Web 删除路由错误安全：区分 400 业务阻止与 500 内部异常
 		async ({ baseUrl }) => {
 			// 1. 已知阻止删除：返回 400 业务错误，带用户可见提示
 			failureMode = "blocked";
-			const resBlocked = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const resBlocked = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(resBlocked.status, 400);
 			const blockedJson = await resBlocked.json();
 			assert.equal(blockedJson.code, "webError.deleteSessionBlocked");
@@ -1085,7 +1095,7 @@ test("Web 删除路由错误安全：区分 400 业务阻止与 500 内部异常
 
 			// 2. 底层文件/回收站异常：返回 500，且绝对不泄露文件路径或敏感标记
 			failureMode = "internal";
-			const resInternal = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const resInternal = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(resInternal.status, 500);
 			const internalRaw = await resInternal.text();
 			assert.doesNotMatch(internalRaw, /TOKEN_SENTINEL/);
@@ -1096,7 +1106,7 @@ test("Web 删除路由错误安全：区分 400 业务阻止与 500 内部异常
 
 			// 3. 正常删除：返回 200 { deleted: true }
 			failureMode = "none";
-			const resOk = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const resOk = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(resOk.status, 200);
 			const okJson = await resOk.json();
 			assert.equal(okJson.deleted, true);
@@ -1122,7 +1132,7 @@ test("有状态删除保护：激活中或运行中的会话删除请求被后�
 	await withServer(
 		async ({ baseUrl, runtime }) => {
 			// 1. 运行态时删除被拒绝，返回 400 业务错误
-			const delActive = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const delActive = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(delActive.status, 400);
 			const errActive = await delActive.json();
 			assert.match(errActive.error, /stopBeforeDelete|Stop the session runtime/i);
@@ -1130,14 +1140,14 @@ test("有状态删除保护：激活中或运行中的会话删除请求被后�
 			// 2. 激活中无 runtime 时删除也被拒绝，返回 400 业务错误
 			runtimeActive = false;
 			activating = true;
-			const delActivating = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const delActivating = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(delActivating.status, 400);
 			const errActivating = await delActivating.json();
 			assert.match(errActivating.error, /stopBeforeDelete|Stop the session runtime/i);
 
 			// 3. 停止激活且无 runtime 时允许删除
 			activating = false;
-			const delStopped = await fetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
+			const delStopped = await authFetch(`${baseUrl}/api/sessions/session-1/delete`, { method: "POST" });
 			assert.equal(delStopped.status, 200);
 			const okBody = await delStopped.json();
 			assert.equal(okBody.deleted, true);
@@ -1164,5 +1174,42 @@ test("有状态删除保护：激活中或运行中的会话删除请求被后�
 				return true;
 			},
 		},
+	);
+});
+
+test("unauthenticated API requests are rejected with the stable unauthorized code", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const response = await fetch(`${baseUrl}/api/state`);
+		assert.equal(response.status, 401);
+		assert.equal((await response.json()).code, "webError.unauthorized");
+	});
+});
+
+test("the access token in the URL is exchanged for an HttpOnly cookie", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const response = await fetch(`${baseUrl}/?pideck_token=${WEB_TEST_TOKEN}`, { redirect: "manual" });
+		assert.equal(response.status, 302);
+		const setCookie = response.headers.get("set-cookie") ?? "";
+		assert.match(setCookie, /pideck_web_token_\d+=/);
+		assert.match(setCookie, /HttpOnly/);
+		assert.match(setCookie, /SameSite=Strict/);
+	});
+});
+
+test("responses no longer advertise wildcard CORS", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const response = await authFetch(`${baseUrl}/api/state`);
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("access-control-allow-origin"), null);
+	});
+});
+
+test("the service refuses to start with an invalid access token", async () => {
+	const WebServiceManager = loadWebServiceManager();
+	const harness = fixture();
+	const manager = new WebServiceManager(harness.deps);
+	await assert.rejects(
+		() => manager.start("127.0.0.1", 0, ""),
+		(error) => error.message === "WEB_SERVICE_INVALID_TOKEN",
 	);
 });

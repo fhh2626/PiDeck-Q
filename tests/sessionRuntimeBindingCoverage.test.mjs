@@ -127,10 +127,12 @@ test("replacement restore is gated by full origin identity in main", () => {
 test("message mutation commands in SessionRuntimeInjector bind pane runtime target", () => {
   assert.match(runtimeInjector, /messageCommandTarget = runtime\.runtimeTarget/);
   assert.match(runtimeInjector, /canDispatchMessageMutation/);
-  assert.match(runtimeInjector, /services\.deleteMessage\?\.\(\s*messageCommandTarget,\s*messageId\s*\)/);
-  assert.match(runtimeInjector, /services\.editMessage\?\.\(\s*messageCommandTarget,\s*messageId,\s*newText\s*\)/);
-  assert.match(runtimeInjector, /services\.resendUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
-  assert.match(runtimeInjector, /services\.forkFromUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
+  assert.match(runtimeInjector, /latestMessageServicesRef\.current\.deleteMessage\?\.\(\s*messageCommandTarget,\s*messageId\s*\)/);
+  assert.match(runtimeInjector, /latestMessageServicesRef\.current\.editMessage\?\.\(\s*messageCommandTarget,\s*messageId,\s*newText\s*\)/);
+  assert.match(runtimeInjector, /latestMessageServicesRef\.current\.resendUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
+  assert.match(runtimeInjector, /latestMessageServicesRef\.current\.forkFromUserMessage\?\.\(\s*messageCommandTarget,\s*message\s*\)/);
+  // 以上 4 条改为 latest-ref 调用：App 每次渲染重建 services.* 回调，直接依赖引用会让
+  // messageActions 每帧换新，TurnRow 按引用比较回调时在流式期间整列重渲染。
   assert.doesNotMatch(runtimeInjector, /onDeleteMessage=\{canMutateActiveMessages \? services\.deleteMessage : undefined\}/);
 });
 

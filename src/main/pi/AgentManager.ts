@@ -87,6 +87,8 @@ import {
 	cleanTitle,
 	inferTitleFromMessages,
 	isDefaultAgentTitle,
+	mapCachedMessageToEntryCandidates,
+	normalizeMessageTextForMatch,
 } from "./agentUtils.ts";
 import {
   updateActiveToolCalls,
@@ -121,6 +123,12 @@ export interface AgentPlatformDeps {
 	 * 缺省（单测/独立宿主）视为无需等待。
 	 */
 	startupBarrier?: StartupBarrier;
+	/**
+	 * 生效界面语言（如 zh-CN / en-US）。注入 PIDECK_UI_LANGUAGE 给 pi 子进程内的内置扩展，
+	 * 使扩展的用户可见提示（如 shell 可用性警告）跟随 PiDeck 语言设置。
+	 * 缺省时扩展自行回退到系统语言。
+	 */
+	getLocale?: () => string;
 }
 
 function errorMessage(error: unknown): string {
@@ -337,6 +345,13 @@ export class AgentManager {
 	 */
 	private readonly recentlyAborted = new Set<string>();
 	/**
+	 * 最近一次进入 error 的来源。
+	 * 只有 "turn"（一轮对话里的 API/模型失败）且进程仍在时，协调器才把 error runtime
+	 * 视为可继续使用；启动失败（get_state 超时等）虽然进程也可能还在，但 runtime 从未就绪，
+	 * 必须仍按启动失败处理（停止 + 不绑定）。process 表示进程本身报错，同样不可恢复。
+	 */
+	private readonly errorOriginByAgent = new Map<string, "turn" | "startup" | "process">();
+	/**
 	 * 每个 agent 的流式 generation 闸门。
 	 * abort 封印当前 generation；须等 abort settled（或超时兜底）后，
 	 * 再由 agent_start 推进 generation 放行，防止残留 thinking/text delta 串台。
@@ -491,6 +506,8 @@ export class AgentManager {
 			// 匿名会话（noSession）无 key，扩展仅用全局默认等级。
 			securitySessionId: securitySessionKey ?? sessionPath,
 			securitySnapshotPath: this.securityStore?.getSnapshotPath(),
+			// 扩展所在子进程读不到 PiDeck 设置，语言必须随环境注入（同 PIDECK_SESSION_ID 模式）。
+			uiLocale: this.platformDeps?.getLocale?.(),
 			// 预检修复：全部 spawn 路径（create/reattach/withTemporarySession）都在 start() 内生效。
 			repairSessionFileBeforeStart: this.repairSessionFile,
 		});
@@ -547,6 +564,27 @@ export class AgentManager {
 			isStreaming: this.streamingAgents.has(agentId),
 			isExecutingTool: !!this.toolExecutingByAgent.get(agentId),
 		};
+	}
+
+	/**
+	 * 供 SessionRuntimeCoordinator 判断 error runtime 能否继续使用（编辑/删除/重发/复用进程）。
+	 * 必须同时满足：当前是 error、来源是轮次级失败、pi 进程仍在。
+	 * 为什么不只看进程存活：create 阶段 get_state 失败也会留下存活进程 + error 状态，
+	 * 那是从未就绪的 runtime，按可用处理会跳过启动失败清理并把半启动进程绑定到会话。
+	 */
+	isRecoverableErrorRuntime(agentId: string): boolean {
+		const runtime = this.agents.get(agentId);
+		if (!runtime || runtime.tab.status !== "error") return false;
+		return this.errorOriginByAgent.get(agentId) === "turn" && runtime.process.isRunning();
+	}
+
+	/**
+	 * 置 error 必须同时记录来源：保证 status === "error" 时来源总是最近一次失败的原因，
+	 * 无需在状态离开 error 时额外清理（后一次失败覆盖前一次即可）。
+	 */
+	private markAgentError(agentId: string, tab: AgentTab, origin: "turn" | "startup" | "process"): void {
+		tab.status = "error";
+		this.errorOriginByAgent.set(agentId, origin);
 	}
 
 	/**
@@ -1230,7 +1268,8 @@ export class AgentManager {
 			client = await process.start(input.sessionPath, trustOverride, input.noSession);
 		} catch (error) {
 			// start() 同步失败（非法 cwd、spawn 抛错等）也要落到会话错误卡，而不是 IPC 裸抛。
-			tab.status = "error";
+			// 启动失败：来源标 startup，即使进程仍在也不得被当作可恢复的 error runtime。
+			this.markAgentError(id, tab, "startup");
 			const rawMessage = error instanceof Error ? error.message : String(error);
 			void this.appLogger?.error("agent", "Agent pi process start threw", {
 				agentId: id,
@@ -1385,7 +1424,9 @@ export class AgentManager {
 				historyLoading: "background",
 			});
 		} catch (error) {
-			tab.status = "error";
+			// Agent create failed：包括 get_state 超时——此时进程可能仍存活，
+			// 但 runtime 从未就绪，来源必须标 startup，协调器才会继续按启动失败处理。
+			this.markAgentError(id, tab, "startup");
 			const rawMessage = error instanceof Error ? error.message : String(error);
 			void this.appLogger?.error("agent", "Agent create failed", {
 				agentId: id,
@@ -1521,7 +1562,8 @@ export class AgentManager {
 		// 在设置状态为 running 之前检查进程是否还活着，避免进程崩溃后状态不一致
 		if (!runtime.process.isRunning()) {
 			const errorMessage = "Agent 进程已停止，请重启 Agent 后重试";
-			runtime.tab.status = "error";
+			// 进程已不在：error 来源是 process，协调器必须按终止态处理
+			this.markAgentError(input.agentId, runtime.tab, "process");
 			if (!input.silent) {
 				this.addLocalizedMessage(
 					input.agentId,
@@ -1680,7 +1722,8 @@ export class AgentManager {
 		// 检查进程是否还活着
 		if (!runtime.process.isRunning()) {
 			const errorMessage = "Agent 进程已停止，请重启 Agent 后重试";
-			runtime.tab.status = "error";
+			// 进程已不在：error 来源是 process，协调器必须按终止态处理
+			this.markAgentError(agentId, runtime.tab, "process");
 			this.addLocalizedMessage(agentId, "error", "diagnostic.agentStopped", errorMessage);
 			this.emitState();
 			return { accepted: false, error: errorMessage, i18nKey: "diagnostic.agentStopped" };
@@ -2663,41 +2706,62 @@ export class AgentManager {
 		if (cachedMessage && (cachedMessage.role === "user" || cachedMessage.role === "assistant")) {
 			try {
 				const identity = await this.sessionHistoryReader.readActiveEntryIdentity(sessionPath);
-				const activeUserAssistantEntries = identity.activeMessageEntries.filter(
-					(entry) => entry.role === "user" || entry.role === "assistant",
+				// 按「轮」锚定而非按 user+assistant 总数对位：abort 会让文件多出一条空 assistant，
+				// 总数对位会整体偏移一位，删除/编辑命中错条目（见 agentUtils.mapCachedMessageToEntryCandidates）。
+				const mapping = mapCachedMessageToEntryCandidates(
+					currentMessages ?? [],
+					identity.activeMessageEntries,
+					messageId,
 				);
-				const cachedUserAssistantMessages = (currentMessages ?? []).filter(
-					(m) => m.role === "user" || m.role === "assistant",
-				);
-				const cachedIndex = cachedUserAssistantMessages.findIndex((m) => m.id === messageId);
-				if (cachedIndex >= 0) {
-					const offsetFromTail = cachedUserAssistantMessages.length - 1 - cachedIndex;
-					const targetEntryIndex = activeUserAssistantEntries.length - 1 - offsetFromTail;
-					if (targetEntryIndex >= 0 && targetEntryIndex < activeUserAssistantEntries.length) {
-						const candidate = activeUserAssistantEntries[targetEntryIndex];
-						if (candidate.role === cachedMessage.role) {
-							void this.appLogger?.info("agent", "Message located by active sequence mapping", {
-								agentId,
-								messageId,
-								entryId: candidate.id,
-							});
-							cachedMessage.meta = { ...cachedMessage.meta, entryId: candidate.id };
-							return {
-								target: {
-									entryId: candidate.id,
-									legacyMessageId: messageId,
-									legacyAgentId: agentId,
-									role: cachedMessage.role,
-									text: cachedMessage.text,
-									activeLeafId,
-								},
-								resend: {
-									text: cachedMessage.text,
-									...(cachedMessage.images?.length ? { images: cachedMessage.images } : {}),
-								},
-							};
+				let mappedEntryId: string | undefined;
+				if (mapping?.role === "user") {
+					mappedEntryId = mapping.entryId;
+				} else if (mapping?.role === "assistant" && mapping.candidateIds.length > 0) {
+					// 同一轮可能有多个 assistant（含 abort 后的空回复），只有正文相等的那条才是用户点的消息。
+					// 从尾部往前找：用户要操作的通常是本轮最后一条。
+					const wanted = normalizeMessageTextForMatch(cachedMessage.text);
+					let lastNonEmpty: string | undefined;
+					const limit = Math.max(0, mapping.candidateIds.length - 64);
+					for (let index = mapping.candidateIds.length - 1; index >= limit; index -= 1) {
+						const candidateId = mapping.candidateIds[index];
+						const locatedText = await this.sessionHistoryReader.readMessageByMessageId(sessionPath, candidateId);
+						const candidateText = normalizeMessageTextForMatch(locatedText?.text ?? "");
+						if (candidateText === wanted) {
+							mappedEntryId = candidateId;
+							break;
 						}
+						if (!lastNonEmpty && candidateText) lastNonEmpty = candidateId;
 					}
+					if (!mappedEntryId) {
+						mappedEntryId = lastNonEmpty ?? mapping.candidateIds[mapping.candidateIds.length - 1];
+						void this.appLogger?.warn("agent", "Sequence mapping picked assistant without exact text match", {
+							agentId,
+							messageId,
+							entryId: mappedEntryId,
+						});
+					}
+				}
+				if (mappedEntryId) {
+					void this.appLogger?.info("agent", "Message located by turn-anchored mapping", {
+						agentId,
+						messageId,
+						entryId: mappedEntryId,
+					});
+					cachedMessage.meta = { ...cachedMessage.meta, entryId: mappedEntryId };
+					return {
+						target: {
+							entryId: mappedEntryId,
+							legacyMessageId: messageId,
+							legacyAgentId: agentId,
+							role: cachedMessage.role,
+							text: cachedMessage.text,
+							activeLeafId,
+						},
+						resend: {
+							text: cachedMessage.text,
+							...(cachedMessage.images?.length ? { images: cachedMessage.images } : {}),
+						},
+					};
 				}
 			} catch (err) {
 				void this.appLogger?.warn("agent", "Sequence mapping lookup failed", {
@@ -3006,6 +3070,8 @@ export class AgentManager {
 		// 停止旧进程并清理状态
 		runtime.process.stop();
 		this.agents.delete(agentId);
+		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
+		this.errorOriginByAgent.delete(agentId);
 		this.messages.delete(agentId);
 		this.messageDirtyFromByAgent.delete(agentId);
 		this.pendingFullMessageEmitAgents.delete(agentId);
@@ -3255,6 +3321,8 @@ export class AgentManager {
 		this.userInitiatedStop.add(agentId);
 		const process = runtime.process;
 		this.agents.delete(agentId);
+		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
+		this.errorOriginByAgent.delete(agentId);
 		this.messages.delete(agentId);
 		this.messageDirtyFromByAgent.delete(agentId);
 		this.pendingFullMessageEmitAgents.delete(agentId);
@@ -3294,6 +3362,8 @@ export class AgentManager {
 			runtime.process.stop();
 		}
 		this.agents.clear();
+		// 与 agents 配对清理：error 来源只对仍在 agents 中的 runtime 有意义。
+		this.errorOriginByAgent.clear();
 		this.messages.clear();
 		// 退出时统一清理所有 gate / abort 兜底定时器，避免泄漏到下一次生命周期。
 		for (const agentId of [...this.streamGates.keys()]) this.clearStreamGate(agentId);
@@ -3427,7 +3497,8 @@ export class AgentManager {
 		piProcess.on("error", (error: Error) => {
 			if (!isCurrentProcess()) return;
 			const runtime = this.agents.get(agentId);
-			if (runtime) runtime.tab.status = "error";
+			// 进程自身报错：即使进程对象还在，runtime 也不可信
+			if (runtime) this.markAgentError(agentId, runtime.tab, "process");
 			const message = error instanceof Error ? error.message : String(error);
 			void this.appLogger?.error("agent", "Pi process error", {
 				agentId,
@@ -3757,7 +3828,8 @@ export class AgentManager {
 			// 自动重试最终失败：如果用户没有主动中止，则保持 agent 的 error 状态
 			// 不被后续 agent_settled 覆盖，确保侧边栏状态显示失败标记。
 			if (!typed.success && runtime && !this.recentlyAborted.has(agentId)) {
-				runtime.tab.status = "error";
+				// 轮次级失败：pi 进程仍在，允许复用该 runtime（来源标 turn）
+				this.markAgentError(agentId, runtime.tab, "turn");
 				const reason = typed.finalError ?? typed.errorMessage ?? "API 请求失败";
 				this.addMessage(agentId, "error", `请求失败：${String(reason)}`);
 				this.emitState();
@@ -3888,13 +3960,13 @@ export class AgentManager {
 				this.addDetailedErrorMessage(agentId, String(errorMsg));
 				// 有错误且不会重试时，Agent 才进入 error 态，
 				// 否则会被误置为 idle 触发"所有任务完成"通知
-				if (runtime) runtime.tab.status = "error";
+				if (runtime) this.markAgentError(agentId, runtime.tab, "turn");
 			} else if (
 				typed.stopReason === "error" ||
 				errorMessages.length > 0
 			) {
 				this.addDetailedErrorMessage(agentId);
-				if (runtime) runtime.tab.status = "error";
+				if (runtime) this.markAgentError(agentId, runtime.tab, "turn");
 			}
 			if (runtime) this.emitState();
 			// agent_end 后 runtimeState 可能暂时仍显示后续 compaction/retry；立即同步一次，
@@ -3943,22 +4015,7 @@ export class AgentManager {
 				// agent_settled 是 Pi 的最终稳定点：没有自动重试、自动压缩、压缩 retry
 				// 或 queued follow-up 会继续执行，此时才允许恢复 idle 并通知用户完成。
 				runtime.tab.status = "idle";
-				// 若 message_end 未到（边缘路径），仍先落盘再清 live。
-				this.finalizeThinkingIntoMessage(agentId);
-				this.flushMessageEmit(agentId);
-				// 一轮结束：运行期缓存裁剪到最近 50 轮（含本轮），防止长会话数组无界增长
-				this.trimRuntimeCache(agentId);
-				this.finishThinkingChannel(agentId);
-				this.activeAssistantMessageIds.delete(agentId);
-				this.setStreamingAgent(agentId, false);
-				this.toolMessageIds.delete(agentId);
-				this.textEmitter.cancel(agentId);
-				this.streamingText.delete(agentId);
-				this.lastSentTextByAgent.delete(agentId);
-				this.textPushCountByAgent.delete(agentId);
-				this.activeToolCallsByAgent.delete(agentId);
-				this.toolExecutingByAgent.set(agentId, null);
-				this.rpcCompactingAgents.delete(agentId);
+				this.settleRuntimeCaches(agentId);
 				this.emitState();
 				void this.emitRuntimeState(agentId);
 
@@ -3969,6 +4026,13 @@ export class AgentManager {
 				if (lastMessage?.role === "assistant" && !isAbortSettled) {
 					this.notifySessionEnd(agentId, runtime.tab.title);
 				}
+			} else if (runtime && runtime.tab.status === "error") {
+				// error 态必须保留（侧栏失败标记、不弹完成通知），但 pi 已 settled：
+				// 不清缓存会残留流式/工具执行/压缩标志，渲染层据此把会话视为运行中
+				// （isStreaming / agentRunning），隐藏编辑/删除/重发按钮，且 live 气泡残留。
+				this.settleRuntimeCaches(agentId);
+				this.emitState();
+				void this.emitRuntimeState(agentId);
 			}
 		}
 
@@ -4566,6 +4630,31 @@ export class AgentManager {
 		const text = this.streamingThinking.get(agentId) ?? "";
 		this.thinkingEmitter.flush(agentId);
 		this.emitThinkingNow(agentId, stripAnsi(text));
+	}
+
+	/**
+	 * 一轮真正结束（agent_settled）后的运行期缓存收尾，idle 与 error 共用。
+	 * 不改 tab.status、不发通知、不 emit：由调用方决定，否则会把失败态误报成完成。
+	 * 为什么：error 态若跳过收尾，会残留流式/工具执行标志与压缩标志，
+	 * 渲染层据此把会话视为运行中（isStreaming / agentRunning），隐藏编辑/删除/重发按钮，且 live 气泡残留。
+	 */
+	private settleRuntimeCaches(agentId: string): void {
+		// 若 message_end 未到（边缘路径），仍先落盘再清 live。
+		this.finalizeThinkingIntoMessage(agentId);
+		this.flushMessageEmit(agentId);
+		// 一轮结束：运行期缓存裁剪到最近 50 轮（含本轮），防止长会话数组无界增长
+		this.trimRuntimeCache(agentId);
+		this.finishThinkingChannel(agentId);
+		this.activeAssistantMessageIds.delete(agentId);
+		this.setStreamingAgent(agentId, false);
+		this.toolMessageIds.delete(agentId);
+		this.textEmitter.cancel(agentId);
+		this.streamingText.delete(agentId);
+		this.lastSentTextByAgent.delete(agentId);
+		this.textPushCountByAgent.delete(agentId);
+		this.activeToolCallsByAgent.delete(agentId);
+		this.toolExecutingByAgent.set(agentId, null);
+		this.rpcCompactingAgents.delete(agentId);
 	}
 
 	/**
