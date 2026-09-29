@@ -1,7 +1,18 @@
 import { test, expect } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+// 每页独立收集未捕获的页面运行时异常（按 Page 隔离，避免测试间串扰）。
+const pageErrors = new WeakMap<Page, string[]>();
 
 test.describe("WebSidebar, Desktop ToolGroupCard, and WebTimeline Interaction Tests", () => {
 	test.beforeEach(async ({ page }) => {
+		// 必须先于导航注册，否则会漏掉初次加载期间抛出的异常。
+		const errors: string[] = [];
+		pageErrors.set(page, errors);
+		page.on("pageerror", (error) => {
+			errors.push(error.message);
+		});
+
 		await page.goto("http://127.0.0.1:5189/tests/browser/sessionAndToolInteraction.html");
 		await page.waitForSelector("#event-monitor");
 		// 确保会话列表已展开（如果未展开则点击折叠箭头展开）
@@ -157,5 +168,56 @@ test.describe("WebSidebar, Desktop ToolGroupCard, and WebTimeline Interaction Te
 		await groupToggle.click();
 		// 展开后显示 2 个工具项
 		await expect(groupCard.locator(".tool-card")).toHaveCount(2);
+	});
+
+	test("6. WebTimeline: 空助手占位不打断连续工具分组，折叠/展开正常，占位出现正文后拆开", async ({ page }) => {
+		const section = page.locator("#web-timeline-placeholder-section");
+
+		// 用户消息与最终正文独立渲染
+		await expect(section.locator(".user-turn")).toBeVisible();
+		await expect(section.locator(".timeline-inline-text")).toContainText("All checks complete.");
+
+		// 1. 空占位时：恰好一个工具组，默认折叠
+		const groupCard = section.locator(".tool-group-card");
+		await expect(groupCard).toHaveCount(1);
+		const groupToggle = groupCard.locator("button").first();
+		await expect(groupToggle).toBeVisible();
+		await expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+		await expect(groupCard.locator(".tool-card")).toHaveCount(0);
+
+		// 2. 点击展开：两个子工具卡按顺序可见（powershell → read）
+		await groupToggle.click();
+		await expect(groupToggle).toHaveAttribute("aria-expanded", "true");
+		await expect(groupCard.locator(".tool-card")).toHaveCount(2);
+		const toolNames = groupCard.locator(".tool-card");
+		await expect(toolNames.nth(0)).toHaveAttribute("data-tool-name", "powershell");
+		await expect(toolNames.nth(1)).toHaveAttribute("data-tool-name", "read");
+		await expect(toolNames.nth(0)).toBeVisible();
+		await expect(toolNames.nth(1)).toBeVisible();
+
+		// 3. 再次点击折叠
+		await groupToggle.click();
+		await expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+		await expect(groupCard.locator(".tool-card")).toHaveCount(0);
+
+		// 4. 占位获得可见正文后：两个工具不再同组，正文只出现一次
+		await page.click("#toggle-placeholder-text");
+		await expect(section.locator(".tool-group-card")).toHaveCount(0);
+		await expect(section.locator("[data-tool-name=powershell]")).toHaveCount(1);
+		await expect(section.locator("[data-tool-name=read]")).toHaveCount(1);
+		await expect(section.locator("[data-tool-name=powershell]")).toBeVisible();
+		await expect(section.locator("[data-tool-name=read]")).toBeVisible();
+		const placeholderText = section.getByText("Let me look at the file content", { exact: true });
+		await expect(placeholderText).toHaveCount(1);
+		await expect(placeholderText).toBeVisible();
+
+		// 5. 切回空占位：重新合并为工具组（纯函数重算的展示行为）
+		await page.click("#toggle-placeholder-text");
+		await expect(section.locator(".tool-group-card")).toHaveCount(1);
+
+		// 6. 整个用例无未捕获的页面运行时异常
+		const errors = pageErrors.get(page);
+		expect(errors).toBeDefined();
+		expect(errors).toEqual([]);
 	});
 });

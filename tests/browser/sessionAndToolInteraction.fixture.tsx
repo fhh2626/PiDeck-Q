@@ -1,11 +1,13 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { WebSidebar } from "@/web/WebSidebar";
 import type { WebState } from "@/web/webTypes";
+import { chatMessagesToUiMessages } from "@/web/webApi";
 import { ToolGroupCard } from "@/components/session/ToolCallComponents";
 import { WebTimeline } from "@/web/WebTimeline";
 import type { ToolGroupItem } from "@/components/app/AppUtils";
 import type { UIMessage } from "ai";
+import type { ChatMessage } from "@shared/types";
 
 // 1x1 base64 png
 const testPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -32,6 +34,10 @@ function InteractionFixtureApp() {
 
 	// 状态切换开关
 	const [omitActivatingField, setOmitActivatingField] = useState(false);
+
+	// 透明占位场景开关：true 时中间空助手占位获得可见正文，
+	// 验证分组重算后必须恢复边界（工具不再同组）。
+	const [placeholderHasText, setPlaceholderHasText] = useState(false);
 
 	const webState: WebState = {
 		projects: [sampleProject],
@@ -128,6 +134,45 @@ function InteractionFixtureApp() {
 		},
 	];
 
+	// 透明占位场景（2026-09）：工具 → 空助手占位 → 工具，经真实转换链
+	// （ChatMessage → UIMessage）构造，与线上链路一致。中间占位为空时
+	// 两个工具应合并为一个可折叠工具组；占位获得正文后必须拆开。
+	const placeholderScenarioChatMessages: ChatMessage[] = useMemo(
+		() => [
+			{ id: "ph-u1", agentId: "a", role: "user", text: "Check the logs", timestamp: 1 },
+			{
+				id: "ph-t1",
+				agentId: "a",
+				role: "tool",
+				text: "powershell ok",
+				timestamp: 2,
+				meta: { toolName: "powershell", toolCallId: "ph-call-1", status: "done", result: "log lines" },
+			},
+			{
+				id: "ph-p1",
+				agentId: "a",
+				role: "assistant",
+				text: placeholderHasText ? "Let me look at the file content" : "",
+				timestamp: 3,
+			},
+			{
+				id: "ph-t2",
+				agentId: "a",
+				role: "tool",
+				text: "read ok",
+				timestamp: 4,
+				meta: { toolName: "read", toolCallId: "ph-call-2", status: "done", result: "file content" },
+			},
+			{ id: "ph-a1", agentId: "a", role: "assistant", text: "All checks complete.", timestamp: 5 },
+		],
+		[placeholderHasText],
+	);
+
+	const placeholderScenarioMessages: UIMessage[] = useMemo(
+		() => chatMessagesToUiMessages(placeholderScenarioChatMessages),
+		[placeholderScenarioChatMessages],
+	);
+
 	return (
 		<div className="p-4 space-y-8">
 			<header className="flex gap-4 items-center border-b pb-2">
@@ -190,6 +235,29 @@ function InteractionFixtureApp() {
 				<h2 className="text-sm font-semibold mb-2">WebTimeline Tool Grouping</h2>
 				<WebTimeline
 					messages={webTimelineMessages}
+					hasActiveSession={true}
+					hasMoreHistory={false}
+					moreCount={0}
+					loadingMore={false}
+					streaming={false}
+					error={null}
+					onLoadMore={() => {}}
+				/>
+			</section>
+
+			{/* 透明占位场景：工具 → 空助手占位 → 工具（真实转换链构造） */}
+			<section className="border p-2 rounded w-96" id="web-timeline-placeholder-section">
+				<h2 className="text-sm font-semibold mb-2">WebTimeline Empty-Placeholder Tool Grouping</h2>
+				<button
+					id="toggle-placeholder-text"
+					type="button"
+					className="px-2 py-1 text-xs border rounded mb-1"
+					onClick={() => setPlaceholderHasText((prev) => !prev)}
+				>
+					Toggle Placeholder Text
+				</button>
+				<WebTimeline
+					messages={placeholderScenarioMessages}
 					hasActiveSession={true}
 					hasMoreHistory={false}
 					moreCount={0}
