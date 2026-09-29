@@ -220,4 +220,180 @@ test.describe("WebSidebar, Desktop ToolGroupCard, and WebTimeline Interaction Te
 		expect(errors).toBeDefined();
 		expect(errors).toEqual([]);
 	});
+
+	test("7. WebTimeline: 60 轮会话只挂载最近 50 轮，展开按钮按 10 轮步长还原更早内容且不重复", async ({ page }) => {
+		const section = page.locator("#web-timeline-turn-window-section");
+
+		// 60 轮 = 120 条消息；窗口只挂载最近 50 轮 = 100 条（首轮 = Question 11）
+		await expect(section.getByText("Question 11", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 10", { exact: true })).toHaveCount(0);
+		await expect(section.getByText("Question 60", { exact: true })).toHaveCount(1);
+
+		// 隐藏 10 轮：按钮文案带轮数，点击后展开 10 轮（到 Question 1）
+		const revealButton = section.locator("button", { hasText: /显示更早的 10 轮对话|Show 10 earlier turns/ });
+		await expect(revealButton).toHaveCount(1);
+		await revealButton.click();
+
+		await expect(section.getByText("Question 1", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 11", { exact: true })).toHaveCount(1);
+		// 已加载内容全部可见：按钮消失（底层无更多磁盘历史）
+		await expect(section.locator("button", { hasText: /显示更早的|Show \d+ earlier turns/ })).toHaveCount(0);
+
+		// 展开后无重复渲染（同一消息只能出现一次）
+		await expect(section.getByText("Question 30", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Answer 30", { exact: true })).toHaveCount(1);
+
+		const errors = pageErrors.get(page);
+		expect(errors).toEqual([]);
+	});
+
+	test("8. WebTimeline: 消息先于加载状态落地时，旧页可见且阅读位置稳定", async ({ page }) => {
+		const section = page.locator("#web-timeline-async-section");
+		const timeline = section.locator(".message-timeline");
+
+		// 初始 50 轮：只挂载最近 50 轮（Question 6..55），Question 0..5 等更早轮次尚未加载
+		await expect(section.getByText("Question 55", { exact: true })).toHaveCount(1);
+
+		// 点击时间线内「加载更多」：触发 revealOlder → 登记 pendingDiskRevealRef + loadingMore=true。
+		// Playwright 点击时间线顶部按钮时会自动把容器滚到顶部（scrollTop=0），
+		// 这与真实用户点完按钮后的位置一致；锚点在「前插落地时」才捕获，不受点击瞬间位置影响。
+		const loadButton = section.locator("button", { hasText: /加载更多对话|Load more conversations/ });
+		await expect(loadButton).toHaveCount(1);
+		await loadButton.click();
+		// 文案切换为「加载中…」：loadingMore=true
+		await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(1);
+
+		// 请求等待期间，用户把阅读位置滚到中间（Question 30 居中）：
+		// 锚点将在「前插落地」时按此刻位置捕获，验证阅读位置稳定。
+		const scrollAnchorToCenter = () =>
+			timeline.evaluate((el) => {
+				const anchor = el.querySelector('[data-web-message-id="aw-u-30"]');
+				if (!anchor) return false;
+				const anchorTop = anchor.getBoundingClientRect().top - el.getBoundingClientRect().top;
+				el.scrollTop += anchorTop - el.clientHeight / 2;
+				return true;
+			});
+		await expect.poll(scrollAnchorToCenter).toBeTruthy();
+		const readAnchor = async () =>
+			section.getByText("Question 30", { exact: true }).evaluate((node) => {
+				const container = node.closest(".message-timeline");
+				return node.getBoundingClientRect().top - (container ? container.getBoundingClientRect().top : 0);
+			});
+		const anchorOffset = await readAnchor();
+		expect(anchorOffset).toBeGreaterThan(0);
+
+		// 请求期间（loadingMore=true）前插 6 个更早轮次（Question 0..5）
+		await page.click("#async-prepend");
+
+		// 消息先提交，稍后请求返回成功的新头并复位 loadingMore。
+		await page.click("#async-complete");
+		await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(0);
+		// 新页落地：旧页消息可见（Question 0..5），且无重复
+		await expect(section.getByText("Question 5", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 0", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 30", { exact: true })).toHaveCount(1);
+
+		// 锚点补偿：Question 30 相对滚动容器顶部的偏移应基本不变（允许少量像素误差）
+		const anchorOffsetAfter = await readAnchor();
+		expect(Math.abs(anchorOffsetAfter - anchorOffset)).toBeLessThan(2);
+
+		const errors = pageErrors.get(page);
+		expect(errors).toEqual([]);
+	});
+
+	test("8b. WebTimeline: 加载状态先复位、旧页稍后落地时仍显示旧页并保持阅读位置", async ({ page }) => {
+		const section = page.locator("#web-timeline-async-section");
+		const timeline = section.locator(".message-timeline");
+		await expect(section.getByText("Question 55", { exact: true })).toHaveCount(1);
+		await section.locator("button", { hasText: /加载更多对话|Load more conversations/ }).click();
+		await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(1);
+		// 模拟请求等待期间用户继续阅读中部；不能因 loadingMore 先复位丢失锚点。
+		await timeline.evaluate((el) => {
+			const anchor = el.querySelector('[data-web-message-id="aw-u-30"]');
+			if (!anchor) throw new Error("reading anchor missing");
+			el.scrollTop += anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - el.clientHeight / 2;
+		});
+		const anchorOffset = await section.getByText("Question 30", { exact: true }).evaluate((node) => {
+			const container = node.closest(".message-timeline");
+			if (!container) throw new Error("timeline missing");
+			return node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+		});
+		expect(await timeline.evaluate((el) => el.scrollTop)).toBeGreaterThan(24);
+		await page.click("#async-complete-before-messages");
+		await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(0);
+		await expect(section.getByText("Question 0", { exact: true })).toHaveCount(0);
+		await page.click("#async-prepend");
+		await expect(section.getByText("Question 0", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 5", { exact: true })).toHaveCount(1);
+		const after = await section.getByText("Question 30", { exact: true }).evaluate((node) => {
+			const container = node.closest(".message-timeline");
+			if (!container) throw new Error("timeline missing");
+			return node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+		});
+		expect(Math.abs(after - anchorOffset)).toBeLessThan(2);
+		expect(pageErrors.get(page)).toEqual([]);
+	});
+
+	test("9. WebTimeline: 短时间线点「加载更多」后不会重新跟底，新消息追加不拉回底部", async ({ page }) => {
+		const section = page.locator("#web-timeline-short-section");
+
+		// 初始仅 2 轮（Question 7、8，内容不足一屏）：贴底
+		await expect(section.getByText("Question 7", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 8", { exact: true })).toHaveCount(1);
+
+		// 点击「加载更多」：前插 6 轮并复位 loading
+		const loadButton = section.locator("button", { hasText: /加载更多对话|Load more conversations/ });
+		await expect(loadButton).toHaveCount(1);
+		await loadButton.click();
+
+		// 新页可见：Question 1..8 全部出现，无重复
+		await expect(section.getByText("Question 1", { exact: true })).toHaveCount(1);
+		await expect(section.getByText("Question 8", { exact: true })).toHaveCount(1);
+
+		// 主动看历史后：追加新消息不得把视口拉回底部（「回到底部」入口应出现）
+		await page.click("#short-append");
+		await expect(section.getByText("Question 9", { exact: true })).toHaveCount(1);
+		const scrollBtn = section.locator("[aria-label*='滚动到底部'], [aria-label*='Scroll to bottom']");
+		await expect(scrollBtn).toBeVisible();
+
+		// 点「回到底部」后才恢复跟底，入口消失
+		await scrollBtn.click();
+		await expect(scrollBtn).toBeHidden();
+
+		const errors = pageErrors.get(page);
+		expect(errors).toEqual([]);
+	});
+
+	for (const outcome of ["fail", "empty"] as const) {
+		test(`10. WebTimeline: ${outcome} 后无关头部变更不会误展开旧页`, async ({ page }) => {
+			const section = page.locator("#web-timeline-async-section");
+			await expect(section.getByText("Question 55", { exact: true })).toHaveCount(1);
+			await section.locator("button", { hasText: /加载更多对话|Load more conversations/ }).click();
+			await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(1);
+			// 失败/空页必须清掉请求状态；之后没有新请求的头部变更不得被当作旧页落地。
+			await page.click(`#async-${outcome}`);
+			await expect(section.locator("button", { hasText: /加载中|Loading/ })).toHaveCount(0);
+			await expect(section.getByText("Question 0", { exact: true })).toHaveCount(0);
+			const oldHead = section.getByText("Question 6", { exact: true });
+			const before = await oldHead.evaluate((node) => {
+				const container = node.closest(".message-timeline");
+				if (!container) throw new Error("timeline missing");
+				return node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+			});
+			await page.click("#async-unrelated-head");
+			await expect(section.getByText("Unrelated earlier message", { exact: true })).toHaveCount(0);
+			await expect(oldHead).toHaveCount(1);
+			const after = await oldHead.evaluate((node) => {
+				const container = node.closest(".message-timeline");
+				if (!container) throw new Error("timeline missing");
+				return node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+			});
+			expect(Math.abs(after - before)).toBeLessThan(2);
+			// 尾部正常追加不会触发待加载旧页逻辑；保持窗口不变。
+			await page.click("#async-append");
+			await expect(section.getByText("Question 56", { exact: true })).toHaveCount(1);
+			await expect(section.getByText("Unrelated earlier message", { exact: true })).toHaveCount(0);
+			expect(pageErrors.get(page)).toEqual([]);
+		});
+	}
 });

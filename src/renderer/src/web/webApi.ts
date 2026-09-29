@@ -239,6 +239,27 @@ export async function fetchMessagePage(
 	return (await res.json()) as SessionMessagePage;
 }
 
+/**
+ * 拉历史「轮次」页（2026-12 统一 50 轮）：首屏 turnCount=50，更早页 turnCount=3。
+ * 一轮 = 一条用户消息及其后的全部内容；工具调用不额外占轮数。
+ * 用 options 对象而非多个位置参数，避免 before/turnCount/beforeEntryId 之间的顺序错配。
+ */
+export async function fetchTurnPage(
+	sessionId: string,
+	options: { before?: number; turnCount?: number; beforeEntryId?: string } = {},
+): Promise<SessionMessagePage> {
+	const params = new URLSearchParams();
+	if (options.turnCount != null) params.set("turnCount", String(options.turnCount));
+	if (options.before != null) params.set("before", String(options.before));
+	if (options.beforeEntryId != null) params.set("beforeEntryId", options.beforeEntryId);
+	const qs = params.toString();
+	const res = await fetch(
+		`/api/sessions/${encodeURIComponent(sessionId)}/messages/turn-page${qs ? `?${qs}` : ""}`,
+	);
+	if (!res.ok) throw new Error(`messages ${res.status}`);
+	return (await res.json()) as SessionMessagePage;
+}
+
 function createWebMessageMetadata(message: ChatMessage): WebMessageMetadata {
 	const metadata: WebMessageMetadata = {
 		chatRole: message.role,

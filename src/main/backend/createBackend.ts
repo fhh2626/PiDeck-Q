@@ -403,6 +403,20 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
 			return agentManager.readSessionDisplayMessagePage(entry.filePath, sessionId, before, pageSize);
 		},
+		// 轮次分页（2026-12 统一 50 轮）：Web 初始尾页/更早页都走这条路径，
+		// 页边界对齐完整用户轮次。Web 端不需要桌面 IPC 的 runtime 缓存优化：
+		// /api/state 已单独下发运行中快照。
+		readSessionTurnPage: async (sessionId, before, turnCount, beforeEntryId) => {
+			const entry = sessionCatalog.get(sessionId);
+			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
+			return agentManager.readSessionDisplayTurnPage(
+				entry.filePath,
+				sessionId,
+				before,
+				turnCount,
+				beforeEntryId,
+			);
+		},
 		sendSessionPrompt: async (input) => {
 			const result = await sessionRuntimeCoordinator.send(input);
 			if (result.agentId) {

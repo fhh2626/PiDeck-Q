@@ -9,27 +9,58 @@ const { trimHistoryMessages, turnTrimStartIndex, countRoleMessagesBefore } = loa
 
 const message = (role) => ({ role });
 
-test("trimHistoryMessages default caps runtime cache at 20 turns (2026-12)", () => {
-  // 21 轮输入 → 保留最近 20 轮（user 消息为轮起点）
+test("trimHistoryMessages default caps runtime cache at 50 turns (2026-12)", () => {
+  // 51 轮输入 → 保留最近 50 轮（user 消息为轮起点）
   const input = [];
-  for (let turn = 0; turn < 21; turn += 1) {
+  for (let turn = 0; turn < 51; turn += 1) {
     input.push(message("user"), message("assistant"), message("tool"));
   }
   const trimmed = trimHistoryMessages(input);
-  assert.equal(trimmed.length, 20 * 3);
+  assert.equal(trimmed.length, 50 * 3);
   assert.equal(trimmed[0].role, "user");
 });
 
-test("trimHistoryMessages default keeps a turn with multiple tool results intact (2026-12)", () => {
-  // 第 21 轮含多条 toolResult：整轮必须完整保留，不能从工具调用中间截断
+test("trimHistoryMessages default keeps 50 turns intact without truncating (2026-12)", () => {
+  // 50 轮输入：未超上限，整段保留（不得在 50 轮内提前裁剪）
   const input = [];
-  for (let turn = 1; turn <= 21; turn += 1) {
+  for (let turn = 0; turn < 50; turn += 1) {
+    input.push(message("user"), message("assistant"), message("tool"));
+  }
+  assert.equal(trimHistoryMessages(input).length, 50 * 3);
+});
+
+test("trimHistoryMessages default keeps a turn with multiple tool results intact (2026-12)", () => {
+  // 第 51 轮含多条 toolResult：整轮必须完整保留，不能从工具调用中间截断
+  const input = [];
+  for (let turn = 1; turn <= 51; turn += 1) {
     input.push(message("user"), message("assistant"), message("toolResult"), message("toolResult"));
   }
   const trimmed = trimHistoryMessages(input);
-  assert.equal(trimmed.length, 20 * 4);
+  assert.equal(trimmed.length, 50 * 4);
   assert.equal(trimmed[0].role, "user");
   assert.equal(trimmed[trimmed.length - 1].role, "toolResult");
+});
+
+test("trimHistoryMessages counts dense tool traffic as one turn (2026-12)", () => {
+  // 单轮内 150 条工具相关消息：工具不额外占轮数，整轮必须保留
+  const input = [{ role: "user" }, { role: "assistant" }];
+  for (let i = 0; i < 150; i += 1) input.push(message("toolResult"));
+  input.push({ role: "assistant" });
+  assert.equal(trimHistoryMessages(input).length, input.length);
+});
+
+test("trimHistoryMessages keeps the trailing unanswered user turn (2026-12)", () => {
+  // 50 个完整轮次 + 第 51 轮用户提问（尚未回复）：最近 50 轮 = 第 2..50 轮 + 新提问
+  const input = [];
+  for (let turn = 1; turn <= 50; turn += 1) {
+    input.push({ role: "user", text: `q${turn}` }, { role: "assistant", text: `a${turn}` });
+  }
+  input.push({ role: "user", text: "q51" });
+  const trimmed = trimHistoryMessages(input);
+  // 49 轮完整（q2..q50/a2..a50）+ 未回复的 q51 = 99 条
+  assert.equal(trimmed.length, 49 * 2 + 1);
+  assert.equal(trimmed[0].text, "q2");
+  assert.equal(trimmed[trimmed.length - 1].text, "q51");
 });
 
 test("trimHistoryMessages keeps the tail intact and aligns to turn boundary", () => {
@@ -52,21 +83,21 @@ test("trimHistoryMessages keeps the last message batch when no user turn exists"
 });
 
 test("turnTrimStartIndex/countRoleMessagesBefore align entryId slots after trim", () => {
-  // 23 轮 user/assistant → 默认 trim 到 20 轮：首条保留消息是 q4（0-based 下标 6）
+  // 53 轮 user/assistant → 默认 trim 到 50 轮：首条保留消息是 q4（0-based 下标 6）
   const input = [];
-  for (let turn = 0; turn < 23; turn += 1) {
+  for (let turn = 0; turn < 53; turn += 1) {
     input.push({ role: "user", text: `q${turn + 1}` });
     input.push({ role: "assistant", text: `a${turn + 1}` });
   }
   const start = turnTrimStartIndex(input);
   assert.equal(start, 6);
   assert.equal(input[start].text, "q4");
-  // 被裁掉 6 个角色消息 → activeEntryIds 应从下标 6 起切，保留消息拿到 u4..a23
+  // 被裁掉 6 个角色消息 → activeEntryIds 应从下标 6 起切，保留消息拿到 u4..a53
   const dropped = countRoleMessagesBefore(input, start);
   assert.equal(dropped, 6);
-  const entryIds = Array.from({ length: 46 }, (_, i) => `e${i}`);
+  const entryIds = Array.from({ length: 106 }, (_, i) => `e${i}`);
   assert.equal(entryIds.slice(dropped)[0], "e6");
-  assert.equal(entryIds.slice(dropped).length, 40);
+  assert.equal(entryIds.slice(dropped).length, 100);
 });
 
 test("countRoleMessagesBefore ignores compaction summary and non-role entries", () => {

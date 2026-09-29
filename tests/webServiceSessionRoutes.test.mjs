@@ -433,6 +433,96 @@ test("historical message pages stay Session-addressed and bounded", async () => 
 	});
 });
 
+test("turn pages are Session-addressed and honor both cursor parameters", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const first = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
+		assert.equal(first.total, 120);
+		assert.equal(first.nextBefore, 40);
+
+		// 续页：两个游标（数值 + entryId）都必须传进依赖
+		const older = await (
+			await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=3&before=40&beforeEntryId=e40`)
+		).json();
+		assert.equal(older.total, 120);
+		assert.equal(older.nextBefore, 34);
+	}, {
+		readSessionTurnPage: async (sessionId, before, turnCount, beforeEntryId) => ({
+			messages: [{
+				id: `${sessionId}-${turnCount}`,
+				role: "assistant",
+				text: JSON.stringify({ before, turnCount, beforeEntryId }),
+				timestamp: 1,
+			}],
+			total: 120,
+			nextBefore: before == null ? 40 : (beforeEntryId === "e40" ? 34 : null),
+		}),
+	});
+});
+
+test("turn pages default to three turns and reject malformed parameters", async () => {
+	await withServer(async ({ baseUrl }) => {
+		// 缺省 turnCount 不传值（由读取层取默认 3 轮，与原始消息分页同一契约）
+		const byDefault = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page`)).json();
+		assert.equal(byDefault.messages[0].text, "default", "必须以便于读取层取默认值的形式转发");
+		// 缺省 before/beforeEntryId 也不得凭空补值
+		assert.equal(
+			byDefault.messages[0].id,
+			JSON.stringify({ before: null, turnCount: null, beforeEntryId: null }),
+		);
+
+		// 显式 turnCount 上限 50：超上限拒绝，不得静默夹紧
+		const tooMany = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=500`);
+		assert.equal(tooMany.status, 400);
+		assert.equal((await tooMany.json()).code, "webError.invalidMessagePage");
+
+		// 非法：0 / 负数 / 小数 / 非数字 / 非安全整数 / 空串
+		for (const value of ["0", "-1", "1.5", "abc", "9007199254740992", ""]) {
+			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
+			assert.equal(response.status, 400, `turnCount=${value} must be rejected`);
+		}
+		for (const value of ["-1", "2.5", "abc", ""]) {
+			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=${value}`);
+			assert.equal(response.status, 400, `before=${value} must be rejected`);
+		}
+		// beforeEntryId 传入时必须非空
+		const emptyAnchor = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?beforeEntryId=`);
+		assert.equal(emptyAnchor.status, 400);
+
+		// 合法边界值仍可用（1 与上限 50）
+		for (const value of ["1", "50"]) {
+			const response = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=${value}`);
+			assert.equal(response.status, 200, `turnCount=${value} must be accepted`);
+		}
+		// before=0 是合法的真实游标（历史起点）
+		const zeroCursor = await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?before=0`);
+		assert.equal(zeroCursor.status, 200);
+	}, {
+		readSessionTurnPage: async (_sessionId, before, turnCount, beforeEntryId) => ({
+			messages: [{
+				id: JSON.stringify({
+					before: before ?? null,
+					turnCount: turnCount ?? null,
+					beforeEntryId: beforeEntryId ?? null,
+				}),
+				role: "assistant",
+				text: turnCount === undefined ? "default" : String(turnCount),
+				timestamp: 1,
+			}],
+			total: 1,
+			nextBefore: null,
+		}),
+	});
+});
+
+test("turn pages return an empty page for a Session without a persisted file", async () => {
+	await withServer(async ({ baseUrl }) => {
+		const page = await (await fetch(`${baseUrl}/api/sessions/session-1/messages/turn-page?turnCount=50`)).json();
+		assert.deepEqual(page, { messages: [], total: 0, nextBefore: null });
+	}, {
+		readSessionTurnPage: async () => ({ messages: [], total: 0, nextBefore: null }),
+	});
+});
+
 test("web polling state includes Session records, runtimes, and Session-keyed messages", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
 		const response = await fetch(`${baseUrl}/api/state`);

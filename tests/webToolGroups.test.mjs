@@ -8,6 +8,9 @@ const {
 	groupWebAssistantParts,
 	groupWebTimelineMessages,
 } = loadTsCommonJs("src/renderer/src/web/webToolGroups.ts");
+const { countWebTurns, selectWebTurnWindow } = loadTsCommonJs(
+	"src/renderer/src/web/webTurnWindow.ts",
+);
 
 test("isWebToolPart recognizes dynamic-tool and tool-*", () => {
 	assert.equal(isWebToolPart({ type: "dynamic-tool" }), true);
@@ -847,4 +850,52 @@ test("groupWebTimelineMessages does not mutate the input array", () => {
 	sameAs(toolParts[0].output, powershellResult);
 	assert.strictEqual(toolParts[0].input, ui[0].parts[0].input, "工具 1 参数引用被替换");
 	assert.strictEqual(toolParts[1].input, ui[2].parts[0].input, "工具 2 参数引用被替换");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 轮次窗口 × 工具分组（2026-12 统一 50 轮）：窗口按用户轮次计数，不按展示条目计数。
+// 工具组展开/折叠与条目数量都不得改变轮次边界。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("web turn window counts grouped tool cards as part of their owning turn", () => {
+	// 真实转换链：user + 工具 + 空占位 + 工具 + 正文 = 一轮（不是 5 条消息、也不是 3 个展示条目）
+	const chatMessages = [
+		chatMsg({ id: "cw-u1", role: "user", text: "Check logs", timestamp: 1 }),
+		toolMsg("cw-t1", "powershell", "cw-c1"),
+		chatMsg({ id: "cw-p1", role: "assistant", text: "", timestamp: 3 }),
+		toolMsg("cw-t2", "read", "cw-c2"),
+		chatMsg({ id: "cw-a1", role: "assistant", text: "done", timestamp: 5 }),
+	];
+	const ui = chatMessagesToUiMessages(chatMessages);
+	assert.equal(countWebTurns(ui), 1, "工具与占位不额外占轮数");
+	const window = selectWebTurnWindow(ui, 1);
+	assert.equal(window.visibleMessages, ui, "单轮不会因条目多而被裁剪");
+	// 分组后仍是一张折叠工具卡 + 正文，窗口不参与分组
+	const grouped = groupWebTimelineMessages(window.visibleMessages);
+	assert.equal(grouped.length, 3);
+	assert.equal(grouped.filter((item) => item.kind === "tool-message-group").length, 1);
+});
+
+test("web turn window keeps the newest 50 of 51 tool-heavy turns", () => {
+	// 每轮 = 1 个提问 + 12 个工具消息（同一轮内）：共 51 轮 663 条消息，
+	// 窗口必须只隐藏最旧一轮，而不是按消息条数或工具个数切片。
+	const chatMessages = [];
+	for (let turn = 1; turn <= 51; turn += 1) {
+		chatMessages.push(chatMsg({ id: `hw-u${turn}`, role: "user", text: `q${turn}`, timestamp: turn * 100 }));
+		for (let tool = 0; tool < 12; tool += 1) {
+			chatMessages.push(toolMsg(`hw-t${turn}-${tool}`, "read", `hw-c${turn}-${tool}`, { timestamp: turn * 100 + tool + 1 }));
+		}
+	}
+	const ui = chatMessagesToUiMessages(chatMessages);
+	assert.equal(ui.length, 51 * 13);
+	assert.equal(countWebTurns(ui), 51);
+	const window = selectWebTurnWindow(ui, 50);
+	assert.equal(window.hiddenTurnCount, 1);
+	assert.equal(countWebTurns(window.visibleMessages), 50);
+	assert.equal(window.visibleMessages[0].id, "hw-u2", "只隐藏第 1 轮整体");
+	// 工具仍可分组：窗口内第一轮的相邻工具依然合并为一张卡
+	const grouped = groupWebTimelineMessages(window.visibleMessages);
+	assert.equal(grouped[0].kind, "message");
+	assert.equal(grouped[1].kind, "tool-message-group");
+	assert.equal(grouped[1].parts.length, 12);
 });

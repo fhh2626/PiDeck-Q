@@ -62,6 +62,12 @@ const NO_LOAD_STATE_ATOM = atom(undefined);
 // 避免流式消息频繁触发 ResizeObserver/MutationObserver 把用户弹回底部造成"颤抖"。
 const BOTTOM_THRESHOLD = 16;
 const LEGACY_OWNER_KEY = "legacy";
+/**
+ * 历史页初始读取轮数（2026-12 统一 50 轮）：首屏显示最近 50 轮对话，
+ * 与主进程 DISPLAY_WINDOW_TURNS / 渲染挂载窗口同一口径。
+ * 轮次起点对齐 user 消息；工具调用不额外占轮数。
+ */
+export const INITIAL_HISTORY_TURN_PAGE_SIZE = 50;
 /** runtime 窗口会话「加载更多对话」的单页轮数（与主进程 DEFAULT_TURN_PAGE_SIZE 对齐） */
 export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
 
@@ -430,7 +436,9 @@ export type SessionTimelineController = {
 export function useSessionTimelineController(options: {
   sessionId?: string;
   messages?: ChatMessage[];
+  /** 初始历史页轮数（unit=turn；缺省最近 50 轮对话） */
   initialPageSize?: number;
+  /** 「加载更多」单页轮数（unit=turn；缺省 3 轮） */
   pageSize?: number;
 }): SessionTimelineController {
   const ownerKey = options.sessionId ?? LEGACY_OWNER_KEY;
@@ -570,7 +578,14 @@ export function useSessionTimelineController(options: {
     setLoadState({ sessionId, state: { status: "loading" } });
 
 		void desktopApi.sessions
-			.readRecordMessagePage(sessionId, undefined, options.initialPageSize ?? 100)
+			// 轮次模型（2026-12 统一 50 轮）：首屏按「最近 50 个用户轮次」读取，
+			// unit=turn 使页边界永远对齐完整轮次；更早历史由「加载更多」每次 3 轮补齐。
+			.readRecordMessagePage(
+				sessionId,
+				undefined,
+				options.initialPageSize ?? INITIAL_HISTORY_TURN_PAGE_SIZE,
+				{ unit: "turn" },
+			)
 			.then((page: { messages: ChatMessage[]; total: number; nextBefore: number | null }) => {
 				if (latestLoadBySession.get(sessionId) !== sequence) return;
 				cacheMessages({
@@ -610,7 +625,7 @@ export function useSessionTimelineController(options: {
 	// 窗口前还有历史可加载：已加载前缀看游标，未加载看窗口起点（>0 说明激活时被截断）
 	const historyHasMore = controllerEnabled && hasMoreRuntimeHistory(cachedEntry);
 	// 2026-11 轮次模型：不再按 100 条分页器切片，显示数组 = 已加载全部（历史前缀 + 运行时窗口段）。
-	// 内存预算由主进程 20 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
+	// 内存预算由主进程 50 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
 	const visibleMessages = combinedMessages;
 	const [isLoadingMessagePage, setIsLoadingMessagePage] = useState(false);
   const [autoScroll, setAutoScroll] = useState(() => {
@@ -630,13 +645,13 @@ export function useSessionTimelineController(options: {
   const pendingJumpRef = useRef<Tagged<string> | undefined>(undefined);
   const highlightTimersRef = useRef(new Map<number, number>());
   // ── 上滚渲染窗口（2026-08 黑屏治理）──
-  // 贴底时渲染层固定用 20 轮小窗口；上滚看历史用此窗口（初始 20 轮，
+  // 贴底时渲染层固定用 50 轮小窗口；上滚看历史用此窗口（初始 50 轮，
   // 「显示更早」按钮逐步扩大）。回底 = 新的浏览周期，窗口重置回基础大小。
   const [scrolledWindowTurns, setScrolledWindowTurns] = useState(TIMELINE_SCROLLED_TURN_LIMIT);
   const [scrolledWindowItems, setScrolledWindowItems] = useState(TIMELINE_SCROLLED_MAX_ITEMS);
   const expandWindow = useCallback(() => {
     // 跟底状态（内容短于视口、按钮可见）下点击「显示更早」：先解锁跟随，
-    // 否则 turnWindowTurns 恒取贴底窗口 20 轮，扩大 scrolledWindowTurns 不生效，
+    // 否则 turnWindowTurns 恒取贴底窗口 50 轮，扩大 scrolledWindowTurns 不生效，
     // 按钮点击表现为无反应（2026-02 修复）。
     if (autoScrollRef.current) {
       autoScrollRef.current = false;
@@ -723,7 +738,11 @@ export function useSessionTimelineController(options: {
 			const expectedRevision = cachedEntry?.revision ?? 0;
 			setIsLoadingMessagePage(true);
 			void desktopApi.sessions
-				.readRecordMessagePage(sessionId, before, options.pageSize ?? 100)
+				// 旧会话（无 runtime 窗口）：与 runtime 窗口会话同口径按轮次补历史，
+				// 每次 3 轮（数据分页步长不变），游标仍用服务器返回的数值下标。
+				.readRecordMessagePage(sessionId, before, options.pageSize ?? RUNTIME_HISTORY_TURN_PAGE_SIZE, {
+					unit: "turn",
+				})
 				.then((page: { messages: ChatMessage[]; total: number; nextBefore: number | null }) => {
 					if (latestLoadBySession.get(sessionId) !== sequence) return;
 					if (prependMessagePage({ sessionId, before, expectedRevision, page })) {
@@ -793,7 +812,7 @@ export function useSessionTimelineController(options: {
 
 	// ── 回底清理临时历史（2026-11 轮次模型）──
 	// 贴底稳定 1.5s 后清掉翻过的历史前缀（atom 只留运行时窗口段），渲染层内存回到最小；
-	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 20 轮内命中，无感）。
+	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 50 轮内命中，无感）。
 	// 上滚/加载历史中会取消待执行的清理；清理后 history 置空，后续再翻再拉。
 	const clearHistory = useSetAtom(clearSessionHistoryAtom);
 	const historyClearTimerRef = useRef<number | undefined>(undefined);

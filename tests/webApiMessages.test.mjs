@@ -12,8 +12,12 @@ const {
 	mergeAuthoritativeUiMessages,
 	getWebAskQuestionResult,
 	prependOlderHistoryPage,
+	fetchTurnPage,
 } = loadTsCommonJs(
 	"src/renderer/src/web/webApi.ts",
+	// webApi 在 VM 沙箱里执行（无浏览器全局）：注入 fetch 供分页 helper 使用；
+	// 各用例自行替换 globalThis.fetch 以观察请求 URL。
+	{ globals: { fetch: (input, init) => globalThis.fetch(input, init) } },
 );
 
 function message(overrides = {}) {
@@ -1273,4 +1277,56 @@ test("prepending an empty older page leaves the tail untouched", () => {
 	]);
 	const merged = prependOlderHistoryPage([], tail);
 	assert.deepEqual(Array.from(merged, (item) => item.id), ["u1"]);
+});
+
+test("fetchTurnPage requests the turn endpoint with an options object", async () => {
+	const previousFetch = globalThis.fetch;
+	const calls = [];
+	globalThis.fetch = async (input) => {
+		calls.push(String(input));
+		return new Response(JSON.stringify({
+			messages: [],
+			total: 5,
+			nextBefore: 3,
+			nextBeforeEntryId: "e3",
+		}), { status: 200, headers: { "content-type": "application/json" } });
+	};
+	try {
+		const page = await fetchTurnPage("sess 1");
+		assert.equal(
+			calls[0],
+			"/api/sessions/sess%201/messages/turn-page",
+			"omitted options must not send empty query parameters",
+		);
+		assert.equal(page.nextBefore, 3);
+
+		await fetchTurnPage("sess-1", { turnCount: 50 });
+		assert.equal(calls[1], "/api/sessions/sess-1/messages/turn-page?turnCount=50");
+
+		await fetchTurnPage("sess-1", { turnCount: 3, before: 40, beforeEntryId: "e40" });
+		assert.equal(
+			calls[2],
+			"/api/sessions/sess-1/messages/turn-page?turnCount=3&before=40&beforeEntryId=e40",
+			"both cursors must be forwarded so a renamed anchor cannot silently restart from the tail",
+		);
+
+		await fetchTurnPage("sess-1", { before: 0 });
+		assert.equal(
+			calls[3],
+			"/api/sessions/sess-1/messages/turn-page?before=0",
+			"before=0 is a real cursor and must not be dropped",
+		);
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
+});
+
+test("fetchTurnPage rejects a failed response instead of returning an empty page", async () => {
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response("nope", { status: 500 });
+	try {
+		await assert.rejects(() => fetchTurnPage("sess-1", { turnCount: 50 }), /messages 500/);
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
 });

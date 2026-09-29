@@ -88,7 +88,7 @@ export function resolveNotificationSessionId(
  * 保留对应轮次及之后的全部消息，避免大会话加载时一次性解析过多内容。
  * 返回保留段的起始下标（无 user 消息时与 slice(-50) 语义一致）。
  */
-export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 20): number {
+export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
 	if (rawMessages.length === 0) return 0;
 	const userIndices: number[] = [];
 	for (let i = rawMessages.length - 1; i >= 0; i--) {
@@ -102,7 +102,7 @@ export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 20): number {
 	return userIndices[0];
 }
 
-export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 20): T[] {
+export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 50): T[] {
 	if (rawMessages.length === 0) return rawMessages;
 	return rawMessages.slice(turnTrimStartIndex(rawMessages, maxTurns));
 }

@@ -79,6 +79,17 @@ type WebServiceDependencies = {
 		before?: number,
 		pageSize?: number,
 	) => Promise<SessionMessagePage>;
+	/**
+	 * 轮次维度历史分页（2026-12 统一 50 轮）：pageSize 复用为轮次数。
+	 * 轮次起点对齐 user 消息（与桌面端 DISPLAY_WINDOW_TURNS 同一约定），
+	 * 工具调用不额外占轮数；beforeEntryId 为稳定的续页锚点。
+	 */
+	readSessionTurnPage: (
+		sessionId: string,
+		before?: number,
+		turnCount?: number,
+		beforeEntryId?: string,
+	) => Promise<SessionMessagePage>;
 	sendSessionPrompt: (input: SendSessionPromptInput) => Promise<SendSessionPromptResult>;
 	getContextControllerState?: (sessionId: string) => Promise<ContextControllerState>;
 	listSessionRuntimes: () => SessionRuntimeInfo[];
@@ -131,6 +142,33 @@ type WebServiceDependencies = {
 	listPendingUiRequests: () => PendingUiRequestSnapshot[];
 	respondToUi: (input: SessionUiResponseInput) => Promise<void>;
 };
+
+/** 轮次分页单页上限（与桌面 IPC 的 SessionHistoryReader.maxTurnPageSize 保持一致）。 */
+const MAX_WEB_TURN_PAGE_SIZE = 50;
+
+/**
+ * 严格解析可选的轮次数：缺省返回 undefined（由下游取默认 3 轮），
+ * 非法（空串/非数字/小数/非正数/超上限）返回 false 表示应当 400 拒绝。
+ * 不静默夹紧：把非法值变成默认值会悄悄地拉回尾部，产生重复历史。
+ */
+function parseOptionalPositiveInteger(value: string | null, max: number): number | undefined | false {
+	if (value === null) return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) return false;
+	return parsed;
+}
+
+/** 严格解析可选的数值游标：缺省返回 undefined，非法返回 false（应 400）。 */
+function parseOptionalNonNegativeInteger(value: string | null): number | undefined | false {
+	if (value === null) return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) return false;
+	return parsed;
+}
 
 const CONTEXT_CONTROLLER_COMMANDS = new Set([
 	"/context-tools on",
@@ -464,6 +502,29 @@ export class WebServiceManager {
 					decodeURIComponent(sessionMessagePageMatch[1]),
 					Number.isSafeInteger(before) ? before : undefined,
 					Number.isSafeInteger(pageSize) ? pageSize : undefined,
+				);
+				this.sendJson(response, page);
+				return;
+			}
+			// 轮次分页（2026-12 统一 50 轮）：初始尾页 turnCount=50，更早页 turnCount=3。
+			// 参数错误一律 400：非法值不能被静默夹紧成默认值（否则会拉回尾部导致重复历史）。
+			const sessionTurnPageMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages\/turn-page$/);
+			if (sessionTurnPageMatch && request.method === "GET") {
+				const turnCount = parseOptionalPositiveInteger(url.searchParams.get("turnCount"), MAX_WEB_TURN_PAGE_SIZE);
+				const before = parseOptionalNonNegativeInteger(url.searchParams.get("before"));
+				const beforeEntryIdValue = url.searchParams.get("beforeEntryId");
+				const beforeEntryId = beforeEntryIdValue === null
+					? undefined
+					: (beforeEntryIdValue.trim() ? beforeEntryIdValue : null);
+				if (turnCount === false || before === false || beforeEntryId === null) {
+					this.sendError(response, 400, "webError.invalidMessagePage", "invalid turn page parameters");
+					return;
+				}
+				const page = await this.deps.readSessionTurnPage(
+					decodeURIComponent(sessionTurnPageMatch[1]),
+					before,
+					turnCount,
+					beforeEntryId,
 				);
 				this.sendJson(response, page);
 				return;

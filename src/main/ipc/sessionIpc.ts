@@ -426,7 +426,8 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		async (sessionId: string, before?: number, pageSize?: number, options?: { unit?: "message" | "turn"; beforeEntryId?: string }) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
-			// unit=turn（2026-08 激活分页）：页边界对齐完整轮次，pageSize 复用为轮次数（上限 10）；
+			// unit=turn（2026-08 激活分页，2026-12 上限 10→50）：页边界对齐完整轮次，pageSize 复用为轮次数；
+			// 初始尾页读最近 50 轮，更早页每次 3 轮，上限由 SessionHistoryReader.maxTurnPageSize() 兜底；
 			// 游标协议不变（before/nextBefore 为绝对消息下标，与运行时数组同一下标空间）；
 			// beforeEntryId 供已激活会话以运行时窗口首条消息为锚点首次补历史。
 			let rawPage: SessionMessagePage | undefined;

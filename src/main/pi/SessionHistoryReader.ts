@@ -157,9 +157,10 @@ export class SessionHistoryReader {
 	/** 完整消息文本 LRU 缓存（「查看完整输出」按需读取结果）：键 `${sessionPath}#${messageId}`。 */
 	private readonly fullTextCache = new Map<string, string>();
 	private static readonly FULL_TEXT_CACHE_LIMIT = 200;
-	/** 轮次分页默认/上限：默认最近一次激活带 3 轮，单页最多 10 轮（防恶意参数撑爆 IPC） */
+	/** 轮次分页默认/上限：默认最近一次激活带 3 轮，单页最多 50 轮（2026-12 10→50：
+	 *  初始尾页按「最近 50 轮」窗口读取；上限仍存在，防恶意参数撑爆 IPC） */
 	static readonly DEFAULT_TURN_PAGE_SIZE = 3;
-	private static readonly MAX_TURN_PAGE_SIZE = 10;
+	private static readonly MAX_TURN_PAGE_SIZE = 50;
 
 	/** 单页轮次上限（AgentManager 缓存优先路径复用，避免翻页超预算） */
 	static maxTurnPageSize(): number {

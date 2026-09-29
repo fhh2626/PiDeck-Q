@@ -11,6 +11,14 @@ export type WebHistoryMeta = {
 	status?: "ready" | "error";
 };
 
+/** 已成功加载的页：tail 首屏/重建，older 向前翻页。 */
+export type WebHistoryPageCursors = {
+	total?: number;
+	nextBefore: number | null;
+	nextBeforeEntryId?: string;
+	indexVersion?: string;
+};
+
 export function hasMoreWebHistory(input: {
 	meta?: WebHistoryMeta;
 	loaded: boolean;
@@ -38,4 +46,57 @@ export function canRequestWebHistoryPage(input: {
 	if (!input.loaded) return true;
 	// 流式提前标 loaded、首页还没回来：仍应拉尾页，而不是点了没反应。
 	return input.meta?.status !== "ready";
+}
+
+/**
+ * 首屏/重建尾页落地时的游标规则（2026-12 保留已加载历史）：
+ * 首次成功初始化向前翻页的边界；已有边界时保留，不得因为一次更新的尾页
+ * 把已向前推进的游标拽回尾部，否则已加载的更早页会被重复遍历。
+ * 保留以「当前状态已 ready」为界：成功到顶的 null 边界同样是已确立边界，必须保留；
+ * 而缺失状态或首屏失败（status=error）仍由新尾页重新初始化/恢复。
+ */
+export function applyWebHistoryTailPage(
+	current: WebHistoryMeta | undefined,
+	page: WebHistoryPageCursors,
+): WebHistoryMeta {
+	const advanced = current?.status === "ready"
+		? { nextBefore: current.nextBefore, nextBeforeEntryId: current.nextBeforeEntryId }
+		: { nextBefore: page.nextBefore, nextBeforeEntryId: page.nextBeforeEntryId };
+	return {
+		total: page.total ?? current?.total ?? 0,
+		nextBefore: advanced.nextBefore,
+		...(advanced.nextBeforeEntryId ? { nextBeforeEntryId: advanced.nextBeforeEntryId } : {}),
+		...(page.indexVersion ? { indexVersion: page.indexVersion } : {}),
+		status: "ready",
+	};
+}
+
+/**
+ * 更早一页落地：游标只能由服务器返回推进。
+ * - page 为 null（请求失败）：保留旧游标，只在 status 上标记可重试。
+ * - 游标未前进（历史被外部改写/锚点失效）：标记错误，避免无限重复请求同一页。
+ * - 空消息页但游标前进：算成功，因为投影可能跳过整页原始条目。
+ */
+export function applyWebHistoryOlderPage(
+	current: WebHistoryMeta | undefined,
+	page: WebHistoryPageCursors | null,
+): WebHistoryMeta {
+	const base: WebHistoryMeta = {
+		total: current?.total ?? 0,
+		nextBefore: current?.nextBefore ?? null,
+		...(current?.nextBeforeEntryId ? { nextBeforeEntryId: current.nextBeforeEntryId } : {}),
+		...(current?.indexVersion ? { indexVersion: current.indexVersion } : {}),
+	};
+	if (!page) return { ...base, status: "error" };
+	const didAdvance = current?.nextBefore == null || page.nextBefore !== current.nextBefore;
+	if (!didAdvance) {
+		return { ...base, status: "error" };
+	}
+	return {
+		total: page.total ?? base.total,
+		nextBefore: page.nextBefore,
+		...(page.nextBeforeEntryId ? { nextBeforeEntryId: page.nextBeforeEntryId } : {}),
+		...(page.indexVersion ? { indexVersion: page.indexVersion } : {}),
+		status: "ready",
+	};
 }

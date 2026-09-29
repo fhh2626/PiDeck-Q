@@ -282,7 +282,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
     const messages = [];
     const entries = [];
     let parent = null;
-    for (let i = 1; i <= 23; i += 1) {
+    for (let i = 1; i <= 53; i += 1) {
       const uid = `u${i}`;
       const aid = `a${i}`;
       messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
@@ -307,7 +307,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
       process: {
         client: {
           request: async ({ type }) => type === "get_entries"
-            ? { success: true, data: { entries, leafId: "a23" } }
+            ? { success: true, data: { entries, leafId: "a53" } }
             : { success: true, data: { messages } },
         },
       },
@@ -326,12 +326,12 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
 
     await manager.loadMessages("agent-1");
     const cached = manager.messages.get("agent-1");
-    // 23 轮裁到 20 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
-    assert.equal(cached.length, 40);
+    // 53 轮裁到 50 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
+    assert.equal(cached.length, 100);
     assert.equal(cached[0].text, "q4");
     assert.equal(cached[0].meta.entryId, "u4");
-    assert.equal(cached[cached.length - 1].meta.entryId, "a23");
-    // 缓存 20 轮 = 显示 20 轮：窗口从缓存头部开始（windowStart = 0，全量 flush 不携带该字段）
+    assert.equal(cached[cached.length - 1].meta.entryId, "a53");
+    // 缓存 50 轮 = 显示 50 轮：窗口从缓存头部开始（windowStart = 0，全量 flush 不携带该字段）
     assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
     // 全量 flush 携带 windowStartFilePos：窗口首条（q4）的文件消息下标 = 6（u1..a3 被裁）
     const full = payloads.find((p) => p.windowStartFilePos !== undefined);
@@ -449,7 +449,7 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 21; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
@@ -457,7 +457,7 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
       { id: "sum-1", agentId: "agent-1", role: "system", text: "compacted", timestamp: 1, meta: { type: "compaction" } },
       ...many,
     ]);
-    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 20 轮）从 q2 起点开始 → 滑出 [卡片, u1, a1]
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 50 轮）从 q2 起点开始 → 滑出 [卡片, u1, a1]
     manager.displayWindowStartByAgent.set("agent-1", 0);
     const payloads = [];
     manager.onOutput((channel, payload) => {
@@ -465,12 +465,12 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
     });
     manager.trimRuntimeCache("agent-1");
     const after = manager.messages.get("agent-1");
-    // 21 轮夹具（15 轮在 20 轮缓存下不会触发裁剪）：卡片保留在头部且不重复；尾部保留最近 20 轮（40 条）
+    // 51 轮夹具（15 轮在 50 轮缓存下不会触发裁剪）：卡片保留在头部且不重复；尾部保留最近 50 轮（100 条）
     assert.equal(after.filter((m) => m.role === "system").length, 1);
     assert.equal(after[0].meta.type, "compaction");
-    assert.equal(after.length, 41);
+    assert.equal(after.length, 101);
     assert.equal(after[1].text, "q2");
-    assert.equal(after[40].text, "a21");
+    assert.equal(after[100].text, "a51");
     // 窗口 = 整个缓存（windowStart=0）：全量 flush 不携带 windowStart 字段，改查 manager 状态
     assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
     const full = payloads.find((p) => p.upsertFrom === undefined);
@@ -492,13 +492,13 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 21; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 21 轮夹具（15 轮在 20 轮缓存下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0）；
-    // trim 后新窗口 = q2 起（尾部 20 轮，下标 2）→ 滑出 [u1, a1]
+    // 51 轮夹具（15 轮在 50 轮缓存下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0）；
+    // trim 后新窗口 = q2 起（尾部 50 轮，下标 2）→ 滑出 [u1, a1]
     manager.displayWindowStartByAgent.set("agent-1", 0);
     // 匿名会话（无文件路径/无 entryId 映射）：headOffset 未知 = -1，trim 后必须保持 -1（M2）
     manager.messageHeadOffsetByAgent.set("agent-1", -1);
@@ -528,13 +528,13 @@ test("trimRuntimeCache appends window slide-out onto an existing pending slideOu
   const { manager, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 21; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 21 轮夹具（15 轮在 20 轮窗口下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0），
-    // 新窗口（尾部 20 轮）从 q2 起点（下标 2）开始 → 滑出 [u1, a1]
+    // 51 轮夹具（15 轮在 50 轮窗口下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0），
+    // 新窗口（尾部 50 轮）从 q2 起点（下标 2）开始 → 滑出 [u1, a1]
     manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.pendingSlideOutByAgent.set("agent-1", [
       { id: "pending-old", agentId: "agent-1", role: "assistant", text: "pending-old", timestamp: 1, meta: { entryId: "pending-old" } },
@@ -559,12 +559,12 @@ test("trimRuntimeCache increments headOffset for file-backed sessions only (M2 r
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 21; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 20 轮）从 q2 起点（下标 2）开始
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 50 轮）从 q2 起点（下标 2）开始
     manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.messageHeadOffsetByAgent.set("agent-1", 0);
     const payloads = [];
@@ -587,15 +587,15 @@ test("trimRuntimeCache increments headOffset for file-backed sessions only (M2 r
   }
 });
 
-test("loadMessages keeps the last 20 turns of a 23-turn session (2026-12)", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-20turns-"));
+test("loadMessages keeps the last 50 turns of a 53-turn session (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-50turns-"));
   const sessionPath = join(directory, "session.jsonl");
   try {
     await writeFile(sessionPath, "{}", "utf8");
     const messages = [];
     const entries = [];
     let parent = null;
-    for (let i = 1; i <= 23; i += 1) {
+    for (let i = 1; i <= 53; i += 1) {
       const uid = `u${i}`;
       const aid = `a${i}`;
       messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
@@ -620,7 +620,7 @@ test("loadMessages keeps the last 20 turns of a 23-turn session (2026-12)", asyn
       process: {
         client: {
           request: async ({ type }) => type === "get_entries"
-            ? { success: true, data: { entries, leafId: "a23" } }
+            ? { success: true, data: { entries, leafId: "a53" } }
             : { success: true, data: { messages } },
         },
       },
@@ -639,12 +639,12 @@ test("loadMessages keeps the last 20 turns of a 23-turn session (2026-12)", asyn
 
     await manager.loadMessages("agent-1");
     const cached = manager.messages.get("agent-1");
-    // 23 轮裁到最近 20 轮：首条保留 q4（entryId u4），末条 a23
-    assert.equal(cached.length, 40);
+    // 53 轮裁到最近 50 轮：首条保留 q4（entryId u4），末条 a53
+    assert.equal(cached.length, 100);
     assert.equal(cached[0].text, "q4");
     assert.equal(cached[0].meta.entryId, "u4");
-    assert.equal(cached[cached.length - 1].meta.entryId, "a23");
-    // 缓存 20 轮 = 显示 20 轮：窗口从缓存头部开始（windowStart 缺省 = 0）
+    assert.equal(cached[cached.length - 1].meta.entryId, "a53");
+    // 缓存 50 轮 = 显示 50 轮：窗口从缓存头部开始（windowStart 缺省 = 0）
     assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
     const full = payloads.find((p) => p.windowStartFilePos !== undefined);
     assert.ok(full, "windowed full flush expected");
@@ -655,17 +655,17 @@ test("loadMessages keeps the last 20 turns of a 23-turn session (2026-12)", asyn
   }
 });
 
-test("trimRuntimeCache keeps the last 20 turns and slides out the oldest (2026-12)", async () => {
+test("trimRuntimeCache keeps the last 50 turns and slides out the oldest (2026-12)", async () => {
   const { manager, sessionPath, directory } = await createHarness();
   try {
-    // 21 轮 user/assistant = 42 条；显示窗口冻结在第 2 轮起点（缓存内下标 2）
+    // 51 轮 user/assistant = 102 条；显示窗口冻结在第 2 轮起点（缓存内下标 2）
     const many = [];
-    for (let i = 1; i <= 21; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 显示窗口 = 尾部 20 轮：第 1 轮起点（缓存内下标 2）仍在窗口覆盖区内；
+    // 显示窗口 = 尾部 50 轮：第 1 轮起点（缓存内下标 2）仍在窗口覆盖区内；
     // 匿名会话无文件路径：headOffset 未知 = -1，trim 后必须保持 -1（M2）
     manager.displayWindowStartByAgent.set("agent-1", 2);
     manager.messageHeadOffsetByAgent.set("agent-1", -1);
@@ -675,18 +675,18 @@ test("trimRuntimeCache keeps the last 20 turns and slides out the oldest (2026-1
     });
     manager.trimRuntimeCache("agent-1");
     const after = manager.messages.get("agent-1");
-    // 第 21 轮结束触发裁剪：运行时缓存只留第 2..21 轮（40 条）
-    assert.equal(after.length, 40);
+    // 第 51 轮结束触发裁剪：运行时缓存只留第 2..51 轮（100 条）
+    assert.equal(after.length, 100);
     assert.equal(after[0].meta.entryId, "u2");
-    assert.equal(after[after.length - 1].meta.entryId, "a21");
-    // 新窗口 = 第 2 轮起点 = 缓存内下标 0（20 轮全量下发，窗口从缓存头部开始不携带 windowStart）
+    assert.equal(after[after.length - 1].meta.entryId, "a51");
+    // 新窗口 = 第 2 轮起点 = 缓存内下标 0（50 轮全量下发，窗口从缓存头部开始不携带 windowStart）
     assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
     const full = payloads.find((p) => p.upsertFrom === undefined);
     assert.ok(full, "windowed full flush expected");
-    // 全量快照下发窗口段 = 全部 40 条（第 2..21 轮）
-    assert.equal(full.messages.length, 40);
+    // 全量快照下发窗口段 = 全部 100 条（第 2..51 轮）
+    assert.equal(full.messages.length, 100);
     assert.equal(full.messages[0].meta.entryId, "u2");
-    // 20 轮窗口下第 21 轮结束不产生滑出（旧窗口头部仍在 20 轮窗口内）；
+    // 50 轮窗口下第 51 轮结束不产生滑出（旧窗口头部仍在 50 轮窗口内）；
     // 第 1 轮在运行时缓存中保留，可经历史分页取回，不重复、不丢
     assert.equal(full.slideOut, undefined);
     assert.equal(manager.pendingSlideOutByAgent.get("agent-1"), undefined);

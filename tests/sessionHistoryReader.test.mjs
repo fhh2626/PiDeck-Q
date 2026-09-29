@@ -377,3 +377,91 @@ test("compaction page paging stays in index space when conversion skips messages
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("turn pages request 50 turns while keeping the raw message cap at 100 (2026-12)", async () => {
+  // 50 轮统一：轮次页上限必须容纳初始的 50 轮请求，
+  // 同时原始消息分页上限仍为 100（两个维度不能互相泄漏）。
+  assert.equal(SessionHistoryReader.maxTurnPageSize(), 50);
+  assert.equal(SessionHistoryReader.DEFAULT_TURN_PAGE_SIZE, 3);
+
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-turn-50-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, role, text) => JSON.stringify({
+    id,
+    parentId,
+    type: "message",
+    message: { role, content: [{ type: "text", text }] },
+  });
+  try {
+    const rows = [JSON.stringify({ id: "session", type: "session" })];
+    let parent = "session";
+    for (let i = 1; i <= 53; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      rows.push(line(uid, parent, "user", `q${i}`));
+      rows.push(line(aid, uid, "assistant", `a${i}`));
+      parent = aid;
+    }
+    await writeFile(sessionPath, rows.join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    // 请求 50 轮：超出旧上限 10，必须真拿到最近 50 轮（首条 = q4）
+    const page = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 50);
+    assert.equal(page.total, 106);
+    assert.equal(page.messages.length, 100);
+    assert.equal(page.messages[0].text, "q4");
+    assert.equal(page.messages[page.messages.length - 1].text, "a53");
+    assert.equal(page.nextBefore, 6);
+
+    // 缺省仍为 3 轮（翻页步长不变）
+    const older = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", page.nextBefore);
+    assert.equal(older.messages.length, 6);
+    assert.equal(older.messages[0].text, "q1");
+    assert.equal(older.nextBefore, null);
+
+    // 超上限请求被夹紧，不会变成无界读取
+    const clamped = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 500);
+    assert.equal(clamped.messages.length, 100);
+
+    // 原始消息分页上限仍为 100
+    const rawPage = await reader.readSessionDisplayMessagePage(sessionPath, "viewer", undefined, 500);
+    assert.equal(rawPage.messages.length, 100);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("turn pages keep whole-turn byte budget while honoring the 50-turn request (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-turn-budget-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, role, text) => JSON.stringify({
+    id,
+    parentId,
+    type: "message",
+    message: { role, content: [{ type: "text", text }] },
+  });
+  try {
+    // 60 轮，每轮内容和很大（每轮 ≈ 120KB）→ 字节预算 256KB 下只能返回少量完整轮次
+    const filler = "x".repeat(120 * 1024);
+    const rows = [JSON.stringify({ id: "session", type: "session" })];
+    let parent = "session";
+    for (let i = 1; i <= 60; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      rows.push(line(uid, parent, "user", `q${i}-${filler}`));
+      rows.push(line(aid, uid, "assistant", `a${i}-${filler}`));
+      parent = aid;
+    }
+    await writeFile(sessionPath, rows.join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const page = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 50);
+    // 预算优先：少于 50 轮是合法结果，但边界必须仍是完整轮次（首条是 user）
+    assert.ok(page.messages.length > 0 && page.messages.length < 100);
+    assert.equal(page.messages[0].role, "user");
+    assert.equal(page.messages[page.messages.length - 1].text.startsWith("a60"), true);
+    assert.ok(page.nextBefore > 0, "预算截断后仍要有续页游标");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

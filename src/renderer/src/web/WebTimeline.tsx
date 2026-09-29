@@ -8,7 +8,7 @@
  * - tool-invocation part → 工具卡片（复用桌面 tool-card 视觉）
  * - 流式期间底部显示响应指示器；出错显示诊断卡
  */
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useMemo, useRef, useState } from "react";
 import { ArrowDown, Brain, ChevronDown, ChevronRight, ChevronUp, Wrench } from "lucide-react";
 import type { UIMessage } from "ai";
 import { Badge } from "@/components/ui-shadcn/badge";
@@ -20,6 +20,8 @@ import { WebAssistantText } from "./WebAssistantText";
 import type { WebPendingUiRequest } from "./webTypes";
 import type { AgentUiRequest, AgentUiResponse, SessionUiResponseInput } from "../../../shared/types";
 import { getWebAskQuestionResult } from "./webApi";
+import { useWebTimelineWindow } from "./useWebTimelineWindow";
+import { WEB_TIMELINE_TURN_EXPAND_STEP } from "./webTurnWindow";
 import { AskQuestionResultCard } from "../components/session/AskQuestionResultCard";
 import {
 	createSessionRuntimeUiResponder,
@@ -427,66 +429,51 @@ const WebPendingAskInner = memo(function WebPendingAskInner(props: {
 export function WebTimeline(props: {
 	messages: UIMessage[];
 	hasActiveSession: boolean;
+	/** 磁盘仍可向前翻页（缓存内隐藏的更早轮次不计入） */
 	hasMoreHistory: boolean;
-	moreCount: number;
 	loadingMore: boolean;
 	streaming: boolean;
 	error: string | null;
+	/** 会话稳定身份：窗口/锚点状态随会话切换复位 */
+	sessionId?: string;
 	pendingUiRequest?: WebPendingUiRequest;
 	/** Web 端 pending 卡提交：带回快照本身（responder 用它取 4-tuple 身份），成功返回 true */
 	onRespondUi?: (
 		request: WebPendingUiRequest,
 		response: AgentUiResponse,
 	) => Promise<boolean>;
-	onLoadMore: () => void;
+	/** 成功返回本次页的新消息头 ID；失败或空页返回 null。 */
+	onLoadMore: () => Promise<string | null>;
 }) {
 	const {
 		messages,
 		hasActiveSession,
 		hasMoreHistory,
-		moreCount,
 		loadingMore,
 		streaming,
 		error,
 		onLoadMore,
 	} = props;
-	const timelineRef = useRef<HTMLDivElement | null>(null);
-	const stickToBottomRef = useRef(true);
-	const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+	// 显示窗口（2026-12 统一 50 轮）：只渲染最近 50 轮 + 用户主动展开的更早内容。
+	// 完整消息仍在 useChat/会话缓存中，这里只做展示切片，不写回底层数据。
+	const timelineWindow = useWebTimelineWindow({
+		sessionId: props.sessionId,
+		messages,
+		hasMoreHistory,
+		loadingMore,
+		onLoadMore,
+	});
+	const timelineRef = timelineWindow.timelineRef;
+	const updateScrollState = timelineWindow.handleScroll;
+	const scrollToBottom = timelineWindow.scrollToBottom;
+	const showScrollToBottom = timelineWindow.showScrollToBottom;
+	const visibleMessages = timelineWindow.visibleMessages;
 
-	const updateScrollState = () => {
-		const el = timelineRef.current;
-		if (!el) return;
-		const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-		const nearBottom = distance < 160;
-		stickToBottomRef.current = nearBottom;
-		setShowScrollToBottom(!nearBottom && messages.length > 0);
-	};
-
-	const scrollToBottom = () => {
-		const el = timelineRef.current;
-		if (!el) return;
-		stickToBottomRef.current = true;
-		setShowScrollToBottom(false);
-		el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-	};
-
+	// 窗口已切片：只在可见集合上做工具分组（分组后是卡片数，不是对话轮数）
 	const groupedMessages = useMemo(
-		() => groupWebTimelineMessages(messages),
-		[messages],
+		() => groupWebTimelineMessages(visibleMessages),
+		[visibleMessages],
 	);
-
-	// 新消息或流式增量到达时，仅在用户原本接近底部时跟随，避免打断用户阅读历史。
-	useEffect(() => {
-		const frame = requestAnimationFrame(() => {
-			const el = timelineRef.current;
-			if (el && stickToBottomRef.current) el.scrollTo({ top: el.scrollHeight });
-			updateScrollState();
-		});
-		return () => cancelAnimationFrame(frame);
-		// messages 变化既覆盖新消息，也覆盖同一条 assistant 消息的流式增量。
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [messages, streaming]);
 
 	return (
 		<section
@@ -495,26 +482,24 @@ export function WebTimeline(props: {
 			onScroll={updateScrollState}
 		>
 			<div className="message-list flex flex-col gap-1.5 px-3 py-2.5">
-				{hasMoreHistory && (
+				{timelineWindow.canRevealOlder && (
 					<div className="flex justify-center py-1">
 						<Button
 							variant="outline"
 							size="sm"
 							disabled={loadingMore}
-							onClick={() => {
-								stickToBottomRef.current = false;
-								// A short transcript can still count as "at bottom". Suspend live-edge
-								// following before prepending history so the new page stays visible.
-								setShowScrollToBottom(messages.length > 0);
-								onLoadMore();
-							}}
+							onClick={timelineWindow.revealOlder}
 							className="h-8 px-4 text-caption"
 						>
-							{loadingMore ? t("timeline.loadingMore") : t("timeline.loadMoreHistory", { count: moreCount })}
+							{loadingMore
+								? t("timeline.loadingMore")
+								: timelineWindow.hiddenTurnCount > 0
+									? t("timeline.loadEarlierTurns", { count: Math.min(timelineWindow.hiddenTurnCount, WEB_TIMELINE_TURN_EXPAND_STEP) })
+									: t("timeline.loadMoreTurns")}
 						</Button>
 					</div>
 				)}
-				{!hasActiveSession && messages.length === 0 ? (
+				{!hasActiveSession && visibleMessages.length === 0 ? (
 					<div className="empty-state">
 						<div className="empty-logo">
 							<svg viewBox="140 140 520 520" width="66" height="66" aria-hidden="true">
@@ -524,7 +509,7 @@ export function WebTimeline(props: {
 						</div>
 						<p className="empty-hint">{t("web.emptySelection")}</p>
 					</div>
-				) : messages.length === 0 ? (
+				) : visibleMessages.length === 0 ? (
 					<div className="empty-state">
 						<div className="empty-logo">
 							<svg viewBox="140 140 520 520" width="66" height="66" aria-hidden="true">
@@ -539,14 +524,18 @@ export function WebTimeline(props: {
 						{groupedMessages.map((item) => {
 							if (item.kind === "tool-message-group") {
 								return (
-									<div key={item.id} className="mt-0">
+									<div
+										key={item.id}
+										className="mt-0"
+										data-web-message-id={item.messages[0]?.id ?? item.id}
+									>
 										<WebToolGroupCard groupId={item.id} parts={item.parts} />
 									</div>
 								);
 							}
 							const message = item.message;
 							return (
-								<div key={message.id} className="mt-0">
+								<div key={message.id} className="mt-0" data-web-message-id={message.id}>
 									{message.role === "user" ? (
 										<WebUserBubble message={message} />
 									) : (
