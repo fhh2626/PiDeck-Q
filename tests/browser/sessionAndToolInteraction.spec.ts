@@ -156,6 +156,9 @@ test.describe("WebSidebar, Desktop ToolGroupCard, and WebTimeline Interaction Te
 		await expect(timelineSection.locator(".user-turn")).toBeVisible();
 		await expect(timelineSection.locator(".timeline-inline-text")).toContainText("Here is the result.");
 
+		// 新语义：工具在整轮「执行过程」折叠区内，先展开执行过程
+		await timelineSection.locator(".execution-summary-toggle").first().click();
+
 		// 验证 2 个连续工具合并为 WebToolGroupCard
 		const groupCard = timelineSection.locator(".tool-group-card");
 		await expect(groupCard).toHaveCount(1);
@@ -176,6 +179,9 @@ test.describe("WebSidebar, Desktop ToolGroupCard, and WebTimeline Interaction Te
 		// 用户消息与最终正文独立渲染
 		await expect(section.locator(".user-turn")).toBeVisible();
 		await expect(section.locator(".timeline-inline-text")).toContainText("All checks complete.");
+
+		// 新语义：工具在整轮「执行过程」折叠区内，先展开执行过程
+		await section.locator(".execution-summary-toggle").first().click();
 
 		// 1. 空占位时：恰好一个工具组，默认折叠
 		const groupCard = section.locator(".tool-group-card");

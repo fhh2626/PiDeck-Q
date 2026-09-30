@@ -2,6 +2,7 @@
 import type { UIMessage } from "ai";
 import type { ChatMessage } from "../../../shared/types";
 import { readWebMessageMetadata, uiMessageIdentity, uiMessageRole } from "./webMessageMetadata";
+import { mergeAdjacentWebMessageParts } from "./webMessageParts";
 
 /** Inserts timestamped history before local rows that have no authoritative timestamp. */
 export function findTimestampInsertionIndex(messages: UIMessage[], incoming: UIMessage): number {
@@ -105,6 +106,20 @@ function rawAnswerCoverageText(message: UIMessage): string {
 		.map((part) => part.type === "text" ? part.text : "")
 		.filter((text) => text.length > 0)
 		.join("\n");
+}
+
+/**
+ * 本地 SSE 气泡按「段」列出 reasoning / text 原文（先合并相邻同类段）。
+ * 为什么按段：一条本地气泡会包含多步（思考→工具→插入语→…→最终答案），
+ * 而持久化侧每条 pi 消息只含其中一段；整体拼接后不可能是任何单条持久化行的前缀。
+ * 先合并相邻段是因为 SSE 重连会把同一段拆成两个 part，拆开后后半段不是前缀。
+ */
+function localSegmentTexts(message: UIMessage, type: "reasoning" | "text"): string[] {
+	return mergeAdjacentWebMessageParts(message.parts).flatMap((part) => {
+		if (type === "reasoning" && part.type === "reasoning" && part.text.trim()) return [part.text];
+		if (type === "text" && part.type === "text" && part.text.trim()) return [part.text];
+		return [];
+	});
 }
 
 export function isLocalSseAssistant(message: UIMessage): boolean {
@@ -296,7 +311,10 @@ export function precedingUserMessage(messages: UIMessage[], beforeIndex: number)
 	return undefined;
 }
 
-/** True only when every local SSE part is covered, with same-turn evidence tracked separately. */
+/**
+ * True only when every local SSE part is covered, with same-turn evidence tracked separately.
+ * 多步合并气泡按段逐一核对：每段 reasoning / text 都必须是本轮某条持久化行的前缀。
+ */
 export function isLocalSseFullyCovered(
 	leftover: UIMessage,
 	baseline: UIMessage[],
@@ -304,22 +322,22 @@ export function isLocalSseFullyCovered(
 	sourceMessages: UIMessage[] = baseline,
 ): { fullyCovered: boolean; coveredInSameTurn: boolean } {
 	if (!isLocalSseAssistant(leftover)) return { fullyCovered: false, coveredInSameTurn: false };
-	const reasoningText = rawReasoningCoverageText(leftover);
+	const reasoningSegments = localSegmentTexts(leftover, "reasoning");
 	const toolIds = leftoverPlaceholderToolIds(leftover);
-	const answerText = rawAnswerCoverageText(leftover);
+	const answerSegments = localSegmentTexts(leftover, "text");
 	// A same-turn text prefix cannot identify which distinct plain-text reply was persisted.
 	if (isLocalSsePlainTextAssistant(leftover)) return { fullyCovered: false, coveredInSameTurn: false };
 	// Do not infer that an unidentifiable tool call was persisted from its display text.
 	if (hasUnidentifiedPlaceholderTool(leftover)) {
 		return { fullyCovered: false, coveredInSameTurn: false };
 	}
-	if (!reasoningText && toolIds.length === 0 && !answerText) {
+	if (reasoningSegments.length === 0 && toolIds.length === 0 && answerSegments.length === 0) {
 		return { fullyCovered: false, coveredInSameTurn: false };
 	}
 
-	let reasoningCovered = !reasoningText;
+	const coveredReasoning = new Set<number>();
 	const coveredToolIds = new Set<string>();
-	let answerCovered = !answerText;
+	const coveredAnswer = new Set<number>();
 	const turnRange = sameTurnCoverageRange(baseline, sourceMessages, anchor);
 	let coveredInSameTurn = false;
 	if (!turnRange) return { fullyCovered: false, coveredInSameTurn: false };
@@ -327,13 +345,13 @@ export function isLocalSseFullyCovered(
 		const incoming = baseline[index];
 		let coversPart = false;
 		const incomingReasoning = rawReasoningCoverageText(incoming);
-		if (
-			!reasoningCovered
-			&& incomingReasoning
-			&& incomingReasoning.startsWith(reasoningText)
-		) {
-			reasoningCovered = true;
-			coversPart = true;
+		if (incomingReasoning) {
+			reasoningSegments.forEach((segment, segmentIndex) => {
+				if (!coveredReasoning.has(segmentIndex) && incomingReasoning.startsWith(segment)) {
+					coveredReasoning.add(segmentIndex);
+					coversPart = true;
+				}
+			});
 		}
 		const incomingIdentity = uiMessageIdentity(incoming);
 		const incomingToolIds = leftoverPlaceholderToolIds(incoming);
@@ -344,18 +362,20 @@ export function isLocalSseFullyCovered(
 			}
 		}
 		const incomingAnswer = rawAnswerCoverageText(incoming);
-		if (
-			!answerCovered
-			&& incomingAnswer
-			&& incomingAnswer.startsWith(answerText)
-		) {
-			answerCovered = true;
-			coversPart = true;
+		if (incomingAnswer) {
+			answerSegments.forEach((segment, segmentIndex) => {
+				if (!coveredAnswer.has(segmentIndex) && incomingAnswer.startsWith(segment)) {
+					coveredAnswer.add(segmentIndex);
+					coversPart = true;
+				}
+			});
 		}
 		if (coversPart) coveredInSameTurn = true;
 	}
 	return {
-		fullyCovered: reasoningCovered && toolIds.every((id) => coveredToolIds.has(id)) && answerCovered,
+		fullyCovered: coveredReasoning.size === reasoningSegments.length
+			&& toolIds.every((id) => coveredToolIds.has(id))
+			&& coveredAnswer.size === answerSegments.length,
 		coveredInSameTurn,
 	};
 }

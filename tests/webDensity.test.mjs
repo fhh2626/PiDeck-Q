@@ -10,7 +10,8 @@ import test from "node:test";
  */
 
 const webSidebar = readFileSync("src/renderer/src/web/WebSidebar.tsx", "utf8");
-const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
+	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
 const webCss = readFileSync("src/renderer/src/web/web.css", "utf8");
 
 // ── Desktop：Web Sidebar ────────────────────────────────────────────────────

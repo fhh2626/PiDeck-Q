@@ -1330,3 +1330,140 @@ test("fetchTurnPage rejects a failed response instead of returning an empty page
 		globalThis.fetch = previousFetch;
 	}
 });
+
+// ── 多步轮次去重（阶段 1/2）共用工厂 ──
+function stepUser(id, text, timestamp) {
+	return { id, agentId: "a1", role: "user", text, timestamp, meta: { entryId: `e-${id}` } };
+}
+function stepAssistant(id, text, timestamp, thinking) {
+	return { id, agentId: "a1", role: "assistant", text, timestamp, ...(thinking ? { thinking } : {}), meta: { entryId: `e-${id}` } };
+}
+function stepTool(id, callId, timestamp) {
+	return { id, agentId: "a1", role: "tool", text: `✓ bash ${callId}`, timestamp, meta: { toolCallId: callId, toolName: "bash", status: "done", result: "ok" } };
+}
+function stepDynamicTool(callId) {
+	return { type: "dynamic-tool", toolName: "bash", toolCallId: callId, state: "output-available", input: {}, output: "ok" };
+}
+/** 持久化侧：一轮按 pi 消息拆开。 */
+function persistedMultiStepTurn() {
+	return chatMessagesToUiMessages([
+		stepUser("u1", "问题", 1000),
+		stepAssistant("a1", "", 1001, "思考一"),
+		stepTool("x1", "t1", 1002),
+		stepAssistant("a2", "插入语", 1003),
+		stepTool("x2", "t2", 1004),
+		stepAssistant("a3", "最终答案", 1005, "思考二"),
+	]);
+}
+/** 本地 SSE 侧：同一轮合成一条 assistant 气泡。 */
+function localMultiStepTurn() {
+	return [
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [
+			{ type: "step-start" }, { type: "reasoning", text: "思考一" }, stepDynamicTool("t1"),
+			{ type: "step-start" }, { type: "text", text: "插入语" }, stepDynamicTool("t2"),
+			{ type: "step-start" }, { type: "reasoning", text: "思考二" }, { type: "text", text: "最终答案" },
+		] },
+	];
+}
+function localPlainTurn() {
+	return [
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [{ type: "step-start" }, { type: "text", text: "最终答案" }] },
+	];
+}
+function persistedPlainTurn() {
+	return chatMessagesToUiMessages([stepUser("u1", "问题", 1000), stepAssistant("a1", "最终答案", 1001)]);
+}
+function countUsers(messages, text) {
+	return messages.filter((m) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text === text)).length;
+}
+function countTextParts(messages, text) {
+	return messages.flatMap((m) => m.parts).filter((p) => p.type === "text" && p.text === text).length;
+}
+function localRows(messages) {
+	return messages.filter((m) => m.metadata === undefined);
+}
+
+test("strict history load replaces a fully persisted multi-step local turn without duplicates", () => {
+	const merged = mergeAuthoritativeUiMessages(localMultiStepTurn(), persistedMultiStepTurn(), {
+		dropCoveredLocalSseLeftovers: true,
+	});
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "最终答案"), 1);
+	assert.equal(countTextParts(merged, "插入语"), 1);
+	// localRows 返回 VM 沙箱域数组，node:assert/strict 的 deepEqual 会因跨域原型不同而失败；
+	// 判空用长度等价且不受域影响。
+	assert.equal(localRows(merged).length, 0, "全部本地行都应被持久化行替换");
+});
+
+test("strict history load keeps a multi-step local turn whose final answer is not persisted yet", () => {
+	const partial = persistedMultiStepTurn().slice(0, 5); // 缺 a3（思考二 + 最终答案）
+	const merged = mergeAuthoritativeUiMessages(localMultiStepTurn(), partial, {
+		dropCoveredLocalSseLeftovers: true,
+	});
+	assert.equal(countTextParts(merged, "最终答案"), 1, "未落盘的最终答案必须仍可见");
+});
+
+test("idle snapshot drops the optimistic prompt once a plain-text turn is persisted", () => {
+	const merged = mergeAuthoritativeUiMessages(localPlainTurn(), persistedPlainTurn(), { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "最终答案"), 1);
+	assert.equal(localRows(merged).length, 0, "本地乐观气泡不应残留");
+});
+
+test("idle snapshot prompt cleanup is stable with earlier history and repeated polls", () => {
+	const prior = chatMessagesToUiMessages([stepUser("u0", "旧问题", 900), stepAssistant("a0", "旧答案", 901)]);
+	const cache = [...prior, ...localPlainTurn()];
+	const snapshot = [...prior, ...persistedPlainTurn()];
+	const once = mergeAuthoritativeUiMessages(cache, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+	const twice = mergeAuthoritativeUiMessages(once, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+	for (const merged of [once, twice]) {
+		assert.equal(countUsers(merged, "问题"), 1);
+		assert.equal(localRows(merged).length, 0);
+	}
+});
+
+test("home-page direct send ends with a single prompt after the idle snapshot", () => {
+	const cases = [
+		{ local: localMultiStepTurn(), snapshot: persistedMultiStepTurn() },
+		{ local: localPlainTurn(), snapshot: persistedPlainTurn() },
+	];
+	for (const { local, snapshot } of cases) {
+		// 流式早期：历史首页只含已落盘的 user（严格模式合并）
+		const earlyLocal = [local[0], { ...local[1], parts: local[1].parts.slice(0, 2) }];
+		let cache = mergeAuthoritativeUiMessages(earlyLocal, chatMessagesToUiMessages([stepUser("u1", "问题", 1000)]), {
+			dropCoveredLocalSseLeftovers: true,
+		});
+		// 流式同步写缓存
+		cache = mergeAuthoritativeUiMessages(cache, local);
+		// 结束后空闲快照
+		cache = mergeAuthoritativeUiMessages(cache, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+		assert.equal(countUsers(cache, "问题"), 1);
+		assert.equal(countTextParts(cache, "最终答案"), 1);
+	}
+});
+
+test("idle snapshot keeps a repeated prompt that never received a reply", () => {
+	const persisted = chatMessagesToUiMessages([stepUser("u7", "问题", 700), stepAssistant("a7", "旧答案", 701)]);
+	const cache = [...persisted, { id: "local-user-2", role: "user", parts: [{ type: "text", text: "问题" }] }];
+	const merged = mergeAuthoritativeUiMessages(cache, persisted, { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 2);
+});
+
+test("idle snapshot keeps the optimistic prompt when the snapshot's last prompt differs", () => {
+	const persisted = chatMessagesToUiMessages([stepUser("u7", "别的问题", 700), stepAssistant("a7", "别的答案", 701)]);
+	const cache = [
+		...persisted,
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [{ type: "step-start" }, { type: "text", text: "新答案" }] },
+	];
+	const merged = mergeAuthoritativeUiMessages(cache, persisted, { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "新答案"), 1);
+});
+
+test("strict history merge never applies the idle orphan-prompt cleanup", () => {
+	const merged = mergeAuthoritativeUiMessages(localPlainTurn(), persistedPlainTurn(), { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((m) => m.id === "local-user"), true);
+});

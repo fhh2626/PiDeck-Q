@@ -107,6 +107,49 @@ function hasEarlierPersistedAssistantInTurn(message: UIMessage, current: UIMessa
 	);
 }
 
+/**
+ * 空闲快照清理「孤儿乐观提问」。
+ * 背景：本地 SSE 提问气泡没有 metadata，纯文本回复又拿不到配对证据，
+ * 快照合并后本地回复已被持久化行替换，只剩这条本地提问垫在时间线底部（重复提问）。
+ * 只有同时满足以下条件才判为孤儿：它原本有本地回复且这些回复都已被消化、
+ * 它后面已没有任何内容、快照最后一条提问正是同一文本且已有正文回复。
+ * 「原本有本地回复」用来保护发送失败、从未得到回复的新提问（它必须留在界面上）。
+ */
+function isOrphanedOptimisticUser(
+	leftover: UIMessage,
+	mergedIndex: number,
+	merged: UIMessage[],
+	current: UIMessage[],
+	authoritative: UIMessage[],
+): boolean {
+	if (uiMessageRole(leftover) !== "user" || readWebMessageMetadata(leftover)) return false;
+	const sourceIndex = current.findIndex((message) => message.id === leftover.id);
+	if (sourceIndex < 0) return false;
+	const nextUserInCurrent = current.findIndex((message, index) =>
+		index > sourceIndex && uiMessageRole(message) === "user",
+	);
+	const localReplies = current
+		.slice(sourceIndex + 1, nextUserInCurrent < 0 ? current.length : nextUserInCurrent)
+		.filter(isLocalSseAssistant);
+	if (localReplies.length === 0) return false;
+	const mergedIds = new Set(merged.map((message) => message.id));
+	if (localReplies.some((reply) => mergedIds.has(reply.id))) return false;
+	const nextInMerged = merged[mergedIndex + 1];
+	if (nextInMerged && uiMessageRole(nextInMerged) !== "user") return false;
+	let lastUserIndex = -1;
+	for (let index = authoritative.length - 1; index >= 0; index -= 1) {
+		if (uiMessageRole(authoritative[index]) === "user") {
+			lastUserIndex = index;
+			break;
+		}
+	}
+	if (lastUserIndex < 0 || uiMessageText(authoritative[lastUserIndex]) !== uiMessageText(leftover)) return false;
+	return authoritative.slice(lastUserIndex + 1).some((message) =>
+		uiMessageRole(message) === "assistant"
+		&& message.parts.some((part) => part.type === "text" && part.text.trim()),
+	);
+}
+
 /** Text fallbacks only compare cached rows that originated in the incoming message's turn. */
 function candidateBelongsToIncomingTurn(
 	candidate: UIMessage,
@@ -330,7 +373,12 @@ export function mergeAuthoritativeUiMessages(
 			&& isLocalSseAssistant(leftover)
 			&& !(isLocalSsePlainTextAssistant(leftover)
 				&& (hasEarlierPersistedAssistantInTurn(leftover, current) || unanchoredPageAssistant));
-		if (!dropEmptyUser && !dropPlaceholder && !dropCoveredSseWithText && !dropCoveredBaselineBubble) continue;
+		// 孤儿乐观提问：只在空闲快照（非严格基线）且快照已有正文回复时清理。
+		// 循环自后向前，执行到这里时该提问之后的本地回复已先被处理，孤立判定才准确。
+		const dropOrphanUser = !strictBaselineMode
+			&& canDropUnmatchedPlaceholders
+			&& isOrphanedOptimisticUser(leftover, index, merged, current, authoritative);
+		if (!dropEmptyUser && !dropPlaceholder && !dropCoveredSseWithText && !dropCoveredBaselineBubble && !dropOrphanUser) continue;
 		merged.splice(index, 1);
 		changed = true;
 	}

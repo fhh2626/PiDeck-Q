@@ -7,7 +7,8 @@ const webSidebar = readFileSync("src/renderer/src/web/WebSidebar.tsx", "utf8");
 const webHeader = readFileSync("src/renderer/src/web/WebHeader.tsx", "utf8");
 const webChatApp = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
 const webComposer = readFileSync("src/renderer/src/web/WebComposer.tsx", "utf8");
-const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
+	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
 const webTimelineWindow = readFileSync("src/renderer/src/web/useWebTimelineWindow.ts", "utf8");
 const webHtml = readFileSync("src/renderer/web.html", "utf8");
 

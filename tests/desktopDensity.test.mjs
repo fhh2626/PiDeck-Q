@@ -62,7 +62,7 @@ test("Thinking trigger header consumes the shared THINKING_HEADER recipe (gap-1.
 });
 
 test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", () => {
-  const src = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+  const src = readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
   const block = src.slice(
     src.indexOf("export const WebThinkingBlock"),
     src.indexOf("export const WebToolCard"),
