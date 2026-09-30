@@ -94,6 +94,7 @@ test("captureHistoryMutationRefresh & refreshHistoryAfterMutation flow: editing 
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -153,6 +154,7 @@ test("captureHistoryMutationRefresh: returns null when no history is loaded (ski
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": { desktopApi: { sessions: {} } },
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -212,6 +214,7 @@ test("concurrency & race: later mutation supersedes earlier in-flight refresh", 
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -270,6 +273,7 @@ test("error handling: page read failure marks stale history invalid without thro
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -697,6 +701,7 @@ test("refreshHistoryAfterMutation survives runtime flushes that arrive while awa
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -766,6 +771,7 @@ test("failed subsequent mutation does not block earlier successful mutation from
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {
@@ -836,6 +842,7 @@ test("stale refresh failure does not clear history from a newer successful mutat
     "../atoms": env.atoms,
     "../i18n": env.i18n,
     "../utils/notice": env.noticeUtils,
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {

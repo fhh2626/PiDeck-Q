@@ -374,6 +374,17 @@ test("incremental message flush merges tail upserts and discards non-contiguous 
     { id: "m10", role: "assistant", text: "lost" },
   ] });
   assert.equal(readMessages().length, 3, "non-contiguous upsert must be discarded");
+  // 丢弃不是终点：必须留下待补信号，让 timeline 请求一次全量（不再等整轮结束）。
+  assert.equal(
+    store.get(atoms.sessionMessageResyncRequestAtom)["session-a"],
+    1,
+    "discarding an incremental update must request a full resync",
+  );
+  // 连续多次丢弃只记一个信号（不发两个 token 让 timeline 重复打 IPC）。
+  emit({ agentId: "agent-a", upsertFrom: 9, totalLength: 10, messages: [
+    { id: "m10", role: "assistant", text: "lost-again" },
+  ] });
+  assert.equal(store.get(atoms.sessionMessageResyncRequestAtom)["session-a"], 1);
 
   // 5) totalLength 校验失败（本地合并后与主进程不一致）→ 丢弃
   emit({ agentId: "agent-a", upsertFrom: 2, totalLength: 99, messages: [
@@ -386,6 +397,29 @@ test("incremental message flush merges tail upserts and discards non-contiguous 
     { id: "m1", role: "user", text: "q" },
     { id: "m2", role: "assistant", text: "final" },
   ] });
+  // 全量已落地：待补信号必须清掉，否则这一会话以后丢增量都不会再请求补发。
+  assert.equal(
+    store.get(atoms.sessionMessageResyncRequestAtom)["session-a"],
+    undefined,
+    "a full flush must clear the resync request for that session",
+  );
+  // 清除后再次丢增量 → 重新亮起信号（不是一次性开关）。
+  emit({ agentId: "agent-a", upsertFrom: 9, totalLength: 10, messages: [
+    { id: "m10", role: "assistant", text: "lost-after-full" },
+  ] });
+  assert.equal(store.get(atoms.sessionMessageResyncRequestAtom)["session-a"], 1);
+
+  // 另一条丢弃分支（offset 有效但长度校验不过）也要留下信号。
+  store.set(atoms.sessionMessageResyncRequestAtom, {});
+  emit({ agentId: "agent-a", upsertFrom: 1, totalLength: 5, messages: [
+    { id: "m2", role: "assistant", text: "length-mismatch" },
+  ] });
+  assert.equal(
+    store.get(atoms.sessionMessageResyncRequestAtom)["session-a"],
+    1,
+    "totalLength-mismatch discards must also request a resync",
+  );
+
   assert.equal(readMessages().find((m) => m.id === "m3")?.meta?.slidingOut, true);
   store.set(atoms.removeSessionSlidingOutMessagesAtom, {
     sessionId: "session-a",
@@ -417,6 +451,8 @@ test("incremental upsert is ignored while cache holds disk-sourced messages", ()
   const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
   assert.equal(entry.source, "disk", "disk entry must not be clobbered by runtime upsert");
   assert.equal(entry.messages.length, 1);
+  // 磁盘来源下增量被忽略同样是「失序」：一样要留下待补信号（否则这套会话永不补发）。
+  assert.equal(store.get(atoms.sessionMessageResyncRequestAtom)["session-a"], 1);
 
   // 随后的全量（激活完成）可以正常接管
   store.set(atoms.applySessionRuntimeEventAtom, {
@@ -431,6 +467,11 @@ test("incremental upsert is ignored while cache holds disk-sourced messages", ()
   const next = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
   assert.equal(next.source, "runtime");
   assert.equal(next.messages[0].text, "runtime");
+  assert.equal(
+    store.get(atoms.sessionMessageResyncRequestAtom)["session-a"],
+    undefined,
+    "the runtime full flush must clear the pending resync request",
+  );
 });
 
 test("isolates composer state and only clears the submitted snapshot", () => {

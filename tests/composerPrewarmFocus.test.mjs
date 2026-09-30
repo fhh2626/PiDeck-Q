@@ -29,6 +29,7 @@ const timeline = compile("src/renderer/src/hooks/useSessionTimelineController.ts
 	"../desktopApi": {},
 	"../i18n": { t: (key) => key },
 	"../utils/notice": { showNotice: () => {} },
+	"../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
 	"../components/session/timeline/turnRenderWindow": {
 		TIMELINE_SCROLLED_TURN_LIMIT: 15,
 		TIMELINE_WINDOW_EXPAND_STEP: 10,

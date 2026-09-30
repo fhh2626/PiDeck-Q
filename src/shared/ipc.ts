@@ -76,6 +76,9 @@ export const ipcChannels = {
 	sessionsRuntimeActivate: "sessions:runtime-activate",
 	sessionsRuntimeStop: "sessions:runtime-stop",
 	sessionsRuntimeAbort: "sessions:runtime-abort",
+	/** 渲染层增量合并失序（upsertFrom/totalLength 不连续）时请求单会话全量补发，
+	 *  避免中间过程要等本轮结束的终态全量才一次性出现。 */
+	sessionsRuntimeFlushMessages: "sessions:runtime-flush-messages",
 	sessionsRuntimeRestart: "sessions:runtime-restart",
 	sessionsRuntimeCompact: "sessions:runtime-compact",
 	sessionsRuntimeState: "sessions:runtime-state",

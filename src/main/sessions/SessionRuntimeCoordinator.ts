@@ -64,6 +64,8 @@ export interface SessionAgentGateway {
 	stop(agentId: string): Promise<void>;
 	rename(agentId: string, name: string): Promise<AgentTab>;
 	abort(agentId: string): Promise<void>;
+	/** 单会话消息窗口全量补发（同步：只登记并立即 emit，无需异步等待）。 */
+	flushLiveMessages(agentId: string): void | Promise<void>;
 	compact(agentId: string, prompt?: string): Promise<AgentRuntimeState>;
 	getRuntimeState(agentId: string): Promise<AgentRuntimeState>;
 	getCommands(agentId: string): Promise<unknown[]>;
@@ -382,6 +384,18 @@ export class SessionRuntimeCoordinator {
 		target: SessionRuntimeTarget,
 	): Promise<SessionCommandResult<SessionTargetedValue<void>>> {
 		return this.runTargetCommand(target, (agentId) => this.agents.abort(agentId));
+	}
+
+	/**
+	 * 单会话消息窗口全量补发：渲染层发现增量合并失序（非终态）时主动请求，
+	 * 不等本轮结束的终态全量，避免思考/工具/正文攒成一批才出现。
+	 */
+	flushMessages(
+		target: SessionRuntimeTarget,
+	): Promise<SessionCommandResult<SessionTargetedValue<void>>> {
+		return this.runTargetCommand(target, async (agentId) => {
+			this.agents.flushLiveMessages(agentId);
+		});
 	}
 
 	compactRuntime(

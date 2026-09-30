@@ -23,6 +23,8 @@ import {
 	sessionMessagesCacheAtom,
 	sessionMessageCacheBySessionIdAtomFamily,
 	sessionMessageLoadStateBySessionIdAtomFamily,
+	sessionMessageResyncRequestAtom,
+	sessionRuntimeBySessionIdAtomFamily,
 	saveSessionScrollAnchorAtom,
 	sessionScrollAnchorByIdAtom,
 	setSessionMessageLoadStateAtom,
@@ -31,6 +33,7 @@ import {
 } from "../atoms";
 import { t } from "../i18n";
 import { showNotice } from "../utils/notice";
+import { toSessionRuntimeTarget } from "../utils/sessionCommands";
 import type { MessageScrollerScrollApi } from "../components/agents/message-scroller";
 import {
   TIMELINE_SCROLLED_MAX_ITEMS,
@@ -563,6 +566,21 @@ export function useSessionTimelineController(options: {
     [options.sessionId],
   );
   const cachedMessages = useAtomValue(cacheSliceAtom);
+  // 增量合并失序的补发信号：按会话订阅（只取本会话的值），
+  // 其它会话请求补发不该让本栏重渲染。
+  const resyncSliceAtom = useMemo(
+    () => selectAtom(
+      sessionMessageResyncRequestAtom,
+      (map) => (options.sessionId ? map[options.sessionId] ?? 0 : 0),
+      Object.is,
+    ),
+    [options.sessionId],
+  );
+  const resyncToken = useAtomValue(resyncSliceAtom);
+  // 本会话当前绑定：只取这两个字段作为 effect 依赖（runtime 迟到时补发请求不丢）。
+  const resyncRuntime = useAtomValue(
+    sessionRuntimeBySessionIdAtomFamily(options.sessionId ?? ""),
+  );
   // 乐观删除：确认删除后立即从视图里藏起将被删的消息段（缓存原样保留，失败可恢复）；
   // 只订本会话的隐藏集合，其它会话删除不会让本栏重算。
   const hiddenDeletionIds = useAtomValue(
@@ -1215,6 +1233,29 @@ export function useSessionTimelineController(options: {
     highlightMessage(element, ownerKey);
     // autoScroll：贴底 turn 窗口展开后 DOM 才出现目标行，需再跑一轮。
   }, [autoScroll, combinedMessages, controllerEnabled, expandWindow, highlightMessage, ownerKey, scrolledWindowTurns, visibleMessages.length]);
+
+  // 增量合并失序后的自愈：发现本会话有待补信号且已经有绑定 runtime 时，
+  // 请求主进程补一次全量消息窗口（渲染层据此重建下标空间）。
+  // 找不到 target 时不记「已发送」：runtime 稍后绑定完成时 effect 会因它重新跑。
+  // 信号固定写 1：全量落地后 atom 删键（token 变 0），下一次丢增量再写回 1。
+  // token 为 0 时必须把 ref 清掉，否则同一挂载（含切会话复用实例）里第二次失序会被当成已发过而不再补。
+  const resyncRequestedTokenRef = useRef(0);
+  useEffect(() => {
+    const sessionId = options.sessionId;
+    if (!sessionId || resyncToken <= 0) {
+      resyncRequestedTokenRef.current = 0;
+      return;
+    }
+    if (resyncRequestedTokenRef.current === resyncToken) return;
+    const target = toSessionRuntimeTarget(
+      sessionId,
+      store.get(sessionRuntimeBySessionIdAtomFamily(sessionId)),
+    );
+    if (!target) return;
+    resyncRequestedTokenRef.current = resyncToken;
+    // 补发失败不打扰用户：本轮结束的终态全量仍是兜底路径。
+    void desktopApi.sessions.flushMessages(target).catch(() => undefined);
+  }, [options.sessionId, resyncRuntime, resyncToken, store]);
 
   return {
     timelineRef,

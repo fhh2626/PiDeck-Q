@@ -206,6 +206,17 @@ export class AgentManager {
 			this.scheduleMessageEmit(agentId, true);
 		}
 	}
+
+	/**
+	 * 单个 Agent 的消息窗口全量补发（渲染层增量合并失序时按会话请求）。
+	 * 与 flushLiveRendererState 的区别：不重推 tabs 状态、不波及其他 Agent——
+	 * 分屏下另一栏的会话不该因为本栏丢了一次增量而被重推。
+	 */
+	flushLiveMessages(agentId: string): void {
+		this.requireRuntime(agentId);
+		// immediate=true：走窗口化全量（无 upsertFrom），渲染层据此重新校准下标空间。
+		this.scheduleMessageEmit(agentId, true);
+	}
 	/** 当前正在流式更新的 assistant 消息；tool 事件插入时仍要继续更新同一个回答块。 */
 	private readonly activeAssistantMessageIds = new Map<string, string>();
 	/** pi 的 toolCallId 贯穿 start/update/end，用它把同一次工具调用合并成一条 UI 记录。 */
@@ -2350,6 +2361,11 @@ export class AgentManager {
 			state.isExecutingTool = !!this.toolExecutingByAgent.get(agentId);
 			state.executingToolName = this.toolExecutingByAgent.get(agentId) ?? undefined;
 			state.toolStateSequence = latestToolSequence;
+			// isStreaming 同理必须用本地真值：abort() 已把流式标志清除并置 idle，
+			// 但工具开始时发出的这次异步 RPC 可能在其后才返回，
+			// 把 pi 里仍为 true 的 isStreaming 写回渲染层 → 右下角停止按钮被盖回红色。
+			// 反向也不能被旧快照收掉：新一轮已开始时本地仍为 true，就要继续发 true。
+			state.isStreaming = this.streamingAgents.has(agentId);
 			this.emit(ipcChannels.agentsRuntimeState, { agentId, state });
 		} catch {
 			// 运行态刷新失败不影响主流程；下一次轮询或事件会继续同步。

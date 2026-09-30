@@ -377,6 +377,11 @@ const api = {
 			transport.invoke(ipcChannels.sessionsRuntimeAbort, target) as Promise<
 				SessionCommandResult<SessionTargetedValue<void>>
 			>,
+		/** 渲染层增量合并失序时请求单会话全量补发（不打断本轮输出）。 */
+		flushMessages: (target: SessionRuntimeTarget) =>
+			transport.invoke(ipcChannels.sessionsRuntimeFlushMessages, target) as Promise<
+				SessionCommandResult<SessionTargetedValue<void>>
+			>,
 		restartRuntime: (target: SessionRuntimeTarget) =>
 			transport.invoke(ipcChannels.sessionsRuntimeRestart, target) as Promise<
 				SessionCommandResult<SessionRuntimeReplacement>

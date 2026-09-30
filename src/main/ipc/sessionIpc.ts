@@ -637,6 +637,10 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		(target: SessionRuntimeTarget) => sessionRuntimeCoordinator.abortRuntime(target),
 	);
 	router.handle(
+		ipcChannels.sessionsRuntimeFlushMessages,
+		(target: SessionRuntimeTarget) => sessionRuntimeCoordinator.flushMessages(target),
+	);
+	router.handle(
 		ipcChannels.sessionsRuntimeRestart,
 		async (target: SessionRuntimeTarget) => {
 			terminalManager.closeAgent(target.agentId);

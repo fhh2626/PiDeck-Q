@@ -62,6 +62,7 @@ function setupEnvironment(pages) {
     "../atoms": atoms,
     "../i18n": { t: (key) => key },
     "../utils/notice": { showNotice: () => {} },
+    "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
     "../desktopApi": fakeDesktopApi,
     "../components/agents/message-scroller": {},
     "../components/session/timeline/turnRenderWindow": {

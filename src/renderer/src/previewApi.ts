@@ -428,6 +428,11 @@ export function createPreviewApi(): PiDesktopApi {
 				ok: true,
 				value: { target, value: undefined },
 			}),
+			// preview 没有真实 runtime：补发是桌面端的自愈手段，这里按成功空操作。
+			flushMessages: async (target) => ({
+				ok: true,
+				value: { target, value: undefined },
+			}),
 			restartRuntime: async (target) => ({
 				ok: true,
 				value: {

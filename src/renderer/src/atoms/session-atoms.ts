@@ -195,6 +195,18 @@ export const SESSION_CACHE_STATS_LIMIT = 50;
 export const sessionMessagesCacheAtom = atom<Record<string, SessionMessageCacheEntry>>({});
 
 /**
+ * 「该会话的增量合并已失序，需要一次全量补发」的信号表。
+ *
+ * 增量协议（upsertFrom/totalLength）在渲染层校验失败时只能丢弃，否则会把错位消息拼进列表。
+ * 但丢弃后如果什么都不做，后续同一轮的增量会继续丢，思考/工具/正文只能等本轮结束的
+ * 终态全量才一次性出现（表现为「攒一批才猛刷」）。
+ *
+ * 这里只存信号，不调 IPC（atom 不得依赖 desktopApi）：取值 `1` 表示待补，
+ * 会话级全量写入缓存后由 applySessionRuntimeEventAtom 删除本键（下一轮才能再次请求）。
+ */
+export const sessionMessageResyncRequestAtom = atom<Record<string, number>>({});
+
+/**
  * 单会话消息缓存条目（selectAtom 隔离）：其它会话的消息到达/分页/失效
  * 都整体重建 cache 对象，但本会话条目引用不变 → Object.is 相等 → 订阅者不重渲染。
  * 2026-10 性能修复：此前 controller 直接订全局缓存，分屏/多开时
@@ -661,6 +673,16 @@ export const touchSessionMessagesAtom = atom(null, (get, set, sessionId: string)
     ...get(sessionMessageLruAtom).filter((id) => id !== sessionId),
   ].slice(0, SESSION_MESSAGE_CACHE_LIMIT));
 });
+
+/**
+ * 标记该会话需要一次全量补发（幂等）：已是正数则不动，避免每次增量失败都换 token
+ * 让 timeline 重复打 IPC。全量写入缓存后由 applySessionRuntimeEventAtom 删除本键。
+ */
+function requestSessionMessageResync(get: Getter, set: Setter, sessionId: string) {
+  const pending = get(sessionMessageResyncRequestAtom);
+  if ((pending[sessionId] ?? 0) > 0) return;
+  set(sessionMessageResyncRequestAtom, { ...pending, [sessionId]: 1 });
+}
 
 /** 历史前缀/窗口段的去重键：优先 pi entryId（跨下标空间稳定），缺省回退消息 id。 */
 function messageEntryKey(message: ChatMessage): string {
@@ -1845,6 +1867,7 @@ export const applySessionRuntimeEventAtom = atom(
                 offset,
                 currentLength: current.messages.length,
               });
+              requestSessionMessageResync(get, set, event.sessionId);
             }
           } else {
             console.warn("[messages] incremental update dropped", {
@@ -1855,6 +1878,7 @@ export const applySessionRuntimeEventAtom = atom(
               offset,
               currentLength: current?.messages?.length ?? 0,
             });
+            requestSessionMessageResync(get, set, event.sessionId);
           }
         } else {
           // 窗口化全量 / 传统全量：替换运行时窗口段；
@@ -1920,6 +1944,14 @@ export const applySessionRuntimeEventAtom = atom(
               ? { windowStartFilePos: payloadWindowStartFilePos }
               : {}),
           });
+          // 全量已写入缓存：清除本会话的补发信号，否则这一会话以后丢增量都不会再请求。
+          // 只在本分支（全量且已 set）清除；增量合并成功与失败都不碰。
+          const pendingResync = get(sessionMessageResyncRequestAtom);
+          if (pendingResync[event.sessionId] !== undefined) {
+            const nextPendingResync = { ...pendingResync };
+            delete nextPendingResync[event.sessionId];
+            set(sessionMessageResyncRequestAtom, nextPendingResync);
+          }
         }
         // message 到达后若已含同段 thinking，安全卸 live（覆盖 done 先到的情况）。
         releaseLiveThinking();

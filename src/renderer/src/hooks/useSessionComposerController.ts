@@ -86,7 +86,9 @@ import { showNotice } from "../utils/notice";
 import { htmlToPlainText } from "../utils/clipboard";
 import { shouldRequestNativeClipboardSnapshot } from "../native/nativeClipboardPaste";
 import {
+  SessionCommandFailure,
   requireSessionCommand,
+  resolveAbortRetry,
   toSessionRuntimeTarget,
 } from "../utils/sessionCommands";
 import { isUserFacingSessionStart } from "./useSessionTimelineController";
@@ -1291,7 +1293,10 @@ export function useSessionComposerController(
   }, []);
 
   const abort = useCallback(async () => {
-    const target = toSessionRuntimeTarget(sessionId, runtime);
+    // 用点击当时的绑定，不用渲染闭包里的 runtime：重启/懒启动完成会让闭包里的
+    // runtimeGeneration 过期，命令会被 SESSION_RUNTIME_CHANGED 拒绝而 abort 根本未执行。
+    const readRuntime = () => store.get(sessionRuntimeBySessionIdAtomFamily(sessionId));
+    const target = toSessionRuntimeTarget(sessionId, readRuntime());
     if (!target) {
       // 运行时信息缺失（如 agent 尚未绑定）：停止无意义，但不应静默——
       // 提示用户当前会话没有可停止的 Agent，避免「点了停止没反应」的困惑。
@@ -1299,14 +1304,22 @@ export function useSessionComposerController(
       return;
     }
     try {
-      requireSessionCommand(await desktopApi.sessions.abortRuntime(target));
+      const result = await desktopApi.sessions.abortRuntime(target);
+      if (result.ok) return;
+      // 代际在命令派发前后变了：重读绑定，代际确实变了才再试一次（只一次）。
+      const retryTarget = resolveAbortRetry(result.error.code, target, readRuntime(), sessionId);
+      if (retryTarget) {
+        requireSessionCommand(await desktopApi.sessions.abortRuntime(retryTarget));
+        return;
+      }
+      throw new SessionCommandFailure(result.error);
     } catch (error) {
       // abort 失败必须可见：之前这里直接 throw 变成未处理 rejection，
       // 用户点停止后毫无反馈、agent 继续运行，表现为「停止不了」。
       // 异常常驻提示，直到用户手动关闭。
       showNotice(error instanceof Error ? error.message : String(error), Number.POSITIVE_INFINITY);
     }
-  }, [runtime?.agentId, runtime?.runtimeGeneration, sessionId]);
+  }, [sessionId, store]);
 
   const acknowledgeUnknownDelivery = useCallback(() => {
     setSendStateAtom({ sessionId, state: { status: "idle" } });
