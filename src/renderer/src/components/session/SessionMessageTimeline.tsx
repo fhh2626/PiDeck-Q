@@ -33,7 +33,6 @@ import {
   canLoadSessionTimelineMore,
   deriveSessionSurfaceRuntime,
   isLatestTimelineRunBusy,
-  resolveTimelineTopCompensation,
   useSessionTimelineController,
   type SessionTimelineController,
 } from "../../hooks/useSessionTimelineController";
@@ -404,7 +403,9 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   
   // 窗口轮数变化（上滚扩大窗口、点「显示更早」扩大）会在顶部插入内容，需补偿 scrollTop
   // 保持视口内容不动；数据 prepend 的补偿由 controller 的 loadMoreAnchorRef 负责，
-  // 两者按「窗口轮数变化 / 数据变化」分工，不会同帧双重补偿。贴底时由引擎接管不补偿。
+  // 两者按「窗口轮数变化 / 数据变化」分工。补页成功会同时前插消息与 +10 轮（同一帧），
+  // 此时由 controller 的前置锚点做唯一一次补偿，本 effect 让位、不得二次补偿。
+  // 贴底时由引擎接管不补偿。
   const turnWindowStateRef = useRef<{ windowed: boolean; height: number; turns: number }>({
     windowed: false,
     height: 0,
@@ -415,26 +416,28 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     if (!timeline) return;
     const prev = turnWindowStateRef.current;
     const nextHeight = timeline.scrollHeight;
-    if (
+    const pendingHistoryAnchor = controller.hasPendingLoadMoreAnchor?.() ?? false;
+    if (pendingHistoryAnchor) {
+      if (prev.turns === turnWindowTurns) {
+        // 加载等待期间的普通帧（含底部流式增高）：只把锚点基线刷成当前值，
+        // 否则这段增高会被当成历史前置的高度差，把视口往下推。
+        controller.refreshLoadMoreAnchorBaseline?.();
+      }
+      // 轮数变化的这一帧就是前插帧：不动 scrollTop、也不刷新基线，
+      // 高度差留给 controller 的前置锚点补偿消费。
+    } else if (
       prev.windowed &&
       prev.turns !== turnWindowTurns &&
       nextHeight > prev.height &&
       !followingForTurnWindow
     ) {
-      // 顶部（≤HISTORY_AUTO_LOAD_THRESHOLD）不补偿：插入内容在视口上方时
-      // 浏览器无滚动锚定（overflow-anchor:none），scrollTop 原位不动即可看到
-      // 新展开的内容；补偿会把新内容推出视口上方，表现为「点「显示更早」没反应」。
-      // 与数据 prepend 补偿共用 resolveTimelineTopCompensation 决策（2026-02 修复）。
-      const nextTop = resolveTimelineTopCompensation(
-        timeline.scrollTop,
-        nextHeight - prev.height,
-      );
-      if (nextTop !== null) {
-        // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
-        // 必须让自动加载监听忽略（补偿后视口可能落在顶部区间）
-        controller.markProgrammaticScroll?.();
-        timeline.scrollTop = nextTop;
-      }
+      // 没有历史前置（纯「显示更早」展开）时在这里补偿：用当前 scrollTop 加高度差，
+      // 贴顶也要加，视口里的消息才不被新展开的内容顶掉。
+      const nextTop = timeline.scrollTop + (nextHeight - prev.height);
+      // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
+      // 必须让自动加载监听忽略（补偿后视口可能落在顶部区间）。
+      controller.markProgrammaticScroll?.();
+      timeline.scrollTop = nextTop;
     }
     turnWindowStateRef.current = {
       windowed: turnWindowActive,

@@ -43,8 +43,7 @@ import {
 
 /** 滚动接近顶部自动加载历史的阈值（px，2026-11 轮次模型）：
  *  贴顶（≤8px）才触发翻页——「滑到底才翻」，避免在顶部附近任何滚动都连翻历史页。
- *  同时用作「顶部不补偿」阈值：视口顶部 prepend/展开新内容时保持原位可见，
- *  补偿会把新内容推出视口（点击「加载更多/显示更早」无反馈根因，2026-02 修复）。 */
+ *  仅用于「是否触发翻页」，不得再当作「顶部不补偿」阈值：贴顶也必须补偿。 */
 export const HISTORY_AUTO_LOAD_THRESHOLD = 8;
 /** 翻页冷却（ms）：加载完成后立即再滚到顶不连翻，需停顿后重新触发（防惯性滚动连翻多页）。 */
 const HISTORY_AUTO_LOAD_COOLDOWN_MS = 300;
@@ -217,17 +216,15 @@ export function restoreTimelineAnchor(previousTop: number, heightDelta: number):
   return previousTop + heightDelta;
 }
 
-/** 顶部补偿决策（数据 prepend / turn 窗口扩大共用，2026-02 修复）：
- *  视口在顶部（≤阈值）时不补偿，保持原位让新加载/展开的内容直接出现在视口顶部——
- *  容器 overflow-anchor:none，插入内容不会自动调整滚动位置，补偿反而把新内容推出视口，
- *  表现为「点击加载更多/显示更早无反馈」。视口中部时按高度差补偿以保持视口内容不动。
- *  返回补偿后的 scrollTop；null = 不补偿（保持原位）。 */
+/** 顶部补偿（数据 prepend / turn 窗口扩大共用）：
+ *  前插或窗口扩大后，始终用高度差把当前阅读位置留在原地——视口里的消息不换屏，
+ *  新加载/展开的内容接在上方。贴顶（scrollTop ≤ HISTORY_AUTO_LOAD_THRESHOLD）同样要加，
+ *  把 scrollTop 留在 0 会让新内容直接占住当前屏。
+ *  返回补偿后的 scrollTop。 */
 export function resolveTimelineTopCompensation(
   previousTop: number,
   heightDelta: number,
-  threshold = HISTORY_AUTO_LOAD_THRESHOLD,
-): number | null {
-  if (previousTop <= threshold) return null;
+): number {
   return restoreTimelineAnchor(previousTop, heightDelta);
 }
 
@@ -515,6 +512,11 @@ export type SessionTimelineController = {
   nextLoadIsHistory: boolean;
   isLoadingMoreMessages: boolean;
   loadMoreMessages: () => void;
+  /** 是否有已登记、尚未消费的历史前置锚点（turn 窗口本帧不要再做第二次补偿）。 */
+  hasPendingLoadMoreAnchor: () => boolean;
+  /** 刷新待消费锚点的高度/位置基线（只改基线，不动 scrollTop）：
+   *  加载等待期间底部流式增高不应被算进历史前置的补偿量。 */
+  refreshLoadMoreAnchorBaseline: () => void;
   /** 标记一次程序化滚动（turn 窗口展开补偿等组件内补偿用），抑制自动加载监听。 */
   markProgrammaticScroll: () => void;
   jumpToMessage: (messageId: string) => void;
@@ -856,15 +858,22 @@ export function useSessionTimelineController(options: {
 
   /** 计算垫片高度：让「用户消息顶 + 视口高 == 内容总高」，滚到底时用户消息正好钉在顶部。 */
 
-	const loadMoreMessages = useCallback(() => {
-		const requestOwnerKey = ownerKey;
+	/**
+	 * 登记一次「历史前置」锚点：记录加载前的高度与位置，落地后据此补偿。
+	 * 只在确认本次真的会发请求时调用；已有未消费锚点时不得覆盖（等待期间用户可能已继续滚动，
+	 * 覆盖会把补偿位置拉回请求开始那一刻）。
+	 */
+	const captureLoadMoreAnchor = useCallback(() => {
+		if (loadMoreAnchorRef.current) return;
 		const timeline = timelineRef.current;
-    if (timeline && ownerKeyRef.current === requestOwnerKey) {
-      loadMoreAnchorRef.current = {
-        ownerKey: requestOwnerKey,
-        value: { height: timeline.scrollHeight, top: timeline.scrollTop },
-      };
-    }
+		if (!timeline || ownerKeyRef.current !== ownerKey) return;
+		loadMoreAnchorRef.current = {
+			ownerKey,
+			value: { height: timeline.scrollHeight, top: timeline.scrollTop },
+		};
+	}, [ownerKey]);
+
+	const loadMoreMessages = useCallback(() => {
 		if (diskPage) {
 			const sessionId = options.sessionId;
 			const before = diskPage.nextBefore;
@@ -872,6 +881,7 @@ export function useSessionTimelineController(options: {
 			const sequence = ++nextLoadSequence;
 			trackLatestLoad(sessionId, sequence);
 			const expectedRevision = cachedEntry?.revision ?? 0;
+			captureLoadMoreAnchor();
 			setIsLoadingMessagePage(true);
 			void desktopApi.sessions
 				// 旧会话（无 runtime 窗口）：与 runtime 窗口会话同口径按轮次补历史，
@@ -927,6 +937,7 @@ export function useSessionTimelineController(options: {
 			const sequence = ++nextLoadSequence;
 			trackLatestLoad(sessionId, sequence);
 			const expectedRevision = cachedEntry?.revision ?? 0;
+			captureLoadMoreAnchor();
 			setIsLoadingMessagePage(true);
 			void readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, {
 				requestBefore,
@@ -966,7 +977,7 @@ export function useSessionTimelineController(options: {
 				});
 			return;
 		}
-	}, [cachedEntry?.revision, diskPage, historyHasMore, isLoadingMessagePage, messages, options.pageSize, options.sessionId, ownerKey, prependHistoryPage, prependMessagePage, runtimeHistory]);
+	}, [cachedEntry?.revision, captureLoadMoreAnchor, diskPage, historyHasMore, isLoadingMessagePage, messages, options.pageSize, options.sessionId, ownerKey, prependHistoryPage, prependMessagePage, runtimeHistory]);
 
 	// ── 回底清理临时历史（2026-11 轮次模型）──
 	// 贴底稳定 1.5s 后清掉翻过的历史前缀（atom 只留运行时窗口段），渲染层内存回到最小；
@@ -1007,6 +1018,21 @@ export function useSessionTimelineController(options: {
   const markProgrammaticScroll = useCallback(() => {
     programmaticScrollRef.current = true;
   }, []);
+
+  /** 是否有尚未消费的历史前置锚点（turn 窗口本帧让位给 controller 的唯一一次补偿）。 */
+  const hasPendingLoadMoreAnchor = useCallback(
+    () => Boolean(loadMoreAnchorRef.current && ownerKeyRef.current === ownerKey),
+    [ownerKey],
+  );
+
+  /** 只把待消费锚点的基线（高度/位置）刷成当前值，不改 scrollTop：
+   *  加载等待期间底部流式增高会被记录进来，而不是被当成历史前置的高度差重复补偿。 */
+  const refreshLoadMoreAnchorBaseline = useCallback(() => {
+    const anchor = loadMoreAnchorRef.current;
+    const timeline = timelineRef.current;
+    if (!anchor || !timeline || ownerKeyRef.current !== ownerKey) return;
+    anchor.value = { height: timeline.scrollHeight, top: timeline.scrollTop };
+  }, [ownerKey]);
 
   const captureHistoryMutationRefreshCallback = useCallback(
     (targetSessionId: string | undefined) =>
@@ -1179,29 +1205,20 @@ export function useSessionTimelineController(options: {
       loadMoreAnchorRef.current = undefined;
       return;
     }
-    // 顶部场景（点击前视口在 ≤HISTORY_AUTO_LOAD_THRESHOLD 处）：不补偿 scrollTop。
-    // 视口容器 overflow-anchor:none，插入内容不会自动调整滚动位置，保持原位即可
-    // 让新加载的内容直接出现在视口顶部；补偿反而把新内容推出视口上方，
-    // 造成「点击加载更多无反馈」（2026-02 修复）。
-    const nextScrollTop = resolveTimelineTopCompensation(
-      anchor.value.top,
-      timeline.scrollHeight - anchor.value.height,
-    );
-    if (nextScrollTop === null) {
-      loadMoreAnchorRef.current = undefined;
-      programmaticScrollRef.current = true;
-      const topFrame = requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
-      });
-      return () => cancelAnimationFrame(topFrame);
-    }
-    // 标记程序化滚动：prepend 补偿的 scrollTop 赋值会触发 scroll 事件，
-    // 不能让 ≤240px 自动加载监听把它当成用户上滚（否则连锁翻页）。
-    // rAF 兜底：若补偿实际无位移（delta=0）不产生 scroll 事件，需清掉抑制标记，
+    // 历史前置落地：把落地那一刻的 scrollTop 加上本次插入的高度差，
+    // 视口里的消息留在原地不换屏，新页接在上方。
+    // 用落地时（而不是请求开始时）的 scrollTop：等待期间用户可能已继续滚动或拖进度条，
+    // 用旧值写回会把用户拉回请求发起的位置。贴顶也不得跳过——
+    // scrollTop 留在 0 会让新内容直接占住当前屏（滚轮/按钮加载“乱跳”根因）。
+    const heightDelta = timeline.scrollHeight - anchor.value.height;
+    loadMoreAnchorRef.current = undefined;
+    if (heightDelta === 0) return;
+    // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
+    // 必须让 ≤HISTORY_AUTO_LOAD_THRESHOLD 的自动加载监听忽略（否则连锁翻页）。
+    // rAF 兜底：若补偿实际无位移不产生 scroll 事件，需清掉抑制标记，
     // 避免吞掉下一次用户滚动（scroll 事件任务先于 rAF 派发，顺序安全）。
     programmaticScrollRef.current = true;
-    timeline.scrollTop = nextScrollTop;
-    loadMoreAnchorRef.current = undefined;
+    timeline.scrollTop = timeline.scrollTop + heightDelta;
     const frame = requestAnimationFrame(() => {
       programmaticScrollRef.current = false;
     });
@@ -1268,6 +1285,8 @@ export function useSessionTimelineController(options: {
     nextLoadIsHistory: controllerEnabled && !diskPage && historyHasMore,
     isLoadingMoreMessages: diskPage || historyHasMore ? isLoadingMessagePage : false,
     loadMoreMessages,
+    hasPendingLoadMoreAnchor,
+    refreshLoadMoreAnchorBaseline,
     markProgrammaticScroll,
     jumpToMessage,
     scrollToBottom,

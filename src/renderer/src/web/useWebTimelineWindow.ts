@@ -6,8 +6,8 @@
  *   新到达的轮次只追加在下方，不把正在阅读的内容挤出窗口。
  * - 历史入口：先展开已加载但被窗口隐藏的更早轮次（不发请求），
  *   再向磁盘请求更早页（由调用方 onLoadMore 负责），新页落地后必须真正可见。
- * - 顶部前插/展开的滚动锚点补偿：刷新前记录可见起点身份与偏移，刷新后恢复，
- *   落在顶部时不补偿，让新内容直接出现在视口顶部（与桌面端同一约定）。
+ * - 顶部前插/展开的滚动锚点补偿：刷新前记录可见起点身份与偏移，刷新后恢复；
+ *   贴顶也同样恢复，阅读位置不换屏（与桌面端同一约定）。
  *
  * 只做展示切片，不修改底层消息、不调用 setMessages。
  */
@@ -23,8 +23,6 @@ import { uiMessageRole } from "./webMessageMetadata";
 
 /** 跟随底部的判定阈值（px）：与此前 WebTimeline 的 160px 行为一致。 */
 const BOTTOM_THRESHOLD = 160;
-/** 视口位于顶部时不做锚点补偿（让新加载的更早内容直接可见）。 */
-const TOP_REVEAL_THRESHOLD = 24;
 
 type VisibleAnchor = { id: string; offset: number };
 type PendingDiskReveal = {
@@ -151,9 +149,7 @@ export function useWebTimelineWindow(input: {
 	const restoreVisibleAnchor = useCallback((anchor: VisibleAnchor) => {
 		const el = timelineRef.current;
 		if (!el) return;
-		// 视口已在顶部：不补偿，让新展开/加载的更早内容直接出现在顶部
-		// （与桌面端 resolveTimelineTopCompensation 同一约定）。
-		if (el.scrollTop <= TOP_REVEAL_THRESHOLD) return;
+		// 贴顶也要补偿：scrollTop 留在顶部会让新展开/加载的更早内容直接占住当前屏。
 		const nodes = el.querySelectorAll("[data-web-message-id]");
 		const containerTop = el.getBoundingClientRect().top;
 		for (const node of nodes) {

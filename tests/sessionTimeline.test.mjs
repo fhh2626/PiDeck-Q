@@ -122,20 +122,57 @@ test("prepend scroll compensation is skipped while following bottom and marks pr
   // 跟底中（autoScrollRef=true）不恢复旧锚点：贴底引擎负责生长补偿，避免把用户拽回顶部；
   // 非跟底时标记程序化滚动，防止补偿的 scrollTop 赋值触发 ≤240px 自动加载。
   assert.match(source, /if \(autoScrollRef\.current\) \{\n\s*loadMoreAnchorRef\.current = undefined;\n\s*return;\n\s*\}/);
-  assert.match(source, /programmaticScrollRef\.current = true;\n\s*timeline\.scrollTop = nextScrollTop;/);
+  assert.match(source, /programmaticScrollRef\.current = true;\n\s*timeline\.scrollTop = timeline\.scrollTop \+ heightDelta;/);
   assert.match(source, /requestAnimationFrame\(\(\) => \{\n\s*programmaticScrollRef\.current = false;/);
 });
 
-test("load-more compensation is skipped at the very top so prepended content stays visible", () => {
-  // 2026-02 回归：视口在顶部（≤8px 阈值）时 prepend/展开不补偿 scrollTop——
-  // 容器 overflow-anchor:none，插入内容不会自动调整滚动位置，补偿会把新内容推出视口上方，
-  // 表现为「点击加载更多/显示更早无反馈」。中部才按高度差补偿保持视口内容不动。
+test("load-more compensation also compensates at the very top so the viewport does not change screen", () => {
+  // 前插/展开后始终按高度差补偿：贴顶也要加，scrollTop 留在 0 会让新内容占住当前屏
+  // （滚轮/拖进度条/按钮加载“乱跳”根因）。不再返回 null。
   const { resolveTimelineTopCompensation } = loadTimelineHelpers();
-  assert.equal(resolveTimelineTopCompensation(0, 600), null);
-  assert.equal(resolveTimelineTopCompensation(8, 600), null);
+  assert.equal(resolveTimelineTopCompensation(0, 600), 600);
+  assert.equal(resolveTimelineTopCompensation(8, 600), 608);
   assert.equal(resolveTimelineTopCompensation(240, 600), 840);
   assert.equal(resolveTimelineTopCompensation(9, -100), -91);
   assert.equal(resolveTimelineTopCompensation(240, 0), 240);
+});
+
+test("history prepend compensates from the landing scrollTop, not the request-time position", () => {
+  // 补偿必须用落地那一刻的 scrollTop 加高度差：用请求开始时的 anchor.value.top 写回
+  // 会把等待期间继续滚动（或拖进度条）的用户拉回旧位置。
+  assert.match(source, /timeline\.scrollTop = timeline\.scrollTop \+ heightDelta/);
+  assert.doesNotMatch(source, /anchor\.value\.top/);
+  assert.match(source, /const heightDelta = timeline\.scrollHeight - anchor\.value\.height/);
+  // 高度差为 0 时不得设置程序化滚动标记：delta=0 不产生 scroll 事件，
+  // 留着标记会吞掉下一次真实用户滚动。
+  assert.match(source, /if \(heightDelta === 0\) return;/);
+});
+
+test("the top-compensation helper no longer has a skip-at-top branch", () => {
+  const fnBody = source.slice(
+    source.indexOf("export function resolveTimelineTopCompensation"),
+    source.indexOf("export function matchesTimelineOwner"),
+  );
+  assert.ok(fnBody.length > 0);
+  assert.doesNotMatch(fnBody, /return null/);
+  assert.doesNotMatch(fnBody, /threshold/);
+});
+
+test("desktop turn-window compensation defers to a pending history anchor", () => {
+  // 补页成功会同时前插消息与 +10 轮（同一帧）：只允许 controller 补偿一次，
+  // turn 窗口 effect 让位；无锚点时自己用当前 scrollTop 加高度差补偿（贴顶亦然）。
+  assert.match(timelineComponentSource, /controller\.hasPendingLoadMoreAnchor/);
+  assert.match(timelineComponentSource, /controller\.refreshLoadMoreAnchorBaseline/);
+  assert.match(timelineComponentSource, /timeline\.scrollTop \+ \(nextHeight - prev\.height\)/);
+  assert.doesNotMatch(timelineComponentSource, /resolveTimelineTopCompensation/);
+});
+
+test("web timeline restores the visible anchor even at the very top", () => {
+  const webSource = readFileSync("src/renderer/src/web/useWebTimelineWindow.ts", "utf8");
+  assert.doesNotMatch(webSource, /TOP_REVEAL_THRESHOLD/);
+  assert.doesNotMatch(webSource, /scrollTop <=/);
+  // 磁盘页落地后再捕获锚点的现行为不得退化回点击时捕获
+  assert.match(webSource, /pendingAnchorRef\.current = captureVisibleAnchor\(\);/);
 });
 
 test("runtime history still has more after a cursor-less slide-out prefix", () => {
