@@ -346,6 +346,8 @@ type AbortRecoverySingleResult = SingleResult & { [AFTER_COMPACTION_SETTLEMENT]?
 const settledReadonlySource = new WeakMap<SingleResult, ChildSession>();
 
 const STOPPED_BEFORE_COMPLETION_ERROR = "Subagent stopped before completion.";
+/** agent_end 之后既无 agent_settled 也无干净助手 stop：停止但没有结果，必须回主 agent。 */
+const UNSETTLED_STOP_ERROR = "Subagent stopped without a result.";
 
 
 async function runSingleAttempt(
@@ -678,6 +680,10 @@ async function runSingleAttempt(
 		// without it.
 		const FINAL_STOP_GRACE_MS = 1000;
 		const HARD_FINISH_MS = 3000;
+		// agent_end 之后仍未拿到终态时的短等待：超过了就按「停止但没有结果」结束，
+		// 不能让主 agent 的工具调用干等到整轮超时。
+		const UNSETTLED_AGENT_END_GRACE_MS = 4000;
+		const UNSETTLED_AGENT_END_HARD_FINISH_MS = 4000;
 		let forcedTermination = false;
 		let cleanTerminalAssistantStopReceived = false;
 		let agentSettledReceived = false;
@@ -685,6 +691,8 @@ async function runSingleAttempt(
 		let finalDrainTimer: NodeJS.Timeout | undefined;
 		let finalHardFinishTimer: NodeJS.Timeout | undefined;
 		let watchdogTailTimer: NodeJS.Timeout | undefined;
+		let unsettledAgentEndTimer: NodeJS.Timeout | undefined;
+		let unsettledAgentEndHardFinishTimer: NodeJS.Timeout | undefined;
 		let childWatchdogState: ChildWatchdogStateSnapshot | undefined;
 		const updateChildWatchdogState = (snapshot: ChildWatchdogStateSnapshot): void => {
 			childWatchdogState = snapshot;
@@ -706,6 +714,38 @@ async function runSingleAttempt(
 				clearTimeout(finalHardFinishTimer);
 				finalHardFinishTimer = undefined;
 			}
+		};
+		const clearUnsettledAgentEndTimers = () => {
+			if (unsettledAgentEndTimer) {
+				clearTimeout(unsettledAgentEndTimer);
+				unsettledAgentEndTimer = undefined;
+			}
+			if (unsettledAgentEndHardFinishTimer) {
+				clearTimeout(unsettledAgentEndHardFinishTimer);
+				unsettledAgentEndHardFinishTimer = undefined;
+			}
+		};
+		const armUnsettledAgentEndTimer = () => {
+			if (sessionSettled || lifecycleFinished || agentSettledReceived || cleanTerminalAssistantStopReceived) return;
+			// 已挂载就不重置：重复的 agent_end 不得把等待窗口重新计时。
+			if (unsettledAgentEndTimer) return;
+			unsettledAgentEndTimer = setTimeout(() => {
+				if (lifecycleFinished || sessionSettled || agentSettledReceived || cleanTerminalAssistantStopReceived || childLifecycleState.compactionRetryActive) return;
+				unsettledAgentEndTimer = undefined;
+				if (!result.error) result.error = UNSETTLED_STOP_ERROR;
+				if (!result.finalOutput) result.finalOutput = UNSETTLED_STOP_ERROR;
+				progress.status = "failed";
+				progress.error = UNSETTLED_STOP_ERROR;
+				progress.durationMs = Date.now() - startTime;
+				fireUpdate();
+				abortChild();
+				unsettledAgentEndHardFinishTimer = setTimeout(() => {
+					if (lifecycleFinished || sessionSettled) return;
+					settle(undefined, true);
+				}, UNSETTLED_AGENT_END_HARD_FINISH_MS);
+				unsettledAgentEndHardFinishTimer.unref?.();
+			}, UNSETTLED_AGENT_END_GRACE_MS);
+			unsettledAgentEndTimer.unref?.();
 		};
 		const startFinalDrain = () => {
 			if (childWatchdogIsActive(childWatchdogState)) {
@@ -745,12 +785,20 @@ async function runSingleAttempt(
 			watchdogTailTimer.unref?.();
 		}
 		const applyChildLifecycle = (action: ChildLifecycleAction): void => {
-			if (action === "cancel-drain") {
+			if (action === "cancel-drain" || action === "cancel-unsettled-end") {
 				clearFinalDrainTimers();
 				clearWatchdogTailTimer();
+				clearUnsettledAgentEndTimers();
 				return;
 			}
-			if (action === "start-drain") startFinalDrain();
+			if (action === "arm-unsettled-end") {
+				armUnsettledAgentEndTimer();
+				return;
+			}
+			if (action === "start-drain") {
+				clearUnsettledAgentEndTimers();
+				startFinalDrain();
+			}
 		};
 		const childLifecycleState: ChildLifecycleState = { compactionRetryActive: false };
 
@@ -775,6 +823,7 @@ async function runSingleAttempt(
 			lifecycleFinished = true;
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
+			clearUnsettledAgentEndTimers();
 			clearTimeoutTimers();
 			clearAllToolTimeouts();
 			if (activityTimer) {
@@ -1291,6 +1340,7 @@ async function runSingleAttempt(
 			if (lifecycleFinished || sessionSettled) return;
 			sessionSettled = true;
 			clearFinalDrainTimers();
+			clearUnsettledAgentEndTimers();
 			const diagnostic = capture.toolDiagnostic();
 			const toolDiagnosticError = diagnostic ? formatChildToolDiagnostic(diagnostic, { host: "parent" }) : undefined;
 			toolAvailabilityError = toolDiagnosticError;

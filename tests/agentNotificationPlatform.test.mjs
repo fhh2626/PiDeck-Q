@@ -273,7 +273,7 @@ function createSettledHarness({
 	return { manager, showCalls, warnCalls, focusCalls, focusLast };
 }
 
-function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole = "assistant", piSessionId } = {}) {
+function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole = "assistant", piSessionId, isInternalSubagent } = {}) {
 	const tab = {
 		id: agentId,
 		projectId: "project-1",
@@ -283,6 +283,7 @@ function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole =
 		createdAt: 1,
 	};
 	if (piSessionId !== undefined) tab.sessionId = piSessionId;
+	if (isInternalSubagent !== undefined) tab.isInternalSubagent = isInternalSubagent;
 	manager.agents.set(agentId, {
 		tab,
 		process: { isRunning: () => true, client: { request: async () => ({ success: true }) } },
@@ -554,4 +555,21 @@ test("notification.show throwing does not break settled and runtime still idles"
 	assert.equal(manager.agents.get("agent-throw").tab.status, "idle");
 	// show 抛错被 notifySessionEnd 的 try/catch 吞掉，不应有 onFailed warn（show 没返回）
 	assert.equal(warnCalls.length, 0);
+});
+
+test("internal subagent settle idles the tab without a system notification", () => {
+	const { manager, showCalls } = createSettledHarness({
+		resolveRecordId: () => "rec-internal",
+	});
+	attachRuntime(manager, "agent-internal", {
+		runtimeStatus: "running",
+		lastRole: "assistant",
+		isInternalSubagent: true,
+	});
+
+	manager.handlePiEvent("agent-internal", { type: "agent_settled" });
+
+	assert.equal(showCalls.length, 0, "hidden subagent sessions must not raise a system notification");
+	// 不弹通知不代表不结算：缓存与状态仍必须回到 idle
+	assert.equal(manager.agents.get("agent-internal").tab.status, "idle");
 });

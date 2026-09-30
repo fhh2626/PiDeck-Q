@@ -167,6 +167,12 @@ function omitUndefined<T extends object>(value: T): T {
 const FINAL_STOP_GRACE_MS = 1000;
 const HARD_FINISH_MS = 3000;
 const ABORT_SETTLE_MS = 3000;
+// agent_end 之后仍未拿到终态时的短等待：超过了就按「停止但没有结果」结束，
+// 不能让主 agent 的工具调用干等到整轮超时。
+const UNSETTLED_AGENT_END_GRACE_MS = 4000;
+const UNSETTLED_AGENT_END_HARD_FINISH_MS = 4000;
+/** 子会话这一轮已结束、却既无 agent_settled 也无干净助手 stop 时的错误文案。 */
+const UNSETTLED_STOP_ERROR = "Subagent stopped without a result.";
 
 export function runChildSession(input: RunChildSessionInput): Promise<RunChildSessionResult> {
 	return new Promise((resolve) => {
@@ -199,6 +205,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		let finalHardFinishTimer: NodeJS.Timeout | undefined;
 		let watchdogTailTimer: NodeJS.Timeout | undefined;
 		let abortSettleTimer: NodeJS.Timeout | undefined;
+		let unsettledAgentEndTimer: NodeJS.Timeout | undefined;
+		let unsettledAgentEndHardFinishTimer: NodeJS.Timeout | undefined;
 		let childWatchdogState: ChildWatchdogStateSnapshot | undefined;
 		const childLifecycleState: ChildLifecycleState = { compactionRetryActive: false };
 		const timeoutMessage = () => input.timeoutMessage ?? "Subagent timed out.";
@@ -294,6 +302,33 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				finalHardFinishTimer = undefined;
 			}
 		};
+		const clearUnsettledAgentEndTimers = (): void => {
+			if (unsettledAgentEndTimer) {
+				clearTimeout(unsettledAgentEndTimer);
+				unsettledAgentEndTimer = undefined;
+			}
+			if (unsettledAgentEndHardFinishTimer) {
+				clearTimeout(unsettledAgentEndHardFinishTimer);
+				unsettledAgentEndHardFinishTimer = undefined;
+			}
+		};
+		const armUnsettledAgentEndTimer = (): void => {
+			if (settled || promptSettled || agentSettledReceived || cleanTerminalAssistantStopReceived) return;
+			// 已挂载就不重置：重复的 agent_end 不得把等待窗口重新计时。
+			if (unsettledAgentEndTimer) return;
+			unsettledAgentEndTimer = setTimeout(() => {
+				if (settled || promptSettled || agentSettledReceived || cleanTerminalAssistantStopReceived || childLifecycleState.compactionRetryActive) return;
+				unsettledAgentEndTimer = undefined;
+				if (!error) error = UNSETTLED_STOP_ERROR;
+				abortChild();
+				unsettledAgentEndHardFinishTimer = setTimeout(() => {
+					if (settled || promptSettled) return;
+					settle(undefined, true);
+				}, UNSETTLED_AGENT_END_HARD_FINISH_MS);
+				unsettledAgentEndHardFinishTimer.unref?.();
+			}, UNSETTLED_AGENT_END_GRACE_MS);
+			unsettledAgentEndTimer.unref?.();
+		};
 		function armWatchdogTail(): void {
 			if ((!cleanTerminalAssistantStopReceived && !agentSettledReceived) || watchdogTailTimer || settled || promptSettled) return;
 			watchdogTailTimer = setTimeout(() => {
@@ -333,12 +368,20 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			finalDrainTimer.unref?.();
 		}
 		const applyChildLifecycle = (action: ChildLifecycleAction): void => {
-			if (action === "cancel-drain") {
+			if (action === "cancel-drain" || action === "cancel-unsettled-end") {
 				clearFinalDrainTimers();
 				clearWatchdogTailTimer();
+				clearUnsettledAgentEndTimers();
 				return;
 			}
-			if (action === "start-drain") startFinalDrain();
+			if (action === "arm-unsettled-end") {
+				armUnsettledAgentEndTimer();
+				return;
+			}
+			if (action === "start-drain") {
+				clearUnsettledAgentEndTimers();
+				startFinalDrain();
+			}
 		};
 
 		let toolTimeoutSequence = 0;
@@ -514,6 +557,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		const finish = (): Promise<void> => {
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
+			clearUnsettledAgentEndTimers();
 			clearAllToolTimeouts();
 			if (abortSettleTimer) {
 				clearTimeout(abortSettleTimer);
@@ -532,6 +576,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		const settle = (promptError: unknown, forced = false): void => {
 			if (settled) return;
 			settled = true;
+			clearUnsettledAgentEndTimers();
 			const closed = finish();
 			const finalOutput = getFinalOutput(messages);
 			let finalError = error ?? assistantError;

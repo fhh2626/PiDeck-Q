@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { resultFilePath, resultPayloadPathForSessionRun, writeAsyncResultFile } from "./result-files.ts";
+import { readProcessTerminal } from "./process-terminal.ts";
 import { updateActiveRunIndex } from "./active-run-index.ts";
 import { readStatus } from "../../shared/utils.ts";
 import { DIRS, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
@@ -401,6 +402,18 @@ export function reconcileAsyncRun(asyncDir: string, options: ReconcileAsyncRunOp
 
 	const liveness = checkPidLiveness(effectiveStatus.pid, options.kill);
 	if (liveness !== "dead") {
+		// pid 检查无法确认退出（例如 EPERM）时，进程退出证明是更强的在场证据：
+		// observed 表示 runner close 已被记录且实例校验通过，直接按失败修复，
+		// 不再等 24 小时的 stale 阈值。alive 不读这份证明，避免旧证明误杀新 runner。
+		if (liveness === "unknown") {
+			const proof = readProcessTerminal(asyncDir, {
+				runId,
+				...(effectiveStatus.processTerminal?.runnerProcessInstanceId
+					? { runnerProcessInstanceId: effectiveStatus.processTerminal.runnerProcessInstanceId }
+					: {}),
+			});
+			if (proof?.state === "observed") return writeFailedRepair(asyncDir, effectiveStatus, resultPath, now);
+		}
 		const staleAfterMs = options.staleAlivePidMs ?? 24 * 60 * 60 * 1000;
 		const lastUpdate = effectiveStatus.lastUpdate ?? effectiveStatus.startedAt;
 		if (now - lastUpdate <= staleAfterMs) return { status: status ?? null, repaired: false, resultPath };

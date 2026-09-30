@@ -4102,8 +4102,9 @@ export class AgentManager {
 				const messages = this.messages.get(agentId) ?? [];
 				const lastMessage = messages[messages.length - 1];
 				// 手动停止（abort）不算正常完成：与下方 notifyAgentSettled 同一判断，
-				// 停止会话后不弹「已完成」系统通知（用户主动中止，无需提醒）
-				if (lastMessage?.role === "assistant" && !isAbortSettled) {
+				// 停止会话后不弹「已完成」系统通知（用户主动中止，无需提醒）。
+				// 内部 subagent runtime 自行结束同样不提醒：用户没有在等这个隐藏会话。
+				if (lastMessage?.role === "assistant" && !isAbortSettled && runtime.tab.isInternalSubagent !== true) {
 					this.notifySessionEnd(agentId, runtime.tab.title);
 				}
 			} else if (runtime && runtime.tab.status === "error") {
