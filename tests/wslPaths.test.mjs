@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -32,19 +33,8 @@ function loadWslEnvironment(paths) {
 	return sandbox.exports;
 }
 
-function loadProjectStore(paths, dialog) {
-	const sandbox = {
-		exports: {},
-		require: (id) => {
-			if (id === "electron") {
-				return { app: { getPath: () => "/tmp/pideck-test" }, dialog };
-			}
-			if (id === "../wsl/WslPaths") return paths;
-			return require(id);
-		},
-	};
-	vm.runInNewContext(transpile("src/main/projects/ProjectStore.ts"), sandbox, { filename: "ProjectStore.ts" });
-	return sandbox.exports;
+function loadProjectStore(paths) {
+	return loadTsCommonJs("src/main/projects/ProjectStore.ts", { stubs: { "../wsl/WslPaths": paths } });
 }
 
 const paths = loadWslPaths();

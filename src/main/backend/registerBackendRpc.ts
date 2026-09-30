@@ -349,6 +349,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 	modelSpecsStore.warm();
 
 	registerFilesIpc(router, {
+		mainCopy,
 		fileSystemService,
 		projectStore,
 		settingsStore,

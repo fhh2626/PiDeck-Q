@@ -262,6 +262,35 @@ test("appendWslEnvName merges, dedupes and keeps existing entries", () => {
 	assert.equal(appendWslEnvName("", "A"), "A");
 });
 
+test("WSL keeps an opaque session id verbatim and still converts security file paths", async () => {
+	const spawnCalls = [];
+	const { PiProcess } = loadPiProcess(spawnCalls);
+	const sessionId = "11111111-2222-4333-8444-555555555555";
+	const piProc = new PiProcess(
+		"//wsl.localhost/Ubuntu-24.04/root/ba_cli",
+		settings,
+		createLocator([]),
+		{
+			securitySessionId: sessionId,
+			securitySnapshotPath: "C:\\pideck\\security.json",
+			resolveBuiltInExtensionPaths: () => ["C:\\pideck\\pi-deck-security-gate.ts"],
+		},
+	);
+
+	await piProc.start();
+
+	const env = spawnCalls[0].options.env;
+	assert.equal(env.PIDECK_SESSION_ID, sessionId);
+	assert.equal(env.PIDECK_SECURITY_CONFIG, "/mnt/c/pideck/security.json");
+	assert.equal(env.PIDECK_SECURITY_GATE_EXTENSION, "/mnt/c/pideck/pi-deck-security-gate.ts");
+	const names = env.WSLENV.split(":").map((entry) => entry.split("/")[0]);
+	assert.ok(names.includes("PIDECK_SESSION_ID"));
+	assert.ok(names.includes("PIDECK_SECURITY_CONFIG"));
+	assert.ok(names.includes("PIDECK_SECURITY_GATE_EXTENSION"));
+	assert.equal(env.WSLENV.includes("PIDECK_SESSION_ID/p"), false);
+	assert.equal(spawnCalls.length, 1);
+});
+
 // 非 WSL 模式：只设 PIDECK_UI_LANGUAGE，不引入 WSLENV。
 test("native spawn sets PIDECK_UI_LANGUAGE without WSLENV", async () => {
 	const spawnCalls = [];

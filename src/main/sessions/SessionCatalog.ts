@@ -42,6 +42,8 @@ export type SessionCatalogEntry = {
 	isInternalSubagent?: boolean;
 	/** 子会话标记：扫描时从 SessionSummary 继承，持久化供 getRecord/listEntries 重建（不丢树形） */
 	parentSessionPath?: string;
+	/** 扫描得到的小型展示元数据。不保存消息正文，供缓存读取与重启后回显。 */
+	scanMetadata?: SessionCatalogScanMetadata;
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 	piSessionId?: string;
@@ -79,10 +81,86 @@ export type SessionFilePathResolver = (
 	environment: SessionEnvironment,
 ) => string;
 
+export type SessionCatalogScanMetadata = {
+	projectPath?: string;
+	preview?: string;
+	messageCount?: number;
+	wsl?: boolean;
+	codexSessionId?: string;
+	codexThreadSource?: "user" | "subagent";
+	codexParentThreadId?: string;
+	codexAgentRole?: string;
+	codexAgentNickname?: string;
+};
+
+const SCAN_PREVIEW_LIMIT = 160;
+const SCAN_METADATA_KEYS = [
+	"codexSessionId",
+	"codexParentThreadId",
+	"codexAgentRole",
+	"codexAgentNickname",
+] as const;
+
+export function sanitizeScanMetadata(value: unknown): SessionCatalogScanMetadata | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	const metadata: SessionCatalogScanMetadata = {};
+	if (typeof raw.projectPath === "string") metadata.projectPath = raw.projectPath;
+	if (typeof raw.preview === "string") metadata.preview = raw.preview.slice(0, SCAN_PREVIEW_LIMIT);
+	if (
+		typeof raw.messageCount === "number" &&
+		Number.isInteger(raw.messageCount) &&
+		raw.messageCount >= 0 &&
+		raw.messageCount <= 1_000_000
+	) {
+		metadata.messageCount = raw.messageCount;
+	}
+	if (typeof raw.wsl === "boolean") metadata.wsl = raw.wsl;
+	if (raw.codexThreadSource === "user" || raw.codexThreadSource === "subagent") {
+		metadata.codexThreadSource = raw.codexThreadSource;
+	}
+	for (const key of SCAN_METADATA_KEYS) {
+		if (typeof raw[key] === "string") metadata[key] = raw[key];
+	}
+	return metadata;
+}
+
+function sameScanMetadata(
+	left: SessionCatalogScanMetadata | undefined,
+	right: SessionCatalogScanMetadata | undefined,
+): boolean {
+	const a = left ?? {};
+	const b = right ?? {};
+	return a.projectPath === b.projectPath &&
+		a.preview === b.preview &&
+		a.messageCount === b.messageCount &&
+		a.wsl === b.wsl &&
+		a.codexThreadSource === b.codexThreadSource &&
+		SCAN_METADATA_KEYS.every((key) => a[key] === b[key]);
+}
+
+export function assignParentSessionIds(records: SessionRecord[]): void {
+	const idByPath = new Map<string, string>();
+	for (const record of records) {
+		if (!record.filePath) continue;
+		idByPath.set(canonicalizeSessionPath(record.filePath, record.environment), record.id);
+	}
+	for (const record of records) {
+		if (!record.parentSessionPath) {
+			record.parentSessionId = undefined;
+			continue;
+		}
+		record.parentSessionId = idByPath.get(
+			canonicalizeSessionPath(record.parentSessionPath, record.environment),
+		);
+	}
+}
+
 function cloneEntry(entry: SessionCatalogEntry): SessionCatalogEntry {
 	return {
 		...entry,
 		model: entry.model ? { ...entry.model } : undefined,
+		scanMetadata: entry.scanMetadata ? { ...entry.scanMetadata } : undefined,
 	};
 }
 
@@ -141,6 +219,10 @@ export class SessionCatalog {
 		private readonly filePath: string,
 		identityContext: SessionCatalogContext = {},
 		private readonly resolveFilePath?: SessionFilePathResolver,
+		private readonly resolveProjectPath?: (
+			projectId: string,
+			environment: SessionEnvironment,
+		) => string | undefined,
 	) {
 		this.identityContext = { ...identityContext };
 	}
@@ -261,7 +343,38 @@ export class SessionCatalog {
 
 	getRecord(id: string): SessionRecord | undefined {
 		const entry = this.get(id);
-		return entry ? this.recordFromEntry(entry) : undefined;
+		if (!entry) return undefined;
+		const record = this.recordFromEntry(entry);
+		if (record.parentSessionPath) {
+			const parentPath = canonicalizeSessionPath(record.parentSessionPath, entry.environment);
+			// 单条查询只查找父身份，不为每一条重建并排序整个项目。
+			const parent = this.entries.findLast((candidate) =>
+				candidate.projectId === entry.projectId && candidate.filePath &&
+				canonicalizeSessionPath(candidate.filePath, candidate.environment) === parentPath,
+			);
+			record.parentSessionId = parent?.id;
+		}
+		return record;
+	}
+
+	/** 批量构建目录记录，父关系按项目隔离；Web 全量读取只需一次映射和排序。 */
+	listRecords(projectId?: string): SessionRecord[] {
+		this.assertLoaded();
+		const records = [...this.transientEntries.values(), ...this.entries]
+			.filter((entry) => projectId === undefined || entry.projectId === projectId)
+			.map((entry) => this.recordFromEntry(entry));
+		const byProject = new Map<string, SessionRecord[]>();
+		for (const record of records) {
+			const group = byProject.get(record.projectId) ?? [];
+			group.push(record);
+			byProject.set(record.projectId, group);
+		}
+		for (const group of byProject.values()) assignParentSessionIds(group);
+		return records.sort((left, right) => right.updatedAt - left.updatedAt);
+	}
+
+	listProjectRecords(projectId: string): SessionRecord[] {
+		return this.listRecords(projectId);
 	}
 
 	findByFilePath(
@@ -583,25 +696,27 @@ export class SessionCatalog {
 				}
 				summaryById.set(entry.id, summary);
 				inheritSessionMeta(entry, summary);
+				const nextMetadata = sanitizeScanMetadata({
+					projectPath: summary.projectPath,
+					preview: summary.preview ?? "",
+					messageCount: summary.messageCount ?? 0,
+					wsl: summary.wsl,
+					codexSessionId: summary.codexSessionId,
+					codexThreadSource: summary.codexThreadSource,
+					codexParentThreadId: summary.codexParentThreadId,
+					codexAgentRole: summary.codexAgentRole,
+					codexAgentNickname: summary.codexAgentNickname,
+				});
+				if (!sameScanMetadata(entry.scanMetadata, nextMetadata)) {
+					entry.scanMetadata = nextMetadata;
+					changed = true;
+				}
 			}
 
 			const records = entries
 				.filter((entry) => entry.projectId === projectId)
 				.map((entry) => this.recordFromEntry(entry, summaryById.get(entry.id)));
-			const idByPath = new Map<string, string>();
-			for (const record of records) {
-				if (!record.filePath) continue;
-				idByPath.set(
-					canonicalizeSessionPath(record.filePath, record.environment),
-					record.id,
-				);
-			}
-			for (const record of records) {
-				if (!record.parentSessionPath) continue;
-				record.parentSessionId = idByPath.get(
-					canonicalizeSessionPath(record.parentSessionPath, record.environment),
-				);
-			}
+			assignParentSessionIds(records);
 			return {
 				value: records.sort((left, right) => right.updatedAt - left.updatedAt),
 				changed,
@@ -633,20 +748,20 @@ export class SessionCatalog {
 				: entry.importedSourceId,
 			isInternalSubagent: summary?.isInternalSubagent ?? entry.isInternalSubagent,
 			parentSessionPath: summary?.parentSessionPath ?? entry.parentSessionPath,
-			projectPath: summary?.projectPath,
-			preview: summary?.preview ?? "",
-			messageCount: summary?.messageCount ?? 0,
+			projectPath: summary?.projectPath ?? entry.scanMetadata?.projectPath ?? this.resolveProjectPath?.(entry.projectId, entry.environment),
+			preview: summary?.preview ?? entry.scanMetadata?.preview ?? "",
+			messageCount: summary?.messageCount ?? entry.scanMetadata?.messageCount ?? 0,
 			status: entry.status,
 			model: entry.model ? { ...entry.model } : undefined,
 			thinkingLevel: entry.thinkingLevel,
 			createdAt: entry.createdAt,
 			updatedAt: summary?.updatedAt ?? entry.updatedAt,
-			wsl: summary?.wsl,
-			codexSessionId: summary?.codexSessionId,
-			codexThreadSource: summary?.codexThreadSource,
-			codexParentThreadId: summary?.codexParentThreadId,
-			codexAgentRole: summary?.codexAgentRole,
-			codexAgentNickname: summary?.codexAgentNickname,
+			wsl: summary?.wsl ?? entry.scanMetadata?.wsl,
+			codexSessionId: summary?.codexSessionId ?? entry.scanMetadata?.codexSessionId,
+			codexThreadSource: summary?.codexThreadSource ?? entry.scanMetadata?.codexThreadSource,
+			codexParentThreadId: summary?.codexParentThreadId ?? entry.scanMetadata?.codexParentThreadId,
+			codexAgentRole: summary?.codexAgentRole ?? entry.scanMetadata?.codexAgentRole,
+			codexAgentNickname: summary?.codexAgentNickname ?? entry.scanMetadata?.codexAgentNickname,
 		};
 	}
 
@@ -747,7 +862,11 @@ export class SessionCatalog {
 		if (entries.length !== parsed.sessions.length) {
 			throw new Error(`Session catalog contains invalid records: ${filePath}`);
 		}
-		return entries.map(cloneEntry);
+		return entries.map((entry) => {
+			const cloned = cloneEntry(entry);
+			if ("scanMetadata" in entry) cloned.scanMetadata = sanitizeScanMetadata(entry.scanMetadata);
+			return cloned;
+		});
 	}
 
 	private async writeSnapshot(entries: SessionCatalogEntry[]): Promise<void> {

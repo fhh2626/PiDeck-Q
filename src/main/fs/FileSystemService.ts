@@ -95,8 +95,18 @@ export class FileSystemService {
 		}
 		if (type === "directory") {
 			await mkdir(fullPath, { recursive: true });
+		} else if (type === "file") {
+			try {
+				// wx 保证创建是独占的：已有文件不会被截断，并发创建也只有一个成功。
+				await writeFile(fullPath, "", { encoding: "utf8", flag: "wx" });
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") {
+					throw new Error(`File already exists: ${fullPath}`);
+				}
+				throw error;
+			}
 		} else {
-			await writeFile(fullPath, "", "utf8");
+			throw new TypeError("File type must be file or directory.");
 		}
 		return fullPath;
 	}

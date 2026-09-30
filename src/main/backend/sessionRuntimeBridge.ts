@@ -232,40 +232,16 @@ export function createSessionRuntimeBridge(
 		emitSessionRuntimeDetach(binding);
 	}
 
-	async function activateAnonymousRuntime(
-		session: SessionRecord,
-		project: Project,
-		input: CreateAnonymousSessionInput,
-	): Promise<void> {
-		let agentId: string | undefined;
-		try {
-			const tab = await agentManager.create({
-				projectId: project.id,
-				title: session.title,
-				environment: session.environment,
-				source: "pi",
-				wslDistro: session.wslDistro,
-				wslUser: session.wslUser,
-				noSession: true,
-			});
-			agentId = tab.id;
-			const runtime = sessionRuntimeCoordinator.bindAnonymousRuntime(session.id, tab.id);
-			// Anonymous Agent 使用 --no-session 创建，不会经过普通 activateRuntime 的恢复流程；
-			// 因此在绑定后显式应用引导页选择，确保 pi 不再按自身默认优先级启动。
-			if (input.model) {
-				const result = await sessionRuntimeCoordinator.setRuntimeModel(runtime, input.model.provider, input.model.modelId);
-				if (!result.ok) throw new Error(result.error.code);
-			}
-			if (input.thinkingLevel) {
-				const result = await sessionRuntimeCoordinator.setRuntimeThinking(runtime, input.thinkingLevel);
-				if (!result.ok) throw new Error(result.error.code);
-			}
-			emitReplacementState(runtime, true);
-		} catch (error) {
-			if (agentId) await agentManager.stop(agentId).catch(() => undefined);
+	function startAnonymousActivation(session: SessionRecord, project: Project, input: CreateAnonymousSessionInput): void {
+		activatingAnonymousSessions.add(session.id);
+		// 必须同步进入 coordinator 的 activationBySession。首次发送走同一把锁，
+		// 不能再直接 agentManager.create，否则冷启动期间会造出第二个 Agent 并被后完成的绑定抢走。
+		const activation = sessionRuntimeCoordinator.activateRuntime(session.id);
+		void activation.then((result) => {
+			if (!result.ok) throw new Error(result.error.code);
+			emitReplacementState(result.value, true);
+		}).catch((error: unknown) => {
 			sessionCatalog.removeTransient(session.id);
-			// createUnlocked 内部已尽量把 pi 启动失败落到会话错误卡；这里兜底信任/项目查找等
-			// 前置异常，保证异步匿名启动失败仍可诊断且不会留下不可用的临时行。
 			void appLogger.error("agent", "Agent create IPC failed", {
 				projectId: project.id,
 				title: input.title,
@@ -274,9 +250,9 @@ export function createSessionRuntimeBridge(
 				platform: process.platform,
 				arch: process.arch,
 			});
-		} finally {
+		}).finally(() => {
 			activatingAnonymousSessions.delete(session.id);
-		}
+		});
 	}
 
 	async function createAnonymousSession(
@@ -332,8 +308,7 @@ export function createSessionRuntimeBridge(
 		});
 		// Agent 启动可能包含 spawn/get_state/历史准备；匿名会话先返回可选中的 Session，
 		// 再后台绑定 runtime。这样欢迎页点击后能立即进入输入框，启动失败仍通过 detach/日志收敛。
-		activatingAnonymousSessions.add(session.id);
-		void activateAnonymousRuntime(session, project, input).catch(() => undefined);
+		startAnonymousActivation(session, project, input);
 		sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: session.projectId });
 		return { session };
 	}

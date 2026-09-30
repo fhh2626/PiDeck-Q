@@ -29,15 +29,48 @@ type TerminalShellCandidate = {
  * 终端归属键：agent 用 `agent:<id>`，无 agent 的项目/历史会话终端用 `cwd:<normalized>`。
  * 主进程的 PTY 实例、回放 buffer 都按归属键隔离，保证项目间/agent 间终端绝不串台。
  */
-export function terminalOwnerKeyFor(target: TerminalTarget): string {
+export function terminalOwnerKeyFor(
+	target: TerminalTarget,
+	platform: NodeJS.Platform = globalThis.process?.platform ?? "win32",
+): string {
 	if (target.kind === "agent") return `agent:${target.agentId}`;
-	// Windows 路径大小写不敏感且分隔符可混用：归一化（统一分隔符 + 去首尾斜杠 +
-	// 小写）后做隔离键，避免同一目录因写法不同被当成两个终端桶。
-	const normalized = target.cwd
-		.replace(/[\\/]+/g, "/")
-		.replace(/^\/+|\/+$/g, "")
-		.toLowerCase();
-	return `cwd:${normalized}`;
+	return `cwd:${normalizeTerminalCwd(target.cwd, platform)}`;
+}
+
+/**
+ * 终端归属只对大小写不敏感的 Windows 本地路径折叠大小写。
+ * POSIX 路径和 WSL UNC 的 Linux 部分必须保留大小写，否则 /repo/Foo 与 /repo/foo 会串用终端。
+ */
+export function normalizeTerminalCwd(cwd: string, platform: NodeJS.Platform): string {
+	const wsl = parseWslTerminalUnc(cwd);
+	if (wsl) return `${wsl.prefix}${wsl.linuxPath}`;
+	if (isWindowsLocalPath(cwd, platform)) return normalizeWindowsLocalPath(cwd);
+	const normalized = cwd.replace(/\/+/g, "/");
+	if (normalized === "/") return "/";
+	return normalized.replace(/\/+$/g, "") || "/";
+}
+
+function parseWslTerminalUnc(cwd: string): { prefix: string; linuxPath: string } | null {
+	const match = cwd.match(/^[\\/]{2}(wsl\$|wsl\.localhost)[\\/]([^\\/]+)[\\/](.*)$/i);
+	if (!match) return null;
+	const linuxPath = `/${match[3].replace(/[\\/]+/g, "/").replace(/\/+$/g, "")}`;
+	return {
+		prefix: `//${match[1].toLowerCase()}/${match[2].toLowerCase()}`,
+		linuxPath: linuxPath === "/" ? "/" : linuxPath,
+	};
+}
+
+function isWindowsLocalPath(cwd: string, platform: NodeJS.Platform): boolean {
+	if (/^[A-Za-z]:[\\/]/.test(cwd) || /^[A-Za-z]:$/.test(cwd)) return true;
+	if (/^[\\/]{2}/.test(cwd)) return true;
+	return platform === "win32" && !cwd.startsWith("/");
+}
+
+function normalizeWindowsLocalPath(cwd: string): string {
+	const normalized = cwd.replace(/[\\/]+/g, "/");
+	if (/^[A-Za-z]:\/?$/.test(normalized)) return `${normalized.slice(0, 2).toLowerCase()}/`;
+	if (normalized === "//") return "//";
+	return normalized.replace(/\/+$/g, "").toLowerCase();
 }
 
 export function isAgentOwnerKey(ownerKey: string): boolean {

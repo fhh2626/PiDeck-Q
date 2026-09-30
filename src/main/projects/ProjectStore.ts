@@ -1,7 +1,8 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { preserveCorruptProjectCatalog, writeProjectSnapshot } from "./projectCatalogPersistence";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
 import type { Project } from "../../shared/types";
 import {
   normalizeSelectedWslProjectPath,
@@ -22,6 +23,7 @@ export interface ProjectStoreDeps {
 export class ProjectStore {
   private readonly filePath: string;
   private readonly chatPathFile: string;
+  private writeQueue: Promise<void> = Promise.resolve();
   // 聊天工作区目录：默认在 userData 下，用户可在侧栏聊天项目设置中改为任意目录并持久化。
   private chatProjectPath: string;
   private projects: Project[] = [];
@@ -44,12 +46,8 @@ export class ProjectStore {
   }
 
   async load() {
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      this.projects = JSON.parse(raw) as Project[];
-    } catch {
-      this.projects = [];
-    }
+    this.projects = await this.readProjects();
+
     // 先读取用户自定义的聊天目录（若存在），再据此修正内置聊天项目路径。
     await this.loadChatProjectPath();
     const chatChanged = this.ensureChatProject();
@@ -341,9 +339,36 @@ export class ProjectStore {
     return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
   }
 
-  private async save() {
-    // 项目列表是桌面端自己的轻量状态，不写入 pi session，避免影响 pi 原生会话格式。
-    await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(this.projects, null, 2), "utf8");
+  private async readProjects(): Promise<Project[]> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (error) {
+      if (this.isMissingFile(error)) return [];
+      throw error;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("Project catalog is not an array");
+      return parsed as Project[];
+    } catch {
+      // 解析失败不能把空列表直接写回正式文件。先保留损坏原件，再允许后续保存重建。
+      await preserveCorruptProjectCatalog(this.filePath);
+      return [];
+    }
   }
+
+  private isMissingFile(error: unknown): boolean {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  }
+
+  private async save() {
+    const snapshot = JSON.stringify(this.projects, null, 2);
+    const operation = this.writeQueue
+      .catch(() => undefined)
+      .then(() => writeProjectSnapshot(this.filePath, snapshot));
+    this.writeQueue = operation.then(() => undefined, () => undefined);
+    await operation;
+  }
+
 }

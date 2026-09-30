@@ -40,5 +40,9 @@ test("file mutation handlers normalize host paths and use authorization checks",
 	assert.match(filesIpc, /const hostSource = await authorizePath\(src, "move-source", "link"\)/);
 	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
 	assert.match(filesIpc, /externalFileCapabilities\?\.consumeRead/);
-	assert.match(filesIpc, /fsOperations\.copy\(hostSource, dest, \{[\s\S]*?force: false,[\s\S]*?errorOnExist: true/);
+	// 移动不再依赖 cp 的 stat/no-clobber 选项；跨设备及同盘均经过独占创建 helper。
+	assert.match(filesIpc, /await copyWithoutOverwrite\(move\.hostSource, move\.dest, fsOperations\)/);
+	const exclusiveCopy = readFileSync("src/main/fs/copyWithoutOverwrite.ts", "utf8");
+	assert.match(exclusiveCopy, /operations\.copyFile\(source, destination, constants\.COPYFILE_EXCL\)/);
+	assert.match(exclusiveCopy, /await operations\.mkdir\(destination\)/);
 });

@@ -224,6 +224,7 @@ export class WebServiceManager {
 	private readonly rendererRoot = join(__dirname, "../renderer");
 
 	private readonly eventStreamRouter: WebEventStreamRouter;
+	private lifecycle: Promise<void> = Promise.resolve();
 
 	constructor(private readonly deps: WebServiceDependencies) {
 		this.devRendererUrl = deps.devRendererUrl?.trim() ? deps.devRendererUrl.trim().replace(/\/$/, "") : "";
@@ -232,9 +233,19 @@ export class WebServiceManager {
 		);
 	}
 
+	private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+		const run = this.lifecycle.catch(() => undefined).then(operation);
+		this.lifecycle = run.then(() => undefined, () => undefined);
+		return run;
+	}
+
 	async applySettings(settings: WebServiceSettings) {
+		return this.enqueueLifecycle(() => this.applySettingsNow(settings));
+	}
+
+	private async applySettingsNow(settings: WebServiceSettings) {
 		if (!settings.webServiceEnabled) {
-			await this.stop();
+			await this.stopNow();
 			return;
 		}
 
@@ -247,7 +258,7 @@ export class WebServiceManager {
 			this.accessToken = token;
 			return;
 		}
-		await this.stop();
+		await this.stopNow();
 		await this.start(host, port, token);
 	}
 
@@ -256,16 +267,24 @@ export class WebServiceManager {
 	 * 未启用时直接返回，避免“重启”操作意外启动用户已经关闭的服务。
 	 */
 	async restart(settings: WebServiceSettings) {
+		return this.enqueueLifecycle(() => this.restartNow(settings));
+	}
+
+	private async restartNow(settings: WebServiceSettings) {
 		if (!settings.webServiceEnabled) return;
 		const host = settings.webServiceHost.trim() || "0.0.0.0";
 		const port = this.normalizePort(settings.webServicePort);
 		const token = settings.webServiceAccessToken;
 		if (!isValidWebServiceAccessToken(token)) throw new Error("WEB_SERVICE_INVALID_TOKEN");
-		await this.stop();
+		await this.stopNow();
 		await this.start(host, port, token);
 	}
 
 	async stop() {
+		return this.enqueueLifecycle(() => this.stopNow());
+	}
+
+	private async stopNow() {
 		// 解绑 pi 事件源，避免服务关闭后仍在转发事件到已失效的 SSE 连接。
 		this.eventStreamRouter.unbindPiSource();
 		if (!this.server) return;

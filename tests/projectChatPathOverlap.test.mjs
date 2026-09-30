@@ -17,6 +17,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -37,21 +38,9 @@ function loadWslPaths() {
 
 const paths = loadWslPaths();
 
-/** 与 wslPaths.test.mjs 同款 vm 沙箱加载 ProjectStore，userData 可参数化（真实文件 I/O 落在临时目录）。 */
-function loadProjectStore(userData) {
-  const sandbox = {
-    exports: {},
-    process,
-    require: (id) => {
-      if (id === "electron") return { app: { getPath: () => userData }, dialog: {} };
-      if (id === "../wsl/WslPaths") return paths;
-      return require(id);
-    },
-  };
-  vm.runInNewContext(transpile("src/main/projects/ProjectStore.ts"), sandbox, {
-    filename: "ProjectStore.ts",
-  });
-  return sandbox.exports;
+/** 加载完整生产依赖图，真实文件 I/O 仍由构造参数限制在临时目录内。 */
+function loadProjectStore() {
+  return loadTsCommonJs("src/main/projects/ProjectStore.ts", { stubs: { "../wsl/WslPaths": paths } });
 }
 
 /** 每个用例独立 userData 目录，结束后清理；userFolder 即用户挑选的项目目录（与聊天目录同路径的候选）。 */

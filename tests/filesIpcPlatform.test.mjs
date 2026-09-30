@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { cp as realCp, rm as realRm } from "node:fs/promises";
+import { copyFile as realCopyFile, rm as realRm } from "node:fs/promises";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -60,6 +61,7 @@ function loadFilesIpc(authorization) {
 		require: (id) => {
 			if (id.includes("shared/ipc")) return ipc;
 			if (id.includes("authorizedPaths")) return authorization;
+			if (id.includes("copyWithoutOverwrite")) return loadTsCommonJs("src/main/fs/copyWithoutOverwrite.ts");
 			return require(id);
 		},
 	};
@@ -234,7 +236,27 @@ test("Files IPC: copy skips an existing destination instead of overwriting it", 
 	}
 });
 
-test("Files IPC: move does not copy and delete after a non-EXDEV rename failure", async () => {
+test("Files IPC: same-device move refuses an existing destination file", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-clobber-"));
+	try {
+		const sourceDir = join(root, "source");
+		const targetDir = join(root, "target");
+		const source = join(sourceDir, "same.txt");
+		const destination = join(targetDir, "same.txt");
+		mkdirSync(sourceDir);
+		mkdirSync(targetDir);
+		writeFileSync(source, "source-content");
+		writeFileSync(destination, "existing-content");
+		const router = registerMoveRouter(root);
+		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
+		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: move refuses to merge an existing destination directory", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-"));
 	try {
 		const sourceParent = join(root, "source");
@@ -248,7 +270,7 @@ test("Files IPC: move does not copy and delete after a non-EXDEV rename failure"
 
 		const router = registerMoveRouter(root);
 		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir));
-		assert.equal(existsSync(source), true, "source must remain after a non-EXDEV failure");
+		assert.equal(existsSync(source), true, "source must remain when the destination exists");
 		assert.equal(existsSync(join(destination, "target-only.txt")), true);
 		assert.equal(existsSync(join(destination, "source-only.txt")), false, "destination must not be merged or overwritten");
 	} finally {
@@ -362,7 +384,7 @@ test("Files IPC: dialog:pick-images handles cancel, selection, and >16 limits", 
 	assert.deepEqual(JSON.parse(JSON.stringify(tooMany)), { kind: "error", code: "TOO_MANY_FILES" });
 });
 
-test("Files IPC: EXDEV move keeps the source when the destination appears during copy", async () => {
+test("Files IPC: move keeps the source when the destination appears at the copy primitive", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-race-"));
 	try {
 		const sourceDir = join(root, "source");
@@ -377,9 +399,9 @@ test("Files IPC: EXDEV move keeps the source when the destination appears during
 			rename: async () => {
 				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
 			},
-			copy: async (from, to, options) => {
+			copyFile: async (from, to, mode) => {
 				writeFileSync(to, "appeared-during-copy");
-				return realCp(from, to, options);
+				return realCopyFile(from, to, mode);
 			},
 			remove: async (...args) => {
 				removeCalled = true;

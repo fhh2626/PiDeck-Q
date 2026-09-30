@@ -1,4 +1,5 @@
 export const mainProcessZhCN = {
+	"mainFile.unsupportedMoveType": "此文件类型不支持移动，源文件已保留。",
 	"diagnostic.historyLoadFailed": "历史会话加载失败，可继续使用当前 Agent 或重新打开会话重试。",
 	"diagnostic.compactReconnected": "会话压缩完成，Agent 已自动重连",
 	"diagnostic.processReconnectFailed": "Agent 进程意外退出，自动重连失败",
@@ -109,6 +110,7 @@ export const mainProcessZhCN = {
 	"mainPrompt.nameRequired": "模板名称不能为空。",
 	"mainPrompt.sameName": "新旧名称相同。",
 	"mainPrompt.notFound": "模板不存在：{name}",
+	"mainPrompt.notAuthorized": "只能访问已授权的全局或项目模板文件。",
 	"mainProjectResource.skillNameCharacters": "Skill 名称只能包含小写字母、数字和连字符。",
 	"mainProjectResource.skillAlreadyExists": "项目 Skill 已存在：{name}",
 	"mainProjectResource.extensionNotFound": "项目 Extension 不存在。",
@@ -168,6 +170,7 @@ export const mainProcessZhCN = {
 export type MainProcessTranslationKey = keyof typeof mainProcessZhCN;
 
 export const mainProcessEnUS: Record<MainProcessTranslationKey, string> = {
+	"mainFile.unsupportedMoveType": "This file type cannot be moved. The source has been preserved.",
 	"diagnostic.historyLoadFailed": "Failed to load session history. You can keep using this Agent or reopen the session to retry.",
 	"diagnostic.compactReconnected": "Session compacted and the Agent reconnected automatically",
 	"diagnostic.processReconnectFailed": "The Agent process exited unexpectedly and could not reconnect",
@@ -278,6 +281,7 @@ export const mainProcessEnUS: Record<MainProcessTranslationKey, string> = {
 	"mainPrompt.nameRequired": "The template name is required.",
 	"mainPrompt.sameName": "The new name is the same as the current name.",
 	"mainPrompt.notFound": "Template not found: {name}",
+	"mainPrompt.notAuthorized": "Only an authorized global or project template file can be accessed.",
 	"mainProjectResource.skillNameCharacters": "The skill name may contain only lowercase letters, numbers, and hyphens.",
 	"mainProjectResource.skillAlreadyExists": "Project skill already exists: {name}",
 	"mainProjectResource.extensionNotFound": "The project extension no longer exists.",

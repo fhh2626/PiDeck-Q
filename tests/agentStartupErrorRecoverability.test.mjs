@@ -106,6 +106,26 @@ test("create with get_state failure: process is alive but runtime is not recover
   );
 });
 
+test("restart keeps the stable deck session id and anonymous mode", async (t) => {
+  const { manager, processes, sessionPath } = createHarness({ failGetState: false });
+  t.after(() => manager.stopAll());
+
+  const created = await manager.create({
+    projectId: "project",
+    sessionPath,
+    deckSessionId: "stable-session-uuid",
+  });
+  const restarted = await manager.restart(created.id);
+
+  assert.notEqual(restarted.id, created.id);
+  assert.equal(processes.at(-1).options.securitySessionId, "stable-session-uuid");
+  assert.notEqual(processes.at(-1).options.securitySessionId, sessionPath);
+
+  const anonymous = await manager.create({ projectId: "project", noSession: true });
+  await manager.restart(anonymous.id);
+  assert.equal(processes.at(-1).options.securitySessionId, undefined);
+});
+
 test("create passes platform locale to PiProcess as uiLocale", async (t) => {
   const { manager, processes, sessionPath } = createHarness({
     getLocale: () => "en-US",

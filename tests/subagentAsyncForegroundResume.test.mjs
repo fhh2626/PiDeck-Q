@@ -985,15 +985,18 @@ test("async workflow resume keeps the preassigned mission binding directory alig
 	assert.deepEqual(ghostDirs, [], `no mission binding may be left in an unused async directory: ${ghostDirs.join(", ")}`);
 });
 
-test("detach reconciliation failure still settles the awaiting workflow and releases the lease", async () => {
+test("detach reconciliation failure still settles the awaiting workflow and releases the lease", { timeout: 5000 }, async () => {
 	const fixture = createFixture(graph, "detach-reconcile-failure");
 	seedCompletedForegroundRun(fixture, { runId: RUN_A });
 	const executor = graph.createSubagentExecutor(fixture.deps);
 
 	let detachedOptions;
+	let notifyDispatch;
+	const dispatched = new Promise((resolve) => { notifyDispatch = resolve; });
 	resetDoubles();
 	setRunSyncBehavior(({ options }) => {
 		detachedOptions = options;
+		notifyDispatch();
 		return completedResult(fixture, { detached: true, detachedReason: "user request", exitCode: undefined, finalOutput: undefined });
 	});
 
@@ -1006,8 +1009,10 @@ test("detach reconciliation failure still settles the awaiting workflow and rele
 		fixture.ctx,
 	);
 
-	// Let the workflow start and receive the provisional detach receipt.
-	await new Promise((resolve) => setTimeout(resolve, 50));
+	// 等实际 dispatch 到达，再让本轮 detach receipt 的微任务完成。
+	// 固定 50ms 不能保证繁忙 CI 上的异步文件 I/O 已结束；测试超时只用于报告真正的停滞。
+	await dispatched;
+	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(typeof detachedOptions?.onDetachedExit, "function");
 
 	// Reconciliation must not be able to strand the awaiting workflow or the lease.

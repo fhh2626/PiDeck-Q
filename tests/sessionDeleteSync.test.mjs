@@ -23,7 +23,7 @@ test("web session mutations notify the desktop catalog instead of leaving PC sta
   );
   assert.match(
     sessionBridge,
-    /void activateAnonymousRuntime\(session, project, input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: session\.projectId/,
+    /startAnonymousActivation\(session, project, input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: session\.projectId/,
   );
   assert.match(
     sessionIpc,

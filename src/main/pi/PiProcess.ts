@@ -386,11 +386,16 @@ export class PiProcess extends EventEmitter {
           ? toWslLinuxPath(gatePath, { distro: this.settings?.wslDistro ?? "" })
           : gatePath;
       }
+      // 路径已在上面按需转换；WSLENV 只登记变量名，不能再加 /p 做第二次路径转换。
+      if (invocation.wsl) {
+        env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_SECURITY_CONFIG");
+        if (gatePath) env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_SECURITY_GATE_EXTENSION");
+      }
     }
     if (this.options.securitySessionId) {
-      env.PIDECK_SESSION_ID = command.startsWith("wsl://")
-        ? toWslLinuxPath(this.options.securitySessionId, { distro: this.settings?.wslDistro ?? "" })
-        : this.options.securitySessionId;
+      // 会话身份是不透明字符串（UUID 或历史兼容 key），不是文件路径。
+      env.PIDECK_SESSION_ID = this.options.securitySessionId;
+      if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_SESSION_ID");
     }
     // 界面语言随 env 传给 pi 子进程：扩展的 notify 文案是用户可见文本，必须跟随 PiDeck 语言设置。
     // 值在子进程内按纯字符串使用，无需路径转换，但 WSL 模式必须登记到 WSLENV，

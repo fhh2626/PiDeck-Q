@@ -146,6 +146,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			openPath: (p) => platform.shell.openPath(p),
 			trashPath,
 		},
+		() => projectStore.list().map((project) => project.path),
 	);
 	const nativeWasmLocateDir = join(paths.appPath, "node_modules", "sql.js", "dist");
 	const wasmLocateDir = existsSync(nativeWasmLocateDir)
@@ -241,6 +242,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			if (!project) return filePath;
 			return toAbsoluteSessionPath(filePath, project.path, environment);
 		},
+		(projectId) => projectStore.get(projectId)?.path,
 	);
 	await sessionCatalog.load();
 
@@ -311,9 +313,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			sessionRuntimeCoordinator.getRuntimeMessages(sessionId),
 		listCatalogSessions: async (projectId) => {
 			if (!projectId) {
-				return sessionCatalog.listEntries()
-					.map((entry) => sessionCatalog.getRecord(entry.id))
-					.filter((record): record is SessionRecord => Boolean(record));
+				return sessionCatalog.listRecords();
 			}
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(mainCopy("project.notFound"));

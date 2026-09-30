@@ -3135,6 +3135,7 @@ export class AgentManager {
 		const {
 			projectId,
 			title,
+			deckSessionId,
 			sessionEnvironment: environment,
 			sessionSource: source,
 			isInternalSubagent,
@@ -3181,6 +3182,7 @@ export class AgentManager {
 		// 用相同的 session 重新创建 agent，新进程会重新加载所有配置
 		return this.create({
 			projectId,
+			deckSessionId,
 			sessionPath: noSession ? undefined : sessionPath,
 			title,
 			environment,

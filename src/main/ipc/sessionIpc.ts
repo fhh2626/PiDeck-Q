@@ -186,10 +186,7 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			};
 
 			// 目录缓存中的现有记录（上次扫描/运行时创建的合并结果，启动时从磁盘加载）
-			const cachedRecords = sessionCatalog.listEntries()
-				.filter((entry) => entry.projectId === projectId)
-				.map((entry) => sessionCatalog.getRecord(entry.id))
-				.filter((record): record is SessionRecord => Boolean(record));
+			const cachedRecords = sessionCatalog.listProjectRecords(projectId);
 
 			// 纯读路径：事件回调/订阅刷新专用，不再触发扫描（防止推送-拉取循环触发）
 			if (options?.scan === false) return cachedRecords;

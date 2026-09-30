@@ -8,9 +8,11 @@ import type { WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { assertDirectPromptFile, assertSinglePromptFileName } from "./promptPathAuthorization";
+import { PromptPathAuthorizer } from "./PromptPathAuthorizer";
 
 export type PromptPlatformOps = {
 	openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
@@ -209,6 +211,8 @@ export class PromptManager {
 	 * 这样测试/CLI host 注入的隔离 HOME 不会被启动任务覆盖。
 	 */
 	private readonly localHome: string;
+	private wslEnvironment: WslEnvironment | null = null;
+	private readonly pathAuthorizer: PromptPathAuthorizer;
 
 	constructor(
 		home?: string,
@@ -216,13 +220,21 @@ export class PromptManager {
 		private readonly getSettings: () => PromptSettingsSlice = () => ({ hiddenBuiltinPromptNames: [] }),
 		private readonly patchSettings: (patch: PromptSettingsSlice) => Promise<unknown> = async () => undefined,
 		private readonly platformOps?: PromptPlatformOps,
+		getRegisteredProjectPaths: () => readonly string[] = () => [],
 	) {
 		this.localHome = home ?? homedir();
 		this.promptsDir = join(this.localHome, ".pi", "agent", "prompts");
+		this.pathAuthorizer = new PromptPathAuthorizer({
+			getGlobalRoot: () => this.promptsDir,
+			getProjectRoots: getRegisteredProjectPaths,
+			getWslEnvironment: () => this.wslEnvironment,
+			translate,
+		});
 	}
 
 	/** 将 prompt 目录切换到统一解析出的 WSL HOME；null 恢复构造时注入的本地 home。 */
 	configureWsl(environment: WslEnvironment | null) {
+		this.wslEnvironment = environment;
 		this.promptsDir = join(environment?.windowsHome ?? this.localHome, ".pi", "agent", "prompts");
 	}
 
@@ -313,17 +325,15 @@ export class PromptManager {
 			await this.hideBuiltin(filePath.slice("builtin://".length));
 			return;
 		}
-		if (!filePath.startsWith(this.promptsDir)) {
-			throw new Error(this.translate("mainPrompt.globalDeleteOnly"));
-		}
-		if (!existsSync(filePath)) {
+		const authorized = await this.authorizeGlobalPrompt(filePath, "link");
+		if (!existsSync(authorized)) {
 			throw new Error(this.translate("mainPrompt.fileNotFound"));
 		}
 		if (!this.platformOps?.trashPath) {
 			throw new Error("Trash service unavailable");
 		}
 		// 提示词模板是用户内容：删除走系统回收站（可恢复）；回收站不可用时抛错，拒绝硬删。
-		await this.platformOps.trashPath(filePath, { source: "prompts:delete" });
+		await this.platformOps.trashPath(authorized, { source: "prompts:delete" });
 	}
 
 	/** 是否还有被用户删除、可被「找回默认模板」恢复的内置项。 */
@@ -368,13 +378,16 @@ export class PromptManager {
 
 	/** 扫描项目 .pi/prompts/ 目录下的模板 */
 	async listByProject(projectPath: string): Promise<PiPromptTemplateListResult> {
-		const projectPromptsDir = join(projectPath, ".pi", "prompts");
+		const projectPromptsDir = await this.requireProjectPromptsDir(projectPath);
 		const entries = await readdir(projectPromptsDir).catch(() => []);
 		const templates: PiPromptTemplateSummary[] = [];
 		for (const entry of entries) {
 			if (!entry.endsWith(".md")) continue;
 			if (entry.endsWith(".d.md")) continue;
 			const fullPath = join(projectPromptsDir, entry);
+			const info = await lstat(fullPath).catch(() => null);
+			// 列表只读真实文件。符号链接即使当前指向目录内，也不能在解析后把外部内容带进来。
+			if (!info?.isFile()) continue;
 			const raw = await readFile(fullPath, "utf8").catch(() => "");
 			if (!raw) continue;
 			const name = basename(entry, ".md");
@@ -400,17 +413,17 @@ export class PromptManager {
 		projectPath: string,
 		input: CreatePiPromptTemplateInput,
 	): Promise<PiPromptTemplateSummary> {
-		const projectPromptsDir = join(projectPath, ".pi", "prompts");
+		const projectPromptsDir = await this.requireProjectPromptsDir(projectPath);
 		await mkdir(projectPromptsDir, { recursive: true });
 		const name = this.normalizeName(input.name);
 		if (!name) throw new Error(this.translate("mainPrompt.nameRequiredDetailed"));
 		const description = input.description.trim();
 		if (!description) throw new Error(this.translate("mainPrompt.descriptionRequired"));
-		const filePath = join(projectPromptsDir, `${name}.md`);
+		const filePath = await assertDirectPromptFile(join(projectPromptsDir, `${name}.md`), projectPromptsDir, "write");
 		if (existsSync(filePath)) throw new Error(this.translate("mainPrompt.alreadyExists", { name }));
 		// 内容仅含 frontmatter 中的 description，正文由用户后续编辑
 		const content = `---\ndescription: ${description.replace(/\n/g, " ")}\n---\n`;
-		await writeFile(filePath, content, "utf8");
+		await writeFile(filePath, content, { encoding: "utf8", flag: "wx" });
 		return {
 			name,
 			path: filePath,
@@ -423,7 +436,13 @@ export class PromptManager {
 
 	/** 从项目 .pi/prompts/ 删除模板 */
 	async deleteFromProject(projectPath: string, fileName: string): Promise<void> {
-		const filePath = join(projectPath, ".pi", "prompts", fileName);
+		const safeName = assertSinglePromptFileName(fileName);
+		const projectPromptsDir = await this.requireProjectPromptsDir(projectPath);
+		const filePath = await assertDirectPromptFile(
+			join(projectPromptsDir, safeName),
+			projectPromptsDir,
+			"link",
+		);
 		if (!existsSync(filePath)) throw new Error(this.translate("mainPrompt.fileNotFound"));
 		if (!this.platformOps?.trashPath) {
 			throw new Error("Trash service unavailable");
@@ -443,17 +462,17 @@ export class PromptManager {
 	 * 读取模板原始内容（供编辑器使用）
 	 */
 	async readContent(filePath: string): Promise<string> {
-		return readFile(filePath, "utf8");
+		const authorized = await this.authorizeReadablePrompt(filePath);
+		return readFile(authorized, "utf8");
 	}
 
 	/**
 	 * 保存模板内容
 	 */
 	async writeContent(filePath: string, content: string): Promise<void> {
-		if (!filePath.startsWith(this.promptsDir)) {
-			throw new Error(this.translate("mainPrompt.globalEditOnly"));
-		}
-		await writeFile(filePath, content, "utf8");
+		if (typeof content !== "string") throw new TypeError("Prompt content must be a string.");
+		const authorized = await this.authorizeGlobalPrompt(filePath, "write");
+		await writeFile(authorized, content, "utf8");
 	}
 
 	private parseFrontmatter(raw: string): Record<string, string> {
@@ -478,8 +497,8 @@ export class PromptManager {
 		if (!normalizedOld || !normalizedNew) throw new Error(this.translate("mainPrompt.nameRequired"));
 		if (normalizedOld === normalizedNew) throw new Error(this.translate("mainPrompt.sameName"));
 
-		const oldPath = join(this.promptsDir, `${normalizedOld}.md`);
-		const newPath = join(this.promptsDir, `${normalizedNew}.md`);
+		const oldPath = await this.authorizeGlobalPrompt(join(this.promptsDir, `${normalizedOld}.md`), "read");
+		const newPath = await this.authorizeGlobalPrompt(join(this.promptsDir, `${normalizedNew}.md`), "write");
 		if (!existsSync(oldPath)) throw new Error(this.translate("mainPrompt.notFound", { name: oldName }));
 		if (existsSync(newPath)) throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
 
@@ -500,14 +519,14 @@ export class PromptManager {
 
 	/** 重命名项目级模板 */
 	async renameInProject(projectPath: string, oldName: string, newName: string): Promise<PiPromptTemplateSummary> {
-		const projectPromptsDir = join(projectPath, ".pi", "prompts");
+		const projectPromptsDir = await this.requireProjectPromptsDir(projectPath);
 		const normalizedOld = this.normalizeName(oldName);
 		const normalizedNew = this.normalizeName(newName);
 		if (!normalizedOld || !normalizedNew) throw new Error(this.translate("mainPrompt.nameRequired"));
 		if (normalizedOld === normalizedNew) throw new Error(this.translate("mainPrompt.sameName"));
 
-		const oldPath = join(projectPromptsDir, `${normalizedOld}.md`);
-		const newPath = join(projectPromptsDir, `${normalizedNew}.md`);
+		const oldPath = await assertDirectPromptFile(join(projectPromptsDir, `${normalizedOld}.md`), projectPromptsDir, "read");
+		const newPath = await assertDirectPromptFile(join(projectPromptsDir, `${normalizedNew}.md`), projectPromptsDir, "write");
 		if (!existsSync(oldPath)) throw new Error(this.translate("mainPrompt.notFound", { name: oldName }));
 		if (existsSync(newPath)) throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
 
@@ -523,6 +542,18 @@ export class PromptManager {
 			userCreated: true,
 			scope: "project",
 		};
+	}
+
+	private requireProjectPromptsDir(projectPath: string): Promise<string> {
+		return this.pathAuthorizer.projectDirectory(projectPath);
+	}
+
+	private authorizeGlobalPrompt(filePath: string, mode: "read" | "write" | "link"): Promise<string> {
+		return this.pathAuthorizer.global(filePath, mode);
+	}
+
+	private authorizeReadablePrompt(filePath: string): Promise<string> {
+		return this.pathAuthorizer.readable(filePath);
 	}
 
 	/** 规范化模板名称：保留 Unicode 字母（含中文等非拉丁文字）、数字和连字符，其余替换为连字符 */
