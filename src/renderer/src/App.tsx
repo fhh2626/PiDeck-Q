@@ -98,6 +98,7 @@ import {
   setSessionDraftAtom,
   upsertSessionAtom,
   anyAgentRuntimeWorkingAtom,
+  beginOptimisticMessageDeletion,
 } from "./atoms";
 import {
   buildComposerPromptSubmission,
@@ -2054,6 +2055,7 @@ export function App() {
     overlays,
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
     refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
+    beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
   });
   /**
    * 打开系统原生文件/文件夹选择器，将选中路径以 @path 引用格式插入到消息中。

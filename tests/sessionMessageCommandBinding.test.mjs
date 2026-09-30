@@ -808,3 +808,49 @@ test("edit save after runtime target disappears still dispatches captured callba
   assert.ok(toasts.length > 0, "user must see a toast instead of silent no-op");
   assert.match(toasts[toasts.length - 1].msg, /sessionCommand\.runtimeChanged/);
 });
+
+test("deleteMessage hides the target optimistically before the API call and commits on success", async () => {
+  const currentTargetRef = { current: { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 } };
+  let onConfirm = null;
+  const { mockCommands, commandEvents } = createHookEnvironment(currentTargetRef, {
+    input: {
+      overlays: { showConfirm: (config) => { onConfirm = config.onConfirm; }, clearConfirm: () => {} },
+      beginOptimisticDeletion: (sessionId, messageId) => {
+        commandEvents.push({ type: "hide", sessionId, messageId });
+        return (outcome) => commandEvents.push({ type: "settle", outcome });
+      },
+    },
+  });
+
+  mockCommands.deleteMessage(currentTargetRef.current, "msg-1");
+  await onConfirm();
+
+  // 隐藏必须先于删除 API（主进程删除要数秒，界面需要立即反馈），成功后提交
+  assert.deepEqual(
+    commandEvents.filter((e) => e.type !== "toast").map((e) => e.type),
+    ["hide", "api:delete", "settle"],
+  );
+  assert.equal(commandEvents.find((e) => e.type === "settle").outcome, "committed");
+});
+
+test("deleteMessage restores optimistically hidden messages when the API fails", async () => {
+  const currentTargetRef = { current: { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 } };
+  let onConfirm = null;
+  const { mockCommands, commandEvents } = createHookEnvironment(currentTargetRef, {
+    desktopApi: {
+      deleteRuntimeMessage: async () => ({ ok: false, error: { code: "SESSION_COMMAND_FAILED" } }),
+    },
+    input: {
+      overlays: { showConfirm: (config) => { onConfirm = config.onConfirm; }, clearConfirm: () => {} },
+      beginOptimisticDeletion: () => (outcome) => commandEvents.push({ type: "settle", outcome }),
+    },
+  });
+
+  mockCommands.deleteMessage(currentTargetRef.current, "msg-1");
+  await onConfirm();
+
+  const settles = commandEvents.filter((e) => e.type === "settle");
+  assert.equal(settles.length, 1);
+  assert.equal(settles[0].outcome, "failed");
+  assert.ok(commandEvents.some((e) => e.type === "toast" && /message\.deleteFailed/.test(e.msg)));
+});

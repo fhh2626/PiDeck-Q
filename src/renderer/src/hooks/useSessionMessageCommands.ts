@@ -40,6 +40,14 @@ type SessionMessageCommandsInput = {
 	};
 	captureHistoryMutationRefresh?: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
 	refreshHistoryAfterMutation?: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
+	/**
+	 * 确认删除后立即隐藏将被删的消息段，返回结算函数（committed / failed）。
+	 * 主进程删除大会话要数秒，没有即时反馈时用户会误以为没删掉。
+	 */
+	beginOptimisticDeletion?: (
+		sessionId: string,
+		messageId: string,
+	) => (outcome: "committed" | "failed") => void;
 };
 
 function translateAgentErrorMessage(message: string): string {
@@ -173,14 +181,21 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 			confirmLabel: t("common.delete"),
 			onConfirm: async () => {
 				input.overlays.clearConfirm();
+				let settleOptimisticDeletion: ((outcome: "committed" | "failed") => void) | undefined;
 				try {
 					const currentTarget = requireCurrentRuntimeTarget(expectedTarget);
+					// 隐藏只作用于视图层，缓存原样保留：历史重读快照仍按真实已加载深度计算
 					const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
+					settleOptimisticDeletion = input.beginOptimisticDeletion?.(currentTarget.sessionId, messageId);
 					requireSessionCommand(await api.sessions.deleteRuntimeMessage(currentTarget, messageId));
 					if (refreshSnapshot && input.refreshHistoryAfterMutation) {
 						await input.refreshHistoryAfterMutation(refreshSnapshot);
 					}
+					// 删除已提交：隐藏保持到权威快照里这些消息消失为止（事件与命令响应不保证先后）
+					settleOptimisticDeletion?.("committed");
 				} catch (error) {
+					// 删除失败：立即恢复被隐藏的消息，再提示失败原因
+					settleOptimisticDeletion?.("failed");
 					const message = error instanceof Error ? error.message : String(error);
 					input.showToast(`${t("message.deleteFailed")}: ${translateAgentErrorMessage(message)}`, 5000);
 				}

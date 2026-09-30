@@ -2586,6 +2586,25 @@ export class AgentManager {
 		return undefined;
 	}
 
+	/**
+	 * 编辑/删除/重发前的定位：Pi 当前 leaf（get_entries）与消息定位互不依赖，并行执行。
+	 * 为什么：大会话 get_entries 要序列化整份条目（实测约 1s），串行时这段耗时会原样
+	 * 叠加到每次删除上；leaf 只作为 target 的约束字段写入，定位过程本身不读它。
+	 * getActiveSessionLeafId 内部吞掉错误，定位失败时不会留下未处理的 rejection。
+	 */
+	private async locateMutationTarget(
+		agentId: string,
+		runtime: AgentRuntime,
+		sessionPath: string,
+		messageId: string,
+	): Promise<{ target: SessionEntryTarget; resend?: { text: string; images?: ImageContent[] } }> {
+		const [activeLeafId, located] = await Promise.all([
+			this.getActiveSessionLeafId(agentId, runtime),
+			this.locateMessageTarget(agentId, sessionPath, messageId),
+		]);
+		return { ...located, target: { ...located.target, activeLeafId } };
+	}
+
 	private createSessionEntryTarget(
 		message: ChatMessage,
 		activeLeafId?: string,
@@ -2799,8 +2818,7 @@ export class AgentManager {
 		if (!sessionPath) throw new Error("Session not persisted");
 
 		const file = this.createSessionFileRef(runtime, sessionPath);
-		const activeLeafId = await this.getActiveSessionLeafId(agentId, runtime);
-		const { target } = await this.locateMessageTarget(agentId, sessionPath, messageId, activeLeafId);
+		const { target } = await this.locateMutationTarget(agentId, runtime, sessionPath, messageId);
 		await this.sessionFileEditor.editMessage({
 			file,
 			target,
@@ -2842,13 +2860,14 @@ export class AgentManager {
 		if (!sessionPath) throw new Error("Session not persisted");
 
 		const file = this.createSessionFileRef(runtime, sessionPath);
-		const activeLeafId = await this.getActiveSessionLeafId(agentId, runtime);
-		const { target } = await this.locateMessageTarget(agentId, sessionPath, messageId, activeLeafId);
+		const { target } = await this.locateMutationTarget(agentId, runtime, sessionPath, messageId);
+		const locatedAt = Date.now();
 		await this.sessionFileEditor.deleteMessage({
 			file,
 			target,
 			reload: () => this.requestSessionReload(runtime, file),
 		});
+		const mutatedAt = Date.now();
 		try {
 			await this.loadMessages(
 				agentId,
@@ -2869,10 +2888,15 @@ export class AgentManager {
 				},
 			);
 		}
+		// 分段耗时：定位（含 get_entries）/ 改写+switch_session / 重读消息，排查大会话删除慢时直接看到瓶颈
+		const finishedAt = Date.now();
 		void this.appLogger?.info("agent", "Delete message completed", {
 			agentId,
 			messageId,
-			elapsedMs: Date.now() - startTime,
+			elapsedMs: finishedAt - startTime,
+			locateMs: locatedAt - startTime,
+			mutateMs: mutatedAt - locatedAt,
+			reloadMs: finishedAt - mutatedAt,
 		});
 	}
 
@@ -2892,8 +2916,7 @@ export class AgentManager {
 		if (cached && cached.role !== "user") throw new Error("Only user messages can be resent");
 
 		const file = this.createSessionFileRef(runtime, sessionPath);
-		const activeLeafId = await this.getActiveSessionLeafId(agentId, runtime);
-		const { target, resend } = await this.locateMessageTarget(agentId, sessionPath, messageId, activeLeafId);
+		const { target, resend } = await this.locateMutationTarget(agentId, runtime, sessionPath, messageId);
 
 		// 重发图片预检：在执行任何破坏性会话截断前，检查重发图片的输入预算（24 MiB）
 		const targetImages = resend?.images ?? (cached?.images?.length ? cached.images : undefined);

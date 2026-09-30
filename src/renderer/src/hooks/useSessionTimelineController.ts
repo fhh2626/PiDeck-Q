@@ -14,6 +14,8 @@ import type { AgentRuntimeState, ChatMessage } from "../../../shared/types";
 import {
 	cacheSessionMessagesAtom,
 	clearSessionHistoryAtom,
+	filterOptimisticallyDeletedMessages,
+	optimisticDeletedIdsBySessionIdAtomFamily,
 	prependSessionHistoryPageAtom,
 	prependSessionMessagePageAtom,
 	replaceSessionHistoryAfterMutationAtom,
@@ -456,7 +458,16 @@ export function useSessionTimelineController(options: {
     [options.sessionId],
   );
   const cachedMessages = useAtomValue(cacheSliceAtom);
-  const messages = options.messages ?? cachedMessages ?? [];
+  // 乐观删除：确认删除后立即从视图里藏起将被删的消息段（缓存原样保留，失败可恢复）；
+  // 只订本会话的隐藏集合，其它会话删除不会让本栏重算。
+  const hiddenDeletionIds = useAtomValue(
+    optimisticDeletedIdsBySessionIdAtomFamily(options.sessionId ?? ""),
+  );
+  const sourceMessages = options.messages ?? cachedMessages;
+  const messages = useMemo(
+    () => filterOptimisticallyDeletedMessages(sourceMessages ?? [], hiddenDeletionIds),
+    [hiddenDeletionIds, sourceMessages],
+  );
   const controllerEnabled = options.sessionId !== undefined && options.messages === undefined;
 
   // ── 会话切换滚动位置保持（状态即真相）──
@@ -619,8 +630,10 @@ export function useSessionTimelineController(options: {
 		? cachedEntry.history
 		: undefined;
 	const combinedMessages = useMemo(
-		() => (runtimeHistory ? [...runtimeHistory.messages, ...messages] : messages),
-		[runtimeHistory, messages],
+		() => (runtimeHistory
+			? [...filterOptimisticallyDeletedMessages(runtimeHistory.messages, hiddenDeletionIds), ...messages]
+			: messages),
+		[hiddenDeletionIds, runtimeHistory, messages],
 	);
 	// 窗口前还有历史可加载：已加载前缀看游标，未加载看窗口起点（>0 说明激活时被截断）
 	const historyHasMore = controllerEnabled && hasMoreRuntimeHistory(cachedEntry);
