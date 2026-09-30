@@ -805,9 +805,54 @@ export class SessionHistoryReader {
 
 
 	/**
+	 * 从已读取的 JSONL 内容中回溯活动父链消息（与 getSessionDisplayIndex 同一规则：
+	 * JSONL 最后一个 entry 是当前 leaf，沿 parentId 回溯到 root）。
+	 *
+	 * 大文件恢复必须只消费活动分支：物理尾部可能属于被 fork/rewind 丢弃的旧分支，
+	 * 按物理顺序取尾部会把已废弃对话显示成最新历史，也与 get_messages / 分页口径不一致。
+	 * 返回 null 表示文件中没有任何可解析条目（空文件/全部损坏）。
+	 */
+	private collectActiveBranchMessages(content: string): unknown[] | null {
+		const entries: Array<{ id: string; parentId: string | null; type: string; message?: unknown }> = [];
+		for (const line of content.split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const entry = JSON.parse(line);
+				if (!entry || typeof entry !== "object" || typeof entry.id !== "string") continue;
+				entries.push({
+					id: entry.id,
+					parentId: typeof entry.parentId === "string" ? entry.parentId : null,
+					type: typeof entry.type === "string" ? entry.type : "",
+					message: entry.message,
+				});
+			} catch {
+				// 单行损坏不影响其余条目；父链缺失节点会在回溯时自然终止。
+			}
+		}
+		if (entries.length === 0) return null;
+		const byId = new Map(entries.map((entry) => [entry.id, entry]));
+		const active: typeof entries = [];
+		const seen = new Set<string>();
+		let current: (typeof entries)[number] | undefined = entries[entries.length - 1];
+		while (current && !seen.has(current.id)) {
+			seen.add(current.id);
+			active.push(current);
+			current = current.parentId ? byId.get(current.parentId) : undefined;
+		}
+		active.reverse();
+		return active
+			.filter((entry) => entry.type === "message" && entry.message)
+			.map((entry) => entry.message);
+	}
+
+	/**
 	 * 直接从历史会话 JSONL 文件读取最近 N 轮对话的消息条目。
 	 * 用于大会话场景：绕过 get_messages RPC 的整文件 JSON 传输瓶颈，
 	 * 直接在桌面进程解析 JSONL 并只取尾部消息，避免大会话加载导致界面冻结。
+	 *
+	 * 取的是「当前 leaf 的活动父链」尾部而不是文件物理尾部：fork/rewind 后废弃分支
+	 * 仍留在文件里，按物理顺序截取会把这些分支混进最新历史。
+	 * 活动链构建失败时保持失败返回（抛错交给调用方提示重试），不静默退回物理顺序。
 	 * 返回兼容 RpcResponse 格式的对象，可复用 loadMessages 的消息处理管线。
 	 */
 	async readRecentMessages(
@@ -826,29 +871,21 @@ export class SessionHistoryReader {
 			throw error;
 		}
 
-		const lines = content.split("\n");
-		const messageEntries: unknown[] = [];
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "message" && entry.message) {
-					messageEntries.push(entry.message);
-				}
-			} catch {
-				// 跳过单行解析失败，不影响后续行
-			}
+		const totalLines = content.split("\n").length;
+		const activeMessages = this.collectActiveBranchMessages(content);
+		if (activeMessages === null) {
+			// 无任何可解析条目：文件可能被截断/清空。返回失败而不是把空结果当作完整历史。
+			throw new Error("Session file contains no readable entries");
 		}
 
-		// 只保留最近 maxTurns 轮对话
-		const trimmed = this.deps.trimMessages(messageEntries, maxTurns);
+		// 只保留最近 maxTurns 轮对话（活动分支口径，与运行窗口/分页同一约定）
+		const trimmed = this.deps.trimMessages(activeMessages, maxTurns);
 		const t1 = Date.now();
 
 		void this.deps.logger?.info("agent", "Recent messages read from session file", {
 			sessionPath,
-			totalLines: lines.length,
-			messageEntries: messageEntries.length,
+			totalLines,
+			messageEntries: activeMessages.length,
 			trimmedTurns: maxTurns,
 			trimmedMessages: trimmed.length,
 			readMs: t1 - t0,

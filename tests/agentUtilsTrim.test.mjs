@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const { trimHistoryMessages, turnTrimStartIndex, countRoleMessagesBefore } = loadTsCommonJs(
+const { trimHistoryMessages, turnTrimStartIndex, countRoleMessagesBefore, contextTrimStartIndex } = loadTsCommonJs(
   "src/main/pi/agentUtils.ts",
 );
 
@@ -127,4 +127,39 @@ test("trim keeps a leading system summary card + last turns (compaction retentio
   // 此处验证 turnTrimStartIndex 不会把卡片当作轮次起点。
   const start = turnTrimStartIndex(input, 1);
   assert.equal(input[start].text, "q2");
+});
+
+test("contextTrimStartIndex keeps the whole context below the 50-turn budget (2026-12)", () => {
+  // 压缩后的保留段常以 assistant/toolResult 开头（首个 user 之前是模型续上下文）：
+  // 不足 50 轮时不得按「首个 user」裁头，否则第一轮以外的保留消息全被丢掉。
+  const input = [
+    { role: "compactionSummary", summary: "compacted" },
+    { role: "assistant", text: "carried-over reasoning" },
+    { role: "toolResult", text: "carried-over tool output" },
+    { role: "user", text: "q1" },
+    { role: "assistant", text: "a1" },
+  ];
+  assert.equal(contextTrimStartIndex(input), 0);
+  assert.equal(trimHistoryMessages(input).length, input.length);
+  assert.equal(trimHistoryMessages(input)[0].role, "compactionSummary");
+});
+
+test("contextTrimStartIndex trims from the 51st user turn once the budget is exceeded (2026-12)", () => {
+  const input = [
+    { role: "assistant", text: "carried-over" },
+    ...Array.from({ length: 51 }, (_, index) => [
+      { role: "user", text: `q${index + 1}` },
+      { role: "assistant", text: `a${index + 1}` },
+    ]).flat(),
+  ];
+  const start = contextTrimStartIndex(input);
+  // 51 个 user：裁到第 51 个 user（最近的 50 轮），首个 user 之前的保留段一并裁掉
+  assert.equal(input[start].text, "q2");
+  assert.equal(trimHistoryMessages(input)[0].text, "q2");
+});
+
+test("contextTrimStartIndex keeps the trailing 50 entries when no user turn exists (2026-12)", () => {
+  const input = Array.from({ length: 80 }, (_, index) => ({ role: "assistant", text: `a${index}` }));
+  assert.equal(contextTrimStartIndex(input), 30);
+  assert.equal(trimHistoryMessages(input).length, 50);
 });

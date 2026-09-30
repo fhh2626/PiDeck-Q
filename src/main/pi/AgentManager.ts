@@ -79,6 +79,7 @@ import {
 	pickNumber,
 	clampPercent,
 	trimHistoryMessages,
+	contextTrimStartIndex,
 	turnTrimStartIndex,
 	countRoleMessagesBefore,
 	buildMessageFlushPayload,
@@ -248,6 +249,8 @@ export class AgentManager {
 	private readonly pendingSlideOutByAgent = new Map<string, ChatMessage[]>();
 	/** 下一次全量 flush 是否保留 renderer 已加载的历史前缀。缺省按追加语义保留。 */
 	private readonly preserveHistoryOnNextFlush = new Map<string, boolean>();
+	/** 下一次全量 flush 是否显式携带 preserveHistory（含 false）：编辑/删除需明确告知不清旧前缀时的语义。 */
+	private readonly preserveHistoryExplicitOnNextFlush = new Set<string>();
 	/** 下一次全量 flush 是否把压缩后的历史前缀暂时标记为 sticky。 */
 	private readonly stickyHistoryOnNextFlush = new Set<string>();
 	/** 会话文件版本（mtime:size）：随消息载荷下发，渲染层据此校验历史前缀是否仍在同一文件版本。 */
@@ -917,6 +920,12 @@ export class AgentManager {
 			);
 		};
 		const staleLoadResult = () => this.messages.get(agentId) ?? [];
+		// 加载期间的保护基准：get_messages 是「发起时」的快照，返回前可能有流式/新消息
+		// 已经写进缓存。这里记录加载前的数组引用与对象引用，提交时把加载期间新增/就地变化
+		// 的消息重新应用回投影结果；只用已经存在的对象，不复制会丢掉身份。
+		const preLoadMessages = this.messages.get(agentId) ?? [];
+		const preLoadMessageRefs = new Map<string, ChatMessage>();
+		for (const message of preLoadMessages) preLoadMessageRefs.set(message.id, message);
 
 		// 并行请求：get_messages 和 get_entries 互不依赖，可以同时发起
 		// 如果已有提前发出的请求（earlyMessagesPromise），直接复用，避免重复发送
@@ -943,15 +952,17 @@ export class AgentManager {
 		const rawMessages = (response.data as { messages?: unknown[] } | undefined)?.messages ?? [];
 		let activeEntryIds = resolvedEntryIds;
 
-		// 按对话轮次截断（保留最近若干轮 user 消息）。压缩摘要不是 user 消息，会被此逻辑保留在尾部，
-		// 因此下方会单独把它插到最前面，确保不被按 user 轮次切掉。
+		// 按对话轮次截断（保留最近若干轮 user 消息）。不足 50 轮时保留完整上下文（含压缩保留段
+		// 首个 user 之前的 assistant/toolResult 与摘要卡片）；压缩摘要不是 user 消息，
+		// 超轮时才可能被切掉，下方会按需从会话文件补回摘要卡片。
 		const trimmed = trimHistoryMessages(rawMessages);
-		const trimmedStart = turnTrimStartIndex(rawMessages);
+		const trimmedStart = contextTrimStartIndex(rawMessages);
 
 		// 身份向量必须与保留消息同步裁剪：activeEntryIds 按「消费槽位的角色消息」与 rawMessages
 		// 一一对应，trim 丢弃头部整轮后，若仍把完整 activeEntryIds 交给 projector，保留消息会被
 		// 绑定到会话最早的 entry——编辑/删除/重发将落到错误轮次（曾因 15 轮裁剪复现 q4→u1）。
 		// compactionSummary/branchSummary 不消费槽位，prepend 到最前不影响对齐。
+		const fullActiveEntryIdCount = activeEntryIds?.length ?? 0;
 		let droppedRoleCount = 0;
 		if (activeEntryIds && trimmedStart > 0) {
 			droppedRoleCount = countRoleMessagesBefore(rawMessages, trimmedStart);
@@ -961,7 +972,17 @@ export class AgentManager {
 		// 需要用它作为首次补历史的数值游标（渲染层 before=windowStartFilePos）。
 		let headOffset: number;
 		if (activeEntryIds) {
-			headOffset = droppedRoleCount;
+			// entryId 向量只覆盖压缩后的模型上下文；文件分页走全活动分支（含压缩归档段）。
+			// 两者之差就是归档消息数，必须加进 headOffset，否则压缩会话的数值游标会指到
+			// 归档段之前，补历史会从错误位置重读。取不到时按 0 回退（与旧行为一致）。
+			const activeFileMessageCount = runtime.tab.sessionPath
+				? await this.sessionHistoryReader
+					.getActiveEntryCount(runtime.tab.sessionPath)
+					.catch(() => 0)
+				: 0;
+			if (!isCurrentLoad()) return staleLoadResult();
+			const archivedMessageCount = Math.max(0, activeFileMessageCount - fullActiveEntryIdCount);
+			headOffset = archivedMessageCount + droppedRoleCount;
 		} else if (runtime.tab.sessionPath) {
 			// get_entries 失败/未启用（skipEntries）时同样尽力提供数值游标：
 			// 否则渲染层「加载更多对话」因 entryId 锚点与 windowStartFilePos 双缺失而静默放弃，
@@ -988,7 +1009,9 @@ export class AgentManager {
 		// 若 RPC 已经返回了压缩/分支摘要，则不再重复补，避免时间线出现两张摘要卡片。
 		let compactionSummaryRaw: unknown | null = null;
 		let archiveDataCompactionCount = runtime.tab.compactionCount;
-		const rpcAlreadyHasSummary = rawMessages.some(
+		// 只按「保留后的消息」判断 RPC 是否已带摘要：超 50 轮时摘要卡片会被 trim 切掉，
+		// 若仍按 rawMessages 判定会阻止下方从会话文件补回摘要卡片，表现为压缩标记消失。
+		const rpcAlreadyHasSummary = trimmed.some(
 			(m) => (m as { role?: unknown })?.role === "compactionSummary"
 				|| (m as { role?: unknown })?.role === "branchSummary",
 		);
@@ -1082,6 +1105,12 @@ export class AgentManager {
 				options?.preserveMessagesAfter,
 			),
 		);
+		// 加载期间新增/就地变化的运行期消息不能被旧快照覆盖：
+		// - 新增 ID（快照发起后才出现）：追加到投影尾部，交由后续事件继续更新；
+		// - 既存 ID 但对象被事件替换（流式 partial 不带新 timestamp）：用当前对象替换投影版；
+		// - 当前正在流式/执行工具的 ID：无论是否变化都保留当前对象，终态事件才能接上。
+		// 已完整落盘且被投影覆盖的消息不在保护范围内，仍以投影版为准（位置/entryId 更准）。
+		this.reapplyMessagesChangedDuringLoad(agentId, nextMessages, preLoadMessageRefs);
 		// 重载后把进行中的消息身份（activeAssistantMessageIds/toolMessageIds）从
 		// 运行期副本重定向到投影版：后续事件继续更新投影版（位置正确、单份），
 		// 避免「投影 partial + 运行期完整版」双份或事件 append 到错误轮次。
@@ -1112,6 +1141,9 @@ export class AgentManager {
 		}
 		this.refreshAutoTitle(agentId);
 		this.preserveHistoryOnNextFlush.set(agentId, options?.preserveHistory !== false);
+		// loadMessages 是历史前缀唯一权威重建点：全量载荷显式声明保留语义，
+		// 避免编辑/删除的 false 被省略后渲染层误当成追加（旧值仍保留）。
+		this.preserveHistoryExplicitOnNextFlush.add(agentId);
 		if (options?.stickyHistory) this.stickyHistoryOnNextFlush.add(agentId);
 		else this.stickyHistoryOnNextFlush.delete(agentId);
 		this.scheduleMessageEmit(agentId, true);
@@ -3053,6 +3085,7 @@ export class AgentManager {
 		this.staleMessageCacheAgents.delete(agentId);
 		this.pendingSlideOutByAgent.delete(agentId);
 		this.preserveHistoryOnNextFlush.delete(agentId);
+		this.preserveHistoryExplicitOnNextFlush.delete(agentId);
 		this.stickyHistoryOnNextFlush.delete(agentId);
 		this.manualCompactionFollowUpAgents.delete(agentId);
 		this.manualCompactionEventAgents.delete(agentId);
@@ -4939,6 +4972,49 @@ export class AgentManager {
 	}
 
 	/**
+	 * loadMessages 提交阶段：把「加载期间新增或就地变化」的运行期消息重新应用到投影结果。
+	 *
+	 * 为什么不能依赖 mergeHistoryWithPreservedMessages 的 timestamp：流式 delta 会复用原
+	 * timestamp（见 upsertAssistantMessage），按时间比较认不出变化；而只靠内容指纹又会把
+	 * 「同一快照内的完整投影版」与「运行期 partial」判成两条（正文不同）→ 双份。
+	 *
+	 * 因此以加载前的对象引用为基准：同一个 ChatMessage 对象引用没变且不是进行中消息，
+	 * 说明加载期间没有事件碰过它，以投影为准；否则用当前对象接管该 ID 对应的位置。
+	 * 新增 ID 追加到尾部；进行中 ID（activeAssistantMessageIds / toolMessageIds）优先保留当前对象。
+	 */
+	private reapplyMessagesChangedDuringLoad(
+		agentId: string,
+		nextMessages: ChatMessage[],
+		preLoadMessageRefs: Map<string, ChatMessage>,
+	): void {
+		const currentList = this.messages.get(agentId) ?? [];
+		// 空投影不能直接跳过：快照为空时当前列表里有加载期间新增/变更/进行中的消息，
+		// 仍然要接回（否则 messages.set(nextMessages) 会把它们抹掉）。
+		if (currentList.length === 0) return;
+		const runningAssistantId = this.activeAssistantMessageIds.get(agentId);
+		const runningToolIds = new Set((this.toolMessageIds.get(agentId) ?? new Map()).values());
+		const indexById = new Map<string, number>();
+		nextMessages.forEach((message, index) => indexById.set(message.id, index));
+
+		for (const message of currentList) {
+			const before = preLoadMessageRefs.get(message.id);
+			const isRunning = message.id === runningAssistantId || runningToolIds.has(message.id);
+			// 引用未变且不是进行中消息：加载期间没有事件更新过它，交给投影结果。
+			if (before === message && !isRunning) continue;
+			const existingIndex = indexById.get(message.id);
+			if (existingIndex !== undefined) {
+				// 投影里已有同 ID：以加载期间的当前对象为准（可能更新，也可能只是进行中）。
+				nextMessages[existingIndex] = message;
+				continue;
+			}
+			// 投影里没有：加载期间新增（或投影未覆盖的乐观消息）→ 追加到尾部并登记下标，
+			// 避免同一 ID 被重复追加。
+			indexById.set(message.id, nextMessages.length);
+			nextMessages.push(message);
+		}
+	}
+
+	/**
 	 * 重载（loadMessages 替换列表）后，把「进行中的消息身份」从运行期副本重定向到投影版。
 	 *
 	 * 场景：重载快照捕捉到流式中间态——投影含未完成 assistant（无 stopReason、部分文本），
@@ -5812,6 +5888,7 @@ export class AgentManager {
 			this.computeWindowStartFilePos(agentId, all, windowStart),
 			this.preserveHistoryOnNextFlush.get(agentId) ?? true,
 			this.stickyHistoryOnNextFlush.has(agentId),
+			this.preserveHistoryExplicitOnNextFlush.has(agentId),
 		);
 		const isFullPayload = payload.upsertFrom === undefined;
 		const slideOut = this.pendingSlideOutByAgent.get(agentId);
@@ -5836,6 +5913,7 @@ export class AgentManager {
 		if (isFullPayload) {
 			this.pendingFullMessageEmitAgents.delete(agentId);
 			this.preserveHistoryOnNextFlush.delete(agentId);
+			this.preserveHistoryExplicitOnNextFlush.delete(agentId);
 			this.stickyHistoryOnNextFlush.delete(agentId);
 			this.pendingSlideOutByAgent.delete(agentId);
 		}
@@ -5935,6 +6013,10 @@ export class AgentManager {
 		// 强制全量 flush：trim 后窗口起点可能为 0（窗口=整个缓存），此时普通 flush 会走增量分支，
 		// 丢失 windowStartFilePos 与 slideOut（H2 回归修复依赖 slideOut 下发滑出轮）。与 loadMessages 结尾
 		// 的 scheduleMessageEmit(id, true) 同一语义：终态全量校准。
+		// 显式声明 preserveHistory：trim 只是窗口右移，已展示的压缩保留段仍属于用户看过的历史，
+		// 不得被渲染层当成「未声明 + 版本变化」误清（与 loadMessages 的全量调度同一约定）。
+		this.preserveHistoryOnNextFlush.set(agentId, true);
+		this.preserveHistoryExplicitOnNextFlush.add(agentId);
 		this.scheduleMessageEmit(agentId, true);
 	}
 

@@ -1354,3 +1354,290 @@ test("restart-style full flush with a new fileVersion keeps already shown histor
     ["e5", "e6"],
   );
 });
+
+test("incremental flush inherits the numeric cursor while a windowed full without it clears the stale one (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const emit = (payload) =>
+    store.set(atoms.applySessionRuntimeEventAtom, {
+      sessionId: "session-a",
+      agentId: "agent-a",
+      runtimeGeneration: 1,
+      sourceChannel: "agents:message",
+      payload,
+    });
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+
+  emit({ agentId: "agent-a", windowStart: 0, totalLength: 2, windowStartFilePos: 7, messages: [
+    { id: "r1", role: "user", text: "q" },
+    { id: "r2", role: "assistant", text: "a" },
+  ] });
+  assert.equal(entry().windowStartFilePos, 7);
+
+  // 增量 flush 不携带该字段：窗口起点未变，必须继承旧游标（不得被改写成 undefined）
+  emit({ agentId: "agent-a", upsertFrom: 1, totalLength: 3, messages: [
+    { id: "r3", role: "assistant", text: "tail" },
+  ] });
+  assert.equal(entry().windowStartFilePos, 7, "incremental must inherit the cursor");
+
+  // 窗口化全量缺字段：窗口起点可能已变，旧数值游标失效，必须清除
+  emit({ agentId: "agent-a", windowStart: 1, totalLength: 3, messages: [
+    { id: "r2", role: "assistant", text: "a" },
+    { id: "r3", role: "assistant", text: "tail" },
+  ] });
+  assert.equal(entry().windowStartFilePos, undefined, "full without the field must clear it");
+});
+
+test("version drift rejects the continuation page and keeps the loaded prefix intact (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: { agentId: "agent-a", windowStart: 2, totalLength: 4, messages: [
+      { id: "r1", role: "user", text: "q", meta: { entryId: "e5" } },
+    ] },
+  });
+  store.set(atoms.prependSessionHistoryPageAtom, {
+    sessionId: "session-a",
+    expectedRevision: entry().revision,
+    before: undefined,
+    page: {
+      messages: [
+        { id: "h1", role: "user", text: "mid-q", meta: { entryId: "e3" } },
+        { id: "h2", role: "assistant", text: "mid-a", meta: { entryId: "e4" } },
+      ],
+      total: 4,
+      nextBefore: 2,
+      indexVersion: "100:2000",
+    },
+  });
+  assert.deepEqual([...entry().history.messages.map((m) => m.meta.entryId)], ["e3", "e4"]);
+
+  // 压缩重写文件：续页返回新版本。旧实现会把已加载中间段丢掉、以单页重建前缀（断层）。
+  assert.equal(store.set(atoms.prependSessionHistoryPageAtom, {
+    sessionId: "session-a",
+    expectedRevision: entry().revision,
+    before: 2,
+    page: {
+      messages: [{ id: "h0", role: "user", text: "older", meta: { entryId: "e1" } }],
+      total: 4,
+      nextBefore: 1,
+      indexVersion: "200:800",
+    },
+  }), false, "version drift must reject the page instead of replacing the prefix");
+  assert.deepEqual(
+    [...entry().history.messages.map((m) => m.meta.entryId)],
+    ["e3", "e4"],
+    "rejected page must not drop or replace the loaded middle prefix",
+  );
+});
+
+test("compaction-retained keys survive a normal explicit full flush but not an explicit reset (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const emit = (payload) =>
+    store.set(atoms.applySessionRuntimeEventAtom, {
+      sessionId: "session-a",
+      agentId: "agent-a",
+      runtimeGeneration: 1,
+      sourceChannel: "agents:message",
+      payload,
+    });
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+
+  // 窗口 = 压缩保留段（e3/e4），压缩前上一窗口 e1/e2 转入历史并记入保留集
+  emit({ agentId: "agent-a", windowStart: 2, totalLength: 4, fileVersion: "100:2000", messages: [
+    { id: "r1", role: "user", text: "old question", meta: { entryId: "e3" } },
+    { id: "r2", role: "assistant", text: "old answer", meta: { entryId: "e4" } },
+  ] });
+  emit({
+    agentId: "agent-a",
+    windowStart: 1,
+    totalLength: 3,
+    fileVersion: "200:800",
+    preserveHistory: true,
+    stickyHistory: true,
+    messages: [
+      { id: "summary", role: "system", text: "compacted", meta: { type: "compaction" } },
+      { id: "n1", role: "user", text: "kept", meta: { entryId: "n1" } },
+    ],
+    slideOut: [
+      { id: "r1", role: "user", text: "old question", meta: { entryId: "e3" } },
+    ],
+  });
+  assert.deepEqual(
+    [...(entry().history.compactionRetainedKeys ?? [])],
+    ["e:e3", "e:e4"],
+    "compaction must record the retained window as keys",
+  );
+
+  // 下一次普通全量（显式声明保留）：sticky 被清但保留集必须仍在——这正是本次修复的行为。
+  const retainedBefore = [...(entry().history.compactionRetainedKeys ?? [])];
+  assert.ok(retainedBefore.length > 0);
+  emit({
+    agentId: "agent-a",
+    windowStart: 1,
+    totalLength: 3,
+    fileVersion: "200:800",
+    preserveHistory: true,
+    messages: [{ id: "n1", role: "user", text: "kept", meta: { entryId: "n1" } }],
+  });
+  assert.equal(entry().history.sticky, undefined);
+  assert.deepEqual(
+    [...entry().history.compactionRetainedKeys],
+    retainedBefore,
+    "a normal full flush must not drop the compaction-retained keys",
+  );
+
+  // 显式 preserveHistory:false（编辑/删除/重发）即便文件版本相同也清空保留集
+  emit({
+    agentId: "agent-a",
+    windowStart: 1,
+    totalLength: 3,
+    fileVersion: "200:800",
+    preserveHistory: false,
+    messages: [{ id: "n1", role: "user", text: "kept", meta: { entryId: "n1" } }],
+  });
+  assert.equal(entry().history, undefined, "explicit reset must drop history and retained keys");
+});
+
+test("compaction retained keys cap at the most recent 50 user turns (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const emit = (payload) =>
+    store.set(atoms.applySessionRuntimeEventAtom, {
+      sessionId: "session-a",
+      agentId: "agent-a",
+      runtimeGeneration: 1,
+      sourceChannel: "agents:message",
+      payload,
+    });
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+
+  // 上一运行窗口含 60 轮：压缩保留集必须只取最近的 50 轮连续后缀，不无界增长
+  const previousWindow = [];
+  for (let turn = 1; turn <= 60; turn += 1) {
+    previousWindow.push({ id: `u${turn}`, role: "user", text: `q${turn}`, meta: { entryId: `u${turn}` } });
+    previousWindow.push({ id: `a${turn}`, role: "assistant", text: `a${turn}`, meta: { entryId: `a${turn}` } });
+  }
+  emit({
+    agentId: "agent-a",
+    windowStart: previousWindow.length,
+    totalLength: previousWindow.length + 2,
+    fileVersion: "100:2000",
+    messages: previousWindow,
+  });
+  emit({
+    agentId: "agent-a",
+    windowStart: 0,
+    totalLength: 2,
+    fileVersion: "200:800",
+    preserveHistory: true,
+    stickyHistory: true,
+    messages: [{ id: "n1", role: "user", text: "kept", meta: { entryId: "n1" } }],
+  });
+
+  const retained = [...(entry().history.compactionRetainedKeys ?? [])];
+  const userKeys = retained.filter((key) => /^e:u\d+$/.test(key));
+  assert.equal(userKeys.length, 50, "retained set must hold exactly the most recent 50 user turns");
+  // 最近 50 轮的窗口自第 11 轮开始（60 轮窗口的尾部 50 轮）
+  assert.equal(userKeys[0], "e:u11");
+  assert.equal(userKeys[userKeys.length - 1], "e:u60");
+  // 更早的轮次不在保留集中（回底释放后可重读）
+  assert.equal(retained.includes("e:u10"), false);
+});
+
+test("bottom-clear frees browsed pages but keeps the compaction-retained tail (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: { agentId: "agent-a", windowStart: 1, totalLength: 3, fileVersion: "200:800", messages: [
+      { id: "n1", role: "user", text: "kept", meta: { entryId: "n1" } },
+    ] },
+  });
+  store.set(atoms.sessionMessagesCacheAtom, {
+    ...store.get(atoms.sessionMessagesCacheAtom),
+    "session-a": {
+      ...entry(),
+      history: {
+        messages: [
+          { id: "h0", role: "user", text: "browsed", meta: { entryId: "e0" } },
+          { id: "h1", role: "user", text: "retained-q", meta: { entryId: "e1" } },
+          { id: "h2", role: "assistant", text: "retained-a", meta: { entryId: "e2" } },
+        ],
+        nextBefore: 0,
+        version: "200:800",
+        compactionRetainedKeys: ["e:e1", "e:e2"],
+      },
+    },
+  });
+
+  assert.equal(store.set(atoms.clearSessionHistoryAtom, "session-a"), true);
+  assert.deepEqual(
+    [...entry().history.messages.map((m) => m.meta.entryId)],
+    ["e1", "e2"],
+    "only the retained turns stay; browsed pages are released",
+  );
+  assert.equal(entry().history.nextBefore, null, "released cursor must reset for re-reads");
+  assert.deepEqual([...entry().history.compactionRetainedKeys], ["e:e1", "e:e2"]);
+});
+
+test("version-drift prefix replace drops messages already shown in the window and a second summary card (2026-12)", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.sessionMessagesCacheAtom, {
+    "session-drift": {
+      sessionId: "session-drift",
+      source: "runtime",
+      revision: 3,
+      messages: [
+        { id: "agent-meta-1", role: "system", text: "window summary", meta: { type: "compaction" } },
+        { id: "w1", role: "user", text: "window", meta: { entryId: "e5" } },
+      ],
+      windowStart: 4,
+    },
+  });
+
+  const applied = store.set(atoms.replaceHistoryPrefixAfterVersionDriftAtom, {
+    sessionId: "session-drift",
+    expectedRevision: 3,
+    page: {
+      messages: [
+        // �ļ�ҳ���ժҪ������ʹ id �봰�ڲ�ͬ����������ժҪ��ʱҲ���붪��
+        { id: "file-summary", role: "system", text: "file summary", meta: { type: "compaction" } },
+        // �봰��ͬһ entryId��������Ȩ���Σ�ҳ��ĸ������붪��
+        { id: "dup", role: "assistant", text: "dup", meta: { entryId: "e5" } },
+        { id: "keep", role: "user", text: "keep", meta: { entryId: "keep" } },
+      ],
+      total: 10,
+      nextBefore: 4,
+      indexVersion: "200:800",
+    },
+  });
+
+  assert.equal(applied, true);
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-drift"];
+  assert.deepEqual(
+    Array.from(entry.history.messages, (message) => message.meta.entryId),
+    ["keep"],
+  );
+  assert.equal(
+    entry.history.messages.some(
+      (message) => message.role === "system" && message.meta?.type === "compaction",
+    ),
+    false,
+    "prefix must not carry a second summary card",
+  );
+  assert.equal(entry.history.nextBefore, 4);
+  assert.equal(entry.history.version, "200:800");
+  assert.equal(entry.revision, 3, "the replace path does not bump the revision");
+});

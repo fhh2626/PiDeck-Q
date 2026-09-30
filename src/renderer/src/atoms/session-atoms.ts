@@ -126,6 +126,12 @@ export type SessionMessageCacheEntry = {
 		version?: string;
 		/** 压缩刚完成时暂缓自动回底清理，避免用户看到的历史立即消失。 */
 		sticky?: boolean;
+		/**
+		 * 压缩保留集合（messageEntryKey）：压缩前的运行窗口与旧保留集合并后，
+		 * 最靠近运行窗口的最近 50 个 user 轮连续后缀。回底清理只释放浏览历史，
+		 * 这些消息必须留在内存；连续多次压缩只保留最新一次计算结果，不累加。
+		 */
+		compactionRetainedKeys?: string[];
 	};
 	/**
 	 * mutation 刷新代际（2026-11）：编辑/删除成功后的历史重读用 per-session 序号
@@ -532,6 +538,11 @@ export const cacheSessionMessagesAtom = atom(
 		cardCount?: number;
 		/** 窗口首条消息的文件消息下标（2026-11）：窗口缺 entryId 时作为首次补历史的数值游标 */
 		windowStartFilePos?: number;
+		/**
+		 * 本次写入是否为增量合并（upsertFrom 尾部替换）。增量载荷不携带窗口字段，
+		 * 缺省时必须继承旧游标；全量载荷缺省时则清除（窗口起点可能已变化）。
+		 */
+		incremental?: boolean;
 		history?: SessionMessageCacheEntry["history"];
 		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
 		mutationSequence?: number;
@@ -587,10 +598,15 @@ export const cacheSessionMessagesAtom = atom(
 				mutationSequence: input.mutationSequence ?? current?.mutationSequence,
 				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
 				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
-				// 未显式提供时保留旧值（增量 flush 不携带该字段，不应清掉有效游标）
+				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
+				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
+				// 数值游标：增量继承旧值（载荷不带该字段不等于窗口起点变了）；
+				// 全量则按本次声明覆盖或清除——窗口右移后旧游标已失效。
 				...(typeof input.windowStartFilePos === "number"
 					? { windowStartFilePos: input.windowStartFilePos }
-					: {}),
+					: (input.incremental && typeof current?.windowStartFilePos === "number"
+						? { windowStartFilePos: current.windowStartFilePos }
+						: {})),
 			} : {}),
 		},
     };
@@ -885,11 +901,51 @@ export const removeSessionSlidingOutMessagesAtom = atom(
 );
 
 /**
+ * 压缩保留轮数：压缩前的运行窗口转入历史后，最靠近运行窗口的最近 50 个 user 轮
+ * 视为「用户已看过的会话主体」，即使回底清理也必须留在内存；更早的浏览数据可释放后重读。
+ * 与主进程 DISPLAY_WINDOW_TURNS / MAX_RUNTIME_CACHE_TURNS 同一口径。
+ */
+const COMPACTION_RETAINED_TURNS = 50;
+
+/**
+ * 计算压缩保留集合（messageEntryKey）：以「旧保留集 + 本次转入历史的上一窗口」为输入，
+ * 取尾部最近 COMPACTION_RETAINED_TURNS 个 user 轮的连续后缀。连续多次压缩只重算 suffixes，
+ * 不把历史各次结果相加，避免保留集无限增长。
+ */
+function computeCompactionRetainedKeys(
+  previousRetained: ChatMessage[],
+  previousWindow: ChatMessage[],
+): string[] {
+  const seen = new Set<string>();
+  const combined: ChatMessage[] = [];
+  for (const message of [...previousRetained, ...previousWindow]) {
+    const key = messageEntryKey(message);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(message);
+  }
+  if (combined.length === 0) return [];
+  const userIndices: number[] = [];
+  for (let i = combined.length - 1; i >= 0; i--) {
+    if (combined[i].role === "user") {
+      userIndices.unshift(i);
+      if (userIndices.length >= COMPACTION_RETAINED_TURNS) break;
+    }
+  }
+  const start = userIndices.length === 0
+    ? Math.max(0, combined.length - COMPACTION_RETAINED_TURNS)
+    : userIndices[0];
+  return combined.slice(start).map(messageEntryKey);
+}
+
+/**
  * 运行时窗口段更新时调和 disk 历史前缀（2026-08 激活分页）：
  * - fileVersion 变化（编辑/删除/压缩改写 JSONL）默认丢弃前缀；
  *   压缩快照显式 preserveHistory 时保留已经展示的对话；
  * - 窗口右移与前缀尾部重叠 → 按 entryId 去重（重叠部分以运行时窗口段为权威）；
- * - slideOut（trim 窗口右移滑出的旧窗口头部轮次）→ 并入前缀尾部，避免锚点轮空洞。
+ * - slideOut（trim 窗口右移滑出的旧窗口头部轮次）→ 并入前缀尾部，避免锚点轮空洞；
+ * - 压缩保留集：把本次转入历史的上一窗口与旧保留集合并，取最近 50 轮连续后缀记入
+ *   compactionRetainedKeys，回底清理时不清这些消息。
  */
 function reconcileHistoryPrefix(
   history: SessionMessageCacheEntry["history"],
@@ -899,12 +955,17 @@ function reconcileHistoryPrefix(
   preserveHistory = false,
   stickyHistory = false,
   historyBefore?: number,
+  /** 本次全量 flush 是否显式声明 preserveHistory（含 false） */
+  historyExplicit = false,
+  /** 本次转入历史的上一运行窗口（连续压缩时与旧保留集合并重算） */
+  compactionRetainedCandidates?: ChatMessage[],
 ): SessionMessageCacheEntry["history"] {
   if (!history && (!slideOut || slideOut.length === 0)) return undefined;
   const versionChanged = Boolean(fileVersion && (!history?.version || fileVersion !== history.version));
   // 编辑/删除等改写会让旧前缀失效；压缩只改写上下文边界，旧对话仍是用户已经
   // 看到的 transcript，因此由主进程显式标记 preserveHistory 后继续保留。
-  if (versionChanged && !preserveHistory) {
+  // 显式 false（编辑/删除/重发）即便文件版本未变也必须丢前缀，否则旧文本会残留。
+  if ((versionChanged && !preserveHistory) || (historyExplicit && !preserveHistory)) {
     history = undefined;
   }
   const hasCurrentSummaryCard = segment.some(isSummaryCard);
@@ -952,6 +1013,27 @@ function reconcileHistoryPrefix(
       ? historyBefore
       : null
   );
+  // 压缩保留集：只有本次真正有「上一窗口转入」或旧保留集时才重算。
+  // 重算输入 = 旧保留消息 + 本次转入候选，取尾部最近 50 轮连续后缀，
+  // 保证连续压缩不累加旧集合、不无界增长。
+  const previousRetainedKeys = history?.compactionRetainedKeys ?? [];
+  const hasRetainedCandidates =
+    (compactionRetainedCandidates?.length ?? 0) > 0 || previousRetainedKeys.length > 0;
+  let retainedKeys: string[] | undefined;
+  if (hasRetainedCandidates) {
+    const previousRetainedSet = new Set(previousRetainedKeys);
+    const previousRetainedMessages = previousRetainedKeys.length > 0
+      ? messages.filter((message) => previousRetainedSet.has(messageEntryKey(message)))
+      : [];
+    const retained = computeCompactionRetainedKeys(
+      previousRetainedMessages,
+      compactionRetainedCandidates ?? [],
+    );
+    // 只保留仍实际存在于前缀里的 key（去重/清理后已消失的不得残留）
+    const presentKeys = new Set(messages.map(messageEntryKey));
+    const filtered = retained.filter((key) => presentKeys.has(key));
+    if (filtered.length > 0) retainedKeys = filtered;
+  }
   return {
     nextBefore,
     ...(history?.nextBeforeEntryId !== undefined
@@ -960,9 +1042,62 @@ function reconcileHistoryPrefix(
     ...(history?.exhausted ? { exhausted: true } : {}),
     version: fileVersion ?? history?.version,
     ...(stickyHistory ? { sticky: true } : {}),
+    ...(retainedKeys ? { compactionRetainedKeys: retainedKeys } : {}),
     messages,
   };
 }
+
+/**
+ * 版本漂移重建后的原子替换：只用于控制器重建路径。
+ * 守卫：source=runtime、revision 匹配（等待期间不得被其他写入抢先）。
+ * 语义与 prepend 不同：本次结果是「从当前接缝重读的完整新前缀」，直接整段替换，
+ * 不做「新页 + 旧前缀」拼接——旧前缀属于失效版本，拼接会错位。
+ * 保留集合（compactionRetainedKeys）保留：它记录的是内存保留名单，与文件版本无关。
+ * 前缀消息按窗口去重后再写入：与 prepend 同口径，窗口是权威段。
+ */
+export const replaceHistoryPrefixAfterVersionDriftAtom = atom(
+  null,
+  (get, set, input: {
+    sessionId: string;
+    expectedRevision: number;
+    page: SessionMessagePage;
+  }): boolean => {
+    const current = get(sessionMessagesCacheAtom)[input.sessionId];
+    if (!current || current.source !== "runtime") return false;
+    if (current.revision !== input.expectedRevision) return false;
+    // 新前缀与当前运行窗口是两个相邻段，重叠消息不得同时留在两处
+    // （正常 prepend 路径同样按 messageEntryKey 去重）：
+    // - 窗口已有同 key 的消息（含同 id 的摘要卡）→ 丢弃页里的副本；
+    // - 窗口已有摘要卡 → 页里的另一张摘要卡（不同 id）也丢弃，避免两张卡片。
+    const segmentKeys = new Set(current.messages.map(messageEntryKey));
+    const windowHasSummary = current.messages.some(isSummaryCard);
+    const prefixMessages = input.page.messages.filter((message) => {
+      if (segmentKeys.has(messageEntryKey(message))) return false;
+      if (windowHasSummary && isSummaryCard(message)) return false;
+      return true;
+    });
+    set(sessionMessagesCacheAtom, {
+      ...get(sessionMessagesCacheAtom),
+      [input.sessionId]: {
+        ...current,
+        history: {
+          // 过滤掉的重叠项可导致空前缀：仍要留下游标，用户还能继续往上翻。
+          messages: prefixMessages,
+          nextBefore: input.page.nextBefore,
+          ...(input.page.nextBeforeEntryId ? { nextBeforeEntryId: input.page.nextBeforeEntryId } : {}),
+          ...(input.page.nextBefore === null ? { exhausted: true } : {}),
+          version: input.page.indexVersion,
+          // sticky 不继承：重建发生在重新分页时，不属于「刚压缩完」窗口
+          ...(current.history?.compactionRetainedKeys
+            ? { compactionRetainedKeys: current.history.compactionRetainedKeys }
+            : {}),
+        },
+        updatedAt: Date.now(),
+      },
+    });
+    return true;
+  },
+);
 
 /**
  * disk 轮次页 prepend（runtime 窗口会话的「加载更多对话」）。
@@ -1001,13 +1136,17 @@ export const prependSessionHistoryPageAtom = atom(
     const segmentKeys = new Set(current.messages.map(messageEntryKey));
     const pageMessages = input.page.messages.filter((message) => !segmentKeys.has(messageEntryKey(message)));
 
-    const stalePrefix = Boolean(
+    // 版本漂移（压缩/改写）：本页是基于旧最老游标读到的单页，不能当作新前缀起点，
+    // 否则会把已加载的中间段直接丢掉（旧实现置 baseMessages=[]，表现为断层）。
+    // 拒绝本页：旧前缀保持不变，由调用方（控制器）从当前窗口接缝重新重建。
+    const versionDrift = Boolean(
       current.history?.version &&
       input.page.indexVersion &&
       current.history.version !== input.page.indexVersion,
     );
-    // 版本漂移：旧前缀下标空间失效，直接以新页重建前缀（仍然与窗口段去重）
-    const baseMessages = stalePrefix ? [] : (current.history?.messages ?? []);
+    if (versionDrift) return false;
+
+    const baseMessages = current.history?.messages ?? [];
     const baseKeys = new Set(baseMessages.map(messageEntryKey));
     const freshMessages = pageMessages.filter((message) => !baseKeys.has(messageEntryKey(message)));
 
@@ -1026,6 +1165,10 @@ export const prependSessionHistoryPageAtom = atom(
               ...(input.page.nextBefore === null ? { exhausted: true } : {}),
               version: input.page.indexVersion ?? current.history?.version,
               ...(current.history?.sticky ? { sticky: true } : {}),
+              // 压缩保留集随前缀一起保留：续页不得冲掉回底清理的保护名单
+              ...(current.history?.compactionRetainedKeys
+                ? { compactionRetainedKeys: current.history.compactionRetainedKeys }
+                : {}),
             },
         updatedAt: Date.now(),
       },
@@ -1087,8 +1230,8 @@ export const replaceSessionHistoryAfterMutationAtom = atom(
 
 /**
  * 回底清理临时历史（2026-11 轮次模型）：贴底稳定后把 runtime 会话翻过的历史前缀清掉，
- * 只保留运行时窗口段 —— atom 数据回到「最近 3 轮窗口」，渲染层内存最小；
- * 再次上翻走「atom → 主进程缓存 → 文件」三级递进重新拉取。
+ * 只保留运行时窗口段与压缩保留集（最近 50 轮）——atom 数据回到「窗口 + 已看过的会话主体」，
+ * 更早的浏览数据释放后再上翻走「atom → 主进程缓存 → 文件」三级递进重新拉取。
  * 仅 runtime 来源缓存生效；disk 来源（历史会话浏览）不清，避免打断按条分页游标。
  */
 export const clearSessionHistoryAtom = atom(
@@ -1099,6 +1242,38 @@ export const clearSessionHistoryAtom = atom(
 		// 压缩刚完成的前缀要先让下一次正常全量 flush 清除 sticky 标记；
 		// 否则用户刚看到的旧回复会在 1.5s 回底定时器里立即消失。
 		if (current.history.sticky) return false;
+		// 压缩保留集不清：这些是压缩前用户已看过的最近若干轮，清了会表现为消息断层。
+		// 保留集合只来自压缩，普通上翻浏览的历史仍会被释放。
+		const retained = current.history.compactionRetainedKeys;
+		if (retained && retained.length > 0) {
+			const retainedSet = new Set(retained);
+			const keptMessages = current.history.messages.filter((message) =>
+				retainedSet.has(messageEntryKey(message)),
+			);
+			if (keptMessages.length === 0) {
+				set(sessionMessagesCacheAtom, {
+					...get(sessionMessagesCacheAtom),
+					[sessionId]: { ...current, history: undefined, updatedAt: Date.now() },
+				});
+				return true;
+			}
+			set(sessionMessagesCacheAtom, {
+				...get(sessionMessagesCacheAtom),
+				[sessionId]: {
+					...current,
+					// 只保留压缩保留消息；游标/版本等分页状态同步失效，
+					// 否则旧游标会指向已被释放的浏览段中间（回底后重读会错位）。
+					history: {
+						messages: keptMessages,
+						nextBefore: null,
+						compactionRetainedKeys: retained,
+						...(current.history.version ? { version: current.history.version } : {}),
+					},
+					updatedAt: Date.now(),
+				},
+			});
+			return true;
+		}
 		set(sessionMessagesCacheAtom, {
 			...get(sessionMessagesCacheAtom),
 			[sessionId]: { ...current, history: undefined, updatedAt: Date.now() },
@@ -1658,6 +1833,8 @@ export const applySessionRuntimeEventAtom = atom(
                 windowStart: W,
                 history: current.history,
                 cardCount,
+                // 增量重写：窗口起点未变，缺省时缓存 atom 必须继承旧数值游标
+                incremental: true,
               });
             } else {
               console.warn("[messages] incremental update dropped", {
@@ -1733,6 +1910,11 @@ export const applySessionRuntimeEventAtom = atom(
               preserveHistory,
               stickyHistory,
               payloadWindowStartFilePos,
+              // 显式字段（含 false）才启用编辑/删除清理与保留集重算：
+              // 旧协议缺省载荷仍按“未声明”处理，不误删已有前缀。
+              typeof payload.preserveHistory === "boolean",
+              // 压缩前上一运行窗口：与旧保留集合并后重算最近 50 轮保留集
+              previousWindow,
             ),
             ...(typeof payloadWindowStartFilePos === "number"
               ? { windowStartFilePos: payloadWindowStartFilePos }

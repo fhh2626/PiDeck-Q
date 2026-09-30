@@ -104,7 +104,30 @@ export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
 
 export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 50): T[] {
 	if (rawMessages.length === 0) return rawMessages;
-	return rawMessages.slice(turnTrimStartIndex(rawMessages, maxTurns));
+	return rawMessages.slice(contextTrimStartIndex(rawMessages, maxTurns));
+}
+
+/**
+ * 按「模型上下文」语义裁剪：保留最近 maxTurns 个 user 轮次及其之后的全部消息。
+ * 与 turnTrimStartIndex（运行缓存显示窗口）的关键区别：不足 maxTurns 轮时返回 0，
+ * 不因为保留段首个消息不是 user 就丢掉头部——pi 压缩后的保留段常以 assistant/toolResult
+ * 开头（首条保留消息之前还可能带 compactionSummary），旧规则会把这些上下文一并误裁。
+ * 无 user 消息时与旧行为一致，按尾部 50 条兑底。
+ */
+export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
+	if (rawMessages.length === 0) return 0;
+	const userIndices: number[] = [];
+	for (let i = rawMessages.length - 1; i >= 0; i--) {
+		const msg = rawMessages[i] as { role?: unknown } | undefined;
+		if (msg?.role === "user") {
+			userIndices.unshift(i);
+			if (userIndices.length >= maxTurns) break;
+		}
+	}
+	if (userIndices.length === 0) return Math.max(0, rawMessages.length - 50);
+	// 不足 maxTurns 轮：整个上下文都在预算内，保留全部（含首个 user 之前的保留消息与摘要卡片）
+	if (userIndices.length < maxTurns) return 0;
+	return userIndices[0];
 }
 
 /**
@@ -167,6 +190,9 @@ export function buildMessageFlushPayload(
 	windowStartFilePos?: number,
 	preserveHistory = false,
 	stickyHistory = false,
+	/** 全量载荷是否显式携带 preserveHistory（含 false）：false 表示「不保留」与「未声明」语义不同，
+	 * 编辑/删除靠显式 false 清前缀；旧调用不传时保持旧协议（只写 true，缺省省略）。 */
+	preserveHistoryExplicit = false,
 ): {
 	agentId: string;
 	messages: ChatMessage[];
@@ -204,6 +230,7 @@ export function buildMessageFlushPayload(
 	// 不 prepend 会被窗口 slice 切掉（增量分支不 prepend：卡片不在增量区，渲染层已有）。
 	// windowStartFilePos：窗口首条消息在会话文件消息下标空间中的位置，
 	// 供渲染层在窗口消息缺 entryId 时作为首次补历史的数值游标（主进程缓存/文件路径都能消费）。
+	// 卡头摘要卡片：全量载荷升为窗口化全量时，窗口前的压缩/分支卡片一并 prepend
 	const summaryCards = leadingSummaryCards(all, boundedWindow);
 	return {
 		agentId,
@@ -211,7 +238,8 @@ export function buildMessageFlushPayload(
 		totalLength: all.length,
 		...(boundedWindow > 0 ? { windowStart: boundedWindow } : {}),
 		...(fileVersion ? { fileVersion } : {}),
-		...(preserveHistory ? { preserveHistory: true } : {}),
+		// 显式携带（含 false）优先；未开启显式时沿用旧协议（只写 true）
+		...(preserveHistoryExplicit || preserveHistory ? { preserveHistory } : {}),
 		...(stickyHistory ? { stickyHistory: true } : {}),
 		...(typeof windowStartFilePos === "number" && windowStartFilePos >= 0
 			? { windowStartFilePos }

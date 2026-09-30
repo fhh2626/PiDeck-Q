@@ -19,6 +19,7 @@ import {
 	prependSessionHistoryPageAtom,
 	prependSessionMessagePageAtom,
 	replaceSessionHistoryAfterMutationAtom,
+	replaceHistoryPrefixAfterVersionDriftAtom,
 	sessionMessagesCacheAtom,
 	sessionMessageCacheBySessionIdAtomFamily,
 	sessionMessageLoadStateBySessionIdAtomFamily,
@@ -72,6 +73,110 @@ const LEGACY_OWNER_KEY = "legacy";
 export const INITIAL_HISTORY_TURN_PAGE_SIZE = 50;
 /** runtime 窗口会话「加载更多对话」的单页轮数（与主进程 DEFAULT_TURN_PAGE_SIZE 对齐） */
 export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
+/**
+ * 版本漂移重建的安全页数上限：压缩后从当前接缝重读到旧前缀深度；
+ * 超出说明文件被持续改写，放弃本次重建（保留旧前缀，下次滚动再试）。
+ */
+export const HISTORY_REBUILD_MAX_PAGES = 20;
+
+/**
+ * 增量续页遇到文件版本漂移（压缩改写）时，从当前 runtime 接缝重新读取一批连续页，
+ * 恢复到早先已加载的深度。
+ *
+ * 为什么不能沿用旧做法（把旧前缀整段丢掉、以单页作新起点）：
+ * 用户已加载的中间段会直接消失，表现为「更早几条 + 最新几条、中间没了」。
+ * 重建期间旧前缀保持不动；任何一页失败/版本再变/会话卸载就整体放弃，不落地部分结果。
+ */
+export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
+  sessionId: string;
+  sequence: number;
+  store: ReturnType<typeof useStore>;
+  targetTurnCount: number;
+  anchorFilePos?: number;
+  /** 陈旧判定（默认按 per-session 加载序号）；测试可注入以驱动失败路径。 */
+  isCurrent?: () => boolean;
+}): Promise<boolean> {
+  const { sessionId, sequence, store, targetTurnCount, anchorFilePos } = deps;
+  const isCurrent = deps.isCurrent ?? (() => latestLoadBySession.get(sessionId) === sequence);
+  const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
+  if (!entryAtStart || entryAtStart.source !== "runtime") return false;
+  const anchorMessage = entryAtStart.messages.find((m) => typeof m.meta?.entryId === "string");
+  const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
+    ? anchorMessage.meta.entryId
+    : undefined;
+  // 接缝游标优先级（不可交换）：显式 anchorFilePos > 窗口 entryId > 缓存里的 windowStartFilePos。
+  // 大历史窗口（skipEntries）消息可能整体缺 entryId：续页时调用方不传 anchorFilePos，
+  // 若这里只用窗口 entryId 会直接放弃重建，表现为「压缩后旧前缀永久陈旧」。
+  // 注意不能用 windowStartFilePos 压过 entryId——那会把普通会话也改成数值游标。
+  let cursor: { requestBefore?: number; anchorEntryId?: string };
+  if (typeof anchorFilePos === "number") {
+    cursor = { requestBefore: anchorFilePos };
+  } else if (anchorEntryId !== undefined) {
+    cursor = { anchorEntryId };
+  } else if (typeof entryAtStart.windowStartFilePos === "number") {
+    cursor = { requestBefore: entryAtStart.windowStartFilePos };
+  } else {
+    return false;
+  }
+
+  const pages: Awaited<ReturnType<typeof readRuntimeHistoryTurnPage>>[] = [];
+  let turns = 0;
+  // 版本锚定：第一页的 indexVersion 就是重建后的权威版本；后续页必须一致，
+  // 否则文件又在改写，继续读会把两个版本的消息拼在一起。
+  let rebuildVersion: string | undefined;
+  try {
+    for (let page = 0; page < HISTORY_REBUILD_MAX_PAGES && turns < targetTurnCount; page += 1) {
+      if (!isCurrent()) return false;
+      const result = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
+      if (!isCurrent()) return false;
+      const latest = store.get(sessionMessagesCacheAtom)[sessionId];
+      if (!latest || latest.source !== "runtime") return false;
+      if (rebuildVersion === undefined) {
+        rebuildVersion = result.indexVersion;
+      } else if (result.indexVersion !== rebuildVersion) {
+        return false;
+      }
+      pages.push(result);
+      for (const message of result.messages) {
+        if (message.role === "user") turns += 1;
+      }
+      // 到顶（nextBefore === null）：重建后的前缀本身就是完整的，停止继续读
+      if (result.nextBefore === null) break;
+      cursor = result.nextBeforeEntryId
+        ? { anchorEntryId: result.nextBeforeEntryId }
+        : { requestBefore: result.nextBefore };
+    }
+  } catch {
+    // 读页失败（IPC/会话已卸载/索引异常）：保留旧前缀，下次滚动再重建。
+    // 不能把异常抛给调用链——那里只负责触发，没有局部错误处理。
+    return false;
+  }
+  if (pages.length === 0) return false;
+
+  // 原子替换：一次性把新前缀交给 atom（携带 expectedRevision 防止等待期间被别的写入抢先）。
+  const currentEntry = store.get(sessionMessagesCacheAtom)[sessionId];
+  if (!currentEntry || currentEntry.source !== "runtime") return false;
+  // 读页从接缝往更早推进：pages[0] 最靠近窗口（最新），末页最老。
+  // 前缀数组必须按「旧 → 新」排列（渲染是 [...history.messages, ...窗口]），
+  // 因此反转页序后拼接；页内消息已是旧到新，不要反转页内顺序。
+  const oldestPage = pages[pages.length - 1];
+  const chronologicalMessages = [...pages].reverse().flatMap((item) => item.messages);
+  const applied = store.set(replaceHistoryPrefixAfterVersionDriftAtom, {
+    sessionId,
+    expectedRevision: currentEntry.revision,
+    page: {
+      messages: chronologicalMessages,
+      total: pages[0].total,
+      // 续页游标取最老页（反转前数组末项）：反转后末项是最新页，其 nextBefore 指向本段中间。
+      nextBefore: oldestPage.nextBefore,
+      ...(oldestPage.nextBeforeEntryId
+        ? { nextBeforeEntryId: oldestPage.nextBeforeEntryId }
+        : {}),
+      indexVersion: rebuildVersion,
+    },
+  });
+  return applied;
+}
 
 /**
  * runtime 窗口会话的磁盘轮次页读取（2026-11 mutation 历史刷新抽出）：
@@ -809,12 +914,34 @@ export function useSessionTimelineController(options: {
 				requestBefore,
 				anchorEntryId,
 			})
-				.then((page) => {
+				.then(async (page) => {
 					if (latestLoadBySession.get(sessionId) !== sequence) return;
 					if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
 						// 同 disk 分支：补页成功同步扩大渲染窗口，避免新页被 turn 窗口裁剪不可见
 						setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
+						return;
 					}
+					// 补页被拒绝：只有「文件版本已漂移（压缩/外部改写）」需要重建。
+					// 其他拒绝原因（revision 变了、会话卸载）直接放弃，等待下一次用户滚动。
+					const entryNow = store.get(sessionMessagesCacheAtom)[sessionId];
+					const drifted = Boolean(
+						entryNow?.history?.version &&
+						page.indexVersion &&
+						entryNow.history.version !== page.indexVersion,
+					);
+					if (!drifted) return;
+					// 把已加载的前缀深度作为重建目标（至少包含原有浏览深度）
+					const targetTurns = Math.max(
+						countLoadedHistoryTurns(entryNow?.history?.messages ?? []),
+						RUNTIME_HISTORY_TURN_PAGE_SIZE,
+					);
+					await rebuildHistoryPrefixAfterVersionDrift({
+						sessionId,
+						sequence,
+						store,
+						targetTurnCount: targetTurns,
+						anchorFilePos,
+					});
 				})
 				.finally(() => {
 					if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);

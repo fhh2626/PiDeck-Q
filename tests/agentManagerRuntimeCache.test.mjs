@@ -342,6 +342,157 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
   }
 });
 
+test("loadMessages keeps messages that changed while the snapshot was in flight (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-inflight-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const snapshot = deferred();
+    const runtime = {
+      tab: {
+        id: "agent-inflight",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "running",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: {
+        client: {
+          request: async () => snapshot.promise,
+        },
+      },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-inflight", runtime);
+
+    // 加载开始前就存在、且随后被流式事件就地更新的消息（delta 不刷新 timestamp，
+    // 因此 preserveMessagesAfter 的时间比较认不出变化）。
+    const streaming = {
+      id: "runtime-streaming",
+      agentId: "agent-inflight",
+      role: "assistant",
+      text: "partial",
+      timestamp: 1,
+    };
+    // 加载期间新到的消息（快照发起后才有）。
+    const lateArrival = {
+      id: "runtime-late",
+      agentId: "agent-inflight",
+      role: "user",
+      text: "sent during load",
+      timestamp: 1,
+    };
+    manager.messages.set("agent-inflight", [streaming]);
+    manager.activeAssistantMessageIds.set("agent-inflight", "runtime-streaming");
+
+    const pending = manager.loadMessages("agent-inflight", true, snapshot.promise);
+    // 加载等待期间：流式更新同一对象（保留 timestamp），并追加一条新消息。
+    streaming.text = "partial + more";
+    manager.messages.get("agent-inflight").push(lateArrival);
+
+    snapshot.resolve({
+      success: true,
+      data: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "old question" }], id: "msg-old-q" },
+          { role: "assistant", content: [{ type: "text", text: "old answer" }], id: "msg-old-a" },
+        ],
+      },
+    });
+    await pending;
+
+    const result = manager.messages.get("agent-inflight");
+    const byId = new Map(result.map((message) => [message.id, message]));
+    // 投影历史仍在（id 由投影器按 agentId-history-N 合成）
+    assert.equal(byId.get("agent-inflight-history-0").text, "old question");
+    assert.equal(byId.get("agent-inflight-history-1").text, "old answer");
+    assert.equal(byId.get("runtime-streaming").text, "partial + more", "in-flight update must survive the snapshot write");
+    assert.equal(byId.get("runtime-late").text, "sent during load");
+    // 不重复：同一 ID 只出现一次
+    assert.equal(result.length, new Set(result.map((message) => message.id)).size);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("empty snapshot keeps only messages created or changed during the load (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-empty-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const snapshot = deferred();
+    const runtime = {
+      tab: {
+        id: "agent-empty",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "running",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: { client: { request: async () => snapshot.promise } },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-empty", runtime);
+
+    const staleUser = { id: "stale-user", agentId: "agent-empty", role: "user", text: "old", timestamp: 1 };
+    const streaming = { id: "runtime-streaming", agentId: "agent-empty", role: "assistant", text: "partial", timestamp: 1 };
+    manager.messages.set("agent-empty", [staleUser, streaming]);
+    manager.activeAssistantMessageIds.set("agent-empty", "runtime-streaming");
+
+    const pending = manager.loadMessages("agent-empty", true, snapshot.promise);
+    streaming.text = "partial + more";
+    manager.messages.get("agent-empty").push(
+      { id: "runtime-late", agentId: "agent-empty", role: "user", text: "sent during load", timestamp: 1 },
+    );
+
+    snapshot.resolve({ success: true, data: { messages: [] } });
+    await pending;
+
+    const result = manager.messages.get("agent-empty");
+    const byId = new Map(result.map((message) => [message.id, message]));
+    // 空快照仍是「历史不在」的权威：未被事件碰过的旧消息不保留
+    assert.equal(byId.has("stale-user"), false, "an unchanged pre-load message must not survive an empty snapshot");
+    // 进行中/新增消息必须接回，否则会被空快照抹掉
+    assert.equal(byId.get("runtime-streaming")?.text, "partial + more");
+    assert.equal(byId.get("runtime-late")?.text, "sent during load");
+    assert.equal(result.length, new Set(result.map((message) => message.id)).size);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("clearAgentState drops the explicit preserveHistory flag for the agent (2026-12)", () => {
+  const manager = new AgentManager(
+    () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+    () => null,
+    { get: () => ({}) },
+    {},
+  );
+  manager.preserveHistoryExplicitOnNextFlush.add("agent-1");
+  manager.preserveHistoryOnNextFlush.set("agent-1", false);
+  manager.clearAgentState("agent-1");
+  assert.equal(manager.preserveHistoryExplicitOnNextFlush.has("agent-1"), false);
+  assert.equal(manager.preserveHistoryOnNextFlush.has("agent-1"), false);
+});
+
 test("loadMessages ignores an older snapshot that resolves after a newer load", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-sequence-"));
   const sessionPath = join(directory, "session.jsonl");

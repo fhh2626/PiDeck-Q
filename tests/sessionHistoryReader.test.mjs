@@ -342,6 +342,102 @@ test("readActiveEntryIdentity aligns entryIds with the compaction while keeping 
   }
 });
 
+test("readRecentMessages reads the active parent chain instead of the physical file tail (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-branch-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    const line = (id, parentId, role, text) => JSON.stringify({
+      id,
+      parentId,
+      type: "message",
+      message: { role, content: [{ type: "text", text }] },
+    });
+    // 活动分支：e1 → e2；随后 rewind 回 e2 开出 e3 → e4。
+    // 被丢弃的分支（e2.5）仍物理排在文件中部，而收尾的旧分支消息 append 在文件最后。
+    await writeFile(sessionPath, [
+      line("e1", null, "user", "kept question"),
+      line("e2", "e1", "assistant", "kept answer"),
+      line("d1", "e2", "user", "discarded question"),
+      line("d2", "d1", "assistant", "discarded answer"),
+      line("e3", "e2", "user", "active question"),
+      line("d3", "d2", "assistant", "discarded tail that must never show"),
+      line("e4", "e3", "assistant", "active answer"),
+    ].join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const response = await reader.readRecentMessages(sessionPath, 10);
+    const texts = Array.from(response.data.messages, (message) => textFromContent(message.content));
+    // 活动父链从当前 leaf（e4）回溯：e1 → e2 → e3 → e4；物理尾部的 d3 不得出现
+    assert.equal(texts.join("|"), "kept question|kept answer|active question|active answer");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("readRecentMessages trims the active branch to the requested turn count (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-trim-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    const line = (id, parentId, role, text) => JSON.stringify({
+      id,
+      parentId,
+      type: "message",
+      message: { role, content: [{ type: "text", text }] },
+    });
+    const lines = [];
+    let parent = null;
+    for (let turn = 1; turn <= 4; turn += 1) {
+      lines.push(line(`u${turn}`, parent, "user", `q${turn}`));
+      parent = `u${turn}`;
+      lines.push(line(`a${turn}`, parent, "assistant", `a${turn}`));
+      parent = `a${turn}`;
+    }
+    await writeFile(sessionPath, lines.join("\n") + "\n", "utf8");
+    // 真实 trimMessages 语义：保留最近 N 轮 user 及之后的全部消息
+    const reader = new SessionHistoryReader({
+      toHostPath: (path) => path,
+      convertMessages: (_agentId, raw, entryIds = []) => raw.map((message, index) => ({
+        id: entryIds[index] ?? `m${index}`,
+        role: message.role,
+        text: textFromContent(message.content),
+      })),
+      trimMessages: (messages, maxTurns) => {
+        const userIndices = [];
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role === "user") {
+            userIndices.unshift(index);
+            if (userIndices.length >= maxTurns) break;
+          }
+        }
+        return userIndices.length < maxTurns ? messages : messages.slice(userIndices[0]);
+      },
+      translate: () => "",
+    });
+
+    const response = await reader.readRecentMessages(sessionPath, 2);
+    const texts = Array.from(response.data.messages, (message) => textFromContent(message.content));
+    assert.equal(texts.join("|"), "q3|a3|q4|a4");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("readRecentMessages fails instead of returning a physical-order fallback for an unreadable session (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-empty-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    // 全部行损坏：既非「空历史」也非「可解析的 active chain」，必须失败而不是静默回退
+    await writeFile(sessionPath, "{ broken\n{ broken too\n", "utf8");
+    const reader = createReader((path) => path);
+    await assert.rejects(
+      () => reader.readRecentMessages(sessionPath, 5),
+      /no readable entries/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("compaction page paging stays in index space when conversion skips messages", async () => {
   // 回归（打开大会话起始页误显根因）：hasCompaction 分页曾用 readSessionDisplayMessages
   // 的全量数组按索引坐标 slice——转换跳过空消息（thinking-only/空 user）后数组比索引短，
