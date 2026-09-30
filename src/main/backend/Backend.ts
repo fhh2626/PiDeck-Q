@@ -38,6 +38,11 @@ export interface Backend {
 	) => string;
 	resolveSessionIdForAgent(agentId: string): string | undefined;
 	hasActiveStreaming(): boolean;
+	/**
+	 * 事件流断层（SSE 历史被裁 / 超大帧被丢弃）时的无导航补发：
+	 * 重新推送 AgentTab 状态与各 Agent 的完整消息窗口。
+	 */
+	resyncLiveRendererState(): void;
 	startAfterWindowCreated(): void;
 	dispose(): Promise<void>;
 }

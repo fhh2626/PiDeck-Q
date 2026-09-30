@@ -192,6 +192,19 @@ export class AgentManager {
 	hasActiveStreaming(): boolean {
 		return this.streamingAgents.size > 0;
 	}
+
+	/**
+	 * 事件流出现断层（历史被裁或超大帧被丢弃）时的无导航补发：
+	 * 把 AgentTab 状态和各 Agent 的完整消息窗口重新推一遍，让渲染层用实时缓存自愈，
+	 * 而不是把整个页面重新加载。只做补发，不新建消息、不改缓存内容。
+	 */
+	flushLiveRendererState(): void {
+		this.emitState();
+		for (const agentId of [...this.agents.keys()]) {
+			// immediate=true：与 loadMessages 结尾同一语义，强制全量校准。
+			this.scheduleMessageEmit(agentId, true);
+		}
+	}
 	/** 当前正在流式更新的 assistant 消息；tool 事件插入时仍要继续更新同一个回答块。 */
 	private readonly activeAssistantMessageIds = new Map<string, string>();
 	/** pi 的 toolCallId 贯穿 start/update/end，用它把同一次工具调用合并成一条 UI 记录。 */

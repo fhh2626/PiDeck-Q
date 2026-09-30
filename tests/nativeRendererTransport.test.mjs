@@ -446,6 +446,58 @@ test("NativeRendererServer truncates replay history by bytes as well as event co
 	}
 });
 
+test("NativeRendererServer notifies onReplayGap once when the replay ring cannot cover the cursor", async () => {
+	const gaps = [];
+	const { server, rendererRoot, address } = await createServerFixture({
+		onReplayGap: (info) => gaps.push(info),
+	});
+	try {
+		for (let index = 0; index < 4_100; index += 1) server.broadcast("test:bulk", [{ index }]);
+		const connection = await connectEvents(address.port, "secret-token", 1);
+		try {
+			const resync = await connection.waitFor((event) => event.data.channel === "native.resyncRequired");
+			// resync 仍在（传输层契约不变），只是不再触发整页重载。
+			assert.equal(resync.data.args[0].reason, "event-history-truncated");
+			assert.deepEqual(gaps, [{ reason: "event-history-truncated" }]);
+		} finally {
+			connection.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeRendererServer replays without onReplayGap while the cursor is still inside the ring", async () => {
+	const gaps = [];
+	const { server, rendererRoot, address } = await createServerFixture({
+		onReplayGap: (info) => gaps.push(info),
+	});
+	try {
+		const first = await connectEvents(address.port, "secret-token");
+		let firstEventId;
+		try {
+			await first.waitFor((event) => event.data.channel === "native.eventChannelReady");
+			server.broadcast("test:first", [{ value: 1 }]);
+			firstEventId = (await first.waitFor((event) => event.data.channel === "test:first")).id;
+		} finally {
+			first.close();
+		}
+		server.broadcast("test:second", [{ value: 2 }]);
+		const replay = await connectEvents(address.port, "secret-token", firstEventId);
+		try {
+			const second = await replay.waitFor((event) => event.data.channel === "test:second");
+			assert.equal(second.data.args[0].value, 2);
+			assert.deepEqual(gaps, []);
+		} finally {
+			replay.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
 test("NativeRendererServer can restart after a fatal listening error", async () => {
 	let activeServer;
 	let resolveRestart;

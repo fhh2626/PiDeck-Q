@@ -77,7 +77,14 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	}
 	const bootstrap = (await response.json()) as NativeBootstrapResponse;
 	const transport = new NativeDesktopTransport(baseUrl, token, {
-		onResyncRequired: () => reloadNativeRenderer(token),
+		// 事件流断层（SSE 历史被裁 / 超大帧被丢弃）由 sidecar 补发全量状态自愈，
+		// 这里绝不导航：整页重载会丢掉滚动位置与正在输入的内容。
+		// 正常断层载荷是对象（{ reason, eventSeq } / { channel, bytes }），只有
+		// 形态不对的畸形载荷才走重载兜底。
+		onResyncRequired: (payload) => {
+			if (isUnknownRecord(payload)) return;
+			reloadNativeRenderer(token);
+		},
 		initialEventSeq: bootstrap.eventSeq ?? 0,
 	});
 	try {

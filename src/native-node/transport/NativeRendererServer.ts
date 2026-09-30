@@ -78,6 +78,12 @@ type NativeRendererDependencies = {
 	onServerError?: (error: Error) => void;
 	onMemoryDiagnostics?: (payload: unknown) => void;
 	onOversizedEvent?: (channel: string, bytes: number) => void;
+	/**
+	 * 事件回放断层（历史被裁 / 超大帧被丢弃）时通知上层补发全量渲染状态。
+	 * 这两个分支无法用重放补齐缺失事件，但也**不需要**整页重载：
+	 * 调用方按 reason 补一次状态即可，页面保持不回导航。
+	 */
+	onReplayGap?: (info: { reason: "event-history-truncated" | "oversized-event" }) => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -263,6 +269,8 @@ export class NativeRendererServer {
 			const hasLastEventId = Number.isInteger(lastEventId) && lastEventId >= 0;
 			const oldestSeq = this.eventHistory[0]?.seq ?? this.eventSeq + 1;
 			if (hasLastEventId && lastEventId < oldestSeq - 1) {
+				// 先让上层补状态再发控制帧：客户端会持续推进游标，不能靠导航自愈。
+				this.deps.onReplayGap?.({ reason: "event-history-truncated" });
 				this.writeControlEvent(client, "native.resyncRequired", {
 					reason: "event-history-truncated",
 					eventSeq: this.eventSeq,
@@ -382,6 +390,7 @@ export class NativeRendererServer {
 		const bytes = Buffer.byteLength(payload);
 		if (bytes > MAX_FRAME_BYTES) {
 			this.deps.onOversizedEvent?.(channel, bytes);
+			this.deps.onReplayGap?.({ reason: "oversized-event" });
 			this.appendEvent("native.resyncRequired", [{ channel, bytes }]);
 			return;
 		}

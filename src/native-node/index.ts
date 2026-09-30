@@ -55,6 +55,12 @@ let pendingStartupFocusSessionId: string | null = null;
 let pendingStartupFocusAgentId: string | null = null;
 let loadFailureCount = 0;
 let loadRetryTimer: NodeJS.Timeout | null = null;
+/**
+ * 补发状态的去重闸门（毫秒级）：超大帧可能连续触发，
+ * 没有它会每帧都全量重推一次消息窗口。
+ */
+let liveResyncTimer: NodeJS.Timeout | null = null;
+const LIVE_RESYNC_DEDUPE_MS = 1_000;
 const externalFileCapabilities = new ExternalFileCapabilityStore();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,6 +73,21 @@ function isFiniteNumber(value: unknown): value is number {
 
 function issueClipboardCapability(snapshot: NativeClipboardMetadata): string {
 	return externalFileCapabilities.issueClipboard(snapshot.filePaths, snapshot.sequence) ?? "";
+}
+
+/**
+ * 事件流断层时的无导航恢复：不重载页面，只让后端把当前 AgentTab 状态与
+ * 各 Agent 的完整消息窗口重推一遍，渲染层用实时缓存自愈。
+ * 重载会丢掉用户当前的滚动位置和进行中的输入，而断层本身并不代表渲染层坏掉。
+ */
+function requestLiveResync(reason: "stalled-event-cursor" | "event-history-truncated" | "oversized-event"): void {
+	void backend?.appLogger.info("native", "Renderer state resync without navigation", { reason });
+	if (liveResyncTimer) return;
+	liveResyncTimer = setTimeout(() => {
+		liveResyncTimer = null;
+	}, LIVE_RESYNC_DEDUPE_MS);
+	liveResyncTimer.unref?.();
+	backend?.resyncLiveRendererState();
 }
 
 async function stop(announceReadyToExit = false): Promise<void> {
@@ -242,18 +263,9 @@ async function main(): Promise<void> {
 				state.eventChannelHealthy,
 			);
 			heartbeatRecoveryState = recovery.state;
-			// Renderer owns the first recovery attempt by reconnecting with its
-			// replay cursor. Native only reloads after several unhealthy heartbeats
-			// whose renderer cursor did not advance, so active streaming cannot be
-			// mistaken for a stuck SSE connection.
-			if (!recovery.shouldReload || reloadInFlight) return;
-			reloadInFlight = true;
-			void host.request("window.reload")
-				.catch(() => undefined)
-				.finally(() => {
-					reloadInFlight = false;
-					lastHeartbeatAt = Date.now();
-				});
+			// 序号停滞不再整页重载：渲染层首要职责是自行重连续传（见 NativeDesktopTransport），
+			// 这里只补一次全量状态。真正需要重载的是「心跳本身消失」——页面定时器已停。
+			if (recovery.shouldResync) requestLiveResync("stalled-event-cursor");
 		},
 		onMemoryDiagnostics: (payload) => {
 			if (!memoryMonitor || typeof payload !== "object" || payload === null) return;
@@ -262,6 +274,7 @@ async function main(): Promise<void> {
 		onOversizedEvent: (channel, bytes) => {
 			void backend?.appLogger.warn("native", "Dropped oversized renderer event", { channel, bytes });
 		},
+		onReplayGap: (info) => requestLiveResync(info.reason),
 	});
 	rendererServer = placeholderServer;
 	host.on<NativeClipboardMetadata>("native.clipboard", (snapshot) => {
@@ -315,6 +328,7 @@ async function main(): Promise<void> {
 		loadFailureCount += 1;
 		loadRetryTimer = setTimeout(() => {
 			loadRetryTimer = null;
+			void backend?.appLogger.warn("native", "Renderer reload", { reason: "renderer-load-failed" });
 			void host.request("window.reload").catch(() => undefined);
 		}, action.delayMs);
 	});
@@ -398,6 +412,8 @@ async function main(): Promise<void> {
 		if (!nativeHost?.shouldWatchRendererHeartbeat()) return;
 		if (!shouldReloadAfterMissedHeartbeats(Date.now() - lastHeartbeatAt) || reloadInFlight) return;
 		reloadInFlight = true;
+		// 心跳完全消失说明页面定时器已经不跑，补状态也收不到，只剩重载可用。
+		void backend?.appLogger.warn("native", "Renderer reload", { reason: "renderer-heartbeat-timeout" });
 		void host.request("window.reload")
 			.catch(() => undefined)
 			.finally(() => {

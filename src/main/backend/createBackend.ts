@@ -586,6 +586,11 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		mainCopy,
 		resolveSessionIdForAgent: (agentId: string) => sessionRuntimeCoordinator.getSessionId(agentId),
 		hasActiveStreaming: () => agentManager.hasActiveStreaming(),
+		// 事件流断层（SSE 历史被裁/超大帧被丢弃）时由 native-node 触发：
+		// 只补发实时状态，不暴露 AgentManager 内部。
+		resyncLiveRendererState: () => {
+			agentManager.flushLiveRendererState();
+		},
 		startAfterWindowCreated: () => {
 			if (postWindowStarted || disposed) return;
 			postWindowStarted = true;

@@ -13,19 +13,22 @@ test("stale unhealthy heartbeat snapshots do not accumulate while the renderer c
 
 	assert.equal(recovery.state.consecutiveStalledHeartbeats, 0);
 	assert.equal(recovery.shouldReload, false);
+	assert.equal(recovery.shouldResync, false);
 });
 
-test("stalled unhealthy heartbeats trigger reload only after three unchanged cursors", () => {
+test("stalled unhealthy heartbeats request a state resync instead of a reload after three unchanged cursors", () => {
 	let recovery = createNativeHeartbeatRecoveryState();
 	recovery = advanceNativeHeartbeatRecovery(recovery, { lastEventSeq: 100 }, false);
 
 	recovery = advanceNativeHeartbeatRecovery(recovery.state, { lastEventSeq: 100 }, false);
 	assert.equal(recovery.state.consecutiveStalledHeartbeats, 2);
 	assert.equal(recovery.shouldReload, false);
+	assert.equal(recovery.shouldResync, false);
 
 	recovery = advanceNativeHeartbeatRecovery(recovery.state, { lastEventSeq: 100 }, false);
 	assert.equal(recovery.state.consecutiveStalledHeartbeats, 3);
-	assert.equal(recovery.shouldReload, true);
+	assert.equal(recovery.shouldReload, false);
+	assert.equal(recovery.shouldResync, true);
 });
 
 test("a healthy heartbeat clears the stalled cursor count", () => {
@@ -36,4 +39,5 @@ test("a healthy heartbeat clears the stalled cursor count", () => {
 
 	assert.equal(recovery.state.consecutiveStalledHeartbeats, 0);
 	assert.equal(recovery.shouldReload, false);
+	assert.equal(recovery.shouldResync, false);
 });
