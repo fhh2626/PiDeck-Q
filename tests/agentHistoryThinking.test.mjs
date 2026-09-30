@@ -12,6 +12,10 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 
+// entryId 对齐（含压缩裁剪）用真实实现：
+// 桩成旧算法会让压缩会话的 entryIds 静默退回全量分支（可见消息绑到归档条目）。
+const realSessionEntryIds = loadTsCommonJs("src/main/pi/sessionEntryIds.ts");
+
 function loadSharedModule(filePath) {
   const output = ts.transpileModule(
     readFileSync(filePath, "utf8"),
@@ -56,7 +60,8 @@ function loadAgentMessageProjectorModule() {
       if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./sessionEntryIds") {
         return {
-          takeActiveEntryId: (ids, index) => ({ entryId: ids?.[index], nextIndex: index + 1 }),
+          takeActiveEntryId: realSessionEntryIds.takeActiveEntryId,
+          buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds,
         };
       }
       // 25fd516 起 AgentManager 引入内置扩展参数拼接；本测试不涉及扩展加载，透传即可
@@ -117,6 +122,9 @@ function loadAgentManagerModule() {
 		exports: historyReaderModule.exports,
 		require: (id) => {
 			if (id === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+			if (id === "./sessionEntryIds") {
+				return { buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds };
+			}
 			return nodeRequire(id);
 		},
 		Buffer,

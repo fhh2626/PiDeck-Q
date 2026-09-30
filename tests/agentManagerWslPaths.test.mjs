@@ -88,6 +88,11 @@ function loadAgentManager() {
 		require: (id) => {
 			if (id === "node:fs/promises") return fsPromises;
 			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");
+			// SessionHistoryReader 从 sessionEntryIds 取 entryId 对齐（压缩裁剪）：
+			// 必须传真实实现，桩掉会让压缩会话的 entryIds 退回全量分支。
+			if (id === "./sessionEntryIds") {
+				return { buildActiveBranchEntryIds: sessionEntryIds.buildActiveBranchEntryIds };
+			}
 			return require(id);
 		},
 	}, { filename: "SessionHistoryReader.ts" });

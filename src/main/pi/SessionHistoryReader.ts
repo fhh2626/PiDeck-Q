@@ -1,4 +1,5 @@
 import { open, readFile, stat } from "node:fs/promises";
+import { buildActiveBranchEntryIds } from "./sessionEntryIds";
 import type { ChatMessage, ImageContent, SessionMessagePage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { RpcResponse } from "./PiRpcClient";
@@ -512,6 +513,10 @@ export class SessionHistoryReader {
 	/**
 	 * 读取会话当前活动分支的 entryId 序列与叶节点 ID（JSONL canonical identity）。
 	 * 当 RPC get_entries 不支持或不可用时，供 AgentManager 回退获取。
+	 *
+	 * entryIds 与 pi 的 get_messages 对齐（压缩后从最新压缩的 firstKeptEntryId 起），
+	 * 供运行时投影按位置配对；activeMessageEntries 仍是全量活动消息——分页与
+	 * 按尾对齐的序列映射（mapCachedMessageToEntryCandidates）依赖完整列表。
 	 */
 	async readActiveEntryIdentity(
 		sessionPath: string,
@@ -521,11 +526,14 @@ export class SessionHistoryReader {
 		activeMessageEntries: Array<{ id: string; role?: string; messageId?: string }>;
 	}> {
 		const index = await this.getSessionDisplayIndex(sessionPath);
+		const leafId = index.activeBranch.length > 0
+			? index.activeBranch[index.activeBranch.length - 1].id
+			: undefined;
 		return {
-			entryIds: index.activeMessageEntries.map((entry) => entry.id),
-			leafId: index.activeBranch.length > 0
-				? index.activeBranch[index.activeBranch.length - 1].id
-				: undefined,
+			// 必须传 activeBranch（含 compaction 与 firstKeptEntryId）：若传 activeMessageEntries，
+			// 函数看不到压缩点，会以为「没有压缩」而退回全量分支，压缩会话的 entryId 会再次错位。
+			entryIds: leafId ? buildActiveBranchEntryIds(index.activeBranch, leafId) : [],
+			leafId,
 			activeMessageEntries: index.activeMessageEntries.map((entry) => ({
 				id: entry.id,
 				role: entry.role,

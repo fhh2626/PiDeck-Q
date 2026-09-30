@@ -30,6 +30,9 @@ function loadAgentManager() {
   // 定位映射/正文规范化用真实实现：它们与 SessionFileEditor 的整轮删除语义直接耦合，
   // 桩掉会让 step 4 静默退回旧的对位逻辑，掩盖错位 bug。
   const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
+  // entryId 对齐用真实实现：压缩会话必须从首压缩的 firstKeptEntryId 起配对，
+  // 桩成旧算法会让 resolveActiveEntryIds 的回归用例失去意义。
+  const realEntryIds = loadTsCommonJs("src/main/pi/sessionEntryIds.ts");
   const output = ts.transpileModule(readFileSync(filePath, "utf8"), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -99,18 +102,8 @@ function loadAgentManager() {
       if (specifier === "./AgentMessageProjector") {
         return {
           AgentMessageProjector: class {},
-          buildActiveBranchEntryIds: (entries, leafId) => {
-            const entryById = new Map();
-            for (const entry of entries) entryById.set(entry.id, entry);
-            const allBranchIds = [];
-            let currentId = leafId;
-            while (currentId) {
-              allBranchIds.unshift(currentId);
-              const entry = entryById.get(currentId);
-              currentId = entry?.parentId ?? null;
-            }
-            return allBranchIds.filter((id) => entryById.get(id)?.type === "message");
-          },
+          buildActiveBranchEntryIds: (entries, leafId) =>
+            realEntryIds.buildActiveBranchEntryIds(entries, leafId),
         };
       }
       // Phase B 起 AgentManager 引入 askQuestionResult（ask_question 结果规范化）；
@@ -678,7 +671,38 @@ test("resolveActiveEntryIds: get_entries succeeds -> uses RPC returned entryIds 
   };
 
   const entryIds = await manager.resolveActiveEntryIds("agent-1", runtime);
-  assert.deepEqual(entryIds, ["e1", "e2"]);
+  // Array.from：结果由 VM 内的真实实现创建，跨 realm 数组的 prototype 不同，深比较必须先归一
+  assert.deepEqual(Array.from(entryIds), ["e1", "e2"]);
+  assert.equal(manager.entrySourceByAgent.get("agent-1"), "rpc");
+});
+
+// 回归：压缩会话里 get_messages 不含归档消息，而 get_entries 的活动分支包含它们。
+// resolveActiveEntryIds 必须从最新压缩的 firstKeptEntryId 起给出 entryId，
+// 否则运行时窗口的删除/重发会绑到归档条目（报 SESSION_ENTRY_ROLE_INVALID 或改错轮次）。
+test("resolveActiveEntryIds: compacted branch drops archived message entryIds", async () => {
+  const editor = { editMessage: async () => {} };
+  const { manager, runtime } = createHarness(editor);
+  runtime.process.client.request = async (command) => {
+    if (command.type === "get_entries") {
+      return {
+        success: true,
+        data: {
+          entries: [
+            { id: "u1", parentId: null, type: "message" },
+            { id: "a1", parentId: "u1", type: "message" },
+            { id: "c1", parentId: "a1", type: "compaction", firstKeptEntryId: "u2" },
+            { id: "u2", parentId: "c1", type: "message" },
+            { id: "a2", parentId: "u2", type: "message" },
+          ],
+          leafId: "a2",
+        },
+      };
+    }
+    return { success: true, data: {} };
+  };
+
+  const entryIds = await manager.resolveActiveEntryIds("agent-1", runtime);
+  assert.deepEqual(Array.from(entryIds), ["u2", "a2"]);
   assert.equal(manager.entrySourceByAgent.get("agent-1"), "rpc");
 });
 

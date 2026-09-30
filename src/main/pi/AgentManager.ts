@@ -2501,7 +2501,18 @@ export class AgentManager {
 				if (response.success) {
 					this.entrySourceByAgent.set(agentId, "rpc");
 					const entriesData = response.data as
-						| { entries?: Array<{ id: string; parentId: string | null; type?: string; message?: { role?: string } }>; leafId?: string }
+						| {
+							entries?: Array<{
+								id: string;
+								parentId: string | null;
+								type?: string;
+								message?: { role?: string };
+								// 压缩锚点：entryId 对齐必须从最新压缩的保留段起点开始，
+								// 否则可见消息会被绑到压缩前的归档条目上
+								firstKeptEntryId?: string;
+							}>;
+							leafId?: string;
+						}
 						| undefined;
 					if (entriesData?.entries && entriesData?.leafId) {
 						return this.buildActiveBranchEntryIds(entriesData.entries, entriesData.leafId);
@@ -5321,16 +5332,24 @@ export class AgentManager {
 	}
 
 		/**
-	 * 从 get_entries 响应构建 active branch 的 entryId 有序列表。
-	 * 从 leafId 沿 parentId 回溯至 root 得到有序列表。
-	 * 这个列表的顺序与 get_messages 返回的消息顺序一致，
-	 * 用于在 convertAgentMessages 中按位置匹配 entryId 到 message。
-	 * 只保留 type=message 的 entryId（即 user/assistant/toolResult 角色消息），
-	 * 剔除 session、model_change、thinking_level_change、custom 等非消息条目，
+	 * 从 get_entries 响应构建「与 pi get_messages 对齐」的 entryId 有序列表。
+	 * 从 leafId 沿 parentId 回溯至 root 得到有序列表，只保留 type=message 条目。
+	 * 剔除 session、model_change、thinking_level_change、custom、compaction 等非消息条目，
 	 * 使返回的 id 列表与 get_messages 返回的 rawMessages 一一对齐。
+	 *
+	 * 压缩会话（2026-10 修复）：get_messages 不含压缩前的归档消息，因此有压缩时
+	 * 列表从最近一次 compaction 的 firstKeptEntryId 起（该规则在 sessionEntryIds 的纯函数里）。
+	 * 后续 loadMessages 里随 trim 做的 slice(droppedRoleCount) 只丢弃 50 轮窗口之外的头部，
+	 * 不能再减归档条数，否则会重复扣除、把保留消息绑到更早的条目。
 	 */
 	private buildActiveBranchEntryIds(
-		entries: Array<{ id: string; parentId: string | null; type?: string; message?: { role?: string } }>,
+		entries: Array<{
+			id: string;
+			parentId: string | null;
+			type?: string;
+			message?: { role?: string };
+			firstKeptEntryId?: string;
+		}>,
 		leafId: string,
 	): string[] {
 		return buildActiveBranchEntryIdsForDisplay(entries, leafId);

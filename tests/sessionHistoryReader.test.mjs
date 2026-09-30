@@ -311,6 +311,37 @@ test("SessionHistoryReader full-rebuilds instead of appending after a growing at
   }
 });
 
+// 回归：压缩会话的活动分支仍包含压缩前的归档消息，但 pi 的 get_messages 不再返回它们。
+// readActiveEntryIdentity.entryIds 必须与 get_messages 对齐（从最新压缩的 firstKeptEntryId 起）；
+// activeMessageEntries 仍保留全量活动消息（分页与按尾对齐的序列映射依赖它）。
+test("readActiveEntryIdentity aligns entryIds with the compaction while keeping all active messages", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-identity-compact-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, type, extra) => JSON.stringify({ id, parentId, type, ...extra });
+  try {
+    await writeFile(sessionPath, [
+      line("session", undefined, "session", {}),
+      line("u1", "session", "message", { message: { role: "user", content: [{ type: "text", text: "q1" }] } }),
+      line("a1", "u1", "message", { message: { role: "assistant", content: [{ type: "text", text: "r1" }] } }),
+      line("c1", "a1", "compaction", { summary: "s", firstKeptEntryId: "u2", tokensBefore: 1 }),
+      line("u2", "c1", "message", { message: { role: "user", content: [{ type: "text", text: "q2" }] } }),
+      line("a2", "u2", "message", { message: { role: "assistant", content: [{ type: "text", text: "r2" }] } }),
+    ].join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const identity = await reader.readActiveEntryIdentity(sessionPath);
+
+    assert.deepEqual(Array.from(identity.entryIds), ["u2", "a2"]);
+    assert.equal(identity.leafId, "a2");
+    assert.deepEqual(
+      Array.from(identity.activeMessageEntries, (entry) => entry.id),
+      ["u1", "a1", "u2", "a2"],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("compaction page paging stays in index space when conversion skips messages", async () => {
   // 回归（打开大会话起始页误显根因）：hasCompaction 分页曾用 readSessionDisplayMessages
   // 的全量数组按索引坐标 slice——转换跳过空消息（thinking-only/空 user）后数组比索引短，

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	alignEntryIdsForDisplayMessages,
 	assertResendRootEntry,
+	buildActiveBranchEntryIds,
 	collectDescendantEntryIds,
 	findLastUserMessageLine,
 	takeActiveEntryId,
@@ -136,6 +137,121 @@ test("wrong early root would wipe history — assertResendRootEntry blocks non-u
 		() => assertResendRootEntry(wrongUser, "resend-me", extractText),
 		/text mismatch/,
 	);
+});
+
+/**
+ * 回归：pi 压缩后 get_messages 只返回「摘要 + 保留段」以后的消息，
+ * 而 get_entries 的活动分支仍包含压缩前的归档消息。若按整条分支从头配对，
+ * 可见消息会被绑到归档条目的 entryId 上（删除/重发落到错误轮次或报 SESSION_ENTRY_ROLE_INVALID）。
+ * 对齐规则：只取最近一次 compaction 的 firstKeptEntryId 及其之后的 message。
+ */
+test("buildActiveBranchEntryIds keeps the whole branch when the session never compacted", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "session", parentId: null, type: "session" },
+		{ id: "message-1", parentId: "session", type: "message" },
+		{ id: "model", parentId: "message-1", type: "model_change" },
+		{ id: "message-2", parentId: "model", type: "message" },
+		{ id: "discarded", parentId: "message-1", type: "message" },
+	], "message-2");
+
+	assert.deepEqual(Array.from(ids), ["message-1", "message-2"]);
+});
+
+test("buildActiveBranchEntryIds starts at the latest compaction's firstKeptEntryId", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+		{ id: "mc", parentId: "a1", type: "model_change" },
+		{ id: "u2", parentId: "mc", type: "message" },
+		{ id: "a2", parentId: "u2", type: "message" },
+		{ id: "c1", parentId: "a2", type: "compaction", firstKeptEntryId: "u2" },
+		{ id: "t2", parentId: "c1", type: "message" },
+		{ id: "u3", parentId: "t2", type: "message" },
+		{ id: "a3", parentId: "u3", type: "message" },
+	], "a3");
+
+	// t2 是 toolResult 消息：必须保留，否则其后的 entryId 会整体错位
+	assert.deepEqual(Array.from(ids), ["u2", "a2", "t2", "u3", "a3"]);
+});
+
+test("buildActiveBranchEntryIds uses only the compaction closest to the leaf", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+		{ id: "c1", parentId: "a1", type: "compaction", firstKeptEntryId: "u1" },
+		{ id: "u2", parentId: "c1", type: "message" },
+		{ id: "a2", parentId: "u2", type: "message" },
+		{ id: "c2", parentId: "a2", type: "compaction", firstKeptEntryId: "u2" },
+		{ id: "u3", parentId: "c2", type: "message" },
+		{ id: "a3", parentId: "u3", type: "message" },
+	], "a3");
+
+	assert.deepEqual(Array.from(ids), ["u2", "a2", "u3", "a3"]);
+});
+
+test("buildActiveBranchEntryIds treats a self-referencing anchor as an empty kept range", () => {
+	// pi appendCompaction 用自身 id 表示「不保留压缩点之前的条目」
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+		{ id: "c1", parentId: "a1", type: "compaction", firstKeptEntryId: "c1" },
+		{ id: "u2", parentId: "c1", type: "message" },
+		{ id: "a2", parentId: "u2", type: "message" },
+	], "a2");
+
+	assert.deepEqual(Array.from(ids), ["u2", "a2"]);
+});
+
+test("buildActiveBranchEntryIds returns no ids when the anchor is missing", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+		{ id: "c1", parentId: "a1", type: "compaction" },
+		{ id: "u2", parentId: "c1", type: "message" },
+	], "u2");
+
+	// 宁可退化成无 entryId（走文件/序列定位），也不能退回全量分支把 id 绑错
+	assert.deepEqual(Array.from(ids), []);
+});
+
+test("buildActiveBranchEntryIds returns no ids when the anchor is off the active branch", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+		{ id: "c1", parentId: "a1", type: "compaction", firstKeptEntryId: "missing" },
+		{ id: "u2", parentId: "c1", type: "message" },
+	], "u2");
+
+	assert.deepEqual(Array.from(ids), []);
+});
+
+test("buildActiveBranchEntryIds ignores compactions that are not on the active branch", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "session", parentId: null, type: "session" },
+		{ id: "message-1", parentId: "session", type: "message" },
+		{ id: "message-2", parentId: "message-1", type: "message" },
+		{ id: "c9", parentId: "other", type: "compaction", firstKeptEntryId: "message-1" },
+	], "message-2");
+
+	assert.deepEqual(Array.from(ids), ["message-1", "message-2"]);
+});
+
+test("buildActiveBranchEntryIds returns no ids when the leaf is unknown", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: null, type: "message" },
+	], "missing");
+
+	assert.deepEqual(Array.from(ids), []);
+});
+
+test("buildActiveBranchEntryIds terminates on a parent cycle", () => {
+	const ids = buildActiveBranchEntryIds([
+		{ id: "u1", parentId: "a1", type: "message" },
+		{ id: "a1", parentId: "u1", type: "message" },
+	], "u1");
+
+	assert.equal(ids.length, 2);
+	assert.deepEqual([...ids].sort(), ["a1", "u1"]);
 });
 
 test("findLastUserMessageLine prefers the latest duplicate text", () => {
