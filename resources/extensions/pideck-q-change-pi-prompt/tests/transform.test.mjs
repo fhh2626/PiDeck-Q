@@ -100,7 +100,8 @@ test('disabled optional tools neither contribute replacements nor lose their rul
 test('custom mode without prompt metadata still receives delegation by provenance', () => {
   const native = { name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } };
   const result = run(fixture(), [native]);
-  assert.match(result.systemPrompt, /exactly one top-level subagent call with async:false/);
+  assert.match(result.systemPrompt, /exactly one foreground workflowScript call \(async:false\), with all children inside it/);
+  assert.match(result.systemPrompt, /Follow the subagent tool contract/);
   assert.doesNotMatch(result.systemPrompt, /run_in_background|subagent_type/);
 });
 test('installed package paths establish provenance without a package source label', () => {
