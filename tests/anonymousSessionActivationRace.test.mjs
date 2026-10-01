@@ -65,7 +65,7 @@ function createAgents() {
 	return agents;
 }
 
-async function createFixture(agents) {
+async function createFixture(agents, options = {}) {
 	const root = await mkdtemp(join(tmpdir(), "pideck-anon-"));
 	const catalog = new SessionCatalog(join(root, "catalog.json"));
 	await catalog.load();
@@ -93,7 +93,10 @@ async function createFixture(agents) {
 		terminalManager: {},
 		appLogger: { info() {}, warn() {}, error(...args) { errors.push(args); } },
 		mainCopy: (key) => key,
-		sendToRenderer(...args) { events.push(args); },
+		sendToRenderer(...args) {
+			events.push(args);
+			options.sendToRenderer?.(...args);
+		},
 	});
 	return { root, catalog, coordinator, bridge, errors, events };
 }
@@ -141,9 +144,11 @@ test("anonymous cold start and the first send share one agent", async () => {
 
 test("anonymous startup failure removes the transient session and does not send", async () => {
 	const agents = createAgents();
-	const { root, catalog, coordinator, bridge } = await createFixture(agents);
+	const { root, catalog, coordinator, bridge, events } = await createFixture(agents);
 	try {
 		const created = await bridge.createAnonymousSession({ projectId: "project" });
+		// 创建匿名会话时也会推一次刷新，所以比较创建后的次数，不能只断言“收到过”。
+		const refreshesAfterCreate = events.filter(([channel]) => channel === ipcChannels.sessionsCatalogRefreshed).length;
 		const sending = coordinator.send({
 			sessionId: created.session.id,
 			requestId: "request-1",
@@ -157,6 +162,49 @@ test("anonymous startup failure removes the transient session and does not send"
 		assert.equal(agents.prompts.length, 0);
 		assert.equal(bridge.isAnonymousActivating(created.session.id), false);
 		assert.equal(coordinator.getTarget(created.session.id), undefined);
+		// 激活失败必须通知渲染端刷新，否则界面会残留一个已不存在的会话标签。
+		const refreshed = events.filter(([channel]) => channel === ipcChannels.sessionsCatalogRefreshed);
+		assert.equal(
+			refreshed.length > refreshesAfterCreate,
+			true,
+			`激活失败后必须再推送一次 catalog 刷新（创建时 ${refreshesAfterCreate} 次，结束时 ${refreshed.length} 次）`,
+		);
+		assert.equal(refreshed.at(-1)[1].projectId, created.session.projectId);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a failure to publish state after a successful activation keeps the session and runtime", async () => {
+	const agents = createAgents();
+	const { root, catalog, coordinator, bridge, errors } = await createFixture(agents, {
+		// 激活已成功，只是通知渲染端这一步失败（原生通道断开等）。
+		// 注意：bridge 统一用 sessionsRuntimeEvent 通道发送，agentsState 是 sourceChannel。
+		sendToRenderer: (channel, event) => {
+			if (channel === ipcChannels.sessionsRuntimeEvent && event?.sourceChannel === ipcChannels.agentsState) {
+				throw new Error("renderer channel closed");
+			}
+		},
+	});
+	try {
+		const created = await bridge.createAnonymousSession({ projectId: "project" });
+		const sending = coordinator.send({
+			sessionId: created.session.id,
+			requestId: "request-1",
+			message: "hello",
+		});
+		agents.release();
+		const sent = await sending;
+		assert.equal(sent.accepted, true, JSON.stringify(sent));
+		await new Promise((resolve) => setImmediate(resolve));
+
+		// 删除会话身份会留下“有 Agent 进程、没会话”的孤儿：两者都必须还在。
+		assert.notEqual(catalog.get(created.session.id), undefined, "发布失败不得删除会话身份");
+		assert.notEqual(coordinator.getTarget(created.session.id), undefined, "发布失败不得解绑 runtime");
+		assert.equal(coordinator.getTarget(created.session.id).agentId, "agent-1");
+		assert.equal(bridge.isAnonymousActivating(created.session.id), false);
+		// 失败必须留痕
+		assert.equal(errors.some((args) => String(args[1] ?? "").includes("publish failed")), true, JSON.stringify(errors));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

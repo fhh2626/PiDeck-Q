@@ -115,6 +115,28 @@ export function createSessionRuntimeBridge(
 
 	const activatingAnonymousSessions = new Set<string>();
 
+	/**
+	 * 匿名会话激活失败：删除临时会话并通知渲染端刷新，避免界面残留一个不存在的会话标签。
+	 * 只在「runtime 没起来」时调用；激活成功后的异常不得走这里（会留下没有会话的孤儿进程）。
+	 */
+	function failAnonymousActivation(
+		session: SessionRecord,
+		project: Project,
+		input: CreateAnonymousSessionInput,
+		error: unknown,
+	): void {
+		sessionCatalog.removeTransient(session.id);
+		sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: session.projectId });
+		void appLogger.error("agent", "Agent create IPC failed", {
+			projectId: project.id,
+			title: input.title,
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+			platform: process.platform,
+			arch: process.arch,
+		});
+	}
+
 	function sendSessionRuntimeEnvelope(event: SessionRuntimeEvent): void {
 		sendToRenderer(ipcChannels.sessionsRuntimeEvent, event);
 	}
@@ -237,20 +259,26 @@ export function createSessionRuntimeBridge(
 		// 必须同步进入 coordinator 的 activationBySession。首次发送走同一把锁，
 		// 不能再直接 agentManager.create，否则冷启动期间会造出第二个 Agent 并被后完成的绑定抢走。
 		const activation = sessionRuntimeCoordinator.activateRuntime(session.id);
-		void activation.then((result) => {
-			if (!result.ok) throw new Error(result.error.code);
-			emitReplacementState(result.value, true);
-		}).catch((error: unknown) => {
-			sessionCatalog.removeTransient(session.id);
-			void appLogger.error("agent", "Agent create IPC failed", {
-				projectId: project.id,
-				title: input.title,
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				platform: process.platform,
-				arch: process.arch,
-			});
-		}).finally(() => {
+		void activation.then(
+			(result) => {
+				if (!result.ok) {
+					failAnonymousActivation(session, project, input, new Error(result.error.code));
+					return;
+				}
+				// 激活已成功：此后的异常只是「通知渲染端失败」，会话与 runtime 都有效，
+				// 不能删除会话身份，否则会留下没有会话的 Agent 进程。
+				try {
+					emitReplacementState(result.value, true);
+				} catch (error) {
+					void appLogger.error("agent", "Anonymous session state publish failed", {
+						sessionId: session.id,
+						agentId: result.value.agentId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			},
+			(error: unknown) => failAnonymousActivation(session, project, input, error),
+		).finally(() => {
 			activatingAnonymousSessions.delete(session.id);
 		});
 	}
