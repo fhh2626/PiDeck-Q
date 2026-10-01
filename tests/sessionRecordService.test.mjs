@@ -4,7 +4,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { SessionRecordService } = loadTsCommonJs("src/main/sessions/SessionRecordService.ts");
 
-function createService({ entries, busy = [], agents = [], messages = [] }) {
+function createService({ entries, busy = [], agents = [], messages = [], scannerFailure }) {
 	const calls = { deleted: [], refreshed: [], renamedFiles: [], renamedRuntime: [] };
 	const byId = new Map(entries.map((entry) => [entry.id, entry]));
 	const service = new SessionRecordService({
@@ -15,9 +15,15 @@ function createService({ entries, busy = [], agents = [], messages = [] }) {
 			update: async (id, patch) => ({ ...byId.get(id), ...patch }),
 		},
 		sessionScanner: {
-			delete: async (path) => { calls.deleted.push(path); },
+			delete: async (path) => {
+				calls.deleted.push(path);
+				if (scannerFailure) throw scannerFailure;
+			},
 			rename: async (path, title) => { calls.renamedFiles.push([path, title]); },
-			archive: async (path) => `${path}.archived`,
+			archive: async (path) => {
+				if (scannerFailure) throw scannerFailure;
+				return `${path}.archived`;
+			},
 			readSessionRawText: async () => "raw",
 		},
 		readDisplayMessages: async () => messages,
@@ -33,7 +39,7 @@ function createService({ entries, busy = [], agents = [], messages = [] }) {
 		mainCopy: (key) => key,
 		logger: { info: () => {}, error: () => {} },
 	});
-	return { service, calls };
+	return { service, calls, byId };
 }
 
 const parent = { id: "p", projectId: "proj", title: "P", filePath: "C:\\s\\p.jsonl", environment: "native" };
@@ -84,4 +90,21 @@ test("readMessages strips tool result payloads before delivery", async () => {
 test("readMessages on an unknown session returns an empty list", async () => {
 	const { service } = createService({ entries: [] });
 	assert.equal((await service.readMessages("ghost")).length, 0);
+});
+
+// 顺序契约：先删文件、再删 catalog 记录。文件删除失败时整个操作中断，
+// 记录必须保留（否则文件还在、列表里却再也找不到它），也不得广播刷新。
+test("a failed file delete keeps the catalog record and does not broadcast", async () => {
+	const { service, calls, byId } = createService({ entries: [parent], scannerFailure: new Error("trash unavailable") });
+	await assert.rejects(() => service.delete("p"), /trash unavailable/);
+	assert.equal(calls.deleted.length, 1);
+	assert.equal(byId.has("p"), true, "文件删除失败时不得移除 catalog 记录");
+	assert.equal(calls.refreshed.length, 0);
+});
+
+test("a failed archive keeps the catalog record and does not broadcast", async () => {
+	const { service, calls, byId } = createService({ entries: [parent], scannerFailure: new Error("archive failed") });
+	await assert.rejects(() => service.archive("p"), /archive failed/);
+	assert.equal(byId.has("p"), true, "归档失败时不得移除 catalog 记录");
+	assert.equal(calls.refreshed.length, 0);
 });
