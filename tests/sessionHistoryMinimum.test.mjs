@@ -67,3 +67,138 @@ test("MIN_DISPLAY_TURNS is 50", () => {
 	const atoms = loadAtoms();
 	assert.equal(atoms.MIN_DISPLAY_TURNS, 50);
 });
+
+// ── D1：全量推送不得丢掉磁盘读到的历史 ──
+
+const WINDOW_TURNS = 50;
+
+/** 模拟磁盘首页：最近 50 轮（turn 1..50），前面还有 150 轮（nextBefore=300）。 */
+function seedDiskFirstPage(store, atoms, sessionId) {
+	store.set(atoms.cacheSessionMessagesAtom, {
+		sessionId,
+		messages: turns(WINDOW_TURNS),
+		source: "disk",
+		expectedRevision: 0,
+		page: { total: 400, nextBefore: 300 },
+	});
+}
+
+function emitFullSnapshot(store, atoms, sessionId, payload) {
+	store.set(atoms.applySessionRuntimeEventAtom, {
+		kind: "event",
+		sessionId,
+		agentId: "agent-1",
+		runtimeGeneration: 1,
+		sourceChannel: "agents:message",
+		payload: { agentId: "agent-1", ...payload },
+	});
+}
+
+/** 显示条数 = 历史前缀 + 运行时窗口。 */
+function shownCount(entry) {
+	return (entry.history?.messages.length ?? 0) + entry.messages.length;
+}
+
+const SUMMARY_CARD = {
+	id: "c1",
+	role: "system",
+	text: "",
+	timestamp: 1000,
+	meta: { type: "compaction" },
+};
+
+test("D1: compaction window keeps the disk history instead of replacing it", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedDiskFirstPage(store, atoms, sessionId);
+
+	emitFullSnapshot(store, atoms, sessionId, {
+		messages: [SUMMARY_CARD, ...turn(50)],
+		totalLength: 2,
+	});
+
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.source, "runtime");
+	assert.ok(shownCount(entry) >= 100, `shown count ${shownCount(entry)} should be >= 100`);
+	const historyTexts = entry.history.messages.map((message) => message.text);
+	assert.equal(historyTexts.includes("q50") || historyTexts.includes("a50"), false,
+		"history must not duplicate messages that live in the runtime window");
+	assert.equal(entry.history.messages.some((message) =>
+		message.meta?.type === "compaction" || message.meta?.type === "branchSummary"), false,
+		"history must not carry a second summary card");
+	assert.equal(entry.history.nextBefore, 300);
+});
+
+test("D1: an empty window does not clear the already displayed messages", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedDiskFirstPage(store, atoms, sessionId);
+
+	emitFullSnapshot(store, atoms, sessionId, { messages: [], totalLength: 0 });
+
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(shownCount(entry), 100);
+});
+
+test("D1: an explicit preserveHistory=false still drops the old content", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedDiskFirstPage(store, atoms, sessionId);
+
+	emitFullSnapshot(store, atoms, sessionId, {
+		messages: [SUMMARY_CARD, ...turn(50)],
+		totalLength: 2,
+		preserveHistory: false,
+	});
+
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.history, undefined);
+});
+
+test("D1: mark the demoted prefix exhausted when disk already reached the file start", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	store.set(atoms.cacheSessionMessagesAtom, {
+		sessionId,
+		messages: turns(WINDOW_TURNS),
+		source: "disk",
+		expectedRevision: 0,
+		page: { total: 100, nextBefore: null },
+	});
+
+	emitFullSnapshot(store, atoms, sessionId, {
+		messages: [SUMMARY_CARD, ...turn(50)],
+		totalLength: 2,
+	});
+
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.history.exhausted, true);
+});
+
+test("D1: runtime window without entryIds still dedupes against the disk prefix", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedDiskFirstPage(store, atoms, sessionId);
+
+	const windowWithoutEntryIds = turn(50).map((message) => ({
+		...message,
+		id: `rt-${message.id}`,
+		meta: {},
+	}));
+	emitFullSnapshot(store, atoms, sessionId, {
+		messages: [SUMMARY_CARD, ...windowWithoutEntryIds],
+		totalLength: 2,
+	});
+
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(
+		entry.history.messages.some((message) => message.text === "q50"),
+		false,
+		"fingerprint overlap must remove the duplicated last turn from the prefix",
+	);
+});

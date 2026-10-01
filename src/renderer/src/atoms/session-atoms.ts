@@ -992,6 +992,35 @@ function computeCompactionRetainedKeys(
 }
 
 /**
+ * 全量运行时窗口替换缓存条目时，把旧内容里「窗口之前」的部分保留下来作为历史前缀。
+ * 典型场景：切到运行中的会话 → 先从磁盘读到最近 50 轮 → 主进程推来压缩后的小窗口
+ * （pi get_messages 压缩后只剩摘要 + 最近一两轮）。不降级的话，磁盘读到的内容会整体消失。
+ * 规则：取旧消息中「第一条被新窗口覆盖的消息」之前的部分；完全无重叠时全部保留。
+ * 覆盖判定允许指纹（运行时窗口在大历史路径下可能没有 entryId），但只在旧消息尾部 32 条内用指纹，
+ * 避免早期的同文短回复（「好的」「继续」）被误判为重叠而截断前缀。
+ */
+function demoteReplacedMessages(
+  oldMessages: ChatMessage[],
+  segment: ChatMessage[],
+): ChatMessage[] {
+  if (oldMessages.length === 0) return [];
+  const covered = findCoveredMessageIndexes(oldMessages, segment, true, true);
+  let end = oldMessages.length;
+  for (let index = 0; index < oldMessages.length; index += 1) {
+    if (covered.has(index)) {
+      end = index;
+      break;
+    }
+  }
+  const segmentHasSummary = segment.some(isSummaryCard);
+  return oldMessages
+    .slice(0, end)
+    .filter((message) => message.meta?.slidingOut !== true)
+    // 新窗口已带摘要卡时，旧内容里的摘要卡不再保留，避免出现两张卡片
+    .filter((message) => !(segmentHasSummary && isSummaryCard(message)));
+}
+
+/**
  * 运行时窗口段更新时调和 disk 历史前缀（2026-08 激活分页）：
  * - fileVersion 变化（编辑/删除/压缩改写 JSONL）默认丢弃前缀；
  *   压缩快照显式 preserveHistory 时保留已经展示的对话；
@@ -1950,6 +1979,33 @@ export const applySessionRuntimeEventAtom = atom(
             (!current.agentId || current.agentId === event.agentId)
             ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, promotedHistory)
             : segment;
+          // 被替换的旧内容降级为历史前缀（见 demoteReplacedMessages）。
+          // 显式 preserveHistory === false 表示编辑/删除/重发，旧内容已失效，不降级。
+          const explicitDrop = payload.preserveHistory === false;
+          const replacedMessages: ChatMessage[] = !explicitDrop && current
+            ? (current.source === "disk"
+                ? current.messages
+                : (bindingChanged && current.source === "runtime"
+                    ? [...(current.history?.messages ?? []), ...current.messages]
+                    : []))
+            : [];
+          const demoted = demoteReplacedMessages(replacedMessages, segment);
+          const diskHistoryExhausted = current?.source === "disk" && current.page?.nextBefore === null;
+          const baseHistory: SessionMessageCacheEntry["history"] = demoted.length > 0
+            ? {
+                messages: demoted,
+                nextBefore: current?.source === "disk"
+                  ? (current.page?.nextBefore ?? null)
+                  : (current?.history?.nextBefore ?? null),
+                ...(current?.source === "runtime" && current.history?.nextBeforeEntryId
+                  ? { nextBeforeEntryId: current.history.nextBeforeEntryId }
+                  : {}),
+                // 磁盘首页已经读到文件开头：标记到顶，避免 D3 的自动补足对着空历史反复请求
+                ...(diskHistoryExhausted ? { exhausted: true } : {}),
+                // 与本次载荷同版本：否则 reconcileHistoryPrefix 会按「文件版本变化」把它整段丢掉
+                ...(fileVersion ? { version: fileVersion } : {}),
+              }
+            : current?.history;
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
             messages: mergedMessages,
@@ -1958,7 +2014,7 @@ export const applySessionRuntimeEventAtom = atom(
             windowStart: payloadWindowStart,
             cardCount,
             history: reconcileHistoryPrefix(
-              current?.history,
+              baseHistory,
               segment,
               fileVersion,
               promotedHistory,
