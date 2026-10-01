@@ -2,12 +2,14 @@ import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import type { AvailableModel, SessionRuntimeTarget } from "../../../../shared/types";
 import {
+  modelPendingAtomFamily,
   modelPendingByIdAtom,
-  sessionComposerModeByIdAtom,
+  sessionComposerModeAtomFamily,
   sessionRecordByIdAtomFamily,
   sessionRuntimeByIdAtom,
   sessionRuntimeBySessionIdAtomFamily,
   setSessionComposerModeAtom,
+  thinkingLevelPendingAtomFamily,
   thinkingLevelPendingByIdAtom,
   upsertSessionAtom,
 } from "../../atoms";
@@ -47,12 +49,13 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   const runtime = useAtomValue(sessionRuntimeBySessionIdAtomFamily(sessionId));
   const setMode = useSetAtom(setSessionComposerModeAtom);
   const upsertSession = useSetAtom(upsertSessionAtom);
-  const thinkingPending = useAtomValue(thinkingLevelPendingByIdAtom)[sessionId];
+  const thinkingPending = useAtomValue(thinkingLevelPendingAtomFamily(sessionId));
   const setThinkingPendingMap = useSetAtom(thinkingLevelPendingByIdAtom);
-  const modelPending = useAtomValue(modelPendingByIdAtom)[sessionId];
+  const modelPending = useAtomValue(modelPendingAtomFamily(sessionId));
   const setModelPendingMap = useSetAtom(modelPendingByIdAtom);
   const [models, setModels] = useState<AvailableModel[]>([]);
-  const composerModes = useAtomValue(sessionComposerModeByIdAtom);
+  // 按会话订阅：别的会话切模式不应重渲染本栏选择器。
+  const composerMode = useAtomValue(sessionComposerModeAtomFamily(sessionId));
   const [favoriteModels, setFavoriteModels] = useState<string[]>([]);
   const [planModeAvailable, setPlanModeAvailable] = useState(true);
   const modelLoadSequenceRef = useRef(0);
@@ -94,12 +97,12 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
       const available = plan?.enabled !== false;
       setPlanModeAvailable(available);
       // 扩展被禁用后清理残留的计划模式状态，避免下拉隐藏但编辑器仍保持计划模式。
-      if (!available && composerModes[sessionId] === "plan") setMode({ sessionId, mode: "normal" });
+      if (!available && composerMode === "plan") setMode({ sessionId, mode: "normal" });
     }).catch(() => {
       setPlanModeAvailable(false);
-      if (composerModes[sessionId] === "plan") setMode({ sessionId, mode: "normal" });
+      if (composerMode === "plan") setMode({ sessionId, mode: "normal" });
     });
-  }, [composerModes, props.picker, sessionId, setMode]);
+  }, [composerMode, props.picker, sessionId, setMode]);
 
   useEffect(() => {
     // 打开模型选择器即加载（不依赖 record：欢迎页/未启动 Agent 时 record 为 undefined，
@@ -420,7 +423,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   if (props.picker === "mode") {
     return (
       <ComposerModePicker
-        currentMode={composerModes[sessionId] ?? "normal"}
+        currentMode={composerMode}
         onClose={props.onClose}
         planModeAvailable={planModeAvailable}
         onPick={(nextMode) => {

@@ -27,7 +27,7 @@ import {
   sessionMessageLoadStateAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
-  sessionSendStateByIdAtom,
+  sessionSendStateAtomFamily,
 } from "../../atoms";
 import {
   canLoadSessionTimelineMore,
@@ -171,16 +171,9 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     ),
     [sessionId],
   );
-  const sendStateSelector = useMemo(
-    () => selectAtom(
-      sessionSendStateByIdAtom,
-      (states) => states[sessionId],
-      Object.is,
-    ),
-    [sessionId],
-  );
+  // 与 SessionHeader / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const messageLoadState = useAtomValue(messageLoadStateSelector);
-  const sendState = useAtomValue(sendStateSelector);
   const internalController = useSessionTimelineController({
     // An injected controller already owns loading and scroll effects; omit the
     // session identity so this inert hook cannot start a second disk load.

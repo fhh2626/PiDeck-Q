@@ -16,14 +16,16 @@ import type {
   SessionSummary,
 } from "../../../shared/types";
 import {
-  sessionAttachmentsByIdAtom,
-  sessionComposerModeByIdAtom,
+  sessionAttachmentsAtomFamily,
+  // 回调里按 id 读其他/本会话草稿用；订阅一律用上面的 atomFamily（见 composer-atoms 注释）。
   sessionDraftByIdAtom,
+  sessionComposerModeAtomFamily,
+  sessionDraftAtomFamily,
   sessionMessagesCacheAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
   sessionRuntimeUiBySessionIdAtomFamily,
-  sessionSendStateByIdAtom,
+  sessionSendStateAtomFamily,
   sessionSummariesByProjectIdAtomFamily,
   setSessionAttachmentsAtom,
   setSessionComposerModeAtom,
@@ -259,19 +261,17 @@ export function useSessionComposerController(
   const projectSessions = useAtomValue(
     sessionSummariesByProjectIdAtomFamily(record?.projectId ?? ""),
   );
-  const drafts = useAtomValue(sessionDraftByIdAtom);
-  const attachmentsBySession = useAtomValue(sessionAttachmentsByIdAtom);
-  const modes = useAtomValue(sessionComposerModeByIdAtom);
-  const sendStates = useAtomValue(sessionSendStateByIdAtom);
+  // 按会话订阅：分屏时另一栏打字不会让本栏 composer 重渲染（见 composer-atoms 注释）。
+  // 回调里需要读本会话草稿时用 store.get(sessionDraftByIdAtom)，不要恢复整表订阅。
+  const draft = useAtomValue(sessionDraftAtomFamily(sessionId));
+  const attachments = useAtomValue(sessionAttachmentsAtomFamily(sessionId));
+  const mode = useAtomValue(sessionComposerModeAtomFamily(sessionId));
+  const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const setDraftAtom = useSetAtom(setSessionDraftAtom);
   const setAttachmentsAtom = useSetAtom(setSessionAttachmentsAtom);
   const setModeAtom = useSetAtom(setSessionComposerModeAtom);
   const setSendStateAtom = useSetAtom(setSessionSendStateAtom);
 
-  const draft = drafts[sessionId] ?? "";
-  const attachments = attachmentsBySession[sessionId] ?? [];
-  const mode = modes[sessionId] ?? "normal";
-  const sendState = sendStates[sessionId] ?? { status: "idle" as const };
   const editorRef = useRef<HTMLDivElement | null>(null);
   // 程序化光标请求（带归属 forValue，见 composer/types.ts 的 ComposerCaretRequest）；
   // 编辑器只在内容同步到 forValue 的同一趟 layout pass 配对消费，过期请求会被丢弃。

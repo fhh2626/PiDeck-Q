@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { atomFamily, selectAtom } from "jotai/utils";
 import type { ComposerAgentMode, ImageContent } from "../../../shared/types";
 import type { ModelPending } from "../utils/modelPendingDisplay";
 import type { ThinkingLevelPending } from "../utils/thinkingDisplay";
@@ -22,6 +23,60 @@ export const sessionDraftByIdAtom = atom<Record<string, string>>({});
 export const sessionAttachmentsByIdAtom = atom<Record<string, ImageContent[]>>({});
 export const sessionComposerModeByIdAtom = atom<Record<string, SessionComposerMode>>({});
 export const sessionSendStateByIdAtom = atom<Record<string, SessionSendState>>({});
+
+/**
+ * 稳定默认值：每次返回同一引用，避免依赖它的 useMemo/useEffect 误触发。
+ * （写成 `?? []` / `?? { status: "idle" }` 时每次读取都是新对象。）
+ */
+const EMPTY_ATTACHMENTS: ImageContent[] = [];
+const IDLE_SEND_STATE: SessionSendState = { status: "idle" };
+
+/**
+ * 按 sessionId 订阅的只读视图。
+ *
+ * 分屏时同一份“按会话表”被多栏共享：直接订阅整张表会让 A 栏打字触发 B 栏 composer
+ * 重渲染（违反「多实例必须按 session 订阅」）。selectAtom 只在本会话切片变化时才通知。
+ * atomFamily 缓存不自动回收：会话移除时必须调 removeComposerSessionAtoms。
+ */
+export const sessionDraftAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(sessionDraftByIdAtom, (map) => map[sessionId] ?? "", Object.is),
+);
+export const sessionAttachmentsAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(sessionAttachmentsByIdAtom, (map) => map[sessionId] ?? EMPTY_ATTACHMENTS, Object.is),
+);
+export const sessionComposerModeAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(
+    sessionComposerModeByIdAtom,
+    (map): SessionComposerMode => map[sessionId] ?? "normal",
+    Object.is,
+  ),
+);
+export const sessionSendStateAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(sessionSendStateByIdAtom, (map) => map[sessionId] ?? IDLE_SEND_STATE, Object.is),
+);
+export const thinkingLevelPendingAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(
+    thinkingLevelPendingByIdAtom,
+    (map): ThinkingLevelPending | undefined => map[sessionId],
+    Object.is,
+  ),
+);
+export const modelPendingAtomFamily = atomFamily((sessionId: string) =>
+  selectAtom(modelPendingByIdAtom, (map) => map[sessionId], Object.is),
+);
+
+/**
+ * 会话移除时清理各 atomFamily 缓存（与 removeSessionComposerStateAtom 内的表清理成对）。
+ * jotai 的 atomFamily 不会自动回收，不清理会随会话数持续增长。
+ */
+export function removeComposerSessionAtoms(sessionId: string): void {
+  sessionDraftAtomFamily.remove(sessionId);
+  sessionAttachmentsAtomFamily.remove(sessionId);
+  sessionComposerModeAtomFamily.remove(sessionId);
+  sessionSendStateAtomFamily.remove(sessionId);
+  thinkingLevelPendingAtomFamily.remove(sessionId);
+  modelPendingAtomFamily.remove(sessionId);
+}
 
 /**
  * 流式生成中切换思考强度产生的「待生效」指示（issue #146，xhigh->max）。
@@ -52,7 +107,7 @@ export const currentSessionDraftAtom = atom(
 export const currentSessionAttachmentsAtom = atom(
   (get) => {
     const sessionId = get(currentSessionIdAtom);
-    return sessionId ? (get(sessionAttachmentsByIdAtom)[sessionId] ?? []) : [];
+    return sessionId ? (get(sessionAttachmentsByIdAtom)[sessionId] ?? EMPTY_ATTACHMENTS) : EMPTY_ATTACHMENTS;
   },
   (get, set, value: ImageContent[] | ((current: ImageContent[]) => ImageContent[])) => {
     const sessionId = get(currentSessionIdAtom);
@@ -78,8 +133,8 @@ export const currentSessionComposerModeAtom = atom(
 export const currentSessionSendStateAtom = atom((get) => {
   const sessionId = get(currentSessionIdAtom);
   return sessionId
-    ? (get(sessionSendStateByIdAtom)[sessionId] ?? { status: "idle" as const })
-    : { status: "idle" as const };
+    ? (get(sessionSendStateByIdAtom)[sessionId] ?? IDLE_SEND_STATE)
+    : IDLE_SEND_STATE;
 });
 
 export const setSessionDraftAtom = atom(
@@ -182,6 +237,8 @@ export const promoteSessionComposerStateAtom = atom(
 );
 
 export const removeSessionComposerStateAtom = atom(null, (get, set, sessionId: string) => {
+  // 按会话表与 atomFamily 缓存必须成对清理，否则 atomFamily 会随会话数持续增长。
+  removeComposerSessionAtoms(sessionId);
   const drafts = { ...get(sessionDraftByIdAtom) };
   delete drafts[sessionId];
   set(sessionDraftByIdAtom, drafts);

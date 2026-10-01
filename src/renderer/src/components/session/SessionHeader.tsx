@@ -1,13 +1,12 @@
 import { HatGlasses, Maximize2 } from "lucide-react";
 import { useAtomValue } from "jotai";
-import { selectAtom } from "jotai/utils";
 import { useMemo, type ReactNode, type RefObject } from "react";
 import type { AgentRuntimeState } from "../../../../shared/types";
 import {
   sessionCacheStatsAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
-  sessionSendStateByIdAtom,
+  sessionSendStateAtomFamily,
   projectByIdAtomFamily,
 } from "../../atoms";
 import { isUserFacingSessionStart } from "../../hooks/useSessionTimelineController";
@@ -73,16 +72,9 @@ export function SessionHeader(props: SessionHeaderProps) {
   const runtime = useAtomValue(sessionRuntimeBySessionIdAtomFamily(sessionId));
   // 会话级缓存命中率历史（统计快照由 runtime 事件写入 atom），供状态入口展示。
   const cacheStats = useAtomValue(sessionCacheStatsAtom);
-  const sendStateSelector = useMemo(
-    () => selectAtom(
-      sessionSendStateByIdAtom,
-      (states) => states[sessionId],
-      Object.is,
-    ),
-    [sessionId],
-  );
-  const sendState = useAtomValue(sendStateSelector);
-  // 顶栏 ctx/cost chip 必须跟 composer 同一份会话 runtime。
+  // 与 SessionMessageTimeline / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
+
   // SessionView 仍走 legacy 装配，不能只在 mode=session 时读 atom；
   // 否则 injector 漏传 activeRuntimeState 时，底栏已有「压缩 42%」，顶栏却空白。
   const runtimeState = runtime?.state ?? (sessionMode ? undefined : legacyProps.runtimeState);
