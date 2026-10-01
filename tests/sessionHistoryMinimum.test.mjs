@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createStore } from "jotai";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
@@ -313,4 +314,75 @@ test("D2: clearSessionHistoryAtom keeps its unconditional-invalidation semantics
 	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
 	assert.equal(entry.history, undefined, "clear must drop everything regardless of the floor");
 	assert.equal(entry.messages.length, 6, "runtime window stays untouched");
+});
+
+// ── D3：运行中会话不足 50 轮时自动补足 ──
+
+/** 加载控制器模块（只需纯函数，重依赖全部用替身）。 */
+function loadController() {
+	return loadTsCommonJs("src/renderer/src/hooks/useSessionTimelineController.ts", {
+		stubs: {
+			react: {},
+			jotai: {
+				atom: (value) => ({ _mockInit: value }),
+				useAtomValue: () => undefined,
+				useSetAtom: () => () => undefined,
+				useStore: () => ({}),
+			},
+			"jotai/utils": {},
+			"../atoms": { MIN_DISPLAY_TURNS: 50, countUserTurns: () => 0 },
+			"../desktopApi": { desktopApi: { sessions: {} } },
+			"../i18n": { t: (key) => key },
+			"../utils/notice": { showNotice: () => {} },
+			"../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
+			"../components/agents/message-scroller": {},
+			"../components/session/timeline/turnRenderWindow": {
+				TIMELINE_SCROLLED_TURN_LIMIT: 20,
+				TIMELINE_WINDOW_EXPAND_STEP: 5,
+			},
+		},
+	});
+}
+
+test("D3: resolveMinimumHistoryTopUp tops up the gap to the floor", () => {
+	const controller = loadController();
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 0, windowTurns: 1, hasMore: true, busy: false }),
+		49,
+	);
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 10, windowTurns: 5, hasMore: true, busy: false }),
+		35,
+	);
+});
+
+test("D3: resolveMinimumHistoryTopUp returns 0 when nothing needs to be fetched", () => {
+	const controller = loadController();
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 0, windowTurns: 50, hasMore: true, busy: false }),
+		0,
+	);
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 0, windowTurns: 1, hasMore: false, busy: false }),
+		0,
+	);
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 0, windowTurns: 1, hasMore: true, busy: true }),
+		0,
+	);
+});
+
+test("D3: the controller wires the top-up helper into the runtime history loader", () => {
+	const controllerSource = readFileSync(
+		"src/renderer/src/hooks/useSessionTimelineController.ts",
+		"utf8",
+	);
+	assert.match(controllerSource, /resolveMinimumHistoryTopUp\(/);
+	// loadRuntimeHistoryPage 必须定义为独立 useCallback，且同时被上滚（用户主动）与
+	// 保底（自动）调用：至少 2 处调用点（不算定义行）。
+	assert.match(controllerSource, /const loadRuntimeHistoryPage = useCallback\(/);
+	const loadCalls = controllerSource.match(/loadRuntimeHistoryPage\(/g) ?? [];
+	assert.ok(loadCalls.length >= 2, `expected >=2 call sites, got ${loadCalls.length}`);
+	// 保底补页必须走同一入口（否则上滚与保底会各写一套锚点/重建逻辑）。
+	assert.match(controllerSource, /loadRuntimeHistoryPage\(Math\.min\(missingTurns, MIN_DISPLAY_TURNS\)/);
 });

@@ -14,6 +14,8 @@ import type { AgentRuntimeState, ChatMessage } from "../../../shared/types";
 import {
 	cacheSessionMessagesAtom,
 	clearSessionHistoryAtom,
+	countUserTurns,
+	MIN_DISPLAY_TURNS,
 	filterOptimisticallyDeletedMessages,
 	optimisticDeletedIdsBySessionIdAtomFamily,
 	prependSessionHistoryPageAtom,
@@ -68,6 +70,25 @@ const NO_LOAD_STATE_ATOM = atom(undefined);
 // 避免流式消息频繁触发 ResizeObserver/MutationObserver 把用户弹回底部造成"颤抖"。
 const BOTTOM_THRESHOLD = 16;
 const LEGACY_OWNER_KEY = "legacy";
+/**
+ * 保底显示轮数差额（2026-12 用户要求：运行中会话至少显示 50 轮）。
+ * 返回需要补的轮数，0 表示不补。:
+ * - busy（正在加载历史页/首屏或上滚补页）时不补，避免并发补页互相顶掉。
+ * - 没有更早历史（hasMore=false）时不补，补也是空页。
+ * - 已满足下限时返回 0。
+ * 调用方按实际状态缓存尝试键（同 revision + 前缀长度只试一次），避免请求循环。
+ */
+export function resolveMinimumHistoryTopUp(input: {
+	historyTurns: number;
+	windowTurns: number;
+	hasMore: boolean;
+	busy: boolean;
+}): number {
+	if (input.busy || !input.hasMore) return 0;
+	const missingTurns = MIN_DISPLAY_TURNS - (input.historyTurns + input.windowTurns);
+	return missingTurns > 0 ? missingTurns : 0;
+}
+
 /**
  * 历史页初始读取轮数（2026-12 统一 50 轮）：首屏显示最近 50 轮对话，
  * 与主进程 DISPLAY_WINDOW_TURNS / 渲染挂载窗口同一口径。
@@ -874,6 +895,86 @@ export function useSessionTimelineController(options: {
 		};
 	}, [ownerKey]);
 
+	/**
+	 * runtime 窗口会话补一页更早历史。
+	 * turnCount：本页轮数（用户上滚 = RUNTIME_HISTORY_TURN_PAGE_SIZE；自动补足 = 差额）。
+	 * preserveScroll：是否登记滚动锚点（用户上滚时需要；贴底自动补足时不需要，
+	 * 贴底状态由 stick-to-bottom 保持，前插内容不会把视口推走）。
+	 */
+	const loadRuntimeHistoryPage = useCallback((turnCount: number, preserveScroll: boolean) => {
+		// runtime 窗口会话：直接按轮次补历史（2026-11 轮次模型，不再有 100 条渲染窗口）。
+		// 首次加载以运行时窗口段首条消息的 entryId 为锚点（两个下标空间唯一的对齐点），
+		// 续页用上一页最旧条目的 entryId（nextBeforeEntryId）——主进程缓存命中路径依赖它。
+		const sessionId = options.sessionId;
+		if (!sessionId || isLoadingMessagePage) return;
+		const before = runtimeHistory?.nextBefore ?? undefined;
+		// 首次补历史锚点：窗口首条可能是无 entryId 的系统摘要卡片（compaction/branchSummary），
+		// 必须取第一条有 entryId 的消息，否则锚点解析失败导致首次上翻静默放弃。
+		// slideOut 合成的 history 只有消息、没有 nextBefore 时，同样要从当前前缀/窗口首条再取锚点。
+		const needsSyntheticAnchor = !runtimeHistory || (
+			runtimeHistory.nextBefore === null &&
+			!runtimeHistory.nextBeforeEntryId
+		);
+		const anchorMessage = needsSyntheticAnchor
+			? [...(runtimeHistory?.messages ?? []), ...messages].find((m) => typeof m.meta?.entryId === "string")
+			: undefined;
+		const anchorEntryId =
+			typeof runtimeHistory?.nextBeforeEntryId === "string"
+				? runtimeHistory.nextBeforeEntryId
+				: (typeof anchorMessage?.meta?.entryId === "string" ? anchorMessage.meta.entryId : undefined);
+		// 大历史窗口（skipEntries 路径）消息可能整体缺 entryId：退化为窗口首条消息的
+		// 文件消息下标（windowStartFilePos）作为数值游标——主进程缓存路径先把它解析成
+		// entryId 再查缓存，磁盘路径直接消费文件下标。两者都没有才放弃补历史。
+		const anchorFilePos = !anchorEntryId && before === undefined
+			? (typeof cachedEntry?.windowStartFilePos === "number"
+				? cachedEntry.windowStartFilePos
+				: undefined)
+			: undefined;
+		const requestBefore = before ?? (anchorFilePos !== undefined ? anchorFilePos : undefined);
+		if (requestBefore === undefined && !anchorEntryId) return;
+		const sequence = ++nextLoadSequence;
+		trackLatestLoad(sessionId, sequence);
+		const expectedRevision = cachedEntry?.revision ?? 0;
+		if (preserveScroll) captureLoadMoreAnchor();
+		setIsLoadingMessagePage(true);
+		void readRuntimeHistoryTurnPage(sessionId, turnCount, {
+			requestBefore,
+			anchorEntryId,
+		})
+			.then(async (page) => {
+				if (latestLoadBySession.get(sessionId) !== sequence) return;
+				if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
+					// 同 disk 分支：补页成功同步扩大渲染窗口，避免新页被 turn 窗口裁剪不可见
+					setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
+					return;
+				}
+				// 补页被拒绝：只有「文件版本已漂移（压缩/外部改写）」需要重建。
+				// 其他拒绝原因（revision 变了、会话卸载）直接放弃，等待下一次用户滚动。
+				const entryNow = store.get(sessionMessagesCacheAtom)[sessionId];
+				const drifted = Boolean(
+					entryNow?.history?.version &&
+					page.indexVersion &&
+					entryNow.history.version !== page.indexVersion,
+				);
+				if (!drifted) return;
+				// 把已加载的前缀深度作为重建目标（至少包含原有浏览深度）
+				const targetTurns = Math.max(
+					countLoadedHistoryTurns(entryNow?.history?.messages ?? []),
+					RUNTIME_HISTORY_TURN_PAGE_SIZE,
+				);
+				await rebuildHistoryPrefixAfterVersionDrift({
+					sessionId,
+					sequence,
+					store,
+					targetTurnCount: targetTurns,
+					anchorFilePos,
+				});
+			})
+			.finally(() => {
+				if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
+			});
+	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, prependHistoryPage, runtimeHistory]);
+
 	const loadMoreMessages = useCallback(() => {
 		if (diskPage) {
 			const sessionId = options.sessionId;
@@ -904,81 +1005,44 @@ export function useSessionTimelineController(options: {
 				});
 			return;
 		}
-		// runtime 窗口会话：直接按轮次补历史（2026-11 轮次模型，不再有 100 条渲染窗口）。
-		// 首次加载以运行时窗口段首条消息的 entryId 为锚点（两个下标空间唯一的对齐点），
-		// 续页用上一页最旧条目的 entryId（nextBeforeEntryId）——主进程缓存命中路径依赖它。
 		if (historyHasMore) {
-			const sessionId = options.sessionId;
-			if (!sessionId || isLoadingMessagePage) return;
-			const before = runtimeHistory?.nextBefore ?? undefined;
-			// 首次补历史锚点：窗口首条可能是无 entryId 的系统摘要卡片（compaction/branchSummary），
-			// 必须取第一条有 entryId 的消息，否则锚点解析失败导致首次上翻静默放弃。
-			// slideOut 合成的 history 只有消息、没有 nextBefore 时，同样要从当前前缀/窗口首条再取锚点。
-			const needsSyntheticAnchor = !runtimeHistory || (
-				runtimeHistory.nextBefore === null &&
-				!runtimeHistory.nextBeforeEntryId
-			);
-			const anchorMessage = needsSyntheticAnchor
-				? [...(runtimeHistory?.messages ?? []), ...messages].find((m) => typeof m.meta?.entryId === "string")
-				: undefined;
-			const anchorEntryId =
-				typeof runtimeHistory?.nextBeforeEntryId === "string"
-					? runtimeHistory.nextBeforeEntryId
-					: (typeof anchorMessage?.meta?.entryId === "string" ? anchorMessage.meta.entryId : undefined);
-			// 大历史窗口（skipEntries 路径）消息可能整体缺 entryId：退化为窗口首条消息的
-			// 文件消息下标（windowStartFilePos）作为数值游标——主进程缓存路径先把它解析成
-			// entryId 再查缓存，磁盘路径直接消费文件下标。两者都没有才放弃补历史。
-			const anchorFilePos = !anchorEntryId && before === undefined
-				? (typeof cachedEntry?.windowStartFilePos === "number"
-					? cachedEntry.windowStartFilePos
-					: undefined)
-				: undefined;
-			const requestBefore = before ?? (anchorFilePos !== undefined ? anchorFilePos : undefined);
-			if (requestBefore === undefined && !anchorEntryId) return;
-			const sequence = ++nextLoadSequence;
-			trackLatestLoad(sessionId, sequence);
-			const expectedRevision = cachedEntry?.revision ?? 0;
-			captureLoadMoreAnchor();
-			setIsLoadingMessagePage(true);
-			void readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, {
-				requestBefore,
-				anchorEntryId,
-			})
-				.then(async (page) => {
-					if (latestLoadBySession.get(sessionId) !== sequence) return;
-					if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
-						// 同 disk 分支：补页成功同步扩大渲染窗口，避免新页被 turn 窗口裁剪不可见
-						setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
-						return;
-					}
-					// 补页被拒绝：只有「文件版本已漂移（压缩/外部改写）」需要重建。
-					// 其他拒绝原因（revision 变了、会话卸载）直接放弃，等待下一次用户滚动。
-					const entryNow = store.get(sessionMessagesCacheAtom)[sessionId];
-					const drifted = Boolean(
-						entryNow?.history?.version &&
-						page.indexVersion &&
-						entryNow.history.version !== page.indexVersion,
-					);
-					if (!drifted) return;
-					// 把已加载的前缀深度作为重建目标（至少包含原有浏览深度）
-					const targetTurns = Math.max(
-						countLoadedHistoryTurns(entryNow?.history?.messages ?? []),
-						RUNTIME_HISTORY_TURN_PAGE_SIZE,
-					);
-					await rebuildHistoryPrefixAfterVersionDrift({
-						sessionId,
-						sequence,
-						store,
-						targetTurnCount: targetTurns,
-						anchorFilePos,
-					});
-				})
-				.finally(() => {
-					if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
-				});
+			loadRuntimeHistoryPage(RUNTIME_HISTORY_TURN_PAGE_SIZE, true);
 			return;
 		}
-	}, [cachedEntry?.revision, captureLoadMoreAnchor, diskPage, historyHasMore, isLoadingMessagePage, messages, options.pageSize, options.sessionId, ownerKey, prependHistoryPage, prependMessagePage, runtimeHistory]);
+	}, [cachedEntry?.revision, captureLoadMoreAnchor, diskPage, historyHasMore, isLoadingMessagePage, loadRuntimeHistoryPage, messages, options.pageSize, options.sessionId, ownerKey, prependMessagePage, runtimeHistory]);
+
+	// ── 保底 50 轮（用户要求）──
+	// 运行中会话「历史前缀 + 运行时窗口」不足 MIN_DISPLAY_TURNS 且还有更早历史时，
+	// 一次补足差额。同一缓存状态（revision + 前缀长度）只尝试一次：
+	// 空页/被拒绝时不会形成请求循环；成功补页后前缀变长，键变化，必要时再补。
+	const minimumTopUpKeyRef = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (!controllerEnabled) return;
+		const sessionId = options.sessionId;
+		if (!sessionId || !cachedEntry || cachedEntry.source !== "runtime") return;
+		if (loadState?.status === "loading" || isLoadingMessagePage) return;
+		const missingTurns = resolveMinimumHistoryTopUp({
+			historyTurns: countUserTurns(runtimeHistory?.messages ?? []),
+			windowTurns: countUserTurns(messages),
+			hasMore: historyHasMore,
+			busy: false,
+		});
+		if (missingTurns <= 0) return;
+		const attemptKey = `${sessionId}:${cachedEntry.revision}:${runtimeHistory?.messages.length ?? 0}`;
+		if (minimumTopUpKeyRef.current === attemptKey) return;
+		minimumTopUpKeyRef.current = attemptKey;
+		loadRuntimeHistoryPage(Math.min(missingTurns, MIN_DISPLAY_TURNS), !autoScrollRef.current);
+	}, [
+		controllerEnabled,
+		options.sessionId,
+		cachedEntry,
+		loadState?.status,
+		isLoadingMessagePage,
+		historyHasMore,
+		runtimeHistory,
+		messages,
+		loadRuntimeHistoryPage,
+	]);
 
 	// ── 回底释放临时历史（2026-11 轮次模型）──
 	// 贴底稳定 1.5s 后释放翻过的历史前缀（保底 MIN_DISPLAY_TURNS 轮，用户要求），
