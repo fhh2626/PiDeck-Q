@@ -1,5 +1,6 @@
 export const mainProcessZhCN = {
 	"mainFile.unsupportedMoveType": "此文件类型不支持移动，源文件已保留。",
+	"mainFile.unsupportedCopyType": "此文件类型不支持复制。",
 	"mainFile.renameTargetExists": "已存在同名文件或文件夹，未进行重命名。",
 	"diagnostic.historyLoadFailed": "历史会话加载失败，可继续使用当前 Agent 或重新打开会话重试。",
 	"diagnostic.compactReconnected": "会话压缩完成，Agent 已自动重连",
@@ -172,6 +173,7 @@ export type MainProcessTranslationKey = keyof typeof mainProcessZhCN;
 
 export const mainProcessEnUS: Record<MainProcessTranslationKey, string> = {
 	"mainFile.unsupportedMoveType": "This file type cannot be moved. The source has been preserved.",
+	"mainFile.unsupportedCopyType": "This file type cannot be copied.",
 	"mainFile.renameTargetExists": "A file or folder with that name already exists. Nothing was renamed.",
 	"diagnostic.historyLoadFailed": "Failed to load session history. You can keep using this Agent or reopen the session to retry.",
 	"diagnostic.compactReconnected": "Session compacted and the Agent reconnected automatically",

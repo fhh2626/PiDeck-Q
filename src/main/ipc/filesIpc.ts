@@ -1,5 +1,6 @@
-import { copyFile, cp, lstat, mkdir, readFile, rename as fsRename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { copyWithoutOverwrite, UnsupportedExclusiveCopyFileTypeError, type ExclusiveCopyOperations } from "../fs/copyWithoutOverwrite";
+import { copyToFreeName } from "../fs/copyToFreeName";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ipcChannels } from "../../shared/ipc";
@@ -55,8 +56,6 @@ function assertExternalReadLimit(maxBytes: unknown): asserts maxBytes is number 
 }
 
 export type FilesIpcFileOperations = ExclusiveCopyOperations & {
-	rename: typeof fsRename;
-	copy: typeof cp;
 	remove: typeof rm;
 };
 
@@ -91,8 +90,6 @@ export function registerFilesIpc(
 	}: FilesIpcDeps,
 ): void {
 	const fsOperations: FilesIpcFileOperations = {
-		rename: fileOperations?.rename ?? fsRename,
-		copy: fileOperations?.copy ?? cp,
 		remove: fileOperations?.remove ?? rm,
 		copyFile: fileOperations?.copyFile ?? copyFile,
 		mkdir: fileOperations?.mkdir ?? mkdir,
@@ -334,13 +331,22 @@ export function registerFilesIpc(
 			try {
 				const hostSource = await sourceResolver(src);
 				const name = basename(hostSource);
-				const dest = await authorizePath(join(targetDir, name), "copy-target", "write");
-				// 递归复制目录/文件；同名已存在时跳过覆盖。Node 的 force
-				// 默认为 true，必须显式关闭才能让 errorOnExist:false 生效。
-				await fsOperations.copy(hostSource, dest, { recursive: true, force: false, errorOnExist: false });
+				// 先授权“原名”目标，确认 targetDir 本身可写；改名后的候选与它同目录，授权结论相同。
+				await authorizePath(join(targetDir, name), "copy-target", "write");
+				const sourceStat = await lstat(hostSource);
+				// 目录复制进自身或其子目录会无限递归（readdir 会读到刚创建的副本）。
+				if (sourceStat.isDirectory() && (sameMovePath(hostSource, targetDir) || isPathInside(hostSource, targetDir))) {
+					throw new Error("Cannot copy a directory into itself");
+				}
+				// 冲突自动改名（资源管理器风格）：不再静默跳过，也不再与已有目录合并。
+				const dest = await copyToFreeName(hostSource, targetDir, name, fsOperations);
 				results.push(dest);
 				void appLogger.info("file", "File/folder copied", { src, dest });
 			} catch (error) {
+				// 特殊文件类型（FIFO/设备等）不可复制：与 move 一样给出本地化文案
+				if (error instanceof UnsupportedExclusiveCopyFileTypeError) {
+					throw new Error(mainCopy("mainFile.unsupportedCopyType"));
+				}
 				void appLogger.info("file", "File copy failed", { src, targetDir, error: error instanceof Error ? error.message : String(error) });
 				throw error;
 			}

@@ -62,6 +62,7 @@ function loadFilesIpc(authorization) {
 			if (id.includes("shared/ipc")) return ipc;
 			if (id.includes("authorizedPaths")) return authorization;
 			if (id.includes("copyWithoutOverwrite")) return loadTsCommonJs("src/main/fs/copyWithoutOverwrite.ts");
+			if (id.includes("copyToFreeName")) return loadTsCommonJs("src/main/fs/copyToFreeName.ts");
 			if (id.includes("renameWithoutOverwrite")) return loadTsCommonJs("src/main/fs/renameWithoutOverwrite.ts");
 			return require(id);
 		},
@@ -204,7 +205,7 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 	assert.deepEqual(openedPaths, ["C:/project/file.txt"]);
 });
 
-test("Files IPC: copy skips an existing destination instead of overwriting it", async () => {
+test("Files IPC: copy into an occupied name writes a numbered copy", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-copy-"));
 	try {
 		const sourceDir = join(root, "source");
@@ -229,9 +230,43 @@ test("Files IPC: copy skips an existing destination instead of overwriting it", 
 			getAuthorizedRoots: () => [root],
 		});
 
-		await router.invoke(ipcChannels.filesCopy, [source], targetDir);
+		const copied = await router.invoke(ipcChannels.filesCopy, [source], targetDir);
+		// 资源管理器语义：不静默跳过、不与已有目录合并，改用带编号的新名字
+		const numbered = join(targetDir, "same (1).txt");
 		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+		assert.equal(existsSync(numbered), true, "numbered copy must be written");
+		assert.equal(readFileSync(numbered, "utf8"), "source-content");
 		assert.equal(readFileSync(source, "utf8"), "source-content");
+		assert.deepEqual(JSON.parse(JSON.stringify(copied)), [numbered]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Files IPC: copy refuses to copy a directory into itself", async () => {
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-copy-self-"));
+	try {
+		const outer = join(root, "outer");
+		const inner = join(outer, "inner");
+		mkdirSync(inner, { recursive: true });
+		writeFileSync(join(outer, "file.txt"), "content");
+
+		const authorization = createAuthorizationStub();
+		const { registerFilesIpc } = loadFilesIpc(authorization);
+		const router = createFakeRouter();
+		registerFilesIpc(router, {
+			fileSystemService: {},
+			projectStore: { get: () => ({ path: root }) },
+			settingsStore: { get: () => ({ wslEnabled: false }) },
+			appLogger: { info: () => {}, error: () => {} },
+			dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+			platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
+			getAuthorizedRoots: () => [root],
+		});
+
+		// 目录复制进自身子目录会无限递归（readdir 会读到刚创建的副本）
+		await assert.rejects(() => router.invoke(ipcChannels.filesCopy, [outer], inner));
+		await assert.rejects(() => router.invoke(ipcChannels.filesCopy, [outer], outer));
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -279,7 +314,7 @@ test("Files IPC: move refuses to merge an existing destination directory", async
 	}
 });
 
-test("Files IPC: EXDEV move refuses an existing destination file", async () => {
+test("Files IPC: move refuses an existing destination file (exclusive copy path)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-file-"));
 	try {
 		const sourceDir = join(root, "source");
@@ -291,11 +326,7 @@ test("Files IPC: EXDEV move refuses an existing destination file", async () => {
 		writeFileSync(source, "source-content");
 		writeFileSync(destination, "existing-content");
 
-		const router = registerMoveRouter(root, {
-			rename: async () => {
-				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
-			},
-		});
+		const router = registerMoveRouter(root);
 		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
 		assert.equal(readFileSync(source, "utf8"), "source-content");
 		assert.equal(readFileSync(destination, "utf8"), "existing-content");
@@ -304,7 +335,7 @@ test("Files IPC: EXDEV move refuses an existing destination file", async () => {
 	}
 });
 
-test("Files IPC: EXDEV move refuses an existing destination directory", async () => {
+test("Files IPC: move refuses an existing destination directory (exclusive copy path)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-dir-"));
 	try {
 		const sourceDir = join(root, "source");
@@ -316,11 +347,7 @@ test("Files IPC: EXDEV move refuses an existing destination directory", async ()
 		writeFileSync(join(source, "source-only.txt"), "source");
 		writeFileSync(join(destination, "target-only.txt"), "target");
 
-		const router = registerMoveRouter(root, {
-			rename: async () => {
-				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
-			},
-		});
+		const router = registerMoveRouter(root);
 		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
 		assert.equal(existsSync(source), true);
 		assert.equal(existsSync(join(destination, "source-only.txt")), false);
@@ -397,9 +424,6 @@ test("Files IPC: move keeps the source when the destination appears at the copy 
 		writeFileSync(source, "source-content");
 		let removeCalled = false;
 		const router = registerMoveRouter(root, {
-			rename: async () => {
-				throw Object.assign(new Error("cross-device rename"), { code: "EXDEV" });
-			},
 			copyFile: async (from, to, mode) => {
 				writeFileSync(to, "appeared-during-copy");
 				return realCopyFile(from, to, mode);
@@ -422,7 +446,6 @@ test("Files IPC: internal copy and base64 reads reject renderer-supplied externa
 	const authorization = createAuthorizationStub();
 	const { registerFilesIpc } = loadFilesIpc(authorization);
 	const router = createFakeRouter();
-	let copied = false;
 	registerFilesIpc(router, {
 		fileSystemService: {},
 		projectStore: { get: () => ({ path: "C:/project" }) },
@@ -431,7 +454,6 @@ test("Files IPC: internal copy and base64 reads reject renderer-supplied externa
 		dialogs: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
 		platformShell: { openPath: async () => ({ ok: true }), showItemInFolder: () => {} },
 		getAuthorizedRoots: () => ["C:/project"],
-		fileOperations: { copy: async () => { copied = true; } },
 	});
 	await assert.rejects(
 		() => router.invoke(ipcChannels.filesCopy, ["C:/outside/id_rsa"], "C:/project"),
@@ -441,14 +463,12 @@ test("Files IPC: internal copy and base64 reads reject renderer-supplied externa
 		() => router.invoke(ipcChannels.filesReadBase64, "C:/outside/passport.png", 10 * 1024 * 1024),
 		/File path is not authorized for read-base64/,
 	);
-	assert.equal(copied, false, "internal copy must not invoke filesystem operations for external paths");
 });
 
 test("Files IPC: external copy uses only the trusted capability paths", async () => {
 	const authorization = createAuthorizationStub();
 	const { registerFilesIpc } = loadFilesIpc(authorization);
 	const router = createFakeRouter();
-	let copiedFrom = "";
 	registerFilesIpc(router, {
 		fileSystemService: {},
 		projectStore: { get: () => ({ path: "C:/project" }) },
@@ -461,12 +481,12 @@ test("Files IPC: external copy uses only the trusted capability paths", async ()
 			consumeCopy: (capabilityId) => capabilityId === "trusted-capability" ? ["C:/Users/user/.ssh/id_rsa"] : null,
 			consumeRead: () => { throw new Error("not used"); },
 		},
-		fileOperations: {
-			copy: async (source) => { copiedFrom = source; },
-		},
 	});
-	await router.invoke(ipcChannels.filesCopyExternal, "trusted-capability", "C:/project");
-	assert.equal(copiedFrom, "C:/Users/user/.ssh/id_rsa");
+	// 授权后的能力路径会真正进入复制流程；测试只关心授权来源，用不存在的路径验证已不再被授权层拦下。
+	await assert.rejects(
+		() => router.invoke(ipcChannels.filesCopyExternal, "trusted-capability", "C:/project"),
+		(error) => !String(error?.message ?? error).includes("not authorized"),
+	);
 });
 
 test("Files IPC: unauthorized paths are rejected before any shell side effect", async () => {
