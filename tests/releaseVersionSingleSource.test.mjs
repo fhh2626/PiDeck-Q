@@ -17,6 +17,24 @@ test("the release version has exactly one source of truth, and every copy agrees
 	assert.equal(lock.packages[""].version, pkg.version, "package-lock.json 根包 version 必须与 package.json 一致");
 });
 
+// Public current-version displays must follow the manifest without pinning the next release.
+test("README current-version badges agree with the release manifest", () => {
+	for (const file of ["README.md", "README.zh-CN.md"]) {
+		const source = readFileSync(file, "utf8");
+		const badge = source.match(/badge\/version-([^"/]+)-yellow/);
+		assert.equal(badge?.[1], pkg.version, `${file} version badge must follow package.json`);
+		assert.ok(source.includes(`alt="Version ${pkg.version}"`), `${file} accessible version must agree`);
+	}
+});
+
+// VitePress exposes the build-time version to Markdown and structured metadata.
+test("the docs site reads its current version from the release manifest", () => {
+	const source = readFileSync("docs-site/.vitepress/config.mts", "utf8");
+	assert.match(source, /readFileSync\(new URL\("\.\.\/\.\.\/package\.json", import\.meta\.url\)/);
+	assert.match(source, /version: packageVersion/);
+	assert.match(source, /softwareVersion: packageVersion/);
+});
+
 test("build scripts read the version from package.json instead of hardcoding it", () => {
 	const expectations = [
 		["scripts/build-native.mjs", /npmPackage\.version/, /PIDECK_VERSION: version/],

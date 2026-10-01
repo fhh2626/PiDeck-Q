@@ -1,53 +1,55 @@
 # 快速开始
 
-PiDeck 是一个同时支持原版 [Pi Agent](https://pi.dev) 和 Pi_Agent_Rust、用于管理多个编码 Agent 会话的桌面工作台。它负责桌面端工作流，Agent 能力仍由所选运行时提供。
+<script setup>
+import { useData } from 'vitepress'
+const { theme } = useData()
+</script>
 
-## 环境要求
+当前 PiDeck-Q 版本：**{{ theme.version }}**。
 
-- Node.js 20+
-- npm
-- 系统 `PATH` 中可访问 `pi` 命令
-- 已完成 pi 的 Provider、登录或 API Key 配置
-
-验证 pi 是否可用：
-
-```bash
-pi --version
-pi --mode rpc
-```
+PiDeck-Q 同时支持 [Pi Agent](https://pi.dev) 和 [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust)。桌面应用管理窗口、项目与会话，Agent 能力仍由运行时提供。
 
 ## 下载安装
 
-Windows、macOS、Linux 的预构建安装包发布在 GitHub Releases：
+从 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 查看实际发布的文件与平台说明，不假定每个版本都有安装器或所有平台产物。当前仓库的 staging 流程以 Windows 为主，安装器编译暂时关闭。
 
-[打开 GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases)
+Windows 桌面运行需要 WebView2 Runtime。macOS/Linux 的源码分支不能视作经过验证的安装包。
 
-安装后首次启动时，PiDeck 会尝试自动检测 `pi` 路径。如果检测失败，可以在设置里手动填写 pi 可执行文件路径。
+先按运行时官方文档安装 Pi Agent 或 Pi_Agent_Rust，配置 Provider/认证。验证对应命令（Rust 命令可能为 `pi-rust`）：
+
+```bash
+pi --version
+```
+
+首次启动会检测 Agent 路径；检测失败时在设置中填写所选运行时的可执行文件路径。
 
 ## 从源码运行
 
+需要 Node.js **24.19.0**、npm **11+**、Git、xmake、C++20/MSVC 工具链；Qt **6.11.2** 由本地 Xmake package 定义提供。详见 [开发与打包](/guide/development)。
+
 ```bash
 git clone https://github.com/fhh2626/PiDeck-Q.git
-cd pi-desktop
+cd PiDeck-Q
 npm install
 npm run make-icon
 npm run dev
 ```
 
+当前 `dev` 流程面向 Windows 原生桌面，不是 Electron。
+
 ## 基本工作流
 
-1. 启动应用。
-2. 添加一个本地项目目录。
-3. 在项目里创建 Agent 会话。
-4. 选择模型和思考等级。
-5. 在聊天输入框中发送任务，或使用 `/`、`@`、`!` 提升输入效率。
+1. 添加本地项目目录。
+2. 创建会话，选择模型与思考等级。
+3. 发送任务，或使用 `/`、`@`、`!` 输入辅助。
+4. 查看历史、文件、Git 和终端。
 
-## 浏览器预览模式
-
-开发 UI 时可以直接打开浏览器预览：
+## 普通浏览器 UI 预览
 
 ```bash
-npm run preview
+npm run test:browser:server
 ```
 
-Renderer 在 `window.piDesktop` 不可用时会降级为 mock 数据，适合调试布局和响应式表现。真实 Agent、会话和文件操作仍需要在 Electron 环境中验证。
+这是浏览器测试/界面预览服务，不是内置浏览器面板；模拟接口不能证明真实 Agent、文件或宿主功能可用。真实桌面行为需在原生宿主下验证。
+
+局域网 Web 前端是另一项能力，可在设置中开启 Web 服务；它不是桌面里的浏览器面板。服务包含认证 token，默认关闭，不应无保护地暴露到公网。

@@ -14,7 +14,7 @@
 | **配置管理** | ✅ 可视化编辑器 | ⚠️ 手动配置 | ⚠️ 手动配置 | ✅ IDE 设置 | ✅ IDE 设置 |
 | **会话导入** | ✅ Codex/Claude | ❌ | ❌ | ❌ | ❌ |
 | **本地优先** | ✅ 完全本地 | ✅ 完全本地 | ✅ 完全本地 | ⚠️ 云端功能 | ⚠️ 云端功能 |
-| **跨平台** | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux |
+| **跨平台** | Windows-first 原生构建，其它平台待验证 | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux | ✅ Win/Mac/Linux |
 | **开源** | ✅ MIT | ⚠️ 部分开源 | ⚠️ 部分开源 | ❌ 闭源 | ❌ 闭源 |
 
 ## PiDeck 的独特优势
@@ -29,19 +29,19 @@ PiDeck 不仅同时支持原版 **Pi Agent** 和 **Pi_Agent_Rust**，还可以�
 
 ### 3. 桌面原生体验
 
-作为 Electron 桌面应用，PiDeck 提供：
+作为 Qt6/QtWebView 原生桌面应用，PiDeck 提供：
 - 系统托盘常驻
 - 独立窗口管理
 - 原生文件选择器
-- 自动更新提示
+- 系统通知（不包含内置应用更新系统）
 
 ### 4. 可视化配置管理
 
 直接图形化编辑 Agent 运行时的 `models.json`、`auth.json`、`settings.json`，无需手动编辑 JSON 文件，降低配置门槛。
 
-### 5. 内置终端与浏览器
+### 5. 内置终端与文件工具
 
-每个 Agent 绑定独立终端 tab，配合右侧抽屉内置浏览器，实现"对话 + 执行 + 预览"的完整本地开发工作流。
+终端、文件编辑器和 Git 面板集中在同一工作台；外链通过系统浏览器打开。可另外启用局域网 Web 前端，但它不是内置浏览器面板。
 
 ## 适合人群
 

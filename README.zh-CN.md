@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT" />
   <img src="https://img.shields.io/badge/Qt-6-41cd52" alt="Qt 6" />
   <img src="https://img.shields.io/badge/React-19-61dafb" alt="React 19" />
-  <img src="https://img.shields.io/badge/version-0.7.0-yellow" alt="Version 0.7.0" />
+  <img src="https://img.shields.io/badge/version-0.4.0-yellow" alt="Version 0.4.0" />
 </p>
 
 ## 项目简介

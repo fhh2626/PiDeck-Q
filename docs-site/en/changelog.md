@@ -1,10 +1,19 @@
 # Changelog
 
-## Latest Release
+## PiDeck-Q Current Baseline
 
-See the [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) page for the latest version and download links.
+<script setup>
+import { useData } from 'vitepress'
+const { theme } = useData()
+</script>
 
-## v0.6.7 (highlights)
+Current version: **{{ theme.version }}**, sourced from the root manifest. This identifies the current baseline, not a fabricated release date or a claim that planned fixes are complete. See [PiDeck-Q Releases](https://github.com/fhh2626/PiDeck-Q/releases) for actual artifacts.
+
+## Upstream History Archive
+
+The following 0.6.7 highlights belong to upstream [PiDeck](https://github.com/ayuayue/PiDeck), not PiDeck-Q's release line or current feature list. Repository history includes upstream documentation update `184ae39d` and upstream merge `d2a958a1`. References to pets, Electron or removed features are historical only. The [Chinese archive](/changelog) preserves the longer upstream 0.6.x/0.7.0 record.
+
+### v0.6.7 (highlights)
 
 - Compact titlebar + Codex-style right sidebar; file editor nested under Files
 - File tree drag/drop/move; @ file tree suggestions; path chips with spaces

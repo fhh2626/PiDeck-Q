@@ -6,7 +6,9 @@ outline: false
 
 PiDeck is an open-source project and everyone is welcome to contribute.
 
-## Core Maintainer
+The following acknowledgements describe upstream [PiDeck](https://github.com/ayuayue/PiDeck) contributions, not the current feature set or fork maintainer assignment.
+
+## Upstream Maintainer
 
 - [**ayuayue**](https://github.com/ayuayue) — Project creator and lead developer
 
@@ -31,4 +33,4 @@ PiDeck welcomes contributions of all kinds:
 3. Make your changes
 4. Submit a Pull Request
 
-Please read the [contributing guidelines](https://github.com/fhh2626/PiDeck-Q/blob/main/CONTRIBUTING.md) before starting.
+Follow the dependency boundaries, tests and commit authorization rules in the repository's root `AGENTS.md`.
