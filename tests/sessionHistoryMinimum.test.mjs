@@ -384,5 +384,15 @@ test("D3: the controller wires the top-up helper into the runtime history loader
 	const loadCalls = controllerSource.match(/loadRuntimeHistoryPage\(/g) ?? [];
 	assert.ok(loadCalls.length >= 2, `expected >=2 call sites, got ${loadCalls.length}`);
 	// 保底补页必须走同一入口（否则上滚与保底会各写一套锚点/重建逻辑）。
-	assert.match(controllerSource, /loadRuntimeHistoryPage\(Math\.min\(missingTurns, MIN_DISPLAY_TURNS\)/);
+	// 差额由 resolveMinimumHistoryTopUp 保证不超过 MIN_DISPLAY_TURNS（服务端单页上限），直接传入
+	assert.match(controllerSource, /loadRuntimeHistoryPage\(missingTurns, !autoScrollRef\.current\)/);
+});
+
+test("D3: resolveMinimumHistoryTopUp never asks for more than the 50-turn page cap", () => {
+	const controller = loadController();
+	// 两边都为 0 轮时差额最大：恰好等于 MIN_DISPLAY_TURNS（服务端单页上限也是 50），调用方无需再截断
+	assert.equal(
+		controller.resolveMinimumHistoryTopUp({ historyTurns: 0, windowTurns: 0, hasMore: true, busy: false }),
+		50,
+	);
 });

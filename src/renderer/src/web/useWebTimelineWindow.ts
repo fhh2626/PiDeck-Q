@@ -108,7 +108,7 @@ export function useWebTimelineWindow(input: {
 		const base = selectWebItemWindow(messages, WEB_TIMELINE_MIN_DISPLAY_ITEMS);
 		if (!windowStartId || following) return base;
 		const startIndex = messages.findIndex((message) => message.id === windowStartId);
-		// 起点消息已不存在（历史被改写/重新合并）：退回最近 N 轮，避免窗口落空
+		// 起点消息已不存在（历史被改写/重新合并）：退回默认窗口（最近至少 100 个显示单元），避免窗口落空
 		if (startIndex < 0) return base;
 		const visibleMessages = messages.slice(startIndex);
 		const totalTurns = countWebTurns(messages);

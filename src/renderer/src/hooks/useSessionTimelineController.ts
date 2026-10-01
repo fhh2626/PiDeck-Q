@@ -72,7 +72,8 @@ const BOTTOM_THRESHOLD = 16;
 const LEGACY_OWNER_KEY = "legacy";
 /**
  * 保底显示轮数差额（2026-12 用户要求：运行中会话至少显示 50 轮）。
- * 返回需要补的轮数，0 表示不补。:
+ * 返回需要补的轮数，0 表示不补；取值范围 0..MIN_DISPLAY_TURNS
+ * （两边都为 0 轮时最大，等于服务端单页上限 50，调用方无需再截断）。
  * - busy（正在加载历史页/首屏或上滚补页）时不补，避免并发补页互相顶掉。
  * - 没有更早历史（hasMore=false）时不补，补也是空页。
  * - 已满足下限时返回 0。
@@ -1031,7 +1032,7 @@ export function useSessionTimelineController(options: {
 		const attemptKey = `${sessionId}:${cachedEntry.revision}:${runtimeHistory?.messages.length ?? 0}`;
 		if (minimumTopUpKeyRef.current === attemptKey) return;
 		minimumTopUpKeyRef.current = attemptKey;
-		loadRuntimeHistoryPage(Math.min(missingTurns, MIN_DISPLAY_TURNS), !autoScrollRef.current);
+		loadRuntimeHistoryPage(missingTurns, !autoScrollRef.current);
 	}, [
 		controllerEnabled,
 		options.sessionId,
