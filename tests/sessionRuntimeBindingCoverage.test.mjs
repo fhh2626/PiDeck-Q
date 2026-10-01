@@ -112,12 +112,17 @@ test("Web wiring is Session-first and exposes no Agent compatibility creation", 
 });
 
 test("catalog deletion rejects bound or activating Session runtimes", () => {
-  // 删除与归档都会连带移动整棵会话树，必须先在 IPC 层过同一道空闲闸门；
-  // 闸门自身的 “忙” 判定覆盖已绑定 runtime、普通激活与匿名激活三种状态。
-  assert.match(sessionIpc, /sessionsCatalogDelete[\s\S]*assertSessionTreeIdle\(entry\)/);
-  assert.match(sessionIpc, /sessionsCatalogArchive[\s\S]*assertSessionTreeIdle\(entry\)/);
-  assert.match(sessionIpc, /const isSessionBusy = [\s\S]*getTarget: [\s\S]*isActivating: [\s\S]*isAnonymousActivating/);
-  assert.match(createBackend, /deleteSessionRecord: async \(sessionId\)[\s\S]*sessionRuntimeCoordinator\.getTarget\(sessionId\)[\s\S]*sessionRuntimeCoordinator\.isActivating\(sessionId\)/);
+  // E1：删除/归档/改名的空闲闸门已收口到 SessionRecordService（桌面 IPC 与 Web 共用）；
+  // sessionIpc 只做委托，所以断言“两边都只能走服务”而不是服务内部的实现位置。
+  const recordService = readFileSync("src/main/sessions/SessionRecordService.ts", "utf8");
+  assert.match(sessionIpc, /sessionsCatalogDelete[\s\S]*sessionRecordService\.delete\(sessionId\)/);
+  assert.match(sessionIpc, /sessionsCatalogArchive[\s\S]*sessionRecordService\.archive\(sessionId\)/);
+  // 闸门自身的“忙”判定必须覆盖已绑定 runtime、普通激活与匿名激活三种状态。
+  assert.match(recordService, /isSessionDeleteBlocked\(sessionId, \{[\s\S]*getTarget: [\s\S]*isActivating: [\s\S]*isAnonymousActivating/);
+  // 删除与归档都必须先过 assertTreeIdle（整棵会话树，不只是父会话）。
+  assert.match(recordService, /async delete\(sessionId: string\)[\s\S]*assertTreeIdle\(sessionId\)/);
+  assert.match(recordService, /async archive\(sessionId: string\)[\s\S]*assertTreeIdle\(sessionId\)/);
+  assert.match(createBackend, /deleteSessionRecord: \(sessionId\) => sessionRecordService\.delete\(sessionId\)/);
   assert.match(coordinator, /isActivating\(sessionId: string\): boolean/);
 });
 

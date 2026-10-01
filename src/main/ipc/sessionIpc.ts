@@ -32,9 +32,7 @@ import {
 import type { RpcRouter } from "../transport/RpcRouter";
 import {
 	enforceDeliveryBudgetOnPage,
-	enforceDeliveryBudgetOnPayload,
 } from "../pi/messageDeliveryBudget";
-import { stripToolResultForDelivery } from "../pi/agentUtils";
 import type { SessionMessagePage } from "../../shared/types/session";
 
 /**
@@ -58,7 +56,8 @@ import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { SessionScanner } from "../sessions/SessionScanner";
 import { ARCHIVE_DIR_NAME } from "../sessions/SessionScanner";
-import type { SessionCatalog, SessionCatalogEntry } from "../sessions/SessionCatalog";
+import type { SessionCatalog } from "../sessions/SessionCatalog";
+import type { SessionRecordService } from "../sessions/SessionRecordService";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import { SessionCommandIpcError } from "../sessions/SessionCommandIpcError";
 import type { AgentManager } from "../pi/AgentManager";
@@ -69,13 +68,14 @@ import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
 import type { AppLogger } from "../logging/AppLogger";
 import { isSessionDeleteBlocked } from "../sessions/SessionDeleteBlockedError";
-import { findSessionTreeBlock } from "../sessions/sessionTreeGuard";
 
 export type SessionIpcDeps = {
 	projectStore: ProjectStore;
 	settingsStore: SettingsStore;
 	sessionScanner: SessionScanner;
 	sessionCatalog: SessionCatalog;
+	/** 会话改名/删除/归档的唯一业务入口（与 Web backend 共用）。 */
+	sessionRecordService: SessionRecordService;
 	sessionRuntimeCoordinator: SessionRuntimeCoordinator;
 	agentManager: AgentManager;
 	configManager: ConfigManager;
@@ -120,6 +120,7 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		settingsStore,
 		sessionScanner,
 		sessionCatalog,
+		sessionRecordService,
 		sessionRuntimeCoordinator,
 		agentManager,
 		configManager,
@@ -140,33 +141,6 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		exportCatalogSessionHtml,
 		replaceAgentSession,
 	} = deps;
-
-	/** 会话本身是否忙：已绑定 runtime、普通激活中或匿名激活中。 */
-	const isSessionBusy = (id: string) => isSessionDeleteBlocked(id, {
-		getTarget: (targetId) => sessionRuntimeCoordinator.getTarget(targetId),
-		isActivating: (targetId) => sessionRuntimeCoordinator.isActivating(targetId),
-		isAnonymousActivating: deps.isAnonymousActivating,
-	});
-
-	/**
-	 * 删除/归档前检查整棵会话树；被阻止时抛出可直接展示的错误。
-	 * draft 可能正在被提升为 runtime：永远不要删掉已经拿到（或正在获取）runtime 的记录。
-	 */
-	const assertSessionTreeIdle = (entry: SessionCatalogEntry) => {
-		const block = findSessionTreeBlock(entry, {
-			listEntries: () => sessionCatalog.listEntries(),
-			listAgents: () => agentManager.list(),
-			isSessionBusy,
-		});
-		if (!block) return;
-		if (block.kind === "file-in-use") {
-			throw new Error(mainCopy("session.inUseDeleteBlocked", { title: block.agentTitle }));
-		}
-		// 父会话自己在跑 → 提示先停止它；子会话在跑 → 提示先停止子会话。
-		throw new Error(mainCopy(
-			block.sessionId === entry.id ? "session.stopBeforeDelete" : "session.childRunningDeleteBlocked",
-		));
-	};
 
 	router.handle(
 		ipcChannels.sessionsList,
@@ -318,79 +292,17 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogUpdate,
-		async (sessionId: string, patch: UpdateSessionRecordInput) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) throw new Error(mainCopy("session.notFound"));
-			const title = patch.title?.trim();
-			if (title && title !== entry.title) {
-				const target = sessionRuntimeCoordinator.getTarget(sessionId);
-				if (target) {
-					const renamed = await sessionRuntimeCoordinator.renameRuntime(target, title);
-					if (!renamed.ok) throw sessionCommandIpcError(renamed.error, appLogger, mainCopy);
-				} else if (entry.filePath) {
-					await sessionScanner.rename(entry.filePath, title);
-					void appLogger.info("session", "Session renamed (file)", {
-						sessionId,
-						oldTitle: entry.title,
-						newTitle: title,
-					});
-				}
-			}
-			return sessionCatalog.update(sessionId, {
-				...patch,
-				title: title || undefined,
-			});
-		},
+		// 参数校验在边界：title 只接受字符串；其余交给 SessionRecordService 处理。
+		(sessionId: string, patch: UpdateSessionRecordInput) =>
+			sessionRecordService.update(sessionId, patch),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogDelete,
-		async (sessionId: string) => {
-		// 删除/归档 <stem>.jsonl 会连带移动 <stem>/ 下的全部子会话，因此保护必须覆盖整棵树：
-		// 只检查父会话会让“子会话单独开着”的情况照样被删，留下悬空的 catalog 与 runtime 绑定。
-		const entry = sessionCatalog.get(sessionId);
-		if (!entry) return false;
-		assertSessionTreeIdle(entry);
-		try {
-				if (entry.filePath) {
-					await sessionScanner.delete(entry.filePath);
-				}
-				await sessionCatalog.remove(sessionId);
-				void appLogger.info("session", "Catalog session deleted", { sessionId, filePath: entry.filePath });
-				sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
-				return true;
-			} catch (error) {
-				// 会话删除失败（文件删除失败/记录移除失败/会话使用中拦截）也要留痕，便于事后追踪。
-				void appLogger.error("session", "Catalog session delete failed", {
-					sessionId,
-					filePath: entry.filePath,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				throw error;
-			}
-		},
+		(sessionId: string) => sessionRecordService.delete(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogArchive,
-		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return false;
-			// 运行中的会话不能归档（同删除）：移动文件会破坏 pi 对当前写入位置的引用。
-			assertSessionTreeIdle(entry);
-			try {
-				const archivedPath = await sessionScanner.archive(entry.filePath);
-				await sessionCatalog.remove(sessionId);
-				void appLogger.info("session", "Session archived", { sessionId, archivedPath });
-				sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
-				return true;
-			} catch (error) {
-				void appLogger.error("session", "Session archive failed", {
-					sessionId,
-					filePath: entry.filePath,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				throw error;
-			}
-		},
+		(sessionId: string) => sessionRecordService.archive(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogUnarchive,
@@ -416,22 +328,7 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogReadMessages,
-		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return [];
-			const content = await sessionScanner.readSessionRawText(entry.filePath);
-			const rawMessages = await agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
-			const stripped = stripToolResultForDelivery(rawMessages);
-			const dummyPayload = { messages: stripped };
-			const result = enforceDeliveryBudgetOnPayload(
-				dummyPayload,
-				(p) => ({ ok: true, result: p.messages }),
-			);
-			if (result.ok) {
-				return result.value.messages;
-			}
-			throw new Error("MESSAGE_DELIVERY_TOO_LARGE");
-		},
+		(sessionId: string) => sessionRecordService.readMessages(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogReadMessagePage,

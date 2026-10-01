@@ -57,10 +57,7 @@ import { registerBackendRpc } from "./registerBackendRpc";
 import { startBackendStartupTasks } from "./backendStartupTasks";
 import { createStartupBarrier } from "../utils/StartupBarrier";
 import { createTrashPath } from "../fs/trash";
-import {
-	SessionDeleteBlockedError,
-	isSessionDeleteBlocked,
-} from "../sessions/SessionDeleteBlockedError";
+import { SessionRecordService } from "../sessions/SessionRecordService";
 
 export async function createBackend(options: CreateBackendOptions): Promise<Backend> {
 	const { router, host, platform, runtime } = options;
@@ -281,6 +278,23 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		sendToRenderer: host.sendToRenderer,
 	});
 
+	// 会话记录（改名/删除/归档/读消息）的唯一业务入口：
+	// 桌面 IPC 与 Web backend 都只调它，避免两边各自演化出漂移的行为。
+	const sessionRecordService = new SessionRecordService({
+		sessionCatalog,
+		sessionScanner,
+		sessionRuntimeCoordinator,
+		listAgents: () => agentManager.list(),
+		isAnonymousActivating: (id) => runtimeBridge.isAnonymousActivating(id),
+		notifyCatalogRefreshed: (projectId) =>
+			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId }),
+		toCommandError: (error) => runtimeBridge.sessionCommandIpcError(error),
+		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
+		logger: appLogger,
+		readDisplayMessages: (filePath, sessionId, content) =>
+			agentManager.readSessionDisplayMessages(filePath, sessionId, content),
+	});
+
 	webServiceManager = new WebServiceManager({
 		devRendererUrl: runtime?.devRendererUrl,
 		// 订阅 pi agent 事件流，供 Web SSE 端点转发给浏览器。
@@ -352,54 +366,14 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			return record;
 		},
 		createAnonymousSession: runtimeBridge.createAnonymousSession,
-		updateSessionRecord: async (sessionId, patch) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) throw new Error(mainCopy("session.notFound"));
-			const title = patch.title?.trim();
-			if (title && title !== entry.title) {
-				const target = sessionRuntimeCoordinator.getTarget(sessionId);
-				if (target) {
-					const renamed = await sessionRuntimeCoordinator.renameRuntime(target, title);
-					if (!renamed.ok) throw runtimeBridge.sessionCommandIpcError(renamed.error);
-				} else if (entry.filePath) {
-					await sessionScanner.rename(entry.filePath, title);
-				}
-			}
-			const record = await sessionCatalog.update(sessionId, {
-				...patch,
-				title: title || undefined,
-			});
-			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: record.projectId });
-			return record;
-		},
-		deleteSessionRecord: async (sessionId) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) return false;
-			if (
-				isSessionDeleteBlocked(sessionId, {
-					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
-					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
-					isAnonymousActivating: (sessionId) => runtimeBridge.isAnonymousActivating(sessionId),
-				})
-			) {
-				throw new SessionDeleteBlockedError(mainCopy("session.stopBeforeDelete"));
-			}
-			const projectId = entry.projectId;
-			if (entry.filePath) await sessionScanner.delete(entry.filePath);
-			await sessionCatalog.remove(sessionId);
-			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId });
-			return true;
-		},
+		updateSessionRecord: (sessionId, patch) => sessionRecordService.update(sessionId, patch),
+		deleteSessionRecord: (sessionId) => sessionRecordService.delete(sessionId),
 		copySessionRecord: (sessionId) => runtimeBridge.copyCatalogSession(sessionId),
 		exportSessionRecordHtml: (sessionId) => runtimeBridge.exportCatalogSessionHtml(sessionId),
 		readSessionReferenceMessages: (sessionId) =>
 			runtimeBridge.readCatalogSessionReferenceMessages(sessionId),
-		readSessionMessages: async (sessionId) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return [];
-			const content = await sessionScanner.readSessionRawText(entry.filePath);
-			return agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
-		},
+		// 与桌面 IPC 共用同一条读消息管线（剔工具结果副本 + 下发预算）。
+		readSessionMessages: (sessionId) => sessionRecordService.readMessages(sessionId),
 		readSessionMessagePage: async (sessionId, before, pageSize) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
@@ -551,6 +525,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			fileSystemService,
 			sessionScanner,
 			sessionCatalog,
+			sessionRecordService,
 			sessionRuntimeCoordinator,
 			codexSessionImporter,
 			claudeSessionImporter,

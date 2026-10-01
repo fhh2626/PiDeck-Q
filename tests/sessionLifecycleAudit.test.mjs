@@ -15,6 +15,8 @@ const agentManager = read("main/pi/AgentManager.ts");
 const settingsStore = read("main/settings/SettingsStore.ts");
 const systemIpc = read("main/ipc/systemIpc.ts");
 const sessionIpc = read("main/ipc/sessionIpc.ts");
+// E1：会话记录的改名/删除/归档日志已收口到 SessionRecordService（桌面与 Web 唯一实现）。
+const sessionRecordService = read("main/sessions/SessionRecordService.ts");
 const appLogger = read("main/logging/AppLogger.ts");
 const piProcess = read("main/pi/PiProcess.ts");
 const backgroundsIpc = read("main/ipc/backgroundsIpc.ts");
@@ -59,7 +61,9 @@ test("settings changes are logged once, key names only, never values", () => {
 test("session write operations are logged", () => {
   assert.match(sessionIpc, /"Session draft created", \{\s*sessionId: draft\.id,/);
   assert.match(sessionIpc, /"Anonymous session created", \{\s*sessionId: result\.session\.id,/);
-  assert.match(sessionIpc, /"Session renamed \(file\)"/);
+  assert.match(sessionRecordService, /"Session renamed \(file\)"/);
+  assert.match(sessionRecordService, /"Catalog session deleted"/);
+  assert.match(sessionRecordService, /"Catalog session delete failed"/);
   assert.match(sessionIpc, /"Session copied", \{\s*sessionId,\s*targetSessionId:/);
   assert.match(sessionIpc, /"Session exported \(catalog HTML\)"/);
   assert.match(sessionIpc, /"Session exported \(runtime HTML\)"/);

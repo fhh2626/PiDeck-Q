@@ -6,6 +6,9 @@ const main = readFileSync("src/native-node/index.ts", "utf8");
 const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
 const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
+// E1：会话记录的改名/删除/归档已收口到 SessionRecordService，两边只做委托，
+// 所以“必须广播 catalog 刷新”的断言改指向这一处（唯一的实现）。
+const recordService = readFileSync("src/main/sessions/SessionRecordService.ts", "utf8");
 const projectsIpc = readFileSync("src/main/ipc/projectsIpc.ts", "utf8");
 const timeline = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
 const chrome = readFileSync("src/renderer/src/hooks/useSessionWorkspaceChrome.ts", "utf8");
@@ -15,7 +18,11 @@ const sessionAtoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "ut
 test("web session mutations notify the desktop catalog instead of leaving PC stale", () => {
   assert.match(
     createBackend,
-    /deleteSessionRecord: async \(sessionId\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId/,
+    /deleteSessionRecord: \(sessionId\) => sessionRecordService\.delete\(sessionId\)/,
+  );
+  assert.match(
+    recordService,
+    /async delete\(sessionId: string\)[\s\S]*notifyCatalogRefreshed\(entry\.projectId\)/,
   );
   assert.match(
     createBackend,
@@ -27,7 +34,7 @@ test("web session mutations notify the desktop catalog instead of leaving PC sta
   );
   assert.match(
     sessionIpc,
-    /sessionsCatalogDelete[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: entry\.projectId/,
+    /sessionsCatalogDelete[\s\S]*sessionRecordService\.delete\(sessionId\)/,
   );
 });
 

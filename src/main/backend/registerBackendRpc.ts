@@ -28,6 +28,7 @@ import type { VisionBridgeConfigManager } from "../settings/visionBridgeConfig";
 import type { SessionCatalog } from "../sessions/SessionCatalog";
 import type { SessionScanner } from "../sessions/SessionScanner";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
+import type { SessionRecordService } from "../sessions/SessionRecordService";
 import type { CodexSessionImporter } from "../sessions/CodexSessionImporter";
 import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
@@ -72,6 +73,7 @@ export interface RegisterBackendRpcDeps {
 		fileSystemService: FileSystemService;
 		sessionScanner: SessionScanner;
 		sessionCatalog: SessionCatalog;
+		sessionRecordService: SessionRecordService;
 		sessionRuntimeCoordinator: SessionRuntimeCoordinator;
 		codexSessionImporter: CodexSessionImporter;
 		claudeSessionImporter: ClaudeSessionImporter;
@@ -106,6 +108,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		fileSystemService,
 		sessionScanner,
 		sessionCatalog,
+		sessionRecordService,
 		sessionRuntimeCoordinator,
 		codexSessionImporter,
 		claudeSessionImporter,
@@ -195,6 +198,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		settingsStore,
 		sessionScanner,
 		sessionCatalog,
+		sessionRecordService,
 		sessionRuntimeCoordinator,
 		agentManager,
 		configManager,
