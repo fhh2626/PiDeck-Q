@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
@@ -163,8 +163,9 @@ test("createProcessEnv prepends search dirs to PATH/Path without pathPrefix (npm
 			root,
 		);
 		const env = new PiLocator().createProcessEnv();
-		// npm 检测（piCheckNpm）直接复用该 env 执行 npm --version
-		assert.ok(String(env.PATH).split(";").includes(join(root, "Local", "pnpm")));
+		// npm 检测（piCheckNpm）直接复用该 env 执行 npm --version。
+		// 拼接分隔符取自宿主 node:path，不能写死 ";"，否则在 POSIX 上必假失败。
+		assert.ok(String(env.PATH).split(delimiter).includes(join(root, "Local", "pnpm")));
 		assert.equal(env.Path, env.PATH);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

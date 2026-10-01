@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const { terminalOwnerKeyFor } = loadTsCommonJs("src/main/terminal/TerminalSessionManager.ts");
+// 本文件只验证 terminalOwnerKeyFor 这一纯函数（路径/身份归一化），
+// 不需要真实 pty 原生模块；node-pty 的预编译产物是按安装平台生成的，
+// 不桩掉的话在非安装平台上会因缺少原生二进制而无法加载模块。
+const { terminalOwnerKeyFor } = loadTsCommonJs("src/main/terminal/TerminalSessionManager.ts", {
+	stubs: { "node-pty": {} },
+});
 
 const project = (cwd) => ({ kind: "project", projectId: "project", cwd });
 
