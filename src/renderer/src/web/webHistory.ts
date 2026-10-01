@@ -1,3 +1,5 @@
+import type { UIMessage } from "ai";
+import { mergeAuthoritativeUiMessages } from "./webMessageMerge";
 import { WEB_TIMELINE_MIN_DISPLAY_ITEMS } from "./webTurnWindow";
 
 /**
@@ -34,6 +36,19 @@ export function decideHistoryApply(
 ): "apply" | "defer" | "skip" {
 	if (!isActive) return "skip";
 	return streaming ? "defer" : "apply";
+}
+
+/**
+ * 流结束后补注入延后的首屏历史时，实际交给 useChat 的消息。
+ * 缓存只在流式期间合并 useChat 的消息；最后一段内容常与「流结束」在同一次渲染到达，
+ * 那一帧来不及进缓存。若直接用缓存替换，会把完整的最后一条回复覆盖成半截。
+ * 因此以 useChat 当前消息为权威合并进缓存：既保住历史，也保住完整的最终回复。
+ */
+export function resolveDeferredHistoryMessages(
+	cached: UIMessage[] | undefined,
+	chatMessages: UIMessage[],
+): UIMessage[] {
+	return mergeAuthoritativeUiMessages(cached ?? [], chatMessages);
 }
 
 /** 首屏自动补页的最大连续次数（超过就停下等用户手动上滚）。 */

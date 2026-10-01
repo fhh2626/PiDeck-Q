@@ -10,6 +10,7 @@ const {
 	applyWebHistoryOlderPage,
 	decideHistoryApply,
 	needsWebHistoryTopUp,
+	resolveDeferredHistoryMessages,
 } = loadTsCommonJs("src/renderer/src/web/webHistory.ts");
 
 test("web history stays loadable before the first page arrives", () => {
@@ -182,10 +183,11 @@ test("WebChatApp defers the first history page while streaming and re-injects it
 	// 延后登记 + 补注入后清理，两处都要有
 	assert.match(source, /deferredHistoryApplyRef\.current\.add\(/);
 	assert.match(source, /deferredHistoryApplyRef\.current\.delete\(/);
-	// 补注入 effect 必须在流结束后用缓存整体替换
+	// 补注入 effect 在流结束后注入「缓存 + useChat 当前消息」的合并结果，
+	// 不能只用缓存：流结束那一帧的最终内容可能还没进缓存（见 resolveDeferredHistoryMessages）
 	assert.match(
 		source,
-		/if \(!activeSessionId \|\| chatStreaming\) return;[\s\S]{0,400}setMessages\(cached\)/,
+		/if \(!activeSessionId \|\| chatStreaming\) return;[\s\S]{0,500}resolveDeferredHistoryMessages\([\s\S]{0,120}messages,[\s\S]{0,200}setMessages\(merged\)/,
 	);
 });
 
@@ -208,4 +210,35 @@ test("needsWebHistoryTopUp stops at the file start and after three attempts", ()
 	// 已达补页次数上限
 	assert.equal(needsWebHistoryTopUp(30, { total: 180, nextBefore: 80, status: "ready" }, 3), false);
 	assert.equal(needsWebHistoryTopUp(30, { total: 180, nextBefore: 80, status: "ready" }, 2), true);
+});
+// W2 补注入：流结束那一帧的最终内容可能还没合并进缓存（缓存只在流式期间合并，
+// 最后一段内容与「流结束」常在同一次渲染到达）。补注入必须以 useChat 当前消息为权威，
+// 否则会用缓存里的半截回复覆盖完整回复。
+test("deferred history injection keeps both the history and the complete final reply", () => {
+	const { chatMessagesToUiMessages } = loadTsCommonJs("src/renderer/src/web/webApi.ts", {
+		globals: { fetch: () => Promise.reject(new Error("no network in tests")) },
+	});
+	const msg = (id, role, text, timestamp) => ({ id, agentId: "a1", role, text, timestamp });
+	const cached = chatMessagesToUiMessages([
+		msg("h-user", "user", "older question", 1),
+		msg("h-answer", "assistant", "older answer", 2),
+		msg("q", "user", "current question", 3),
+		msg("final", "assistant", "partial", 4),
+	]);
+	const chatMessages = chatMessagesToUiMessages([
+		msg("q", "user", "current question", 3),
+		msg("final", "assistant", "partial and now complete", 4),
+	]);
+	const result = resolveDeferredHistoryMessages(cached, chatMessages);
+	assert.equal(
+		JSON.stringify(result.map((item) => item.parts[0]?.text)),
+		JSON.stringify(["older question", "older answer", "current question", "partial and now complete"]),
+	);
+});
+
+test("deferred history injection with no cache falls back to the chat messages", () => {
+	const chatMessages = [{ id: "x", role: "assistant", parts: [{ type: "text", text: "only" }] }];
+	const result = resolveDeferredHistoryMessages(undefined, chatMessages);
+	assert.equal(result.length, 1);
+	assert.equal(result[0].id, "x");
 });

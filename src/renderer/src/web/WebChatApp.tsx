@@ -47,7 +47,7 @@ import {
 	WEB_STATE_POLL_MS,
 	type WebConnectionSnapshot,
 } from "./webConnection";
-import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, needsWebHistoryTopUp, WEB_HISTORY_TOP_UP_MAX_ATTEMPTS, type WebHistoryMeta } from "./webHistory";
+import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, needsWebHistoryTopUp, resolveDeferredHistoryMessages, WEB_HISTORY_TOP_UP_MAX_ATTEMPTS, type WebHistoryMeta } from "./webHistory";
 import { WEB_TIMELINE_TURN_LIMIT, WEB_TIMELINE_MIN_DISPLAY_ITEMS, countWebDisplayItems } from "./webTurnWindow";
 import {
 	isWebChatStreaming,
@@ -246,15 +246,20 @@ export function WebChatApp() {
 			});
 	}, [activeSessionId, bumpHistory, setMessages]);
 
-	// 流结束后补注入延后的首屏历史：缓存在流式期间一直在合并（含历史与本次回复），
-	// 直接用缓存整体替换 useChat 的消息。
+	// 流结束后补注入延后的首屏历史。缓存只在流式期间合并，流结束那一帧的最终内容
+	// 可能还没进缓存，所以先以 useChat 当前消息为权威合并，再整体注入（见 resolveDeferredHistoryMessages）。
+	// 依赖含 messages 不会重复注入：只有登记过的会话才进入，进入即从登记中删除。
 	useEffect(() => {
 		if (!activeSessionId || chatStreaming) return;
 		if (!deferredHistoryApplyRef.current.has(activeSessionId)) return;
 		deferredHistoryApplyRef.current.delete(activeSessionId);
-		const cached = messagesBySessionRef.current[activeSessionId];
-		if (cached) setMessages(cached);
-	}, [activeSessionId, chatStreaming, setMessages]);
+		const merged = resolveDeferredHistoryMessages(
+			messagesBySessionRef.current[activeSessionId],
+			messages,
+		);
+		messagesBySessionRef.current[activeSessionId] = merged;
+		setMessages(merged);
+	}, [activeSessionId, chatStreaming, messages, setMessages]);
 
 	// SSE 异常先以权威快照建立新基线；runtime 仍在运行时只重订阅 session stream，
 	// 绝不重试 POST /api/chat，避免同一 prompt 被再次发送。
