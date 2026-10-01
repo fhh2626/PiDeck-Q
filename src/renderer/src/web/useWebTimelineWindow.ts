@@ -1,8 +1,8 @@
 /**
- * useWebTimelineWindow — Web 端时间线显示窗口与滚动跟随（2026-12 统一 50 轮）。
+ * useWebTimelineWindow — Web 端时间线显示窗口与滚动跟随（2026-12：至少 100 个显示单元）。
  *
  * 职责（单一 owner，不向 WebChatApp 扩散状态）：
- * - 计算可见消息：跟底时 = 最近 50 轮；离开底部后冻结在当时的窗口起点，
+ * - 计算可见消息：跟底时 = 最近至少 100 个显示单元；离开底部后冻结在当时的窗口起点，
  *   新到达的轮次只追加在下方，不把正在阅读的内容挤出窗口。
  * - 历史入口：先展开已加载但被窗口隐藏的更早轮次（不发请求），
  *   再向磁盘请求更早页（由调用方 onLoadMore 负责），新页落地后必须真正可见。
@@ -14,10 +14,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import {
+	WEB_TIMELINE_MIN_DISPLAY_ITEMS,
 	WEB_TIMELINE_TURN_EXPAND_STEP,
-	WEB_TIMELINE_TURN_LIMIT,
 	countWebTurns,
-	selectWebTurnWindow,
+	selectWebItemWindow,
 } from "./webTurnWindow";
 import { uiMessageRole } from "./webMessageMetadata";
 
@@ -47,7 +47,7 @@ export type WebTimelineWindow = {
 	showScrollToBottom: boolean;
 	/** 滚动容器 onScroll */
 	handleScroll: () => void;
-	/** 回到底部：恢复最近 50 轮窗口并贴底 */
+	/** 回到底部：恢复最近 100 个显示单元的窗口并贴底 */
 	scrollToBottom: () => void;
 	/** 展开更早内容：先展开缓存，缓存耗尽再请求磁盘更早页 */
 	revealOlder: () => void;
@@ -66,7 +66,7 @@ export function useWebTimelineWindow(input: {
 	const stickToBottomRef = useRef(true);
 	const [following, setFollowing] = useState(true);
 	const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-	/** 冻结的窗口起点消息 id（undefined = 跟随尾部最近 50 轮）。 */
+	/** 冻结的窗口起点消息 id（undefined = 跟随尾部最近 100 个显示单元）。 */
 	const [windowStartId, setWindowStartId] = useState<string | undefined>(undefined);
 	/**
 	 * 程序化滚动目标位置。用「期望 scrollTop」而不是布尔开关：
@@ -105,7 +105,7 @@ export function useWebTimelineWindow(input: {
 	}, [sessionId]);
 
 	const turnWindow = useMemo(() => {
-		const base = selectWebTurnWindow(messages, WEB_TIMELINE_TURN_LIMIT);
+		const base = selectWebItemWindow(messages, WEB_TIMELINE_MIN_DISPLAY_ITEMS);
 		if (!windowStartId || following) return base;
 		const startIndex = messages.findIndex((message) => message.id === windowStartId);
 		// 起点消息已不存在（历史被改写/重新合并）：退回最近 N 轮，避免窗口落空

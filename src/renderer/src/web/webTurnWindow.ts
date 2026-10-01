@@ -1,9 +1,14 @@
 /**
- * Web 时间线「最近 N 轮对话」显示窗口（2026-12 统一 50 轮）。
+ * Web 时间线显示窗口（2026-12：按「显示单元」计数，至少 100 个单元）。
  *
  * 一轮 = 一条用户消息开启，直到下一条用户消息之前都属于该轮：助手正文、
  * 思考、工具调用、系统/摘要卡片都在轮内。工具调用与工具组不额外占轮数，
  * 展开/折叠也不改变窗口边界；当前尚未得到回复的用户提问同样算一轮。
+ *
+ * 显示单元的计数口径（与 webToolGroups.groupWebTimelineMessages 同源）：
+ * 每条用户消息 = 1；连续纯工具消息合成 1 组 = 1；其他每条助手侧消息 = 1；
+ * 透明占位不计。selectWebItemWindow 是贴底/上滚的默认窗口；
+ * selectWebTurnWindow（按轮计数）保留给展开逻辑与兼容。
  *
  * 本模块只做展示切片：
  * - 不删除、不去重、不修改底层消息（缓存与 useChat 仍是权威数据）。
@@ -13,11 +18,55 @@
  */
 import type { UIMessage } from "ai";
 import { uiMessageRole } from "./webMessageMetadata";
+import { groupWebTimelineMessages } from "./webToolGroups";
 
 /** 贴底/上滚的基础显示窗口轮数（与桌面端 TIMELINE_MOUNTED_TURN_LIMIT 对齐）。 */
 export const WEB_TIMELINE_TURN_LIMIT = 50;
 /** 展示已加载更早内容时每次展开的轮数（不发起网络请求）。 */
 export const WEB_TIMELINE_TURN_EXPAND_STEP = 10;
+/** 用户要求：Web 至少显示最近 100 个显示单元（一组工具调用/一条思考算一条）。 */
+export const WEB_TIMELINE_MIN_DISPLAY_ITEMS = 100;
+
+/** 显示单元数，与 groupWebTimelineMessages 同口径。 */
+export function countWebDisplayItems(messages: readonly UIMessage[]): number {
+	return groupWebTimelineMessages(messages).length;
+}
+
+/**
+ * 从尾部选出「至少 minItems 个显示单元」的最短后缀，并向前扩到所在轮的用户消息起点
+ * （不把一轮切成两半）。总单元数不足 minItems 时全部显示。返回形状与 selectWebTurnWindow 一致。
+ */
+export function selectWebItemWindow(
+	messages: readonly UIMessage[],
+	minItems: number,
+): {
+	visibleMessages: UIMessage[];
+	hiddenTurnCount: number;
+	hasHiddenMessages: boolean;
+} {
+	const all = messages as UIMessage[];
+	if (minItems <= 0 || all.length === 0) {
+		return { visibleMessages: all, hiddenTurnCount: 0, hasHiddenMessages: false };
+	}
+	// 从尾部按轮累计：每遇到一条用户消息，计算 [该用户消息, 上一个切点) 这一轮的单元数。
+	let itemsSoFar = 0;
+	let turnEnd = all.length;
+	for (let index = all.length - 1; index >= 0; index -= 1) {
+		if (!isUserTurnMessage(all[index])) continue;
+		itemsSoFar += countWebDisplayItems(all.slice(index, turnEnd));
+		turnEnd = index;
+		if (itemsSoFar >= minItems) {
+			if (index <= 0) break;
+			const visibleMessages = all.slice(index);
+			return {
+				visibleMessages,
+				hiddenTurnCount: Math.max(0, countWebTurns(all) - countWebTurns(visibleMessages)),
+				hasHiddenMessages: true,
+			};
+		}
+	}
+	return { visibleMessages: all, hiddenTurnCount: 0, hasHiddenMessages: false };
+}
 
 /** 是否为开启一轮的用户提问。 */
 function isUserTurnMessage(message: UIMessage): boolean {
