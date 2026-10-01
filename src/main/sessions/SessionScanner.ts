@@ -794,6 +794,9 @@ export class SessionScanner {
   /**
    * 删除会话文件，同时清理同级子会话目录（如果存在）。
    *
+   * 本地路径：统一移入系统回收站（可恢复），拒绝静默硬删；
+   * WSL 路径：mv 到会话根下的 .pideck-trash 回收目录（A4）。
+   *
    * 目录结构约定：父会话 <stem>.jsonl 与子会话目录 <stem>/ 相邻。
    * 删除父会话时一并移除 <stem>/ 目录及其下所有子会话 JSONL，
    * 避免残留孤儿目录。仅删除单个子会话时（无同级目录）行为不变。
@@ -830,7 +833,11 @@ export class SessionScanner {
     return wsl ? posixJoin(...parts) : join(...parts);
   }
 
-  /** 取 filePath 所在扫描根的归档目录；非扫描根内文件返回 undefined */
+  /**
+   * 取 filePath 所在扫描根的归档目录。
+   * 总是返回一个归档目录：不在任何扫描根内的文件归入默认根
+   * （findSessionsRootForFile 找不到匹配时会回退到 defaultSessionsRoot）。
+   */
   private archiveDirFor(filePath: string): string | undefined {
     const root = this.findSessionsRootForFile(filePath);
     if (!root) return undefined;

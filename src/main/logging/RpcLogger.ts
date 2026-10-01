@@ -7,7 +7,6 @@ import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 
 const MAX_LIVE = 1000;
-/** 写入文件时 data 字段 JSON 序列化后的最大字节数，超过则截断 */
 /**
  * 实时环形缓冲中单条 data 的最大字节数（仅影响内存中的缓冲副本，文件仍按原始数据落盘）。
  * 防止高频大 payload（如 prompt 全文）在缓冲里堆积把主进程内存打爆。
@@ -29,8 +28,9 @@ export interface RpcLoggerOptions {
 
 /**
  * RPC 日志服务。
- * - 按 Agent 分文件：userData/logs/rpc/rpc-<agentId>-YYYY-MM-DD.jsonl
- * - 写入时截断大 data（超过 2KB 脱敏保存），大幅减少文件体积
+ * - 按 Agent 分文件：~/.pi-desktop/logs/rpc/rpc-<agentId>-YYYY-MM-DD.jsonl
+ * - 文件按原始数据完整落盘（仅 bash 命令截断为 200 字符），可能包含提示词和文件内容；
+ *   仅在用户为某个 Agent 打开 RPC 日志时写入
  * - 次日自动 gzip 前一天文件，进一步压缩历史日志
  * - 超过 30 天自动清理
  * - 保持环形缓冲区（1000 条）供实时查看弹窗拉取初始历史
@@ -76,8 +76,8 @@ export class RpcLogger {
   }
 
   /**
-   * 供实时查看的内存副本：data JSON 超过 MAX_LIVE_DATA_BYTES 时替换为脱敏摘要。
-   * 只影响内存缓冲，不改变落盘内容。
+   * 供实时查看的内存缓冲副本：data JSON 超过 MAX_LIVE_DATA_BYTES 时替换为摘要。
+   * 只影响内存缓冲，不改变落盘内容（落盘只做 bash 命令截断）。
    */
   private truncateForLive(entry: RpcLogEntry): RpcLogEntry {
     if (entry.data === undefined) return entry;
@@ -119,7 +119,7 @@ export class RpcLogger {
       const existingIds = await this.readEntryIds(filePath);
       const fresh = group.filter((entry) => !existingIds.has(entry.id));
       if (fresh.length === 0) continue;
-      // 与 push 共用写入队列：串行追加，跨日 gzip / 截断逻辑一致
+      // 与 push 共用写入队列：串行追加，跨日 gzip 逻辑一致
       await new Promise<void>((resolve, reject) => {
         this.writeQueue = this.writeQueue
           .then(async () => {
@@ -296,7 +296,7 @@ export class RpcLogger {
     }
     this.lastWriteDate = dateStr;
 
-    // 截断大 data：将 entry 的 data 字段截断后写入，避免文件快速膨胀
+    // 落盘前只做 bash 命令截断（完整大 data 会原样写入，若不能接受可关闭该 Agent 的记录）
     const safeEntry = this.truncateData(entry);
     await appendFile(filePath, `${JSON.stringify(safeEntry)}\n`, "utf8");
 
@@ -306,7 +306,7 @@ export class RpcLogger {
     }
   }
 
-  /** 截断 data 字段：JSON 序列化超过 MAX_DATA_BYTES 时替换为脱敏摘要。 */
+  /** 截断 data 字段：仅把 bash 命令截断为 200 字符；其他字段原样写入。 */
   private truncateData(entry: RpcLogEntry): RpcLogEntry {
     // 处理 direction === "send" 时提取精简命令
     if (entry.direction === "send") {
