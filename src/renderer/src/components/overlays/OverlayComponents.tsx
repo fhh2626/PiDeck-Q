@@ -10,7 +10,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "../ui-shadcn/dialog";
-import type { AppInfo, Project, PiInstallStatus, PiInstallExecResult } from "../../../../shared/types";
+import type { PiInstallStatus, PiInstallExecResult } from "../../../../shared/types";
 import { Input } from "../ui-shadcn/input";
 import { Label } from "../../components/ui-shadcn/label";
 

@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { mkdir, open as openFile, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open as openFile, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { basename as posixBasename, dirname as posixDirname, extname as posixExtname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
 import type { TrashPath } from "../fs/trash";
-import type { ChatMessage, ChatRole, SessionSummary } from "../../shared/types";
+import type { ChatMessage, SessionSummary } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { getCodexSessionThreadInfo } from "../../shared/codexSessionMeta";
 import { extractMessageText, extractThinkingRaw } from "../pi/messageContent";
@@ -394,18 +394,6 @@ export class SessionScanner {
     if (await this.wslPathExists(srcPath)) {
       throw new Error(`WSL_MOVE_TARGET_EXISTS: ${dstPath}`);
     }
-  }
-
-  /** 通过 wsl.exe 复制文件 */
-  private copyWslFile(srcPath: string, dstPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "cp", srcPath, dstPath], {
-        shell: this.wslShell,
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-      }, (err) => { if (err) reject(err); else resolve(); });
-    });
   }
 
   /** 通过 wsl.exe 检查文件是否存在 */

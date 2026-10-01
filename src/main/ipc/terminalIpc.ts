@@ -1,5 +1,5 @@
 import { ipcChannels } from "../../shared/ipc";
-import type { SessionCommandError, SessionRuntimeTarget, TerminalTarget } from "../../shared/types";
+import type { SessionCommandError, TerminalTarget } from "../../shared/types";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";

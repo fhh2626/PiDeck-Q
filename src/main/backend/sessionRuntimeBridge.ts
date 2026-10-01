@@ -9,8 +9,6 @@ import type {
 	CreateAnonymousSessionInput,
 	CreateAnonymousSessionResult,
 	Project,
-	SendPromptInput,
-	SendPromptResult,
 	SessionCommandError,
 	SessionCommandResult,
 	SessionRecord,

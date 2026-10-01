@@ -42,7 +42,6 @@ export type SessionModifiedFile = {
 	content?: string;
 };
 
-type DiffFileHandler = (path: string, originalContent?: string, content?: string) => void;
 
 export function EnvironmentDialog(props: {
 	status: PiInstallStatus | null;

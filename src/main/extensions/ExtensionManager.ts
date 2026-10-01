@@ -37,7 +37,6 @@ export class ExtensionManager {
 	/** 扩展列表缓存：避免每次打开配置页都重新跑 pi list + npm view。 */
 	private listCache: PiExtensionListResult | null = null;
 	/** 缓存是否包含 npm 版本信息（仅 forceRefresh 路径会写入 true）。 */
-	private listCacheHasVersionInfo = false;
 	/** 进行中的列表请求，用于启动预热与并发去重。 */
 	private listInflight: Promise<PiExtensionListResult> | null = null;
 	/** 进行中请求是否为强制刷新（含版本信息）。 */
@@ -90,7 +89,6 @@ export class ExtensionManager {
 	 */
 	invalidateListCache() {
 		this.listCache = null;
-		this.listCacheHasVersionInfo = false;
 		this.listCacheGeneration += 1;
 		// 允许下一次 list() 立刻发起新请求，而不是复用失效前的 inflight。
 		this.listInflight = null;
@@ -128,7 +126,6 @@ export class ExtensionManager {
 					return this.list(forceRefresh);
 				}
 				this.listCache = result;
-				this.listCacheHasVersionInfo = forceRefresh;
 				return result;
 			})
 			.finally(() => {

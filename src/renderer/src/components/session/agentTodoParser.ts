@@ -1,4 +1,4 @@
-import type { TodoItem, TodoItemStatus } from "../agents/todo-list";
+import type { TodoItem } from "../agents/todo-list";
 
 /** 与官方 BeUI TodoItem 对齐的解析结果（title 恒为 string）。 */
 export type AgentTodoItem = TodoItem;

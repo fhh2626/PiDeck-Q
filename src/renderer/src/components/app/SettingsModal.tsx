@@ -3,13 +3,11 @@ import {
 	Settings2,
 	Network,
 	Wrench,
-	PawPrint,
 	Trash2,
 	Brush,
 	Eye,
 	ChartColumnBig,
 	Activity,
-	MessageSquare,
 	X,
 } from "lucide-react";
 import { t } from "../../i18n";

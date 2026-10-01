@@ -9,12 +9,8 @@ import {
 } from "../../shared/i18n/mainProcessCopy";
 import { toAbsoluteSessionPath } from "../../shared/sessionIdentity";
 import type {
-	CreateAnonymousSessionInput,
-	CreateAnonymousSessionResult,
-	Project,
 	SendPromptInput,
 	SendPromptResult,
-	SessionRecord,
 } from "../../shared/types";
 import { ProjectStore } from "../projects/ProjectStore";
 import { FileSystemService } from "../fs/FileSystemService";

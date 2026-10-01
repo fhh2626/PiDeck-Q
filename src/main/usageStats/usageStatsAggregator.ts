@@ -20,8 +20,6 @@ import type {
   UsageDayModelSlice,
   UsageDayProjectSlice,
   UsageDayRow,
-  UsageModelRow,
-  UsageProjectRow,
   UsageRecord,
 } from "../../shared/types/usageStats";
 

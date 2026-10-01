@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { constants, realpathSync } from "node:fs";
 import { lstat, open, readlink, realpath, unlink } from "node:fs/promises";
 import { promisify } from "node:util";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TrashPath } from "../fs/trash";
 import type { GitBranchInfo, CommitDetail, CommitEntry, GitRef, BranchDiffResult, GitChangedFile, GitFileStatus, GitCommitFileDiff, GitResourceGroupType, GitWorkspaceFileDiff, GitAheadBehind } from "../../shared/types";
 import { GitStatus } from "../../shared/types";

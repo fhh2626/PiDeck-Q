@@ -1,6 +1,6 @@
 import { HatGlasses, Maximize2 } from "lucide-react";
 import { useAtomValue } from "jotai";
-import { useMemo, type ReactNode, type RefObject } from "react";
+import { type ReactNode, type RefObject } from "react";
 import type { AgentRuntimeState } from "../../../../shared/types";
 import {
   sessionCacheStatsAtom,

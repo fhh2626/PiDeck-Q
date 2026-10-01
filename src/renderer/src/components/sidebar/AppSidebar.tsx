@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import { useRef } from "react";
 import { useSetAtom } from "jotai";
 import { PanelLeft } from "lucide-react";
 import { SidebarContent, type SidebarActions } from "./SidebarContent";

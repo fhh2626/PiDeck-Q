@@ -1,8 +1,6 @@
 import type { ChatMessage } from "../../../../shared/types";
 import type {
 	AgentRunItem,
-	ThinkingGroupItem,
-	ToolGroupItem,
 } from "../app/AppUtils";
 
 /* ── 工具参数解析（与 AppUtils 同逻辑的内联副本：此文件被 node 单测直接加载，

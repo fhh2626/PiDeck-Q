@@ -15,7 +15,7 @@ import {
 	Wrench,
 	X,
 } from "lucide-react";
-import { t, type TranslationKey } from "../../i18n";
+import { t} from "../../i18n";
 import { Button } from "../ui-shadcn/button";
 import {
 	Command,

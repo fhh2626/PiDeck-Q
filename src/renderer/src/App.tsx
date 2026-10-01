@@ -154,7 +154,6 @@ import {
   EnvironmentDialog,
   FileContextMenu,
   ImagePreviewModal,
-  LogoMark,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
 import {
@@ -2057,24 +2056,6 @@ export function App() {
     refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
     beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
   });
-  /**
-   * 打开系统原生文件/文件夹选择器，将选中路径以 @path 引用格式插入到消息中。
-   * 仅引用路径，不读取/上传文件内容。
-   */
-  async function handleAttachFile() {
-    try {
-      // session-first：路径引用插入由 composer controller 负责；这里仅打开选择器并派发事件。
-      const paths = await window.piDesktop.dialog.pickFiles({
-        title: t("menu.attachFile"),
-      });
-      if (paths.length > 0) {
-        window.dispatchEvent(new CustomEvent("composer-attach-paths", { detail: { paths } }));
-      }
-    } catch {
-      // 用户取消或出错时不作处理
-    }
-  }
-
   async function updateSettings(patch: Partial<AppSettings>) {
     const changesWebService =
       "webServiceEnabled" in patch ||

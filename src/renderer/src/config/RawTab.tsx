@@ -1,5 +1,3 @@
-import { Button } from "../components/ui-shadcn/button";
-import { t } from "../i18n";
 import { ConfigSelect } from "./ConfigShared";
 import { Textarea } from "../components/ui-shadcn/textarea";
 

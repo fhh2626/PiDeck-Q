@@ -1,6 +1,6 @@
 import { Button } from "../components/ui-shadcn/button";
-import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Copy, ExternalLink, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ChevronRight, ExternalLink, Trash2 } from "lucide-react";
 import { t } from "../i18n";
 import type { AuthFile, ModelsFile } from "./configTypes";
 import { ConfigComboboxInput, openDocsInSystemBrowser, SecretInput } from "./ConfigShared";

@@ -52,7 +52,6 @@ import { WEB_TIMELINE_TURN_LIMIT } from "./webTurnWindow";
 import {
 	isWebChatStreaming,
 	isWebComposerBusy,
-	isWebRuntimeBusy,
 	shouldApplyWebRuntimeSnapshotToChat,
 	shouldResumeWebStream,
 } from "./webRuntimeBusy";

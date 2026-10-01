@@ -21,8 +21,6 @@ type Piece = {
 };
 
 const LOGO_FPS = 18;
-const BOARD_W = 8;
-const BOARD_H = 9;
 const CLEAR_ROW = 6;
 
 const COLORS: Record<ColorKey, string> = {

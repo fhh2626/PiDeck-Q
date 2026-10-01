@@ -14,12 +14,6 @@ import type {
 	SessionUiResponseInput,
 	SessionRuntimeTarget,
 	SessionRuntimeInfo,
-	SessionRuntimeReplacement,
-	SessionRuntimeEvent,
-	SessionCommandError,
-	SessionCommandResult,
-	SendPromptInput,
-	SendPromptResult,
 	SessionRecord,
 	SessionProcessEvent,
 } from "../../shared/types";
@@ -59,7 +53,6 @@ import { ARCHIVE_DIR_NAME } from "../sessions/SessionScanner";
 import type { SessionCatalog } from "../sessions/SessionCatalog";
 import type { SessionRecordService } from "../sessions/SessionRecordService";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
-import { SessionCommandIpcError } from "../sessions/SessionCommandIpcError";
 import type { AgentManager } from "../pi/AgentManager";
 import type { ConfigManager } from "../config/ConfigManager";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
@@ -67,7 +60,6 @@ import type { CodexSessionImporter } from "../sessions/CodexSessionImporter";
 import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
 import type { AppLogger } from "../logging/AppLogger";
-import { isSessionDeleteBlocked } from "../sessions/SessionDeleteBlockedError";
 
 export type SessionIpcDeps = {
 	projectStore: ProjectStore;
@@ -99,20 +91,6 @@ export type SessionIpcDeps = {
 	exportCatalogSessionHtml: (sessionId: string) => Promise<Record<string, unknown> & { path: string }>;
 	replaceAgentSession: (agentId: string, fn: () => Promise<any>) => Promise<any>;
 };
-
-function sessionCommandIpcError(
-	error: SessionCommandError,
-	appLogger: Pick<AppLogger, "warn">,
-	mainCopy: (key: string, params?: Record<string, string | number>) => string,
-): SessionCommandIpcError {
-	if (error.debugDetails) {
-		void appLogger.warn("session-command", "Session command failed", {
-			code: error.code,
-			debugDetails: error.debugDetails,
-		});
-	}
-	return new SessionCommandIpcError(error, mainCopy);
-}
 
 export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): void {
 	const {

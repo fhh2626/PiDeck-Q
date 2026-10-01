@@ -1,23 +1,17 @@
 import {
-	Fragment,
-	isValidElement,
 	memo,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
-	useMemo,
 	useRef,
 	useState,
-	type CSSProperties,
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 } from "react";
 import { MarkdownStream } from "./MarkdownStream";
-import { useAtomValue } from "jotai";
 import "katex/dist/katex.min.css";
-import { MessageImage, ImagePreviewModal } from "./MessageImage";
+import { MessageImage } from "./MessageImage";
 import { CopyMenu } from "./MessageCopyMenu";
-import { EmptyState } from "./EmptyState";
 export { ImagePreviewModal } from "./MessageImage";
 export { CopyMenu } from "./MessageCopyMenu";
 export { EmptyState } from "./EmptyState";
@@ -35,32 +29,10 @@ import {
 	Check,
 	CircleAlert,
 	CircleDot,
-	ChevronLeft,
 	ChevronDown,
 	ChevronUp,
-	ChevronsUpDown,
-	MoveDown,
-	MoveUp,
-	ChevronsDownUp,
-	GitBranch,
 	Eye,
 	Loader2,
-	FileText,
-	Folder,
-	Globe2,
-	MessageCircle,
-	Network,
-	PawPrint,
-	Pin,
-	Plus,
-	RefreshCw,
-	Search,
-	Settings2,
-	Terminal,
-	UploadCloud,
-	Wrench,
-	Star,
-	FolderOpen,
 	Trash,
 	Share,
 	SquarePen,
@@ -69,33 +41,13 @@ import {
 	GitFork,
 	LoaderCircle,
 } from "lucide-react";
-import { getFileIconSeti, getFileIconColor, getFileTypeLabel } from "../../fileIcons";
-import { normalizeSessionPathForCompare } from "../../agentListDisplay";
 import { t } from "../../i18n";
-import { showNotice } from "../../utils/notice";
 import { USER_TURN_BUBBLE } from "@/lib/density";
 import { Button } from "../ui-shadcn/button";
 import type {
 	AgentRuntimeState,
-	AgentTab,
-	AppInfo,
-	AppSettings,
-	ComposerAgentMode,
-	AvailableModel,
 	ChatMessage,
-	CodexImportReport,
-	CodexSessionSummary,
-	ClaudeImportReport,
-	ClaudeSessionSummary,
-	OpenCodeImportReport,
-	OpenCodeSessionSummary,
-	GitBranchInfo,
 	ImageContent,
-	PiCommand,
-	PiInstallExecResult,
-	PiInstallStatus,
-	Project,
-	SessionSummary,
 	VisionBridgeEvent,
 	VisionEventsInfo,
 } from "../../../../shared/types";
@@ -103,11 +55,11 @@ import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
 import { createTrackedEditSubmit } from "../../utils/trackedEditSubmit";
 import removeMarkdown from "remove-markdown";
 
-import type { WorkspaceDrawerPanel } from "../../hooks/useWorkspacePanels";
+import type {} from "../../hooks/useWorkspacePanels";
 import { formatDuration, formatTime, stripAnsi } from "./TimelineFormat";
 import { extractVisionBridgeBlocks, matchVisionBridgeEvent } from "../../utils/visionBridgeBlocks";
 import { visionImageHashes } from "../../utils/visionImageHash";
-import { ToolCard, ToolGroupCard, type DiffFileHandler } from "./ToolCallComponents";
+import { ToolCard, ToolGroupCard} from "./ToolCallComponents";
 import {
 	AskQuestionCard,
 	CompactionCard,
@@ -132,16 +84,6 @@ import { MultiSelectModal } from "./MessageShareModal";
 //   多选导出/截图复制的节点排除。）
 // ============================================================
 
-type SessionModifiedFile = {
-	path: string;
-	toolName: string;
-	status: string;
-	changedLines?: number;
-	/** 工具执行前的文件原始内容，用于历史会话恢复时展示差异对比。 */
-	originalContent?: string;
-	/** 工具写入/编辑后的新文件内容，优先于从磁盘实时读取（历史会话恢复时磁盘可能已变化或文件已删除）。 */
-	content?: string;
-};
 
 
 /**

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useAtomValue } from "jotai";
 import { selectAtom } from "jotai/utils";
 import type { AgentTab, SessionRecord, SessionRuntimeTarget } from "../../../shared/types";

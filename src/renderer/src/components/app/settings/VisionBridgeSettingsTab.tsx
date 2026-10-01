@@ -15,7 +15,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, ChevronsUpDown, RefreshCw, Trash2 } from "lucide-react";
 import { t } from "../../../i18n";
 import { desktopApi } from "../../../desktopApi";
-import { showNotice } from "../../../utils/notice";
 import { Button } from "../../ui-shadcn/button";
 import { Input } from "../../ui-shadcn/input";
 import { Textarea } from "../../ui-shadcn/textarea";
@@ -38,7 +37,6 @@ import {
 	DEFAULT_PROMPT,
 	DEFAULT_TIMEOUT_MS,
 	configFilePath,
-	emptyDraft,
 } from "./visionDraft.ts";
 
 export type { VisionBridgeConfig, VisionBridgeState } from "../../../../../shared/types";

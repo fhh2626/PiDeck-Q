@@ -1,6 +1,6 @@
 /** Reconciles persisted history with local Web SSE messages without losing timeline order. */
 import type { UIMessage } from "ai";
-import type { ChatMessage } from "../../../shared/types";
+import type {} from "../../../shared/types";
 import { readWebMessageMetadata, uiMessageIdentity, uiMessageRole } from "./webMessageMetadata";
 import {
 	canMatchPartialText,

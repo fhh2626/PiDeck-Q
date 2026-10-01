@@ -3,7 +3,7 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui-shadcn/tabs";
 import { showNotice } from "../utils/notice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, BookOpen, Check, Download, ExternalLink, Globe, Search } from "lucide-react";
-import type { PromptStoreItem, PromptStoreSearchResult, PiPromptTemplateSummary, PiPromptTemplateListResult } from "../../../shared/types";
+import type { PromptStoreItem, PromptStoreSearchResult, PiPromptTemplateListResult } from "../../../shared/types";
 import { t } from "../i18n";
 import { desktopApi } from "../desktopApi";
 import { YaoPromptTab } from "./YaoPromptTab";

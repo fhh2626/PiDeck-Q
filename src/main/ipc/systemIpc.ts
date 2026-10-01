@@ -6,7 +6,6 @@ import type {
 	AppLogLevel,
 	AppLogQuery,
 	AppSettings,
-	AvailableModel,
 	CreatePiSkillInput,
 	SessionCommandResult,
 	SessionRuntimeTarget,
@@ -34,7 +33,6 @@ import type { MainWindowControls } from "../window/MainWindowControlsContract";
 import type {
 	PlatformApplication,
 	PlatformPaths,
-	PlatformProxy,
 	PlatformShell,
 	PlatformTheme,
 } from "../platform/PlatformServices";

@@ -2,7 +2,6 @@ import type React from "react";
 import { FileText } from "lucide-react";
 import {
 	isLocalPathRef,
-	remarkLinkifyPaths,
 } from "./MarkdownLinkCore";
 import { normalizeLocalFileTarget } from "../../utils/fileLinks";
 import { detectRendererPlatform } from "../../lib/detectRendererPlatform";

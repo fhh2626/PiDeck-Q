@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type ReactNode, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type ReactNode} from "react";
 import {
   type GroupImperativeHandle,
   type PanelImperativeHandle,
@@ -12,8 +12,8 @@ import {
 } from "../ui-shadcn/resizable";
 import type { AgentRuntimeState, GitBranchInfo, ImageContent, TerminalTarget } from "../../../../shared/types";
 import type { SessionTimelineController } from "../../hooks/useSessionTimelineController";
-import type { QueuedPrompt } from "../../hooks/useQueuedPrompt";
-import type { PiDesktopApi } from "@shared/desktop/createPiDesktopApi";
+import type {} from "../../hooks/useQueuedPrompt";
+import type {} from "@shared/desktop/createPiDesktopApi";
 import { isLanWeb, desktopApi as api } from "../../desktopApi";
 import { useNotifyLayoutResized } from "../../hooks/useNotifyLayoutResized";
 import { SessionHeader } from "./SessionHeader";
@@ -22,7 +22,6 @@ import { SessionWidgetChips } from "./SessionWidgetChips";
 import { SessionSurfaceStage } from "./SessionSurfaceStage";
 import { ComposerArea } from "./ComposerArea";
 import { SessionRuntimeDock } from "./SessionRuntimeDock";
-import { QueuedPromptPanel } from "./ComposerPanels";
 import { useSessionPaneActions } from "./SessionPaneServices";
 import { COMPOSER_DEFAULT_HEIGHT, COMPOSER_MIN_HEIGHT, TIMELINE_MIN_HEIGHT, growComposerWithinTimelineBudget, displayProjectDirectoryName } from "../../rendererUtils";
 import { projectByIdAtomFamily, sessionRecordByIdAtomFamily } from "../../atoms";

@@ -29,7 +29,7 @@ import { useSessionPaneActions } from "./SessionPaneServices";
 import { desktopApi } from "../../desktopApi";
 import { COMPOSER_DEFAULT_HEIGHT } from "../../rendererUtils";
 import { chatContentWidthStyle } from "./chatContentWidth";
-import type { AvailableModel, GitBranchInfo, VisionBridgeConfig } from "../../../../shared/types";
+import type { AvailableModel, GitBranchInfo } from "../../../../shared/types";
 import type { EnqueuePromptSnapshot } from "../../hooks/useSessionSend";
 
 export type ComposerAreaProps = {

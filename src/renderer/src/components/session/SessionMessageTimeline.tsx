@@ -3,7 +3,6 @@ import { selectAtom } from "jotai/utils";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
 import type { ChatMessage, ImageContent } from "../../../../shared/types";
-import { MarkdownStream } from "./MarkdownStream";
 import {
   CompactionCard,
   DiagnosticMessageCard,
@@ -48,9 +47,7 @@ import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
 import {
   resolveTimelineTurnWindow,
-  shouldWindowTimelineTurns,
   TIMELINE_MOUNTED_TURN_LIMIT,
-  TIMELINE_SCROLLED_MAX_ITEMS,
 } from "./timeline/turnRenderWindow";
 
 type TurnRowProps = ComponentProps<typeof TurnRow>;

@@ -2,7 +2,7 @@ import { resolveNotificationSessionId, enforceDeliveryEnvelopeBudget } from "./a
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import type {
 	AgentRuntimeState,
@@ -26,7 +26,6 @@ import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
-import { applyImageDisplayBudget, MAX_RUNTIME_TOTAL_IMAGE_BASE64_BYTES } from "../../shared/imageLimits.ts";
 import {
 	computeTurnImageUsedBytes,
 	applyRuntimeMessageImageBudget,
@@ -37,8 +36,6 @@ import {
 import type { StartupBarrier } from "../utils/StartupBarrier";
 import type {
 	PlatformNotifications,
-	PlatformApplication,
-	PlatformPaths,
 } from "../platform/PlatformServices";
 import type { RpcResponse } from "./PiRpcClient";
 import { formatBashToolMessage } from "./bashResult";
@@ -85,7 +82,6 @@ import {
 	buildMessageFlushPayload,
 	leadingSummaryCards,
 	stripToolResultForDelivery,
-	cleanTitle,
 	inferTitleFromMessages,
 	isDefaultAgentTitle,
 	mapCachedMessageToEntryCandidates,
@@ -161,9 +157,6 @@ type CreateAgentInputWithHistory = CreateAgentInput & {
 	preserveHistoryOnLoad?: boolean;
 };
 
-const MAX_TOOL_IMAGE_SINGLE_BASE64_BYTES = 4 * 1024 * 1024;
-const MAX_TOOL_IMAGES_PER_MESSAGE = 8;
-const MAX_TOOL_IMAGE_MESSAGE_BASE64_BYTES = 8 * 1024 * 1024;
 
 export class AgentManager {
 	private readonly agents = new Map<string, AgentRuntime>();
@@ -359,7 +352,6 @@ export class AgentManager {
 	 */
 	private readonly rpcCompactingAgents = new Set<string>();
 	/** 正在执行模型配置刷新的 agent，用于退出处理器中忽略进程退出事件 */
-	private readonly modelRefreshingAgents = new Set<string>();
 	/** 用户主动停止的 agent，用于退出处理器中跳过自动重连 */
 	private readonly userInitiatedStop = new Set<string>();
 	/** 已尝试过自动重连的 agent（防止无限循环），重连成功后清除 */
@@ -2476,29 +2468,6 @@ export class AgentManager {
 			// reload_config 尚不支持，当前 pi 版本无轻量级刷新路径
 		}
 
-		// 策略 2（已注释）：进程重启方案。
-		// 原因：运行中重启会打断用户对话、工具执行，且涉及 exit 事件竞态。
-		// 等 pi 官方支持 reload_config RPC 后，策略 1 自动生效，无需回退到策略 2。
-		//
-		// const sessionPath = runtime.tab.sessionPath;
-		// if (!sessionPath) {
-		// 	throw new Error("Cannot refresh models: agent has no session path");
-		// }
-		// this.modelRefreshingAgents.add(agentId);
-		// try {
-		// 	const previousState = await this.getRuntimeState(agentId).catch(() => null);
-		// 	runtime.process.stop();
-		// 	await new Promise<void>((resolve) => setTimeout(resolve, 600));
-		// 	await this.reattachProcess(agentId, sessionPath);
-		// 	if (previousState?.provider && previousState?.modelId) {
-		// 		try { await this.setModel(agentId, previousState.provider, previousState.modelId); } catch {}
-		// 	}
-		// 	runtime.tab.status = "idle";
-		// 	await this.loadMessages(agentId).catch(() => undefined);
-		// } finally {
-		// 	this.modelRefreshingAgents.delete(agentId);
-		// }
-
 		void this.appLogger?.info("agent", "Model refresh: reload_config not supported by current pi version, skipping", {
 			agentId,
 			elapsedMs: Date.now() - startTime,
@@ -3622,7 +3591,6 @@ export class AgentManager {
 		payload: { code: number | null; signal: string | null },
 	) {
 		// 模型配置刷新期间的进程退出由 refreshModels() 负责重连，此处静默忽略
-		if (this.modelRefreshingAgents.has(agentId)) return;
 		// 用户主动停止 → 不自动重连
 		if (this.userInitiatedStop.has(agentId)) {
 			this.userInitiatedStop.delete(agentId);
@@ -3712,7 +3680,6 @@ export class AgentManager {
 		runtime: AgentRuntime,
 		payload: { code: number | null; signal: string | null },
 	) {
-		if (this.modelRefreshingAgents.has(agentId)) return;
 		if (this.userInitiatedStop.has(agentId)) {
 			this.userInitiatedStop.delete(agentId);
 			runtime.tab.status = "closed";

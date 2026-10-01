@@ -16,7 +16,7 @@ import { t } from "@/i18n";
 import { WebBrandLockup } from "./WebBrandLockup";
 import { cn } from "@/lib/utils";
 import { sessionStatusDotClass } from "@/agentListDisplay";
-import type { WebProject, WebRuntime, WebSession, WebState } from "./webTypes";
+import type { WebProject, WebRuntime, WebState } from "./webTypes";
 
 const projectRowClass =
 	"conversation relative flex min-h-7 w-full items-center gap-1.5 rounded-md border border-transparent bg-background px-2 py-0 text-left text-body text-foreground shadow-none transition-[background-color,border-color] duration-200 hover:border-border-subtle hover:bg-muted/60 hover:text-foreground";

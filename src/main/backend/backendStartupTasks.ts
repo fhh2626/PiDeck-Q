@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { writeFileAtomic } from "../utils/atomicWriteFile";import { ipcChannels } from "../../shared/ipc";
 import type { AppLogger } from "../logging/AppLogger";
 import type { PiLocator } from "../pi/PiLocator";

@@ -31,7 +31,6 @@ export type GitIpcDeps = {
 /** 轻量 pi 进程，用 RPC 模式运行，只做文本生成，不加载 session/tools/extensions */
 let genProcess: ChildProcess | null = null;
 let genRpcClient: PiRpcClient | null = null;
-let genProcessCwd = "";
 let genModelKey = "";
 let genIdleTimer: NodeJS.Timeout | null = null;
 /** 生成互斥锁：同一时刻只允许一个摘要请求，避免并发打到复用进程触发 pi 的 busy 拒绝 */
@@ -49,7 +48,6 @@ function stopGenProcess() {
 		try { genProcess.kill(); } catch { /* ignore */ }
 	}
 	genProcess = null;
-	genProcessCwd = "";
 	genModelKey = "";
 }
 
@@ -74,7 +72,6 @@ async function ensureGenProcess(
 	const modelKey = `${model.provider}\0${model.modelId}`;
 	if (genProcess && genRpcClient && genProcess.exitCode === null) {
 		if (genModelKey === modelKey) {
-			genProcessCwd = projectPath;
 			resetGenIdleTimer();
 			return genRpcClient;
 		}
@@ -105,7 +102,6 @@ async function ensureGenProcess(
 		windowsVerbatimArguments: invocation.windowsVerbatimArguments,
 	});
 	genProcess = childProcess;
-	genProcessCwd = projectPath;
 
 	genRpcClient = new PiRpcClient(childProcess.stdin!, childProcess.stdout!);
 

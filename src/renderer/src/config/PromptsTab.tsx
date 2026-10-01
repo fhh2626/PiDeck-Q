@@ -5,7 +5,6 @@ import { showNotice } from "../utils/notice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, FileEdit, FileText, Pencil, ShoppingBag, Trash2, X } from "lucide-react";
 import type {
-	CreatePiPromptTemplateInput,
 	PiPromptTemplateListResult,
 	PiPromptTemplateSummary,
 } from "../../../shared/types";

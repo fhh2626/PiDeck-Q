@@ -1,5 +1,5 @@
 import { Button } from "../components/ui-shadcn/button";
-import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { X, Plus, Check } from "lucide-react";
 import type { AuthFile, SettingsFile, ModelsFile } from "./configTypes";
 import { ConfigComboboxInput } from "./ConfigShared";

@@ -7,9 +7,7 @@ import { basename, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Project } from "../../shared/types";
 import {
-  normalizeSelectedWslProjectPath,
   parseWslUncPath,
-  type WslEnvironment,
 } from "../wsl/WslPaths";
 
 const CHAT_PROJECT_ID = "builtin-chat";

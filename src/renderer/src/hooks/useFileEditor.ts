@@ -19,7 +19,7 @@ import {
   type EditorTabOpenMode,
 } from "../utils/editorTabs";
 
-import { isAbsoluteFilePath, resolveFileLinkPath } from "../utils/fileLinks";
+import { resolveFileLinkPath } from "../utils/fileLinks";
 export { resolveFileLinkPath };
 
 const EDITOR_TAB_LIMIT = 5;

@@ -1,14 +1,13 @@
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
-import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createGzip, createGunzip } from "node:zlib";
+import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 
 const MAX_LIVE = 1000;
 /** 写入文件时 data 字段 JSON 序列化后的最大字节数，超过则截断 */
-const MAX_DATA_BYTES = 2_048;
 /**
  * 实时环形缓冲中单条 data 的最大字节数（仅影响内存中的缓冲副本，文件仍按原始数据落盘）。
  * 防止高频大 payload（如 prompt 全文）在缓冲里堆积把主进程内存打爆。

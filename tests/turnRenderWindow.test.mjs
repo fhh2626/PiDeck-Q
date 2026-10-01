@@ -292,7 +292,12 @@ test("timeline wires the turn mount window helper", () => {
   assert.match(source, /resolveTimelineTurnWindow/);
   assert.match(source, /controller\.scrolledWindowItems/);
   assert.match(source, /TIMELINE_MOUNTED_TURN_LIMIT/);
-  assert.match(source, /TIMELINE_SCROLLED_MAX_ITEMS/);
+  // TIMELINE_SCROLLED_MAX_ITEMS 由 controller 持有（滚动态窗口上限），
+  // 时间线自己只用它的值与 controller.scrolledWindowItems；
+  // 此前这里断言的是时间线里一个未使用的 import（G1 已删）。
+  const controller = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
+  assert.match(controller, /TIMELINE_SCROLLED_MAX_ITEMS/);
+  assert.doesNotMatch(source, /import \{[^}]*TIMELINE_SCROLLED_MAX_ITEMS/, "时间线不得再引入未使用的常量 import");
   assert.match(source, /displayRuns\.map/);
   // 按钮文案按「隐藏的用户轮数」计算，不再按 agent-run 数
   assert.match(source, /hiddenTurnCount/);

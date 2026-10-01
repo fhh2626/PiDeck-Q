@@ -1,4 +1,4 @@
-import type { ChatMessage, ImageContent } from "../../shared/types";
+import type { ChatMessage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { extractMessageText } from "./messageContent";
 import { takeActiveEntryId } from "./sessionEntryIds";

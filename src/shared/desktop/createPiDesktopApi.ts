@@ -13,7 +13,6 @@ import type {
 	ProcessMetricsSnapshot,
 	AppSettings,
 	AvailableModel,
-	ChatMessage,
 	ModelSpec,
 	CodexImportReport,
 	CodexSessionSummary,

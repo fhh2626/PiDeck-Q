@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Brain, Check, ChevronDown, ChevronRight, Coins, Copy, ExternalLink, Plus, SquarePen, Trash2, X } from "lucide-react";
 import { t } from "../i18n";
 import { desktopApi } from "../desktopApi";
-import type { ModelItem, ModelsFile } from "./configTypes";
+import type { ModelsFile } from "./configTypes";
 import { ApiTypeInput, ConfigSelect, openDocsInSystemBrowser, SecretInput } from "./ConfigShared";
 import { emptyTierDraft, normalizeTiers, toTierDrafts, type CostTierDraft } from "./modelCostTiers";
 import {

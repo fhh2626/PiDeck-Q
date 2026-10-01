@@ -5,7 +5,7 @@ import {
 	askPanelOpenAtom,
 	askPanelSessionIdAtom,
 } from "../atoms/ask-panel-atoms";
-import { upsertSessionAtom, sessionRecordsAtom } from "../atoms/session-atoms";
+import { sessionRecordsAtom } from "../atoms/session-atoms";
 import { sessionRuntimeBySessionIdAtomFamily } from "../atoms/session-selectors";
 import { desktopApi } from "../desktopApi";
 import { t } from "../i18n";

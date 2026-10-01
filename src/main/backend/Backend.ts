@@ -1,4 +1,4 @@
-import type { AppFocusSessionTarget, AppSettings } from "../../shared/types";
+import type { AppFocusSessionTarget } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SettingsStore } from "../settings/SettingsStore";
