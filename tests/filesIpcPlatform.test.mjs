@@ -62,6 +62,7 @@ function loadFilesIpc(authorization) {
 			if (id.includes("shared/ipc")) return ipc;
 			if (id.includes("authorizedPaths")) return authorization;
 			if (id.includes("copyWithoutOverwrite")) return loadTsCommonJs("src/main/fs/copyWithoutOverwrite.ts");
+			if (id.includes("renameWithoutOverwrite")) return loadTsCommonJs("src/main/fs/renameWithoutOverwrite.ts");
 			return require(id);
 		},
 	};

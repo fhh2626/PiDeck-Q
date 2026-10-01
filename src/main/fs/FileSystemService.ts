@@ -1,12 +1,20 @@
-import { readdir, rename as fsRename, mkdir, writeFile, stat } from "node:fs/promises";
+import { readdir, mkdir, writeFile, stat } from "node:fs/promises";
 import { join, relative, dirname } from "node:path";
 import type { TrashPath } from "./trash";
 import type { FileTreeNode } from "../../shared/types";
+import { renameWithoutOverwrite } from "./renameWithoutOverwrite";
 
 const ignoredNames = new Set([".git", "node_modules", "dist", "build", ".next", "coverage", ".venv", "__pycache__"]);
 
 // 文件侧边栏需要能展示常见前端/桌面项目的深层源码目录；保留上限是为了避免误打开超大仓库时递归读取拖慢 UI。
 const DEFAULT_FILE_TREE_MAX_DEPTH = 12;
+
+/** 名字必须是单个目录项：拒绝路径分隔符和 . / ..，防止借改名/新建把文件移出父目录。 */
+function assertSingleEntryName(name: string): void {
+  if (!name || name === "." || name === ".." || name.includes("..") || name.includes("/") || name.includes("\\")) {
+    throw new Error(`Invalid path: "${name}" escapes parent directory`);
+  }
+}
 
 export class FileSystemService {
   constructor(private readonly trashPath?: TrashPath) {}
@@ -77,11 +85,11 @@ export class FileSystemService {
     await this.trashPath(targetPath, { source: "files:delete" });
   }
 
-  /** 重命名文件或目录 */
+  /** 重命名文件或目录；目标已存在时抛 RenameTargetExistsError，绝不覆盖。 */
   async rename(targetPath: string, newName: string): Promise<string> {
-    const parent = dirname(targetPath);
-    const newPath = join(parent, newName);
-    await fsRename(targetPath, newPath);
+    assertSingleEntryName(newName);
+    const newPath = join(dirname(targetPath), newName);
+    await renameWithoutOverwrite(targetPath, newPath);
     return newPath;
   }
 
@@ -90,11 +98,20 @@ export class FileSystemService {
 		const fullPath = join(parentDir, name);
 		// Names are single directory entries. Reject separators/traversal here as
 		// defense in depth in case a non-IPC caller bypasses the parent authorization.
-		if (!name || name === "." || name === ".." || name.includes("..") || name.includes("/") || name.includes("\\") || !fullPath.startsWith(parentDir)) {
+		assertSingleEntryName(name);
+		if (!fullPath.startsWith(parentDir)) {
 			throw new Error(`Invalid path: "${name}" escapes parent directory`);
 		}
 		if (type === "directory") {
-			await mkdir(fullPath, { recursive: true });
+			try {
+				// 不带 recursive：目录已存在时 EEXIST，与新建文件的行为一致（不能静默成功）。
+				await mkdir(fullPath);
+			} catch (error) {
+				if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") {
+					throw new Error(`File already exists: ${fullPath}`);
+				}
+				throw error;
+			}
 		} else if (type === "file") {
 			try {
 				// wx 保证创建是独占的：已有文件不会被截断，并发创建也只有一个成功。

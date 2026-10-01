@@ -19,7 +19,8 @@ test("creating a file does not truncate an existing file", async () => {
 		assert.equal(await readFile(created, "utf8"), "");
 		await mkdir(join(root, "dir"));
 		await assert.rejects(() => service.create(root, "dir", "file"));
-		await service.create(root, "dir", "directory");
+		// 已存在的目录也不能静默成功：与新建文件保持一致，否则 UI 会误报“已创建”。
+		await assert.rejects(() => service.create(root, "dir", "directory"), /exists/i);
 		const concurrent = await Promise.allSettled([
 			service.create(root, "race.txt", "file"),
 			service.create(root, "race.txt", "file"),

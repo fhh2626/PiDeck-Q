@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { ipcChannels } from "../../shared/ipc";
 import type { PickImagesResult } from "../../shared/types";
 import type { FileSystemService } from "../fs/FileSystemService";
+import { RenameTargetExistsError } from "../fs/renameWithoutOverwrite";
 import {
 	assertAuthorizedFilePath,
 	type AuthorizedPathMode,
@@ -310,9 +311,17 @@ export function registerFilesIpc(
 	router.handle(ipcChannels.filesRename, async (path: string, newName: string) => {
 		const hostPath = await authorizePath(path, "rename", "link");
 		await authorizePath(join(dirname(hostPath), newName), "rename", "write");
-		const result = await fileSystemService.rename(hostPath, newName);
-		void appLogger.info("file", "File renamed", { path, newName, result });
-		return result;
+		try {
+			const result = await fileSystemService.rename(hostPath, newName);
+			void appLogger.info("file", "File renamed", { path, newName, result });
+			return result;
+		} catch (error) {
+			// 目标已存在：不覆盖，给出本地化提示而不是裸系统错误
+			if (RenameTargetExistsError.is(error)) {
+				throw new Error(mainCopy("mainFile.renameTargetExists"));
+			}
+			throw error;
+		}
 	});
 
 	const copyToAuthorizedTarget = async (
