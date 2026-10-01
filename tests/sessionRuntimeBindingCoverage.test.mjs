@@ -112,7 +112,11 @@ test("Web wiring is Session-first and exposes no Agent compatibility creation", 
 });
 
 test("catalog deletion rejects bound or activating Session runtimes", () => {
-  assert.match(sessionIpc, /sessionsCatalogDelete[\s\S]*sessionRuntimeCoordinator\.getTarget\(sessionId\)[\s\S]*sessionRuntimeCoordinator\.isActivating\(sessionId\)/);
+  // 删除与归档都会连带移动整棵会话树，必须先在 IPC 层过同一道空闲闸门；
+  // 闸门自身的 “忙” 判定覆盖已绑定 runtime、普通激活与匿名激活三种状态。
+  assert.match(sessionIpc, /sessionsCatalogDelete[\s\S]*assertSessionTreeIdle\(entry\)/);
+  assert.match(sessionIpc, /sessionsCatalogArchive[\s\S]*assertSessionTreeIdle\(entry\)/);
+  assert.match(sessionIpc, /const isSessionBusy = [\s\S]*getTarget: [\s\S]*isActivating: [\s\S]*isAnonymousActivating/);
   assert.match(createBackend, /deleteSessionRecord: async \(sessionId\)[\s\S]*sessionRuntimeCoordinator\.getTarget\(sessionId\)[\s\S]*sessionRuntimeCoordinator\.isActivating\(sessionId\)/);
   assert.match(coordinator, /isActivating\(sessionId: string\): boolean/);
 });

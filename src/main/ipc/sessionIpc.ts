@@ -5,7 +5,6 @@
 
 
 import { ipcChannels } from "../../shared/ipc";
-import { canonicalizeSessionPath } from "../../shared/sessionIdentity";
 import type {
 	CreateSessionDraftInput,
 	CreateAnonymousSessionInput,
@@ -58,7 +57,7 @@ export function scheduleCatalogBackgroundScan(projectId: string, task: () => Pro
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { SessionScanner } from "../sessions/SessionScanner";
-import type { SessionCatalog } from "../sessions/SessionCatalog";
+import type { SessionCatalog, SessionCatalogEntry } from "../sessions/SessionCatalog";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import { SessionCommandIpcError } from "../sessions/SessionCommandIpcError";
 import type { AgentManager } from "../pi/AgentManager";
@@ -69,6 +68,7 @@ import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
 import type { AppLogger } from "../logging/AppLogger";
 import { isSessionDeleteBlocked } from "../sessions/SessionDeleteBlockedError";
+import { findSessionTreeBlock } from "../sessions/sessionTreeGuard";
 
 export type SessionIpcDeps = {
 	projectStore: ProjectStore;
@@ -139,6 +139,33 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		exportCatalogSessionHtml,
 		replaceAgentSession,
 	} = deps;
+
+	/** 会话本身是否忙：已绑定 runtime、普通激活中或匿名激活中。 */
+	const isSessionBusy = (id: string) => isSessionDeleteBlocked(id, {
+		getTarget: (targetId) => sessionRuntimeCoordinator.getTarget(targetId),
+		isActivating: (targetId) => sessionRuntimeCoordinator.isActivating(targetId),
+		isAnonymousActivating: deps.isAnonymousActivating,
+	});
+
+	/**
+	 * 删除/归档前检查整棵会话树；被阻止时抛出可直接展示的错误。
+	 * draft 可能正在被提升为 runtime：永远不要删掉已经拿到（或正在获取）runtime 的记录。
+	 */
+	const assertSessionTreeIdle = (entry: SessionCatalogEntry) => {
+		const block = findSessionTreeBlock(entry, {
+			listEntries: () => sessionCatalog.listEntries(),
+			listAgents: () => agentManager.list(),
+			isSessionBusy,
+		});
+		if (!block) return;
+		if (block.kind === "file-in-use") {
+			throw new Error(mainCopy("session.inUseDeleteBlocked", { title: block.agentTitle }));
+		}
+		// 父会话自己在跑 → 提示先停止它；子会话在跑 → 提示先停止子会话。
+		throw new Error(mainCopy(
+			block.sessionId === entry.id ? "session.stopBeforeDelete" : "session.childRunningDeleteBlocked",
+		));
+	};
 
 	router.handle(
 		ipcChannels.sessionsList,
@@ -317,37 +344,13 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	router.handle(
 		ipcChannels.sessionsCatalogDelete,
 		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) return false;
-			// A draft may be promoted while a renderer click is in flight. Never delete
-			// a catalog record that has acquired, or is acquiring, a Session runtime.
-			if (
-				isSessionDeleteBlocked(sessionId, {
-					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
-					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
-					isAnonymousActivating: deps.isAnonymousActivating,
-				})
-			) {
-				throw new Error(mainCopy("session.stopBeforeDelete"));
-			}
-			try {
+		// 删除/归档 <stem>.jsonl 会连带移动 <stem>/ 下的全部子会话，因此保护必须覆盖整棵树：
+		// 只检查父会话会让“子会话单独开着”的情况照样被删，留下悬空的 catalog 与 runtime 绑定。
+		const entry = sessionCatalog.get(sessionId);
+		if (!entry) return false;
+		assertSessionTreeIdle(entry);
+		try {
 				if (entry.filePath) {
-					const normalizedTarget = canonicalizeSessionPath(
-						entry.filePath,
-						entry.environment,
-					);
-					const usingAgent = agentManager.list().find((agent) => (
-						agent.sessionPath &&
-						agent.sessionEnvironment === entry.environment &&
-						(entry.environment !== "wsl" || (
-							agent.wslDistro === entry.wslDistro &&
-							agent.wslUser === entry.wslUser
-						)) &&
-						canonicalizeSessionPath(agent.sessionPath, entry.environment) === normalizedTarget
-					));
-					if (usingAgent) {
-						throw new Error(mainCopy("session.inUseDeleteBlocked", { title: usingAgent.title }));
-					}
 					await sessionScanner.delete(entry.filePath);
 				}
 				await sessionCatalog.remove(sessionId);
@@ -371,16 +374,21 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return false;
 			// 运行中的会话不能归档（同删除）：移动文件会破坏 pi 对当前写入位置的引用。
-			if (
-				sessionRuntimeCoordinator.getTarget(sessionId) ||
-				sessionRuntimeCoordinator.isActivating(sessionId)
-			) {
-				throw new Error(mainCopy("session.stopBeforeDelete"));
+			assertSessionTreeIdle(entry);
+			try {
+				const archivedPath = await sessionScanner.archive(entry.filePath);
+				await sessionCatalog.remove(sessionId);
+				void appLogger.info("session", "Session archived", { sessionId, archivedPath });
+				sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
+				return true;
+			} catch (error) {
+				void appLogger.error("session", "Session archive failed", {
+					sessionId,
+					filePath: entry.filePath,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				throw error;
 			}
-			const archivedPath = await sessionScanner.archive(entry.filePath);
-			await sessionCatalog.remove(sessionId);
-			void appLogger.info("session", "Session archived", { sessionId, archivedPath });
-			return true;
 		},
 	);
 	router.handle(
