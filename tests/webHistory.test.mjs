@@ -188,3 +188,24 @@ test("WebChatApp defers the first history page while streaming and re-injects it
 		/if \(!activeSessionId \|\| chatStreaming\) return;[\s\S]{0,400}setMessages\(cached\)/,
 	);
 });
+
+// ── W3：首屏不足 100 个显示单元时自动补页 ──
+
+test("needsWebHistoryTopUp tops up while items are short and a cursor remains", () => {
+	assert.equal(needsWebHistoryTopUp(30, { total: 180, nextBefore: 80, status: "ready" }, 0), true);
+});
+
+test("needsWebHistoryTopUp stops when the item count is already sufficient", () => {
+	assert.equal(needsWebHistoryTopUp(100, { total: 180, nextBefore: 80, status: "ready" }, 0), false);
+	assert.equal(needsWebHistoryTopUp(120, { total: 180, nextBefore: 80, status: "ready" }, 0), false);
+});
+
+test("needsWebHistoryTopUp stops at the file start and after three attempts", () => {
+	// 游标为空 = 已到顶，补也是空页
+	assert.equal(needsWebHistoryTopUp(30, { total: 30, nextBefore: null, status: "ready" }, 0), false);
+	// 没有元数据（首屏还没回来）不得触发
+	assert.equal(needsWebHistoryTopUp(30, undefined, 0), false);
+	// 已达补页次数上限
+	assert.equal(needsWebHistoryTopUp(30, { total: 180, nextBefore: 80, status: "ready" }, 3), false);
+	assert.equal(needsWebHistoryTopUp(30, { total: 180, nextBefore: 80, status: "ready" }, 2), true);
+});

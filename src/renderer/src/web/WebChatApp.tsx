@@ -47,8 +47,8 @@ import {
 	WEB_STATE_POLL_MS,
 	type WebConnectionSnapshot,
 } from "./webConnection";
-import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, type WebHistoryMeta } from "./webHistory";
-import { WEB_TIMELINE_TURN_LIMIT } from "./webTurnWindow";
+import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, needsWebHistoryTopUp, WEB_HISTORY_TOP_UP_MAX_ATTEMPTS, type WebHistoryMeta } from "./webHistory";
+import { WEB_TIMELINE_TURN_LIMIT, WEB_TIMELINE_MIN_DISPLAY_ITEMS, countWebDisplayItems } from "./webTurnWindow";
 import {
 	isWebChatStreaming,
 	isWebComposerBusy,
@@ -125,6 +125,11 @@ export function WebChatApp() {
 	const recoveringStreamSessionRef = useRef<string | null>(null);
 	/** 首屏历史在流式期间到达、暂未注入 useChat 的会话（流结束后补注入）。 */
 	const deferredHistoryApplyRef = useRef<Set<string>>(new Set());
+	/**
+	 * 「正在加载更早页」的同步镜像：首屏自动补页循环是串行 await，
+	 * state 更新到下次渲染前读不到，用它做“未在加载”的前置检查。
+	 */
+	const loadingMoreRef = useRef(false);
 	// 首页直发暂存：新建会话后等 useChat 实例切换完成，再投递首条消息
 	const pendingSendRef = useRef<{ sessionId: string; text: string } | null>(null);
 
@@ -225,6 +230,9 @@ export function WebChatApp() {
 				} else if (applyDecision === "defer") {
 					deferredHistoryApplyRef.current.add(sessionId);
 				}
+				// W3：首屏不足 100 个显示单元时自动补页（最多连续 3 次），每次补页前
+				// 重新校验仍是当前会话、未在加载、单元数仍不足、游标非空。
+				void topUpFirstPage(sessionId, merged);
 			})
 			.catch(() => {
 				if (historyRequestSequenceRef.current[sessionId] !== requestSequence) return;
@@ -684,22 +692,26 @@ export function WebChatApp() {
 		}
 	};
 
-	/** 返回本次成功页将提交的新消息头；null 表示失败、空页或未发起请求。 */
-	const handleLoadMore = async (): Promise<string | null> => {
-		if (!activeSessionId || loadingMore) return null;
-		const sessionId = activeSessionId;
+	/**
+	 * 请求一页更早历史并合并进 per-session 缓存与游标（W3 抽出，供「加载更多」与首屏自动补页共用）。
+	 * turnCount：已有游标时本次向服务器请求的轮数（无游标时仍拉尾页，行为不变）。
+	 * 返回合并结果与本次成功页的新消息头；null 表示被取代/失败/未发起。
+	 * 只写缓存与游标元数据——是否推进 useChat 由调用方按自己的时机规则决定。
+	 */
+	const loadOlderHistoryPage = async (
+		sessionId: string,
+		turnCount: number,
+	): Promise<{ merged: UIMessage[]; headId: string | null } | null> => {
 		const meta = historyMetaRef.current[sessionId];
-		const alreadyLoaded = loadedSessionsRef.current.has(sessionId);
-		// 首页失败 / 尚未拉过 / 流式提前标了缓存：重新拉尾页（最近 50 轮）；已有游标：继续往更早翻（每次 3 轮）。
-		if (!canRequestWebHistoryPage({ loaded: alreadyLoaded, meta })) return null;
 		const requestSequence = (historyRequestSequenceRef.current[sessionId] ?? 0) + 1;
 		historyRequestSequenceRef.current[sessionId] = requestSequence;
+		loadingMoreRef.current = true;
 		setLoadingMore(true);
 		try {
 			const hasCursor = meta?.nextBefore != null;
 			const page = hasCursor
 				? await fetchTurnPage(sessionId, {
-					turnCount: RUNTIME_HISTORY_TURN_PAGE_SIZE,
+					turnCount,
 					before: meta.nextBefore ?? undefined,
 					beforeEntryId: meta.nextBeforeEntryId,
 				})
@@ -720,11 +732,11 @@ export function WebChatApp() {
 			messagesBySessionRef.current[sessionId] = merged;
 			loadedSessionsRef.current.add(sessionId);
 			bumpHistory();
-			// merged 基于每个流式增量都会更新的 per-session 缓存，既含当前回复也含旧页；
-			// 因此可以直接注入 useChat，让思考/回答期间点击「加载更多」立即可见。
-			setMessages(merged);
-			// useChat 外部订阅的 DOM 提交可能晚于 loadingMore 复位；hook 要等这个头真正落地。
-			return merged[0]?.id !== current[0]?.id ? merged[0]?.id ?? null : null;
+			return {
+				merged,
+				// useChat 外部订阅的 DOM 提交可能晚于 loadingMore 复位；hook 要等这个头真正落地。
+				headId: merged[0]?.id !== current[0]?.id ? merged[0]?.id ?? null : null,
+			};
 		} catch {
 			if (historyRequestSequenceRef.current[sessionId] !== requestSequence) return null;
 			// 失败时保留旧游标（不写 null），用户重试可继续翻；首页失败仍标记 error 以便重拉尾页。
@@ -739,8 +751,52 @@ export function WebChatApp() {
 			if (activeSessionIdRef.current === sessionId) setCommandError(t("web.historyLoadFailed"));
 			return null;
 		} finally {
+			loadingMoreRef.current = false;
 			setLoadingMore(false);
 		}
+	};
+
+	/**
+	 * W3：首屏历史落地后，若显示的单元数仍不足 100 且有更早游标，串行补页（最多 3 次）。
+	 * 每次补页前都重查游标；补页只走 loadOlderHistoryPage（写缓存与游标），
+	 * 是否推进 useChat 按 W2 同一规则：只在当前会话且未流式时 setMessages，
+	 * 流式时登记延后注入。
+	 */
+	const topUpFirstPage = async (sessionId: string, merged: UIMessage[]): Promise<void> => {
+		let currentCount = countWebDisplayItems(merged);
+		for (let attempt = 0; attempt < WEB_HISTORY_TOP_UP_MAX_ATTEMPTS; attempt += 1) {
+			if (activeSessionIdRef.current !== sessionId) return;
+			if (loadingMoreRef.current) return;
+			if (!needsWebHistoryTopUp(currentCount, historyMetaRef.current[sessionId], attempt)) return;
+			const result = await loadOlderHistoryPage(sessionId, WEB_TIMELINE_TURN_LIMIT);
+			if (!result) return;
+			currentCount = countWebDisplayItems(result.merged);
+			const decision = decideHistoryApply(
+				activeSessionIdRef.current === sessionId,
+				streamingRef.current,
+			);
+			if (decision === "apply") {
+				setMessages(result.merged);
+			} else if (decision === "defer") {
+				deferredHistoryApplyRef.current.add(sessionId);
+			}
+		}
+	};
+
+	/** 返回本次成功页将提交的新消息头；null 表示失败、空页或未发起请求。 */
+	const handleLoadMore = async (): Promise<string | null> => {
+		if (!activeSessionId || loadingMore) return null;
+		const sessionId = activeSessionId;
+		const meta = historyMetaRef.current[sessionId];
+		const alreadyLoaded = loadedSessionsRef.current.has(sessionId);
+		// 首页失败 / 尚未拉过 / 流式提前标了缓存：重新拉尾页（最近 50 轮）；已有游标：继续往更早翻（每次 3 轮）。
+		if (!canRequestWebHistoryPage({ loaded: alreadyLoaded, meta })) return null;
+		const result = await loadOlderHistoryPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE);
+		if (!result) return null;
+		// merged 基于每个流式增量都会更新的 per-session 缓存，既含当前回复也含旧页；
+		// 因此可以直接注入 useChat，让思考/回答期间点击「加载更多」立即可见。
+		setMessages(result.merged);
+		return result.headId;
 	};
 
 	// 头部运行态：与 composer 同一套忙碌判定，避免 SSE 已空闲、runtime 仍在跑时状态分叉。

@@ -1,3 +1,5 @@
+import { WEB_TIMELINE_MIN_DISPLAY_ITEMS } from "./webTurnWindow";
+
 /**
  * Web 历史分页是否还能再翻。
  * 游标存在 ref 里、首页失败、或只合并了 runtime 窗口时，
@@ -32,6 +34,24 @@ export function decideHistoryApply(
 ): "apply" | "defer" | "skip" {
 	if (!isActive) return "skip";
 	return streaming ? "defer" : "apply";
+}
+
+/** 首屏自动补页的最大连续次数（超过就停下等用户手动上滚）。 */
+export const WEB_HISTORY_TOP_UP_MAX_ATTEMPTS = 3;
+
+/**
+ * 首屏历史合并后是否还需要自动补一页更早历史（2026-12 用户要求：至少 100 个显示单元）。
+ * 三个条件缺一不可：单元数不足、仍有更早游标、未超过补页次数上限。
+ * 限次是为了避免「空页/游标不动」时形成请求循环。
+ */
+export function needsWebHistoryTopUp(
+	itemCount: number,
+	meta: WebHistoryMeta | undefined,
+	attempts: number,
+): boolean {
+	if (itemCount >= WEB_TIMELINE_MIN_DISPLAY_ITEMS) return false;
+	if (attempts >= WEB_HISTORY_TOP_UP_MAX_ATTEMPTS) return false;
+	return meta?.nextBefore != null;
 }
 
 export function hasMoreWebHistory(input: {
