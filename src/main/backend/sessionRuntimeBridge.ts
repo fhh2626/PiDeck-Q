@@ -278,6 +278,12 @@ export function createSessionRuntimeBridge(
 			(error: unknown) => failAnonymousActivation(session, project, input, error),
 		).finally(() => {
 			activatingAnonymousSessions.delete(session.id);
+		}).catch((error: unknown) => {
+			// 失败处理本身（如 sendToRenderer）抛错时兜底记录，避免未处理的 Promise 拒绝。
+			void appLogger.error("agent", "Anonymous activation cleanup failed", {
+				sessionId: session.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		});
 	}
 

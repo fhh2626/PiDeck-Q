@@ -209,3 +209,32 @@ test("a failure to publish state after a successful activation keeps the session
 		await rm(root, { recursive: true, force: true });
 	}
 });
+
+test("a throwing failure handler is logged instead of becoming an unhandled rejection", async () => {
+	const agents = createAgents();
+	let created;
+	const { root, bridge, coordinator, errors } = await createFixture(agents, {
+		// 激活失败后的刷新通知也失败（原生通道已断开）：失败处理本身抛错。
+		sendToRenderer: (channel) => {
+			if (channel === ipcChannels.sessionsCatalogRefreshed && created) {
+				throw new Error("renderer channel closed");
+			}
+		},
+	});
+	const unhandled = [];
+	const onUnhandled = (reason) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		created = await bridge.createAnonymousSession({ projectId: "project" });
+		const sending = coordinator.send({ sessionId: created.session.id, requestId: "request-1", message: "hello" });
+		agents.fail(new Error("spawn failed"));
+		await sending;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(unhandled.length, 0, `unhandled rejections: ${unhandled.map(String).join(", ")}`);
+		assert.equal(errors.some((args) => String(args[1] ?? "").includes("cleanup failed")), true, JSON.stringify(errors));
+		assert.equal(bridge.isAnonymousActivating(created.session.id), false);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+		await rm(root, { recursive: true, force: true });
+	}
+});
