@@ -57,6 +57,7 @@ export function scheduleCatalogBackgroundScan(projectId: string, task: () => Pro
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { SessionScanner } from "../sessions/SessionScanner";
+import { ARCHIVE_DIR_NAME } from "../sessions/SessionScanner";
 import type { SessionCatalog, SessionCatalogEntry } from "../sessions/SessionCatalog";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import { SessionCommandIpcError } from "../sessions/SessionCommandIpcError";
@@ -396,6 +397,12 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		async (archivedPath: string) => {
 			// 校验入参：归档路径必须是 .pideck-archive 目录内的 JSONL，防路径穿越。
 			if (typeof archivedPath !== "string" || !archivedPath.endsWith(".jsonl")) {
+				throw new Error(mainCopy("session.invalidArchivePath"));
+			}
+			// 归档路径必须位于某个 .pideck-archive 目录之内（按 / 和 \ 两种分隔符判断）。
+			// 仅看后缀不够：它把“能否恢复”完全交给了索引，注释与代码不符。
+			const segments = archivedPath.split(/[\\/]+/);
+			if (!segments.slice(0, -1).includes(ARCHIVE_DIR_NAME)) {
 				throw new Error(mainCopy("session.invalidArchivePath"));
 			}
 			const restoredPath = await sessionScanner.unarchive(archivedPath);
