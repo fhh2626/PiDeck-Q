@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { RenameTargetExistsError, renameWithoutOverwrite } from "../fs/renameWithoutOverwrite";
 import type { TrashPath } from "../fs/trash";
 import type {
 	CreatePiSkillInput,
@@ -302,11 +303,19 @@ export class SkillManager {
 		const updated = this.setFrontmatterName(raw, normalizedNew);
 		const sameEntry = this.isSameRenamePath(oldEntry, newEntry);
 		if (sameEntry && updated === raw) throw new Error(this.translate("mainSkill.sameName"));
-		if (!sameEntry && existsSync(newEntry)) {
-			throw new Error(this.translate("mainSkill.alreadyExists", { name: normalizedNew }));
-		}
 
-		if (!sameEntry) await rename(oldEntry, newEntry);
+		// 不做目标存在性预检：预检与改名之间的竞态会直接覆盖已有技能。
+		// 由 no-clobber 改名独占判定，冲突时映射为已有文案。
+		if (!sameEntry) {
+			try {
+				await renameWithoutOverwrite(oldEntry, newEntry);
+			} catch (error) {
+				if (RenameTargetExistsError.is(error)) {
+					throw new Error(this.translate("mainSkill.alreadyExists", { name: normalizedNew }));
+				}
+				throw error;
+			}
+		}
 		const newSkillPath = skill.type === "directory"
 			? join(newEntry, basename(skill.path))
 			: newEntry;

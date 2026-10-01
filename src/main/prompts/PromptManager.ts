@@ -8,11 +8,12 @@ import type { WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { assertDirectPromptFile, assertSinglePromptFileName } from "./promptPathAuthorization";
 import { PromptPathAuthorizer } from "./PromptPathAuthorizer";
+import { RenameTargetExistsError, renameWithoutOverwrite } from "../fs/renameWithoutOverwrite";
 
 export type PromptPlatformOps = {
 	openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
@@ -500,9 +501,17 @@ export class PromptManager {
 		const oldPath = await this.authorizeGlobalPrompt(join(this.promptsDir, `${normalizedOld}.md`), "read");
 		const newPath = await this.authorizeGlobalPrompt(join(this.promptsDir, `${normalizedNew}.md`), "write");
 		if (!existsSync(oldPath)) throw new Error(this.translate("mainPrompt.notFound", { name: oldName }));
-		if (existsSync(newPath)) throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
 
-		await rename(oldPath, newPath);
+		// 不预检目标是否存在：预检与改名之间有竞态，目标在此期间被创建就会被覆盖。
+		// 交给 renameWithoutOverwrite 由系统调用独占判定，冲突时映射为已有文案。
+		try {
+			await renameWithoutOverwrite(oldPath, newPath);
+		} catch (error) {
+			if (RenameTargetExistsError.is(error)) {
+				throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
+			}
+			throw error;
+		}
 		// 读取新文件内容返回摘要
 		const raw = await readFile(newPath, "utf8");
 		const frontmatter = this.parseFrontmatter(raw);
@@ -528,9 +537,16 @@ export class PromptManager {
 		const oldPath = await assertDirectPromptFile(join(projectPromptsDir, `${normalizedOld}.md`), projectPromptsDir, "read");
 		const newPath = await assertDirectPromptFile(join(projectPromptsDir, `${normalizedNew}.md`), projectPromptsDir, "write");
 		if (!existsSync(oldPath)) throw new Error(this.translate("mainPrompt.notFound", { name: oldName }));
-		if (existsSync(newPath)) throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
 
-		await rename(oldPath, newPath);
+		// 同 rename()：不做目标存在性预检，由 no-clobber 改名独占判定。
+		try {
+			await renameWithoutOverwrite(oldPath, newPath);
+		} catch (error) {
+			if (RenameTargetExistsError.is(error)) {
+				throw new Error(this.translate("mainPrompt.alreadyExists", { name: normalizedNew }));
+			}
+			throw error;
+		}
 		const raw = await readFile(newPath, "utf8");
 		const frontmatter = this.parseFrontmatter(raw);
 		const description = frontmatter.description ?? "";

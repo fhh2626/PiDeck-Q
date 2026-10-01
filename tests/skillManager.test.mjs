@@ -9,41 +9,22 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 class SymlinkUnavailableError extends Error {}
 
 function loadSkillManagerModule() {
-	const source = readFileSync("src/main/skills/SkillManager.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		exports: {},
-		process,
-		require: (id) => {
-			if (id === "electron") return { shell: { openPath: async () => "" } };
+	return loadTsCommonJs("src/main/skills/SkillManager.ts", {
+		stubs: {
+			electron: { shell: { openPath: async () => "" } },
 			// 删除统一入口：测试环境无回收站，noop stub（本测试不触达删除路径）
-			if (id === "../fs/trash") return { trashPath: async () => {} };
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			return require(id);
+			"../fs/trash": { trashPath: async () => {} },
+			"../logging/sharedLogger": { getAppLogger: () => null },
 		},
-	};
-	sandbox.global = sandbox;
-	vm.runInNewContext(outputText, sandbox, {
-		filename: "SkillManager.ts",
 	});
-	return sandbox.exports;
 }
 
 async function createSkillFile(path, name, description = `${name} description`) {
@@ -245,6 +226,8 @@ test("rejects rename onto an existing skill", async () => {
 		const { manager, skill } = await findSkill(home, skillPath);
 		await assert.rejects(() => manager.rename(skill.path, "b"));
 		assert.equal(existsSync(join(globalSkills, "a", "SKILL.md")), true);
+		// 冲突时两边都必须原样保留，不能把 b 覆盖掉
+		assert.match(await readFile(join(globalSkills, "b", "SKILL.md"), "utf8"), /name: b/);
 	});
 });
 

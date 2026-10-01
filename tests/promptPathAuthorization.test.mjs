@@ -116,6 +116,47 @@ test("prompt reads do not follow a link out of the template directory", async (c
 	}
 });
 
+test("renaming a global template never overwrites an existing one", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pideck-prompt-rename-"));
+	try {
+		const { manager } = createHarness(root, []);
+		await mkdir(manager.getDir(), { recursive: true });
+		await writeFile(join(manager.getDir(), "alpha.md"), "---\ndescription: Alpha\n---\nA");
+		await writeFile(join(manager.getDir(), "beta.md"), "---\ndescription: Beta\n---\nB");
+
+		await assert.rejects(() => manager.rename("alpha", "beta"));
+		// 冲突时两边内容都不能变
+		assert.equal(await readFile(join(manager.getDir(), "alpha.md"), "utf8"), "---\ndescription: Alpha\n---\nA");
+		assert.equal(await readFile(join(manager.getDir(), "beta.md"), "utf8"), "---\ndescription: Beta\n---\nB");
+
+		const renamed = await manager.rename("alpha", "gamma");
+		assert.equal(renamed.name, "gamma");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("renaming a project template never overwrites an existing one", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pideck-prompt-rename-project-"));
+	const project = join(root, "project");
+	try {
+		const { manager } = createHarness(root, [project]);
+		const projectPrompts = join(project, ".pi", "prompts");
+		await mkdir(projectPrompts, { recursive: true });
+		await writeFile(join(projectPrompts, "alpha.md"), "---\ndescription: Alpha\n---\nA");
+		await writeFile(join(projectPrompts, "beta.md"), "---\ndescription: Beta\n---\nB");
+
+		await assert.rejects(() => manager.renameInProject(project, "alpha", "beta"));
+		assert.equal(await readFile(join(projectPrompts, "alpha.md"), "utf8"), "---\ndescription: Alpha\n---\nA");
+		assert.equal(await readFile(join(projectPrompts, "beta.md"), "utf8"), "---\ndescription: Beta\n---\nB");
+
+		const renamed = await manager.renameInProject(project, "alpha", "gamma");
+		assert.equal(renamed.name, "gamma");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 for (const linkedDirectory of [".pi", "prompts"]) {
  test(`project prompt IPC rejects an external ${linkedDirectory} directory link`, async (context) => {
   const root = await mkdtemp(join(tmpdir(), "pideck-prompt-junction-"));
