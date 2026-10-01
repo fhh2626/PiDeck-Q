@@ -1,8 +1,9 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import { preserveCorruptProjectCatalog, writeProjectSnapshot } from "./projectCatalogPersistence";
 import { parseProjectCatalog } from "./projectRecordValidation";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join, normalize, resolve } from "node:path";
+import { basename, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Project } from "../../shared/types";
 import {
@@ -129,8 +130,8 @@ export class ProjectStore {
   }
 
   private async saveChatProjectPath(path: string) {
-    await mkdir(dirname(this.chatPathFile), { recursive: true });
-    await writeFile(this.chatPathFile, JSON.stringify({ path }, null, 2), "utf8");
+    // 原子写：writeFileAtomic 会自己创建父目录。
+    await writeFileAtomic(this.chatPathFile, JSON.stringify({ path }, null, 2));
   }
 
   private async loadChatProjectPath() {

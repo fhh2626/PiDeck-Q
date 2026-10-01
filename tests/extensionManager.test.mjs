@@ -1,57 +1,19 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const nodeRequire = createRequire(import.meta.url);
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 function loadExtensionManagerModule() {
-  const source = readFileSync("src/main/extensions/ExtensionManager.ts", "utf8");
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-      esModuleInterop: true,
-    },
-    fileName: "ExtensionManager.ts",
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(output, {
-    module,
-    exports: module.exports,
-    require: (specifier) => {
-      if (specifier === "../wsl/WslPaths") {
-        return { toWindowsHostPath: (path) => path };
-      }
-      // 25fd516 起 ExtensionManager 依赖内置扩展清单模块；按真实模块透传（纯数据 + 纯函数）
-      if (specifier === "./builtInExtensions") {
-        return nodeRequire("../src/main/extensions/builtInExtensions.ts");
-      }
-      // 删除走系统回收站统一入口；测试环境没有回收站，模拟为真实删除（rm 已在测试 import 中）。
-      if (specifier === "../fs/trash") {
-        return { trashPath: async (p) => { await rm(p, { recursive: true, force: true }); } };
-      }
+  return loadTsCommonJs("src/main/extensions/ExtensionManager.ts", {
+    stubs: {
+      // 删除走系统回收站统一入口；测试环境没有回收站，模拟为真实删除。
+      "../fs/trash": { trashPath: async (p) => { await rm(p, { recursive: true, force: true }); } },
       // 共享日志器：测试环境未注册实例，返回 null 让调用方静默跳过
-      if (specifier === "../logging/sharedLogger") {
-        return { getAppLogger: () => null };
-      }
-      if (specifier === "../../shared/piCompatibility") {
-        return nodeRequire("../src/shared/piCompatibility.ts");
-      }
-      return nodeRequire(specifier);
+      "../logging/sharedLogger": { getAppLogger: () => null },
     },
-    Promise,
-    Set,
-    Map,
-    JSON,
-    Error,
-  }, { filename: "ExtensionManager.ts" });
-  return module.exports;
+  });
 }
 
 function deferred() {

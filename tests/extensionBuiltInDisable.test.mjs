@@ -1,84 +1,32 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { createRequire } from "node:module";
+import * as fsPromises from "node:fs/promises";
+import * as os from "node:os";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
-
-function transpile(filePath) {
-	return ts.transpileModule(readFileSync(filePath, "utf8"), {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	}).outputText;
-}
-
-function loadWslPaths() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/main/wsl/WslPaths.ts"), sandbox, { filename: "WslPaths.ts" });
-	return sandbox.exports;
-}
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 /**
  * 加载 ExtensionManager，并把 homeDir 重定向到 fixture（通过 mock os.homedir）。
  * 同时可 mock runPi 输出，便于测 list 冲突路径。
  */
 function loadExtensionManager({ homeDir, runPiOutput = "", fsOverrides = {} } = {}) {
-	const wslPaths = loadWslPaths();
-	const realOs = require("node:os");
-	const sandbox = {
-		exports: {},
-		require: (id) => {
-			if (id === "node:os") {
-				return {
-					...realOs,
-					homedir: () => homeDir ?? realOs.homedir(),
-				};
-			}
-			if (id === "node:fs/promises") {
-				return { ...require(id), ...fsOverrides };
-			}
-			if (id === "node:child_process") {
-				const real = require(id);
-				return {
-					...real,
-					execFile: (cmd, args, opts, cb) => {
-						// runPi 走 execFile；返回预设 stdout，模拟 pi list
-						queueMicrotask(() => cb(null, runPiOutput, ""));
-					},
-				};
-			}
-			if (id === "../wsl/WslPaths") return wslPaths;
-			if (id === "../pi/PiLocator") return {};
-			if (id === "../fs/trash") return { trashPath: async () => {} };
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			if (id === "../../shared/piCompatibility") return require("../src/shared/piCompatibility.ts");
-			if (id === "./builtInExtensions") {
-				// ExtensionManager 只需要内置名列表；避免 vm 沙箱解析相对 TS 路径失败。
-				const builtInExtensions = [
-					"pideck-q-ask-question.ts",
-					"pi-deck-nul-redirect-fix.ts",
-					"pi-deck-plan-mode.ts",
-					"pi-deck-todo.ts",
-					"pideck-q-better-compaction.ts",
-				];
-				return {
-					BUILT_IN_EXTENSIONS: builtInExtensions,
-					isBuiltInExtensionName: (source) => builtInExtensions.includes(source),
-				};
-			}
-			return require(id);
+	return loadTsCommonJs("src/main/extensions/ExtensionManager.ts", {
+		stubs: {
+			"node:os": { ...os, homedir: () => homeDir ?? os.homedir() },
+			"node:fs/promises": { ...fsPromises, ...fsOverrides },
+			"node:child_process": {
+				execFile: (cmd, args, opts, cb) => {
+					// runPi 走 execFile；返回预设 stdout，模拟 pi list
+					queueMicrotask(() => cb(null, runPiOutput, ""));
+				},
+			},
+			"../pi/PiLocator": {},
+			"../fs/trash": { trashPath: async () => {} },
+			"../logging/sharedLogger": { getAppLogger: () => null },
 		},
-	};
-	vm.runInNewContext(transpile("src/main/extensions/ExtensionManager.ts"), sandbox, {
-		filename: "ExtensionManager.ts",
 	});
-	return sandbox.exports;
 }
 
 test("disableBuiltIn records removal and deletes user extension file", async () => {

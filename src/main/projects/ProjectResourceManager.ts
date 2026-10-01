@@ -11,6 +11,7 @@ import type {
 	ProjectResourceListResult,
 } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 
 const SKILL_FILE = "SKILL.md";
 
@@ -117,7 +118,7 @@ export class ProjectResourceManager {
 				settings.disabledExtensions = [...disabled, extName];
 			}
 		}
-		await writeFile(settingsFile, JSON.stringify(settings, null, 2), "utf8");
+		await writeFileAtomic(settingsFile, JSON.stringify(settings, null, 2));
 	}
 
 	async deleteExtension(projectId: string, extensionPath: string): Promise<void> {

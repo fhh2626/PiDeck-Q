@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { copyFile, lstat, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 
 function isExistingPath(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
@@ -40,20 +40,6 @@ export async function preserveCorruptProjectCatalog(filePath: string): Promise<v
 
 /** 在同目录独占写入并同步临时文件，再原子替换正式目录；所有失败路径都清理临时文件。 */
 export async function writeProjectSnapshot(filePath: string, snapshot: string): Promise<void> {
-	await mkdir(dirname(filePath), { recursive: true });
-	const tempPath = `${filePath}.${randomUUID()}.tmp`;
-	const handle = await open(tempPath, "wx");
-	try {
-		try {
-			await handle.writeFile(snapshot, "utf8");
-			await handle.sync();
-		} finally {
-			await handle.close();
-		}
-		await rename(tempPath, filePath);
-	} catch (error) {
-		// 临时文件属于本次独占写入；这里不触碰正式文件或任何历史备份。
-		await unlink(tempPath).catch(() => undefined);
-		throw error;
-	}
+	// 统一走 writeFileAtomic：同样是 tmp → fsync → rename，并带 Windows 杀软锁重试。
+	await writeFileAtomic(filePath, snapshot);
 }

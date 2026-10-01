@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { ipcChannels } from "../../shared/ipc";
+import { writeFileAtomic } from "../utils/atomicWriteFile";import { ipcChannels } from "../../shared/ipc";
 import type { AppLogger } from "../logging/AppLogger";
 import type { PiLocator } from "../pi/PiLocator";
 import type { ProjectStore } from "../projects/ProjectStore";
@@ -140,8 +140,8 @@ async function ensurePiSettingsDefaults(configDir: string, piVersionHint?: strin
 	}
 
 	if (changed) {
-		await mkdir(configDir, { recursive: true });
-		await writeFile(filePath, JSON.stringify(current, null, 2), "utf8");
+		// 原子写：writeFileAtomic 会自己建目录，避免崩溃后 pi 的 settings.json 只剩半个 JSON。
+		await writeFileAtomic(filePath, JSON.stringify(current, null, 2));
 		console.log("[PiDeck] Ensured pi settings defaults at:", filePath);
 	}
 }

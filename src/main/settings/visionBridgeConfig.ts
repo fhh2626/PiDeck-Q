@@ -8,10 +8,11 @@
  * 安全约束：IPC 入参不可信，saveConfig 逐字段白名单校验后再落盘；
  * apiKey 允许写入配置文件（与 auth.json 同级信任域），但不进日志。
  */
-import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAppLogger } from "../logging/sharedLogger";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 import type {
 	VisionBridgeConfig,
 	VisionBridgeEvent,
@@ -166,8 +167,8 @@ export class VisionBridgeConfigManager {
 		}
 		try {
 			const dir = visionConfigDir();
-			await mkdir(dir, { recursive: true });
-			await writeFile(join(dir, CONFIG_FILE_NAME), JSON.stringify(next, null, 2), "utf8");
+			// 原子写：writeFileAtomic 会自己建目录，且崩溃时不会留下半个 JSON。
+			await writeFileAtomic(join(dir, CONFIG_FILE_NAME), JSON.stringify(next, null, 2));
 			// 视觉桥配置含 apiKey 敏感写：只记 provider 与是否携带 key，不记 key 值
 			void getAppLogger()?.info("vision", "Vision config saved", {
 				provider: (next as { provider?: string }).provider,
