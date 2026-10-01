@@ -18,6 +18,7 @@ import {
 	optimisticDeletedIdsBySessionIdAtomFamily,
 	prependSessionHistoryPageAtom,
 	prependSessionMessagePageAtom,
+	releaseSessionHistoryAtom,
 	replaceSessionHistoryAfterMutationAtom,
 	replaceHistoryPrefixAfterVersionDriftAtom,
 	sessionMessagesCacheAtom,
@@ -979,11 +980,11 @@ export function useSessionTimelineController(options: {
 		}
 	}, [cachedEntry?.revision, captureLoadMoreAnchor, diskPage, historyHasMore, isLoadingMessagePage, messages, options.pageSize, options.sessionId, ownerKey, prependHistoryPage, prependMessagePage, runtimeHistory]);
 
-	// ── 回底清理临时历史（2026-11 轮次模型）──
-	// 贴底稳定 1.5s 后清掉翻过的历史前缀（atom 只留运行时窗口段），渲染层内存回到最小；
-	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 50 轮内命中，无感）。
-	// 上滚/加载历史中会取消待执行的清理；清理后 history 置空，后续再翻再拉。
-	const clearHistory = useSetAtom(clearSessionHistoryAtom);
+	// ── 回底释放临时历史（2026-11 轮次模型）──
+	// 贴底稳定 1.5s 后释放翻过的历史前缀（保底 MIN_DISPLAY_TURNS 轮，用户要求），
+	// 更早的浏览数据回到最小；再次上翻走「atom → 主进程缓存 → 文件」重新拉取。
+	// 上滚/加载历史中会取消待执行的释放。mutation 失败的无条件作废走 clearSessionHistoryAtom。
+	const releaseHistory = useSetAtom(releaseSessionHistoryAtom);
 	const historyClearTimerRef = useRef<number | undefined>(undefined);
 	useEffect(() => {
 		if (!controllerEnabled) return;
@@ -993,7 +994,7 @@ export function useSessionTimelineController(options: {
 			if (historyClearTimerRef.current != null) return;
 			historyClearTimerRef.current = window.setTimeout(() => {
 				historyClearTimerRef.current = undefined;
-				if (clearHistory(sessionId)) {
+				if (releaseHistory(sessionId)) {
 					// 清理后丢弃在途历史页响应：迟到页会把已释放的 history 复活并携带旧滚动锚点
 					const sequence = ++nextLoadSequence;
 					trackLatestLoad(sessionId, sequence);
@@ -1012,7 +1013,7 @@ export function useSessionTimelineController(options: {
 			window.clearTimeout(historyClearTimerRef.current);
 			historyClearTimerRef.current = undefined;
 		}
-	}, [autoScroll, clearHistory, controllerEnabled, options.sessionId, runtimeHistory]);
+	}, [autoScroll, releaseHistory, controllerEnabled, options.sessionId, runtimeHistory]);
 
   /** 标记一次程序化滚动（turn 窗口展开补偿等组件内补偿用），抑制自动加载监听。 */
   const markProgrammaticScroll = useCallback(() => {

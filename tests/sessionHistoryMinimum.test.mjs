@@ -202,3 +202,115 @@ test("D1: runtime window without entryIds still dedupes against the disk prefix"
 		"fingerprint overlap must remove the duplicated last turn from the prefix",
 	);
 });
+
+// ── D2：回底释放必须给出 50 轮的底线 ──
+
+/** 构造一个 runtime 条目：窗口段 + 历史前缀。 */
+function seedRuntimeWithHistory(store, atoms, sessionId, input) {
+	store.set(atoms.cacheSessionMessagesAtom, {
+		sessionId,
+		messages: input.window,
+		source: "runtime",
+		windowStart: 0,
+		history: {
+			messages: input.history,
+			nextBefore: 123,
+			...(input.compactionRetainedKeys
+				? { compactionRetainedKeys: input.compactionRetainedKeys }
+				: {}),
+			...(input.sticky ? { sticky: true } : {}),
+		},
+	});
+}
+
+test("D2: bottom release keeps enough history to reach the 50-turn floor", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(WINDOW_TURNS - 47, 78), // 3 轮
+		history: turns(80), // 80 轮
+	});
+
+	assert.equal(store.set(atoms.releaseSessionHistoryAtom, sessionId), true);
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(atoms.countUserTurns(entry.history.messages), 47);
+	assert.equal(entry.history.nextBefore, null);
+});
+
+test("D2: bottom release is a no-op when the history is below the floor", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(WINDOW_TURNS - 47, 78),
+		history: turns(40),
+	});
+	const before = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+
+	assert.equal(store.set(atoms.releaseSessionHistoryAtom, sessionId), false);
+	assert.equal(store.get(atoms.sessionMessagesCacheAtom)[sessionId], before);
+});
+
+test("D2: bottom release still frees history when the window alone exceeds the floor", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(60),
+		history: turns(10),
+	});
+
+	assert.equal(store.set(atoms.releaseSessionHistoryAtom, sessionId), true);
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.history, undefined);
+});
+
+test("D2: bottom release keeps the compaction-retained turns in addition to the floor", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	const history = turns(10);
+	const retained = history.slice(-4).map((message) => `e:${message.meta.entryId}`);
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(60),
+		history,
+		compactionRetainedKeys: retained,
+	});
+
+	assert.equal(store.set(atoms.releaseSessionHistoryAtom, sessionId), true);
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.history.messages.length, 4);
+	assert.equal(ids(entry.history.messages), ids(history.slice(-4)));
+});
+
+test("D2: bottom release defers while the prefix is still sticky", () => {
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(1),
+		history: turns(80),
+		sticky: true,
+	});
+
+	assert.equal(store.set(atoms.releaseSessionHistoryAtom, sessionId), false);
+});
+
+test("D2: clearSessionHistoryAtom keeps its unconditional-invalidation semantics", () => {
+	// 两个 atom 职责不同（用户 2026-12 确认拆分）：
+	// - clearSessionHistoryAtom：旧前缀已失效，无条件作废（mutation refresh 失败兜底）；
+	// - releaseSessionHistoryAtom：回底省内存，保底 MIN_DISPLAY_TURNS 轮。
+	const atoms = loadAtoms();
+	const store = createStore();
+	const sessionId = "s1";
+	seedRuntimeWithHistory(store, atoms, sessionId, {
+		window: turns(3, 78),
+		history: turns(80),
+	});
+
+	assert.equal(store.set(atoms.clearSessionHistoryAtom, sessionId), true);
+	const entry = store.get(atoms.sessionMessagesCacheAtom)[sessionId];
+	assert.equal(entry.history, undefined, "clear must drop everything regardless of the floor");
+	assert.equal(entry.messages.length, 6, "runtime window stays untouched");
+});

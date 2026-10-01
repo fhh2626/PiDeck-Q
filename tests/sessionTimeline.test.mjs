@@ -109,10 +109,12 @@ test("background Session cache changes retain the selected timeline slice", () =
   assert.equal(store.get(selectedMessages), before);
 });
 
-test("bottom-settle history clear invalidates in-flight runtime history pages", () => {
-  // 清理成功后必须推进 load 序号并复位加载标志：迟到页响应被 latestLoadBySession 丢弃，
-  // isLoadingMessagePage 也不会卡死后续加载（修复前只有 clearHistory 调用）。
-  assert.match(source, /if \(clearHistory\(sessionId\)\)/);
+test("bottom-settle history release invalidates in-flight runtime history pages", () => {
+  // 释放成功后必须推进 load 序号并复位加载标志：迟到页响应被 latestLoadBySession 丢弃，
+  // isLoadingMessagePage 也不会卡死后续加载（修复前只有释放调用）。
+  // 回底路径用保底 50 轮的 releaseSessionHistoryAtom；无条件作废（mutation 失败兜底）
+  // 仍走 clearSessionHistoryAtom。
+  assert.match(source, /if \(releaseHistory\(sessionId\)\)/);
   assert.match(source, /const sequence = \+\+nextLoadSequence;/);
   assert.match(source, /setIsLoadingMessagePage\(false\)/);
   assert.match(source, /trackLatestLoad\(sessionId, sequence\)/);

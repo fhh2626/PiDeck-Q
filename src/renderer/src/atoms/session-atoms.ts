@@ -1315,6 +1315,9 @@ export const replaceSessionHistoryAfterMutationAtom = atom(
  * 只保留运行时窗口段与压缩保留集（最近 50 轮）——atom 数据回到「窗口 + 已看过的会话主体」，
  * 更早的浏览数据释放后再上翻走「atom → 主进程缓存 → 文件」三级递进重新拉取。
  * 仅 runtime 来源缓存生效；disk 来源（历史会话浏览）不清，避免打断按条分页游标。
+ *
+ * 无条件作废语义：用于「旧前缀已失效」的场景（如 mutation refresh 失败），调用方要求
+ * 无论如何都不再展示旧内容。回底省内存的保底路径用 releaseSessionHistoryAtom。
  */
 export const clearSessionHistoryAtom = atom(
 	null,
@@ -1359,6 +1362,66 @@ export const clearSessionHistoryAtom = atom(
 		set(sessionMessagesCacheAtom, {
 			...get(sessionMessagesCacheAtom),
 			[sessionId]: { ...current, history: undefined, updatedAt: Date.now() },
+		});
+		return true;
+	},
+);
+
+/**
+ * 回底释放浏览历史（保底版，用户要求至少显示 MIN_DISPLAY_TURNS 轮）。
+ * 与 clearSessionHistoryAtom 的差别：只释放超出下限的更早部分，
+ * 「历史前缀轮数 + 运行时窗口轮数」不足 MIN_DISPLAY_TURNS 时直接返回 false（不写 atom）。
+ * 压缩保留集（compactionRetainedKeys）照旧保留：它记录的是压缩前用户已看过的最近若干轮。
+ */
+export const releaseSessionHistoryAtom = atom(
+	null,
+	(get, set, sessionId: string) => {
+		const current = get(sessionMessagesCacheAtom)[sessionId];
+		if (!current || current.source !== "runtime" || !current.history) return false;
+		// 压缩刚完成的前缀要先让下一次正常全量 flush 清除 sticky 标记；
+		// 否则用户刚看到的旧回复会在 1.5s 回底定时器里立即消失。
+		if (current.history.sticky) return false;
+
+		const historyMessages = current.history.messages;
+		// 用户要求至少显示 MIN_DISPLAY_TURNS 轮：只释放超出下限的更早部分。
+		const neededTurns = MIN_DISPLAY_TURNS - countUserTurns(current.messages);
+		let keepStart = historyMessages.length - keepTailTurns(historyMessages, neededTurns).length;
+		// 压缩保留集不清：这些是压缩前用户已看过的最近若干轮（它本身是尾部连续段）。
+		const retained = current.history.compactionRetainedKeys;
+		if (retained && retained.length > 0) {
+			const retainedSet = new Set(retained);
+			const firstRetained = historyMessages.findIndex((message) =>
+				retainedSet.has(messageEntryKey(message)),
+			);
+			if (firstRetained >= 0) keepStart = Math.min(keepStart, firstRetained);
+		}
+		// 全部都需要保留：没有可释放的内容
+		if (keepStart <= 0) return false;
+
+		const kept = historyMessages.slice(keepStart);
+		if (kept.length === 0) {
+			set(sessionMessagesCacheAtom, {
+				...get(sessionMessagesCacheAtom),
+				[sessionId]: { ...current, history: undefined, updatedAt: Date.now() },
+			});
+			return true;
+		}
+		const keptKeys = new Set(kept.map(messageEntryKey));
+		const keptRetained = retained?.filter((key) => keptKeys.has(key)) ?? [];
+		set(sessionMessagesCacheAtom, {
+			...get(sessionMessagesCacheAtom),
+			[sessionId]: {
+				...current,
+				// 头部被释放：旧游标指向已释放段，必须置为未知（null）。
+				// 下次上翻由控制器用「历史 + 窗口首条 entryId」作锚点重新读取（已有逻辑）。
+				history: {
+					messages: kept,
+					nextBefore: null,
+					...(keptRetained.length > 0 ? { compactionRetainedKeys: keptRetained } : {}),
+					...(current.history.version ? { version: current.history.version } : {}),
+				},
+				updatedAt: Date.now(),
+			},
 		});
 		return true;
 	},
