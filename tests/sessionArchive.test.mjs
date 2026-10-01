@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
@@ -135,6 +135,89 @@ test("archive directory is excluded from regular scans", async () => {
 		// 直接触发完整扫描：即使归档目录内还有 .jsonl，常规 list 也必须跳过
 		const summaries = await scanner.list();
 		assert.ok(!summaries.some((s) => s.filePath.includes(".pideck-archive")), "archive dir must be excluded from list");
+	} finally {
+		await cleanupTempDir(home);
+	}
+});
+
+test("archiving a second same-name session keeps parent and child under one archive name", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-archive-same-name-"));
+	try {
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner(undefined, home);
+		await scanner.list();
+
+		// 两个同名会话（不同扫描根下的同 stem 文件）各自带子会话目录
+		const firstPath = join(sessionsRoot, "same.jsonl");
+		const secondPath = join(sessionsRoot, "sub", "same.jsonl");
+		const childOf = (stem) => join(stem, "run", "child.jsonl");
+		writeSession(firstPath, healthySession);
+		writeSession(join(sessionsRoot, "same", "run", "child.jsonl"), healthySession);
+		writeSession(secondPath, healthySession);
+		writeSession(join(sessionsRoot, "sub", "same", "run", "child.jsonl"), healthySession);
+
+		const firstArchived = await scanner.archive(firstPath);
+		const secondArchived = await scanner.archive(secondPath);
+		assert.notEqual(firstArchived, secondArchived, "同名归档必须错开名字");
+
+		// 父文件与子目录必须共用同一个归档 stem，否则恢复时找不到子会话
+		const secondStem = secondArchived.replace(/\.jsonl$/, "");
+		assert.ok(
+			existsSync(join(secondStem, "run", "child.jsonl")),
+			`归档名称必须让父文件与子目录同名：${secondStem}`,
+		);
+
+		const restored = await scanner.unarchive(secondArchived);
+		assert.equal(restored, secondPath);
+		assert.ok(existsSync(secondPath), "父会话必须回到原位置");
+		assert.ok(existsSync(childOf(join(sessionsRoot, "sub", "same"))), "子会话必须一并回到原位置");
+	} finally {
+		await cleanupTempDir(home);
+	}
+});
+
+test("archive failure to write the index rolls the move back", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-archive-rollback-"));
+	try {
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const sessionPath = join(sessionsRoot, "keep.jsonl");
+		writeSession(sessionPath, healthySession);
+		// 在索引应处的位置放一个目录：写索引必然失败
+		mkdirSync(join(sessionsRoot, ".pideck-archive", "index.json"), { recursive: true });
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner(undefined, home);
+		await scanner.list();
+
+		await assert.rejects(() => scanner.archive(sessionPath));
+		// 报错后磁盘状态必须与调用前一致（不能出现“说失败了但文件已被移走”）
+		assert.equal(existsSync(sessionPath), true, "归档失败时原会话必须留在原位置");
+	} finally {
+		await cleanupTempDir(home);
+	}
+});
+
+test("a corrupt archive index is preserved instead of overwritten", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-archive-corrupt-"));
+	try {
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const archiveDir = join(sessionsRoot, ".pideck-archive");
+		mkdirSync(archiveDir, { recursive: true });
+		writeFileSync(join(archiveDir, "index.json"), "{ not json", "utf8");
+		const sessionPath = join(sessionsRoot, "corrupt-index.jsonl");
+		writeSession(sessionPath, healthySession);
+
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner(undefined, home);
+		await scanner.list();
+		await scanner.archive(sessionPath);
+
+		const preserved = readdirSync(archiveDir).filter((name) => name.startsWith("index.json.corrupt-"));
+		assert.equal(preserved.length, 1, `损坏索引必须保留一份备份，实际：${preserved.join(",")}`);
+		assert.equal(readFileSync(join(archiveDir, preserved[0]), "utf8"), "{ not json");
+		// 新索引是合法 JSON（归档照常完成）
+		assert.equal(typeof JSON.parse(readFileSync(join(archiveDir, "index.json"), "utf8")).constructor, "function");
 	} finally {
 		await cleanupTempDir(home);
 	}

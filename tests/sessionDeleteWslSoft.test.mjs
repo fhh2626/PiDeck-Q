@@ -73,6 +73,18 @@ test(".pideck-trash is skipped even by archive scans", async () => {
 	}
 });
 
+test("first WSL archive creates the archive directory", async () => {
+	const { home, fake, scanner, put } = await setup();
+	try {
+		put(`${ROOT}/a.jsonl`);
+		const archived = await scanner.archive(`${ROOT}/a.jsonl`);
+		assert.ok(existsSync(fake.host(archived)), `归档文件必须存在：${archived}`);
+		assert.equal(existsSync(fake.host(`${ROOT}/a.jsonl`)), false, "原位置必须空出来");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
 test("WSL scan ignores sessions sitting inside .pideck-trash", async () => {
 	const { home, fake, scanner, put } = await setup();
 	try {

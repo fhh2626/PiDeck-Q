@@ -75,6 +75,23 @@ export const ARCHIVE_DIR_NAME = ".pideck-archive";
 /** WSL 会话软删除目录：Windows 回收站看不到 WSL 文件系统，改用扫描根下的隐藏目录。 */
 export const SESSION_TRASH_DIR_NAME = ".pideck-trash";
 
+/** 解析归档索引；结构不是 {string: string} 时返回 null，由调用方按“损坏”处理。 */
+export function parseArchiveIndex(raw: string): Record<string, string> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== "string") return null;
+    result[key] = value;
+  }
+  return result;
+}
+
 /**
  * 判断目录或文件路径是否属于会话扫描应忽略的路径。
  *
@@ -845,74 +862,96 @@ export class SessionScanner {
     return this.joinArchivePath(this.isWslPath(filePath), root, SessionScanner.ARCHIVE_DIR_NAME);
   }
 
-  /**
-   * 归档会话：把 JSONL（连同同级子会话目录）移入归档目录，并写入索引。
-   * 支持 WSL 路径；返回归档后的文件路径。
-   */
   async archive(filePath: string): Promise<string> {
+    return this.runArchiveExclusive(() => this.archiveUnlocked(filePath));
+  }
+
+  /** 从归档恢复会话：父文件与子目录一并移回原路径；任一原路径被占用则整体拒绝。 */
+  async unarchive(archivedPath: string): Promise<string> {
+    return this.runArchiveExclusive(() => this.unarchiveUnlocked(archivedPath));
+  }
+
+  /** 归档/恢复/索引写入串行执行：索引是读-改-写，并发会丢条目。 */
+  private archiveQueue: Promise<unknown> = Promise.resolve();
+  private runArchiveExclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.archiveQueue.then(task, task);
+    this.archiveQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  /** 路径（文件或目录）是否存在。 */
+  private async pathExists(path: string, wsl: boolean): Promise<boolean> {
+    return wsl ? this.wslPathExists(path) : existsSync(path);
+  }
+
+  /** 不覆盖的移动：本地用 renameWithoutOverwrite，WSL 用 moveWsl 的 no-clobber 模式。 */
+  private async moveNoClobber(src: string, dst: string, wsl: boolean): Promise<void> {
+    if (wsl) await this.moveWsl(src, dst, "no-clobber");
+    else await renameWithoutOverwrite(src, dst);
+  }
+
+  private async archiveUnlocked(filePath: string): Promise<string> {
     const wsl = this.isWslPath(filePath);
     const archiveDir = this.archiveDirFor(filePath);
     if (!archiveDir) throw new Error("会话不在可扫描目录内，无法归档");
-    const fileBasename = wsl ? posixBasename(filePath) : basename(filePath);
+    // WSL 也必须先建归档目录，否则首次归档时 mv 会因父目录不存在而失败。
+    if (wsl) await this.mkdirWsl(archiveDir);
+    else await mkdir(archiveDir, { recursive: true });
     const fileExtname = wsl ? posixExtname(filePath) : extname(filePath);
-    // 归档目标 = 归档目录 + 原文件名；重名时追加时间戳避免覆盖已有归档。
-    const target = this.joinArchivePath(wsl, archiveDir, fileBasename);
-    const finalTarget = existsSync(target) || (wsl && await this.existsWslFile(target))
-      ? this.joinArchivePath(
-          wsl,
-          archiveDir,
-          `${wsl ? posixBasename(filePath, fileExtname) : basename(filePath, fileExtname)}.${Date.now()}${fileExtname}`,
-        )
-      : target;
+    const stem = wsl ? posixBasename(filePath, fileExtname) : basename(filePath, fileExtname);
 
-    if (wsl) {
-      await this.mkdirWsl(archiveDir);
-      await this.moveWsl(filePath, finalTarget, "no-clobber");
-    } else {
-      await mkdir(archiveDir, { recursive: true });
-      await rename(filePath, finalTarget);
+    // 父文件与子目录必须共用同一个归档 stem：恢复时由 <归档 stem>.jsonl 推出 <归档 stem>/。
+    // 因此候选名要求“文件名和目录名都空闲”才可用。
+    let archiveStem = stem;
+    for (let attempt = 0; ; attempt++) {
+      archiveStem = attempt === 0 ? stem : `${stem}.${Date.now()}-${attempt}`;
+      const fileTarget = this.joinArchivePath(wsl, archiveDir, `${archiveStem}${fileExtname}`);
+      const dirTarget = this.joinArchivePath(wsl, archiveDir, archiveStem);
+      if (!(await this.pathExists(fileTarget, wsl)) && !(await this.pathExists(dirTarget, wsl))) break;
+      if (attempt >= 20) throw new Error("ARCHIVE_NAME_EXHAUSTED");
     }
-    // 同级子会话目录（<stem>/）一并移入归档，保持子会话归属。
+    const finalTarget = this.joinArchivePath(wsl, archiveDir, `${archiveStem}${fileExtname}`);
     const siblingDir = this.getSiblingDir(filePath);
-    if (siblingDir) {
-      const siblingBasename = wsl ? posixBasename(siblingDir) : basename(siblingDir);
-      const targetSibling = this.joinArchivePath(wsl, archiveDir, siblingBasename);
-      if (wsl) {
-        if (await this.existsWslDir(siblingDir)) await this.moveWsl(siblingDir, targetSibling, "no-clobber");
-      } else if (existsSync(siblingDir)) {
-        await rename(siblingDir, targetSibling);
-      }
+    const siblingTarget = this.joinArchivePath(wsl, archiveDir, archiveStem);
+    const hasSibling = Boolean(siblingDir) && await this.pathExists(siblingDir!, wsl);
+
+    // 顺序：子目录 → 父文件 → 索引。任何一步失败都把已完成的步骤反向撤销，
+    // 保证失败时磁盘状态与调用前一致（不会出现“报错了但文件已被移走”）。
+    if (hasSibling) await this.moveNoClobber(siblingDir!, siblingTarget, wsl);
+    try {
+      await this.moveNoClobber(filePath, finalTarget, wsl);
+    } catch (error) {
+      if (hasSibling) await this.moveNoClobber(siblingTarget, siblingDir!, wsl).catch(() => undefined);
+      throw error;
     }
-    await this.recordArchiveEntry(finalTarget, filePath, wsl);
+    try {
+      await this.recordArchiveEntry(finalTarget, filePath, wsl);
+    } catch (error) {
+      await this.moveNoClobber(finalTarget, filePath, wsl).catch(() => undefined);
+      if (hasSibling) await this.moveNoClobber(siblingTarget, siblingDir!, wsl).catch(() => undefined);
+      throw error;
+    }
     return finalTarget;
   }
 
-  /**
-   * 从归档恢复会话：按索引把文件移回原路径。
-   * 原路径已存在（被新建会话占用）时抛错，避免覆盖。
-   */
-  async unarchive(archivedPath: string): Promise<string> {
+  private async unarchiveUnlocked(archivedPath: string): Promise<string> {
     const wsl = this.isWslPath(archivedPath);
     const originalPath = await this.lookupArchiveOriginal(archivedPath, wsl);
     if (!originalPath) throw new Error("归档索引中找不到该会话");
-    if (wsl ? await this.existsWslFile(originalPath) : existsSync(originalPath)) {
-      throw new Error("原路径已被占用，无法恢复");
-    }
-    if (wsl) {
-      await this.moveWsl(archivedPath, originalPath, "no-clobber");
-    } else {
-      await rename(archivedPath, originalPath);
-    }
-    // 子会话目录一并移回
-    const siblingDir = this.getSiblingDir(archivedPath);
-    if (siblingDir) {
-      const originalSibling = this.getSiblingDir(originalPath);
-      if (originalSibling) {
-        if (wsl ? await this.existsWslDir(siblingDir) : existsSync(siblingDir)) {
-          if (wsl) await this.moveWsl(siblingDir, originalSibling, "no-clobber");
-          else await rename(siblingDir, originalSibling);
-        }
-      }
+    const archivedSibling = this.getSiblingDir(archivedPath);
+    const originalSibling = this.getSiblingDir(originalPath);
+    const hasSibling = Boolean(archivedSibling && originalSibling) && await this.pathExists(archivedSibling!, wsl);
+
+    // 先检查全部目标，再动任何文件：父文件和子目录任一被占用都整体拒绝。
+    if (await this.pathExists(originalPath, wsl)) throw new Error("原路径已被占用，无法恢复");
+    if (hasSibling && await this.pathExists(originalSibling!, wsl)) throw new Error("原路径已被占用，无法恢复");
+
+    if (hasSibling) await this.moveNoClobber(archivedSibling!, originalSibling!, wsl);
+    try {
+      await this.moveNoClobber(archivedPath, originalPath, wsl);
+    } catch (error) {
+      if (hasSibling) await this.moveNoClobber(originalSibling!, archivedSibling!, wsl).catch(() => undefined);
+      throw error;
     }
     await this.removeArchiveEntry(archivedPath, wsl);
     return originalPath;
@@ -946,41 +985,55 @@ export class SessionScanner {
     return results.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  /** 读归档索引（JSON：{ archivedPath: originalPath }） */
-  private async readArchiveIndex(wsl: boolean): Promise<Record<string, string>> {
-    const roots = wsl ? [this.wslSessionsDir] : [this.root];
-    const merged: Record<string, string> = {};
-    for (const root of roots) {
-      const indexPath = this.joinArchivePath(
-        wsl,
-        root,
-        SessionScanner.ARCHIVE_DIR_NAME,
-        SessionScanner.ARCHIVE_INDEX_NAME,
-      );
-      try {
-        const raw = wsl ? await this.readWslFile(indexPath) : await readFile(indexPath, "utf8");
-        Object.assign(merged, JSON.parse(raw) as Record<string, string>);
-      } catch {
-        // 索引缺失/损坏视为空归档；归档操作会重新写入。
-      }
-    }
-    return merged;
-  }
-
-  /** 写入归档索引（合并现有条目 + 新增/删除） */
-  private async writeArchiveIndex(entries: Record<string, string>, wsl: boolean): Promise<void> {
-    const archiveDir = this.joinArchivePath(
+  /** 归档索引文件路径（全局唯一，位于默认扫描根下）。 */
+  private archiveIndexPath(wsl: boolean): string {
+    return this.joinArchivePath(
       wsl,
       wsl ? this.wslSessionsDir : this.root,
       SessionScanner.ARCHIVE_DIR_NAME,
+      SessionScanner.ARCHIVE_INDEX_NAME,
     );
-    const indexPath = this.joinArchivePath(wsl, archiveDir, SessionScanner.ARCHIVE_INDEX_NAME);
+  }
+
+  /**
+   * 读归档索引（JSON：{ archivedPath: originalPath }）。
+   * - 文件不存在：视为空索引。
+   * - 内容损坏：先把原件改名为 index.json.corrupt-<时间戳> 保留，再返回空索引。
+   *   绝不能直接返回 {} 后让下一次写入覆盖原件，那会丢失全部历史映射。
+   */
+  private async readArchiveIndex(wsl: boolean): Promise<Record<string, string>> {
+    const indexPath = this.archiveIndexPath(wsl);
+    let raw: string;
+    try {
+      if (wsl) {
+        if (!(await this.wslPathExists(indexPath))) return {};
+        raw = await this.readWslFile(indexPath);
+      } else {
+        raw = await readFile(indexPath, "utf8");
+      }
+    } catch (error) {
+      if (!wsl && typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT") return {};
+      throw error;
+    }
+    const parsed = parseArchiveIndex(raw);
+    if (parsed) return parsed;
+    const backup = `${indexPath}.corrupt-${Date.now()}`;
+    if (wsl) await this.moveWsl(indexPath, backup, "no-clobber");
+    else await renameWithoutOverwrite(indexPath, backup);
+    getAppLogger()?.warn("session", "Archive index was corrupt; preserved and reset", { indexPath, backup });
+    return {};
+  }
+
+  /** 原子写入归档索引：写临时文件再改名，崩溃时不会留下半个 JSON。 */
+  private async writeArchiveIndex(entries: Record<string, string>, wsl: boolean): Promise<void> {
+    const indexPath = this.archiveIndexPath(wsl);
     const content = JSON.stringify(entries, null, 2);
     if (wsl) {
-      await this.writeWslFile(indexPath, content);
+      await this.mkdirWsl(this.joinArchivePath(true, this.wslSessionsDir, SessionScanner.ARCHIVE_DIR_NAME));
+      await this.writeWslFileAtomic(indexPath, content);
     } else {
-      await mkdir(archiveDir, { recursive: true });
-      await writeFile(indexPath, content, "utf8");
+      // writeFileAtomic 自己创建父目录，本地分支无需 mkdir。
+      await writeFileAtomic(indexPath, content);
     }
   }
 
