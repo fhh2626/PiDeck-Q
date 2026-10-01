@@ -272,7 +272,10 @@ test("Files IPC: copy refuses to copy a directory into itself", async () => {
 	}
 });
 
-test("Files IPC: same-device move refuses an existing destination file", async () => {
+// 移动一律走独占复制（不再区分同盘 rename / 跨设备 copy），因此只有这一条
+// 「目标已存在的文件」用例；原「same-device …」与「… (exclusive copy path)」
+// 两条在 A3 之后内容完全相同，已合并（H5）。
+test("Files IPC: move refuses an existing destination file (exclusive copy path)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-clobber-"));
 	try {
 		const sourceDir = join(root, "source");
@@ -285,8 +288,8 @@ test("Files IPC: same-device move refuses an existing destination file", async (
 		writeFileSync(destination, "existing-content");
 		const router = registerMoveRouter(root);
 		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
-		assert.equal(readFileSync(source, "utf8"), "source-content");
-		assert.equal(readFileSync(destination, "utf8"), "existing-content");
+		assert.equal(readFileSync(source, "utf8"), "source-content", "失败的移动不得动到源文件");
+		assert.equal(readFileSync(destination, "utf8"), "existing-content", "已有目标不得被覆盖");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -309,49 +312,6 @@ test("Files IPC: move refuses to merge an existing destination directory", async
 		assert.equal(existsSync(source), true, "source must remain when the destination exists");
 		assert.equal(existsSync(join(destination, "target-only.txt")), true);
 		assert.equal(existsSync(join(destination, "source-only.txt")), false, "destination must not be merged or overwritten");
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Files IPC: move refuses an existing destination file (exclusive copy path)", async () => {
-	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-file-"));
-	try {
-		const sourceDir = join(root, "source");
-		const targetDir = join(root, "target");
-		const source = join(sourceDir, "same.txt");
-		const destination = join(targetDir, basename(source));
-		mkdirSync(sourceDir);
-		mkdirSync(targetDir);
-		writeFileSync(source, "source-content");
-		writeFileSync(destination, "existing-content");
-
-		const router = registerMoveRouter(root);
-		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
-		assert.equal(readFileSync(source, "utf8"), "source-content");
-		assert.equal(readFileSync(destination, "utf8"), "existing-content");
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Files IPC: move refuses an existing destination directory (exclusive copy path)", async () => {
-	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-dir-"));
-	try {
-		const sourceDir = join(root, "source");
-		const targetDir = join(root, "target");
-		const source = join(sourceDir, "same-folder");
-		const destination = join(targetDir, basename(source));
-		mkdirSync(source, { recursive: true });
-		mkdirSync(destination, { recursive: true });
-		writeFileSync(join(source, "source-only.txt"), "source");
-		writeFileSync(join(destination, "target-only.txt"), "target");
-
-		const router = registerMoveRouter(root);
-		await assert.rejects(() => router.invoke(ipcChannels.filesMove, [source], targetDir), /exist/i);
-		assert.equal(existsSync(source), true);
-		assert.equal(existsSync(join(destination, "source-only.txt")), false);
-		assert.equal(readFileSync(join(destination, "target-only.txt"), "utf8"), "target");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -413,7 +373,7 @@ test("Files IPC: dialog:pick-images handles cancel, selection, and >16 limits", 
 });
 
 test("Files IPC: move keeps the source when the destination appears at the copy primitive", async () => {
-	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-exdev-race-"));
+	const root = mkdtempSync(join(tmpdir(), "pideck-files-move-race-"));
 	try {
 		const sourceDir = join(root, "source");
 		const targetDir = join(root, "target");

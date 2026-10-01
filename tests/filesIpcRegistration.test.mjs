@@ -31,18 +31,19 @@ test("files:show-in-folder handler authorizes a Windows-converted path", () => {
   assert.match(filesIpc, /const toHostPath = \(path: string\): string => toWindowsPath\(path\)/);
 });
 
-test("file mutation handlers normalize host paths and use authorization checks", () => {
+// H4：本用例原来还断言 rename / copy 的源码正则，这些已由行为测试覆盖：
+// - rename 不覆盖已有目标、换名规则：tests/renameWithoutOverwrite.test.mjs
+// - copy 冲突换名、目录不合并、不自我递归：tests/copyToFreeName.test.mjs
+// - 两个 handler 的端到端行为（含换号与拒绝合并）：tests/filesIpcPlatform.test.mjs
+// 这里只保留「授权在副作用之前」这条结构约束——它描述的是调用顺序，
+// 用注入 stub 只能断言“被调用”，无法证明“先授权后调用”。
+test("file mutation handlers authorize every path before touching the filesystem", () => {
 	assert.match(filesIpc, /const hostPath = await authorizePath\(path, "write", "write"\)/);
-	assert.match(filesIpc, /fileSystemService\.delete\(hostPath, recursive\)/);
-	assert.match(filesIpc, /fileSystemService\.rename\(hostPath, newName\)/);
 	assert.match(filesIpc, /const hostTargetDir = await authorizePath\(targetDir, "copy-target", "read"\)/);
 	assert.match(filesIpc, /const hostTargetDir = await authorizePath\(targetDir, "move-target", "read"\)/);
 	assert.match(filesIpc, /const hostSource = await authorizePath\(src, "move-source", "link"\)/);
+	assert.match(filesIpc, /const toHostPath = \(path: string\): string => toWindowsPath\(path\)/);
+	// 外部文件只能凭 capability 读，不允许渲染层自报路径
 	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
 	assert.match(filesIpc, /externalFileCapabilities\?\.consumeRead/);
-	// 移动不再依赖 cp 的 stat/no-clobber 选项；跨设备及同盘均经过独占创建 helper。
-	assert.match(filesIpc, /await copyWithoutOverwrite\(move\.hostSource, move\.dest, fsOperations\)/);
-	const exclusiveCopy = readFileSync("src/main/fs/copyWithoutOverwrite.ts", "utf8");
-	assert.match(exclusiveCopy, /operations\.copyFile\(source, destination, constants\.COPYFILE_EXCL\)/);
-	assert.match(exclusiveCopy, /await operations\.mkdir\(destination\)/);
 });

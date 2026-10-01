@@ -2,13 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const main = readFileSync("src/native-node/index.ts", "utf8");
 const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
 const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
-const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-// E1：会话记录的改名/删除/归档已收口到 SessionRecordService，两边只做委托，
-// 所以“必须广播 catalog 刷新”的断言改指向这一处（唯一的实现）。
-const recordService = readFileSync("src/main/sessions/SessionRecordService.ts", "utf8");
 const projectsIpc = readFileSync("src/main/ipc/projectsIpc.ts", "utf8");
 const timeline = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
 const chrome = readFileSync("src/renderer/src/hooks/useSessionWorkspaceChrome.ts", "utf8");
@@ -16,14 +11,10 @@ const webApp = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
 const sessionAtoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "utf8");
 
 test("web session mutations notify the desktop catalog instead of leaving PC stale", () => {
-  assert.match(
-    createBackend,
-    /deleteSessionRecord: \(sessionId\) => sessionRecordService\.delete\(sessionId\)/,
-  );
-  assert.match(
-    recordService,
-    /async delete\(sessionId: string\)[\s\S]*notifyCatalogRefreshed\(entry\.projectId\)/,
-  );
+  // H4：deleteSessionRecord / sessionsCatalogDelete 两条委托正则已删，
+  // 它们保护的「删除后广播刷新」由 E1 的行为测试覆盖：
+  //   tests/sessionRecordService.test.mjs —「delete removes the file, then broadcasts a refresh for the project」
+  // 这里只留创建路径的契约（新建草稿与匿名激活各自推一次刷新）。
   assert.match(
     createBackend,
     /createSessionDraft: async \(input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: input\.projectId/,
@@ -31,10 +22,6 @@ test("web session mutations notify the desktop catalog instead of leaving PC sta
   assert.match(
     sessionBridge,
     /startAnonymousActivation\(session, project, input\)[\s\S]*sessionsCatalogRefreshed[\s\S]*projectId: session\.projectId/,
-  );
-  assert.match(
-    sessionIpc,
-    /sessionsCatalogDelete[\s\S]*sessionRecordService\.delete\(sessionId\)/,
   );
 });
 
