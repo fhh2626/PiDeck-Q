@@ -15,7 +15,3 @@ test("catalog delete still removes the catalog record after a stale file path", 
   assert.match(ipc, /if \(entry\.filePath\) \{[\s\S]*await sessionScanner\.delete\(entry\.filePath\);[\s\S]*\}/);
   assert.match(ipc, /await sessionCatalog\.remove\(sessionId\)/);
 });
-
-test("WSL deletion uses force semantics for the same idempotent contract", () => {
-  assert.match(scanner, /"rm", "-f", wslPath/);
-});

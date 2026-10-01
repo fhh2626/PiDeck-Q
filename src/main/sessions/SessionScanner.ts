@@ -70,6 +70,9 @@ function hasLegacySessionNameLine(text: string): boolean {
 /** 归档目录名（各扫描根下的隐藏子目录） */
 export const ARCHIVE_DIR_NAME = ".pideck-archive";
 
+/** WSL 会话软删除目录：Windows 回收站看不到 WSL 文件系统，改用扫描根下的隐藏目录。 */
+export const SESSION_TRASH_DIR_NAME = ".pideck-trash";
+
 /**
  * 判断目录或文件路径是否属于会话扫描应忽略的路径。
  *
@@ -89,6 +92,13 @@ export function isIgnoredSessionScanDirectory(pathOrName: string, options?: { al
   const normalized = pathOrName.replace(/\\/g, "/").replace(/\/+$/, "");
   const lower = normalized.toLowerCase();
   const base = lower.split("/").pop() ?? "";
+
+  // 0. 软删除目录（.pideck-trash）：Windows 回收站覆盖不到 WSL 文件系统，改用
+  //    扫描根下的隐藏目录；无论常规扫描还是归档扫描都必须跳过。
+  //    归档扫描可访问 .pideck-archive，但软删除目录里的会话永远不得“复活”。
+  if (base === SESSION_TRASH_DIR_NAME || lower.includes(`/${SESSION_TRASH_DIR_NAME}/`)) {
+    return true;
+  }
 
   // 1. 归档目录（.pideck-archive）：常规扫描跳过该目录本身（归档扫描时放行）
   if (!options?.allowArchive && base === ARCHIVE_DIR_NAME.toLowerCase()) {
@@ -297,7 +307,11 @@ export class SessionScanner {
     });
   }
 
-  /** 通过 wsl.exe 删除文件 */
+  /**
+   * 通过 wsl.exe 删除文件。
+   * 仅供本模块自己创建的临时文件（原子写入的 .tmp）清理使用；
+   * 会话删除不得调用它（用户主动删除必须可恢复，见 softDeleteWsl）。
+   */
   private deleteWslFile(wslPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "rm", "-f", wslPath], {
@@ -307,6 +321,45 @@ export class SessionScanner {
         windowsHide: true,
       }, (err) => { if (err) reject(err); else resolve(); });
     });
+  }
+
+  /** 通过 wsl.exe 执行一条命令；参数必须是数组，禁止拼接 shell 字符串。 */
+  private execWsl(args: string[], timeout = 10_000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, ...args], {
+        shell: this.wslShell,
+        encoding: "utf8",
+        timeout,
+        windowsHide: true,
+      }, (err, stdout) => { if (err) reject(err); else resolve(String(stdout ?? "")); });
+    });
+  }
+
+  /** WSL 内路径（文件或目录）是否存在。 */
+  private wslPathExists(wslPath: string): Promise<boolean> {
+    return this.execWsl(["test", "-e", wslPath]).then(() => true, () => false);
+  }
+
+  /** WSL 内 mkdir -p。 */
+  private mkdirWsl(wslPath: string): Promise<void> {
+    return this.execWsl(["mkdir", "-p", wslPath]).then(() => undefined);
+  }
+
+  /**
+   * 通过 wsl.exe 移动文件/目录。
+   * - "no-clobber"：目标已存在时报错，绝不覆盖。-T 防止目标是已有目录时把源“移进去”嵌套一层。
+   *   GNU mv -n 在跳过时可能仍返回 0，所以移动后再确认源已经离开。
+   * - "overwrite"：仅用于原子写入（临时文件替换正式文件）。
+   */
+  private async moveWsl(srcPath: string, dstPath: string, mode: "no-clobber" | "overwrite"): Promise<void> {
+    if (mode === "overwrite") {
+      await this.execWsl(["mv", "-f", "-T", srcPath, dstPath]);
+      return;
+    }
+    await this.execWsl(["mv", "-n", "-T", srcPath, dstPath]);
+    if (await this.wslPathExists(srcPath)) {
+      throw new Error(`WSL_MOVE_TARGET_EXISTS: ${dstPath}`);
+    }
   }
 
   /** 通过 wsl.exe 复制文件 */
@@ -343,10 +396,11 @@ export class SessionScanner {
     return new Promise((resolve, reject) => {
       execFile(this.wslExePath, [
         "-d", this.wslConfig!.distro, "-u", this.wslConfig!.user,
-        // 跳过归档目录（.pideck-archive）与回收目录（.trash）：归档会话不参与常规扫描。
+        // 跳过归档目录（.pideck-archive）与软删除目录（.pideck-trash）：归档/已删会话不参与常规扫描。
         // 跳过 subagent 的 transcript/artifact 目录，避免非会话 JSONL 进入会话列表。
         "find", sessionsDir, "-name", "*.jsonl", "-type", "f",
         "-not", "-path", `*/${SessionScanner.ARCHIVE_DIR_NAME}/*`,
+        "-not", "-path", `*/${SESSION_TRASH_DIR_NAME}/*`,
         "-not", "-path", "*/subagent-artifacts/*",
         "-not", "-path", "*/.pi/subagents/artifacts/*",
       ], {
@@ -733,9 +787,7 @@ export class SessionScanner {
    */
   async delete(filePath: string): Promise<void> {
     if (this.isWslPath(filePath)) {
-      // rm -f 语义保证“文件已被外部清理”与成功删除等价，避免重启后删空草稿报错。
-      await this.deleteWslSiblingDir(filePath);
-      await this.deleteWslFile(filePath);
+      await this.softDeleteWsl(filePath);
       return;
     }
 
@@ -793,7 +845,8 @@ export class SessionScanner {
       : target;
 
     if (wsl) {
-      await this.moveWsl(filePath, finalTarget);
+      await this.mkdirWsl(archiveDir);
+      await this.moveWsl(filePath, finalTarget, "no-clobber");
     } else {
       await mkdir(archiveDir, { recursive: true });
       await rename(filePath, finalTarget);
@@ -804,7 +857,7 @@ export class SessionScanner {
       const siblingBasename = wsl ? posixBasename(siblingDir) : basename(siblingDir);
       const targetSibling = this.joinArchivePath(wsl, archiveDir, siblingBasename);
       if (wsl) {
-        if (await this.existsWslDir(siblingDir)) await this.moveWsl(siblingDir, targetSibling);
+        if (await this.existsWslDir(siblingDir)) await this.moveWsl(siblingDir, targetSibling, "no-clobber");
       } else if (existsSync(siblingDir)) {
         await rename(siblingDir, targetSibling);
       }
@@ -825,7 +878,7 @@ export class SessionScanner {
       throw new Error("原路径已被占用，无法恢复");
     }
     if (wsl) {
-      await this.moveWsl(archivedPath, originalPath);
+      await this.moveWsl(archivedPath, originalPath, "no-clobber");
     } else {
       await rename(archivedPath, originalPath);
     }
@@ -835,7 +888,7 @@ export class SessionScanner {
       const originalSibling = this.getSiblingDir(originalPath);
       if (originalSibling) {
         if (wsl ? await this.existsWslDir(siblingDir) : existsSync(siblingDir)) {
-          if (wsl) await this.moveWsl(siblingDir, originalSibling);
+          if (wsl) await this.moveWsl(siblingDir, originalSibling, "no-clobber");
           else await rename(siblingDir, originalSibling);
         }
       }
@@ -870,18 +923,6 @@ export class SessionScanner {
       }
     }
     return results.sort((a, b) => b.updatedAt - a.updatedAt);
-  }
-
-  /** 通过 wsl.exe 移动文件/目录 */
-  private moveWsl(srcPath: string, dstPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "mv", "-f", srcPath, dstPath], {
-        shell: this.wslShell,
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-      }, (err) => { if (err) reject(err); else resolve(); });
-    });
   }
 
   /** 读归档索引（JSON：{ archivedPath: originalPath }） */
@@ -984,31 +1025,24 @@ export class SessionScanner {
     await this.trashPath(siblingDir, { source: "sessions:delete-sibling" });
   }
 
-  /** 删除 WSL 同级子会话目录（如果存在） */
-  private async deleteWslSiblingDir(filePath: string): Promise<void> {
+  /**
+   * WSL 会话的可恢复删除：Windows 回收站看不到 WSL 文件系统，所以移到
+   * <扫描根>/.pideck-trash/<时间戳>-<uuid>/ 下（常规扫描跳过该目录）。
+   * 先移子会话目录、再移父文件；任一步失败直接抛错，不会出现“子目录没删掉、父文件却没了”。
+   * 文件已不存在时视为成功，保持删除接口幂等。
+   */
+  private async softDeleteWsl(filePath: string): Promise<void> {
+    const root = this.findSessionsRootForFile(filePath);
+    const bucket = posixJoin(root, SESSION_TRASH_DIR_NAME, `${Date.now()}-${randomUUID()}`);
     const siblingDir = this.getSiblingDir(filePath);
-    if (!siblingDir) return;
-    // 安全防护：不删除 WSL sessions 根目录
-    if (this.normalize(siblingDir) === this.normalize(this.wslSessionsDir)) return;
-    // 检查目录是否存在
-    const exists = await new Promise<boolean>((resolve) => {
-      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "test", "-d", siblingDir], {
-        shell: this.wslShell,
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-      }, (err) => resolve(!err));
-    });
-    if (!exists) return;
-    // 递归删除目录
-    await new Promise<void>((resolve) => {
-      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "rm", "-rf", siblingDir], {
-        shell: this.wslShell,
-        encoding: "utf8",
-        timeout: 10_000,
-        windowsHide: true,
-      }, () => resolve()); // 静默：失败不阻塞文件删除
-    });
+    const hasSibling = Boolean(siblingDir)
+      && this.normalize(siblingDir!) !== this.normalize(this.wslSessionsDir)
+      && await this.wslPathExists(siblingDir!);
+    const hasFile = await this.wslPathExists(filePath);
+    if (!hasSibling && !hasFile) return;
+    await this.mkdirWsl(bucket);
+    if (hasSibling) await this.moveWsl(siblingDir!, posixJoin(bucket, posixBasename(siblingDir!)), "no-clobber");
+    if (hasFile) await this.moveWsl(filePath, posixJoin(bucket, posixBasename(filePath)), "no-clobber");
   }
 
   /**
