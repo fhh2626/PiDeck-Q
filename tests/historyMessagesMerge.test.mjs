@@ -111,7 +111,7 @@ test("用户连发两条相同文本：指纹一一消耗，不误删", () => {
 	);
 });
 
-test("tool 消息按 toolCallId 指纹匹配（text 随状态变化不可靠）", () => {
+test("tool 消息按 toolCallId 指纹匹配 → 合并后只保留投影版（text 随状态变化不可靠）", () => {
 	// 运行期 tool 消息 text 带 ▶/✓ 前缀，投影带 ✓/✗ 前缀，文本不一致；
 	// 但两者 meta.toolCallId 同源（pi 的 toolCallId）→ 必须按 toolCallId 去重。
 	const history = [

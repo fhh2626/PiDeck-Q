@@ -48,12 +48,11 @@ test("approval card shows the full question text instead of a single truncated l
   assert.match(descriptionLine, /break-words|overflow-wrap:anywhere/);
 });
 
-test("composer default height stays compact while remaining vertically resizable", () => {
-  const rendererUtils = readFileSync("src/renderer/src/rendererUtils.ts", "utf8");
-  assert.match(rendererUtils, /COMPOSER_DEFAULT_HEIGHT = 160/);
-  assert.match(rendererUtils, /COMPOSER_MIN_HEIGHT = 148/);
+// 高度常量与 minSize 的具体取值由 composerAutoGrow.test.mjs 的
+// 「auto growth does not relax the existing minimum-size constraints」守卫；
+// 这里只验证「输入区仍是一个可纵向调整的面板」，即两个文件不重复。
+test("composer stays a vertically resizable panel", () => {
   assert.match(sessionView, /COMPOSER_DEFAULT_HEIGHT/);
-  assert.match(sessionView, /minSize=\{COMPOSER_MIN_HEIGHT\}/);
   // 标签与 prop 允许跨行（终端布局修复后 Group 多了 groupRef，JSX 折行）
   assert.match(sessionView, /<ResizablePanelGroup[\s\S]*?orientation="vertical"/);
   assert.match(sessionView, /id="composer"/);

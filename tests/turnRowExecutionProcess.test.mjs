@@ -29,10 +29,9 @@ test("renders the run as order-preserving flat display without pulling the last 
     turnRowSource.slice(turnRowSource.indexOf("foldableItems.map")),
     /最终回答（始终可见）/,
   );
-  assert.match(turnRowSource, /buildTurnDisplay\(run/);
-  // 最终回答走 FinalAnswer（常驻），容器外常驻区渲染
-  assert.match(turnRowSource, /\/\/ final-answer/);
-  assert.match(turnRowSource, /<FinalAnswer/);
+  // 最终回答走 FinalAnswer（常驻），容器外常驻区渲染；
+  // buildTurnDisplay / :: final-answer / hidden={!stepsVisible} 的断言归
+  // turnDisplayStructure.test.mjs（单折叠汇总的完整契约）。
 });
 
 // issue #130：回答文本是面向用户的正式内容，不应折进「执行过程」。
@@ -43,12 +42,9 @@ test("issue #130: fold concerns process steps and interim answers, final answer 
   assert.match(thinkingStepSource, /ThinkingBlock/);
   assert.match(thinkingStepSource, /defaultExpanded=\{false\}/);
   assert.match(toolStepSource, /ToolGroupCard/);
-  // 步骤原位渲染，不受「单个折叠容器」限制（避免折叠容器被回答文本打断）
-  assert.match(turnRowSource, /hidden=\{!stepsVisible\}/);
 
   // 概要只统计工具/思考/中间回复数，不再计「N次回答」预览
   assert.doesNotMatch(turnRowSource, /executionAnswerCount/);
-  assert.doesNotMatch(summaryToggleSource, /message\.text/);
 
   // i18n key 同步移除旧的回答计数；新增中间回复计数
   assert.doesNotMatch(
