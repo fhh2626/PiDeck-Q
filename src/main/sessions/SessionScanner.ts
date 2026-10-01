@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
-import { mkdir, open as openFile, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open as openFile, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { basename as posixBasename, dirname as posixDirname, extname as posixExtname, isAbsolute as posixIsAbsolute, join as posixJoin } from "node:path/posix";
@@ -11,6 +11,8 @@ import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCop
 import { getCodexSessionThreadInfo } from "../../shared/codexSessionMeta";
 import { extractMessageText, extractThinkingRaw } from "../pi/messageContent";
 import { toWslLinuxPath, type WslEnvironment } from "../wsl/WslPaths";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
+import { renameWithoutOverwrite } from "../fs/renameWithoutOverwrite";
 import { getAppLogger } from "../logging/sharedLogger";
 import {
   isLegacySessionNameEntry,
@@ -266,6 +268,21 @@ export class SessionScanner {
         else resolve(stdout);
       });
     });
+  }
+
+  /**
+   * WSL 原子写：先 dd 到同目录临时文件，再 mv -f 覆盖目标。
+   * dd of=<目标> 会先截断目标再写入，超时或中断会留下半个文件；改名在 Linux 上是原子的。
+   */
+  private async writeWslFileAtomic(wslPath: string, content: string): Promise<void> {
+    const tempPath = `${wslPath}.${randomUUID()}.tmp`;
+    try {
+      await this.writeWslFile(tempPath, content);
+      await this.moveWsl(tempPath, wslPath, "overwrite");
+    } catch (error) {
+      await this.deleteWslFile(tempPath).catch(() => undefined);
+      throw error;
+    }
   }
 
   /** 通过 wsl.exe 写入文件内容 */
@@ -648,7 +665,8 @@ export class SessionScanner {
   // ── 会话操作：rename / delete / copy / exportHtml / readMessages ─
 
   /**
-   * 重命名会话：按 pi 原生格式在 JSONL 末尾追加 session_info 记录。
+   * 重命名会话：读取全文、剔除旧版 sessionName 私有行、追加 session_info 记录后
+   * 原子替换整个文件（不是仅追加一行）。
    *
    * pi 要求会话文件首条可解析记录必须是 type:"session"（buildSessionInfo 中
    * 否则直接返回 null），旧版在文件头前置 {"sessionName":...} 会让 pi 完全无法
@@ -662,10 +680,12 @@ export class SessionScanner {
     const wsl = this.isWslPath(filePath);
     const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
     const output = this.appendSessionInfoLine(raw, newName);
+    // 原子替换：写同目录临时文件再改名。直接 writeFile 会先截断原文件，
+    // 中途崩溃（或 WSL dd 超时）会留下半个会话文件。
     if (wsl) {
-      await this.writeWslFile(filePath, output);
+      await this.writeWslFileAtomic(filePath, output);
     } else {
-      await writeFile(filePath, output, "utf8");
+      await writeFileAtomic(filePath, output);
     }
   }
 
@@ -690,12 +710,12 @@ export class SessionScanner {
       const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
       const stripped = stripLegacySessionNameLine(raw);
       if (stripped === raw) return false;
-      if (wsl) {
-        await this.writeWslFile(filePath, stripped);
-      } else {
-        await writeFile(filePath, stripped, "utf8");
-      }
-      return true;
+    if (wsl) {
+      await this.writeWslFileAtomic(filePath, stripped);
+    } else {
+      await writeFileAtomic(filePath, stripped);
+    }
+    return true;
     }
 
     // 模式 2：首行路径粘连（.jsonl{ + 合法 session header，见 tryRestorePathGluedHeader）
@@ -707,10 +727,11 @@ export class SessionScanner {
       if (lines[0] === restoredFirstLine) return false;
       lines[0] = restoredFirstLine;
       const output = lines.join("\n");
+      // 修复也是改写正式会话文件：同样必须原子替换，否则修坏比不修更糟。
       if (wsl) {
-        await this.writeWslFile(filePath, output);
+        await this.writeWslFileAtomic(filePath, output);
       } else {
-        await writeFile(filePath, output, "utf8");
+        await writeFileAtomic(filePath, output);
       }
       return true;
     }
@@ -1062,10 +1083,21 @@ export class SessionScanner {
     // copiedFrom 作为附加字段保留来源信息；pi 会忽略未知字段，不影响加载。
     const content = this.appendSessionInfoLine(raw, copyName, { copiedFrom: filePath });
 
+    // 副本是新文件：先完整写入临时文件，再以“不覆盖”方式改名到目标，
+    // 既不会留下半个副本，也不会覆盖在 nextCopyPath 检查之后出现的同名文件。
+    const tempPath = `${targetPath}.${randomUUID()}.tmp`;
     if (wsl) {
-      await this.writeWslFile(targetPath, content);
+      await this.writeWslFile(tempPath, content);
+      await this.moveWsl(tempPath, targetPath, "no-clobber").catch(async (error: unknown) => {
+        await this.deleteWslFile(tempPath).catch(() => undefined);
+        throw error;
+      });
     } else {
-      await writeFile(targetPath, content, "utf8");
+      await writeFile(tempPath, content, { encoding: "utf8", flag: "wx" });
+      await renameWithoutOverwrite(tempPath, targetPath).catch(async (error: unknown) => {
+        await unlink(tempPath).catch(() => undefined);
+        throw error;
+      });
     }
     const summary = await this.readSummary(targetPath);
     if (!summary) throw new Error("复制后的会话文件无法读取");

@@ -162,8 +162,11 @@ test("WSL 重命名超过 1MB 的会话不报错且追加 session_info（#147 �
 		// 修复前：readWslFile（读全文）与 writeWslFile（tee 回显）都会撞 1MB 上限
 		await scanner.rename(BIG_PATH, "renamed");
 
-		const written = mock.writes.find((w) => w.path === BIG_PATH);
-		assert.ok(written, "重命名应回写文件");
+		// 原子写：内容先经 dd 写入同目录临时文件，再用 mv -f -T 替换正式文件。
+		const written = mock.writes.find((w) => w.path.startsWith(`${BIG_PATH}.`) && w.path.endsWith(".tmp"));
+		assert.ok(written, "重命名应先完整写入临时文件");
+		const replaced = mock.calls.some(({ args }) => args.includes("mv") && args.includes("-T") && args.at(-2) === written.path && args.at(-1) === BIG_PATH);
+		assert.ok(replaced, "临时文件应原子替换正式会话文件");
 		assert.equal(piSessionName(written.content.split(/\r?\n/)), "renamed");
 	} finally {
 		rmSync(home, { recursive: true, force: true });
