@@ -930,6 +930,37 @@ export const removeSessionSlidingOutMessagesAtom = atom(
 const COMPACTION_RETAINED_TURNS = 50;
 
 /**
+ * 用户要求：桌面聊天至少显示最近 50 轮。运行中会话的「历史前缀 + 运行时窗口」
+ * 合计不得少于此数（会话本身更短时除外）。与主进程 DISPLAY_WINDOW_TURNS 同值。
+ */
+export const MIN_DISPLAY_TURNS = 50;
+
+/** 统计用户轮数：只数 role === "user" 的消息（摘要卡、工具、助手都不算轮）。 */
+export function countUserTurns(messages: readonly ChatMessage[]): number {
+  let turns = 0;
+  for (const message of messages) {
+    if (message.role === "user") turns += 1;
+  }
+  return turns;
+}
+
+/**
+ * 保留尾部最近 turnCount 轮：从倒数第 turnCount 条用户消息处切开，轮内内容整体保留。
+ * - turnCount <= 0：返回空数组。
+ * - 总轮数不足 turnCount：原样返回（包括第一条用户消息之前的碎片）。
+ */
+export function keepTailTurns(messages: ChatMessage[], turnCount: number): ChatMessage[] {
+  if (turnCount <= 0) return [];
+  let seen = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role !== "user") continue;
+    seen += 1;
+    if (seen === turnCount) return messages.slice(index);
+  }
+  return messages;
+}
+
+/**
  * 计算压缩保留集合（messageEntryKey）：以「旧保留集 + 本次转入历史的上一窗口」为输入，
  * 取尾部最近 COMPACTION_RETAINED_TURNS 个 user 轮的连续后缀。连续多次压缩只重算 suffixes，
  * 不把历史各次结果相加，避免保留集无限增长。
