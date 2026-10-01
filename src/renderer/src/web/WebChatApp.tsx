@@ -47,7 +47,7 @@ import {
 	WEB_STATE_POLL_MS,
 	type WebConnectionSnapshot,
 } from "./webConnection";
-import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, type WebHistoryMeta } from "./webHistory";
+import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, type WebHistoryMeta } from "./webHistory";
 import { WEB_TIMELINE_TURN_LIMIT } from "./webTurnWindow";
 import {
 	isWebChatStreaming,
@@ -123,6 +123,8 @@ export function WebChatApp() {
 	const streamingRef = useRef(false);
 	// 同一条断线只启动一次恢复；重新收到实时帧后释放，允许后续独立断线再次恢复。
 	const recoveringStreamSessionRef = useRef<string | null>(null);
+	/** 首屏历史在流式期间到达、暂未注入 useChat 的会话（流结束后补注入）。 */
+	const deferredHistoryApplyRef = useRef<Set<string>>(new Set());
 	// 首页直发暂存：新建会话后等 useChat 实例切换完成，再投递首条消息
 	const pendingSendRef = useRef<{ sessionId: string; text: string } | null>(null);
 
@@ -211,9 +213,17 @@ export function WebChatApp() {
 				);
 				loadedSessionsRef.current.add(sessionId);
 				bumpHistory();
-				// 仅当仍停留在该会话时才注入（避免切走后 setMessages 串台）
-				if (activeSessionIdRef.current === sessionId && !streamingRef.current) {
+				// 仅当仍停留在该会话时才注入（避免切走后 setMessages 串台）；
+				// 流式期间不能 setMessages（会与 SSE 写入冲突），登记后由下方的
+				// 「流结束后补注入」effect 用缓存整体替换。
+				const applyDecision = decideHistoryApply(
+					activeSessionIdRef.current === sessionId,
+					streamingRef.current,
+				);
+				if (applyDecision === "apply") {
 					setMessages(merged);
+				} else if (applyDecision === "defer") {
+					deferredHistoryApplyRef.current.add(sessionId);
 				}
 			})
 			.catch(() => {
@@ -227,6 +237,16 @@ export function WebChatApp() {
 				if (activeSessionIdRef.current === sessionId) setCommandError(t("web.historyLoadFailed"));
 			});
 	}, [activeSessionId, bumpHistory, setMessages]);
+
+	// 流结束后补注入延后的首屏历史：缓存在流式期间一直在合并（含历史与本次回复），
+	// 直接用缓存整体替换 useChat 的消息。
+	useEffect(() => {
+		if (!activeSessionId || chatStreaming) return;
+		if (!deferredHistoryApplyRef.current.has(activeSessionId)) return;
+		deferredHistoryApplyRef.current.delete(activeSessionId);
+		const cached = messagesBySessionRef.current[activeSessionId];
+		if (cached) setMessages(cached);
+	}, [activeSessionId, chatStreaming, setMessages]);
 
 	// SSE 异常先以权威快照建立新基线；runtime 仍在运行时只重订阅 session stream，
 	// 绝不重试 POST /api/chat，避免同一 prompt 被再次发送。
@@ -372,6 +392,7 @@ export function WebChatApp() {
 						delete messagesBySessionRef.current[id];
 						delete historyMetaRef.current[id];
 						loadedSessionsRef.current.delete(id);
+						deferredHistoryApplyRef.current.delete(id);
 					}
 				}
 				// 初始页面保持空会话，让用户明确选择项目/会话；外部删除当前会话时也回到空状态。
@@ -533,6 +554,7 @@ export function WebChatApp() {
 				delete messagesBySessionRef.current[session.id];
 				delete historyMetaRef.current[session.id];
 				loadedSessionsRef.current.delete(session.id);
+				deferredHistoryApplyRef.current.delete(session.id);
 			}
 			setState((current) => ({
 				...current,
@@ -572,6 +594,7 @@ export function WebChatApp() {
 			delete messagesBySessionRef.current[sessionId];
 			delete historyMetaRef.current[sessionId];
 			loadedSessionsRef.current.delete(sessionId);
+			deferredHistoryApplyRef.current.delete(sessionId);
 			if (activeSessionId === sessionId) {
 				setActiveSessionId("");
 				setMessages([]);

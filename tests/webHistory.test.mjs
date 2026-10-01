@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
@@ -7,6 +8,8 @@ const {
 	canRequestWebHistoryPage,
 	applyWebHistoryTailPage,
 	applyWebHistoryOlderPage,
+	decideHistoryApply,
+	needsWebHistoryTopUp,
 } = loadTsCommonJs("src/renderer/src/web/webHistory.ts");
 
 test("web history stays loadable before the first page arrives", () => {
@@ -154,4 +157,34 @@ test("a stale older page that does not advance the cursor stops the frontier", (
 	);
 	assert.equal(next.status, "error");
 	assert.equal(next.nextBefore, 70, "保留旧游标便于用户手动重试");
+});
+
+
+test("decideHistoryApply applies when the session is active and idle", () => {
+	assert.equal(decideHistoryApply(true, false), "apply");
+});
+
+test("decideHistoryApply defers while the active session is streaming", () => {
+	assert.equal(decideHistoryApply(true, true), "defer");
+});
+
+test("decideHistoryApply skips when the session is no longer active", () => {
+	assert.equal(decideHistoryApply(false, false), "skip");
+	assert.equal(decideHistoryApply(false, true), "skip");
+});
+
+// ── W2：首屏历史在流式期间到达时必须延后应用（源码结构约束） ──
+
+test("WebChatApp defers the first history page while streaming and re-injects it afterwards", () => {
+	const source = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
+	// 回调必须走纯函数判定，而不是手写 if
+	assert.match(source, /decideHistoryApply\(/);
+	// 延后登记 + 补注入后清理，两处都要有
+	assert.match(source, /deferredHistoryApplyRef\.current\.add\(/);
+	assert.match(source, /deferredHistoryApplyRef\.current\.delete\(/);
+	// 补注入 effect 必须在流结束后用缓存整体替换
+	assert.match(
+		source,
+		/if \(!activeSessionId \|\| chatStreaming\) return;[\s\S]{0,400}setMessages\(cached\)/,
+	);
 });

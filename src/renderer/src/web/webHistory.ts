@@ -19,6 +19,21 @@ export type WebHistoryPageCursors = {
 	indexVersion?: string;
 };
 
+/**
+ * 首屏历史页返回后该怎么处置（2026-12）。
+ * - skip：用户已切走，不得 setMessages（否则串台）。
+ * - defer：仍在该会话但正在流式，不能 setMessages（会与 SSE 写入冲突），
+ *   流结束后由 WebChatApp 的补注入 effect 用缓存整体替换。
+ * - apply：空闲且仍是当前会话，直接注入。
+ */
+export function decideHistoryApply(
+	isActive: boolean,
+	streaming: boolean,
+): "apply" | "defer" | "skip" {
+	if (!isActive) return "skip";
+	return streaming ? "defer" : "apply";
+}
+
 export function hasMoreWebHistory(input: {
 	meta?: WebHistoryMeta;
 	loaded: boolean;
