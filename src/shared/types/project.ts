@@ -1,3 +1,8 @@
+/**
+ * 项目记录。
+ * 注意：新增字段必须同步到 main/projects/projectRecordValidation.ts 的 parseProjectRecord，
+ * 否则该字段会在下次启动加载目录时被静默丢弃。
+ */
 export type Project = {
 	id: string;
 	name: string;

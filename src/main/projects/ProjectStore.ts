@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { preserveCorruptProjectCatalog, writeProjectSnapshot } from "./projectCatalogPersistence";
+import { parseProjectCatalog } from "./projectRecordValidation";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -27,6 +28,8 @@ export class ProjectStore {
   // 聊天工作区目录：默认在 userData 下，用户可在侧栏聊天项目设置中改为任意目录并持久化。
   private chatProjectPath: string;
   private projects: Project[] = [];
+  /** readProjects 丢弃过非法记录时为 true，load() 据此把清洗后的列表写回。 */
+  private repairedOnLoad = false;
 
   constructor(
     deps?: ProjectStoreDeps | string,
@@ -52,7 +55,8 @@ export class ProjectStore {
     await this.loadChatProjectPath();
     const chatChanged = this.ensureChatProject();
     const orderChanged = this.ensureSortOrder();
-    const changed = chatChanged || orderChanged;
+    const changed = chatChanged || orderChanged || this.repairedOnLoad;
+    this.repairedOnLoad = false;
     await this.ensureDirectory(this.chatProjectPath);
     if (changed) await this.save();
     return this.list();
@@ -347,15 +351,27 @@ export class ProjectStore {
       if (this.isMissingFile(error)) return [];
       throw error;
     }
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error("Project catalog is not an array");
-      return parsed as Project[];
+      parsed = JSON.parse(raw);
     } catch {
-      // 解析失败不能把空列表直接写回正式文件。先保留损坏原件，再允许后续保存重建。
+      // 整体不是合法 JSON：先保留损坏原件，再允许后续保存重建。
       await preserveCorruptProjectCatalog(this.filePath);
       return [];
     }
+    const catalog = parseProjectCatalog(parsed);
+    if (!catalog) {
+      // 不是数组同样视为整体不可用（旧实现只检查“是不是数组”，
+      // 但随后用 as 强转，[null] 这类内容会一直带到访问 project.kind 时崩溃）。
+      await preserveCorruptProjectCatalog(this.filePath);
+      return [];
+    }
+    if (catalog.dropped > 0) {
+      // 部分记录非法：保留原件备查，丢弃坏记录，其余项目照常加载；load() 会把清洗结果写回。
+      await preserveCorruptProjectCatalog(this.filePath);
+      this.repairedOnLoad = true;
+    }
+    return catalog.projects;
   }
 
   private isMissingFile(error: unknown): boolean {

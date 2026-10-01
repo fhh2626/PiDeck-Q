@@ -101,3 +101,21 @@ test("failed atomic project snapshot writes remove their temporary file", async 
   await assert.rejects(() => readFile(projectsFile), /ENOENT/);
  } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("invalid project entries are dropped, the original is preserved, valid projects still load", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pideck-projects-invalid-entry-"));
+	try {
+		const projectsFile = join(root, "projects.json");
+		// [null] 以前能通过“最外层是数组”的检查，随后在访问 project.kind 时崩溃
+		const original = JSON.stringify([null, { id: "p1", name: "One", path: join(root, "one"), lastOpenedAt: 1 }]);
+		await writeFile(projectsFile, original);
+		const store = new ProjectStore({ projectsFile, chatPathFile: join(root, "chat-path.json"), defaultChatProjectPath: join(root, "chat") });
+		const projects = await store.load();
+		assert.equal(projects.some((project) => project.id === "p1"), true, "合法项目必须照常加载");
+		assert.equal(await readFile(`${projectsFile}.corrupt`, "utf8"), original, "丢弃过记录就必须保留原件备查");
+		const rewritten = JSON.parse(await readFile(projectsFile, "utf8"));
+		assert.equal(rewritten.includes(null), false, "清洗后的列表写回磁盘");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
