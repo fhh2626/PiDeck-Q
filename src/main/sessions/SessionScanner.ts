@@ -11,6 +11,7 @@ import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCop
 import { getCodexSessionThreadInfo } from "../../shared/codexSessionMeta";
 import { extractMessageText, extractThinkingRaw } from "../pi/messageContent";
 import { toWslLinuxPath, type WslEnvironment } from "../wsl/WslPaths";
+import { getWslExe } from "../wsl/wslExe";
 import { writeFileAtomic } from "../utils/atomicWriteFile";
 import { renameWithoutOverwrite } from "../fs/renameWithoutOverwrite";
 import { getAppLogger } from "../logging/sharedLogger";
@@ -182,27 +183,13 @@ export class SessionScanner {
     this.activeScanRoots = [this.root];
   }
 
-  /**
-   * wsl.exe 命令与启动模式。优先绝对路径，
-   * 文件不存在时回退到 shell PATH 查找。
-   */
-  private resolveWslExe(): { command: string; shell: boolean } {
-    const systemRoot = process.env.SystemRoot || "C:\\Windows";
-    const candidates = process.arch === "ia32"
-      ? [join(systemRoot, "Sysnative", "wsl.exe"), join(systemRoot, "System32", "wsl.exe")]
-      : [join(systemRoot, "System32", "wsl.exe")];
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) return { command: candidate, shell: false };
-    }
-    return { command: "wsl", shell: true };
-  }
-  /** @deprecated 使用 resolveWslExe() 代替 */
+  /** wsl.exe 完整路径（查找带缓存，见 src/main/wsl/wslExe.ts）。 */
   private get wslExePath(): string {
-    return this.resolveWslExe().command;
+    return getWslExe().command;
   }
-  /** 是否需要 shell 模式来查找 wsl.exe */
+  /** 是否需要 shell 模式来查找 wsl.exe（仅在 System32 找不到 wsl.exe 时） */
   private get wslShell(): boolean {
-    return this.resolveWslExe().shell;
+    return getWslExe().shell;
   }
 
   async configureWsl(environment: WslEnvironment | null): Promise<void> {

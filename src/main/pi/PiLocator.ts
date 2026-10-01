@@ -7,6 +7,7 @@ import type { AppSettings, PiInstallStatus } from "../../shared/types";
 import { detectPiRuntimeKind, type PiRuntimePreference } from "../../shared/piCompatibility";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { sanitizeChildEnvironment } from "../process/sanitizeChildEnvironment";
+import { getWslExe } from "../wsl/wslExe";
 
 type PiLocatorCopy = (
   key: MainProcessTranslationKey,
@@ -203,7 +204,7 @@ export class PiLocator {
       const parsed = this.parseWslUrl(command);
       if (!parsed) return { command, args, shell: false };
       const { distro, user, piCommand } = parsed;
-      const wslExe = this.resolveWslExe();
+      const wslExe = getWslExe();
       const wslArgs = [
         "-d", distro,
         "-u", user,
@@ -211,7 +212,6 @@ export class PiLocator {
         piCommand,
         ...args,
       ];
-      console.log('[PiLocator] WSL invocation:', wslExe.command, wslArgs.join(' '), 'shell:', wslExe.shell);
       return {
         command: wslExe.command,
         args: wslArgs,
@@ -438,31 +438,6 @@ export class PiLocator {
    * SysWOW64，而 wsl.exe 仅存在于真实 System32 中。使用 Sysnative 别名绕过重定向。
    */
   /**
-   * wsl.exe 完整路径（优先绝对路径，fopen 失败时回退到 PATH）。
-   * 32 位进程在 64 位 Windows 上访问 System32 会被文件系统重定向，
-   * Sysnative 别名可绕过；若均不可用则通过 shell PATH 查找。
-   */
-  private resolveWslExe(): { command: string; shell: boolean } {
-    const systemRoot = process.env.SystemRoot || "C:\\Windows";
-    // 尝试真实 System32（通过 Sysnative 处理 32-bit 重定向）
-    const candidates = process.arch === "ia32"
-      ? [join(systemRoot, "Sysnative", "wsl.exe"), join(systemRoot, "System32", "wsl.exe")]
-      : [join(systemRoot, "System32", "wsl.exe")];
-    for (const candidate of candidates) {
-      const ok = existsSync(candidate);
-      console.log('[PiLocator] resolveWslExe candidate:', candidate, 'exists:', ok);
-      if (ok) return { command: candidate, shell: false };
-    }
-    // 绝对路径均不存在：通过 cmd.exe PATH 查找 wsl.exe
-    console.log('[PiLocator] resolveWslExe fallback: shell mode with "wsl"');
-    return { command: "wsl", shell: true };
-  }
-  /** @deprecated 使用 resolveWslExe() 代替，支持 PATH 回退 */
-  private get wslExePath(): string {
-    return this.resolveWslExe().command;
-  }
-
-  /**
    * 解析 "wsl://<distro>/<user>/<piCommand>" 格式的 URL。
    * 使用正则代替 .split("/") 避免 wsl:// 的双斜杠产生空字符串元素导致解析错位。
    */
@@ -474,7 +449,7 @@ export class PiLocator {
 
   private resolveWslCommand(distro: string, user: string): string | undefined {
     try {
-      const wslExe = this.resolveWslExe();
+      const wslExe = getWslExe();
       const wslArgs = ["-d", distro, "-u", user, "which", "pi"];
       const result = execFileSync(wslExe.command, wslArgs, {
         encoding: "utf8",
@@ -493,7 +468,7 @@ export class PiLocator {
 
   private checkWslCommand(distro: string, user: string, piCommand: string): Promise<PiInstallStatus> {
     return new Promise(resolve => {
-      const wslExe = this.resolveWslExe();
+      const wslExe = getWslExe();
       const wslArgs = ["-d", distro, "-u", user, piCommand, "--version"];
       execFile(wslExe.command, wslArgs, {
         env: this.createProcessEnv(undefined, undefined, { distro, user, piCommand }),

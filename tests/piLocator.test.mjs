@@ -1,54 +1,30 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { sanitizeChildEnvironment } = loadTsCommonJs("src/main/process/sanitizeChildEnvironment.ts");
 
-const require = createRequire(import.meta.url);
-
+/**
+ * 在指定 platform/env 下加载 PiLocator。
+ * process 与 electron 经 loadTsCommonJs 的 globals/stubs 注入，
+ * 相对 import（含 ../wsl/wslExe）由加载器自动解析。
+ */
 function loadPiLocatorModule(platform = process.platform, envOverrides = {}, homePath = tmpdir()) {
-	const source = readFileSync("src/main/pi/PiLocator.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		Buffer,
-		TextDecoder,
-		exports: {},
-		process: {
-			...process,
-			env: { ...process.env, ...envOverrides },
-			platform,
-		},
-		require: (id) => {
-			if (id === "electron") {
-				return { app: { getPath: () => homePath } };
-			}
-			if (id.includes("piCompatibility")) {
-				return require("../src/shared/piCompatibility.ts");
-			}
-			if (id === "../process/sanitizeChildEnvironment") return { sanitizeChildEnvironment };
-			return require(id);
-		},
-	};
-	sandbox.global = sandbox;
 	// 宿主开发机可能已设置 MISE_DATA_DIR 等变量（如 D:\mise-data），
 	// 未显式覆盖时剔除，保证每个用例从“干净环境”出发验证默认路径逻辑。
-	if (!("MISE_DATA_DIR" in envOverrides)) delete sandbox.process.env.MISE_DATA_DIR;
-	if (!("MISE_INSTALL_PATH" in envOverrides)) delete sandbox.process.env.MISE_INSTALL_PATH;
-	vm.runInNewContext(outputText, sandbox, {
-		filename: "PiLocator.ts",
+	const env = { ...process.env, ...envOverrides };
+	if (!("MISE_DATA_DIR" in envOverrides)) delete env.MISE_DATA_DIR;
+	if (!("MISE_INSTALL_PATH" in envOverrides)) delete env.MISE_INSTALL_PATH;
+	return loadTsCommonJs("src/main/pi/PiLocator.ts", {
+		stubs: {
+			electron: { app: { getPath: () => homePath } },
+			"../process/sanitizeChildEnvironment": { sanitizeChildEnvironment },
+		},
+		globals: { process: { ...process, platform, env } },
 	});
-	return sandbox.exports;
 }
 
 test("uses the pi shim bin directory as PATH prefix on macOS when node is beside the shim", () => {
