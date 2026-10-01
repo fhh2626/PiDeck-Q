@@ -1,209 +1,29 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import test from "node:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
 
 const require = createRequire(import.meta.url);
 
-function loadTranspiledModule(filePath, overrides = new Map()) {
-	const source = readFileSync(filePath, "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		clearTimeout,
-		exports: {},
-		process,
-		require: (id) => overrides.has(id) ? overrides.get(id) : require(id),
-		setTimeout,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: filePath });
-	return sandbox.exports;
-}
-
-function loadCodexMetaModule() {
-	const source = readFileSync("src/shared/codexSessionMeta.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = { exports: {} };
-	vm.runInNewContext(outputText, sandbox, { filename: "codexSessionMeta.ts" });
-	return sandbox.exports;
-}
-
-function loadMessageContentModule() {
-	const compilerOptions = {
-		module: ts.ModuleKind.CommonJS,
-		target: ts.ScriptTarget.ES2022,
-	};
-	const hostInstruction = { exports: {} };
-	vm.runInNewContext(
-		ts.transpileModule(readFileSync("src/main/pi/hostInstruction.ts", "utf8"), { compilerOptions }).outputText,
-		hostInstruction,
-		{ filename: "hostInstruction.ts" },
-	);
-	const messageContent = {
-		exports: {},
-		require: (id) => {
-			if (id === "./hostInstruction") return hostInstruction.exports;
-			throw new Error(`Unexpected messageContent import: ${id}`);
-		},
-	};
-	vm.runInNewContext(
-		ts.transpileModule(readFileSync("src/main/pi/messageContent.ts", "utf8"), { compilerOptions }).outputText,
-		messageContent,
-		{ filename: "messageContent.ts" },
-	);
-	return messageContent.exports;
-}
-
-function loadWslPathsModule() {
-	const source = readFileSync("src/main/wsl/WslPaths.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		exports: {},
-		require,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "WslPaths.ts" });
-	return sandbox.exports;
-}
-
-function loadFsRetryModule() {
-	// fsRetry 只依赖 node:fs/promises，随 sessionSummaryCache 一起编译注入，
-	// 让真实实现（含 EPERM 退避重试）在测试中同样生效
-	const source = readFileSync("src/main/utils/fsRetry.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		clearTimeout,
-		exports: {},
-		process,
-		require,
-		setTimeout,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "fsRetry.ts" });
-	return sandbox.exports;
-}
-
-function loadSessionSummaryCacheModule(homePath) {
-	const source = readFileSync("src/main/sessions/sessionSummaryCache.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const fsRetry = loadFsRetryModule();
-	const sandbox = {
-		clearTimeout: () => undefined,
-		exports: {},
-		process,
-		require: (id) => {
-			if (id === "electron") {
-				return {
-					app: {
-						getPath: (name) => name === "userData" ? join(homePath, "user-data") : homePath,
-					},
-				};
-			}
-			// fsRetry 只依赖 node:fs/promises，走真实 require 即可
-			if (id === "../utils/fsRetry") return fsRetry;
-			return require(id);
-		},
-		setTimeout: () => ({ unref: () => undefined }),
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "sessionSummaryCache.ts" });
-	return sandbox.exports;
-}
-
-function loadSessionNameLineModule() {
-	const source = readFileSync("src/main/sessions/sessionNameLine.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		exports: {},
-		process,
-		require,
-		setTimeout,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "sessionNameLine.ts" });
-	return sandbox.exports;
-}
-
-function loadPiCompatibilityModule() {
-	return loadTranspiledModule("src/shared/piCompatibility.ts");
-}
-
 function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}) {
-	const source = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
+	const childProcess = { ...require("node:child_process"), ...childProcessOverrides };
+	const nodeFs = { ...require("node:fs"), ...fsOverrides };
+	const exports = loadSharedSessionScanner(homePath, {
+		stubs: {
+			"node:fs": nodeFs,
+			"node:child_process": childProcess,
+			child_process: childProcess,
 		},
 	});
-	const codexMeta = loadCodexMetaModule();
-	const messageContent = loadMessageContentModule();
-	const sessionSummaryCache = loadSessionSummaryCacheModule(homePath);
-	const wslPaths = loadWslPathsModule();
-	const piCompatibility = loadPiCompatibilityModule();
-	const sandbox = {
-		AbortController,
-		AbortSignal,
-		Buffer,
-		clearTimeout,
-		exports: {},
-		process,
-		setTimeout,
-		require: (id) => {
-			if (id === "electron") return { app: { getPath: () => homePath }, shell: {} };
-			if (id === "../../shared/codexSessionMeta") return codexMeta;
-			if (id === "../../shared/piCompatibility") return piCompatibility;
-			if (id === "../../shared/imageContent") return loadTranspiledModule("src/shared/imageContent.ts");
-			if (id === "../../shared/imageLimits") return loadTranspiledModule("src/shared/imageLimits.ts");
-			if (id === "../pi/messageContent") return messageContent;
-			if (id === "../wsl/WslPaths") return wslPaths;
-			if (id === "./sessionSummaryCache") return sessionSummaryCache;
-			// sessionNameLine 为无依赖纯函数模块，直接编译加载真实实现，保证清理口径一致
-			if (id === "./sessionNameLine") return loadSessionNameLineModule();
-			// sharedLogger 未注册时 getAppLogger 返回 null，SessionScanner 埋点静默跳过
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			if (id === "node:child_process") return { ...require(id), ...childProcessOverrides };
-			if (id === "node:fs") return { ...require(id), ...fsOverrides };
-			return require(id);
-		},
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "SessionScanner.ts" });
-	const RawSessionScanner = sandbox.exports.SessionScanner;
-	class WrappedSessionScanner extends RawSessionScanner {
+	class WrappedSessionScanner extends exports.SessionScanner {
 		constructor(translate, home, ...rest) {
 			super(translate, home ?? homePath, ...rest);
 		}
 	}
-	return { ...sandbox.exports, SessionScanner: WrappedSessionScanner };
+	return { ...exports, SessionScanner: WrappedSessionScanner };
 }
 
 function writeSession(filePath, entries) {

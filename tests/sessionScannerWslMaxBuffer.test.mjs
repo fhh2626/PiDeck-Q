@@ -1,115 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
-
-function loadTranspiledModule(filePath, overrides = new Map()) {
-	const source = readFileSync(filePath, "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = {
-		clearTimeout,
-		exports: {},
-		process,
-		require: (id) => overrides.has(id) ? overrides.get(id) : require(id),
-		setTimeout,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: filePath });
-	return sandbox.exports;
-}
-
-function loadCodexMetaModule() {
-	const source = readFileSync("src/shared/codexSessionMeta.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = { exports: {} };
-	vm.runInNewContext(outputText, sandbox, { filename: "codexSessionMeta.ts" });
-	return sandbox.exports;
-}
-
-function loadSessionNameLineModule() {
-	const source = readFileSync("src/main/sessions/sessionNameLine.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const sandbox = { exports: {}, process, require, setTimeout };
-	vm.runInNewContext(outputText, sandbox, { filename: "sessionNameLine.ts" });
-	return sandbox.exports;
-}
+import { loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
 
 function loadSessionScanner(homePath, execFileMock) {
-	const source = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	});
-	const codexMeta = loadCodexMetaModule();
-	const hostInstruction = loadTranspiledModule("src/main/pi/hostInstruction.ts");
-	const piCompatibility = loadTranspiledModule("src/shared/piCompatibility.ts");
-	const messageContent = loadTranspiledModule(
-		"src/main/pi/messageContent.ts",
-		new Map([["./hostInstruction", hostInstruction]]),
-	);
-	const fsRetry = loadTranspiledModule("src/main/utils/fsRetry.ts");
-	const sessionSummaryCache = loadTranspiledModule(
-		"src/main/sessions/sessionSummaryCache.ts",
-		new Map([
-			["electron", { app: { getPath: () => homePath } }],
-			["../utils/fsRetry", fsRetry],
-		]),
-	);
-	const wslPaths = loadTranspiledModule("src/main/wsl/WslPaths.ts");
-	const sandbox = {
-		AbortController,
-		AbortSignal,
-		Buffer,
-		clearTimeout,
-		exports: {},
-		process,
-		setTimeout,
-		require: (id) => {
-			if (id === "node:child_process") return { execFile: execFileMock };
-			if (id === "electron") {
-				return {
-					app: {
-						getPath: (key) => (key === "home" ? homePath : join(homePath, String(key))),
-					},
-					shell: { trashItem: async () => {} },
-				};
-			}
-			if (id === "../../shared/codexSessionMeta") return codexMeta;
-			if (id === "../../shared/piCompatibility") return piCompatibility;
-			if (id === "../../shared/imageContent") return loadTranspiledModule("src/shared/imageContent.ts");
-			if (id === "../../shared/imageLimits") return loadTranspiledModule("src/shared/imageLimits.ts");
-			if (id === "../pi/messageContent") return messageContent;
-			if (id === "./sessionSummaryCache") return sessionSummaryCache;
-			if (id === "../wsl/WslPaths") return wslPaths;
-			if (id === "./sessionNameLine") return loadSessionNameLineModule();
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			return require(id);
-		},
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "SessionScanner.ts" });
-	return sandbox.exports;
+	return loadSharedSessionScanner(homePath, { childProcess: { execFile: execFileMock } });
 }
 
 /**
