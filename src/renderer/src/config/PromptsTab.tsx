@@ -9,7 +9,7 @@ import type {
 	PiPromptTemplateSummary,
 } from "../../../shared/types";
 import { t } from "../i18n";
-import { CodeMirrorEditor } from "../components/app/CodeMirrorEditor";
+import { PromptEditorDialog } from "../components/app/PromptEditorDialog";
 import { PromptStoreTab } from "./PromptStoreTab";
 import { Input } from "../components/ui-shadcn/input";
 import { Textarea } from "../components/ui-shadcn/textarea";
@@ -226,37 +226,14 @@ export function PromptsTab(props: {
 
 				{/* 编辑弹框 */}
 				{props.editingTemplate && (
-				<div
-					className="prompts-editor-backdrop"
-					onClick={props.onCancelEdit}
-				>
-					<div
-						className="prompts-editor-modal"
-						onClick={(e) => e.stopPropagation()}
-					>
-						<div className="file-diff-header">
-							<span className="file-diff-header-file">
-								{props.editingTemplate.name}.md
-								{showHint && <span className="file-diff-hint">{t("config.promptSaveHint")}</span>}
-							</span>
-							<div className="file-diff-header-actions">
-								<Button variant="ghost" size="icon" aria-label={t("common.close")} title={t("common.close")} onClick={props.onCancelEdit}>
-									<X size={18} strokeWidth={2.2} aria-hidden="true" />
-								</Button>
-							</div>
-						</div>
-						{props.editLoading ? (
-							<div className="py-12 text-center text-control text-text-tertiary">{t("common.loading")}</div>
-						) : (
-							<div className="prompts-monaco-wrap">
-								<CodeMirrorEditor
-									value={props.editContent}
-									onChange={props.onChangeEditContent}
-								/>
-							</div>
-						)}
-					</div>
-				</div>
+				<PromptEditorDialog
+					title={`${props.editingTemplate.name}.md`}
+					content={props.editContent}
+					loading={props.editLoading}
+					hint={showHint ? t("config.promptSaveHint") : undefined}
+					onChange={props.onChangeEditContent}
+					onClose={props.onCancelEdit}
+				/>
 			)}
 				</>
 			)}

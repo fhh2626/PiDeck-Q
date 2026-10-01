@@ -4,6 +4,7 @@ import { showNotice } from "../../utils/notice";
 
 import { Check, Code2, FileEdit, FolderOpen, MessageSquareText, Pencil, Puzzle, RefreshCw, ToggleLeft, ToggleRight, Trash2, X } from "lucide-react";
 import { CodeMirrorEditor } from "../app/CodeMirrorEditor";
+import { PromptEditorDialog } from "./PromptEditorDialog";
 import {
 	Dialog,
 	DialogClose,
@@ -577,29 +578,14 @@ export function ProjectResourcesModal(props: {
 						</div>
 					</div>
 				) : editingProjectPrompt ? (
-					<div className="prompts-editor-backdrop" onClick={cancelProjectPromptEditor}>
-						<div className="prompts-editor-modal" onClick={(e) => e.stopPropagation()}>
-							<div className="file-diff-header">
-								<span className="file-diff-header-file">{editingProjectPrompt.name}.md</span>
-								<div className="file-diff-header-actions">
-									<Button variant="ghost" size="icon-sm" onClick={cancelProjectPromptEditor} aria-label={t("common.close")} title={t("common.close")}>
-										<X size={16} />
-									</Button>
-								</div>
-							</div>
-							{editProjectPromptLoading ? (
-								<div className="py-12 text-center text-[13px] text-text-tertiary">{t("common.loading")}</div>
-							) : (
-								<div className="prompts-monaco-wrap">
-									<CodeMirrorEditor
-										value={editProjectPromptContent}
-										onChange={setEditProjectPromptContent}
-									/>
-								</div>
-							)}
-							{editProjectPromptSaved && <span className="file-diff-hint saved">{t("config.promptSavedHint")}</span>}
-						</div>
-					</div>
+					<PromptEditorDialog
+						title={`${editingProjectPrompt.name}.md`}
+						content={editProjectPromptContent}
+						loading={editProjectPromptLoading}
+						hint={editProjectPromptSaved ? t("config.promptSavedHint") : undefined}
+						onChange={setEditProjectPromptContent}
+						onClose={cancelProjectPromptEditor}
+					/>
 				) : (
 					<div className="project-resources-body">
 						<Card className="project-skill-create">
