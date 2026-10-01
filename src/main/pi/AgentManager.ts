@@ -3033,7 +3033,7 @@ export class AgentManager {
 	 * 在 agent 生命周期终止点（stop/restart/最终 closed/stopAll）统一调用。
 	 *
 	 * 不清的键（各自语义）：agents/messages（调用方处理）、userInitiatedStop
-	 * （stop 后由退出处理器消费删除）、modelRefreshingAgents（refresh 流程跨 stop 存活）、
+	 * （stop 后由退出处理器消费删除）、
 	 * pendingTrustRequests（启动流程 await 中，删键会挂死 create）、
 	 * compactingAgents（compact 的 catch 靠它决定重连）。
 	 */

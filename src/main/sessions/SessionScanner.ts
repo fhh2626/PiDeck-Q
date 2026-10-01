@@ -702,12 +702,12 @@ export class SessionScanner {
       const raw = wsl ? await this.readWslFile(filePath) : await readFile(filePath, "utf8");
       const stripped = stripLegacySessionNameLine(raw);
       if (stripped === raw) return false;
-    if (wsl) {
-      await this.writeWslFileAtomic(filePath, stripped);
-    } else {
-      await writeFileAtomic(filePath, stripped);
-    }
-    return true;
+      if (wsl) {
+        await this.writeWslFileAtomic(filePath, stripped);
+      } else {
+        await writeFileAtomic(filePath, stripped);
+      }
+      return true;
     }
 
     // 模式 2：首行路径粘连（.jsonl{ + 合法 session header，见 tryRestorePathGluedHeader）

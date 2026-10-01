@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { readFile, rm } from "node:fs/promises";
-import { writeFileAtomic } from "../utils/atomicWriteFile";import { ipcChannels } from "../../shared/ipc";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
+import { ipcChannels } from "../../shared/ipc";
 import type { AppLogger } from "../logging/AppLogger";
 import type { PiLocator } from "../pi/PiLocator";
 import type { ProjectStore } from "../projects/ProjectStore";

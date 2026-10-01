@@ -1,5 +1,5 @@
 import { useAtomValue } from "jotai";
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type ReactNode} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type ReactNode } from "react";
 import {
   type GroupImperativeHandle,
   type PanelImperativeHandle,
@@ -12,8 +12,6 @@ import {
 } from "../ui-shadcn/resizable";
 import type { AgentRuntimeState, GitBranchInfo, ImageContent, TerminalTarget } from "../../../../shared/types";
 import type { SessionTimelineController } from "../../hooks/useSessionTimelineController";
-import type {} from "../../hooks/useQueuedPrompt";
-import type {} from "@shared/desktop/createPiDesktopApi";
 import { isLanWeb, desktopApi as api } from "../../desktopApi";
 import { useNotifyLayoutResized } from "../../hooks/useNotifyLayoutResized";
 import { SessionHeader } from "./SessionHeader";

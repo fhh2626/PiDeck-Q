@@ -55,7 +55,6 @@ import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
 import { createTrackedEditSubmit } from "../../utils/trackedEditSubmit";
 import removeMarkdown from "remove-markdown";
 
-import type {} from "../../hooks/useWorkspacePanels";
 import { formatDuration, formatTime, stripAnsi } from "./TimelineFormat";
 import { extractVisionBridgeBlocks, matchVisionBridgeEvent } from "../../utils/visionBridgeBlocks";
 import { visionImageHashes } from "../../utils/visionImageHash";

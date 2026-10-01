@@ -343,11 +343,12 @@ export function registerFilesIpc(
 				results.push(dest);
 				void appLogger.info("file", "File/folder copied", { src, dest });
 			} catch (error) {
+				// 失败一律先留痕（包括不支持的文件类型），再按类型决定抛给渲染端的文案。
+				void appLogger.info("file", "File copy failed", { src, targetDir, error: error instanceof Error ? error.message : String(error) });
 				// 特殊文件类型（FIFO/设备等）不可复制：与 move 一样给出本地化文案
 				if (error instanceof UnsupportedExclusiveCopyFileTypeError) {
 					throw new Error(mainCopy("mainFile.unsupportedCopyType"));
 				}
-				void appLogger.info("file", "File copy failed", { src, targetDir, error: error instanceof Error ? error.message : String(error) });
 				throw error;
 			}
 		}

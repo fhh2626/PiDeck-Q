@@ -3,7 +3,6 @@
  * Fast Refresh 只支持组件和 hook（useXxx）导出，普通函数导出会导致整页刷新。
  */
 
-import type {} from "react";
 import type {
 	ChatMessage,
 	FileTreeNode,
