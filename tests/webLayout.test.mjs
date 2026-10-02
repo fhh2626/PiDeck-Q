@@ -7,6 +7,7 @@ const webSidebar = readFileSync("src/renderer/src/web/WebSidebar.tsx", "utf8");
 const webHeader = readFileSync("src/renderer/src/web/WebHeader.tsx", "utf8");
 const webChatApp = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
 const webComposer = readFileSync("src/renderer/src/web/WebComposer.tsx", "utf8");
+const webStreamCache = readFileSync("src/renderer/src/web/useWebStreamMessageCache.ts", "utf8");
 const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
 	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
 const webTimelineWindow = readFileSync("src/renderer/src/web/useWebTimelineWindow.ts", "utf8");
@@ -97,7 +98,9 @@ test("Web history load control stays at the top and can recover from a missing c
 	// 轮次分页：尾页基线由 webHistory 纯函数推进（游标只前进，不被重复拉取拽回）
 	assert.match(webChatApp, /applyWebHistoryTailPage\(/);
 	assert.match(webChatApp, /status: "error"/);
-	assert.match(webChatApp, /不要把会话标成 loaded/);
+	// Streaming cache ownership moved to its hook; loading history alone owns loaded status.
+	assert.match(webChatApp, /useWebStreamMessageCache\(\{/);
+	assert.doesNotMatch(webStreamCache, /loadedSessionsRef|loadedSessions/);
 	const loadButton = webTimeline.indexOf("timelineWindow.revealOlder");
 	const messageMap = webTimeline.indexOf("groupedMessages.map((item)");
 	assert.ok(loadButton >= 0, "WebTimeline must render a reveal-history control");
@@ -116,8 +119,8 @@ test("Web history remains interactive and cached while an answer streams", () =>
 		"the history control must stay visible while the model is answering",
 	);
 	assert.match(
-		webChatApp,
-		/messagesBySessionRef\.current\[activeSessionId\] = mergeAuthoritativeUiMessages\(/,
+		webStreamCache,
+		/cache\.current\[sessionId\] = mergeAuthoritativeUiMessages\(/,
 		"streaming updates must merge into prepended history instead of replacing it with the runtime tail",
 	);
 	assert.match(

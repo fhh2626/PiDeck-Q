@@ -340,7 +340,16 @@ export function isLocalSseFullyCovered(
 	const coveredAnswer = new Set<number>();
 	const turnRange = sameTurnCoverageRange(baseline, sourceMessages, anchor);
 	let coveredInSameTurn = false;
-	if (!turnRange) return { fullyCovered: false, coveredInSameTurn: false };
+	if (!turnRange) {
+		// A tool-only bubble can precede loading its user anchor (e.g. ask_question).
+		// A unique call id identifies that row without guessing text/turn ownership.
+		// Never use this fallback for a conflicting anchor or any text/reasoning content.
+		const coveredByUniqueCalls = !anchor && reasoningSegments.length === 0 && answerSegments.length === 0
+			&& toolIds.length > 0 && toolIds.every((id) => baseline.filter((message) =>
+				uiMessageIdentity(message) === `tool:${id}` || leftoverPlaceholderToolIds(message).includes(id),
+			).length === 1);
+		return { fullyCovered: coveredByUniqueCalls, coveredInSameTurn: coveredByUniqueCalls };
+	}
 	for (let index = turnRange.start; index < turnRange.end; index += 1) {
 		const incoming = baseline[index];
 		let coversPart = false;

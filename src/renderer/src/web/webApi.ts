@@ -265,6 +265,9 @@ function createWebMessageMetadata(message: ChatMessage): WebMessageMetadata {
 		chatRole: message.role,
 		timestamp: message.timestamp,
 	};
+	// A queued user's position is optimistic: previous-turn tools may still follow it.
+	const behavior = message.meta?.streamingBehavior;
+	if (behavior === "steer" || behavior === "followUp") metadata.streamingBehavior = behavior;
 	const entryId = message.meta?.entryId;
 	if (typeof entryId === "string" && entryId) metadata.entryId = entryId;
 	const toolCallId = message.meta?.toolCallId;

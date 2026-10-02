@@ -22,6 +22,7 @@ import { WebSidebar } from "./WebSidebar";
 import { WebHeader, type WebHeaderStatus } from "./WebHeader";
 import { WebTimeline } from "./WebTimeline";
 import { WebComposer } from "./WebComposer";
+import { useWebStreamMessageCache } from "./useWebStreamMessageCache";
 import {
 	respondToUi,
 	chatMessagesToUiMessages,
@@ -327,6 +328,15 @@ export function WebChatApp() {
 		})();
 	}, [activeSessionId, bumpHistory, error, resumeStream, setMessages, syncRuntimeMessages]);
 
+	// Commit the stream's final tool/text frame before an idle snapshot reads the cache.
+	useWebStreamMessageCache({
+		sessionId: activeSessionId,
+		streaming: chatStreaming,
+		messages,
+		cache: messagesBySessionRef,
+		setMessages,
+	});
+
 	// 轮询拿到的运行时快照也要在切换会话/流结束后立即回放，
 	// 否则 Web 只显示自己发出的 SSE，PC 端新增的消息永远要等重新打开页面才出现。
 	useEffect(() => {
@@ -356,19 +366,6 @@ export function WebChatApp() {
 				}
 			});
 	}, [activeSessionId, activeRuntime, chatStreaming, error, resumeStream, status]);
-
-	// 流式期间同步缓存：仅 streaming 时合并（空闲时 setMessages 来自历史恢复/分页，
-	// 对应逻辑已各自写缓存）。运行时 useChat 可能只保留尾部窗口，不能直接覆盖缓存，
-	// 否则用户已经「加载更多」prepend 的旧页会在下一次发送后全部丢失。
-	// 不要把会话标成 loaded：那是「首页已经成功」的语义。流式先标 loaded
-	// 会让 handleLoadMore 在还没拿到 nextBefore 时直接 return，点按钮没反应。
-	useEffect(() => {
-		if (!activeSessionId || !chatStreaming) return;
-		messagesBySessionRef.current[activeSessionId] = mergeAuthoritativeUiMessages(
-			messagesBySessionRef.current[activeSessionId] ?? [],
-			messages,
-		);
-	}, [messages, activeSessionId, chatStreaming]);
 
 	// 首页直发：useChat 随 activeSessionId 切换在渲染期重建实例（@ai-sdk/react 在 render 中
 	// 直接替换 chatRef.current），因此本 effect 里拿到的 sendMessage 已属于新会话；

@@ -11,6 +11,10 @@ export type WebMessageMetadata = {
 	timestamp?: number;
 	/** Stable Pi branch entry identity shared by runtime and history projections. */
 	entryId?: string;
+	/** Bounded source-id aliases established by proven same-turn reconciliation (Web cache only). */
+	reconciledIds?: string[];
+	/** Queued submissions may precede replies from the previous Pi turn; not safe tool anchors yet. */
+	streamingBehavior?: "steer" | "followUp";
 	/** Stable tool result identity; tool display text changes while execution proceeds. */
 	toolCallId?: string;
 	/** Normalized completed ask_question result used by the persistent answer card. */
@@ -28,6 +32,11 @@ export function readWebMessageMetadata(message: UIMessage): WebMessageMetadata |
 	const timestamp = Reflect.get(value, "timestamp");
 	const entryId = Reflect.get(value, "entryId");
 	const toolCallId = Reflect.get(value, "toolCallId");
+	const streamingBehavior = Reflect.get(value, "streamingBehavior");
+	const rawAliases: unknown = Reflect.get(value, "reconciledIds");
+	const reconciledIds = Array.isArray(rawAliases)
+		? rawAliases.filter((id: unknown): id is string => typeof id === "string" && id.length > 0 && id.length <= 512).slice(-8)
+		: [];
 	const askQuestionResult = normalizeAskQuestionResultSummary(
 		Reflect.get(value, "askQuestionResult"),
 	);
@@ -35,6 +44,8 @@ export function readWebMessageMetadata(message: UIMessage): WebMessageMetadata |
 		chatRole,
 		...(typeof timestamp === "number" ? { timestamp } : {}),
 		...(typeof entryId === "string" && entryId ? { entryId } : {}),
+		...(reconciledIds.length ? { reconciledIds } : {}),
+		...(streamingBehavior === "steer" || streamingBehavior === "followUp" ? { streamingBehavior } : {}),
 		...(typeof toolCallId === "string" && toolCallId ? { toolCallId } : {}),
 		...(askQuestionResult ? { askQuestionResult } : {}),
 	};

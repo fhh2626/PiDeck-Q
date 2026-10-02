@@ -126,11 +126,15 @@ test("WebChatApp wires composerBusy into composer and timeline chrome", () => {
 	assert.match(app, /if \(composerBusy\) return;/);
 	assert.match(app, /streamingRef\.current = chatStreaming/);
 	assert.match(app, /if \(!activeSessionId \|\| chatStreaming\) return;/);
-	assert.match(app, /if \(!activeSessionId \|\| !chatStreaming\) return;/);
+	const streamCache = readFileSync("src/renderer/src/web/useWebStreamMessageCache.ts", "utf8");
+	assert.match(app, /useWebStreamMessageCache\(\{[\s\S]*?streaming: chatStreaming/);
+	assert.match(streamCache, /if \(!sessionId\)/);
+	assert.match(streamCache, /if \(streaming\) \{[\s\S]*?mergeAuthoritativeUiMessages[\s\S]*?return;/);
+	assert.match(streamCache, /streamEnded/);
 	assert.match(app, /if \(chatStreaming\) return; \/\/ 新实例就绪/);
 
 	const silentStart = app.indexOf("useChat 已 ready 但 runtime 仍在跑");
-	const silentEnd = app.indexOf("// 流式期间同步缓存", silentStart);
+	const silentEnd = app.indexOf("// 首页直发：", silentStart);
 	assert.ok(silentStart >= 0 && silentEnd > silentStart);
 	const silent = app.slice(silentStart, silentEnd);
 	assert.match(silent, /shouldResumeWebStream/);

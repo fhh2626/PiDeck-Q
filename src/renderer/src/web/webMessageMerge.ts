@@ -1,5 +1,8 @@
 /** Reconciles persisted history with local Web SSE messages without losing timeline order. */
 import type { UIMessage } from "ai";
+import { reconcileWebMessageIdentities } from "./webMessageReconciliation";
+import { preserveSettledWebTools } from "./webToolStateMerge";
+import { isWebToolPart, webMessageContentKey } from "./webMessageParts";
 import { readWebMessageMetadata, uiMessageIdentity, uiMessageRole } from "./webMessageMetadata";
 import {
 	canMatchPartialText,
@@ -27,6 +30,8 @@ function canFallbackMatchUserMessageByText(
 	authoritative: UIMessage[],
 ): boolean {
 	if (uiMessageRole(incoming) !== "user") return true;
+	// Identical captions/placeholders do not identify different image submissions.
+	if (webMessageContentKey(candidate) !== webMessageContentKey(incoming)) return false;
 	const candidateIdentity = uiMessageIdentity(candidate);
 	const incomingIdentity = uiMessageIdentity(incoming);
 	if (candidateIdentity && incomingIdentity) return candidateIdentity === incomingIdentity;
@@ -176,6 +181,10 @@ export function mergeAuthoritativeUiMessages(
 	},
 ): UIMessage[] {
 	if (authoritative.length === 0) return current;
+	const reconciled = reconcileWebMessageIdentities(current, authoritative);
+	// A final SSE bubble can settle tools that are still running in the cached snapshot.
+	current = preserveSettledWebTools(reconciled.incoming, reconciled.current);
+	authoritative = preserveSettledWebTools(current, reconciled.incoming);
 	const merged = [...current];
 	const matchedCurrent = new Set<number>();
 	let changed = false;
@@ -226,8 +235,10 @@ export function mergeAuthoritativeUiMessages(
 			&& incomingRole === "assistant" && !incomingTurnAnchor
 			? { start: merged.length, end: merged.length }
 			: textFallbackRange(merged, incomingRole, incomingTurnAnchor, authoritative);
-		const preserveUncoveredCombined = options?.dropCoveredLocalSseLeftovers === true
-			&& isCombinedLocalSseAssistant(incoming);
+		// A combined stream row cannot be identified by the text of just one split row,
+		// including during idle replay or final-frame cache writes.
+		const preserveUncoveredCombined = isCombinedLocalSseAssistant(incoming)
+			|| (isLocalSseAssistant(incoming) && incoming.parts.some(isWebToolPart));
 		const preserveUnidentifiedPlainText = options?.dropCoveredLocalSseLeftovers === true
 			&& isLocalSsePlainTextAssistant(incoming);
 		if (matchIndex < 0 && !preserveUncoveredCombined) {
@@ -244,7 +255,11 @@ export function mergeAuthoritativeUiMessages(
 								&& hasLocalPlainTextReplyAfterUser(candidate, current)))
 						&& !hasLocalUserReplyEvidence(candidate, incoming, current, authoritative))
 					|| (incomingRole !== "user" && !candidateBelongsToIncomingTurn(candidate, current, authoritative, incomingTurnAnchor))
-					|| (options?.dropCoveredLocalSseLeftovers === true && isCombinedLocalSseAssistant(candidate))
+					|| ((isCombinedLocalSseAssistant(candidate) || (isLocalSseAssistant(candidate) && candidate.parts.some(isWebToolPart)))
+						&& (options?.dropCoveredLocalSseLeftovers === true || !isLocalSseFullyCovered(
+							candidate, authoritative,
+							precedingUserMessage(current, current.findIndex((row) => row.id === candidate.id)), current,
+						).fullyCovered))
 					|| (options?.dropCoveredLocalSseLeftovers === true && isLocalSsePlainTextAssistant(candidate)
 						&& !hasLaterUserAfterMessage(candidate, current))
 					|| (isLocalSsePlainTextAssistant(candidate) && hasEarlierPersistedAssistantInTurn(candidate, current))
@@ -352,7 +367,10 @@ export function mergeAuthoritativeUiMessages(
 		const strictBaselineMode = options?.dropCoveredLocalSseLeftovers === true;
 		const covered = strictBaselineMode ? false : isCoveredLocalSseAssistant(leftover, authoritative);
 		const sourceIndex = current.findIndex((message) => message.id === leftover.id);
-		const baselineCoverage = strictBaselineMode && sourceIndex >= 0
+		const needsFullCoverage = isCombinedLocalSseAssistant(leftover) || leftover.parts.some(isWebToolPart);
+		// Idle snapshots may still be older than the last SSE frame. Like disk history,
+		// they must cover ALL segments/tools, including tool-only frames.
+		const baselineCoverage = (strictBaselineMode || needsFullCoverage) && sourceIndex >= 0
 			? isLocalSseFullyCovered(
 				leftover,
 				authoritative,
@@ -360,15 +378,16 @@ export function mergeAuthoritativeUiMessages(
 				current,
 			)
 			: undefined;
-		const dropCoveredBaselineBubble = baselineCoverage?.fullyCovered === true
-			&& baselineCoverage.coveredInSameTurn;
-		const dropPlaceholder = isLocalOnlyAssistantPlaceholder(leftover) && (
+		const fullyCovered = baselineCoverage?.fullyCovered === true && baselineCoverage.coveredInSameTurn;
+		const dropCoveredBaselineBubble = strictBaselineMode && fullyCovered;
+		const dropPlaceholder = (!needsFullCoverage || fullyCovered) && isLocalOnlyAssistantPlaceholder(leftover) && (
 			(!strictBaselineMode && covered)
 			|| (!strictBaselineMode && canDropUnmatchedPlaceholders)
 		);
 		const dropCoveredSseWithText = !strictBaselineMode
 			&& canDropUnmatchedPlaceholders
 			&& covered
+			&& (!needsFullCoverage || fullyCovered)
 			&& isLocalSseAssistant(leftover)
 			&& !(isLocalSsePlainTextAssistant(leftover)
 				&& (hasEarlierPersistedAssistantInTurn(leftover, current) || unanchoredPageAssistant));
@@ -388,6 +407,10 @@ export function mergeAuthoritativeUiMessages(
 /** Prepends older history without disturbing the streaming tail; overlaps keep the cached row. */
 export function prependOlderHistoryPage(older: UIMessage[], current: UIMessage[]): UIMessage[] {
 	if (older.length === 0) return current;
+	// The same pairing policy serves both tail recovery and overlapping disk pages.
+	const reconciled = reconcileWebMessageIdentities(current, older);
+	current = reconciled.current;
+	older = reconciled.incoming;
 	const currentIds = new Set(current.map((message) => message.id));
 	const currentIdentities = new Set(
 		current
