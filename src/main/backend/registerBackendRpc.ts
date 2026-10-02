@@ -100,7 +100,7 @@ export interface RegisterBackendRpcDeps {
 	};
 }
 
-export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
+export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 	const { router, host, platform, mainCopy, getLocale, runtimeBridge, externalFileCapabilities, services } = deps;
 	const paths = platform.paths;
 	const {
@@ -133,6 +133,15 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		modelSpecsStore,
 		visionBridge,
 	} = services;
+
+	// Git HEAD reads and file reads share the same desktop authorization scope.
+	const getAuthorizedRoots = () => [
+		...projectStore.list().map((project) => project.path),
+		promptManager.getDir(),
+		...skillManager.getDirs(),
+		join(paths.home, ".pi", "agent"),
+		paths.userData,
+	];
 
 	// 用量统计：业务在 UsageStatsService，handler 薄层只校验/适配
 	registerUsageStatsIpc(router, usageStatsService);
@@ -257,7 +266,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 	}, 3000);
 	prewarmTimer.unref?.();
 
-	registerGitIpc(router, {
+	const disposeGit = registerGitIpc(router, {
 		appLogger,
 		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
 		getLocale,
@@ -266,6 +275,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		projectStore,
 		settingsStore,
 		worktreeService,
+		getAuthorizedRoots,
 	});
 
 	registerSystemIpc(router, {
@@ -360,13 +370,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		appLogger,
 		dialogs: platform.dialogs,
 		platformShell: platform.shell,
-		getAuthorizedRoots: () => [
-			...projectStore.list().map((project) => project.path),
-			promptManager.getDir(),
-			...skillManager.getDirs(),
-			join(paths.home, ".pi", "agent"),
-			paths.userData,
-		],
+		getAuthorizedRoots,
 		externalFileCapabilities,
 	});
 
@@ -377,4 +381,5 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): void {
 		if (typeof id !== "string" || id.length === 0 || id.length > 128) return;
 		host.acknowledgeFocusTarget(id);
 	});
+	return () => disposeGit();
 }

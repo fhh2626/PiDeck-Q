@@ -2,6 +2,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { preserveCorruptProjectCatalog, writeProjectSnapshot } from "./projectCatalogPersistence";
 import { parseProjectCatalog } from "./projectRecordValidation";
 import { writeFileAtomic } from "../utils/atomicWriteFile";
+import { getAppLogger } from "../logging/sharedLogger";
 import { randomUUID } from "node:crypto";
 import { basename, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -47,7 +48,20 @@ export class ProjectStore {
     this.chatProjectPath = options?.defaultChatProjectPath ?? join(defaultBase, "chat-workspace");
   }
 
+  /** Explicit reloads retain their strict failure contract. */
   async load() {
+    return this.loadCatalog(false);
+  }
+
+  /** Load migration dependencies even when an external chat directory is offline. */
+  async loadForStartup() {
+    return this.loadCatalog(true);
+  }
+
+  /** Read project identities before initializing or repairing their workspace metadata. */
+  private async loadCatalog(bestEffortInitialization: boolean) {
+    // Reading/preserving the catalog is mandatory: swallowing that error would
+    // migrate sessions against an empty project map and risk overwriting data.
     this.projects = await this.readProjects();
 
     // 先读取用户自定义的聊天目录（若存在），再据此修正内置聊天项目路径。
@@ -56,9 +70,28 @@ export class ProjectStore {
     const orderChanged = this.ensureSortOrder();
     const changed = chatChanged || orderChanged || this.repairedOnLoad;
     this.repairedOnLoad = false;
-    await this.ensureDirectory(this.chatProjectPath);
-    if (changed) await this.save();
+    await this.completeLoadStep("chat-directory", () => this.ensureDirectory(this.chatProjectPath), bestEffortInitialization);
+    if (changed) await this.completeLoadStep("catalog-save", () => this.save(), bestEffortInitialization);
     return this.list();
+  }
+
+  /** Only non-critical startup initialization may fail after records are loaded. */
+  private async completeLoadStep(
+    operation: "chat-directory" | "catalog-save",
+    task: () => Promise<void>,
+    bestEffort: boolean,
+  ): Promise<void> {
+    try {
+      await task();
+    } catch (error) {
+      if (!bestEffort) throw error;
+      // Keep the user's configured path, rather than silently moving sessions
+      // to a fallback workspace. A subsequent load or path change can recover.
+      void getAppLogger()?.warn("projects", "Startup initialization failed; keeping loaded projects", {
+        operation,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   list() {

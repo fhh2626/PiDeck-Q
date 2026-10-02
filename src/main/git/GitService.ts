@@ -14,6 +14,11 @@ const GIT_MUTATION_TIMEOUT_MS = 30_000;
 export class GitService {
 	constructor(private readonly trashPath?: TrashPath) {}
 
+	/** Resolve only after Git has initialized the repository; propagate spawn/exit failures. */
+	async init(cwd: string): Promise<void> {
+		await execFileAsync("git", ["init"], { cwd, timeout: GIT_MUTATION_TIMEOUT_MS });
+	}
+
 	/** 只缓存轻量 commit 元数据/文件清单；正文永不缓存，且 LRU 总预算不超过 2MB。 */
 	private readonly commitDetailCache = new Map<string, { detail: CommitDetail; bytes: number }>();
 	private readonly commitDetailCacheLimit = 16;

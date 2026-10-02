@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const gitIpc = readFileSync("src/main/ipc/gitIpc.ts", "utf8");
+const quickGenerator = readFileSync("src/main/git/QuickGenerator.ts", "utf8");
 const settingsStore = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
 const settingsTypes = readFileSync("src/shared/types/settings.ts", "utf8");
 const settingsModal = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
@@ -29,7 +30,7 @@ test("Git summary stores an explicit provider and model without a legacy fallbac
 });
 
 test("Git summary selects the configured model while retaining the lightweight RPC flags", () => {
-  assert.match(gitIpc, /type:\s*"set_model"[\s\S]*provider: model\.provider[\s\S]*modelId: model\.modelId/);
+  assert.match(quickGenerator, /type:\s*"set_model"[\s\S]*provider: model\.provider[\s\S]*modelId: model\.modelId/);
   for (const flag of [
     "--no-session",
     "--no-tools",
@@ -39,11 +40,12 @@ test("Git summary selects the configured model while retaining the lightweight R
     "--no-themes",
     "--thinking",
   ]) {
-    assert.match(gitIpc, new RegExp(`"${flag}"`));
+    assert.match(quickGenerator, new RegExp(`"${flag}"`));
   }
-  assert.match(gitIpc, /"--thinking",\s*"off"/);
-  assert.match(gitIpc, /provider\/model 变化时必须重启轻量进程/);
-  assert.match(gitIpc, /if \(genProcess === childProcess\) stopGenProcess\(\)/);
+  assert.match(quickGenerator, /"--thinking",\s*"off"/);
+  assert.match(quickGenerator, /provider\/model 变化时必须重启轻量进程/);
+  assert.match(quickGenerator, /if \(genProcess === childProcess\) stopGenProcess\(/);
+  assert.match(gitIpc, /quickGenerator\.generate\(project\.path, prompt, \{ provider, modelId \}\)/);
 });
 
 test("File sorting leaves hover state to Radix DropdownMenu", () => {

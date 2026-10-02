@@ -213,7 +213,7 @@ export class SettingsStore {
       // 兼容迁移：旧版 contentMaxWidth(px) → chatContentWidthPct(%)。
       // 语义从「最大宽度 px」变为「占面板百分比」，无法精确换算（面板宽度可变），
       // 用线性映射保留旧值感觉：800→60%、1400→84%、1800(不限)→100%。
-      this.migrateContentWidth();
+      this.migrateContentWidth(parsed);
       const generatedWebServiceToken = this.ensureWebServiceAccessToken();
       if (
         hadLegacyTelemetry ||
@@ -277,10 +277,13 @@ export class SettingsStore {
    * - 新字段已存在（已迁移/用户已设置）→ 不动作；
    * - 否则按旧 px 线性映射到 60–100%（1800=不限→100%，800→60%），写回持久化。
    */
-  private migrateContentWidth() {
-    const pct = this.settings.chatContentWidthPct;
+  private migrateContentWidth(parsed: Partial<AppSettings>) {
+    // Defaults have already been merged: only persisted fields tell us whether
+    // this is an old preference, an explicit new value, or a fresh install.
+    const pct = parsed.chatContentWidthPct;
     if (typeof pct === "number" && Number.isFinite(pct)) return;
-    const legacyPx = this.settings.contentMaxWidth;
+    if (!Object.hasOwn(parsed, "contentMaxWidth")) return;
+    const legacyPx = parsed.contentMaxWidth;
     let mapped = 100;
     if (typeof legacyPx === "number" && legacyPx > 0 && legacyPx < 1800) {
       // 线性映射：px∈[800,1800) → pct∈[60,100)，其余（≤0 或 ≥1800=不限）→ 100

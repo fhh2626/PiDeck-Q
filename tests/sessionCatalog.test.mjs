@@ -45,7 +45,9 @@ function loadCatalog(fsPromises = nodeRequire("node:fs/promises")) {
   const fsRetry = compileModule("src/main/utils/fsRetry.ts", {
     "node:fs/promises": fsPromises,
   });
+  const migration = compileModule("src/main/sessions/sessionCatalogMigration.ts");
   return compileModule("src/main/sessions/SessionCatalog.ts", {
+    "./sessionCatalogMigration": migration,
     "../../shared/sessionIdentity": identity,
     "../utils/fsRetry": fsRetry,
     "../logging/sharedLogger": { getAppLogger: () => null },

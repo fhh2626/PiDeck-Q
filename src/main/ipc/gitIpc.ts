@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { assertAuthorizedFilePath } from "../fs/authorizedPaths";
+import { createQuickGenerator } from "../git/QuickGenerator";
 import {
 	getDefaultGitCommitMessagePrompt,
 	resolveGitCommitMessagePromptLocale,
@@ -9,7 +10,6 @@ import type { GitGenerateCommitMessageResult, GitWorkspaceDiffGroup } from "../.
 import type { GitService } from "../git/GitService";
 import type { AppLogger } from "../logging/AppLogger";
 import type { PiLocator } from "../pi/PiLocator";
-import { PiRpcClient } from "../pi/PiRpcClient";
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { WorktreeService } from "../git/WorktreeService";
@@ -24,195 +24,10 @@ export type GitIpcDeps = {
 	projectStore: ProjectStore;
 	settingsStore: SettingsStore;
 	worktreeService: WorktreeService;
+	getAuthorizedRoots: () => string[];
 };
 
-// ── QuickGen：持久化轻量 pi 进程，通过 RPC 生成提交摘要 ──────────────
-
-/** 轻量 pi 进程，用 RPC 模式运行，只做文本生成，不加载 session/tools/extensions */
-let genProcess: ChildProcess | null = null;
-let genRpcClient: PiRpcClient | null = null;
-let genModelKey = "";
-let genIdleTimer: NodeJS.Timeout | null = null;
-/** 生成互斥锁：同一时刻只允许一个摘要请求，避免并发打到复用进程触发 pi 的 busy 拒绝 */
-let genBusy = false;
-
-/** 清理快速生成进程 */
-function stopGenProcess() {
-	if (genIdleTimer) {
-		clearTimeout(genIdleTimer);
-		genIdleTimer = null;
-	}
-	genRpcClient?.close();
-	genRpcClient = null;
-	if (genProcess && genProcess.exitCode === null) {
-		try { genProcess.kill(); } catch { /* ignore */ }
-	}
-	genProcess = null;
-	genModelKey = "";
-}
-
-/** 重置空闲定时器：30 分钟无请求自动杀掉进程释放内存 */
-function resetGenIdleTimer() {
-	if (genIdleTimer) clearTimeout(genIdleTimer);
-	genIdleTimer = setTimeout(() => {
-		stopGenProcess();
-	}, 30 * 60_000);
-}
-
-/** 确保有一个轻量 pi RPC 进程在运行，跨项目复用 */
-async function ensureGenProcess(
-	projectPath: string,
-	command: string,
-	piLocator: PiLocator,
-	settingsStore: SettingsStore,
-	model: { provider: string; modelId: string },
-	appLogger: Pick<AppLogger, "warn">,
-): Promise<PiRpcClient> {
-	// provider/model 变化时必须重启轻量进程，避免旧进程继续持有上一组选中的模型。
-	const modelKey = `${model.provider}\0${model.modelId}`;
-	if (genProcess && genRpcClient && genProcess.exitCode === null) {
-		if (genModelKey === modelKey) {
-			resetGenIdleTimer();
-			return genRpcClient;
-		}
-		stopGenProcess();
-	}
-
-	// 清理已死的旧进程
-	if (genProcess) stopGenProcess();
-
-	const settings = settingsStore.get();
-	const invocation = piLocator.createInvocation(command, [
-		"--mode", "rpc",
-		"--no-session",
-		"--no-tools",
-		"--no-extensions",
-		"--no-skills",
-		"--no-prompt-templates",
-		"--no-themes",
-		"--thinking", "off",
-	]);
-
-	const childProcess = spawn(invocation.command, invocation.args, {
-		cwd: projectPath,
-		env: piLocator.createProcessEnv(settings, invocation.pathPrefix, invocation.wsl),
-		stdio: ["pipe", "pipe", "pipe"],
-		shell: invocation.shell,
-		windowsHide: true,
-		windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-	});
-	genProcess = childProcess;
-
-	genRpcClient = new PiRpcClient(childProcess.stdin!, childProcess.stdout!);
-
-	try {
-		const modelResponse = await genRpcClient.request({
-			type: "set_model",
-			provider: model.provider,
-			modelId: model.modelId,
-		});
-		if (!modelResponse.success) {
-			throw new Error(modelResponse.error ?? `Unable to select model ${model.provider}/${model.modelId}`);
-		}
-		genModelKey = modelKey;
-	} catch (error) {
-		stopGenProcess();
-		throw error;
-	}
-
-	// stderr 仅用于调试日志
-	genProcess.stderr!.on("data", (chunk: Buffer) => {
-		const text = chunk.toString("utf8").slice(0, 300);
-		void appLogger.warn("git", "QuickGen stderr", { text });
-	});
-
-	genProcess.on("exit", () => {
-		// 旧进程可能在模型切换后才发出 exit；只允许当前实例清理全局状态。
-		if (genProcess === childProcess) stopGenProcess();
-	});
-
-	resetGenIdleTimer();
-	return genRpcClient;
-}
-
-/** 通过持久化 RPC 进程快速生成文本，避免每次 fork 新进程 */
-async function quickGenerate(
-	projectPath: string,
-	prompt: string,
-	piLocator: PiLocator,
-	settingsStore: SettingsStore,
-	model: { provider: string; modelId: string },
-	appLogger: Pick<AppLogger, "warn">,
-): Promise<string> {
-	// 复用进程同时只能跑一个生成；并发（连点/跨项目）直接拒绝，由 handler 转友好提示
-	if (genBusy) {
-		throw new Error("Agent is already processing");
-	}
-	genBusy = true;
-
-	const settings = settingsStore.get();
-	const command = piLocator.resolveCommand(
-		settings.customPiPath,
-		settings.wslEnabled,
-		settings.wslDistro,
-		settings.wslUser,
-		settings.piRuntimePreference,
-		settings.piTypescriptPath,
-		settings.piRustPath,
-	);
-
-	try {
-		const rpc = await ensureGenProcess(projectPath, command, piLocator, settingsStore, model, appLogger);
-
-		return await new Promise<string>((resolve, reject) => {
-			const collected: string[] = [];
-			let settled = false;
-			const timeout = setTimeout(() => {
-				if (!settled) {
-					void appLogger.warn("git", "QuickGen timed out", {});
-					// 超时后 pi 进程内的 agent 可能仍在处理旧请求（残留 busy 状态），
-					// 直接杀掉复用进程，下次请求重建干净的进程，避免后续请求被 busy 拒绝。
-					stopGenProcess();
-					reject(new Error("Quick generate timed out"));
-				}
-			}, 60_000);
-
-			const onEvent = (event: Record<string, unknown>) => {
-				const eventType = event.type as string;
-				if (eventType === "message_update") {
-					const ae = (event as Record<string, unknown>).assistantMessageEvent as Record<string, unknown> | undefined;
-					if (ae?.type === "text_delta" && typeof ae.delta === "string") {
-						collected.push(ae.delta);
-					}
-				}
-				if (eventType === "agent_settled" || eventType === "agent_end") {
-					settled = true;
-					clearTimeout(timeout);
-					rpc.off("event", onEvent);
-					resolve(collected.join(""));
-				}
-			};
-
-			rpc.on("event", onEvent);
-
-			rpc.request({ type: "prompt", message: prompt }).then((response) => {
-				if (!response.success) {
-					clearTimeout(timeout);
-					rpc.off("event", onEvent);
-					reject(new Error(response.error ?? "Prompt rejected"));
-				}
-			}).catch((err) => {
-				clearTimeout(timeout);
-				rpc.off("event", onEvent);
-				reject(err);
-			});
-		});
-	} finally {
-		genBusy = false;
-	}
-}
-
-// ── IPC 注册 ────────────────────────────────────────────────────────
+// QuickGen lifecycle belongs to the Git domain; IPC only adapts its result.
 
 export function registerGitIpc(
 	router: RpcRouter,
@@ -225,8 +40,10 @@ export function registerGitIpc(
 		projectStore,
 		settingsStore,
 		worktreeService,
+		getAuthorizedRoots,
 	}: GitIpcDeps,
-): void {
+): () => void {
+	const quickGenerator = createQuickGenerator({ piLocator, settingsStore, appLogger });
 	router.handle(ipcChannels.gitBranches, async (projectId: string) => {
 		const project = projectStore.get(projectId);
 		if (!project) throw new Error(`Project not found: ${projectId}`);
@@ -257,9 +74,13 @@ export function registerGitIpc(
 	// 差异查看需要文件的 Git HEAD 原始内容作为对比基准；参数是绝对文件路径，后端自行定位仓库根。
 	router.handle(
 		ipcChannels.gitOriginalContent,
-		async (filePath: string) => {
+		async (filePath: unknown) => {
+			if (typeof filePath !== "string" || !filePath.trim()) throw new TypeError("filePath must be a non-empty string.");
+			// Repository containment is not authorization. Resolve symlinks and missing
+			// tracked-file suffixes using the same boundary as desktop file reads.
+			const authorizedPath = await assertAuthorizedFilePath(filePath, getAuthorizedRoots(), "gitOriginalContent");
 			const maxBytes = Math.max(1, settingsStore.get().maxEditorFileSizeMB) * 1024 * 1024;
-			return gitService.getOriginalContent(filePath, maxBytes);
+			return gitService.getOriginalContent(authorizedPath, maxBytes);
 		},
 	);
 
@@ -548,14 +369,7 @@ export function registerGitIpc(
 			const prompt = promptTemplate.replace("{diff}", diff.slice(0, 8000));
 
 			try {
-				const result = await quickGenerate(
-					project.path,
-					prompt,
-					piLocator,
-					settingsStore,
-					{ provider, modelId },
-					appLogger,
-				);
+				const result = await quickGenerator.generate(project.path, prompt, { provider, modelId });
 				void appLogger.warn("git", "Generate commit message result", { length: result.length });
 				return { ok: true, message: result.trim() };
 			} catch (err) {
@@ -575,11 +389,11 @@ export function registerGitIpc(
 
 	router.handle(
 		ipcChannels.gitInit,
-		async (projectId: string) => {
+		async (projectId: unknown) => {
+			if (typeof projectId !== "string" || !projectId.trim()) throw new TypeError("projectId must be a non-empty string.");
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(`Project not found: ${projectId}`);
-			const { execFile } = await import("node:child_process");
-			await execFile("git", ["init"], { cwd: project.path });
+			await gitService.init(project.path);
 			void appLogger.info("git", "Repository initialized", { projectId, path: project.path });
 		},
 	);
@@ -619,5 +433,5 @@ export function registerGitIpc(
 			void appLogger.warn("git", "Files deleted (recycle bin)", { projectId, count: paths.length, paths });
 		},
 	);
-
+	return () => quickGenerator.dispose();
 }

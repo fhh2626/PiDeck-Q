@@ -284,17 +284,13 @@ export function startBackendStartupTasks(deps: BackendStartupTasksDeps): void {
 		void appLogger.warn("editor", "External editor first launch detection failed", error);
 	});
 
-	// 项目列表可能位于杀软/同步盘较慢的 userData；窗口先显示，随后异步加载，避免 packaged app 打开时白屏等待。
-	void projectStore
-		.load()
-		.then(() => {
-			const s = settingsStore.get();
-			const visible = s.wslEnabled
-				? projectStore.list().filter((p) => p.kind === "chat" || p.environment === "wsl")
-				: projectStore.list().filter((p) => p.kind === "chat" || !p.environment || p.environment === "windows");
-			host.sendToRenderer(ipcChannels.projectsChanged, visible);
-		})
-		.catch(() => undefined);
+	// createBackend loads projects before catalog migration. Publish the existing
+	// snapshot after the window opens; reloading here could overwrite early edits.
+	const s = settingsStore.get();
+	const visible = s.wslEnabled
+		? projectStore.list().filter((p) => p.kind === "chat" || p.environment === "wsl")
+		: projectStore.list().filter((p) => p.kind === "chat" || !p.environment || p.environment === "windows");
+	host.sendToRenderer(ipcChannels.projectsChanged, visible);
 
 	// 启动后异步检查 RPC 超时时间，如果小于 600 秒则自动修正为 600 秒
 	// 避免用户配置的过小超时（如 30 秒）导致启动或命令执行频繁超时

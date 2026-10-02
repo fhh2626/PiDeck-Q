@@ -219,7 +219,9 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		(channel, payload) => host.sendToRenderer(channel, payload),
 	);
 
-	await settingsStore.load();
+	// Catalog migration resolves relative paths through ProjectStore. Both must be
+	// loaded before catalog.load(); parallel I/O keeps this dependency inexpensive.
+	await Promise.all([settingsStore.load(), projectStore.loadForStartup()]);
 	platform.application.hideApplicationMenu();
 	const initialSessionSettings = settingsStore.get();
 	const sessionCatalog = new SessionCatalog(
@@ -508,7 +510,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 
 	const visionBridge = new VisionBridgeConfigManager(configManager);
 
-	registerBackendRpc({
+	const disposeRpc = registerBackendRpc({
 		router,
 		host,
 		platform,
@@ -588,6 +590,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		dispose: async () => {
 			if (disposed) return;
 			disposed = true;
+			disposeRpc();
 			terminalManager?.closeAll();
 			agentManager?.stopAll();
 			await webServiceManager?.stop().catch(() => undefined);

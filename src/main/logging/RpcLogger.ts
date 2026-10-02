@@ -1,4 +1,5 @@
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
+import { readRpcLogHistory } from "./readRpcLogHistory";
 import { appendFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -156,40 +157,31 @@ export class RpcLogger {
     return ids;
   }
 
-  /** 从文件读取日志。
-   * 按 agentId 和日期范围过滤，倒序返回最近 limit 条。
-   * 只读取未压缩的 .jsonl 文件（当天和近期尚未 gzip 的），
-   * 跨日文件已被 gzip，不影响最近 7 天查询。
+  /** Read plain/gzip history for a calendar-day range, globally newest first.
+   * Streaming scan and response budgets bound large archives and result payloads.
    */
   async getFromFile(options?: {
     agentId?: string;
     days?: number;
     limit?: number;
   }): Promise<RpcLogEntry[]> {
+    // Wait for queued writes/compression so a read cannot race gzip replacement.
+    await this.writeQueue;
     await mkdir(this.dir, { recursive: true });
-    const limit = Math.max(1, Math.min(options?.limit ?? 5000, 10000));
-    const days = Math.max(1, options?.days ?? 7);
-
-    const files = this.listFiles(options?.agentId, ".jsonl")
-      .sort()
-      .reverse()
-      .slice(0, days);
-
-    const lines: string[] = [];
-    for (const file of files) {
-      const raw = await readFile(join(this.dir, file), "utf8").catch(() => "");
-      const fileLines = raw.split(/\r?\n/).filter(Boolean);
-      lines.push(...fileLines.reverse());
-      if (lines.length >= limit) break;
-    }
-
-    return lines
-      .slice(0, limit)
-      .map((line) => {
-        try { return JSON.parse(line) as RpcLogEntry; }
-        catch { return null; }
-      })
-      .filter((e): e is RpcLogEntry => Boolean(e));
+    const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(Math.floor(options?.limit ?? 5000), 10000)) : 5000;
+    const days = Number.isFinite(options?.days) ? Math.max(1, Math.min(Math.floor(options?.days ?? 7), RETENTION_DAYS)) : 7;
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - days + 1);
+    const cutoffDate = formatDate(cutoff);
+    const files = this.listFiles(options?.agentId).filter(file => {
+      const date = file.match(/-(\d{4}-\d{2}-\d{2})\.jsonl/)?.[1];
+      return date !== undefined && date >= cutoffDate;
+    }).sort((left, right) => {
+      const date = (file: string) => file.match(/-(\d{4}-\d{2}-\d{2})\.jsonl/)?.[1] ?? "";
+      return date(right).localeCompare(date(left));
+    });
+    return readRpcLogHistory(this.dir, files, { limit, cutoff: cutoff.getTime(), agentId: options?.agentId });
   }
 
   /** 获取 RPC 日志文件总大小（字节），可选按 agentId 过滤，含 gzip 文件 */
@@ -236,7 +228,7 @@ export class RpcLogger {
       for (const entry of entries) {
         if (typeof entry !== "string") continue;
         // 只匹配 rpc-<agentId>-YYYY-MM-DD.jsonl 或 .jsonl.gz
-        if (!/^rpc-[\w-]+-\d{4}-\d{2}-\d{2}\.jsonl(\.gz)?$/.test(entry)) continue;
+        if (!/^rpc-[\w.~\-]+-\d{4}-\d{2}-\d{2}\.jsonl(\.gz)?$/.test(entry)) continue;
         if (agentId) {
           const prefix = `rpc-${this.sanitizeAgentId(agentId)}-`;
           if (!entry.startsWith(prefix)) continue;

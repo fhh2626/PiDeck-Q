@@ -51,7 +51,7 @@ test("SettingsStore default is 80% (readable width, not full width)", () => {
 
 test("SettingsStore migrates legacy px via linear mapping on load", () => {
   // 迁移必须在 load() 的兼容迁移区调用（commit-mono 迁移之后、catch 之前）
-  assert.match(store, /this\.migrateContentWidth\(\)/);
+  assert.match(store, /this\.migrateContentWidth\(parsed\)/);
   // 线性映射公式：px∈[800,1800) → pct∈[60,100)；其余（≤0 或 ≥1800=不限）→ 100
   assert.match(store, /\(\(legacyPx - 800\) \/ 1000\) \* 40 \+ 60/);
   assert.match(store, /legacyPx > 0 && legacyPx < 1800/);

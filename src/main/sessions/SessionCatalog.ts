@@ -16,6 +16,7 @@ import type {
 } from "../../shared/types";
 import { getAppLogger } from "../logging/sharedLogger";
 import { renameWithRetry } from "../utils/fsRetry";
+import { migrateSessionCatalogEntries } from "./sessionCatalogMigration";
 import {
 	buildSessionOriginKey,
 	buildSummaryOriginKey,
@@ -278,14 +279,21 @@ export class SessionCatalog {
 		// 兼容旧数据：早期版本可能存有相对 filePath（pi 返回相对 cwd 的 sessionFile，
 		// 如 sessionDir 配置为 ".pi/sessions"）。相对路径与扫描器绝对路径的 originKey
 		// 不同 → 同一文件出现两条记录（侧栏重复显示），且文件操作落到错误位置。
-		// 加载时用注入的 resolver 统一修正为绝对路径并重算 originKey。
-		const repaired = this.repairRelativeFilePaths(this.entries);
+		// 加载时规范化并合并历史上已经落盘的双记录，保留原稳定身份及用户偏好。
+		const repaired = migrateSessionCatalogEntries(
+			this.entries,
+			this.resolveFilePath,
+			(entry) => this.originKeyForEntry(entry),
+		);
 		if (repaired) {
 			this.entries = repaired;
 			try {
 				await this.writeSnapshot(this.entries);
-			} catch {
-				// 修复是 best-effort；内存已生效，下一次启动仍会重试。
+			} catch (error) {
+				// 修复是 best-effort；内存已生效，旧磁盘数据保留供下次启动重试。
+				void getAppLogger()?.warn("session-catalog", "Failed to persist catalog migration; keeping repaired records", {
+					cause: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 		this.loaded = true;
@@ -775,33 +783,6 @@ export class SessionCatalog {
 			wslUser: entry.wslUser ?? this.identityContext.wslUser,
 			importedSourceId: entry.importedSourceId,
 		});
-	}
-
-	/**
-	 * 把条目中的相对 filePath 修正为绝对路径（通过注入的 resolver）。
-	 * 返回新数组表示有变更；未注入 resolver 或无需修正时返回 undefined。
-	 */
-	private repairRelativeFilePaths(
-		entries: SessionCatalogEntry[],
-	): SessionCatalogEntry[] | undefined {
-		const resolve = this.resolveFilePath;
-		if (!resolve) return undefined;
-		let changed = false;
-		const next = entries.map((entry) => {
-			if (!entry.filePath) return entry;
-			const resolved = resolve(
-				entry.projectId,
-				entry.filePath,
-				entry.environment,
-			);
-			if (!resolved || resolved === entry.filePath) return entry;
-			changed = true;
-			const repaired = { ...entry, filePath: resolved };
-			// originKey 随路径变化重算，否则后续 mergeScanned/attachRuntime 仍按旧 key 去重
-			if (repaired.originKey) repaired.originKey = this.originKeyForEntry(repaired);
-			return repaired;
-		});
-		return changed ? next : undefined;
 	}
 
 	private requireEntry(

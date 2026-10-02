@@ -155,8 +155,8 @@ export class SessionHistoryReader {
 	private static readonly SESSION_DISPLAY_INDEX_LIMIT = 32;
 	private static readonly MAX_SESSION_DISPLAY_PAGE_SIZE = 100;
 	private static readonly MAX_SESSION_DISPLAY_PAGE_BYTES = 256 * 1024;
-	/** 完整消息文本 LRU 缓存（「查看完整输出」按需读取结果）：键 `${sessionPath}#${messageId}`。 */
-	private readonly fullTextCache = new Map<string, string>();
+	/** Full text is reusable only for the same host file version and exact entry anchor. */
+	private readonly fullTextCache = new Map<string, { text: string; version: string }>();
 	private static readonly FULL_TEXT_CACHE_LIMIT = 200;
 	/** 轮次分页默认/上限：默认最近一次激活带 3 轮，单页最多 50 轮（2026-12 10→50：
 	 *  初始尾页按「最近 50 轮」窗口读取；上限仍存在，防恶意参数撑爆 IPC） */
@@ -179,15 +179,19 @@ export class SessionHistoryReader {
 		messageId: string,
 		entryId?: string,
 	): Promise<{ text: string }> {
-		const cacheKey = `${sessionPath}#${messageId}`;
+		const hostPath = this.deps.toHostPath(sessionPath);
+		const fileStat = await stat(hostPath);
+		const version = `${fileStat.dev}:${fileStat.ino}:${fileStat.size}:${fileStat.mtimeMs}:${fileStat.ctimeMs}`;
+		const cacheKey = JSON.stringify([hostPath, messageId, entryId ?? null]);
 		const cached = this.fullTextCache.get(cacheKey);
-		if (cached !== undefined) {
+		if (cached?.version === version) {
 			// LRU 刷新：先删后插，保持 Map 迭代序 = 最近使用序
 			this.fullTextCache.delete(cacheKey);
 			this.fullTextCache.set(cacheKey, cached);
-			return { text: cached };
+			return { text: cached.text };
 		}
-		const content = await readFile(this.deps.toHostPath(sessionPath), "utf8");
+		this.fullTextCache.delete(cacheKey);
+		const content = await readFile(hostPath, "utf8");
 		// 定位读取：逐行 parse 直到命中目标 entry（entryId 优先，回退 message.id），
 		// 不做全文件转换，避免大会话展开单条内容时触发整文件解析冻结。
 		for (const line of content.split("\n")) {
@@ -200,10 +204,10 @@ export class SessionHistoryReader {
 			}
 			if (!entry || typeof entry !== "object") continue;
 			const e = entry as { id?: unknown; message?: unknown };
-			const match = Boolean(
-				(entryId && e.id === entryId) ||
-				(e.message && typeof e.message === "object" && (e.message as { id?: unknown }).id === messageId),
-			);
+			// An explicit entry anchor must not match a different branch's message.id.
+			const match = entryId
+				? Boolean(entryId && e.id === entryId)
+				: Boolean(e.message && typeof e.message === "object" && "id" in e.message && e.message.id === messageId);
 			if (!match) continue;
 			const text = extractEntryResultText(e.message);
 			if (!text) {
@@ -213,7 +217,7 @@ export class SessionHistoryReader {
 				const oldest = this.fullTextCache.keys().next().value;
 				if (oldest !== undefined) this.fullTextCache.delete(oldest);
 			}
-			this.fullTextCache.set(cacheKey, text);
+			this.fullTextCache.set(cacheKey, { text, version });
 			return { text };
 		}
 		throw new Error(`Message ${messageId} not found in session file`);
