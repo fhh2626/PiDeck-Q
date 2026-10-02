@@ -73,12 +73,17 @@ test("project resources use one consistent shadcn management shell", () => {
     "toggleExtension",
     "confirmDelete",
     "openEditor",
-    "openProjectPromptEditor",
     "refresh",
     "loadPrompts",
   ]) {
     assert.match(projectResources, new RegExp(`\\b${contract}\\b`));
   }
+  // Prompt edit ownership moved to the shared hook; keep the actual launch,
+  // project file adapter and dialog wiring protected, not the old function name.
+  assert.match(projectResources, /const promptEditor = usePromptTemplateEditor\(/);
+  assert.match(projectResources, /storage: createProjectPromptEditorStorage\(window\.piDesktop\.files\)/);
+  assert.match(projectResources, /onClick=\{\(\) => void promptEditor\.open\(prompt\)\}/);
+  assert.match(projectResources, /<PromptEditorDialog editor=\{promptEditor\}/);
 });
 
 test("project resource cards stack metadata and keep destructive actions discoverable", () => {

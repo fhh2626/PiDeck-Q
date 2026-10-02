@@ -5,6 +5,8 @@ import { showNotice } from "../../utils/notice";
 import { Check, Code2, FileEdit, FolderOpen, MessageSquareText, Pencil, Puzzle, RefreshCw, ToggleLeft, ToggleRight, Trash2, X } from "lucide-react";
 import { CodeMirrorEditor } from "../app/CodeMirrorEditor";
 import { PromptEditorDialog } from "./PromptEditorDialog";
+import { usePromptTemplateEditor } from "../../hooks/usePromptTemplateEditor";
+import { createProjectPromptEditorStorage } from "../../config/promptEditorStorage";
 import {
 	Dialog,
 	DialogClose,
@@ -58,12 +60,10 @@ export function ProjectResourcesModal(props: {
 	const [newPromptName, setNewPromptName] = useState("");
 	const [newPromptDescription, setNewPromptDescription] = useState("");
 	const [creatingPrompt, setCreatingPrompt] = useState(false);
-	// 项目 prompt 编辑器状态
-	const [editingProjectPrompt, setEditingProjectPrompt] = useState<PiPromptTemplateSummary | null>(null);
-	const [editProjectPromptContent, setEditProjectPromptContent] = useState("");
-	const [editProjectPromptLoading, setEditProjectPromptLoading] = useState(false);
-	const [editProjectPromptSaving, setEditProjectPromptSaving] = useState(false);
-	const [editProjectPromptSaved, setEditProjectPromptSaved] = useState(false);
+	const promptEditor = usePromptTemplateEditor({
+		storage: createProjectPromptEditorStorage(window.piDesktop.files),
+		onSaved: async () => { if (!await loadPrompts()) throw new Error(t("config.loadFailed")); },
+	});
 	const [error, setError] = useState<string | null>(null);
 	// 内建编辑器状态
 	const [editingSkill, setEditingSkill] = useState<PiSkillSummary | null>(null);
@@ -101,9 +101,12 @@ export function ProjectResourcesModal(props: {
 			const result = await window.piDesktop.prompts.listByProject(props.project.path);
 			setPrompts(result.templates);
 		} catch (err) {
-			setPrompts([]);
+			setError(err instanceof Error ? err.message : String(err));
+			setPromptsLoading(false);
+			return false;
 		}
 		setPromptsLoading(false);
+		return true;
 	}, [props.project.path]);
 
 	/** 进入提示词 tab 时自动加载 */
@@ -175,16 +178,13 @@ export function ProjectResourcesModal(props: {
 			if (editingSkill && !editSaving) {
 				e.preventDefault();
 				void saveEditor();
-			} else if (editingProjectPrompt && !editProjectPromptSaving) {
-				e.preventDefault();
-				void saveProjectPromptEditor();
 			}
 		};
-		if (editingSkill || editingProjectPrompt) {
+		if (editingSkill) {
 			window.addEventListener("keydown", handleKeyDown);
 			return () => window.removeEventListener("keydown", handleKeyDown);
 		}
-	}, [editingSkill, editingProjectPrompt, editSaving, editProjectPromptSaving]);
+	}, [editingSkill, editSaving]);
 
 	/** 打开内建编辑器：读取 SKILL.md 内容 */
 	const openEditor = async (skill: PiSkillSummary) => {
@@ -292,44 +292,6 @@ export function ProjectResourcesModal(props: {
 		} finally {
 			setCreatingPrompt(false);
 		}
-	};
-
-	const openProjectPromptEditor = async (prompt: PiPromptTemplateSummary) => {
-		setEditingProjectPrompt(prompt);
-		setEditProjectPromptContent("");
-		setEditProjectPromptLoading(true);
-		setEditProjectPromptSaved(false);
-		setError(null);
-		try {
-			const content = await window.piDesktop.files.readContent(prompt.path);
-			setEditProjectPromptContent(content);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			setEditingProjectPrompt(null);
-		} finally {
-			setEditProjectPromptLoading(false);
-		}
-	};
-
-	const saveProjectPromptEditor = async () => {
-		if (!editingProjectPrompt || editProjectPromptSaving) return;
-		setEditProjectPromptSaving(true);
-		setError(null);
-		try {
-			await window.piDesktop.files.writeContent(editingProjectPrompt.path, editProjectPromptContent);
-			setEditProjectPromptSaved(true);
-			window.setTimeout(() => setEditProjectPromptSaved(false), 2000);
-			await loadPrompts();
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-		} finally {
-			setEditProjectPromptSaving(false);
-		}
-	};
-
-	const cancelProjectPromptEditor = () => {
-		setEditingProjectPrompt(null);
-		setEditProjectPromptContent("");
 	};
 
 	return (
@@ -577,15 +539,8 @@ export function ProjectResourcesModal(props: {
 						))}
 						</div>
 					</div>
-				) : editingProjectPrompt ? (
-					<PromptEditorDialog
-						title={`${editingProjectPrompt.name}.md`}
-						content={editProjectPromptContent}
-						loading={editProjectPromptLoading}
-						hint={editProjectPromptSaved ? t("config.promptSavedHint") : undefined}
-						onChange={setEditProjectPromptContent}
-						onClose={cancelProjectPromptEditor}
-					/>
+				) : promptEditor.state.template ? (
+					<PromptEditorDialog editor={promptEditor} />
 				) : (
 					<div className="project-resources-body">
 						<Card className="project-skill-create">
@@ -620,7 +575,7 @@ export function ProjectResourcesModal(props: {
 								<button
 									type="button"
 									className="project-resource-info"
-									onClick={() => void openProjectPromptEditor(prompt)}
+									onClick={() => void promptEditor.open(prompt)}
 									title={t("common.edit")}
 								>
 									<div className="project-resource-title">
@@ -633,7 +588,7 @@ export function ProjectResourcesModal(props: {
 									<Button
 										variant="ghost"
 										size="icon-sm"
-										onClick={() => void openProjectPromptEditor(prompt)}
+										onClick={() => void promptEditor.open(prompt)}
 										title={t("common.edit")}
 									>
 										<Pencil size={14} strokeWidth={1.8} />

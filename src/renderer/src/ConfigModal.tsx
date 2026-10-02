@@ -47,6 +47,8 @@ import { RawTab } from "./config/RawTab";
 import { TrustTab } from "./config/TrustTab";
 import { SettingsTab } from "./config/SettingsTab";
 import { PromptsTab } from "./config/PromptsTab";
+import { createGlobalPromptEditorStorage } from "./config/promptEditorStorage";
+import { usePromptTemplateEditor } from "./hooks/usePromptTemplateEditor";
 import { SkillsTab } from "./config/SkillsTab";
 import { ExtensionsTab } from "./config/ExtensionsTab";
 import { SecuritySection, type SecuritySectionHandle } from "./components/config/SecuritySection";
@@ -371,10 +373,11 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [creatingPrompt, setCreatingPrompt] = useState(false);
 	const [newPromptName, setNewPromptName] = useState("");
 	const [newPromptDescription, setNewPromptDescription] = useState("");
-	const [editingPrompt, setEditingPrompt] = useState<PiPromptTemplateSummary | null>(null);
-	const [editPromptContent, setEditPromptContent] = useState("");
-	const [editPromptLoading, setEditPromptLoading] = useState(false);
-	const [editPromptSaving, setEditPromptSaving] = useState(false);
+	const promptEditor = usePromptTemplateEditor({
+		storage: createGlobalPromptEditorStorage(api.prompts),
+		onSaved: () => refreshPrompts(),
+		onDirtyChange: (dirty) => { if (dirty) markDirty("prompts"); else clearDirty("prompts"); },
+	});
 	/** 待确认删除的 Prompt 模板（删除前弹确认框） */
 	const [deletePromptConfirm, setDeletePromptConfirm] = useState<PiPromptTemplateSummary | null>(null);
 	/** 是否确认找回全部默认内置模板 */
@@ -1272,68 +1275,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		}
 	};
 
-	/** 打开 prompt template 编辑器 */
-	const handleEditPrompt = async (template: PiPromptTemplateSummary) => {
-		// 内置模板直接使用预加载的 content，无需从文件读取
-		if (!template.userCreated) {
-			setEditingPrompt(template);
-			setEditPromptContent(template.content);
-			setEditPromptLoading(false);
-			setError(null);
-			return;
-		}
-		setEditingPrompt(template);
-		setEditPromptContent("");
-		setEditPromptLoading(true);
-		setError(null);
-		try {
-			const content = await api.prompts.edit(template.path);
-			setEditPromptContent(content as string);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			setEditingPrompt(null);
-		} finally {
-			setEditPromptLoading(false);
-		}
-	};
-
-	/** 取消编辑 prompt template（放弃未保存修改，清除标记） */
-	const handleCancelEditPrompt = () => {
-		setEditingPrompt(null);
-		setEditPromptContent("");
-		clearDirty("prompts");
-	};
-
-	/** 保存 prompt template 编辑器内容；返回是否成功（关闭确认框等待其结果再决定是否关闭） */
-	const handleSaveEditPrompt = async (): Promise<boolean> => {
-		if (!editingPrompt || editPromptSaving) return false;
-		setEditPromptSaving(true);
-		setError(null);
-		try {
-			if (!editingPrompt.userCreated) {
-				// 内置模板：先创建用户副本，再写入编辑内容
-				const created = await api.prompts.create({
-					name: editingPrompt.name,
-					description: editingPrompt.description,
-				});
-				await api.prompts.edit(created.path, editPromptContent);
-			} else {
-				await api.prompts.edit(editingPrompt.path, editPromptContent);
-			}
-			clearDirty("prompts");
-			showToast(t("config.promptSavedToast"));
-			setEditingPrompt(null);
-			await refreshPrompts();
-			return true;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			return false;
-		} finally {
-			setEditPromptSaving(false);
-		}
-	};
-
-	/** Ctrl+S 快速保存：保存但不关闭弹框、不弹提示 */
+	/** Rename a prompt, then refresh its list metadata. */
 	const handleRenamePrompt = async (template: { name: string; path: string }, newName: string) => {
 		setError(null);
 		try {
@@ -1342,31 +1284,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 			showToast(t("config.promptRenamedToast"));
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
-		}
-	};
-
-	const handleQuickSavePrompt = async (): Promise<boolean> => {
-		if (!editingPrompt || editPromptSaving) return false;
-		setEditPromptSaving(true);
-		setError(null);
-		try {
-			if (!editingPrompt.userCreated) {
-				const created = await api.prompts.create({
-					name: editingPrompt.name,
-					description: editingPrompt.description,
-				});
-				await api.prompts.edit(created.path, editPromptContent);
-			} else {
-				await api.prompts.edit(editingPrompt.path, editPromptContent);
-			}
-			clearDirty("prompts");
-			await refreshPrompts();
-			return true;
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
-			return false;
-		} finally {
-			setEditPromptSaving(false);
 		}
 	};
 
@@ -1591,7 +1508,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			case "skills":
 				return saveGlobalSkillEditor();
 			case "prompts":
-				return handleSaveEditPrompt();
+				return promptEditor.save();
 			case "security":
 				return securitySectionRef.current?.save() ?? false;
 			default:
@@ -1945,10 +1862,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 							creating={creatingPrompt}
 							newName={newPromptName}
 							newDescription={newPromptDescription}
-							editingTemplate={editingPrompt}
-							editContent={editPromptContent}
-							editLoading={editPromptLoading}
-							editSaving={editPromptSaving}
+							editor={promptEditor}
 							onRefresh={refreshPrompts}
 							onOpenRoot={() => api.prompts.openFolder()}
 							canRestoreBuiltins={promptsData.hasHiddenBuiltins}
@@ -1958,15 +1872,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 							onChangeNewDescription={setNewPromptDescription}
 							onCreate={handleCreatePrompt}
 							onDelete={setDeletePromptConfirm}
-							onEdit={handleEditPrompt}
 							onRename={handleRenamePrompt}
-							onQuickSave={handleQuickSavePrompt}
-							onCancelEdit={handleCancelEditPrompt}
-							onChangeEditContent={(value) => {
-								setEditPromptContent(value);
-								markDirty("prompts");
-							}}
-							onSaveEdit={handleSaveEditPrompt}
 						/>
 					)}
 						</div>

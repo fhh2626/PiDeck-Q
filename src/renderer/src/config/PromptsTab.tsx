@@ -1,8 +1,8 @@
 import { Button } from "../components/ui-shadcn/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui-shadcn/table";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui-shadcn/tabs";
-import { showNotice } from "../utils/notice";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import type { PromptTemplateEditor } from "../hooks/usePromptTemplateEditor";
 import { Check, FileEdit, FileText, Pencil, ShoppingBag, Trash2, X } from "lucide-react";
 import type {
 	PiPromptTemplateListResult,
@@ -21,14 +21,8 @@ export function PromptsTab(props: {
 	creating: boolean;
 	newName: string;
 	newDescription: string;
-	/** 当前正在编辑的模板，null 表示未打开编辑器 */
-	editingTemplate: PiPromptTemplateSummary | null;
-	/** 编辑器内容 */
-	editContent: string;
-	/** 编辑器是否正在加载 */
-	editLoading: boolean;
-	/** 编辑器是否正在保存 */
-	editSaving: boolean;
+	/** One owner for the draft, save command, baseline and errors. */
+	editor: PromptTemplateEditor;
 	onRefresh: () => void;
 	onOpenRoot: () => void;
 	/** 是否存在可恢复的已删除内置模板 */
@@ -39,12 +33,7 @@ export function PromptsTab(props: {
 	onChangeNewDescription: (value: string) => void;
 	onCreate: () => void;
 	onDelete: (template: PiPromptTemplateSummary) => void;
-	onEdit: (template: PiPromptTemplateSummary) => void;
 	onRename: (template: PiPromptTemplateSummary, newName: string) => Promise<void>;
-	onCancelEdit: () => void;
-	onQuickSave: () => void;
-	onChangeEditContent: (value: string) => void;
-	onSaveEdit: () => void;
 }) {
 	const { data } = props;
 	const canCreate = props.newName.trim().length > 0 && props.newDescription.trim().length > 0;
@@ -56,45 +45,6 @@ export function PromptsTab(props: {
 	const [renamingTemplate, setRenamingTemplate] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState("");
 	const [renameBusy, setRenameBusy] = useState(false);
-
-	// 编辑器提示状态
-	const [showHint, setShowHint] = useState(false);
-	const prevSaving = useRef(props.editSaving);
-
-	// 当编辑器打开时，显示快捷键提示
-	useEffect(() => {
-		if (props.editingTemplate) {
-			setShowHint(true);
-			/* savedHint 已改用 toast (sonner) */
-			const timer = setTimeout(() => setShowHint(false), 3000);
-			return () => clearTimeout(timer);
-		}
-	}, [props.editingTemplate]);
-
-	// 保存完成后显示 toast 提示（改用 sonner）
-	useEffect(() => {
-		if (prevSaving.current && !props.editSaving) {
-			showNotice(t("config.promptSavedHint"), 2000);
-		}
-		prevSaving.current = props.editSaving;
-	});
-
-	// Ctrl+S / Cmd+S 快捷键保存
-	const handleKeyDown = useCallback((e: KeyboardEvent) => {
-		if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-			e.preventDefault();
-			if (props.editingTemplate && !props.editSaving) {
-				props.onQuickSave();
-			}
-		}
-	}, [props.editingTemplate, props.editSaving, props.onQuickSave]);
-
-	useEffect(() => {
-		if (props.editingTemplate) {
-			window.addEventListener("keydown", handleKeyDown);
-			return () => window.removeEventListener("keydown", handleKeyDown);
-		}
-	}, [props.editingTemplate, handleKeyDown]);
 
 	return (
 		<div className="prompts-tab">
@@ -208,12 +158,12 @@ export function PromptsTab(props: {
 											<Button variant="ghost" size="icon-sm" className="size-7" onClick={() => setRenamingTemplate(null)} disabled={renameBusy} title={t("common.cancel")}><X size={14} strokeWidth={2} /></Button>
 										</div>
 									) : (
-										<button type="button" className="prompts-list-item-info" onClick={() => props.onEdit(template)} title={t("common.edit")}><span className="flex min-w-0 items-center gap-2"><FileText size={14} strokeWidth={1.8} className="shrink-0 text-text-tertiary" /><strong className="truncate">/{template.name}</strong></span></button>
+										<button type="button" className="prompts-list-item-info" onClick={() => void props.editor.open(template)} title={t("common.edit")}><span className="flex min-w-0 items-center gap-2"><FileText size={14} strokeWidth={1.8} className="shrink-0 text-text-tertiary" /><strong className="truncate">/{template.name}</strong></span></button>
 									)}
 								</TableCell>
 								<TableCell className="whitespace-normal break-words text-caption leading-relaxed text-text-secondary" title={template.description}>{template.description}</TableCell>
 								<TableCell className="text-right"><div className="flex justify-end gap-1">
-									<Button variant="ghost" size="icon-sm" className="size-7" onClick={() => props.onEdit(template)} title={t("common.edit")}><Pencil size={14} strokeWidth={1.8} /></Button>
+									<Button variant="ghost" size="icon-sm" className="size-7" onClick={() => void props.editor.open(template)} title={t("common.edit")}><Pencil size={14} strokeWidth={1.8} /></Button>
 									<Button variant="ghost" size="icon-sm" className="size-7" onClick={() => { setRenamingTemplate(template.path); setRenameValue(template.name); }} title={t("common.rename")}><FileEdit size={14} strokeWidth={1.8} /></Button>
 									<Button variant="ghost" size="icon-sm" className="size-7 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => props.onDelete(template)} title={t("common.delete")}><Trash2 size={14} strokeWidth={1.8} /></Button>
 								</div></TableCell>
@@ -225,16 +175,7 @@ export function PromptsTab(props: {
 			</section>
 
 				{/* 编辑弹框 */}
-				{props.editingTemplate && (
-				<PromptEditorDialog
-					title={`${props.editingTemplate.name}.md`}
-					content={props.editContent}
-					loading={props.editLoading}
-					hint={showHint ? t("config.promptSaveHint") : undefined}
-					onChange={props.onChangeEditContent}
-					onClose={props.onCancelEdit}
-				/>
-			)}
+				{props.editor.state.template && <PromptEditorDialog editor={props.editor} />}
 				</>
 			)}
 		</div>

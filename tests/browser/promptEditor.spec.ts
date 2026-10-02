@@ -15,13 +15,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 640, height: 480 
 		expect(bounds.y).toBeGreaterThanOrEqual(0);
 		expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
 		expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-		const close = editor.getByRole("button").last();
-		await expect.poll(() => close.evaluate((element) => {
+		const save = editor.getByRole("button", { name: "Save", exact: true });
+		await editor.locator(".cm-content").fill("Changed content");
+		await expect(editor.locator(".cm-content")).toContainText("Changed content");
+		await expect(save).toBeEnabled();
+		await expect.poll(() => save.evaluate((element) => {
 			const rect = element.getBoundingClientRect();
 			return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
 		})).toBe(true);
-		await editor.locator(".cm-content").fill("Changed content");
-		await expect(editor.locator(".cm-content")).toContainText("Changed content");
+		await save.click();
+		await expect(editor.getByRole("status")).toContainText("Saved");
 		await page.keyboard.press("Escape");
 		await expect(editor).toBeHidden();
 		await expect(page.getByTestId("settings")).toBeVisible();
@@ -34,7 +37,7 @@ test("closing the editor restores the settings dialog and permits reopening", as
 	await trigger.click();
 	const editor = page.getByRole("dialog", { name: "editable.md", exact: true });
 	await expect(editor).toBeVisible();
-	await editor.getByRole("button").last().click();
+	await editor.getByRole("button", { name: "Close", exact: true }).last().click();
 	await expect(editor).toBeHidden();
 	await expect(page.getByTestId("settings")).toBeVisible();
 	await trigger.click();
