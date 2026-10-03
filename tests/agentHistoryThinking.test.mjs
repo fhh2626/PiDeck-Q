@@ -121,6 +121,7 @@ function loadAgentManagerModule() {
 		module: historyReaderModule,
 		exports: historyReaderModule.exports,
 		require: (id) => {
+			if (id === "./SessionDisplayIndexStore") return loadTsCommonJs("src/main/pi/SessionDisplayIndexStore.ts");
 			if (id === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
 			if (id === "./sessionEntryIds") {
 				return { buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds };
@@ -164,6 +165,7 @@ function loadAgentManagerModule() {
       }
       if (specifier === "../../shared/ipc") return { ipcChannels: {} };
       if (specifier === "./PiProcess") return { PiProcess: class {} };
+      if (specifier === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
       if (specifier === "./bashResult") return { formatBashToolMessage: () => "" };
       if (specifier === "./AgentMessageProjector") return messageProjectorModule;
       if (specifier === "./historyMessages") return { mergeHistoryWithPreservedMessages: (messages) => messages };

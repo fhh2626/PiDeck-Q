@@ -51,6 +51,10 @@ async function startupFixture(t, { unavailableChat = false, duplicate = false } 
     ["../settings/visionBridgeConfig", "VisionBridgeConfigManager"], ["../web/WebServiceManager", "WebServiceManager"],
     ["../sessions/SessionRecordService", "SessionRecordService"],
   ]) stubs[module] = { [name]: InertService };
+  let scannerDisposals = 0;
+  stubs["../sessions/SessionScanner"] = { SessionScanner: class extends InertService {
+    dispose() { scannerDisposals++; }
+  } };
   const logger = new InertService();
   stubs["../logging/sharedLogger"] = { setAppLogger() {}, getAppLogger: () => logger };
   stubs["../settings/DesktopProxy"] = { applyDesktopProxy: async () => {} };
@@ -73,8 +77,15 @@ async function startupFixture(t, { unavailableChat = false, duplicate = false } 
       shell: { trashItem: async () => {} },
     },
   });
-  return { root, project, relativePath, scan, warnings };
+  return { root, project, relativePath, scan, warnings,
+    dispose: () => backend.dispose(), getScannerDisposals: () => scannerDisposals };
 }
+
+test("backend disposal releases its scanner exactly once", async t => {
+  const fixture = await startupFixture(t);
+  await fixture.dispose(); await fixture.dispose();
+  assert.equal(fixture.getScannerDisposals(), 1);
+});
 
 test("backend startup repairs relative session identities before the first scan", async t => {
   const fixture = await startupFixture(t);

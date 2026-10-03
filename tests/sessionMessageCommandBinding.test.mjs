@@ -496,6 +496,7 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
     "../utils/agentRuntimeState": runtimeState,
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
+    "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
   });
   const sessionSelectors = compileModule("src/renderer/src/atoms/session-selectors.ts", {
     "./session-atoms": atoms,

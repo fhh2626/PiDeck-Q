@@ -42,9 +42,11 @@ export function buildActiveBranchEntryIds(
 	while (currentId && !seen.has(currentId)) {
 		seen.add(currentId);
 		const entry = entryById.get(currentId);
-		branch.unshift(entry ?? { id: currentId, parentId: null });
+		branch.push(entry ?? { id: currentId, parentId: null });
 		currentId = entry?.parentId ?? null;
 	}
+	// 回溯方向是 leaf→root；一次反转避免逐条头插造成平方级数组搬移。
+	branch.reverse();
 
 	const isMessage = (entry: BranchEntryRef): boolean => entry.type === "message";
 	// 取活动分支上最靠近叶子的压缩点，而不是输入顺序里的最后一条

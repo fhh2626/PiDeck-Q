@@ -24,6 +24,7 @@ import type {
 } from "../../shared/types";
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
+import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
 import {
@@ -95,7 +96,7 @@ import type { SettingsStore } from "../settings/SettingsStore";
 import type { SecurityStore } from "../security/SecurityStore";
 import type { ConfigManager } from "../config/ConfigManager";
 import type { RpcLogger } from "../logging/RpcLogger";
-import type { RpcLogBatch, RpcLogEntry } from "../../shared/types/rpcLog";
+import type { RpcLogEntry } from "../../shared/types/rpcLog";
 import type { AppLogger } from "../logging/AppLogger";
 import {
 	toWindowsHostPath,
@@ -325,18 +326,8 @@ export class AgentManager {
 	private readonly outputListeners = new Set<(channel: string, payload: unknown) => boolean | void>();
 	/** 开启了 RPC 日志记录的 agent id 集合 */
 	private readonly rpcLoggingAgents = new Set<string>();
-	/**
-	 * 实时 RPC 日志广播缓冲：按 agent 聚合待发条目，节流刷出。
-	 * 流式阶段 RPC 事件可能非常高频，逐条 IPC 会把渲染进程打爆，必须批量推送。
-	 */
-	private readonly pendingLiveRpcLogs = new Map<string, RpcLogEntry[]>();
-	private liveRpcLogFlushTimer: NodeJS.Timeout | null = null;
-	/** 实时日志广播节流间隔：聚合 ~80ms 的条目一次性推送 */
-	private static readonly LIVE_RPC_LOG_FLUSH_MS = 80;
-	/** 单次广播批次的条数上限，防止单条 IPC 负载过大 */
-	private static readonly LIVE_RPC_LOG_MAX_BATCH = 100;
-	/** 聚合缓冲的条数上限，极端高频时丢弃最旧条目，防止内存失控 */
-	private static readonly LIVE_RPC_LOG_MAX_PENDING = 1000;
+	/** The buffer owns its queues/timer; the user's logging gate remains in AgentManager. */
+	private readonly liveRpcLogs = new LiveRpcLogBuffer((batch) => this.emit(ipcChannels.agentsRpcLog, batch));
 	/** 正在执行手动压缩操作的 agent，用于区分手动压缩重启和异常崩溃 */
 	private readonly compactingAgents = new Set<string>();
 	/** 手动压缩期间 Pi 是否已经开始了后续 agent run；用于避免 finally 提前置 idle。 */
@@ -3081,7 +3072,7 @@ export class AgentManager {
 		this.promptRequestedAtByAgent.delete(agentId);
 		this.entrySourceByAgent.delete(agentId);
 		this.rpcLoggingAgents.delete(agentId);
-		this.dropPendingLiveRpcLogs(agentId);
+		this.liveRpcLogs.drop(agentId);
 		// 工具完整结果缓存是运行期性能优化（回退读文件等价），只释放当前 agent。
 		this.toolFullTextByAgent.delete(agentId);
 	}
@@ -3317,51 +3308,6 @@ export class AgentManager {
 		});
 	}
 
-	/**
-	 * 聚合待广播的实时日志条目，节流刷出（见 LIVE_RPC_LOG_FLUSH_MS）。
-	 * 批量推送既能降低 IPC 次数，也让渲染层一次 state 更新收到多条，减少重渲染频率。
-	 */
-	private enqueueLiveRpcLog(entry: RpcLogEntry) {
-		let pending = this.pendingLiveRpcLogs.get(entry.agentId);
-		if (!pending) {
-			pending = [];
-			this.pendingLiveRpcLogs.set(entry.agentId, pending);
-		}
-		if (pending.length >= AgentManager.LIVE_RPC_LOG_MAX_PENDING) {
-			// 极端高频下丢弃最旧，保证聚合缓冲有界
-			pending.splice(0, pending.length - AgentManager.LIVE_RPC_LOG_MAX_PENDING + 1);
-		}
-		pending.push(entry);
-		if (this.liveRpcLogFlushTimer === null) {
-			this.liveRpcLogFlushTimer = setTimeout(() => {
-				this.liveRpcLogFlushTimer = null;
-				this.flushLiveRpcLogs();
-			}, AgentManager.LIVE_RPC_LOG_FLUSH_MS);
-		}
-	}
-
-	/** 把聚合缓冲按 agent 拆分后批量广播；单次批次超限的条目留到下一轮，不丢日志 */
-	private flushLiveRpcLogs() {
-		if (this.pendingLiveRpcLogs.size === 0) return;
-		for (const [agentId, entries] of [...this.pendingLiveRpcLogs]) {
-			const batch = entries.slice(0, AgentManager.LIVE_RPC_LOG_MAX_BATCH);
-			if (batch.length > 0) {
-				this.emit(ipcChannels.agentsRpcLog, { agentId, entries: batch } satisfies RpcLogBatch);
-			}
-			const rest = entries.slice(AgentManager.LIVE_RPC_LOG_MAX_BATCH);
-			if (rest.length > 0) {
-				this.pendingLiveRpcLogs.set(agentId, rest);
-			} else {
-				this.pendingLiveRpcLogs.delete(agentId);
-			}
-		}
-	}
-
-	/** 清空某 agent 的实时日志聚合缓冲（agent 关闭时调用，防止残留数据泄漏） */
-	private dropPendingLiveRpcLogs(agentId: string) {
-		this.pendingLiveRpcLogs.delete(agentId);
-	}
-
 	/** 设置某 agent 的 RPC 日志记录开关 */
 	setRpcLogging(agentId: string, enabled: boolean) {
 		if (enabled) {
@@ -3391,18 +3337,7 @@ export class AgentManager {
 		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
 		this.errorOriginByAgent.delete(agentId);
 		this.messages.delete(agentId);
-		this.messageDirtyFromByAgent.delete(agentId);
-		this.pendingFullMessageEmitAgents.delete(agentId);
-		this.activeToolCallsByAgent.delete(agentId);
-		this.toolExecutingByAgent.delete(agentId);
-		this.toolStateSequenceByAgent.delete(agentId);
-		this.pendingSlideOutByAgent.delete(agentId);
-		this.clearStreamGate(agentId);
-		// agent 关闭时自动关闭 RPC 日志记录，并丢弃未广播的实时日志缓冲
-		this.rpcLoggingAgents.delete(agentId);
-		this.dropPendingLiveRpcLogs(agentId);
-		this.displayWindowStartByAgent.delete(agentId);
-		this.sessionFileVersionByAgent.delete(agentId);
+		// One termination path owns per-agent clearing; preserve stop intent for the exit handler.
 		this.clearAgentState(agentId);
 		process.stop();
 		this.emitState();
@@ -3435,12 +3370,7 @@ export class AgentManager {
 		// 退出时统一清理所有 gate / abort 兜底定时器，避免泄漏到下一次生命周期。
 		for (const agentId of [...this.streamGates.keys()]) this.clearStreamGate(agentId);
 		this.recentlyAborted.clear();
-		// 实时日志广播的节流定时器与聚合缓冲同步清理
-		if (this.liveRpcLogFlushTimer !== null) {
-			clearTimeout(this.liveRpcLogFlushTimer);
-			this.liveRpcLogFlushTimer = null;
-		}
-		this.pendingLiveRpcLogs.clear();
+		this.liveRpcLogs.clear();
 		this.manualCompactionReloadClaims.clear();
 		this.emitState();
 	}
@@ -3535,7 +3465,7 @@ export class AgentManager {
 				// 未开启的 agent 不发射任何事件，避免每一条 RPC 通信都白白过一遍 IPC。
 				if (this.rpcLoggingAgents.has(agentId)) {
 					this.rpcLogger?.push(logEntry);
-					this.enqueueLiveRpcLog(logEntry);
+					this.liveRpcLogs.enqueue(logEntry);
 				}
 			} catch (error) {
 				void this.appLogger?.warn("agent", "rpc-log handler failed", {

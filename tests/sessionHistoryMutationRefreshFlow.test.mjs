@@ -46,6 +46,7 @@ function setupTestEnvironment() {
     "../utils/agentRuntimeState": runtimeState,
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
+    "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
   });
 
   const i18n = {

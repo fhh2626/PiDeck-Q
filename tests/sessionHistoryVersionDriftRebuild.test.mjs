@@ -43,6 +43,7 @@ function setupEnvironment(pages) {
     "../utils/agentRuntimeState": runtimeState,
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
+    "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
   });
   const requests = [];
   const fakeDesktopApi = {

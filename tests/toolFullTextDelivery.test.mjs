@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { withHistoryFixture } from "./helpers/performanceFixtures.mjs";
 
 // 文本驻留契约：工具结果截断下发 + 「查看完整输出」按需读取链路
 const projector = readFileSync("src/main/pi/AgentMessageProjector.ts", "utf8");
@@ -49,15 +50,19 @@ test("delivery strips redundant meta.result from tool messages", () => {
   assert.match(agentManager, /stripToolResultForDelivery\(page\.messages\)/);
 });
 
-test("full text read falls back to session file with LRU cache", () => {
-  // 主进程：内存缓存优先，回退会话文件定位读取（不整文件转换）
-  assert.match(agentManager, /async readMessageFullText\(/);
-  assert.match(agentManager, /this\.toolFullTextByAgent\.get\(agentId\)\?\.get\(messageId\)/);
-  assert.match(agentManager, /this\.sessionHistoryReader\.readMessageFullText\(sessionPath, messageId, entryId\)/);
-  // 文件读取：逐行 parse 定位（entryId 优先，回退 message.id），LRU 200
-  assert.match(reader, /async readMessageFullText\(/);
-  assert.match(reader, /entryId && e\.id === entryId/);
-  assert.match(reader, /FULL_TEXT_CACHE_LIMIT = 200/);
+test("full text read falls back to session file with LRU cache", async () => {
+  await withHistoryFixture(3, async ({ reader, path, metrics, body, count }) => {
+    assert.ok(count > 200);
+    assert.equal((await reader.readMessageFullText(path, "m0", "e0")).text, body);
+    metrics.bytes = 0;
+    assert.equal((await reader.readMessageFullText(path, "m0", "e0")).text, body);
+    assert.equal(metrics.bytes, 0, "same-version full text is reused");
+    for (let i = 1; i <= 200; i++) await reader.readMessageFullText(path, `m${i}`, `e${i}`);
+    metrics.bytes = 0;
+    assert.equal((await reader.readMessageFullText(path, "m0", "e0")).text, body);
+    assert.ok(metrics.bytes > 0, "LRU evicts the oldest result rather than growing indefinitely");
+    await assert.rejects(reader.readMessageFullText(path, "m0", "missing-entry"), /not found/);
+  });
 });
 
 test("agent cleanup removes every per-agent cache without clearing sibling output", () => {

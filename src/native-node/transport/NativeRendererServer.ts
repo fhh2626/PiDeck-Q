@@ -394,11 +394,16 @@ export class NativeRendererServer {
 			this.appendEvent("native.resyncRequired", [{ channel, bytes }]);
 			return;
 		}
-		this.appendEvent(channel, args);
+		// Size validation already serialized this envelope; reuse it for replay/live delivery.
+		this.appendEventPayload(payload);
 	}
 
 	private appendEvent(channel: string, args: unknown[]): void {
-		const payload = JSON.stringify({ channel, args });
+		this.appendEventPayload(JSON.stringify({ channel, args }));
+	}
+
+	/** Store and deliver the exact envelope that passed the frame-budget check. */
+	private appendEventPayload(payload: string): void {
 		const seq = ++this.eventSeq;
 		const frame = `id: ${seq}\ndata: ${payload}\n\n`;
 		const bytes = Buffer.byteLength(frame);

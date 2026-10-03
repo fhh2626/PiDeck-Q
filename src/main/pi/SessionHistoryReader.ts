@@ -1,42 +1,11 @@
-import { open, readFile, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { SessionDisplayIndexStore, type SessionDisplayIndex, type SessionDisplayEntry } from "./SessionDisplayIndexStore";
 import { buildActiveBranchEntryIds } from "./sessionEntryIds";
 import type { ChatMessage, ImageContent, SessionMessagePage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { RpcResponse } from "./PiRpcClient";
 import type { AppLogger } from "../logging/AppLogger";
 import { extractImageContent } from "../../shared/imageContent";
-
-type SessionDisplayEntry = {
-	id: string;
-	parentId: string | null;
-	type: string;
-	offset: number;
-	byteLength: number;
-	hasMessage: boolean;
-	/** 消息角色（user/assistant/…）：轮次分页按 user 消息切轮次边界，建索引时顺手捕获 */
-	role?: string;
-	/** 消息条目的 message.id：编辑/删除/重发缓存未命中时按 messageId 定位文件条目 */
-	messageId?: string;
-	summary?: string;
-	firstKeptEntryId?: string;
-	timestamp?: string;
-	tokensBefore?: number;
-};
-
-type SessionDisplayIndex = {
-	hostPath: string;
-	size: number;
-	mtimeMs: number;
-	hasCompaction: boolean;
-	/** 全量条目表（含非活跃分支）：增量追加与 fork/rewind 回溯用 */
-	entries: Map<string, SessionDisplayEntry>;
-	/** 活动分支（含 compaction 等非消息条目）：从最后 entry 沿 parentId 回溯 */
-	activeBranch: SessionDisplayEntry[];
-	/** 活动分支中的消息条目（分页/轮次计算用，派生自 activeBranch） */
-	activeMessageEntries: SessionDisplayEntry[];
-	/** 构建时文件是否以完整行（\n）结尾：false 时禁止增量追加（旧最后一行可能被拼接污染） */
-	endsWithNewline: boolean;
-};
 
 export type SessionArchiveData = {
 	compactions: Array<{
@@ -151,8 +120,7 @@ export function syntheticHistoryEntryId(messageId: string): string | undefined {
  * AgentManager; this reader owns bounded display paging and compaction recovery.
  */
 export class SessionHistoryReader {
-	private readonly sessionDisplayIndexes = new Map<string, SessionDisplayIndex>();
-	private static readonly SESSION_DISPLAY_INDEX_LIMIT = 32;
+	private readonly indexStore = new SessionDisplayIndexStore(32);
 	private static readonly MAX_SESSION_DISPLAY_PAGE_SIZE = 100;
 	private static readonly MAX_SESSION_DISPLAY_PAGE_BYTES = 256 * 1024;
 	/** Full text is reusable only for the same host file version and exact entry anchor. */
@@ -191,36 +159,20 @@ export class SessionHistoryReader {
 			return { text: cached.text };
 		}
 		this.fullTextCache.delete(cacheKey);
-		const content = await readFile(hostPath, "utf8");
-		// 定位读取：逐行 parse 直到命中目标 entry（entryId 优先，回退 message.id），
-		// 不做全文件转换，避免大会话展开单条内容时触发整文件解析冻结。
-		for (const line of content.split("\n")) {
-			if (!line.trim()) continue;
-			let entry: unknown;
-			try {
-				entry = JSON.parse(line);
-			} catch {
-				continue; // 跳过单行解析失败
-			}
-			if (!entry || typeof entry !== "object") continue;
-			const e = entry as { id?: unknown; message?: unknown };
-			// An explicit entry anchor must not match a different branch's message.id.
-			const match = entryId
-				? Boolean(entryId && e.id === entryId)
-				: Boolean(e.message && typeof e.message === "object" && "id" in e.message && e.message.id === messageId);
-			if (!match) continue;
-			const text = extractEntryResultText(e.message);
-			if (!text) {
-				throw new Error(`Message ${messageId} has no extractable text content`);
-			}
-			if (this.fullTextCache.size >= SessionHistoryReader.FULL_TEXT_CACHE_LIMIT) {
-				const oldest = this.fullTextCache.keys().next().value;
-				if (oldest !== undefined) this.fullTextCache.delete(oldest);
-			}
-			this.fullTextCache.set(cacheKey, { text, version });
-			return { text };
+		const index = await this.getSessionDisplayIndex(sessionPath);
+		// Preserve physical-first lookup, including abandoned branches and legacy no-id messages.
+		const entry = entryId ? index.firstEntries.get(entryId) : index.firstMessages.get(messageId);
+		if (!entry) throw new Error(`Message ${messageId} not found in session file`);
+		const raw = await this.readIndexedSessionMessages(index, [entry]);
+		const text = extractEntryResultText(raw[0]);
+		if (!text) throw new Error(`Message ${messageId} has no extractable text content`);
+		if (this.fullTextCache.size >= SessionHistoryReader.FULL_TEXT_CACHE_LIMIT) {
+			const oldest = this.fullTextCache.keys().next().value;
+			if (oldest !== undefined) this.fullTextCache.delete(oldest);
 		}
-		throw new Error(`Message ${messageId} not found in session file`);
+		const sourceVersion = `${index.dev}:${index.ino}:${index.size}:${index.mtimeMs}:${index.ctimeMs}`;
+		this.fullTextCache.set(cacheKey, { text, version: sourceVersion });
+		return { text };
 	}
 
 	async readSessionDisplayMessages(
@@ -352,15 +304,14 @@ export class SessionHistoryReader {
 			start -= 1;
 		}
 
-		// Compaction cards contain archived child messages. Preserve their existing
-		// semantics until archive data gets its own cursor protocol; normal Sessions,
-		// including the 50 MiB fixture, use the bounded offset reader below.
+		// Compacted sessions use the same indexed message space, with the summary card
+		// inserted only when this page crosses its retained-entry boundary.
 		if (index.hasCompaction) {
 			// 分页必须与 normal 分支同空间：按索引 activeMessageEntries 切片后读取原始消息再转换。
 			// 旧实现用 readSessionDisplayMessages 的全量数组按索引坐标 slice——转换会跳过空消息
 			// （thinking-only/空 user），数组比索引短，slice 越界返回空页（打开大会话起始页误显根因）。
 			const entries = index.activeMessageEntries.slice(start, boundedBefore);
-			const rawMessages = await this.readIndexedSessionMessages(index.hostPath, entries);
+			const rawMessages = await this.readIndexedSessionMessages(index, entries);
 			const messages = await this.convertCompactionPageMessages(
 				index, agentId, rawMessages, entries.map((entry) => entry.id), start,
 			);
@@ -371,7 +322,7 @@ export class SessionHistoryReader {
 			};
 		}
 		const entries = index.activeMessageEntries.slice(start, boundedBefore);
-		const rawMessages = await this.readIndexedSessionMessages(index.hostPath, entries);
+		const rawMessages = await this.readIndexedSessionMessages(index, entries);
 		return {
 			messages: this.deps.convertMessages(agentId, rawMessages, entries.map((entry) => entry.id)),
 			total,
@@ -414,11 +365,11 @@ export class SessionHistoryReader {
 			SessionHistoryReader.MAX_SESSION_DISPLAY_PAGE_BYTES,
 		);
 
-		// 与消息分页一致：压缩会话的归档语义未游标化前走全量读取 + 切片
+		// 与消息分页一致：只读取本页条目，并在压缩插入点落入页内时补摘要卡片。
 		if (index.hasCompaction) {
 			// 同空间分页（见 readSessionDisplayMessagePage 注释）：索引切片 + 转换 + 页内卡片
 			const entries = index.activeMessageEntries.slice(start, boundedBefore);
-			const rawMessages = await this.readIndexedSessionMessages(index.hostPath, entries);
+			const rawMessages = await this.readIndexedSessionMessages(index, entries);
 			const messages = await this.convertCompactionPageMessages(
 				index, agentId, rawMessages, entries.map((entry) => entry.id), start,
 			);
@@ -432,7 +383,7 @@ export class SessionHistoryReader {
 		}
 
 		const entries = index.activeMessageEntries.slice(start, boundedBefore);
-		const rawMessages = await this.readIndexedSessionMessages(index.hostPath, entries);
+		const rawMessages = await this.readIndexedSessionMessages(index, entries);
 		return {
 			messages: this.deps.convertMessages(agentId, rawMessages, entries.map((entry) => entry.id)),
 			total,
@@ -566,7 +517,7 @@ export class SessionHistoryReader {
 				(syntheticId !== undefined && candidate.id === syntheticId),
 		);
 		if (!entry) return undefined;
-		const raw = await this.readIndexedSessionMessages(index.hostPath, [entry]);
+		const raw = await this.readIndexedSessionMessages(index, [entry]);
 		const content = (raw[0] as { content?: unknown } | undefined)?.content;
 		const extracted = extractResendContent(content);
 		return {
@@ -577,276 +528,21 @@ export class SessionHistoryReader {
 		};
 	}
 
-	private async getSessionDisplayIndex(sessionPath: string): Promise<SessionDisplayIndex> {
-		const hostPath = this.deps.toHostPath(sessionPath);
-		const version = await stat(hostPath);
-		const cached = this.sessionDisplayIndexes.get(hostPath);
-		if (cached && cached.size === version.size && cached.mtimeMs === version.mtimeMs) {
-			this.sessionDisplayIndexes.delete(hostPath);
-			this.sessionDisplayIndexes.set(hostPath, cached);
-			return cached;
-		}
-
-		// 增量路径：文件变大且旧索引以完整行结尾 → 只读尾部新增字节并追加条目。
-		// pi 运行中持续往 JSONL 追加行，运行中翻历史/看分页会反复触发索引失效；
-		// 全量重建需要整文件 readFile + 逐行 parse，大会话（几十 MB）会造成可感知卡顿。
-		// 前置条件 endsWithNewline：旧最后一行以 \n 结尾，追加内容与旧内容边界干净。
-		if (cached && version.size > cached.size && cached.endsWithNewline) {
-			const updated = await this.appendIndexFromTail(cached, hostPath, version);
-			if (updated) {
-				this.sessionDisplayIndexes.delete(hostPath);
-				this.sessionDisplayIndexes.set(hostPath, updated);
-				this.trimDisplayIndexCache();
-				return updated;
-			}
-			// 增量失败（IO 异常/无新增完整行）：回退全量重建
-		}
-
-		const content = await readFile(hostPath, "utf8");
-		const entries = new Map<string, SessionDisplayEntry>();
-		let lastEntryId: string | undefined;
-		let byteOffset = 0;
-		// 文件是否以完整行（\n）结尾：决定后续 append 能否走增量索引
-		const endsWithNewline = content.endsWith("\n");
-		const lines = content.split("\n");
-		for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-			const sourceLine = lines[lineIndex];
-			const hasNewline = lineIndex < lines.length - 1;
-			const byteLength = Buffer.byteLength(sourceLine, "utf8");
-			const parsed = this.parseIndexLine(sourceLine, byteOffset, byteLength);
-			if (parsed) {
-				entries.set(parsed.id, parsed);
-				lastEntryId = parsed.id;
-			}
-			byteOffset += byteLength + (hasNewline ? 1 : 0);
-		}
-		const activeBranch = this.traceActiveBranch(entries, lastEntryId);
-		const index = this.finishIndex(hostPath, version, entries, activeBranch, endsWithNewline);
-		this.sessionDisplayIndexes.delete(hostPath);
-		this.sessionDisplayIndexes.set(hostPath, index);
-		this.trimDisplayIndexCache();
-		return index;
+	/** File/index ownership is isolated from projection and runtime history semantics. */
+	private getSessionDisplayIndex(sessionPath: string): Promise<SessionDisplayIndex> {
+		return this.indexStore.get(this.deps.toHostPath(sessionPath)).catch((error: unknown) => this.translateSnapshotFailure(error));
 	}
 
-	/** 解析单行 JSONL 为索引条目；损坏行返回 null（不影响其他行）。 */
-	private parseIndexLine(
-		sourceLine: string,
-		offset: number,
-		byteLength: number,
-	): SessionDisplayEntry | null {
-		const jsonLine = sourceLine.endsWith("\r") ? sourceLine.slice(0, -1) : sourceLine;
-		try {
-			const entry = JSON.parse(jsonLine) as Record<string, unknown>;
-			if (typeof entry.id !== "string") return null;
-			const message = entry.message as Record<string, unknown> | null | undefined;
-			return {
-				id: entry.id,
-				parentId: typeof entry.parentId === "string" ? entry.parentId : null,
-				type: typeof entry.type === "string" ? entry.type : "",
-				offset,
-				byteLength,
-				hasMessage: entry.message !== undefined && entry.message !== null,
-				role: typeof message?.role === "string" ? message.role : undefined,
-				messageId: typeof message?.id === "string" ? message.id : undefined,
-				summary: typeof entry.summary === "string" ? entry.summary : undefined,
-				firstKeptEntryId: typeof entry.firstKeptEntryId === "string"
-					? entry.firstKeptEntryId
-					: undefined,
-				timestamp: typeof entry.timestamp === "string" ? entry.timestamp : undefined,
-				tokensBefore: typeof entry.tokensBefore === "number" ? entry.tokensBefore : undefined,
-			};
-		} catch {
-			return null;
-		}
+	private readIndexedSessionMessages(index: SessionDisplayIndex, entries: SessionDisplayEntry[]): Promise<unknown[]> {
+		return this.indexStore.readMessages(index, entries).catch((error: unknown) => this.translateSnapshotFailure(error));
 	}
 
-	/** 从最后 entry 沿 parentId 回溯活动分支（与 JSONL 语义一致：leaf 沿父链到 root）。 */
-	private traceActiveBranch(
-		entries: Map<string, SessionDisplayEntry>,
-		lastEntryId: string | undefined,
-	): SessionDisplayEntry[] {
-		const activeBranch: SessionDisplayEntry[] = [];
-		const seen = new Set<string>();
-		let current = lastEntryId ? entries.get(lastEntryId) : undefined;
-		while (current && !seen.has(current.id)) {
-			seen.add(current.id);
-			activeBranch.push(current);
-			current = current.parentId ? entries.get(current.parentId) : undefined;
+	/** Keep the internal retry marker machine-readable while presenting a localized failure. */
+	private translateSnapshotFailure(error: unknown): never {
+		if (error !== null && typeof error === "object" && "message" in error && error.message === "SESSION_HISTORY_CHANGED") {
+			throw Object.assign(new Error(this.deps.translate("session.historyChanged"), { cause: error }), { code: "SESSION_HISTORY_CHANGED" });
 		}
-		activeBranch.reverse();
-		return activeBranch;
-	}
-
-	/** 由分支 + 全量条目表组装最终索引（消息条目派生 + 压缩标记）。 */
-	private finishIndex(
-		hostPath: string,
-		version: { size: number; mtimeMs: number },
-		entries: Map<string, SessionDisplayEntry>,
-		activeBranch: SessionDisplayEntry[],
-		endsWithNewline: boolean,
-	): SessionDisplayIndex {
-		return {
-			hostPath,
-			size: version.size,
-			mtimeMs: version.mtimeMs,
-			// 分页索引包含压缩点之前的全部消息（JSONL 保留完整历史）：
-			// 压缩前历史由翻页像正常对话流一样逐条可见（用户需求），不再从 firstKeptEntryId 截断。
-			hasCompaction: activeBranch.some((entry) => entry.type === "compaction"),
-			entries,
-			activeBranch,
-			activeMessageEntries: activeBranch.filter((entry) => entry.type === "message" && entry.hasMessage),
-			endsWithNewline,
-		};
-	}
-
-	/**
-	 * 增量索引：只读 [oldSize, newSize) 的新增字节，解析完整行后追加到既有索引。
-	 * 新条目沿 parentId 回溯至旧分支节点（支持 fork/rewind 场景），旧分支保留。
-	 * 返回 null 表示无可追加内容或 IO 失败（调用方回退全量重建）。
-	 */
-	private async appendIndexFromTail(
-		cached: SessionDisplayIndex,
-		hostPath: string,
-		version: { size: number; mtimeMs: number },
-	): Promise<SessionDisplayIndex | null> {
-		const length = version.size - cached.size;
-		if (length <= 0) return null;
-		let tail: Buffer;
-		try {
-			const handle = await open(hostPath, "r");
-			try {
-				// 前置校验：SessionFileEditor.atomicReplace 会整文件重写（temp + rename），
-				// 若重写使文件变大，仅凭 size 增长会被误判为 append，从旧 offset 读新内容会
-				// 解析出半行 JSON（曾复现 SyntaxError: Unexpected token）。
-				// 抽查旧索引首/末条目的 offset/byteLength 是否仍能解析出相同 id：
-				// 纯 append 保证 [0, oldSize) 字节不变 → 校验通过；整文件重写必然破坏末条目（或首条目）
-				// 的旧 offset 内容 → 返回 null，调用方回退全量重建。
-				const entriesInOrder = [...cached.entries.values()];
-				const probes = [entriesInOrder[0], entriesInOrder[entriesInOrder.length - 1]];
-				for (const probe of probes) {
-					if (!probe) continue;
-					const probeBuffer = Buffer.allocUnsafe(probe.byteLength);
-					const probeRead = await handle.read(probeBuffer, 0, probe.byteLength, probe.offset);
-					if (probeRead.bytesRead !== probe.byteLength) return null;
-					try {
-						const parsed = JSON.parse(
-							probeBuffer.toString("utf8").replace(/\r$/, ""),
-						) as { id?: unknown };
-						if (parsed.id !== probe.id) return null;
-					} catch {
-						return null;
-					}
-				}
-				tail = Buffer.allocUnsafe(length);
-				const { bytesRead } = await handle.read(tail, 0, length, cached.size);
-				if (bytesRead !== length) return null;
-			} finally {
-				await handle.close();
-			}
-		} catch {
-			return null;
-		}
-		const tailText = tail.toString("utf8");
-		// 只解析完整行（以 \n 结尾）；尾部残行（pi 正在写）留给下一次 append/重建
-		const completeLines = tailText.split("\n").slice(0, -1);
-		const entries = new Map(cached.entries);
-		const newEntries: SessionDisplayEntry[] = [];
-		let byteOffset = cached.size;
-		for (const sourceLine of completeLines) {
-			const byteLength = Buffer.byteLength(sourceLine, "utf8");
-			const parsed = this.parseIndexLine(sourceLine, byteOffset, byteLength);
-			if (parsed) {
-				entries.set(parsed.id, parsed);
-				newEntries.push(parsed);
-			}
-			byteOffset += byteLength + 1; // 完整行必然带 \n
-		}
-		// 无新增完整行（文件还在写）：保持旧索引，下次 mtime 变化再试
-		if (newEntries.length === 0) return null;
-
-		// 从最后一个新条目沿 parentId 回溯到旧分支内的锚点；新链挂到锚点之后。
-		const branchSet = new Set(cached.activeBranch.map((entry) => entry.id));
-		const chain: SessionDisplayEntry[] = [];
-		let current: SessionDisplayEntry | undefined = newEntries[newEntries.length - 1];
-		while (current && !branchSet.has(current.id) && !chain.some((entry) => entry.id === current?.id)) {
-			chain.push(current);
-			current = current.parentId ? entries.get(current.parentId) : undefined;
-		}
-		chain.reverse();
-		const pivotIndex = current
-			? cached.activeBranch.findIndex((entry) => entry.id === current.id)
-			: -1;
-		const baseBranch = pivotIndex >= 0
-			? cached.activeBranch.slice(0, pivotIndex + 1)
-			: cached.activeBranch;
-		const nextBranch = [...baseBranch, ...chain];
-		return this.finishIndex(hostPath, version, entries, nextBranch, tailText.endsWith("\n"));
-	}
-
-	/** 索引 LRU 上限裁剪：超出上限丢最旧（Map 迭代序 = 插入序）。 */
-	private trimDisplayIndexCache() {
-		while (this.sessionDisplayIndexes.size > SessionHistoryReader.SESSION_DISPLAY_INDEX_LIMIT) {
-			this.sessionDisplayIndexes.delete(this.sessionDisplayIndexes.keys().next().value!);
-		}
-	}
-
-	private async readIndexedSessionMessages(
-		hostPath: string,
-		entries: SessionDisplayEntry[],
-	): Promise<unknown[]> {
-		const handle = await open(hostPath, "r");
-		try {
-			return await Promise.all(entries.map(async (entry) => {
-				const buffer = Buffer.allocUnsafe(entry.byteLength);
-				await handle.read(buffer, 0, buffer.length, entry.offset);
-				const line = buffer.toString("utf8").replace(/\r$/, "");
-				return (JSON.parse(line) as { message?: unknown }).message;
-			}));
-		} finally {
-			await handle.close();
-		}
-	}
-
-
-	/**
-	 * 从已读取的 JSONL 内容中回溯活动父链消息（与 getSessionDisplayIndex 同一规则：
-	 * JSONL 最后一个 entry 是当前 leaf，沿 parentId 回溯到 root）。
-	 *
-	 * 大文件恢复必须只消费活动分支：物理尾部可能属于被 fork/rewind 丢弃的旧分支，
-	 * 按物理顺序取尾部会把已废弃对话显示成最新历史，也与 get_messages / 分页口径不一致。
-	 * 返回 null 表示文件中没有任何可解析条目（空文件/全部损坏）。
-	 */
-	private collectActiveBranchMessages(content: string): unknown[] | null {
-		const entries: Array<{ id: string; parentId: string | null; type: string; message?: unknown }> = [];
-		for (const line of content.split("\n")) {
-			if (!line.trim()) continue;
-			try {
-				const entry = JSON.parse(line);
-				if (!entry || typeof entry !== "object" || typeof entry.id !== "string") continue;
-				entries.push({
-					id: entry.id,
-					parentId: typeof entry.parentId === "string" ? entry.parentId : null,
-					type: typeof entry.type === "string" ? entry.type : "",
-					message: entry.message,
-				});
-			} catch {
-				// 单行损坏不影响其余条目；父链缺失节点会在回溯时自然终止。
-			}
-		}
-		if (entries.length === 0) return null;
-		const byId = new Map(entries.map((entry) => [entry.id, entry]));
-		const active: typeof entries = [];
-		const seen = new Set<string>();
-		let current: (typeof entries)[number] | undefined = entries[entries.length - 1];
-		while (current && !seen.has(current.id)) {
-			seen.add(current.id);
-			active.push(current);
-			current = current.parentId ? byId.get(current.parentId) : undefined;
-		}
-		active.reverse();
-		return active
-			.filter((entry) => entry.type === "message" && entry.message)
-			.map((entry) => entry.message);
+		throw error;
 	}
 
 	/**
@@ -864,32 +560,20 @@ export class SessionHistoryReader {
 		maxTurns: number,
 	): Promise<RpcResponse> {
 		const t0 = Date.now();
-		let content: string;
-		try {
-			content = await readFile(this.deps.toHostPath(sessionPath), "utf8");
-		} catch (error) {
-			void this.deps.logger?.warn("agent", "Failed to read session file for recent messages", {
-				sessionPath,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			throw error;
-		}
-
-		const totalLines = content.split("\n").length;
-		const activeMessages = this.collectActiveBranchMessages(content);
-		if (activeMessages === null) {
-			// 无任何可解析条目：文件可能被截断/清空。返回失败而不是把空结果当作完整历史。
-			throw new Error("Session file contains no readable entries");
-		}
-
-		// 只保留最近 maxTurns 轮对话（活动分支口径，与运行窗口/分页同一约定）
-		const trimmed = this.deps.trimMessages(activeMessages, maxTurns);
+		const index = await this.getSessionDisplayIndex(sessionPath);
+		if (index.entries.size === 0) throw new Error("Session file contains no readable entries");
+		const activeEntries = index.activeBranch.filter((entry) => entry.type === "message" && entry.hasTruthyMessage);
+		// Apply the existing ordered, role-based trimmer before reading message bodies.
+		const wanted = new Set(this.deps.trimMessages(activeEntries, maxTurns));
+		const selected = activeEntries.filter((entry) => wanted.has(entry));
+		const trimmed = await this.readIndexedSessionMessages(index, selected);
+		const totalLines = index.rowCount;
 		const t1 = Date.now();
 
 		void this.deps.logger?.info("agent", "Recent messages read from session file", {
 			sessionPath,
 			totalLines,
-			messageEntries: activeMessages.length,
+			messageEntries: activeEntries.length,
 			trimmedTurns: maxTurns,
 			trimmedMessages: trimmed.length,
 			readMs: t1 - t0,
@@ -918,7 +602,11 @@ export class SessionHistoryReader {
 	}> {
 		let content: string;
 		try {
-			content = sessionContent ?? await readFile(this.deps.toHostPath(sessionPath), "utf8");
+			if (sessionContent === undefined) {
+				const index = await this.getSessionDisplayIndex(sessionPath);
+				return { compactions: index.compactions.map((entry) => ({ ...entry })) };
+			}
+			content = sessionContent;
 		} catch (error) {
 			void this.deps.logger?.warn("agent", "Failed to read session file for archive parsing", {
 				sessionPath,

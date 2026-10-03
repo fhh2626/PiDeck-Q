@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -103,6 +104,7 @@ function loadAgentManager() {
 		if (id.includes("PiProcess")) return piProcess;
 		if (id.includes("SessionFileEditor")) return sessionFileEditor;
 		if (id.includes("AgentMessageProjector")) return agentMessageProjector;
+		if (id.includes("LiveRpcLogBuffer")) return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 		if (id.includes("SessionHistoryReader")) return sessionHistoryReader;
 		if (id.includes("imageContent")) return loadModule("src/shared/imageContent.ts");
 		if (id.includes("imageLimits")) return loadModule("src/shared/imageLimits.ts");

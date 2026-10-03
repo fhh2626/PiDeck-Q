@@ -59,6 +59,7 @@ function loadSessionAtoms() {
       "src/renderer/src/utils/sessionRecordIdentity.ts",
     ),
     "../../../shared/messageFingerprint": messageFingerprint,
+    "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
   });
 }
 

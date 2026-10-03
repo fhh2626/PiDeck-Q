@@ -51,6 +51,7 @@ function loadAtoms() {
 		"../utils/agentRuntimeState": runtimeState,
 		"../utils/sessionRecordIdentity": sessionRecordIdentity,
 		"../../../shared/messageFingerprint": messageFingerprint,
+		"../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
 	});
 	const deletionAtoms = compileModule("src/renderer/src/atoms/message-deletion-atoms.ts", {
 		"./session-atoms": sessionAtoms,

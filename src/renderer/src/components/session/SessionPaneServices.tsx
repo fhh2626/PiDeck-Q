@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useMemo,
+  useRef,
   type MutableRefObject,
   type ReactNode,
   type RefObject,
@@ -9,6 +10,11 @@ import {
 import type { AgentTab, AgentUiResponse, ChatMessage, GitBranchInfo, ImageContent, Project, SessionRuntimeTarget, TerminalTarget } from "../../../../shared/types";
 import type { QueuedPrompt } from "../../hooks/useQueuedPrompt";
 import type { NoticeId } from "../../utils/notice";
+import { useStableSessionPaneActions } from "../../hooks/useStableSessionPaneActions";
+import { useAtomValue } from "jotai";
+import { selectAtom } from "jotai/utils";
+import { sessionRuntimeBySessionIdAtomFamily } from "../../atoms/session-selectors";
+import { projectSessionPaneState } from "../../utils/sessionPaneState";
 
 /**
  * 会话栏共享服务：跨分屏双栏稳定不变的回调与资源。
@@ -124,70 +130,9 @@ export function SessionPaneServicesProvider(props: {
   value: SessionPaneServices;
   children: ReactNode;
 }) {
-  // 拆分后两轨各自 memo：actions 轨依赖稳定的回调/ref，state 轨依赖会变化的数据。
-  // 只读 actions 的组件（Composer/pickers）在只有 state 变化时拿到同一个 actions
-  // 引用，从而不被唤醒。App 侧已对 value 做 useMemo，这里再按子集 memo 一次，
-  // 让「字段引用稳定但外层对象换了」的情况也能命中缓存。
-  const actionsValue = useMemo<SessionPaneActions>(
-    () => ({
-      promoteSessionToPermanent: props.value.promoteSessionToPermanent,
-      showToast: props.value.showToast,
-      onOpenFile: props.value.onOpenFile,
-      onDiffFile: props.value.onDiffFile,
-      onPreviewImage: props.value.onPreviewImage,
-      abortAgent: props.value.abortAgent,
-      restartActiveAgent: props.value.restartActiveAgent,
-      runCreateSessionDraft: props.value.runCreateSessionDraft,
-      enqueueSessionPrompt: props.value.enqueueSessionPrompt,
-      insertQuickPrompt: props.value.insertQuickPrompt,
-      ensureSessionId: props.value.ensureSessionId,
-      resendUserMessage: props.value.resendUserMessage,
-      editMessage: props.value.editMessage,
-      deleteMessage: props.value.deleteMessage,
-      forkFromUserMessage: props.value.forkFromUserMessage,
-      openSidebarSessionById: props.value.openSidebarSessionById,
-      queueRetract: props.value.queueRetract,
-      queueDiscard: props.value.queueDiscard,
-      queueFlushBySessionRef: props.value.queueFlushBySessionRef,
-      setTerminalOpenForOwner: props.value.setTerminalOpenForOwner,
-      setTerminalCollapsedForOwner: props.value.setTerminalCollapsedForOwner,
-      setTerminalHeightByOwner: props.value.setTerminalHeightByOwner,
-      changeChatPath: props.value.changeChatPath,
-      showNotice: props.value.showNotice,
-      api: props.value.api,
-      jumpToMessageRef: props.value.jumpToMessageRef,
-      exitSessionSplit: props.value.exitSessionSplit,
-    }),
-    [
-      props.value.promoteSessionToPermanent,
-      props.value.showToast,
-      props.value.onOpenFile,
-      props.value.onDiffFile,
-      props.value.onPreviewImage,
-      props.value.abortAgent,
-      props.value.restartActiveAgent,
-      props.value.runCreateSessionDraft,
-      props.value.enqueueSessionPrompt,
-      props.value.insertQuickPrompt,
-      props.value.ensureSessionId,
-      props.value.resendUserMessage,
-      props.value.editMessage,
-      props.value.deleteMessage,
-      props.value.forkFromUserMessage,
-      props.value.openSidebarSessionById,
-      props.value.queueRetract,
-      props.value.queueDiscard,
-      props.value.queueFlushBySessionRef,
-      props.value.setTerminalOpenForOwner,
-      props.value.setTerminalCollapsedForOwner,
-      props.value.setTerminalHeightByOwner,
-      props.value.changeChatPath,
-      props.value.showNotice,
-      props.value.api,
-      props.value.jumpToMessageRef,
-      props.value.exitSessionSplit,
-    ],
-  );
+  // The actions owner delegates to committed implementations, including default active targets.
+  // Merely memoizing App's render-local closures cannot provide this identity guarantee.
+  const actionsValue = useStableSessionPaneActions(props.value);
 
   const stateValue = useMemo<SessionPaneState>(
     () => ({
@@ -245,6 +190,19 @@ export function SessionPaneServicesProvider(props: {
       </SessionPaneStateContext.Provider>
     </SessionPaneActionsContext.Provider>
   );
+}
+
+/** Local frame projection: expensive consumers receive only their own runtime/queue fields. */
+export function SessionPaneScope(props: { sessionId: string; children: ReactNode }) {
+  const source = useSessionPaneState();
+  const agentAtom = useMemo(() => selectAtom(
+    sessionRuntimeBySessionIdAtomFamily(props.sessionId), (runtime) => runtime?.agentId,
+  ), [props.sessionId]);
+  const agentId = useAtomValue(agentAtom);
+  const previous = useRef<SessionPaneState | undefined>(undefined);
+  const value = projectSessionPaneState(source, props.sessionId, agentId, previous.current);
+  previous.current = value;
+  return <SessionPaneStateContext.Provider value={value}>{props.children}</SessionPaneStateContext.Provider>;
 }
 
 export function useSessionPaneActions(): SessionPaneActions {

@@ -1642,7 +1642,7 @@ export function App() {
     // 请求序号与项目身份校验由 useProjectSync 统一持有；慢请求即使跨过
     // 下一次轮询或项目切换才结束，也不会把旧分支写回当前工作区。
     const timer = window.setInterval(
-      () => void refreshGitInfo(activeProjectId).catch(() => undefined),
+      () => void refreshGitInfo(activeProjectId, "poll").catch(() => undefined),
       4000,
     );
     return () => window.clearInterval(timer);

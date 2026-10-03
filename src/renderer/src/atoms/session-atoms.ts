@@ -608,9 +608,7 @@ export const cacheSessionMessagesAtom = atom(
 				// mutation 代际：runtime flush 不改变它，只有显式传入（refresh 落地）才更新。
 				// 缺省继承旧值，保证在途 refresh 不因无关 runtime 更新被误判为陈旧。
 				mutationSequence: input.mutationSequence ?? current?.mutationSequence,
-				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
-				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
-				// 卡片数只在全量 flush 推导（增量 flush 不携带 → 保留旧值，合并偏移依赖它）
+				// 单次组装权威卡片数；不额外制造第二个覆盖相同字段的对象。
 				...(typeof input.cardCount === "number" ? { cardCount: input.cardCount } : {}),
 				// 数值游标：增量继承旧值（载荷不带该字段不等于窗口起点变了）；
 				// 全量则按本次声明覆盖或清除——窗口右移后旧游标已失效。
@@ -935,30 +933,9 @@ const COMPACTION_RETAINED_TURNS = 50;
  */
 export const MIN_DISPLAY_TURNS = 50;
 
-/** 统计用户轮数：只数 role === "user" 的消息（摘要卡、工具、助手都不算轮）。 */
-export function countUserTurns(messages: readonly ChatMessage[]): number {
-  let turns = 0;
-  for (const message of messages) {
-    if (message.role === "user") turns += 1;
-  }
-  return turns;
-}
-
-/**
- * 保留尾部最近 turnCount 轮：从倒数第 turnCount 条用户消息处切开，轮内内容整体保留。
- * - turnCount <= 0：返回空数组。
- * - 总轮数不足 turnCount：原样返回（包括第一条用户消息之前的碎片）。
- */
-export function keepTailTurns(messages: ChatMessage[], turnCount: number): ChatMessage[] {
-  if (turnCount <= 0) return [];
-  let seen = 0;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role !== "user") continue;
-    seen += 1;
-    if (seen === turnCount) return messages.slice(index);
-  }
-  return messages;
-}
+// Pure window policy has no Jotai dependency; existing imports retain the same implementation.
+import { countUserTurns, keepTailTurns } from "../utils/historyTurnWindow";
+export { countUserTurns, keepTailTurns } from "../utils/historyTurnWindow";
 
 /**
  * 计算压缩保留集合（messageEntryKey）：以「旧保留集 + 本次转入历史的上一窗口」为输入，

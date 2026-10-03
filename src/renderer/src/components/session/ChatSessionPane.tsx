@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useAtomValue } from "jotai";
 import { sessionRecordByIdAtomFamily } from "../../atoms";
 import { useSessionTimelineController } from "../../hooks/useSessionTimelineController";
 import { SessionRuntimeInjector } from "./SessionRuntimeInjector";
-import { useSessionPaneServices } from "./SessionPaneServices";
+import { SessionPaneScope, useSessionPaneServices } from "./SessionPaneServices";
+import { useLatestPaneCommand } from "../../hooks/useStableSessionPaneActions";
 import { t } from "../../i18n";
 
 export type ChatSessionPaneProps = {
@@ -19,6 +20,16 @@ export type ChatSessionPaneProps = {
  * 共享服务来自 SessionPaneServices；Tab 栏由 App 外置统一挂载。
  */
 export function ChatSessionPane(props: ChatSessionPaneProps) {
+  const onFocusPane = useLatestPaneCommand(props.onFocusPane);
+  return (
+    <SessionPaneScope sessionId={props.sessionId}>
+      <ChatSessionPaneContent {...props} onFocusPane={onFocusPane} />
+    </SessionPaneScope>
+  );
+}
+
+/** Context and parent-render isolation complement the existing per-session timeline subscription. */
+const ChatSessionPaneContent = memo(function ChatSessionPaneContent(props: ChatSessionPaneProps) {
   const { sessionId, focused, onFocusPane, splitPane = false } = props;
   const services = useSessionPaneServices();
 
@@ -78,4 +89,4 @@ export function ChatSessionPane(props: ChatSessionPaneProps) {
       setTerminalHeightByOwner={services.setTerminalHeightByOwner}
     />
   );
-}
+});

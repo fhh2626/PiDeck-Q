@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import * as os from "node:os";
 import { loadTsCommonJs } from "./loadTsCommonJs.mjs";
 
 /**
@@ -8,6 +9,10 @@ import { loadTsCommonJs } from "./loadTsCommonJs.mjs";
  */
 export function loadSessionScanner(homePath, options = {}) {
 	const stubs = {
+		// Native Scanner/cache resolve homedir directly; an Electron-only stub leaked cache
+		// fixtures into the real home and made repeated WSL tests spuriously warm.
+		"node:os": { ...os, homedir: () => homePath },
+		os: { ...os, homedir: () => homePath },
 		electron: {
 			app: { getPath: (key) => (key === "home" ? homePath : join(homePath, String(key))) },
 			shell: { trashItem: async () => {} },
@@ -20,5 +25,5 @@ export function loadSessionScanner(homePath, options = {}) {
 	}
 	// 其他需要替换的模块（例如 node:fs 的局部 override）；注意它们对所有被加载的模块都生效。
 	Object.assign(stubs, options.stubs ?? {});
-	return loadTsCommonJs("src/main/sessions/SessionScanner.ts", { stubs });
+	return loadTsCommonJs("src/main/sessions/SessionScanner.ts", { stubs, globals: options.globals });
 }

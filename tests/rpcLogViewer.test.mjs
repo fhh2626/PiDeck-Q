@@ -106,19 +106,11 @@ test("sidebar gates rpc logging toggle on a live runtime", () => {
   assert.match(sidebarContent, /if \(!menuAgentCanRpcLog\) \{\n\s+showNotice\(t\("menu\.rpcLoggingRequiresRuntime"\), 2500\);/);
 });
 
-test("AgentManager batches live log broadcast and cleans up on exit", () => {
-  // 广播只发生在开启记录的 agent 上：落盘与实时推送同一闸门
+test("AgentManager gates both persistence and live log delivery behind the user's logging choice", () => {
+  // Queue/batch/budget/cleanup behavior is covered through public creation and process events
+  // in agentLiveRpcLog.behavior.test.mjs; this remains only a narrow wiring contract.
   assert.match(agentManager, /if \(this\.rpcLoggingAgents\.has\(agentId\)\) \{\n\t\t\t\t\tthis\.rpcLogger\?\.push\(logEntry\);/);
-  assert.match(agentManager, /enqueueLiveRpcLog\(logEntry\)/);
-  // 节流常量：~80ms 聚合一批，单批与缓冲都有上限（防止 IPC/内存失控）
-  assert.match(agentManager, /LIVE_RPC_LOG_FLUSH_MS = 80/);
-  assert.match(agentManager, /LIVE_RPC_LOG_MAX_BATCH = 100/);
-  assert.match(agentManager, /LIVE_RPC_LOG_MAX_PENDING = 1000/);
-  // 单批超限的条目留到下一轮，不丢日志
-  assert.match(agentManager, /if \(rest\.length > 0\) \{\n\t+this\.pendingLiveRpcLogs\.set\(agentId, rest\);/);
-  // 生命周期配对：stopAll 清定时器与聚合缓冲，agent 关闭丢弃该 agent 的待发缓冲
-  assert.match(agentManager, /clearTimeout\(this\.liveRpcLogFlushTimer\)/);
-  assert.match(agentManager, /dropPendingLiveRpcLogs\(agentId\)/);
+  assert.match(agentManager, /this\.liveRpcLogs\.enqueue\(logEntry\)/);
 });
 
 test("RpcLogger keeps a larger live ring buffer with filtered getLive and data truncation", () => {

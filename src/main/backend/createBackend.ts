@@ -591,6 +591,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			if (disposed) return;
 			disposed = true;
 			disposeRpc();
+			sessionScanner.dispose();
 			terminalManager?.closeAll();
 			agentManager?.stopAll();
 			await webServiceManager?.stop().catch(() => undefined);

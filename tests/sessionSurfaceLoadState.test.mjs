@@ -24,6 +24,7 @@ const sessionAtoms = compile("src/renderer/src/atoms/session-atoms.ts", {
   "../utils/agentRuntimeState": compile("src/renderer/src/utils/agentRuntimeState.ts"),
   "../utils/sessionRecordIdentity": compile("src/renderer/src/utils/sessionRecordIdentity.ts"),
   "../../../shared/messageFingerprint": messageFingerprint,
+  "../utils/historyTurnWindow": compile("src/renderer/src/utils/historyTurnWindow.ts"),
 });
 const composerAtoms = compile("src/renderer/src/atoms/composer-atoms.ts", {
   "./session-atoms": sessionAtoms,

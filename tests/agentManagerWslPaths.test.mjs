@@ -59,13 +59,26 @@ function loadAgentManager() {
 		copyFile: [],
 		existsSync: [],
 		readFile: [],
+		open: [],
+		stat: [],
 		readdir: [],
 		readdirSync: [],
 		statSync: [],
 		unlink: [],
 		writeFile: [],
 	};
+	const historyBuffer = Buffer.from(`${JSON.stringify({ id: "entry-user", type: "message", message: { role: "user", content: "hello" } })}\n`);
+	const version = { size: historyBuffer.length, mtimeMs: 1, ctimeMs: 1, dev: 1, ino: 1 };
 	const fsPromises = {
+		stat: async (file) => { calls.stat.push(file); return version; },
+		open: async (file) => {
+			calls.open.push(file);
+			return {
+				stat: async () => version,
+				read: async (buffer, offset, length, position) => ({ bytesRead: historyBuffer.copy(buffer, offset, position, position + length), buffer }),
+				close: async () => {},
+			};
+		},
 		copyFile: async (...args) => { calls.copyFile.push(args); },
 		readFile: async (...args) => {
 			calls.readFile.push(args);
@@ -86,6 +99,7 @@ function loadAgentManager() {
 		module: historyReaderModule,
 		Promise,
 		require: (id) => {
+			if (id === "./SessionDisplayIndexStore") return loadTsCommonJs("src/main/pi/SessionDisplayIndexStore.ts", { stubs: { "node:fs/promises": fsPromises } });
 			if (id === "node:fs/promises") return fsPromises;
 			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");
 			// SessionHistoryReader 从 sessionEntryIds 取 entryId 对齐（压缩裁剪）：
@@ -119,6 +133,7 @@ function loadAgentManager() {
 			// 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
 			id = id.replace(/\.ts$/, "");
 			if (id === "electron") return { app: {}, Notification: class {} };
+			if (id === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 			if (id === "node:fs/promises") return fsPromises;
 			if (id === "node:fs") {
 				return {
@@ -243,8 +258,11 @@ test("maps WSL Session file operations to host paths while retaining Linux proto
 
 	const expectedHostPath = "\\\\wsl.localhost\\Ubuntu-24.04\\root\\.pi\\agent\\sessions\\session.jsonl";
 	assert.equal(calls.statSync[0], expectedHostPath);
+	assert.ok(calls.open.length > 0);
+	assert.ok(calls.stat.length > 0);
+	assert.ok(calls.open.every((file) => file === expectedHostPath));
+	assert.ok(calls.stat.every((file) => file === expectedHostPath));
 	assert.equal(calls.readFile[0][0], expectedHostPath);
-	assert.equal(calls.readFile[1][0], expectedHostPath);
 	assert.equal(calls.writeFile[0][0], expectedHostPath);
 });
 

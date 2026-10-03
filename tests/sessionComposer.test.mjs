@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 function compile(filePath, stubs = {}) {
   const source = readFileSync(filePath, "utf8");
@@ -51,6 +52,7 @@ function loadControllerHelpers() {
   return compile("src/renderer/src/hooks/useSessionComposerController.ts", {
     react: {},
     jotai: {},
+    "../utils/composerPolicies": loadTsCommonJs("src/renderer/src/utils/composerPolicies.ts"),
   });
 }
 
