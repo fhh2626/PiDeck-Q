@@ -219,7 +219,14 @@ export class AgentMessageProjector {
 							: Date.now(),
 						meta: {
 							type: isCompaction ? "compaction" : "branchSummary",
-							tokensBefore: typed.tokensBefore,
+							tokensBefore: typed.tokensBefore ?? typed.meta?.tokensBefore,
+							// 文件补入的卡片把事件身份放在 meta；保留它才能跨 session/runtime 投影去重。
+							...(isCompaction && typeof typed.meta?.compactionId === "string"
+								? { compactionId: typed.meta.compactionId } : {}),
+							...(isCompaction && typeof typed.meta?.firstKeptEntryId === "string"
+								? { firstKeptEntryId: typed.meta.firstKeptEntryId } : {}),
+							...(!isCompaction && typeof typed.fromId === "string"
+								? { fromId: typed.fromId } : {}),
 						// 保留压缩次数（桌面端从会话文件解析得到），供前端展示“已压缩 N 次”
 						...(isCompaction && typed.meta?.compactionCount != null
 							? { compactionCount: typed.meta.compactionCount }

@@ -686,7 +686,8 @@ export class AgentManager {
 	/**
 	 * 窗口首条消息在会话文件消息下标空间中的位置（无 entryId 窗口的数值游标）。
 	 * 消息数组头部可能存在系统摘要卡片（compaction/branchSummary，文件消息空间无对应条目），
-	 * 因此用「headOffset + (windowStart - 卡片数)」换算；窗口完全落在卡片区时返回 undefined。
+	 * 只减去窗口之前已跳过的摘要卡片；窗口从摘要卡片开始时仍对应 headOffset，
+	 * 不能因可见卡片算出负偏移、丢掉归档历史游标。未知 headOffset 仍不提供数值游标。
 	 */
 	private computeWindowStartFilePos(
 		agentId: string,
@@ -695,10 +696,8 @@ export class AgentManager {
 	): number | undefined {
 		const headOffset = this.messageHeadOffsetByAgent.get(agentId);
 		if (headOffset === undefined || headOffset < 0) return undefined;
-		const cardCount = leadingSummaryCards(all, all.length).length;
-		const offset = windowStart - cardCount;
-		if (offset < 0) return undefined;
-		return headOffset + offset;
+		const cardCount = leadingSummaryCards(all, windowStart).length;
+		return headOffset + windowStart - cardCount;
 	}
 
 	/**

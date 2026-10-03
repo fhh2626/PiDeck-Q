@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { Value } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/value/index.mjs";
-import { makeStrictJsonSchema } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/constrained-sampling.js";
-import { loadExtensions } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { loadPiCompatibilityModules } from "./helpers/piCompatibilityModules.mjs";
+
+const { Value, makeStrictJsonSchema, loadExtensions } = await loadPiCompatibilityModules();
 
 const srcSource = readFileSync("resources/extensions/pideck-q-webfetch/src/index.mjs", "utf8");
 const distSource = readFileSync("resources/extensions/pideck-q-webfetch/dist/index.mjs", "utf8");

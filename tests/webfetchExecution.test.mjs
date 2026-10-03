@@ -4,8 +4,9 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadExtensions } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { Value } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/value/index.mjs";
+import { loadPiCompatibilityModules } from "./helpers/piCompatibilityModules.mjs";
+
+const { Value, loadExtensions } = await loadPiCompatibilityModules();
 
 test("WebFetch: real registered tool parameter check and execution behavior", async () => {
 	const webfetchDistPath = resolve("resources/extensions/pideck-q-webfetch/dist/index.mjs");

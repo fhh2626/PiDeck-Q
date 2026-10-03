@@ -452,6 +452,9 @@ export class SessionHistoryReader {
 			timestamp: lastCompaction.timestamp ? Date.parse(lastCompaction.timestamp) : Date.now(),
 			meta: {
 				type: "compaction",
+				// 投影 id 随 session/agent 改变，保留 canonical 压缩身份供展示接缝去重。
+				compactionId: lastCompaction.id,
+				firstKeptEntryId: lastCompaction.firstKeptEntryId,
 				tokensBefore: lastCompaction.tokensBefore,
 				...(compactions.length > 0 ? { compactionCount: compactions.length } : {}),
 			},

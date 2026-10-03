@@ -1642,7 +1642,7 @@ test("version-drift prefix replace drops messages already shown in the window an
       source: "runtime",
       revision: 3,
       messages: [
-        { id: "agent-meta-1", role: "system", text: "window summary", meta: { type: "compaction" } },
+        { id: "agent-meta-1", agentId: "agent", role: "system", text: "window summary", timestamp: 1000, meta: { type: "compaction", compactionId: "same-compaction" } },
         { id: "w1", role: "user", text: "window", meta: { entryId: "e5" } },
       ],
       windowStart: 4,
@@ -1654,9 +1654,9 @@ test("version-drift prefix replace drops messages already shown in the window an
     expectedRevision: 3,
     page: {
       messages: [
-        // �ļ�ҳ���ժҪ������ʹ id �봰�ڲ�ͬ����������ժҪ��ʱҲ���붪��
-        { id: "file-summary", role: "system", text: "file summary", meta: { type: "compaction" } },
-        // �봰��ͬһ entryId��������Ȩ���Σ�ҳ��ĸ������붪��
+        // 同一压缩事件的投影 id/正文可能不同，窗口是权威副本；不能把不同事件也当作重复。
+        { id: "file-summary", agentId: "session-drift", role: "system", text: "file summary", timestamp: 1000, meta: { type: "compaction", compactionId: "same-compaction" } },
+        // 与窗口同一 entryId，页中的副本必须丢弃。
         { id: "dup", role: "assistant", text: "dup", meta: { entryId: "e5" } },
         { id: "keep", role: "user", text: "keep", meta: { entryId: "keep" } },
       ],

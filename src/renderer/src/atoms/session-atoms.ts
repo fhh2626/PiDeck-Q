@@ -12,7 +12,7 @@ import type {
   SessionRuntimeEvent,
   SessionRuntimeInfo,
 } from "../../../shared/types";
-import { messageFingerprint } from "../../../shared/messageFingerprint";
+import { isSameSummaryCard, messageFingerprint } from "../../../shared/messageFingerprint";
 import { mergeAgentRuntimeState } from "../utils/agentRuntimeState";
 import { sameProjectSessionList } from "../utils/sessionRecordIdentity";
 
@@ -1127,12 +1127,12 @@ export const replaceHistoryPrefixAfterVersionDriftAtom = atom(
     // 新前缀与当前运行窗口是两个相邻段，重叠消息不得同时留在两处
     // （正常 prepend 路径同样按 messageEntryKey 去重）：
     // - 窗口已有同 key 的消息（含同 id 的摘要卡）→ 丢弃页里的副本；
-    // - 窗口已有摘要卡 → 页里的另一张摘要卡（不同 id）也丢弃，避免两张卡片。
+    // - 同一摘要事件的跨投影副本去重，但保留不同压缩事件/分支摘要。
     const segmentKeys = new Set(current.messages.map(messageEntryKey));
-    const windowHasSummary = current.messages.some(isSummaryCard);
+    const windowSummaries = current.messages.filter(isSummaryCard);
     const prefixMessages = input.page.messages.filter((message) => {
       if (segmentKeys.has(messageEntryKey(message))) return false;
-      if (windowHasSummary && isSummaryCard(message)) return false;
+      if (isSummaryCard(message) && windowSummaries.some((card) => isSameSummaryCard(card, message))) return false;
       return true;
     });
     set(sessionMessagesCacheAtom, {
@@ -1207,7 +1207,13 @@ export const prependSessionHistoryPageAtom = atom(
 
     const baseMessages = current.history?.messages ?? [];
     const baseKeys = new Set(baseMessages.map(messageEntryKey));
-    const freshMessages = pageMessages.filter((message) => !baseKeys.has(messageEntryKey(message)));
+    // IPC 文件页使用 sessionId，runtime 使用 agentId：摘要 id 不同但可能是同一事件。
+    // 仅匹配摘要事件，不能一见窗口摘要就丢弃页内所有摘要（旧压缩/分支卡片仍有意义）。
+    const knownSummaries = [...current.messages, ...baseMessages].filter(isSummaryCard);
+    const freshMessages = pageMessages.filter((message) =>
+      !baseKeys.has(messageEntryKey(message)) &&
+      !(isSummaryCard(message) && knownSummaries.some((card) => isSameSummaryCard(card, message))),
+    );
 
     const merged = [...freshMessages, ...baseMessages];
     set(sessionMessagesCacheAtom, {
