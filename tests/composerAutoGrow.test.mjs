@@ -6,6 +6,10 @@ const composerArea = readFileSync(
   "src/renderer/src/components/session/ComposerArea.tsx",
   "utf8",
 );
+const measuredExtras = readFileSync(
+  "src/renderer/src/components/session/composer/ComposerMeasuredExtras.tsx",
+  "utf8",
+);
 const sessionView = readFileSync(
   "src/renderer/src/components/session/SessionView.tsx",
   "utf8",
@@ -19,7 +23,7 @@ const rendererUtils = readFileSync(
  * 输入区自适应增高契约：Todo/记忆 widget、图片附件等可变内容渲染在输入区上方，
  * 若 footer 高度固定不变，会挤压 composer-box 导致输入区被压缩、显示不清晰。
  * 这些断言锁定修复路径：
- * 1. ComposerArea 在 useLayoutEffect 中同步测量可变内容额外高度（绘制前完成，
+ * 1. ComposerMeasuredExtras 在 ResizeObserver 中测量真实尺寸变化（绘制前完成，
  *    避免内容出现时先压缩再回弹的跳动），图片附件栏紧贴输入框；
  * 2. SessionView 通过 panelRef 命令式 resize：内容需要更高时自动增高、
  *    内容减少时（如图片清空但 widgets 仍在）自动回缩到所需高度；
@@ -27,16 +31,17 @@ const rendererUtils = readFileSync(
  */
 test("composer measures variable content above the input and reports the extra height", () => {
   // 可变内容（widgets / 队列 / 投递通知）与图片附件栏分层测量
-  assert.match(composerArea, /widgetsRef/);
-  assert.match(composerArea, /attachmentBarRef/);
-  // useLayoutEffect 同步测量：layout effect 中的 setState 在浏览器绘制前 flush，
-  // panel.resize 与内容渲染同帧生效，输入区不会被压缩一帧（避免闪烁）
-  assert.match(composerArea, /useLayoutEffect\(\(\) => \{\n\s*if \(!mountedRef\.current\) return;/);
-  assert.match(composerArea, /const extra = measureExtra\(\);[\s\S]*onHeightChangeRef\.current\(extra\)/);
+  assert.match(measuredExtras, /widgetsRef/);
+  assert.match(measuredExtras, /attachmentBarRef/);
+  // ResizeObserver 在 paint 前回调；只响应真实尺寸变化，不随普通输入重复测量。
+  // 公开报告行为、增长/回缩和输入资源预算由 composerExtrasMeasurement.behavior 覆盖。
+  assert.match(measuredExtras, /new ResizeObserver\(\(\) => \{\n\s*if \(mountedRef\.current\) reportExtra\(\);/);
+  assert.doesNotMatch(measuredExtras, /useLayoutEffect/);
+  assert.match(measuredExtras, /const extra = measureExtra\(\);[\s\S]*onHeightChangeRef\.current\(extra\)/);
   // 挂载首帧跳过；mounted 只能在 rAF 内置 true，避免 StrictMode 重放
   // layout effect 时面板仍未注册（Group not found）
   assert.match(
-    composerArea,
+    measuredExtras,
     /requestAnimationFrame\(\(\) => \{[\s\S]*mountedRef\.current = true;[\s\S]*reportExtra\(\);/,
   );
   // 非受控模式本地增长：起步高度可被宿主覆盖（起始页传更高的 defaultHeight），
@@ -47,14 +52,14 @@ test("composer measures variable content above the input and reports the extra h
 
 test("extras height sync lives in a child that rerenders when variable content changes", () => {
   // ComposerRuntimeIntegrations owns variable-content state. Closing/updating extras rerenders
-  // its render-prop subtree, not the outer ComposerArea, so the layout effect must live in a
-  // child receiving the extras as props; otherwise the panel only shrinks after the user types
+  // its render-prop subtree, not the outer ComposerArea, so size observation must live in a
+  // child observing the extras; otherwise the panel only shrinks after the user types
   // and rerenders ComposerArea for an unrelated reason.
   // 注：扩展 widget（Todo/Plan）默认在 chat-header SessionWidgetChips，composer 内
   // widgets 槽位默认 null，测量的可变内容为附件栏/队列/投递通知。
   assert.match(
-    composerArea,
-    /function ComposerMeasuredExtras[\s\S]*useLayoutEffect/,
+    measuredExtras,
+    /function ComposerMeasuredExtras[\s\S]*new ResizeObserver/,
   );
   assert.match(
     composerArea,
@@ -66,16 +71,16 @@ test("content containers are shrink-proof so panel resizes cannot feedback-loop"
   // widgets 容器与图片栏 shrink-0：面板增高/回缩时容器自身高度不变，
   // 避免「面板调整→容器被压缩→extra 变化→再调整」的同步更新循环
   assert.match(composerArea, /shrink-0/);
-  const widgetsSlot = composerArea.indexOf("ref={widgetsRef}");
-  const attachmentSlot = composerArea.indexOf("ref={attachmentBarRef}");
+  const widgetsSlot = measuredExtras.indexOf("ref={widgetsRef}");
+  const attachmentSlot = measuredExtras.indexOf("ref={attachmentBarRef}");
   assert.ok(widgetsSlot !== -1 && widgetsSlot < attachmentSlot);
 });
 
 test("image attachment bar stays glued to the input box", () => {
   // 测量组件内部顺序固定为 widgets → 图片栏；调用点紧邻 composer-box 之前
-  const measuredComponent = composerArea.indexOf("function ComposerMeasuredExtras");
-  const widgetsSlot = composerArea.indexOf("ref={widgetsRef}", measuredComponent);
-  const attachmentSlot = composerArea.indexOf("ref={attachmentBarRef}", measuredComponent);
+  const measuredComponent = measuredExtras.indexOf("function ComposerMeasuredExtras");
+  const widgetsSlot = measuredExtras.indexOf("ref={widgetsRef}", measuredComponent);
+  const attachmentSlot = measuredExtras.indexOf("ref={attachmentBarRef}", measuredComponent);
   const measuredCall = composerArea.indexOf("<ComposerMeasuredExtras");
   const composerBoxSlot = composerArea.indexOf('className={["composer-box');
   assert.ok(widgetsSlot !== -1 && widgetsSlot < attachmentSlot);
@@ -87,10 +92,10 @@ test("image attachment bar stays glued to the input box", () => {
   // 导致有图/无图时输入区高度不一致
   assert.match(composerArea, /composer\.attachments\.length > 0 \? \(/);
   // 空 extras 必须 hidden，否则 gap-2 会在「组织回答」和输入框之间再垫 8px。
-  assert.match(composerArea, /flex shrink-0 min-h-0 min-w-0 flex-col gap-2 empty:hidden/);
+  assert.match(measuredExtras, /flex shrink-0 min-h-0 min-w-0 flex-col gap-2 empty:hidden/);
   // gap 实测：Tailwind gap-2 是 rem，随根字号变化，用 rowGap 拿真实 px
-  assert.match(composerArea, /getComputedStyle\(footerEl\)\.rowGap/);
-  assert.match(composerArea, /imageBarH > 0 \? gapPx : 0/);
+  assert.match(measuredExtras, /getComputedStyle\(footerEl\)\.rowGap/);
+  assert.match(measuredExtras, /imageBarH > 0 \? gapPx : 0/);
 });
 
 test("session view grows and shrinks the composer panel with variable content", () => {

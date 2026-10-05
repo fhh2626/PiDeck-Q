@@ -691,6 +691,8 @@ export function useSessionComposerController(
   }, [draft, sessionId]);
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // IME 的方向键/Enter 属于候选确认，不得读取历史或抢走编辑器事件。
+    if (isComposingKeyboardEvent(event)) return;
     if (completion && !completion.dismissed) {
       if (suggestionsOpen && event.key === "ArrowDown") {
         event.preventDefault();
@@ -721,40 +723,46 @@ export function useSessionComposerController(
       }
     }
 
-    const liveDraft = liveDomDraftRef.current.sessionId === sessionId
-      ? liveDomDraftRef.current.value
-      : draft;
-    const liveCursor = editorRef.current
-      ? getComposerCaretOffset(editorRef.current)
-      : cursor;
-    const firstLine = !liveDraft.slice(0, liveCursor).includes("\n");
-    const lastLine = !liveDraft.slice(liveCursor).includes("\n");
-    const history = getPromptHistory();
+    // 历史与 DOM 光标只供上下键导航使用；普通输入不扫描重会话消息，
+    // 也不调用 TipTap 光标转换（其中可能读取布局）。行内移动同样不读取历史。
+    if (event.key === "ArrowUp" || (event.key === "ArrowDown" && historyIndex >= 0)) {
+      const liveDraft = liveDomDraftRef.current.sessionId === sessionId
+        ? liveDomDraftRef.current.value
+        : draft;
+      const liveCursor = editorRef.current
+        ? getComposerCaretOffset(editorRef.current)
+        : cursor;
+      const firstLine = !liveDraft.slice(0, liveCursor).includes("\n");
+      const lastLine = !liveDraft.slice(liveCursor).includes("\n");
 
-    if (event.key === "ArrowUp" && firstLine && history.length > 0) {
-      event.preventDefault();
-      clearCompletion();
-      const nextIndex = historyIndex < 0
-        ? 0
-        : Math.min(historyIndex + 1, history.length - 1);
-      if (historyIndex < 0) setSavedDraft(liveDraft);
-      setHistoryIndex(nextIndex);
-      liveDomDraftRef.current = { sessionId, value: history[nextIndex] };
-      setDraft(history[nextIndex]);
-      caretRef.current = { pos: history[nextIndex].length, forValue: history[nextIndex] };
-      return;
-    }
-    if (event.key === "ArrowDown" && lastLine && historyIndex >= 0) {
-      event.preventDefault();
-      clearCompletion();
-      const nextIndex = historyIndex - 1;
-      const nextDraft = nextIndex >= 0 ? history[nextIndex] : savedDraft;
-      setHistoryIndex(nextIndex);
-      if (nextIndex < 0) setSavedDraft("");
-      liveDomDraftRef.current = { sessionId, value: nextDraft };
-      setDraft(nextDraft);
-      caretRef.current = { pos: nextDraft.length, forValue: nextDraft };
-      return;
+      if (event.key === "ArrowUp" && firstLine) {
+        const history = getPromptHistory();
+        if (history.length > 0) {
+          event.preventDefault();
+          clearCompletion();
+          const nextIndex = historyIndex < 0
+            ? 0
+            : Math.min(historyIndex + 1, history.length - 1);
+          if (historyIndex < 0) setSavedDraft(liveDraft);
+          setHistoryIndex(nextIndex);
+          liveDomDraftRef.current = { sessionId, value: history[nextIndex] };
+          setDraft(history[nextIndex]);
+          caretRef.current = { pos: history[nextIndex].length, forValue: history[nextIndex] };
+          return;
+        }
+      }
+      if (event.key === "ArrowDown" && lastLine && historyIndex >= 0) {
+        event.preventDefault();
+        clearCompletion();
+        const nextIndex = historyIndex - 1;
+        const nextDraft = nextIndex >= 0 ? getPromptHistory()[nextIndex] : savedDraft;
+        setHistoryIndex(nextIndex);
+        if (nextIndex < 0) setSavedDraft("");
+        liveDomDraftRef.current = { sessionId, value: nextDraft };
+        setDraft(nextDraft);
+        caretRef.current = { pos: nextDraft.length, forValue: nextDraft };
+        return;
+      }
     }
     if (event.key === "Escape" && historyIndex >= 0) {
       clearCompletion();
@@ -775,6 +783,7 @@ export function useSessionComposerController(
     clearCompletion,
     commitCompletion,
     completion,
+    cursor,
     dismissCompletion,
     draft,
     getPromptHistory,

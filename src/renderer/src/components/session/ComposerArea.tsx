@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAtom, useAtomValue, useStore } from "jotai";
 import {
   ComposerBottomBar,
@@ -8,6 +8,7 @@ import {
 import {
   TipTapComposer,
 } from "./composer";
+import { ComposerMeasuredExtras } from "./composer/ComposerMeasuredExtras";
 import { SessionReferenceModal } from "../app/SessionReferenceModal";
 import { t } from "../../i18n";
 import { useSessionComposerController } from "../../hooks/useSessionComposerController";
@@ -53,98 +54,6 @@ export type ComposerAreaProps = {
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
   ensureSessionId?: (sessionId: string) => Promise<string>;
 };
-
-const CONTENT_GAP_PX = 8;
-
-type ComposerMeasuredExtrasProps = {
-  widgets: ReactNode;
-  queuePanel?: ReactNode;
-  deliveryNotice: ReactNode;
-  attachmentBar: ReactNode;
-  onHeightChange: (extraHeight: number) => void;
-};
-
-/**
- * 必须作为 ComposerRuntimeIntegrations render-prop 子树中的独立组件存在：
- * widget 的关闭/更新只会重渲染这棵子树，不会重渲染外层 ComposerArea。
- * 测量 effect 放在这里，才能在 widget 变化的同一帧回缩面板，而不是等用户输入。
- */
-function ComposerMeasuredExtras(props: ComposerMeasuredExtrasProps) {
-  const widgetsRef = useRef<HTMLDivElement | null>(null);
-  const attachmentBarRef = useRef<HTMLDivElement | null>(null);
-  const lastContentExtraRef = useRef(0);
-  const mountedRef = useRef(false);
-  const onHeightChangeRef = useRef(props.onHeightChange);
-  onHeightChangeRef.current = props.onHeightChange;
-
-  const measureExtra = () => {
-    const widgetsH = widgetsRef.current?.offsetHeight ?? 0;
-    const imageBarH = attachmentBarRef.current?.offsetHeight ?? 0;
-    // gap 实测：Tailwind gap-2 是 rem，随根字号变化；用 rowGap 拿到真实 px。
-    let gapPx = CONTENT_GAP_PX;
-    const footerEl = widgetsRef.current?.parentElement;
-    if (footerEl && typeof window !== "undefined") {
-      const rowGap = parseFloat(window.getComputedStyle(footerEl).rowGap || "");
-      if (!Number.isNaN(rowGap) && rowGap > 0) gapPx = rowGap;
-    }
-    return Math.ceil(
-      widgetsH + imageBarH + (imageBarH > 0 ? gapPx : 0),
-    );
-  };
-
-  const reportExtra = () => {
-    const extra = measureExtra();
-    if (extra === lastContentExtraRef.current) return;
-    lastContentExtraRef.current = extra;
-    onHeightChangeRef.current(extra);
-  };
-
-  // props.widgets 变化会重渲染本组件；在 paint 前同步 resize，输入区不会闪高一帧。
-  useLayoutEffect(() => {
-    if (!mountedRef.current) return;
-    reportExtra();
-  });
-
-  const hasAttachmentBar = props.attachmentBar != null;
-  useEffect(() => {
-    let rafId = 0;
-    const schedule = () => {
-      if (rafId) return;
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        mountedRef.current = true;
-        reportExtra();
-      });
-    };
-    const observer = new ResizeObserver(schedule);
-    if (widgetsRef.current) observer.observe(widgetsRef.current);
-    if (attachmentBarRef.current) observer.observe(attachmentBarRef.current);
-    // 首测延迟到下一帧：此时 ResizablePanel 已注册到 group。
-    schedule();
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      observer.disconnect();
-    };
-  }, [hasAttachmentBar]);
-
-  return (
-    <>
-      <div
-        ref={widgetsRef}
-        className="flex shrink-0 min-h-0 min-w-0 flex-col gap-2 empty:hidden"
-      >
-        {props.widgets}
-        {props.queuePanel}
-        {props.deliveryNotice}
-      </div>
-      {hasAttachmentBar ? (
-        <div ref={attachmentBarRef} className="shrink-0">
-          {props.attachmentBar}
-        </div>
-      ) : null}
-    </>
-  );
-}
 
 export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function ComposerArea(
   props,
