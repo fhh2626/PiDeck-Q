@@ -64,6 +64,22 @@ test("cloned useChat ready arrays do not cause repeated writeback", () => {
 	assert.equal(h.writes.length, 1);
 });
 
+/** A PC tail may already be cached while the visible useChat baseline is still older. */
+test("a new Web turn stays after the cached PC tail during streaming and settlement", () => {
+	const h = harness();
+	const original = user("original");
+	const earlierReply = { id: "earlier", role: "assistant", metadata: { chatRole: "assistant", timestamp: 2, entryId: "earlier" }, parts: [{ type: "text", text: "earlier" }] };
+	const pcTool = { id: "pc-tool", role: "assistant", metadata: { chatRole: "tool", timestamp: 3, toolCallId: "pc-write" }, parts: [{ type: "tool-write", toolCallId: "pc-write", state: "output-available", input: {}, output: "done" }] };
+	const pcReply = { id: "pc-reply", role: "assistant", metadata: { chatRole: "assistant", timestamp: 4, entryId: "pc-reply" }, parts: [{ type: "text", text: "PC reply" }] };
+	h.cache.current.session = [original, earlierReply, pcTool, pcReply];
+	const live = [original, earlierReply, user("new-user"), answer("New Web response")];
+	h.render(live, true);
+	assert.deepEqual(Array.from(h.cache.current.session, (m) => m.id), ["original", "earlier", "pc-tool", "pc-reply", "new-user", "stream"]);
+	assert.equal(h.writes.length, 0, "never replace useChat mid-stream");
+	h.render(live, false);
+	assert.deepEqual(Array.from(h.writes.at(-1), (m) => m.id), ["original", "earlier", "pc-tool", "pc-reply", "new-user", "stream"]);
+});
+
 test("switching session does not flush the previous stream into the new session", () => {
 	const h = harness();
 	h.render([user("old-user"), answer("Partial")], true, "old");

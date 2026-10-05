@@ -22,6 +22,22 @@ export function findTimestampInsertionIndex(messages: UIMessage[], incoming: UIM
 	return firstLaterIndex;
 }
 
+/** Keep a replayed local user before its next known turn; otherwise it is a new tail submission. */
+export function findLocalUserInsertionIndex(
+	merged: UIMessage[], incoming: UIMessage[], incomingIndex: number, lastPlacedIndex: number,
+): number {
+	for (let index = incomingIndex + 1; index < incoming.length; index += 1) {
+		const next = incoming[index];
+		if (uiMessageRole(next) !== "user") continue;
+		const identity = uiMessageIdentity(next);
+		const boundary = merged.findIndex((row, rowIndex) => rowIndex > lastPlacedIndex
+			&& uiMessageRole(row) === "user"
+			&& (row.id === next.id || (identity !== undefined && uiMessageIdentity(row) === identity)));
+		if (boundary >= 0) return boundary;
+	}
+	return merged.length;
+}
+
 export function uiMessageText(message: UIMessage): string {
 	return message.parts
 		.map((part) => {
@@ -37,6 +53,12 @@ export function sameUiMessage(left: UIMessage, right: UIMessage): boolean {
 		&& JSON.stringify(left.parts) === JSON.stringify(right.parts)
 		// Metadata-only updates include settled ask_question cards, so they must replace the cache.
 		&& JSON.stringify(left.metadata ?? null) === JSON.stringify(right.metadata ?? null);
+}
+
+/** Compare the visible useChat rows, not cache identity; AI SDK may clone assigned arrays. */
+export function sameUiMessages(left: UIMessage[], right: UIMessage[]): boolean {
+	return left === right || (left.length === right.length
+		&& left.every((row, index) => row === right[index] || sameUiMessage(row, right[index])));
 }
 
 export function isEmptyUiMessage(message: UIMessage): boolean {

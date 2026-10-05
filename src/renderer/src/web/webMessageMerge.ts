@@ -7,6 +7,7 @@ import { readWebMessageMetadata, uiMessageIdentity, uiMessageRole } from "./webM
 import {
 	canMatchPartialText,
 	findTimestampInsertionIndex,
+	findLocalUserInsertionIndex,
 	hasConflictingStableIdentity,
 	haveConflictingTimestamps,
 	isCombinedLocalSseAssistant,
@@ -328,9 +329,15 @@ export function mergeAuthoritativeUiMessages(
 			continue;
 		}
 
-		const insertionIndex = lastPlacedIndex >= 0
-			? lastPlacedIndex + 1
-			: findTimestampInsertionIndex(merged, incoming);
+		// A local useChat baseline may omit the previous turn's cached PC tail.
+		// Place an unmatched local user after that tail, but before a later known
+		// user when replaying an older local array. Disk users keep timestamp order.
+		const localUser = incomingRole === "user" && !readWebMessageMetadata(incoming);
+		const insertionIndex = localUser
+			? findLocalUserInsertionIndex(merged, authoritative, incomingIndex, lastPlacedIndex)
+			: lastPlacedIndex >= 0
+				? lastPlacedIndex + 1
+				: findTimestampInsertionIndex(merged, incoming);
 		// Keep matchedCurrent aligned when an older history row is inserted before a match.
 		if (insertionIndex < merged.length) {
 			const shifted = [...matchedCurrent]

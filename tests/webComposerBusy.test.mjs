@@ -188,6 +188,6 @@ test("WebChatApp only setMessages runtime snapshots when applySnapshot is true",
 	assert.ok(syncStart >= 0 && syncEnd > syncStart);
 	const sync = app.slice(syncStart, syncEnd);
 	assert.match(sync, /shouldApplyWebRuntimeSnapshotToChat/);
-	assert.match(sync, /if \(applySnapshot && activeSessionIdRef\.current === sessionId && merged !== current\)/);
+	assert.match(sync, /if \(applySnapshot && activeSessionIdRef\.current === sessionId\s*&& !sameUiMessages\(visibleMessagesRef\.current, merged\)\)/);
 	assert.doesNotMatch(sync, /const idle = !streamingRef\.current/);
 });

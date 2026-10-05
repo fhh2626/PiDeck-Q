@@ -23,6 +23,7 @@ import { WebHeader, type WebHeaderStatus } from "./WebHeader";
 import { WebTimeline } from "./WebTimeline";
 import { WebComposer } from "./WebComposer";
 import { useWebStreamMessageCache } from "./useWebStreamMessageCache";
+import { sameUiMessages } from "./webMessageMergeHelpers";
 import {
 	respondToUi,
 	chatMessagesToUiMessages,
@@ -157,6 +158,10 @@ export function WebChatApp() {
 		runtime: activeRuntime,
 	});
 
+	// Poll callbacks stay stable, but must compare against this chat's visible rows,
+	// not a cache that may have advanced while runtime/SSE was busy.
+	const visibleMessagesRef = useRef(messages);
+	visibleMessagesRef.current = messages;
 	activeSessionIdRef.current = activeSessionId;
 	streamingRef.current = chatStreaming;
 
@@ -189,7 +194,8 @@ export function WebChatApp() {
 		messagesBySessionRef.current[sessionId] = merged;
 		// SSE 或 runtime 仍忙时不要把拆开的尾部快照推进 useChat，否则旧思考/工具会垫底。
 		// 缓存仍合并，等双方空闲后再替换为主进程的最终消息。
-		if (applySnapshot && activeSessionIdRef.current === sessionId && merged !== current) {
+		if (applySnapshot && activeSessionIdRef.current === sessionId
+			&& !sameUiMessages(visibleMessagesRef.current, merged)) {
 			setMessages(merged);
 		}
 	}, [setMessages]);
