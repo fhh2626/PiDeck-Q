@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { LogoMark } from "../app/AppParts";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
+import { reloadDesktopRenderer } from "../../native/initializeNativeDesktop";
 import { StackTrace } from "../ui-shadcn/stack-trace";
 
 type AppErrorBoundaryProps = {
@@ -53,7 +54,7 @@ export class AppErrorBoundary extends Component<
 	};
 
 	private handleReload = () => {
-		window.location.reload();
+		reloadDesktopRenderer();
 	};
 
 	override render() {

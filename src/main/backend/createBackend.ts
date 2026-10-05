@@ -561,8 +561,16 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		hasActiveStreaming: () => agentManager.hasActiveStreaming(),
 		// 事件流断层（SSE 历史被裁/超大帧被丢弃）时由 native-node 触发：
 		// 只补发实时状态，不暴露 AgentManager 内部。
-		resyncLiveRendererState: () => {
-			agentManager.flushLiveRendererState();
+		resyncLiveRendererState: (resyncOptions = {}) => {
+			// 聚焦会话必补；其余 Agent 由 AgentManager 按流式/待投递/断层后是否有下发筛选。
+			const focusedSessionId = sessionRuntimeCoordinator.getFocusedSession();
+			const focusedAgentId = focusedSessionId
+				? sessionRuntimeCoordinator.getAgentId(focusedSessionId)
+				: undefined;
+			agentManager.flushLiveRendererState({
+				priorityAgentIds: focusedAgentId ? new Set([focusedAgentId]) : undefined,
+				lostSinceMs: resyncOptions.lostSinceMs,
+			});
 		},
 		startAfterWindowCreated: () => {
 			if (postWindowStarted || disposed) return;

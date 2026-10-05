@@ -331,8 +331,11 @@ function paintCells(canvas: HTMLCanvasElement, cells: Cells, cssSize: number) {
 }
 
 function isOverlayAlive(overlay: HTMLElement | null) {
-	// 覆盖层被 main.tsx 移除，或已开始淡出时停止循环，避免淡出期间仍占 rAF/计时器
-	return Boolean(overlay?.isConnected) && !overlay?.classList.contains("fade-out");
+	// 覆盖层被 main.tsx 移除，或已开始淡出时停止循环，避免淡出期间仍占 rAF/计时器；
+	// 启动失败（bootFailure 标记 data-failed）时也停：循环动画会让失败页看起来仍在加载。
+	return Boolean(overlay?.isConnected)
+		&& !overlay?.classList.contains("fade-out")
+		&& overlay?.dataset.failed !== "true";
 }
 
 async function playOnce(
@@ -446,6 +449,10 @@ function startBootLogoLoop() {
 			// 启动页卸载时忽略
 		} finally {
 			mq.removeEventListener?.("change", onSchemeChange);
+			// 因启动失败而停下时画布可能停在动画中间帧：补画完整定格的 logo。
+			if (overlay.isConnected && overlay.dataset.failed === "true") {
+				paintCells(canvas, finalLogoCells(settledLogoColor()), size);
+			}
 		}
 	})();
 }

@@ -6,8 +6,13 @@ import { AppErrorBoundary } from "./components/app/AppErrorBoundary";
 import { TooltipProvider } from "./components/ui-shadcn/tooltip";
 import { Toaster } from "./components/ui-shadcn/sonner";
 import { t } from "./i18n";
-import { showNotice } from "./utils/notice";
+import { dismissNotice, showNotice } from "./utils/notice";
 import { desktopApi, initializeDesktopRuntime } from "./desktopApi";
+import { showBootFailure } from "./bootFailure";
+import {
+  NATIVE_EVENT_CHANNEL_HEALTH_EVENT,
+  type NativeEventChannelHealthDetail,
+} from "./native/initializeNativeDesktop";
 import "./styles.css";
 
 function redactRendererUrl(): string {
@@ -58,7 +63,10 @@ window.addEventListener("error", (event) => {
   // 资源加载失败（script/img）也会进 error 事件，但 event.error 通常为空；
   // 这类错误不适合弹业务 toast，只记日志。
   const isResourceError = event.target instanceof HTMLElement;
-  writeStartupLog("error", "Renderer uncaught error", {
+  // ResizeObserver loop 是 Chromium 的良性通知，不应以 error 级别污染日志。
+  const isBenignResizeObserverLoop = typeof event.message === "string"
+    && event.message.includes("ResizeObserver loop");
+  writeStartupLog(isBenignResizeObserverLoop ? "debug" : "error", "Renderer uncaught error", {
     message: event.message,
     filename: event.filename,
     lineno: event.lineno,
@@ -70,8 +78,6 @@ window.addEventListener("error", (event) => {
     const message = formatRuntimeError(event.error ?? event.message);
     // ResizeObserver loop 警告是 Chromium 的良性通知（同一帧内 RO 回调又触发 resize），
     // Streamdown 动画 + resizable panels 组合下常见；只记日志，不弹错误 toast 干扰用户。
-    const isBenignResizeObserverLoop = typeof event.message === "string"
-      && event.message.includes("ResizeObserver loop");
     if (message && !isBenignResizeObserverLoop) {
       showNotice(`${t("app.runtimeErrorToast")}: ${message}`, 6000, "error");
     }
@@ -87,6 +93,24 @@ window.addEventListener("unhandledrejection", (event) => {
   if (message) {
     showNotice(`${t("app.unhandledRejectionToast")}: ${message}`, 6000, "error");
   }
+});
+
+// 原生事件通道持续连不上：页面仍可操作但实时更新已停，要让用户看见。
+// 日志由 initializeNativeDesktop 经 RPC 直接写入（启动期 desktopApi 尚未就绪）。
+let eventChannelNoticeId: ReturnType<typeof showNotice> | undefined;
+window.addEventListener(NATIVE_EVENT_CHANNEL_HEALTH_EVENT, (event) => {
+  const detail = (event as CustomEvent<NativeEventChannelHealthDetail>).detail;
+  if (!detail) return;
+  if (!detail.healthy) {
+    // 不自动消失：状态只在翻转时上报一次，提示一旦过期，持续断连就又变回静默。
+    // 恢复时由下方显式关闭；用户也可以手动关掉。
+    dismissNotice(eventChannelNoticeId);
+    eventChannelNoticeId = showNotice(t("app.eventChannelLost"), Number.POSITIVE_INFINITY, "warning");
+    return;
+  }
+  dismissNotice(eventChannelNoticeId);
+  eventChannelNoticeId = undefined;
+  showNotice(t("app.eventChannelRestored"), 3_000, "info");
 });
 
 function dismissBootOverlay() {
@@ -161,5 +185,7 @@ async function bootstrap() {
 
 void bootstrap().catch((error) => {
   writeStartupLog("error", "Renderer bootstrap failed", error);
+  // 遮罩不会自行消失：显式展示失败原因和重试入口，而不是永远停在“正在启动”。
+  showBootFailure(error);
   throw error;
 });

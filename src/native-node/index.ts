@@ -10,8 +10,11 @@ import { NativeRpcRouter } from "../main/transport/NativeRpcRouter";
 import { ExternalFileCapabilityStore } from "../main/fs/ExternalFileCapabilityStore";
 import { HostBridge } from "./host/HostBridge";
 import { NativeBackendHost } from "./host/NativeBackendHost";
+import { requestWithFallback } from "./host/requestWithFallback";
 import { createNativePlatformServices } from "./platform/createNativePlatformServices";
-import { NativeRendererServer } from "./transport/NativeRendererServer";
+import { NativeRendererServer, type NativeEventChannelDiagnostic } from "./transport/NativeRendererServer";
+import { LiveResyncCoalescer, type LiveResyncRequest } from "./transport/liveResyncCoalescer";
+import { monotonicNowMs } from "../main/transport/monotonicNow";
 import type { NativeClipboardMetadata, NativeClipboardSnapshot, NativeFileDropPayload } from "../shared/desktop/NativeHostTypes";
 import { ipcChannels } from "../shared/ipc";
 import { NativeMemoryMonitor, type NativeRendererDiagnostics } from "./diagnostics/NativeMemoryMonitor";
@@ -56,11 +59,12 @@ let pendingStartupFocusAgentId: string | null = null;
 let loadFailureCount = 0;
 let loadRetryTimer: NodeJS.Timeout | null = null;
 /**
- * 补发状态的去重闸门（毫秒级）：超大帧可能连续触发，
- * 没有它会每帧都全量重推一次消息窗口。
+ * 补发状态的节流窗口：超大帧可能连续触发，没有节流会每帧都全量重推一次消息窗口。
+ * 窗口内的后续请求不丢弃，而是合并成窗口结束时的一次尾随补发（见 LiveResyncCoalescer）。
  */
-let liveResyncTimer: NodeJS.Timeout | null = null;
 const LIVE_RESYNC_DEDUPE_MS = 1_000;
+/** 启动握手等待宿主剪贴板元数据的上限；超时即降级为空剪贴板。 */
+const BOOTSTRAP_CLIPBOARD_TIMEOUT_MS = 2_000;
 const externalFileCapabilities = new ExternalFileCapabilityStore();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,14 +84,44 @@ function issueClipboardCapability(snapshot: NativeClipboardMetadata): string {
  * 各 Agent 的完整消息窗口重推一遍，渲染层用实时缓存自愈。
  * 重载会丢掉用户当前的滚动位置和进行中的输入，而断层本身并不代表渲染层坏掉。
  */
-function requestLiveResync(reason: "stalled-event-cursor" | "event-history-truncated" | "oversized-event"): void {
-	void backend?.appLogger.info("native", "Renderer state resync without navigation", { reason });
-	if (liveResyncTimer) return;
-	liveResyncTimer = setTimeout(() => {
-		liveResyncTimer = null;
-	}, LIVE_RESYNC_DEDUPE_MS);
-	liveResyncTimer.unref?.();
-	backend?.resyncLiveRendererState();
+const liveResync = new LiveResyncCoalescer({
+	windowMs: LIVE_RESYNC_DEDUPE_MS,
+	run: ({ reason, lostSinceMs }) => {
+		void backend?.appLogger.info("native", "Renderer state resync without navigation", {
+			reason,
+			// 单调时钟读数本身无意义，记录“断层已持续多久”；null 表示起点未知、按全量补发。
+			gapAgeMs: lostSinceMs === undefined ? null : Math.round(monotonicNowMs() - lostSinceMs),
+		});
+		backend?.resyncLiveRendererState({ lostSinceMs });
+	},
+	onCoalesced: ({ reason }) => {
+		void backend?.appLogger.debug("native", "Renderer state resync coalesced into trailing resync", { reason });
+	},
+	onReentrantIgnored: ({ reason }) => {
+		void backend?.appLogger.debug("native", "Renderer state resync request raised by the resync itself ignored", { reason });
+	},
+	onError: (error, { reason }) => {
+		void backend?.appLogger.error("native", "Renderer state resync failed", {
+			reason,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	},
+});
+
+function requestLiveResync(request: LiveResyncRequest): void {
+	liveResync.request(request);
+}
+
+/**
+ * 背压掐断意味着渲染层确实丢了连接，记 warn；大帧在长会话的正常流式输出中每次全量 flush 都会出现，
+ * 只作排查参考，记 info，避免 warn 日志被正常流量淹没。
+ */
+function logEventChannelDiagnostic(event: NativeEventChannelDiagnostic): void {
+	if (event.kind === "client-backpressure-dropped") {
+		void backend?.appLogger.warn("native", "Native event channel diagnostic", { ...event });
+		return;
+	}
+	void backend?.appLogger.info("native", "Native event channel diagnostic", { ...event });
 }
 
 async function stop(announceReadyToExit = false): Promise<void> {
@@ -104,6 +138,7 @@ async function stop(announceReadyToExit = false): Promise<void> {
 		externalFileCapabilities.clear();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		heartbeatTimer = null;
+		liveResync.dispose();
 		if (loadRetryTimer) clearTimeout(loadRetryTimer);
 		loadRetryTimer = null;
 		memoryMonitor?.stop();
@@ -242,7 +277,16 @@ async function main(): Promise<void> {
 		getBootstrap: async () => {
 			// Bootstrap only needs clipboard metadata. PNG encoding is reserved for
 			// the live snapshot requested by an actual paste operation.
-			const clipboard = await host.request<NativeClipboardMetadata>("clipboard.metadataSnapshot");
+			// 剪贴板读取在 Windows 上可能被其他程序长时间占用，而 HostBridge.request 没有超时：
+			// 启动握手不能依赖它，超时/失败时用空剪贴板元数据继续启动。
+			const { value: clipboard, degraded } = await requestWithFallback<NativeClipboardMetadata>(
+				() => host.request<NativeClipboardMetadata>("clipboard.metadataSnapshot"),
+				{ text: "", html: "", filePaths: [], hasImage: false, sequence: 0 },
+				BOOTSTRAP_CLIPBOARD_TIMEOUT_MS,
+			);
+			if (degraded) {
+				void backend?.appLogger.warn("native", "Bootstrap clipboard snapshot unavailable; continuing without it");
+			}
 			const externalFileCapabilityId = issueClipboardCapability(clipboard);
 			return {
 				clipboard: {
@@ -265,7 +309,12 @@ async function main(): Promise<void> {
 			heartbeatRecoveryState = recovery.state;
 			// 序号停滞不再整页重载：渲染层首要职责是自行重连续传（见 NativeDesktopTransport），
 			// 这里只补一次全量状态。真正需要重载的是「心跳本身消失」——页面定时器已停。
-			if (recovery.shouldResync) requestLiveResync("stalled-event-cursor");
+			if (recovery.shouldResync) {
+				requestLiveResync({
+					reason: "stalled-event-cursor",
+					lostSinceMs: placeholderServer.getLostSinceMs(payload.lastEventSeq, payload.eventSourceGeneration),
+				});
+			}
 		},
 		onMemoryDiagnostics: (payload) => {
 			if (!memoryMonitor || typeof payload !== "object" || payload === null) return;
@@ -274,7 +323,9 @@ async function main(): Promise<void> {
 		onOversizedEvent: (channel, bytes) => {
 			void backend?.appLogger.warn("native", "Dropped oversized renderer event", { channel, bytes });
 		},
-		onReplayGap: (info) => requestLiveResync(info.reason),
+		onReplayGap: (info) => requestLiveResync({ reason: info.reason, lostSinceMs: info.lostSinceMs }),
+		// 背压掐断与大帧只记字节数/通道名，不含载荷，便于定位“流式信息流停住”。
+		onEventChannelDiagnostic: (event) => logEventChannelDiagnostic(event),
 	});
 	rendererServer = placeholderServer;
 	host.on<NativeClipboardMetadata>("native.clipboard", (snapshot) => {

@@ -40,9 +40,10 @@ export interface Backend {
 	hasActiveStreaming(): boolean;
 	/**
 	 * 事件流断层（SSE 历史被裁 / 超大帧被丢弃）时的无导航补发：
-	 * 重新推送 AgentTab 状态与各 Agent 的完整消息窗口。
+	 * 重新推送 AgentTab 状态与断层期间可能丢帧的 Agent 的完整消息窗口。
+	 * lostSinceMs：渲染层丢失的第一帧的产生时间（monotonicNowMs() 口径）；未知时全部补发。
 	 */
-	resyncLiveRendererState(): void;
+	resyncLiveRendererState(options?: { lostSinceMs?: number }): void;
 	startAfterWindowCreated(): void;
 	dispose(): Promise<void>;
 }

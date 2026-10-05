@@ -1,18 +1,18 @@
 import { open, stat, type FileHandle } from "node:fs/promises";
-import type { Stats } from "node:fs";
 import { createHash, type Hash } from "node:crypto";
 import { sessionJsonlRows, type SessionJsonlRow } from "./sessionJsonlRows";
+import { containsSessionSnapshot, hashSessionFilePrefix, readSessionFileRange as readRange,
+	sessionFileFingerprint as fingerprint, validateSessionFileSnapshot, type SessionFileVersion } from "./sessionFileSnapshot";
 
 export type SessionDisplayEntry = {
-	id: string; parentId: string | null; type: string; offset: number; byteLength: number;
+	id: string; parentId: string | null; type: string; offset: number; byteLength: number; rowDigest: string;
 	hasMessage: boolean; hasTruthyMessage: boolean; role?: string; messageId?: string;
 	summary?: string; firstKeptEntryId?: string; timestamp?: string; tokensBefore?: number;
 };
 export type SessionCompaction = {
 	id: string; summary: string; timestamp: string; firstKeptEntryId?: string; tokensBefore?: number;
 };
-type FileVersion = Pick<Stats, "size" | "mtimeMs" | "ctimeMs" | "dev" | "ino">;
-export type SessionDisplayIndex = FileVersion & {
+export type SessionDisplayIndex = SessionFileVersion & {
 	hostPath: string; prefixDigest: string; hasCompaction: boolean; endsWithNewline: boolean; rowCount: number;
 	entries: Map<string, SessionDisplayEntry>;
 	activeBranch: SessionDisplayEntry[]; activeMessageEntries: SessionDisplayEntry[];
@@ -23,9 +23,6 @@ type IndexParts = Pick<SessionDisplayIndex, "entries" | "firstEntries" | "firstM
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function fingerprint(version: FileVersion): string {
-	return JSON.stringify([version.dev, version.ino, version.size, version.mtimeMs, version.ctimeMs]);
 }
 
 /** Parse once, retaining offsets and metadata rather than historical message bodies. */
@@ -40,6 +37,7 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 		parentId: typeof value.parentId === "string" ? value.parentId : null,
 		type: typeof value.type === "string" ? value.type : "",
 		offset: row.offset, byteLength: row.byteLength,
+		rowDigest: createHash("sha256").update(row.text).digest("hex"),
 		hasMessage: value.message !== undefined && value.message !== null,
 		hasTruthyMessage: Boolean(value.message),
 		role: typeof message?.role === "string" ? message.role : undefined,
@@ -62,7 +60,7 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 }
 
 /** Trace from the actual leaf; append and cold builds use exactly the same branch policy. */
-function finish(hostPath: string, version: FileVersion, parts: IndexParts, prefixDigest: string): SessionDisplayIndex {
+function finish(hostPath: string, version: SessionFileVersion, parts: IndexParts, prefixDigest: string): SessionDisplayIndex {
 	const branch: SessionDisplayEntry[] = [];
 	const seen = new Set<string>();
 	let current = parts.leafId ? parts.entries.get(parts.leafId) : undefined;
@@ -74,18 +72,6 @@ function finish(hostPath: string, version: FileVersion, parts: IndexParts, prefi
 	return { ...version, ...parts, hostPath, prefixDigest, activeBranch: branch,
 		hasCompaction: branch.some((entry) => entry.type === "compaction"),
 		activeMessageEntries: branch.filter((entry) => entry.type === "message" && entry.hasMessage) };
-}
-
-/** Bounded snapshot I/O; zero/short reads must never parse uninitialized buffer bytes. */
-async function readRange(handle: FileHandle, length: number, position: number): Promise<Buffer> {
-	const buffer = Buffer.allocUnsafe(length);
-	let filled = 0;
-	while (filled < length) {
-		const { bytesRead } = await handle.read(buffer, filled, length - filled, position + filled);
-		if (!bytesRead) throw new Error("SESSION_HISTORY_CHANGED");
-		filled += bytesRead;
-	}
-	return buffer;
 }
 
 /** LRU + single-flight display indexes. Runtime/Pi ownership remains outside this file reader. */
@@ -108,7 +94,8 @@ export class SessionDisplayIndexStore {
 			}
 			try {
 				const index = await pending.promise;
-				if (fingerprint(await stat(hostPath)) !== key) continue;
+				// build validated its fixed prefix. A newer tail need not invalidate this
+				// request; exact cache identity still makes the next request extend/rebuild.
 				this.touch(hostPath, index); return index;
 			} catch (error) {
 				if (!isRecord(error) || error.message !== "SESSION_HISTORY_CHANGED" || attempt > 0) throw error;
@@ -128,10 +115,13 @@ export class SessionDisplayIndexStore {
 		}
 	}
 
-	private async build(path: string, version: FileVersion, cached?: SessionDisplayIndex): Promise<SessionDisplayIndex> {
+	private async build(path: string, requestedVersion: SessionFileVersion, cached?: SessionDisplayIndex): Promise<SessionDisplayIndex> {
 		const handle = await open(path, "r");
 		try {
-			if (fingerprint(await handle.stat()) !== fingerprint(version)) throw new Error("SESSION_HISTORY_CHANGED");
+			// Pin descriptor size/version once. An append between stat and open is
+			// readable, but a replaced file or a shorter prefix must start a fresh load.
+			const version = await handle.stat();
+			if (!containsSessionSnapshot(version, requestedVersion)) throw new Error("SESSION_HISTORY_CHANGED");
 			const prefixHash = cached && cached.dev === version.dev && cached.ino === version.ino &&
 				version.size > cached.size && cached.endsWithNewline
 				? await this.verifiedPrefix(handle, cached) : undefined;
@@ -144,13 +134,17 @@ export class SessionDisplayIndexStore {
 					// unfinished row is skipped, and endsWithNewline=false forces a rebuild when it grows.
 					addRow(parts, row);
 				}
-				return finish(path, version, parts, prefixHash.digest("hex"));
+				const index = finish(path, version, parts, prefixHash.digest("hex"));
+				await validateSessionFileSnapshot(handle, index, undefined, true);
+				return index;
 			}
 			const parts: IndexParts = { entries: new Map(), firstEntries: new Map(), firstMessages: new Map(),
 				compactions: [], rowCount: 0, endsWithNewline: false };
 			const hash = createHash("sha256");
 			for await (const row of sessionJsonlRows(handle, 0, version.size, (chunk) => { hash.update(chunk); })) addRow(parts, row);
-			return finish(path, version, parts, hash.digest("hex"));
+			const index = finish(path, version, parts, hash.digest("hex"));
+			await validateSessionFileSnapshot(handle, index, undefined, true);
+			return index;
 		} finally { await handle.close(); }
 	}
 
@@ -160,10 +154,7 @@ export class SessionDisplayIndexStore {
 	 * linear prefix read on a new version, but never silently serves an outdated branch.
 	 */
 	private async verifiedPrefix(handle: FileHandle, cached: SessionDisplayIndex): Promise<Hash | undefined> {
-		const hash = createHash("sha256");
-		for (let offset = 0; offset < cached.size; offset += 64 * 1024) {
-			hash.update(await readRange(handle, Math.min(64 * 1024, cached.size - offset), offset));
-		}
+		const hash = await hashSessionFilePrefix(handle, cached.size);
 		return hash.copy().digest("hex") === cached.prefixDigest ? hash : undefined;
 	}
 
@@ -171,7 +162,7 @@ export class SessionDisplayIndexStore {
 	async readMessages(index: SessionDisplayIndex, entries: readonly SessionDisplayEntry[]): Promise<unknown[]> {
 		const handle = await open(index.hostPath, "r");
 		try {
-			if (fingerprint(await handle.stat()) !== fingerprint(index)) throw new Error("SESSION_HISTORY_CHANGED");
+			const validatedVersion = await validateSessionFileSnapshot(handle, index);
 			const result: unknown[] = [];
 			let from = 0;
 			while (from < entries.length) {
@@ -184,15 +175,18 @@ export class SessionDisplayIndexStore {
 				const buffer = await readRange(handle, end - entries[from].offset, entries[from].offset);
 				for (let i = from; i < to; i++) {
 					const entry = entries[i]; const offset = entry.offset - entries[from].offset;
-					const row: unknown = JSON.parse(buffer.subarray(offset, offset + entry.byteLength).toString("utf8"));
+					const text = buffer.subarray(offset, offset + entry.byteLength).toString("utf8");
+					// Prefix validation may overlap appends; served bodies must still be
+					// exactly the indexed rows, not same-ID records from an in-place edit.
+					if (createHash("sha256").update(text).digest("hex") !== entry.rowDigest) throw new Error("SESSION_HISTORY_CHANGED");
+					const row: unknown = JSON.parse(text);
 					if (!isRecord(row) || (entry.id && row.id !== entry.id)) throw new Error("SESSION_HISTORY_CHANGED");
 					result.push(row.message);
 				}
 				from = to;
 			}
-			// fstat alone misses an atomic replacement while this descriptor still reads the old inode.
-			if (fingerprint(await handle.stat()) !== fingerprint(index) ||
-				fingerprint(await stat(index.hostPath)) !== fingerprint(index)) throw new Error("SESSION_HISTORY_CHANGED");
+			// Check both the descriptor and named path, retaining replacement protection.
+			await validateSessionFileSnapshot(handle, index, validatedVersion, true);
 			return result;
 		} finally { await handle.close(); }
 	}

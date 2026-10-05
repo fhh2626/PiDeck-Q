@@ -165,6 +165,8 @@ function loadAgentManagerModule() {
       }
       if (specifier === "../../shared/ipc") return { ipcChannels: {} };
       if (specifier === "./PiProcess") return { PiProcess: class {} };
+      if (specifier === "./recoverRecentHistoryLoad") return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+      if (specifier === "../transport/monotonicNow") return loadTsCommonJs("src/main/transport/monotonicNow.ts");
       if (specifier === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
       if (specifier === "./bashResult") return { formatBashToolMessage: () => "" };
       if (specifier === "./AgentMessageProjector") return messageProjectorModule;

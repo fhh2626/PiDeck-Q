@@ -104,6 +104,8 @@ function loadAgentManager() {
 		if (id.includes("PiProcess")) return piProcess;
 		if (id.includes("SessionFileEditor")) return sessionFileEditor;
 		if (id.includes("AgentMessageProjector")) return agentMessageProjector;
+		if (id.includes("recoverRecentHistoryLoad")) return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+		if (id.includes("monotonicNow")) return loadTsCommonJs("src/main/transport/monotonicNow.ts");
 		if (id.includes("LiveRpcLogBuffer")) return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 		if (id.includes("SessionHistoryReader")) return sessionHistoryReader;
 		if (id.includes("imageContent")) return loadModule("src/shared/imageContent.ts");

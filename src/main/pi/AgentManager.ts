@@ -56,6 +56,7 @@ import {
 	type SessionFileRef,
 } from "./SessionFileEditor";
 import { SessionHistoryReader, findTurnPageStart } from "./SessionHistoryReader";
+import { recoverRecentHistoryLoad } from "./recoverRecentHistoryLoad";
 import {
 	AgentMessageProjector,
 	buildActiveBranchEntryIds as buildActiveBranchEntryIdsForDisplay,
@@ -98,6 +99,7 @@ import type { ConfigManager } from "../config/ConfigManager";
 import type { RpcLogger } from "../logging/RpcLogger";
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
 import type { AppLogger } from "../logging/AppLogger";
+import { monotonicNowMs } from "../transport/monotonicNow";
 import {
 	toWindowsHostPath,
 	toWslLinuxPath,
@@ -190,15 +192,42 @@ export class AgentManager {
 
 	/**
 	 * 事件流出现断层（历史被裁或超大帧被丢弃）时的无导航补发：
-	 * 把 AgentTab 状态和各 Agent 的完整消息窗口重新推一遍，让渲染层用实时缓存自愈，
-	 * 而不是把整个页面重新加载。只做补发，不新建消息、不改缓存内容。
+	 * 把 AgentTab 状态和「断层期间可能丢过消息帧」的 Agent 的完整消息窗口重新推一遍，
+	 * 让渲染层用实时缓存自愈，而不是把整个页面重新加载。只做补发，不新建消息、不改缓存内容。
+	 *
+	 * 不对全部 Agent 无差别扇出：每个全量窗口可达数 MB，多个常驻会话一次补发就能把
+	 * SSE 背压与重放历史打满，使断层自我延续。补发范围：
+	 * - 聚焦会话、正在流式输出、有待投递消息变更的 Agent：总是补发；
+	 * - lostSinceMs 已知（= 渲染层丢失的第一帧的产生时间，monotonicNowMs 口径）：只补发此后下发过消息的 Agent，
+	 *   此前就已静止的 Agent 在断层中没有丢任何消息帧，无需补发；
+	 * - lostSinceMs 未知（断层起点超出服务端记录范围）：保守地全部补发。
 	 */
-	flushLiveRendererState(): void {
+	flushLiveRendererState(options: { priorityAgentIds?: ReadonlySet<string>; lostSinceMs?: number } = {}): void {
 		this.emitState();
 		for (const agentId of [...this.agents.keys()]) {
+			if (!this.shouldResyncAgentMessages(agentId, options)) continue;
 			// immediate=true：与 loadMessages 结尾同一语义，强制全量校准。
 			this.scheduleMessageEmit(agentId, true);
 		}
+	}
+
+	private shouldResyncAgentMessages(
+		agentId: string,
+		options: { priorityAgentIds?: ReadonlySet<string>; lostSinceMs?: number },
+	): boolean {
+		if (options.priorityAgentIds?.has(agentId)) return true;
+		if (this.streamingAgents.has(agentId)) return true;
+		if (
+			this.pendingMessageAgents.has(agentId)
+			|| this.pendingFullMessageEmitAgents.has(agentId)
+			|| this.messageDirtyFromByAgent.has(agentId)
+		) {
+			return true;
+		}
+		if (options.lostSinceMs === undefined || !Number.isFinite(options.lostSinceMs)) return true;
+		const lastEmitAt = this.lastMessageEmitAtByAgent.get(agentId);
+		return lastEmitAt !== undefined
+			&& lastEmitAt >= options.lostSinceMs - AgentManager.RESYNC_CLOCK_SLACK_MS;
 	}
 
 	/**
@@ -283,6 +312,14 @@ export class AgentManager {
 	private readonly thinkingPushCountByAgent = new Map<string, number>();
 	/** 流式 emit 合并窗口（毫秒）。50ms 兼顾流畅度与传输量，肉眼几乎无延迟。 */
 	private static readonly MESSAGE_FLUSH_INTERVAL_MS = 50;
+	/**
+	 * 断层起点与下发时间比较时的容差。下发时间在 emit 之前记录，断层起点在服务端写入事件时记录，
+	 * 同一帧的前者总略早于后者（同步转发链路下仅微秒级）；容差吸收这段差值，并为将来若出现的
+	 * 异步转发留余量。多补一个会话只是多推一帧，漏补则界面停在旧内容，所以宁宽勿窄。
+	 */
+	private static readonly RESYNC_CLOCK_SLACK_MS = 1_000;
+	/** 每个 Agent 最近一次消息下发时间（monotonicNowMs 口径），仅用于断层补发的范围判断。 */
+	private readonly lastMessageEmitAtByAgent = new Map<string, number>();
 	/** 激活显示窗口轮数（2026-08 激活分页，2026-12 3→20→50）：loadMessages 后只下发尾部 N 轮，更早历史走 disk 轮次分页。 */
 	private static readonly DISPLAY_WINDOW_TURNS = 50;
 	/**
@@ -943,7 +980,10 @@ export class AgentManager {
 		const t1 = Date.now();
 
 		const rawMessages = (response.data as { messages?: unknown[] } | undefined)?.messages ?? [];
-		let activeEntryIds = resolvedEntryIds;
+		const recentSnapshot = runtime.tab.sessionPath
+			? this.sessionHistoryReader.getRecentSnapshot(response, runtime.tab.sessionPath)
+			: undefined;
+		let activeEntryIds = recentSnapshot?.entryIds ?? resolvedEntryIds;
 
 		// 按对话轮次截断（保留最近若干轮 user 消息）。不足 50 轮时保留完整上下文（含压缩保留段
 		// 首个 user 之前的 assistant/toolResult 与摘要卡片）；压缩摘要不是 user 消息，
@@ -964,7 +1004,11 @@ export class AgentManager {
 		// 记录缓存头部在文件消息下标空间中的位置：无 entryId 的窗口（skipEntries 大历史路径）
 		// 需要用它作为首次补历史的数值游标（渲染层 before=windowStartFilePos）。
 		let headOffset: number;
-		if (activeEntryIds) {
+		if (recentSnapshot) {
+			// Local startup reads carry their own file-space positions. Recounting a
+			// newer file would shift the old bodies' cursor by newly appended messages.
+			headOffset = recentSnapshot.entryPositions[droppedRoleCount] ?? recentSnapshot.total;
+		} else if (activeEntryIds) {
 			// entryId 向量只覆盖压缩后的模型上下文；文件分页走全活动分支（含压缩归档段）。
 			// 两者之差就是归档消息数，必须加进 headOffset，否则压缩会话的数值游标会指到
 			// 归档段之前，补历史会从错误位置重读。取不到时按 0 回退（与旧行为一致）。
@@ -1015,7 +1059,8 @@ export class AgentManager {
 			rawMessageCount: rawMessages.length,
 		});
 		if (runtime.tab.sessionPath) {
-			const archiveData = await this.scanCompactions(runtime.tab.sessionPath).catch((err) => {
+			const archiveData = recentSnapshot ? { compactions: recentSnapshot.compactions }
+				: await this.scanCompactions(runtime.tab.sessionPath).catch((err) => {
 				void this.appLogger?.warn("agent", "Failed to parse session archives", {
 					agentId,
 					sessionPath: runtime.tab.sessionPath,
@@ -1054,8 +1099,8 @@ export class AgentManager {
 		// 文件版本随本次加载快照：普通外部改写会改变 mtime:size，渲染层据此校验
 		// disk 前缀；压缩路径通过 preserveHistory 明确保留已展示的对话。
 		// 所有异步 I/O 在此处全部完成，确认当前 load 依然有效后，再原子写入状态。
-		let sessionFileVersion: string | undefined;
-		if (runtime.tab.sessionPath) {
+		let sessionFileVersion = recentSnapshot?.fileVersion;
+		if (runtime.tab.sessionPath && !recentSnapshot) {
 			try {
 				const version = await stat(this.toSessionHostPath(runtime.tab.sessionPath));
 				if (!isCurrentLoad()) return staleLoadResult();
@@ -1418,41 +1463,40 @@ export class AgentManager {
 						});
 					});
 			} else if (input.sessionPath) {
-				void this.loadMessages(
-					id,
-					true,
-					this.readRecentMessagesFromSessionFile(
-						input.sessionPath,
-						AgentManager.MAX_HISTORY_LOAD_TURNS,
-					),
-					historyLoadOptions,
-				)
-					.then(() => {
+				const sessionPath = input.sessionPath;
+				const runtimeSessionPath = tab.sessionPath;
+				let ownedLoadSequence = this.messageLoadSequenceByAgent.get(id) ?? 0;
+				const isCurrentHistoryLoad = () => {
+					const current = this.agents.get(id);
+					return Boolean(current && current.process === process && current.tab.sessionPath === runtimeSessionPath
+						&& (this.messageLoadSequenceByAgent.get(id) ?? 0) === ownedLoadSequence);
+				};
+				void recoverRecentHistoryLoad(() => {
+					const loading = this.loadMessages(id, true,
+						this.readRecentMessagesFromSessionFile(sessionPath, AgentManager.MAX_HISTORY_LOAD_TURNS), historyLoadOptions);
+					ownedLoadSequence = this.messageLoadSequenceByAgent.get(id) ?? 0;
+					return loading;
+				}, isCurrentHistoryLoad)
+					.then((loaded) => {
+						if (!loaded) return;
 						void this.appLogger?.info("agent", "Agent recent history loaded from file", {
 							agentId: id,
-							sessionPath: input.sessionPath,
+							sessionPath,
 							sizeBytes: historyLoadDecision.sizeBytes,
 							totalMs: Date.now() - preserveMessagesAfter,
 						});
 					})
-					.catch((error) => {
-						const list = this.messages.get(id) ?? [];
-						const loadingMessage = list.find((message) => message.meta?.historyLoading === true);
-						if (loadingMessage) {
-							loadingMessage.role = "error";
-							loadingMessage.text = "历史会话加载失败，可继续使用当前 Agent 或重新打开会话重试。";
-							loadingMessage.meta = {
-								historyLoading: "failed",
-								i18nKey: "diagnostic.historyLoadFailed",
-								debugDetails: error instanceof Error ? error.message : String(error),
-							};
-							loadingMessage.timestamp = Date.now();
-							this.scheduleMessageEmit(id, true);
-						}
+					.catch((error: unknown) => {
+						if (!isCurrentHistoryLoad()) return;
+						const details = error !== null && typeof error === "object" && "message" in error
+							&& typeof error.message === "string" ? error.message : String(error);
+						// Creation starts with [], not a loading placeholder. Always surface
+						// failure, while leaving cursor/exhaustion unknown and live messages intact.
+						this.addMessage(id, "error", this.translate("diagnostic.historyLoadFailed"), {
+							historyLoading: "failed", i18nKey: "diagnostic.historyLoadFailed", debugDetails: details,
+						});
 						void this.appLogger?.warn("agent", "Agent recent history file load failed", {
-							agentId: id,
-							sessionPath: input.sessionPath,
-							error: error instanceof Error ? error.message : String(error),
+							agentId: id, sessionPath, error: details,
 						});
 					});
 			}
@@ -3056,6 +3100,7 @@ export class AgentManager {
 		this.messageDirtyFromByAgent.delete(agentId);
 		this.pendingFullMessageEmitAgents.delete(agentId);
 		this.displayWindowStartByAgent.delete(agentId);
+		this.lastMessageEmitAtByAgent.delete(agentId);
 		this.messageHeadOffsetByAgent.delete(agentId);
 		this.staleMessageCacheAgents.delete(agentId);
 		this.pendingSlideOutByAgent.delete(agentId);
@@ -5811,6 +5856,7 @@ export class AgentManager {
 			payload.slideOut = stripToolResultForDelivery(slideOut);
 		}
 		const boundedPayload = enforceDeliveryEnvelopeBudget(payload);
+		this.lastMessageEmitAtByAgent.set(agentId, monotonicNowMs());
 		const accepted = this.emit(ipcChannels.agentsMessage, boundedPayload);
 		if (accepted === false) {
 			if (isFullPayload) {

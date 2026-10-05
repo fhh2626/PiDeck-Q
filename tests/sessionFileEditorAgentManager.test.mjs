@@ -75,6 +75,8 @@ function loadAgentManager() {
       // AgentManager 源码 import 带 .ts 扩展名（allowImportingTsExtensions）；
       // 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
       specifier = specifier.replace(/\.ts$/, "");
+      if (specifier === "./recoverRecentHistoryLoad") return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+      if (specifier === "../transport/monotonicNow") return loadTsCommonJs("src/main/transport/monotonicNow.ts");
       if (specifier === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
       if (specifier === "electron") {
         return {

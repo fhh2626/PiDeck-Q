@@ -17,6 +17,12 @@ export type SessionArchiveData = {
 	}>;
 };
 
+/** Internal startup projection metadata; never serialized into Pi RPC or desktop IPC. */
+export type RecentSessionSnapshot = {
+	hostPath: string; entryIds: string[]; entryPositions: number[]; total: number;
+	fileVersion: string; compactions: SessionArchiveData["compactions"];
+};
+
 export type SessionHistoryReaderDeps = {
 	toHostPath: (sessionPath: string) => string;
 	convertMessages: (
@@ -121,6 +127,7 @@ export function syntheticHistoryEntryId(messageId: string): string | undefined {
  */
 export class SessionHistoryReader {
 	private readonly indexStore = new SessionDisplayIndexStore(32);
+	private readonly recentSnapshots = new WeakMap<RpcResponse, RecentSessionSnapshot>();
 	private static readonly MAX_SESSION_DISPLAY_PAGE_SIZE = 100;
 	private static readonly MAX_SESSION_DISPLAY_PAGE_BYTES = 256 * 1024;
 	/** Full text is reusable only for the same host file version and exact entry anchor. */
@@ -548,6 +555,12 @@ export class SessionHistoryReader {
 		throw error;
 	}
 
+	/** Retrieve metadata only for this reader's exact local response and session path. */
+	getRecentSnapshot(response: RpcResponse, sessionPath: string): RecentSessionSnapshot | undefined {
+		const snapshot = this.recentSnapshots.get(response);
+		return snapshot?.hostPath === this.deps.toHostPath(sessionPath) ? snapshot : undefined;
+	}
+
 	/**
 	 * 直接从历史会话 JSONL 文件读取最近 N 轮对话的消息条目。
 	 * 用于大会话场景：绕过 get_messages RPC 的整文件 JSON 传输瓶颈，
@@ -582,12 +595,26 @@ export class SessionHistoryReader {
 			readMs: t1 - t0,
 		});
 
-		return {
-			type: "response" as const,
+		const response: RpcResponse = {
+			type: "response",
 			command: "get_messages",
 			success: true,
 			data: { messages: trimmed },
 		};
+		// Count, entry identities, compactions and version must describe the same
+		// pinned bodies. A second file query can already include a newly sent prompt.
+		const roleEntries = index.activeMessageEntries.flatMap((entry, position) => wanted.has(entry)
+			&& (entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult")
+			? [{ entry, position }] : []);
+		this.recentSnapshots.set(response, {
+			hostPath: index.hostPath,
+			entryIds: roleEntries.map(({ entry }) => entry.id),
+			entryPositions: roleEntries.map(({ position }) => position),
+			total: index.activeMessageEntries.length,
+			fileVersion: `${index.mtimeMs}:${index.size}`,
+			compactions: index.compactions,
+		});
+		return response;
 	}
 
 	/**
@@ -611,6 +638,10 @@ export class SessionHistoryReader {
 			}
 			content = sessionContent;
 		} catch (error) {
+			// 新建会话的文件在首条消息落盘前并不存在：这是正常状态（无压缩归档），不是告警。
+			if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+				return { compactions: [] };
+			}
 			void this.deps.logger?.warn("agent", "Failed to read session file for archive parsing", {
 				sessionPath,
 				error: error instanceof Error ? error.message : String(error),

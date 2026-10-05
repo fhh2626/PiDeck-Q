@@ -133,6 +133,8 @@ function loadAgentManager() {
 			// 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
 			id = id.replace(/\.ts$/, "");
 			if (id === "electron") return { app: {}, Notification: class {} };
+			if (id === "./recoverRecentHistoryLoad") return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+			if (id === "../transport/monotonicNow") return loadTsCommonJs("src/main/transport/monotonicNow.ts");
 			if (id === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 			if (id === "node:fs/promises") return fsPromises;
 			if (id === "node:fs") {

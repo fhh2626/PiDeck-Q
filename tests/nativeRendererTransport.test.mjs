@@ -458,7 +458,10 @@ test("NativeRendererServer notifies onReplayGap once when the replay ring cannot
 			const resync = await connection.waitFor((event) => event.data.channel === "native.resyncRequired");
 			// resync 仍在（传输层契约不变），只是不再触发整页重载。
 			assert.equal(resync.data.args[0].reason, "event-history-truncated");
-			assert.deepEqual(gaps, [{ reason: "event-history-truncated" }]);
+			assert.equal(gaps.length, 1);
+			assert.equal(gaps[0].reason, "event-history-truncated");
+			// 断层起点 = 游标之后第一帧（seq 2）的产生时间，供补发按时间筛选会话。
+			assert.equal(typeof gaps[0].lostSinceMs, "number");
 		} finally {
 			connection.close();
 		}
@@ -567,7 +570,8 @@ test("NativeRendererServer disconnects an SSE client that exceeds the backpressu
 		connection.response.pause();
 		const closed = new Promise((resolve) => connection.response.once("close", resolve));
 		const chunk = "x".repeat(128 * 1024);
-		for (let index = 0; index < 64; index += 1) server.broadcast("test:backpressure", [chunk]);
+		// 积压上限 64 MiB：发送远超上限的数据，卡死的客户端仍必须被断开。
+		for (let index = 0; index < 1_024; index += 1) server.broadcast("test:backpressure", [chunk]);
 		await Promise.race([
 			closed,
 			new Promise((_, reject) => setTimeout(() => reject(new Error("SSE client was not closed")), 2_000)),

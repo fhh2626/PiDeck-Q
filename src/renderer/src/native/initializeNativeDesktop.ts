@@ -8,6 +8,7 @@ import { NativeDesktopTransport, type NativeHeartbeatState } from "./NativeDeskt
 import { createNativeHeartbeatRequest } from "./nativeHeartbeat";
 import { createNativeReloadUrl } from "./nativeReloadUrl";
 import { applyRendererZoom } from "./rendererZoom";
+import { ipcChannels } from "../../../shared/ipc";
 
 const NATIVE_HEARTBEAT_INTERVAL_MS = 3_000;
 
@@ -21,6 +22,30 @@ export function getNativeRendererToken(): string | null {
 function reloadNativeRenderer(token: string): void {
 	window.location.replace(createNativeReloadUrl(window.location.href, token));
 }
+
+/**
+ * 重新加载页面并保留认证。原生运行时的 token 在 bootstrap 后已从地址栏抹掉，
+ * 裸 window.location.reload() 会丢掉它，页面随后因 "token is missing" 永远卡在启动画面。
+ * 非原生运行时（LAN Web / 预览）没有 token，直接刷新即可。
+ */
+export function reloadDesktopRenderer(): void {
+	if (nativeRendererToken) {
+		reloadNativeRenderer(nativeRendererToken);
+		return;
+	}
+	window.location.reload();
+}
+
+/** 事件通道健康度变化时在 window 上派发的事件名（detail: NativeEventChannelHealthDetail）。 */
+export const NATIVE_EVENT_CHANNEL_HEALTH_EVENT = "pideck-native-event-channel-health";
+
+export interface NativeEventChannelHealthDetail {
+	healthy: boolean;
+	failedAttempts: number;
+}
+
+/** 启动握手的请求上限：宿主/Sidecar 无响应时要给出可见的失败，而不是无限等待。 */
+const NATIVE_BOOTSTRAP_TIMEOUT_MS = 15_000;
 
 interface NativeBootstrapResponse {
 	clipboard?: Partial<NativeClipboardMetadata>;
@@ -69,13 +94,26 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	// the server to replay every event newer than this exact bootstrap sequence.
 	const bootstrapUrl = new URL("/__pideck/bootstrap", baseUrl);
 	bootstrapUrl.searchParams.set("token", token);
-	const response = await fetch(bootstrapUrl, {
-		headers: { "x-pideck-token": token },
-	});
-	if (!response.ok) {
-		throw new Error(`Native bootstrap failed (${response.status})`);
+	const bootstrapAbort = new AbortController();
+	const bootstrapTimer = window.setTimeout(() => bootstrapAbort.abort(), NATIVE_BOOTSTRAP_TIMEOUT_MS);
+	let bootstrap: NativeBootstrapResponse;
+	try {
+		const response = await fetch(bootstrapUrl, {
+			headers: { "x-pideck-token": token },
+			signal: bootstrapAbort.signal,
+		});
+		if (!response.ok) {
+			throw new Error(`Native bootstrap failed (${response.status})`);
+		}
+		bootstrap = (await response.json()) as NativeBootstrapResponse;
+	} catch (error) {
+		if (bootstrapAbort.signal.aborted) {
+			throw new Error(`Native bootstrap timed out after ${NATIVE_BOOTSTRAP_TIMEOUT_MS}ms`);
+		}
+		throw error;
+	} finally {
+		window.clearTimeout(bootstrapTimer);
 	}
-	const bootstrap = (await response.json()) as NativeBootstrapResponse;
 	const transport = new NativeDesktopTransport(baseUrl, token, {
 		// 事件流断层（SSE 历史被裁 / 超大帧被丢弃）由 sidecar 补发全量状态自愈，
 		// 这里绝不导航：整页重载会丢掉滚动位置与正在输入的内容。
@@ -86,12 +124,32 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 			reloadNativeRenderer(token);
 		},
 		initialEventSeq: bootstrap.eventSeq ?? 0,
+		// 事件通道持续连不上时页面仍可操作，但实时更新已停：这里写日志，入口负责提示用户。
+		onEventChannelHealthChange: (healthy, info) => {
+			if (healthy) logEventChannel("info", "Native event channel recovered");
+			else logEventChannel("warn", "Native event channel unhealthy", { failedAttempts: info.failedAttempts });
+			window.dispatchEvent(new CustomEvent<NativeEventChannelHealthDetail>(NATIVE_EVENT_CHANNEL_HEALTH_EVENT, {
+				detail: { healthy, failedAttempts: info.failedAttempts },
+			}));
+		},
 	});
+	/**
+	 * 事件通道日志直接走已可用的 RPC：启动握手完成前 desktopApi 仍是预览实现，
+	 * 经它写的日志只进控制台、不进日志文件，而启动期正是事件通道故障最需要留痕的时候。
+	 */
+	function logEventChannel(level: "info" | "warn", message: string, detail?: unknown): void {
+		void transport.invoke(ipcChannels.rendererLog, level, "renderer", message, detail).catch(() => undefined);
+	}
 	try {
 		await transport.ready();
 	} catch (error) {
-		transport.dispose();
-		throw error;
+		logEventChannel("warn", "Native event channel not ready during bootstrap; reconnecting", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		// 事件通道暂未就绪不应让整个工作台卡在启动画面：RPC 已可用，
+		// 就绪超时会关闭 EventSource，这里主动重连，之后由心跳与 CLOSED 退避重连兜底；
+		// 若持续连不上，transport 会经 onEventChannelHealthChange 上报，入口据此提示用户。
+		transport.reconnect();
 	}
 	const syncHost = new NativeDesktopSyncHost(bootstrap.clipboard);
 

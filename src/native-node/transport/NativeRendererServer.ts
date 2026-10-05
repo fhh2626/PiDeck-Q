@@ -4,6 +4,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import type { NativeRpcRouter } from "../../main/transport/NativeRpcRouter";
+import { monotonicNowMs } from "../../main/transport/monotonicNow.ts";
 import type { NativeClipboardMetadata } from "../../shared/desktop/NativeHostTypes";
 import { MAX_NATIVE_EVENT_FRAME_BYTES, MAX_NATIVE_RPC_BODY_BYTES } from "../../shared/desktop/nativeLimits.ts";
 
@@ -11,7 +12,24 @@ const MAX_BODY_BYTES = MAX_NATIVE_RPC_BODY_BYTES;
 const MAX_FRAME_BYTES = MAX_NATIVE_EVENT_FRAME_BYTES;
 const MAX_EVENT_HISTORY = 4_096;
 const MAX_EVENT_HISTORY_BYTES = 32 * 1024 * 1024;
-const MAX_PENDING_EVENT_BYTES = 4 * 1024 * 1024;
+/**
+ * 单个 SSE 客户端积压（尚未写出的帧）的上限。
+ * 它必须明显大于单个全量消息帧：大会话的一次全量窗口就有数 MB～十几 MB，积压上限若小于
+ * 单帧，任何“上一帧还没 drain 时又来一个大帧”都会掐断客户端；而重连后重放历史又会重复这个
+ * 过程，使连接永远无法追上（日志里成对出现的 event-history-truncated / 游标停滞）。
+ * 队列里的帧与 eventHistory 共享同一个字符串，上限只约束“被历史淘汰后仍被慢客户端持有”的部分。
+ */
+const MAX_PENDING_EVENT_BYTES = 64 * 1024 * 1024;
+/** 达到该大小的帧会产生一条诊断日志，便于确认是否由大帧拖慢渲染层。 */
+const LARGE_FRAME_LOG_BYTES = 256 * 1024;
+/** 大帧诊断的最小间隔：大会话的每次全量 flush 都是大帧，逐帧记日志会刷屏。 */
+const LARGE_FRAME_LOG_INTERVAL_MS = 5_000;
+/**
+ * 记录最近这么多个事件序号的产生时间（环形数组，每项 8 字节，共 512 KiB）。
+ * 断层补发据此算出“渲染层丢失的第一帧是何时产生的”，只补发此后有过下发的会话；
+ * 比 eventHistory 覆盖更久，因为大帧会让字节上限先于条数上限把历史挤掉。
+ */
+const EVENT_TIME_RING_SIZE = 65_536;
 
 const MIME_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -83,8 +101,26 @@ type NativeRendererDependencies = {
 	 * 这两个分支无法用重放补齐缺失事件，但也**不需要**整页重载：
 	 * 调用方按 reason 补一次状态即可，页面保持不回导航。
 	 */
-	onReplayGap?: (info: { reason: "event-history-truncated" | "oversized-event" }) => void;
+	onReplayGap?: (info: NativeReplayGapInfo) => void;
+	/**
+	 * 事件通道诊断：背压掐断 SSE 客户端、大帧下发。只携带通道名与字节数，
+	 * 不包含载荷内容，调用方可安全写入日志。
+	 */
+	onEventChannelDiagnostic?: (event: NativeEventChannelDiagnostic) => void;
 };
+
+export type NativeReplayGapInfo = {
+	reason: "event-history-truncated" | "oversized-event";
+	/**
+	 * 渲染层丢失的第一帧的产生时间（monotonicNowMs() 口径，进程内单调时钟）。超出服务端时间记录范围时为 undefined，
+	 * 调用方此时应保守地全量补发。
+	 */
+	lostSinceMs?: number;
+};
+
+export type NativeEventChannelDiagnostic =
+	| { kind: "client-backpressure-dropped"; pendingBytes: number; frameBytes: number }
+	| { kind: "large-frame"; channel: string; bytes: number; suppressedSinceLast: number };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,9 +166,13 @@ export class NativeRendererServer {
 	private readonly clients = new Set<EventClient>();
 	private heartbeatTimer: NodeJS.Timeout | null = null;
 	private eventSeq = 0;
+	private lastLargeFrameLogAt = 0;
+	private suppressedLargeFrames = 0;
 	private eventSourceGeneration = randomUUID();
 	private readonly eventHistory: NativeEventRecord[] = [];
 	private eventHistoryBytes = 0;
+	/** eventTimes[seq % EVENT_TIME_RING_SIZE] = 该序号事件的产生时间（monotonicNowMs）。 */
+	private readonly eventTimes = new Float64Array(EVENT_TIME_RING_SIZE);
 	private readonly deps: NativeRendererDependencies;
 
 	constructor(deps: NativeRendererDependencies) {
@@ -270,7 +310,10 @@ export class NativeRendererServer {
 			const oldestSeq = this.eventHistory[0]?.seq ?? this.eventSeq + 1;
 			if (hasLastEventId && lastEventId < oldestSeq - 1) {
 				// 先让上层补状态再发控制帧：客户端会持续推进游标，不能靠导航自愈。
-				this.deps.onReplayGap?.({ reason: "event-history-truncated" });
+				this.deps.onReplayGap?.({
+					reason: "event-history-truncated",
+					lostSinceMs: this.getLostSinceMs(lastEventId),
+				});
 				this.writeControlEvent(client, "native.resyncRequired", {
 					reason: "event-history-truncated",
 					eventSeq: this.eventSeq,
@@ -390,23 +433,26 @@ export class NativeRendererServer {
 		const bytes = Buffer.byteLength(payload);
 		if (bytes > MAX_FRAME_BYTES) {
 			this.deps.onOversizedEvent?.(channel, bytes);
-			this.deps.onReplayGap?.({ reason: "oversized-event" });
+			// 被丢弃的正是此刻产生的这一帧。
+			this.deps.onReplayGap?.({ reason: "oversized-event", lostSinceMs: monotonicNowMs() });
 			this.appendEvent("native.resyncRequired", [{ channel, bytes }]);
 			return;
 		}
 		// Size validation already serialized this envelope; reuse it for replay/live delivery.
-		this.appendEventPayload(payload);
+		this.appendEventPayload(payload, channel);
 	}
 
 	private appendEvent(channel: string, args: unknown[]): void {
-		this.appendEventPayload(JSON.stringify({ channel, args }));
+		this.appendEventPayload(JSON.stringify({ channel, args }), channel);
 	}
 
 	/** Store and deliver the exact envelope that passed the frame-budget check. */
-	private appendEventPayload(payload: string): void {
+	private appendEventPayload(payload: string, channel = "unknown"): void {
 		const seq = ++this.eventSeq;
 		const frame = `id: ${seq}\ndata: ${payload}\n\n`;
 		const bytes = Buffer.byteLength(frame);
+		this.eventTimes[seq % EVENT_TIME_RING_SIZE] = monotonicNowMs();
+		if (bytes >= LARGE_FRAME_LOG_BYTES) this.reportLargeFrame(channel, bytes);
 		this.eventHistory.push({ seq, frame, bytes });
 		this.eventHistoryBytes += bytes;
 		while (this.eventHistory.length > MAX_EVENT_HISTORY || this.eventHistoryBytes > MAX_EVENT_HISTORY_BYTES) {
@@ -415,6 +461,32 @@ export class NativeRendererServer {
 			this.eventHistoryBytes -= removed.bytes;
 		}
 		for (const client of [...this.clients]) this.writeToClient(client, frame);
+	}
+
+	/**
+	 * 渲染层游标停在 rendererEventSeq 时，它丢失的第一帧（rendererEventSeq + 1）的产生时间。
+	 * 游标不在当前序号空间内、或第一帧已超出时间记录范围时返回 undefined（调用方应全量补发）。
+	 */
+	getLostSinceMs(rendererEventSeq: number | undefined, eventSourceGeneration?: string): number | undefined {
+		if (eventSourceGeneration !== undefined && eventSourceGeneration !== this.eventSourceGeneration) return undefined;
+		if (rendererEventSeq === undefined || !Number.isInteger(rendererEventSeq) || rendererEventSeq < 0) return undefined;
+		const firstLostSeq = rendererEventSeq + 1;
+		if (firstLostSeq > this.eventSeq || firstLostSeq <= this.eventSeq - EVENT_TIME_RING_SIZE) return undefined;
+		return this.eventTimes[firstLostSeq % EVENT_TIME_RING_SIZE];
+	}
+
+	/** 限频上报大帧；被抑制的次数随下一条诊断一并给出，不丢失“有多频繁”的信息。 */
+	private reportLargeFrame(channel: string, bytes: number): void {
+		if (!this.deps.onEventChannelDiagnostic) return;
+		const now = Date.now();
+		if (now - this.lastLargeFrameLogAt < LARGE_FRAME_LOG_INTERVAL_MS) {
+			this.suppressedLargeFrames += 1;
+			return;
+		}
+		this.lastLargeFrameLogAt = now;
+		const suppressedSinceLast = this.suppressedLargeFrames;
+		this.suppressedLargeFrames = 0;
+		this.deps.onEventChannelDiagnostic({ kind: "large-frame", channel, bytes, suppressedSinceLast });
 	}
 
 	private writeControlEvent(client: EventClient, channel: string, args: unknown): void {
@@ -426,7 +498,14 @@ export class NativeRendererServer {
 		if (client.response.destroyed) return false;
 		const bytes = Buffer.byteLength(frame);
 		if (client.blocked) {
-			if (client.pendingBytes + bytes > MAX_PENDING_EVENT_BYTES) {
+			// 只有“已有积压本身超限”才掐断；新帧自身再大也不能触发，否则单个大帧就杀死连接。
+			if (client.pendingBytes > MAX_PENDING_EVENT_BYTES) {
+				// 静默掐断会让上层只看到“事件游标停滞”而找不到原因，这里留痕。
+				this.deps.onEventChannelDiagnostic?.({
+					kind: "client-backpressure-dropped",
+					pendingBytes: client.pendingBytes,
+					frameBytes: bytes,
+				});
 				this.clients.delete(client);
 				client.response.destroy(new Error("Native event client backpressure limit exceeded"));
 				return false;
