@@ -15,6 +15,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,9 +39,20 @@ export interface FileDiffLine {
   content: string;
 }
 
+export interface FileDiffLineSource {
+  /** 新增行数（与 line 数组里 added 行的数量一致）。 */
+  additions: number;
+  /** 删除行数（write/create 为 0）。 */
+  deletions: number;
+  /** 构造完整行数组；只能由已展开的正文调用（文件名行不得触发）。 */
+  getLines: () => FileDiffLine[];
+}
+
 export interface FileDiffProps {
   file: ReactNode;
-  lines: FileDiffLine[];
+  lines?: FileDiffLine[];
+  /** 惰性行数据源：优先于 `lines`。父组件用它避免为收起文件提前拆全文。 */
+  lineSource?: FileDiffLineSource;
   status?: FileDiffStatus;
   open?: boolean;
   defaultOpen?: boolean;
@@ -52,6 +64,8 @@ export interface FileDiffProps {
   onCopy?: () => void | Promise<void>;
   className?: string;
 }
+
+const EMPTY_LINES: FileDiffLine[] = [];
 
 function ChangeCount({ value, type }: { value: number; type: "added" | "removed" }) {
   if (!value) return null;
@@ -79,7 +93,8 @@ function ChangeCount({ value, type }: { value: number; type: "added" | "removed"
  * 每轮底部可能挂几十个文件，全部留在文档里会让输入等待布局。
  */
 function FileDiffBody({
-  lines,
+  lines: eagerLines,
+  lineSource,
   language,
   maxHeight,
   streaming,
@@ -88,9 +103,9 @@ function FileDiffBody({
   canCopy,
   onCopy,
 }: {
-  lines: FileDiffLine[];
-  language: AgentCodeLanguage;
-  maxHeight: number;
+  lines?: FileDiffLine[];
+  lineSource?: FileDiffLineSource;
+  language: AgentCodeLanguage;  maxHeight: number;
   streaming: boolean;
   reduce: boolean;
   copied: boolean;
@@ -98,6 +113,11 @@ function FileDiffBody({
   onCopy: () => void | Promise<void>;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  // 行数组到这里才构造：收起时不挂载正文，因此完全不会走到这里。
+  const lines = useMemo(
+    () => lineSource?.getLines() ?? eagerLines ?? EMPTY_LINES,
+    [eagerLines, lineSource],
+  );
   const code = lines.map((line) => line.content).join("\n");
   const tokens = useAgentCodeTokens(code, language);
 
@@ -201,6 +221,7 @@ function FileDiffBody({
 export function FileDiff({
   file,
   lines,
+  lineSource,
   status = "streaming",
   open,
   defaultOpen = true,
@@ -222,8 +243,13 @@ export function FileDiff({
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const currentOpen = open ?? internalOpen;
   const streaming = status === "streaming";
-  const additions = lines.filter((line) => line.type === "added").length;
-  const deletions = lines.filter((line) => line.type === "removed").length;
+  // 计数走 lineSource 的轻量统计（只数换行），不得为了计数去构造行数组。
+  const additions = lineSource
+    ? lineSource.additions
+    : (lines ?? EMPTY_LINES).filter((line) => line.type === "added").length;
+  const deletions = lineSource
+    ? lineSource.deletions
+    : (lines ?? EMPTY_LINES).filter((line) => line.type === "removed").length;
   const canCopy = Boolean(copyText || onCopy);
 
   const setOpen = useCallback(
@@ -235,9 +261,9 @@ export function FileDiff({
   );
 
   useEffect(() => {
-    if (previousStatus.current !== "streaming" && status === "streaming") {
-      setOpen(true);
-    }
+    // 正文挂载只看开合：运行状态上升沿不再强行展开本轮所有文件。
+    // 旧行为会在 complete→streaming 时 setOpen(true)，那是「一轮改几十个文件就同时挂上
+    // 几十份 diff 正文与高亮」的来源；运行状态现在只负责状态展示与完成时的收起。
     if (
       previousStatus.current === "streaming" &&
       status === "complete" &&
@@ -315,13 +341,13 @@ export function FileDiff({
         aria-labelledby={triggerId}
         open={currentOpen}
       >
-        {/* 收起且不在流式中时整块不挂载：逐行节点、Shiki 高亮与拼接全文全部省掉。
-            不用 CSS 把正文藏起来——那只是把节点留在文档里，
-            布局与样式重算的成本照旧。流式中保持挂载以跟随滚动，
-            状态变为 complete 后上面的 effect 会收起，正文随之卸载。 */}
-        {(currentOpen || streaming) && (
+        {/* 只有展开时才挂载正文：逐行节点、Shiki 高亮与拼接全文全部省掉。
+            不用 CSS 把正文藏起来——那只是把节点留在文档里，布局与样式重算的成本照旧。
+            也不因为整轮 streaming 就预挂载：运行状态不等于「用户要看这个文件的正文」。 */}
+        {currentOpen && (
           <FileDiffBody
             lines={lines}
+            lineSource={lineSource}
             language={language}
             maxHeight={maxHeight}
             streaming={streaming}

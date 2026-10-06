@@ -1,9 +1,9 @@
 import { memo, useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, ExternalLink, Files } from "lucide-react";
+import { ChevronDown, ChevronUp, Files } from "lucide-react";
 import { t } from "../../../i18n";
 import { Button } from "../../ui-shadcn/button";
-import { FileDiff } from "../../agents/file-diff";
-import { collectRunFileChanges, fileChangeToDiffLines } from "../TimelineFormat";
+import { TurnFileChangeRow } from "./TurnFileChangeRow";
+import { collectRunFileChanges } from "../TimelineFormat";
 import type { AgentRunItem } from "../timeline/types";
 import type { DiffFileHandler } from "../ToolCallComponents";
 
@@ -48,34 +48,15 @@ export const TurnFileChanges = memo(function TurnFileChanges(props: {
 			{!collapsed && (
 				<div className="flex flex-col gap-0">
 					{files.map((entry) => (
-						<div key={entry.path} className="flex items-center gap-1">
-							<FileDiff
-								className="min-w-0 flex-1 [&>button]:min-h-6 [&>button]:py-0"
-								// 同文件多次修改时在路径后附次数（truncate 由 FileDiff 内部处理）
-								file={`${entry.path}${entry.count > 1 ? ` ×${entry.count}` : ""}`}
-								lines={fileChangeToDiffLines(entry)}
-								status={props.streaming ? "streaming" : "complete"}
-								defaultOpen={false}
-								maxHeight={200}
-								language="diff"
-							/>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								className="size-6 shrink-0 rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-								title={t("session.openInDiffViewer", { path: entry.path })}
-								onClick={() =>
-									props.onDiffFile?.(
-										entry.path,
-										entry.originalContent,
-										entry.content,
-									)
-								}
-							>
-								<ExternalLink size={13} />
-							</Button>
-						</div>
+						<TurnFileChangeRow
+							key={entry.path}
+							path={entry.path}
+							count={entry.count}
+							originalContent={entry.originalContent}
+							content={entry.content}
+							streaming={props.streaming}
+							onDiffFile={props.onDiffFile}
+						/>
 					))}
 				</div>
 			)}

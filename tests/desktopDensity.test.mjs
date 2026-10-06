@@ -150,7 +150,10 @@ test("FileDiff trigger uses min-h-7 py-0.5 gap-1.5 (not min-h-9 py-1 gap-2)", ()
 });
 
 test("TurnFileChanges uses mb-0.5 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () => {
-  const src = read("components/session/turn/TurnFileChanges.tsx");
+  // 单文件行已拆到 TurnFileChangeRow：密度契约跨两个文件，合并后断言。
+  const src = `${read("components/session/turn/TurnFileChanges.tsx")}\n${read(
+    "components/session/turn/TurnFileChangeRow.tsx",
+  )}`;
   assert.match(src, /mb-0\.5 flex items-center/, "title should use mb-0.5");
   assert.doesNotMatch(src, /mb-1 flex items-center/, "title must not stay at mb-1");
   assert.doesNotMatch(src, /mb-1\.5 flex items-center/, "title should not use mb-1.5");

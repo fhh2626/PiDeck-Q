@@ -58,12 +58,16 @@ test("FileDiff: full-text join lives in FileDiffBody, not in FileDiff", () => {
 		"FileDiff must not join the whole diff text while collapsed",
 	);
 });
-
-test("FileDiff: body is mounted only while open or streaming", () => {
-	const gate = "{(currentOpen || streaming) && (";
+test("FileDiff: body is mounted only while open", () => {
+	const gate = "{currentOpen && (";
 	assert.ok(
 		fileDiffSource.includes(gate),
-		"body mount gate must be (currentOpen || streaming)",
+		"body mount gate must be currentOpen alone",
+	);
+	assert.doesNotMatch(
+		fileDiffSource,
+		/currentOpen\s*\|\|\s*streaming/,
+		"streaming must not force the body to mount",
 	);
 
 	const gateIndex = fileDiffSource.indexOf(gate);
@@ -71,6 +75,14 @@ test("FileDiff: body is mounted only while open or streaming", () => {
 	assert.ok(
 		bodyIndex > gateIndex,
 		"FileDiffBody must be rendered behind the mount gate",
+	);
+});
+
+test("FileDiff: streaming edge does not force the diff open", () => {
+	assert.doesNotMatch(
+		fileDiffSource,
+		/previousStatus\.current !== "streaming"[\s\S]{0,80}setOpen\(true\)/,
+		"complete→streaming must not call setOpen(true)",
 	);
 });
 
