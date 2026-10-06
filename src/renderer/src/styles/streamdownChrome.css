@@ -88,7 +88,11 @@
   color: var(--color-text-secondary);
 }
 
-[data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
+/* 操作按钮的定位外壳：Streamdown 代码块的直接子元素里，只有它没有 data-streamdown 属性
+   （header 与 body 都带）。不用 :has([data-streamdown="code-block-actions"])——
+   :has() 参数里含属性选择器时，页面任意位置插入/删除元素都会让 Chromium 重算整页样式，
+   长会话里每次按键 70ms+（见 docs/long-session-input-lag-fix.md）。 */
+[data-streamdown="code-block"] > div:not([data-streamdown]) {
   pointer-events: none;
   position: absolute;
   top: 0;

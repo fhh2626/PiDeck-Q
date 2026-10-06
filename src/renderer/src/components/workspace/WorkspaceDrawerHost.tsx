@@ -81,7 +81,13 @@ export function WorkspaceDrawerHost(props: WorkspaceDrawerHostProps) {
         style={props.style}
       >
         {visiblePanel && (
-          <div className="drawer-content-frame flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            className={
+              open && props.rail
+                ? "drawer-content-frame drawer-content-frame--with-rail flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "drawer-content-frame flex min-h-0 flex-1 flex-col overflow-hidden"
+            }
+          >
             {open && props.rail}
             {rendered}
           </div>

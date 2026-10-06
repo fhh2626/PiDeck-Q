@@ -9,6 +9,7 @@ import { t } from "./i18n";
 import { dismissNotice, showNotice } from "./utils/notice";
 import { desktopApi, initializeDesktopRuntime } from "./desktopApi";
 import { showBootFailure } from "./bootFailure";
+import { startInputLatencyMonitor } from "./inputLatencyMonitor";
 import {
   NATIVE_EVENT_CHANNEL_HEALTH_EVENT,
   type NativeEventChannelHealthDetail,
@@ -161,6 +162,11 @@ async function bootstrap() {
       </AppErrorBoundary>
     </React.StrictMode>,
   );
+
+  // 输入延迟诊断：键盘/输入法事件到绘制超过 100ms 时按 10 秒窗口汇总写日志（不含输入内容）。
+  startInputLatencyMonitor({
+    report: (report) => writeStartupLog("warn", "Slow input detected", report),
+  });
 
   /**
    * React 首次渲染完成后淡出启动遮罩。前台窗口走双 rAF，保证 transition

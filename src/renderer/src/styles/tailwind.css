@@ -172,7 +172,9 @@
   & li.task-list-item {
     list-style: none;
   }
-  & ul:has(> li.task-list-item) {
+  /* remark-gfm 给含任务项的列表加 contains-task-list；不用 :has(> li.task-list-item)，
+     减少页面上的 :has() 规则（见 docs/long-session-input-lag-fix.md）。 */
+  & ul.contains-task-list {
     padding-left: 1.4em;
   }
   & input[type="checkbox"] {

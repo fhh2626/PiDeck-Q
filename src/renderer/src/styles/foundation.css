@@ -1193,11 +1193,13 @@ select:focus-visible {
   }
 }
 /* 拖拽区高度同时暴露在 :root：sonner toaster、兑底 toast 等浮层渲染在 #root 内、
-   并非 .wechat-shell 的后代，读不到 shell 作用域变量，会错误地按 0px 计算顶部 offset */
+   并非 .wechat-shell 的后代，读不到 shell 作用域变量，会错误地按 0px 计算顶部 offset。
+   根元素的标记类由 AppShell 随 custom-titlebar-enabled 同步（不用 :root:has(...)，见
+   docs/long-session-input-lag-fix.md）；类名刻意不同，避免误命中 .custom-titlebar-enabled 的后代规则。 */
 :root {
   --window-drag-height: 0px;
 }
-:root:has(.wechat-shell.custom-titlebar-enabled) {
+:root.pideck-custom-titlebar {
   --window-drag-height: 40px;
   /* 4 × 36px；拖拽层 / Tab 栏让位 / 控件条共用，避免各写 144 漂移 */
   --window-controls-width: 144px;
@@ -2905,13 +2907,15 @@ select:focus-visible {
   /* 所有可跳转消息共享顶部安全区，避免定位时文字贴到视口上沿。 */
   scroll-margin-top: 28px;
 }
-.message-timeline:has(.session-runtime-ui:not(:empty)) {
+/* runtimeUi（ask 卡片）存在时：上方与 RespondingIndicator（消息流末尾的 Agent 运行动画）
+   留出呼吸间距，避免消息占满滚动区时两者贴死；下方保留 8px 底部留白。
+   规则直接写在 runtime-ui 自身：它带 empty:hidden，为空时不占位，等价于原来的
+   .message-timeline:has(.session-runtime-ui:not(:empty))，但不用 :has()——
+   :has() 参数含 :empty 时，页面任意位置插入/删除元素都会让 Chromium 重算整页样式，
+   长会话里每次按键 70ms+（见 docs/long-session-input-lag-fix.md）。 */
+.session-runtime-ui {
+  margin-top: var(--space-3);
   padding-bottom: 8px;
-}
-/* RespondingIndicator（消息流末尾的 Agent 运行动画）与 ask 卡片（runtimeUi）相邻：
-   消息占满滚动区时两者只剩 8px 底部留白，视觉上贴死；给动画块单独留出呼吸间距 */
-.message-timeline:has(.session-runtime-ui:not(:empty)) .message-list > :last-child {
-  margin-bottom: var(--space-3);
 }
 .scroll-to-bottom-btn {
   position: absolute;

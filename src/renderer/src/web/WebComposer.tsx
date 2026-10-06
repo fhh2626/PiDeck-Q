@@ -5,8 +5,11 @@
  * - textarea 由 .composer textarea 统一样式（透明底、内边距、随内容撑高）
  * - Enter 发送、Shift/Ctrl+Enter 换行
  * - 无会话时禁用；忙碌期间提交按钮转为停止（useChat 流式或 runtime 权威忙碌）
+ * - textarea 非受控：正文只存在 DOM 里，React 只记录“是否有内容”。受控 textarea 每次按键都会
+ *   改写 defaultValue（即 textarea 的子文本节点），只要样式表里有任何 :has() 规则，Chromium
+ *   就会因此重算整页样式；长会话里每个按键 70ms+（见 docs/long-session-input-lag-fix.md）。
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui-shadcn/button";
 import { t } from "@/i18n";
 import { isComposingKeyboardEvent } from "../composerBehavior";
@@ -17,14 +20,21 @@ export function WebComposer(props: {
 	onSend: (text: string) => void;
 	onStop: () => void;
 }) {
-	const [draft, setDraft] = useState("");
+	// 只在“空 ↔ 非空”切换时更新，普通按键不触发重渲染。
+	const [hasText, setHasText] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+	// 非受控时 DOM 可能已有内容（浏览器表单恢复等），挂载后按实际内容同步一次发送按钮状态。
+	useEffect(() => {
+		setHasText(Boolean(textareaRef.current?.value.trim()));
+	}, []);
 
 	const submit = () => {
-		const text = draft.trim();
+		const textarea = textareaRef.current;
+		const text = textarea?.value.trim() ?? "";
 		if (!text || props.disabled || props.busy) return;
 		props.onSend(text);
-		setDraft("");
+		if (textarea) textarea.value = "";
+		setHasText(false);
 	};
 
 	return (
@@ -39,8 +49,8 @@ export function WebComposer(props: {
 				<textarea
 					id="prompt"
 					ref={textareaRef}
-					value={draft}
-					onChange={(event) => setDraft(event.target.value)}
+					defaultValue=""
+					onChange={(event) => setHasText(event.target.value.trim().length > 0)}
 					placeholder={t("web.promptPlaceholder")}
 					disabled={props.disabled}
 					onKeyDown={(event) => {
@@ -71,7 +81,7 @@ export function WebComposer(props: {
 							type="submit"
 							size="sm"
 							className="h-8 shrink-0"
-							disabled={props.disabled || !draft.trim()}
+							disabled={props.disabled || !hasText}
 						>
 							{t("app.send")}
 						</Button>

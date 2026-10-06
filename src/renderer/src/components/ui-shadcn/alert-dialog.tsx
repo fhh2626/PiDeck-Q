@@ -67,6 +67,13 @@ function AlertDialogContent({
   )
 }
 
+/**
+ * 带 AlertDialogMedia 的对话框：调用方在 AlertDialogContent 上加 data-has-media，
+ * 头部/标题据此切换布局。不用 Tailwind 的 has-data 变体按子元素 slot 判断（会生成参数含属性选择器的 :has()）。
+ * 注意：注释里也不要写出完整的变体类名，Tailwind 会扫描注释并照样生成规则。
+ * :has() 参数含属性选择器时，页面任意位置增删元素都会触发 Chromium 整页样式重算，
+ * 长会话里每次按键 70ms+（见 docs/long-session-input-lag-fix.md）。
+ */
 function AlertDialogHeader({
   className,
   ...props
@@ -75,7 +82,7 @@ function AlertDialogHeader({
     <div
       data-slot="alert-dialog-header"
       className={cn(
-        "grid grid-rows-[auto_1fr] place-items-center gap-1.5 text-center has-data-[slot=alert-dialog-media]:grid-rows-[auto_auto_1fr] has-data-[slot=alert-dialog-media]:gap-x-6 sm:group-data-[size=default]/alert-dialog-content:place-items-start sm:group-data-[size=default]/alert-dialog-content:text-left sm:group-data-[size=default]/alert-dialog-content:has-data-[slot=alert-dialog-media]:grid-rows-[auto_1fr]",
+        "grid grid-rows-[auto_1fr] place-items-center gap-1.5 text-center group-data-[has-media]/alert-dialog-content:grid-rows-[auto_auto_1fr] group-data-[has-media]/alert-dialog-content:gap-x-6 sm:group-data-[size=default]/alert-dialog-content:place-items-start sm:group-data-[size=default]/alert-dialog-content:text-left sm:group-data-[size=default]/alert-dialog-content:group-data-[has-media]/alert-dialog-content:grid-rows-[auto_1fr]",
         className
       )}
       {...props}
@@ -107,7 +114,7 @@ function AlertDialogTitle({
     <AlertDialogPrimitive.Title
       data-slot="alert-dialog-title"
       className={cn(
-        "text-lg font-semibold sm:group-data-[size=default]/alert-dialog-content:group-has-data-[slot=alert-dialog-media]/alert-dialog-content:col-start-2",
+        "text-lg font-semibold sm:group-data-[size=default]/alert-dialog-content:group-data-[has-media]/alert-dialog-content:col-start-2",
         className
       )}
       {...props}

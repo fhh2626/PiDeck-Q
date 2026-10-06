@@ -1070,7 +1070,9 @@ button.scratch-pad-tool-btn.active {
   cursor: pointer;
 }
 
-.scratch-pad-md li:has(> input[type="checkbox"]) {
+/* 任务项由 ScratchPadPanel 按源码行判定后打标记类；不用 li:has(> input[type="checkbox"])，
+   原因同 streamdownChrome.css 中代码块操作栏的说明。 */
+.scratch-pad-md li.scratch-pad-task-item {
   list-style: none;
   margin-left: -1.4em;
   padding-left: 0;
@@ -1584,6 +1586,8 @@ body.is-git-pane-resizing, body.is-git-pane-resizing * { cursor: row-resize !imp
 .drawer-activity-rail-button.active::before {
   display: none; /* 指示条改由组件内 span 渲染 */
 }
-.detail-drawer:has(.drawer-activity-rail) .drawer-content-frame {
+/* 抽屉内容区带 activity rail 时由 WorkspaceDrawerHost 加标记类；不用 :has(.drawer-activity-rail)，
+   减少页面上的 :has() 规则（见 docs/long-session-input-lag-fix.md）。 */
+.detail-drawer .drawer-content-frame--with-rail {
   min-width: 0;
 }
