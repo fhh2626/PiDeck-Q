@@ -54,7 +54,7 @@ test("toaster is excluded from the window drag region and drag height is exposed
   assert.match(surfaces, /\[data-sonner-toaster\][\s\S]*?-webkit-app-region:\s*no-drag/);
   // toaster 不是 .wechat-shell 的后代，--window-drag-height 必须在 :root 可读
   const foundation = readFileSync("src/renderer/src/styles/foundation.css", "utf8");
-  // 由 AppShell 在根元素上同步标记类（不用 :root:has(...)，见 docs/long-session-input-lag-fix.md）。
+  // 由 AppShell 在根元素上同步标记类（不用 :root:has(...)）。
   assert.match(foundation, /:root\.pideck-custom-titlebar \{[\s\S]*?--window-drag-height:\s*40px;/);
   const appShell = readFileSync("src/renderer/src/components/app/AppShell.tsx", "utf8");
   assert.match(appShell, /root\.classList\.toggle\("pideck-custom-titlebar", !useNativeTitleBar\)/);

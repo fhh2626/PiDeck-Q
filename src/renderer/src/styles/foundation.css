@@ -1194,8 +1194,8 @@ select:focus-visible {
 }
 /* 拖拽区高度同时暴露在 :root：sonner toaster、兑底 toast 等浮层渲染在 #root 内、
    并非 .wechat-shell 的后代，读不到 shell 作用域变量，会错误地按 0px 计算顶部 offset。
-   根元素的标记类由 AppShell 随 custom-titlebar-enabled 同步（不用 :root:has(...)，见
-   docs/long-session-input-lag-fix.md）；类名刻意不同，避免误命中 .custom-titlebar-enabled 的后代规则。 */
+   根元素的标记类由 AppShell 随 custom-titlebar-enabled 同步（不用 :root:has(...)）；
+   类名刻意不同，避免误命中 .custom-titlebar-enabled 的后代规则。 */
 :root {
   --window-drag-height: 0px;
 }
@@ -2912,7 +2912,7 @@ select:focus-visible {
    规则直接写在 runtime-ui 自身：它带 empty:hidden，为空时不占位，等价于原来的
    .message-timeline:has(.session-runtime-ui:not(:empty))，但不用 :has()——
    :has() 参数含 :empty 时，页面任意位置插入/删除元素都会让 Chromium 重算整页样式，
-   长会话里每次按键 70ms+（见 docs/long-session-input-lag-fix.md）。 */
+   长会话里每次按键 70ms+。 */
 .session-runtime-ui {
   margin-top: var(--space-3);
   padding-bottom: 8px;

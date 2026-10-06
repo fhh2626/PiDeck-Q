@@ -299,6 +299,13 @@ test("timeline wires the turn mount window helper", () => {
   assert.match(controller, /TIMELINE_SCROLLED_MAX_ITEMS/);
   assert.doesNotMatch(source, /import \{[^}]*TIMELINE_SCROLLED_MAX_ITEMS/, "时间线不得再引入未使用的常量 import");
   assert.match(source, /displayRuns\.map/);
+  // 长会话渲染治理：贴底与上滚共用同一条目预算（controller.scrolledWindowItems），
+  // 不得再给贴底开「无上限」分支——一离开底部列表就突然缩短，视口会跳。
+  assert.doesNotMatch(
+    source,
+    /followingForTurnWindow \? undefined/,
+    "贴底窗口不得再传 undefined 绕开条目预算",
+  );
   // 按钮文案按「隐藏的用户轮数」计算，不再按 agent-run 数
   assert.match(source, /hiddenTurnCount/);
   assert.doesNotMatch(source, /hiddenRunCount/);

@@ -72,7 +72,7 @@ function AlertDialogContent({
  * 头部/标题据此切换布局。不用 Tailwind 的 has-data 变体按子元素 slot 判断（会生成参数含属性选择器的 :has()）。
  * 注意：注释里也不要写出完整的变体类名，Tailwind 会扫描注释并照样生成规则。
  * :has() 参数含属性选择器时，页面任意位置增删元素都会触发 Chromium 整页样式重算，
- * 长会话里每次按键 70ms+（见 docs/long-session-input-lag-fix.md）。
+ * 长会话里每次按键 70ms+。
  */
 function AlertDialogHeader({
   className,

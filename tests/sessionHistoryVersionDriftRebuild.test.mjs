@@ -70,6 +70,8 @@ function setupEnvironment(pages) {
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
   return { atoms, controllerModule, requests };
 }

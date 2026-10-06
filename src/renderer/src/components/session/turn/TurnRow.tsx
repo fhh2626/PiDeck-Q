@@ -35,6 +35,7 @@ import { InterimAnswer } from "./InterimAnswer";
 import { ProcessSummaryToggle } from "./ProcessSummaryToggle";
 import { ThinkingStep } from "./ThinkingStep";
 import { ToolStep } from "./ToolStep";
+import { shouldMountProcessBody } from "./processBodyMount";
 import { TurnFileChanges } from "./TurnFileChanges";
 import { useTurnExecution } from "./useTurnExecution";
 import type { DiffFileHandler } from "../ToolCallComponents";
@@ -239,6 +240,11 @@ export const TurnRow = memo(
 			collapsePrevRunsOnNewTurn: flowSettings.collapsePrevRunsOnNewTurn,
 			newTurnCollapseTick,
 		});
+	// 长会话渲染治理：收起的已结束轮次不挂载思考/工具/中间回答正文。
+	// 只靠 display:none 隐藏时节点仍留在文档里，输入与拖动都要为它付样式/布局成本；
+	// 正在输出的那一轮（agentRunning 只下发给当前忙碌轮）例外，收起时保留隐藏 DOM
+	// 以保住打字机与未结束工具卡的状态。判定收在 shouldMountProcessBody，勿在此另写。
+	const mountProcessBody = shouldMountProcessBody(stepsVisible, props.agentRunning);
 
 	// 中间内容（思考/工具/中间回答）与最终回答分组：
 	// 中间内容统一收进执行过程折叠容器（stepsVisible 整体控制显隐），
@@ -371,7 +377,7 @@ export const TurnRow = memo(
 							</div>
 						)}
 						<CollapsibleContent className="execution-summary-details">
-							{foldableItems.map((item) => {
+							{mountProcessBody && foldableItems.map((item) => {
 								let content: ReactNode;
 								let itemKey: string;
 								if (item.kind === "process-entry") {

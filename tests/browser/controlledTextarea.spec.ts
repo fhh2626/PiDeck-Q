@@ -3,8 +3,8 @@ import type {} from "./controlledTextarea.fixture";
 
 /**
  * 共享 Textarea 对调用方是受控用法，但打字时不能改写 textarea 的子文本节点：
- * 只要样式表里有任意 :has()，子节点改写就会让 Chromium 重算整页样式（长会话每键 70ms+，
- * 见 docs/long-session-input-lag-fix.md）。同时必须保持 React 受控组件的可观察语义。
+ * 只要样式表里有任意 :has()，子节点改写就会让 Chromium 重算整页样式（长会话每键 70ms+）。
+ * 同时必须保持 React 受控组件的可观察语义。
  */
 
 test.beforeEach(async ({ page }) => {

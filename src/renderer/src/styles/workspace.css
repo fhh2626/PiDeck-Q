@@ -1587,7 +1587,7 @@ body.is-git-pane-resizing, body.is-git-pane-resizing * { cursor: row-resize !imp
   display: none; /* 指示条改由组件内 span 渲染 */
 }
 /* 抽屉内容区带 activity rail 时由 WorkspaceDrawerHost 加标记类；不用 :has(.drawer-activity-rail)，
-   减少页面上的 :has() 规则（见 docs/long-session-input-lag-fix.md）。 */
+   减少页面上的 :has() 规则。 */
 .detail-drawer .drawer-content-frame--with-rail {
   min-width: 0;
 }

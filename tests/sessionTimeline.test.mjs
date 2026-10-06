@@ -46,6 +46,9 @@ function loadTimelineHelpers() {
       TIMELINE_SCROLLED_TURN_LIMIT: 15,
       TIMELINE_WINDOW_EXPAND_STEP: 10,
     },
+    // controller 现在依赖锚点/窗口位移策略模块：给真实模块而不是再 mock 一份，
+    // 否则同一规则会有两套真相（策略自己的单测在 timelineScrollAnchor.test.mjs）。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 }
 

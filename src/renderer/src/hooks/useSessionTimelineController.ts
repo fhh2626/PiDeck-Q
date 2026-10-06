@@ -43,6 +43,12 @@ import {
   TIMELINE_SCROLLED_TURN_LIMIT,
   TIMELINE_WINDOW_EXPAND_STEP,
 } from "../components/session/timeline/turnRenderWindow";
+import {
+  anchorRowId,
+  anchorRowStillInData,
+  resolveAnchorRestore,
+  resolveAnchorRow,
+} from "./timelineScrollAnchor";
 
 /** 滚动接近顶部自动加载历史的阈值（px，2026-11 轮次模型）：
  *  贴顶（≤8px）才触发翻页——「滑到底才翻」，避免在顶部附近任何滚动都连翻历史页。
@@ -226,6 +232,16 @@ export function readRuntimeHistoryTurnPage(
 
 type Tagged<T> = { ownerKey: string; value: T };
 type TimelineAnchor = { height: number; top: number };
+
+/**
+ * 锚点读取结果。三态而不是 `SessionScrollAnchor | null`：
+ * 命中测试失败（unresolved）与「在底部」（at-bottom → 应清除锚点）必须分开，
+ * 否则一次量不到就会把用户正在看的位置抹掉。
+ */
+export type AnchorReading =
+  | { status: "resolved"; anchor: SessionScrollAnchor }
+  | { status: "at-bottom" }
+  | { status: "unresolved" };
 
 export function isTimelineAtBottom(
   scrollTop: number,
@@ -542,6 +558,9 @@ export type SessionTimelineController = {
   refreshLoadMoreAnchorBaseline: () => void;
   /** 标记一次程序化滚动（turn 窗口展开补偿等组件内补偿用），抑制自动加载监听。 */
   markProgrammaticScroll: () => void;
+  /** 当前视口锚点快照（不订阅、不触发渲染）：渲染层在列表变短时据此把正在看的
+   *  那一行放回原处。未成功读取过时为 unresolved，调用方不得凭它猜位置。 */
+  peekViewportAnchor: () => AnchorReading;
   jumpToMessage: (messageId: string) => void;
   scrollToBottom: () => void;
   /** 滚动回调（MessageScroller viewport 接线）：维护会话切换的滚动锚点。 */
@@ -628,40 +647,51 @@ export function useSessionTimelineController(options: {
   const currentAnchorRef = useRef<SessionScrollAnchor | null>(null);
   const scrollAnchorFrameRef = useRef<number | undefined>(undefined);
   const scrollSaveTimerRef = useRef<number | undefined>(undefined);
+  // 锚点行被渲染窗口裁掉时的扩窗找回：待恢复锚点 + 已扩窗次数（上限在纯策略里）。
+  const pendingAnchorRestoreRef = useRef<Tagged<SessionScrollAnchor> | undefined>(undefined);
+  const anchorWideningsRef = useRef(0);
+  // 最近一次成功的锚点读取结果（resolved 的行 + 偏移，或 at-bottom）：渲染层在列表
+  // 变短时用它把正在看的那一行放回原处，因此需要行 id 与它距视口顶的偏移。
+  const anchorReadingRef = useRef<AnchorReading>({ status: "unresolved" });
 
   /**
-   * 计算当前视口锚点（纯读取，不落盘）。
-   * 规则：在底部跟流 → null（切回继续跟底）；查看历史 → 记录
+   * 读当前视口锚点（纯读取，不落盘）。
+   * 规则：在底部跟流 → at-bottom（切回继续跟底）；查看历史 → resolved
    * 「视口顶部的第一条消息行 + 距视口顶偏移 + 分页窗口」。
-   * 锚点行用 data-message-id（run 或消息行都带），恢复时无需关心具体类型。
+   *
+   * 长会话拖动治理：锚点行用命中测试取，不再遍历 [data-message-id] 逐行量矩形。
+   * unresolved = 命中测试不可用/屏顶被骨架或浮层占住，调用方保留上一次锚点。
+   * 这里不得退回全表扫描，否则拖动时每帧仍是一次 O(挂载行数) 的强制布局。
    */
-  const computeCurrentAnchor = useCallback((): SessionScrollAnchor | null => {
+  const readCurrentAnchor = useCallback((): AnchorReading => {
     const timeline = timelineRef.current;
-    if (!timeline) return null;
+    if (!timeline) return { status: "unresolved" };
     if (isTimelineAtBottom(timeline.scrollTop, timeline.scrollHeight, timeline.clientHeight)) {
-      return null;
+      const atBottom: AnchorReading = { status: "at-bottom" };
+      anchorReadingRef.current = atBottom;
+      return atBottom;
     }
     const viewportRect = timeline.getBoundingClientRect();
-    const rows = timeline.querySelectorAll<HTMLElement>("[data-message-id]");
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect();
-      if (rect.bottom >= viewportRect.top + 1) {
-        const messageId = row.dataset.messageId ?? "";
-        if (!messageId) continue;
-        return {
-          messageId,
-          // 保留负偏移：视口顶部常被上一行底部占据（行顶在视口上方），
-          // 截断为 0 会导致恢复时把行顶对齐视口顶、整体位置偏下（高大行偏差明显）。
-          // 恢复侧 scrollTop = max(0, elTop - offsetTop) 已兜底负值。
-          offsetTop: rect.top - viewportRect.top,
-          // 2026-11 轮次模型：不再有 100 条分页窗口，visibleCount 恒为 0（兼容字段）
-          visibleCount: 0,
-          savedAt: Date.now(),
-        };
-      }
-    }
-    // 无任何消息行（空会话/加载中）
-    return null;
+    const row = resolveAnchorRow(timeline, viewportRect.top);
+    if (!row) return { status: "unresolved" };
+    const messageId = anchorRowId(row);
+    if (!messageId) return { status: "unresolved" };
+    const rect = row.getBoundingClientRect();
+    const reading: AnchorReading = {
+      status: "resolved",
+      anchor: {
+        messageId,
+        // 保留负偏移：视口顶部常被上一行底部占据（行顶在视口上方），
+        // 截断为 0 会导致恢复时把行顶对齐视口顶、整体位置偏下（高大行偏差明显）。
+        // 恢复侧 scrollTop = max(0, elTop - offsetTop) 已兜底负值。
+        offsetTop: rect.top - viewportRect.top,
+        // 2026-11 轮次模型：不再有 100 条分页窗口，visibleCount 恒为 0（兼容字段）
+        visibleCount: 0,
+        savedAt: Date.now(),
+      },
+    };
+    anchorReadingRef.current = reading;
+    return reading;
   }, []);
 
   /** 把当前锚点写入 atom（节流）。内容未变化由 atom 侧跳过，引用保持稳定。 */
@@ -671,7 +701,11 @@ export function useSessionTimelineController(options: {
   }, [saveScrollAnchor]);
 
   /** 透传给 MessageScroller viewport 的滚动回调（SessionMessageTimeline 接线）。
-   *  rAF 合并高频滚动计算锚点（不每帧 getBoundingClientRect），再节流 250ms 落盘 atom。 */
+   *
+   * rAF 合并高频滚动 + 250ms 节流落盘的结构不变：cleanup 落盘依赖 ref 的新鲜度
+   * （切走时 DOM 可能已是新会话的行，不能现场量），所以不能只在 250ms 里算。
+   * 变的是单次成本：旧实现每帧遍历 [data-message-id] 逐行量矩形（O(挂载行数) 强制
+   * 布局，长会话拖动卡顿根因），现在只做一次命中测试 + 量容器和该行共两个矩形。 */
   const handleTimelineScroll = useCallback(() => {
     const sessionId = ownerKeyRef.current;
     if (!sessionId || sessionId === LEGACY_OWNER_KEY) return;
@@ -680,7 +714,12 @@ export function useSessionTimelineController(options: {
       scrollAnchorFrameRef.current = undefined;
       // 回调执行时若已切走（ownerKeyRef 已更新），丢弃——旧会话状态由 cleanup 落盘。
       if (ownerKeyRef.current !== sessionId) return;
-      currentAnchorRef.current = computeCurrentAnchor();
+      const reading = readCurrentAnchor();
+      // unresolved 不覆盖已有锚点：宁可继续记住刚才在看的那一行，也不因为一次
+      // 命中失败（屏顶被骨架/浮层占住）把用户位置弄丢。
+      if (reading.status !== "unresolved") {
+        currentAnchorRef.current = reading.status === "resolved" ? reading.anchor : null;
+      }
       // 节流写 atom：只排一个 timer，期间连续滚动不重复写；
       // 内容未变时 atom 侧跳过（引用稳定，订阅者零重渲染）。
       if (scrollSaveTimerRef.current != null) return;
@@ -688,7 +727,7 @@ export function useSessionTimelineController(options: {
         persistCurrentAnchor(sessionId);
       }, 250);
     });
-  }, [computeCurrentAnchor, persistCurrentAnchor]);
+  }, [persistCurrentAnchor, readCurrentAnchor]);
 
   // ── Load messages from disk when sessionId changes ──
 	// 只订本会话缓存条目（family selectAtom 隔离）：其它会话的消息到达/分页不拖着重渲染本栏。
@@ -801,6 +840,9 @@ export function useSessionTimelineController(options: {
   // 与 autoScroll 初始值保持一致（有锚点的会话首帧即不跟底），避免首帧 ref/state 不一致
   const autoScrollRef = useRef(autoScroll);
   const programmaticScrollRef = useRef(false);
+  // 程序化滚动的抑制标记如果没人消费（位置没变、不派发 scroll），要在下一帧清掉。
+  // 会话切走时必须取消，避免晚到的清理把新会话刚立上的标记抹掉。
+  const programmaticScrollClearRef = useRef<number | undefined>(undefined);
   const scrollerScrollApiRef = useRef<MessageScrollerScrollApi | null>(null);
   const loadMoreAnchorRef = useRef<Tagged<TimelineAnchor> | undefined>(undefined);
   const pendingJumpRef = useRef<Tagged<string> | undefined>(undefined);
@@ -848,6 +890,131 @@ export function useSessionTimelineController(options: {
     }, 2000);
     highlightTimersRef.current.set(timer, timer);
   }, []);
+
+  /**
+   * 尝试把视口对齐到 pendingAnchorRestoreRef 登记的锚点行（可重入）。
+   *
+   * 结局由 resolveAnchorRestore 决定：行已挂载 → 精确对齐；数据还没落地 → 等下一帧；
+   * 行仍在数据里但被渲染窗口裁掉 → 扩窗后等下一轮重试；行确实已从数据消失（或扩窗到
+   * 上限）→ 贴窗口顶部兜底。不能猜位置：那正是「信息流跳到以前的消息」的来源。
+   * 返回 true 表示本轮恢复已结束（已对齐或已兜底）。
+   */
+  const attemptAnchorRestore = useCallback((requestOwnerKey: string): boolean => {
+    const pending = pendingAnchorRestoreRef.current;
+    if (!pending || pending.ownerKey !== requestOwnerKey) return true;
+    // 已切到别的会话：旧会话的恢复尝试直接作废（pending 由下一次切换重新登记）。
+    if (ownerKeyRef.current !== requestOwnerKey) {
+      pendingAnchorRestoreRef.current = undefined;
+      return true;
+    }
+    const timeline = timelineRef.current;
+    if (!timeline) return false;
+    const anchor = pending.value;
+    const anchorRow = timeline.querySelector(
+      `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
+    ) as HTMLElement | null;
+    const rowBox = anchorRow?.getBoundingClientRect();
+    // 行在 DOM 里但不可见（折叠正文被卸载 / display:none 时矩形全零）一律当未挂载：
+    // 拿全零矩形对齐会算出接近 0 的 scrollTop，就是「跳到以前的消息」。
+    const rowMounted = Boolean(rowBox && (rowBox.height > 0 || rowBox.width > 0));
+    const step = resolveAnchorRestore({
+      rowMounted,
+      // 「有缓存条目」= 读取已返回（即使空会话），与起始页判定同一约定；
+      // 不能用 combinedMessages.length>0：空会话的旧锚点会被当成「还在加载」永远等待。
+      dataLoaded: cachedEntry !== undefined,
+      stillInData: anchorRowStillInData(anchor.messageId, combinedMessages),
+      widenings: anchorWideningsRef.current,
+    });
+    if (step === "wait-for-data") return false;
+    // 查看历史期间不得跟流：新消息到达不拽走用户，只让「回到底部」按钮保持亮起。
+    autoScrollRef.current = false;
+    setAutoScroll(false);
+    setShowScrollToBottom(true);
+    // 位置没变就不立抑制标记：没有 scroll 事件时标记会一直为 true，
+    // 下一次用户滚到顶会被自动翻页监听吞掉。变了则事件先消费标记，rAF 只清残留。
+    const writeProgrammaticScrollTop = (nextTop: number, write: () => void) => {
+      const before = timeline.scrollTop;
+      if (before === nextTop) return;
+      if (programmaticScrollClearRef.current != null) {
+        cancelAnimationFrame(programmaticScrollClearRef.current);
+        programmaticScrollClearRef.current = undefined;
+      }
+      programmaticScrollRef.current = true;
+      write();
+      if (timeline.scrollTop === before) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+      programmaticScrollClearRef.current = requestAnimationFrame(() => {
+        programmaticScrollClearRef.current = undefined;
+        programmaticScrollRef.current = false;
+      });
+    };
+    if (step === "restore" && anchorRow && rowBox) {
+      // 行顶在内容中的位置：rect 差 + 当前 scrollTop（含负偏移语义，不在此处夹零）。
+      const elTop =
+        rowBox.top - timeline.getBoundingClientRect().top + timeline.scrollTop;
+      // 原子恢复：定位 + 解锁锁底 + 取消在途动画一次完成。
+      // busy 会话的 ResizeObserver（instant 贴底）看到 isAtBottom=false 不再拽回。
+      const api = scrollerScrollApiRef.current;
+      // 夹零只作用于最终落点：offsetTop 允许为负（锚点行顶在视口上方），截断它会把
+      // 行顶对齐视口顶、整体偏下（高大行偏差明显）。
+      const targetTop = Math.max(0, elTop - anchor.offsetTop);
+      writeProgrammaticScrollTop(targetTop, () => {
+        if (api?.restoreAt) {
+          api.restoreAt(targetTop);
+        } else {
+          // 引擎未挂上（会话切换首帧等）时回退原生定位
+          timeline.scrollTop = targetTop;
+        }
+      });
+      // 恢复后的位置即当前锚点：即使恢复后用户未滚动就切走，
+      // cleanup 落盘的也是这份锚点（而不是误判为底部/空）。
+      currentAnchorRef.current = anchor;
+      // 快照同步成 resolved：恢复后的视口顶部就是这个锚点行，
+      // 下一次窗口变短补偿不必等一次真实滚动才有锚点可用。
+      anchorReadingRef.current = { status: "resolved", anchor };
+      pendingAnchorRestoreRef.current = undefined;
+      return true;
+    }
+    if (step === "widen") {
+      // 消息仍在数据里、只是被窗口裁掉：扩窗找回它，重试 effect 随窗口变化再对齐。
+      anchorWideningsRef.current += 1;
+      expandWindow();
+      return false;
+    }
+    // 已不在数据里或扩窗到上限：贴窗口顶部。窗口是尾部 N 轮，锚点不在窗口里只能
+    // 意味着它比窗口最旧一行更旧：贴顶差几轮、贴底差几十轮，且顶部「显示更早」仍可上溯。
+    // 失效锚点不能写回 currentAnchorRef：进入时已清成 null，写回会在切走时再次落盘，
+    // 下次进入重复扩窗再贴顶。本次仍不跟底（上面已关掉 autoScroll）。
+    pendingAnchorRestoreRef.current = undefined;
+    currentAnchorRef.current = null;
+    writeProgrammaticScrollTop(0, () => {
+      timeline.scrollTop = 0;
+    });
+    return true;
+  }, [cachedEntry, combinedMessages, expandWindow]);
+
+  // 扩窗/数据/窗口变化后重试恢复：锚点行一旦挂载就结束本轮尝试，不要停在窗口顶部。
+  // 窗口轮数与条目上限存在 ref 里、不进 attemptAnchorRestore 的依赖，因此这里显式
+  // 列入 deps；pendingAnchorRestoreRef 命中即清空，重复渲染没有副作用。
+  useEffect(() => {
+    if (!controllerEnabled) return;
+    const pending = pendingAnchorRestoreRef.current;
+    if (!pending || pending.ownerKey !== ownerKey) return;
+    attemptAnchorRestore(pending.ownerKey);
+  }, [
+    attemptAnchorRestore,
+    combinedMessages,
+    controllerEnabled,
+    ownerKey,
+    scrolledWindowItems,
+    scrolledWindowTurns,
+    visibleMessages.length,
+  ]);
+
+  /** 当前视口锚点快照（未成功读取过时为 unresolved，调用方不得凭它猜位置）。 */
+  const peekViewportAnchor = useCallback((): AnchorReading => anchorReadingRef.current, []);
 
   const scrollToBottom = useCallback(() => {
     const requestOwnerKey = ownerKey;
@@ -1138,6 +1305,13 @@ export function useSessionTimelineController(options: {
     loadMoreAnchorRef.current = undefined;
     pendingJumpRef.current = undefined;
     programmaticScrollRef.current = false;
+    if (programmaticScrollClearRef.current != null) {
+      cancelAnimationFrame(programmaticScrollClearRef.current);
+      programmaticScrollClearRef.current = undefined;
+    }
+    // 上一会话未完成的锚点扩窗尝试不得留给新会话：ownerKey 校验只是最后一道防线。
+    pendingAnchorRestoreRef.current = undefined;
+    anchorWideningsRef.current = 0;
     // 会话切换：清掉上一会话的置顶垫片与动画标记
     clearHighlightTimers();
     return clearHighlightTimers;
@@ -1161,6 +1335,7 @@ export function useSessionTimelineController(options: {
         saveScrollAnchor({ sessionId, anchor: currentAnchorRef.current });
       }
       currentAnchorRef.current = null;
+      anchorReadingRef.current = { status: "unresolved" };
     };
   }, [ownerKey, saveScrollAnchor]);
 
@@ -1179,41 +1354,12 @@ export function useSessionTimelineController(options: {
       setAutoScroll(false);
       setShowScrollToBottom(true);
       const requestOwnerKey = ownerKey;
+      anchorWideningsRef.current = 0;
+      // 恢复可能是一轮尝试而不是一帧动作：锚点行在窗口里就直接对齐；被窗口裁掉则先扩窗，
+      // 再由下面的 effect 随窗口/数据变化重试，直到命中或撞上扩窗上限。
+      pendingAnchorRestoreRef.current = { ownerKey: requestOwnerKey, value: anchor };
       const frame = requestAnimationFrame(() => {
-        const timeline = timelineRef.current;
-        if (!timeline || ownerKeyRef.current !== requestOwnerKey) return;
-        const el = timeline.querySelector(
-          `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
-        ) as HTMLElement | null;
-        if (el) {
-          const elTop =
-            el.getBoundingClientRect().top -
-            timeline.getBoundingClientRect().top +
-            timeline.scrollTop;
-          programmaticScrollRef.current = true;
-          // 原子恢复：定位 + 解锁锁底 + 取消在途动画一次完成。
-          // busy 会话的 ResizeObserver（instant 贴底）看到 isAtBottom=false 不再拽回。
-          const api = scrollerScrollApiRef.current;
-          const targetTop = Math.max(0, elTop - anchor.offsetTop);
-          if (api?.restoreAt) {
-            api.restoreAt(targetTop);
-          } else {
-            // 引擎未挂上（会话切换首帧等）时回退原生定位
-            timeline.scrollTop = targetTop;
-          }
-          // 恢复后的位置即当前锚点：即使恢复后用户未滚动就切走，
-          // cleanup 落盘的也是这份锚点（而不是误判为底部/空）。
-          currentAnchorRef.current = anchor;
-          return;
-        }
-        // 锚点行不存在（期间被压缩清理 / 在渲染窗口之外——上滚窗口化裁剪）：
-        // 对齐渲染窗口顶部（顶部有「显示更早」按钮可继续上溯），保持不跟流，
-        // 避免把查看历史的用户拽回底部（2026-08 黑屏治理）。
-        autoScrollRef.current = false;
-        setAutoScroll(false);
-        setShowScrollToBottom(true);
-        programmaticScrollRef.current = true;
-        timeline.scrollTop = 0;
+        attemptAnchorRestore(requestOwnerKey);
       });
       return () => cancelAnimationFrame(frame);
     }
@@ -1353,6 +1499,8 @@ export function useSessionTimelineController(options: {
     loadMoreMessages,
     hasPendingLoadMoreAnchor,
     refreshLoadMoreAnchorBaseline,
+    /** 视口锚点快照：渲染层在列表变短时按行补偿（不订阅，同帧只读）。 */
+    peekViewportAnchor,
     markProgrammaticScroll,
     jumpToMessage,
     scrollToBottom,

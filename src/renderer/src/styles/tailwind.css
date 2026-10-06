@@ -173,7 +173,7 @@
     list-style: none;
   }
   /* remark-gfm 给含任务项的列表加 contains-task-list；不用 :has(> li.task-list-item)，
-     减少页面上的 :has() 规则（见 docs/long-session-input-lag-fix.md）。 */
+     减少页面上的 :has() 规则。 */
   & ul.contains-task-list {
     padding-left: 1.4em;
   }

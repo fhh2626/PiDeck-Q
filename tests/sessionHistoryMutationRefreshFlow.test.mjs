@@ -102,6 +102,8 @@ test("captureHistoryMutationRefresh & refreshHistoryAfterMutation flow: editing 
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   // 1. 初始化包含旧历史的会话缓存
@@ -162,6 +164,8 @@ test("captureHistoryMutationRefresh: returns null when no history is loaded (ski
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   store.set(env.atoms.cacheSessionMessagesAtom, {
@@ -222,6 +226,8 @@ test("concurrency & race: later mutation supersedes earlier in-flight refresh", 
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   store.set(env.atoms.cacheSessionMessagesAtom, {
@@ -281,6 +287,8 @@ test("error handling: page read failure marks stale history invalid without thro
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   store.set(env.atoms.cacheSessionMessagesAtom, {
@@ -709,6 +717,8 @@ test("refreshHistoryAfterMutation survives runtime flushes that arrive while awa
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   // 1. 初始缓存状态
@@ -779,6 +789,8 @@ test("failed subsequent mutation does not block earlier successful mutation from
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   store.set(env.atoms.cacheSessionMessagesAtom, {
@@ -850,6 +862,8 @@ test("stale refresh failure does not clear history from a newer successful mutat
       TIMELINE_SCROLLED_TURN_LIMIT: 20,
       TIMELINE_WINDOW_EXPAND_STEP: 5,
     },
+    // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+    "./timelineScrollAnchor": compileModule("src/renderer/src/hooks/timelineScrollAnchor.ts"),
   });
 
   store.set(env.atoms.cacheSessionMessagesAtom, {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 /**
- * 长会话输入卡顿回归（见 docs/long-session-input-lag-fix.md）。
+ * 长会话输入卡顿回归。
  * 样式表里的 :has() 会让 Chromium 在元素增删、textarea 内容改写时重算整页样式；长会话有数万个元素，
  * 每次按键（含输入法组字、代码高亮插入节点）都要多花 70ms 以上。参数含属性选择器或 :empty 的最严重，
  * 但只用类名的（如 :root:has(.x)）实测也会拖慢受控 textarea。

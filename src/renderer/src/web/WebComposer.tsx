@@ -7,7 +7,7 @@
  * - 无会话时禁用；忙碌期间提交按钮转为停止（useChat 流式或 runtime 权威忙碌）
  * - textarea 非受控：正文只存在 DOM 里，React 只记录“是否有内容”。受控 textarea 每次按键都会
  *   改写 defaultValue（即 textarea 的子文本节点），只要样式表里有任何 :has() 规则，Chromium
- *   就会因此重算整页样式；长会话里每个按键 70ms+（见 docs/long-session-input-lag-fix.md）。
+ *   就会因此重算整页样式；长会话里每个按键 70ms+。
  */
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui-shadcn/button";

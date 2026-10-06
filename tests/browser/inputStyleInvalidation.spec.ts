@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type {} from "./inputStyleInvalidation.fixture";
 
 /**
- * 长会话输入卡顿回归（见 docs/long-session-input-lag-fix.md）：
+ * 长会话输入卡顿回归：
  * :has() 的参数里含属性选择器或 :empty 时，页面任意位置增删元素都会让 Chromium 重算整页样式；
  * 受控 textarea 每次按键改写子文本节点，只要存在任意 :has() 规则也会触发同样的整页重算。
  * 长会话（数万个元素）里两者都会让每次按键耗时 70ms 以上。

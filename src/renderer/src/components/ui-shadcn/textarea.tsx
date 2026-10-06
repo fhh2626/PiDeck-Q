@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
  * defaultValue 属性），也就是改写 textarea 的子文本节点。受控用法因此不向 React 传 value/defaultValue，
  * 初始值和后续同步都由下面的 layout effect 直接写 node.value。
  * 只要样式表里存在任意 :has() 规则，Chromium 就会因此重算整页样式；长会话页面有数万个元素，
- * 每次按键（含输入法组字）70ms 以上（见 docs/long-session-input-lag-fix.md）。直接写 value 属性不改子节点。
+ * 每次按键（含输入法组字）70ms 以上。直接写 value 属性不改子节点。
  *
  * 与 React 受控语义保持一致：
  * - 外部改值（清空、回填、调用方对输入做过滤）后，渲染时把 DOM 同步为新值；

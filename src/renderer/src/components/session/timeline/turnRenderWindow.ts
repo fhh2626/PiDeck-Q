@@ -4,6 +4,7 @@
  * - 上滚查看历史：挂尾部大窗口（TIMELINE_SCROLLED_TURN_LIMIT + 用户逐步展开），
  *   并在窗口前留「显示更早」按钮 —— 历史全量挂载是渲染进程内存峰值/黑屏的来源
  *   （2026-08 治理：此前上滚 = 取消跟随 = 全量放开，大会话可一次挂载近千条消息）。
+ *   条目预算（maxItems）对贴底与上滚同时生效，避免贴底时单轮海量工具把 DOM 撑满。
  * 与消息分页（100 条）/ 主进程轮次缓存（50 轮）正交——只决定「渲染多少」。
  *
  * 轮次定义（2026-12 统一 50 轮）：一条用户消息开启一轮，其后直到下一条用户
@@ -18,7 +19,9 @@ export const TIMELINE_SCROLLED_TURN_LIMIT = 50;
 /** 「显示更早」按钮每次展开的轮数步长。 */
 export const TIMELINE_WINDOW_EXPAND_STEP = 10;
 /** 上滚窗口的展示条目预算：单轮超大（一轮内上百条工具调用）时按轮截断仍会挂载海量 DOM，
- *  按条目数兜底截断（截断点取整轮边界，不切碎 run）。贴底窗口不设此限（折叠态 DOM 可控）。 */
+ *  按条目数兜底截断（截断点取整轮边界，不切碎 run）。贴底同样使用调用方传入的
+ *  maxItems（controller 持有该预算，贴底时为基础值）；只剩最新一轮仍超预算时整轮保留，
+ *  该轮的体积由折叠正文卸载（shouldMountProcessBody）承担。 */
 export const TIMELINE_SCROLLED_MAX_ITEMS = 200;
 
 export function countAgentRunItems(items: ReadonlyArray<{ kind: string }>): number {
@@ -57,7 +60,7 @@ export function sliceLastUserTurns<T extends { kind: string } & { items?: readon
 	if (maxTurns <= 0 || items.length === 0) return items as T[];
 	// 恰好等于（或低于）轮次上限时：未超限，前置内容（压缩摘要卡等）不属于任何轮次，
 	// 不得被裁掉——只有真正超过上限才需要从尾部切开。
-	// 例外：上滚条目预算（maxItems）仍是独立安全阀，超预算时继续走下面的预算裁切，
+	// 例外：条目预算（maxItems）仍是独立安全阀，超预算时继续走下面的预算裁切，
 	// 不能因「未超轮数」的早退而绕过它。
 	if (countUserTurnItems(items) <= maxTurns &&
 		(maxItems === undefined || items.length <= maxItems)) {
@@ -195,7 +198,7 @@ export function shouldWindowTimelineTurns(
 	return windowTurns > 0 && agentRunCount > windowTurns;
 }
 
-/** 按窗口轮数决定展示列表；未裁剪时返回原数组引用。maxItems 为上滚窗口的条目预算。 */
+/** 按窗口轮数决定展示列表；未裁剪时返回原数组引用。maxItems 为条目预算（贴底与上滚共用）。 */
 export function selectTimelineTurnWindow<T extends { kind: string } & { items?: readonly unknown[] }>(
 	items: readonly T[],
 	windowTurns: number,
