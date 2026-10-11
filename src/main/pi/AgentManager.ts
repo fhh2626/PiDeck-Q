@@ -79,7 +79,6 @@ import {
 	clampPercent,
 	trimHistoryMessages,
 	contextTrimStartIndex,
-	turnTrimStartIndex,
 	countRoleMessagesBefore,
 	buildMessageFlushPayload,
 	leadingSummaryCards,
@@ -5922,12 +5921,16 @@ export class AgentManager {
 	 * 渲染层以窗口化全量校准（与 loadMessages 后的窗口协议一致）。
 	 * 头部系统摘要卡片（compaction/branchSummary）不属于 user 轮次，会被 trim 切掉，
 	 * 裁剪前先取出、裁剪后重新 prepend，保证「已压缩 N 次」卡片持续可见。
+	 * 不足 50 轮时必须用 contextTrimStartIndex：压缩保留段常以 assistant/tool 开头
+	 * （首条 user 之前是刚看过的回答）。turnTrimStartIndex 会从首个 user 砍掉这一段，
+	 * 而显示窗口仍从 0 起、也不会把它放进 slideOut，表现为发出下一条
+	 * （例如「请提交」）并等到该轮结束后，上一条信息流消息直接消失。
 	 */
 	private trimRuntimeCache(agentId: string) {
 		const list = this.messages.get(agentId);
 		if (!list || list.length === 0) return;
 		const summaryCards = leadingSummaryCards(list, list.length);
-		const trimmedStart = turnTrimStartIndex(list, AgentManager.MAX_RUNTIME_CACHE_TURNS);
+		const trimmedStart = contextTrimStartIndex(list, AgentManager.MAX_RUNTIME_CACHE_TURNS);
 		const trimmed = list.slice(trimmedStart);
 		if (trimmed.length === list.length) return;
 		// 卡片恒在数组最前（index 0），trim 保留尾部时必然被整体丢弃，重新 prepend 不会重复。

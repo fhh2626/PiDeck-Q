@@ -596,6 +596,29 @@ test("loadMessages stat error in older load does not delete sessionFileVersion o
   }
 });
 
+test("trimRuntimeCache keeps the pre-user answer left by compaction", async () => {
+  const { manager, directory } = await createHarness();
+  try {
+    // 压缩保留段不足 50 轮，且以刚看过的助手回答开头；用户接着说「请提交」。
+    // 旧裁剪从首个 user 砍头，这条回答不进 slideOut，信息流里会直接消失。
+    manager.messages.set("agent-1", [
+      { id: "sum", agentId: "agent-1", role: "system", text: "compacted", timestamp: 1, meta: { type: "compaction", entryId: "sum" } },
+      { id: "pre-a", agentId: "agent-1", role: "assistant", text: "上一轮结论还没提交", timestamp: 1, meta: { entryId: "pre-a" } },
+      { id: "pre-t", agentId: "agent-1", role: "tool", text: "✓ git status", timestamp: 1, meta: { entryId: "pre-t" } },
+      { id: "u", agentId: "agent-1", role: "user", text: "请提交", timestamp: 1, meta: { entryId: "u" } },
+      { id: "a", agentId: "agent-1", role: "assistant", text: "已提交", timestamp: 1, meta: { entryId: "a" } },
+    ]);
+    manager.displayWindowStartByAgent.set("agent-1", 0);
+    manager.trimRuntimeCache("agent-1");
+    assert.deepEqual(
+      manager.messages.get("agent-1").map((message) => message.meta.entryId ?? message.id),
+      ["sum", "pre-a", "pre-t", "u", "a"],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("trimRuntimeCache keeps leading compaction summary cards", async () => {
   const { manager, sessionPath, directory } = await createHarness();
   try {

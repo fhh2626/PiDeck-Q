@@ -109,9 +109,11 @@ export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 50): T[] {
 
 /**
  * 按「模型上下文」语义裁剪：保留最近 maxTurns 个 user 轮次及其之后的全部消息。
- * 与 turnTrimStartIndex（运行缓存显示窗口）的关键区别：不足 maxTurns 轮时返回 0，
+ * 与 turnTrimStartIndex 的关键区别：不足 maxTurns 轮时返回 0，
  * 不因为保留段首个消息不是 user 就丢掉头部——pi 压缩后的保留段常以 assistant/toolResult
  * 开头（首条保留消息之前还可能带 compactionSummary），旧规则会把这些上下文一并误裁。
+ * loadMessages 与 trimRuntimeCache 都必须用本函数。turnTrimStartIndex 只保留给旧测试对照：
+ * 它在不足轮次时从首个 user 砍头，裁掉的回答不会进入 slideOut，信息流里直接消失。
  * 无 user 消息时与旧行为一致，按尾部 50 条兑底。
  */
 export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
