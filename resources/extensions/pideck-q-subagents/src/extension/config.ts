@@ -233,7 +233,7 @@ export function applyModelExclusionsConfig(config: Pick<ExtensionConfig, "modelE
 }
 
 export function resolveAsyncByDefault(config: Pick<ExtensionConfig, "asyncByDefault">): boolean {
-	return config.asyncByDefault !== false;
+	return config.asyncByDefault === true;
 }
 
 export function loadConfig(): ExtensionConfig {

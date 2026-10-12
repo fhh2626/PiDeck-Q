@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
-import { Archive, Check, CircleAlert, CircleDot, Folder, LoaderCircle, MessageCircle } from "lucide-react";
+import { Archive, CircleAlert, CircleDot, Folder, LoaderCircle, MessageCircle } from "lucide-react";
 import { t } from "../../i18n";
 import {
 	AlertDialog,
@@ -600,12 +600,6 @@ export function ProjectAvatar(props: {
 	);
 }
 
-type EntryAction = {
-	active?: boolean;
-	label: string;
-	onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
-	icon: ReactNode;
-};
 export function WorktreeCreateDialog(props: {
 	projectId: string;
 	creating: boolean;

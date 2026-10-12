@@ -106,7 +106,7 @@ test("compact variant is optional, defaults to official classes, and uses PiDeck
 	assert.match(compact, /text-\[length:var\(--text-widget-detail\)\]/); // 详情最小档（默认 9px）
 	assert.match(compact, /text-caption/); // 头部完成计数
 	assert.match(compact, /h-9 gap-2 pl-3 pr-8/); // 头部收紧 + 宿主关闭按钮预留角
-	assert.match(compact, /min-h-8 gap-2/); // 行距收紧
+	assert.match(compact, /min-h-5 gap-1\.5 py-0\.5/); // 单行约 20px；换行内容自然增高
 	// 状态图标随 compact 收两档：官方 size-5（20px）→ size-3.5（14px）
 	assert.match(src, /compact \? "size-3\.5" : "size-5"/);
 
@@ -116,6 +116,63 @@ test("compact variant is optional, defaults to official classes, and uses PiDeck
 	assert.match(src, /aria-expanded=\{currentOpen\}/);
 	// 已完成项无删除线（2026-12 产品取舍，见文件头部适配注释）
 	assert.doesNotMatch(src, /scaleX: status === "completed" \? 1 : 0/);
+});
+
+test("embedded TodoList renders completed items without a second accordion click", () => {
+	const jsx = (type, props) => ({ type, props });
+	const openChanges = [];
+	const { TodoList } = compile(todoListPath, {
+		"react/jsx-runtime": { jsx, jsxs: jsx },
+		react: {
+			useCallback: (fn) => fn,
+			useEffect: (effect) => effect(),
+			useId: () => "todo-test",
+			useLayoutEffect: () => {},
+			useRef: () => ({ current: null }),
+			useState: (initial) => [initial, () => {}],
+		},
+		"motion/react": { motion: { li: "motion.li", span: "motion.span", svg: "motion.svg", circle: "motion.circle", path: "motion.path" }, AnimatePresence: "AnimatePresence", useReducedMotion: () => true },
+		"lucide-react": { ChevronDown: "ChevronDown", ListTodo: "ListTodo" },
+		"@/components/agents/agent-disclosure": { AgentDisclosure: "AgentDisclosure" },
+		"@/components/motion/action-swap-roll": { ActionSwapRollText: "ActionSwapRollText" },
+		"@/i18n": { t: (key) => key },
+		"@/lib/ease": {},
+		"@/lib/utils": { cn: (...values) => values.filter(Boolean).join(" ") },
+	});
+	const tree = TodoList({ items: [{ id: "done", title: "completed task", status: "completed" }], title: "Plan", compact: true, embedded: true, defaultOpen: false, onOpenChange: (open) => openChanges.push(open) });
+	assert.deepEqual(openChanges, [], "completed items must not trigger the internal collapse callback in a Popover");
+	const nodes = [];
+	function visit(node, into) {
+		if (Array.isArray(node)) return node.forEach((child) => visit(child, into));
+		if (!node || typeof node !== "object") return;
+		if ("type" in node) into.push(node);
+		visit(node.props?.children, into);
+	}
+	visit(tree, nodes);
+	assert.equal(nodes.some((node) => node.type === "button"), false, "the Popover must not contain another expandable header");
+	const region = nodes.find((node) => node.type === "AgentDisclosure");
+	assert.equal(region?.props.open, true, "completed items remain visible even if the accordion would be closed");
+	assert.equal(region?.props["aria-labelledby"], undefined, "a headerless region must not reference a missing trigger");
+	assert.equal(region?.props["aria-label"], "Plan", "the embedded Plan region uses its visible chip title, not a generic TODO label");
+	assert.equal(nodes.find((node) => node.type === "section")?.props["aria-label"], "Plan", "the surrounding section must not announce a conflicting generic label");
+	const nonText = TodoList({ items: [], title: jsx("strong", { children: "Plan" }), embedded: true });
+	const fallbackNodes = [];
+	visit(nonText, fallbackNodes);
+	assert.equal(fallbackNodes.find((node) => node.type === "AgentDisclosure")?.props["aria-label"], "app.todoListAriaLabel", "non-text titles fall back to the existing translated label");
+	assert.equal(fallbackNodes.find((node) => node.type === "section")?.props["aria-label"], "app.todoListAriaLabel");
+	const row = nodes.find((node) => node.type === "motion.li");
+	assert.match(row?.props.className ?? "", /min-h-5 gap-1\.5 py-0\.5/, "single-line rows should return to ~20px density");
+	assert.match(readFileSync("src/renderer/src/components/session/SessionWidgetChips.tsx", "utf8"), /<TodoList[\s\S]*?\bembedded\b/, "the widget Popover opts into the headerless presentation");
+
+	const standalone = TodoList({ items: [{ id: "done", title: "completed task", status: "completed" }], defaultOpen: false });
+	const standaloneNodes = [];
+	visit(standalone, standaloneNodes);
+	assert.ok(standaloneNodes.some((node) => node.type === "button"), "standalone BeUI lists retain their accordion trigger");
+	const standaloneRegion = standaloneNodes.find((node) => node.type === "AgentDisclosure");
+	assert.equal(standaloneRegion?.props.open, false);
+	assert.equal(standaloneRegion?.props["aria-labelledby"], "todo-test-trigger", "standalone lists retain their trigger as the region label");
+	assert.equal(standaloneRegion?.props["aria-label"], undefined);
+	assert.equal(standaloneNodes.find((node) => node.type === "section")?.props["aria-label"], "app.todoListAriaLabel");
 });
 
 test("tailwind-merge keeps widget font sizes next to status colors", () => {

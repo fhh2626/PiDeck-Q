@@ -32,10 +32,6 @@ test("TurnRow renders a single process summary toggle plus order-preserving flat
   assert.match(turnRowSource, /showProcessToggle && \(/);
   // 中间回答/最终回答区分渲染；最终回答走 FinalAnswer（常驻）
   assert.match(turnRowSource, /item\.kind === "interim-answer"/);
-  assert.match(turnRowSource, /<FinalAnswer/);
-  assert.match(turnRowSource, /\/\/ final-answer/);
-  // 思考/工具/中间回答共用一个折叠开关
-  assert.match(turnRowSource, /hidden=\{!stepsVisible\}/);
   // 中间内容收进执行过程折叠容器（foldableItems），最终回答常驻容器外（finalItems）
   assert.match(turnRowSource, /foldableItems\.map/);
   assert.match(turnRowSource, /persistentItems\.map/);

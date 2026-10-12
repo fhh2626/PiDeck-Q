@@ -3,6 +3,7 @@ import type { Project, FileTreeNode, GitBranchInfo, WorktreeEntry, SessionSummar
 import type { SessionLoadState } from "../atoms/session-atoms";
 import { sessionRecordToSummary } from "../atoms/session-selectors";
 import { requestProjectInventory } from "../utils/projectInventoryRequests";
+import { ProjectGitRefresh, type GitRefreshIntent } from "../utils/projectGitRefresh";
 
 const SESSION_REFRESH_TIMEOUT_MS = 20_000;
 const SIDEBAR_PROJECT_CHILD_PAGE_SIZE = 5;
@@ -95,7 +96,25 @@ export function useProjectSync(input: UseProjectSyncInput) {
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
   const fileRequestRef = useRef(0);
-  const gitInfoRequestRef = useRef(0);
+  const gitRefreshRef = useRef<ProjectGitRefresh | null>(null);
+  if (!gitRefreshRef.current) {
+    gitRefreshRef.current = new ProjectGitRefresh((projectId) => api.git.branches(projectId), (projectId, next) => {
+      setGitInfo((current) =>
+        current.current === next.current &&
+        current.branches.length === next.branches.length &&
+        current.branches.every((branch, index) => branch === next.branches[index])
+          ? current : next,
+      );
+      setBranchByProject((current) => current[projectId] === next.current
+        ? current : { ...current, [projectId]: next.current });
+    });
+  }
+  // Observe every render, not only the effect: an A→B→A epoch cannot revive old responses.
+  gitRefreshRef.current.select(activeProjectId);
+  useEffect(() => {
+    gitRefreshRef.current?.activate();
+    return () => gitRefreshRef.current?.dispose();
+  }, []);
   // request sequence 只记录启动顺序；只有成功应用的请求才能推进数据 authority。
   const sessionRequestByProjectRef = useRef<Record<string, number>>({});
   const sessionLatestAppliedRequestByProjectRef = useRef<Record<string, number | undefined>>({});
@@ -121,7 +140,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
         api.git.branches(projectId).catch(() => ({ current: null, branches: [] })),
       ]);
       setWorktreesByProject((prev) => ({ ...prev, [projectId]: entries }));
-      setBranchByProject((prev) => ({ ...prev, [projectId]: branchInfo.current }));
+      setProjectBranch(projectId, branchInfo.current);
       const next = await requestProjectInventory(api.projects.list);
       if (next) setProjects(next);
     } catch { setWorktreesByProject((prev) => ({ ...prev, [projectId]: [] })); }
@@ -308,46 +327,22 @@ export function useProjectSync(input: UseProjectSyncInput) {
     if (!silent) showToast(t("app.filesRefreshed", {}), 1800);
   }
 
-  async function refreshGitInfo(projectId = activeProjectId) {
+  /** Polling joins in-flight reads; explicit mutation refreshes request one subsequent read. */
+  async function refreshGitInfo(projectId = activeProjectId, intent: GitRefreshIntent = "explicit") {
     if (!projectId || activeProjectIdRef.current !== projectId) return;
-    const request = gitInfoRequestRef.current + 1;
-    gitInfoRequestRef.current = request;
-    let next: GitBranchInfo;
-    try {
-      next = await api.git.branches(projectId);
-    } catch (error) {
-      // 只允许当前项目的最新失败清空状态；旧项目失败不能抹掉新项目结果。
-      if (
-        gitInfoRequestRef.current === request &&
-        activeProjectIdRef.current === projectId
-      ) {
-        setGitInfo({ current: null, branches: [] });
-        setBranchByProject((current) => ({ ...current, [projectId]: null }));
-      }
-      throw error;
-    }
-    if (
-      gitInfoRequestRef.current !== request ||
-      activeProjectIdRef.current !== projectId
-    ) return;
-    setGitInfo((current) =>
-      current.current === next.current &&
-      current.branches.join("\n") === next.branches.join("\n")
-        ? current
-        : next,
-    );
-    setBranchByProject((current) => ({ ...current, [projectId]: next.current }));
+    gitRefreshRef.current?.select(activeProjectIdRef.current);
+    await gitRefreshRef.current?.refresh(projectId, intent);
   }
 
   function setProjectBranch(projectId: string, branch: string | null) {
-    setBranchByProject((current) => ({ ...current, [projectId]: branch }));
+    setBranchByProject((current) => current[projectId] === branch
+      ? current : { ...current, [projectId]: branch });
   }
 
   useEffect(() => {
     // 项目身份变化时先让旧树退出屏幕，再加载新项目。两个请求共用各自的
     // request generation；即使旧 IPC 无法取消，迟到结果也不能回写当前项目。
     fileRequestRef.current += 1;
-    gitInfoRequestRef.current += 1;
     setProjectFiles({ projectId: activeProjectId, files: EMPTY_FILE_TREE });
     setGitInfo({ current: null, branches: [] });
     if (!activeProjectId) return;

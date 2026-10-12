@@ -27,7 +27,7 @@ Manage authentication credentials:
 - **Language** — Interface language.
 - **Theme** — Light, dark, or system theme.
 - **Font Size** — Adjust the editor and terminal font size.
-- **Auto-save** — Configure session auto-save intervals.
+- Session persistence is owned by the selected pi runtime; PiDeck does not implement a separate Agent autosave mechanism.
 
 ## Skills
 
@@ -51,7 +51,7 @@ Skills that apply only to a specific project. Accessible from the project contex
 
 ## Extensions
 
-Extensions add new functionality to PiDeck itself (not the agent). Manage them in the Extensions tab:
+These extensions extend the pi Agent runtime; PiDeck manages their configuration and injection. Manage them in the Extensions tab:
 
 - **Installed Extensions** — View and manage installed extensions.
 - **Extension Store** — Browse and install community extensions.

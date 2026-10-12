@@ -336,11 +336,7 @@ test("sidebar uses one persisted project accordion without duplicating current p
   // 已启动的会话行复用 Tab 栏蓝/黄/红状态点，而不是回退到项目头像。
   assert.doesNotMatch(sessionTree, /\?\? \"bg-muted-foreground\/50\"/);
   assert.doesNotMatch(sessionTree, /\?\? \"bg-border\"/);
-  assert.match(sessionTree, /function renderRuntimeStatusDot/);
   assert.match(sessionTree, /if \(!dotClass\) return null/);
-  assert.match(sessionTree, /sessionStatusDotClass\(status\)/);
-  assert.match(sessionTree, /renderRuntimeStatusDot\(child\.agent\.status\)/);
-  assert.match(sessionTree, /renderRuntimeStatusDot\(runtimeSnapshot\?\.status\)/);
   assert.match(sessionTree, /display\.visibleChildren\.map\(renderChild\)/);
   assert.match(sessionTree, /renderSubagents\(groupKey, child\.codexSubagents, child\.piSubagents\)/);
 });

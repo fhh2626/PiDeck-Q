@@ -403,3 +403,33 @@ test("systemIpc piExecInstall uses platformPaths.home as child cwd", async () =>
 	);
 	assert.notEqual(installExecCalls[0].options.cwd, process.cwd());
 });
+
+test("systemIpc skillsRename delegates to SkillManager and validates input", async () => {
+	const { router, invoke } = createRouterHarness();
+	const renames = [];
+	const { deps } = createDeps({
+		skillManager: {
+			rename: async (skillPath, newName) => {
+				renames.push({ skillPath, newName });
+				return { path: "C:/skills/new/SKILL.md", name: newName };
+			},
+		},
+	});
+	registerSystemIpc(router, deps);
+
+	const result = await invoke(ipcChannels.skillsRename, "C:/skills/old/SKILL.md", "new");
+	assert.deepEqual(renames, [{ skillPath: "C:/skills/old/SKILL.md", newName: "new" }]);
+	assert.equal(result.path, "C:/skills/new/SKILL.md");
+	assert.equal(result.name, "new");
+
+	// 渲染层入参不可信：非字符串路径 / 空名称必须在边界拦截，且不得触达 SkillManager
+	await assert.rejects(
+		() => invoke(ipcChannels.skillsRename, 1, "new"),
+		(error) => error.message === "mainSkill.notFound",
+	);
+	await assert.rejects(
+		() => invoke(ipcChannels.skillsRename, "C:/skills/old/SKILL.md", ""),
+		(error) => error.message === "mainSkill.nameRequired",
+	);
+	assert.equal(renames.length, 1, "invalid input must not reach SkillManager.rename");
+});

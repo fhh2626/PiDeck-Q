@@ -33,21 +33,15 @@ The built-in Git panel provides a visual interface for common Git operations:
 
 Edit files without leaving PiDeck:
 
-- Up to 5 concurrent file tabs
-- Monaco Editor (same engine as VS Code)
-- Modal and drawer display modes
+- Multi-tab editing
+- CodeMirror-based editor
 - Diff comparison with side-by-side view
 - Markdown preview with live rendering
 - Syntax highlighting for 50+ languages
 
-## Built-in Browser
+## Web Access
 
-A full-featured browser embedded in the right drawer:
-
-- Multi-tab browsing
-- Fullscreen mode
-- Device presets (PC / Mobile / Tablet)
-- URL navigation bar
+Enable the separate LAN Web frontend in settings when needed. It shares session/runtime services with the desktop and requires authentication. It is not an embedded browser panel. External links open through the system browser.
 
 ## Terminal Dock
 
@@ -81,8 +75,4 @@ Quick access to common actions:
 
 ## Cross-Platform
 
-PiDeck runs on all major platforms:
-
-- **Windows** — NSIS installer or portable zip
-- **macOS** — DMG for Apple Silicon and Intel
-- **Linux** — AppImage and deb packages
+The native build/staging pipeline is Windows-first and requires WebView2 Runtime. Check actual GitHub release artifacts; macOS/Linux source paths are not proof of tested installers. See [Development](/en/guide/development).

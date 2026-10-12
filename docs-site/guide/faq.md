@@ -4,11 +4,11 @@
 
 ## PiDeck 是什么？
 
-**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Electron + TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
+**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Qt6/QtWebView + Node Sidecar + React/TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
 
 ## PiDeck 和 pi 是什么关系？
 
-PiDeck **不是**原版 Pi Agent 或 Pi_Agent_Rust 的分支。它是一个轻量 Electron 外壳，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
+PiDeck **不是**原版 Pi Agent 或 Pi_Agent_Rust 的分支。它使用原生 Qt 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
 
 ## 支持哪些 AI 编码助手？
 
@@ -16,7 +16,7 @@ PiDeck 原生支持 **原版 Pi Agent** 和 **Pi_Agent_Rust**。通过会话导�
 
 ## 支持哪些平台？
 
-PiDeck 提供 **Windows**、**macOS**、**Linux** 的预构建安装包，通过 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 发布。源码开发环境要求 Node.js 20+ 和 npm。
+当前原生 SDK 与 staging 流程以 Windows 为主，运行需要 WebView2 Runtime。下载以 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 的实际文件为准；macOS/Linux 源码分支不代表已有经过验证的安装包。
 
 ## 如何下载安装 PiDeck？
 
@@ -24,8 +24,8 @@ PiDeck 提供 **Windows**、**macOS**、**Linux** 的预构建安装包，通过
 
 ## 从源码运行需要什么环境？
 
-- Node.js 20+
-- npm
+- Node.js 24.19.0、npm 11+
+- xmake、C++20/MSVC 工具链与 Qt 6.11.2（见 [开发与打包](/guide/development)）
 - 系统 `PATH` 中可访问 `pi` 命令
 - 已完成 pi 的 Provider、登录或 API Key 配置
 
@@ -45,7 +45,7 @@ pi --mode rpc
 - **可视化配置管理**：图形化编辑 Models、Auth、Settings
 - **插件与 Skill 管理**：全局和项目级 Skills 与 Extension 管理
 - **上下文感知输入**：`@` 文件引用、`!` Shell 执行、`/` 斜线命令
-- **内置浏览器预览**：右侧抽屉浏览网页，支持多标签和视口预设
+- **局域网 Web 前端**：可选启用的独立 Web 服务，不是内置浏览器面板
 
 ## PiDeck 是免费的吗？
 
@@ -55,7 +55,7 @@ pi --mode rpc
 
 ```bash
 git clone https://github.com/fhh2626/PiDeck-Q.git
-cd pi-desktop
+cd PiDeck-Q
 npm install
 npm run make-icon
 npm run dev
@@ -67,8 +67,8 @@ npm run dev
 |---|---|
 | `npm run dev` | 启动开发模式 |
 | `npm run typecheck` | 运行 TypeScript 类型检查 |
-| `npm run build` | 构建 Renderer + Main 产物 |
-| `npm run dist` | 为当前平台打包 |
+| `npm run build` | 类型检查并构建 Renderer + Sidecar |
+| `npm run pack` | 原生 Windows staging 与产物校验 |
 
 ## PiDeck 会收集我的数据吗？
 

@@ -25,11 +25,9 @@ export const DEFAULT_PROMPTS = {
 - Use \`todo\` for multi-step work: add items before starting and update them as work progresses.
 - Use IDs from the current list rather than guessing; clear completed tracking when the task is finished.`,
 	delegation: `## Delegation
-- Use direct tools for simple lookups, a few file reads, or small edits. Otherwise, delegate multi-step exploration/research, work with large intermediate results best kept out of the main context, or independent parallel tasks. Known paths do not rule out delegation.
-- In this environment, native Pi subagents must run foreground with async:false. Never omit async for native Pi children and never pass async:true. External CLI/job agents follow their runner contract and must not be converted to foreground; if background execution is unavailable in this standalone environment, treat that runner as unavailable.
-- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false. Inside workflowScript, every native child launch (runs.run, runs.all, and runs.lanes stage) must explicitly declare async:false; never omit async (resume-only stages do not require async).
-- In standalone Pi, use inline workflowScript only; workflowScriptPath and named workflow resources are not supported. External CLI/job runners are unavailable in standalone Pi.
-- Do not duplicate delegated work. Verify actual changes and checks before reporting success; summarize results for the user.`,
+- Use direct tools for small, focused tasks; delegate substantial exploration or independent work. Do not duplicate delegated work.
+- For multi-step or parallel delegation, use exactly one foreground workflowScript call (async:false), with all children inside it. Follow the subagent tool contract.
+- Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
 - Do not fix unrelated failures or weaken tests just to make them pass; report such failures.
@@ -78,18 +76,16 @@ export const DEFAULT_CONFIG: Config = {
 export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
 
 ## Execution
-- Choose one input: {agent,task?}, workflowScript, workflowScriptPath, or {workflow,args}. Never combine them. Omit action for execution; use action only for management/control.
-- SINGLE: {agent:"worker",task:"...",async:false}. Request options apply to that child. Native Pi subagents must run foreground with async:false; never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground; in standalone Pi, external runners are unavailable.
-- For multi-step or parallel work, make exactly one top-level subagent call with async:false; launch all children inside that workflow. Top-level workflowScript must also set async:false. Background native children are not available in this environment.
-- SCRIPT: workflowScript is a JavaScript statement body. Use an explicit return for useful output. It has no filesystem, shell, arbitrary Pi tools, or host globals outside authorized runs.host calls.
-- Use runs.run("key", { agent: "worker", task: "...", async: false }) for one child.
-- For parallel children: await runs.all([{ key: "implement", agent: "worker", task: "...", async: false }, { key: "review", agent: "reviewer", task: "...", async: false }]). runs.all returns an ordered array, not a key map.
-- Await results before reading them. Every stored runs.run promise must eventually be observed with await, Promise.race, or Promise.all.
-- Use top-level await, plain helper functions returning promises, or explicit Promise chains. Nested async function, arrow, and method helpers are rejected.
-- For parallel sequential chains: await runs.lanes([{ key: "lane", stages: [{ key: "first", agent: "worker", task: "...", async: false }, { key: "second", resume: "previous", task: "..." }] }]). First stages run together; later stages sequence per lane. Failures are lane-local. Only structuredOutput.verdict === "blocked" blocks an otherwise successful stage; reviewer prose is not parsed.
-- FILE: workflowScriptPath resolves against the request cwd and is read by the host before sandbox execution. (In standalone Pi, use inline workflowScript instead).
-- RESOURCE: {workflow:"resource-name",args:{...}} uses an extension-owned script and authority for permission/policy integration. args must be bounded plain data. (In standalone Pi, use inline workflowScript instead).
-- Use action:"validate" with workflowScript or workflowScriptPath to check syntax and statically decidable structure without launching children.
+- Before execution, use {action:"list",capabilities:true}; choose an executable, non-disabled native agent from the catalog.
+- In standalone Pi, use either {agent,task,async:false} or {workflowScript,async:false}; never combine them. Omit action for execution. External runners, workflowScriptPath, and named workflows are unavailable.
+- For multi-step or parallel work, use one top-level workflowScript call. The workflow itself needs no agent; every new child inside it must explicitly declare agent:"catalog-name" and async:false.
+- Agent names must be string literals from the catalog. Child configs must be object literals; batch/stage lists must be array literals. No spreads, computed keys, or duplicate keys.
+- One child: return await runs.run("a",{agent:"catalog-name",task:"...",async:false}).
+- Parallel: return await runs.all([{key:"a",agent:"catalog-name",task:"...",async:false},{key:"b",agent:"catalog-name",task:"...",async:false}]). Results are an ordered array, not a key map.
+- Use top-level await and return useful results. Observe every launched promise; no nested async helpers.
+- Scripts have no filesystem, shell, or arbitrary Pi tools; host access requires authorized runs.host calls.
+- Only runs.lanes resume-only stages may omit agent/async. Read the workflows guide for lanes and advanced usage.
+- Use {action:"validate",workflowScript:"..."} to check without launching children.
 
 ## Isolation and runners
 - For managed Git isolation, set worktree:true on the workflow or child; parallel children receive separate worktrees. The source checkout must be clean.

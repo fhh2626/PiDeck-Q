@@ -311,6 +311,133 @@ test("SessionHistoryReader full-rebuilds instead of appending after a growing at
   }
 });
 
+// 回归：压缩会话的活动分支仍包含压缩前的归档消息，但 pi 的 get_messages 不再返回它们。
+// readActiveEntryIdentity.entryIds 必须与 get_messages 对齐（从最新压缩的 firstKeptEntryId 起）；
+// activeMessageEntries 仍保留全量活动消息（分页与按尾对齐的序列映射依赖它）。
+test("readActiveEntryIdentity aligns entryIds with the compaction while keeping all active messages", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-identity-compact-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, type, extra) => JSON.stringify({ id, parentId, type, ...extra });
+  try {
+    await writeFile(sessionPath, [
+      line("session", undefined, "session", {}),
+      line("u1", "session", "message", { message: { role: "user", content: [{ type: "text", text: "q1" }] } }),
+      line("a1", "u1", "message", { message: { role: "assistant", content: [{ type: "text", text: "r1" }] } }),
+      line("c1", "a1", "compaction", { summary: "s", firstKeptEntryId: "u2", tokensBefore: 1 }),
+      line("u2", "c1", "message", { message: { role: "user", content: [{ type: "text", text: "q2" }] } }),
+      line("a2", "u2", "message", { message: { role: "assistant", content: [{ type: "text", text: "r2" }] } }),
+    ].join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const identity = await reader.readActiveEntryIdentity(sessionPath);
+
+    assert.deepEqual(Array.from(identity.entryIds), ["u2", "a2"]);
+    assert.equal(identity.leafId, "a2");
+    assert.deepEqual(
+      Array.from(identity.activeMessageEntries, (entry) => entry.id),
+      ["u1", "a1", "u2", "a2"],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("readRecentMessages reads the active parent chain instead of the physical file tail (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-branch-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    const line = (id, parentId, role, text) => JSON.stringify({
+      id,
+      parentId,
+      type: "message",
+      message: { role, content: [{ type: "text", text }] },
+    });
+    // 活动分支：e1 → e2；随后 rewind 回 e2 开出 e3 → e4。
+    // 被丢弃的分支（e2.5）仍物理排在文件中部，而收尾的旧分支消息 append 在文件最后。
+    await writeFile(sessionPath, [
+      line("e1", null, "user", "kept question"),
+      line("e2", "e1", "assistant", "kept answer"),
+      line("d1", "e2", "user", "discarded question"),
+      line("d2", "d1", "assistant", "discarded answer"),
+      line("e3", "e2", "user", "active question"),
+      line("d3", "d2", "assistant", "discarded tail that must never show"),
+      line("e4", "e3", "assistant", "active answer"),
+    ].join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const response = await reader.readRecentMessages(sessionPath, 10);
+    const texts = Array.from(response.data.messages, (message) => textFromContent(message.content));
+    // 活动父链从当前 leaf（e4）回溯：e1 → e2 → e3 → e4；物理尾部的 d3 不得出现
+    assert.equal(texts.join("|"), "kept question|kept answer|active question|active answer");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("readRecentMessages trims the active branch to the requested turn count (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-trim-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    const line = (id, parentId, role, text) => JSON.stringify({
+      id,
+      parentId,
+      type: "message",
+      message: { role, content: [{ type: "text", text }] },
+    });
+    const lines = [];
+    let parent = null;
+    for (let turn = 1; turn <= 4; turn += 1) {
+      lines.push(line(`u${turn}`, parent, "user", `q${turn}`));
+      parent = `u${turn}`;
+      lines.push(line(`a${turn}`, parent, "assistant", `a${turn}`));
+      parent = `a${turn}`;
+    }
+    await writeFile(sessionPath, lines.join("\n") + "\n", "utf8");
+    // 真实 trimMessages 语义：保留最近 N 轮 user 及之后的全部消息
+    const reader = new SessionHistoryReader({
+      toHostPath: (path) => path,
+      convertMessages: (_agentId, raw, entryIds = []) => raw.map((message, index) => ({
+        id: entryIds[index] ?? `m${index}`,
+        role: message.role,
+        text: textFromContent(message.content),
+      })),
+      trimMessages: (messages, maxTurns) => {
+        const userIndices = [];
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index].role === "user") {
+            userIndices.unshift(index);
+            if (userIndices.length >= maxTurns) break;
+          }
+        }
+        return userIndices.length < maxTurns ? messages : messages.slice(userIndices[0]);
+      },
+      translate: () => "",
+    });
+
+    const response = await reader.readRecentMessages(sessionPath, 2);
+    const texts = Array.from(response.data.messages, (message) => textFromContent(message.content));
+    assert.equal(texts.join("|"), "q3|a3|q4|a4");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("readRecentMessages fails instead of returning a physical-order fallback for an unreadable session (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-recent-empty-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    // 全部行损坏：既非「空历史」也非「可解析的 active chain」，必须失败而不是静默回退
+    await writeFile(sessionPath, "{ broken\n{ broken too\n", "utf8");
+    const reader = createReader((path) => path);
+    await assert.rejects(
+      () => reader.readRecentMessages(sessionPath, 5),
+      /no readable entries/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("compaction page paging stays in index space when conversion skips messages", async () => {
   // 回归（打开大会话起始页误显根因）：hasCompaction 分页曾用 readSessionDisplayMessages
   // 的全量数组按索引坐标 slice——转换跳过空消息（thinking-only/空 user）后数组比索引短，
@@ -373,6 +500,94 @@ test("compaction page paging stays in index space when conversion skips messages
     const p2 = await reader.readSessionDisplayMessagePage(sessionPath, "viewer", page.nextBefore, 100);
     assert.ok(p2.messages.length > 0);
     assert.equal(p2.nextBefore, null); // 剩余 50 条一页取完，到顶
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("turn pages request 50 turns while keeping the raw message cap at 100 (2026-12)", async () => {
+  // 50 轮统一：轮次页上限必须容纳初始的 50 轮请求，
+  // 同时原始消息分页上限仍为 100（两个维度不能互相泄漏）。
+  assert.equal(SessionHistoryReader.maxTurnPageSize(), 50);
+  assert.equal(SessionHistoryReader.DEFAULT_TURN_PAGE_SIZE, 3);
+
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-turn-50-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, role, text) => JSON.stringify({
+    id,
+    parentId,
+    type: "message",
+    message: { role, content: [{ type: "text", text }] },
+  });
+  try {
+    const rows = [JSON.stringify({ id: "session", type: "session" })];
+    let parent = "session";
+    for (let i = 1; i <= 53; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      rows.push(line(uid, parent, "user", `q${i}`));
+      rows.push(line(aid, uid, "assistant", `a${i}`));
+      parent = aid;
+    }
+    await writeFile(sessionPath, rows.join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    // 请求 50 轮：超出旧上限 10，必须真拿到最近 50 轮（首条 = q4）
+    const page = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 50);
+    assert.equal(page.total, 106);
+    assert.equal(page.messages.length, 100);
+    assert.equal(page.messages[0].text, "q4");
+    assert.equal(page.messages[page.messages.length - 1].text, "a53");
+    assert.equal(page.nextBefore, 6);
+
+    // 缺省仍为 3 轮（翻页步长不变）
+    const older = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", page.nextBefore);
+    assert.equal(older.messages.length, 6);
+    assert.equal(older.messages[0].text, "q1");
+    assert.equal(older.nextBefore, null);
+
+    // 超上限请求被夹紧，不会变成无界读取
+    const clamped = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 500);
+    assert.equal(clamped.messages.length, 100);
+
+    // 原始消息分页上限仍为 100
+    const rawPage = await reader.readSessionDisplayMessagePage(sessionPath, "viewer", undefined, 500);
+    assert.equal(rawPage.messages.length, 100);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("turn pages keep whole-turn byte budget while honoring the 50-turn request (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-history-turn-budget-"));
+  const sessionPath = join(directory, "session.jsonl");
+  const line = (id, parentId, role, text) => JSON.stringify({
+    id,
+    parentId,
+    type: "message",
+    message: { role, content: [{ type: "text", text }] },
+  });
+  try {
+    // 60 轮，每轮内容和很大（每轮 ≈ 120KB）→ 字节预算 256KB 下只能返回少量完整轮次
+    const filler = "x".repeat(120 * 1024);
+    const rows = [JSON.stringify({ id: "session", type: "session" })];
+    let parent = "session";
+    for (let i = 1; i <= 60; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      rows.push(line(uid, parent, "user", `q${i}-${filler}`));
+      rows.push(line(aid, uid, "assistant", `a${i}-${filler}`));
+      parent = aid;
+    }
+    await writeFile(sessionPath, rows.join("\n") + "\n", "utf8");
+    const reader = createReader((path) => path);
+
+    const page = await reader.readSessionDisplayTurnPage(sessionPath, "viewer", undefined, 50);
+    // 预算优先：少于 50 轮是合法结果，但边界必须仍是完整轮次（首条是 user）
+    assert.ok(page.messages.length > 0 && page.messages.length < 100);
+    assert.equal(page.messages[0].role, "user");
+    assert.equal(page.messages[page.messages.length - 1].text.startsWith("a60"), true);
+    assert.ok(page.nextBefore > 0, "预算截断后仍要有续页游标");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

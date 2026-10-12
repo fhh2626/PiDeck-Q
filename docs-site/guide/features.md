@@ -1,6 +1,6 @@
 # 功能介绍
 
-PiDeck 的核心目标是把原版 Pi Agent、Pi_Agent_Rust 及其他本地编码 Agent 会话收拢到一个稳定的桌面工作台里。
+PiDeck-Q 的核心目标是把 Pi Agent 与 Pi_Agent_Rust 会话收拢到一个稳定的原生 Qt 桌面工作台里；Codex/Claude 仅通过历史导入提供浏览与恢复入口。
 
 ## 多项目工作区
 
@@ -61,6 +61,10 @@ Windows 下编辑器检测会依次尝试 PATH、常见安装目录、Windows �
 ## 日志面板
 
 设置中的日志页现在支持按日志级别（Debug / Info / Warn / Error）和时间范围筛选，方便排查运行时问题。
+
+## Web 与平台边界
+
+可选开启局域网 Web 前端，与桌面共用会话/runtime 服务。它不是内置浏览器面板；外链由系统浏览器打开。当前原生 staging 以 Windows 为主，Windows 需要 WebView2 Runtime，其它平台安装产物以实际发布与验证为准。
 
 ## 终端 Dock
 

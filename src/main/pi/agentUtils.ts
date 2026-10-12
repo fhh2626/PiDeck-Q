@@ -88,7 +88,7 @@ export function resolveNotificationSessionId(
  * 保留对应轮次及之后的全部消息，避免大会话加载时一次性解析过多内容。
  * 返回保留段的起始下标（无 user 消息时与 slice(-50) 语义一致）。
  */
-export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 12): number {
+export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
 	if (rawMessages.length === 0) return 0;
 	const userIndices: number[] = [];
 	for (let i = rawMessages.length - 1; i >= 0; i--) {
@@ -102,9 +102,34 @@ export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 12): number {
 	return userIndices[0];
 }
 
-export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 12): T[] {
+export function trimHistoryMessages<T>(rawMessages: T[], maxTurns = 50): T[] {
 	if (rawMessages.length === 0) return rawMessages;
-	return rawMessages.slice(turnTrimStartIndex(rawMessages, maxTurns));
+	return rawMessages.slice(contextTrimStartIndex(rawMessages, maxTurns));
+}
+
+/**
+ * 按「模型上下文」语义裁剪：保留最近 maxTurns 个 user 轮次及其之后的全部消息。
+ * 与 turnTrimStartIndex 的关键区别：不足 maxTurns 轮时返回 0，
+ * 不因为保留段首个消息不是 user 就丢掉头部——pi 压缩后的保留段常以 assistant/toolResult
+ * 开头（首条保留消息之前还可能带 compactionSummary），旧规则会把这些上下文一并误裁。
+ * loadMessages 与 trimRuntimeCache 都必须用本函数。turnTrimStartIndex 只保留给旧测试对照：
+ * 它在不足轮次时从首个 user 砍头，裁掉的回答不会进入 slideOut，信息流里直接消失。
+ * 无 user 消息时与旧行为一致，按尾部 50 条兑底。
+ */
+export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
+	if (rawMessages.length === 0) return 0;
+	const userIndices: number[] = [];
+	for (let i = rawMessages.length - 1; i >= 0; i--) {
+		const msg = rawMessages[i] as { role?: unknown } | undefined;
+		if (msg?.role === "user") {
+			userIndices.unshift(i);
+			if (userIndices.length >= maxTurns) break;
+		}
+	}
+	if (userIndices.length === 0) return Math.max(0, rawMessages.length - 50);
+	// 不足 maxTurns 轮：整个上下文都在预算内，保留全部（含首个 user 之前的保留消息与摘要卡片）
+	if (userIndices.length < maxTurns) return 0;
+	return userIndices[0];
 }
 
 /**
@@ -167,6 +192,9 @@ export function buildMessageFlushPayload(
 	windowStartFilePos?: number,
 	preserveHistory = false,
 	stickyHistory = false,
+	/** 全量载荷是否显式携带 preserveHistory（含 false）：false 表示「不保留」与「未声明」语义不同，
+	 * 编辑/删除靠显式 false 清前缀；旧调用不传时保持旧协议（只写 true，缺省省略）。 */
+	preserveHistoryExplicit = false,
 ): {
 	agentId: string;
 	messages: ChatMessage[];
@@ -204,6 +232,7 @@ export function buildMessageFlushPayload(
 	// 不 prepend 会被窗口 slice 切掉（增量分支不 prepend：卡片不在增量区，渲染层已有）。
 	// windowStartFilePos：窗口首条消息在会话文件消息下标空间中的位置，
 	// 供渲染层在窗口消息缺 entryId 时作为首次补历史的数值游标（主进程缓存/文件路径都能消费）。
+	// 卡头摘要卡片：全量载荷升为窗口化全量时，窗口前的压缩/分支卡片一并 prepend
 	const summaryCards = leadingSummaryCards(all, boundedWindow);
 	return {
 		agentId,
@@ -211,7 +240,8 @@ export function buildMessageFlushPayload(
 		totalLength: all.length,
 		...(boundedWindow > 0 ? { windowStart: boundedWindow } : {}),
 		...(fileVersion ? { fileVersion } : {}),
-		...(preserveHistory ? { preserveHistory: true } : {}),
+		// 显式携带（含 false）优先；未开启显式时沿用旧协议（只写 true）
+		...(preserveHistoryExplicit || preserveHistory ? { preserveHistory } : {}),
 		...(stickyHistory ? { stickyHistory: true } : {}),
 		...(typeof windowStartFilePos === "number" && windowStartFilePos >= 0
 			? { windowStartFilePos }
@@ -323,4 +353,87 @@ export function isDefaultAgentTitle(
 		title === `${project.name} 历史会话` ||
 		title === "历史会话"
 	);
+}
+
+export type EntryRoleRef = { id: string; role?: string };
+
+/**
+ * 运行期缓存消息 → 会话文件活动分支条目的映射结果。
+ * - user：文件条目唯一（只按 user 序号对位，不比正文）。
+ * - assistant：同一轮可能有多个候选（含 abort 产生的空 assistant），需要调用方再筛。
+ */
+export type MessageEntryMapping =
+	| { role: "user"; entryId: string }
+	| { role: "assistant"; candidateIds: string[] };
+
+/**
+ * 把缓存中的一条 user/assistant 消息映射到会话文件活动分支条目（按「轮」锚定）。
+ *
+ * 为什么不能沿用「按 user+assistant 总序号从尾部对位」：用户中止（abort）时 pi 会往文件多写
+ * 一条空的 assistant（stopReason: "aborted"），而 PiDeck 的封印闸门丢弃了对应事件，
+ * 于是文件比缓存多一条 assistant，整体序号偏移一位，删除/编辑会命中错条目。
+ * 按「轮」锚定后，user 只数 user 即不受影响；assistant 则返回同一轮的候选列表，由调用方用正文精确择一。
+ *
+ * 不比 user 正文：缓存里的用户文本可能被 host instruction、模式或模板改写，与文件不一致。
+ */
+export function mapCachedMessageToEntryCandidates(
+	cached: ReadonlyArray<{ id: string; role: string }>,
+	entries: ReadonlyArray<EntryRoleRef>,
+	messageId: string,
+): MessageEntryMapping | undefined {
+	const isUser = (role: string | undefined): boolean => role === "user";
+	const isAssistant = (role: string | undefined): boolean => role === "assistant";
+
+	const cachedSequence = cached.filter((message) => isUser(message.role) || isAssistant(message.role));
+	const targetIndex = cachedSequence.findIndex((message) => message.id === messageId);
+	if (targetIndex < 0) return undefined;
+
+	const fileSequence: EntryRoleRef[] = [];
+	const fileUserIndexes: number[] = [];
+	for (const entry of entries) {
+		if (!isUser(entry.role) && !isAssistant(entry.role)) continue;
+		if (isUser(entry.role)) fileUserIndexes.push(fileSequence.length);
+		fileSequence.push(entry);
+	}
+
+	// 缓存里位于 index 之后的 user 条数：用来把「从尾部数第几轮」对齐到文件。
+	const countUsersAfter = (index: number): number =>
+		cachedSequence.slice(index + 1).filter((message) => isUser(message.role)).length;
+
+	/** 文件里第 pos 个 user 条目在 fileSequence 中的下标。 */
+	const fileUserPosition = (pos: number): number | undefined => fileUserIndexes[pos];
+
+	const target = cachedSequence[targetIndex];
+	if (isUser(target.role)) {
+		const pos = fileUserIndexes.length - 1 - countUsersAfter(targetIndex);
+		const sequenceIndex = fileUserPosition(pos);
+		if (sequenceIndex === undefined) return undefined;
+		return { role: "user", entryId: fileSequence[sequenceIndex].id };
+	}
+
+	// assistant：先找到它本轮所属的 user 锚点，再取锚点之后、下一条 user 之前的全部 assistant。
+	let anchorIndex = -1;
+	for (let index = targetIndex - 1; index >= 0; index -= 1) {
+		if (isUser(cachedSequence[index].role)) {
+			anchorIndex = index;
+			break;
+		}
+	}
+	if (anchorIndex < 0) return undefined;
+
+	const anchorPos = fileUserIndexes.length - 1 - countUsersAfter(anchorIndex);
+	const anchorSequenceIndex = fileUserPosition(anchorPos);
+	if (anchorSequenceIndex === undefined) return undefined;
+
+	const candidateIds: string[] = [];
+	for (let index = anchorSequenceIndex + 1; index < fileSequence.length; index += 1) {
+		if (isUser(fileSequence[index].role)) break;
+		if (isAssistant(fileSequence[index].role)) candidateIds.push(fileSequence[index].id);
+	}
+	return { role: "assistant", candidateIds };
+}
+
+/** 文本比对前的规范化：折叠空白并去首尾空白（缓存与文件的分块拼接分隔符可能不同）。 */
+export function normalizeMessageTextForMatch(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
 }

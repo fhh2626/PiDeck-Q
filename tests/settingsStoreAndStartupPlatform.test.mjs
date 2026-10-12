@@ -7,6 +7,8 @@ import { createRequire } from "node:module";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const require = createRequire(import.meta.url);
 
 function transpile(filePath) {
@@ -39,6 +41,8 @@ const startupPreferences = loadModule("src/main/settings/startupPreferences.ts")
 
 function loadSettingsStore() {
 	return loadModule("src/main/settings/SettingsStore.ts", (id) => {
+		if (id.includes("atomicWriteFile")) return loadTsCommonJs("src/main/utils/atomicWriteFile.ts");
+		if (id.includes("webServiceAccess")) return loadTsCommonJs("src/shared/webServiceAccess.ts");
 		if (id.includes("builtInExtensions")) return builtInExtensions;
 		if (id.includes("gitCommitMessagePrompt")) return gitCommitMessagePrompt;
 		if (id.includes("shared/types")) return externalEditorTypes;
@@ -173,5 +177,83 @@ test("SettingsStore: a lone legacy disableUpdateCheck is cleaned from disk on lo
 		assert.equal(onDisk.installationType, "portable");
 	} finally {
 		await rm(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("SettingsStore: a failed write rejects and keeps in-memory settings unchanged", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-write-failure-"));
+	// 构造写入必失败：把 settings.json 的父级做成普通文件，mkdir/写 tmp 都必然失败
+	const blockedParent = join(tempDir, "blocked");
+	await writeFile(blockedParent, "not a directory", "utf8");
+	const desktopSettingsFile = join(blockedParent, "settings.json");
+	try {
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		const baseline = store.get().closeToTray;
+		await assert.rejects(() => store.update({ closeToTray: !baseline }));
+		assert.equal(
+			store.get().closeToTray,
+			baseline,
+			"failed write must not mutate in-memory settings",
+		);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	}
+});
+
+test("SettingsStore: concurrent updates are serialized and none are lost", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-concurrent-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		const baselineTray = store.get().closeToTray;
+		const baselineTitleBar = store.get().useNativeTitleBar;
+		await Promise.all([
+			store.update({ closeToTray: !baselineTray }),
+			store.update({ useNativeTitleBar: !baselineTitleBar }),
+		]);
+		assert.equal(store.get().closeToTray, !baselineTray);
+		assert.equal(store.get().useNativeTitleBar, !baselineTitleBar);
+
+		const reloaded = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await reloaded.load();
+		assert.equal(reloaded.get().closeToTray, !baselineTray, "disk must keep the first patch");
+		assert.equal(reloaded.get().useNativeTitleBar, !baselineTitleBar, "disk must keep the second patch");
+	} finally {
+		// load() 内部有 fire-and-forget 的 void save()，与清理存在竞态；Windows 上需重试删除
+		await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	}
+});
+test("SettingsStore: generates and persists a Web service access token", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-web-token-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		await writeFile(desktopSettingsFile, JSON.stringify({ language: "en-US" }), "utf8");
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await store.load();
+		const token = store.get().webServiceAccessToken;
+		assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+		assert.equal(JSON.parse(await readFile(desktopSettingsFile, "utf8")).webServiceAccessToken, token);
+
+		// 稳定：重新加载不会重新生成
+		const reloaded = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await reloaded.load();
+		assert.equal(reloaded.get().webServiceAccessToken, token);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	}
+});
+
+test("SettingsStore: rejects a blank access token patch instead of downgrading auth", async () => {
+	const tempDir = await mkdtemp(join(tmpdir(), "pideck-settings-web-token-patch-"));
+	const desktopSettingsFile = join(tempDir, "settings.json");
+	try {
+		const store = new SettingsStore({ desktopSettingsFile, getSystemLocale: () => "en-US" });
+		await store.load();
+		const token = store.get().webServiceAccessToken;
+		assert.ok(token);
+		await store.update({ webServiceAccessToken: "" });
+		assert.equal(store.get().webServiceAccessToken, token);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	}
 });

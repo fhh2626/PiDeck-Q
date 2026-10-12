@@ -116,6 +116,14 @@ export function AppShell(props: AppShellProps) {
     children,
   } = props;
 
+  // :root 上的拖拽区变量需要随自定义标题栏切换（toaster 等浮层不在 .wechat-shell 内）。
+  // 用根元素标记类代替 :root:has(.wechat-shell.custom-titlebar-enabled)，见 foundation.css。
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("pideck-custom-titlebar", !useNativeTitleBar);
+    return () => root.classList.remove("pideck-custom-titlebar");
+  }, [useNativeTitleBar]);
+
   const listPanelRef = useRef<PanelImperativeHandle | null>(null);
   const drawerPanelRef = useRef<PanelImperativeHandle | null>(null);
   const groupRef = useRef<HTMLDivElement | null>(null);

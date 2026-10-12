@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toggleTaskCheckbox as toggleTaskLine } from "../components/scratchPad/scratchPadLists";
-import type { DraftMeta, ScratchPadData } from "../../../shared/types";
+import type { DraftMeta } from "../../../shared/types";
 
 const AUTOSAVE_DELAY = 1500;
 

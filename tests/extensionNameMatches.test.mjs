@@ -1,55 +1,18 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const require = createRequire(import.meta.url);
-
-function transpile(filePath) {
-	return ts.transpileModule(readFileSync(filePath, "utf8"), {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	}).outputText;
-}
-
-function loadWslPaths() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/main/wsl/WslPaths.ts"), sandbox, { filename: "WslPaths.ts" });
-	return sandbox.exports;
-}
-
-/** 复用 ExtensionManager 的 WSL mock 加载方式，只导出冲突匹配相关符号。 */
-function loadExtensionConflictHelpers() {
-	const wslPaths = loadWslPaths();
-	const sandbox = {
-		exports: {},
-		require: (id) => {
-			if (id === "../wsl/WslPaths") return wslPaths;
-			// ExtensionManager 依赖内置扩展清单；名字匹配测试用空清单即可
-			if (id === "./builtInExtensions") {
-				return { BUILT_IN_EXTENSIONS: [], isBuiltInExtensionName: () => false };
-			}
-			// 删除走系统回收站统一入口；本测试不触达删除路径，提供 noop stub 即可。
-			if (id === "../fs/trash") return { trashPath: async () => {} };
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			if (id === "../../shared/piCompatibility") return require("../src/shared/piCompatibility.ts");
-			return require(id);
-		},
-	};
-	vm.runInNewContext(transpile("src/main/extensions/ExtensionManager.ts"), sandbox, {
-		filename: "ExtensionManager.ts",
-	});
-	return {
-		extensionNameMatches: sandbox.exports.extensionNameMatches,
-		BUILT_IN_CONFLICT_KEYWORDS: sandbox.exports.BUILT_IN_CONFLICT_KEYWORDS,
-	};
-}
-
-const { extensionNameMatches, BUILT_IN_CONFLICT_KEYWORDS } = loadExtensionConflictHelpers();
+/** 只需冲突匹配相关符号；内置清单用空数组即可（本文件只测关键字表）。 */
+const loaded = loadTsCommonJs("src/main/extensions/ExtensionManager.ts", {
+	stubs: {
+		"./builtInExtensions": { BUILT_IN_EXTENSIONS: [], isBuiltInExtensionName: () => false },
+		// 删除走系统回收站统一入口；本测试不触达删除路径，提供 noop stub 即可。
+		"../fs/trash": { trashPath: async () => {} },
+		"../logging/sharedLogger": { getAppLogger: () => null },
+	},
+});
+const extensionNameMatches = loaded.extensionNameMatches;
+const BUILT_IN_CONFLICT_KEYWORDS = loaded.BUILT_IN_CONFLICT_KEYWORDS;
 
 test("only todo / plan / ask / webfetch / subagents built-ins participate in conflict detection", () => {
 	assert.equal(BUILT_IN_CONFLICT_KEYWORDS.length, 5);

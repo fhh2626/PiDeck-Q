@@ -122,6 +122,7 @@ let previewSettings: AppSettings = {
 	webServiceEnabled: false,
 	webServiceHost: "0.0.0.0",
 	webServicePort: 8765,
+	webServiceAccessToken: "",
 	rpcTimeout: 600_000,
 	workspaceContentOpenMode: "split",
 	contentMaxWidth: 1800,
@@ -424,6 +425,11 @@ export function createPreviewApi(): PiDesktopApi {
 			}),
 			stopRuntime: async (target) => ({ ok: true, value: target }),
 			abortRuntime: async (target) => ({
+				ok: true,
+				value: { target, value: undefined },
+			}),
+			// preview 没有真实 runtime：补发是桌面端的自愈手段，这里按成功空操作。
+			flushMessages: async (target) => ({
 				ok: true,
 				value: { target, value: undefined },
 			}),

@@ -359,8 +359,10 @@ export function extractUserPrompts(
 	const prompts: string[] = [];
 	// 消息按时间正序，从后往前取保证最新在前
 	for (let i = messages.length - 1; i >= 0 && prompts.length < limit; i--) {
+		// 工具/助手正文可能很大；历史导航只需要 user 输入，先按角色过滤。
+		if (messages[i].role !== "user") continue;
 		const text = messages[i].text.trim();
-		if (messages[i].role !== "user" || !text || text.startsWith("!")) continue;
+		if (!text || text.startsWith("!")) continue;
 		prompts.push(text);
 	}
 	return prompts;

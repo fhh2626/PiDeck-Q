@@ -52,6 +52,7 @@ export type PiEvent = {
 /** 事件流翻译器：维护消息级游标（text/reasoning/tool 块是否已开启），逐事件产出帧。 */
 export class PiEventToUiMessageStream {
 	private textBlockId: string | null = null;
+	private hasTextDelta = false;
 	private reasoningBlockId: string | null = null;
 	private hasReasoningDelta = false;
 	private currentMessageId: string | null = null;
@@ -134,16 +135,25 @@ export class PiEventToUiMessageStream {
 		// 文本：AI SDK 需要 start/delta/end 三件套；首次 delta 前自动补 text-start。
 		if (eventType === "text_start" || eventType === "text_delta" || eventType === "text_end") {
 			const delta = String(ev.delta ?? ev.text ?? "");
+			const finalContent = eventType === "text_end" ? String(ev.content ?? "") : "";
 			if (!this.textBlockId) {
 				this.textBlockId = `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+				this.hasTextDelta = false;
 				frames.push({ type: "text-start", id: this.textBlockId });
 			}
 			if (eventType === "text_delta" && delta) {
+				this.hasTextDelta = true;
 				frames.push({ type: "text-delta", id: this.textBlockId, delta });
 			}
 			if (eventType === "text_end" && this.textBlockId) {
+				// text_end.content 是权威全文；只有本块完全没发 delta 时才回填，
+				// 避免普通流式块把已追加的 delta 再重复一遍。
+				if (!this.hasTextDelta && finalContent) {
+					frames.push({ type: "text-delta", id: this.textBlockId, delta: finalContent });
+				}
 				frames.push({ type: "text-end", id: this.textBlockId });
 				this.textBlockId = null;
+				this.hasTextDelta = false;
 			}
 			return frames;
 		}
@@ -261,6 +271,7 @@ export class PiEventToUiMessageStream {
 		if (this.textBlockId) {
 			frames.push({ type: "text-end", id: this.textBlockId });
 			this.textBlockId = null;
+			this.hasTextDelta = false;
 		}
 		if (this.reasoningBlockId) {
 			frames.push({ type: "reasoning-end", id: this.reasoningBlockId });

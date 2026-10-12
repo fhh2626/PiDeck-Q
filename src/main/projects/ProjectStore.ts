@@ -1,12 +1,14 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, normalize, resolve } from "node:path";
-import { homedir } from "node:os";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { preserveCorruptProjectCatalog, writeProjectSnapshot } from "./projectCatalogPersistence";
+import { parseProjectCatalog } from "./projectRecordValidation";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
+import { getAppLogger } from "../logging/sharedLogger";
 import { randomUUID } from "node:crypto";
+import { basename, join, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { Project } from "../../shared/types";
 import {
-  normalizeSelectedWslProjectPath,
   parseWslUncPath,
-  type WslEnvironment,
 } from "../wsl/WslPaths";
 
 const CHAT_PROJECT_ID = "builtin-chat";
@@ -22,9 +24,12 @@ export interface ProjectStoreDeps {
 export class ProjectStore {
   private readonly filePath: string;
   private readonly chatPathFile: string;
+  private writeQueue: Promise<void> = Promise.resolve();
   // 聊天工作区目录：默认在 userData 下，用户可在侧栏聊天项目设置中改为任意目录并持久化。
   private chatProjectPath: string;
   private projects: Project[] = [];
+  /** readProjects 丢弃过非法记录时为 true，load() 据此把清洗后的列表写回。 */
+  private repairedOnLoad = false;
 
   constructor(
     deps?: ProjectStoreDeps | string,
@@ -43,21 +48,50 @@ export class ProjectStore {
     this.chatProjectPath = options?.defaultChatProjectPath ?? join(defaultBase, "chat-workspace");
   }
 
+  /** Explicit reloads retain their strict failure contract. */
   async load() {
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      this.projects = JSON.parse(raw) as Project[];
-    } catch {
-      this.projects = [];
-    }
+    return this.loadCatalog(false);
+  }
+
+  /** Load migration dependencies even when an external chat directory is offline. */
+  async loadForStartup() {
+    return this.loadCatalog(true);
+  }
+
+  /** Read project identities before initializing or repairing their workspace metadata. */
+  private async loadCatalog(bestEffortInitialization: boolean) {
+    // Reading/preserving the catalog is mandatory: swallowing that error would
+    // migrate sessions against an empty project map and risk overwriting data.
+    this.projects = await this.readProjects();
+
     // 先读取用户自定义的聊天目录（若存在），再据此修正内置聊天项目路径。
     await this.loadChatProjectPath();
     const chatChanged = this.ensureChatProject();
     const orderChanged = this.ensureSortOrder();
-    const changed = chatChanged || orderChanged;
-    await this.ensureDirectory(this.chatProjectPath);
-    if (changed) await this.save();
+    const changed = chatChanged || orderChanged || this.repairedOnLoad;
+    this.repairedOnLoad = false;
+    await this.completeLoadStep("chat-directory", () => this.ensureDirectory(this.chatProjectPath), bestEffortInitialization);
+    if (changed) await this.completeLoadStep("catalog-save", () => this.save(), bestEffortInitialization);
     return this.list();
+  }
+
+  /** Only non-critical startup initialization may fail after records are loaded. */
+  private async completeLoadStep(
+    operation: "chat-directory" | "catalog-save",
+    task: () => Promise<void>,
+    bestEffort: boolean,
+  ): Promise<void> {
+    try {
+      await task();
+    } catch (error) {
+      if (!bestEffort) throw error;
+      // Keep the user's configured path, rather than silently moving sessions
+      // to a fallback workspace. A subsequent load or path change can recover.
+      void getAppLogger()?.warn("projects", "Startup initialization failed; keeping loaded projects", {
+        operation,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   list() {
@@ -127,8 +161,8 @@ export class ProjectStore {
   }
 
   private async saveChatProjectPath(path: string) {
-    await mkdir(dirname(this.chatPathFile), { recursive: true });
-    await writeFile(this.chatPathFile, JSON.stringify({ path }, null, 2), "utf8");
+    // 原子写：writeFileAtomic 会自己创建父目录。
+    await writeFileAtomic(this.chatPathFile, JSON.stringify({ path }, null, 2));
   }
 
   private async loadChatProjectPath() {
@@ -341,9 +375,48 @@ export class ProjectStore {
     return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
   }
 
-  private async save() {
-    // 项目列表是桌面端自己的轻量状态，不写入 pi session，避免影响 pi 原生会话格式。
-    await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(this.projects, null, 2), "utf8");
+  private async readProjects(): Promise<Project[]> {
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (error) {
+      if (this.isMissingFile(error)) return [];
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // 整体不是合法 JSON：先保留损坏原件，再允许后续保存重建。
+      await preserveCorruptProjectCatalog(this.filePath);
+      return [];
+    }
+    const catalog = parseProjectCatalog(parsed);
+    if (!catalog) {
+      // 不是数组同样视为整体不可用（旧实现只检查“是不是数组”，
+      // 但随后用 as 强转，[null] 这类内容会一直带到访问 project.kind 时崩溃）。
+      await preserveCorruptProjectCatalog(this.filePath);
+      return [];
+    }
+    if (catalog.dropped > 0) {
+      // 部分记录非法：保留原件备查，丢弃坏记录，其余项目照常加载；load() 会把清洗结果写回。
+      await preserveCorruptProjectCatalog(this.filePath);
+      this.repairedOnLoad = true;
+    }
+    return catalog.projects;
   }
+
+  private isMissingFile(error: unknown): boolean {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  }
+
+  private async save() {
+    const snapshot = JSON.stringify(this.projects, null, 2);
+    const operation = this.writeQueue
+      .catch(() => undefined)
+      .then(() => writeProjectSnapshot(this.filePath, snapshot));
+    this.writeQueue = operation.then(() => undefined, () => undefined);
+    await operation;
+  }
+
 }

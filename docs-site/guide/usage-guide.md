@@ -1,3 +1,8 @@
+<script setup>
+import { useData } from 'vitepress'
+const { theme } = useData()
+</script>
+
 # 使用指南
 
 > 如果你没用过 Pi Agent、Pi_Agent_Rust 或类似的 AI 编码助手，这份指南会从零开始带你走完从安装到完成第一个任务的完整流程。
@@ -47,15 +52,7 @@ pi --version
 
 [https://github.com/fhh2626/PiDeck-Q/releases](https://github.com/fhh2626/PiDeck-Q/releases)
 
-找到最新版本，根据你的操作系统选择：
-
-| 操作系统 | 推荐下载 |
-|---------|---------|
-| **Windows** | 安装版：`PiDeck-Setup-x.x.x.exe` / 便携版：`PiDeck-x.x.x.zip` |
-| **macOS** | `PiDeck-x.x.x-arm64.dmg`（Apple Silicon）或 `PiDeck-x.x.x-x64.dmg`（Intel）|
-| **Linux** | `PiDeck-x.x.x.AppImage` 或 `PiDeck-x.x.x.deb` |
-
-下载后直接运行安装程序。
+当前版本：**{{ theme.version }}**。根据实际发布文件选择，不假定所有平台都有安装包。当前 staging 流程以 Windows 为主，安装器编译暂时关闭；Windows 运行需要 WebView2 Runtime。macOS/Linux 源码分支不等于已验证安装包，源码运行要求见 [快速开始](/guide/getting-started)。
 
 ### 首次启动
 
@@ -267,7 +264,7 @@ Agent 关闭后，它会在左侧栏消失，重新变为可点击的历史会�
 
 ### 历史会话内容空白
 
-这是旧版本的一个 bug，v0.6.2 已修复。如果仍有问题，请重启应用。
+请检查所选会话文件和运行时是否匹配，查看日志并记录复现步骤；不能用上游历史版本号断言当前问题已经修复。
 
 ### Agent 运行中卡住了
 
@@ -275,9 +272,7 @@ Agent 关闭后，它会在左侧栏消失，重新变为可点击的历史会�
 
 ### 如何更新 PiDeck？
 
-1. 设置 → 检查更新
-2. 如果有新版本，点击下载
-3. 下载完成后运行安装包更新
+从 GitHub Releases 查看实际发布文件并按该产物说明更新。当前没有内置应用更新系统。
 
 ---
 

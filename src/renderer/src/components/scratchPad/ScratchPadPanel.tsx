@@ -274,7 +274,7 @@ export const ScratchPadPanel = memo(function ScratchPadPanel(props: ScratchPadPa
 												return (
 													<li
 														{...liProps}
-														className={classes}
+														className={classes ? `scratch-pad-task-item ${classes}` : "scratch-pad-task-item"}
 														/* 勾选只响应方框本身：只有点击 checkbox 才切换，点文字不触发 */
 														onClick={(event) => {
 															const target = event.target as HTMLElement;

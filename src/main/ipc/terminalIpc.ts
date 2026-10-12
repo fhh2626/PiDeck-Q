@@ -1,5 +1,5 @@
 import { ipcChannels } from "../../shared/ipc";
-import type { SessionCommandError, SessionRuntimeTarget, TerminalTarget } from "../../shared/types";
+import type { SessionCommandError, TerminalTarget } from "../../shared/types";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
@@ -70,4 +70,6 @@ export function registerTerminalIpc(
 		terminalManager.close(tabId);
 		void appLogger.info("terminal", "Terminal closed", { tabId });
 	});
+	// Shell 候选列表：无入参、只读，不依赖 runtime 目标；供终端 Shell 下拉菜单使用。
+	router.handle(ipcChannels.terminalShells, () => terminalManager.listShells());
 }

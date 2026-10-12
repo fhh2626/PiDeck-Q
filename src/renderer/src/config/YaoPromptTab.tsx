@@ -1,13 +1,12 @@
 import { Button } from "../components/ui-shadcn/button";
 import { showNotice } from "../utils/notice";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, Download, Search } from "lucide-react";
-import type { YaoPromptListResult, YaoPromptItem, YaoPromptDetailResult, PiPromptTemplateSummary, PiPromptTemplateListResult } from "../../../shared/types";
+import { ArrowLeft, Check, Download, Search } from "lucide-react";
+import type { YaoPromptListResult, YaoPromptItem, YaoPromptDetailResult, PiPromptTemplateListResult } from "../../../shared/types";
 import { t } from "../i18n";
 import { desktopApi } from "../desktopApi";
 import { Input } from "../components/ui-shadcn/input";
 import { Pagination } from "../components/ui-shadcn/pagination";
-const PAGE_SIZE = 20;
 
 async function getInstalledPromptNames(): Promise<Set<string>> {
 	try {

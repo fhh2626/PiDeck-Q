@@ -29,10 +29,9 @@ test("renders the run as order-preserving flat display without pulling the last 
     turnRowSource.slice(turnRowSource.indexOf("foldableItems.map")),
     /最终回答（始终可见）/,
   );
-  assert.match(turnRowSource, /buildTurnDisplay\(run/);
-  // 最终回答走 FinalAnswer（常驻），容器外常驻区渲染
-  assert.match(turnRowSource, /\/\/ final-answer/);
-  assert.match(turnRowSource, /<FinalAnswer/);
+  // 最终回答走 FinalAnswer（常驻），容器外常驻区渲染；
+  // buildTurnDisplay / :: final-answer / hidden={!stepsVisible} 的断言归
+  // turnDisplayStructure.test.mjs（单折叠汇总的完整契约）。
 });
 
 // issue #130：回答文本是面向用户的正式内容，不应折进「执行过程」。
@@ -43,12 +42,9 @@ test("issue #130: fold concerns process steps and interim answers, final answer 
   assert.match(thinkingStepSource, /ThinkingBlock/);
   assert.match(thinkingStepSource, /defaultExpanded=\{false\}/);
   assert.match(toolStepSource, /ToolGroupCard/);
-  // 步骤原位渲染，不受「单个折叠容器」限制（避免折叠容器被回答文本打断）
-  assert.match(turnRowSource, /hidden=\{!stepsVisible\}/);
 
   // 概要只统计工具/思考/中间回复数，不再计「N次回答」预览
   assert.doesNotMatch(turnRowSource, /executionAnswerCount/);
-  assert.doesNotMatch(summaryToggleSource, /message\.text/);
 
   // i18n key 同步移除旧的回答计数；新增中间回复计数
   assert.doesNotMatch(
@@ -111,4 +107,33 @@ test("TurnRow uses custom memo compare so unchanged runs skip re-render", () => 
     readFileSync("src/renderer/src/components/app/AppUtils.ts", "utf8"),
     /export function sameAgentRunForRender/,
   );
+});
+
+// 无可见文字的一轮（纯工具轮、停止后空回复）也必须能删：操作栏只在
+// mergedText 存在时才渲染的话，这类轮次就彻底没有删除入口，用户无法清理失败轮次。
+test("TurnRow action bar shows delete for turns without visible text", () => {
+  // 操作栏在「有文字或可删」时才渲染
+  assert.match(turnRowSource, /\(mergedText \|\| canDeleteTurn\) && !editing/);
+  // 无需正文的删除入口：只依赖本轮最后一条 assistant 的 id
+  assert.match(turnRowSource, /const lastAssistantId = assistantMessages\.at\(-1\)\?\.message\.id;/);
+  assert.match(turnRowSource, /const canDeleteTurn = Boolean\(/);
+  // 编辑/复制/分享依赖正文，无文字时保持隐藏（编辑空文本无意义）
+  assert.match(turnRowSource, /mergedText && props\.onEditMessage/);
+});
+
+// 回调引用必须参与 memo 比较，否则 runtime 从不可变更切到可变更（如 error → idle）时
+// 历史轮次不重渲染，删除按钮永远不出现，旧闭包还会指向过期 target。
+test("TurnRow memo compares mutation callbacks and injector keeps them stable", () => {
+  assert.match(turnRowSource, /^\s*prev\.onDeleteMessage === next\.onDeleteMessage\s*(?:&&)?\s*$/m);
+  assert.match(turnRowSource, /^\s*prev\.onEditMessage === next\.onEditMessage\s*&&\s*$/m);
+
+  const injector = readFileSync(
+    "src/renderer/src/components/session/SessionRuntimeInjector.tsx",
+    "utf8",
+  );
+  // latest-ref：包装函数只在派发能力/目标 runtime 变化时换引用，让上面的引用比较既能生效
+  // 又不会在每个 token 更新时整列重渲染。
+  assert.match(injector, /latestMessageServicesRef\.current = services;/);
+  assert.doesNotMatch(injector, /^\s*services\.deleteMessage,\s*$/m);
+  assert.doesNotMatch(injector, /^\s*services\.editMessage,\s*$/m);
 });

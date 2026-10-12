@@ -91,7 +91,10 @@ export class WorktreeService {
 
 	/**
 	 * 删除指定 worktree。
-	 * 先 git worktree remove --force，再清理目录，最后删除对应的分支。
+	 * 先 git worktree remove --force，再清理目录，最后尝试删除对应的分支。
+	 *
+	 * 注意：`--force` 会丢弃 worktree 里未提交的修改与未跟踪文件；
+	 * 未合并的分支会被保留（用 -d 删除，git 会拒绝删除未合并分支）。
 	 *
 	 * 安全约束（防止误删主工作区/非 worktree 目录）：
 	 * 1. 目标必须出现在 list() 中（list 已排除主工作区）；
@@ -119,22 +122,29 @@ export class WorktreeService {
 			await execFileAsync("git", ["worktree", "remove", "--force", worktreePath], { cwd: projectPath });
 		} catch {
 			// git 拒绝移除：目录仍存在 → 拒绝物理删除（安全优先，删不掉也比删错强）；
-			// 目录已不存在 → 残留记录清理场景，无需回收站（无内容可删），继续视为成功。
+			// 目录已不存在 → 残留记录清理场景，继续清理本目标的归属分支。
 			if (existsSync(worktreePath)) return false;
 		}
 
-		// git 已确认移除后，把物理目录移入系统回收站（可恢复删除）。
-		// 目录已被外部删除时无需回收站，直接返回成功（残留记录清理路径）。
-		if (!existsSync(worktreePath)) return true;
-		// 回收站不可用时 trashPath 抛错：删除失败比永久丢失安全（历史教训：误删 40G）。
-		if (!this.trashPath) throw new Error("Trash unavailable");
-		await this.trashPath(worktreePath, { source: "git:worktree-remove" });
+		// 真实 git worktree remove 成功后目录通常已经消失。分支清理由此不能再被
+		// “目录不存在”提前返回跳过；目录仍在时才尝试回收站。
+		if (existsSync(worktreePath)) {
+			if (!this.trashPath) throw new Error("Trash unavailable");
+			await this.trashPath(worktreePath, { source: "git:worktree-remove" });
+		}
 
 		// 删除 PiDeck 创建的分支：旧版本使用 pideck/{slug}，新版本使用与目录名一致的 {slug}。
 		// 对外部 worktree 尽量保守，只在“分支名等于目录名”时认为是 PiDeck 创建的同名工作区。
 		const worktreeDirName = basename(worktreePath);
 		if (entry.branch?.startsWith("pideck/") || entry.branch === worktreeDirName) {
-			await execFileAsync("git", ["branch", "-D", entry.branch], { cwd: projectPath }).catch(() => undefined);
+			try {
+				// 必须用 -d（而非 -D）：-D 会把未合并的提交变成只能靠 reflog 找回的游离对象。
+				await execFileAsync("git", ["branch", "-d", entry.branch], { cwd: projectPath });
+			} catch (error) {
+				// -d 拒绝删除未合并分支：保留分支，避免提交变成不可达。
+				// worktree 目录已删除成功，所以不能返回 false——那会让界面以为整个操作失败。
+				console.warn("[WorktreeService] kept unmerged worktree branch", entry.branch, error);
+			}
 		}
 
 		return true;

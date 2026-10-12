@@ -10,7 +10,8 @@ import test from "node:test";
  */
 
 const webSidebar = readFileSync("src/renderer/src/web/WebSidebar.tsx", "utf8");
-const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
+	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
 const webCss = readFileSync("src/renderer/src/web/web.css", "utf8");
 
 // ── Desktop：Web Sidebar ────────────────────────────────────────────────────
@@ -189,10 +190,10 @@ test("mobile web media query keeps 36px touch targets", () => {
     /\.message-list\s*\{[^}]*padding-left:\s*16px;[^}]*padding-right:\s*16px/,
     "mobile message list should widen left/right to 16px",
   );
-  // 思考卡 trigger（桌面 24px 可点）移动端抬到 44px 真实点击区。
+  // 普通小按钮仍保持 44px；思考标题有独立 44px 绝对定位命中区，不能被通用规则撑高布局。
   assert.match(
     mobile,
-    /\.message-list button\.min-h-6\s*\{[^}]*min-height:\s*44px/,
-    "mobile thinking trigger should expand to 44px touch target",
+    /\.message-list button\.min-h-6:not\(\[data-web-compact-hit-area\]\)\s*\{[^}]*min-height:\s*44px/,
+    "generic mobile small buttons keep 44px targets while the compact thinking control opts into its measured layout",
   );
 });

@@ -14,12 +14,20 @@ import type { AgentRuntimeState, ChatMessage } from "../../../shared/types";
 import {
 	cacheSessionMessagesAtom,
 	clearSessionHistoryAtom,
+	countUserTurns,
+	MIN_DISPLAY_TURNS,
+	filterOptimisticallyDeletedMessages,
+	optimisticDeletedIdsBySessionIdAtomFamily,
 	prependSessionHistoryPageAtom,
 	prependSessionMessagePageAtom,
+	releaseSessionHistoryAtom,
 	replaceSessionHistoryAfterMutationAtom,
+	replaceHistoryPrefixAfterVersionDriftAtom,
 	sessionMessagesCacheAtom,
 	sessionMessageCacheBySessionIdAtomFamily,
 	sessionMessageLoadStateBySessionIdAtomFamily,
+	sessionMessageResyncRequestAtom,
+	sessionRuntimeBySessionIdAtomFamily,
 	saveSessionScrollAnchorAtom,
 	sessionScrollAnchorByIdAtom,
 	setSessionMessageLoadStateAtom,
@@ -28,17 +36,23 @@ import {
 } from "../atoms";
 import { t } from "../i18n";
 import { showNotice } from "../utils/notice";
+import { toSessionRuntimeTarget } from "../utils/sessionCommands";
 import type { MessageScrollerScrollApi } from "../components/agents/message-scroller";
 import {
   TIMELINE_SCROLLED_MAX_ITEMS,
   TIMELINE_SCROLLED_TURN_LIMIT,
   TIMELINE_WINDOW_EXPAND_STEP,
 } from "../components/session/timeline/turnRenderWindow";
+import {
+  anchorRowId,
+  anchorRowStillInData,
+  resolveAnchorRestore,
+  resolveAnchorRow,
+} from "./timelineScrollAnchor";
 
 /** 滚动接近顶部自动加载历史的阈值（px，2026-11 轮次模型）：
  *  贴顶（≤8px）才触发翻页——「滑到底才翻」，避免在顶部附近任何滚动都连翻历史页。
- *  同时用作「顶部不补偿」阈值：视口顶部 prepend/展开新内容时保持原位可见，
- *  补偿会把新内容推出视口（点击「加载更多/显示更早」无反馈根因，2026-02 修复）。 */
+ *  仅用于「是否触发翻页」，不得再当作「顶部不补偿」阈值：贴顶也必须补偿。 */
 export const HISTORY_AUTO_LOAD_THRESHOLD = 8;
 /** 翻页冷却（ms）：加载完成后立即再滚到顶不连翻，需停顿后重新触发（防惯性滚动连翻多页）。 */
 const HISTORY_AUTO_LOAD_COOLDOWN_MS = 300;
@@ -62,8 +76,138 @@ const NO_LOAD_STATE_ATOM = atom(undefined);
 // 避免流式消息频繁触发 ResizeObserver/MutationObserver 把用户弹回底部造成"颤抖"。
 const BOTTOM_THRESHOLD = 16;
 const LEGACY_OWNER_KEY = "legacy";
+/**
+ * 保底显示轮数差额（2026-12 用户要求：运行中会话至少显示 50 轮）。
+ * 返回需要补的轮数，0 表示不补；取值范围 0..MIN_DISPLAY_TURNS
+ * （两边都为 0 轮时最大，等于服务端单页上限 50，调用方无需再截断）。
+ * - busy（正在加载历史页/首屏或上滚补页）时不补，避免并发补页互相顶掉。
+ * - 没有更早历史（hasMore=false）时不补，补也是空页。
+ * - 已满足下限时返回 0。
+ * 调用方按实际状态缓存尝试键（同 revision + 前缀长度只试一次），避免请求循环。
+ */
+export function resolveMinimumHistoryTopUp(input: {
+	historyTurns: number;
+	windowTurns: number;
+	hasMore: boolean;
+	busy: boolean;
+}): number {
+	if (input.busy || !input.hasMore) return 0;
+	const missingTurns = MIN_DISPLAY_TURNS - (input.historyTurns + input.windowTurns);
+	return missingTurns > 0 ? missingTurns : 0;
+}
+
+/**
+ * 历史页初始读取轮数（2026-12 统一 50 轮）：首屏显示最近 50 轮对话，
+ * 与主进程 DISPLAY_WINDOW_TURNS / 渲染挂载窗口同一口径。
+ * 轮次起点对齐 user 消息；工具调用不额外占轮数。
+ */
+export const INITIAL_HISTORY_TURN_PAGE_SIZE = 50;
 /** runtime 窗口会话「加载更多对话」的单页轮数（与主进程 DEFAULT_TURN_PAGE_SIZE 对齐） */
 export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
+/**
+ * 版本漂移重建的安全页数上限：压缩后从当前接缝重读到旧前缀深度；
+ * 超出说明文件被持续改写，放弃本次重建（保留旧前缀，下次滚动再试）。
+ */
+export const HISTORY_REBUILD_MAX_PAGES = 20;
+
+/**
+ * 增量续页遇到文件版本漂移（压缩改写）时，从当前 runtime 接缝重新读取一批连续页，
+ * 恢复到早先已加载的深度。
+ *
+ * 为什么不能沿用旧做法（把旧前缀整段丢掉、以单页作新起点）：
+ * 用户已加载的中间段会直接消失，表现为「更早几条 + 最新几条、中间没了」。
+ * 重建期间旧前缀保持不动；任何一页失败/版本再变/会话卸载就整体放弃，不落地部分结果。
+ */
+export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
+  sessionId: string;
+  sequence: number;
+  store: ReturnType<typeof useStore>;
+  targetTurnCount: number;
+  anchorFilePos?: number;
+  /** 陈旧判定（默认按 per-session 加载序号）；测试可注入以驱动失败路径。 */
+  isCurrent?: () => boolean;
+}): Promise<boolean> {
+  const { sessionId, sequence, store, targetTurnCount, anchorFilePos } = deps;
+  const isCurrent = deps.isCurrent ?? (() => latestLoadBySession.get(sessionId) === sequence);
+  const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
+  if (!entryAtStart || entryAtStart.source !== "runtime") return false;
+  const anchorMessage = entryAtStart.messages.find((m) => typeof m.meta?.entryId === "string");
+  const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
+    ? anchorMessage.meta.entryId
+    : undefined;
+  // 接缝游标优先级（不可交换）：显式 anchorFilePos > 窗口 entryId > 缓存里的 windowStartFilePos。
+  // 大历史窗口（skipEntries）消息可能整体缺 entryId：续页时调用方不传 anchorFilePos，
+  // 若这里只用窗口 entryId 会直接放弃重建，表现为「压缩后旧前缀永久陈旧」。
+  // 注意不能用 windowStartFilePos 压过 entryId——那会把普通会话也改成数值游标。
+  let cursor: { requestBefore?: number; anchorEntryId?: string };
+  if (typeof anchorFilePos === "number") {
+    cursor = { requestBefore: anchorFilePos };
+  } else if (anchorEntryId !== undefined) {
+    cursor = { anchorEntryId };
+  } else if (typeof entryAtStart.windowStartFilePos === "number") {
+    cursor = { requestBefore: entryAtStart.windowStartFilePos };
+  } else {
+    return false;
+  }
+
+  const pages: Awaited<ReturnType<typeof readRuntimeHistoryTurnPage>>[] = [];
+  let turns = 0;
+  // 版本锚定：第一页的 indexVersion 就是重建后的权威版本；后续页必须一致，
+  // 否则文件又在改写，继续读会把两个版本的消息拼在一起。
+  let rebuildVersion: string | undefined;
+  try {
+    for (let page = 0; page < HISTORY_REBUILD_MAX_PAGES && turns < targetTurnCount; page += 1) {
+      if (!isCurrent()) return false;
+      const result = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
+      if (!isCurrent()) return false;
+      const latest = store.get(sessionMessagesCacheAtom)[sessionId];
+      if (!latest || latest.source !== "runtime") return false;
+      if (rebuildVersion === undefined) {
+        rebuildVersion = result.indexVersion;
+      } else if (result.indexVersion !== rebuildVersion) {
+        return false;
+      }
+      pages.push(result);
+      for (const message of result.messages) {
+        if (message.role === "user") turns += 1;
+      }
+      // 到顶（nextBefore === null）：重建后的前缀本身就是完整的，停止继续读
+      if (result.nextBefore === null) break;
+      cursor = result.nextBeforeEntryId
+        ? { anchorEntryId: result.nextBeforeEntryId }
+        : { requestBefore: result.nextBefore };
+    }
+  } catch {
+    // 读页失败（IPC/会话已卸载/索引异常）：保留旧前缀，下次滚动再重建。
+    // 不能把异常抛给调用链——那里只负责触发，没有局部错误处理。
+    return false;
+  }
+  if (pages.length === 0) return false;
+
+  // 原子替换：一次性把新前缀交给 atom（携带 expectedRevision 防止等待期间被别的写入抢先）。
+  const currentEntry = store.get(sessionMessagesCacheAtom)[sessionId];
+  if (!currentEntry || currentEntry.source !== "runtime") return false;
+  // 读页从接缝往更早推进：pages[0] 最靠近窗口（最新），末页最老。
+  // 前缀数组必须按「旧 → 新」排列（渲染是 [...history.messages, ...窗口]），
+  // 因此反转页序后拼接；页内消息已是旧到新，不要反转页内顺序。
+  const oldestPage = pages[pages.length - 1];
+  const chronologicalMessages = [...pages].reverse().flatMap((item) => item.messages);
+  const applied = store.set(replaceHistoryPrefixAfterVersionDriftAtom, {
+    sessionId,
+    expectedRevision: currentEntry.revision,
+    page: {
+      messages: chronologicalMessages,
+      total: pages[0].total,
+      // 续页游标取最老页（反转前数组末项）：反转后末项是最新页，其 nextBefore 指向本段中间。
+      nextBefore: oldestPage.nextBefore,
+      ...(oldestPage.nextBeforeEntryId
+        ? { nextBeforeEntryId: oldestPage.nextBeforeEntryId }
+        : {}),
+      indexVersion: rebuildVersion,
+    },
+  });
+  return applied;
+}
 
 /**
  * runtime 窗口会话的磁盘轮次页读取（2026-11 mutation 历史刷新抽出）：
@@ -89,6 +233,16 @@ export function readRuntimeHistoryTurnPage(
 type Tagged<T> = { ownerKey: string; value: T };
 type TimelineAnchor = { height: number; top: number };
 
+/**
+ * 锚点读取结果。三态而不是 `SessionScrollAnchor | null`：
+ * 命中测试失败（unresolved）与「在底部」（at-bottom → 应清除锚点）必须分开，
+ * 否则一次量不到就会把用户正在看的位置抹掉。
+ */
+export type AnchorReading =
+  | { status: "resolved"; anchor: SessionScrollAnchor }
+  | { status: "at-bottom" }
+  | { status: "unresolved" };
+
 export function isTimelineAtBottom(
   scrollTop: number,
   scrollHeight: number,
@@ -101,17 +255,15 @@ export function restoreTimelineAnchor(previousTop: number, heightDelta: number):
   return previousTop + heightDelta;
 }
 
-/** 顶部补偿决策（数据 prepend / turn 窗口扩大共用，2026-02 修复）：
- *  视口在顶部（≤阈值）时不补偿，保持原位让新加载/展开的内容直接出现在视口顶部——
- *  容器 overflow-anchor:none，插入内容不会自动调整滚动位置，补偿反而把新内容推出视口，
- *  表现为「点击加载更多/显示更早无反馈」。视口中部时按高度差补偿以保持视口内容不动。
- *  返回补偿后的 scrollTop；null = 不补偿（保持原位）。 */
+/** 顶部补偿（数据 prepend / turn 窗口扩大共用）：
+ *  前插或窗口扩大后，始终用高度差把当前阅读位置留在原地——视口里的消息不换屏，
+ *  新加载/展开的内容接在上方。贴顶（scrollTop ≤ HISTORY_AUTO_LOAD_THRESHOLD）同样要加，
+ *  把 scrollTop 留在 0 会让新内容直接占住当前屏。
+ *  返回补偿后的 scrollTop。 */
 export function resolveTimelineTopCompensation(
   previousTop: number,
   heightDelta: number,
-  threshold = HISTORY_AUTO_LOAD_THRESHOLD,
-): number | null {
-  if (previousTop <= threshold) return null;
+): number {
   return restoreTimelineAnchor(previousTop, heightDelta);
 }
 
@@ -399,8 +551,16 @@ export type SessionTimelineController = {
   nextLoadIsHistory: boolean;
   isLoadingMoreMessages: boolean;
   loadMoreMessages: () => void;
+  /** 是否有已登记、尚未消费的历史前置锚点（turn 窗口本帧不要再做第二次补偿）。 */
+  hasPendingLoadMoreAnchor: () => boolean;
+  /** 刷新待消费锚点的高度/位置基线（只改基线，不动 scrollTop）：
+   *  加载等待期间底部流式增高不应被算进历史前置的补偿量。 */
+  refreshLoadMoreAnchorBaseline: () => void;
   /** 标记一次程序化滚动（turn 窗口展开补偿等组件内补偿用），抑制自动加载监听。 */
   markProgrammaticScroll: () => void;
+  /** 当前视口锚点快照（不订阅、不触发渲染）：渲染层在列表变短时据此把正在看的
+   *  那一行放回原处。未成功读取过时为 unresolved，调用方不得凭它猜位置。 */
+  peekViewportAnchor: () => AnchorReading;
   jumpToMessage: (messageId: string) => void;
   scrollToBottom: () => void;
   /** 滚动回调（MessageScroller viewport 接线）：维护会话切换的滚动锚点。 */
@@ -430,7 +590,9 @@ export type SessionTimelineController = {
 export function useSessionTimelineController(options: {
   sessionId?: string;
   messages?: ChatMessage[];
+  /** 初始历史页轮数（unit=turn；缺省最近 50 轮对话） */
   initialPageSize?: number;
+  /** 「加载更多」单页轮数（unit=turn；缺省 3 轮） */
   pageSize?: number;
 }): SessionTimelineController {
   const ownerKey = options.sessionId ?? LEGACY_OWNER_KEY;
@@ -448,7 +610,31 @@ export function useSessionTimelineController(options: {
     [options.sessionId],
   );
   const cachedMessages = useAtomValue(cacheSliceAtom);
-  const messages = options.messages ?? cachedMessages ?? [];
+  // 增量合并失序的补发信号：按会话订阅（只取本会话的值），
+  // 其它会话请求补发不该让本栏重渲染。
+  const resyncSliceAtom = useMemo(
+    () => selectAtom(
+      sessionMessageResyncRequestAtom,
+      (map) => (options.sessionId ? map[options.sessionId] ?? 0 : 0),
+      Object.is,
+    ),
+    [options.sessionId],
+  );
+  const resyncToken = useAtomValue(resyncSliceAtom);
+  // 本会话当前绑定：只取这两个字段作为 effect 依赖（runtime 迟到时补发请求不丢）。
+  const resyncRuntime = useAtomValue(
+    sessionRuntimeBySessionIdAtomFamily(options.sessionId ?? ""),
+  );
+  // 乐观删除：确认删除后立即从视图里藏起将被删的消息段（缓存原样保留，失败可恢复）；
+  // 只订本会话的隐藏集合，其它会话删除不会让本栏重算。
+  const hiddenDeletionIds = useAtomValue(
+    optimisticDeletedIdsBySessionIdAtomFamily(options.sessionId ?? ""),
+  );
+  const sourceMessages = options.messages ?? cachedMessages;
+  const messages = useMemo(
+    () => filterOptimisticallyDeletedMessages(sourceMessages ?? [], hiddenDeletionIds),
+    [hiddenDeletionIds, sourceMessages],
+  );
   const controllerEnabled = options.sessionId !== undefined && options.messages === undefined;
 
   // ── 会话切换滚动位置保持（状态即真相）──
@@ -461,40 +647,51 @@ export function useSessionTimelineController(options: {
   const currentAnchorRef = useRef<SessionScrollAnchor | null>(null);
   const scrollAnchorFrameRef = useRef<number | undefined>(undefined);
   const scrollSaveTimerRef = useRef<number | undefined>(undefined);
+  // 锚点行被渲染窗口裁掉时的扩窗找回：待恢复锚点 + 已扩窗次数（上限在纯策略里）。
+  const pendingAnchorRestoreRef = useRef<Tagged<SessionScrollAnchor> | undefined>(undefined);
+  const anchorWideningsRef = useRef(0);
+  // 最近一次成功的锚点读取结果（resolved 的行 + 偏移，或 at-bottom）：渲染层在列表
+  // 变短时用它把正在看的那一行放回原处，因此需要行 id 与它距视口顶的偏移。
+  const anchorReadingRef = useRef<AnchorReading>({ status: "unresolved" });
 
   /**
-   * 计算当前视口锚点（纯读取，不落盘）。
-   * 规则：在底部跟流 → null（切回继续跟底）；查看历史 → 记录
+   * 读当前视口锚点（纯读取，不落盘）。
+   * 规则：在底部跟流 → at-bottom（切回继续跟底）；查看历史 → resolved
    * 「视口顶部的第一条消息行 + 距视口顶偏移 + 分页窗口」。
-   * 锚点行用 data-message-id（run 或消息行都带），恢复时无需关心具体类型。
+   *
+   * 长会话拖动治理：锚点行用命中测试取，不再遍历 [data-message-id] 逐行量矩形。
+   * unresolved = 命中测试不可用/屏顶被骨架或浮层占住，调用方保留上一次锚点。
+   * 这里不得退回全表扫描，否则拖动时每帧仍是一次 O(挂载行数) 的强制布局。
    */
-  const computeCurrentAnchor = useCallback((): SessionScrollAnchor | null => {
+  const readCurrentAnchor = useCallback((): AnchorReading => {
     const timeline = timelineRef.current;
-    if (!timeline) return null;
+    if (!timeline) return { status: "unresolved" };
     if (isTimelineAtBottom(timeline.scrollTop, timeline.scrollHeight, timeline.clientHeight)) {
-      return null;
+      const atBottom: AnchorReading = { status: "at-bottom" };
+      anchorReadingRef.current = atBottom;
+      return atBottom;
     }
     const viewportRect = timeline.getBoundingClientRect();
-    const rows = timeline.querySelectorAll<HTMLElement>("[data-message-id]");
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect();
-      if (rect.bottom >= viewportRect.top + 1) {
-        const messageId = row.dataset.messageId ?? "";
-        if (!messageId) continue;
-        return {
-          messageId,
-          // 保留负偏移：视口顶部常被上一行底部占据（行顶在视口上方），
-          // 截断为 0 会导致恢复时把行顶对齐视口顶、整体位置偏下（高大行偏差明显）。
-          // 恢复侧 scrollTop = max(0, elTop - offsetTop) 已兜底负值。
-          offsetTop: rect.top - viewportRect.top,
-          // 2026-11 轮次模型：不再有 100 条分页窗口，visibleCount 恒为 0（兼容字段）
-          visibleCount: 0,
-          savedAt: Date.now(),
-        };
-      }
-    }
-    // 无任何消息行（空会话/加载中）
-    return null;
+    const row = resolveAnchorRow(timeline, viewportRect.top);
+    if (!row) return { status: "unresolved" };
+    const messageId = anchorRowId(row);
+    if (!messageId) return { status: "unresolved" };
+    const rect = row.getBoundingClientRect();
+    const reading: AnchorReading = {
+      status: "resolved",
+      anchor: {
+        messageId,
+        // 保留负偏移：视口顶部常被上一行底部占据（行顶在视口上方），
+        // 截断为 0 会导致恢复时把行顶对齐视口顶、整体位置偏下（高大行偏差明显）。
+        // 恢复侧 scrollTop = max(0, elTop - offsetTop) 已兜底负值。
+        offsetTop: rect.top - viewportRect.top,
+        // 2026-11 轮次模型：不再有 100 条分页窗口，visibleCount 恒为 0（兼容字段）
+        visibleCount: 0,
+        savedAt: Date.now(),
+      },
+    };
+    anchorReadingRef.current = reading;
+    return reading;
   }, []);
 
   /** 把当前锚点写入 atom（节流）。内容未变化由 atom 侧跳过，引用保持稳定。 */
@@ -504,7 +701,11 @@ export function useSessionTimelineController(options: {
   }, [saveScrollAnchor]);
 
   /** 透传给 MessageScroller viewport 的滚动回调（SessionMessageTimeline 接线）。
-   *  rAF 合并高频滚动计算锚点（不每帧 getBoundingClientRect），再节流 250ms 落盘 atom。 */
+   *
+   * rAF 合并高频滚动 + 250ms 节流落盘的结构不变：cleanup 落盘依赖 ref 的新鲜度
+   * （切走时 DOM 可能已是新会话的行，不能现场量），所以不能只在 250ms 里算。
+   * 变的是单次成本：旧实现每帧遍历 [data-message-id] 逐行量矩形（O(挂载行数) 强制
+   * 布局，长会话拖动卡顿根因），现在只做一次命中测试 + 量容器和该行共两个矩形。 */
   const handleTimelineScroll = useCallback(() => {
     const sessionId = ownerKeyRef.current;
     if (!sessionId || sessionId === LEGACY_OWNER_KEY) return;
@@ -513,7 +714,12 @@ export function useSessionTimelineController(options: {
       scrollAnchorFrameRef.current = undefined;
       // 回调执行时若已切走（ownerKeyRef 已更新），丢弃——旧会话状态由 cleanup 落盘。
       if (ownerKeyRef.current !== sessionId) return;
-      currentAnchorRef.current = computeCurrentAnchor();
+      const reading = readCurrentAnchor();
+      // unresolved 不覆盖已有锚点：宁可继续记住刚才在看的那一行，也不因为一次
+      // 命中失败（屏顶被骨架/浮层占住）把用户位置弄丢。
+      if (reading.status !== "unresolved") {
+        currentAnchorRef.current = reading.status === "resolved" ? reading.anchor : null;
+      }
       // 节流写 atom：只排一个 timer，期间连续滚动不重复写；
       // 内容未变时 atom 侧跳过（引用稳定，订阅者零重渲染）。
       if (scrollSaveTimerRef.current != null) return;
@@ -521,7 +727,7 @@ export function useSessionTimelineController(options: {
         persistCurrentAnchor(sessionId);
       }, 250);
     });
-  }, [computeCurrentAnchor, persistCurrentAnchor]);
+  }, [persistCurrentAnchor, readCurrentAnchor]);
 
   // ── Load messages from disk when sessionId changes ──
 	// 只订本会话缓存条目（family selectAtom 隔离）：其它会话的消息到达/分页不拖着重渲染本栏。
@@ -570,7 +776,14 @@ export function useSessionTimelineController(options: {
     setLoadState({ sessionId, state: { status: "loading" } });
 
 		void desktopApi.sessions
-			.readRecordMessagePage(sessionId, undefined, options.initialPageSize ?? 100)
+			// 轮次模型（2026-12 统一 50 轮）：首屏按「最近 50 个用户轮次」读取，
+			// unit=turn 使页边界永远对齐完整轮次；更早历史由「加载更多」每次 3 轮补齐。
+			.readRecordMessagePage(
+				sessionId,
+				undefined,
+				options.initialPageSize ?? INITIAL_HISTORY_TURN_PAGE_SIZE,
+				{ unit: "turn" },
+			)
 			.then((page: { messages: ChatMessage[]; total: number; nextBefore: number | null }) => {
 				if (latestLoadBySession.get(sessionId) !== sequence) return;
 				cacheMessages({
@@ -604,13 +817,15 @@ export function useSessionTimelineController(options: {
 		? cachedEntry.history
 		: undefined;
 	const combinedMessages = useMemo(
-		() => (runtimeHistory ? [...runtimeHistory.messages, ...messages] : messages),
-		[runtimeHistory, messages],
+		() => (runtimeHistory
+			? [...filterOptimisticallyDeletedMessages(runtimeHistory.messages, hiddenDeletionIds), ...messages]
+			: messages),
+		[hiddenDeletionIds, runtimeHistory, messages],
 	);
 	// 窗口前还有历史可加载：已加载前缀看游标，未加载看窗口起点（>0 说明激活时被截断）
 	const historyHasMore = controllerEnabled && hasMoreRuntimeHistory(cachedEntry);
 	// 2026-11 轮次模型：不再按 100 条分页器切片，显示数组 = 已加载全部（历史前缀 + 运行时窗口段）。
-	// 内存预算由主进程 12 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
+	// 内存预算由主进程 50 轮缓存 + 回底临时历史清理承担，渲染层不再有第二道条数窗口。
 	const visibleMessages = combinedMessages;
 	const [isLoadingMessagePage, setIsLoadingMessagePage] = useState(false);
   const [autoScroll, setAutoScroll] = useState(() => {
@@ -625,18 +840,21 @@ export function useSessionTimelineController(options: {
   // 与 autoScroll 初始值保持一致（有锚点的会话首帧即不跟底），避免首帧 ref/state 不一致
   const autoScrollRef = useRef(autoScroll);
   const programmaticScrollRef = useRef(false);
+  // 程序化滚动的抑制标记如果没人消费（位置没变、不派发 scroll），要在下一帧清掉。
+  // 会话切走时必须取消，避免晚到的清理把新会话刚立上的标记抹掉。
+  const programmaticScrollClearRef = useRef<number | undefined>(undefined);
   const scrollerScrollApiRef = useRef<MessageScrollerScrollApi | null>(null);
   const loadMoreAnchorRef = useRef<Tagged<TimelineAnchor> | undefined>(undefined);
   const pendingJumpRef = useRef<Tagged<string> | undefined>(undefined);
   const highlightTimersRef = useRef(new Map<number, number>());
   // ── 上滚渲染窗口（2026-08 黑屏治理）──
-  // 贴底时渲染层固定用 3 轮小窗口；上滚看历史用此窗口（初始 15 轮，
+  // 贴底时渲染层固定用 50 轮小窗口；上滚看历史用此窗口（初始 50 轮，
   // 「显示更早」按钮逐步扩大）。回底 = 新的浏览周期，窗口重置回基础大小。
   const [scrolledWindowTurns, setScrolledWindowTurns] = useState(TIMELINE_SCROLLED_TURN_LIMIT);
   const [scrolledWindowItems, setScrolledWindowItems] = useState(TIMELINE_SCROLLED_MAX_ITEMS);
   const expandWindow = useCallback(() => {
     // 跟底状态（内容短于视口、按钮可见）下点击「显示更早」：先解锁跟随，
-    // 否则 turnWindowTurns 恒取贴底窗口 3 轮，扩大 scrolledWindowTurns 不生效，
+    // 否则 turnWindowTurns 恒取贴底窗口 50 轮，扩大 scrolledWindowTurns 不生效，
     // 按钮点击表现为无反应（2026-02 修复）。
     if (autoScrollRef.current) {
       autoScrollRef.current = false;
@@ -673,6 +891,131 @@ export function useSessionTimelineController(options: {
     highlightTimersRef.current.set(timer, timer);
   }, []);
 
+  /**
+   * 尝试把视口对齐到 pendingAnchorRestoreRef 登记的锚点行（可重入）。
+   *
+   * 结局由 resolveAnchorRestore 决定：行已挂载 → 精确对齐；数据还没落地 → 等下一帧；
+   * 行仍在数据里但被渲染窗口裁掉 → 扩窗后等下一轮重试；行确实已从数据消失（或扩窗到
+   * 上限）→ 贴窗口顶部兜底。不能猜位置：那正是「信息流跳到以前的消息」的来源。
+   * 返回 true 表示本轮恢复已结束（已对齐或已兜底）。
+   */
+  const attemptAnchorRestore = useCallback((requestOwnerKey: string): boolean => {
+    const pending = pendingAnchorRestoreRef.current;
+    if (!pending || pending.ownerKey !== requestOwnerKey) return true;
+    // 已切到别的会话：旧会话的恢复尝试直接作废（pending 由下一次切换重新登记）。
+    if (ownerKeyRef.current !== requestOwnerKey) {
+      pendingAnchorRestoreRef.current = undefined;
+      return true;
+    }
+    const timeline = timelineRef.current;
+    if (!timeline) return false;
+    const anchor = pending.value;
+    const anchorRow = timeline.querySelector(
+      `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
+    ) as HTMLElement | null;
+    const rowBox = anchorRow?.getBoundingClientRect();
+    // 行在 DOM 里但不可见（折叠正文被卸载 / display:none 时矩形全零）一律当未挂载：
+    // 拿全零矩形对齐会算出接近 0 的 scrollTop，就是「跳到以前的消息」。
+    const rowMounted = Boolean(rowBox && (rowBox.height > 0 || rowBox.width > 0));
+    const step = resolveAnchorRestore({
+      rowMounted,
+      // 「有缓存条目」= 读取已返回（即使空会话），与起始页判定同一约定；
+      // 不能用 combinedMessages.length>0：空会话的旧锚点会被当成「还在加载」永远等待。
+      dataLoaded: cachedEntry !== undefined,
+      stillInData: anchorRowStillInData(anchor.messageId, combinedMessages),
+      widenings: anchorWideningsRef.current,
+    });
+    if (step === "wait-for-data") return false;
+    // 查看历史期间不得跟流：新消息到达不拽走用户，只让「回到底部」按钮保持亮起。
+    autoScrollRef.current = false;
+    setAutoScroll(false);
+    setShowScrollToBottom(true);
+    // 位置没变就不立抑制标记：没有 scroll 事件时标记会一直为 true，
+    // 下一次用户滚到顶会被自动翻页监听吞掉。变了则事件先消费标记，rAF 只清残留。
+    const writeProgrammaticScrollTop = (nextTop: number, write: () => void) => {
+      const before = timeline.scrollTop;
+      if (before === nextTop) return;
+      if (programmaticScrollClearRef.current != null) {
+        cancelAnimationFrame(programmaticScrollClearRef.current);
+        programmaticScrollClearRef.current = undefined;
+      }
+      programmaticScrollRef.current = true;
+      write();
+      if (timeline.scrollTop === before) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+      programmaticScrollClearRef.current = requestAnimationFrame(() => {
+        programmaticScrollClearRef.current = undefined;
+        programmaticScrollRef.current = false;
+      });
+    };
+    if (step === "restore" && anchorRow && rowBox) {
+      // 行顶在内容中的位置：rect 差 + 当前 scrollTop（含负偏移语义，不在此处夹零）。
+      const elTop =
+        rowBox.top - timeline.getBoundingClientRect().top + timeline.scrollTop;
+      // 原子恢复：定位 + 解锁锁底 + 取消在途动画一次完成。
+      // busy 会话的 ResizeObserver（instant 贴底）看到 isAtBottom=false 不再拽回。
+      const api = scrollerScrollApiRef.current;
+      // 夹零只作用于最终落点：offsetTop 允许为负（锚点行顶在视口上方），截断它会把
+      // 行顶对齐视口顶、整体偏下（高大行偏差明显）。
+      const targetTop = Math.max(0, elTop - anchor.offsetTop);
+      writeProgrammaticScrollTop(targetTop, () => {
+        if (api?.restoreAt) {
+          api.restoreAt(targetTop);
+        } else {
+          // 引擎未挂上（会话切换首帧等）时回退原生定位
+          timeline.scrollTop = targetTop;
+        }
+      });
+      // 恢复后的位置即当前锚点：即使恢复后用户未滚动就切走，
+      // cleanup 落盘的也是这份锚点（而不是误判为底部/空）。
+      currentAnchorRef.current = anchor;
+      // 快照同步成 resolved：恢复后的视口顶部就是这个锚点行，
+      // 下一次窗口变短补偿不必等一次真实滚动才有锚点可用。
+      anchorReadingRef.current = { status: "resolved", anchor };
+      pendingAnchorRestoreRef.current = undefined;
+      return true;
+    }
+    if (step === "widen") {
+      // 消息仍在数据里、只是被窗口裁掉：扩窗找回它，重试 effect 随窗口变化再对齐。
+      anchorWideningsRef.current += 1;
+      expandWindow();
+      return false;
+    }
+    // 已不在数据里或扩窗到上限：贴窗口顶部。窗口是尾部 N 轮，锚点不在窗口里只能
+    // 意味着它比窗口最旧一行更旧：贴顶差几轮、贴底差几十轮，且顶部「显示更早」仍可上溯。
+    // 失效锚点不能写回 currentAnchorRef：进入时已清成 null，写回会在切走时再次落盘，
+    // 下次进入重复扩窗再贴顶。本次仍不跟底（上面已关掉 autoScroll）。
+    pendingAnchorRestoreRef.current = undefined;
+    currentAnchorRef.current = null;
+    writeProgrammaticScrollTop(0, () => {
+      timeline.scrollTop = 0;
+    });
+    return true;
+  }, [cachedEntry, combinedMessages, expandWindow]);
+
+  // 扩窗/数据/窗口变化后重试恢复：锚点行一旦挂载就结束本轮尝试，不要停在窗口顶部。
+  // 窗口轮数与条目上限存在 ref 里、不进 attemptAnchorRestore 的依赖，因此这里显式
+  // 列入 deps；pendingAnchorRestoreRef 命中即清空，重复渲染没有副作用。
+  useEffect(() => {
+    if (!controllerEnabled) return;
+    const pending = pendingAnchorRestoreRef.current;
+    if (!pending || pending.ownerKey !== ownerKey) return;
+    attemptAnchorRestore(pending.ownerKey);
+  }, [
+    attemptAnchorRestore,
+    combinedMessages,
+    controllerEnabled,
+    ownerKey,
+    scrolledWindowItems,
+    scrolledWindowTurns,
+    visibleMessages.length,
+  ]);
+
+  /** 当前视口锚点快照（未成功读取过时为 unresolved，调用方不得凭它猜位置）。 */
+  const peekViewportAnchor = useCallback((): AnchorReading => anchorReadingRef.current, []);
+
   const scrollToBottom = useCallback(() => {
     const requestOwnerKey = ownerKey;
     if (ownerKeyRef.current !== requestOwnerKey) return;
@@ -705,15 +1048,102 @@ export function useSessionTimelineController(options: {
 
   /** 计算垫片高度：让「用户消息顶 + 视口高 == 内容总高」，滚到底时用户消息正好钉在顶部。 */
 
-	const loadMoreMessages = useCallback(() => {
-		const requestOwnerKey = ownerKey;
+	/**
+	 * 登记一次「历史前置」锚点：记录加载前的高度与位置，落地后据此补偿。
+	 * 只在确认本次真的会发请求时调用；已有未消费锚点时不得覆盖（等待期间用户可能已继续滚动，
+	 * 覆盖会把补偿位置拉回请求开始那一刻）。
+	 */
+	const captureLoadMoreAnchor = useCallback(() => {
+		if (loadMoreAnchorRef.current) return;
 		const timeline = timelineRef.current;
-    if (timeline && ownerKeyRef.current === requestOwnerKey) {
-      loadMoreAnchorRef.current = {
-        ownerKey: requestOwnerKey,
-        value: { height: timeline.scrollHeight, top: timeline.scrollTop },
-      };
-    }
+		if (!timeline || ownerKeyRef.current !== ownerKey) return;
+		loadMoreAnchorRef.current = {
+			ownerKey,
+			value: { height: timeline.scrollHeight, top: timeline.scrollTop },
+		};
+	}, [ownerKey]);
+
+	/**
+	 * runtime 窗口会话补一页更早历史。
+	 * turnCount：本页轮数（用户上滚 = RUNTIME_HISTORY_TURN_PAGE_SIZE；自动补足 = 差额）。
+	 * preserveScroll：是否登记滚动锚点（用户上滚时需要；贴底自动补足时不需要，
+	 * 贴底状态由 stick-to-bottom 保持，前插内容不会把视口推走）。
+	 */
+	const loadRuntimeHistoryPage = useCallback((turnCount: number, preserveScroll: boolean) => {
+		// runtime 窗口会话：直接按轮次补历史（2026-11 轮次模型，不再有 100 条渲染窗口）。
+		// 首次加载以运行时窗口段首条消息的 entryId 为锚点（两个下标空间唯一的对齐点），
+		// 续页用上一页最旧条目的 entryId（nextBeforeEntryId）——主进程缓存命中路径依赖它。
+		const sessionId = options.sessionId;
+		if (!sessionId || isLoadingMessagePage) return;
+		const before = runtimeHistory?.nextBefore ?? undefined;
+		// 首次补历史锚点：窗口首条可能是无 entryId 的系统摘要卡片（compaction/branchSummary），
+		// 必须取第一条有 entryId 的消息，否则锚点解析失败导致首次上翻静默放弃。
+		// slideOut 合成的 history 只有消息、没有 nextBefore 时，同样要从当前前缀/窗口首条再取锚点。
+		const needsSyntheticAnchor = !runtimeHistory || (
+			runtimeHistory.nextBefore === null &&
+			!runtimeHistory.nextBeforeEntryId
+		);
+		const anchorMessage = needsSyntheticAnchor
+			? [...(runtimeHistory?.messages ?? []), ...messages].find((m) => typeof m.meta?.entryId === "string")
+			: undefined;
+		const anchorEntryId =
+			typeof runtimeHistory?.nextBeforeEntryId === "string"
+				? runtimeHistory.nextBeforeEntryId
+				: (typeof anchorMessage?.meta?.entryId === "string" ? anchorMessage.meta.entryId : undefined);
+		// 大历史窗口（skipEntries 路径）消息可能整体缺 entryId：退化为窗口首条消息的
+		// 文件消息下标（windowStartFilePos）作为数值游标——主进程缓存路径先把它解析成
+		// entryId 再查缓存，磁盘路径直接消费文件下标。两者都没有才放弃补历史。
+		const anchorFilePos = !anchorEntryId && before === undefined
+			? (typeof cachedEntry?.windowStartFilePos === "number"
+				? cachedEntry.windowStartFilePos
+				: undefined)
+			: undefined;
+		const requestBefore = before ?? (anchorFilePos !== undefined ? anchorFilePos : undefined);
+		if (requestBefore === undefined && !anchorEntryId) return;
+		const sequence = ++nextLoadSequence;
+		trackLatestLoad(sessionId, sequence);
+		const expectedRevision = cachedEntry?.revision ?? 0;
+		if (preserveScroll) captureLoadMoreAnchor();
+		setIsLoadingMessagePage(true);
+		void readRuntimeHistoryTurnPage(sessionId, turnCount, {
+			requestBefore,
+			anchorEntryId,
+		})
+			.then(async (page) => {
+				if (latestLoadBySession.get(sessionId) !== sequence) return;
+				if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
+					// 同 disk 分支：补页成功同步扩大渲染窗口，避免新页被 turn 窗口裁剪不可见
+					setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
+					return;
+				}
+				// 补页被拒绝：只有「文件版本已漂移（压缩/外部改写）」需要重建。
+				// 其他拒绝原因（revision 变了、会话卸载）直接放弃，等待下一次用户滚动。
+				const entryNow = store.get(sessionMessagesCacheAtom)[sessionId];
+				const drifted = Boolean(
+					entryNow?.history?.version &&
+					page.indexVersion &&
+					entryNow.history.version !== page.indexVersion,
+				);
+				if (!drifted) return;
+				// 把已加载的前缀深度作为重建目标（至少包含原有浏览深度）
+				const targetTurns = Math.max(
+					countLoadedHistoryTurns(entryNow?.history?.messages ?? []),
+					RUNTIME_HISTORY_TURN_PAGE_SIZE,
+				);
+				await rebuildHistoryPrefixAfterVersionDrift({
+					sessionId,
+					sequence,
+					store,
+					targetTurnCount: targetTurns,
+					anchorFilePos,
+				});
+			})
+			.finally(() => {
+				if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
+			});
+	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, prependHistoryPage, runtimeHistory]);
+
+	const loadMoreMessages = useCallback(() => {
 		if (diskPage) {
 			const sessionId = options.sessionId;
 			const before = diskPage.nextBefore;
@@ -721,9 +1151,14 @@ export function useSessionTimelineController(options: {
 			const sequence = ++nextLoadSequence;
 			trackLatestLoad(sessionId, sequence);
 			const expectedRevision = cachedEntry?.revision ?? 0;
+			captureLoadMoreAnchor();
 			setIsLoadingMessagePage(true);
 			void desktopApi.sessions
-				.readRecordMessagePage(sessionId, before, options.pageSize ?? 100)
+				// 旧会话（无 runtime 窗口）：与 runtime 窗口会话同口径按轮次补历史，
+				// 每次 3 轮（数据分页步长不变），游标仍用服务器返回的数值下标。
+				.readRecordMessagePage(sessionId, before, options.pageSize ?? RUNTIME_HISTORY_TURN_PAGE_SIZE, {
+					unit: "turn",
+				})
 				.then((page: { messages: ChatMessage[]; total: number; nextBefore: number | null }) => {
 					if (latestLoadBySession.get(sessionId) !== sequence) return;
 					if (prependMessagePage({ sessionId, before, expectedRevision, page })) {
@@ -738,64 +1173,50 @@ export function useSessionTimelineController(options: {
 				});
 			return;
 		}
-		// runtime 窗口会话：直接按轮次补历史（2026-11 轮次模型，不再有 100 条渲染窗口）。
-		// 首次加载以运行时窗口段首条消息的 entryId 为锚点（两个下标空间唯一的对齐点），
-		// 续页用上一页最旧条目的 entryId（nextBeforeEntryId）——主进程缓存命中路径依赖它。
 		if (historyHasMore) {
-			const sessionId = options.sessionId;
-			if (!sessionId || isLoadingMessagePage) return;
-			const before = runtimeHistory?.nextBefore ?? undefined;
-			// 首次补历史锚点：窗口首条可能是无 entryId 的系统摘要卡片（compaction/branchSummary），
-			// 必须取第一条有 entryId 的消息，否则锚点解析失败导致首次上翻静默放弃。
-			// slideOut 合成的 history 只有消息、没有 nextBefore 时，同样要从当前前缀/窗口首条再取锚点。
-			const needsSyntheticAnchor = !runtimeHistory || (
-				runtimeHistory.nextBefore === null &&
-				!runtimeHistory.nextBeforeEntryId
-			);
-			const anchorMessage = needsSyntheticAnchor
-				? [...(runtimeHistory?.messages ?? []), ...messages].find((m) => typeof m.meta?.entryId === "string")
-				: undefined;
-			const anchorEntryId =
-				typeof runtimeHistory?.nextBeforeEntryId === "string"
-					? runtimeHistory.nextBeforeEntryId
-					: (typeof anchorMessage?.meta?.entryId === "string" ? anchorMessage.meta.entryId : undefined);
-			// 大历史窗口（skipEntries 路径）消息可能整体缺 entryId：退化为窗口首条消息的
-			// 文件消息下标（windowStartFilePos）作为数值游标——主进程缓存路径先把它解析成
-			// entryId 再查缓存，磁盘路径直接消费文件下标。两者都没有才放弃补历史。
-			const anchorFilePos = !anchorEntryId && before === undefined
-				? (typeof cachedEntry?.windowStartFilePos === "number"
-					? cachedEntry.windowStartFilePos
-					: undefined)
-				: undefined;
-			const requestBefore = before ?? (anchorFilePos !== undefined ? anchorFilePos : undefined);
-			if (requestBefore === undefined && !anchorEntryId) return;
-			const sequence = ++nextLoadSequence;
-			trackLatestLoad(sessionId, sequence);
-			const expectedRevision = cachedEntry?.revision ?? 0;
-			setIsLoadingMessagePage(true);
-			void readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, {
-				requestBefore,
-				anchorEntryId,
-			})
-				.then((page) => {
-					if (latestLoadBySession.get(sessionId) !== sequence) return;
-					if (prependHistoryPage({ sessionId, expectedRevision, before, page })) {
-						// 同 disk 分支：补页成功同步扩大渲染窗口，避免新页被 turn 窗口裁剪不可见
-						setScrolledWindowTurns((prev) => prev + TIMELINE_WINDOW_EXPAND_STEP);
-					}
-				})
-				.finally(() => {
-					if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
-				});
+			loadRuntimeHistoryPage(RUNTIME_HISTORY_TURN_PAGE_SIZE, true);
 			return;
 		}
-	}, [cachedEntry?.revision, diskPage, historyHasMore, isLoadingMessagePage, messages, options.pageSize, options.sessionId, ownerKey, prependHistoryPage, prependMessagePage, runtimeHistory]);
+	}, [cachedEntry?.revision, captureLoadMoreAnchor, diskPage, historyHasMore, isLoadingMessagePage, loadRuntimeHistoryPage, messages, options.pageSize, options.sessionId, ownerKey, prependMessagePage, runtimeHistory]);
 
-	// ── 回底清理临时历史（2026-11 轮次模型）──
-	// 贴底稳定 1.5s 后清掉翻过的历史前缀（atom 只留运行时窗口段），渲染层内存回到最小；
-	// 再次上翻走「atom → 主进程缓存 → 文件」重新拉取（主进程 12 轮内命中，无感）。
-	// 上滚/加载历史中会取消待执行的清理；清理后 history 置空，后续再翻再拉。
-	const clearHistory = useSetAtom(clearSessionHistoryAtom);
+	// ── 保底 50 轮（用户要求）──
+	// 运行中会话「历史前缀 + 运行时窗口」不足 MIN_DISPLAY_TURNS 且还有更早历史时，
+	// 一次补足差额。同一缓存状态（revision + 前缀长度）只尝试一次：
+	// 空页/被拒绝时不会形成请求循环；成功补页后前缀变长，键变化，必要时再补。
+	const minimumTopUpKeyRef = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (!controllerEnabled) return;
+		const sessionId = options.sessionId;
+		if (!sessionId || !cachedEntry || cachedEntry.source !== "runtime") return;
+		if (loadState?.status === "loading" || isLoadingMessagePage) return;
+		const missingTurns = resolveMinimumHistoryTopUp({
+			historyTurns: countUserTurns(runtimeHistory?.messages ?? []),
+			windowTurns: countUserTurns(messages),
+			hasMore: historyHasMore,
+			busy: false,
+		});
+		if (missingTurns <= 0) return;
+		const attemptKey = `${sessionId}:${cachedEntry.revision}:${runtimeHistory?.messages.length ?? 0}`;
+		if (minimumTopUpKeyRef.current === attemptKey) return;
+		minimumTopUpKeyRef.current = attemptKey;
+		loadRuntimeHistoryPage(missingTurns, !autoScrollRef.current);
+	}, [
+		controllerEnabled,
+		options.sessionId,
+		cachedEntry,
+		loadState?.status,
+		isLoadingMessagePage,
+		historyHasMore,
+		runtimeHistory,
+		messages,
+		loadRuntimeHistoryPage,
+	]);
+
+	// ── 回底释放临时历史（2026-11 轮次模型）──
+	// 贴底稳定 1.5s 后释放翻过的历史前缀（保底 MIN_DISPLAY_TURNS 轮，用户要求），
+	// 更早的浏览数据回到最小；再次上翻走「atom → 主进程缓存 → 文件」重新拉取。
+	// 上滚/加载历史中会取消待执行的释放。mutation 失败的无条件作废走 clearSessionHistoryAtom。
+	const releaseHistory = useSetAtom(releaseSessionHistoryAtom);
 	const historyClearTimerRef = useRef<number | undefined>(undefined);
 	useEffect(() => {
 		if (!controllerEnabled) return;
@@ -805,7 +1226,7 @@ export function useSessionTimelineController(options: {
 			if (historyClearTimerRef.current != null) return;
 			historyClearTimerRef.current = window.setTimeout(() => {
 				historyClearTimerRef.current = undefined;
-				if (clearHistory(sessionId)) {
+				if (releaseHistory(sessionId)) {
 					// 清理后丢弃在途历史页响应：迟到页会把已释放的 history 复活并携带旧滚动锚点
 					const sequence = ++nextLoadSequence;
 					trackLatestLoad(sessionId, sequence);
@@ -824,12 +1245,27 @@ export function useSessionTimelineController(options: {
 			window.clearTimeout(historyClearTimerRef.current);
 			historyClearTimerRef.current = undefined;
 		}
-	}, [autoScroll, clearHistory, controllerEnabled, options.sessionId, runtimeHistory]);
+	}, [autoScroll, releaseHistory, controllerEnabled, options.sessionId, runtimeHistory]);
 
   /** 标记一次程序化滚动（turn 窗口展开补偿等组件内补偿用），抑制自动加载监听。 */
   const markProgrammaticScroll = useCallback(() => {
     programmaticScrollRef.current = true;
   }, []);
+
+  /** 是否有尚未消费的历史前置锚点（turn 窗口本帧让位给 controller 的唯一一次补偿）。 */
+  const hasPendingLoadMoreAnchor = useCallback(
+    () => Boolean(loadMoreAnchorRef.current && ownerKeyRef.current === ownerKey),
+    [ownerKey],
+  );
+
+  /** 只把待消费锚点的基线（高度/位置）刷成当前值，不改 scrollTop：
+   *  加载等待期间底部流式增高会被记录进来，而不是被当成历史前置的高度差重复补偿。 */
+  const refreshLoadMoreAnchorBaseline = useCallback(() => {
+    const anchor = loadMoreAnchorRef.current;
+    const timeline = timelineRef.current;
+    if (!anchor || !timeline || ownerKeyRef.current !== ownerKey) return;
+    anchor.value = { height: timeline.scrollHeight, top: timeline.scrollTop };
+  }, [ownerKey]);
 
   const captureHistoryMutationRefreshCallback = useCallback(
     (targetSessionId: string | undefined) =>
@@ -869,6 +1305,13 @@ export function useSessionTimelineController(options: {
     loadMoreAnchorRef.current = undefined;
     pendingJumpRef.current = undefined;
     programmaticScrollRef.current = false;
+    if (programmaticScrollClearRef.current != null) {
+      cancelAnimationFrame(programmaticScrollClearRef.current);
+      programmaticScrollClearRef.current = undefined;
+    }
+    // 上一会话未完成的锚点扩窗尝试不得留给新会话：ownerKey 校验只是最后一道防线。
+    pendingAnchorRestoreRef.current = undefined;
+    anchorWideningsRef.current = 0;
     // 会话切换：清掉上一会话的置顶垫片与动画标记
     clearHighlightTimers();
     return clearHighlightTimers;
@@ -892,6 +1335,7 @@ export function useSessionTimelineController(options: {
         saveScrollAnchor({ sessionId, anchor: currentAnchorRef.current });
       }
       currentAnchorRef.current = null;
+      anchorReadingRef.current = { status: "unresolved" };
     };
   }, [ownerKey, saveScrollAnchor]);
 
@@ -910,41 +1354,12 @@ export function useSessionTimelineController(options: {
       setAutoScroll(false);
       setShowScrollToBottom(true);
       const requestOwnerKey = ownerKey;
+      anchorWideningsRef.current = 0;
+      // 恢复可能是一轮尝试而不是一帧动作：锚点行在窗口里就直接对齐；被窗口裁掉则先扩窗，
+      // 再由下面的 effect 随窗口/数据变化重试，直到命中或撞上扩窗上限。
+      pendingAnchorRestoreRef.current = { ownerKey: requestOwnerKey, value: anchor };
       const frame = requestAnimationFrame(() => {
-        const timeline = timelineRef.current;
-        if (!timeline || ownerKeyRef.current !== requestOwnerKey) return;
-        const el = timeline.querySelector(
-          `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
-        ) as HTMLElement | null;
-        if (el) {
-          const elTop =
-            el.getBoundingClientRect().top -
-            timeline.getBoundingClientRect().top +
-            timeline.scrollTop;
-          programmaticScrollRef.current = true;
-          // 原子恢复：定位 + 解锁锁底 + 取消在途动画一次完成。
-          // busy 会话的 ResizeObserver（instant 贴底）看到 isAtBottom=false 不再拽回。
-          const api = scrollerScrollApiRef.current;
-          const targetTop = Math.max(0, elTop - anchor.offsetTop);
-          if (api?.restoreAt) {
-            api.restoreAt(targetTop);
-          } else {
-            // 引擎未挂上（会话切换首帧等）时回退原生定位
-            timeline.scrollTop = targetTop;
-          }
-          // 恢复后的位置即当前锚点：即使恢复后用户未滚动就切走，
-          // cleanup 落盘的也是这份锚点（而不是误判为底部/空）。
-          currentAnchorRef.current = anchor;
-          return;
-        }
-        // 锚点行不存在（期间被压缩清理 / 在渲染窗口之外——上滚窗口化裁剪）：
-        // 对齐渲染窗口顶部（顶部有「显示更早」按钮可继续上溯），保持不跟流，
-        // 避免把查看历史的用户拽回底部（2026-08 黑屏治理）。
-        autoScrollRef.current = false;
-        setAutoScroll(false);
-        setShowScrollToBottom(true);
-        programmaticScrollRef.current = true;
-        timeline.scrollTop = 0;
+        attemptAnchorRestore(requestOwnerKey);
       });
       return () => cancelAnimationFrame(frame);
     }
@@ -1002,29 +1417,20 @@ export function useSessionTimelineController(options: {
       loadMoreAnchorRef.current = undefined;
       return;
     }
-    // 顶部场景（点击前视口在 ≤HISTORY_AUTO_LOAD_THRESHOLD 处）：不补偿 scrollTop。
-    // 视口容器 overflow-anchor:none，插入内容不会自动调整滚动位置，保持原位即可
-    // 让新加载的内容直接出现在视口顶部；补偿反而把新内容推出视口上方，
-    // 造成「点击加载更多无反馈」（2026-02 修复）。
-    const nextScrollTop = resolveTimelineTopCompensation(
-      anchor.value.top,
-      timeline.scrollHeight - anchor.value.height,
-    );
-    if (nextScrollTop === null) {
-      loadMoreAnchorRef.current = undefined;
-      programmaticScrollRef.current = true;
-      const topFrame = requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
-      });
-      return () => cancelAnimationFrame(topFrame);
-    }
-    // 标记程序化滚动：prepend 补偿的 scrollTop 赋值会触发 scroll 事件，
-    // 不能让 ≤240px 自动加载监听把它当成用户上滚（否则连锁翻页）。
-    // rAF 兜底：若补偿实际无位移（delta=0）不产生 scroll 事件，需清掉抑制标记，
+    // 历史前置落地：把落地那一刻的 scrollTop 加上本次插入的高度差，
+    // 视口里的消息留在原地不换屏，新页接在上方。
+    // 用落地时（而不是请求开始时）的 scrollTop：等待期间用户可能已继续滚动或拖进度条，
+    // 用旧值写回会把用户拉回请求发起的位置。贴顶也不得跳过——
+    // scrollTop 留在 0 会让新内容直接占住当前屏（滚轮/按钮加载“乱跳”根因）。
+    const heightDelta = timeline.scrollHeight - anchor.value.height;
+    loadMoreAnchorRef.current = undefined;
+    if (heightDelta === 0) return;
+    // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
+    // 必须让 ≤HISTORY_AUTO_LOAD_THRESHOLD 的自动加载监听忽略（否则连锁翻页）。
+    // rAF 兜底：若补偿实际无位移不产生 scroll 事件，需清掉抑制标记，
     // 避免吞掉下一次用户滚动（scroll 事件任务先于 rAF 派发，顺序安全）。
     programmaticScrollRef.current = true;
-    timeline.scrollTop = nextScrollTop;
-    loadMoreAnchorRef.current = undefined;
+    timeline.scrollTop = timeline.scrollTop + heightDelta;
     const frame = requestAnimationFrame(() => {
       programmaticScrollRef.current = false;
     });
@@ -1057,6 +1463,29 @@ export function useSessionTimelineController(options: {
     // autoScroll：贴底 turn 窗口展开后 DOM 才出现目标行，需再跑一轮。
   }, [autoScroll, combinedMessages, controllerEnabled, expandWindow, highlightMessage, ownerKey, scrolledWindowTurns, visibleMessages.length]);
 
+  // 增量合并失序后的自愈：发现本会话有待补信号且已经有绑定 runtime 时，
+  // 请求主进程补一次全量消息窗口（渲染层据此重建下标空间）。
+  // 找不到 target 时不记「已发送」：runtime 稍后绑定完成时 effect 会因它重新跑。
+  // 信号固定写 1：全量落地后 atom 删键（token 变 0），下一次丢增量再写回 1。
+  // token 为 0 时必须把 ref 清掉，否则同一挂载（含切会话复用实例）里第二次失序会被当成已发过而不再补。
+  const resyncRequestedTokenRef = useRef(0);
+  useEffect(() => {
+    const sessionId = options.sessionId;
+    if (!sessionId || resyncToken <= 0) {
+      resyncRequestedTokenRef.current = 0;
+      return;
+    }
+    if (resyncRequestedTokenRef.current === resyncToken) return;
+    const target = toSessionRuntimeTarget(
+      sessionId,
+      store.get(sessionRuntimeBySessionIdAtomFamily(sessionId)),
+    );
+    if (!target) return;
+    resyncRequestedTokenRef.current = resyncToken;
+    // 补发失败不打扰用户：本轮结束的终态全量仍是兜底路径。
+    void desktopApi.sessions.flushMessages(target).catch(() => undefined);
+  }, [options.sessionId, resyncRuntime, resyncToken, store]);
+
   return {
     timelineRef,
     messages,
@@ -1068,6 +1497,10 @@ export function useSessionTimelineController(options: {
     nextLoadIsHistory: controllerEnabled && !diskPage && historyHasMore,
     isLoadingMoreMessages: diskPage || historyHasMore ? isLoadingMessagePage : false,
     loadMoreMessages,
+    hasPendingLoadMoreAnchor,
+    refreshLoadMoreAnchorBaseline,
+    /** 视口锚点快照：渲染层在列表变短时按行补偿（不订阅，同帧只读）。 */
+    peekViewportAnchor,
     markProgrammaticScroll,
     jumpToMessage,
     scrollToBottom,

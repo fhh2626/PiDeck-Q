@@ -4,7 +4,6 @@ import {
 	useRef,
 	useState,
 	type MouseEvent as ReactMouseEvent,
-	type PointerEvent,
 } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";

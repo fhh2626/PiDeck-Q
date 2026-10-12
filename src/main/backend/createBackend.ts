@@ -9,12 +9,8 @@ import {
 } from "../../shared/i18n/mainProcessCopy";
 import { toAbsoluteSessionPath } from "../../shared/sessionIdentity";
 import type {
-	CreateAnonymousSessionInput,
-	CreateAnonymousSessionResult,
-	Project,
 	SendPromptInput,
 	SendPromptResult,
-	SessionRecord,
 } from "../../shared/types";
 import { ProjectStore } from "../projects/ProjectStore";
 import { FileSystemService } from "../fs/FileSystemService";
@@ -57,10 +53,7 @@ import { registerBackendRpc } from "./registerBackendRpc";
 import { startBackendStartupTasks } from "./backendStartupTasks";
 import { createStartupBarrier } from "../utils/StartupBarrier";
 import { createTrashPath } from "../fs/trash";
-import {
-	SessionDeleteBlockedError,
-	isSessionDeleteBlocked,
-} from "../sessions/SessionDeleteBlockedError";
+import { SessionRecordService } from "../sessions/SessionRecordService";
 
 export async function createBackend(options: CreateBackendOptions): Promise<Backend> {
 	const { router, host, platform, runtime } = options;
@@ -146,6 +139,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			openPath: (p) => platform.shell.openPath(p),
 			trashPath,
 		},
+		() => projectStore.list().map((project) => project.path),
 	);
 	const nativeWasmLocateDir = join(paths.appPath, "node_modules", "sql.js", "dist");
 	const wasmLocateDir = existsSync(nativeWasmLocateDir)
@@ -212,6 +206,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			hasLiveWindow: () => host.hasLiveWindow(),
 			// 内置扩展入口迁移必须在首次 spawn 前完成，否则旧全局版与 -e 内置版双加载。
 			startupBarrier,
+			// 扩展提示文案跟随界面语言：注入给 pi 子进程的 PIDECK_UI_LANGUAGE 来源。
+			getLocale: currentMainProcessLocale,
 		},
 	);
 
@@ -223,7 +219,9 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		(channel, payload) => host.sendToRenderer(channel, payload),
 	);
 
-	await settingsStore.load();
+	// Catalog migration resolves relative paths through ProjectStore. Both must be
+	// loaded before catalog.load(); parallel I/O keeps this dependency inexpensive.
+	await Promise.all([settingsStore.load(), projectStore.loadForStartup()]);
 	platform.application.hideApplicationMenu();
 	const initialSessionSettings = settingsStore.get();
 	const sessionCatalog = new SessionCatalog(
@@ -239,6 +237,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			if (!project) return filePath;
 			return toAbsoluteSessionPath(filePath, project.path, environment);
 		},
+		(projectId) => projectStore.get(projectId)?.path,
 	);
 	await sessionCatalog.load();
 
@@ -277,6 +276,23 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		sendToRenderer: host.sendToRenderer,
 	});
 
+	// 会话记录（改名/删除/归档/读消息）的唯一业务入口：
+	// 桌面 IPC 与 Web backend 都只调它，避免两边各自演化出漂移的行为。
+	const sessionRecordService = new SessionRecordService({
+		sessionCatalog,
+		sessionScanner,
+		sessionRuntimeCoordinator,
+		listAgents: () => agentManager.list(),
+		isAnonymousActivating: (id) => runtimeBridge.isAnonymousActivating(id),
+		notifyCatalogRefreshed: (projectId) =>
+			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId }),
+		toCommandError: (error) => runtimeBridge.sessionCommandIpcError(error),
+		mainCopy: mainCopy as (key: string, params?: Record<string, string | number>) => string,
+		logger: appLogger,
+		readDisplayMessages: (filePath, sessionId, content) =>
+			agentManager.readSessionDisplayMessages(filePath, sessionId, content),
+	});
+
 	webServiceManager = new WebServiceManager({
 		devRendererUrl: runtime?.devRendererUrl,
 		// 订阅 pi agent 事件流，供 Web SSE 端点转发给浏览器。
@@ -309,9 +325,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			sessionRuntimeCoordinator.getRuntimeMessages(sessionId),
 		listCatalogSessions: async (projectId) => {
 			if (!projectId) {
-				return sessionCatalog.listEntries()
-					.map((entry) => sessionCatalog.getRecord(entry.id))
-					.filter((record): record is SessionRecord => Boolean(record));
+				return sessionCatalog.listRecords();
 			}
 			const project = projectStore.get(projectId);
 			if (!project) throw new Error(mainCopy("project.notFound"));
@@ -350,58 +364,32 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			return record;
 		},
 		createAnonymousSession: runtimeBridge.createAnonymousSession,
-		updateSessionRecord: async (sessionId, patch) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) throw new Error(mainCopy("session.notFound"));
-			const title = patch.title?.trim();
-			if (title && title !== entry.title) {
-				const target = sessionRuntimeCoordinator.getTarget(sessionId);
-				if (target) {
-					const renamed = await sessionRuntimeCoordinator.renameRuntime(target, title);
-					if (!renamed.ok) throw runtimeBridge.sessionCommandIpcError(renamed.error);
-				} else if (entry.filePath) {
-					await sessionScanner.rename(entry.filePath, title);
-				}
-			}
-			const record = await sessionCatalog.update(sessionId, {
-				...patch,
-				title: title || undefined,
-			});
-			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: record.projectId });
-			return record;
-		},
-		deleteSessionRecord: async (sessionId) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) return false;
-			if (
-				isSessionDeleteBlocked(sessionId, {
-					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
-					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
-					isAnonymousActivating: (sessionId) => runtimeBridge.isAnonymousActivating(sessionId),
-				})
-			) {
-				throw new SessionDeleteBlockedError(mainCopy("session.stopBeforeDelete"));
-			}
-			const projectId = entry.projectId;
-			if (entry.filePath) await sessionScanner.delete(entry.filePath);
-			await sessionCatalog.remove(sessionId);
-			host.sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId });
-			return true;
-		},
+		updateSessionRecord: (sessionId, patch) => sessionRecordService.update(sessionId, patch),
+		deleteSessionRecord: (sessionId) => sessionRecordService.delete(sessionId),
 		copySessionRecord: (sessionId) => runtimeBridge.copyCatalogSession(sessionId),
 		exportSessionRecordHtml: (sessionId) => runtimeBridge.exportCatalogSessionHtml(sessionId),
 		readSessionReferenceMessages: (sessionId) =>
 			runtimeBridge.readCatalogSessionReferenceMessages(sessionId),
-		readSessionMessages: async (sessionId) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return [];
-			const content = await sessionScanner.readSessionRawText(entry.filePath);
-			return agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
-		},
+		// 与桌面 IPC 共用同一条读消息管线（剔工具结果副本 + 下发预算）。
+		readSessionMessages: (sessionId) => sessionRecordService.readMessages(sessionId),
 		readSessionMessagePage: async (sessionId, before, pageSize) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
 			return agentManager.readSessionDisplayMessagePage(entry.filePath, sessionId, before, pageSize);
+		},
+		// 轮次分页（2026-12 统一 50 轮）：Web 初始尾页/更早页都走这条路径，
+		// 页边界对齐完整用户轮次。Web 端不需要桌面 IPC 的 runtime 缓存优化：
+		// /api/state 已单独下发运行中快照。
+		readSessionTurnPage: async (sessionId, before, turnCount, beforeEntryId) => {
+			const entry = sessionCatalog.get(sessionId);
+			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
+			return agentManager.readSessionDisplayTurnPage(
+				entry.filePath,
+				sessionId,
+				before,
+				turnCount,
+				beforeEntryId,
+			);
 		},
 		sendSessionPrompt: async (input) => {
 			const result = await sessionRuntimeCoordinator.send(input);
@@ -522,7 +510,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 
 	const visionBridge = new VisionBridgeConfigManager(configManager);
 
-	registerBackendRpc({
+	const disposeRpc = registerBackendRpc({
 		router,
 		host,
 		platform,
@@ -535,6 +523,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			fileSystemService,
 			sessionScanner,
 			sessionCatalog,
+			sessionRecordService,
 			sessionRuntimeCoordinator,
 			codexSessionImporter,
 			claudeSessionImporter,
@@ -570,6 +559,19 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		mainCopy,
 		resolveSessionIdForAgent: (agentId: string) => sessionRuntimeCoordinator.getSessionId(agentId),
 		hasActiveStreaming: () => agentManager.hasActiveStreaming(),
+		// 事件流断层（SSE 历史被裁/超大帧被丢弃）时由 native-node 触发：
+		// 只补发实时状态，不暴露 AgentManager 内部。
+		resyncLiveRendererState: (resyncOptions = {}) => {
+			// 聚焦会话必补；其余 Agent 由 AgentManager 按流式/待投递/断层后是否有下发筛选。
+			const focusedSessionId = sessionRuntimeCoordinator.getFocusedSession();
+			const focusedAgentId = focusedSessionId
+				? sessionRuntimeCoordinator.getAgentId(focusedSessionId)
+				: undefined;
+			agentManager.flushLiveRendererState({
+				priorityAgentIds: focusedAgentId ? new Set([focusedAgentId]) : undefined,
+				lostSinceMs: resyncOptions.lostSinceMs,
+			});
+		},
 		startAfterWindowCreated: () => {
 			if (postWindowStarted || disposed) return;
 			postWindowStarted = true;
@@ -596,6 +598,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		dispose: async () => {
 			if (disposed) return;
 			disposed = true;
+			disposeRpc();
+			sessionScanner.dispose();
 			terminalManager?.closeAll();
 			agentManager?.stopAll();
 			await webServiceManager?.stop().catch(() => undefined);

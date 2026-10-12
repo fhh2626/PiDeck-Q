@@ -15,6 +15,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,9 +39,20 @@ export interface FileDiffLine {
   content: string;
 }
 
+export interface FileDiffLineSource {
+  /** 新增行数（与 line 数组里 added 行的数量一致）。 */
+  additions: number;
+  /** 删除行数（write/create 为 0）。 */
+  deletions: number;
+  /** 构造完整行数组；只能由已展开的正文调用（文件名行不得触发）。 */
+  getLines: () => FileDiffLine[];
+}
+
 export interface FileDiffProps {
   file: ReactNode;
-  lines: FileDiffLine[];
+  lines?: FileDiffLine[];
+  /** 惰性行数据源：优先于 `lines`。父组件用它避免为收起文件提前拆全文。 */
+  lineSource?: FileDiffLineSource;
   status?: FileDiffStatus;
   open?: boolean;
   defaultOpen?: boolean;
@@ -52,6 +64,8 @@ export interface FileDiffProps {
   onCopy?: () => void | Promise<void>;
   className?: string;
 }
+
+const EMPTY_LINES: FileDiffLine[] = [];
 
 function ChangeCount({ value, type }: { value: number; type: "added" | "removed" }) {
   if (!value) return null;
@@ -70,9 +84,144 @@ function ChangeCount({ value, type }: { value: number; type: "added" | "removed"
   );
 }
 
+/**
+ * 展开态的 diff 正文：逐行 DOM、Shiki 高亮与复制按钮都只在这里构建。
+ *
+ * 为什么单独拆组件而不是在 FileDiff 内部用条件表达式渲染同一段 JSX：
+ * `useAgentCodeTokens`（Shiki）是钩子，不能进条件分支；只有整块不挂载
+ * 才能真正跳过「拼接全文 + 高亮 + 逐行节点」的成本。收起的长会话里
+ * 每轮底部可能挂几十个文件，全部留在文档里会让输入等待布局。
+ */
+function FileDiffBody({
+  lines: eagerLines,
+  lineSource,
+  language,
+  maxHeight,
+  streaming,
+  reduce,
+  copied,
+  canCopy,
+  onCopy,
+}: {
+  lines?: FileDiffLine[];
+  lineSource?: FileDiffLineSource;
+  language: AgentCodeLanguage;  maxHeight: number;
+  streaming: boolean;
+  reduce: boolean;
+  copied: boolean;
+  canCopy: boolean;
+  onCopy: () => void | Promise<void>;
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // 行数组到这里才构造：收起时不挂载正文，因此完全不会走到这里。
+  const lines = useMemo(
+    () => lineSource?.getLines() ?? eagerLines ?? EMPTY_LINES,
+    [eagerLines, lineSource],
+  );
+  const code = lines.map((line) => line.content).join("\n");
+  const tokens = useAgentCodeTokens(code, language);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !streaming) return;
+
+    const frame = requestAnimationFrame(() => {
+      if (viewport.scrollHeight <= viewport.clientHeight) return;
+      if (typeof viewport.scrollTo === "function") {
+        viewport.scrollTo({
+          top: viewport.scrollHeight,
+          behavior: reduce ? "auto" : "smooth",
+        });
+      } else {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+
+  return (
+    <div className="pl-5 pt-1">
+      <div className="overflow-hidden rounded-md bg-muted/80">
+        <div
+          ref={viewportRef}
+          data-slot="file-diff-viewport"
+          aria-live="polite"
+          className="scrollbar-hide overflow-auto"
+          style={{ maxHeight }}
+        >
+          <div className="font-mono text-xs leading-5">
+            <span className="sr-only">File changes</span>
+            {lines.map((line, index) => {
+              const type = line.type ?? "context";
+              return (
+                <div
+                  key={line.id}
+                  className={cn(
+                    "grid grid-cols-[2.25rem_2.25rem_1rem_minmax(0,1fr)]",
+                    type === "added" && "bg-emerald-500/[0.07]",
+                    type === "removed" && "bg-rose-500/[0.07]",
+                  )}
+                >
+                  <span className="select-none pr-2 text-right tabular-nums text-muted-foreground/40">
+                    {line.oldLine}
+                  </span>
+                  <span className="select-none pr-2 text-right tabular-nums text-muted-foreground/40">
+                    {line.newLine}
+                  </span>
+                  <span
+                    className={cn(
+                      "select-none text-center text-muted-foreground/45",
+                      type === "added" &&
+                        "text-emerald-600 dark:text-emerald-400",
+                      type === "removed" &&
+                        "text-rose-600 dark:text-rose-400",
+                    )}
+                  >
+                    {type === "added"
+                      ? "+"
+                      : type === "removed"
+                        ? "−"
+                        : ""}
+                  </span>
+                  <AgentCodeLine
+                    code={line.content}
+                    tokens={tokens?.[index]}
+                    className="min-w-0 whitespace-pre px-1.5"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {canCopy ? (
+          <div className="flex justify-end px-2 pb-1.5 pt-1">
+            <motion.button
+              type="button"
+              aria-label={copied ? "Copied" : "Copy diff"}
+              title={copied ? "Copied" : "Copy diff"}
+              onClick={onCopy}
+              whileTap={reduce ? undefined : { scale: 0.9 }}
+              transition={SPRING_PRESS}
+              className="grid size-7 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {copied ? (
+                <Check className="size-3.5" />
+              ) : (
+                <Copy className="size-3.5" />
+              )}
+            </motion.button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function FileDiff({
   file,
   lines,
+  lineSource,
   status = "streaming",
   open,
   defaultOpen = true,
@@ -88,18 +237,20 @@ export function FileDiff({
   const baseId = useId();
   const triggerId = `${baseId}-trigger`;
   const contentId = `${baseId}-content`;
-  const viewportRef = useRef<HTMLDivElement>(null);
   const previousStatus = useRef(status);
   const copyTimer = useRef<number | undefined>(undefined);
   const [copied, setCopied] = useState(false);
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const currentOpen = open ?? internalOpen;
   const streaming = status === "streaming";
-  const additions = lines.filter((line) => line.type === "added").length;
-  const deletions = lines.filter((line) => line.type === "removed").length;
+  // 计数走 lineSource 的轻量统计（只数换行），不得为了计数去构造行数组。
+  const additions = lineSource
+    ? lineSource.additions
+    : (lines ?? EMPTY_LINES).filter((line) => line.type === "added").length;
+  const deletions = lineSource
+    ? lineSource.deletions
+    : (lines ?? EMPTY_LINES).filter((line) => line.type === "removed").length;
   const canCopy = Boolean(copyText || onCopy);
-  const code = lines.map((line) => line.content).join("\n");
-  const tokens = useAgentCodeTokens(code, language);
 
   const setOpen = useCallback(
     (next: boolean) => {
@@ -110,9 +261,9 @@ export function FileDiff({
   );
 
   useEffect(() => {
-    if (previousStatus.current !== "streaming" && status === "streaming") {
-      setOpen(true);
-    }
+    // 正文挂载只看开合：运行状态上升沿不再强行展开本轮所有文件。
+    // 旧行为会在 complete→streaming 时 setOpen(true)，那是「一轮改几十个文件就同时挂上
+    // 几十份 diff 正文与高亮」的来源；运行状态现在只负责状态展示与完成时的收起。
     if (
       previousStatus.current === "streaming" &&
       status === "complete" &&
@@ -129,24 +280,6 @@ export function FileDiff({
     },
     [],
   );
-
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || !currentOpen || !streaming) return;
-
-    const frame = requestAnimationFrame(() => {
-      if (viewport.scrollHeight <= viewport.clientHeight) return;
-      if (typeof viewport.scrollTo === "function") {
-        viewport.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: reduce ? "auto" : "smooth",
-        });
-      } else {
-        viewport.scrollTop = viewport.scrollHeight;
-      }
-    });
-    return () => cancelAnimationFrame(frame);
-  });
 
   const handleCopy = useCallback(async () => {
     if (onCopy) await onCopy();
@@ -208,81 +341,22 @@ export function FileDiff({
         aria-labelledby={triggerId}
         open={currentOpen}
       >
-        <div className="pl-5 pt-1">
-          <div className="overflow-hidden rounded-md bg-muted/80">
-            <div
-              ref={viewportRef}
-              data-slot="file-diff-viewport"
-              aria-live="polite"
-              className="scrollbar-hide overflow-auto"
-              style={{ maxHeight }}
-            >
-              <div className="font-mono text-xs leading-5">
-                <span className="sr-only">File changes</span>
-                {lines.map((line, index) => {
-                  const type = line.type ?? "context";
-                  return (
-                    <div
-                      key={line.id}
-                      className={cn(
-                        "grid grid-cols-[2.25rem_2.25rem_1rem_minmax(0,1fr)]",
-                        type === "added" && "bg-emerald-500/[0.07]",
-                        type === "removed" && "bg-rose-500/[0.07]",
-                      )}
-                    >
-                      <span className="select-none pr-2 text-right tabular-nums text-muted-foreground/40">
-                        {line.oldLine}
-                      </span>
-                      <span className="select-none pr-2 text-right tabular-nums text-muted-foreground/40">
-                        {line.newLine}
-                      </span>
-                      <span
-                        className={cn(
-                          "select-none text-center text-muted-foreground/45",
-                          type === "added" &&
-                            "text-emerald-600 dark:text-emerald-400",
-                          type === "removed" &&
-                            "text-rose-600 dark:text-rose-400",
-                        )}
-                      >
-                        {type === "added"
-                          ? "+"
-                          : type === "removed"
-                            ? "−"
-                            : ""}
-                      </span>
-                      <AgentCodeLine
-                        code={line.content}
-                        tokens={tokens?.[index]}
-                        className="min-w-0 whitespace-pre px-1.5"
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {canCopy ? (
-              <div className="flex justify-end px-2 pb-1.5 pt-1">
-                <motion.button
-                  type="button"
-                  aria-label={copied ? "Copied" : "Copy diff"}
-                  title={copied ? "Copied" : "Copy diff"}
-                  onClick={handleCopy}
-                  whileTap={reduce ? undefined : { scale: 0.9 }}
-                  transition={SPRING_PRESS}
-                  className="grid size-7 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {copied ? (
-                    <Check className="size-3.5" />
-                  ) : (
-                    <Copy className="size-3.5" />
-                  )}
-                </motion.button>
-              </div>
-            ) : null}
-          </div>
-        </div>
+        {/* 只有展开时才挂载正文：逐行节点、Shiki 高亮与拼接全文全部省掉。
+            不用 CSS 把正文藏起来——那只是把节点留在文档里，布局与样式重算的成本照旧。
+            也不因为整轮 streaming 就预挂载：运行状态不等于「用户要看这个文件的正文」。 */}
+        {currentOpen && (
+          <FileDiffBody
+            lines={lines}
+            lineSource={lineSource}
+            language={language}
+            maxHeight={maxHeight}
+            streaming={streaming}
+            reduce={reduce}
+            copied={copied}
+            canCopy={canCopy}
+            onCopy={handleCopy}
+          />
+        )}
       </AgentDisclosure>
     </div>
   );

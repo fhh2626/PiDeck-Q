@@ -15,7 +15,7 @@ function compile(filePath, imports = {}) {
 }
 
 const timeline = compile("src/renderer/src/hooks/useSessionTimelineController.ts", {
-  react: {}, jotai: { atom: (value) => ({ _mockInit: value }) }, "jotai/utils": {}, "../atoms": {}, "../desktopApi": {},});
+  react: {}, jotai: { atom: (value) => ({ _mockInit: value }) }, "jotai/utils": {}, "../atoms": {}, "../desktopApi": {}, "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },});
 
 function readRendererRuntimeSources(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

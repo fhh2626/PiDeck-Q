@@ -1,7 +1,10 @@
-import type { ChatMessage, ImageContent } from "../../shared/types";
+import type { ChatMessage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { extractMessageText } from "./messageContent";
 import { takeActiveEntryId } from "./sessionEntryIds";
+// entryId 对齐规则（含压缩裁剪）定义在 sessionEntryIds 的纯函数里，便于单测直接加载；
+// 这里保留同名导出，外部导入路径不变。
+export { buildActiveBranchEntryIds } from "./sessionEntryIds";
 import { buildAskQuestionResultSummary } from "./askQuestionResult";
 import { extractImageContent } from "../../shared/imageContent";
 import { applyImageDisplayBudget } from "../../shared/imageLimits";
@@ -17,27 +20,6 @@ export type AgentMessageProjectorDeps = {
 function stripAnsi(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
 }
-
-export function buildActiveBranchEntryIds(
-		entries: Array<{ id: string; parentId: string | null; type?: string; message?: { role?: string } }>,
-		leafId: string,
-	): string[] {
-		const entryById = new Map<string, { id: string; parentId: string | null; type?: string; message?: { role?: string } }>();
-		for (const entry of entries) {
-			entryById.set(entry.id, entry);
-		}
-
-		// 从 leafId 回溯到 root，只保留 type=message 的条目
-		const allBranchIds: string[] = [];
-		let currentId: string | null = leafId;
-		while (currentId) {
-			allBranchIds.unshift(currentId);
-			const entry = entryById.get(currentId);
-			currentId = entry?.parentId ?? null;
-		}
-		return allBranchIds.filter((id) => entryById.get(id)?.type === "message");
-	}
-
 
 /**
  * Converts persisted Pi/RPC history into renderer ChatMessage records. It has no
@@ -237,7 +219,14 @@ export class AgentMessageProjector {
 							: Date.now(),
 						meta: {
 							type: isCompaction ? "compaction" : "branchSummary",
-							tokensBefore: typed.tokensBefore,
+							tokensBefore: typed.tokensBefore ?? typed.meta?.tokensBefore,
+							// 文件补入的卡片把事件身份放在 meta；保留它才能跨 session/runtime 投影去重。
+							...(isCompaction && typeof typed.meta?.compactionId === "string"
+								? { compactionId: typed.meta.compactionId } : {}),
+							...(isCompaction && typeof typed.meta?.firstKeptEntryId === "string"
+								? { firstKeptEntryId: typed.meta.firstKeptEntryId } : {}),
+							...(!isCompaction && typeof typed.fromId === "string"
+								? { fromId: typed.fromId } : {}),
 						// 保留压缩次数（桌面端从会话文件解析得到），供前端展示“已压缩 N 次”
 						...(isCompaction && typed.meta?.compactionCount != null
 							? { compactionCount: typed.meta.compactionCount }

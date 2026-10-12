@@ -24,6 +24,7 @@ const sessionAtoms = compile("src/renderer/src/atoms/session-atoms.ts", {
   "../utils/agentRuntimeState": compile("src/renderer/src/utils/agentRuntimeState.ts"),
   "../utils/sessionRecordIdentity": compile("src/renderer/src/utils/sessionRecordIdentity.ts"),
   "../../../shared/messageFingerprint": messageFingerprint,
+  "../utils/historyTurnWindow": compile("src/renderer/src/utils/historyTurnWindow.ts"),
 });
 const composerAtoms = compile("src/renderer/src/atoms/composer-atoms.ts", {
   "./session-atoms": sessionAtoms,
@@ -36,10 +37,13 @@ const timeline = compile("src/renderer/src/hooks/useSessionTimelineController.ts
   "../desktopApi": {},
   "../i18n": { t: (key) => key },
   "../utils/notice": { showNotice: () => {} },
+  "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
   "../components/session/timeline/turnRenderWindow": {
     TIMELINE_SCROLLED_TURN_LIMIT: 15,
     TIMELINE_WINDOW_EXPAND_STEP: 10,
   },
+  // controller 依赖锚点/窗口位移策略：给真实模块而不是再 mock 一份，避免同一规则两套真相。
+  "./timelineScrollAnchor": compile("src/renderer/src/hooks/timelineScrollAnchor.ts"),
 });
 
 test("session load and send selectors retain current references across background patches", () => {

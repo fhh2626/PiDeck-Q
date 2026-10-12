@@ -107,12 +107,21 @@ export function useTipTapComposerEditor(
 		onChangeRef.current(next, posToPlainOffset(editor, editor.state.selection.from));
 	};
 
-	const editor = useEditor({
-		immediatelyRender: false,
-		editable: !disabled,
-		extensions: createComposerExtensions(),
-		content: plainTextToComposerDoc(value, whitelist),
-		editorProps: buildComposerEditorProps(
+	// 初始化文档/扩展只创建一次。外部 value 回填由下面的 layout effect 负责；
+	// 不能把每次草稿变化当成新初始化配置，否则 useEditor 会反复 setOptions。
+	const initialOptionsRef = useRef<{
+		extensions: ReturnType<typeof createComposerExtensions>;
+		content: ReturnType<typeof plainTextToComposerDoc>;
+	} | null>(null);
+	if (!initialOptionsRef.current) {
+		initialOptionsRef.current = {
+			extensions: createComposerExtensions(),
+			content: plainTextToComposerDoc(value, whitelist),
+		};
+	}
+	// DOM 事件委托读取最新 callback ref，配置只随真正的外观/权限变化更新。
+	const editorProps = useMemo(
+		() => buildComposerEditorProps(
 			{
 				composingRef,
 				onTextInput: (text) => {
@@ -142,6 +151,14 @@ export function useTipTapComposerEditor(
 			},
 			{ className, placeholder, disabled },
 		),
+		[className, placeholder, disabled],
+	);
+
+	const editor = useEditor({
+		immediatelyRender: false,
+		editable: !disabled,
+		...initialOptionsRef.current,
+		editorProps,
 		onUpdate: ({ editor: ed }) => {
 			syncEmptyClass(ed);
 			if (composingRef.current) return;
@@ -174,40 +191,10 @@ export function useTipTapComposerEditor(
 
 	useEffect(() => {
 		if (!editor || editor.isDestroyed) return;
-		editor.setEditable(!disabled);
-		editor.setOptions({
-			editorProps: buildComposerEditorProps(
-				{
-					composingRef,
-					onTextInput: (text) => {
-						onTextInputRef.current?.(text);
-					},
-					onKeyDown: (event) => {
-						onKeyDownRef.current?.(
-							event as unknown as React.KeyboardEvent<HTMLDivElement>,
-						);
-					},
-					onPaste: (event) => {
-						onPasteRef.current?.(
-							event as unknown as React.ClipboardEvent<HTMLDivElement>,
-						);
-					},
-					onDrop: (event) => {
-						onDropRef.current?.(
-							event as unknown as React.DragEvent<HTMLDivElement>,
-						);
-					},
-					onDragOver: (event) => {
-						onDragOverRef.current?.(
-							event as unknown as React.DragEvent<HTMLDivElement>,
-						);
-					},
-					onChipClick: (chip) => onChipClickRef.current?.(chip),
-				},
-				{ className, placeholder, disabled },
-			),
-		});
-	}, [editor, disabled, className, placeholder]);
+		// useEditor 更新 options 时刻意保留当前 editable，权限切换需显式同步。
+		// editorProps 已由 memo 交给 useEditor，不在这里重复设置整份 DOM 配置。
+		if (editor.isEditable !== !disabled) editor.setEditable(!disabled);
+	}, [editor, disabled]);
 
 	// composition 结束后补一次同步：合成期间 onUpdate 被跳过，避免草稿 atom 一直为空导致无法发送。
 	useEffect(() => {
@@ -225,11 +212,6 @@ export function useTipTapComposerEditor(
 		return () => dom.removeEventListener("compositionend", onCompositionEnd);
 	}, [editor]);
 
-	/**
-	 * 受控同步：只在父层 value 与「我们上次发出的文本」不一致时写回编辑器。
-	 * 禁止用 editorText !== value 当条件——打字后父层尚未 re-render 时会把新输入打回旧草稿。
-	 * 白名单变化只影响下次 setContent 解析，不作为同步触发依赖。
-	 */
 	/**
 	 * 受控同步：只在父层 value 与「我们上次发出的文本」不一致时写回编辑器。
 	 * 禁止用 editorText !== value 当条件——打字后父层尚未 re-render 时会把新输入打回旧草稿。

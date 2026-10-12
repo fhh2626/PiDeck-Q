@@ -265,6 +265,21 @@ export function hideUnavailableShellTools(
 	return { next, hidden };
 }
 
+/**
+ * 隐藏 shell 工具后是否需要通知用户。
+ * 为什么：bash 与 powershell 互为替代，Windows 上没有 Git Bash 是常态而非故障；
+ * 只要修剪后仍有一个可用 shell 工具留在 active 列表里，就静默处理，不发警告也不发提示。
+ * 只有「本次确实隐藏了 shell 且一个 shell 工具都不剩」时，模型才真正失去命令执行能力，值得告知。
+ */
+export function shouldNotifyHiddenShells(
+	hidden: readonly ShellToolName[],
+	nextActiveTools: readonly string[],
+): boolean {
+	if (hidden.length === 0) return false;
+	const shellNames: readonly string[] = SHELL_TOOL_NAMES;
+	return !nextActiveTools.some(name => shellNames.includes(name));
+}
+
 /** Remove inactive bash/powershell rows from Pi's Available tools list; keep all other rows. */
 export function filterUnavailableShellToolLines(block: string, activeTools: readonly string[]): string {
 	const drop = new Set<string>();

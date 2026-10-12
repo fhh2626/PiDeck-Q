@@ -135,6 +135,15 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
   const messageCommandTarget = runtime.runtimeTarget;
   const canDispatchMessageMutation =
     canMutateActiveMessages && messageCommandTarget !== undefined;
+  // latest-ref：App 每次渲染都会重建 services.* 回调。若把回调本身放进 useMemo 依赖，
+  // messageActions 每帧都换引用，TurnRow 按引用比较回调时会在流式期间整列重渲染。
+  // ref 让包装函数只在「能否派发 / 目标 runtime / 能力有无」变化时换新，点击时仍调最新实现。
+  const latestMessageServicesRef = React.useRef(services);
+  latestMessageServicesRef.current = services;
+  const hasResendService = Boolean(services.resendUserMessage);
+  const hasEditService = Boolean(services.editMessage);
+  const hasDeleteService = Boolean(services.deleteMessage);
+  const hasForkService = Boolean(services.forkFromUserMessage);
 
   const messageActions = React.useMemo(() => {
     if (!canDispatchMessageMutation || !messageCommandTarget) {
@@ -146,21 +155,21 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
       };
     }
     return {
-      onResendUserMessage: services.resendUserMessage
+      onResendUserMessage: hasResendService
         ? (message: ChatMessage) =>
-            services.resendUserMessage?.(messageCommandTarget, message)
+            latestMessageServicesRef.current.resendUserMessage?.(messageCommandTarget, message)
         : undefined,
-      onEditMessage: services.editMessage
+      onEditMessage: hasEditService
         ? (messageId: string, newText: string) =>
-            services.editMessage?.(messageCommandTarget, messageId, newText)
+            latestMessageServicesRef.current.editMessage?.(messageCommandTarget, messageId, newText)
         : undefined,
-      onDeleteMessage: services.deleteMessage
+      onDeleteMessage: hasDeleteService
         ? (messageId: string) =>
-            services.deleteMessage?.(messageCommandTarget, messageId)
+            latestMessageServicesRef.current.deleteMessage?.(messageCommandTarget, messageId)
         : undefined,
-      onForkMessage: services.forkFromUserMessage
+      onForkMessage: hasForkService
         ? (message: ChatMessage) =>
-            services.forkFromUserMessage?.(messageCommandTarget, message)
+            latestMessageServicesRef.current.forkFromUserMessage?.(messageCommandTarget, message)
         : undefined,
     };
   }, [
@@ -168,10 +177,10 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
     messageCommandTarget?.sessionId,
     messageCommandTarget?.agentId,
     messageCommandTarget?.runtimeGeneration,
-    services.resendUserMessage,
-    services.editMessage,
-    services.deleteMessage,
-    services.forkFromUserMessage,
+    hasResendService,
+    hasEditService,
+    hasDeleteService,
+    hasForkService,
   ]);
 
   return (

@@ -6,6 +6,8 @@ const backendDirectory = "src/main/backend";
 const mainDomainPaths = [
   "src/main/window/MainWindowControlsContract.ts",
   "src/native-node/host/NativeMainWindowControls.ts",
+  // E1：会话改名/删除/归档已收口到领域服务，"session.*" 文案引用随之移到这里。
+  "src/main/sessions/SessionRecordService.ts",
 ];
 
 export const mainIpcSources = [

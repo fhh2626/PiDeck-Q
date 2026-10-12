@@ -233,6 +233,8 @@ function createHarness(options = {}) {
       if (options.getLocalStreamingFlags) return options.getLocalStreamingFlags(agentId);
       return { isStreaming: false, isExecutingTool: false };
     },
+    // 缺省不提供该能力：保持旧语义（error 视为终止），旧用例不受影响。
+    ...(options.isRecoverableErrorRuntime ? { isRecoverableErrorRuntime: options.isRecoverableErrorRuntime } : {}),
 	refreshSessionIdentity: async (agentId) => {
 	  calls.refreshSessionIdentity += 1;
 	  const tab = tabs.find((candidate) => candidate.id === agentId);
@@ -376,6 +378,103 @@ test("explicit activation creates a runtime that is bound to the requested Sessi
   assert.equal(result.value.runtimeGeneration, 1);
   assert.equal(harness.calls.create, 1);
   assert.equal(harness.calls.send, 0);
+});
+
+// ── error 态的 runtime 可用性 ──
+// 一轮对话内的 API 请求失败会把 runtime 置为 error，但 pi 进程仍存活。
+// 若把这种可恢复的 error 当作终止态，编辑/删除/重发会全部报「runtime 不可用」，
+// 下一次发送还会无谓地 stop + 重建进程。
+test("recoverable (turn-level) error runtime stays bound and accepts history mutations", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({ isRecoverableErrorRuntime: () => true });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+
+  const activated = await coordinator.activateRuntime("session-1");
+  assert.equal(activated.ok, true);
+  const target = activated.value;
+
+  // 模拟一次轮次级 API 请求失败：状态变 error，但进程还在且可恢复
+  harness.tabs[0].status = "error";
+
+  // getTarget 会走 getAgentId 的终止态判定；可恢复的 error 必须保持绑定
+  assert.equal(coordinator.getTarget("session-1")?.agentId, "agent-1");
+  assert.equal(coordinator.listRuntimes().length, 1, "recoverable error runtime stays listed");
+
+  const deleted = await coordinator.deleteRuntimeMessage(target, "message-1");
+  assert.equal(deleted.ok, true, "history mutation must reach the live process");
+  assert.equal(harness.calls.deleteMessage, 1);
+
+  // 再次激活应复用同一进程，而不是 stop + create
+  await coordinator.activateRuntime("session-1");
+  assert.equal(harness.calls.create, 1, "a recoverable error runtime must be reused");
+  assert.equal(harness.calls.stop, 0);
+});
+
+test("non-recoverable error runtime is unbound as before", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({ isRecoverableErrorRuntime: () => false });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+
+  const activated = await coordinator.activateRuntime("session-1");
+  assert.equal(activated.ok, true);
+  const target = activated.value;
+
+  harness.tabs[0].status = "error";
+
+  // 不可恢复（启动失败 / 进程已退出）：保持旧的 fail-closed 语义
+  assert.equal(coordinator.getTarget("session-1"), undefined);
+  assert.equal(coordinator.listRuntimes().length, 0);
+
+  const deleted = await coordinator.deleteRuntimeMessage(target, "message-1");
+  assert.equal(deleted.ok, false);
+  assert.equal(deleted.error.code, "SESSION_RUNTIME_UNAVAILABLE");
+  assert.equal(harness.calls.deleteMessage, 0);
+});
+
+test("startup error stays a startup failure even when the gateway reports recoverability", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    // gateway 已实现探测能力：启动失败路径必须显式报告不可恢复，
+    // 而不是因为「能力存在」就跳过启动失败清理。
+    isRecoverableErrorRuntime: () => false,
+    getMessages: () => [{
+      id: "startup-error-2",
+      agentId: "agent-error-2",
+      role: "error",
+      text: "Agent 运行时发生错误。",
+      meta: { debugDetails: "pi --mode rpc failed: get_state timeout" },
+      timestamp: 1,
+    }],
+    createdTab: {
+      id: "agent-error-2",
+      projectId: "project-1",
+      cwd: "C:/project",
+      title: "Session 1",
+      status: "error",
+      createdAt: 1,
+    },
+  });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+  );
+  const result = await coordinator.send(prompt());
+  assert.equal(result.accepted, false);
+  assert.equal(result.delivery, "rejected");
+  assert.match(result.error, /get_state timeout/);
+  assert.equal(harness.entry.status, "draft");
+  assert.equal(harness.calls.attach, 0);
+  assert.equal(harness.calls.send, 0);
+  assert.equal(harness.calls.stop, 1);
 });
 
 test("reports a draft activation before its runtime binding completes", async () => {

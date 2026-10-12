@@ -8,7 +8,13 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const nodeRequire = createRequire(import.meta.url);
+
+// entryId 对齐（含压缩裁剪）用真实实现：
+// 桩成旧算法会让压缩会话的 entryIds 静默退回全量分支（可见消息绑到归档条目）。
+const realSessionEntryIds = loadTsCommonJs("src/main/pi/sessionEntryIds.ts");
 
 function loadSharedModule(filePath) {
   const output = ts.transpileModule(
@@ -54,7 +60,8 @@ function loadAgentMessageProjectorModule() {
       if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./sessionEntryIds") {
         return {
-          takeActiveEntryId: (ids, index) => ({ entryId: ids?.[index], nextIndex: index + 1 }),
+          takeActiveEntryId: realSessionEntryIds.takeActiveEntryId,
+          buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds,
         };
       }
       // 25fd516 起 AgentManager 引入内置扩展参数拼接；本测试不涉及扩展加载，透传即可
@@ -75,6 +82,8 @@ function loadAgentMessageProjectorModule() {
 }
 
 function loadAgentManagerModule() {
+	// 定位映射/正文规范化用真实实现：桩掉会让 step 4 静默退回旧对位逻辑，掩盖 abort 错位 bug。
+	const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
 	// AgentManager 新增 streamGate 依赖（abort 流式封印），真实加载以保持闸门行为。
 	const streamGateModule = { exports: {} };
 	vm.runInNewContext(
@@ -112,7 +121,11 @@ function loadAgentManagerModule() {
 		module: historyReaderModule,
 		exports: historyReaderModule.exports,
 		require: (id) => {
+			if (id === "./SessionDisplayIndexStore") return loadTsCommonJs("src/main/pi/SessionDisplayIndexStore.ts");
 			if (id === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+			if (id === "./sessionEntryIds") {
+				return { buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds };
+			}
 			return nodeRequire(id);
 		},
 		Buffer,
@@ -152,6 +165,9 @@ function loadAgentManagerModule() {
       }
       if (specifier === "../../shared/ipc") return { ipcChannels: {} };
       if (specifier === "./PiProcess") return { PiProcess: class {} };
+      if (specifier === "./recoverRecentHistoryLoad") return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+      if (specifier === "../transport/monotonicNow") return loadTsCommonJs("src/main/transport/monotonicNow.ts");
+      if (specifier === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
       if (specifier === "./bashResult") return { formatBashToolMessage: () => "" };
       if (specifier === "./AgentMessageProjector") return messageProjectorModule;
       if (specifier === "./historyMessages") return { mergeHistoryWithPreservedMessages: (messages) => messages };
@@ -181,6 +197,8 @@ function loadAgentManagerModule() {
           cleanTitle: (t) => t,
           inferTitleFromMessages: () => undefined,
           isDefaultAgentTitle: () => false,
+          mapCachedMessageToEntryCandidates: realAgentUtils.mapCachedMessageToEntryCandidates,
+          normalizeMessageTextForMatch: realAgentUtils.normalizeMessageTextForMatch,
         };
       }
       if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");

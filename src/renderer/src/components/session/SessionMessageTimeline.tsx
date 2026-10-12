@@ -3,7 +3,6 @@ import { selectAtom } from "jotai/utils";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
 import type { ChatMessage, ImageContent } from "../../../../shared/types";
-import { MarkdownStream } from "./MarkdownStream";
 import {
   CompactionCard,
   DiagnosticMessageCard,
@@ -27,13 +26,12 @@ import {
   sessionMessageLoadStateAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
-  sessionSendStateByIdAtom,
+  sessionSendStateAtomFamily,
 } from "../../atoms";
 import {
   canLoadSessionTimelineMore,
   deriveSessionSurfaceRuntime,
   isLatestTimelineRunBusy,
-  resolveTimelineTopCompensation,
   useSessionTimelineController,
   type SessionTimelineController,
 } from "../../hooks/useSessionTimelineController";
@@ -49,11 +47,12 @@ import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
 import {
   resolveTimelineTurnWindow,
-  shouldWindowTimelineTurns,
   TIMELINE_MOUNTED_TURN_LIMIT,
-  TIMELINE_SCROLLED_MAX_ITEMS,
-  countAgentRunItems,
 } from "./timeline/turnRenderWindow";
+import {
+  resolveTimelineWindowShift,
+  scrollTopForRetainedRow,
+} from "../../hooks/timelineScrollAnchor";
 
 type TurnRowProps = ComponentProps<typeof TurnRow>;
 type UserBubbleProps = ComponentProps<typeof UserBubble>;
@@ -173,16 +172,9 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     ),
     [sessionId],
   );
-  const sendStateSelector = useMemo(
-    () => selectAtom(
-      sessionSendStateByIdAtom,
-      (states) => states[sessionId],
-      Object.is,
-    ),
-    [sessionId],
-  );
+  // 与 SessionHeader / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const messageLoadState = useAtomValue(messageLoadStateSelector);
-  const sendState = useAtomValue(sendStateSelector);
   const internalController = useSessionTimelineController({
     // An injected controller already owns loading and scroll effects; omit the
     // session identity so this inert hook cannot start a second disk load.
@@ -371,8 +363,8 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     prevRenderedRunsRef.current = next;
     return next;
   }, [renderedRuns]);
-  // 渲染窗口（2026-08 黑屏治理）：贴底只挂尾部 3 轮；上滚查看历史也裁剪
-  // （controller.scrolledWindowTurns，初始 15 轮 + 「显示更早」逐步扩大）——
+  // 渲染窗口（2026-08 黑屏治理，2026-12 统一 50 轮）：贴底只挂尾部 50 轮；上滚查看历史也裁剪
+  // （controller.scrolledWindowTurns，初始 50 轮 + 「显示更早」逐步扩大）——
   // 历史全量放开挂载是大会话渲染进程内存峰值/黑屏的来源。数据仍在 atoms。
   const followingForTurnWindow = controller.autoScroll;
   const turnWindowTurns = followingForTurnWindow
@@ -382,7 +374,11 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     () => resolveTimelineTurnWindow(
       reconciledRuns,
       turnWindowTurns,
-      followingForTurnWindow ? undefined : controller.scrolledWindowItems,
+      // 贴底与上滚共用同一条目预算（controller 持有，贴底时回落到基础值）。
+      // 以前贴底传 undefined：一轮里上百条工具时 DOM 无上限，输入与拖动都顿；
+      // 且一离开底部就突然从「全部」切到 200 条，列表从顶部缩短而无人补偿。
+      // 最新一轮单独超预算时 sliceLastUserTurns 仍整轮保留，不会切掉当前回复。
+      controller.scrolledWindowItems,
     ),
     [controller.scrolledWindowItems, followingForTurnWindow, reconciledRuns, turnWindowTurns],
   );
@@ -403,9 +399,11 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     return -1;
   }, [displayRuns]);
   
-  // 窗口轮数变化（上滚 3→15、点「显示更早」扩大）会在顶部插入内容，需补偿 scrollTop
+  // 窗口轮数变化（上滚扩大窗口、点「显示更早」扩大）会在顶部插入内容，需补偿 scrollTop
   // 保持视口内容不动；数据 prepend 的补偿由 controller 的 loadMoreAnchorRef 负责，
-  // 两者按「窗口轮数变化 / 数据变化」分工，不会同帧双重补偿。贴底时由引擎接管不补偿。
+  // 两者按「窗口轮数变化 / 数据变化」分工。补页成功会同时前插消息与 +10 轮（同一帧），
+  // 此时由 controller 的前置锚点做唯一一次补偿，本 effect 让位、不得二次补偿。
+  // 贴底时由引擎接管不补偿。
   const turnWindowStateRef = useRef<{ windowed: boolean; height: number; turns: number }>({
     windowed: false,
     height: 0,
@@ -416,27 +414,57 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     if (!timeline) return;
     const prev = turnWindowStateRef.current;
     const nextHeight = timeline.scrollHeight;
-    if (
-      prev.windowed &&
-      prev.turns !== turnWindowTurns &&
-      nextHeight > prev.height &&
-      !followingForTurnWindow
-    ) {
-      // 顶部（≤HISTORY_AUTO_LOAD_THRESHOLD）不补偿：插入内容在视口上方时
-      // 浏览器无滚动锚定（overflow-anchor:none），scrollTop 原位不动即可看到
-      // 新展开的内容；补偿会把新内容推出视口上方，表现为「点「显示更早」没反应」。
-      // 与数据 prepend 补偿共用 resolveTimelineTopCompensation 决策（2026-02 修复）。
-      const nextTop = resolveTimelineTopCompensation(
-        timeline.scrollTop,
-        nextHeight - prev.height,
-      );
-      if (nextTop !== null) {
-        // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
-        // 必须让自动加载监听忽略（补偿后视口可能落在顶部区间）
-        controller.markProgrammaticScroll?.();
-        timeline.scrollTop = nextTop;
+    // 锚点快照必须在改动 scrollTop 之前取：变短补偿要用「这一帧之前正在看的那一行」
+    // 和它当时距视口顶的偏移，才能把内容放回原处（controller 只在真实滚动时更新它）。
+    const anchorReading = controller.peekViewportAnchor();
+    const shiftAction = resolveTimelineWindowShift({
+      hasPendingHistoryAnchor: controller.hasPendingLoadMoreAnchor?.() ?? false,
+      turnsChanged: prev.turns !== turnWindowTurns,
+      heightDelta: nextHeight - prev.height,
+      following: followingForTurnWindow,
+      hadWindowedRows: prev.windowed,
+    });
+    if (shiftAction === "refresh-baseline") {
+      // 加载等待期间的普通帧（含底部流式增高）：只把锚点基线刷成当前值，
+      // 否则这段增高会被当成历史前置的高度差，把视口往下推。
+      controller.refreshLoadMoreAnchorBaseline?.();
+    } else if (shiftAction === "grow-compensation") {
+      // 没有历史前置（纯「显示更早」展开）时在这里补偿：用当前 scrollTop 加高度差，
+      // 贴顶也要加，视口里的消息才不被新展开的内容顶掉。
+      const nextTop = timeline.scrollTop + (nextHeight - prev.height);
+      // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
+      // 必须让自动加载监听忽略（补偿后视口可能落在顶部区间）。
+      controller.markProgrammaticScroll?.();
+      timeline.scrollTop = nextTop;
+    } else if (shiftAction === "shrink-compensation") {
+      // 顶部整轮被裁掉（非跟底时条目预算收紧、或 Agent 又跑完一轮把最旧轮顶出窗口）：
+      // 高度差不再适用——被裁掉的量不等于插入量，按差值补偿等于什么也没补，
+      // 视口会并到另一批内容上（表现为突然跳走）。改按锚点行对齐：把正在看的那一行
+      // 放回它原来的位置。
+      const anchorMessageId =
+        anchorReading?.status === "resolved" ? anchorReading.anchor.messageId : undefined;
+      const anchorRow = anchorMessageId
+        ? timeline.querySelector(`[data-message-id="${CSS.escape(anchorMessageId)}"]`)
+        : null;
+      const rowRect = anchorRow?.getBoundingClientRect();
+      // 行不可见（矩形全零）时不能用来对齐：按全零矩形算出的 scrollTop 是垃圾值。
+      if (anchorRow && rowRect && (rowRect.height > 0 || rowRect.width > 0)) {
+        const nextTop = scrollTopForRetainedRow(
+          rowRect.top - timeline.getBoundingClientRect().top + timeline.scrollTop,
+          anchorReading.status === "resolved" ? anchorReading.anchor.offsetTop : 0,
+        );
+        if (nextTop !== timeline.scrollTop) {
+          // 同样要标记程序化滚动：补偿后视口可能落在顶部区间，不能触发自动翻页。
+          controller.markProgrammaticScroll?.();
+          timeline.scrollTop = nextTop;
+        }
       }
+      // 锚点行已不在窗口里（被裁掉的正是正在看的那一行）：不猜位置，保持本帧落点。
+      // 下一帧真实滚动会带回新锚点；这里乱写 scrollTop 只会表现为「跳到以前的消息」。
     }
+    // "defer-to-history-anchor"：这一帧就是历史前插帧，不动 scrollTop 也不刷基线，
+    // 高度差交给 controller 的前置锚点补偿消费（同一帧补两次会把视口推下两倍高度）。
+    // "none"：跟底时由 stick-to-bottom 引擎负责生长补偿；上帧未裁切则没有顶部被裁的位移。
     turnWindowStateRef.current = {
       windowed: turnWindowActive,
       height: nextHeight,
@@ -644,9 +672,9 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                 {t("timeline.loadingMore")}
               </>
             ) : turnWindowActive
-                ? turnWindow.hiddenRunCount > 0
+                ? turnWindow.hiddenTurnCount > 0
                   ? t("timeline.loadEarlierTurns", {
-                      count: turnWindow.hiddenRunCount,
+                      count: turnWindow.hiddenTurnCount,
                     })
                   : t("timeline.loadEarlierContent")
                 : controller.nextLoadIsHistory

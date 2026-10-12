@@ -9,8 +9,8 @@
  *   - /todo 命令用 ctx.ui.notify 输出文本快照（单数命名，避免与 plan-mode 的 /todos 冲突）
  *
  * 状态持久化用 pi.appendEntry 写 custom entry，session_start / session_tree 时读
- * 最后一条快照重建——比扫描 toolResult.details 更可靠，且天然支持分支：分支切换后
- * getEntries 返回该分支的快照，todo 状态自动跟随分支。
+ * 当前分支最后一条快照重建——比扫描 toolResult.details 更可靠。快照挂在写入时的
+ * leaf 上，因此必须用 getBranch() 沿当前分支回溯；getEntries() 是整棵树的追加序。
  *
  * 相比 pi-deck-plan-mode（从 LLM 输出的 Plan: 文本解析 todo），本扩展让 LLM 显式
  * 调用工具维护任意任务列表，不依赖固定输出格式，定位更通用。
@@ -105,16 +105,37 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
-	 * 从会话 entries 重建状态：取最后一条 pi-deck-todo 快照。
-	 * 分支切换后 getEntries 返回该分支的 entries，状态自动跟随分支。
+	 * 从当前分支重建状态：取该分支路径上最后一条 pi-deck-todo 快照。
+	 * getEntries() 返回整棵会话树，其他分支后写入的快照会排在更后；切分支后必须用 getBranch()。
 	 */
 	function reconstructState(ctx: ExtensionContext): void {
-		const entries = ctx.sessionManager.getEntries();
-		const last = entries
-			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === ENTRY_TYPE)
-			.pop() as { data?: TodoState } | undefined;
-		todos = last?.data?.todos ?? [];
-		nextId = last?.data?.nextId ?? 1;
+		const entries = ctx.sessionManager.getBranch();
+		let snapshot: TodoState | undefined;
+		for (let index = entries.length - 1; index >= 0; index -= 1) {
+			const entry = entries[index];
+			if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
+			// 当前分支上最新的快照优先；形状无效时按空列表恢复，不回退到更早快照。
+			snapshot = isTodoState(entry.data) ? entry.data : undefined;
+			break;
+		}
+		todos = snapshot?.todos ?? [];
+		nextId = snapshot?.nextId ?? 1;
+	}
+
+	/** 校验持久化快照的最小形状，避免把会话边界上的未知数据当成待办状态。 */
+	function isTodoState(data: unknown): data is TodoState {
+		if (typeof data !== "object" || data === null) return false;
+		const todosValue = Reflect.get(data, "todos");
+		const nextIdValue = Reflect.get(data, "nextId");
+		if (!Array.isArray(todosValue) || typeof nextIdValue !== "number") return false;
+		return todosValue.every((item) => {
+			if (typeof item !== "object" || item === null) return false;
+			return (
+				typeof Reflect.get(item, "id") === "number" &&
+				typeof Reflect.get(item, "text") === "string" &&
+				typeof Reflect.get(item, "done") === "boolean"
+			);
+		});
 	}
 
 	// 立即注册（运行时初始化后 getAllTools 才能调用，因此无法在 default 里做加载顺序检测）。
@@ -127,7 +148,8 @@ export default function (pi: ExtensionAPI) {
 			"Manage a todo list. Actions: list (show all), add (text), toggle (id), clear (remove all). Progress is shown in the desktop UI widget.",
 		promptSnippet: "Manage a todo list (add / toggle / clear)",
 		promptGuidelines: [
-			"Use the todo tool to track multi-step work: add items before starting, toggle done as you complete each step, clear when finished.",
+			"Use the todo tool to track multi-step work: add items before starting and toggle each item done as you complete it.",
+			"Keep completed items in place. Do not clear the list when the work is finished; call clear only when the user explicitly asks to clear it.",
 			"Toggle by id; call list first if you need to see current ids.",
 			"Todo state is per-branch — switching branches restores that branch's list automatically.",
 		],

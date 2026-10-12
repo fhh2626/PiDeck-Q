@@ -153,7 +153,9 @@ Set `enabled` to `false` (or remove the block) as a kill switch. In that state, 
 { "asyncByDefault": false }
 ```
 
-WorkflowScript calls use background execution when the request omits `async`. Set `asyncByDefault` to `false` to restore foreground-by-default behavior for tool launches that still use the internal single-run primitive. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
+Interactive subagent tool calls run in the foreground by default when `async` is omitted or `false`. Only an explicit `async: true` launches a background run and returns a detached receipt. External runners (`external-cli` and `external-job`) have no foreground capability; omitting `async` or passing `async: false` is rejected immediately.
+
+`asyncByDefault` is retained for configuration compatibility; interactive tool calls always default to foreground execution regardless of this setting. Dedicated background channels (such as scheduled runs and RPC background spawns) continue to manage background execution explicitly.
 
 ## `defaultSubagentContext`
 
@@ -253,7 +255,7 @@ The watcher logs `Subagent result scan inspected … scheduled …` through `con
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 internal single, parallel, and chain runs into background mode and bypasses launch UI by forcing `clarify: false`. Nested calls keep their own inherited settings.
+When enabled, enforces non-interactive background execution for explicit depth-0 async launches (`async: true`) by setting `clarify: false`. Interactive calls that omit `async` or pass `async: false` continue to run in the foreground and are never flipped to background by this setting. Nested calls keep their own inherited settings.
 
 ## `timeoutMs`
 

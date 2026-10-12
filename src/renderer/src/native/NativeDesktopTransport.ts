@@ -3,7 +3,19 @@ import { MAX_NATIVE_RPC_BODY_BYTES } from "@shared/desktop/nativeLimits";
 import { ipcChannels } from "../../../shared/ipc";
 
 const NATIVE_HEARTBEAT_CATCHUP_DELAY_MS = 400;
+/**
+ * 事件游标在此时间内仍有推进，说明 SSE 正在消化积压（例如一个 MB 级全量帧），
+ * 此时重连只会丢掉进行中的帧并触发新的全量补发，所以继续等待而不是重连。
+ */
+const NATIVE_EVENT_PROGRESS_GRACE_MS = 5_000;
 const NATIVE_EVENT_CHANNEL_READY_TIMEOUT_MS = 8_000;
+/** 连续这么多次建立 SSE 都没等到 eventChannelReady，即判定事件通道不健康并上报。 */
+const NATIVE_EVENT_CHANNEL_UNHEALTHY_AFTER_ATTEMPTS = 3;
+/** EventSource 进入 CLOSED（不再自动重试）后的手动重连退避。 */
+const NATIVE_EVENT_RECONNECT_BASE_DELAY_MS = 1_000;
+const NATIVE_EVENT_RECONNECT_MAX_DELAY_MS = 30_000;
+/** EventSource.CLOSED；用字面量避免依赖运行环境上的静态常量。 */
+const EVENT_SOURCE_CLOSED = 2;
 const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;
 export const NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS = 5_000;
 const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
@@ -66,6 +78,11 @@ type NativeDesktopTransportOptions = {
 	initialEventSeq?: number;
 	/** Test override; production uses the bounded 8 second startup deadline. */
 	readyTimeoutMs?: number;
+	/**
+	 * 事件通道健康度变化：连续多次连接都未就绪时报 false，之后首次就绪时报 true。
+	 * 只在状态翻转时回调，不会重复上报。
+	 */
+	onEventChannelHealthChange?: (healthy: boolean, info: { failedAttempts: number }) => void;
 };
 
 function isNativeEventFrame(value: unknown): value is NativeEventFrame {
@@ -103,6 +120,12 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	private hasEventCursor = false;
 	private heartbeatRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 	private heartbeatRecoveryExpectedSeq: number | null = null;
+	/** 事件游标最近一次向前推进的时间（毫秒时间戳）；0 表示尚未收到过事件。 */
+	private lastEventProgressAt = 0;
+	/** 自上次 eventChannelReady 以来建立过的 SSE 连接次数（含当前这一次）。 */
+	private connectAttemptsSinceReady = 0;
+	private eventChannelReportedUnhealthy = false;
+	private closedReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		private readonly baseUrl: string,
@@ -140,6 +163,19 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		// itself. Manual reconstruction must send the cursor explicitly or replay
 		// starts from the live tail and silently skips the gap.
 		if (this.hasEventCursor) eventsUrl.searchParams.set("lastEventId", String(this.lastEventSeq));
+		this.cancelClosedReconnect();
+		this.connectAttemptsSinceReady += 1;
+		if (
+			this.connectAttemptsSinceReady >= NATIVE_EVENT_CHANNEL_UNHEALTHY_AFTER_ATTEMPTS &&
+			!this.eventChannelReportedUnhealthy
+		) {
+			// 只在“确实连不上”时上报：单次断线由 EventSource 自动重试或心跳重连即可恢复，
+			// 连续多次仍未就绪说明页面虽可交互但实时更新已停止，必须让用户和日志看见。
+			this.eventChannelReportedUnhealthy = true;
+			this.options.onEventChannelHealthChange?.(false, {
+				failedAttempts: this.connectAttemptsSinceReady - 1,
+			});
+		}
 		const eventSource = new EventSource(eventsUrl);
 		this.eventSource = eventSource;
 		eventSource.onmessage = (event) => this.handleEvent(event);
@@ -147,7 +183,37 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			// EventSource performs its own retry. Record the failure so the bounded
 			// startup deadline rejects with a diagnostic instead of hanging forever.
 			if (!this.readySettled) this.eventSourceErrored = true;
+			// 非 200 响应等致命错误会让 EventSource 进入 CLOSED 且不再自动重试；
+			// 空闲时心跳也看不出序号落后，没人会重连，所以这里按退避自行重连。
+			if (eventSource.readyState === EVENT_SOURCE_CLOSED && this.eventSource === eventSource) {
+				this.scheduleClosedReconnect();
+			}
 		};
+	}
+
+	private scheduleClosedReconnect(): void {
+		if (this.disposed || this.closedReconnectTimer !== null) return;
+		const exponent = Math.max(0, this.connectAttemptsSinceReady - 1);
+		const delayMs = Math.min(
+			NATIVE_EVENT_RECONNECT_BASE_DELAY_MS * 2 ** exponent,
+			NATIVE_EVENT_RECONNECT_MAX_DELAY_MS,
+		);
+		this.closedReconnectTimer = setTimeout(() => {
+			this.closedReconnectTimer = null;
+			this.reconnect();
+		}, delayMs);
+	}
+
+	private cancelClosedReconnect(): void {
+		if (this.closedReconnectTimer !== null) clearTimeout(this.closedReconnectTimer);
+		this.closedReconnectTimer = null;
+	}
+
+	private markEventChannelReady(): void {
+		this.connectAttemptsSinceReady = 0;
+		if (!this.eventChannelReportedUnhealthy) return;
+		this.eventChannelReportedUnhealthy = false;
+		this.options.onEventChannelHealthChange?.(true, { failedAttempts: 0 });
 	}
 
 	private handleEvent(event: MessageEvent<string>): void {
@@ -166,6 +232,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			if (typeof payload.eventSourceGeneration === "string") this.eventSourceGeneration = payload.eventSourceGeneration;
 			const readySeq = typeof payload.eventSeq === "number" ? Math.max(seq, payload.eventSeq) : seq;
 			this.commitEventSeq(readySeq);
+			this.markEventChannelReady();
 			this.settleReady();
 			return;
 		}
@@ -176,6 +243,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 
 	private commitEventSeq(seq: number): void {
 		this.hasEventCursor = true;
+		if (seq > this.lastEventSeq) this.lastEventProgressAt = Date.now();
 		this.lastEventSeq = Math.max(this.lastEventSeq, seq);
 		if (
 			this.heartbeatRecoveryExpectedSeq !== null &&
@@ -256,12 +324,20 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			expectedEventSeq,
 		);
 		if (this.heartbeatRecoveryTimer !== null) return;
-		this.heartbeatRecoveryTimer = setTimeout(() => {
+		const recheck = (): void => {
 			this.heartbeatRecoveryTimer = null;
 			const expectedSeq = this.heartbeatRecoveryExpectedSeq;
 			this.heartbeatRecoveryExpectedSeq = null;
-			if (expectedSeq !== null && this.lastEventSeq < expectedSeq) this.reconnect();
-		}, NATIVE_HEARTBEAT_CATCHUP_DELAY_MS);
+			if (expectedSeq === null || this.lastEventSeq >= expectedSeq) return;
+			// 游标仍在推进：SSE 在消化积压，继续观察；只有推进停滞才重连。
+			if (Date.now() - this.lastEventProgressAt < NATIVE_EVENT_PROGRESS_GRACE_MS) {
+				this.heartbeatRecoveryExpectedSeq = expectedSeq;
+				this.heartbeatRecoveryTimer = setTimeout(recheck, NATIVE_HEARTBEAT_CATCHUP_DELAY_MS);
+				return;
+			}
+			this.reconnect();
+		};
+		this.heartbeatRecoveryTimer = setTimeout(recheck, NATIVE_HEARTBEAT_CATCHUP_DELAY_MS);
 	}
 
 	private cancelHeartbeatRecovery(): void {
@@ -344,6 +420,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 		this.disposed = true;
 		if (!this.readySettled) this.settleReady();
 		this.cancelHeartbeatRecovery();
+		this.cancelClosedReconnect();
 		this.eventSource?.close();
 		this.eventSource = null;
 		this.queuedEvents.length = 0;

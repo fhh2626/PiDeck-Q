@@ -127,7 +127,7 @@ test("时间差远超容差 → 视为不同消息，不沿用旧 id", () => {
 	assert.equal(stabilized[0].id, "agent-1-history-e1", "时间不匹配保持投影 id");
 });
 
-test("tool 消息按 toolCallId 指纹匹配（text 随状态变化不可靠）", () => {
+test("tool 消息按 toolCallId 指纹匹配 → 重载时沿用旧 id（text 随状态变化不可靠）", () => {
 	const previous = [
 		runtimeMessage("▶ image_gen", "tool", {
 			meta: { toolCallId: "tc-1", status: "running" },

@@ -6,16 +6,16 @@ import type { UIMessage } from "ai";
  * 因此这里只在渲染前拼接相邻 part，保持一段回复的视觉连续性。工具等其他 part 是边界，
  * 不能跨越合并，否则会破坏真实的 reasoning/text/tool 时序。
  */
-function isWebToolPart(part: UIMessage["parts"][number]): boolean {
+export function isWebToolPart(part: UIMessage["parts"][number]): boolean {
 	return part.type === "dynamic-tool"
 		|| (typeof part.type === "string" && part.type.startsWith("tool-"));
 }
 
-function mergeAdjacentReasoningText(previous: string, next: string): string {
-	if (previous === next) return previous;
-	if (previous.startsWith(next)) return previous;
-	if (next.startsWith(previous)) return next;
-	return previous + next;
+/** Compare message content including attachments, ignoring transport-only text state/steps. */
+export function webMessageContentKey(message: UIMessage): string {
+	return JSON.stringify(message.parts.filter((part) => part.type !== "step-start")
+		.map((part) => part.type === "text" || part.type === "reasoning"
+			? { type: part.type, text: part.text } : part));
 }
 
 export function mergeAdjacentWebMessageParts(
@@ -25,13 +25,16 @@ export function mergeAdjacentWebMessageParts(
 	for (const part of parts) {
 		const previous = merged.at(-1);
 		if (part.type === "reasoning" && previous?.type === "reasoning") {
+			// Reasoning parts have no replay identity or offset either; never discard by text overlap.
 			merged[merged.length - 1] = {
 				...previous,
-				text: mergeAdjacentReasoningText(previous.text, part.text),
+				text: previous.text + part.text,
 			};
 			continue;
 		}
 		if (part.type === "text" && previous?.type === "text") {
+			// AI SDK part state is not protocol evidence of replay; preserve every streamed
+			// character unless the wire format supplies an identity/offset to prove overlap.
 			merged[merged.length - 1] = {
 				...previous,
 				text: previous.text + part.text,

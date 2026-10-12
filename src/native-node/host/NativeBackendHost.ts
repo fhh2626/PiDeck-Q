@@ -76,12 +76,15 @@ export class NativeBackendHost implements BackendHost {
 		return this.liveWindow && this.windowVisible && !this.mainWindowControls.isMinimized();
 	}
 
-	async openExternalUrl(url: string, _forceSystem = false): Promise<void> {
+	// IPC 注册时会把该方法拆出来传递（registerBackendRpc 的 openExternalUrl: host.openExternalUrl），
+	// 必须用箭头函数字段保住 this；否则调用时 this 为 undefined，读 this.logger 就抛错，
+	// 系统浏览器打不开（与 sendToRenderer 同一原因）。
+	openExternalUrl = async (url: string, _forceSystem = false): Promise<void> => {
 		await openExternalLink(url, {
 			openInSystem: (target) => this.host.request("shell.openExternal", { url: target }),
 			logger: this.logger,
 		});
-	}
+	};
 
 	refreshTrayContextMenu(): void {
 		const labels = this.getTrayLabels();

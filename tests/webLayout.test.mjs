@@ -7,7 +7,10 @@ const webSidebar = readFileSync("src/renderer/src/web/WebSidebar.tsx", "utf8");
 const webHeader = readFileSync("src/renderer/src/web/WebHeader.tsx", "utf8");
 const webChatApp = readFileSync("src/renderer/src/web/WebChatApp.tsx", "utf8");
 const webComposer = readFileSync("src/renderer/src/web/WebComposer.tsx", "utf8");
-const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+const webStreamCache = readFileSync("src/renderer/src/web/useWebStreamMessageCache.ts", "utf8");
+const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
+	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
+const webTimelineWindow = readFileSync("src/renderer/src/web/useWebTimelineWindow.ts", "utf8");
 const webHtml = readFileSync("src/renderer/web.html", "utf8");
 
 test("Web shell keeps sidebar and chat pane in a horizontal split", () => {
@@ -92,12 +95,15 @@ test("Web history load control stays at the top and can recover from a missing c
 	assert.match(webChatApp, /hasMoreWebHistory/);
 	assert.match(webChatApp, /canRequestWebHistoryPage/);
 	assert.match(webChatApp, /catalogMessageCount: activeSession\?\.messageCount/);
-	assert.match(webChatApp, /status: "ready"/);
+	// 轮次分页：尾页基线由 webHistory 纯函数推进（游标只前进，不被重复拉取拽回）
+	assert.match(webChatApp, /applyWebHistoryTailPage\(/);
 	assert.match(webChatApp, /status: "error"/);
-	assert.match(webChatApp, /不要把会话标成 loaded/);
-	const loadButton = webTimeline.indexOf('t("timeline.loadMoreHistory"');
+	// Streaming cache ownership moved to its hook; loading history alone owns loaded status.
+	assert.match(webChatApp, /useWebStreamMessageCache\(\{/);
+	assert.doesNotMatch(webStreamCache, /loadedSessionsRef|loadedSessions/);
+	const loadButton = webTimeline.indexOf("timelineWindow.revealOlder");
 	const messageMap = webTimeline.indexOf("groupedMessages.map((item)");
-	assert.ok(loadButton >= 0, "WebTimeline must render a load-more control");
+	assert.ok(loadButton >= 0, "WebTimeline must render a reveal-history control");
 	assert.ok(messageMap > loadButton, "load more must sit above the message list, not after it");
 });
 
@@ -113,14 +119,14 @@ test("Web history remains interactive and cached while an answer streams", () =>
 		"the history control must stay visible while the model is answering",
 	);
 	assert.match(
-		webChatApp,
-		/messagesBySessionRef\.current\[activeSessionId\] = mergeAuthoritativeUiMessages\(/,
+		webStreamCache,
+		/cache\.current\[sessionId\] = mergeAuthoritativeUiMessages\(/,
 		"streaming updates must merge into prepended history instead of replacing it with the runtime tail",
 	);
 	assert.match(
-		webTimeline,
-		/onClick=\{\(\) => \{\s*stickToBottomRef\.current = false;[\s\S]*?onLoadMore\(\);\s*\}\}/,
-		"loading older messages must suspend bottom-follow so the prepended page stays visible",
+		webTimelineWindow,
+		/stickToBottomRef\.current = false;[\s\S]*?void onLoadMore\(\)\.then\(/,
+		"loading older messages must suspend bottom-follow and observe the page result so the prepended page stays visible",
 	);
 });
 
@@ -145,7 +151,7 @@ test("Web stream recovery refreshes a running session without reposting the prom
 	assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart);
 	const recovery = webChatApp.slice(recoveryStart, recoveryEnd);
 	const stateFetch = recovery.indexOf("await fetchState()");
-	const pageFetch = recovery.indexOf("await fetchMessagePage(sessionId)");
+	const pageFetch = recovery.indexOf("await fetchTurnPage(sessionId, { turnCount: WEB_TIMELINE_TURN_LIMIT })");
 	const runtimeBaseline = recovery.indexOf("nextState.messagesBySession[sessionId]");
 	const resume = recovery.indexOf("await resumeStream()");
 	assert.ok(stateFetch >= 0 && pageFetch > stateFetch && runtimeBaseline > pageFetch && resume > runtimeBaseline);
@@ -164,13 +170,29 @@ test("Web tool cards stay compact and keep a visible settled status", () => {
 
 test("Web timeline does not double-space tool and thinking steps", () => {
 	assert.match(webTimeline, /message-list flex flex-col gap-1\.5 px-3 py-2\.5/);
-	assert.match(webTimeline, /<div key=\{message\.id\} className="mt-0">/);
+	assert.match(webTimeline, /<div key=\{message\.id\} className="mt-0" data-web-message-id=\{message\.id\}>/);
 	assert.doesNotMatch(webTimeline, /user-turn group\/user mb-4/);
 	// step 间距唯一真源是 TimelineMarker 默认 pb-1；Web 不再逐卡 override pb-0。
 	assert.match(webTimeline, /<TimelineMarker kind="thinking" tone="neutral">/);
 	assert.match(webTimeline, /<TimelineMarker[\s\S]*?kind="tool"[\s\S]*?tone=\{error \? "error" : running \? "active" : "success"\}>/);
 	assert.doesNotMatch(webTimeline, /contentClassName="pb-0"/, "Web cards must not override the marker bottom gap");
 	assert.match(webTimeline, /flex min-h-6 max-w-full items-center px-2 py-0\.5/);
+});
+
+test("Web thinking header stays visually compact while keeping a mobile tap target", () => {
+	assert.match(webTimeline, /data-web-compact-hit-area=/);
+	assert.match(webTimeline, /data-web-thinking-header-slot=/);
+	assert.match(
+		webCss,
+		/@media \(hover: none\) and \(pointer: coarse\)[\s\S]*?position:\s*absolute;[\s\S]*?min-height:\s*44px;/,
+		"only coarse-pointer devices receive the touch hit-area overlay",
+	);
+	assert.match(webCss, /data-web-thinking-expanded="true"[\s\S]*?min-height:\s*44px;/);
+	assert.match(
+		webCss,
+		/button\.min-h-6:not\(\[data-web-compact-hit-area\]\)[\s\S]*?min-height:\s*44px;/,
+		"other mobile controls retain their 44px target without inflating the compact thinking row",
+	);
 });
 
 test("Project actions are sibling buttons instead of nested controls", () => {

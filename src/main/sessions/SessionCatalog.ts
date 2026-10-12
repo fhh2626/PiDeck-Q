@@ -16,6 +16,7 @@ import type {
 } from "../../shared/types";
 import { getAppLogger } from "../logging/sharedLogger";
 import { renameWithRetry } from "../utils/fsRetry";
+import { migrateSessionCatalogEntries } from "./sessionCatalogMigration";
 import {
 	buildSessionOriginKey,
 	buildSummaryOriginKey,
@@ -42,6 +43,8 @@ export type SessionCatalogEntry = {
 	isInternalSubagent?: boolean;
 	/** 子会话标记：扫描时从 SessionSummary 继承，持久化供 getRecord/listEntries 重建（不丢树形） */
 	parentSessionPath?: string;
+	/** 扫描得到的小型展示元数据。不保存消息正文，供缓存读取与重启后回显。 */
+	scanMetadata?: SessionCatalogScanMetadata;
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 	piSessionId?: string;
@@ -53,6 +56,14 @@ type SessionCatalogFile = {
 	version: 1;
 	sessions: SessionCatalogEntry[];
 };
+
+/** catalog 版本高于当前程序支持的版本：必须中止，不能回退 .bak 或回写，防止降级覆盖新数据。 */
+export class UnsupportedSessionCatalogVersionError extends Error {
+	constructor(readonly filePath: string, readonly version: unknown) {
+		super(`Unsupported Session catalog version ${String(version)}: ${filePath}`);
+		this.name = "UnsupportedSessionCatalogVersionError";
+	}
+}
 
 type SessionCatalogContext = {
 	wslDistro?: string;
@@ -71,10 +82,86 @@ export type SessionFilePathResolver = (
 	environment: SessionEnvironment,
 ) => string;
 
+export type SessionCatalogScanMetadata = {
+	projectPath?: string;
+	preview?: string;
+	messageCount?: number;
+	wsl?: boolean;
+	codexSessionId?: string;
+	codexThreadSource?: "user" | "subagent";
+	codexParentThreadId?: string;
+	codexAgentRole?: string;
+	codexAgentNickname?: string;
+};
+
+const SCAN_PREVIEW_LIMIT = 160;
+const SCAN_METADATA_KEYS = [
+	"codexSessionId",
+	"codexParentThreadId",
+	"codexAgentRole",
+	"codexAgentNickname",
+] as const;
+
+export function sanitizeScanMetadata(value: unknown): SessionCatalogScanMetadata | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	const metadata: SessionCatalogScanMetadata = {};
+	if (typeof raw.projectPath === "string") metadata.projectPath = raw.projectPath;
+	if (typeof raw.preview === "string") metadata.preview = raw.preview.slice(0, SCAN_PREVIEW_LIMIT);
+	if (
+		typeof raw.messageCount === "number" &&
+		Number.isInteger(raw.messageCount) &&
+		raw.messageCount >= 0 &&
+		raw.messageCount <= 1_000_000
+	) {
+		metadata.messageCount = raw.messageCount;
+	}
+	if (typeof raw.wsl === "boolean") metadata.wsl = raw.wsl;
+	if (raw.codexThreadSource === "user" || raw.codexThreadSource === "subagent") {
+		metadata.codexThreadSource = raw.codexThreadSource;
+	}
+	for (const key of SCAN_METADATA_KEYS) {
+		if (typeof raw[key] === "string") metadata[key] = raw[key];
+	}
+	return metadata;
+}
+
+function sameScanMetadata(
+	left: SessionCatalogScanMetadata | undefined,
+	right: SessionCatalogScanMetadata | undefined,
+): boolean {
+	const a = left ?? {};
+	const b = right ?? {};
+	return a.projectPath === b.projectPath &&
+		a.preview === b.preview &&
+		a.messageCount === b.messageCount &&
+		a.wsl === b.wsl &&
+		a.codexThreadSource === b.codexThreadSource &&
+		SCAN_METADATA_KEYS.every((key) => a[key] === b[key]);
+}
+
+export function assignParentSessionIds(records: SessionRecord[]): void {
+	const idByPath = new Map<string, string>();
+	for (const record of records) {
+		if (!record.filePath) continue;
+		idByPath.set(canonicalizeSessionPath(record.filePath, record.environment), record.id);
+	}
+	for (const record of records) {
+		if (!record.parentSessionPath) {
+			record.parentSessionId = undefined;
+			continue;
+		}
+		record.parentSessionId = idByPath.get(
+			canonicalizeSessionPath(record.parentSessionPath, record.environment),
+		);
+	}
+}
+
 function cloneEntry(entry: SessionCatalogEntry): SessionCatalogEntry {
 	return {
 		...entry,
 		model: entry.model ? { ...entry.model } : undefined,
+		scanMetadata: entry.scanMetadata ? { ...entry.scanMetadata } : undefined,
 	};
 }
 
@@ -133,6 +220,10 @@ export class SessionCatalog {
 		private readonly filePath: string,
 		identityContext: SessionCatalogContext = {},
 		private readonly resolveFilePath?: SessionFilePathResolver,
+		private readonly resolveProjectPath?: (
+			projectId: string,
+			environment: SessionEnvironment,
+		) => string | undefined,
 	) {
 		this.identityContext = { ...identityContext };
 	}
@@ -148,6 +239,13 @@ export class SessionCatalog {
 			this.entries = await this.readEntries(this.filePath);
 		} catch (error) {
 			primaryError = error;
+			if (error instanceof UnsupportedSessionCatalogVersionError) {
+				// 版本不支持时必须中止：若回退 .bak 并回写，会用旧数据覆盖新版本文件（降级丢数据）
+				void getAppLogger()?.error("session-catalog", "Unsupported catalog version; refusing to load", {
+					version: String(error.version),
+				});
+				throw error;
+			}
 			try {
 				this.entries = await this.readEntries(this.backupFilePath());
 				this.skipNextBackup = true;
@@ -181,14 +279,21 @@ export class SessionCatalog {
 		// 兼容旧数据：早期版本可能存有相对 filePath（pi 返回相对 cwd 的 sessionFile，
 		// 如 sessionDir 配置为 ".pi/sessions"）。相对路径与扫描器绝对路径的 originKey
 		// 不同 → 同一文件出现两条记录（侧栏重复显示），且文件操作落到错误位置。
-		// 加载时用注入的 resolver 统一修正为绝对路径并重算 originKey。
-		const repaired = this.repairRelativeFilePaths(this.entries);
+		// 加载时规范化并合并历史上已经落盘的双记录，保留原稳定身份及用户偏好。
+		const repaired = migrateSessionCatalogEntries(
+			this.entries,
+			this.resolveFilePath,
+			(entry) => this.originKeyForEntry(entry),
+		);
 		if (repaired) {
 			this.entries = repaired;
 			try {
 				await this.writeSnapshot(this.entries);
-			} catch {
-				// 修复是 best-effort；内存已生效，下一次启动仍会重试。
+			} catch (error) {
+				// 修复是 best-effort；内存已生效，旧磁盘数据保留供下次启动重试。
+				void getAppLogger()?.warn("session-catalog", "Failed to persist catalog migration; keeping repaired records", {
+					cause: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 		this.loaded = true;
@@ -246,7 +351,38 @@ export class SessionCatalog {
 
 	getRecord(id: string): SessionRecord | undefined {
 		const entry = this.get(id);
-		return entry ? this.recordFromEntry(entry) : undefined;
+		if (!entry) return undefined;
+		const record = this.recordFromEntry(entry);
+		if (record.parentSessionPath) {
+			const parentPath = canonicalizeSessionPath(record.parentSessionPath, entry.environment);
+			// 单条查询只查找父身份，不为每一条重建并排序整个项目。
+			const parent = this.entries.findLast((candidate) =>
+				candidate.projectId === entry.projectId && candidate.filePath &&
+				canonicalizeSessionPath(candidate.filePath, candidate.environment) === parentPath,
+			);
+			record.parentSessionId = parent?.id;
+		}
+		return record;
+	}
+
+	/** 批量构建目录记录，父关系按项目隔离；Web 全量读取只需一次映射和排序。 */
+	listRecords(projectId?: string): SessionRecord[] {
+		this.assertLoaded();
+		const records = [...this.transientEntries.values(), ...this.entries]
+			.filter((entry) => projectId === undefined || entry.projectId === projectId)
+			.map((entry) => this.recordFromEntry(entry));
+		const byProject = new Map<string, SessionRecord[]>();
+		for (const record of records) {
+			const group = byProject.get(record.projectId) ?? [];
+			group.push(record);
+			byProject.set(record.projectId, group);
+		}
+		for (const group of byProject.values()) assignParentSessionIds(group);
+		return records.sort((left, right) => right.updatedAt - left.updatedAt);
+	}
+
+	listProjectRecords(projectId: string): SessionRecord[] {
+		return this.listRecords(projectId);
 	}
 
 	findByFilePath(
@@ -568,25 +704,27 @@ export class SessionCatalog {
 				}
 				summaryById.set(entry.id, summary);
 				inheritSessionMeta(entry, summary);
+				const nextMetadata = sanitizeScanMetadata({
+					projectPath: summary.projectPath,
+					preview: summary.preview ?? "",
+					messageCount: summary.messageCount ?? 0,
+					wsl: summary.wsl,
+					codexSessionId: summary.codexSessionId,
+					codexThreadSource: summary.codexThreadSource,
+					codexParentThreadId: summary.codexParentThreadId,
+					codexAgentRole: summary.codexAgentRole,
+					codexAgentNickname: summary.codexAgentNickname,
+				});
+				if (!sameScanMetadata(entry.scanMetadata, nextMetadata)) {
+					entry.scanMetadata = nextMetadata;
+					changed = true;
+				}
 			}
 
 			const records = entries
 				.filter((entry) => entry.projectId === projectId)
 				.map((entry) => this.recordFromEntry(entry, summaryById.get(entry.id)));
-			const idByPath = new Map<string, string>();
-			for (const record of records) {
-				if (!record.filePath) continue;
-				idByPath.set(
-					canonicalizeSessionPath(record.filePath, record.environment),
-					record.id,
-				);
-			}
-			for (const record of records) {
-				if (!record.parentSessionPath) continue;
-				record.parentSessionId = idByPath.get(
-					canonicalizeSessionPath(record.parentSessionPath, record.environment),
-				);
-			}
+			assignParentSessionIds(records);
 			return {
 				value: records.sort((left, right) => right.updatedAt - left.updatedAt),
 				changed,
@@ -618,20 +756,20 @@ export class SessionCatalog {
 				: entry.importedSourceId,
 			isInternalSubagent: summary?.isInternalSubagent ?? entry.isInternalSubagent,
 			parentSessionPath: summary?.parentSessionPath ?? entry.parentSessionPath,
-			projectPath: summary?.projectPath,
-			preview: summary?.preview ?? "",
-			messageCount: summary?.messageCount ?? 0,
+			projectPath: summary?.projectPath ?? entry.scanMetadata?.projectPath ?? this.resolveProjectPath?.(entry.projectId, entry.environment),
+			preview: summary?.preview ?? entry.scanMetadata?.preview ?? "",
+			messageCount: summary?.messageCount ?? entry.scanMetadata?.messageCount ?? 0,
 			status: entry.status,
 			model: entry.model ? { ...entry.model } : undefined,
 			thinkingLevel: entry.thinkingLevel,
 			createdAt: entry.createdAt,
 			updatedAt: summary?.updatedAt ?? entry.updatedAt,
-			wsl: summary?.wsl,
-			codexSessionId: summary?.codexSessionId,
-			codexThreadSource: summary?.codexThreadSource,
-			codexParentThreadId: summary?.codexParentThreadId,
-			codexAgentRole: summary?.codexAgentRole,
-			codexAgentNickname: summary?.codexAgentNickname,
+			wsl: summary?.wsl ?? entry.scanMetadata?.wsl,
+			codexSessionId: summary?.codexSessionId ?? entry.scanMetadata?.codexSessionId,
+			codexThreadSource: summary?.codexThreadSource ?? entry.scanMetadata?.codexThreadSource,
+			codexParentThreadId: summary?.codexParentThreadId ?? entry.scanMetadata?.codexParentThreadId,
+			codexAgentRole: summary?.codexAgentRole ?? entry.scanMetadata?.codexAgentRole,
+			codexAgentNickname: summary?.codexAgentNickname ?? entry.scanMetadata?.codexAgentNickname,
 		};
 	}
 
@@ -645,33 +783,6 @@ export class SessionCatalog {
 			wslUser: entry.wslUser ?? this.identityContext.wslUser,
 			importedSourceId: entry.importedSourceId,
 		});
-	}
-
-	/**
-	 * 把条目中的相对 filePath 修正为绝对路径（通过注入的 resolver）。
-	 * 返回新数组表示有变更；未注入 resolver 或无需修正时返回 undefined。
-	 */
-	private repairRelativeFilePaths(
-		entries: SessionCatalogEntry[],
-	): SessionCatalogEntry[] | undefined {
-		const resolve = this.resolveFilePath;
-		if (!resolve) return undefined;
-		let changed = false;
-		const next = entries.map((entry) => {
-			if (!entry.filePath) return entry;
-			const resolved = resolve(
-				entry.projectId,
-				entry.filePath,
-				entry.environment,
-			);
-			if (!resolved || resolved === entry.filePath) return entry;
-			changed = true;
-			const repaired = { ...entry, filePath: resolved };
-			// originKey 随路径变化重算，否则后续 mergeScanned/attachRuntime 仍按旧 key 去重
-			if (repaired.originKey) repaired.originKey = this.originKeyForEntry(repaired);
-			return repaired;
-		});
-		return changed ? next : undefined;
 	}
 
 	private requireEntry(
@@ -714,6 +825,11 @@ export class SessionCatalog {
 
 	private async readEntries(filePath: string): Promise<SessionCatalogEntry[]> {
 		const parsed = JSON.parse(await readFile(filePath, "utf8")) as Partial<SessionCatalogFile>;
+		// 缺失 version 视为旧 v1 数据兼容；其他值一律拒绝（不猜测格式）
+		const rawVersion: unknown = parsed.version;
+		if (rawVersion !== undefined && rawVersion !== 1) {
+			throw new UnsupportedSessionCatalogVersionError(filePath, rawVersion);
+		}
 		if (!Array.isArray(parsed.sessions)) {
 			throw new Error(`Invalid Session catalog: ${filePath}`);
 		}
@@ -727,7 +843,11 @@ export class SessionCatalog {
 		if (entries.length !== parsed.sessions.length) {
 			throw new Error(`Session catalog contains invalid records: ${filePath}`);
 		}
-		return entries.map(cloneEntry);
+		return entries.map((entry) => {
+			const cloned = cloneEntry(entry);
+			if ("scanMetadata" in entry) cloned.scanMetadata = sanitizeScanMetadata(entry.scanMetadata);
+			return cloned;
+		});
 	}
 
 	private async writeSnapshot(entries: SessionCatalogEntry[]): Promise<void> {

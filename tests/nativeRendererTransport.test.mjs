@@ -446,6 +446,61 @@ test("NativeRendererServer truncates replay history by bytes as well as event co
 	}
 });
 
+test("NativeRendererServer notifies onReplayGap once when the replay ring cannot cover the cursor", async () => {
+	const gaps = [];
+	const { server, rendererRoot, address } = await createServerFixture({
+		onReplayGap: (info) => gaps.push(info),
+	});
+	try {
+		for (let index = 0; index < 4_100; index += 1) server.broadcast("test:bulk", [{ index }]);
+		const connection = await connectEvents(address.port, "secret-token", 1);
+		try {
+			const resync = await connection.waitFor((event) => event.data.channel === "native.resyncRequired");
+			// resync 仍在（传输层契约不变），只是不再触发整页重载。
+			assert.equal(resync.data.args[0].reason, "event-history-truncated");
+			assert.equal(gaps.length, 1);
+			assert.equal(gaps[0].reason, "event-history-truncated");
+			// 断层起点 = 游标之后第一帧（seq 2）的产生时间，供补发按时间筛选会话。
+			assert.equal(typeof gaps[0].lostSinceMs, "number");
+		} finally {
+			connection.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
+test("NativeRendererServer replays without onReplayGap while the cursor is still inside the ring", async () => {
+	const gaps = [];
+	const { server, rendererRoot, address } = await createServerFixture({
+		onReplayGap: (info) => gaps.push(info),
+	});
+	try {
+		const first = await connectEvents(address.port, "secret-token");
+		let firstEventId;
+		try {
+			await first.waitFor((event) => event.data.channel === "native.eventChannelReady");
+			server.broadcast("test:first", [{ value: 1 }]);
+			firstEventId = (await first.waitFor((event) => event.data.channel === "test:first")).id;
+		} finally {
+			first.close();
+		}
+		server.broadcast("test:second", [{ value: 2 }]);
+		const replay = await connectEvents(address.port, "secret-token", firstEventId);
+		try {
+			const second = await replay.waitFor((event) => event.data.channel === "test:second");
+			assert.equal(second.data.args[0].value, 2);
+			assert.deepEqual(gaps, []);
+		} finally {
+			replay.close();
+		}
+	} finally {
+		await server.stop();
+		rmSync(rendererRoot, { recursive: true, force: true });
+	}
+});
+
 test("NativeRendererServer can restart after a fatal listening error", async () => {
 	let activeServer;
 	let resolveRestart;
@@ -515,7 +570,8 @@ test("NativeRendererServer disconnects an SSE client that exceeds the backpressu
 		connection.response.pause();
 		const closed = new Promise((resolve) => connection.response.once("close", resolve));
 		const chunk = "x".repeat(128 * 1024);
-		for (let index = 0; index < 64; index += 1) server.broadcast("test:backpressure", [chunk]);
+		// 积压上限 64 MiB：发送远超上限的数据，卡死的客户端仍必须被断开。
+		for (let index = 0; index < 1_024; index += 1) server.broadcast("test:backpressure", [chunk]);
 		await Promise.race([
 			closed,
 			new Promise((_, reject) => setTimeout(() => reject(new Error("SSE client was not closed")), 2_000)),

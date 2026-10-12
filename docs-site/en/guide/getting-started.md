@@ -1,52 +1,55 @@
 # Quick Start
 
-There are two ways to use PiDeck: download a pre-built installer or run from source.
+<script setup>
+import { useData } from 'vitepress'
+const { theme } = useData()
+</script>
+
+Current PiDeck-Q version: **{{ theme.version }}**.
+
+PiDeck-Q supports [Pi Agent](https://pi.dev) and [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust). The desktop manages windows, projects and sessions; the runtime supplies Agent behavior.
 
 ## Download & Install
 
-1. Go to the [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) page.
-2. Download the latest installer for your platform:
-   - **Windows**: `.exe` installer or `.zip` portable
-   - **macOS**: `.dmg` (Apple Silicon / Intel)
-   - **Linux**: `.AppImage` or `.deb`
-3. Run the installer and follow the setup wizard.
-4. Launch PiDeck — you'll see the project workspace and session panel.
+Check [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) for actual files and platform instructions. Do not assume every release has an installer or artifacts for every platform. The current staging pipeline is Windows-first and installer compilation is disabled.
+
+Windows desktop use requires WebView2 Runtime. macOS/Linux source branches do not establish verified installers.
+
+Install Pi Agent or Pi_Agent_Rust using its official instructions, and configure providers/auth. Verify the selected command (Rust may use `pi-rust`):
+
+```bash
+pi --version
+```
+
+The app detects Agent paths at startup. If detection fails, enter the selected runtime's executable path in settings.
 
 ## Run from Source
 
-### Prerequisites
-
-- **Node.js** >= 20
-- **npm** >= 9
-- **Git**
-
-### Steps
+Requires Node.js **24.19.0**, npm **11+**, Git, xmake and a C++20/MSVC toolchain. Local Xmake package definitions provide Qt **6.11.2**. See [Development](/en/guide/development).
 
 ```bash
-# Clone the repository
 git clone https://github.com/fhh2626/PiDeck-Q.git
-cd PiDeck
-
-# Install dependencies
+cd PiDeck-Q
 npm install
-
-# Start in development mode
+npm run make-icon
 npm run dev
 ```
 
-This launches the Electron app with hot-reload enabled.
+The current `dev` workflow targets the Windows native desktop, not Electron.
 
-### Build for Distribution
+## Basic Workflow
+
+1. Add a local project directory.
+2. Create a session and choose a model/thinking level.
+3. Send a task, optionally using `/`, `@` and `!` input helpers.
+4. Browse history, files, Git and the terminal.
+
+## Ordinary Browser UI Preview
 
 ```bash
-# Package for your current platform
-npm run dist
+npm run test:browser:server
 ```
 
-Output files are placed in the `release/` directory.
+This is the browser test/UI preview server, not an embedded browser panel. Mock APIs do not validate real Agent, filesystem or host capabilities; test those in the native host.
 
-## Start a Project
-
-1. Click **"Add Project"** or drag a folder into the workspace panel.
-2. Select a project to open its session view.
-3. Type your prompt in the composer and press Enter — PiDeck will start the selected Agent runtime for that project.
+The LAN Web frontend is a separate capability enabled in Web service settings, not a browser inside the desktop. It uses an authentication token and is disabled by default. Do not expose it unprotected to the public internet.

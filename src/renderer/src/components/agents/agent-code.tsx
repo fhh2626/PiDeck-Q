@@ -1,27 +1,21 @@
 "use client";
 
-import {
-  type CSSProperties,
-  Fragment,
-  useEffect,
-  useState,
-} from "react";
-import type { Highlighter } from "shiki";
+import { type CSSProperties, Fragment, useEffect, useState } from "react";
 import {
   cacheTokens,
   getCachedTokens,
   type AgentCodeToken,
   type AgentCodeTokenLines,
 } from "./agentCodeTokenCache";
+import {
+  type AgentCodeHighlightClient,
+  createAgentCodeHighlightClient,
+} from "./agentCodeHighlightClient";
+import type { AgentCodeLanguage } from "./agentHighlightTypes";
 import { cn } from "@/lib/utils";
 
-export type AgentCodeLanguage =
-  | "bash"
-  | "diff"
-  | "json"
-  | "text"
-  | "tsx"
-  | "typescript";
+// 语言枚举定义在 agentHighlightTypes（Worker 协议共用），这里转出以保持既有导入路径。
+export type { AgentCodeLanguage } from "./agentHighlightTypes";
 
 export type { AgentCodeToken, AgentCodeTokenLines } from "./agentCodeTokenCache";
 export interface AgentCodeProps {
@@ -36,27 +30,29 @@ export interface AgentCodeLineProps {
   className?: string;
 }
 
-const LIGHT_THEME = "github-light-high-contrast";
-const DARK_THEME = "github-dark-high-contrast";
-let agentCodeHighlighter: Promise<Highlighter> | null = null;
-
-function getAgentCodeHighlighter() {
-  if (!agentCodeHighlighter) {
-    // 动态 import shiki：它是 WASM 重库（~1MB 量级），只在首次渲染代码块时才加载，
-    // 避免进首屏初始 chunk——升级前 index chunk 5.96MB 里 shiki 占了可观比例。
-    // import type 的 Highlighter 是纯类型，运行时无依赖。
-    agentCodeHighlighter = import("shiki").then(({ createHighlighter }) =>
-      createHighlighter({
-        themes: [LIGHT_THEME, DARK_THEME],
-        langs: ["bash", "diff", "json", "tsx", "typescript"],
-      }),
-    );
-  }
-  return agentCodeHighlighter;
-}
-
 function tokenCacheKey(code: string, language: AgentCodeLanguage) {
   return `${language}\u0000${code}`;
+}
+
+// 页面级单例：一个 Worker + 一套排队/取消/超时策略都由 client 负责
+// （见 agentCodeHighlightClient.ts）。高亮计算放在 Worker 里，
+// 因为 shiki 的 codeToTokensWithThemes 是同步 CPU 计算，留在主线程会阻塞输入帧。
+let agentCodeHighlightClient: AgentCodeHighlightClient | null = null;
+
+function getAgentCodeHighlightClient(): AgentCodeHighlightClient {
+  if (!agentCodeHighlightClient) {
+    agentCodeHighlightClient = createAgentCodeHighlightClient({
+      // Worker 入口 URL 只在工厂模块里解析；这里动态加载，使 client 与 hook
+      // 能在 Node 单测中被静态加载并注入替身 Worker。
+      createWorker: async () => {
+        const { createAgentCodeHighlightWorker } = await import(
+          "./agentCodeHighlightWorkerFactory"
+        );
+        return createAgentCodeHighlightWorker();
+      },
+    });
+  }
+  return agentCodeHighlightClient;
 }
 
 export function useAgentCodeTokens(
@@ -80,36 +76,25 @@ export function useAgentCodeTokens(
     }
 
     let cancelled = false;
-    getAgentCodeHighlighter().then((highlighter) => {
-      if (cancelled) return;
-      const lines = highlighter
-        .codeToTokensWithThemes(code, {
-          lang: language,
-          themes: {
-            light: LIGHT_THEME,
-            dark: DARK_THEME,
-          },
-        })
-        .map((line) =>
-          line.map((token) => ({
-            content: token.content,
-            offset: token.offset,
-            light: token.variants.light?.color,
-            dark: token.variants.dark?.color,
-          })),
-      );
-      cacheTokens(key, lines);
-      setResult({ key, code, language, lines });
-    });
+    const handle = getAgentCodeHighlightClient().request(code, language);
+    handle.promise
+      .then((lines) => {
+        if (cancelled) return;
+        cacheTokens(key, lines);
+        setResult({ key, code, language, lines });
+      })
+      .catch(() => {
+        // Worker 失败/超时：不设结果，上层按纯文本呈现（可读、无高亮）。
+        // 刻意不做主线程回退——回退等于把卡顿搬回来，还会掩盖 Worker 失败。
+      });
     return () => {
       cancelled = true;
+      // 只取消本消费者；同一段代码的其它消费者仍会拿到结果。
+      handle.cancel();
     };
   }, [code, key, language]);
 
   if (result?.key === key) return result.lines;
-  if (result?.language === language && code.startsWith(result.code)) {
-    return result.lines;
-  }
   return null;
 }
 

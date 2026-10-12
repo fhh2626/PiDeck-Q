@@ -1,12 +1,11 @@
 import { useAtomValue } from "jotai";
-import { selectAtom } from "jotai/utils";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { FileText, Terminal } from "lucide-react";
 import {
 	contextControllerSettingsAtom,
 	sessionRuntimeBySessionIdAtomFamily,
 	sessionRuntimeUiBySessionIdAtomFamily,
-	sessionSendStateByIdAtom,
+	sessionSendStateAtomFamily,
 } from "../../atoms";
 import { isUserFacingSessionStart } from "../../hooks/useSessionTimelineController";
 import { desktopApi } from "../../desktopApi";
@@ -234,15 +233,8 @@ export function ContextControllerSwitches(props: { sessionId: string }) {
 	const runtimeUi = useAtomValue(sessionRuntimeUiBySessionIdAtomFamily(sessionId));
 	const extSettings = useAtomValue(contextControllerSettingsAtom);
 
-	const sendStateSelector = useMemo(
-		() => selectAtom(
-			sessionSendStateByIdAtom,
-			(states) => states[sessionId],
-			Object.is,
-		),
-		[sessionId],
-	);
-	const sendState = useAtomValue(sendStateSelector);
+	// 与 SessionHeader / SessionMessageTimeline / ComposerArea 共用同一个按会话选择器。
+	const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
 
 	const isPluginDisabled =
 		extSettings.piRpcNoExtensions ||

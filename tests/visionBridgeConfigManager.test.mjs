@@ -8,44 +8,16 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const MODULE_PATH = "src/main/settings/visionBridgeConfig.ts";
 
-function compile(filePath) {
-	const source = readFileSync(filePath, "utf8");
-	const output = ts.transpileModule(source, {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-			esModuleInterop: true,
-		},
-		fileName: filePath,
-	}).outputText;
-	const module = { exports: {} };
-	const localRequire = (specifier) => {
-		if (specifier.startsWith("node:")) return require(specifier);
-		// 共享日志器：测试环境未注册实例，返回 null 让调用方静默跳过
-		if (specifier === "../logging/sharedLogger") return { getAppLogger: () => null };
-		return {};
-	};
-	vm.runInNewContext(output, {
-		module,
-		exports: module.exports,
-		require: localRequire,
-		console,
-		process,
-	}, { filename: filePath });
-	return module.exports;
-}
-
-const mod = compile(MODULE_PATH);
+// 共享日志器：测试环境未注册实例，返回 null 让调用方静默跳过。
+const mod = loadTsCommonJs(MODULE_PATH, {
+	stubs: { "../logging/sharedLogger": { getAppLogger: () => null } },
+});
 const { VisionBridgeConfigManager, VISION_DEFAULT_PROMPT } = mod;
 
 /** 在临时目录下创建 manager（PIDECK_VISION_CONFIG_DIR 指向该目录）。 */

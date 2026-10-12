@@ -1,6 +1,19 @@
 # 更新日志
 
-## v0.7.0
+## PiDeck-Q 当前基线
+
+<script setup>
+import { useData } from 'vitepress'
+const { theme } = useData()
+</script>
+
+当前版本：**{{ theme.version }}**，由根 `package.json` 提供。本节只标识当前版本，不构造发布日期或尚未完成的修复记录。实际发布文件见 [PiDeck-Q Releases](https://github.com/fhh2626/PiDeck-Q/releases)。
+
+## 上游历史归档
+
+以下 0.6.x/0.7.0 内容来自上游 PiDeck，不是 PiDeck-Q 的发布线或当前功能清单。仓库历史 `184ae39d` 记录上游 0.7.0 文档更新，`d2a958a1` 记录同步上游的合并；历史日期与内容原样保留。飞书、宠物、浏览器面板、Electron 等历史条目不代表当前仍提供这些能力。
+
+### v0.7.0
 
 发布时间：2026-08-11
 
@@ -133,4 +146,4 @@
 
 ## 历史版本
 
-官网只摘录最近版本，发布详情以 GitHub Releases 为准，避免信息在多个位置长期分叉。
+本页上方版本记录仅为上游历史摘录，完整历史以 [上游 PiDeck Releases](https://github.com/ayuayue/PiDeck/releases) 为准；PiDeck-Q 当前发布以本项目 Releases 和 manifest 为准。

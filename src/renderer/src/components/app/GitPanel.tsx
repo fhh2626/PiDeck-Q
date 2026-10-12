@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -18,12 +17,10 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   ClipboardPaste,
-  FileCode2,
   GitBranch,
   Loader2,
   Plus,
   RefreshCw,
-  RotateCcw,
   Sparkles,
 } from "lucide-react";
 import { Button } from "../ui-shadcn/button";

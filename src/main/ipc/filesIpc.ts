@@ -1,8 +1,12 @@
-import { cp, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { copyFile, lstat, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyWithoutOverwrite, UnsupportedExclusiveCopyFileTypeError, type ExclusiveCopyOperations } from "../fs/copyWithoutOverwrite";
+import { copyToFreeName } from "../fs/copyToFreeName";
+import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ipcChannels } from "../../shared/ipc";
 import type { PickImagesResult } from "../../shared/types";
 import type { FileSystemService } from "../fs/FileSystemService";
+import { RenameTargetExistsError } from "../fs/renameWithoutOverwrite";
 import {
 	assertAuthorizedFilePath,
 	type AuthorizedPathMode,
@@ -16,6 +20,21 @@ import type { PlatformDialogs, PlatformShell } from "../platform/PlatformService
 
 function hasNodeErrorCode(error: unknown, code: string): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+function isWindowsPathSemantics(): boolean {
+	return globalThis.process?.platform === "win32";
+}
+
+function sameMovePath(left: string, right: string): boolean {
+	const a = resolve(left);
+	const b = resolve(right);
+	return isWindowsPathSemantics() ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function isPathInside(parent: string, candidate: string): boolean {
+	const rel = relative(resolve(parent), resolve(candidate));
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function assertString(value: unknown, field: string): asserts value is string {
@@ -36,9 +55,7 @@ function assertExternalReadLimit(maxBytes: unknown): asserts maxBytes is number 
 	}
 }
 
-export type FilesIpcFileOperations = {
-	rename: typeof fsRename;
-	copy: typeof cp;
+export type FilesIpcFileOperations = ExclusiveCopyOperations & {
 	remove: typeof rm;
 };
 
@@ -50,6 +67,7 @@ export type FilesIpcDeps = {
 	dialogs: PlatformDialogs;
 	platformShell: Pick<PlatformShell, "openPath" | "showItemInFolder">;
 	getAuthorizedRoots: () => string[];
+	mainCopy?: (key: MainProcessTranslationKey) => string;
 	/** Capabilities issued by the trusted native clipboard/drop boundary. */
 	externalFileCapabilities?: Pick<ExternalFileCapabilityStore, "consumeCopy" | "consumeRead" | "issuePicker">;
 	/** Optional seam for deterministic cross-device move tests. */
@@ -66,14 +84,16 @@ export function registerFilesIpc(
 		dialogs,
 		platformShell,
 		getAuthorizedRoots,
+		mainCopy = (key) => key,
 		externalFileCapabilities,
 		fileOperations,
 	}: FilesIpcDeps,
 ): void {
 	const fsOperations: FilesIpcFileOperations = {
-		rename: fileOperations?.rename ?? fsRename,
-		copy: fileOperations?.copy ?? cp,
 		remove: fileOperations?.remove ?? rm,
+		copyFile: fileOperations?.copyFile ?? copyFile,
+		mkdir: fileOperations?.mkdir ?? mkdir,
+		symlink: fileOperations?.symlink ?? symlink,
 	};
 	// 将 WSL Linux 路径转为 Windows 可访问的路径（/mnt/c → C:\，/home/... → \\wsl$\<distro>\...）
 	const toWindowsPath = (linuxPath: string): string => {
@@ -252,7 +272,12 @@ export function registerFilesIpc(
 
 	router.handle(
 		ipcChannels.filesCreate,
-		async (parentDir: string, name: string, type: "file" | "directory") => {
+		async (parentDir: unknown, name: unknown, type: unknown) => {
+			assertString(parentDir, "parentDir");
+			assertString(name, "name");
+			if (type !== "file" && type !== "directory") {
+				throw new TypeError("type must be file or directory.");
+			}
 			const hostParentDir = await authorizePath(parentDir, "create", "read");
 			// Check the final entry too: an existing child symlink must not turn a
 			// workspace create into an outside write.
@@ -283,9 +308,17 @@ export function registerFilesIpc(
 	router.handle(ipcChannels.filesRename, async (path: string, newName: string) => {
 		const hostPath = await authorizePath(path, "rename", "link");
 		await authorizePath(join(dirname(hostPath), newName), "rename", "write");
-		const result = await fileSystemService.rename(hostPath, newName);
-		void appLogger.info("file", "File renamed", { path, newName, result });
-		return result;
+		try {
+			const result = await fileSystemService.rename(hostPath, newName);
+			void appLogger.info("file", "File renamed", { path, newName, result });
+			return result;
+		} catch (error) {
+			// 目标已存在：不覆盖，给出本地化提示而不是裸系统错误
+			if (RenameTargetExistsError.is(error)) {
+				throw new Error(mainCopy("mainFile.renameTargetExists"));
+			}
+			throw error;
+		}
 	});
 
 	const copyToAuthorizedTarget = async (
@@ -298,14 +331,24 @@ export function registerFilesIpc(
 			try {
 				const hostSource = await sourceResolver(src);
 				const name = basename(hostSource);
-				const dest = await authorizePath(join(targetDir, name), "copy-target", "write");
-				// 递归复制目录/文件；同名已存在时跳过覆盖。Node 的 force
-				// 默认为 true，必须显式关闭才能让 errorOnExist:false 生效。
-				await fsOperations.copy(hostSource, dest, { recursive: true, force: false, errorOnExist: false });
+				// 先授权“原名”目标，确认 targetDir 本身可写；改名后的候选与它同目录，授权结论相同。
+				await authorizePath(join(targetDir, name), "copy-target", "write");
+				const sourceStat = await lstat(hostSource);
+				// 目录复制进自身或其子目录会无限递归（readdir 会读到刚创建的副本）。
+				if (sourceStat.isDirectory() && (sameMovePath(hostSource, targetDir) || isPathInside(hostSource, targetDir))) {
+					throw new Error("Cannot copy a directory into itself");
+				}
+				// 冲突自动改名（资源管理器风格）：不再静默跳过，也不再与已有目录合并。
+				const dest = await copyToFreeName(hostSource, targetDir, name, fsOperations);
 				results.push(dest);
 				void appLogger.info("file", "File/folder copied", { src, dest });
 			} catch (error) {
+				// 失败一律先留痕（包括不支持的文件类型），再按类型决定抛给渲染端的文案。
 				void appLogger.info("file", "File copy failed", { src, targetDir, error: error instanceof Error ? error.message : String(error) });
+				// 特殊文件类型（FIFO/设备等）不可复制：与 move 一样给出本地化文案
+				if (error instanceof UnsupportedExclusiveCopyFileTypeError) {
+					throw new Error(mainCopy("mainFile.unsupportedCopyType"));
+				}
 				throw error;
 			}
 		}
@@ -338,35 +381,49 @@ export function registerFilesIpc(
 
 	router.handle(
 		ipcChannels.filesMove,
-		async (sourcePaths: string[], targetDir: string) => {
+		async (sourcePaths: unknown, targetDir: unknown) => {
+			assertStringArray(sourcePaths, "sourcePaths");
+			assertString(targetDir, "targetDir");
 			const hostTargetDir = await authorizePath(targetDir, "move-target", "read");
-			const results: string[] = [];
+			const planned: Array<{ src: string; hostSource: string; dest: string }> = [];
+			const destinations = new Set<string>();
 			for (const src of sourcePaths) {
 				const hostSource = await authorizePath(src, "move-source", "link");
+				const dest = await authorizePath(join(hostTargetDir, basename(hostSource)), "move-target", "write");
+				const key = isWindowsPathSemantics() ? dest.toLowerCase() : dest;
+				if (destinations.has(key)) throw new Error(`Destination already exists: ${dest}`);
+				destinations.add(key);
+				planned.push({ src, hostSource, dest });
+			}
+			const results: string[] = [];
+			for (const move of planned) {
 				try {
-					const name = basename(hostSource);
-					const dest = await authorizePath(join(hostTargetDir, name), "move-target", "write");
-					// 同设备优先 rename（瞬时）；跨设备/跨盘 rename 会报 EXDEV，回退 cp + rm
-					try {
-						await fsOperations.rename(hostSource, dest);
-					} catch (error) {
-						// 仅跨设备 rename 才允许 copy+remove。目标冲突、权限和
-						// sharing violation 必须原样失败，避免覆盖目标后删除源数据。
-						if (!hasNodeErrorCode(error, "EXDEV")) throw error;
-						// force 默认是 true；关闭它并要求 errorOnExist，保证目标在
-						// copy 前已存在或在竞态中出现时都不会覆盖后删除源文件。
-						await fsOperations.copy(hostSource, dest, {
-							recursive: true,
-							dereference: false,
-							force: false,
-							errorOnExist: true,
-						});
-						await fsOperations.remove(hostSource, { recursive: true, force: true });
+					if (sameMovePath(move.hostSource, move.dest)) {
+						results.push(move.dest);
+						continue;
 					}
-					results.push(dest);
-					void appLogger.info("file", "File/folder moved", { src, dest });
+					const sourceStat = await lstat(move.hostSource);
+					if (sourceStat.isDirectory() && isPathInside(move.hostSource, move.dest)) {
+						throw new Error("Cannot move a directory into itself");
+					}
+					// rename 在 Windows 同盘会直接替换已有文件，且检查后再 rename 仍有竞态。
+					// 独占创建每个目标条目，源只在整个树复制成功后删除。
+					try {
+						await lstat(move.dest);
+						throw new Error(`Destination already exists: ${move.dest}`);
+					} catch (error) {
+						if (error instanceof Error && error.message.startsWith("Destination already exists")) throw error;
+						if (!hasNodeErrorCode(error, "ENOENT")) throw error;
+					}
+					await copyWithoutOverwrite(move.hostSource, move.dest, fsOperations);
+					await fsOperations.remove(move.hostSource, { recursive: true, force: true });
+					results.push(move.dest);
+					void appLogger.info("file", "File/folder moved", { src: move.src, dest: move.dest });
 				} catch (error) {
-					void appLogger.info("file", "File move failed", { src, targetDir, error: error instanceof Error ? error.message : String(error) });
+					void appLogger.info("file", "File move failed", { src: move.src, targetDir, error: error instanceof Error ? error.message : String(error) });
+					if (error instanceof UnsupportedExclusiveCopyFileTypeError) {
+						throw new Error(mainCopy("mainFile.unsupportedMoveType"));
+					}
 					throw error;
 				}
 			}

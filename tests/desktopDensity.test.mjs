@@ -62,7 +62,7 @@ test("Thinking trigger header consumes the shared THINKING_HEADER recipe (gap-1.
 });
 
 test("WebThinkingBlock stays in sync with desktop Thinking (shared recipes)", () => {
-  const src = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+  const src = readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
   const block = src.slice(
     src.indexOf("export const WebThinkingBlock"),
     src.indexOf("export const WebToolCard"),
@@ -150,7 +150,10 @@ test("FileDiff trigger uses min-h-7 py-0.5 gap-1.5 (not min-h-9 py-1 gap-2)", ()
 });
 
 test("TurnFileChanges uses mb-0.5 gap-0 size-6 (not mb-1.5 gap-0.5 size-7)", () => {
-  const src = read("components/session/turn/TurnFileChanges.tsx");
+  // 单文件行已拆到 TurnFileChangeRow：密度契约跨两个文件，合并后断言。
+  const src = `${read("components/session/turn/TurnFileChanges.tsx")}\n${read(
+    "components/session/turn/TurnFileChangeRow.tsx",
+  )}`;
   assert.match(src, /mb-0\.5 flex items-center/, "title should use mb-0.5");
   assert.doesNotMatch(src, /mb-1 flex items-center/, "title must not stay at mb-1");
   assert.doesNotMatch(src, /mb-1\.5 flex items-center/, "title should not use mb-1.5");

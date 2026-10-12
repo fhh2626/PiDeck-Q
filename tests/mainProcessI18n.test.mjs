@@ -7,6 +7,9 @@ import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { mainIpcSource } from "./helpers/mainIpcSources.mjs";
 
+// 会话命令错误的唯一转换点（E1 下沉到 bridge，sessionIpc 不再自持）。
+const loadBridgeSource = () => readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
+
 const {
   setI18nLocale,
   translateI18nDescriptor,
@@ -270,7 +273,11 @@ test("main-process user surfaces use stable copy and keep caught details in logs
   assert.match(source, /appLogger\.warn\("skill-hub", "Install failed"/);
   assert.match(source, /"webService\.invalidPort"/);
   assert.match(source, /"webService\.startFailed"/);
-  assert.match(source, /throw sessionCommandIpcError\(/);
+  // E1 后会话命令错误的转换由 sessionRuntimeBridge 提供（sessionIpc 只经 deps 注入），
+  // 因此断言唯一实现必须带上 bridge，而不是 sessionIpc 自己那份（G1 已删除）。
+  // 注意：systemIpc 里同名的参数是注入回调，不在本断言范围内。
+  assert.match(loadBridgeSource(), /function sessionCommandIpcError\(/);
+  assert.doesNotMatch(readFileSync("src/main/ipc/sessionIpc.ts", "utf8"), /throw sessionCommandIpcError\(/);
   assert.doesNotMatch(source, /throw new Error\([^\n]*debugDetails \|\|[^\n]*code/);
   assert.match(source, /"dialog\.chooseProjectFolder"/);
 });

@@ -5,7 +5,6 @@
 
 
 import { ipcChannels } from "../../shared/ipc";
-import { canonicalizeSessionPath } from "../../shared/sessionIdentity";
 import type {
 	CreateSessionDraftInput,
 	CreateAnonymousSessionInput,
@@ -15,12 +14,6 @@ import type {
 	SessionUiResponseInput,
 	SessionRuntimeTarget,
 	SessionRuntimeInfo,
-	SessionRuntimeReplacement,
-	SessionRuntimeEvent,
-	SessionCommandError,
-	SessionCommandResult,
-	SendPromptInput,
-	SendPromptResult,
 	SessionRecord,
 	SessionProcessEvent,
 } from "../../shared/types";
@@ -33,9 +26,7 @@ import {
 import type { RpcRouter } from "../transport/RpcRouter";
 import {
 	enforceDeliveryBudgetOnPage,
-	enforceDeliveryBudgetOnPayload,
 } from "../pi/messageDeliveryBudget";
-import { stripToolResultForDelivery } from "../pi/agentUtils";
 import type { SessionMessagePage } from "../../shared/types/session";
 
 /**
@@ -58,9 +49,10 @@ export function scheduleCatalogBackgroundScan(projectId: string, task: () => Pro
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { SessionScanner } from "../sessions/SessionScanner";
+import { ARCHIVE_DIR_NAME } from "../sessions/SessionScanner";
 import type { SessionCatalog } from "../sessions/SessionCatalog";
+import type { SessionRecordService } from "../sessions/SessionRecordService";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
-import { SessionCommandIpcError } from "../sessions/SessionCommandIpcError";
 import type { AgentManager } from "../pi/AgentManager";
 import type { ConfigManager } from "../config/ConfigManager";
 import type { TerminalSessionManager } from "../terminal/TerminalSessionManager";
@@ -68,13 +60,14 @@ import type { CodexSessionImporter } from "../sessions/CodexSessionImporter";
 import type { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
 import type { AppLogger } from "../logging/AppLogger";
-import { isSessionDeleteBlocked } from "../sessions/SessionDeleteBlockedError";
 
 export type SessionIpcDeps = {
 	projectStore: ProjectStore;
 	settingsStore: SettingsStore;
 	sessionScanner: SessionScanner;
 	sessionCatalog: SessionCatalog;
+	/** 会话改名/删除/归档的唯一业务入口（与 Web backend 共用）。 */
+	sessionRecordService: SessionRecordService;
 	sessionRuntimeCoordinator: SessionRuntimeCoordinator;
 	agentManager: AgentManager;
 	configManager: ConfigManager;
@@ -99,26 +92,13 @@ export type SessionIpcDeps = {
 	replaceAgentSession: (agentId: string, fn: () => Promise<any>) => Promise<any>;
 };
 
-function sessionCommandIpcError(
-	error: SessionCommandError,
-	appLogger: Pick<AppLogger, "warn">,
-	mainCopy: (key: string, params?: Record<string, string | number>) => string,
-): SessionCommandIpcError {
-	if (error.debugDetails) {
-		void appLogger.warn("session-command", "Session command failed", {
-			code: error.code,
-			debugDetails: error.debugDetails,
-		});
-	}
-	return new SessionCommandIpcError(error, mainCopy);
-}
-
 export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): void {
 	const {
 		projectStore,
 		settingsStore,
 		sessionScanner,
 		sessionCatalog,
+		sessionRecordService,
 		sessionRuntimeCoordinator,
 		agentManager,
 		configManager,
@@ -186,10 +166,7 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 			};
 
 			// 目录缓存中的现有记录（上次扫描/运行时创建的合并结果，启动时从磁盘加载）
-			const cachedRecords = sessionCatalog.listEntries()
-				.filter((entry) => entry.projectId === projectId)
-				.map((entry) => sessionCatalog.getRecord(entry.id))
-				.filter((record): record is SessionRecord => Boolean(record));
+			const cachedRecords = sessionCatalog.listProjectRecords(projectId);
 
 			// 纯读路径：事件回调/订阅刷新专用，不再触发扫描（防止推送-拉取循环触发）
 			if (options?.scan === false) return cachedRecords;
@@ -293,104 +270,29 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogUpdate,
-		async (sessionId: string, patch: UpdateSessionRecordInput) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) throw new Error(mainCopy("session.notFound"));
-			const title = patch.title?.trim();
-			if (title && title !== entry.title) {
-				const target = sessionRuntimeCoordinator.getTarget(sessionId);
-				if (target) {
-					const renamed = await sessionRuntimeCoordinator.renameRuntime(target, title);
-					if (!renamed.ok) throw sessionCommandIpcError(renamed.error, appLogger, mainCopy);
-				} else if (entry.filePath) {
-					await sessionScanner.rename(entry.filePath, title);
-					void appLogger.info("session", "Session renamed (file)", {
-						sessionId,
-						oldTitle: entry.title,
-						newTitle: title,
-					});
-				}
-			}
-			return sessionCatalog.update(sessionId, {
-				...patch,
-				title: title || undefined,
-			});
-		},
+		// 参数校验在边界：title 只接受字符串；其余交给 SessionRecordService 处理。
+		(sessionId: string, patch: UpdateSessionRecordInput) =>
+			sessionRecordService.update(sessionId, patch),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogDelete,
-		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry) return false;
-			// A draft may be promoted while a renderer click is in flight. Never delete
-			// a catalog record that has acquired, or is acquiring, a Session runtime.
-			if (
-				isSessionDeleteBlocked(sessionId, {
-					getTarget: (sessionId) => sessionRuntimeCoordinator.getTarget(sessionId),
-					isActivating: (sessionId) => sessionRuntimeCoordinator.isActivating(sessionId),
-					isAnonymousActivating: deps.isAnonymousActivating,
-				})
-			) {
-				throw new Error(mainCopy("session.stopBeforeDelete"));
-			}
-			try {
-				if (entry.filePath) {
-					const normalizedTarget = canonicalizeSessionPath(
-						entry.filePath,
-						entry.environment,
-					);
-					const usingAgent = agentManager.list().find((agent) => (
-						agent.sessionPath &&
-						agent.sessionEnvironment === entry.environment &&
-						(entry.environment !== "wsl" || (
-							agent.wslDistro === entry.wslDistro &&
-							agent.wslUser === entry.wslUser
-						)) &&
-						canonicalizeSessionPath(agent.sessionPath, entry.environment) === normalizedTarget
-					));
-					if (usingAgent) {
-						throw new Error(mainCopy("session.inUseDeleteBlocked", { title: usingAgent.title }));
-					}
-					await sessionScanner.delete(entry.filePath);
-				}
-				await sessionCatalog.remove(sessionId);
-				void appLogger.info("session", "Catalog session deleted", { sessionId, filePath: entry.filePath });
-				sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: entry.projectId });
-				return true;
-			} catch (error) {
-				// 会话删除失败（文件删除失败/记录移除失败/会话使用中拦截）也要留痕，便于事后追踪。
-				void appLogger.error("session", "Catalog session delete failed", {
-					sessionId,
-					filePath: entry.filePath,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				throw error;
-			}
-		},
+		(sessionId: string) => sessionRecordService.delete(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogArchive,
-		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return false;
-			// 运行中的会话不能归档（同删除）：移动文件会破坏 pi 对当前写入位置的引用。
-			if (
-				sessionRuntimeCoordinator.getTarget(sessionId) ||
-				sessionRuntimeCoordinator.isActivating(sessionId)
-			) {
-				throw new Error(mainCopy("session.stopBeforeDelete"));
-			}
-			const archivedPath = await sessionScanner.archive(entry.filePath);
-			await sessionCatalog.remove(sessionId);
-			void appLogger.info("session", "Session archived", { sessionId, archivedPath });
-			return true;
-		},
+		(sessionId: string) => sessionRecordService.archive(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogUnarchive,
 		async (archivedPath: string) => {
 			// 校验入参：归档路径必须是 .pideck-archive 目录内的 JSONL，防路径穿越。
 			if (typeof archivedPath !== "string" || !archivedPath.endsWith(".jsonl")) {
+				throw new Error(mainCopy("session.invalidArchivePath"));
+			}
+			// 归档路径必须位于某个 .pideck-archive 目录之内（按 / 和 \ 两种分隔符判断）。
+			// 仅看后缀不够：它把“能否恢复”完全交给了索引，注释与代码不符。
+			const segments = archivedPath.split(/[\\/]+/);
+			if (!segments.slice(0, -1).includes(ARCHIVE_DIR_NAME)) {
 				throw new Error(mainCopy("session.invalidArchivePath"));
 			}
 			const restoredPath = await sessionScanner.unarchive(archivedPath);
@@ -404,29 +306,15 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogReadMessages,
-		async (sessionId: string) => {
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return [];
-			const content = await sessionScanner.readSessionRawText(entry.filePath);
-			const rawMessages = await agentManager.readSessionDisplayMessages(entry.filePath, sessionId, content);
-			const stripped = stripToolResultForDelivery(rawMessages);
-			const dummyPayload = { messages: stripped };
-			const result = enforceDeliveryBudgetOnPayload(
-				dummyPayload,
-				(p) => ({ ok: true, result: p.messages }),
-			);
-			if (result.ok) {
-				return result.value.messages;
-			}
-			throw new Error("MESSAGE_DELIVERY_TOO_LARGE");
-		},
+		(sessionId: string) => sessionRecordService.readMessages(sessionId),
 	);
 	router.handle(
 		ipcChannels.sessionsCatalogReadMessagePage,
 		async (sessionId: string, before?: number, pageSize?: number, options?: { unit?: "message" | "turn"; beforeEntryId?: string }) => {
 			const entry = sessionCatalog.get(sessionId);
 			if (!entry?.filePath) return { messages: [], total: 0, nextBefore: null };
-			// unit=turn（2026-08 激活分页）：页边界对齐完整轮次，pageSize 复用为轮次数（上限 10）；
+			// unit=turn（2026-08 激活分页，2026-12 上限 10→50）：页边界对齐完整轮次，pageSize 复用为轮次数；
+			// 初始尾页读最近 50 轮，更早页每次 3 轮，上限由 SessionHistoryReader.maxTurnPageSize() 兜底；
 			// 游标协议不变（before/nextBefore 为绝对消息下标，与运行时数组同一下标空间）；
 			// beforeEntryId 供已激活会话以运行时窗口首条消息为锚点首次补历史。
 			let rawPage: SessionMessagePage | undefined;
@@ -634,6 +522,10 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	router.handle(
 		ipcChannels.sessionsRuntimeAbort,
 		(target: SessionRuntimeTarget) => sessionRuntimeCoordinator.abortRuntime(target),
+	);
+	router.handle(
+		ipcChannels.sessionsRuntimeFlushMessages,
+		(target: SessionRuntimeTarget) => sessionRuntimeCoordinator.flushMessages(target),
 	);
 	router.handle(
 		ipcChannels.sessionsRuntimeRestart,

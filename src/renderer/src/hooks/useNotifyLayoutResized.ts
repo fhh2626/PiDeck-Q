@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 
 /**
  * 布局变化 → 通知悬浮层重算定位（模块级单例）。

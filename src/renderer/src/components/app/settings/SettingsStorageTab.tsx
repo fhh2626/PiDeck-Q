@@ -4,6 +4,7 @@ import { t } from "../../../i18n";
 import { Button } from "../../ui-shadcn/button";
 import { SectionHeading } from "../../ui-shadcn/section-heading";
 import type { AppSettings } from "../../../../../shared/types";
+import { reloadDesktopRenderer } from "../../../native/initializeNativeDesktop";
 import { SettingBox, SettingRow } from "./SettingRows";
 import { LogViewer } from "./LogViewer";
 
@@ -122,7 +123,7 @@ export function StorageTab(props: {
 			setFeedback(`${t("common.error")}: ${e instanceof Error ? e.message : String(e)}`);
 			return;
 		}
-		window.location.reload();
+		reloadDesktopRenderer();
 	};
 
 	const confirmClearLocalStorage = () => {

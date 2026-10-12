@@ -1,11 +1,15 @@
-import { defineConfig } from "vitepress";
+import { readFileSync } from "node:fs";
+import { defineConfig, type DefaultTheme } from "vitepress";
+
+// Current-version displays and metadata share the desktop build's manifest source.
+const packageVersion: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 // 自定义域名部署在站点根路径；本地/兼容旧 github.io 子路径时可用 VITEPRESS_BASE=/PiDeck/
 const base = process.env.VITEPRESS_BASE ?? "/";
 // 官网正式入口：自定义域名（GitHub Pages Settings + public/CNAME）
 const siteOrigin = process.env.DOCS_SITE_ORIGIN ?? "https://pideck.caoayu.top";
 
-export default defineConfig({
+export default defineConfig<DefaultTheme.Config & { version: string }>({
   base,
   cleanUrls: true,
   lastUpdated: true,
@@ -116,7 +120,8 @@ export default defineConfig({
   // ===== 共享主题配置 =====
   themeConfig: {
     logo: "/icon.svg",
-    siteTitle: "PiDeck",
+    siteTitle: "PiDeck-Q",
+    version: packageVersion,
     socialLinks: [{ icon: "github", link: "https://github.com/fhh2626/PiDeck-Q" }],
     search: {
       provider: "local",
@@ -151,7 +156,7 @@ export default defineConfig({
   head: [
     ["link", { rel: "icon", href: `${base}icon.svg` }],
     ["link", { rel: "canonical", href: `${siteOrigin}/` }],
-    ["meta", { name: "keywords", content: "PiDeck, pi, pi-agent, ai-coding-agent, desktop, electron, rpc, local-ai, developer-tools, coding-assistant, workspace, session-management, git, terminal, windows, macos, linux, open-source" }],
+    ["meta", { name: "keywords", content: "PiDeck, pi, pi-agent, ai-coding-agent, desktop, qt, rpc, local-ai, developer-tools, coding-assistant, workspace, session-management, git, terminal, windows, macos, linux, open-source" }],
     ["meta", { name: "author", content: "ayuayue" }],
     ["meta", { name: "robots", content: "index, follow" }],
     ["meta", { property: "og:site_name", content: "PiDeck" }],
@@ -173,7 +178,8 @@ export default defineConfig({
         "@type": "SoftwareApplication",
         "name": "PiDeck",
         "applicationCategory": "DeveloperApplication",
-        "operatingSystem": "Windows, macOS, Linux",
+        "operatingSystem": "Windows",
+        softwareVersion: packageVersion,
         "description": "Open-source desktop workbench for managing multiple pi AI coding agents across local project folders.",
         "url": siteOrigin,
         "downloadUrl": "https://github.com/fhh2626/PiDeck-Q/releases",

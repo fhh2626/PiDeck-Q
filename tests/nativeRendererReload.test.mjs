@@ -18,9 +18,16 @@ test("native renderer resync restores the token before navigation", () => {
 	));
 	assert.equal(url.searchParams.get("runtime"), "native");
 	assert.equal(url.searchParams.get("token"), "secret");
-	assert.match(rendererBootstrap, /onResyncRequired: \(\) => reloadNativeRenderer\(token\)/);
 	assert.match(rendererBootstrap, /window\.location\.replace\(createNativeReloadUrl\(window\.location\.href, token\)\)/);
 	assert.doesNotMatch(rendererBootstrap, /onResyncRequired: \(\) => window\.location\.reload\(\)/);
+});
+
+test("native renderer resync keeps the page when the server sends a structured gap", () => {
+	// 正常断层载荷是对象；只有畸形载荷才允许走整页重载兜底。
+	assert.doesNotMatch(rendererBootstrap, /onResyncRequired: \(\) => reloadNativeRenderer\(token\)/);
+	assert.match(rendererBootstrap, /onResyncRequired: \(payload\) => \{/);
+	assert.match(rendererBootstrap, /if \(isUnknownRecord\(payload\)\) return;/);
+	assert.match(rendererBootstrap, /reloadNativeRenderer\(token\);/);
 });
 
 test("native reload URL preserves unrelated query parameters and hash", () => {

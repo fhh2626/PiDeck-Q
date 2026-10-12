@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import type { FileTreeNode } from "../../../../shared/types";
 import { t } from "../../i18n";

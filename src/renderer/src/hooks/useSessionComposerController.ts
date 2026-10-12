@@ -16,14 +16,16 @@ import type {
   SessionSummary,
 } from "../../../shared/types";
 import {
-  sessionAttachmentsByIdAtom,
-  sessionComposerModeByIdAtom,
+  sessionAttachmentsAtomFamily,
+  // 回调里按 id 读其他/本会话草稿用；订阅一律用上面的 atomFamily（见 composer-atoms 注释）。
   sessionDraftByIdAtom,
+  sessionComposerModeAtomFamily,
+  sessionDraftAtomFamily,
   sessionMessagesCacheAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
   sessionRuntimeUiBySessionIdAtomFamily,
-  sessionSendStateByIdAtom,
+  sessionSendStateAtomFamily,
   sessionSummariesByProjectIdAtomFamily,
   setSessionAttachmentsAtom,
   setSessionComposerModeAtom,
@@ -86,7 +88,9 @@ import { showNotice } from "../utils/notice";
 import { htmlToPlainText } from "../utils/clipboard";
 import { shouldRequestNativeClipboardSnapshot } from "../native/nativeClipboardPaste";
 import {
+  SessionCommandFailure,
   requireSessionCommand,
+  resolveAbortRetry,
   toSessionRuntimeTarget,
 } from "../utils/sessionCommands";
 import { isUserFacingSessionStart } from "./useSessionTimelineController";
@@ -135,101 +139,17 @@ export type UseSessionComposerControllerOptions = {
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
 };
 
-export type ComposerDraftGuard = {
-  sessionId: string;
-  agentId?: string;
-  runtimeGeneration: number;
-  baselineDraft: string;
-  version: number;
-  pristine: boolean;
-};
-
-export function createComposerDraftGuard(input: {
-  sessionId: string;
-  agentId?: string;
-  runtimeGeneration?: number;
-  draft: string;
-}): ComposerDraftGuard {
-  return {
-    sessionId: input.sessionId,
-    agentId: input.agentId,
-    runtimeGeneration: input.runtimeGeneration ?? 0,
-    baselineDraft: input.draft,
-    version: 0,
-    pristine: input.draft.length === 0,
-  };
-}
-
-export function markComposerDraftMutation(
-  guard: ComposerDraftGuard,
-): ComposerDraftGuard {
-  return { ...guard, version: guard.version + 1, pristine: false };
-}
-
-export function canApplyRuntimeEditorText(
-  guard: ComposerDraftGuard,
-  input: {
-    sessionId: string;
-    agentId: string;
-    runtimeGeneration: number;
-    currentDraft: string;
-  },
-): boolean {
-  return guard.sessionId === input.sessionId &&
-    guard.agentId === input.agentId &&
-    guard.runtimeGeneration === input.runtimeGeneration &&
-    guard.pristine &&
-    guard.baselineDraft === input.currentDraft;
-}
-
-export type LatestRequestToken = { key: string; sequence: number };
-
-export function createLatestRequestGate() {
-  let current = { key: "", sequence: 0 };
-  return {
-    begin(key: string): LatestRequestToken {
-      current = { key, sequence: current.sequence + 1 };
-      return current;
-    },
-    invalidate(key: string) {
-      current = { key, sequence: current.sequence + 1 };
-    },
-    isCurrent(token: LatestRequestToken) {
-      return token.key === current.key && token.sequence === current.sequence;
-    },
-  };
-}
-
-type SessionReferenceMessage = {
-  role: string;
-  content: string;
-  timestamp: number;
-};
-
-export type SessionReferenceSelection = {
-  selectedIndices: number[];
-  entries: Array<{ index: number; message: SessionReferenceMessage }>;
-};
-
-export function createSessionReferenceSelection(
-  selectedIndices: number[],
-  selectedMessages: SessionReferenceMessage[],
-): SessionReferenceSelection {
-  const entries = selectedIndices
-    .map((index, position) => ({ index, message: selectedMessages[position] }))
-    .filter((entry): entry is { index: number; message: SessionReferenceMessage } =>
-      Boolean(entry.message),
-    );
-  return { selectedIndices: entries.map((entry) => entry.index), entries };
-}
-
-export function selectedSessionReferenceMessages(
-  selection: SessionReferenceSelection,
-): SessionReferenceMessage[] {
-  return [...selection.entries]
-    .sort((left, right) => left.index - right.index)
-    .map((entry) => entry.message);
-}
+// Compatibility exports share the same pure policy implementation, not duplicate state.
+import {
+  createComposerDraftGuard, markComposerDraftMutation, canApplyRuntimeEditorText,
+  createLatestRequestGate, createSessionReferenceSelection, selectedSessionReferenceMessages,
+  type ComposerDraftGuard, type SessionReferenceSelection,
+} from "../utils/composerPolicies";
+export {
+  createComposerDraftGuard, markComposerDraftMutation, canApplyRuntimeEditorText,
+  createLatestRequestGate, createSessionReferenceSelection, selectedSessionReferenceMessages,
+  type ComposerDraftGuard, type LatestRequestToken, type SessionReferenceSelection,
+} from "../utils/composerPolicies";
 
 function getBangMode(text: string): "none" | "bang" | "bang-bang" {
   if (text.startsWith("!!")) return "bang-bang";
@@ -257,19 +177,17 @@ export function useSessionComposerController(
   const projectSessions = useAtomValue(
     sessionSummariesByProjectIdAtomFamily(record?.projectId ?? ""),
   );
-  const drafts = useAtomValue(sessionDraftByIdAtom);
-  const attachmentsBySession = useAtomValue(sessionAttachmentsByIdAtom);
-  const modes = useAtomValue(sessionComposerModeByIdAtom);
-  const sendStates = useAtomValue(sessionSendStateByIdAtom);
+  // 按会话订阅：分屏时另一栏打字不会让本栏 composer 重渲染（见 composer-atoms 注释）。
+  // 回调里需要读本会话草稿时用 store.get(sessionDraftByIdAtom)，不要恢复整表订阅。
+  const draft = useAtomValue(sessionDraftAtomFamily(sessionId));
+  const attachments = useAtomValue(sessionAttachmentsAtomFamily(sessionId));
+  const mode = useAtomValue(sessionComposerModeAtomFamily(sessionId));
+  const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const setDraftAtom = useSetAtom(setSessionDraftAtom);
   const setAttachmentsAtom = useSetAtom(setSessionAttachmentsAtom);
   const setModeAtom = useSetAtom(setSessionComposerModeAtom);
   const setSendStateAtom = useSetAtom(setSessionSendStateAtom);
 
-  const draft = drafts[sessionId] ?? "";
-  const attachments = attachmentsBySession[sessionId] ?? [];
-  const mode = modes[sessionId] ?? "normal";
-  const sendState = sendStates[sessionId] ?? { status: "idle" as const };
   const editorRef = useRef<HTMLDivElement | null>(null);
   // 程序化光标请求（带归属 forValue，见 composer/types.ts 的 ComposerCaretRequest）；
   // 编辑器只在内容同步到 forValue 的同一趟 layout pass 配对消费，过期请求会被丢弃。
@@ -773,6 +691,8 @@ export function useSessionComposerController(
   }, [draft, sessionId]);
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // IME 的方向键/Enter 属于候选确认，不得读取历史或抢走编辑器事件。
+    if (isComposingKeyboardEvent(event)) return;
     if (completion && !completion.dismissed) {
       if (suggestionsOpen && event.key === "ArrowDown") {
         event.preventDefault();
@@ -803,40 +723,46 @@ export function useSessionComposerController(
       }
     }
 
-    const liveDraft = liveDomDraftRef.current.sessionId === sessionId
-      ? liveDomDraftRef.current.value
-      : draft;
-    const liveCursor = editorRef.current
-      ? getComposerCaretOffset(editorRef.current)
-      : cursor;
-    const firstLine = !liveDraft.slice(0, liveCursor).includes("\n");
-    const lastLine = !liveDraft.slice(liveCursor).includes("\n");
-    const history = getPromptHistory();
+    // 历史与 DOM 光标只供上下键导航使用；普通输入不扫描重会话消息，
+    // 也不调用 TipTap 光标转换（其中可能读取布局）。行内移动同样不读取历史。
+    if (event.key === "ArrowUp" || (event.key === "ArrowDown" && historyIndex >= 0)) {
+      const liveDraft = liveDomDraftRef.current.sessionId === sessionId
+        ? liveDomDraftRef.current.value
+        : draft;
+      const liveCursor = editorRef.current
+        ? getComposerCaretOffset(editorRef.current)
+        : cursor;
+      const firstLine = !liveDraft.slice(0, liveCursor).includes("\n");
+      const lastLine = !liveDraft.slice(liveCursor).includes("\n");
 
-    if (event.key === "ArrowUp" && firstLine && history.length > 0) {
-      event.preventDefault();
-      clearCompletion();
-      const nextIndex = historyIndex < 0
-        ? 0
-        : Math.min(historyIndex + 1, history.length - 1);
-      if (historyIndex < 0) setSavedDraft(liveDraft);
-      setHistoryIndex(nextIndex);
-      liveDomDraftRef.current = { sessionId, value: history[nextIndex] };
-      setDraft(history[nextIndex]);
-      caretRef.current = { pos: history[nextIndex].length, forValue: history[nextIndex] };
-      return;
-    }
-    if (event.key === "ArrowDown" && lastLine && historyIndex >= 0) {
-      event.preventDefault();
-      clearCompletion();
-      const nextIndex = historyIndex - 1;
-      const nextDraft = nextIndex >= 0 ? history[nextIndex] : savedDraft;
-      setHistoryIndex(nextIndex);
-      if (nextIndex < 0) setSavedDraft("");
-      liveDomDraftRef.current = { sessionId, value: nextDraft };
-      setDraft(nextDraft);
-      caretRef.current = { pos: nextDraft.length, forValue: nextDraft };
-      return;
+      if (event.key === "ArrowUp" && firstLine) {
+        const history = getPromptHistory();
+        if (history.length > 0) {
+          event.preventDefault();
+          clearCompletion();
+          const nextIndex = historyIndex < 0
+            ? 0
+            : Math.min(historyIndex + 1, history.length - 1);
+          if (historyIndex < 0) setSavedDraft(liveDraft);
+          setHistoryIndex(nextIndex);
+          liveDomDraftRef.current = { sessionId, value: history[nextIndex] };
+          setDraft(history[nextIndex]);
+          caretRef.current = { pos: history[nextIndex].length, forValue: history[nextIndex] };
+          return;
+        }
+      }
+      if (event.key === "ArrowDown" && lastLine && historyIndex >= 0) {
+        event.preventDefault();
+        clearCompletion();
+        const nextIndex = historyIndex - 1;
+        const nextDraft = nextIndex >= 0 ? getPromptHistory()[nextIndex] : savedDraft;
+        setHistoryIndex(nextIndex);
+        if (nextIndex < 0) setSavedDraft("");
+        liveDomDraftRef.current = { sessionId, value: nextDraft };
+        setDraft(nextDraft);
+        caretRef.current = { pos: nextDraft.length, forValue: nextDraft };
+        return;
+      }
     }
     if (event.key === "Escape" && historyIndex >= 0) {
       clearCompletion();
@@ -857,6 +783,7 @@ export function useSessionComposerController(
     clearCompletion,
     commitCompletion,
     completion,
+    cursor,
     dismissCompletion,
     draft,
     getPromptHistory,
@@ -1291,7 +1218,10 @@ export function useSessionComposerController(
   }, []);
 
   const abort = useCallback(async () => {
-    const target = toSessionRuntimeTarget(sessionId, runtime);
+    // 用点击当时的绑定，不用渲染闭包里的 runtime：重启/懒启动完成会让闭包里的
+    // runtimeGeneration 过期，命令会被 SESSION_RUNTIME_CHANGED 拒绝而 abort 根本未执行。
+    const readRuntime = () => store.get(sessionRuntimeBySessionIdAtomFamily(sessionId));
+    const target = toSessionRuntimeTarget(sessionId, readRuntime());
     if (!target) {
       // 运行时信息缺失（如 agent 尚未绑定）：停止无意义，但不应静默——
       // 提示用户当前会话没有可停止的 Agent，避免「点了停止没反应」的困惑。
@@ -1299,14 +1229,22 @@ export function useSessionComposerController(
       return;
     }
     try {
-      requireSessionCommand(await desktopApi.sessions.abortRuntime(target));
+      const result = await desktopApi.sessions.abortRuntime(target);
+      if (result.ok) return;
+      // 代际在命令派发前后变了：重读绑定，代际确实变了才再试一次（只一次）。
+      const retryTarget = resolveAbortRetry(result.error.code, target, readRuntime(), sessionId);
+      if (retryTarget) {
+        requireSessionCommand(await desktopApi.sessions.abortRuntime(retryTarget));
+        return;
+      }
+      throw new SessionCommandFailure(result.error);
     } catch (error) {
       // abort 失败必须可见：之前这里直接 throw 变成未处理 rejection，
       // 用户点停止后毫无反馈、agent 继续运行，表现为「停止不了」。
       // 异常常驻提示，直到用户手动关闭。
       showNotice(error instanceof Error ? error.message : String(error), Number.POSITIVE_INFINITY);
     }
-  }, [runtime?.agentId, runtime?.runtimeGeneration, sessionId]);
+  }, [sessionId, store]);
 
   const acknowledgeUnknownDelivery = useCallback(() => {
     setSendStateAtom({ sessionId, state: { status: "idle" } });

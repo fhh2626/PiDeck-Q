@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronUp, MessageCircle, Minimize, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronUp, Minimize } from "lucide-react";
 import type { ChatMessage } from "../../../../shared/types";
 import { t, translateI18nDescriptor } from "../../i18n";
 import { formatDuration, formatTime, stripAnsi } from "./TimelineFormat";
@@ -9,7 +9,6 @@ import { ApprovalCard } from "../ui-shadcn/approval-card";
 import { TimelineMarker } from "./TimelineMarker";
 import { LiveDuration } from "./LiveDuration";
 import { MarkdownStream } from "./MarkdownStream";
-import { ShimmerText } from "./ShimmerText";
 import { ReasoningText } from "../agents/loading-states/reasoning-text";
 import { Loader } from "../motion/loader";
 import { SingleLinePreview } from "./SingleLinePreview";

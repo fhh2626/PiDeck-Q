@@ -30,17 +30,19 @@ import type {
 	SessionUiResponseInput,
 	UpdateSessionRecordInput,
 } from "../../shared/types";
-import { serializeWebClientDictionaries, webEnUS } from "./WebI18n";
+import { serializeWebClientDictionaries, webEnUS, webZhCN } from "./WebI18n";
 import {
 	WebEventStreamRouter,
 	type PiEvent,
 } from "./WebEventStream";
 import { getAppLogger } from "../logging/sharedLogger";
 import { SessionDeleteBlockedError } from "../sessions/SessionDeleteBlockedError";
+import { authorizeWebRequest } from "./webServiceAuth";
+import { isValidWebServiceAccessToken } from "../../shared/webServiceAccess";
 
 type WebServiceSettings = Pick<
 	AppSettings,
-	"webServiceEnabled" | "webServiceHost" | "webServicePort"
+	"webServiceEnabled" | "webServiceHost" | "webServicePort" | "webServiceAccessToken"
 >;
 
 type WebServiceDependencies = {
@@ -78,6 +80,17 @@ type WebServiceDependencies = {
 		sessionId: string,
 		before?: number,
 		pageSize?: number,
+	) => Promise<SessionMessagePage>;
+	/**
+	 * 轮次维度历史分页（2026-12 统一 50 轮）：pageSize 复用为轮次数。
+	 * 轮次起点对齐 user 消息（与桌面端 DISPLAY_WINDOW_TURNS 同一约定），
+	 * 工具调用不额外占轮数；beforeEntryId 为稳定的续页锚点。
+	 */
+	readSessionTurnPage: (
+		sessionId: string,
+		before?: number,
+		turnCount?: number,
+		beforeEntryId?: string,
 	) => Promise<SessionMessagePage>;
 	sendSessionPrompt: (input: SendSessionPromptInput) => Promise<SendSessionPromptResult>;
 	getContextControllerState?: (sessionId: string) => Promise<ContextControllerState>;
@@ -132,6 +145,33 @@ type WebServiceDependencies = {
 	respondToUi: (input: SessionUiResponseInput) => Promise<void>;
 };
 
+/** 轮次分页单页上限（与桌面 IPC 的 SessionHistoryReader.maxTurnPageSize 保持一致）。 */
+const MAX_WEB_TURN_PAGE_SIZE = 50;
+
+/**
+ * 严格解析可选的轮次数：缺省返回 undefined（由下游取默认 3 轮），
+ * 非法（空串/非数字/小数/非正数/超上限）返回 false 表示应当 400 拒绝。
+ * 不静默夹紧：把非法值变成默认值会悄悄地拉回尾部，产生重复历史。
+ */
+function parseOptionalPositiveInteger(value: string | null, max: number): number | undefined | false {
+	if (value === null) return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) return false;
+	return parsed;
+}
+
+/** 严格解析可选的数值游标：缺省返回 undefined，非法返回 false（应 400）。 */
+function parseOptionalNonNegativeInteger(value: string | null): number | undefined | false {
+	if (value === null) return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed < 0) return false;
+	return parsed;
+}
+
 const CONTEXT_CONTROLLER_COMMANDS = new Set([
 	"/context-tools on",
 	"/context-tools off",
@@ -173,9 +213,18 @@ export class WebServiceManager {
 	private current: { host: string; port: number } | null = null;
 	/** dev 模式渲染层 dev server 基址（无尾斜杠）；空串表示走构建产物。 */
 	private readonly devRendererUrl: string;
+	/** 当前实例期望的访问令牌；空值即全部拒绝（fail-closed）。 */
+	private accessToken = "";
+	/**
+	 * 已升级（HMR WebSocket）的客户端 socket。
+	 * 升级后的连接脱离了 http.Server 的连接管理，closeAllConnections() 关不掉，
+	 * 必须自行登记，并在 stop() 时显式销毁，否则 server.close() 会永久等待。
+	 */
+	private readonly upgradedSockets = new Set<import("node:stream").Duplex>();
 	private readonly rendererRoot = join(__dirname, "../renderer");
 
 	private readonly eventStreamRouter: WebEventStreamRouter;
+	private lifecycle: Promise<void> = Promise.resolve();
 
 	constructor(private readonly deps: WebServiceDependencies) {
 		this.devRendererUrl = deps.devRendererUrl?.trim() ? deps.devRendererUrl.trim().replace(/\/$/, "") : "";
@@ -184,17 +233,33 @@ export class WebServiceManager {
 		);
 	}
 
+	private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+		const run = this.lifecycle.catch(() => undefined).then(operation);
+		this.lifecycle = run.then(() => undefined, () => undefined);
+		return run;
+	}
+
 	async applySettings(settings: WebServiceSettings) {
+		return this.enqueueLifecycle(() => this.applySettingsNow(settings));
+	}
+
+	private async applySettingsNow(settings: WebServiceSettings) {
 		if (!settings.webServiceEnabled) {
-			await this.stop();
+			await this.stopNow();
 			return;
 		}
 
 		const host = settings.webServiceHost.trim() || "0.0.0.0";
 		const port = this.normalizePort(settings.webServicePort);
-		if (this.server && this.current?.host === host && this.current.port === port) return;
-		await this.stop();
-		await this.start(host, port);
+		const token = settings.webServiceAccessToken;
+		if (!isValidWebServiceAccessToken(token)) throw new Error("WEB_SERVICE_INVALID_TOKEN");
+		if (this.server && this.current?.host === host && this.current.port === port) {
+			// 仅令牌变化时热更新，无需重启监听（已下发的旧 Cookie 随即失效）
+			this.accessToken = token;
+			return;
+		}
+		await this.stopNow();
+		await this.start(host, port, token);
 	}
 
 	/**
@@ -202,14 +267,24 @@ export class WebServiceManager {
 	 * 未启用时直接返回，避免“重启”操作意外启动用户已经关闭的服务。
 	 */
 	async restart(settings: WebServiceSettings) {
+		return this.enqueueLifecycle(() => this.restartNow(settings));
+	}
+
+	private async restartNow(settings: WebServiceSettings) {
 		if (!settings.webServiceEnabled) return;
 		const host = settings.webServiceHost.trim() || "0.0.0.0";
 		const port = this.normalizePort(settings.webServicePort);
-		await this.stop();
-		await this.start(host, port);
+		const token = settings.webServiceAccessToken;
+		if (!isValidWebServiceAccessToken(token)) throw new Error("WEB_SERVICE_INVALID_TOKEN");
+		await this.stopNow();
+		await this.start(host, port, token);
 	}
 
 	async stop() {
+		return this.enqueueLifecycle(() => this.stopNow());
+	}
+
+	private async stopNow() {
 		// 解绑 pi 事件源，避免服务关闭后仍在转发事件到已失效的 SSE 连接。
 		this.eventStreamRouter.unbindPiSource();
 		if (!this.server) return;
@@ -218,6 +293,7 @@ export class WebServiceManager {
 		const server = this.server;
 		this.server = null;
 		this.current = null;
+		this.accessToken = "";
 		// SSE 长连接不会因 server.close() 自动断开（Node 需显式关闭活跃连接），
 		// 否则 stop() 会一直等待连接关闭导致卡死。
 		try {
@@ -225,12 +301,17 @@ export class WebServiceManager {
 		} catch {
 			// 旧版 Node 无该方法时忽略，退化为等待连接自然关闭
 		}
+		// 已升级的 HMR 连接不受 closeAllConnections() 管理，必须手动销毁，
+		// 否则浏览器开着 dev 页面时，关闭/重启 Web 服务会永久卡在 server.close()。
+		for (const upgradedSocket of this.upgradedSockets) upgradedSocket.destroy();
+		this.upgradedSockets.clear();
 		await new Promise<void>((resolve, reject) => {
 			server.close((error) => (error ? reject(error) : resolve()));
 		});
 	}
 
-	private async start(host: string, port: number) {
+	private async start(host: string, port: number, accessToken: string) {
+		if (!isValidWebServiceAccessToken(accessToken)) throw new Error("WEB_SERVICE_INVALID_TOKEN");
 		// 启动时绑定 pi 事件源；路由器只在存在活跃 SSE 连接时转发，空闲时零开销。
 		this.eventStreamRouter.bindPiSource(this.deps.subscribePiEvents);
 		const server = createServer(async (request, response) => {
@@ -253,8 +334,31 @@ export class WebServiceManager {
 
 		// dev 模式：把 WebSocket upgrade 请求（vite HMR 热更新）转发到 dev server，
 		// 否则浏览器连同源的 / 只拿到 HTTP 升级失败，改代码不热更新。
+		// HMR 也必须过同一套鉴权，否则未授权客户端可借升级请求拿到 dev server 通道。
 		if (this.devRendererUrl) {
 			server.on("upgrade", (request, socket, head) => {
+				let upgradeUrl: URL;
+				try {
+					upgradeUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+				} catch {
+					// Host 来自未授权客户端；非法 URL 只能拒绝当前连接，不能让未捕获异常终止 Sidecar。
+					socket.destroy();
+					return;
+				}
+				const auth = authorizeWebRequest({
+					method: "GET",
+					url: upgradeUrl,
+					headers: request.headers,
+					port: this.getPort(server, port),
+					expectedToken: this.accessToken,
+				});
+				if (auth.kind !== "authorized") {
+					socket.destroy();
+					return;
+				}
+				// 登记已升级连接，供 stop() 强制关闭；连接自然关闭时移出，避免集合无限增长。
+				this.upgradedSockets.add(socket);
+				socket.once("close", () => this.upgradedSockets.delete(socket));
 				this.proxyDevWebSocket(request, socket, head);
 			});
 		}
@@ -271,6 +375,7 @@ export class WebServiceManager {
 		});
 		this.server = server;
 		this.current = { host, port: this.getPort(server, port) };
+		this.accessToken = accessToken;
 		getAppLogger()?.info("web", "Web service started", this.current);
 	}
 
@@ -282,6 +387,34 @@ export class WebServiceManager {
 		server: Server,
 	) {
 			const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+			const auth = authorizeWebRequest({
+				method: request.method ?? "GET",
+				url,
+				headers: request.headers,
+				port: this.getPort(server, port),
+				expectedToken: this.accessToken,
+			});
+			if (auth.kind === "forbidden-origin") {
+				this.sendError(response, 403, "webError.forbiddenOrigin", "Cross-site request rejected");
+				return;
+			}
+			if (auth.kind === "unauthorized") {
+				if (url.pathname.startsWith("/api/")) {
+					this.sendError(response, 401, "webError.unauthorized", "Unauthorized");
+				} else {
+					this.sendUnauthorizedPage(response);
+				}
+				return;
+			}
+			if (auth.kind === "exchange") {
+				response.writeHead(302, {
+					location: auth.location,
+					"set-cookie": auth.setCookie,
+					"cache-control": "no-store",
+				});
+				response.end();
+				return;
+			}
 			if (request.method === "OPTIONS") {
 				this.sendNoContent(response);
 				return;
@@ -464,6 +597,29 @@ export class WebServiceManager {
 					decodeURIComponent(sessionMessagePageMatch[1]),
 					Number.isSafeInteger(before) ? before : undefined,
 					Number.isSafeInteger(pageSize) ? pageSize : undefined,
+				);
+				this.sendJson(response, page);
+				return;
+			}
+			// 轮次分页（2026-12 统一 50 轮）：初始尾页 turnCount=50，更早页 turnCount=3。
+			// 参数错误一律 400：非法值不能被静默夹紧成默认值（否则会拉回尾部导致重复历史）。
+			const sessionTurnPageMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages\/turn-page$/);
+			if (sessionTurnPageMatch && request.method === "GET") {
+				const turnCount = parseOptionalPositiveInteger(url.searchParams.get("turnCount"), MAX_WEB_TURN_PAGE_SIZE);
+				const before = parseOptionalNonNegativeInteger(url.searchParams.get("before"));
+				const beforeEntryIdValue = url.searchParams.get("beforeEntryId");
+				const beforeEntryId = beforeEntryIdValue === null
+					? undefined
+					: (beforeEntryIdValue.trim() ? beforeEntryIdValue : null);
+				if (turnCount === false || before === false || beforeEntryId === null) {
+					this.sendError(response, 400, "webError.invalidMessagePage", "invalid turn page parameters");
+					return;
+				}
+				const page = await this.deps.readSessionTurnPage(
+					decodeURIComponent(sessionTurnPageMatch[1]),
+					before,
+					turnCount,
+					beforeEntryId,
 				);
 				this.sendJson(response, page);
 				return;
@@ -1385,10 +1541,16 @@ export class WebServiceManager {
 			upstreamSocket.pipe(socket).pipe(upstreamSocket);
 			upstreamSocket.on("error", () => socket.destroy());
 			socket.on("error", () => upstreamSocket.destroy());
+			// 任一端关闭（不只是出错）都联动关闭另一端：否则客户端被 stop() 销毁或正常离开后，
+			// 到 dev server 的上游连接会一直悬挂。
+			socket.once("close", () => upstreamSocket.destroy());
+			upstreamSocket.once("close", () => socket.destroy());
 			if (upstreamHead?.length) socket.write(upstreamHead);
 			if (head?.length) upstreamSocket.write(head);
 		});
 		upstream.on("error", () => socket.destroy());
+		// 握手尚未完成客户端就离开时，放弃上游握手请求。
+		socket.once("close", () => upstream.destroy());
 		upstream.end();
 	}
 
@@ -1432,7 +1594,6 @@ export class WebServiceManager {
 		response.writeHead(200, {
 			"content-type": "application/json; charset=utf-8",
 			"cache-control": "no-store",
-			"access-control-allow-origin": "*",
 		});
 		response.end(serializePublicWebPayload(body));
 	}
@@ -1453,7 +1614,6 @@ export class WebServiceManager {
 			"cache-control": "no-cache, no-transform",
 			connection: "keep-alive",
 			"x-accel-buffering": "no",
-			"access-control-allow-origin": "*",
 			"x-vercel-ai-ui-message-stream": "v1",
 		});
 		response.flushHeaders?.();
@@ -1535,7 +1695,6 @@ export class WebServiceManager {
 		response.writeHead(statusCode, {
 			"content-type": "application/json; charset=utf-8",
 			"cache-control": "no-store",
-			"access-control-allow-origin": "*",
 		});
 		response.end(JSON.stringify({
 			code,
@@ -1544,11 +1703,21 @@ export class WebServiceManager {
 		}));
 	}
 
+	/** 未授权页面访问：返回静态双语提示（无用户输入拼接），引导从桌面设置页重新进入。 */
+	private sendUnauthorizedPage(response: ServerResponse) {
+		response.writeHead(401, {
+			"content-type": "text/html; charset=utf-8",
+			"cache-control": "no-store",
+		});
+		response.end(
+			`<!doctype html><meta charset="utf-8"><title>PiDeck</title>` +
+			`<p>${webZhCN["webError.unauthorized"]}</p><p>${webEnUS["webError.unauthorized"]}</p>`,
+		);
+	}
+
 	private sendNoContent(response: ServerResponse) {
 		response.writeHead(204, {
-			"access-control-allow-origin": "*",
-			"access-control-allow-methods": "GET,POST,OPTIONS",
-			"access-control-allow-headers": "content-type",
+			"cache-control": "no-store",
 		});
 		response.end();
 	}

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
+// entryId 对齐（含压缩裁剪）用真实实现：
+// 桩成旧算法会让压缩会话的回归用例静默退回全量分支，失去意义。
+const realSessionEntryIds = loadTsCommonJs("src/main/pi/sessionEntryIds.ts");
+
 const { AgentMessageProjector, buildActiveBranchEntryIds } = loadTsCommonJs(
   "src/main/pi/AgentMessageProjector.ts",
   {
@@ -15,10 +19,8 @@ const { AgentMessageProjector, buildActiveBranchEntryIds } = loadTsCommonJs(
           : typeof content === "string" ? content : "",
       },
       "./sessionEntryIds": {
-        takeActiveEntryId: (ids, index) => ({
-          entryId: ids?.[index],
-          nextIndex: index + 1,
-        }),
+        takeActiveEntryId: realSessionEntryIds.takeActiveEntryId,
+        buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds,
       },
     },
   },
@@ -226,4 +228,47 @@ test("returns only message entries on the active branch", () => {
   ], "message-2");
 
   assert.deepEqual(Array.from(ids), ["message-1", "message-2"]);
+});
+
+// 回归：压缩会话里 get_messages 不含归档消息，entryId 必须从最新压缩的
+// firstKeptEntryId 起配对，否则可见消息会绑到归档条目上（删除/重发落到错误轮次）。
+const COMPACTED_ENTRIES = [
+  { id: "u1", parentId: null, type: "message" },
+  { id: "a1", parentId: "u1", type: "message" },
+  { id: "u2", parentId: "a1", type: "message" },
+  { id: "a2", parentId: "u2", type: "message" },
+  { id: "c1", parentId: "a2", type: "compaction", firstKeptEntryId: "u2" },
+  { id: "t2", parentId: "c1", type: "message" },
+  { id: "u3", parentId: "t2", type: "message" },
+  { id: "a3", parentId: "u3", type: "message" },
+];
+
+test("compacted branch excludes archived messages from entry id list", () => {
+  const ids = buildActiveBranchEntryIds(COMPACTED_ENTRIES, "a3");
+  assert.deepEqual(Array.from(ids), ["u2", "a2", "t2", "u3", "a3"]);
+});
+
+test("compacted history binds kept messages to kept entry ids", () => {
+  const rawMessages = [
+    {
+      role: "compactionSummary",
+      summary: "compacted",
+      timestamp: 1,
+      meta: { firstKeptEntryId: "u2" },
+    },
+    { role: "user", content: [{ type: "text", text: "q2" }], timestamp: 2 },
+    { role: "assistant", content: [{ type: "text", text: "r2" }], timestamp: 3 },
+    { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "ok" }], timestamp: 4 },
+    { role: "user", content: [{ type: "text", text: "q3" }], timestamp: 5 },
+    { role: "assistant", content: [{ type: "text", text: "r3" }], timestamp: 6 },
+  ];
+
+  const messages = createProjector().convert(
+    "agent",
+    rawMessages,
+    Array.from(buildActiveBranchEntryIds(COMPACTED_ENTRIES, "a3")),
+  );
+
+  const entryIds = messages.map((message) => message.meta?.entryId);
+  assert.deepEqual(entryIds, [undefined, "u2", "a2", "t2", "u3", "a3"]);
 });

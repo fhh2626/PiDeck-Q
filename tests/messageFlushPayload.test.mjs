@@ -110,6 +110,32 @@ test("compaction flags are carried on both full and incremental flush payloads",
   assert.equal(incremental.stickyHistory, true);
 });
 
+test("explicit preserveHistory false rides the full payload so edits drop the stale prefix (2026-12)", () => {
+  const all = [msg("a"), msg("b")];
+  // 编辑/删除：必须显式下发 false（缺省会被渲染层当成「未声明」而保留旧前缀）
+  const destructive = buildMessageFlushPayload(
+    "agent-1", all, undefined, 0, "123:456", undefined, false, false, true,
+  );
+  assert.equal(destructive.preserveHistory, false);
+
+  // 普通全量：显式声明 true，压缩保留集不会因下一次普通 flush 丢失保留名单
+  const regular = buildMessageFlushPayload(
+    "agent-1", all, undefined, 0, "123:456", undefined, true, false, true,
+  );
+  assert.equal(regular.preserveHistory, true);
+});
+
+test("incremental payloads keep the legacy omission when preserveHistory is not explicit (2026-12)", () => {
+  const all = [msg("a"), msg("b")];
+  const incremental = buildMessageFlushPayload(
+    "agent-1", all, 1, 0, "123:456", undefined, false, false, true,
+  );
+  assert.equal(incremental.upsertFrom, 1);
+  // 增量分支不随显式标志升级：缺字段仍省略，旧协议的增量载荷保持合法
+  assert.equal(incremental.preserveHistory, undefined);
+  assert.equal(incremental.stickyHistory, undefined);
+});
+
 test("dirtyFrom 0 emits a full replacement in incremental form (renderer merges as full overwrite)", () => {
   const all = [msg("a"), msg("b")];
   const payload = buildMessageFlushPayload("agent-1", all, 0);

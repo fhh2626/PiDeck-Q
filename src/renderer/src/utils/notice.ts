@@ -197,13 +197,18 @@ export function showNotice(message: string, duration?: number, kind?: NoticeData
 	return toast(text, plainOptions);
 }
 
-/** 精准关闭由 showNotice 返回的通知，不影响其他全局 toast。 */
+/**
+ * 精准关闭由 showNotice 返回的通知，不影响其他全局 toast。
+ * 按通知实际所在的位置关闭，而不是按“当前 Toaster 是否已挂载”：
+ * 挂载前弹出的兜底通知在挂载后关闭时仍在兜底容器里，交给 sonner 只会是空操作，
+ * 不自动消失的通知就会永久残留。
+ */
 export function dismissNotice(id: NoticeId | undefined) {
 	if (id === undefined) return;
-	if (toasterMounted()) {
-		toast.dismiss(id);
+	const item = fallbackHost?.querySelector<HTMLDivElement>(`[data-notice-id="${CSS.escape(String(id))}"]`);
+	if (item && fallbackHost) {
+		dismissFallbackNotice(item, fallbackHost);
 		return;
 	}
-	const item = fallbackHost?.querySelector<HTMLDivElement>(`[data-notice-id="${CSS.escape(String(id))}"]`);
-	if (item && fallbackHost) dismissFallbackNotice(item, fallbackHost);
+	if (toasterMounted()) toast.dismiss(id);
 }

@@ -10,7 +10,7 @@
  * - 采样失败（进程刚好退出/命令缺失）返回 undefined，快照仍可用，非致命。
  */
 import { spawn } from "node:child_process";
-import { parsePrivateMemoryBytes, parsePsRssKb, parseTasklistMemoryKb } from "./pidMemoryParsers";
+import { parsePrivateMemoryBytes, parsePsRssKb } from "./pidMemoryParsers";
 import type { AgentProcessMetric, ProcessMetricsSnapshot } from "../../shared/types";
 
 const TASKLIST_TIMEOUT_MS = 2000;

@@ -30,26 +30,44 @@ test("Web display merges adjacent text parts created by stream resume", () => {
 	);
 });
 
-test("Web display keeps identical adjacent reasoning as one part", () => {
+test("Web display preserves repeated characters across snapshot-to-stream text parts without replay evidence", () => {
 	const merged = mergeAdjacentWebMessageParts([
-		{ type: "reasoning", text: "同一段思考" },
-		{ type: "reasoning", text: "同一段思考" },
+		{ type: "text", text: "hello" },
+		{ type: "text", text: "o", state: "done" },
 	]);
-	assert.equal(
-		JSON.stringify(merged),
-		JSON.stringify([{ type: "reasoning", text: "同一段思考" }]),
-	);
+	assert.equal(merged[0].text, "helloo");
 });
 
-test("Web display keeps the longer continuation of adjacent reasoning", () => {
+test("Web display preserves real overlapping characters across resumed text parts without offsets", () => {
 	const merged = mergeAdjacentWebMessageParts([
-		{ type: "reasoning", text: "前" },
-		{ type: "reasoning", text: "前半段" },
+		{ type: "text", text: "你好世界，" },
+		{ type: "text", text: "世界，我们继续", state: "streaming" },
 	]);
-	assert.equal(
-		JSON.stringify(merged),
-		JSON.stringify([{ type: "reasoning", text: "前半段" }]),
-	);
+	assert.equal(merged[0].text, "你好世界，世界，我们继续");
+});
+
+test("Web display preserves genuinely repeated adjacent snapshot text", () => {
+	const merged = mergeAdjacentWebMessageParts([
+		{ type: "text", text: "哈哈" },
+		{ type: "text", text: "哈哈" },
+	]);
+	assert.equal(merged[0].text, "哈哈哈哈");
+});
+
+test("Web display preserves repeated adjacent reasoning without replay evidence", () => {
+	const merged = mergeAdjacentWebMessageParts([
+		{ type: "reasoning", text: "同一段思考" },
+		{ type: "reasoning", text: "同一段思考" },
+	]);
+	assert.equal(merged[0].text, "同一段思考同一段思考");
+});
+
+test("Web display preserves overlapping adjacent reasoning without replay offsets", () => {
+	const merged = mergeAdjacentWebMessageParts([
+		{ type: "reasoning", text: "前半段" },
+		{ type: "reasoning", text: "前半段继续" },
+	]);
+	assert.equal(merged[0].text, "前半段前半段继续");
 });
 
 test("Web display never merges reasoning or text across a tool part", () => {

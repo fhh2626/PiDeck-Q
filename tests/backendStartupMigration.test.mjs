@@ -128,6 +128,26 @@ async function makeHome() {
 	return { root, agentDir, entry: join(agentDir, "extensions", "change-pi-prompt.ts") };
 }
 
+/**
+ * pi settings 默认项补齐是 fire-and-forget 后台任务，不在启动屏障里；
+ * 屏障放行时它可能还没写完（原子写要 fsync，负载高时更明显）。
+ * 轮询到文件可解析且满足条件为止，而不是赌时序。
+ */
+async function readJsonWhen(filePath, predicate = () => true, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs;
+	let lastError;
+	while (Date.now() < deadline) {
+		try {
+			const value = JSON.parse(await readFile(filePath, "utf8"));
+			if (predicate(value)) return value;
+		} catch (error) {
+			lastError = error;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw lastError ?? new Error(`timed out waiting for ${filePath}`);
+}
+
 async function runStartupTasks({ settings, homeRoot, wslEnv, piLocator = null, profile, barrier }) {
 	const wslCalls = [];
 	const overrides = new Map([
@@ -284,8 +304,8 @@ test("pi settings defaults are ensured in every resolved agent dir", async () =>
 		wslEnv: { distro: "Ubuntu", user: "root", linuxHome: "/root", windowsHome: join(wslRoot, "root") },
 	});
 
-	const localSettings = JSON.parse(await readFile(join(home.agentDir, "settings.json"), "utf8"));
-	const wslSettings = JSON.parse(await readFile(join(wslAgentDir, "settings.json"), "utf8"));
+	const localSettings = await readJsonWhen(join(home.agentDir, "settings.json"), (s) => s.defaultProjectTrust !== undefined);
+	const wslSettings = await readJsonWhen(join(wslAgentDir, "settings.json"), (s) => s.defaultProjectTrust !== undefined);
 	assert.equal(localSettings.defaultProjectTrust, "ask");
 	assert.equal(wslSettings.defaultProjectTrust, "ask");
 	assert.equal(localSettings.compaction.enabled, true);
@@ -307,7 +327,7 @@ test("pi version hint is written to lastChangelogVersion when available", async 
 		settings: { wslEnabled: false, externalEditors: {}, removedBuiltInExtensions: [] },
 	});
 
-	const written = JSON.parse(await readFile(join(home.agentDir, "settings.json"), "utf8"));
+	const written = await readJsonWhen(join(home.agentDir, "settings.json"), (s) => s.lastChangelogVersion !== undefined);
 	assert.equal(written.lastChangelogVersion, "0.84.4");
 });
 

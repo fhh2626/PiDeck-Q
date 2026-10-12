@@ -1,14 +1,13 @@
 import type { RpcLogEntry } from "../../shared/types/rpcLog";
-import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { readRpcLogHistory } from "./readRpcLogHistory";
+import { appendFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createGzip, createGunzip } from "node:zlib";
+import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 
 const MAX_LIVE = 1000;
-/** 写入文件时 data 字段 JSON 序列化后的最大字节数，超过则截断 */
-const MAX_DATA_BYTES = 2_048;
 /**
  * 实时环形缓冲中单条 data 的最大字节数（仅影响内存中的缓冲副本，文件仍按原始数据落盘）。
  * 防止高频大 payload（如 prompt 全文）在缓冲里堆积把主进程内存打爆。
@@ -30,8 +29,9 @@ export interface RpcLoggerOptions {
 
 /**
  * RPC 日志服务。
- * - 按 Agent 分文件：userData/logs/rpc/rpc-<agentId>-YYYY-MM-DD.jsonl
- * - 写入时截断大 data（超过 2KB 脱敏保存），大幅减少文件体积
+ * - 按 Agent 分文件：~/.pi-desktop/logs/rpc/rpc-<agentId>-YYYY-MM-DD.jsonl
+ * - 文件按原始数据完整落盘（仅 bash 命令截断为 200 字符），可能包含提示词和文件内容；
+ *   仅在用户为某个 Agent 打开 RPC 日志时写入
  * - 次日自动 gzip 前一天文件，进一步压缩历史日志
  * - 超过 30 天自动清理
  * - 保持环形缓冲区（1000 条）供实时查看弹窗拉取初始历史
@@ -77,8 +77,8 @@ export class RpcLogger {
   }
 
   /**
-   * 供实时查看的内存副本：data JSON 超过 MAX_LIVE_DATA_BYTES 时替换为脱敏摘要。
-   * 只影响内存缓冲，不改变落盘内容。
+   * 供实时查看的内存缓冲副本：data JSON 超过 MAX_LIVE_DATA_BYTES 时替换为摘要。
+   * 只影响内存缓冲，不改变落盘内容（落盘只做 bash 命令截断）。
    */
   private truncateForLive(entry: RpcLogEntry): RpcLogEntry {
     if (entry.data === undefined) return entry;
@@ -120,7 +120,7 @@ export class RpcLogger {
       const existingIds = await this.readEntryIds(filePath);
       const fresh = group.filter((entry) => !existingIds.has(entry.id));
       if (fresh.length === 0) continue;
-      // 与 push 共用写入队列：串行追加，跨日 gzip / 截断逻辑一致
+      // 与 push 共用写入队列：串行追加，跨日 gzip 逻辑一致
       await new Promise<void>((resolve, reject) => {
         this.writeQueue = this.writeQueue
           .then(async () => {
@@ -157,40 +157,31 @@ export class RpcLogger {
     return ids;
   }
 
-  /** 从文件读取日志。
-   * 按 agentId 和日期范围过滤，倒序返回最近 limit 条。
-   * 只读取未压缩的 .jsonl 文件（当天和近期尚未 gzip 的），
-   * 跨日文件已被 gzip，不影响最近 7 天查询。
+  /** Read plain/gzip history for a calendar-day range, globally newest first.
+   * Streaming scan and response budgets bound large archives and result payloads.
    */
   async getFromFile(options?: {
     agentId?: string;
     days?: number;
     limit?: number;
   }): Promise<RpcLogEntry[]> {
+    // Wait for queued writes/compression so a read cannot race gzip replacement.
+    await this.writeQueue;
     await mkdir(this.dir, { recursive: true });
-    const limit = Math.max(1, Math.min(options?.limit ?? 5000, 10000));
-    const days = Math.max(1, options?.days ?? 7);
-
-    const files = this.listFiles(options?.agentId, ".jsonl")
-      .sort()
-      .reverse()
-      .slice(0, days);
-
-    const lines: string[] = [];
-    for (const file of files) {
-      const raw = await readFile(join(this.dir, file), "utf8").catch(() => "");
-      const fileLines = raw.split(/\r?\n/).filter(Boolean);
-      lines.push(...fileLines.reverse());
-      if (lines.length >= limit) break;
-    }
-
-    return lines
-      .slice(0, limit)
-      .map((line) => {
-        try { return JSON.parse(line) as RpcLogEntry; }
-        catch { return null; }
-      })
-      .filter((e): e is RpcLogEntry => Boolean(e));
+    const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(Math.floor(options?.limit ?? 5000), 10000)) : 5000;
+    const days = Number.isFinite(options?.days) ? Math.max(1, Math.min(Math.floor(options?.days ?? 7), RETENTION_DAYS)) : 7;
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - days + 1);
+    const cutoffDate = formatDate(cutoff);
+    const files = this.listFiles(options?.agentId).filter(file => {
+      const date = file.match(/-(\d{4}-\d{2}-\d{2})\.jsonl/)?.[1];
+      return date !== undefined && date >= cutoffDate;
+    }).sort((left, right) => {
+      const date = (file: string) => file.match(/-(\d{4}-\d{2}-\d{2})\.jsonl/)?.[1] ?? "";
+      return date(right).localeCompare(date(left));
+    });
+    return readRpcLogHistory(this.dir, files, { limit, cutoff: cutoff.getTime(), agentId: options?.agentId });
   }
 
   /** 获取 RPC 日志文件总大小（字节），可选按 agentId 过滤，含 gzip 文件 */
@@ -237,7 +228,7 @@ export class RpcLogger {
       for (const entry of entries) {
         if (typeof entry !== "string") continue;
         // 只匹配 rpc-<agentId>-YYYY-MM-DD.jsonl 或 .jsonl.gz
-        if (!/^rpc-[\w-]+-\d{4}-\d{2}-\d{2}\.jsonl(\.gz)?$/.test(entry)) continue;
+        if (!/^rpc-[\w.~\-]+-\d{4}-\d{2}-\d{2}\.jsonl(\.gz)?$/.test(entry)) continue;
         if (agentId) {
           const prefix = `rpc-${this.sanitizeAgentId(agentId)}-`;
           if (!entry.startsWith(prefix)) continue;
@@ -297,7 +288,7 @@ export class RpcLogger {
     }
     this.lastWriteDate = dateStr;
 
-    // 截断大 data：将 entry 的 data 字段截断后写入，避免文件快速膨胀
+    // 落盘前只做 bash 命令截断（完整大 data 会原样写入，若不能接受可关闭该 Agent 的记录）
     const safeEntry = this.truncateData(entry);
     await appendFile(filePath, `${JSON.stringify(safeEntry)}\n`, "utf8");
 
@@ -307,7 +298,7 @@ export class RpcLogger {
     }
   }
 
-  /** 截断 data 字段：JSON 序列化超过 MAX_DATA_BYTES 时替换为脱敏摘要。 */
+  /** 截断 data 字段：仅把 bash 命令截断为 200 字符；其他字段原样写入。 */
   private truncateData(entry: RpcLogEntry): RpcLogEntry {
     // 处理 direction === "send" 时提取精简命令
     if (entry.direction === "send") {

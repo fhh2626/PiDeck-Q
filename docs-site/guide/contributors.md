@@ -4,7 +4,7 @@ title: 贡献者
 
 # 贡献者
 
-感谢所有为 PiDeck 做出贡献的人！
+感谢所有为上游 [PiDeck](https://github.com/ayuayue/PiDeck) 和 PiDeck-Q 做出贡献的人！以下上游历史贡献保留致谢；飞书、宠物等历史功能不代表当前 PiDeck-Q 仍提供这些能力。
 
 
 ## 代码贡献

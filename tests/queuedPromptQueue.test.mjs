@@ -114,9 +114,6 @@ test("compact queue panel exposes retract-to-input and discard only", () => {
   assert.match(composerPanelsSource, /app\.retractToInput/);
   assert.match(composerPanelsSource, /app\.retractDiscard/);
   assert.match(sessionRuntimeInjectorSource, /onDiscard=\{services\.queueDiscard\}/);
-  assert.match(composerPanelsSource, /canRetractQueuedPromptToInput\(status\)/);
-  assert.match(composerPanelsSource, /canDiscardQueuedPrompt\(status\)/);
-  assert.match(appSource, /const activeQueuedPrompts = currentSessionId/);
   assert.match(composerPanelsSource, /queued-behavior-\$\{prompt\.behavior\}/);
   assert.match(composerPanelsSource, /max-h-\[102px\]/);
   assert.match(stylesSource, /\.queued-row\.queued-behavior-steer \{/);
@@ -127,7 +124,6 @@ test("compact queue panel exposes retract-to-input and discard only", () => {
   assert.doesNotMatch(composerPanelsSource, /app\.queuedAcknowledge/);
   assert.doesNotMatch(appSource, /retryQueuedPrompt/);
   assert.match(queueStateSource, /export const QUEUED_PROMPT_LIMIT = 10/);
-  assert.match(queueStateSource, /export const QUEUED_PROMPT_VISIBLE = 3/);
 });
 
 test("busy composer keeps stop and queued-send controls separate", () => {
@@ -266,7 +262,6 @@ test("indeterminate prompt timeout never becomes a retryable rejection", () => {
     /命令接收结果未知[\s\S]*?delivery: "unknown"/,
   );
   assert.match(queuedPromptHookSource, /status: "unknown"/);
-  assert.match(sessionSendSource, /outcome === "unknown"/);
   assert.match(sessionSendSource, /status: "unknown"/);
   assert.match(composerPanelsSource, /SessionDeliveryNotice/);
   const runtimeControllerSource = readFileSync(

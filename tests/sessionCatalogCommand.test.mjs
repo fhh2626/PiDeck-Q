@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const projectSync = readFileSync("src/renderer/src/hooks/useProjectSync.ts", "utf8");
 
@@ -50,6 +51,7 @@ function createHookForRuntimeTest() {
       if (request === "../utils/projectInventoryRequests") {
         return { requestProjectInventory: (list) => list() };
       }
+      if (request === "../utils/projectGitRefresh") return loadTsCommonJs("src/renderer/src/utils/projectGitRefresh.ts");
       throw new Error(`Unexpected runtime import: ${request}`);
     },
     setTimeout,

@@ -11,8 +11,13 @@ const {
 	chatMessagesToUiMessages,
 	mergeAuthoritativeUiMessages,
 	getWebAskQuestionResult,
+	prependOlderHistoryPage,
+	fetchTurnPage,
 } = loadTsCommonJs(
 	"src/renderer/src/web/webApi.ts",
+	// webApi 在 VM 沙箱里执行（无浏览器全局）：注入 fetch 供分页 helper 使用；
+	// 各用例自行替换 globalThis.fetch 以观察请求 URL。
+	{ globals: { fetch: (input, init) => globalThis.fetch(input, init) } },
 );
 
 function message(overrides = {}) {
@@ -264,7 +269,7 @@ test("does not collapse two identical user messages into one", () => {
 test("inserts a missed assistant reply before the next local turn", () => {
 	const current = [
 		...chatMessagesToUiMessages([
-			message({ id: "web-user-1", role: "user", text: "第一问" }),
+			message({ id: "web-user-1", role: "user", text: "第一问", timestamp: 100 }),
 		]),
 		{ id: "web-user-2", role: "user", parts: [{ type: "text", text: "第二问" }] },
 		{ id: "web-assistant-2", role: "assistant", parts: [{ type: "text", text: "第二问答复" }] },
@@ -671,4 +676,794 @@ test("merge applies a metadata-only snapshot update (ask card appears late)", ()
 	);
 	assert.equal(mergedBack.length, 1);
 	assert.equal(getWebAskQuestionResult(mergedBack[0]), undefined);
+});
+
+// ── 跨轮误匹配防护：相同短句/前缀不得跨过用户消息去认领旧回复 ─────────────────
+
+test("does not match a new assistant reply against an older turn with identical text", () => {
+	// 旧轮回复与新轮回复正文都是「好的」。若允许跨轮全文匹配，新轮快照会替换掉
+	// 旧轮回复，表现为「上一条回答消失」——必须按同轮尾部限定候选。
+	const current = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "先前", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "好的", timestamp: 110 }),
+		message({ id: "u2", role: "user", text: "继续", timestamp: 200 }),
+	]);
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "rt-a2", role: "assistant", text: "好的", timestamp: 210 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(
+		Array.from(merged, (item) => `${item.id}:${item.parts[0]?.text}`),
+		["u1:先前", "a1:好的", "u2:继续", "rt-a2:好的"],
+	);
+});
+
+test("does not match a new assistant reply against an older turn that is its prefix", () => {
+	// 局部文本→完整文本的前缀匹配同样不能跨轮：旧轮「好的」是新轮「好的，我来继续处理」
+	// 的前缀，但两者属于不同轮次。
+	const current = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "先前", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "好的", timestamp: 110 }),
+		message({ id: "u2", role: "user", text: "继续", timestamp: 200 }),
+	]);
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "rt-a2", role: "assistant", text: "好的，我来继续处理", timestamp: 210 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(
+		Array.from(merged, (item) => `${item.id}:${item.parts[0]?.text}`),
+		["u1:先前", "a1:好的", "u2:继续", "rt-a2:好的，我来继续处理"],
+	);
+});
+
+test("does not text-match messages with different stable entry identities", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "history-old", role: "assistant", text: "同一段正文", timestamp: 100, meta: { entryId: "entry-old" } }),
+	]);
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "runtime-new", role: "assistant", text: "同一段正文", timestamp: 110, meta: { entryId: "entry-new" } }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(Array.from(merged, (item) => item.id), ["history-old", "runtime-new"]);
+});
+
+test("inserts timestamped history before an untimestamped local streaming tail", () => {
+	const current = [
+		{ id: "local-live", role: "assistant", parts: [{ type: "text", text: "正在生成" }] },
+	];
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "history-user", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "history-answer", role: "assistant", text: "已落盘回答", timestamp: 110 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(
+		Array.from(merged, (item) => item.id),
+		["history-user", "history-answer", "local-live"],
+	);
+});
+
+test("still merges a same-turn partial local reply into the authoritative answer", () => {
+	// 同轮限定不能把「局部文本→完整文本」的正向能力一起关掉：本地流式半句必须
+	// 被本轮完整快照吸收成一条。
+	const current = [
+		{ id: "web-u-1", role: "user", parts: [{ type: "text", text: "问" }] },
+		{ id: "web-a-1", role: "assistant", parts: [{ type: "text", text: "半句" }] },
+	];
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "rt-u-1", role: "user", text: "问", timestamp: 100 }),
+		message({ id: "rt-a-1", role: "assistant", text: "半句完整内容", timestamp: 110 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(
+		Array.from(merged, (item) => `${item.id}:${item.parts[0]?.text}`),
+		["rt-u-1:问", "rt-a-1:半句完整内容"],
+	);
+});
+
+// ── 历史首页基线：已确认被历史覆盖的本地合泡清掉，未覆盖的保留在尾部 ──────────
+
+test("drops a covered stale local SSE bubble when the history baseline loads", () => {
+	// 首页 = 最新一页权威历史。旧轮「思考+正文」合泡的内容已完整出现在历史里，
+	// 若只靠默认合并会把它顶到时间线最底部（重复的旧内容排在最新回复之后）。
+	const history = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "先前", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "旧答复", thinking: "我想一想", timestamp: 110 }),
+		message({ id: "u2", role: "user", text: "继续", timestamp: 200 }),
+		message({ id: "a2", role: "assistant", text: "新答复", timestamp: 210 }),
+	]);
+	const cached = [
+		{ id: "web-u1", role: "user", parts: [{ type: "text", text: "先前" }] },
+		{
+			id: "local-combined",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "我想一想" },
+				{ type: "text", text: "旧答复" },
+			],
+		},
+		{ id: "web-u2", role: "user", parts: [{ type: "text", text: "继续" }] },
+	];
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	// A trailing metadata-free user without a covered reply might be an optimistic newer turn;
+	// retaining it does not prevent the old reasoning+answer bubble from being cleared.
+	assert.deepEqual(
+		Array.from(merged, (item) => item.id),
+		["u1", "a1", "u2", "a2", "web-u2"],
+	);
+	assert.equal(merged.some((item) => item.id === "local-combined"), false);
+});
+
+test("keeps an uncovered local leftover at the tail when the history baseline loads", () => {
+	// 覆盖未确认（历史里没有对应正文）时不得删除：它可能是历史尚未落盘的实时回复。
+	const history = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "先前", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "旧答复", timestamp: 110 }),
+	]);
+	const cached = [
+		{ id: "web-u1", role: "user", parts: [{ type: "text", text: "先前" }] },
+		{ id: "local-live", role: "assistant", parts: [{ type: "text", text: "历史还没落盘的新回复" }] },
+	];
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	// The page does not establish whether its user and the optimistic user are the same turn.
+	assert.deepEqual(
+		Array.from(merged, (item) => item.id),
+		["u1", "a1", "web-u1", "local-live"],
+	);
+	assert.equal(merged.at(-1)?.parts[0]?.text, "历史还没落盘的新回复");
+});
+
+test("history baseline keeps a streaming local reply that merely repeats an old short answer", () => {
+	// 反向边界：新轮本地流式正文恰好与旧轮短句相同，但历史尚未包含本轮回复时
+	// 不能仅凭「正文相同」就删掉它（覆盖必须能确认，不能跨轮误伤）。
+	const history = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "先前", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "好的", timestamp: 110 }),
+		message({ id: "u2", role: "user", text: "继续", timestamp: 200 }),
+	]);
+	const cached = [
+		{ id: "web-u1", role: "user", parts: [{ type: "text", text: "先前" }] },
+		{ id: "web-a1", role: "assistant", parts: [{ type: "text", text: "好的" }] },
+		{ id: "web-u2", role: "user", parts: [{ type: "text", text: "继续" }] },
+		{ id: "local-live", role: "assistant", parts: [{ type: "text", text: "好的" }] },
+	];
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	// The earlier cached answer can reconcile before the next user, but the newest
+	// metadata-free user/reply remains unclaimed without a reliable turn link.
+	assert.deepEqual(Array.from(merged, (item) => item.id),
+		["u1", "a1", "u2", "web-u2", "local-live"]);
+});
+
+test("strict history cleanup requires stable tool ids and complete coverage of every combined part", () => {
+	const cached = [
+		{ id: "web-turn", role: "user", parts: [{ type: "text", text: "工具问题" }] },
+		{
+			id: "local-combined-tool",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "准备调用工具" },
+				{ type: "dynamic-tool", toolName: "read", toolCallId: "call-stable", state: "output-available", input: {}, output: "文件内容" },
+				{ type: "text", text: "读取完成" },
+			],
+		},
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-user", role: "user", text: "工具问题", timestamp: 100 }),
+		message({ id: "history-assistant", role: "assistant", text: "读取完成", thinking: "准备调用工具", timestamp: 110 }),
+		message({ id: "history-tool", role: "tool", text: "文件内容", timestamp: 111, meta: { toolCallId: "call-stable", toolName: "read" } }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-combined-tool"), false);
+
+	const unidentifiableTool = cached.map((item) => item.id === "local-combined-tool"
+		? { ...item, id: "local-unmatched-tool", parts: item.parts.map((part) => part.type === "dynamic-tool" ? { ...part, toolCallId: "different-call" } : part) }
+		: item);
+	const retained = mergeAuthoritativeUiMessages(unidentifiableTool, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(retained.some((item) => item.id === "local-unmatched-tool"), true);
+});
+
+test("strict history cleanup does not discard a combined bubble containing a tool without a stable id", () => {
+	const cached = [
+		{ id: "web-tool-turn", role: "user", parts: [{ type: "text", text: "读取文件" }] },
+		{
+			id: "local-tool-no-id",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "开始读取" },
+				{ type: "dynamic-tool", toolName: "read", state: "output-available", input: {}, output: "same output" },
+				{ type: "text", text: "已读取" },
+			],
+		},
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-tool-user", role: "user", text: "读取文件", timestamp: 100 }),
+		message({ id: "history-tool-assistant", role: "assistant", text: "已读取", thinking: "开始读取", timestamp: 110 }),
+		message({ id: "history-other-tool", role: "tool", text: "same output", timestamp: 111, meta: { toolCallId: "different-call", toolName: "read" } }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-tool-no-id"), true);
+	assert.equal(merged.some((item) => item.id === "history-tool-assistant"), true);
+});
+
+test("history merge preserves reasoning joined with a tool that has no stable id", () => {
+	const cached = [
+		{ id: "web-no-id-turn", role: "user", parts: [{ type: "text", text: "检查" }] },
+		{
+			id: "local-reasoning-tool-no-id",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "准备检查" },
+				{ type: "dynamic-tool", toolName: "read", state: "output-available", input: {}, output: "same output" },
+			],
+		},
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-no-id-user", role: "user", text: "检查", timestamp: 100 }),
+		message({ id: "history-no-id-assistant", role: "assistant", text: "", thinking: "准备检查", timestamp: 110 }),
+		message({ id: "history-no-id-tool", role: "tool", text: "same output", timestamp: 111, meta: { toolCallId: "other-call", toolName: "read" } }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-reasoning-tool-no-id"), true);
+	assert.equal(merged.some((item) => item.id === "history-no-id-assistant"), true);
+});
+
+test("history baseline keeps a distinct local reply when an older answer is its prefix", () => {
+	const cached = [
+		{ id: "web-u", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "old-answer", role: "assistant", parts: [{ type: "text", text: "OK and more" }] },
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "OK and more", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.deepEqual(Array.from(merged, (item) => item.id), ["u", "old-answer", "new-local"]);
+	assert.equal(merged.at(-1)?.parts[0]?.text, "OK");
+});
+
+test("history exact-text fallback does not claim a distinct local reply", () => {
+	const cached = [
+		{ id: "web-u", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "OK and more", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "new-local"), true);
+	assert.equal(merged.some((item) => item.id === "old-answer"), true);
+});
+
+test("runtime cleanup keeps a distinct plain-text reply after an earlier cached answer", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "OK and more", timestamp: 110 }),
+	]);
+	current.push({ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] });
+	const snapshot = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "OK and more", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(current, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(merged.some((item) => item.id === "new-local"), true);
+});
+
+test("history baseline keeps an identical distinct local reply", () => {
+	const cached = [
+		{ id: "web-u", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "old-answer", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "OK", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "new-local"), true);
+});
+
+test("strict history exact-text match keeps a newer local reply when cached old id differs", () => {
+	const cached = [
+		...chatMessagesToUiMessages([
+			message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+			message({ id: "cache-old", role: "assistant", text: "OK", timestamp: 110 }),
+		]),
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "hist-old", role: "assistant", text: "OK", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "new-local"), true);
+	assert.equal(merged.some((item) => item.id === "hist-old"), true);
+});
+
+test("runtime exact-text merge keeps a newer reply after an earlier persisted answer", () => {
+	const current = [
+		...chatMessagesToUiMessages([
+			message({ id: "u", role: "user", text: "question", timestamp: 100 }),
+			message({ id: "cached-old", role: "assistant", text: "OK", timestamp: 110 }),
+		]),
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const snapshot = chatMessagesToUiMessages([
+		message({ id: "u", role: "user", text: "question", timestamp: 100 }),
+		message({ id: "snapshot-old", role: "assistant", text: "OK", timestamp: 110 }),
+	]);
+	for (const options of [undefined, { dropUnmatchedTrailingPlaceholders: true }]) {
+		const merged = mergeAuthoritativeUiMessages(current, snapshot, options);
+		assert.equal(merged.some((item) => item.id === "snapshot-old"), true);
+		assert.equal(merged.some((item) => item.id === "new-local"), true);
+	}
+});
+
+test("strict history does not match an unanchored older assistant to a live reply", () => {
+	// A bounded history page can begin in the middle of an older turn.
+	const cached = [
+		{ id: "web-new", role: "user", parts: [{ type: "text", text: "新问题" }] },
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "OK" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "older-answer", role: "assistant", text: "OK", timestamp: 100 }),
+		message({ id: "history-new", role: "user", text: "新问题", timestamp: 200 }),
+	]);
+	for (const options of [
+		{ dropCoveredLocalSseLeftovers: true },
+		{ dropUnmatchedTrailingPlaceholders: true },
+	]) {
+		const merged = mergeAuthoritativeUiMessages(cached, history, options);
+		assert.equal(merged.some((item) => item.id === "new-local"), true);
+		assert.equal(merged.some((item) => item.id === "older-answer"), true);
+	}
+});
+
+test("strict history does not clear a combined bubble from a different timestamped turn", () => {
+	const cached = [
+		...chatMessagesToUiMessages([message({ id: "cache-u", role: "user", text: "继续", timestamp: 100 })]),
+		{ id: "local-combined", role: "assistant", parts: [
+			{ type: "reasoning", text: "想好了" },
+			{ type: "text", text: "OK" },
+		] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-u", role: "user", text: "继续", timestamp: 200 }),
+		message({ id: "history-a", role: "assistant", text: "OK", thinking: "想好了", timestamp: 210 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-combined"), true);
+	assert.equal(merged.some((item) => item.id === "history-a"), true);
+});
+
+test("strict history preserves a newer optimistic repeat beyond the loaded history window", () => {
+	const cached = [
+		{ id: "new-user", role: "user", parts: [{ type: "text", text: "继续" }] },
+		{ id: "new-local", role: "assistant", parts: [{ type: "text", text: "尚未落盘的新回复" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "old-user", role: "user", text: "继续", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "旧答复", timestamp: 110 }),
+	]);
+	for (const options of [
+		{ dropCoveredLocalSseLeftovers: true },
+		{ dropUnmatchedTrailingPlaceholders: true },
+	]) {
+		const merged = mergeAuthoritativeUiMessages(cached, history, options);
+		assert.equal(merged.some((item) => item.id === "new-user"), true);
+		assert.equal(merged.some((item) => item.id === "old-user"), true);
+		assert.equal(merged.some((item) => item.id === "new-local"), true);
+	}
+});
+
+test("strict history keeps an unanswered optimistic repeat missing from its page", () => {
+	const cached = [{ id: "new-user", role: "user", parts: [{ type: "text", text: "repeat" }] }];
+	const history = chatMessagesToUiMessages([
+		message({ id: "old-user", role: "user", text: "repeat", timestamp: 100 }),
+		message({ id: "old-answer", role: "assistant", text: "earlier answer", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.deepEqual(Array.from(merged, (item) => item.id), ["old-user", "old-answer", "new-user"]);
+});
+
+test("timestamp evidence reconciles repeated prompts and assistant replies by turn", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "cache-u1", role: "user", text: "again", timestamp: 100 }),
+		message({ id: "cache-a1", role: "assistant", text: "first", timestamp: 110 }),
+		message({ id: "cache-u2", role: "user", text: "again", timestamp: 200 }),
+		message({ id: "cache-a2", role: "assistant", text: "second", timestamp: 210 }),
+	]);
+	const history = chatMessagesToUiMessages([
+		message({ id: "hist-u1", role: "user", text: "again", timestamp: 100 }),
+		message({ id: "hist-a1", role: "assistant", text: "first", timestamp: 110 }),
+		message({ id: "hist-u2", role: "user", text: "again", timestamp: 200 }),
+		message({ id: "hist-a2", role: "assistant", text: "second", timestamp: 210 }),
+	]);
+	for (const options of [undefined, { dropCoveredLocalSseLeftovers: true }]) {
+		const merged = mergeAuthoritativeUiMessages(current, history, options);
+		assert.deepEqual(Array.from(merged, (item) => item.id), ["hist-u1", "hist-a1", "hist-u2", "hist-a2"]);
+	}
+});
+
+test("strict history cleanup keeps longer local text when history contains only a short prefix", () => {
+	const cached = [
+		{ id: "web-user", role: "user", parts: [{ type: "text", text: "本轮问题" }] },
+		{ id: "local-answer", role: "assistant", parts: [{ type: "text", text: "短内容以及尚未落盘的长后缀" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-user", role: "user", text: "本轮问题", timestamp: 100 }),
+		message({ id: "history-answer", role: "assistant", text: "短内容", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-answer"), true);
+});
+
+test("strict history cleanup keeps trailing local reasoning and answer characters absent from the snapshot", () => {
+	const cached = [
+		{ id: "web-trailing-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{
+			id: "local-trailing-space",
+			role: "assistant",
+			parts: [
+				{ type: "reasoning", text: "思考 " },
+				{ type: "text", text: "答案 " },
+			],
+		},
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-trailing-user", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "history-trailing-answer", role: "assistant", text: "答案", thinking: "思考", timestamp: 110 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(cached, history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "local-trailing-space"), true);
+});
+
+test("strict history cleanup keeps a covered-looking orphan when it has no user-turn anchor", () => {
+	const orphan = {
+		id: "orphan-local",
+		role: "assistant",
+		parts: [
+			{ type: "reasoning", text: "历史思考" },
+			{ type: "text", text: "历史回答" },
+		],
+	};
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-user", role: "user", text: "问题", timestamp: 100 }),
+		message({ id: "history-answer", role: "assistant", text: "历史回答", thinking: "历史思考", timestamp: 110 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages([orphan], history, { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((item) => item.id === "orphan-local"), true);
+});
+
+test("does not map repeated prompts across different timestamps", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "cache-u", role: "user", text: "again", timestamp: 100 }),
+		message({ id: "cache-a", role: "assistant", text: "first", timestamp: 110 }),
+	]);
+	const history = chatMessagesToUiMessages([
+		message({ id: "hist-u", role: "user", text: "again", timestamp: 200 }),
+		message({ id: "hist-a", role: "assistant", text: "second", timestamp: 210 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(current, history);
+	assert.equal(merged.some((item) => item.id === "cache-a"), true);
+	assert.equal(merged.some((item) => item.id === "hist-a"), true);
+});
+
+test("does not choose a repeated prompt when timestamp evidence is non-unique", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "cache-u1", role: "user", text: "again", timestamp: 100 }),
+		message({ id: "cache-u2", role: "user", text: "again", timestamp: 100 }),
+	]);
+	const history = chatMessagesToUiMessages([
+		message({ id: "hist-u", role: "user", text: "again", timestamp: 100 }),
+	]);
+	const merged = mergeAuthoritativeUiMessages(current, history);
+	assert.equal(merged.filter((item) => item.role === "user").length, 3);
+});
+
+test("stable entry identity resolves repeated user text without text-order fallback", () => {
+	const current = [
+		{ id: "cache-u1", role: "user", metadata: { chatRole: "user", entryId: "u1", timestamp: 100 }, parts: [{ type: "text", text: "again" }] },
+		{ id: "cache-a1", role: "assistant", metadata: { chatRole: "assistant", entryId: "a1", timestamp: 110 }, parts: [{ type: "text", text: "first" }] },
+		{ id: "cache-u2", role: "user", metadata: { chatRole: "user", entryId: "u2", timestamp: 200 }, parts: [{ type: "text", text: "again" }] },
+		{ id: "cache-a2", role: "assistant", metadata: { chatRole: "assistant", entryId: "a2", timestamp: 210 }, parts: [{ type: "text", text: "second" }] },
+	];
+	const history = [
+		{ id: "hist-u1", role: "user", metadata: { chatRole: "user", entryId: "u1", timestamp: 100 }, parts: [{ type: "text", text: "again" }] },
+		{ id: "hist-a1", role: "assistant", metadata: { chatRole: "assistant", entryId: "a1", timestamp: 110 }, parts: [{ type: "text", text: "first" }] },
+		{ id: "hist-u2", role: "user", metadata: { chatRole: "user", entryId: "u2", timestamp: 200 }, parts: [{ type: "text", text: "again" }] },
+		{ id: "hist-a2", role: "assistant", metadata: { chatRole: "assistant", entryId: "a2", timestamp: 210 }, parts: [{ type: "text", text: "second" }] },
+	];
+	const merged = mergeAuthoritativeUiMessages(current, history);
+	assert.deepEqual(Array.from(merged, (item) => item.id), ["hist-u1", "hist-a1", "hist-u2", "hist-a2"]);
+});
+
+test("does not map repeated metadata-free user turns by reverse text order", () => {
+	const cached = [
+		{ id: "web-u1", role: "user", parts: [{ type: "text", text: "same prompt" }] },
+		{ id: "web-a1", role: "assistant", parts: [{ type: "text", text: "first answer" }] },
+		{ id: "web-u2", role: "user", parts: [{ type: "text", text: "same prompt" }] },
+		{ id: "web-a2", role: "assistant", parts: [{ type: "text", text: "second answer" }] },
+	];
+	const history = chatMessagesToUiMessages([
+		message({ id: "history-u1", role: "user", text: "same prompt", timestamp: 100 }),
+		message({ id: "history-a1", role: "assistant", text: "first answer", timestamp: 110 }),
+		message({ id: "history-u2", role: "user", text: "same prompt", timestamp: 200 }),
+		message({ id: "history-a2", role: "assistant", text: "second answer", timestamp: 210 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(cached, history);
+	const mergedIds = Array.from(merged, (item) => item.id);
+	const expectedIds = ["web-u1", "web-a1", "web-u2", "web-a2", "history-u1", "history-a1", "history-u2", "history-a2"];
+	assert.equal(mergedIds.length, expectedIds.length, "ambiguous repeated prompts must not cause a cache row to be replaced or dropped");
+	for (const id of expectedIds) {
+		assert.equal(mergedIds.filter((actualId) => actualId === id).length, 1, `${id} remains as its own message`);
+	}
+	assert.deepEqual(mergedIds.filter((id) => id.startsWith("web-")), ["web-u1", "web-a1", "web-u2", "web-a2"]);
+	assert.deepEqual(mergedIds.filter((id) => id.startsWith("history-")), ["history-u1", "history-a1", "history-u2", "history-a2"]);
+});
+
+test("keeps both identical user turns when the runtime snapshot repeats the newest one", () => {
+	const current = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "继续", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "一", timestamp: 110 }),
+		message({ id: "u2", role: "user", text: "继续", timestamp: 200 }),
+	]);
+	const authoritative = chatMessagesToUiMessages([
+		message({ id: "rt-u2", role: "user", text: "继续", timestamp: 200 }),
+	]);
+
+	const merged = mergeAuthoritativeUiMessages(current, authoritative);
+	assert.deepEqual(
+		Array.from(merged, (item) => `${item.id}:${item.parts[0]?.text}`),
+		["u1:继续", "a1:一", "rt-u2:继续"],
+	);
+});
+
+// ── 历史分页：更早的一页只往顶部插，流式尾部原样保留 ─────────────────────────
+
+test("prepends an older history page above the streaming tail without disturbing it", () => {
+	const older = chatMessagesToUiMessages([
+		message({ id: "u0", role: "user", text: "最早的问题", timestamp: 50 }),
+		message({ id: "a0", role: "assistant", text: "最早的回答", timestamp: 60 }),
+	]);
+	const tail = [
+		...chatMessagesToUiMessages([
+			message({ id: "u1", role: "user", text: "第二问", timestamp: 100 }),
+			message({ id: "a1", role: "assistant", text: "第二答", timestamp: 110 }),
+		]),
+		{ id: "live", role: "assistant", parts: [{ type: "text", text: "正在生成" }] },
+	];
+
+	const merged = prependOlderHistoryPage(older, tail);
+	assert.deepEqual(
+		Array.from(merged, (item) => item.id),
+		["u0", "a0", "u1", "a1", "live"],
+	);
+});
+
+test("prepending an overlapping older page does not duplicate already visible rows", () => {
+	const older = chatMessagesToUiMessages([
+		message({ id: "u0", role: "user", text: "最早的问题", timestamp: 50 }),
+		message({ id: "a0", role: "assistant", text: "最早的回答", timestamp: 60 }),
+		message({ id: "u1", role: "user", text: "第二问", timestamp: 100 }),
+	]);
+	const tail = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "第二问", timestamp: 100 }),
+		message({ id: "a1", role: "assistant", text: "第二答", timestamp: 110 }),
+	]);
+
+	const merged = prependOlderHistoryPage(older, tail);
+	assert.deepEqual(
+		Array.from(merged, (item) => item.id),
+		["u0", "a0", "u1", "a1"],
+	);
+});
+
+test("prepending an empty older page leaves the tail untouched", () => {
+	const tail = chatMessagesToUiMessages([
+		message({ id: "u1", role: "user", text: "问", timestamp: 100 }),
+	]);
+	const merged = prependOlderHistoryPage([], tail);
+	assert.deepEqual(Array.from(merged, (item) => item.id), ["u1"]);
+});
+
+test("fetchTurnPage requests the turn endpoint with an options object", async () => {
+	const previousFetch = globalThis.fetch;
+	const calls = [];
+	globalThis.fetch = async (input) => {
+		calls.push(String(input));
+		return new Response(JSON.stringify({
+			messages: [],
+			total: 5,
+			nextBefore: 3,
+			nextBeforeEntryId: "e3",
+		}), { status: 200, headers: { "content-type": "application/json" } });
+	};
+	try {
+		const page = await fetchTurnPage("sess 1");
+		assert.equal(
+			calls[0],
+			"/api/sessions/sess%201/messages/turn-page",
+			"omitted options must not send empty query parameters",
+		);
+		assert.equal(page.nextBefore, 3);
+
+		await fetchTurnPage("sess-1", { turnCount: 50 });
+		assert.equal(calls[1], "/api/sessions/sess-1/messages/turn-page?turnCount=50");
+
+		await fetchTurnPage("sess-1", { turnCount: 3, before: 40, beforeEntryId: "e40" });
+		assert.equal(
+			calls[2],
+			"/api/sessions/sess-1/messages/turn-page?turnCount=3&before=40&beforeEntryId=e40",
+			"both cursors must be forwarded so a renamed anchor cannot silently restart from the tail",
+		);
+
+		await fetchTurnPage("sess-1", { before: 0 });
+		assert.equal(
+			calls[3],
+			"/api/sessions/sess-1/messages/turn-page?before=0",
+			"before=0 is a real cursor and must not be dropped",
+		);
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
+});
+
+test("fetchTurnPage rejects a failed response instead of returning an empty page", async () => {
+	const previousFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response("nope", { status: 500 });
+	try {
+		await assert.rejects(() => fetchTurnPage("sess-1", { turnCount: 50 }), /messages 500/);
+	} finally {
+		globalThis.fetch = previousFetch;
+	}
+});
+
+// ── 多步轮次去重（阶段 1/2）共用工厂 ──
+function stepUser(id, text, timestamp) {
+	return { id, agentId: "a1", role: "user", text, timestamp, meta: { entryId: `e-${id}` } };
+}
+function stepAssistant(id, text, timestamp, thinking) {
+	return { id, agentId: "a1", role: "assistant", text, timestamp, ...(thinking ? { thinking } : {}), meta: { entryId: `e-${id}` } };
+}
+function stepTool(id, callId, timestamp) {
+	return { id, agentId: "a1", role: "tool", text: `✓ bash ${callId}`, timestamp, meta: { toolCallId: callId, toolName: "bash", status: "done", result: "ok" } };
+}
+function stepDynamicTool(callId) {
+	return { type: "dynamic-tool", toolName: "bash", toolCallId: callId, state: "output-available", input: {}, output: "ok" };
+}
+/** 持久化侧：一轮按 pi 消息拆开。 */
+function persistedMultiStepTurn() {
+	return chatMessagesToUiMessages([
+		stepUser("u1", "问题", 1000),
+		stepAssistant("a1", "", 1001, "思考一"),
+		stepTool("x1", "t1", 1002),
+		stepAssistant("a2", "插入语", 1003),
+		stepTool("x2", "t2", 1004),
+		stepAssistant("a3", "最终答案", 1005, "思考二"),
+	]);
+}
+/** 本地 SSE 侧：同一轮合成一条 assistant 气泡。 */
+function localMultiStepTurn() {
+	return [
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [
+			{ type: "step-start" }, { type: "reasoning", text: "思考一" }, stepDynamicTool("t1"),
+			{ type: "step-start" }, { type: "text", text: "插入语" }, stepDynamicTool("t2"),
+			{ type: "step-start" }, { type: "reasoning", text: "思考二" }, { type: "text", text: "最终答案" },
+		] },
+	];
+}
+function localPlainTurn() {
+	return [
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [{ type: "step-start" }, { type: "text", text: "最终答案" }] },
+	];
+}
+function persistedPlainTurn() {
+	return chatMessagesToUiMessages([stepUser("u1", "问题", 1000), stepAssistant("a1", "最终答案", 1001)]);
+}
+function countUsers(messages, text) {
+	return messages.filter((m) => m.role === "user" && m.parts.some((p) => p.type === "text" && p.text === text)).length;
+}
+function countTextParts(messages, text) {
+	return messages.flatMap((m) => m.parts).filter((p) => p.type === "text" && p.text === text).length;
+}
+function localRows(messages) {
+	return messages.filter((m) => m.metadata === undefined);
+}
+
+test("strict history load replaces a fully persisted multi-step local turn without duplicates", () => {
+	const merged = mergeAuthoritativeUiMessages(localMultiStepTurn(), persistedMultiStepTurn(), {
+		dropCoveredLocalSseLeftovers: true,
+	});
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "最终答案"), 1);
+	assert.equal(countTextParts(merged, "插入语"), 1);
+	// localRows 返回 VM 沙箱域数组，node:assert/strict 的 deepEqual 会因跨域原型不同而失败；
+	// 判空用长度等价且不受域影响。
+	assert.equal(localRows(merged).length, 0, "全部本地行都应被持久化行替换");
+});
+
+test("strict history load keeps a multi-step local turn whose final answer is not persisted yet", () => {
+	const partial = persistedMultiStepTurn().slice(0, 5); // 缺 a3（思考二 + 最终答案）
+	const merged = mergeAuthoritativeUiMessages(localMultiStepTurn(), partial, {
+		dropCoveredLocalSseLeftovers: true,
+	});
+	assert.equal(countTextParts(merged, "最终答案"), 1, "未落盘的最终答案必须仍可见");
+});
+
+test("idle snapshot drops the optimistic prompt once a plain-text turn is persisted", () => {
+	const merged = mergeAuthoritativeUiMessages(localPlainTurn(), persistedPlainTurn(), { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "最终答案"), 1);
+	assert.equal(localRows(merged).length, 0, "本地乐观气泡不应残留");
+});
+
+test("idle snapshot prompt cleanup is stable with earlier history and repeated polls", () => {
+	const prior = chatMessagesToUiMessages([stepUser("u0", "旧问题", 900), stepAssistant("a0", "旧答案", 901)]);
+	const cache = [...prior, ...localPlainTurn()];
+	const snapshot = [...prior, ...persistedPlainTurn()];
+	const once = mergeAuthoritativeUiMessages(cache, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+	const twice = mergeAuthoritativeUiMessages(once, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+	for (const merged of [once, twice]) {
+		assert.equal(countUsers(merged, "问题"), 1);
+		assert.equal(localRows(merged).length, 0);
+	}
+});
+
+test("home-page direct send ends with a single prompt after the idle snapshot", () => {
+	const cases = [
+		{ local: localMultiStepTurn(), snapshot: persistedMultiStepTurn() },
+		{ local: localPlainTurn(), snapshot: persistedPlainTurn() },
+	];
+	for (const { local, snapshot } of cases) {
+		// 流式早期：历史首页只含已落盘的 user（严格模式合并）
+		const earlyLocal = [local[0], { ...local[1], parts: local[1].parts.slice(0, 2) }];
+		let cache = mergeAuthoritativeUiMessages(earlyLocal, chatMessagesToUiMessages([stepUser("u1", "问题", 1000)]), {
+			dropCoveredLocalSseLeftovers: true,
+		});
+		// 流式同步写缓存
+		cache = mergeAuthoritativeUiMessages(cache, local);
+		// 结束后空闲快照
+		cache = mergeAuthoritativeUiMessages(cache, snapshot, { dropUnmatchedTrailingPlaceholders: true });
+		assert.equal(countUsers(cache, "问题"), 1);
+		assert.equal(countTextParts(cache, "最终答案"), 1);
+	}
+});
+
+test("idle snapshot keeps a repeated prompt that never received a reply", () => {
+	const persisted = chatMessagesToUiMessages([stepUser("u7", "问题", 700), stepAssistant("a7", "旧答案", 701)]);
+	const cache = [...persisted, { id: "local-user-2", role: "user", parts: [{ type: "text", text: "问题" }] }];
+	const merged = mergeAuthoritativeUiMessages(cache, persisted, { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 2);
+});
+
+test("idle snapshot keeps the optimistic prompt when the snapshot's last prompt differs", () => {
+	const persisted = chatMessagesToUiMessages([stepUser("u7", "别的问题", 700), stepAssistant("a7", "别的答案", 701)]);
+	const cache = [
+		...persisted,
+		{ id: "local-user", role: "user", parts: [{ type: "text", text: "问题" }] },
+		{ id: "msg_local", role: "assistant", parts: [{ type: "step-start" }, { type: "text", text: "新答案" }] },
+	];
+	const merged = mergeAuthoritativeUiMessages(cache, persisted, { dropUnmatchedTrailingPlaceholders: true });
+	assert.equal(countUsers(merged, "问题"), 1);
+	assert.equal(countTextParts(merged, "新答案"), 1);
+});
+
+test("strict history merge never applies the idle orphan-prompt cleanup", () => {
+	const merged = mergeAuthoritativeUiMessages(localPlainTurn(), persistedPlainTurn(), { dropCoveredLocalSseLeftovers: true });
+	assert.equal(merged.some((m) => m.id === "local-user"), true);
 });

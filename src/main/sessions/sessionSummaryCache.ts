@@ -28,8 +28,10 @@ interface DiskCacheFile<V> {
   entries: Record<string, CacheEntry<V>>;
 }
 
-/** Bump when Summary fields change so old caches are discarded and re-scanned. */
-const DISK_SCHEMA_VERSION = 3;
+/** Version 3 can contain wrong parents persisted by concurrent scans using shared roots.
+ * These are disposable derived summaries: rebuild once, without touching session/catalog data.
+ * Bump for interpretation changes as well as field changes; unchanged mtime cannot repair them. */
+const DISK_SCHEMA_VERSION = 4;
 const SAVE_DEBOUNCE_MS = 800;
 
 export class SessionSummaryCache<V> {

@@ -11,7 +11,7 @@ test("drop capabilities redeem exact paths once for reads", () => {
 	const store = new ExternalFileCapabilityStore();
 	const capabilityId = store.issueDrop(["C:\\outside\\passport.png", "C:\\outside\\notes.txt"]);
 	assert.ok(capabilityId);
-	assert.equal(store.consumeRead(capabilityId, "c:/outside/passport.png"), "C:\\outside\\passport.png");
+	assert.equal(store.consumeRead(capabilityId, "C:\\outside\\passport.png"), "C:\\outside\\passport.png");
 	assert.throws(
 		() => store.consumeRead(capabilityId, "C:\\outside\\passport.png"),
 		(error) => error instanceof ExternalFileCapabilityError,
@@ -22,6 +22,19 @@ test("drop capabilities redeem exact paths once for reads", () => {
 		(error) => error instanceof ExternalFileCapabilityError,
 	);
 });
+
+// 反斜杠/盘符大小写归一化只在 Windows 生效（normalizePath 看 process.platform），
+// POSIX 上 "c:/outside/x" 与 "C:\\outside\\x" 是两个不同路径，无法断言同一行为。
+test(
+	"drop capabilities match Windows paths case-insensitively",
+	{ skip: process.platform !== "win32" },
+	() => {
+		const store = new ExternalFileCapabilityStore();
+		const capabilityId = store.issueDrop(["C:\\outside\\passport.png"]);
+		assert.ok(capabilityId);
+		assert.equal(store.consumeRead(capabilityId, "c:/outside/passport.png"), "C:\\outside\\passport.png");
+	},
+);
 
 test("clipboard capabilities can be reused until the clipboard sequence changes", () => {
 	const store = new ExternalFileCapabilityStore();

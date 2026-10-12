@@ -37,5 +37,6 @@ test("environment dialog nodejs link forces system browser in both dialog implem
 test("settings web service link forces system browser", () => {
 	const src = readFileSync("src/renderer/src/components/app/SettingsFeatureRoot.tsx", "utf8");
 	// Web 服务页必须通过受控的 system-browser API 打开；外部端按桌面浏览器视口设计。
-	assert.match(src, /onOpenWebService: \(port: string\) => api\.app\.openExternal\(`http:\/\/127\.0\.0\.1:\$\{port\}`, true\)/);
+	// 访问 URL 必须携带访问令牌，否则外部端会被鉴权层拒绝（401）。
+	assert.match(src, /onOpenWebService: \(port: string\) => api\.app\.openExternal\(buildWebServiceAccessUrl\("127\.0\.0\.1", port, props\.settings\.webServiceAccessToken\), true\)/);
 });

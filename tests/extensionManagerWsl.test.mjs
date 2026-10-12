@@ -1,54 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const require = createRequire(import.meta.url);
-
-function transpile(filePath) {
-	return ts.transpileModule(readFileSync(filePath, "utf8"), {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	}).outputText;
-}
-
-function loadWslPaths() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/main/wsl/WslPaths.ts"), sandbox, { filename: "WslPaths.ts" });
-	return sandbox.exports;
-}
-
-function loadExtensionManager(fsOverrides = {}) {
-	const wslPaths = loadWslPaths();
-	const sandbox = {
-		exports: {},
-		require: (id) => {
-			if (id === "node:fs/promises") {
-				return { ...require(id), ...fsOverrides };
-			}
-			if (id === "../wsl/WslPaths") return wslPaths;
-			// 25fd516 起 ExtensionManager 依赖内置扩展清单模块；按真实模块透传（纯数据 + 纯函数）
-			if (id === "./builtInExtensions") {
-				return require("../src/main/extensions/builtInExtensions.ts");
-			}
+function loadExtensionManager(fsOverrides = {}, atomicWrite) {
+	const loaded = loadTsCommonJs("src/main/extensions/ExtensionManager.ts", {
+		stubs: {
+			"node:fs/promises": { ...fsPromises, ...fsOverrides },
+			// 设置写入走原子写；需要观察/伪造写入时替换它（不再拦截 fs.promises.writeFile）。
+			...(atomicWrite ? { "../utils/atomicWriteFile": { writeFileAtomic: atomicWrite } } : {}),
 			// 删除走系统回收站统一入口；本测试不触达删除路径，提供 noop stub 即可。
-			if (id === "../fs/trash") return { trashPath: async () => {} };
-			if (id === "../logging/sharedLogger") return { getAppLogger: () => null };
-			if (id === "../../shared/piCompatibility") return require("../src/shared/piCompatibility.ts");
-			return require(id);
+			"../fs/trash": { trashPath: async () => {} },
+			"../logging/sharedLogger": { getAppLogger: () => null },
 		},
-	};
-	vm.runInNewContext(transpile("src/main/extensions/ExtensionManager.ts"), sandbox, {
-		filename: "ExtensionManager.ts",
 	});
-	return { ...sandbox.exports, wslPaths };
+	// WslPaths 含 parameter property，不能直接 ESM import（Node strip-only 不支持）；
+	// 与 ExtensionManager 用同一套加载器，保证两边类实例同源。
+	const wslPaths = loadTsCommonJs("src/main/wsl/WslPaths.ts");
+	return { ...loaded, wslPaths };
 }
 
 test("reads an installed WSL npm extension version through its canonical host path", async () => {
@@ -91,10 +64,9 @@ test("reads and writes extension enablement in the active WSL HOME", async () =>
 			reads.push(String(filePath));
 			return settingsContent;
 		},
-		writeFile: async (filePath, content) => {
-			writes.push(String(filePath));
-			settingsContent = String(content);
-		},
+	}, async (filePath, content) => {
+		writes.push(String(filePath));
+		settingsContent = String(content);
 	});
 	const manager = new ExtensionManager({}, () => ({}));
 	manager.configureWsl(wslPaths.createWslEnvironment("Ubuntu-24.04", "root", "/root"));

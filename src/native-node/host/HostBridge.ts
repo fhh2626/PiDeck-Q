@@ -1,5 +1,6 @@
 import { connect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
+import { HostFrameDecoder } from "./HostFrameDecoder.ts";
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_PENDING_WRITE_BYTES = 8 * 1024 * 1024;
@@ -39,7 +40,7 @@ type PendingHello = {
  */
 export class HostBridge {
 	private socket: Socket | null = null;
-	private receiveBuffer = Buffer.alloc(0);
+	private readonly decoder = new HostFrameDecoder(MAX_FRAME_BYTES);
 	private readonly pending = new Map<string, PendingRequest>();
 	private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
 	private pendingHello: PendingHello | null = null;
@@ -134,29 +135,19 @@ export class HostBridge {
 	}
 
 	private receive(chunk: Buffer): void {
-		this.receiveBuffer = Buffer.concat([this.receiveBuffer, chunk]);
-		while (this.receiveBuffer.length >= 4) {
-			const frameLength = this.receiveBuffer.readUInt32LE(0);
-			if (frameLength > MAX_FRAME_BYTES) {
-				this.handleClose(new Error("Native host frame exceeds 32 MB"));
-				return;
-			}
-			if (this.receiveBuffer.length < frameLength + 4) return;
-			const payload = this.receiveBuffer.subarray(4, frameLength + 4);
-			this.receiveBuffer = this.receiveBuffer.subarray(frameLength + 4);
+		if (this.closed) return;
+		this.decoder.push(chunk, (payload) => {
 			let frame: HostFrame;
 			try {
 				frame = JSON.parse(payload.toString("utf8")) as HostFrame;
 			} catch {
 				this.handleClose(new Error("Native host sent invalid JSON"));
-				return;
+				return false;
 			}
-			if (this.helloHandler?.(frame)) {
-				this.helloHandler = null;
-				continue;
-			}
-			this.dispatch(frame);
-		}
+			if (this.helloHandler?.(frame)) this.helloHandler = null;
+			else this.dispatch(frame);
+			return !this.closed;
+		}, () => this.handleClose(new Error("Native host frame exceeds 32 MB")));
 	}
 
 	private dispatch(frame: HostFrame): void {
@@ -341,6 +332,7 @@ export class HostBridge {
 		if (this.closed) return;
 		const isFatal = this.authenticated && !this.closingIntentionally;
 		this.closed = true;
+		this.decoder.reset();
 		this.helloHandler = null;
 		this.settleHello(error);
 		for (const waiter of [...this.writeDrainWaiters]) waiter();

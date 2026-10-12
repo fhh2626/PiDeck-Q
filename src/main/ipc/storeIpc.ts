@@ -30,6 +30,12 @@ export type StoreIpcDeps = {
 	mainCopy: (key: string, params?: Record<string, string | number>) => string;
 };
 
+function assertNonEmptyString(value: unknown, field: string): asserts value is string {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new TypeError(`${field} must be a non-empty string.`);
+	}
+}
+
 export function registerStoreIpc(
 	router: RpcRouter,
 	{
@@ -48,7 +54,8 @@ export function registerStoreIpc(
 		void appLogger.info("prompt", "Prompt template created", { name: input.name });
 		return result;
 	});
-	router.handle(ipcChannels.promptsDelete, async (filePath: string) => {
+	router.handle(ipcChannels.promptsDelete, async (filePath: unknown) => {
+		assertNonEmptyString(filePath, "filePath");
 		await promptManager.delete(filePath);
 		void appLogger.info("prompt", "Prompt template deleted", { filePath });
 	});
@@ -57,17 +64,23 @@ export function registerStoreIpc(
 		await promptManager.restoreHiddenBuiltins();
 		void appLogger.info("prompt", "Built-in prompt templates restored");
 	});
-	router.handle(ipcChannels.promptsEdit, async (filePath: string, content?: string) => {
+	router.handle(ipcChannels.promptsEdit, async (filePath: unknown, content?: unknown) => {
+		assertNonEmptyString(filePath, "filePath");
+		if (content !== undefined && typeof content !== "string") {
+			throw new TypeError("content must be a string.");
+		}
 		if (content !== undefined) {
 			await promptManager.writeContent(filePath, content);
 			return;
 		}
 		return promptManager.readContent(filePath);
 	});
-	router.handle(ipcChannels.promptsListByProject, async (projectPath: string) => {
+	router.handle(ipcChannels.promptsListByProject, async (projectPath: unknown) => {
+		assertNonEmptyString(projectPath, "projectPath");
 		return promptManager.listByProject(projectPath);
 	});
-	router.handle(ipcChannels.promptsCreateInProject, async (projectPath: string, input: CreatePiPromptTemplateInput) => {
+	router.handle(ipcChannels.promptsCreateInProject, async (projectPath: unknown, input: CreatePiPromptTemplateInput) => {
+		assertNonEmptyString(projectPath, "projectPath");
 		const result = await promptManager.createInProject(projectPath, input);
 		void appLogger.info("prompt", "Project prompt template created", {
 			projectPath,
@@ -75,7 +88,9 @@ export function registerStoreIpc(
 		});
 		return result;
 	});
-	router.handle(ipcChannels.promptsDeleteInProject, async (projectPath: string, fileName: string) => {
+	router.handle(ipcChannels.promptsDeleteInProject, async (projectPath: unknown, fileName: unknown) => {
+		assertNonEmptyString(projectPath, "projectPath");
+		assertNonEmptyString(fileName, "fileName");
 		await promptManager.deleteFromProject(projectPath, fileName);
 		void appLogger.info("prompt", "Project prompt template deleted", { projectPath, fileName });
 	});
@@ -84,7 +99,8 @@ export function registerStoreIpc(
 		void appLogger.info("prompt", "Prompt template renamed", { oldName, newName });
 		return result;
 	});
-	router.handle(ipcChannels.promptsRenameInProject, async (projectPath: string, oldName: string, newName: string) => {
+	router.handle(ipcChannels.promptsRenameInProject, async (projectPath: unknown, oldName: string, newName: string) => {
+		assertNonEmptyString(projectPath, "projectPath");
 		const result = await promptManager.renameInProject(projectPath, oldName, newName);
 		void appLogger.info("prompt", "Project prompt template renamed", { projectPath, oldName, newName });
 		return result;

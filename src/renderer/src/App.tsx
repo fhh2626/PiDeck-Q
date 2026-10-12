@@ -98,6 +98,7 @@ import {
   setSessionDraftAtom,
   upsertSessionAtom,
   anyAgentRuntimeWorkingAtom,
+  beginOptimisticMessageDeletion,
 } from "./atoms";
 import {
   buildComposerPromptSubmission,
@@ -153,7 +154,6 @@ import {
   EnvironmentDialog,
   FileContextMenu,
   ImagePreviewModal,
-  LogoMark,
 } from "./components/app/AppParts";
 import { ExternalEditorOverlay } from "./components/workspace/ExternalEditorOverlay";
 import {
@@ -545,6 +545,7 @@ export function App() {
     webServiceEnabled: false,
     webServiceHost: "0.0.0.0",
     webServicePort: 8765,
+    webServiceAccessToken: "",
     rpcTimeout: 600_000,
     workspaceContentOpenMode: "split",
     contentMaxWidth: 1800,
@@ -1641,7 +1642,7 @@ export function App() {
     // 请求序号与项目身份校验由 useProjectSync 统一持有；慢请求即使跨过
     // 下一次轮询或项目切换才结束，也不会把旧分支写回当前工作区。
     const timer = window.setInterval(
-      () => void refreshGitInfo(activeProjectId).catch(() => undefined),
+      () => void refreshGitInfo(activeProjectId, "poll").catch(() => undefined),
       4000,
     );
     return () => window.clearInterval(timer);
@@ -2053,25 +2054,8 @@ export function App() {
     overlays,
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
     refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
+    beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
   });
-  /**
-   * 打开系统原生文件/文件夹选择器，将选中路径以 @path 引用格式插入到消息中。
-   * 仅引用路径，不读取/上传文件内容。
-   */
-  async function handleAttachFile() {
-    try {
-      // session-first：路径引用插入由 composer controller 负责；这里仅打开选择器并派发事件。
-      const paths = await window.piDesktop.dialog.pickFiles({
-        title: t("menu.attachFile"),
-      });
-      if (paths.length > 0) {
-        window.dispatchEvent(new CustomEvent("composer-attach-paths", { detail: { paths } }));
-      }
-    } catch {
-      // 用户取消或出错时不作处理
-    }
-  }
-
   async function updateSettings(patch: Partial<AppSettings>) {
     const changesWebService =
       "webServiceEnabled" in patch ||

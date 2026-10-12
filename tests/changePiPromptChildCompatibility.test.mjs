@@ -35,6 +35,7 @@ import {
 	classifyConfiguredShellKind,
 	powershellAvailable,
 	probeShellAvailability,
+	shouldNotifyHiddenShells,
 } from "../resources/extensions/pideck-q-change-pi-prompt/shellAvailability.ts";
 import {
 	buildChildToolEnvironmentBlock,
@@ -42,6 +43,10 @@ import {
 	isChildSession,
 	registerPromptExtension,
 } from "../resources/extensions/pideck-q-change-pi-prompt/runtime.ts";
+import {
+	UI_LANGUAGE_ENV_NAME,
+	resolveExtensionLocale,
+} from "../resources/extensions/pideck-q-change-pi-prompt/copy.ts";
 import { transformSystemPrompt } from "../resources/extensions/pideck-q-change-pi-prompt/transform.ts";
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from "../resources/extensions/pideck-q-change-pi-prompt/defaults.ts";
 
@@ -1038,6 +1043,116 @@ test("configured shellPath contributes only to the backend it really is", () => 
 
 	// 不存在的配置路径不能凭空产生后端
 	assert.deepEqual(probeShellAvailability(windows, "D:\\tools\\missing.exe"), { bash: false, powershell: false });
+});
+
+// 15b. 隐藏 shell 后只要还剩一个可用 shell 工具就静默；bash 不是必需品
+test("hiding a shell is silent while another shell tool remains active", () => {
+	assert.equal(shouldNotifyHiddenShells(["bash"], ["read", "powershell"]), false);
+	assert.equal(shouldNotifyHiddenShells(["powershell"], ["read", "bash"]), false);
+	assert.equal(shouldNotifyHiddenShells([], ["read"]), false);
+});
+
+test("hidden shells notify only when no shell tool is left", () => {
+	assert.equal(shouldNotifyHiddenShells(["bash", "powershell"], ["read"]), true);
+	assert.equal(shouldNotifyHiddenShells(["bash"], ["read"]), true);
+});
+
+// 15c. 集成：Windows 有 PowerShell、无 Git Bash 时 session_start 隐藏 bash 但不发任何通知
+test("session_start on Windows with PowerShell but no Git Bash hides bash without notifying", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-silent-"));
+	try {
+		const { mockPi, setTools, getHandler } = createMockPi();
+		setTools([
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		]);
+		const powershellExe = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+		registerPromptExtension(mockPi, tempDir, {
+			probeHost: { platform: "win32", env: { Path: "" }, exists: (path) => path === powershellExe },
+			isStandalone: () => true,
+		});
+		const notifications = [];
+		const ctx = { hasUI: true, ui: { notify: (message, level) => { notifications.push({ message, level }); }, editor: async () => undefined } };
+
+		// 模拟删除/编辑/重发引起的多次重载：每次都不得弹出 bash 相关通知
+		await getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+		await getHandler("session_start")({ type: "session_start", reason: "resume" }, ctx);
+
+		assert.deepEqual(mockPi.getActiveTools(), ["read", "powershell"], "bash must still be hidden");
+		assert.deepEqual(notifications.filter((n) => /bash|shell/i.test(n.message)), [], "no shell notification while PowerShell is usable");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+// 15d. 所有 shell 工具都不可用时，通知文案与平台无关（不再点名 bash）。
+test("session_start with no usable shell notifies with the platform-neutral message", async () => {
+	for (const platform of ["win32", "linux"]) {
+		const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-none-"));
+		try {
+			const { mockPi, setTools, getHandler } = createMockPi();
+			setTools([
+				{ name: "read", sourceInfo: { source: "builtin" } },
+				{ name: "bash", sourceInfo: { source: "builtin" } },
+				{ name: "powershell", sourceInfo: { source: "builtin" } },
+			]);
+			registerPromptExtension(mockPi, tempDir, {
+				probeHost: { platform, env: platform === "win32" ? { Path: "" } : { PATH: "" }, exists: () => false },
+				isStandalone: () => true,
+				// 固定语言，避免宿主/CI 环境变量影响文案断言
+				locale: "zh-CN",
+			});
+			const notifications = [];
+			const ctx = { hasUI: true, ui: { notify: (message, level) => { notifications.push({ message, level }); }, editor: async () => undefined } };
+
+			// session_start 会清空 warnOnce 去重集合，因此只调用一次才能断言「恰好一条」。
+			await getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+			assert.deepEqual(mockPi.getActiveTools(), ["read"], `both shells must be hidden on ${platform}`);
+			assert.deepEqual(
+				notifications.filter((n) => /Shell/.test(n.message)).map((n) => n.message),
+				["PowerShell 及其他 Shell 工具均不可用，已对本会话隐藏对应工具。"],
+				`exactly one shell notification on ${platform}`,
+			);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	}
+});
+
+// 15e. 英文界面下同一条提示必须英文，不能中英混排。
+test("shell notification follows the injected UI language", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-locale-"));
+	try {
+		const { mockPi, setTools, getHandler } = createMockPi();
+		setTools([
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+		]);
+		registerPromptExtension(mockPi, tempDir, {
+			// 模拟宿主注入的语言环境变量
+			probeHost: { platform: "win32", env: { Path: "", [UI_LANGUAGE_ENV_NAME]: "en-US" }, exists: () => false },
+			isStandalone: () => true,
+		});
+		const notifications = [];
+		const ctx = { hasUI: true, ui: { notify: (message, level) => { notifications.push({ message, level }); }, editor: async () => undefined } };
+
+		await getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx);
+
+		const shellMessages = notifications.filter((n) => /[Ss]hell/.test(n.message)).map((n) => n.message);
+		assert.equal(shellMessages.length, 1, "exactly one shell notification");
+		assert.match(shellMessages[0], /PowerShell and other shell tools are unavailable/);
+		// 中英混排说明该分支漏了双语：英文界面下不得出现中文字符
+		assert.doesNotMatch(shellMessages[0], /[\u4e00-\u9fff]/);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("resolveExtensionLocale prefers the injected language over the system locale", () => {
+	assert.equal(resolveExtensionLocale({ [UI_LANGUAGE_ENV_NAME]: "en-US" }, "zh-CN"), "en-US");
+	assert.equal(resolveExtensionLocale({ [UI_LANGUAGE_ENV_NAME]: "zh-CN" }, "en-US"), "zh-CN");
 });
 
 // 16. 全局 reconciliation 只能由 parent 执行：child session 不得写 settings.json / 不得改 overrides

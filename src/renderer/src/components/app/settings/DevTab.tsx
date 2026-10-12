@@ -8,6 +8,7 @@ import type {
   WebNetworkAddress,
 } from "../../../../../shared/types";
 import { APP_RELEASES_URL } from "../../../../../shared/appIdentity";
+import { buildWebServiceAccessUrl } from "../../../../../shared/webServiceAccess";
 import { t } from "../../../i18n";
 import { desktopApi } from "../../../desktopApi";
 import { Button } from "../../ui-shadcn/button";
@@ -155,7 +156,7 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
   }, []);
 
   const webAccessUrl = selectedWebAddress
-    ? `http://${selectedWebAddress}:${webPortDraft || draft.webServicePort}`
+    ? buildWebServiceAccessUrl(selectedWebAddress, webPortDraft || draft.webServicePort, draft.webServiceAccessToken)
     : "";
 
   // URL 或开关变化时重新编码，二维码只保存 data URL，不把主进程能力暴露给页面。

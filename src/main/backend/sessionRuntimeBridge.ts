@@ -9,8 +9,6 @@ import type {
 	CreateAnonymousSessionInput,
 	CreateAnonymousSessionResult,
 	Project,
-	SendPromptInput,
-	SendPromptResult,
 	SessionCommandError,
 	SessionCommandResult,
 	SessionRecord,
@@ -114,6 +112,28 @@ export function createSessionRuntimeBridge(
 	} = deps;
 
 	const activatingAnonymousSessions = new Set<string>();
+
+	/**
+	 * 匿名会话激活失败：删除临时会话并通知渲染端刷新，避免界面残留一个不存在的会话标签。
+	 * 只在「runtime 没起来」时调用；激活成功后的异常不得走这里（会留下没有会话的孤儿进程）。
+	 */
+	function failAnonymousActivation(
+		session: SessionRecord,
+		project: Project,
+		input: CreateAnonymousSessionInput,
+		error: unknown,
+	): void {
+		sessionCatalog.removeTransient(session.id);
+		sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: session.projectId });
+		void appLogger.error("agent", "Agent create IPC failed", {
+			projectId: project.id,
+			title: input.title,
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+			platform: process.platform,
+			arch: process.arch,
+		});
+	}
 
 	function sendSessionRuntimeEnvelope(event: SessionRuntimeEvent): void {
 		sendToRenderer(ipcChannels.sessionsRuntimeEvent, event);
@@ -232,51 +252,39 @@ export function createSessionRuntimeBridge(
 		emitSessionRuntimeDetach(binding);
 	}
 
-	async function activateAnonymousRuntime(
-		session: SessionRecord,
-		project: Project,
-		input: CreateAnonymousSessionInput,
-	): Promise<void> {
-		let agentId: string | undefined;
-		try {
-			const tab = await agentManager.create({
-				projectId: project.id,
-				title: session.title,
-				environment: session.environment,
-				source: "pi",
-				wslDistro: session.wslDistro,
-				wslUser: session.wslUser,
-				noSession: true,
-			});
-			agentId = tab.id;
-			const runtime = sessionRuntimeCoordinator.bindAnonymousRuntime(session.id, tab.id);
-			// Anonymous Agent 使用 --no-session 创建，不会经过普通 activateRuntime 的恢复流程；
-			// 因此在绑定后显式应用引导页选择，确保 pi 不再按自身默认优先级启动。
-			if (input.model) {
-				const result = await sessionRuntimeCoordinator.setRuntimeModel(runtime, input.model.provider, input.model.modelId);
-				if (!result.ok) throw new Error(result.error.code);
-			}
-			if (input.thinkingLevel) {
-				const result = await sessionRuntimeCoordinator.setRuntimeThinking(runtime, input.thinkingLevel);
-				if (!result.ok) throw new Error(result.error.code);
-			}
-			emitReplacementState(runtime, true);
-		} catch (error) {
-			if (agentId) await agentManager.stop(agentId).catch(() => undefined);
-			sessionCatalog.removeTransient(session.id);
-			// createUnlocked 内部已尽量把 pi 启动失败落到会话错误卡；这里兜底信任/项目查找等
-			// 前置异常，保证异步匿名启动失败仍可诊断且不会留下不可用的临时行。
-			void appLogger.error("agent", "Agent create IPC failed", {
-				projectId: project.id,
-				title: input.title,
-				error: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				platform: process.platform,
-				arch: process.arch,
-			});
-		} finally {
+	function startAnonymousActivation(session: SessionRecord, project: Project, input: CreateAnonymousSessionInput): void {
+		activatingAnonymousSessions.add(session.id);
+		// 必须同步进入 coordinator 的 activationBySession。首次发送走同一把锁，
+		// 不能再直接 agentManager.create，否则冷启动期间会造出第二个 Agent 并被后完成的绑定抢走。
+		const activation = sessionRuntimeCoordinator.activateRuntime(session.id);
+		void activation.then(
+			(result) => {
+				if (!result.ok) {
+					failAnonymousActivation(session, project, input, new Error(result.error.code));
+					return;
+				}
+				// 激活已成功：此后的异常只是「通知渲染端失败」，会话与 runtime 都有效，
+				// 不能删除会话身份，否则会留下没有会话的 Agent 进程。
+				try {
+					emitReplacementState(result.value, true);
+				} catch (error) {
+					void appLogger.error("agent", "Anonymous session state publish failed", {
+						sessionId: session.id,
+						agentId: result.value.agentId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			},
+			(error: unknown) => failAnonymousActivation(session, project, input, error),
+		).finally(() => {
 			activatingAnonymousSessions.delete(session.id);
-		}
+		}).catch((error: unknown) => {
+			// 失败处理本身（如 sendToRenderer）抛错时兜底记录，避免未处理的 Promise 拒绝。
+			void appLogger.error("agent", "Anonymous activation cleanup failed", {
+				sessionId: session.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 	}
 
 	async function createAnonymousSession(
@@ -332,8 +340,7 @@ export function createSessionRuntimeBridge(
 		});
 		// Agent 启动可能包含 spawn/get_state/历史准备；匿名会话先返回可选中的 Session，
 		// 再后台绑定 runtime。这样欢迎页点击后能立即进入输入框，启动失败仍通过 detach/日志收敛。
-		activatingAnonymousSessions.add(session.id);
-		void activateAnonymousRuntime(session, project, input).catch(() => undefined);
+		startAnonymousActivation(session, project, input);
 		sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId: session.projectId });
 		return { session };
 	}

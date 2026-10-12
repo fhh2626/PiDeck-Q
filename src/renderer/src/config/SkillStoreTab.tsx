@@ -2,7 +2,7 @@ import { Button } from "../components/ui-shadcn/button";
 import { showNotice } from "../utils/notice";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Download, ExternalLink, Search, Sparkles } from "lucide-react";
-import type { PromptStoreItem, PromptStoreSearchResult, PiSkillSummary } from "../../../shared/types";
+import type { PromptStoreItem, PromptStoreSearchResult } from "../../../shared/types";
 import { desktopApi } from "../desktopApi";
 import { t } from "../i18n";
 import { Input } from "../components/ui-shadcn/input";

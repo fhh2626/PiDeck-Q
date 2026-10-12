@@ -6,6 +6,8 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 const require = createRequire(import.meta.url);
 
 function transpile(filePath) {
@@ -32,6 +34,8 @@ function loadWslPaths() {
 
 function loadAgentManager() {
 	const wslPaths = loadWslPaths();
+	// 定位映射/正文规范化用真实实现：桩掉会让 step 4 静默退回旧对位逻辑，掩盖 abort 错位 bug。
+	const realAgentUtils = loadTsCommonJs("src/main/pi/agentUtils.ts");
 	// AgentManager 新增 streamGate 依赖（abort 流式封印）；与 WslPaths 一样显式沙箱加载。
 	const streamGate = (() => {
 		const sandbox = { exports: {}, require };
@@ -55,13 +59,26 @@ function loadAgentManager() {
 		copyFile: [],
 		existsSync: [],
 		readFile: [],
+		open: [],
+		stat: [],
 		readdir: [],
 		readdirSync: [],
 		statSync: [],
 		unlink: [],
 		writeFile: [],
 	};
+	const historyBuffer = Buffer.from(`${JSON.stringify({ id: "entry-user", type: "message", message: { role: "user", content: "hello" } })}\n`);
+	const version = { size: historyBuffer.length, mtimeMs: 1, ctimeMs: 1, dev: 1, ino: 1 };
 	const fsPromises = {
+		stat: async (file) => { calls.stat.push(file); return version; },
+		open: async (file) => {
+			calls.open.push(file);
+			return {
+				stat: async () => version,
+				read: async (buffer, offset, length, position) => ({ bytesRead: historyBuffer.copy(buffer, offset, position, position + length), buffer }),
+				close: async () => {},
+			};
+		},
 		copyFile: async (...args) => { calls.copyFile.push(args); },
 		readFile: async (...args) => {
 			calls.readFile.push(args);
@@ -82,8 +99,14 @@ function loadAgentManager() {
 		module: historyReaderModule,
 		Promise,
 		require: (id) => {
+			if (id === "./SessionDisplayIndexStore") return loadTsCommonJs("src/main/pi/SessionDisplayIndexStore.ts", { stubs: { "node:fs/promises": fsPromises } });
 			if (id === "node:fs/promises") return fsPromises;
 			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");
+			// SessionHistoryReader 从 sessionEntryIds 取 entryId 对齐（压缩裁剪）：
+			// 必须传真实实现，桩掉会让压缩会话的 entryIds 退回全量分支。
+			if (id === "./sessionEntryIds") {
+				return { buildActiveBranchEntryIds: sessionEntryIds.buildActiveBranchEntryIds };
+			}
 			return require(id);
 		},
 	}, { filename: "SessionHistoryReader.ts" });
@@ -110,6 +133,9 @@ function loadAgentManager() {
 			// 本 loader 的 stub 分支按无扩展名书写，入口处统一归一化。
 			id = id.replace(/\.ts$/, "");
 			if (id === "electron") return { app: {}, Notification: class {} };
+			if (id === "./recoverRecentHistoryLoad") return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+			if (id === "../transport/monotonicNow") return loadTsCommonJs("src/main/transport/monotonicNow.ts");
+			if (id === "./LiveRpcLogBuffer") return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 			if (id === "node:fs/promises") return fsPromises;
 			if (id === "node:fs") {
 				return {
@@ -167,6 +193,8 @@ function loadAgentManager() {
 					cleanTitle: (t) => t,
 					inferTitleFromMessages: () => undefined,
 					isDefaultAgentTitle: () => false,
+					mapCachedMessageToEntryCandidates: realAgentUtils.mapCachedMessageToEntryCandidates,
+					normalizeMessageTextForMatch: realAgentUtils.normalizeMessageTextForMatch,
 				};
 			}
 			if (id === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
@@ -232,8 +260,11 @@ test("maps WSL Session file operations to host paths while retaining Linux proto
 
 	const expectedHostPath = "\\\\wsl.localhost\\Ubuntu-24.04\\root\\.pi\\agent\\sessions\\session.jsonl";
 	assert.equal(calls.statSync[0], expectedHostPath);
+	assert.ok(calls.open.length > 0);
+	assert.ok(calls.stat.length > 0);
+	assert.ok(calls.open.every((file) => file === expectedHostPath));
+	assert.ok(calls.stat.every((file) => file === expectedHostPath));
 	assert.equal(calls.readFile[0][0], expectedHostPath);
-	assert.equal(calls.readFile[1][0], expectedHostPath);
 	assert.equal(calls.writeFile[0][0], expectedHostPath);
 });
 

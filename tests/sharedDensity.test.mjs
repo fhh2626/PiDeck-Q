@@ -15,7 +15,8 @@ import test from "node:test";
 
 const density = readFileSync("src/renderer/src/lib/density.ts", "utf8");
 const surfaceComponents = readFileSync("src/renderer/src/components/session/SurfaceComponents.tsx", "utf8");
-const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8");
+const webTimeline = readFileSync("src/renderer/src/web/WebTimeline.tsx", "utf8")
+	+ "\n" + readFileSync("src/renderer/src/web/WebTimelineCards.tsx", "utf8");
 const eventCards = readFileSync("src/renderer/src/components/session/TimelineEventCards.tsx", "utf8");
 const timelineMarker = readFileSync("src/renderer/src/components/session/TimelineMarker.tsx", "utf8");
 const toolCall = readFileSync("src/renderer/src/components/session/ToolCallComponents.tsx", "utf8");

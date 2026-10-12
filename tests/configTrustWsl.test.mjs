@@ -25,6 +25,15 @@ function loadConfigManager() {
 		process: { ...process, platform: "win32" },
 		setTimeout,
 		require: (id) => {
+			if (id === "../utils/atomicWriteFile") {
+				// 原子写替身：与旧 writeFile 桩行为一致，把内容记入 content/writes 供断言读取
+				return {
+					writeFileAtomic: async (filePath, nextContent) => {
+						content = nextContent;
+						writes.push({ filePath, content: nextContent });
+					},
+				};
+			}
 			if (id === "node:fs/promises") {
 				return {
 					mkdir: async () => {},

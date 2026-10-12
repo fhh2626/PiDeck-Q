@@ -282,7 +282,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
     const messages = [];
     const entries = [];
     let parent = null;
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 53; i += 1) {
       const uid = `u${i}`;
       const aid = `a${i}`;
       messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
@@ -307,7 +307,7 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
       process: {
         client: {
           request: async ({ type }) => type === "get_entries"
-            ? { success: true, data: { entries, leafId: "a15" } }
+            ? { success: true, data: { entries, leafId: "a53" } }
             : { success: true, data: { messages } },
         },
       },
@@ -326,18 +326,171 @@ test("loadMessages aligns trimmed runtime messages with their real entry ids", a
 
     await manager.loadMessages("agent-1");
     const cached = manager.messages.get("agent-1");
-    // 15 轮裁到 12 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
+    // 53 轮裁到 50 轮：首条保留 q4，其 entryId 必须是 u4（修复前被错配成 u1）
+    assert.equal(cached.length, 100);
     assert.equal(cached[0].text, "q4");
     assert.equal(cached[0].meta.entryId, "u4");
-    assert.equal(cached[cached.length - 1].meta.entryId, "a15");
-    // 全量 flush 携带 windowStartFilePos：窗口首条（q13）的文件消息下标 = 24
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    assert.equal(cached[cached.length - 1].meta.entryId, "a53");
+    // 缓存 50 轮 = 显示 50 轮：窗口从缓存头部开始（windowStart = 0，全量 flush 不携带该字段）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    // 全量 flush 携带 windowStartFilePos：窗口首条（q4）的文件消息下标 = 6（u1..a3 被裁）
+    const full = payloads.find((p) => p.windowStartFilePos !== undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 18);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStartFilePos, 6);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("loadMessages keeps messages that changed while the snapshot was in flight (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-inflight-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const snapshot = deferred();
+    const runtime = {
+      tab: {
+        id: "agent-inflight",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "running",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: {
+        client: {
+          request: async () => snapshot.promise,
+        },
+      },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-inflight", runtime);
+
+    // 加载开始前就存在、且随后被流式事件就地更新的消息（delta 不刷新 timestamp，
+    // 因此 preserveMessagesAfter 的时间比较认不出变化）。
+    const streaming = {
+      id: "runtime-streaming",
+      agentId: "agent-inflight",
+      role: "assistant",
+      text: "partial",
+      timestamp: 1,
+    };
+    // 加载期间新到的消息（快照发起后才有）。
+    const lateArrival = {
+      id: "runtime-late",
+      agentId: "agent-inflight",
+      role: "user",
+      text: "sent during load",
+      timestamp: 1,
+    };
+    manager.messages.set("agent-inflight", [streaming]);
+    manager.activeAssistantMessageIds.set("agent-inflight", "runtime-streaming");
+
+    const pending = manager.loadMessages("agent-inflight", true, snapshot.promise);
+    // 加载等待期间：流式更新同一对象（保留 timestamp），并追加一条新消息。
+    streaming.text = "partial + more";
+    manager.messages.get("agent-inflight").push(lateArrival);
+
+    snapshot.resolve({
+      success: true,
+      data: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "old question" }], id: "msg-old-q" },
+          { role: "assistant", content: [{ type: "text", text: "old answer" }], id: "msg-old-a" },
+        ],
+      },
+    });
+    await pending;
+
+    const result = manager.messages.get("agent-inflight");
+    const byId = new Map(result.map((message) => [message.id, message]));
+    // 投影历史仍在（id 由投影器按 agentId-history-N 合成）
+    assert.equal(byId.get("agent-inflight-history-0").text, "old question");
+    assert.equal(byId.get("agent-inflight-history-1").text, "old answer");
+    assert.equal(byId.get("runtime-streaming").text, "partial + more", "in-flight update must survive the snapshot write");
+    assert.equal(byId.get("runtime-late").text, "sent during load");
+    // 不重复：同一 ID 只出现一次
+    assert.equal(result.length, new Set(result.map((message) => message.id)).size);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("empty snapshot keeps only messages created or changed during the load (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-empty-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const snapshot = deferred();
+    const runtime = {
+      tab: {
+        id: "agent-empty",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "running",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: { client: { request: async () => snapshot.promise } },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-empty", runtime);
+
+    const staleUser = { id: "stale-user", agentId: "agent-empty", role: "user", text: "old", timestamp: 1 };
+    const streaming = { id: "runtime-streaming", agentId: "agent-empty", role: "assistant", text: "partial", timestamp: 1 };
+    manager.messages.set("agent-empty", [staleUser, streaming]);
+    manager.activeAssistantMessageIds.set("agent-empty", "runtime-streaming");
+
+    const pending = manager.loadMessages("agent-empty", true, snapshot.promise);
+    streaming.text = "partial + more";
+    manager.messages.get("agent-empty").push(
+      { id: "runtime-late", agentId: "agent-empty", role: "user", text: "sent during load", timestamp: 1 },
+    );
+
+    snapshot.resolve({ success: true, data: { messages: [] } });
+    await pending;
+
+    const result = manager.messages.get("agent-empty");
+    const byId = new Map(result.map((message) => [message.id, message]));
+    // 空快照仍是「历史不在」的权威：未被事件碰过的旧消息不保留
+    assert.equal(byId.has("stale-user"), false, "an unchanged pre-load message must not survive an empty snapshot");
+    // 进行中/新增消息必须接回，否则会被空快照抹掉
+    assert.equal(byId.get("runtime-streaming")?.text, "partial + more");
+    assert.equal(byId.get("runtime-late")?.text, "sent during load");
+    assert.equal(result.length, new Set(result.map((message) => message.id)).size);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("clearAgentState drops the explicit preserveHistory flag for the agent (2026-12)", () => {
+  const manager = new AgentManager(
+    () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+    () => null,
+    { get: () => ({}) },
+    {},
+  );
+  manager.preserveHistoryExplicitOnNextFlush.add("agent-1");
+  manager.preserveHistoryOnNextFlush.set("agent-1", false);
+  manager.clearAgentState("agent-1");
+  assert.equal(manager.preserveHistoryExplicitOnNextFlush.has("agent-1"), false);
+  assert.equal(manager.preserveHistoryOnNextFlush.has("agent-1"), false);
 });
 
 test("loadMessages ignores an older snapshot that resolves after a newer load", async () => {
@@ -443,11 +596,34 @@ test("loadMessages stat error in older load does not delete sessionFileVersion o
   }
 });
 
+test("trimRuntimeCache keeps the pre-user answer left by compaction", async () => {
+  const { manager, directory } = await createHarness();
+  try {
+    // 压缩保留段不足 50 轮，且以刚看过的助手回答开头；用户接着说「请提交」。
+    // 旧裁剪从首个 user 砍头，这条回答不进 slideOut，信息流里会直接消失。
+    manager.messages.set("agent-1", [
+      { id: "sum", agentId: "agent-1", role: "system", text: "compacted", timestamp: 1, meta: { type: "compaction", entryId: "sum" } },
+      { id: "pre-a", agentId: "agent-1", role: "assistant", text: "上一轮结论还没提交", timestamp: 1, meta: { entryId: "pre-a" } },
+      { id: "pre-t", agentId: "agent-1", role: "tool", text: "✓ git status", timestamp: 1, meta: { entryId: "pre-t" } },
+      { id: "u", agentId: "agent-1", role: "user", text: "请提交", timestamp: 1, meta: { entryId: "u" } },
+      { id: "a", agentId: "agent-1", role: "assistant", text: "已提交", timestamp: 1, meta: { entryId: "a" } },
+    ]);
+    manager.displayWindowStartByAgent.set("agent-1", 0);
+    manager.trimRuntimeCache("agent-1");
+    assert.deepEqual(
+      manager.messages.get("agent-1").map((message) => message.meta.entryId ?? message.id),
+      ["sum", "pre-a", "pre-t", "u", "a"],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("trimRuntimeCache keeps leading compaction summary cards", async () => {
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
@@ -455,23 +631,32 @@ test("trimRuntimeCache keeps leading compaction summary cards", async () => {
       { id: "sum-1", agentId: "agent-1", role: "system", text: "compacted", timestamp: 1, meta: { type: "compaction" } },
       ...many,
     ]);
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 50 轮）从 q2 起点开始 → 滑出 [卡片, u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     const payloads = [];
     manager.onOutput((channel, payload) => {
       if (channel === "agents:message") payloads.push(payload);
     });
     manager.trimRuntimeCache("agent-1");
     const after = manager.messages.get("agent-1");
-    // 卡片保留在头部且不重复；尾部保留最近 12 轮（24 条）
+    // 51 轮夹具（15 轮在 50 轮缓存下不会触发裁剪）：卡片保留在头部且不重复；尾部保留最近 50 轮（100 条）
     assert.equal(after.filter((m) => m.role === "system").length, 1);
     assert.equal(after[0].meta.type, "compaction");
-    assert.equal(after.length, 25);
-    assert.equal(after[1].text, "q4");
-    assert.equal(after[24].text, "a15");
-    // 数值游标不被卡片污染：窗口首条 q13 的文件消息下标 = 24（headOffset 只按角色消息递增）
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    assert.equal(after.length, 101);
+    assert.equal(after[1].text, "q2");
+    assert.equal(after[100].text, "a51");
+    // 窗口 = 整个缓存（windowStart=0）：全量 flush 不携带 windowStart 字段，改查 manager 状态
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.upsertFrom === undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 19);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStart, undefined);
+    assert.equal(full.messages[0].meta.type, "compaction");
+    assert.equal(full.messages[1].text, "q2");
+    // 滑出 = 旧窗口头部 [卡片, u1, a1]；卡片随滑出随全量 flush 下发，不丢失、不重复
+    assert.deepEqual(
+      Array.from(full.slideOut, (m) => m.meta.entryId ?? m.meta.type),
+      ["compaction", "u1", "a1"],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -481,13 +666,14 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    // 旧窗口 = q10 起（旧空间下标 18）；trim 后窗口 = q13 起 → 滑出 [q10..a12]（3 轮 6 条）
-    manager.displayWindowStartByAgent.set("agent-1", 18);
+    // 51 轮夹具（15 轮在 50 轮缓存下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0）；
+    // trim 后新窗口 = q2 起（尾部 50 轮，下标 2）→ 滑出 [u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     // 匿名会话（无文件路径/无 entryId 映射）：headOffset 未知 = -1，trim 后必须保持 -1（M2）
     manager.messageHeadOffsetByAgent.set("agent-1", -1);
     const payloads = [];
@@ -500,10 +686,10 @@ test("trimRuntimeCache slides out the old window head and keeps anonymous headOf
     assert.ok(slidePayload, "full flush must carry slideOut");
     assert.deepEqual(
       Array.from(slidePayload.slideOut, (m) => m.meta.entryId),
-      ["u10", "a10", "u11", "a11", "u12", "a12"],
+      ["u1", "a1"],
     );
-    assert.equal(slidePayload.windowStart, 18, "trim 后窗口 = q13 起（新空间下标 18）");
-    assert.equal(slidePayload.messages[0].meta.entryId, "u13");
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    assert.equal(slidePayload.messages[0].meta.entryId, "u2");
     assert.equal(manager.pendingSlideOutByAgent.get("agent-1"), undefined, "flush 后待发滑出已清空");
     // M2：-1 保持 -1（修复前被递增成 5 的伪造游标）
     assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), -1);
@@ -516,12 +702,14 @@ test("trimRuntimeCache appends window slide-out onto an existing pending slideOu
   const { manager, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
-    manager.displayWindowStartByAgent.set("agent-1", 18);
+    // 51 轮夹具（15 轮在 50 轮窗口下不会触发裁剪）：旧窗口冻结于缓存头部（下标 0），
+    // 新窗口（尾部 50 轮）从 q2 起点（下标 2）开始 → 滑出 [u1, a1]
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.pendingSlideOutByAgent.set("agent-1", [
       { id: "pending-old", agentId: "agent-1", role: "assistant", text: "pending-old", timestamp: 1, meta: { entryId: "pending-old" } },
     ]);
@@ -534,7 +722,7 @@ test("trimRuntimeCache appends window slide-out onto an existing pending slideOu
     assert.ok(slidePayload, "full flush must carry the combined slideOut");
     assert.deepEqual(
       Array.from(slidePayload.slideOut, (m) => m.meta.entryId),
-      ["pending-old", "u10", "a10", "u11", "a11", "u12", "a12"],
+      ["pending-old", "u1", "a1"],
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -545,23 +733,139 @@ test("trimRuntimeCache increments headOffset for file-backed sessions only (M2 r
   const { manager, sessionPath, directory } = await createHarness();
   try {
     const many = [];
-    for (let i = 1; i <= 15; i += 1) {
+    for (let i = 1; i <= 51; i += 1) {
       many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
       many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
     }
     manager.messages.set("agent-1", many);
+    // 旧窗口冻结于缓存头部（下标 0）；新窗口（尾部 50 轮）从 q2 起点（下标 2）开始
+    manager.displayWindowStartByAgent.set("agent-1", 0);
     manager.messageHeadOffsetByAgent.set("agent-1", 0);
     const payloads = [];
     manager.onOutput((channel, payload) => {
       if (channel === "agents:message") payloads.push(payload);
     });
     manager.trimRuntimeCache("agent-1");
-    // 被裁 q1..a3 = 6 条角色消息 → 数值游标前移 6；窗口首条 u13 的文件下标 = 6 + 18 = 24
-    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), 6);
-    const full = payloads.find((p) => p.windowStart !== undefined);
+    // 被裁 q1/a1 = 2 条角色消息 → 数值游标前移 2
+    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), 2);
+    // 窗口 = 整个缓存（windowStart=0）：全量 flush 不携带 windowStart 字段（仅 >0 时加）
+    const full = payloads.find((p) => p.upsertFrom === undefined);
     assert.ok(full, "windowed full flush expected");
-    assert.equal(full.windowStart, 18);
-    assert.equal(full.windowStartFilePos, 24);
+    assert.equal(full.windowStart, undefined);
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    // 窗口首条 u2 的文件下标 = headOffset(2) + (windowStart(0) - cardCount(0)) = 2
+    assert.equal(full.windowStartFilePos, 2);
+    assert.equal(full.messages[0].meta.entryId, "u2");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("loadMessages keeps the last 50 turns of a 53-turn session (2026-12)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-50turns-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const messages = [];
+    const entries = [];
+    let parent = null;
+    for (let i = 1; i <= 53; i += 1) {
+      const uid = `u${i}`;
+      const aid = `a${i}`;
+      messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }], id: `msg-u${i}` });
+      entries.push({ id: uid, parentId: parent, type: "message", message: { role: "user", id: `msg-u${i}` } });
+      parent = uid;
+      messages.push({ role: "assistant", content: [{ type: "text", text: `a${i}` }], id: `msg-a${i}` });
+      entries.push({ id: aid, parentId: parent, type: "message", message: { role: "assistant", id: `msg-a${i}` } });
+      parent = aid;
+    }
+    const runtime = {
+      tab: {
+        id: "agent-1",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "idle",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: {
+        client: {
+          request: async ({ type }) => type === "get_entries"
+            ? { success: true, data: { entries, leafId: "a53" } }
+            : { success: true, data: { messages } },
+        },
+      },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-1", runtime);
+    const payloads = [];
+    manager.onOutput((channel, payload) => {
+      if (channel === "agents:message") payloads.push(payload);
+    });
+
+    await manager.loadMessages("agent-1");
+    const cached = manager.messages.get("agent-1");
+    // 53 轮裁到最近 50 轮：首条保留 q4（entryId u4），末条 a53
+    assert.equal(cached.length, 100);
+    assert.equal(cached[0].text, "q4");
+    assert.equal(cached[0].meta.entryId, "u4");
+    assert.equal(cached[cached.length - 1].meta.entryId, "a53");
+    // 缓存 50 轮 = 显示 50 轮：窗口从缓存头部开始（windowStart 缺省 = 0）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.windowStartFilePos !== undefined);
+    assert.ok(full, "windowed full flush expected");
+    // 文件消息下标：u1..a3 被裁 = 6 条 → 窗口首条 u4 的文件下标 = 6
+    assert.equal(full.windowStartFilePos, 6);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("trimRuntimeCache keeps the last 50 turns and slides out the oldest (2026-12)", async () => {
+  const { manager, sessionPath, directory } = await createHarness();
+  try {
+    // 51 轮 user/assistant = 102 条；显示窗口冻结在第 2 轮起点（缓存内下标 2）
+    const many = [];
+    for (let i = 1; i <= 51; i += 1) {
+      many.push({ id: `m-u${i}`, agentId: "agent-1", role: "user", text: `q${i}`, timestamp: 1, meta: { entryId: `u${i}` } });
+      many.push({ id: `m-a${i}`, agentId: "agent-1", role: "assistant", text: `a${i}`, timestamp: 1, meta: { entryId: `a${i}` } });
+    }
+    manager.messages.set("agent-1", many);
+    // 显示窗口 = 尾部 50 轮：第 1 轮起点（缓存内下标 2）仍在窗口覆盖区内；
+    // 匿名会话无文件路径：headOffset 未知 = -1，trim 后必须保持 -1（M2）
+    manager.displayWindowStartByAgent.set("agent-1", 2);
+    manager.messageHeadOffsetByAgent.set("agent-1", -1);
+    const payloads = [];
+    manager.onOutput((channel, payload) => {
+      if (channel === "agents:message") payloads.push(payload);
+    });
+    manager.trimRuntimeCache("agent-1");
+    const after = manager.messages.get("agent-1");
+    // 第 51 轮结束触发裁剪：运行时缓存只留第 2..51 轮（100 条）
+    assert.equal(after.length, 100);
+    assert.equal(after[0].meta.entryId, "u2");
+    assert.equal(after[after.length - 1].meta.entryId, "a51");
+    // 新窗口 = 第 2 轮起点 = 缓存内下标 0（50 轮全量下发，窗口从缓存头部开始不携带 windowStart）
+    assert.equal(manager.displayWindowStartByAgent.get("agent-1"), 0);
+    const full = payloads.find((p) => p.upsertFrom === undefined);
+    assert.ok(full, "windowed full flush expected");
+    // 全量快照下发窗口段 = 全部 100 条（第 2..51 轮）
+    assert.equal(full.messages.length, 100);
+    assert.equal(full.messages[0].meta.entryId, "u2");
+    // 50 轮窗口下第 51 轮结束不产生滑出（旧窗口头部仍在 50 轮窗口内）；
+    // 第 1 轮在运行时缓存中保留，可经历史分页取回，不重复、不丢
+    assert.equal(full.slideOut, undefined);
+    assert.equal(manager.pendingSlideOutByAgent.get("agent-1"), undefined);
+    // M2：-1 保持 -1（匿名会话不得被递增成伪造游标）
+    assert.equal(manager.messageHeadOffsetByAgent.get("agent-1"), -1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

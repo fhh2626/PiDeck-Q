@@ -18,7 +18,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "../ui-shadcn/dialog";
-import type { FileTreeNode, Project, SessionSummary } from "../../../../shared/types";
+import type { Project, SessionSummary } from "../../../../shared/types";
 import { Input } from "../ui-shadcn/input";
 import { PathTooltip } from "../ui-shadcn/PathTooltip";
 import { t } from "../../i18n";

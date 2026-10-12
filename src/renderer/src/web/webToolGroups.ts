@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { getWebAskQuestionResult } from "./webApi";
+import { readWebMessageMetadata } from "./webMessageMetadata";
 
 export type WebToolPart = {
 	type: string;
@@ -164,8 +165,47 @@ export type WebTimelineGroupedItem =
 	| { kind: "tool-message-group"; id: string; messages: UIMessage[]; parts: WebToolPart[] };
 
 /**
+ * 是否为「透明助手占位」：一条在时间线展示分组中可以跳过、但不能从底层
+ * 消息数据删除的空助手占位消息。
+ *
+ * 背景：主进程在 message_start 时为每个助手回合 upsert 一条空助手占位
+ * （allowEmpty）作为流式正文/思考的挂载点。若该回合只发起工具调用、没有
+ * 正文与思考，占位就保持为空。Web 不渲染它，但它不应切断前后工具消息的
+ * 分组（否则连续工具全部退化为单工具行）。这里只在展示投影层面把它当作
+ * 透明，底层数组与后续流式更新不受影响。
+ *
+ * 采用保守白名单，满足以下全部条件才返回 true：
+ * 1. role 为 assistant；
+ * 2. 没有已完成问答结果（ask 问答卡是真实边界）；
+ * 3. 来源元数据没有明确表明它是非助手消息（user/system/tool/error）；
+ * 4. parts 是合法数组；
+ * 5. 数组为空，或每项都是 step-start 或 type="text" 且 text=""（空文本）。
+ * 其余情况（任何工具、reasoning、非空文本、图片/文件、未知 part、缺失 parts）
+ * 一律返回 false——未知内容保守视为边界。
+ */
+export function isTransparentAssistantPlaceholder(message: UIMessage): boolean {
+	if (message.role !== "assistant") return false;
+	if (getWebAskQuestionResult(message)) return false;
+	// 来源元数据明确为非助手角色时（历史转换把 tool/system/user 也映射成
+	// assistant role），不得当作占位跳过。
+	const chatRole = readWebMessageMetadata(message)?.chatRole;
+	if (chatRole !== undefined && chatRole !== "assistant") return false;
+	if (!Array.isArray(message.parts)) return false;
+	for (const part of message.parts) {
+		if (part && typeof part === "object") {
+			if (part.type === "step-start") continue;
+			if (part.type === "text" && part.text === "") continue;
+		}
+		return false; // 其他任何 part（含 undefined）都保守视为边界
+	}
+	return true;
+}
+
+/**
  * 历史分页消息流在时间线层级的分组：
  * 连续的纯工具 UIMessage 合并为一个展示组；遇到 user、text、reasoning、ask 等立即结束。
+ * 透明助手占位（空 message_start 挂载点）被跳过，不切断工具组，也不从底层数组删除。
+ * WebTimeline 已改用 groupWebTimelineTurns + buildWebTurnDisplay；本函数保留供兼容与测试。
  */
 export function groupWebTimelineMessages(
 	messages: readonly UIMessage[],
@@ -197,6 +237,10 @@ export function groupWebTimelineMessages(
 	};
 
 	for (const message of messages) {
+		// 透明助手占位：不渲染内容、不打断工具组、不进入底层数组投影。
+		if (isTransparentAssistantPlaceholder(message)) {
+			continue;
+		}
 		if (isPureToolMessage(message)) {
 			currentToolMessages.push(message);
 		} else {
@@ -206,5 +250,36 @@ export function groupWebTimelineMessages(
 	}
 
 	flushToolMessages();
+	return items;
+}
+
+export type WebTimelineTurnItem =
+	| { kind: "user"; message: UIMessage }
+	| { kind: "assistant-turn"; id: string; messages: UIMessage[] };
+
+/**
+ * 时间线按「轮」分组：每条 user 自成一项；两条 user 之间的全部助手侧消息
+ * （assistant / tool / system / error 投影）合成一个 assistant-turn，交给整轮展示折叠。
+ * 透明空占位跳过（不渲染、不影响分组，也不从底层数组删除）；全是占位的轮不产出项。
+ * id 取本轮第一条非占位消息的 id，作为 React key 与滚动锚点 data-web-message-id。
+ */
+export function groupWebTimelineTurns(messages: readonly UIMessage[]): WebTimelineTurnItem[] {
+	const items: WebTimelineTurnItem[] = [];
+	let turn: UIMessage[] = [];
+	const flush = () => {
+		const first = turn[0];
+		if (first) items.push({ kind: "assistant-turn", id: first.id, messages: turn });
+		turn = [];
+	};
+	for (const message of messages) {
+		if (message.role === "user") {
+			flush();
+			items.push({ kind: "user", message });
+			continue;
+		}
+		if (isTransparentAssistantPlaceholder(message)) continue;
+		turn.push(message);
+	}
+	flush();
 	return items;
 }

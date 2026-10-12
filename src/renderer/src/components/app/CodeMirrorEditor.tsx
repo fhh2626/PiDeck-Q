@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { foldGutter, foldKeymap, indentOnInput, bracketMatching, indentUnit } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
@@ -48,6 +48,9 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 }: CodeMirrorEditorProps) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const viewRef = useRef<EditorView | null>(null);
+	const readOnlyCompartment = useRef(new Compartment());
+	const readOnlyRef = useRef(readOnly);
+	readOnlyRef.current = readOnly;
 	const onChangeRef = useRef(onChange);
 	onChangeRef.current = onChange;
 	const onAttachSelectionRef = useRef(onAttachSelection);
@@ -98,7 +101,8 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 					state: EditorState.create({
 						doc: value,
 						extensions: [
-							...baseEditorExtensions({ readOnly, wordWrap: true, language: resolvedLanguage }),
+							...baseEditorExtensions({ wordWrap: true, language: resolvedLanguage }),
+							readOnlyCompartment.current.of(EditorState.readOnly.of(readOnlyRef.current)),
 							// 与 Monaco 默认一致的编辑体验：行号/折叠/自动换行/括号匹配/补全/查找
 							lineNumbers(),
 							foldGutter(),
@@ -155,8 +159,13 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 				viewRef.current = null;
 			}
 		};
-	// 语言/只读变化需重建实例（CM6 无热切换语言的标准路径，重建成本低且简单可靠）
-	}, [language, readOnly]);
+	// Only language changes recreate the editor. Saving temporarily locks input;
+	// destroying the view for that lock would discard the user's caret and undo history.
+	}, [language]);
+
+	useEffect(() => {
+		viewRef.current?.dispatch({ effects: readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(readOnly)) });
+	}, [readOnly]);
 
 	// 外部 value 同步：只在文档确实不同时替换（防止覆盖用户输入、防止 onChange 回环）
 	useEffect(() => {

@@ -1,70 +1,62 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const nodeRequire = createRequire(import.meta.url);
+const {
+	assertAuthorizedFilePath,
+	assertLexicallyAuthorizedFilePath,
+	isPathWithinAuthorizedRoots,
+	UnauthorizedFilePathError,
+} = loadTsCommonJs("src/main/fs/authorizedPaths.ts");
 
-function compileModule(filePath, imports = {}) {
-  const output = ts.transpileModule(readFileSync(filePath, "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-    fileName: filePath,
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(output, {
-    module,
-    exports: module.exports,
-    require: (specifier) => imports[specifier] ?? nodeRequire(specifier),
-  }, { filename: filePath });
-  return module.exports;
+// 授权判定是纯词法边界检查，用临时目录构造绝对路径即可，
+// 这样 Windows 与 POSIX 跑的是同一套断言，不需要平台特有的字面量。
+const rootDir = join(tmpdir(), "pideck-authorized-fixture", "project");
+const rootSiblingDir = join(tmpdir(), "pideck-authorized-fixture", "project-evil");
+const unrelatedDir = join(tmpdir(), "pideck-authorized-unrelated");
+const rootFile = join(rootDir, "src", "file.ts");
+const globalPromptDir = join(tmpdir(), "pideck-authorized-global", ".pi", "agent");
+
+/** 把绝对路径拼上相对路径，避免测试自己重新实现路径拼接规则。 */
+function underRoot(...parts) {
+	return join(rootDir, ...parts);
 }
 
-const policy = compileModule("src/main/security/policy.ts");
-const {
-  assertAuthorizedFilePath,
-  assertLexicallyAuthorizedFilePath,
-  isPathWithinAuthorizedRoots,
-  UnauthorizedFilePathError,
-} = compileModule("src/main/fs/authorizedPaths.ts", {
-  "../security/policy": policy,
-});
+/**
+ * 保留字面量 ".." 的路径必须手写拼接：join() 会在词法上先消掉 ".."，
+ * 那样就测不到生产代码自己的 resolve() 归一化行为了。
+ */
+function rawUnderRoot(...parts) {
+	return [rootDir, ...parts].join(sep);
+}
 
 test("authorized paths accept descendants and reject adjacent directories", () => {
-	assert.equal(
-		isPathWithinAuthorizedRoots("C:/work/project/src/file.ts", ["C:/work/project"]),
-		true,
-	);
-	assert.equal(
-		isPathWithinAuthorizedRoots("C:/work/project-evil/file.ts", ["C:/work/project"]),
-		false,
-	);
-	assert.equal(
-		isPathWithinAuthorizedRoots("C:/outside/file.ts", ["C:/work/project"]),
-		false,
-	);
+	assert.equal(isPathWithinAuthorizedRoots(underRoot("src", "file.ts"), [rootDir]), true);
+	// 兄弟目录同名前缀不能被误判为子路径
+	assert.equal(isPathWithinAuthorizedRoots(join(rootSiblingDir, "file.ts"), [rootDir]), false);
+	assert.equal(isPathWithinAuthorizedRoots(join(unrelatedDir, "file.ts"), [rootDir]), false);
+	assert.equal(isPathWithinAuthorizedRoots(rootFile, [rootDir]), true);
 });
 
 test("authorized paths normalize traversal before checking containment", () => {
+	// src/.. 回到根目录，归一化后仍在授权范围内
 	assert.equal(
-		assertLexicallyAuthorizedFilePath("C:/work/project/src/../file.ts", ["C:/work/project"], "read"),
-		"C:\\work\\project\\file.ts",
+		assertLexicallyAuthorizedFilePath(rawUnderRoot("src", "..", "file.ts"), [rootDir], "read"),
+		resolve(underRoot("file.ts")),
 	);
+	// 两级 .. 逃出授权根目录，必须拒绝
 	assert.throws(
-		() => assertLexicallyAuthorizedFilePath("C:/work/project/../../secret.txt", ["C:/work/project"], "read"),
+		() => assertLexicallyAuthorizedFilePath(rawUnderRoot("..", "..", "secret.txt"), [rootDir], "read"),
 		(error) => error instanceof UnauthorizedFilePathError && error.code === "FILE_PATH_NOT_AUTHORIZED",
 	);
 });
 
 test("authorized paths support multiple roots for project and global resources", () => {
 	assert.equal(
-		isPathWithinAuthorizedRoots("C:/Users/test/.pi/agent/prompts/review.md", [
-			"C:/work/project",
-			"C:/Users/test/.pi/agent",
-		]),
+		isPathWithinAuthorizedRoots(join(globalPromptDir, "prompts", "review.md"), [rootDir, globalPromptDir]),
 		true,
 	);
 });

@@ -1,10 +1,9 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSetAtom } from "jotai";
 import { t } from "../i18n";
 import { settingsOpenAtom } from "../atoms";
 import type {
   AppSettings,
-  NpmAvailabilityResult,
   PiInstallExecResult,
   PiInstallStatus,
 } from "../../../shared/types";

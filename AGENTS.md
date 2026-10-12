@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-PiDeck 是一个面向本地开发工作的桌面应用，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在多个项目目录之间管理和运行编码 Agent。应用提供多项目工作区、会话时间线、历史会话恢复、文件抽屉、Git 面板、模型选择、工具调用展示、内置浏览器、中文提示词精选、技能/扩展商店以及打包发布能力，目标是让用户可以在桌面端更稳定地管理多个编码助手会话。
+PiDeck-Q 是一个面向本地开发工作的桌面应用，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在多个项目目录之间管理和运行编码 Agent。应用提供多项目工作区、会话时间线、历史会话恢复、文件抽屉、Git 面板、模型选择、工具调用展示、中文提示词精选、技能/扩展商店以及打包发布能力，目标是让用户可以在桌面端更稳定地管理多个编码助手会话。
 
 技术栈：C++20/Qt6（桌面宿主） + Node.js（业务 Sidecar） + React 19 + TypeScript + Vite。
 
@@ -14,20 +14,21 @@ PiDeck 是一个面向本地开发工作的桌面应用，同时支持原版 Pi 
 
 ## 代码结构与跨层契约
 
-本项目只维护项目根目录这一份 `AGENTS.md`；除非用户明确要求，不要再在子目录生成同名规则文件。`docs/开发规范.md` 中仍有历史架构表述，若与本文件或实际类型/API 冲突，以本文件和代码为准。
+本项目只维护项目根目录这一份 `AGENTS.md`；除非用户明确要求，不要再在子目录生成同名规则文件。当前应用版本以 `package.json` 为唯一来源，README 与官网的当前版本展示必须同步。历史上游记录不代表 PiDeck-Q 的当前版本或功能。
 
-- `native/src/` 是 C++20/Qt6 原生桌面宿主层，负责窗口、Qt WebEngine / WebChannel、原生系统托盘与子进程拉起。
-- `src/native-node/` 是原生架构下的 Node.js 业务 Sidecar 进程入口与宿主桥接（HostBridge / NativeBackendHost）。
+- `native/src/` 是 C++20/Qt6 原生桌面宿主层，入口为 `native/src/main.cpp`，负责窗口、QtWebView、原生系统托盘与子进程拉起。Windows 需要 WebView2 Runtime；其它平台的后端不能据此假定。
+- Qt 宿主与 Node Sidecar 通过本地 TCP、token 握手和长度前缀 JSON 通信；渲染层与 Sidecar 通过环回 HTTP RPC + 可重放 SSE 通信。这两条桌面通信边界都不直接访问 pi。
+- `src/native-node/` 是原生架构下的 Node.js 业务 Sidecar，入口为 `src/native-node/index.ts`，负责宿主桥接（HostBridge / NativeBackendHost）与渲染服务装配。
 - `src/shared/` 是跨进程纯契约层：共享类型按 `shared/types/*.ts` 拆分，`shared/types.ts` 仅做兼容导出；IPC 名称只定义在 `shared/ipc.ts`。
-- `src/main/` 拥有业务领域行为（`main/<domain>/`），`main/ipc/*Ipc.ts` 只做输入校验和适配，`main/backend/` 装配业务后端。
-- `src/renderer/` 是 React 19 前端视图层，通过 `desktopApi`（在原生宿主下通过 WebChannel/WebSocket 与 Node Sidecar RPC 桥接，或测试/兼容桩）调用桌面能力。跨组件状态使用 Jotai atom，副作用放 hook，视图放 component；不得直接 import Node/Electron 或新增第二种全局状态方案。
+- `src/main/` 拥有业务领域行为（`main/<domain>/`），`main/ipc/*Ipc.ts` 只做输入校验和适配，`main/backend/createBackend.ts` 装配业务后端，`main/backend/registerBackendRpc.ts` 装配域 IPC 注册。
+- `src/renderer/` 是 React 19 前端视图层，通过 `desktopApi`（在原生宿主下通过环回 HTTP RPC / SSE 与 Node Sidecar 桥接，或测试/兼容桩）调用桌面能力。跨组件状态使用 Jotai atom，副作用放 hook，视图放 component；不得直接 import Node/Electron 或新增第二种全局状态方案。
 - `SessionRecord.id` 是跨重启的稳定会话身份（UUID），`agentId` 仅表示当前 pi 子进程。所有 runtime 命令和事件都必须带 `sessionId + agentId + runtimeGeneration`，拒绝旧 runtime 的迟到结果。
 - pi 只通过 stdio JSON-RPC 与 PiDeck 通信；PiDeck 不复刻 pi 的 Agent/工具/会话行为，也不为访问 pi 引入第二条通信通道。
 - 持久化结构、设置和 session catalog 变更必须兼容旧数据；listener、timer、子进程、terminal 和 watcher 必须在同一模块找到配对清理路径。
 
 
 ```
-native/                # C++20 / Qt6 原生桌面宿主 (Qt WebEngine / WebChannel)
+native/                # C++20 / Qt6 原生桌面宿主 (QtWebView / TCP 宿主桥)
 src/
 ├── native-node/       # Node.js 业务 Sidecar 入口与 HostBridge
 ├── main/              # 业务主逻辑
@@ -39,11 +40,8 @@ src/
 │   ├── extensions/    # ExtensionManager
 │   ├── settings/      # SettingsStore + DesktopProxy
 │   ├── terminal/      # 终端会话管理（node-pty）
-│   ├── pet/           # 桌面宠物
-│   ├── feishu/        # 飞书集成（FeishuBridge + FeishuConnection）
 │   ├── ipc/           # ★ IPC 域注册（sessionIpc/systemIpc/gitIpc/storeIpc/...）
 │   └── web/           # Web 服务管理
-├── preload/           # 历史/兼容 preload 脚本
 ├── renderer/
 │   └── src/
 │       ├── atoms/         # Jotai 状态（session-first）
@@ -51,7 +49,7 @@ src/
 │       │   ├── ui-shadcn/  # 共享 UI 原语（button/dialog/input/select 等）
 │       │   ├── session/   # 会话视图族（SessionView/Composer*/Timeline*）
 │       │   ├── sidebar/   # 左侧栏
-│       │   ├── workspace/ # 右侧抽屉（files/git/browser/editor）
+│       │   ├── workspace/ # 右侧抽屉（files/sessions/editor/git）
 │       │   └── app/       # 业务组件
 │       ├── hooks/         # 渲染层 hooks（useWorkspacePanels/useSessionComposerController 等）
 │       ├── i18n/          # 文案（zh-CN / en-US，rendererCopy.*.ts）
@@ -63,12 +61,12 @@ src/
 
 1. **session-first**：会话是一等公民。新功能优先挂在 session/runtime 链路上，不要退回“围绕 agent tab 堆全局 state”。
 2. **状态管理用 Jotai**：新增跨组件状态放 `atoms/`，按域建 atom；禁止再引入第二种全局状态方案。
-3. **IPC 按域注册**：主进程 handler 一律放 `src/main/ipc/*Ipc.ts`，`index.ts` 只做装配；通道名集中在 `shared/ipc.ts` 定义，禁止散落字符串字面量。
-4. **类型共享走 `shared/types/`**：按域拆文件；主进程、preload、渲染进程不得各自重复定义同一结构。
+3. **IPC 按域注册**：主进程 handler 一律放 `src/main/ipc/*Ipc.ts`，`main/backend/registerBackendRpc.ts` 只做装配；通道名集中在 `shared/ipc.ts` 定义，禁止散落字符串字面量。
+4. **类型共享走 `shared/types/`**：按域拆文件；业务层、Sidecar、渲染层不得各自重复定义同一结构。
 5. **单向依赖**：跨进程契约统一放在 `shared`；`native-node` 作为 Sidecar 装配入口可以依赖 `main` 的后端与领域服务，`main` 不得反向依赖宿主装配层。`renderer` 通过 `desktopApi`（底层由 `src/shared/desktop/createPiDesktopApi.ts` 暴露）访问主进程，不能直接 import Node/Electron 或 main 代码；main 不得 import renderer 代码；`shared` 不得反向依赖任何运行时层。
 6. **文件体量红线**：
    - 组件/模块单文件目标 ≤ 400 行，超过 600 行必须评估拆分。
-   - `App.tsx`、`main/index.ts` 只增装配代码，不增业务逻辑；新业务先建新模块。
+   - `App.tsx`、`src/native-node/index.ts`、`main/backend/createBackend.ts`、`main/backend/registerBackendRpc.ts` 只增装配代码，不增业务逻辑；新业务先建新模块。
    - 为“省一次 import”把逻辑塞回大文件，视为架构倒退，评审应拒绝。
 
 ## 模块内聚与低耦合（硬性）
@@ -76,7 +74,7 @@ src/
 > 写代码的默认标准：**高内聚、低耦合、可单测、装配层不长胖**。功能能跑不等于结构合格。
 
 1. **一个模块一件事**：状态机/策略/几何/解析放纯函数（`utils/` 或同域 helper），UI 只负责呈现与事件转发，hook 拥有该域状态与命令。禁止把「Tab / 预览 / 分屏 / 拖拽落点」这类完整域逻辑散落在 `App.tsx` 匿名回调里。
-2. **装配层只装配**：`App.tsx` / `main/index.ts` 只做依赖注入与布局拼装。新增交互或状态流转时，优先抽 `hooks/useXxx`、组件宿主或 atoms；若改动让 `App.tsx` 再长出大段 `if/else` 业务，视为未完成拆分。
+2. **装配层只装配**：`App.tsx`、`src/native-node/index.ts` 与 `main/backend/` 装配入口只做依赖注入与布局拼装。新增交互或状态流转时，优先抽 `hooks/useXxx`、组件宿主或 atoms；若改动让 `App.tsx` 再长出大段 `if/else` 业务，视为未完成拆分。
 3. **按域抽 hook，而不是按屏幕堆 props**：跨多个子树的同一域（例如会话工作区 chrome、composer、timeline）应有明确 owner（如 `useSessionWorkspaceChrome`）。禁止用 30+ 字段的「共享 props 袋」在 App → Pane → Injector → View 之间层层透传；稳定回调与服务用窄接口 / context / 工厂，视图 props 只留身份与 chrome 开关。
 4. **选中 ≠ 呈现**：`selectSession` / 打开会话记录只负责「当前会话是谁」；Tab 预览/常驻、分屏布局、拖拽 MIME 属于 chrome 域。不要把 `preview | permanent | keep` 之类 UI 模式长期渗进通用 selection API；chrome 应在边界组合「选中 + 登记」。
 5. **多实例必须按 session 订阅**：分屏/多栏挂载时，runtime / messages / sendState 只订本栏 `sessionId` 的 atom family。禁止非聚焦栏订阅 `currentSession*` 全局原子，以免一栏流式更新拖垮另一栏重渲染。
@@ -127,7 +125,7 @@ src/
 2. **输入校验在边界**：所有 IPC handler 的第一行职责是校验入参（类型、路径合法性、枚举范围）；渲染层来的数据一律不可信。
 3. **路径安全**：文件读写必须限制在项目目录或应用数据目录内；拼接路径前做规范化与逃逸检查，禁止直接拼用户输入。
 4. **进程调用**：spawn/exec 的参数必须数组形式传递，禁止字符串插值拼 shell 命令；子进程环境变量经 `sanitizePiChildEnv` 类函数清洗。
-5. **Webview/浏览器面板**：禁止加载 `file://` 以外的任意本地内容；`allowpopups`、node integration 等属性保持最小化，新增 webview 属性需评审。
+5. **QtWebView 与页面导航**：桌面页面通过受控环回 HTTP 渲染服务加载；保持本地文件访问关闭，禁止把任意本地文件或外部页面当作桌面 RPC 页面加载。环回 RPC/SSE 必须验证 token，初始化后从页面 URL 移除 token；外部链接统一经外链策略交给系统处理。新增 WebView 权限与导航入口必须评审。
 6. **密钥与令牌**：Auth 配置只经 `config/` 模块读写；日志、错误上报、遥测中禁止输出 token/key。
 7. **依赖引入**：新增依赖需说明理由；优先用已有依赖能力，禁止为一个小功能引重型库。
 
@@ -147,50 +145,21 @@ src/
 3. `src/shared/desktop/createPiDesktopApi.ts`：在 `desktopApi` 上暴露对应方法并标注强类型。
 4. 涉及跨进程数据结构时同步 `src/shared/types/`，事件订阅接口必须返回 unsubscribe 清理函数。
 
-## 历史 Electron 经验与参考（兼容归档）
+## 历史 Electron 经验与参考（仅历史，非当前执行要求）
 
-> 注：以下条目沉淀自历史 Electron 架构实现或向后兼容路径，供排查兼容性参考，不代表当前 Qt6 原生架构的现行主入口。
+> 原项目使用过 Electron；旧 API、沙箱选项与浏览器面板配置不适用于当前架构。当前没有 preload、asar 或 electron-builder 入口。当前实现与验证应使用上方原生架构入口、`package.json` 实际 scripts、QtWebView 权限及环回服务契约。
+>
+> 历史问题中仍有效的原则（启动诊断、首帧稳定、环境隔离、清理配对、导航授权、原生模块部署及跨平台路径）已由当前章节约束。不要按旧 API 重建已经移除的功能。
 
-### 启动与进程生命周期
+### 延续到原生架构的原则
 
-1. **app.ready 前的配置窗口**：`commandLine.appendSwitch`、`app.setPath("userData")`、单实例判断等必须在 `app.whenReady()` 之前完成；错过时机一律无效，不要试图在 ready 后补救。
-2. **启动失败要可诊断**：主进程关键节点（窗口创建、load 开始/结束、preload 路径、pi 启动）必须写 `appLogger`，黑屏/白屏排查只靠日志。
-3. **首帧体验**：窗口保持隐藏时先 `maximize()` 再加载页面，避免 `ready-to-show` 后再最大化造成布局跳变；`zoomFactor` 等用户设置在 `did-finish-load` 后应用，防止被加载过程覆盖。
-4. **单实例用自研按版本互斥，不用 `requestSingleInstanceLock`**：原生锁按 userData 全局互斥，会导致不同版本无法并行。本项目实现见 `acquireVersionSingleInstance`（同版本复用窗口、不同版本并存）；第二实例用 `app.exit(0)`（未 ready，比 `quit()` 快）。
-5. **开发/正式数据目录隔离**：dev 模式 userData 追加 `-dev` 后缀，防止开发调试污染正式数据；追加前判断已有后缀，避免重复拼接。
-6. **退出清理**：quit 路径必须覆盖 pi 子进程、node-pty、文件 watcher、单实例锁文件；新增常驻资源时在退出清单里同步登记。
-
-### 窗口与 webContents
-
-7. **主窗口 webPreferences 基线**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox` 跟随用户设置、`webviewTag: true`（仅主窗口，浏览器面板需要）。新增窗口以此为起点逐项评估，禁止默认全开。
-8. **Chromium 沙箱默认关闭是刻意的**：Windows 上部分安全软件/旧 GPU 驱动会在沙箱初始化时触发原生断点（0x80000003）。关闭时必须显式 `appendSwitch("no-sandbox")`；`electronChromiumSandbox` 开关改动需整应用重启生效，不要做成运行时热切换。
-9. **`setWindowOpenHandler` 统一收口**：主窗口与 webview guest 都必须注册，走 `openExternalUrl` 并 `deny`；漏注册 = 用户点击链接开出无管控新窗口。
-10. **自定义标题栏**：frame/titleBarStyle 相关改动要同时验证三平台窗口控制按钮、拖拽区、双击最大化；全屏式弹层内容不得被窗口控制区遮挡。
-
-### Webview（内置浏览器面板）
-
-11. **独立 partition + 收敛 webPreferences**：webview 用专属 `partition`，强制 `sandbox: true`、`nodeIntegration: false`、`webSecurity: true`、`allowRunningInsecureContent: false`、`webviewTag: false`，并删除外部传入的 `preload`/`preloadURL`/`allowpopups` 等危险参数（见 `configureBrowserPanelWebviewHost`）。
-12. **session 校验**：`did-attach-webview` 时校验 guest.session 是否为预期 partition，不是立即 `close()` —— 防止页面注入意外 guest。
-13. **导航白名单**：`will-frame-navigate` / `will-redirect` / `setWindowOpenHandler` 三层都要过 `isAllowedBrowserPanelUrl` 白名单；只拦一层会被重定向绕过。
-
-### IPC 与 preload
-
-14. **handle/invoke 成对注册**：新增通道三处同步——`shared/ipc.ts` 通道常量、主进程 `ipc/*Ipc.ts` handler、preload 白名单暴露；漏任何一处就是运行时 undefined。
-15. **preload 不做业务**：preload 只做参数校验后的 `invoke` 转发与事件订阅封装，禁止在 preload 里写业务逻辑或缓存状态。
-16. **事件推送要可退订**：`webContents.send` 类推送，preload 侧返回 unsubscribe 函数；渲染层组件卸载必须退订，防止向已销毁页面推送导致泄漏。
-
-### 原生模块与打包
-
-17. **node-pty 等原生模块**：必须 `asarUnpack` 并在 postinstall 修权限（`scripts/fix-pty-permissions.js`）；新增原生依赖时同步检查这两项，否则打包后运行时才炸。
-18. **afterPack 清理要谨慎**：删除 node_modules 冗余文件（如 `@larksuiteoapi/node-sdk` 的 lib/）必须有对应测试（`tests/afterPackCleanup.test.mjs`）；清理脚本误删运行时必需文件 = 打包能过、用户启动崩。
-19. **打包验证分层**：`npm run pack`（--dir 快速验证）→ `dist:win/mac/linux`；发版前至少跑过一次目标平台完整安装包的人工 smoke，不依赖 CI 构建成功即发布。
-20. **资源路径**：运行时资源用 `process.resourcesPath` / `app.getAppPath()` 推导，禁止写相对 `__dirname` 的裸路径假设 asar 内可直接读；preload 路径统一走 `preloadPath.ts` 解析。
-
-### 跨平台
-
-21. **路径与命令**：禁止硬编码 `/` 或 `\`；shell 检测、外部编辑器、git 路径查找必须覆盖 win/mac/linux（含 WSL 场景，见 `wslExe.ts`）。
-22. **平台 workaround 集中管理**：如 `linuxDisplayBackend.ts`，平台特判写在专属模块并注明触发条件，不散落在业务代码里。
-23. **Windows 特有问题优先怀疑**：路径空格、杀毒软件锁文件、长路径、权限弹窗；Windows 上的"偶发失败"大多不是偶发，日志要带足上下文。
+1. **启动可诊断**：窗口、页面加载、Sidecar 与 pi 启动关键节点记录结构化脱敏日志；不输出完整命令或环境。
+2. **首帧稳定**：启动窗口大小和用户缩放应在合适的生命周期应用，避免显示后跳变。
+3. **环境与单实例隔离**：开发数据目录与正式数据目录分离；单实例按版本隔离，保持已有混合版本兼容。
+4. **退出清理**：覆盖 pi、node-pty、watcher、timer、连接和单实例资源，保持同模块清理配对。
+5. **部署校验**：原生模块按实际 Node ABI 和 staging 布局部署；资源经宿主路径契约解析，禁止裸相对路径假设。`npm run pack` 校验 staging，发版前验证实际目标产物，不把 CI 成功当人工 smoke。
+6. **跨平台边界**：路径与命令使用平台模块，WSL shell 查询走 `src/main/wsl/wslExe.ts`；平台 workaround 集中管理并说明原因。
+7. **Windows 排查**：路径空格、文件锁、长路径及权限失败需要带上下文的脱敏日志。源码存在跨平台分支不等于已经验证各平台安装包。
 
 ## 稳定性与可扩展性约束
 
@@ -287,10 +256,10 @@ src/
 
 ### GitHub 协作说明
 
-详见 `docs/PiDeck-协作说明.md`。
+协作遵循本文件的 Issue 修复、测试门禁与提交授权规则；PR 中记录原因、范围和验证结果。
 
 ## 长期重构纪律
 
-- 大重构必须先写对照计划（参考 `docs/issue-113-main-parity-plan.md`），明确能力 parity 表与合并门禁。
+- 大重构必须先写对照计划，明确能力 parity 表与合并门禁。
 - 禁止无对照表的长期分叉分支；main 的用户可感知改动当周回填到进行中重构分支。
 - 重构期间禁止用 `-X theirs`/`-X ours` 静默吞掉对方改动；每个冲突都要确认能力归属。

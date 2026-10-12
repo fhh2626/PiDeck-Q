@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { normalize, join, dirname } from "node:path";
 import { dirname as posixDirname, normalize as posixNormalize } from "node:path/posix";
 import { homedir } from "node:os";
@@ -9,6 +9,7 @@ import {
 	suggestNormalizedBaseUrl,
 } from "./baseUrlPath";
 import type { WslEnvironment } from "../wsl/WslPaths";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 import {
 	mainProcessT,
 	type MainProcessTranslationKey,
@@ -362,7 +363,8 @@ export class ConfigManager {
 		const filePath = join(this.configDir, fileName);
 		const json =
 			typeof content === "string" ? content : JSON.stringify(content, null, 2);
-		await writeFile(filePath, json, "utf8");
+		// 原子替换：避免崩溃留下截断的 pi 配置（auth/models 等）
+		await writeFileAtomic(filePath, json);
 	}
 
 	// ── 远程拉取模型列表 ─────────────────────────────────

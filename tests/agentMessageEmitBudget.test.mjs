@@ -6,6 +6,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
 const AGENTS_MESSAGE = "agents:message";
 const AGENTS_STATE = "agents:state";
+const AGENTS_RUNTIME_STATE = "agents:runtime-state";
 
 /**
  * 回归（Review P1）：sessionRuntimeBridge 按真实 sessions:runtime-event 外包络做 30 MiB
@@ -300,6 +301,72 @@ test("flush 成功后 dirty 清除：下次无新变更时为窗口化全量（u
 	manager.flushMessageEmit("agent-1");
 	assert.equal(payloads.length, 2);
 	assert.equal(payloads[1].upsertFrom, undefined);
+});
+
+// 渲染层增量合并失序时按会话请求的全量补发：必须走窗口化全量（无 upsertFrom），
+// 且只影响被请求的 Agent（不重推 tabs 状态）。
+// 这是「思考/工具/正文攒一批才出现」的修复路径：补发到得比终态 flush 早。
+test("flushLiveMessages emits a windowed full payload for that agent only", () => {
+	const payloads = [];
+	const channels = [];
+	const manager = createManager((channel, payload) => {
+		channels.push(channel);
+		if (channel === AGENTS_MESSAGE) payloads.push(payload);
+	});
+
+	// 同会话另建一个 Agent：补发不得波及它（分屏另一栏不该被重推）。
+	manager.agents.set("agent-2", {
+		...manager.agents.get("agent-1"),
+		tab: { ...manager.agents.get("agent-1").tab, id: "agent-2" },
+	});
+	manager.messages.set("agent-2", [
+		{ id: "b-1", agentId: "agent-2", role: "user", text: "other", timestamp: 1 },
+	]);
+
+	seedMessages(manager, [assistantMsg("a-1", "still streaming")]);
+	// 即使有可用的 dirty 下标（正常会走增量），补发也必须强制全量。
+	manager.markMessagesDirtyFrom("agent-1", 1);
+	manager.flushLiveMessages("agent-1");
+
+	assert.equal(payloads.length, 1, "只应补发被请求的那个 Agent");
+	assert.equal(payloads[0].agentId, "agent-1");
+	assert.equal(payloads[0].upsertFrom, undefined, "补发必须是全量载荷（渲染层据此重建下标空间）");
+	assert.ok(payloads[0].messages.some((m) => m.id === "a-1"), "全量必须包含当前窗口消息");
+	// 全量校准是终态语义，不额外重推 tabs（那是 flushLiveRendererState 的职责）。
+	assert.ok(!channels.includes(AGENTS_STATE), "补发不应重推 agents:state");
+});
+
+// abort 后停止按钮被盖回红色的根因回归：emitRuntimeState 是异步 RPC，
+// 工具开始时发出的那一次可能在 abort 之后才返回；它必须信本地流式标志，
+// 否则 pi 里仍为 true 的 isStreaming 会把渲染层的停止按钮重新点亮。
+test("emitRuntimeState uses the local streaming flag over a stale get_state snapshot", async () => {
+	const payloads = [];
+	const manager = createManager(() => {});
+	const runtime = manager.agents.get("agent-1");
+	runtime.process.client.request = async () => ({
+		success: true,
+		data: { isStreaming: true },
+	});
+	manager.onOutput((channel, payload) => {
+		if (channel === AGENTS_RUNTIME_STATE) payloads.push(payload);
+	});
+
+	// 本地已停止（abort 刚清过流式标志），但 get_state 仍报 streaming：
+	// 必须以本地为准，否则按钮永不回退。
+	manager.streamingAgents.delete("agent-1");
+	await manager.emitRuntimeState("agent-1");
+	assert.equal(payloads.length, 1);
+	assert.equal(payloads[0].state.isStreaming, false, "本地未流式时不得被旧快照改回 true");
+
+	// 反向：新一轮已经开始（本地 streaming=true），旧快照报 false 也不能把它收掉。
+	runtime.process.client.request = async () => ({
+		success: true,
+		data: { isStreaming: false },
+	});
+	manager.streamingAgents.add("agent-1");
+	await manager.emitRuntimeState("agent-1");
+	assert.equal(payloads.length, 2);
+	assert.equal(payloads[1].state.isStreaming, true, "本地已流式时不得被旧快照收掉");
 });
 
 // 契约断言（防回归）：flushMessageEmit 不得在构建 payload 之前删除 dirty 下标；

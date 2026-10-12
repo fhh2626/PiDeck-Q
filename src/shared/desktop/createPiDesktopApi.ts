@@ -13,7 +13,6 @@ import type {
 	ProcessMetricsSnapshot,
 	AppSettings,
 	AvailableModel,
-	ChatMessage,
 	ModelSpec,
 	CodexImportReport,
 	CodexSessionSummary,
@@ -375,6 +374,11 @@ const api = {
 			>,
 		abortRuntime: (target: SessionRuntimeTarget) =>
 			transport.invoke(ipcChannels.sessionsRuntimeAbort, target) as Promise<
+				SessionCommandResult<SessionTargetedValue<void>>
+			>,
+		/** 渲染层增量合并失序时请求单会话全量补发（不打断本轮输出）。 */
+		flushMessages: (target: SessionRuntimeTarget) =>
+			transport.invoke(ipcChannels.sessionsRuntimeFlushMessages, target) as Promise<
 				SessionCommandResult<SessionTargetedValue<void>>
 			>,
 		restartRuntime: (target: SessionRuntimeTarget) =>
@@ -863,7 +867,11 @@ const api = {
 		restoreBuiltins: () =>
 			transport.invoke(ipcChannels.promptsRestoreBuiltins) as Promise<void>,
 		edit: (filePath: string, content?: string) =>
-			transport.invoke(ipcChannels.promptsEdit, filePath, content) as Promise<string | void>,
+			// Read requests must omit content: JSON encodes undefined array entries as null,
+			// which the IPC boundary correctly rejects as invalid write content.
+			(content === undefined
+				? transport.invoke(ipcChannels.promptsEdit, filePath)
+				: transport.invoke(ipcChannels.promptsEdit, filePath, content)) as Promise<string | void>,
 		listByProject: (projectPath: string) =>
 			transport.invoke(ipcChannels.promptsListByProject, projectPath) as Promise<PiPromptTemplateListResult>,
 		createInProject: (projectPath: string, input: CreatePiPromptTemplateInput) =>

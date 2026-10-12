@@ -15,12 +15,16 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
+/**
+ * 使用 CardAction 时在 CardHeader 上加 data-has-action="true" 以切换两列布局。
+ * 不用 Tailwind 的 has-data 变体按子元素 slot 判断，原因见 alert-dialog.tsx 的说明。
+ */
 function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-header"
       className={cn(
-        "@container/card-header grid auto-rows-min grid-rows-[auto_auto] items-start gap-2 px-6 has-data-[slot=card-action]:grid-cols-[1fr_auto] [.border-b]:pb-6",
+        "@container/card-header grid auto-rows-min grid-rows-[auto_auto] items-start gap-2 px-6 data-[has-action=true]:grid-cols-[1fr_auto] [.border-b]:pb-6",
         className
       )}
       {...props}

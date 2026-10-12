@@ -8,11 +8,11 @@ PiDeck is an open-source desktop workbench supporting the original Pi Agent and 
 
 ### Is PiDeck a fork of pi?
 
-No. PiDeck is a lightweight Electron shell that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
+No. PiDeck is a native Qt6/QtWebView host with a Node Sidecar that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
 
 ### Which platforms are supported?
 
-Windows, macOS, and Linux. Pre-built packages are available on GitHub Releases.
+The native SDK/staging pipeline is Windows-first and requires WebView2 Runtime. Check actual GitHub release files; macOS/Linux source branches do not establish verified installers.
 
 ## Usage
 
@@ -36,7 +36,7 @@ Type `&` in the composer to search and reference past sessions from the same pro
 
 ### What's the minimum Node.js version?
 
-Node.js 20 or higher is required to run from source.
+The manifest requires Node.js 24.19.0 and npm 11+. Native development also needs xmake, a C++20/MSVC toolchain and Qt 6.11.2; see [Development](/en/guide/development).
 
 ### Can I use PiDeck with self-hosted models?
 
@@ -48,7 +48,7 @@ No. PiDeck does not collect any usage data or telemetry. All data stays on your 
 
 ### How do I update PiDeck?
 
-When a new version is released on GitHub, PiDeck will show an in-app notification. You can download the latest version from the notification or from the GitHub Releases page.
+Check GitHub Releases and follow the instructions for the actual artifact. There is no built-in application update system.
 
 ## Troubleshooting
 
@@ -70,4 +70,5 @@ PiDeck tries PowerShell, cmd, and sh in order. If none are available, the termin
 
 - Check the log file in the app's data directory.
 - Make sure no other instance is already running.
-- On Linux, ensure FUSE is installed for AppImage.
+- On Windows, check that WebView2 Runtime is installed.
+- Source support on other platforms is not a claim of tested installer availability.

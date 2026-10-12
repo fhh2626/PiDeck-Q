@@ -49,6 +49,32 @@ export function toSessionRuntimeTarget(
 	};
 }
 
+/**
+ * abort 命中断代（SESSION_RUNTIME_CHANGED）后是否可以再试一次。
+ *
+ * 用户点击停止到命令到达主进程之间，runtime 可能已经换绑（重启/懒启动完成）：
+ * 旧 target 会被拒绝，而 AgentManager.abort 根本不会执行——按钮保持红色。
+ * 只对「代际变了」这一种原因重试一次：其它失败（会话不存在/命令失败）重试无意义，
+ * 也可能反复撞同一个错误。
+ *
+ * @returns 新 target；不需要或不能重试时返回 undefined（调用方按失败处理）。
+ */
+export function resolveAbortRetry(
+	failedCode: SessionCommandError["code"] | undefined,
+	first: SessionRuntimeTarget,
+	latest: { agentId?: string; runtimeGeneration?: number } | undefined,
+	sessionId: string,
+): SessionRuntimeTarget | undefined {
+	if (failedCode !== "SESSION_RUNTIME_CHANGED") return undefined;
+	const next = toSessionRuntimeTarget(sessionId, latest);
+	if (!next) return undefined;
+	// 代际与 agent 都没变：重试会撞同一结果，不重复请求。
+	if (next.agentId === first.agentId && next.runtimeGeneration === first.runtimeGeneration) {
+		return undefined;
+	}
+	return next;
+}
+
 export function isSameSessionRuntimeTarget(
 	left: SessionRuntimeTarget | undefined,
 	right: SessionRuntimeTarget | undefined,

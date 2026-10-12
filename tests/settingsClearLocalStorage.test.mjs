@@ -27,7 +27,9 @@ test("clearing UI cache goes through a danger ConfirmDialog, not a bare button",
 test("clear executes localStorage.clear() and reloads the page", () => {
   // 清空后内存态（宽度/折叠/过滤器）仍是旧值，不刷新会把旧值写回，等于没清
   assert.match(tab, /localStorage\.clear\(\)/);
-  assert.match(tab, /window\.location\.reload\(\)/);
+  // 刷新必须保留原生 token（裸 location.reload() 会让页面永久卡在启动画面），统一走 reloadDesktopRenderer。
+  assert.match(tab, /reloadDesktopRenderer\(\)/);
+  assert.doesNotMatch(tab, /window\.location\.reload\(\)/);
 });
 
 test("clear targets the renderer localStorage only, never main-process logs", () => {

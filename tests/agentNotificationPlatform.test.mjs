@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -103,6 +104,9 @@ function loadAgentManager() {
 		if (id.includes("PiProcess")) return piProcess;
 		if (id.includes("SessionFileEditor")) return sessionFileEditor;
 		if (id.includes("AgentMessageProjector")) return agentMessageProjector;
+		if (id.includes("recoverRecentHistoryLoad")) return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
+		if (id.includes("monotonicNow")) return loadTsCommonJs("src/main/transport/monotonicNow.ts");
+		if (id.includes("LiveRpcLogBuffer")) return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
 		if (id.includes("SessionHistoryReader")) return sessionHistoryReader;
 		if (id.includes("imageContent")) return loadModule("src/shared/imageContent.ts");
 		if (id.includes("imageLimits")) return loadModule("src/shared/imageLimits.ts");
@@ -273,7 +277,7 @@ function createSettledHarness({
 	return { manager, showCalls, warnCalls, focusCalls, focusLast };
 }
 
-function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole = "assistant", piSessionId } = {}) {
+function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole = "assistant", piSessionId, isInternalSubagent } = {}) {
 	const tab = {
 		id: agentId,
 		projectId: "project-1",
@@ -283,6 +287,7 @@ function attachRuntime(manager, agentId, { runtimeStatus = "running", lastRole =
 		createdAt: 1,
 	};
 	if (piSessionId !== undefined) tab.sessionId = piSessionId;
+	if (isInternalSubagent !== undefined) tab.isInternalSubagent = isInternalSubagent;
 	manager.agents.set(agentId, {
 		tab,
 		process: { isRunning: () => true, client: { request: async () => ({ success: true }) } },
@@ -406,6 +411,84 @@ test("error runtime settled does NOT fire the session-complete notification", ()
 	assert.equal(showCalls.length, 0, "error settled must not pop a 'done' notification");
 });
 
+// 供 SessionRuntimeCoordinator 判断 error runtime 能否继续使用：
+// 只有「轮次级 API 失败 + 进程仍存活」才返回 true。
+test("turn-level agent_end error is recoverable while the process lives", () => {
+	const { manager } = createSettledHarness({ resolveRecordId: () => "rec-turn" });
+	const tab = attachRuntime(manager, "agent-turn", { runtimeStatus: "running" });
+
+	manager.handlePiEvent("agent-turn", { type: "agent_end", messages: [], errorMessage: "503 upstream" });
+
+	assert.equal(tab.status, "error");
+	assert.equal(manager.isRecoverableErrorRuntime("agent-turn"), true, "turn-level error with live process is recoverable");
+
+	// 进程退出后必须报 false，否则协调器会把已死 runtime 继续当作可用
+	manager.agents.get("agent-turn").process.isRunning = () => false;
+	assert.equal(manager.isRecoverableErrorRuntime("agent-turn"), false);
+	assert.equal(manager.isRecoverableErrorRuntime("missing"), false, "unknown agent must be false");
+});
+
+// stopAll 清空 agents 时必须同步清空 error 来源（生命周期配对清理）。
+test("stopAll clears recorded error origins together with the runtimes", () => {
+	const { manager } = createSettledHarness({ resolveRecordId: () => "rec-stop" });
+	attachRuntime(manager, "agent-stop", { runtimeStatus: "running" });
+	manager.agents.get("agent-stop").process.stop = () => undefined;
+	manager.handlePiEvent("agent-stop", { type: "agent_end", messages: [], errorMessage: "503 upstream" });
+	assert.equal(manager.errorOriginByAgent.size, 1);
+
+	manager.stopAll();
+
+	assert.equal(manager.errorOriginByAgent.size, 0);
+});
+
+// 没有轮次级来源的 error（模拟启动失败：进程可能仍在但 runtime 从未就绪）不可恢复。
+test("error status without a turn-level origin is not recoverable", () => {
+	const { manager } = createSettledHarness({ resolveRecordId: () => "rec-raw" });
+	attachRuntime(manager, "agent-raw", { runtimeStatus: "error" });
+
+	assert.equal(manager.isRecoverableErrorRuntime("agent-raw"), false, "startup-style error must stay terminal");
+	assert.equal(manager.isRecoverableErrorRuntime("missing"), false);
+});
+
+// 后续进程级错误必须覆盖先前的轮次级来源，防止已死进程被误判为可恢复。
+test("a later process error overrides an earlier turn-level origin", () => {
+	const { manager } = createSettledHarness({ resolveRecordId: () => "rec-proc" });
+	const tab = attachRuntime(manager, "agent-turn2", { runtimeStatus: "running" });
+
+	manager.handlePiEvent("agent-turn2", { type: "agent_end", messages: [], errorMessage: "503 upstream" });
+	assert.equal(manager.isRecoverableErrorRuntime("agent-turn2"), true);
+
+	// 私有方法在编译后为普通属性，测试可直接调用（现有测试已有访问 manager.agents 等私有成员的先例）
+	manager.markAgentError("agent-turn2", tab, "process");
+	assert.equal(manager.isRecoverableErrorRuntime("agent-turn2"), false);
+});
+
+// error 态也要清运行期缓存：否则会残留流式/工具执行/压缩标志，
+// 渲染层据此把会话视为运行中（isStreaming / agentRunning），隐藏编辑/删除/重发按钮。
+test("error runtime settled clears tool and streaming caches but keeps error status", () => {
+	const { manager, showCalls } = createSettledHarness({
+		resolveRecordId: () => "rec-err-caches",
+	});
+	const tab = attachRuntime(manager, "agent-err2", { runtimeStatus: "error", lastRole: "assistant" });
+
+	manager.activeToolCallsByAgent.set("agent-err2", new Map([["call-1", "bash"]]));
+	manager.toolExecutingByAgent.set("agent-err2", "bash");
+	manager.rpcCompactingAgents.add("agent-err2");
+	manager.setStreamingAgent("agent-err2", true);
+
+	manager.handlePiEvent("agent-err2", { type: "agent_settled" });
+
+	assert.equal(manager.activeToolCallsByAgent.has("agent-err2"), false, "active tool calls must be cleared");
+	// 逐字段断言：getLocalStreamingFlags 返回 vm 沙箱内的对象，deepEqual 会因原型不同而失败。
+	const flags = manager.getLocalStreamingFlags("agent-err2");
+	assert.equal(flags.isStreaming, false, "streaming flag must be reset");
+	assert.equal(flags.isExecutingTool, false, "tool flag must be reset");
+	assert.equal(manager.rpcCompactingAgents.has("agent-err2"), false, "compaction flag must be cleared");
+	// 失败态保留：侧栏失败标记与「不弹完成通知」都依赖它
+	assert.equal(tab.status, "error");
+	assert.equal(showCalls.length, 0);
+});
+
 test("settled with non-assistant last message does NOT fire the notification", () => {
 	const { manager, showCalls } = createSettledHarness({
 		resolveRecordId: () => "rec-user",
@@ -476,4 +559,21 @@ test("notification.show throwing does not break settled and runtime still idles"
 	assert.equal(manager.agents.get("agent-throw").tab.status, "idle");
 	// show 抛错被 notifySessionEnd 的 try/catch 吞掉，不应有 onFailed warn（show 没返回）
 	assert.equal(warnCalls.length, 0);
+});
+
+test("internal subagent settle idles the tab without a system notification", () => {
+	const { manager, showCalls } = createSettledHarness({
+		resolveRecordId: () => "rec-internal",
+	});
+	attachRuntime(manager, "agent-internal", {
+		runtimeStatus: "running",
+		lastRole: "assistant",
+		isInternalSubagent: true,
+	});
+
+	manager.handlePiEvent("agent-internal", { type: "agent_settled" });
+
+	assert.equal(showCalls.length, 0, "hidden subagent sessions must not raise a system notification");
+	// 不弹通知不代表不结算：缓存与状态仍必须回到 idle
+	assert.equal(manager.agents.get("agent-internal").tab.status, "idle");
 });

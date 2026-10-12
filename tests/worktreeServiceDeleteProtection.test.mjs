@@ -196,10 +196,15 @@ test("remove() 正常删除 worktree：目录进回收站、分支被删除", as
 		// 目录应移入回收站（fake trashPath 模拟真实移动：源目录被删除）
 		assert.ok(trashCalls.some((p) => lower(p) === lower(wtB)), "worktree 目录应移入回收站");
 		assert.ok(!existsSync(wtB), "回收站移动后源目录应不存在");
-		// 分支名（feat-b）等于目录名 → PiDeck 创建的 worktree，应删除分支
+		// 分支名（feat-b）等于目录名 → PiDeck 创建的 worktree，应删除分支。
+		// 必须用 -d（而非 -D）：-D 会把未合并的提交变成只能靠 reflog 找回的游离对象。
 		assert.ok(
-			calls.some((c) => c.args[0] === "branch" && c.args[1] === "-D" && c.args[2] === "feat-b"),
+			calls.some((c) => c.args[0] === "branch" && c.args[1] === "-d" && c.args[2] === "feat-b"),
 			"应删除同名分支 feat-b",
+		);
+		assert.ok(
+			!calls.some((c) => c.args[0] === "branch" && c.args[1] === "-D"),
+			"不得使用 -D 强删未合并分支",
 		);
 	} finally {
 		cleanup();

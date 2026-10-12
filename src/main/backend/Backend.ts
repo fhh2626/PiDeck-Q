@@ -1,4 +1,4 @@
-import type { AppFocusSessionTarget, AppSettings } from "../../shared/types";
+import type { AppFocusSessionTarget } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import type { AppLogger } from "../logging/AppLogger";
 import type { SettingsStore } from "../settings/SettingsStore";
@@ -38,6 +38,12 @@ export interface Backend {
 	) => string;
 	resolveSessionIdForAgent(agentId: string): string | undefined;
 	hasActiveStreaming(): boolean;
+	/**
+	 * 事件流断层（SSE 历史被裁 / 超大帧被丢弃）时的无导航补发：
+	 * 重新推送 AgentTab 状态与断层期间可能丢帧的 Agent 的完整消息窗口。
+	 * lostSinceMs：渲染层丢失的第一帧的产生时间（monotonicNowMs() 口径）；未知时全部补发。
+	 */
+	resyncLiveRendererState(options?: { lostSinceMs?: number }): void;
 	startAfterWindowCreated(): void;
 	dispose(): Promise<void>;
 }

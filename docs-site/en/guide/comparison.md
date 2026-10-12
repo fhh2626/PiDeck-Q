@@ -10,12 +10,11 @@ Here's how PiDeck compares to other popular AI coding tools.
 | Session history & restore | ✅ Full timeline | ✅ Limited | ✅ Conversation log | ❌ Not available |
 | Git visual panel | ✅ VS Code-style | ✅ Built-in | ❌ CLI only | ✅ Via editor |
 | Built-in terminal | ✅ Dock with tabs | ✅ Integrated | ✅ Terminal native | ❌ Via editor |
-| File editor | ✅ Monaco editor | ✅ Built-in | ❌ CLI editor | ❌ Via editor |
-| Built-in browser | ✅ Right drawer | ❌ | ❌ | ❌ |
+| File editor | ✅ CodeMirror editor | ✅ Built-in | ❌ CLI editor | ❌ Via editor |
 | Multiple agent sessions | ✅ Parallel RPC | ❌ Single | ✅ Parallel CLI | ❌ Single |
 | Visual config management | ✅ GUI panels | ❌ JSON files | ❌ Config files | ❌ Settings page |
 | Session import (Codex/Claude) | ✅ Supported | ❌ | ❌ | ❌ |
-| Cross-platform desktop | ✅ Electron app | ✅ Electron app | ❌ CLI only | ✅ Editor plugin |
+| Cross-platform desktop | Windows-first native build; other platforms unverified | ✅ Electron app | ❌ CLI only | ✅ Editor plugin |
 | Open source | ✅ MIT | ❌ Proprietary | ⚠️ Limited | ❌ Proprietary |
 | Self-hosted models | ✅ Configurable | ❌ | ✅ Supported | ❌ |
 | Skills / Extensions | ✅ Visual management | ❌ | ✅ Skills | ❌ |
@@ -36,7 +35,7 @@ PiDeck saves the complete history of every session, including tool calls and fil
 
 ### 4. All-in-One Desktop Experience
 
-PiDeck combines a file editor, terminal, Git panel, built-in browser, and config management in one desktop window. No need to switch between multiple tools.
+PiDeck combines a file editor, terminal, Git panel, and config management in one desktop window. No need to switch between multiple tools.
 
 ## When to Choose PiDeck
 

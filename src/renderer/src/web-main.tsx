@@ -13,6 +13,7 @@ import { setI18nLocale } from "./i18n";
 import { resolveLocale } from "./i18n";
 import { TooltipProvider } from "./components/ui-shadcn/tooltip";
 import { WebChatApp } from "./web/WebChatApp";
+import { startInputLatencyMonitor } from "./inputLatencyMonitor";
 
 // 与桌面端一致的 locale 解析：优先浏览器语言，中文走 zh-CN
 setI18nLocale(resolveLocale("system"));
@@ -25,6 +26,11 @@ function applyTheme() {
 }
 applyTheme();
 darkMedia.addEventListener("change", applyTheme);
+
+// 输入延迟诊断：Web 端没有日志通道，慢输入汇总写到浏览器控制台（不含输入内容）。
+startInputLatencyMonitor({
+  report: (report) => console.warn("[PiDeck] Slow input detected", report),
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

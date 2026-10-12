@@ -20,9 +20,6 @@ import {
   Wrench,
 } from "lucide-react";
 import {
-  countTextLines,
-  getToolEditDiff,
-  getToolFilePath,
   parseToolArgs,
   type ToolGroupItem,
 } from "../app/AppUtils";
@@ -39,7 +36,6 @@ import { desktopApi } from "../../desktopApi";
 import {
   formatDuration,
   getToolDetailText,
-  getToolExitCode,
   getToolName,
   getToolStatus,
 } from "./TimelineFormat";

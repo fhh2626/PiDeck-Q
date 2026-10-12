@@ -17,6 +17,8 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+// 用 pi 自己的上下文构建函数断言「模型实际看到什么」，而不是只看文件字段（先例：webfetchExecution.test.mjs）。
+import { buildContextEntries } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js";
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -398,7 +400,9 @@ test("deleting an assistant answer also tombstones that turn's thinking and tool
   });
 });
 
-test("delete tombstones the target, reparents direct children and leaves grandchildren and siblings intact", async () => {
+// 需求变更：删除 user 消息改为「整轮删除」——它后面对应的 AI 回复必须一起删，
+// 否则回复会改挂到上一轮，界面表现为「上一轮多出两段回答」。
+test("deleting a user message removes its whole turn and reparents remaining children to the turn's parent", async () => {
   const entries = [
     header(),
     message("u1", null, "user", "delete me"),
@@ -415,12 +419,225 @@ test("delete tombstones the target, reparents direct children and leaves grandch
       reload: async () => undefined,
     });
     const next = parseLines(await readFile(path, "utf8"));
+    // 本轮 user + 活动分支上的回答一起删
     assert.equal(byOriginalOrId(next, "u1").type, "deleted");
-    assert.equal(byOriginalOrId(next, "a1").parentId, null);
+    assert.equal(byOriginalOrId(next, "a1").type, "deleted");
+    // 幸存子节点接到本轮 user 的父节点（此处为根）
     assert.equal(byOriginalOrId(next, "a2").parentId, null);
-    assert.equal(byOriginalOrId(next, "u2").parentId, "a1");
+    assert.equal(byOriginalOrId(next, "u2").parentId, null);
     assert.equal(byOriginalOrId(next, "sibling").parentId, null);
-    assert.deepEqual(new Set(result.changedEntryIds), new Set(["u1", "a1", "a2"]));
+    assert.deepEqual(new Set(result.changedEntryIds), new Set(["u1", "a1", "a2", "u2"]));
+  });
+});
+
+// 整轮删除：只墓碑最终回答会留下悬空 toolCall（pi 下一轮请求直接报错），
+// 中间带文字的 assistant 片段、工具结果、停止后的空回复都必须一起清掉。
+test("deleting the final answer removes the whole reply including interim text and tool calls", async () => {
+  const entries = [
+    header(),
+    message("u1", null, "user", "first question"),
+    message("a1a", "u1", "assistant", [
+      { type: "text", text: "working" },
+      { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+    ]),
+    message("t1", "a1a", "toolResult", "ok"),
+    message("a1b", "t1", "assistant", "done"),
+    message("u2", "a1b", "user", "next"),
+    message("a2", "u2", "assistant", "answer two"),
+  ];
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "a1b", role: "assistant", text: "done", activeLeafId: "a2" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    for (const id of ["a1a", "t1", "a1b"]) {
+      assert.equal(byOriginalOrId(next, id).type, "deleted", `${id} must be tombstoned`);
+    }
+    // 下一轮接到本轮 user（u1）之后，不会串到已删内容上
+    assert.equal(byOriginalOrId(next, "u2").parentId, "u1");
+    assert.deepEqual(piActiveMessageTexts(next), ["first question", "next", "answer two"]);
+  });
+});
+
+test("deleting an interim assistant fragment removes the same whole reply", async () => {
+  const entries = [
+    header(),
+    message("u1", null, "user", "first question"),
+    message("a1a", "u1", "assistant", [
+      { type: "text", text: "working" },
+      { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+    ]),
+    message("t1", "a1a", "toolResult", "ok"),
+    message("a1b", "t1", "assistant", "done"),
+    message("u2", "a1b", "user", "next"),
+    message("a2", "u2", "assistant", "answer two"),
+  ];
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "a1a", role: "assistant", text: "working", activeLeafId: "a2" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    // 同一轮的任意片段都删除同一整轮：结果与删最终回答一致
+    for (const id of ["a1a", "t1", "a1b"]) {
+      assert.equal(byOriginalOrId(next, id).type, "deleted", `${id} must be tombstoned`);
+    }
+    assert.equal(byOriginalOrId(next, "u2").parentId, "u1");
+    assert.deepEqual(piActiveMessageTexts(next), ["first question", "next", "answer two"]);
+  });
+});
+
+test("deleting a user message cascades its replies and joins the next turn to the previous one", async () => {
+  const entries = [
+    header(),
+    message("u1", null, "user", "q1"),
+    message("a1", "u1", "assistant", "r1"),
+    message("u2", "a1", "user", "q2"),
+    message("a2", "u2", "assistant", "r2"),
+    message("u3", "a2", "user", "q3"),
+    message("a3", "u3", "assistant", "r3"),
+  ];
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "u2", role: "user", text: "q2", activeLeafId: "a3" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    assert.equal(byOriginalOrId(next, "u2").type, "deleted");
+    assert.equal(byOriginalOrId(next, "a2").type, "deleted");
+    assert.equal(byOriginalOrId(next, "u3").parentId, "a1");
+    assert.deepEqual(piActiveMessageTexts(next), ["q1", "r1", "q3", "r3"]);
+  });
+});
+
+// 删除一轮时命中区间内的设置类条目（model_change）不参与墓碑，只重新挂父：
+// 删掉会连带丢掉用户手动切换的模型/思考等级。
+test("non-message entries inside a deleted turn are kept and reparented", async () => {
+  const entries = [
+    header(),
+    message("u1", null, "user", "q1"),
+    message("a1", "u1", "assistant", "r1"),
+    { type: "model_change", id: "mc", parentId: "a1", provider: "p", modelId: "m" },
+    message("u2", "mc", "user", "q2"),
+    message("a2", "u2", "assistant", "r2"),
+  ];
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "a1", role: "assistant", text: "r1", activeLeafId: "a2" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    const modelChange = byOriginalOrId(next, "mc");
+    assert.equal(modelChange.type, "model_change", "settings entries must survive a turn delete");
+    assert.equal(modelChange.parentId, "u1", "but they must be reparented onto a surviving ancestor");
+  });
+});
+
+// 用户中止（abort）后 pi 会留下「工具结果 + 空回复」的尾巴：
+// 删除时必须连工具调用一起清掉，否则悬空的 toolCall 会让 pi 下一轮请求报错。
+test("deleting an aborted empty reply removes the dangling tool call before it", async () => {
+  const entries = [
+    header(),
+    message("u1", null, "user", "q1"),
+    message("a1", "u1", "assistant", [
+      { type: "text", text: "working" },
+      { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+    ]),
+    message("t1", "a1", "toolResult", "Operation aborted"),
+    message("a1e", "t1", "assistant", []),
+  ];
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "a1e", role: "assistant", text: "", activeLeafId: "a1e" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    for (const id of ["a1", "t1", "a1e"]) {
+      assert.equal(byOriginalOrId(next, id).type, "deleted", `${id} must be tombstoned`);
+    }
+    assert.deepEqual(piActiveMessageTexts(next), ["q1"]);
+  });
+});
+
+// pi 压缩后的真实结构：compaction 条目追加在叶节点，firstKeptEntryId 指向它之前的「保留段」起点。
+// pi 的 buildContextEntries 只在活动路径上找这个锚点；被删条目改挂后不在路径上，
+// 锚点失效会把没被删的保留消息也静默排除出 LLM 上下文。
+function piContextIds(entries, leafId) {
+  const withIds = entries.filter((entry) => typeof entry.id === "string");
+  const byId = new Map(withIds.map((entry) => [entry.id, entry]));
+  return buildContextEntries(withIds, leafId, byId).map((entry) => entry.id);
+}
+
+function compactedSession() {
+  return [
+    header(),
+    message("u1", null, "user", "q1"),
+    message("a1", "u1", "assistant", "r1"),
+    message("u2", "a1", "user", "q2"),
+    message("a2", "u2", "assistant", "r2"),
+    message("u3", "a2", "user", "q3"),
+    message("a3", "u3", "assistant", "r3"),
+    { type: "compaction", id: "c1", parentId: "a3", firstKeptEntryId: "u2", summary: "s", tokensBefore: 1 },
+    message("u4", "c1", "user", "q4"),
+    message("a4", "u4", "assistant", "r4"),
+  ];
+}
+
+test("deleting the first kept turn moves firstKeptEntryId to the next surviving entry", async () => {
+  assert.deepEqual(piContextIds(compactedSession(), "a4"), ["c1", "u2", "a2", "u3", "a3", "u4", "a4"]);
+  await withTempSession(compactedSession(), {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "u2", role: "user", text: "q2", activeLeafId: "a4" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    assert.equal(byOriginalOrId(next, "c1").firstKeptEntryId, "u3");
+    assert.deepEqual(piContextIds(next, "a4"), ["c1", "u3", "a3", "u4", "a4"], "surviving kept messages must stay in the LLM context");
+  });
+});
+
+test("deleting every kept entry points firstKeptEntryId at the compaction itself", async () => {
+  const entries = compactedSession().filter((entry) => !["u3", "a3"].includes(entry.id));
+  const compaction = entries.find((entry) => entry.id === "c1");
+  compaction.parentId = "a2";
+  await withTempSession(entries, {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "u2", role: "user", text: "q2", activeLeafId: "a4" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    // pi appendCompaction 同样用自身 id 表示「不保留压缩点之前的条目」。
+    assert.equal(byOriginalOrId(next, "c1").firstKeptEntryId, "c1");
+    assert.deepEqual(piContextIds(next, "a4"), ["c1", "u4", "a4"]);
+  });
+});
+
+test("deleting an archived turn before the kept range leaves firstKeptEntryId unchanged", async () => {
+  await withTempSession(compactedSession(), {}, async ({ path }) => {
+    const editor = new SessionFileEditor({ now: () => 123 });
+    await editor.deleteMessage({
+      file: fileRef(path),
+      target: target({ entryId: "u1", role: "user", text: "q1", activeLeafId: "a4" }),
+      reload: async () => undefined,
+    });
+    const next = parseLines(await readFile(path, "utf8"));
+    assert.equal(byOriginalOrId(next, "c1").firstKeptEntryId, "u2");
+    assert.deepEqual(piContextIds(next, "a4"), ["c1", "u2", "a2", "u3", "a3", "u4", "a4"]);
   });
 });
 

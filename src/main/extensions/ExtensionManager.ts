@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import type { TrashPath } from "../fs/trash";
@@ -10,6 +10,7 @@ import { toWindowsHostPath, type WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { BUILT_IN_EXTENSIONS, isBuiltInExtensionName } from "./builtInExtensions";
 import { detectPiRuntimeKind } from "../../shared/piCompatibility";
+import { writeFileAtomic } from "../utils/atomicWriteFile";
 
 export { BUILT_IN_EXTENSIONS } from "./builtInExtensions";
 
@@ -36,7 +37,6 @@ export class ExtensionManager {
 	/** 扩展列表缓存：避免每次打开配置页都重新跑 pi list + npm view。 */
 	private listCache: PiExtensionListResult | null = null;
 	/** 缓存是否包含 npm 版本信息（仅 forceRefresh 路径会写入 true）。 */
-	private listCacheHasVersionInfo = false;
 	/** 进行中的列表请求，用于启动预热与并发去重。 */
 	private listInflight: Promise<PiExtensionListResult> | null = null;
 	/** 进行中请求是否为强制刷新（含版本信息）。 */
@@ -89,7 +89,6 @@ export class ExtensionManager {
 	 */
 	invalidateListCache() {
 		this.listCache = null;
-		this.listCacheHasVersionInfo = false;
 		this.listCacheGeneration += 1;
 		// 允许下一次 list() 立刻发起新请求，而不是复用失效前的 inflight。
 		this.listInflight = null;
@@ -127,7 +126,6 @@ export class ExtensionManager {
 					return this.list(forceRefresh);
 				}
 				this.listCache = result;
-				this.listCacheHasVersionInfo = forceRefresh;
 				return result;
 			})
 			.finally(() => {
@@ -317,7 +315,8 @@ export class ExtensionManager {
 			const disabled = settings.disabledExtensions ?? [];
 			if (!disabled.includes(source)) return;
 			settings.disabledExtensions = disabled.filter((item) => item !== source);
-			await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+			// pi 的 settings.json 是用户配置：原子替换，避免崩溃后只剩半个 JSON。
+			await writeFileAtomic(settingsPath, JSON.stringify(settings, null, 2));
 		} catch {
 			// settings 不存在或解析失败时忽略；卸载主流程已成功
 		}
@@ -518,7 +517,7 @@ export class ExtensionManager {
 				settings.disabledExtensions = [...disabled, source];
 			}
 		}
-		await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+		await writeFileAtomic(settingsPath, JSON.stringify(settings, null, 2));
 		// 开关状态变化后同步清缓存，避免 UI 显示旧 enabled。
 		this.invalidateListCache();
 	}
