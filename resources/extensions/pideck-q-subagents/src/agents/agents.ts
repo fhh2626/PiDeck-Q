@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, AcceptanceRole, AgentRunnerConfig, OutputMode, ToolBudgetConfig } from "../shared/types.ts";
-import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL, isCodeOwnedExternalCliAdapterId, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
+import { REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
 import { expandHomePath } from "../shared/settings.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
@@ -1882,8 +1882,7 @@ function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string)
 	if (runner.args !== undefined && (!Array.isArray(runner.args) || runner.args.some((arg) => typeof arg !== "string"))) {
 		throw new Error(`Agent '${agentName}' external-cli runner args must be an array of strings.`);
 	}
-	if (runner.adapter !== undefined && !isCodeOwnedExternalCliAdapterId(runner.adapter)) throw new Error(`Agent '${agentName}' external-cli runner adapter must be ${CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL}.`);
-	if (runner.adapter !== undefined && Array.isArray(runner.args) && runner.args.length > 0) throw new Error(`Agent '${agentName}' ${runner.adapter} adapter owns its argv; runner args are not supported.`);
+	if (runner.adapter !== undefined) throw new Error(`Agent '${agentName}' external-cli runner adapter is not supported. ${REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE}`);
 	if (runner.promptDelivery !== undefined && runner.promptDelivery !== "stdin") {
 		throw new Error(`Agent '${agentName}' external-cli runner promptDelivery must be 'stdin'.`);
 	}
@@ -1894,7 +1893,6 @@ function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string)
 	const runnerArgs = Array.isArray(runner.args) ? runner.args.filter((arg): arg is string => typeof arg === "string") : undefined;
 	return {
 		type: "external-cli",
-		...(isCodeOwnedExternalCliAdapterId(runner.adapter) ? { adapter: runner.adapter } : {}),
 		command: runner.command.trim(),
 		...(runnerArgs?.length ? { args: runnerArgs } : {}),
 		...(runner.promptDelivery ? { promptDelivery: "stdin" as const } : {}),

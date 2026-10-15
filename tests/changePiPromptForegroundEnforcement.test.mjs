@@ -345,12 +345,11 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		isStandalone = true;
 		assert.equal(existsSync(configPath), false);
 
-		// 模拟向 external-cli 类型的 subagent 调用（例如 codex-exec）
+		// 已移除的外部 agent 不能再按 external-cli 启动，也不能触发 native config.json 创建
 		const externalInput = { agent: "codex-exec", task: "external job", async: true };
 		const resExternal = await toolCallHandler({ toolName: "subagent", input: externalInput });
-		// standalone 下 external runner 无法在后台运行，会以明确 reason 阻断，但绝不应触发 native config.json 创建
 		assert.ok(resExternal && resExternal.block === true);
-		assert.match(resExternal.reason, /external runner/);
+		assert.match(resExternal.reason, /无法确认 Agent "codex-exec" 的 runner 类型/);
 		assert.equal(existsSync(configPath), false, "external runner 不应触发 native subagent config.json 创建");
 		assert.equal(externalInput.foregroundOnly, undefined, "external runner 绝不能被注入 foregroundOnly: true");
 

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Removed
+- Remove the bundled Codex, Claude Code, and Cursor external CLI agents and their launch adapters.
+
 ## [0.66.0] - 2026-09-06
 
 ### Highlights

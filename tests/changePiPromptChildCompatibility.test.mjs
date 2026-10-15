@@ -174,12 +174,12 @@ test("standalone Pi blocks external-cli and forces native async:false, while Nod
 		// ── Standalone Mode ──
 		standaloneMode = true;
 
-		// 1. external-cli (codex-exec) 必须被明确 block，绝不能强改 async:false
+		// 1. 已移除的外部 agent 必须 fail-closed，绝不能强改 async:false
 		const codexInput = { agent: "codex-exec", task: "analyze", async: true };
 		const codexRes = await toolCallHandler({ toolName: "subagent", input: codexInput });
 		assert.ok(codexRes && codexRes.block === true);
-		assert.match(codexRes.reason, /external runner \(external-cli\)/);
-		assert.equal(codexInput.async, true, "Must not convert external-cli to async:false");
+		assert.match(codexRes.reason, /无法确认 Agent "codex-exec" 的 runner 类型/);
+		assert.equal(codexInput.async, true, "Must not convert a removed external agent to async:false");
 
 		// 2. native (worker) 在 standalone 下必须 async:false
 		const workerInput = { agent: "worker", task: "code", async: true };
@@ -209,7 +209,7 @@ test("standalone Pi blocks external-cli and forces native async:false, while Nod
 // 5. 验证真实 bundled agent catalog 结构与漂移
 test("bundled agents in pideck-q-subagents match expected runner and tool categories", () => {
 	const catalog = loadSubagentCatalog(join(process.cwd(), "resources/extensions/pideck-q-subagents"));
-	assert.ok(catalog.agents.size >= 12, "Must load all bundled agents");
+	assert.ok(catalog.agents.size >= 6, "Must load all bundled native agents");
 
 	// Native agents
 	const nativeNames = ["worker", "scout", "oracle", "delegate", "reviewer", "researcher"];
@@ -230,12 +230,8 @@ test("bundled agents in pideck-q-subagents match expected runner and tool catego
 		}
 	}
 
-	// External CLI agents
-	const externalCliNames = ["codex-exec", "codex-exec-writer", "claude-code", "claude-code-writer", "cursor-agent", "cursor-agent-writer"];
-	for (const name of externalCliNames) {
-		const agent = catalog.agents.get(name);
-		assert.ok(agent, `Agent ${name} must exist in catalog`);
-		assert.equal(agent.runnerType, "external-cli", `Agent ${name} must be external-cli`);
+	for (const name of ["codex-exec", "codex-exec-writer", "claude-code", "claude-code-writer", "cursor-agent", "cursor-agent-writer"]) {
+		assert.equal(catalog.agents.has(name), false, `Removed external agent ${name} must not remain bundled`);
 	}
 });
 
