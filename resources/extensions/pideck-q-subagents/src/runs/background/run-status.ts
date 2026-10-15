@@ -410,6 +410,8 @@ export function inspectSubagentStatus(params: RunStatusParams, deps: RunStatusDe
 		} else if (!params.dir && requestedId) {
 			const resolved = resolveSubagentRunId(requestedId, { asyncDirRoot, resultsDir, state: deps.state, nested: deps.nested });
 			if (resolved?.kind === "foreground") {
+				const workflow = deps.state?.foregroundWorkflows?.get(resolved.id);
+				if (workflow && workflow.sessionId === deps.state?.currentSessionId) return workflow.snapshot();
 				const control = deps.state?.foregroundControls.get(resolved.id);
 				if (control && deps.state && params.view === "transcript") {
 					return {

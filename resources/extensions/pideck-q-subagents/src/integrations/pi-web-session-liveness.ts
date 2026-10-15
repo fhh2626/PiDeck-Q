@@ -24,7 +24,8 @@ export interface PiWebSessionLivenessHandle {
 	release: () => void;
 }
 
-type LiveWorkState = Pick<SubagentState, "asyncJobs" | "foregroundControls" | "retainedForegroundNestedRoutes">;
+type LiveWorkState = Pick<SubagentState, "asyncJobs" | "foregroundControls" | "retainedForegroundNestedRoutes" | "foregroundWorkflows">
+	& Partial<Pick<SubagentState, "currentSessionId">>;
 
 function resolveRegistry(): PiWebSessionLivenessRegistry | null {
 	const value = (globalThis as Record<PropertyKey, unknown>)[Symbol.for(PI_WEB_SESSION_LIVENESS_REGISTRY_KEY)];
@@ -43,6 +44,11 @@ export function retainLiveForegroundNestedRoute(state: Pick<SubagentState, "reta
 }
 
 export function hasLiveSubagentWork(state: LiveWorkState): boolean {
+	// A handed-off VM can own a host step or pure assembly after its final model child exits.
+	// Only live continuations count; retaining their terminal output must not prevent eviction.
+	for (const workflow of state.foregroundWorkflows?.values() ?? []) {
+		if (!workflow.result && (!state.currentSessionId || workflow.sessionId === state.currentSessionId)) return true;
+	}
 	for (const job of state.asyncJobs.values()) {
 		if (job.status === "queued" || job.status === "running" || hasLiveNestedDescendants(job.nestedChildren)) return true;
 	}

@@ -44,6 +44,20 @@ Pi is the parent session. A subagent is a focused child Pi session with its own 
 
 When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground children run as sessions inside the parent Pi process and stream in the conversation. Background children run as sessions inside a detached runner process that keeps working and can be checked later.
 
+### Supervisor decisions in foreground workflows
+
+When a child needs a supervisor decision, a foreground workflow returns an explicit `needs_attention` handoff immediately so the parent can answer. The original in-memory JavaScript VM, child sessions, deadlines, and sequential dependencies remain live; this is not an empty task result or a new background runner.
+
+1. Inspect the indicated provider's pending requests for the authoritative question and current request id: `subagent_supervisor({ action: "pending" })` for native supervisor questions, or `intercom({ action: "pending" })` for external intercom questions. A queued notification can be stale.
+2. Reply to that id. The original workflow continues with the child's authoritative exit result; later stages do not consume a provisional detach receipt.
+3. Use `subagent({ action: "status", id: "<workflow-id>" })` or `bg_wait({ id: "<workflow-id>" })` for the final output. New decisions interrupt waits even with `all: true` or `stopOnAttention: false`. Completion also sends a notification.
+
+Do not resume/replay the workflow or start a replacement writer while its children are live. `interrupt` or `stop` can cancel the retained workflow, but child ownership is released only on confirmed child exit. Continuations are memory-only: changing the parent session or reloading the extension aborts them rather than replaying old code. At most 50 live/retained foreground workflows are held; terminal entries are evicted first.
+
+External attention is tied to the owned intercom tool call and clears when that call settles; an old tool completion cannot clear a later ask. Mixed waits preserve async/provider completions and failure evidence alongside foreground output. A live retained VM keeps a compatible host session alive even between model children; terminal history does not pin the session.
+
+Workflow cleanup waits at most one second for host/steer callbacks after abort. If a callback ignores cancellation, the failure explicitly warns that the operation may still be live; inspect it before retrying rather than assuming timeout means successful termination. Read-only agents report checks that would write files as verification limitations instead of repeatedly asking for permission to break their role.
+
 Installing the extension does not start an automatic review in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say so in your prompt or project instructions:
 
 ```text

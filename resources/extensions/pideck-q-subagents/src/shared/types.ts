@@ -16,6 +16,7 @@ import type { GlobalMissionIndexRecord, MissionRecord, MissionStoreConfig } from
 import type { ExtensionBindings } from "../runs/shared/extension-bindings.ts";
 import type { WorkflowChildPermitContext } from "./workflow-child-permit.ts";
 import type { WatchdogWarningDetails } from "../watchdog/types.ts";
+import type { ForegroundWorkflowContinuation } from "../runs/foreground/workflow-handoff.ts";
 
 // ============================================================================
 // Basic Types
@@ -2259,6 +2260,8 @@ export interface SubagentState {
 	waitSubscriptions?: Map<string, WaitSubscriptionRecord>;
 	/** Live in-process workflow controllers. Durable status remains on disk after settlement. */
 	workflowControllers?: Map<string, AbortController>;
+	/** Live foreground VMs retained across supervisor handoff; never persisted or replayed. */
+	foregroundWorkflows?: Map<string, ForegroundWorkflowContinuation>;
 	/** Live in-process workflow child stoppers keyed by parent workflow run id. */
 	workflowChildStops?: Map<string, (childId: string, message?: string) => boolean>;
 }
@@ -2306,6 +2309,7 @@ export interface IntercomEventBus {
 }
 
 export const INTERCOM_DETACH_REQUEST_EVENT = "pi-intercom:detach-request";
+export const SUPERVISOR_REQUEST_SETTLED_EVENT = "pi-subagents:supervisor-request-settled";
 export const INTERCOM_DETACH_RESPONSE_EVENT = "pi-intercom:detach-response";
 export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
@@ -2376,6 +2380,8 @@ export interface RunSyncOptions {
 	toolBudget?: ResolvedToolBudget;
 	allowZeroToolBudget?: boolean;
 	allowIntercomDetach?: boolean;
+	/** An attached workflow retains deadline/interrupt ownership across a supervisor handoff. */
+	retainAbortOnDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: import("@earendil-works/pi-agent-core").AgentToolResult<Details>) => void;
 	/** Internal structured-delegation transport optimization: skip unchanged live snapshots. */

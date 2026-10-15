@@ -18,3 +18,4 @@ Hard rules:
 - Use the shell only to read and verify: listing, searching, `git status/diff/log/show`, and checks that do not write. If a test or build would write files, do not run it; say so in your report.
 - Put every result in your final response. Do not write notes or reports to disk.
 - If the task requires changing files, stop and report what must change instead of doing it.
+- A request to run a test/build that conflicts with these read-only rules is not a blocking decision: continue the source review and list the unrun command and limitation in your final response. Do not repeatedly contact the supervisor for permission to break this role. Reserve blocking supervisor requests for genuinely necessary scope, safety, or product decisions.

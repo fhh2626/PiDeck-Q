@@ -12,6 +12,8 @@ export interface SupervisorRequestMessageDetails {
 	requestId?: string;
 	reason?: SupervisorReason;
 	expectsReply?: boolean;
+	/** Optional for older journal entries; never show an expired request as actionable. */
+	expiresAt?: number;
 	runId?: string;
 	agent?: string;
 	childIndex?: number;
@@ -111,6 +113,7 @@ function requestDetails(value: unknown): SupervisorRequestMessageDetails | undef
 	if (!optionalString(value.id) || !optionalString(value.requestId) || !optionalString(value.replyHint) || !optionalString(value.requestBody) || !optionalString(value.runId) || !optionalString(value.agent) || !optionalString(value.childTarget)) return undefined;
 	if (value.reason !== undefined && !isSupervisorReason(value.reason)) return undefined;
 	if (value.expectsReply !== undefined && typeof value.expectsReply !== "boolean") return undefined;
+	if (value.expiresAt !== undefined && (typeof value.expiresAt !== "number" || !Number.isFinite(value.expiresAt))) return undefined;
 	if (value.childIndex !== undefined && (typeof value.childIndex !== "number" || !Number.isFinite(value.childIndex))) return undefined;
 	return value;
 }
@@ -153,7 +156,11 @@ function requestLines(message: SupervisorMessageLike, details: SupervisorRequest
 	];
 	if (details.childTarget) lines.push(`Child target: ${boundedField(details.childTarget)}`);
 	lines.push(`Request ID: ${requestId}`);
-	if (details.expectsReply) lines.push(`Reply with: ${displayText(details.replyHint ?? supervisorReplyHint(requestId), MAX_BODY_CHARS, expanded)}`);
+	if (details.expectsReply) {
+		const expired = details.expiresAt !== undefined && Date.now() > details.expiresAt;
+		if (expired) lines.push("Expired request — no reply is possible. Inspect the current pending requests and run status.");
+		else lines.push("Check current pending requests before replying.", `If still pending, reply with: ${displayText(details.replyHint ?? supervisorReplyHint(requestId), MAX_BODY_CHARS, expanded)}`);
+	}
 	lines.push("", "Request:", displayText((details.requestBody ?? contentText(message.content)) || "(no request body)", MAX_BODY_CHARS, expanded));
 	if (details.interview !== undefined) lines.push("", "Interview shape:", interviewText(details.interview, expanded));
 	return lines;
@@ -206,10 +213,10 @@ function renderCard(lines: string[], heading: string, theme: Theme, width: numbe
 class SupervisorCardComponent implements Component {
 	private readonly expanded: boolean;
 	private readonly heading: string;
-	private readonly lines: string[];
+	private readonly lines: string[] | (() => string[]);
 	private readonly theme: Theme;
 
-	constructor(heading: string, lines: string[], theme: Theme, expanded: boolean) {
+	constructor(heading: string, lines: string[] | (() => string[]), theme: Theme, expanded: boolean) {
 		this.expanded = expanded;
 		this.heading = heading;
 		this.lines = lines;
@@ -219,7 +226,7 @@ class SupervisorCardComponent implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return renderCard(this.lines, this.heading, this.theme, width, this.expanded);
+		return renderCard(typeof this.lines === "function" ? this.lines() : this.lines, this.heading, this.theme, width, this.expanded);
 	}
 }
 
@@ -230,7 +237,8 @@ export function renderSupervisorRequest(
 ): Component | undefined {
 	const details = requestDetails(message.details);
 	if (!details) return undefined;
-	return new SupervisorCardComponent(requestHeading(details.reason), requestLines(message, details, options.expanded), theme, options.expanded);
+	// Re-evaluate expiry when a queued or journalled card is rendered, not just at creation.
+	return new SupervisorCardComponent(requestHeading(details.reason), () => requestLines(message, details, options.expanded), theme, options.expanded);
 }
 
 export function renderSupervisorReply(

@@ -40,6 +40,7 @@
 
 import * as fs from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ForegroundWorkflowContinuation } from "../foreground/workflow-handoff.ts";
 import {
 	listBackgroundWorkWakeChannels,
 	snapshotBackgroundWork,
@@ -352,6 +353,14 @@ function result(text: string, isError = false, completions?: WaitCompletion[]): 
 	};
 }
 
+/** Merge retained VM output without discarding async completions, usage, or failure policy. */
+function appendWorkflowResults(response: AgentToolResult<Details>, workflows: readonly ForegroundWorkflowContinuation[]): AgentToolResult<Details> {
+	return { ...response,
+		content: [...response.content, ...workflows.flatMap((run) => run.result?.content ?? (run.requests.size > 0 ? run.snapshot().content : []))],
+		details: { ...response.details, results: [...response.details.results, ...workflows.flatMap((run) => run.result?.details.results ?? [])] },
+	};
+}
+
 function formatCompletionRecovery(completions: WaitCompletion[] | undefined): string {
 	const lines = (completions ?? []).flatMap((completion) =>
 		(completion.results ?? []).flatMap((child) => formatTimeoutRecoveryLines(child.timeoutRecovery)));
@@ -565,6 +574,10 @@ export async function waitForSubagents(
 		return result("nonBlocking cannot be combined with all; subscribe to one exact run id.", true);
 	}
 
+	// A handoff is still a foreground VM, not an async runner. Track it alongside existing work
+	// so both targeted waits and all:true can yield immediately on a new supervisor decision.
+	let workflows = [...(deps.state.foregroundWorkflows?.values() ?? [])].filter((run) => run.sessionId === deps.state.currentSessionId && (!run.result || params.id !== undefined)
+		&& (!params.id || run.runId.startsWith(params.id)));
 	let active: AsyncRunSummary[];
 	let foreground: ForegroundResumeRun[];
 	let providerSnapshot: BackgroundWorkSnapshot;
@@ -578,6 +591,7 @@ export async function waitForSubagents(
 
 	if (params.id) {
 		const candidates = [
+			...workflows.map((run) => ({ kind: "workflow" as const, id: run.runId, run })),
 			...active.map((run) => ({ kind: "async" as const, id: run.id, run })),
 			...foreground.map((run) => ({ kind: "foreground" as const, id: run.runId, run })),
 		];
@@ -587,7 +601,10 @@ export async function waitForSubagents(
 			return result(`Ambiguous subagent run id prefix "${params.id}" matched ${matches.length} active runs: ${matches.map((candidate) => candidate.id).join(", ")}. Pass a longer id.`, true);
 		}
 		const selected = matches[0];
-		if (selected && params.nonBlocking) {
+		if (selected?.kind === "workflow" && params.nonBlocking) {
+			return result(`Foreground workflow ${selected.id} already publishes a completion notification. Use status or blocking bg_wait({ id: "${selected.id}" }); no second subscription was created.`);
+		}
+		if (selected && selected.kind !== "workflow" && params.nonBlocking) {
 			if (!deps.subscribe) {
 				return result("Non-blocking wait subscriptions require a long-lived interactive subagent runtime; this runtime can only use blocking bg_wait calls.", true);
 			}
@@ -602,40 +619,47 @@ export async function waitForSubagents(
 			return waitForDetachedForegroundRun(selected.run, signal, deps, startedAt, now, pollIntervalMs, timeoutMs);
 		}
 		active = selected?.kind === "async" ? [selected.run] : [];
+		workflows = selected?.kind === "workflow" ? [selected.run] : [];
+		if (selected?.kind === "workflow" && selected.run.result) return selected.run.snapshot();
 	}
 
 	let providerActive = providerSnapshot.items;
-	if (active.length === 0 && providerActive.length === 0) {
+	if (active.length === 0 && providerActive.length === 0 && workflows.length === 0) {
 		return result(params.id
 			? `No active run matched "${params.id}". Nothing to wait for.`
 			: "No active async runs or registered provider work in this session. Nothing to wait for.");
 	}
-	const waitParams = params.id ? { ...params, id: active[0]!.id } : params;
+	const waitParams = params.id && active[0] ? { ...params, id: active[0].id } : params;
 	const initialAsyncIds = new Set(active.map((run) => run.id));
 	const initialProviderIds = new Set(providerActive.map(backgroundWorkIdentity));
 	const initialProviderNames = new Set(providerActive.map((item) => item.provider));
-	const initialCount = initialAsyncIds.size + initialProviderIds.size;
+	const initialCount = initialAsyncIds.size + initialProviderIds.size + workflows.length;
 	const stopOnAttention = params.stopOnAttention ?? deps.stopOnAttention !== false;
 	let attention = active.filter((run) => needsAttention(run));
 
 	const isDone = (): boolean => {
+		if (workflows.some((run) => run.requests.size > 0)) return true;
 		if (attention.some((run) => initialAsyncIds.has(run.id) && (stopOnAttention || hasSupervisorTool(run)))) return true;
 		const activeAsyncIds = new Set(active.map((run) => run.id));
 		const activeProviderIds = new Set(providerActive.map(backgroundWorkIdentity));
 		if (waitForAll) {
 			return [...initialAsyncIds].every((id) => !activeAsyncIds.has(id))
-				&& [...initialProviderIds].every((id) => !activeProviderIds.has(id));
+				&& [...initialProviderIds].every((id) => !activeProviderIds.has(id))
+				&& workflows.every((run) => run.result !== undefined);
 		}
 		return [...initialAsyncIds].some((id) => !activeAsyncIds.has(id))
-			|| [...initialProviderIds].some((id) => !activeProviderIds.has(id));
+			|| [...initialProviderIds].some((id) => !activeProviderIds.has(id))
+			|| workflows.some((run) => run.result !== undefined);
 	};
 
 	while (!isDone()) {
+		if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
 		const activeInitialRuns = active.filter((run) => initialAsyncIds.has(run.id));
 		const activeInitialProviderItems = providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item)));
 		const stillActive = [
 			...activeInitialRuns.map((run) => `${run.id} (${run.state})`),
 			...activeInitialProviderItems.map((item) => `${item.provider}/${item.id}`),
+			...workflows.filter((run) => !run.result).map((run) => `${run.runId} (foreground workflow)`),
 		].join(", ");
 		deps.onUpdate?.(asyncWaitUpdate(activeInitialRuns, activeInitialProviderItems.length, now() - startedAt));
 		if (signal?.aborted) {
@@ -644,7 +668,7 @@ export async function waitForSubagents(
 		if (now() - startedAt >= timeoutMs) {
 			return windowElapsedResult(
 				`Wait window elapsed after ${formatDuration(timeoutMs)} with ${activeInitialRuns.length} async run(s) and ${activeInitialProviderItems.length} provider item(s) still active: ${stillActive}. The work keeps going; call bg_wait again or inspect subagent status.`,
-				activeInitialRuns.map((run) => run.id),
+				[...activeInitialRuns.map((run) => run.id), ...workflows.filter((run) => !run.result).map((run) => run.runId)],
 				activeInitialProviderItems,
 			);
 		}
@@ -664,6 +688,13 @@ export async function waitForSubagents(
 		}
 	}
 
+	if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
+	const workflowAttention = workflows.filter((run) => run.requests.size > 0);
+	if (workflowAttention[0] && initialAsyncIds.size === 0 && initialProviderIds.size === 0) return { ...workflowAttention[0].snapshot(), ...(deps.failOnAttention ? { isError: true } : {}) };
+	if (params.id && workflows[0]?.result) return workflows[0].snapshot();
+	if (workflows.length > 0 && initialAsyncIds.size === 0 && initialProviderIds.size === 0) {
+		return { content: workflows.flatMap((run) => run.snapshot().content), isError: workflows.some((run) => run.result?.isError), details: { mode: "workflow", results: workflows.flatMap((run) => run.result?.details.results ?? []) } };
+	}
 	let terminalSummary: string;
 	let finishedAsyncCount: number;
 	let failedAsyncCount: number;
@@ -691,26 +722,26 @@ export async function waitForSubagents(
 		? ` ${relevantAttention.length} run(s) need attention: ${relevantAttention.map((run) => run.id).join(", ")} —${supervisorAttentionHint} inspect with subagent({ action: "status" }) then steer a top-level live async child, resume a paused/completed/failed child, or interrupt explicitly.`
 		: "";
 	const stillRunning = active.filter((run) => initialAsyncIds.has(run.id)).length
-		+ providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item))).length;
+		+ providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item))).length
+		+ workflows.filter((run) => !run.result).length;
 	const elapsed = formatDuration(now() - startedAt);
-	const outcome = terminalSummary ? ` Outcome: ${terminalSummary}.` : "";
+	const workflowSummary = workflows.map((run) => `Foreground workflow ${run.runId}: ${run.result ? run.result.isError ? "failed" : "complete" : run.requests.size > 0 ? "needs_attention" : "running"}; inspect status for output.`).join(" ");
+	const outcome = `${terminalSummary ? ` Outcome: ${terminalSummary}.` : ""}${workflowSummary ? ` ${workflowSummary}` : ""}`;
 	const recoveryNote = formatCompletionRecovery(completions);
 
 	if (waitForAll) {
 		const scope = params.id
 			? `run "${params.id}"`
-			: initialProviderIds.size === 0
-				? `${initialAsyncIds.size} async run(s)`
-				: `${initialAsyncIds.size} async run(s) and ${initialProviderIds.size} provider item(s)`;
-		const status = relevantAttention.length > 0 ? "attention required" : "done";
-		return result(
+			: `${initialAsyncIds.size} async run(s)${workflows.length ? ` and ${workflows.length} foreground workflow(s)` : ""}${initialProviderIds.size ? ` and ${initialProviderIds.size} provider item(s)` : ""}`;
+		const status = relevantAttention.length > 0 || workflowAttention.length > 0 ? "attention required" : "done";
+		return appendWorkflowResults(result(
 			`Waited ${elapsed} for ${scope}; ${status}.${outcome}${recoveryNote}${resumeGuidance}${attentionNote} Completion/control events have been observed; inspect status if a notification is not visible yet.`,
-			(deps.failOnFailedRuns === true && failedAsyncCount > 0) || (deps.failOnAttention === true && relevantAttention.length > 0),
+			(deps.failOnFailedRuns === true && (failedAsyncCount > 0 || workflows.some((run) => run.result?.isError))) || (deps.failOnAttention === true && (relevantAttention.length > 0 || workflowAttention.length > 0)),
 			completions,
-		);
+		), workflows);
 	}
 
-	const finishedCount = finishedAsyncCount + providerFinishedCount;
+	const finishedCount = finishedAsyncCount + providerFinishedCount + workflows.filter((run) => run.result).length;
 	const subject = initialProviderIds.size === 0 ? "run(s)" : "item(s)";
 	const remainder = stillRunning > 0
 		? ` ${stillRunning} ${subject} still in flight — call bg_wait again to catch the next one.`
@@ -720,9 +751,9 @@ export async function waitForSubagents(
 	const progress = relevantAttention.length > 0 && finishedCount === 0
 		? `${relevantAttention.length} of ${initialCount} ${subject} need attention`
 		: `${finishedCount} of ${initialCount} ${subject} finished`;
-	return result(
+	return appendWorkflowResults(result(
 		`Waited ${elapsed}; ${progress}.${outcome}${recoveryNote}${resumeGuidance}${attentionNote}${remainder} Relevant completion/control events have been observed; inspect status if a notification is not visible yet.`,
-		(deps.failOnFailedRuns === true && failedAsyncCount > 0) || (deps.failOnAttention === true && relevantAttention.length > 0),
+		(deps.failOnFailedRuns === true && (failedAsyncCount > 0 || workflows.some((run) => run.result?.isError))) || (deps.failOnAttention === true && (relevantAttention.length > 0 || workflowAttention.length > 0)),
 		completions,
-	);
+	), workflows);
 }
