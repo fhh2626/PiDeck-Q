@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
 /**
@@ -34,6 +34,7 @@ export function createFakeWslExecFile(hostRoot) {
 			const ok = flag === "-e" ? existsSync(p)
 				: flag === "-f" ? existsSync(p) && statSync(p).isFile()
 				: flag === "-d" ? existsSync(p) && statSync(p).isDirectory()
+				: flag === "-L" ? (() => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } })()
 				: false;
 			if (!ok) throw Object.assign(new Error("test failed"), { code: 1 });
 			return "";
@@ -65,6 +66,13 @@ export function createFakeWslExecFile(hostRoot) {
 			return "";
 		}
 		if (cmd === "cat") return readFileSync(host(rest[0]), "utf8");
+		if (cmd === "ls" && rest[0] === "-1A") {
+			const dir = host(rest[1]);
+			if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+				throw Object.assign(new Error("ls: No such file or directory"), { code: 1 });
+			}
+			return readdirSync(dir).join("\n");
+		}
 		if (cmd === "find") {
 			// 只支持 `find <dir> -name "*.jsonl" -type f [-not -path <glob> ...]`
 			const dir = rest[0];

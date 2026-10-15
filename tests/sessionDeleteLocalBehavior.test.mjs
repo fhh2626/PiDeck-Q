@@ -94,6 +94,74 @@ test("deleting a parent session also trashes the sibling child directory", async
 	}
 });
 
+test("deleting a session also trashes its edit backups and only its subagent artifacts", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-delete-residue-"));
+	const trashCalls = [];
+	try {
+		const sessionsRoot = join(home, ".pi", "agent", "sessions");
+		const parentPath = join(sessionsRoot, "parent.jsonl");
+		writeSessionFile(parentPath);
+		const ownRun = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const otherRun = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		mkdirSync(join(sessionsRoot, "parent", ownRun), { recursive: true });
+		writeFileSync(join(sessionsRoot, "parent", ownRun, "session.jsonl"), "{}\n", "utf8");
+		// forks 不是 runId，不能拿去匹配共用产物目录。
+		mkdirSync(join(sessionsRoot, "parent", "forks"), { recursive: true });
+		const artifacts = join(sessionsRoot, "subagent-artifacts");
+		mkdirSync(join(artifacts, "outputs", ownRun), { recursive: true });
+		mkdirSync(join(artifacts, "outputs", otherRun), { recursive: true });
+		const ownTranscript = join(artifacts, `${ownRun}_reviewer_0_transcript.jsonl`);
+		const otherTranscript = join(artifacts, `${otherRun}_reviewer_0_transcript.jsonl`);
+		writeFileSync(ownTranscript, "{}\n", "utf8");
+		writeFileSync(otherTranscript, "{}\n", "utf8");
+		writeFileSync(join(artifacts, "outputs", ownRun, "output.md"), "own\n", "utf8");
+		writeFileSync(join(artifacts, "outputs", otherRun, "output.md"), "other\n", "utf8");
+		writeFileSync(join(artifacts, ".last-cleanup"), "1", "utf8");
+		const ownBackup = join(sessionsRoot, "parent.jsonl.0000000000001-11111111-1111-4111-8111-111111111111.edit-backup");
+		const otherBackup = join(sessionsRoot, "other.jsonl.0000000000002-22222222-2222-4222-8222-222222222222.edit-backup");
+		const looseNote = join(sessionsRoot, "parent.jsonl.notes.edit-backup");
+		writeFileSync(ownBackup, "backup\n", "utf8");
+		writeFileSync(otherBackup, "other\n", "utf8");
+		writeFileSync(looseNote, "note\n", "utf8");
+
+		const scanner = createScanner(home, trashCalls);
+		await scanner.delete(parentPath);
+
+		const trashed = new Map(trashCalls.map((call) => [call.target, call.source]));
+		assert.equal(trashed.get(parentPath), "sessions:delete");
+		assert.equal(trashed.get(join(sessionsRoot, "parent")), "sessions:delete-sibling");
+		assert.equal(trashed.get(ownBackup), "sessions:delete-backup");
+		assert.equal(trashed.get(ownTranscript), "sessions:delete-artifact");
+		assert.equal(trashed.get(join(artifacts, "outputs", ownRun)), "sessions:delete-artifact");
+		assert.equal(trashed.has(otherBackup), false, "另一个会话的编辑备份必须留下");
+		assert.equal(trashed.has(looseNote), false, "不符合备份命名的文件不能跟着删");
+		assert.equal(trashed.has(otherTranscript), false, "其他会话的子代理产物必须留下");
+		assert.equal(trashed.has(join(artifacts, "outputs", otherRun)), false);
+		assert.equal(trashed.has(join(artifacts, ".last-cleanup")), false);
+		assert.equal(trashed.has(artifacts), false, "不能把共用的 subagent-artifacts 目录整个删掉");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("local deletion refuses to hard-delete backups when no trash service is configured", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pideck-delete-residue-notrash-"));
+	try {
+		const sessionPath = join(home, ".pi", "agent", "sessions", "keep-me.jsonl");
+		writeSessionFile(sessionPath);
+		const backupPath = `${sessionPath}.0000000000001-11111111-1111-4111-8111-111111111111.edit-backup`;
+		writeFileSync(backupPath, "backup\n", "utf8");
+		const { SessionScanner } = loadSessionScanner(home);
+		const scanner = new SessionScanner(undefined, home);
+
+		await assert.rejects(() => scanner.delete(sessionPath), /Trash service unavailable/);
+		assert.equal(existsSync(sessionPath), true, "拒绝删除后会话文件必须原地保留");
+		assert.equal(existsSync(backupPath), true, "拒绝删除后编辑备份也必须原地保留");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
 test("local deletion refuses to hard-delete when no trash service is configured", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-delete-notrash-"));
 	try {
