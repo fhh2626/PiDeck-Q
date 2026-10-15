@@ -602,6 +602,51 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	assert.match(r8.workflowScript, /\{async: false,  key: 's1', agent: 'worker'/);
 	assert.match(r8.workflowScript, /\{ key: 's2', resume: 'previous'/);
 
+	// runs.run / runs.all 的静态 resume 复用已保存 agent，不要求重复声明，也不注入 async。
+	const resumedRun = validateStandaloneWorkflowScript("return await runs.run('review-correction', { resume: 'repair', task: 'fix' });", fakeCatalog);
+	assert.equal(resumedRun.ok, true);
+	assert.equal(resumedRun.workflowScript, "return await runs.run('review-correction', { resume: 'repair', task: 'fix' });");
+	const resumedAll = validateStandaloneWorkflowScript("return await runs.all([{ key: 'again', resume: 'repair', task: 'fix' }]);", fakeCatalog);
+	assert.equal(resumedAll.ok, true);
+	assert.equal(resumedAll.workflowScript, "return await runs.all([{ key: 'again', resume: 'repair', task: 'fix' }]);");
+	const launchThenResume = validateStandaloneWorkflowScript("await runs.run('repair', { agent: 'worker', task: 'fix' }); return await runs.run('review-correction', { resume: 'repair', task: 'again' });", fakeCatalog);
+	assert.equal(launchThenResume.ok, true);
+	assert.match(launchThenResume.workflowScript, /runs\.run\('repair', \{async: false,  agent: 'worker'/);
+	assert.match(launchThenResume.workflowScript, /\{ resume: 'repair', task: 'again' \}/);
+
+	const missingAgent = validateStandaloneWorkflowScript("return await runs.run('a', { task: 'fix' });", fakeCatalog);
+	assert.equal(missingAgent.ok, false);
+	assert.match(missingAgent.reason, /runs\.run 是新启动，必须声明 agent/);
+	const dynamicResume = validateStandaloneWorkflowScript("return await runs.run('a', { resume: target, task: 'fix' });", fakeCatalog);
+	assert.equal(dynamicResume.ok, false);
+	assert.match(dynamicResume.reason, /runs\.run 的 resume 必须为静态字符串；否则必须同时声明 agent/);
+	const dynamicAllResume = validateStandaloneWorkflowScript("return await runs.all([{ key: 'a', resume: target, task: 'fix' }]);", fakeCatalog);
+	assert.equal(dynamicAllResume.ok, false);
+	assert.match(dynamicAllResume.reason, /runs\.all 子项的 resume 必须为静态字符串；否则必须同时声明 agent/);
+	const resumedExternal = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'codex-exec', resume: 'repair', async: false });", fakeCatalog);
+	assert.equal(resumedExternal.ok, false);
+	assert.match(resumedExternal.reason, /external runner/);
+	const resumedAsync = validateStandaloneWorkflowScript("return await runs.run('again', { resume: 'repair', task: 'fix', async: true });", fakeCatalog);
+	assert.equal(resumedAsync.ok, false);
+	assert.match(resumedAsync.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
+	const resumedAsyncFalse = validateStandaloneWorkflowScript("return await runs.run('again', { resume: 'repair', task: 'fix', async: false });", fakeCatalog);
+	assert.equal(resumedAsyncFalse.ok, true);
+	assert.equal(resumedAsyncFalse.workflowScript, "return await runs.run('again', { resume: 'repair', task: 'fix', async: false });");
+	const resumedDynamicAsync = validateStandaloneWorkflowScript("return await runs.run('again', { resume: 'repair', task: 'fix', async: flag });", fakeCatalog);
+	assert.equal(resumedDynamicAsync.ok, false);
+	assert.match(resumedDynamicAsync.reason, /async 属性必须为显式字面量 false/);
+	const resumedLaneAsync = validateStandaloneWorkflowScript(`
+		return await runs.lanes([{
+			key: 'l1',
+			stages: [
+				{ key: 's1', agent: 'worker', task: 't1', async: false },
+				{ key: 's2', resume: 'previous', task: 't2', async: true }
+			]
+		}]);
+	`, fakeCatalog);
+	assert.equal(resumedLaneAsync.ok, false);
+	assert.match(resumedLaneAsync.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
+
 	// 多个缺省 child 按源代码位置补全，不改变已有明确 async:false 的项。
 	const multiple = validateStandaloneWorkflowScript(`return await runs.all([
 		{ key: 'a', agent: 'worker' },

@@ -118,6 +118,35 @@ export function inspectStaticObject(obj: AstNode): { ok: boolean; reason?: strin
 	return { ok: true };
 }
 
+/** Resume keeps the stored execution mode, but an explicit async value must still be foreground. */
+function resumeAsyncError(cfg: AstNode): string | undefined {
+	const asyncVal = getProperty(cfg, 'async');
+	if (!asyncVal || (asyncVal.type === 'Literal' && asyncVal.value === false)) return undefined;
+	if (asyncVal.type === 'Literal' && asyncVal.value === true) {
+		return '不支持在 workflowScript 内部调用中使用 async:true。请移除 async:true 或改为 async:false';
+	}
+	return 'workflowScript 中的子代理 async 属性必须为显式字面量 false';
+}
+
+/**
+ * Resume reuses the stored agent, so a static resume may omit agent.
+ * A new launch must name its agent before any runner or foreground check.
+ */
+function classifyChildLaunch(
+	cfg: AstNode,
+	messages: { newLaunch: string; dynamicResume: string },
+): { launch: boolean } | { error: string } {
+	const hasAgent = Boolean(getProperty(cfg, 'agent'));
+	const resumeVal = getProperty(cfg, 'resume');
+	if (!hasAgent && resumeVal) {
+		if (resumeVal.type !== 'Literal' || typeof resumeVal.value !== 'string') return { error: messages.dynamicResume };
+		const asyncError = resumeAsyncError(cfg);
+		return asyncError ? { error: asyncError } : { launch: false };
+	}
+	if (!hasAgent) return { error: messages.newLaunch };
+	return { launch: true };
+}
+
 /** Retrieve property value from an object that has passed inspectStaticObject. */
 function getProperty(obj: AstNode, name: string): AstNode | undefined {
 	if (obj.type !== 'ObjectExpression' || !Array.isArray(obj.properties)) return undefined;
@@ -182,9 +211,20 @@ export function validateStandaloneWorkflowScript(
 
 	const childConfigs: AstNode[] = [];
 	let structureError: string | undefined;
+	let policyError: string | undefined;
+	const acceptChild = (cfg: AstNode, messages: { newLaunch: string; dynamicResume: string }): boolean => {
+		const decision = classifyChildLaunch(cfg, messages);
+		if ('error' in decision) {
+			if (!policyError) policyError = `[change-pi-prompt] standalone Pi 环境下，${decision.error}。`;
+			return false;
+		}
+		// Resume-only calls keep the stored agent and must not receive an async injection.
+		if (decision.launch) childConfigs.push(cfg);
+		return true;
+	};
 
 	walkAstWithParents(root, (node, parents) => {
-		if (structureError) return;
+		if (structureError || policyError) return;
 
 		// 0. 禁止通过 globalThis.runs 或 this.runs 间接引用
 		if (node.type === 'MemberExpression') {
@@ -258,8 +298,11 @@ export function validateStandaloneWorkflowScript(
 				const safety = inspectStaticObject(paramsArg);
 				if (!safety.ok) {
 					structureError = safety.reason;
-				} else {
-					childConfigs.push(paramsArg);
+				} else if (!acceptChild(paramsArg, {
+					newLaunch: 'runs.run 是新启动，必须声明 agent',
+					dynamicResume: 'runs.run 的 resume 必须为静态字符串；否则必须同时声明 agent',
+				})) {
+					return;
 				}
 			}
 		} else if (directRunsCall(node, 'all')) {
@@ -278,7 +321,10 @@ export function validateStandaloneWorkflowScript(
 						structureError = safety.reason;
 						break;
 					}
-					childConfigs.push(elem as AstNode);
+					if (!acceptChild(elem as AstNode, {
+						newLaunch: 'runs.all 子项是新启动，必须声明 agent',
+						dynamicResume: 'runs.all 子项的 resume 必须为静态字符串；否则必须同时声明 agent',
+					})) break;
 				}
 			}
 		} else if (directRunsCall(node, 'lanes')) {
@@ -312,24 +358,18 @@ export function validateStandaloneWorkflowScript(
 							structureError = stageSafety.reason;
 							break;
 						}
-						const hasResume = Boolean(getProperty(stage as AstNode, 'resume'));
-						const hasAgent = Boolean(getProperty(stage as AstNode, 'agent'));
-						if (hasResume && !hasAgent) {
-							const resumeVal = getProperty(stage as AstNode, 'resume')!;
-							if (resumeVal.type !== 'Literal' || typeof resumeVal.value !== 'string') {
-								structureError = 'runs.lanes stage 的 resume 属性必须为静态字符串字面量';
-								break;
-							}
-							continue;
-						}
-						childConfigs.push(stage as AstNode);
+						if (!acceptChild(stage as AstNode, {
+							newLaunch: 'runs.lanes stage 是新启动，必须声明 agent',
+							dynamicResume: 'runs.lanes stage 的 resume 必须为静态字符串；否则必须同时声明 agent',
+						})) break;
 					}
-					if (structureError) break;
+					if (structureError || policyError) break;
 				}
 			}
 		}
 	});
 
+	if (policyError) return { ok: false, reason: policyError };
 	if (structureError) {
 		return {
 			ok: false,
@@ -345,7 +385,7 @@ export function validateStandaloneWorkflowScript(
 		if (!agentVal) {
 			return {
 				ok: false,
-				reason: '[change-pi-prompt] standalone Pi 环境下子代理调用必须声明 agent。',
+				reason: '[change-pi-prompt] standalone Pi 环境下，子代理新启动必须声明 agent。',
 			};
 		}
 
