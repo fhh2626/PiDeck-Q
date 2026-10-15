@@ -1263,7 +1263,7 @@ function isExplicitReadOnlyRecoveryReview(params: Record<string, unknown>): bool
 		.replace(new RegExp(RECOVERY_REVIEW_READ_ONLY_PATTERN.source, "gi"), " ");
 	return params.acceptance === false
 		&& agent !== ""
-		&& /\b(?:advisor|oracle|review|reviewer)\b/i.test(agent)
+		&& /\b(?:readonly|advisor|review|reviewer)\b/i.test(agent)
 		&& RECOVERY_REVIEW_READ_ONLY_PATTERN.test(task)
 		&& !RECOVERY_REVIEW_DESTRUCTIVE_COMMAND_PATTERN.test(taskDestructiveCommandText)
 		&& !RECOVERY_REVIEW_MUTATION_VERB_PATTERN.test(taskMutationText)

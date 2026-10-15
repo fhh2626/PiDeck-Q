@@ -14,7 +14,7 @@ Live progress shows compact detail for single, chain, and parallel modes: a boun
 
 Press Pi's configured expand key (`Ctrl+O` by default) to expand the full streaming view with complete output per step. Running-card hints also advertise `Ctrl+Alt+F` for the Fleet inspector.
 
-Sequential chains show a flow line like `done scout → running worker`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
+Sequential chains show a flow line like `done readonly → running writable`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
 ## Background runs
 
@@ -30,9 +30,9 @@ Or ask naturally: "Show me the current async runs."
 The under-editor async widget gives a short view while work runs. Its expand key follows your Pi keybinding:
 
 ```text
-async subagent worker · background
-● worker
-  ● Step 1/1: worker · running
+async subagent readonly · background
+● readonly
+  ● Step 1/1: readonly · running
     task: Review authentication boundaries
     ⎿  read: src/auth.ts | 2.0s
     Press configured-expand-key for live detail · Ctrl+Alt+F Fleet
@@ -74,8 +74,8 @@ After you expand it:
 ↑↓/jk select · enter inspect · esc back
 
 > main
-    scout · running         1m 12s · ↓ 2.0k window · 2.8k spent
-    reviewer · running        38s · ↓ 1.1k window · 1.4k spent
+    readonly · running      1m 12s · ↓ 2.0k window · 2.8k spent
+    writable · running        38s · ↓ 1.1k window · 1.4k spent
 ```
 
 When the focused editor is empty, press `↓` or `←` to expand the summary into `main` plus active children with agent name, state, elapsed time, and token usage. When providers report usage, `window` is the latest assistant turn's input plus cache-read tokens, while `spent` keeps the cumulative input-plus-output total. Old run artifacts without window data keep the existing token-total label. The compact line counts active current-session work and Herdr project panes. Then use `↑`/`↓` or `j`/`k` to select a child and `Enter` to open the Fleet lobby; press `Enter` or `H` there to open its child-specific Herdr inspector. Printable navigation keys are never intercepted before activation.

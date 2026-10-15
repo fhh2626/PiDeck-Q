@@ -34,6 +34,7 @@ import {
 } from "./child-tool-plan.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { createCapturedChildHooks, withChildSessionErrorReporting } from "./child-hooks.ts";
+import { createForegroundMcpHook } from "./foreground-mcp.ts";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
 import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
 
@@ -303,6 +304,10 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		fast: input.fast === true,
 	};
 	const capturedHooks = createCapturedChildHooks(config, input.host === "runner");
+	if (input.host === "parent" && toolPlan.effectiveMcpSelections.length > 0) {
+		if (!toolPlan.mcpConfig) throw new Error("Foreground MCP tools require a session-local server configuration snapshot.");
+		capturedHooks.hooks.push(createForegroundMcpHook(toolPlan.mcpConfig, toolPlan.effectiveMcpSelections));
+	}
 
 	const securityConfigPath = input.securityConfigPath ?? process.env.PIDECK_SECURITY_CONFIG;
 	const securitySessionId = input.securitySessionId ?? input.parentSessionId ?? process.env.PIDECK_SESSION_ID;

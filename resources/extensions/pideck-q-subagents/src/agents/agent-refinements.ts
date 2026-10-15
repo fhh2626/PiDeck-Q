@@ -14,7 +14,7 @@ const MAX_EVIDENCE_ITEMS = 8;
 const MAX_AGE_DAYS = 14;
 const MAX_ITEM_BYTES = 2_048;
 const MAX_PACKET_BYTES = 16_384;
-const PROPOSAL_AGENT = "reviewer";
+const PROPOSAL_AGENT = "readonly";
 
 type RefinementAction = "refine" | "refine.show" | "refine.rollback";
 type RefinementEvidenceSource = "live-state" | "artifact-metadata" | "artifact-output";

@@ -5,7 +5,15 @@
 ### Added
 - Add `tools: "parent"` agent override, which copies the launching session's currently active tools (builtins by name, extension tools with their provider extensions) into the child instead of Pi's default builtin set. Combine it with `excludeTools` as a blacklist.
 
+- Add the `readonly` and `writable` builtin agents. Both use `tools: parent` (the frontmatter form of the `tools: "parent"` override), inherit the parent's model and thinking, and default to forked context. `readonly` excludes `edit` and `write` and carries a strict read-only prompt.
+- Run a single new launch as `writable` when no `agent` is given; an unknown agent name now fails with the list of available agents.
+
+### Fixed
+- Apply the default agent before public input validation and workflow output admission, so omitted-agent calls behave like explicit `writable` calls and parallel inherited output paths remain isolated.
+- Register foreground direct MCP tools through the SDK's session-local MCP provider, preserving strict selections, required-tool diagnostics, and per-child connection cleanup without process-global MCP environment changes.
+
 ### Removed
+- Replace the scout, researcher, worker, reviewer, oracle, and delegate builtin agents (and their aliases) with `readonly` and `writable`.
 - Remove the bundled Codex, Claude Code, and Cursor external CLI agents and their launch adapters.
 
 ## [0.66.0] - 2026-09-06

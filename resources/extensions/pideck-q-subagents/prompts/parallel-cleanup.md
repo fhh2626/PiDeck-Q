@@ -4,7 +4,7 @@ description: Parallel cleanup review
 
 Run a fresh-context parallel cleanup review of the current work.
 
-Use the `subagent` tool. First inspect available agents/skills if needed, then launch two reviewer subagents in parallel with `context: "fresh"`. Do not use forked context unless I explicitly ask for it. Reviewers must inspect the repository, relevant instructions, and current diff directly from files and commands. They must not rely on the main conversation history.
+Use the `subagent` tool. First inspect available agents/skills if needed, then launch two `readonly` reviewer subagents in parallel with `context: "fresh"`. Do not use forked context unless I explicitly ask for it. Reviewers must inspect the repository, relevant instructions, and current diff directly from files and commands. They must not rely on the main conversation history.
 
 Do not write reviewer output files into the repository unless I explicitly ask for artifacts. Prefer `output: false` for each reviewer task.
 

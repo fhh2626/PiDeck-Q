@@ -20,6 +20,7 @@ import { getLivePromptAudit, rewritePromptWithGuidance, updateLiveEffectivePromp
 import { persistForegroundRunHistory, MAX_REMEMBERED_FOREGROUND_RUNS } from "./foreground-history.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
+import { withDefaultAgent } from "../../agents/default-agent.ts";
 import { applyParentToolInheritance, readParentToolContext } from "../../agents/parent-tool-inheritance.ts";
 import { handleRefinementAction } from "../../agents/agent-refinements.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
@@ -1323,7 +1324,7 @@ function appendStepToAsyncChain(input: {
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discoveredForAppend = input.deps.discoverAgents(input.requestCwd, scope, input.parentModel?.provider);
 	// Appended chain steps carry their own tools into the async runner, so resolve `tools: "parent"` now.
-	const agents = applyParentToolInheritance(discoveredForAppend.agents, () => readParentToolContext(input.deps.pi));
+	const agents = applyParentToolInheritance(discoveredForAppend.agents, () => readParentToolContext(input.deps.pi, input.requestCwd));
 	const contextPolicy = resolveExplicitContextPolicy(input.params);
 	const chainSkillInput = normalizeSkillInput(input.params.skill);
 	const chainSkills = chainSkillInput === false ? [] : (chainSkillInput ?? []);
@@ -2312,7 +2313,7 @@ async function resumeRun(input: ResumeRunInput): Promise<AgentToolResult<Details
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discovered = input.deps.discoverAgents(effectiveCwd, scope, input.parentModel?.provider);
 	// A resumed child is relaunched from the discovered definition, so `tools: "parent"` must resolve here too.
-	const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(input.deps.pi));
+	const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(input.deps.pi, effectiveCwd));
 	const unknownAgentDiagnosticContext = diagnosticContextFromDiscovery(discovered, effectiveCwd, scope);
 	const modelScope = discovered.modelScope;
 	const sessionName = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
@@ -3975,6 +3976,8 @@ function resolveWorkflowChildOutputPath(input: {
 	key: string;
 	params: Record<string, unknown>;
 }): { path?: string; inherited: boolean } {
+	// Admission must see the same agent/default output that the eventual child launch uses.
+	input = { ...input, params: withDefaultAgent(input.params) };
 	const rawOutput = input.params.output;
 	const hasExplicitOutput = typeof rawOutput === "string" || typeof rawOutput === "boolean";
 	if (typeof input.params.resume === "string" && (!hasExplicitOutput || rawOutput === true || rawOutput === "true")) {
@@ -4078,6 +4081,7 @@ function prepareWorkflowChildLaunchParams(input: {
 	outputClaimPath?: string;
 	options?: { missionDetached?: boolean; suppressRoutineResultIntercom?: boolean; awaitDetachedChild?: boolean; runFanoutBudget?: RunFanoutBudgetDescriptor; parentDeadlineAt?: number; capabilityCeiling?: ResolvedSubagentCapabilityCeiling };
 }): SubagentParamsLike {
+	input = { ...input, childParams: withDefaultAgent(input.childParams) };
 	let childParams = input.childParams;
 	const usesDefaultOutput = input.childParams.output === undefined && input.childParams.resume === undefined;
 	if (usesDefaultOutput && input.outputOverride !== undefined) {
@@ -5401,7 +5405,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		deps.state.lastForegroundControlId ??= null;
 		const normalizedGate = normalizeGateParams(params);
 		if (!normalizedGate.ok) return buildRequestedModeError(params, normalizedGate.error);
-		let requestParams = normalizedGate.params;
+		// A launch that names no agent runs as the default writable agent (identity is preserved when unchanged).
+		let requestParams = withDefaultAgent(normalizedGate.params);
 		const capacityOverrideError = validateWorkflowCapacityOverrides(requestParams);
 		if (capacityOverrideError) return buildRequestedModeError(requestParams, capacityOverrideError);
 		let workflowPreflight: import("../../shared/types.ts").WorkflowPreflight | undefined;
@@ -6653,7 +6658,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					state: deps.state,
 					signal,
 					launchProposalChild: (task, outputSchema, proposalSignal) => execute(randomUUID(), {
-						agent: "reviewer",
+						agent: "readonly",
 						task,
 						context: "fresh",
 						async: false,
@@ -7164,7 +7169,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const discovered = deps.discoverAgents(effectiveCwd, scope, requestParentModel?.provider);
 		// `tools: "parent"` agents copy this session's active tools; resolved here because only the
 		// launching session knows them, and later async/workflow steps carry the concrete list.
-		const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(deps.pi));
+		const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(deps.pi, effectiveCwd));
 		const unknownAgentDiagnosticContext = diagnosticContextFromDiscovery(discovered, effectiveCwd, scope);
 		const canonicalParams = canonicalizeExecutionParams(effectiveParams, discoveredAgents, discovered.agentDiagnostics, unknownAgentDiagnosticContext);
 		if (canonicalParams.error) return buildRequestedModeError(effectiveParams, canonicalParams.error);

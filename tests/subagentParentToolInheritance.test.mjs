@@ -212,7 +212,7 @@ test("readParentToolContext returns undefined instead of throwing when the sessi
 	assert.equal(context, undefined);
 });
 
-test("a tools:'parent' settings override marks the agent and later explicit overrides clear it", (t) => {
+test("a tools:'parent' builtin accepts a blacklist override and an explicit list clears the marker", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "pideck-parent-override-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	t.after(() => {
@@ -227,26 +227,26 @@ test("a tools:'parent' settings override marks the agent and later explicit over
 	mkdirSync(projectDir, { recursive: true });
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-		subagents: { agentOverrides: { delegate: { tools: "parent", excludeTools: ["bash"] } } },
+		subagents: { agentOverrides: { writable: { tools: "parent", excludeTools: ["bash"] } } },
 	}), "utf8");
 	agentsModule.clearAgentDiscoveryCache?.();
 
 	const { agents } = agentsModule.discoverAgents(projectDir, "user");
-	const delegate = agents.find((candidate) => candidate.name === "delegate");
-	assert.ok(delegate, "builtin delegate must be discoverable");
-	assert.equal(delegate.inheritParentTools, true);
+	const writable = agents.find((candidate) => candidate.name === "writable");
+	assert.ok(writable, "builtin writable must be discoverable");
+	assert.equal(writable.inheritParentTools, true);
 	// The blacklist travels with the same override and is what the launch resolver consumes.
-	assert.deepEqual(delegate.excludeTools, ["bash"]);
+	assert.deepEqual(writable.excludeTools, ["bash"]);
 	// Unresolved marker must fail closed (no tools), never fall back to the default builtin set.
-	assert.deepEqual(delegate.tools, []);
-	assert.equal(delegate.mcpDirectTools, undefined);
+	assert.deepEqual(writable.tools, []);
+	assert.equal(writable.mcpDirectTools, undefined);
 
 	// A narrower explicit list in the same file replaces the marker instead of stacking with it.
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-		subagents: { agentOverrides: { delegate: { tools: ["read"] } } },
+		subagents: { agentOverrides: { writable: { tools: ["read"] } } },
 	}), "utf8");
 	agentsModule.clearAgentDiscoveryCache?.();
-	const explicit = agentsModule.discoverAgents(projectDir, "user").agents.find((candidate) => candidate.name === "delegate");
+	const explicit = agentsModule.discoverAgents(projectDir, "user").agents.find((candidate) => candidate.name === "writable");
 	assert.deepEqual(explicit.tools, ["read"]);
 	assert.equal(explicit.inheritParentTools, undefined);
 });

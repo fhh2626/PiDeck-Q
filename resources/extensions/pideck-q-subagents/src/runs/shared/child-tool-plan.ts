@@ -11,6 +11,7 @@ import {
 	formatUnresolvedMcpDirectToolSelectors,
 	resolveMcpDirectToolResolution,
 	type McpRuntimeSnapshotHost,
+	type McpConfig,
 	type ResolvedMcpDirectToolSelection,
 } from "./mcp-direct-tool-allowlist.ts";
 import {
@@ -161,6 +162,8 @@ export interface PiLaunchToolPlan {
 	toolExtensionPaths: string[];
 	resolvedMcpSelections: ResolvedMcpDirectToolSelection[];
 	effectiveMcpSelections: ResolvedMcpDirectToolSelection[];
+	/** Private launch-only configuration; never part of the persisted capability audit. */
+	mcpConfig?: McpConfig;
 	effectiveMcpTools: string[];
 	explicitToolAllowlist: boolean;
 	internalTools: string[];
@@ -484,6 +487,7 @@ export function resolvePiLaunchToolPlan(
 		toolExtensionPaths,
 		resolvedMcpSelections,
 		effectiveMcpSelections,
+		...(mcpResolution.mcpConfig ? { mcpConfig: mcpResolution.mcpConfig } : {}),
 		effectiveMcpTools,
 		explicitToolAllowlist,
 		internalTools,

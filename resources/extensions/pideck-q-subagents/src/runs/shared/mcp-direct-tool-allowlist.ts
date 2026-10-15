@@ -134,6 +134,7 @@ export function resolveMcpDirectToolResolution(
 	return {
 		selections: grant.selections,
 		unresolvedSelectors: grant.unresolvedSelectors,
+		mcpConfig: resolvedConfig,
 		...runtime,
 	};
 }
@@ -144,6 +145,40 @@ export function resolveMcpDirectToolSelections(
 	runtimeSnapshotHost?: McpRuntimeSnapshotHost,
 ): ResolvedMcpDirectToolSelection[] {
 	return resolveMcpDirectToolResolution(mcpDirectTools, cwd, runtimeSnapshotHost).selections;
+}
+
+/**
+ * Maps the parent's directly registered MCP tools back to `mcp:` selectors so `tools: parent`
+ * can hand them to a child through the supported direct-tool path.
+ *
+ * Each configured server's cached tools are expanded with the same naming rules the adapter uses
+ * (planMcpDirectToolGrant), and only the ones the parent really has active are kept. Servers with
+ * a stale or missing metadata cache, runtime-only servers, and any config error yield nothing:
+ * a selector that cannot resolve would fail the whole child launch, so omission is the safe side.
+ */
+export function resolveMcpSelectorsForActiveTools(activeToolNames: readonly string[], cwd = process.cwd()): ResolvedMcpDirectToolSelection[] {
+	try {
+		const config = loadMcpConfig(cwd);
+		const serverNames = Object.keys(config.mcpServers);
+		if (serverNames.length === 0) return [];
+		const cache = loadMetadataCache();
+		if (!cache) return [];
+		const validMetadata: Record<string, ServerCacheEntry> = {};
+		for (const [serverName, definition] of Object.entries(config.mcpServers)) {
+			const serverCache = cache.servers[serverName];
+			if (isServerCacheValid(serverCache, definition)) validMetadata[serverName] = serverCache;
+		}
+		const grant = planMcpDirectToolGrant({
+			selectors: serverNames,
+			servers: config.mcpServers,
+			metadata: validMetadata,
+			toolPrefix: config.settings?.toolPrefix,
+		});
+		const active = new Set(activeToolNames);
+		return grant.selections.filter((selection) => active.has(selection.name));
+	} catch {
+		return [];
+	}
 }
 
 function loadMetadataCache(): MetadataCache | null {
@@ -406,6 +441,18 @@ export function computeMcpServerHash(definition: ServerEntry): string {
 		protocolVersion: definition.protocolVersion,
 	};
 	return createHash("sha256").update(stableStringify(identity)).digest("hex");
+}
+
+/** Materialize adapter config interpolation once for a session-local foreground provider. */
+export function resolveMcpServerLaunchDefinition(definition: McpServerDefinition): McpServerDefinition {
+	return {
+		...definition,
+		...(definition.cwd !== undefined ? { cwd: resolveConfigPath(definition.cwd) } : {}),
+		...(definition.url !== undefined ? { url: resolveServerUrl(definition) } : {}),
+		...(definition.env ? { env: interpolateEnvRecord(definition.env) } : {}),
+		...(definition.headers ? { headers: interpolateEnvRecord(definition.headers) } : {}),
+		...(definition.bearerToken !== undefined || definition.bearerTokenEnv ? { bearerToken: resolveBearerToken(definition) } : {}),
+	};
 }
 
 function isImportKind(value: unknown): value is ImportKind {

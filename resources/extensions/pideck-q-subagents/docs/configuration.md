@@ -112,7 +112,7 @@ Controls only the main chat `subagent` call/result renderer. It does not change 
 With `"summary"`, a tool result looks like this:
 
 ```text
-✓ reviewer · completed
+✓ readonly · completed
 ```
 
 ## `foregroundDetachShortcut`

@@ -143,7 +143,7 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		writeSubagentConfig({ asyncByDefault: true });
 		const unsafeCall = {
 			toolName: "subagent",
-			input: { agent: "worker", task: "do something", async: true },
+			input: { agent: "writable", task: "do something", async: true },
 		};
 		const blocked = await toolCallHandler(unsafeCall);
 		assert.ok(blocked && blocked.block === true, "Must block when subagent config is unsafe");
@@ -153,7 +153,7 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		writeSubagentConfig({ asyncByDefault: false, forceTopLevelAsync: true });
 		const blockedForced = await toolCallHandler({
 			toolName: "subagent",
-			input: { agent: "worker", task: "do something" },
+			input: { agent: "writable", task: "do something" },
 		});
 		assert.ok(blockedForced && blockedForced.block === true, "Must block when forceTopLevelAsync is true");
 		assert.match(blockedForced.reason, /forceTopLevelAsync!=true/);
@@ -162,19 +162,19 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		writeSubagentConfig({ asyncByDefault: false });
 
 		// C1: 模型传入 async: true -> 强制转为 async: false
-		const inputWithAsyncTrue = { agent: "worker", task: "do something", async: true };
+		const inputWithAsyncTrue = { agent: "writable", task: "do something", async: true };
 		const res1 = await toolCallHandler({ toolName: "subagent", input: inputWithAsyncTrue });
 		assert.equal(res1, undefined, "Safe call must not be blocked");
 		assert.equal(inputWithAsyncTrue.async, false, "Input async must be mutated to false");
 
 		// C2: 模型未传 async -> 强制设为 async: false
-		const inputWithoutAsync = { agent: "worker", task: "do something" };
+		const inputWithoutAsync = { agent: "writable", task: "do something" };
 		const res2 = await toolCallHandler({ toolName: "subagent", input: inputWithoutAsync });
 		assert.equal(res2, undefined);
 		assert.equal(inputWithoutAsync.async, false, "Omitted async must be set to false");
 
 		// C3: 模型传入 workflowScript (显式 async: false) -> 强制设为 async: false
-		const workflowInput = { workflowScript: "return await runs.run('a', { agent: 'worker', task: 'hi', async: false });" };
+		const workflowInput = { workflowScript: "return await runs.run('a', { agent: 'writable', task: 'hi', async: false });" };
 		const res3 = await toolCallHandler({ toolName: "subagent", input: workflowInput });
 		assert.equal(res3, undefined);
 		assert.equal(workflowInput.async, false, "WorkflowScript call must have async: false");
@@ -186,7 +186,7 @@ test("runtime tool_call handler locks async:false and fail-closes unsafe configs
 		assert.equal(listActionInput.async, undefined, "Management actions must not have async injected");
 
 		// ── 场景 E: 非确认来源的第三方 subagent 工具不被拦截或修改 ──
-		const thirdPartyInput = { agent: "worker", task: "do something", async: true };
+		const thirdPartyInput = { agent: "writable", task: "do something", async: true };
 		const resThirdParty = await toolCallHandler({ toolName: "custom_subagent", input: thirdPartyInput });
 		assert.equal(resThirdParty, undefined);
 		assert.equal(thirdPartyInput.async, true, "Unconfirmed subagent tool must not be modified");
@@ -318,7 +318,7 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		assert.equal(existsSync(configPath), false);
 
 		// 2. 首次 native tool_call -> 不 block，自动创建安全配置，且 input.async 被设为 false, foregroundOnly 为 true
-		const nativeInput = { agent: "worker", task: "initial call" };
+		const nativeInput = { agent: "writable", task: "initial call" };
 		const resFirst = await toolCallHandler({ toolName: "subagent", input: nativeInput });
 		assert.equal(resFirst, undefined, "首次调用不应被阻断");
 		assert.equal(nativeInput.async, false, "native subagent input.async 必须强制为 false");
@@ -335,7 +335,7 @@ test("runtime handles missing config on first tool_call, non-standalone, and ext
 		assert.equal(existsSync(configPath), false);
 		isStandalone = false;
 
-		const nonStandaloneInput = { agent: "worker", task: "call in node pi", async: true };
+		const nonStandaloneInput = { agent: "writable", task: "call in node pi", async: true };
 		const resNonStandalone = await toolCallHandler({ toolName: "subagent", input: nonStandaloneInput });
 		assert.equal(resNonStandalone, undefined);
 		assert.equal(nonStandaloneInput.async, true, "非 standalone Pi 环境下不得篡改 async 为 false");
@@ -469,7 +469,7 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 
 		// 1. Direct native call：
 		// 自动创建 config.json，且输入参数最终必须被硬锁为 async=false 且 foregroundOnly=true
-		const directCall = { agent: "worker", task: "fix something" };
+		const directCall = { agent: "writable", task: "fix something" };
 		const resDirect = await toolCallHandler({ toolName: "subagent", input: directCall });
 		assert.equal(resDirect, undefined);
 		assert.equal(directCall.async, false);
@@ -479,18 +479,18 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		// 2. workflowScript 内 native child 省略 async：
 		// 即使当前进程内存中上游默认仍为 asyncByDefault=true，也要在执行前补全 foreground。
 		const omitWorkflow = {
-			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile' });`,
+			workflowScript: `return await runs.run('step1', { agent: 'writable', task: 'compile' });`,
 		};
 		const resOmit = await toolCallHandler({ toolName: "subagent", input: omitWorkflow });
 		assert.equal(resOmit, undefined);
-		assert.match(omitWorkflow.workflowScript, /\{async: false,  agent: 'worker', task: 'compile'/);
+		assert.match(omitWorkflow.workflowScript, /\{async: false,  agent: 'writable', task: 'compile'/);
 		assert.equal(omitWorkflow.async, false);
 		assert.equal(omitWorkflow.foregroundOnly, true);
 
 		// 3. workflowScript 内 native child 显式声明 async: true：
 		// 必须 block
 		const trueWorkflow = {
-			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile', async: true });`,
+			workflowScript: `return await runs.run('step1', { agent: 'writable', task: 'compile', async: true });`,
 		};
 		const resTrue = await toolCallHandler({ toolName: "subagent", input: trueWorkflow });
 		assert.ok(resTrue && resTrue.block === true);
@@ -499,7 +499,7 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		// 4. workflowScript 内 native child 显式声明 async: false：
 		// 必须放行，且顶层 workflowScript 也被设为 async: false + foregroundOnly: true
 		const safeWorkflow = {
-			workflowScript: `return await runs.run('step1', { agent: 'worker', task: 'compile', async: false });`,
+			workflowScript: `return await runs.run('step1', { agent: 'writable', task: 'compile', async: false });`,
 		};
 		const resSafe = await toolCallHandler({ toolName: "subagent", input: safeWorkflow });
 		assert.equal(resSafe, undefined);
@@ -509,13 +509,13 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		// 5. runs.all 包含省略 async 的 native child：只给缺失的子项补全。
 		const omitAllWorkflow = {
 			workflowScript: `return await runs.all([
-				{ key: 'a', agent: 'worker', task: 't1', async: false },
-				{ key: 'b', agent: 'worker', task: 't2' }
+				{ key: 'a', agent: 'writable', task: 't1', async: false },
+				{ key: 'b', agent: 'writable', task: 't2' }
 			]);`,
 		};
 		const resAllOmit = await toolCallHandler({ toolName: "subagent", input: omitAllWorkflow });
 		assert.equal(resAllOmit, undefined);
-		assert.match(omitAllWorkflow.workflowScript, /\{async: false,  key: 'b', agent: 'worker', task: 't2'/);
+		assert.match(omitAllWorkflow.workflowScript, /\{async: false,  key: 'b', agent: 'writable', task: 't2'/);
 		assert.equal(omitAllWorkflow.async, false);
 		assert.equal(omitAllWorkflow.foregroundOnly, true);
 
@@ -523,8 +523,8 @@ test("standalone Pi workflowScript and direct subagent enforce foreground-only a
 		// 必须放行
 		const safeAllWorkflow = {
 			workflowScript: `return await runs.all([
-				{ key: 'a', agent: 'worker', task: 't1', async: false },
-				{ key: 'b', agent: 'worker', task: 't2', async: false }
+				{ key: 'a', agent: 'writable', task: 't1', async: false },
+				{ key: 'b', agent: 'writable', task: 't2', async: false }
 			]);`,
 		};
 		const resAllSafe = await toolCallHandler({ toolName: "subagent", input: safeAllWorkflow });
@@ -539,7 +539,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const fakeCatalog = {
 		packageRoot: "/dummy",
 		agents: new Map([
-			["worker", { name: "worker", aliases: [], runnerType: "native", tools: ["read", "write"], filePath: "/dummy/worker.md" }],
+			["writable", { name: "writable", aliases: [], runnerType: "native", tools: ["read", "write"], filePath: "/dummy/writable.md" }],
 			["codex-exec", { name: "codex-exec", aliases: [], runnerType: "external-cli", tools: [], filePath: "/dummy/codex.md" }],
 		]),
 	};
@@ -554,16 +554,16 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	assert.match(r2.reason, /语法校验失败/);
 
 	// 3. runs.run 显式 async: false -> 允许
-	const r3 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: false });", fakeCatalog);
+	const r3 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'writable', async: false });", fakeCatalog);
 	assert.equal(r3.ok, true);
 
 	// 4. runs.run 省略 async -> 安全补全后执行，不能依赖上游进程内的旧默认值
-	const r4 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker' });", fakeCatalog);
+	const r4 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'writable' });", fakeCatalog);
 	assert.equal(r4.ok, true);
-	assert.equal(r4.workflowScript, "return await runs.run('a', {async: false,  agent: 'worker' });");
+	assert.equal(r4.workflowScript, "return await runs.run('a', {async: false,  agent: 'writable' });");
 
 	// 5. runs.run 显式 async: true -> 阻断
-	const r5 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'worker', async: true });", fakeCatalog);
+	const r5 = validateStandaloneWorkflowScript("return await runs.run('a', { agent: 'writable', async: true });", fakeCatalog);
 	assert.equal(r5.ok, false);
 	assert.match(r5.reason, /不支持在 workflowScript 内部调用中使用 async:true/);
 
@@ -571,7 +571,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const r6 = validateStandaloneWorkflowScript(`
 		// Comment mentioning async: true
 		const note = "Don't use async: true";
-		return await runs.run('a', { agent: 'worker', async: false });
+		return await runs.run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r6.ok, true);
 
@@ -580,7 +580,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 		return await runs.lanes([{
 			key: 'l1',
 			stages: [
-				{ key: 's1', agent: 'worker', task: 't1', async: false },
+				{ key: 's1', agent: 'writable', task: 't1', async: false },
 				{ key: 's2', resume: 'previous', task: 't2' }
 			]
 		}]);
@@ -592,13 +592,13 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 		return await runs.lanes([{
 			key: 'l1',
 			stages: [
-				{ key: 's1', agent: 'worker', task: 't1' },
+				{ key: 's1', agent: 'writable', task: 't1' },
 				{ key: 's2', resume: 'previous', task: 't2' }
 			]
 		}]);
 	`, fakeCatalog);
 	assert.equal(r8.ok, true);
-	assert.match(r8.workflowScript, /\{async: false,  key: 's1', agent: 'worker'/);
+	assert.match(r8.workflowScript, /\{async: false,  key: 's1', agent: 'writable'/);
 	assert.match(r8.workflowScript, /\{ key: 's2', resume: 'previous'/);
 
 	// runs.run / runs.all 的静态 resume 复用已保存 agent，不要求重复声明，也不注入 async。
@@ -608,14 +608,18 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const resumedAll = validateStandaloneWorkflowScript("return await runs.all([{ key: 'again', resume: 'repair', task: 'fix' }]);", fakeCatalog);
 	assert.equal(resumedAll.ok, true);
 	assert.equal(resumedAll.workflowScript, "return await runs.all([{ key: 'again', resume: 'repair', task: 'fix' }]);");
-	const launchThenResume = validateStandaloneWorkflowScript("await runs.run('repair', { agent: 'worker', task: 'fix' }); return await runs.run('review-correction', { resume: 'repair', task: 'again' });", fakeCatalog);
+	const launchThenResume = validateStandaloneWorkflowScript("await runs.run('repair', { agent: 'writable', task: 'fix' }); return await runs.run('review-correction', { resume: 'repair', task: 'again' });", fakeCatalog);
 	assert.equal(launchThenResume.ok, true);
-	assert.match(launchThenResume.workflowScript, /runs\.run\('repair', \{async: false,  agent: 'worker'/);
+	assert.match(launchThenResume.workflowScript, /runs\.run\('repair', \{async: false,  agent: 'writable'/);
 	assert.match(launchThenResume.workflowScript, /\{ resume: 'repair', task: 'again' \}/);
 
+	// An omitted agent runs as the default native writable agent, so it is accepted but still forced foreground.
 	const missingAgent = validateStandaloneWorkflowScript("return await runs.run('a', { task: 'fix' });", fakeCatalog);
-	assert.equal(missingAgent.ok, false);
-	assert.match(missingAgent.reason, /runs\.run 是新启动，必须声明 agent/);
+	assert.equal(missingAgent.ok, true);
+	assert.equal(missingAgent.workflowScript, "return await runs.run('a', {async: false,  task: 'fix' });");
+	const missingAgentAsync = validateStandaloneWorkflowScript("return await runs.run('a', { task: 'fix', async: true });", fakeCatalog);
+	assert.equal(missingAgentAsync.ok, false);
+	assert.match(missingAgentAsync.reason, /async:true/);
 	const dynamicResume = validateStandaloneWorkflowScript("return await runs.run('a', { resume: target, task: 'fix' });", fakeCatalog);
 	assert.equal(dynamicResume.ok, false);
 	assert.match(dynamicResume.reason, /runs\.run 的 resume 必须为静态字符串；否则必须同时声明 agent/);
@@ -638,7 +642,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 		return await runs.lanes([{
 			key: 'l1',
 			stages: [
-				{ key: 's1', agent: 'worker', task: 't1', async: false },
+				{ key: 's1', agent: 'writable', task: 't1', async: false },
 				{ key: 's2', resume: 'previous', task: 't2', async: true }
 			]
 		}]);
@@ -648,16 +652,16 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 
 	// 多个缺省 child 按源代码位置补全，不改变已有明确 async:false 的项。
 	const multiple = validateStandaloneWorkflowScript(`return await runs.all([
-		{ key: 'a', agent: 'worker' },
-		{ key: 'b', agent: 'worker', async: false },
-		{ key: 'c', agent: 'worker' }
+		{ key: 'a', agent: 'writable' },
+		{ key: 'b', agent: 'writable', async: false },
+		{ key: 'c', agent: 'writable' }
 	]);`, fakeCatalog);
 	assert.equal(multiple.ok, true);
 	assert.equal((multiple.workflowScript.match(/async: false/g) ?? []).length, 3);
 	assert.equal(validateStandaloneWorkflowScript(multiple.workflowScript, fakeCatalog).workflowScript, multiple.workflowScript);
 
 	// 不允许先补全部分 children 再让不安全的启动通过：必须整体失败。
-	const mixedUnsafe = validateStandaloneWorkflowScript("return await runs.all([{key:'a', agent:'worker'}, {key:'b', agent:'worker', async:true}]);", fakeCatalog);
+	const mixedUnsafe = validateStandaloneWorkflowScript("return await runs.all([{key:'a', agent:'writable'}, {key:'b', agent:'writable', async:true}]);", fakeCatalog);
 	assert.equal(mixedUnsafe.ok, false);
 	assert.equal(mixedUnsafe.workflowScript, undefined);
 
@@ -669,7 +673,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 10. runs.run 使用 SpreadElement -> fail-closed 阻断
 	const r10 = validateStandaloneWorkflowScript(`
 		const opts = { task: 'test' };
-		return await runs.run('a', { agent: 'worker', async: false, ...opts });
+		return await runs.run('a', { agent: 'writable', async: false, ...opts });
 	`, fakeCatalog);
 	assert.equal(r10.ok, false);
 	assert.match(r10.reason, /SpreadElement/);
@@ -677,7 +681,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 11. runs.all 项中使用 SpreadElement -> fail-closed 阻断
 	const r11 = validateStandaloneWorkflowScript(`
 		const extra = { task: 't' };
-		return await runs.all([{ key: 'a', agent: 'worker', async: false, ...extra }]);
+		return await runs.all([{ key: 'a', agent: 'writable', async: false, ...extra }]);
 	`, fakeCatalog);
 	assert.equal(r11.ok, false);
 	assert.match(r11.reason, /SpreadElement/);
@@ -693,7 +697,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 13. runs.lanes stages 中使用 SpreadElement -> fail-closed 阻断
 	const r13 = validateStandaloneWorkflowScript(`
 		const extra = { task: 't' };
-		return await runs.lanes([{ key: 'l', stages: [{ key: 's1', agent: 'worker', async: false, ...extra }] }]);
+		return await runs.lanes([{ key: 'l', stages: [{ key: 's1', agent: 'writable', async: false, ...extra }] }]);
 	`, fakeCatalog);
 	assert.equal(r13.ok, false);
 	assert.match(r13.reason, /SpreadElement/);
@@ -701,26 +705,26 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 14. 无关变量包含 { async: true } -> 不误杀，只要 runs.run 子代理显式声明 async: false 即放行
 	const r14 = validateStandaloneWorkflowScript(`
 		const metadata = { async: true };
-		return await runs.run('a', { agent: 'worker', async: false });
+		return await runs.run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r14.ok, true, "无关对象的 async: true 不得误杀合法的 runs.run 调用");
 
 	// 15. duplicate keys -> fail-closed 阻断
 	const r15a = validateStandaloneWorkflowScript(`
-		return await runs.run('a', { agent: 'worker', async: false, async: false });
+		return await runs.run('a', { agent: 'writable', async: false, async: false });
 	`, fakeCatalog);
 	assert.equal(r15a.ok, false);
 	assert.match(r15a.reason, /重复静态键 "async"/);
 
 	const r15b = validateStandaloneWorkflowScript(`
-		return await runs.run('a', { agent: 'worker', async: false, async: true });
+		return await runs.run('a', { agent: 'writable', async: false, async: true });
 	`, fakeCatalog);
 	assert.equal(r15b.ok, false);
 	assert.match(r15b.reason, /重复静态键 "async"/);
 
 	// 16. computed property 字符串字面量 -> fail-closed 阻断
 	const r16 = validateStandaloneWorkflowScript(`
-		return await runs.run('a', { agent: 'worker', ["async"]: true });
+		return await runs.run('a', { agent: 'writable', ["async"]: true });
 	`, fakeCatalog);
 	assert.equal(r16.ok, false);
 	assert.match(r16.reason, /计算属性/);
@@ -728,7 +732,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 17. computed property 变量 -> fail-closed 阻断
 	const r17 = validateStandaloneWorkflowScript(`
 		const k = 'async';
-		return await runs.run('a', { agent: 'worker', async: false, [k]: true });
+		return await runs.run('a', { agent: 'writable', async: false, [k]: true });
 	`, fakeCatalog);
 	assert.equal(r17.ok, false);
 	assert.match(r17.reason, /计算属性/);
@@ -736,7 +740,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 18. alias runs.run -> fail-closed 阻断
 	const r18 = validateStandaloneWorkflowScript(`
 		const launch = runs.run;
-		return await launch('a', { agent: 'worker', async: false });
+		return await launch('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r18.ok, false);
 	assert.match(r18.reason, /runs\.run 必须直接调用/);
@@ -744,35 +748,35 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	// 19. destructuring runs -> fail-closed 阻断
 	const r19 = validateStandaloneWorkflowScript(`
 		const { run } = runs;
-		return await run('a', { agent: 'worker', async: false });
+		return await run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r19.ok, false);
 	assert.match(r19.reason, /runs 只能用于直接方法调用/);
 
 	// 20. runs.run.call -> fail-closed 阻断
 	const r20 = validateStandaloneWorkflowScript(`
-		return await runs.run.call(null, 'a', { agent: 'worker', async: false });
+		return await runs.run.call(null, 'a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r20.ok, false);
 	assert.match(r20.reason, /runs\.run 必须直接调用/);
 
 	// 21. Reflect.apply(runs.run, ...) -> fail-closed 阻断
 	const r21 = validateStandaloneWorkflowScript(`
-		return await Reflect.apply(runs.run, null, ['a', { agent: 'worker', async: false }]);
+		return await Reflect.apply(runs.run, null, ['a', { agent: 'writable', async: false }]);
 	`, fakeCatalog);
 	assert.equal(r21.ok, false);
 	assert.match(r21.reason, /runs\.run 必须直接调用/);
 
 	// 22. computed callee runs["run"] -> fail-closed 阻断
 	const r22 = validateStandaloneWorkflowScript(`
-		return await runs['run']('a', { agent: 'worker', async: false });
+		return await runs['run']('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r22.ok, false);
 	assert.match(r22.reason, /runs 只能用于直接方法调用/);
 
 	// 23. dynamic agent name -> fail-closed 阻断
 	const r23 = validateStandaloneWorkflowScript(`
-		const target = 'worker';
+		const target = 'writable';
 		return await runs.run('a', { agent: target, async: false });
 	`, fakeCatalog);
 	assert.equal(r23.ok, false);
@@ -787,25 +791,25 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 
 	// 25. globalThis.runs / this.runs bypass -> fail-closed 阻断
 	const r25a = validateStandaloneWorkflowScript(`
-		return await globalThis.runs.run('a', { agent: 'worker', async: false });
+		return await globalThis.runs.run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r25a.ok, false);
 	assert.match(r25a.reason, /禁止通过 globalThis\/this 间接访问 runs/);
 
 	const r25b = validateStandaloneWorkflowScript(`
-		return await globalThis['runs'].run('a', { agent: 'worker', async: false });
+		return await globalThis['runs'].run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r25b.ok, false);
 	assert.match(r25b.reason, /禁止通过 globalThis\/this 间接访问 runs/);
 
 	const r25c = validateStandaloneWorkflowScript(`
-		return await this.runs.run('a', { agent: 'worker', async: false });
+		return await this.runs.run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r25c.ok, false);
 	assert.match(r25c.reason, /禁止通过 globalThis\/this 间接访问 runs/);
 
 	const r25d = validateStandaloneWorkflowScript(`
-		return await this['runs'].run('a', { agent: 'worker', async: false });
+		return await this['runs'].run('a', { agent: 'writable', async: false });
 	`, fakeCatalog);
 	assert.equal(r25d.ok, false);
 	assert.match(r25d.reason, /禁止通过 globalThis\/this 间接访问 runs/);
@@ -820,7 +824,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 	const r26c = validateStandaloneWorkflowScript("return runs.refs(results);", fakeCatalog);
 	assert.equal(r26c.ok, true);
 
-	const r26d = validateStandaloneWorkflowScript("return await runs.steer('worker', 'continue');", fakeCatalog);
+	const r26d = validateStandaloneWorkflowScript("return await runs.steer('writable', 'continue');", fakeCatalog);
 	assert.equal(r26d.ok, true);
 
 	// 27. alias safe runs methods -> fail-closed 阻断
@@ -833,7 +837,7 @@ test("validateStandaloneWorkflowScript parses AST and enforces bounded async rul
 
 	const r27b = validateStandaloneWorkflowScript(`
 		const { steer } = runs;
-		return steer('worker', 'msg');
+		return steer('writable', 'msg');
 	`, fakeCatalog);
 	assert.equal(r27b.ok, false);
 	assert.match(r27b.reason, /runs 只能用于直接方法调用/);

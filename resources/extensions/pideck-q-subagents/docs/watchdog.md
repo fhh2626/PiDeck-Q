@@ -1,6 +1,6 @@
 # Watchdog and child permissions
 
-The watchdog is an opt-in second model that reviews what the agent just did and pushes findings back into the transcript. It looks for missed constraints, correctness risks, test gaps, unsafe changes, loop risks, and scope drift, and says nothing when the turn is clean. It is not the `reviewer` subagent; `subagents.defaultModel` and `agentOverrides.reviewer` do not configure it.
+The watchdog is an opt-in second model that reviews what the agent just did and pushes findings back into the transcript. It looks for missed constraints, correctness risks, test gaps, unsafe changes, loop risks, and scope drift, and says nothing when the turn is clean. It is not the `readonly` subagent; `subagents.defaultModel` and `agentOverrides.readonly` do not configure it.
 
 ## When it runs
 
@@ -24,8 +24,8 @@ Children get the same boundary, cadence, and LSP behavior. Child cadence resolve
         "enabled": true,
         "cadence": { "everyNTools": 20 },
         "overrides": {
-          "worker": { "cadence": { "everyNTools": 5 } },
-          "reviewer": { "enabled": false }
+          "writable": { "cadence": { "everyNTools": 5 } },
+          "readonly": { "enabled": false }
         }
       }
     }
@@ -33,7 +33,7 @@ Children get the same boundary, cadence, and LSP behavior. Child cadence resolve
 }
 ```
 
-That means: main every 10 tools, worker every 5, other children every 20, reviewer never.
+That means: main every 10 tools, writable every 5, other children every 20, readonly never.
 
 ## What you see
 
@@ -122,9 +122,8 @@ Opt in under `subagents.watchdog.children`. `model` and `thinking` set the defau
       "rules": {
         "action": "warn",
         "roleModels": {
-          "scout": { "allow": ["openai-codex/gpt-5.6-luna:max"] },
-          "oracle": { "deny": ["*"], "note": "oracle is for hard questions only; ask before launching" },
-          "worker": { "deny": ["openai-codex/gpt-5.6-sol:high"] }
+          "readonly": { "allow": ["openai-codex/gpt-5.6-luna:max"] },
+          "writable": { "deny": ["openai-codex/gpt-5.6-sol:high"], "note": "keep the top reasoning tier off routine edits" }
         }
       }
     }
@@ -140,7 +139,7 @@ Opt-in, Pi child runtimes only. With no rules, every tool call passes through. G
 
 ```yaml
 ---
-name: worker
+name: writable
 permission:
   write: allow
   edit: ask

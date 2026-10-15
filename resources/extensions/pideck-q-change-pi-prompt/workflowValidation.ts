@@ -130,11 +130,12 @@ function resumeAsyncError(cfg: AstNode): string | undefined {
 
 /**
  * Resume reuses the stored agent, so a static resume may omit agent.
- * A new launch must name its agent before any runner or foreground check.
+ * A new launch without an agent runs as the default native `writable` agent (the subagent runtime
+ * applies the default), so it needs no runner lookup but still gets the foreground policy.
  */
 function classifyChildLaunch(
 	cfg: AstNode,
-	messages: { newLaunch: string; dynamicResume: string },
+	messages: { dynamicResume: string },
 ): { launch: boolean } | { error: string } {
 	const hasAgent = Boolean(getProperty(cfg, 'agent'));
 	const resumeVal = getProperty(cfg, 'resume');
@@ -143,7 +144,6 @@ function classifyChildLaunch(
 		const asyncError = resumeAsyncError(cfg);
 		return asyncError ? { error: asyncError } : { launch: false };
 	}
-	if (!hasAgent) return { error: messages.newLaunch };
 	return { launch: true };
 }
 
@@ -212,7 +212,7 @@ export function validateStandaloneWorkflowScript(
 	const childConfigs: AstNode[] = [];
 	let structureError: string | undefined;
 	let policyError: string | undefined;
-	const acceptChild = (cfg: AstNode, messages: { newLaunch: string; dynamicResume: string }): boolean => {
+	const acceptChild = (cfg: AstNode, messages: { dynamicResume: string }): boolean => {
 		const decision = classifyChildLaunch(cfg, messages);
 		if ('error' in decision) {
 			if (!policyError) policyError = `[change-pi-prompt] standalone Pi 环境下，${decision.error}。`;
@@ -299,7 +299,6 @@ export function validateStandaloneWorkflowScript(
 				if (!safety.ok) {
 					structureError = safety.reason;
 				} else if (!acceptChild(paramsArg, {
-					newLaunch: 'runs.run 是新启动，必须声明 agent',
 					dynamicResume: 'runs.run 的 resume 必须为静态字符串；否则必须同时声明 agent',
 				})) {
 					return;
@@ -322,7 +321,6 @@ export function validateStandaloneWorkflowScript(
 						break;
 					}
 					if (!acceptChild(elem as AstNode, {
-						newLaunch: 'runs.all 子项是新启动，必须声明 agent',
 						dynamicResume: 'runs.all 子项的 resume 必须为静态字符串；否则必须同时声明 agent',
 					})) break;
 				}
@@ -359,7 +357,6 @@ export function validateStandaloneWorkflowScript(
 							break;
 						}
 						if (!acceptChild(stage as AstNode, {
-							newLaunch: 'runs.lanes stage 是新启动，必须声明 agent',
 							dynamicResume: 'runs.lanes stage 的 resume 必须为静态字符串；否则必须同时声明 agent',
 						})) break;
 					}
@@ -382,41 +379,37 @@ export function validateStandaloneWorkflowScript(
 	for (const cfg of childConfigs) {
 		// 检查 agent
 		const agentVal = getProperty(cfg, 'agent');
-		if (!agentVal) {
-			return {
-				ok: false,
-				reason: '[change-pi-prompt] standalone Pi 环境下，子代理新启动必须声明 agent。',
-			};
-		}
+		// 省略 agent：运行时默认使用 native 的 writable，无需 catalog 校验。
+		if (agentVal) {
+			if (agentVal.type !== 'Literal' || typeof agentVal.value !== 'string') {
+				return {
+					ok: false,
+					reason: '[change-pi-prompt] agent 必须为静态字符串，才能验证 native/external runner 类型。',
+				};
+			}
 
-		if (agentVal.type !== 'Literal' || typeof agentVal.value !== 'string') {
-			return {
-				ok: false,
-				reason: '[change-pi-prompt] agent 必须为静态字符串，才能验证 native/external runner 类型。',
-			};
-		}
+			const agentName = agentVal.value.trim();
+			if (!catalog) {
+				return {
+					ok: false,
+					reason: `[change-pi-prompt] 无法获取 agent catalog，无法在 standalone Pi 环境下验证 agent "${agentName}" 的 runner 类型。`,
+				};
+			}
 
-		const agentName = agentVal.value.trim();
-		if (!catalog) {
-			return {
-				ok: false,
-				reason: `[change-pi-prompt] 无法获取 agent catalog，无法在 standalone Pi 环境下验证 agent "${agentName}" 的 runner 类型。`,
-			};
-		}
+			const entry = getAgentFromCatalog(catalog, agentName);
+			if (!entry) {
+				return {
+					ok: false,
+					reason: `[change-pi-prompt] 未知的子代理 "${agentName}"，不在 catalog 中，无法验证 runner 类型。可用 agent：${[...catalog.agents.keys()].join(", ")}。`,
+				};
+			}
 
-		const entry = getAgentFromCatalog(catalog, agentName);
-		if (!entry) {
-			return {
-				ok: false,
-				reason: `[change-pi-prompt] 未知的子代理 "${agentName}"，不在 catalog 中，无法验证 runner 类型。`,
-			};
-		}
-
-		if (entry.runnerType !== 'native') {
-			return {
-				ok: false,
-				reason: `[change-pi-prompt] Agent "${agentName}" 使用 external runner (${entry.runnerType})，只支持 async/background，当前 standalone Pi 环境不可在 workflowScript 中执行。`,
-			};
+			if (entry.runnerType !== 'native') {
+				return {
+					ok: false,
+					reason: `[change-pi-prompt] Agent "${agentName}" 使用 external runner (${entry.runnerType})，只支持 async/background，当前 standalone Pi 环境不可在 workflowScript 中执行。`,
+				};
+			}
 		}
 
 		// Only catalog-confirmed native launches may inherit foreground mode. Rewrite the

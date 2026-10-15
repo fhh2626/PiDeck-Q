@@ -39,11 +39,11 @@ export interface AgentMemoryConfig {
 }
 
 export function defaultSystemPromptMode(name: string): SystemPromptMode {
-	return name === "delegate" ? "append" : "replace";
+	return "replace";
 }
 
 export function defaultInheritProjectContext(name: string): boolean {
-	return name === "delegate";
+	return false;
 }
 
 export function defaultInheritSkills(): boolean {
@@ -51,6 +51,7 @@ export function defaultInheritSkills(): boolean {
 }
 
 export interface BuiltinAgentOverrideBase {
+	inheritParentTools?: boolean;
 	description?: string;
 	output?: string;
 	outputMode?: OutputMode;
@@ -770,6 +771,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		...(agent.skills ? { skills: [...agent.skills] } : {}),
 		...(agent.skillPath ? { skillPath: [...agent.skillPath] } : {}),
 		...(agent.tools ? { tools: [...agent.tools] } : {}),
+		...(agent.inheritParentTools === true ? { inheritParentTools: true } : {}),
 		...(agent.excludeTools ? { excludeTools: [...agent.excludeTools] } : {}),
 		...(agent.allowNestedSubagents !== undefined ? { allowNestedSubagents: agent.allowNestedSubagents } : {}),
 		...(agent.mcpDirectTools ? { mcpDirectTools: [...agent.mcpDirectTools] } : {}),
@@ -1524,7 +1526,7 @@ function applyCustomAgentOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "modelProvider" | "fallbackModels" | "fast" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritGlobalContext" | "inheritSkills" | "defaultContext" | "acceptanceRole" | "disabled" | "systemPrompt" | "skills" | "tools" | "allowNestedSubagents" | "mcpDirectTools" | "extensions" | "subagentOnlyExtensions" | "mutationTools" | "completionGuard" | "toolBudget"> & Partial<Pick<AgentConfig, "description" | "output" | "outputMode" | "defaultReads" | "excludeTools">>,
+	draft: Pick<AgentConfig, "model" | "modelProvider" | "fallbackModels" | "fast" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritGlobalContext" | "inheritSkills" | "defaultContext" | "acceptanceRole" | "disabled" | "systemPrompt" | "skills" | "tools" | "allowNestedSubagents" | "mcpDirectTools" | "extensions" | "subagentOnlyExtensions" | "mutationTools" | "completionGuard" | "toolBudget"> & Partial<Pick<AgentConfig, "description" | "output" | "outputMode" | "defaultReads" | "excludeTools" | "inheritParentTools">>,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
@@ -1552,7 +1554,11 @@ export function buildBuiltinOverrideConfig(
 
 	const baseTools = joinToolList(base);
 	const draftTools = joinToolList(draft);
-	if (!arraysEqual(draftTools, baseTools)) override.tools = draftTools ? [...draftTools] : false;
+	if ((draft.inheritParentTools === true) !== (base.inheritParentTools === true)) {
+		override.tools = draft.inheritParentTools === true ? "parent" : draftTools ? [...draftTools] : false;
+	} else if (draft.inheritParentTools !== true && !arraysEqual(draftTools, baseTools)) {
+		override.tools = draftTools ? [...draftTools] : false;
+	}
 	if (!arraysEqual(draft.excludeTools, base.excludeTools)) override.excludeTools = draft.excludeTools ? [...draft.excludeTools] : false;
 	if (draft.allowNestedSubagents !== base.allowNestedSubagents) override.allowNestedSubagents = draft.allowNestedSubagents === true;
 	if (!arraysEqual(draft.extensions, base.extensions)) override.extensions = draft.extensions ? [...draft.extensions] : false;
@@ -2001,7 +2007,9 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 			else throw new Error(`Agent '${localName}' has invalid advertise frontmatter; expected true or false.`);
 		}
 		const rawTools = parseFrontmatterList(frontmatter.tools);
-		const parsedTools = splitToolList(rawTools);
+		// `tools: parent` mirrors the launching session's tools; it is resolved at launch (parent-tool-inheritance.ts).
+		const inheritParentTools = rawTools?.length === 1 && rawTools[0]?.trim() === "parent";
+		const parsedTools: { tools?: string[]; mcpDirectTools?: string[] } = inheritParentTools ? { tools: [] } : splitToolList(rawTools);
 		const tools = parsedTools.tools ?? [];
 		const mcpDirectTools = parsedTools.mcpDirectTools ?? [];
 		const excludeTools = parseFrontmatterList(frontmatter.excludeTools);
@@ -2126,7 +2134,9 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 			description: frontmatter.description,
 			...(advertise !== undefined ? { advertise } : {}),
 			...(aliases !== undefined ? { aliases } : {}),
+			// With the parent marker, `tools` stays an empty fail-closed placeholder until launch resolution.
 			...(rawTools !== undefined ? { tools } : {}),
+			...(inheritParentTools ? { inheritParentTools: true } : {}),
 			...(excludeTools !== undefined ? { excludeTools } : {}),
 			...(allowNestedSubagents !== undefined ? { allowNestedSubagents } : {}),
 			...(mcpDirectTools.length > 0 ? { mcpDirectTools } : {}),

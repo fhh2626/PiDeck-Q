@@ -484,6 +484,7 @@ export function registerPromptExtension(
 				const wantsShell = !!childAgent && (
 					childAgent.tools.some(isShellToolName)
 					|| childAgent.hostShell === true
+					|| childAgent.inheritParentTools === true
 					|| agentInheritsParentTools(agentDir, childAgent.name)
 				);
 				// A valid owner snapshot is authoritative. Without one, fail closed: a child
@@ -785,7 +786,7 @@ export function registerPromptExtension(
 		if (standalone && targetAgentName && runnerType === 'unknown') {
 			return {
 				block: true,
-				reason: `[change-pi-prompt] 无法确认 Agent "${targetAgentName}" 的 runner 类型；standalone Pi 下拒绝执行。`,
+				reason: `[change-pi-prompt] 无法确认 Agent "${targetAgentName}" 的 runner 类型；standalone Pi 下拒绝执行。${catalog ? `可用 agent：${[...catalog.agents.keys()].join(', ')}。` : ''}`,
 			};
 		}
 

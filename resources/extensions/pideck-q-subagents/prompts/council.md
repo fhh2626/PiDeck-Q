@@ -23,13 +23,13 @@ of convening a council.
   unknown agent. Do not require or invent per-advisor role labels.
 - Otherwise list agents with `subagent({ action: "list" })`, then prefer 2–3
   executable names that start with `council-`.
-- If fewer than two profiles are available, fill the roster with `oracle`, then
-  `reviewer`, until it has two advisors. Launch fallback `oracle` with
-  `context: "fork"` so global defaults cannot remove its parent-chat context.
-  Let `reviewer` use its normal profile context. Note the fallback and known
+- If fewer than two profiles are available, fill the roster with `readonly`
+  until it has two advisors. Launch each fallback `readonly` with
+  `context: "fork"` so global defaults cannot remove its parent-chat context,
+  and give each a distinct stance in its task. Note the fallback and known
   context modes in the memo.
-- Use the normal single-oracle loop only when a requested roster or unavailable
-  builtins leaves fewer than two advisors. Label the memo as degraded mode.
+- Use the normal single-advisor loop only when a requested roster leaves fewer
+  than two advisors. Label the memo as degraded mode.
 
 Profiles provide the model, tools, context, and advisor stance. The council
 question and scope provide the decision frame. If the user wants a specific lens,

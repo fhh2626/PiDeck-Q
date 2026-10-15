@@ -29,7 +29,7 @@ Host grants bind **exact key/trimmed-command pairs**, not independent sets of ke
 
 ### Mixed child and finite host example
 
-This extension owns two fixed commands; `scripts/finite-check.mjs` must be an existing trusted finite helper in the workflow cwd. It runs a reviewer first, then a check. No command or flags come from free-form public args.
+This extension owns two fixed commands; `scripts/finite-check.mjs` must be an existing trusted finite helper in the workflow cwd. It runs a readonly review first, then a check. No command or flags come from free-form public args.
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
             hostCommands: [{ key: "check", command }],
             script: `
               const review = await runs.run("review", {
-                agent: "reviewer", task: ${JSON.stringify(args.task)}
+                agent: "readonly", task: ${JSON.stringify(args.task)}
               });
               if (!review.ok) throw new Error("Review child failed");
               const check = await runs.host("check", ${JSON.stringify(host)});
@@ -108,7 +108,7 @@ pi.events.emit("subagents:rpc:v1:request", {
   requestId,
   method: "spawn",
   params: {
-    workflowScript: `return runs.run("main", { agent: "reviewer", task: "Review the current diff" })`,
+    workflowScript: `return runs.run("main", { agent: "readonly", task: "Review the current diff" })`,
     context: "fresh"
   }
 });
@@ -236,7 +236,7 @@ Use `pi-subagents/preflight` when an extension needs to inspect the resolved chi
 import { resolveSubagentLaunchContract } from "pi-subagents/preflight";
 
 const result = await resolveSubagentLaunchContract({
-  agent: "reviewer",
+  agent: "readonly",
   task: "Review the current diff.",
   context: "fresh",
   cwd: ctx.cwd,
@@ -286,7 +286,7 @@ const request: SubagentDelegationRequest = {
   requestId: crypto.randomUUID(),
   ownerRunId: workflowRunId,
   nodeId: "review-accuracy",
-  agent: "reviewer",
+  agent: "readonly",
   task: "Review the supplied evidence.",
   context: "fresh",
   cwd: ctx.cwd,
@@ -351,7 +351,7 @@ const restriction = registerSubagentCapabilityCeiling({
   sessionId: ctx.sessionManager.getSessionId(),
   source: "plan-mode",
   ceiling: {
-    allowedAgents: ["plan-scout", "plan-researcher", "plan-reviewer"],
+    allowedAgents: ["plan-recon", "plan-research", "plan-review"],
     allowedTools: ["read", "grep", "find", "ls"],
     denyExtensions: true,
   },

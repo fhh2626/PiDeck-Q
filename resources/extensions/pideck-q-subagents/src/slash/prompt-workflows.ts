@@ -72,7 +72,7 @@ function parseSkill(value: string | undefined): string | string[] | false | unde
 
 function parseAgent(frontmatter: Record<string, string>): string {
 	const subagent = stringField(frontmatter, "subagent");
-	if (!subagent || subagent === "true") return "delegate";
+	if (!subagent || subagent === "true") return "writable";
 	return subagent;
 }
 
@@ -221,7 +221,7 @@ function promptWorkflowScript(workflows: PromptWorkflow[], args: string[], runti
 		const params = workflowParams(workflow, args, runtime);
 		const task = params.task ?? "";
 		const child = {
-			agent: params.agent ?? "delegate",
+			agent: params.agent ?? "writable",
 			task,
 			...(params.model ? { model: params.model } : {}),
 			...(params.skill !== undefined ? { skill: params.skill } : {}),

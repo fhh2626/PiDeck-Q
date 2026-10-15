@@ -67,10 +67,13 @@ export function serializeAgent(config: AgentConfig, options: SerializeAgentOptio
 	const aliasesValue = joinComma(config.aliases);
 	if (aliasesValue || preserve("alias", "aliases")) lines.push(`aliases: ${aliasesValue ?? ""}`);
 
-	const tools = [
-		...(config.tools ?? []),
-		...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
-	];
+	// `tools: parent` is a marker, not a tool list; the placeholder empty allowlist must not be written out.
+	const tools = config.inheritParentTools === true
+		? ["parent"]
+		: [
+			...(config.tools ?? []),
+			...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
+		];
 	const toolsValue = joinComma(tools);
 	if (toolsValue || preserve("tools")) lines.push(`tools: ${toolsValue ?? ""}`);
 	const excludeToolsValue = joinComma(config.excludeTools);

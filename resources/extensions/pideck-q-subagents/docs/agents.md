@@ -4,8 +4,8 @@ An agent is a markdown file: YAML frontmatter on top, a system prompt below. The
 
 ```yaml
 ---
-name: scout
-description: Fast codebase recon
+name: security-reviewer
+description: Security-focused code review
 tools: read, grep, find, ls
 ---
 
@@ -37,17 +37,12 @@ Builtins load at the lowest priority, so a user or project agent with the same n
 
 | Agent | Use it when you want... |
 |-------|--------------------------|
-| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks, and where another agent should start. |
-| `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
-| `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
-| `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
-| `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
-| `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `readonly` | Investigation, code review, and research. It inherits the launching session's tools except `edit` and `write`, and its prompt forbids changing files or running file-modifying shell commands. |
+| `writable` | The default agent. It inherits the launching session's tools and can edit files and run commands. Omitting `agent` on a single launch runs `writable`. |
 
-Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+Both builtins use `tools: parent` (see below), inherit the parent model and thinking level, and default to `context: "fork"`, so they start with the parent conversation. Use `context: "fresh"` for independent review or verification, parallel research, or when the conversation is nearly full. `readonly` restricts file edits by removing `edit` and `write` and by prompt; the shell stays available for reading, so this is a strong guardrail rather than a sandbox. Parallel `writable` children must touch disjoint files or use `worktree: true`.
 
-`oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `advisor` is the same bundled role under the Claude Code-compatible name.
-
+An unknown agent name is an error that lists the available agents; only a missing `agent` falls back to `writable`.
 ### Optional Surf integration
 
 When `surf-cli` is installed and loaded, Surf can expose a `gpt-pro` package agent through the `surf-oracle` external-job provider. It starts through the same `subagent({ agent: "gpt-pro" })` mental model as any other agent, but Surf owns the package agent and provider. Surf maps `model: pro` to ChatGPT GPT-5.6 Sol Pro web mode. pi-subagents does not own that model mapping.
@@ -62,7 +57,7 @@ External CLI agents use their own runner contract. They are deliberate execution
 
 Bundled Codex, Claude Code, and Cursor profiles (`codex-exec`, `codex-exec-writer`, `claude-code`, `claude-code-writer`, `cursor-agent`, and `cursor-agent-writer`) have been removed. A custom agent may still declare a generic `external-cli` command, but it cannot select those adapter ids.
 
-Native `oracle` runs inside Pi and can use its configured read tools. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
+A native agent runs inside Pi and can use its inherited tools. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
 
 ### External-job state table
 
@@ -72,14 +67,6 @@ Native `oracle` runs inside Pi and can use its configured read tools. An externa
 | `result.json` or session result payload | pi-subagents async runner | `complete`, `failed`, `stopped` | All steps reach terminal state and result publication succeeds or is recoverably indexed | Result write fails and pending result repair records the terminal state | Stale status can repair from an existing result file | Unindexed sessionless stale failure |
 | `external-job-requests/` and `external-job-responses/` | Host-mediated provider bridge | pending request, terminal response | Host process writes a matching response and removes the request | Bridge timeout or malformed request response | Requests are operation-scoped. Recovery sends `reattach`/`result`, not `start` or `follow-up`, when job metadata exists. `start` and `follow-up` use durable dispatch claims | Provider not registered, host bridge not loaded, malformed request, provider exception, ambiguous dispatch without a provider job id |
 | Provider artifact path | External provider | provider-defined terminal artifact | Provider returns `artifactPath`, or Pi writes returned text to `external-job-<index>.result.md` | Provider reports failure or no result | Existing artifact path is retained in `status.json` | Missing artifact with no text output returns a terminal message instead of inventing content |
-
-The `researcher` builtin uses `web_search`, `fetch_content`, `get_search_content`, and selective `source_check` validation. Those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
-
-```bash
-pi install npm:pi-web-access
-```
-
-The loaded provider must register all four tools, including `source_check`, before launch; a missing required tool prevents a successful run. Fetched-source inspection is a fallback for a registered `source_check` call failing, not for missing registration.
 
 ## Overriding builtins and custom agents
 
@@ -92,7 +79,7 @@ You can override selected agent fields without copying the whole agent. Override
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": {
+      "readonly": {
         "description": "Independent review tier",
         "inheritProjectContext": false
       }
@@ -106,7 +93,7 @@ Supported override fields: `description`, `output`, `outputMode`, `defaultReads`
 - `description` replaces the discovered description for builtin and custom agents, which lets list output show deployment-specific routing or model metadata.
 - Use `output: false`, `defaultReads: false`, `defaultContext: false`, or `acceptanceRole: false` to clear an inherited value.
 - Use `tools: "inherit"` when that one role should omit its bundled or frontmatter tool allowlist and receive Pi's normal builtins (plus ambient extensions when it runs as a background child).
-- Use `tools: "parent"` when that one role should mirror the tools the launching session has active right now. The active tool names become the child's strict allowlist, and each extension tool's provider extension is loaded into the child (merged into `subagentOnlyExtensions`), so it works for foreground children too. `excludeTools` is the blacklist: listed names (exact, including `contact_supervisor`) are removed from the copy, and a provider extension is loaded only while at least one non-excluded tool still needs it. Never copied: `subagent` (nested fan-out stays governed by `allowNestedSubagents` and depth ceilings), tools provided by this package, and pi-mcp-adapter tools (use explicit `mcp:` entries); tools with no loadable provider file are skipped. `contact_supervisor` is always included. If the launching session's tools cannot be read, the child gets no tools rather than the default set. Examples: `{ "subagents": { "agentOverrides": { "delegate": { "tools": "parent" } } } }` copies everything; `{ "tools": "parent", "excludeTools": ["bash", "edit", "write"] }` copies everything except those tools.
+- Use `tools: "parent"` (also valid as the frontmatter value `tools: parent`, which is how the builtin agents are defined) when that one role should mirror the tools the launching session has active right now. The active tool names become the child's strict allowlist, and each extension tool's provider extension is loaded into the child (merged into `subagentOnlyExtensions`), so it works for foreground children too. `excludeTools` is the blacklist: listed names (exact, including `contact_supervisor`) are removed from the copy, and a provider extension is loaded only while at least one non-excluded tool still needs it. Never copied: `subagent` (nested fan-out stays governed by `allowNestedSubagents` and depth ceilings), tools provided by this package, and the pi-mcp-adapter proxy tool; tools with no loadable provider file are skipped. The parent's direct MCP tools are converted to `mcp:<server>` selectors (resolved against the adapter config and metadata cache, so servers that are only configured at runtime cannot be passed on). `contact_supervisor` is always included. If the launching session's tools cannot be read, the child gets no tools rather than the default set. Examples: `{ "subagents": { "agentOverrides": { "security-reviewer": { "tools": "parent" } } } }` copies everything; `{ "tools": "parent", "excludeTools": ["bash", "edit", "write"] }` copies everything except those tools.
 - Project overrides beat user overrides.
 - Matching package, user, and project agents also receive override fields, which replace the same fields declared in their frontmatter. This lets a shared agent keep its persona while local settings choose the effective model, context, tools, or other supported options.
 
@@ -114,9 +101,9 @@ Disable and restore:
 
 - `disabled: true` hides a builtin from runtime discovery and agent-facing `subagent({ action: "list" })` output.
 - `subagents.disableBuiltins: true` disables all builtins at once.
-- `subagent({ action: "disable", agent: "reviewer" })` writes the override without editing settings by hand; `subagent({ action: "enable", agent: "reviewer" })` removes it.
-- `subagent({ action: "eject", agent: "reviewer" })` copies a bundled builtin or package agent verbatim into the user or project agent dir (default `user`) as an editable custom file that shadows the original.
-- `subagent({ action: "reset", agent: "reviewer" })` deletes the scope's custom agent file and/or settings override entry, restoring the bundled default. It refuses if no bundled default exists (use `delete` for purely custom agents).
+- `subagent({ action: "disable", agent: "readonly" })` writes the override without editing settings by hand; `subagent({ action: "enable", agent: "readonly" })` removes it.
+- `subagent({ action: "eject", agent: "readonly" })` copies a bundled builtin or package agent verbatim into the user or project agent dir (default `user`) as an editable custom file that shadows the original.
+- `subagent({ action: "reset", agent: "readonly" })` deletes the scope's custom agent file and/or settings override entry, restoring the bundled default. It refuses if no bundled default exists (use `delete` for purely custom agents).
 
 `eject`, `disable`, `enable`, and `reset` accept `agentScope: "user" | "project"` and operate in one scope at a time. Project overrides still win over user ones, so a project-scope disable survives a user-scope `enable` until you target the project scope.
 
@@ -142,7 +129,7 @@ Use these fields when an agent should see more:
 | `inheritSkills: true` | Let the child see Pi's discovered skills catalog. |
 | `defaultContext: fork` | Prefer forked session context when a launch omits `context`; if the parent has no persisted session file or current leaf yet, the implicit default falls back to `fresh` without a failed first attempt. Explicit `context: "fork"` remains strict, and explicit `context: "fresh"` still wins. |
 
-Builtin agents opt into repository instruction inheritance by default so they follow repo-specific rules out of the box, but global context remains excluded unless `inheritGlobalContext: true` is set. This changes the behavior of existing agents that previously received global context as part of `inheritProjectContext: true`. `delegate` also uses append mode because its job is orchestration inside the parent workflow.
+Builtin agents opt into repository instruction inheritance by default so they follow repo-specific rules out of the box, but global context remains excluded unless `inheritGlobalContext: true` is set. This changes the behavior of existing agents that previously received global context as part of `inheritProjectContext: true`. Both builtin agents use append mode, so the child keeps Pi's own system prompt and adds only the agent marker and, for `readonly`, its read-only rules.
 
 ## Frontmatter reference
 
@@ -150,12 +137,12 @@ A full example:
 
 ```yaml
 ---
-name: scout
-# Optional: registers this as code-analysis.scout while preserving name: scout
+name: recon
+# Optional: registers this as code-analysis.recon while preserving name: recon
 package: code-analysis
 description: Fast codebase recon
 advertise: true
-aliases: explorer, code-scout
+aliases: explorer, code-recon
 tools: read, grep, find, ls, bash, mcp:chrome-devtools
 excludeTools: bash
 extensions:
@@ -201,7 +188,7 @@ Field notes:
 
 | Field | Notes |
 |-------|-------|
-| `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
+| `package` | Optional package identifier. A file with `name: recon` and `package: code-analysis` registers as `code-analysis.recon`; serialization keeps `name` and `package` separate. |
 | `advertise` | Set `true` to include this agent's name and description in the parent system prompt when the `subagent` tool is active. Defaults to `false`. |
 | `aliases` | Optional comma-separated or block-list names that resolve to this agent for selection and explicit `agent` and task inputs. Runtime status, persistence, and config still use the canonical `name`. Exact canonical names take precedence over aliases, and alias collisions between distinct canonical agents fail as ambiguous. |
 | `tools` | Strict child tool allowlist. Named extension tools must also have their provider loaded. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
@@ -251,7 +238,7 @@ How it works:
 
 - On each run, the first 200 lines of `MEMORY.md` in the resolved memory directory are injected into the child system prompt, so the agent can recall accumulated role notes such as threat-model entries, release gotchas, or verified commands.
 - Agents with write tools (`edit`, `write`, or `bash`, or no `tools` allowlist at all) are told they may append concise dated entries to the file.
-- Agents without write tools receive a read-only memory block and are not instructed to edit it. A read-only reviewer can recall prior notes without gaining write capability.
+- Agents without write tools receive a read-only memory block and are not instructed to edit it. A read-only agent can recall prior notes without gaining write capability.
 - The memory directory is never created eagerly. The agent's own `write` tool creates it (and `MEMORY.md`) on the first persist.
 - Memory paths are validated against `.`/`..` traversal and symlink escape. An unsafe or unresolvable scope is silently skipped rather than breaking the run.
 
@@ -265,13 +252,13 @@ Scopes:
 A refinement overlay is bounded, project-local guidance layered on top of one agent's system prompt without editing the agent file. Use it when an agent repeatedly stumbles on the same project-specific issue and recent run evidence shows what to correct.
 
 ```text
-/subagents-refine reviewer
+/subagents-refine readonly
 ```
 
 ```ts
-subagent({ action: "refine", agent: "reviewer" })
-subagent({ action: "refine.show", agent: "reviewer" })
-subagent({ action: "refine.rollback", agent: "reviewer" })
+subagent({ action: "refine", agent: "readonly" })
+subagent({ action: "refine.show", agent: "readonly" })
+subagent({ action: "refine.rollback", agent: "readonly" })
 ```
 
 How it works:
@@ -296,7 +283,7 @@ How `tools` behaves:
 
 An allowlisted name does not load the extension that registers it. Load that provider through `extensions`, `subagentOnlyExtensions`, a path-like `tools` entry, or (background children only) normal Pi extension discovery.
 
-Ambient extensions depend on where the child runs. Foreground children are sessions inside the parent Pi process and never load the parent's ambient extensions; otherwise the parent would start a second copy of each ambient extension, including this one. Background children are sessions inside the detached runner process and load the ambient extensions unless the agent sets `extensions` or the capability ceiling denies extensions. Agents that need MCP tools (`mcpDirectTools`, or MCP tools from an ambient adapter such as pi-mcp-adapter) or models from a provider extension must therefore run as background children (`async: true`). A foreground launch of such an agent fails with a diagnostic that says exactly that.
+Ambient extensions depend on where the child runs. Foreground children are sessions inside the parent Pi process and never load the parent's ambient extensions; otherwise the parent would start a second copy of each ambient extension, including this one. Background children are sessions inside the detached runner process and load the ambient extensions unless the agent sets `extensions` or the capability ceiling denies extensions. Foreground direct MCP tools use the SDK's session-local MCP provider with only the resolved server/tool selections; they do not require ambient extension loading or process-global MCP environment variables. For models or other tools from provider extensions, load those providers explicitly through the agent's extension settings.
 
 More rules:
 
@@ -315,7 +302,7 @@ Examples:
 - `allowNestedSubagents: true` with `tools` omitted: normal builtin tools (and, for background children, ambient extensions) remain inherited, and the child-safe nested `subagent` runtime is added.
 - `tools: read, fixture_search` plus `subagentOnlyExtensions: ./tools/fixture-search.ts`: the provider loads only in this agent's child sessions, and the registered `fixture_search` name survives the strict allowlist.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
+Direct MCP selection uses [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) configuration and cached metadata. Foreground children connect through the SDK MCP factory with a per-child configuration snapshot; ordinary stdio and streamable HTTP servers are supported. Adapter-only settings such as sockets, request-header commands, custom protocol versions, and literal-environment policies fail explicitly instead of being silently dropped or downgraded. Required selected tools still fail startup if the server does not register them. Subagents only receive direct MCP tools when `mcp:` entries are declared (including those resolved by `tools: parent`); global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
 
 `extensions` controls child extension loading:
 
@@ -354,9 +341,9 @@ Discovery uses project-first precedence:
 Use agent defaults, override them at runtime, or disable them:
 
 ```ts
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "..." })` }
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "...", skill: "tmux, safe-bash" })` }
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "...", skill: false })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "..." })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "...", skill: "tmux, safe-bash" })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "...", skill: false })` }
 ```
 
 For chains, `skill` at the top level is additive. A step-level `skill` overrides that step; `false` disables skills for that step.

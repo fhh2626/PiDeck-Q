@@ -76,11 +76,11 @@ interface RuntimeAgentRegistry {
 export type RuntimeAgentOwner = ExtensionAPI;
 
 function defaultSystemPromptMode(name: string): "append" | "replace" {
-	return name === "delegate" ? "append" : "replace";
+	return "replace";
 }
 
 function defaultInheritProjectContext(name: string): boolean {
-	return name === "delegate";
+	return false;
 }
 
 function defaultInheritSkills(): boolean {

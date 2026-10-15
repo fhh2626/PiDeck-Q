@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveMcpSelectorsForActiveTools } from "../runs/shared/mcp-direct-tool-allowlist.ts";
 import type { AgentConfig } from "./agents.ts";
 
 /** Structural subset of pi's tool info; avoids coupling this pure module to the host SDK types. */
@@ -27,6 +28,8 @@ export interface ParentToolContext {
 	activeToolNames: readonly string[];
 	/** Root of this package; tools it provides are never copied into children. */
 	ownPackageRoot?: string;
+	/** Parent MCP direct tools expressed as `mcp:` selectors (adapter naming rules already applied). */
+	mcpSelections?: readonly { name: string; selector: string }[];
 }
 
 export interface ParentToolSelection {
@@ -34,6 +37,8 @@ export interface ParentToolSelection {
 	tools: string[];
 	/** Provider extension paths the child must load for those tools (`subagentOnlyExtensions`). */
 	extensionPaths: string[];
+	/** `mcp:` direct-tool selectors (without the prefix) for the parent's MCP tools (AgentConfig.mcpDirectTools). */
+	mcpDirectTools: string[];
 	/** Active parent tools that were deliberately or unavoidably not copied, with the reason. */
 	skipped: Array<{ name: string; reason: "excluded" | "subagent-owned" | "mcp-adapter" | "no-loadable-provider" }>;
 }
@@ -61,9 +66,11 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 /**
- * The pi-mcp-adapter registers tools dynamically after connecting servers. Loading it into an
- * in-process child cannot guarantee those names exist, and a missing name aborts the whole launch
- * under the strict allowlist, so MCP tools stay opt-in through explicit `mcp:` entries.
+ * The pi-mcp-adapter registers tools dynamically after connecting servers. Loading it as a plain
+ * provider cannot guarantee those names exist, and a missing name aborts the whole launch under the
+ * strict allowlist. Direct MCP tools therefore travel as `mcp:` selectors (see `mcpSelections`), which
+ * the launch plan resolves against the adapter's config and metadata cache; anything left over from
+ * the adapter (e.g. the `mcp` proxy tool) is not copied.
  */
 function isMcpAdapterPath(providerPath: string): boolean {
 	return providerPath.replace(/\\/g, "/").toLowerCase().includes("/pi-mcp-adapter");
@@ -76,12 +83,14 @@ export interface ParentToolHost {
 }
 
 /** Snapshot the launching session's tools; undefined when the host cannot report them. */
-export function readParentToolContext(host: ParentToolHost): ParentToolContext | undefined {
+export function readParentToolContext(host: ParentToolHost, cwd: string = process.cwd()): ParentToolContext | undefined {
 	try {
+		const activeToolNames = host.getActiveTools();
 		return {
 			allTools: host.getAllTools(),
-			activeToolNames: host.getActiveTools(),
+			activeToolNames,
 			ownPackageRoot: findOwnPackageRoot(),
+			mcpSelections: resolveMcpSelectorsForActiveTools(activeToolNames, cwd),
 		};
 	} catch {
 		// A stale/unbound session may throw; the caller fails closed instead of widening the child.
@@ -102,6 +111,8 @@ export function selectParentTools(context: ParentToolContext, excludeTools: read
 	const byName = new Map(context.allTools.map((tool) => [tool.name, tool]));
 	const names: string[] = [];
 	const providerPaths: string[] = [];
+	const mcpDirectTools: string[] = [];
+	const mcpByName = new Map((context.mcpSelections ?? []).map((selection) => [selection.name, selection.selector]));
 	const skipped: ParentToolSelection["skipped"] = [];
 
 	for (const name of new Set(context.activeToolNames)) {
@@ -115,6 +126,11 @@ export function selectParentTools(context: ParentToolContext, excludeTools: read
 		}
 		if ((ALWAYS_KEPT_COORDINATION_TOOLS as readonly string[]).includes(name)) {
 			names.push(name);
+			continue;
+		}
+		const mcpSelector = mcpByName.get(name);
+		if (mcpSelector !== undefined) {
+			if (!mcpDirectTools.includes(mcpSelector)) mcpDirectTools.push(mcpSelector);
 			continue;
 		}
 		const info = byName.get(name);
@@ -143,7 +159,7 @@ export function selectParentTools(context: ParentToolContext, excludeTools: read
 	for (const name of ALWAYS_KEPT_COORDINATION_TOOLS) {
 		if (!excluded.has(name) && !names.includes(name)) names.push(name);
 	}
-	return { tools: names, extensionPaths: providerPaths, skipped };
+	return { tools: names, extensionPaths: providerPaths, mcpDirectTools, skipped };
 }
 
 /**
@@ -165,6 +181,7 @@ export function applyParentToolInheritance(
 		const { inheritParentTools: _resolved, ...rest } = agent;
 		const next: AgentConfig = { ...rest, tools: selection ? [...selection.tools] : [] };
 		delete next.mcpDirectTools;
+		if (selection && selection.mcpDirectTools.length > 0) next.mcpDirectTools = [...selection.mcpDirectTools];
 		if (selection && selection.extensionPaths.length > 0) {
 			next.subagentOnlyExtensions = [...new Set([...(agent.subagentOnlyExtensions ?? []), ...selection.extensionPaths])];
 		}
