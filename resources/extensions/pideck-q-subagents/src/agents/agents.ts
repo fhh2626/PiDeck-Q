@@ -100,7 +100,7 @@ interface BuiltinAgentOverrideConfig {
 	disabled?: boolean;
 	systemPrompt?: string;
 	skills?: string[] | false;
-	tools?: string[] | false | "inherit";
+	tools?: string[] | false | "inherit" | "parent";
 	excludeTools?: string[] | false;
 	allowNestedSubagents?: boolean;
 	extensions?: string[] | false;
@@ -138,6 +138,8 @@ export interface AgentConfig {
 	advertise?: boolean;
 	aliases?: string[];
 	tools?: string[];
+	/** Set by a `tools: "parent"` override; resolved into `tools` at launch from the parent's active tools. */
+	inheritParentTools?: boolean;
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	mcpDirectTools?: string[];
@@ -945,10 +947,11 @@ function parseToolsOverride(
 	meta: { filePath: string; name: string },
 ): BuiltinAgentOverrideConfig["tools"] | undefined {
 	if (typeof value === "string" && value.trim() === "inherit") return "inherit";
+	if (typeof value === "string" && value.trim() === "parent") return "parent";
 	if (value === undefined || value === false || Array.isArray(value)) {
 		return parseOverrideStringArrayOrFalse(value, { ...meta, field: "tools" });
 	}
-	throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid 'tools'; expected an array of strings, "inherit", or false.`);
+	throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid 'tools'; expected an array of strings, "inherit", "parent", or false.`);
 }
 
 function parseBuiltinOverrideEntry(
@@ -1346,10 +1349,21 @@ function applySubagentDefaults(
 	);
 }
 
-function applyToolsOverride(target: AgentConfig, toolsOverride: string[] | false | "inherit"): void {
+function applyToolsOverride(target: AgentConfig, toolsOverride: string[] | false | "inherit" | "parent"): void {
+	// Any explicit tools override replaces an earlier "parent" marker (e.g. user vs project scope).
+	delete target.inheritParentTools;
 	if (toolsOverride === "inherit") {
 		delete target.tools;
 		delete target.mcpDirectTools;
+		return;
+	}
+	if (toolsOverride === "parent") {
+		// Resolved at launch against the launching session's active tools; see parent-tool-inheritance.ts.
+		// The empty allowlist is a fail-closed placeholder: any launch path that forgets to resolve the
+		// marker gives the child no tools instead of silently widening it to Pi's default builtin set.
+		target.tools = [];
+		delete target.mcpDirectTools;
+		target.inheritParentTools = true;
 		return;
 	}
 	const { tools, mcpDirectTools } = splitToolList(toolsOverride === false ? [] : toolsOverride);

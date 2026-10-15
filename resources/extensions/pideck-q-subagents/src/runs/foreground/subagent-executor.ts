@@ -20,6 +20,7 @@ import { getLivePromptAudit, rewritePromptWithGuidance, updateLiveEffectivePromp
 import { persistForegroundRunHistory, MAX_REMEMBERED_FOREGROUND_RUNS } from "./foreground-history.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
+import { applyParentToolInheritance, readParentToolContext } from "../../agents/parent-tool-inheritance.ts";
 import { handleRefinementAction } from "../../agents/agent-refinements.ts";
 import { buildDoctorReport } from "../../extension/doctor.ts";
 import { readSubagentGuide } from "../../extension/subagent-guide.ts";
@@ -1321,7 +1322,8 @@ function appendStepToAsyncChain(input: {
 
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discoveredForAppend = input.deps.discoverAgents(input.requestCwd, scope, input.parentModel?.provider);
-	const agents = discoveredForAppend.agents;
+	// Appended chain steps carry their own tools into the async runner, so resolve `tools: "parent"` now.
+	const agents = applyParentToolInheritance(discoveredForAppend.agents, () => readParentToolContext(input.deps.pi));
 	const contextPolicy = resolveExplicitContextPolicy(input.params);
 	const chainSkillInput = normalizeSkillInput(input.params.skill);
 	const chainSkills = chainSkillInput === false ? [] : (chainSkillInput ?? []);
@@ -2309,7 +2311,8 @@ async function resumeRun(input: ResumeRunInput): Promise<AgentToolResult<Details
 	const effectiveCwd = target.cwd ?? input.requestCwd;
 	const scope: AgentScope = resolveExecutionAgentScope(input.params.agentScope);
 	const discovered = input.deps.discoverAgents(effectiveCwd, scope, input.parentModel?.provider);
-	const discoveredAgents = discovered.agents;
+	// A resumed child is relaunched from the discovered definition, so `tools: "parent"` must resolve here too.
+	const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(input.deps.pi));
 	const unknownAgentDiagnosticContext = diagnosticContextFromDiscovery(discovered, effectiveCwd, scope);
 	const modelScope = discovered.modelScope;
 	const sessionName = resolveIntercomSessionTarget(input.deps.pi.getSessionName(), input.ctx.sessionManager.getSessionId());
@@ -7159,7 +7162,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		const discovered = deps.discoverAgents(effectiveCwd, scope, requestParentModel?.provider);
-		const discoveredAgents = discovered.agents;
+		// `tools: "parent"` agents copy this session's active tools; resolved here because only the
+		// launching session knows them, and later async/workflow steps carry the concrete list.
+		const discoveredAgents = applyParentToolInheritance(discovered.agents, () => readParentToolContext(deps.pi));
 		const unknownAgentDiagnosticContext = diagnosticContextFromDiscovery(discovered, effectiveCwd, scope);
 		const canonicalParams = canonicalizeExecutionParams(effectiveParams, discoveredAgents, discovered.agentDiagnostics, unknownAgentDiagnosticContext);
 		if (canonicalParams.error) return buildRequestedModeError(effectiveParams, canonicalParams.error);

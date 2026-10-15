@@ -34,6 +34,7 @@ import {
 	type SubagentCatalog,
 } from './subagentCatalog.ts';
 import {
+	agentInheritsParentTools,
 	reconcileChildEnvironments,
 	readEffectiveShellPolicySnapshot,
 	resolveCurrentChangePiPromptPath,
@@ -479,7 +480,12 @@ export function registerPromptExtension(
 				const agentName = getActiveAgentName(event.systemPrompt);
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
-				const wantsShell = !!childAgent && (childAgent.tools.some(isShellToolName) || childAgent.hostShell === true);
+				// A `tools: "parent"` override copies the parent's shells into the allowlist, so it counts as declaring them.
+				const wantsShell = !!childAgent && (
+					childAgent.tools.some(isShellToolName)
+					|| childAgent.hostShell === true
+					|| agentInheritsParentTools(agentDir, childAgent.name)
+				);
 				// A valid owner snapshot is authoritative. Without one, fail closed: a child
 				// cannot infer the parent's active tools from its own registry or allowlist.
 				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);

@@ -1746,3 +1746,66 @@ test("child before_agent_start applies the owner extension ceiling before render
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
+
+// tools:"parent" 覆盖把 parent 的 shell 显式写进 allowlist；不声明 shell 的 bundled agent（researcher）
+// 不能再被「定义里没有 shell」这条规则剥掉，否则 child 因缺 required tool 启动失败。
+test("a tools:'parent' override keeps the copied shell for a bundled agent that declares none", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-parent-tools-"));
+	const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
+	process.env[SHELL_POLICY_OWNER_ENV] = "parent-tools-owner";
+	try {
+		const registered = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "write", sourceInfo: { source: "builtin" } },
+			{ name: "contact_supervisor", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		];
+
+		async function runResearcher(agent = "researcher") {
+			const { mockPi, setTools, getHandler } = createMockPi();
+			setTools(registered);
+			mockPi.setActiveTools(["read", "write", "contact_supervisor", "powershell"]);
+			mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+			writeFileSync(
+				shellPolicySnapshotPath(tempDir, "parent-tools-owner"),
+				JSON.stringify({
+					version: 2,
+					platform: "win32",
+					shell: { bash: false, powershell: true },
+					parentActiveTools: registered.map(t => t.name),
+				}),
+				"utf8",
+			);
+			registerPromptExtension(mockPi, tempDir, {
+				probeHost: {
+					platform: "win32",
+					env: { Path: "" },
+					exists: path => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" || path.toLowerCase().includes("rg") || path.toLowerCase().includes("fd"),
+				},
+				isStandalone: () => true,
+			});
+			const ctx = { hasUI: true, ui: { notify: () => {}, editor: async () => undefined } };
+			const result = await getHandler("before_agent_start")({ systemPrompt: `<active_agent name="${agent}"/>\n\nYou are ${agent}.`, systemPromptOptions: {} }, ctx);
+			assert.ok(result, "child prompt must be injected");
+			return mockPi.getActiveTools();
+		}
+
+		// 对照：声明 hostShell 的 scout 在同一环境下保留 powershell，证明基线断言不是因为后端不可用
+		assert.equal((await runResearcher("scout")).includes("powershell"), true);
+
+		// 基线：没有覆盖时，researcher 的定义没有 shell，powershell 被剥掉（既有硬能力上限不变）
+		assert.equal((await runResearcher()).includes("powershell"), false);
+
+		// 有 tools:"parent" 覆盖时，parent 复制来的 shell 保留
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ subagents: { agentOverrides: { researcher: { tools: "parent" } } } }), "utf8");
+		assert.equal((await runResearcher()).includes("powershell"), true);
+
+		// 覆盖是显式列表时不算「复制 parent」，仍按定义剥掉
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ subagents: { agentOverrides: { researcher: { tools: ["read", "powershell"] } } } }), "utf8");
+		assert.equal((await runResearcher()).includes("powershell"), false);
+	} finally {
+		if (previousOwner === undefined) delete process.env[SHELL_POLICY_OWNER_ENV];
+		else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});

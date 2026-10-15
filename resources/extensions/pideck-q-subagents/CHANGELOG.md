@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Add `tools: "parent"` agent override, which copies the launching session's currently active tools (builtins by name, extension tools with their provider extensions) into the child instead of Pi's default builtin set. Combine it with `excludeTools` as a blacklist.
+
 ### Removed
 - Remove the bundled Codex, Claude Code, and Cursor external CLI agents and their launch adapters.
 

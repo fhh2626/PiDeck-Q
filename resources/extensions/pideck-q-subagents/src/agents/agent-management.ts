@@ -753,7 +753,9 @@ function formatAgentCapabilitiesLine(agent: AgentConfig, providerNames: Set<stri
 		...(agent.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
 	];
 	let tools = "none";
-	if (agent.tools === undefined && agent.mcpDirectTools === undefined) {
+	if (agent.inheritParentTools === true) {
+		tools = "copied from the launching session's active tools";
+	} else if (agent.tools === undefined && agent.mcpDirectTools === undefined) {
 		tools = "default/ambient";
 	} else if (declaredTools.length > 0) {
 		tools = declaredTools.join(", ");
@@ -794,7 +796,7 @@ function agentCapabilityRunner(agent: AgentConfig, providerNames: Set<string> | 
 
 function agentCapabilityTools(agent: AgentConfig): AgentCapabilityRow["tools"] {
 	return {
-		ambient: agent.tools === undefined && agent.mcpDirectTools === undefined,
+		ambient: agent.inheritParentTools !== true && agent.tools === undefined && agent.mcpDirectTools === undefined,
 		names: listOrEmpty(agent.tools),
 		...(agent.excludeTools !== undefined ? { excludeTools: [...agent.excludeTools] } : {}),
 		mcpDirectTools: listOrEmpty(agent.mcpDirectTools),
