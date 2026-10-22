@@ -32,7 +32,7 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 
 - 真实后端缺失、或父 Agent 最终未激活的 `bash` / `powershell`：从 child 的 active tools 里隐藏。
 - 父会话 reconciliation 会按本机探测结果，把 shell-capable agent 的 `subagents.agentOverrides.<name>.tools` 写成真名 allowlist（只有 PowerShell 就把 `bash` 换成 `powershell`；两个都有就都留；都没有就都去掉）。这是共享 settings，跟当前 tab 是否激活无关。
-- 不覆盖用户已经手写的 `tools`；本扩展上次写入且未被改过的 allowlist 才会随探测结果更新。reviewer 等未声明 shell 的 agent 不写 `tools`。
+- 不覆盖用户已经手写的 `tools`；本扩展上次写入且未被改过的 allowlist 才会随探测结果更新。`tools: parent` 等未声明 shell 的 agent 不写 `tools`。
 - 不改 `pideck-q-subagents/agents/*.md`，也不把 PowerShell 挂到名为 `bash` 的槽。本次会话里 pi-subagents 若已读完 catalog，新 allowlist 从下一次会话或 `/reload` 生效。
 - pwsh adapter 占用 `bash` 名称时：父会话可保留该槽；child 不把它当成真实 bash，也不把它注入共享 child settings。
 - 不扩权：原本不声明 shell 的子 Agent（如 reviewer）不会被追加 `powershell`；child 身份无法解析时只做 prune，绝不主动加工具。

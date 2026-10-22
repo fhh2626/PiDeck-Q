@@ -75,16 +75,20 @@ export const DEFAULT_CONFIG: Config = {
 /** pi-subagents 0.66 custom description; upstream appends its mandatory safety guidance. */
 export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
 
+## Agents
+- readonly: investigation, review, research; cannot edit or write files. writable (default when agent is omitted): can edit files and run commands.
+- Children default to context:"fork" (inherit this conversation). Use context:"fresh" only for independent review or verification, parallel research, or when this conversation is nearly full.
+- Parallel writable children must touch disjoint files or use worktree:true.
+
 ## Execution
-- Before execution, use {action:"list",capabilities:true}; choose an executable, non-disabled native agent from the catalog.
 - In standalone Pi, use either {agent,task,async:false} or {workflowScript,async:false}; never combine them. Omit action for execution. External runners, workflowScriptPath, and named workflows are unavailable.
-- For multi-step or parallel work, use one top-level workflowScript call. The workflow itself needs no agent; every new child inside it must explicitly declare agent:"catalog-name" and async:false.
-- Agent names must be string literals from the catalog. Child configs must be object literals; batch/stage lists must be array literals. No spreads, computed keys, or duplicate keys.
-- One child: return await runs.run("a",{agent:"catalog-name",task:"...",async:false}).
-- Parallel: return await runs.all([{key:"a",agent:"catalog-name",task:"...",async:false},{key:"b",agent:"catalog-name",task:"...",async:false}]). Results are an ordered array, not a key map.
+- For multi-step or parallel work, use one top-level workflowScript call. Every new child inside it must set async:false; agent may be omitted (defaults to writable).
+- Agent names must be string literals ("readonly" or "writable"). Child configs must be object literals; batch/stage lists must be array literals. No spreads, computed keys, or duplicate keys.
+- One child: return await runs.run("a",{agent:"readonly",task:"...",async:false}).
+- Parallel: return await runs.all([{key:"a",agent:"readonly",task:"...",async:false},{key:"b",agent:"readonly",task:"...",async:false}]). Results are an ordered array, not a key map.
 - Use top-level await and return useful results. Observe every launched promise; no nested async helpers.
 - Scripts have no filesystem, shell, or arbitrary Pi tools; host access requires authorized runs.host calls.
-- Only runs.lanes resume-only stages may omit agent/async. Read the workflows guide for lanes and advanced usage.
+- Resume-only calls may omit agent/async. Read the workflows guide for lanes and advanced usage.
 - Use {action:"validate",workflowScript:"..."} to check without launching children.
 
 ## Isolation and runners

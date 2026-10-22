@@ -351,6 +351,10 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 			return { ok: false, code: "thinking_ceiling", message, diagnostics };
 		}
 	}
+	if (agent.inheritParentTools) {
+		// The copied tool set only exists in the launching session; this host-less plan sees the fail-closed placeholder.
+		diagnostics.push({ code: "host_required", severity: "host-required", message: `Agent "${agent.name}" uses tools: "parent"; its exact tool set is copied from the launching session at launch and cannot be previewed here.` });
+	}
 	let toolPlan: PiLaunchToolPlan;
 	const permissionRules = resolvePermissionRules(loadConfig().permissions, agent.permissions);
 	const fast = input.fast ?? agent.fast;

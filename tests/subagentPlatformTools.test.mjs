@@ -27,67 +27,54 @@ test("parseAgentFrontmatter reads hostShell correctly and defaults to false", ()
 	assert.equal(entryInvalid.hostShell, false);
 });
 
-for (const name of ["delegate", "oracle", "worker", "reviewer", "scout"]) {
-	test(`${name} has fixed non-shell base tool allowlist and hostShell: true`, () => {
+for (const name of ["readonly", "writable"]) {
+	test(`${name} copies the parent's tools (tools: parent) and uses the host shell`, () => {
 		const agent = catalog.agents.get(name);
 		assert.ok(agent, `${name} must exist in catalog`);
 		assert.equal(agent.hostShell, true, `${name} must declare hostShell: true`);
+		assert.equal(agent.inheritParentTools, true, `${name} must declare tools: parent`);
+		// No fixed list: the launcher copies the launching session's active tools at spawn time.
+		assert.deepEqual(agent.tools, [], `${name} must not pin a tool list`);
 
-		// Base tools must not require platform-dependent search or shell tools
-		assert.ok(Array.isArray(agent.tools), `${name} must declare a tool list`);
-		assert.ok(agent.tools.includes("read"), `${name} must include read`);
-		assert.equal(agent.tools.includes("grep"), false, `${name} must not declare grep`);
-		assert.equal(agent.tools.includes("find"), false, `${name} must not declare find`);
-		assert.equal(agent.tools.includes("ls"), false, `${name} must not declare ls`);
-		assert.equal(agent.tools.includes("bash"), false, `${name} must not declare fixed bash`);
-		assert.equal(agent.tools.includes("powershell"), false, `${name} must not declare fixed powershell`);
-
-		// Markdown frontmatter verification
-		const filePath = fileURLToPath(new URL(`${name}.md`, agentsDir));
-		const source = readFileSync(filePath, "utf8");
+		const source = readFileSync(fileURLToPath(new URL(`${name}.md`, agentsDir)), "utf8");
 		const frontmatter = source.split("---", 3)[1];
 		assert.ok(frontmatter, `${name} must have agent frontmatter`);
-		assert.match(frontmatter, /^tools:/m);
+		assert.match(frontmatter, /^tools:\s*parent$/m);
 		assert.match(frontmatter, /^hostShell:\s*true$/m);
-		assert.doesNotMatch(frontmatter, /\b(?:grep|find|ls)\b/i);
+		assert.match(frontmatter, /^defaultContext:\s*fork$/m);
+		// Model and thinking are inherited from the parent: no pinned values.
+		assert.doesNotMatch(frontmatter, /^(?:model|thinking):/m);
 	});
 }
 
-test("oracle and reviewer enforce read-only role boundaries without edit or write tools", () => {
-	for (const name of ["oracle", "reviewer"]) {
-		const agent = catalog.agents.get(name);
-		assert.ok(agent);
-		assert.equal(agent.tools.includes("edit"), false, `${name} must not declare edit`);
-		assert.equal(agent.tools.includes("write"), false, `${name} must not declare write`);
-
-		const filePath = fileURLToPath(new URL(`${name}.md`, agentsDir));
-		const source = readFileSync(filePath, "utf8");
-		const frontmatter = source.split("---", 3)[1];
-		assert.match(frontmatter, /excludeTools:.*edit/);
-		assert.match(frontmatter, /excludeTools:.*write/);
+test("only readonly blocks edit and write, and its prompt forbids file-modifying shell use", () => {
+	const readonlySource = readFileSync(fileURLToPath(new URL("readonly.md", agentsDir)), "utf8");
+	const readonlyFrontmatter = readonlySource.split("---", 3)[1];
+	assert.match(readonlyFrontmatter, /^excludeTools:\s*edit,\s*write$/m);
+	for (const phrase of [/git add\/commit\/checkout/, /package installs/, /output redirection/, /\brm\b/, /\bmv\b/]) {
+		assert.match(readonlySource, phrase);
 	}
+
+	const writableSource = readFileSync(fileURLToPath(new URL("writable.md", agentsDir)), "utf8");
+	assert.doesNotMatch(writableSource.split("---", 3)[1], /excludeTools/);
+	// Empty body: the writable agent adds no prompt text of its own.
+	assert.equal(writableSource.split("---").slice(2).join("---").trim(), "");
 });
 
-test("delegate and worker retain necessary implementation tools", () => {
-	for (const name of ["delegate", "worker"]) {
-		const agent = catalog.agents.get(name);
-		assert.ok(agent);
-		assert.ok(agent.tools.includes("read"), `${name} must include read`);
-		assert.ok(agent.tools.includes("edit"), `${name} must include edit`);
-		assert.ok(agent.tools.includes("write"), `${name} must include write`);
-		assert.ok(agent.tools.includes("contact_supervisor"), `${name} must include contact_supervisor`);
-	}
+test("only the readonly and writable agents are bundled", () => {
+	assert.deepEqual([...catalog.agents.keys()].sort(), ["readonly", "writable"]);
 });
 
-test("scout retains write for handoff output but does not declare edit", () => {
-	const scout = catalog.agents.get("scout");
-	assert.ok(scout);
-	assert.ok(scout.tools.includes("read"), "scout must include read");
-	assert.ok(scout.tools.includes("write"), "scout must include write for output");
-	assert.ok(scout.tools.includes("contact_supervisor"), "scout must include contact_supervisor");
-	assert.equal(scout.tools.includes("edit"), false, "scout must not declare edit");
+test("a tools: parent frontmatter marks the catalog entry and drops any listed tools", () => {
+	const entry = parseAgentFrontmatter("---\nname: parent-agent\ntools: parent\n---\nPrompt", "x.md");
+	assert.ok(entry);
+	assert.equal(entry.inheritParentTools, true);
+	assert.deepEqual(entry.tools, []);
+	const listed = parseAgentFrontmatter("---\nname: listed-agent\ntools: read, edit\n---\nPrompt", "x.md");
+	assert.ok(listed);
+	assert.equal(listed.inheritParentTools, undefined);
+	assert.deepEqual(listed.tools, ["read", "edit"]);
 });
-
 test("mapAgentToolsToHostShells resolves platform shells accurately for hostShell agents", () => {
 	const baseTools = ["read", "contact_supervisor"];
 

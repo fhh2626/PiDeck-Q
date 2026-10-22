@@ -566,7 +566,7 @@ function parseSingleRequiredArg(args: string, usage: string): { ok: true; value:
 }
 
 function getProfileWorkerModel(profile: { subagents?: { agentOverrides?: Record<string, { model?: string }> } }): string | undefined {
-	const model = profile.subagents?.agentOverrides?.worker?.model;
+	const model = profile.subagents?.agentOverrides?.writable?.model;
 	return typeof model === "string" && model.trim() ? model.trim() : undefined;
 }
 
@@ -1188,7 +1188,7 @@ export function registerSlashCommands(
 					if (workerModel && typeof pi.setModel === "function" && typeof ctx.modelRegistry?.find === "function" && typeof ctx.modelRegistry?.getAvailable === "function") {
 						const shouldSwitch = await ctx.ui.confirm(
 							"",
-							`Profile loaded. Also switch this session to the profile worker model?\n\n${workerModel}`,
+							`Profile loaded. Also switch this session to the profile writable model?\n\n${workerModel}`,
 						);
 						if (shouldSwitch) {
 							const modelInfo = findModelInfo(workerModel, ctx.modelRegistry.getAvailable().map(toModelInfo));
@@ -1202,7 +1202,7 @@ export function registerSlashCommands(
 							}
 						}
 					} else if (workerModel) {
-						lines.push(`Profile worker model: ${workerModel}`);
+						lines.push(`Profile writable model: ${workerModel}`);
 					}
 
 					sendSlashText(pi, lines.join("\n"));

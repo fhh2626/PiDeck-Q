@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+- Add `tools: "parent"` agent override, which copies the launching session's currently active tools (builtins by name, extension tools with their provider extensions) into the child instead of Pi's default builtin set. Combine it with `excludeTools` as a blacklist.
+
+- Add the `readonly` and `writable` builtin agents. Both use `tools: parent` (the frontmatter form of the `tools: "parent"` override), inherit the parent's model and thinking, and default to forked context. `readonly` excludes `edit` and `write` and carries a strict read-only prompt.
+- Run a single new launch as `writable` when no `agent` is given; an unknown agent name now fails with the list of available agents.
+
+### Fixed
+- Yield foreground workflow control on supervisor decisions while retaining the original VM and authoritative child completion, including resumed children, parallel/repeated asks, status/wait, interruption, and session replacement. Never replay a live writer to answer a decision.
+- Bound abort cleanup for unresponsive host/steer callbacks without mutating default or frozen abort reasons; preserve error classification, causes, and partial failure evidence, and identify operations whose exit is not confirmed.
+- Preserve async/provider completions and failure policy in mixed foreground waits, settle external attention by its owned tool call, and keep live retained VMs visible to compatible host-session liveness checks.
+- Expose current supervisor question bodies, expire stale reply hints in journal cards, and reject late replies with an explicit undelivered result. Read-only roles report prohibited checks instead of repeatedly asking for exceptions.
+- Apply the default agent before public input validation and workflow output admission, so omitted-agent calls behave like explicit `writable` calls and parallel inherited output paths remain isolated.
+- Register foreground direct MCP tools through the SDK's session-local MCP provider, preserving strict selections, required-tool diagnostics, and per-child connection cleanup without process-global MCP environment changes.
+
+### Removed
+- Replace the scout, researcher, worker, reviewer, oracle, and delegate builtin agents (and their aliases) with `readonly` and `writable`.
+- Remove the bundled Codex, Claude Code, and Cursor external CLI agents and their launch adapters.
+
 ## [0.66.0] - 2026-09-06
 
 ### Highlights

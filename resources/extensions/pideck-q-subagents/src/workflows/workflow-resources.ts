@@ -158,7 +158,7 @@ function resolveReview(args: Readonly<Record<string, unknown>>): ReturnType<Work
 	const task = args.task;
 	if (typeof task !== "string" || !task.trim()) return { error: "workflow 'review' requires a non-empty string args.task." };
 	return {
-		script: `return (await runs.run("review", { agent: "reviewer", task: ${JSON.stringify(task.trim())} })).output;`,
+		script: `return (await runs.run("review", { agent: "readonly", task: ${JSON.stringify(task.trim())} })).output;`,
 	};
 }
 

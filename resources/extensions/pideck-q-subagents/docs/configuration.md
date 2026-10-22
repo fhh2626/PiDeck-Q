@@ -58,7 +58,7 @@ For a native Pi `model_verification_failed` where your proxy accepts `claude-hai
 }
 ```
 
-Replace `YOUR_PROVIDER` with the resolved Pi provider ID. Keep the outgoing model alias unchanged. This native remedy already exists in v0.65.1; it does not infer equivalence from provider prefixes or dates. The built-in external `claude-code` adapter does not invoke this verifier or use this setting. If an external run shows this diagnostic, identify the installed version, resolved runner kind/adapter, and error location before applying a native remedy. Thanks to [sixtus](https://github.com/sixtus) for the concrete request-ID/response-ID example in [#1922](https://github.com/nicobailon/pi-subagents/issues/1922).
+Replace `YOUR_PROVIDER` with the resolved Pi provider ID. Keep the outgoing model alias unchanged. This native remedy already exists in v0.65.1; it does not infer equivalence from provider prefixes or dates. Thanks to [sixtus](https://github.com/sixtus) for the concrete request-ID/response-ID example in [#1922](https://github.com/nicobailon/pi-subagents/issues/1922).
 
 ## `modelExclusions`
 
@@ -112,7 +112,7 @@ Controls only the main chat `subagent` call/result renderer. It does not change 
 With `"summary"`, a tool result looks like this:
 
 ```text
-✓ reviewer · completed
+✓ readonly · completed
 ```
 
 ## `foregroundDetachShortcut`

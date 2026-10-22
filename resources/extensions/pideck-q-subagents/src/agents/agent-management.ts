@@ -31,7 +31,7 @@ import { resolveEffectiveThinking, toModelInfo } from "../shared/model-info.ts";
 import { resolveSubagentModelOverride, type ParentModel } from "../runs/shared/model-fallback.ts";
 import { validateToolBudgetConfig } from "../runs/shared/tool-budget.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
-import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL, isCodeOwnedExternalCliAdapterId, resolveExternalCliRunnerStatus, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
+import { REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE, resolveExternalCliRunnerStatus, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
 import { resolveExternalCliBinaryAvailability, type ExternalCliBinaryAvailability } from "../runs/shared/external-cli-preflight.ts";
 import type { AcceptanceInput, AgentCapabilitiesSnapshot, AgentCapabilityRow, Details, ExtensionConfig, ToolBudgetConfig } from "../shared/types.ts";
 import { getProjectConfigDir } from "../shared/utils.ts";
@@ -445,17 +445,16 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 			if (runner.type === "pi" && Object.keys(runner).every((key) => key === "type")) target.runner = { type: "pi" };
 			else if (runner.type === "external-cli" && typeof runner.command === "string" && runner.command.trim()
 				&& (runner.args === undefined || (Array.isArray(runner.args) && runner.args.every((arg) => typeof arg === "string")))
-				&& (runner.adapter === undefined || isCodeOwnedExternalCliAdapterId(runner.adapter))
-				&& (runner.adapter === undefined || runner.args === undefined || runner.args.length === 0)
+				&& runner.adapter === undefined
 				&& (runner.promptDelivery === undefined || runner.promptDelivery === "stdin")
-				&& Object.keys(runner).every((key) => ["type", "adapter", "command", "args", "promptDelivery"].includes(key))) {
+				&& Object.keys(runner).every((key) => ["type", "command", "args", "promptDelivery"].includes(key))) {
 				const runnerArgs = Array.isArray(runner.args) ? runner.args.filter((arg): arg is string => typeof arg === "string") : undefined;
-				target.runner = { type: "external-cli", ...(isCodeOwnedExternalCliAdapterId(runner.adapter) ? { adapter: runner.adapter } : {}), command: runner.command.trim(), ...(runnerArgs?.length ? { args: runnerArgs } : {}), ...(runner.promptDelivery ? { promptDelivery: "stdin" } : {}) };
+				target.runner = { type: "external-cli", command: runner.command.trim(), ...(runnerArgs?.length ? { args: runnerArgs } : {}), ...(runner.promptDelivery ? { promptDelivery: "stdin" } : {}) };
 			} else if (runner.type === "external-job" && typeof runner.provider === "string" && runner.provider.trim() === runner.provider && runner.provider
 				&& (runner.options === undefined || (runner.options && typeof runner.options === "object" && !Array.isArray(runner.options) && isJsonSerializable(runner.options)))
 				&& Object.keys(runner).every((key) => ["type", "provider", "options"].includes(key))) {
 				target.runner = { type: "external-job", provider: runner.provider, ...(runner.options ? { options: runner.options as Record<string, unknown> } : {}) };
-			} else return `config.runner must be { type: 'pi' }, { type: 'external-cli', adapter?: ${CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL}, command: string, args?: string[], promptDelivery?: 'stdin' }, or { type: 'external-job', provider: string, options?: object }.`;
+			} else return `config.runner must be { type: 'pi' }, { type: 'external-cli', command: string, args?: string[], promptDelivery?: 'stdin' }, or { type: 'external-job', provider: string, options?: object }. ${REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE}`;
 		} else return "config.runner must be an object, false, or empty string when provided.";
 	}
 	if (hasKey(cfg, "model")) {
@@ -754,7 +753,9 @@ function formatAgentCapabilitiesLine(agent: AgentConfig, providerNames: Set<stri
 		...(agent.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
 	];
 	let tools = "none";
-	if (agent.tools === undefined && agent.mcpDirectTools === undefined) {
+	if (agent.inheritParentTools === true) {
+		tools = "copied from the launching session's active tools";
+	} else if (agent.tools === undefined && agent.mcpDirectTools === undefined) {
 		tools = "default/ambient";
 	} else if (declaredTools.length > 0) {
 		tools = declaredTools.join(", ");
@@ -781,12 +782,13 @@ function agentCapabilityRunner(agent: AgentConfig, providerNames: Set<string> | 
 	if (!runner || runner.type === "pi") return PI_AGENT_RUNNER;
 	if (runner.type === "external-cli") {
 		const availability = externalCliAvailability.get(runner.command)!;
+		const status = resolveExternalCliRunnerStatus(runner);
 		return {
 			type: "external-cli",
-			adapter: runner.adapter,
+			adapter: status.adapter.id,
 			command: runner.command,
 			...availability,
-			capabilities: resolveExternalCliRunnerStatus(runner).capabilities,
+			capabilities: status.capabilities,
 		};
 	}
 	return { type: "external-job", provider: runner.provider, available: providerNames?.has(runner.provider), capabilities: EXTERNAL_JOB_CAPABILITIES };
@@ -794,7 +796,7 @@ function agentCapabilityRunner(agent: AgentConfig, providerNames: Set<string> | 
 
 function agentCapabilityTools(agent: AgentConfig): AgentCapabilityRow["tools"] {
 	return {
-		ambient: agent.tools === undefined && agent.mcpDirectTools === undefined,
+		ambient: agent.inheritParentTools !== true && agent.tools === undefined && agent.mcpDirectTools === undefined,
 		names: listOrEmpty(agent.tools),
 		...(agent.excludeTools !== undefined ? { excludeTools: [...agent.excludeTools] } : {}),
 		mcpDirectTools: listOrEmpty(agent.mcpDirectTools),

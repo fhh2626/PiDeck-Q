@@ -27,6 +27,8 @@ import { extractImageContent } from "../../shared/imageContent";
 import { applyImageDisplayBudget } from "../../shared/imageLimits";
 import { ScanReadQueue } from "./ScanReadQueue";
 import { readSubagentRecords } from "./readSubagentRecords";
+import { SHARED_SUBAGENT_ARTIFACTS_DIR } from "./sessionDeleteResidue";
+import { collectSessionDeleteResidue, localSessionDeleteFiles } from "./sessionDeleteCollection";
 import { readWslScanBatches, WslScanCommandError, type WslScanFileRead } from "./WslScanBatchReader";
 
 type SessionScannerCopyKey = Extract<MainProcessTranslationKey,
@@ -790,14 +792,16 @@ export class SessionScanner {
   }
 
   /**
-   * 删除会话文件，同时清理同级子会话目录（如果存在）。
+   * 删除会话文件，同时清理仍属于这次会话的残留。
    *
    * 本地路径：统一移入系统回收站（可恢复），拒绝静默硬删；
    * WSL 路径：mv 到会话根下的 .pideck-trash 回收目录（A4）。
    *
    * 目录结构约定：父会话 <stem>.jsonl 与子会话目录 <stem>/ 相邻。
-   * 删除父会话时一并移除 <stem>/ 目录及其下所有子会话 JSONL，
-   * 避免残留孤儿目录。仅删除单个子会话时（无同级目录）行为不变。
+   * 删除父会话时一并移除 <stem>/ 目录及其下所有子会话 JSONL。
+   * 编辑备份躺在会话文件旁边，子代理产物在共用的 subagent-artifacts/ 里，
+   * 两者都不在 <stem>/ 中，必须单独收走；产物只删本次会话的 runId，不能删整个共用目录。
+   * 残留先于主文件处理：失败时会话还在，用户可以重试。
    */
   async delete(filePath: string): Promise<void> {
     if (this.isWslPath(filePath)) {
@@ -805,6 +809,7 @@ export class SessionScanner {
       return;
     }
 
+    await this.trashLocalDeleteResidue(filePath);
     // 先删除同级子会话目录（如果存在），再删除文件本身。
     await this.deleteSiblingDir(filePath);
     // catalog 可能保留一个已被 pi/系统回收站移走的历史路径；删除接口必须幂等。
@@ -1068,6 +1073,31 @@ export class SessionScanner {
     return dir;
   }
 
+  /**
+   * 收走不在同名子目录里的本会话残留。
+   * 没有可归属的文件时不触碰回收站；有残留但没有回收站时抛错，不硬删。
+   */
+  private async trashLocalDeleteResidue(filePath: string): Promise<void> {
+    const residue = await this.listLocalDeleteResidue(filePath);
+    const targets = [
+      ...residue.backups.map((target) => ({ target, source: "sessions:delete-backup" })),
+      ...residue.artifacts.map((target) => ({ target, source: "sessions:delete-artifact" })),
+    ];
+    if (targets.length === 0) return;
+    if (!this.trashPath) {
+      throw new Error("Trash service unavailable");
+    }
+    for (const item of targets) {
+      if (!existsSync(item.target)) continue;
+      await this.trashPath(item.target, { source: item.source });
+    }
+  }
+
+  /** IO/归属策略在同域 helper 中；扫描器只注入宿主文件边界。 */
+  private listLocalDeleteResidue(filePath: string): Promise<{ backups: string[]; artifacts: string[] }> {
+    return collectSessionDeleteResidue(filePath, this.getSiblingDir(filePath), localSessionDeleteFiles);
+  }
+
   /** 删除 Windows 同级子会话目录（如果存在） */
   private async deleteSiblingDir(filePath: string): Promise<void> {
     const siblingDir = this.getSiblingDir(filePath);
@@ -1082,21 +1112,68 @@ export class SessionScanner {
   /**
    * WSL 会话的可恢复删除：Windows 回收站看不到 WSL 文件系统，所以移到
    * <扫描根>/.pideck-trash/<时间戳>-<uuid>/ 下（常规扫描跳过该目录）。
-   * 先移子会话目录、再移父文件；任一步失败直接抛错，不会出现“子目录没删掉、父文件却没了”。
+   * 先移本会话的编辑备份和子代理产物，再移子会话目录和父文件；任一步失败直接抛错。
    * 文件已不存在时视为成功，保持删除接口幂等。
    */
   private async softDeleteWsl(filePath: string): Promise<void> {
     const root = this.findSessionsRootForFile(filePath);
-    const bucket = posixJoin(root, SESSION_TRASH_DIR_NAME, `${Date.now()}-${randomUUID()}`);
     const siblingDir = this.getSiblingDir(filePath);
     const hasSibling = Boolean(siblingDir)
       && this.normalize(siblingDir!) !== this.normalize(this.wslSessionsDir)
-      && await this.wslPathExists(siblingDir!);
-    const hasFile = await this.wslPathExists(filePath);
-    if (!hasSibling && !hasFile) return;
+      && await this.wslDeleteTest("-d", siblingDir!);
+    const hasFile = await this.wslDeleteTest("-e", filePath);
+    // 先收集结构化结果及旧 runId 目录，任何探测失败都不得变成「无残留」。
+    const residue = await this.listWslDeleteResidue(filePath, hasSibling ? siblingDir : undefined);
+    if (!hasSibling && !hasFile && residue.backups.length === 0 && residue.artifacts.length === 0) return;
+    const bucket = posixJoin(root, SESSION_TRASH_DIR_NAME, `${Date.now()}-${randomUUID()}`);
     await this.mkdirWsl(bucket);
+    const artifactsDir = posixJoin(posixDirname(filePath), SHARED_SUBAGENT_ARTIFACTS_DIR);
+    for (const artifact of residue.artifacts) {
+      const relative = artifact.startsWith(`${artifactsDir}/`)
+        ? artifact.slice(artifactsDir.length + 1)
+        : posixBasename(artifact);
+      const dest = posixJoin(bucket, SHARED_SUBAGENT_ARTIFACTS_DIR, relative);
+      await this.mkdirWsl(posixDirname(dest));
+      await this.moveWsl(artifact, dest, "no-clobber");
+    }
+    for (const backup of residue.backups) {
+      await this.moveWsl(backup, posixJoin(bucket, posixBasename(backup)), "no-clobber");
+    }
     if (hasSibling) await this.moveWsl(siblingDir!, posixJoin(bucket, posixBasename(siblingDir!)), "no-clobber");
     if (hasFile) await this.moveWsl(filePath, posixJoin(bucket, posixBasename(filePath)), "no-clobber");
+  }
+
+  /** WSL 与本地共用归属策略，只有文件操作适配不同。 */
+  private listWslDeleteResidue(
+    filePath: string,
+    siblingDir: string | undefined,
+  ): Promise<{ backups: string[]; artifacts: string[] }> {
+    return collectSessionDeleteResidue(filePath, siblingDir, {
+      listNames: (dir) => this.listWslNames(dir),
+      isDirectory: async (path) => !(await this.wslDeleteTest("-L", path)) && await this.wslDeleteTest("-d", path),
+      isFile: async (path) => !(await this.wslDeleteTest("-L", path)) && await this.wslDeleteTest("-f", path),
+      readSession: async (path) => await this.wslDeleteTest("-f", path) ? this.readWslFile(path) : undefined,
+    }, true);
+  }
+
+  /** Confirmed missing directories are empty; failed commands reject before deleting ownership. */
+  private async listWslNames(dir: string): Promise<string[]> {
+    if (!(await this.wslDeleteTest("-e", dir))) return [];
+    const output = await this.execWsl(["ls", "-1A", dir]);
+    return output.split(/\n/).filter((line) => line.length > 0);
+  }
+
+  /** test returns 1 without diagnostics for a negative result; launch/timeout errors are not absence. */
+  private wslDeleteTest(flag: "-e" | "-d" | "-f" | "-L", path: string): Promise<boolean> {
+    return new Promise((resolveTest, reject) => {
+      execFile(this.wslExePath, ["-d", this.wslConfig!.distro, "-u", this.wslConfig!.user, "test", flag, path], {
+        shell: this.wslShell, encoding: "utf8", timeout: 10000, windowsHide: true,
+      }, (error, _stdout, stderr) => {
+        if (!error) resolveTest(true);
+        else if (error.code === 1 && !error.killed && !error.signal && !String(stderr ?? "").trim()) resolveTest(false);
+        else reject(error);
+      });
+    });
   }
 
   /**

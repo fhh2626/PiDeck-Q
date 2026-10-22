@@ -247,7 +247,7 @@ export function toDelegationUpdate(requestId: string, update: PromptTemplateBrid
 				: undefined;
 		return {
 			index: entry.index,
-			agent: entry.agent ?? "delegate",
+			agent: entry.agent ?? "writable",
 			status: entry.status,
 			currentTool: entry.currentTool,
 			currentToolArgs: entry.currentToolArgs,

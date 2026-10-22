@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { transformSystemPrompt } from '../transform.ts';
+import { stripChildDocumentation, transformSystemPrompt } from '../transform.ts';
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from '../defaults.ts';
 
 const identity = 'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.';
@@ -24,6 +24,19 @@ test('Pi-only installation needs neither optional plugin nor interactive tools',
   assert.match(result.systemPrompt, /You are Pi,/);
   assert.doesNotMatch(result.systemPrompt, /Pi documentation|ask_question|`todo`|PowerShell|## Delegation/);
   assert.ok(result.systemPrompt.endsWith('\n\n<project_context>KEEP EXACTLY\r\n</project_context>\nCurrent working directory: /project'));
+});
+test('child documentation strip removes only the Pi documentation block and keeps the role prompt', () => {
+  const role = '\n\n<active_agent name="readonly"/>\n\nYou are a read-only subagent.\nCurrent working directory: /project';
+  const prompt = fixture(coreRules, role);
+  const stripped = stripChildDocumentation(prompt, DEFAULT_CONFIG);
+  assert.doesNotMatch(stripped, /Pi documentation|Main documentation|Additional docs/);
+  assert.ok(stripped.startsWith(identity + '\n\nAvailable tools:\n- read: Read file contents'));
+  assert.ok(stripped.includes('- Show file paths clearly when working with files\n\n<active_agent name="readonly"/>'));
+  assert.ok(stripped.endsWith(role.trimStart()));
+  assert.equal(stripChildDocumentation(stripped, DEFAULT_CONFIG), stripped);
+  assert.equal(stripChildDocumentation(prompt, { ...DEFAULT_CONFIG, removeDocumentation: false }), prompt);
+  assert.equal(stripChildDocumentation(prompt, { ...DEFAULT_CONFIG, enabled: false }), prompt);
+  assert.equal(stripChildDocumentation('<active_agent name="worker"/>\nYou are worker.', DEFAULT_CONFIG), '<active_agent name="worker"/>\nYou are worker.');
 });
 test('inactive bash and powershell rows disappear with their shell guidelines', () => {
   const prompt = fixture(coreRules).replace(

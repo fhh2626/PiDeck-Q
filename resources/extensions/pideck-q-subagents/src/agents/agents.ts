@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, AcceptanceRole, AgentRunnerConfig, OutputMode, ToolBudgetConfig } from "../shared/types.ts";
-import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL, isCodeOwnedExternalCliAdapterId, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
+import { REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
 import { expandHomePath } from "../shared/settings.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
@@ -39,11 +39,11 @@ export interface AgentMemoryConfig {
 }
 
 export function defaultSystemPromptMode(name: string): SystemPromptMode {
-	return name === "delegate" ? "append" : "replace";
+	return "replace";
 }
 
 export function defaultInheritProjectContext(name: string): boolean {
-	return name === "delegate";
+	return false;
 }
 
 export function defaultInheritSkills(): boolean {
@@ -51,6 +51,7 @@ export function defaultInheritSkills(): boolean {
 }
 
 export interface BuiltinAgentOverrideBase {
+	inheritParentTools?: boolean;
 	description?: string;
 	output?: string;
 	outputMode?: OutputMode;
@@ -100,7 +101,7 @@ interface BuiltinAgentOverrideConfig {
 	disabled?: boolean;
 	systemPrompt?: string;
 	skills?: string[] | false;
-	tools?: string[] | false | "inherit";
+	tools?: string[] | false | "inherit" | "parent";
 	excludeTools?: string[] | false;
 	allowNestedSubagents?: boolean;
 	extensions?: string[] | false;
@@ -138,6 +139,8 @@ export interface AgentConfig {
 	advertise?: boolean;
 	aliases?: string[];
 	tools?: string[];
+	/** Set by a `tools: "parent"` override; resolved into `tools` at launch from the parent's active tools. */
+	inheritParentTools?: boolean;
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	mcpDirectTools?: string[];
@@ -768,6 +771,7 @@ function cloneOverrideBase(agent: AgentConfig): BuiltinAgentOverrideBase {
 		...(agent.skills ? { skills: [...agent.skills] } : {}),
 		...(agent.skillPath ? { skillPath: [...agent.skillPath] } : {}),
 		...(agent.tools ? { tools: [...agent.tools] } : {}),
+		...(agent.inheritParentTools === true ? { inheritParentTools: true } : {}),
 		...(agent.excludeTools ? { excludeTools: [...agent.excludeTools] } : {}),
 		...(agent.allowNestedSubagents !== undefined ? { allowNestedSubagents: agent.allowNestedSubagents } : {}),
 		...(agent.mcpDirectTools ? { mcpDirectTools: [...agent.mcpDirectTools] } : {}),
@@ -945,10 +949,11 @@ function parseToolsOverride(
 	meta: { filePath: string; name: string },
 ): BuiltinAgentOverrideConfig["tools"] | undefined {
 	if (typeof value === "string" && value.trim() === "inherit") return "inherit";
+	if (typeof value === "string" && value.trim() === "parent") return "parent";
 	if (value === undefined || value === false || Array.isArray(value)) {
 		return parseOverrideStringArrayOrFalse(value, { ...meta, field: "tools" });
 	}
-	throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid 'tools'; expected an array of strings, "inherit", or false.`);
+	throw new Error(`Builtin override '${meta.name}' in '${meta.filePath}' has invalid 'tools'; expected an array of strings, "inherit", "parent", or false.`);
 }
 
 function parseBuiltinOverrideEntry(
@@ -1346,10 +1351,21 @@ function applySubagentDefaults(
 	);
 }
 
-function applyToolsOverride(target: AgentConfig, toolsOverride: string[] | false | "inherit"): void {
+function applyToolsOverride(target: AgentConfig, toolsOverride: string[] | false | "inherit" | "parent"): void {
+	// Any explicit tools override replaces an earlier "parent" marker (e.g. user vs project scope).
+	delete target.inheritParentTools;
 	if (toolsOverride === "inherit") {
 		delete target.tools;
 		delete target.mcpDirectTools;
+		return;
+	}
+	if (toolsOverride === "parent") {
+		// Resolved at launch against the launching session's active tools; see parent-tool-inheritance.ts.
+		// The empty allowlist is a fail-closed placeholder: any launch path that forgets to resolve the
+		// marker gives the child no tools instead of silently widening it to Pi's default builtin set.
+		target.tools = [];
+		delete target.mcpDirectTools;
+		target.inheritParentTools = true;
 		return;
 	}
 	const { tools, mcpDirectTools } = splitToolList(toolsOverride === false ? [] : toolsOverride);
@@ -1510,7 +1526,7 @@ function applyCustomAgentOverrides(
 
 export function buildBuiltinOverrideConfig(
 	base: BuiltinAgentOverrideBase,
-	draft: Pick<AgentConfig, "model" | "modelProvider" | "fallbackModels" | "fast" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritGlobalContext" | "inheritSkills" | "defaultContext" | "acceptanceRole" | "disabled" | "systemPrompt" | "skills" | "tools" | "allowNestedSubagents" | "mcpDirectTools" | "extensions" | "subagentOnlyExtensions" | "mutationTools" | "completionGuard" | "toolBudget"> & Partial<Pick<AgentConfig, "description" | "output" | "outputMode" | "defaultReads" | "excludeTools">>,
+	draft: Pick<AgentConfig, "model" | "modelProvider" | "fallbackModels" | "fast" | "thinking" | "systemPromptMode" | "inheritProjectContext" | "inheritGlobalContext" | "inheritSkills" | "defaultContext" | "acceptanceRole" | "disabled" | "systemPrompt" | "skills" | "tools" | "allowNestedSubagents" | "mcpDirectTools" | "extensions" | "subagentOnlyExtensions" | "mutationTools" | "completionGuard" | "toolBudget"> & Partial<Pick<AgentConfig, "description" | "output" | "outputMode" | "defaultReads" | "excludeTools" | "inheritParentTools">>,
 ): BuiltinAgentOverrideConfig | undefined {
 	const override: BuiltinAgentOverrideConfig = {};
 
@@ -1538,7 +1554,11 @@ export function buildBuiltinOverrideConfig(
 
 	const baseTools = joinToolList(base);
 	const draftTools = joinToolList(draft);
-	if (!arraysEqual(draftTools, baseTools)) override.tools = draftTools ? [...draftTools] : false;
+	if ((draft.inheritParentTools === true) !== (base.inheritParentTools === true)) {
+		override.tools = draft.inheritParentTools === true ? "parent" : draftTools ? [...draftTools] : false;
+	} else if (draft.inheritParentTools !== true && !arraysEqual(draftTools, baseTools)) {
+		override.tools = draftTools ? [...draftTools] : false;
+	}
 	if (!arraysEqual(draft.excludeTools, base.excludeTools)) override.excludeTools = draft.excludeTools ? [...draft.excludeTools] : false;
 	if (draft.allowNestedSubagents !== base.allowNestedSubagents) override.allowNestedSubagents = draft.allowNestedSubagents === true;
 	if (!arraysEqual(draft.extensions, base.extensions)) override.extensions = draft.extensions ? [...draft.extensions] : false;
@@ -1882,8 +1902,7 @@ function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string)
 	if (runner.args !== undefined && (!Array.isArray(runner.args) || runner.args.some((arg) => typeof arg !== "string"))) {
 		throw new Error(`Agent '${agentName}' external-cli runner args must be an array of strings.`);
 	}
-	if (runner.adapter !== undefined && !isCodeOwnedExternalCliAdapterId(runner.adapter)) throw new Error(`Agent '${agentName}' external-cli runner adapter must be ${CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL}.`);
-	if (runner.adapter !== undefined && Array.isArray(runner.args) && runner.args.length > 0) throw new Error(`Agent '${agentName}' ${runner.adapter} adapter owns its argv; runner args are not supported.`);
+	if (runner.adapter !== undefined) throw new Error(`Agent '${agentName}' external-cli runner adapter is not supported. ${REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE}`);
 	if (runner.promptDelivery !== undefined && runner.promptDelivery !== "stdin") {
 		throw new Error(`Agent '${agentName}' external-cli runner promptDelivery must be 'stdin'.`);
 	}
@@ -1894,7 +1913,6 @@ function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string)
 	const runnerArgs = Array.isArray(runner.args) ? runner.args.filter((arg): arg is string => typeof arg === "string") : undefined;
 	return {
 		type: "external-cli",
-		...(isCodeOwnedExternalCliAdapterId(runner.adapter) ? { adapter: runner.adapter } : {}),
 		command: runner.command.trim(),
 		...(runnerArgs?.length ? { args: runnerArgs } : {}),
 		...(runner.promptDelivery ? { promptDelivery: "stdin" as const } : {}),
@@ -1989,7 +2007,9 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 			else throw new Error(`Agent '${localName}' has invalid advertise frontmatter; expected true or false.`);
 		}
 		const rawTools = parseFrontmatterList(frontmatter.tools);
-		const parsedTools = splitToolList(rawTools);
+		// `tools: parent` mirrors the launching session's tools; it is resolved at launch (parent-tool-inheritance.ts).
+		const inheritParentTools = rawTools?.length === 1 && rawTools[0]?.trim() === "parent";
+		const parsedTools: { tools?: string[]; mcpDirectTools?: string[] } = inheritParentTools ? { tools: [] } : splitToolList(rawTools);
 		const tools = parsedTools.tools ?? [];
 		const mcpDirectTools = parsedTools.mcpDirectTools ?? [];
 		const excludeTools = parseFrontmatterList(frontmatter.excludeTools);
@@ -2114,7 +2134,9 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 			description: frontmatter.description,
 			...(advertise !== undefined ? { advertise } : {}),
 			...(aliases !== undefined ? { aliases } : {}),
+			// With the parent marker, `tools` stays an empty fail-closed placeholder until launch resolution.
 			...(rawTools !== undefined ? { tools } : {}),
+			...(inheritParentTools ? { inheritParentTools: true } : {}),
 			...(excludeTools !== undefined ? { excludeTools } : {}),
 			...(allowNestedSubagents !== undefined ? { allowNestedSubagents } : {}),
 			...(mcpDirectTools.length > 0 ? { mcpDirectTools } : {}),

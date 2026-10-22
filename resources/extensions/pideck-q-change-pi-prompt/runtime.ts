@@ -34,6 +34,7 @@ import {
 	type SubagentCatalog,
 } from './subagentCatalog.ts';
 import {
+	agentInheritsParentTools,
 	reconcileChildEnvironments,
 	readEffectiveShellPolicySnapshot,
 	resolveCurrentChangePiPromptPath,
@@ -52,7 +53,7 @@ import {
 	type ShellAvailability,
 	type ShellProbeHost,
 } from './shellAvailability.ts';
-import { transformSystemPrompt } from './transform.ts';
+import { stripChildDocumentation, transformSystemPrompt } from './transform.ts';
 import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale } from './copy.ts';
 
 export interface ReconciliationOutcome {
@@ -479,7 +480,13 @@ export function registerPromptExtension(
 				const agentName = getActiveAgentName(event.systemPrompt);
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
 				// Shell capability must come from the agent definition: the child's own list may already be pruned.
-				const wantsShell = !!childAgent && (childAgent.tools.some(isShellToolName) || childAgent.hostShell === true);
+				// A `tools: "parent"` override copies the parent's shells into the allowlist, so it counts as declaring them.
+				const wantsShell = !!childAgent && (
+					childAgent.tools.some(isShellToolName)
+					|| childAgent.hostShell === true
+					|| childAgent.inheritParentTools === true
+					|| agentInheritsParentTools(agentDir, childAgent.name)
+				);
 				// A valid owner snapshot is authoritative. Without one, fail closed: a child
 				// cannot infer the parent's active tools from its own registry or allowlist.
 				const snapshot = readEffectiveShellPolicySnapshot(agentDir, probeHost.platform, childShellPolicyOwnerKey);
@@ -512,7 +519,9 @@ export function registerPromptExtension(
 					childActiveTools = reconciled;
 				}
 
-				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, childActiveTools);
+				// Role prompt stays intact; only the stock Pi documentation block is dropped, matching the parent.
+				const childPrompt = stripChildDocumentation(event.systemPrompt, settings!.config);
+				const nextPrompt = injectChildToolEnvironment(childPrompt, childActiveTools);
 				lastStatus = ['child-subagent-mode: preserved role prompt, injected tool environment', ...lastShellStatus];
 				if (nextPrompt !== event.systemPrompt) {
 					return { systemPrompt: nextPrompt };
@@ -779,7 +788,7 @@ export function registerPromptExtension(
 		if (standalone && targetAgentName && runnerType === 'unknown') {
 			return {
 				block: true,
-				reason: `[change-pi-prompt] 无法确认 Agent "${targetAgentName}" 的 runner 类型；standalone Pi 下拒绝执行。`,
+				reason: `[change-pi-prompt] 无法确认 Agent "${targetAgentName}" 的 runner 类型；standalone Pi 下拒绝执行。${catalog ? `可用 agent：${[...catalog.agents.keys()].join(', ')}。` : ''}`,
 			};
 		}
 

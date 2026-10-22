@@ -2,7 +2,7 @@
 description: Parallel subagents review
 ---
 
-Launch parallel reviewers for an adversarial review of the current work.
+Launch parallel `readonly` reviewers for an adversarial review of the current work.
 
 Use fresh context, not forked context, unless I explicitly ask for forked context. Reviewers should inspect the repository, relevant instructions, and current diff directly from files and commands. Do not rely on the main conversation history.
 

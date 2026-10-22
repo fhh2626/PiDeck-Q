@@ -92,12 +92,15 @@ function foregroundIds(state: SubagentState | undefined): string[] {
 			.filter((run) => run.sessionId === state.currentSessionId)
 			.map((run) => run.runId)
 		: [];
-	return [...new Set([...state.foregroundControls.keys(), ...remembered])];
+	const workflows = [...(state.foregroundWorkflows?.values() ?? [])].filter((run) => run.sessionId === state.currentSessionId).map((run) => run.runId);
+	return [...new Set([...state.foregroundControls.keys(), ...remembered, ...workflows])];
 }
 
 function hasExactForegroundId(state: SubagentState | undefined, id: string): boolean {
 	if (!state) return false;
 	if (state.foregroundControls.has(id)) return true;
+	const workflow = state.foregroundWorkflows?.get(id);
+	if (workflow && workflow.sessionId === state.currentSessionId) return true;
 	const remembered = state.foregroundRuns?.get(id);
 	return Boolean(remembered && state.currentSessionId && remembered.sessionId === state.currentSessionId);
 }

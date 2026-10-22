@@ -26,10 +26,10 @@ In `~/.pi/agent/settings.json` (user) or the project config settings file (`.pi/
     "defaultModel": "deepseek-v4-flash",
     "defaultProvider": "gpu-a",
     "agentOverrides": {
-      "oracle": {
+      "readonly": {
         "model": "deepseek-v4-pro"
       },
-      "worker": {
+      "writable": {
         "defaultProvider": "gpu-b"
       }
     }
@@ -43,14 +43,14 @@ To keep one role definition but configure it differently for work and personal p
 {
   "subagents": {
     "agentOverrides": {
-      "worker": { "thinking": "medium" }
+      "writable": { "thinking": "medium" }
     },
     "agentOverridesByProvider": {
       "github-copilot": {
-        "worker": { "model": "github-copilot/gpt-5-mini" }
+        "writable": { "model": "github-copilot/gpt-5-mini" }
       },
       "openrouter": {
-        "worker": { "model": "openrouter/openai/gpt-5-mini" }
+        "writable": { "model": "openrouter/openai/gpt-5-mini" }
       }
     }
   }
@@ -62,7 +62,7 @@ The provider key comes from the active parent session model (or an explicit host
 For one run, put the override in the command:
 
 ```text
-/run reviewer[model=anthropic/claude-sonnet-4:high] "Review this diff"
+/run readonly[model=anthropic/claude-sonnet-4:high] "Review this diff"
 ```
 
 For a persistent role override with a backup model for provider failures:
@@ -71,7 +71,7 @@ For a persistent role override with a backup model for provider failures:
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": {
+      "readonly": {
         "model": "anthropic/claude-sonnet-4",
         "thinking": "high",
         "fallbackModels": ["openai-codex/gpt-5.6-luna:low"]
@@ -93,9 +93,9 @@ Fast mode fails before launch unless every resolved model candidate is on the al
 
 A setup that works well in practice: route agents by task shape instead of running everything on one model. Four tiers:
 
-1. **Fast workhorse** — the cheapest capable model at low thinking, for recon, lookups, and mechanical edits. Example: `openai-codex/gpt-5.6-luna:low` on `scout`.
-2. **Standard well-scoped** — a mid-tier model at medium thinking, for most delegations: routine multi-file edits, focused reviews, straightforward implementation. Example: `openai-codex/gpt-5.6-luna:max` on `worker`, `reviewer`, and a lightweight `delegate` agent.
-3. **Deep but bounded** — a top reasoning model at high thinking, only for hard tasks that arrive with explicit goals and completion criteria. These models tend to loop on vague goals, so keep them off open-ended work. Example: `openai-codex/gpt-5.6-sol:high` on oracle-style agents.
+1. **Fast workhorse** — the cheapest capable model at low thinking, for recon, lookups, and mechanical edits. Example: `openai-codex/gpt-5.6-luna:low` on `readonly` (per-run override: `model: "openai-codex/gpt-5.6-luna:low"`).
+2. **Standard well-scoped** — a mid-tier model at medium thinking, for most delegations: routine multi-file edits, focused reviews, straightforward implementation. Example: `openai-codex/gpt-5.6-luna:max` on `writable` and `readonly`.
+3. **Deep but bounded** — a top reasoning model at high thinking, only for hard tasks that arrive with explicit goals and completion criteria. These models tend to loop on vague goals, so keep them off open-ended work. Example: `openai-codex/gpt-5.6-sol:high` on a custom hard-question agent.
 4. **Taste and intent** — a model that reads human intent well and makes judgment calls without looping, for ambiguous work: UX and design decisions, product tradeoffs, planning from vague requirements, writing quality. Example: `anthropic/claude-fable-5` at `low` for lighter passes and `medium` for harder ones.
 
 The routing rule: use the capability tiers (1–3) when the task is well-scoped, and the intent tier (4) when scoping or judging is the task itself.
@@ -180,7 +180,7 @@ Set `subagents.defaultThinking` to give builtin, package, user, and project agen
   "subagents": {
     "defaultThinking": "medium",
     "agentOverrides": {
-      "reviewer": { "thinking": "high" }
+      "readonly": { "thinking": "high" }
     }
   }
 }
@@ -218,7 +218,7 @@ Project settings win over user settings. Use `agentOverrides.<name>.extensions` 
   "subagents": {
     "defaultExtensions": [],
     "agentOverrides": {
-      "researcher": {
+      "readonly": {
         "extensions": ["./tools/research.ts"]
       }
     }
@@ -234,7 +234,7 @@ To see what `pi-subagents` has actually loaded right now:
 
 ```text
 /subagents-models
-/subagents-models reviewer
+/subagents-models readonly
 ```
 
 That reports the live runtime mapping, which can differ from settings on disk until you reload Pi.
@@ -264,8 +264,8 @@ To keep subagents inside a budget or compliance profile, enforce a model scope. 
       "strict": true,
       "allow": ["inherit", "openai/gpt-5-*", "openai-codex/gpt-5.6-*"],
       "agents": {
-        "worker": { "allow": ["openai-codex/gpt-5.6-luna"] },
-        "reviewer": { "allow": ["inherit"] }
+        "writable": { "allow": ["openai-codex/gpt-5.6-luna"] },
+        "readonly": { "allow": ["inherit"] }
       }
     }
   }
@@ -280,7 +280,7 @@ To keep subagents inside a budget or compliance profile, enforce a model scope. 
 - Set `strict: true` with `enforce: true` to reject every resolved out-of-scope model. This includes inherited models and fallback candidates. An invalid fallback fails the run instead of being removed from the candidate chain.
 - `enforce: true` requires at least one non-empty global or agent `allow` list; otherwise the config is rejected at load time.
 
-Model scope is policy only. It rejects or warns; it does not select a cheaper model. Set `agentOverrides.worker.model` to choose a worker model and use `modelScope.agents.worker` to prevent a per-run override or fallback from escaping that restriction.
+Model scope is policy only. It rejects or warns; it does not select a cheaper model. Set `agentOverrides.writable.model` to choose a writable model and use `modelScope.agents.writable` to prevent a per-run override or fallback from escaping that restriction.
 
 `inherit` expands in the parent process at each launch. It is never sent to the child as a model id. A nested child therefore inherits its immediate parent's current model, not the original top-level model. If no parent model is available, an enforced `inherit` entry does not match and fails closed.
 

@@ -51,7 +51,7 @@ example](../../docs/workflows.md#parallel-sequential-lanes). Keep assignments
 bounded, but do not add stages or ceremony just to satisfy this skill.
 
 Use async/background by default. Set `async:false` only when the parent must
-block. Final reviews, validation gates, oracle checks, and publication checks
+block. Final reviews, validation gates, advisory checks, and publication checks
 stay async.
 
 In an ordinary interactive session, yield after launching or triaging useful
@@ -74,7 +74,7 @@ that runner explicitly supports the option.
 | Branch | Read |
 | --- | --- |
 | Delegate or choose roles, prompts, models, or slash commands | `references/prompting-and-roles.md` |
-| Execute single, scripted, async, scheduled, mission, forked, watchdog, oracle, or intercom workflows | `references/execution-controls.md` |
+| Execute single, scripted, async, scheduled, mission, forked, watchdog, advisory, or intercom workflows | `references/execution-controls.md` |
 | Review, validate, triage gate failures, or prepare delivery | `references/review-and-validation.md` |
 | Coordinate lanes, worktrees, repositories, or writer waves | `references/multi-lane-orchestration.md` |
 | List, create, edit, disable, eject, or expose agents/RPC | `references/management-authoring-rpc.md` |

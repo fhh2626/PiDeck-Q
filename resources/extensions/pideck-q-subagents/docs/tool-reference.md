@@ -27,19 +27,19 @@ The host resolves the script and authority internally and records bounded proven
 
 ```js
 // One child; return the child promise explicitly
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "Analyze the auth flow" })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "Analyze the auth flow" })` }
 
 // Sequential workflow
 { workflowScript: `
-  const scan = await runs.run("scan", { agent: "scout", task: "Analyze auth" });
-  return (await runs.run("implement", { agent: "worker", task: "Implement from: " + scan.output })).output;
+  const scan = await runs.run("scan", { agent: "readonly", task: "Analyze auth" });
+  return (await runs.run("implement", { agent: "writable", task: "Implement from: " + scan.output })).output;
 ` }
 
 // Parallel workflow
 { workflowScript: `
   const results = await runs.all([
-    { key: "backend", agent: "reviewer", task: "Review backend" },
-    { key: "frontend", agent: "reviewer", task: "Review frontend" }
+    { key: "backend", agent: "readonly", task: "Review backend" },
+    { key: "frontend", agent: "readonly", task: "Review frontend" }
   ]);
   return results.map(result => result.output);
 ` }
@@ -53,13 +53,13 @@ Use `runs.lanes(lanes)` inside a `workflowScript` when several independent lanes
 { workflowScript: `
   const board = await runs.lanes([
     { key: "api", stages: [
-      { key: "writer", agent: "worker", task: "Implement the API change" },
+      { key: "writer", agent: "writable", task: "Implement the API change" },
       { key: "challenge", resume: "previous", task: "Challenge the implementation" },
-      { key: "review", agent: "reviewer", task: "Review the API lane" }
+      { key: "review", agent: "readonly", task: "Review the API lane" }
     ] },
     { key: "ui", stages: [
-      { key: "writer", agent: "worker", task: "Implement the UI change" },
-      { key: "review", agent: "reviewer", task: "Review the UI lane" }
+      { key: "writer", agent: "writable", task: "Implement the UI change" },
+      { key: "review", agent: "readonly", task: "Review the UI lane" }
     ] }
   ]);
   return board.map((lane) => ({
@@ -86,11 +86,11 @@ The complete plain-JSON inventory is validated before the first launch (maximum 
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agent` | string | - | Agent target for management actions. Workflow child agents are set inside `runs.run` or `runs.all`. |
+| `agent` | string | `writable` | Agent for a single child launch (omitted means `writable`; an unknown name is an error listing the available agents), or the target of management actions. Workflow child agents are set inside `runs.run` or `runs.all`. |
 | `action` | string | - | Offline workflow `validate`, agent management (including `guide`, `children.list`, and `refine`/`refine.show`/`refine.rollback`), lane evidence (`lane.status`, `lane.recordMerge`, `lane.recordSupersession`), mission (`mission.create/list/show/update/resolve-decision/attach-run/close`), Herdr inspector (`inspector.open/status/close`), Herdr project pane (`project.open/status/close`), status/control, plan-only `worktree.cleanup`, schedule, watchdog, or doctor action. |
 | `topic` | `overview \| workflows \| agents \| missions \| observability \| tool-reference \| configuration \| models \| watchdog \| extension-api` | `overview` | Packaged guide topic for `action: "guide"`. |
 | `config` | object/string | - | Agent config for management create/update. |
-| `context` | `fresh \| fork` | global or per-agent default, else `fresh` | Explicit `fresh` or `fork` overrides every workflow child. When omitted, [`defaultSubagentContext`](configuration.md#defaultsubagentcontext) wins over each agent's `defaultContext`; `"fork"` creates a real branched session when the parent session file and current leaf exist, otherwise it falls back to `fresh`. Packaged `worker`, `oracle`, and `advisor` default to `fork`. |
+| `context` | `fresh \| fork` | global or per-agent default (`fork` for the builtin agents) | Explicit `fresh` or `fork` overrides every workflow child. When omitted, [`defaultSubagentContext`](configuration.md#defaultsubagentcontext) wins over each agent's `defaultContext`; `"fork"` creates a real branched session when the parent session file and current leaf exist, otherwise it falls back to `fresh`. Packaged `worker`, `oracle`, and `advisor` default to `fork`. |
 | `missionId` | string | - | Attach a workflow to an existing project mission instead of creating its default enclosing mission. |
 | `mission` | object/false | auto-create | Override the default enclosing mission with `{ title \| summary, objective?, goal?, budget?, labels? }`. Set exactly one non-empty `title` or `summary`; `objective` and `labels` are optional. `goal` may only be `true`, requires `budget.tokens`, and enables continuation notices. Pass `false` for an intentionally ephemeral workflow with no mission for it or its children and no `state` global. Explicit mission persistence failures are strict. |
 | `handoffPath` | string | - | Aggregate handoff manifest for `action: "worktree.discard"` or lane evidence actions, or optional explicit metadata for `action: "worktree.cleanup"`. |
@@ -134,7 +134,7 @@ Explicit `context: "fork"` fails fast when the parent session is not persisted, 
 
 When the inherited transcript contains signed Anthropic `thinking` / `redacted_thinking` blocks, `pi-subagents` strips those provider-private blocks from the forked child session. It forces thinking `off` only when the child's effective primary or fallback model resolves through the model registry to the Anthropic provider or `anthropic-messages` API; unresolved models are treated conservatively. The result reports every affected child, including on failed runs. Use `context: "fresh"` when an Anthropic child needs thinking. Explicit `context: "fork"` never silently downgrades to `fresh`.
 
-In workflow runs that omit `context`, each `runs.run` child follows the global `defaultSubagentContext` when set, then its own `defaultContext`. Without the global setting, a fresh-default scout can run fresh beside a fork-default worker. If the parent session file or current leaf is not available yet, implicit fork-default children run fresh. Pass explicit `context: "fork"` or `context: "fresh"` when you intentionally want one context for every child.
+In workflow runs that omit `context`, each `runs.run` child follows the global `defaultSubagentContext` when set, then its own `defaultContext`. Without the global setting, a fresh-default custom agent can run fresh beside a fork-default builtin. If the parent session file or current leaf is not available yet, implicit fork-default children run fresh. Pass explicit `context: "fork"` or `context: "fresh"` when you intentionally want one context for every child.
 
 ### Workflow steering
 
@@ -147,8 +147,8 @@ For advanced rolling fanout, keep the launched `runs.run` promises in ordinary J
 ```js
 { workflowScript: `
   let pending = [
-    { key: "writer", promise: runs.run("writer", { agent: "worker", task: "Draft the fix" }).then((result) => ({ key: "writer", result })) },
-    { key: "reviewer", promise: runs.run("reviewer", { agent: "reviewer", task: "Review likely risks" }).then((result) => ({ key: "reviewer", result })) }
+    { key: "writer", promise: runs.run("writer", { agent: "writable", task: "Draft the fix" }).then((result) => ({ key: "writer", result })) },
+    { key: "risks", promise: runs.run("risks", { agent: "readonly", task: "Review likely risks" }).then((result) => ({ key: "risks", result })) }
   ];
   const first = await Promise.race(pending.map((child) => child.promise));
   pending = pending.filter((child) => child.key !== first.key);
@@ -175,7 +175,7 @@ Completed workflow children from the current parent session stay addressable as 
 
 ```js
 { workflowScript: `
-  let writer = await runs.run("implement", { agent: "worker", task: "Implement the accepted contract" });
+  let writer = await runs.run("implement", { agent: "writable", task: "Implement the accepted contract" });
   for (const pass of [1, 2]) {
     if (!writer.runId) throw new Error("writer did not return a retained run id");
     writer = await runs.run("followup-" + pass, { resume: writer.runId, task: "Revisit pass " + pass + ": " + writer.output });
@@ -204,17 +204,17 @@ Agent definitions are not loaded into context by default. Management actions let
 { action: "list" }
 { action: "list", agentScope: "project" }
 { action: "list", capabilities: true }
-{ action: "get", agent: "scout" }
+{ action: "get", agent: "readonly" }
 { action: "models" }
-{ action: "models", agent: "reviewer" }
-{ action: "get", agent: "code-analysis.scout" }
+{ action: "models", agent: "readonly" }
+{ action: "get", agent: "code-analysis.recon" }
 
 { action: "create", config: {
   name: "Code Scout",
   package: "code-analysis",
   description: "Scans codebases for patterns and issues",
   scope: "user",
-  systemPrompt: "You are a code scout...",
+  systemPrompt: "You are a code recon agent...",
   systemPromptMode: "replace",
   inheritProjectContext: false,
   inheritGlobalContext: false,
@@ -223,7 +223,7 @@ Agent definitions are not loaded into context by default. Management actions let
   fallbackModels: ["openai-codex/gpt-5.6-luna:low", "anthropic/claude-haiku-4-5"],
   tools: "read, bash, mcp:github/search_repositories",
   extensions: "",
-  skills: "parallel-scout",
+  skills: "parallel-recon",
   thinking: "high",
   acceptance: { level: "none", reason: "lightweight lookup" },
   acceptanceRole: "read-only",
@@ -233,16 +233,16 @@ Agent definitions are not loaded into context by default. Management actions let
 }}
 
 
-{ action: "update", agent: "code-analysis.scout", config: { model: "openai/gpt-4o" } }
-{ action: "update", agent: "code-analysis.scout", config: { acceptance: "" } } // clear the frontmatter default
-{ action: "update", agent: "code-analysis.scout", config: { acceptanceRole: false } } // restore inferred name fallback
-{ action: "delete", agent: "scout" }
+{ action: "update", agent: "code-analysis.recon", config: { model: "openai/gpt-4o" } }
+{ action: "update", agent: "code-analysis.recon", config: { acceptance: "" } } // clear the frontmatter default
+{ action: "update", agent: "code-analysis.recon", config: { acceptanceRole: false } } // restore inferred name fallback
+{ action: "delete", agent: "code-analysis.recon" }
 
-{ action: "eject", agent: "reviewer" }
-{ action: "eject", agent: "reviewer", agentScope: "project" }
-{ action: "disable", agent: "reviewer" }
-{ action: "enable", agent: "reviewer", agentScope: "project" }
-{ action: "reset", agent: "reviewer" }
+{ action: "eject", agent: "readonly" }
+{ action: "eject", agent: "readonly", agentScope: "project" }
+{ action: "disable", agent: "readonly" }
+{ action: "enable", agent: "readonly", agentScope: "project" }
+{ action: "reset", agent: "readonly" }
 ```
 
 Rules:
@@ -372,7 +372,7 @@ Every run resolves an effective acceptance policy. Callers may omit `acceptance`
 
 ```ts
 {
-  agent: "worker",
+  agent: "writable",
   task: "Implement the fix",
   acceptance: {
     level: "verified",
@@ -388,7 +388,7 @@ Every run resolves an effective acceptance policy. Callers may omit `acceptance`
 When one host-run command is the entire verification contract, use the `gate` shorthand instead of a full `acceptance` object:
 
 ```js
-{ workflowScript: `return runs.run("impl", { agent: "worker", task: "Implement the fix", gate: "npm test" })` }
+{ workflowScript: `return runs.run("impl", { agent: "writable", task: "Implement the fix", gate: "npm test" })` }
 ```
 
 `gate` normalizes to verified acceptance with that single command, so the runtime executes it on the host and records the result as evidence. Verification results are memoized per tracked workspace state and effective environment, so an unchanged tree does not rerun the same command. Use explicit `acceptance.verify` when you need multiple commands, timeouts, or custom criteria. `gate` rejects `acceptance` except `false` (treated as omitted), and rejects retained `resume` items. With `worktree: true`, the gate runs inside the child's managed worktree.
@@ -399,18 +399,18 @@ Acceptance evidence levels are `auto`, `none`, `attested`, `checked`, and `verif
 
 Review is a separate gate configured with `acceptance.review`:
 
-- Async, risky, and dynamic writer contexts infer checked evidence plus `review: { agent: "reviewer", required: true }`.
+- Async, risky, and dynamic writer contexts infer checked evidence plus `review: { agent: "readonly", required: true }`.
 - Reviewer/read-only calls infer no acceptance by default; explicit acceptance requests still apply.
 - Normal writer tasks infer checked evidence without review.
 
-Agent frontmatter or `subagents.agentOverrides` may set `acceptanceRole: "read-only" | "writer"` for ambiguous tasks. Explicit task mutation or no-edit intent wins over that role, while omitted metadata preserves the existing reviewer/scout/worker name heuristics. The role affects acceptance inference only and does not change tool access.
+Agent frontmatter or `subagents.agentOverrides` may set `acceptanceRole: "read-only" | "writer"` for ambiguous tasks. Explicit task mutation or no-edit intent wins over that role, while omitted metadata preserves the existing readonly/writable name heuristics. The role affects acceptance inference only and does not change tool access.
 
 Edge cases:
 
 - The bare string `"none"` is rejected; use `{ level: "none", reason: "..." }` instead.
 - `acceptance: false` is accepted only as a deprecated shorthand for disabling gates.
-- For reviewer/read-only calls, omit `acceptance`.
-- The explicit value `"reviewed"` is not a policy level: it remains schema-recognized only so semantic preflight can explain the mistake without spawning a child. To require review of a writer result, use `acceptance: { level: "checked", review: { required: true, agent: "reviewer" } }` and orchestrate the reviewer separately.
+- For read-only calls, omit `acceptance`.
+- The explicit value `"reviewed"` is not a policy level: it remains schema-recognized only so semantic preflight can explain the mistake without spawning a child. To require review of a writer result, use `acceptance: { level: "checked", review: { required: true, agent: "readonly" } }` and orchestrate the reviewer separately.
 - With `agentContract: { version: 1 }`, omitted, `"auto"`, and `false` mean no acceptance request for that run; explicit acceptance is reported separately from execution.
 
 ### Evidence status
@@ -483,7 +483,7 @@ Intentionally unsupported: native Pi child options such as model override, struc
 Pass `share: true` to export a full session to HTML, upload it to a secret GitHub Gist through your `gh` credentials, and return a `https://shittycodingagent.ai/session/?<gistId>` URL.
 
 ```ts
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "..." })`, share: true }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "..." })`, share: true }
 ```
 
 This is disabled by default. Session data may contain source code, paths, environment variables, credentials, or other sensitive output. You need `gh` installed and authenticated.

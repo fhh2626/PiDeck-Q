@@ -31,13 +31,13 @@ const created = subagent({
   mission: { title: "Ship auth refresh", objective: "Implement and validate token refresh" }
 })
 subagent({
-  workflowScript: `return runs.run("main", { agent: "worker", task: "Implement the approved auth refresh plan" })`,
+  workflowScript: `return runs.run("main", { agent: "writable", task: "Implement the approved auth refresh plan" })`,
   missionId: "<mission-id>"
 })
 
 // Or create and attach in one launch
 subagent({
-  workflowScript: `return runs.run("main", { agent: "worker", task: "Implement the approved plan" })`,
+  workflowScript: `return runs.run("main", { agent: "writable", task: "Implement the approved plan" })`,
   mission: { title: "Ship auth refresh" }
 })
 ```
@@ -96,7 +96,7 @@ subagent({
   name: "Evening review",
   at: "+30m",
   baseRef: "refs/heads/release",
-  workflowScript: `return runs.run("main", { agent: "reviewer", task: "Review the current diff." })`
+  workflowScript: `return runs.run("main", { agent: "readonly", task: "Review the current diff." })`
 })
 ```
 

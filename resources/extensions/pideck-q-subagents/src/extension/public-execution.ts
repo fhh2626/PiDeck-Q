@@ -1,3 +1,4 @@
+import { withDefaultAgent } from "../agents/default-agent.ts";
 import { normalizeWorktreeBaseRef } from "../runs/shared/worktree.ts";
 
 export interface PublicSubagentExecutionParams {
@@ -67,6 +68,8 @@ export function validateWorkflowCapacityOverrides(params: PublicSubagentExecutio
  * Internal runs.run children and structured owned delegation bypass this boundary.
  */
 export function normalizePublicSubagentExecution<T extends PublicSubagentExecutionParams>(params: T): PublicSubagentExecutionNormalization<T> {
+	// Default before public validation, using the same rule as workflow admission and internal launch.
+	params = withDefaultAgent(params);
 	for (const field of ["resource", "resourceProvenance", "workflowResource", "workflowResourceProvenance", "workflowResourcePermit", "resourcePermit", "permit"] as const) {
 		if (Object.hasOwn(params, field) && (params as Record<string, unknown>)[field] !== undefined) {
 			return { ok: false, error: "Public execution does not accept workflow resource provenance or permit fields.", mode: params.action === undefined ? "workflow" : "management" };

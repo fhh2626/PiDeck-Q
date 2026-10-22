@@ -38,7 +38,7 @@ External job profiles do not support foreground/clarify, steer/resume, Pi models
 
 ```typescript
 subagent({
-  agent: "oracle",
+  agent: "readonly",
   task: "Review my current direction and challenge assumptions."
 })
 ```
@@ -53,7 +53,7 @@ must resume it by key.
 
 ```typescript
 subagent({
-  workflowScript: `return runs.run("oracle-check", { agent: "oracle", task: "Review my current direction and challenge assumptions.", context: "fork" })`
+  workflowScript: `return runs.run("advisory-check", { agent: "readonly", task: "Review my current direction and challenge assumptions.", context: "fork" })`
 })
 ```
 
@@ -73,20 +73,20 @@ JavaScript control flow or data-dependent branching. Use
 `runs.run(key, { agent, task, ... })` for keyed children, `runs.all([...])` for
 parallel children, and ordinary JavaScript for sequence, filtering, retries,
 and aggregation. Scripts are ordinary JavaScript statement bodies, so use an
-explicit return such as `return runs.run("main", { agent: "worker", task: "..." })` for a useful one-child result. Use top-level `await`,
+explicit return such as `return runs.run("main", { agent: "writable", task: "..." })` for a useful one-child result. Use top-level `await`,
 plain helper functions, or explicit Promise chains; nested `async function`
 helpers, async arrows, and async methods are rejected. Prefer a single scripted
 workflow whenever the parent is starting a coordinated wave, such as multiple
-reviews, review plus gate monitor, worker then monitor setup, cross-repo prep
+reviews, review plus gate monitor, writer then monitor setup, cross-repo prep
 lanes, or a fanout that the parent will consume together.
 
 ```js
 subagent({
   workflowScript: `
-    const scan = await runs.run("scan", { agent: "scout", task: "Map the target" });
+    const scan = await runs.run("scan", { agent: "readonly", task: "Map the target" });
     const reviews = await runs.all([
-      { key: "correctness", agent: "reviewer", task: "Review correctness: " + scan.output },
-      { key: "tests", agent: "reviewer", task: "Review tests: " + scan.output }
+      { key: "correctness", agent: "readonly", task: "Review correctness: " + scan.output },
+      { key: "tests", agent: "readonly", task: "Review tests: " + scan.output }
     ]);
     return reviews.map(result => result.output);
   `
@@ -99,7 +99,7 @@ If `runs.all` is missing in a running session, reload or update `pi-subagents` b
 
 For one host-run verification command, pass `gate: "npm test"` on a `runs.run`/`runs.all` item (or at the top level as a workflow default). It is shorthand for verified acceptance with that single command: the runtime executes it on the host, records the result as evidence, and memoizes it per tracked workspace state and effective environment. `gate` cannot be combined with `acceptance`; use explicit `acceptance.verify` for multiple commands or custom criteria.
 
-If omitted, acceptance is inferred from role, mode, and risk. Use `level: "checked"` for ordinary writer evidence and `level: "verified"` when the runtime should run explicit validation commands. Independent review is orthogonal: use `review: { required: true, agent: "reviewer" }`; reviewer/read-only calls omit `acceptance`. `review-required` means evidence passed but review is pending; `reviewed` means an independent review found no blockers. Never request `level: "reviewed"`; it is recognized only so preflight can return an actionable correction. Disable gates with `{ level: "none", reason: "..." }`; bare `"none"` is rejected and `false` is only a deprecated shorthand. Child-reported command success is evidence, not runtime verification.
+If omitted, acceptance is inferred from role, mode, and risk. Use `level: "checked"` for ordinary writer evidence and `level: "verified"` when the runtime should run explicit validation commands. Independent review is orthogonal: use `review: { required: true, agent: "readonly" }`; read-only calls omit `acceptance`. `review-required` means evidence passed but review is pending; `reviewed` means an independent review found no blockers. Never request `level: "reviewed"`; it is recognized only so preflight can return an actionable correction. Disable gates with `{ level: "none", reason: "..." }`; bare `"none"` is rejected and `false` is only a deprecated shorthand. Child-reported command success is evidence, not runtime verification.
 
 Completed workflow children from this parent session stay addressable as retained children. `subagent({ action: "children.list" })` lists up to the last 10 with run ids and reports each row as `resumable` or `not resumable` with a reason. Resume only rows reported `resumable`. For a retained-child challenge, use `resume` instead of `steer` when the child is complete. If no retained child is resumable, launch a same-role fallback challenge and label it as fallback. A later workflow continues a resumable child with `runs.run(key, { resume: "<run-id>", task: "follow-up" })`. Inside `workflowScript`, awaiting that call waits for the revived child to finish and returns its completed output and new `runId`; top-level `{ action: "resume" }` remains detached. Pass explicit follow-up task text. Assign each returned child result back to the loop variable because every resume can return a new retained `runId`; always resume the latest returned id. `resume` and `agent` are mutually exclusive, the revived child keeps its stored agent/model/tool contract, and `gate` is rejected on retained resume items.
 
@@ -108,8 +108,8 @@ Each workflow key identifies one result lane: use a new stable workflow key for 
 Terminal async workflows also persist `workflow-receipt.json` beside `status.json`. It maps each stable child key to its agent, requested and resolved context when known, latest run id, resumability, output reference, and continuation lineage. A later workflow can resume the latest retained child without copying its run id:
 
 ```js
-return runs.run("cross-oracle", {
-  resume: { workflowRunId: "<pass-1-workflow-id>", key: "advisor-oracle", latest: true },
+return runs.run("cross-exam", {
+  resume: { workflowRunId: "<pass-1-workflow-id>", key: "advisor-a", latest: true },
   task: "Review the focused challenge packet."
 });
 ```
@@ -131,11 +131,11 @@ depends on runtime data rather than a predeclared stage plan.
 
 ### Async/background
 
-Prefer async mode for every subagent launch. Set `async: true` no matter the task unless the parent must block until completion. This applies to scouts, researchers, workers, reviewers, validators, oracle checks, one-off delegates, final review gates, publication gates, and scripted workflows. Keep the write path single-threaded even when the run is async.
+Prefer async mode for every subagent launch. Set `async: true` no matter the task unless the parent must block until completion. This applies to every `readonly` and `writable` child, validators, advisory checks, final review gates, publication gates, and scripted workflows. Keep the write path single-threaded even when the run is async.
 
 Use `async:false` only when the parent must block until completion. Async mode still shows progress. Do not use `async:false` because a task is short, because it is the last gate, because no other work is ready, because the user asked to finish the overall job, or because blocking is convenient.
 
-Async does not mean parallel writes. Do not edit the same active worktree while an async worker is changing it. Parent-side overlap should be reading, validation prep, synthesis, command planning, or review of unaffected context unless the writer is isolated in a separate worktree.
+Async does not mean parallel writes. Do not edit the same active worktree while an async writer is changing it. Parent-side overlap should be reading, validation prep, synthesis, command planning, or review of unaffected context unless the writer is isolated in a separate worktree.
 
 Do not end your turn immediately after launching an async child if you promised to keep working. Continue the local inspection, synthesis, or validation prep, then check the async run when its result is needed. If no safe independent work remains, return control and let Pi wake the session; do not convert the child to foreground.
 
@@ -182,7 +182,7 @@ reconciliation, or timeout failures.
 
 ```typescript
 subagent({
-  workflowScript: `return runs.run("main", { agent: "worker", task: "Run the full test suite" })`,
+  workflowScript: `return runs.run("main", { agent: "writable", task: "Run the full test suite" })`,
   async: true
 })
 ```
@@ -195,7 +195,7 @@ For review fanout where the parent continues a local audit:
 
 ```typescript
 const run = subagent({
-  workflowScript: `return runs.run("correctness", { agent: "reviewer", task: "Review the current diff for correctness issues. Do not edit files." })`,
+  workflowScript: `return runs.run("correctness", { agent: "readonly", task: "Review the current diff for correctness issues. Do not edit files." })`,
   async: true,
   context: "fresh"
 })
@@ -224,8 +224,8 @@ Use `steer` for top-level live async guidance and `resume` after a delegated run
 ```typescript
 subagent({ action: "steer", id: "run-id", message: "Focus on the failing test." })
 subagent({ action: "resume", id: "run-id", message: "Follow up on this point." })
-subagent({ action: "resume", id: "run-id", index: 1, message: "Continue reviewer 2." })
-subagent({ action: "resume", id: "nested-run-id", message: "Continue this nested reviewer." })
+subagent({ action: "resume", id: "run-id", index: 1, message: "Continue readonly child 2." })
+subagent({ action: "resume", id: "nested-run-id", message: "Continue this nested readonly child." })
 ```
 
 Resume behavior:
@@ -261,8 +261,8 @@ A cooperating terminal runtime can register read-only external records through `
 Schedules are durable project records under `.pi/subagents/schedules/`. They are enabled by default; set `{ "scheduledRuns": { "enabled": false } }` in `~/.pi/agent/extensions/subagent/config.json` to disable them. Only schedule explicit work the user asked for. To keep schedules outside the project repository, set `{ "scheduledRuns": { "storeRoot": "~/.pi/subagent-schedules" } }` in the same config: `storeRoot` accepts an absolute path or a `~/`-prefixed path, and records land under `<storeRoot>/<sha256(path.resolve(cwd)) first 20 hex>/<scheduleId>/`.
 
 ```typescript
-// One-shot reviewer
-subagent({ action: "schedule.create", id: "evening-review", name: "Evening review", at: "+30m", workflowScript: "return runs.run('main', { agent: 'reviewer', task: 'Review the diff.' })" })
+// One-shot readonly review
+subagent({ action: "schedule.create", id: "evening-review", name: "Evening review", at: "+30m", workflowScript: "return runs.run('main', { agent: 'readonly', task: 'Review the diff.' })" })
 
 // Fixed recurring workflow
 subagent({ action: "schedule.create", id: "backlog", every: "6h", catchUp: "latest", workflowScript: "..." })
@@ -307,7 +307,7 @@ Per-run control thresholds can be overridden when a task legitimately runs witho
 ```typescript
 subagent({
   workflowScript: `return runs.run("slow-tests", {
-    agent: "worker",
+    agent: "writable",
     task: "Run the slow migration test suite",
     control: {
       needsAttentionAfterMs: 300000,
@@ -343,8 +343,8 @@ Direct input acceptance returns `delivered`, not proof of model compliance. A li
 ## Watchdog
 
 The subagent watchdog is an **opt-in** adversarial change reviewer. It is not the
-`reviewer` subagent and is not configured by `subagents.defaultModel` or
-`agentOverrides.reviewer`.
+`readonly` subagent and is not configured by `subagents.defaultModel` or
+`agentOverrides.readonly`.
 
 When enabled, it reviews actual repo edits at safe `agent_end` boundaries only if
 the final worktree state changed during that turn. Unchanged or reverted diffs and
@@ -378,7 +378,7 @@ subagent({ action: "watchdog.check" })
 ```
 
 `session` scope is temporary. Persistent `user`/`project` scopes write settings only
-when the user asked. Use ordinary fresh-context `reviewer` fanout for planned review
+when the user asked. Use ordinary fresh-context `readonly` fanout for planned review
 waves; enable the watchdog when you want an automatic second pass on real edits.
 
 ## Missions and cross-project routing
@@ -416,8 +416,8 @@ Project panes run a separate Pi session from the target directory. Subagents lau
 
 ```typescript
 subagent({ action: "mission.create", mission: { title: "Ship auth refresh", objective: "Implement and validate refresh handling" } })
-subagent({ workflowScript: `return runs.run("main", { agent: "worker", task: "Implement the approved plan" })`, missionId: "<mission-id>" })
-subagent({ workflowScript: `return runs.run("main", { agent: "scout", task: "Quickly answer whether this file exists" })`, mission: false })
+subagent({ workflowScript: `return runs.run("main", { agent: "writable", task: "Implement the approved plan" })`, missionId: "<mission-id>" })
+subagent({ workflowScript: `return runs.run("main", { agent: "readonly", task: "Quickly answer whether this file exists" })`, mission: false })
 subagent({ action: "mission.list", missionScope: "global" })
 subagent({ action: "mission.resolve-decision", missionId: "<mission-id>", id: "<decision-id>", summary: "Settled: ship the v2 API; no schema freeze needed." })
 subagent({ action: "project.open", cwd: "/path/to/other-repo", message: "Own this mission for the project and report back with receipts." })
@@ -435,8 +435,8 @@ them share one filesystem view.
 subagent({
   workflowScript: `
     const results = await runs.all([
-      { key: "feature-a", agent: "worker", task: "Implement feature A", worktree: true },
-      { key: "feature-b", agent: "worker", task: "Implement feature B", worktree: true }
+      { key: "feature-a", agent: "writable", task: "Implement feature A", worktree: true },
+      { key: "feature-b", agent: "writable", task: "Implement feature B", worktree: true }
     ]);
     return results.map(({ key, artifactPaths }) => ({ key, artifactPaths }));
   `
@@ -465,44 +465,41 @@ worktree, first confirm dependencies were linked, installed, or provisioned by
 
 ## The Oracle Workflow
 
-### Oracle consultation loop
+### Advisory consultation loop
 
-For plan, design, or architecture advice that asks to ask, consult, discuss with, or come to agreement with `oracle`, start with one forked oracle run. Read its result. If it challenges the direction or leaves a material tradeoff, resume that same completed child once with a focused follow-up, then synthesize the parent decision. `resume` returns a new run id, but continues the same oracle session and inherited context. Do not force a second round for an explicit one-shot request, a trivial question, or a fully settled first answer.
+For plan, design, or architecture advice that asks to ask, consult, discuss with, or come to agreement with a subagent, start with one forked `readonly` run. Read its result. If it challenges the direction or leaves a material tradeoff, resume that same completed child once with a focused follow-up, then synthesize the parent decision. `resume` returns a new run id, but continues the same advisory session and inherited context. Do not force a second round for an explicit one-shot request, a trivial question, or a fully settled first answer.
 
 ```typescript
-const first = await runs.run("oracle-consult", { agent: "oracle", task: "Review this plan and identify the strongest unresolved tradeoff." });
-const final = await runs.run("oracle-consult-follow-up", { resume: first.runId, task: "Address this focused question, then state the best recommendation: ..." });
+const first = await runs.run("consult", { agent: "readonly", task: "Review this plan and identify the strongest unresolved tradeoff." });
+const final = await runs.run("consult-follow-up", { resume: first.runId, task: "Address this focused question, then state the best recommendation: ..." });
 ```
 
-The parent remains the final decision-maker. Oracle advice does not approve a direction or start implementation.
+The parent remains the final decision-maker. Advisory output does not approve a direction or start implementation.
 
-The intended oracle loop is:
-1. the main agent forks to `oracle`
-2. `oracle` reviews direction, drift, assumptions, and risks
-3. `oracle` can coordinate back through `contact_supervisor` when the bridge injects it
+The intended advisory loop is:
+1. the main agent forks to `readonly`
+2. `readonly` reviews direction, drift, assumptions, and risks
+3. `readonly` can coordinate back through `contact_supervisor` when the bridge injects it
 4. the main agent decides what direction to approve
-5. only then should `worker` implement
+5. only then should `writable` implement
 
 ```typescript
-// Advisory review in a branched thread. Oracle defaults to forked context.
+// Advisory review in a branched thread. Both builtins default to forked context.
 subagent({
-  workflowScript: `return runs.run("oracle-check", { agent: "oracle", task: "Review my current direction, challenge assumptions, and propose the best next move." })`
+  workflowScript: `return runs.run("advisory-check", { agent: "readonly", task: "Review my current direction, challenge assumptions, and propose the best next move." })`
 })
 
-// Implementation only after explicit approval. Worker defaults to forked context.
+// Implementation only after explicit approval.
 subagent({
-  workflowScript: `return runs.run("implementation", { agent: "worker", task: "Implement the approved approach: ..." })`
+  workflowScript: `return runs.run("implementation", { agent: "writable", task: "Implement the approved approach: ..." })`
 })
 ```
 
-`oracle` is not a fresh-context reviewer in the Cognition article sense. It is
-a forked advisory thread that inherits the parent session history and uses that
-history as a baseline contract.
+A forked `readonly` run is not a fresh-context reviewer in the Cognition article sense. It is a forked advisory thread that inherits the parent session history and uses that history as a baseline contract. Pass `context: "fresh"` for independent review.
 
-Use `oracle` as a smart-friend escalation when the parent needs help with trajectory rather than diff inspection: architectural boundaries, model capability routing, merge conflicts, reviewer disagreement, context drift after long work, a worker about to invent a pattern, or fixes that require product/scope tradeoffs. Ask broad questions when the right concern is unclear, and let `oracle` point out missing context or files the parent should inspect before asking again. Keep `oracle` advisory unless it has been explicitly assigned the single writer role.
+Use a forked advisory run as a smart-friend escalation when the parent needs help with trajectory rather than diff inspection: architectural boundaries, model capability routing, merge conflicts, reviewer disagreement, context drift after long work, an implementer about to invent a pattern, or fixes that require product/scope tradeoffs. Ask broad questions when the right concern is unclear, and let it point out missing context or files the parent should inspect before asking again.
 
-Do not use `oracle` or Sol-high models to satisfy routine fresh-review gates, ordinary follow-up reviews, or ordinary performance crit passes. Use the `reviewer` role for those reviews, then escalate only when normal review/bot/CI evidence exposes an unresolved invariant, root-cause, model-routing, or product-tradeoff question.
-
+Do not use Sol-high models to satisfy routine fresh-review gates, ordinary follow-up reviews, or ordinary performance crit passes. Use fresh-context `readonly` runs for those reviews, then escalate only when normal review/bot/CI evidence exposes an unresolved invariant, root-cause, model-routing, or product-tradeoff question.
 ## Subagent + Intercom Coordination
 
 `pi-subagents` includes native supervisor coordination. Child agents can use `contact_supervisor` to ask the exact parent session that spawned them; messages are scoped by parent session id and should not appear in other Pi sessions. Parents inspect or reply with `subagent_supervisor`. This path does not require `pi-intercom`.

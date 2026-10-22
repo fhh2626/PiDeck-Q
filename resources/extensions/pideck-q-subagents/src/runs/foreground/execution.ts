@@ -5,6 +5,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import { createForegroundAbortScope } from "./foreground-abort.ts";
+import { createForegroundSupervisorBridge } from "./foreground-supervisor.ts";
 import { discoverAgents, formatUnknownAgentError, unknownAgentDiagnosticContext, type AgentConfig } from "../../agents/agents.ts";
 import { appendAgentRefinementOverlay } from "../../agents/agent-refinements.ts";
 import { alignForkedSessionCwd } from "../../shared/fork-session-cwd.ts";
@@ -25,8 +27,6 @@ import {
 	type SingleResult,
 	type Usage,
 	DEFAULT_MAX_OUTPUT,
-	INTERCOM_DETACH_REQUEST_EVENT,
-	INTERCOM_DETACH_RESPONSE_EVENT,
 	type AcceptanceLedger,
 	type ResolvedAcceptanceConfig,
 	truncateOutput,
@@ -611,7 +611,6 @@ async function runSingleAttempt(
 		let sessionSettled = false;
 		let lifecycleFinished = false;
 		let detached = false;
-		let intercomStarted = false;
 		let assistantError: string | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
@@ -802,20 +801,13 @@ async function runSingleAttempt(
 		};
 		const childLifecycleState: ChildLifecycleState = { compactionRetryActive: false };
 
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || sessionSettled) return;
-			if (!payload || typeof payload !== "object") return;
-			const event = payload as { requestId?: unknown; runId?: unknown; agent?: unknown; childIndex?: unknown };
-			const requestId = event.requestId;
-			if (typeof requestId !== "string" || requestId.length === 0) return;
-			const hasRoute = event.runId !== undefined || event.agent !== undefined || event.childIndex !== undefined;
-			if (hasRoute) {
-				if (typeof event.runId === "string" && event.runId !== options.runId) return;
-				if (typeof event.agent === "string" && event.agent !== agent.name) return;
-				if (typeof event.childIndex === "number" && event.childIndex !== (options.index ?? 0)) return;
-			} else if (!intercomStarted) return;
-			const accepted = detachForeground("intercom coordination");
-			options.intercomEvents?.emit(INTERCOM_DETACH_RESPONSE_EVENT, { requestId, accepted, runId: options.runId, agent: agent.name, childIndex: options.index ?? 0 });
+		const supervisorBridge = createForegroundSupervisorBridge({
+			events: options.intercomEvents, enabled: options.allowIntercomDetach === true,
+			runId: options.runId, agent: agent.name, childIndex: options.index ?? 0,
+			isLive: () => !sessionSettled && !lifecycleFinished,
+			isDetached: () => detached,
+			detach: () => detachForeground("intercom coordination"),
+			activeIntercomCalls: () => [...activeToolCalls.values()].filter((call) => call.tool === "intercom"),
 		});
 
 		const finish = (code: number) => {
@@ -830,7 +822,7 @@ async function runSingleAttempt(
 				clearInterval(activityTimer);
 				activityTimer = undefined;
 			}
-			unsubscribeIntercomDetach?.();
+			supervisorBridge.dispose();
 			removeAbortListener?.();
 			removeInterruptListener?.();
 			unsubscribe?.();
@@ -854,7 +846,7 @@ async function runSingleAttempt(
 
 		let activeLongRunningNotified = false;
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
-		type ActiveToolCall = { key: string; tool: string; args: string; startedAt: number; path?: string };
+		type ActiveToolCall = { key: string; toolCallId?: string; tool: string; args: string; startedAt: number; path?: string };
 		let activeToolSequence = 0;
 		const activeToolCalls = new Map<string, ActiveToolCall>();
 		const activeToolKeysByName = new Map<string, string[]>();
@@ -878,6 +870,7 @@ async function runSingleAttempt(
 			const path = resolveCurrentPath(event.toolName, args);
 			const active: ActiveToolCall = {
 				key,
+				...(typeof event.toolCallId === "string" && event.toolCallId ? { toolCallId: event.toolCallId } : {}),
 				tool: event.toolName,
 				args: extractToolArgsPreview(args),
 				startedAt: now,
@@ -1103,9 +1096,6 @@ async function runSingleAttempt(
 					structuredOutputToolInvoked = true;
 					structuredOutputMessageStartIndex = result.messages?.length ?? 0;
 				}
-				if (options.allowIntercomDetach && (evt.toolName === "intercom" || evt.toolName === "contact_supervisor")) {
-					intercomStarted = true;
-				}
 				progress.toolCount++;
 				if (options.toolBudget) {
 					result.toolBudget = toolBudgetState(options.toolBudget, progress.toolCount);
@@ -1120,6 +1110,7 @@ async function runSingleAttempt(
 				clearActiveToolTimeout(evt);
 				const endedTool = removeActiveToolCall(evt);
 				if (endedTool) {
+					supervisorBridge.toolEnded(endedTool.key);
 					progress.recentTools.push({
 						tool: endedTool.tool,
 						args: endedTool.args,
@@ -1196,6 +1187,7 @@ async function runSingleAttempt(
 				clearActiveToolTimeout(toolResultCompletion);
 				const endedTool = removeActiveToolCall(toolResultCompletion);
 				if (endedTool) {
+					supervisorBridge.toolEnded(endedTool.key);
 					progress.recentTools.push({
 						tool: endedTool.tool,
 						args: endedTool.args,
@@ -2282,13 +2274,8 @@ export async function runSync(
 	let detachReadyPublished = false;
 	let resolveReceipt!: (result: SingleResult) => void;
 	const receipt = new Promise<SingleResult>((resolve) => { resolveReceipt = resolve; });
-	const originSignal = options.signal;
-	const originController = new AbortController();
-	const forwardOriginAbort = () => {
-		if (!detachedReason) originController.abort(originSignal?.reason);
-	};
-	if (originSignal?.aborted) forwardOriginAbort();
-	else originSignal?.addEventListener("abort", forwardOriginAbort, { once: true });
+	const abortScope = createForegroundAbortScope({ origin: options.signal, isDetached: () => detachedReason !== undefined, retainAbortOnDetach: options.retainAbortOnDetach });
+	const originController = abortScope.controller;
 
 	const completion = runSyncCompletion(runtimeCwd, agents, agentName, task, {
 		...options,
@@ -2388,7 +2375,7 @@ export async function runSync(
 		// Attached completion rejection remains observable through the returned
 		// promise without becoming an unhandled side-channel rejection.
 	}).finally(() => {
-		originSignal?.removeEventListener("abort", forwardOriginAbort);
+		abortScope.dispose();
 	});
 
 	return Promise.race([authoritativeCompletion, receipt]);

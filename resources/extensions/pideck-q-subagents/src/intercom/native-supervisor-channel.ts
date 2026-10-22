@@ -5,7 +5,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ChildSupervisorMetadata } from "../runs/shared/child-runtime-config.ts";
-import { INTERCOM_DETACH_REQUEST_EVENT, POLL_INTERVAL_MS, TEMP_ROOT_DIR, type ControlEvent, type IntercomEventBus, type SubagentState } from "../shared/types.ts";
+import { INTERCOM_DETACH_REQUEST_EVENT, SUPERVISOR_REQUEST_SETTLED_EVENT, POLL_INTERVAL_MS, TEMP_ROOT_DIR, type ControlEvent, type IntercomEventBus, type SubagentState } from "../shared/types.ts";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { shouldUseNativeFsWatch } from "../shared/watch-strategy.ts";
 import {
@@ -480,7 +480,7 @@ function refreshPendingRequests(pending: Map<string, PendingSupervisorRequest>, 
 
 function formatPendingLine(request: PendingSupervisorRequest): string {
 	const replyHint = request.expectsReply ? ` Reply: ${supervisorReplyHint(request.id)}` : "";
-	return `- ${request.id}: ${request.agent} [${request.runId}#${request.childIndex}] ${request.reason}.${replyHint}`;
+	return `- ${request.id}: ${request.agent} [${request.runId}#${request.childIndex}] ${request.reason}.${replyHint}\n  ${request.message.slice(0, 2000)}${request.expectsReply ? `\n  Expires at ${new Date(requestExpiresAt(request, request.createdAt)).toISOString()}.` : ""}`;
 }
 
 function requestVisibleText(request: PendingSupervisorRequest): string {
@@ -499,8 +499,12 @@ function requestVisibleText(request: PendingSupervisorRequest): string {
 		);
 		if (request.interview !== undefined) lines.push(JSON.stringify(request.interview, null, "\t"));
 	}
-	if (request.expectsReply) lines.push("", `Reply with: ${supervisorReplyHint(request.id)}`);
-	lines.push("", `Live guidance: subagent({ action: "steer", id: ${JSON.stringify(request.runId)}, index: ${request.childIndex}, message: "..." })${request.expectsReply ? " (Reply to the pending request first.)" : ""}`);
+	if (request.expectsReply) {
+		// A queued notification can outlive the ask. Never present a delayed message as live authority.
+		lines.push("", `Request expires at ${new Date(requestExpiresAt(request, request.createdAt)).toISOString()}. Check subagent_supervisor({ action: "pending" }) before replying; this notification may already be stale.`,
+			`If still pending, reply with: ${supervisorReplyHint(request.id)}`);
+	}
+	lines.push("", `Live guidance: subagent({ action: "status", id: ${JSON.stringify(request.runId)} })${request.expectsReply ? " (Do not resume or launch a replacement while the child is still live.)" : ""}`);
 	return lines.join("\n").trimEnd();
 }
 
@@ -570,6 +574,8 @@ function publicPendingRequests(pending: Map<string, PendingSupervisorRequest>): 
 		childIndex: request.childIndex,
 		reason: request.reason,
 		expectsReply: request.expectsReply,
+		message: request.message.slice(0, 2000),
+		...(request.expiresAt !== undefined ? { expiresAt: request.expiresAt } : {}),
 	}));
 }
 
@@ -592,6 +598,10 @@ function buildParentSupervisorTool(pi: ExtensionAPI, pending: Map<string, Pendin
 				return { content: [{ type: "text", text: lines.length ? lines.join("\n") : "No pending supervisor requests." }], details: { pending: publicPendingRequests(pending) } };
 			}
 			if (input.action === "reply") {
+				if (input.replyTo && !pending.has(input.replyTo)) {
+					// A queued model/UI notification is not proof that a live ask still exists.
+					return { content: [{ type: "text", text: `Supervisor request '${input.replyTo}' is no longer pending here (it may be expired, answered, cancelled, or owned by another session). No reply was delivered. Inspect current pending requests and the run status; do not retry an old reply id or restart a still-live child.` }], isError: true, details: { delivered: false, replyTo: input.replyTo } };
+				}
 				const request = resolvePendingRequest(pending, input);
 				const reply = writeReply(request, input.message ?? "");
 				appendSupervisorReplyEntry(pi, request, reply);
@@ -651,6 +661,11 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 	};
 	const observeRequestLifecycle: SupervisorRequestLifecycleObserver = (request, lifecycle) => {
 		if (lifecycle !== "wrong-session") rememberResolvedRequest(request);
+		// Release attention in a retained foreground workflow on reply, expiry, cancellation or exit.
+		// The child/VM still owns completion; a settled ask is not a successful task result.
+		(pi as { events?: IntercomEventBus }).events?.emit(SUPERVISOR_REQUEST_SETTLED_EVENT, {
+			requestId: request.id, runId: request.runId, agent: request.agent, childIndex: request.childIndex, source: "native", lifecycle,
+		});
 	};
 	const getSupervisorRequestState = (event: ControlEvent): SupervisorRequestState => {
 		if (event.currentTool === "intercom" || event.index === undefined) return "unknown";
@@ -743,6 +758,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 						requestId: request.id,
 						reason: request.reason,
 						expectsReply: request.expectsReply,
+						...(request.expiresAt !== undefined ? { expiresAt: request.expiresAt } : {}),
 						runId: request.runId,
 						agent: request.agent,
 						childIndex: request.childIndex,
@@ -765,6 +781,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 					runId: request.runId,
 					agent: request.agent,
 					childIndex: request.childIndex,
+					source: "native",
 				});
 				if (pending.has(request.id)) markForegroundSupervisorAttention(request, state);
 			}

@@ -7,10 +7,10 @@ How to compose subagents: the recommended pattern, packaged prompt shortcuts, sc
 Use orchestration as parent-agent guidance, not as a runtime workflow mode. For implementation work, the recommended loop is:
 
 ```text
-clarify → scout → worker → fresh reviewers → worker
+clarify → readonly scan → writable → fresh readonly reviewers → writable
 ```
 
-Packaged `worker`, `oracle`, and `advisor` default to forked context when a launch omits `context`. If the parent has no persisted session file or current leaf yet, that implicit default falls back to `fresh`. Pass `context: "fresh"` when you intentionally want a fresh child run, or `context: "fork"` when fork must remain strict.
+Packaged `readonly` and `writable` default to forked context when a launch omits `context`. If the parent has no persisted session file or current leaf yet, that implicit default falls back to `fresh`. Pass `context: "fresh"` when you intentionally want a fresh child run, or `context: "fork"` when fork must remain strict.
 
 Child-safety boundaries are enforced at runtime:
 
@@ -34,8 +34,8 @@ The package includes reusable prompt templates for common workflows. You do not 
 | Prompt | Use it for |
 |--------|------------|
 | `/parallel-review` | Launch fresh-context reviewers with distinct angles, then synthesize what to fix. |
-| `/review-loop` | Run parent-controlled worker, reviewer, and fix-worker cycles until clean or capped. |
-| `/parallel-research` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
+| `/review-loop` | Run parent-controlled implementation, review, and fix cycles until clean or capped. |
+| `/parallel-research` | Combine `readonly` subagents for external evidence, local code context, and practical tradeoffs. |
 | `/gather-context-and-clarify` | Scout/research first, then ask the user the clarification questions that matter. |
 | `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
 
@@ -51,7 +51,7 @@ Validate a script without launching children:
 
 ```js
 subagent({ action: "validate", workflowScript: `
-  const results = await runs.all([{ key: "scan", agent: "scout", task: "Scan" }]);
+  const results = await runs.all([{ key: "scan", agent: "readonly", task: "Scan" }]);
   return results[0].output;
 ` });
 ```
@@ -83,8 +83,8 @@ Composite workflows have no default parent deadline. Add bounds only when the wo
 ```js
 subagent({
   workflowScript: `
-    const scan = await runs.run("scan", { agent: "scout", task: "Inspect the named files." });
-    return runs.run("review", { agent: "reviewer", task: "Review:\n" + scan.output });
+    const scan = await runs.run("scan", { agent: "readonly", task: "Inspect the named files." });
+    return runs.run("review", { agent: "readonly", task: "Review:\n" + scan.output });
   `,
   timeoutMs: 900000,
   toolBudget: { soft: 40, hard: 60 },
@@ -104,10 +104,10 @@ The result is `{ ok, errors }`. Invalid scripts return a tool error and include 
 
 ```js
 subagent({ workflowScript: `
-  const scan = await runs.run("scan", { agent: "scout", task: "Scan the codebase" });
+  const scan = await runs.run("scan", { agent: "readonly", task: "Scan the codebase" });
   const reviews = await runs.all([
-    { key: "correctness", agent: "reviewer", task: "Review correctness: " + scan.output },
-    { key: "tests", agent: "reviewer", task: "Review tests: " + scan.output }
+    { key: "correctness", agent: "readonly", task: "Review correctness: " + scan.output },
+    { key: "tests", agent: "readonly", task: "Review tests: " + scan.output }
   ]);
   return reviews.map(result => result.output);
 ` });
@@ -118,7 +118,7 @@ Keep helper functions portable across Node and Bun. Use top-level `await`, plain
 ```js
 subagent({ workflowScript: `
   function scan() {
-    return runs.run("scan", { agent: "scout", task: "Scan the codebase" });
+    return runs.run("scan", { agent: "readonly", task: "Scan the codebase" });
   }
   const result = await scan();
   return result.output;
@@ -129,8 +129,8 @@ Chaining is still supported. The supported form is scripted chaining: await one 
 
 ```js
 subagent({ workflowScript: `
-  const plan = await runs.run("plan", { agent: "scout", task: "Plan the migration" });
-  const patch = await runs.run("patch", { agent: "worker", task: "Implement this plan:\n" + plan.output });
+  const plan = await runs.run("plan", { agent: "readonly", task: "Plan the migration" });
+  const patch = await runs.run("patch", { agent: "writable", task: "Implement this plan:\n" + plan.output });
   return patch.output;
 ` });
 ```
@@ -145,16 +145,16 @@ subagent({ workflowScript: `
     {
       key: "api",
       stages: [
-        { key: "writer", agent: "worker", task: "Implement the API change" },
+        { key: "writer", agent: "writable", task: "Implement the API change" },
         { key: "challenge", resume: "previous", task: "Challenge the API implementation" },
-        { key: "review", agent: "reviewer", task: "Review the API lane" }
+        { key: "review", agent: "readonly", task: "Review the API lane" }
       ]
     },
     {
       key: "ui",
       stages: [
-        { key: "writer", agent: "worker", task: "Implement the UI change" },
-        { key: "review", agent: "reviewer", task: "Review the UI lane" }
+        { key: "writer", agent: "writable", task: "Implement the UI change" },
+        { key: "review", agent: "readonly", task: "Review the UI lane" }
       ]
     }
   ]);
@@ -196,8 +196,8 @@ Use `await runs.steer(key, message, options?)` after `runs.run` or `runs.all` ha
 
 ```js
 subagent({ workflowScript: `
-  const writer = runs.run("writer", { agent: "worker", task: "Implement the change" });
-  const evidence = await runs.run("evidence", { agent: "scout", task: "Find the exact contract" });
+  const writer = runs.run("writer", { agent: "writable", task: "Implement the change" });
+  const evidence = await runs.run("evidence", { agent: "readonly", task: "Find the exact contract" });
   const receipt = await runs.steer("writer", "Also check: " + evidence.output, { mode: "follow_up" });
   return { writer: await writer, receipt };
 ` });
@@ -214,9 +214,9 @@ Always await or return a `runs.steer` promise. The workflow waits for an observe
 ```js
 subagent({ workflowScript: `
   let pending = [
-    { key: "analysis-a", promise: runs.run("analysis-a", { agent: "reviewer", task: "Analyze option A" }).then((result) => ({ key: "analysis-a", result })) },
-    { key: "analysis-b", promise: runs.run("analysis-b", { agent: "reviewer", task: "Analyze option B" }).then((result) => ({ key: "analysis-b", result })) },
-    { key: "critic", promise: runs.run("critic", { agent: "reviewer", task: "Find the strongest objection" }).then((result) => ({ key: "critic", result })) }
+    { key: "analysis-a", promise: runs.run("analysis-a", { agent: "readonly", task: "Analyze option A" }).then((result) => ({ key: "analysis-a", result })) },
+    { key: "analysis-b", promise: runs.run("analysis-b", { agent: "readonly", task: "Analyze option B" }).then((result) => ({ key: "analysis-b", result })) },
+    { key: "critic", promise: runs.run("critic", { agent: "readonly", task: "Find the strongest objection" }).then((result) => ({ key: "critic", result })) }
   ];
 
   const first = await Promise.race(pending.map((child) => child.promise));
@@ -237,7 +237,7 @@ Use named outputs when later workflow steps need structured data or durable refe
 ```js
 subagent({ workflowScript: `
   const inventory = await runs.run("inventory", {
-    agent: "scout",
+    agent: "readonly",
     task: "List the files that need review.",
     outputSchema: {
       type: "object",
@@ -247,7 +247,7 @@ subagent({ workflowScript: `
     }
   });
   return runs.run("review", {
-    agent: "reviewer",
+    agent: "readonly",
     task: "Review these files: " + inventory.structuredOutput.files.join(", ")
   });
 ` });
@@ -258,7 +258,7 @@ For dynamic fanout, have one step return a structured list, check it in JavaScri
 ```js
 subagent({ workflowScript: `
   const targets = await runs.run("targets", {
-    agent: "scout",
+    agent: "readonly",
     task: "Return up to five source files that need review.",
     outputSchema: {
       type: "object",
@@ -270,7 +270,7 @@ subagent({ workflowScript: `
   const files = targets.structuredOutput.files.slice(0, 5);
   return runs.all(files.map((file, index) => ({
     key: "review-" + index,
-    agent: "reviewer",
+    agent: "readonly",
     task: "Review " + file
   })));
 ` });
@@ -280,8 +280,8 @@ For intermediate data that only later steps need, prefer the prior child's retur
 
 ```js
 subagent({ workflowScript: `
-  const scan = await runs.run("scan", { agent: "scout", task: "Find the files that need fixes." });
-  return runs.run("fix", { agent: "worker", task: "Implement these findings:\n" + scan.output });
+  const scan = await runs.run("scan", { agent: "readonly", task: "Find the files that need fixes." });
+  return runs.run("fix", { agent: "writable", task: "Implement these findings:\n" + scan.output });
 ` });
 ```
 
@@ -293,24 +293,24 @@ Legacy top-level `chain`, `tasks`, `parallel`, `chainDir`, `/chain`, `/parallel`
 
 ```js
 // Old shape, no longer supported:
-// { chain: [{ agent: "scout", task: "Scan" }, { agent: "worker", task: "Fix from {previous}" }] }
+// { chain: [{ agent: "readonly", task: "Scan" }, { agent: "writable", task: "Fix from {previous}" }] }
 
 // Current shape:
 { workflowScript: `
-  const scan = await runs.run("scan", { agent: "scout", task: "Scan" });
-  return runs.run("fix", { agent: "worker", task: "Fix from: " + scan.output });
+  const scan = await runs.run("scan", { agent: "readonly", task: "Scan" });
+  return runs.run("fix", { agent: "writable", task: "Fix from: " + scan.output });
 ` }
 ```
 
 ```js
 // Old shape, no longer supported:
-// { tasks: [{ agent: "reviewer", task: "Review API" }, { agent: "reviewer", task: "Review UI" }] }
+// { tasks: [{ agent: "readonly", task: "Review API" }, { agent: "readonly", task: "Review UI" }] }
 
 // Current shape:
 { workflowScript: `
   return runs.all([
-    { key: "api", agent: "reviewer", task: "Review API" },
-    { key: "ui", agent: "reviewer", task: "Review UI" }
+    { key: "api", agent: "readonly", task: "Review API" },
+    { key: "ui", agent: "readonly", task: "Review UI" }
   ]);
 ` }
 ```
@@ -324,7 +324,7 @@ const task = [
   "npm test",
   "```"
 ].join("\n");
-return runs.run("test", { agent: "worker", task });
+return runs.run("test", { agent: "writable", task });
 ````
 
 A plain workflow creates one enclosing mission by default. Its children do not create separate missions. The result exposes the id as `details.missionId`, and human-readable output ends with `Mission: <id> (<status>)`. Pass `mission:false` for an ephemeral workflow with no mission or durable `state` global.
@@ -338,7 +338,7 @@ For a process you run often, save the task as a prompt template under `.pi/promp
 ```md
 ---
 description: Review a release candidate
-subagent: reviewer
+subagent: readonly
 fresh: true
 ---
 Review $@. Return concrete findings with source proof, or state that no issue was found.
@@ -370,8 +370,8 @@ Scripted workflows can give each writing child a separate managed git worktree b
 
 ```javascript
 const [api, ui] = await runs.all([
-  { key: "api", agent: "worker", task: "Implement the API", worktree: true },
-  { key: "ui", agent: "worker", task: "Implement the UI", worktree: true }
+  { key: "api", agent: "writable", task: "Implement the API", worktree: true },
+  { key: "ui", agent: "writable", task: "Implement the UI", worktree: true }
 ]);
 return { api: api.artifactPaths, ui: ui.artifactPaths };
 ```
@@ -422,11 +422,11 @@ Child agents can talk back to the parent Pi session without installing `pi-inter
 Use it for work where the child might need a decision instead of guessing:
 
 ```text
-Run this implementation in the background. If the worker gets blocked or needs a product decision, have it ask me through the supervisor channel.
+Run this implementation in the background. If the child gets blocked or needs a product decision, have it ask me through the supervisor channel.
 ```
 
 ```text
-Ask oracle to review this plan. If it sees a decision I need to make, have it ask me instead of assuming.
+Ask a readonly subagent to review this plan. If it sees a decision I need to make, have it ask me instead of assuming.
 ```
 
 The child uses one dedicated coordination tool, `contact_supervisor`, with a `reason`:
@@ -447,7 +447,7 @@ If messages do not show up, run `/subagents-doctor`. Advanced users can tune the
 
 ## Recursion guard
 
-Subagents can call `subagent` only when their resolved builtin tools explicitly include `subagent`. That is meant for delegated fanout agents, not ordinary worker/reviewer children. A depth guard prevents unbounded nesting.
+Subagents can call `subagent` only when their resolved builtin tools explicitly include `subagent`. That is meant for delegated fanout agents, not ordinary readonly/writable children. A depth guard prevents unbounded nesting.
 
 By default, nesting is limited to two levels: main session → subagent → sub-subagent. Deeper calls are blocked with guidance to complete the current task directly. Nested runs appear in the parent status widget and `status` output as a tree, and `status`, `interrupt`, and `resume` can target a nested run by its id.
 
@@ -487,6 +487,6 @@ Then run it through the native adapter:
 /prompt-workflow take-screenshot https://example.com
 ```
 
-The adapter delegates to the named subagent, applies `model`, `skill`, `cwd`, and fork/fresh context metadata, and supports runtime overrides such as `--subagent reviewer`, `--fork`, `--fresh`, and `--bg`.
+The adapter delegates to the named subagent, applies `model`, `skill`, `cwd`, and fork/fresh context metadata, and supports runtime overrides such as `--subagent readonly`, `--fork`, `--fresh`, and `--bg`.
 
 Prompt templates with `chain:` frontmatter are translated into `workflowScript` and launched through `/prompt-workflow`; `/chain-prompts` is no longer registered.

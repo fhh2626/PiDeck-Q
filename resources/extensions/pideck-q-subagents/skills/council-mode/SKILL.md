@@ -18,7 +18,7 @@ Before launch, read:
 
 Run `subagent({ action: "list" })`, then choose 2-3 executable advisor names that start with `council-`. The prefix is convention only. Never use more than four advisors.
 
-If fewer than two council profiles are available, fill with `oracle`, then `reviewer`. Launch fallback `oracle` with `context: "fork"`; let fallback `reviewer` use its normal profile context. Note fallbacks and known context modes in the memo. If fewer than two advisors remain, use the normal one-oracle consultation loop and label it degraded mode.
+If fewer than two council profiles are available, fill with `readonly`. Launch each fallback `readonly` with `context: "fork"` and a distinct stance in its task. Note fallbacks and known context modes in the memo. If fewer than two advisors remain, use the normal single-advisor consultation loop and label it degraded mode.
 
 `council-*` profiles live in user or project agent directories, not this package. A profile defines model, tools, context, output defaults, and persistent stance. Keep advisors read-only, disable inherited skills unless needed, and put stance in the profile body instead of inventing per-run role labels.
 
@@ -56,4 +56,4 @@ The memo states:
 - confidence and what would change the decision
 - roster, passes, fallbacks, and known advisor context modes
 
-Identify advisors by profile name. State when fallback `oracle` was forked and context-aware. Escalate to a writer only after the memo and only when the user requests it.
+Identify advisors by profile name. State when a fallback `readonly` advisor was forked and context-aware. Escalate to a writer only after the memo and only when the user requests it.

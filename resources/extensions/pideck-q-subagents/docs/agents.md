@@ -4,8 +4,8 @@ An agent is a markdown file: YAML frontmatter on top, a system prompt below. The
 
 ```yaml
 ---
-name: scout
-description: Fast codebase recon
+name: security-reviewer
+description: Security-focused code review
 tools: read, grep, find, ls
 ---
 
@@ -37,17 +37,12 @@ Builtins load at the lowest priority, so a user or project agent with the same n
 
 | Agent | Use it when you want... |
 |-------|--------------------------|
-| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks, and where another agent should start. |
-| `researcher` | Web/docs research with sources: official docs, specs, benchmarks, recent changes, and a concise research brief. |
-| `worker` | Implementation work, including approved oracle handoffs. It edits files, validates, and escalates unapproved decisions instead of guessing. |
-| `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
-| `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
-| `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `readonly` | Investigation, code review, and research. It inherits the launching session's tools except `edit` and `write`, and its prompt forbids changing files or running file-modifying shell commands. |
+| `writable` | The default agent. It inherits the launching session's tools and can edit files and run commands. Omitting `agent` on a single launch runs `writable`. |
 
-Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+Both builtins use `tools: parent` (see below), inherit the parent model and thinking level, and default to `context: "fork"`, so they start with the parent conversation. Use `context: "fresh"` for independent review or verification, parallel research, or when the conversation is nearly full. `readonly` restricts file edits by removing `edit` and `write` and by prompt; the shell stays available for reading, so this is a strong guardrail rather than a sandbox. Parallel `writable` children must touch disjoint files or use `worktree: true`.
 
-`oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `advisor` is the same bundled role under the Claude Code-compatible name.
-
+An unknown agent name is an error that lists the available agents; only a missing `agent` falls back to `writable`.
 ### Optional Surf integration
 
 When `surf-cli` is installed and loaded, Surf can expose a `gpt-pro` package agent through the `surf-oracle` external-job provider. It starts through the same `subagent({ agent: "gpt-pro" })` mental model as any other agent, but Surf owns the package agent and provider. Surf maps `model: pro` to ChatGPT GPT-5.6 Sol Pro web mode. pi-subagents does not own that model mapping.
@@ -60,120 +55,9 @@ The Pi async run remains the source of truth for status, artifacts, wake/wait, m
 
 External CLI agents use their own runner contract. They are deliberate execution modes, not implicit recovery paths for a failed native `subagent` workflow. For backlog lanes and other subagent-governed workflows, switching to an external, foreground, or CLI runner requires explicit owner approval after the exact failure/run/worktree state is recorded and the worktree is verified clean or its partial diff is captured. Do not pass native Pi child options such as model override, structured output, acceptance/agent contract, tool budgets, fast mode, fork context, skills, or native Pi tools unless the adapter explicitly implements them.
 
-The built-in `codex-exec` and `codex-exec-writer` profiles are the supported Codex one-shot modes. Both require an installed and authenticated Codex CLI. The adapters own `codex exec --json` argv with ignored user config and rules, ephemeral sessions, approval policy `never`, and a final-message artifact.
+Bundled Codex, Claude Code, and Cursor profiles (`codex-exec`, `codex-exec-writer`, `claude-code`, `claude-code-writer`, `cursor-agent`, and `cursor-agent-writer`) have been removed. A custom agent may still declare a generic `external-cli` command, but it cannot select those adapter ids.
 
-| Profile | Access | Sandbox |
-|---|---|---|
-| `codex-exec` | Read-only analysis | `read-only` |
-| `codex-exec-writer` | Explicit workspace edits | `workspace-write` |
-
-Neither adapter uses full access, approval or sandbox bypasses, automatic approval review, or additional writable roots. User profiles cannot add argv. The `codex-exec` selection identity is reserved for the read-only adapter.
-
-Run it asynchronously:
-
-```text
-Use codex-exec to analyze this change without editing files.
-
-Use codex-exec-writer to make the requested workspace changes.
-```
-
-The adapter validates `codex --version` and `codex exec --help` only when a run launches. Discovery, list, status, and native Pi launches do not execute Codex or its version/help probes. A capabilities listing performs only a passive PATH/PATHEXT/X_OK lookup and exposes the command as `runner.available`; that does not prove authentication or launch compatibility. JSONL, stderr, and stdout are untrusted. A run succeeds only after bounded valid JSONL contains one `turn.completed` event and the bounded final-message artifact is present.
-
-Maintainers can collect real smoke evidence without making it part of the normal test suite:
-
-```bash
-PI_SUBAGENTS_CODEX_EXEC_SMOKE=1 \
-PI_SUBAGENTS_CODEX_EXEC_SMOKE_REPORT=/tmp/pi-subagents-codex-exec-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/codex-exec-smoke.test.ts
-
-PI_SUBAGENTS_CODEX_EXEC_WRITER_SMOKE=1 \
-PI_SUBAGENTS_CODEX_EXEC_WRITER_SMOKE_REPORT=/tmp/pi-subagents-codex-exec-writer-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/codex-exec-writer-smoke.test.ts
-```
-
-The read-only smoke must report `writeCanaryExists: false`. The writer smoke must report `writeCanaryMatches: true`. Both reports include startup duration and terminal proof without raw protocol output, prompts, or credentials.
-
-The built-in `claude-code` and `claude-code-writer` profiles are the supported Claude Code one-shot modes. Both require an installed Claude Code CLI that is already authenticated through its normal local login. Claude Code 2.1.150 needs the user setting source for normal OAuth/keychain authentication, so both adapters load user settings but exclude project and local settings. User-level Claude Code settings and hooks are therefore an operator-trusted prerequisite. Review or disable unsafe user hooks before using either profile.
-
-| Profile | Access | Permission mode | Built-in tools |
-|---|---|---|---|
-| `claude-code` | Handoff-only read-only advice | `plan` | none |
-| `claude-code-writer` | Explicit workspace file edits | `acceptEdits` | `Read,Write,Edit,Glob,Grep` |
-
-Both adapters own `claude -p` argv with stream JSON, strict empty MCP configuration, user-only setting sources, no session persistence, disabled slash commands, and disabled Chrome integration. The writer mode does not include Bash or any permission bypass. Neither mode uses `--bare`, which does not read normal OAuth/keychain authentication. Neither mode requires `--safe-mode`, which is absent from the installed 2.1.150 help. User profiles cannot add argv. Selecting the code-owned `claude-code-writer` adapter identity is the only way to opt into its write tools; the read-only adapter cannot be widened with user argv.
-
-Run it asynchronously:
-
-```text
-Use claude-code to analyze this handoff without editing files.
-
-Use claude-code-writer to make the requested file changes.
-```
-
-The adapter validates `claude --version` and `claude --help` only when a run launches. Discovery, list, status, and native Pi launches do not execute Claude Code or probe authentication. A capabilities listing performs only a passive PATH/PATHEXT/X_OK lookup and exposes the command as `runner.available`; that does not prove authentication or launch compatibility. JSONL, stderr, and stdout are untrusted. A run succeeds only after bounded valid JSONL contains exactly one successful terminal `result` with non-empty final text. Missing or revoked local authentication, limit stops, malformed JSON, duplicate terminal results, and EOF before a terminal result fail closed.
-
-Maintainers can opt in to separate read-only and writer canaries:
-
-```bash
-PI_SUBAGENTS_CLAUDE_CODE_SMOKE=1 \
-PI_SUBAGENTS_CLAUDE_CODE_SMOKE_REPORT=/tmp/pi-subagents-claude-code-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/claude-code-smoke.test.ts
-
-PI_SUBAGENTS_CLAUDE_CODE_WRITER_SMOKE=1 \
-PI_SUBAGENTS_CLAUDE_CODE_WRITER_SMOKE_REPORT=/tmp/pi-subagents-claude-code-writer-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/claude-code-writer-smoke.test.ts
-```
-
-Both smoke reports record `authentication: "existing-cli-required"`, `settingSources: "user"`, and `userSettingsTrust: "required"` without recording credential details. For read-only, confirm `terminalState` is `completed` and `writeCanaryExists` is `false`. For writer, confirm `terminalState` is `completed` and `writeCanaryMatches` is `true`. `durationMs` records cold process time. If authentication is missing or revoked, repair the normal local Claude Code login and rerun the smoke. Reports do not contain raw protocol output or credentials.
-
-The built-in `cursor-agent` and `cursor-agent-writer` profiles are the supported Cursor CLI one-shot modes. Both require an installed Cursor CLI and either `CURSOR_API_KEY` or an existing local login.
-
-| Profile | Access | Cursor mode |
-|---|---|---|
-| `cursor-agent` | Read-only analysis | `ask` |
-| `cursor-agent-writer` | Explicit workspace edits | non-interactive print |
-
-Both adapters use stream JSON, the enabled sandbox, and the primary workspace. They write the full handoff to a private `0600` file in a private temporary directory. Process argv contains only a short instruction with that path. The temporary directory is added as a workspace root only when it is outside the primary workspace. The prompt file and directory are removed after completion, failure, or stop.
-
-The adapters do not pass force, yolo, auto-review, MCP approval, plugin, session resume, continue, worktree, or workspace trust flags. User profiles cannot add argv or workspace roots. The `cursor-agent` selection identity is reserved for the read-only adapter.
-
-Launch preflight validates `cursor-agent --version` and `cursor-agent --help` only when a run starts. Discovery, list, status, and native Pi launches do not execute Cursor or probe authentication. A capabilities listing performs only a passive PATH/PATHEXT/X_OK lookup and exposes the command as `runner.available`; that does not prove authentication or launch compatibility. A run succeeds only when bounded valid JSONL ends with one successful `result` event that has non-empty final text. Error events, failed results, malformed JSON, output after the terminal event, and EOF before a result fail closed.
-
-These headless smokes rely on saved workspace trust. Cursor documents no passive command that checks workspace trust, so the smoke cannot verify it before launch. The operator must use Cursor's interactive trust flow for the exact disposable workspace and the exact derived prompt directory, `<state-root>/external-0.cursor-prompt`. Keep that prompt directory after the trust step. It must be empty, owned by the operator who runs the smoke, and must not be a symlink. The harness preserves this directory but creates its private handoff with exclusive `0600` access and removes the handoff after every run. Repeat the trust setup if either exact path changes.
-
-The smoke requires two existing, separate operator-managed directories and an explicit disposable-workspace attestation:
-
-```bash
-export PI_SUBAGENTS_CURSOR_SMOKE_WORKSPACE=/tmp/pi-subagents-cursor-smoke-workspace
-export PI_SUBAGENTS_CURSOR_SMOKE_STATE_ROOT=/tmp/pi-subagents-cursor-smoke-state
-export PI_SUBAGENTS_CURSOR_SMOKE_DISPOSABLE=1
-mkdir -p "$PI_SUBAGENTS_CURSOR_SMOKE_WORKSPACE" "$PI_SUBAGENTS_CURSOR_SMOKE_STATE_ROOT"
-mkdir -p "$PI_SUBAGENTS_CURSOR_SMOKE_STATE_ROOT/external-0.cursor-prompt"
-```
-
-Do not place a file at `pi-subagents-cursor-write-canary.txt` in the workspace or any file, including `handoff.txt`, in the prompt directory. The harness refuses the pre-existing canary and any non-empty prompt directory. It does not delete the workspace, state root, or operator-owned prompt directory. It removes only its canary and private handoff file.
-
-Maintainers can then run separate read-only and writer canaries:
-
-```bash
-PI_SUBAGENTS_CURSOR_AGENT_SMOKE=1 \
-PI_SUBAGENTS_CURSOR_AGENT_SMOKE_REPORT=/tmp/pi-subagents-cursor-agent-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/cursor-agent-smoke.test.ts
-
-PI_SUBAGENTS_CURSOR_AGENT_WRITER_SMOKE=1 \
-PI_SUBAGENTS_CURSOR_AGENT_WRITER_SMOKE_REPORT=/tmp/pi-subagents-cursor-agent-writer-smoke.json \
-node --experimental-strip-types --import ./test/support/register-loader.mjs \
-  --test test/integration/cursor-agent-writer-smoke.test.ts
-```
-
-The read-only smoke must report `writeCanaryExists: false`. The writer smoke must report `writeCanaryMatches: true`. Both reports record `workspaceTrust: "operator-managed-saved"`, confirm that the external prompt root was added, and include startup duration and terminal proof without raw protocol output, prompts, or credentials. A trust-required error remains terminal; the harness does not retry with a trust, force, or yolo flag.
-
-Native `oracle` runs inside Pi and can use its configured read tools. The Claude profiles send the assembled prompt to the local Claude Code CLI through stdin. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
+A native agent runs inside Pi and can use its inherited tools. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
 
 ### External-job state table
 
@@ -183,14 +67,6 @@ Native `oracle` runs inside Pi and can use its configured read tools. The Claude
 | `result.json` or session result payload | pi-subagents async runner | `complete`, `failed`, `stopped` | All steps reach terminal state and result publication succeeds or is recoverably indexed | Result write fails and pending result repair records the terminal state | Stale status can repair from an existing result file | Unindexed sessionless stale failure |
 | `external-job-requests/` and `external-job-responses/` | Host-mediated provider bridge | pending request, terminal response | Host process writes a matching response and removes the request | Bridge timeout or malformed request response | Requests are operation-scoped. Recovery sends `reattach`/`result`, not `start` or `follow-up`, when job metadata exists. `start` and `follow-up` use durable dispatch claims | Provider not registered, host bridge not loaded, malformed request, provider exception, ambiguous dispatch without a provider job id |
 | Provider artifact path | External provider | provider-defined terminal artifact | Provider returns `artifactPath`, or Pi writes returned text to `external-job-<index>.result.md` | Provider reports failure or no result | Existing artifact path is retained in `status.json` | Missing artifact with no text output returns a terminal message instead of inventing content |
-
-The `researcher` builtin uses `web_search`, `fetch_content`, `get_search_content`, and selective `source_check` validation. Those require [pi-web-access](https://github.com/nicobailon/pi-web-access):
-
-```bash
-pi install npm:pi-web-access
-```
-
-The loaded provider must register all four tools, including `source_check`, before launch; a missing required tool prevents a successful run. Fetched-source inspection is a fallback for a registered `source_check` call failing, not for missing registration.
 
 ## Overriding builtins and custom agents
 
@@ -203,7 +79,7 @@ You can override selected agent fields without copying the whole agent. Override
 {
   "subagents": {
     "agentOverrides": {
-      "reviewer": {
+      "readonly": {
         "description": "Independent review tier",
         "inheritProjectContext": false
       }
@@ -217,6 +93,7 @@ Supported override fields: `description`, `output`, `outputMode`, `defaultReads`
 - `description` replaces the discovered description for builtin and custom agents, which lets list output show deployment-specific routing or model metadata.
 - Use `output: false`, `defaultReads: false`, `defaultContext: false`, or `acceptanceRole: false` to clear an inherited value.
 - Use `tools: "inherit"` when that one role should omit its bundled or frontmatter tool allowlist and receive Pi's normal builtins (plus ambient extensions when it runs as a background child).
+- Use `tools: "parent"` (also valid as the frontmatter value `tools: parent`, which is how the builtin agents are defined) when that one role should mirror the tools the launching session has active right now. The active tool names become the child's strict allowlist, and each extension tool's provider extension is loaded into the child (merged into `subagentOnlyExtensions`), so it works for foreground children too. `excludeTools` is the blacklist: listed names (exact, including `contact_supervisor`) are removed from the copy, and a provider extension is loaded only while at least one non-excluded tool still needs it. Never copied: `subagent` (nested fan-out stays governed by `allowNestedSubagents` and depth ceilings), tools provided by this package, and the pi-mcp-adapter proxy tool; tools with no loadable provider file are skipped. The parent's direct MCP tools are converted to `mcp:<server>` selectors (resolved against the adapter config and metadata cache, so servers that are only configured at runtime cannot be passed on). `contact_supervisor` is always included. If the launching session's tools cannot be read, the child gets no tools rather than the default set. Examples: `{ "subagents": { "agentOverrides": { "security-reviewer": { "tools": "parent" } } } }` copies everything; `{ "tools": "parent", "excludeTools": ["bash", "edit", "write"] }` copies everything except those tools.
 - Project overrides beat user overrides.
 - Matching package, user, and project agents also receive override fields, which replace the same fields declared in their frontmatter. This lets a shared agent keep its persona while local settings choose the effective model, context, tools, or other supported options.
 
@@ -224,9 +101,9 @@ Disable and restore:
 
 - `disabled: true` hides a builtin from runtime discovery and agent-facing `subagent({ action: "list" })` output.
 - `subagents.disableBuiltins: true` disables all builtins at once.
-- `subagent({ action: "disable", agent: "reviewer" })` writes the override without editing settings by hand; `subagent({ action: "enable", agent: "reviewer" })` removes it.
-- `subagent({ action: "eject", agent: "reviewer" })` copies a bundled builtin or package agent verbatim into the user or project agent dir (default `user`) as an editable custom file that shadows the original.
-- `subagent({ action: "reset", agent: "reviewer" })` deletes the scope's custom agent file and/or settings override entry, restoring the bundled default. It refuses if no bundled default exists (use `delete` for purely custom agents).
+- `subagent({ action: "disable", agent: "readonly" })` writes the override without editing settings by hand; `subagent({ action: "enable", agent: "readonly" })` removes it.
+- `subagent({ action: "eject", agent: "readonly" })` copies a bundled builtin or package agent verbatim into the user or project agent dir (default `user`) as an editable custom file that shadows the original.
+- `subagent({ action: "reset", agent: "readonly" })` deletes the scope's custom agent file and/or settings override entry, restoring the bundled default. It refuses if no bundled default exists (use `delete` for purely custom agents).
 
 `eject`, `disable`, `enable`, and `reset` accept `agentScope: "user" | "project"` and operate in one scope at a time. Project overrides still win over user ones, so a project-scope disable survives a user-scope `enable` until you target the project scope.
 
@@ -252,7 +129,7 @@ Use these fields when an agent should see more:
 | `inheritSkills: true` | Let the child see Pi's discovered skills catalog. |
 | `defaultContext: fork` | Prefer forked session context when a launch omits `context`; if the parent has no persisted session file or current leaf yet, the implicit default falls back to `fresh` without a failed first attempt. Explicit `context: "fork"` remains strict, and explicit `context: "fresh"` still wins. |
 
-Builtin agents opt into repository instruction inheritance by default so they follow repo-specific rules out of the box, but global context remains excluded unless `inheritGlobalContext: true` is set. This changes the behavior of existing agents that previously received global context as part of `inheritProjectContext: true`. `delegate` also uses append mode because its job is orchestration inside the parent workflow.
+Builtin agents opt into repository instruction inheritance by default so they follow repo-specific rules out of the box, but global context remains excluded unless `inheritGlobalContext: true` is set. This changes the behavior of existing agents that previously received global context as part of `inheritProjectContext: true`. Both builtin agents use append mode, so the child keeps Pi's own system prompt and adds only the agent marker and, for `readonly`, its read-only rules.
 
 ## Frontmatter reference
 
@@ -260,12 +137,12 @@ A full example:
 
 ```yaml
 ---
-name: scout
-# Optional: registers this as code-analysis.scout while preserving name: scout
+name: recon
+# Optional: registers this as code-analysis.recon while preserving name: recon
 package: code-analysis
 description: Fast codebase recon
 advertise: true
-aliases: explorer, code-scout
+aliases: explorer, code-recon
 tools: read, grep, find, ls, bash, mcp:chrome-devtools
 excludeTools: bash
 extensions:
@@ -311,7 +188,7 @@ Field notes:
 
 | Field | Notes |
 |-------|-------|
-| `package` | Optional package identifier. A file with `name: scout` and `package: code-analysis` registers as `code-analysis.scout`; serialization keeps `name` and `package` separate. |
+| `package` | Optional package identifier. A file with `name: recon` and `package: code-analysis` registers as `code-analysis.recon`; serialization keeps `name` and `package` separate. |
 | `advertise` | Set `true` to include this agent's name and description in the parent system prompt when the `subagent` tool is active. Defaults to `false`. |
 | `aliases` | Optional comma-separated or block-list names that resolve to this agent for selection and explicit `agent` and task inputs. Runtime status, persistence, and config still use the canonical `name`. Exact canonical names take precedence over aliases, and alias collisions between distinct canonical agents fail as ambiguous. |
 | `tools` | Strict child tool allowlist. Named extension tools must also have their provider loaded. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
@@ -361,7 +238,7 @@ How it works:
 
 - On each run, the first 200 lines of `MEMORY.md` in the resolved memory directory are injected into the child system prompt, so the agent can recall accumulated role notes such as threat-model entries, release gotchas, or verified commands.
 - Agents with write tools (`edit`, `write`, or `bash`, or no `tools` allowlist at all) are told they may append concise dated entries to the file.
-- Agents without write tools receive a read-only memory block and are not instructed to edit it. A read-only reviewer can recall prior notes without gaining write capability.
+- Agents without write tools receive a read-only memory block and are not instructed to edit it. A read-only agent can recall prior notes without gaining write capability.
 - The memory directory is never created eagerly. The agent's own `write` tool creates it (and `MEMORY.md`) on the first persist.
 - Memory paths are validated against `.`/`..` traversal and symlink escape. An unsafe or unresolvable scope is silently skipped rather than breaking the run.
 
@@ -375,13 +252,13 @@ Scopes:
 A refinement overlay is bounded, project-local guidance layered on top of one agent's system prompt without editing the agent file. Use it when an agent repeatedly stumbles on the same project-specific issue and recent run evidence shows what to correct.
 
 ```text
-/subagents-refine reviewer
+/subagents-refine readonly
 ```
 
 ```ts
-subagent({ action: "refine", agent: "reviewer" })
-subagent({ action: "refine.show", agent: "reviewer" })
-subagent({ action: "refine.rollback", agent: "reviewer" })
+subagent({ action: "refine", agent: "readonly" })
+subagent({ action: "refine.show", agent: "readonly" })
+subagent({ action: "refine.rollback", agent: "readonly" })
 ```
 
 How it works:
@@ -406,7 +283,7 @@ How `tools` behaves:
 
 An allowlisted name does not load the extension that registers it. Load that provider through `extensions`, `subagentOnlyExtensions`, a path-like `tools` entry, or (background children only) normal Pi extension discovery.
 
-Ambient extensions depend on where the child runs. Foreground children are sessions inside the parent Pi process and never load the parent's ambient extensions; otherwise the parent would start a second copy of each ambient extension, including this one. Background children are sessions inside the detached runner process and load the ambient extensions unless the agent sets `extensions` or the capability ceiling denies extensions. Agents that need MCP tools (`mcpDirectTools`, or MCP tools from an ambient adapter such as pi-mcp-adapter) or models from a provider extension must therefore run as background children (`async: true`). A foreground launch of such an agent fails with a diagnostic that says exactly that.
+Ambient extensions depend on where the child runs. Foreground children are sessions inside the parent Pi process and never load the parent's ambient extensions; otherwise the parent would start a second copy of each ambient extension, including this one. Background children are sessions inside the detached runner process and load the ambient extensions unless the agent sets `extensions` or the capability ceiling denies extensions. Foreground direct MCP tools use the SDK's session-local MCP provider with only the resolved server/tool selections; they do not require ambient extension loading or process-global MCP environment variables. For models or other tools from provider extensions, load those providers explicitly through the agent's extension settings.
 
 More rules:
 
@@ -425,7 +302,7 @@ Examples:
 - `allowNestedSubagents: true` with `tools` omitted: normal builtin tools (and, for background children, ambient extensions) remain inherited, and the child-safe nested `subagent` runtime is added.
 - `tools: read, fixture_search` plus `subagentOnlyExtensions: ./tools/fixture-search.ts`: the provider loads only in this agent's child sessions, and the registered `fixture_search` name survives the strict allowlist.
 
-Direct MCP tools require [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter). Subagents only receive direct MCP tools when `mcp:` entries are listed in their frontmatter; global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
+Direct MCP selection uses [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) configuration and cached metadata. Foreground children connect through the SDK MCP factory with a per-child configuration snapshot; ordinary stdio and streamable HTTP servers are supported. Adapter-only settings such as sockets, request-header commands, custom protocol versions, and literal-environment policies fail explicitly instead of being silently dropped or downgraded. Required selected tools still fail startup if the server does not register them. Subagents only receive direct MCP tools when `mcp:` entries are declared (including those resolved by `tools: parent`); global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
 
 `extensions` controls child extension loading:
 
@@ -464,9 +341,9 @@ Discovery uses project-first precedence:
 Use agent defaults, override them at runtime, or disable them:
 
 ```ts
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "..." })` }
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "...", skill: "tmux, safe-bash" })` }
-{ workflowScript: `return runs.run("main", { agent: "scout", task: "...", skill: false })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "..." })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "...", skill: "tmux, safe-bash" })` }
+{ workflowScript: `return runs.run("main", { agent: "readonly", task: "...", skill: false })` }
 ```
 
 For chains, `skill` at the top level is additive. A step-level `skill` overrides that step; `false` disables skills for that step.

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve as resolvePath } from "node:path";
 import { Worker } from "node:worker_threads";
+import { drainWorkflowOperations, WORKFLOW_CLEANUP_TIMEOUT_MS } from "./workflow-cleanup.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../runs/shared/parallel-utils.ts";
 import { HOST_STEP_MAX_COUNT } from "../runs/shared/host-step-status.ts";
 import { classifyTaskMutationIntent } from "../runs/shared/task-intent.ts";
@@ -1091,8 +1092,8 @@ export class WorkflowScriptError extends Error {
 	readonly partial: Omit<WorkflowScriptResult, "value">;
 	readonly errorKind?: "detached-child" | "timeout";
 
-	constructor(message: string, partial: Omit<WorkflowScriptResult, "value">, errorKind?: "detached-child" | "timeout") {
-		super(message);
+	constructor(message: string, partial: Omit<WorkflowScriptResult, "value">, errorKind?: "detached-child" | "timeout", cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
 		this.name = "WorkflowScriptError";
 		this.partial = partial;
 		this.errorKind = errorKind;
@@ -1263,7 +1264,7 @@ function isExplicitReadOnlyRecoveryReview(params: Record<string, unknown>): bool
 		.replace(new RegExp(RECOVERY_REVIEW_READ_ONLY_PATTERN.source, "gi"), " ");
 	return params.acceptance === false
 		&& agent !== ""
-		&& /\b(?:advisor|oracle|review|reviewer)\b/i.test(agent)
+		&& /\b(?:readonly|advisor|review|reviewer)\b/i.test(agent)
 		&& RECOVERY_REVIEW_READ_ONLY_PATTERN.test(task)
 		&& !RECOVERY_REVIEW_DESTRUCTIVE_COMMAND_PATTERN.test(taskDestructiveCommandText)
 		&& !RECOVERY_REVIEW_MUTATION_VERB_PATTERN.test(taskMutationText)
@@ -1823,13 +1824,24 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 				assemblyFlushTimer = undefined;
 			}
 			childController.abort("error" in outcome ? outcome.error : new Error("Workflow script completed."));
-			void Promise.allSettled([...steers.values(), ...hostCalls.values()].map(({ promise }) => promise)).then(() => {
+			void drainWorkflowOperations([...steers.values(), ...hostCalls.values()].map(({ promise }) => promise)).then((drained) => {
+				// Cancellation is best-effort for user-supplied host callbacks. Preserve that uncertainty
+				// in the failure rather than authorizing a retry while an operation may still be live.
+				if (!drained) {
+					const message = `Cleanup did not settle within ${WORKFLOW_CLEANUP_TIMEOUT_MS}ms after abort; host/steer operations may still be live. Inspect their state before retrying.`;
+					// AbortError.message can be getter-only, and callers can freeze their abort reason.
+					// Wrap rather than mutate it, preserving classification and diagnostic causality.
+					if ("error" in outcome) {
+						const original = outcome.error;
+						outcome = { error: Object.assign(new Error(`${original.message} ${message}`, { cause: original }), { workflowErrorKind: original.workflowErrorKind }) };
+					} else outcome = { error: new Error(message) };
+				}
 				if (settled) return;
 				settled = true;
 				options.registerStopChild?.(undefined);
 				if (timer) clearTimeout(timer);
 				options.signal?.removeEventListener("abort", onAbort);
-				void worker.terminate();
+				void worker.terminate().catch(() => undefined);
 				const unobservedKeys = "value" in outcome ? [...launches].filter(([, launch]) => !launch.observed).map(([key]) => key) : [];
 				const completionError = unobservedKeys.length > 0
 					? new Error(`workflowScript completed with unawaited runs.run launch(es): ${unobservedKeys.map((key) => `'${key}'`).join(", ")}. For ordinary parallel fanout use await runs.all([{key, agent, task}, ...]); do not read .output from unawaited launches.`)
@@ -1841,9 +1853,16 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 							return unobservedHosts.length > 0 ? new Error(`workflowScript completed with unawaited runs.host call(s): ${unobservedHosts.map((key) => `'${key}'`).join(", ")}. Await or return each call.`) : undefined;
 						})()
 						: undefined;
-				if ("error" in outcome) reject(new WorkflowScriptError(outcome.error.message, partial(), outcome.error.workflowErrorKind === "detached-child" || outcome.error.workflowErrorKind === "timeout" ? outcome.error.workflowErrorKind : undefined));
+				if ("error" in outcome) reject(new WorkflowScriptError(outcome.error.message, partial(), outcome.error.workflowErrorKind === "detached-child" || outcome.error.workflowErrorKind === "timeout" ? outcome.error.workflowErrorKind : undefined, outcome.error));
 				else if (completionError) reject(new WorkflowScriptError(completionError.message, partial()));
 				else resolve({ value: outcome.value, ...partial() });
+			}).catch((error: unknown) => {
+				// Teardown hooks must not turn an already-finishing workflow into an orphaned promise.
+				settled = true;
+				if (timer) clearTimeout(timer);
+				options.signal?.removeEventListener("abort", onAbort);
+				void worker.terminate().catch(() => undefined);
+				reject(new WorkflowScriptError(`Workflow cleanup failed: ${error instanceof Error ? error.message : String(error)}`, partial(), undefined, error));
 			});
 		};
 		const onAbort = () => {

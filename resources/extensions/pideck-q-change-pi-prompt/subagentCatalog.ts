@@ -14,6 +14,8 @@ export interface SubagentCatalogEntry {
 	aliases: string[];
 	runnerType: AgentRunnerType;
 	tools: string[];
+	/** `tools: parent`: the child mirrors the launching session's tools, so `tools` is intentionally empty. */
+	inheritParentTools?: boolean;
 	hostShell?: boolean;
 	systemPromptMode?: string;
 	extensions?: string[];
@@ -115,11 +117,15 @@ export function parseAgentFrontmatter(content: string, filePath: string): Subage
 
 	if (!name) return undefined;
 
+	// The marker is not a tool name; treating it as one would report a missing provider.
+	const inheritParentTools = tools.length === 1 && tools[0] === 'parent';
+
 	return {
 		name,
 		aliases,
 		runnerType,
-		tools: [...new Set(tools)],
+		tools: inheritParentTools ? [] : [...new Set(tools)],
+		...(inheritParentTools ? { inheritParentTools: true } : {}),
 		hostShell: hostShell === true,
 		systemPromptMode,
 		extensions,

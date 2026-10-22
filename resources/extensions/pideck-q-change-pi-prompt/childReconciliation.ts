@@ -291,6 +291,27 @@ function readManagedState(statePath: string): string[] {
 	return readManagedStateFile(statePath).managedPaths;
 }
 
+/**
+ * True when the user settings give this agent a `tools: "parent"` override, i.e. the child's
+ * allowlist is a copy of the launching session's tools (see pideck-q-subagents parent-tool-inheritance).
+ * Shell capability normally comes from the bundled agent definition; a parent copy carries the
+ * parent's shells explicitly, so the child must not strip them just because the bundled definition
+ * declares none. Unreadable or malformed settings answer false (conservative:
+ * the existing definition-based pruning keeps applying).
+ */
+export function agentInheritsParentTools(agentDir: string, agentName: string): boolean {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(agentDir, 'settings.json'), 'utf8'));
+		if (!isRecord(parsed) || !isRecord(parsed.subagents)) return false;
+		const overrides = parsed.subagents.agentOverrides;
+		if (!isRecord(overrides)) return false;
+		const override = overrides[agentName];
+		return isRecord(override) && typeof override.tools === 'string' && override.tools.trim() === 'parent';
+	} catch {
+		return false;
+	}
+}
+
 function asStringArray(value: unknown): string[] | undefined {
 	if (!Array.isArray(value)) return undefined;
 	return value.filter((item): item is string => typeof item === 'string');
@@ -540,7 +561,8 @@ function reconcileChildEnvironmentsLocked(options: {
 
 			const desiredTools = mapAgentToolsToHostShells({
 				declaredTools: agent.tools,
-				hostShell: agent.hostShell,
+				// `tools: parent` agents already carry the parent's shells; never map host shells onto them.
+				hostShell: agent.inheritParentTools ? false : agent.hostShell,
 				hostShells,
 			});
 			// Inject a shell provider only for names this host allowlist actually keeps.
@@ -601,7 +623,8 @@ function reconcileChildEnvironmentsLocked(options: {
 			}
 
 			// Host-shell allowlist: only when the caller probed backends, and never over user-owned tools.
-			if (hostShells && (agent.tools.some(isShellToolName) || agent.hostShell)) {
+			// Never write a tools override for `tools: parent` agents: it would replace the parent copy.
+			if (hostShells && !agent.inheritParentTools && (agent.tools.some(isShellToolName) || agent.hostShell)) {
 				const existingTools = agentOverride?.tools;
 				const lastManaged = previousManagedTools[name];
 				const existingArray = asStringArray(existingTools);

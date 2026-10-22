@@ -13,7 +13,7 @@ import { projectRuntimeAcknowledgedExtensions } from "./runtime-acknowledged-ext
 /** Inline extension shape accepted by pi's resource loader (`extensionFactories`). */
 export interface ChildHookExtension {
 	name: string;
-	factory: (pi: ExtensionAPI) => void;
+	factory: (pi: ExtensionAPI) => void | Promise<void>;
 }
 
 type OwnedCapture = Required<Pick<ChildRuntimeConfig, "toolDiagnostic" | "runtimeAcknowledgements">>;
@@ -138,10 +138,12 @@ export function createCapturedChildHooks(config: ChildRuntimeConfig, runner = fa
 	Object.assign(config, capture);
 	const hooks = childHooks(config, capture);
 	if (runner) {
-		hooks.push({ name: "pi-subagents:completion-intent", factory: (pi) => pi.on("session_start", (_event, childCtx) => {
-			// Retain only attempt model services, not the live child session.
-			completionIntentContext = { model: childCtx.model, modelRegistry: childCtx.modelRegistry };
-		}) });
+		hooks.push({ name: "pi-subagents:completion-intent", factory: (pi) => {
+			pi.on("session_start", (_event, childCtx) => {
+				// Retain only attempt model services, not the live child session.
+				completionIntentContext = { model: childCtx.model, modelRegistry: childCtx.modelRegistry };
+			});
+		} });
 		const proof = promptProofs.get(hooks[0]!.factory);
 		if (proof) proof.factories = hooks.map((hook) => hook.factory);
 	}

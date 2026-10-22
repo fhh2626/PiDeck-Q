@@ -33,6 +33,7 @@ function loadChildLaunchModule() {
 					extensionArgs: x.extensions ? [...x.extensions] : [],
 					requiredChildTools: [],
 					effectiveMcpTools: [],
+					effectiveMcpSelections: [],
 					excludeTools: x.excludeTools ?? [],
 					effectiveToolAllowlist: x.tools ?? ["read", "write", "edit", "bash", "powershell"],
 					explicitToolAllowlist: Boolean(x.tools),

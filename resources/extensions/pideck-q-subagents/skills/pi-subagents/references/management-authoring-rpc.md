@@ -23,9 +23,9 @@ Lists up to the last 10 retained workflow children from this parent session with
 ### Refinement overlays
 
 ```typescript
-subagent({ action: "refine", agent: "reviewer" })
-subagent({ action: "refine.show", agent: "reviewer" })
-subagent({ action: "refine.rollback", agent: "reviewer" })
+subagent({ action: "refine", agent: "readonly" })
+subagent({ action: "refine.show", agent: "readonly" })
+subagent({ action: "refine.rollback", agent: "readonly" })
 ```
 
 `refine` builds a bounded project-local guidance overlay for one agent from recent run evidence, using a fresh read-only proposal child; validated guidance is stored under `.pi/subagents/refinements/<agent>.md` with revision snapshots and is injected into that agent's child system prompt for this project. `refine.show` prints the current overlay and history; `refine.rollback` restores the previous revision. Guidance that tries to override safety, policy, tool, output, acceptance, developer, or system instructions is rejected. `/subagents-refine <agent>` is the slash equivalent.
@@ -69,15 +69,15 @@ subagent({ action: "delete", agent: "code-analysis.my-agent" })
 
 ```typescript
 // Copy a bundled builtin/package agent to user scope as an editable custom file.
-subagent({ action: "eject", agent: "reviewer" })
-subagent({ action: "eject", agent: "reviewer", agentScope: "project" })
+subagent({ action: "eject", agent: "readonly" })
+subagent({ action: "eject", agent: "readonly", agentScope: "project" })
 
 // Hide an agent from runtime discovery without deleting it (reversible).
-subagent({ action: "disable", agent: "reviewer" })
-subagent({ action: "enable", agent: "reviewer", agentScope: "project" })
+subagent({ action: "disable", agent: "readonly" })
+subagent({ action: "enable", agent: "readonly", agentScope: "project" })
 
 // Delete the scope's custom agent file and/or settings override, restoring the bundled default.
-subagent({ action: "reset", agent: "reviewer" })
+subagent({ action: "reset", agent: "readonly" })
 ```
 
 `eject` copies a builtin or package agent verbatim into the user (default) or project agent dir so it can be customized without hunting package files; the copy shadows the original by runtime name. `disable` writes a reversible `agentOverrides.<name>.disabled: true` entry to the user or project settings file. `enable` removes that `disabled` field while keeping any other override fields. `reset` removes the scope's custom file and settings override to restore the bundled default, and refuses if no bundled default exists (use `delete` for purely custom agents). All four take optional `agentScope: "user" | "project"`; project overrides win over user ones, so target the project scope to undo a project-scope disable.

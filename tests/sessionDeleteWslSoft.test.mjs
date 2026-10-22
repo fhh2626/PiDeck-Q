@@ -51,6 +51,49 @@ test("WSL session delete moves parent and child dir into .pideck-trash instead o
 	}
 });
 
+test("WSL session delete also moves that session's backups and subagent artifacts", async () => {
+	const { home, fake, scanner, put } = await setup();
+	try {
+		const ownRun = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const otherRun = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const ownBackup = `${ROOT}/p.jsonl.0000000000001-11111111-1111-4111-8111-111111111111.edit-backup`;
+		const otherBackup = `${ROOT}/other.jsonl.0000000000002-22222222-2222-4222-8222-222222222222.edit-backup`;
+		put(`${ROOT}/p.jsonl`);
+		put(`${ROOT}/p/${ownRun}/session.jsonl`, "{}\n");
+		put(ownBackup, "backup\n");
+		put(otherBackup, "other\n");
+		put(`${ROOT}/subagent-artifacts/${ownRun}_reviewer_0_transcript.jsonl`, "own\n");
+		put(`${ROOT}/subagent-artifacts/${otherRun}_reviewer_0_transcript.jsonl`, "other\n");
+		put(`${ROOT}/subagent-artifacts/outputs/${ownRun}/output.md`, "own-out\n");
+		put(`${ROOT}/subagent-artifacts/outputs/${otherRun}/output.md`, "other-out\n");
+
+		await scanner.delete(`${ROOT}/p.jsonl`);
+
+		assert.equal(existsSync(fake.host(`${ROOT}/p.jsonl`)), false);
+		assert.equal(existsSync(fake.host(`${ROOT}/p`)), false);
+		assert.equal(existsSync(fake.host(ownBackup)), false, "本会话的编辑备份必须离开原处");
+		assert.equal(existsSync(fake.host(otherBackup)), true, "另一个会话的编辑备份必须留下");
+		assert.equal(existsSync(fake.host(`${ROOT}/subagent-artifacts/${ownRun}_reviewer_0_transcript.jsonl`)), false);
+		assert.equal(existsSync(fake.host(`${ROOT}/subagent-artifacts/${otherRun}_reviewer_0_transcript.jsonl`)), true);
+		assert.equal(existsSync(fake.host(`${ROOT}/subagent-artifacts/outputs/${otherRun}/output.md`)), true);
+		const buckets = readdirSync(fake.host(`${ROOT}/.pideck-trash`));
+		assert.equal(buckets.length, 1);
+		const bucket = `${ROOT}/.pideck-trash/${buckets[0]}`;
+		assert.equal(readFileSync(fake.host(`${bucket}/${ownBackup.split("/").pop()}`), "utf8"), "backup\n");
+		assert.equal(
+			readFileSync(fake.host(`${bucket}/subagent-artifacts/${ownRun}_reviewer_0_transcript.jsonl`), "utf8"),
+			"own\n",
+		);
+		assert.equal(
+			readFileSync(fake.host(`${bucket}/subagent-artifacts/outputs/${ownRun}/output.md`), "utf8"),
+			"own-out\n",
+		);
+		assert.equal(fake.calls.some((argv) => argv[0] === "rm"), false, "delete must never call rm");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
 test("WSL delete of an already missing session succeeds", async () => {
 	const { home, fake, scanner } = await setup();
 	try {

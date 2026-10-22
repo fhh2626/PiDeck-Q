@@ -4,7 +4,7 @@
 
 # pi-subagents
 
-`pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
+`pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, investigation, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
 <https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1>
 
@@ -21,15 +21,15 @@ That is the only required step. Background children require pi installed as the 
 You do not need to create agents, write config, or learn slash commands. After installing, ask Pi in plain language:
 
 ```text
-Use reviewer to review this diff.
+Use a readonly subagent to review this diff.
 ```
 
 ```text
-Ask oracle for a second opinion on my current plan. Challenge assumptions and tell me what I might be missing.
+Ask a readonly subagent for a second opinion on my current plan. Challenge assumptions and tell me what I might be missing.
 ```
 
 ```text
-Use scout to understand this code based on our discussion, then ask me clarification questions.
+Use a readonly subagent to understand this code based on our discussion, then ask me clarification questions.
 ```
 
 ```text
@@ -44,27 +44,36 @@ Pi is the parent session. A subagent is a focused child Pi session with its own 
 
 When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground children run as sessions inside the parent Pi process and stream in the conversation. Background children run as sessions inside a detached runner process that keeps working and can be checked later.
 
-Installing the extension does not start an automatic reviewer in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say so in your prompt or project instructions:
+### Supervisor decisions in foreground workflows
+
+When a child needs a supervisor decision, a foreground workflow returns an explicit `needs_attention` handoff immediately so the parent can answer. The original in-memory JavaScript VM, child sessions, deadlines, and sequential dependencies remain live; this is not an empty task result or a new background runner.
+
+1. Inspect the indicated provider's pending requests for the authoritative question and current request id: `subagent_supervisor({ action: "pending" })` for native supervisor questions, or `intercom({ action: "pending" })` for external intercom questions. A queued notification can be stale.
+2. Reply to that id. The original workflow continues with the child's authoritative exit result; later stages do not consume a provisional detach receipt.
+3. Use `subagent({ action: "status", id: "<workflow-id>" })` or `bg_wait({ id: "<workflow-id>" })` for the final output. New decisions interrupt waits even with `all: true` or `stopOnAttention: false`. Completion also sends a notification.
+
+Do not resume/replay the workflow or start a replacement writer while its children are live. `interrupt` or `stop` can cancel the retained workflow, but child ownership is released only on confirmed child exit. Continuations are memory-only: changing the parent session or reloading the extension aborts them rather than replaying old code. At most 50 live/retained foreground workflows are held; terminal entries are evicted first.
+
+External attention is tied to the owned intercom tool call and clears when that call settles; an old tool completion cannot clear a later ask. Mixed waits preserve async/provider completions and failure evidence alongside foreground output. A live retained VM keeps a compatible host session alive even between model children; terminal history does not pin the session.
+
+Workflow cleanup waits at most one second for host/steer callbacks after abort. If a callback ignores cancellation, the failure explicitly warns that the operation may still be live; inspect it before retrying rather than assuming timeout means successful termination. Read-only agents report checks that would write files as verification limitations instead of repeatedly asking for permission to break their role.
+
+Installing the extension does not start an automatic review in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say so in your prompt or project instructions:
 
 ```text
-When you finish implementing, run a reviewer subagent before summarizing.
+When you finish implementing, run a readonly review subagent before summarizing.
 ```
 
 ## Builtin agents
 
-The extension ships with agents you can use immediately:
+The extension ships with two agents:
 
 | Agent | Use it when you want... |
 |-------|--------------------------|
-| `scout` | Fast local codebase recon: relevant files, entry points, data flow, risks. |
-| `researcher` | Web/docs research with sources and a concise research brief. |
-| `worker` | Implementation work. Edits files, validates, escalates unapproved decisions instead of guessing. |
-| `reviewer` | Code review and small fixes against the task/plan, tests, edge cases, and simplicity. |
-| `oracle` | A second opinion before acting. Challenges assumptions without editing. |
-| `delegate` | A lightweight general delegate that behaves close to the parent session. |
+| `readonly` | Investigation, review, and research. Cannot edit or write files; its prompt also forbids file-modifying shell commands. |
+| `writable` | The default. Edits files and runs commands. Used whenever a launch does not name an agent. |
 
-Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
-
+Both inherit the parent session's tools, model, and thinking level, and start with the parent conversation (`context: "fork"`). Ask for `context: "fresh"` when you want an independent review or verification. See [Agents](docs/agents.md).
 ## Common workflows
 
 The package includes `/council` and `council-mode`, plus documented model-based
@@ -72,22 +81,22 @@ The package includes `/council` and `council-mode`, plus documented model-based
 
 | Want | Ask naturally |
 |------|---------------|
-| Get a second opinion | "Ask oracle to review this plan and challenge assumptions." |
-| Solve a hard problem | "Use oracle to investigate this bug before we edit." |
-| Review a diff | "Use reviewer to review this diff." |
+| Get a second opinion | "Ask a readonly subagent to review this plan and challenge assumptions." |
+| Solve a hard problem | "Use a readonly subagent to investigate this bug before we edit." |
+| Review a diff | "Use a readonly subagent to review this diff." |
 | Run parallel reviewers | "Run reviewers for correctness, tests, and cleanup." |
 | Debate a material decision | "Use `/council` with model-based advisors to compare this decision." |
 | Implement then review | "Implement this, then review it." |
 | Review until clean | "Run a review loop on this change with a max of 3 rounds." |
-| Execute a plan carefully | "Have worker implement this approved plan, then run reviewers and apply the feedback." |
-| Scout before planning | "Use scout to inspect the auth flow before planning." |
+| Execute a plan carefully | "Have a writable subagent implement this approved plan, then run readonly reviewers and apply the feedback." |
+| Investigate before planning | "Use a readonly subagent to inspect the auth flow before planning." |
 | Run in the background | "Run this in the background." |
 | Use a saved workflow | "Run the review chain on this branch." |
 | Browse agents | "Show me the available subagents." |
 | See running work | "Show active async runs." or "Show the subagent fleet." |
 | Check setup | "Check whether subagents are configured correctly." |
 
-For implementation work, the recommended loop is `clarify → scout → worker → fresh reviewers → worker`. Packaged prompt shortcuts like `/parallel-review` and `/review-loop` make these patterns repeatable — see [Workflows](https://github.com/nicobailon/pi-subagents/blob/main/docs/workflows.md).
+For implementation work, the recommended loop is `clarify → readonly scan → writable → fresh readonly reviewers → writable`. Packaged prompt shortcuts like `/parallel-review` and `/review-loop` make these patterns repeatable — see [Workflows](https://github.com/nicobailon/pi-subagents/blob/main/docs/workflows.md).
 
 ## Where running work shows up
 
