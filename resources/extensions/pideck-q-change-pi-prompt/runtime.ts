@@ -53,7 +53,7 @@ import {
 	type ShellAvailability,
 	type ShellProbeHost,
 } from './shellAvailability.ts';
-import { transformSystemPrompt } from './transform.ts';
+import { stripChildDocumentation, transformSystemPrompt } from './transform.ts';
 import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale } from './copy.ts';
 
 export interface ReconciliationOutcome {
@@ -519,7 +519,9 @@ export function registerPromptExtension(
 					childActiveTools = reconciled;
 				}
 
-				const nextPrompt = injectChildToolEnvironment(event.systemPrompt, childActiveTools);
+				// Role prompt stays intact; only the stock Pi documentation block is dropped, matching the parent.
+				const childPrompt = stripChildDocumentation(event.systemPrompt, settings!.config);
+				const nextPrompt = injectChildToolEnvironment(childPrompt, childActiveTools);
 				lastStatus = ['child-subagent-mode: preserved role prompt, injected tool environment', ...lastShellStatus];
 				if (nextPrompt !== event.systemPrompt) {
 					return { systemPrompt: nextPrompt };

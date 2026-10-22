@@ -295,6 +295,31 @@ test('child shell authority obeys an explicit parent deny-all snapshot', () => h
   exists: path => path.endsWith('bash.exe') || path.endsWith('powershell.exe'),
 }));
 
+test('child before_agent_start drops the stock Pi documentation block but keeps identity and role', () => harness(async ({ dir, handlers, ctx, pi }) => {
+  const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
+  const ownerKey = 'runtime-docs-parent';
+  try {
+    process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
+    await writeConfig(dir);
+    await writeFile(shellPolicySnapshotPath(dir, ownerKey), JSON.stringify({
+      version: 2, platform: 'win32', shell: { bash: false, powershell: false }, parentActiveTools: ['read'],
+    }));
+    pi._tools = [{ name: 'read', sourceInfo: { source: 'builtin' } }];
+    pi._active = ['read'];
+    const identity = 'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.';
+    const prompt = `${identity}\n\nAvailable tools:\n- read: Read file contents\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n- Be concise in your responses\n\nPi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples\n\n<active_agent name="worker"/>\n\nYou are worker.`;
+    const result = await handlers.get('before_agent_start')({ systemPrompt: prompt, systemPromptOptions: {} }, ctx);
+    assert.doesNotMatch(result.systemPrompt, /Pi documentation|Main documentation/);
+    assert.ok(result.systemPrompt.startsWith(identity));
+    assert.match(result.systemPrompt, /<active_agent name="worker"\/>\n\nYou are worker\./);
+    assert.match(result.systemPrompt, /change-pi-prompt:child-tools:v1/);
+    assert.doesNotMatch(result.systemPrompt, /You are Pi,/);
+  } finally {
+    if (previousOwner === undefined) delete process.env[SHELL_POLICY_OWNER_ENV];
+    else process.env[SHELL_POLICY_OWNER_ENV] = previousOwner;
+  }
+}));
+
 test('child without a usable parent snapshot fails closed to coordination tools', () => harness(async ({ dir, handlers, ctx, pi }) => {
   const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
   try {

@@ -71,6 +71,22 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	return joinGuidelineParts(sections);
 }
 
+/**
+ * Child sessions keep Pi's identity, tools, guidelines and their role prompt untouched; only the
+ * stock `Pi documentation` block is removed when `removeDocumentation` is on. The parent drops the
+ * same block through transformSystemPrompt, and Claude OAuth upstreams reject a request that still
+ * carries it with "Third-party apps now draw from your extra usage", so a child keeping it fails
+ * while its parent succeeds. Unknown layouts are returned unchanged.
+ */
+export function stripChildDocumentation(systemPrompt: string, config: Pick<Config, 'enabled' | 'removeDocumentation'>): string {
+	if (!config.enabled || !config.removeDocumentation) return systemPrompt;
+	const layout = parseLayout(systemPrompt);
+	if (!layout) return systemPrompt;
+	const before = systemPrompt.slice(0, layout.docsStart).replace(/\s+$/, '');
+	const after = systemPrompt.slice(layout.docsEnd).replace(/^\s+/, '');
+	return after ? `${before}\n\n${after}` : before;
+}
+
 /** Unknown layouts and custom/child prompts never receive partially applied transformations. */
 export function transformSystemPrompt(input: TransformInput): TransformResult {
 	const original = input.systemPrompt;
