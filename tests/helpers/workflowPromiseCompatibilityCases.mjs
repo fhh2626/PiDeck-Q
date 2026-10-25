@@ -31,6 +31,15 @@ const scenarios = [
 	["Promise.try adopts child", `return (await Promise.try(() => ${run})).output;`, "child"],
 	["await host command", 'return (await runs.host("check", {kind:"command",command:"fixture",timeoutMs:1000})).stdout;', "fixture"],
 	["await steer command", `await ${run}; return (await runs.steer("child", "fixture")).state;`, "delivered"],
+	["strict then receives undefined", 'return await Promise.resolve(1).then(function () { "use strict"; return this === undefined; });', true],
+	["strict catch receives undefined", 'return await Promise.reject(1).catch(function () { "use strict"; return this === undefined; });', true],
+	["strict finally receives undefined", 'let correct; await Promise.resolve(1).finally(function () { "use strict"; correct = this === undefined; }); return correct;', true],
+	["sloppy then stays in workflow realm", 'return await Promise.resolve(1).then(function () { return this === globalThis && !("process" in this); });', true],
+	["sloppy catch stays in workflow realm", 'return await Promise.reject(1).catch(function () { return this === globalThis && !("process" in this); });', true],
+	["sloppy finally stays in workflow realm", 'let correct; await Promise.resolve(1).finally(function () { correct = this === globalThis && !("process" in this); }); return correct;', true],
+	["Promise facade reports static methods through in", 'return ["all" in Promise, "allSettled" in Promise, "resolve" in Promise, "missingStatic" in Promise];', [true, true, true, false]],
+	["Promise facade exposes no sloppy-function caller/arguments", 'return [Reflect.ownKeys(Promise).includes("caller"), Reflect.ownKeys(Promise).includes("arguments")];', [false, false]],
+	["callback does not use an overridden apply property", 'const callback = () => 42; callback.apply = () => 0; return await Promise.resolve(1).then(callback);', 42],
 ];
 const unobserved = [
 	["bare launch", `${run};`],
@@ -63,12 +72,15 @@ function options(script, overrides = {}) {
 }
 
 /** Shared by the deterministic Node suite and isolated real Pi/Pi-Bolt diagnostics. */
-export async function runWorkflowPromiseCompatibilityCases() {
+export async function runWorkflowPromiseCompatibilityCases(onCase = () => {}) {
 	const failures = [];
 	let passed = 0;
 	async function check(name, action) {
+		// A real-runtime crash can otherwise erase which case was in flight.
+		onCase({ name, state: "running" });
 		try { await action(); passed++; }
 		catch (error) { failures.push({ name, error: error.stack }); }
+		finally { onCase({ name, state: "completed" }); }
 	}
 	for (const [name, script, expected] of scenarios) {
 		await check(name, async () => {

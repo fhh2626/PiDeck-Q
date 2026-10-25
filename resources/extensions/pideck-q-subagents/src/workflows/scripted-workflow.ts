@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import { Worker } from "node:worker_threads";
 import { drainWorkflowOperations, WORKFLOW_CLEANUP_TIMEOUT_MS } from "./workflow-cleanup.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../runs/shared/parallel-utils.ts";
@@ -193,7 +194,9 @@ function trackObservationTracker(tracker, promise, allowFutureObservations = fal
         // of letting native assimilation falsely observe an ignored callback's child.
         const wrapHandler = (handler) => typeof handler === "function"
           ? function trackedPromiseHandler(...args) {
-            const value = handler.apply(this, args);
+            // Native Promise callbacks receive undefined, never the worker's
+            // global object (which a sloppy wrapper would receive as its this).
+            const value = Reflect.apply(handler, undefined, args);
             addTrackerDependency(chainTracker, promiseObservationTracker(value));
             return trackedPromiseTarget(value);
           }
@@ -225,8 +228,11 @@ function trackPromiseCombinator(items, createPromise) {
 // Do not proxy the native constructor: Pi-Bolt fixes its static methods, and
 // returning wrappers for non-configurable/non-writable own properties violates
 // Proxy invariants. The facade owns no such methods; native intrinsics stay intact.
-const workflowPromise = new Proxy(function WorkflowPromise() {}, {
+// The placeholder is strict so it has no own caller/arguments properties to leak.
+const workflowPromise = new Proxy(function WorkflowPromise() { "use strict"; }, {
   apply(_target, thisArg, args) { return Reflect.apply(Promise, thisArg, args); },
+  // Keep "all" in Promise etc. truthful; own-property reflection is intentionally not mirrored.
+  has(_facade, prop) { return Reflect.has(Promise, prop); },
   construct(_target, [executor]) {
     const target = Promise;
     if (typeof executor !== "function") return new target(executor);
@@ -1730,6 +1736,44 @@ function setupAbortResumeParams(params: Record<string, unknown>, result: Workflo
 	return resumeParams;
 }
 
+/**
+ * Start the workflow VM worker.
+ *
+ * Pi 0.85.1 embeds Bun 1.3.14, which panics ("cannot resolve DirInfo for non-absolute
+ * path") when an `eval: true` worker source grows past roughly 137 KB; the source was
+ * already within a few hundred bytes of that limit. Loading the same source from a
+ * private file avoids the size-dependent eval path on every runtime. If the file cannot
+ * be created (read-only or missing temp dir) fall back to eval so launching still works
+ * wherever it did before. The directory is removed once the worker exits.
+ */
+function createWorkflowWorker(acornPath: string): Worker {
+	let directory: string | undefined;
+	try {
+		directory = mkdtempSync(joinPath(tmpdir(), "pideck-workflow-"));
+		const entry = joinPath(directory, "workflow-worker.cjs");
+		writeFileSync(entry, WORKER_SOURCE, { encoding: "utf8", mode: 0o600 });
+		const worker = new Worker(entry, { workerData: { acornPath } });
+		const workerDirectory = directory;
+		worker.once("exit", () => {
+			try {
+				rmSync(workerDirectory, { recursive: true, force: true });
+			} catch {
+				// Best-effort: the directory only contains this immutable worker script.
+			}
+		});
+		return worker;
+	} catch {
+		if (directory !== undefined) {
+			try {
+				rmSync(directory, { recursive: true, force: true });
+			} catch {
+				// Nothing else owns this directory; leave it for the OS temp cleaner.
+			}
+		}
+		return new Worker(WORKER_SOURCE, { eval: true, workerData: { acornPath } });
+	}
+}
+
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
 	if (!options.script.trim()) throw new Error("workflowScript must not be empty.");
 	if (options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new Error("workflow script timeout must be a positive integer.");
@@ -1744,7 +1788,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 	} catch (error) {
 		throw new Error("Workflow parser dependency 'acorn' is unavailable from pi-subagents. Reinstall pi-subagents dependencies before launching workflowScript.", { cause: error });
 	}
-	const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { acornPath } });
+	const worker = createWorkflowWorker(acornPath);
 	const emits: unknown[] = [];
 	const consoleEntries: WorkflowScriptResult["console"] = [];
 	const trace: WorkflowScriptTraceEntry[] = [];

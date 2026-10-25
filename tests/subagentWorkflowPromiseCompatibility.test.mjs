@@ -15,7 +15,7 @@ for (const mode of ["native", "immutable", "nohooks", "immutable-nohooks"]) {
 		});
 		assert.equal(result.status, 0, result.stdout + result.stderr + (result.error?.message ?? ""));
 		const report = JSON.parse(result.stdout);
-		assert.equal(report.passed, 50);
+		assert.equal(report.passed, 59);
 		assert.deepEqual(report.failures, []);
 	});
 }
