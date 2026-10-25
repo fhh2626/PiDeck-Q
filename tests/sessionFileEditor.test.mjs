@@ -18,7 +18,8 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 // 用 pi 自己的上下文构建函数断言「模型实际看到什么」，而不是只看文件字段（先例：webfetchExecution.test.mjs）。
-import { buildContextEntries } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js";
+import { piFixtureFileUrl } from "../scripts/pi-compatibility-fixture.mjs";
+const { buildContextEntries } = await import(piFixtureFileUrl("dist/core/session-manager.js"));
 
 const nodeRequire = createRequire(import.meta.url);
 

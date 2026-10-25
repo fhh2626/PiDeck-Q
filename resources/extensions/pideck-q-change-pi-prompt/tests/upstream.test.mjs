@@ -11,26 +11,24 @@ import { OWN_END, transformSystemPrompt } from '../transform.ts';
  *
  * 解析顺序：
  *  1. CHANGE_PI_PROMPT_TEST_PI_DIR（开发者显式指定一个 Pi 安装做额外兼容测试）；
- *  2. 从本测试文件向上找 node_modules/@earendil-works/pi-coding-agent，
- *     以「dist/core/system-prompt.js 存在」为判定锚点（该包的 exports 表只暴露
- *     入口，子路径 require/import 都会被拦，所以不能直接按子路径解析）。
+ *  2. 仓库根下 prepare:pi-latest 管理的 .cache/pi-latest 独立 npm 项目（固定相对路径，不向上搜索）。
+ *     只认这个约定位置，不回退到 node_modules，防止误用生产构建依赖中的旧 SDK。
+ *     刻意不 import 仓库的 scripts/，让本扩展目录的测试不依赖仓库根脚本；
+ *     约定路径的另一端是 scripts/pi-compatibility-fixture.mjs。
  *
  * `npm test` 会先跑 prepare:pi-latest，因此默认路径必须能解析到 latest fixture。
  * 解析不到 = 包结构变了，测试失败而不是 skip。
  */
 const here = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PI_PACKAGE = join('.cache', 'pi-latest', 'node_modules', '@earendil-works', 'pi-coding-agent');
 
 function resolvePiPackageDir() {
 	if (process.env.CHANGE_PI_PROMPT_TEST_PI_DIR) return process.env.CHANGE_PI_PROMPT_TEST_PI_DIR;
-	let dir = here;
-	for (let i = 0; i < 8; i++) {
-		const candidate = join(dir, 'node_modules', '@earendil-works', 'pi-coding-agent');
-		if (existsSync(join(candidate, 'dist/core/system-prompt.js'))) return candidate;
-		const up = dirname(dir);
-		if (up === dir) break;
-		dir = up;
-	}
-	return null;
+	// Fixed repository-relative location (tests -> extension -> extensions -> resources -> repo root).
+	// Deliberately not an upward search: a stray cache in some ancestor directory must never stand in
+	// for this repository's own fixture.
+	const candidate = join(here, '..', '..', '..', '..', FIXTURE_PI_PACKAGE);
+	return existsSync(join(candidate, 'dist/core/system-prompt.js')) ? candidate : null;
 }
 
 const packageDir = resolvePiPackageDir();

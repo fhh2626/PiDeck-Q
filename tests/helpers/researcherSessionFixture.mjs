@@ -3,8 +3,9 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SessionManager, SettingsManager, DefaultResourceLoader, ModelRuntime, createAgentSession, createEventBus } from "@earendil-works/pi-coding-agent";
-import { AuthStorage } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/auth-storage.js";
+import { piFixtureFileUrl } from "../../scripts/pi-compatibility-fixture.mjs";
+const { SessionManager, SettingsManager, DefaultResourceLoader, ModelRuntime, createAgentSession, createEventBus } = await import(piFixtureFileUrl("dist/index.js"));
+const { AuthStorage } = await import(piFixtureFileUrl("dist/core/auth-storage.js"));
 
 export const repo = fileURLToPath(new URL("../../", import.meta.url));
 export const runtimePath = resolve(repo, "resources/extensions/pideck-q-subagents/src/runs/shared/subagent-prompt-runtime.ts");

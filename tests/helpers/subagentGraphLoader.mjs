@@ -15,6 +15,7 @@
 import { registerHooks } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { claimExtensionModuleHook } from "./extensionModuleHookClaim.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STUB_URL = pathToFileURL(path.join(HERE, "piExternalStubs.mjs")).href;
@@ -38,6 +39,8 @@ const DETACH_RECONCILE_TS = path.join("src", "runs", "foreground", "workflow-det
 let installed = false;
 
 export function installSubagentGraphLoader() {
+	// Stubbing and fixture resolution must not both rewrite extension imports in one process.
+	claimExtensionModuleHook("subagent-graph-loader");
 	if (installed) return;
 	installed = true;
 	registerHooks({

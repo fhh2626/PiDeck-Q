@@ -7,12 +7,18 @@
   // NodeNext 下会直接报错，但 pi 侧要求保留后缀）。
   //
   // 该配置由 `npm run typecheck` 链式调用。类型来自 prepare:pi-latest 临时安装到
-  // node_modules 的 npm latest `@earendil-works/pi-coding-agent`，不钉死版本。
+  // .cache/pi-latest 的 npm latest SDK，与根构建依赖隔离，不钉死版本。
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    // Only extension compatibility checks use latest Pi; application builds keep
+    // their root lockfile graph. Pi's own imports resolve inside its fixture.
+    // paths 相对本 tsconfig 所在目录解析（TS>=4.1），不需要 baseUrl，避免裸模块名被误按仓库根解析。
+    "paths": {
+      "@earendil-works/*": ["./.cache/pi-latest/node_modules/@earendil-works/*"]
+    },
     "types": ["node"],
 
     "strict": true,

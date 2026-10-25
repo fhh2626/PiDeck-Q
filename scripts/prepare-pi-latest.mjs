@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * 查询 npm 上 @earendil-works/pi-coding-agent 的 latest，并临时装到
- * node_modules 供 typecheck / 真实 builder 测试使用。
- *
- * 不写入 package.json / package-lock.json（--no-save --package-lock=false）。
+ * 查询 npm 上 @earendil-works/pi-coding-agent 的 latest，装到独立的
+ * .cache/pi-latest npm 项目，供 typecheck / 真实 builder 测试使用。
+ * 根 node_modules 和清单完全不参与准备过程，避免 npm 重解普通构建依赖。
  * 具体版本号只作为日志出现，不作为源码或配置里的兼容规则。
  */
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getPiFixtureDir, getPiFixturePackageDir, initializePiFixture, PI_PACKAGE, PROJECT_ROOT, withPiFixtureLock } from "./pi-compatibility-fixture.mjs";
 
-export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+export { PI_PACKAGE };
 export const VIEW_ARGS = ["view", PI_PACKAGE, "version"];
 export const INSTALL_ARGS = [
 	"install",
@@ -21,10 +21,6 @@ export const INSTALL_ARGS = [
 	"--ignore-scripts",
 	`${PI_PACKAGE}@latest`,
 ];
-
-function defaultPackageDir(cwd = process.cwd()) {
-	return join(cwd, "node_modules", ...PI_PACKAGE.split("/"));
-}
 
 /** Windows 上 npm 是 .cmd，必须走 node + npm-cli.js，禁止拼 shell 命令。 */
 export function createNpmCommand() {
@@ -82,37 +78,55 @@ function parseLatest(stdout) {
 export async function preparePiLatest(deps = {}) {
 	const log = deps.log ?? console.log;
 	const error = deps.error ?? console.error;
-	const cwd = deps.cwd ?? process.cwd();
-	const packageDir = deps.packageDir ?? defaultPackageDir(cwd);
-	const queryLatest = deps.queryLatest ?? (async () => parseLatest((await runNpm(VIEW_ARGS, createNpmCommand(), cwd)).stdout));
+	const projectRoot = deps.cwd ?? PROJECT_ROOT;
+	const cwd = getPiFixtureDir(projectRoot);
+	const packageDir = getPiFixturePackageDir(projectRoot);
+	const preparedFile = join(cwd, "prepared.json");
+	const readPrepared = deps.readPrepared ?? (async () => {
+		try { return JSON.parse(await readFile(preparedFile, "utf8")).version; }
+		catch (error) { if (error.code === "ENOENT" || error instanceof SyntaxError) return null; throw error; }
+	});
+	const npm = deps.runNpm ?? runNpm;
+	const queryLatest = deps.queryLatest ?? (async () => parseLatest((await npm(VIEW_ARGS, createNpmCommand(), cwd)).stdout));
 	const readInstalled = deps.readInstalled ?? (() => readInstalledVersion(packageDir));
-	const installLatest = deps.installLatest ?? (() => runNpm(INSTALL_ARGS, createNpmCommand(), cwd));
+	// --prefix is intentional redundancy: npm must never discover an ancestor's
+	// package when preparing an empty or partially installed fixture directory.
+	const installArgs = ["--prefix", cwd, ...INSTALL_ARGS];
+	const installLatest = deps.installLatest ?? (() => npm(installArgs, createNpmCommand(), cwd));
 
-	const latestVersion = await queryLatest();
-	log(`Latest Pi version: ${latestVersion}`);
+	return withPiFixtureLock(cwd, async () => {
+		await initializePiFixture(cwd);
+		const latestVersion = await queryLatest();
+		log(`Pi compatibility fixture: ${cwd}`);
+		log(`Latest Pi version: ${latestVersion}`);
 
-	const installedVersion = await readInstalled();
-	if (installedVersion === latestVersion) {
-		log("Pi compatibility fixture already current.");
+		const installedVersion = await readInstalled();
+		if (installedVersion === latestVersion && await readPrepared() === latestVersion) {
+			log("Pi compatibility fixture already current.");
+			log("[Pi compatibility]");
+			log(`npm latest: ${latestVersion}`);
+			log(`installed:  ${installedVersion}`);
+			return { latestVersion, installedVersion, installed: true };
+		}
+
+		log("Installing latest Pi compatibility fixture...");
+		// npm can write the new SDK manifest before failing. A separate completion
+		// receipt prevents a partial installation from being accepted on the next run.
+		await rm(preparedFile, { force: true });
+		await installLatest({ cwd, packageDir, args: installArgs });
+		const after = await readInstalled();
+		if (after !== latestVersion) {
+			error(`Pi compatibility fixture version mismatch: expected ${latestVersion}, got ${after ?? "missing"}`);
+			return { latestVersion, installedVersion: after, installed: false };
+		}
+
+		await writeFile(preparedFile, `${JSON.stringify({ version: after })}\n`);
+		log(`Installed Pi compatibility fixture: ${after}`);
 		log("[Pi compatibility]");
 		log(`npm latest: ${latestVersion}`);
-		log(`installed:  ${installedVersion}`);
-		return { latestVersion, installedVersion, installed: true };
-	}
-
-	log("Installing latest Pi compatibility fixture...");
-	await installLatest();
-	const after = await readInstalled();
-	if (after !== latestVersion) {
-		error(`Pi compatibility fixture version mismatch: expected ${latestVersion}, got ${after ?? "missing"}`);
-		return { latestVersion, installedVersion: after, installed: false };
-	}
-
-	log(`Installed Pi compatibility fixture: ${after}`);
-	log("[Pi compatibility]");
-	log(`npm latest: ${latestVersion}`);
-	log(`installed:  ${after}`);
-	return { latestVersion, installedVersion: after, installed: true };
+		log(`installed:  ${after}`);
+		return { latestVersion, installedVersion: after, installed: true };
+	});
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));

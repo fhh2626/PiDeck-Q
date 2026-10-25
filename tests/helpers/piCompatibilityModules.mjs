@@ -1,8 +1,9 @@
 import { createRequire, findPackageJSON } from "node:module";
 import { pathToFileURL } from "node:url";
+import { piFixtureFileUrl } from "../../scripts/pi-compatibility-fixture.mjs";
 
 /** Resolve compatibility dependencies from the installed Pi fixture, regardless of npm hoisting. */
-export async function loadPiCompatibilityModules(piEntryUrl = import.meta.resolve("@earendil-works/pi-coding-agent")) {
+export async function loadPiCompatibilityModules(piEntryUrl = piFixtureFileUrl("dist/index.js")) {
   const piRequire = createRequire(piEntryUrl);
   const piAiPackage = findPackageJSON("@earendil-works/pi-ai", piEntryUrl);
   if (!piAiPackage) throw new Error("Installed Pi fixture is missing its pi-ai dependency");
