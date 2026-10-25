@@ -186,25 +186,19 @@ function trackObservationTracker(tracker, promise, allowFutureObservations = fal
 
   const tracked = new Proxy(target, {
     get(promiseTarget, prop) {
-      if (prop === "then") return function promiseThen(onFulfilled, onRejected) {
+      if (prop === "then" || prop === "catch" || prop === "finally") return function promiseHandler(...handlers) {
         consumeTrackedObservations(tracker);
         const chainTracker = { observations: tracker.observations, consumed: false, dependencies: [tracker] };
+        // All three handlers can return a child promise. Attach it to the chain instead
+        // of letting native assimilation falsely observe an ignored callback's child.
         const wrapHandler = (handler) => typeof handler === "function"
-          ? function trackedThenHandler(...args) {
+          ? function trackedPromiseHandler(...args) {
             const value = handler.apply(this, args);
             addTrackerDependency(chainTracker, promiseObservationTracker(value));
             return trackedPromiseTarget(value);
           }
           : handler;
-        return trackObservationTracker(chainTracker, promiseTarget.then(wrapHandler(onFulfilled), wrapHandler(onRejected)), true);
-      };
-      if (prop === "catch") return function promiseCatch(onRejected) {
-        consumeTrackedObservations(tracker);
-        return trackObservationTracker({ observations: tracker.observations, consumed: false, dependencies: [tracker] }, promiseTarget.catch(onRejected), true);
-      };
-      if (prop === "finally") return function promiseFinally(onFinally) {
-        consumeTrackedObservations(tracker);
-        return trackObservationTracker({ observations: tracker.observations, consumed: false, dependencies: [tracker] }, promiseTarget.finally(onFinally), true);
+        return trackObservationTracker(chainTracker, Reflect.apply(promiseTarget[prop], promiseTarget, handlers.map(wrapHandler)), true);
       };
       return Reflect.get(promiseTarget, prop, promiseTarget);
     },
@@ -224,12 +218,17 @@ function trackPromiseCombinator(items, createPromise) {
   const values = Array.from(items);
   const dependencies = [...new Set(values.map(promiseObservationTracker).filter(Boolean))];
   const promise = withSuppressedNativePromiseConsumption(() => createPromise(values.map(trackedPromiseTarget)));
-  if (dependencies.length === 0) return promise;
+  // An initially empty chain can acquire a child from a later callback.
   return trackObservationTracker({ observations: [], consumed: false, dependencies }, promise, true);
 }
 
-const workflowPromise = new Proxy(Promise, {
-  construct(target, [executor]) {
+// Do not proxy the native constructor: Pi-Bolt fixes its static methods, and
+// returning wrappers for non-configurable/non-writable own properties violates
+// Proxy invariants. The facade owns no such methods; native intrinsics stay intact.
+const workflowPromise = new Proxy(function WorkflowPromise() {}, {
+  apply(_target, thisArg, args) { return Reflect.apply(Promise, thisArg, args); },
+  construct(_target, [executor]) {
+    const target = Promise;
     if (typeof executor !== "function") return new target(executor);
     const tracker = { observations: [], consumed: false };
     const promise = new target((resolve, reject) => {
@@ -252,7 +251,10 @@ const workflowPromise = new Proxy(Promise, {
     });
     return trackObservationTracker(tracker, promise, true);
   },
-  get(target, prop) {
+  get(facade, prop) {
+    const own = Object.getOwnPropertyDescriptor(facade, prop);
+    if (own && !own.configurable && !own.writable && "value" in own) return own.value;
+    const target = Promise;
     if (prop === "all") return (items) => trackPromiseCombinator(items, (values) => target.all(values));
     if (prop === "allSettled") return (items) => trackPromiseCombinator(items, (values) => target.allSettled(values));
     if (prop === "race") return (items) => trackPromiseCombinator(items, (values) => target.race(values));
@@ -260,9 +262,15 @@ const workflowPromise = new Proxy(Promise, {
     if (prop === "resolve") return (value) => {
       const dependency = promiseObservationTracker(value);
       const promise = withSuppressedNativePromiseConsumption(() => target.resolve(trackedPromiseTarget(value)));
-      if (!dependency) return promise;
-      return trackObservationTracker({ observations: [], consumed: false, dependencies: [dependency] }, promise, true);
+      return trackObservationTracker({ observations: [], consumed: false, dependencies: dependency ? [dependency] : [] }, promise, true);
     };
+    if (prop === "reject") return (reason) => trackObservationTracker({ observations: [], consumed: false, dependencies: [] }, target.reject(reason), true);
+    if (prop === "withResolvers" && typeof target[prop] === "function") return () => {
+      let resolve, reject;
+      const promise = new workflowPromise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+      return { promise, resolve, reject };
+    };
+    if (prop === "try" && typeof target[prop] === "function") return (callback, ...args) => new workflowPromise((resolve) => resolve(callback(...args)));
     const value = target[prop];
     return typeof value === "function" ? value.bind(target) : value;
   },
@@ -276,7 +284,7 @@ function hostCall(method, args, observation) {
   });
   return observation && typeof observation.key === "string" && typeof observation.operation === "string"
     ? trackRunObservation([{ key: observation.key, operation: observation.operation, callId }], promise)
-    : promise;
+    : trackObservationTracker({ observations: [], consumed: false, dependencies: [] }, promise, true);
 }
 
 function runHostCall(key, params, collectFailure, batch, generatedLaneKey) {
@@ -929,17 +937,24 @@ parentPort.on("message", async (message) => {
     if (!nativeThenDescriptor || typeof nativeThenDescriptor.value !== "function") throw new Error("workflowScript could not inspect the VM Promise.prototype.then method.");
     const nativeThen = nativeThenDescriptor.value;
     let stopWorkflowPromiseHook;
+    let nativeThenReplaced = false;
     let value;
     try {
-      Object.defineProperty(nativePromisePrototype, "then", {
-        ...nativeThenDescriptor,
-        value: function workflowPromiseThen(...args) {
-          if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
-            return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
-          }
-          return Reflect.apply(nativeThen, this, args);
-        },
-      });
+      // V8 tracking can additionally observe realm-native chains. Pi-Bolt fixes
+      // this method; its supported workflow chains are tracked by the facade and
+      // callback dependency ledger instead, including when V8 hooks are absent.
+      if (nativeThenDescriptor.configurable || nativeThenDescriptor.writable) {
+        Object.defineProperty(nativePromisePrototype, "then", {
+          ...nativeThenDescriptor,
+          value: function workflowPromiseThen(...args) {
+            if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
+              return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
+            }
+            return Reflect.apply(nativeThen, this, args);
+          },
+        });
+        nativeThenReplaced = true;
+      }
       stopWorkflowPromiseHook = createWorkflowPromiseHook({
         before(promise) {
           activeNativePromises.push(promise);
@@ -971,7 +986,7 @@ parentPort.on("message", async (message) => {
         stopWorkflowPromiseHook?.();
       } finally {
         try {
-          Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
+          if (nativeThenReplaced) Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
         } finally {
           topLevelWorkflowPromise = undefined;
           activeNativePromises.length = 0;
