@@ -63,7 +63,19 @@ export interface ReconciliationOutcome {
 	reason?: string;
 }
 
-export function isStandalonePiExecutable(execPath: string = process.execPath): boolean {
+/**
+ * PiDeck sets `PIDECK_PI_STANDALONE=1` on a Pi process that is a self-contained binary (e.g. Pi-Bolt).
+ * It is authoritative over the executable-name heuristic, which cannot know about differently
+ * named distributions (`pi-bolt`, a launcher that execs `pi-bin`, renamed copies).
+ */
+export const PIDECK_PI_STANDALONE_ENV = 'PIDECK_PI_STANDALONE';
+
+export function isStandalonePiExecutable(
+	execPath: string = process.execPath,
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	if (env[PIDECK_PI_STANDALONE_ENV] === '1') return true;
+	// Fallback for stock Pi started outside PiDeck: its standalone build is named pi / pi.exe.
 	const name = basename(execPath);
 	return /^pi(?:\.exe)?$/i.test(name);
 }

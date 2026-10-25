@@ -16,11 +16,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { after } from "node:test";
 
 // ── Environment isolation (must run before any extension module is imported) ──
 // DIRS/SESSION_LEASES_DIR/getAgentDir() capture env at module load, so these
 // assignments happen at harness module evaluation time, before loadSubagentResumeGraph().
 export const HARNESS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-resume-harness-"));
+// 测试文件结束后整体删除（文件级 after 钩子），避免每个使用本 harness 的文件都在临时目录留一份。
+after(() => fs.rmSync(HARNESS_ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
 process.env.PI_SUBAGENTS_TEMP_ROOT = path.join(HARNESS_ROOT, "temp-root");
 process.env.PI_CODING_AGENT_DIR = path.join(HARNESS_ROOT, "agent-dir");
 // Keep the optional LLM intent arbiter out of behavioral tests.

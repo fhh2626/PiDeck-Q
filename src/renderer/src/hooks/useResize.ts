@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // Keep the default workbench geometry aligned with the main dev branch. The
 // Session-first change only affects when a runtime begins, not sidebar width.
@@ -48,6 +48,7 @@ export function writeListWidth(storage: UseResizeOptions["storage"] | undefined,
  * 持久化约定：
  * - 只记忆展开宽度（拖拽提交路径回写，AppShell 拖拽折叠时不会调用 setListWidth），
  *   从不记忆折叠状态——重启后侧栏总是展开，避免“上次折叠成 0 → 这次找不到侧栏”。
+ * - 折叠后再展开恢复折叠前的宽度，而不是重置为默认值（重置还会把已保存的宽度覆盖掉）。
  * - 初始宽度从 localStorage 恢复（clamp 到可调范围），宽度变化即写回，无需节流。
  */
 export function useResize(options: UseResizeOptions = {}) {
@@ -59,16 +60,26 @@ export function useResize(options: UseResizeOptions = {}) {
     writeListWidth(storageRef.current, listWidth);
   }, [listWidth]);
 
-  function toggleListCollapsed() {
-    const nextCollapsed = !listCollapsed;
-    if (!nextCollapsed) setListWidth(DEFAULT_LIST_WIDTH);
+  // 折叠开关会被快捷键 / 原生菜单这类长寿命回调持有，所以读 ref 里的最新状态而不是闭包里的某次渲染值，
+  // 并保持回调身份稳定（否则旧闭包第二次调用仍按“未折叠”处理，永远展不开）。
+  const listWidthRef = useRef(listWidth);
+  const listCollapsedRef = useRef(listCollapsed);
+  listWidthRef.current = listWidth;
+  listCollapsedRef.current = listCollapsed;
+
+  const toggleListCollapsed = useCallback(() => {
+    const nextCollapsed = !listCollapsedRef.current;
+    // 展开时恢复折叠前的宽度（折叠态从不回写宽度，state 里仍是用户拖出来的值）；
+    // 只有宽度已低于可拖拽下限这种异常值才回退默认，避免展开后卡在拖不动的窄条。
+    if (!nextCollapsed && listWidthRef.current < LIST_WIDTH_MIN) setListWidth(DEFAULT_LIST_WIDTH);
     if (nextCollapsed) {
       // 收起后焦点仍可能留在侧栏中的控件上；先释放，避免隐藏内容保留键盘焦点。
       (document.activeElement as HTMLElement | null)?.blur();
     }
+    // 同步更新 ref：同一事件循环里连续调用两次也要各自基于最新值翻转。
+    listCollapsedRef.current = nextCollapsed;
     setListCollapsed(nextCollapsed);
-  }
-
+  }, []);
   return {
     listWidth,
     setListWidth,

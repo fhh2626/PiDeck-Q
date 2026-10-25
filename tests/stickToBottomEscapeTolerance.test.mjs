@@ -1,94 +1,308 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { withHookHost } from "./helpers/l5_hookHost.mjs";
 
-const engineSource = readFileSync(
-  "src/renderer/src/lib/stick-to-bottom/useStickToBottom.ts",
-  "utf8",
-);
+// 锁底滚动引擎（useStickToBottom）的“逃逸 / 重锁”语义。
+// 真实挂载 hook，用假的滚动容器 + 假的 ResizeObserver + 可控时钟驱动 scroll / wheel / 内容增长事件，
+// 断言对外可观察的 state.isAtBottom / state.escapedFromLock / scrollTop。
+//
+// 几何：scrollHeight=2000, clientHeight=500 → 底部 scrollTop=1500（距底 0）；
+// 引擎的 targetScrollTop = scrollHeight - 1 - clientHeight = 1499。
 
-// 用户反馈 bug：流式回复过程中「滚动到底部」按钮频繁闪现。
-// 根因：引擎的上滚逃逸（handleScroll isScrollingUp）与 wheel 逃逸（handleWheel
-// deltaY<0）都是无条件解锁锁底——流式回复中滚轮/触控板轻微上滚（含贴底时
-// 滚不动但仍产生事件、或上滚不足 25px 仍算在实时尾部附近）会误逃逸，
-// 后续内容增长不再贴底，底部按钮随即出现。
-// 修复（对照 dsh-web ChatView 的 movedByReader + 距底 <=25px 判定）：
-// 两处逃逸都加「距底 > 25px」守卫，距底容差带内（<=25px）的滚动仍视为在底部。
-test("escape tolerance band keeps near-bottom scrolls attached", () => {
-  // 容差带常量：dsh-web 同值 25px，小于 STICK_TO_BOTTOM_OFFSET_PX（70，近底重锁带）
-  assert.match(
-    engineSource,
-    /const AT_BOTTOM_TOLERANCE_PX = 25;/,
-  );
-  // 上滚逃逸必须带距离守卫：只有距底 > 25px 且越过增长守卫带才解锁锁底
-  // （2026-08 追加守卫带，见 growth-guard-band 用例）
-  assert.match(
-    engineSource,
-    /if \(\s*distanceFromBottom > AT_BOTTOM_TOLERANCE_PX &&[\s\S]*?!isWithinGrowthGuardBand\(distanceFromBottom, state\)\s*\) \{\s*setEscapedFromLock\(true\);\s*setIsAtBottom\(false\);/,
-  );
-  // wheel 逃逸同样带距离守卫（贴底时向上滚轮无位移，不算逃逸意图）
-  assert.match(
-    engineSource,
-    /scrollRef\.current\.scrollHeight -\s*scrollRef\.current\.scrollTop -\s*scrollRef\.current\.clientHeight >\s*AT_BOTTOM_TOLERANCE_PX/,
-  );
+const BOTTOM = 1500;
+// withHookHost 会在测试期间把全局 Event 换成 linkedom 版本；EventTarget 只认 Node 原生 Event，故先捕获。
+const NodeEvent = globalThis.Event;
+
+/** 最小可滚动元素：EventTarget + 可写 scrollTop（不做浏览器 clamp，测试自己控制位置）。 */
+class FakeScrollElement extends EventTarget {
+	constructor() {
+		super();
+		this.scrollTop = BOTTOM;
+		this.scrollHeight = 2000;
+		this.clientHeight = 500;
+		this.parentElement = null;
+	}
+}
+
+class FakeContentElement {}
+
+function createEngineEnv() {
+	const clock = { now: 10_000 };
+	const observers = [];
+	class FakeResizeObserver {
+		constructor(callback) {
+			this.callback = callback;
+			observers.push(this);
+		}
+		observe() {}
+		disconnect() {}
+	}
+	const frames = [];
+	// 引擎用 setTimeout(…, 1) 延迟判定“用户是否逃逸”。换成可手动推进的假定时器：真实定时器在机器繁忙时
+	// 会让“没有发生逃逸”这类用例在判定尚未执行时误绿，也会让“逃逸”类用例偶发变红。
+	const timers = [];
+	const globals = {
+		setTimeout: (fn) => {
+			timers.push(fn);
+			return timers.length;
+		},
+		clearTimeout: () => undefined,
+		performance: { now: () => clock.now },
+		ResizeObserver: FakeResizeObserver,
+		getComputedStyle: () => ({ overflow: "auto" }),
+		requestAnimationFrame: (fn) => {
+			frames.push(fn);
+			return frames.length;
+		},
+		cancelAnimationFrame: () => undefined,
+	};
+	const { useStickToBottom } = loadTsCommonJs(
+		"src/renderer/src/lib/stick-to-bottom/useStickToBottom.ts",
+		{ globals },
+	);
+	/** 执行当前所有待处理的定时器（含执行中新登记的），有上限避免死循环。 */
+	const runTimers = () => {
+		for (let guard = 0; timers.length > 0 && guard < 100; guard += 1) timers.shift()();
+		assert.equal(timers.length, 0, "engine timers must settle within the bounded drain");
+	};
+	return { useStickToBottom, clock, observers, runTimers };
+}
+
+/** 挂载引擎并接上假的滚动容器/内容容器；返回驱动用户行为的小工具。 */
+async function mountEngine(host, options = { initial: "instant", resize: "instant" }) {
+	const env = createEngineEnv();
+	const mounted = await host.mount(env.useStickToBottom, options);
+	const scroll = new FakeScrollElement();
+	const content = new FakeContentElement();
+	await host.act(async () => {
+		mounted.result().scrollRef(scroll);
+		mounted.result().contentRef(content);
+	});
+	const state = mounted.result().state;
+	const settle = () => host.act(async () => env.runTimers());
+
+	const driver = {
+		state,
+		scroll,
+		clock: env.clock,
+		/** 用户把滚动条拖到 top：触发 scroll 事件并等待引擎的 1ms 延迟判定。 */
+		async scrollTo(top) {
+			scroll.scrollTop = top;
+			await host.act(async () => scroll.dispatchEvent(new NodeEvent("scroll")));
+			await settle();
+		},
+		/** 滚轮：deltaY<0 为上滚。 */
+		async wheel(deltaY) {
+			await host.act(async () => {
+				const event = new NodeEvent("wheel");
+				event.deltaY = deltaY;
+				scroll.dispatchEvent(event);
+			});
+		},
+		/** 内容高度变化（ResizeObserver 回调）。 */
+		async resizeTo(height) {
+			await host.act(async () => env.observers.at(-1).callback([{ contentRect: { height } }]));
+			await settle();
+		},
+	};
+	// 先建立 lastScrollTop 基线（贴底），之后的 scroll 才有方向。
+	await driver.scrollTo(BOTTOM);
+	return driver;
+}
+
+// ── 容差带：贴近底部的滚动不算逃逸 ──
+
+test("scrolling up within the 25px tolerance band stays attached to the bottom", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 20);
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, true);
+	});
 });
 
-// 用户反馈 bug：流式渲染「推着推着就不动了」，只能手动点回底按钮。
-// 根因：流式逐行增高时弹簧追底存在物理滞后（scrollTop 落后 target 数十到上百 px，
-// 距底远超 25px 容差带），此时用户/触控板轻微上滚（含惯性误触）被误判为逃逸，
-// 之后内容增长不再跟随，且 turn 窗口 3→15 轮展开放大为「视口突然停住」。
-// 修复：最后一次正增长后 500ms 内、距底 <= 200px 的上滚视为「仍在跟随」，
-// 不逃逸；流式结束约 500ms 后恢复正常逃逸语义；距底更远的上滚（明确读历史）
-// 即使流式中也立即逃逸，不被长时间锁死。
-test("growth guard band blocks escape while streaming lags behind", () => {
-  // 守卫常量：500ms 锁定窗口 + 200px 守卫带
-  assert.match(engineSource, /const POSITIVE_RESIZE_ESCAPE_LOCKOUT_MS = 500;/);
-  assert.match(engineSource, /const GROWTH_ESCAPE_GUARD_PX = 200;/);
-  // 判定辅助函数：距底 <= 守卫带 && 距上次正增长 < 锁定窗口
-  assert.match(
-    engineSource,
-    /function isWithinGrowthGuardBand\([\s\S]*?distanceFromBottom <= GROWTH_ESCAPE_GUARD_PX &&\s*performance\.now\(\) - state\.lastPositiveResizeAt < POSITIVE_RESIZE_ESCAPE_LOCKOUT_MS/,
-  );
-  // 任何正增长（流式渲染）都刷新锁定计时
-  assert.match(engineSource, /state\.lastPositiveResizeAt = performance\.now\(\);/);
-  // 两处逃逸（scroll / wheel）都必须越过守卫带才生效
-  assert.match(
-    engineSource,
-    /isWithinGrowthGuardBand\(distanceFromBottom, state\)/,
-  );
-  assert.match(engineSource, /!isWithinGrowthGuardBand\(/);
+test("scrolling up beyond the 25px tolerance band escapes the bottom lock", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 100);
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isAtBottom, false);
+	});
 });
 
-// 用户反馈 bug（2026-08-15）：会话输出完成后上滚被反复拽回底部，只能靠会话定位跳回。
-// 根因：曾存在的「近底自动恢复」——RO 正增长分支里 `if (!state.isAtBottom &&
-// state.isNearBottom) { setEscapedFromLock(false); setIsAtBottom(true); }`。输出完成后
-// 仍有正增长（settle 全量渲染/图片加载/尾部组件），用户上滚 25~70px 读历史（距底
-// 仍在 70px 近底带内）会被任何一次增长自动恢复锁底并拽回，无法阅读上方内容。
-// 修复：移除该自动恢复，逃逸后只有用户主动下滚回近底带（handleScroll 重锁路径）
-// 才恢复锁底；守卫带（增长活跃窗口内不逃逸）仍保留，覆盖流式中轻微上滚误逃逸。
-test("escaped scroll is never dragged back by content growth", () => {
-  // 正增长分支不再存在自动恢复：lastPositiveResizeAt 到 mergeAnimations 之间
-  // 不得出现 setEscapedFromLock（若有，旧逻辑会在此处拽回已逃逸用户）
-  assert.doesNotMatch(
-    engineSource,
-    /lastPositiveResizeAt = performance\.now\(\);[\s\S]*?setEscapedFromLock\(false\);[\s\S]*?const requested = mergeAnimations\(/,
-  );
-  // 自动恢复被说明注释替换，明确「不再自动恢复已逃逸的锁底」
-  assert.match(
-    engineSource,
-    /这里不再自动恢复已逃逸的锁底/,
-  );
+test("wheel-up within the 25px tolerance band does not escape (no displacement, no intent)", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		engine.scroll.scrollTop = BOTTOM - 10;
+		await engine.wheel(-50);
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, true);
+	});
 });
 
-// 逃逸后的重锁语义保持不变：向下滚动回实时尾部（近底 70px 带）仍恢复锁底
-test("re-lock path after escape is preserved", () => {
-  assert.match(
-    engineSource,
-    /if \(!state\.escapedFromLock && state\.isNearBottom\) \{\s*setIsAtBottom\(true\);/,
-  );
-  // 负增长（内容收缩）不主动滚动、不误重锁逃逸用户的守卫仍在
-  assert.match(
-    engineSource,
-    /if \(!state\.escapedFromLock && state\.isNearBottom\) \{\s*setEscapedFromLock\(false\);\s*setIsAtBottom\(true\);/,
-  );
+test("wheel-up beyond the tolerance band escapes the bottom lock", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		engine.scroll.scrollTop = BOTTOM - 100;
+		await engine.wheel(-50);
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("wheel-down never escapes the bottom lock", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		engine.scroll.scrollTop = BOTTOM - 100;
+		await engine.wheel(50);
+		assert.equal(engine.state.escapedFromLock, false);
+	});
+});
+
+// ── 流式增长守卫带：弹簧追底滞后时的轻微上滚不逃逸 ──
+
+test("scroll-up inside the growth guard band right after streaming growth does not escape", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000); // 建立内容高度基线并刷新“最近正增长”时刻
+		engine.clock.now += 100; // 仍在 500ms 锁定窗口内
+		await engine.scrollTo(BOTTOM - 100); // 距底 100px <= 200px 守卫带
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, true);
+	});
+});
+
+test("scroll-up beyond the guard band escapes immediately even while streaming", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		engine.clock.now += 100;
+		await engine.scrollTo(BOTTOM - 300); // 距底 300px > 200px：明确要读历史
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("the growth guard expires 500ms after the last positive growth", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		engine.clock.now += 600; // 流式已结束超过 500ms：恢复正常逃逸语义
+		await engine.scrollTo(BOTTOM - 100);
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("wheel-up inside the growth guard band does not escape while streaming; outside it does", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		engine.clock.now += 100;
+		engine.scroll.scrollTop = BOTTOM - 100;
+		await engine.wheel(-50);
+		assert.equal(engine.state.escapedFromLock, false, "守卫带内的滚轮上滚不逃逸");
+
+		engine.scroll.scrollTop = BOTTOM - 300;
+		await engine.wheel(-50);
+		assert.equal(engine.state.escapedFromLock, true, "守卫带外的滚轮上滚立即逃逸");
+	});
+});
+
+test("every positive growth refreshes the guard window", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		engine.clock.now += 400;
+		await engine.resizeTo(1100); // 再次正增长：重新计时
+		engine.clock.now += 400; // 距首次增长 800ms，但距最近一次仅 400ms
+		await engine.scrollTo(BOTTOM - 100);
+		assert.equal(engine.state.escapedFromLock, false);
+	});
+});
+
+// ── 逃逸后不被内容增长拽回 ──
+
+test("an escaped reader near the bottom is never dragged back by content growth", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		engine.clock.now += 1000; // 越过守卫窗口，使上滚真正逃逸
+		await engine.scrollTo(BOTTOM - 50); // 距底 50px：已逃逸，但仍在 70px 近底带内
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isNearBottom, true);
+
+		const readingPosition = engine.scroll.scrollTop;
+		await engine.resizeTo(1200); // 输出完成后的尾部正增长
+		assert.equal(engine.state.escapedFromLock, true, "增长不得自动清除逃逸");
+		assert.equal(engine.state.isAtBottom, false, "增长不得自动恢复锁底");
+		assert.equal(engine.scroll.scrollTop, readingPosition, "不得把阅读位置拽回底部");
+	});
+});
+
+test("content growth while attached keeps following the bottom", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		engine.scroll.scrollTop = BOTTOM - 400;
+		engine.scroll.scrollHeight = 2400; // 内容变高，目标位置下移
+		await engine.resizeTo(1000);
+		await engine.resizeTo(1100);
+		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.scroll.scrollTop, 2400 - 1 - 500, "锁底时增长应把 scrollTop 贴到新的底部");
+	});
+});
+
+// ── 重锁语义 ──
+
+test("scrolling back down into the near-bottom band re-locks after an escape", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 200);
+		assert.equal(engine.state.isAtBottom, false);
+		await engine.scrollTo(BOTTOM - 10); // 向下滚回实时尾部（近底 70px 带）
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, true);
+	});
+});
+
+test("scrolling down but staying far from the bottom clears the escape flag without re-locking", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 1000);
+		assert.equal(engine.state.escapedFromLock, true);
+		await engine.scrollTo(BOTTOM - 800); // 下滚，但仍远离近底带
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("content shrinking re-locks a user who never escaped but is near the bottom", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		// 下滚到远处：未逃逸（escaped=false）但也不在底部
+		await engine.scrollTo(BOTTOM - 1000);
+		await engine.scrollTo(BOTTOM - 800);
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.isAtBottom, false);
+
+		await engine.resizeTo(1000);
+		engine.scroll.scrollTop = BOTTOM - 20; // 内容收缩使容器恰好落在底部附近
+		await engine.resizeTo(900); // 负增长
+		assert.equal(engine.state.isAtBottom, true);
+	});
+});
+
+test("content shrinking never re-locks a reader who escaped upward", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 100);
+		assert.equal(engine.state.escapedFromLock, true);
+
+		await engine.resizeTo(1000);
+		engine.scroll.scrollTop = BOTTOM - 20; // 距底 <70px，但用户已主动上滚逃逸
+		await engine.resizeTo(900); // 负增长（折叠内外高度往返的其中一帧）
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.state.isAtBottom, false, "负增长帧不得把读历史的用户误重锁");
+	});
 });

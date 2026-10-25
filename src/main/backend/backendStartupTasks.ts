@@ -164,6 +164,7 @@ async function ensureAllPiSettingsDefaults(
 			s.piRuntimePreference,
 			s.piTypescriptPath,
 			s.piRustPath,
+			s.piBoltPath,
 		).catch(() => null))?.version ?? "";
 	}
 

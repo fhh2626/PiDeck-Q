@@ -9,7 +9,8 @@ import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 
-function loadChildLaunchModule() {
+/** processStub 让测试控制 cwd/env，用来区分「兄弟路径回退」与「cwd 回退」两条解析路径。 */
+function loadChildLaunchModule(processStub = process) {
 	const rawSource = readFileSync(
 		"resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts",
 		"utf8",
@@ -54,7 +55,7 @@ function loadChildLaunchModule() {
 			};
 		},
 		console,
-		process,
+		process: processStub,
 		__dirname: resolve("resources/extensions/pideck-q-subagents/src/runs/shared"),
 	};
 
@@ -104,23 +105,39 @@ async function loadChildSecurityGate(processEnvOverrides = {}) {
 	};
 }
 
-test("child-launch: sibling fallback uses four parents from shared/, not five", () => {
-	const source = readFileSync(
-		"resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts",
-		"utf8",
-	);
-	assert.match(
-		source,
-		/"\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
-		"fallback must be ../../../../pi-deck-security-gate.ts (shared -> runs -> src -> pideck-q-subagents -> extensions)",
-	);
-	assert.doesNotMatch(
-		source,
-		/"\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
-		"five-parent fallback overshoots resources/ and must not remain",
-	);
+test("child-launch: sibling fallback resolves the gate from shared/ even when cwd is elsewhere", () => {
+	// 回归：兄弟路径必须是 shared -> runs -> src -> pideck-q-subagents -> extensions 四级上溯。
+	// 上溯层数错误时，cwd 回退（resources/extensions/...）会在仓库根目录下掩盖问题，
+	// 所以把 cwd 指到一个没有 resources/ 的临时目录，强制只能靠兄弟路径解析。
+	const emptyCwd = mkdtempSync(join(tmpdir(), "pideck-sec-sibling-"));
+	try {
+		const { resolveSecurityGateExtensionPath } = loadChildLaunchModule({
+			env: {},
+			cwd: () => emptyCwd,
+			platform: process.platform,
+		});
+		const gatePath = resolveSecurityGateExtensionPath();
+		assert.ok(gatePath, "sibling fallback must find the gate without relying on cwd");
+		assert.equal(normalize(gatePath), normalize(resolve("resources/extensions/pi-deck-security-gate.ts")));
+	} finally {
+		rmSync(emptyCwd, { recursive: true, force: true });
+	}
 });
 
+test("child-launch: PIDECK_SECURITY_GATE_EXTENSION wins when it exists and is ignored when stale", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pideck-sec-envgate-"));
+	try {
+		const fakeGate = join(dir, "custom-gate.ts");
+		writeFileSync(fakeGate, "// fake", "utf8");
+		const real = normalize(resolve("resources/extensions/pi-deck-security-gate.ts"));
+		const withEnv = loadChildLaunchModule({ env: { PIDECK_SECURITY_GATE_EXTENSION: fakeGate }, cwd: () => dir, platform: process.platform });
+		assert.equal(withEnv.resolveSecurityGateExtensionPath(), fakeGate);
+		const stale = loadChildLaunchModule({ env: { PIDECK_SECURITY_GATE_EXTENSION: join(dir, "gone.ts") }, cwd: () => dir, platform: process.platform });
+		assert.equal(normalize(stale.resolveSecurityGateExtensionPath()), real, "stale env path falls back to the sibling file");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive", () => {
 	const { resolveSecurityGateExtensionPath, isSecurityPolicyActive } = loadChildLaunchModule();
 	const previousGateEnv = process.env.PIDECK_SECURITY_GATE_EXTENSION;

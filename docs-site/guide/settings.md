@@ -1,6 +1,6 @@
 # 配置与 Skills
 
-PiDeck 提供图形化配置入口，减少频繁查找和编辑 Pi Agent / Pi_Agent_Rust 配置文件的成本。
+PiDeck 提供图形化配置入口，减少频繁查找和编辑 Pi Agent / Pi_Agent_Rust / Pi-Bolt 配置文件的成本。
 
 ## 配置管理
 

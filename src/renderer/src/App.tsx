@@ -514,6 +514,7 @@ export function App() {
     piRuntimePreference: "auto",
     piTypescriptPath: "",
     piRustPath: "",
+    piBoltPath: "",
     sessionTabOpenMode: "preview",
     enableGitManagement: true,
     gitCommitMessagePrompt: getDefaultGitCommitMessagePrompt(
@@ -2129,7 +2130,8 @@ export function App() {
       if (
         "piRuntimePreference" in patch ||
         "piTypescriptPath" in patch ||
-        "piRustPath" in patch
+        "piRustPath" in patch ||
+        "piBoltPath" in patch
       ) {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
       }

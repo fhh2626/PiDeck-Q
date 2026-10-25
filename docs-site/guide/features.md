@@ -1,6 +1,6 @@
 # 功能介绍
 
-PiDeck-Q 的核心目标是把 Pi Agent 与 Pi_Agent_Rust 会话收拢到一个稳定的原生 Qt 桌面工作台里；Codex/Claude 仅通过历史导入提供浏览与恢复入口。
+PiDeck-Q 的核心目标是把 Pi Agent、Pi_Agent_Rust 与 Pi-Bolt 会话收拢到一个稳定的原生 Qt 桌面工作台里；Codex/Claude 仅通过历史导入提供浏览与恢复入口。
 
 ## 多项目工作区
 

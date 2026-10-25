@@ -64,9 +64,11 @@ export class PiLocator {
     runtimePreference: PiRuntimePreference = "auto",
     typescriptPath?: string,
     rustPath?: string,
+    boltPath?: string,
   ) {
     const selectedPath = runtimePreference === "typescript" ? typescriptPath :
-      runtimePreference === "rust" ? rustPath : undefined;
+      runtimePreference === "rust" ? rustPath :
+      runtimePreference === "bolt" ? boltPath : undefined;
     const normalizedSelectedPath = this.normalizeCustomPath(selectedPath);
     const normalizedCustomPath = this.normalizeCustomPath(customPath);
     // 用户手动指定路径优先，适用于 npm/pnpm/yarn 全局安装、nvm/volta/asdf/mise 等极端情况。
@@ -82,7 +84,7 @@ export class PiLocator {
     }
     // 用户显式开启 WSL 时优先使用 WSL 中的 pi，不轮询本地 PATH 中的 Windows 版本
     if (wslEnabled && process.platform === "win32" && wslDistro && wslUser) {
-      const wslCommand = this.resolveWslCommand(wslDistro, wslUser);
+      const wslCommand = this.resolveWslCommand(wslDistro, wslUser, runtimePreference);
       if (wslCommand) return wslCommand;
     }
 
@@ -94,7 +96,7 @@ export class PiLocator {
     const candidates = this.getCandidates(runtimePreference);
     const found = candidates.find(candidate => existsSync(candidate));
     if (found) return found;
-    return runtimePreference === "rust" ? "pi-rust" : "pi";
+    return runtimePreference === "rust" ? "pi-rust" : runtimePreference === "bolt" ? "pi-bolt" : "pi";
   }
 
   getSearchDirs() {
@@ -294,6 +296,7 @@ export class PiLocator {
     runtimePreference: PiRuntimePreference = "auto",
     typescriptPath?: string,
     rustPath?: string,
+    boltPath?: string,
   ): Promise<PiInstallStatus> {
     const normalizedCustomPath = this.normalizeCustomPath(customPath);
     if (runtimePreference === "auto" && normalizedCustomPath && this.isUnsupportedPowerShellShim(normalizedCustomPath)) {
@@ -307,6 +310,7 @@ export class PiLocator {
       runtimePreference,
       typescriptPath,
       rustPath,
+      boltPath,
     );
     const searchedDirs = this.getSearchDirs();
 
@@ -447,10 +451,16 @@ export class PiLocator {
     return { distro: match[1], user: match[2], piCommand: match[3] };
   }
 
-  private resolveWslCommand(distro: string, user: string): string | undefined {
+  private resolveWslCommand(
+    distro: string,
+    user: string,
+    runtimePreference: PiRuntimePreference = "auto",
+  ): string | undefined {
+    // WSL 里同样按所选实现查找命令名；其余偏好仍沿用原版 `pi`。
+    const commandName = runtimePreference === "bolt" ? "pi-bolt" : "pi";
     try {
       const wslExe = getWslExe();
-      const wslArgs = ["-d", distro, "-u", user, "which", "pi"];
+      const wslArgs = ["-d", distro, "-u", user, "which", commandName];
       const result = execFileSync(wslExe.command, wslArgs, {
         encoding: "utf8",
         timeout: 8_000,
@@ -458,7 +468,7 @@ export class PiLocator {
         shell: wslExe.shell,
       }).trim();
       if (result && result.length > 0 && !result.includes("not found")) {
-        return `wsl://${distro}/${user}/pi`;
+        return `wsl://${distro}/${user}/${commandName}`;
       }
     } catch {
       // WSL 不可用或未安装 pi，静默忽略，回退到普通 "pi"
@@ -549,7 +559,10 @@ export class PiLocator {
       ? ["legacy-pi", "pi-ts", "pi"]
       : runtimePreference === "rust"
         ? ["pi-rust", "pi_agent_rust", "pi"]
-        : ["pi"];
+        // Pi-Bolt 只发布 pi-bolt 可执行文件；不回退到 pi，避免把原版 Pi 当作 Bolt 启动。
+        : runtimePreference === "bolt"
+          ? ["pi-bolt"]
+          : ["pi"];
     const names = process.platform === "win32"
       ? baseNames.flatMap((name) => [`${name}.cmd`, `${name}.exe`, name])
       : baseNames;

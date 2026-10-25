@@ -58,6 +58,7 @@ const defaultSettings: AppSettings = {
 	piRuntimePreference: "auto",
 	piTypescriptPath: "",
 	piRustPath: "",
+	piBoltPath: "",
   sessionTabOpenMode: "preview",
   enableGitManagement: true,
   // load() 会按系统/用户语言把内置模板切换为中文或英文。

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 function compile(filePath) {
   const output = ts.transpileModule(readFileSync(filePath, "utf8"), {
@@ -63,13 +64,165 @@ test("recoveries outside the window do not count toward the limit", () => {
   assert.equal(guard.shouldAutoReload("crashed"), true);
 });
 
-test("native sidecar reloads only after three missed heartbeat windows", () => {
-  const source = readFileSync("src/native-node/index.ts", "utf8");
-  const watchdog = readFileSync("src/native-node/transport/nativeHeartbeatWatchdog.ts", "utf8");
-  assert.match(source, /lastHeartbeatAt/);
-  assert.match(source, /window\.reload/);
-  assert.match(source, /shouldReloadAfterMissedHeartbeats/);
-  assert.match(source, /reloadInFlight/);
-  assert.match(watchdog, /DEFAULT_HEARTBEAT_WINDOW_MS = 15_000/);
-  assert.match(watchdog, /DEFAULT_MISSED_WINDOWS_BEFORE_RELOAD = 3/);
+const { shouldReloadAfterMissedHeartbeats } = loadTsCommonJs(
+  "src/native-node/transport/nativeHeartbeatWatchdog.ts",
+);
+/** 与生产默认窗口一致：15 秒一个心跳窗口，连续 3 个窗口无心跳才重载。 */
+const WINDOW_MS = 15_000;
+
+test("heartbeat watchdog does not reload while fewer than three full windows were missed", () => {
+  assert.equal(shouldReloadAfterMissedHeartbeats(0), false);
+  // 渲染进程短暂卡顿（一个或两个窗口）不应触发整页重载
+  assert.equal(shouldReloadAfterMissedHeartbeats(WINDOW_MS), false);
+  assert.equal(shouldReloadAfterMissedHeartbeats(2 * WINDOW_MS), false);
+  assert.equal(shouldReloadAfterMissedHeartbeats(3 * WINDOW_MS - 1), false);
+});
+
+test("heartbeat watchdog reloads once three full windows were missed", () => {
+  assert.equal(shouldReloadAfterMissedHeartbeats(3 * WINDOW_MS), true);
+  assert.equal(shouldReloadAfterMissedHeartbeats(10 * WINDOW_MS), true);
+});
+
+test("heartbeat watchdog treats negative elapsed time (clock skew) as no missed heartbeats", () => {
+  assert.equal(shouldReloadAfterMissedHeartbeats(-5 * WINDOW_MS), false);
+});
+
+test("heartbeat watchdog honours custom window size and missed-window threshold", () => {
+  assert.equal(shouldReloadAfterMissedHeartbeats(1_999, { windowMs: 1_000, missedWindowsBeforeReload: 2 }), false);
+  assert.equal(shouldReloadAfterMissedHeartbeats(2_000, { windowMs: 1_000, missedWindowsBeforeReload: 2 }), true);
+  // 非法配置（0 / 0.5）被钳到最小值 1，避免除零或永远重载
+  assert.equal(shouldReloadAfterMissedHeartbeats(0, { windowMs: 0, missedWindowsBeforeReload: 0 }), false);
+  assert.equal(shouldReloadAfterMissedHeartbeats(5, { windowMs: 0, missedWindowsBeforeReload: 10 }), false);
+  assert.equal(shouldReloadAfterMissedHeartbeats(1, { windowMs: 0, missedWindowsBeforeReload: 0.5 }), true);
+});
+
+// 看门狗控制器（定时器 tick -> 判定 -> 重载 + 去重 + 宽限期重置）：用注入的假时钟驱动，不依赖入口脚本。
+const { createRendererHeartbeatWatchdog } = loadTsCommonJs(
+  "src/native-node/transport/nativeHeartbeatWatchdog.ts",
+);
+
+function createWatchdogHarness({ shouldWatch = true, logThrows = false, logRejects = false, reloadThrows = false } = {}) {
+  let now = 1_000_000;
+  const harness = {
+    reloads: 0,
+    logs: 0,
+    pending: [],
+    watch: shouldWatch,
+    advance: (ms) => { now += ms; },
+  };
+  harness.watchdog = createRendererHeartbeatWatchdog({
+    now: () => now,
+    shouldWatch: () => harness.watch,
+    reload: () => {
+      harness.reloads += 1;
+      if (reloadThrows) throw new Error("synchronous reload failure");
+      return new Promise((resolve, reject) => { harness.pending.push({ resolve, reject }); });
+    },
+    onReload: () => {
+      harness.logs += 1;
+      if (logThrows) throw new Error("diagnostic failure");
+      if (logRejects) return Promise.reject(new Error("async diagnostic failure"));
+    },
+  });
+  /** 让 reload 的 promise 链（catch/finally）跑完。 */
+  harness.settle = async () => { for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r)); };
+  return harness;
+}
+
+test("renderer heartbeat watchdog reloads only after three silent windows and reports it once", () => {
+  const h = createWatchdogHarness();
+  h.advance(3 * WINDOW_MS - 1);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 0);
+  h.advance(1);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1);
+  assert.equal(h.logs, 1);
+});
+
+test("renderer heartbeats keep resetting the silence clock", () => {
+  const h = createWatchdogHarness();
+  for (let i = 0; i < 10; i += 1) {
+    h.advance(2 * WINDOW_MS); // 每次都接近但未到阈值
+    h.watchdog.touch();
+    h.watchdog.tick();
+  }
+  assert.equal(h.reloads, 0);
+});
+
+test("renderer heartbeat watchdog does not judge a window that is hidden or being destroyed", () => {
+  const h = createWatchdogHarness({ shouldWatch: false });
+  h.advance(10 * WINDOW_MS);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 0);
+});
+
+test("renderer heartbeat watchdog never starts a second reload while one is in flight", async () => {
+  const h = createWatchdogHarness();
+  h.advance(5 * WINDOW_MS);
+  h.watchdog.tick();
+  h.advance(5 * WINDOW_MS);
+  h.watchdog.tick();
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1);
+
+  // 重载结束后才恢复判定；并且重置了计时起点，新页面获得完整宽限期，不会立刻再重载（避免重载循环）。
+  h.pending[0].resolve();
+  await h.settle();
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1, "the grace period restarts after the reload finished");
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 2, "a page that stays silent is reloaded again");
+});
+
+test("a failing diagnostic hook cannot prevent reload or disable the watchdog", async () => {
+  const h = createWatchdogHarness({ logThrows: true });
+  h.advance(3 * WINDOW_MS);
+  assert.doesNotThrow(() => h.watchdog.tick());
+  assert.equal(h.reloads, 1);
+  h.pending[0].resolve();
+  await h.settle();
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 2);
+});
+
+test("an asynchronous diagnostic rejection does not become an unhandled rejection", async () => {
+  const h = createWatchdogHarness({ logRejects: true });
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  h.pending[0].resolve();
+  await h.settle();
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  h.pending[1].resolve();
+  await h.settle();
+  assert.equal(h.reloads, 2);
+});
+
+test("a synchronous reload failure releases the guard and grants fresh grace", async () => {
+  const h = createWatchdogHarness({ reloadThrows: true });
+  h.advance(3 * WINDOW_MS);
+  assert.doesNotThrow(() => h.watchdog.tick());
+  await h.settle();
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1);
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 2);
+});
+
+test("a failed reload request still releases the in-flight guard and restarts the grace period", async () => {
+  const h = createWatchdogHarness();
+  h.advance(4 * WINDOW_MS);
+  h.watchdog.tick();
+  h.pending[0].reject(new Error("host gone"));
+  await h.settle();
+
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1);
+  h.advance(3 * WINDOW_MS);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 2, "the guard was released after the failure");
 });

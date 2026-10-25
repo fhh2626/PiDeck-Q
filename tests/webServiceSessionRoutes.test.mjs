@@ -24,7 +24,7 @@ function loadWebServiceManager() {
 }
 
 function loadBrowserApi(fetchImpl) {
-	const source = readFileSync("src/renderer/src/browserApi.ts", "utf8");
+	const source = readFileSync("src/renderer/src/browserApi.ts", "utf8"); // 被测对象本身就是该文件的编译产物，并非文本匹配
 	const { outputText } = ts.transpileModule(source, {
 		compilerOptions: {
 			module: ts.ModuleKind.CommonJS,
@@ -659,17 +659,73 @@ test("web polling omits a message snapshot whose runtime target no longer matche
 	});
 });
 
-test("web polling cannot read runtime messages directly by Agent ID", () => {
-	const source = readFileSync("src/main/web/WebServiceManager.ts", "utf8");
-	assert.match(source, /getSessionRuntimeMessages\(runtime\.sessionId\)/);
-	assert.doesNotMatch(source, /getMessages\(runtime\.agentId\)/);
+test("web polling reads runtime messages only through the Session-addressed dependency", async () => {
+	const WebServiceManager = loadWebServiceManager();
+	const harness = fixture();
+	const manager = new WebServiceManager(harness.deps);
+	await manager.start("127.0.0.1", 0, WEB_TEST_TOKEN);
+	try {
+		const response = await authFetch(`http://127.0.0.1:${manager.current.port}/api/state`);
+		assert.equal(response.status, 200);
+		const state = await response.json();
+		assert.equal(state.messagesBySession["session-1"][0].text, "ready");
+		// 传入的是 Session ID，而不是 runtime 的 agentId("agent-1")：runtime 重启后旧 agentId 不能再被当成消息入口。
+		assert.deepEqual(harness.calls.messageSessions, ["session-1"]);
+	} finally {
+		await manager.stop();
+	}
 });
 
-test("web polling runtime info carries local streaming flags", () => {
-	const coordinator = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
-	assert.match(coordinator, /getLocalStreamingFlags\?\(agentId: string\)/);
-	assert.match(coordinator, /isStreaming: streamingFlags\?\.isStreaming/);
-	assert.match(coordinator, /isExecutingTool: streamingFlags\?\.isExecutingTool/);
+test("web polling runtime info carries the coordinator's live streaming flags end to end", async () => {
+	const { SessionRuntimeCoordinator } = loadTsCommonJs("src/main/sessions/SessionRuntimeCoordinator.ts");
+	let flags = { isStreaming: true, isExecutingTool: true };
+	const tab = {
+		id: "agent-a",
+		projectId: "project-1",
+		cwd: "C:/project",
+		status: "running",
+		sessionPath: "C:/sessions/session-1.jsonl",
+		createdAt: 10,
+	};
+	const session = {
+		id: "session-1",
+		projectId: "project-1",
+		title: "Session 1",
+		source: "pi",
+		environment: "native",
+		status: "active",
+		createdAt: 1,
+		updatedAt: 1,
+	};
+	const catalog = {
+		get: (id) => (id === session.id ? { ...session } : undefined),
+		getRecord: (id) => (id === session.id ? { ...session, preview: "", messageCount: 0 } : undefined),
+	};
+	const agents = {
+		list: () => [tab],
+		getMessages: (agentId) => [{ id: "m1", role: "assistant", text: `from ${agentId}`, timestamp: 1 }],
+		isMessageCacheStale: () => false,
+		getLocalStreamingFlags: () => flags,
+	};
+	const coordinator = new SessionRuntimeCoordinator(catalog, agents, async () => ({ accepted: true }));
+	coordinator.bindExistingAgent("session-1", "agent-a");
+
+	await withServer(async ({ baseUrl }) => {
+		const live = await (await authFetch(`${baseUrl}/api/state`)).json();
+		assert.equal(live.runtimes[0].isStreaming, true);
+		assert.equal(live.runtimes[0].isExecutingTool, true);
+		assert.equal(live.messagesBySession["session-1"][0].text, "from agent-a");
+
+		// 标志位每次轮询都重新读取，流结束后前端必须看到 false（而不是缓存的 true）。
+		flags = { isStreaming: false, isExecutingTool: false };
+		const settled = await (await authFetch(`${baseUrl}/api/state`)).json();
+		assert.equal(settled.runtimes[0].isStreaming, false);
+		assert.equal(settled.runtimes[0].isExecutingTool, false);
+	}, {
+		listCatalogSessions: async () => [session],
+		listSessionRuntimes: () => coordinator.listRuntimes(),
+		getSessionRuntimeMessages: (sessionId) => coordinator.getRuntimeMessages(sessionId),
+	});
 });
 
 test("embedded web client and HTTP surface are Session-first", async () => {
@@ -947,6 +1003,7 @@ test("web service dev mode falls back to the legacy page when dev server is down
 		assert.match(await page.text(), /PiDeck(-Q)? Web Service/);
 	}, { devRendererUrl: "http://127.0.0.1:1" });
 });
+
 test("POST /api/chat closes the run-level stream when prompt validation rejects", async () => {
 	await withServer(async ({ baseUrl }) => {
 		const response = await authFetch(baseUrl + "/api/chat", {

@@ -93,6 +93,7 @@ let previewSettings: AppSettings = {
 	piRuntimePreference: "auto",
 	piTypescriptPath: "",
 	piRustPath: "",
+	piBoltPath: "",
 	sessionTabOpenMode: "preview",
 	enableGitManagement: true,
 	gitCommitMessagePrompt: "",

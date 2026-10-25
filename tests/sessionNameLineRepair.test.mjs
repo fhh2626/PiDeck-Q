@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createFakePiManager, loadAgentManagerWithFakePi } from "./helpers/l4_agentManagerHarness.mjs";
+import { startCreateBackendHarness } from "./helpers/l4_createBackendHarness.mjs";
+import { loadPiProcess } from "./helpers/loadPiProcess.mjs";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 // 纯函数模块（零依赖）直接编译加载
@@ -183,28 +186,107 @@ test("repairCorruptSessionHeader 修复首行路径粘连文件", async () => {
   }
 });
 
-// ── 装配链路（源码契约）─────────────────────────────────────────
+// ── 装配链路（行为）──────────────────────────────────────────────
 
-test("PiProcess 在 spawn 前调用修复回调，失败不阻塞启动", () => {
-  const source = readFileSync("src/main/pi/PiProcess.ts", "utf8");
-  assert.match(source, /repairSessionFileBeforeStart\?: \(sessionPath: string\) => Promise<boolean>/);
-  assert.match(source, /if \(sessionPath && !noSession && this\.options\.repairSessionFileBeforeStart\)/);
-  assert.match(source, /await this\.options\.repairSessionFileBeforeStart\(sessionPath\)/);
-  assert.match(source, /Repaired legacy sessionName header before spawn/);
+function createPiLocator(command = "/usr/bin/pi") {
+  return {
+    resolveCommand: () => command,
+    createInvocation: (_command, args) => ({ command, args: [...args], shell: false }),
+    createProcessEnv: () => ({}),
+  };
+}
+
+test("PiProcess 在 spawn 前调用修复回调（带会话路径）", async () => {
+  const spawnCalls = [];
+  const events = [];
+  const { PiProcess } = loadPiProcess(spawnCalls);
+  const pi = new PiProcess("/tmp/project", {}, createPiLocator(), {
+    repairSessionFileBeforeStart: async (sessionPath) => {
+      // 记录回调触发时已发生的 spawn 数：必须为 0，才算“spawn 之前”
+      events.push({ sessionPath, spawnedBefore: spawnCalls.length });
+      return true;
+    },
+  });
+  await pi.start("/tmp/project/.pi/sessions/a.jsonl");
+  assert.deepEqual(events, [{ sessionPath: "/tmp/project/.pi/sessions/a.jsonl", spawnedBefore: 0 }]);
+  assert.equal(spawnCalls.length, 1, "修复之后仍必须 spawn");
 });
 
-test("AgentManager 与 index.ts 完成修复回调装配", () => {
-  const agentSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-  assert.match(agentSource, /repairSessionFile\?: \(sessionPath: string\) => Promise<boolean>/);
-  assert.match(agentSource, /repairSessionFileBeforeStart: this\.repairSessionFile/);
-  const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
-  assert.match(createBackendSource, /repairCorruptSessionHeader/);
+test("PiProcess 修复回调失败不阻塞启动", async () => {
+  const spawnCalls = [];
+  const { PiProcess } = loadPiProcess(spawnCalls);
+  const pi = new PiProcess("/tmp/project", {}, createPiLocator(), {
+    repairSessionFileBeforeStart: async () => {
+      throw new Error("disk is read-only");
+    },
+  });
+  await pi.start("/tmp/project/.pi/sessions/a.jsonl");
+  assert.equal(spawnCalls.length, 1, "预检失败后仍要 spawn，让 pi 自己的报错进入诊断");
 });
 
-test("rename 与修复共用同一剔除判定（无重复私有行判定实现）", () => {
-  const scannerSource = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
-  assert.match(scannerSource, /isLegacySessionNameEntry\(parsed\)/);
-  assert.match(scannerSource, /stripLegacySessionNameLine\(raw\)/);
-  // appendSessionInfoLine 中不再残留内联的旧判定
-  assert.doesNotMatch(scannerSource, /typeof parsed\.sessionName === "string" && typeof parsed\.type !== "string"/);
+test("PiProcess 无会话路径或 noSession 时不调用修复回调", async () => {
+  for (const [sessionPath, noSession] of [[undefined, false], ["/tmp/project/a.jsonl", true]]) {
+    const spawnCalls = [];
+    const repairs = [];
+    const { PiProcess } = loadPiProcess(spawnCalls);
+    const pi = new PiProcess("/tmp/project", {}, createPiLocator(), {
+      repairSessionFileBeforeStart: async (path) => {
+        repairs.push(path);
+        return false;
+      },
+    });
+    await pi.start(sessionPath, undefined, noSession);
+    assert.deepEqual(repairs, [], `sessionPath=${sessionPath} noSession=${noSession}`);
+    assert.equal(spawnCalls.length, 1);
+  }
+});
+
+test("AgentManager 把修复回调注入每条 spawn 路径的 PiProcess", async () => {
+  const repaired = [];
+  const harness = loadAgentManagerWithFakePi();
+  const manager = createFakePiManager(harness, {
+    repairSessionFile: async (sessionPath) => {
+      repaired.push(sessionPath);
+      return true;
+    },
+  });
+  await manager.create({ projectId: "p1" });
+  await manager.cloneSessionFile("p1", "/proj/s.jsonl");
+  assert.equal(harness.constructed.length >= 2, true, "create 与 clone 各构造一个 PiProcess");
+  for (const { options } of harness.constructed) {
+    assert.equal(typeof options.repairSessionFileBeforeStart, "function");
+    await options.repairSessionFileBeforeStart("/x.jsonl");
+  }
+  assert.equal(repaired.length, harness.constructed.length, "注入的是装配时传入的同一个回调");
+});
+
+test("createBackend 把 SessionScanner.repairCorruptSessionHeader 装配为 AgentManager 的修复回调", async () => {
+  const harness = await startCreateBackendHarness();
+  try {
+    assert.equal(harness.agentManagerArgs.length, 1);
+    // 第 11 个构造参数 = repairSessionFile（见 AgentManager 构造函数）
+    const repairSessionFile = harness.agentManagerArgs[0][10];
+    assert.equal(typeof repairSessionFile, "function");
+    assert.equal(await repairSessionFile("/p/s.jsonl"), true);
+    assert.deepEqual(harness.scanners[0].repairCalls, ["/p/s.jsonl"]);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test("rename 与修复共用同一剔除判定：重命名同样清掉旧版私有行", async () => {
+  const scanner = new SessionScanner();
+  const { dir, filePath } = withTempSessionFile(damagedSessionText());
+  try {
+    await scanner.rename(filePath, "新名字");
+    const lines = readFileSync(filePath, "utf8").split("\n").filter((line) => line);
+    assert.equal(lines.some((line) => isLegacySessionNameLine(line)), false, "私有 sessionName 行必须被剔除");
+    assert.deepEqual(lines.slice(0, 2), [SESSION_HEADER, MESSAGE_LINE], "其余记录与顺序保持不变");
+    const info = JSON.parse(lines[2]);
+    assert.equal(info.type, "session_info");
+    assert.equal(info.name, "新名字");
+  } finally {
+    const { rmSync } = await import("node:fs");
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

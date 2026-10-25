@@ -7,7 +7,7 @@ import vm from "node:vm";
 
 const nodeRequire = createRequire(import.meta.url);
 
-function compileModule(filePath, imports = {}) {
+function compileModule(filePath, imports = {}, globals = {}) {
   const source = readFileSync(filePath, "utf8");
   const output = ts.transpileModule(source, {
     compilerOptions: {
@@ -25,11 +25,12 @@ function compileModule(filePath, imports = {}) {
     console,
     setTimeout,
     clearTimeout,
+    ...globals,
   }, { filename: filePath });
   return module.exports;
 }
 
-function loadCoordinator() {
+function loadCoordinator(globals = {}) {
   const identity = compileModule("src/shared/sessionIdentity.ts");
   // shared/askQuestion 是值导入（batch 表单 normalizer），同样走 TS 编译；
   // 它自己的 import 全部是 import type（transpile 后擦除），无需再映射。
@@ -37,19 +38,8 @@ function loadCoordinator() {
   return compileModule("src/main/sessions/SessionRuntimeCoordinator.ts", {
     "../../shared/sessionIdentity": identity,
     "../../shared/askQuestion": askQuestion,
-  });
+  }, globals);
 }
-
-test("session performance instrumentation keeps activation and dispatch phase markers", () => {
-  const source = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
-  assert.match(source, /Prompt pipeline started/);
-  assert.match(source, /Runtime activation started/);
-  assert.match(source, /Runtime activation completed/);
-  assert.match(source, /Prompt dispatch started/);
-  assert.match(source, /Prompt dispatch completed/);
-  assert.match(source, /activationMs/);
-  assert.match(source, /dispatchMs/);
-});
 
 function deferred() {
   let resolve;
@@ -269,6 +259,57 @@ function prompt(overrides = {}) {
   };
 }
 
+test("session performance instrumentation logs activation and dispatch phases in order with timings", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness();
+  const perf = [];
+  const logger = {
+    info: (scope, message, details) => {
+      if (scope === "session-perf") perf.push({ message, details: { ...details } });
+    },
+    warn() {},
+    error() {},
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, logger);
+
+  const result = await coordinator.send(prompt());
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(perf.map((entry) => entry.message), [
+    "Prompt pipeline started",
+    "Runtime activation started",
+    "Runtime activation completed",
+    "Prompt dispatch started",
+    "Prompt dispatch completed",
+  ]);
+  // 每个阶段都带会话/请求身份，便于按 requestId 串起整条耗时链
+  for (const entry of perf) {
+    assert.equal(entry.details.sessionId, "session-1");
+    assert.equal(entry.details.requestId, "request-1");
+  }
+  const completed = perf.find((entry) => entry.message === "Runtime activation completed").details;
+  assert.equal(completed.agentId, "agent-1");
+  assert.equal(typeof completed.activationMs, "number");
+  const dispatched = perf.find((entry) => entry.message === "Prompt dispatch completed").details;
+  assert.equal(dispatched.accepted, true);
+  assert.equal(typeof dispatched.dispatchMs, "number");
+});
+
+test("a failed dispatch logs no 'dispatch completed' phase", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({ sender: async () => { throw new Error("pi write failed"); } });
+  const messages = [];
+  const logger = {
+    info: (scope, message) => { if (scope === "session-perf") messages.push(message); },
+    warn() {},
+    error() {},
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, logger);
+  const result = await coordinator.send(prompt());
+  assert.equal(result.accepted, false);
+  assert.ok(messages.includes("Prompt dispatch started"));
+  assert.ok(!messages.includes("Prompt dispatch completed"), "未完成的派发不得记录 completed 耗时");
+});
 test("rejects an empty prompt before activating a runtime", async () => {
   const { SessionRuntimeCoordinator } = loadCoordinator();
   const harness = createHarness();
@@ -1455,18 +1496,35 @@ test("commandFailure classifies model-not-found as SESSION_MODEL_NOT_FOUND (not 
   assert.equal(modelMiss.error.code, "SESSION_MODEL_NOT_FOUND");
   // {model} 参数提取：i18n 文案「模型未找到：{model}」有值
   assert.equal(modelMiss.error.params?.model, "grok.weishiair.de/copy");
-  // 注意：vm 沙箱里主 realm 的 Error 不满足 instanceof，needsRestart 分支无法行为级验证，
-  // 用源码断言确认该分支同样提取 model 参数（本地有模型时引导重启而非误报会话不存在）
-  const coordinatorSource = readFileSync(
-    "src/main/sessions/SessionRuntimeCoordinator.ts",
-    "utf8",
-  );
-  assert.match(
-    coordinatorSource,
-    /needsRestart: true,[\s\S]*?params: \{ model: this\.extractModelFromNotFound\(error\.message\) \?\? error\.message \}/,
-  );
 });
 
+test("commandFailure marks needsRestart model errors and extracts the model identifier", () => {
+  // 让沙箱内的 `error instanceof Error` 与测试里构造的 Error 同属一个 realm，
+  // needsRestart 分支才能被真实走到。
+  const { SessionRuntimeCoordinator } = loadCoordinator({ Error });
+  const harness = createHarness();
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+
+  const restartNeeded = coordinator.commandFailure(
+    Object.assign(new Error("Model not found: openai/gpt-x"), { needsRestart: true }),
+  );
+  assert.equal(restartNeeded.ok, false);
+  assert.equal(restartNeeded.error.code, "SESSION_MODEL_NOT_FOUND");
+  assert.equal(restartNeeded.error.needsRestart, true);
+  assert.equal(restartNeeded.error.params?.model, "openai/gpt-x");
+
+  // 消息里没有 "Model not found: xxx" 形态时，{model} 退回完整消息而不是 undefined
+  const opaque = coordinator.commandFailure(
+    Object.assign(new Error("model gone"), { needsRestart: true }),
+  );
+  assert.equal(opaque.error.needsRestart, true);
+  assert.equal(opaque.error.params?.model, "model gone");
+
+  // 没有 needsRestart 标记的同类错误走普通分类，不带 needsRestart
+  const plain = coordinator.commandFailure(new Error("Model not found: openai/gpt-x"));
+  assert.equal(plain.error.code, "SESSION_MODEL_NOT_FOUND");
+  assert.equal(plain.error.needsRestart, undefined);
+});
 test("SessionCommandIpcError maps MESSAGE_NOT_FOUND to the dedicated copy key", () => {
   const { SessionCommandIpcError } = compileModule(
     "src/main/sessions/SessionCommandIpcError.ts",

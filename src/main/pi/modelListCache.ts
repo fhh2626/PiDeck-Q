@@ -154,6 +154,7 @@ async function runPiRpcModelList(
 		settings.piRuntimePreference,
 		settings.piTypescriptPath,
 		settings.piRustPath,
+		settings.piBoltPath,
 	);
 	const invocation = piLocator.createInvocation(command, MODEL_LIST_RPC_ARGS);
 	const child = spawn(invocation.command, invocation.args, {
@@ -191,12 +192,13 @@ async function runPiTextModelList(
 		settings.piRuntimePreference,
 		settings.piTypescriptPath,
 		settings.piRustPath,
+		settings.piBoltPath,
 	);
 	const { execFile } = await import("node:child_process");
 	// The neutral set is valid for both implementations. Only an explicit
-	// TypeScript selection opts into --offline; auto mode must stay safe when
-	// PATH resolves to Rust under the generic `pi` name.
-	const argumentSets = settings.piRuntimePreference === "typescript"
+	// TypeScript-compatible selection (original Pi or Pi-Bolt) opts into --offline;
+	// auto mode must stay safe when PATH resolves to Rust under the generic `pi` name.
+	const argumentSets = settings.piRuntimePreference === "typescript" || settings.piRuntimePreference === "bolt"
 		? [MODEL_LIST_FAST_ARGS, MODEL_LIST_RUST_ARGS]
 		: [MODEL_LIST_RUST_ARGS];
 	let lastError: Error | undefined;

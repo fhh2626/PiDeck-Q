@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { withComposerController } from "./helpers/l5_composerControllerHost.mjs";
 
 function transpileModule(path, requireImpl = () => ({})) {
 	const source = readFileSync(path, "utf8");
@@ -334,24 +335,109 @@ test("absolute @ paths expose a raw-path candidate before scanned files", () => 
 	assert.equal(sessionItems[0].value, "&C:/Users/me/session.json");
 });
 
-test("Enter remains outside completion commit while Tab is the completion key", () => {
-	const controller = readFileSync(
-		"src/renderer/src/hooks/useSessionComposerController.ts",
-		"utf8",
-	);
-	assert.match(controller, /event\.key === "Tab"/);
-	assert.doesNotMatch(controller, /suggestionsOpen[\s\S]{0,120}event\.key === "Enter"/);
-	assert.match(controller, /getComposerEnterIntent\(event, sendShortcut\)/);
+// ── 控制器行为：真实挂载 useSessionComposerController，通过 editor.* / suggestions.* 驱动 ──
+
+test("Tab commits the selected completion candidate and ends the session", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		assert.equal(c.controller().suggestions.open, true);
+		const first = c.controller().suggestions.items[0].value;
+
+		const event = await c.press("Tab");
+
+		assert.equal(event.prevented, true, "Tab 提交候选时必须拦截默认行为");
+		// 候选值后补一个空格，方便继续输入
+		assert.equal(c.storedDraft(), `${first} `);
+		// 草稿必须真的被改写，而不是停留在触发字符上。
+		assert.notEqual(c.storedDraft(), "/");
+		assert.equal(c.controller().suggestions.open, false);
+		assert.equal(c.calls.sendPrompt.length, 0, "Tab 只提交候选，不发送");
+	});
 });
 
-test("completion session state is cleared on reset and focus does not rescan text", () => {
+test("Enter never commits a completion candidate; it keeps its send intent", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		assert.equal(c.controller().suggestions.open, true);
+
+		const event = await c.press("Enter");
+
+		// Enter 继续走 composer 原有的发送职责：发出的是用户键入的原文，而不是被选中的候选
+		assert.equal(event.prevented, true);
+		assert.deepEqual(c.calls.promoted, ["s1"]);
+		assert.equal(c.calls.sendPrompt.length, 1);
+		assert.equal(c.calls.sendPrompt[0].message, "/");
+		// 发送后临时 UI（含补全会话）被重置
+		assert.equal(c.controller().suggestions.open, false);
+	});
+});
+
+test("Shift+Enter with the menu open neither commits nor sends", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		const event = await c.press("Enter", { shiftKey: true });
+		assert.equal(event.prevented, false, "换行交给编辑器");
+		assert.equal(c.calls.sendPrompt.length, 0);
+		assert.equal(c.storedDraft(), "/");
+	});
+});
+
+test("Escape dismisses the completion menu without touching the draft text", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		const event = await c.press("Escape");
+		assert.equal(event.prevented, true);
+		assert.equal(c.controller().suggestions.open, false);
+		assert.equal(c.storedDraft(), "/");
+	});
+});
+
+test("switching sessions ends the completion session", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		assert.equal(c.controller().suggestions.open, true);
+		await c.rerender({ sessionId: "s2" });
+		assert.equal(c.controller().suggestions.open, false);
+		assert.equal(c.controller().suggestions.completionId, undefined);
+	});
+});
+
+test("an external draft rewrite ends the completion session instead of remapping its range", async () => {
+	await withComposerController(async (c) => {
+		await c.typeChar("/", "/");
+		assert.equal(c.controller().suggestions.open, true);
+		// 例如并行问询直接清空 atom：没有经过 editor.onChange
+		await c.host.act(async () => c.store.set(c.atoms.sessionDraftByIdAtom, { s1: "" }));
+		assert.equal(c.controller().suggestions.open, false);
+	});
+});
+
+test("focus has no handler (so it cannot rescan text), while blur dismisses the open menu", async () => {
+	await withComposerController(
+		async (c) => {
+			// 挂载/聚焦都不会重新扫描已有草稿里的 / @ & 去自动弹出补全
+			assert.equal(c.controller().suggestions.open, false);
+			assert.equal(c.controller().editor.onFocus, undefined);
+
+			await c.typeChar("/", "/");
+			assert.equal(c.controller().suggestions.open, true);
+			await c.host.act(async () => c.controller().editor.onBlur());
+			assert.equal(c.controller().suggestions.open, false);
+			assert.equal(c.storedDraft(), "/", "失焦只收起菜单，不改文本");
+		},
+		{
+			seed: (store, atoms) => store.set(atoms.sessionDraftByIdAtom, { s1: "see /compact and @src" }),
+		},
+	);
+});
+
+test("controller no longer carries the legacy suggestion-open / trigger-detection state", () => {
+	// 文本匹配合理：这是“已移除实现不得回归”的静态规则；旧的 setSuggestionsOpen/detectTrigger
+	// 在运行时已不存在，没有可调用的入口可断言。
 	const controller = readFileSync(
 		"src/renderer/src/hooks/useSessionComposerController.ts",
 		"utf8",
 	);
 	assert.doesNotMatch(controller, /setSuggestionsOpen/);
 	assert.doesNotMatch(controller, /detectTrigger/);
-	assert.match(controller, /clearCompletion\(\);/);
-	assert.match(controller, /onFocus: undefined/);
-	assert.match(controller, /onBlur: dismissCompletion/);
 });

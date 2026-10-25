@@ -9,7 +9,7 @@ import type { PiLocator } from "../pi/PiLocator";
 import { toWindowsHostPath, type WslEnvironment } from "../wsl/WslPaths";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { BUILT_IN_EXTENSIONS, isBuiltInExtensionName } from "./builtInExtensions";
-import { detectPiRuntimeKind } from "../../shared/piCompatibility";
+import { detectPiRuntimeKind, piSupportsTrustFlags } from "../../shared/piCompatibility";
 import { writeFileAtomic } from "../utils/atomicWriteFile";
 
 export { BUILT_IN_EXTENSIONS } from "./builtInExtensions";
@@ -539,13 +539,8 @@ export class ExtensionManager {
 	private async noApproveSupported(): Promise<boolean> {
 		const version = await this.getPiVersion();
 		if (!version) return false;
-		if (detectPiRuntimeKind(version) === "rust") return false;
-		const match = version.match(/^(\d+)\.(\d+)/);
-		if (!match) return false;
-		const major = parseInt(match[1], 10);
-		const minor = parseInt(match[2], 10);
-		// pi >= 0.79.0 或 1.x+ 都支持 --no-approve
-		return major > 0 || minor >= 79;
+		// pi >= 0.79.0 或 1.x+ 都支持（Rust 版没有信任系统），规则与 PiProcess 共用。
+		return piSupportsTrustFlags(version);
 	}
 
 	private async getPiVersion(): Promise<string | null> {
@@ -567,6 +562,7 @@ export class ExtensionManager {
 			settings.piRuntimePreference ?? "auto",
 			settings.piTypescriptPath ?? "",
 			settings.piRustPath ?? "",
+			settings.piBoltPath ?? "",
 		]);
 	}
 
@@ -581,6 +577,7 @@ export class ExtensionManager {
 				settings.piRuntimePreference,
 				settings.piTypescriptPath,
 				settings.piRustPath,
+				settings.piBoltPath,
 			);
 			if (status.installed && status.version) {
 				// A settings change can race an in-flight probe. Only publish a
@@ -619,17 +616,17 @@ export class ExtensionManager {
 			settings.piRuntimePreference,
 			settings.piTypescriptPath,
 			settings.piRustPath,
+			settings.piBoltPath,
 		);
 		const invocation = this.locator.createInvocation(command, finalArgs);
 		const env = this.locator.createProcessEnv(settings, invocation.pathPrefix, invocation.wsl);
 		const detectedRuntime = detectPiRuntimeKind(this.piVersion ?? "");
+		// 版本串无法识别时退回用户显式选择的实现（auto 则保持 unknown）。
 		const runtimeKind = detectedRuntime !== "unknown"
 			? detectedRuntime
-			: settings.piRuntimePreference === "typescript"
-				? "typescript"
-				: settings.piRuntimePreference === "rust"
-					? "rust"
-					: "unknown";
+			: settings.piRuntimePreference === "auto"
+				? "unknown"
+				: settings.piRuntimePreference;
 		// list/remove/install 使用离线模式避免配置页被网络和包管理器输出拖慢；update 必须允许联网，
 		// 否则 pi 只会返回简化的 Updated packages，无法真正走 npm 更新流程。
 		// PI_OFFLINE 是 TypeScript Pi 的环境变量；Rust 版不读取它，保持环境中立。

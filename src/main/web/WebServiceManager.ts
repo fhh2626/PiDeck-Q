@@ -1004,7 +1004,7 @@ export class WebServiceManager {
 			return trOr("web.status." + (runtime?.status || session?.status || "unknown"), tr("web.status.unknown"));
 		}
 		function mergeRejectedDraft(rejected, current) {
-			return [rejected, current].filter(value => value && value.trim()).join("\n\n");
+			return [rejected, current].filter(value => value && value.trim()).join("\\n\\n");
 		}
 		function applyStaticCopy() {
 			document.documentElement.lang = locale;
@@ -1243,7 +1243,7 @@ export class WebServiceManager {
 			}
 			if (type === "error") {
 				const block = ensureStreamingText();
-				block.textContent += "\n[错误] " + (frame.errorText || "");
+				block.textContent += "\\n[错误] " + (frame.errorText || "");
 				scrollStreamToBottom();
 				return;
 			}
@@ -1272,10 +1272,10 @@ export class WebServiceManager {
 					buffer += decoder.decode(value, { stream: true });
 					// SSE 帧以空行分隔；逐帧解析 data: 行
 					let sep;
-					while ((sep = buffer.indexOf("\n\n")) !== -1) {
+					while ((sep = buffer.indexOf("\\n\\n")) !== -1) {
 						const rawEvent = buffer.slice(0, sep);
 						buffer = buffer.slice(sep + 2);
-						const dataLine = rawEvent.split("\n").find(line => line.startsWith("data:"));
+						const dataLine = rawEvent.split("\\n").find(line => line.startsWith("data:"));
 						if (!dataLine) continue;
 						const payload = dataLine.slice(5).trim();
 						if (payload === "[DONE]") {

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import {
+	createFakePiManager,
+	loadAgentManagerWithFakePi,
+	settle,
+} from "./helpers/l4_agentManagerHarness.mjs";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 /**
@@ -124,16 +128,50 @@ test("absent barrier (unit hosts / standalone backends) keeps the spawn path wor
 	assert.deepEqual(order, ["construct"]);
 });
 
-test("every spawn site awaits the barrier-producing factory", () => {
-	// 结构守卫：新增 spawn 路径若忘记 await，双加载会静默复发。
-	const source = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-	const calls = source.match(/this\.createPiProcess\(/g) ?? [];
-	const awaited = source.match(/await this\.createPiProcess\(/g) ?? [];
-	assert.ok(calls.length >= 3, `expected at least 3 spawn sites, got ${calls.length}`);
-	assert.equal(awaited.length, calls.length, "every createPiProcess call site must be awaited");
-	assert.match(
-		source,
-		/private async createPiProcess\([\s\S]*?\): Promise<PiProcess>/,
-		"createPiProcess must be async so the barrier is awaited inside it",
-	);
+/**
+ * 三条 spawn 路径（create / 历史 clone 的临时进程 / 压缩后 reattach）都必须经过
+ * 屏障：屏障挂起时不得构造 PiProcess，放行后必须用真正的 PiProcess 实例继续 start()。
+ * 若某条路径漏写 await，拿到的会是 Promise，后续 on()/start() 会直接抛错。
+ */
+async function expectSpawnPathHonoursBarrier(invoke) {
+	let releaseBarrier;
+	const harness = loadAgentManagerWithFakePi();
+	const manager = createFakePiManager(harness, {
+		platformDeps: {
+			...BASE_PLATFORM_DEPS,
+			startupBarrier: {
+				add: () => undefined,
+				wait: () => new Promise((resolve) => { releaseBarrier = resolve; }),
+			},
+		},
+	});
+
+	const running = invoke(manager).catch(() => undefined);
+	await settle();
+	assert.deepEqual(harness.log, [], "屏障挂起期间不得构造 PiProcess");
+
+	releaseBarrier(true);
+	await running;
+	await settle();
+	assert.equal(harness.log[0], "construct", "屏障放行后才构造 PiProcess");
+	assert.ok(harness.log.includes("start"), "放行后必须对真实 PiProcess 调用 start()");
+}
+
+test("create() waits for the startup barrier before spawning", async () => {
+	await expectSpawnPathHonoursBarrier((manager) => manager.create({ projectId: "p1" }));
+});
+
+test("cloneSessionFile() temporary process waits for the startup barrier", async () => {
+	await expectSpawnPathHonoursBarrier((manager) => manager.cloneSessionFile("p1", "/proj/s.jsonl"));
+});
+
+test("reattach after compaction waits for the startup barrier", async () => {
+	await expectSpawnPathHonoursBarrier((manager) => {
+		manager.agents.set("a1", {
+			tab: { id: "a1", projectId: "p1", cwd: "/proj", title: "t", status: "running", createdAt: 1 },
+			process: { isRunning: () => false },
+		});
+		// reattachProcess 无公开入口（仅 compact 的进程退出分支内部使用），按普通方法取用
+		return Reflect.get(manager, "reattachProcess").call(manager, "a1", "/proj/s.jsonl");
+	});
 });

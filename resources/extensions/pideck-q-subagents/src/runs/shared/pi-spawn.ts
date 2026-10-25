@@ -5,6 +5,12 @@ import { PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
 
 export const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
 export const PI_SUBAGENT_PI_BINARY_ENV = "PI_SUBAGENT_PI_BINARY";
+/**
+ * PiDeck sets this to "1" on a Pi process that is a self-contained binary (e.g. Pi-Bolt).
+ * It is authoritative over the executable-name heuristic, which cannot know about
+ * differently named distributions (pi-bolt, a launcher that execs pi-bin, renamed copies).
+ */
+export const PIDECK_PI_STANDALONE_ENV = "PIDECK_PI_STANDALONE";
 
 export function findPiPackageRootFromEntry(
 	entryPoint: string,
@@ -84,7 +90,9 @@ function normalizePath(filePath: string): string {
 	return path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
 }
 
-function isStandalonePiExecutable(execPath: string): boolean {
+function isStandalonePiExecutable(execPath: string, env: NodeJS.ProcessEnv): boolean {
+	if (env[PIDECK_PI_STANDALONE_ENV] === "1") return true;
+	// Fallback for stock Pi started outside PiDeck: its standalone build is named pi / pi.exe.
 	const executableName = execPath.split(/[\\/]/).pop();
 	return /^pi(?:\.exe)?$/i.test(executableName ?? "");
 }
@@ -176,7 +184,7 @@ export function getPiSpawnCommand(
 	}
 
 	const execPath = deps.execPath ?? process.execPath;
-	if (isStandalonePiExecutable(execPath)) {
+	if (isStandalonePiExecutable(execPath, env)) {
 		return { command: execPath, args };
 	}
 

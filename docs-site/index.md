@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: PiDeck-Q
-  text: 支持 Pi Agent 与 Pi_Agent_Rust 的桌面工作台
-  tagline: 在原生 Qt 桌面工作区中管理 Pi Agent 与 Pi_Agent_Rust 的会话、配置、Git 和终端。当前构建流程以 Windows 为主，其它平台产物以实际发布为准。
+  text: 支持 Pi 系后端的桌面工作台
+  tagline: 在原生 Qt 桌面工作区中管理原版 Pi Agent、Pi_Agent_Rust 与 Pi-Bolt 的会话、配置、Git 和终端。当前构建流程以 Windows 为主，其它平台产物以实际发布为准。
   actions:
     - theme: brand
       text: 下载最新版本
@@ -18,7 +18,7 @@ hero:
 
 features:
   - title: 多项目工作区
-    details: 添加、搜索、拖动排序和切换本地项目目录，每个 Agent 会话都保持项目级隔离，同时运行原版 Pi Agent 与 Pi_Agent_Rust。
+    details: 添加、搜索、拖动排序和切换本地项目目录，每个 Agent 会话都保持项目级隔离，可同时运行多个 Agent，运行时可选 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt。
   - title: 会话历史与恢复
     details: 恢复历史会话，按时间线查看工具调用和回答细节，并回放历史会话中的修改内容，支持 Codex 和 Claude 会话导入。
   - title: Git 集成
@@ -51,7 +51,7 @@ const { theme } = useData()
 
 ## 面向本地开发的桌面控制台
 
-`PiDeck-Q` 基于上游 [PiDeck](https://github.com/ayuayue/PiDeck)，不是原版 Pi Agent 或 Pi_Agent_Rust 的分支。它使用原生 Qt6/QtWebView 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、配置管理和桌面交互整合起来，Agent 能力仍由所选运行时原生提供。
+`PiDeck-Q` 基于上游 [PiDeck](https://github.com/ayuayue/PiDeck)，不是原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt6/QtWebView 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、配置管理和桌面交互整合起来，Agent 能力仍由所选运行时原生提供。
 
 <div class="info-strip">
   <div>

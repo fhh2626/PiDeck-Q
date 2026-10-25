@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { UPSTREAM_ASYNC_DEFAULT_SENTENCE } from '../config.ts';
 import { DEFAULT_CONFIG } from '../defaults.ts';
 import { readEffectiveShellPolicySnapshot, reconciliationLockPath, shellPolicySnapshotPath, SHELL_POLICY_OWNER_ENV, withReconciliationLock } from '../childReconciliation.ts';
-import { isChildSession, registerPromptExtension } from '../runtime.ts';
+import { isChildSession, isStandalonePiExecutable, registerPromptExtension } from '../runtime.ts';
 
 async function writeConfig(dir, overrides = {}) {
   await mkdir(join(dir, 'change-pi-prompt', 'prompts'), { recursive: true });
@@ -859,3 +859,22 @@ test('legacy lock with numeric createdAt is reclaimed when stale and preserved w
   assert.equal(staleCalled, true, 'Stale legacy lock must be reclaimed');
   assert.equal(staleRes, 'acquired-stale-legacy');
 }));
+
+// PiDeck 通过 PIDECK_PI_STANDALONE 声明“这是独立二进制 Pi”，不再依赖可执行文件名：
+// Pi-Bolt 叫 pi-bolt(.exe)，macOS 启动器会 exec pi-bin，用户也可能改名。
+test('PiDeck standalone marker overrides the executable-name heuristic', () => {
+  const marked = { PIDECK_PI_STANDALONE: '1' };
+  assert.equal(isStandalonePiExecutable('C:\\Pi-Bolt\\pi-bolt.exe', marked), true);
+  assert.equal(isStandalonePiExecutable('/opt/pi-bolt/pi-bin', marked), true);
+  assert.equal(isStandalonePiExecutable('/usr/bin/node', marked), true);
+});
+
+test('without the marker only the stock pi executable names count as standalone', () => {
+  assert.equal(isStandalonePiExecutable('C:\\Pi\\pi.exe', {}), true);
+  assert.equal(isStandalonePiExecutable('/usr/local/bin/pi', {}), true);
+  assert.equal(isStandalonePiExecutable('C:\\Pi-Bolt\\pi-bolt.exe', {}), false);
+  assert.equal(isStandalonePiExecutable('/usr/bin/node', {}), false);
+  // 只有精确的 "1" 才算声明，避免空串/0 之类的值误开启 standalone 限制。
+  assert.equal(isStandalonePiExecutable('/usr/bin/node', { PIDECK_PI_STANDALONE: '0' }), false);
+  assert.equal(isStandalonePiExecutable('/usr/bin/node', { PIDECK_PI_STANDALONE: '' }), false);
+});

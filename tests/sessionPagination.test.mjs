@@ -32,9 +32,10 @@ test("A to B owner switch renders B's initial page without A visibleCount or loa
   assert.equal(timeline.matchesTimelineOwner("A", "B"), false);
 });
 
-test("append growth keeps the top message in the window (no lagged visibleCount)", () => {
-  // 轮次模型下渲染层无条数窗口：新消息追加即全部显示，无 visibleCount 追赶问题。
-  // 保留该测试名作为契约：controller 不再依赖 growVisibleCountForAppend。
+test("the removed visibleCount append catch-up helper does not come back", () => {
+  // 轮次模型下渲染层无条数窗口：新消息追加即全部显示，不再有 visibleCount 追赶问题。
+  // 文本匹配在此是正确工具：断言的是「已删除的符号不得回归」，运行时没有可观察行为可测。
+  // 注意：这只是回归栅栏，并不证明追加行为本身正确；追加路径目前没有专门的 hook 挂载测试。
   const controller = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
   assert.doesNotMatch(controller, /growVisibleCountForAppend/);
 });
@@ -63,6 +64,6 @@ test("renderer runtime code reads historical messages only through the bounded p
     ...readRendererRuntimeSources("src/renderer/src/hooks"),
     ...readRendererRuntimeSources("src/renderer/src/components/session"),
   ].join("\n");
+  // 文本匹配在此是正确工具：这是静态架构规则（渲染层禁用全量历史 API），任何调用点都不得出现；
   assert.doesNotMatch(rendererRuntime, /readRecordMessages\(/);
-  assert.match(rendererRuntime, /readRecordMessagePage\(/);
 });

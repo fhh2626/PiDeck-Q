@@ -5,15 +5,15 @@ const { theme } = useData()
 
 # 使用指南
 
-> 如果你没用过 Pi Agent、Pi_Agent_Rust 或类似的 AI 编码助手，这份指南会从零开始带你走完从安装到完成第一个任务的完整流程。
+> 如果你没用过 Pi Agent、Pi_Agent_Rust、Pi-Bolt 或类似的 AI 编码助手，这份指南会从零开始带你走完从安装到完成第一个任务的完整流程。
 
 ## 什么是 PiDeck？什么是 Agent 运行时？
 
-**Pi Agent** 和 **Pi_Agent_Rust** 是命令行编码助手运行时——你在终端输命令，它们理解你的项目代码，能帮你写代码、改代码、解释代码。
+**Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt** 是命令行编码助手运行时——你在终端输命令，它们理解你的项目代码，能帮你写代码、改代码、解释代码。
 
-**PiDeck** 是一个桌面应用，为原版 Pi Agent 和 Pi_Agent_Rust 提供统一的图形界面。它让你不需要一直盯着终端，而是可以在一个窗口里：
+**PiDeck** 是一个桌面应用，为原版 Pi Agent、Pi_Agent_Rust 和 Pi-Bolt 提供统一的图形界面。它让你不需要一直盯着终端，而是可以在一个窗口里：
 
-- 同时管理多个项目中的 Pi Agent 与 Pi_Agent_Rust 对话（像聊天软件一样）
+- 同时管理多个项目中的 Pi 系 Agent（Pi Agent、Pi_Agent_Rust、Pi-Bolt）对话（像聊天软件一样）
 - 查看项目文件和 Git 分支
 - 在有需要的时候打开终端
 - 用可视化的方式配置 API 密钥和模型
@@ -24,15 +24,15 @@ const { theme } = useData()
 
 ## 第一步：安装 Agent 运行时
 
-PiDeck 本身只是一个桌面外壳，所有编码能力来自 Agent 运行时，所以必须先安装原版 Pi Agent 或 Pi_Agent_Rust。
+PiDeck 本身只是一个桌面外壳，所有编码能力来自 Agent 运行时，所以必须先安装原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt。
 
 ### 什么是 Agent 运行时？
 
-Pi Agent 和 Pi_Agent_Rust 是类似 Claude Code、Cursor 的命令行 AI 编码助手。它们运行在你本地的项目目录里，能读取你的代码文件、帮你修改代码、执行命令、回答代码问题。
+Pi Agent、Pi_Agent_Rust 和 Pi-Bolt 是类似 Claude Code、Cursor 的命令行 AI 编码助手。它们运行在你本地的项目目录里，能读取你的代码文件、帮你修改代码、执行命令、回答代码问题。
 
 ### 如何安装 Agent 运行时？
 
-请根据原版 Pi Agent 或 Pi_Agent_Rust 的官方文档完成安装。安装完成后，在终端验证对应命令。
+请根据原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的官方文档完成安装。安装完成后，在终端验证对应命令。
 
 ```bash
 pi --version

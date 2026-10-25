@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { trackedTempDirs } from "./helpers/trackedTempDirs.mjs";
 import ts from "typescript";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
+const makeTempDir = trackedTempDirs();
 
 /**
  * 启动任务编排层的行为测试（真实临时目录 + 替身服务）。
@@ -122,7 +123,7 @@ function makeStubServices(wslCalls) {
 }
 
 async function makeHome() {
-	const root = await mkdtemp(join(tmpdir(), "pideck-startup-"));
+	const root = makeTempDir("pideck-startup-");
 	const agentDir = join(root, ".pi", "agent");
 	await mkdir(join(agentDir, "extensions"), { recursive: true });
 	return { root, agentDir, entry: join(agentDir, "extensions", "change-pi-prompt.ts") };
@@ -244,7 +245,7 @@ test("WSL agent dir is migrated through windowsHome, not a hand-built home path"
 	const startup = loadBarrier(profile).createStartupBarrier();
 	const home = await makeHome();
 	// WSL 侧独立 temp root，模拟 UNC 映射下的 Linux home（含空格，最容易暴露拼路径 bug）
-	const wslRoot = await mkdtemp(join(tmpdir(), "pideck-wslhome-"));
+	const wslRoot = makeTempDir("pideck-wslhome-");
 	const wslAgentDir = join(wslRoot, "srv", "dev home", ".pi", "agent");
 	await mkdir(join(wslAgentDir, "extensions"), { recursive: true });
 	const wslEntry = join(wslAgentDir, "extensions", "change-pi-prompt.ts");
@@ -285,7 +286,7 @@ test("pi settings defaults are ensured in every resolved agent dir", async () =>
 	const profile = newProfile();
 	const startup = loadBarrier(profile).createStartupBarrier();
 	const home = await makeHome();
-	const wslRoot = await mkdtemp(join(tmpdir(), "pideck-wslhome2-"));
+	const wslRoot = makeTempDir("pideck-wslhome2-");
 	const wslAgentDir = join(wslRoot, "root", ".pi", "agent");
 	await mkdir(join(wslAgentDir, "extensions"), { recursive: true });
 

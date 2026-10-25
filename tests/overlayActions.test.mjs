@@ -65,13 +65,31 @@ function createOverlayActionsHarness(desktopApiStub) {
 }
 
 test("useOverlayActions owns only confirm and trust state", () => {
-  assert.match(source, /export function useOverlayActions/);
-  assert.match(source, /useState<ConfirmDialogConfig/);
-  assert.match(source, /useState<TrustRequest/);
+  const harness = createOverlayActionsHarness();
+  const r = harness.render();
+  r.showConfirm({ title: "X", message: "Y", onConfirm: () => undefined });
+  r.setTrustRequest({ requestId: "r1", cwd: "/tmp", projectName: "Test" });
+
+  // 行为面：返回值只暴露 confirm / trust 两个域的状态与命令，
+  // overlayProps 只可能出现 confirm / trust 两个浮层。
+  const r2 = harness.render();
+  // 命令确实改写了各自的状态（而不仅是 key 存在）。
+  assert.equal(r2.confirmDialog.title, "X");
+  assert.deepEqual({ ...r2.trustRequest }, { requestId: "r1", cwd: "/tmp", projectName: "Test" });
+  assert.deepEqual(Object.keys(r2.overlayProps).sort(), ["confirm", "trust"]);
+  assert.deepEqual(Object.keys(r2).sort(), [
+    "clearConfirm",
+    "confirmDialog",
+    "overlayProps",
+    "setTrustRequest",
+    "showConfirm",
+    "trustRequest",
+  ]);
+});
+
+test("useOverlayActions has no feedback / homepage / external-link overlay code", () => {
+  // 文本匹配合理：这是“已移除功能不得回归”的静态规则，无运行时入口可断言。
   assert.doesNotMatch(source, /feedback|homepage|openExternal/);
-  assert.match(source, /const showConfirm = useCallback/);
-  assert.match(source, /const clearConfirm = useCallback/);
-  assert.match(source, /const overlayProps = useMemo/);
 });
 
 test("showConfirm sets confirmDialog with full config", () => {

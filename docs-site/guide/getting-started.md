@@ -7,7 +7,7 @@ const { theme } = useData()
 
 当前 PiDeck-Q 版本：**{{ theme.version }}**。
 
-PiDeck-Q 同时支持 [Pi Agent](https://pi.dev) 和 [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust)。桌面应用管理窗口、项目与会话，Agent 能力仍由运行时提供。
+PiDeck-Q 同时支持 [Pi Agent](https://pi.dev)、[Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust) 和 [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt)（Pi 的预编译发行版）。桌面应用管理窗口、项目与会话，Agent 能力仍由运行时提供。
 
 ## 下载安装
 
@@ -15,7 +15,7 @@ PiDeck-Q 同时支持 [Pi Agent](https://pi.dev) 和 [Pi_Agent_Rust](https://git
 
 Windows 桌面运行需要 WebView2 Runtime。macOS/Linux 的源码分支不能视作经过验证的安装包。
 
-先按运行时官方文档安装 Pi Agent 或 Pi_Agent_Rust，配置 Provider/认证。验证对应命令（Rust 命令可能为 `pi-rust`）：
+先按运行时官方文档安装 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt，配置 Provider/认证。验证对应命令（Rust 命令可能为 `pi-rust`，Pi-Bolt 命令为 `pi-bolt`）。自动模式不会自动发现 `pi-bolt` 命令（自定义 Pi 路径仍可指向它）；建议在「设置 → 开发设置 → Pi 运行时偏好」中选择 Pi-Bolt，并按需填写 Pi-Bolt 运行时路径：
 
 ```bash
 pi --version

@@ -254,146 +254,65 @@ test("active Agent identity does not use useState", () => {
 // 4. Deterministic bug parity: TurnRow hook order
 // ════════════════════════════════════════════════════════════════════
 
-test("TurnRow puts all hooks before any early return", () => {
-  const surfaceSource = readFileSync(
-    "src/renderer/src/components/session/turn/TurnRow.tsx",
-    "utf8",
-  );
+// TurnRow 是 .tsx，没有 DOM 环境可渲染，只能做静态分析。分析器必须先证明自己真的取到了函数体：
+// 组件声明是 `memo(\n function TurnRow(...)` 多行写法，早先按单行串查找得到 -1，函数体被误取成 import 花括号，
+// 两条守卫于是恒绿。因此这里用正则定位并断言函数体足够大、hook 足够多，再做顺序检查。
+const HOOK_PATTERNS = [
+  /\buseState\(/,
+  /\buseRef\(/,
+  /\buseMemo\(/,
+  /\buseCallback\(/,
+  /\buseEffect\(/,
+  /\buseLayoutEffect\(/,
+  /\buseAtomValue\(/,
+  /\buseSetAtom\(/,
+  /\buseStore\(/,
+];
 
-  // Find TurnRow component
-  const turnRowIndex = surfaceSource.indexOf(
-    "export const TurnRow = memo(function TurnRow",
-  );
-  if (turnRowIndex === -1) {
-    // 多行格式：export const TurnRow = memo(\n    function TurnRow(...)
-    const multiLineIndex = surfaceSource.indexOf(
-      "export const TurnRow = memo(",
-    );
-    assert.notEqual(
-      multiLineIndex,
-      -1,
-      "TurnRow should exist in turn/TurnRow.tsx",
-    );
-  } else {
-    assert.notEqual(
-      turnRowIndex,
-      -1,
-      "TurnRow should exist in turn/TurnRow.tsx",
-    );
-  }
-
-  // Get the function body
-  const bodyStart = surfaceSource.indexOf("{", turnRowIndex);
+/** 取出 TurnRow 函数体文本（花括号配平）。 */
+function extractTurnRowBody(source) {
+  const declaration = /function TurnRow\([^)]*\)\s*\{/.exec(source);
+  assert.ok(declaration, "TurnRow should exist in turn/TurnRow.tsx");
+  const bodyStart = declaration.index + declaration[0].length - 1;
   let depth = 0;
-  let parseIndex = bodyStart;
-  for (; parseIndex < surfaceSource.length; parseIndex += 1) {
-    const ch = surfaceSource[parseIndex];
+  let end = bodyStart;
+  for (; end < source.length; end += 1) {
+    const ch = source[end];
     if (ch === "{") depth += 1;
     if (ch === "}") {
       depth -= 1;
       if (depth === 0) break;
     }
   }
-  const body = surfaceSource.slice(bodyStart, parseIndex);
+  return source.slice(bodyStart, end);
+}
 
-  // Find the last hook-like call (useState, useRef, useMemo, useCallback, useEffect, useAtomValue, etc.)
-  // before any early return statement
-  const lines = body.split("\n");
-  const hookPatterns = [
-    /\buseState\(/,
-    /\buseRef\(/,
-    /\buseMemo\(/,
-    /\buseCallback\(/,
-    /\buseEffect\(/,
-    /\buseLayoutEffect\(/,
-    /\buseAtomValue\(/,
-    /\buseSetAtom\(/,
-    /\buseStore\(/,
-  ];
-
-  let lastHookLine = -1;
+function analyseTurnRowHooks() {
+  const source = readFileSync("src/renderer/src/components/session/turn/TurnRow.tsx", "utf8");
+  const lines = extractTurnRowBody(source).split("\n");
+  const hookLines = [];
   let firstEarlyReturnLine = -1;
+  lines.forEach((line, index) => {
+    if (HOOK_PATTERNS.some((pattern) => pattern.test(line))) hookLines.push(index);
+    if (firstEarlyReturnLine === -1 && /\breturn\s+null\b/.test(line)) firstEarlyReturnLine = index;
+  });
+  return { lines, hookLines, firstEarlyReturnLine };
+}
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const isHook = hookPatterns.some((p) => p.test(line));
-    if (isHook) lastHookLine = i;
-    if (/\breturn\s+null\b/.test(line) && firstEarlyReturnLine === -1) {
-      firstEarlyReturnLine = i;
-    }
-  }
-
-  if (firstEarlyReturnLine === -1) {
-    // No early return — no risk of hook reordering. This is the safest case.
-    assert.ok(true, "TurnRow has no early return, hook order is safe");
-  } else {
-    // If there IS an early return, all hooks must be before it
-    assert.ok(
-      lastHookLine < firstEarlyReturnLine,
-      `TurnRow has hooks after early return (last hook at line ${lastHookLine}, early return at ${firstEarlyReturnLine}). This causes 'Rendered fewer hooks' crash.`,
-    );
-  }
+test("the TurnRow analyser really sees the component body", () => {
+  const { lines, hookLines, firstEarlyReturnLine } = analyseTurnRowHooks();
+  assert.ok(lines.length > 100, `body should be the whole component (got ${lines.length} lines)`);
+  assert.ok(hookLines.length >= 8, `body should contain the component's hooks (got ${hookLines.length})`);
+  assert.notEqual(firstEarlyReturnLine, -1, "TurnRow has an early `return null` the guard must compare against");
 });
 
-test("TurnRow has no hook placed after an early return", () => {
-  const surfaceSource = readFileSync(
-    "src/renderer/src/components/session/turn/TurnRow.tsx",
-    "utf8",
-  );
-
-  const turnRowIndex = surfaceSource.indexOf(
-    "export const TurnRow = memo(function TurnRow",
-  );
-  const bodyStart = surfaceSource.indexOf("{", turnRowIndex);
-  let depth = 0;
-  let parseIndex = bodyStart;
-  for (; parseIndex < surfaceSource.length; parseIndex += 1) {
-    const ch = surfaceSource[parseIndex];
-    if (ch === "{") depth += 1;
-    if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) break;
-    }
-  }
-  const body = surfaceSource.slice(bodyStart, parseIndex);
-
-  // Split into lines for analysis
-  const lines = body.split("\n");
-
-  // Track hook names that appear after any early return
-  const hookPatterns = [
-    /\buseState\(/,
-    /\buseRef\(/,
-    /\buseMemo\(/,
-    /\buseCallback\(/,
-    /\buseEffect\(/,
-    /\buseLayoutEffect\(/,
-    /\buseAtomValue\(/,
-    /\buseSetAtom\(/,
-  ];
-
-  let afterEarlyReturn = false;
-  let violations = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/\breturn\s+null\b/.test(line)) {
-      afterEarlyReturn = true;
-      continue;
-    }
-    if (afterEarlyReturn) {
-      for (const pattern of hookPatterns) {
-        if (pattern.test(line)) {
-          violations.push(`Line ${i}: ${line.trim()}`);
-        }
-      }
-    }
-  }
-
-  assert.equal(
-    violations.length,
-    0,
-    `TurnRow has hooks after early return: ${violations.join("; ")}`,
+test("TurnRow puts all hooks before any early return", () => {
+  const { hookLines, firstEarlyReturnLine } = analyseTurnRowHooks();
+  const lateHooks = hookLines.filter((line) => line > firstEarlyReturnLine);
+  assert.deepEqual(
+    lateHooks,
+    [],
+    `TurnRow has hooks after the early return at body line ${firstEarlyReturnLine}: lines ${lateHooks.join(", ")}. This causes 'Rendered fewer hooks' crash.`,
   );
 });
 

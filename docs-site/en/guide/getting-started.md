@@ -7,7 +7,7 @@ const { theme } = useData()
 
 Current PiDeck-Q version: **{{ theme.version }}**.
 
-PiDeck-Q supports [Pi Agent](https://pi.dev) and [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust). The desktop manages windows, projects and sessions; the runtime supplies Agent behavior.
+PiDeck-Q supports [Pi Agent](https://pi.dev), [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust) and [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt) (a precompiled distribution of Pi). The desktop manages windows, projects and sessions; the runtime supplies Agent behavior.
 
 ## Download & Install
 
@@ -15,7 +15,7 @@ Check [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) for actual
 
 Windows desktop use requires WebView2 Runtime. macOS/Linux source branches do not establish verified installers.
 
-Install Pi Agent or Pi_Agent_Rust using its official instructions, and configure providers/auth. Verify the selected command (Rust may use `pi-rust`):
+Install Pi Agent, Pi_Agent_Rust or Pi-Bolt using its official instructions, and configure providers/auth. Verify the selected command (Rust may use `pi-rust`; Pi-Bolt uses `pi-bolt`). Auto mode does not automatically discover the `pi-bolt` command (a custom Pi path can still point to it): select it under Settings → Developer → Pi Runtime Preference and set the Pi-Bolt runtime path if needed:
 
 ```bash
 pi --version

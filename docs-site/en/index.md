@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: PiDeck-Q
-  text: Desktop Workbench for Pi Agent and Pi_Agent_Rust
-  tagline: Manage Pi Agent and Pi_Agent_Rust sessions, configs, Git and terminals in a native Qt workspace. The current build pipeline is Windows-first; other platform artifacts depend on actual releases.
+  text: Desktop Workbench for the Pi Family of Agents
+  tagline: Manage original Pi Agent, Pi_Agent_Rust and Pi-Bolt sessions, configs, Git and terminals in a native Qt workspace. The current build pipeline is Windows-first; other platform artifacts depend on actual releases.
   actions:
     - theme: brand
       text: Download Latest
@@ -18,7 +18,7 @@ hero:
 
 features:
   - title: Multi-Project Workspace
-    details: Add, search, drag-sort, and switch local project folders. Run the original Pi Agent and Pi_Agent_Rust simultaneously with per-project isolation.
+    details: Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent, Pi_Agent_Rust or Pi-Bolt.
   - title: Session History & Restore
     details: Restore previous conversations, browse tool calls and answers by timeline, and review file changes in past sessions. Import Codex and Claude sessions.
   - title: Git Integration
@@ -49,7 +49,7 @@ Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck]
   <figcaption>Workspace, sessions, file drawer, Git branches, and tool calls — all in one desktop window.</figcaption>
 </figure>
 
-- **Multi-Project Workspace** — Add, search, drag-sort, and switch local project folders. Run the original Pi Agent and Pi_Agent_Rust simultaneously with per-project isolation.
+- **Multi-Project Workspace** — Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent, Pi_Agent_Rust or Pi-Bolt.
 - **Session History & Restore** — Restore previous conversations, browse tool calls and answers by timeline, and review file changes in past sessions. Import local Codex and Claude sessions.
 - **Git Integration** — Real-time branch display and switching, VS Code-style 3-panel view (Changes/History/Compare), AI commit message generation, branch graph visualization, cherry-pick/revert/reset/drop, file tree with Git status, worktree support.
 - **Session Reference (&)** — Type & in composer to search and reference past sessions across the same project. Inject full context or select specific messages.

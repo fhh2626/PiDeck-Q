@@ -85,18 +85,23 @@ function sessionSummary(overrides = {}) {
   };
 }
 
-// ── static source assertions ──
+// ── hook surface ──
 
-test("useRename sources track four state atoms and export a flat hook", () => {
-  assert.match(source, /export function useRename/);
-  assert.match(source, /useState<AgentTab/);
-  assert.match(source, /useState<\{[\s\S]*?projectId: string;[\s\S]*?session: SessionSummary/);
-  assert.match(source, /useState\(""\)/);
-  assert.match(source, /useState\(false\)/);
-  assert.match(source, /function openAgentRename/);
-  assert.match(source, /function openSessionRename/);
-  assert.match(source, /async function submitAgentRename/);
-  assert.match(source, /async function submitSessionRename/);
+test("useRename starts idle and exposes a flat state + command surface", () => {
+  const harness = createRenameHarness({ t: (key) => key });
+  const r = harness.render(createDefaultApi());
+
+  // 初始状态：没有重命名目标、输入为空、不在保存中，且不显示弹窗
+  assert.equal(r.agentRenameTarget, null);
+  assert.equal(r.sessionRenameTarget, null);
+  assert.equal(r.agentRenameValue, "");
+  assert.equal(r.agentRenaming, false);
+  assert.equal(r.renameModalsProps.agentRename, undefined);
+
+  // 扁平命令面：打开/提交两对命令都是函数
+  for (const name of ["openAgentRename", "openSessionRename", "submitAgentRename", "submitSessionRename"]) {
+    assert.equal(typeof r[name], "function", `${name} should be a function`);
+  }
 });
 
 // ── runtime logic ──

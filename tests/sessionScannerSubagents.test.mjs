@@ -4,9 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
+import { flushLoadedScanners, loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
 
 const require = createRequire(import.meta.url);
+
+/** 先落盘摘要缓存的防抖写再删目录，否则 .pi-desktop 会被重新建出来（临时目录泄漏）。 */
+async function removeHome(dir) {
+	await flushLoadedScanners();
+	rmSync(dir, { recursive: true, force: true });
+}
 
 function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}) {
 	const childProcess = { ...require("node:child_process"), ...childProcessOverrides };
@@ -38,7 +44,7 @@ function session(name, cwd) {
 	];
 }
 
-test("validates a local parent session by reading only the bounded file head", () => {
+test("validates a local parent session by reading only the bounded file head", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-session-head-"));
 	try {
 		const fixture = Buffer.from(`${JSON.stringify({ type: "session_info", name: "Parent" })}\n`);
@@ -58,7 +64,7 @@ test("validates a local parent session by reading only the bounded file head", (
 		assert.equal(requestedBytes, 4096);
 		assert.equal(closed, true);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -82,7 +88,7 @@ test("aborts a hung WSL scan before the renderer watchdog and allows a clean ret
 		assert.equal((await scanner.list()).length, 0);
 		assert.equal(attempts, 2);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -138,7 +144,7 @@ test("hides persisted pi-subagents runs without deleting them or unrelated neste
 		assert.ok(namedLikeWorker);
 		assert.notEqual(namedLikeWorker.isInternalSubagent, true);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -195,7 +201,7 @@ test("groups WSL child sessions with POSIX parent paths", async () => {
 		assert.equal(fullReadCount.get(parentFile), 1);
 		assert.equal(fullReadCount.get(forkParentFile), 1);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -224,7 +230,7 @@ test("uses a valid renamed parent session and ignores false-positive path owners
 		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.isInternalSubagent, undefined);
 		assert.equal(summaries.find((item) => item.filePath === lookalikeFile)?.parentSessionPath, undefined);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -294,7 +300,7 @@ test("handles orphan, fork, rename and imported-session compatibility without fa
 		assert.equal(customSummary.isInternalSubagent, true);
 		assert.equal(customSummary.parentSessionPath, undefined);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -320,7 +326,7 @@ test("resolves fork child with absolute Windows parent path via parentSession he
 		assert.equal(forkSummary.isInternalSubagent, true);
 		assert.equal(forkSummary.parentSessionPath, parentFile);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -343,7 +349,7 @@ test("resolves Rust Pi branchedFrom headers as parent sessions", async () => {
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.isInternalSubagent, true);
 		assert.equal(summaries.find((item) => item.filePath === childFile)?.parentSessionPath, parentFile);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -382,7 +388,7 @@ test("recovers last-used model from assistant message when JSONL has no model_ch
 		assert.equal(summaries[0].model?.modelId, "deepseek-v4-pro");
 		assert.equal(summaries[0].thinkingLevel, "off");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -423,7 +429,7 @@ test("model_change takes precedence over message-level model", async () => {
 		assert.equal(summaries[0].model?.modelId, "claude-sonnet-4");
 		assert.equal(summaries[0].thinkingLevel, "high");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -445,7 +451,7 @@ test("marks a custom-location child as internal even when the parent path cannot
 		assert.equal(childSummary.isInternalSubagent, true);
 		assert.equal(childSummary.parentSessionPath, undefined);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -473,11 +479,11 @@ test("only user messages yield undefined model and undefined thinking", async ()
 		assert.equal(summaries[0].model, undefined);
 		assert.equal(summaries[0].thinkingLevel, undefined);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
-test("isIgnoredSessionScanDirectory correctly identifies artifact directories across Windows and POSIX paths", () => {
+test("isIgnoredSessionScanDirectory correctly identifies artifact directories across Windows and POSIX paths", async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-ignored-dirs-"));
 	try {
 		const { isIgnoredSessionScanDirectory, SessionScanner } = loadSessionScanner(home);
@@ -514,7 +520,7 @@ test("isIgnoredSessionScanDirectory correctly identifies artifact directories ac
 		assert.equal(isIgnoredSessionScanDirectory("/home/dev/.pi/agent/sessions/parent/run-abc/run-0/session.jsonl"), false);
 		assert.equal(isIgnoredSessionScanDirectory("/home/dev/project/.pi/sessions/normal.jsonl"), false);
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -603,7 +609,7 @@ test("native/local scan skips subagent-artifacts and .pi/subagents/artifacts wit
 		assert.equal(existsSync(artifactTranscriptFile), true, "Artifact file remains safely on disk");
 		assert.equal(existsSync(projectArtifactFile), true, "Project artifact file remains safely on disk");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -692,7 +698,7 @@ test("WSL scan path excludes subagent-artifacts and .pi/subagents/artifacts via 
 		// 4. 验证内容中包含 [prompt redacted] 的合法会话正常保留（不依赖内容过滤）
 		assert.equal(scannedPaths.has(promptRedactedFile), true, "WSL legit session with [prompt redacted] must be scanned");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -771,7 +777,7 @@ test("distinguishes regular /fork session from subagent using run records and na
 		assert.ok(uuidSummary);
 		assert.equal(uuidSummary.isInternalSubagent, true, "UUID session found in pi-subagents tmp records must be internal subagent");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 		rmSync(tempSubagentsDir, { recursive: true, force: true });
 	}
 });
@@ -861,7 +867,7 @@ test("distinguishes WSL regular /fork session from subagent using WSL run record
 		assert.ok(uuidSummary);
 		assert.equal(uuidSummary.isInternalSubagent, true, "WSL UUID session found in WSL pi-subagents records must be internal subagent");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -932,7 +938,7 @@ test("WSL subagents script handles custom PI_SUBAGENTS_TEMP_ROOT and spaces corr
 		assert.ok(subagentSummary);
 		assert.equal(subagentSummary.isInternalSubagent, true, "Session recorded in custom WSL root must be identified as internal subagent");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 	}
 });
 
@@ -985,7 +991,7 @@ test("invalidates cached summary classification when a subagent run record appea
 		assert.ok(secondSummary);
 		assert.equal(secondSummary.isInternalSubagent, true, "Second scan must update classification to internal subagent without session file modification");
 	} finally {
-		rmSync(home, { recursive: true, force: true });
+		await removeHome(home);
 		rmSync(tempSubagentsDir, { recursive: true, force: true });
 	}
 });

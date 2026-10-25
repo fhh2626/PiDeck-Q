@@ -6,6 +6,8 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { createFakePiManager, loadAgentManagerWithFakePi } from "./helpers/l4_agentManagerHarness.mjs";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -132,23 +134,52 @@ test("PiProcess forwards spawn error to business listeners after start returns",
 	assert.deepEqual(seen, ["spawn EACCES"]);
 });
 
-test("AgentManager attaches lifecycle listeners before process.start", () => {
-	const source = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-	assert.match(source, /attachPiProcessLifecycle\(/);
-	assert.match(source, /buildStartupFailureMessage\(/);
-	// createUnlocked：先 attach，再 await process.start
-	const createBlock = source.slice(
-		source.indexOf("private async createUnlocked"),
-		source.indexOf("async rename("),
-	);
-	const attachAt = createBlock.indexOf("this.attachPiProcessLifecycle");
-	const startAt = createBlock.indexOf("await process.start");
-	assert.ok(attachAt >= 0 && startAt > attachAt, "lifecycle must be attached before start()");
+test("AgentManager attaches lifecycle listeners before process.start", async () => {
+	// 顺序契约：spawn 的 error 事件是异步的，start() 之前必须已有 listener，
+	// 否则 0 listener 的 EventEmitter 会把 ENOENT 升级成未捕获异常。
+	const harness = loadAgentManagerWithFakePi();
+	const manager = createFakePiManager(harness);
+	await manager.create({ projectId: "p1" });
+	const startAt = harness.log.indexOf("start");
+	assert.ok(startAt >= 0, "create() 必须调用 PiProcess.start()");
+	for (const event of ["event", "stderr", "protocol-error", "error", "exit"]) {
+		const attachedAt = harness.log.indexOf(`on:${event}`);
+		assert.ok(attachedAt >= 0 && attachedAt < startAt, `${event} listener 必须在 start() 之前挂上`);
+	}
 });
 
+test("AgentManager reports a start() failure as an in-session error message instead of throwing", async () => {
+	// start 同步失败（非法 cwd / spawn 抛错）要落到会话错误卡，且消息带原始错误文本。
+	const harness = loadAgentManagerWithFakePi({
+		startImpl: () => {
+			throw new Error("spawn ENOENT /missing/pi");
+		},
+	});
+	const manager = createFakePiManager(harness);
+	const tab = await manager.create({ projectId: "p1" });
+	const errors = (manager.messages.get(tab.id) ?? []).filter((message) => message.role === "error");
+	assert.equal(errors.length, 1);
+	assert.match(errors[0].text, /spawn ENOENT \/missing\/pi/);
+	assert.equal(tab.status, "error");
+});
+
+/** 伪造宿主平台与空 PATH，使搜索目录只来自 PiLocator 自身的平台分支。 */
+function searchDirsFor(platform) {
+	const fakeProcess = Object.create(process, {
+		platform: { value: platform },
+		env: { value: { PATH: "" } },
+	});
+	const { PiLocator } = loadTsCommonJs("src/main/pi/PiLocator.ts", { globals: { process: fakeProcess } });
+	return new PiLocator(undefined, "/Users/tester").getSearchDirs();
+}
+
 test("macOS search dirs include Homebrew prefixes for Dock-launched PATH gaps", () => {
-	const source = readFileSync("src/main/pi/PiLocator.ts", "utf8");
-	assert.match(source, /\/opt\/homebrew\/bin/);
-	assert.match(source, /\/usr\/local\/bin/);
-	assert.match(source, /platform === "darwin"/);
+	const dirs = searchDirsFor("darwin");
+	assert.ok(dirs.includes("/opt/homebrew/bin"), "Apple Silicon Homebrew");
+	assert.ok(dirs.includes("/usr/local/bin"), "Intel Homebrew");
+});
+
+test("non-macOS hosts do not search the Homebrew prefix", () => {
+	assert.ok(!searchDirsFor("win32").includes("/opt/homebrew/bin"));
+	assert.ok(!searchDirsFor("linux").includes("/opt/homebrew/bin"));
 });

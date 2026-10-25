@@ -180,6 +180,7 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 			settings.piRuntimePreference,
 			settings.piTypescriptPath,
 			settings.piRustPath,
+			settings.piBoltPath,
 		);
 		void appLogger.info("pi", "Pi check completed", {
 			installed: status.installed,
@@ -639,7 +640,8 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		if (
 			"piRuntimePreference" in patch ||
 			"piTypescriptPath" in patch ||
-			"piRustPath" in patch
+			"piRustPath" in patch ||
+			"piBoltPath" in patch
 		) {
 			invalidateModelListCache();
 			void refreshModelList(piLocator, settingsStore).catch(() => undefined);

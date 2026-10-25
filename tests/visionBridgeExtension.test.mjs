@@ -6,11 +6,11 @@
  * 测行为不测实现：只断言配置解析、图片收集、替换、端点解析、请求构造、响应解析。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
+import { trackedTempDirs } from "./helpers/trackedTempDirs.mjs";
 import ts from "typescript";
 import vm from "node:vm";
 
@@ -57,11 +57,12 @@ function compile(filePath) {
 	return module.exports;
 }
 
+const makeTempDir = trackedTempDirs();
 const ext = compile(EXT_PATH);
 
 /** 临时配置目录 + 写入 pi-deck-vision.json，返回目录路径。 */
 function makeConfigDir(partial) {
-	const dir = mkdtempSync(join(tmpdir(), "vision-test-"));
+	const dir = makeTempDir("vision-test-");
 	writeFileSync(join(dir, "pi-deck-vision.json"), JSON.stringify(partial, null, 2));
 	return dir;
 }
@@ -98,12 +99,12 @@ test("loadVisionBridgeConfig: parses file and merges defaults", async () => {
 });
 
 test("loadVisionBridgeConfig: missing file returns null", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "vision-test-"));
+	const dir = makeTempDir("vision-test-");
 	assert.equal(await ext.loadVisionBridgeConfig(dir), null);
 });
 
 test("loadVisionBridgeConfig: invalid json returns null", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "vision-test-"));
+	const dir = makeTempDir("vision-test-");
 	writeFileSync(join(dir, "pi-deck-vision.json"), "{ not json");
 	assert.equal(await ext.loadVisionBridgeConfig(dir), null);
 });

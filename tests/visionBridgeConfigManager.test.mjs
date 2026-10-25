@@ -6,12 +6,13 @@
  * 与扩展测试 tests/visionBridgeExtension.test.mjs 共用同一套配置契约。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { trackedTempDirs } from "./helpers/trackedTempDirs.mjs";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
+const makeTempDir = trackedTempDirs();
 const MODULE_PATH = "src/main/settings/visionBridgeConfig.ts";
 
 // 共享日志器：测试环境未注册实例，返回 null 让调用方静默跳过。
@@ -22,7 +23,7 @@ const { VisionBridgeConfigManager, VISION_DEFAULT_PROMPT } = mod;
 
 /** 在临时目录下创建 manager（PIDECK_VISION_CONFIG_DIR 指向该目录）。 */
 function makeManager(modelsProviders = {}) {
-	const dir = mkdtempSync(join(tmpdir(), "vision-mgr-"));
+	const dir = makeTempDir("vision-mgr-");
 	process.env.PIDECK_VISION_CONFIG_DIR = dir;
 	const configManager = {
 		getModelsConfig: async () => ({
