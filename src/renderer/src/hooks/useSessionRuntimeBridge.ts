@@ -4,6 +4,8 @@ import type { AgentRuntimeState } from "../../../shared/types";
 import {
   applySessionRuntimeEventAtom,
   replaceSessionRuntimesAtom,
+  removeSessionComposerStateAtom,
+  sessionRecordsAtom,
   sessionRuntimeByIdAtom,
 } from "../atoms";
 import { agentExitedAtom } from "../atoms/runtime-atoms";
@@ -34,15 +36,6 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
     }).catch(() => undefined);
 
     const offRuntimeEvents = desktopApi.sessions.onRuntimeEvent((event) => {
-      // agents:state 是全量 AgentTab[] 推送：对已退出（closed）的 agent 释放
-      // agentId 维度 atomFamily 缓存（agentId 每次新 UUID，只增不清是慢泄漏）。
-      if (event.sourceChannel === "agents:state" && Array.isArray(event.payload)) {
-        for (const tab of event.payload as Array<{ id?: string; status?: string }>) {
-          if (typeof tab.id === "string" && tab.status === "closed") {
-            store.set(agentExitedAtom, tab.id);
-          }
-        }
-      }
       if (event.sourceChannel === "sessions:message-delivery-status") {
         showNotice(t("session.messageDeliveryTooLarge"), Number.POSITIVE_INFINITY, "error");
         return;
@@ -65,9 +58,27 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
         return;
       }
       const previousRuntime = store.get(sessionRuntimeByIdAtom)[event.sessionId];
+      const wasAnonymous = event.kind === "detach" && store.get(sessionRecordsAtom)[event.sessionId]?.noSession === true;
       store.set(applySessionRuntimeEventAtom, event);
-      if (event.sourceChannel !== "agents:runtime-state") return;
       const currentRuntime = store.get(sessionRuntimeByIdAtom)[event.sessionId];
+      // Backend canonical events carry one AgentTab, not an inventory array.
+      // Only an accepted reducer transition can reclaim an agent: stale closed/detach
+      // events must never remove the replacement's subscriptions.
+      if (previousRuntime !== currentRuntime) {
+        if (previousRuntime?.agentId && previousRuntime.agentId !== currentRuntime?.agentId) {
+          store.set(agentExitedAtom, previousRuntime.agentId);
+        }
+        if (currentRuntime?.agentId === event.agentId && currentRuntime.status === "closed") {
+          store.set(agentExitedAtom, event.agentId);
+        }
+      }
+      // Clean composer only after the canonical reducer accepted detach and removed the
+      // transient record. A stale generation must never wipe the replacement's draft.
+      // This boundary owns the cross-domain cleanup without introducing atom-module cycles.
+      if (event.kind === "detach" && wasAnonymous && !store.get(sessionRecordsAtom)[event.sessionId]) {
+        store.set(removeSessionComposerStateAtom, event.sessionId);
+      }
+      if (event.sourceChannel !== "agents:runtime-state") return;
       if (
         currentRuntime?.agentId !== event.agentId ||
         currentRuntime.runtimeGeneration !== event.runtimeGeneration ||

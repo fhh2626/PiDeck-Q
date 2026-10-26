@@ -47,7 +47,7 @@ export function createNativeBackendHostHarness() {
  * app:get-focus-target-pending / app:ack-focus-target，host 是可记录的替身。
  */
 export function runBackendRpcFocusWiring() {
-	const noopRegistrar = (exportName) => ({ [exportName]: () => () => undefined, scheduleCatalogBackgroundScan: () => true });
+	const noopRegistrar = (exportName) => ({ [exportName]: () => () => undefined, scheduleCatalogBackgroundScan: () => true, disposeCatalogBackgroundScans: () => {} });
 	const stubs = {
 		"../ipc/usageStatsIpc": noopRegistrar("registerUsageStatsIpc"),
 		"../ipc/editorsIpc": noopRegistrar("registerEditorsIpc"),

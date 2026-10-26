@@ -4,7 +4,7 @@ import type { AgentRuntimeState, AgentStatus, AgentTab } from "../../../shared/t
 import { sessionRecordsAtom, sessionRuntimeByIdAtom } from "./session-atoms";
 import { sessionIdByRuntimeAgentIdAtomFamily } from "./session-selectors";
 
-export const agentInventoryAtom = atom((get) => {
+const agentInventoryProjectionAtom = atom((get) => {
   const records = get(sessionRecordsAtom);
   return Object.entries(get(sessionRuntimeByIdAtom))
     .filter((entry): entry is [string, typeof entry[1] & {
@@ -44,6 +44,25 @@ export const agentInventoryAtom = atom((get) => {
     });
 });
 
+/** Compare only the inventory projection, not high-frequency runtime capability/state data. */
+function sameAgentInventory(left: AgentTab[], right: AgentTab[]): boolean {
+  const fields = [
+    "id", "projectId", "cwd", "title", "status", "sessionId", "sessionPath",
+    "sessionEnvironment", "sessionSource", "wslDistro", "wslUser", "importedSourceId",
+    "noSession", "runtimeGeneration", "createdAt", "compactionCount",
+  ] satisfies (keyof AgentTab)[];
+  return left.length === right.length && left.every((agent, index) =>
+    fields.every((field) => agent[field] === right[index][field]),
+  );
+}
+
+// selectAtom retains equivalent values per Jotai store: no cross-window/store mutable cache.
+export const agentInventoryAtom = selectAtom(
+  agentInventoryProjectionAtom,
+  (inventory) => inventory,
+  sameAgentInventory,
+);
+
 /**
  * 全局是否存在「正在工作」的 runtime：任意项目任意 Agent starting/running、流式输出或执行工具都算。
  * 全局门控（如 Skills 快捷修改）必须以权威 sessionRuntimeByIdAtom 为准，
@@ -75,7 +94,7 @@ export const runtimeCapabilityByAgentIdAtomFamily = atomFamily((agentId: string)
 /**
  * agent 退出（closed）时释放 agentId 维度 atomFamily 缓存：
  * agentId 每次都是新 UUID，不复用则 family 内部 Map 只增不清（2026-10 泄漏修复）。
- * 由 useSessionRuntimeBridge 在 agents:state 全量推送中检测 closed 后触发；
+ * 由 useSessionRuntimeBridge 在 canonical reducer 接受 closed/detach/替换绑定后触发；
  * atomFamily 惰性重建，后续同 id 重新出现时无副作用。
  */
 export const agentExitedAtom = atom(null, (_get, _set, agentId: string) => {

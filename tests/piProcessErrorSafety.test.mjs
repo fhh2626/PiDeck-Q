@@ -40,6 +40,8 @@ function loadPiProcess(spawnImpl) {
 	const paths = loadSandboxed("src/main/wsl/WslPaths.ts", "WslPaths.ts");
 	const extensionFilter = loadSandboxed("src/main/pi/piExtensionFilter.ts", "piExtensionFilter.ts");
 	const compatibility = loadSandboxed("src/shared/piCompatibility.ts", "piCompatibility.ts");
+	const wslEnvNames = loadSandboxed("src/main/pi/wslEnvNames.ts", "wslEnvNames.ts");
+	const terminate = loadSandboxed("src/main/process/terminateChildProcess.ts", "terminateChildProcess.ts");
 
 	class FakeRpcClient extends EventEmitter {
 		close() {}
@@ -66,6 +68,8 @@ function loadPiProcess(spawnImpl) {
 			if (id === "../../shared/piCompatibility") return compatibility;
 			if (id === "../wsl/WslPaths") return paths;
 			if (id === "./piExtensionFilter") return extensionFilter;
+			if (id === "./wslEnvNames") return wslEnvNames;
+			if (id === "../process/terminateChildProcess") return terminate;
 			// 25fd516 起 PiProcess 引入内置扩展参数拼接；本测试只关心 spawn 错误转发，
 			// mock 为原样透传，避免 vm sandbox 的 require 按 tests/ 相对路径误解析。
 			if (id === "../extensions/builtInExtensions") {

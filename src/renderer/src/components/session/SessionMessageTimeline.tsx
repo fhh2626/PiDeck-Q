@@ -1,6 +1,6 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { selectAtom } from "jotai/utils";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
 import type { ChatMessage, ImageContent } from "../../../../shared/types";
 import {
@@ -258,6 +258,8 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   // 只对「时间线尾部新增」的消息播放一次入场动画：历史加载/分页前插不算，
   // 避免整屏消息同时闪烁。乐观上屏的用户消息与流式替换后的权威消息都会触发。
   const [multiSelectOpen, setMultiSelectOpen] = useState(false);
+  // Shared by all memoized rows; a fresh arrow here defeats their shallow prop comparison.
+  const enterMultiSelect = useCallback(() => setMultiSelectOpen(true), []);
   const [freshMessageIds, setFreshMessageIds] = useState<ReadonlySet<string>>(() => new Set());
   const seenTailMessageIdRef = useRef<string | undefined>(undefined);
   const freshTimersRef = useRef<Map<string, number>>(new Map());
@@ -766,7 +768,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                     onDiffFile={props.onDiffFile}
                     onEditMessage={props.onEditMessage}
                     onDeleteMessage={props.onDeleteMessage}
-                    onEnterMultiSelect={() => setMultiSelectOpen(true)}
+                    onEnterMultiSelect={enterMultiSelect}
                   />
                 );
               } else if (item.kind === "message") {
@@ -789,7 +791,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                       showResendButton={resendableMessageIds.has(message.id)}
                       validCommandNames={props.validCommandNames}
                       validFilePaths={props.validFilePaths}
-                      onEnterMultiSelect={() => setMultiSelectOpen(true)}
+                      onEnterMultiSelect={enterMultiSelect}
                     />
                   );
                 } else if (message.role === "error") {

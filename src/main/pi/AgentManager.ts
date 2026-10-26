@@ -247,6 +247,10 @@ export class AgentManager {
 	private readonly retryStatusMessageIds = new Map<string, string>();
 	/** 同一历史会话正在创建 Agent 时共享同一个 Promise，避免快速重复点击/IPC 竞态创建多个进程。 */
 	private readonly creatingSessionAgents = new Map<string, Promise<AgentTab>>();
+	/** Intentional restart owns shutdown, so old exit must not detach an anonymous session. */
+	private readonly restartingAgents = new Set<string>();
+	/** Keep a stopping runtime fenced until its process has actually exited. */
+	private readonly stoppingAgents = new Set<string>();
 	/** 工具 start/end 事件的单调序号，renderer 用它忽略迟到的异步完整状态。 */
 	private readonly toolStateSequenceByAgent = new Map<string, number>();
 	/** 每个 agent 当前仍在执行的 toolCall；并行工具必须等最后一个结束才发 false 边沿。 */
@@ -3130,6 +3134,9 @@ export class AgentManager {
 
 	async restart(agentId: string): Promise<AgentTab> {
 		const runtime = this.requireRuntime(agentId);
+		if (this.stoppingAgents.has(agentId) || this.restartingAgents.has(agentId)) {
+			throw new Error("Agent restart was cancelled because shutdown is already in progress.");
+		}
 		void this.appLogger?.info("agent", "Agent restart requested", {
 			agentId,
 			projectId: runtime.tab.projectId,
@@ -3167,8 +3174,28 @@ export class AgentManager {
 			}
 		}
 
+		// A stop/dispose may have taken ownership while get_state was awaiting RPC.
+		if (this.agents.get(agentId) !== runtime || this.stoppingAgents.has(agentId)) {
+			throw new Error("Agent restart was cancelled by a concurrent stop.");
+		}
+		// Old and new runtimes must never append the same session concurrently.
+		this.restartingAgents.add(agentId);
+		try {
+			if (await runtime.process.stop() === false) {
+				this.userInitiatedStop.add(agentId);
+				throw new Error("Previous pi process did not exit; restart was cancelled to protect the session file.");
+			}
+			// stopAll clears ownership immediately; a user stop fences it until exit.
+			// Neither may be undone by an earlier restart resuming after this await.
+			if (this.agents.get(agentId) !== runtime || this.stoppingAgents.has(agentId)) {
+				throw new Error("Agent restart was cancelled by a concurrent stop.");
+			}
+		} finally {
+			this.restartingAgents.delete(agentId);
+		}
+		// The exit listener is fenced during restart, so retire any prior stop intent here.
+		this.userInitiatedStop.delete(agentId);
 		// 停止旧进程并清理状态
-		runtime.process.stop();
 		this.agents.delete(agentId);
 		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
 		this.errorOriginByAgent.delete(agentId);
@@ -3375,15 +3402,25 @@ export class AgentManager {
 		});
 		// 标记用户主动停止，退出处理器将跳过自动重连
 		this.userInitiatedStop.add(agentId);
-		const process = runtime.process;
-		this.agents.delete(agentId);
-		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
-		this.errorOriginByAgent.delete(agentId);
-		this.messages.delete(agentId);
-		// One termination path owns per-agent clearing; preserve stop intent for the exit handler.
-		this.clearAgentState(agentId);
-		process.stop();
-		this.emitState();
+		this.stoppingAgents.add(agentId);
+		try {
+			// Retain the runtime/session reservation until the actual process exit.
+			// Otherwise stopRuntime could unbind and activate a second writer early.
+			if (await runtime.process.stop() === false) {
+				throw new Error("Previous pi process did not exit; stop could not safely release the session file.");
+			}
+			// The fenced exit handler cannot clear this intent; shutdown is now confirmed.
+			this.userInitiatedStop.delete(agentId);
+			if (this.agents.get(agentId) !== runtime) return;
+			this.agents.delete(agentId);
+			// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
+			this.errorOriginByAgent.delete(agentId);
+			this.messages.delete(agentId);
+			this.clearAgentState(agentId);
+			this.emitState();
+		} finally {
+			this.stoppingAgents.delete(agentId);
+		}
 	}
 
 	/** 注册本地事件监听器（供 Web SSE 等主进程内部模块使用） */
@@ -3399,12 +3436,13 @@ export class AgentManager {
 		return () => this.outputListeners.delete(listener);
 	}
 
-	stopAll() {
-		// 应用退出时统一清理所有 pi 子进程，避免后台 agent 残留占用模型或文件句柄。
+	async stopAll() {
+		// Stop concurrently but let backend disposal await bounded process shutdown.
+		const stopped: Promise<boolean>[] = [];
 		for (const runtime of this.agents.values()) {
 			this.userInitiatedStop.add(runtime.tab.id);
 			this.clearAgentState(runtime.tab.id);
-			runtime.process.stop();
+			stopped.push(runtime.process.stop());
 		}
 		this.agents.clear();
 		// 与 agents 配对清理：error 来源只对仍在 agents 中的 runtime 有意义。
@@ -3416,6 +3454,7 @@ export class AgentManager {
 		this.liveRpcLogs.clear();
 		this.manualCompactionReloadClaims.clear();
 		this.emitState();
+		await Promise.all(stopped);
 	}
 
 
@@ -3431,7 +3470,8 @@ export class AgentManager {
 			onExit: (payload: { code: number | null; signal: string | null }) => void;
 		},
 	) {
-		const isCurrentProcess = () => this.agents.get(agentId)?.process === piProcess;
+		const isCurrentProcess = () => this.agents.get(agentId)?.process === piProcess
+			&& !this.restartingAgents.has(agentId) && !this.stoppingAgents.has(agentId);
 		piProcess.on("event", (event) => {
 			if (!isCurrentProcess()) return;
 			try {

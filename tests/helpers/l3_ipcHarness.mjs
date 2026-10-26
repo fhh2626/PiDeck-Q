@@ -44,7 +44,7 @@ const REGISTRAR_MODULES = {
  * 这样可以断言“装配层把哪些服务交给了哪个 IPC 域”，而不依赖源码文字。
  * 所有服务都是带 `__name` 的假对象，便于用 === 校验传递的是同一实例。
  */
-export function runBackendRpcWiring({ disposeGit = () => {}, modelListCache, timers } = {}) {
+export function runBackendRpcWiring({ disposeGit = () => {}, modelListCache, timers, clearedTimers, sessionIpc = {} } = {}) {
   const captured = new Map();
   const stubs = {};
   for (const [key, [specifier, exportName]] of Object.entries(REGISTRAR_MODULES)) {
@@ -53,10 +53,13 @@ export function runBackendRpcWiring({ disposeGit = () => {}, modelListCache, tim
         captured.set(key, { router, deps });
         return key === "git" ? disposeGit : undefined;
       },
-      // sessionIpc 还导出启动预扫描调度函数
+      // sessionIpc 还导出启动预扫描调度函数及其配对的清理函数
       scheduleCatalogBackgroundScan: () => true,
+      disposeCatalogBackgroundScans: () => {},
     };
   }
+  // 测试可覆盖 sessionIpc 的调度/清理导出，观察预扫描生命周期
+  Object.assign(stubs[REGISTRAR_MODULES.session[0]], sessionIpc);
   stubs["../pi/modelListCache"] = modelListCache ?? { fetchModelList: async () => [], getCachedModelList: () => [] };
   stubs["../pi/PiProxyTester"] = { testPiProxy: async () => ({}) };
   stubs["../settings/DesktopProxy"] = { applyDesktopProxy: () => {} };
@@ -65,13 +68,14 @@ export function runBackendRpcWiring({ disposeGit = () => {}, modelListCache, tim
   stubs["../fs/trash"] = { createTrashPath: () => () => {} };
 
   // 预扫描/预取用的 setTimeout 默认不触发，也不挂住事件循环；传入 timers 数组时把回调收集起来，由测试决定何时触发
+  // 句柄带上回调，传入 clearedTimers 时记录被 clearTimeout 的句柄，便于断言 dispose 清理了哪些定时器
   const inertTimer = (fn) => {
     if (timers) timers.push(fn);
-    return { unref() {} };
+    return { unref() {}, callback: fn };
   };
   const { registerBackendRpc } = loadTsCommonJs("src/main/backend/registerBackendRpc.ts", {
     stubs,
-    globals: { setTimeout: inertTimer, clearTimeout: () => {} },
+    globals: { setTimeout: inertTimer, clearTimeout: (handle) => { clearedTimers?.push(handle); } },
   });
 
   const named = (__name, extra = {}) => ({ __name, ...extra });

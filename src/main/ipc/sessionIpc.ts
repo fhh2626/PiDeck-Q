@@ -18,7 +18,7 @@ import type {
 	SessionProcessEvent,
 } from "../../shared/types";
 import { parseSessionProcessEvents } from "../sessions/sessionProcessEvents";
-import { BackgroundScanCoordinator } from "../sessions/BackgroundScanCoordinator";
+import { CatalogScanScope } from "../sessions/CatalogScanScope";
 import {
 	DEFAULT_CONTEXT_CONTROLLER_STATE,
 	parseContextControllerStateFromJsonl,
@@ -29,23 +29,6 @@ import {
 } from "../pi/messageDeliveryBudget";
 import type { SessionMessagePage } from "../../shared/types/session";
 
-/**
- * 已扫描过项目的集合（模块级）：决定 catalogList 走「首次同步扫描」还是
- * 「缓存先回显 + 后台扫描推送」。进程生命周期内单调增长，无需清理。
- */
-const scannedProjects = new Set<string>();
-
-/** 后台目录扫描协调器：同项目触发去重 + 冷却合并（3 秒轮询不会演变成并发重扫）。 */
-const catalogScanCoordinator = new BackgroundScanCoordinator(5000);
-
-/**
- * 供主进程装配层（启动预扫描）触发的后台扫描调度入口。
- * 标记项目为已扫描，保证预热后首次展开项目走缓存回显路径。
- */
-export function scheduleCatalogBackgroundScan(projectId: string, task: () => Promise<void>): boolean {
-	scannedProjects.add(projectId);
-	return catalogScanCoordinator.schedule(projectId, task);
-}
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { SettingsStore } from "../settings/SettingsStore";
 import type { SessionScanner } from "../sessions/SessionScanner";
@@ -62,6 +45,8 @@ import type { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporte
 import type { AppLogger } from "../logging/AppLogger";
 
 export type SessionIpcDeps = {
+	/** Shared only with this backend's startup prewarm, never module-global. */
+	catalogScans?: CatalogScanScope;
 	projectStore: ProjectStore;
 	settingsStore: SettingsStore;
 	sessionScanner: SessionScanner;
@@ -93,6 +78,7 @@ export type SessionIpcDeps = {
 };
 
 export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): void {
+	const catalogScans = deps.catalogScans ?? new CatalogScanScope();
 	const {
 		projectStore,
 		settingsStore,
@@ -151,12 +137,16 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 
 			// 扫描 + 合并 + 运行时绑定（首次同步路径与后台路径共用）
 			const runScanAndMerge = async (): Promise<SessionRecord[]> => {
+				if (catalogScans.disposed) return [];
 				const summaries = await sessionScanner.list(projectPath);
+				// A backend may be disposed while the scanner awaits filesystem IO.
+				if (catalogScans.disposed) return [];
 				const records = await sessionCatalog.mergeScanned(
 					projectId,
 					summaries,
 					wslEnabled ? { wslDistro, wslUser } : {},
 				);
+				if (catalogScans.disposed) return [];
 				const bindings = sessionRuntimeCoordinator.attachCatalogRuntimes(records);
 				for (const binding of bindings) {
 					const tab = agentManager.list().find((candidate) => candidate.id === binding.agentId);
@@ -173,16 +163,17 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 
 			// 首次访问该项目：缓存无数据可回显，同步扫描保证首次有结果；
 			// 之后转入「缓存先回显 + 后台扫描推送」模式。
-			if (!scannedProjects.has(projectId)) {
-				scannedProjects.add(projectId);
+			if (!catalogScans.hasScanned(projectId)) {
+				catalogScans.markScanned(projectId);
 				return runScanAndMerge();
 			}
 
 			// 已有缓存：立即返回，后台扫描（去重+冷却）完成后推送 catalog-refreshed，
 			// 渲染层收到后以 scan:false 重新拉取合并结果。
-			catalogScanCoordinator.schedule(projectId, async () => {
+			catalogScans.schedule(projectId, async () => {
 				try {
 					await runScanAndMerge();
+					if (catalogScans.disposed) return;
 					sendToRenderer(ipcChannels.sessionsCatalogRefreshed, { projectId });
 				} catch (error) {
 					void appLogger.warn("session", "Background catalog scan failed", {

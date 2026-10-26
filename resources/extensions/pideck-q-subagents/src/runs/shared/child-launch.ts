@@ -310,7 +310,9 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	}
 
 	const securityConfigPath = input.securityConfigPath ?? process.env.PIDECK_SECURITY_CONFIG;
-	const securitySessionId = input.securitySessionId ?? input.parentSessionId ?? process.env.PIDECK_SESSION_ID;
+	// parentSessionId routes Pi messages, while session-level security is keyed by
+	// PiDeck's stable session UUID. In desktop children these are not the same ID.
+	const securitySessionId = input.securitySessionId ?? process.env.PIDECK_SESSION_ID ?? input.parentSessionId;
 	const securityGateExtensionPath = input.securityGateExtensionPath ?? resolveSecurityGateExtensionPath();
 	const securityActive = isSecurityPolicyActive(securityConfigPath);
 

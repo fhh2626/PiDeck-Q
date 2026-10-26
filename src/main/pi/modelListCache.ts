@@ -17,6 +17,7 @@ import type { SettingsStore } from "../settings/SettingsStore";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { PiRpcClient } from "./PiRpcClient";
 import { normalizePiRpcModels } from "../../shared/piCompatibility";
+import { appendWslEnvName } from "./wslEnvNames";
 
 /** 全局缓存：模型列表（null = 未加载/已失效） */
 let cachedListModels: AvailableModel[] | null = null;
@@ -157,8 +158,17 @@ async function runPiRpcModelList(
 		settings.piBoltPath,
 	);
 	const invocation = piLocator.createInvocation(command, MODEL_LIST_RPC_ARGS);
+	const env = { ...piLocator.createProcessEnv(settings, invocation.pathPrefix, invocation.wsl) };
+	// 与 Agent 进程的 --offline 策略一致（piRpcOffline 默认开启）：跳过启动期的模型目录联网刷新，
+	// 既加快列表子进程，也让下拉列表与 Agent 实际可用的模型集合一致。用环境变量而非 --offline
+	// 参数：auto 模式下无法确定是否 Rust 实现，未知参数会让其启动失败，而未知环境变量只会被忽略。
+	if (settings.piRpcOffline !== false) {
+		env.PI_OFFLINE = "1";
+		// wsl.exe 只转发 WSLENV 登记的变量；值是纯字符串，不加 /p。
+		if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, "PI_OFFLINE");
+	}
 	const child = spawn(invocation.command, invocation.args, {
-		env: piLocator.createProcessEnv(settings, invocation.pathPrefix, invocation.wsl),
+		env,
 		shell: invocation.shell,
 		windowsHide: true,
 		windowsVerbatimArguments: invocation.windowsVerbatimArguments,
@@ -168,6 +178,18 @@ async function runPiRpcModelList(
 	// the pipe even though the model-list result only needs stdout.
 	child.stderr.on("data", () => undefined);
 	const client = new PiRpcClient(child.stdin, child.stdout);
+	// spawn 失败（ENOENT 等）与提前退出都是异步事件：没有 error 监听会升级成未捕获异常，
+	// 没有 exit 监听则请求要空等 20s 超时才回退文本路径。两者都立即关闭客户端使请求失败。
+	const onError = (error: Error) => client.close(error);
+	const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+		client.close(new Error(`pi model-list process exited: code=${code ?? "null"}, signal=${signal ?? "null"}`));
+	// 进程已退出后再写 stdin 会得到 EPIPE；结果由 exit/超时路径负责，这里只阻止崩溃。
+	const onStdinError = () => undefined;
+	// 监听不在 finally 里卸载：kill 之后仍可能异步上报 error/EPIPE，卸掉会变成未捕获异常；
+	// 它们只挂在本函数独占的 child 上，跟随子进程对象一起释放，对已关闭的客户端再 close 是空操作。
+	child.on("error", onError);
+	child.once("exit", onExit);
+	child.stdin.on("error", onStdinError);
 	try {
 		const response = await client.request({ type: "get_available_models" }, 20_000);
 		if (!response.success) throw new Error(response.error ?? "get_available_models failed");

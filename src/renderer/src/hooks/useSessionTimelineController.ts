@@ -1384,6 +1384,10 @@ export function useSessionTimelineController(options: {
   // 若补偿后 scrollTop ≤ 阈值会连锁加载下一页；programmaticScrollRef 抑制此类事件，
   // 只响应用户真实滚动（滚到顶才翻一页，停在顶部不动不连翻）。
   const lastHistoryLoadAtRef = useRef(0);
+  // The loader closes over messages/revisions; keep it current without reattaching scroll
+  // listeners on every delta. Policy inputs below remain real effect dependencies.
+  const loadMoreMessagesRef = useRef(loadMoreMessages);
+  loadMoreMessagesRef.current = loadMoreMessages;
   useEffect(() => {
     if (!controllerEnabled) return;
     const timeline = timelineRef.current;
@@ -1401,11 +1405,11 @@ export function useSessionTimelineController(options: {
       const now = Date.now();
       if (now - lastHistoryLoadAtRef.current < HISTORY_AUTO_LOAD_COOLDOWN_MS) return;
       lastHistoryLoadAtRef.current = now;
-      loadMoreMessages();
+      loadMoreMessagesRef.current();
     };
     timeline.addEventListener("scroll", onScroll, { passive: true });
     return () => timeline.removeEventListener("scroll", onScroll);
-  }, [controllerEnabled, diskPage, historyHasMore, isLoadingMessagePage, loadMoreMessages, timelineRef]);
+  }, [controllerEnabled, diskPage, historyHasMore, isLoadingMessagePage, timelineRef]);
 
   useLayoutEffect(() => {
     if (!controllerEnabled) return;

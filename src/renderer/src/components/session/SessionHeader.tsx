@@ -1,9 +1,9 @@
 import { HatGlasses, Maximize2 } from "lucide-react";
 import { useAtomValue } from "jotai";
-import { type ReactNode, type RefObject } from "react";
+import { useMemo, type ReactNode, type RefObject } from "react";
 import type { AgentRuntimeState } from "../../../../shared/types";
 import {
-  sessionCacheStatsAtom,
+  sessionCacheStatsBySessionIdAtom,
   sessionRecordByIdAtomFamily,
   sessionRuntimeBySessionIdAtomFamily,
   sessionSendStateAtomFamily,
@@ -71,7 +71,8 @@ export function SessionHeader(props: SessionHeaderProps) {
   const session = useAtomValue(sessionRecordByIdAtomFamily(sessionId));
   const runtime = useAtomValue(sessionRuntimeBySessionIdAtomFamily(sessionId));
   // 会话级缓存命中率历史（统计快照由 runtime 事件写入 atom），供状态入口展示。
-  const cacheStats = useAtomValue(sessionCacheStatsAtom);
+  const cacheStatsAtom = useMemo(() => sessionCacheStatsBySessionIdAtom(sessionId), [sessionId]);
+  const cacheStats = useAtomValue(cacheStatsAtom);
   // 与 SessionMessageTimeline / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
   const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
 
@@ -103,7 +104,7 @@ export function SessionHeader(props: SessionHeaderProps) {
       )}
       {sessionId ? <ContextControllerSwitches sessionId={sessionId} /> : null}
       <div className="shrink-0">
-        <SessionStatus state={runtimeState} duration={props.duration} cacheHitHistory={cacheStats[sessionId]?.cacheHitHistory} />
+        <SessionStatus state={runtimeState} duration={props.duration} cacheHitHistory={cacheStats?.cacheHitHistory} />
       </div>
     </div>
   );

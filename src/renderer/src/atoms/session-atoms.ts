@@ -1634,6 +1634,12 @@ function applySessionRuntimeUiEvent(
   }
   if (request.method === "setWidget") {
     const widgetKey = request.widgetKey || request.requestId;
+    const previousLines = base.widgets[widgetKey];
+    const nextLines = request.widgetLines;
+    // Status widgets often resend identical text on each delta; do not wake every UI consumer.
+    if (nextLines?.length
+      ? previousLines?.length === nextLines.length && nextLines.every((line, index) => line === previousLines[index])
+      : previousLines === undefined) return base;
     const widgets = { ...base.widgets };
     if (request.widgetLines?.length) widgets[widgetKey] = request.widgetLines;
     else delete widgets[widgetKey];
@@ -2101,7 +2107,7 @@ export const applySessionRuntimeEventAtom = atom(
           bindingChanged,
         )
       : undefined;
-    if (nextUi) {
+    if (nextUi && nextUi !== get(sessionRuntimeUiByIdAtom)[event.sessionId]) {
       set(sessionRuntimeUiByIdAtom, {
         ...get(sessionRuntimeUiByIdAtom),
         [event.sessionId]: nextUi,

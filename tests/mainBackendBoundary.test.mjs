@@ -65,7 +65,7 @@ function loadRegisterBackendRpc() {
 		"../ipc/scratchPadIpc": ipcModule("registerScratchPadIpc"),
 		"../ipc/securityIpc": ipcModule("registerSecurityIpc"),
 		"../ipc/visionIpc": ipcModule("registerVisionIpc"),
-		"../ipc/sessionIpc": { ...ipcModule("registerSessionIpc"), scheduleCatalogBackgroundScan: () => true },
+		"../ipc/sessionIpc": { ...ipcModule("registerSessionIpc"), scheduleCatalogBackgroundScan: () => true, disposeCatalogBackgroundScans: () => {} },
 		"../ipc/gitIpc": ipcModule("registerGitIpc"),
 		"../ipc/systemIpc": ipcModule("registerSystemIpc"),
 		"../ipc/storeIpc": ipcModule("registerStoreIpc"),
@@ -81,7 +81,7 @@ function loadRegisterBackendRpc() {
 	const { registerBackendRpc } = loadTsCommonJs("src/main/backend/registerBackendRpc.ts", {
 		stubs,
 		// 预扫描/模型预取是延迟定时器；换成只记录的假定时器，既不真等也不泄漏。
-		globals: { setTimeout: (callback, delay) => { timers.push({ callback, delay }); return { unref() {} }; } },
+		globals: { setTimeout: (callback, delay) => { timers.push({ callback, delay }); return { unref() {} }; }, clearTimeout: () => {} },
 	});
 	return { registerBackendRpc, registrations, disposed, timers, deep: recorder.deep };
 }

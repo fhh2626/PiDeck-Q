@@ -55,6 +55,34 @@ test("concurrent triggers for the same project collapse into one running scan + 
   coordinator.dispose();
 });
 
+test("the pending rerun executes the most recently scheduled task", async () => {
+  // 用户展开项目时的任务会推送刷新；它排在预扫描之后时不能被旧任务替换掉。
+  const coordinator = new BackgroundScanCoordinator(0);
+  const ran = [];
+  let releaseFirst;
+  const gate = new Promise((r) => { releaseFirst = r; });
+  coordinator.schedule("p1", async () => { ran.push("prewarm"); await gate; });
+  await sleep(5);
+  coordinator.schedule("p1", async () => { ran.push("stale"); });
+  coordinator.schedule("p1", async () => { ran.push("latest"); });
+  releaseFirst();
+  await sleep(20);
+  assert.deepEqual(ran, ["prewarm", "latest"]);
+  coordinator.dispose();
+});
+
+test("dispose during a cooldown wait leaves the project schedulable again", async () => {
+  const coordinator = new BackgroundScanCoordinator(1000);
+  let runs = 0;
+  coordinator.schedule("p1", async () => { runs += 1; });
+  coordinator.dispose();
+  // 被取消的延迟扫描不能永久占着「扫描中」，否则重建后端后该项目再也不会扫描。
+  assert.equal(coordinator.schedule("p1", async () => { runs += 10; }), true);
+  coordinator.dispose();
+  await sleep(20);
+  assert.equal(runs, 0);
+});
+
 test("different projects scan independently", async () => {
   const coordinator = new BackgroundScanCoordinator(0);
   const ran = [];

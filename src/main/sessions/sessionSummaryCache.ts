@@ -7,7 +7,7 @@
  * - 写盘采用 debounce + 原子 rename，失败静默（缓存失效只是慢，不能影响主流程）
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { renameWithRetry } from "../utils/fsRetry";
@@ -33,11 +33,15 @@ interface DiskCacheFile<V> {
  * Bump for interpretation changes as well as field changes; unchanged mtime cannot repair them. */
 const DISK_SCHEMA_VERSION = 4;
 const SAVE_DEBOUNCE_MS = 800;
+/** 进程内 tmp 文件序号：同一进程的多个缓存实例/多次写盘不共用 tmp，避免互相截断。 */
+let tmpSequence = 0;
 
 export class SessionSummaryCache<V> {
   private readonly store = new Map<string, CacheEntry<V>>();
   private readonly filePath: string;
   private dirty = false;
+  /** 每次标脏递增；写盘完成时序号未变才能清 dirty，写盘期间的修改留待下次写盘。 */
+  private mutationSeq = 0;
   private saveTimer: NodeJS.Timeout | null = null;
   private loadPromise: Promise<void> | null = null;
   private loaded = false;
@@ -140,6 +144,7 @@ export class SessionSummaryCache<V> {
 
   private markDirty(): void {
     this.dirty = true;
+    this.mutationSeq += 1;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -170,19 +175,22 @@ export class SessionSummaryCache<V> {
   }
 
   private async saveToDisk(): Promise<void> {
-    if (!this.dirty) return;
-    // 串行化写盘，避免并发 rename 踩踏
-    if (this.saving) {
+    // 串行化写盘，避免并发 rename 踩踏。多个等待者在同一次写盘后会同时醒来，
+    // 因此用循环重新检查：只有抢到空闲槽位的那个发起下一次写盘，其余继续等它。
+    while (this.saving) {
       await this.saving;
-      if (!this.dirty) return;
     }
-    this.saving = this.writeAtomic().finally(() => {
-      this.saving = null;
+    if (!this.dirty) return;
+    const saving = this.writeAtomic().finally(() => {
+      if (this.saving === saving) this.saving = null;
     });
-    await this.saving;
+    this.saving = saving;
+    await saving;
   }
 
   private async writeAtomic(): Promise<void> {
+    const seq = this.mutationSeq;
+    const tmpPath = `${this.filePath}.${process.pid}.${++tmpSequence}.tmp`;
     try {
       const entries: Record<string, CacheEntry<V>> = {};
       for (const [path, entry] of this.store) {
@@ -194,13 +202,14 @@ export class SessionSummaryCache<V> {
       };
       const dir = dirname(this.filePath);
       await mkdir(dir, { recursive: true });
-      const tmpPath = `${this.filePath}.${process.pid}.tmp`;
       await writeFile(tmpPath, JSON.stringify(payload), "utf8");
       // 杀软扫描可能瞬时锁住刚写出的 tmp，rename 走退避重试；仍失败保留 dirty 下次再写
       await renameWithRetry(tmpPath, this.filePath);
-      this.dirty = false;
+      // 快照在第一个 await 前生成；写盘期间又有修改时保持 dirty（其定时器会再写一次）。
+      if (this.mutationSeq === seq) this.dirty = false;
     } catch {
-      // 写盘失败保留 dirty，下次 set/flush 再试
+      // 写盘失败保留 dirty，下次 set/flush 再试；序号唯一的 tmp 不会被后续写盘覆盖，顺手清掉。
+      await unlink(tmpPath).catch(() => undefined);
     }
   }
 }

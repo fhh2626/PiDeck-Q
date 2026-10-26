@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
-import { createStore } from "jotai/vanilla";
+import { atom, createStore } from "jotai/vanilla";
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -506,6 +506,7 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
 
   const controllerModule = compileModule("src/renderer/src/hooks/useSessionRuntimeController.ts", {
     jotai: {
+      atom,
       useAtomValue: (anAtom) => {
         if (anAtom && typeof anAtom.read === "function") {
           return anAtom.read((a) => store.get(a));

@@ -4,6 +4,7 @@ import { writeFileAtomic } from "../utils/atomicWriteFile";
 import { ipcChannels } from "../../shared/ipc";
 import type { AppLogger } from "../logging/AppLogger";
 import type { PiLocator } from "../pi/PiLocator";
+import { PiProcess } from "../pi/PiProcess";
 import type { ProjectStore } from "../projects/ProjectStore";
 import type { ConfigManager } from "../config/ConfigManager";
 import type { SessionScanner } from "../sessions/SessionScanner";
@@ -266,6 +267,19 @@ export function startBackendStartupTasks(deps: BackendStartupTasksDeps): void {
 				console.error("Failed to migrate legacy built-in extensions:", error);
 			}),
 	);
+
+	// 预热 PiProcess 的 --version 缓存：首个 Agent 启动时即可按实际实现附加 --offline 与独立运行时标记（Pi-Bolt），
+	// 显式选择运行时也不必在首次 spawn 前同步等待探测。等 WSL 环境解析后再做，
+	// 避免与上面的 wsl.exe 调用抢启动时间；失败只影响缓存命中，记日志即可。
+	if (piLocator) {
+		void wslEnvPromise
+			.then(() => PiProcess.warmVersionCache(settingsStore.get(), piLocator))
+			.catch((error) => {
+				void appLogger.warn("pi-process", "Pi version cache warm-up failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+	}
 
 	void wslEnvPromise
 		.then((wslEnv) => ensureAllPiSettingsDefaults(agentDirsOf(wslEnv), piLocator, settingsStore))

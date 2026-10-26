@@ -22,12 +22,21 @@ function loadSandboxed(filePath) {
 	return sandbox.exports;
 }
 
+let nextFakePid = 4_000;
+
 function createChildProcess() {
 	const child = new EventEmitter();
 	child.stdin = new PassThrough();
 	child.stdout = new PassThrough();
 	child.stderr = new PassThrough();
-	child.kill = () => true;
+	child.pid = nextFakePid++;
+	/** 按时间顺序记录生命周期动作，供断言「先关 stdin 再 kill」。 */
+	child.actions = [];
+	child.stdin.on("finish", () => child.actions.push("stdin-end"));
+	child.kill = () => {
+		child.actions.push("kill");
+		return true;
+	};
 	return child;
 }
 
@@ -37,11 +46,23 @@ function createChildProcess() {
  * - `spawnCalls` 收集每次 spawn 的 command/args/options，供断言最终启动参数与环境。
  * - `versionOutput` 是 `pi --version` 的伪输出；信任标志与运行时识别都依赖它，
  *   所以测试可以用真实的 Pi / Pi-Bolt 版本串验证分支，而不启动真实进程。
+ * - `timers` 替换 setTimeout/clearTimeout（停止宽限期等），`platform` 覆盖 process.platform，
+ *   `execCalls` 收集非版本探测的 execFile 调用（如 taskkill）。
  */
-export function loadPiProcess(spawnCalls, { versionOutput = "0.81.1\n", versionGate, versionResult, now = Date.now } = {}) {
+export function loadPiProcess(spawnCalls, {
+	versionOutput = "0.81.1\n",
+	versionGate,
+	versionResult,
+	now = Date.now,
+	timers = { setTimeout, clearTimeout },
+	platform,
+	execCalls = [],
+} = {}) {
 	const paths = loadSandboxed("src/main/wsl/WslPaths.ts");
 	const extensionFilter = loadSandboxed("src/main/pi/piExtensionFilter.ts");
 	const compatibility = loadSandboxed("src/shared/piCompatibility.ts");
+	const wslEnvNames = loadSandboxed("src/main/pi/wslEnvNames.ts");
+	const terminate = loadSandboxed("src/main/process/terminateChildProcess.ts");
 	class FakeRpcClient extends EventEmitter {
 		close() {}
 	}
@@ -51,13 +72,20 @@ export function loadPiProcess(spawnCalls, { versionOutput = "0.81.1\n", versionG
 		console: { log() {}, warn() {}, error() {} },
 		Date: class extends Date { static now() { return now(); } },
 		exports: {},
-		process,
+		process: platform ? { ...process, platform } : process,
+		setTimeout: timers.setTimeout,
+		clearTimeout: timers.clearTimeout,
 		require: (id) => {
 			if (id === "node:child_process") {
 				return {
 					// 真实 execFile 的回调一定异步。PiProcess 先执行 execFile 再写入 pending 缓存，
 					// 同步回调会让 "done" 被随后的 "pending" 覆盖，从而永远读不到版本。
 					execFile: (_command, _args, _options, callback) => {
+						if (_command === "taskkill") {
+							execCalls.push({ command: _command, args: [..._args] });
+							setImmediate(() => callback(null, "", ""));
+							return new EventEmitter();
+						}
 						// versionGate（可选 Promise）模拟一次迟迟不返回的 --version 探测：放行前回调不触发。
 						const deliver = () => {
 							const result = versionResult?.() ?? { error: null, stdout: versionOutput };
@@ -79,6 +107,8 @@ export function loadPiProcess(spawnCalls, { versionOutput = "0.81.1\n", versionG
 			if (id === "../../shared/piCompatibility") return compatibility;
 			if (id === "../wsl/WslPaths") return paths;
 			if (id === "./piExtensionFilter") return extensionFilter;
+			if (id === "./wslEnvNames") return wslEnvNames;
+			if (id === "../process/terminateChildProcess") return terminate;
 			// 25fd516 起 PiProcess 引入内置扩展参数拼接；这些测试只关心路径转换与运行时参数，
 			// mock 为原样透传，避免 vm sandbox 的 require 按 tests/ 相对路径误解析。
 			if (id === "../extensions/builtInExtensions") {

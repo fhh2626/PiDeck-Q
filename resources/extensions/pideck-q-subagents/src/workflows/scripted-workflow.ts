@@ -151,6 +151,45 @@ function trackedPromiseTarget(value) {
   return value && (typeof value === "object" || typeof value === "function") ? trackedPromiseTargets.get(value) ?? value : value;
 }
 
+// Native thenable assimilation runs outside workflow-script.js and, without V8 hooks,
+// would consume a returned child's proxy as if it were awaited. Adopt explicitly so
+// the enclosing chain owns every dependency, including nested asynchronous thenables.
+function adoptTrackedValue(value, tracker) {
+  const dependency = promiseObservationTracker(value);
+  if (dependency) {
+    addTrackerDependency(tracker, dependency);
+    return trackedPromiseTarget(value);
+  }
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+  const then = value.then;
+  if (typeof then !== "function") {
+    // Passing the same value to native resolve would read an accessor twice. This
+    // uncommon accessor shape cannot be adopted faithfully by the tracking facade;
+    // reject explicitly rather than repeat arbitrary getter side effects silently.
+    for (let owner = value; owner; owner = Object.getPrototypeOf(owner)) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, "then");
+      if (!descriptor) continue;
+      if (descriptor.get) throw new Error("workflowScript cannot track a non-callable then accessor. Use an ordinary value or a callable thenable.");
+      break;
+    }
+    return value;
+  }
+  return new Promise((resolve, reject) => {
+    queueMicrotask(() => {
+      let settled = false;
+      const rejectOnce = (error) => { if (!settled) { settled = true; reject(error); } };
+      try {
+        Reflect.apply(then, value, [(next) => {
+          if (settled) return;
+          settled = true;
+          try { resolve(adoptTrackedValue(next, tracker)); }
+          catch (error) { reject(error); }
+        }, rejectOnce]);
+      } catch (error) { rejectOnce(error); }
+    });
+  });
+}
+
 function addTrackedObservations(tracker, observations) {
   tracker.observations = mergeObservations(tracker.observations, observations);
   if (!tracker.consumed) return;
@@ -197,8 +236,7 @@ function trackObservationTracker(tracker, promise, allowFutureObservations = fal
             // Native Promise callbacks receive undefined, never the worker's
             // global object (which a sloppy wrapper would receive as its this).
             const value = Reflect.apply(handler, undefined, args);
-            addTrackerDependency(chainTracker, promiseObservationTracker(value));
-            return trackedPromiseTarget(value);
+            return adoptTrackedValue(value, chainTracker);
           }
           : handler;
         return trackObservationTracker(chainTracker, Reflect.apply(promiseTarget[prop], promiseTarget, handlers.map(wrapHandler)), true);
@@ -218,11 +256,33 @@ function trackRunObservation(observations, promise) {
 }
 
 function trackPromiseCombinator(items, createPromise) {
-  const values = Array.from(items);
-  const dependencies = [...new Set(values.map(promiseObservationTracker).filter(Boolean))];
-  const promise = withSuppressedNativePromiseConsumption(() => createPromise(values.map(trackedPromiseTarget)));
+  const tracker = { observations: [], consumed: false, dependencies: [] };
+  let promise;
+  try {
+    // Let the native combinator drive iteration and observe each adopted item
+    // before asking for the next. Eagerly collecting first would leave earlier
+    // rejections unhandled if the iterator later throws.
+    promise = withSuppressedNativePromiseConsumption(() => createPromise({
+      *[Symbol.iterator]() {
+        for (const value of items) {
+          let adopted;
+          try {
+            adopted = adoptTrackedValue(value, tracker);
+          } catch (error) {
+            // A bad then getter rejects this item, not the entire combinator:
+            // allSettled/any/race must still apply their native settlement rules.
+            adopted = Promise.reject(error);
+          }
+          yield adopted;
+        }
+      },
+    }));
+  } catch (error) {
+    // Combinator setup failures reject instead of throwing synchronously.
+    promise = Promise.reject(error);
+  }
   // An initially empty chain can acquire a child from a later callback.
-  return trackObservationTracker({ observations: [], consumed: false, dependencies }, promise, true);
+  return trackObservationTracker(tracker, promise, true);
 }
 
 // Do not proxy the native constructor: Pi-Bolt fixes its static methods, and
@@ -243,8 +303,8 @@ const workflowPromise = new Proxy(function WorkflowPromise() { "use strict"; }, 
         executor((value) => {
           if (settled) return;
           settled = true;
-          addTrackerDependency(tracker, promiseObservationTracker(value));
-          resolve(trackedPromiseTarget(value));
+          try { resolve(adoptTrackedValue(value, tracker)); }
+          catch (error) { reject(error); }
         }, (reason) => {
           if (settled) return;
           settled = true;
@@ -265,11 +325,7 @@ const workflowPromise = new Proxy(function WorkflowPromise() { "use strict"; }, 
     if (prop === "allSettled") return (items) => trackPromiseCombinator(items, (values) => target.allSettled(values));
     if (prop === "race") return (items) => trackPromiseCombinator(items, (values) => target.race(values));
     if (prop === "any") return (items) => trackPromiseCombinator(items, (values) => target.any(values));
-    if (prop === "resolve") return (value) => {
-      const dependency = promiseObservationTracker(value);
-      const promise = withSuppressedNativePromiseConsumption(() => target.resolve(trackedPromiseTarget(value)));
-      return trackObservationTracker({ observations: [], consumed: false, dependencies: dependency ? [dependency] : [] }, promise, true);
-    };
+    if (prop === "resolve") return (value) => new workflowPromise(resolve => resolve(value));
     if (prop === "reject") return (reason) => trackObservationTracker({ observations: [], consumed: false, dependencies: [] }, target.reject(reason), true);
     if (prop === "withResolvers" && typeof target[prop] === "function") return () => {
       let resolve, reject;

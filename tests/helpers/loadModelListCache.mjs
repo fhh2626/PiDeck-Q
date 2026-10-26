@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { PassThrough } from "node:stream";
 import ts from "typescript";
 import vm from "node:vm";
+import { loadTsCommonJs } from "./loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -32,8 +33,11 @@ function loadSandboxed(filePath, sandboxExtras = {}, requireOverride = () => und
  *
  * `rpcResponses` / `textOutputs` 是“按调用顺序消费”的队列，用完后重复最后一项；
  * 响应为 Error 实例时表示该次调用失败；RPC 响应可以是返回 Promise 的函数，用来挂起在途请求。
+ *
+ * `realRpcClient: true` 时改用真实 PiRpcClient（读写假子进程的 stdio），配合 `onSpawn(child)`
+ * 脚本化子进程行为（发 error/exit、写 stdout），用于验证进程生命周期处理。
  */
-export function loadModelListCache({ rpcResponses = [], textOutputs = [] } = {}) {
+export function loadModelListCache({ rpcResponses = [], textOutputs = [], realRpcClient = false, onSpawn } = {}) {
 	const calls = { spawn: [], execFile: [], resolveCommand: [], delays: [] };
 	let rpcIndex = 0;
 	let textIndex = 0;
@@ -61,7 +65,8 @@ export function loadModelListCache({ rpcResponses = [], textOutputs = [] } = {})
 				child.killed = true;
 				return true;
 			};
-			calls.spawn.push({ command, args, options });
+			calls.spawn.push({ command, args, options, child });
+			onSpawn?.(child);
 			return child;
 		},
 		execFile: (command, args, options, callback) => {
@@ -82,8 +87,11 @@ export function loadModelListCache({ rpcResponses = [], textOutputs = [] } = {})
 		{ setTimeout: (fn, delay) => { calls.delays.push(delay); return setImmediate(fn); } },
 		(id) => {
 			if (id === "node:child_process") return childProcess;
-			if (id === "./PiRpcClient") return { PiRpcClient: FakeRpcClient };
+			if (id === "./PiRpcClient") {
+				return realRpcClient ? loadTsCommonJs("src/main/pi/PiRpcClient.ts") : { PiRpcClient: FakeRpcClient };
+			}
 			if (id === "../../shared/piCompatibility") return piCompatibility;
+			if (id === "./wslEnvNames") return loadTsCommonJs("src/main/pi/wslEnvNames.ts");
 			return undefined;
 		},
 	);

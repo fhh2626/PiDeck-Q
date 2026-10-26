@@ -12,6 +12,9 @@ export async function startCreateBackendHarness({
 	refreshModelList = async () => {},
 	beforeCreate,
 	afterCreate,
+	// 可选：捕获 host.sendToRenderer 的广播，以及替换 session runtime bridge 替身。
+	sendToRenderer = () => {},
+	runtimeBridge = {},
 } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "pideck-l4-backend-"));
 	let backend;
@@ -70,11 +73,16 @@ export async function startCreateBackendHarness({
 		},
 	};
 	const agentManagerArgs = [];
+	const agentOutputListeners = [];
 	stubs["../pi/AgentManager"] = {
 		AgentManager: class extends InertService {
 			constructor(...args) {
 				super();
 				agentManagerArgs.push(args);
+			}
+			onOutput(listener) {
+				agentOutputListeners.push(listener);
+				return () => {};
 			}
 		},
 	};
@@ -83,7 +91,7 @@ export async function startCreateBackendHarness({
 	stubs["../settings/DesktopProxy"] = { applyDesktopProxy: async () => {} };
 	stubs["../pi/modelListCache"] = { fetchModelList: async () => [], refreshModelList };
 	stubs["../ipc/projectsIpc"] = { listVisibleProjects: (store) => store.list() };
-	stubs["./sessionRuntimeBridge"] = { createSessionRuntimeBridge: () => ({}) };
+	stubs["./sessionRuntimeBridge"] = { createSessionRuntimeBridge: () => runtimeBridge };
 	stubs["./registerBackendRpc"] = { registerBackendRpc: () => () => {} };
 	stubs["./backendStartupTasks"] = { startBackendStartupTasks() {} };
 
@@ -91,7 +99,7 @@ export async function startCreateBackendHarness({
 	if (beforeCreate) await beforeCreate();
 	backend = await createBackend({
 		router: {},
-		host: { sendToRenderer() {} },
+		host: { sendToRenderer },
 		platform: {
 			paths: { home: root, userData: root, appPath: root, resourcesPath: root, downloads: root },
 			application: { hideApplicationMenu() {}, getLocale: () => "en-US", name: "test", version: "0.4.0", isPackaged: false },
@@ -101,6 +109,7 @@ export async function startCreateBackendHarness({
 	if (afterCreate) await afterCreate(backend);
 	return {
 		agentManagerArgs,
+		agentOutputListeners,
 		scanners,
 		dispose: cleanup,
 	};

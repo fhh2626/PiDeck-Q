@@ -46,7 +46,7 @@ const NO_LIVE_TEXT_ATOM = atom(false);
 const NO_STREAMING_MSG_ID_ATOM = atom("");
 /** sessionId 为空时的占位 atom：恒 0（无会话不订阅新一轮信号）。 */
 const NO_TURN_TICK_ATOM = atom(0);
-/** sessionId 为空时的占位 atom：恒 undefined（无会话不订阅 UI 请求）。 */
+/** 历史轮/无会话不订阅运行时 UI：只有最后一轮消费 pending Ask。 */
 const NO_RUNTIME_UI_ATOM = atom<SessionRuntimeUiState | undefined>(undefined);
 
 /**
@@ -116,7 +116,7 @@ export const TurnRow = memo(
 		(isComplete && !isRunLive && duration > 0) || (isRunLive && run.startedAt > 0);
 
 	const runtimeUi = useAtomValue(
-		props.sessionId
+		props.sessionId && props.isLastAgentRun
 			? sessionRuntimeUiBySessionIdAtomFamily(props.sessionId)
 			: NO_RUNTIME_UI_ATOM,
 	);

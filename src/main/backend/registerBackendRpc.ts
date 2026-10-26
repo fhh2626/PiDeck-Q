@@ -45,7 +45,8 @@ import { registerProjectsIpc } from "../ipc/projectsIpc";
 import { registerScratchPadIpc } from "../ipc/scratchPadIpc";
 import { registerSecurityIpc } from "../ipc/securityIpc";
 import { registerVisionIpc } from "../ipc/visionIpc";
-import { registerSessionIpc, scheduleCatalogBackgroundScan } from "../ipc/sessionIpc";
+import { registerSessionIpc } from "../ipc/sessionIpc";
+import { CatalogScanScope } from "../sessions/CatalogScanScope";
 import { registerGitIpc } from "../ipc/gitIpc";
 import { registerSystemIpc } from "../ipc/systemIpc";
 import { registerStoreIpc } from "../ipc/storeIpc";
@@ -202,7 +203,9 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 		log: (message, ...args) => appLogger.info("vision", message, ...args),
 	});
 
+	const catalogScans = new CatalogScanScope();
 	registerSessionIpc(router, {
+		catalogScans,
 		projectStore,
 		settingsStore,
 		sessionScanner,
@@ -234,11 +237,24 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 	// 延迟 3s 启动、项目间错开 1.5s 逐个调度后台扫描：预热 catalog 缓存，
 	// 用户首次展开项目时直接命中缓存回显，不再同步全量扫描卡 UI。
 	// 错开 + 协调器去重/冷却（sessionIpc 内）保证不与用户触发的扫描并发重扫。
-	const prewarmTimer = setTimeout(() => {
+	// 所有预扫描定时器登记在 startupTimers，由本函数返回的 disposer 清理；已排队到协调器的
+	// 任务在 disposed 后直接返回，避免后端释放（或重建）后旧服务继续扫描/写 catalog。
+	let disposed = false;
+	const startupTimers = new Set<ReturnType<typeof setTimeout>>();
+	const startupTimeout = (callback: () => void, delayMs: number): void => {
+		const timer = setTimeout(() => {
+			startupTimers.delete(timer);
+			if (!disposed) callback();
+		}, delayMs);
+		timer.unref?.();
+		startupTimers.add(timer);
+	};
+	startupTimeout(() => {
 		const projects = projectStore.list();
 		projects.forEach((project, index) => {
-			const timer = setTimeout(() => {
-				scheduleCatalogBackgroundScan(project.id, async () => {
+			startupTimeout(() => {
+				catalogScans.schedule(project.id, async () => {
+					if (disposed) return;
 					try {
 						const settings = settingsStore.get();
 						let projectPath = project.path;
@@ -248,6 +264,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 								.replace(/\\/g, "/");
 						}
 						const summaries = await sessionScanner.list(projectPath);
+						if (disposed) return;
 						await sessionCatalog.mergeScanned(
 							project.id,
 							summaries,
@@ -261,10 +278,8 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 					}
 				});
 			}, index * 1500);
-			timer.unref?.();
 		});
 	}, 3000);
-	prewarmTimer.unref?.();
 
 	const disposeGit = registerGitIpc(router, {
 		appLogger,
@@ -350,7 +365,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 	// 使用户首次打开模型/思考选择器时不需要等待 fork pi 进程。
 	// 已有缓存或在途请求时不会重复 fork。
 	if (typeof piLocator !== "undefined" && typeof settingsStore !== "undefined") {
-		setTimeout(() => {
+		startupTimeout(() => {
 			if (!getCachedModelList()) {
 				void fetchModelList(piLocator, settingsStore).catch(() => {
 					// 预取失败静默；用户首次点击选择器时会自动重试。
@@ -381,5 +396,12 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 		if (typeof id !== "string" || id.length === 0 || id.length > 128) return;
 		host.acknowledgeFocusTarget(id);
 	});
-	return () => disposeGit();
+	return () => {
+		disposed = true;
+		for (const timer of startupTimers) clearTimeout(timer);
+		startupTimers.clear();
+		// 取消协调器里仍在冷却等待的后台目录扫描（用户触发与预扫描共用同一协调器）。
+		catalogScans.dispose();
+		disposeGit();
+	};
 }

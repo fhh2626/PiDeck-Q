@@ -13,6 +13,23 @@ import {
 	type SessionImportCopy,
 } from "./SessionImportCopy";
 
+/** 扫描时同时读取/解析的 Claude 会话上限：项目下数百个大 JSONL 时避免一次性全部读入内存。 */
+const SCAN_CONCURRENCY = 8;
+
+/** 保序并发映射：最多 limit 个任务同时进行；worker 内异常由调用方自行在 mapper 里捕获。 */
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array<R>(items.length);
+	let next = 0;
+	const worker = async (): Promise<void> => {
+		while (next < items.length) {
+			const index = next++;
+			results[index] = await mapper(items[index]);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	return results;
+}
+
 type ParsedClaudeSession = {
 	meta: {
 		sessionId: string;
@@ -42,17 +59,15 @@ export class ClaudeSessionImporter {
 	async scan(projectPath: string): Promise<ClaudeSessionSummary[]> {
 		const projectDir = this.getClaudeProjectDir(projectPath);
 		const files = await this.collectJsonl(projectDir).catch(() => []);
-		const sessions = await Promise.all(
-			files.map((file) => this.readClaudeSession(file).catch(() => null)),
-		);
+		// 读取与转摘要放在同一个受限任务里：解析后的 entries 只在本任务内存活，内存峰值随并发数而非文件数增长。
+		const summaries = await mapWithConcurrency(files, SCAN_CONCURRENCY, async (file) => {
+			const session = await this.readClaudeSession(file).catch(() => null);
+			return session ? this.toSummary(session, projectPath) : null;
+		});
 
-		const summaries = await Promise.all(
-			sessions
-				.filter((session): session is ParsedClaudeSession => Boolean(session))
-				.map((session) => this.toSummary(session, projectPath)),
-		);
-
-		return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+		return summaries
+			.filter((summary): summary is ClaudeSessionSummary => Boolean(summary))
+			.sort((a, b) => b.updatedAt - a.updatedAt);
 	}
 
 	async import(projectPath: string, sourcePaths: string[]): Promise<ClaudeImportReport> {
@@ -323,10 +338,17 @@ export class ClaudeSessionImporter {
 	private async readClaudeSession(filePath: string): Promise<ParsedClaudeSession> {
 		this.assertClaudeSourcePath(filePath);
 		const [raw, info] = await Promise.all([readFile(filePath, "utf8"), stat(filePath)]);
-		const entries = raw
-			.split(/\r?\n/)
-			.filter(Boolean)
-			.map((line) => JSON.parse(line) as Record<string, any>);
+		// 截断/半行与非对象行逐行跳过，不让单个坏行使整份会话无法扫描/导入（与 pi 会话扫描一致）。
+		const entries: Array<Record<string, any>> = [];
+		for (const line of raw.split(/\r?\n/)) {
+			if (!line) continue;
+			try {
+				const parsed: unknown = JSON.parse(line);
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) entries.push(parsed);
+			} catch {
+				// 跳过坏行
+			}
+		}
 
 		// 从第一个 user 消息中提取元数据
 		const firstUserEntry = entries.find((e) => e.type === "user");
@@ -334,16 +356,23 @@ export class ClaudeSessionImporter {
 			throw new Error("Missing Claude session metadata");
 		}
 
-		const timestamps = entries
-			.filter((e) => e.timestamp)
-			.map((e) => new Date(e.timestamp).getTime());
+		// 循环求极值：超长会话的时间戳数组用 Math.min(...arr) 展开会触发 RangeError。
+		// 语义保持不变：空集为 ±Infinity，含无效日期时为 NaN（与原展开写法一致）。
+		let firstTimestamp = Number.POSITIVE_INFINITY;
+		let lastTimestamp = Number.NEGATIVE_INFINITY;
+		for (const entry of entries) {
+			if (!entry.timestamp) continue;
+			const time = new Date(entry.timestamp).getTime();
+			firstTimestamp = Math.min(firstTimestamp, time);
+			lastTimestamp = Math.max(lastTimestamp, time);
+		}
 
 		return {
 			meta: {
 				sessionId: firstUserEntry.sessionId,
 				cwd: firstUserEntry.cwd,
-				firstTimestamp: Math.min(...timestamps),
-				lastTimestamp: Math.max(...timestamps),
+				firstTimestamp,
+				lastTimestamp,
 			},
 			entries,
 			sourcePath: filePath,
