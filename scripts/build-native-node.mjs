@@ -12,7 +12,8 @@ if (process.version !== PINNED_NODE_VERSION) {
 const npmCli = process.env.npm_execpath
 	?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 // CI and release builds run this script under the pinned Node 24 toolchain;
-// rebuilding against the active Node ABI avoids restoring an Electron addon.
+// rerunning node-pty's install may select its host prebuild or compile for the
+// active Node ABI. Staging supports both layouts; rebuild does not force source compilation.
 await new Promise((resolve, reject) => {
 	const child = spawn(process.execPath, [npmCli, "rebuild", "node-pty"], {
 		stdio: "inherit",
