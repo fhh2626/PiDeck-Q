@@ -802,6 +802,151 @@ test("managed host-shell tools overrides update when the host backends change", 
 	}
 });
 
+test("managed host-shell tools overrides transition: known -> unknown -> known preserves ownership and state", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-tools-transition-"));
+	try {
+		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
+		const parentTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		];
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
+		const run = (hostShells, availability) => reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read", "bash", "powershell"],
+			platform: "win32",
+			shellPolicy: resolveEffectiveShellPolicy({
+				platform: "win32",
+				availability: availability ?? { bash: false, powershell: true },
+				parentTools,
+				parentActiveTools: ["read", "bash", "powershell"],
+			}),
+			hostShells,
+			changePiPromptPath,
+		});
+
+		// Phase 1: PowerShell-only known state
+		await run({ bash: false, powershell: true }, { bash: false, powershell: true });
+		const p1Settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		const p1Tools = p1Settings.subagents.agentOverrides.worker.tools;
+		assert.equal(p1Tools.includes("powershell"), true);
+		assert.equal(p1Tools.includes("bash"), false);
+
+		const managedMetaPath = join(tempDir, "change-pi-prompt", "managed-child-extensions.json");
+		const p1Meta = JSON.parse(readFileSync(managedMetaPath, "utf8"));
+		assert.ok(p1Meta.managedTools?.worker, "worker must be tracked as managedTools in metadata");
+		assert.deepEqual(p1Meta.managedTools?.worker, p1Tools);
+
+		// Phase 2: unknown state (hostShells: undefined)
+		await run(undefined, { bash: true, powershell: true }); // retention avail allows both, but known is undefined
+		const p2Settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		const p2Tools = p2Settings.subagents.agentOverrides.worker.tools;
+		// Tool list must remain completely identical to Phase 1
+		assert.deepEqual(p2Tools, p1Tools);
+		const p2Meta = JSON.parse(readFileSync(managedMetaPath, "utf8"));
+		assert.deepEqual(p2Meta.managedTools?.worker, p1Meta.managedTools?.worker, "managed ownership must be preserved across unknown phase");
+
+		// Phase 3: Bash-only known state
+		await run({ bash: true, powershell: false }, { bash: true, powershell: false });
+		const p3Settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		const p3Tools = p3Settings.subagents.agentOverrides.worker.tools;
+		assert.equal(p3Tools.includes("bash"), true);
+		assert.equal(p3Tools.includes("powershell"), false);
+		const p3Meta = JSON.parse(readFileSync(managedMetaPath, "utf8"));
+		assert.ok(p3Meta.managedTools?.worker, "worker remains managed after returning to known state");
+		assert.deepEqual(p3Meta.managedTools?.worker, p3Tools, "managedTools.worker must match p3Tools exactly");
+
+		// Non-shell tools content and order must remain completely identical across all 3 phases
+		const nonShell = tools => tools.filter(t => t !== "bash" && t !== "powershell");
+		assert.deepEqual(nonShell(p1Tools), nonShell(p2Tools));
+		assert.deepEqual(nonShell(p2Tools), nonShell(p3Tools));
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
+test("user-edited tools during unknown phase is never clobbered", async () => {
+	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-tools-user-unknown-"));
+	try {
+		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
+		const parentTools = [
+			{ name: "read", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "powershell", sourceInfo: { source: "builtin" } },
+		];
+		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
+		// Phase 1: Initial managed state
+		await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read", "powershell"],
+			platform: "win32",
+			shellPolicy: resolveEffectiveShellPolicy({
+				platform: "win32",
+				availability: { bash: false, powershell: true },
+				parentTools,
+				parentActiveTools: ["read", "powershell"],
+			}),
+			hostShells: { bash: false, powershell: true },
+			changePiPromptPath,
+		});
+
+		// User edits settings.json to custom list
+		const userCustomTools = ["read", "custom_tool"];
+		const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		settings.subagents.agentOverrides.worker.tools = userCustomTools;
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify(settings), "utf8");
+
+		// Phase 2: unknown state
+		await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read", "powershell"],
+			platform: "win32",
+			shellPolicy: resolveEffectiveShellPolicy({
+				platform: "win32",
+				availability: { bash: true, powershell: true },
+				parentTools,
+				parentActiveTools: ["read", "powershell"],
+			}),
+			hostShells: undefined,
+			changePiPromptPath,
+		});
+
+		let currentSettings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.deepEqual(currentSettings.subagents.agentOverrides.worker.tools, userCustomTools);
+
+		// Phase 3: Known state
+		await reconcileChildEnvironments({
+			agentDir: tempDir,
+			catalog,
+			parentTools,
+			parentActiveTools: ["read", "bash"],
+			platform: "win32",
+			shellPolicy: resolveEffectiveShellPolicy({
+				platform: "win32",
+				availability: { bash: true, powershell: false },
+				parentTools,
+				parentActiveTools: ["read", "bash"],
+			}),
+			hostShells: { bash: true, powershell: false },
+			changePiPromptPath,
+		});
+
+		currentSettings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
+		assert.deepEqual(currentSettings.subagents.agentOverrides.worker.tools, userCustomTools, "User manual edits must not be clobbered");
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+
 test("matrix: reconcileChildEnvironments manages host shells according to backend availability", async () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-child-matrix-"));
 	try {

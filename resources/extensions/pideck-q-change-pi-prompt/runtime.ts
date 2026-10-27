@@ -43,18 +43,29 @@ import {
 	type ReconciliationResult,
 } from './childReconciliation.ts';
 import {
+	createWindowsGitDiscoveryProvider,
+	type WindowsGitDiscovery,
+	type WindowsGitDiscoveryProvider,
+} from './windowsShellDiscovery.ts';
+import {
 	defaultShellProbeHost,
 	hideUnavailableShellTools,
 	hideUnavailableSearchTools,
 	parseShellPathFromSettings,
 	probeShellAvailability,
+	probeShellDetails,
 	probeSearchAvailability,
 	shouldNotifyHiddenShells,
+	toRetentionAvailability,
+	toKnownHostShells,
 	type ShellAvailability,
+	type ShellProbeDetails,
 	type ShellProbeHost,
+	type ShellProbeResult,
+	type ShellToolName,
 } from './shellAvailability.ts';
 import { stripChildDocumentation, transformSystemPrompt } from './transform.ts';
-import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale } from './copy.ts';
+import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale, type ShellProbeAction } from './copy.ts';
 
 export interface ReconciliationOutcome {
 	ok: boolean;
@@ -82,6 +93,7 @@ export function isStandalonePiExecutable(
 
 export interface PromptExtensionOptions {
 	probeHost?: ShellProbeHost;
+	windowsGitDiscovery?: WindowsGitDiscoveryProvider;
 	isStandalone?: () => boolean;
 	changePiPromptPath?: string;
 	lock?: ReconciliationLockOptions;
@@ -221,9 +233,15 @@ export function registerPromptExtension(
 		? {
 			...defaultHost,
 			isExecutableFile: options.probeHost.isExecutableFile,
+			inspectShellPath: options.probeHost.inspectShellPath,
 			...options.probeHost,
 		}
 		: defaultHost;
+	const windowsGitDiscovery = options.windowsGitDiscovery ?? (
+		options.probeHost
+			? (async () => ({ roots: [], status: 'complete' as const }))
+			: createWindowsGitDiscoveryProvider({ platform: process.platform, env: process.env })
+	);
 	const isStandalone = options.isStandalone ?? (() => isStandalonePiExecutable());
 	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
 	// 提示文案跟随界面语言：宿主经 PIDECK_UI_LANGUAGE 注入；未注入时回退系统语言/中文。
@@ -272,7 +290,10 @@ export function registerPromptExtension(
 	 * shares the same settings.json, and its own active tools are not the parent's, so a child that
 	 * reconciled would rewrite (and degrade) the overrides every other child depends on.
 	 */
-	const runReconciliation = async (activeTools?: readonly string[]): Promise<ReconciliationOutcome> => {
+	const runReconciliation = async (
+		activeTools?: readonly string[],
+		providedDetails?: ShellProbeDetails,
+	): Promise<ReconciliationOutcome> => {
 		const diagnostics: string[] = [];
 		if (!subagentAdaptationEnabled()) {
 			return { ok: false, diagnostics, reason: 'subagent adaptation is disabled' };
@@ -292,7 +313,9 @@ export function registerPromptExtension(
 			const effectiveActive = activeTools ?? [...pi.getActiveTools()];
 			const pkgRoot = findSubagentsPackageRoot(tools);
 			catalog = loadSubagentCatalog(pkgRoot);
-			const availability = await probeShells();
+			const details = providedDetails ?? await probeShells();
+			const retentionAvail = toRetentionAvailability(details);
+			const knownHostShells = toKnownHostShells(details);
 			const next = await reconcileChildEnvironments({
 				agentDir,
 				catalog,
@@ -301,11 +324,11 @@ export function registerPromptExtension(
 				platform: probeHost.platform,
 				shellPolicy: resolveEffectiveShellPolicy({
 					platform: probeHost.platform,
-					availability,
+					availability: retentionAvail,
 					parentTools: tools,
 					parentActiveTools: effectiveActive,
 				}),
-				hostShells: { bash: availability.bash, powershell: availability.powershell },
+				hostShells: knownHostShells,
 				changePiPromptPath,
 				shellPolicyOwnerKey,
 				lock: options.lock,
@@ -383,11 +406,35 @@ export function registerPromptExtension(
 		}
 	};
 
-	/** Probe the real shell backends once per pass and record the status line. */
-	const probeShells = async (): Promise<ShellAvailability> => {
-		const availability = probeShellAvailability(probeHost, await readConfiguredShellPath());
-		lastShellStatus = [`shell: bash=${availability.bash ? 'available' : 'missing'}, powershell=${availability.powershell ? 'available' : 'missing'}`];
-		return availability;
+	/** Probe the real shell backends once per pass without mutating lastShellStatus. */
+	const probeShells = async (): Promise<ShellProbeDetails> => {
+		let discovery: WindowsGitDiscovery | undefined;
+		try {
+			discovery = await windowsGitDiscovery();
+		} catch {
+			discovery = { roots: [], status: 'unknown' };
+		}
+		const shellPath = await readConfiguredShellPath();
+		return probeShellDetails(probeHost, shellPath, discovery);
+	};
+
+	const recordShellDiagnostics = (
+		details: ShellProbeDetails,
+		beforeTools: readonly string[],
+		afterTools: readonly string[],
+	): string[] => {
+		const lines: string[] = [];
+		const names: ShellToolName[] = ['bash', 'powershell'];
+		for (const name of names) {
+			let action: ShellProbeAction = 'inactive';
+			if (afterTools.includes(name)) {
+				action = 'retained';
+			} else if (beforeTools.includes(name)) {
+				action = 'hidden';
+			}
+			lines.push(copy.shellProbeStatus(name, details[name], action));
+		}
+		return lines;
 	};
 
 	/** Hide bash/powershell with no backend before the model sees the catalog.
@@ -395,21 +442,22 @@ export function registerPromptExtension(
 	const pruneUnavailableShells = async (
 		ctx: ExtensionContext,
 		_options: { forChild?: boolean } = {},
-	): Promise<{ next: string[]; availability: ShellAvailability } | undefined> => {
+	): Promise<{ next: string[]; availability: ShellAvailability; details: ShellProbeDetails } | undefined> => {
 		if (!promptExtensionEnabled() || !settings?.config.pruneUnavailableShells) return undefined;
 		if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return undefined;
-		const availability = await probeShells();
+		const details = await probeShells();
+		const availability = toRetentionAvailability(details);
 		const active = [...pi.getActiveTools()];
 		const { next, hidden } = hideUnavailableShellTools(active, availability);
-		if (hidden.length === 0) return { next, availability };
-		pi.setActiveTools(next);
-		lastShellStatus.push(`shell-tools: hid ${hidden.join(', ')}`);
+		if (hidden.length > 0) {
+			pi.setActiveTools(next);
+		}
 		// 仍有可用 shell（如 Windows 上的 PowerShell）时静默：缺 Git Bash 是常态，
 		// 且每次删除/编辑/重发触发的 session 重载都会重跑这里，警告会被误认为操作失败。
 		if (shouldNotifyHiddenShells(hidden, next)) {
 			warnOnce(ctx, copy.allShellsHidden);
 		}
-		return { next, availability };
+		return { next, availability, details };
 	};
 
 	/** Prune grep/find when their rg/fd backends are unavailable; recheck on each turn. */
@@ -439,9 +487,15 @@ export function registerPromptExtension(
 		childShellPolicyOwnerKey = undefined;
 		await ensureLoaded(ctx);
 		if (!promptExtensionEnabled()) return;
+		const beforeTools = typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : [];
 		// Session-local only: shell pruning never writes shared state, so it stays here.
-		await pruneUnavailableShells(ctx);
+		const prunedShells = await pruneUnavailableShells(ctx);
 		pruneUnavailableSearch(ctx);
+		if (prunedShells && typeof pi.getActiveTools === 'function') {
+			const afterTools = [...pi.getActiveTools()];
+			const diag = recordShellDiagnostics(prunedShells.details, beforeTools, afterTools);
+			lastShellStatus = [...diag, ...lastShellStatus];
+		}
 		if (lastShellStatus.length) lastStatus = [...lastStatus, ...lastShellStatus];
 	});
 
@@ -468,11 +522,15 @@ export function registerPromptExtension(
 			// shells or inject child guidance when subagent adaptation is disabled.
 			if (childSession && !subagentAdaptationEnabled()) return;
 
+			// 本次生命周期处理的动作诊断，不是跨轮历史；在开始本轮适配前重置，执行期探测不在此清空
+			lastShellStatus = [];
+
 			if (childSession) {
 				childShellPolicyOwnerKey ??= resolveShellPolicyOwnerKey();
 			}
 
-			await pruneUnavailableShells(ctx, { forChild: childSession });
+			const beforeShellTools = typeof pi.getActiveTools === 'function' ? [...pi.getActiveTools()] : [];
+			const prunedShells = await pruneUnavailableShells(ctx, { forChild: childSession });
 			const searchPruned = pruneUnavailableSearch(ctx);
 			const tools = snapshotTools(pi);
 			const hasActiveToolsApi = typeof pi.getActiveTools === 'function';
@@ -487,7 +545,8 @@ export function registerPromptExtension(
 					lastStatus = ['child-subagent-mode: getActiveTools or setActiveTools API unavailable, fail closed'];
 					return;
 				}
-				const availability = await probeShells();
+				const details = prunedShells?.details ?? await probeShells();
+				const availability = toRetentionAvailability(details);
 				const childCatalog = catalog ?? loadSubagentCatalog(findSubagentsPackageRoot(tools));
 				const agentName = getActiveAgentName(event.systemPrompt);
 				const childAgent = agentName ? getAgentFromCatalog(childCatalog, agentName) : undefined;
@@ -531,6 +590,9 @@ export function registerPromptExtension(
 					childActiveTools = reconciled;
 				}
 
+				const childDiag = recordShellDiagnostics(details, beforeShellTools, childActiveTools);
+				lastShellStatus = [...childDiag, ...lastShellStatus];
+
 				// Role prompt stays intact; only the stock Pi documentation block is dropped, matching the parent.
 				const childPrompt = stripChildDocumentation(event.systemPrompt, settings!.config);
 				const nextPrompt = injectChildToolEnvironment(childPrompt, childActiveTools);
@@ -546,7 +608,12 @@ export function registerPromptExtension(
 			// Scope the published ceiling to this parent so parallel sessions sharing one agentDir
 			// cannot overwrite each other's shell policy.
 			shellPolicyOwnerKey = readSessionIdentity(ctx) ?? resolveShellPolicyOwnerKey() ?? shellPolicyOwnerKey ?? `pid-${process.pid}`;
-			const reconciliationStatus = await runReconciliation(activeTools);
+			const reconciliationStatus = await runReconciliation(activeTools, prunedShells?.details);
+
+			if (prunedShells && hasActiveToolsApi) {
+				const parentDiag = recordShellDiagnostics(prunedShells.details, beforeShellTools, activeTools);
+				lastShellStatus = [...parentDiag, ...lastShellStatus];
+			}
 
 			const nativeTools = tools.filter(tool => activeTools.includes(tool.name) && isSubagent(tool));
 			const standalone = isStandalone();
@@ -698,7 +765,8 @@ export function registerPromptExtension(
 
 			// Backend availability checks for shells and search tools
 			if (event.toolName === 'bash') {
-				const avail = await probeShells();
+				const details = await probeShells();
+				const avail = toRetentionAvailability(details);
 				if (!snapshot.shell.bash || !avail.bash) {
 					return {
 						block: true,
@@ -706,7 +774,8 @@ export function registerPromptExtension(
 					};
 				}
 			} else if (event.toolName === 'powershell') {
-				const avail = await probeShells();
+				const details = await probeShells();
+				const avail = toRetentionAvailability(details);
 				if (!snapshot.shell.powershell || !avail.powershell) {
 					return {
 						block: true,

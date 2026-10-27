@@ -16,7 +16,7 @@ export const DEFAULT_PROMPTS = {
 	batchEdit: `- Use one \`edit\` call for multiple disjoint changes in the same file.
 - Each \`edits[].oldText\` matches the original file, not earlier edits in that call. Keep matches exact, unique, minimal, and non-overlapping; merge nearby changes.`,
 	write: `- Use \`write\` only for new files or complete rewrites.`,
-	shell: `- For shell commands, follow the runtime and syntax stated in the active tool description; a tool named \`bash\` does not necessarily execute GNU Bash.`,
+	shell: `- For shell commands, follow the runtime and syntax stated in the active tool description; do not infer the runtime from a tool name or the local OS.`,
 	pwsh: `- For \`bash\`, follow the runtime version and syntax stated in its tool description. Invoke Bash explicitly for Bash-only syntax; do not infer the runtime from the tool name or local OS.`,
 	userInput: `## User Input
 - Whenever clarification or confirmation is needed, use \`ask_question\` rather than plain-text questions.
