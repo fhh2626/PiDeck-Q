@@ -79,6 +79,22 @@ test("stale running without local generation flags does not resume", () => {
 	}), false);
 });
 
+test("a generation that already resumed does not replay while the poll still says running", () => {
+	assert.equal(shouldResumeWebStream({
+		chatStatus: "ready",
+		alreadyResumed: true,
+		runtime: { status: "running", isStreaming: true },
+	}), false);
+});
+
+test("a later run resumes again after the previous generation was consumed", () => {
+	assert.equal(shouldResumeWebStream({
+		chatStatus: "ready",
+		alreadyResumed: false,
+		runtime: { status: "running", isStreaming: true },
+	}), true);
+});
+
 test("starting runtime does not resume even while streaming flags are set", () => {
 	assert.equal(shouldResumeWebStream({
 		chatStatus: "ready",

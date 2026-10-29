@@ -125,6 +125,8 @@ export function WebChatApp() {
 	const streamingRef = useRef(false);
 	// 同一条断线只启动一次恢复；重新收到实时帧后释放，允许后续独立断线再次恢复。
 	const recoveringStreamSessionRef = useRef<string | null>(null);
+	// 同一 runtime generation 只静默订阅一次。键是 sessionId + generation。
+	const consumedResumeKeyRef = useRef<string | null>(null);
 	/** 首屏历史在流式期间到达、暂未注入 useChat 的会话（流结束后补注入）。 */
 	const deferredHistoryApplyRef = useRef<Set<string>>(new Set());
 	/**
@@ -171,6 +173,8 @@ export function WebChatApp() {
 	}, [status]);
 
 	useEffect(() => {
+		// 切会话会换掉 useChat 实例，上一轮的订阅不能挡住新实例。
+		consumedResumeKeyRef.current = null;
 		if (recoveringStreamSessionRef.current !== activeSessionId) {
 			recoveringStreamSessionRef.current = null;
 		}
@@ -353,14 +357,25 @@ export function WebChatApp() {
 	// useChat 已 ready 但 runtime 仍在跑：只在客户端已空闲、runtime 仍 running 且本地仍在生成时重订阅；stale running / starting 不 resume。
 	useEffect(() => {
 		if (!activeSessionId || chatStreaming || error) return;
+		// 离开 running 后清掉订阅标记，下一轮即使复用 generation 也能再订。
+		if (activeRuntime?.status !== "running") {
+			if (consumedResumeKeyRef.current?.startsWith(`${activeSessionId}:`)) {
+				consumedResumeKeyRef.current = null;
+			}
+			return;
+		}
+		const resumeKey = `${activeSessionId}:${activeRuntime?.runtimeGeneration ?? ""}`;
 		if (!shouldResumeWebStream({
 			chatStatus: status,
 			hasChatError: Boolean(error),
 			runtime: activeRuntime,
+			alreadyResumed: consumedResumeKeyRef.current === resumeKey,
 		})) return;
 		if (recoveringStreamSessionRef.current === activeSessionId) return;
 		const sessionId = activeSessionId;
 		recoveringStreamSessionRef.current = sessionId;
+		// 在请求发出前占用本轮，避免流结束、状态回到 ready 时 effect 再次进入。
+		consumedResumeKeyRef.current = resumeKey;
 		void resumeStream()
 			.then(() => {
 				if (recoveringStreamSessionRef.current !== sessionId) return;

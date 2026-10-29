@@ -50,9 +50,16 @@ export function shouldResumeWebStream(input: {
 	chatStatus?: WebChatStatus;
 	hasChatError?: boolean;
 	runtime?: WebRuntimeBusyInfo;
+	/**
+	 * 当前会话的这一 runtime generation 已经订阅过。
+	 * 流正常结束后，轮询最多还要 3 秒才把 running 收成 idle；
+	 * 这段窗口里再订阅会把同一次有限回放追加进上一条 assistant。
+	 */
+	alreadyResumed?: boolean;
 }): boolean {
 	if (isWebChatStreaming(input.chatStatus)) return false;
 	if (input.hasChatError === true) return false;
+	if (input.alreadyResumed === true) return false;
 	if (input.runtime?.status !== "running") return false;
 	return input.runtime.isStreaming === true || input.runtime.isExecutingTool === true;
 }

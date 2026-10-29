@@ -2,7 +2,6 @@
 import type { UIMessage } from "ai";
 import type { ChatMessage } from "../../../shared/types";
 import { readWebMessageMetadata, uiMessageIdentity, uiMessageRole } from "./webMessageMetadata";
-import { mergeAdjacentWebMessageParts } from "./webMessageParts";
 
 /** Inserts timestamped history before local rows that have no authoritative timestamp. */
 export function findTimestampInsertionIndex(messages: UIMessage[], incoming: UIMessage): number {
@@ -130,6 +129,14 @@ function rawAnswerCoverageText(message: UIMessage): string {
 		.join("\n");
 }
 
+/** 回放把同一段正文原样贴了多次时，拼起来的字符串仍然算被持久化行覆盖。 */
+function segmentRepeatsPersistedText(segment: string, persisted: string): boolean {
+	if (!persisted || segment.length <= persisted.length || !segment.startsWith(persisted)) return false;
+	let rest = segment;
+	while (rest.startsWith(persisted)) rest = rest.slice(persisted.length);
+	return rest.length === 0;
+}
+
 /**
  * 本地 SSE 气泡按「段」列出 reasoning / text 原文（先合并相邻同类段）。
  * 为什么按段：一条本地气泡会包含多步（思考→工具→插入语→…→最终答案），
@@ -137,11 +144,33 @@ function rawAnswerCoverageText(message: UIMessage): string {
  * 先合并相邻段是因为 SSE 重连会把同一段拆成两个 part，拆开后后半段不是前缀。
  */
 function localSegmentTexts(message: UIMessage, type: "reasoning" | "text"): string[] {
-	return mergeAdjacentWebMessageParts(message.parts).flatMap((part) => {
-		if (type === "reasoning" && part.type === "reasoning" && part.text.trim()) return [part.text];
-		if (type === "text" && part.type === "text" && part.text.trim()) return [part.text];
-		return [];
-	});
+	const segments: string[] = [];
+	let pending: string | undefined;
+	const flush = () => {
+		if (pending !== undefined && pending.trim()) segments.push(pending);
+		pending = undefined;
+	};
+	for (const part of message.parts) {
+		if (part.type !== type) {
+			flush();
+			continue;
+		}
+		if (!part.text) continue;
+		if (pending === undefined) {
+			pending = part.text;
+			continue;
+		}
+		// 整段被原样再贴一次时不能拼成「正文正文」，否则对不上持久化行。
+		// 重连把同一段拆成前后两截时仍然拼回去，后半截单独不是前缀。
+		if (part.text === pending) {
+			flush();
+			pending = part.text;
+			continue;
+		}
+		pending += part.text;
+	}
+	flush();
+	return segments;
 }
 
 export function isLocalSseAssistant(message: UIMessage): boolean {
@@ -378,7 +407,10 @@ export function isLocalSseFullyCovered(
 		const incomingReasoning = rawReasoningCoverageText(incoming);
 		if (incomingReasoning) {
 			reasoningSegments.forEach((segment, segmentIndex) => {
-				if (!coveredReasoning.has(segmentIndex) && incomingReasoning.startsWith(segment)) {
+					if (!coveredReasoning.has(segmentIndex) && (
+					incomingReasoning.startsWith(segment)
+					|| segmentRepeatsPersistedText(segment, incomingReasoning)
+				)) {
 					coveredReasoning.add(segmentIndex);
 					coversPart = true;
 				}
@@ -395,7 +427,10 @@ export function isLocalSseFullyCovered(
 		const incomingAnswer = rawAnswerCoverageText(incoming);
 		if (incomingAnswer) {
 			answerSegments.forEach((segment, segmentIndex) => {
-				if (!coveredAnswer.has(segmentIndex) && incomingAnswer.startsWith(segment)) {
+				if (!coveredAnswer.has(segmentIndex) && (
+					incomingAnswer.startsWith(segment)
+					|| segmentRepeatsPersistedText(segment, incomingAnswer)
+				)) {
 					coveredAnswer.add(segmentIndex);
 					coversPart = true;
 				}

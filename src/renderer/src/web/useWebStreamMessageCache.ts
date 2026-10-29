@@ -24,9 +24,11 @@ export function useWebStreamMessageCache({ sessionId, streaming, messages, cache
 		// A short SSE response can batch streaming -> ready into one React commit.
 		// Metadata-free assistant rows still identify its final frame, unlike disk history.
 		if (!streamEnded && !messages.some(isLocalSseAssistant)) return;
-		// This is a live final frame, not a disk baseline: strict coverage cleanup
-		// can discard both copies when the same SSE row exists on both sides.
-		const merged = mergeAuthoritativeUiMessages(cache.current[sessionId] ?? [], messages);
+		// 不用严格基线清理：同一条 SSE 同时出现在两侧时，那条路径会把两份都丢掉。
+		// 空闲快照标志只丢掉「每一段都已被缓存覆盖」的回放克隆，未落盘的尾部仍保留。
+		const merged = mergeAuthoritativeUiMessages(cache.current[sessionId] ?? [], messages, {
+			dropUnmatchedTrailingPlaceholders: true,
+		});
 		cache.current[sessionId] = merged;
 		// Only the settled stream can write back; never replace useChat mid-stream.
 		// useChat may clone the assigned array; compare rows, not array references,
