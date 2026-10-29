@@ -1,4 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, useMemo } from "react";
+import { useAtom } from "jotai";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronUp, Minimize } from "lucide-react";
 import type { ChatMessage } from "../../../../shared/types";
 import { t, translateI18nDescriptor } from "../../i18n";
@@ -13,6 +14,11 @@ import { ReasoningText } from "../agents/loading-states/reasoning-text";
 import { Loader } from "../motion/loader";
 import { SingleLinePreview } from "./SingleLinePreview";
 import { CARD_BODY_PADDING, CARD_PREVIEW_PADDING, DASHED_SURFACE, THINKING_HEADER } from "@/lib/density";
+import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
+import {
+	getCompactionExpandedAtom,
+	getThinkingPresentationAtom,
+} from "../../atoms/timeline-presentation";
 
 // Button 收口状态（P0）：本文件按钮全部保留原生——
 // compaction-card-header / thinking-card-trigger 是折叠触发器 + 内容排版容器（内部 span/small/em 结构）；
@@ -40,7 +46,18 @@ export const CompactionCard = memo(function CompactionCard(props: {
 	onOpenExternal: (url: string, forceSystem?: boolean) => void;
 	onOpenFile?: (path: string) => void;
 }) {
-	const [expanded, setExpanded] = useState(false);
+	const context = useTimelinePresentationContext();
+	const compactionAtom = useMemo(() => {
+		if (context?.sessionId && context?.rowKey) {
+			return getCompactionExpandedAtom(context.sessionId, context.rowKey, props.message.id);
+		}
+		return null;
+	}, [context?.sessionId, context?.rowKey, props.message.id]);
+
+	const [expanded, setExpanded] = useAtom(
+		compactionAtom ??
+			useMemo(() => getCompactionExpandedAtom("__local__", "__local__", props.message.id), [props.message.id]),
+	);
 	// 学 ThinkingBlock 折叠轻渲染：折叠态只挂 200 字符截断预览，
 	// 全文（Markdown DOM）仅在展开时挂载、收起即卸载；溢出判断用字符阈值替代 DOM 测量。
 	const summaryText = stripAnsi(props.message.text);
@@ -317,6 +334,7 @@ export const AskQuestionCard = memo(function AskQuestionCard(props: {
 export const ThinkingBlock = memo(
 	function ThinkingBlock(props: {
 		text: string;
+		thinkingGroupId?: string;
 		startedAt?: number;
 		endedAt?: number;
 		showThinking?: boolean;
@@ -327,11 +345,41 @@ export const ThinkingBlock = memo(
 		onOpenExternal: (url: string) => void;
 		onOpenFile?: (path: string) => void;
 	}) {
-	const [expanded, setExpanded] = useState(props.defaultExpanded ?? false);
-	// agent 完成时强制收起：即使之前手动展开过，思考也随执行过程整体收起（回到折叠单行态）
+	const context = useTimelinePresentationContext();
+	const thinkingGroupId = props.thinkingGroupId ?? "default-thinking";
+	const presentationAtom = useMemo(() => {
+		if (context?.sessionId && context?.rowKey) {
+			return getThinkingPresentationAtom(context.sessionId, context.rowKey, thinkingGroupId);
+		}
+		return null;
+	}, [context?.sessionId, context?.rowKey, thinkingGroupId]);
+
+	const [presentationState, setPresentationState] = useAtom(
+		presentationAtom ??
+			useMemo(
+				() => getThinkingPresentationAtom("__local__", "__local__", thinkingGroupId),
+				[thinkingGroupId],
+			),
+	);
+
+	const expanded = presentationState.expanded || (props.defaultExpanded && !presentationState.hasHandledEnd);
+	const setExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
+		setPresentationState((prev) => ({
+			...prev,
+			expanded: typeof updater === "function" ? updater(prev.expanded) : updater,
+		}));
+	};
+
+	// agent 完成时仅处理一次收起事件，避免 remount 时再次强制收起用户手动展开的历史思考
 	useEffect(() => {
-		if (props.endedAt) setExpanded(false);
-	}, [props.endedAt]);
+		if (props.endedAt && !presentationState.hasHandledEnd) {
+			setPresentationState((prev) => ({
+				...prev,
+				expanded: false,
+				hasHandledEnd: true,
+			}));
+		}
+	}, [props.endedAt, presentationState.hasHandledEnd, setPresentationState]);
 	// 折叠态只挂载轻量单行预览；展开态由 MarkdownStream 负责唯一的流式渲染，避免双重打字机。
 
 	if (!props.showThinking || !props.text.trim()) return null;

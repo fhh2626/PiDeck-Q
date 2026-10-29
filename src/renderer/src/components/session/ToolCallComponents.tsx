@@ -1,10 +1,19 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useState, useMemo, type ReactNode } from "react";
+import { useAtom } from "jotai";
+import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
+import {
+  getToolGroupAtom,
+  getToolCardExpandedAtom,
+} from "../../atoms/timeline-presentation";
 import type { ImageContent } from "../../../../shared/types";
 import {
   Brain,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   CircleCheck,
   CircleX,
   FileText,
@@ -28,6 +37,12 @@ import { Badge } from "../ui-shadcn/badge";
 import { Button } from "../ui-shadcn/button";
 import type { ChatMessage } from "../../../../shared/types";
 import { TimelineMarker } from "./TimelineMarker";
+import {
+  resolveToolGroupPage,
+  resolveToolGroupPageWithAnchor,
+  findRunningToolPage,
+  TOOL_GROUP_PAGE_SIZE,
+} from "./timeline/toolGroupPage";
 import { LiveDuration } from "./LiveDuration";
 import { getToolPhraseFromArgs } from "./timeline/toolPhrase";
 import { ToolResult } from "../agents/tool-result";
@@ -217,7 +232,26 @@ export const ToolCard = memo(function ToolCard(props: {
 	/** 控制媒体画廊是否挂载，用于与外层折叠互斥，杜绝短暂双挂载 */
 	mountMedia?: boolean;
 }) {
-	const [expanded, setExpanded] = useState(props.defaultOpen ?? false);
+	const context = useTimelinePresentationContext();
+	const presentationAtom = useMemo(() => {
+		if (context?.sessionId && context?.rowKey) {
+			return getToolCardExpandedAtom(context.sessionId, context.rowKey, props.message.id);
+		}
+		return null;
+	}, [context?.sessionId, context?.rowKey, props.message.id]);
+
+	const [atomExpanded, setAtomExpanded] = useAtom(
+		presentationAtom ??
+			useMemo(
+				() => getToolCardExpandedAtom("__local__", "__local__", props.message.id),
+				[props.message.id],
+			),
+	);
+
+	const expanded = atomExpanded || (props.defaultOpen ?? false);
+	const setExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
+		setAtomExpanded((prev) => (typeof updater === "function" ? updater(prev) : updater));
+	};
 	const messageStatus = getToolStatus(props.message);
 	const status = props.stopped && messageStatus === "running" ? "stopped" : messageStatus;
 	const toolName = getToolName(props.message);
@@ -385,6 +419,7 @@ export const ToolCard = memo(function ToolCard(props: {
 			{hasImages && props.mountMedia !== false && (
 				<div className="ml-5 mt-1 mb-1">
 					<MessageImageGallery
+						messageId={props.message.id}
 						images={props.message.images}
 						notice={props.message.imageDisplayNotice}
 						onPreviewImage={props.onPreviewImage}
@@ -457,7 +492,50 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
 	mountMedia?: boolean;
 }) {
-	const [expanded, setExpanded] = useState(false);
+	const context = useTimelinePresentationContext();
+	const groupAtom = useMemo(() => {
+		if (context?.sessionId && context?.rowKey) {
+			return getToolGroupAtom(context.sessionId, context.rowKey, props.group.id);
+		}
+		return null;
+	}, [context?.sessionId, context?.rowKey, props.group.id]);
+
+	const [groupState, setGroupState] = useAtom(
+		groupAtom ??
+			useMemo(
+				() => getToolGroupAtom("__local__", "__local__", props.group.id),
+				[props.group.id],
+			),
+	);
+
+	const expanded = groupState.expanded;
+	const setExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
+		setGroupState((prev) => ({
+			...prev,
+			expanded: typeof updater === "function" ? updater(prev.expanded) : updater,
+		}));
+	};
+
+	// 带有 anchor 恢复能力的分页计算（计划步骤 6.5）
+	const pagination = resolveToolGroupPageWithAnchor(
+		props.group.messages,
+		groupState.pageIndex,
+		groupState.anchorMessageId,
+	);
+
+	const setPageIndex = (updater: number | ((prev: number) => number)) => {
+		setGroupState((prev) => {
+			// 基于当前有效解析出来的 pagination.pageIndex 进行翻页，而不是基于可能失效的 prev.pageIndex
+			const nextIdx = typeof updater === "function" ? updater(pagination.pageIndex) : updater;
+			const safeIdx = Math.max(0, Math.min(nextIdx, pagination.pageCount - 1));
+			const anchorId = props.group.messages[safeIdx * TOOL_GROUP_PAGE_SIZE]?.id;
+			return {
+				...prev,
+				pageIndex: safeIdx,
+				anchorMessageId: anchorId ?? prev.anchorMessageId,
+			};
+		});
+	};
 
 	if (props.group.messages.length < 2) {
 		const singleMessage = props.group.messages[0];
@@ -477,6 +555,7 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 		);
 	}
 
+	const total = props.group.messages.length;
 	const statuses = props.group.messages.map((message) => getToolStatus(message));
 	const status = props.stopped && statuses.includes("running")
 		? "stopped"
@@ -487,6 +566,14 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 		? props.group.messages.filter((m) => (m.images && m.images.length > 0) || m.imageDisplayNotice)
 		: [];
 
+	const visibleMessages = total > TOOL_GROUP_PAGE_SIZE
+		? props.group.messages.slice(pagination.startIndex, pagination.endIndex)
+		: props.group.messages;
+
+	const runningPage = findRunningToolPage(statuses, props.stopped);
+	const showLocateRunning =
+		runningPage !== null && runningPage !== pagination.pageIndex;
+
 	return (
 		<section className="tool-group-card w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel" data-message-id={props.group.id}>
 			<button
@@ -496,7 +583,7 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 				aria-expanded={expanded}
 			>
 				<Wrench size={16} className="shrink-0 text-text-tertiary" aria-hidden="true" />
-				<span className="font-medium">{t("tool.group.title", { count: props.group.messages.length })}</span>
+				<span className="font-medium">{t("tool.group.title", { count: total })}</span>
 				{expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
 				<Badge variant={status === "error" ? "outline" : status === "running" ? "outline" : "secondary"} className="px-1 py-0 text-micro">
 					{t(status === "stopped" ? "tool.statusStopped" : status === "running" ? "tool.statusRunning" : status === "error" ? "tool.statusError" : "tool.statusDone")}
@@ -507,6 +594,7 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 					{groupImages.map((m) => (
 						<MessageImageGallery
 							key={m.id}
+							messageId={m.id}
 							images={m.images}
 							notice={m.imageDisplayNotice}
 							onPreviewImage={props.onPreviewImage}
@@ -516,7 +604,75 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 			)}
 			{expanded && (
 				<div className="flex flex-col border-t border-border-subtle">
-					{props.group.messages.map((message) => (
+					{total > TOOL_GROUP_PAGE_SIZE && (
+						<div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border-subtle bg-bg-secondary/40 px-2 py-1 text-micro text-text-secondary">
+							<span className="font-mono">
+								{t("tool.group.range", {
+									start: pagination.startIndex + 1,
+									end: pagination.endIndex,
+									total,
+								})}
+							</span>
+							<div className="flex items-center gap-1">
+								{showLocateRunning && (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="h-6 px-1.5 text-micro"
+										onClick={() => setPageIndex(runningPage)}
+									>
+										{t("tool.group.locateRunning")}
+									</Button>
+								)}
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									className="size-6"
+									disabled={!pagination.canPrevious}
+									onClick={() => setPageIndex(0)}
+									aria-label={t("tool.group.first")}
+								>
+									<ChevronsLeft size={13} aria-hidden="true" />
+								</Button>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									className="size-6"
+									disabled={!pagination.canPrevious}
+									onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+									aria-label={t("pagination.previous")}
+								>
+									<ChevronLeft size={13} aria-hidden="true" />
+								</Button>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									className="size-6"
+									disabled={!pagination.canNext}
+									onClick={() => setPageIndex((p) => p + 1)}
+									aria-label={t("pagination.next")}
+								>
+									<ChevronRight size={13} aria-hidden="true" />
+								</Button>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									className="size-6"
+									disabled={!pagination.canNext}
+									onClick={() => setPageIndex(pagination.pageCount - 1)}
+									aria-label={t("tool.group.last")}
+								>
+									<ChevronsRight size={13} aria-hidden="true" />
+								</Button>
+							</div>
+						</div>
+					)}
+					{visibleMessages.map((message) => (
 						<ToolCard
 							key={message.id}
 							message={message}

@@ -146,14 +146,14 @@ test("message mutation commands in SessionRuntimeInjector bind pane runtime targ
 });
 
 test("edit save dispatches captured callback and never gates on the current onEditMessage prop", () => {
-  // 保存路径必须走 trackedEditSubmit（开始编辑时捕获的回调），
+  // 保存路径必须走 useTimelineMessageEdit 或 trackedEditSubmit，
   // 不得用当前 props.onEditMessage 拦截保存：runtime 消失时该 prop 为 undefined，
   // 会把已打开的编辑框保存变成静默无效（无 toast、编辑框永远开着）。
   for (const [name, source] of [["TurnRow", turnRow], ["SurfaceComponents", surfaceComponents]]) {
-    assert.match(source, /trackedEditSubmit\.current\.submit\(/, `${name} save must dispatch via trackedEditSubmit`);
-    assert.doesNotMatch(source, /if \(props\.onEditMessage &&[\s\S]{0,200}trackedEditSubmit\.current\.submit\(/, `${name} save must not gate on current props.onEditMessage`);
+    assert.match(source, /(?:trackedEditSubmit\.current\.submit\(|timelineEdit\.saveEdit\(\))/, `${name} save must dispatch via trackedEditSubmit or timelineEdit`);
+    assert.doesNotMatch(source, /if \(props\.onEditMessage &&[\s\S]{0,200}(?:trackedEditSubmit\.current\.submit\(|timelineEdit\.saveEdit\(\))/, `${name} save must not gate on current props.onEditMessage`);
   }
   // 进入编辑必须捕获当次回调（绑定当时 target）
-  assert.match(turnRow, /trackedEditSubmit\.current\.begin\(props\.onEditMessage\)/);
-  assert.match(surfaceComponents, /trackedEditSubmit\.current\.begin\(props\.onEditMessage\)/);
+  assert.match(turnRow, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
+  assert.match(surfaceComponents, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
 });

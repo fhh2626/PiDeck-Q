@@ -43,7 +43,7 @@ test("single-turn DOM stays light via default-collapsed process group", () => {
     /if \(opts\.isComplete && !opts\.agentRunning && opts\.hasFinalAnswer\) return false;/,
   );
   // 手动 override 最高优先：上升沿不清 override、不撑开手动折叠过的轮次
-  assert.match(turnExecution, /!userOverrideRef\.current/);
+  assert.match(turnExecution, /!atomState\.userOverride/);
   // 完成后 1.5s 自动收起（落在 1~2s 体验区间）
   assert.match(turnExecution, /}, 1500\)/);
 });

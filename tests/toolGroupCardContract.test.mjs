@@ -25,13 +25,13 @@ test("ToolGroupCard single message group renders single ToolCard directly withou
 test("ToolGroupCard defaults to collapsed and omits unmounted ToolCards", () => {
 	assert.match(
 		src,
-		/const \[expanded, setExpanded\] = useState\(false\);/,
-		"group card must default to collapsed state",
+		/const expanded = groupState\.expanded;/,
+		"group card must read collapsed state from atom state",
 	);
-	// 验证 ToolCard 仅在 expanded 为 true 时才挂载
+	// 验证 ToolCard 仅在 expanded 为 true 时才挂载（映射 visibleMessages 分页切片）
 	assert.match(
 		src,
-		/\{expanded\s*&&\s*\([\s\S]*?props\.group\.messages\.map\(\(message\)\s*=>\s*\([\s\S]*?<ToolCard/,
+		/\{expanded\s*&&\s*\([\s\S]*?visibleMessages\.map\(\(message\)\s*=>\s*\([\s\S]*?<ToolCard/,
 		"detail ToolCards must not mount when collapsed",
 	);
 });

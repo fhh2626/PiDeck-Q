@@ -802,6 +802,41 @@ export class AgentManager {
 		return this.sessionHistoryReader.readMessageFullText(sessionPath, messageId, entryId);
 	}
 
+	async readToolExportPayload(
+		sessionId: string,
+		messageId: string,
+	): Promise<{ argsText?: string; resultText?: string; detailsText?: string } | null> {
+		const payloads = await this.readToolExportPayloads(sessionId, [messageId]);
+		return payloads[messageId] ?? null;
+	}
+
+	async readToolExportPayloadFromFile(
+		sessionPath: string,
+		messageId: string,
+	): Promise<{ argsText?: string; resultText?: string; detailsText?: string } | null> {
+		return this.sessionHistoryReader.readToolExportPayload(sessionPath, messageId);
+	}
+
+	async readToolExportPayloads(
+		sessionId: string,
+		messageIds: readonly string[],
+	): Promise<Record<string, { argsText?: string; resultText?: string; detailsText?: string }>> {
+		for (const runtime of this.agents.values()) {
+			if (runtime.tab.deckSessionId === sessionId && runtime.tab.sessionPath) {
+				return this.readToolExportPayloadsFromFile(runtime.tab.sessionPath, messageIds);
+			}
+		}
+		return {};
+	}
+
+	async readToolExportPayloadsFromFile(
+		sessionPath: string,
+		messageIds: readonly string[],
+	): Promise<Record<string, { argsText?: string; resultText?: string; detailsText?: string }>> {
+		const map = await this.sessionHistoryReader.readToolExportPayloads(sessionPath, messageIds);
+		return Object.fromEntries(map);
+	}
+
 	/**
 	 * The reader owns persisted JSONL parsing and paging. This facade keeps the
 	 * Session-first public contract on AgentManager while runtime remains inactive.

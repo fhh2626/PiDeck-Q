@@ -23,6 +23,7 @@ export function AssistantMessageImages({
 			{messagesWithMedia.map((item) => (
 				<div key={item.message.id} data-assistant-media={item.message.id}>
 					<MessageImageGallery
+						messageId={item.message.id}
 						images={item.message.images}
 						notice={item.message.imageDisplayNotice}
 						onPreviewImage={onPreviewImage}

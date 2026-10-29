@@ -3,11 +3,18 @@ import {
 	useCallback,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 } from "react";
+import { useAtom } from "jotai";
+import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
+import {
+	getUserBubblePresentationAtom,
+	getEditPresentationAtom,
+} from "../../atoms/timeline-presentation";
 import { MarkdownStream } from "./MarkdownStream";
 import "katex/dist/katex.min.css";
 import { MessageImage } from "./MessageImage";
@@ -52,7 +59,7 @@ import type {
 	VisionEventsInfo,
 } from "../../../../shared/types";
 import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
-import { createTrackedEditSubmit } from "../../utils/trackedEditSubmit";
+import { useTimelineMessageEdit } from "../../hooks/useTimelineMessageEdit";
 import removeMarkdown from "remove-markdown";
 
 import { formatDuration, formatTime, stripAnsi } from "./TimelineFormat";
@@ -491,29 +498,63 @@ export const UserBubble = memo(function UserBubble(props: {
 	onEnterMultiSelect?: () => void;
 }) {
 	const { message } = props;
+	const rowRef = useRef<HTMLElement | null>(null);
 	// 空闲时始终展示 fork 入口；entryId 解析放到点击时做（meta 缺失时走 getForkMessages 回退）。
 	const canFork = Boolean(props.onForkMessage) && !props.agentRunning;
-	const rowRef = useRef<HTMLElement | null>(null);
-	const [editing, setEditing] = useState(false);
-	const [editText, setEditText] = useState("");
+	const context = useTimelinePresentationContext();
+	const userBubbleAtom = useMemo(() => {
+		if (context?.sessionId && context?.rowKey) {
+			return getUserBubblePresentationAtom(context.sessionId, context.rowKey);
+		}
+		return null;
+	}, [context?.sessionId, context?.rowKey]);
+
+	const [bubblePresentation, setBubblePresentation] = useAtom(
+		userBubbleAtom ??
+			useMemo(() => getUserBubblePresentationAtom("__local__", "__local__"), []),
+	);
+
+	// 提取 pi 展开后的 <skill> 块：渲染为 skill 徽标，并从正文里剥除 XML
+	const vision = extractVisionBridgeBlocks(stripAnsi(message.text));
+	const visionBlocks = vision.blocks;
+	const { skills, text: bodyText } = extractSkillBlocks(vision.text);
+	const cleanText = bodyText;
+
 	const editAreaRef = useRef<HTMLDivElement | null>(null);
-	// 编辑是跨渲染周期的长时操作：进入编辑时捕获当次提交回调，保存时用捕获值。
-	// 若保存时才读最新 props，Agent 重启后回调已换绑新 generation target，会把旧
-	// 编辑重定向到新 runtime、绕过 freshness 校验（见 trackedEditSubmit.ts 注释）。
-	const trackedEditSubmit = useRef(createTrackedEditSubmit());
-	/** 进入编辑模式：捕获当前 onEditMessage（绑定当时的 runtime target）。 */
+	const timelineEdit = useTimelineMessageEdit({
+		messageId: message.id,
+		initialText: cleanText,
+		onLegacyEditMessage: props.onEditMessage
+			? async (id, text) => {
+					props.onEditMessage?.(id, text);
+			  }
+			: undefined,
+	});
+	const editing = timelineEdit.isEditing;
+	const editText = timelineEdit.text;
+
+	/** 进入编辑模式：捕获当前 runtime target。 */
 	const startEditingWithCurrentTarget = () => {
-		trackedEditSubmit.current.begin(props.onEditMessage);
-		setEditText(cleanText);
-		setEditing(true);
+		timelineEdit.beginEdit();
 	};
 	// 长消息折叠（2026-08）：超过 8 行（line-clamp-8）折叠为预览，避免超长发送全量铺开；
-	// 溢出检测用 ResizeObserver 对比 scrollHeight/clientHeight，折叠态下才测量（展开态保持按钮可见）。
-	const [messageExpanded, setMessageExpanded] = useState(false);
+	const messageExpanded = bubblePresentation.messageExpanded;
+	const setMessageExpanded = (updater: boolean | ((prev: boolean) => boolean)) => {
+		setBubblePresentation((prev) => ({
+			...prev,
+			messageExpanded: typeof updater === "function" ? updater(prev.messageExpanded) : updater,
+		}));
+	};
 	const [messageOverflowing, setMessageOverflowing] = useState(false);
 	const userTextRef = useRef<HTMLDivElement | null>(null);
 	// 视觉桥「请求详情」展开态：事件数据懒加载（用户点击才拉取，避免每条消息都读事件文件）
-	const [visionDetailOpen, setVisionDetailOpen] = useState(false);
+	const visionDetailOpen = bubblePresentation.visionDetailOpen;
+	const setVisionDetailOpen = (updater: boolean | ((prev: boolean) => boolean)) => {
+		setBubblePresentation((prev) => ({
+			...prev,
+			visionDetailOpen: typeof updater === "function" ? updater(prev.visionDetailOpen) : updater,
+		}));
+	};
 	const [visionEvents, setVisionEvents] = useState<VisionEventsInfo | null>(null);
 	const [visionLoading, setVisionLoading] = useState(false);
 	const loadVisionEvents = useCallback(async () => {
@@ -565,11 +606,6 @@ export const UserBubble = memo(function UserBubble(props: {
 		observer.observe(el);
 		return () => observer.disconnect();
 	}, [messageExpanded]);
-	// 视觉桥块：pi-deck-vision 扩展把用户消息里的图片换成描述文本时，会在消息里
-	// 留下「[图片 #N（视觉桥已查看...）]」/失败标记。先剥出块，渲染成可视化卡片，
-	// 用户才能直观看到「走了视觉桥」以及转换结果/失败原因，而不是一段方括号文本。
-	const vision = extractVisionBridgeBlocks(stripAnsi(message.text));
-	const visionBlocks = vision.blocks;
 	// 发送后短窗口内轮询事件文件（0/700/1800/3200ms），命中即渲染实时卡片，超时静默放弃。
 	// 依赖 visionBlocks.length：历史消息文本里已有标记块时走文本卡片，不再轮询。
 	useEffect(() => {
@@ -607,9 +643,6 @@ export const UserBubble = memo(function UserBubble(props: {
 		};
 	}, [imageHashes, message.images, message.timestamp, visionBlocks.length]);
 	// 提取 pi 展开后的 <skill> 块：渲染为 skill 徽标，并从正文里剥除 XML
-	const { skills, text: bodyText } = extractSkillBlocks(vision.text);
-	const cleanText = bodyText;
-	// 投递策略标签：steer(下次调用前插入) / followUp(停止后排队)
 	const deliveryBehavior = message.meta?.streamingBehavior as
 		| "steer"
 		| "followUp"
@@ -620,14 +653,9 @@ export const UserBubble = memo(function UserBubble(props: {
 			: deliveryBehavior === "followUp"
 				? t("app.messageDeliveryFollowUp")
 				: null;
-	/** 原地编辑不影响输入框；先提交给确认弹窗。 */
+	/** 原地编辑不影响输入框。 */
 	const handleSaveEdit = () => {
-		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
-		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
-		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
-		if (editText.trim() && trackedEditSubmit.current.submit(message.id, editText)) {
-			setEditing(false);
-		}
+		void timelineEdit.saveEdit();
 	};
 	/** 编辑后重发：放回 composer 输入框，由用户自行修改后发送。 */
 	const handleEditAndResend = () => {
@@ -656,6 +684,8 @@ export const UserBubble = memo(function UserBubble(props: {
 							src={`data:${img.mimeType};base64,${img.data}`}
 							alt={t("app.imageAlt", { index: index + 1 })}
 							className="size-16 max-h-40 cursor-pointer rounded-md border border-border object-cover transition-colors duration-150 hover:border-border-strong"
+							messageId={message.id}
+							imageIndex={index}
 							onClick={() => props.onPreviewImage(img, message.images)}
 						/>
 					))}
@@ -800,7 +830,7 @@ export const UserBubble = memo(function UserBubble(props: {
 					>
 						{renderChipText(cleanText, props.onOpenFile, props.validCommandNames, props.validFilePaths)}
 					</div>
-					{messageOverflowing && (
+					{(messageOverflowing || messageExpanded) && (
 						<div className="relative mt-1 flex justify-end">
 							{/* 折叠态底部渐变提示还有内容；展开态不需要 */}
 							{!messageExpanded && (
@@ -825,21 +855,22 @@ export const UserBubble = memo(function UserBubble(props: {
 					<Textarea
 						className="min-h-[100px] max-h-[400px] w-full resize-y rounded-sm border border-[var(--color-accent)] bg-bg-panel p-2 font-mono text-sm leading-relaxed text-text-primary outline-none focus:border-[var(--color-accent)] focus:shadow-[0_0_0_2px_var(--focus-ring)]"
 						value={editText}
-						onChange={(e) => setEditText(e.target.value)}
+						onChange={(e) => timelineEdit.updateText(e.target.value)}
 						onKeyDown={(e) => {
 							if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 								e.preventDefault();
 								handleSaveEdit();
 							}
-							if (e.key === "Escape") setEditing(false);
+							if (e.key === "Escape") timelineEdit.cancelEdit();
 						}}
+						disabled={timelineEdit.isSubmitting}
 						autoFocus
 					/>
 					<div className="flex justify-end gap-2">
-						<Button variant="outline" size="sm" className="h-auto border-[var(--color-accent)] px-3 py-1 text-xs text-[var(--color-accent)] shadow-none hover:text-[var(--color-accent)]" onClick={handleSaveEdit}>
+						<Button variant="outline" size="sm" className="h-auto border-[var(--color-accent)] px-3 py-1 text-xs text-[var(--color-accent)] shadow-none hover:text-[var(--color-accent)]" onClick={handleSaveEdit} disabled={timelineEdit.isSubmitting}>
 							{t("common.save")}
 						</Button>
-						<Button variant="outline" size="sm" className="h-auto px-3 py-1 text-xs shadow-none" onClick={() => setEditing(false)}>
+						<Button variant="outline" size="sm" className="h-auto px-3 py-1 text-xs shadow-none" onClick={timelineEdit.cancelEdit} disabled={timelineEdit.isSubmitting}>
 							{t("common.cancel")}
 						</Button>
 					</div>

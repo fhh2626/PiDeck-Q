@@ -428,6 +428,47 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 		},
 	);
 	router.handle(
+		ipcChannels.sessionsReadToolExportPayload,
+		async (input: unknown) => {
+			if (!input || typeof input !== "object") {
+				throw new Error("Invalid tool export payload request");
+			}
+			const { sessionId, messageId } = input as { sessionId?: unknown; messageId?: unknown };
+			if (typeof sessionId !== "string" || !sessionId.trim() || typeof messageId !== "string" || !messageId.trim()) {
+				throw new Error("Invalid sessionId or messageId");
+			}
+			const record = sessionCatalog.get(sessionId);
+			if (record?.filePath) {
+				return await agentManager.readToolExportPayloadFromFile(record.filePath, messageId);
+			}
+			return await agentManager.readToolExportPayload(sessionId, messageId);
+		},
+	);
+	router.handle(
+		ipcChannels.sessionsReadToolExportPayloads,
+		async (input: unknown) => {
+			if (!input || typeof input !== "object") {
+				throw new Error("Invalid tool export payloads request");
+			}
+			const { sessionId, messageIds } = input as { sessionId?: unknown; messageIds?: unknown };
+			if (
+				typeof sessionId !== "string" ||
+				!sessionId.trim() ||
+				!Array.isArray(messageIds) ||
+				messageIds.length === 0 ||
+				messageIds.length > 200 ||
+				!messageIds.every((id) => typeof id === "string" && id.trim())
+			) {
+				throw new Error("Invalid tool export payloads request");
+			}
+			const record = sessionCatalog.get(sessionId);
+			if (record?.filePath) {
+				return await agentManager.readToolExportPayloadsFromFile(record.filePath, messageIds);
+			}
+			return await agentManager.readToolExportPayloads(sessionId, messageIds);
+		},
+	);
+	router.handle(
 		ipcChannels.sessionsCatalogExportHtml,
 		async (sessionId: string) => {
 			const result = await exportCatalogSessionHtml(sessionId);

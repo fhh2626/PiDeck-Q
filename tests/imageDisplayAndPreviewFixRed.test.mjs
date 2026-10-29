@@ -9,7 +9,11 @@ test("production tool galleries stay single-mounted across outer collapse and fo
   const h = createHookHarness();
   const stubs = {
     react: { ...h.react, memo: (fn) => fn },
-    jotai: { atom: (value) => value, useAtomValue: (value) => value },
+    jotai: {
+      atom: (value) => value,
+      useAtomValue: (value) => value,
+      useAtom: (atomVal) => h.react.useState(typeof atomVal === "function" ? atomVal() : atomVal),
+    },
     "../../../atoms/session-atoms": {}, "../../../atoms/session-selectors": {},
     "../../../atoms/app-ui-atoms": { turnFlowSettingsAtom: {} },
     "../../../i18n": { t: (key) => key }, "../../i18n": { t: (key) => key },

@@ -111,14 +111,14 @@ async function mountEngine(host, options = { initial: "instant", resize: "instan
 	return driver;
 }
 
-// ── 容差带：贴近底部的滚动不算逃逸 ──
+// ── 用户明确上滚立即逃逸进入阅读状态（不再受旧 25px 容差或 200px 增长保护带压制）──
 
-test("scrolling up within the 25px tolerance band stays attached to the bottom", async () => {
+test("scrolling up even by a small distance escapes the bottom lock immediately", async () => {
 	await withHookHost(async (host) => {
 		const engine = await mountEngine(host);
 		await engine.scrollTo(BOTTOM - 20);
-		assert.equal(engine.state.escapedFromLock, false);
-		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.state.escapedFromLock, true, "明确上滚 20px 必须立即进入阅读模式");
+		assert.equal(engine.state.isAtBottom, false);
 	});
 });
 
@@ -131,13 +131,13 @@ test("scrolling up beyond the 25px tolerance band escapes the bottom lock", asyn
 	});
 });
 
-test("wheel-up within the 25px tolerance band does not escape (no displacement, no intent)", async () => {
+test("wheel-up near the bottom escapes immediately when content is vertically scrollable", async () => {
 	await withHookHost(async (host) => {
 		const engine = await mountEngine(host);
 		engine.scroll.scrollTop = BOTTOM - 10;
 		await engine.wheel(-50);
-		assert.equal(engine.state.escapedFromLock, false);
-		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.state.escapedFromLock, true, "真实滚轮上滚必须立即打断追底并逃逸");
+		assert.equal(engine.state.isAtBottom, false);
 	});
 });
 
@@ -160,16 +160,16 @@ test("wheel-down never escapes the bottom lock", async () => {
 	});
 });
 
-// ── 流式增长守卫带：弹簧追底滞后时的轻微上滚不逃逸 ──
+// ── 流式增长时用户意图优先：即使在流式增长窗口内，上滚也立即逃逸 ──
 
-test("scroll-up inside the growth guard band right after streaming growth does not escape", async () => {
+test("scroll-up right after streaming growth escapes immediately into reader mode", async () => {
 	await withHookHost(async (host) => {
 		const engine = await mountEngine(host);
 		await engine.resizeTo(1000); // 建立内容高度基线并刷新“最近正增长”时刻
-		engine.clock.now += 100; // 仍在 500ms 锁定窗口内
-		await engine.scrollTo(BOTTOM - 100); // 距底 100px <= 200px 守卫带
-		assert.equal(engine.state.escapedFromLock, false);
-		assert.equal(engine.state.isAtBottom, true);
+		engine.clock.now += 100; // 仍在流式紧密间隔内
+		await engine.scrollTo(BOTTOM - 100); // 用户主动上滚
+		assert.equal(engine.state.escapedFromLock, true, "即使刚刚发生正增长，上滚也必须立即逃逸");
+		assert.equal(engine.state.isAtBottom, false);
 	});
 });
 
@@ -195,30 +195,32 @@ test("the growth guard expires 500ms after the last positive growth", async () =
 	});
 });
 
-test("wheel-up inside the growth guard band does not escape while streaming; outside it does", async () => {
+test("wheel-up escapes immediately even right after positive resize", async () => {
 	await withHookHost(async (host) => {
 		const engine = await mountEngine(host);
 		await engine.resizeTo(1000);
 		engine.clock.now += 100;
 		engine.scroll.scrollTop = BOTTOM - 100;
 		await engine.wheel(-50);
-		assert.equal(engine.state.escapedFromLock, false, "守卫带内的滚轮上滚不逃逸");
+		assert.equal(engine.state.escapedFromLock, true, "正增长后紧接着滚轮上滚必须立即逃逸");
+		assert.equal(engine.state.isAtBottom, false);
 
 		engine.scroll.scrollTop = BOTTOM - 300;
 		await engine.wheel(-50);
-		assert.equal(engine.state.escapedFromLock, true, "守卫带外的滚轮上滚立即逃逸");
+		assert.equal(engine.state.escapedFromLock, true);
 	});
 });
 
-test("every positive growth refreshes the guard window", async () => {
+test("user scroll-up escapes immediately across multiple positive growths", async () => {
 	await withHookHost(async (host) => {
 		const engine = await mountEngine(host);
 		await engine.resizeTo(1000);
 		engine.clock.now += 400;
-		await engine.resizeTo(1100); // 再次正增长：重新计时
-		engine.clock.now += 400; // 距首次增长 800ms，但距最近一次仅 400ms
+		await engine.resizeTo(1100); // 再次正增长
+		engine.clock.now += 400;
 		await engine.scrollTo(BOTTOM - 100);
-		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.state.escapedFromLock, true, "正增长多次后用户上滚依然立即逃逸");
+		assert.equal(engine.state.isAtBottom, false);
 	});
 });
 

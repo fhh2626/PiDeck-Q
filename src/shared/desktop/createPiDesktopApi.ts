@@ -335,6 +335,16 @@ const api = {
 				messageId,
 				entryId,
 			) as Promise<{ text: string }>,
+		readToolExportPayload: (input: { sessionId: string; messageId: string }) =>
+			transport.invoke(
+				ipcChannels.sessionsReadToolExportPayload,
+				input,
+			) as Promise<import("../types").ToolExportPayload | null>,
+		readToolExportPayloads: (input: { sessionId: string; messageIds: string[] }) =>
+			transport.invoke(
+				ipcChannels.sessionsReadToolExportPayloads,
+				input,
+			) as Promise<Record<string, import("../types").ToolExportPayload>>,
 		readReferenceMessages: (sessionId: string) =>
 			transport.invoke(
 				ipcChannels.sessionsCatalogReadReferenceMessages,

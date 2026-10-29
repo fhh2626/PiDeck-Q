@@ -399,6 +399,8 @@ export function createPreviewApi(): PiDesktopApi {
 			readProcessEvents: async () => [],
 						readRecordMessagePage: async () => ({ messages: [], total: 0, nextBefore: null }),
 			readMessageFullText: async () => ({ text: "" }),
+			readToolExportPayload: async () => null,
+			readToolExportPayloads: async () => ({}),
 			readReferenceMessages: async () => [
 				{ role: "user", content: "Preview user message", timestamp: Date.now() - 60000 },
 				{ role: "assistant", content: "Preview assistant response", timestamp: Date.now() - 30000 },

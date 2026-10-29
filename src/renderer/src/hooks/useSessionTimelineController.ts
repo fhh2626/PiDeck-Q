@@ -238,10 +238,8 @@ type TimelineAnchor = { height: number; top: number };
  * 命中测试失败（unresolved）与「在底部」（at-bottom → 应清除锚点）必须分开，
  * 否则一次量不到就会把用户正在看的位置抹掉。
  */
-export type AnchorReading =
-  | { status: "resolved"; anchor: SessionScrollAnchor }
-  | { status: "at-bottom" }
-  | { status: "unresolved" };
+import type { TimelineViewportAdapter, AnchorReading } from "../components/session/timeline/TimelineViewportAdapter";
+export type { TimelineViewportAdapter, AnchorReading };
 
 export function isTimelineAtBottom(
   scrollTop: number,
@@ -573,6 +571,8 @@ export type SessionTimelineController = {
    * 挂到 MessageScroller 的 stick-to-bottom 引擎 API（回底弹簧）。
    * 未挂上时 scrollToBottom 退化为原生 scrollTo。
    */
+  /** 注册由 useVirtualTimeline 暴露的适配器 */
+  registerViewportAdapter?: (adapter: TimelineViewportAdapter) => () => void;
   scrollerScrollApiRef: RefObject<MessageScrollerScrollApi | null>;
   /** 上滚查看历史时的渲染窗口轮数（贴底时渲染层用 TIMELINE_MOUNTED_TURN_LIMIT，忽略此值）。
    *  2026-08 黑屏治理：历史不再全量放开挂载，窗口随「显示更早」逐步扩大。 */
@@ -664,6 +664,13 @@ export function useSessionTimelineController(options: {
    * 这里不得退回全表扫描，否则拖动时每帧仍是一次 O(挂载行数) 的强制布局。
    */
   const readCurrentAnchor = useCallback((): AnchorReading => {
+    // 优先从虚拟 Adapter 获取锚点快照（Adapter 原生返回三态 AnchorReading）
+    if (viewportAdapterRef.current?.captureReadingAnchor) {
+      const virtReading = viewportAdapterRef.current.captureReadingAnchor();
+      anchorReadingRef.current = virtReading;
+      return virtReading;
+    }
+
     const timeline = timelineRef.current;
     if (!timeline) return { status: "unresolved" };
     if (isTimelineAtBottom(timeline.scrollTop, timeline.scrollHeight, timeline.clientHeight)) {
@@ -681,11 +688,7 @@ export function useSessionTimelineController(options: {
       status: "resolved",
       anchor: {
         messageId,
-        // 保留负偏移：视口顶部常被上一行底部占据（行顶在视口上方），
-        // 截断为 0 会导致恢复时把行顶对齐视口顶、整体位置偏下（高大行偏差明显）。
-        // 恢复侧 scrollTop = max(0, elTop - offsetTop) 已兜底负值。
         offsetTop: rect.top - viewportRect.top,
-        // 2026-11 轮次模型：不再有 100 条分页窗口，visibleCount 恒为 0（兼容字段）
         visibleCount: 0,
         savedAt: Date.now(),
       },
@@ -844,6 +847,15 @@ export function useSessionTimelineController(options: {
   // 会话切走时必须取消，避免晚到的清理把新会话刚立上的标记抹掉。
   const programmaticScrollClearRef = useRef<number | undefined>(undefined);
   const scrollerScrollApiRef = useRef<MessageScrollerScrollApi | null>(null);
+  const viewportAdapterRef = useRef<TimelineViewportAdapter | null>(null);
+  const registerViewportAdapter = useCallback((adapter: TimelineViewportAdapter) => {
+    viewportAdapterRef.current = adapter;
+    return () => {
+      if (viewportAdapterRef.current === adapter) {
+        viewportAdapterRef.current = null;
+      }
+    };
+  }, []);
   const loadMoreAnchorRef = useRef<Tagged<TimelineAnchor> | undefined>(undefined);
   const pendingJumpRef = useRef<Tagged<string> | undefined>(undefined);
   const highlightTimersRef = useRef(new Map<number, number>());
@@ -910,6 +922,19 @@ export function useSessionTimelineController(options: {
     const timeline = timelineRef.current;
     if (!timeline) return false;
     const anchor = pending.value;
+
+    // 若 Adapter 已挂载且包含该消息，优先通过虚拟 Adapter 纯几何对齐
+    if (viewportAdapterRef.current?.containsMessage(anchor.messageId)) {
+      autoScrollRef.current = false;
+      setAutoScroll(false);
+      setShowScrollToBottom(true);
+      viewportAdapterRef.current.restoreMessage(anchor.messageId, anchor.offsetTop);
+      currentAnchorRef.current = anchor;
+      anchorReadingRef.current = { status: "resolved", anchor };
+      pendingAnchorRestoreRef.current = undefined;
+      return true;
+    }
+
     const anchorRow = timeline.querySelector(
       `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
     ) as HTMLElement | null;
@@ -1054,6 +1079,8 @@ export function useSessionTimelineController(options: {
 	 * 覆盖会把补偿位置拉回请求开始那一刻）。
 	 */
 	const captureLoadMoreAnchor = useCallback(() => {
+		// 虚拟模式下禁止注册 DOM 滚动高度差锚点，完全交由虚拟 Hook 的 layout 纯几何纠偏！
+		if (viewportAdapterRef.current) return;
 		if (loadMoreAnchorRef.current) return;
 		const timeline = timelineRef.current;
 		if (!timeline || ownerKeyRef.current !== ownerKey) return;
@@ -1283,6 +1310,22 @@ export function useSessionTimelineController(options: {
     const requestOwnerKey = ownerKey;
     const timeline = timelineRef.current;
     if (!timeline || ownerKeyRef.current !== requestOwnerKey) return;
+
+    // 优先通过虚拟 Adapter 跳转
+    if (viewportAdapterRef.current?.containsMessage(messageId)) {
+      autoScrollRef.current = false;
+      setAutoScroll(false);
+      setShowScrollToBottom(true);
+      viewportAdapterRef.current.jumpToMessage(messageId);
+      const existing = timeline.querySelector(
+        `[data-message-id="${CSS.escape(messageId)}"]`,
+      ) as HTMLElement | null;
+      if (existing) {
+        highlightMessage(existing, requestOwnerKey);
+      }
+      return;
+    }
+
     const existing = timeline.querySelector(
       `[data-message-id="${CSS.escape(messageId)}"]`,
     ) as HTMLElement | null;
@@ -1293,8 +1336,6 @@ export function useSessionTimelineController(options: {
     }
     const index = combinedMessages.findIndex((message) => message.id === messageId);
     if (index < 0) return;
-    // 目标可能在贴底 turn 窗口外：先取消跟随以展开挂载，再等布局后滚动。
-    // （2026-11 轮次模型：数据全量在 atom，无需再扩展渲染窗口。）
     autoScrollRef.current = false;
     setAutoScroll(false);
     setShowScrollToBottom(true);
@@ -1510,6 +1551,7 @@ export function useSessionTimelineController(options: {
     scrollToBottom,
     /** 滚动回调：维护会话切换用的滚动锚点（rAF 合并，不触发渲染） */
     handleTimelineScroll,
+    registerViewportAdapter,
     autoScroll,
     showScrollToBottom,
     setAutoScrollFromScroller,

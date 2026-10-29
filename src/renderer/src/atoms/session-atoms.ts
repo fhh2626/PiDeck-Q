@@ -219,6 +219,31 @@ export const sessionMessageCacheBySessionIdAtomFamily = atomFamily(
 
 
 /**
+ * 时间线展示状态清理注册表接口（遵循计划步骤 5 规则）。
+ * 彻底切断 session-atoms 与 timeline-presentation 的模块循环依赖，
+ * 同时兼容单元测试 VM 环境中各种无副作用/直接引入情况。
+ */
+type TimelinePresentationCleanupRegistry = {
+	handler: ((sessionId: string) => void) | null;
+	register: (fn: (sessionId: string) => void) => void;
+	removeSession: (sessionId: string) => void;
+};
+
+export const timelinePresentationCleanupRegistry: TimelinePresentationCleanupRegistry = {
+	handler: null,
+	register(fn: (sessionId: string) => void) {
+		this.handler = fn;
+	},
+	removeSession(sessionId: string) {
+		if (this.handler) {
+			this.handler(sessionId);
+		} else if (typeof globalThis !== "undefined" && typeof (globalThis as Record<string, unknown>).__piTimelinePresentationCleanup === "function") {
+			((globalThis as Record<string, unknown>).__piTimelinePresentationCleanup as (s: string) => void)(sessionId);
+		}
+	},
+};
+
+/**
  * 会话切换时的滚动位置锚点（per-session，切走保存、切回恢复）。
  * 只保存「非跟底」状态：用户正在查看历史时切走，回来时停留在原位置；
  * 在底部跟流切走的会话不存锚点，切回继续跟底。
@@ -626,7 +651,11 @@ export const cacheSessionMessagesAtom = atom(
     ];
     const retainedIds = lru.slice(0, SESSION_MESSAGE_CACHE_LIMIT);
     for (const cachedSessionId of Object.keys(nextCache)) {
-      if (!retainedIds.includes(cachedSessionId)) delete nextCache[cachedSessionId];
+      if (!retainedIds.includes(cachedSessionId)) {
+        delete nextCache[cachedSessionId];
+        // 淘汰该会话在内存中的全部 presentation 状态（防止内存长期堆积）
+        timelinePresentationCleanupRegistry.removeSession(cachedSessionId);
+      }
     }
     set(sessionMessagesCacheAtom, nextCache);
     set(sessionMessageLruAtom, retainedIds);
@@ -2296,6 +2325,7 @@ export const removeSessionStateAtom = atom(null, (get, set, sessionId: string) =
   const loadState = { ...get(sessionMessageLoadStateAtom) };
   delete loadState[sessionId];
   set(sessionMessageLoadStateAtom, loadState);
+  timelinePresentationCleanupRegistry.removeSession(sessionId);
   if (get(currentSessionIdAtom) === sessionId) set(currentSessionIdAtom, undefined);
 });
 

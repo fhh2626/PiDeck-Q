@@ -159,17 +159,23 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		})();
 	}
 
-	async function editMessage(expectedTarget: SessionRuntimeTarget, messageId: string, newText: string): Promise<void> {
+	async function editMessage(expectedTarget: SessionRuntimeTarget, messageId: string, newText: string): Promise<boolean> {
 		try {
 			const currentTarget = requireCurrentRuntimeTarget(expectedTarget);
 			const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
 			requireSessionCommand(await api.sessions.editRuntimeMessage(currentTarget, messageId, newText));
 			if (refreshSnapshot && input.refreshHistoryAfterMutation) {
-				await input.refreshHistoryAfterMutation(refreshSnapshot);
+				try {
+					await input.refreshHistoryAfterMutation(refreshSnapshot);
+				} catch {
+					input.showToast(t("diagnostic.historyLoadFailed"), 4000);
+				}
 			}
+			return true;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			input.showToast(`${t("message.editFailed")}: ${translateAgentErrorMessage(message)}`, 5000);
+			return false;
 		}
 	}
 

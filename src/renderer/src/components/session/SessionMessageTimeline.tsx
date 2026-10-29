@@ -45,14 +45,12 @@ import { SessionStartSurface } from "./SessionStartSurface";
 import { MessageScroller } from "../agents/message-scroller";
 import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
-import {
-  resolveTimelineTurnWindow,
-  TIMELINE_MOUNTED_TURN_LIMIT,
-} from "./timeline/turnRenderWindow";
-import {
-  resolveTimelineWindowShift,
-  scrollTopForRetainedRow,
-} from "../../hooks/timelineScrollAnchor";
+import { useVirtualTimeline } from "../../hooks/useVirtualTimeline";
+import { useTimelineInteractionPins } from "../../hooks/useTimelineInteractionPins";
+import type { TimelineViewportAdapter } from "./timeline/TimelineViewportAdapter";
+import { TimelineMessageRow } from "./timeline/TimelineMessageRow";
+import { VirtualTimelineRows } from "./timeline/VirtualTimelineRows";
+import { exportSelectedMessagesToImage } from "./timeline/TimelineImageExport";
 
 type TurnRowProps = ComponentProps<typeof TurnRow>;
 type UserBubbleProps = ComponentProps<typeof UserBubble>;
@@ -96,7 +94,7 @@ function markFailureToastShown(messageId: string) {
 }
 
 /** 判断消息是否为「失败/重试类」提示（时间线不渲染、改 toast）。 */
-function isFloatingFailureMessage(message: ChatMessage): boolean {
+export function isFloatingFailureMessage(message: ChatMessage): boolean {
 	const key = (message.meta as Record<string, unknown> | undefined)?.i18nKey;
 	return typeof key === "string" && FLOATING_FAILURE_KEYS.has(key);
 }
@@ -130,6 +128,12 @@ function isItemSlidingOut(item: RenderMessage): boolean {
     return item.message.meta?.slidingOut === true;
   }
   return false;
+}
+
+function findPinnedRowElement(viewport: HTMLElement | null, rowKey: string | undefined): HTMLElement | null {
+  if (!viewport || !rowKey || typeof CSS === "undefined" || typeof CSS.escape !== "function") return null;
+  const node = viewport.querySelector(`[data-timeline-row-key="${CSS.escape(rowKey)}"]`);
+  return node instanceof HTMLElement ? node : null;
 }
 
 type TimelineInteractionProps = {
@@ -204,6 +208,14 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     // 不依赖 catalog messageCount（摘要缺失时兑底为 0，不可靠）。
     Boolean(surfaceCachedEntry),
   );
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // 接入交互 Pin（输入焦点 / 文本选区 / 编辑）
+  const { pinnedKeys, pinAnimationByMessageId } = useTimelineInteractionPins({
+    viewportRef: timelineRef,
+    sessionId,
+  });
+
   const isConversationLoading = modernSurfaceState.isLoading;
   // 空态时起始页走原来的杂志式快捷入口，不再在时间线里挂第二套输入框。
   const showSurfaceEmptyState =
@@ -246,7 +258,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   }, [activeMessages, removeSlidingOut, sessionId]);
 
   useEffect(() => () => {
-    for (const timer of slidingTimersRef.current.values()) {
+    for (const [, timer] of slidingTimersRef.current.entries()) {
       window.clearTimeout(timer);
     }
     slidingTimersRef.current.clear();
@@ -350,7 +362,9 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   ]);
 
   useEffect(() => () => {
-    for (const timer of freshTimersRef.current.values()) window.clearTimeout(timer);
+    for (const [, timer] of freshTimersRef.current.entries()) {
+      window.clearTimeout(timer);
+    }
     freshTimersRef.current.clear();
   }, []);
 
@@ -365,114 +379,94 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     prevRenderedRunsRef.current = next;
     return next;
   }, [renderedRuns]);
-  // 渲染窗口（2026-08 黑屏治理，2026-12 统一 50 轮）：贴底只挂尾部 50 轮；上滚查看历史也裁剪
-  // （controller.scrolledWindowTurns，初始 50 轮 + 「显示更早」逐步扩大）——
-  // 历史全量放开挂载是大会话渲染进程内存峰值/黑屏的来源。数据仍在 atoms。
-  const followingForTurnWindow = controller.autoScroll;
-  const turnWindowTurns = followingForTurnWindow
-    ? TIMELINE_MOUNTED_TURN_LIMIT
-    : controller.scrolledWindowTurns;
-  const turnWindow = useMemo(
-    () => resolveTimelineTurnWindow(
-      reconciledRuns,
-      turnWindowTurns,
-      // 贴底与上滚共用同一条目预算（controller 持有，贴底时回落到基础值）。
-      // 以前贴底传 undefined：一轮里上百条工具时 DOM 无上限，输入与拖动都顿；
-      // 且一离开底部就突然从「全部」切到 200 条，列表从顶部缩短而无人补偿。
-      // 最新一轮单独超预算时 sliceLastUserTurns 仍整轮保留，不会切掉当前回复。
-      controller.scrolledWindowItems,
-    ),
-    [controller.scrolledWindowItems, followingForTurnWindow, reconciledRuns, turnWindowTurns],
-  );
-  const displayRuns = turnWindow.displayItems;
-  const turnWindowActive = turnWindow.windowActive;
-  // 「最后一个 agent-run」：live 挂载门的判定基准。不能按最后一条显示条目判定：
-  // steer 排队期显示数组以用户消息结尾（新轮尚未产生首条消息），最后一条 agent-run
-  // 才是真正的流式轮；反过来若门控放宽到任意轮，被 steer 打断的旧轮（尾部是空文本
-  // interim）会挂上会话级流式槽，把新一轮正文在旧轮底部再打印一遍（同一中间回复
-  // 前后双份，2026-08 回归）。
-  // 注意：这个判定只用于 live 挂载门——isLatestRun/busy 仍按「最后一条显示条目」
-  // 判定，否则普通发送的激活等待期（用户消息在末尾）会把上一轮已完成、已提升的
-  // 最终回答重新降级，导致最终回答暂时消失。
-  const lastAgentRunIndex = useMemo(() => {
-    for (let index = displayRuns.length - 1; index >= 0; index -= 1) {
-      if (displayRuns[index].kind === "agent-run") return index;
+  const adapterRef = useRef<TimelineViewportAdapter | null>(null);
+
+  // 稳定阅读位置纠偏回调（只调用当前 engine 的 restoreAt，未挂上时不写原生 DOM）
+  const applyReaderScrollTop = useCallback((top: number) => {
+    const api = controller.scrollerScrollApiRef.current;
+    if (api?.restoreAt) {
+      api.restoreAt(top);
     }
-    return -1;
-  }, [displayRuns]);
-  
-  // 窗口轮数变化（上滚扩大窗口、点「显示更早」扩大）会在顶部插入内容，需补偿 scrollTop
-  // 保持视口内容不动；数据 prepend 的补偿由 controller 的 loadMoreAnchorRef 负责，
-  // 两者按「窗口轮数变化 / 数据变化」分工。补页成功会同时前插消息与 +10 轮（同一帧），
-  // 此时由 controller 的前置锚点做唯一一次补偿，本 effect 让位、不得二次补偿。
-  // 贴底时由引擎接管不补偿。
-  const turnWindowStateRef = useRef<{ windowed: boolean; height: number; turns: number }>({
-    windowed: false,
-    height: 0,
-    turns: 0,
+  }, [controller.scrollerScrollApiRef]);
+
+  // 接入虚拟列表
+  const virtualTimeline = useVirtualTimeline({
+    items: reconciledRuns,
+    viewportRef: timelineRef,
+    listRef,
+    isFollowing: controller.autoScroll,
+    applyReaderScrollTop,
+    sessionId,
+    adapterRef,
+    pinnedKeys,
   });
+
+  // 把已实例化的 adapter 在 layout 阶段稳定注册给 controller
+  const registerAdapter = controller.registerViewportAdapter;
   useLayoutEffect(() => {
-    const timeline = timelineRef.current;
-    if (!timeline) return;
-    const prev = turnWindowStateRef.current;
-    const nextHeight = timeline.scrollHeight;
-    // 锚点快照必须在改动 scrollTop 之前取：变短补偿要用「这一帧之前正在看的那一行」
-    // 和它当时距视口顶的偏移，才能把内容放回原处（controller 只在真实滚动时更新它）。
-    const anchorReading = controller.peekViewportAnchor();
-    const shiftAction = resolveTimelineWindowShift({
-      hasPendingHistoryAnchor: controller.hasPendingLoadMoreAnchor?.() ?? false,
-      turnsChanged: prev.turns !== turnWindowTurns,
-      heightDelta: nextHeight - prev.height,
-      following: followingForTurnWindow,
-      hadWindowedRows: prev.windowed,
-    });
-    if (shiftAction === "refresh-baseline") {
-      // 加载等待期间的普通帧（含底部流式增高）：只把锚点基线刷成当前值，
-      // 否则这段增高会被当成历史前置的高度差，把视口往下推。
-      controller.refreshLoadMoreAnchorBaseline?.();
-    } else if (shiftAction === "grow-compensation") {
-      // 没有历史前置（纯「显示更早」展开）时在这里补偿：用当前 scrollTop 加高度差，
-      // 贴顶也要加，视口里的消息才不被新展开的内容顶掉。
-      const nextTop = timeline.scrollTop + (nextHeight - prev.height);
-      // 标记程序化滚动：补偿的 scrollTop 位移会派发 scroll 事件，
-      // 必须让自动加载监听忽略（补偿后视口可能落在顶部区间）。
-      controller.markProgrammaticScroll?.();
-      timeline.scrollTop = nextTop;
-    } else if (shiftAction === "shrink-compensation") {
-      // 顶部整轮被裁掉（非跟底时条目预算收紧、或 Agent 又跑完一轮把最旧轮顶出窗口）：
-      // 高度差不再适用——被裁掉的量不等于插入量，按差值补偿等于什么也没补，
-      // 视口会并到另一批内容上（表现为突然跳走）。改按锚点行对齐：把正在看的那一行
-      // 放回它原来的位置。
-      const anchorMessageId =
-        anchorReading?.status === "resolved" ? anchorReading.anchor.messageId : undefined;
-      const anchorRow = anchorMessageId
-        ? timeline.querySelector(`[data-message-id="${CSS.escape(anchorMessageId)}"]`)
-        : null;
-      const rowRect = anchorRow?.getBoundingClientRect();
-      // 行不可见（矩形全零）时不能用来对齐：按全零矩形算出的 scrollTop 是垃圾值。
-      if (anchorRow && rowRect && (rowRect.height > 0 || rowRect.width > 0)) {
-        const nextTop = scrollTopForRetainedRow(
-          rowRect.top - timeline.getBoundingClientRect().top + timeline.scrollTop,
-          anchorReading.status === "resolved" ? anchorReading.anchor.offsetTop : 0,
-        );
-        if (nextTop !== timeline.scrollTop) {
-          // 同样要标记程序化滚动：补偿后视口可能落在顶部区间，不能触发自动翻页。
-          controller.markProgrammaticScroll?.();
-          timeline.scrollTop = nextTop;
+    if (adapterRef.current && registerAdapter) {
+      return registerAdapter(adapterRef.current);
+    }
+  }, [registerAdapter, sessionId]);
+
+  // 统一动效 Pin 注册（将 slide-out 与 fresh 新增消息顶层行 pin 住，防止虚拟滚动卸载中断动画）
+  const animationPinCleanupRef = useRef<Map<string, () => void>>(new Map());
+  useEffect(() => {
+    const activeTokens = new Set<string>();
+
+    for (const msg of activeMessages) {
+      if (msg.meta?.slidingOut === true) {
+        const token = `slide:${msg.id}`;
+        activeTokens.add(token);
+        if (!animationPinCleanupRef.current.has(token)) {
+          const rowKey = virtualTimeline.rowModel.rowKeyByMessageId.get(msg.id);
+          const el = findPinnedRowElement(timelineRef.current, rowKey);
+          const cleanup = pinAnimationByMessageId(
+            msg.id,
+            virtualTimeline.rowModel.rowKeyByMessageId,
+            el,
+          );
+          animationPinCleanupRef.current.set(token, cleanup);
         }
       }
-      // 锚点行已不在窗口里（被裁掉的正是正在看的那一行）：不猜位置，保持本帧落点。
-      // 下一帧真实滚动会带回新锚点；这里乱写 scrollTop 只会表现为「跳到以前的消息」。
     }
-    // "defer-to-history-anchor"：这一帧就是历史前插帧，不动 scrollTop 也不刷基线，
-    // 高度差交给 controller 的前置锚点补偿消费（同一帧补两次会把视口推下两倍高度）。
-    // "none"：跟底时由 stick-to-bottom 引擎负责生长补偿；上帧未裁切则没有顶部被裁的位移。
-    turnWindowStateRef.current = {
-      windowed: turnWindowActive,
-      height: nextHeight,
-      turns: turnWindowTurns,
-    };
-  }, [controller, displayRuns, followingForTurnWindow, timelineRef, turnWindowActive, turnWindowTurns]);
+
+    for (const id of freshMessageIds) {
+      const token = `fresh:${id}`;
+      activeTokens.add(token);
+      if (!animationPinCleanupRef.current.has(token)) {
+        const rowKey = virtualTimeline.rowModel.rowKeyByMessageId.get(id);
+        const el = findPinnedRowElement(timelineRef.current, rowKey);
+        const cleanup = pinAnimationByMessageId(
+          id,
+          virtualTimeline.rowModel.rowKeyByMessageId,
+          el,
+        );
+        animationPinCleanupRef.current.set(token, cleanup);
+      }
+    }
+
+    // 清理不再活跃的 token
+    for (const [token, cleanup] of animationPinCleanupRef.current.entries()) {
+      if (!activeTokens.has(token)) {
+        cleanup();
+        animationPinCleanupRef.current.delete(token);
+      }
+    }
+  }, [
+    activeMessages,
+    freshMessageIds,
+    virtualTimeline.rowModel,
+    pinAnimationByMessageId,
+    timelineRef,
+  ]);
+
+  useEffect(() => () => {
+    for (const cleanup of animationPinCleanupRef.current.values()) {
+      cleanup();
+    }
+    animationPinCleanupRef.current.clear();
+  }, []);
   // 文件修改展示已下沉到每轮 TurnRow 底部（TurnFileChanges），此处不再做全局汇总
   const lastUserMessageId = useMemo(() => {
     for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
@@ -524,44 +518,22 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   ) {
     if (kind === "image") {
       try {
-        const { toBlob } = await loadHtmlToImage();
         const source = timelineRef.current?.querySelector(
           ".message-list",
         ) as HTMLElement | null;
-        if (!source) return;
+        const width = source ? Math.max(source.clientWidth, source.scrollWidth) : 600;
 
-        const captureIds = getMultiSelectImageCaptureIds(reconciledRuns, selectedIds);
-        const clone = source.cloneNode(true) as HTMLElement;
-        for (const item of Array.from(clone.children)) {
-          if (!(item instanceof HTMLElement)) continue;
-          const id = item.dataset.messageId;
-          if (!id || !captureIds.has(id)) item.remove();
-        }
-        clone.classList.add("multi-select-image-export");
-        clone.style.width = `${Math.max(source.clientWidth, source.scrollWidth)}px`;
-        clone.style.padding = "24px";
-        clone.style.background =
-          getComputedStyle(document.documentElement).getPropertyValue(
-            "--color-bg-panel",
-          ) || "#fff";
-        document.body.appendChild(clone);
-        let blob: Blob | null = null;
-        try {
-          blob = await toBlob(clone, {
-            pixelRatio: Math.min(2, window.devicePixelRatio || 1),
-            backgroundColor:
-              getComputedStyle(document.documentElement).getPropertyValue(
-                "--color-bg-panel",
-              ) || undefined,
-            filter: (node) =>
-              !(node instanceof HTMLElement) ||
-              (!node.classList.contains("turn-row-actions") &&
-                !node.classList.contains("user-turn-actions") &&
-                !node.classList.contains("copy-menu-popover")),
-          });
-        } finally {
-          clone.remove();
-        }
+        const blob = await exportSelectedMessagesToImage({
+          reconciledRuns,
+          selectedIds,
+          width,
+          sessionId,
+          onPreviewImage: props.onPreviewImage,
+          onOpenExternal: props.onOpenExternal,
+          onOpenFile: props.onOpenFile,
+          showThinking: props.showThinking,
+        });
+
         if (blob) {
           await navigator.clipboard.write([
             new ClipboardItem({ [blob.type]: blob }),
@@ -613,24 +585,19 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
         contentEntering && "timeline-content-enter",
       )}
       viewportClassName="message-timeline"
-      // 宽度约束落在内层 [role=log] 而非 scroller 宿主：视口撑满整个面板，
-      // 原生滚动条贴面板最右侧；内容列仍与 composer 同宽居中（见 chatContentWidth）。
       contentProps={showSurfaceEmptyState ? undefined : { style: chatContentWidthStyle }}
       viewportRef={timelineRef}
       scrollApiRef={controller.scrollerScrollApiRef}
-      followOutput={controller.autoScroll}
+      initialFollowOutput={controller.autoScroll}
       followThreshold={56}
       smooth
-      // busy 只驱动 aria-busy 和结束后的 150ms instant 窗口；流式增高是否弹簧
-      // 由 MessageScroller 的 resize + 28px 阈值决定，不再整段忙碌硬贴底。
       busy={isAgentBusy || isAwaitingAssistant}
       onFollowChange={controller.setAutoScrollFromScroller}
       viewportProps={{
-        // 会话切换滚动位置保持：滚动时维护 per-session 锚点（rAF 合并，不触发渲染）
         onScroll: controller.handleTimelineScroll,
       }}
     >
-      {(turnWindowActive || (hasMoreMessages && canLoadMoreMessages)) && (
+      {hasMoreMessages && canLoadMoreMessages && (
         <div
           style={{
             display: "flex",
@@ -641,13 +608,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
         >
           <button
             onClick={() => {
-              // 窗口裁剪生效时先扩大渲染窗口（显示已加载的更早内容）；
-              // 窗口已覆盖全部已加载数据且还有历史时才翻数据页。
-              // 数据翻页补偿（loadMoreAnchorRef）与窗口扩大补偿（turnWindowStateRef）
-              // 发生在不同帧，不会双重补偿。
-              if (turnWindowActive) {
-                controller.expandWindow();
-              } else if (hasMoreMessages && canLoadMoreMessages) {
+              if (hasMoreMessages && canLoadMoreMessages) {
                 loadMoreMessages();
               }
             }}
@@ -668,22 +629,15 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
             }}
           >
             {isLoadingMoreMessages ? (
-              // 加载动画：点击后立即出现，真正加载完成（finally 复位 isLoadingMessagePage）才消失
               <>
                 <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                 {t("timeline.loadingMore")}
               </>
-            ) : turnWindowActive
-                ? turnWindow.hiddenTurnCount > 0
-                  ? t("timeline.loadEarlierTurns", {
-                      count: turnWindow.hiddenTurnCount,
-                    })
-                  : t("timeline.loadEarlierContent")
-                : controller.nextLoadIsHistory
-                  ? t("timeline.loadMoreTurns")
-                  : t("timeline.loadMoreHistory", {
-										count: totalMessageCount - paginatedMessages.length,
-									})}
+            ) : controller.nextLoadIsHistory
+              ? t("timeline.loadMoreTurns")
+              : t("timeline.loadMoreHistory", {
+                  count: totalMessageCount - paginatedMessages.length,
+                })}
           </button>
         </div>
       )}
@@ -730,104 +684,57 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
           <SessionStartSurface onQuickPrompt={props.onQuickPrompt} />
         )}
 
-      {/* 长会话渲染治理：
-          - 不再使用 content-visibility 估算高度（展开工具会抖）。
-          - 学 Proma：总折叠压缩单行 DOM；另在贴底时只挂尾部 N 个 agent-run
-            （见 turnRenderWindow），上滚放开。分页仍做数据窗口治理。 */}
+      {/* 虚拟化顶层行渲染列表 */}
       {hasActiveConversation &&
         !isConversationLoading &&
         activeMessages.length > 0 && (
-          <div className="message-list min-w-0 w-full mx-auto transition-opacity duration-150">
-            {displayRuns.map((item, index) => {
-              const isSliding = isItemSlidingOut(item);
-              let node: ReactNode = null;
-              if (item.kind === "agent-run") {
-                // Controls：忙碌中的末行 run 视为 live（isStreaming 补丁可能略滞后于正文 atom）。
-                const isRunStreaming = isLatestTimelineRunBusy(
-                  isAgentBusy,
-                  index,
-                  displayRuns.length,
-                );
-                node = (
-                  <TurnRow
-                    key={item.id}
-                    run={item}
+          <div
+            ref={(node) => {
+              listRef.current = node;
+              virtualTimeline.registerListNode?.(node);
+            }}
+            data-virtualized="true"
+            className="message-list min-w-0 w-full mx-auto transition-opacity duration-150"
+          >
+            <VirtualTimelineRows
+              renderPlan={virtualTimeline.renderPlan}
+              registerRowNode={virtualTimeline.registerRowNode}
+              renderRow={(virtualRow) => {
+                const item = virtualRow.item;
+                const isSliding = isItemSlidingOut(item);
+                // 唯一以 virtualTimeline.rowModel.lastAgentRunKey 为基准，避免原 lastAgentRunIndex 双重判定导致多个 agent-run 被标为最后轮
+                const isLastAgentRun = virtualRow.key === virtualTimeline.rowModel.lastAgentRunKey;
+                return (
+                  <TimelineMessageRow
+                    key={virtualRow.key}
+                    item={item}
+                    index={virtualRow.sourceIndex}
+                    totalItems={reconciledRuns.length}
                     sessionId={sessionId}
-                    fresh={freshMessageIds.has(item.id)}
-                    onPreviewImage={props.onPreviewImage}
+                    fresh={freshMessageIds.has(virtualRow.anchorId)}
                     showThinking={props.showThinking}
-                    isStreaming={isRunStreaming}
-                    // 始终下发 live id（按 message id 命中）；勿绑 isRunStreaming，
-                    // 否则流结束而 History 未到时会提前卸思考步导致 remount dump。
                     liveThinkingId={liveThinkingId}
-                    agentRunning={isRunStreaming}
-                    isLatestRun={index === displayRuns.length - 1}
-                    isLastAgentRun={index === lastAgentRunIndex}
+                    isAgentBusy={isAgentBusy}
+                    isLastAgentRun={isLastAgentRun}
+                    lastUserMessageId={lastUserMessageId}
+                    resendableMessageIds={resendableMessageIds}
+                    forkingMessageId={props.forkingMessageId ?? undefined}
+                    validCommandNames={props.validCommandNames}
+                    validFilePaths={props.validFilePaths}
+                    isSliding={isSliding}
+                    onPreviewImage={props.onPreviewImage}
                     onOpenExternal={props.onOpenExternal}
                     onOpenFile={props.onOpenFile}
                     onDiffFile={props.onDiffFile}
+                    onResendUserMessage={props.onResendUserMessage}
                     onEditMessage={props.onEditMessage}
                     onDeleteMessage={props.onDeleteMessage}
+                    onForkMessage={props.onForkMessage}
                     onEnterMultiSelect={enterMultiSelect}
                   />
                 );
-              } else if (item.kind === "message") {
-                const message = item.message;
-                if (message.role === "user") {
-                  node = (
-                    <UserBubble
-                      key={message.id}
-                      message={message}
-                      fresh={freshMessageIds.has(message.id)}
-                      onPreviewImage={props.onPreviewImage}
-                      onOpenFile={props.onOpenFile}
-                      onResendUserMessage={props.onResendUserMessage}
-                      onEditMessage={props.onEditMessage}
-                      onDeleteMessage={props.onDeleteMessage}
-                      onForkMessage={props.onForkMessage}
-                      forking={props.forkingMessageId === message.id}
-                      agentRunning={isAgentBusy}
-                      isLastUserMessage={message.id === lastUserMessageId}
-                      showResendButton={resendableMessageIds.has(message.id)}
-                      validCommandNames={props.validCommandNames}
-                      validFilePaths={props.validFilePaths}
-                      onEnterMultiSelect={enterMultiSelect}
-                    />
-                  );
-                } else if (message.role === "error") {
-                  // 失败/重试类提示已转 toast（见 FLOATING_FAILURE_KEYS），
-                  // 时间线不再渲染卡片；pi 启动失败/运行时诊断仍走诊断卡片。
-                  if (isFloatingFailureMessage(message)) return null;
-                  node = <DiagnosticMessageCard key={message.id} message={message} />;
-                } else if (message.role === "system") {
-                  const meta = message.meta as any;
-                  if (meta?.type === "askQuestion") {
-                    // Pending extension UI is rendered once in the timeline footer.
-                    // Legacy in-memory messages may still contain this placeholder.
-                    return null;
-                  }
-                  if (meta?.type === "compaction") {
-                    node = <CompactionCard key={message.id} message={message} sessionId={sessionId} onOpenExternal={props.onOpenExternal} onOpenFile={props.onOpenFile} />;
-                  } else {
-                    // 自动重试状态（retryScheduled/retrySucceeded/retryFailed 等）
-                    // 属于「重试提示」，与失败类一样转 toast、不占时间线。
-                    if (isFloatingFailureMessage(message)) return null;
-                    node = <DiagnosticMessageCard key={message.id} message={message} />;
-                  }
-                }
-              }
-
-              if (!node) return null;
-              if (isSliding) {
-                const itemId = item.kind === "message" ? item.message.id : item.id;
-                return (
-                  <div key={`slideout-${itemId}`} className="timeline-message-slide-out">
-                    {node}
-                  </div>
-                );
-              }
-              return node;
-            })}
+              }}
+            />
 
             {hasActiveConversation &&
               !cancellingUi &&

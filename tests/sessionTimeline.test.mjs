@@ -165,12 +165,10 @@ test("the top-compensation helper no longer has a skip-at-top branch", () => {
 });
 
 test("desktop turn-window compensation defers to a pending history anchor", () => {
-  // 补页成功会同时前插消息与 +10 轮（同一帧）：只允许 controller 补偿一次，
-  // turn 窗口 effect 让位；无锚点时自己用当前 scrollTop 加高度差补偿（贴顶亦然）。
-  assert.match(timelineComponentSource, /controller\.hasPendingLoadMoreAnchor/);
-  assert.match(timelineComponentSource, /controller\.refreshLoadMoreAnchorBaseline/);
-  assert.match(timelineComponentSource, /timeline\.scrollTop \+ \(nextHeight - prev\.height\)/);
-  assert.doesNotMatch(timelineComponentSource, /resolveTimelineTopCompensation/);
+  // useVirtualTimeline 已经接管阅读位置补偿与前插保护
+  const vSource = readFileSync("src/renderer/src/hooks/useVirtualTimeline.ts", "utf8");
+  assert.match(vSource, /preserve-anchor/);
+  assert.match(vSource, /readingAnchorRef/);
 });
 
 test("web timeline restores the visible anchor even at the very top", () => {

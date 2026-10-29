@@ -124,3 +124,120 @@ test("timeline wires reconcileRuns and TurnRow memo fast path", () => {
 	);
 	assert.match(turnRow, /sameAgentRunForRender\(prev\.run, next\.run\)/);
 });
+
+function makeMsg(id, text, role = "user") {
+	return {
+		kind: "message",
+		message: {
+			id,
+			agentId: "agent",
+			role,
+			text,
+			timestamp: 10,
+		},
+	};
+}
+
+test("reconcileRuns updates rendered text on same-length ordinary message replacement", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const prevMsg = makeMsg("msg-1", "old text");
+	const nextMsg = makeMsg("msg-1", "NEW text");
+	const previous = [prevMsg];
+	const next = [nextMsg];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous, "must not return stale previous array");
+	assert.equal(result[0], nextMsg, "must take incoming changed message");
+	assert.equal(result[0].message.text, "NEW text");
+});
+
+test("reconcileRuns preserves new order on same-length ordinary message reorder", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msgA = makeMsg("msg-a", "A");
+	const msgB = makeMsg("msg-b", "B");
+	const previous = [msgA, msgB];
+	const next = [msgB, msgA];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous, "must not return previous array when order changed");
+	assert.equal(result[0], msgB);
+	assert.equal(result[1], msgA);
+});
+
+test("reconcileRuns preserves new order on same-length agent-run reorder while runs unchanged", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const runA = makeRun("run-a", "Answer A");
+	const runB = makeRun("run-b", "Answer B");
+	const previous = [runA, runB];
+	const next = [runB, runA];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous, "must not return previous array when run order changed");
+	assert.equal(result[0], runB);
+	assert.equal(result[1], runA);
+	assert.equal(result[0].id, "run-b");
+	assert.equal(result[1].id, "run-a");
+});
+
+test("reconcileRuns handles non-run replacement mixed with unchanged run", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msg1 = makeMsg("msg-1", "user original");
+	const run1 = makeRun("run-1", "assistant answer");
+	const previous = [msg1, run1];
+
+	const msg1New = makeMsg("msg-1", "user edited");
+	const run1Identical = makeRun("run-1", "assistant answer");
+	const next = [msg1New, run1Identical];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous);
+	assert.equal(result[0], msg1New, "changed message must use incoming reference");
+	assert.equal(result[1], run1, "unchanged run must retain previous reference");
+});
+
+test("reconcileRuns returns new array when message identity changes with equal text", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msgA1 = makeMsg("msg-a", "same text");
+	const msgA2 = makeMsg("msg-a", "same text");
+	const previous = [msgA1];
+	const next = [msgA2];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous);
+	assert.equal(result[0], msgA2);
+});
+
+test("reconcileRuns returns new array when top-level kind changes at same position", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msg = makeMsg("entry-1", "hello");
+	const run = makeRun("entry-1", "hello");
+	const previous = [msg];
+	const next = [run];
+
+	const result = reconcileRuns(previous, next);
+	assert.notEqual(result, previous);
+	assert.equal(result[0], run);
+});
+
+test("reconcileRuns returns previous array when references and order are completely unchanged", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msg = makeMsg("msg-1", "hello");
+	const run = makeRun("run-1", "world");
+	const previous = [msg, run];
+	const next = [msg, makeRun("run-1", "world")]; // run is content-identical, msg is exact ref
+
+	const result = reconcileRuns(previous, next);
+	assert.equal(result, previous, "must return exact previous array");
+});
+
+test("reconcileRuns does not mutate inputs", () => {
+	const { reconcileRuns } = loadAppUtils();
+	const msg = makeMsg("msg-1", "hello");
+	const run = makeRun("run-1", "world");
+	const previous = Object.freeze([msg, run]);
+	const next = Object.freeze([makeMsg("msg-1", "new"), run]);
+
+	assert.doesNotThrow(() => {
+		reconcileRuns(previous, next);
+	});
+});

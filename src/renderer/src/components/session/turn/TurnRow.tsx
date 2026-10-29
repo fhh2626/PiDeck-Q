@@ -26,7 +26,7 @@ import type {
 	MessageItem,
 } from "../timeline/types";
 import { sameAgentRunForRender } from "../../app/AppUtils";
-import { createTrackedEditSubmit } from "../../../utils/trackedEditSubmit";
+import { useTimelineMessageEdit } from "../../../hooks/useTimelineMessageEdit";
 import { FinalAnswer } from "./FinalAnswer";
 import { AssistantMessageImages } from "./AssistantMessageImages";
 import { MessageImageGallery } from "../MessageImageGallery";
@@ -91,13 +91,43 @@ export const TurnRow = memo(
 	function TurnRow(props: TurnRowProps) {
 	const { run } = props;
 	const rowRef = useRef<HTMLElement | null>(null);
-	const [editing, setEditing] = useState(false);
-	const [editText, setEditText] = useState("");
+
+	// 收集本轮所有 assistant 消息（按 run.items 的时序保持原始顺序）
+	const assistantMessages = useMemo(
+		() =>
+			run.items.filter(
+				(item): item is MessageItem =>
+					item.kind === "message" && item.message.role === "assistant",
+			),
+		[run.items],
+	);
+
+	// 合并后的完整文本仅用于编辑/复制/删除等操作栏，不用于展示
+	const mergedText = useMemo(
+		() =>
+			assistantMessages
+				.map((item) => stripThinkingTags(stripAnsi(item.message.text)).trim())
+				.filter(Boolean)
+				.join("\n\n"),
+		[assistantMessages],
+	);
+
+	const lastAssistantId = assistantMessages.at(-1)?.message.id;
+
+	// 编辑是跨渲染周期的长时操作：通过 useTimelineMessageEdit 持久化
 	const editAreaRef = useRef<HTMLDivElement | null>(null);
-	// 编辑是跨渲染周期的长时操作：进入编辑时捕获当次提交回调，保存时用捕获值。
-	// 若保存时才读最新 props，Agent 重启后回调已换绑新 generation target，会把旧
-	// 编辑重定向到新 runtime、绕过 freshness 校验（见 trackedEditSubmit.ts 注释）。
-	const trackedEditSubmit = useRef(createTrackedEditSubmit());
+	const timelineEdit = useTimelineMessageEdit({
+		messageId: lastAssistantId ?? run.id,
+		initialText: mergedText,
+		onLegacyEditMessage: props.onEditMessage
+			? async (id, text) => {
+					props.onEditMessage?.(id, text);
+			  }
+			: undefined,
+	});
+	const editing = timelineEdit.isEditing;
+	const editText = timelineEdit.text;
+
 	// 激活编辑时自动滚动到编辑区（避免 textarea 超出可视区域）
 	useEffect(() => {
 		if (editing && editAreaRef.current) {
@@ -265,11 +295,6 @@ export const TurnRow = memo(
 			),
 		[displayItems],
 	);
-	// 收集本轮所有 assistant 消息（按 run.items 的时序保持原始顺序）
-	const assistantMessages = run.items.filter(
-		(item): item is MessageItem =>
-			item.kind === "message" && item.message.role === "assistant",
-	);
 	const hasAssistantMediaOrNotice = assistantMessages.some(
 		(item) =>
 			(item.message.images && item.message.images.length > 0) ||
@@ -290,14 +315,9 @@ export const TurnRow = memo(
 		}
 		return msgs;
 	}, [displayItems]);
-	// 合并后的完整文本仅用于编辑/复制/删除等操作栏，不用于展示
-	const mergedText = assistantMessages
-		.map((item) => stripThinkingTags(stripAnsi(item.message.text)).trim())
-		.filter(Boolean)
-		.join("\n\n");
+
 	// 删除只需本轮最后一条 assistant 的 id（后端按整轮删除），与是否有可见文字无关：
 	// 纯工具调用、停止后的空回复等轮次也必须能删，否则用户无法清理失败轮次。
-	const lastAssistantId = assistantMessages.at(-1)?.message.id;
 	const canDeleteTurn = Boolean(
 		lastAssistantId && props.onDeleteMessage && !props.isStreaming && !props.agentRunning,
 	);
@@ -306,19 +326,10 @@ export const TurnRow = memo(
 	if (displayItems.length === 0 && !hasAssistantMediaOrNotice) return null;
 
 	const startEditing = () => {
-		// 捕获当前 onEditMessage（绑定进入编辑时的 runtime target），保存时使用该捕获值。
-		trackedEditSubmit.current.begin(props.onEditMessage);
-		setEditText(mergedText);
-		setEditing(true);
+		timelineEdit.beginEdit();
 	};
 	const saveEdit = () => {
-		const targetId = lastAssistantId;
-		// 不再依赖当前 props.onEditMessage：runtime 消失时它会被置为 undefined，
-		// 若用它拦截保存会让已打开的编辑框静默无效。捕获回调存在即派发，
-		// target 已过期/消失由 hook 的 freshness 校验拒绝并提示 runtimeChanged。
-		if (targetId && trackedEditSubmit.current.submit(targetId, editText)) {
-			setEditing(false);
-		}
+		void timelineEdit.saveEdit();
 	};
 	const deleteMessage = () => {
 		if (lastAssistantId) props.onDeleteMessage?.(lastAssistantId);
@@ -369,6 +380,7 @@ export const TurnRow = memo(
 								{toolMessagesWithImages.map((tm) => (
 									<MessageImageGallery
 										key={tm.id}
+										messageId={tm.id}
 										images={tm.images}
 										notice={tm.notice}
 										onPreviewImage={props.onPreviewImage}
@@ -469,9 +481,9 @@ export const TurnRow = memo(
 								editing={editing}
 								editText={editText}
 								editAreaRef={editAreaRef}
-								onEditTextChange={setEditText}
+								onEditTextChange={timelineEdit.updateText}
 								onStartEdit={startEditing}
-								onCancelEdit={() => setEditing(false)}
+								onCancelEdit={timelineEdit.cancelEdit}
 								onSaveEdit={saveEdit}
 								onPreviewImage={props.onPreviewImage}
 								onOpenExternal={props.onOpenExternal}

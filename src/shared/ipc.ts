@@ -67,6 +67,9 @@ export const ipcChannels = {
 	sessionsCatalogGetContextControllerState: "sessions:catalog-get-context-controller-state",
 	/** 按需读取单条消息完整文本（工具结果截断后的「查看完整输出」入口）。 */
 	sessionsCatalogReadMessageFullText: "sessions:catalog-read-message-full-text",
+	/** 为长图导出读取未截断的工具参数与结果完整载荷 */
+	sessionsReadToolExportPayload: "sessions:read-tool-export-payload",
+	sessionsReadToolExportPayloads: "sessions:read-tool-export-payloads",
 	sessionsCatalogCopy: "sessions:catalog-copy",
 	sessionsCatalogExportHtml: "sessions:catalog-export-html",
 	sessionsSendPrompt: "sessions:send-prompt",
