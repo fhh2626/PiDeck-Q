@@ -24,6 +24,11 @@ export function createHookHarness() {
       return slots[i].value;
     },
     useCallback(fn, deps) { return react.useMemo(() => fn, deps); },
+    useId() {
+      const i = cursor++;
+      if (!slots[i]) slots[i] = { id: `:h${i}:` };
+      return slots[i].id;
+    },
     useContext(context) {
       return context?._currentValue ?? null;
     },
