@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useId, useMemo } from "react";
 import { useAtom } from "jotai";
 import { useTimelinePresentationContext } from "../timeline/timelinePresentationContext";
-import { getRunExecutionAtom, type RunExecutionPresentation } from "../../../atoms/timeline-presentation";
+import { getRunExecutionAtom } from "../../../atoms/timeline-presentation";
 
 export type TurnExecutionState = {
 	/** 思考/工具/中间回答步骤是否可见（run 级唯一折叠开关）。 */
@@ -33,21 +33,17 @@ export function useTurnExecution(opts: {
 	newTurnCollapseTick?: number;
 }): TurnExecutionState {
 	const context = useTimelinePresentationContext();
+	// 没有行上下文时按组件实例隔离。所有轮次共用同一个 __local__ atom 时，
+	// 流式轮把 wasRunning 写成 true、历史轮写回 false，两个 effect 会嵌套 setState 直到 React #185。
+	const fallbackId = useId();
 	const presentationAtom = useMemo(() => {
 		if (context?.sessionId && context?.rowKey) {
 			return getRunExecutionAtom(context.sessionId, context.rowKey);
 		}
-		return null;
-	}, [context?.sessionId, context?.rowKey]);
+		return getRunExecutionAtom("__local__", fallbackId);
+	}, [context?.sessionId, context?.rowKey, fallbackId]);
 
-	const [atomState, setAtomState] = useAtom(
-		presentationAtom ??
-			useMemo(
-				() =>
-					getRunExecutionAtom("__local__", "__local__"),
-				[],
-			),
-	);
+	const [atomState, setAtomState] = useAtom(presentationAtom);
 
 	// 初始默认值（历史已完成且有最终回答的轮：始终折叠；流式中按 expandInterimDuringStream 展开）
 	const initialStepsVisible = useMemo(() => {

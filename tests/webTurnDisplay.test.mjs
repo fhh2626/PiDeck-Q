@@ -7,7 +7,12 @@ import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { buildWebTurnDisplay } = loadTsCommonJs("src/renderer/src/web/webTurnDisplay.ts");
-const { groupWebTimelineTurns } = loadTsCommonJs("src/renderer/src/web/webToolGroups.ts");
+const {
+	groupWebTimelineTurns,
+	collectWebTurnAliases,
+	rememberWebTurnPresentationKey,
+	resolveWebTurnPresentationKey,
+} = loadTsCommonJs("src/renderer/src/web/webToolGroups.ts");
 const { chatMessagesToUiMessages } = loadTsCommonJs("src/renderer/src/web/webApi.ts", {
 	globals: { fetch: () => { throw new Error("no fetch in tests"); } },
 });
@@ -224,6 +229,38 @@ test("groupWebTimelineTurns starts with an assistant turn when the window begins
 	]);
 	assert.deepEqual(Array.from(grouped, (item) => item.kind), ["assistant-turn", "user"]);
 	assert.equal(grouped[0].id, "a1");
+});
+
+test("assistant turn presentation key survives a reconciled message id", () => {
+	const aliasToKey = new Map();
+	const beforeMessages = [{
+		id: "sse-1",
+		role: "assistant",
+		parts: [{ type: "dynamic-tool", toolName: "bash", toolCallId: "call-1" }],
+	}];
+	const beforeAliases = collectWebTurnAliases(beforeMessages);
+	assert.deepEqual(Array.from(beforeAliases), ["sse-1"]);
+	const before = resolveWebTurnPresentationKey(beforeAliases, aliasToKey);
+	assert.equal(aliasToKey.size, 0);
+	rememberWebTurnPresentationKey(beforeAliases, before, aliasToKey);
+	const afterAliases = collectWebTurnAliases([{
+		id: "persisted-1",
+		role: "assistant",
+		metadata: {
+			chatRole: "assistant",
+			entryId: "entry-1",
+			reconciledIds: ["sse-1", "persisted-1"],
+			toolCallId: "call-1",
+		},
+		parts: [{ type: "dynamic-tool", toolName: "bash", toolCallId: "call-1" }],
+	}]);
+	assert.equal(resolveWebTurnPresentationKey(afterAliases, aliasToKey), "sse-1");
+	const otherAliases = collectWebTurnAliases([{
+		id: "sse-2",
+		role: "assistant",
+		parts: [{ type: "dynamic-tool", toolName: "bash", toolCallId: "call-1" }],
+	}]);
+	assert.equal(resolveWebTurnPresentationKey(otherAliases, aliasToKey), "sse-2");
 });
 
 test("groupWebTimelineTurns emits nothing for a turn made only of transparent placeholders", () => {
