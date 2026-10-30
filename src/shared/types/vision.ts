@@ -96,6 +96,12 @@ export type VisionBridgeEvent = {
 	prompt: string;
 	/** 本批总耗时 ms */
 	totalDurationMs: number;
+	/**
+	 * 扩展明确让路（当前模型原生支持图片，本轮不转换）。
+	 * 渲染层遇到该批次应立即停止等待，且不渲染任何转换卡片：
+	 * 它是「这批图不会经过视觉桥」的权威信号，比桌面模型列表更可信。
+	 */
+	skipped?: boolean;
 	items: VisionEventItem[];
 };
 

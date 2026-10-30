@@ -168,6 +168,8 @@ const api = {
 			transport.invoke(ipcChannels.projectsListModels, projectId) as Promise<
 				AvailableModel[]
 			>,
+		/** 主进程模型缓存已刷新（配置保存/运行时切换）；无负载，收到后自行重读列表。 */
+		onModelsChanged: (callback: () => void) => subscribe(ipcChannels.modelsChanged, callback),
 		// 查询模型规格（context window / 能力，内置 model-specs.db，中转站按 id 匹配）
 		getModelSpec: (providerName: string, modelId: string) =>
 			transport.invoke(ipcChannels.projectsGetModelSpec, providerName, modelId) as Promise<

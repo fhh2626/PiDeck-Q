@@ -6,7 +6,7 @@
  * 测行为不测实现：只断言配置解析、图片收集、替换、端点解析、请求构造、响应解析。
  */
 import assert from "node:assert/strict";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -692,4 +692,94 @@ test("describeImage: success reports durationMs and outputTokens", async () => {
 	assert.equal(result.ok, true);
 	assert.equal(result.outputTokens, 120);
 	assert.ok(typeof result.durationMs === "number" && result.durationMs >= 0);
+});
+
+// ── 让路事件（模型原生支持图片） ─────────────────────────────
+// 桌面端模型列表（pi --list-models 的 images 列）与 pi 自己的 ctx.model.input 不是同一份数据，
+// 两边不一致时渲染层会一直等「视觉桥转换中」。扩展在让路时写一条 skipped 事件作为权威信号。
+
+test("createVisionSkipEvent: 标记 skipped、带上模型与图片哈希", () => {
+	const event = ext.createVisionSkipEvent("input", [imageA, imageB], {
+		model: { id: "gpt-4o", provider: "openai" },
+	});
+	assert.equal(event.skipped, true);
+	assert.equal(event.kind, "input");
+	assert.equal(event.model, "openai/gpt-4o");
+	assert.equal(event.totalDurationMs, 0);
+	// vm 沙箱里的数组原型与测试域不同，deepStrictEqual 会因原型差异失败，改为逐项比对
+	assert.equal(
+		event.items.map((item) => item.imageHash).join(","),
+		[ext.imageHash("AAAA"), ext.imageHash("BBBB")].join(","),
+	);
+	// 让路没有请求视觉模型，不能标成缓存命中
+	assert.equal(event.items.every((item) => item.ok && item.cached === false), true);
+});
+
+test("createVisionSkipEvent: 重复图片去重，缺少模型信息时不抛错", () => {
+	const event = ext.createVisionSkipEvent("input", [imageA, imageA], {});
+	assert.equal(event.items.length, 1);
+	assert.equal(event.model, "/");
+});
+
+test("input 阶段模型原生支持图片时写一条让路事件", async () => {
+	const dir = makeConfigDir({ enabled: true, provider: "glm", model: "glm-4v-flash" });
+	const prev = process.env.PIDECK_VISION_CONFIG_DIR;
+	process.env.PIDECK_VISION_CONFIG_DIR = dir;
+	try {
+		const handlers = new Map();
+		ext.default({ on: (name, handler) => handlers.set(name, handler) });
+		const result = await handlers.get("input")(
+			{ text: "看看这张图", images: [imageA] },
+			{ model: { id: "gpt-4o", provider: "openai", input: ["text", "image"] } },
+		);
+		assert.equal(result, undefined, "让路时不得改写用户输入");
+		const events = readFileSync(join(dir, "pi-deck-vision-events.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		assert.equal(events.length, 1);
+		assert.equal(events[0].skipped, true);
+		assert.equal(events[0].model, "openai/gpt-4o");
+		assert.equal(events[0].items[0].imageHash, ext.imageHash("AAAA"));
+	} finally {
+		if (prev === undefined) delete process.env.PIDECK_VISION_CONFIG_DIR;
+		else process.env.PIDECK_VISION_CONFIG_DIR = prev;
+	}
+});
+
+test("input 阶段未配置视觉桥时不写让路事件", async () => {
+	// 渲染层只在视觉桥启用时轮询事件文件，未配置时写事件纯属噪音
+	const dir = makeConfigDir({ enabled: false, provider: "glm", model: "glm-4v-flash" });
+	const prev = process.env.PIDECK_VISION_CONFIG_DIR;
+	process.env.PIDECK_VISION_CONFIG_DIR = dir;
+	try {
+		const handlers = new Map();
+		ext.default({ on: (name, handler) => handlers.set(name, handler) });
+		await handlers.get("input")(
+			{ text: "看看这张图", images: [imageA] },
+			{ model: { id: "gpt-4o", provider: "openai", input: ["text", "image"] } },
+		);
+		const exists = readdirSync(dir).includes("pi-deck-vision-events.jsonl");
+		assert.equal(exists, false);
+	} finally {
+		if (prev === undefined) delete process.env.PIDECK_VISION_CONFIG_DIR;
+		else process.env.PIDECK_VISION_CONFIG_DIR = prev;
+	}
+});
+
+// ── 钩子注册契约 ─────────────────────────────────────────────
+// pi 对未知钩子名不报错（handler 永不触发），所以钩子名写错是「静默失效」。
+// 这里锁住注册清单：载荷兜底必须挂在新名字 before_provider_request 上（老名字继续兼容）。
+
+test("注册钩子：input / tool_result / 载荷兜底（新老名字共用同一实现）", () => {
+	const handlers = new Map();
+	ext.default({ on: (name, handler) => handlers.set(name, handler) });
+	for (const name of ["input", "tool_result", "before_provider_request"]) {
+		assert.equal(typeof handlers.get(name), "function", `必须注册 ${name}`);
+	}
+	assert.equal(
+		handlers.get("before_provider_request"),
+		handlers.get("before_provider_payload"),
+		"新老钩子名必须指向同一实现",
+	);
 });

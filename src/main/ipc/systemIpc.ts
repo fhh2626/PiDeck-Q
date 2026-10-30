@@ -168,6 +168,19 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 		restartApplication,
 	} = deps;
 
+	/**
+	 * 模型缓存失效后重取，并通知渲染层刷新。
+	 * 渲染层用这份列表判断模型是否原生支持图片（视觉桥是否本应接管），
+	 * 只在保存配置时同步，不必为每条消息重复拉取。
+	 * 只推信号不推列表：避免大模型表撑爆事件帧，渲染层收到后读主进程缓存。
+	 */
+	const publishModelList = (): void => {
+		invalidateModelListCache();
+		void refreshModelList(piLocator, settingsStore)
+			.then(() => sendToRenderer?.(ipcChannels.modelsChanged))
+			.catch(() => undefined);
+	};
+
 	// ── Pi 检测 ──────────────────────────────────────────────────────
 
 	router.handle(ipcChannels.piCheck, async () => {
@@ -643,8 +656,8 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 			"piRustPath" in patch ||
 			"piBoltPath" in patch
 		) {
-			invalidateModelListCache();
-			void refreshModelList(piLocator, settingsStore).catch(() => undefined);
+			// pi 二进制/类型切换会改变可用模型集合，重取并同步给渲染层。
+			publishModelList();
 		}
 		// WSL 设置变更时同步更新会话扫描器和配置管理器
 		if ("wslEnabled" in patch || "wslDistro" in patch || "wslUser" in patch) {
@@ -748,17 +761,15 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 	);
 	router.handle(ipcChannels.configSaveModels, async (data: PiModelsFile) => {
 		const result = await configManager.saveModelsConfig(data);
-		invalidateModelListCache();
-		// 配置保存后立即后台重取，下次打开选择器直接命中新缓存。
-		void refreshModelList(piLocator, settingsStore).catch(() => undefined);
+		// 配置保存后立即后台重取，下次打开选择器直接命中新缓存；同时广播新列表。
+		publishModelList();
 		void appLogger.info("config", "Models config saved", { providerCount: Object.keys(data?.providers ?? {}).length });
 		return result;
 	});
 	router.handle(ipcChannels.configSaveAuth, async (data: PiAuthFile) => {
 		const result = await configManager.saveAuthConfig(data);
-		invalidateModelListCache();
 		// auth 影响「可用模型」过滤（pi 只列已认证 provider），保存后同样后台重取。
-		void refreshModelList(piLocator, settingsStore).catch(() => undefined);
+		publishModelList();
 		void appLogger.info("config", "Auth config saved", { authCount: Object.keys(data ?? {}).length });
 		return result;
 	});

@@ -55,7 +55,6 @@ import type {
 	AgentRuntimeState,
 	ChatMessage,
 	ImageContent,
-	VisionBridgeEvent,
 	VisionEventsInfo,
 } from "../../../../shared/types";
 import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
@@ -63,8 +62,8 @@ import { useTimelineMessageEdit } from "../../hooks/useTimelineMessageEdit";
 import removeMarkdown from "remove-markdown";
 
 import { formatDuration, formatTime, stripAnsi } from "./TimelineFormat";
-import { extractVisionBridgeBlocks, matchVisionBridgeEvent } from "../../utils/visionBridgeBlocks";
-import { visionImageHashes } from "../../utils/visionImageHash";
+import { extractVisionBridgeBlocks } from "../../utils/visionBridgeBlocks";
+import { useUserMessageVisionPoll } from "../../hooks/useUserMessageVisionPoll";
 import { ToolCard, ToolGroupCard} from "./ToolCallComponents";
 import {
 	AskQuestionCard,
@@ -417,7 +416,11 @@ function VisionBridgeDetail(props: { events: VisionEventsInfo | null; loading: b
 	if (props.loading) {
 		return <p className="mt-2 text-[11px] text-muted-foreground">…</p>;
 	}
-	const batch = props.events?.events.filter((e) => e.kind === "input").at(-1);
+	// 只看真实转换批次："skipped" 是扩展让路事件（模型原生支持图片，没有请求视觉模型），
+	// 混进来会把空耗时/空提示词的假记录当成最近一次转换。
+	const batch = props.events?.events
+		.filter((e) => e.kind === "input" && e.skipped !== true)
+		.at(-1);
 	if (!batch) {
 		return <p className="mt-2 text-[11px] text-muted-foreground">{t("app.visionNoEvents")}</p>;
 	}
@@ -571,21 +574,13 @@ export const UserBubble = memo(function UserBubble(props: {
 	}, [visionEvents, visionLoading]);
 	// 实时消息的视觉桥卡片：pi 只把转换结果写会话文件、不推送给实时消息流，
 	// 因此对带图片的乐观消息轮询事件文件，按图片哈希匹配本次转换批次。
-	const [imageHashes, setImageHashes] = useState<string[] | null>(null);
-	const [visionMatch, setVisionMatch] = useState<VisionBridgeEvent | null>(null);
-	const [visionPolling, setVisionPolling] = useState(false);
-	// 图片哈希与扩展侧 imageHash（sha256 前 24 位）同源，跨进程可匹配
-	useEffect(() => {
-		const images = message.images ?? [];
-		if (images.length === 0) return;
-		let cancelled = false;
-		void visionImageHashes(images.map((image) => image.data)).then((hashes) => {
-			if (!cancelled) setImageHashes(hashes);
-		});
-		return () => {
-			cancelled = true;
-		};
-	}, [message.images]);
+	// 是否值得轮询由 hook 判定：模型原生支持图片/桥未启用/历史消息都不轮询，
+	// 避免气泡空转「视觉桥转换中…」。
+	const { showConverting: visionConverting, match: visionMatch } = useUserMessageVisionPoll({
+		sessionId: context?.sessionId,
+		message,
+		inlineBlockCount: visionBlocks.length,
+	});
 	// 激活编辑时自动滚动到编辑区
 	useEffect(() => {
 		if (editing && editAreaRef.current) {
@@ -606,42 +601,6 @@ export const UserBubble = memo(function UserBubble(props: {
 		observer.observe(el);
 		return () => observer.disconnect();
 	}, [messageExpanded]);
-	// 发送后短窗口内轮询事件文件（0/700/1800/3200ms），命中即渲染实时卡片，超时静默放弃。
-	// 依赖 visionBlocks.length：历史消息文本里已有标记块时走文本卡片，不再轮询。
-	useEffect(() => {
-		const images = message.images ?? [];
-		if (images.length === 0 || visionBlocks.length > 0 || !imageHashes || imageHashes.length === 0) {
-			return;
-		}
-		let cancelled = false;
-		let timer: number | undefined;
-		const delays = [0, 700, 1800, 3200];
-		let attempt = 0;
-		const poll = async () => {
-			if (cancelled) return;
-			setVisionPolling(true);
-			try {
-				const info = await window.piDesktop.config.visionGetEvents();
-				if (cancelled) return;
-				const matched = matchVisionBridgeEvent(info.events, imageHashes, message.timestamp);
-				if (matched) {
-					setVisionMatch(matched);
-					setVisionPolling(false);
-					return;
-				}
-			} catch {
-				// 拉取失败静默，等下一轮重试
-			}
-			attempt++;
-			if (attempt < delays.length) timer = window.setTimeout(poll, delays[attempt]);
-			else setVisionPolling(false);
-		};
-		void poll();
-		return () => {
-			cancelled = true;
-			if (timer !== undefined) window.clearTimeout(timer);
-		};
-	}, [imageHashes, message.images, message.timestamp, visionBlocks.length]);
 	// 提取 pi 展开后的 <skill> 块：渲染为 skill 徽标，并从正文里剥除 XML
 	const deliveryBehavior = message.meta?.streamingBehavior as
 		| "steer"
@@ -753,7 +712,7 @@ export const UserBubble = memo(function UserBubble(props: {
 				</div>
 			)}
 			{/* 实时消息：文本里没有标记块（转换结果只写会话文件），用事件文件匹配渲染卡片 */}
-			{visionBlocks.length === 0 && visionPolling && !visionMatch && (
+			{visionBlocks.length === 0 && visionConverting && (
 				<div className="mb-2 flex w-full max-w-[min(82%,64ch)] flex-col items-end">
 					<div className="flex items-center gap-1.5 rounded-lg border border-border bg-background/70 px-2.5 py-1.5 text-[11px] text-muted-foreground">
 						<Loader2 size={11} className="animate-spin" />

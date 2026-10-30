@@ -1,5 +1,5 @@
 {
-  // 内置扩展 `pideck-q-change-pi-prompt` 的独立类型检查配置。
+  // 内置扩展的独立类型检查配置（目前覆盖 change-pi-prompt / security-gate / vision）。
   //
   // 为什么单独一份：扩展源码在 `resources/` 下，不在主 `tsconfig.json` 的
   // include 范围内；而且它的运行环境是 pi（jiti 直跑 .ts），不是 Electron 的
@@ -37,7 +37,8 @@
   "include": [
     "resources/extensions/pideck-q-change-pi-prompt.ts",
     "resources/extensions/pideck-q-change-pi-prompt/**/*.ts",
-    "resources/extensions/pi-deck-security-gate.ts"
+    "resources/extensions/pi-deck-security-gate.ts",
+    "resources/extensions/pi-deck-vision.ts"
   ],
   "exclude": ["resources/extensions/pideck-q-change-pi-prompt/tests"]
 }

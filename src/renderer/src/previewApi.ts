@@ -239,6 +239,8 @@ export function createPreviewApi(): PiDesktopApi {
 			chooseChatPath: async () => null,
 			setChatPath: async () => projects[0],
 			listModels: async () => [],
+			// 预览态没有主进程模型缓存，事件永远不会触发（仅满足接口形状）
+			onModelsChanged: noop,
 			getModelSpec: async () => null,
 			onTrustRequest: noop,
 			respondTrustRequest: async () => undefined,
