@@ -157,6 +157,15 @@ async function bootSidecar(t, { watching = true, onDispose = () => undefined } =
 		timerCleared: () => watchdogTimer.cleared === true,
 		advance: (ms) => { nowMs += ms; },
 		tick: () => watchdogTimer.callback(),
+		elapse(ms) {
+			let left = ms;
+			while (left > 0) {
+				const step = Math.min(watchdogTimer.ms, left);
+				nowMs += step;
+				watchdogTimer.callback();
+				left -= step;
+			}
+		},
 		timerMs: () => watchdogTimer.ms,
 		heartbeat: () => env.server.deps.onHeartbeat({ lastEventSeq: 0, eventSourceGeneration: "g" }, { eventChannelHealthy: true }),
 		visible: (value) => env.host.listeners.get("window.visibleChanged")(value),
@@ -166,8 +175,19 @@ async function bootSidecar(t, { watching = true, onDispose = () => undefined } =
 test("a renderer that stays silent for three windows is reloaded through the host", async (t) => {
 	const sidecar = await bootSidecar(t);
 	assert.equal(sidecar.timerMs(), 3_000, "the watchdog polls every three seconds");
-	sidecar.advance(3 * WINDOW_MS - 1);
+	sidecar.elapse(3 * WINDOW_MS - 1);
+	assert.equal(sidecar.env.reloads.length, 0);
+	sidecar.advance(1);
 	sidecar.tick();
+	assert.equal(sidecar.env.reloads.length, 1);
+});
+
+test("a lid-close gap resets the watchdog instead of reloading the renderer", async (t) => {
+	const sidecar = await bootSidecar(t);
+	sidecar.advance(89_000);
+	sidecar.tick();
+	assert.equal(sidecar.env.reloads.length, 0);
+	sidecar.elapse(3 * WINDOW_MS - 1);
 	assert.equal(sidecar.env.reloads.length, 0);
 	sidecar.advance(1);
 	sidecar.tick();
@@ -191,27 +211,23 @@ test("shutdown disables the watchdog before awaiting backend disposal", async (t
 
 test("renderer heartbeats keep the watchdog from reloading", async (t) => {
 	const sidecar = await bootSidecar(t);
-	sidecar.advance(2 * WINDOW_MS);
+	sidecar.elapse(2 * WINDOW_MS);
 	sidecar.heartbeat();
-	sidecar.advance(2 * WINDOW_MS);
-	sidecar.tick();
+	sidecar.elapse(2 * WINDOW_MS);
 	assert.equal(sidecar.env.reloads.length, 0, "a heartbeat restarts the silence clock");
-	sidecar.advance(WINDOW_MS);
-	sidecar.tick();
+	sidecar.elapse(WINDOW_MS);
 	assert.equal(sidecar.env.reloads.length, 1, "silence after the heartbeat is still caught");
 });
 
 test("a window becoming visible gives the renderer a fresh grace period; hiding does not", async (t) => {
 	const sidecar = await bootSidecar(t);
-	sidecar.advance(2 * WINDOW_MS);
+	sidecar.elapse(2 * WINDOW_MS);
 	sidecar.visible(true);
-	sidecar.advance(2 * WINDOW_MS);
-	sidecar.tick();
+	sidecar.elapse(2 * WINDOW_MS);
 	assert.equal(sidecar.env.reloads.length, 0);
 
-	sidecar.advance(2 * WINDOW_MS);
 	sidecar.visible(false);
-	sidecar.tick();
+	sidecar.elapse(WINDOW_MS);
 	assert.equal(sidecar.env.reloads.length, 1, "hiding the window is not a sign of life");
 });
 
@@ -226,10 +242,7 @@ test("a reload that is still in flight is never requested twice", async (t) => {
 	const sidecar = await bootSidecar(t);
 	let finish;
 	sidecar.env.reloadGate = new Promise((resolve) => { finish = resolve; });
-	sidecar.advance(5 * WINDOW_MS);
-	sidecar.tick();
-	sidecar.advance(5 * WINDOW_MS);
-	sidecar.tick();
+	sidecar.elapse(5 * WINDOW_MS);
 	assert.equal(sidecar.env.reloads.length, 1);
 
 	finish();

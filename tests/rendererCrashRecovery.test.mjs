@@ -101,6 +101,19 @@ const { createRendererHeartbeatWatchdog } = loadTsCommonJs(
   "src/native-node/transport/nativeHeartbeatWatchdog.ts",
 );
 
+const POLL_MS = 3_000;
+
+/** 按真实 3 秒轮询推进。一次跳过整段超时会被当成 sidecar 挂起，不能用来模拟渲染层失联。 */
+function elapse(h, ms) {
+  let left = ms;
+  while (left > 0) {
+    const step = Math.min(POLL_MS, left);
+    h.advance(step);
+    h.watchdog.tick();
+    left -= step;
+  }
+}
+
 function createWatchdogHarness({ shouldWatch = true, logThrows = false, logRejects = false, reloadThrows = false } = {}) {
   let now = 1_000_000;
   const harness = {
@@ -131,8 +144,7 @@ function createWatchdogHarness({ shouldWatch = true, logThrows = false, logRejec
 
 test("renderer heartbeat watchdog reloads only after three silent windows and reports it once", () => {
   const h = createWatchdogHarness();
-  h.advance(3 * WINDOW_MS - 1);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS - 1);
   assert.equal(h.reloads, 0);
   h.advance(1);
   h.watchdog.tick();
@@ -143,26 +155,44 @@ test("renderer heartbeat watchdog reloads only after three silent windows and re
 test("renderer heartbeats keep resetting the silence clock", () => {
   const h = createWatchdogHarness();
   for (let i = 0; i < 10; i += 1) {
-    h.advance(2 * WINDOW_MS); // 每次都接近但未到阈值
+    elapse(h, 2 * WINDOW_MS); // 每次都接近但未到阈值
     h.watchdog.touch();
-    h.watchdog.tick();
   }
   assert.equal(h.reloads, 0);
 });
 
+test("a lid-close sized tick gap restarts the grace period instead of reloading", () => {
+  const h = createWatchdogHarness();
+  h.advance(89_000);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 0);
+  elapse(h, 3 * WINDOW_MS - 1);
+  assert.equal(h.reloads, 0, "sleep time must not count toward the next silence window");
+  h.advance(1);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1);
+});
+
+test("a slow poll shorter than one reload window still counts toward silence", () => {
+  const h = createWatchdogHarness();
+  elapse(h, 2 * WINDOW_MS);
+  h.advance(12_000);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 0);
+  h.advance(3_000);
+  h.watchdog.tick();
+  assert.equal(h.reloads, 1, "a hitch below the reload window must not discard accumulated silence");
+});
+
 test("renderer heartbeat watchdog does not judge a window that is hidden or being destroyed", () => {
   const h = createWatchdogHarness({ shouldWatch: false });
-  h.advance(10 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 10 * WINDOW_MS);
   assert.equal(h.reloads, 0);
 });
 
 test("renderer heartbeat watchdog never starts a second reload while one is in flight", async () => {
   const h = createWatchdogHarness();
-  h.advance(5 * WINDOW_MS);
-  h.watchdog.tick();
-  h.advance(5 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 5 * WINDOW_MS);
   h.watchdog.tick();
   assert.equal(h.reloads, 1);
 
@@ -171,31 +201,26 @@ test("renderer heartbeat watchdog never starts a second reload while one is in f
   await h.settle();
   h.watchdog.tick();
   assert.equal(h.reloads, 1, "the grace period restarts after the reload finished");
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   assert.equal(h.reloads, 2, "a page that stays silent is reloaded again");
 });
 
 test("a failing diagnostic hook cannot prevent reload or disable the watchdog", async () => {
   const h = createWatchdogHarness({ logThrows: true });
-  h.advance(3 * WINDOW_MS);
-  assert.doesNotThrow(() => h.watchdog.tick());
+  assert.doesNotThrow(() => elapse(h, 3 * WINDOW_MS));
   assert.equal(h.reloads, 1);
   h.pending[0].resolve();
   await h.settle();
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   assert.equal(h.reloads, 2);
 });
 
 test("an asynchronous diagnostic rejection does not become an unhandled rejection", async () => {
   const h = createWatchdogHarness({ logRejects: true });
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   h.pending[0].resolve();
   await h.settle();
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   h.pending[1].resolve();
   await h.settle();
   assert.equal(h.reloads, 2);
@@ -203,26 +228,22 @@ test("an asynchronous diagnostic rejection does not become an unhandled rejectio
 
 test("a synchronous reload failure releases the guard and grants fresh grace", async () => {
   const h = createWatchdogHarness({ reloadThrows: true });
-  h.advance(3 * WINDOW_MS);
-  assert.doesNotThrow(() => h.watchdog.tick());
+  assert.doesNotThrow(() => elapse(h, 3 * WINDOW_MS));
   await h.settle();
   h.watchdog.tick();
   assert.equal(h.reloads, 1);
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   assert.equal(h.reloads, 2);
 });
 
 test("a failed reload request still releases the in-flight guard and restarts the grace period", async () => {
   const h = createWatchdogHarness();
-  h.advance(4 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 4 * WINDOW_MS);
   h.pending[0].reject(new Error("host gone"));
   await h.settle();
 
   h.watchdog.tick();
   assert.equal(h.reloads, 1);
-  h.advance(3 * WINDOW_MS);
-  h.watchdog.tick();
+  elapse(h, 3 * WINDOW_MS);
   assert.equal(h.reloads, 2, "the guard was released after the failure");
 });
