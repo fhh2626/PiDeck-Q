@@ -20,3 +20,4 @@ export * from "./types/scratchPad";
 export * from "./piCompatibility";
 export * from "./types/trajectory";
 export * from "./types/images";
+export * from "./types/subagents";

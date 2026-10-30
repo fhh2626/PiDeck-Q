@@ -235,6 +235,12 @@ export const ipcChannels = {
 	appBeginWindowResize: "app:begin-window-resize",
 	nativeClipboardSnapshot: "native:clipboard-snapshot",
 	agentsRuntimeState: "agents:runtime-state",
+	/**
+	 * 子代理运行状态快照：主进程 → 渲染层。
+	 * pi 内建子代理不是 PiDeck 的 Agent（没有 agentId 绑定的 runtime），
+	 * 状态只能从父会话 `subagent` 工具 details 截取，再按子会话文件路径点亮侧栏行。
+	 */
+	agentsSubagentStatus: "agents:subagent-status",
 	agentsState: "agents:state",
 	projectsListModels: "projects:list-models",
 	/**

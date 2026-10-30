@@ -11,6 +11,7 @@ const RAW_WITHOUT_SUBSCRIBERS = [
 	"agents:thinking",
 	"agents:state",
 	"agents:runtime-state",
+	"agents:subagent-status",
 	"agents:ui-request",
 	"agents:notice",
 	"agents:log",

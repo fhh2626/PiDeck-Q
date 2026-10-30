@@ -13,6 +13,7 @@ const ENVELOPED_AGENT_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.agentsThinking,
 	ipcChannels.agentsState,
 	ipcChannels.agentsRuntimeState,
+	ipcChannels.agentsSubagentStatus,
 	ipcChannels.agentsUiRequest,
 	ipcChannels.agentsNotice,
 	ipcChannels.agentsLog,

@@ -1,8 +1,9 @@
 import { Fragment, type ReactNode } from "react";
+import { useAtomValue } from "jotai";
 import { ChevronDown, Ellipsis, HatGlasses, Square, Trash2 } from "lucide-react";
 import type { AgentTab, Project, SessionRecord, SessionSummary } from "../../../../shared/types";
-import { collectDisplayedSessionIds, filterAgentsForSidebarDisplay, getProjectAgentSessionDisplay, sessionStatusDotClass, subagentSidebarStatus, type ProjectChildItem } from "../../agentListDisplay";
-import { sessionRecordToSummary } from "../../atoms";
+import { collectDisplayedSessionIds, filterAgentsForSidebarDisplay, getProjectAgentSessionDisplay, sessionStatusDotClass, subagentGroupActivity, subagentSidebarStatus, type ProjectChildItem } from "../../agentListDisplay";
+import { sessionRecordToSummary, subagentLiveRunsAtom } from "../../atoms";
 import { t } from "../../i18n";
 import { filterSidebarSessions, getBoundSidebarRuntimeAgent, hasLiveSidebarRuntime, type SidebarController } from "../../hooks/useSidebarController";
 import { Button } from "../ui-shadcn/button";
@@ -104,6 +105,8 @@ export function SessionTree(props: {
   const summaries = filterSidebarSessions(allSummaries, filter)
     .filter((session) => matchesSearch(`${session.name ?? ""}${session.preview}${session.filePath}`, search));
   const projectAgents = props.agents.filter((agent) => agent.projectId === props.project.id);
+  // pi 内建子代理没有 PiDeck runtime：状态来自父会话 `subagent` 工具 details 的投影。
+  const subagentLiveRuns = useAtomValue(subagentLiveRunsAtom);
   const displayAgents = filterAgentsForSidebarDisplay({
     agents: projectAgents,
     allSessions: allSummaries,
@@ -189,6 +192,7 @@ export function SessionTree(props: {
     session,
     projectAgents,
     props.controller.catalog.runtimeBySessionId[session.id]?.status,
+    subagentLiveRuns,
   );
   const renderSubagent = (session: SessionSummary, label: ReactNode) => {
     return (
@@ -243,12 +247,15 @@ export function SessionTree(props: {
       </div>
     );
   };
-  const renderToggle = (key: string, count: number) => count > 0 ? (
+  const renderToggle = (key: string, count: number, activity: "running" | "completed" | undefined) => count > 0 ? (
     <span
       className={cn("subagent-inline-toggle px-1 py-0.5 mr-7")}
-      title={t("app.piSubagentCount", { count })}
+      // 只有 running 才说「运行中」：completed 是刚结束的短暂保留，文案不能说还在跑。
+      title={activity === "running" ? `${t("app.piSubagentCount", { count })} · ${t("app.statusRunning")}` : t("app.piSubagentCount", { count })}
       onClick={(event) => { event.stopPropagation(); props.controller.toggleSubagentGroup(key); }}
     >
+      {/* 分组默认折叠：折叠态也必须能看出子代理在跑或刚结束，否则状态灯等于不存在 */}
+      {activity && <span className={cn("size-1.5 shrink-0 rounded-full bg-warning", activity === "running" && "animate-pulse")} aria-hidden="true" />}
       <ChevronDown size={8} className={props.controller.expandedSubagentGroups.has(key) ? "expanded" : ""} />
       {/* 子 Agent 数量：统一 pill 样式（与项目行会话数徽标同尺寸同圆角），紧凑档 */}
       <span className="subagent-inline-count inline-flex h-3.5 shrink-0 items-center rounded-full px-1 text-[10px] font-medium tabular-nums">{count}</span>
@@ -260,6 +267,11 @@ export function SessionTree(props: {
   const renderChild = (child: ProjectChildItem) => {
     const groupKey = `${props.project.id}:${child.key}`;
     const childCount = child.codexSubagents.length + child.piSubagents.length;
+    // 折叠态的活动指示：与展开后的行共用同一份 liveRuns 投影，不另建订阅。
+    const childSubagentActivity = subagentGroupActivity(
+      [...child.codexSubagents, ...child.piSubagents],
+      subagentLiveRuns,
+    );
     if (child.type === "agent") {
       const agentSession = props.sessions.find((session) => (
         props.controller.catalog.runtimeBySessionId[session.id]?.agentId === child.agent.id
@@ -285,7 +297,7 @@ export function SessionTree(props: {
               <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-[52px] @max-[255px]:group-focus-within/row:pr-[52px]"><div className="conversation-title flex min-w-0 items-center gap-1.5">
                 <strong className="min-w-0 flex-1 truncate font-medium">{child.agent.title}</strong>
                 {child.agent.noSession && <span className="anonymous-indicator" title={t("app.anonymousChat")}><HatGlasses size={11} aria-hidden="true" /></span>}
-                {renderToggle(groupKey, childCount)}
+                {renderToggle(groupKey, childCount, childSubagentActivity)}
               </div></div>
             </button>
           </PathTooltip>
@@ -352,7 +364,7 @@ export function SessionTree(props: {
             {/* 历史会话（无运行态）文字降一级，与活跃 Agent/运行中会话形成层级差 */}
             <strong className={cn("min-w-0 flex-1 truncate", runtime ? "font-medium" : "font-normal text-muted-foreground/90")}>{child.session.name || t("common.untitled")}</strong>
             {child.session.source && child.session.source !== "pi" && <SessionSourceBadge source={child.session.source} />}
-            {renderToggle(groupKey, childCount)}
+            {renderToggle(groupKey, childCount, childSubagentActivity)}
           </div></div>
         </button>
         </PathTooltip>

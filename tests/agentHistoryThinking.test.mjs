@@ -205,6 +205,7 @@ function loadAgentManagerModule() {
       if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
       if (specifier === "./streamGate") return streamGateModule.exports;
+      if (specifier === "./SubagentRunTracker") return loadTsCommonJs("src/main/pi/SubagentRunTracker.ts");
       if (specifier === "./cacheHitStats") return cacheHitStatsModule.exports;
       if (specifier === "../../shared/toolRuntimeState") return { updateActiveToolCalls: () => undefined };
       // AgentManager 也依赖 askQuestionResult（与 Projector 共用同一桩）

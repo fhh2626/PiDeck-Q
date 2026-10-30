@@ -1,8 +1,11 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "jotai";
+import { ipcChannels } from "../../../shared/ipc";
 import type { AgentRuntimeState } from "../../../shared/types";
 import {
   applySessionRuntimeEventAtom,
+  applySubagentLiveSnapshotAtom,
+  clearSubagentLiveRunsAtom,
   replaceSessionRuntimesAtom,
   removeSessionComposerStateAtom,
   sessionRecordsAtom,
@@ -35,7 +38,56 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
       if (!disposed) store.set(replaceSessionRuntimesAtom, runtimes);
     }).catch(() => undefined);
 
+    // 子代理快照最后一帧（按 agent）+ 已 detach 待回放的 agent 集合。
+    // 会话替换（克隆/切换）会发 detach 清掉投影，但同一个 pi 进程还活着、子代理还在跑；
+    // detach 之后该 agent 再来任何事件，就回放最后一帧，避免黄点要等下一次工具更新帧才回来。
+    // 只在 detach 之后回放：替换开始时 binding 已解绑，detach 帧之前可能先到 state/message 事件，
+    // 那些事件不能提前消耗缓存帧。空快照（回合结束/进程停止）会删掉对应条目；卸载即丢。
+    const lastSubagentSnapshotByAgent = new Map<string, unknown[]>();
+    const detachedSubagentAgents = new Set<string>();
+
     const offRuntimeEvents = desktopApi.sessions.onRuntimeEvent((event) => {
+      // 子代理运行态是独立投影：pi 内建子代理没有 PiDeck runtime，进不了
+      // sessionRuntimeByIdAtom（进了会改坏父会话 runtime），只能写到子代理专用 atom。
+      // 放在 hook 边界与 agents:notice 同层：跨域清理不引 atom 模块循环。
+      if (event.sourceChannel === ipcChannels.agentsSubagentStatus) {
+        // 与 applySessionRuntimeEventAtom 同一套代际门禁：旧 runtime 的迟到帧不能写进新代的投影，
+        // 否则 detach 已先到、之后没人再清，会留下无法自愈的状态点。
+        const runtime = store.get(sessionRuntimeByIdAtom)[event.sessionId];
+        if (runtime && runtime.runtimeGeneration > event.runtimeGeneration) return;
+        if (
+          runtime &&
+          runtime.runtimeGeneration === event.runtimeGeneration &&
+          runtime.agentId &&
+          runtime.agentId !== event.agentId
+        ) {
+          return;
+        }
+        const payload = event.payload && typeof event.payload === "object"
+          ? event.payload as { runs?: unknown }
+          : undefined;
+        const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+        // 空快照是清理信号（回合结束/进程停止），删掉缓存帧；非空帧留作替换回放。
+        if (runs.length === 0) lastSubagentSnapshotByAgent.delete(event.agentId);
+        else lastSubagentSnapshotByAgent.set(event.agentId, runs);
+        store.set(applySubagentLiveSnapshotAtom, {
+          agentId: event.agentId,
+          runs,
+        });
+        return;
+      }
+      // detach 清掉该 agent 的投影（按 agentId 存储，旧代 detach 不会误伤替换后的新 agent），
+      // 并标记待回放：会话替换后同一个 pi 进程还活着，下一条事件到达时回放缓存帧。
+      if (event.kind === "detach") {
+        store.set(clearSubagentLiveRunsAtom, event.agentId);
+        if (lastSubagentSnapshotByAgent.has(event.agentId)) detachedSubagentAgents.add(event.agentId);
+      } else if (detachedSubagentAgents.delete(event.agentId)) {
+        const snapshot = lastSubagentSnapshotByAgent.get(event.agentId);
+        lastSubagentSnapshotByAgent.delete(event.agentId);
+        if (snapshot && snapshot.length > 0) {
+          store.set(applySubagentLiveSnapshotAtom, { agentId: event.agentId, runs: snapshot });
+        }
+      }
       if (event.sourceChannel === "sessions:message-delivery-status") {
         showNotice(t("session.messageDeliveryTooLarge"), Number.POSITIVE_INFINITY, "error");
         return;

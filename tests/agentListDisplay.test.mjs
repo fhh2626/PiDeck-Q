@@ -83,6 +83,10 @@ test("subagent status dot prefers a live runtime and otherwise uses the child ag
 	];
 	assert.equal(subagentSidebarStatus(session, agents, "detached"), undefined);
 	assert.equal(subagentSidebarStatus(session, agents), "running");
+	// completed 是短暂保留，不在行上点灯。
+	assert.equal(subagentSidebarStatus(session, [], undefined, [
+		{ sessionFile: "/home/user/proj/Session.jsonl", status: "completed", updatedAt: 1 },
+	]), undefined);
 	assert.equal(subagentSidebarStatus(session, [
 		{
 			deckSessionId: "child-1",
@@ -562,4 +566,67 @@ test("collectDisplayedSessionIds excludes drafts already shown as agent or sessi
 		(agent) => (agent.id === "live-1" ? "draft-1" : undefined),
 	);
 	assert.deepEqual([...ids], ["history-1", "draft-1"]);
+});
+
+test("subagent status dot falls back to the live subagent run projection", () => {
+	const { subagentSidebarStatus, visibleSidebarStatus } = loadModule();
+	const childFile = "C:/sessions/Parent/run-1/run-0/session.jsonl";
+	const child = session({ filePath: childFile });
+	const running = [{ sessionFile: "c:/SESSIONS/parent/run-1/run-0/Session.jsonl", status: "running", updatedAt: 1 }];
+	const failed = [{ sessionFile: childFile, status: "error", updatedAt: 1 }];
+
+	// pi 内建子代理没有 PiDeck runtime / Agent：工具 details 投影是唯一状态来源。
+	assert.equal(subagentSidebarStatus(child, [], undefined, running), "running");
+	assert.equal(subagentSidebarStatus(child, [], "", failed), "error");
+	// PiDeck runtime 快照优先：用户手动打开子会话后以 runtime 为准（detached 仍然无点）。
+	assert.equal(subagentSidebarStatus(child, [], "idle", running), "idle");
+	assert.equal(subagentSidebarStatus(child, [], "detached", running), undefined);
+	// 路径不匹配 / 缺省投影都不点亮该行。
+	assert.equal(subagentSidebarStatus(child, [], undefined, [
+		{ sessionFile: "C:/sessions/other/run-1/run-0/session.jsonl", status: "running", updatedAt: 1 },
+	]), undefined);
+	assert.equal(subagentSidebarStatus(child, []), undefined);
+	// WSL 路径区分大小写，不能把另一个会话误点亮。
+	assert.equal(subagentSidebarStatus(
+		session({ filePath: "/home/u/S.jsonl", wsl: true }),
+		[],
+		undefined,
+		[{ sessionFile: "/home/u/s.jsonl", status: "running", updatedAt: 1 }],
+	), undefined);
+	// 同一路径多条时取最新一次观察：子会话被 resume 后旧 error 不能让行一直红着。
+	assert.equal(subagentSidebarStatus(child, [], undefined, [
+		{ sessionFile: childFile, status: "error", updatedAt: 5 },
+		{ sessionFile: childFile, status: "running", updatedAt: 9 },
+	]), "running");
+	assert.equal(subagentSidebarStatus(child, [], undefined, [
+		{ sessionFile: childFile, status: "running", updatedAt: 5 },
+		{ sessionFile: childFile, status: "error", updatedAt: 9 },
+	]), "error");
+	// 子代理投影低于 runtime 快照，但高于匹配 Agent。
+	assert.equal(visibleSidebarStatus({ subagentStatus: "error", agentStatus: "idle" }), "error");
+	assert.equal(visibleSidebarStatus({ runtimeStatus: "idle", subagentStatus: "error" }), "idle");
+});
+
+test("collapsed subagent group reports running before a just-finished child", () => {
+	const { subagentGroupActivity } = loadModule();
+	const childFile = "C:/sessions/Parent/run-1/run-0/session.jsonl";
+	const child = session({ filePath: childFile, isInternalSubagent: true, parentSessionPath: "C:/sessions/Parent.jsonl" });
+
+	// native 路径大小写/分隔符不敏感：与行上状态点共用同一套归一化。
+	assert.equal(subagentGroupActivity([child], [
+		{ sessionFile: "c:\\sessions\\parent\\run-1\\run-0\\Session.jsonl", status: "running", updatedAt: 5 },
+	]), "running");
+	// 只有错误不亮折叠灯：错误靠展开后的红灯表达。
+	assert.equal(subagentGroupActivity([child], [{ sessionFile: childFile, status: "error", updatedAt: 5 }]), undefined);
+	// 刚完成的子代理也算，但文案不能说「运行中」，所以返回 completed 而不是 running。
+	assert.equal(subagentGroupActivity([child], [{ sessionFile: childFile, status: "completed", updatedAt: 5 }]), "completed");
+	// running 优先于 completed：有一个还在跑就报 running。
+	assert.equal(subagentGroupActivity([child, session({ filePath: "C:/sessions/Parent/run-2/run-0/session.jsonl" })], [
+		{ sessionFile: childFile, status: "completed", updatedAt: 5 },
+		{ sessionFile: "C:/sessions/Parent/run-2/run-0/session.jsonl", status: "running", updatedAt: 6 },
+	]), "running");
+	// 跑的是别的子会话
+	assert.equal(subagentGroupActivity([child], [{ sessionFile: "C:/other/s.jsonl", status: "running", updatedAt: 5 }]), undefined);
+	assert.equal(subagentGroupActivity([child], []), undefined);
+	assert.equal(subagentGroupActivity([], [{ sessionFile: childFile, status: "running", updatedAt: 5 }]), undefined);
 });

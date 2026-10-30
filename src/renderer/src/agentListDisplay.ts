@@ -1,5 +1,5 @@
 import { canonicalizeSessionPath, getSessionEnvironment } from "../../shared/sessionIdentity";
-import type { AgentTab, SessionEnvironment, SessionSummary } from "../../shared/types";
+import type { AgentTab, SessionEnvironment, SessionSummary, SubagentLiveRun } from "../../shared/types";
 
 /**
  * 会话/Agent 行的状态点 Tailwind bg 类（跨 Sidebar SessionTree 与会话 Tab 复用）。
@@ -33,14 +33,19 @@ function hasSidebarRuntimeSnapshot(status?: string | null): status is string {
 /**
  * 侧栏行实际要点亮的状态。
  * 已有 runtime 快照时只认快照：detached/closed 不再退回可能过期的 Agent。
- * 还没有快照时，才用 Agent 状态。
+ * 没有快照时依次退：子代理工具投递的运行态 → 匹配的 Agent。
  */
 export function visibleSidebarStatus(input: {
 	runtimeStatus?: string | null;
+	/** pi 内建子代理的运行态：子会话没有 PiDeck runtime，只能靠这个。completed 是短暂保留，不点灯。 */
+	subagentStatus?: string | null;
 	agentStatus?: string | null;
 }): string | undefined {
 	if (hasSidebarRuntimeSnapshot(input.runtimeStatus)) {
 		return sessionStatusDotClass(input.runtimeStatus) ? input.runtimeStatus : undefined;
+	}
+	if (input.subagentStatus && input.subagentStatus !== "completed" && sessionStatusDotClass(input.subagentStatus)) {
+		return input.subagentStatus;
 	}
 	if (sessionStatusDotClass(input.agentStatus)) return input.agentStatus ?? undefined;
 	return undefined;
@@ -76,16 +81,60 @@ function pickSubagentAgentStatus(
 	return visible[0]?.status;
 }
 
-/** 子会话行的状态点：runtime 快照优先，没有快照时按环境匹配 Agent。 */
+/**
+ * 从主进程推来的子代理状态里找出与本子会话同路径的条目。
+ * 同一路径可能因跨 agent/重开链留下多条，取最新一次观察（updatedAt 最大）：
+ * 子会话被 resume 后旧的 error 不能让行一直红着。
+ */
+function pickSubagentLiveStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	liveRuns: readonly SubagentLiveRun[] | undefined,
+): string | undefined {
+	if (!liveRuns?.length) return undefined;
+	const environment = getSessionEnvironment(session);
+	let latest: SubagentLiveRun | undefined;
+	for (const run of liveRuns) {
+		if (!isSameSessionPath(run.sessionFile, session.filePath, environment)) continue;
+		if (!latest || run.updatedAt >= latest.updatedAt) latest = run;
+	}
+	return latest?.status;
+}
+
+/**
+ * 子会话行的状态点：PiDeck runtime 快照 > 子代理工具投递的运行态 > 匹配的 Agent。
+ * pi 内建子代理（前台内联 / 后台 detached）永远没有 PiDeck runtime，
+ * liveRuns 是它们唯一的状态来源。
+ */
 export function subagentSidebarStatus(
 	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
 	agents: readonly SubagentStatusAgent[],
 	runtimeStatus?: string | null,
+	liveRuns?: readonly SubagentLiveRun[],
 ): string | undefined {
 	return visibleSidebarStatus({
 		runtimeStatus,
+		subagentStatus: pickSubagentLiveStatus(session, liveRuns),
 		agentStatus: pickSubagentAgentStatus(session, agents),
 	});
+}
+
+/**
+ * 折叠分组的子代理活动态：running 优先于 completed，error 不算。
+ * running 表示现在有活；completed 是短暂保留，表示刚结束（行可能还没被扫描出来）。
+ * 错误靠展开后的红灯表达。
+ */
+export function subagentGroupActivity(
+	sessions: readonly Pick<SessionSummary, "id" | "filePath" | "wsl">[],
+	liveRuns: readonly SubagentLiveRun[] | undefined,
+): "running" | "completed" | undefined {
+	if (!liveRuns?.length) return undefined;
+	let completed = false;
+	for (const session of sessions) {
+		const status = pickSubagentLiveStatus(session, liveRuns);
+		if (status === "running") return "running";
+		if (status === "completed") completed = true;
+	}
+	return completed ? "completed" : undefined;
 }
 
 const DEFAULT_VISIBLE_PROJECT_CHILD_LIMIT = 5;

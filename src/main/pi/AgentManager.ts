@@ -24,6 +24,7 @@ import type {
 } from "../../shared/types";
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
+import { SubagentRunTracker } from "./SubagentRunTracker";
 import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
@@ -243,6 +244,11 @@ export class AgentManager {
 	private readonly activeAssistantMessageIds = new Map<string, string>();
 	/** pi 的 toolCallId 贯穿 start/update/end，用它把同一次工具调用合并成一条 UI 记录。 */
 	private readonly toolMessageIds = new Map<string, Map<string, string>>();
+	/**
+	 * 子代理运行态投影：pi 内建子代理不是 PiDeck 的 Agent（无 agentId/runtime），
+	 * 只能从 `subagent` 工具 details 截取 sessionFile + 状态后按路径下发给侧栏。
+	 */
+	private readonly subagentRuns = new SubagentRunTracker();
 	/** 每个 agent 只保留一条自动重试状态消息，避免短暂 5xx/网络错误把会话刷屏。 */
 	private readonly retryStatusMessageIds = new Map<string, string>();
 	/** 同一历史会话正在创建 Agent 时共享同一个 Promise，避免快速重复点击/IPC 竞态创建多个进程。 */
@@ -2416,6 +2422,31 @@ export class AgentManager {
 		});
 	}
 
+	/**
+	 * 吸收子代理工具事件并按需推送状态快照。
+	 * details 体积不可控（含 messages），因此只在这里截取最小字段；
+	 * 同值帧（流式重复 running）不推送，避免事件通道被刷满。
+	 */
+	private observeSubagentToolEvent(agentId: string, event: unknown): void {
+		if (!this.subagentRuns.observe(agentId, event)) return;
+		this.emit(ipcChannels.agentsSubagentStatus, {
+			agentId,
+			runs: this.subagentRuns.snapshot(agentId),
+		});
+	}
+
+	/**
+	 * 工具级失败：subagent 工具可能在 details 里不带 results（参数错误/启动失败），
+	 * 该次调用登记的 running 行收不到终态，需在同回合内清掉，否则黄灯要撑到 agent_end。
+	 */
+	private clearSubagentToolCall(agentId: string, toolCallId: string): void {
+		if (!this.subagentRuns.clearToolCall(agentId, toolCallId)) return;
+		this.emit(ipcChannels.agentsSubagentStatus, {
+			agentId,
+			runs: this.subagentRuns.snapshot(agentId),
+		});
+	}
+
 	private async emitRuntimeState(agentId: string) {
 		try {
 			const state = await this.getRuntimeState(agentId);
@@ -3117,6 +3148,11 @@ export class AgentManager {
 		this.setStreamingAgent(agentId, false);
 		this.activeAssistantMessageIds.delete(agentId);
 		this.toolMessageIds.delete(agentId);
+		// 与 toolMessageIds 配对清理：子代理状态按 agentId 存储，不清理会随重启反复泄漏。
+		// 先推空快照再清：进程崩溃/重启路径不一定有 detach 帧，否则渲染层会留下永久黄灯。
+		if (this.subagentRuns.clearAgent(agentId)) {
+			this.emit(ipcChannels.agentsSubagentStatus, { agentId, runs: [] });
+		}
 		this.retryStatusMessageIds.delete(agentId);
 		this.streamingText.delete(agentId);
 		this.lastSentTextByAgent.delete(agentId);
@@ -4024,6 +4060,14 @@ export class AgentManager {
 				this.lastSentTextByAgent.delete(agentId);
 				this.textPushCountByAgent.delete(agentId);
 			}
+			// 子代理是本回合内的执行体：回合结束后仍为 running 的条目不可能再更新，
+			// 立刻推一次空快照，避免侧栏的黄灯永久卡住（失败条目按 TTL 保留供回看）。
+			if (this.subagentRuns.clearRunning(agentId)) {
+				this.emit(ipcChannels.agentsSubagentStatus, {
+					agentId,
+					runs: this.subagentRuns.snapshot(agentId),
+				});
+			}
 			// agent 异常结束时（如 API 返回 400、模型报错等），将错误提示写入会话，避免用户看到空白。
 			// 错误信息的存放位置因 pi 版本和错误类型不同而有多种可能：
 			//   1. agent_end 顶层 errorMessage
@@ -4224,6 +4268,11 @@ export class AgentManager {
 				typed,
 				typed.isError ? "error" : "done",
 			);
+			// 子代理终态（成功/失败/超时）从 details 结算后立刻下发，侧栏不必等下一帧。
+			this.observeSubagentToolEvent(agentId, typed);
+			if (typed.isError === true) {
+				this.clearSubagentToolCall(agentId, String(typed.toolCallId ?? ""));
+			}
 			// 工具执行结束是终态，立即 flush 把最终结果推给渲染进程，避免节流窗口内用户看不到完成状态。
 			this.flushMessageEmit(agentId);
 			// 清除本次 toolCall；并行批次仅在最后一个工具结束时发布 false，
@@ -4250,6 +4299,7 @@ export class AgentManager {
 				return;
 			}
 			this.upsertToolMessage(agentId, typed, "running");
+			this.observeSubagentToolEvent(agentId, typed);
 		}
 
 		if (typed.type === "extension_ui_request") {

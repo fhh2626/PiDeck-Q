@@ -7,4 +7,5 @@ export * from "./project-atoms";
 export * from "./app-ui-atoms";
 export * from "./message-deletion-atoms";
 export * from "./vision-atoms";
+export * from "./subagent-atoms";
 export * from "./model-atoms";
