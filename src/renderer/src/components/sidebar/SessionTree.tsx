@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { ChevronDown, Ellipsis, HatGlasses, Square, Trash2 } from "lucide-react";
 import type { AgentTab, Project, SessionRecord, SessionSummary } from "../../../../shared/types";
-import { collectDisplayedSessionIds, filterAgentsForSidebarDisplay, getProjectAgentSessionDisplay, sessionStatusDotClass, type ProjectChildItem } from "../../agentListDisplay";
+import { collectDisplayedSessionIds, filterAgentsForSidebarDisplay, getProjectAgentSessionDisplay, sessionStatusDotClass, subagentSidebarStatus, type ProjectChildItem } from "../../agentListDisplay";
 import { sessionRecordToSummary } from "../../atoms";
 import { t } from "../../i18n";
 import { filterSidebarSessions, getBoundSidebarRuntimeAgent, hasLiveSidebarRuntime, type SidebarController } from "../../hooks/useSidebarController";
@@ -185,6 +185,11 @@ export function SessionTree(props: {
       y: event.clientY,
     });
   };
+  const subagentStatus = (session: SessionSummary) => subagentSidebarStatus(
+    session,
+    projectAgents,
+    props.controller.catalog.runtimeBySessionId[session.id]?.status,
+  );
   const renderSubagent = (session: SessionSummary, label: ReactNode) => {
     return (
       <div
@@ -204,6 +209,7 @@ export function SessionTree(props: {
             onDoubleClick={() => openSession(session.id, "permanent")}
             {...sessionDragProps(session.id)}
           >
+            {renderRuntimeStatusDot(subagentStatus(session))}
             <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-7 @max-[255px]:group-focus-within/row:pr-7"><div className="conversation-title flex min-w-0 items-center gap-1.5">{label}</div></div>
           </button>
         </PathTooltip>

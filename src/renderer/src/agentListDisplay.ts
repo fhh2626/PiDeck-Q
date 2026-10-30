@@ -25,6 +25,69 @@ export function sessionStatusDotClass(status?: string | null): string | undefine
 	}
 }
 
+/** 有字符串就算 runtime 快照；空串与缺失一样，才允许退回 Agent。 */
+function hasSidebarRuntimeSnapshot(status?: string | null): status is string {
+	return status != null && status !== "";
+}
+
+/**
+ * 侧栏行实际要点亮的状态。
+ * 已有 runtime 快照时只认快照：detached/closed 不再退回可能过期的 Agent。
+ * 还没有快照时，才用 Agent 状态。
+ */
+export function visibleSidebarStatus(input: {
+	runtimeStatus?: string | null;
+	agentStatus?: string | null;
+}): string | undefined {
+	if (hasSidebarRuntimeSnapshot(input.runtimeStatus)) {
+		return sessionStatusDotClass(input.runtimeStatus) ? input.runtimeStatus : undefined;
+	}
+	if (sessionStatusDotClass(input.agentStatus)) return input.agentStatus ?? undefined;
+	return undefined;
+}
+
+type SubagentStatusAgent = Pick<
+	AgentTab,
+	"deckSessionId" | "sessionPath" | "sessionEnvironment" | "status" | "createdAt"
+>;
+
+function agentMatchesSubagent(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agent: SubagentStatusAgent,
+): boolean {
+	if (agent.deckSessionId && agent.deckSessionId === session.id) return true;
+	// 缺环境不能借用子会话的环境，否则 WSL 路径会被 native 规则折掉大小写。
+	if (!agent.sessionEnvironment || agent.sessionEnvironment !== getSessionEnvironment(session)) return false;
+	return isSameSessionPath(agent.sessionPath, session.filePath, agent.sessionEnvironment);
+}
+
+/**
+ * 同一子会话可能留下未标 closed 的旧 Agent。
+ * 只在仍可显示的状态里取最新创建的那个，避免旧 running 压过重启后的 idle。
+ */
+function pickSubagentAgentStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agents: readonly SubagentStatusAgent[],
+): string | undefined {
+	const visible = agents.filter((agent) =>
+		agentMatchesSubagent(session, agent) && sessionStatusDotClass(agent.status),
+	);
+	visible.sort((left, right) => right.createdAt - left.createdAt);
+	return visible[0]?.status;
+}
+
+/** 子会话行的状态点：runtime 快照优先，没有快照时按环境匹配 Agent。 */
+export function subagentSidebarStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agents: readonly SubagentStatusAgent[],
+	runtimeStatus?: string | null,
+): string | undefined {
+	return visibleSidebarStatus({
+		runtimeStatus,
+		agentStatus: pickSubagentAgentStatus(session, agents),
+	});
+}
+
 const DEFAULT_VISIBLE_PROJECT_CHILD_LIMIT = 5;
 
 export type ProjectChildItem =

@@ -43,6 +43,94 @@ function session(overrides) {
 	};
 }
 
+test("subagent status dot prefers a live runtime and otherwise uses the child agent", () => {
+	const { visibleSidebarStatus, sessionStatusDotClass, subagentSidebarStatus } = loadModule();
+	assert.equal(visibleSidebarStatus({ runtimeStatus: "running", agentStatus: "idle" }), "running");
+	assert.equal(visibleSidebarStatus({ runtimeStatus: "detached", agentStatus: "idle" }), undefined);
+	assert.equal(visibleSidebarStatus({ runtimeStatus: "closed", agentStatus: "error" }), undefined);
+	assert.equal(visibleSidebarStatus({ agentStatus: "starting" }), "starting");
+	assert.equal(visibleSidebarStatus({ runtimeStatus: "detached", agentStatus: "closed" }), undefined);
+	assert.equal(sessionStatusDotClass("idle"), "bg-info");
+	assert.equal(sessionStatusDotClass("running"), "bg-warning");
+	assert.equal(sessionStatusDotClass("error"), "bg-danger");
+
+	const session = {
+		id: "child-1",
+		filePath: "/home/user/proj/Session.jsonl",
+		wsl: true,
+	};
+	const agents = [
+		{
+			deckSessionId: "child-1",
+			sessionPath: "/home/user/proj/session.jsonl",
+			sessionEnvironment: "wsl",
+			status: "closed",
+			createdAt: 1,
+		},
+		{
+			deckSessionId: "child-1",
+			sessionPath: "/home/user/proj/Session.jsonl",
+			sessionEnvironment: "wsl",
+			status: "running",
+			createdAt: 2,
+		},
+		{
+			sessionPath: "/home/user/proj/Session.jsonl",
+			sessionEnvironment: "native",
+			status: "error",
+			createdAt: 3,
+		},
+	];
+	assert.equal(subagentSidebarStatus(session, agents, "detached"), undefined);
+	assert.equal(subagentSidebarStatus(session, agents), "running");
+	assert.equal(subagentSidebarStatus(session, [
+		{
+			deckSessionId: "child-1",
+			sessionPath: "/home/user/proj/Session.jsonl",
+			sessionEnvironment: "wsl",
+			status: "running",
+			createdAt: 1,
+		},
+		{
+			deckSessionId: "child-1",
+			sessionPath: "/home/user/proj/Session.jsonl",
+			sessionEnvironment: "wsl",
+			status: "idle",
+			createdAt: 5,
+		},
+	]), "idle");
+	assert.equal(subagentSidebarStatus({
+		id: "native-child",
+		filePath: "C:/sessions/Child.jsonl",
+	}, [{
+		sessionPath: "C:/sessions/child.jsonl",
+		status: "running",
+		createdAt: 1,
+	}]), undefined);
+	assert.equal(subagentSidebarStatus({
+		id: "wsl-only",
+		filePath: "/home/user/proj/Session.jsonl",
+		wsl: true,
+	}, [
+		{
+			sessionPath: "/home/user/proj/Session.jsonl",
+			sessionEnvironment: "native",
+			status: "error",
+			createdAt: 5,
+		},
+		{
+			sessionPath: "/home/user/proj/session.jsonl",
+			sessionEnvironment: "wsl",
+			status: "idle",
+			createdAt: 1,
+		},
+	]), undefined);
+
+	const tree = readFileSync("src/renderer/src/components/sidebar/SessionTree.tsx", "utf8");
+	assert.match(tree, /renderRuntimeStatusDot\(subagentStatus\(session\)\)/);
+	assert.match(tree, /subagentSidebarStatus\(/);
+});
+
 test("matches native Session paths only for runtime/catalog deduplication", () => {
 	const { isSameSessionPath } = loadModule();
 	const parentPath = "C:\\sessions\\parent.jsonl";
