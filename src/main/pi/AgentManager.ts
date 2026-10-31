@@ -5310,6 +5310,10 @@ export class AgentManager {
 
 		if (existing) {
 			existing.text = text;
+			// timestamp 的语义是「最后更新时间」，不是计时起点：工具卡的运行中秒表必须用
+			// meta.startedAt（契约见 tests/toolMessageStartedAt.test.mjs）。历史 bug 就是渲染层
+			// 拿被这里刷新的 timestamp 当起点，导致 powershell/subagent 的耗时反复归零。
+			// 不能简单改回「创建时间」：turn 结束判定、指纹时间容差等既有消费者依赖该语义。
 			existing.timestamp = Date.now();
 			// 若本次有明确结果传入（包含终态或非空结果），准确替换展示图片与 notice，清除旧 partial 遗留
 			if (hasExplicitResult) {

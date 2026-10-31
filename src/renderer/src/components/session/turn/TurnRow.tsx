@@ -564,7 +564,7 @@ export const TurnRow = memo(
 						<Clock size={12} className="shrink-0" aria-hidden="true" />
 						<span className="font-mono text-body leading-none tabular-nums">
 							{isRunLive ? (
-								<LiveDuration startedAt={run.startedAt} isStreaming />
+								<LiveDuration identity={run.id} startedAt={run.startedAt} isStreaming />
 							) : (
 								formatDuration(duration)
 							)}

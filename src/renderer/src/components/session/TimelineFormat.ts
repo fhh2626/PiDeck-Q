@@ -221,6 +221,27 @@ export function getToolExitCode(message: ChatMessage): number | undefined {
   return undefined;
 }
 
+/**
+ * 工具卡的计时起点：运行中必须用主进程在 tool_execution_start 时记录的 meta.startedAt。
+ *
+ * 不能用 message.timestamp：AgentManager.upsertToolMessage 在每次 tool_execution_update
+ * 都会把它重置为「最后更新时间」，powershell 流式输出 / subagent 进度更新会让秒表反复归零
+ * （契约见 tests/toolMessageStartedAt.test.mjs）。历史投影/旧数据缺 startedAt 时回退
+ * timestamp——那时卡片已是终态，不走实时计价。
+ */
+export function getToolStartedAt(message: ChatMessage): number {
+  const startedAt = message.meta?.startedAt;
+  if (typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > 0) return startedAt;
+  return message.timestamp;
+}
+
+/** 工具终态耗时（ms）；运行中为 undefined，由 LiveDuration 实时计价。 */
+export function getToolDurationMs(message: ChatMessage): number | undefined {
+  const duration = message.meta?.durationMs;
+  if (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0) return undefined;
+  return duration;
+}
+
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.floor(ms / 1000);

@@ -51,7 +51,9 @@ import { desktopApi } from "../../desktopApi";
 import {
   formatDuration,
   getToolDetailText,
+  getToolDurationMs,
   getToolName,
+  getToolStartedAt,
   getToolStatus,
 } from "./TimelineFormat";
 
@@ -287,10 +289,10 @@ export const ToolCard = memo(function ToolCard(props: {
 	// 学 Proma：折叠态显示语义短语（如「读取 foo.ts」）而非完整命令行
 	const phrase = getToolPhraseFromArgs(toolName, props.message.meta?.args);
 	const displayLabel = status === "running" ? phrase.loadingLabel : phrase.label;
-	const durationMs =
-		typeof props.message.meta?.durationMs === "number"
-			? props.message.meta.durationMs
-			: undefined;
+	const durationMs = getToolDurationMs(props.message);
+	// 运行中计时起点：见 getToolStartedAt 里的契约说明（不能用会被 update 刷新的 timestamp）。
+	// 旧历史消息缺 meta.startedAt 时内部回退 timestamp。
+	const startedAtMs = getToolStartedAt(props.message);
 	const showDuration = durationMs !== undefined || status === "running";
 	// 模型用 read 工具读取 SKILL.md 来加载 skill：识别后以 skill 徽标样式渲染
 	const skillName = getReadSkillName(props.message);
@@ -390,11 +392,17 @@ export const ToolCard = memo(function ToolCard(props: {
 							{t("tool.images.count", { count: props.message.images!.length })}
 						</Badge>
 					)}
+					{/* 时长锚点：端到端用例按 data-tool-duration 定位运行中秒表 */}
 					{showDuration && (
-						<span className="shrink-0 font-mono text-micro tabular-nums text-text-tertiary" title={t("tool.durationTitle")}>
+						<span
+							className="shrink-0 font-mono text-micro tabular-nums text-text-tertiary"
+							title={t("tool.durationTitle")}
+							data-tool-duration={status}
+						>
 							{status === "running" ? (
-								// 工具执行中：从消息时间戳起实时计时（LiveDuration 每秒刷新）
-								<LiveDuration startedAt={props.message.timestamp} isStreaming />
+								// 工具执行中：从 meta.startedAt 起实时计时（LiveDuration 每 100ms 刷新）。
+								// identity 用消息 id：即使上游再拿被刷新的 timestamp 当起点，读数也不回跳。
+								<LiveDuration identity={props.message.id} startedAt={startedAtMs} isStreaming />
 							) : (
 								formatDuration(durationMs ?? 0)
 							)}

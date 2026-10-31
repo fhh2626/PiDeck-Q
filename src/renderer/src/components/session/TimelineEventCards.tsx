@@ -422,7 +422,7 @@ export const ThinkingBlock = memo(
 							// 思考结束只是数字冻结，不会出现前缀/文案整体蹦出。
 							<>
 								{t("thinking.durationPrefix")}
-								<LiveDuration startedAt={props.startedAt} isStreaming />
+								<LiveDuration identity={thinkingGroupId} startedAt={props.startedAt} isStreaming />
 							</>
 						)}
 					</small>
