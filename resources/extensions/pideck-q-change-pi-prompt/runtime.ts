@@ -973,7 +973,7 @@ export function registerPromptExtension(
 							break;
 						}
 						const created = await initializeSubagentDescription(agentDir);
-						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'subagent-tool-description.md')}。请在 ${join(agentDir, 'extensions', 'subagent', 'config.json')} 顶层设置 toolDescriptionMode 为 custom。standalone Pi 下，如果 subagent config 不存在，change-pi-prompt 会自动创建最小 foreground-safe 配置。已有配置不会自动修改。项目配置目录中的 subagent-tool-description.md 优先；本命令不修改 pi-subagents 配置。上游会自动追加安全指南。独立二进制环境必须显式关闭后台子 agent。`);
+						report(ctx, `${created ? '已创建' : '保留已有'} ${join(agentDir, 'subagent-tool-description.md')}。无需额外配置：省略 toolDescriptionMode 时默认会优先读取该文件，项目与全局位置都没有有效文件时回落到内置默认描述；只有想强制使用该文件（不回落到内置默认描述）时，才需在 ${join(agentDir, 'extensions', 'subagent', 'config.json')} 顶层设为 custom。standalone Pi 下，如果 subagent config 不存在，change-pi-prompt 会自动创建最小 foreground-safe 配置。已有配置不会自动修改。项目配置目录中的 subagent-tool-description.md 优先；本命令不修改 pi-subagents 配置。上游会自动追加安全指南。独立二进制环境必须显式关闭后台子 agent。`);
 						break;
 					}
 					case 'preview':

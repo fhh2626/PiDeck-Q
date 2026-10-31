@@ -143,7 +143,7 @@ systemPrompt hook 不能修改工具 description。使用 pi-subagents 自带 cu
 
 1. 确认已安装 `pi-subagents`（Nico Bailon，适配 0.66.0），工具名为 `subagent`。
 2. `/change-pi-prompt init-subagent`：只创建缺失的 `<agentDir>/subagent-tool-description.md`。
-3. 在 `<agentDir>/extensions/subagent/config.json` 顶层设置 `"toolDescriptionMode": "custom"`。在独立 Pi（standalone Pi）环境下，若该配置文件完全不存在，`change-pi-prompt` 会在首次会话或子代理调用时自动生成最小前台安全配置（`asyncByDefault: false, forceTopLevelAsync: false`）；已有用户配置绝不覆盖，仅执行安全合规校验。`before_agent_start`、`context`、`before_provider_request` 和 `tool_result` 会把上游强制安全段、工具描述、已注入 skill，以及对 `pi-subagents/skills/` 的 `read` 结果中的默认后台说明改写为：插件默认是 `asyncByDefault:true`，本环境必须 `async:false`。不修改 pi-subagents 上游源码。用语义窗口匹配，而不是整段原文；用户自己的 `async: true` 不替换。
+3. 无需设置 `toolDescriptionMode`：省略时默认会优先读取该文件，项目与全局位置都没有有效文件时回落到内置默认描述；只有想强制使用该文件（不回落到内置默认描述）时，才需要在 `<agentDir>/extensions/subagent/config.json` 顶层设置 `"toolDescriptionMode": "custom"`。在独立 Pi（standalone Pi）环境下，若该配置文件完全不存在，`change-pi-prompt` 会在首次会话或子代理调用时自动生成最小前台安全配置（`asyncByDefault: false, forceTopLevelAsync: false`）；已有用户配置绝不覆盖，仅执行安全合规校验。`before_agent_start`、`context`、`before_provider_request` 和 `tool_result` 会把上游强制安全段、工具描述、已注入 skill，以及对 `pi-subagents/skills/` 的 `read` 结果中的默认后台说明改写为：插件默认是 `asyncByDefault:true`，本环境必须 `async:false`。不修改 pi-subagents 上游源码。用语义窗口匹配，而不是整段原文；用户自己的 `async: true` 不替换。
 4. 开启新会话，使 subagent 工具重新注册。
 
 命令不修改 pi-subagents 配置，不覆盖已有 description；未检测到目标工具时不写任何文件。

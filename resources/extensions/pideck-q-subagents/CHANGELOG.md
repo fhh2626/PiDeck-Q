@@ -8,7 +8,11 @@
 - Add the `readonly` and `writable` builtin agents. Both use `tools: parent` (the frontmatter form of the `tools: "parent"` override), inherit the parent's model and thinking, and default to forked context. `readonly` excludes `edit` and `write` and carries a strict read-only prompt.
 - Run a single new launch as `writable` when no `agent` is given; an unknown agent name now fails with the list of available agents.
 
+### Changed
+- Make the default `subagent` tool description prefer `subagent-tool-description.md` when present, falling back to the built-in default description (not `full` or `compact`) when no valid file is found.
+
 ### Fixed
+- Refresh the safety guidance: remove references to the removed `oracle`/`advisor` builtin agents and the nonexistent `one-shot` request mode, and name the `readonly` agent explicitly for independent review.
 - Yield foreground workflow control on supervisor decisions while retaining the original VM and authoritative child completion, including resumed children, parallel/repeated asks, status/wait, interruption, and session replacement. Never replay a live writer to answer a decision.
 - Bound abort cleanup for unresponsive host/steer callbacks without mutating default or frozen abort reasons; preserve error classification, causes, and partial failure evidence, and identify operations whose exit is not confirmed.
 - Preserve async/provider completions and failure policy in mixed foreground waits, settle external attention by its owned tool call, and keep live retained VMs visible to compatible host-session liveness checks.
