@@ -443,8 +443,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			sessionRuntimeCoordinator.editRuntimeMessage(target, messageId, newText),
 		deleteSessionRuntimeMessage: (target, messageId) =>
 			sessionRuntimeCoordinator.deleteRuntimeMessage(target, messageId),
-		prepareSessionRuntimeResend: (target, messageId) =>
-			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId),
+		prepareSessionRuntimeResend: (target, messageId, model, thinkingLevel) =>
+			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId, model, thinkingLevel),
 		setSessionRuntimeModel: (target, provider, modelId) =>
 			sessionRuntimeCoordinator.setRuntimeModel(target, provider, modelId),
 		setSessionRuntimeThinking: (target, level) =>

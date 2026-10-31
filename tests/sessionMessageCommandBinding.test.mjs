@@ -90,8 +90,8 @@ function createMockCommandsEnvironment(customDesktopApiOverrides = {}) {
           commandEvents.push({ type: "api:delete", target, messageId });
           return { ok: true, value: { success: true } };
         },
-        prepareRuntimeResend: async (target, messageId) => {
-          commandEvents.push({ type: "api:prepareResend", target, messageId });
+        prepareRuntimeResend: async (target, messageId, model, thinkingLevel) => {
+          commandEvents.push({ type: "api:prepareResend", target, messageId, model, thinkingLevel });
           // 与生产契约一致：SessionCommandResult<SessionTargetedValue<{text, images}>>
           return { ok: true, value: { target, value: { text: "resend-text", images: [] } } };
         },
@@ -777,6 +777,32 @@ test("resendUserMessage: unchanged target submits snapshot after prepare succeed
   assert.deepEqual(submittedSnapshots[0], { sessionId: "session-1", text: "resend-text" });
   const toasts = commandEvents.filter((e) => e.type === "toast");
   assert.equal(toasts.length, 0, "no error toast expected on happy path");
+});
+
+test("resendUserMessage: passes currently selected model to prepareRuntimeResend", async () => {
+  const currentTargetRef = { current: { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 } };
+  const { mockCommands, commandEvents, submittedSnapshots } = createHookEnvironment(currentTargetRef, {
+    input: {
+      getCurrentModelForSession: (sessionId) => {
+        if (sessionId === "session-1") {
+          return {
+            model: { provider: "deepseek", modelId: "deepseek-chat" },
+            thinkingLevel: "high",
+          };
+        }
+        return undefined;
+      },
+    },
+  });
+
+  mockCommands.resendUserMessage(currentTargetRef.current, { id: "msg-1", role: "user", text: "hello", agentId: "agent-1" });
+  await flushMicrotasks();
+
+  assert.equal(submittedSnapshots.length, 1);
+  const prepareEvents = commandEvents.filter((e) => e.type === "api:prepareResend");
+  assert.equal(prepareEvents.length, 1);
+  assert.deepEqual(prepareEvents[0].model, { provider: "deepseek", modelId: "deepseek-chat" });
+  assert.equal(prepareEvents[0].thinkingLevel, "high");
 });
 
 test("edit save after runtime target disappears still dispatches captured callback and surfaces runtimeChanged", async () => {

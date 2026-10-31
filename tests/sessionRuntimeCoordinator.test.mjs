@@ -1272,6 +1272,139 @@ test("targeted runtime commands return the validated target and command value", 
   assert.equal(harness.calls.abort, 1);
 });
 
+test("prepareRuntimeResend preserves currently selected model instead of reverting to old message model", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const setModelCalls = [];
+  const setThinkingCalls = [];
+  const harness = createHarness({
+    entry: {
+      id: "session-1",
+      title: "Session 1",
+      model: { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+      thinkingLevel: "high",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+    runtimeState: { isStreaming: false, provider: "anthropic", modelId: "claude-3-5-sonnet", thinkingLevel: "high" },
+    // 模拟 pi 对不支持的等级做钓制：请求 medium，实际接受 low。
+    thinkingState: { isStreaming: false, thinkingLevel: "low" },
+  });
+  harness.agents.setModel = async (agentId, provider, modelId) => {
+    setModelCalls.push({ agentId, provider, modelId });
+  };
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { isStreaming: false, thinkingLevel: "low" };
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  // Case 1: 传入当前在 UI 选中的新模型（如 deepseek-chat），重发截断后应将其重新应用
+  const resendWithExplicitModel = await coordinator.prepareRuntimeResend(
+    target,
+    "message-old",
+    { provider: "deepseek", modelId: "deepseek-chat" },
+    "medium",
+  );
+  assert.equal(resendWithExplicitModel.ok, true);
+  assert.deepEqual(setModelCalls, [{ agentId: "agent-a", provider: "deepseek", modelId: "deepseek-chat" }]);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "medium" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.catalog.get("session-1").model)), { provider: "deepseek", modelId: "deepseek-chat" });
+  // 回写必须是 pi 实际接受的等级（low），不是请求值（medium）
+  assert.equal(harness.catalog.get("session-1").thinkingLevel, "low");
+  assert.equal(harness.calls.publishRuntimeState, 1);
+
+  // Case 2: 未显式传参时，保留 catalog 记录的当前模型，避免倒退回历史消息的模型
+  setModelCalls.length = 0;
+  setThinkingCalls.length = 0;
+  const catalogWritesBeforeCase2 = harness.calls.update;
+  const resendWithCatalogModel = await coordinator.prepareRuntimeResend(target, "message-old");
+  assert.equal(resendWithCatalogModel.ok, true);
+  assert.deepEqual(setModelCalls, [{ agentId: "agent-a", provider: "deepseek", modelId: "deepseek-chat" }]);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "low" }]);
+  // catalog 已是同一模型/等级时不得重复写盘（避免每次重发都 bump updatedAt 把会话顶到侧栏最前）
+  assert.equal(harness.calls.update, catalogWritesBeforeCase2);
+  assert.equal(harness.calls.publishRuntimeState, 2);
+});
+
+test("prepareRuntimeResend without any model preference leaves the runtime model untouched", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const setModelCalls = [];
+  const setThinkingCalls = [];
+  const harness = createHarness({
+    // 默认 catalogEntry 既无 model 也无 thinkingLevel
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async (agentId, provider, modelId) => {
+    setModelCalls.push({ agentId, provider, modelId });
+  };
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { isStreaming: false };
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const result = await coordinator.prepareRuntimeResend(target, "message-old");
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.prepareResend, 1);
+  assert.deepEqual(setModelCalls, []);
+  assert.deepEqual(setThinkingCalls, []);
+  assert.equal(harness.calls.update, 0);
+  // 没有偏好可恢复也要补一次真实运行态：switch_session 重载本身可能已经改变了模型
+  assert.equal(harness.calls.publishRuntimeState, 1);
+});
+
+test("prepareRuntimeResend keeps the resend usable when the selected model cannot be restored", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      id: "session-1",
+      title: "Session 1",
+      model: { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+      thinkingLevel: "high",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+    // 模拟 pi 启动快照里没有该模型：set_model 报 Model not found（渲染层会引导重启）
+    modelError: "Model not found: deepseek/deepseek-chat",
+    thinkingState: { isStreaming: false, thinkingLevel: "high" },
+  });
+  const warns = [];
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, {
+    info: () => {},
+    warn: (scope, message) => warns.push(`${scope}:${message}`),
+    error: () => {},
+  });
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const result = await coordinator.prepareRuntimeResend(
+    target,
+    "message-old",
+    { provider: "deepseek", modelId: "deepseek-chat" },
+  );
+
+  // 截断已经落盘：模型恢复失败不能变成重发失败，否则用户既丢了上下文又没重发成功
+  assert.equal(result.ok, true);
+  assert.equal(result.value.value.text, "hello");
+  // 模型没恢复成功时不得把未生效的模型写进 catalog
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.catalog.get("session-1").model)),
+    { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+  );
+  // 思考等级与模型无关，仍应尝试恢复
+  assert.equal(harness.calls.setThinking, 1);
+  assert.equal(harness.calls.update, 0);
+  // 失败也要推真实运行态，避免底栏继续显示未生效的模型
+  assert.equal(harness.calls.publishRuntimeState, 1);
+  assert.ok(
+    warns.some((entry) => entry.includes("Failed to restore current model after resend truncate")),
+    "model restore failure must be recorded for diagnosis",
+  );
+});
+
 test("runtime message snapshots retain the validated Session target", () => {
   const { SessionRuntimeCoordinator } = loadCoordinator();
   const harness = createHarness({

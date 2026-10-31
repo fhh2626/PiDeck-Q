@@ -500,7 +500,7 @@ export function createPreviewApi(): PiDesktopApi {
 				ok: true,
 				value: { target, value: undefined },
 			}),
-			prepareRuntimeResend: async (target) => ({
+			prepareRuntimeResend: async (target, _messageId, _model, _thinkingLevel) => ({
 				ok: true,
 				value: { target, value: { text: "" } },
 			}),

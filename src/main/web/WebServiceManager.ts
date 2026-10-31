@@ -126,6 +126,8 @@ type WebServiceDependencies = {
 	prepareSessionRuntimeResend: (
 		target: SessionRuntimeTarget,
 		messageId: string,
+		model?: { provider: string; modelId: string },
+		thinkingLevel?: string,
 	) => Promise<SessionCommandResult<SessionTargetedValue<{ text: string; images?: ImageContent[] }>>>;
 	setSessionRuntimeModel: (
 		target: SessionRuntimeTarget,
@@ -764,6 +766,8 @@ export class WebServiceManager {
 					provider?: string;
 					modelId?: string;
 					level?: string;
+					model?: { provider: string; modelId: string };
+					thinkingLevel?: string;
 				}>(request);
 				const target = body.target;
 				if (!target || target.sessionId !== sessionId) {
@@ -812,7 +816,12 @@ export class WebServiceManager {
 						result = await this.deps.deleteSessionRuntimeMessage(target, body.messageId ?? "");
 						break;
 					case "prepare-resend":
-						result = await this.deps.prepareSessionRuntimeResend(target, body.messageId ?? "");
+						result = await this.deps.prepareSessionRuntimeResend(
+							target,
+							body.messageId ?? "",
+							body.model,
+							body.thinkingLevel,
+						);
 						break;
 					case "model":
 						result = await this.deps.setSessionRuntimeModel(

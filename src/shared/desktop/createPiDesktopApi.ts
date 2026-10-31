@@ -431,11 +431,18 @@ const api = {
 				target,
 				messageId,
 			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
-		prepareRuntimeResend: (target: SessionRuntimeTarget, messageId: string) =>
+		prepareRuntimeResend: (
+			target: SessionRuntimeTarget,
+			messageId: string,
+			model?: { provider: string; modelId: string },
+			thinkingLevel?: string,
+		) =>
 			transport.invoke(
 				ipcChannels.sessionsRuntimePrepareResend,
 				target,
 				messageId,
+				model,
+				thinkingLevel,
 			) as Promise<SessionCommandResult<SessionTargetedValue<{
 				text: string;
 				images?: ImageContent[];

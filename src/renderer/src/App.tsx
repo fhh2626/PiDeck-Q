@@ -53,6 +53,7 @@ import { useImportFlow } from "./hooks/useImportFlow";
 import { useQueuedPrompt } from "./hooks/useQueuedPrompt";
 import { activeAgentIdAtom } from "./hooks/useSessionRuntimeController";
 import { PromptDeliveryUnknownError } from "./utils/promptErrors";
+import { resolveResendModelSelection } from "./utils/resendModelSelection";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -98,6 +99,7 @@ import {
   setSessionCatalogLoadStateAtom,
   setSessionDraftAtom,
   upsertSessionAtom,
+  modelPendingByIdAtom,
   anyAgentRuntimeWorkingAtom,
   beginOptimisticMessageDeletion,
 } from "./atoms";
@@ -2057,6 +2059,17 @@ export function App() {
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
     refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
     beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
+    // 重发要沿用的是「当前选中的模型」，而底栏展示顺序就是 pending > runtime.state > record：
+    // 两端必须同源，否则 /model 轮换或在途切换会把旧模型写回去。策略见 resolveResendModelSelection。
+    getCurrentModelForSession: (sessionId: string) => {
+      const record = store.get(sessionRecordByIdAtomFamily(sessionId));
+      return resolveResendModelSelection({
+        pending: store.get(modelPendingByIdAtom)[sessionId],
+        runtimeState: store.get(sessionRuntimeBySessionIdAtomFamily(sessionId))?.state,
+        recordModel: record?.model,
+        recordThinkingLevel: record?.thinkingLevel,
+      });
+    },
   });
   async function updateSettings(patch: Partial<AppSettings>) {
     const changesWebService =

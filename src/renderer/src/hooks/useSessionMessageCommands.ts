@@ -48,6 +48,11 @@ type SessionMessageCommandsInput = {
 		sessionId: string,
 		messageId: string,
 	) => (outcome: "committed" | "failed") => void;
+	/** 获取会话「当前选中的模型」（pending > runtime.state > record，与底栏展示同源），用于重发时保持当前模型 */
+	getCurrentModelForSession?: (sessionId: string) => {
+		model?: { provider: string; modelId: string };
+		thinkingLevel?: string;
+	} | undefined;
 };
 
 function translateAgentErrorMessage(message: string): string {
@@ -126,8 +131,14 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		let preparedText: string | undefined;
 		void (async () => {
 			try {
+				const currentSelected = input.getCurrentModelForSession?.(currentTarget.sessionId);
 				const snapshot = requireSessionCommand(
-					await api.sessions.prepareRuntimeResend(currentTarget, message.id),
+					await api.sessions.prepareRuntimeResend(
+						currentTarget,
+						message.id,
+						currentSelected?.model,
+						currentSelected?.thinkingLevel,
+					),
 				).value;
 				preparedText = snapshot.text;
 				const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;

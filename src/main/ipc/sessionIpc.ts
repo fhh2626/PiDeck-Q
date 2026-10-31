@@ -617,8 +617,18 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	);
 	router.handle(
 		ipcChannels.sessionsRuntimePrepareResend,
-		(target: SessionRuntimeTarget, messageId: string) =>
-			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId),
+		(
+			target: SessionRuntimeTarget,
+			messageId: string,
+			model?: { provider: string; modelId: string },
+			thinkingLevel?: string,
+		) =>
+			sessionRuntimeCoordinator.prepareRuntimeResend(
+				target,
+				messageId,
+				model,
+				thinkingLevel,
+			),
 	);
 	router.handle(
 		ipcChannels.sessionsRuntimeSetModel,
