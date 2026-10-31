@@ -105,7 +105,7 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 Windows 默认目录：`C:\Users\<user>\.pi\agent\change-pi-prompt`。
 实际目录使用 Pi 的 `getAgentDir()`，因此支持宿主自定义 agentDir。
 
-模板包括：identity、execution、tools、read、edit、batchEdit、write、shell、pwsh、userInput、taskTracking、delegation、validation、communication、environment。
+模板包括：identity、execution、tools、read、edit、batchEdit、write、shell、pwsh、userInput、delegation、validation、communication、environment。
 内置默认文案集中在 `defaults.ts` 开头。发布更新不触碰用户 Markdown。
 仅 environment.md 支持 `{{hostOs}}`、`{{today}}`；其余模板为纯文本，不执行代码。
 不存在的模板使用默认值；空文件、未知占位符、保留标记、超过 64 KiB 的文件会拒绝加载。

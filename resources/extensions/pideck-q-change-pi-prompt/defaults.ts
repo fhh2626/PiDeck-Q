@@ -21,9 +21,6 @@ export const DEFAULT_PROMPTS = {
 	userInput: `## User Input
 - Whenever clarification or confirmation is needed, use \`ask_question\` rather than plain-text questions.
 - Choose the appropriate input type and batch related questions when supported by the active schema.`,
-	taskTracking: `## Task Tracking
-- Use \`todo\` for multi-step work: add items before starting and update them as work progresses.
-- Use IDs from the current list rather than guessing; clear completed tracking when the task is finished.`,
 	delegation: `## Delegation
 - Use direct tools for small, focused tasks; delegate substantial exploration or independent work. Do not duplicate delegated work.
 - For multi-step or parallel delegation, use exactly one foreground workflowScript call (async:false), with all children inside it. Follow the subagent tool contract.

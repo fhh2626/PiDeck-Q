@@ -17,7 +17,9 @@
     // their root lockfile graph. Pi's own imports resolve inside its fixture.
     // paths 相对本 tsconfig 所在目录解析（TS>=4.1），不需要 baseUrl，避免裸模块名被误按仓库根解析。
     "paths": {
-      "@earendil-works/*": ["./.cache/pi-latest/node_modules/@earendil-works/*"]
+      "@earendil-works/*": ["./.cache/pi-latest/node_modules/@earendil-works/*"],
+      // 内置扩展（如 pi-deck-todo）直接用 pi 运行时的 typebox，与 PiDeck 构建依赖隔离。
+      "typebox": ["./.cache/pi-latest/node_modules/typebox"]
     },
     "types": ["node"],
 
@@ -37,6 +39,7 @@
   "include": [
     "resources/extensions/pideck-q-change-pi-prompt.ts",
     "resources/extensions/pideck-q-change-pi-prompt/**/*.ts",
+    "resources/extensions/pi-deck-todo.ts",
     "resources/extensions/pi-deck-security-gate.ts",
     "resources/extensions/pi-deck-vision.ts"
   ],
