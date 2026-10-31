@@ -54,6 +54,8 @@ test("sanitizes cross-process entries and drops an agent when its snapshot empti
 			run("C:/ok.jsonl"),
 			{ sessionFile: "", status: "running", updatedAt: 1 },
 			{ sessionFile: "C:/bad.jsonl", status: "idle", updatedAt: 1 },
+			// completed 不进投影：黄点只表示「正在跑」，否则停下来的子代理会一直亮着。
+			{ sessionFile: "C:/done.jsonl", status: "completed", updatedAt: 1 },
 			{ status: "running", updatedAt: 1 },
 			null,
 		],

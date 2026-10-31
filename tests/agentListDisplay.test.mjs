@@ -83,7 +83,7 @@ test("subagent status dot prefers a live runtime and otherwise uses the child ag
 	];
 	assert.equal(subagentSidebarStatus(session, agents, "detached"), undefined);
 	assert.equal(subagentSidebarStatus(session, agents), "running");
-	// completed 是短暂保留，不在行上点灯。
+	// 主进程不会下发 completed（终态即移除），这里仍防御性断言不点灯。
 	assert.equal(subagentSidebarStatus(session, [], undefined, [
 		{ sessionFile: "/home/user/proj/Session.jsonl", status: "completed", updatedAt: 1 },
 	]), undefined);
@@ -607,7 +607,7 @@ test("subagent status dot falls back to the live subagent run projection", () =>
 	assert.equal(visibleSidebarStatus({ runtimeStatus: "idle", subagentStatus: "error" }), "idle");
 });
 
-test("collapsed subagent group reports running before a just-finished child", () => {
+test("collapsed subagent group lights only while a child is running", () => {
 	const { subagentGroupActivity } = loadModule();
 	const childFile = "C:/sessions/Parent/run-1/run-0/session.jsonl";
 	const child = session({ filePath: childFile, isInternalSubagent: true, parentSessionPath: "C:/sessions/Parent.jsonl" });
@@ -618,9 +618,9 @@ test("collapsed subagent group reports running before a just-finished child", ()
 	]), "running");
 	// 只有错误不亮折叠灯：错误靠展开后的红灯表达。
 	assert.equal(subagentGroupActivity([child], [{ sessionFile: childFile, status: "error", updatedAt: 5 }]), undefined);
-	// 刚完成的子代理也算，但文案不能说「运行中」，所以返回 completed 而不是 running。
-	assert.equal(subagentGroupActivity([child], [{ sessionFile: childFile, status: "completed", updatedAt: 5 }]), "completed");
-	// running 优先于 completed：有一个还在跑就报 running。
+	// 刚完成的子代理不点灯：黄点语义是「运行中」，结束后必须熄灭。
+	assert.equal(subagentGroupActivity([child], [{ sessionFile: childFile, status: "completed", updatedAt: 5 }]), undefined);
+	// 有一个还在跑就报 running。
 	assert.equal(subagentGroupActivity([child, session({ filePath: "C:/sessions/Parent/run-2/run-0/session.jsonl" })], [
 		{ sessionFile: childFile, status: "completed", updatedAt: 5 },
 		{ sessionFile: "C:/sessions/Parent/run-2/run-0/session.jsonl", status: "running", updatedAt: 6 },

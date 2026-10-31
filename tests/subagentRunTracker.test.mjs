@@ -85,10 +85,8 @@ test("flips to error when the child fails, and removes the row once it succeeds"
 	assert.equal(tracker.observe("agent-1", failed, 2_000), true);
 	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), ["C:/s.jsonl|error|readonly"]);
 	assert.equal(tracker.observe("agent-1", ok, 3_000), true);
-	// 完成条目短暂保留：侧栏行可能在子代理结束后才被扫描出来，需要还能匹配到。
-	assert.deepEqual(summarize(tracker.snapshot("agent-1", 3_000)), ["C:/s.jsonl|completed|readonly"]);
-	// 超过保留期后自然消失，不留永久状态点。
-	assert.deepEqual(summarize(tracker.snapshot("agent-1", 3_000 + SUBAGENT_RUN_TRACKER_LIMITS.completedTtlMs + 1)), []);
+	// 完成不保留：黄点只表示「正在跑」，结束后必须立刻熄灭（否则看起来像停了还在跑）。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 3_000)), []);
 });
 
 test("treats terminal flags as failure and detached runs as finished", () => {
@@ -130,9 +128,8 @@ test("clears a background child when bg_wait reports its completion", () => {
 		},
 	};
 	assert.equal(tracker.observe("agent-1", waitEvent, 2_000), true);
-	// 完成条目短暂保留，让迟到的侧栏行能匹配到；超过保留期才消失。
-	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), ["C:/bg.jsonl|completed|"]);
-	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000 + SUBAGENT_RUN_TRACKER_LIMITS.completedTtlMs + 1)), []);
+	// 后台子代理完成即移除：不再留「刚结束」的黄点。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), []);
 });
 
 test("keeps state per agent and clears on request", () => {
@@ -204,7 +201,7 @@ test("drops malformed session paths instead of surfacing them", () => {
 	assert.deepEqual(summarize(updates), ["C:/ok.jsonl|running|"]);
 });
 
-test("prefers the terminal details over the streaming partial result", () => {
+test("terminal details win over a stale running partial result", () => {
 	const tracker = new SubagentRunTracker();
 	tracker.observe("agent-1", {
 		toolName: "subagent",
@@ -213,7 +210,8 @@ test("prefers the terminal details over the streaming partial result", () => {
 		},
 		result: { details: { mode: "single", results: [result("C:/s.jsonl", { success: true })] } },
 	}, 1_000);
-	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/s.jsonl|completed|readonly"]);
+	// 终态优先：completed 直接收灯，迟到的 running 不会把行又点亮。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), []);
 });
 
 test("bg_wait reports a failed background child so the row can show it", () => {

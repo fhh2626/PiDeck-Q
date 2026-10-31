@@ -247,15 +247,15 @@ export function SessionTree(props: {
       </div>
     );
   };
-  const renderToggle = (key: string, count: number, activity: "running" | "completed" | undefined) => count > 0 ? (
+  const renderToggle = (key: string, count: number, activity: "running" | undefined) => count > 0 ? (
     <span
       className={cn("subagent-inline-toggle px-1 py-0.5 mr-7")}
-      // 只有 running 才说「运行中」：completed 是刚结束的短暂保留，文案不能说还在跑。
+      // 只有真在跑才报「运行中」：黄点不再兼作「刚结束」提示。
       title={activity === "running" ? `${t("app.piSubagentCount", { count })} · ${t("app.statusRunning")}` : t("app.piSubagentCount", { count })}
       onClick={(event) => { event.stopPropagation(); props.controller.toggleSubagentGroup(key); }}
     >
-      {/* 分组默认折叠：折叠态也必须能看出子代理在跑或刚结束，否则状态灯等于不存在 */}
-      {activity && <span className={cn("size-1.5 shrink-0 rounded-full bg-warning", activity === "running" && "animate-pulse")} aria-hidden="true" />}
+      {/* 分组默认折叠：折叠态也必须能看出子代理在跑，否则状态灯等于不存在 */}
+      {activity && <span className="size-1.5 shrink-0 rounded-full bg-warning animate-pulse" aria-hidden="true" />}
       <ChevronDown size={8} className={props.controller.expandedSubagentGroups.has(key) ? "expanded" : ""} />
       {/* 子 Agent 数量：统一 pill 样式（与项目行会话数徽标同尺寸同圆角），紧凑档 */}
       <span className="subagent-inline-count inline-flex h-3.5 shrink-0 items-center rounded-full px-1 text-[10px] font-medium tabular-nums">{count}</span>

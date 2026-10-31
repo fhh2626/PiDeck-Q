@@ -37,13 +37,14 @@ function hasSidebarRuntimeSnapshot(status?: string | null): status is string {
  */
 export function visibleSidebarStatus(input: {
 	runtimeStatus?: string | null;
-	/** pi 内建子代理的运行态：子会话没有 PiDeck runtime，只能靠这个。completed 是短暂保留，不点灯。 */
+	/** pi 内建子代理的运行态：子会话没有 PiDeck runtime，只能靠这个。投影只含 running/error。 */
 	subagentStatus?: string | null;
 	agentStatus?: string | null;
 }): string | undefined {
 	if (hasSidebarRuntimeSnapshot(input.runtimeStatus)) {
 		return sessionStatusDotClass(input.runtimeStatus) ? input.runtimeStatus : undefined;
 	}
+	// 防御：投影类型上只有 running/error，但旧帧或未来版本若带 completed，也不该点亮行灯。
 	if (input.subagentStatus && input.subagentStatus !== "completed" && sessionStatusDotClass(input.subagentStatus)) {
 		return input.subagentStatus;
 	}
@@ -119,22 +120,19 @@ export function subagentSidebarStatus(
 }
 
 /**
- * 折叠分组的子代理活动态：running 优先于 completed，error 不算。
- * running 表示现在有活；completed 是短暂保留，表示刚结束（行可能还没被扫描出来）。
- * 错误靠展开后的红灯表达。
+ * 折叠分组的子代理活动态：只有真的在跑才点亮（running）。
+ * 黄点语义就是「运行中」（见 sessionStatusDotClass）；completed 是瞬时终态，
+ * 结束后继续亮黄点就成了「已经停了还黄着」，比不亮更误导；错误靠展开后的红灯表达。
  */
 export function subagentGroupActivity(
 	sessions: readonly Pick<SessionSummary, "id" | "filePath" | "wsl">[],
 	liveRuns: readonly SubagentLiveRun[] | undefined,
-): "running" | "completed" | undefined {
+): "running" | undefined {
 	if (!liveRuns?.length) return undefined;
-	let completed = false;
 	for (const session of sessions) {
-		const status = pickSubagentLiveStatus(session, liveRuns);
-		if (status === "running") return "running";
-		if (status === "completed") completed = true;
+		if (pickSubagentLiveStatus(session, liveRuns) === "running") return "running";
 	}
-	return completed ? "completed" : undefined;
+	return undefined;
 }
 
 const DEFAULT_VISIBLE_PROJECT_CHILD_LIMIT = 5;

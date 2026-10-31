@@ -511,6 +511,11 @@ async function runSingleAttempt(
 		index: options.index ?? 0,
 		agent: agent.name,
 		task: shared.originalTask ?? task,
+		// 子会话路径在启动阶段就确定，必须在第一条 onUpdate 之前就写进 result：
+		// 运行期的 partial 快照只做 {...result} 展开，而收尾处（runSyncCompletionInner）
+		// 才赋值的话，宿主拿不到「哪个子会话正在跑」，表现为主会话侧栏在子代理运行期间
+		// 永远没有运行态条目，只有结束后才从终态帧里学到一次 completed。
+		...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
 		...(childSessionName ? { sessionName: childSessionName } : {}),
 		...(options.agentContract ? { agentContract: options.agentContract } : {}),
 		launchContractDigest,

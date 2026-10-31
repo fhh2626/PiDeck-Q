@@ -24,8 +24,12 @@ export const subagentLiveRunsAtom = atom<readonly SubagentLiveRun[]>((get) => {
 	return runs;
 });
 
+/**
+ * 主进程只下发 running / error（completed 到达即移除，避免结束后仍亮黄点）。
+ * 这里做同样的收窄：旧帧或异常载荷带 completed 时直接丢弃，不进投影。
+ */
 function isLiveStatus(value: unknown): value is SubagentLiveRunStatus {
-	return value === "running" || value === "error" || value === "completed";
+	return value === "running" || value === "error";
 }
 
 const MAX_LIVE_RUNS = 128;

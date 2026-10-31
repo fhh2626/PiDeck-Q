@@ -30,19 +30,13 @@ const RUNNING_TTL_MS = 10 * 60_000;
 const ERROR_TTL_MS = 30 * 60_000;
 
 /**
- * 完成条目的短暂保留：子代理会话文件在结束时才落盘，侧栏列表刷新又在父回答结束之后，
- * 行出现时 tracker 里的条目往往已被删除，黄点永远不亮。保留一小段时间让迟到的行能匹配到，
- * 之后自然过期，不留永久状态点。
- */
-const COMPLETED_TTL_MS = 2 * 60_000;
-
-/**
  * 会话文件路径长度上限：真实路径远小于此值，超出即视为异常数据。
  * 上限同时是载荷边界：64 条 × 1 KiB 远小于事件帧预算。
  */
 const MAX_SESSION_PATH_LENGTH = 1024;
 
-type ObservedStatus = SubagentLiveRunStatus;
+/** 观察到的状态：比下发状态多一个 completed（终态帧到达后不保留，避免结束后仍亮灯）。 */
+type ObservedStatus = SubagentLiveRunStatus | "completed";
 
 /** 内部条目：对外快照会剥掉 toolCallId，只用于工具级失败时精准清理。 */
 type TrackedRun = SubagentLiveRun & { toolCallId?: string };
@@ -176,12 +170,17 @@ export class SubagentRunTracker {
 		let changed = this.prune(agentId, now);
 		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
 		for (const update of updates) {
+			// completed 不保留：侧栏黄点的语义是「正在运行」（见 sessionStatusDotClass），
+			// 保留完成条目会让刚跑完的子代理继续亮灯，读起来像「已经停了还在跑」。
+			if (update.status === "completed") {
+				if (runs.delete(update.sessionFile)) changed = true;
+				continue;
+			}
 			const previous = runs.get(update.sessionFile);
 			if (!previous || previous.status !== update.status || previous.agent !== update.agent) {
 				changed = true;
 			}
 			// 先删后设，保持「最近更新在末尾」的插入序，超出上限时淘汰最久未更新的条目。
-			// completed 不删除：侧栏行可能在子代理结束后才被扫描出来，短暂保留让它能匹配到。
 			runs.delete(update.sessionFile);
 			runs.set(update.sessionFile, {
 				sessionFile: update.sessionFile,
@@ -203,7 +202,8 @@ export class SubagentRunTracker {
 
 	/**
 	 * 当前可见快照。TTL 只在主进程内存侧保底，不会主动推送：UI 的清理靠
-	 * agent_end（running）/ detach / 下一次工具事件，避免为此新增定时器。
+	 * completed 终态帧（observe 内直接删除）/ agent_end（running）/ detach /
+	 * 下一次工具事件，避免为此新增定时器。
 	 */
 	snapshot(agentId: string, now = Date.now()): SubagentLiveRun[] {
 		this.prune(agentId, now);
@@ -265,11 +265,7 @@ export class SubagentRunTracker {
 		if (!runs) return false;
 		let changed = false;
 		for (const [sessionFile, run] of runs) {
-			const ttl = run.status === "error"
-				? ERROR_TTL_MS
-				: run.status === "completed"
-					? COMPLETED_TTL_MS
-					: RUNNING_TTL_MS;
+			const ttl = run.status === "error" ? ERROR_TTL_MS : RUNNING_TTL_MS;
 			if (now - run.updatedAt <= ttl) continue;
 			runs.delete(sessionFile);
 			changed = true;
@@ -297,5 +293,4 @@ export const SUBAGENT_RUN_TRACKER_LIMITS = Object.freeze({
 	maxRunsPerAgent: MAX_RUNS_PER_AGENT,
 	runningTtlMs: RUNNING_TTL_MS,
 	errorTtlMs: ERROR_TTL_MS,
-	completedTtlMs: COMPLETED_TTL_MS,
 });
