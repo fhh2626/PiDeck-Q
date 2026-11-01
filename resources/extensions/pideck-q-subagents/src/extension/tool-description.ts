@@ -17,7 +17,13 @@ const WORKFLOW_SCRIPT_PORTABILITY_GUIDANCE = "workflowScript rejects nested asyn
 const WORKFLOW_RESOURCE_GUIDANCE = "For permission/policy-extension interoperability, use an extension-owned named resource such as {workflow:'review',args:{task:'...'}} or {workflow:'run-ci',args:{command:'npm test'}}. The host resolves the script and authority internally so policy can distinguish it from raw workflowScript/workflowScriptPath; args are bounded plain data, and do not combine workflow with agent, task, workflowScript, or workflowScriptPath.";
 const WORKFLOW_HOST_GUIDANCE = "For permission-sensitive host calls, use an extension-owned resource such as {workflow:'run-ci',args:{command:'npm test'}}; raw workflowScript/workflowScriptPath have unknown resource provenance and cannot use runs.host. In a resource that grants it, await runs.host(key,{kind:'command',command,timeoutMs,output?,role?,provider?}). runs.host has no per-step cwd: commands and relative output paths use the workflow cwd; set cwd on the outer subagent request instead (for example, {cwd:'/path/to/worktree',workflowScript:'...'}), or put a trusted directory change in the command (for example, 'cd /path/to/worktree && npm test'). runs.host supports only command steps; output is bounded and command failure fails the workflow.";
 
-export const DEFAULT_SUBAGENT_TOOL_DESCRIPTION = `Delegate to configured subagents. For execution, omit action and use {agent, task?} for one child, workflowScript for inline orchestration, workflowScriptPath to load a script from the request cwd, or a named workflow resource for permission/policy-aware execution. ${WORKFLOW_RESOURCE_GUIDANCE} ${AGENT_SELECTION_GUIDANCE} The script inputs are mutually exclusive. Use action:'validate' with either script input to check it without launching children. For multi-step or parallel work, make exactly one top-level subagent call with async:true; launch children only inside that workflow and do not make another top-level call for them. Use runs.run('key',{agent,task}) for one child, await runs.all([{key:'a',agent:'readonly',task:'...'},{key:'b',agent:'readonly',task:'...'}]) for ordinary parallel children, and read its ordered array result with indexes, destructuring, or .map(...), not by key property. ${WORKFLOW_SCRIPT_PORTABILITY_GUIDANCE} ${WORKFLOW_LANES_GUIDANCE} ${WORKFLOW_HOST_GUIDANCE} ${WORKTREE_BASE_REF_GUIDANCE} ${EXTERNAL_CLI_RUNNER_GUIDANCE} ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE} ${WORKFLOW_SUPERVISOR_HANDOFF_GUIDANCE} Use action only for management/control. Use guide or the pi-subagents skill for advanced workflow details.`;
+const SUBAGENT_FOREGROUND_GUIDANCE = "Subagents run in the foreground by default (or with explicit async:false); background children are unavailable in this environment, so do not pass async:true. Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.";
+const SUBAGENT_ORCHESTRATOR_BOUNDARY_GUIDANCE = "Ordinary child subagents are not orchestrators. Only explicitly configured fanout children may use the child-safe subagent tool, still bounded by depth/session limits.";
+const SUBAGENT_EXPERT_CONSULTATION_GUIDANCE = "For expert consultation on material unknowns, use available supervisor dialogue when a focused answer is enough.";
+const SUBAGENT_READONLY_REVIEW_GUIDANCE = "Use the 'readonly' agent in a fresh context for independent review, then have the parent synthesize and apply fixes.";
+const SUBAGENT_STATUS_GUIDANCE = "Async runs expose asyncId/asyncDir with status.json, events.jsonl, output logs, status via { action: \"status\", id }, and lifecycle diagnostics via { action: \"debug.run\", id }. Include output paths and residual risks when reporting results.";
+
+export const DEFAULT_SUBAGENT_TOOL_DESCRIPTION = `Delegate to configured subagents. For execution, omit action and use {agent, task?} for one child, workflowScript for inline orchestration, workflowScriptPath to load a script from the request cwd, or a named workflow resource for permission/policy-aware execution. ${WORKFLOW_RESOURCE_GUIDANCE} ${AGENT_SELECTION_GUIDANCE} The script inputs are mutually exclusive. Use action:'validate' with either script input to check it without launching children. For multi-step or parallel work, make exactly one top-level subagent call with async:true; launch children only inside that workflow and do not make another top-level call for them. ${SUBAGENT_FOREGROUND_GUIDANCE} Use runs.run('key',{agent,task}) for one child, await runs.all([{key:'a',agent:'readonly',task:'...'},{key:'b',agent:'readonly',task:'...'}]) for ordinary parallel children, and read its ordered array result with indexes, destructuring, or .map(...), not by key property. ${WORKFLOW_SCRIPT_PORTABILITY_GUIDANCE} ${WORKFLOW_LANES_GUIDANCE} ${WORKFLOW_RESUME_KEY_GUIDANCE} ${WORKFLOW_HOST_GUIDANCE} ${WORKTREE_BASE_REF_GUIDANCE} ${EXTERNAL_CLI_RUNNER_GUIDANCE} ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE} ${WORKFLOW_SUPERVISOR_HANDOFF_GUIDANCE} ${SUBAGENT_ORCHESTRATOR_BOUNDARY_GUIDANCE} ${SUBAGENT_READONLY_REVIEW_GUIDANCE} ${SUBAGENT_EXPERT_CONSULTATION_GUIDANCE} ${SUBAGENT_STATUS_GUIDANCE} Use action only for management/control. Use guide or the pi-subagents skill for advanced workflow details.`;
 
 export const SUBAGENT_TOOL_PROMPT_SNIPPET = "Delegate to subagents; orchestrate in one workflowScript call.";
 
@@ -34,14 +40,14 @@ export const SUBAGENT_SAFETY_GUIDANCE = `SAFETY-CRITICAL SUBAGENT GUIDANCE:
 • ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE}
 • ${WORKFLOW_SUPERVISOR_HANDOFF_GUIDANCE}
 • Keep execution and management separate: omit action for structured single-child or workflowScript execution; use action only for management/control.
-• Subagents run in the foreground by default (or with explicit async:false); background children are unavailable in this environment, so do not pass async:true. Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
+• ${SUBAGENT_FOREGROUND_GUIDANCE}
 • ${WORKFLOW_RESUME_KEY_GUIDANCE}
 • ${WORKFLOW_OUTPUT_BINDING_GUIDANCE}
 • ${WORKFLOW_HOST_GUIDANCE}
-• Ordinary child subagents are not orchestrators. Only explicitly configured fanout children may use the child-safe subagent tool, still bounded by depth/session limits.
-• For expert consultation on material unknowns, use available supervisor dialogue when a focused answer is enough.
-• Keep one writer for the same cwd/worktree. Use the 'readonly' agent in a fresh context for independent review, then have the parent synthesize and apply fixes.
-• Async runs expose asyncId/asyncDir with status.json, events.jsonl, output logs, status via { action: "status", id }, and lifecycle diagnostics via { action: "debug.run", id }. Include output paths and residual risks when reporting results.`;
+• ${SUBAGENT_ORCHESTRATOR_BOUNDARY_GUIDANCE}
+• ${SUBAGENT_EXPERT_CONSULTATION_GUIDANCE}
+• Keep one writer for the same cwd/worktree. ${SUBAGENT_READONLY_REVIEW_GUIDANCE}
+• ${SUBAGENT_STATUS_GUIDANCE}`;
 
 export const FULL_SUBAGENT_TOOL_DESCRIPTION = `Run one child with { agent, task? }; use { workflowScript } for inline orchestration or { workflowScriptPath } to load it from the request cwd. The script inputs are mutually exclusive. Omit action for execution. Use action only for management/control actions.
 
@@ -89,7 +95,7 @@ MANAGE / CONTROL:
 ASYNC / SAFETY:
 • ${SUBAGENT_FAILURE_RECOVERY_GUIDANCE}
 • ${WORKFLOW_SUPERVISOR_HANDOFF_GUIDANCE}
-• Subagents run in the foreground by default (or with explicit async:false); background children are unavailable in this environment, so do not pass async:true. Do not return control to wait for a background wake. Do not call bg_wait merely to wait for a subagent. Do not sleep or poll status just to wait; use bg_wait only for provider, detached, or other background work without a native notification when this turn must receive its result.
+• ${SUBAGENT_FOREGROUND_GUIDANCE}
 • ${WORKFLOW_RESUME_KEY_GUIDANCE}
 • ${WORKFLOW_OUTPUT_BINDING_GUIDANCE}
 • ${WORKFLOW_HOST_GUIDANCE}

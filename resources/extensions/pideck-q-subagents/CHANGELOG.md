@@ -10,6 +10,7 @@
 
 ### Changed
 - Make the default `subagent` tool description prefer `subagent-tool-description.md` when present, falling back to the built-in default description (not `full` or `compact`) when no valid file is found.
+- Inline the safety guidance into the built-in default path (description plus prompt guidelines) so machines without a custom file keep the same guardrails.
 
 ### Fixed
 - Refresh the safety guidance: remove references to the removed `oracle`/`advisor` builtin agents and the nonexistent `one-shot` request mode, and name the `readonly` agent explicitly for independent review.

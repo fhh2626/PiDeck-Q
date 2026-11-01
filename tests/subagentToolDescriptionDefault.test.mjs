@@ -187,3 +187,18 @@ test("a custom file that already contains safety guidance is not duplicated", ()
 		assert.equal((description.match(/SAFETY-CRITICAL SUBAGENT GUIDANCE/g) ?? []).length, 1);
 	});
 });
+
+test("built-in default description embeds the missing safety guidance", () => {
+	const module = loadDescriptionModule();
+	// 这些内容原先只在强制安全块里；默认描述也必须覆盖，否则没有 custom 文件时会退回弱化版本。
+	for (const phrase of [
+		"background children are unavailable",
+		"Each workflow key identifies one result lane",
+		"not orchestrators",
+		"status.json",
+		"Use the 'readonly' agent",
+		"For expert consultation",
+	]) {
+		assert.ok(module.DEFAULT_SUBAGENT_TOOL_DESCRIPTION.includes(phrase), `missing default guidance: ${phrase}`);
+	}
+});
