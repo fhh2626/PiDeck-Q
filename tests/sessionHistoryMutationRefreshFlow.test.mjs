@@ -44,6 +44,9 @@ function setupTestEnvironment() {
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const atoms = compileModule("src/renderer/src/atoms/session-atoms.ts", {
     "../utils/agentRuntimeState": runtimeState,
+    "../utils/optimisticUserReconciliation": compileModule(
+      "src/renderer/src/utils/optimisticUserReconciliation.ts",
+    ),
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
     "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),

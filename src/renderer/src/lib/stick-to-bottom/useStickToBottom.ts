@@ -22,6 +22,7 @@ import {
 } from "./mergeAnimations";
 import {
   findNearestVerticalScrollableAncestor,
+  isContentShrinkClamp,
   isTimelineUpwardKeyIntent,
   isNestedScrollEvent,
 } from "./scrollIntent";
@@ -113,6 +114,8 @@ export interface StickToBottomState {
   calculatedTargetScrollTop: number;
   scrollDifference: number;
   resizeDifference: number;
+  /** 上一帧内容的最大可滚动距离；用于区分内容收缩 clamp 与用户轻微上滚。 */
+  lastMaxScrollTop?: number;
   /** 最近一次内容正增长时刻（performance.now，ms）；0 = 尚未增长。 */
   lastPositiveResizeAt: number;
   /** 每次新开滚动会话递增；在途 rAF 发现代数过期则退出，避免与同步校正打架。 */
@@ -396,6 +399,11 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     if (Number.isFinite(scrollTop)) {
       state.scrollTop = Math.max(0, scrollTop);
     }
+    // 会话切回时内容高度已换了一份；旧 max / resize 证据不能作为下一次
+    // “内容收缩”判定的基准，否则短会话第一次上滚会被误判为 clamp。
+    state.lastScrollTop = state.scrollTop;
+    state.resizeDifference = 0;
+    state.lastMaxScrollTop = undefined;
   }, [cancelScrollAnimation, state]);
 
   const handleScroll = useCallback(
@@ -409,8 +417,14 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       state.lastScrollTop = scrollTop;
       state.ignoreScrollToTop = undefined;
 
+      // 程序化恢复（会话切回）也会触发 scroll 事件；即使本次事件被 ignore，
+      // 也必须把 lastMaxScrollTop 对齐到新内容，否则切回短会话后第一次上滚
+      // 会拿旧会话的更大 max 误判成“内容收缩 clamp”。
+      const maxScrollTop = scrollEl ? Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight) : 0;
+
       // 如果当前位置正是 engine 设定的目标（比如 restoreAt 或内部程序化写入），则不作为用户滚动
       if (ignoreScrollToTop !== undefined && Math.abs(scrollTop - ignoreScrollToTop) <= 1) {
+        state.lastMaxScrollTop = maxScrollTop;
         return;
       }
 
@@ -425,8 +439,16 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
        * 若最大可滚动距离缩窄，且 scrollTop 刚好等于当前最大可滚动距离 (scrollHeight - clientHeight)，
        * 说明是浏览器自动收缩导致的 clamp，不是用户上滚，维持原有的 following 状态。
        */
-      const maxScrollTop = scrollEl ? Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight) : 0;
-      const isClampedByShrink = scrollEl && Math.abs(scrollTop - maxScrollTop) <= 1 && scrollTop < lastScrollTop && state.isAtBottom;
+      const previousMaxScrollTop = state.lastMaxScrollTop;
+      state.lastMaxScrollTop = maxScrollTop;
+      const isClampedByShrink = scrollEl !== null && isContentShrinkClamp({
+        scrollTop,
+        lastScrollTop,
+        maxScrollTop,
+        previousMaxScrollTop,
+        resizeDifference: state.resizeDifference,
+        isFollowing: state.isAtBottom,
+      });
 
       setTimeout(() => {
         if (scrollTop === ignoreScrollToTop) {

@@ -34,6 +34,37 @@ export function findNearestVerticalScrollableAncestor(
 }
 
 /**
+ * 判定「scrollTop 变小」是否只是内容收缩后浏览器自动夹到底部。
+ *
+ * 内容动画/虚拟行替换会让 scrollHeight 缩水，浏览器把 scrollTop 夹到新的
+ * maxScrollTop，看起来像用户上滚。判定需要两个证据：原本锁底、scrollTop
+ * 紧贴新的底部，且新的 maxScrollTop 确实小于上一帧 scrollTop（内容真的缩短了）。
+ * 只看“差 2px 以内”会把用户真实上滚 1–2px 误判成 clamp。
+ */
+export function isContentShrinkClamp(input: {
+	scrollTop: number;
+	lastScrollTop: number;
+	maxScrollTop: number;
+	previousMaxScrollTop?: number;
+	resizeDifference?: number;
+	isFollowing: boolean;
+	tolerancePx?: number;
+}): boolean {
+	if (!input.isFollowing) return false;
+	// 内容真的缩短是 clamp 的前提。previousMaxScrollTop 是上一帧的最大可滚动
+	// 距离，比 lastScrollTop 更可靠（贴底时可能有亚像素差）。首帧没有上一帧
+	// 值时，退回 ResizeObserver 的负增长证据；两者都没有则不判 clamp。
+	const contentShrank = input.previousMaxScrollTop !== undefined
+		? input.maxScrollTop < input.previousMaxScrollTop
+		: (input.resizeDifference !== undefined && input.resizeDifference < 0)
+			|| input.maxScrollTop < input.lastScrollTop;
+	if (!contentShrank) return false;
+	const tolerance = input.tolerancePx ?? 2;
+	return input.scrollTop < input.lastScrollTop
+		&& Math.abs(input.scrollTop - input.maxScrollTop) <= tolerance;
+}
+
+/**
  * 判断事件目标是否为可编辑区域或表单交互控件。
  * 处于 input / textarea / contenteditable / ProseMirror 内部时，按键不影响外层时间线。
  */

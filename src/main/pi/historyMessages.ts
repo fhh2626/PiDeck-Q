@@ -142,8 +142,49 @@ export function stabilizeReloadedMessageIds(
 				continue;
 			}
 			consumed.add(prevIndex);
-			return { ...message, id: prev.id };
+			return carryOptimisticUserMetadata(prev, { ...message, id: prev.id });
 		}
 		return message;
 	});
+}
+
+/**
+ * 投影消息替换 host 乐观 user 行时保留 renderer 的发送身份与投递语义。
+ * 这样 renderer 侧即使尚未收到原乐观消息，也能按 requestId 精确配对，
+ * 虚拟列表也能沿用旧行实测高度，不会因投影 id 改变而滑出/跳变；
+ * streamingBehavior 则让重载后的 steer/followUp 标签不丢失。
+ */
+function carryOptimisticUserMetadata(previous: ChatMessage, projected: ChatMessage): ChatMessage {
+	const requestId = previous.meta?.optimisticRequestId;
+	const streamingBehavior = previous.meta?.streamingBehavior;
+	const hasRequestId = typeof requestId === "string" && requestId.length > 0;
+	const hasDeliveryLabel =
+		streamingBehavior === "steer" || streamingBehavior === "followUp";
+	if (!hasRequestId && !hasDeliveryLabel) return projected;
+
+	const meta = { ...(projected.meta ?? {}) };
+	// 投影若已携带另一个发送身份，以投影为准；正常文件投影不会带该字段。
+	let requestIdCarried = false;
+	if (hasRequestId) {
+		const projectedRequestId = meta.optimisticRequestId;
+		const projectedHasDifferentRequest =
+			typeof projectedRequestId === "string" &&
+			projectedRequestId.length > 0 &&
+			projectedRequestId !== requestId;
+		if (!projectedHasDifferentRequest) {
+			meta.optimisticRequestId = requestId;
+			requestIdCarried = true;
+		}
+	}
+	// 投递标签只在同一条发送身份被接续时保留，避免同文本指纹误配把 steer
+	// 标签复制到另一条用户消息上。
+	if (
+		hasDeliveryLabel &&
+		requestIdCarried &&
+		meta.streamingBehavior !== "steer" &&
+		meta.streamingBehavior !== "followUp"
+	) {
+		meta.streamingBehavior = streamingBehavior;
+	}
+	return { ...projected, meta };
 }

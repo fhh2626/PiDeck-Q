@@ -579,3 +579,151 @@ test("步骤1回归红测: session A -> B -> A 切换后，第一代 A 的迟到
 });
 
 
+
+test("optimistic user row height follows the authoritative replacement without a measurement flash", async () => {
+	await withHookHost(async ({ React, load, mount, window, act, flushFrames }) => {
+		ControllableResizeObserver.reset();
+		globalThis.ResizeObserver = ControllableResizeObserver;
+		window.ResizeObserver = ControllableResizeObserver;
+
+		const mod = load("src/renderer/src/hooks/useVirtualTimeline.ts", {
+			globals: { ResizeObserver: ControllableResizeObserver },
+		});
+		const { useVirtualTimeline } = mod;
+
+		const viewport = window.document.createElement("div");
+		Object.defineProperty(viewport, "scrollTop", { value: 0, writable: true });
+		Object.defineProperty(viewport, "clientHeight", { value: 600, writable: true });
+
+		const list = window.document.createElement("div");
+		const optimisticItems = [{
+			kind: "message",
+			message: {
+				id: "request-1",
+				role: "user",
+				text: "hello",
+				timestamp: 1,
+				meta: { optimistic: true, optimisticRequestId: "request-1" },
+			},
+		}];
+		const canonicalItems = [{
+			kind: "message",
+			message: {
+				id: "main-entry",
+				role: "user",
+				text: "hello",
+				timestamp: 2,
+				meta: { optimisticRequestId: "request-1" },
+			},
+		}];
+		let hookResult;
+		let rowNode;
+
+		const probe = await mount(
+			(props) => {
+				hookResult = useVirtualTimeline({
+					items: props.items,
+					viewportRef: { current: viewport },
+					listRef: { current: list },
+					isFollowing: false,
+					applyReaderScrollTop: () => undefined,
+					sessionId: "sess-optimistic-height",
+				});
+				return hookResult;
+			},
+			{ items: optimisticItems },
+			(child) =>
+				React.createElement(
+					React.Fragment,
+					null,
+					child,
+					React.createElement("div", {
+						ref: (el) => {
+							rowNode = el;
+							if (hookResult?.registerRowNode) {
+								hookResult.registerRowNode("message:request-1", el);
+							}
+						},
+						"data-timeline-measure-key": "message:request-1",
+					}),
+				),
+		);
+
+		const ro = ControllableResizeObserver.instances.at(-1);
+		await act(() => {
+			ro.dispatchEntries([
+				ControllableResizeObserver.createEntry(list, { width: 800, height: 90 }),
+				ControllableResizeObserver.createEntry(rowNode, { width: 800, height: 90 }),
+			]);
+		});
+		await flushFrames();
+		assert.equal(probe.result().geometry.heights[0], 90);
+
+		await probe.rerender({ items: canonicalItems });
+		await flushFrames();
+
+		assert.equal(
+			probe.result().geometry.heights[0],
+			90,
+			"权威行必须复用乐观行实测高度，不能先闪回估计高度",
+		);
+	});
+});
+
+test("entering follow mode clears a stale reading anchor before the user scrolls up again", async () => {
+	await withHookHost(async ({ load, mount, window, flushFrames }) => {
+		ControllableResizeObserver.reset();
+		globalThis.ResizeObserver = ControllableResizeObserver;
+		window.ResizeObserver = ControllableResizeObserver;
+
+		const mod = load("src/renderer/src/hooks/useVirtualTimeline.ts", {
+			globals: { ResizeObserver: ControllableResizeObserver },
+		});
+		const { useVirtualTimeline } = mod;
+
+		const viewport = window.document.createElement("div");
+		Object.defineProperty(viewport, "scrollTop", { value: 0, writable: true });
+		Object.defineProperty(viewport, "clientHeight", { value: 600, writable: true });
+
+		const firstItems = [0, 1, 2].map((index) => ({
+			kind: "message",
+			message: { id: `m-${index}`, role: "user", text: `msg ${index}`, timestamp: index + 1 },
+		}));
+		const nextItems = [
+			...firstItems,
+			{
+				kind: "message",
+				message: { id: "m-3", role: "user", text: "msg 3", timestamp: 4 },
+			},
+		];
+		const scrollCalls = [];
+		let hookResult;
+
+		const probe = await mount(
+			(props) => {
+				hookResult = useVirtualTimeline({
+					items: props.items,
+					viewportRef: { current: viewport },
+					isFollowing: props.isFollowing,
+					applyReaderScrollTop: (top, reason) => scrollCalls.push({ top, reason }),
+					sessionId: "sess-anchor-clear",
+				});
+				return hookResult;
+			},
+			{ items: firstItems, isFollowing: false },
+		);
+
+		assert.equal(hookResult.captureReadingAnchor().status, "resolved");
+		const callsBeforeFollow = scrollCalls.length;
+
+		await probe.rerender({ items: firstItems, isFollowing: true });
+		await flushFrames();
+		await probe.rerender({ items: nextItems, isFollowing: false });
+		await flushFrames();
+
+		const newPreserveCalls = scrollCalls
+			.slice(callsBeforeFollow)
+			.filter((call) => call.reason === "preserve-anchor");
+		assert.deepEqual(newPreserveCalls, [], "跟底后旧的阅读锚点不得再次触发 preserve-anchor");
+	});
+});

@@ -155,6 +155,17 @@ test("engine exposes atomic restoreAt: position + unlock + cancel in-flight anim
   assert.match(engineSource, /restoreAt,/);
 });
 
+test("restoreAt resets the shrink-clamp baseline for the new session", () => {
+  // 会话切回时旧会话的 maxScrollTop 不能沿用：否则短会话第一次上滚会被
+  // isContentShrinkClamp 误判成“内容收缩”，继续锁底把用户拽回底部。
+  assert.match(engineSource, /state\.lastMaxScrollTop = undefined;/);
+  // 程序化恢复触发的 scroll 事件虽然被 ignore，也要把基线对齐到新内容。
+  assert.match(
+    engineSource,
+    /if \(ignoreScrollToTop !== undefined[\s\S]*?state\.lastMaxScrollTop = maxScrollTop;[\s\S]*?return;/,
+  );
+});
+
 test("MessageScroller forwards restoreAt to timeline controller scroll api", () => {
   // MessageScrollerScrollApi 类型与 api 挂载都要包含 restoreAt
   assert.match(scrollerSource, /restoreAt: \(scrollTop: number\) => void;/);

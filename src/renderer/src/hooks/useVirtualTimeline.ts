@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { SessionScrollAnchor } from "../atoms";
 import type { TimelineViewportAdapter, AnchorReading } from "../components/session/timeline/TimelineViewportAdapter";
 import {
+	buildMeasuredHeightAliases,
 	buildTimelineRowModel,
 	computeTimelineGeometry,
 	findVisibleRowRange,
@@ -108,6 +109,13 @@ export function useVirtualTimeline(params: {
 	rowModelRef.current = rowModel;
 	const logicalRows = rowModel.rows;
 
+	// 权威消息替换本地乐观气泡时，row key 会从 message:<requestId> 变成主进程 id。
+	// 把旧行已测高度别名到新行，替换帧不需要先回退到估算高度再测量。
+	const measuredHeightAliases = useMemo(
+		() => buildMeasuredHeightAliases(logicalRows),
+		[logicalRows],
+	);
+
 	// 2. 当前 render 的 geometry 必须直接由当前 rowModel.rows + 当前 context 有效测量缓存 + gap 派生！
 	const geometry = useMemo(() => {
 		const el = listNode ?? listRef?.current ?? viewportRef.current;
@@ -118,9 +126,9 @@ export function useVirtualTimeline(params: {
 				gapRef.current = gapVal;
 			}
 		}
-		return computeTimelineGeometry(logicalRows, currentContext.measuredHeights, gapRef.current);
+		return computeTimelineGeometry(logicalRows, currentContext.measuredHeights, gapRef.current, measuredHeightAliases);
 		// measurementRevision 驱动重新计算
-	}, [logicalRows, currentContext, measurementRevision, listNode, listRef, viewportRef]);
+	}, [logicalRows, currentContext, measurementRevision, listNode, listRef, viewportRef, measuredHeightAliases]);
 
 	// 可见挂载区间
 	const [visibleRange, setVisibleRange] = useState({
@@ -213,6 +221,13 @@ export function useVirtualTimeline(params: {
 	const updateRange = useCallback(() => {
 		updateRangeWithGeometry(committedSnapshotRef.current.geometry);
 	}, [updateRangeWithGeometry]);
+
+	// 跟底时不存在需要保留的阅读锚点。若不清掉，用户之后上滚/内容变化时
+	// 可能拿一个陈旧的锚点执行 preserve-anchor，造成时间线被拉回旧位置。
+	useLayoutEffect(() => {
+		if (!isFollowing) return;
+		currentContext.readingAnchor = null;
+	}, [isFollowing, currentContext]);
 
 	// layout 阶段：更新提交快照，并按照计划优先级执行至多一次纠偏（显式 pending restore > preserve-anchor）
 	useLayoutEffect(() => {

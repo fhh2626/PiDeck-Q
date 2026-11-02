@@ -58,12 +58,34 @@ export function getEstimatedRowHeight(item: VirtualTimelineRow["item"]): number 
 export const DEFAULT_TIMELINE_ROW_GAP = 12;
 
 /**
+ * 构造乐观 user 行到权威 user 行的高度别名。
+ * 主进程乐观消息带 optimisticRequestId，而本地行 key 是 message:<requestId>；
+ * 权威行换 id 后可复用本地行已测高度，避免测量闪烁。
+ */
+export function buildMeasuredHeightAliases(
+	rows: readonly VirtualTimelineRow[],
+): ReadonlyMap<TimelineRowKey, TimelineRowKey> {
+	const aliases = new Map<TimelineRowKey, TimelineRowKey>();
+	for (const row of rows) {
+		if (row.item.kind !== "message" || row.item.message.role !== "user") continue;
+		const requestId = row.item.message.meta?.optimisticRequestId;
+		if (typeof requestId !== "string" || !requestId) continue;
+		const optimisticKey = `message:${requestId}`;
+		if (optimisticKey !== row.key) aliases.set(row.key, optimisticKey);
+	}
+	return aliases;
+}
+
+/**
  * 计算/刷新前缀和高度数组。
+ * measuredHeightAliases 把「刚被权威消息替换掉的本地乐观行 key」映射到权威行，
+ * 让替换瞬间沿用旧行已测到的高度，避免先按 180px 估计再测量导致几何跳变。
  */
 export function computeTimelineGeometry(
 	rows: readonly VirtualTimelineRow[],
 	measuredHeights: ReadonlyMap<string, number>,
 	gap = DEFAULT_TIMELINE_ROW_GAP,
+	measuredHeightAliases?: ReadonlyMap<TimelineRowKey, TimelineRowKey>,
 ): VirtualTimelineGeometry {
 	const count = rows.length;
 	const heights = new Array<number>(count);
@@ -74,7 +96,11 @@ export function computeTimelineGeometry(
 	for (let i = 0; i < count; i += 1) {
 		const row = rows[i];
 		indexByKey.set(row.key, i);
-		const measured = measuredHeights.get(row.key);
+		const directMeasured = measuredHeights.get(row.key);
+		const alias = measuredHeightAliases?.get(row.key);
+		const measured = directMeasured !== undefined && directMeasured > 0
+			? directMeasured
+			: (alias ? measuredHeights.get(alias) : undefined);
 		const h = measured !== undefined && measured > 0 ? measured : getEstimatedRowHeight(row.item);
 		heights[i] = h;
 		const gapAfter = i < count - 1 ? gap : 0;

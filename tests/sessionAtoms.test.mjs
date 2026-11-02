@@ -37,6 +37,9 @@ function loadAtoms() {
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const sessions = compileModule("src/renderer/src/atoms/session-atoms.ts", {
     "../utils/agentRuntimeState": runtimeState,
+    "../utils/optimisticUserReconciliation": compileModule(
+      "src/renderer/src/utils/optimisticUserReconciliation.ts",
+    ),
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
     "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
@@ -188,6 +191,97 @@ test("rejects a late disk page continuation whose revision does not match", () =
     store.get(atoms.sessionMessagesCacheAtom)["session-c"].messages[0].text,
     "v1",
   );
+});
+
+test("a cold optimistic bubble does not block the initial disk page", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const local = {
+    id: "request-1",
+    role: "user",
+    text: "hello",
+    timestamp: 2_000,
+    meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+  };
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [local],
+    source: "runtime",
+  });
+
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [{ id: "disk-1", role: "user", text: "old", timestamp: 1_000 }],
+    source: "disk",
+    expectedRevision: 0,
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, true);
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "disk");
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["disk-1", "request-1"]);
+  assert.equal(entry.messages[1].meta?.optimisticPending, true);
+  assert.deepEqual(entry.page, { total: 1, nextBefore: null });
+});
+
+test("a discarded local bubble does not block the initial disk page", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  // 模拟发送在磁盘首页返回前失败：乐观气泡被 discard，只留下一个空 runtime 条目。
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [],
+    source: "runtime",
+  });
+
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [{ id: "disk-1", role: "user", text: "old", timestamp: 1_000 }],
+    source: "disk",
+    expectedRevision: 0,
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, true);
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "disk");
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["disk-1"]);
+});
+
+test("a cold optimistic bubble is removed when the initial disk page already has its host row", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [{
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    }],
+    source: "runtime",
+  });
+
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [{
+      id: "host-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_100,
+      meta: { optimisticRequestId: "request-1" },
+    }],
+    source: "disk",
+    expectedRevision: 0,
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, true);
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "disk");
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["host-1"]);
 });
 
 test("anonymous session switch-back does not wipe runtime messages via empty disk write", () => {
@@ -1682,4 +1776,691 @@ test("version-drift prefix replace drops messages already shown in the window an
   assert.equal(entry.history.nextBefore, 4);
   assert.equal(entry.history.version, "200:800");
   assert.equal(entry.revision, 3, "the replace path does not bump the revision");
+});
+
+test("pending optimistic bubble survives a snapshot that predates the authoritative user", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    {
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    },
+    { id: "old-answer", role: "assistant", text: "old", timestamp: 1_000 },
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(
+    previous,
+    [previous[1]],
+  );
+
+  const local = merged.find((message) => message.id === "request-1");
+  assert.ok(local, "pending optimistic bubble must not be dropped by an older snapshot");
+  assert.notEqual(local.meta?.slidingOut, true, "pending bubble must not start a slide-out animation");
+});
+
+test("settled optimistic bubble follows the normal slide-out cleanup path", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    {
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1" },
+    },
+    { id: "old-answer", role: "assistant", text: "old", timestamp: 1_000 },
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(
+    previous,
+    [previous[1]],
+  );
+
+  assert.equal(
+    merged.find((message) => message.id === "request-1")?.meta?.slidingOut,
+    true,
+  );
+});
+
+test("pending optimistic bubble also survives an empty full snapshot", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    {
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true, slidingOut: true },
+    },
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(previous, []);
+
+  assert.equal(merged.length, 1);
+  assert.notEqual(merged[0].meta?.slidingOut, true, "a previously mis-marked pending bubble must be released");
+});
+
+test("incremental tail update preserves a pending optimistic bubble appended after the runtime messages", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      { id: "u1", role: "user", text: "question", timestamp: 1_000 },
+      { id: "a1", role: "assistant", text: "partial", timestamp: 1_100 },
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow up",
+        timestamp: 1_200,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      totalLength: 2,
+      upsertFrom: 1,
+      windowStart: 0,
+      messages: [{ id: "a1", role: "assistant", text: "complete", timestamp: 1_100 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.messages.find((message) => message.id === "a1")?.text, "complete");
+  assert.ok(
+    entry.messages.find((message) => message.id === "request-1"),
+    "pending bubble must survive an incremental update of the previous turn",
+  );
+});
+
+test("incremental authoritative user still retires the matching pending bubble", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      { id: "u1", role: "user", text: "question", timestamp: 1_000 },
+      { id: "a1", role: "assistant", text: "partial", timestamp: 1_100 },
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow up",
+        timestamp: 1_200,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      totalLength: 3,
+      upsertFrom: 0,
+      windowStart: 0,
+      messages: [
+        { id: "u1", role: "user", text: "question", timestamp: 1_000 },
+        { id: "a1", role: "assistant", text: "partial", timestamp: 1_100 },
+        {
+          id: "main-entry",
+          role: "user",
+          text: "follow up",
+          timestamp: 1_200,
+          meta: { optimisticRequestId: "request-1" },
+        },
+      ],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.messages.some((message) => message.id === "request-1"), false);
+  assert.ok(entry.messages.some((message) => message.id === "main-entry"));
+});
+
+test("a binding-changed full snapshot keeps a pending optimistic bubble despite a stale cache agentId", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    agentId: "old-agent",
+    messages: [
+      {
+        id: "request-1",
+        role: "user",
+        text: "hello",
+        timestamp: 2_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      windowStart: 0,
+      totalLength: 1,
+      messages: [{ id: "old-answer", role: "assistant", text: "old", timestamp: 1_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.ok(
+    entry.messages.find((message) => message.id === "request-1"),
+    "a new runtime activation snapshot must not erase the local send before it reaches the host",
+  );
+});
+
+test("a pending optimistic bubble is placed before a newer assistant reply", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    { id: "u1", role: "user", text: "q", timestamp: 1_000 },
+    {
+      id: "request-1",
+      role: "user",
+      text: "follow-up",
+      timestamp: 3_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    },
+  ];
+  const canonical = [
+    previous[0],
+    { id: "a2", role: "assistant", text: "reply", timestamp: 4_000 },
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(previous, canonical);
+  assert.deepEqual([...merged.map((message) => message.id)], ["u1", "request-1", "a2"]);
+});
+
+test("a full snapshot keeps a pending bubble before the reply it triggered", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    { id: "u1", role: "user", text: "q", timestamp: 1_000 },
+    {
+      id: "request-1",
+      role: "user",
+      text: "follow-up",
+      timestamp: 3_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    },
+    { id: "a2", role: "assistant", text: "reply", timestamp: 4_000 },
+  ];
+  const canonical = [previous[0], previous[2]];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(previous, canonical);
+  assert.deepEqual(
+    [...merged.map((message) => message.id)],
+    ["u1", "request-1", "a2"],
+    "the reply must remain after the user message that triggered it",
+  );
+});
+
+test("a pending optimistic bubble stays after an older canonical message", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    { id: "u1", role: "user", text: "q", timestamp: 1_000 },
+    {
+      id: "request-1",
+      role: "user",
+      text: "follow-up",
+      timestamp: 3_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    },
+  ];
+  const canonical = [
+    previous[0],
+    { id: "a2", role: "assistant", text: "old reply", timestamp: 2_000 },
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(previous, canonical);
+  assert.deepEqual([...merged.map((message) => message.id)], ["u1", "a2", "request-1"]);
+});
+
+test("an incremental reply is inserted after the pending optimistic bubble, not before it", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      { id: "u1", role: "user", text: "q", timestamp: 1_000 },
+      { id: "a1", role: "assistant", text: "answer", timestamp: 1_500 },
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow-up",
+        timestamp: 3_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "agent-a",
+      upsertFrom: 2,
+      totalLength: 3,
+      messages: [{ id: "a2", role: "assistant", text: "reply", timestamp: 4_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["u1", "a1", "request-1", "a2"]);
+});
+
+test("disk-sourced cache keeps an optimistic bubble until a runtime full snapshot takes over", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    messages: [{ id: "d1", role: "user", text: "disk", timestamp: 1_000 }],
+    page: { total: 1, nextBefore: null },
+    agentId: "old-agent",
+  });
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    messages: [
+      { id: "d1", role: "user", text: "disk", timestamp: 1_000 },
+      {
+        id: "request-1",
+        role: "user",
+        text: "hello",
+        timestamp: 2_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+    page: { total: 1, nextBefore: null },
+  });
+
+  // runtime 启动后的第一条增量不能按 runtime 下标切磁盘分页。
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "new-agent",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: { agentId: "new-agent", upsertFrom: 0, totalLength: 1, messages: [
+      { id: "r1", role: "user", text: "runtime", timestamp: 2_500 },
+    ] },
+  });
+  let entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "disk");
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["d1", "request-1"]);
+
+  // 全量接管时接回 pending，不能让磁盘页和本地发送一起消失。
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "new-agent",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: { agentId: "new-agent", messages: [
+      { id: "r1", role: "user", text: "runtime", timestamp: 2_500 },
+    ] },
+  });
+  entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "runtime");
+  assert.deepEqual([...entry.messages.map((message) => message.id)], ["request-1", "r1"]);
+});
+
+test("a binding-changed full snapshot keeps a pending bubble before an existing reply", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    agentId: "old-agent",
+    messages: [
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow-up",
+        timestamp: 3_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+      { id: "a1", role: "assistant", text: "reply", timestamp: 4_000 },
+    ],
+    windowStart: 0,
+    cardCount: 0,
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "new-agent",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "new-agent",
+      messages: [{ id: "a1", role: "assistant", text: "reply", timestamp: 4_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.source, "runtime");
+  assert.deepEqual(
+    [...entry.messages.map((message) => message.id)],
+    ["request-1", "a1"],
+    "binding handoff must not move the local user bubble behind its reply",
+  );
+});
+
+test("a pending bubble is dropped when its authoritative user already lives in history", () => {
+  const atoms = loadAtoms();
+  const previous = [
+    {
+      id: "host-user",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimisticRequestId: "request-1" },
+    },
+    {
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    },
+    { id: "a2", role: "assistant", text: "reply", timestamp: 3_000 },
+  ];
+  const canonical = [
+    previous[0],
+    previous[2],
+  ];
+
+  const merged = atoms.mergeCanonicalSnapshotWithSlidingOut(
+    previous,
+    canonical,
+    undefined,
+    new Set(["request-1"]),
+  );
+  assert.equal(merged.some((message) => message.id === "request-1"), false);
+});
+
+test("an optimistic disk append advances revision so a stale disk page cannot overwrite it", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    messages: [{ id: "d1", role: "user", text: "disk", timestamp: 1_000 }],
+    page: { total: 1, nextBefore: null },
+  });
+  const revisionBefore = store.get(atoms.sessionMessagesCacheAtom)["session-a"].revision;
+
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    optimistic: true,
+    messages: [{ id: "request-1", role: "user", text: "local", timestamp: 2_000 }],
+    page: { total: 1, nextBefore: null },
+  });
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    expectedRevision: revisionBefore,
+    messages: [{ id: "stale", role: "user", text: "stale", timestamp: 3_000 }],
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, false);
+  assert.equal(
+    store.get(atoms.sessionMessagesCacheAtom)["session-a"].messages[0].id,
+    "request-1",
+  );
+});
+
+test("a pending bubble is dropped when the host user is already in the history prefix", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      {
+        id: "request-1",
+        role: "user",
+        text: "hello",
+        timestamp: 2_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+    ],
+    history: {
+      messages: [{
+        id: "host-user",
+        role: "user",
+        text: "hello",
+        timestamp: 2_000,
+        meta: { optimisticRequestId: "request-1" },
+      }],
+      nextBefore: 10,
+    },
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "agent-a",
+      messages: [{ id: "a2", role: "assistant", text: "reply", timestamp: 3_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.messages.some((message) => message.id === "request-1"), false);
+  assert.equal(entry.history?.messages[0].id, "host-user");
+});
+
+test("a disk snapshot cannot overwrite a pending optimistic bubble even at the same revision", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    messages: [{
+      id: "request-1",
+      role: "user",
+      text: "local",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    }],
+    page: { total: 1, nextBefore: null },
+  });
+  const revision = store.get(atoms.sessionMessagesCacheAtom)["session-a"].revision;
+
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    expectedRevision: revision,
+    messages: [{ id: "stale", role: "user", text: "disk", timestamp: 1_000 }],
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, false);
+  assert.equal(store.get(atoms.sessionMessagesCacheAtom)["session-a"].messages[0].id, "request-1");
+});
+
+test("settling a disk-sourced pending bubble can still write the cache", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    messages: [{
+      id: "request-1",
+      role: "user",
+      text: "local",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    }],
+    page: { total: 1, nextBefore: null },
+  });
+
+  const applied = store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "disk",
+    optimistic: true,
+    messages: [{
+      id: "request-1",
+      role: "user",
+      text: "local",
+      timestamp: 2_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1" },
+    }],
+    page: { total: 1, nextBefore: null },
+  });
+
+  assert.equal(applied, true);
+  assert.equal(
+    store.get(atoms.sessionMessagesCacheAtom)["session-a"].messages[0].meta?.optimisticPending,
+    undefined,
+  );
+});
+
+test("an incremental update maps around a pending bubble that sits before the upsert offset", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow-up",
+        timestamp: 3_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+      { id: "a1", role: "assistant", text: "answer", timestamp: 1_000 },
+      { id: "a2", role: "assistant", text: "older", timestamp: 2_000 },
+    ],
+    windowStart: 0,
+    cardCount: 0,
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "agent-a",
+      upsertFrom: 1,
+      totalLength: 2,
+      messages: [{ id: "a2", role: "assistant", text: "newer", timestamp: 4_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.deepEqual(
+    [...entry.messages.map((message) => message.id)],
+    ["a1", "request-1", "a2"],
+    "the runtime message before the pending bubble must survive the offset remap",
+  );
+});
+
+test("an incremental append keeps a pending bubble before a reply already in the prefix", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [
+      { id: "u1", role: "user", text: "q", timestamp: 1_000 },
+      {
+        id: "request-1",
+        role: "user",
+        text: "follow-up",
+        timestamp: 3_000,
+        meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+      },
+      { id: "a1", role: "assistant", text: "answer", timestamp: 4_000 },
+    ],
+    windowStart: 0,
+    cardCount: 0,
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "agent-a",
+      upsertFrom: 2,
+      totalLength: 3,
+      messages: [{ id: "a2", role: "assistant", text: "more", timestamp: 5_000 }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.deepEqual(
+    [...entry.messages.map((message) => message.id)],
+    ["u1", "request-1", "a1", "a2"],
+    "a prefix reply that comes after the pending bubble must not jump ahead of it",
+  );
+});
+
+test("an incremental payload may reuse the local optimistic id for the authoritative row", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    source: "runtime",
+    messages: [{
+      id: "request-1",
+      role: "user",
+      text: "hello",
+      timestamp: 1_000,
+      meta: { optimistic: true, optimisticRequestId: "request-1", optimisticPending: true },
+    }],
+    windowStart: 0,
+    cardCount: 0,
+  });
+
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-a",
+    agentId: "agent-a",
+    runtimeGeneration: 1,
+    sourceChannel: "agents:message",
+    payload: {
+      agentId: "agent-a",
+      upsertFrom: 0,
+      totalLength: 1,
+      messages: [{
+        id: "request-1",
+        role: "user",
+        text: "hello",
+        timestamp: 1_000,
+        meta: { optimisticRequestId: "request-1" },
+      }],
+    },
+  });
+
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.messages.length, 1);
+  assert.equal(entry.messages[0].meta?.optimistic, undefined);
+  assert.equal(entry.messages[0].meta?.optimisticRequestId, "request-1");
 });

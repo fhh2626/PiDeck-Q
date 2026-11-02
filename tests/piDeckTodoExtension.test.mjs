@@ -279,3 +279,15 @@ test("yielding to a third-party todo extension disables input reset", async () =
 	assert.equal(extension.entries.length, snapshotCount, "让位后不接管状态，也就不写快照");
 	assert.deepEqual(toPlain(widgets.at(-1)), ["☑ #1 改接口"]);
 });
+
+test("an invalid action is rejected without mutating state or persisting a snapshot", async () => {
+	const extension = loadExtension();
+	const { run, widgets } = todoRunner(extension);
+
+	const result = await run({ action: "delete" });
+
+	assert.match(result.content[0].text, /unknown action/);
+	assert.equal(result.details.action, "list");
+	assert.equal(extension.entries.length, 0);
+	assert.equal(widgets.length, 0);
+});

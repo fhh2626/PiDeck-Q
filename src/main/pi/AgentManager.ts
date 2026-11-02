@@ -1675,7 +1675,12 @@ export class AgentManager {
 				? trimmed.slice(2).trim()
 				: trimmed.slice(1).trim();
 			if (command) {
-				return this.executeBashCommand(input.agentId, command, isBashExcluded);
+				return this.executeBashCommand(
+					input.agentId,
+					command,
+					isBashExcluded,
+					input.requestId,
+				);
 			}
 		}
 
@@ -1728,11 +1733,17 @@ export class AgentManager {
 			// 乐观更新：在等待 RPC 返回前先把用户消息写入会话，让用户立即看到自己的消息。
 			// 只展示用户原文；agentMessage 里的宿主指令不进 UI 气泡。
 			// 如果后续 RPC 失败，再追加错误消息；用户消息本身仍保留在聊天中（用户确已发送）。
+			// requestId 透传给渲染层：模板/技能展开会改写正文，发送后用户请求 id 是最稳定
+			// 的配对依据；renderer 的本地气泡用同一个 id 做精确替换。
+			const optimisticUserMeta: Record<string, unknown> = {
+				...(promptDeliveryBehavior ? { streamingBehavior: promptDeliveryBehavior } : {}),
+				...(input.requestId ? { optimisticRequestId: input.requestId } : {}),
+			};
 			this.addMessage(
 				input.agentId,
 				"user",
 				trimmed || this.translate("session.imagePlaceholder"),
-				promptDeliveryBehavior ? { streamingBehavior: promptDeliveryBehavior } : undefined,
+				Object.keys(optimisticUserMeta).length > 0 ? optimisticUserMeta : undefined,
 				input.images,
 			);
 		}
@@ -1841,6 +1852,7 @@ export class AgentManager {
 		agentId: string,
 		command: string,
 		excludeFromContext: boolean,
+		requestId?: string,
 	): Promise<SendPromptResult> {
 		const runtime = this.requireRuntime(agentId);
 		const statusBeforeCommand = runtime.tab.status;
@@ -1889,6 +1901,7 @@ export class AgentManager {
 				agentId,
 				"user",
 				`${excludeFromContext ? "!!" : "!"}${command}`,
+				requestId ? { optimisticRequestId: requestId } : undefined,
 			);
 			const data = response.data as
 				| {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	findNearestVerticalScrollableAncestor,
+	isContentShrinkClamp,
 	isEditableOrInteractiveTarget,
 	isTimelineUpwardKeyIntent,
 } from "../src/renderer/src/lib/stick-to-bottom/scrollIntent.ts";
@@ -125,5 +126,64 @@ test("isTimelineUpwardKeyIntent identifies upward keys and ignores modifier or i
 			defaultPrevented: false,
 		}),
 		false,
+	);
+});
+
+test("isContentShrinkClamp tolerates subpixel bottom clamping but not real upward scrolling", () => {
+	assert.equal(
+		isContentShrinkClamp({ scrollTop: 100, lastScrollTop: 102, maxScrollTop: 100.6, isFollowing: true }),
+		true,
+		"亚像素夹取不能被判成用户上滚",
+	);
+	assert.equal(
+		isContentShrinkClamp({ scrollTop: 100, lastScrollTop: 102, maxScrollTop: 100.6, isFollowing: false }),
+		false,
+	);
+	assert.equal(
+		isContentShrinkClamp({ scrollTop: 100, lastScrollTop: 102, maxScrollTop: 96, isFollowing: true }),
+		false,
+		"离底部超过容差必须视为真实上滚",
+	);
+	assert.equal(
+		isContentShrinkClamp({ scrollTop: 103, lastScrollTop: 102, maxScrollTop: 103, isFollowing: true }),
+		false,
+	);
+});
+
+test("isContentShrinkClamp does not swallow a real 1-2px upward scroll at the bottom", () => {
+	assert.equal(
+		isContentShrinkClamp({
+			scrollTop: 998,
+			lastScrollTop: 1_000,
+			maxScrollTop: 1_000,
+			isFollowing: true,
+		}),
+		false,
+		"内容高度未缩短时，轻微上滚仍是用户意图，不能按 clamp 忽略",
+	);
+});
+
+test("isContentShrinkClamp accepts a proven content shrink with a subpixel bottom gap", () => {
+	assert.equal(
+		isContentShrinkClamp({
+			scrollTop: 998.5,
+			lastScrollTop: 999,
+			maxScrollTop: 998.5,
+			previousMaxScrollTop: 1_000,
+			isFollowing: true,
+		}),
+		true,
+		"上一帧最大滚动距离缩短时，即使贴底有亚像素差也应维持锁底",
+	);
+	assert.equal(
+		isContentShrinkClamp({
+			scrollTop: 998.5,
+			lastScrollTop: 999,
+			maxScrollTop: 998.5,
+			previousMaxScrollTop: 998.5,
+			isFollowing: true,
+		}),
+		false,
+		"最大滚动距离未缩短就不能按 clamp 吞掉上滚",
 	);
 });

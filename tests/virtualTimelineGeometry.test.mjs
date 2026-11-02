@@ -235,3 +235,60 @@ test("resolveAnchorScrollTop handles positive and negative offsetTop with listOr
 	const topNeg = resolveAnchorScrollTop(geom, 1, -20, listOrigin);
 	assert.equal(topNeg, 216);
 });
+
+test("computeTimelineGeometry reuses the optimistic row's measured height through an alias", () => {
+	const rows = [
+		{
+			key: "message:canonical",
+			anchorId: "canonical",
+			item: {
+				kind: "message",
+				message: {
+					id: "canonical",
+					role: "user",
+					text: "hello",
+					timestamp: 2,
+					meta: { optimisticRequestId: "request-1" },
+				},
+			},
+			sourceIndex: 0,
+			messageIds: ["canonical"],
+		},
+	];
+	const measured = new Map([["message:request-1", 84]]);
+	const aliases = new Map([["message:canonical", "message:request-1"]]);
+
+	const geom = computeTimelineGeometry(rows, measured, 12, aliases);
+
+	assert.equal(geom.heights[0], 84, "权威行必须沿用被替换乐观行的实测高度");
+});
+
+test("computeTimelineGeometry prefers the authoritative row's own measurement over an alias", () => {
+	const rows = [
+		{
+			key: "message:canonical",
+			anchorId: "canonical",
+			item: {
+				kind: "message",
+				message: {
+					id: "canonical",
+					role: "user",
+					text: "hello",
+					timestamp: 2,
+					meta: { optimisticRequestId: "request-1" },
+				},
+			},
+			sourceIndex: 0,
+			messageIds: ["canonical"],
+		},
+	];
+	const measured = new Map([
+		["message:request-1", 84],
+		["message:canonical", 120],
+	]);
+	const aliases = new Map([["message:canonical", "message:request-1"]]);
+
+	const geom = computeTimelineGeometry(rows, measured, 12, aliases);
+
+	assert.equal(geom.heights[0], 120);
+});

@@ -43,8 +43,18 @@ interface TodoState {
 
 // 工具结果 details：携带当前完整状态，便于 LLM 与桌面端渲染时直接读取
 interface TodoDetails extends TodoState {
-	action: "list" | "add" | "toggle" | "clear";
+	action: TodoAction;
 	error?: string;
+}
+
+type TodoAction = "list" | "add" | "toggle" | "clear";
+
+// Pi 1.5's StringEnum parameter collapses to unknown in registerTool; validate
+// explicitly so unchecked input never reaches TodoDetails.
+function parseTodoAction(value: unknown): TodoAction | undefined {
+	return value === "list" || value === "add" || value === "toggle" || value === "clear"
+		? value
+		: undefined;
 }
 
 const TodoParams = Type.Object({
@@ -173,9 +183,22 @@ export default function (pi: ExtensionAPI) {
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const action = parseTodoAction(params.action);
+			if (!action) {
+				const details: TodoDetails = {
+					action: "list",
+					todos: [...todos],
+					nextId,
+					error: "unknown action",
+				};
+				return {
+					content: [{ type: "text" as const, text: "Error: unknown action" }],
+					details,
+				};
+			}
 			let error: string | undefined;
 
-			switch (params.action) {
+			switch (action) {
 				case "add": {
 					const text = params.text?.trim();
 					if (!text) {
@@ -210,13 +233,13 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// 仅在状态实际变更时持久化；list 与出错仍刷新 widget 以保持桌面端与内存一致
-			if (params.action !== "list" && !error) {
+			if (action !== "list" && !error) {
 				persistState();
 			}
 			updateWidget(ctx);
 
 			const details: TodoDetails = {
-				action: params.action,
+				action,
 				todos: [...todos],
 				nextId,
 				...(error ? { error } : {}),
@@ -226,14 +249,14 @@ export default function (pi: ExtensionAPI) {
 			let text: string;
 			if (error) {
 				text = `Error: ${error}`;
-			} else if (params.action === "list") {
+			} else if (action === "list") {
 				text = todos.length
 					? todos.map((t) => `[${t.done ? "x" : " "}] #${t.id}: ${t.text}`).join("\n")
 					: "No todos";
-			} else if (params.action === "add") {
+			} else if (action === "add") {
 				const added = todos[todos.length - 1];
 				text = `Added todo #${added.id}: ${added.text}`;
-			} else if (params.action === "toggle") {
+			} else if (action === "toggle") {
 				const t = todos.find((x) => x.id === params.id);
 				text = `Todo #${params.id} ${t?.done ? "completed" : "uncompleted"}`;
 			} else {
