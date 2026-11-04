@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 test("Windows native packaging stages Qt, Node, renderer and resources without Electron Builder", () => {
+	// 文本匹配在此是正确工具：xmake.lua / 打包脚本 / package.json 都是构建配置文件，没有可在单测中执行的运行时入口（需要 Qt 工具链）；
+	// 这里守的是配置内容契约（暂存 Qt、Node、渲染层与资源，且不回到 Electron Builder / NSIS）。
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 	assert.match(pkg.scripts?.["build:native"] ?? "", /build-native\.mjs/);
 	assert.match(pkg.scripts?.["dist:win"] ?? "", /dist-win-native\.mjs/);

@@ -461,6 +461,8 @@ export function groupToolMessages(messages: ChatMessage[]): RenderMessage[] {
  *
  * 规则：按 run.id 配对，内容相同（sameAgentRunForRender）则取旧引用；
  * 新增/删除/内容变化的 run 用新对象。列表结构（顺序、条目数）以 next 为准。
+ * 注意：复用旧 run 引用绝不代表可以忽略顶层条目的内容变化或顺序重排，
+ * 只有当对齐后的每一项引用均与 previous[i] 严格相等时才整体复用 previous 数组。
  */
 export function reconcileRuns(
 	previous: RenderMessage[] | undefined,
@@ -472,17 +474,18 @@ export function reconcileRuns(
 	for (const item of previous) {
 		if (item.kind === "agent-run") prevRuns.set(item.id, item);
 	}
-	let changed = false;
 	const reconciled = next.map((item) => {
 		if (item.kind !== "agent-run") return item;
 		const prev = prevRuns.get(item.id);
 		if (prev && sameAgentRunForRender(prev, item)) return prev;
-		changed = true;
 		return item;
 	});
-	// 只有「长度相同且全部未变化」才能整体复用 previous 数组本身；
-	// 否则（新增/删除/变化）必须返回 reconciled（其中未变化 run 已复用旧引用）。
-	if (!changed && previous.length === next.length) return previous;
+	// 逐项位置引用比对：长度相同且每个索引处的引用都严格相等，才整体复用 previous 数组；
+	// 否则（顶层消息变更、条目顺序变动、run 变化或增删）返回 reconciled。
+	const unchanged =
+		previous.length === reconciled.length &&
+		reconciled.every((item, index) => item === previous[index]);
+	if (unchanged) return previous;
 	return reconciled;
 }
 

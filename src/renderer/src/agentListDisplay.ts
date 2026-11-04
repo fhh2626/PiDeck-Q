@@ -1,5 +1,5 @@
 import { canonicalizeSessionPath, getSessionEnvironment } from "../../shared/sessionIdentity";
-import type { AgentTab, SessionEnvironment, SessionSummary } from "../../shared/types";
+import type { AgentTab, SessionEnvironment, SessionSummary, SubagentLiveRun } from "../../shared/types";
 
 /**
  * 会话/Agent 行的状态点 Tailwind bg 类（跨 Sidebar SessionTree 与会话 Tab 复用）。
@@ -23,6 +23,116 @@ export function sessionStatusDotClass(status?: string | null): string | undefine
 		default:
 			return undefined;
 	}
+}
+
+/** 有字符串就算 runtime 快照；空串与缺失一样，才允许退回 Agent。 */
+function hasSidebarRuntimeSnapshot(status?: string | null): status is string {
+	return status != null && status !== "";
+}
+
+/**
+ * 侧栏行实际要点亮的状态。
+ * 已有 runtime 快照时只认快照：detached/closed 不再退回可能过期的 Agent。
+ * 没有快照时依次退：子代理工具投递的运行态 → 匹配的 Agent。
+ */
+export function visibleSidebarStatus(input: {
+	runtimeStatus?: string | null;
+	/** pi 内建子代理的运行态：子会话没有 PiDeck runtime，只能靠这个。投影只含 running/error。 */
+	subagentStatus?: string | null;
+	agentStatus?: string | null;
+}): string | undefined {
+	if (hasSidebarRuntimeSnapshot(input.runtimeStatus)) {
+		return sessionStatusDotClass(input.runtimeStatus) ? input.runtimeStatus : undefined;
+	}
+	// 防御：投影类型上只有 running/error，但旧帧或未来版本若带 completed，也不该点亮行灯。
+	if (input.subagentStatus && input.subagentStatus !== "completed" && sessionStatusDotClass(input.subagentStatus)) {
+		return input.subagentStatus;
+	}
+	if (sessionStatusDotClass(input.agentStatus)) return input.agentStatus ?? undefined;
+	return undefined;
+}
+
+type SubagentStatusAgent = Pick<
+	AgentTab,
+	"deckSessionId" | "sessionPath" | "sessionEnvironment" | "status" | "createdAt"
+>;
+
+function agentMatchesSubagent(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agent: SubagentStatusAgent,
+): boolean {
+	if (agent.deckSessionId && agent.deckSessionId === session.id) return true;
+	// 缺环境不能借用子会话的环境，否则 WSL 路径会被 native 规则折掉大小写。
+	if (!agent.sessionEnvironment || agent.sessionEnvironment !== getSessionEnvironment(session)) return false;
+	return isSameSessionPath(agent.sessionPath, session.filePath, agent.sessionEnvironment);
+}
+
+/**
+ * 同一子会话可能留下未标 closed 的旧 Agent。
+ * 只在仍可显示的状态里取最新创建的那个，避免旧 running 压过重启后的 idle。
+ */
+function pickSubagentAgentStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agents: readonly SubagentStatusAgent[],
+): string | undefined {
+	const visible = agents.filter((agent) =>
+		agentMatchesSubagent(session, agent) && sessionStatusDotClass(agent.status),
+	);
+	visible.sort((left, right) => right.createdAt - left.createdAt);
+	return visible[0]?.status;
+}
+
+/**
+ * 从主进程推来的子代理状态里找出与本子会话同路径的条目。
+ * 同一路径可能因跨 agent/重开链留下多条，取最新一次观察（updatedAt 最大）：
+ * 子会话被 resume 后旧的 error 不能让行一直红着。
+ */
+function pickSubagentLiveStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	liveRuns: readonly SubagentLiveRun[] | undefined,
+): string | undefined {
+	if (!liveRuns?.length) return undefined;
+	const environment = getSessionEnvironment(session);
+	let latest: SubagentLiveRun | undefined;
+	for (const run of liveRuns) {
+		if (!isSameSessionPath(run.sessionFile, session.filePath, environment)) continue;
+		if (!latest || run.updatedAt >= latest.updatedAt) latest = run;
+	}
+	return latest?.status;
+}
+
+/**
+ * 子会话行的状态点：PiDeck runtime 快照 > 子代理工具投递的运行态 > 匹配的 Agent。
+ * pi 内建子代理（前台内联 / 后台 detached）永远没有 PiDeck runtime，
+ * liveRuns 是它们唯一的状态来源。
+ */
+export function subagentSidebarStatus(
+	session: Pick<SessionSummary, "id" | "filePath" | "wsl">,
+	agents: readonly SubagentStatusAgent[],
+	runtimeStatus?: string | null,
+	liveRuns?: readonly SubagentLiveRun[],
+): string | undefined {
+	return visibleSidebarStatus({
+		runtimeStatus,
+		subagentStatus: pickSubagentLiveStatus(session, liveRuns),
+		agentStatus: pickSubagentAgentStatus(session, agents),
+	});
+}
+
+/**
+ * 折叠分组的子代理活动态：只有真的在跑才点亮（running）。
+ * 黄点语义就是「运行中」（见 sessionStatusDotClass）；completed 是瞬时终态，
+ * 结束后继续亮黄点就成了「已经停了还黄着」，比不亮更误导；错误靠展开后的红灯表达。
+ */
+export function subagentGroupActivity(
+	sessions: readonly Pick<SessionSummary, "id" | "filePath" | "wsl">[],
+	liveRuns: readonly SubagentLiveRun[] | undefined,
+): "running" | undefined {
+	if (!liveRuns?.length) return undefined;
+	for (const session of sessions) {
+		if (pickSubagentLiveStatus(session, liveRuns) === "running") return "running";
+	}
+	return undefined;
 }
 
 const DEFAULT_VISIBLE_PROJECT_CHILD_LIMIT = 5;

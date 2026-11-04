@@ -291,3 +291,9 @@ export type SessionUiResponseInput = {
 	runtimeGeneration: number;
 	response: AgentUiResponse;
 };
+
+export type ToolExportPayload = {
+	argsText?: string;
+	resultText?: string;
+	detailsText?: string;
+};

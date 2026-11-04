@@ -8,9 +8,6 @@ export default defineConfig({
 	use: {
 		baseURL: "http://127.0.0.1:5189",
 		headless: true,
-		launchOptions: {
-			executablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-		},
 	},
 	webServer: {
 		command: "npm run test:browser:server",
@@ -21,7 +18,10 @@ export default defineConfig({
 	projects: [
 		{
 			name: "edge",
-			use: { ...devices["Desktop Chrome"] },
+			use: {
+				...devices["Desktop Chrome"],
+				channel: "msedge",
+			},
 		},
 	],
 });

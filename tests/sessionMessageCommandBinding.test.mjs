@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
-import { createStore } from "jotai/vanilla";
+import { atom, createStore } from "jotai/vanilla";
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -90,8 +90,8 @@ function createMockCommandsEnvironment(customDesktopApiOverrides = {}) {
           commandEvents.push({ type: "api:delete", target, messageId });
           return { ok: true, value: { success: true } };
         },
-        prepareRuntimeResend: async (target, messageId) => {
-          commandEvents.push({ type: "api:prepareResend", target, messageId });
+        prepareRuntimeResend: async (target, messageId, model, thinkingLevel) => {
+          commandEvents.push({ type: "api:prepareResend", target, messageId, model, thinkingLevel });
           // 与生产契约一致：SessionCommandResult<SessionTargetedValue<{text, images}>>
           return { ok: true, value: { target, value: { text: "resend-text", images: [] } } };
         },
@@ -494,6 +494,9 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const atoms = compileModule("src/renderer/src/atoms/session-atoms.ts", {
     "../utils/agentRuntimeState": runtimeState,
+    "../utils/optimisticUserReconciliation": compileModule(
+      "src/renderer/src/utils/optimisticUserReconciliation.ts",
+    ),
     "../utils/sessionRecordIdentity": sessionRecordIdentity,
     "../../../shared/messageFingerprint": messageFingerprint,
     "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
@@ -506,6 +509,7 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
 
   const controllerModule = compileModule("src/renderer/src/hooks/useSessionRuntimeController.ts", {
     jotai: {
+      atom,
       useAtomValue: (anAtom) => {
         if (anAtom && typeof anAtom.read === "function") {
           return anAtom.read((a) => store.get(a));
@@ -776,6 +780,32 @@ test("resendUserMessage: unchanged target submits snapshot after prepare succeed
   assert.deepEqual(submittedSnapshots[0], { sessionId: "session-1", text: "resend-text" });
   const toasts = commandEvents.filter((e) => e.type === "toast");
   assert.equal(toasts.length, 0, "no error toast expected on happy path");
+});
+
+test("resendUserMessage: passes currently selected model to prepareRuntimeResend", async () => {
+  const currentTargetRef = { current: { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 } };
+  const { mockCommands, commandEvents, submittedSnapshots } = createHookEnvironment(currentTargetRef, {
+    input: {
+      getCurrentModelForSession: (sessionId) => {
+        if (sessionId === "session-1") {
+          return {
+            model: { provider: "deepseek", modelId: "deepseek-chat" },
+            thinkingLevel: "high",
+          };
+        }
+        return undefined;
+      },
+    },
+  });
+
+  mockCommands.resendUserMessage(currentTargetRef.current, { id: "msg-1", role: "user", text: "hello", agentId: "agent-1" });
+  await flushMicrotasks();
+
+  assert.equal(submittedSnapshots.length, 1);
+  const prepareEvents = commandEvents.filter((e) => e.type === "api:prepareResend");
+  assert.equal(prepareEvents.length, 1);
+  assert.deepEqual(prepareEvents[0].model, { provider: "deepseek", modelId: "deepseek-chat" });
+  assert.equal(prepareEvents[0].thinkingLevel, "high");
 });
 
 test("edit save after runtime target disappears still dispatches captured callback and surfaces runtimeChanged", async () => {

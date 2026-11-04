@@ -4,7 +4,7 @@ PiDeck brings together project management, session management, Git operations, a
 
 ## Multi-Project Workspace
 
-Manage multiple local project directories in one window. Add, search, reorder, and switch between projects with ease. Each project gets its own isolated Pi Agent or Pi_Agent_Rust session.
+Manage multiple local project directories in one window. Add, search, reorder, and switch between projects with ease. Each project gets its own isolated Pi Agent, Pi_Agent_Rust or Pi-Bolt session.
 
 ## Session History & Restore
 

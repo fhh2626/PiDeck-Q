@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 import { readUIMessageStream } from "ai";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { startWebWiringHarness } from "./helpers/l1a_webWiringHarness.mjs";
+import { bootLegacyWebPage, createControlledSseBody, settle } from "./helpers/l1a_legacyWebPageHarness.mjs";
 
 /**
  * Web SSE 流式化（A1）：pi 事件 → AI SDK v5 UIMessageStream 帧 翻译器。
@@ -13,9 +15,6 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
  * 4) agent_end 收尾（error 时带 error 帧）
  * 5) 端点与协议头接线（WebServiceManager 注册 /stream + x-vercel-ai-ui-message-stream）
  */
-
-const webServiceSource = readFileSync("src/main/web/WebServiceManager.ts", "utf8");
-const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
 
 const {
 	PiEventToUiMessageStream,
@@ -522,57 +521,276 @@ test("WebEventStreamRouter routes agent events to per-session entries only", () 
 	router.unbindPiSource();
 });
 
-test("WebServiceManager registers /stream SSE endpoint with protocol header", () => {
-	assert.match(webServiceSource, /\/api\/sessions\/([^/]+)\/stream/);
-	assert.match(webServiceSource, /x-vercel-ai-ui-message-stream/);
-	assert.match(webServiceSource, /text\/event-stream/);
-	// [DONE] 终止标记在翻译器模块
+/** 起一个真实 WebServiceManager（只提供 SSE 路径需要的依赖），返回 baseUrl 与 pi 事件触发器。 */
+async function withStreamServer(run, { runtimeStatus = "running" } = {}) {
+	const WebServiceManager = loadTsCommonJs("src/main/web/WebServiceManager.ts", {
+		globals: { fetch: globalThis.fetch, Response: globalThis.Response, ReadableStream: globalThis.ReadableStream },
+	}).WebServiceManager;
+	let emitPiEvent = null;
+	const manager = new WebServiceManager({
+		subscribePiEvents: (handler) => {
+			emitPiEvent = handler;
+			return () => { emitPiEvent = null; };
+		},
+		getSessionIdForAgent: (agentId) => (agentId === "agent-1" ? "session-1" : undefined),
+		listSessionRuntimes: () => [{
+			sessionId: "session-1",
+			agentId: "agent-1",
+			runtimeGeneration: 1,
+			projectId: "project-1",
+			cwd: "C:/project",
+			status: runtimeStatus,
+			createdAt: 1,
+		}],
+	});
+	const token = "t".repeat(43);
+	await manager.start("127.0.0.1", 0, token);
+	try {
+		await run({
+			baseUrl: `http://127.0.0.1:${manager.current.port}`,
+			token,
+			manager,
+			emit: (agentId, event) => emitPiEvent(agentId, event),
+		});
+	} finally {
+		await manager.stop();
+	}
+}
+
+test("GET /stream answers with the AI SDK protocol header and a [DONE]-terminated SSE body", async () => {
+	await withStreamServer(async ({ baseUrl, token, emit }) => {
+		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
+			headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
+		});
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("x-vercel-ai-ui-message-stream"), "v1");
+		assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
+		emit("agent-1", { type: "agent_settled" });
+		const body = await response.text();
+		assert.match(body, /data: \{"type":"finish"\}\n\n/);
+		assert.ok(body.endsWith(SSE_DONE), "stream must end with the [DONE] marker");
+	});
+});
+
+test("GET /stream only delivers events of the agent bound to that session", async () => {
+	await withStreamServer(async ({ baseUrl, token, emit }) => {
+		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`, {
+			headers: { authorization: `Bearer ${token}` },
+		});
+		emit("foreign-agent", {
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", delta: "LEAKED" },
+		});
+		emit("agent-1", {
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", delta: "mine" },
+		});
+		emit("agent-1", { type: "agent_settled" });
+		const body = await response.text();
+		assert.match(body, /mine/);
+		assert.doesNotMatch(body, /LEAKED/);
+	});
+});
+
+test("GET /stream rejects unauthenticated clients before any SSE headers are written", async () => {
+	await withStreamServer(async ({ baseUrl }) => {
+		const response = await fetch(`${baseUrl}/api/sessions/session-1/stream`);
+		assert.equal(response.status, 401);
+		assert.equal(response.headers.get("x-vercel-ai-ui-message-stream"), null);
+	});
+});
+
+test("createBackend wires the Web pi event source to AgentManager local listeners", async () => {
+	const harness = await startWebWiringHarness();
+	try {
+		const [deps] = harness.webDeps;
+		assert.ok(deps, "createBackend must construct the WebServiceManager");
+		const received = [];
+		const unsubscribe = deps.subscribePiEvents((agentId, event, generation) => {
+			received.push({ agentId, event, generation });
+		});
+		assert.equal(harness.localListeners.size, 1, "subscribing must register one AgentManager listener");
+		for (const listener of harness.localListeners) {
+			listener("agent-9", { type: "agent_settled" }, 7);
+		}
+		assert.deepEqual(received, [{ agentId: "agent-9", event: { type: "agent_settled" }, generation: 7 }]);
+		unsubscribe();
+		assert.equal(harness.localListeners.size, 0, "the returned unsubscribe must detach the listener");
+	} finally {
+		await harness.dispose();
+	}
+});
+
+test("createBackend resolves Web agent ids to Session ids through the runtime coordinator", async () => {
+	const harness = await startWebWiringHarness();
+	try {
+		harness.bindAgentToSession("agent-1", "session-1");
+		const [deps] = harness.webDeps;
+		assert.equal(deps.getSessionIdForAgent("agent-1"), "session-1");
+		assert.equal(deps.getSessionIdForAgent("unknown-agent"), undefined);
+	} finally {
+		await harness.dispose();
+	}
+});
+
+const STREAMED_SESSION = {
+	id: "s1",
+	projectId: "p1",
+	title: "Session One",
+	status: "active",
+	projectPath: "C:/project",
+};
+
+/** 页面所需的最小 /api 假后端；authoritative 是流结束后 /messages/page 返回的权威消息。 */
+function createLegacyPageBackend(authoritativeMessages, sse) {
+	let messagePageFetches = 0;
+	const handle = async (url) => {
+		if (url === "/api/state") {
+			return {
+				json: {
+					projects: [],
+					sessions: [STREAMED_SESSION],
+					runtimes: [],
+					messagesBySession: { s1: [{ id: "u1", role: "user", text: "hi" }] },
+					pendingUiRequests: [],
+				},
+			};
+		}
+		if (url.startsWith("/api/sessions/s1/prompt")) {
+			return { json: { result: { accepted: true, sessionId: "s1", requestId: "r" } } };
+		}
+		if (url.startsWith("/api/sessions/s1/stream")) return { stream: sse.stream };
+		if (url.startsWith("/api/sessions/s1/messages/page")) {
+			messagePageFetches += 1;
+			return { json: { messages: authoritativeMessages, total: authoritativeMessages.length, nextBefore: null } };
+		}
+		throw new Error(`unexpected request ${url}`);
+	};
+	return { handle, messagePageFetches: () => messagePageFetches };
+}
+
+test("legacy web page keeps the live streaming block when the 600ms poll refreshes", async () => {
+	const sse = createControlledSseBody();
+	const backend = createLegacyPageBackend([], sse);
+	const page = await bootLegacyWebPage(backend.handle);
+	assert.match(page.document.getElementById("messages").textContent, /hi/);
+
+	await page.submitPrompt("question");
+	sse.pushFrame({ type: "text-start", id: "t1" });
+	sse.pushFrame({ type: "text-delta", id: "t1", delta: "typing live" });
+	await settle();
+	assert.match(page.document.querySelector(".streaming-text")?.textContent ?? "", /typing live/);
+
+	await page.runPoll();
+	// 轮询只刷新侧栏/状态，整体重绘 #messages 会清掉正在打字的流式块。
 	assert.match(
-		readFileSync("src/main/web/WebEventStream.ts", "utf8"),
-		/data: \[DONE\]/,
+		page.document.querySelector(".streaming-text")?.textContent ?? "",
+		/typing live/,
+		"poll refresh must not wipe the in-flight streaming block",
+	);
+	sse.close();
+	await settle();
+});
+
+test("legacy web page replaces streamed blocks with the authoritative messages on [DONE]", async () => {
+	const sse = createControlledSseBody();
+	const backend = createLegacyPageBackend([
+		{ id: "u1", role: "user", text: "hi" },
+		{ id: "a1", role: "assistant", text: "final persisted answer" },
+	], sse);
+	const page = await bootLegacyWebPage(backend.handle);
+
+	await page.submitPrompt("question");
+	sse.pushFrame({ type: "text-delta", id: "t1", delta: "partial" });
+	await settle();
+	assert.ok(page.document.querySelector(".streaming-text"), "precondition: a streamed block is displayed");
+	assert.equal(backend.messagePageFetches(), 0);
+
+	sse.pushDone();
+	await settle(12);
+	assert.equal(backend.messagePageFetches(), 1, "[DONE] must reload the authoritative message list once");
+	assert.equal(page.document.querySelector(".streaming-text"), null, "streamed increments must be replaced");
+	const rendered = page.document.getElementById("messages").textContent;
+	assert.match(rendered, /final persisted answer/);
+	sse.close();
+});
+
+test("legacy web page inline script is syntactically valid JavaScript", () => {
+	const { WebServiceManager } = loadTsCommonJs("src/main/web/WebServiceManager.ts");
+	const html = new WebServiceManager({
+		subscribePiEvents: () => () => undefined,
+		getSessionIdForAgent: () => undefined,
+	}).renderPage();
+	const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
+	assert.doesNotThrow(() => new vm.Script(script));
+});
+
+test("WebServiceManager disables Node request timeouts but keeps the default keep-alive timeout", async () => {
+	const { createServer } = await import("node:http");
+	const pristine = createServer();
+	const defaultKeepAlive = pristine.keepAliveTimeout;
+	pristine.close();
+	await withStreamServer(async ({ manager }) => {
+		// 长回复 SSE 超过 5 分钟不能被 Node 的请求/头超时切断；keep-alive 仍保持默认以便回收空闲连接。
+		assert.equal(manager.server.requestTimeout, 0);
+		assert.equal(manager.server.headersTimeout, 0);
+		assert.equal(manager.server.keepAliveTimeout, defaultKeepAlive);
+	});
+});
+
+/** 构造带一个运行时的 AgentManager，并返回收集本地事件的 listener 记录。 */
+function createAgentManagerWithListener() {
+	const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
+	const manager = new AgentManager(
+		() => ({ id: "project-1", name: "Project", path: "C:/project" }),
+		() => null,
+		{ get: () => ({}) },
+		{},
+	);
+	manager.agents.set("agent-1", {
+		tab: {
+			id: "agent-1",
+			projectId: "project-1",
+			cwd: "C:/project",
+			title: "Session",
+			status: "idle",
+			sessionPath: "C:/project/.pi/sessions/x.jsonl",
+			sessionEnvironment: "native",
+			sessionSource: "pi",
+			createdAt: 1,
+		},
+		process: { client: { request: async () => ({ success: true, data: {} }) } },
+	});
+	const seen = [];
+	manager.addLocalEventListener((agentId, event, generation) => seen.push({ agentId, event, generation }));
+	return { manager, seen };
+}
+
+test("AgentManager emits each pi event to local (Web SSE) listeners exactly once", () => {
+	// 重复 emit 会让 Web 端每个 text_delta 被追加两遍。
+	const { manager, seen } = createAgentManagerWithListener();
+	const events = [
+		{ type: "agent_start" },
+		{ type: "message_start", message: { role: "assistant", id: "m1" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hello" } },
+		{ type: "tool_execution_start", toolName: "bash", toolCallId: "c1" },
+		{ type: "agent_end" },
+	];
+	for (const event of events) manager.handlePiEvent("agent-1", event);
+	assert.deepEqual(
+		seen.map((entry) => entry.event.type),
+		events.map((event) => event.type),
 	);
 });
 
-test("index.ts wires pi event source + agent-to-session router to WebServiceManager", () => {
-	assert.match(createBackendSource, /subscribePiEvents:/);
-	assert.match(createBackendSource, /addLocalEventListener/);
-	assert.match(createBackendSource, /getSessionIdForAgent:/);
-	assert.match(createBackendSource, /getSessionId\(agentId\)/);
+test("AgentManager forwards agent_start with the next stream generation to local listeners", () => {
+	const { manager, seen } = createAgentManagerWithListener();
+	const before = manager.getStreamGate("agent-1").currentGeneration;
+	manager.handlePiEvent("agent-1", { type: "agent_start" });
+	assert.equal(seen.length, 1);
+	assert.equal(seen[0].generation, before + 1);
 });
 
-test("web frontend preserves streaming block during polling refresh", () => {
-  // refresh() 在流式活跃时只渲染侧栏/状态，不整体重绘 #messages
-  assert.match(webServiceSource, /if \(streamingSessionId\)/);
-  assert.match(webServiceSource, /renderMessages\(\)/);
-  // render() 不再直接操作 #messages（拆到 renderMessages）
-  const renderBody = webServiceSource.slice(
-    webServiceSource.indexOf("function render() {"),
-    webServiceSource.indexOf("function renderMessages()"),
-  );
-  assert.doesNotMatch(renderBody, /el\("messages"\)/);
-});
-
-test("web frontend reloads authoritative messages on stream finish", () => {
-  // [DONE] 后先停流、再 loadSessionMessages + 整体重绘（替换流式增量块）
-  assert.match(webServiceSource, /finishStream\(sessionId\)/);
-  assert.match(webServiceSource, /loadSessionMessages\(sessionId\)/);
-  assert.match(webServiceSource, /async function finishStream/);
-});
-test("WebServiceManager disables Node request timeouts for long SSE replies", () => {
-	assert.match(webServiceSource, /server\.requestTimeout = 0/);
-	assert.match(webServiceSource, /server\.headersTimeout = 0/);
-	assert.doesNotMatch(webServiceSource, /server\.keepAliveTimeout = 0/);
-});
-
-test("handlePiEvent emits each local event once for Web SSE", () => {
-	const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-	const handler = agentManager.slice(
-		agentManager.indexOf("private handlePiEvent("),
-		agentManager.indexOf("private beginAssistantMessage("),
-	);
-	const emits = handler.match(/this\.emitLocalEvent\(/g) ?? [];
-	assert.equal(emits.length, 1, "duplicate local emits replay every text_delta twice on Web");
-});
 test("tool_execution_end without a start still opens the same toolCallId", () => {
 	const adapter = new PiEventToUiMessageStream();
 	const frames = adapter.push({

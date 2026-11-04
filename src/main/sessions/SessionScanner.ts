@@ -26,10 +26,16 @@ import { getPiSessionParent } from "../../shared/piCompatibility";
 import { extractImageContent } from "../../shared/imageContent";
 import { applyImageDisplayBudget } from "../../shared/imageLimits";
 import { ScanReadQueue } from "./ScanReadQueue";
-import { readSubagentRecords } from "./readSubagentRecords";
+import { readSubagentRecords, type SubagentRecordCache } from "./readSubagentRecords";
 import { SHARED_SUBAGENT_ARTIFACTS_DIR } from "./sessionDeleteResidue";
 import { collectSessionDeleteResidue, localSessionDeleteFiles } from "./sessionDeleteCollection";
 import { readWslScanBatches, WslScanCommandError, type WslScanFileRead } from "./WslScanBatchReader";
+
+/** 本地摘要扫描已读取的正文及其读前 stat（含 ctime/ino，与归属缓存的版本键一致）。 */
+type LocalSessionBodyRead = {
+  info: { mtimeMs: number; size: number; ctimeMs: number; ino: number };
+  text: string;
+};
 
 type SessionScannerCopyKey = Extract<MainProcessTranslationKey,
   | "session.untitled"
@@ -469,27 +475,21 @@ export class SessionScanner {
               ? null : summary;
           },
         })
-        : await Promise.all(files.map(file =>
-          this.readSummary(file, signal, knownSubagents, scanRoots).catch(rethrowAbort(null))
-        ));
+        : await Promise.all(files.map(async (file) => {
+          // 与 WSL 分支一致：足文 body 仍在作用域时完成归属判断，父目录会话不再为内容校验重读全文。
+          let localRead: LocalSessionBodyRead | undefined;
+          const summary = await this.readSummary(file, signal, knownSubagents, scanRoots, undefined, (read) => { localRead = read; })
+            .catch(rethrowAbort(null));
+          if (!summary || !normalizedProjectPath) return summary;
+          // 异步 isSameProject 过滤（自定义 sessionDir 下的文件也会按 cwd/路径归属判断）
+          return await this.isSameProject(summary, normalizedProjectPath, signal, scanRoots, undefined, localRead) ? summary : null;
+        }));
       signal?.throwIfAborted();
 
-      const validSummaries = summaries.filter((summary): summary is SessionSummary => Boolean(summary));
-
-      // WSL membership was already evaluated while each batch body was available.
-      if (!normalizedProjectPath || this.wslConfig) {
-        return validSummaries.sort((a, b) => b.updatedAt - a.updatedAt);
-      }
-      // 异步 isSameProject 过滤（自定义 sessionDir 下的文件也会按 cwd/路径归属判断）
-      const matched = await Promise.all(
-        validSummaries.map(summary => this.isSameProject(summary, normalizedProjectPath, signal, scanRoots))
-      );
-      signal?.throwIfAborted();
-      const filtered = validSummaries
-        .filter((_, i) => matched[i])
+      // Both branches already evaluated project membership while each body was available.
+      return summaries
+        .filter((summary): summary is SessionSummary => Boolean(summary))
         .sort((a, b) => b.updatedAt - a.updatedAt);
-      const childCount = filtered.filter(s => s.parentSessionPath).length;
-      return filtered;
     } finally {
       if (scanTimer) clearTimeout(scanTimer);
       this.activeScans.delete(controller);
@@ -1446,6 +1446,8 @@ export class SessionScanner {
   /** 已知 subagent 运行记录中记录的标准 sessionFile 缓存集合 */
   private knownSubagentSessionFiles: Set<string> | null = null;
   private knownSubagentScanTimestamp = 0;
+  /** 本地运行记录逐文件解析缓存：每轮强制刷新只重读变化的记录。 */
+  private readonly subagentRecordCache: SubagentRecordCache = new Map();
 
   /**
    * 在每轮扫描开始前异步加载已知 subagent 运行记录快照。
@@ -1512,7 +1514,7 @@ export class SessionScanner {
   private async loadKnownSubagentSessionFilesLocal(signal?: AbortSignal): Promise<Set<string>> {
     const generation = this.environmentGeneration;
     const set = await readSubagentRecords(tmpdir(), process.env.PI_SUBAGENTS_TEMP_ROOT?.trim(),
-      (path) => this.normalize(path), this.readQueue, signal);
+      (path) => this.normalize(path), this.readQueue, signal, this.subagentRecordCache);
     if (generation !== this.environmentGeneration) throw new Error("Session scan environment changed");
     this.knownSubagentSessionFiles = set;
     this.knownSubagentScanTimestamp = Date.now();
@@ -1638,16 +1640,19 @@ export class SessionScanner {
     return this.projectMembership.get(key)?.version !== JSON.stringify([version.mtimeMs, version.size, null, null]);
   }
 
-  private async readSummary(filePath: string, signal?: AbortSignal, knownSubagents?: ReadonlySet<string>, scanRoots: readonly string[] = this.activeScanRoots, read?: WslScanFileRead): Promise<SessionSummary | null> {
+  /**
+   * @param onLocalBody 本地路径实际读取了正文时回传「读前 stat + 正文」，供同一轮归属校验复用；
+   *   摘要缓存命中时不会调用。
+   */
+  private async readSummary(filePath: string, signal?: AbortSignal, knownSubagents?: ReadonlySet<string>, scanRoots: readonly string[] = this.activeScanRoots, read?: WslScanFileRead, onLocalBody?: (read: LocalSessionBodyRead) => void): Promise<SessionSummary | null> {
     const generation = this.environmentGeneration;
     const isWsl = this.isWslPath(filePath);
     if (!knownSubagents && !this.knownSubagentSessionFiles) {
       knownSubagents = await this.loadKnownSubagentSessionFiles(isWsl, signal);
     }
     // 先读取轻量文件指纹；未变化时复用摘要，避免周期扫描反复读取和解析全部 JSONL。
-    const info = read?.version ?? (isWsl
-      ? await this.readWslFileVersion(filePath, signal)
-      : await stat(filePath));
+    const localStat = read || isWsl ? undefined : await stat(filePath);
+    const info = read?.version ?? localStat ?? await this.readWslFileVersion(filePath, signal);
     signal?.throwIfAborted();
     if (generation !== this.environmentGeneration) throw new Error("Session scan environment changed");
     const version = { mtimeMs: info.mtimeMs, size: info.size };
@@ -1668,6 +1673,8 @@ export class SessionScanner {
       : await this.readQueue.run((readSignal) => readFile(filePath, { encoding: "utf8", signal: readSignal }), signal));
     if (generation !== this.environmentGeneration) throw new Error("Session scan environment changed");
     signal?.throwIfAborted();
+    // 版本取自读前 stat：若读取期间文件又变化，下一轮 stat 不同会重算归属（安全方向）。
+    if (localStat) onLocalBody?.({ info: localStat, text: raw });
     const lines = raw.split(/\r?\n/).filter(Boolean);
     if (lines.length === 0) {
       this.summaryCache.set(filePath, version, null);
@@ -1699,8 +1706,20 @@ export class SessionScanner {
     /** 最后一条 assistant 消息携带的 provider/model（旧格式兼容回退）。 */
     let lastAssistantModel: { provider: string; modelId: string } | undefined;
 
+    // pi 被强杀/写入中断时常留下半行；单行损坏只跳过该行，不能让整个会话从扫描结果里消失
+    // （否则每轮扫描都会因 .catch → null 不入缓存而重读全文）。与 readMessages 的逐行容错一致。
+    let validEntries = 0;
     for (const line of lines) {
-      const entry = JSON.parse(line) as any;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      // null / 数字等非对象行没有任何会话字段，按坏行跳过。
+      if (!parsed || typeof parsed !== "object") continue;
+      validEntries += 1;
+      const entry = parsed as any;
       if (entry.type === "session_info") {
         // Forked sessions may contain an older copied name; only the latest marker is authoritative.
         latestSessionInfoName = this.optionalString(entry.name ?? entry.data?.name);
@@ -1752,6 +1771,12 @@ export class SessionScanner {
           lastAssistantModel = { provider: message.provider, modelId: message.model };
         }
       }
+    }
+
+    // 没有任何可解析记录的文件不是可展示的会话（与空文件同样缓存为 null，避免周期重读）。
+    if (validEntries === 0) {
+      this.summaryCache.set(filePath, version, null);
+      return null;
     }
 
     // 旧会话不包含 model_change / thinking_level_change 时，
@@ -1976,11 +2001,11 @@ export class SessionScanner {
     return trimmed.replace(/-/g, "/");
   }
 
-  private async isSameProject(summary: SessionSummary, projectPath: string, signal?: AbortSignal, scanRoots = this.activeScanRoots, read?: WslScanFileRead) {
+  private async isSameProject(summary: SessionSummary, projectPath: string, signal?: AbortSignal, scanRoots = this.activeScanRoots, read?: WslScanFileRead, localRead?: LocalSessionBodyRead) {
     const normalizedProject = this.normalize(projectPath);
     const normalizedSessionProject = summary.projectPath ? this.normalize(summary.projectPath) : "";
     if (normalizedSessionProject === normalizedProject) return true;
-    if (await this.isParentSessionForProject(normalizedSessionProject, normalizedProject, summary.filePath, signal, read)) return true;
+    if (await this.isParentSessionForProject(normalizedSessionProject, normalizedProject, summary.filePath, signal, read, localRead)) return true;
 
     // 项目级自定义 sessionDir（如 <project>/.pi/sessions）下的文件默认归属该项目。
     // 该布局不再使用 encoded-cwd 子目录，safePathToken 无法从路径反推项目。
@@ -2013,7 +2038,7 @@ export class SessionScanner {
     return false;
   }
 
-  private async isParentSessionForProject(sessionProject: string, projectPath: string, filePath: string, signal?: AbortSignal, read?: WslScanFileRead) {
+  private async isParentSessionForProject(sessionProject: string, projectPath: string, filePath: string, signal?: AbortSignal, read?: WslScanFileRead, localRead?: LocalSessionBodyRead) {
     // 早期用户常在 home 目录启动 pi 再操作子项目；这类历史 session 的 cwd 是父目录，
     // 但文件内容可能明确提到当前项目。仅对父目录 session 做内容校验，避免把无关 home 会话全部展示到子项目下。
     if (!sessionProject || !projectPath.startsWith(`${sessionProject}/`)) return false;
@@ -2025,7 +2050,7 @@ export class SessionScanner {
     const environment = this.wslConfig;
     const key = JSON.stringify([environment, filePath, projectPath]);
     try {
-      const info = read?.version ?? (this.isWslPath(filePath)
+      const info = read?.version ?? localRead?.info ?? (this.isWslPath(filePath)
         ? await this.readWslFileVersion(filePath, signal) : await stat(filePath));
       // atime changes when we read; only content/identity fields invalidate membership.
       const version = JSON.stringify([info.mtimeMs, info.size,
@@ -2036,7 +2061,7 @@ export class SessionScanner {
         this.projectMembership.set(key, cached);
         return cached.matches;
       }
-      const raw = (read?.body.status === "success" ? read.body.text : undefined) ?? (this.isWslPath(filePath)
+      const raw = (read?.body.status === "success" ? read.body.text : undefined) ?? localRead?.text ?? (this.isWslPath(filePath)
         ? await this.readWslFile(filePath, signal)
         : await this.readQueue.run((readSignal) => readFile(filePath, { encoding: "utf8", signal: readSignal }), signal));
       signal?.throwIfAborted();

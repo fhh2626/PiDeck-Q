@@ -9,6 +9,26 @@ import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCop
 import { sanitizeChildEnvironment } from "../process/sanitizeChildEnvironment";
 import { getWslExe } from "../wsl/wslExe";
 
+/**
+ * 同步探测结果的复用窗口。
+ * 为什么要缓存：登录 shell PATH（`/bin/sh -lc`，最长 3s）与 `wsl which`（最长 8s）都是 execFileSync，
+ * 而 createProcessEnv / resolveCommand 在每次启动 Agent、刷新模型列表、扩展命令时都会调用，
+ * 不缓存就是每次都阻塞 Sidecar 主线程。窗口取短值而非永久：用户刚装好 nvm / pi 后
+ * 点「重新检测」仍能在一分钟内拿到新结果；失败同样缓存，避免超时场景反复卡顿。
+ */
+const SYNC_PROBE_TTL_MS = 60_000;
+
+type TimedValue<T> = { value: T; at: number };
+
+/** 进程级缓存：登录 shell PATH 与实例无关，多处 new PiLocator 共享同一结果。 */
+let loginShellPathCache: TimedValue<string> | undefined;
+/** 键为 distro\0user\0command；值为是否在 WSL 内找到该命令。 */
+const wslWhichCache = new Map<string, TimedValue<boolean>>();
+
+function isFresh<T>(entry: TimedValue<T> | undefined): entry is TimedValue<T> {
+  return entry !== undefined && Date.now() - entry.at < SYNC_PROBE_TTL_MS;
+}
+
 type PiLocatorCopy = (
   key: MainProcessTranslationKey,
   params?: Record<string, string | number>,
@@ -64,9 +84,11 @@ export class PiLocator {
     runtimePreference: PiRuntimePreference = "auto",
     typescriptPath?: string,
     rustPath?: string,
+    boltPath?: string,
   ) {
     const selectedPath = runtimePreference === "typescript" ? typescriptPath :
-      runtimePreference === "rust" ? rustPath : undefined;
+      runtimePreference === "rust" ? rustPath :
+      runtimePreference === "bolt" ? boltPath : undefined;
     const normalizedSelectedPath = this.normalizeCustomPath(selectedPath);
     const normalizedCustomPath = this.normalizeCustomPath(customPath);
     // 用户手动指定路径优先，适用于 npm/pnpm/yarn 全局安装、nvm/volta/asdf/mise 等极端情况。
@@ -82,7 +104,7 @@ export class PiLocator {
     }
     // 用户显式开启 WSL 时优先使用 WSL 中的 pi，不轮询本地 PATH 中的 Windows 版本
     if (wslEnabled && process.platform === "win32" && wslDistro && wslUser) {
-      const wslCommand = this.resolveWslCommand(wslDistro, wslUser);
+      const wslCommand = this.resolveWslCommand(wslDistro, wslUser, runtimePreference);
       if (wslCommand) return wslCommand;
     }
 
@@ -94,7 +116,7 @@ export class PiLocator {
     const candidates = this.getCandidates(runtimePreference);
     const found = candidates.find(candidate => existsSync(candidate));
     if (found) return found;
-    return runtimePreference === "rust" ? "pi-rust" : "pi";
+    return runtimePreference === "rust" ? "pi-rust" : runtimePreference === "bolt" ? "pi-bolt" : "pi";
   }
 
   getSearchDirs() {
@@ -224,6 +246,14 @@ export class PiLocator {
       return { command, args, shell: false, pathPrefix: this.getCommandBinDir(command) };
     }
 
+    // 绝对路径的 .exe（Pi-Bolt、独立二进制 Pi）直接启动：套一层 cmd.exe 只会多一个进程和
+    // 启动开销，还让 kill() 只结束 cmd 而留下真正的 pi。参数由 Node 按 Windows 规则转义，
+    // 不能开 windowsVerbatimArguments。.cmd/.bat 必须经 cmd 解释；裸命令名依赖 cmd 的 PATHEXT
+    // 查找（pi 可能是 pi.cmd），两者保持原样。
+    if (this.isAbsoluteWindowsExe(command)) {
+      return { command, args, shell: false, pathPrefix: this.getCommandBinDir(command) };
+    }
+
     // Windows 仅支持 .cmd/.exe/裸命令，不再走 PowerShell .ps1。
     // npm/yarn/pnpm 生成的 pi.ps1 与 pi.cmd 指向同一个包入口，但 PowerShell 的执行策略、编码和引号规则更复杂；
     // 对桌面端来说，统一使用 cmd shim 能减少检测与 agent 启动路径差异。
@@ -294,6 +324,7 @@ export class PiLocator {
     runtimePreference: PiRuntimePreference = "auto",
     typescriptPath?: string,
     rustPath?: string,
+    boltPath?: string,
   ): Promise<PiInstallStatus> {
     const normalizedCustomPath = this.normalizeCustomPath(customPath);
     if (runtimePreference === "auto" && normalizedCustomPath && this.isUnsupportedPowerShellShim(normalizedCustomPath)) {
@@ -307,6 +338,7 @@ export class PiLocator {
       runtimePreference,
       typescriptPath,
       rustPath,
+      boltPath,
     );
     const searchedDirs = this.getSearchDirs();
 
@@ -447,23 +479,37 @@ export class PiLocator {
     return { distro: match[1], user: match[2], piCommand: match[3] };
   }
 
-  private resolveWslCommand(distro: string, user: string): string | undefined {
+  private resolveWslCommand(
+    distro: string,
+    user: string,
+    runtimePreference: PiRuntimePreference = "auto",
+  ): string | undefined {
+    // WSL 里同样按所选实现查找命令名；其余偏好仍沿用原版 `pi`。
+    const commandName = runtimePreference === "bolt" ? "pi-bolt" : "pi";
+    const cacheKey = `${distro}\0${user}\0${commandName}`;
+    const cached = wslWhichCache.get(cacheKey);
+    if (isFresh(cached)) return cached.value ? `wsl://${distro}/${user}/${commandName}` : undefined;
+    const found = this.probeWslCommand(distro, user, commandName);
+    wslWhichCache.set(cacheKey, { value: found, at: Date.now() });
+    return found ? `wsl://${distro}/${user}/${commandName}` : undefined;
+  }
+
+  /** 在 WSL 内执行 which；任何失败都视为未找到（由调用方回退本机检测）。 */
+  private probeWslCommand(distro: string, user: string, commandName: string): boolean {
     try {
       const wslExe = getWslExe();
-      const wslArgs = ["-d", distro, "-u", user, "which", "pi"];
+      const wslArgs = ["-d", distro, "-u", user, "which", commandName];
       const result = execFileSync(wslExe.command, wslArgs, {
         encoding: "utf8",
         timeout: 8_000,
         windowsHide: true,
         shell: wslExe.shell,
       }).trim();
-      if (result && result.length > 0 && !result.includes("not found")) {
-        return `wsl://${distro}/${user}/pi`;
-      }
+      return Boolean(result && result.length > 0 && !result.includes("not found"));
     } catch {
       // WSL 不可用或未安装 pi，静默忽略，回退到普通 "pi"
+      return false;
     }
-    return undefined;
   }
 
   private checkWslCommand(distro: string, user: string, piCommand: string): Promise<PiInstallStatus> {
@@ -529,6 +575,11 @@ export class PiLocator {
     return `"${value.replace(/"/g, '""')}"`;
   }
 
+  private isAbsoluteWindowsExe(command: string) {
+    // 盘符绝对路径或 UNC 路径；不用 path.isAbsolute，因为测试/跨平台宿主的 path 实现未必是 win32。
+    return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(command) && extname(command).toLowerCase() === ".exe";
+  }
+
   private needsCmdQuote(value: string) {
     return /[\s&()\[\]{}^=;!'+,`~|<>]/.test(value);
   }
@@ -549,7 +600,10 @@ export class PiLocator {
       ? ["legacy-pi", "pi-ts", "pi"]
       : runtimePreference === "rust"
         ? ["pi-rust", "pi_agent_rust", "pi"]
-        : ["pi"];
+        // Pi-Bolt 只发布 pi-bolt 可执行文件；不回退到 pi，避免把原版 Pi 当作 Bolt 启动。
+        : runtimePreference === "bolt"
+          ? ["pi-bolt"]
+          : ["pi"];
     const names = process.platform === "win32"
       ? baseNames.flatMap((name) => [`${name}.cmd`, `${name}.exe`, name])
       : baseNames;
@@ -563,16 +617,18 @@ export class PiLocator {
   }
 
   private readLoginShellPath() {
+    // Windows 检测链路不再依赖 PowerShell；Explorer 启动的 Electron 通常已经拿到系统合并 PATH，
+    // 其他包管理器特殊路径由 getSearchDirs 和用户手动输入兜底。
+    if (process.platform === "win32") return "";
+    if (isFresh(loginShellPathCache)) return loginShellPathCache.value;
+    let value = "";
     try {
-      if (process.platform === "win32") {
-        // Windows 检测链路不再依赖 PowerShell；Explorer 启动的 Electron 通常已经拿到系统合并 PATH，
-        // 其他包管理器特殊路径由 getSearchDirs 和用户手动输入兜底。
-        return "";
-      }
-      return execFileSync("/bin/sh", ["-lc", "printf %s \"$PATH\""], { encoding: "utf8", timeout: 3000 }).trim();
+      value = execFileSync("/bin/sh", ["-lc", "printf %s \"$PATH\""], { encoding: "utf8", timeout: 3000 }).trim();
     } catch {
-      return "";
+      // 登录 shell 不可用/超时：按空 PATH 处理，同样缓存，避免每次 spawn 都再等 3s。
     }
+    loginShellPathCache = { value, at: Date.now() };
+    return value;
   }
 
   private listChildDirs(parent: string) {

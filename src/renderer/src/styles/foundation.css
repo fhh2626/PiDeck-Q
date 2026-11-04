@@ -2971,9 +2971,13 @@ select:focus-visible {
 }
 /* 消息间间距：每条用户/助手/工具/诊断卡片之间留出呼吸空间
    双类名提升特异性，确保不被组件自身 margin 覆盖
-   Density Contract：turn-gap = 12px（--density-turn-gap），不再 16px */
+   Density Contract：turn-gap = 12px（--density-turn-gap），不再 16px
+   收窄规则：虚拟列表下的占位（[data-virtual-spacer]）与虚拟包裹行不受此全局 sibling 规则叠加影响 */
 .message-list.message-list > * + * {
   margin-top: var(--density-turn-gap, var(--space-3));
+}
+.message-list.message-list[data-virtualized="true"] > * + * {
+  margin-top: 0;
 }
 /* Native 会话：RespondingIndicator 不再叠 turn 外边距，只保留 4px。Web 时间线不受影响。 */
 .message-timeline-host .message-list.message-list > .responding-indicator {

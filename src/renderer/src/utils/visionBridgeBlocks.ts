@@ -74,6 +74,22 @@ export function extractVisionBridgeBlocks(text: string): {
 	};
 }
 
+export type VisionBridgeMatchKind = "converted" | "skipped" | null;
+
+/**
+ * 视觉桥事件匹配结果分类：
+ * - "converted"：本次确实转换成功，渲染「已查看」卡片；
+ * - "skipped"：扩展明确让路（当前模型原生支持图片），应立即停止等待且不出卡片；
+ * - null：没有匹配事件。
+ * 让路信号比桌面模型列表更可信：两边模型能力数据不一致时以扩展实际行为为准。
+ */
+export function classifyVisionBridgeMatch(
+	event: VisionBridgeEvent | null | undefined,
+): VisionBridgeMatchKind {
+	if (!event) return null;
+	return event.skipped === true ? "skipped" : "converted";
+}
+
 /**
  * 把视觉桥事件文件里的 input 批次匹配到「实时发送中的用户消息」。
  * 匹配规则：kind=input、ts 不早于消息发送时间、items 的 imageHash 全部命中本消息图片集合。

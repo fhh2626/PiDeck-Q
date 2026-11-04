@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
@@ -369,23 +368,5 @@ test("emitRuntimeState uses the local streaming flag over a stale get_state snap
 	assert.equal(payloads[1].state.isStreaming, true, "本地已流式时不得被旧快照收掉");
 });
 
-// 契约断言（防回归）：flushMessageEmit 不得在构建 payload 之前删除 dirty 下标；
-// emit 的 skip 规则必须只针对 agents:message。
-test("AgentManager flush/emit 契约：dirty 先快照后清除，emit 按通道跳过", () => {
-	const source = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-	const flushStart = source.indexOf("private flushMessageEmit");
-	assert.ok(flushStart >= 0, "flushMessageEmit 必须存在");
-	const flushEnd = source.indexOf("private setStreamingAgent", flushStart);
-	const body = source.slice(flushStart, flushEnd);
-	const buildPos = body.indexOf("buildMessageFlushPayload");
-	const deletePos = body.indexOf("messageDirtyFromByAgent.delete");
-	assert.ok(buildPos >= 0, "flushMessageEmit 内必须构建 payload");
-	assert.ok(deletePos < 0 || deletePos > buildPos, "dirty 下标不得在 buildMessageFlushPayload 之前删除");
-	// 失败分支提前 return；后续成功处理仅在 accepted !== false 时执行
-	assert.match(body, /if \(accepted === false\)/);
-	// emit 的 renderer 跳过只针对 agents:message
-	const emitStart = source.indexOf("private emit(channel: string");
-	const emitEnd = source.indexOf("private emitLocalEvent", emitStart);
-	const emitBody = source.slice(emitStart, emitEnd);
-	assert.match(emitBody, /accepted === false && channel === ipcChannels\.agentsMessage/);
-});
+// 原“源码文本契约”测试（dirty 先快照后清除、emit 只对 agents:message 跳过 sendToRenderer）
+// 已由上面的行为用例覆盖：被拒后 dirty 下标保留 / 全量要求保留 / 其余 channel 不受拒绝影响。

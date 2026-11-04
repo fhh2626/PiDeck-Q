@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { trackedTempDirs } from "./helpers/trackedTempDirs.mjs";
 import ts from "typescript";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
+const makeTempDir = trackedTempDirs();
 
 /**
  * 旧全局入口迁移的行为契约（真实临时目录）。
@@ -77,7 +78,7 @@ const ORIGINAL_SELF_IMPLEMENTATION = [
 ].join("\n");
 
 async function makeAgentDir() {
-	const root = await mkdtemp(join(tmpdir(), "pideck-legacy-mig-"));
+	const root = makeTempDir("pideck-legacy-mig-");
 	const agentDir = join(root, ".pi", "agent");
 	await mkdir(join(agentDir, "extensions"), { recursive: true });
 	return { root, agentDir, entry: join(agentDir, "extensions", "change-pi-prompt.ts") };

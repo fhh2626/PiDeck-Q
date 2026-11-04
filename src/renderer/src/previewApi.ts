@@ -93,6 +93,7 @@ let previewSettings: AppSettings = {
 	piRuntimePreference: "auto",
 	piTypescriptPath: "",
 	piRustPath: "",
+	piBoltPath: "",
 	sessionTabOpenMode: "preview",
 	enableGitManagement: true,
 	gitCommitMessagePrompt: "",
@@ -238,6 +239,8 @@ export function createPreviewApi(): PiDesktopApi {
 			chooseChatPath: async () => null,
 			setChatPath: async () => projects[0],
 			listModels: async () => [],
+			// 预览态没有主进程模型缓存，事件永远不会触发（仅满足接口形状）
+			onModelsChanged: noop,
 			getModelSpec: async () => null,
 			onTrustRequest: noop,
 			respondTrustRequest: async () => undefined,
@@ -398,6 +401,8 @@ export function createPreviewApi(): PiDesktopApi {
 			readProcessEvents: async () => [],
 						readRecordMessagePage: async () => ({ messages: [], total: 0, nextBefore: null }),
 			readMessageFullText: async () => ({ text: "" }),
+			readToolExportPayload: async () => null,
+			readToolExportPayloads: async () => ({}),
 			readReferenceMessages: async () => [
 				{ role: "user", content: "Preview user message", timestamp: Date.now() - 60000 },
 				{ role: "assistant", content: "Preview assistant response", timestamp: Date.now() - 30000 },
@@ -495,7 +500,7 @@ export function createPreviewApi(): PiDesktopApi {
 				ok: true,
 				value: { target, value: undefined },
 			}),
-			prepareRuntimeResend: async (target) => ({
+			prepareRuntimeResend: async (target, _messageId, _model, _thinkingLevel) => ({
 				ok: true,
 				value: { target, value: { text: "" } },
 			}),

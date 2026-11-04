@@ -23,6 +23,17 @@ test('init is non-overwriting and Markdown overrides remain literal', () => with
   await initializeSettings(dir);
   assert.equal((await loadSettings(dir)).prompts.identity, 'Custom $& $1 identity');
 }));
+test('custom shell.md override is preserved across initializeSettings and loaded literally', () => withDir(async dir => {
+  await initializeSettings(dir);
+  const shellFile = join(dir, 'change-pi-prompt/prompts/shell.md');
+  const customContent = 'Custom $& $1 shell guide with bash specific recommendations';
+  await writeFile(shellFile, customContent, 'utf8');
+  await initializeSettings(dir);
+  const readBack = await readFile(shellFile, 'utf8');
+  assert.equal(readBack, customContent);
+  const loaded = await loadSettings(dir);
+  assert.equal(loaded.prompts.shell, customContent);
+}));
 test('init creates coordinated delegation guidelines and native Agent description', () => withDir(async dir => {
   await initializeSettings(dir);
   await initializeSubagentDescription(dir);

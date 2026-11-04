@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createStore } from "jotai/vanilla";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 // 第二批内存优化契约：消息图片按需解码 + agentId 维度 atomFamily 随退出释放
 const surface = [
 	readFileSync("src/renderer/src/components/session/MessageImage.tsx", "utf8"),
 	readFileSync("src/renderer/src/components/session/SurfaceComponents.tsx", "utf8"),
 ].join("\n");
-const runtimeAtoms = readFileSync(
-  "src/renderer/src/atoms/runtime-atoms.ts",
-  "utf8",
-);
-const bridge = readFileSync(
-  "src/renderer/src/hooks/useSessionRuntimeBridge.ts",
-  "utf8",
-);
+const atoms = loadTsCommonJs("src/renderer/src/atoms/index.ts");
 
 test("message images decode lazily via IntersectionObserver", () => {
   // base64 data URL 字符串无法省（已在消息对象），但解码位图是内存大头：
@@ -29,13 +24,14 @@ test("message images decode lazily via IntersectionObserver", () => {
 });
 
 test("agentId atom families are released on agent exit", () => {
-  // agentId 每次新 UUID：closed 后 family 缓存只增不清是慢泄漏，退出时统一释放
-  assert.match(runtimeAtoms, /export const agentExitedAtom = atom\(null/);
-  assert.match(runtimeAtoms, /agentByIdAtomFamily\.remove\(agentId\);/);
-  assert.match(runtimeAtoms, /runtimeCapabilityByAgentIdAtomFamily\.remove\(agentId\);/);
-  assert.match(runtimeAtoms, /sessionIdByRuntimeAgentIdAtomFamily\.remove\(agentId\);/);
-  // 联动：agents:state 全量推送中检测 closed 触发
-  assert.match(bridge, /event\.sourceChannel === \"agents:state\" && Array\.isArray\(event\.payload\)/);
-  assert.match(bridge, /tab\.status === \"closed\"/);
-  assert.match(bridge, /store\.set\(agentExitedAtom, tab\.id\);/);
+  // Exercise reclamation, not the old (unreachable) inventory-array branch's source text.
+  // The real single-object bridge and freshness guard are covered by rendererAnonymousDetachCleanup.
+  const families = [atoms.agentByIdAtomFamily, atoms.runtimeCapabilityByAgentIdAtomFamily, atoms.sessionIdByRuntimeAgentIdAtomFamily];
+  const old = families.map(f => f("exited"));
+  const retained = families.map(f => f("alive"));
+  createStore().set(atoms.agentExitedAtom, "exited");
+  families.forEach((family, index) => {
+    assert.notEqual(family("exited"), old[index]);
+    assert.equal(family("alive"), retained[index]);
+  });
 });

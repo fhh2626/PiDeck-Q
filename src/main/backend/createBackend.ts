@@ -54,6 +54,7 @@ import { startBackendStartupTasks } from "./backendStartupTasks";
 import { createStartupBarrier } from "../utils/StartupBarrier";
 import { createTrashPath } from "../fs/trash";
 import { SessionRecordService } from "../sessions/SessionRecordService";
+import { createAgentRendererSender } from "./agentRendererOutput";
 
 export async function createBackend(options: CreateBackendOptions): Promise<Backend> {
 	const { router, host, platform, runtime } = options;
@@ -179,7 +180,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 
 	const agentManager = new AgentManager(
 		(id) => projectStore.get(id),
-		(channel, ...args) => host.sendToRenderer(channel, ...args),
+		createAgentRendererSender(host),
 		settingsStore,
 		configManager,
 		rpcLogger,
@@ -442,8 +443,8 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			sessionRuntimeCoordinator.editRuntimeMessage(target, messageId, newText),
 		deleteSessionRuntimeMessage: (target, messageId) =>
 			sessionRuntimeCoordinator.deleteRuntimeMessage(target, messageId),
-		prepareSessionRuntimeResend: (target, messageId) =>
-			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId),
+		prepareSessionRuntimeResend: (target, messageId, model, thinkingLevel) =>
+			sessionRuntimeCoordinator.prepareRuntimeResend(target, messageId, model, thinkingLevel),
 		setSessionRuntimeModel: (target, provider, modelId) =>
 			sessionRuntimeCoordinator.setRuntimeModel(target, provider, modelId),
 		setSessionRuntimeThinking: (target, level) =>
@@ -601,7 +602,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			disposeRpc();
 			sessionScanner.dispose();
 			terminalManager?.closeAll();
-			agentManager?.stopAll();
+			await agentManager?.stopAll();
 			await webServiceManager?.stop().catch(() => undefined);
 		},
 	};

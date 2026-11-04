@@ -22,7 +22,12 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 - 同名工具由其他扩展提供：不误认为目标插件。
 - 缺少元数据 API：保留无法归属的规则，不猜测提供者。
 - 没有 ask_question / todo：不输出对应使用要求。
-- `pruneUnavailableShells`（默认 true）：只探测 bash.exe / Git Bash / `settings.shellPath` 与 pwsh/powershell 是否存在，不 spawn 命令。缺失则隐藏该工具并省略对应 prompt 段；不按操作系统一刀切。pwsh adapter 占用 `bash` 名称时保留该槽（仅父 Agent）。
+- `pruneUnavailableShells`（默认 true）：采用三态（available / unknown / missing）探测 bash / powershell 是否存在静态可执行候选，不 spawn 测试命令（避免启动未知进程或触发 WSL 自动拉起）。
+  - Windows Git 发现：除环境变量与 PATH 外，异步查询 Windows Git 注册表元数据（HKCU/HKLM `Software\GitForWindows` 的 `InstallPath`，支持 32/64 位注册表视图，结果缓存 60 秒），自动识别安装在 D 盘等非 C 盘位置的 Git Bash。
+  - WindowsApps 别名防御：对 `Microsoft\WindowsApps\bash.exe` 等应用执行别名，由于不同 JS 运行时（如 Node 与 Bun）在 `existsSync` 行为上存在差异且它并不保证实际后端安装，探测结果归入 `unknown`（`windows-app-alias`）。
+  - 裁剪与扩权隔离（双投影机制）：
+    - 裁剪（`toRetentionAvailability`）：采用 fail-open 原则，仅对明确 `missing` 的 shell 予以剔除，对 `available` 与 `unknown` 均予保留已有活动工具，防止因别名或注册表探测不完整而误杀可用工具；绝不主动向活动列表追加工具。
+    - 共享 allowlist 映射（`toKnownHostShells`）：当任一 shell 为 `unknown` 时返回 `undefined`，`reconcileChildEnvironments` 保持既有共享工具所有权与配置不变，杜绝因不确定的探测结果扩写子 Agent 的共享工具 allowlist。
 - `pruneUnavailableSearchTools`（默认 true）：按上述静态探测规则，`rg`/`fd` 不可用时分别隐藏 grep/find；已安装后启动新父会话即可恢复（仍须在父会话的 defaultTools 与 child allowlist 中启用）。`ls` 不依赖这两个程序，不受影响。静态探测不保证 DLL 完整性、CPU 架构或进程实际 spawn 成功。
 - `settings.shellPath` 按文件名分类：`bash.exe` / `bash` / `sh.exe` / `sh` 计入 bash；`pwsh.exe` / `pwsh` / `powershell.exe` / `powershell` 计入 powershell；其它名字（如 `cmd.exe`）不计入任何后端。配置的 shell 路径绝不再被当作 bash 的同义词。
 
@@ -100,7 +105,7 @@ pwsh 和 subagent **均为可选依赖**：插件不导入、安装或执行它�
 Windows 默认目录：`C:\Users\<user>\.pi\agent\change-pi-prompt`。
 实际目录使用 Pi 的 `getAgentDir()`，因此支持宿主自定义 agentDir。
 
-模板包括：identity、execution、tools、read、edit、batchEdit、write、shell、pwsh、userInput、taskTracking、delegation、validation、communication、environment。
+模板包括：identity、execution、tools、read、edit、batchEdit、write、shell、pwsh、userInput、delegation、validation、communication、environment。
 内置默认文案集中在 `defaults.ts` 开头。发布更新不触碰用户 Markdown。
 仅 environment.md 支持 `{{hostOs}}`、`{{today}}`；其余模板为纯文本，不执行代码。
 不存在的模板使用默认值；空文件、未知占位符、保留标记、超过 64 KiB 的文件会拒绝加载。
@@ -138,7 +143,7 @@ systemPrompt hook 不能修改工具 description。使用 pi-subagents 自带 cu
 
 1. 确认已安装 `pi-subagents`（Nico Bailon，适配 0.66.0），工具名为 `subagent`。
 2. `/change-pi-prompt init-subagent`：只创建缺失的 `<agentDir>/subagent-tool-description.md`。
-3. 在 `<agentDir>/extensions/subagent/config.json` 顶层设置 `"toolDescriptionMode": "custom"`。在独立 Pi（standalone Pi）环境下，若该配置文件完全不存在，`change-pi-prompt` 会在首次会话或子代理调用时自动生成最小前台安全配置（`asyncByDefault: false, forceTopLevelAsync: false`）；已有用户配置绝不覆盖，仅执行安全合规校验。`before_agent_start`、`context`、`before_provider_request` 和 `tool_result` 会把上游强制安全段、工具描述、已注入 skill，以及对 `pi-subagents/skills/` 的 `read` 结果中的默认后台说明改写为：插件默认是 `asyncByDefault:true`，本环境必须 `async:false`。不修改 pi-subagents 上游源码。用语义窗口匹配，而不是整段原文；用户自己的 `async: true` 不替换。
+3. 无需设置 `toolDescriptionMode`：省略时默认会优先读取该文件，项目与全局位置都没有有效文件时回落到内置默认描述；只有想强制使用该文件（不回落到内置默认描述）时，才需要在 `<agentDir>/extensions/subagent/config.json` 顶层设置 `"toolDescriptionMode": "custom"`。在独立 Pi（standalone Pi）环境下，若该配置文件完全不存在，`change-pi-prompt` 会在首次会话或子代理调用时自动生成最小前台安全配置（`asyncByDefault: false, forceTopLevelAsync: false`）；已有用户配置绝不覆盖，仅执行安全合规校验。`before_agent_start`、`context`、`before_provider_request` 和 `tool_result` 会把上游强制安全段、工具描述、已注入 skill，以及对 `pi-subagents/skills/` 的 `read` 结果中的默认后台说明改写为：插件默认是 `asyncByDefault:true`，本环境必须 `async:false`。不修改 pi-subagents 上游源码。用语义窗口匹配，而不是整段原文；用户自己的 `async: true` 不替换。
 4. 开启新会话，使 subagent 工具重新注册。
 
 命令不修改 pi-subagents 配置，不覆盖已有 description；未检测到目标工具时不写任何文件。
@@ -154,10 +159,17 @@ bg_wait、subagent_supervisor、外部 CLI 行为和子代理角色均不改写�
 
 ## 诊断
 
-- `/change-pi-prompt status`：当前配置、上次转换结果、可选来源规则指纹。
+- `/change-pi-prompt status`：当前配置、上次转换结果、可选来源规则指纹、Shell 探测证据与最近一次生命周期处理的实际动作。
 - `/change-pi-prompt preview`：仅在 UI 中预览上次已转换基础块，不保存，不包含后续项目/技能上下文。
 - 同一会话中目标指南变化会提示；指纹不跨进程持久化，不保证自动检测两次启动之间的更新。
 - 默认日志不输出完整 prompt、模板、项目内容。
+
+## Shell 探测与双投影语义
+
+- 显式配置的 `shellPath` 同样经过完整的三态证据探测，不被布尔存在性前置检查过滤。
+- 注册表发现非法或非结构化输出保守降级为 `unknown`，不误判为 `missing`。
+- `unknown` 状态在父会话保留已有活动工具但不主动添加，在共享子代理配置中映射为 `undefined`，防止意外扩写 allowlist。
+- 发现元数据通过 60 秒内存缓存加速，不跨轮缓存活动工具权限；各生命周期步骤直接读取新鲜活动工具。
 
 ## 兼容性与安全边界
 

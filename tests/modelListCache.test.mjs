@@ -8,9 +8,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
  * 1) parsePiListModels 解析表格输出（provider/model/thinking）
  * 2) MODEL_LIST_FAST_ARGS 包含加速参数（offline/no-ext/skills/themes）
  * 3) fetchModelList 读缓存、refreshModelList 强制重取
- * 4) 配置保存（models/auth）后触发后台重取
- * 5) 每次 spawn Agent 前刷新缓存（onBeforeAgentSpawn 钩子）
- * 6) setModel needsRestart 重启引导（保留）
+ * 4) 接线行为（配置保存重取 / spawn 前刷新 / setModel needsRestart）见 modelListWiring.test.mjs
  */
 
 const {
@@ -20,11 +18,6 @@ const {
   MODEL_LIST_RPC_ARGS,
 } = loadTsCommonJs("src/main/pi/modelListCache.ts");
 const { normalizePiRpcModels } = loadTsCommonJs("src/shared/piCompatibility.ts");
-const cacheSource = readFileSync("src/main/pi/modelListCache.ts", "utf8");
-const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
-const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-const createBackendSource = readFileSync("src/main/backend/createBackend.ts", "utf8");
-const registerBackendRpcSource = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
 const pickerHost = readFileSync(
   "src/renderer/src/components/session/ComposerPickerHost.tsx",
   "utf8",
@@ -147,70 +140,18 @@ test("MODEL_LIST_RPC_ARGS uses the neutral RPC mode", () => {
   assert.deepEqual(Array.from(MODEL_LIST_RPC_ARGS.slice(0, 3)), ["--mode", "rpc", "--no-session"]);
 });
 
-test("Rust-safe text fallback never includes the unsupported --offline flag", () => {
+test("Rust-safe text fallback argument set never includes the unsupported --offline flag", () => {
+  // 参数集本身的契约；各偏好实际选用哪一组见 modelListCacheBehavior.test.mjs 的行为测试。
   assert.ok(MODEL_LIST_RUST_ARGS.includes("--list-models"));
   assert.ok(!MODEL_LIST_RUST_ARGS.includes("--offline"));
-  assert.match(cacheSource, /MODEL_LIST_RUST_ARGS/);
-  assert.match(cacheSource, /settings\.piRuntimePreference === "typescript"/);
 });
 
-test("fetchModelList uses cache; refreshModelList forces reload", () => {
-  // 缓存命中短路
-  assert.match(cacheSource, /if \(cachedListModels\) return Promise\.resolve/);
-  // 强制刷新绕过缓存
-  assert.match(cacheSource, /export function refreshModelList/);
-  // 加速参数传入 execFile
-  assert.match(cacheSource, /MODEL_LIST_FAST_ARGS/);
-  // 空结果不写缓存（避免永久「没有匹配的模型」）+ 自动重试
-  assert.match(cacheSource, /if \(models\.length > 0 && !configInvalidated\) cachedListModels/);
-  assert.match(cacheSource, /重试一次|setTimeout\(resolve, 500\)/);
-});
+// 缓存命中/强制刷新/空结果重试/配置失效后不被旧结果覆盖：见 modelListCacheBehavior.test.mjs。
+// 配置保存触发重取 / spawn 前刷新 / 启动预取 / setModel 的 needsRestart：见 modelListWiring.test.mjs。
+// compact 的 customInstructions 字段：见 agentManagerRuntimeCache.test.mjs。
 
-test("config save must not let stale in-flight list overwrite new cache", () => {
-  // 保存 models.json 时若存在旧的在途 fork（启动预取/此前打开过选择器），
-  // 旧结果会覆盖新配置缓存 → 「新模型有时候没有」。修复：
-  // 1) invalidate 置 configInvalidated，在途结果不再写缓存
-  assert.match(cacheSource, /configInvalidated = true/);
-  assert.match(cacheSource, /if \(models\.length > 0 && !configInvalidated\) cachedListModels/);
-  // 2) refreshModelList 不直接复用旧在途请求：链式等它结束后重新 fork
-  assert.match(cacheSource, /const pending = cachedListModelsPending/);
-  assert.match(cacheSource, /pending[\s\S]*?\.catch\(\(\) => undefined\)/);
-  assert.match(cacheSource, /configInvalidated = false/);
-});
-
-test("config save (models/auth) triggers background refresh", () => {
-  assert.match(systemIpc, /invalidateModelListCache\(\)/);
-  assert.match(systemIpc, /refreshModelList\(piLocator, settingsStore\)/);
-  // auth 保存同样触发（auth 决定可用模型过滤）
-  assert.match(systemIpc, /configSaveAuth/);
-});
-
-test("agent spawn refreshes model cache via onBeforeAgentSpawn hook", () => {
-  // AgentManager 构造注入 onBeforeAgentSpawn
-  assert.match(agentManager, /onBeforeAgentSpawn/);
-  // createUnlocked spawn 前调用
-  assert.match(agentManager, /this\.onBeforeAgentSpawn\?\.\(\)/);
-  // createBackend 装配时传 refreshModelList
-  assert.match(createBackendSource, /refreshModelList\(piLocator, settingsStore\)/);
-});
-
-test("compact sends the shared customInstructions RPC field", () => {
-  assert.match(agentManager, /type: "compact", customInstructions: trimmedPrompt/);
-  assert.doesNotMatch(agentManager, /type: "compact", prompt: trimmedPrompt/);
-});
-
-test("startup prefetch still present", () => {
-  assert.match(registerBackendRpcSource, /fetchModelList\(piLocator, settingsStore\)/);
-  assert.match(registerBackendRpcSource, /getCachedModelList\(\)/);
-});
-
-test("AgentManager.setModel detects Model not found with local model present", () => {
-  assert.match(agentManager, /model not found/i);
-  assert.match(agentManager, /needsRestart = true/);
-  assert.match(agentManager, /localModelsContains/);
-  assert.match(agentManager, /getModelsConfig\(\)/);
-});
-
+// 以下两条断言渲染层 .tsx 源码：仓库没有 DOM 测试环境（无 jsdom/testing-library），ComposerPickerHost
+// 的 JSX 交互无法在 node:test 里真实挂载，因此保留为文本契约，仅作回归栅栏，不证明交互正确。
 test("renderer ComposerPickerHost shows restart confirm on needsRestart", () => {
   assert.match(pickerHost, /needsRestart/);
   assert.match(pickerHost, /ConfirmDialog/);

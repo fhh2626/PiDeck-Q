@@ -5,7 +5,8 @@
  * - 用户粘贴/上传的图片：input 事件里直接转成文字描述（否则 pi 会在 provider 层
  *   替换成 "(image omitted...)" 占位符，模型什么都看不到）；
  * - 工具结果（如 read 读图）中的图片：tool_result 事件直接转成文字并写回工具结果；
- *   before_provider_payload 只负责旧会话/其他扩展残留图片的最后兜底。
+ *   before_provider_request（旧版本 pi 叫 before_provider_payload，两个都注册）
+ *   只负责旧会话/其他扩展残留图片的最后兜底。
  *
  * - 工具图片先在 tool_result 阶段转换，避免模型看到图片省略占位符后再调用 read
  *   搜索临时文件；payload 阶段只处理无法提前改写的历史内容。
@@ -73,8 +74,49 @@ export type VisionBatchEvent = {
 	prompt: string;
 	/** 本批总耗时 ms */
 	totalDurationMs: number;
+	/**
+	 * 本批为「让路」事件：当前模型原生支持图片，扩展没有转换。
+	 * 与共享契约 VisionBridgeEvent.skipped 一致；会话渲染层遇到它立即停止等待。
+	 */
+	skipped?: boolean;
 	items: VisionEventItem[];
 };
+
+/**
+ * 构造「让路」事件：模型原生支持图片时告诉渲染层这批图不会经过视觉桥。
+ * 带图片哈希是为了让渲染层能把事件匹配回具体消息；渲染层应据此停止轮询且不出卡片。
+ */
+export function createVisionSkipEvent(
+	kind: VisionBatchEvent["kind"],
+	images: ImageContent[],
+	ctx: ExtensionContext,
+): VisionBatchEvent {
+	const seen = new Set<string>();
+	const items: VisionEventItem[] = [];
+	for (const image of images) {
+		const hash = imageHash(image.data);
+		if (seen.has(hash)) continue;
+		seen.add(hash);
+		items.push({
+			index: items.length + 1,
+			imageHash: hash,
+			mimeType: image.mimeType,
+			ok: true,
+			durationMs: 0,
+			// 不是缓存命中：这里根本没有向视觉模型发请求
+			cached: false,
+		});
+	}
+	return {
+		ts: Date.now(),
+		kind,
+		model: `${ctx.model?.provider ?? ""}/${ctx.model?.id ?? ""}`,
+		prompt: "",
+		totalDurationMs: 0,
+		skipped: true,
+		items,
+	};
+}
 
 /** 追加一条批次事件；文件超限时截断保留尾部（异步幂等，失败静默不阻断转换）。 */
 export async function writeVisionEvent(configDir: string, event: VisionBatchEvent): Promise<void> {
@@ -155,8 +197,17 @@ export async function writeVisionLog(configDir: string, level: "info" | "warn" |
 const MAX_IMAGES_PER_TURN = 12;
 /** 单张图片 base64 长度上限（≈15MB），超出跳过并提示，避免请求体过大 */
 const MAX_IMAGE_BASE64_LENGTH = 15 * 1024 * 1024;
+/** 单张图的转换结果（描述调用 / 缓存 / 批次事件共用同一形状）。 */
+type ImageOutcome = {
+	ok: boolean;
+	text: string;
+	durationMs?: number;
+	outputTokens?: number;
+	finishReason?: string;
+};
+
 /** 图片哈希 → 描述结果缓存（含失败，避免同一张图反复调用视觉模型） */
-const descriptionCache = new Map<string, { ok: boolean; text: string }>();
+const descriptionCache = new Map<string, ImageOutcome>();
 /** toolCallId → 未能在 tool_result 阶段改写的图片，供 payload 兜底消费 */
 const pendingToolImages = new Map<string, ImageContent[]>();
 /** 未消费缓存的硬上限：请求被中断/裁剪时缓存会滞留，超过上限时丢弃最旧的，防止内存膨胀 */
@@ -754,7 +805,7 @@ export async function describeImages(
 
 	// 第一遍：去重 + 跳过超大图（结果按出现顺序编号，保证多图时模型能对号入座）
 	const jobs: Array<{ hash: string; image: ImageContent }> = [];
-	const results = new Map<string, { ok: boolean; text: string }>();
+	const results = new Map<string, ImageOutcome>();
 	for (const image of selected) {
 		const hash = imageHash(image.data);
 		if (results.has(hash)) continue;
@@ -874,6 +925,12 @@ export default function (pi: ExtensionAPI) {
 			if (!images || images.length === 0) return undefined;
 			if (!shouldUseVisionBridge(ctx)) {
 				log("info", `${images.length} image(s) bypassed: current model declares image input support`);
+				// 让路信号：桌面端模型列表可能与 pi 自己的能力判断不一致，
+				// 只有扩展自己写的事件能让渲染层立即停止「视觉桥转换中」的等待。
+				// 仅对配置过视觉桥的用户写入（未配置时渲染层根本不会轮询）。
+				if (config?.enabled && config.provider && config.model) {
+					await writeVisionEvent(configDir, createVisionSkipEvent("input", images, ctx));
+				}
 				return undefined;
 			}
 			if (!config?.enabled || !config.provider || !config.model) {
@@ -969,8 +1026,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// 旧会话/其他扩展仍可能把图片带到 provider payload；这里做最后兜底。
-	// 使用 before_provider_payload，而不是 before_provider_request：只有前者携带真正的 payload。
-	pi.on("before_provider_payload", async (event, ctx) => {
+	// 钩子名随 pi 版本变过：新版本是 before_provider_request（event.payload = 完整请求体，
+	// 返回值即新 payload），老版本是 before_provider_payload。两个都注册：
+	// 未知钩子名不会报错（handler 只是永不触发），而同一请求不会同时触发两个名字；
+	// 改写对同一 payload 幂等（第二次已无图可换），所以即便某个版本两个都触发也安全。
+	const convertProviderPayload = async (
+		event: { payload?: unknown },
+		ctx: ExtensionContext,
+	): Promise<unknown> => {
 		const configDir = resolveConfigDir();
 		const log = (level: "info" | "warn" | "error", message: string) =>
 			writeVisionLog(configDir, level, `request: ${message}`);
@@ -983,7 +1046,7 @@ export default function (pi: ExtensionAPI) {
 			const config = await loadVisionBridgeConfig();
 			if (!config?.enabled || !config.provider || !config.model) return undefined;
 
-			const payload = (event as { payload?: { messages?: unknown[] } }).payload;
+			const payload = event.payload as { messages?: unknown[] } | null | undefined;
 			if (!payload || !Array.isArray(payload.messages)) return undefined;
 
 			const prompt = config.promptTemplate ?? DEFAULT_PROMPT;
@@ -1083,5 +1146,12 @@ export default function (pi: ExtensionAPI) {
 			log("error", `unhandled: ${error instanceof Error ? error.message : String(error)}`);
 			return undefined;
 		}
-	});
+	};
+
+	pi.on("before_provider_request", convertProviderPayload);
+	// 老版本钩子名不在当前 SDK 类型里：这是跨版本兼容声明，不是掩盖类型错误。
+	const legacyPayloadHook = pi as unknown as {
+		on?: (event: "before_provider_payload", handler: typeof convertProviderPayload) => unknown;
+	};
+	legacyPayloadHook.on?.("before_provider_payload", convertProviderPayload);
 }

@@ -67,6 +67,9 @@ export const ipcChannels = {
 	sessionsCatalogGetContextControllerState: "sessions:catalog-get-context-controller-state",
 	/** 按需读取单条消息完整文本（工具结果截断后的「查看完整输出」入口）。 */
 	sessionsCatalogReadMessageFullText: "sessions:catalog-read-message-full-text",
+	/** 为长图导出读取未截断的工具参数与结果完整载荷 */
+	sessionsReadToolExportPayload: "sessions:read-tool-export-payload",
+	sessionsReadToolExportPayloads: "sessions:read-tool-export-payloads",
 	sessionsCatalogCopy: "sessions:catalog-copy",
 	sessionsCatalogExportHtml: "sessions:catalog-export-html",
 	sessionsSendPrompt: "sessions:send-prompt",
@@ -232,8 +235,21 @@ export const ipcChannels = {
 	appBeginWindowResize: "app:begin-window-resize",
 	nativeClipboardSnapshot: "native:clipboard-snapshot",
 	agentsRuntimeState: "agents:runtime-state",
+	/**
+	 * 子代理运行状态快照：主进程 → 渲染层。
+	 * pi 内建子代理不是 PiDeck 的 Agent（没有 agentId 绑定的 runtime），
+	 * 状态只能从父会话 `subagent` 工具 details 截取，再按子会话文件路径点亮侧栏行。
+	 */
+	agentsSubagentStatus: "agents:subagent-status",
 	agentsState: "agents:state",
 	projectsListModels: "projects:list-models",
+	/**
+	 * 模型缓存已重取：主进程 → 渲染层（无负载，仅变更信号）。
+	 * 模型图片能力是视觉桥判定与选择器的共享数据源，配置保存/运行时切换后必须同步，
+	 * 否则渲染层会拿旧列表判断能力（表现为「模型能看图却显示视觉桥转换中」）。
+	 * 不发全量列表：模型数可能很多，渲染层收到信号后用 listModels 读已刷新好的主进程缓存。
+	 */
+	modelsChanged: "models:changed",
 	/** 模型规格查询：线上缓存（OpenRouter + models.dev）按模型 id 匹配，中转站通用 */
 	projectsGetModelSpec: "projects:get-model-spec",
 	/** 手动刷新云端模型规格缓存 */

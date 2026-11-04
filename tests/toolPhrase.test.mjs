@@ -1,32 +1,22 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 // 工具语义短语（学 Proma tool-phrase.ts）：折叠态显示可读中文短语，
 // 替代完整命令行，让工具行更轻、更易扫读。
-// 纯函数用 ts 编译 + vm 加载，避免模块路径解析负担。
-const rawSource = readFileSync(
+// 通过真实模块图加载（含真实 parseToolArgs），不再对源码文本做 import 剥离/替换。
+const { getToolPhrase, getToolPhraseFromArgs } = loadTsCommonJs(
   "src/renderer/src/components/session/timeline/toolPhrase.ts",
-  "utf8",
 );
-// 去掉 import 行（本测试直接传解析后的 input，不需要真实 parseToolArgs）；
-// 保留 export，CommonJS 编译后挂到 module.exports。
-const moduleSource = rawSource
-  .replace(/^import .*$/gm, "")
-  .replace("export interface ToolPhrase", "interface ToolPhrase");
 
 function loadPhrase(toolName, input) {
-  const js = ts.transpileModule(moduleSource, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-  }).outputText;
-  const module = { exports: {} };
-  const sandbox = { module, exports: module.exports, console };
-  vm.runInNewContext(js, sandbox);
-  return sandbox.module.exports.getToolPhrase(toolName, input);
+  return getToolPhrase(toolName, input);
 }
 
+test("tool arguments given as a JSON string are parsed before building the phrase", () => {
+  const phrase = getToolPhraseFromArgs("Read", JSON.stringify({ file_path: "src/deep/main.ts" }));
+  assert.match(phrase.label, /读取 main\.ts/);
+});
 test("read tool produces a readable file phrase", () => {
   const phrase = loadPhrase("Read", { file_path: "src/main.ts" });
   assert.match(phrase.label, /读取 main\.ts/);

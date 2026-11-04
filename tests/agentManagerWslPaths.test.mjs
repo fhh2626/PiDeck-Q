@@ -199,6 +199,8 @@ function loadAgentManager() {
 			}
 			if (id === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
 			if (id === "./streamGate") return streamGate;
+			// 子代理状态投影与本用例无关，但要真实模块（TS 不能被 node require 解析）。
+			if (id === "./SubagentRunTracker") return loadTsCommonJs("src/main/pi/SubagentRunTracker.ts");
 			if (id === "./cacheHitStats") return cacheHitStats;
 			if (id === "../../shared/toolRuntimeState") return { updateActiveToolCalls: () => new Map() };
 			if (id === "../wsl/WslPaths") return wslPaths;

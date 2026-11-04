@@ -403,7 +403,43 @@ export function mergeAuthoritativeUiMessages(
 		const dropOrphanUser = !strictBaselineMode
 			&& canDropUnmatchedPlaceholders
 			&& isOrphanedOptimisticUser(leftover, index, merged, current, authoritative);
-		if (!dropEmptyUser && !dropPlaceholder && !dropCoveredSseWithText && !dropCoveredBaselineBubble && !dropOrphanUser) continue;
+		// useChat 会克隆上一条 assistant 再追加回放，克隆行带着原身份但换成了 SSE id。
+		// 身份已经有一行权威副本、且克隆上的每一段都被这一轮覆盖时，丢掉克隆。
+		const leftoverIdentity = uiMessageIdentity(leftover);
+		const duplicatesPersistedIdentity = leftoverIdentity !== undefined
+			&& uiMessageRole(leftover) !== "user"
+			&& merged.some((row, rowIndex) => rowIndex !== index && uiMessageIdentity(row) === leftoverIdentity);
+		const continuationCoverage = duplicatesPersistedIdentity
+			? isLocalSseFullyCovered(
+				{ ...leftover, metadata: undefined },
+				merged.filter((_, rowIndex) => rowIndex !== index),
+				precedingUserMessage(merged, index),
+				merged.filter((_, rowIndex) => rowIndex !== index),
+			)
+			: undefined;
+		const dropContinuationClone = !strictBaselineMode
+			&& canDropUnmatchedPlaceholders
+			&& continuationCoverage?.fullyCovered === true
+			&& continuationCoverage.coveredInSameTurn;
+		// 回放克隆会带上被克隆行的 timestamp/chatRole，于是不再算「本地 SSE」，
+		// 但又没有 entryId。段和工具都已被权威行覆盖时仍然丢掉。
+		const leftoverMetadata = readWebMessageMetadata(leftover);
+		const unpersistedReplay = uiMessageRole(leftover) === "assistant"
+			&& !leftoverMetadata?.entryId
+			&& leftoverMetadata?.chatRole !== "tool";
+		const replayCoverage = unpersistedReplay
+			? isLocalSseFullyCovered(
+				{ ...leftover, metadata: undefined },
+				authoritative,
+				precedingUserMessage(current, Math.max(sourceIndex, 0)),
+				current,
+			)
+			: undefined;
+		const dropUnpersistedReplay = !strictBaselineMode
+			&& canDropUnmatchedPlaceholders
+			&& replayCoverage?.fullyCovered === true
+			&& replayCoverage.coveredInSameTurn;
+		if (!dropEmptyUser && !dropPlaceholder && !dropCoveredSseWithText && !dropCoveredBaselineBubble && !dropOrphanUser && !dropContinuationClone && !dropUnpersistedReplay) continue;
 		merged.splice(index, 1);
 		changed = true;
 	}

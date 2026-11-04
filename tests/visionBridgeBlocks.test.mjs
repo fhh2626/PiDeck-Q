@@ -134,3 +134,32 @@ test("matchVisionBridgeEvent: 无哈希/空输入返回 null", () => {
   assert.equal(matchVisionBridgeEvent([makeEvent(1000, "input", [])], ["h-a"], 0), null);
   assert.equal(matchVisionBridgeEvent([makeEvent(1000, "input", [{ index: 1, ok: true }])], ["h-a"], 0), null);
 });
+
+// 「让路」批次（模型原生支持图片，扩展不转换）必须被识别成 skipped：
+// 渲染层据此立刻停止等待，且不渲染任何转换卡片（旧版本会一直显示「视觉桥转换中」）。
+test("classifyVisionBridgeMatch: 区分转换成功 / 扩展让路 / 未命中", () => {
+  const { classifyVisionBridgeMatch } = loadTsCommonJs(
+    "src/renderer/src/utils/visionBridgeBlocks.ts",
+  );
+  assert.equal(classifyVisionBridgeMatch(null), null);
+  assert.equal(classifyVisionBridgeMatch(undefined), null);
+  assert.equal(
+    classifyVisionBridgeMatch(makeEvent(1000, "input", [{ index: 1, imageHash: "h-a", ok: true }])),
+    "converted",
+  );
+  assert.equal(
+    classifyVisionBridgeMatch({
+      ...makeEvent(1000, "input", [{ index: 1, imageHash: "h-a", ok: true }]),
+      skipped: true,
+    }),
+    "skipped",
+  );
+  // skipped 必须是布尔真值才认让路：老版本事件文件没有该字段
+  assert.equal(
+    classifyVisionBridgeMatch({
+      ...makeEvent(1000, "input", [{ index: 1, imageHash: "h-a", ok: true }]),
+      skipped: false,
+    }),
+    "converted",
+  );
+});

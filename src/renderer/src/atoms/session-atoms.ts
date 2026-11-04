@@ -14,6 +14,12 @@ import type {
 } from "../../../shared/types";
 import { isSameSummaryCard, messageFingerprint } from "../../../shared/messageFingerprint";
 import { mergeAgentRuntimeState } from "../utils/agentRuntimeState";
+import {
+  insertOptimisticMessagesBeforeNewer,
+  isPendingOptimisticMessage,
+  optimisticRequestId,
+  reconcileOptimisticUserMessages,
+} from "../utils/optimisticUserReconciliation";
 import { sameProjectSessionList } from "../utils/sessionRecordIdentity";
 
 /**
@@ -217,6 +223,31 @@ export const sessionMessageCacheBySessionIdAtomFamily = atomFamily(
     selectAtom(sessionMessagesCacheAtom, (cache) => cache[sessionId], Object.is),
 );
 
+
+/**
+ * 时间线展示状态清理注册表接口（遵循计划步骤 5 规则）。
+ * 彻底切断 session-atoms 与 timeline-presentation 的模块循环依赖，
+ * 同时兼容单元测试 VM 环境中各种无副作用/直接引入情况。
+ */
+type TimelinePresentationCleanupRegistry = {
+	handler: ((sessionId: string) => void) | null;
+	register: (fn: (sessionId: string) => void) => void;
+	removeSession: (sessionId: string) => void;
+};
+
+export const timelinePresentationCleanupRegistry: TimelinePresentationCleanupRegistry = {
+	handler: null,
+	register(fn: (sessionId: string) => void) {
+		this.handler = fn;
+	},
+	removeSession(sessionId: string) {
+		if (this.handler) {
+			this.handler(sessionId);
+		} else if (typeof globalThis !== "undefined" && typeof (globalThis as Record<string, unknown>).__piTimelinePresentationCleanup === "function") {
+			((globalThis as Record<string, unknown>).__piTimelinePresentationCleanup as (s: string) => void)(sessionId);
+		}
+	},
+};
 
 /**
  * 会话切换时的滚动位置锚点（per-session，切走保存、切回恢复）。
@@ -555,6 +586,10 @@ export const cacheSessionMessagesAtom = atom(
 		 * 缺省时必须继承旧游标；全量载荷缺省时则清除（窗口起点可能已变化）。
 		 */
 		incremental?: boolean;
+		/** disk 来源的本地乐观追加：必须递增 revision，让在途磁盘分页按旧 revision 失效。 */
+		optimistic?: boolean;
+		/** 显式移除本地 pending（会话提升迁移源）时放行 disk 写入。 */
+		allowPendingRemoval?: boolean;
 		history?: SessionMessageCacheEntry["history"];
 		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
 		mutationSequence?: number;
@@ -585,9 +620,44 @@ export const cacheSessionMessagesAtom = atom(
       input.source === "disk" &&
       current?.source === "runtime"
     ) {
+      // 冷启动发送会先建一个只含本地气泡的 runtime 缓存；随后返回的磁盘首页
+      // 只携带项目历史，并不是 runtime 窗口。若直接拒绝，长会话的历史前缀会
+      // 永久缺失（loadState 已经被标记 ready）。这里把本地气泡并入磁盘页，
+      // 并让来源保持 disk，等 runtime 全量接管后再转为窗口。
+      // 空数组也允许：发送在磁盘首页返回前失败时，discard 会把缓存写成空
+      // runtime 条目；它同样不是 runtime 窗口，不能因此挡掉历史首页。
+      const localOnlyRuntimeCache =
+        current.messages.every((message) => message.meta?.optimistic === true)
+        && current.history === undefined
+        && current.windowStart === undefined
+        && current.cardCount === undefined
+        && current.windowStartFilePos === undefined
+        && current.mutationSequence === undefined;
+      if (!localOnlyRuntimeCache) return false;
+      const reconciled = reconcileOptimisticUserMessages(current.messages, input.messages);
+      const diskIds = new Set(input.messages.map((message) => message.id));
+      input = {
+        ...input,
+        messages: [
+          ...input.messages,
+          ...reconciled.messages.filter((message) => !diskIds.has(message.id)),
+        ],
+        ...(reconciled.droppedIds.length > 0 ? { allowPendingRemoval: true } : {}),
+      };
+    }
+    // 发送中的本地气泡只存在于 renderer；磁盘分页即使 revision 匹配也不能
+    // 用旧文件快照把它覆盖掉，否则发送瞬间会再次出现“气泡消失 + 高度回弹”。
+    if (
+      input.source === "disk" &&
+      !input.allowPendingRemoval &&
+      current?.messages.some((message) =>
+        isPendingOptimisticMessage(message)
+        && !input.messages.some((next) => next.id === message.id)
+      )
+    ) {
       return false;
     }
-    const revision = input.source === "runtime"
+    const revision = input.source === "runtime" || input.optimistic === true
       ? (current?.revision ?? 0) + 1
       : (current?.revision ?? 0);
     const nextCache = {
@@ -626,7 +696,11 @@ export const cacheSessionMessagesAtom = atom(
     ];
     const retainedIds = lru.slice(0, SESSION_MESSAGE_CACHE_LIMIT);
     for (const cachedSessionId of Object.keys(nextCache)) {
-      if (!retainedIds.includes(cachedSessionId)) delete nextCache[cachedSessionId];
+      if (!retainedIds.includes(cachedSessionId)) {
+        delete nextCache[cachedSessionId];
+        // 淘汰该会话在内存中的全部 presentation 状态（防止内存长期堆积）
+        timelinePresentationCleanupRegistry.removeSession(cachedSessionId);
+      }
     }
     set(sessionMessagesCacheAtom, nextCache);
     set(sessionMessageLruAtom, retainedIds);
@@ -766,6 +840,19 @@ function findCoveredMessageIndexes(
 }
 
 /**
+ * 待发送结果的本地乐观气泡不能被仍停留在上一轮的旧快照滑出：
+ * 旧快照里没有本次请求的权威 user，但它并不代表这次发送失败。
+ * 若在这里滑出，移除行会缩短 scrollHeight，底部 scrollTop 被向上夹取，
+ * 用户就会看到发送瞬间信息流回滚约一条消息。
+ */
+function clearSlidingOut(message: ChatMessage): ChatMessage {
+  if (message.meta?.slidingOut !== true) return message;
+  const meta = { ...message.meta };
+  delete meta.slidingOut;
+  return { ...message, meta };
+}
+
+/**
  * 比较当前已展示的运行期消息与新的权威 canonical snapshot：
  * - 权威 canonical 消息之间的相对顺序 100% 保持 canonicalMessages 中的原始顺序不变；
  * - 旧数组中存在但新 canonical 数组中不存在的消息，标记为 meta.slidingOut = true 并保留在数组中；
@@ -777,20 +864,40 @@ export function mergeCanonicalSnapshotWithSlidingOut(
   previousMessages: ChatMessage[],
   canonicalMessages: ChatMessage[],
   slideOut?: ChatMessage[],
+  confirmedRequestIds?: ReadonlySet<string>,
 ): ChatMessage[] {
   if (previousMessages.length === 0) {
     return canonicalMessages;
   }
+  const isConfirmedPending = (message: ChatMessage): boolean => {
+    if (!isPendingOptimisticMessage(message)) return false;
+    const requestId = optimisticRequestId(message);
+    return Boolean(requestId && confirmedRequestIds?.has(requestId));
+  };
   if (canonicalMessages.length === 0) {
-    return previousMessages.map((m) =>
-      m.meta?.slidingOut === true ? m : { ...m, meta: { ...m.meta, slidingOut: true } }
-    );
+    return previousMessages
+      .filter((message) => !isConfirmedPending(message))
+      .map((m) => {
+        if (isPendingOptimisticMessage(m)) return clearSlidingOut(m);
+        return m.meta?.slidingOut === true ? m : { ...m, meta: { ...m.meta, slidingOut: true } };
+      });
   }
 
   const canonicalById = new Map<string, ChatMessage>();
   for (const msg of canonicalMessages) {
     canonicalById.set(msg.id, msg);
   }
+  // 只把「本地气泡之前」的旧 message 当作不可移动的锚点；气泡之后已有的
+  // assistant 是 pending 触发的回复，重排时必须允许 pending 插回它前面。
+  // 若误用全部 previousIds，局部快照会漏掉这个锚点，把 user 排到回复之后。
+  const firstOptimisticIndex = previousMessages.findIndex(
+    (message) => message.meta?.optimistic === true,
+  );
+  const previousIdsBeforeOptimistic = new Set(
+    previousMessages
+      .slice(0, firstOptimisticIndex >= 0 ? firstOptimisticIndex : 0)
+      .map((message) => message.id),
+  );
 
   // trim 窗口右移滑出轮已被 reconcileHistoryPrefix 并入 history.messages，
   // 不应在 messages 中重复保留为 slidingOut
@@ -807,6 +914,7 @@ export function mergeCanonicalSnapshotWithSlidingOut(
 
   // 1. 找出 previousMessages 中所有需要保留为 slidingOut 的消息，并为它们确定在 canonical 序列中的相对插槽
   const headSliding: ChatMessage[] = [];
+  const pendingSliding: ChatMessage[] = [];
   const slidingBeforeCanonicalId = new Map<string, ChatMessage[]>();
   const tailSliding: ChatMessage[] = [];
 
@@ -829,11 +937,20 @@ export function mergeCanonicalSnapshotWithSlidingOut(
       continue;
     }
 
-    // 已被 slideOut 并入 history 前缀的跳过
+    // 已被 slideOut 并入 history 前缀的跳过；仍在等待发送结果的本地气泡
+    // 即使不在旧快照里也必须保留（clearSlidingOut 让上一帧误标记的滑出回滚）。
     if (
       slideOutIds.has(prevMsg.id) ||
       (typeof prevMsg.meta?.entryId === "string" && slideOutEntryIds.has(prevMsg.meta.entryId))
     ) {
+      continue;
+    }
+
+    if (isPendingOptimisticMessage(prevMsg)) {
+      // 权威 user 已出现在 history/slideOut：本地副本退出，避免同一用户在
+      // history 与当前窗口各出现一次。
+      if (isConfirmedPending(prevMsg)) continue;
+      pendingSliding.push(clearSlidingOut(prevMsg));
       continue;
     }
 
@@ -876,8 +993,14 @@ export function mergeCanonicalSnapshotWithSlidingOut(
   }
 
   result.push(...tailSliding);
-
-  return result;
+  // pending user 必须排在它触发的回复之前；旧快照里新出现的 assistant
+  // 若时间晚于本地气泡，就把 pending 插到它前面，而不是一律排到队尾。
+  return insertOptimisticMessagesBeforeNewer(
+    result,
+    pendingSliding,
+    new Set(canonicalById.keys()),
+    previousIdsBeforeOptimistic,
+  );
 }
 
 /**
@@ -1634,6 +1757,12 @@ function applySessionRuntimeUiEvent(
   }
   if (request.method === "setWidget") {
     const widgetKey = request.widgetKey || request.requestId;
+    const previousLines = base.widgets[widgetKey];
+    const nextLines = request.widgetLines;
+    // Status widgets often resend identical text on each delta; do not wake every UI consumer.
+    if (nextLines?.length
+      ? previousLines?.length === nextLines.length && nextLines.every((line, index) => line === previousLines[index])
+      : previousLines === undefined) return base;
     const widgets = { ...base.widgets };
     if (request.widgetLines?.length) widgets[widgetKey] = request.widgetLines;
     else delete widgets[widgetKey];
@@ -1944,19 +2073,98 @@ export const applySessionRuntimeEventAtom = atom(
           // 为本轮回答内的显示延迟，终态到达后完全纠正。
           const W = current?.windowStart ?? 0;
           const cardCount = current?.cardCount ?? 0;
-          const slidingCount = current?.messages.filter((m) => m.meta?.slidingOut === true).length ?? 0;
+          const slidingCount = current?.messages.filter(
+            (m) => m.meta?.slidingOut === true && m.meta?.optimistic !== true,
+          ).length ?? 0;
           const offset = upsertFrom - W + cardCount + slidingCount;
-          if (current?.source === "runtime" && offset >= 0 && current.messages.length >= offset) {
+          // 本地乐观气泡不在 runtime 下标空间里。offset 是含 slidingOut 的
+          // runtime 下标，直接拿它切 current.messages 会把乐观气泡算进长度，
+          // 或把乐观气泡前面的运行时消息一起截掉。先扫描到对应本地位置。
+          let localOffset = 0;
+          let runtimeSlotsSeen = 0;
+          while (localOffset < (current?.messages.length ?? 0) && runtimeSlotsSeen < offset) {
+            if (current?.messages[localOffset]?.meta?.optimistic !== true) runtimeSlotsSeen += 1;
+            localOffset += 1;
+          }
+          if (
+            current?.source === "runtime"
+            && offset >= 0
+            && current.messages.length >= localOffset
+          ) {
+            // 所有本地乐观气泡（包括等待确认和已 settle 但未收到权威行的）
+            // 都先移出 runtime 下标空间，长度校验通过后再按时间插回。
+            const localOptimisticMessages = current.messages
+              .filter((message) => message.meta?.optimistic === true)
+              .map((message) => isPendingOptimisticMessage(message) ? clearSlidingOut(message) : message);
             const merged = [
-              ...current.messages.slice(0, offset),
+              ...current.messages.slice(0, localOffset)
+                .filter((message) => message.meta?.optimistic !== true),
               ...(messages as ChatMessage[]),
             ];
             // 长度校验：合并后本地长度 = 卡片 + (totalLength − W) + slidingCount；不满足说明增量已失序
             // （漏事件/trim 未校准），丢弃等待全量
             if (merged.length === totalLength - W + cardCount + slidingCount) {
+              // 增量负载里也可能第一次出现权威 user（例如漏了全量校准）：
+              // 在长度校验通过后清掉已被覆盖的本地乐观气泡，避免它们留到全量快照才滑出。
+              const optimisticReconciliation = reconcileOptimisticUserMessages(
+                current.messages,
+                messages as ChatMessage[],
+              );
+              const droppedOptimisticIds = new Set(optimisticReconciliation.droppedIds);
+              // 权威 user 可能已在 history 前缀（而不是本次 delta）：例如全量先把
+              // 它移进 history，随后才收到新 assistant 的增量。按 requestId 让本地
+              // 副本退出，避免 history 与当前窗口各显示一次。
+              const confirmedRequestIds = new Set<string>();
+              if (localOptimisticMessages.length > 0) {
+                for (const message of [
+                  ...(current.history?.messages ?? []),
+                  ...current.messages,
+                ]) {
+                  if (message.meta?.optimistic === true) continue;
+                  const requestId = optimisticRequestId(message);
+                  if (requestId) confirmedRequestIds.add(requestId);
+                }
+                for (const message of current.messages) {
+                  const requestId = optimisticRequestId(message);
+                  if (
+                    message.meta?.optimistic === true
+                    && requestId
+                    && confirmedRequestIds.has(requestId)
+                  ) {
+                    droppedOptimisticIds.add(message.id);
+                  }
+                }
+              }
+              // 乐观气泡不在 runtime 下标空间里；若直接接在 payload 后面，它会
+              // 排到本轮新 assistant 之后。按时间把它插回“它之后新增的 payload
+              // 消息”之前。已 settle 的气泡也保留到全量快照，避免行突然消失。
+              const firstOptimisticIndex = current.messages.findIndex(
+                (message) => message.meta?.optimistic === true,
+              );
+              const previousIdsBeforeOptimistic = new Set(
+                current.messages
+                  .slice(0, firstOptimisticIndex >= 0 ? firstOptimisticIndex : 0)
+                  .map((message) => message.id),
+              );
+              const payloadIds = new Set((messages as ChatMessage[]).map((message) => message.id));
+              // merged 的前缀已经排除全部本地乐观气泡；即使 payload 复用了
+              // 同一个 id（投影稳定化），也必须保留 payload 里的权威行。
+              const mergedBase = merged;
+              const nextMessages = insertOptimisticMessagesBeforeNewer(
+                mergedBase,
+                localOptimisticMessages.filter((message) =>
+                  !droppedOptimisticIds.has(message.id) && !payloadIds.has(message.id)
+                ),
+                // 锚点不能只看 payload：窗口前缀里也可能有「pending 之后已存在」
+                // 的回复（例如 upsertFrom 落在更后面）。用整个 merged 作为候选，
+                // previousIdsBeforeOptimistic 已经把 pending 之前的旧消息排除。
+                new Set(mergedBase.map((message) => message.id)),
+                previousIdsBeforeOptimistic,
+                0,
+              );
               set(cacheSessionMessagesAtom, {
                 sessionId: event.sessionId,
-                messages: merged,
+                messages: nextMessages,
                 source: "runtime",
                 windowStart: W,
                 history: current.history,
@@ -1999,12 +2207,21 @@ export const applySessionRuntimeEventAtom = atom(
           const slideOut = Array.isArray(payload.slideOut)
             ? (payload.slideOut as ChatMessage[])
             : undefined;
+          // 本地乐观用户气泡与本次权威 user 消息配对：配对成功时先从旧数组移除，
+          // 避免 merge 把它标记为 slidingOut 后在 280ms 后删除造成底部回滚。
+          const optimisticReconciliation = reconcileOptimisticUserMessages(
+            current?.messages ?? [],
+            segment,
+          );
+          const droppedOptimisticIds = new Set(optimisticReconciliation.droppedIds);
           // 压缩后的 canonical snapshot 只保留总结与当前窗口；把压缩前的运行期窗口
           // 作为 history candidates，reconcile 会剔除仍被新 segment 覆盖的消息。
           const previousWindow = preserveHistory &&
             stickyHistory &&
             current?.source === "runtime"
-            ? current.messages
+            // 本地乐观气泡不是历史轮次；它参与 compaction retained 计算会
+            // 多算一轮并挤掉真正老消息，必须先排除。
+            ? current.messages.filter((message) => message.meta?.optimistic !== true)
             : undefined;
           const combinedSlideOut = [
             ...(previousWindow ?? []),
@@ -2014,25 +2231,108 @@ export const applySessionRuntimeEventAtom = atom(
           const historyCandidates = combinedSlideOut.filter((message) => {
             const key = messageEntryKey(message);
             if (seenHistoryCandidates.has(key)) return false;
+            if (droppedOptimisticIds.has(message.id)) return false;
+            // 本地乐观气泡不是权威历史；等待中的气泡即使没被配对，也不能被
+            // 压缩/粘性窗口提升成 history 前缀，否则会在旧位置残留一份用户消息。
+            if (message.meta?.optimistic === true) return false;
             seenHistoryCandidates.add(key);
             return true;
           });
           const promotedHistory = historyCandidates.length > 0
             ? historyCandidates
             : undefined;
-          const mergedMessages = !bindingChanged &&
+          // 权威 user 可能已经落在 history/slideOut，而不是本次 segment：
+          // 若本地 pending 仍按 segment 配对，就会和 history 里的同一条 user
+          // 各显示一次。requestId 是唯一安全的自证身份，不用正文兜底。
+          const confirmedRequestIds = new Set<string>();
+          const hasLocalOptimistic = (current?.messages ?? [])
+            .some((message) => message.meta?.optimistic === true);
+          if (hasLocalOptimistic) {
+            for (const message of [
+              ...(current?.messages ?? []),
+              ...segment,
+              ...(current?.history?.messages ?? []),
+              ...(slideOut ?? []),
+              ...(previousWindow ?? []),
+            ]) {
+              if (message.meta?.optimistic === true) continue;
+              const requestId = optimisticRequestId(message);
+              if (requestId) confirmedRequestIds.add(requestId);
+            }
+          }
+          const confirmedLocalIds = new Set(
+            (current?.messages ?? [])
+              .filter((message) => message.meta?.optimistic === true)
+              .filter((message) => {
+                const requestId = optimisticRequestId(message);
+                return Boolean(requestId && confirmedRequestIds.has(requestId));
+              })
+              .map((message) => message.id),
+          );
+          for (const messageId of confirmedLocalIds) {
+            droppedOptimisticIds.add(messageId);
+          }
+          const explicitDrop = payload.preserveHistory === false;
+          const canMergeRuntime = !bindingChanged &&
             current?.source === "runtime" &&
-            (!current.agentId || current.agentId === event.agentId)
-            ? mergeCanonicalSnapshotWithSlidingOut(current.messages, segment, promotedHistory)
-            : segment;
+            (!current.agentId || current.agentId === event.agentId);
+          const reconciledMessages = optimisticReconciliation.messages.filter((message) =>
+            !confirmedLocalIds.has(message.id)
+            && !(explicitDrop && message.meta?.optimistic === true)
+          );
+          // binding 切换时 cache 会整体换成新 runtime 的 segment；cache 里的
+          // agentId 可能还停留在旧 runtime（乐观写入继承旧值），不能因此丢掉
+          // 显式在途的 pending 气泡。pending 生命周期由发送结果和权威配对管理。
+          // disk 来源同样需要接回：磁盘页不是 runtime 下标空间，增量会等待全量，
+          // 全量接管时若不接回，本地气泡会凭空消失。
+          const pendingOptimisticMessages = !explicitDrop && (
+            current?.source === "disk"
+            || (current?.source === "runtime" && !canMergeRuntime)
+          )
+            ? current.messages
+                .filter((message) =>
+                  isPendingOptimisticMessage(message)
+                  && !droppedOptimisticIds.has(message.id)
+                  && !segment.some((canonical) => canonical.id === message.id)
+                )
+                .map(clearSlidingOut)
+            : [];
+          // 与全量 merge 同口径：pending 之前的旧消息才是不可移动锚点；
+          // pending 之后已存在的 assistant 必须允许它插回前面，否则绑定切换
+          // 或磁盘接管时 user 会被排到自己的回复之后。
+          const firstOptimisticIndex = current?.messages.findIndex(
+            (message) => message.meta?.optimistic === true,
+          ) ?? -1;
+          const previousIdsBeforeOptimistic = new Set(
+            (current?.messages ?? [])
+              .slice(0, firstOptimisticIndex >= 0 ? firstOptimisticIndex : 0)
+              .map((message) => message.id),
+          );
+          const mergedMessages = current?.source === "disk"
+            || (current?.source === "runtime" && !canMergeRuntime)
+            ? insertOptimisticMessagesBeforeNewer(
+                segment,
+                pendingOptimisticMessages,
+                new Set(segment.map((message) => message.id)),
+                previousIdsBeforeOptimistic,
+              )
+            : canMergeRuntime
+              ? mergeCanonicalSnapshotWithSlidingOut(
+                  reconciledMessages,
+                  segment,
+                  promotedHistory,
+                  confirmedRequestIds,
+                )
+              : segment;
           // 被替换的旧内容降级为历史前缀（见 demoteReplacedMessages）。
           // 显式 preserveHistory === false 表示编辑/删除/重发，旧内容已失效，不降级。
-          const explicitDrop = payload.preserveHistory === false;
           const replacedMessages: ChatMessage[] = !explicitDrop && current
             ? (current.source === "disk"
-                ? current.messages
-                : (bindingChanged && current.source === "runtime"
-                    ? [...(current.history?.messages ?? []), ...current.messages]
+                ? current.messages.filter((message) => message.meta?.optimistic !== true)
+                : (current.source === "runtime" && !canMergeRuntime
+                    ? [...(current.history?.messages ?? []), ...current.messages.filter((message) =>
+                        !droppedOptimisticIds.has(message.id) && message.meta?.optimistic !== true
+                      )]
                     : []))
             : [];
           const demoted = demoteReplacedMessages(replacedMessages, segment);
@@ -2101,7 +2401,7 @@ export const applySessionRuntimeEventAtom = atom(
           bindingChanged,
         )
       : undefined;
-    if (nextUi) {
+    if (nextUi && nextUi !== get(sessionRuntimeUiByIdAtom)[event.sessionId]) {
       set(sessionRuntimeUiByIdAtom, {
         ...get(sessionRuntimeUiByIdAtom),
         [event.sessionId]: nextUi,
@@ -2290,6 +2590,7 @@ export const removeSessionStateAtom = atom(null, (get, set, sessionId: string) =
   const loadState = { ...get(sessionMessageLoadStateAtom) };
   delete loadState[sessionId];
   set(sessionMessageLoadStateAtom, loadState);
+  timelinePresentationCleanupRegistry.removeSession(sessionId);
   if (get(currentSessionIdAtom) === sessionId) set(currentSessionIdAtom, undefined);
 });
 

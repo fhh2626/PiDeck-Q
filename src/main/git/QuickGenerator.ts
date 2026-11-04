@@ -54,7 +54,7 @@ export function createQuickGenerator({ piLocator, settingsStore, appLogger }: Qu
 		const settings = settingsStore.get();
 		const command = piLocator.resolveCommand(
 			settings.customPiPath, settings.wslEnabled, settings.wslDistro, settings.wslUser,
-			settings.piRuntimePreference, settings.piTypescriptPath, settings.piRustPath,
+			settings.piRuntimePreference, settings.piTypescriptPath, settings.piRustPath, settings.piBoltPath,
 		);
 		const invocation = piLocator.createInvocation(command, [
 			"--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills",

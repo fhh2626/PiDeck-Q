@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 
@@ -39,13 +38,29 @@ test("timeout error message includes the configured duration", async () => {
   );
 });
 
-test("default timeout is 30s and reflected in error text", () => {
-  // 不实际等 30s：仅断言源码层面默认值与错误模板一致，防止默认值漂移
-  const source = readFileSync("src/main/pi/PiRpcClient.ts", "utf8");
-  assert.match(source, /timeoutMs = 30_000/);
-  assert.match(source, /RPC command timed out after \$\{timeoutMs\}ms/);
+test("default timeout is 30s and reflected in error text", async () => {
+  // 注入可控的 setTimeout：不真等 30s，直接观察调度时长并手动触发回调
+  const scheduled = [];
+  const { PiRpcClient: ClockedClient } = loadTsCommonJs("src/main/pi/PiRpcClient.ts", {
+    globals: {
+      setTimeout: (fn, delay) => {
+        scheduled.push({ fn, delay });
+        return { fake: true };
+      },
+      clearTimeout: () => {},
+    },
+  });
+  const stdin = new Writable({ write: (_chunk, _enc, cb) => cb() });
+  const client = new ClockedClient(stdin, new PassThrough());
+  const pending = client.request({ type: "get_state" });
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delay, 30_000, "未显式传入 timeout 时默认 30s");
+  scheduled[0].fn();
+  await assert.rejects(pending, (error) => {
+    assert.match(String(error.message), /RPC command timed out after 30000ms: get_state/);
+    return true;
+  });
 });
-
 test("pending request is removed after timeout (no double resolve)", async () => {
   const { client } = createClient(10);
   const error = await client.request({ type: "get_state" }, 10).catch((e) => e);

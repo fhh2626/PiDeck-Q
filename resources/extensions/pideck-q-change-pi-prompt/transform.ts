@@ -64,7 +64,6 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	if (has('write')) sections.push(p.write);
 	if (has('bash') || has('powershell')) sections.push(p.shell);
 	if (has('ask_question')) sections.push(p.userInput);
-	if (has('todo')) sections.push(p.taskTracking);
 	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);
 	sections.push(p.validation, p.communication);
 	sections.push(p.environment.replace(/\{\{(hostOs|today)\}\}/g, (_, key: string) => key === 'hostOs' ? input.hostOs : input.today));

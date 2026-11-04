@@ -320,7 +320,7 @@ export class NativeRendererServer {
 				});
 			} else if (hasLastEventId) {
 				for (const record of this.eventHistory) {
-					if (record.seq > lastEventId) this.writeToClient(client, record.frame);
+					if (record.seq > lastEventId) this.writeToClient(client, record.frame, record.bytes);
 				}
 			}
 			this.writeControlEvent(client, "native.eventChannelReady", {
@@ -438,8 +438,8 @@ export class NativeRendererServer {
 			this.appendEvent("native.resyncRequired", [{ channel, bytes }]);
 			return;
 		}
-		// Size validation already serialized this envelope; reuse it for replay/live delivery.
-		this.appendEventPayload(payload, channel);
+		// Size validation already serialized this envelope; reuse it (and its byte length) for replay/live delivery.
+		this.appendEventPayload(payload, channel, bytes);
 	}
 
 	private appendEvent(channel: string, args: unknown[]): void {
@@ -447,10 +447,13 @@ export class NativeRendererServer {
 	}
 
 	/** Store and deliver the exact envelope that passed the frame-budget check. */
-	private appendEventPayload(payload: string, channel = "unknown"): void {
+	private appendEventPayload(payload: string, channel = "unknown", payloadBytes = Buffer.byteLength(payload)): void {
 		const seq = ++this.eventSeq;
-		const frame = `id: ${seq}\ndata: ${payload}\n\n`;
-		const bytes = Buffer.byteLength(frame);
+		const header = `id: ${seq}\ndata: `;
+		const frame = `${header}${payload}\n\n`;
+		// The SSE header and the trailing blank line are ASCII, so the frame size is the
+		// already-known payload size plus their character counts; avoids re-scanning MB frames.
+		const bytes = header.length + payloadBytes + 2;
 		this.eventTimes[seq % EVENT_TIME_RING_SIZE] = monotonicNowMs();
 		if (bytes >= LARGE_FRAME_LOG_BYTES) this.reportLargeFrame(channel, bytes);
 		this.eventHistory.push({ seq, frame, bytes });
@@ -460,7 +463,7 @@ export class NativeRendererServer {
 			if (!removed) break;
 			this.eventHistoryBytes -= removed.bytes;
 		}
-		for (const client of [...this.clients]) this.writeToClient(client, frame);
+		for (const client of [...this.clients]) this.writeToClient(client, frame, bytes);
 	}
 
 	/**
@@ -494,10 +497,11 @@ export class NativeRendererServer {
 		this.writeToClient(client, `id: ${this.eventSeq}\ndata: ${payload}\n\n`);
 	}
 
-	private writeToClient(client: EventClient, frame: string): boolean {
+	/** frameBytes is optional: only the blocked (queueing) path needs the size, so compute it lazily. */
+	private writeToClient(client: EventClient, frame: string, frameBytes?: number): boolean {
 		if (client.response.destroyed) return false;
-		const bytes = Buffer.byteLength(frame);
 		if (client.blocked) {
+			const bytes = frameBytes ?? Buffer.byteLength(frame);
 			// 只有“已有积压本身超限”才掐断；新帧自身再大也不能触发，否则单个大帧就杀死连接。
 			if (client.pendingBytes > MAX_PENDING_EVENT_BYTES) {
 				// 静默掐断会让上层只看到“事件游标停滞”而找不到原因，这里留痕。

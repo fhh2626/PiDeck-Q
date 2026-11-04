@@ -287,26 +287,13 @@ test("sliceLastUserTurns keeps the item budget over the turn limit for prefixes"
   assert.equal(sliced[0].message?.role, "user");
 });
 
-test("timeline wires the turn mount window helper", () => {
+test("timeline wires virtual row rendering rather than legacy turn windowing", () => {
   const source = readFileSync("src/renderer/src/components/session/SessionMessageTimeline.tsx", "utf8");
-  assert.match(source, /resolveTimelineTurnWindow/);
-  assert.match(source, /controller\.scrolledWindowItems/);
-  assert.match(source, /TIMELINE_MOUNTED_TURN_LIMIT/);
-  // TIMELINE_SCROLLED_MAX_ITEMS 由 controller 持有（滚动态窗口上限），
-  // 时间线自己只用它的值与 controller.scrolledWindowItems；
-  // 此前这里断言的是时间线里一个未使用的 import（G1 已删）。
+  assert.match(source, /useVirtualTimeline/);
+  assert.match(source, /VirtualTimelineRows/);
+  assert.match(source, /TimelineMessageRow/);
+  // controller 仍然维护滚动状态
   const controller = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
   assert.match(controller, /TIMELINE_SCROLLED_MAX_ITEMS/);
   assert.doesNotMatch(source, /import \{[^}]*TIMELINE_SCROLLED_MAX_ITEMS/, "时间线不得再引入未使用的常量 import");
-  assert.match(source, /displayRuns\.map/);
-  // 长会话渲染治理：贴底与上滚共用同一条目预算（controller.scrolledWindowItems），
-  // 不得再给贴底开「无上限」分支——一离开底部列表就突然缩短，视口会跳。
-  assert.doesNotMatch(
-    source,
-    /followingForTurnWindow \? undefined/,
-    "贴底窗口不得再传 undefined 绕开条目预算",
-  );
-  // 按钮文案按「隐藏的用户轮数」计算，不再按 agent-run 数
-  assert.match(source, /hiddenTurnCount/);
-  assert.doesNotMatch(source, /hiddenRunCount/);
 });

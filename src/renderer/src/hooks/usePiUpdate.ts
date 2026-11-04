@@ -81,7 +81,9 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
           ? { piTypescriptPath: status.command }
           : status.runtimeKind === "rust" && !settings.piRustPath
             ? { piRustPath: status.command }
-            : {};
+            : status.runtimeKind === "bolt" && !settings.piBoltPath
+              ? { piBoltPath: status.command }
+              : {};
       return api.settings.update({
         piInstall: {
           command: status.command,
@@ -93,7 +95,7 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
     }
     // 未检测到：清除旧缓存，避免残留上一台机器/旧路径的结果
     return api.settings.update({ piInstall: undefined });
-  }, [api, settings.piRustPath, settings.piTypescriptPath]);
+  }, [api, settings.piBoltPath, settings.piRustPath, settings.piTypescriptPath]);
 
   const checkPiInstall = useCallback(
     async (source: "startup" | "manual" = "manual") => {

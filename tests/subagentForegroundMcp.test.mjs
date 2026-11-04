@@ -3,10 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createForegroundMcpHook } from "../resources/extensions/pideck-q-subagents/src/runs/shared/foreground-mcp.ts";
-import { buildInProcessChildLaunch } from "../resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts";
-import { computeMcpServerHash } from "../resources/extensions/pideck-q-subagents/src/runs/shared/mcp-direct-tool-allowlist.ts";
-import { evaluateChildToolDiagnostic } from "../resources/extensions/pideck-q-subagents/src/runs/shared/child-runtime-config.ts";
+import "./helpers/piFixtureResolver.mjs";
+
+// Pi-hosted packages come from the latest-Pi fixture, so load sources only after the resolver is active.
+const shared = "../resources/extensions/pideck-q-subagents/src/runs/shared";
+const { createForegroundMcpHook } = await import(`${shared}/foreground-mcp.ts`);
+const { buildInProcessChildLaunch } = await import(`${shared}/child-launch.ts`);
+const { computeMcpServerHash } = await import(`${shared}/mcp-direct-tool-allowlist.ts`);
+const { evaluateChildToolDiagnostic } = await import(`${shared}/child-runtime-config.ts`);
 
 /** In-memory JSON-RPC transport: exercises the SDK's real MCP connection/tool/cleanup path. */
 function transportFor(server, calls) {

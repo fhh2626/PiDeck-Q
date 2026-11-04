@@ -1,18 +1,18 @@
 # 常见问题
 
-这里整理了一些与 **PiDeck**、**Pi Agent / Pi_Agent_Rust 桌面工作台**、**本地 AI 编码助手** 相关的常见问题，帮助搜索引擎和用户更快找到答案。
+这里整理了一些与 **PiDeck**、**Pi Agent / Pi_Agent_Rust / Pi-Bolt 桌面工作台**、**本地 AI 编码助手** 相关的常见问题，帮助搜索引擎和用户更快找到答案。
 
 ## PiDeck 是什么？
 
-**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Qt6/QtWebView + Node Sidecar + React/TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
+**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent、Pi_Agent_Rust 和 Pi-Bolt，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Qt6/QtWebView + Node Sidecar + React/TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
 
 ## PiDeck 和 pi 是什么关系？
 
-PiDeck **不是**原版 Pi Agent 或 Pi_Agent_Rust 的分支。它使用原生 Qt 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
+PiDeck **不是**原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
 
 ## 支持哪些 AI 编码助手？
 
-PiDeck 原生支持 **原版 Pi Agent** 和 **Pi_Agent_Rust**。通过会话导入功能，你也可以将本地的 **Codex** 和 **Claude** 会话导入为 PiDeck 历史会话，方便统一浏览和恢复。
+PiDeck 原生支持 **原版 Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**（Pi 系后端；无意支持 Pi 系以外的后端）。通过会话导入功能，你也可以将本地的 **Codex** 和 **Claude** 会话导入为 PiDeck 历史会话，方便统一浏览和恢复。
 
 ## 支持哪些平台？
 
@@ -38,7 +38,7 @@ pi --mode rpc
 
 ## PiDeck 的主要功能有哪些？
 
-- **多项目工作区**：同时管理多个本地项目，每个项目独立运行 Pi Agent 或 Pi_Agent_Rust
+- **多项目工作区**：同时管理多个本地项目，每个运行中的会话拥有独立的 Agent 进程（运行时可选 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt）
 - **会话历史与恢复**：浏览、恢复、导出历史对话
 - **Git 集成**：实时分支显示、文件状态、本地和远程分支管理
 - **内置终端 Dock**：Agent 绑定独立终端 tab，支持多标签、主题切换
@@ -46,6 +46,10 @@ pi --mode rpc
 - **插件与 Skill 管理**：全局和项目级 Skills 与 Extension 管理
 - **上下文感知输入**：`@` 文件引用、`!` Shell 执行、`/` 斜线命令
 - **局域网 Web 前端**：可选启用的独立 Web 服务，不是内置浏览器面板
+
+## 可以同时运行多个 Agent 吗？
+
+可以。每个运行中的会话对应一个独立的 RPC Agent 进程，同一项目或不同项目都可以同时运行多个 Agent。Pi 运行时（Pi Agent、Pi_Agent_Rust 或 Pi-Bolt）是全局偏好设置，不支持按项目或会话分别选择；新启动的 Agent 使用当前设置，修改偏好不会切换已经运行的进程。
 
 ## PiDeck 是免费的吗？
 

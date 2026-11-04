@@ -11,6 +11,9 @@ import {
   parseShellPathFromSettings,
   powershellAvailable,
   probeShellAvailability,
+  probeShellDetails,
+  toRetentionAvailability,
+  toKnownHostShells,
   probeSearchAvailability,
   resolveShellPath,
 } from '../shellAvailability.ts';
@@ -173,4 +176,98 @@ test('parseShellPathFromSettings ignores invalid JSON and non-absolute relative 
   assert.equal(parseShellPathFromSettings('{'), undefined);
   assert.equal(resolveShellPath('relative/bash'), undefined);
   assert.equal(resolveShellPath('~/bin/bash', '/home/me'), join('/home/me', 'bin/bash'));
+});
+
+test('non-C drive Git discovered via Windows Git registry is available', () => {
+  const winHost = {
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\Program Files', Path: 'C:\\Windows\\System32' },
+    exists: (file) => file === 'D:\\Program Files\\Git\\bin\\bash.exe',
+  };
+  const discovery = {
+    roots: ['D:\\Program Files\\Git'],
+    status: 'complete',
+  };
+  const details = probeShellDetails(winHost, undefined, discovery);
+  assert.equal(details.bash.status, 'available');
+  assert.equal(details.bash.source, 'git-registry');
+  assert.equal(details.bash.candidate, 'D:\\Program Files\\Git\\bin\\bash.exe');
+  assert.equal(toRetentionAvailability(details).bash, true);
+  assert.equal(toKnownHostShells(details)?.bash, true);
+});
+
+test('WindowsApps alias yields identical unknown result across Node and Bun exists divergence', () => {
+  const aliasPath = 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe';
+  const aliasEvidence = { kind: 'unknown', reason: 'windows-app-alias' };
+
+  // Node simulation: existsSync returns false for WindowsApps alias
+  const nodeHost = {
+    platform: 'win32',
+    env: {
+      Path: 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Windows\\System32',
+      LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    },
+    exists: (file) => (file === aliasPath ? false : false),
+    inspectShellPath: (file) => (file.toLowerCase() === aliasPath.toLowerCase() ? aliasEvidence : { kind: 'missing' }),
+  };
+
+  // Bun simulation: existsSync returns true for WindowsApps alias
+  const bunHost = {
+    platform: 'win32',
+    env: {
+      Path: 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Windows\\System32',
+      LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    },
+    exists: (file) => (file === aliasPath ? true : false),
+    inspectShellPath: (file) => (file.toLowerCase() === aliasPath.toLowerCase() ? aliasEvidence : { kind: 'missing' }),
+  };
+
+  const nodeDetails = probeShellDetails(nodeHost);
+  const bunDetails = probeShellDetails(bunHost);
+
+  assert.deepEqual(nodeDetails.bash, bunDetails.bash);
+  assert.equal(nodeDetails.bash.status, 'unknown');
+  assert.equal(nodeDetails.bash.reason, 'windows-app-alias');
+
+  // Both retain bash (fail-open for pruning existing tools)
+  assert.equal(toRetentionAvailability(nodeDetails).bash, true);
+  assert.equal(toRetentionAvailability(bunDetails).bash, true);
+
+  // Neither expands shared child allowlist (safe for child tool policy)
+  assert.equal(toKnownHostShells(nodeDetails), undefined);
+  assert.equal(toKnownHostShells(bunDetails), undefined);
+});
+
+test('POSIX PATH preserves directory spaces without unintended trimming in search helper', () => {
+  const host = {
+    platform: 'linux',
+    env: {
+      PATH: '/opt/tool bin ',
+    },
+    exists: (file) => ['/opt/tool bin /rg', '/opt/tool bin /fd'].includes(file),
+    isExecutableFile: () => true,
+  };
+
+  const availability = probeSearchAvailability(host, '/tmp/agent');
+  assert.equal(availability.grep, true);
+  assert.equal(availability.find, true);
+});
+
+test('legacy boolean APIs project unknown shell status to false while retention availability is true', () => {
+  const host = {
+    platform: 'win32',
+    env: { Path: '' },
+    exists: () => false,
+    inspectShellPath: () => ({ kind: 'unknown', reason: 'windows-app-alias' }),
+  };
+
+  // Legacy boolean functions must only project available to true (unknown projects to false)
+  assert.equal(bashAvailable(host), false, 'bashAvailable must return false for unknown');
+  assert.equal(powershellAvailable(host), false, 'powershellAvailable must return false for unknown');
+  assert.deepEqual(probeShellAvailability(host), { bash: false, powershell: false });
+
+  // Detailed retention projection on the same details must be true (fail-open)
+  const details = probeShellDetails(host);
+  assert.equal(toRetentionAvailability(details).bash, true, 'toRetentionAvailability must be true for unknown');
+  assert.equal(toRetentionAvailability(details).powershell, true, 'toRetentionAvailability must be true for unknown');
 });

@@ -1,6 +1,7 @@
 import { useSetAtom, useStore } from "jotai";
 import { useRef } from "react";
 import type {
+  ChatMessage,
   ImageContent,
   SendSessionPromptInput,
   SendSessionPromptResult,
@@ -26,6 +27,8 @@ import {
   expandPromptTemplates,
 } from "../composerBehavior";
 import { exceedsComposerImagePayloadBudget } from "../utils/composerImages";
+import { buildOptimisticCacheWrite } from "../utils/optimisticSessionCache";
+import { settleOptimisticMessage } from "../utils/optimisticUserReconciliation";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -119,6 +122,9 @@ export function createSessionSendLock() {
   };
 }
 
+export { buildOptimisticCacheWrite };
+
+
 export function useSessionSend(options: UseSessionSendOptions) {
   const store = useStore();
   const setDraft = useSetAtom(setSessionDraftAtom);
@@ -128,6 +134,54 @@ export function useSessionSend(options: UseSessionSendOptions) {
   const bindRuntime = useSetAtom(bindSessionRuntimeAtom);
   const upsertSession = useSetAtom(upsertSessionAtom);
   const sendingSessionIdsRef = useRef<Set<string>>(new Set());
+
+  /** 写入乐观消息时保留窗口/历史字段；runtime 全量写入缺省会清除它们。 */
+  function writeOptimisticCache(
+    targetSessionId: string,
+    messages: ChatMessage[],
+    options?: { allowPendingRemoval?: boolean },
+  ) {
+    const current = store.get(sessionMessagesCacheAtom)?.[targetSessionId];
+    setCacheMessages(buildOptimisticCacheWrite(targetSessionId, messages, current, options));
+  }
+
+  /** 队列/压缩等“不会直接发给 host”的路径要收回本地气泡，避免留下永久 pending。 */
+  function discardOptimisticBubble(targetSessionId: string, targetRequestId: string) {
+    const current = store.get(sessionMessagesCacheAtom)?.[targetSessionId];
+    // 只删本地乐观行；若投影恰好复用了同一个 id，权威行不能被当成气泡删掉。
+    if (!current?.messages.some((item) =>
+      item.id === targetRequestId && item.meta?.optimistic === true
+    )) return;
+    writeOptimisticCache(
+      targetSessionId,
+      current.messages.filter((item) =>
+        !(item.id === targetRequestId && item.meta?.optimistic === true)
+      ),
+      { allowPendingRemoval: true },
+    );
+  }
+
+  /**
+   * 把实际提交给主进程的正文补到本地气泡上。
+   * 模板/技能展开后正文与用户输入不同；主进程权威消息使用展开正文，
+   * 仅靠原始输入无法在请求 id 缺失时配对。
+   */
+  function updateOptimisticMatchText(
+    targetSessionId: string,
+    targetRequestId: string,
+    matchText: string,
+  ) {
+    const current = store.get(sessionMessagesCacheAtom)?.[targetSessionId];
+    if (!current) return;
+    let found = false;
+    const messages = current.messages.map((item) => {
+      if (item.id !== targetRequestId || item.meta?.optimistic !== true) return item;
+      found = true;
+      return { ...item, meta: { ...item.meta, optimisticMatchText: matchText } };
+    });
+    if (!found) return;
+    writeOptimisticCache(targetSessionId, messages);
+  }
 
   function clearSnapshot(targetSessionId: string) {
     options.onDraftMutation?.(targetSessionId);
@@ -207,18 +261,17 @@ export function useSessionSend(options: UseSessionSendOptions) {
       clearSnapshot(targetSessionId);
       const cacheEntry = store.get(sessionMessagesCacheAtom)?.[targetSessionId];
       const previousMessages = cacheEntry?.messages ?? [];
-      setCacheMessages({
-        sessionId: targetSessionId,
-        messages: [...previousMessages, {
-          id: requestId,
-          agentId: "",
-          role: "user" as const,
-          text: message,
-          timestamp: Date.now(),
-          images: imageSnapshot,
-        }],
-        source: "runtime" as const,
-      });
+      writeOptimisticCache(targetSessionId, [...previousMessages, {
+        id: requestId,
+        agentId: "",
+        role: "user" as const,
+        text: message,
+        timestamp: Date.now(),
+        images: imageSnapshot,
+        // 本地先显示的气泡；权威快照到达后由 reconcileOptimisticUserMessages 配对替换。
+        // pending=true 期间旧快照不能把它滑出（见 mergeCanonicalSnapshotWithSlidingOut）。
+        meta: { optimistic: true, optimisticRequestId: requestId, optimisticPending: true },
+      }]);
       options.resetComposerUi?.();
     };
 
@@ -226,12 +279,34 @@ export function useSessionSend(options: UseSessionSendOptions) {
     if (publishBeforeActivation) publishOptimisticSubmission(sourceSessionId);
 
     let sessionId = sourceSessionId;
+    // accepted/unknown 只代表主进程已受理或无法判断，不代表权威 user 行已经
+    // 到达 renderer。此时清掉 pending 会让随后一条旧增量/全量快照把本地气泡
+    // 截掉或滑出，重新触发 scrollHeight 收缩回弹；只有明确 rejected 才 settle。
+    let keepOptimisticPending = false;
+    /**
+     * 明确失败/不需要 host 确认的路径清掉本地气泡的 pending 标记。
+     * accepted/unknown 不调用：旧快照可能只是上一轮终态，清掉后会把尚未
+     * 被权威消息确认的气泡滑出，重新触发底部回弹。
+     */
+    const settleOptimisticBubbles = () => {
+      for (const targetSessionId of new Set([sourceSessionId, sessionId])) {
+        const current = store.get(sessionMessagesCacheAtom)?.[targetSessionId];
+        if (!current) continue;
+        const settled = settleOptimisticMessage(current.messages, requestId);
+        if (settled.changed) writeOptimisticCache(targetSessionId, settled.messages);
+      }
+    };
     try {
       sessionId = options.ensureSessionId
         ? await options.ensureSessionId(sourceSessionId)
         : sourceSessionId;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      // ensure 失败时本地气泡是唯一记录；发布路径已清空草稿，必须还回去。
+      if (publishBeforeActivation) {
+        restoreRejectedSnapshot(sourceSessionId, message, imageSnapshot);
+      }
+      discardOptimisticBubble(sourceSessionId, requestId);
       setSendState({
         sessionId: sourceSessionId,
         state: { status: "error", error: errorMessage },
@@ -239,6 +314,30 @@ export function useSessionSend(options: UseSessionSendOptions) {
       options.showError?.(errorMessage, 4000);
       sendingSessionIdsRef.current.delete(sourceSessionId);
       return;
+    }
+
+    // 旧 Chat 前哨可能把 sourceSessionId 提升为真实 catalog session；本地气泡
+    // 是先发布在 source 的，若不迁移，新会话的权威 user 无法与它配对，旧会话
+    // 还会残留一条幽灵消息。只迁移本次 request，保留两边的窗口/历史字段。
+    if (publishBeforeActivation && sessionId !== sourceSessionId) {
+      const sourceCache = store.get(sessionMessagesCacheAtom)?.[sourceSessionId];
+      const sourceMessages = sourceCache?.messages ?? [];
+      const localMessages = sourceMessages.filter(
+        (item) => item.id === requestId && item.meta?.optimistic === true,
+      );
+      if (localMessages.length > 0) {
+        const targetMessages = store.get(sessionMessagesCacheAtom)?.[sessionId]?.messages ?? [];
+        if (!targetMessages.some((item) => item.id === requestId)) {
+          writeOptimisticCache(sessionId, [...targetMessages, ...localMessages]);
+        }
+        writeOptimisticCache(
+          sourceSessionId,
+          sourceMessages.filter((item) =>
+            !(item.id === requestId && item.meta?.optimistic === true)
+          ),
+          { allowPendingRemoval: true },
+        );
+      }
     }
 
     const runtime = store.get(sessionRuntimeByIdAtom)[sessionId];
@@ -255,13 +354,22 @@ export function useSessionSend(options: UseSessionSendOptions) {
         sessionId,
         state: { status: "sending", requestId },
       });
-      setCacheMessages({
-        sessionId,
-        messages: (store.get(sessionMessagesCacheAtom)?.[sessionId]?.messages ?? []).map((item) =>
-          item.id === requestId ? { ...item, agentId: runtimeAgentId } : item,
-        ),
-        source: "runtime",
-      });
+      const optimisticMessages = store.get(sessionMessagesCacheAtom)?.[sessionId]?.messages;
+      // 会话提升可能返回新的 sessionId；只有本地气泡确实在该缓存里时才重写，
+      // 避免用空数组覆盖另一个会话已加载的窗口元数据，也避免把复用同一 id 的
+      // 权威投影行当成气泡重写并触发一次无意义的 disk revision 递增。
+      if (optimisticMessages?.some((item) =>
+        item.id === requestId && item.meta?.optimistic === true
+      )) {
+        writeOptimisticCache(
+          sessionId,
+          optimisticMessages.map((item) =>
+            item.id === requestId && item.meta?.optimistic === true
+              ? { ...item, agentId: runtimeAgentId }
+              : item,
+          ),
+        );
+      }
     }
     if (isCompactCommand) {
       if (!runtimeAgentId) {
@@ -269,6 +377,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
         // pi will handle /compact command once active.
       } else {
         const compactPrompt = trimmedMessage.replace(/^\/compact\s*/, "").trim();
+        discardOptimisticBubble(sessionId, requestId);
         clearSnapshot(sessionId);
         options.resetComposerUi?.();
         try {
@@ -277,6 +386,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
           // /compact exits before the normal send finally block; release the
           // session guard here so a failed/finished compaction cannot freeze
           // every later submission for this session.
+          settleOptimisticBubbles();
           sendingSessionIdsRef.current.delete(sourceSessionId);
         }
         return;
@@ -295,6 +405,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
       );
       if (!expandedMessage.trim() && emptyTemplateName) {
         // 模板正文为空：拦截排队，提示用户先补正文（否则入队的是空白消息）
+        discardOptimisticBubble(sessionId, requestId);
         sendingSessionIdsRef.current.delete(sourceSessionId);
         rejectEmptyTemplate(emptyTemplateName);
         return;
@@ -307,6 +418,8 @@ export function useSessionSend(options: UseSessionSendOptions) {
         behavior: streamingBehavior,
       });
       if (enqueued) {
+        // 队列面板是这一轮的展示来源；时间线不再保留一条永远不会收到 host 确认的气泡。
+        discardOptimisticBubble(sessionId, requestId);
         clearSnapshot(sessionId);
         options.resetComposerUi?.();
         sendingSessionIdsRef.current.delete(sourceSessionId);
@@ -325,21 +438,22 @@ export function useSessionSend(options: UseSessionSendOptions) {
       });
       clearSnapshot(sessionId);
 
-      // Special paths publish only after their runtime/session target is known.
-      const cacheEntry = store.get(sessionMessagesCacheAtom)?.[sessionId];
-      const previousMessages = cacheEntry?.messages ?? [];
-      setCacheMessages({
-        sessionId,
-        messages: [...previousMessages, {
+      // /compact 是运行时命令，不是对话消息；冷启动落到正常发送路径时也不能
+      // 发布本地 user 气泡，否则 host 不会返回对应权威行，气泡会永久 pending。
+      if (!isCompactCommand) {
+        const cacheEntry = store.get(sessionMessagesCacheAtom)?.[sessionId];
+        const previousMessages = cacheEntry?.messages ?? [];
+        writeOptimisticCache(sessionId, [...previousMessages, {
           id: requestId,
           agentId: runtimeAgentId ?? "",
           role: "user" as const,
           text: message,
           timestamp: Date.now(),
           images: imageSnapshot,
-        }],
-        source: "runtime" as const,
-      });
+          // 本地先显示的气泡；权威快照到达后由 reconcileOptimisticUserMessages 配对替换。
+          meta: { optimistic: true, optimisticRequestId: requestId, optimisticPending: true },
+        }]);
+      }
       options.resetComposerUi?.();
     }
 
@@ -351,6 +465,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
     } catch (error) {
       restoreRejectedSnapshot(sessionId, message, imageSnapshot);
       const errorMessage = error instanceof Error ? error.message : String(error);
+      discardOptimisticBubble(sessionId, requestId);
       setSendState({
         sessionId,
         state: { status: "error", requestId, error: errorMessage },
@@ -370,6 +485,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
       // 给明确提示而不是把空白消息发到主进程被拒为“消息不能为空”。
       restoreRejectedSnapshot(sessionId, message, imageSnapshot);
       rejectEmptyTemplate(emptyTemplateName);
+      discardOptimisticBubble(sessionId, requestId);
       sendingSessionIdsRef.current.delete(sourceSessionId);
       return;
     }
@@ -377,6 +493,12 @@ export function useSessionSend(options: UseSessionSendOptions) {
       expandedMessage,
       store.get(sessionComposerModeByIdAtom)[sessionId] ?? "normal",
     );
+    // 主进程的乐观 user 消息使用实际提交正文；本地气泡展示的是用户原始输入。
+    // 发送前记录一份可用于内容兜底配对的正文，避免模板/技能展开造成重复气泡。
+    const submittedText = submission.message.trim();
+    if (submittedText && submittedText !== message.trim()) {
+      updateOptimisticMatchText(sessionId, requestId, submittedText);
+    }
 
     try {
       const result = await options.sendPrompt({
@@ -424,10 +546,14 @@ export function useSessionSend(options: UseSessionSendOptions) {
         toastMessage = `${deliveryError}${details}`;
       }
       if (outcome === "accepted") {
+        keepOptimisticPending = true;
         options.recordPromptHistory?.(sessionId, message);
         setSendState({ sessionId, state: { status: "idle" } });
         if (record) options.refreshProject?.(record.projectId);
       } else if (outcome === "unknown") {
+        // unknown 可能已经落库；保留 pending，等到权威 user 行配对或后续
+        // rejected 清理，不能用未确认的旧快照替用户“撤回”消息。
+        keepOptimisticPending = true;
         setSendState({
           sessionId,
           state: {
@@ -450,6 +576,8 @@ export function useSessionSend(options: UseSessionSendOptions) {
         options.showError?.(toastMessage, 4000);
       }
     } catch (error) {
+      // 抛异常同样属于投递结果未知：保留本地气泡，避免旧快照把它滑出。
+      keepOptimisticPending = true;
       setSendState({
         sessionId,
         state: {
@@ -464,6 +592,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
       });
       options.showUnknown?.();
     } finally {
+      if (!keepOptimisticPending) settleOptimisticBubbles();
       sendingSessionIdsRef.current.delete(sourceSessionId);
     }
   };

@@ -126,6 +126,8 @@ type WebServiceDependencies = {
 	prepareSessionRuntimeResend: (
 		target: SessionRuntimeTarget,
 		messageId: string,
+		model?: { provider: string; modelId: string },
+		thinkingLevel?: string,
 	) => Promise<SessionCommandResult<SessionTargetedValue<{ text: string; images?: ImageContent[] }>>>;
 	setSessionRuntimeModel: (
 		target: SessionRuntimeTarget,
@@ -764,6 +766,8 @@ export class WebServiceManager {
 					provider?: string;
 					modelId?: string;
 					level?: string;
+					model?: { provider: string; modelId: string };
+					thinkingLevel?: string;
 				}>(request);
 				const target = body.target;
 				if (!target || target.sessionId !== sessionId) {
@@ -812,7 +816,12 @@ export class WebServiceManager {
 						result = await this.deps.deleteSessionRuntimeMessage(target, body.messageId ?? "");
 						break;
 					case "prepare-resend":
-						result = await this.deps.prepareSessionRuntimeResend(target, body.messageId ?? "");
+						result = await this.deps.prepareSessionRuntimeResend(
+							target,
+							body.messageId ?? "",
+							body.model,
+							body.thinkingLevel,
+						);
 						break;
 					case "model":
 						result = await this.deps.setSessionRuntimeModel(
@@ -1004,7 +1013,7 @@ export class WebServiceManager {
 			return trOr("web.status." + (runtime?.status || session?.status || "unknown"), tr("web.status.unknown"));
 		}
 		function mergeRejectedDraft(rejected, current) {
-			return [rejected, current].filter(value => value && value.trim()).join("\n\n");
+			return [rejected, current].filter(value => value && value.trim()).join("\\n\\n");
 		}
 		function applyStaticCopy() {
 			document.documentElement.lang = locale;
@@ -1243,7 +1252,7 @@ export class WebServiceManager {
 			}
 			if (type === "error") {
 				const block = ensureStreamingText();
-				block.textContent += "\n[错误] " + (frame.errorText || "");
+				block.textContent += "\\n[错误] " + (frame.errorText || "");
 				scrollStreamToBottom();
 				return;
 			}
@@ -1272,10 +1281,10 @@ export class WebServiceManager {
 					buffer += decoder.decode(value, { stream: true });
 					// SSE 帧以空行分隔；逐帧解析 data: 行
 					let sep;
-					while ((sep = buffer.indexOf("\n\n")) !== -1) {
+					while ((sep = buffer.indexOf("\\n\\n")) !== -1) {
 						const rawEvent = buffer.slice(0, sep);
 						buffer = buffer.slice(sep + 2);
-						const dataLine = rawEvent.split("\n").find(line => line.startsWith("data:"));
+						const dataLine = rawEvent.split("\\n").find(line => line.startsWith("data:"));
 						if (!dataLine) continue;
 						const payload = dataLine.slice(5).trim();
 						if (payload === "[DONE]") {

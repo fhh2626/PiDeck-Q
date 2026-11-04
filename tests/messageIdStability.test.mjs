@@ -175,3 +175,62 @@ test("压缩归档的旧消息（投影中已不存在）自然消失，不影�
 	assert.equal(stabilized[0].id, previous[1].id);
 	assert.equal(stabilized[1].id, previous[2].id);
 });
+
+test("stabilize keeps the host optimistic requestId when the projected row replaces it", () => {
+	const previous = [
+		runtimeMessage("请展开模板", "user", {
+			meta: { optimisticRequestId: "request-1" },
+		}),
+	];
+	const projected = [projectedMessage("请展开模板", "e1", "user")];
+
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+
+	assert.equal(stabilized[0].id, previous[0].id);
+	assert.equal(stabilized[0].meta.entryId, "e1");
+	assert.equal(stabilized[0].meta.optimisticRequestId, "request-1");
+});
+
+test("stabilize also preserves the host streaming delivery label", () => {
+	const previous = [
+		runtimeMessage("继续", "user", {
+			meta: { optimisticRequestId: "request-1", streamingBehavior: "steer" },
+		}),
+	];
+	const projected = [projectedMessage("继续", "e1", "user")];
+
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+
+	assert.equal(stabilized[0].meta.optimisticRequestId, "request-1");
+	assert.equal(stabilized[0].meta.streamingBehavior, "steer");
+});
+
+test("stabilize does not overwrite a different requestId already present on the projection", () => {
+	const previous = [
+		runtimeMessage("继续", "user", {
+			meta: { optimisticRequestId: "request-old" },
+		}),
+	];
+	const projected = [
+		projectedMessage("继续", "e1", "user", {
+			meta: { entryId: "e1", optimisticRequestId: "request-new" },
+		}),
+	];
+
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+
+	assert.equal(stabilized[0].meta.optimisticRequestId, "request-new");
+});
+
+test("stabilize does not copy a delivery label without a request identity", () => {
+	const previous = [
+		runtimeMessage("继续", "user", {
+			meta: { streamingBehavior: "steer" },
+		}),
+	];
+	const projected = [projectedMessage("继续", "e1", "user")];
+
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+
+	assert.equal(stabilized[0].meta.streamingBehavior, undefined);
+});

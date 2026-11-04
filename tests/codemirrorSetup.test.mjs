@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createRequire } from "node:module";
 import ts from "typescript";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -90,31 +91,120 @@ test("baseEditorExtensions applies readOnly and wordWrap", async () => {
   assert.equal(all.length, baseEditorExtensions().length + 3);
 });
 
-test("editorTheme is a valid theme extension without legacy merge classes", () => {
+test("editorTheme is a valid theme extension", () => {
   const { editorTheme } = loadModule();
-  // editorTheme 是合法主题扩展（theme() 构建不抛 Unsupported selector）
+  // editorTheme 是合法主题扩展：theme() 在模块加载时就会构建 StyleModule，
+  // 若主题里出现 theme() 不支持的 &light/&dark 选择器会抛 "Unsupported selector"，
+  // 加载（loadModule）本身即覆盖该约束。
   assert.ok(editorTheme);
+  // 主题能被真实 EditorState 安装（扩展树合法）
+  const { EditorState } = require("@codemirror/state");
+  const { baseEditorExtensions } = loadModule();
+  assert.doesNotThrow(() => EditorState.create({ doc: "x", extensions: baseEditorExtensions() }));
+});
+
+test("editor theme source has no legacy merge-view classes", () => {
+  // 文本匹配合理：这是“已移除功能不得回归”的静态规则（diff 渲染已迁到 CodeDiffView），
+  // 主题里残留的 cm-merge-* 类名没有任何运行时入口可断言。
   const src = readFileSync("src/renderer/src/utils/codemirrorSetup.ts", "utf8");
-  // diff 渲染已迁移到独立渲染库（CodeDiffView），编辑器主题不再残留 merge 类名
   assert.doesNotMatch(src, /cm-merge-pane/);
   assert.doesNotMatch(src, /cm-merge-gap/);
   assert.doesNotMatch(src, /cm-merge-chunk/);
   assert.doesNotMatch(src, /cm-merge-collapsed/);
   assert.doesNotMatch(src, /cm-collapsedLines/);
-  // theme() 不支持 &light/&dark 选择器（仅 baseTheme 支持），出现会抛 "Unsupported selector"
-  assert.doesNotMatch(src, /"&light|"&dark/);
 });
 
-test("language packages are loaded on demand, not statically imported", () => {
-  // 性能优化核心：codemirrorSetup 不再静态 import @codemirror/lang-* 与 legacy-modes，
-  // 只静态 import core（language/state/view/lezer）。语言包通过 loadEditorLanguage
-  // 内的动态 import() 按需拉入，用户只聊天时 parser 不进初始模块图。
-  const src = readFileSync("src/renderer/src/utils/codemirrorSetup.ts", "utf8");
-  // 静态 import 区（文件顶部到 loadEditorLanguage 之前）不应再有 lang-* / legacy-modes
-  const head = src.slice(0, src.indexOf("async function actuallyLoadLanguage"));
-  assert.doesNotMatch(head, /import \{[^}]*\} from "@codemirror\/lang-/);
-  assert.doesNotMatch(head, /from "@codemirror\/legacy-modes\//);
-  // 动态 import 仍在（按需）
-  assert.match(src, /await import\("@codemirror\/lang-javascript"\)/);
-  assert.match(src, /await import\("@codemirror\/legacy-modes\/mode\/shell"\)/);
+test("readOnly editors set the readOnly state without disabling the editable facet", () => {
+  const { baseEditorExtensions } = loadModule();
+  const { EditorState } = require("@codemirror/state");
+  const { EditorView } = require("@codemirror/view");
+  const state = EditorState.create({ doc: "hello", extensions: baseEditorExtensions({ readOnly: true }) });
+  // readOnly 在状态层生效（命令层据此拒绝编辑）……
+  assert.equal(state.readOnly, true);
+  // ……但不得设置 editable=false，否则 contenteditable 被移除，双击选词/拖拽选块全部失效
+  assert.equal(state.facet(EditorView.editable), true);
+  // 默认（非只读）编辑器 readOnly 为 false
+  assert.equal(EditorState.create({ doc: "hello", extensions: baseEditorExtensions() }).readOnly, false);
+});
+
+test("wordWrap installs line wrapping on the content element", () => {
+  const { baseEditorExtensions } = loadModule();
+  const { EditorState } = require("@codemirror/state");
+  const { EditorView } = require("@codemirror/view");
+  const classes = (state) =>
+    state.facet(EditorView.contentAttributes).map((attrs) => attrs.class ?? "").join(" ");
+  const wrapped = EditorState.create({ extensions: baseEditorExtensions({ wordWrap: true }) });
+  const plain = EditorState.create({ extensions: baseEditorExtensions() });
+  assert.match(classes(wrapped), /cm-lineWrapping/);
+  assert.doesNotMatch(classes(plain), /cm-lineWrapping/);
+});
+
+// 语言包按需加载：以“require 记录”观察模块图，而不是 grep import 语句。
+const LAZY_PACKAGES = [
+  "@codemirror/lang-javascript",
+  "@codemirror/lang-json",
+  "@codemirror/lang-markdown",
+  "@codemirror/lang-css",
+  "@codemirror/lang-sass",
+  "@codemirror/lang-less",
+  "@codemirror/lang-html",
+  "@codemirror/lang-yaml",
+  "@codemirror/lang-xml",
+  "@codemirror/lang-python",
+  "@codemirror/lang-go",
+  "@codemirror/lang-rust",
+  "@codemirror/lang-java",
+  "@codemirror/lang-cpp",
+  "@codemirror/lang-sql",
+  "@codemirror/legacy-modes/mode/shell",
+];
+
+/** getter 型替身：每次被 require 解析时记一笔，可配置为首次失败。 */
+function createRecordingStubs({ failFirst = new Set() } = {}) {
+  const requested = [];
+  const failed = new Set();
+  const stubs = {};
+  for (const name of LAZY_PACKAGES) {
+    Object.defineProperty(stubs, name, {
+      enumerable: true,
+      get() {
+        requested.push(name);
+        if (failFirst.has(name) && !failed.has(name)) {
+          failed.add(name);
+          throw new Error(`simulated chunk load failure: ${name}`);
+        }
+        return {
+          javascript: (options) => ({ lang: "javascript", options }),
+          shell: { name: "shell-mode" },
+        };
+      },
+    });
+  }
+  return { stubs, requested };
+}
+
+test("language packages are loaded on demand, not when the module is imported", async () => {
+  const { stubs, requested } = createRecordingStubs();
+  const mod = loadTsCommonJs("src/renderer/src/utils/codemirrorSetup.ts", { stubs });
+  // 导入模块（含构建主题/高亮）不得拉入任何 lang-* / legacy-modes：用户只聊天时 parser 不进初始模块图
+  assert.equal(requested.length, 0);
+
+  const ts = await mod.loadEditorLanguage("ts");
+  assert.equal(JSON.stringify(ts), JSON.stringify({ lang: "javascript", options: { typescript: true } }));
+  // 只拉入被请求语言对应的那一个包
+  assert.equal(requested.join(","), "@codemirror/lang-javascript");
+
+  assert.ok(await mod.loadEditorLanguage("sh"));
+  assert.equal(requested.join(","), "@codemirror/lang-javascript,@codemirror/legacy-modes/mode/shell");
+});
+
+test("a failed language import is not cached, so the next request retries", async () => {
+  const { stubs, requested } = createRecordingStubs({
+    failFirst: new Set(["@codemirror/lang-javascript"]),
+  });
+  const mod = loadTsCommonJs("src/renderer/src/utils/codemirrorSetup.ts", { stubs });
+  await assert.rejects(mod.loadEditorLanguage("js"), /simulated chunk load failure/);
+  const retried = await mod.loadEditorLanguage("js");
+  assert.equal(retried.lang, "javascript");
+  assert.equal(requested.length, 2, "失败后必须重新 import，而不是永久卡在失败态");
 });

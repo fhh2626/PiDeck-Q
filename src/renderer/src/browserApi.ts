@@ -321,8 +321,8 @@ export function createBrowserApi(): PiDesktopApi {
 				sessionRuntimeCommand(target, "edit-message", { messageId, newText }),
 			deleteRuntimeMessage: (target, messageId) =>
 				sessionRuntimeCommand(target, "delete-message", { messageId }),
-			prepareRuntimeResend: (target, messageId) =>
-				sessionRuntimeCommand(target, "prepare-resend", { messageId }),
+			prepareRuntimeResend: (target, messageId, model, thinkingLevel) =>
+				sessionRuntimeCommand(target, "prepare-resend", { messageId, model, thinkingLevel }),
 			setRuntimeModel: (target, provider, modelId) =>
 				sessionRuntimeCommand(target, "model", { provider, modelId }),
 			setRuntimeThinking: (target, level) =>

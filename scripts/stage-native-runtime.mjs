@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Native sidecar runtime files that are loaded by node-pty on Windows.
+ * Source-build runtime paths for node-pty on Windows (kept as a public allowlist).
  * Build products such as PDB/OBJ files and the source tree are deliberately
  * excluded because they are not consulted by node-pty at runtime.
  */
@@ -16,6 +16,48 @@ export const NODE_PTY_RUNTIME_FILES = Object.freeze([
 	"build/Release/conpty/conpty.dll",
 	"build/Release/conpty/OpenConsole.exe",
 ]);
+
+// Each addon is resolved independently by lib/utils.js. Its DLL/executable
+// companions must stay beside that addon, not beside a different build's addon.
+const NODE_PTY_RUNTIME_GROUPS = [
+	["conpty_console_list.node"],
+	["conpty.node", "conpty/conpty.dll", "conpty/OpenConsole.exe"],
+	["pty.node", "winpty-agent.exe", "winpty.dll"],
+];
+
+/** Select production addon locations without loading native code in the packager. */
+async function resolveNodePtyRuntimeFiles(sourceRoot) {
+	// xmake/Windows release staging uses the active Node runtime, as does node-pty.
+	// No npm_config_arch override: it could disagree with the shipped Node loader.
+	const prebuilt = `prebuilds/${process.platform}-${process.arch}`;
+	const files = [];
+	for (const group of NODE_PTY_RUNTIME_GROUPS) {
+		let complete = false;
+		let missingPath;
+		for (const directory of ["build/Release", prebuilt]) {
+			const candidates = group.map((file) => `${directory}/${file}`);
+			let missing = false;
+			for (const file of candidates) {
+				try {
+					await access(join(sourceRoot, file));
+				} catch (error) {
+					if (error.code !== "ENOENT") throw error;
+					missingPath = join(sourceRoot, file);
+					missing = true;
+					break;
+				}
+			}
+			if (missing) continue;
+			// Preserve both complete groups: node-pty falls back on any dlopen error,
+			// not just absent files (e.g. stale Release addons from another Node ABI).
+			// Never ship a partial group or mix its DLLs with a different build.
+			files.push(...candidates);
+			complete = true;
+		}
+		if (!complete) throw new Error(`Missing node-pty runtime file: ${missingPath}`);
+	}
+	return files;
+}
 
 /** sql.js uses the default WASM build and locates exactly this sibling WASM file. */
 export const SQL_JS_RUNTIME_FILES = Object.freeze([
@@ -72,7 +114,7 @@ async function stageNodePty(projectRoot, stageRoot) {
 	await resetDirectory(destinationRoot);
 	let copied = await copyFiles(sourceRoot, destinationRoot, ["package.json"], "node-pty");
 	copied += await copyJavaScriptTree(join(sourceRoot, "lib"), join(destinationRoot, "lib"));
-	copied += await copyFiles(sourceRoot, destinationRoot, NODE_PTY_RUNTIME_FILES, "node-pty");
+	copied += await copyFiles(sourceRoot, destinationRoot, await resolveNodePtyRuntimeFiles(sourceRoot), "node-pty");
 	return copied;
 }
 

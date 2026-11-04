@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { PiRpcClient } from "./PiRpcClient";
@@ -10,10 +11,21 @@ import {
   type ParkedExtension,
 } from "./piExtensionFilter";
 import type { AppSettings } from "../../shared/types";
-import { detectPiRuntimeKind, type PiRuntimeKind } from "../../shared/piCompatibility";
+import {
+  PIDECK_PI_STANDALONE_ENV,
+  detectPiRuntimeKind,
+  isStandaloneRuntimeKind,
+  piSupportsTrustFlags,
+  type PiRuntimeKind,
+} from "../../shared/piCompatibility";
 import { toWindowsHostPath, toWslLinuxPath } from "../wsl/WslPaths";
 import { appendBuiltInExtensionArgs } from "../extensions/builtInExtensions";
 import { getAppLogger } from "../logging/sharedLogger";
+import { appendWslEnvName, withoutWslEnvName } from "./wslEnvNames";
+import { terminateChildProcess } from "../process/terminateChildProcess";
+
+// 保持既有导出位置：WSLENV 工具已收口到 wslEnvNames，模型列表子进程也复用同一实现。
+export { appendWslEnvName };
 
 type PiProcessSettings = Pick<
   AppSettings,
@@ -25,6 +37,7 @@ type PiProcessSettings = Pick<
   | "piRuntimePreference"
   | "piTypescriptPath"
   | "piRustPath"
+  | "piBoltPath"
   | "wslEnabled"
   | "wslDistro"
   | "wslUser"
@@ -71,19 +84,48 @@ type PiProcessOptions = {
   repairSessionFileBeforeStart?: (sessionPath: string) => Promise<boolean>;
 };
 
+/** 本地可执行文件的身份指纹；升级/替换二进制后任一变化即视为新文件。 */
+type BinaryFingerprint = { mtimeMs: number; size: number };
+
 type VersionCacheEntry =
   | { status: "pending"; promise: Promise<boolean> }
-  | { status: "done"; ok: boolean; minorVersion: number | null; version?: string };
+  | {
+      status: "done";
+      ok: boolean;
+      minorVersion: number | null;
+      version?: string;
+      checkedAt: number;
+      /** 仅本地绝对路径命令有值；裸命令与 wsl:// 仍只按 command 缓存。 */
+      fingerprint?: BinaryFingerprint | null;
+    };
+
+/** 暂时不可用的命令允许重试，同时避免连续创建会话引发探测风暴。 */
+const FAILED_PROBE_RETRY_MS = 30_000;
 
 /**
- * 把变量名追加进 WSLENV（冒号分隔、去重、保留已有项）。
- * 为什么：wsl.exe 只把 WSLENV 列出的 Windows 环境变量传进 Linux 进程，
- * 否则扩展在 WSL 内读不到宿主注入的值（如界面语言）。值是纯字符串，不加 /p 路径转换标志。
+ * stop() 的优雅退出宽限期。pi 的 RPC 模式把 stdin EOF 视为退出请求，会先执行
+ * session_shutdown 等扩展清理、刷新会话文件；立即 kill（Windows 上是 TerminateProcess）会跳过
+ * 这些清理。超过宽限期仍未退出才强制结束，避免卡死的 pi 残留。
  */
-export function appendWslEnvName(current: string | undefined, name: string): string {
-	const names = (current ?? "").split(":").map((item) => item.trim()).filter(Boolean);
-	const exists = names.some((item) => item.split("/")[0] === name);
-	return exists ? names.join(":") : [...names, name].join(":");
+const STOP_GRACE_MS = 3_000;
+
+/** 只有本地绝对路径才能 stat；裸命令由 PATH 解析、wsl:// 在另一个文件系统里。 */
+function readBinaryFingerprint(command: string): BinaryFingerprint | null | undefined {
+  if (command.startsWith("wsl://")) return undefined;
+  if (!/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(command)) return undefined;
+  try {
+    const stats = statSync(command);
+    return { mtimeMs: stats.mtimeMs, size: stats.size };
+  } catch {
+    // 文件不可读（安装器替换中、已删除）：用 null 记录。探测时与读取时都不存在视为未变化，
+    // 交由失败重试窗口处理；从不存在变为存在（或反之）则必须重探。
+    return null;
+  }
+}
+
+function sameFingerprint(a: BinaryFingerprint | null | undefined, b: BinaryFingerprint | null | undefined) {
+  if (a === undefined || b === undefined || a === null || b === null) return a === b;
+  return a.mtimeMs === b.mtimeMs && a.size === b.size;
 }
 
 export class PiProcess extends EventEmitter {
@@ -92,22 +134,31 @@ export class PiProcess extends EventEmitter {
   /** 从 --version 解析出的次版本号（第二段），用于启动诊断和信任标志兼容性判断。 */
   private piMinorVersion: number | null = null;
   /**
-   * pi --version 只用于启动失败后的诊断，不应阻塞真正的 RPC 进程启动。
-   * 按 command 路径缓存结果，避免连续打开多个 Agent 时重复启动 Node shim。
+   * 按 command 缓存版本与运行时类型，避免连续打开 Agent 时重复探测。
+   * 在途探测、显式运行时选择和信任参数校验需要真实结果；execFile 的 5 秒超时限制等待。
    */
   private static readonly versionCache = new Map<string, VersionCacheEntry>();
+  /** A changed executable invalidates persisted identity until a real probe succeeds. */
+  private static readonly replacedCommands = new Set<string>();
 
   /**
-   * --approve/--no-approve 信任标志在 pi 0.79.0 引入。
-   * 检查次版本号是否 >= 79（当前 pi 版本为 0.x.y，次版本号对应第二段）。
-   * 未来 pi 升级到 1.x+ 后需要同步更新此检查。
+   * 读取版本缓存；本地二进制被替换（升级 Pi-Bolt / 换装 pi）后丢弃旧结果。
+   * 只按 command 做键时，应用生命周期内升级会一直沿用旧版本号，进而错判信任参数与运行时类型。
    */
-  private static versionSupportsTrustFlags(minorVersion: number | null, version?: string): boolean {
-    if (minorVersion === null) return false;
-    if (version && detectPiRuntimeKind(version) === "rust") return false;
-    return minorVersion >= 79;
+  private static readVersionCache(command: string): VersionCacheEntry | undefined {
+    const cached = PiProcess.versionCache.get(command);
+    if (cached?.status !== "done" || cached.fingerprint === undefined) return cached;
+    if (sameFingerprint(cached.fingerprint, readBinaryFingerprint(command))) return cached;
+    PiProcess.versionCache.delete(command);
+    PiProcess.replacedCommands.add(command);
+    return undefined;
   }
 
+  /** 优雅退出宽限期的强制结束定时器；exit 时清除。 */
+  private stopTimer?: ReturnType<typeof setTimeout>;
+  private stopPromise?: Promise<boolean>;
+  /** 当前子进程是否经 cmd.exe /c 包装：强制结束时需要杀进程树。 */
+  private cmdWrapped = false;
   /**
    * 应用启动时预热 pi --version 缓存，避免首次创建 Agent（尤其 trust 路径）同步等待版本检测。
    * 失败不抛错：仅影响缓存命中与诊断字段，不阻塞主流程。
@@ -124,6 +175,7 @@ export class PiProcess extends EventEmitter {
       settings?.piRuntimePreference,
       settings?.piTypescriptPath,
       settings?.piRustPath,
+      settings?.piBoltPath,
     );
     // 复用实例方法的缓存逻辑：构造临时实例只为调用 ensureVersionCheck。
     const probe = new PiProcess(process.cwd(), settings, locator);
@@ -240,6 +292,7 @@ export class PiProcess extends EventEmitter {
       this.settings?.piRuntimePreference,
       this.settings?.piTypescriptPath,
       this.settings?.piRustPath,
+      this.settings?.piBoltPath,
     );
     const runtimeKind = await this.resolveRuntimeKind(command);
     const requestedRuntime = this.settings?.piRuntimePreference;
@@ -306,8 +359,9 @@ export class PiProcess extends EventEmitter {
     // 避免 "unknown option" 错误导致 RPC 进程启动失败。
     if (trustOverride) {
       await this.ensureVersionCheck(command);
-      const cached = PiProcess.versionCache.get(command);
-      if (cached?.status === "done" && PiProcess.versionSupportsTrustFlags(cached.minorVersion, cached.version)) {
+      const cached = PiProcess.readVersionCache(command);
+      // 版本门槛与 ExtensionManager 共用 piSupportsTrustFlags（按主版本+次版本判断，1.x 全部支持）。
+      if (cached?.status === "done" && piSupportsTrustFlags(cached.version ?? "")) {
         if (trustOverride === "approve") finalPiArgs.push("--approve");
         else if (trustOverride === "no-approve") finalPiArgs.push("--no-approve");
       }
@@ -346,7 +400,7 @@ export class PiProcess extends EventEmitter {
 
     // 初始化诊断信息。信任场景的版本检测已在上方同步完成。
     // 非信任场景仍异步触发，不阻塞 RPC 启动。
-    const cachedVersion = PiProcess.versionCache.get(command);
+    const cachedVersion = PiProcess.readVersionCache(command);
     this.piMinorVersion = cachedVersion?.status === "done" ? cachedVersion.minorVersion : this.piMinorVersion;
     this.diagnostics = {
       command: command,
@@ -375,7 +429,18 @@ export class PiProcess extends EventEmitter {
 
     // 安全管理：把策略快照路径 + 会话身份注入 pi 子进程环境。
     // WSL 模式下 Windows 盘符路径必须转成 Linux 路径（/mnt/c/...），否则扩展读不到快照。
-    const env = this.locator.createProcessEnv(this.settings, invocation.pathPrefix, invocation.wsl);
+    // 复制后再改：locator 返回的对象可能与调用方持有的环境相同，不能就地删除继承值。
+    const env = {
+      ...this.locator.createProcessEnv(this.settings, invocation.pathPrefix, invocation.wsl),
+    };
+    // 顶层 Pi 进程不继承父环境的独立二进制标记。PiDeck 可能从 Bolt 的 shell 启动，
+    // 随后却要运行原版 Node Pi；遗留标记会让子代理把 node 当成独立二进制。
+    delete env[PIDECK_PI_STANDALONE_ENV];
+    if (invocation.wsl) {
+      const withoutMarker = withoutWslEnvName(env.WSLENV, PIDECK_PI_STANDALONE_ENV);
+      if (withoutMarker) env.WSLENV = withoutMarker;
+      else delete env.WSLENV;
+    }
     if (this.options.securitySnapshotPath) {
       env.PIDECK_SECURITY_CONFIG = command.startsWith("wsl://")
         ? toWslLinuxPath(this.options.securitySnapshotPath, { distro: this.settings?.wslDistro ?? "" })
@@ -404,6 +469,13 @@ export class PiProcess extends EventEmitter {
       env.PIDECK_UI_LANGUAGE = this.options.uiLocale;
       if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_UI_LANGUAGE");
     }
+    // 独立二进制 Pi（如 Pi-Bolt）没有 Node + CLI 脚本的组合，内置扩展不能靠可执行文件名猜测：
+    // macOS 启动器会 exec pi-bin，用户也可能改名。由已探测到的实现类型统一告知。
+    // 子代理进程继承该变量，从而和父进程保持一致；WSL 模式同样需要登记到 WSLENV。
+    if (isStandaloneRuntimeKind(runtimeKind)) {
+      env[PIDECK_PI_STANDALONE_ENV] = "1";
+      if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, PIDECK_PI_STANDALONE_ENV);
+    }
     // 每个 agent 绑定独立 cwd，确保 pi 自己发现项目级 AGENTS.md、settings 和 session 分组。
     // 打包后的 Electron 不一定继承用户终端 PATH；这里补齐跨平台 Node 工具链常见 bin 目录，尽量让已安装 pi 的用户开箱即用。
     // Windows 下通过 PiLocator.createInvocation 显式包裹含空格的 npm shim 路径，避免 cmd 拆分路径导致 agent 启动失败。
@@ -429,6 +501,15 @@ export class PiProcess extends EventEmitter {
       this.emit("error", err);
       throw err;
     }
+
+    // cmd /c 包装时 windowsVerbatimArguments 必然为 true（见 PiLocator.createInvocation）；
+    // 直接启动的 .exe / wsl.exe 不是。
+    this.cmdWrapped = process.platform === "win32" && invocation.windowsVerbatimArguments === true;
+    // stop() 先 end stdin；进程已退出时写入会异步报 EPIPE。无监听的 stream error 会升级成未捕获异常，
+    // 而进程结束本身由 exit 事件负责上报，这里只记调试日志。
+    this.proc.stdin.on("error", (error) => {
+      void getAppLogger()?.debug("pi-process", "Pi stdin error", { message: error.message });
+    });
 
     this.rpc = new PiRpcClient(this.proc.stdin, this.proc.stdout);
 
@@ -460,6 +541,11 @@ export class PiProcess extends EventEmitter {
       this.emit("error", error);
     });
     this.proc.on("exit", (code, signal) => {
+      // 优雅退出已完成：取消宽限期后的强制结束（与 stop() 的 setTimeout 配对）。
+      if (this.stopTimer) {
+        clearTimeout(this.stopTimer);
+        this.stopTimer = undefined;
+      }
       // 退出时更新诊断信息
       if (this.diagnostics) {
         this.diagnostics.exitCode = code;
@@ -471,6 +557,7 @@ export class PiProcess extends EventEmitter {
       this.emit("exit", { code, signal });
       this.proc = undefined;
       this.rpc = undefined;
+      this.stopPromise = undefined;
     });
 
     return this.rpc;
@@ -493,29 +580,63 @@ export class PiProcess extends EventEmitter {
     return this.proc !== undefined && this.rpc !== undefined;
   }
 
-  stop() {
-    // 先关闭 RPC 输入面，再杀子进程。Windows 上 kill 到 exit 事件之间仍可能
-    // 有已排队 stdout；这些内容属于旧 runtime，不能再解析成业务事件。
+  /** Stop with bounded shutdown. False means the old process may still own its session file. */
+  stop(): Promise<boolean> {
     this.rpc?.close(new Error("pi process stopped"));
+    if (this.stopPromise) return this.stopPromise;
     if (!this.proc) {
-      // 进程已不在仍可能残留停放态（例如 start 中途失败路径）。
       this.restoreParkedExtensions();
-      return;
+      return Promise.resolve(true);
     }
-    this.proc.kill();
-    // 真正还原在 exit 回调里做；此处不提前 unpark，避免与仍在退出的 pi 竞态。
+    const proc = this.proc;
+    const killTree = this.cmdWrapped;
+    this.stopPromise = new Promise<boolean>((resolve) => {
+      const finish = (exited: boolean) => {
+        if (this.stopTimer) clearTimeout(this.stopTimer);
+        this.stopTimer = undefined;
+        proc.removeListener("exit", onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      proc.once("exit", onExit);
+      // EOF lets pi flush sessions/extensions. Do not start a replacement until actual exit.
+      this.stopTimer = setTimeout(() => {
+        if (this.proc !== proc) return finish(true);
+        // Bound waiting even if kill fails or an OS process never reports exit.
+        this.stopTimer = setTimeout(() => finish(false), STOP_GRACE_MS);
+        this.stopTimer.unref?.();
+        terminateChildProcess(proc, {
+          killTree,
+          platform: process.platform,
+          execFile: (file, args, options, callback) =>
+            execFile(file, args, options, (error) => callback(error)),
+        });
+      }, STOP_GRACE_MS);
+      this.stopTimer.unref?.();
+      try {
+        proc.stdin.end();
+      } catch (error) {
+        void getAppLogger()?.debug("pi-process", "Pi stdin end failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    return this.stopPromise;
   }
 
-  /** 后台执行 pi --version：更新诊断缓存，但不阻塞 start()/spawn。 */
+  /** 复用或执行有超时的版本探测；调用者按运行时/信任校验需求决定是否等待。 */
   private ensureVersionCheck(command: string): Promise<boolean> {
-    const cached = PiProcess.versionCache.get(command);
-    if (cached?.status === "done") {
+    const cached = PiProcess.readVersionCache(command);
+    // 成功结果永久复用；失败只缓存一个短窗口，不能让偶发故障污染整个应用生命周期。
+    if (cached?.status === "done" && (cached.ok || Date.now() - cached.checkedAt < FAILED_PROBE_RETRY_MS)) {
       this.piMinorVersion = cached.minorVersion;
       if (this.diagnostics?.command === command) this.diagnostics.versionCheck = cached.ok;
       return Promise.resolve(cached.ok);
     }
     if (cached?.status === "pending") return cached.promise;
 
+    // 在探测前取指纹：探测期间若文件被替换，下次读取会因指纹不符而重探。
+    const fingerprint = readBinaryFingerprint(command);
     const promise = new Promise<boolean>((resolve) => {
       const invocation = this.locator.createInvocation(command, ["--version"]);
       execFile(invocation.command, invocation.args, {
@@ -526,8 +647,16 @@ export class PiProcess extends EventEmitter {
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       }, (error, stdout) => {
         const ok = !error;
+        if (ok) PiProcess.replacedCommands.delete(command);
         const minorVersion = ok ? this.parseMinorVersion(stdout.trim()) : 0;
-        PiProcess.versionCache.set(command, { status: "done", ok, minorVersion, version: stdout.trim() });
+        PiProcess.versionCache.set(command, {
+          status: "done",
+          ok,
+          minorVersion,
+          version: ok ? stdout.trim() : "",
+          checkedAt: Date.now(),
+          fingerprint,
+        });
         this.piMinorVersion = minorVersion;
         if (this.diagnostics?.command === command) this.diagnostics.versionCheck = ok;
         this.emit("version-check", { ok, minorVersion });
@@ -544,29 +673,53 @@ export class PiProcess extends EventEmitter {
    * 必须先完成一次 --version 探测，防止两个实现都叫 `pi` 时静默启动错误版本。
    */
   private async resolveRuntimeKind(command: string): Promise<PiRuntimeKind> {
-    const cached = PiProcess.versionCache.get(command);
+    const explicitPreference = Boolean(
+      this.settings?.piRuntimePreference && this.settings.piRuntimePreference !== "auto",
+    );
+
+    let cached = PiProcess.readVersionCache(command);
+    // 应用启动预热的 --version 还在进行时直接等它：不新增 spawn，只避免把已经在途的结果当成“未知”，
+    // 否则自动模式下指向 pi-bolt 的自定义路径会漏掉独立二进制标记和 --offline。
+    // 即使存在持久化类型也不能提前回退：旧版本可能把 Bolt 记成 typescript，
+    // 漏传 standalone 标记会破坏子代理启动。等待受 execFile 的 5 秒超时约束。
+    if (cached?.status === "pending") {
+      await cached.promise;
+      cached = PiProcess.readVersionCache(command);
+    }
     if (cached?.status === "done" && cached.version) {
       return detectPiRuntimeKind(cached.version);
     }
-
-    const persisted = this.settings?.piInstall;
-    const wslParts = command.match(/^wsl:\/\/([^/]+)\/([^/]+)\/(.+)$/);
-    const expectedWslCommand = wslParts
-      ? `wsl -d ${wslParts[1]} -u ${wslParts[2]} ${wslParts[3]}`
-      : undefined;
-    const sameWslCommand = Boolean(expectedWslCommand && persisted?.command === expectedWslCommand);
-    if ((persisted?.command === command || sameWslCommand) && persisted?.runtimeKind) {
-      return persisted.runtimeKind;
-    }
-
-    if (this.settings?.piRuntimePreference && this.settings.piRuntimePreference !== "auto") {
+    // 自动模式没有实时结果时不新增探测，回退到下方的持久化重判以保持快速启动。显式选择某个实现时先实测：
+    // 旧版本可能把 Pi-Bolt 误记成 typescript；实测成功必须以实测为准，避免升级后第一次启动被“类型不符”误拒。
+    const wasReplaced = PiProcess.replacedCommands.has(command);
+    if (explicitPreference || wasReplaced) {
       await this.ensureVersionCheck(command);
-      const detected = PiProcess.versionCache.get(command);
+      const detected = PiProcess.readVersionCache(command);
       if (detected?.status === "done" && detected.version) {
         return detectPiRuntimeKind(detected.version);
       }
     }
-    return "unknown";
+    // 探测失败或自动模式没有实时结果时，只使用与当前命令匹配的持久化记录。
+    // 先按保存的版本串用现行规则重判：旧版曾把 Pi-Bolt 横幅记成 typescript。
+    return PiProcess.replacedCommands.has(command) ? "unknown" : this.persistedRuntimeKind(command) ?? "unknown";
+  }
+
+  /** 当前命令自己的持久化运行时；版本串能识别时优先于旧分类，认不出才沿用旧分类。 */
+  private persistedRuntimeKind(command: string): PiRuntimeKind | undefined {
+    const persisted = this.settings?.piInstall;
+    if (!persisted) return undefined;
+    const wslParts = command.match(/^wsl:\/\/([^/]+)\/([^/]+)\/(.+)$/);
+    const expectedWslCommand = wslParts
+      ? `wsl -d ${wslParts[1]} -u ${wslParts[2]} ${wslParts[3]}`
+      : undefined;
+    const sameCommand = persisted.command === command
+      || Boolean(expectedWslCommand && persisted.command === expectedWslCommand);
+    if (!sameCommand) return undefined;
+    if (persisted.version) {
+      const detected = detectPiRuntimeKind(persisted.version);
+      if (detected !== "unknown") return detected;
+    }
+    return persisted.runtimeKind;
   }
 
   /**

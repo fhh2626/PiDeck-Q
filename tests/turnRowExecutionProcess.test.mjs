@@ -83,7 +83,7 @@ test("execution fold renders thinking as collapsed CoT steps", () => {
     "utf8",
   );
   assert.match(cards, /defaultExpanded\?: boolean/);
-  assert.match(cards, /useState\(props\.defaultExpanded \?\? false\)/);
+  assert.match(cards, /props\.defaultExpanded/);
 
   // 汇总按钮带步骤图标（ListTree），呼应 Chain of Thought 头部
   assert.match(summaryToggleSource, /<ListTree size=\{13\}/);

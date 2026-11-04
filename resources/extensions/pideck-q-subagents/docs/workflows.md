@@ -113,7 +113,7 @@ subagent({ workflowScript: `
 ` });
 ```
 
-Keep helper functions portable across Node and Bun. Use top-level `await`, plain helper functions that return `runs.run(...)`, or explicit Promise chains. Do not define nested `async function` helpers, async arrows, or async methods inside `workflowScript`; native async helpers hide child-launch observation in Bun and are rejected.
+Keep helper functions portable across Node and Bun. Use top-level `await`, plain helper functions that return `runs.run(...)`, or explicit Promise chains. Promise adoption tracks callable thenables (including nested ones), so ignoring a chain cannot hide an unawaited child on runtimes without V8 promise hooks. A `then` accessor that returns a non-function is rejected explicitly: faithfully adopting that uncommon shape would require repeating getter side effects. Use ordinary values without a `then` accessor, or a callable thenable instead. Do not define nested `async function` helpers, async arrows, or async methods inside `workflowScript`; native async helpers hide child-launch observation in Bun and are rejected.
 
 ```js
 subagent({ workflowScript: `

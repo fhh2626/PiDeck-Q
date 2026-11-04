@@ -14,6 +14,7 @@ import test from "node:test";
  * 迁移类行为（旧字段剥离）另有 tests/settingsMigration.test.mjs 做行为验证。
  */
 
+// 本文件断言的是「已移除功能不得回归」（文件不存在 / 依赖不在 package.json），属于静态仓库布局契约，不是源码文本匹配，保持原样。
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 
 test("feishu integration files and dependency are gone", () => {

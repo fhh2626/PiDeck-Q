@@ -10,6 +10,7 @@ export type MessageImageGalleryProps = {
 	className?: string;
 	/** 第二参携带本组完整图片数组，供父级预览弹层做组内导航 */
 	onPreviewImage?: (image: ImageContent, images?: ImageContent[]) => void;
+	messageId?: string;
 };
 
 export function MessageImageGallery(props: MessageImageGalleryProps) {
@@ -70,6 +71,8 @@ export function MessageImageGallery(props: MessageImageGalleryProps) {
 								src={`data:${image.mimeType};base64,${image.data}`}
 								alt={t("app.imagePreviewAlt")}
 								className="max-h-48 max-w-xs object-contain"
+								messageId={props.messageId}
+								imageIndex={index}
 							/>
 						</div>
 					))}

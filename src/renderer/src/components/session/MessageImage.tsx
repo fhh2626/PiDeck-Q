@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtom } from "jotai";
 import { ChevronLeft, ChevronRight, ExternalLink, ImageOff, X } from "lucide-react";
 import type { ImageContent } from "../../../../shared/types";
 import { t } from "../../i18n";
 import { Dialog, DialogContent } from "../ui-shadcn/dialog";
 import { Button } from "../ui-shadcn/button";
 import { showNotice } from "../../utils/notice";
+import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
+import { getMediaPresentationAtom } from "../../atoms/timeline-presentation";
 
 function ImageLoader(props: {
 	src: string;
@@ -12,12 +15,39 @@ function ImageLoader(props: {
 	className: string;
 	onClick?: () => void;
 	placeholderClass?: string;
+	messageId?: string;
+	imageIndex?: number;
 }) {
 	const ref = useRef<HTMLImageElement>(null);
-	const [inView, setInView] = useState(false);
-	const [hasError, setHasError] = useState(false);
+	const presentationCtx = useTimelinePresentationContext();
+	const sessionId = presentationCtx?.sessionId;
+	const rowKey = presentationCtx?.rowKey;
+	const messageId = props.messageId;
+	const imageIndex = props.imageIndex ?? 0;
+
+	const mediaAtom = useMemo(() => {
+		if (sessionId && rowKey && messageId) {
+			return getMediaPresentationAtom(sessionId, rowKey, messageId, imageIndex);
+		}
+		return null;
+	}, [sessionId, rowKey, messageId, imageIndex]);
+
+	const [mediaState, setMediaState] = useAtom(
+		mediaAtom ??
+			useMemo(
+				() => getMediaPresentationAtom("__noop__", "__noop__", "__noop__", 0),
+				[],
+			),
+	);
+
+	const isAlreadyLoaded = mediaAtom !== null && mediaState.source === props.src && mediaState.status === "loaded";
+	const isAlreadyError = mediaAtom !== null && mediaState.source === props.src && mediaState.status === "error";
+
+	const [inView, setInView] = useState(() => isAlreadyLoaded);
+	const [hasError, setHasError] = useState(() => isAlreadyError);
 
 	useEffect(() => {
+		if (inView || isAlreadyLoaded) return;
 		const element = ref.current;
 		if (!element) return;
 		const observer = new IntersectionObserver(
@@ -31,9 +61,22 @@ function ImageLoader(props: {
 		);
 		observer.observe(element);
 		return () => observer.disconnect();
-	}, []);
+	}, [inView, isAlreadyLoaded]);
 
-	if (hasError) {
+	const handleLoad = useCallback(() => {
+		if (mediaAtom) {
+			setMediaState({ source: props.src, status: "loaded" });
+		}
+	}, [mediaAtom, props.src, setMediaState]);
+
+	const handleError = useCallback(() => {
+		setHasError(true);
+		if (mediaAtom) {
+			setMediaState({ source: props.src, status: "error" });
+		}
+	}, [mediaAtom, props.src, setMediaState]);
+
+	if (hasError || isAlreadyError) {
 		return (
 			<div
 				className={`flex items-center justify-center gap-1.5 p-3 text-caption text-muted-foreground bg-muted/40 rounded ${props.className}`}
@@ -54,7 +97,8 @@ function ImageLoader(props: {
 			loading="lazy"
 			decoding="async"
 			onClick={props.onClick}
-			onError={() => setHasError(true)}
+			onLoad={handleLoad}
+			onError={handleError}
 		/>
 	);
 }
@@ -66,6 +110,8 @@ export function MessageImage(props: {
 	className: string;
 	onClick?: () => void;
 	placeholderClass?: string;
+	messageId?: string;
+	imageIndex?: number;
 }) {
 	return <ImageLoader key={props.src} {...props} />;
 }

@@ -69,6 +69,10 @@ test('active powershell keeps the generic shell guideline and its catalog row', 
   assert.doesNotMatch(result.systemPrompt, /- bash: /);
   assert.match(result.systemPrompt, /- powershell: Execute a PowerShell command/);
   assert.match(result.systemPrompt, /For shell commands/);
+  // Default shell guide in tools section does not mention bash when only powershell is active
+  const toolsSectionMatch = result.systemPrompt.match(/## Tools\n([\s\S]*?)\n\n##/);
+  assert.ok(toolsSectionMatch, 'Tools section must exist');
+  assert.doesNotMatch(toolsSectionMatch[1], /For `bash`|`bash`/);
 });
 test('tool bullets stay in one list without blank lines', () => {
   const edit = tool('edit');

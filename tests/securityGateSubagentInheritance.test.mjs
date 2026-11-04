@@ -9,7 +9,8 @@ import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 
-function loadChildLaunchModule() {
+/** processStub 让测试控制 cwd/env，用来区分「兄弟路径回退」与「cwd 回退」两条解析路径。 */
+function loadChildLaunchModule(processStub = process) {
 	const rawSource = readFileSync(
 		"resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts",
 		"utf8",
@@ -54,7 +55,7 @@ function loadChildLaunchModule() {
 			};
 		},
 		console,
-		process,
+		process: processStub,
 		__dirname: resolve("resources/extensions/pideck-q-subagents/src/runs/shared"),
 	};
 
@@ -104,23 +105,62 @@ async function loadChildSecurityGate(processEnvOverrides = {}) {
 	};
 }
 
-test("child-launch: sibling fallback uses four parents from shared/, not five", () => {
-	const source = readFileSync(
-		"resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts",
-		"utf8",
-	);
-	assert.match(
-		source,
-		/"\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
-		"fallback must be ../../../../pi-deck-security-gate.ts (shared -> runs -> src -> pideck-q-subagents -> extensions)",
-	);
-	assert.doesNotMatch(
-		source,
-		/"\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/pi-deck-security-gate\.ts"/,
-		"five-parent fallback overshoots resources/ and must not remain",
-	);
+/** The Pi runtime UUID and the PiDeck security UUID are different identity domains. */
+for (const host of ["parent", "runner"]) {
+	for (const [label, environmentId, explicitId, expected] of [
+		["inherits the PiDeck identity, not the Pi runtime UUID", "deck-session-uuid", undefined, "deck-session-uuid"],
+		["explicit security identity wins over inherited environment", "deck-session-uuid", "explicit-deck-uuid", "explicit-deck-uuid"],
+		["CLI without desktop identity falls back to the Pi parent", undefined, undefined, "pi-session-uuid"],
+	]) {
+		test(`child-launch ${host}: ${label}`, () => {
+			const { buildInProcessChildLaunch } = loadChildLaunchModule({
+				env: { PIDECK_SESSION_ID: environmentId }, cwd: () => process.cwd(), platform: process.platform,
+			});
+			const launch = buildInProcessChildLaunch({
+				cwd: process.cwd(), host, childAgentName: "readonly", childIndex: 0, sessionEnabled: false,
+				inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false,
+				parentSessionId: "pi-session-uuid", securityConfigPath: "fixture-only-policy.json",
+				securitySessionId: explicitId,
+			});
+			assert.equal(launch.session.processEnv.PIDECK_SESSION_ID, expected);
+			assert.equal(launch.config.parentSessionId, "pi-session-uuid", "routing keeps the Pi identity");
+		});
+	}
+}
+
+test("child-launch: sibling fallback resolves the gate from shared/ even when cwd is elsewhere", () => {
+	// 回归：兄弟路径必须是 shared -> runs -> src -> pideck-q-subagents -> extensions 四级上溯。
+	// 上溯层数错误时，cwd 回退（resources/extensions/...）会在仓库根目录下掩盖问题，
+	// 所以把 cwd 指到一个没有 resources/ 的临时目录，强制只能靠兄弟路径解析。
+	const emptyCwd = mkdtempSync(join(tmpdir(), "pideck-sec-sibling-"));
+	try {
+		const { resolveSecurityGateExtensionPath } = loadChildLaunchModule({
+			env: {},
+			cwd: () => emptyCwd,
+			platform: process.platform,
+		});
+		const gatePath = resolveSecurityGateExtensionPath();
+		assert.ok(gatePath, "sibling fallback must find the gate without relying on cwd");
+		assert.equal(normalize(gatePath), normalize(resolve("resources/extensions/pi-deck-security-gate.ts")));
+	} finally {
+		rmSync(emptyCwd, { recursive: true, force: true });
+	}
 });
 
+test("child-launch: PIDECK_SECURITY_GATE_EXTENSION wins when it exists and is ignored when stale", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pideck-sec-envgate-"));
+	try {
+		const fakeGate = join(dir, "custom-gate.ts");
+		writeFileSync(fakeGate, "// fake", "utf8");
+		const real = normalize(resolve("resources/extensions/pi-deck-security-gate.ts"));
+		const withEnv = loadChildLaunchModule({ env: { PIDECK_SECURITY_GATE_EXTENSION: fakeGate }, cwd: () => dir, platform: process.platform });
+		assert.equal(withEnv.resolveSecurityGateExtensionPath(), fakeGate);
+		const stale = loadChildLaunchModule({ env: { PIDECK_SECURITY_GATE_EXTENSION: join(dir, "gone.ts") }, cwd: () => dir, platform: process.platform });
+		assert.equal(normalize(stale.resolveSecurityGateExtensionPath()), real, "stale env path falls back to the sibling file");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive", () => {
 	const { resolveSecurityGateExtensionPath, isSecurityPolicyActive } = loadChildLaunchModule();
 	const previousGateEnv = process.env.PIDECK_SECURITY_GATE_EXTENSION;
@@ -157,7 +197,10 @@ test("child-launch: resolveSecurityGateExtensionPath and isSecurityPolicyActive"
 });
 
 test("child-launch: inherits security policy into foreground (parent) and runner child", () => {
-	const { buildInProcessChildLaunch, resolveSecurityGateExtensionPath } = loadChildLaunchModule();
+	// Exercise the CLI fallback independently of the hosting desktop's identity.
+	const { buildInProcessChildLaunch, resolveSecurityGateExtensionPath } = loadChildLaunchModule({
+		env: { ...process.env, PIDECK_SESSION_ID: undefined }, cwd: () => process.cwd(), platform: process.platform,
+	});
 	const gatePath = resolveSecurityGateExtensionPath();
 
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-sec-launch-"));
@@ -652,7 +695,11 @@ test("Scenario D: Worker child inherits exact parent session level override with
 	};
 	writeFileSync(configPath, JSON.stringify(snapshot));
 
-	const { buildInProcessChildLaunch } = loadChildLaunchModule();
+	// The desktop policy UUID deliberately differs from the underlying Pi UUID.
+	const desktopEnv = { PIDECK_SESSION_ID: "parent-standard-session" };
+	const { buildInProcessChildLaunch } = loadChildLaunchModule({
+		env: desktopEnv, cwd: () => process.cwd(), platform: process.platform,
+	});
 
 	// 1. 父 session 是 standard -> child 继承 standard
 	const standardLaunch = buildInProcessChildLaunch({
@@ -664,7 +711,7 @@ test("Scenario D: Worker child inherits exact parent session level override with
 		inheritGlobalContext: false,
 		inheritSkills: false,
 		host: "parent",
-		parentSessionId: "parent-standard-session",
+		parentSessionId: "pi-runtime-standard-session",
 		securityConfigPath: configPath,
 	});
 
@@ -682,6 +729,7 @@ test("Scenario D: Worker child inherits exact parent session level override with
 	}
 
 	// 2. 父 session 是 strict -> child 继承 strict（即使全局默认是 standard）
+	desktopEnv.PIDECK_SESSION_ID = "parent-strict-session";
 	const strictLaunch = buildInProcessChildLaunch({
 		cwd: workspaceDir,
 		childAgentName: "worker",
@@ -691,7 +739,7 @@ test("Scenario D: Worker child inherits exact parent session level override with
 		inheritGlobalContext: false,
 		inheritSkills: false,
 		host: "parent",
-		parentSessionId: "parent-strict-session",
+		parentSessionId: "pi-runtime-strict-session",
 		securityConfigPath: configPath,
 	});
 

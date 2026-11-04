@@ -24,6 +24,7 @@ import type {
 } from "../../shared/types";
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
+import { SubagentRunTracker } from "./SubagentRunTracker";
 import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
@@ -243,10 +244,19 @@ export class AgentManager {
 	private readonly activeAssistantMessageIds = new Map<string, string>();
 	/** pi 的 toolCallId 贯穿 start/update/end，用它把同一次工具调用合并成一条 UI 记录。 */
 	private readonly toolMessageIds = new Map<string, Map<string, string>>();
+	/**
+	 * 子代理运行态投影：pi 内建子代理不是 PiDeck 的 Agent（无 agentId/runtime），
+	 * 只能从 `subagent` 工具 details 截取 sessionFile + 状态后按路径下发给侧栏。
+	 */
+	private readonly subagentRuns = new SubagentRunTracker();
 	/** 每个 agent 只保留一条自动重试状态消息，避免短暂 5xx/网络错误把会话刷屏。 */
 	private readonly retryStatusMessageIds = new Map<string, string>();
 	/** 同一历史会话正在创建 Agent 时共享同一个 Promise，避免快速重复点击/IPC 竞态创建多个进程。 */
 	private readonly creatingSessionAgents = new Map<string, Promise<AgentTab>>();
+	/** Intentional restart owns shutdown, so old exit must not detach an anonymous session. */
+	private readonly restartingAgents = new Set<string>();
+	/** Keep a stopping runtime fenced until its process has actually exited. */
+	private readonly stoppingAgents = new Set<string>();
 	/** 工具 start/end 事件的单调序号，renderer 用它忽略迟到的异步完整状态。 */
 	private readonly toolStateSequenceByAgent = new Map<string, number>();
 	/** 每个 agent 当前仍在执行的 toolCall；并行工具必须等最后一个结束才发 false 边沿。 */
@@ -796,6 +806,41 @@ export class AgentManager {
 		entryId?: string,
 	): Promise<{ text: string }> {
 		return this.sessionHistoryReader.readMessageFullText(sessionPath, messageId, entryId);
+	}
+
+	async readToolExportPayload(
+		sessionId: string,
+		messageId: string,
+	): Promise<{ argsText?: string; resultText?: string; detailsText?: string } | null> {
+		const payloads = await this.readToolExportPayloads(sessionId, [messageId]);
+		return payloads[messageId] ?? null;
+	}
+
+	async readToolExportPayloadFromFile(
+		sessionPath: string,
+		messageId: string,
+	): Promise<{ argsText?: string; resultText?: string; detailsText?: string } | null> {
+		return this.sessionHistoryReader.readToolExportPayload(sessionPath, messageId);
+	}
+
+	async readToolExportPayloads(
+		sessionId: string,
+		messageIds: readonly string[],
+	): Promise<Record<string, { argsText?: string; resultText?: string; detailsText?: string }>> {
+		for (const runtime of this.agents.values()) {
+			if (runtime.tab.deckSessionId === sessionId && runtime.tab.sessionPath) {
+				return this.readToolExportPayloadsFromFile(runtime.tab.sessionPath, messageIds);
+			}
+		}
+		return {};
+	}
+
+	async readToolExportPayloadsFromFile(
+		sessionPath: string,
+		messageIds: readonly string[],
+	): Promise<Record<string, { argsText?: string; resultText?: string; detailsText?: string }>> {
+		const map = await this.sessionHistoryReader.readToolExportPayloads(sessionPath, messageIds);
+		return Object.fromEntries(map);
 	}
 
 	/**
@@ -1630,7 +1675,12 @@ export class AgentManager {
 				? trimmed.slice(2).trim()
 				: trimmed.slice(1).trim();
 			if (command) {
-				return this.executeBashCommand(input.agentId, command, isBashExcluded);
+				return this.executeBashCommand(
+					input.agentId,
+					command,
+					isBashExcluded,
+					input.requestId,
+				);
 			}
 		}
 
@@ -1683,11 +1733,17 @@ export class AgentManager {
 			// 乐观更新：在等待 RPC 返回前先把用户消息写入会话，让用户立即看到自己的消息。
 			// 只展示用户原文；agentMessage 里的宿主指令不进 UI 气泡。
 			// 如果后续 RPC 失败，再追加错误消息；用户消息本身仍保留在聊天中（用户确已发送）。
+			// requestId 透传给渲染层：模板/技能展开会改写正文，发送后用户请求 id 是最稳定
+			// 的配对依据；renderer 的本地气泡用同一个 id 做精确替换。
+			const optimisticUserMeta: Record<string, unknown> = {
+				...(promptDeliveryBehavior ? { streamingBehavior: promptDeliveryBehavior } : {}),
+				...(input.requestId ? { optimisticRequestId: input.requestId } : {}),
+			};
 			this.addMessage(
 				input.agentId,
 				"user",
 				trimmed || this.translate("session.imagePlaceholder"),
-				promptDeliveryBehavior ? { streamingBehavior: promptDeliveryBehavior } : undefined,
+				Object.keys(optimisticUserMeta).length > 0 ? optimisticUserMeta : undefined,
 				input.images,
 			);
 		}
@@ -1796,6 +1852,7 @@ export class AgentManager {
 		agentId: string,
 		command: string,
 		excludeFromContext: boolean,
+		requestId?: string,
 	): Promise<SendPromptResult> {
 		const runtime = this.requireRuntime(agentId);
 		const statusBeforeCommand = runtime.tab.status;
@@ -1844,6 +1901,7 @@ export class AgentManager {
 				agentId,
 				"user",
 				`${excludeFromContext ? "!!" : "!"}${command}`,
+				requestId ? { optimisticRequestId: requestId } : undefined,
 			);
 			const data = response.data as
 				| {
@@ -2374,6 +2432,31 @@ export class AgentManager {
 				executingToolName,
 				toolStateSequence,
 			},
+		});
+	}
+
+	/**
+	 * 吸收子代理工具事件并按需推送状态快照。
+	 * details 体积不可控（含 messages），因此只在这里截取最小字段；
+	 * 同值帧（流式重复 running）不推送，避免事件通道被刷满。
+	 */
+	private observeSubagentToolEvent(agentId: string, event: unknown): void {
+		if (!this.subagentRuns.observe(agentId, event)) return;
+		this.emit(ipcChannels.agentsSubagentStatus, {
+			agentId,
+			runs: this.subagentRuns.snapshot(agentId),
+		});
+	}
+
+	/**
+	 * 工具级失败：subagent 工具可能在 details 里不带 results（参数错误/启动失败），
+	 * 该次调用登记的 running 行收不到终态，需在同回合内清掉，否则黄灯要撑到 agent_end。
+	 */
+	private clearSubagentToolCall(agentId: string, toolCallId: string): void {
+		if (!this.subagentRuns.clearToolCall(agentId, toolCallId)) return;
+		this.emit(ipcChannels.agentsSubagentStatus, {
+			agentId,
+			runs: this.subagentRuns.snapshot(agentId),
 		});
 	}
 
@@ -3078,6 +3161,11 @@ export class AgentManager {
 		this.setStreamingAgent(agentId, false);
 		this.activeAssistantMessageIds.delete(agentId);
 		this.toolMessageIds.delete(agentId);
+		// 与 toolMessageIds 配对清理：子代理状态按 agentId 存储，不清理会随重启反复泄漏。
+		// 先推空快照再清：进程崩溃/重启路径不一定有 detach 帧，否则渲染层会留下永久黄灯。
+		if (this.subagentRuns.clearAgent(agentId)) {
+			this.emit(ipcChannels.agentsSubagentStatus, { agentId, runs: [] });
+		}
 		this.retryStatusMessageIds.delete(agentId);
 		this.streamingText.delete(agentId);
 		this.lastSentTextByAgent.delete(agentId);
@@ -3130,6 +3218,9 @@ export class AgentManager {
 
 	async restart(agentId: string): Promise<AgentTab> {
 		const runtime = this.requireRuntime(agentId);
+		if (this.stoppingAgents.has(agentId) || this.restartingAgents.has(agentId)) {
+			throw new Error("Agent restart was cancelled because shutdown is already in progress.");
+		}
 		void this.appLogger?.info("agent", "Agent restart requested", {
 			agentId,
 			projectId: runtime.tab.projectId,
@@ -3167,8 +3258,28 @@ export class AgentManager {
 			}
 		}
 
+		// A stop/dispose may have taken ownership while get_state was awaiting RPC.
+		if (this.agents.get(agentId) !== runtime || this.stoppingAgents.has(agentId)) {
+			throw new Error("Agent restart was cancelled by a concurrent stop.");
+		}
+		// Old and new runtimes must never append the same session concurrently.
+		this.restartingAgents.add(agentId);
+		try {
+			if (await runtime.process.stop() === false) {
+				this.userInitiatedStop.add(agentId);
+				throw new Error("Previous pi process did not exit; restart was cancelled to protect the session file.");
+			}
+			// stopAll clears ownership immediately; a user stop fences it until exit.
+			// Neither may be undone by an earlier restart resuming after this await.
+			if (this.agents.get(agentId) !== runtime || this.stoppingAgents.has(agentId)) {
+				throw new Error("Agent restart was cancelled by a concurrent stop.");
+			}
+		} finally {
+			this.restartingAgents.delete(agentId);
+		}
+		// The exit listener is fenced during restart, so retire any prior stop intent here.
+		this.userInitiatedStop.delete(agentId);
 		// 停止旧进程并清理状态
-		runtime.process.stop();
 		this.agents.delete(agentId);
 		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
 		this.errorOriginByAgent.delete(agentId);
@@ -3375,15 +3486,25 @@ export class AgentManager {
 		});
 		// 标记用户主动停止，退出处理器将跳过自动重连
 		this.userInitiatedStop.add(agentId);
-		const process = runtime.process;
-		this.agents.delete(agentId);
-		// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
-		this.errorOriginByAgent.delete(agentId);
-		this.messages.delete(agentId);
-		// One termination path owns per-agent clearing; preserve stop intent for the exit handler.
-		this.clearAgentState(agentId);
-		process.stop();
-		this.emitState();
+		this.stoppingAgents.add(agentId);
+		try {
+			// Retain the runtime/session reservation until the actual process exit.
+			// Otherwise stopRuntime could unbind and activate a second writer early.
+			if (await runtime.process.stop() === false) {
+				throw new Error("Previous pi process did not exit; stop could not safely release the session file.");
+			}
+			// The fenced exit handler cannot clear this intent; shutdown is now confirmed.
+			this.userInitiatedStop.delete(agentId);
+			if (this.agents.get(agentId) !== runtime) return;
+			this.agents.delete(agentId);
+			// 与 errorOriginByAgent 配对清理，防止 Map 无界增长
+			this.errorOriginByAgent.delete(agentId);
+			this.messages.delete(agentId);
+			this.clearAgentState(agentId);
+			this.emitState();
+		} finally {
+			this.stoppingAgents.delete(agentId);
+		}
 	}
 
 	/** 注册本地事件监听器（供 Web SSE 等主进程内部模块使用） */
@@ -3399,12 +3520,13 @@ export class AgentManager {
 		return () => this.outputListeners.delete(listener);
 	}
 
-	stopAll() {
-		// 应用退出时统一清理所有 pi 子进程，避免后台 agent 残留占用模型或文件句柄。
+	async stopAll() {
+		// Stop concurrently but let backend disposal await bounded process shutdown.
+		const stopped: Promise<boolean>[] = [];
 		for (const runtime of this.agents.values()) {
 			this.userInitiatedStop.add(runtime.tab.id);
 			this.clearAgentState(runtime.tab.id);
-			runtime.process.stop();
+			stopped.push(runtime.process.stop());
 		}
 		this.agents.clear();
 		// 与 agents 配对清理：error 来源只对仍在 agents 中的 runtime 有意义。
@@ -3416,6 +3538,7 @@ export class AgentManager {
 		this.liveRpcLogs.clear();
 		this.manualCompactionReloadClaims.clear();
 		this.emitState();
+		await Promise.all(stopped);
 	}
 
 
@@ -3431,7 +3554,8 @@ export class AgentManager {
 			onExit: (payload: { code: number | null; signal: string | null }) => void;
 		},
 	) {
-		const isCurrentProcess = () => this.agents.get(agentId)?.process === piProcess;
+		const isCurrentProcess = () => this.agents.get(agentId)?.process === piProcess
+			&& !this.restartingAgents.has(agentId) && !this.stoppingAgents.has(agentId);
 		piProcess.on("event", (event) => {
 			if (!isCurrentProcess()) return;
 			try {
@@ -3949,6 +4073,14 @@ export class AgentManager {
 				this.lastSentTextByAgent.delete(agentId);
 				this.textPushCountByAgent.delete(agentId);
 			}
+			// 子代理是本回合内的执行体：回合结束后仍为 running 的条目不可能再更新，
+			// 立刻推一次空快照，避免侧栏的黄灯永久卡住（失败条目按 TTL 保留供回看）。
+			if (this.subagentRuns.clearRunning(agentId)) {
+				this.emit(ipcChannels.agentsSubagentStatus, {
+					agentId,
+					runs: this.subagentRuns.snapshot(agentId),
+				});
+			}
 			// agent 异常结束时（如 API 返回 400、模型报错等），将错误提示写入会话，避免用户看到空白。
 			// 错误信息的存放位置因 pi 版本和错误类型不同而有多种可能：
 			//   1. agent_end 顶层 errorMessage
@@ -4149,6 +4281,11 @@ export class AgentManager {
 				typed,
 				typed.isError ? "error" : "done",
 			);
+			// 子代理终态（成功/失败/超时）从 details 结算后立刻下发，侧栏不必等下一帧。
+			this.observeSubagentToolEvent(agentId, typed);
+			if (typed.isError === true) {
+				this.clearSubagentToolCall(agentId, String(typed.toolCallId ?? ""));
+			}
 			// 工具执行结束是终态，立即 flush 把最终结果推给渲染进程，避免节流窗口内用户看不到完成状态。
 			this.flushMessageEmit(agentId);
 			// 清除本次 toolCall；并行批次仅在最后一个工具结束时发布 false，
@@ -4175,6 +4312,7 @@ export class AgentManager {
 				return;
 			}
 			this.upsertToolMessage(agentId, typed, "running");
+			this.observeSubagentToolEvent(agentId, typed);
 		}
 
 		if (typed.type === "extension_ui_request") {
@@ -5185,6 +5323,10 @@ export class AgentManager {
 
 		if (existing) {
 			existing.text = text;
+			// timestamp 的语义是「最后更新时间」，不是计时起点：工具卡的运行中秒表必须用
+			// meta.startedAt（契约见 tests/toolMessageStartedAt.test.mjs）。历史 bug 就是渲染层
+			// 拿被这里刷新的 timestamp 当起点，导致 powershell/subagent 的耗时反复归零。
+			// 不能简单改回「创建时间」：turn 结束判定、指纹时间容差等既有消费者依赖该语义。
 			existing.timestamp = Date.now();
 			// 若本次有明确结果传入（包含终态或非空结果），准确替换展示图片与 notice，清除旧 partial 遗留
 			if (hasExplicitResult) {

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderSupervisorRequest } from "../resources/extensions/pideck-q-subagents/src/intercom/supervisor-ui.ts";
+import "./helpers/piFixtureResolver.mjs";
+
+// pi-tui is supplied by the latest-Pi fixture; load the source only after the resolver is active.
+const { renderSupervisorRequest } = await import("../resources/extensions/pideck-q-subagents/src/intercom/supervisor-ui.ts");
 
 /** A journal card may be rendered much later than the request that originally created it. */
 test("a supervisor card rechecks expiry on render and hides obsolete reply commands", () => {

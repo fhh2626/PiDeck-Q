@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { useAtomValue } from "jotai";
+import { atom, useAtomValue } from "jotai";
 import { selectAtom } from "jotai/utils";
 import type { AgentTab, SessionRecord, SessionRuntimeTarget } from "../../../shared/types";
 import {
@@ -7,6 +7,7 @@ import {
   currentSessionRuntimeAtom,
   sessionRecordsAtom,
   sessionRuntimeUiByIdAtom,
+  type SessionRuntimeUiState,
 } from "../atoms/session-atoms";
 import {
   sessionRecordByIdAtomFamily,
@@ -76,6 +77,9 @@ export interface UseSessionRuntimeControllerOptions {
 }
 
 const idleSendState = { status: "idle" as const };
+// Only the focused pane owns cross-session background-Ask notifications.
+const NO_BACKGROUND_UI_ATOM = atom<Record<string, SessionRuntimeUiState>>({});
+const NO_BACKGROUND_RECORDS_ATOM = atom<Record<string, SessionRecord>>({});
 
 /**
  * 会话 runtime 视图模型：始终按 sessionId 订阅 family，
@@ -118,8 +122,8 @@ export function useSessionRuntimeController(
   const currentSessionRuntimeUi = useAtomValue(runtimeUiAtom);
   const currentSessionSendState = useAtomValue(sendAtom);
 
-  const sessionRuntimeUiById = useAtomValue(sessionRuntimeUiByIdAtom);
-  const sessionRecords = useAtomValue(sessionRecordsAtom);
+  const sessionRuntimeUiById = useAtomValue(isFocusedPane ? sessionRuntimeUiByIdAtom : NO_BACKGROUND_UI_ATOM);
+  const sessionRecords = useAtomValue(isFocusedPane ? sessionRecordsAtom : NO_BACKGROUND_RECORDS_ATOM);
 
   const activeAgentId = currentSessionRuntime?.agentId;
   const runtimeTarget =

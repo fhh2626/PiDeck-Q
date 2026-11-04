@@ -182,6 +182,190 @@ export class SessionHistoryReader {
 		return { text };
 	}
 
+	/**
+	 * 批量读取未截断的工具调用与结果完整载荷，用于高精度长图/Markdown导出。
+	 * 整个方法只读取一次文件并批量提取所有 assistant / toolResult 条目。
+	 */
+	async readToolExportPayloads(
+		sessionPath: string,
+		messageIds: readonly string[],
+	): Promise<Map<string, { argsText?: string; resultText?: string; detailsText?: string }>> {
+		const resultMap = new Map<string, { argsText?: string; resultText?: string; detailsText?: string }>();
+		if (!sessionPath || !messageIds || messageIds.length === 0) return resultMap;
+
+		const cleanIds: string[] = [];
+		const seenIds = new Set<string>();
+		for (const id of messageIds) {
+			if (typeof id === "string" && id.trim()) {
+				const trimmed = id.trim();
+				if (!seenIds.has(trimmed)) {
+					seenIds.add(trimmed);
+					cleanIds.push(trimmed);
+				}
+			}
+		}
+		if (cleanIds.length === 0) return resultMap;
+
+		try {
+			const index = await this.getSessionDisplayIndex(sessionPath);
+
+			// 收集待查找的目标 entry
+			const targetEntriesByRequestedId = new Map<string, typeof index.activeMessageEntries[number]>();
+			for (const reqId of cleanIds) {
+				const syntheticId = syntheticHistoryEntryId(reqId);
+				const targetEntry = index.activeMessageEntries.find(
+					(candidate) =>
+						candidate.messageId === reqId ||
+						candidate.id === reqId ||
+						(syntheticId !== undefined && candidate.id === syntheticId),
+				);
+				if (targetEntry) {
+					targetEntriesByRequestedId.set(reqId, targetEntry);
+				}
+			}
+
+			// 收集活动分支上全部 assistant 与 toolResult 条目，用于一次性批量读取并配对参数
+			const toRead = index.activeMessageEntries.filter(
+				(entry) => entry.role === "assistant" || entry.role === "toolResult",
+			);
+
+			if (toRead.length === 0) return resultMap;
+
+			// 单次批量读取
+			const rawList = await this.readIndexedSessionMessages(index, toRead);
+
+			const entryIndexMap = new Map<typeof index.activeMessageEntries[number], number>();
+			for (let i = 0; i < toRead.length; i++) {
+				entryIndexMap.set(toRead[i], i);
+			}
+
+			// 1. 构建 callId -> rawArgsText 映射表（遍历所有 assistant 的 content 数组中全部 toolCall 块）
+			const argsByCallId = new Map<string, string>();
+			for (let i = 0; i < toRead.length; i++) {
+				if (toRead[i].role === "assistant") {
+					const rawMsg = rawList[i] as { content?: unknown } | undefined;
+					if (rawMsg && Array.isArray(rawMsg.content)) {
+						for (const block of rawMsg.content) {
+							if (block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall") {
+								const call = block as { id?: unknown; arguments?: unknown };
+								if (call.id !== undefined && call.id !== null) {
+									const rawArgs = call.arguments;
+									const argsText =
+										typeof rawArgs === "string"
+											? rawArgs
+											: typeof rawArgs === "object" && rawArgs !== null
+												? JSON.stringify(rawArgs, null, 2)
+												: String(rawArgs ?? "");
+									argsByCallId.set(String(call.id), argsText);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// 2. 为每个找到的目标 entry 生成载荷
+			for (const [reqId, entry] of targetEntriesByRequestedId.entries()) {
+				const idx = entryIndexMap.get(entry);
+				if (idx === undefined) {
+					resultMap.set(reqId, {});
+					continue;
+				}
+				const rawMsg = rawList[idx] as {
+					role?: string;
+					toolCallId?: string;
+					content?: unknown;
+					details?: unknown;
+				} | undefined;
+				if (!rawMsg) {
+					resultMap.set(reqId, {});
+					continue;
+				}
+
+				let argsText: string | undefined;
+				let resultText: string | undefined;
+				let detailsText: string | undefined;
+
+				if (rawMsg.role === "toolResult") {
+					const toolCallId = rawMsg.toolCallId;
+					resultText =
+						extractEntryResultText(rawMsg) ||
+						(typeof rawMsg.content === "string"
+							? rawMsg.content
+							: typeof rawMsg.content === "object" && rawMsg.content !== null
+								? JSON.stringify(rawMsg.content, null, 2)
+								: undefined);
+					if (rawMsg.details !== undefined) {
+						detailsText =
+							typeof rawMsg.details === "string"
+								? rawMsg.details
+								: JSON.stringify(rawMsg.details, null, 2);
+					}
+					if (toolCallId !== undefined && toolCallId !== null) {
+						argsText = argsByCallId.get(String(toolCallId));
+					}
+				} else if (rawMsg.role === "assistant") {
+					if (Array.isArray(rawMsg.content)) {
+						const call = rawMsg.content.find(
+							(b: any) => b && typeof b === "object" && b.type === "toolCall",
+						);
+						if (call) {
+							const rawArgs = (call as any).arguments;
+							argsText =
+								typeof rawArgs === "string"
+									? rawArgs
+									: typeof rawArgs === "object" && rawArgs !== null
+										? JSON.stringify(rawArgs, null, 2)
+										: String(rawArgs ?? "");
+							const callId = (call as any).id;
+							if (callId !== undefined && callId !== null) {
+								for (let j = 0; j < toRead.length; j++) {
+									if (toRead[j].role === "toolResult") {
+										const resMsg = rawList[j] as any;
+										if (resMsg && String(resMsg.toolCallId) === String(callId)) {
+											resultText =
+												extractEntryResultText(resMsg) ||
+												(typeof resMsg.content === "string"
+													? resMsg.content
+													: typeof resMsg.content === "object" && resMsg.content !== null
+														? JSON.stringify(resMsg.content, null, 2)
+														: undefined);
+											if (resMsg.details !== undefined) {
+												detailsText =
+													typeof resMsg.details === "string"
+														? resMsg.details
+														: JSON.stringify(resMsg.details, null, 2);
+											}
+											break;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+				resultMap.set(reqId, { argsText, resultText, detailsText });
+			}
+
+			return resultMap;
+		} catch {
+			return resultMap;
+		}
+	}
+
+	/**
+	 * 读取未截断的工具调用与结果完整载荷，用于高精度长图/Markdown导出。
+	 */
+	async readToolExportPayload(
+		sessionPath: string,
+		messageId: string,
+	): Promise<{ argsText?: string; resultText?: string; detailsText?: string } | null> {
+		if (!sessionPath || !messageId) return null;
+		const map = await this.readToolExportPayloads(sessionPath, [messageId]);
+		return map.get(messageId) ?? null;
+	}
+
 	async readSessionDisplayMessages(
 		sessionPath: string,
 		agentId = "_viewer",

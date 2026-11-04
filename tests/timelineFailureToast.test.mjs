@@ -41,12 +41,11 @@ test("floating failure helper: guards non-string meta and uses i18nKey", () => {
 });
 
 test("timeline render: failure/retry messages return null, diagnostics kept", () => {
-	const source = readFileSync("src/renderer/src/components/session/SessionMessageTimeline.tsx", "utf8");
+	const source = readFileSync("src/renderer/src/components/session/timeline/TimelineMessageRow.tsx", "utf8");
 	// error 分支：失败类不渲染卡片（已转 toast）
-	assert.match(source, /if \(message\.role === "error"\) \{\s*\/\/ 失败\/重试类提示已转 toast/s);
+	assert.match(source, /if \(message\.role === "error"\) \{\s*if \(isFloatingFailureMessage\(message\)\) return null;/s);
 	assert.match(source, /if \(isFloatingFailureMessage\(message\)\) return null;/);
 	// system 分支：自动重试状态同样转 toast，其他诊断卡片保留
-	assert.match(source, /\/\/ 自动重试状态（retryScheduled\/retrySucceeded\/retryFailed 等）\s*\/\/ 属于「重试提示」/s);
 	assert.match(source, /if \(isFloatingFailureMessage\(message\)\) return null;/);
 });
 

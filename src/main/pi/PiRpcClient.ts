@@ -18,7 +18,12 @@ type PendingRequest = {
 };
 
 export class PiRpcClient extends EventEmitter {
-  private buffer = "";
+  /**
+   * 尚未遇到换行的行片段。只在新到的解码文本里找换行，换行到达时才 join：
+   * 若每个 chunk 都拼接整个累积缓冲并从头 indexOf，数十 MB 的单行响应
+   * （如 get_messages）会退化为 O(n²)，阻塞主进程数秒。
+   */
+  private partialLine: string[] = [];
   private readonly decoder = new StringDecoder("utf8");
   private readonly pending = new Map<string, PendingRequest>();
   private closed = false;
@@ -67,6 +72,8 @@ export class PiRpcClient extends EventEmitter {
   close(error?: Error) {
     if (this.closed) return;
     this.closed = true;
+    // 关闭后不再解析 stdout，释放可能很大的未完成行。
+    this.partialLine = [];
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(error ?? new Error(`RPC client closed before response: ${id}`));
@@ -84,29 +91,38 @@ export class PiRpcClient extends EventEmitter {
 
   private consumeChunk(chunk: Buffer | string) {
     if (this.closed) return;
-    this.buffer += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
-    this.drainLines();
+    // StringDecoder 保留跨 chunk 的半个多字节字符，这里拿到的文本始终是完整字符。
+    this.drainLines(typeof chunk === "string" ? chunk : this.decoder.write(chunk));
   }
 
   private consumeEnd() {
     if (this.closed) return;
-    this.buffer += this.decoder.end();
-    if (this.buffer.length > 0) {
-      this.handleLine(this.buffer.endsWith("\r") ? this.buffer.slice(0, -1) : this.buffer);
-      this.buffer = "";
+    const rest = this.decoder.end();
+    if (rest) this.partialLine.push(rest);
+    if (this.partialLine.length > 0) {
+      const line = this.partialLine.join("");
+      this.partialLine = [];
+      this.handleLine(line.endsWith("\r") ? line.slice(0, -1) : line);
     }
   }
 
-  private drainLines() {
-    while (true) {
-      const newlineIndex = this.buffer.indexOf("\n");
-      if (newlineIndex === -1) return;
-
-      let line = this.buffer.slice(0, newlineIndex);
-      this.buffer = this.buffer.slice(newlineIndex + 1);
+  /** 只扫描新文本；未完成的尾部片段留到下次换行时再拼接。 */
+  private drainLines(text: string) {
+    let start = 0;
+    while (!this.closed) {
+      const newlineIndex = text.indexOf("\n", start);
+      if (newlineIndex === -1) break;
+      let line = text.slice(start, newlineIndex);
+      if (this.partialLine.length > 0) {
+        this.partialLine.push(line);
+        line = this.partialLine.join("");
+        this.partialLine = [];
+      }
+      start = newlineIndex + 1;
       if (line.endsWith("\r")) line = line.slice(0, -1);
       this.handleLine(line);
     }
+    if (!this.closed && start < text.length) this.partialLine.push(text.slice(start));
   }
 
   private handleLine(line: string) {

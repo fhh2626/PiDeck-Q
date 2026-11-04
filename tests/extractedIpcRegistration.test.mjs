@@ -1,47 +1,96 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { createFakeRouter, runBackendRpcWiring } from "./helpers/l3_ipcHarness.mjs";
 
-const registerBackendRpc = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
-const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-const scratchPadIpc = readFileSync("src/main/ipc/scratchPadIpc.ts", "utf8");
+const { ipcChannels } = loadTsCommonJs("src/shared/ipc.ts");
 
-test("extracted session and scratch-pad IPC modules remain registered by the backend", () => {
-  assert.match(registerBackendRpc, /registerScratchPadIpc\(router,\s*\{/);
-  assert.match(
-    registerBackendRpc,
-    /registerSessionIpc\(router,\s*\{[\s\S]*projectStore,[\s\S]*settingsStore,[\s\S]*sessionScanner,[\s\S]*sessionCatalog,[\s\S]*sessionRuntimeCoordinator,[\s\S]*agentManager,[\s\S]*configManager,[\s\S]*terminalManager,[\s\S]*replaceAgentSession,[\s\S]*\}\)/,
-  );
-  assert.doesNotMatch(sessionIpc, /from\s+["']\.\.\/index["']/);
-  assert.doesNotMatch(scratchPadIpc, /from\s+["']\.\.\/index["']/);
+test("backend wiring registers the scratch-pad IPC domain on the shared router", () => {
+  const { captured, router } = runBackendRpcWiring();
+  const scratch = captured.get("scratchPad");
+  assert.ok(scratch, "registerScratchPadIpc must be called by registerBackendRpc");
+  assert.equal(scratch.router, router);
+  assert.equal(scratch.deps.appLogger.__name, "appLogger");
+  assert.equal(scratch.deps.userDataDir, "/data");
 });
 
-test("catalog session loading remains owned by the registered session IPC module", () => {
-  assert.match(sessionIpc, /ipcChannels\.sessionsCatalogList/);
-  assert.match(sessionIpc, /sessionCatalog\.mergeScanned/);
+test("backend wiring hands the session IPC domain its services unchanged", () => {
+  const { captured, services, router } = runBackendRpcWiring();
+  const session = captured.get("session");
+  assert.ok(session, "registerSessionIpc must be called by registerBackendRpc");
+  assert.equal(session.router, router);
+  for (const name of [
+    "projectStore",
+    "settingsStore",
+    "sessionScanner",
+    "sessionCatalog",
+    "sessionRuntimeCoordinator",
+    "agentManager",
+    "configManager",
+    "terminalManager",
+  ]) {
+    assert.equal(session.deps[name], services[name], `session IPC must receive the shared ${name}`);
+  }
+  // replaceAgentSession 来自 runtimeBridge，而不是装配层自己重造
+  assert.equal(session.deps.replaceAgentSession, "bridge:replaceAgentSession");
 });
 
-const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
+test("catalog session loading is served by the registered session IPC handler", async () => {
+  const { registerSessionIpc } = loadTsCommonJs("src/main/ipc/sessionIpc.ts");
+  const router = createFakeRouter();
+  const scanned = [{ id: "s-file", path: "/work/p1/a.jsonl" }];
+  const merged = [{ id: "stable-1", projectId: "p1" }];
+  const calls = [];
+  registerSessionIpc(router, {
+    projectStore: { get: (id) => (id === "p1" ? { id, path: "/work/p1" } : undefined) },
+    settingsStore: { get: () => ({ wslEnabled: false }) },
+    sessionScanner: { list: async (path) => { calls.push(["scan", path]); return scanned; } },
+    sessionCatalog: {
+      mergeScanned: async (projectId, summaries, options) => {
+        calls.push(["merge", projectId, summaries, options]);
+        return merged;
+      },
+      listProjectRecords: () => [],
+    },
+    sessionRuntimeCoordinator: { attachCatalogRuntimes: () => [] },
+    agentManager: { list: () => [] },
+    appLogger: { info() {}, warn() {}, error() {} },
+    mainCopy: (key) => key,
+    emitSessionRuntimeEvent: () => {},
+  });
 
-test("system IPC no longer carries the pi update channels", () => {
-  // 回归：0.2.1 移除内置更新系统后，systemIpc 不再注册 pi:update-check / pi:update，
-  // 也不再依赖 extensionManager（那是给更新用的）。
-  // 守门：后人若想把更新塞回 systemIpc，应先看这条断言。
-  assert.doesNotMatch(systemIpc, /ipcChannels\.piUpdateCheck/);
-  assert.doesNotMatch(systemIpc, /ipcChannels\.piUpdate\b/);
-  assert.doesNotMatch(systemIpc, /checkForAppUpdate/);
-  assert.doesNotMatch(systemIpc, /downloadUpdateAsset/);
-  // registerSystemIpc 不再吃 extensionManager（它改由 storeIpc 拥有扩展 CRUD）
-  // 从 registerSystemIpc(router, {...}) 块内抽取文本，断言块内没有裸 extensionManager, 简写
-  const systemIpcBlock = registerBackendRpc.slice(
-    registerBackendRpc.indexOf("registerSystemIpc(router, {"),
-    registerBackendRpc.indexOf("registerStoreIpc(router, {"),
-  );
-  assert.ok(systemIpcBlock.length > 0, "registerSystemIpc block must exist");
-  assert.doesNotMatch(
-    systemIpcBlock,
-    /\n\t\textensionManager,\n/,
-    "extensionManager must not be a direct dep of registerSystemIpc",
-  );
-  assert.doesNotMatch(systemIpc, /from\s+["']\.\.\/index["']/);
+  const result = await router.invoke(ipcChannels.sessionsCatalogList, "p1");
+
+  assert.deepEqual(result, merged);
+  // 经 JSON 往返抹平 vm 沙箱内对象的跨 realm 原型差异
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["scan", "/work/p1"], ["merge", "p1", scanned, {}]]);
+});
+
+test("system IPC registers no pi update channels", () => {
+  // 回归：0.2.1 移除内置更新系统后，systemIpc 不再注册 pi:update-check / pi:update。
+  const { registerSystemIpc } = loadTsCommonJs("src/main/ipc/systemIpc.ts");
+  const router = createFakeRouter();
+  const inertDep = () => undefined;
+  // 宽松假依赖：注册阶段只应读取依赖，不应调用它们
+  registerSystemIpc(router, new Proxy({}, { get: () => inertDep }));
+  const channels = [...router.handlers.keys()];
+  assert.ok(channels.length > 10, "system IPC should register its handlers");
+  assert.deepEqual(channels.filter((channel) => /^pi:update/.test(channel)), []);
+  assert.equal(Object.keys(ipcChannels).filter((key) => /^piUpdate/.test(key)).length, 0);
+});
+
+test("backend wiring does not give system IPC the extension manager", () => {
+  // registerSystemIpc 不再吃 extensionManager（扩展 CRUD 归 storeIpc）
+  const { captured, services } = runBackendRpcWiring();
+  assert.ok(!("extensionManager" in captured.get("system").deps));
+  assert.equal(captured.get("store").deps.extensionManager, services.extensionManager);
+});
+
+test("extracted IPC modules do not import the native-node entry", () => {
+  // 静态分层规则：领域 IPC 模块不得反向依赖入口，文本匹配是此类规则的合适手段。
+  for (const file of ["sessionIpc", "scratchPadIpc", "systemIpc"]) {
+    const source = readFileSync(`src/main/ipc/${file}.ts`, "utf8");
+    assert.doesNotMatch(source, /from\s+["']\.\.\/index["']/, file);
+  }
 });

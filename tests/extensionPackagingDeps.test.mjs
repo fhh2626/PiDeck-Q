@@ -36,6 +36,8 @@ function collectBareImports() {
 	return [...specs];
 }
 
+// 本文件整体是打包配置契约：xmake.lua、stage-native-runtime.mjs、.gitignore 与 resources 目录布局都是静态配置，
+// 无运行时入口可调用（需 Qt 构建/打包产物），因此正则/existsSync 是正确工具；依赖提取（collectBareImports）本身已按 import 语句逐行解析。
 test("extension runtime deps are packaged next to extensions", () => {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 	const xmake = readFileSync("xmake.lua", "utf8");
@@ -61,7 +63,7 @@ test("pideck-q-better-compaction keeps its relative runtime files in extraResour
 test("pideck-q-change-pi-prompt keeps its relative runtime files in extraResources", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
 	assert.match(xmake, /os\.cp\(path\.join\(os\.projectdir\(\), "resources", "\*"\)/);
-	for (const file of ["runtime.ts", "transform.ts", "config.ts", "defaults.ts", "layout.ts", "contributions.ts", "shellAvailability.ts", "copy.ts", "tests/transform.test.mjs"]) {
+	for (const file of ["runtime.ts", "transform.ts", "config.ts", "defaults.ts", "layout.ts", "contributions.ts", "shellAvailability.ts", "shellProbe.ts", "windowsShellDiscovery.ts", "copy.ts", "tests/transform.test.mjs"]) {
 		assert.ok(existsSync(join("resources", "extensions", "pideck-q-change-pi-prompt", file)));
 	}
 });

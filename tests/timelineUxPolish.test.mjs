@@ -40,13 +40,11 @@ test("tool card name uses medium weight like process summary, not bold 650", () 
 
 test("auto-collapse process waits 1.5s after agent stops (not merely endedAt)", () => {
   assert.match(turnExecution, /}, 1500\)/);
-  assert.match(turnExecution, /1\.5s 后自动收起/);
+  assert.match(turnExecution, /1\.5s 后收起/);
   // 收起只改折叠态，不再回调滚动（对准最终回答会解锁跟底并点亮回底按钮）
   assert.doesNotMatch(turnExecution, /autoCollapseTick/);
   // 以 agentRunning 停转为准，避免流式中 endedAt>0 误触发收起
-  assert.match(turnExecution, /if \(opts\.agentRunning \|\| userOverrideRef\.current\) return;/);
-  // 上升沿才强制展开，避免用户收起后被 busy 抖动撑开
-  assert.match(turnExecution, /running && !wasRunningRef\.current/);
+  assert.match(turnExecution, /if \(opts\.agentRunning \|\| atomState\.userOverride\) return;/);
   assert.match(turnExecution, /setStepsVisibleFromUser/);
 });
 
@@ -66,11 +64,10 @@ test("auto-collapse does not steal follow or show the jump-to-bottom button", ()
   assert.doesNotMatch(turnRow, /onProcessAutoCollapsed/);
   assert.doesNotMatch(timeline, /onProcessAutoCollapsed/);
   assert.doesNotMatch(controller, /clientHeight \* 0\.35/);
-  // isLatestRun（自动收起）保持按「最后一条显示条目」判定；
-  // isLastAgentRun（最后一个 agent-run）用于 ask_question 门控（pickActiveAskRequest）——
-  // live 正文挂载已改为 streamingMessageId 精确匹配（见 liveMountDecision 回归），与二者无关。
-  assert.match(timeline, /isLatestRun=\{index === displayRuns\.length - 1\}/);
-  assert.match(timeline, /isLastAgentRun=\{index === lastAgentRunIndex\}/);
+  // isLatestRun（自动收起）与 isLastAgentRun 在虚拟化行中计算
+  const rowSource = readFileSync("src/renderer/src/components/session/timeline/TimelineMessageRow.tsx", "utf8");
+  assert.match(rowSource, /isLatestRun = index === totalItems - 1/);
+  assert.match(timeline, /isLastAgentRun=\{isLastAgentRun\}/);
   assert.match(timeline, /lastAgentRunIndex/);
 });
 

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { quoteExecutableForShell } from "../runs/shared/acceptance.ts";
 import { createOwnedProcessTreeController, type OwnedProcessTreeController } from "../runs/background/owned-process-tree.ts";
 import { resolveSingleOutputClaimPath } from "../runs/shared/single-output.ts";
@@ -44,8 +45,19 @@ function byteLength(value: string): number {
 
 function boundedText(value: string, maxBytes: number): string {
 	if (byteLength(value) <= maxBytes) return value;
-	let end = Math.max(0, maxBytes - 3);
-	while (end > 0 && byteLength(value.slice(0, end)) > maxBytes - 3) end -= 1;
+	const budget = Math.max(0, maxBytes - 3);
+	let end = 0;
+	let upper = Math.min(value.length, budget);
+	// Binary-search the UTF-16 prefix. Walking down one code unit at a time
+	// repeatedly rescans megabytes of non-ASCII output and can stall cleanup.
+	while (end < upper) {
+		const middle = Math.ceil((end + upper) / 2);
+		if (byteLength(value.slice(0, middle)) <= budget) end = middle;
+		else upper = middle - 1;
+	}
+	// A byte-budget cut must not turn the first half of an astral character into U+FFFD.
+	const last = value.charCodeAt(end - 1);
+	if (last >= 0xd800 && last <= 0xdbff) end -= 1;
 	return `${value.slice(0, end)}...`;
 }
 
@@ -86,9 +98,9 @@ export function normalizeWorkflowHostCommandParams(value: unknown, label = "runs
 	};
 }
 
-function appendBounded(current: string, chunk: Buffer, limit: number): string {
+function appendBounded(current: string, text: string, limit: number): string {
 	if (byteLength(current) >= limit) return current;
-	return boundedText(current + chunk.toString("utf8"), limit);
+	return boundedText(current + text, limit);
 }
 
 export function resolveWorkflowHostOutputClaimPath(outputPath: string): string {
@@ -197,19 +209,26 @@ export async function executeWorkflowHostCommand(input: {
 		const onAbort = () => terminate("abort");
 		if (input.signal.aborted) onAbort();
 		else input.signal.addEventListener("abort", onAbort, { once: true });
-		child.stdout.on("data", (chunk: Buffer) => {
-			stdout = appendBounded(stdout, chunk, MAX_PREVIEW_BYTES);
-			capture = appendBounded(capture, chunk, MAX_CAPTURE_BYTES);
-		});
-		child.stderr.on("data", (chunk: Buffer) => {
-			stderr = appendBounded(stderr, chunk, MAX_PREVIEW_BYTES);
-			capture = appendBounded(capture, chunk, MAX_CAPTURE_BYTES);
-		});
+		// Pipe chunks are byte boundaries, not UTF-8 character boundaries. Keep one
+		// decoder per stream so interleaved stderr cannot complete a stdout character.
+		const stdoutDecoder = new StringDecoder("utf8");
+		const stderrDecoder = new StringDecoder("utf8");
+		const appendDecoded = (stream: "stdout" | "stderr", text: string) => {
+			if (!text) return;
+			if (stream === "stdout") stdout = appendBounded(stdout, text, MAX_PREVIEW_BYTES);
+			else stderr = appendBounded(stderr, text, MAX_PREVIEW_BYTES);
+			capture = appendBounded(capture, text, MAX_CAPTURE_BYTES);
+		};
+		child.stdout.on("data", (chunk: Buffer) => appendDecoded("stdout", stdoutDecoder.write(chunk)));
+		child.stderr.on("data", (chunk: Buffer) => appendDecoded("stderr", stderrDecoder.write(chunk)));
 		const finish = async (exitCode: number | null, spawnError?: unknown) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeout);
 			input.signal.removeEventListener("abort", onAbort);
+			// Preserve any incomplete terminal sequence using the decoder's normal replacement policy.
+			appendDecoded("stdout", stdoutDecoder.end());
+			appendDecoded("stderr", stderrDecoder.end());
 			const terminal = termination ? await termination : await processTree?.finishAfterWriterClose();
 			const cleanupError = process.platform !== "win32" && terminal?.state === "unknown" ? terminal.reason : undefined;
 			const state = timedOut ? "timed-out" : stopped ? "stopped" : exitCode === 0 && !spawnError && !cleanupError ? "passed" : "failed";

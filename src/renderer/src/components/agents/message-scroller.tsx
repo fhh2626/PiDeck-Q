@@ -31,6 +31,8 @@ export type MessageScrollerScrollApi = {
 };
 
 export interface MessageScrollerProps extends ComponentPropsWithRef<"div"> {
+  /** 初始是否跟底。优先使用此显式初始化语义，避免受镜像回写干扰。 */
+  initialFollowOutput?: boolean;
   /** Keep streamed output pinned while the reader remains near the end. */
   followOutput?: boolean;
   /** Distance from the end that still counts as following the output. */
@@ -62,6 +64,7 @@ export interface MessageScrollerProps extends ComponentPropsWithRef<"div"> {
 }
 
 export function MessageScroller({
+  initialFollowOutput,
   followOutput = true,
   followThreshold = 56,
   smooth = true,
@@ -81,10 +84,12 @@ export function MessageScroller({
   const reduce = useReducedMotion() ?? false;
   const viewportRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // 初始跟随语义：initialFollowOutput 优先，次选 followOutput
+  const initialFollow = initialFollowOutput ?? followOutput ?? true;
+
   // 流式结束过渡（needsInstant）：busy（等待流式输出）true→false 后的窗口期内，
   // 内容增长追底用 instant 而非 smooth，避免最终文本长高触发平滑滚动动画造成跳屏。
-  // 注意：busyEnding 必须是 state（不能用 ref）——useStickToBottom 每次渲染读 options，
-  // ref 变化不触发渲染，resize 不会随过渡窗口切换。
   const [busyEnding, setBusyEnding] = useState(false);
   const busyEndingTimerRef = useRef<number | undefined>(undefined);
   const {
@@ -95,17 +100,12 @@ export function MessageScroller({
     ...restViewportProps
   } = viewportProps ?? {};
 
-  // ── 滚动引擎：use-stick-to-bottom（弹簧物理 + 锁底/逃逸 + 350ms 保留期）──
-  // smooth=false 或 reduced-motion 时 resize 用 instant（与旧手写逻辑等价）。
-  // 流式期间不再因 busy 一刀切 instant：逐行增高走弹簧，才有「流体上移」。
-  // 工具卡/折叠/插件切全量那种几百 px 跳变由 instantResizeThreshold（28）同步 instant，
-  // 避免弹簧「先撑上去再弹回」。busyEnding 只覆盖流结束 150ms，防收尾长高跳屏。
+  // ── 滚动引擎：use-stick-to-bottom ──
   const stick = useStickToBottom({
-    initial: "instant",
+    initial: initialFollow ? "instant" : false,
     resize: busyEnding || reduce || !smooth ? "instant" : "smooth",
     instantResizeThreshold: 28,
   });
-  // 解构出稳定引用：stick 每次渲染是新对象，effect 依赖不能直接用它。
   const engineScrollRef = stick.scrollRef;
   const engineContentRef = stick.contentRef;
   const engineScrollToBottom = stick.scrollToBottom;
@@ -113,14 +113,16 @@ export function MessageScroller({
   const engineRestoreAt = stick.restoreAt;
   const engineStopScroll = stick.stopScroll;
 
-  // 把引擎能力挂到外部 ref，供 SessionTimelineController 的回底按钮/历史位置恢复使用。
-  useEffect(() => {
+  // 在 layout effect 中同步发布 engine API 给外部，避免首帧恢复时拿不到或被异步打乱
+  const currentApiRef = useRef<MessageScrollerScrollApi | null>(null);
+  useLayoutEffect(() => {
     if (!scrollApiRef) return;
     const api: MessageScrollerScrollApi = {
       scrollToBottom: engineScrollToBottom,
       restoreAt: engineRestoreAt,
       stopScroll: engineStopScroll,
     };
+    currentApiRef.current = api;
     if (typeof scrollApiRef === "function") {
       scrollApiRef(api);
       return () => {
@@ -129,14 +131,15 @@ export function MessageScroller({
     }
     scrollApiRef.current = api;
     return () => {
-      scrollApiRef.current = null;
+      if (scrollApiRef.current === api) {
+        scrollApiRef.current = null;
+      }
     };
   }, [scrollApiRef, engineScrollToBottom, engineRestoreAt, engineStopScroll]);
 
   const setViewportRef = useCallback(
     (node: HTMLElement | null) => {
       viewportRef.current = node;
-      // 桥接给 stick-to-bottom 引擎（内部会挂 scroll/wheel 监听并同步 scrollRef.current）
       engineScrollRef(node);
       if (typeof externalViewportRef === "function") {
         externalViewportRef(node);
@@ -156,15 +159,25 @@ export function MessageScroller({
   );
 
   // ── followOutput / onFollowChange 桥接 ──
-  // engineIsAtBottom 即「用户仍在实时尾部」；跟随开关（followOutput）变化时
-  // 重新锁底或逃逸，向上兼容旧的 onFollowChange 语义。
+  // engineIsAtBottom 即跟随状态；外部 followOutput 仅作为兼容的显式输入控制口
   const isFollowing = engineIsAtBottom;
 
+  // 监听显式 followOutput 的边沿变化（仅当外部值发生真实 boolean 翻转时响应，不依赖 isFollowing 造成循环）
+  const prevFollowOutputRef = useRef(followOutput);
   useLayoutEffect(() => {
-    if (!followOutput) return;
-    // 回底按钮会先 setAutoScroll(true) 再发起弹簧；若这里无条件 instant，
-    // layout 阶段会抢跑把弹簧掐死，观感变成「唰」一下。
-    // 距底较远用弹簧滞空；已在近底则 instant 即可。
+    const prev = prevFollowOutputRef.current;
+    prevFollowOutputRef.current = followOutput;
+
+    if (prev === followOutput) {
+      return;
+    }
+
+    if (!followOutput) {
+      engineStopScroll();
+      return;
+    }
+
+    // 从 false 变更为 true（显式要求回底跟随）
     const scroll = viewportRef.current;
     const distance = scroll
       ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight
@@ -172,8 +185,9 @@ export function MessageScroller({
     const animation =
       reduce || distance <= followThreshold ? "instant" : "smooth";
     engineScrollToBottom({ animation });
-  }, [followOutput, followThreshold, reduce, engineScrollToBottom]);
+  }, [followOutput, followThreshold, reduce, engineScrollToBottom, engineStopScroll]);
 
+  // 回报引擎跟随状态变化
   useEffect(() => {
     onFollowChange?.(isFollowing);
   }, [isFollowing, onFollowChange]);

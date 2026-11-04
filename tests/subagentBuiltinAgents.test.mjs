@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import "./helpers/piFixtureResolver.mjs";
 
 const root = process.cwd();
 const load = (relative) => import(pathToFileURL(join(root, "resources/extensions/pideck-q-subagents/src", relative)).href);

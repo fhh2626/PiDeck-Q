@@ -132,14 +132,21 @@ function attachInlineCopy(katex: HTMLElement) {
 
 /** 为 root 及其后代补齐公式复制挂载（幂等）：块级插按钮，行内本体加框。 */
 function ensureFormulaButtons(root: Element) {
+	// 计划步骤 10.2 核心要求：跳过位于只读导出宿主内的 root 或其子元素！
+	if (root.closest?.("[data-markdown-readonly]") || root.hasAttribute("data-markdown-readonly")) {
+		return;
+	}
+
 	// 行内公式：所有 .katex 中不在 .math-display 容器内的（块级已由容器统一处理）
 	for (const el of root.querySelectorAll(".katex")) {
+		if (el.closest("[data-markdown-readonly]")) continue;
 		if (!el.closest(".math-display")) attachInlineCopy(el as HTMLElement);
 	}
 	if (root.classList.contains("katex") && !root.closest(".math-display")) {
 		attachInlineCopy(root as HTMLElement);
 	}
 	for (const el of root.querySelectorAll(".math-display")) {
+		if (el.closest("[data-markdown-readonly]")) continue;
 		attachBlockButton(el as HTMLElement);
 	}
 	if (root.classList.contains("math-display")) attachBlockButton(root as HTMLElement);

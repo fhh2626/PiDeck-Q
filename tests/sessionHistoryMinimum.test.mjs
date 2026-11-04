@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createStore } from "jotai";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { withTimelineController } from "./helpers/l6_timelineControllerHarness.mjs";
 
 /** 会话历史保底（桌面 50 轮 / Web 100 显示单元）的回归测试。 */
 function loadAtoms() {
@@ -372,22 +372,118 @@ test("D3: resolveMinimumHistoryTopUp returns 0 when nothing needs to be fetched"
 	);
 });
 
-test("D3: the controller wires the top-up helper into the runtime history loader", () => {
-	const controllerSource = readFileSync(
-		"src/renderer/src/hooks/useSessionTimelineController.ts",
-		"utf8",
-	);
-	assert.match(controllerSource, /resolveMinimumHistoryTopUp\(/);
-	// loadRuntimeHistoryPage 必须定义为独立 useCallback，且同时被上滚（用户主动）与
-	// 保底（自动）调用：至少 2 处调用点（不算定义行）。
-	assert.match(controllerSource, /const loadRuntimeHistoryPage = useCallback\(/);
-	const loadCalls = controllerSource.match(/loadRuntimeHistoryPage\(/g) ?? [];
-	assert.ok(loadCalls.length >= 2, `expected >=2 call sites, got ${loadCalls.length}`);
-	// 保底补页必须走同一入口（否则上滚与保底会各写一套锚点/重建逻辑）。
-	// 差额由 resolveMinimumHistoryTopUp 保证不超过 MIN_DISPLAY_TURNS（服务端单页上限），直接传入
-	assert.match(controllerSource, /loadRuntimeHistoryPage\(missingTurns, !autoScrollRef\.current\)/);
+test("D3: a mounted runtime session below the floor tops up the gap through the shared history loader", async () => {
+	// 行为校验（原来是对 controller 源码做正则）：挂载真实 hook，窗口 5 轮 + 历史前缀 10 轮、还有更早历史，
+	// 必须自动向主进程补足差额 35 轮，游标为前缀的 nextBefore，且补页结果并入前缀。
+	const olderPage = {
+		messages: turns(2, 900),
+		total: 500,
+		nextBefore: 77,
+		indexVersion: "1:1",
+	};
+	await withTimelineController({
+		respond: (call) => Promise.resolve(
+			call.before === undefined && call.opts.beforeEntryId === undefined
+				? { messages: [], total: 0, nextBefore: null }
+				: olderPage,
+		),
+	}, async ({ atoms, store, calls, mount }) => {
+		seedRuntimeWithHistory(store, atoms, "s-d3", {
+			window: turns(5, 100),
+			history: turns(10, 200),
+		});
+		await mount("s-d3");
+
+		const topUp = calls.find((call) => call.before === 123);
+		assert.ok(topUp, "top-up must continue from the prefix cursor nextBefore=123");
+		assert.equal(topUp.pageSize, 35);
+		assert.equal(topUp.opts.unit, "turn");
+		const entry = store.get(atoms.sessionMessagesCacheAtom)["s-d3"];
+		assert.equal(entry.history.nextBefore, 77, "fetched page must be prepended to the history prefix");
+		assert.equal(atoms.countUserTurns(entry.history.messages), 12);
+	});
 });
 
+/**
+ * 假的滚动容器：scrollHeight 随已显示消息数增长（每条 10px），scrollTop 可读写。
+ * 只实现 hook 在挂载/补页期间会碰到的最小面；不模拟布局，补偿是否发生由 scrollTop 的最终值体现。
+ */
+function createFakeTimeline(getMessageCount) {
+	const element = {
+		scrollTop: 0,
+		clientHeight: 400,
+		get scrollHeight() {
+			return 1000 + getMessageCount() * 10;
+		},
+		addEventListener() {},
+		removeEventListener() {},
+		querySelector: () => null,
+		getBoundingClientRect: () => ({ top: 0, bottom: 400, height: 400, left: 0, right: 0, width: 0 }),
+		scrollTo() {},
+	};
+	return element;
+}
+
+async function runAutoTopUp({ userScrolledUp }) {
+	let releasePage;
+	const pageGate = new Promise((resolve) => { releasePage = resolve; });
+	let anchorWhileInFlight;
+	const olderPage = { messages: turns(2, 900), total: 500, nextBefore: 77, indexVersion: "1:1" };
+	let ctl;
+	let timeline;
+	await withTimelineController({
+		respond: (call) => (
+			call.before === undefined && call.opts.beforeEntryId === undefined
+				? Promise.resolve({ messages: [], total: 0, nextBefore: null })
+				: pageGate.then(() => olderPage)
+		),
+		timeline: () => {
+			timeline = createFakeTimeline(() => ctl?.visibleMessages.length ?? 0);
+			return timeline;
+		},
+	}, async ({ atoms, store, controller, mount, act }) => {
+		ctl = new Proxy({}, { get: (_target, key) => controller()?.[key] });
+		// 用户上滚 = 该会话存在滚动锚点 → autoScroll 初始为 false；没有锚点则处于贴底跟随。
+		if (userScrolledUp) {
+			store.set(atoms.sessionScrollAnchorByIdAtom, {
+				"s-d3": { messageId: "m", offsetTop: 0, visibleCount: 20, savedAt: 1 },
+			});
+		}
+		// 先空挂载，再让缓存数据到达：会话切换的重置 effect 会清掉挂载当帧登记的锚点，
+		// 只有“已在该会话里、数据后到”这条路径才是 preserveScroll 真正起作用的场景。
+		await mount("s-d3");
+		await act(async () => {
+			seedRuntimeWithHistory(store, atoms, "s-d3", {
+				window: turns(5, 100),
+				history: turns(10, 200),
+			});
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		// 此刻补页请求已发出、尚未落地：锚点是否已登记只取决于 preserveScroll。
+		anchorWhileInFlight = controller().hasPendingLoadMoreAnchor();
+		await act(async () => {
+			releasePage();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	});
+	return { timeline, anchorWhileInFlight };
+}
+
+test("D3: auto top-up while the user has scrolled up registers a scroll anchor and compensates the inserted height", async () => {
+	const { timeline, anchorWhileInFlight } = await runAutoTopUp({ userScrolledUp: true });
+	assert.equal(anchorWhileInFlight, true, "scroll anchor must be registered before the page request");
+	// 补页插入 2 轮消息，高度增加；视口必须随之下移，否则用户正在读的内容会被顶走。
+	assert.ok(timeline.scrollTop > 0, `expected scrollTop to be compensated, got ${timeline.scrollTop}`);
+});
+
+test("D3: auto top-up while stuck to the bottom leaves the scroll position to the stick-to-bottom engine", async () => {
+	const { timeline, anchorWhileInFlight } = await runAutoTopUp({ userScrolledUp: false });
+	assert.equal(anchorWhileInFlight, false, "no scroll anchor may be registered while stuck to the bottom");
+	// 贴底时由贴底引擎负责生长补偿；这里若也补偿，会把视口拽离底部。
+	assert.equal(timeline.scrollTop, 0);
+});
 test("D3: resolveMinimumHistoryTopUp never asks for more than the 50-turn page cap", () => {
 	const controller = loadController();
 	// 两边都为 0 轮时差额最大：恰好等于 MIN_DISPLAY_TURNS（服务端单页上限也是 50），调用方无需再截断

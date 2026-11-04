@@ -24,7 +24,7 @@ import {
 	advanceNativeHeartbeatRecovery,
 	createNativeHeartbeatRecoveryState,
 } from "./transport/nativeHeartbeatRecovery";
-import { shouldReloadAfterMissedHeartbeats } from "./transport/nativeHeartbeatWatchdog";
+import { createRendererHeartbeatWatchdog } from "./transport/nativeHeartbeatWatchdog";
 
 const port = Number(process.env.PIDECK_HOST_PORT);
 const token = process.env.PIDECK_HOST_TOKEN?.trim();
@@ -48,8 +48,7 @@ let backend: Backend | null = null;
 let singleInstance: Awaited<ReturnType<typeof acquireVersionSingleInstance>> | null = null;
 let stopPromise: Promise<void> | null = null;
 let heartbeatTimer: NodeJS.Timeout | null = null;
-let lastHeartbeatAt = Date.now();
-let reloadInFlight = false;
+let heartbeatWatchdog: ReturnType<typeof createRendererHeartbeatWatchdog> | null = null;
 let heartbeatRecoveryState = createNativeHeartbeatRecoveryState();
 let pendingBounds: LastWindowBounds | null = null;
 let userDataDirectory = "";
@@ -130,14 +129,16 @@ async function stop(announceReadyToExit = false): Promise<void> {
 		return;
 	}
 	stopPromise = (async () => {
+		// 先关闭恢复入口再等待后端释放，避免 dispose 期间定时器又请求整页重载。
+		if (heartbeatTimer) clearInterval(heartbeatTimer);
+		heartbeatTimer = null;
+		heartbeatWatchdog = null;
 		const activeBackend = backend;
 		backend = null;
 		if (activeBackend) await activeBackend.dispose().catch(() => undefined);
 		singleInstance?.dispose();
 		singleInstance = null;
 		externalFileCapabilities.clear();
-		if (heartbeatTimer) clearInterval(heartbeatTimer);
-		heartbeatTimer = null;
 		liveResync.dispose();
 		if (loadRetryTimer) clearTimeout(loadRetryTimer);
 		loadRetryTimer = null;
@@ -300,7 +301,7 @@ async function main(): Promise<void> {
 			};
 		},
 		onHeartbeat: (payload, state) => {
-			lastHeartbeatAt = Date.now();
+			heartbeatWatchdog?.touch();
 			const recovery = advanceNativeHeartbeatRecovery(
 				heartbeatRecoveryState,
 				payload,
@@ -398,7 +399,7 @@ async function main(): Promise<void> {
 	host.on("window.closed", () => nativeHost?.markWindowDestroyed());
 	host.on<boolean>("window.visibleChanged", (visible) => {
 		nativeHost?.markWindowVisible(visible);
-		if (visible) lastHeartbeatAt = Date.now();
+		if (visible) heartbeatWatchdog?.touch();
 	});
 	host.on<unknown>("window.normalBoundsChanged", (payload) => {
 		if (!isRecord(payload) || !isFiniteNumber(payload.width) || !isFiniteNumber(payload.height)) return;
@@ -459,19 +460,14 @@ async function main(): Promise<void> {
 	});
 
 	// Renderer heartbeats preserve Electron's crash-recovery behavior without CDP.
-	heartbeatTimer = setInterval(() => {
-		if (!nativeHost?.shouldWatchRendererHeartbeat()) return;
-		if (!shouldReloadAfterMissedHeartbeats(Date.now() - lastHeartbeatAt) || reloadInFlight) return;
-		reloadInFlight = true;
+	heartbeatWatchdog = createRendererHeartbeatWatchdog({
+		now: Date.now,
+		shouldWatch: () => Boolean(nativeHost?.shouldWatchRendererHeartbeat()),
+		reload: () => host.request("window.reload"),
 		// 心跳完全消失说明页面定时器已经不跑，补状态也收不到，只剩重载可用。
-		void backend?.appLogger.warn("native", "Renderer reload", { reason: "renderer-heartbeat-timeout" });
-		void host.request("window.reload")
-			.catch(() => undefined)
-			.finally(() => {
-				reloadInFlight = false;
-				lastHeartbeatAt = Date.now();
-			});
-	}, 3_000);
+		onReload: () => backend?.appLogger.warn("native", "Renderer reload", { reason: "renderer-heartbeat-timeout" }),
+	});
+	heartbeatTimer = setInterval(() => heartbeatWatchdog?.tick(), 3_000);
 	heartbeatTimer.unref();
 
 	const focusTarget = extractFocusTargetFromArgv(hostArgv.length > 0 ? hostArgv : process.argv);

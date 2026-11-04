@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
+import { createStore } from "jotai/vanilla";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 function compile(filePath, stubs = {}) {
@@ -40,6 +41,9 @@ function loadSendHelpers() {
   return compile("src/renderer/src/hooks/useSessionSend.ts", {
     react: { useRef: (value) => ({ current: value }) },
     jotai: { useAtomValue: () => undefined, useSetAtom: () => () => undefined },
+    "../utils/optimisticSessionCache": loadTsCommonJs(
+      "src/renderer/src/utils/optimisticSessionCache.ts",
+    ),
     "../i18n": { translateI18nDescriptor: (_descriptor, fallback) => fallback },
   });
 }
@@ -73,6 +77,8 @@ function createSendHarness(initial = {}) {
     sessionComposerModeByIdAtom: {},
     sessionRuntimeByIdAtom: {},
     sessionRecordsAtom: {},
+    sessionMessagesCacheAtom: {},
+    cacheSessionMessagesAtom: {},
     setSessionDraftAtom: {},
     setSessionAttachmentsAtom: {},
     setSessionSendStateAtom: {},
@@ -85,6 +91,7 @@ function createSendHarness(initial = {}) {
     [atoms.sessionComposerModeByIdAtom, { ...(initial.modes ?? {}) }],
     [atoms.sessionRuntimeByIdAtom, { ...(initial.runtimes ?? {}) }],
     [atoms.sessionRecordsAtom, { ...(initial.records ?? {}) }],
+    [atoms.sessionMessagesCacheAtom, {}],
   ]);
   const setAtom = (atom, input) => {
     if (atom === atoms.setSessionDraftAtom) {
@@ -110,6 +117,15 @@ function createSendHarness(initial = {}) {
       if (input.state.status === "idle") delete next[input.sessionId];
       else next[input.sessionId] = input.state;
       state.set("sendStates", next);
+    } else if (atom === atoms.cacheSessionMessagesAtom) {
+      const next = { ...state.get(atoms.sessionMessagesCacheAtom) };
+      next[input.sessionId] = {
+        ...input,
+        messages: [...input.messages],
+        revision: (next[input.sessionId]?.revision ?? 0) + 1,
+        updatedAt: Date.now(),
+      };
+      state.set(atoms.sessionMessagesCacheAtom, next);
     }
   };
   const module = compile("src/renderer/src/hooks/useSessionSend.ts", {
@@ -120,6 +136,12 @@ function createSendHarness(initial = {}) {
       useStore: () => ({ get: (atom) => state.get(atom), set: (atom, input) => setAtom(atom, input) }),
     },
     "../atoms": atoms,
+    "../utils/optimisticSessionCache": loadTsCommonJs(
+      "src/renderer/src/utils/optimisticSessionCache.ts",
+    ),
+    "../utils/optimisticUserReconciliation": loadTsCommonJs(
+      "src/renderer/src/utils/optimisticUserReconciliation.ts",
+    ),
     "../composerBehavior": {
       expandPromptTemplates: (message) => ({ message }),
       buildComposerPromptSubmission: (message) => ({ message }),
@@ -258,6 +280,28 @@ test("/compact releases the session send lock before the next prompt", async () 
   assert.equal(promptCalls, 1, "a completed compact command must not block the next prompt");
 });
 
+test("a cold /compact command does not publish a pending user bubble", async () => {
+  const harness = createSendHarness({ drafts: { "session-a": "/compact" } });
+  let submitted;
+  const send = harness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    sendPrompt: async (input) => {
+      submitted = input;
+      return { accepted: true, requestId: input.requestId };
+    },
+  });
+
+  await send();
+  assert.equal(submitted.message, "/compact");
+  assert.equal(
+    harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"]?.messages?.length ?? 0,
+    0,
+    "a runtime command must not leave an optimistic user row behind",
+  );
+});
+
 test("a pre-send Chat surface promotes once and only sends through its real Session", async () => {
   const bootstrapId = "renderer:chat-bootstrap";
   const realSessionId = "catalog-session";
@@ -283,10 +327,20 @@ test("a pre-send Chat surface promotes once and only sends through its real Sess
   const first = send();
   const second = send();
   assert.equal(promotionCalls, 1, "double-clicking cannot create two Catalog Sessions");
+  const sourceCache = harness.state.get(harness.atoms.sessionMessagesCacheAtom)[bootstrapId];
+  assert.equal(sourceCache?.messages[0]?.meta?.optimisticPending, true);
   promotion.resolve(realSessionId);
   await Promise.all([first, second]);
   assert.equal(submitted.sessionId, realSessionId);
   assert.equal(submitted.message, "start after send");
+  const targetCache = harness.state.get(harness.atoms.sessionMessagesCacheAtom)[realSessionId];
+  assert.equal(
+    targetCache?.messages.some((message) => message.id === sourceCache?.messages[0]?.id),
+    true,
+    "the local optimistic bubble must move to the promoted Session",
+  );
+  const settledSource = harness.state.get(harness.atoms.sessionMessagesCacheAtom)[bootstrapId];
+  assert.equal(settledSource?.messages.some((message) => message.meta?.optimistic), false);
 });
 
 test("Composer identity is session-only and send snapshots address the captured Session", () => {
@@ -459,4 +513,250 @@ test("image handling keeps GIFs lossless and rejects unsupported/oversized files
   );
   assert.match(source, /file\.type === "image\/gif"\) return fileToImageContent\(file\)/);
   assert.match(source, /COMPOSER_IMAGE_MAX_BYTES/);
+});
+
+test("optimistic cache writes preserve the loaded history window and cursor", () => {
+  const { buildOptimisticCacheWrite } = loadSendHelpers();
+  const history = {
+    messages: [{ id: "old", agentId: "agent-1", role: "user", text: "old", timestamp: 1 }],
+    nextBefore: 20,
+    nextBeforeEntryId: "old-entry",
+    exhausted: false,
+  };
+  const current = {
+    messages: [],
+    revision: 4,
+    source: "runtime",
+    updatedAt: 5,
+    windowStart: 120,
+    cardCount: 2,
+    windowStartFilePos: 98,
+    history,
+  };
+  const messages = [{
+    id: "request-1",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello",
+    timestamp: 10,
+  }];
+
+  const write = buildOptimisticCacheWrite("session-a", messages, current);
+
+  assert.equal(write.source, "runtime");
+  assert.equal(write.windowStart, 120);
+  assert.equal(write.cardCount, 2);
+  assert.equal(write.windowStartFilePos, 98);
+  assert.equal(write.history, history);
+  assert.deepEqual(write.messages, messages);
+});
+
+test("optimistic cache writes stay empty when the session has no window metadata", () => {
+  const { buildOptimisticCacheWrite } = loadSendHelpers();
+  const write = buildOptimisticCacheWrite("session-a", [], undefined);
+
+  assert.equal(write.sessionId, "session-a");
+  assert.deepEqual([...write.messages], []);
+  assert.equal(write.source, "runtime");
+  assert.equal("windowStart" in write, false);
+  assert.equal("history" in write, false);
+  assert.equal("cardCount" in write, false);
+  assert.equal("windowStartFilePos" in write, false);
+});
+
+test("the real cache atom retains the history window after an optimistic append", () => {
+  const { buildOptimisticCacheWrite } = loadSendHelpers();
+  const atoms = loadTsCommonJs("src/renderer/src/atoms/session-atoms.ts");
+  const store = createStore();
+  const history = {
+    messages: [{ id: "old", agentId: "agent-1", role: "user", text: "old", timestamp: 1 }],
+    nextBefore: 20,
+  };
+  store.set(atoms.cacheSessionMessagesAtom, {
+    sessionId: "session-a",
+    messages: [],
+    source: "runtime",
+    agentId: "agent-1",
+    revision: 1,
+    updatedAt: 1,
+    windowStart: 120,
+    cardCount: 2,
+    windowStartFilePos: 98,
+    history,
+  });
+  const write = buildOptimisticCacheWrite("session-a", [{
+    id: "request-1",
+    agentId: "agent-1",
+    role: "user",
+    text: "hello",
+    timestamp: 10,
+  }], store.get(atoms.sessionMessagesCacheAtom)["session-a"]);
+
+  assert.equal(store.set(atoms.cacheSessionMessagesAtom, write), true);
+  const entry = store.get(atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(entry.windowStart, 120);
+  assert.equal(entry.cardCount, 2);
+  assert.equal(entry.windowStartFilePos, 98);
+  assert.equal(entry.history, history);
+  assert.equal(entry.agentId, "agent-1");
+});
+
+test("accepted and unknown deliveries keep the optimistic pending marker until the host confirms it", async () => {
+  for (const delivery of ["accepted", "unknown"]) {
+    const harness = createSendHarness({ drafts: { "session-a": delivery } });
+    const send = harness.send({
+      sessionId: "session-a",
+      templates: [],
+      compact: async () => undefined,
+      sendPrompt: async () => delivery === "accepted"
+        ? { accepted: true }
+        : { accepted: false, delivery: "unknown", error: "timeout" },
+    });
+    await send();
+
+    const cached = harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"];
+    assert.equal(
+      cached?.messages[0]?.meta?.optimisticPending,
+      true,
+      `${delivery} is not authoritative; a stale snapshot must not evict the local bubble`,
+    );
+  }
+});
+
+test("a rejected delivery settles the optimistic bubble so cleanup can proceed", async () => {
+  const harness = createSendHarness({ drafts: { "session-a": "rejected" } });
+  const send = harness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    sendPrompt: async () => ({ accepted: false, delivery: "rejected", error: "no" }),
+  });
+  await send();
+
+  const cached = harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"];
+  assert.equal(cached?.messages[0]?.meta?.optimisticPending, undefined);
+});
+
+test("optimistic cache writes keep a disk page as disk instead of inventing a runtime window", () => {
+  const { buildOptimisticCacheWrite } = loadSendHelpers();
+  const page = { total: 120, nextBefore: 80 };
+  const write = buildOptimisticCacheWrite("session-a", [], {
+    messages: [],
+    revision: 3,
+    source: "disk",
+    updatedAt: 1,
+    page,
+  });
+
+  assert.equal(write.source, "disk");
+  assert.deepEqual(write.page, page);
+  assert.equal("windowStart" in write, false);
+});
+
+test("pre-send failure keeps an authoritative row that reused the optimistic id", async () => {
+  const harness = createSendHarness({ drafts: { "session-a": "hello" } });
+  harness.state.set(harness.atoms.sessionMessagesCacheAtom, {
+    "session-a": {
+      messages: [{
+        id: "request-id",
+        agentId: "agent-1",
+        role: "user",
+        text: "projected by the host",
+        timestamp: 1,
+      }],
+      revision: 1,
+      source: "runtime",
+      updatedAt: 1,
+    },
+  });
+
+  const send = harness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    ensureSessionId: async () => {
+      throw new Error("promotion failed");
+    },
+    sendPrompt: async () => ({ accepted: true }),
+  });
+  await send();
+
+  const messages = harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"].messages;
+  assert.deepEqual([...messages.map((message) => message.id)], ["request-id"]);
+  assert.equal(messages[0].text, "projected by the host");
+});
+
+test("promotion only stamps the optimistic row when the host projection reused its id", async () => {
+  const harness = createSendHarness({
+    drafts: { "session-a": "hello" },
+    runtimes: { "session-a": { agentId: "agent-1", runtimeGeneration: 1 } },
+  });
+  harness.state.set(harness.atoms.sessionMessagesCacheAtom, {
+    "session-a": {
+      messages: [{
+        id: "request-id",
+        agentId: "host-agent",
+        role: "user",
+        text: "projected by the host",
+        timestamp: 1,
+      }],
+      revision: 1,
+      source: "runtime",
+      updatedAt: 1,
+    },
+  });
+
+  const send = harness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    ensureSessionId: async () => "session-a",
+    sendPrompt: async () => ({ accepted: true }),
+  });
+  await send();
+
+  const messages = harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"].messages;
+  assert.deepEqual([...messages.map((message) => message.id)], ["request-id", "request-id"]);
+  assert.equal(messages[0].agentId, "host-agent");
+  assert.equal(messages[1].agentId, "agent-1");
+  assert.equal(messages[1].meta?.optimistic, true);
+});
+
+test("pre-send failures discard the local optimistic bubble instead of leaving it pending", async () => {
+  const promotionHarness = createSendHarness({ drafts: { "session-a": "hello" } });
+  const promotionSend = promotionHarness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    ensureSessionId: async () => {
+      throw new Error("promotion failed");
+    },
+    sendPrompt: async () => ({ accepted: true }),
+  });
+  await promotionSend();
+  assert.deepEqual(
+    promotionHarness.state.get(promotionHarness.atoms.sessionMessagesCacheAtom)["session-a"].messages,
+    [],
+  );
+  assert.equal(
+    promotionHarness.state.get(promotionHarness.atoms.sessionDraftByIdAtom)["session-a"],
+    "hello",
+    "a failed ensure must give the cleared draft back",
+  );
+
+  const prepareHarness = createSendHarness({ drafts: { "session-a": "hello" } });
+  const prepareSend = prepareHarness.send({
+    sessionId: "session-a",
+    templates: [],
+    compact: async () => undefined,
+    prepareMessage: async () => {
+      throw new Error("prepare failed");
+    },
+    sendPrompt: async () => ({ accepted: true }),
+  });
+  await prepareSend();
+  assert.deepEqual(
+    prepareHarness.state.get(prepareHarness.atoms.sessionMessagesCacheAtom)["session-a"].messages,
+    [],
+  );
 });

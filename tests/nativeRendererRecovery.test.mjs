@@ -153,7 +153,7 @@ test("native renderer recovery reloads Qt before renderer.ready when liveWindow 
 					nextLoadFailureAction: () => ({ kind: "showError", delayMs: 0 }),
 				},
 				"./transport/nativeHeartbeatWatchdog": {
-					shouldReloadAfterMissedHeartbeats: () => false,
+					createRendererHeartbeatWatchdog: () => ({ touch() {}, tick() {} }),
 				},
 				"./transport/nativeHeartbeatRecovery": {
 					createNativeHeartbeatRecoveryState: () => ({}),

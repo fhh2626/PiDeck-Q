@@ -20,6 +20,10 @@ import type { SessionTimelineController } from "../../hooks/useSessionTimelineCo
 import { QueuedPromptPanel } from "./ComposerPanels";
 import { SessionView } from "./SessionView";
 import { useSessionPaneServices } from "./SessionPaneServices";
+import {
+  TimelineEditCommandsProvider,
+  type TimelineEditCommands,
+} from "./timeline/timelineEditCommandsContext";
 
 export type SessionRuntimeInjectorProps = {
   currentSessionId: string;
@@ -183,92 +187,110 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
     hasForkService,
   ]);
 
+  const timelineEditCommands: TimelineEditCommands = React.useMemo(() => {
+    return {
+      currentRuntimeTarget: messageCommandTarget,
+      submitEditMessage: async (expectedTarget, messageId, newText) => {
+        const editFn = latestMessageServicesRef.current.editMessage;
+        if (!editFn) return false;
+        try {
+          const res = await editFn(expectedTarget, messageId, newText);
+          return res !== false;
+        } catch {
+          return false;
+        }
+      },
+    };
+  }, [messageCommandTarget]);
+
   return (
-    <SessionView
-      sessionId={currentSessionId}
-      sessionTitle={sessionTitle}
-      sessionTimeline={sessionTimeline}
-      splitPane={splitPane}
-      focused={focused}
-      onFocusPane={onFocusPane}
-      activeAgentId={runtime.activeAgentId ?? undefined}
-      activeAgent={activeAgent}
-      hasActiveConversation={runtime.hasActiveConversation}
-      hasProject={runtime.sessionHasProject}
-      chatHeaderRef={chatHeaderRef}
-      composerRef={composerRef}
-      composerOffsetHeight={composerOffsetHeight}
-      terminalRowHeight={terminalRowHeight}
-     isAgentStarting={runtime.isAgentStarting}
-     isRestarting={runtime.isRestartingThisAgent}
-     sessionDuration={runtime.sessionDuration}
-      activeRuntimeState={runtime.activeRuntimeState}
-     showThinking={services.showThinking}
-      validCommandNames={services.validCommandNames}
-      validFilePaths={services.validFilePaths}
-      onPreviewImage={services.onPreviewImage}
-      onOpenFile={services.onOpenFile}
-      onDiffFile={services.onDiffFile}
-      onResendUserMessage={messageActions.onResendUserMessage}
-      onEditMessage={messageActions.onEditMessage}
-      onDeleteMessage={messageActions.onDeleteMessage}
-      onForkMessage={messageActions.onForkMessage}
-      forkingMessageId={services.forkingMessageId}
-      onToast={(message: string) => services.showToast(message)}
-      onQuickPrompt={(message) => services.insertQuickPrompt(currentSessionId, message)}
-      canMutateActiveMessages={canMutateActiveMessages}
-      onOpenBranchSession={
-        services.activeProjectId && services.openSidebarSessionById
-          ? (sessionId: string) => {
-              void services.openSidebarSessionById?.(services.activeProjectId!, sessionId);
-            }
-          : undefined
-      }
-      enqueueSessionPrompt={services.enqueueSessionPrompt}
-      gitInfo={services.gitInfo}
-      ensureSessionId={services.ensureSessionId}
-      openFilePath={services.onOpenFile}
-      runtimeUi={
-        runtimeUiResponder ? (
-          <SessionRuntimeUiOverlay
-            sessionId={currentSessionId}
-            runtime={currentSessionRuntime}
-            ui={currentSessionRuntimeUi}
-            responder={runtimeUiResponder}
-            onExpandedChange={(expanded) => {
-              if (!expanded) return;
-              requestAnimationFrame(() => sessionTimeline.scrollToBottom());
-            }}
-          />
-        ) : null
-      }
-      queuePanel={
-        currentSessionId ? (
-          <QueuedPromptPanel
-            trackRef={queuedTrackRef}
-            sessionId={currentSessionId}
-            prompts={activeQueuedPrompts}
-            visiblePrompts={activeQueuedPrompts}
-            onRetract={services.queueRetract}
-            onDiscard={services.queueDiscard}
-          />
-        ) : undefined
-      }
-      terminalDockVisible={focused && services.terminalDockVisible}
-      terminalOpen={focused && services.terminalOpen}
-      terminalDockClosing={focused && services.terminalDockClosing}
-      terminalCollapsed={services.terminalCollapsed}
-      availableTerminalHeight={services.availableTerminalHeight ?? 120}
-      terminalOwnerKey={terminalOwnerKey}
-      terminalTarget={terminalTarget}
-      setTerminalOpenForOwner={setTerminalOpenForOwner}
-      setTerminalCollapsedForOwner={setTerminalCollapsedForOwner}
-      setTerminalHeightByOwner={setTerminalHeightByOwner}
-      settingsOpen={settingsOpen}
-      configOpen={services.configOpen}
-      environmentDialog={services.environmentDialog}
-      runCreateSessionDraft={services.runCreateSessionDraft}
-      abortAgent={services.abortAgent}
-    />
+    <TimelineEditCommandsProvider value={timelineEditCommands}>
+      <SessionView
+        sessionId={currentSessionId}
+        sessionTitle={sessionTitle}
+        sessionTimeline={sessionTimeline}
+        splitPane={splitPane}
+        focused={focused}
+        onFocusPane={onFocusPane}
+        activeAgentId={runtime.activeAgentId ?? undefined}
+        activeAgent={activeAgent}
+        hasActiveConversation={runtime.hasActiveConversation}
+        hasProject={runtime.sessionHasProject}
+        chatHeaderRef={chatHeaderRef}
+        composerRef={composerRef}
+        composerOffsetHeight={composerOffsetHeight}
+        terminalRowHeight={terminalRowHeight}
+        isAgentStarting={runtime.isAgentStarting}
+        isRestarting={runtime.isRestartingThisAgent}
+        sessionDuration={runtime.sessionDuration}
+        activeRuntimeState={runtime.activeRuntimeState}
+        showThinking={services.showThinking}
+        validCommandNames={services.validCommandNames}
+        validFilePaths={services.validFilePaths}
+        onPreviewImage={services.onPreviewImage}
+        onOpenFile={services.onOpenFile}
+        onDiffFile={services.onDiffFile}
+        onResendUserMessage={messageActions.onResendUserMessage}
+        onEditMessage={messageActions.onEditMessage}
+        onDeleteMessage={messageActions.onDeleteMessage}
+        onForkMessage={messageActions.onForkMessage}
+        forkingMessageId={services.forkingMessageId}
+        onToast={(message: string) => services.showToast(message)}
+        onQuickPrompt={(message) => services.insertQuickPrompt(currentSessionId, message)}
+        canMutateActiveMessages={canMutateActiveMessages}
+        onOpenBranchSession={
+          services.activeProjectId && services.openSidebarSessionById
+            ? (sessionId: string) => {
+                void services.openSidebarSessionById?.(services.activeProjectId!, sessionId);
+              }
+            : undefined
+        }
+        enqueueSessionPrompt={services.enqueueSessionPrompt}
+        gitInfo={services.gitInfo}
+        ensureSessionId={services.ensureSessionId}
+        openFilePath={services.onOpenFile}
+        runtimeUi={
+          runtimeUiResponder ? (
+            <SessionRuntimeUiOverlay
+              sessionId={currentSessionId}
+              runtime={currentSessionRuntime}
+              ui={currentSessionRuntimeUi}
+              responder={runtimeUiResponder}
+              onExpandedChange={(expanded) => {
+                if (!expanded) return;
+                requestAnimationFrame(() => sessionTimeline.scrollToBottom());
+              }}
+            />
+          ) : null
+        }
+        queuePanel={
+          currentSessionId ? (
+            <QueuedPromptPanel
+              trackRef={queuedTrackRef}
+              sessionId={currentSessionId}
+              prompts={activeQueuedPrompts}
+              visiblePrompts={activeQueuedPrompts}
+              onRetract={services.queueRetract}
+              onDiscard={services.queueDiscard}
+            />
+          ) : undefined
+        }
+        terminalDockVisible={focused && services.terminalDockVisible}
+        terminalOpen={focused && services.terminalOpen}
+        terminalDockClosing={focused && services.terminalDockClosing}
+        terminalCollapsed={services.terminalCollapsed}
+        availableTerminalHeight={services.availableTerminalHeight ?? 120}
+        terminalOwnerKey={terminalOwnerKey}
+        terminalTarget={terminalTarget}
+        setTerminalOpenForOwner={setTerminalOpenForOwner}
+        setTerminalCollapsedForOwner={setTerminalCollapsedForOwner}
+        setTerminalHeightByOwner={setTerminalHeightByOwner}
+        settingsOpen={settingsOpen}
+        configOpen={services.configOpen}
+        environmentDialog={services.environmentDialog}
+        runCreateSessionDraft={services.runCreateSessionDraft}
+        abortAgent={services.abortAgent}
+      />
+    </TimelineEditCommandsProvider>
   );
 });

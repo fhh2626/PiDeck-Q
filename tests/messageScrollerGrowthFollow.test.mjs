@@ -120,10 +120,12 @@ test("tool enter animation has no translateY", () => {
 
 // 跟随开关（followOutput）与用户逃逸/回底（onFollowChange）桥接到引擎：
 // - followOutput=true 时重新锁底（近底 instant / 远处弹簧）
+// - followOutput=false 时调用 engineStopScroll 取消在途动画
 // - 引擎 isAtBottom 变化时上报给 controller，controller 再回写 followOutput
 test("followOutput and onFollowChange bridge to the stick engine", () => {
   assert.match(scrollerSource, /const engineScrollToBottom = stick\.scrollToBottom;/);
-  assert.match(scrollerSource, /if \(!followOutput\) return;/);
+  assert.match(scrollerSource, /if \(!followOutput\) \{/);
+  assert.match(scrollerSource, /engineStopScroll\(\);/);
   assert.match(scrollerSource, /engineScrollToBottom\(\{ animation \}\)/);
   assert.match(
     scrollerSource,
@@ -151,6 +153,17 @@ test("engine exposes atomic restoreAt: position + unlock + cancel in-flight anim
   // 定位走 state.scrollTop setter（写 DOM 并设置 ignoreScrollToTop，后续 scroll 事件被忽略）
   assert.match(engineSource, /state\.scrollTop = Math\.max\(0, scrollTop\);/);
   assert.match(engineSource, /restoreAt,/);
+});
+
+test("restoreAt resets the shrink-clamp baseline for the new session", () => {
+  // 会话切回时旧会话的 maxScrollTop 不能沿用：否则短会话第一次上滚会被
+  // isContentShrinkClamp 误判成“内容收缩”，继续锁底把用户拽回底部。
+  assert.match(engineSource, /state\.lastMaxScrollTop = undefined;/);
+  // 程序化恢复触发的 scroll 事件虽然被 ignore，也要把基线对齐到新内容。
+  assert.match(
+    engineSource,
+    /if \(ignoreScrollToTop !== undefined[\s\S]*?state\.lastMaxScrollTop = maxScrollTop;[\s\S]*?return;/,
+  );
 });
 
 test("MessageScroller forwards restoreAt to timeline controller scroll api", () => {

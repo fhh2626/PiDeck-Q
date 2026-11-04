@@ -25,5 +25,24 @@ export function loadSessionScanner(homePath, options = {}) {
 	}
 	// 其他需要替换的模块（例如 node:fs 的局部 override）；注意它们对所有被加载的模块都生效。
 	Object.assign(stubs, options.stubs ?? {});
-	return loadTsCommonJs("src/main/sessions/SessionScanner.ts", { stubs, globals: options.globals });
+	const loaded = loadTsCommonJs("src/main/sessions/SessionScanner.ts", { stubs, globals: options.globals });
+	const Base = loaded.SessionScanner;
+	// 登记每个实例：摘要缓存按 800ms 防抖异步写盘，测试 rm 掉 home 之后它会用 mkdir -p 把
+	// `.pi-desktop/` 重新建出来，在系统临时目录里留下垃圾。测试清理前先 flushLoadedScanners()。
+	class TrackedSessionScanner extends Base {
+		constructor(...args) {
+			super(...args);
+			trackedScanners.add(this);
+		}
+	}
+	return { ...loaded, SessionScanner: TrackedSessionScanner };
+}
+
+const trackedScanners = new Set();
+
+/** 把所有已创建 scanner 的待写摘要缓存立刻落盘并取消防抖计时器；清理临时 home 之前调用。 */
+export async function flushLoadedScanners() {
+	const scanners = [...trackedScanners];
+	trackedScanners.clear();
+	await Promise.all(scanners.map((scanner) => scanner.flushSummaryCache().catch(() => undefined)));
 }

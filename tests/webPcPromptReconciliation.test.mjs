@@ -165,6 +165,96 @@ test("late stale useChat user copies cannot resurrect a proven duplicate", () =>
 	assert.equal(userRows(merged)[0].metadata.entryId, "user-one");
 });
 
+test("a stream continuation clone is dropped once every copied segment is persisted", () => {
+	const { history } = turn();
+	const tool = history[2];
+	const clone = {
+		...tool,
+		id: "sse-run",
+		parts: [
+			...tool.parts,
+			{ type: "text", text: "Intermediate one" },
+			{ type: "tool-read", toolCallId: "call-one", state: "output-available", input: {}, output: "done" },
+		],
+	};
+	const merged = mergeAuthoritativeUiMessages(
+		[history[0], history[1], tool, clone],
+		history,
+		{ dropUnmatchedTrailingPlaceholders: true },
+	);
+	assert.equal(merged.some((m) => m.id === "sse-run"), false);
+	assert.equal(merged.filter((m) => m.parts.some((p) => p.type === "text" && p.text === "Intermediate one")).length, 1);
+	assert.equal(merged.flatMap((m) => m.parts).filter((p) => p.toolCallId === "call-one").length, 1);
+});
+
+test("browser intermediate race keeps one read after the sse replay is covered", () => {
+	const history = chatMessagesToUiMessages([
+		{ id: "session-history-user", agentId: "agent", role: "user", text: "PC prompt", timestamp: 1005, meta: { entryId: "entry-user" } },
+		{ id: "session-history-answer", agentId: "agent", role: "assistant", text: "Intermediate response", timestamp: 1105, meta: { entryId: "entry-answer" } },
+	]);
+	const live = chatMessagesToUiMessages([
+		{ id: "pc-live-user", agentId: "agent", role: "user", text: "PC prompt", timestamp: 1000 },
+		{ id: "pc-live-answer", agentId: "agent", role: "assistant", text: "Intermediate response", timestamp: 1100 },
+		{ id: "pc-live-tool", agentId: "agent", role: "tool", text: "read", timestamp: 1200,
+			meta: { toolName: "read", toolCallId: "call-read", args: { path: "file.txt" }, status: "running" } },
+	]);
+	const sse = { id: "sse-run", role: "assistant", metadata: { chatRole: "assistant", timestamp: 1100, reconciledIds: ["sse-run"] }, parts: [
+		{ type: "text", text: "Intermediate response" },
+		{ type: "text", text: "Intermediate response" },
+		{ type: "tool-read", toolCallId: "call-read", state: "output-available", input: { path: "file.txt" }, output: "read result" },
+	] };
+	const merged = mergeAuthoritativeUiMessages(
+		[...history, live[2], sse],
+		live,
+		{ dropUnmatchedTrailingPlaceholders: true },
+	);
+	assert.equal(merged.some((m) => m.id === "sse-run"), false, JSON.stringify(merged.map((m) => m.id)));
+	assert.equal(merged.flatMap((m) => m.parts).filter((p) => p.toolCallId === "call-read").length, 1);
+});
+
+test("a doubled replay of a persisted answer does not stay beside the snapshot tool", () => {
+	const { history } = turn();
+	const answer = history[1];
+	const replay = {
+		id: "sse-run",
+		role: "assistant",
+		parts: [
+			{ type: "text", text: "Intermediate oneIntermediate one" },
+			{ type: "tool-read", toolCallId: "call-one", state: "output-available", input: {}, output: "done" },
+		],
+	};
+	const merged = mergeAuthoritativeUiMessages(
+		[history[0], answer, replay],
+		history,
+		{ dropUnmatchedTrailingPlaceholders: true },
+	);
+	assert.equal(merged.some((m) => m.id === "sse-run"), false);
+	assert.equal(merged.flatMap((m) => m.parts).filter((p) => p.toolCallId === "call-one").length, 1);
+});
+
+test("a stream continuation clone keeps text the snapshot has not persisted", () => {
+	const { history } = turn();
+	const answer = history[1];
+	const clone = {
+		...answer,
+		id: "sse-run",
+		parts: [
+			...answer.parts,
+			{ type: "text", text: "Intermediate one" },
+			{ type: "text", text: "Not persisted yet" },
+			{ type: "tool-read", toolCallId: "call-one", state: "output-available", input: {}, output: "done" },
+		],
+	};
+	const merged = mergeAuthoritativeUiMessages(
+		[history[0], answer, clone],
+		history,
+		{ dropUnmatchedTrailingPlaceholders: true },
+	);
+	const kept = merged.find((m) => m.id === "sse-run");
+	assert.ok(kept);
+	assert.equal(kept.parts.some((p) => p.text === "Not persisted yet"), true);
+});
+
 test("final static SSE tool output survives removal of its covered combined bubble", () => {
 	const { runtime } = turn();
 	const stream = { id: "sse", role: "assistant", parts: [

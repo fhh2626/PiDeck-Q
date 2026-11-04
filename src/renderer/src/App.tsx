@@ -53,6 +53,7 @@ import { useImportFlow } from "./hooks/useImportFlow";
 import { useQueuedPrompt } from "./hooks/useQueuedPrompt";
 import { activeAgentIdAtom } from "./hooks/useSessionRuntimeController";
 import { PromptDeliveryUnknownError } from "./utils/promptErrors";
+import { resolveResendModelSelection } from "./utils/resendModelSelection";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -67,6 +68,7 @@ import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useProjectSync } from "./hooks/useProjectSync";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
+import { useModelListSync } from "./hooks/useModelListSync";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
@@ -97,6 +99,7 @@ import {
   setSessionCatalogLoadStateAtom,
   setSessionDraftAtom,
   upsertSessionAtom,
+  modelPendingByIdAtom,
   anyAgentRuntimeWorkingAtom,
   beginOptimisticMessageDeletion,
 } from "./atoms";
@@ -514,6 +517,7 @@ export function App() {
     piRuntimePreference: "auto",
     piTypescriptPath: "",
     piRustPath: "",
+    piBoltPath: "",
     sessionTabOpenMode: "preview",
     enableGitManagement: true,
     gitCommitMessagePrompt: getDefaultGitCommitMessagePrompt(
@@ -2055,6 +2059,17 @@ export function App() {
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
     refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
     beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
+    // 重发要沿用的是「当前选中的模型」，而底栏展示顺序就是 pending > runtime.state > record：
+    // 两端必须同源，否则 /model 轮换或在途切换会把旧模型写回去。策略见 resolveResendModelSelection。
+    getCurrentModelForSession: (sessionId: string) => {
+      const record = store.get(sessionRecordByIdAtomFamily(sessionId));
+      return resolveResendModelSelection({
+        pending: store.get(modelPendingByIdAtom)[sessionId],
+        runtimeState: store.get(sessionRuntimeBySessionIdAtomFamily(sessionId))?.state,
+        recordModel: record?.model,
+        recordThinkingLevel: record?.thinkingLevel,
+      });
+    },
   });
   async function updateSettings(patch: Partial<AppSettings>) {
     const changesWebService =
@@ -2129,7 +2144,8 @@ export function App() {
       if (
         "piRuntimePreference" in patch ||
         "piTypescriptPath" in patch ||
-        "piRustPath" in patch
+        "piRustPath" in patch ||
+        "piBoltPath" in patch
       ) {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
       }
@@ -2865,6 +2881,10 @@ export function App() {
 
 
   useNativeFileDropCopy({ api, refreshFiles, showToast });
+
+  // 全局订阅模型列表更新（保存 models.json/auth.json、切换 pi 运行时后主进程广播）：
+  // 视觉桥能力判定与模型选择器共用这份数据，只在装配层挂一份。
+  useModelListSync();
 
   const nativeWindowChrome = resolveNativeWindowChrome(
     settings.useNativeTitleBar,

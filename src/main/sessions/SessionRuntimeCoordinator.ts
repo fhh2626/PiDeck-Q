@@ -455,10 +455,94 @@ export class SessionRuntimeCoordinator {
 	prepareRuntimeResend(
 		target: SessionRuntimeTarget,
 		messageId: string,
+		model?: { provider: string; modelId: string },
+		thinkingLevel?: string,
 	): Promise<SessionCommandResult<SessionTargetedValue<{ text: string; images?: ImageContent[] }>>> {
 		return this.runHistoryMutationCommand(
 			target,
-			(agentId) => this.agents.prepareResendFromMessage(agentId, messageId),
+			async (agentId) => {
+				// catalog 必须在真正执行时读：runHistoryMutationCommand 会按 Session 串行排队，
+				// 入队前的快照可能在等待期间被用户另一次模型切换覆盖。
+				const sessionEntry = this.catalog.get(target.sessionId);
+				// 显式传入的模型（渲染层当前选中）优先级最高；否则保留会话记录里当前选中的模型，
+				// 防止 truncateForResend + switch_session 让 pi 倒退回那条历史消息生成时用的旧模型。
+				// 入参来自渲染层/Web body，一律按不可信处理：只接受非空字符串。
+				const explicitModel =
+					typeof model?.provider === "string" && typeof model?.modelId === "string" &&
+					model.provider.length > 0 && model.modelId.length > 0
+						? { provider: model.provider, modelId: model.modelId }
+						: undefined;
+				const catalogModel = sessionEntry?.model?.provider && sessionEntry.model.modelId
+					? { provider: sessionEntry.model.provider, modelId: sessionEntry.model.modelId }
+					: undefined;
+				const modelToRestore = explicitModel ?? catalogModel;
+				const thinkingToRestore =
+					typeof thinkingLevel === "string" && thinkingLevel.length > 0
+						? thinkingLevel
+						: sessionEntry?.thinkingLevel;
+
+				const result = await this.agents.prepareResendFromMessage(agentId, messageId);
+
+				// catalog 只是镜像：写盘失败不该反过来吞掉「运行态已换模型」的推送，否则底栏会与 pi 实际模型漂移。
+				const persistPreference = async (patch: {
+					model?: { provider: string; modelId: string };
+					thinkingLevel?: string;
+				}): Promise<void> => {
+					await this.catalog
+						.update(target.sessionId, { ...patch, updatedAt: Date.now() })
+						.catch((err: unknown) => {
+							void this.logger?.warn("session-runtime", "Failed to persist restored preference", {
+								sessionId: target.sessionId,
+								...patch,
+								error: err instanceof Error ? err.message : String(err),
+							});
+						});
+				};
+
+				// 重发截断重载后：把「当前选中」的模型重新应用到 pi 进程。
+				// setModel 失败（如新模型不在 pi 启动快照里）只记 warn：截断已经提交，不能因此阻断重发。
+				// 注意 catalog 记录与传入值相同也必须重新 setModel：switch_session 已把 pi 内存里的模型退回旧值；
+				// 但 catalog 只在真的不同时写，避免每次重发无谓 bump updatedAt（侧栏按它排序）。
+				const recordedModel = sessionEntry?.model;
+				if (modelToRestore) {
+					try {
+						await this.agents.setModel(agentId, modelToRestore.provider, modelToRestore.modelId);
+						if (
+							recordedModel?.provider !== modelToRestore.provider ||
+							recordedModel.modelId !== modelToRestore.modelId
+						) {
+							await persistPreference({ model: modelToRestore });
+						}
+					} catch (err) {
+						void this.logger?.warn("session-runtime", "Failed to restore current model after resend truncate", {
+							sessionId: target.sessionId,
+							agentId,
+							model: modelToRestore,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+				if (thinkingToRestore) {
+					// 必须排在 setModel 之后：部分运行时切换模型会重置思考等级。
+					// 回写的是 pi 实际接受的等级（state.thinkingLevel），与 setRuntimeThinking / applyPreferences 同一契约；
+					// 直接写回请求值会让 catalog 与 pi 钳制后的真实值不一致，下次启动又会套错。
+					try {
+						const state = await this.agents.setThinking(agentId, thinkingToRestore);
+						const effectiveThinking = state.thinkingLevel ?? thinkingToRestore;
+						if (effectiveThinking !== sessionEntry?.thinkingLevel) {
+							await persistPreference({ thinkingLevel: effectiveThinking });
+						}
+					} catch {
+						// 思考等级恢复失败静默：不影响重发，下次启动由 applyPreferences 兜底
+					}
+				}
+
+				// 无条件重推运行态：switch_session 重载本身就可能改变 pi 的模型/思考等级（即使无偏好可恢复），
+				// 恢复失败时更需要让底栏显示真实值，否则就是本次要修的「底栏显示当前模型、实际跑历史模型」漂移。
+				await this.agents.publishRuntimeState(agentId).catch(() => undefined);
+
+				return result;
+			},
 		);
 	}
 

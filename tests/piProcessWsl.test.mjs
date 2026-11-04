@@ -1,98 +1,6 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { PassThrough } from "node:stream";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
-
-function transpile(filePath) {
-	return ts.transpileModule(readFileSync(filePath, "utf8"), {
-		compilerOptions: {
-			module: ts.ModuleKind.CommonJS,
-			target: ts.ScriptTarget.ES2022,
-		},
-	}).outputText;
-}
-
-function loadWslPaths() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/main/wsl/WslPaths.ts"), sandbox, { filename: "WslPaths.ts" });
-	return sandbox.exports;
-}
-
-// PiProcess 拆分出的扩展隔离模块；vm 沙箱不会自动解析相对模块，需与 WslPaths 一样显式登记。
-function loadPiExtensionFilter() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/main/pi/piExtensionFilter.ts"), sandbox, { filename: "piExtensionFilter.ts" });
-	return sandbox.exports;
-}
-
-function loadPiCompatibility() {
-	const sandbox = { exports: {}, require };
-	vm.runInNewContext(transpile("src/shared/piCompatibility.ts"), sandbox, { filename: "piCompatibility.ts" });
-	return sandbox.exports;
-}
-
-function createChildProcess() {
-	const child = new EventEmitter();
-	child.stdin = new PassThrough();
-	child.stdout = new PassThrough();
-	child.stderr = new PassThrough();
-	child.kill = () => true;
-	return child;
-}
-
-function loadPiProcess(spawnCalls) {
-	const paths = loadWslPaths();
-	const extensionFilter = loadPiExtensionFilter();
-	const compatibility = loadPiCompatibility();
-	class FakeRpcClient extends EventEmitter {
-		close() {}
-	}
-	class FakePiLocator {}
-	const sandbox = {
-		Buffer,
-		console: { log() {}, warn() {}, error() {} },
-		exports: {},
-		process,
-		require: (id) => {
-			if (id === "node:child_process") {
-				return {
-					execFile: (_command, _args, _options, callback) => {
-						callback(null, "0.81.1\n", "");
-						return new EventEmitter();
-					},
-					spawn: (command, args, options) => {
-						const child = createChildProcess();
-						spawnCalls.push({ command, args, options, child });
-						return child;
-					},
-				};
-			}
-			if (id === "./PiRpcClient") return { PiRpcClient: FakeRpcClient };
-			if (id === "./PiLocator") return { PiLocator: FakePiLocator };
-			if (id === "../../shared/piCompatibility") return compatibility;
-			if (id === "../wsl/WslPaths") return paths;
-			if (id === "./piExtensionFilter") return extensionFilter;
-			// 25fd516 起 PiProcess 引入内置扩展参数拼接；WSL 测试只关心路径转换，
-			// mock 为原样透传，避免 vm sandbox 的 require 按 tests/ 相对路径误解析。
-			if (id === "../extensions/builtInExtensions") {
-				return { appendBuiltInExtensionArgs: (args) => [...args] };
-			}
-			// sharedLogger 未注册时 getAppLogger 返回 null，PiProcess 埋点静默跳过
-			if (id === "../logging/sharedLogger") {
-				return { getAppLogger: () => null };
-			}
-			return require(id);
-		},
-	};
-	vm.runInNewContext(transpile("src/main/pi/PiProcess.ts"), sandbox, { filename: "PiProcess.ts" });
-	return sandbox.exports;
-}
+import { loadPiProcess } from "./helpers/loadPiProcess.mjs";
 
 function createLocator(invocationCalls) {
 	return {
@@ -140,6 +48,64 @@ const settings = {
 	piProxyUrl: "",
 	piProxyBypass: "",
 };
+
+test("WSL stock Pi drops an inherited standalone marker but keeps the other WSLENV names", async () => {
+	const spawnCalls = [];
+	const parentEnv = {
+		PIDECK_PI_STANDALONE: "1",
+		KEEP_TOKEN: "kept",
+		WSLENV: "KEEP_TOKEN:PIDECK_PI_STANDALONE:OTHER",
+	};
+	const { PiProcess } = loadPiProcess(spawnCalls, { versionOutput: "1.4.0\n" });
+	const locator = {
+		resolveCommand: () => "wsl://Ubuntu-24.04/root/pi",
+		createInvocation: (_command, args) => ({
+			command: "wsl.exe",
+			args,
+			shell: false,
+			wsl: { distro: "Ubuntu-24.04", user: "root", piCommand: "pi" },
+		}),
+		createProcessEnv: () => parentEnv,
+	};
+	await new PiProcess(
+		"//wsl.localhost/Ubuntu-24.04/root/work",
+		{ ...settings, piRuntimePreference: "typescript" },
+		locator,
+	).start();
+
+	const env = spawnCalls[0].options.env;
+	assert.equal(parentEnv.PIDECK_PI_STANDALONE, "1");
+	assert.equal(parentEnv.WSLENV, "KEEP_TOKEN:PIDECK_PI_STANDALONE:OTHER");
+	assert.equal(env.PIDECK_PI_STANDALONE, undefined);
+	assert.equal(env.KEEP_TOKEN, "kept");
+	assert.deepEqual(env.WSLENV.split(":"), ["KEEP_TOKEN", "OTHER"]);
+});
+
+test("WSL Pi-Bolt replaces an inherited standalone marker and preserves unrelated WSLENV names", async () => {
+	const spawnCalls = [];
+	const parentEnv = { PIDECK_PI_STANDALONE: "0", WSLENV: "OTHER" };
+	const { PiProcess } = loadPiProcess(spawnCalls, { versionOutput: "1.4.0 (Pi-Bolt 1.0.2, linux-x64, JIT off)\n" });
+	const locator = {
+		resolveCommand: () => "wsl://Ubuntu-24.04/root/pi-bolt",
+		createInvocation: (_command, args) => ({
+			command: "wsl.exe",
+			args,
+			shell: false,
+			wsl: { distro: "Ubuntu-24.04", user: "root", piCommand: "pi-bolt" },
+		}),
+		createProcessEnv: () => parentEnv,
+	};
+	await new PiProcess(
+		"//wsl.localhost/Ubuntu-24.04/root/work",
+		{ ...settings, piRuntimePreference: "bolt" },
+		locator,
+	).start();
+
+	const env = spawnCalls[0].options.env;
+	assert.equal(parentEnv.WSLENV, "OTHER");
+	assert.equal(env.PIDECK_PI_STANDALONE, "1");
+	assert.deepEqual(env.WSLENV.split(":").sort(), ["OTHER", "PIDECK_PI_STANDALONE"]);
+});
 
 test("starts WSL pi with Linux cwd/session while keeping a Windows-accessible spawn cwd", async () => {
 	const spawnCalls = [];

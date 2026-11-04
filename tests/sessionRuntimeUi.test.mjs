@@ -34,6 +34,9 @@ function loadAtoms() {
     "../utils/agentRuntimeState": compileModule(
       "src/renderer/src/utils/agentRuntimeState.ts",
     ),
+    "../utils/optimisticUserReconciliation": compileModule(
+      "src/renderer/src/utils/optimisticUserReconciliation.ts",
+    ),
     "../utils/sessionRecordIdentity": compileModule(
       "src/renderer/src/utils/sessionRecordIdentity.ts",
     ),

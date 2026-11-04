@@ -12,10 +12,10 @@
  * 领域对象类型（AgentRunItem / ThinkingGroupItem / ToolGroupItem）目前暂存于
  * AppUtils.ts，随重构逐步迁移至此；本模块只定义展示层新增类型，避免大爆炸。
  */
-import type { AgentRunItem, MessageItem, ThinkingGroupItem, ToolGroupItem } from "../../app/AppUtils";
+import type { AgentRunItem, MessageItem, ThinkingGroupItem, ToolGroupItem, RenderMessage } from "../../app/AppUtils";
 import type { ChatMessage, AskQuestionResultSummary } from "../../../../../shared/types";
 
-export type { AgentRunItem, MessageItem, ThinkingGroupItem, ToolGroupItem };
+export type { AgentRunItem, MessageItem, ThinkingGroupItem, ToolGroupItem, RenderMessage };
 
 /** 单个执行过程条目：思考步骤或工具步骤。 */
 export type TurnProcessEntry =

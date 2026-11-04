@@ -29,6 +29,7 @@ export const ThinkingStep = memo(function ThinkingStep(props: {
 	return (
 		<div style={{ display: props.hidden ? "none" : undefined }}>
 			<ThinkingBlock
+				thinkingGroupId={props.group.id}
 				text={text}
 				startedAt={startedAt}
 				endedAt={endedAt}

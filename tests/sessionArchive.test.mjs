@@ -3,13 +3,15 @@ import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
+import { flushLoadedScanners, loadSessionScanner as loadSharedSessionScanner } from "./helpers/loadSessionScanner.mjs";
 
 function loadSessionScanner(homePath) {
 	return loadSharedSessionScanner(homePath);
 }
 
 async function cleanupTempDir(dir) {
+	// 先落盘摘要缓存的防抖写：否则目录删掉后它会把 .pi-desktop 重新建出来（临时目录泄漏）。
+	await flushLoadedScanners();
 	// Windows 上杀软/索引会短暂锁住刚写过的临时目录；清理失败不应把已通过的断言打成红。
 	for (let i = 0; i < 5; i++) {
 		try {

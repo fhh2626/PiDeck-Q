@@ -24,6 +24,17 @@ export function createHookHarness() {
       return slots[i].value;
     },
     useCallback(fn, deps) { return react.useMemo(() => fn, deps); },
+    useId() {
+      const i = cursor++;
+      if (!slots[i]) slots[i] = { id: `:h${i}:` };
+      return slots[i].id;
+    },
+    useContext(context) {
+      return context?._currentValue ?? null;
+    },
+    createContext(defaultValue) {
+      return { _currentValue: defaultValue, Provider: ({ value, children }) => children };
+    },
     useEffect(fn, deps) {
       const i = cursor++;
       if (!slots[i] || !same(slots[i].deps, deps)) effects.push(() => {

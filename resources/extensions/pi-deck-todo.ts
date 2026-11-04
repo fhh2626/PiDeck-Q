@@ -4,8 +4,9 @@
  * 注册 todo 工具让 LLM 主动维护任务列表（add / toggle / clear / list），并通过
  * RPC Extension UI Protocol 在桌面端展示进度：
  *   - ctx.ui.setWidget 持续显示当前列表与完成进度（fire-and-forget，不污染会话消息）
- *   - widget 按插入顺序输出全部条目，完成项原位保留（☑ 标记，不按状态分组沉底），
- *     清空列表显式用 clear（2027-01 用户要求）
+ *   - widget 按插入顺序输出全部条目，完成项原位保留（☑ 标记，不按状态分组沉底）
+ *   - 完成时不自动清空：上一轮列表保留到用户下一次提交指令，由该轮 input 重置；
+ *     运行中插话（steer/followUp）和扩展注入消息不算新指令，不会清空
  *   - /todo 命令用 ctx.ui.notify 输出文本快照（单数命名，避免与 plan-mode 的 /todos 冲突）
  *
  * 状态持久化用 pi.appendEntry 写 custom entry，session_start / session_tree 时读
@@ -42,8 +43,18 @@ interface TodoState {
 
 // 工具结果 details：携带当前完整状态，便于 LLM 与桌面端渲染时直接读取
 interface TodoDetails extends TodoState {
-	action: "list" | "add" | "toggle" | "clear";
+	action: TodoAction;
 	error?: string;
+}
+
+type TodoAction = "list" | "add" | "toggle" | "clear";
+
+// Pi 1.5's StringEnum parameter collapses to unknown in registerTool; validate
+// explicitly so unchecked input never reaches TodoDetails.
+function parseTodoAction(value: unknown): TodoAction | undefined {
+	return value === "list" || value === "add" || value === "toggle" || value === "clear"
+		? value
+		: undefined;
 }
 
 const TodoParams = Type.Object({
@@ -66,6 +77,8 @@ export default function (pi: ExtensionAPI) {
 	let widgetCollapsed = false;
 	// 是否已让位给第三方 todo 扩展；让位后不显示 widget、不重建状态、命令转引导
 	let yielded = false;
+	// 状态是否已按当前分支重建；首条用户消息可能先于 session_start 到达。
+	let hydrated = false;
 
 	/**
 	 * 判断当前生效的 "todo" 工具是否仍是本扩展注册的（未被第三方覆盖）。
@@ -79,12 +92,13 @@ export default function (pi: ExtensionAPI) {
 
 	/** 把当前状态写入会话 custom entry，供后续 session_start / 分支切换时重建 */
 	function persistState(): void {
-		pi.appendEntry(ENTRY_TYPE, { todos, nextId });
+		// 传浅拷贝：appendEntry 之后内存状态仍会继续变化，快照必须是写入那一刻的值。
+		pi.appendEntry(ENTRY_TYPE, { todos: todos.map((t) => ({ ...t })), nextId });
 	}
 
 	/**
 	 * 刷新桌面端 widget：按插入顺序输出全部条目，完成项原位保留（仅换 ☑ 标记），
-	 * 不再按状态分组把已完成项沉底（2027-01 用户要求）；清空请用 todo clear。
+	 * 不再按状态分组把已完成项沉底；重置由新一轮 input 自动处理，也可显式 todo clear。
 	 * 折叠态只回一行 "done/total" 摘要。
 	 */
 	function updateWidget(ctx: ExtensionContext): void {
@@ -102,6 +116,18 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		ctx.ui.setWidget(WIDGET_KEY, lines);
+	}
+
+	/**
+	 * 用户提交新指令前清空上一轮列表。
+	 * 完成记录要保留到用户看到为止，所以不在收尾时清；改由下一轮 input 触发，
+	 * 并写入快照，保证后续 session_start / 分支切换恢复出的是空列表。
+	 */
+	function resetForNewRound(ctx: ExtensionContext): void {
+		todos = [];
+		nextId = 1;
+		persistState();
+		updateWidget(ctx);
 	}
 
 	/**
@@ -148,17 +174,31 @@ export default function (pi: ExtensionAPI) {
 			"Manage a todo list. Actions: list (show all), add (text), toggle (id), clear (remove all). Progress is shown in the desktop UI widget.",
 		promptSnippet: "Manage a todo list (add / toggle / clear)",
 		promptGuidelines: [
-			"Use the todo tool to track multi-step work: add items before starting and toggle each item done as you complete it.",
+			"Use the todo tool to track multi-step work: add items before starting and mark each item done immediately as you finish it.",
 			"Keep completed items in place. Do not clear the list when the work is finished; call clear only when the user explicitly asks to clear it.",
+			"The list resets automatically at the next user instruction — start a fresh list for the new work instead of reusing earlier items.",
 			"Toggle by id; call list first if you need to see current ids.",
 			"Todo state is per-branch — switching branches restores that branch's list automatically.",
 		],
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const action = parseTodoAction(params.action);
+			if (!action) {
+				const details: TodoDetails = {
+					action: "list",
+					todos: [...todos],
+					nextId,
+					error: "unknown action",
+				};
+				return {
+					content: [{ type: "text" as const, text: "Error: unknown action" }],
+					details,
+				};
+			}
 			let error: string | undefined;
 
-			switch (params.action) {
+			switch (action) {
 				case "add": {
 					const text = params.text?.trim();
 					if (!text) {
@@ -193,13 +233,13 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// 仅在状态实际变更时持久化；list 与出错仍刷新 widget 以保持桌面端与内存一致
-			if (params.action !== "list" && !error) {
+			if (action !== "list" && !error) {
 				persistState();
 			}
 			updateWidget(ctx);
 
 			const details: TodoDetails = {
-				action: params.action,
+				action,
 				todos: [...todos],
 				nextId,
 				...(error ? { error } : {}),
@@ -209,14 +249,14 @@ export default function (pi: ExtensionAPI) {
 			let text: string;
 			if (error) {
 				text = `Error: ${error}`;
-			} else if (params.action === "list") {
+			} else if (action === "list") {
 				text = todos.length
 					? todos.map((t) => `[${t.done ? "x" : " "}] #${t.id}: ${t.text}`).join("\n")
 					: "No todos";
-			} else if (params.action === "add") {
+			} else if (action === "add") {
 				const added = todos[todos.length - 1];
 				text = `Added todo #${added.id}: ${added.text}`;
-			} else if (params.action === "toggle") {
+			} else if (action === "toggle") {
 				const t = todos.find((x) => x.id === params.id);
 				text = `Todo #${params.id} ${t?.done ? "completed" : "uncompleted"}`;
 			} else {
@@ -261,8 +301,26 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// 新一轮指令入口：把上一轮列表保留到用户看到，再由这里清空。
+	// - source=extension 是扩展自己注入的消息（如系统提醒），不算用户新指令；
+	// - steer/followUp 是运行中插话，仍属于当前这一轮，不能清空；
+	// - 其余 input（含回答 ask_question）视为新指令；列表为空时不写空快照。
+	pi.on("input", async (event, ctx) => {
+		if (yielded || !isOwnTodo()) return;
+		if (event.source === "extension") return;
+		if (event.streamingBehavior) return;
+		// 首条用户消息可能先于 session_start：内存里还没有列表时才从当前分支补齐，
+		// 本进程已经建过的列表以内存为准，不能被分支快照覆盖。
+		if (!hydrated) {
+			if (todos.length === 0) reconstructState(ctx);
+			hydrated = true;
+		}
+		if (todos.length === 0) return;
+		resetForNewRound(ctx);
+	});
+
 	// 会话启动 / 分支切换时从快照重建状态、刷新 widget。
-	// 不再清理已完成项：完成标记原位保留，直到用户执行 todo clear（2027-01 用户要求）。
+	// 已完成条目不在这里清理：由下一轮 input 统一重置，跨分支恢复同样的完成态。
 	pi.on("session_start", async (_event, ctx) => {
 		if (!isOwnTodo()) {
 			yielded = true;
@@ -270,6 +328,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		yielded = false;
 		reconstructState(ctx);
+		hydrated = true;
 		updateWidget(ctx);
 	});
 
@@ -279,6 +338,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		reconstructState(ctx);
+		hydrated = true;
 		updateWidget(ctx);
 	});
 }

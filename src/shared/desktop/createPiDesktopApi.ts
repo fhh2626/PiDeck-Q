@@ -168,6 +168,8 @@ const api = {
 			transport.invoke(ipcChannels.projectsListModels, projectId) as Promise<
 				AvailableModel[]
 			>,
+		/** 主进程模型缓存已刷新（配置保存/运行时切换）；无负载，收到后自行重读列表。 */
+		onModelsChanged: (callback: () => void) => subscribe(ipcChannels.modelsChanged, callback),
 		// 查询模型规格（context window / 能力，内置 model-specs.db，中转站按 id 匹配）
 		getModelSpec: (providerName: string, modelId: string) =>
 			transport.invoke(ipcChannels.projectsGetModelSpec, providerName, modelId) as Promise<
@@ -335,6 +337,16 @@ const api = {
 				messageId,
 				entryId,
 			) as Promise<{ text: string }>,
+		readToolExportPayload: (input: { sessionId: string; messageId: string }) =>
+			transport.invoke(
+				ipcChannels.sessionsReadToolExportPayload,
+				input,
+			) as Promise<import("../types").ToolExportPayload | null>,
+		readToolExportPayloads: (input: { sessionId: string; messageIds: string[] }) =>
+			transport.invoke(
+				ipcChannels.sessionsReadToolExportPayloads,
+				input,
+			) as Promise<Record<string, import("../types").ToolExportPayload>>,
 		readReferenceMessages: (sessionId: string) =>
 			transport.invoke(
 				ipcChannels.sessionsCatalogReadReferenceMessages,
@@ -419,11 +431,18 @@ const api = {
 				target,
 				messageId,
 			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
-		prepareRuntimeResend: (target: SessionRuntimeTarget, messageId: string) =>
+		prepareRuntimeResend: (
+			target: SessionRuntimeTarget,
+			messageId: string,
+			model?: { provider: string; modelId: string },
+			thinkingLevel?: string,
+		) =>
 			transport.invoke(
 				ipcChannels.sessionsRuntimePrepareResend,
 				target,
 				messageId,
+				model,
+				thinkingLevel,
 			) as Promise<SessionCommandResult<SessionTargetedValue<{
 				text: string;
 				images?: ImageContent[];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { shouldReloadAfterMissedHeartbeats } from "../src/native-node/transport/nativeHeartbeatWatchdog.ts";
+import { shouldReloadAfterMissedHeartbeats, shouldResetHeartbeatAfterSidecarSuspend } from "../src/native-node/transport/nativeHeartbeatWatchdog.ts";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { NativeBackendHost } = loadTsCommonJs("src/native-node/host/NativeBackendHost.ts", {
@@ -37,6 +37,14 @@ test("heartbeat watchdog reloads after three complete missed windows", () => {
 test("a recovered heartbeat resets the watchdog through a fresh elapsed duration", () => {
 	assert.equal(shouldReloadAfterMissedHeartbeats(45_000), true);
 	assert.equal(shouldReloadAfterMissedHeartbeats(0), false);
+});
+
+test("only a tick gap that covers a full reload window is treated as suspend", () => {
+	assert.equal(shouldResetHeartbeatAfterSidecarSuspend(3_000), false);
+	assert.equal(shouldResetHeartbeatAfterSidecarSuspend(10_001), false);
+	assert.equal(shouldResetHeartbeatAfterSidecarSuspend(44_999), false);
+	assert.equal(shouldResetHeartbeatAfterSidecarSuspend(45_000), true);
+	assert.equal(shouldResetHeartbeatAfterSidecarSuspend(89_000), true);
 });
 
 test("NativeBackendHost enables the renderer watchdog only after Qt reports visibility", () => {

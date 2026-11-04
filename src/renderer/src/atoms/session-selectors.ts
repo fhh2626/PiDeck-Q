@@ -3,6 +3,7 @@ import { atomFamily, selectAtom } from "jotai/utils";
 import type { SessionRecord, SessionSummary } from "../../../shared/types";
 import {
   sameSessionRuntimeView,
+  sessionCacheStatsAtom,
   sessionIdsByProjectAtom,
   sessionRecordsAtom,
   sessionRuntimeByIdAtom,
@@ -68,6 +69,13 @@ export const sessionIdByRuntimeAgentIdAtomFamily = atomFamily((agentId: string) 
       : selected
   ), { updatedAt: -1 }).sessionId),
 );
+
+/** Cache-rate history is session-local; the caller memoizes this atom for its mount lifetime.
+ * Unlike an atomFamily, this does not retain deleted session IDs in a global cache.
+ */
+export function sessionCacheStatsBySessionIdAtom(sessionId: string) {
+  return selectAtom(sessionCacheStatsAtom, (map) => map[sessionId], Object.is);
+}
 
 export const sessionRuntimeUiBySessionIdAtomFamily = atomFamily((sessionId: string) =>
   atom((get) => get(sessionRuntimeUiByIdAtom)[sessionId]),

@@ -13,7 +13,7 @@ import { SessionReferenceModal } from "../app/SessionReferenceModal";
 import { t } from "../../i18n";
 import { useSessionComposerController } from "../../hooks/useSessionComposerController";
 import { useComposerImagePicker } from "../../hooks/useComposerImagePicker";
-import { useVisionBridgeConfig } from "../../hooks/useVisionBridgeConfig";
+import { useVisionBridgeCapabilities } from "../../hooks/useVisionBridgeCapabilities";
 import { getModelImageCapabilityNotice } from "../../utils/modelImageCapability";
 import { showNotice } from "../../utils/notice";
 import {
@@ -30,7 +30,7 @@ import { useSessionPaneActions } from "./SessionPaneServices";
 import { desktopApi } from "../../desktopApi";
 import { COMPOSER_DEFAULT_HEIGHT } from "../../rendererUtils";
 import { chatContentWidthStyle } from "./chatContentWidth";
-import type { AvailableModel, GitBranchInfo } from "../../../../shared/types";
+import type { GitBranchInfo } from "../../../../shared/types";
 import type { EnqueuePromptSnapshot } from "../../hooks/useSessionSend";
 
 export type ComposerAreaProps = {
@@ -71,26 +71,13 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
   });
 
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
-  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
-
-  useEffect(() => {
-    let mounted = true;
-    void desktopApi.projects.listModels().then((models) => {
-      if (mounted) setAvailableModels(models);
-    }).catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  // 模型列表与视觉桥配置用全应用共享快照（与时间线气泡同一数据源）：
+  // 避免每个输入框各拉一次 IPC，也保证「输入框提示」与「气泡转换卡片」判定一致。
+  const capabilities = useVisionBridgeCapabilities();
+  const availableModels = capabilities.models;
 
   const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
   const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
-
-  const visionBridgeConfig = useVisionBridgeConfig({
-    projectPath: sessionRecord?.projectPath,
-    modelId: currentModelId,
-    provider: currentProvider,
-  });
 
   const imagePicker = useComposerImagePicker({
     sessionId: props.sessionId,
@@ -101,6 +88,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
 
   const modelNotice = useMemo(() => {
     if (composer.attachments.length === 0) return undefined;
+    // 能力快照未就绪时不要下结论：否则会先闪一句「图片能力未知」再变成正确提示。
+    if (!capabilities.ready) return undefined;
     const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
     const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
     if (!currentModelId) return undefined;
@@ -109,7 +98,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
       (m) => m.id === currentModelId && (!currentProvider || m.provider === currentProvider),
     ) ?? { id: currentModelId, provider: currentProvider ?? "" };
 
-    const notice = getModelImageCapabilityNotice(matchedModel, visionBridgeConfig ?? undefined);
+    const notice = getModelImageCapabilityNotice(matchedModel, capabilities.config ?? undefined);
     if (!notice) return undefined;
     switch (notice.kind) {
       case "vision-bridge-active":
@@ -126,7 +115,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     composer.record?.model?.modelId,
     composer.record?.model?.provider,
     availableModels,
-    visionBridgeConfig,
+    capabilities.ready,
+    capabilities.config,
   ]);
 
   const onNativeFileDrop = composer.editor.onNativeFileDrop;

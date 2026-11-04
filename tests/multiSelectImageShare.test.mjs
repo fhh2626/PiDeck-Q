@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { readRendererStyles } from "./helpers/rendererStyles.mjs";
 import ts from "typescript";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import vm from "node:vm";
 
 test("html-to-image stays behind the shared dynamic loader", () => {
@@ -22,6 +23,7 @@ test("html-to-image stays behind the shared dynamic loader", () => {
       statement.moduleSpecifier.text === "html-to-image" &&
       !statement.importClause?.isTypeOnly
     );
+    // 静态架构规则：任何渲染层文件都不得静态 import html-to-image（必须经动态加载器），用 AST 检查 import 声明是正确工具。
     assert.equal(
       runtimeImport,
       undefined,
@@ -29,8 +31,36 @@ test("html-to-image stays behind the shared dynamic loader", () => {
     );
   }
 
-  const loader = readFileSync("src/renderer/src/utils/htmlToImage.ts", "utf8");
-  assert.match(loader, /import\("html-to-image"\)/);
+});
+
+test("html-to-image loader imports the library lazily, shares one request and retries after a failure", async () => {
+  // 行为校验（原先是对 import("html-to-image") 文本的正则）：
+  // 模块加载时不得触碰库；首次调用才加载；并发复用同一请求；失败后清缓存可重试。
+  let requires = 0;
+  let failNext = true;
+  const library = { toPng: () => "png" };
+  const stubs = {};
+  Object.defineProperty(stubs, "html-to-image", {
+    enumerable: true,
+    get() {
+      requires += 1;
+      if (failNext) {
+        failNext = false;
+        throw new Error("transient chunk error");
+      }
+      return library;
+    },
+  });
+  const { loadHtmlToImage } = loadTsCommonJs("src/renderer/src/utils/htmlToImage.ts", { stubs });
+  assert.equal(requires, 0, "importing the loader module must not load html-to-image");
+
+  await assert.rejects(loadHtmlToImage(), /transient chunk error/);
+  const first = loadHtmlToImage();
+  const second = loadHtmlToImage();
+  assert.strictEqual(first, second, "concurrent callers share one request");
+  assert.equal((await first).toPng(), "png");
+  assert.strictEqual(loadHtmlToImage(), first, "successful load stays cached");
+  assert.equal(requires, 2, "one failed attempt plus one successful attempt");
 });
 
 function loadAppUtils() {
@@ -55,6 +85,7 @@ function loadAppUtils() {
 }
 
 test("multi-select image export stays renderable for html-to-image", () => {
+  // 文本匹配在此是正确工具：这是 CSS 规则内容契约（无浏览器布局引擎可验证，linkedom 不计算样式）。
   const styles = readRendererStyles();
   const rule = styles.match(/\.multi-select-image-export \{([\s\S]*?)\n\}/)?.[1] ?? "";
 

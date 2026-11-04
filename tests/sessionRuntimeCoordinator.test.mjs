@@ -7,7 +7,7 @@ import vm from "node:vm";
 
 const nodeRequire = createRequire(import.meta.url);
 
-function compileModule(filePath, imports = {}) {
+function compileModule(filePath, imports = {}, globals = {}) {
   const source = readFileSync(filePath, "utf8");
   const output = ts.transpileModule(source, {
     compilerOptions: {
@@ -25,11 +25,12 @@ function compileModule(filePath, imports = {}) {
     console,
     setTimeout,
     clearTimeout,
+    ...globals,
   }, { filename: filePath });
   return module.exports;
 }
 
-function loadCoordinator() {
+function loadCoordinator(globals = {}) {
   const identity = compileModule("src/shared/sessionIdentity.ts");
   // shared/askQuestion 是值导入（batch 表单 normalizer），同样走 TS 编译；
   // 它自己的 import 全部是 import type（transpile 后擦除），无需再映射。
@@ -37,19 +38,8 @@ function loadCoordinator() {
   return compileModule("src/main/sessions/SessionRuntimeCoordinator.ts", {
     "../../shared/sessionIdentity": identity,
     "../../shared/askQuestion": askQuestion,
-  });
+  }, globals);
 }
-
-test("session performance instrumentation keeps activation and dispatch phase markers", () => {
-  const source = readFileSync("src/main/sessions/SessionRuntimeCoordinator.ts", "utf8");
-  assert.match(source, /Prompt pipeline started/);
-  assert.match(source, /Runtime activation started/);
-  assert.match(source, /Runtime activation completed/);
-  assert.match(source, /Prompt dispatch started/);
-  assert.match(source, /Prompt dispatch completed/);
-  assert.match(source, /activationMs/);
-  assert.match(source, /dispatchMs/);
-});
 
 function deferred() {
   let resolve;
@@ -269,6 +259,57 @@ function prompt(overrides = {}) {
   };
 }
 
+test("session performance instrumentation logs activation and dispatch phases in order with timings", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness();
+  const perf = [];
+  const logger = {
+    info: (scope, message, details) => {
+      if (scope === "session-perf") perf.push({ message, details: { ...details } });
+    },
+    warn() {},
+    error() {},
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, logger);
+
+  const result = await coordinator.send(prompt());
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(perf.map((entry) => entry.message), [
+    "Prompt pipeline started",
+    "Runtime activation started",
+    "Runtime activation completed",
+    "Prompt dispatch started",
+    "Prompt dispatch completed",
+  ]);
+  // 每个阶段都带会话/请求身份，便于按 requestId 串起整条耗时链
+  for (const entry of perf) {
+    assert.equal(entry.details.sessionId, "session-1");
+    assert.equal(entry.details.requestId, "request-1");
+  }
+  const completed = perf.find((entry) => entry.message === "Runtime activation completed").details;
+  assert.equal(completed.agentId, "agent-1");
+  assert.equal(typeof completed.activationMs, "number");
+  const dispatched = perf.find((entry) => entry.message === "Prompt dispatch completed").details;
+  assert.equal(dispatched.accepted, true);
+  assert.equal(typeof dispatched.dispatchMs, "number");
+});
+
+test("a failed dispatch logs no 'dispatch completed' phase", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({ sender: async () => { throw new Error("pi write failed"); } });
+  const messages = [];
+  const logger = {
+    info: (scope, message) => { if (scope === "session-perf") messages.push(message); },
+    warn() {},
+    error() {},
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, logger);
+  const result = await coordinator.send(prompt());
+  assert.equal(result.accepted, false);
+  assert.ok(messages.includes("Prompt dispatch started"));
+  assert.ok(!messages.includes("Prompt dispatch completed"), "未完成的派发不得记录 completed 耗时");
+});
 test("rejects an empty prompt before activating a runtime", async () => {
   const { SessionRuntimeCoordinator } = loadCoordinator();
   const harness = createHarness();
@@ -1231,6 +1272,139 @@ test("targeted runtime commands return the validated target and command value", 
   assert.equal(harness.calls.abort, 1);
 });
 
+test("prepareRuntimeResend preserves currently selected model instead of reverting to old message model", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const setModelCalls = [];
+  const setThinkingCalls = [];
+  const harness = createHarness({
+    entry: {
+      id: "session-1",
+      title: "Session 1",
+      model: { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+      thinkingLevel: "high",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+    runtimeState: { isStreaming: false, provider: "anthropic", modelId: "claude-3-5-sonnet", thinkingLevel: "high" },
+    // 模拟 pi 对不支持的等级做钓制：请求 medium，实际接受 low。
+    thinkingState: { isStreaming: false, thinkingLevel: "low" },
+  });
+  harness.agents.setModel = async (agentId, provider, modelId) => {
+    setModelCalls.push({ agentId, provider, modelId });
+  };
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { isStreaming: false, thinkingLevel: "low" };
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  // Case 1: 传入当前在 UI 选中的新模型（如 deepseek-chat），重发截断后应将其重新应用
+  const resendWithExplicitModel = await coordinator.prepareRuntimeResend(
+    target,
+    "message-old",
+    { provider: "deepseek", modelId: "deepseek-chat" },
+    "medium",
+  );
+  assert.equal(resendWithExplicitModel.ok, true);
+  assert.deepEqual(setModelCalls, [{ agentId: "agent-a", provider: "deepseek", modelId: "deepseek-chat" }]);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "medium" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.catalog.get("session-1").model)), { provider: "deepseek", modelId: "deepseek-chat" });
+  // 回写必须是 pi 实际接受的等级（low），不是请求值（medium）
+  assert.equal(harness.catalog.get("session-1").thinkingLevel, "low");
+  assert.equal(harness.calls.publishRuntimeState, 1);
+
+  // Case 2: 未显式传参时，保留 catalog 记录的当前模型，避免倒退回历史消息的模型
+  setModelCalls.length = 0;
+  setThinkingCalls.length = 0;
+  const catalogWritesBeforeCase2 = harness.calls.update;
+  const resendWithCatalogModel = await coordinator.prepareRuntimeResend(target, "message-old");
+  assert.equal(resendWithCatalogModel.ok, true);
+  assert.deepEqual(setModelCalls, [{ agentId: "agent-a", provider: "deepseek", modelId: "deepseek-chat" }]);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "low" }]);
+  // catalog 已是同一模型/等级时不得重复写盘（避免每次重发都 bump updatedAt 把会话顶到侧栏最前）
+  assert.equal(harness.calls.update, catalogWritesBeforeCase2);
+  assert.equal(harness.calls.publishRuntimeState, 2);
+});
+
+test("prepareRuntimeResend without any model preference leaves the runtime model untouched", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const setModelCalls = [];
+  const setThinkingCalls = [];
+  const harness = createHarness({
+    // 默认 catalogEntry 既无 model 也无 thinkingLevel
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async (agentId, provider, modelId) => {
+    setModelCalls.push({ agentId, provider, modelId });
+  };
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { isStreaming: false };
+  };
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const result = await coordinator.prepareRuntimeResend(target, "message-old");
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.calls.prepareResend, 1);
+  assert.deepEqual(setModelCalls, []);
+  assert.deepEqual(setThinkingCalls, []);
+  assert.equal(harness.calls.update, 0);
+  // 没有偏好可恢复也要补一次真实运行态：switch_session 重载本身可能已经改变了模型
+  assert.equal(harness.calls.publishRuntimeState, 1);
+});
+
+test("prepareRuntimeResend keeps the resend usable when the selected model cannot be restored", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      id: "session-1",
+      title: "Session 1",
+      model: { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+      thinkingLevel: "high",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+    // 模拟 pi 启动快照里没有该模型：set_model 报 Model not found（渲染层会引导重启）
+    modelError: "Model not found: deepseek/deepseek-chat",
+    thinkingState: { isStreaming: false, thinkingLevel: "high" },
+  });
+  const warns = [];
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender, {
+    info: () => {},
+    warn: (scope, message) => warns.push(`${scope}:${message}`),
+    error: () => {},
+  });
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+  const target = { sessionId: "session-1", agentId: "agent-a", runtimeGeneration };
+
+  const result = await coordinator.prepareRuntimeResend(
+    target,
+    "message-old",
+    { provider: "deepseek", modelId: "deepseek-chat" },
+  );
+
+  // 截断已经落盘：模型恢复失败不能变成重发失败，否则用户既丢了上下文又没重发成功
+  assert.equal(result.ok, true);
+  assert.equal(result.value.value.text, "hello");
+  // 模型没恢复成功时不得把未生效的模型写进 catalog
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.catalog.get("session-1").model)),
+    { provider: "anthropic", modelId: "claude-3-5-sonnet" },
+  );
+  // 思考等级与模型无关，仍应尝试恢复
+  assert.equal(harness.calls.setThinking, 1);
+  assert.equal(harness.calls.update, 0);
+  // 失败也要推真实运行态，避免底栏继续显示未生效的模型
+  assert.equal(harness.calls.publishRuntimeState, 1);
+  assert.ok(
+    warns.some((entry) => entry.includes("Failed to restore current model after resend truncate")),
+    "model restore failure must be recorded for diagnosis",
+  );
+});
+
 test("runtime message snapshots retain the validated Session target", () => {
   const { SessionRuntimeCoordinator } = loadCoordinator();
   const harness = createHarness({
@@ -1455,18 +1629,35 @@ test("commandFailure classifies model-not-found as SESSION_MODEL_NOT_FOUND (not 
   assert.equal(modelMiss.error.code, "SESSION_MODEL_NOT_FOUND");
   // {model} 参数提取：i18n 文案「模型未找到：{model}」有值
   assert.equal(modelMiss.error.params?.model, "grok.weishiair.de/copy");
-  // 注意：vm 沙箱里主 realm 的 Error 不满足 instanceof，needsRestart 分支无法行为级验证，
-  // 用源码断言确认该分支同样提取 model 参数（本地有模型时引导重启而非误报会话不存在）
-  const coordinatorSource = readFileSync(
-    "src/main/sessions/SessionRuntimeCoordinator.ts",
-    "utf8",
-  );
-  assert.match(
-    coordinatorSource,
-    /needsRestart: true,[\s\S]*?params: \{ model: this\.extractModelFromNotFound\(error\.message\) \?\? error\.message \}/,
-  );
 });
 
+test("commandFailure marks needsRestart model errors and extracts the model identifier", () => {
+  // 让沙箱内的 `error instanceof Error` 与测试里构造的 Error 同属一个 realm，
+  // needsRestart 分支才能被真实走到。
+  const { SessionRuntimeCoordinator } = loadCoordinator({ Error });
+  const harness = createHarness();
+  const coordinator = new SessionRuntimeCoordinator(harness.catalog, harness.agents, harness.sender);
+
+  const restartNeeded = coordinator.commandFailure(
+    Object.assign(new Error("Model not found: openai/gpt-x"), { needsRestart: true }),
+  );
+  assert.equal(restartNeeded.ok, false);
+  assert.equal(restartNeeded.error.code, "SESSION_MODEL_NOT_FOUND");
+  assert.equal(restartNeeded.error.needsRestart, true);
+  assert.equal(restartNeeded.error.params?.model, "openai/gpt-x");
+
+  // 消息里没有 "Model not found: xxx" 形态时，{model} 退回完整消息而不是 undefined
+  const opaque = coordinator.commandFailure(
+    Object.assign(new Error("model gone"), { needsRestart: true }),
+  );
+  assert.equal(opaque.error.needsRestart, true);
+  assert.equal(opaque.error.params?.model, "model gone");
+
+  // 没有 needsRestart 标记的同类错误走普通分类，不带 needsRestart
+  const plain = coordinator.commandFailure(new Error("Model not found: openai/gpt-x"));
+  assert.equal(plain.error.code, "SESSION_MODEL_NOT_FOUND");
+  assert.equal(plain.error.needsRestart, undefined);
+});
 test("SessionCommandIpcError maps MESSAGE_NOT_FOUND to the dedicated copy key", () => {
   const { SessionCommandIpcError } = compileModule(
     "src/main/sessions/SessionCommandIpcError.ts",

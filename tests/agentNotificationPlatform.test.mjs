@@ -95,6 +95,7 @@ function loadAgentManager() {
 		if (id.includes("messageContent")) return messageContent;
 		if (id.includes("toolRuntimeState")) return toolRuntimeState;
 		if (id.includes("streamGate")) return streamGate;
+		if (id.includes("SubagentRunTracker")) return loadTsCommonJs("src/main/pi/SubagentRunTracker.ts");
 		if (id.includes("bashResult")) return bashResult;
 		if (id.includes("cacheHitStats")) return cacheHitStats;
 		if (id.includes("askQuestionResult")) return askQuestionResult;

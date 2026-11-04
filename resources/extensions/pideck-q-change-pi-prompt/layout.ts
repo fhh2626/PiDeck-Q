@@ -56,7 +56,8 @@ export function parseLayout(prompt: string): Layout | undefined {
 	const toolsEnd = lines[i - 1]?.end;
 	if (toolsEnd === undefined) return;
 	skipBlank();
-	if (lines[i]?.text === 'In addition to the tools above, you may have access to other custom tools depending on the project.') {
+	if (lines[i]?.text === 'In addition to the tools above, you may have access to other custom tools depending on the project.' ||
+		lines[i]?.text === 'Additional tools may be available.') {
 		i++;
 		skipBlank();
 	}

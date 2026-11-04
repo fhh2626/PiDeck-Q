@@ -258,10 +258,56 @@ export type WebTimelineTurnItem =
 	| { kind: "assistant-turn"; id: string; messages: UIMessage[] };
 
 /**
+ * 本轮身份别名只含消息 id、对账别名和 entry。
+ * 工具 id 会在历史轮和流式回放里重复出现，不能用来合并两轮的展示键。
+ */
+export function collectWebTurnAliases(messages: readonly UIMessage[]): string[] {
+	const aliases: string[] = [];
+	const push = (value: string | undefined) => {
+		if (!value || aliases.includes(value)) return;
+		aliases.push(value);
+	};
+	for (const message of messages) {
+		push(message.id);
+		const metadata = readWebMessageMetadata(message);
+		for (const id of metadata?.reconciledIds ?? []) push(id);
+		push(metadata?.entryId ? `${metadata.chatRole}:entry:${metadata.entryId}` : undefined);
+	}
+	return aliases;
+}
+
+/** 别名里只要有一个曾经见过，就沿用当时的展示键；否则用当前第一条别名。 */
+export function resolveWebTurnPresentationKey(
+	aliases: readonly string[],
+	aliasToKey: ReadonlyMap<string, string>,
+): string {
+	for (const alias of aliases) {
+		const existing = aliasToKey.get(alias);
+		if (existing) return existing;
+	}
+	return aliases[0] ?? "turn";
+}
+
+/**
+ * 提交后再记下别名。已有别名不改指向，避免后一轮抢走前一轮的键。
+ * 渲染期只能 resolve，不能调用这里：被丢弃的渲染不会回滚 Map。
+ */
+export function rememberWebTurnPresentationKey(
+	aliases: readonly string[],
+	key: string,
+	aliasToKey: Map<string, string>,
+): void {
+	for (const alias of aliases) {
+		if (!aliasToKey.has(alias)) aliasToKey.set(alias, key);
+	}
+}
+
+/**
  * 时间线按「轮」分组：每条 user 自成一项；两条 user 之间的全部助手侧消息
  * （assistant / tool / system / error 投影）合成一个 assistant-turn，交给整轮展示折叠。
  * 透明空占位跳过（不渲染、不影响分组，也不从底层数组删除）；全是占位的轮不产出项。
- * id 取本轮第一条非占位消息的 id，作为 React key 与滚动锚点 data-web-message-id。
+ * id 取本轮第一条非占位消息的 id，只做滚动锚点 data-web-message-id。
+ * 折叠状态的 React key 不直接用它：对账换成持久 id 后，提交阶段记下的别名仍能找回原来的键。
  */
 export function groupWebTimelineTurns(messages: readonly UIMessage[]): WebTimelineTurnItem[] {
 	const items: WebTimelineTurnItem[] = [];

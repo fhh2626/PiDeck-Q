@@ -22,6 +22,9 @@ function compile(filePath, imports = {}) {
 const messageFingerprint = compile("src/shared/messageFingerprint.ts");
 const sessionAtoms = compile("src/renderer/src/atoms/session-atoms.ts", {
   "../utils/agentRuntimeState": compile("src/renderer/src/utils/agentRuntimeState.ts"),
+  "../utils/optimisticUserReconciliation": compile(
+    "src/renderer/src/utils/optimisticUserReconciliation.ts",
+  ),
   "../utils/sessionRecordIdentity": compile("src/renderer/src/utils/sessionRecordIdentity.ts"),
   "../../../shared/messageFingerprint": messageFingerprint,
   "../utils/historyTurnWindow": compile("src/renderer/src/utils/historyTurnWindow.ts"),

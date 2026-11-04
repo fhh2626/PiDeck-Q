@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -68,7 +68,9 @@ before(() => {
 });
 
 after(() => {
-  // 保留 buildDir/repositoryDir 于系统临时目录，由 OS 清理；避免 after 与并发测试竞争
+  // 本文件的测试在 describe 内顺序执行，顶层 after 触发时不会再有测试使用这两个目录。
+  rmSync(buildDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  rmSync(repositoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 describe("getWorkspaceFileDiff untracked-file group fallback", () => {

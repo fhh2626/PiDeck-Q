@@ -6,7 +6,7 @@
  * - 助手侧整轮 → WebAssistantTurn（思考/工具/插入语折叠进执行过程，最终回答常驻）
  * - 流式期间底部显示响应指示器；出错显示诊断卡
  */
-import { memo, useMemo, useRef } from "react";
+import { memo, useId, useLayoutEffect, useMemo, useRef } from "react";
 import { ArrowDown } from "lucide-react";
 import type { UIMessage } from "ai";
 import { Button } from "@/components/ui-shadcn/button";
@@ -24,8 +24,17 @@ import type {
 	SessionRuntimeUiState,
 	SessionRuntimeViewState,
 } from "../atoms/session-atoms";
-import { groupWebTimelineTurns } from "./webToolGroups";
+import {
+	collectWebTurnAliases,
+	groupWebTimelineTurns,
+	rememberWebTurnPresentationKey,
+	resolveWebTurnPresentationKey,
+} from "./webToolGroups";
 import { WebAssistantTurn } from "./WebAssistantTurn";
+import { TimelinePresentationProvider } from "../components/session/timeline/timelinePresentationContext";
+
+/** 会话切换那一帧使用的只读空表，渲染期不得写入。 */
+const EMPTY_TURN_ALIAS_MAP: ReadonlyMap<string, string> = new Map();
 
 // 兼容再导出：浏览器夹具等仍从 WebTimeline 引用卡片组件。
 export { WebThinkingBlock, WebToolCard, WebToolGroupCard } from "./WebTimelineCards";
@@ -198,6 +207,15 @@ export function WebTimeline(props: {
 	const scrollToBottom = timelineWindow.scrollToBottom;
 	const showScrollToBottom = timelineWindow.showScrollToBottom;
 	const visibleMessages = timelineWindow.visibleMessages;
+	// 没有会话 id 时用本时间线实例做桶，禁止落到所有页面共享的固定字符串。
+	const presentationScope = useId();
+	const presentationSessionId = props.sessionId || presentationScope;
+	const turnAliasSessionRef = useRef(presentationSessionId);
+	const turnAliasToKeyRef = useRef(new Map<string, string>());
+	// 会话切换的那一帧只读空表。真正清空放在 layout effect，被丢弃的渲染不能改表。
+	const turnAliasMap = turnAliasSessionRef.current === presentationSessionId
+		? turnAliasToKeyRef.current
+		: EMPTY_TURN_ALIAS_MAP;
 
 	// 窗口已切片：在可见集合上按「轮」分组（整轮折叠由 WebAssistantTurn 负责）
 	const groupedMessages = useMemo(
@@ -212,6 +230,20 @@ export function WebTimeline(props: {
 		}
 		return undefined;
 	}, [groupedMessages]);
+
+	useLayoutEffect(() => {
+		if (turnAliasSessionRef.current !== presentationSessionId) {
+			turnAliasSessionRef.current = presentationSessionId;
+			turnAliasToKeyRef.current = new Map();
+		}
+		const aliasMap = turnAliasToKeyRef.current;
+		for (const item of groupedMessages) {
+			if (item.kind !== "assistant-turn") continue;
+			const aliases = collectWebTurnAliases(item.messages);
+			const key = resolveWebTurnPresentationKey(aliases, aliasMap);
+			rememberWebTurnPresentationKey(aliases, key, aliasMap);
+		}
+	}, [groupedMessages, presentationSessionId]);
 
 	return (
 		<section
@@ -261,13 +293,20 @@ export function WebTimeline(props: {
 					<>
 						{groupedMessages.map((item) => {
 							if (item.kind === "assistant-turn") {
+								const turnAliases = collectWebTurnAliases(item.messages);
+								const presentationKey = resolveWebTurnPresentationKey(turnAliases, turnAliasMap);
 								return (
-									<div key={item.id} className="mt-0" data-web-message-id={item.id}>
-										<WebAssistantTurn
-											messages={item.messages}
-											streaming={streaming && lastMessage !== undefined && item.messages.includes(lastMessage)}
-											isLatest={item.id === lastTurnId}
-										/>
+									<div key={presentationKey} className="mt-0" data-web-message-id={item.id}>
+										<TimelinePresentationProvider
+											sessionId={presentationSessionId}
+											rowKey={`run:${presentationKey}`}
+										>
+											<WebAssistantTurn
+												messages={item.messages}
+												streaming={streaming && lastMessage !== undefined && item.messages.includes(lastMessage)}
+												isLatest={item.id === lastTurnId}
+											/>
+										</TimelinePresentationProvider>
 									</div>
 								);
 							}

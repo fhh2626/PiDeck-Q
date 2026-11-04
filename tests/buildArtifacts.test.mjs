@@ -134,6 +134,8 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 		"pideck-q-change-pi-prompt/layout.ts",
 		"pideck-q-change-pi-prompt/contributions.ts",
 		"pideck-q-change-pi-prompt/shellAvailability.ts",
+		"pideck-q-change-pi-prompt/shellProbe.ts",
+		"pideck-q-change-pi-prompt/windowsShellDiscovery.ts",
 		"pideck-q-change-pi-prompt/childShellPolicy.ts",
 		"pideck-q-change-pi-prompt/childReconciliation.ts",
 		"pideck-q-change-pi-prompt/subagentCatalog.ts",
@@ -162,8 +164,8 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 12 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 23
-		assert.equal(result.checked.length, 23, JSON.stringify(result.checked));
+		// 14 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 25
+		assert.equal(result.checked.length, 25, JSON.stringify(result.checked));
 	});
 });
 
@@ -184,6 +186,24 @@ test("missing workflowValidation.ts or subagentCatalog.ts fails verification", a
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /subagentCatalog\.ts/);
+	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "shellProbe.ts"));
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /shellProbe\.ts/);
+	});
+
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		await putChangePromptFiles(repo);
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "windowsShellDiscovery.ts"));
+		const result = await verifyBuildArtifacts({ repoRoot: repo });
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("\n"), /windowsShellDiscovery\.ts/);
 	});
 });
 

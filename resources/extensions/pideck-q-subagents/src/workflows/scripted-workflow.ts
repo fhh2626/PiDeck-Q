@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import { Worker } from "node:worker_threads";
 import { drainWorkflowOperations, WORKFLOW_CLEANUP_TIMEOUT_MS } from "./workflow-cleanup.ts";
 import { DEFAULT_GLOBAL_CONCURRENCY_LIMIT, Semaphore } from "../runs/shared/parallel-utils.ts";
@@ -150,6 +151,45 @@ function trackedPromiseTarget(value) {
   return value && (typeof value === "object" || typeof value === "function") ? trackedPromiseTargets.get(value) ?? value : value;
 }
 
+// Native thenable assimilation runs outside workflow-script.js and, without V8 hooks,
+// would consume a returned child's proxy as if it were awaited. Adopt explicitly so
+// the enclosing chain owns every dependency, including nested asynchronous thenables.
+function adoptTrackedValue(value, tracker) {
+  const dependency = promiseObservationTracker(value);
+  if (dependency) {
+    addTrackerDependency(tracker, dependency);
+    return trackedPromiseTarget(value);
+  }
+  if (!value || (typeof value !== "object" && typeof value !== "function")) return value;
+  const then = value.then;
+  if (typeof then !== "function") {
+    // Passing the same value to native resolve would read an accessor twice. This
+    // uncommon accessor shape cannot be adopted faithfully by the tracking facade;
+    // reject explicitly rather than repeat arbitrary getter side effects silently.
+    for (let owner = value; owner; owner = Object.getPrototypeOf(owner)) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, "then");
+      if (!descriptor) continue;
+      if (descriptor.get) throw new Error("workflowScript cannot track a non-callable then accessor. Use an ordinary value or a callable thenable.");
+      break;
+    }
+    return value;
+  }
+  return new Promise((resolve, reject) => {
+    queueMicrotask(() => {
+      let settled = false;
+      const rejectOnce = (error) => { if (!settled) { settled = true; reject(error); } };
+      try {
+        Reflect.apply(then, value, [(next) => {
+          if (settled) return;
+          settled = true;
+          try { resolve(adoptTrackedValue(next, tracker)); }
+          catch (error) { reject(error); }
+        }, rejectOnce]);
+      } catch (error) { rejectOnce(error); }
+    });
+  });
+}
+
 function addTrackedObservations(tracker, observations) {
   tracker.observations = mergeObservations(tracker.observations, observations);
   if (!tracker.consumed) return;
@@ -186,25 +226,20 @@ function trackObservationTracker(tracker, promise, allowFutureObservations = fal
 
   const tracked = new Proxy(target, {
     get(promiseTarget, prop) {
-      if (prop === "then") return function promiseThen(onFulfilled, onRejected) {
+      if (prop === "then" || prop === "catch" || prop === "finally") return function promiseHandler(...handlers) {
         consumeTrackedObservations(tracker);
         const chainTracker = { observations: tracker.observations, consumed: false, dependencies: [tracker] };
+        // All three handlers can return a child promise. Attach it to the chain instead
+        // of letting native assimilation falsely observe an ignored callback's child.
         const wrapHandler = (handler) => typeof handler === "function"
-          ? function trackedThenHandler(...args) {
-            const value = handler.apply(this, args);
-            addTrackerDependency(chainTracker, promiseObservationTracker(value));
-            return trackedPromiseTarget(value);
+          ? function trackedPromiseHandler(...args) {
+            // Native Promise callbacks receive undefined, never the worker's
+            // global object (which a sloppy wrapper would receive as its this).
+            const value = Reflect.apply(handler, undefined, args);
+            return adoptTrackedValue(value, chainTracker);
           }
           : handler;
-        return trackObservationTracker(chainTracker, promiseTarget.then(wrapHandler(onFulfilled), wrapHandler(onRejected)), true);
-      };
-      if (prop === "catch") return function promiseCatch(onRejected) {
-        consumeTrackedObservations(tracker);
-        return trackObservationTracker({ observations: tracker.observations, consumed: false, dependencies: [tracker] }, promiseTarget.catch(onRejected), true);
-      };
-      if (prop === "finally") return function promiseFinally(onFinally) {
-        consumeTrackedObservations(tracker);
-        return trackObservationTracker({ observations: tracker.observations, consumed: false, dependencies: [tracker] }, promiseTarget.finally(onFinally), true);
+        return trackObservationTracker(chainTracker, Reflect.apply(promiseTarget[prop], promiseTarget, handlers.map(wrapHandler)), true);
       };
       return Reflect.get(promiseTarget, prop, promiseTarget);
     },
@@ -221,15 +256,45 @@ function trackRunObservation(observations, promise) {
 }
 
 function trackPromiseCombinator(items, createPromise) {
-  const values = Array.from(items);
-  const dependencies = [...new Set(values.map(promiseObservationTracker).filter(Boolean))];
-  const promise = withSuppressedNativePromiseConsumption(() => createPromise(values.map(trackedPromiseTarget)));
-  if (dependencies.length === 0) return promise;
-  return trackObservationTracker({ observations: [], consumed: false, dependencies }, promise, true);
+  const tracker = { observations: [], consumed: false, dependencies: [] };
+  let promise;
+  try {
+    // Let the native combinator drive iteration and observe each adopted item
+    // before asking for the next. Eagerly collecting first would leave earlier
+    // rejections unhandled if the iterator later throws.
+    promise = withSuppressedNativePromiseConsumption(() => createPromise({
+      *[Symbol.iterator]() {
+        for (const value of items) {
+          let adopted;
+          try {
+            adopted = adoptTrackedValue(value, tracker);
+          } catch (error) {
+            // A bad then getter rejects this item, not the entire combinator:
+            // allSettled/any/race must still apply their native settlement rules.
+            adopted = Promise.reject(error);
+          }
+          yield adopted;
+        }
+      },
+    }));
+  } catch (error) {
+    // Combinator setup failures reject instead of throwing synchronously.
+    promise = Promise.reject(error);
+  }
+  // An initially empty chain can acquire a child from a later callback.
+  return trackObservationTracker(tracker, promise, true);
 }
 
-const workflowPromise = new Proxy(Promise, {
-  construct(target, [executor]) {
+// Do not proxy the native constructor: Pi-Bolt fixes its static methods, and
+// returning wrappers for non-configurable/non-writable own properties violates
+// Proxy invariants. The facade owns no such methods; native intrinsics stay intact.
+// The placeholder is strict so it has no own caller/arguments properties to leak.
+const workflowPromise = new Proxy(function WorkflowPromise() { "use strict"; }, {
+  apply(_target, thisArg, args) { return Reflect.apply(Promise, thisArg, args); },
+  // Keep "all" in Promise etc. truthful; own-property reflection is intentionally not mirrored.
+  has(_facade, prop) { return Reflect.has(Promise, prop); },
+  construct(_target, [executor]) {
+    const target = Promise;
     if (typeof executor !== "function") return new target(executor);
     const tracker = { observations: [], consumed: false };
     const promise = new target((resolve, reject) => {
@@ -238,8 +303,8 @@ const workflowPromise = new Proxy(Promise, {
         executor((value) => {
           if (settled) return;
           settled = true;
-          addTrackerDependency(tracker, promiseObservationTracker(value));
-          resolve(trackedPromiseTarget(value));
+          try { resolve(adoptTrackedValue(value, tracker)); }
+          catch (error) { reject(error); }
         }, (reason) => {
           if (settled) return;
           settled = true;
@@ -252,17 +317,22 @@ const workflowPromise = new Proxy(Promise, {
     });
     return trackObservationTracker(tracker, promise, true);
   },
-  get(target, prop) {
+  get(facade, prop) {
+    const own = Object.getOwnPropertyDescriptor(facade, prop);
+    if (own && !own.configurable && !own.writable && "value" in own) return own.value;
+    const target = Promise;
     if (prop === "all") return (items) => trackPromiseCombinator(items, (values) => target.all(values));
     if (prop === "allSettled") return (items) => trackPromiseCombinator(items, (values) => target.allSettled(values));
     if (prop === "race") return (items) => trackPromiseCombinator(items, (values) => target.race(values));
     if (prop === "any") return (items) => trackPromiseCombinator(items, (values) => target.any(values));
-    if (prop === "resolve") return (value) => {
-      const dependency = promiseObservationTracker(value);
-      const promise = withSuppressedNativePromiseConsumption(() => target.resolve(trackedPromiseTarget(value)));
-      if (!dependency) return promise;
-      return trackObservationTracker({ observations: [], consumed: false, dependencies: [dependency] }, promise, true);
+    if (prop === "resolve") return (value) => new workflowPromise(resolve => resolve(value));
+    if (prop === "reject") return (reason) => trackObservationTracker({ observations: [], consumed: false, dependencies: [] }, target.reject(reason), true);
+    if (prop === "withResolvers" && typeof target[prop] === "function") return () => {
+      let resolve, reject;
+      const promise = new workflowPromise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+      return { promise, resolve, reject };
     };
+    if (prop === "try" && typeof target[prop] === "function") return (callback, ...args) => new workflowPromise((resolve) => resolve(callback(...args)));
     const value = target[prop];
     return typeof value === "function" ? value.bind(target) : value;
   },
@@ -276,7 +346,7 @@ function hostCall(method, args, observation) {
   });
   return observation && typeof observation.key === "string" && typeof observation.operation === "string"
     ? trackRunObservation([{ key: observation.key, operation: observation.operation, callId }], promise)
-    : promise;
+    : trackObservationTracker({ observations: [], consumed: false, dependencies: [] }, promise, true);
 }
 
 function runHostCall(key, params, collectFailure, batch, generatedLaneKey) {
@@ -929,17 +999,24 @@ parentPort.on("message", async (message) => {
     if (!nativeThenDescriptor || typeof nativeThenDescriptor.value !== "function") throw new Error("workflowScript could not inspect the VM Promise.prototype.then method.");
     const nativeThen = nativeThenDescriptor.value;
     let stopWorkflowPromiseHook;
+    let nativeThenReplaced = false;
     let value;
     try {
-      Object.defineProperty(nativePromisePrototype, "then", {
-        ...nativeThenDescriptor,
-        value: function workflowPromiseThen(...args) {
-          if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
-            return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
-          }
-          return Reflect.apply(nativeThen, this, args);
-        },
-      });
+      // V8 tracking can additionally observe realm-native chains. Pi-Bolt fixes
+      // this method; its supported workflow chains are tracked by the facade and
+      // callback dependency ledger instead, including when V8 hooks are absent.
+      if (nativeThenDescriptor.configurable || nativeThenDescriptor.writable) {
+        Object.defineProperty(nativePromisePrototype, "then", {
+          ...nativeThenDescriptor,
+          value: function workflowPromiseThen(...args) {
+            if (isDirectWorkflowScriptPromiseHandlerCall() || suppressNativePromiseConsumption > 0) {
+              return withSuppressedNativePromiseConsumption(() => Reflect.apply(nativeThen, this, args));
+            }
+            return Reflect.apply(nativeThen, this, args);
+          },
+        });
+        nativeThenReplaced = true;
+      }
       stopWorkflowPromiseHook = createWorkflowPromiseHook({
         before(promise) {
           activeNativePromises.push(promise);
@@ -971,7 +1048,7 @@ parentPort.on("message", async (message) => {
         stopWorkflowPromiseHook?.();
       } finally {
         try {
-          Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
+          if (nativeThenReplaced) Object.defineProperty(nativePromisePrototype, "then", nativeThenDescriptor);
         } finally {
           topLevelWorkflowPromise = undefined;
           activeNativePromises.length = 0;
@@ -1715,6 +1792,44 @@ function setupAbortResumeParams(params: Record<string, unknown>, result: Workflo
 	return resumeParams;
 }
 
+/**
+ * Start the workflow VM worker.
+ *
+ * Pi 0.85.1 embeds Bun 1.3.14, which panics ("cannot resolve DirInfo for non-absolute
+ * path") when an `eval: true` worker source grows past roughly 137 KB; the source was
+ * already within a few hundred bytes of that limit. Loading the same source from a
+ * private file avoids the size-dependent eval path on every runtime. If the file cannot
+ * be created (read-only or missing temp dir) fall back to eval so launching still works
+ * wherever it did before. The directory is removed once the worker exits.
+ */
+function createWorkflowWorker(acornPath: string): Worker {
+	let directory: string | undefined;
+	try {
+		directory = mkdtempSync(joinPath(tmpdir(), "pideck-workflow-"));
+		const entry = joinPath(directory, "workflow-worker.cjs");
+		writeFileSync(entry, WORKER_SOURCE, { encoding: "utf8", mode: 0o600 });
+		const worker = new Worker(entry, { workerData: { acornPath } });
+		const workerDirectory = directory;
+		worker.once("exit", () => {
+			try {
+				rmSync(workerDirectory, { recursive: true, force: true });
+			} catch {
+				// Best-effort: the directory only contains this immutable worker script.
+			}
+		});
+		return worker;
+	} catch {
+		if (directory !== undefined) {
+			try {
+				rmSync(directory, { recursive: true, force: true });
+			} catch {
+				// Nothing else owns this directory; leave it for the OS temp cleaner.
+			}
+		}
+		return new Worker(WORKER_SOURCE, { eval: true, workerData: { acornPath } });
+	}
+}
+
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
 	if (!options.script.trim()) throw new Error("workflowScript must not be empty.");
 	if (options.timeoutMs !== undefined && (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new Error("workflow script timeout must be a positive integer.");
@@ -1729,7 +1844,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
 	} catch (error) {
 		throw new Error("Workflow parser dependency 'acorn' is unavailable from pi-subagents. Reinstall pi-subagents dependencies before launching workflowScript.", { cause: error });
 	}
-	const worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { acornPath } });
+	const worker = createWorkflowWorker(acornPath);
 	const emits: unknown[] = [];
 	const consoleEntries: WorkflowScriptResult["console"] = [];
 	const trace: WorkflowScriptTraceEntry[] = [];
