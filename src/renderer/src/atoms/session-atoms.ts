@@ -865,6 +865,18 @@ export function mergeCanonicalSnapshotWithSlidingOut(
   canonicalMessages: ChatMessage[],
   slideOut?: ChatMessage[],
   confirmedRequestIds?: ReadonlySet<string>,
+  options?: {
+    /**
+     * 保留「排在权威快照尾部之后、尚未被快照确认」的 user 消息。
+     *
+     * 权威快照的尾就是主进程当前最新一条；本地还有更新的 user，只可能是快照
+     * 比本地旧（重放/乱序/主进程重载竞态）。这种快照并不代表那条消息被删除，
+     * 若在这里滑出，移除行会缩短 scrollHeight，底部 scrollTop 被向上夹取——
+     * 用户看到发送瞬间信息流回滚约一条消息。编辑/删除/重发显式
+     * preserveHistory=false，不启用本保护。
+     */
+    keepUnconfirmedTrailingUserMessages?: boolean;
+  },
 ): ChatMessage[] {
   if (previousMessages.length === 0) {
     return canonicalMessages;
@@ -915,8 +927,41 @@ export function mergeCanonicalSnapshotWithSlidingOut(
   // 1. 找出 previousMessages 中所有需要保留为 slidingOut 的消息，并为它们确定在 canonical 序列中的相对插槽
   const headSliding: ChatMessage[] = [];
   const pendingSliding: ChatMessage[] = [];
+  /** 排在权威快照尾部之后的未确认 user：保留但不滑出（见 options 注释）。 */
+  const keptTrailing: ChatMessage[] = [];
   const slidingBeforeCanonicalId = new Map<string, ChatMessage[]>();
   const tailSliding: ChatMessage[] = [];
+
+  // 本地序列中最后一条被快照覆盖的消息下标：之后的本地消息都晚于快照尾。
+  let lastCanonicalIndexInPrevious = -1;
+  previousMessages.forEach((message, index) => {
+    if (canonicalById.has(message.id)) lastCanonicalIndexInPrevious = index;
+  });
+
+  // 快照里最后一条 user 是「刚发出那条」的候选副本：同文且时间戳不比它更早
+  // （pi 排队落盘会让副本时间戳更晚）说明这条发送已经落盘，只是 id 没被
+  // stabilizeReloadedMessageIds 稳定化（运行期与投影时间戳差出容差）。此时
+  // 再保留本地副本就是两条同文 user，所以按“已确认”处理。
+  // 反之，快照最后一条 user 更早则是上一轮的同文消息（连发「继续」），
+  // 尾部那段必须保留。
+  let canonicalLastUser: ChatMessage | undefined;
+  for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
+    if (canonicalMessages[index].role === "user") {
+      canonicalLastUser = canonicalMessages[index];
+      break;
+    }
+  }
+  const canonicalLastUserFingerprint = canonicalLastUser
+    ? messageFingerprint(canonicalLastUser)
+    : undefined;
+  const canonicalLastUserTimestamp = canonicalLastUser?.timestamp ?? 0;
+  // 不带容差：本地副本的 timestamp 是发送时刻，一定早于 pi 落盘时刻（同一台
+  // 机器同一时钟），所以“快照最后一条 user 不比它早”就是同一条发送；带容差会
+  // 把几秒内连发的同文 prompt 误判成已落盘。
+  const isAlreadyConfirmed = (message: ChatMessage): boolean =>
+    canonicalLastUserFingerprint !== undefined &&
+    messageFingerprint(message) === canonicalLastUserFingerprint &&
+    canonicalLastUserTimestamp >= (message.timestamp ?? 0);
 
   // 预先反向扫描 previousMessages 计算每个位置之后第一个幸存的 canonical id
   const nextSurvivorIdAt = new Array<string | null>(previousMessages.length);
@@ -951,6 +996,22 @@ export function mergeCanonicalSnapshotWithSlidingOut(
       // history 与当前窗口各出现一次。
       if (isConfirmedPending(prevMsg)) continue;
       pendingSliding.push(clearSlidingOut(prevMsg));
+      continue;
+    }
+
+    // 快照尾之后仍未确认的 user：快照比本地旧，不能当成“被删除”滑出。
+    // 只认 user：assistant/tool 的尾部残缺由流式事件与 rebindInFlightMessages
+    // 负责，滑出它们仍是正确语义（旧中间态被终态全量替换）。
+    if (
+      options?.keepUnconfirmedTrailingUserMessages === true &&
+      prevMsg.role === "user" &&
+      prevMsg.meta?.optimistic !== true &&
+      lastCanonicalIndexInPrevious >= 0 &&
+      i > lastCanonicalIndexInPrevious &&
+      // 已以另一份身份落盘的发送不重复保留（详见上方注释）。
+      !isAlreadyConfirmed(prevMsg)
+    ) {
+      keptTrailing.push(clearSlidingOut(prevMsg));
       continue;
     }
 
@@ -995,9 +1056,10 @@ export function mergeCanonicalSnapshotWithSlidingOut(
   result.push(...tailSliding);
   // pending user 必须排在它触发的回复之前；旧快照里新出现的 assistant
   // 若时间晚于本地气泡，就把 pending 插到它前面，而不是一律排到队尾。
+  // 未确认的尾部 user 同理：它晚于快照尾，但快照里可能已有它触发的回复。
   return insertOptimisticMessagesBeforeNewer(
     result,
-    pendingSliding,
+    [...pendingSliding, ...keptTrailing],
     new Set(canonicalById.keys()),
     previousIdsBeforeOptimistic,
   );
@@ -2322,6 +2384,9 @@ export const applySessionRuntimeEventAtom = atom(
                   segment,
                   promotedHistory,
                   confirmedRequestIds,
+                  // 未显式声明丢弃历史的全量快照：排在快照尾之后的 user 是
+                  // 「快照比本地旧」的证据，不能滑出（发送瞬间回滚一条的根因）。
+                  { keepUnconfirmedTrailingUserMessages: !explicitDrop },
                 )
               : segment;
           // 被替换的旧内容降级为历史前缀（见 demoteReplacedMessages）。

@@ -424,6 +424,96 @@ test("loadMessages keeps messages that changed while the snapshot was in flight 
   }
 });
 
+test("compaction reload keeps a prompt sent before the load but not yet projected", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-unprojected-"));
+  const sessionPath = join(directory, "session.jsonl");
+  try {
+    await writeFile(sessionPath, "{}", "utf8");
+    const snapshot = deferred();
+    const runtime = {
+      tab: {
+        id: "agent-unprojected",
+        projectId: "project-1",
+        cwd: "C:/project",
+        title: "Session",
+        status: "running",
+        sessionPath,
+        sessionEnvironment: "native",
+        sessionSource: "pi",
+        createdAt: 1,
+      },
+      process: {
+        client: {
+          request: async () => snapshot.promise,
+        },
+      },
+    };
+    const manager = new AgentManager(
+      () => ({ id: "project-1", name: "Project", path: "C:/project" }),
+      () => null,
+      { get: () => ({}) },
+      {},
+    );
+    manager.agents.set("agent-unprojected", runtime);
+
+    // 用户刚发出的 prompt：addMessage 在「重载开始之前」写入，因此不在
+    // reapplyMessagesChangedDuringLoad 的保护范围（引用未变、不是进行中消息）。
+    const justSent = {
+      id: "runtime-just-sent",
+      agentId: "agent-unprojected",
+      role: "user",
+      text: "next prompt",
+      timestamp: 2_000_000,
+      meta: { optimisticRequestId: "request-1" },
+    };
+    // 重载前缓存里已有上一轮投影（运行期身份），它是「未落盘发送」的边界。
+    const projectedBeforeReload = [
+      {
+        id: "runtime-old-q",
+        agentId: "agent-unprojected",
+        role: "user",
+        text: "old question",
+        timestamp: 1_000,
+      },
+      {
+        id: "runtime-old-a",
+        agentId: "agent-unprojected",
+        role: "assistant",
+        text: "old answer",
+        timestamp: 1_100,
+      },
+    ];
+    manager.messages.set("agent-unprojected", [...projectedBeforeReload, justSent]);
+
+    // 压缩/重连重载：不带 preserveMessagesAfter，投影是「发起时」快照，
+    // 里面还没有这条 prompt。
+    const pending = manager.loadMessages("agent-unprojected", true, snapshot.promise, {
+      preserveHistory: true,
+      stickyHistory: true,
+    });
+    snapshot.resolve({
+      success: true,
+      data: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "old question" }], id: "msg-old-q", timestamp: 1_000 },
+          { role: "assistant", content: [{ type: "text", text: "old answer" }], id: "msg-old-a", timestamp: 1_100 },
+        ],
+      },
+    });
+    await pending;
+
+    const result = manager.messages.get("agent-unprojected");
+    assert.deepEqual(
+      [...result.map((message) => message.text)],
+      ["old question", "old answer", "next prompt"],
+      "未落盘的 prompt 不能因压缩重载被丢掉（否则渲染层会把它滑出，时间线回滚一条）",
+    );
+    assert.equal(result[result.length - 1].id, "runtime-just-sent", "必须接在投影尾部");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("empty snapshot keeps only messages created or changed during the load (2026-12)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pideck-runtime-cache-empty-"));
   const sessionPath = join(directory, "session.jsonl");

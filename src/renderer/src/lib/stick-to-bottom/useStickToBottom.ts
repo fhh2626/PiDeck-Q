@@ -404,7 +404,37 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     state.lastScrollTop = state.scrollTop;
     state.resizeDifference = 0;
     state.lastMaxScrollTop = undefined;
-  }, [cancelScrollAnimation, state]);
+    /**
+     * 恢复位置正好在底部（会话切回 / 保锚把视口放回尾部）：用户并没有上滚读历史，
+     * 不能留在“已解锁”状态。
+     *
+     * 否则会同时坏两件事：
+     * 1. 下一次内容增长（发送后新气泡）时 RO 的 `if (state.isAtBottom)` 不成立，
+     *    不跟底——用户看到视口停在旧消息上，新消息在折叠下方；
+     * 2. 内容收缩时 `isContentShrinkClamp` 因 `isFollowing=false` 拒绝识别 clamp，
+     *    浏览器的底部夹取被当成用户上滚，永久逃逸。
+     *
+     * 只认贴底（≤ 2px）：25~70px 的近底带仍按阅读状态处理，
+     * 不把正在读历史的人拽回底部。
+     * 已知副作用：跳到最后一行的场景也会因此恢复跟底——那本来就是实时边缘，
+     * 用户再上滚一次就会重新进入阅读状态。
+     */
+    if (scrollRef.current) {
+      // 用 scrollHeight - clientHeight（真实最大滚动距离）而不是 state.targetScrollTop：
+      // 后者在内容容器未挂载时返回 0，会把任意位置误判成贴底。
+      // 比较对象是本次恢复请求的落点（state.scrollTop 是引擎写入值，不是回读值），
+      // 所以“请求到底部或越过底部”都算贴底——越过底部只可能是内容比预期短，
+      // 此时浏览器已经夹到底部，跟底才是正确姿势。
+      const maxScrollTop = Math.max(
+        0,
+        scrollRef.current.scrollHeight - scrollRef.current.clientHeight,
+      );
+      if (state.scrollTop >= maxScrollTop - 2) {
+        setEscapedFromLock(false);
+        setIsAtBottom(true);
+      }
+    }
+  }, [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, state]);
 
   const handleScroll = useCallback(
     ({ target }: Event) => {

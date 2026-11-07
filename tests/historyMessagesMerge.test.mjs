@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const { mergeHistoryWithPreservedMessages } = loadTsCommonJs(
-	"src/main/pi/historyMessages.ts",
-);
+const { mergeHistoryWithPreservedMessages, preserveUnprojectedTrailingUserMessages } =
+	loadTsCommonJs("src/main/pi/historyMessages.ts");
 
 /**
  * 双份回归（issue：中间回复在上一轮/下一轮都显现）复现测试。
@@ -237,4 +236,118 @@ test("M1: 连发多条同文本：尾部窗口内一一消耗，不误删也不�
 	assert.equal(merged.length, 40, "两条副本各消耗一条，不多删");
 	assert.equal(merged[38].id, "agent-1-history-e38");
 	assert.equal(merged[39].id, "agent-1-history-e39");
+});
+
+// ── 压缩/重连重载：已发出但尚未被 pi 投影的尾部 user 不能被丢掉 ──
+// 回归：发送瞬间信息流回滚到上一条消息。loadMessages（compaction_end /
+// reattach）不带 preserveMessagesAfter 时直接返回投影，刚发出的 prompt 不在
+// 投影里 → 运行期缓存丢行 → 下一次全量 flush 让渲染层把它滑出，底部被向上夹取。
+
+test("压缩重载：投影早于刚发出的 prompt 时保留尾部 user", () => {
+	const projected = [
+		projectedMessage("历史问题", "e1", "user"),
+		projectedMessage("历史回答", "e2", "assistant"),
+	];
+	const current = [
+		...projected.map((message) => ({ ...message, id: `run-${message.meta.entryId}` })),
+		runtimeMessageAt("刚发出的 prompt", 2_500_000, "user"),
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.deepEqual(
+		[...merged.map((message) => message.text)],
+		["历史问题", "历史回答", "刚发出的 prompt"],
+		"未落盘的尾部 user 必须接回投影尾部",
+	);
+	assert.equal(merged[2].id.startsWith("run-"), true, "保留运行期身份，等 pi 落盘后再稳定化");
+});
+
+test("压缩重载：投影已包含同一条 user 时不重复保留", () => {
+	const projected = [
+		projectedMessage("历史问题", "e1", "user"),
+		{ ...projectedMessage("刚发出的 prompt", "e2", "user"), timestamp: 2_500_000 },
+	];
+	const current = [runtimeMessageAt("刚发出的 prompt", 2_500_000, "user")];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.equal(merged.length, 2, "指纹 + 时间容差命中即视为已落盘，不得双份");
+	assert.equal(merged[1].id, "agent-1-history-e2");
+});
+
+test("压缩重载：更旧且不在投影里的 user 属于归档段，不复活", () => {
+	const projected = [projectedMessage("压缩后的最新回答", "e9", "assistant")];
+	const current = [
+		runtimeMessageAt("压缩前的老问题", 1_000_000, "user"),
+		runtimeMessageAt("压缩前的老回答", 1_100_000, "assistant"),
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.equal(merged.length, 1, "归档段由 history/slideOut 通道处理");
+	assert.equal(merged[0].meta.entryId, "e9");
+});
+
+test("压缩重载：assistant/tool 尾部残缺不归本函数保护", () => {
+	const projected = [projectedMessage("历史问题", "e1", "user")];
+	const current = [
+		runtimeMessageAt("历史问题", 2_000_000, "user"),
+		runtimeMessageAt("流式中的回答", 2_600_000, "assistant"),
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.equal(merged.length, 1, "assistant 由流式事件与 rebindInFlightMessages 负责");
+});
+
+test("压缩重载：投影副本时间戳差出容差时宁可不保留，也不产生同 id 双份", () => {
+	// pi 排队等工具结束后才落盘：投影副本 timestamp 比运行期晚 30s，超出 5s 容差。
+	// 若只靠“指纹+容差”判定，会把已落盘的 prompt 再接一份；stabilizeReloadedMessageIds
+	// 按指纹把两份映射到同一个 id，渲染层就会出现 duplicate React key。
+	const projected = [
+		projectedMessage("历史问题", "e1", "user"),
+		{ ...projectedMessage("刚发出的 prompt", "e2", "user"), timestamp: 2_530_000 },
+	];
+	const current = [
+		projectedMessage("历史问题", "e1", "user"),
+		{ ...projectedMessage("刚发出的 prompt", "e2", "user"), timestamp: 2_500_000 },
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.equal(merged.length, 2, "已落盘的 prompt 不得再接一份");
+	assert.equal(merged[1].timestamp, 2_530_000, "以投影为准");
+});
+
+test("压缩重载：连发两条且后一条与旧消息同文时两条都保留", () => {
+	// 用户连发 B、A 两条（都未落盘），A 与投影里的旧同文消息重合。
+	// 投影最后一条 user 明显更早（2_000_000 vs 2_600_000），说明那是上一轮的
+	// 同文消息，不是这条发送的副本 → 两条新 prompt 都必须保留。
+	const projected = [
+		projectedMessage("A", "e1", "user"),
+		projectedMessage("回答", "e2", "assistant"),
+	];
+	const current = [
+		projectedMessage("A", "e1", "user"),
+		projectedMessage("回答", "e2", "assistant"),
+		runtimeMessageAt("B", 2_500_000, "user"),
+		runtimeMessageAt("A", 2_600_000, "user"),
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.deepEqual(
+		[...merged.map((message) => message.text)],
+		["A", "回答", "B", "A"],
+		"两条未落盘的新 prompt 都必须保留",
+	);
+});
+
+test("压缩重载：连发同文「继续」时新的一条仍要保留", () => {
+	// 投影最后一条 user 是上一轮的「继续」（明显更早），不是这条发送的副本：
+	// 若按“投影里有同文 user 就不保留”，用户最常见的连发会被误判成已落盘。
+	const projected = [
+		projectedMessage("继续", "e1", "user"),
+		projectedMessage("上一轮回答", "e2", "assistant"),
+	];
+	const current = [
+		projectedMessage("继续", "e1", "user"),
+		projectedMessage("上一轮回答", "e2", "assistant"),
+		runtimeMessageAt("继续", 2_500_000, "user"),
+	];
+	const merged = preserveUnprojectedTrailingUserMessages(projected, current);
+	assert.deepEqual(
+		[...merged.map((message) => message.text)],
+		["继续", "上一轮回答", "继续"],
+		"新发的同文 prompt 必须保留，否则渲染层会把它滑出、时间线回滚一条",
+	);
 });

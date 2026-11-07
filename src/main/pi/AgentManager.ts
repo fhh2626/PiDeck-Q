@@ -44,6 +44,7 @@ import { formatBashToolMessage } from "./bashResult";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import {
 	mergeHistoryWithPreservedMessages,
+	preserveUnprojectedTrailingUserMessages,
 	stabilizeReloadedMessageIds,
 } from "./historyMessages";
 import {
@@ -1179,10 +1180,17 @@ export class AgentManager {
 		// abort 时 ask_question 的 answer 已被覆写为 null，不再需要跟踪
 		this.abortedDuringAsk.delete(agentId);
 		const currentMessages = this.messages.get(agentId) ?? [];
+		// 压缩/重连重载（preserveHistory 未显式关闭）时，投影可能早于用户刚发出的
+		// prompt：那条 user 既不在投影里、也不属于被压缩的历史，必须接回尾部，
+		// 否则下一次全量 flush 会让渲染层把它滑出（发送瞬间信息流回滚一条）。
+		// 编辑/删除/重发显式 preserveHistory=false，走原替换语义。
+		const projectedMessages = options?.preserveHistory === false
+			? messages
+			: preserveUnprojectedTrailingUserMessages(messages, currentMessages);
 		const nextMessages = stabilizeReloadedMessageIds(
 			currentMessages,
 			mergeHistoryWithPreservedMessages(
-				messages,
+				projectedMessages,
 				currentMessages,
 				options?.preserveMessagesAfter,
 			),

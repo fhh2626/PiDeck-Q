@@ -262,23 +262,31 @@ export function useVirtualTimeline(params: {
 		}
 		// 优先级 2: 阅读者模式下的阅读锚点保锚（仅当无显式 pending restore 时执行至多一次）
 		else if (!isFollowingRef.current && currentContext.readingAnchor && viewport) {
-			const { rowKey, offsetTop } = currentContext.readingAnchor;
-			const rowIndex = geometry.rows.findIndex((r) => r.key === rowKey);
-			if (rowIndex !== -1) {
-				const listOrigin = calculateListOrigin(effectiveList, viewport);
-				const targetTop = resolveAnchorScrollTop(geometry, rowIndex, offsetTop, listOrigin);
-				applyReaderScrollTopRef.current(targetTop, "preserve-anchor");
+			// 视口已经在底部：跟底状态还没回传（onFollowChange 是 passive effect），
+			// 此时保锚会把底部位置当成阅读位置再写一次，反而把刚恢复的锁底解锁，
+			// 之后内容增长不再跟底（发送后视口停在旧消息上）。
+			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+			if (viewport.scrollTop >= maxScrollTop - 2) {
+				currentContext.readingAnchor = null;
 			} else {
-				// 行被删除或折叠消失：对齐到同位置后继或前驱，并同步更新内部阅读锚点
-				const prevIndex = prevSnapshot.geometry.rows.findIndex((r) => r.key === rowKey);
-				if (prevIndex !== -1 && geometry.rows.length > 0) {
-					const fallbackIndex = Math.min(prevIndex, geometry.rows.length - 1);
-					const fallbackRow = geometry.rows[fallbackIndex];
+				const { rowKey, offsetTop } = currentContext.readingAnchor;
+				const rowIndex = geometry.rows.findIndex((r) => r.key === rowKey);
+				if (rowIndex !== -1) {
 					const listOrigin = calculateListOrigin(effectiveList, viewport);
-					const targetTop = resolveAnchorScrollTop(geometry, fallbackIndex, 0, listOrigin);
+					const targetTop = resolveAnchorScrollTop(geometry, rowIndex, offsetTop, listOrigin);
 					applyReaderScrollTopRef.current(targetTop, "preserve-anchor");
-					if (fallbackRow) {
-						currentContext.readingAnchor = { rowKey: fallbackRow.key, offsetTop: 0 };
+				} else {
+					// 行被删除或折叠消失：对齐到同位置后继或前驱，并同步更新内部阅读锚点
+					const prevIndex = prevSnapshot.geometry.rows.findIndex((r) => r.key === rowKey);
+					if (prevIndex !== -1 && geometry.rows.length > 0) {
+						const fallbackIndex = Math.min(prevIndex, geometry.rows.length - 1);
+						const fallbackRow = geometry.rows[fallbackIndex];
+						const listOrigin = calculateListOrigin(effectiveList, viewport);
+						const targetTop = resolveAnchorScrollTop(geometry, fallbackIndex, 0, listOrigin);
+						applyReaderScrollTopRef.current(targetTop, "preserve-anchor");
+						if (fallbackRow) {
+							currentContext.readingAnchor = { rowKey: fallbackRow.key, offsetTop: 0 };
+						}
 					}
 				}
 			}

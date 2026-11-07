@@ -97,6 +97,93 @@ export function mergeHistoryWithPreservedMessages(
 }
 
 /**
+ * 压缩/重连重载时保护「已发出但尚未被 pi 投影」的尾部 user 消息。
+ *
+ * get_messages 是「发起时」的快照：用户刚发出的 prompt 可能还没进 pi 的消息
+ * 列表（压缩进行中、进程刚重连、prompt 尚未被 pi 消费）。它既不是被压缩掉的
+ * 历史（不该进 history/slideOut），也不在投影里；若在这里丢掉，下一次全量
+ * flush 会让渲染层把它当成被压缩的旧消息滑出，底部因此少一行并被向上夹取——
+ * 表现为「发送瞬间信息流回滚到上一条消息」。
+ *
+ * 只保护 user：assistant/tool 的尾部残缺由流式事件与 rebindInFlightMessages
+ * 负责；编辑/删除/重发走 preserveHistory=false，不经过本函数。
+ *
+ * 边界用「从尾部倒序扫描，遇到第一条已被投影覆盖的消息就停」而非时间比较：
+ * 投影时间戳可能来自文件、也可能由投影器回退成 Date.now()，时间先后不可靠；
+ * 而压缩总是保留最近若干轮，所以「尾部连续未落盘的 user」就是尚未被 pi 消费
+ * 的发送，更旧的未覆盖 user 属于压缩归档段，由 history/slideOut 通道处理。
+ *
+ * 去重必须比边界更严：投影里最后一条 user 才是「刚发出那条」的候选副本。
+ * 若它与尾部副本同文、且时间戳不比副本更早（pi 排队处理会让副本时间戳
+ * 更晚，例如排队等工具结束才落盘），就说明本次发送已经落盘，只是 id 没被
+ * stabilizeReloadedMessageIds 稳定化；再保留一份会出现两条同文 user。
+ * 反之，投影最后一条 user 更早则是上一轮的同文消息（例如连发「继续」），
+ * 尾部那段仍必须保留。
+ */
+export function preserveUnprojectedTrailingUserMessages(
+	projectedMessages: ChatMessage[],
+	currentMessages: ChatMessage[],
+): ChatMessage[] {
+	if (currentMessages.length === 0) return projectedMessages;
+	// 空投影是「历史不在」的权威（新会话/会话被清空）：不在这里复活旧 user，
+	// 加载期间新增/变更的消息由 reapplyMessagesChangedDuringLoad 负责。
+	if (projectedMessages.length === 0) return projectedMessages;
+	// 投影侧指纹索引：同一条 pi 消息的投影副本与运行期副本正文一致、时间同源。
+	const projectedFingerprints = new Map<string, number[]>();
+	let lastProjectedUser: ChatMessage | undefined;
+	projectedMessages.forEach((message, index) => {
+		const fingerprint = messageFingerprint(message);
+		const indices = projectedFingerprints.get(fingerprint);
+		if (indices) indices.push(index);
+		else projectedFingerprints.set(fingerprint, [index]);
+		if (message.role === "user") lastProjectedUser = message;
+	});
+	const isProjected = (message: ChatMessage): boolean => {
+		const candidates = projectedFingerprints.get(messageFingerprint(message));
+		if (!candidates) return false;
+		return candidates.some(
+			(index) =>
+				Math.abs(
+					(projectedMessages[index].timestamp ?? 0) - (message.timestamp ?? 0),
+				) <= FINGERPRINT_MATCH_TIME_TOLERANCE_MS,
+		);
+	};
+	// 这条尾部 user 是否已经以另一份身份落盘（见上方注释）。
+	// 比较不带容差：运行期副本的 timestamp 是 addMessage 写入时刻，一定早于 pi
+	// 落盘时刻（同一台机器同一时钟），所以“投影最后一条 user 不比它早”就是同一
+	// 条发送；带容差会把几秒内连发的同文 prompt 误判成已落盘。
+	const lastProjectedUserFingerprint = lastProjectedUser
+		? messageFingerprint(lastProjectedUser)
+		: undefined;
+	const lastProjectedUserTimestamp = lastProjectedUser?.timestamp ?? 0;
+	const isAlreadyPersisted = (message: ChatMessage): boolean =>
+		lastProjectedUserFingerprint !== undefined &&
+		messageFingerprint(message) === lastProjectedUserFingerprint &&
+		lastProjectedUserTimestamp >= (message.timestamp ?? 0);
+	const kept: ChatMessage[] = [];
+	// 必须找到一条已被投影覆盖的消息作为边界，否则无法区分「未落盘的发送」
+	// 与「压缩归档段」；找不到就不猜，交给 history/slideOut 通道处理。
+	let boundedByProjection = false;
+	for (let index = currentMessages.length - 1; index >= 0; index -= 1) {
+		const message = currentMessages[index];
+		// 遇到已被投影覆盖的消息就停：压缩总是保留最近若干轮，所以更旧的
+		// 未覆盖 user 属于归档段，由 history/slideOut 通道处理。
+		if (isProjected(message)) {
+			boundedByProjection = true;
+			break;
+		}
+		if (message.role !== "user") continue;
+		if (message.meta?.historyLoading === true) continue;
+		// 已经落盘的发送不重复保留（详见上方注释）。用 continue 而不是 break：
+		// 只跳过这条，继续向前找边界；它前面的新 prompt 仍确定可以保留。
+		if (isAlreadyPersisted(message)) continue;
+		kept.unshift(message);
+	}
+	if (!boundedByProjection) return projectedMessages;
+	return kept.length > 0 ? [...projectedMessages, ...kept] : projectedMessages;
+}
+
+/**
  * 重载后投影消息身份稳定化。事件通道（randomUUID id）与文件投影通道
  * （agentId-history-entryId id）对同一条 pi 消息的 id 永不相同；压缩/attach
  * 重连等场景 loadMessages 会用投影整体替换运行期缓存，若直接替换，渲染层

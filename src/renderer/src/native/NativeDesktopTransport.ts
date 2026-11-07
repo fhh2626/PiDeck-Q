@@ -76,6 +76,11 @@ type NativeDesktopTransportOptions = {
 	onResyncRequired?: (payload: unknown) => void;
 	/** Bootstrap supplies the snapshot boundary before the first SSE connection. */
 	initialEventSeq?: number;
+	/**
+	 * 启动握手时的服务端事件源代次。带上它，首次心跳就不会因为本地代次
+	 * 还是空串而把游标当成“换服务器”重置为 0（那会让服务端重放整个历史）。
+	 */
+	initialEventSourceGeneration?: string;
 	/** Test override; production uses the bounded 8 second startup deadline. */
 	readyTimeoutMs?: number;
 	/**
@@ -152,6 +157,9 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			this.lastEventSeq = options.initialEventSeq;
 			this.hasEventCursor = true;
 		}
+		if (options.initialEventSourceGeneration) {
+			this.eventSourceGeneration = options.initialEventSourceGeneration;
+		}
 		this.connectEventSource();
 	}
 
@@ -218,7 +226,11 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 
 	private handleEvent(event: MessageEvent<string>): void {
 		const parsedSeq = Number(event.lastEventId);
-		const seq = Number.isInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : this.lastEventSeq;
+		// 无 id 的帧（EventSource 对没有 `id:` 行的消息给空串）不能参与去重：
+		// 它会被当成 seq 0，一旦游标已推进就会被全部丢掉。
+		const frameHasSeq =
+			event.lastEventId !== "" && Number.isInteger(parsedSeq) && parsedSeq >= 0;
+		const seq = frameHasSeq ? parsedSeq : this.lastEventSeq;
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(event.data);
@@ -236,9 +248,24 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			this.settleReady();
 			return;
 		}
+		if (frameHasSeq && this.isStaleEventFrame(seq, frame)) return;
 		if (!this.activated) this.queuedEvents.push({ seq, frame });
 		else this.dispatch(frame);
 		this.commitEventSeq(seq);
+	}
+
+	/**
+	 * 已应用过的序号不再重复派发。
+	 *
+	 * 服务端在每次 SSE 连接建立时按 Last-Event-ID 重放 eventHistory；游标落后
+	 * （心跳代次重置、手动重连、旧连接晚到的帧）时，旧的全量消息快照会被再次
+	 * 应用——渲染层会把“快照里没有的尾部消息”当成被删除而滑出，表现为发送后
+	 * 信息流回滚一条。控制帧（resyncRequired）必须放行：它本身不携带状态，
+	 * 且序号可能等于当前游标。
+	 */
+	private isStaleEventFrame(seq: number, frame: NativeEventFrame): boolean {
+		if (frame.channel === "native.resyncRequired") return false;
+		return this.hasEventCursor && seq <= this.lastEventSeq;
 	}
 
 	private commitEventSeq(seq: number): void {
@@ -299,8 +326,16 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 	 * short catch-up window so the normal SSE delivery can win the race.
 	 */
 	handleHeartbeat(state: NativeHeartbeatState): void {
+		// 首次心跳可能早于 eventChannelReady：此时本地代次还是空串，不能当成
+		// “服务端换了代次”而把游标重置为 0——那会让服务端重放整个 eventHistory，
+		// 旧的全量消息快照被再次应用（发送后信息流回滚一条的来源之一）。
+		// 空串只补登代次，不重连。
+		if (this.eventSourceGeneration === "" && typeof state.eventSourceGeneration === "string") {
+			this.eventSourceGeneration = state.eventSourceGeneration;
+		}
 		const generationMismatch =
 			typeof state.eventSourceGeneration === "string" &&
+			this.eventSourceGeneration !== "" &&
 			this.eventSourceGeneration !== state.eventSourceGeneration;
 		if (generationMismatch) {
 			// A new server starts a fresh sequence namespace. Do not send the old

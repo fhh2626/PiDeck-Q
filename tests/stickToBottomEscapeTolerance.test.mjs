@@ -100,6 +100,11 @@ async function mountEngine(host, options = { initial: "instant", resize: "instan
 				scroll.dispatchEvent(event);
 			});
 		},
+		/** 原子恢复位置（会话切回 / 保锚纠偏）。 */
+		async restoreAt(top) {
+			await host.act(async () => mounted.result().restoreAt(top));
+			await settle();
+		},
 		/** 内容高度变化（ResizeObserver 回调）。 */
 		async resizeTo(height) {
 			await host.act(async () => env.observers.at(-1).callback([{ contentRect: { height } }]));
@@ -306,5 +311,43 @@ test("content shrinking never re-locks a reader who escaped upward", async () =>
 		await engine.resizeTo(900); // 负增长（折叠内外高度往返的其中一帧）
 		assert.equal(engine.state.escapedFromLock, true);
 		assert.equal(engine.state.isAtBottom, false, "负增长帧不得把读历史的用户误重锁");
+	});
+});
+
+// ── 贴底恢复不得留在“已解锁”状态 ──
+// 会话切回/保锚把视口放回尾部时，restoreAt 无条件解锁会让下一次内容增长不跟底
+// （发送后视口停在旧消息上），内容收缩时又会因 isFollowing=false 拒绝识别 clamp。
+
+test("restoring exactly at the bottom keeps the bottom lock", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 300);
+		assert.equal(engine.state.isAtBottom, false, "前置：先进入阅读状态");
+
+		await engine.restoreAt(BOTTOM);
+		assert.equal(engine.state.escapedFromLock, false, "贴底恢复不得留在已解锁状态");
+		assert.equal(engine.state.isAtBottom, true);
+	});
+});
+
+test("restoring above the bottom keeps the reader state", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.restoreAt(BOTTOM - 50);
+		assert.equal(engine.state.escapedFromLock, true, "近底但不在底部仍是阅读位置");
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("content growth after a bottom restore still follows the bottom", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 300);
+		await engine.restoreAt(BOTTOM);
+		engine.scroll.scrollHeight = 2400;
+		await engine.resizeTo(1000);
+		await engine.resizeTo(1100);
+		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.scroll.scrollTop, 2400 - 1 - 500, "贴底恢复后增长必须继续跟底");
 	});
 });
