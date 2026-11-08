@@ -57,7 +57,6 @@ export type AgentRuntimeState = {
 	cacheHitAveragePercent?: number | null;
 	/** 参与平均统计的 assistant 消息条数（与 cacheHitAveragePercent 同源） */
 	cacheHitSampleCount?: number;
-	cost?: number;
 	/** 最近一次 assistant 回复的首 token 延迟（ms；message_start → 首个 text/thinking delta），由主进程本地计时 */
 	ttftMs?: number;
 	/** 最近一次 assistant 回复的总耗时（ms；message_start → message_end/done/error） */

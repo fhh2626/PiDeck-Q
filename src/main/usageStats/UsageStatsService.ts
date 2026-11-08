@@ -34,8 +34,8 @@ import {
 } from "./usageStatsAggregator";
 import { UsageLogReader, type LogFileState } from "./UsageLogReader";
 
-/** 缓存结构版本：dayBuckets 含 byModel/byProject 明细后升到 2（旧结构直接弃用触发全量重扫）。 */
-const CACHE_SCHEMA_VERSION = 2;
+/** 缓存结构版本：dayBuckets 含 byModel/byProject 明细后升到 2；移除费用字段后升到 3（旧缓存触发全量重扫）。 */
+const CACHE_SCHEMA_VERSION = 3;
 
 /** 缓存值：结构版本 + 游标 + 可序列化中间态（视图按 now 派生，不落盘）。 */
 type CachedUsageStats = {

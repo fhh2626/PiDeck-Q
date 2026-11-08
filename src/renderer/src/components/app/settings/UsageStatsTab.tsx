@@ -18,7 +18,7 @@ import { UsageHeatmap } from "../usageStats/UsageHeatmap";
 import { UsageDailyChart } from "../usageStats/UsageDailyChart";
 import { UsageDayDetail } from "../usageStats/UsageDayDetail";
 import { UsageTable } from "../usageStats/UsageTable";
-import { formatCost, formatTokens } from "../usageStats/format";
+import { formatTokens } from "../usageStats/format";
 
 type Phase = "loading" | "missing" | "ready" | "error";
 
@@ -37,15 +37,6 @@ function SummaryCard(props: { label: string; value: React.ReactNode; sub?: strin
       <div className="usage-stats-card-value">{props.value}</div>
       {props.sub && <div className="usage-stats-card-sub">{props.sub}</div>}
     </div>
-  );
-}
-
-function CostValue(props: { cost: number; costKnown: boolean }) {
-  return (
-    <span title={props.costKnown ? undefined : t("usageStats.cards.costUnknown")}>
-      {formatCost(props.cost)}
-      {!props.costKnown && <span className="usage-stats-unknown"> *</span>}
-    </span>
   );
 }
 
@@ -117,7 +108,7 @@ function UsageRows(props: { data: UsageAggregated }) {
   return (
     <>
       {/* 按天明细（默认今日）：当日卡片 + provider 条 + 当日模型/项目表；可切其他天 */}
-      <UsageDayDetail rows={data.daily} costKnown={data.costKnown} />
+      <UsageDayDetail rows={data.daily} />
       {/* 累计概览：独立分块（divided 横线分隔），与上方当日区块明确区分 */}
       <SettingsSection divided boxed={false} title={t("usageStats.cards.title")}>
         <div className="usage-stats-cards">
@@ -125,11 +116,6 @@ function UsageRows(props: { data: UsageAggregated }) {
           label={t("usageStats.cards.totalTokens")}
           value={formatTokens(data.totals.tokens)}
           sub={t("usageStats.cards.today") + " " + formatTokens(data.today.tokens)}
-        />
-        <SummaryCard
-          label={t("usageStats.cards.totalCost")}
-          value={<CostValue cost={data.totals.cost} costKnown={data.costKnown} />}
-          sub={t("usageStats.cards.month") + " " + formatCost(data.thisMonth.cost)}
         />
         <SummaryCard
           label={t("usageStats.cards.turns")}
@@ -156,14 +142,12 @@ function UsageRows(props: { data: UsageAggregated }) {
             headers={[
               t("usageStats.models.col.model"),
               t("usageStats.models.col.tokens"),
-              t("usageStats.models.col.cost"),
               t("usageStats.models.col.turns"),
               t("usageStats.models.col.sessions"),
             ]}
             rows={data.byModel.map((m) => [
               m.model,
               formatTokens(m.tokens),
-              formatCost(m.cost),
               String(m.turns),
               String(m.sessions),
             ])}
@@ -174,13 +158,11 @@ function UsageRows(props: { data: UsageAggregated }) {
             headers={[
               t("usageStats.projects.col.project"),
               t("usageStats.models.col.tokens"),
-              t("usageStats.models.col.cost"),
               t("usageStats.models.col.turns"),
             ]}
             rows={data.byProject.map((p) => [
               p.project,
               formatTokens(p.tokens),
-              formatCost(p.cost),
               String(p.turns),
             ])}
           />

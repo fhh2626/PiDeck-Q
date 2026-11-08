@@ -145,7 +145,7 @@ test("setAgentDir invalidates memory state and rescans the new directory", async
     const view = await service.getAggregated();
     assert.equal(view.recordCount, 1);
     assert.equal(view.totals.sessions.length, 1);
-    assert.equal(view.totals.cost, 0.05, "must read from the new directory, not the old");
+    assert.equal(view.totals.tokens, 150, "must read from the new directory, not the old");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -194,12 +194,13 @@ test("overlapping refreshes are single-flight (no double count)", async () => {
   }
 });
 
-test("legacy cache without schemaVersion is discarded and triggers full rescan", async () => {
+test("legacy cost-bearing cache (schemaVersion 2) is discarded and triggers full rescan", async () => {
   const { base, agentDir, userDataDir, logPath } = await makeEnv();
   try {
     const t0 = 1710000000000;
     await writeFile(logPath, line(t0, "s1", 0.01) + "\n");
-    // 手工构造"旧版"缓存：value 缺 schemaVersion，dayBuckets 无 byModel/byProject 字段
+    // 手工构造"旧版"缓存：schemaVersion=2 且缺少 byModel/byProject，仍带费用字段。
+    // 当前结构版本已升到 3，必须弃用并全量重扫，避免旧费用数据继续经 IPC 下发。
     const { stat } = await import("node:fs/promises");
     const fileStat = await stat(logPath);
     const oldIntermediate = {
@@ -219,11 +220,14 @@ test("legacy cache without schemaVersion is discarded and triggers full rescan",
       recordCount: 1,
     };
     const cachePayload = {
-      version: 1,
+      // 必须与 SessionSummaryCache 当前磁盘版本一致，否则会在磁盘层被丢弃，
+      // 测不到 UsageStatsService 对 schemaVersion=2 的失效逻辑。
+      version: 4,
       entries: {
         [logPath]: {
           version: { mtimeMs: fileStat.mtimeMs, size: fileStat.size },
           value: {
+            schemaVersion: 2,
             fileState: { size: fileStat.size, mtimeMs: fileStat.mtimeMs, count: 1 },
             intermediate: oldIntermediate,
           },
@@ -241,6 +245,9 @@ test("legacy cache without schemaVersion is discarded and triggers full rescan",
     assert.equal(detect.recordCount, null);
     const view = await service.getAggregated();
     assert.equal(view.recordCount, 1);
+    // 旧缓存里的费用字段不能被新聚合继续下发
+    assert.equal("cost" in view.totals, false);
+    assert.equal("costKnown" in view, false);
     // 新聚合必须带按天模型/项目明细（旧缓存结构不会提供，证明走了全量重扫）
     assert.equal(view.daily.length, 1);
     assert.ok(Array.isArray(view.daily[0].byModel), "rescan must produce per-day byModel");

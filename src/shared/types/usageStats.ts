@@ -22,9 +22,6 @@ export type UsageRecord = {
 	cacheRead: number;
 	cacheWrite: number;
 	totalTokens: number;
-	cost: number;
-	/** true=provider 实际返回了定价；false=成本未知（显示 n/a 而非 0） */
-	costKnown: boolean;
 };
 
 /** 检测结果：pi-tracker 是否已装、日志是否可读。 */
@@ -55,7 +52,6 @@ export type UsageStatsRefreshResult = {
 export type ProviderSlice = {
 	provider: string;
 	tokens: number;
-	cost: number;
 	turns: number;
 };
 
@@ -66,7 +62,6 @@ export type DayTotals = {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
-	cost: number;
 	turns: number;
 	/** 当天有记录的会话 id 列表（去重） */
 	sessions: string[];
@@ -77,7 +72,6 @@ export type UsageDayModelSlice = {
 	model: string;
 	provider: string;
 	tokens: number;
-	cost: number;
 	turns: number;
 };
 
@@ -85,7 +79,6 @@ export type UsageDayModelSlice = {
 export type UsageDayProjectSlice = {
 	project: string;
 	tokens: number;
-	cost: number;
 	turns: number;
 };
 
@@ -114,7 +107,6 @@ export type UsageModelRow = {
 	model: string;
 	provider: string;
 	tokens: number;
-	cost: number;
 	turns: number;
 	sessions: number;
 };
@@ -124,7 +116,6 @@ export type UsageProjectRow = {
 	/** 完整 cwd 路径 */
 	project: string;
 	tokens: number;
-	cost: number;
 	turns: number;
 };
 
@@ -146,8 +137,6 @@ export type UsageAggregated = {
 	heatmapStart: string;
 	byModel: UsageModelRow[];
 	byProject: UsageProjectRow[];
-	/** 存在 costKnown=false 的记录时为 false（UI 显示「部分成本未知」） */
-	costKnown: boolean;
 	/** 参与聚合的记录条数 */
 	recordCount: number;
 };

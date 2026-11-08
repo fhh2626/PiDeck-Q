@@ -5,8 +5,8 @@
  *   10 字段（旧版）: [ts, sid, cwd, model, in, out, cR, cW, tot, cost]
  *   11 字段（新）  : 同上 + costKnown(0|1)
  *
- * 外部插件产物视为不可信输入：坏行/类型错一律跳过不抛异常，
- * 兼容规则与上游自身逻辑保持一致（costKnown 推断见 parseCostKnown）。
+ * 外部插件产物视为不可信输入：坏行/类型错一律跳过不抛异常。
+ * 费用字段仅用于兼容上游行格式，PiDeck 不再读取或聚合费用。
  */
 
 import type { UsageRecord } from "../../shared/types/usageStats";
@@ -16,17 +16,6 @@ const ACCEPTED_FIELD_COUNTS = new Set([10, 11]);
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
-}
-
-/**
- * 兼容旧日志：11 字段直接读 costKnown；10 字段按 cost > 0 推断
- * （与 pi-tracker readAll 的 costKnown 兼容逻辑一致）。
- */
-function parseCostKnown(row: unknown[], cost: number): boolean {
-  if (row.length > 10) {
-    return row[10] === 1;
-  }
-  return cost > 0;
 }
 
 /** 解析一行；非法行返回 null（调用方计数，不中断）。 */
@@ -51,14 +40,13 @@ export function parseUsageLogLine(line: string): UsageRecord | null {
   const cacheRead = row[6];
   const cacheWrite = row[7];
   const totalTokens = row[8];
-  const cost = row[9];
 
   if (!isFiniteNumber(ts) || ts <= 0) return null;
   if (typeof sid !== "string" || sid.length === 0) return null;
   if (typeof cwd !== "string") return null;
   if (typeof model !== "string" || model.length === 0) return null;
   // 数值字段做防御：非法类型视为坏行（不静默清零，避免脏数据污染统计）
-  for (const value of [input, output, cacheRead, cacheWrite, totalTokens, cost]) {
+  for (const value of [input, output, cacheRead, cacheWrite, totalTokens]) {
     if (!isFiniteNumber(value)) return null;
   }
 
@@ -72,8 +60,6 @@ export function parseUsageLogLine(line: string): UsageRecord | null {
     cacheRead,
     cacheWrite,
     totalTokens,
-    cost,
-    costKnown: parseCostKnown(row, cost),
   };
 }
 

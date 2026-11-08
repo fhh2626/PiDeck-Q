@@ -11,7 +11,7 @@ import {
  * 数据格式来自 pi-tracker@0.3.0 src/storage/jsonl-store.ts：
  *   10 字段（旧）: [ts, sid, cwd, model, in, out, cR, cW, tot, cost]
  *   11 字段（新）: 同上 + costKnown(0|1)
- * 解析规则必须与上游兼容逻辑一致，且对任意坏行不抛异常。
+ * 解析规则必须兼容上游行格式，且对任意坏行不抛异常；费用字段被忽略。
  */
 
 /** 构造一行合法记录（11 字段） */
@@ -36,25 +36,21 @@ test("parses a valid 11-field line with all fields mapped", () => {
     cacheRead: 0,
     cacheWrite: 0,
     totalTokens: 150,
-    cost: 0.01,
-    costKnown: true,
   });
+  assert.equal("cost" in r, false);
+  assert.equal("costKnown" in r, false);
 });
 
-test("parses a valid 10-field legacy line (costKnown inferred from cost > 0)", () => {
+test("parses a valid 10-field legacy line and ignores its cost field", () => {
   const r = parseUsageLogLine(line10());
-  assert.equal(r.costKnown, true);
   assert.equal(r.totalTokens, 150);
+  assert.equal("cost" in r, false);
 });
 
-test("10-field legacy line with zero cost infers costKnown=false", () => {
-  const r = parseUsageLogLine(line10({ 9: 0 }));
-  assert.equal(r.costKnown, false);
-});
-
-test("11-field line with costKnown=0 keeps costKnown=false even when cost > 0", () => {
+test("11-field lines remain accepted after cost tracking removal", () => {
   const r = parseUsageLogLine(line11({ 9: 5, 10: 0 }));
-  assert.equal(r.costKnown, false);
+  assert.equal(r.totalTokens, 150);
+  assert.equal("costKnown" in r, false);
 });
 
 test("rejects malformed JSON lines without throwing", () => {

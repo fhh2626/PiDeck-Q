@@ -2399,7 +2399,6 @@ export class AgentManager {
 		cacheHitPercent,
 		cacheHitAveragePercent,
 		cacheHitSampleCount: fileHitStats.sampleCount,
-		cost: stats?.cost,
 		// 最近一次回复性能指标：本地结算缓存（不经 RPC），会话切换/轮询时保持可用
 		ttftMs: perf?.ttftMs,
 		totalMs: perf?.totalMs,

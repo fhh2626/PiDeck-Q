@@ -30,8 +30,6 @@ function rec(overrides = {}) {
     cacheRead: 0,
     cacheWrite: 0,
     totalTokens: 150,
-    cost: 0.01,
-    costKnown: true,
   };
   return { ...base, ...overrides };
 }
@@ -44,7 +42,6 @@ test("empty input produces zeroed aggregate with no daily rows", () => {
   assert.equal(a.daily.length, 0);
   assert.equal(a.byModel.length, 0);
   assert.equal(a.byProject.length, 0);
-  assert.equal(a.costKnown, true);
   assert.equal(a.recordCount, 0);
   assert.ok(a.window.since > a.window.to, "empty window should be inverted");
   assert.equal(a.heatmap.length, 53 * 7);
@@ -79,13 +76,12 @@ test("single record lands in totals, today, daily and heatmap", () => {
 test("multiple records on same day merge into one daily row", () => {
   const now = new Date(2026, 6, 15, 18, 0, 0);
   const a = aggregateUsage(
-    [rec({ sid: "s1" }), rec({ sid: "s2", totalTokens: 50, input: 30, output: 20, cost: 0.005 })],
+    [rec({ sid: "s1" }), rec({ sid: "s2", totalTokens: 50, input: 30, output: 20 })],
     now,
   );
   assert.equal(a.daily.length, 1);
   assert.equal(a.totals.tokens, 200);
   assert.equal(a.totals.turns, 2);
-  assert.equal(a.totals.cost, 0.015);
   assert.equal(a.today.sessions.length, 2);
 });
 
@@ -161,12 +157,6 @@ test("byModel and byProject sort by tokens desc and count distinct sessions", ()
       ["/b", 20],
     ],
   );
-});
-
-test("costKnown propagates false when any record lacks pricing", () => {
-  const now = new Date(2026, 6, 15, 12, 0, 0);
-  const a = aggregateUsage([rec(), rec({ sid: "s2", cost: 0, costKnown: false })], now);
-  assert.equal(a.costKnown, false);
 });
 
 test("today/thisWeek/thisMonth respect local boundaries", () => {
@@ -258,11 +248,10 @@ test("mergeIntermediates combines same-day and different-day buckets exactly", (
   assert.equal(merged.window.to, new Date(2026, 6, 16, 9).getTime());
 });
 
-test("mergeIntermediates propagates costKnown AND and totals", () => {
+test("mergeIntermediates sums tokens and unions sessions", () => {
   const base = intermediateFromRecords([rec()]);
-  const delta = intermediateFromRecords([rec({ sid: "s2", cost: 0, costKnown: false })]);
+  const delta = intermediateFromRecords([rec({ sid: "s2" })]);
   const merged = mergeIntermediates(base, delta);
-  assert.equal(merged.costKnown, false);
   assert.equal(merged.totals.tokens, 300);
   assert.equal(merged.totals.sessions.length, 2);
 });
@@ -333,49 +322,49 @@ test("daily rows carry per-day byModel/byProject detail sorted by tokens desc", 
   const now = new Date(2026, 6, 15, 12, 0, 0);
   const a = aggregateUsage(
     [
-      rec({ model: MODEL_B, totalTokens: 200, input: 200, cwd: "/a", cost: 0.2 }),
+      rec({ model: MODEL_B, totalTokens: 200, input: 200, cwd: "/a" }),
       rec({ model: MODEL_A, totalTokens: 10, input: 10, cwd: "/a", sid: "s2" }),
-      rec({ model: MODEL_A, totalTokens: 20, input: 20, cwd: "/b", sid: "s3", cost: 0.01 }),
+      rec({ model: MODEL_A, totalTokens: 20, input: 20, cwd: "/b", sid: "s3" }),
     ],
     now,
   );
   const day = a.daily[0];
   assert.deepEqual(
-    day.byModel.map((m) => [m.model, m.provider, m.tokens, m.cost, m.turns]),
+    day.byModel.map((m) => [m.model, m.provider, m.tokens, m.turns]),
     [
-      [MODEL_B, "openai", 200, 0.2, 1],
-      [MODEL_A, "anthropic", 30, 0.02, 2],
+      [MODEL_B, "openai", 200, 1],
+      [MODEL_A, "anthropic", 30, 2],
     ],
   );
   assert.deepEqual(
-    day.byProject.map((p) => [p.project, p.tokens, Math.round(p.cost * 100) / 100, p.turns]),
+    day.byProject.map((p) => [p.project, p.tokens, p.turns]),
     [
-      ["/a", 210, 0.21, 2],
-      ["/b", 20, 0.01, 1],
+      ["/a", 210, 2],
+      ["/b", 20, 1],
     ],
   );
 });
 
 test("mergeIntermediates merges per-day byModel/byProject buckets exactly", () => {
-  const base = intermediateFromRecords([rec({ model: MODEL_A, totalTokens: 100, cwd: "/a", cost: 0.1 })]);
+  const base = intermediateFromRecords([rec({ model: MODEL_A, totalTokens: 100, cwd: "/a" })]);
   const delta = intermediateFromRecords([
-    rec({ model: MODEL_A, totalTokens: 50, cwd: "/b", cost: 0.05, sid: "s2" }), // 同天同模型、新项目
-    rec({ model: MODEL_B, totalTokens: 30, cwd: "/a", cost: 0.03, sid: "s3" }), // 同天新模型
+    rec({ model: MODEL_A, totalTokens: 50, cwd: "/b", sid: "s2" }), // 同天同模型、新项目
+    rec({ model: MODEL_B, totalTokens: 30, cwd: "/a", sid: "s3" }), // 同天新模型
   ]);
   const merged = mergeIntermediates(base, delta);
   const day = merged.dayBuckets.find((b) => b.day === "2026-07-15");
   assert.deepEqual(
-    day.byModel.map((m) => [m.model, m.tokens, Math.round(m.cost * 100) / 100]),
+    day.byModel.map((m) => [m.model, m.tokens]),
     [
-      [MODEL_A, 150, 0.15],
-      [MODEL_B, 30, 0.03],
+      [MODEL_A, 150],
+      [MODEL_B, 30],
     ],
   );
   assert.deepEqual(
-    day.byProject.map((p) => [p.project, p.tokens, Math.round(p.cost * 100) / 100]),
+    day.byProject.map((p) => [p.project, p.tokens]),
     [
-      ["/a", 130, 0.13],
-      ["/b", 50, 0.05],
+      ["/a", 130],
+      ["/b", 50],
     ],
   );
 });

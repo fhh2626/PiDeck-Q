@@ -706,14 +706,6 @@
   flex: 0 0 auto;
   border-color: var(--color-border-subtle);
 }
-.session-status .cost-chip {
-  max-width: none;
-  flex: 0 0 auto;
-  border-color: var(--color-border-subtle);
-  font-weight: 600;
-  font-family: var(--font-family-business);
-  font-variant-numeric: tabular-nums;
-}
 
 /* Agent 状态徽章 */
 

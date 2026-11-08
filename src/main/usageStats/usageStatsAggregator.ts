@@ -41,20 +41,17 @@ export type UsageStatsIntermediate = {
     model: string;
     provider: string;
     tokens: number;
-    cost: number;
     turns: number;
     sessions: string[];
   }>;
   projectBuckets: Array<{
     project: string;
     tokens: number;
-    cost: number;
     turns: number;
     sessions: string[];
   }>;
   totals: DayTotals;
   window: { since: number; to: number };
-  costKnown: boolean;
   recordCount: number;
 };
 
@@ -85,7 +82,6 @@ function emptyTotals(): DayTotals {
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
-    cost: 0,
     turns: 0,
     sessions: [],
   };
@@ -117,11 +113,10 @@ type DayBucket = {
 function addToProvider(map: Map<string, ProviderSlice>, provider: string, r: UsageRecord): void {
   let slice = map.get(provider);
   if (!slice) {
-    slice = { provider, tokens: 0, cost: 0, turns: 0 };
+    slice = { provider, tokens: 0, turns: 0 };
     map.set(provider, slice);
   }
   slice.tokens += r.totalTokens;
-  slice.cost += r.cost;
   slice.turns += 1;
 }
 
@@ -129,11 +124,10 @@ function addToProvider(map: Map<string, ProviderSlice>, provider: string, r: Usa
 function addToDayModel(map: Map<string, UsageDayModelSlice>, model: string, r: UsageRecord): void {
   let slice = map.get(model);
   if (!slice) {
-    slice = { model, provider: providerOf(model), tokens: 0, cost: 0, turns: 0 };
+    slice = { model, provider: providerOf(model), tokens: 0, turns: 0 };
     map.set(model, slice);
   }
   slice.tokens += r.totalTokens;
-  slice.cost += r.cost;
   slice.turns += 1;
 }
 
@@ -141,11 +135,10 @@ function addToDayModel(map: Map<string, UsageDayModelSlice>, model: string, r: U
 function addToDayProject(map: Map<string, UsageDayProjectSlice>, project: string, r: UsageRecord): void {
   let slice = map.get(project);
   if (!slice) {
-    slice = { project, tokens: 0, cost: 0, turns: 0 };
+    slice = { project, tokens: 0, turns: 0 };
     map.set(project, slice);
   }
   slice.tokens += r.totalTokens;
-  slice.cost += r.cost;
   slice.turns += 1;
 }
 
@@ -159,7 +152,6 @@ function mergeDayModelMaps(
     const existing = merged.get(key);
     if (existing) {
       existing.tokens += slice.tokens;
-      existing.cost += slice.cost;
       existing.turns += slice.turns;
     } else {
       merged.set(key, slice);
@@ -178,7 +170,6 @@ function mergeDayProjectMaps(
     const existing = merged.get(key);
     if (existing) {
       existing.tokens += slice.tokens;
-      existing.cost += slice.cost;
       existing.turns += slice.turns;
     } else {
       merged.set(key, slice);
@@ -195,7 +186,6 @@ function mergeTotals(a: DayTotals, b: DayTotals): DayTotals {
     output: a.output + b.output,
     cacheRead: a.cacheRead + b.cacheRead,
     cacheWrite: a.cacheWrite + b.cacheWrite,
-    cost: a.cost + b.cost,
     turns: a.turns + b.turns,
     sessions: [...new Set([...a.sessions, ...b.sessions])],
   };
@@ -206,11 +196,10 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
   const dayBuckets = new Map<string, DayBucket>();
   const totals = emptyTotals();
   const totalSessions = new Set<string>();
-  const byModel = new Map<string, { provider: string; tokens: number; cost: number; turns: number; sessions: Set<string> }>();
-  const byProject = new Map<string, { tokens: number; cost: number; turns: number; sessions: Set<string> }>();
+  const byModel = new Map<string, { provider: string; tokens: number; turns: number; sessions: Set<string> }>();
+  const byProject = new Map<string, { tokens: number; turns: number; sessions: Set<string> }>();
   let firstTs = Number.POSITIVE_INFINITY;
   let lastTs = Number.NEGATIVE_INFINITY;
-  let allCostKnown = true;
 
   for (const r of records) {
     const dayKey = dayKeyOf(new Date(r.ts));
@@ -230,7 +219,6 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
     bucket.totals.output += r.output;
     bucket.totals.cacheRead += r.cacheRead;
     bucket.totals.cacheWrite += r.cacheWrite;
-    bucket.totals.cost += r.cost;
     bucket.totals.turns += 1;
     bucket.sessions.add(r.sid);
     addToProvider(bucket.byProvider, providerOf(r.model), r);
@@ -242,33 +230,29 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
     totals.output += r.output;
     totals.cacheRead += r.cacheRead;
     totals.cacheWrite += r.cacheWrite;
-    totals.cost += r.cost;
     totals.turns += 1;
     totalSessions.add(r.sid);
 
     let modelRow = byModel.get(r.model);
     if (!modelRow) {
-      modelRow = { provider: providerOf(r.model), tokens: 0, cost: 0, turns: 0, sessions: new Set() };
+      modelRow = { provider: providerOf(r.model), tokens: 0, turns: 0, sessions: new Set() };
       byModel.set(r.model, modelRow);
     }
     modelRow.tokens += r.totalTokens;
-    modelRow.cost += r.cost;
     modelRow.turns += 1;
     modelRow.sessions.add(r.sid);
 
     let projectRow = byProject.get(r.cwd);
     if (!projectRow) {
-      projectRow = { tokens: 0, cost: 0, turns: 0, sessions: new Set() };
+      projectRow = { tokens: 0, turns: 0, sessions: new Set() };
       byProject.set(r.cwd, projectRow);
     }
     projectRow.tokens += r.totalTokens;
-    projectRow.cost += r.cost;
     projectRow.turns += 1;
     projectRow.sessions.add(r.sid);
 
     if (r.ts < firstTs) firstTs = r.ts;
     if (r.ts > lastTs) lastTs = r.ts;
-    if (!r.costKnown) allCostKnown = false;
   }
 
   return {
@@ -288,7 +272,6 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
         model,
         provider: row.provider,
         tokens: row.tokens,
-        cost: row.cost,
         turns: row.turns,
         sessions: [...row.sessions],
       })),
@@ -297,7 +280,6 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
       .map(([project, row]) => ({
         project,
         tokens: row.tokens,
-        cost: row.cost,
         turns: row.turns,
         sessions: [...row.sessions],
       })),
@@ -306,7 +288,6 @@ export function intermediateFromRecords(records: UsageRecord[]): UsageStatsInter
       since: Number.isFinite(firstTs) ? firstTs : 0,
       to: Number.isFinite(lastTs) ? lastTs : -1,
     },
-    costKnown: allCostKnown,
     recordCount: records.length,
   };
 }
@@ -333,7 +314,6 @@ export function mergeIntermediates(
       const ep = byProvider.get(p.provider);
       if (ep) {
         ep.tokens += p.tokens;
-        ep.cost += p.cost;
         ep.turns += p.turns;
       } else {
         byProvider.set(p.provider, p);
@@ -359,7 +339,6 @@ export function mergeIntermediates(
     modelMap.set(d.model, {
       ...existing,
       tokens: existing.tokens + d.tokens,
-      cost: existing.cost + d.cost,
       turns: existing.turns + d.turns,
       sessions: [...new Set([...existing.sessions, ...d.sessions])],
     });
@@ -375,7 +354,6 @@ export function mergeIntermediates(
     projectMap.set(d.project, {
       ...existing,
       tokens: existing.tokens + d.tokens,
-      cost: existing.cost + d.cost,
       turns: existing.turns + d.turns,
       sessions: [...new Set([...existing.sessions, ...d.sessions])],
     });
@@ -390,7 +368,6 @@ export function mergeIntermediates(
       since: Math.min(base.window.since, delta.window.since),
       to: Math.max(base.window.to, delta.window.to),
     },
-    costKnown: base.costKnown && delta.costKnown,
     recordCount: base.recordCount + delta.recordCount,
   };
 }
@@ -454,17 +431,14 @@ export function buildAggregatedView(
       model: row.model,
       provider: row.provider,
       tokens: row.tokens,
-      cost: row.cost,
       turns: row.turns,
       sessions: row.sessions.length,
     })),
     byProject: state.projectBuckets.map((row) => ({
       project: row.project,
       tokens: row.tokens,
-      cost: row.cost,
       turns: row.turns,
     })),
-    costKnown: state.costKnown,
     recordCount: state.recordCount,
   };
 }

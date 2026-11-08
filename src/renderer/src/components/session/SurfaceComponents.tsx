@@ -91,13 +91,7 @@ import { MultiSelectModal } from "./MessageShareModal";
 
 
 
-/**
- * 美元→人民币估算汇率：仅用于费用提示的便捷换算（约合金额），非实时牌价。
- * 如需跟随实时汇率或用户自定义，可升级为设置项（usdToCnyRate）。
- */
-export const USD_TO_CNY_RATE = 7.2;
-
-export type SessionDetailRow = { label: string; value: string; emphasis?: boolean };
+export type SessionDetailRow = { label: string; value: string };
 
 export type SessionStatusDetail = {
 	detailRows: SessionDetailRow[];
@@ -117,7 +111,7 @@ export function buildSessionStatusDetail(
 				| "contextPercent" | "contextTokens" | "contextWindow"
 				| "inputTokens" | "outputTokens"
 				| "cacheRead" | "cacheWrite" | "cacheTotal" | "cacheHitPercent"
-				| "ttftMs" | "totalMs" | "tps" | "cost"
+				| "ttftMs" | "totalMs" | "tps"
 		  >
 		| undefined,
 	averageCacheHit: number | undefined,
@@ -126,11 +120,6 @@ export function buildSessionStatusDetail(
 	const detailRows: SessionDetailRow[] = [];
 	const replyPerfRows: SessionDetailRow[] = [];
 	if (!state) return { detailRows, replyPerfRows, hasDetail: false };
-	// 美元→人民币估算汇率（仅用于费用提示的便捷换算，非实时牌价；
-	// 如后续需要跟随实时汇率，可升级为设置项 usdToCnyRate）
-	const cnyAmount = state.cost != null
-		? `¥${(state.cost * USD_TO_CNY_RATE).toFixed(2)}`
-		: undefined;
 
 	if (state.contextPercent != null || state.contextTokens != null) {
 		detailRows.push({
@@ -165,7 +154,7 @@ export function buildSessionStatusDetail(
 	if (averageCacheHit != null) {
 		detailRows.push({
 			label: t("ctx.detail.hitAverage"),
-			value: `${averageCacheHit.toFixed(1)}% (${averageCacheHitSampleCount} ${t("ctx.detail.snapshots")})`,
+			value: `${averageCacheHit.toFixed(1)}% (${averageCacheHitSampleCount} ${t("ctx.detail.samples")})`,
 		});
 	}
 	// 这些值来自 AgentManager 的 lastPerfByAgent，只代表最近一条 assistant 回复，
@@ -178,10 +167,6 @@ export function buildSessionStatusDetail(
 	}
 	if (state.tps != null) {
 		replyPerfRows.push({ label: t("ctx.detail.tps"), value: `${state.tps.toFixed(0)} tok/s` });
-	}
-	if (state.cost != null) {
-		detailRows.push({ label: t("ctx.detail.cost"), value: `$${state.cost.toFixed(3)}`, emphasis: true });
-		detailRows.push({ label: t("ctx.detail.costCny"), value: cnyAmount ?? "-", emphasis: true });
 	}
 	return { detailRows, replyPerfRows, hasDetail: detailRows.length > 0 || replyPerfRows.length > 0 };
 }
@@ -208,10 +193,6 @@ export function SessionStatus(props: {
 		averageCacheHit,
 		averageCacheHitSampleCount,
 	);
-	// cost-chip 悬浮提示里的人民币估算（与明细行共用同一汇率常量）
-	const cnyAmount = state.cost != null
-		? `¥${(state.cost * USD_TO_CNY_RATE).toFixed(2)}`
-		: undefined;
 
 	const statusInner = (
 		<div className="session-status">
@@ -223,18 +204,9 @@ export function SessionStatus(props: {
 					% / {formatCompact(state.contextWindow)}
 				</span>
 			)}
-			{(state.cacheHitPercent != null) && (
-				<span className="cache-chip">
-					{t("app.cacheHit")}: {state.cacheHitPercent?.toFixed?.(0) ?? state.cacheHitPercent}%
-				</span>
-			)}
-			{/* 平均命中率只在悬停明细中展示（ctx.detail.hitAverage），头部不再显示单独 chip */}
-			{state.cost != null && (
-				<span className="cost-chip" title={t("app.totalCostCny", {
-					usd: `$${state.cost.toFixed(3)}`,
-					cny: cnyAmount ?? "-",
-				})}>
-					${state.cost.toFixed(3)}
+			{averageCacheHit != null && (
+				<span className="cache-chip" title={t("ctx.detail.hitAverageTitle")}>
+					{t("app.cacheHit")}: {averageCacheHit.toFixed(1)}%
 				</span>
 			)}
 		</div>
@@ -261,7 +233,7 @@ export function SessionStatus(props: {
 						{detailRows.map((row) => (
 							<div
 								key={row.label}
-								className={`flex items-baseline justify-between gap-4 px-1 py-0.5 text-caption leading-5${row.emphasis ? " mt-1 border-t border-border/70 pt-1.5" : ""}`}
+								className="flex items-baseline justify-between gap-4 px-1 py-0.5 text-caption leading-5"
 							>
 								<span className="shrink-0 text-muted-foreground">{row.label}</span>
 								<span className="min-w-0 text-right font-mono font-semibold tabular-nums text-popover-foreground">{row.value}</span>
