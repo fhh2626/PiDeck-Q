@@ -98,10 +98,13 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
         const notice = event.payload as {
           message?: string;
           i18nKey?: string;
+          i18nParams?: Record<string, string | number>;
           kind?: "info" | "warning" | "error";
           duration?: number;
         };
-        const text = notice.i18nKey ? t(notice.i18nKey as TranslationKey) : notice.message;
+        const text = notice.i18nKey
+          ? t(notice.i18nKey as TranslationKey, notice.i18nParams)
+          : notice.message;
         if (text) {
           // 异常（error）常驻不自动消失；info/warning 保持主进程指定的短时反馈
           const kind = notice.kind ?? "info";

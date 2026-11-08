@@ -970,7 +970,7 @@ export function ModelsTab(props: {
 														<TableHead className="w-40 min-w-0">{t("config.modelDisplayName")}</TableHead>
 														<TableHead className="w-24">{t("config.contextWindow")}</TableHead>
 														<TableHead className="w-24">{t("config.maxTokens")}</TableHead>
-														<TableHead className="w-24">{t("config.thinkingLevels")}</TableHead>
+														<TableHead className="w-32">{t("config.thinkingLevels")}</TableHead>
 														<TableHead className="w-24">{t("config.capabilities")}</TableHead>
 														<TableHead className="w-20 text-right pr-3">{t("config.actions")}</TableHead>
 													</TableRow>
@@ -999,22 +999,22 @@ export function ModelsTab(props: {
 								props.onUpdateModel(name, i, "cost", Object.keys(nextCost).length > 0 ? nextCost : undefined);
 							};
 							const modelAdvancedFields = Object.keys(m).filter(
-												(key) => !KNOWN_MODEL_FIELDS.has(key),
-											);
-											const xhighValue =
-												m.thinkingLevelMap?.xhigh === "xhigh" || m.thinkingLevelMap?.xhigh === "max"
-													? m.thinkingLevelMap.xhigh
-													: "";
-													const maxValue =
-												m.thinkingLevelMap?.max === "xhigh" || m.thinkingLevelMap?.max === "max"
-													? m.thinkingLevelMap.max
-													: "";
-											const hasOnlyManagedThinkingLevelMap =
-												m.thinkingLevelMap &&
-												Object.keys(m.thinkingLevelMap).every((key) => key === "xhigh" || key === "max");
-											const modelComplexFields = ["api", "baseUrl", "thinkingLevelMap", "cost", "headers", "compat"].filter(
-												(key) => m[key] !== undefined && (key !== "thinkingLevelMap" || !hasOnlyManagedThinkingLevelMap),
-											);
+								(key) => !KNOWN_MODEL_FIELDS.has(key),
+							);
+							const xhighValue =
+								m.thinkingLevelMap?.xhigh === "xhigh" || m.thinkingLevelMap?.xhigh === "max"
+									? m.thinkingLevelMap.xhigh
+									: "";
+							const maxValue =
+								m.thinkingLevelMap?.max === "xhigh" || m.thinkingLevelMap?.max === "max"
+									? m.thinkingLevelMap.max
+									: "";
+							const hasOnlyManagedThinkingLevelMap =
+								m.thinkingLevelMap &&
+								Object.keys(m.thinkingLevelMap).every((key) => key === "xhigh" || key === "max");
+							const modelComplexFields = ["api", "baseUrl", "thinkingLevelMap", "cost", "headers", "compat"].filter(
+								(key) => m[key] !== undefined && (key !== "thinkingLevelMap" || !hasOnlyManagedThinkingLevelMap),
+							);
 											return (
 											<>
 											<TableRow key={`${name}-${i}`} className="align-middle">
@@ -1083,35 +1083,45 @@ export function ModelsTab(props: {
 														className="h-8 min-w-0"
 													/>
 												</TableCell>
-												{/* 思考级别列：一个按钮弹出 Popover，内含 xhigh / max 两个下拉，避免行高被两行控件撑高 */}
+												{/* 思考级别列：单个按钮展示 xhigh/max 勾选状态，点击弹出两个 Checkbox。
+												    勾上=声明支持并映射为同级值；取消=删除该键（见 ConfigModal handleUpdateModelThinkingLevel）。 */}
 												<TableCell className="min-w-0 p-2">
 													<Popover>
 														<PopoverTrigger asChild>
-															<Button variant="outline" size="sm" className="h-7 w-full justify-between gap-1 px-2 font-mono text-[11px]" title={t("config.thinkingLevels")}>
-																<span className="min-w-0 truncate">{xhighValue || maxValue ? [xhighValue, maxValue].filter(Boolean).join(" / ") : t("config.xhighOff")}</span>
+															<Button variant="outline" size="sm" className="h-7 w-full justify-between gap-1 px-2 font-mono text-[10px]" title={t("config.thinkingLevelsDesc")}>
+																{xhighValue || maxValue ? (
+																	<span className="flex min-w-0 items-center gap-1.5">
+																		{([["xhigh", xhighValue], ["max", maxValue]] as const).map(([key, value]) => {
+																			const enabled = Boolean(value);
+																			return (
+																				<span key={key} className={`inline-flex items-center gap-0.5${enabled ? " text-foreground" : " text-muted-foreground/60"}`}>
+																					<span>{key}</span>
+																					{enabled
+																						? <Check className="size-3" aria-hidden="true" />
+																						: <X className="size-3" aria-hidden="true" />}
+																				</span>
+																			);
+																		})}
+																	</span>
+																) : (
+																	<span className="min-w-0 truncate text-muted-foreground">{t("config.xhighOff")}</span>
+																)}
 																<Brain className="size-3.5 shrink-0 opacity-60" aria-hidden="true" />
 															</Button>
 														</PopoverTrigger>
-														<PopoverContent align="start" className="w-48 p-2">
-															<div className="config-thinking-levels-cell">
+														<PopoverContent align="start" className="w-44 p-2">
+															<div className="flex flex-col gap-1">
 																{([["xhigh", xhighValue], ["max", maxValue]] as const).map(([key, value]) => (
-																	<div key={key} className="config-thinking-levels-row">
-																		<span className="config-thinking-levels-key">{key}</span>
-																		<ConfigSelect
-																			value={value}
-																			options={[
-																				{ value: "", label: t("config.xhighOff") },
-																				{ value: "xhigh", label: "xhigh" },
-																				{ value: "max", label: "max" },
-																			]}
-																			onChange={(v) => {
-																				// ConfigSelect 回传 string，白名单收窄到合法级别值（项目禁 as 强转）
-																				if (v === "" || v === "xhigh" || v === "max") {
-																					props.onUpdateModelThinkingLevel(name, i, key, v);
-																				}
+																	<Label key={key} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 hover:bg-accent">
+																		<Checkbox
+																			checked={Boolean(value)}
+																			onCheckedChange={(checked) => {
+																				// 勾选语义为「声明支持」：值固定为级别名，不再提供交叉映射下拉。
+																				props.onUpdateModelThinkingLevel(name, i, key, checked === true ? key : "");
 																			}}
 																		/>
-																	</div>
+																		<span className="font-mono text-[11px] font-medium">{key}</span>
+																	</Label>
 																))}
 															</div>
 														</PopoverContent>

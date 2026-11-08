@@ -25,7 +25,12 @@ export function usePendingModelApply(input: {
   sessionId: string;
   runtime: RuntimeLike;
   modelPending: ModelPending | undefined;
-  applyRuntimeModelState: (state: { provider?: string; modelId?: string; modelName?: string }) => void;
+  applyRuntimeModelState: (state: {
+    provider?: string;
+    modelId?: string;
+    modelName?: string;
+    thinkingLevel?: string;
+  }) => void;
   clearPending: () => void;
   offerRestart: (handle: SessionRuntimeTarget, model: AvailableModel) => void;
 }) {

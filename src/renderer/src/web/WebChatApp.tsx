@@ -51,6 +51,7 @@ import {
 } from "./webConnection";
 import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, needsWebHistoryTopUp, resolveDeferredHistoryMessages, WEB_HISTORY_TOP_UP_MAX_ATTEMPTS, type WebHistoryMeta } from "./webHistory";
 import { WEB_TIMELINE_TURN_LIMIT, WEB_TIMELINE_MIN_DISPLAY_ITEMS, countWebDisplayItems } from "./webTurnWindow";
+import { clampThinkingLevelForModel, findModelThinkingSupport, isExtendedThinkingLevel } from "../../../shared/thinkingLevelSupport";
 import {
 	isWebChatStreaming,
 	isWebComposerBusy,
@@ -647,14 +648,22 @@ export function WebChatApp() {
 
 	const handleModelChange = async (model: AvailableModel) => {
 		if (!activeSessionId) {
-			// 首页无会话：选择暂存为待用偏好，新建会话时生效
+			// 首页无会话：选择暂存为待用偏好，新建会话时生效；当前档位不支持时同步降级。
 			setPendingModel({ provider: model.provider, modelId: model.id });
+			const nextThinking = clampThinkingLevelForModel(
+				pendingThinkingLevel ?? undefined,
+				findModelThinkingSupport(models, model.provider, model.id),
+			);
+			if (nextThinking && nextThinking !== pendingThinkingLevel) setPendingThinkingLevel(nextThinking);
 			return;
 		}
 		setCommandError(null);
 		try {
+			let nextThinking: string | undefined;
 			if (activeRuntime) {
-				await setRuntimeModel(
+				// 主进程在 setRuntimeModel 内完成档位降级，并回传降级后的 state；
+				// 这里同步 thinkingLevel，避免按钮/下拉继续显示已失效的 xhigh。
+				const state = await setRuntimeModel(
 					{
 						sessionId: activeRuntime.sessionId,
 						agentId: activeRuntime.agentId,
@@ -663,12 +672,36 @@ export function WebChatApp() {
 					model.provider,
 					model.id,
 				);
+				const level = state && typeof state === "object"
+					? Reflect.get(state, "thinkingLevel")
+					: undefined;
+				const currentLevel = activeSession?.thinkingLevel;
+				// 只采纳扩展档位的变化。基础档位被 pi 切模型重置时不写本地状态，
+				// 避免把 high 显示成 low；服务端 catalog 也只在扩展档位上改。
+				if (
+					typeof level === "string" &&
+					level.length > 0 &&
+					currentLevel &&
+					isExtendedThinkingLevel(currentLevel) &&
+					level !== currentLevel
+				) nextThinking = level;
 			} else {
+				// 已有会话只按它自己的档位降级；pendingThinkingLevel 属于首页新建会话偏好，
+				// 不能因为切换模型就写进一个原本没有档位的会话记录。
+				const fallback = clampThinkingLevelForModel(
+					activeSession?.thinkingLevel ?? undefined,
+					findModelThinkingSupport(models, model.provider, model.id),
+				);
+				if (fallback && fallback !== activeSession?.thinkingLevel) nextThinking = fallback;
 				await updateSessionRecord(activeSessionId, {
 					model: { provider: model.provider, modelId: model.id },
+					...(nextThinking ? { thinkingLevel: nextThinking } : {}),
 				});
 			}
-			updateActiveSessionState({ model: { provider: model.provider, modelId: model.id } });
+			updateActiveSessionState({
+				model: { provider: model.provider, modelId: model.id },
+				...(nextThinking ? { thinkingLevel: nextThinking } : {}),
+			});
 		} catch (error) {
 			setCommandError(error instanceof Error ? error.message : String(error));
 		}
@@ -682,8 +715,9 @@ export function WebChatApp() {
 		}
 		setCommandError(null);
 		try {
+			let effectiveLevel = level;
 			if (activeRuntime) {
-				await setRuntimeThinking(
+				const state = await setRuntimeThinking(
 					{
 						sessionId: activeRuntime.sessionId,
 						agentId: activeRuntime.agentId,
@@ -691,10 +725,15 @@ export function WebChatApp() {
 					},
 					level,
 				);
+				// pi 会按运行中模型快照钳制档位：本地状态跟实际值走，避免下拉显示未生效的档位。
+				const reported = state && typeof state === "object"
+					? Reflect.get(state, "thinkingLevel")
+					: undefined;
+				if (typeof reported === "string" && reported) effectiveLevel = reported;
 			} else {
 				await updateSessionRecord(activeSessionId, { thinkingLevel: level });
 			}
-			updateActiveSessionState({ thinkingLevel: level });
+			updateActiveSessionState({ thinkingLevel: effectiveLevel });
 		} catch (error) {
 			setCommandError(error instanceof Error ? error.message : String(error));
 		}

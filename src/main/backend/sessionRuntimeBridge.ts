@@ -63,6 +63,12 @@ export interface SessionRuntimeBridge {
 		sourceChannel: string,
 		payload: unknown,
 	): boolean;
+	/**
+	 * 不依赖 runtime 绑定的会话通知（如激活阶段降级思考档位）：
+	 * 激活时 binding 尚未建立，emitSessionRuntimeEvent 会丢弃；通知使用显式 sessionId，
+	 * runtimeGeneration 在未绑定时为 0（渲染层 notice 分支不参与代际围栏）。
+	 */
+	emitSessionNotice(sessionId: string, agentId: string, payload: unknown): void;
 	emitSessionRuntimeDetach(binding: SessionRuntimeBinding): void;
 	discardAnonymousSession(binding: SessionRuntimeBinding): void;
 	createAnonymousSession(
@@ -228,6 +234,19 @@ export function createSessionRuntimeBridge(
 			discardAnonymousSession({ ...runtimeBinding, agentId });
 		}
 		return true;
+	}
+
+	function emitSessionNotice(sessionId: string, agentId: string, payload: unknown): void {
+		const runtimeBinding = sessionRuntimeCoordinator.getRuntimeBinding(agentId);
+		sendSessionRuntimeEnvelope({
+			kind: "event",
+			sessionId,
+			agentId,
+			// 激活阶段 binding 尚未建立：notice 分支不参与代际围栏，0 仅作占位值。
+			runtimeGeneration: runtimeBinding?.runtimeGeneration ?? 0,
+			sourceChannel: ipcChannels.agentsNotice,
+			payload,
+		});
 	}
 
 	function emitSessionRuntimeDetach(binding: SessionRuntimeBinding): void {
@@ -529,6 +548,7 @@ export function createSessionRuntimeBridge(
 	return {
 		sendSessionRuntimeEnvelope,
 		emitSessionRuntimeEvent,
+		emitSessionNotice,
 		emitSessionRuntimeDetach,
 		discardAnonymousSession,
 		createAnonymousSession,

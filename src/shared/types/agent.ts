@@ -68,6 +68,16 @@ export type AgentRuntimeState = {
 	perfAt?: number;
 };
 
+/**
+ * models.json 声明的扩展思考档位（xhigh/max）支持位。
+ * 只有勾选过 thinkingLevelMap 对应键的模型才为 true；主进程按配置注入，
+ * 渲染层据此决定思考级别选择器是否出现这两个档位。
+ */
+export type ModelThinkingSupport = {
+	xhigh: boolean;
+	max: boolean;
+};
+
 export type AvailableModel = {
 	id: string;
 	name?: string;
@@ -79,6 +89,8 @@ export type AvailableModel = {
 	reasoning?: boolean;
 	/** 是否支持图片输入（来自 images 列；undefined = pi 未提供该列） */
 	images?: boolean;
+	/** 扩展思考档位支持（来自本地 models.json；undefined = 未经 decorate 注入） */
+	thinkingLevels?: ModelThinkingSupport;
 };
 
 export type CreateAgentInput = {

@@ -40,11 +40,13 @@ import { UsageStatsService } from "../usageStats/UsageStatsService";
 import { PiLocator } from "../pi/PiLocator";
 import { AgentManager } from "../pi/AgentManager";
 import { fetchModelList, refreshModelList } from "../pi/modelListCache";
+import { resolveModelThinkingSupport, decorateModelsWithThinkingSupport } from "../pi/modelThinkingSupport";
 import { ModelSpecsStore } from "../pi/modelSpecsStore";
 import { VisionBridgeConfigManager } from "../settings/visionBridgeConfig";
 import { WebServiceManager } from "../web/WebServiceManager";
 import type { Backend, CreateBackendOptions } from "./Backend";
 import { createSessionRuntimeBridge } from "./sessionRuntimeBridge";
+import type { SessionRuntimeBridge } from "./sessionRuntimeBridge";
 import { registerBackendRpc } from "./registerBackendRpc";
 import { startBackendStartupTasks } from "./backendStartupTasks";
 import { createStartupBarrier } from "../utils/StartupBarrier";
@@ -251,15 +253,33 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		return result;
 	};
 
+	// 先声明桥接器：coordinator 的降级回调要发 session 信封（含 sessionId/agentId/generation）。
+	let runtimeBridge: SessionRuntimeBridge;
 	const sessionRuntimeCoordinator = new SessionRuntimeCoordinator(
 		sessionCatalog,
 		agentManager,
 		sendAgentPrompt,
 		appLogger,
+		{
+			// 模型切换/恢复偏好时按 models.json 的 thinkingLevelMap 判定 xhigh/max 是否受支持。
+			resolveSupport: (provider, modelId) => resolveModelThinkingSupport(configManager, provider, modelId),
+			// 自动降级只发一次轻量 toast（不进会话时间线）；心跳/重启恢复也走同一策略。
+			onThinkingLevelAdjusted: (sessionId, agentId, fromLevel, toLevel) => {
+				// coordinator 先于 bridge 构造；正常激活发生在 bridge 就绪后，这里只防极端时序。
+				if (!runtimeBridge) return;
+				runtimeBridge.emitSessionNotice(sessionId, agentId, {
+					agentId,
+					i18nKey: "app.thinkingUnsupported",
+					i18nParams: { level: fromLevel, fallback: toLevel },
+					kind: "info",
+					duration: 4000,
+				});
+			},
+		},
 	);
 	getSessionIdForAgent = (agentId) => sessionRuntimeCoordinator.getSessionId(agentId);
 
-	const runtimeBridge = createSessionRuntimeBridge({
+	runtimeBridge = createSessionRuntimeBridge({
 		projectStore,
 		settingsStore,
 		configManager,
@@ -313,7 +333,10 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			);
 			return true;
 		},
-		listModels: () => fetchModelList(piLocator, settingsStore),
+		listModels: async () => decorateModelsWithThinkingSupport(
+			await fetchModelList(piLocator, settingsStore),
+			configManager,
+		),
 		listSessions: (projectId) => {
 			const project = projectStore.get(projectId);
 			return sessionScanner.list(project?.path);

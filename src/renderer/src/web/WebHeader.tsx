@@ -25,6 +25,7 @@ import {
 } from "@/components/ui-shadcn/select";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../shared/thinkingLevelSupport";
 
 export type WebHeaderStatus = "idle" | "starting" | "running" | "error";
 
@@ -48,6 +49,19 @@ export function WebHeader(props: {
 		onModelChange,
 		onThinkingChange,
 	} = props;
+	// 扩展档位是否出现由 models.json 决定；历史/待生效档位若已不被支持，
+	// 触发框展示降级后的 high，避免 Select 显示空白（主进程会同步真实降级）。
+	const thinkingSupport = findModelThinkingSupport(models, model?.provider, model?.modelId);
+	// 模型列表尚未加载时支持位未知：先展示全部档位，避免当前 xhigh/max 找不到对应 SelectItem 而显示空白。
+	const visibleThinkingLevels = models.length === 0
+		? thinkingLevels
+		: thinkingLevels.filter((level) =>
+			level === "xhigh" || level === "max" ? thinkingSupport[level] : true,
+		);
+	const effectiveThinkingLevel = models.length === 0
+		// 模型列表尚未加载：不要凭「未知」把显示降成 high，等支持位到达再校正。
+		? thinkingLevel
+		: clampThinkingLevelForModel(thinkingLevel, thinkingSupport);
 	// 允许窄屏换行：标题保留可用宽度，控制项在下一行展开，避免手机上相互挤压。
 	return (
 		<header className="chat-header flex min-w-0 flex-wrap items-center gap-2 border-b border-border bg-background px-3 py-2">
@@ -74,7 +88,7 @@ export function WebHeader(props: {
 				{/* 模型/思考/状态成组：窄屏时整组换到下一行，避免控制项被挤成竖排。 */}
 				<div className="chat-header-runtime flex min-w-0 items-center gap-1.5">
 					<ModelPicker model={model} models={models} onChange={onModelChange} />
-					<Select value={thinkingLevel ?? "off"} onValueChange={onThinkingChange}>
+					<Select value={effectiveThinkingLevel ?? "off"} onValueChange={onThinkingChange}>
 						<SelectTrigger
 							size="sm"
 							className="w-24 shrink-0 border-transparent bg-transparent px-2 text-caption text-muted-foreground hover:bg-muted/60"
@@ -84,7 +98,7 @@ export function WebHeader(props: {
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
-							{thinkingLevels.map((level) => (
+							{visibleThinkingLevels.map((level) => (
 								<SelectItem key={level} value={level}>{thinkingLabel(level)}</SelectItem>
 							))}
 						</SelectContent>

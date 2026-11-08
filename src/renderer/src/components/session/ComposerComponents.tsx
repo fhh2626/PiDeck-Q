@@ -33,6 +33,7 @@ import {
 } from "../ui-shadcn/dialog";
 import { cn } from "../../lib/utils";
 import { computeModelDisplay, formatModelRef, type ModelPending } from "../../utils/modelPendingDisplay";
+import { isExtendedThinkingLevel } from "../../../../shared/thinkingLevelSupport";
 import { computeThinkingDisplay, type ThinkingLevelPending } from "../../utils/thinkingDisplay";
 import { CommandPickerGroup, CommandPickerPanel } from "../ui-shadcn/command-picker";
 import { THINKING_LEVELS, groupModelsByProvider } from "./sessionPickerOptions";
@@ -41,6 +42,7 @@ import type {
 	AvailableModel,
 	ComposerAgentMode,
 	GitBranchInfo,
+	ModelThinkingSupport,
 	SessionRecord,
 } from "../../../../shared/types";
 
@@ -603,9 +605,15 @@ export function ComposerModePicker(props: {
 
 export function ThinkingPicker(props: {
 	current?: string;
+	/** 当前模型在 models.json 中声明的扩展档位支持；xhigh/max 未勾选时不展示。 */
+	support: ModelThinkingSupport;
 	onClose: () => void;
 	onPick: (level: string) => void;
 }) {
+	// 基础档位始终可选；扩展档位只在该模型声明后出现（配置页勾选 xhigh/max）。
+	const levels = THINKING_LEVELS.filter((level) =>
+		isExtendedThinkingLevel(level.value) ? props.support[level.value] : true,
+	);
 	return (
 		<CommandPickerDialog
 			title={t("app.thinkingPickerTitle")}
@@ -614,7 +622,7 @@ export function ThinkingPicker(props: {
 			className="thinking-picker"
 			value={props.current}
 		>
-			{THINKING_LEVELS.map((level) => {
+			{levels.map((level) => {
 				const selected = level.value === props.current;
 				return (
 					<CommandItem

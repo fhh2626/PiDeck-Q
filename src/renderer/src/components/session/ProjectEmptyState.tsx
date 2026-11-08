@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
 import { FolderGit2, HatGlasses, Plus, Sparkles } from "lucide-react";
 import type { AvailableModel, Project, SessionLaunchPreferences } from "../../../../shared/types";
 import { t, type TranslationKey } from "../../i18n";
@@ -8,6 +9,8 @@ import { ModelPicker, ThinkingPicker } from "./ComposerComponents";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY } from "../../utils/chatSessionBootstrap";
 import { EmptyState } from "./SurfaceParts";
 import { THINKING_LEVELS } from "./sessionPickerOptions";
+import { modelListRevisionAtom } from "../../atoms";
+import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../../shared/thinkingLevelSupport";
 
 const THINKING_LABEL_KEYS: Record<string, TranslationKey> = {};
 for (const level of THINKING_LEVELS) {
@@ -49,11 +52,21 @@ export function ProjectEmptyState(props: {
   const [thinkingChoice, setThinkingChoice] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
+  const modelListRevision = useAtomValue(modelListRevisionAtom);
+  // 模型列表独立拉取：配置页保存 models.json 后主进程广播 models:changed，空态常驻在
+  // 配置弹窗后面时也要重取，否则刚勾选的 xhigh/max 要等空态重挂载才会出现在选择器里。
   useEffect(() => {
     let alive = true;
     void desktopApi.projects.listModels(props.activeProject?.id).then((items) => {
       if (alive) setModels(items);
     }).catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [modelListRevision, props.activeProject?.id]);
+
+  useEffect(() => {
+    let alive = true;
     const apply = (model: string | undefined, thinking: string | undefined) => {
       if (alive) {
         setModelChoice(model ?? "");
@@ -128,6 +141,29 @@ export function ProjectEmptyState(props: {
   const currentModel = modelSeparator > 0
     ? { provider: modelChoice.slice(0, modelSeparator), modelId: modelChoice.slice(modelSeparator + 1) }
     : undefined;
+  const currentProvider = currentModel?.provider;
+  const currentModelId = currentModel?.modelId;
+  // 引导页也按 models.json 勾选状态过滤 xhigh/max：与主界面/Web 同一套规则。
+  const thinkingSupport = findModelThinkingSupport(models, currentProvider, currentModelId);
+  // 初始档位可能来自 pi settings（如 xhigh），但默认模型未在 models.json 声明该档位：
+  // 启动前面板与主进程 applyPreferences 的降级结果保持一致，避免显示一个不会生效的档位。
+  useEffect(() => {
+    if (models.length === 0 || !currentProvider || !currentModelId) return;
+    // 模型列表里没有当前默认模型（未认证/配置不完整）时支持位是未知的，不要凭未知降级。
+    const targetProvider = currentProvider.toLowerCase();
+    const targetModelId = currentModelId.toLowerCase();
+    const modelExists = models.some(
+      (model) =>
+        model.provider.toLowerCase() === targetProvider &&
+        model.id.toLowerCase() === targetModelId,
+    );
+    if (!modelExists) return;
+    const support = findModelThinkingSupport(models, currentProvider, currentModelId);
+    setThinkingChoice((previous) => {
+      const next = clampThinkingLevelForModel(previous, support);
+      return next && next !== previous ? next : previous;
+    });
+  }, [models, currentProvider, currentModelId]);
 
   // 取路径末段作为页眉右侧的项目名，与侧栏项目行的命名口径一致。
   const activeProjectName = props.activeProject
@@ -138,6 +174,12 @@ export function ProjectEmptyState(props: {
     setModelChoice(value);
     const model = models.find((item) => `${item.provider}/${item.id}` === value);
     if (!model) return;
+    // 切到不支持当前 xhigh/max 的模型时同步降级为 high，避免带着无效档位启动会话。
+    const nextThinking = clampThinkingLevelForModel(
+      thinkingChoice,
+      findModelThinkingSupport(models, model.provider, model.id),
+    );
+    if (nextThinking && nextThinking !== thinkingChoice) saveThinkingChoice(nextThinking);
     try {
       localStorage.setItem(WELCOME_MODEL_KEY, JSON.stringify({ provider: model.provider, modelId: model.id }));
     } catch {
@@ -232,6 +274,7 @@ export function ProjectEmptyState(props: {
                   {thinkingPickerOpen && (
                     <ThinkingPicker
                       current={thinkingChoice}
+                      support={thinkingSupport}
                       onClose={() => setThinkingPickerOpen(false)}
                       onPick={(level) => {
                         saveThinkingChoice(level);

@@ -46,6 +46,8 @@ export type ConfigFileReadResult<T> = {
 	raw: string;
 	parsed: T;
 	diagnostic?: ConfigFileDiagnostic;
+	/** 读取失败（非文件不存在，如权限/IO）；缺省表示读取成功或文件不存在。 */
+	readError?: boolean;
 };
 
 // ── Project Resources / Extensions ─────────────────────────────────────

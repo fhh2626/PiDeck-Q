@@ -35,9 +35,12 @@ function loadCoordinator(globals = {}) {
   // shared/askQuestion 是值导入（batch 表单 normalizer），同样走 TS 编译；
   // 它自己的 import 全部是 import type（transpile 后擦除），无需再映射。
   const askQuestion = compileModule("src/shared/askQuestion.ts");
+  // xhigh/max 能力判定：coordinator 用同一份纯策略做降级，测试需映射本地模块。
+  const thinkingLevelSupport = compileModule("src/shared/thinkingLevelSupport.ts");
   return compileModule("src/main/sessions/SessionRuntimeCoordinator.ts", {
     "../../shared/sessionIdentity": identity,
     "../../shared/askQuestion": askQuestion,
+    "../../shared/thinkingLevelSupport": thinkingLevelSupport,
   }, globals);
 }
 
@@ -1961,4 +1964,398 @@ test("history mutation command fencing: runtime changed during execution returns
   const result = await promise;
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "SESSION_RUNTIME_CHANGED");
+});
+
+// ── xhigh/max 勾选能力：模型切换/恢复偏好时自动降级为 high ──────────────
+
+test("switching to a model without xhigh downgrades the thinking level to high", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "xhigh",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  const setThinkingCalls = [];
+  const adjustments = [];
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "xhigh",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { provider: "openai", modelId: "plain-model", thinkingLevel: level };
+  };
+  harness.agents.getRuntimeState = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "high",
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    {
+      resolveSupport: async () => ({ xhigh: false, max: false }),
+      onThinkingLevelAdjusted: (sessionId, agentId, fromLevel, toLevel) =>
+        adjustments.push({ sessionId, agentId, fromLevel, toLevel }),
+    },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "plain-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "high" }]);
+  assert.equal(harness.entry.thinkingLevel, "high");
+  assert.equal(result.value.value.thinkingLevel, "high");
+  assert.deepEqual(adjustments, [
+    { sessionId: "session-1", agentId: "agent-a", fromLevel: "xhigh", toLevel: "high" },
+  ]);
+});
+
+test("unsupported xhigh lands on high even when pi applies its own lower default", async () => {
+  // pi 切模型时可能套用全局默认 low；需求要求 xhigh/max 在不支持的模型上落到 high，
+  // 因此对齐必须以用户此前选择的档位为准，而不是 pi 切换后的默认值。
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "xhigh",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  const setThinkingCalls = [];
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "low",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { provider: "openai", modelId: "plain-model", thinkingLevel: level };
+  };
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    { resolveSupport: async () => ({ xhigh: false, max: false }) },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "plain-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "high" }]);
+  assert.equal(harness.entry.thinkingLevel, "high");
+  assert.equal(result.value.value.thinkingLevel, "high");
+});
+
+test("switching to a supporting model keeps the current thinking level", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "max",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "reasoning-model",
+    thinkingLevel: "max",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    throw new Error(`unexpected setThinking ${agentId} ${level}`);
+  };
+  harness.agents.getRuntimeState = async () => ({
+    provider: "openai",
+    modelId: "reasoning-model",
+    thinkingLevel: "max",
+  });
+
+  const adjustments = [];
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    {
+      resolveSupport: async () => ({ xhigh: true, max: true }),
+      onThinkingLevelAdjusted: (sessionId, agentId, fromLevel, toLevel) =>
+        adjustments.push({ sessionId, agentId, fromLevel, toLevel }),
+    },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "reasoning-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.value.thinkingLevel, "max");
+  assert.equal(harness.entry.thinkingLevel, "max");
+  assert.deepEqual(adjustments, []);
+});
+
+test("activation downgrades a persisted xhigh/max level when the model does not declare it", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "plain-model" },
+      thinkingLevel: "max",
+    },
+  });
+  const appliedLevels = [];
+  harness.agents.setThinking = async (agentId, level) => {
+    appliedLevels.push({ agentId, level });
+    return { thinkingLevel: level };
+  };
+  const adjustments = [];
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    {
+      resolveSupport: async () => ({ xhigh: false, max: false }),
+      onThinkingLevelAdjusted: (sessionId, agentId, fromLevel, toLevel) =>
+        adjustments.push({ sessionId, agentId, fromLevel, toLevel }),
+    },
+  );
+
+  const result = await coordinator.send(prompt());
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(appliedLevels, [{ agentId: "agent-1", level: "high" }]);
+  assert.equal(harness.entry.thinkingLevel, "high");
+  assert.deepEqual(adjustments, [
+    { sessionId: "session-1", agentId: "agent-1", fromLevel: "max", toLevel: "high" },
+  ]);
+});
+
+test("a failing thinking adjustment notice does not fail activation", async () => {
+  // toast 只是附带反馈：渲染端不可用时通知发送可能抛错，不能反过来让会话激活失败。
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "plain-model" },
+      thinkingLevel: "max",
+    },
+  });
+  harness.agents.setThinking = async (agentId, level) => ({ thinkingLevel: level });
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    {
+      resolveSupport: async () => ({ xhigh: false, max: false }),
+      onThinkingLevelAdjusted: () => {
+        throw new Error("renderer unavailable");
+      },
+    },
+  );
+
+  const result = await coordinator.send(prompt());
+
+  assert.equal(result.accepted, true);
+  assert.equal(harness.entry.thinkingLevel, "high");
+});
+
+test("a supporting model restores xhigh when pi resets it during the switch", async () => {
+  // 新模型仍声明 xhigh 时，pi 切模型套用的默认档位不是用户选择。
+  // 必须设回 xhigh；只有 pi 明确拒绝时才改 catalog。
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "xhigh",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  const setThinkingCalls = [];
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "reasoning-model",
+    thinkingLevel: "high",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    setThinkingCalls.push({ agentId, level });
+    return { provider: "openai", modelId: "reasoning-model", thinkingLevel: level };
+  };
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    { resolveSupport: async () => ({ xhigh: true, max: true }) },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "reasoning-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(setThinkingCalls, [{ agentId: "agent-a", level: "xhigh" }]);
+  assert.equal(result.value.value.thinkingLevel, "xhigh");
+  assert.equal(harness.entry.thinkingLevel, "xhigh");
+});
+
+test("model switch keeps a base thinking level when pi applies its own default", async () => {
+  // high/medium/low/off 不参与 xhigh/max 降级。pi 切模型重置档位只是副作用，
+  // 不能写进 catalog，否则下次启动不会再套回用户原来的 high。
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "high",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "low",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    throw new Error(`unexpected setThinking ${agentId} ${level}`);
+  };
+  harness.agents.getRuntimeState = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "low",
+  });
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    { resolveSupport: async () => ({ xhigh: false, max: false }) },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "plain-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.value.thinkingLevel, "low");
+  assert.equal(harness.entry.thinkingLevel, "high");
+});
+
+test("a failed thinking downgrade does not persist pi's model-switch default", async () => {
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "xhigh",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "low",
+  });
+  harness.agents.setThinking = async () => {
+    throw new Error("thinking apply failed");
+  };
+
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    { resolveSupport: async () => ({ xhigh: false, max: false }) },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "plain-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.entry.thinkingLevel, "xhigh");
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.entry.model)), {
+    provider: "openai",
+    modelId: "plain-model",
+  });
+});
+
+test("model switch records high when pi already clamped an unsupported xhigh", async () => {
+  // pi 自己已经钳到 high：不必再 setThinking，但 catalog 必须离开 xhigh，
+  // 否则下次启动会把不支持档位套回去。
+  const { SessionRuntimeCoordinator } = loadCoordinator();
+  const harness = createHarness({
+    entry: {
+      model: { provider: "openai", modelId: "old-model" },
+      thinkingLevel: "xhigh",
+    },
+    tabs: [{ id: "agent-a", status: "idle", createdAt: 1 }],
+  });
+  harness.agents.setModel = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "high",
+  });
+  harness.agents.setThinking = async (agentId, level) => {
+    throw new Error(`unexpected setThinking ${agentId} ${level}`);
+  };
+  harness.agents.getRuntimeState = async () => ({
+    provider: "openai",
+    modelId: "plain-model",
+    thinkingLevel: "high",
+  });
+  const adjustments = [];
+  const coordinator = new SessionRuntimeCoordinator(
+    harness.catalog,
+    harness.agents,
+    harness.sender,
+    undefined,
+    {
+      resolveSupport: async () => ({ xhigh: false, max: false }),
+      onThinkingLevelAdjusted: (sessionId, agentId, fromLevel, toLevel) =>
+        adjustments.push({ sessionId, agentId, fromLevel, toLevel }),
+    },
+  );
+  const runtimeGeneration = coordinator.bindExistingAgent("session-1", "agent-a");
+
+  const result = await coordinator.setRuntimeModel(
+    { sessionId: "session-1", agentId: "agent-a", runtimeGeneration },
+    "openai",
+    "plain-model",
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(harness.entry.thinkingLevel, "high");
+  assert.equal(result.value.value.thinkingLevel, "high");
+  assert.deepEqual(adjustments, [
+    { sessionId: "session-1", agentId: "agent-a", fromLevel: "xhigh", toLevel: "high" },
+  ]);
 });

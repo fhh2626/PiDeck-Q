@@ -3511,37 +3511,8 @@ div.fixed.inset-0.z-50 {
   }
 }
 
-/* 思考级别映射：两个 ConfigSelect 垂直排列（xhigh + max） */
-.config-thinking-levels-cell {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.config-thinking-levels-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.config-thinking-levels-key {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-  width: 26px;
-}
-
-
-.config-thinking-levels-row .config-select-trigger > span {
-  font-size: 11px;
-}
-
-.config-thinking-levels-row .config-select-value {
-  font-size: 11px;
-}
+/* 思考级别映射：Popover 内部改由 Tailwind utility 布局（xhigh/max 两个 Checkbox）。
+   旧 .config-thinking-levels-* 样式随下拉改勾选框一并移除，避免与 utility 抢属性。 */
 
 /* 壁纸模式下业务弹框只保留 DialogContent 这一层底色；布局容器透明，
    否则 header 是一层、body 又叠一层同色面板，最终看起来像两个透明度。 */

@@ -31,6 +31,7 @@ import {
 import { ConfirmDialog } from "../app/AppParts";
 import { useSessionPaneActions } from "./SessionPaneServices";
 import { usePendingModelApply } from "../../hooks/usePendingModelApply";
+import { clampThinkingLevelForModel, findModelThinkingSupport, isExtendedThinkingLevel } from "../../../../shared/thinkingLevelSupport";
 import type { ComposerPickerKind } from "../../hooks/useSessionComposerController";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY, readWelcomeModelPreference, readWelcomeThinkingPreference } from "../../utils/chatSessionBootstrap";
 
@@ -105,9 +106,10 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   }, [composerMode, props.picker, sessionId, setMode]);
 
   useEffect(() => {
-    // 打开模型选择器即加载（不依赖 record：欢迎页/未启动 Agent 时 record 为 undefined，
+    // 打开模型/思考级别选择器即加载（不依赖 record：欢迎页/未启动 Agent 时 record 为 undefined，
     // 但模型列表是全量的，listModels 不依赖 projectId）。
-    if (props.picker !== "model") return;
+    // 思考级别选择器需要 thinkingLevels 支持位来判断 xhigh/max 是否展示。
+    if (props.picker !== "model" && props.picker !== "thinking") return;
     const sequence = ++modelLoadSequenceRef.current;
     // Always read models.json directly — same source as Agent RPC, no transition flicker
     void desktopApi.projects.listModels(record?.projectId).then((next) => {
@@ -136,17 +138,28 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
         error.code === "SESSION_RUNTIME_CHANGED");
   }
 
-  async function applyModelToRecord(model: AvailableModel) {
+  async function applyModelToRecord(model: AvailableModel, thinkingLevel?: string) {
     const updated = await desktopApi.sessions.updateRecord(sessionId, {
       model: { provider: model.provider, modelId: model.id },
+      ...(thinkingLevel ? { thinkingLevel } : {}),
     });
     upsertSession(updated);
   }
 
+  /** 模型切换/落记录的档位降级：扩展档位未被模型声明时退回 high（主进程同策略兜底）。 */
+  function clampedThinkingForModel(model: { provider: string; id: string }): string | undefined {
+    const next = clampThinkingLevelForModel(
+      record?.thinkingLevel,
+      findModelThinkingSupport(models, model.provider, model.id),
+    );
+    // 仅返回「需要变更」的值：无变化时不重复写 catalog/updatedAt。
+    return next && next !== record?.thinkingLevel ? next : undefined;
+  }
+
   function currentLiveModel() {
     return {
-      provider: runtime?.state?.provider ?? record?.model?.provider ?? "",
-      modelId: runtime?.state?.modelId ?? record?.model?.modelId ?? "",
+      provider: runtime?.state?.provider || record?.model?.provider || "",
+      modelId: runtime?.state?.modelId || record?.model?.modelId || "",
       modelName: runtime?.state?.modelName,
     };
   }
@@ -188,16 +201,38 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     });
   }
 
-  function applyRuntimeModelState(agentState: { provider?: string; modelId?: string; modelName?: string }) {
+  function applyRuntimeModelState(agentState: {
+    provider?: string;
+    modelId?: string;
+    modelName?: string;
+    thinkingLevel?: string;
+  }) {
     const current = store.get(sessionRuntimeByIdAtom)[sessionId];
-    if (!current) return;
-    store.set(sessionRuntimeByIdAtom, {
-      ...store.get(sessionRuntimeByIdAtom),
-      [sessionId]: {
-        ...current,
-        state: current.state ? { ...current.state, ...agentState } : agentState,
-      },
-    });
+    if (current) {
+      store.set(sessionRuntimeByIdAtom, {
+        ...store.get(sessionRuntimeByIdAtom),
+        [sessionId]: {
+          ...current,
+          state: current.state ? { ...current.state, ...agentState } : agentState,
+        },
+      });
+    }
+    // 只同步扩展档位的真实变化（xhigh/max → high，或 pi 拒绝恢复）。
+    // 基础档位不跟 pi 切模型时的默认值走，否则 high 会被写成 low 并在下次启动丢失。
+    const recordNow = store.get(sessionRecordByIdAtomFamily(sessionId));
+    const reportedThinking = agentState.thinkingLevel;
+    if (
+      reportedThinking &&
+      recordNow?.thinkingLevel &&
+      isExtendedThinkingLevel(recordNow.thinkingLevel) &&
+      recordNow.thinkingLevel !== reportedThinking
+    ) {
+      upsertSession({
+        ...recordNow,
+        thinkingLevel: reportedThinking,
+        updatedAt: Date.now(),
+      });
+    }
   }
 
   usePendingModelApply({
@@ -226,7 +261,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     } catch {
       // 查快照失败（含生成中 busy）不挡选择：先记下，本轮结束后 setRuntimeModel 再判断要不要重启。
     }
-    await applyModelToRecord(model);
+    await applyModelToRecord(model, clampedThinkingForModel(model));
     markModelPending(model);
     props.onClose();
   }
@@ -239,6 +274,16 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
           provider: model.provider,
           modelId: model.id,
         }));
+        // 欢迎页偏好也要跟随模型能力：否则新会话启动时才由主进程降级，
+        // 期间底栏/启动参数仍会显示不支持的 xhigh/max。
+        const welcomeThinking = readWelcomeThinkingPreference()?.thinkingLevel;
+        const nextThinking = clampThinkingLevelForModel(
+          welcomeThinking,
+          findModelThinkingSupport(models, model.provider, model.id),
+        );
+        if (nextThinking && nextThinking !== welcomeThinking) {
+          localStorage.setItem(WELCOME_THINKING_KEY, nextThinking);
+        }
       } catch {
         // localStorage 不可用时静默；创建会话回退到 pi 默认模型
       }
@@ -249,6 +294,9 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     const generationInFlight =
       Boolean(handle) &&
       (runtime?.status === "running" || Boolean(runtime?.state?.isStreaming));
+    // 目标模型不支持当前 xhigh/max 时立即降级为 high（与主进程策略一致）：
+    // 无运行时写记录、运行时由主进程 setRuntimeModel 真实降级并回传 state。
+    const fallbackThinking = clampedThinkingForModel(model);
     try {
       if (handle && generationInFlight) {
         await pickModelWhileBusy(handle, model);
@@ -261,9 +309,22 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
             model.provider,
             model.id,
           ));
+          const reportedThinking = result.value.thinkingLevel;
+          const nextThinking = reportedThinking && reportedThinking.length > 0
+            ? reportedThinking
+            : fallbackThinking;
+          // 与主进程一致：只有扩展档位发生真实变化才改本地记录。
+          // pi 切模型顺手改掉的 low/medium/high 不能覆盖用户原来的选择。
+          const persistThinking = Boolean(
+            nextThinking &&
+            record.thinkingLevel &&
+            isExtendedThinkingLevel(record.thinkingLevel) &&
+            nextThinking !== record.thinkingLevel,
+          );
           upsertSession({
             ...record,
             model: { provider: model.provider, modelId: model.id },
+            ...(persistThinking ? { thinkingLevel: nextThinking } : {}),
             updatedAt: Date.now(),
           });
           setModelPendingMap((prev) => ({ ...prev, [sessionId]: undefined }));
@@ -274,10 +335,10 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
           // 运行时代理不可用（Agent 已关/绑定已换）时降级写记录，
           // 保证「先选模型、后启动 Agent」的流程始终可用。
           if (!isStaleRuntimeFailure(error)) throw error;
-          await applyModelToRecord(model);
+          await applyModelToRecord(model, fallbackThinking);
         }
       } else {
-        await applyModelToRecord(model);
+        await applyModelToRecord(model, fallbackThinking);
       }
       props.onClose();
     } catch (error) {
@@ -305,8 +366,15 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     // 先关确认框，避免 AlertDialog 关闭动画盖住 overlay。
     setRestartTarget(null);
     try {
+      // 重启后 applyPreferences 会按新模型能力降级档位；这里先写记录，
+      // 避免重启动画结束后记录仍停留在不支持的 xhigh/max。
+      const fallbackThinking = clampedThinkingForModel({
+        provider: intent.provider,
+        id: intent.modelId,
+      });
       const updated = await desktopApi.sessions.updateRecord(sessionId, {
         model: { provider: intent.provider, modelId: intent.modelId },
+        ...(fallbackThinking ? { thinkingLevel: fallbackThinking } : {}),
       });
       upsertSession(updated);
       setModelPendingMap((prev) => ({ ...prev, [sessionId]: undefined }));
@@ -336,18 +404,31 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
       if (handle) {
         try {
           const result = requireSessionCommand(await desktopApi.sessions.setRuntimeThinking(handle, level));
-          upsertSession({ ...record, thinkingLevel: level, updatedAt: Date.now() });
+          const agentState = result.value;
+          // pi 会按运行中模型快照钳制档位（例如刚在配置页勾选 xhigh，但 Agent 尚未重启）：
+          // 记录必须写 pi 实际接受的档位，而不是请求值，否则底栏/下次启动会显示一个未生效的档位。
+          const reportedLevel = agentState.thinkingLevel;
+          const effectiveLevel = reportedLevel && reportedLevel.length > 0 ? reportedLevel : level;
+          upsertSession({ ...record, thinkingLevel: effectiveLevel, updatedAt: Date.now() });
+          // 运行中 Agent 的模型快照可能尚未包含刚在配置页勾选的档位：pi 会钳制到支持值，
+          // 此时给出与主进程模型切换一致的轻量提示，避免用户以为选择被静默吞掉。
+          if (effectiveLevel !== level) {
+            showNotice(
+              t("app.thinkingUnsupported", { level, fallback: effectiveLevel }),
+              4000,
+              "info",
+            );
+          }
           // 生成进行中：飞行中的生成仍用旧档位，新档位下一轮才生效。
           // 记录待生效指示（issue #146：xhigh->max），由 ComposerArea 在流式结束时清除。
           if (runtime?.state?.isStreaming) {
             const from = thinkingPending?.from ?? runtime.state.thinkingLevel ?? record.thinkingLevel;
-            if (from && from !== level) {
-              setThinkingPendingMap((prev) => ({ ...prev, [sessionId]: { from, to: level } }));
+            if (from && from !== effectiveLevel) {
+              setThinkingPendingMap((prev) => ({ ...prev, [sessionId]: { from, to: effectiveLevel } }));
             }
           }
           // 立即将返回的 AgentRuntimeState 合并到 runtime state atom，
           // 使底部栏的思考强度即刻刷新
-          const agentState = result.value;
           const current = store.get(sessionRuntimeByIdAtom)[sessionId];
           if (current) {
             store.set(sessionRuntimeByIdAtom, {
@@ -434,9 +515,19 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     );
   }
   if (props.picker === "thinking") {
+    // 用「运行中模型 → 会话记录 → 欢迎页偏好」的同一优先级解析当前模型，
+    // 再按 models.json 声明的 xhigh/max 支持位过滤选项（未勾选就不出现）。
+    const liveModel = currentLiveModel();
+    const welcomeModel = readWelcomeModelPreference()?.model;
+    const thinkingSupport = findModelThinkingSupport(
+      models,
+      liveModel.provider || welcomeModel?.provider,
+      liveModel.modelId || welcomeModel?.modelId,
+    );
     return (
       <ThinkingPicker
         current={runtime?.state?.thinkingLevel ?? record?.thinkingLevel ?? readWelcomeThinkingPreference()?.thinkingLevel}
+        support={thinkingSupport}
         onClose={props.onClose}
         onPick={(level) => void pickThinking(level)}
       />

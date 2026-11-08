@@ -24,6 +24,7 @@ import type { RpcLogger } from "../logging/RpcLogger";
 import type { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
 import type { SkillManager } from "../skills/SkillManager";
 import { fetchModelList, invalidateModelListCache, getCachedModelList, refreshModelList } from "../pi/modelListCache";
+import { decorateModelsWithThinkingSupport } from "../pi/modelThinkingSupport";
 import type { ModelSpecsStore } from "../pi/modelSpecsStore";
 import { getProcessSnapshot } from "../process/ProcessMonitor";
 import type { ProcessMetricsSnapshot } from "../../shared/types";
@@ -229,7 +230,10 @@ export function registerSystemIpc(router: RpcRouter, deps: SystemIpcDeps): void 
 				cached: getCachedModelList() === models,
 				providers: [...new Set(models.map((m) => m.provider))].slice(0, 8),
 			});
-			return models;
+			// thinkingLevels 由本地 models.json 注入，不写进 pi 模型列表缓存：
+			// 配置页勾选 xhigh/max 后，下次 listModels 即读到新值；
+			// 运行中的 Agent 仍使用启动时加载的模型快照，需重启后才会真正接受新档位。
+			return decorateModelsWithThinkingSupport(models, configManager);
 		} catch (error) {
 			void appLogger.warn("pi", "Failed to list models via Pi RPC/text fallback", {
 				error: error instanceof Error ? error.message : String(error),

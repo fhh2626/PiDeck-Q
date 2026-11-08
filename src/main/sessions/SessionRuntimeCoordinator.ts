@@ -21,9 +21,11 @@ import type {
 	SessionTargetedValue,
 	SessionUiResponseInput,
 	PendingUiRequestSnapshot,
+	ModelThinkingSupport,
 } from "../../shared/types";
 import { buildSessionOriginKey } from "../../shared/sessionIdentity";
 import { normalizeAgentUiBatchQuestion } from "../../shared/askQuestion";
+import { clampThinkingLevelForModel, isExtendedThinkingLevel } from "../../shared/thinkingLevelSupport";
 import type { SessionCatalogEntry } from "./SessionCatalog";
 
 export interface SessionCatalogGateway {
@@ -113,6 +115,22 @@ export interface SessionRuntimeLogger {
 	error(scope: string, message: string, detail?: unknown): unknown;
 }
 
+/**
+ * 思考档位与模型能力对齐的策略入口（由 createBackend 注入）。
+ * 主进程统一兜底：模型切换 / 恢复会话偏好时如果 xhigh/max 不再被模型声明，
+ * 退回 high；onThinkingLevelAdjusted 用于发一次轻量 toast。
+ */
+export interface SessionThinkingLevelPolicy {
+	/** undefined = 配置不可读/未知，调用方跳过降级，不能当成不支持。 */
+	resolveSupport(provider: string, modelId: string): Promise<ModelThinkingSupport | undefined>;
+	onThinkingLevelAdjusted?(
+		sessionId: string,
+		agentId: string,
+		fromLevel: string,
+		toLevel: string,
+	): void;
+}
+
 type DeliveryCacheEntry = {
 	createdAt: number;
 	settled: boolean;
@@ -151,6 +169,13 @@ const DELIVERY_CACHE_TTL_MS = 10 * 60_000;
 const DELIVERY_CACHE_MAX_ENTRIES = 500;
 /** 轮询间隔之外的少量余量，避免刚过 RPC deadline 就误杀仍在收尾的启动流程。 */
 const AGENT_READY_POLLING_GRACE_MS = 1_000;
+
+/** SessionAgentGateway.setModel 的返回类型是 unknown（Rust/TS 运行时一致但网关不复刻形状）；只取需要的字段。 */
+function readRuntimeThinkingLevel(value: unknown): string | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const level = Reflect.get(value, "thinkingLevel");
+	return typeof level === "string" && level.length > 0 ? level : undefined;
+}
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -197,6 +222,7 @@ export class SessionRuntimeCoordinator {
 		private readonly agents: SessionAgentGateway,
 		private readonly sendAgentPrompt: (input: SendPromptInput) => Promise<SendPromptResult>,
 		private readonly logger?: SessionRuntimeLogger,
+		private readonly thinkingLevelPolicy?: SessionThinkingLevelPolicy,
 	) {}
 
 	/** 渲染层在 currentSessionId 变化时汇报聚焦会话（见 sessions:set-focused-session IPC）。 */
@@ -527,11 +553,26 @@ export class SessionRuntimeCoordinator {
 					// 必须排在 setModel 之后：部分运行时切换模型会重置思考等级。
 					// 回写的是 pi 实际接受的等级（state.thinkingLevel），与 setRuntimeThinking / applyPreferences 同一契约；
 					// 直接写回请求值会让 catalog 与 pi 钳制后的真实值不一致，下次启动又会套错。
+					// 模型已切换时先按 models.json 声明降级（xhigh/max → high），避免把不支持档位又套回去。
+					const support = modelToRestore && isExtendedThinkingLevel(thinkingToRestore)
+						? await this.resolveThinkingSupport(modelToRestore.provider, modelToRestore.modelId)
+						: undefined;
+					const desiredThinking = support
+						? (clampThinkingLevelForModel(thinkingToRestore, support) ?? thinkingToRestore)
+						: thinkingToRestore;
 					try {
-						const state = await this.agents.setThinking(agentId, thinkingToRestore);
-						const effectiveThinking = state.thinkingLevel ?? thinkingToRestore;
+						const state = await this.agents.setThinking(agentId, desiredThinking);
+						const effectiveThinking = readRuntimeThinkingLevel(state) ?? desiredThinking;
 						if (effectiveThinking !== sessionEntry?.thinkingLevel) {
 							await persistPreference({ thinkingLevel: effectiveThinking });
+						}
+						if (effectiveThinking !== thinkingToRestore) {
+							this.notifyThinkingLevelAdjusted(
+								target.sessionId,
+								agentId,
+								thinkingToRestore,
+								effectiveThinking,
+							);
 						}
 					} catch {
 						// 思考等级恢复失败静默：不影响重发，下次启动由 applyPreferences 兜底
@@ -578,18 +619,35 @@ export class SessionRuntimeCoordinator {
 			// 若先写后失败：用户点「取消重启」时 catalog 已是新模型，下次启动会误套上；
 			// 且 ConfirmDialog 点确定也会走 onCancel，回滚与确认会互相踩。
 			// needsRestart 由渲染层在用户确认后再 updateRecord + 重启。
-			await this.agents.setModel(agentId, provider, modelId);
+			const modelState: unknown =
+				await this.agents.setModel(agentId, provider, modelId);
+			const entryBefore = this.catalog.get(target.sessionId);
+			const runtimeLevel = readRuntimeThinkingLevel(modelState);
+			// 只写模型。pi 切模型时可能把思考档位重置成默认值，这是副作用，
+			// 不能先写进 catalog：基础档位会被覆盖，降级 RPC 失败时 xhigh 也会丢成 low。
 			await this.catalog.update(target.sessionId, {
 				model: { provider, modelId },
 				updatedAt: Date.now(),
 			});
+			// 切模型后对齐扩展档位：新模型未声明 xhigh/max 时降为 high；
+			// 仍声明但 pi 把档位重置掉时设回用户原档位。基础档位不在这里改 catalog。
+			const adjustedState = await this.alignThinkingLevelWithModel(
+				target.sessionId,
+				agentId,
+				// 以用户此前选择的档位为准：pi 切模型时可能套用全局/模型默认值（如 low），
+				// 但需求要求「xhigh/max 遇到不支持的模型」时稳定落到 high，而不是跟随 pi 默认值。
+				entryBefore?.thinkingLevel ?? runtimeLevel,
+				{ provider, modelId },
+				runtimeLevel,
+			);
 			void this.logger?.info("session-runtime", "Runtime model changed", {
 				sessionId: target.sessionId,
 				agentId,
 				provider,
 				modelId,
+				thinkingLevel: adjustedState?.thinkingLevel ?? readRuntimeThinkingLevel(modelState),
 			});
-			return this.agents.getRuntimeState(agentId);
+			return adjustedState ?? await this.agents.getRuntimeState(agentId);
 		});
 	}
 
@@ -599,7 +657,7 @@ export class SessionRuntimeCoordinator {
 	): Promise<SessionCommandResult<SessionTargetedValue<AgentRuntimeState>>> {
 		return this.runTargetCommand(target, async (agentId) => {
 			const state = await this.agents.setThinking(agentId, level);
-			const effectiveLevel = state.thinkingLevel ?? level;
+			const effectiveLevel = readRuntimeThinkingLevel(state) ?? level;
 			await this.catalog.update(target.sessionId, {
 				thinkingLevel: effectiveLevel,
 				updatedAt: Date.now(),
@@ -1211,14 +1269,151 @@ export class SessionRuntimeCoordinator {
 			await this.agents.setModel(agentId, entry.model.provider, entry.model.modelId);
 		}
 		if (entry.thinkingLevel) {
-			const state = await this.agents.setThinking(agentId, entry.thinkingLevel);
-			if (state.thinkingLevel && state.thinkingLevel !== entry.thinkingLevel) {
+			// 模型切换可能让持久化的 xhigh/max 失效：先按 models.json 声明降级，
+			// 再交给 pi。否则 applyPreferences 会把刚被模型切换降下来的档位又套回去。
+			const needsSupportCheck = isExtendedThinkingLevel(entry.thinkingLevel);
+			const support = needsSupportCheck && entry.model
+				? await this.resolveThinkingSupport(entry.model.provider, entry.model.modelId)
+				: undefined;
+			const desiredLevel = support
+				? (clampThinkingLevelForModel(entry.thinkingLevel, support) ?? entry.thinkingLevel)
+				: entry.thinkingLevel;
+			const state = await this.agents.setThinking(agentId, desiredLevel);
+			const effectiveLevel = readRuntimeThinkingLevel(state) ?? desiredLevel;
+			if (effectiveLevel !== entry.thinkingLevel) {
 				await this.catalog.update(entry.id, {
-					thinkingLevel: state.thinkingLevel,
+					thinkingLevel: effectiveLevel,
 					updatedAt: Date.now(),
 				});
 			}
+			if (effectiveLevel !== entry.thinkingLevel) {
+				this.notifyThinkingLevelAdjusted(
+					entry.id,
+					agentId,
+					entry.thinkingLevel,
+					effectiveLevel,
+				);
+				void this.logger?.warn("session-runtime", "Thinking level downgraded while applying preferences", {
+					sessionId: entry.id,
+					agentId,
+					fromLevel: entry.thinkingLevel,
+					toLevel: effectiveLevel,
+					provider: entry.model?.provider,
+					modelId: entry.model?.modelId,
+				});
+			}
 		}
+	}
+
+	/** 读取模型支持位；策略未注入或读取失败时返回 undefined（不做降级）。 */
+	private async resolveThinkingSupport(
+		provider: string,
+		modelId: string,
+	): Promise<ModelThinkingSupport | undefined> {
+		if (!this.thinkingLevelPolicy) return undefined;
+		try {
+			return await this.thinkingLevelPolicy.resolveSupport(provider, modelId);
+		} catch (error) {
+			void this.logger?.warn("session-runtime", "Failed to resolve model thinking support", {
+				provider,
+				modelId,
+				error: errorMessage(error),
+			});
+			return undefined;
+		}
+	}
+
+	/**
+	 * 发送档位调整通知。通知只是附带反馈：发送失败不能反过来让模型切换/会话激活失败。
+	 */
+	private notifyThinkingLevelAdjusted(
+		sessionId: string,
+		agentId: string,
+		fromLevel: string,
+		toLevel: string,
+	): void {
+		try {
+			this.thinkingLevelPolicy?.onThinkingLevelAdjusted?.(sessionId, agentId, fromLevel, toLevel);
+		} catch (error) {
+			void this.logger?.warn("session-runtime", "Failed to emit thinking level adjustment notice", {
+				sessionId,
+				agentId,
+				fromLevel,
+				toLevel,
+				error: errorMessage(error),
+			});
+		}
+	}
+
+	/**
+	 * 模型切换后的扩展档位对齐：
+	 * 新模型未声明 xhigh/max 时降为 high；仍声明但 pi 重置了档位时设回用户原值。
+	 * 只有实际变化才写 catalog。未调整、基础档位或配置不可读时返回 undefined。
+	 */
+	private async alignThinkingLevelWithModel(
+		sessionId: string,
+		agentId: string,
+		level: string | undefined,
+		model: { provider: string; modelId: string },
+		runtimeLevel?: string,
+	): Promise<AgentRuntimeState | undefined> {
+		// 基础档位不受模型能力影响：不读 models.json，也不把 pi 的切换副作用写进 catalog。
+		if (!level || !isExtendedThinkingLevel(level)) return undefined;
+		const support = await this.resolveThinkingSupport(model.provider, model.modelId);
+		// 配置不可读或未注入策略：不能把「未知」当成不支持，也不能顺手清掉用户原档位。
+		if (!support) return undefined;
+		const nextLevel = clampThinkingLevelForModel(level, support);
+		if (!nextLevel) return undefined;
+		// 仍支持且 pi 没有改档（或没有回报档位）：不多打一次 setThinking。
+		if (nextLevel === level && (!runtimeLevel || runtimeLevel === level)) return undefined;
+		try {
+			// pi 已经落在目标档位（通常是自己钳制到 high）：只同步 catalog，避免多一次 RPC。
+			// 写 catalog 失败同样不能让已经成功的模型切换整体失败。
+			if (runtimeLevel === nextLevel) {
+				await this.persistAdjustedThinking(sessionId, agentId, level, nextLevel, model);
+				return undefined;
+			}
+			const state = await this.agents.setThinking(agentId, nextLevel);
+			const effectiveLevel = readRuntimeThinkingLevel(state) ?? nextLevel;
+			// 设回用户原档位成功时 catalog 不用改；只有 pi 实际接受的值不同才落盘。
+			if (effectiveLevel !== level) {
+				await this.persistAdjustedThinking(sessionId, agentId, level, effectiveLevel, model);
+			}
+			return state;
+		} catch (error) {
+			// 降级/恢复失败不回滚模型切换，也不改 catalog：下次启动 applyPreferences 仍按用户原档位兜底。
+			void this.logger?.warn("session-runtime", "Failed to align thinking level after model change", {
+				sessionId,
+				agentId,
+				fromLevel: level,
+				toLevel: nextLevel,
+				error: errorMessage(error),
+			});
+			return undefined;
+		}
+	}
+
+	/** 把对齐后的扩展档位写回 catalog，并发一次降级通知。通知失败不影响写入。 */
+	private async persistAdjustedThinking(
+		sessionId: string,
+		agentId: string,
+		fromLevel: string,
+		toLevel: string,
+		model: { provider: string; modelId: string },
+	): Promise<void> {
+		await this.catalog.update(sessionId, {
+			thinkingLevel: toLevel,
+			updatedAt: Date.now(),
+		});
+		this.notifyThinkingLevelAdjusted(sessionId, agentId, fromLevel, toLevel);
+		void this.logger?.warn("session-runtime", "Thinking level aligned for model support", {
+			sessionId,
+			agentId,
+			provider: model.provider,
+			modelId: model.modelId,
+			fromLevel,
+			toLevel,
+		});
 	}
 
 	private async waitUntilReady(initialTab: AgentTab): Promise<AgentTab> {

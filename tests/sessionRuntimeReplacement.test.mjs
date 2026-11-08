@@ -30,9 +30,11 @@ function loadCoordinator() {
   // shared/askQuestion 是值导入（batch 表单 normalizer），走 TS 编译；
   // 其内部 import 全为 import type，transpile 后擦除，无需再映射。
   const askQuestion = compileModule("src/shared/askQuestion.ts");
+  const thinkingLevelSupport = compileModule("src/shared/thinkingLevelSupport.ts");
   return compileModule("src/main/sessions/SessionRuntimeCoordinator.ts", {
     "../../shared/sessionIdentity": identity,
     "../../shared/askQuestion": askQuestion,
+    "../../shared/thinkingLevelSupport": thinkingLevelSupport,
   });
 }
 

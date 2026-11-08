@@ -310,8 +310,17 @@ export class ConfigManager {
 					diagnostic: this.createJsonDiagnostic(fileName, raw, error),
 				};
 			}
-		} catch {
-			return { raw: JSON.stringify(fallback, null, 2), parsed: fallback };
+		} catch (error) {
+			const errorCode =
+				typeof error === "object" && error !== null && "code" in error
+					? error.code
+					: undefined;
+			return {
+				raw: JSON.stringify(fallback, null, 2),
+				parsed: fallback,
+				// 文件不存在是正常兜底；其它读取失败（权限/IO）标记出来，供需要区分「未知配置」的调用方使用。
+				...(errorCode === "ENOENT" ? {} : { readError: true }),
+			};
 		}
 	}
 

@@ -11,7 +11,7 @@ test("ModelsTab renders model list as shadcn Table (header + body)", () => {
   assert.match(source, /<TableBody>/);
   // 表头 7 列：id/name/context/maxTokens/thinkingLevels/capabilities/actions（能力列在操作列前）
   assert.match(source, /<TableHead className="w-48 min-w-0">\{t\("config\.modelId"\)\}/);
-  assert.match(source, /<TableHead className="w-24">\{t\("config\.thinkingLevels"\)\}/);
+  assert.match(source, /<TableHead className="w-32">\{t\("config\.thinkingLevels"\)\}/);
   assert.match(source, /<TableHead className="w-24">\{t\("config\.capabilities"\)\}/);
   assert.match(source, /<TableHead className="w-20 text-right pr-3">\{t\("config\.actions"\)\}<\/TableHead>/);
   // 表头顺序：thinkingLevels 必须在 capabilities 之前
@@ -48,17 +48,24 @@ test("reasoning and image checkboxes share one capabilities column", () => {
 });
 
 test("thinking levels open in a Popover from a single button", () => {
-  // 一个按钮（摘要 + Brain 图标），点击弹 Popover 内两个下拉
+  // 一个按钮（勾/叉摘要 + Brain 图标），点击弹 Popover 内两个 Checkbox
   assert.match(source, /<Popover>/);
   assert.match(source, /<PopoverTrigger asChild>/);
   assert.match(source, /<Brain className="size-3\.5 shrink-0 opacity-60"/);
-  assert.match(source, /xhighValue \|\| maxValue \? \[xhighValue, maxValue\]\.filter\(Boolean\)\.join\(" \/ "\) : t\("config\.xhighOff"\)/);
-  assert.match(source, /<PopoverContent align="start" className="w-48 p-2">/);
-  // 两个级别仍是 ConfigSelect + 白名单收窄（项目禁 as 强转）
-  const selectCount = (source.match(/<ConfigSelect/g) ?? []).length;
-  assert.ok(selectCount >= 2, `expected >= 2 ConfigSelect, got ${selectCount}`);
-  assert.match(source, /if \(v === "" \|\| v === "xhigh" \|\| v === "max"\)/);
-  assert.match(source, /onUpdateModelThinkingLevel\(name, i, key, v\)/);
+  assert.match(source, /t\("config\.xhighOff"\)/);
+  assert.match(source, /<PopoverContent align="start" className="w-44 p-2">/);
+  // xhigh/max 改为勾选框；勾选=声明支持（值固定为级别名），不再有下拉
+  const thinkingBlockStart = source.indexOf("思考级别列");
+  const thinkingBlockEnd = source.indexOf("能力列", thinkingBlockStart);
+  assert.ok(thinkingBlockStart > -1 && thinkingBlockEnd > thinkingBlockStart, "thinking block must exist");
+  const thinkingBlock = source.slice(thinkingBlockStart, thinkingBlockEnd);
+  assert.match(thinkingBlock, /<Checkbox/);
+  assert.match(thinkingBlock, /checked=\{Boolean\(value\)\}/);
+  assert.match(thinkingBlock, /checked === true \? key : ""/);
+  assert.doesNotMatch(thinkingBlock, /<ConfigSelect/);
+  // 未勾选时触发框显示关闭；勾选状态用 Check/X 图标
+  assert.match(thinkingBlock, /\{enabled\s*\? <Check className="size-3"/);
+  assert.match(thinkingBlock, /: <X className="size-3"/);
   // 不再有行内两组三按钮
   assert.doesNotMatch(source, /config-thinking-levels-segmented/);
   assert.doesNotMatch(source, /config-thinking-level-option/);
@@ -107,10 +114,10 @@ test("dead CSS rules removed, kept rules intact", () => {
   assert.doesNotMatch(surfaces, /\.config-thinking-levels-segmented/);
   assert.doesNotMatch(surfaces, /\.config-thinking-level-option/);
   assert.doesNotMatch(surfaces, /\.config-cost-cell/);
-  // 保留：计费字段布局 / 图片 label / 级别行与 key 样式（Popover 内使用）
+  // 保留：计费字段布局 / 图片 label；思考级别下拉的旧 CSS 已随 Checkbox 改造删除
   assert.doesNotMatch(surfaces, /\.config-model-cost \{/);
   assert.match(surfaces, /\.config-model-cost-field \{/);
   assert.match(surfaces, /\.config-input-option \{/);
-  assert.match(surfaces, /\.config-thinking-levels-cell \{/);
-  assert.match(surfaces, /\.config-thinking-levels-row \.config-select-trigger > span/);
+  assert.doesNotMatch(surfaces, /\.config-thinking-levels-cell \{/);
+  assert.doesNotMatch(surfaces, /\.config-thinking-levels-row/);
 });

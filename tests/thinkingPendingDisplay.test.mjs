@@ -83,7 +83,10 @@ test("契约: 流式生成中切换才记录待生效指示", () => {
     "utf8",
   );
   assert.match(picker, /if \(runtime\?\.state\?\.isStreaming\)/);
-  assert.match(picker, /setThinkingPendingMap\(\(prev\) => \(\{ \.\.\.prev, \[sessionId\]: \{ from, to: level \} \}\)/);
+  assert.match(picker, /setThinkingPendingMap\(\(prev\) => \(\{ \.\.\.prev, \[sessionId\]: \{ from, to: effectiveLevel \} \}\)/);
+  // pi 会按运行中模型快照钳制档位：记录/待生效指示必须使用 pi 实际接受的值
+  assert.match(picker, /const reportedLevel = agentState\.thinkingLevel/);
+  assert.match(picker, /reportedLevel && reportedLevel\.length > 0 \? reportedLevel : level/);
   // 连续切换时保留首次 from（当前生效档位不变，仍是最初的旧档位）
   assert.match(picker, /thinkingPending\?\.from \?\? runtime\.state\.thinkingLevel/);
 });
