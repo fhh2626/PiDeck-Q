@@ -862,7 +862,6 @@ export function WebChatApp() {
 				<WebHeader
 					title={activeSession?.title || t("web.chooseSession")}
 					status={headerStatus}
-					sessionId={activeSessionId}
 					onOpenSidebar={() => setMobileSidebarOpen(true)}
 					model={activeSession?.model ?? pendingModel ?? undefined}
 					thinkingLevel={activeSession?.thinkingLevel ?? pendingThinkingLevel ?? undefined}

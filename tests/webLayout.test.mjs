@@ -49,32 +49,21 @@ test("Web model picker supports search and mobile header wrapping", () => {
 	assert.match(webHeader, /max-w-52 shrink/);
 });
 
-test("Mobile Web header wraps context checks above the model picker", () => {
-	const checks = readFileSync("src/renderer/src/web/WebContextChecks.tsx", "utf8");
+test("Mobile Web header wraps the runtime controls instead of squeezing them", () => {
 	assert.match(webCss, /\.chat-header-actions[\s\S]*flex-wrap:\s*wrap;/);
 	assert.doesNotMatch(
 		webCss,
 		/@media\s*\(max-width:\s*900px\)[\s\S]*\.chat-header-actions[\s\S]*flex-wrap:\s*nowrap;/,
 		"phones must not force the header controls onto one squeezed row",
 	);
-	assert.match(webCss, /chat-context-checks,[\s\S]*flex:\s*1\s+1\s+100%;/);
-	assert.match(checks, /chat-context-checks/);
-	assert.match(checks, /whitespace-nowrap/);
 	assert.match(webHeader, /chat-header-runtime/);
 	assert.match(webHeader, /max-w-52 shrink/);
 	assert.match(webCss, /overflow-x:\s*auto;/);
 });
 
-test("Web header mounts context checkboxes before the model picker", () => {
-	const checksIndex = webHeader.indexOf("<WebContextChecks");
-	const pickerIndex = webHeader.indexOf("<ModelPicker");
-	assert.ok(checksIndex >= 0, "WebHeader must mount WebContextChecks");
-	assert.ok(pickerIndex > checksIndex, "context checks must sit left of the model picker");
-	const checks = readFileSync("src/renderer/src/web/WebContextChecks.tsx", "utf8");
-	assert.match(checks, /applyLocalSwitch/);
-	assert.match(checks, /WebKeepSpinBox/);
-	assert.match(checks, /\/context-keep/);
-	assert.match(checks, /pendingRef/);
+test("Web header no longer mounts context checkboxes", () => {
+	assert.doesNotMatch(webHeader, /WebContextChecks/);
+	assert.ok(webHeader.includes("<ModelPicker"), "model picker must stay in the header");
 });
 
 test("Mobile Web keeps chat full-screen and opens the project tree as a drawer", () => {

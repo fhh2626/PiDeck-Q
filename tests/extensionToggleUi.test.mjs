@@ -22,15 +22,6 @@ test("extension menu uses lightweight refresh on entry and after toggles", () =>
 	assert.match(tab, /getExtensionsApi\(\)\.toggle\(extension\.source, enabled\)[\s\S]*?props\.onReload\(\)/);
 });
 
-test("context controller is a default-on built-in shown as PiDeck-Q-context-controller", () => {
-	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
-	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
-	assert.match(builtIns, /"pideck-q-context-controller\.ts"/);
-	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-context-controller/);
-	assert.match(tab, /PiDeck-Q-context-controller/);
-	assert.match(tab, /"pideck-q-context-controller\.ts": "PiDeck-Q-context-controller"/);
-});
-
 test("web search is a default-off built-in shown as PiDeck-Q-WebSearch", () => {
 	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
 	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");

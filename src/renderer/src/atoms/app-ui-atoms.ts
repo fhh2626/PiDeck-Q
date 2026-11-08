@@ -40,13 +40,3 @@ export const turnFlowSettingsAtom = atom<TurnFlowSettings>({
 	expandInterimDuringStream: false,
 	collapsePrevRunsOnNewTurn: true,
 });
-
-export type ContextControllerSettings = {
-	piRpcNoExtensions: boolean;
-	removedBuiltInExtensions: readonly string[];
-};
-
-export const contextControllerSettingsAtom = atom<ContextControllerSettings>({
-	piRpcNoExtensions: false,
-	removedBuiltInExtensions: ["pideck-q-better-compaction.ts"],
-});

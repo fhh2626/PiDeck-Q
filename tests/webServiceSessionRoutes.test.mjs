@@ -260,6 +260,28 @@ test("native Session HTTP routes create drafts and send by stable Session identi
 	});
 });
 
+test("retired context-controller routes stay removed", async () => {
+	await withServer(async ({ baseUrl, calls }) => {
+		// 上下文控制器扩展已下线，桌面端与 Web 端都不再提供开关；
+		// 这里守住两个已删除的 HTTP 入口，防止被无意恢复成一条绕过生成锁的静默命令通道。
+		const stateResponse = await authFetch(
+			`${baseUrl}/api/sessions/session-1/context-controller-state`,
+		);
+		assert.equal(stateResponse.status, 404);
+
+		const commandResponse = await authFetch(
+			`${baseUrl}/api/sessions/session-1/context-controller`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ command: "/context-keep 5" }),
+			},
+		);
+		assert.equal(commandResponse.status, 404);
+		assert.equal(calls.send.length, 0, "removed route must not reach sendSessionPrompt");
+	});
+});
+
 test("web core routes create a project and expose the configured model list", async () => {
 	await withServer(async ({ baseUrl, calls }) => {
 		const projectResponse = await authFetch(`${baseUrl}/api/projects`, {

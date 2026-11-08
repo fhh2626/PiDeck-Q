@@ -176,7 +176,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     ),
     [sessionId],
   );
-  // 与 SessionHeader / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  // 与 SessionHeader / ComposerArea 共用同一个按会话选择器。
   const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const messageLoadState = useAtomValue(messageLoadStateSelector);
   const internalController = useSessionTimelineController({

@@ -175,17 +175,6 @@ export type ImageContent = {
 	mimeType: string; // 如 "image/png", "image/jpeg", "image/gif", "image/webp"
 };
 
-export type ContextControllerState = {
-	/** 丢掉全部 toolCall + toolResult（早于最近 keepRecentCount 条的调用） */
-	clearToolHistory: boolean;
-	/** stub read 正文（早于最近 keepRecentCount 条的调用） */
-	clearReadContent: boolean;
-	/** stub 非 read 正文（早于最近 keepRecentCount 条的调用） */
-	clearCommandContent: boolean;
-	/** 保留最近 N 条工具结果原文不裁剪（默认 10，范围 0-99） */
-	keepRecentCount: number;
-};
-
 export type SendPromptInput = {
 	agentId: string;
 	message: string;

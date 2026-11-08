@@ -63,8 +63,6 @@ export const ipcChannels = {
 	/** 会话 JSONL 过程事件（session/model/thinking/custom/compaction），供轨迹复盘，不进聊天时间线。 */
 	sessionsCatalogReadProcessEvents: "sessions:catalog-read-process-events",
 	sessionsCatalogReadReferenceMessages: "sessions:catalog-read-reference-messages",
-	/** 读取会话文件中最近保存的上下文控制器状态（开关初始化用） */
-	sessionsCatalogGetContextControllerState: "sessions:catalog-get-context-controller-state",
 	/** 按需读取单条消息完整文本（工具结果截断后的「查看完整输出」入口）。 */
 	sessionsCatalogReadMessageFullText: "sessions:catalog-read-message-full-text",
 	/** 为长图导出读取未截断的工具参数与结果完整载荷 */

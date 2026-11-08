@@ -19,10 +19,6 @@ import type {
 } from "../../shared/types";
 import { parseSessionProcessEvents } from "../sessions/sessionProcessEvents";
 import { CatalogScanScope } from "../sessions/CatalogScanScope";
-import {
-	DEFAULT_CONTEXT_CONTROLLER_STATE,
-	parseContextControllerStateFromJsonl,
-} from "../sessions/contextControllerStateReader";
 import type { RpcRouter } from "../transport/RpcRouter";
 import {
 	enforceDeliveryBudgetOnPage,
@@ -352,22 +348,6 @@ export function registerSessionIpc(router: RpcRouter, deps: SessionIpcDeps): voi
 	router.handle(
 		ipcChannels.sessionsCatalogReadReferenceMessages,
 		(sessionId: string) => readCatalogSessionReferenceMessages(sessionId),
-	);
-	router.handle(
-		ipcChannels.sessionsCatalogGetContextControllerState,
-		async (sessionId: string) => {
-			if (typeof sessionId !== "string" || !sessionId.trim()) {
-				return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			}
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			try {
-				const content = await sessionScanner.readSessionRawText(entry.filePath);
-				return parseContextControllerStateFromJsonl(content);
-			} catch {
-				return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			}
-		},
 	);
 	// 按需读取消息完整文本（工具结果截断后的「查看完整输出」）：
 	// 入参校验在边界（渲染层数据不可信），agentId/messageId 必须为非空字符串。

@@ -157,3 +157,26 @@ test("edit save dispatches captured callback and never gates on the current onEd
   assert.match(turnRow, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
   assert.match(surfaceComponents, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
 });
+
+test("silent extension commands keep their generic contract", () => {
+  // 静默命令是 SessionRuntimeCoordinator.send / IPC 的 API 约定，与 composer 的
+  // `!!` 无关——后者是 pi 自己的 shell 命令语法。
+  // Web POST /api/sessions/:id/prompt 会把 body.silent 透传下去，但空 message 会在进入
+  // coordinator 之前被 400 拒掉；空正文只在 IPC 这一层允许。
+  // 契约：正文走 agentMessage，且不进入模型回合（不置 running、不写乐观用户消息、
+  // 不占 TTFT 计时起点），否则会污染下一次真实回复的首字延迟。
+  assert.match(
+    coordinator,
+    /const hasSilentCommand = Boolean\(input\.silent && input\.agentMessage\?\.trim\(\)\);/,
+  );
+  assert.match(
+    coordinator,
+    /if \(!input\.message\.trim\(\) && !input\.images\?\.length && !hasSilentCommand\)/,
+  );
+  // 静默命令必须是已注册扩展命令，否则会被当成普通 prompt 发给模型
+  assert.match(agentManager, /静默命令必须是已注册扩展命令/);
+  assert.match(
+    agentManager,
+    /静默扩展命令不进入模型回合，不能占用首字计时起点[\s\S]{0,400}?if \(!input\.silent\) \{[\s\S]{0,200}?this\.promptRequestedAtByAgent\.set/,
+  );
+});

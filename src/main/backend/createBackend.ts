@@ -17,10 +17,6 @@ import { FileSystemService } from "../fs/FileSystemService";
 import { SessionScanner } from "../sessions/SessionScanner";
 import { SessionCatalog } from "../sessions/SessionCatalog";
 import { SessionRuntimeCoordinator } from "../sessions/SessionRuntimeCoordinator";
-import {
-	DEFAULT_CONTEXT_CONTROLLER_STATE,
-	parseContextControllerStateFromJsonl,
-} from "../sessions/contextControllerStateReader";
 import { CodexSessionImporter } from "../sessions/CodexSessionImporter";
 import { ClaudeSessionImporter } from "../sessions/ClaudeSessionImporter";
 import { OpenCodeSessionImporter } from "../sessions/OpenCodeSessionImporter";
@@ -399,19 +395,6 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 				if (tab) runtimeBridge.emitSessionRuntimeEvent(tab.id, ipcChannels.agentsState, tab);
 			}
 			return result;
-		},
-		getContextControllerState: async (sessionId) => {
-			if (typeof sessionId !== "string" || !sessionId.trim()) {
-				return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			}
-			const entry = sessionCatalog.get(sessionId);
-			if (!entry?.filePath) return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			try {
-				const content = await sessionScanner.readSessionRawText(entry.filePath);
-				return parseContextControllerStateFromJsonl(content);
-			} catch {
-				return { ...DEFAULT_CONTEXT_CONTROLLER_STATE };
-			}
 		},
 		listSessionRuntimes: () => sessionRuntimeCoordinator.listRuntimes(),
 		listPendingUiRequests: () => sessionRuntimeCoordinator.listPendingUiRequests(),

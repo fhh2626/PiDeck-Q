@@ -7,7 +7,6 @@ import { basename, join } from "node:path";
  */
 export const BUILT_IN_EXTENSIONS = [
 	"pideck-q-ask-question.ts",
-	"pideck-q-context-controller.ts",
 	"pi-deck-nul-redirect-fix.ts",
 	"pi-deck-plan-mode.ts",
 	"pi-deck-security-gate.ts",
@@ -45,15 +44,30 @@ const DEFAULT_DISABLED_MIGRATIONS: ReadonlyArray<{
 /** 文件更名只迁移持久化身份，不改变用户此前的启用/禁用选择。 */
 const BUILT_IN_EXTENSION_ALIASES: Readonly<Record<string, BuiltInExtensionName>> = {
 	"pi-deck-ask-question.ts": "pideck-q-ask-question.ts",
-	"pi-deck-context-controller.ts": "pideck-q-context-controller.ts",
 	"pi-deck-websearch.ts": "pideck-q-websearch.ts",
 	"pi-better-compaction.ts": "pideck-q-better-compaction.ts",
 };
 
+/**
+ * 已下线、不再随包分发的旧入口。
+ *
+ * 必须保留在 LEGACY_BUILT_IN_EXTENSION_NAMES 里：升级后要能从 pi 自动发现目录
+ * 清掉旧副本，否则 pi 会继续自动加载它，等于功能没删干净。
+ *
+ * 两个名字都要登记：老版本曾把内置扩展复制成 `pi-deck-context-controller.ts`，
+ * 重命名后复制成 `pideck-q-context-controller.ts`；下线后它们都不再属于
+ * BUILT_IN_EXTENSIONS，不会自动进入清理名单。
+ */
+const RETIRED_BUILT_IN_EXTENSION_NAMES = [
+	"pi-deck-context-controller.ts",
+	"pideck-q-context-controller.ts",
+] as const;
+
 /** 升级后必须从 pi 自动发现目录清掉的旧入口，避免与重命名后的 -e 入口重复加载。 */
-export const LEGACY_BUILT_IN_EXTENSION_NAMES = Object.freeze(
-	Object.keys(BUILT_IN_EXTENSION_ALIASES),
-);
+export const LEGACY_BUILT_IN_EXTENSION_NAMES = Object.freeze([
+	...Object.keys(BUILT_IN_EXTENSION_ALIASES),
+	...RETIRED_BUILT_IN_EXTENSION_NAMES,
+]);
 
 export function migrateBuiltInExtensionDefaults(
 	removedBuiltInExtensions: readonly string[] | undefined,

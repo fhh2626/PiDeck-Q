@@ -67,9 +67,9 @@ test("listActiveBuiltInExtensionPaths respects removedBuiltIn and missing files"
 		);
 		assert.equal(paths.length, 1);
 		assert.ok(String(paths[0]).endsWith("pideck-q-ask-question.ts"));
-		// 内置扩展清单随版本增长：ask/context-controller/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction/change-pi-prompt/webfetch/subagents
-		assert.equal(BUILT_IN_EXTENSIONS.length, 12);
-		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-context-controller.ts"));
+		// 内置扩展清单随版本增长：ask/nul-redirect/plan-mode/security-gate/todo/vision/websearch/better-compaction/change-pi-prompt/webfetch/subagents
+		assert.equal(BUILT_IN_EXTENSIONS.length, 11);
+		assert.ok(!BUILT_IN_EXTENSIONS.includes("pideck-q-context-controller.ts"));
 		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-webfetch.ts"));
 		assert.ok(BUILT_IN_EXTENSIONS.includes("pideck-q-subagents.ts"));
 	} finally {
@@ -170,7 +170,6 @@ test("renamed built-ins preserve legacy disabled choices", () => {
 	const migrated = migrateBuiltInExtensionDefaults(
 		[
 			"pi-deck-ask-question.ts",
-			"pi-deck-context-controller.ts",
 			"pi-deck-websearch.ts",
 			"pi-better-compaction.ts",
 		],
@@ -182,10 +181,11 @@ test("renamed built-ins preserve legacy disabled choices", () => {
 		[
 			"pideck-q-ask-question.ts",
 			"pideck-q-better-compaction.ts",
-			"pideck-q-context-controller.ts",
 			"pideck-q-websearch.ts",
 		],
 	);
+	// 已下线的 context-controller 两个历史文件名都必须留在清理名单里：
+	// 它们已不在 BUILT_IN_EXTENSIONS，不登记就会被 pi 自动发现目录继续加载。
 	assert.deepEqual(
 		[...LEGACY_BUILT_IN_EXTENSION_NAMES].sort(),
 		[
@@ -193,6 +193,7 @@ test("renamed built-ins preserve legacy disabled choices", () => {
 			"pi-deck-ask-question.ts",
 			"pi-deck-context-controller.ts",
 			"pi-deck-websearch.ts",
+			"pideck-q-context-controller.ts",
 		],
 	);
 });

@@ -12,9 +12,7 @@ import type {
 	AvailableModel,
 	AskQuestionResultSummary,
 	ChatMessage,
-	ContextControllerState,
 	ImageContent,
-	SendSessionPromptResult,
 	SessionCommandResult,
 	SessionLaunchPreferences,
 	SessionMessagePage,
@@ -63,32 +61,6 @@ export async function fetchModels(): Promise<AvailableModel[]> {
 	if (!res.ok) throw new Error(`models ${res.status}`);
 	const result = (await res.json()) as { models?: AvailableModel[] };
 	return result.models ?? [];
-}
-
-/** 读取会话 JSONL 中最后一条上下文控制器快照；与桌面 IPC 同源。 */
-export async function fetchContextControllerState(sessionId: string): Promise<ContextControllerState> {
-	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/context-controller-state`);
-	if (!res.ok) throw new Error(`context-controller-state ${res.status}`);
-	return res.json() as Promise<ContextControllerState>;
-}
-
-/**
- * 静默下发上下文开关命令。不走 /prompt，避免占用 Web 生成锁。
- * 桌面与 Web 最终都进入同一条 sendSessionPrompt(silent) 路径，JSONL 快照共享。
- */
-export async function sendContextControllerCommand(
-	sessionId: string,
-	command: string,
-): Promise<SendSessionPromptResult> {
-	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/context-controller`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ command }),
-	});
-	if (!res.ok) throw new Error(`context-controller ${res.status}`);
-	const payload = (await res.json()) as { result?: SendSessionPromptResult };
-	if (!payload.result) throw new Error("context-controller: missing result");
-	return payload.result;
 }
 
 /** 按项目新建会话（对应桌面端「新建 Agent」入口）。返回新会话 id。 */

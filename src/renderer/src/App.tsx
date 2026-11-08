@@ -29,7 +29,7 @@ import {
   isNativeRuntime,
   missingElectronPreload,
 } from "./desktopApi";
-import { contextControllerSettingsAtom, turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
+import { turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
 import {
   useImagePreviewController,
 } from "./hooks/useImagePreviewController";
@@ -591,18 +591,6 @@ export function App() {
     settings.expandInterimDuringStream,
     settings.collapsePrevRunsOnNewTurn,
     setTurnFlowSettings,
-  ]);
-
-  const setContextControllerSettings = useSetAtom(contextControllerSettingsAtom);
-  useEffect(() => {
-    setContextControllerSettings({
-      piRpcNoExtensions: Boolean(settings.piRpcNoExtensions),
-      removedBuiltInExtensions: settings.removedBuiltInExtensions ?? [],
-    });
-  }, [
-    settings.piRpcNoExtensions,
-    settings.removedBuiltInExtensions,
-    setContextControllerSettings,
   ]);
 
   // Guard: hide git drawer when git management is disabled.

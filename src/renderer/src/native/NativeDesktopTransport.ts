@@ -26,7 +26,6 @@ const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.sessionsCatalogReadMessagePage,
 	ipcChannels.sessionsCatalogReadProcessEvents,
 	ipcChannels.sessionsCatalogReadReferenceMessages,
-	ipcChannels.sessionsCatalogGetContextControllerState,
 	ipcChannels.sessionsCatalogReadMessageFullText,
 	ipcChannels.filesList,
 	ipcChannels.filesReadContent,

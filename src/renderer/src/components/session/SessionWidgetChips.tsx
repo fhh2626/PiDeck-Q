@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useState } from "react";
-import { ClipboardList, ListChecks, SlidersHorizontal, X } from "lucide-react";
+import { ClipboardList, ListChecks, X } from "lucide-react";
 import {
 	sessionRuntimeBySessionIdAtomFamily,
 	sessionRuntimeUiBySessionIdAtomFamily,
@@ -123,7 +123,6 @@ export function SessionWidgetChips(props: { sessionId: string }) {
 	const widgets = coherent?.widgets ?? {};
 	const entries = Object.entries(widgets).filter(
 		([widgetKey, lines]) =>
-			widgetKey !== "pi-deck-context-controller" &&
 			!isWidgetDismissed(dismissed, props.sessionId, widgetKey, lines),
 	);
 
@@ -164,13 +163,8 @@ function WidgetChip(props: {
 	const title = widgetDisplayTitle(props.widgetKey);
 	const { done, total } = widgetProgress(props.lines);
 	// 无 ☑/☐ 行（如 todo 折叠态只回 "2/4" 一行）时，chip 摘要退化为首行文本
-	const isContextController = props.widgetKey === "pi-deck-context-controller";
 	const summary = total > 0 ? `${done}/${total}` : (props.lines[0] ?? "");
-	const Icon = isContextController
-		? SlidersHorizontal
-		: props.widgetKey === "pi-deck-plan-todos"
-			? ClipboardList
-			: ListChecks;
+	const Icon = props.widgetKey === "pi-deck-plan-todos" ? ClipboardList : ListChecks;
 	// 全部完成时用成功色描边提示，一眼可辨无需再点开
 	const allDone = total > 0 && done === total;
 	return (
@@ -221,25 +215,14 @@ function WidgetChip(props: {
 					>
 						<X className="size-3.5" aria-hidden="true" />
 					</Button>
-					{isContextController ? (
-						<div className="px-3 py-3 pr-8">
-							<div className="mb-2 text-xs font-semibold">{title}</div>
-							<div className="space-y-1 text-xs leading-5 text-muted-foreground">
-								{props.lines.map((line) => (
-									<div key={line}>{line}</div>
-								))}
-							</div>
-						</div>
-					) : (
-						<TodoList
-							title={title}
-							items={parseAgentTodoItems(props.lines)}
-							embedded
-							compact
-							maxHeight={320}
-							className="rounded-none border-0 pr-7"
-						/>
-					)}
+					<TodoList
+						title={title}
+						items={parseAgentTodoItems(props.lines)}
+						embedded
+						compact
+						maxHeight={320}
+						className="rounded-none border-0 pr-7"
+					/>
 				</div>
 			</PopoverContent>
 		</Popover>

@@ -69,7 +69,6 @@ export function renderWidgetLine(line: string): ReactNode {
 export function widgetDisplayTitle(widgetKey: string): string {
 	if (widgetKey === "pi-deck-todo") return t("app.widgetTitleTodo");
 	if (widgetKey === "pi-deck-plan-todos") return t("app.widgetTitlePlan");
-	if (widgetKey === "pi-deck-context-controller") return t("app.widgetTitleContext");
 	return widgetKey;
 }
 

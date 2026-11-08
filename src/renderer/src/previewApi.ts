@@ -407,12 +407,6 @@ export function createPreviewApi(): PiDesktopApi {
 				{ role: "user", content: "Preview user message", timestamp: Date.now() - 60000 },
 				{ role: "assistant", content: "Preview assistant response", timestamp: Date.now() - 30000 },
 			],
-			getContextControllerState: async () => ({
-				clearToolHistory: false,
-				clearReadContent: false,
-				clearCommandContent: false,
-				keepRecentCount: 10,
-			}),
 			sendPrompt: async (input) => ({
 				accepted: true,
 				sessionId: input.sessionId,

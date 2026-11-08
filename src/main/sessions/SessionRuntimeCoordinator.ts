@@ -215,7 +215,8 @@ export class SessionRuntimeCoordinator {
 		const requestId = input.requestId.trim();
 		if (!sessionId) return Promise.resolve(this.rejected(input, "Session ID is required"));
 		if (!requestId) return Promise.resolve(this.rejected(input, "Request ID is required"));
-		// 静默扩展命令允许 message 为空、由 agentMessage 驱动（如顶栏上下文开关）。
+		// 静默扩展命令允许 message 为空、由 agentMessage 驱动。
+		// 这是 send 的 API 约定（IPC 会原样透传 silent），不再对应某个具体扩展。
 		const hasSilentCommand = Boolean(input.silent && input.agentMessage?.trim());
 		if (!input.message.trim() && !input.images?.length && !hasSilentCommand) {
 			return Promise.resolve(this.rejected(input, "消息不能为空", {

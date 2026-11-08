@@ -33,19 +33,26 @@ test("session tabs mount once outside SessionView; pane keeps standalone header"
   assert.doesNotMatch(headerArea, /embedded/);
 });
 
-test("context and cost chips stay pinned when header switches overflow", () => {
+test("context and cost chips stay pinned when the header row overflows", () => {
   const header = readFileSync(
     "src/renderer/src/components/session/SessionHeader.tsx",
     "utf8",
   );
-  const switches = readFileSync(
-    "src/renderer/src/components/session/ContextControllerSwitches.tsx",
-    "utf8",
-  );
-  // 开关文案变长后必须先让位，不能把最右侧 ctx/cost chip 挤出窗口。
+  // 头部内容变长时必须先让位，不能把最右侧 ctx/cost chip 挤出窗口。
   assert.match(header, /grid-cols-\[minmax\(0,1fr\)_minmax\(0,auto\)\]/);
   assert.match(header, /<div className="shrink-0">\s*<SessionStatus/);
-  assert.match(switches, /flex min-w-0 shrink items-center justify-end gap-2 overflow-hidden/);
+});
+
+test("header action buttons exempt switch, checkbox and select triggers from the 60px min-width", () => {
+  // .chat-header-actions 同时用于桌面 SessionHeader 与 Web WebHeader。
+  // 头部按钮统一 60px 最小宽度可保证图标对齐，但模型选择器的 select-trigger
+  // 被撑成 60px 会挤压标题；开关/复选框同理。该豁免规则与具体功能无关，
+  // 不能因为上下文开关下线就删掉。
+  const css = readFileSync("src/renderer/src/styles/foundation.css", "utf8");
+  assert.match(
+    css,
+    /\.chat-header-actions button:not\(\[data-slot="switch"\]\):not\(\[data-slot="checkbox"\]\):not\(\[data-slot="select-trigger"\]\)/,
+  );
 });
 
 test("session status and new-session controls use the shared medium radius", () => {

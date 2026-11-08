@@ -13,7 +13,6 @@ import { isUserFacingSessionStart } from "../../hooks/useSessionTimelineControll
 import { t } from "../../i18n";
 import { displayProjectDirectoryName } from "../../rendererUtils";
 import { Button } from "../ui-shadcn/button";
-import { ContextControllerSwitches } from "./ContextControllerSwitches";
 import { SessionStatus } from "./SurfaceParts";
 
 type HeaderActions = {
@@ -73,7 +72,7 @@ export function SessionHeader(props: SessionHeaderProps) {
   // 会话级缓存命中率历史（统计快照由 runtime 事件写入 atom），供状态入口展示。
   const cacheStatsAtom = useMemo(() => sessionCacheStatsBySessionIdAtom(sessionId), [sessionId]);
   const cacheStats = useAtomValue(cacheStatsAtom);
-  // 与 SessionMessageTimeline / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  // 与 SessionMessageTimeline / ComposerArea 共用同一个按会话选择器。
   const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
 
   // SessionView 仍走 legacy 装配，不能只在 mode=session 时读 atom；
@@ -102,7 +101,6 @@ export function SessionHeader(props: SessionHeaderProps) {
           <HatGlasses size={14} aria-hidden="true" />
         </span>
       )}
-      {sessionId ? <ContextControllerSwitches sessionId={sessionId} /> : null}
       <div className="shrink-0">
         <SessionStatus state={runtimeState} duration={props.duration} cacheHitHistory={cacheStats?.cacheHitHistory} />
       </div>

@@ -15,7 +15,6 @@ const READONLY_CHANNEL_KEYS = [
 	"sessionsCatalogReadMessagePage",
 	"sessionsCatalogReadProcessEvents",
 	"sessionsCatalogReadReferenceMessages",
-	"sessionsCatalogGetContextControllerState",
 	"sessionsCatalogReadMessageFullText",
 	"filesList",
 	"filesReadContent",

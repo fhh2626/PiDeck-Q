@@ -1721,15 +1721,15 @@ export class AgentManager {
 			if (!isExtensionCommand) {
 				return {
 					accepted: false,
-					error: "Context controller command is unavailable",
-					i18nKey: "ctx.switches.pluginDisabled",
+					error: "Silent command is unavailable",
+					i18nKey: "sessionCommand.silentUnavailable",
 				};
 			}
 			if (alreadyBusy) {
 				return {
 					accepted: false,
-					error: "Can't change context while generating",
-					i18nKey: "ctx.switches.busyDisabled",
+					error: "Silent commands are locked while generating",
+					i18nKey: "sessionCommand.silentBusy",
 				};
 			}
 		}

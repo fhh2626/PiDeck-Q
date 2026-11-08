@@ -352,11 +352,6 @@ const api = {
 				ipcChannels.sessionsCatalogReadReferenceMessages,
 				sessionId,
 			) as Promise<Array<{ role: string; content: string; timestamp: number }>>,
-		getContextControllerState: (sessionId: string) =>
-			transport.invoke(
-				ipcChannels.sessionsCatalogGetContextControllerState,
-				sessionId,
-			) as Promise<import("../types").ContextControllerState>,
 		copyRecord: (sessionId: string) =>
 			transport.invoke(ipcChannels.sessionsCatalogCopy, sessionId) as Promise<{
 				cancelled?: boolean;
