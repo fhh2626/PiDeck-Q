@@ -21,6 +21,7 @@ import {
   Terminal,
   GitBranch,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { showNotice } from "./utils/notice";
 import {
@@ -34,6 +35,9 @@ import {
   useImagePreviewController,
 } from "./hooks/useImagePreviewController";
 const ConfigModal = lazy(() => import("./ConfigModal").then((m) => ({ default: m.ConfigModal })));
+const SubagentSettingsDialog = lazy(() =>
+  import("./components/subagents/SubagentSettingsDialog").then((m) => ({ default: m.SubagentSettingsDialog })),
+);
 import { type SidebarActions } from "./components/sidebar/SidebarContent";
 import { AppSidebar } from "./components/sidebar/AppSidebar";
 import { AppBootstrap } from "./components/app/AppBootstrap";
@@ -69,6 +73,7 @@ import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useProjectSync } from "./hooks/useProjectSync";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useModelListSync } from "./hooks/useModelListSync";
+import { useSubagentExtensionEnabled } from "./hooks/useSubagentExtensionEnabled";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
@@ -1778,6 +1783,16 @@ export function App() {
   const [skillsQuickOpen, setSkillsQuickOpen] = useState(false);
   const skillsQuickChangedRef = useRef(false);
 
+  // 子代理偏好弹框：配置写入 pi settings.json 的 subagents 块，由扩展消费。
+  // 扩展未启用时入口置灰（配置写了也不会生效），用配置弹框开关作为重新探测的 key。
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const subagentsExtensionEnabled = useSubagentExtensionEnabled(!isLanWeb, configOpen);
+  // 探测未完成（undefined）时按「检查中」置灰：不能对已安装的插件谎报「需要安装」。
+  const subagentsAvailable = subagentsExtensionEnabled === true;
+  const subagentsLabel = subagentsExtensionEnabled === undefined
+    ? t("subagents.checking")
+    : subagentsAvailable ? t("subagents.title") : t("subagents.unavailable");
+
   /**
    * Skills 修改完成后停止所有当前真实 Agent runtime。
    * 只从 agentsRef（agentInventoryAtom，已绑定真实 runtime）取 ID；
@@ -2992,6 +3007,18 @@ export function App() {
             },
             icon: <Sparkles size={14} />,
           } : undefined}
+          // 子代理偏好：与 Skills 入口同一安全边界——LAN Web 不允许改宿主机全局配置；
+          // 扩展未启用时置灰并说明原因（配置写了也不会生效）。
+          subagentsAction={!isLanWeb ? {
+            active: subagentsOpen,
+            disabled: !subagentsAvailable,
+            label: subagentsLabel,
+            onClick: () => {
+              if (!subagentsAvailable) return;
+              setSubagentsOpen(true);
+            },
+            icon: <Users size={14} />,
+          } : undefined}
         />
       }
       setListCollapsed={setListCollapsed}
@@ -3231,6 +3258,18 @@ export function App() {
 
     {/* Scratch Pad（草稿本）：根级渲染，避免受 chat-pane grid 影响定位 */}
     <ScratchPadOverlay controller={scratchPad} />
+
+    {/* 子代理偏好弹框：全局/项目配置，根级渲染；扩展未启用时入口已置灰，这里再兜一层。 */}
+    {!isLanWeb && subagentsAvailable && (
+      <Suspense fallback={null}>
+        <SubagentSettingsDialog
+          open={subagentsOpen}
+          projectId={activeProjectId}
+          projectName={activeProject?.name}
+          onClose={() => setSubagentsOpen(false)}
+        />
+      </Suspense>
+    )}
 
     {/* Skills 快捷管理小窗口：全局配置，根级渲染，不随某个 session pane 的 mount/unmount 卸载。
         locked 用 skillsRuntimeBusy（不含 skillsStoppingAgents 自身）+ stopping，保证 stop 过程中 toggle 全禁。 */}

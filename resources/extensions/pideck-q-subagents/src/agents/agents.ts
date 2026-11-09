@@ -200,6 +200,8 @@ interface SubagentSettings {
 	disableBuiltins?: boolean;
 	disableThinking?: boolean;
 	modelScope?: ModelScopeConfig;
+	/** 在系统提示词中引导主代理优先委派复杂任务（PiDeck 右侧「子代理」弹框写入）。 */
+	preferDelegation?: boolean;
 }
 
 const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {}, providerOverrides: {} };
@@ -1158,6 +1160,14 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 			throw new Error(`Subagent settings in '${filePath}' have invalid 'defaultProvider'; expected a non-empty string.`);
 		}
 	}
+	let preferDelegation: boolean | undefined;
+	if ("preferDelegation" in subagentsObject) {
+		if (typeof subagentsObject.preferDelegation === "boolean") {
+			preferDelegation = subagentsObject.preferDelegation;
+		} else {
+			throw new Error(`Subagent settings in '${filePath}' have invalid 'preferDelegation'; expected a boolean.`);
+		}
+	}
 	let defaultThinking: string | undefined;
 	if ("defaultThinking" in subagentsObject) {
 		if (typeof subagentsObject.defaultThinking === "string" && subagentsObject.defaultThinking.trim()) {
@@ -1208,6 +1218,7 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		...(disableBuiltins !== undefined ? { disableBuiltins } : {}),
 		...(disableThinking !== undefined ? { disableThinking } : {}),
 		...(modelScope !== undefined ? { modelScope } : {}),
+		...(preferDelegation !== undefined ? { preferDelegation } : {}),
 	};
 	if (agentOverrides && typeof agentOverrides === "object" && !Array.isArray(agentOverrides)) {
 		for (const [name, value] of Object.entries(agentOverrides)) {
@@ -1282,6 +1293,17 @@ function applySubagentDefaultModel(agents: AgentConfig[], defaultModel: AgentMod
 		if (frontmatterFields) agentFrontmatterFields.set(next, frontmatterFields);
 		return next;
 	});
+}
+
+/**
+ * 读取「优先委派」偏好：项目 settings 覆盖用户 settings。
+ * 供 extension/delegation-hint.ts 在 before_agent_start 里决定是否注入引导语。
+ */
+export function resolveSubagentPreferDelegation(cwd: string): boolean {
+	const user = readSubagentSettings(getUserAgentSettingsPath());
+	const projectPath = getProjectAgentSettingsPath(cwd);
+	const project = projectPath ? readSubagentSettings(projectPath) : EMPTY_SUBAGENT_SETTINGS;
+	return project.preferDelegation ?? user.preferDelegation ?? false;
 }
 
 function resolveSubagentDefaultThinking(

@@ -988,6 +988,8 @@ export function ConversationOutline(props: {
 	gitAction?: EntryAction;
 	editorsAction?: EntryAction & { anchorRef?: React.RefObject<HTMLButtonElement | null> };
 	skillsAction?: EntryAction;
+	/** 子代理偏好入口：扩展未启用时 disabled + 提示文案。 */
+	subagentsAction?: EntryAction;
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const [dragging, setDragging] = useState(false);
@@ -1152,6 +1154,28 @@ export function ConversationOutline(props: {
 				>
 					{props.skillsAction.icon}
 				</button>
+			)}
+			{/* 复用 skills-entry 的入口外观：右侧工具条这一排共用同一套 legacy 视觉，
+			    新增 .subagents-entry 只会再复制一份手写 CSS。
+			    提示文案挂在外层 span：disabled 按钮不派发鼠标事件，原生 title 不会弹出，
+			    悬停子元素时浏览器会显示最近祖先的 title。 */}
+			{props.subagentsAction && (
+				<span
+					className={`inline-flex${props.subagentsAction.disabled ? " cursor-not-allowed" : ""}`}
+					title={props.subagentsAction.label}
+				>
+					<button
+						type="button"
+						// pointer-events-none：disabled 按钮自己吃掉 hover，外层 span 就收不到，
+						// title 也就不会弹；把命中让给 span 才能显示「需要安装并启用插件」。
+						className={`skills-entry${props.subagentsAction.active ? " active" : ""}${props.subagentsAction.disabled ? " pointer-events-none" : ""}`}
+						aria-label={props.subagentsAction.label}
+						disabled={props.subagentsAction.disabled}
+						onClick={props.subagentsAction.onClick}
+					>
+						{props.subagentsAction.icon}
+					</button>
+				</span>
 			)}
 		</div>
 	);

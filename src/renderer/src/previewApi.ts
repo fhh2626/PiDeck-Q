@@ -526,6 +526,14 @@ export function createPreviewApi(): PiDesktopApi {
 			}),
 			get: async () => null as unknown as import("../../shared/types").UsageAggregated,
 		},
+		// 预览环境没有主进程：返回空配置，保存为 no-op，避免 UI 报错。
+		subagents: {
+			getSettings: async () => ({
+				global: { useOwnModel: false, preferDelegation: false },
+				project: null,
+			}),
+			saveSettings: async () => ({ ok: true }),
+		},
 		codexSessions: {
 			scan: async () => [],
 			import: async () => ({ results: [], imported: 0, failed: 0 }),

@@ -31,3 +31,35 @@ export type SubagentLiveSnapshot = {
 	/** 只含 running / error；终态 completed 不会出现在下发快照里。 */
 	runs: SubagentLiveRun[];
 };
+
+// ── 子代理偏好设置（右侧工具条「子代理」弹框） ─────────────────────────
+// 落盘位置是 pi 的 settings.json `subagents` 块：扩展本来就从这里读
+// defaultModel / defaultProvider / defaultThinking，PiDeck 只负责图形化编辑。
+
+/** 配置作用域：全局（~/.pi/agent/settings.json）或当前项目（<project>/.pi/settings.json）。 */
+export type SubagentSettingsScope = "global" | "project";
+
+/** 子代理独立模型选择。 */
+export type SubagentModelChoice = {
+	provider: string;
+	modelId: string;
+	/** 思考强度；缺省表示不写 defaultThinking，沿用 pi 默认。 */
+	thinkingLevel?: string;
+};
+
+/** 一份作用域下的子代理偏好。 */
+export type SubagentSettings = {
+	/** 子代理是否使用与主代理不同的模型；false = 继承主代理。 */
+	useOwnModel: boolean;
+	/** useOwnModel 为 true 时的模型与档位。 */
+	model?: SubagentModelChoice;
+	/** 是否在系统提示词中引导主代理优先把复杂任务交给子代理。 */
+	preferDelegation: boolean;
+};
+
+/** 一次读取返回两个作用域，渲染层切换作用域时无需再请求。 */
+export type SubagentSettingsSnapshot = {
+	global: SubagentSettings;
+	/** 无活动项目时为 null（弹框禁用项目作用域）。 */
+	project: SubagentSettings | null;
+};

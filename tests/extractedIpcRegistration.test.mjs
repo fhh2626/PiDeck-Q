@@ -15,6 +15,15 @@ test("backend wiring registers the scratch-pad IPC domain on the shared router",
   assert.equal(scratch.deps.userDataDir, "/data");
 });
 
+test("backend wiring hands the subagents IPC domain the settings store identity", () => {
+  const { captured, services, router } = runBackendRpcWiring();
+  const subagents = captured.get("subagents");
+  assert.ok(subagents, "registerSubagentsIpc must be called by registerBackendRpc");
+  assert.equal(subagents.router, router);
+  // 业务服务按身份下发：渲染层写的就是 createBackend 装配的那份 store
+  assert.equal(subagents.deps, services.subagentSettingsStore);
+});
+
 test("backend wiring hands the session IPC domain its services unchanged", () => {
   const { captured, services, router } = runBackendRpcWiring();
   const session = captured.get("session");

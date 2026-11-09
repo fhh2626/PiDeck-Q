@@ -25,6 +25,7 @@ export function createFakeRouter() {
 
 const REGISTRAR_MODULES = {
   usageStats: ["../ipc/usageStatsIpc", "registerUsageStatsIpc"],
+  subagents: ["../ipc/subagentsIpc", "registerSubagentsIpc"],
   editors: ["../ipc/editorsIpc", "registerEditorsIpc"],
   backgrounds: ["../ipc/backgroundsIpc", "registerBackgroundsIpc"],
   projects: ["../ipc/projectsIpc", "registerProjectsIpc"],
@@ -106,6 +107,7 @@ export function runBackendRpcWiring({ disposeGit = () => {}, modelListCache, tim
     appLogger: named("appLogger", { info() {}, warn() {}, error() {} }),
     rpcLogger: named("rpcLogger"),
     usageStatsService: named("usageStatsService"),
+    subagentSettingsStore: named("subagentSettingsStore"),
     modelSpecsStore: named("modelSpecsStore", { warm() {} }),
     visionBridge: named("visionBridge"),
   };

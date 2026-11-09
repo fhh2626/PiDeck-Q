@@ -37,6 +37,7 @@ import { AppLogger } from "../logging/AppLogger";
 import { setAppLogger } from "../logging/sharedLogger";
 import { RpcLogger } from "../logging/RpcLogger";
 import { UsageStatsService } from "../usageStats/UsageStatsService";
+import { SubagentSettingsStore } from "../subagents/SubagentSettingsStore";
 import { PiLocator } from "../pi/PiLocator";
 import { AgentManager } from "../pi/AgentManager";
 import { fetchModelList, refreshModelList } from "../pi/modelListCache";
@@ -120,6 +121,13 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			info: (message) => void appLogger?.info("usage-stats", message),
 			warn: (message) => void appLogger?.warn("usage-stats", message),
 		},
+	});
+	// 子代理偏好：直接编辑 pi settings.json 的 subagents 块（全局用 ConfigManager 目录，
+	// 项目用 <project>/.pi/settings.json），扩展侧读同一份数据，不另存副本。
+	const subagentSettingsStore = new SubagentSettingsStore({
+		getConfigDir: () => configManager.getDir(),
+		getProjectPath: (projectId) => projectStore.get(projectId)?.path,
+		logger: appLogger,
 	});
 	const gitService = new GitService(trashPath);
 	const worktreeService = new WorktreeService(mainCopy, trashPath);
@@ -552,6 +560,7 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 			appLogger,
 			rpcLogger,
 			usageStatsService,
+			subagentSettingsStore,
 			modelSpecsStore,
 			visionBridge,
 		},

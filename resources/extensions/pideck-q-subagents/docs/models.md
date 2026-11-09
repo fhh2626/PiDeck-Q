@@ -13,6 +13,8 @@ Builtin agents inherit your current Pi default model. This keeps new installs fr
 
 Precedence, strongest first: per-run override → provider-scoped role override → `agentOverrides.<name>.model` → agent frontmatter `model` → `subagents.defaultModel` → the parent session model. A provider preference does not replace this order; it only resolves bare model ids when the active registry has more than one match. Fully qualified `provider/model` strings still win exactly.
 
+PiDeck-Q writes `defaultModel` in the fully qualified `provider/model` form (for example `openrouter/anthropic/claude-sonnet-4`). A bare id whose own name contains a slash would otherwise be read as a provider prefix and resolve to a different provider's copy of the same model; the qualified form matches the registry entry exactly. Hand-written bare ids keep working.
+
 Use `model: "inherit"` in agent frontmatter or `agentOverrides.<name>.model` to select the current parent session model explicitly.
 
 ## Setting defaults and overrides
@@ -170,6 +172,18 @@ Read the assigned files and return your findings without editing.
 Launch with `subagent({ agent: "reader", task: "Read README.md and summarize it", async: false, context: "fresh", output: false })`. Keep `forceTopLevelAsync` disabled and omit tool/usage budgets and the excluded runtime features above. No new recovery flag is required: these settings make the profile eligible, but continuation still requires actual completed read-only work, observed 429 and all checkpoint/provider/lifecycle checks. This is a trusted-host compatibility boundary, not sandboxing or universal provider attestation.
 
 For native background execution, use the same call with `async: true`, which overrides the agent's foreground default. Keep the explicit empty `extensions:` field: omitting it allows ambient extensions in background children and does not certify this profile. Select a fallback model satisfying the stricter background capacity bound above; unconfigured budgets are simplest, while token-only budgets still require the authoritative allowance check. Do not disable needed coordination or ambient capabilities merely to obtain continuation.
+
+## Delegation preference
+
+Set `subagents.preferDelegation: true` in user or project settings to add one sentence to the parent session's system prompt: delegate complex or parallelizable work to subagents and keep the main agent on planning, integration, and verification. Project settings win over user settings. The hint is only injected when the `subagent` tool is available and never inside a child process (`PI_SUBAGENT_CHILD`), so subagents do not inherit the instruction. In PiDeck-Q this switch is the last switch in the right-side "Subagents" dialog.
+
+```json
+{
+  "subagents": {
+    "preferDelegation": true
+  }
+}
+```
 
 ## Thinking level defaults
 

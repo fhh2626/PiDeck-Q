@@ -59,6 +59,7 @@ function loadRegisterBackendRpc() {
 	const timers = [];
 	const stubs = {
 		"../ipc/usageStatsIpc": ipcModule("registerUsageStatsIpc"),
+		"../ipc/subagentsIpc": ipcModule("registerSubagentsIpc"),
 		"../ipc/editorsIpc": ipcModule("registerEditorsIpc"),
 		"../ipc/backgroundsIpc": ipcModule("registerBackgroundsIpc"),
 		"../ipc/projectsIpc": ipcModule("registerProjectsIpc"),
@@ -109,7 +110,7 @@ test("registerBackendRpc wires every IPC domain onto the one transport-neutral r
 		"settingsStore", "securityStore", "worktreeService", "gitService", "piLocator", "agentManager",
 		"configManager", "promptManager", "xuePromptManager", "skillManager", "extensionManager",
 		"projectResourceManager", "webServiceManager", "terminalManager", "appLogger", "rpcLogger",
-		"modelSpecsStore", "visionBridge",
+		"modelSpecsStore", "visionBridge", "subagentSettingsStore",
 	];
 	const services = Object.fromEntries(serviceNames.map((name) => [name, service(name)]));
 	services.usageStatsService = null;
@@ -124,8 +125,9 @@ test("registerBackendRpc wires every IPC domain onto the one transport-neutral r
 	const registered = harness.registrations.map((entry) => entry.name).sort();
 	assert.deepEqual(registered, [
 		"registerBackgroundsIpc", "registerEditorsIpc", "registerFilesIpc", "registerGitIpc", "registerProjectsIpc",
-		"registerScratchPadIpc", "registerSecurityIpc", "registerSessionIpc", "registerStoreIpc", "registerSystemIpc",
-		"registerTerminalIpc", "registerUsageStatsIpc", "registerVisionIpc",
+		"registerScratchPadIpc", "registerSecurityIpc", "registerSessionIpc", "registerStoreIpc",
+		"registerSubagentsIpc", "registerSystemIpc", "registerTerminalIpc", "registerUsageStatsIpc",
+		"registerVisionIpc",
 	]);
 	for (const entry of harness.registrations) {
 		assert.equal(entry.router, router, `${entry.name} must register on the shared router, not its own channel`);

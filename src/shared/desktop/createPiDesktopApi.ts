@@ -75,6 +75,9 @@ import type {
 	SessionTargetedValue,
 	SessionUiResponseInput,
 	SessionSummary,
+	SubagentSettings,
+	SubagentSettingsScope,
+	SubagentSettingsSnapshot,
 	TerminalDataEvent,
 	TerminalExitEvent,
 	TerminalTab,
@@ -494,6 +497,24 @@ const api = {
 			transport.invoke(ipcChannels.usageStatsGet) as Promise<
 				import("../types").UsageAggregated
 			>,
+	},
+	// 子代理偏好：落盘在 pi settings.json 的 subagents 块，扩展侧消费同一份配置。
+	subagents: {
+		getSettings: (projectId?: string) =>
+			transport.invoke(ipcChannels.subagentsGetSettings, projectId) as Promise<
+				SubagentSettingsSnapshot
+			>,
+		saveSettings: (
+			scope: SubagentSettingsScope,
+			projectId: string | undefined,
+			settings: SubagentSettings,
+		) =>
+			transport.invoke(
+				ipcChannels.subagentsSaveSettings,
+				scope,
+				projectId,
+				settings,
+			) as Promise<{ ok: boolean }>,
 	},
 	codexSessions: {
 		scan: (projectId: string) =>

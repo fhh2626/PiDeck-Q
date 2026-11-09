@@ -39,6 +39,8 @@ import type { RpcRouter } from "../transport/RpcRouter";
 import type { BackendHost } from "./Backend";
 import type { SessionRuntimeBridge } from "./sessionRuntimeBridge";
 import { registerUsageStatsIpc } from "../ipc/usageStatsIpc";
+import { registerSubagentsIpc } from "../ipc/subagentsIpc";
+import type { SubagentSettingsStore } from "../subagents/SubagentSettingsStore";
 import { registerEditorsIpc } from "../ipc/editorsIpc";
 import { registerBackgroundsIpc } from "../ipc/backgroundsIpc";
 import { registerProjectsIpc } from "../ipc/projectsIpc";
@@ -96,6 +98,7 @@ export interface RegisterBackendRpcDeps {
 		appLogger: AppLogger;
 		rpcLogger: RpcLogger;
 		usageStatsService: UsageStatsService | null;
+		subagentSettingsStore: SubagentSettingsStore;
 		modelSpecsStore: ModelSpecsStore;
 		visionBridge: VisionBridgeConfigManager;
 	};
@@ -131,6 +134,7 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 		appLogger,
 		rpcLogger,
 		usageStatsService,
+		subagentSettingsStore,
 		modelSpecsStore,
 		visionBridge,
 	} = services;
@@ -146,6 +150,9 @@ export function registerBackendRpc(deps: RegisterBackendRpcDeps): () => void {
 
 	// 用量统计：业务在 UsageStatsService，handler 薄层只校验/适配
 	registerUsageStatsIpc(router, usageStatsService);
+
+	// 子代理偏好：读写 pi settings.json 的 subagents 块（扩展侧消费）
+	registerSubagentsIpc(router, subagentSettingsStore);
 
 	registerEditorsIpc(router, {
 		settingsStore,

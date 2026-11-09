@@ -43,6 +43,10 @@ Edit files without leaving PiDeck:
 
 Enable the separate LAN Web frontend in settings when needed. It shares session/runtime services with the desktop and requires authentication. It is not an embedded browser panel. External links open through the system browser.
 
+## Subagents
+
+The "Subagents" entry in the right-side toolbar configures the pideck-q-subagents extension. Subagents can run on a different model and thinking level than the main agent, and the main agent can be nudged to hand complex work to subagents while it stays on planning, integration, and verification. Settings are written to the `subagents` block of pi's `settings.json` and can be scoped globally or per project. When the extension is disabled the entry is greyed out and explains why.
+
 ## Terminal Dock
 
 Each agent gets its own terminal tab:

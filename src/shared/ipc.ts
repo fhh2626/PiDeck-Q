@@ -290,6 +290,12 @@ export const ipcChannels = {
 	/** 快速测试 provider 连接：发送一条最小请求验证 baseUrl/apiKey/模型 是否正常 */
 	configTestProvider: "config:test-provider",
 
+	// ===== 子代理偏好（pideck-q-subagents 扩展的 settings.json subagents 块） =====
+	/** 读取全局 + 当前项目的子代理偏好 */
+	subagentsGetSettings: "subagents:get-settings",
+	/** 写入指定作用域的子代理偏好（只改 subagents 块，保留其余键） */
+	subagentsSaveSettings: "subagents:save-settings",
+
 	// ===== 安全管理（SecurityStore + pi-deck-security-gate 扩展） =====
 	/** 拉取完整安全配置（等级/默认等级/会话覆盖） */
 	securityGetConfig: "security:get-config",
