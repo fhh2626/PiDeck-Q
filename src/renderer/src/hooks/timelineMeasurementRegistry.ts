@@ -12,7 +12,13 @@ export interface TimelineSessionContext {
 	lastObservedListWidth: number | null;
 	measuredHeights: Map<string, number>;
 	nodeMap: Map<string, RowRegistrationRecord>;
-	readingAnchor: { rowKey: string; offsetTop: number } | null;
+	/** DOM captures must be restored in DOM space while height caches catch up.
+	 * Missing source keeps explicit restore/jump and older geometry anchors compatible. */
+	readingAnchor: { rowKey: string; offsetTop: number; coordinateSource?: "dom" | "geometry" } | null;
+	/** Raw position last included in intent; catches input whose scroll event is still queued. */
+	readingAnchorScrollTop: number | null;
+	/** Last applied correction; its native notifications are not new reader intent. */
+	programmaticScrollTop: number | null;
 	pendingRestore: { messageId: string; offsetTop: number } | null;
 	scheduledRaf: number | null;
 	pendingEntries: Map<string, PendingEntryRecord>;
@@ -47,6 +53,8 @@ export function createTimelineSessionContext(
 		measuredHeights: new Map(),
 		nodeMap: new Map(),
 		readingAnchor: null,
+		readingAnchorScrollTop: null,
+		programmaticScrollTop: null,
 		pendingRestore: null,
 		scheduledRaf: null,
 		pendingEntries: new Map(),

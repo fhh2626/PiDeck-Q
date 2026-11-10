@@ -1,9 +1,10 @@
-import React, { useRef, useState, useMemo } from "react";
+import React, { useRef, useState, useMemo, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { Provider, createStore } from "jotai";
 import { useVirtualTimeline } from "../../src/renderer/src/hooks/useVirtualTimeline";
 import { VirtualTimelineRows } from "../../src/renderer/src/components/session/timeline/VirtualTimelineRows";
 import type { TimelineRowItem } from "../../src/renderer/src/components/session/timeline/timelineRowModel";
+import type { TimelineViewportAdapter } from "../../src/renderer/src/components/session/timeline/TimelineViewportAdapter";
 import { SessionMessageTimeline } from "../../src/renderer/src/components/session/SessionMessageTimeline";
 import {
   sessionRecordsAtom,
@@ -13,7 +14,7 @@ import {
 } from "../../src/renderer/src/atoms";
 import type { ChatMessage, SessionRecord } from "../../src/shared/types";
 
-function generateIntegratedMessages(count = 100): ChatMessage[] {
+function generateIntegratedMessages(count = 100, codeLines = 1): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   for (let i = 0; i < count; i++) {
     msgs.push({
@@ -27,7 +28,7 @@ function generateIntegratedMessages(count = 100): ChatMessage[] {
       id: `a-${i}`,
       agentId: "agent-1",
       role: "assistant",
-      text: `助手回答 #${i}: 真实时间线装配渲染。每轮回答包含 Markdown 与代码块。\n\n\`\`\`ts\nconst turn_${i} = ${i};\n\`\`\``,
+      text: `助手回答 #${i}: 真实时间线装配渲染。每轮回答包含 Markdown 与代码块。\n\n\`\`\`ts\n${Array.from({ length: codeLines }, (_, line) => `const turn_${i}_${line} = ${i};`).join("\n")}\n\`\`\``,
       timestamp: 1700000000000 + i * 2000 + 1000,
     });
   }
@@ -75,11 +76,19 @@ function generate2000Items(): TimelineRowItem[] {
 
 function VirtualTimelineTestFixture() {
   const [useIntegrated, setUseIntegrated] = useState(false);
-  const [integratedMessages, setIntegratedMessages] = useState<ChatMessage[]>(() => generateIntegratedMessages(100));
+  // Long-code mode reproduces reading settled history while rows remount.
+  const [integratedMessages, setIntegratedMessages] = useState<ChatMessage[]>(() =>
+    generateIntegratedMessages(100, new URLSearchParams(location.search).has("longCode") ? 40 : 1));
   const [items, setItems] = useState<TimelineRowItem[]>(() => generate2000Items());
   const [isFollowing] = useState(false);
   const integratedTimelineRef = useRef<HTMLElement | null>(null);
   const integratedScrollerScrollApiRef = useRef<any>(null);
+  const integratedAdapterRef = useRef<TimelineViewportAdapter | null>(null);
+  const snapshotFrameRef = useRef<number | null>(null);
+  const snapshotCountRef = useRef(0);
+  useEffect(() => () => {
+    if (snapshotFrameRef.current !== null) cancelAnimationFrame(snapshotFrameRef.current);
+  }, []);
 
   const integratedController = useMemo<any>(() => {
     return {
@@ -94,7 +103,23 @@ function VirtualTimelineTestFixture() {
       autoScroll: false,
       showScrollToBottom: false,
       setAutoScrollFromScroller: () => {},
-      handleTimelineScroll: () => {},
+      // Exercise the production controller's deferred snapshot timing as well
+      // as the virtualizer's native scroll listener, instead of a no-op stub.
+      handleTimelineScroll: () => {
+        if (snapshotFrameRef.current !== null) return;
+        snapshotFrameRef.current = requestAnimationFrame(() => {
+          snapshotFrameRef.current = null;
+          integratedAdapterRef.current?.captureReadingAnchor();
+          snapshotCountRef.current += 1;
+          integratedTimelineRef.current?.setAttribute("data-passive-anchor-reads", String(snapshotCountRef.current));
+        });
+      },
+      registerViewportAdapter: (adapter: TimelineViewportAdapter) => {
+        integratedAdapterRef.current = adapter;
+        return () => {
+          if (integratedAdapterRef.current === adapter) integratedAdapterRef.current = null;
+        };
+      },
       scrollerScrollApiRef: integratedScrollerScrollApiRef,
       scrolledWindowTurns: 0,
       scrolledWindowItems: 0,
