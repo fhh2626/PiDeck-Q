@@ -1,296 +1,268 @@
-import type { SubagentLiveRun, SubagentLiveRunStatus } from "../../shared/types/subagents";
+import type { SubagentLiveRun, SubagentLiveRunStatus, SubagentStatusSnapshot } from "../../shared/types/subagents";
+import { SubagentExecutionOwnership } from "./SubagentExecutionOwnership";
+import { SubagentExpiryScheduler } from "./SubagentExpiryScheduler";
+import { extractSubagentRunUpdates, subagentRecord } from "./subagentRunUpdates";
+import { SUBAGENT_RUN_TRACKER_LIMITS as LIMITS } from "./subagentRunLimits";
 
-/**
- * 从父会话 `subagent` 工具事件里截取子代理运行态。
- *
- * 为什么需要这一层：pi 内建子代理（pi-subagents 扩展）的会话不是 PiDeck 的 Agent，
- * 没有 agentId / runtimeGeneration，`sessionRuntimeByIdAtom` 永远不会有它们的快照，
- * 侧栏子会话行因此永远不亮状态点。pi 的 tool_execution_update 里 partialResult 是完整
- * AgentToolResult，`details.results[]` 带 `sessionFile` 与 `progress.status`，这里是唯一
- * 不新增通道就能拿到的权威来源；整包 details 体积不可控（含 messages），所以只截取
- * sessionFile + 状态，绝不透传原始 payload。
- */
+export { extractSubagentRunUpdates } from "./subagentRunUpdates";
+export { SUBAGENT_RUN_TRACKER_LIMITS } from "./subagentRunLimits";
 
-/**
- * 会带子会话 details 的工具名：
- * - `subagent`：起子代理（results[] 带 sessionFile + progress.status）；
- * - `bg_wait`：收后台/分离运行终态（completions[] 带 sessionFile）。
- * 旧文档提到的 `subagent-wait` 在当前内置扩展里并不存在（wait-tool.ts 注册的是 bg_wait），
- * 不要再当作别名依赖。
- */
+/** Only observe existing stdio tool/status events, never poll or manage pi's child processes. */
 const SUBAGENT_TOOL_NAMES: ReadonlySet<string> = new Set(["subagent", "bg_wait"]);
 
-/** 单 agent 最多记住多少条子会话状态：扩展侧并发已限流，这里只是兜底防无界增长。 */
-const MAX_RUNS_PER_AGENT = 64;
-
-/** 运行中条目存活时间：父会话异常退出/崩溃后不留永久黄灯。 */
-const RUNNING_TTL_MS = 10 * 60_000;
-
-/** 失败条目保留更久，便于回看哪个子代理报错（重开侧栏仍在）。 */
-const ERROR_TTL_MS = 30 * 60_000;
+type TrackedRun = SubagentLiveRun & { toolCallId?: string; snapshotRunId?: string; workflowRunId?: string };
+type SnapshotTask = { updatedAt: number };
 
 /**
- * 会话文件路径长度上限：真实路径远小于此值，超出即视为异常数据。
- * 上限同时是载荷边界：64 条 × 1 KiB 远小于事件帧预算。
- */
-const MAX_SESSION_PATH_LENGTH = 1024;
-
-/** 观察到的状态：比下发状态多一个 completed（终态帧到达后不保留，避免结束后仍亮灯）。 */
-type ObservedStatus = SubagentLiveRunStatus | "completed";
-
-/** 内部条目：对外快照会剥掉 toolCallId，只用于工具级失败时精准清理。 */
-type TrackedRun = SubagentLiveRun & { toolCallId?: string };
-
-type ObservedRun = {
-	sessionFile: string;
-	status: ObservedStatus;
-	agent?: string;
-};
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	return value as Record<string, unknown>;
-}
-
-/** 工具结束时 details 在 result，流式更新时在 partialResult。 */
-function pickDetails(event: Record<string, unknown>): Record<string, unknown> | undefined {
-	const fromResult = asRecord(asRecord(event.result)?.details);
-	if (fromResult) return fromResult;
-	return asRecord(asRecord(event.partialResult)?.details);
-}
-
-function readSessionFile(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	if (!trimmed || trimmed.length > MAX_SESSION_PATH_LENGTH) return undefined;
-	return trimmed;
-}
-
-/**
- * 单条子结果的终态判定。
- *
- * 顺序即优先级：`progress.status` 是扩展自己的状态机（pending/running/completed/failed/
- * detached），比 flags 更早可用；detached 表示子代理脱离了父回合（后续由 bg_wait 投递），
- * 不能据此点灯，按已完成处理（移除条目）。
- */
-function resolveObservedStatus(item: Record<string, unknown>): ObservedStatus | undefined {
-	const progressStatus = asRecord(item.progress)?.status;
-	if (typeof progressStatus === "string") {
-		switch (progressStatus) {
-			case "running":
-			case "pending":
-				return "running";
-			case "failed":
-				return "error";
-			case "completed":
-			case "detached":
-				return "completed";
-		}
-	}
-	// 兼容形状：部分嵌套/旧版结果会同时带 success 与残留 error 字段，成功优先。
-	if (item.success === true) return "completed";
-	if (
-		item.stopped === true ||
-		item.timedOut === true ||
-		item.interrupted === true ||
-		item.turnBudgetExceeded === true
-	) {
-		return "error";
-	}
-	if (typeof item.error === "string" && item.error.trim()) return "error";
-	if (typeof item.exitCode === "number") return item.exitCode === 0 ? "completed" : "error";
-	return "running";
-}
-
-/** 从 details 抽出本轮可用的状态更新。 */
-export function extractSubagentRunUpdates(details: unknown): ObservedRun[] {
-	const record = asRecord(details);
-	if (!record) return [];
-	const observed: ObservedRun[] = [];
-
-	// management 动作（list/status/interrupt）的 results 不是运行态，跳过。
-	// 注意：bg_wait 的 details.mode 也是 "management"（subagent-wait.ts 的 result()），
-	// 它的 completions 必须独立于这个过滤，否则后台子代理的失败永远不会亮红灯。
-	if (record.mode !== "management") {
-		const results = Array.isArray(record.results) ? record.results : [];
-		for (const item of results.slice(0, MAX_RUNS_PER_AGENT)) {
-			const result = asRecord(item);
-			if (!result) continue;
-			const sessionFile = readSessionFile(result.sessionFile);
-			if (!sessionFile) continue;
-			const status = resolveObservedStatus(result);
-			if (!status) continue;
-			const agent = typeof result.agent === "string" && result.agent.trim()
-				? result.agent
-				: undefined;
-			observed.push({ sessionFile, status, ...(agent ? { agent } : {}) });
-		}
-	}
-
-	// bg_wait 的完成投递：后台子代理在 detached 时不点灯，等终态到达再清残留条目。
-	const completions = Array.isArray(record.completions) ? record.completions : [];
-	for (const item of completions.slice(0, MAX_RUNS_PER_AGENT)) {
-		const children = Array.isArray(asRecord(item)?.results) ? (asRecord(item)?.results as unknown[]) : [];
-		for (const child of children.slice(0, MAX_RUNS_PER_AGENT)) {
-			const childRecord = asRecord(child);
-			const sessionFile = readSessionFile(childRecord?.sessionFile);
-			if (!sessionFile) continue;
-			observed.push({
-				sessionFile,
-				status: childRecord?.success === false ? "error" : "completed",
-			});
-		}
-	}
-
-	return observed;
-}
-
-/**
- * 每个 agent 的子代理运行状态表（有界 + TTL）。
- *
- * `observe` 返回侧栏可见状态是否真的变化：updatedAt 刷新、重复同样的 running 帧都返回
- * false，避免流式期间把事件通道刷满（与 runtime-state 的同值跳过策略一致）。
+ * Bounded sidebar projection for pi-owned child sessions (not PiDeck Agent runtimes).
+ * Execution admission and completed tombstones live separately from visible rows:
+ * path reuse must not let an older workflow heartbeat revive a failure after resume.
+ * With an expiry listener, idle renderers receive TTL cleanup on the existing channel.
  */
 export class SubagentRunTracker {
 	private readonly runsByAgent = new Map<string, Map<string, TrackedRun>>();
+	private readonly snapshotTasksByAgent = new Map<string, Map<string, SnapshotTask>>();
+	private readonly ownership = new SubagentExecutionOwnership();
+	private readonly expiry: SubagentExpiryScheduler | undefined;
 
+	constructor(onExpiry?: (agentId: string) => void) {
+		if (onExpiry) this.expiry = new SubagentExpiryScheduler((agentId) => {
+			const changed = this.prune(agentId, Date.now());
+			this.updateExpiry(agentId);
+			if (changed) onExpiry(agentId);
+		});
+	}
+
+	/** Same-state frames refresh timestamps/deadlines but do not flood the renderer. */
 	observe(agentId: string, event: unknown, now = Date.now()): boolean {
-		const record = asRecord(event);
-		if (!record) return false;
-		const toolName = typeof record.toolName === "string" ? record.toolName.toLowerCase() : "";
-		if (!SUBAGENT_TOOL_NAMES.has(toolName)) return false;
-		const details = pickDetails(record);
+		const record = subagentRecord(event);
+		const toolName = typeof record?.toolName === "string" ? record.toolName.toLowerCase() : "";
+		if (!record || !SUBAGENT_TOOL_NAMES.has(toolName)) return false;
+		const details = subagentRecord(subagentRecord(record.result)?.details)
+			?? subagentRecord(subagentRecord(record.partialResult)?.details);
 		if (!details) return false;
-		const updates = extractSubagentRunUpdates(details);
-		if (updates.length === 0) return false;
-		const toolCallId = typeof record.toolCallId === "string" && record.toolCallId
-			? record.toolCallId
-			: undefined;
-
 		let changed = this.prune(agentId, now);
+		const toolCallId = typeof record.toolCallId === "string" && record.toolCallId.length <= 128 ? record.toolCallId : undefined;
 		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
-		for (const update of updates) {
-			// completed 不保留：侧栏黄点的语义是「正在运行」（见 sessionStatusDotClass），
-			// 保留完成条目会让刚跑完的子代理继续亮灯，读起来像「已经停了还在跑」。
+		for (const update of extractSubagentRunUpdates(details)) {
+			const previousOwner = this.ownership.current(agentId, update.sessionFile);
+			// An anonymous detach receipt cannot prove a NEW execution. Known aliases still
+			// resolve normally; actual new launches identify themselves with runId or running.
+			const allowNew = update.status === "running" || Boolean(update.executionId || update.workflowRunId) || !previousOwner?.snapshotRunId;
+			const owner = this.ownership.claim(agentId, update.sessionFile, { ...update, ...(toolCallId ? { toolCallId } : {}) }, now, allowNew);
+			if (!owner) continue;
+			if (owner.snapshotRunId && this.hasLiveSnapshotTask(agentId, owner.snapshotRunId, now)) continue;
+			// Completion closes liveness, not the outcome: a current terminal failure
+			// may arrive after an empty complete frame and still needs its red row.
+			if (owner.finished && owner.executionId && update.status === "running") continue;
 			if (update.status === "completed") {
+				owner.finished = true;
 				if (runs.delete(update.sessionFile)) changed = true;
 				continue;
 			}
-			const previous = runs.get(update.sessionFile);
-			if (!previous || previous.status !== update.status || previous.agent !== update.agent) {
-				changed = true;
-			}
-			// 先删后设，保持「最近更新在末尾」的插入序，超出上限时淘汰最久未更新的条目。
-			runs.delete(update.sessionFile);
-			runs.set(update.sessionFile, {
-				sessionFile: update.sessionFile,
-				status: update.status,
+			changed = this.writeRun(runs, {
+				sessionFile: update.sessionFile, status: update.status, updatedAt: now,
 				...(update.agent ? { agent: update.agent } : {}),
-				updatedAt: now,
-				// 记住所属工具调用：工具级失败（details 里没有 results）时才能精准清掉它的残留行。
-				...(toolCallId ? { toolCallId } : previous?.toolCallId ? { toolCallId: previous.toolCallId } : {}),
-			});
+				...(owner.toolCallId ? { toolCallId: owner.toolCallId } : {}),
+				...(owner.workflowRunId ? { workflowRunId: owner.workflowRunId } : {}),
+			}) || changed;
 		}
-		if (runs.size === 0) {
-			this.runsByAgent.delete(agentId);
-			return changed;
-		}
-		this.runsByAgent.set(agentId, runs);
-		if (this.enforceLimit(runs)) changed = true;
-		return changed;
+		return this.settle(agentId, runs, changed);
 	}
 
-	/**
-	 * 当前可见快照。TTL 只在主进程内存侧保底，不会主动推送：UI 的清理靠
-	 * completed 终态帧（observe 内直接删除）/ agent_end（running）/ detach /
-	 * 下一次工具事件，避免为此新增定时器。
-	 */
+	/** Full snapshots remove omitted OWNED rows; truncated snapshots only update included rows. */
+	observeStatusSnapshot(agentId: string, snapshot: SubagentStatusSnapshot, now = Date.now()): boolean {
+		let changed = this.prune(agentId, now);
+		if (!this.ownership.acceptSnapshot(agentId, snapshot, now)) {
+			this.updateExpiry(agentId);
+			return changed;
+		}
+		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
+		const tasks = this.snapshotTasksByAgent.get(agentId) ?? new Map<string, SnapshotTask>();
+		const nextFiles = new Set<string>();
+		const supersededFiles = new Set<string>();
+		for (const child of snapshot.children) {
+			nextFiles.add(child.sessionFile);
+			const owner = this.ownership.claim(agentId, child.sessionFile, {
+				workflowRunId: snapshot.workflowRunId, toolCallId: snapshot.parentToolCallId,
+				taskKey: child.taskKey, ...(child.executionId ? { executionId: child.executionId } : {}),
+			}, now);
+			if (!owner) { supersededFiles.add(child.sessionFile); continue; }
+			owner.snapshotRunId = snapshot.workflowRunId;
+			if (owner.finished && owner.executionId && child.state === "running") continue;
+			const status: SubagentLiveRunStatus | undefined = child.state === "failed" ? "error"
+				: child.state === "running" && !snapshot.complete ? "running" : undefined;
+			if (status) {
+				changed = this.writeRun(runs, {
+					sessionFile: child.sessionFile, status, updatedAt: now,
+					...(child.agent ? { agent: child.agent } : {}),
+					toolCallId: snapshot.parentToolCallId,
+					snapshotRunId: snapshot.workflowRunId, workflowRunId: snapshot.workflowRunId,
+				}) || changed;
+			} else {
+				owner.finished = true;
+				if (runs.delete(child.sessionFile)) changed = true;
+			}
+		}
+		for (const [sessionFile, run] of runs) {
+			if (supersededFiles.has(sessionFile)) continue;
+			if (snapshot.complete) {
+				// Close only rows still owned by this workflow, including tool-only rows.
+				// Another workflow/new tool execution must survive old complete/clear frames.
+				if (run.snapshotRunId !== snapshot.workflowRunId && run.workflowRunId !== snapshot.workflowRunId) continue;
+				if (run.status === "error") continue;
+			} else if (snapshot.truncated || run.snapshotRunId !== snapshot.workflowRunId || nextFiles.has(sessionFile)) continue;
+			const owner = this.ownership.current(agentId, sessionFile);
+			if (owner) owner.finished = true;
+			runs.delete(sessionFile);
+			changed = true;
+		}
+		if (snapshot.complete) tasks.delete(snapshot.workflowRunId);
+		else if (snapshot.children.length || tasks.has(snapshot.workflowRunId)) {
+			tasks.delete(snapshot.workflowRunId);
+			tasks.set(snapshot.workflowRunId, { updatedAt: now });
+		}
+		// A publisher/task flood is bounded independently of the visible row limit.
+		while (tasks.size > LIMITS.maxSnapshotTasksPerAgent) {
+			const oldest = tasks.keys().next().value;
+			if (oldest === undefined) break;
+			tasks.delete(oldest);
+			changed = this.removeTaskRunning(runs, oldest) || changed;
+		}
+		if (tasks.size) this.snapshotTasksByAgent.set(agentId, tasks);
+		else this.snapshotTasksByAgent.delete(agentId);
+		return this.settle(agentId, runs, changed);
+	}
+
+	/** Explicit clear closes the source, preserves failures, and cannot clear a newer owner. */
+	clearStatusTask(agentId: string, workflowRunId: string): boolean {
+		this.ownership.closeSnapshot(agentId, workflowRunId);
+		this.snapshotTasksByAgent.get(agentId)?.delete(workflowRunId);
+		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
+		for (const [file, run] of runs) {
+			if (run.status !== "running" || (run.snapshotRunId !== workflowRunId && run.workflowRunId !== workflowRunId)) continue;
+			const owner = this.ownership.current(agentId, file);
+			if (owner) owner.finished = true;
+		}
+		return this.settle(agentId, runs, this.removeTaskRunning(runs, workflowRunId));
+	}
+
+	/** Read projection; expiry callbacks proactively push changes even with no further reads/events. */
 	snapshot(agentId: string, now = Date.now()): SubagentLiveRun[] {
 		this.prune(agentId, now);
-		const runs = this.runsByAgent.get(agentId);
-		if (!runs || runs.size === 0) return [];
-		// 显式投影：toolCallId 是内部记账，不能随载荷下发给渲染层。
-		return [...runs.values()].map((run) => ({
-			sessionFile: run.sessionFile,
-			status: run.status,
+		this.updateExpiry(agentId);
+		return [...(this.runsByAgent.get(agentId)?.values() ?? [])].map((run) => ({
+			sessionFile: run.sessionFile, status: run.status, updatedAt: run.updatedAt,
 			...(run.agent ? { agent: run.agent } : {}),
-			updatedAt: run.updatedAt,
 		}));
 	}
 
-	/**
-	 * 工具级失败：subagent 工具可能在 details 里根本不带 results（参数错误/启动失败），
-	 * 此时该次调用登记的 running 行再也收不到终态，必须在同回合内清掉。
-	 *
-	 * 只清 running：工具调用带 isError 是常态（任一子代理失败就会置 true），
-	 * 此时 observe 已经写入的 error 行必须保留，否则红灯会被立刻抹掉。
-	 */
-	clearToolCall(agentId: string, toolCallId: string): boolean {
-		if (!toolCallId) return false;
-		const runs = this.runsByAgent.get(agentId);
-		if (!runs) return false;
+	/** Tool-level failures remove that call's running rows, never a live snapshot or a failure row. */
+	clearToolCall(agentId: string, toolCallId: string, now = Date.now()): boolean {
+		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
 		let changed = false;
-		for (const [sessionFile, run] of runs) {
-			if (run.toolCallId !== toolCallId || run.status !== "running") continue;
-			runs.delete(sessionFile);
+		for (const [file, run] of runs) {
+			if (!toolCallId || run.toolCallId !== toolCallId || run.status !== "running") continue;
+			if (run.snapshotRunId && this.hasLiveSnapshotTask(agentId, run.snapshotRunId, now)) continue;
+			runs.delete(file);
 			changed = true;
 		}
-		if (changed && runs.size === 0) this.runsByAgent.delete(agentId);
-		return changed;
+		return this.settle(agentId, runs, changed);
 	}
 
-	/**
-	 * 回合结束：仍处于 running 的条目不可能再收到更新（子代理随回合销毁），
-	 * 立刻移除避免黄灯卡在侧栏；error 条目保留供用户回看。
-	 */
-	clearRunning(agentId: string): boolean {
-		const runs = this.runsByAgent.get(agentId);
-		if (!runs) return false;
+	/** Turn end is not child end after handoff: keep lights with a live snapshot owner. */
+	clearRunning(agentId: string, now = Date.now()): boolean {
 		let changed = false;
-		for (const [sessionFile, run] of runs) {
+		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
+		for (const [file, run] of runs) {
 			if (run.status !== "running") continue;
-			runs.delete(sessionFile);
+			if (run.snapshotRunId && this.hasLiveSnapshotTask(agentId, run.snapshotRunId, now)) continue;
+			runs.delete(file);
 			changed = true;
 		}
-		if (runs.size === 0) this.runsByAgent.delete(agentId);
-		return changed;
+		return this.settle(agentId, runs, changed);
 	}
 
+	/** All stop/restart/exit/stopAll paths pair timer, row, task, and ownership cleanup here. */
 	clearAgent(agentId: string): boolean {
+		this.expiry?.cancel(agentId);
+		this.ownership.clearAgent(agentId);
+		this.snapshotTasksByAgent.delete(agentId);
 		return this.runsByAgent.delete(agentId);
 	}
 
 	private prune(agentId: string, now: number): boolean {
-		const runs = this.runsByAgent.get(agentId);
-		if (!runs) return false;
+		this.ownership.prune(agentId, now);
 		let changed = false;
-		for (const [sessionFile, run] of runs) {
-			const ttl = run.status === "error" ? ERROR_TTL_MS : RUNNING_TTL_MS;
-			if (now - run.updatedAt <= ttl) continue;
-			runs.delete(sessionFile);
+		const runs = this.runsByAgent.get(agentId) ?? new Map<string, TrackedRun>();
+		const tasks = this.snapshotTasksByAgent.get(agentId);
+		for (const [id, task] of tasks ?? []) {
+			if (now - task.updatedAt < LIMITS.snapshotStaleMs) continue;
+			tasks?.delete(id);
+			// Lost heartbeat only invalidates running status. Failures remain for 30 minutes.
+			changed = this.removeTaskRunning(runs, id) || changed;
+		}
+		for (const [file, run] of runs) {
+			const ttl = run.status === "error" ? LIMITS.errorTtlMs : LIMITS.runningTtlMs;
+			if (now - run.updatedAt < ttl) continue;
+			runs.delete(file);
 			changed = true;
 		}
-		if (runs.size === 0) {
-			this.runsByAgent.delete(agentId);
+		if (!runs.size) this.runsByAgent.delete(agentId);
+		this.dropEmptyTasks(agentId, runs);
+		return changed;
+	}
+
+	private removeTaskRunning(runs: Map<string, TrackedRun>, workflowRunId: string): boolean {
+		let changed = false;
+		for (const [file, run] of runs) {
+			if (run.status === "error" || (run.snapshotRunId !== workflowRunId && run.workflowRunId !== workflowRunId)) continue;
+			runs.delete(file);
 			changed = true;
 		}
 		return changed;
 	}
 
-	private enforceLimit(runs: Map<string, TrackedRun>): boolean {
-		let changed = false;
-		while (runs.size > MAX_RUNS_PER_AGENT) {
+	private hasLiveSnapshotTask(agentId: string, workflowRunId: string, now: number): boolean {
+		const task = this.snapshotTasksByAgent.get(agentId)?.get(workflowRunId);
+		return task !== undefined && now - task.updatedAt < LIMITS.snapshotStaleMs;
+	}
+
+	private writeRun(runs: Map<string, TrackedRun>, run: TrackedRun): boolean {
+		const previous = runs.get(run.sessionFile);
+		const changed = !previous || previous.status !== run.status || previous.agent !== run.agent;
+		runs.delete(run.sessionFile);
+		runs.set(run.sessionFile, run);
+		return changed;
+	}
+
+	private settle(agentId: string, runs: Map<string, TrackedRun>, changed: boolean): boolean {
+		while (runs.size > LIMITS.maxRunsPerAgent) {
 			const oldest = runs.keys().next().value;
 			if (oldest === undefined) break;
 			runs.delete(oldest);
 			changed = true;
 		}
+		if (runs.size) this.runsByAgent.set(agentId, runs);
+		else this.runsByAgent.delete(agentId);
+		this.dropEmptyTasks(agentId, runs);
+		this.updateExpiry(agentId);
 		return changed;
 	}
-}
 
-export const SUBAGENT_RUN_TRACKER_LIMITS = Object.freeze({
-	maxRunsPerAgent: MAX_RUNS_PER_AGENT,
-	runningTtlMs: RUNNING_TTL_MS,
-	errorTtlMs: ERROR_TTL_MS,
-});
+	private dropEmptyTasks(agentId: string, runs: Map<string, TrackedRun>): void {
+		const tasks = this.snapshotTasksByAgent.get(agentId);
+		if (!tasks) return;
+		const owners = new Set([...runs.values()].map((run) => run.snapshotRunId));
+		for (const id of tasks.keys()) if (!owners.has(id)) tasks.delete(id);
+		if (!tasks.size) this.snapshotTasksByAgent.delete(agentId);
+	}
+
+	private updateExpiry(agentId: string): void {
+		if (!this.expiry) return;
+		let deadline = Infinity;
+		for (const task of this.snapshotTasksByAgent.get(agentId)?.values() ?? []) deadline = Math.min(deadline, task.updatedAt + LIMITS.snapshotStaleMs);
+		for (const run of this.runsByAgent.get(agentId)?.values() ?? []) deadline = Math.min(deadline, run.updatedAt + (run.status === "error" ? LIMITS.errorTtlMs : LIMITS.runningTtlMs));
+		this.expiry.schedule(agentId, Number.isFinite(deadline) ? deadline : undefined);
+	}
+}

@@ -476,6 +476,10 @@ export class PiProcess extends EventEmitter {
       env[PIDECK_PI_STANDALONE_ENV] = "1";
       if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, PIDECK_PI_STANDALONE_ENV);
     }
+    // 桌面宿主标识：内置扩展据此启用仅 PiDeck 消费的状态通道（如子代理状态快照），
+    // 避免在终端 TUI 里把 JSON 写进状态栏。值在子进程内按字符串使用，无需路径转换。
+    env.PIDECK_DESKTOP = "1";
+    if (invocation.wsl) env.WSLENV = appendWslEnvName(env.WSLENV, "PIDECK_DESKTOP");
     // 每个 agent 绑定独立 cwd，确保 pi 自己发现项目级 AGENTS.md、settings 和 session 分组。
     // 打包后的 Electron 不一定继承用户终端 PATH；这里补齐跨平台 Node 工具链常见 bin 目录，尽量让已安装 pi 的用户开箱即用。
     // Windows 下通过 PiLocator.createInvocation 显式包裹含空格的 npm shim 路径，避免 cmd 拆分路径导致 agent 启动失败。

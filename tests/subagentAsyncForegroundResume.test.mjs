@@ -35,6 +35,9 @@ import {
 	setAsyncBehaviors,
 	setRunSyncBehavior,
 } from "./helpers/subagentResumeHarness.mjs";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
+const { parseSubagentStatusSnapshot } = loadTsCommonJs("src/main/pi/subagentStatusSnapshot.ts");
 
 const graph = await loadSubagentResumeGraph();
 
@@ -1167,4 +1170,66 @@ test("nested mission workflow async resume prewrites the binding in the actual n
 	const newTopLevelAfterTask = (fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : [])
 		.filter((entry) => !priorTopLevelDirs.has(entry) && fs.existsSync(path.join(graph.DIRS.async, entry, "mission.json")));
 	assert.deepEqual(newTopLevelAfterTask, [], "neither nested launch may leave a top-level mission binding");
+});
+
+test("a resumed child keeps its light while detached", async () => {
+	const fixture = createFixture(graph, "resume-detach-status");
+	seedCompletedForegroundRun(fixture, { runId: RUN_E });
+	// 恢复执行同样可能在提问后 detach：工具调用返回后，状态槽必须继续上报。
+	fixture.ctx.hasUI = true;
+	const slot = [];
+	fixture.ctx.ui = { setStatus: (key, text) => slot.push({ key, text }) };
+	process.env.PIDECK_DESKTOP = "1";
+	let detachedOptions;
+	resetDoubles();
+	setRunSyncBehavior(({ options }) => {
+		detachedOptions = options;
+		return completedResult(fixture, { detached: true, detachedReason: "user request", exitCode: undefined, finalOutput: undefined });
+	});
+	const executor = graph.createSubagentExecutor(fixture.deps);
+	const frames = () => slot.map((entry) => parseSubagentStatusSnapshot(entry.text)).filter(Boolean);
+
+	try {
+		const receipt = await executor.executePublic("call-1", { action: "resume", id: RUN_E, message: "detach please" }, abortSignal(), undefined, fixture.ctx);
+		assert.equal(receipt.details.results[0]?.detached, true);
+		const running = frames().at(-1);
+		assert.equal(running.complete, false);
+		assert.equal(running.children.length, 1);
+		assert.equal(running.children[0].state, "running");
+		assert.equal(running.children[0].sessionFile, fixture.childSessionFile);
+		assert.equal(running.children[0].executionId, detachedOptions.runId, "resume snapshots identify the actual new execution, not the retained source");
+		assert.notEqual(running.children[0].executionId, RUN_E);
+
+		await detachedOptions.onDetachedExit(completedResult(fixture, { detached: undefined, detachedReason: "user request", finalOutput: "final output" }));
+		const final = frames().at(-1);
+		assert.equal(final.complete, true);
+		assert.equal(final.children[0].state, "completed");
+		assert.equal(slot.at(-1).text, undefined, "the slot is cleared after the resumed child settles");
+	} finally {
+		delete process.env.PIDECK_DESKTOP;
+	}
+});
+
+test("a resumed child that finishes normally turns its light off", async () => {
+	const fixture = createFixture(graph, "resume-attached-status");
+	seedCompletedForegroundRun(fixture, { runId: RUN_E });
+	fixture.ctx.hasUI = true;
+	const slot = [];
+	fixture.ctx.ui = { setStatus: (key, text) => slot.push({ key, text }) };
+	process.env.PIDECK_DESKTOP = "1";
+	resetDoubles();
+	setRunSyncBehavior(() => completedResult(fixture));
+	const executor = graph.createSubagentExecutor(fixture.deps);
+	const frames = () => slot.map((entry) => parseSubagentStatusSnapshot(entry.text)).filter(Boolean);
+
+	try {
+		const result = await executor.executePublic("call-1", { action: "resume", id: RUN_E, message: "finish please" }, abortSignal(), undefined, fixture.ctx);
+		assert.notEqual(result.isError, true, textOf(result));
+		assert.equal(result.details.results[0]?.detached, undefined);
+		assert.equal(frames().some((frame) => frame.children.some((child) => child.state === "running")), true);
+		// 正常结束必须停掉状态上报。只发过 running 却不清槽时，心跳会让黄灯一直亮。
+		assert.equal(slot.at(-1).text, undefined, "the slot is cleared when the resumed child finishes");
+	} finally {
+		delete process.env.PIDECK_DESKTOP;
+	}
 });

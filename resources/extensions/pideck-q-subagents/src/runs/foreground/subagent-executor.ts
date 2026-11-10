@@ -123,7 +123,8 @@ import { executeWorkflowHostCommand, resolveWorkflowHostOutputClaimPath, type Wo
 import { buildWorkflowReceipt, readWorkflowReceipt, workflowReceiptPath, resolveWorkflowReceiptResumeEntry, writeWorkflowReceipt, type WorkflowReceipt, type WorkflowReceiptState } from "../../workflows/workflow-receipt.ts";
 import { upsertHostStep, validHostStepNodes } from "../shared/host-step-status.ts";
 import { assertWorkflowLaneKey, normalizeWorkflowLaneMetadata } from "../shared/lane-metadata.ts";
-import { parseWorkflowChildSummary, workflowChildProgress, workflowChildSummary } from "../../workflows/workflow-child-summary.ts";
+import { parseWorkflowChildSummary, workflowChildProgress, workflowChildSummary, type WorkflowChildSummary } from "../../workflows/workflow-child-summary.ts";
+import { createSubagentStatusPublisher, workflowChildToStatusChild } from "./subagent-status-publisher.ts";
 import { resolveWorkflowChatProgress, type WorkflowChatProgressProjection } from "../../workflows/chat-progress.ts";
 import { annotateWorkflowPreflightTrace, formatWorkflowPreflight, formatWorkflowPreflightWarnings, normalizeWorkflowPreflight, workflowPreflightWarnings } from "../../workflows/workflow-preflight.ts";
 import {
@@ -486,6 +487,8 @@ interface ExecutionContextData {
 	/** Discovered agent definitions before per-run bridge injection. */
 	recoveryAgents: AgentConfig[];
 	runId: string;
+	/** 发起本次执行的工具调用 id；状态槽载荷用它做诊断关联。 */
+	toolCallId?: string;
 	shareEnabled: boolean;
 	sessionRoot: string;
 	sessionDirForIndex: (idx?: number) => string;
@@ -1791,6 +1794,10 @@ interface ResumeRunInput {
 	signal?: AbortSignal;
 	inheritedUsageBudget?: UsageBudgetConfig;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
+	/** Workflow 子任务恢复时沿用发起方登记的启动观察回调（新建路径末尾不会经过）。 */
+	launchObserver?: WorkflowLaunchObserver;
+	/** 发起恢复的工具调用 id；状态槽载荷用它做诊断关联。 */
+	toolCallId?: string;
 }
 
 async function resumeForegroundRun(options: {
@@ -1834,6 +1841,21 @@ async function resumeForegroundRun(options: {
 		}
 		return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true, details: { mode: "single", results: [] } };
 	}
+
+	// 恢复执行同样可能在提问后 detach：工具调用返回后，状态槽是唯一还能持续
+	// 更新侧栏的通道。workflow 子代理由 workflow 的聚合快照负责。
+	const statusPublisher = options.input.params.workflowParentRunId
+		? undefined
+		: createSubagentStatusPublisher({
+			ui: options.input.ctx.hasUI ? options.input.ctx.ui : undefined,
+			ownerSessionId: options.parentSessionFile ?? parentSessionId ?? "",
+			parentToolCallId: options.input.toolCallId ?? runId,
+			workflowRunId: runId,
+		});
+	const publishStatus = (state: "running" | "completed" | "failed", complete = false) => {
+		if (!statusPublisher?.enabled) return;
+		statusPublisher.publish([{ taskKey: "single", executionId: runId, sessionFile: options.revivalSessionFile, state }], complete);
+	};
 
 	let foregroundControl: ForegroundRunControl | undefined;
 	let leaseReleased = false;
@@ -2094,6 +2116,19 @@ async function resumeForegroundRun(options: {
 			}
 		};
 
+		// 恢复执行不会走新建执行末尾的启动观察，但侧栏同样需要在子代理真正开工后
+		// 点亮原来的子会话行。放在全部启动校验之后、runSync 之前：参数非法等
+		// 未真正启动的失败不能把旧会话上报成「正在运行」。
+		if (options.input.launchObserver) {
+			try {
+				options.input.launchObserver({ agent: options.target.agent, sessionFile: options.revivalSessionFile, async: false, runId });
+			} catch (error) {
+				// 观察方（状态上报/mission 记账）失败不能把恢复执行本身判失败。
+				console.error("Failed to observe resumed workflow child launch:", error);
+			}
+		}
+
+		publishStatus("running");
 		let r = await runSync(options.input.ctx.cwd, runAgents, options.target.agent, revivedTask, compactOptional<Parameters<typeof runSync>[4]>({
 			permissions: options.input.deps.config.permissions,
 			runtimeSnapshotHost: options.input.deps.pi,
@@ -2156,6 +2191,12 @@ async function resumeForegroundRun(options: {
 				detachForeground = detach;
 			},
 			onDetachedExit: async (terminalResult) => {
+				// detached 子代理的终态不会再经过工具帧，只能从这里收灯。
+				try {
+					publishStatus(terminalResult.exitCode !== 0 || Boolean(terminalResult.error) ? "failed" : "completed", true);
+				} finally {
+					statusPublisher?.dispose();
+				}
 				try {
 					updateRememberedForegroundChild(options.input.deps.state, {
 						runId,
@@ -2246,6 +2287,9 @@ async function resumeForegroundRun(options: {
 				finalizeChildOwnership();
 			}
 		}
+		// 正常结束也要停心跳：只在启动失败时清槽的话，恢复执行跑完后黄灯会一直亮。
+		// detach 收据返回后子代理还在跑，状态槽留到 onDetachedExit 再收。
+		if (!awaitingDetachExit) statusPublisher?.dispose();
 	}
 }
 
@@ -4401,12 +4445,30 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 
 	const deadlineAt = data.deadlineAt ?? (data.timeoutMs !== undefined ? Date.now() + data.timeoutMs : undefined);
+	// 单个子代理也可能在提问后 detach 继续跑：工具调用返回后，状态槽是唯一还能
+	// 持续更新侧栏的通道。workflow 子代理由 workflow 的聚合快照负责，两个发布器
+	// 同时写同一会话行会互相收灯，所以这里跳过。
+	const singleSessionFile = sessionFileForTask(params.agent!, 0, modelOverride, modelOverrideFromParent, modelOrigin);
+	const statusPublisher = params.workflowParentRunId
+		? undefined
+		: createSubagentStatusPublisher({
+			ui: ctx.hasUI ? ctx.ui : undefined,
+			ownerSessionId: data.parentSessionId,
+			parentToolCallId: data.toolCallId ?? runId,
+			workflowRunId: runId,
+		});
+	const publishSingleStatus = (state: "running" | "completed" | "failed", complete = false) => {
+		if (!statusPublisher?.enabled) return;
+		statusPublisher.publish([{ taskKey: "single", executionId: runId, sessionFile: singleSessionFile, state }], complete);
+	};
 	let r: Awaited<ReturnType<typeof runSync>> | undefined;
 	let resolveDetachedWorkflowChild: ((result: Awaited<ReturnType<typeof runSync>>) => void) | undefined;
 	const detachedWorkflowChild = params.workflowAwaitDetached === true
 		? new Promise<Awaited<ReturnType<typeof runSync>>>((resolve) => { resolveDetachedWorkflowChild = resolve; })
 		: undefined;
 	try {
+		// 先点亮：attached 运行由工具帧结算，detached 运行只能靠状态槽。
+		publishSingleStatus("running");
 		const launched = await runSync(ctx.cwd, agents, params.agent!, task, compactOptional<Parameters<typeof runSync>[4]>({
 			permissions: deps.config.permissions,
 			runtimeSnapshotHost: deps.pi,
@@ -4426,7 +4488,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			intercomEvents: deps.pi.events,
 			runId,
 			sessionDir: sessionDirForIndex(0),
-			sessionFile: sessionFileForTask(params.agent!, 0, modelOverride, modelOverrideFromParent, modelOrigin),
+			sessionFile: singleSessionFile,
 			share: shareEnabled,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
 			artifactConfig,
@@ -4467,6 +4529,12 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				detachForeground = detach;
 			},
 			onDetachedExit: async (result) => {
+				// detached 子代理的终态不会再经过工具帧，只能从这里收灯。
+				try {
+					publishSingleStatus(result.exitCode !== 0 || Boolean(result.error) ? "failed" : "completed", true);
+				} finally {
+					statusPublisher?.dispose();
+				}
 				if (resolveDetachedWorkflowChild) {
 					resolveDetachedWorkflowChild(result);
 					return;
@@ -4522,6 +4590,8 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		// A successful detached receipt transfers both to onDetachedExit while the
 		// authoritative completion remains live.
 		if (!r?.detached) {
+			// attached 运行的终态由工具结果结算；这里只清掉状态槽，避免残留心跳。
+			statusPublisher?.dispose();
 			if (!artifactConfig.enabled) cleanupStructuredOutputRuntime(structuredRuntime);
 			if (foregroundControl) finishForegroundChild(foregroundControl, 0);
 		}
@@ -4647,7 +4717,10 @@ function duplicateSubagentCallResult(params: SubagentParamsLike): AgentToolResul
 	};
 }
 
-const workflowLaunchObservers = new WeakMap<object, (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string }) => void>();
+/** 启动观察回调：workflow 子代理解析出会话路径时通知发起方（侧栏状态、mission 记账）。 */
+type WorkflowLaunchObserver = (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string }) => void;
+
+const workflowLaunchObservers = new WeakMap<object, WorkflowLaunchObserver>();
 const workflowOwnedUsageBudgets = new WeakMap<object, UsageBudgetConfig>();
 
 /**
@@ -5474,6 +5547,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					return buildRequestedModeError(requestParams, error instanceof Error ? error.message : String(error));
 				}
 			}
+			// Background execution remains available to the retained async machinery; this
+			// branch is not permission to bypass the model-facing foreground-only policy.
+			// A foreground supervisor handoff below is distinct: its original VM stays live
+			// while the parent answers a question, without launching a new async workflow.
 			const asyncWorkflow = requestParams.async === true;
 			const parentCwd = ctx.cwd;
 			const timeout = requestParams.timeoutMs ?? requestParams.maxRuntimeMs ?? (!asyncWorkflow ? resolveConfigDefaultTimeoutMs(deps.config.timeoutMs) ?? DEFAULT_FOREGROUND_TIMEOUT_MS : undefined);
@@ -6304,33 +6381,84 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const workflowHostSteps = new Map<string, HostStepNode>();
 			let liveWorkflow: NonNullable<Details["workflow"]> = { trace: [], emits: [], console: [], ...(workflowResource ? { resource: workflowResource.provenance } : {}) };
 			const childProgress = new Map<string, ReturnType<typeof workflowChildProgress>>();
+			// Public runs.run accepts one child per key; runs.all and sequential stages
+			// launch separate keyed children (legacy nested tasks/chain inputs are rejected).
+			// These launch-resolved paths identify each child before its first output;
+			// resolving a path does not prove the session file has been created yet.
+			const childSessionFiles = new Map<string, string>();
 			let activityTimer: ReturnType<typeof setTimeout> | undefined;
 			let lastProgressAt = 0;
 			let workflowProgressClosed = false;
 			let workflowResponseYielded = false;
 			const workflowDeadlineAt = timeout === undefined ? undefined : Date.now() + timeout;
-			const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(resolveCurrentSessionId(ctx.sessionManager)));
+			const foregroundSessionId = resolveCurrentSessionId(ctx.sessionManager);
+			const workflowCapabilityCeiling = intersectSubagentCapabilityCeilings(requestParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(foregroundSessionId));
+			// 侧栏状态快照与工具进度帧分开上报：交接后工具帧必须停，但子代理状态仍要
+			// 继续更新，否则「回答后继续跑」的子代理在侧栏不亮灯。
+			const statusPublisher = createSubagentStatusPublisher({
+				ui: ctx.hasUI ? ctx.ui : undefined,
+				ownerSessionId: foregroundSessionId,
+				parentToolCallId: _id,
+				workflowRunId: foregroundWorkflowRunId,
+			});
+			const publishSubagentStatus = (summary?: WorkflowChildSummary, complete = false) => {
+				// 收尾后不再发运行帧；终态帧（complete）仍需放行一次。
+				// 未启用时直接返回：TUI/独立 pi 下不值得为状态槽构建投影。
+				if (!statusPublisher.enabled) return;
+				if (workflowProgressClosed && !complete) return;
+				try {
+					const source = summary ?? workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: complete ? "completed" : "running", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress, sessionFiles: childSessionFiles, runIds: workflowChildRunIds });
+					statusPublisher.publish(source.children.flatMap((row) => {
+						const child = workflowChildToStatusChild(row);
+						return child ? [child] : [];
+					}), complete);
+				} catch (error) {
+					// 状态投影失败只影响侧栏，不能改变工作流结果。
+					console.error("Failed to publish subagent status:", error);
+				}
+			};
 			const sendWorkflowProgress = () => {
-				if (workflowProgressClosed || workflowResponseYielded) return;
+				if (workflowProgressClosed) return;
+				// 交接后没有状态槽可写时直接返回，避免每帧白建一次投影。
+				if (workflowResponseYielded && !statusPublisher.enabled) return;
+				// 状态投影只构建一次：状态槽与工具进度帧共用同一份 summary。
+				let liveWorkflowChildren: WorkflowChildSummary;
+				try {
+					liveWorkflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "running", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress, sessionFiles: childSessionFiles, runIds: workflowChildRunIds });
+				} catch (error) {
+					console.error("Failed to project workflow progress:", error);
+					return;
+				}
+				// 交接后工具帧要停，但状态槽仍要继续更新。
+				publishSubagentStatus(liveWorkflowChildren);
+				if (workflowResponseYielded) return;
 				if (activityTimer) clearTimeout(activityTimer);
 				activityTimer = undefined;
 				lastProgressAt = Date.now();
-				const liveWorkflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "running", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress });
-				onUpdate?.(workflowProgressUpdate(foregroundWorkflowRunId, chatProgress, liveWorkflow, liveWorkflowChildren, workflowPreflight));
+				// onUpdate 是宿主回调，且这里也会被定时器调用：上报失败不能让
+				// 子代理/工作流改变执行结果，也不能变成定时器里的未捕获异常。
+				try {
+					onUpdate?.(workflowProgressUpdate(foregroundWorkflowRunId, chatProgress, liveWorkflow, liveWorkflowChildren, workflowPreflight));
+				} catch (error) {
+					console.error("Failed to emit workflow progress:", error);
+				}
 			};
 			const foregroundScript = requestParams.workflowScript;
-			const foregroundSessionId = resolveCurrentSessionId(ctx.sessionManager);
 			return runForegroundWorkflowWithHandoff({
 				state: deps.state, events: deps.pi.events, runId: foregroundWorkflowRunId,
 				sessionId: foregroundSessionId, cwd: workflowCwd, signal,
 				onHandoff: () => {
+					// 交接后工具调用已经返回，不能再往这个调用发进度帧；侧栏状态改由
+					// 独立的状态槽继续更新，直到 workflow 真正结束。
 					workflowResponseYielded = true;
 					if (activityTimer) clearTimeout(activityTimer);
+					publishSubagentStatus();
 				},
 				partial: () => {
+					// 交接快照只负责让等待中的子代理继续亮灯；后续状态与收灯走状态槽。
 					return { content: [], details: { mode: "workflow", runId: foregroundWorkflowRunId,
 						results: workflowResults, workflow: liveWorkflow,
-						workflowChildren: workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "paused", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress }) } };
+						workflowChildren: workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "paused", inventoryComplete: false, trace: liveWorkflow.trace, progress: childProgress, sessionFiles: childSessionFiles, runIds: workflowChildRunIds }) } };
 				},
 				notify: (run) => deps.pi.sendMessage?.({ customType: "subagent-workflow-complete", content: `Foreground workflow ${run.runId} ${run.result?.isError ? "failed" : "completed"}. Inspect subagent({ action: "status", id: "${run.runId}" }) for the retained output.`, display: true }, { triggerTurn: true }),
 				run: async (signal) => {
@@ -6405,16 +6533,25 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 										if (childAgent?.runner?.type === "external-cli" || childAgent?.runner?.type === "external-job") throw new Error("Workflow child permit supports native Pi children only.");
 										workflowPermitContexts.set(childRequest, { child: { permit: delegatedWorkflowPermit, workflowRunId: foregroundWorkflowRunId, childKey: key } });
 									}
-									workflowLaunchObservers.set(childRequest, (launch) => recordMissionWorkflowChild(missionBinding, foregroundWorkflowRunId, key, {
-										status: "running",
-										agent: launch.agent,
-										...(launch.sessionFile ? { sessionPath: launch.sessionFile } : {}),
-									}));
+									workflowLaunchObservers.set(childRequest, (launch) => {
+										// 一个 key 对应一个子代理；自动继续/恢复沿用同一 sessionFile，
+										// 所以这里覆盖写入不会把上一次执行的路径变成无人收尾的残留黄灯。
+										if (launch.sessionFile) childSessionFiles.set(key, launch.sessionFile);
+										// Use the actual launch id immediately; an auto-resume trace may still name its retained source.
+										if (launch.runId) workflowChildRunIds.set(key, launch.runId);
+										recordMissionWorkflowChild(missionBinding, foregroundWorkflowRunId, key, {
+											status: "running",
+											agent: launch.agent,
+											...(launch.sessionFile ? { sessionPath: launch.sessionFile } : {}),
+										});
+										// Publish the launch-resolved path; session creation may still be pending.
+										sendWorkflowProgress();
+									});
 									return execute(randomUUID(), childRequest, workflowSignal, (update) => {
 										const progress = update.details.progress?.[0];
 										if (!progress) return;
 										if (onUpdate && !workflowProgressClosed) {
-											if (progress.status === "running") childProgress.set(key, workflowChildProgress(progress));
+											if (progress.status === "running") childProgress.set(key, workflowChildProgress(progress, childSessionFiles.get(key)));
 											else childProgress.delete(key);
 											if (!activityTimer) {
 												const delay = 100 - (Date.now() - lastProgressAt);
@@ -6454,7 +6591,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						});
 						const finalPreflightWarnings = workflowPreflightWarnings(workflowPreflight, workflow.trace, { settled: true });
 						const finalPreflightTrace = annotateWorkflowPreflightTrace(workflow.trace, workflowPreflight);
-						const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "completed", inventoryComplete: true, trace: workflow.trace, children: workflow.children });
+						// 终态也带已知路径：失败/停止的子代理可能没有任何 result 行，
+						// 而最终 summary 会写进 status.json 与回执，不能丢掉会话链接。
+						const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "completed", inventoryComplete: true, trace: workflow.trace, children: workflow.children, sessionFiles: childSessionFiles, runIds: workflowChildRunIds });
 						const receipt = terminalWorkflowReceipt(foregroundWorkflowRunId, "complete", workflow.children, workflowChildren, undefined, [...workflowHostSteps.values()], workflowResource?.provenance);
 						const traceLines = finalPreflightTrace.map((entry) => `- ${entry.operation} ${entry.key}: ${entry.state}${entry.runId ? ` (${entry.runId})` : ""}${entry.durationMs !== undefined ? ` in ${entry.durationMs}ms` : ""}${entry.warning ? ` — ${entry.warning}` : ""}${entry.error ? ` — ${entry.error}` : ""}`);
 						const sections = [
@@ -6494,7 +6633,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const workflowText = sections.join("\n\n");
 						const outputWarning = writeWorkflowAggregateOutput(workflowAggregateOutputPath, workflowText, producedChildOutputPaths);
 						const displayText = appendWorkflowOutputWarning(workflowText, outputWarning);
-						const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: true, trace: partial.trace, children: partial.children });
+						const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: true, trace: partial.trace, children: partial.children, sessionFiles: childSessionFiles, runIds: workflowChildRunIds });
 						const terminalOutcome = workflowFailureTerminalOutcome(error, partial.children, usageBudgetState(workflowUsageBudget.budget, sumResultsCost(workflowResults)));
 						const receipt = terminalWorkflowReceipt(foregroundWorkflowRunId, "failed", partial.children, workflowChildren, terminalOutcome, [...workflowHostSteps.values()], workflowResource?.provenance);
 						return attachWorkflowMission(withRunFanoutBudget({
@@ -6506,6 +6645,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						workflowProgressClosed = true;
 						if (activityTimer) clearTimeout(activityTimer);
 						childProgress.clear();
+						// 终态快照先发，再清空状态槽：主进程收到任一信号都会收掉这个任务的灯。
+						publishSubagentStatus(undefined, true);
+						statusPublisher.dispose();
 					}
 				},
 			});
@@ -6883,7 +7025,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				if (retained?.kind === "foreground" && deps.state.foregroundWorkflows?.has(retained.id)) {
 					return { content: [{ type: "text", text: `Workflow ${retained.id} retains its original JavaScript continuation. Reply to pending supervisor requests and inspect status; do not replay or resume the workflow.` }], isError: true, details: { mode: "management", results: [] } };
 				}
-				return resumeRun(omitUndefinedProperties({ params: paramsWithResolvedCwd, requestCwd, ctx, deps, parentModel: requestParentModel, signal, inheritedUsageBudget, onUpdate }));
+				// 启动观察只消费一次：恢复失败时也不会再用同一请求对象重试。
+				if (workflowLaunchObserver) workflowLaunchObservers.delete(params);
+				return resumeRun(omitUndefinedProperties({ params: paramsWithResolvedCwd, requestCwd, ctx, deps, parentModel: requestParentModel, signal, inheritedUsageBudget, onUpdate, launchObserver: workflowLaunchObserver, toolCallId: _id }));
 			}
 			if (action === "steer") {
 				if (paramsWithResolvedCwd.mode !== undefined && resolveSteerDeliveryMode(paramsWithResolvedCwd.mode) === undefined) {
@@ -7555,6 +7699,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			unknownAgentDiagnosticContext,
 			recoveryAgents: discoveredAgents,
 			runId,
+			toolCallId: _id,
 			shareEnabled,
 			sessionRoot,
 			sessionDirForIndex,

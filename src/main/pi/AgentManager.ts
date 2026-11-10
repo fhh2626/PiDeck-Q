@@ -25,6 +25,8 @@ import type {
 import { ipcChannels } from "../../shared/ipc";
 import { PiProcess } from "./PiProcess";
 import { SubagentRunTracker } from "./SubagentRunTracker";
+import { parseSubagentStatusSnapshot, sameSessionPath } from "./subagentStatusSnapshot";
+import { SUBAGENT_STATUS_KEY_PREFIX } from "../../shared/types/subagents";
 import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
@@ -247,9 +249,10 @@ export class AgentManager {
 	private readonly toolMessageIds = new Map<string, Map<string, string>>();
 	/**
 	 * 子代理运行态投影：pi 内建子代理不是 PiDeck 的 Agent（无 agentId/runtime），
-	 * 只能从 `subagent` 工具 details 截取 sessionFile + 状态后按路径下发给侧栏。
+	 * 从工具 details / 扩展状态槽截取最小状态；tracker 的到期回调主动收掉失联灯，
+	 * 与 clearAgentState 的 stop/restart/exit/stopAll 清理配对，不轮询 pi。
 	 */
-	private readonly subagentRuns = new SubagentRunTracker();
+	private readonly subagentRuns = new SubagentRunTracker((agentId) => this.emitSubagentStatus(agentId));
 	/** 每个 agent 只保留一条自动重试状态消息，避免短暂 5xx/网络错误把会话刷屏。 */
 	private readonly retryStatusMessageIds = new Map<string, string>();
 	/** 同一历史会话正在创建 Agent 时共享同一个 Promise，避免快速重复点击/IPC 竞态创建多个进程。 */
@@ -2449,6 +2452,44 @@ export class AgentManager {
 	 */
 	private observeSubagentToolEvent(agentId: string, event: unknown): void {
 		if (!this.subagentRuns.observe(agentId, event)) return;
+		this.emitSubagentStatus(agentId);
+	}
+
+	/**
+	 * 子代理状态槽：扩展在交接后继续上报运行态，主进程按 key 前缀消费。
+	 *
+	 * 为什么不用工具事件：交接后工具调用已经返回，协议上不能再往它发进度帧。
+	 * 其他扩展的 setStatus 仍然忽略，不占用桌面 UI 空间。
+	 */
+	private observeSubagentStatusSlot(agentId: string, typed: Record<string, unknown>): void {
+		const statusKey = typeof typed.statusKey === "string" ? typed.statusKey : "";
+		if (!statusKey.startsWith(SUBAGENT_STATUS_KEY_PREFIX)) return;
+		const runId = statusKey.slice(SUBAGENT_STATUS_KEY_PREFIX.length);
+		if (!runId) return;
+
+		const statusText = typed.statusText;
+		// 清空状态槽：扩展已收尾，立即收灯。
+		if (statusText === undefined || statusText === null || statusText === "") {
+			if (this.subagentRuns.clearStatusTask(agentId, runId)) this.emitSubagentStatus(agentId);
+			return;
+		}
+
+		const snapshot = parseSubagentStatusSnapshot(statusText);
+		// key 与载荷里的任务标识必须一致，避免一个任务覆盖另一个任务的槽。
+		if (!snapshot || snapshot.workflowRunId !== runId) return;
+		// 同一进程切换会话后，旧会话的状态帧不能点亮新会话的侧栏。
+		// 扩展侧可能给出相对路径，先按项目根补全再比较（与 normalizeSessionPathFromPi 同一套规则）。
+		const runtime = this.agents.get(agentId);
+		const sessionPath = runtime?.tab.sessionPath;
+		if (runtime && sessionPath) {
+			const projectPath = this.getProject(runtime.tab.projectId)?.path ?? runtime.tab.cwd;
+			const ownerPath = toAbsoluteSessionPath(snapshot.ownerSessionId, projectPath, runtime.tab.sessionEnvironment ?? "native");
+			if (!sameSessionPath(sessionPath, ownerPath)) return;
+		}
+		if (this.subagentRuns.observeStatusSnapshot(agentId, snapshot)) this.emitSubagentStatus(agentId);
+	}
+
+	private emitSubagentStatus(agentId: string): void {
 		this.emit(ipcChannels.agentsSubagentStatus, {
 			agentId,
 			runs: this.subagentRuns.snapshot(agentId),
@@ -2461,10 +2502,7 @@ export class AgentManager {
 	 */
 	private clearSubagentToolCall(agentId: string, toolCallId: string): void {
 		if (!this.subagentRuns.clearToolCall(agentId, toolCallId)) return;
-		this.emit(ipcChannels.agentsSubagentStatus, {
-			agentId,
-			runs: this.subagentRuns.snapshot(agentId),
-		});
+		this.emitSubagentStatus(agentId);
 	}
 
 	private async emitRuntimeState(agentId: string) {
@@ -4082,11 +4120,9 @@ export class AgentManager {
 			}
 			// 子代理是本回合内的执行体：回合结束后仍为 running 的条目不可能再更新，
 			// 立刻推一次空快照，避免侧栏的黄灯永久卡住（失败条目按 TTL 保留供回看）。
+			// 例外：已交接的任务由状态槽持续上报，tracker 会保留它的运行态。
 			if (this.subagentRuns.clearRunning(agentId)) {
-				this.emit(ipcChannels.agentsSubagentStatus, {
-					agentId,
-					runs: this.subagentRuns.snapshot(agentId),
-				});
+				this.emitSubagentStatus(agentId);
 			}
 			// agent 异常结束时（如 API 返回 400、模型报错等），将错误提示写入会话，避免用户看到空白。
 			// 错误信息的存放位置因 pi 版本和错误类型不同而有多种可能：
@@ -4385,8 +4421,13 @@ export class AgentManager {
 			});
 			return;
 		}
+		// 子代理状态槽（交接后仍持续上报）先消费：它不是对话 UI，也不应占用弹窗通道。
+		if (method === "setStatus") {
+			this.observeSubagentStatusSlot(agentId, typed);
+			return;
+		}
 		// 其他非对话 UI 方法暂不占用桌面 UI 空间。
-		if (["setStatus", "setTitle"].includes(method)) return;
+		if (method === "setTitle") return;
 		if (!["select", "confirm", "input", "editor"].includes(method)) return;
 
 		// Batch ask_question sends its form as an input title envelope. Decode it at

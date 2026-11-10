@@ -78,7 +78,7 @@ test("WSL stock Pi drops an inherited standalone marker but keeps the other WSLE
 	assert.equal(parentEnv.WSLENV, "KEEP_TOKEN:PIDECK_PI_STANDALONE:OTHER");
 	assert.equal(env.PIDECK_PI_STANDALONE, undefined);
 	assert.equal(env.KEEP_TOKEN, "kept");
-	assert.deepEqual(env.WSLENV.split(":"), ["KEEP_TOKEN", "OTHER"]);
+	assert.deepEqual(env.WSLENV.split(":"), ["KEEP_TOKEN", "OTHER", "PIDECK_DESKTOP"]);
 });
 
 test("WSL Pi-Bolt replaces an inherited standalone marker and preserves unrelated WSLENV names", async () => {
@@ -104,7 +104,7 @@ test("WSL Pi-Bolt replaces an inherited standalone marker and preserves unrelate
 	const env = spawnCalls[0].options.env;
 	assert.equal(parentEnv.WSLENV, "OTHER");
 	assert.equal(env.PIDECK_PI_STANDALONE, "1");
-	assert.deepEqual(env.WSLENV.split(":").sort(), ["OTHER", "PIDECK_PI_STANDALONE"]);
+	assert.deepEqual(env.WSLENV.split(":").sort(), ["OTHER", "PIDECK_DESKTOP", "PIDECK_PI_STANDALONE"]);
 });
 
 test("starts WSL pi with Linux cwd/session while keeping a Windows-accessible spawn cwd", async () => {
@@ -271,5 +271,7 @@ test("native spawn sets PIDECK_UI_LANGUAGE without WSLENV", async () => {
 	await piProc.start();
 
 	assert.equal(spawnCalls[0].options.env.PIDECK_UI_LANGUAGE, "en-US");
+	// 桌面宿主标识：内置扩展据此启用仅 PiDeck 消费的状态通道。
+	assert.equal(spawnCalls[0].options.env.PIDECK_DESKTOP, "1");
 	assert.equal(spawnCalls[0].options.env.WSLENV, undefined);
 });

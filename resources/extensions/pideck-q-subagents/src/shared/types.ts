@@ -200,6 +200,8 @@ export interface WorkflowChildSummary {
 		agent?: string;
 		/** Human-readable display name for the child session, when derived at launch. */
 		sessionName?: string;
+		/** Absolute child session file; PiDeck uses it to bind live sidebar status. */
+		sessionFile?: string;
 		model?: string;
 		thinking?: string;
 		/** Present only while a synchronous foreground child is running. */

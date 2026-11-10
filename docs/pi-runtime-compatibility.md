@@ -22,6 +22,7 @@
 | 原生 subagent | 原版扩展/工具生态各自决定会话存储 | Rust 内置 `subagent` 只有在 `--tools` 显式启用时才加入；子进程使用 `--no-session`，结果是临时的 | 不把无 session 的内部 worker 当作第二个 PiDeck Agent；持久化分支按父会话字段归组 |
 | 运行时选择 | 自动检测 | 自动检测 | 设置中提供“自动 / 原版 TypeScript / Rust”以及两条可选路径；启动时自动检测并缓存实现类型 |
 | 更新 | PiDeck 原有 npm 更新链 | 不是 npm 包，PiDeck 不代替 Rust 自身更新 | Rust 版本只做检测，不显示原版 npm 更新为可用 |
+| 子代理运行状态 | 扩展调用 `ctx.ui.setStatus`，经 `extension_ui_request` 上报 | 需真实运行验证 | 仅在 `PIDECK_DESKTOP=1` 且存在 UI 上下文时发布；主进程按 key 前缀消费，通道缺失时安全降级为不亮灯 |
 
 ## 功能差异与风险矩阵
 
@@ -68,6 +69,29 @@ PiDeck -> pi --mode rpc --no-session -> get_available_models
 PiDeck 的显示层应只展示当前 session catalog 中的顶层会话；内部 subagent 若没有持久化 session，不应被重新扫描成 PiDeck Agent。对于确实写入 session 文件的子会话，扫描器同时读取原版 `parentSession` 和 Rust `branchedFrom`，并把子会话挂到父会话的 `parentSessionPath` 下，避免顶层重复。
 
 Rust 原生 subagent 本身通过 `--no-session` 运行临时 child。若未来 Rust 改为持久化 child，仍应沿用 `branchedFrom` 关联，而不是在 PiDeck 中额外创建一个独立主 Agent。
+
+### 子代理运行状态通道
+
+子代理工具调用返回后（例如子代理提问并 detach），工具事件不再更新，PiDeck 侧栏需要另一条持续的状态来源。扩展复用 pi 已有的扩展 UI 回写，不新增 HTTP/文件轮询：
+
+```text
+extension publishSubagentStatus
+  -> ctx.ui.setStatus("pideck.subagent-status.v1:<runId>", JSON)
+  -> pi extension_ui_request(method=setStatus)
+  -> AgentManager.observeSubagentStatusSlot
+  -> parseSubagentStatusSnapshot
+  -> SubagentRunTracker.observeStatusSnapshot
+  -> agents:subagent-status -> renderer
+```
+
+边界：
+
+- 只在桌面宿主（`PIDECK_DESKTOP=1`）发布，避免终端 TUI 状态栏出现 JSON。
+- 载荷只含子会话路径、状态和诊断字段，不转发工具结果；单帧限 16 KiB、单任务限 64 行，丢行即标记 `truncated`。
+- 心跳 1s；主进程 30s 未收到新帧只收运行灯，不判定任务成功或杀掉子进程。每个 Agent 使用一个最近到期定时器，即使父回合已结束、渲染层空闲，也会主动经现有 `agents:subagent-status` 推送清理；同状态心跳仍刷新到期时间，但不反复重建定时器。失败行保留到最后一次有效观察后 30 分钟。
+- 同一路径的先后执行按首次观察建立归属，不比较不透明的 executionId 大小。状态槽只优先于**当前执行**的工具帧；旧 workflow 的心跳、complete/clear 和工具终态不能覆盖恢复后的新执行。单代理/恢复发布器携带实际新 runId，workflow 在拿到 launch 路径时同步带上实际 runId（不沿用自动恢复 trace 的旧源 id）；缺少 executionId 时回退到 workflow + taskKey / toolCallId。旧行从无 runId 到补齐 runId 只是元数据完善，不能重新取得归属。
+- 成功/清槽后仍保留有界归属墓碑，防止旧失败复活；每 Agent 最多 64 个会话、64 个状态源栅栏，每会话最多 64 次执行。无任何来源更新的栅栏 30 分钟后惰性淘汰，持续的旧心跳只保活归属保护，不刷新新行或旧失败的显示 TTL。超过窗口/容量后不保证识别任意历史迟到帧；完全无身份的同 key 重执行无法区分。空清单不创建活跃任务；stop/restart/exit/stopAll 统一释放定时器及所有状态。
+- 原版 TypeScript Pi 1.5.1 已确认该通道可用；Rust 运行时是否支持 `ctx.ui.setStatus` 仍需真实运行验证，不支持时表现为不亮灯而不是崩溃。
 
 ## 运行时切换说明
 

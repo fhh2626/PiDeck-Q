@@ -232,6 +232,169 @@ test("bg_wait reports a failed background child so the row can show it", () => {
 	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/bg-failed.jsonl|error|"]);
 });
 
+test("workflow mode lights a child from its live workflowChildren row", () => {
+	const tracker = new SubagentRunTracker();
+	const event = {
+		type: "tool_execution_update",
+		toolName: "subagent",
+		toolCallId: "call-wf",
+		partialResult: {
+			content: [],
+			details: {
+				mode: "workflow",
+				results: [],
+				workflowChildren: {
+					children: [{ childId: "factory-stream-review", state: "running", agent: "readonly", sessionFile: "C:/wf-child.jsonl" }],
+				},
+			},
+		},
+	};
+
+	assert.equal(tracker.observe("agent-1", event, 1_000), true);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/wf-child.jsonl|running|readonly"]);
+
+	// workflowChildren 的 completed/failed 终态也要能收灯或亮红灯。
+	const completed = structuredClone(event);
+	completed.partialResult.details.workflowChildren.children[0].state = "completed";
+	assert.equal(tracker.observe("agent-1", completed, 1_500), true);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_500)), []);
+
+	const failed = structuredClone(event);
+	failed.partialResult.details.workflowChildren.children[0].state = "failed";
+	assert.equal(tracker.observe("agent-1", failed, 2_000), true);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), ["C:/wf-child.jsonl|error|readonly"]);
+});
+
+test("workflow rows without a session file stay invisible until launch resolves one", () => {
+	const tracker = new SubagentRunTracker();
+	const withoutFile = {
+		toolName: "subagent",
+		partialResult: { details: { mode: "workflow", results: [], workflowChildren: { children: [{ childId: "a", state: "running" }] } } },
+	};
+	assert.equal(tracker.observe("agent-1", withoutFile, 1_000), false);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), []);
+});
+
+test("terminal results win over a stale workflowChildren running row", () => {
+	const tracker = new SubagentRunTracker();
+	tracker.observe("agent-1", {
+		toolName: "subagent",
+		result: {
+			details: {
+				mode: "workflow",
+				results: [],
+				workflowChildren: { children: [{ childId: "a", state: "running", sessionFile: "C:/wf.jsonl" }] },
+			},
+		},
+	}, 1_000);
+	assert.equal(tracker.snapshot("agent-1", 1_000).length, 1);
+
+	// 同一帧里终态 results 已到，旧 workflowChildren 的 running 不能把行重新点亮。
+	tracker.observe("agent-1", {
+		toolName: "subagent",
+		result: {
+			details: {
+				mode: "workflow",
+				results: [result("C:/wf.jsonl", { success: true })],
+				workflowChildren: { children: [{ childId: "a", state: "running", sessionFile: "C:/wf.jsonl" }] },
+			},
+		},
+	}, 2_000);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), []);
+});
+
+test("a progress frame can finish one workflow child while another stays running", () => {
+	const tracker = new SubagentRunTracker();
+	const frame = (children) => ({
+		toolName: "subagent",
+		partialResult: { details: { mode: "workflow", results: [], workflowChildren: { children } } },
+	});
+	tracker.observe("agent-1", frame([
+		{ childId: "done", state: "running", sessionFile: "C:/done.jsonl" },
+		{ childId: "live", state: "running", sessionFile: "C:/live.jsonl" },
+	]), 1_000);
+	assert.equal(tracker.observe("agent-1", frame([
+		{ childId: "done", state: "completed", sessionFile: "C:/done.jsonl" },
+		{ childId: "live", state: "running", sessionFile: "C:/live.jsonl" },
+	]), 2_000), true);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), ["C:/live.jsonl|running|"]);
+});
+
+test("a queued workflow row never lights before it starts", () => {
+	const tracker = new SubagentRunTracker();
+	// 异步 steps 的 pending 行可能预先带会话路径，但子代理还没开工，不能点灯。
+	assert.equal(tracker.observe("agent-1", {
+		toolName: "subagent",
+		partialResult: {
+			details: {
+				mode: "workflow",
+				results: [],
+				workflowChildren: { children: [{ childId: "queued", state: "pending", sessionFile: "C:/wf-queued.jsonl" }] },
+			},
+		},
+	}, 1_000), false);
+	assert.equal(tracker.snapshot("agent-1", 1_000).length, 0);
+});
+
+test("a later execution of the same session file is not masked by its earlier terminal state", () => {
+	const tracker = new SubagentRunTracker();
+	// 连续恢复同一个子会话：两个步骤共用同一个会话文件，第一步已完成。
+	const frame = (children) => ({
+		toolName: "subagent",
+		partialResult: { details: { mode: "workflow", results: [], workflowChildren: { children } } },
+	});
+	tracker.observe("agent-1", frame([
+		{ childId: "first", state: "completed", sessionFile: "C:/same.jsonl" },
+		{ childId: "second", state: "running", sessionFile: "C:/same.jsonl" },
+	]), 1_000);
+	// 最新一次执行在跑，不能因为上一步已完成就不亮灯。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/same.jsonl|running|"]);
+
+	tracker.observe("agent-1", frame([
+		{ childId: "first", state: "completed", sessionFile: "C:/same.jsonl" },
+		{ childId: "second", state: "completed", sessionFile: "C:/same.jsonl" },
+	]), 2_000);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), []);
+});
+
+test("a successful retry of the same session file clears the earlier failure", () => {
+	const tracker = new SubagentRunTracker();
+	const frame = (children, results = []) => ({
+		toolName: "subagent",
+		partialResult: { details: { mode: "workflow", results, workflowChildren: { children } } },
+	});
+	tracker.observe("agent-1", frame([
+		{ childId: "first", state: "failed", sessionFile: "C:/retry.jsonl" },
+		{ childId: "second", state: "running", sessionFile: "C:/retry.jsonl" },
+	]), 1_000);
+	// 重试进行中：不能因为上一次失败就一直红灯。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/retry.jsonl|running|"]);
+
+	tracker.observe("agent-1", frame([
+		{ childId: "first", state: "failed", sessionFile: "C:/retry.jsonl" },
+		{ childId: "second", state: "completed", sessionFile: "C:/retry.jsonl" },
+	], [result("C:/retry.jsonl", { exitCode: 1, error: "first failed" }), result("C:/retry.jsonl")]), 2_000);
+	// 重试成功：旧失败不能把新结果盖成红灯。
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 2_000)), []);
+});
+
+test("a rejected workflow child upgrades a completed exitCode-0 result", () => {
+	const tracker = new SubagentRunTracker();
+	tracker.observe("agent-1", {
+		toolName: "subagent",
+		result: {
+			details: {
+				mode: "workflow",
+				// 验收拒绝等逻辑失败可能仍带 exitCode 0；此时 workflowChildren 的 rejected
+				// 比 results 的 completed 更可信，不能把红灯洗成无灯。
+				results: [result("C:/wf.jsonl", { success: true })],
+				workflowChildren: { children: [{ childId: "a", state: "rejected", sessionFile: "C:/wf.jsonl" }] },
+			},
+		},
+	}, 1_000);
+	assert.deepEqual(summarize(tracker.snapshot("agent-1", 1_000)), ["C:/wf.jsonl|error|readonly"]);
+});
+
 test("management results carry no run state and are ignored", () => {
 	const tracker = new SubagentRunTracker();
 	// action: list/status/interrupt 也会返回 results 字段，但它们不是运行态。

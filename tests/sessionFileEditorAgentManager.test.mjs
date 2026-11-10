@@ -146,6 +146,8 @@ function loadAgentManager() {
       if (specifier === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
       if (specifier === "./streamGate") return streamGateModule.exports;
       if (specifier === "./SubagentRunTracker") return loadTsCommonJs("src/main/pi/SubagentRunTracker.ts");
+      if (specifier === "./subagentStatusSnapshot") return loadTsCommonJs("src/main/pi/subagentStatusSnapshot.ts");
+      if (specifier === "../../shared/types/subagents") return loadTsCommonJs("src/shared/types/subagents.ts");
       if (specifier === "./cacheHitStats") return cacheHitStatsModule.exports;
       if (specifier === "../../shared/toolRuntimeState") return { updateActiveToolCalls: () => undefined };
       // 25fd516 起 AgentManager 引入内置扩展参数拼接；本测试不涉及扩展加载，透传即可
