@@ -1093,6 +1093,8 @@ export interface WorkflowScriptChildResult {
 	outputPathMapping?: { requestedPath: string; savedPath: string };
 	externalAdapter?: import("../shared/types.ts").ExternalCliReceiptMetadata;
 	resumability?: { state: "resumable" } | { state: "not-resumable"; reason: string };
+	/** Recovery brief carried from an abnormal child termination. */
+	recoveryBrief?: import("../shared/types.ts").SingleResult["recoveryBrief"];
 	continuation?: { runIds: string[] };
 	artifactPaths: string[];
 	results?: SingleResult[];

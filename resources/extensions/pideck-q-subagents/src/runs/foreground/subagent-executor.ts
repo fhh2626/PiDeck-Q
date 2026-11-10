@@ -74,6 +74,8 @@ import { finalizeSingleOutput, injectSingleOutputInstruction, normalizeSingleOut
 import { assertJsonSchemaObject, cleanupStructuredOutputRuntime, createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { compactForegroundDetails, getSingleResultOutput, readStatus, resolveChildCwd, sumResultsCost, sumResultsUsage, toAgentToolUsage } from "../../shared/utils.ts";
 import { createTaskMutationArbiter } from "../shared/llm-intent-arbiter.ts";
+import { createRecoveryBriefGenerator } from "../shared/recovery-brief-model.ts";
+import { formatRecoveryBriefBlock, type RecoveryBriefResumability } from "../shared/recovery-brief.ts";
 import { discardPreservedWorktrees, formatParallelHandoffError, formatParallelHandoffReference, formatStoredParallelHandoffCleanup, parallelHandoffPath, readParallelHandoffManifest, recordParallelHandoffMerge, recordParallelHandoffSupersession, writeParallelHandoffGroup, writeWorktreeSetupHandoff } from "../shared/parallel-handoff.ts";
 import { summarizeContextModes, type ContextMode, type ContextSummary } from "../shared/context-mode.ts";
 import {
@@ -2134,6 +2136,7 @@ async function resumeForegroundRun(options: {
 			runtimeSnapshotHost: options.input.deps.pi,
 			parentSessionId: options.input.ctx.sessionManager.getSessionId() ?? undefined,
 			llmIntentArbiter: createTaskMutationArbiter(options.input.ctx),
+			recoveryBrief: createRecoveryBriefGenerator(options.input.ctx),
 			childRuntime: options.input.deps.childRuntime,
 			onChildSession: (controls) => {
 				childSessionControls = controls;
@@ -2264,9 +2267,16 @@ async function resumeForegroundRun(options: {
 
 		const isError = r.exitCode !== 0 && !r.detached;
 		const singleOutput = getSingleResultOutput(r);
-		const text = isError && r.error
+		const baseText = isError && r.error
 			? r.error
 			: r.finalOutput ?? (singleOutput && singleOutput.trim() ? singleOutput : undefined) ?? `Revived ${options.target.source} subagent from ${options.target.runId} completed without output.`;
+		// A resumed child can fail too. Its receipt must carry the same brief as a
+		// fresh launch; the terminal record is already remembered above, so the
+		// resumability probe sees the final state.
+		const recoveryBrief = isError
+			? formatRecoveryBriefReceipt({ result: r, state: options.input.deps.state, runId })
+			: "";
+		const text = recoveryBrief ? `${baseText}\n\n${recoveryBrief}` : baseText;
 		return {
 			content: [{ type: "text", text }],
 			...(isError ? { isError: true } : {}),
@@ -2794,10 +2804,12 @@ async function resumeRun(input: ResumeRunInput): Promise<AgentToolResult<Details
 
 function resultSummaryForIntercom(result: SingleResult): string {
 	const output = getSingleResultOutput(result);
-	if (result.exitCode !== 0 && result.error) {
-		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
-	}
-	return output || result.error || "(no output)";
+	const base = result.exitCode !== 0 && result.error
+		? (output ? `${result.error}\n\nOutput:\n${output}` : result.error)
+		: output || result.error || "(no output)";
+	// The supervisor channel must not lose the recovery brief that the tool
+	// receipt already carries for an abnormal termination.
+	return result.recoveryBrief ? `${base}\n\n${result.recoveryBrief.text}` : base;
 }
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
@@ -2811,6 +2823,50 @@ function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string
 		lines.push("", `Output artifact: ${result.artifactPaths.outputPath}`);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Probe whether this finished run can still be continued in its child session.
+ *
+ * Reuses the same resolver `action:'resume'` uses, so the printed advice can
+ * never promise a continuation the resume path would reject. Failures are
+ * reported as a reason instead of throwing: the brief must still be delivered.
+ */
+function probeRecoveryBriefResumability(
+	state: SubagentState,
+	runId: string,
+): RecoveryBriefResumability {
+	try {
+		const target = resolveResumeTarget({ id: runId }, state, { asyncRequireSessionFile: true, exactOnly: true });
+		return target.kind === "revive"
+			? { state: "resumable" }
+			: { state: "not-resumable", reason: "the child is still running" };
+	} catch (error) {
+		return { state: "not-resumable", reason: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+/**
+ * Render the parent-facing recovery brief block for a failed single run, or an
+ * empty string when the run produced no brief (success, stop, detach, or a
+ * prelaunch failure).
+ */
+function formatRecoveryBriefReceipt(input: {
+	result: SingleResult;
+	state: SubagentState;
+	runId: string;
+}): string {
+	const brief = input.result.recoveryBrief;
+	if (!brief) return "";
+	return formatRecoveryBriefBlock(brief, {
+		references: {
+			runId: input.runId,
+			...(input.result.sessionFile ? { sessionFile: input.result.sessionFile } : {}),
+			...(input.result.transcriptPath ? { transcriptPath: input.result.transcriptPath } : {}),
+			...(input.result.artifactPaths?.outputPath ? { outputPath: input.result.artifactPaths.outputPath } : {}),
+		},
+		resumability: probeRecoveryBriefResumability(input.state, input.runId),
+	});
 }
 
 function createForegroundControlNotifier(data: Pick<ExecutionContextData, "controlConfig" | "contextPolicy" | "intercomBridge" | "params">, deps: Pick<ExecutorDeps, "pi" | "state">): (event: ControlEvent) => void {
@@ -4474,6 +4530,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			runtimeSnapshotHost: deps.pi,
 			parentSessionId: ctx.sessionManager.getSessionId() ?? undefined,
 			llmIntentArbiter: createTaskMutationArbiter(ctx),
+			recoveryBrief: createRecoveryBriefGenerator(ctx),
 			childRuntime: deps.childRuntime,
 			onChildSession: (controls) => { childSessionControls = controls; },
 			context: data.contextPolicy.contextForAgent(params.agent!),
@@ -4687,12 +4744,17 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		};
 	}
 
-	if (r.exitCode !== 0)
+	if (r.exitCode !== 0) {
+		const recoveryBrief = formatRecoveryBriefReceipt({ result: r, state: deps.state, runId });
 		return {
-			content: [{ type: "text", text: `${formatFailedSingleRunOutput(r, finalizedOutput.displayOutput)}${worktreeSuffix}` }],
+			content: [{
+				type: "text",
+				text: `${formatFailedSingleRunOutput(r, finalizedOutput.displayOutput)}${recoveryBrief ? `\n\n${recoveryBrief}` : ""}${worktreeSuffix}`,
+			}],
 			details,
 			isError: true,
 		};
+	}
 	return {
 		content: [{ type: "text", text: `${finalizedOutput.displayOutput || "(no output)"}${worktreeSuffix}` }],
 		details,
@@ -4806,13 +4868,22 @@ function workflowChildResult(
 	forcedTerminalOutcome?: WorkflowTerminalOutcome,
 ): WorkflowScriptChildResult {
 	const receiptOutput = result.content.map((part) => part.type === "text" ? part.text : "").filter(Boolean).join("\n");
+	// A failed child's recovery brief must survive the workflow aggregate; the
+	// structured `results` rows already carry it, but the child row is what a
+	// script and the workflow summary read. Strip the brief body from the receipt
+	// text here so it is not duplicated in `output`/`error`; the aggregate render
+	// appends the formatted block once.
+	const recoveryBrief = result.details.results.find((child) => child.recoveryBrief)?.recoveryBrief;
+	const receiptOutputWithoutBrief = recoveryBrief && recoveryBrief.text
+		? receiptOutput.split(recoveryBrief.text).join("").trim()
+		: receiptOutput;
 	const output = result.details.results.length === 1 && result.details.results[0]?.finalOutput !== undefined
 		? result.details.results[0].finalOutput
-		: receiptOutput;
+		: receiptOutputWithoutBrief;
 	const childError = result.details.results.map((child) => child.error).find((error): error is string => Boolean(error));
-	const failureErrorBase = childError && receiptOutput
-		? receiptOutput.includes(childError) ? receiptOutput : `${childError}\n\n${receiptOutput}`
-		: childError || receiptOutput || output || "Child run failed.";
+	const failureErrorBase = childError && receiptOutputWithoutBrief
+		? receiptOutputWithoutBrief.includes(childError) ? receiptOutputWithoutBrief : `${childError}\n\n${receiptOutputWithoutBrief}`
+		: childError || receiptOutputWithoutBrief || output || "Child run failed.";
 	const savedOutputEvidence = [...new Set(result.details.results.map((child) => child.savedOutputPath).filter((value): value is string => Boolean(value)))]
 		.filter((savedOutputPath) => !failureErrorBase.includes(savedOutputPath))
 		.map((savedOutputPath) => `Saved output: ${savedOutputPath}`);
@@ -4870,6 +4941,7 @@ function workflowChildResult(
 	return {
 		key,
 		ok,
+		...(recoveryBrief ? { recoveryBrief } : {}),
 		...(lane ? { lane } : {}),
 		...(terminalOutcome ? { terminalOutcome } : {}),
 		...(resolvedAgents.length === 1 ? { agent: resolvedAgents[0] } : {}),
@@ -4909,6 +4981,48 @@ function workflowOutputPathMappingSummary(children: WorkflowScriptChildResult[])
 		? [`'${child.key}': requested ${child.outputPathMapping.requestedPath} -> saved ${child.outputPathMapping.savedPath}`]
 		: []);
 	return mappings.length > 0 ? ` Output path mappings: ${mappings.join("; ")}.` : "";
+}
+
+/**
+ * Render a workflow child's recovery brief with the same authoritative
+ * references and resumability advice as a foreground receipt.
+ */
+function workflowRecoveryBriefBlock(child: WorkflowScriptChildResult): string | undefined {
+	const brief = child.recoveryBrief;
+	if (!brief) return undefined;
+	const sessionFile = child.results?.find((result) => result.sessionFile)?.sessionFile;
+	const transcriptPath = child.results?.find((result) => result.transcriptPath)?.transcriptPath;
+	const outputPath = child.results?.find((result) => result.savedOutputPath)?.savedOutputPath
+		?? child.results?.find((result) => result.outputReference?.path)?.outputReference?.path
+		?? child.results?.find((result) => result.artifactPaths?.outputPath)?.artifactPaths?.outputPath;
+	return formatRecoveryBriefBlock(brief, {
+		references: {
+			...(child.runId ? { runId: child.runId } : {}),
+			...(sessionFile ? { sessionFile } : {}),
+			...(transcriptPath ? { transcriptPath } : {}),
+			...(outputPath ? { outputPath } : {}),
+		},
+		resumability: child.resumability ?? { state: "not-resumable", reason: "resumability was not inspected" },
+	});
+}
+
+/**
+ * Append recovery briefs for failed workflow children to the aggregate text.
+ *
+ * `runs.run` rejects on failure, but `runs.all` resolves per-child failures and
+ * a script may return only `child.output`; the host therefore cannot rely on
+ * the script to surface the brief. Skip a brief whose body is already present
+ * (for example when the script returned `child.error` or the child object).
+ */
+function appendWorkflowRecoveryBriefs(text: string, children: WorkflowScriptChildResult[]): string {
+	const blocks: string[] = [];
+	for (const child of children) {
+		const brief = child.recoveryBrief;
+		if (!brief?.text || text.includes(brief.text)) continue;
+		const block = workflowRecoveryBriefBlock(child);
+		if (block) blocks.push(block);
+	}
+	return blocks.length > 0 ? `${text}\n\n${blocks.join("\n\n")}` : text;
 }
 
 function workflowDetailsResults(children: WorkflowScriptChildResult[]): SingleResult[] {
@@ -6607,7 +6721,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (finalPreflightWarnings.length > 0) sections.push(formatWorkflowPreflightWarnings(finalPreflightWarnings));
 						const outputMappings = workflowOutputPathMappingSummary(workflow.children).trim();
 						if (outputMappings) sections.push(outputMappings);
-						const workflowText = sections.join("\n\n");
+						const workflowText = appendWorkflowRecoveryBriefs(sections.join("\n\n"), workflow.children);
 						const outputWarning = writeWorkflowAggregateOutput(workflowAggregateOutputPath, workflowText, producedChildOutputPaths);
 						const displayText = appendWorkflowOutputWarning(workflowText, outputWarning);
 						return attachWorkflowMission(withRunFanoutBudget({
@@ -6630,7 +6744,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (finalPreflightWarnings.length > 0) sections.push(formatWorkflowPreflightWarnings(finalPreflightWarnings));
 						const outputMappings = workflowOutputPathMappingSummary(partial.children).trim();
 						if (outputMappings) sections.push(outputMappings);
-						const workflowText = sections.join("\n\n");
+						const workflowText = appendWorkflowRecoveryBriefs(sections.join("\n\n"), partial.children);
 						const outputWarning = writeWorkflowAggregateOutput(workflowAggregateOutputPath, workflowText, producedChildOutputPaths);
 						const displayText = appendWorkflowOutputWarning(workflowText, outputWarning);
 						const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: true, trace: partial.trace, children: partial.children, sessionFiles: childSessionFiles, runIds: workflowChildRunIds });

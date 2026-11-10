@@ -278,6 +278,27 @@ For npm package projects, project-scoped artifacts need a `.npmignore` rule (or 
 
 Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from a branched session file produced from the parent's current leaf (foreground children open it in-process; background children receive it as `--session`). That is a real session fork, not an injected summary. An omitted launch `context` that resolves through `defaultContext: fork` uses the same branch when the parent session file and current leaf exist, and otherwise starts fresh.
 
+## Recovery briefs
+
+Scope: the native foreground pipeline only — single foreground launches, foreground `action: "resume"` runs, and workflow children launched by that pipeline. Background children started by `runs/background/subagent-runner.ts` are a separate pipeline and do not produce recovery briefs.
+
+When one of those children ends abnormally — a runtime/model error, an unexpected termination, or a timeout — after doing real work, the failed receipt carries one short recovery brief so the parent can decide whether to continue or correct that same child.
+
+The brief is produced by a single bounded, tool-free inference that uses the child's own effective provider/model and thinking level. There is no model switching and no fallback to the parent model: if the child's model cannot be resolved unambiguously, the deterministic evidence brief is used instead. The inference summarizes the whole run (early, middle, and late progress, validation results, failures, and blockers) from phase-bucketed evidence, and reports the interruption point from the most recent tool activity. Thinking blocks are never included, dropped evidence is marked, and the inference cannot call tools or touch the child session. The parent-language sentence in the prompt is advisory only; there is no locale detection. No claim is made about live-model summary quality.
+
+Runtime identity comes from the settled child session and its recorded request metadata, including the effective thinking level after defaults and capability clamping. Model lookup is exact-only; another date/version or provider is never substituted. Continued runs include stored task requests and earlier results alongside the new execution events, under separate evidence budgets.
+
+Guards worth knowing:
+
+- A clean success, an explicit stop or interrupt, a detach receipt, parent cancellation, and a prelaunch failure produce no brief.
+- A run governed by a `usageBudget` skips the inference and uses the deterministic evidence brief instead, so no unauthorized spend happens.
+- A model/auth failure, timeout, empty response, an errored/aborted/truncated terminal response (even with partial text), or an inference that exceeds the whole-lifecycle deadline also degrades to that deterministic brief; the child's original error, output, acceptance state, and file-only output semantics are never rewritten.
+- Parent cancellation or an explicit child interrupt during the inference aborts the agent and suppresses the late brief. Any usage the provider already reported is still preserved; the original child failure remains unchanged.
+- The inference's measured token/cost usage is added to the child's usage and the parent aggregate exactly once. It does not add turns or tool calls.
+- The brief is separate from `finalOutput` and is also written to the child's metadata artifact.
+
+The block ends with the authoritative run id, session file, transcript path, and output artifact. Continuation advice is only printed when the normal resume resolution would accept the run; otherwise the block states that the child cannot be resumed in its original session. Resuming continues the same child session under a new run id. Workflow aggregate output includes a failed child's brief even when the script returns only that child's output; the brief is never counted as task success or as `finalOutput`.
+
 ## Completion notifications
 
 Async completions belong only to the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to record completion state.

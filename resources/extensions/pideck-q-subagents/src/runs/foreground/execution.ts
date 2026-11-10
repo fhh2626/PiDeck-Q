@@ -58,6 +58,7 @@ import { effectiveToolTimeoutMs, formatToolTimeoutMessage, resolveToolTimeoutMs,
 import { evaluateCompletionMutationGuard, expectsImplementationMutation, hasMutationToolCapability, validateImplementationToolContract } from "../shared/completion-guard.ts";
 import { planCompletionEvidence } from "../shared/completion-evidence.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
+import { applyRecoveryBrief, captureRecoveryBriefIdentity, foldRecoveryBriefUsage, recoveryBriefRequest, type RecoveryBriefRuntimeSnapshot } from "../shared/recovery-brief.ts";
 import { planReadonlyModelContinuation, type LogicalRecoveryState } from "../shared/readonly-model-continuation.ts";
 import { getReadonlySessionEvidence, requestReadonlySessionEvidence, type SettledReadonlyEvidence } from "../shared/readonly-session-evidence.ts";
 import { getReadonlyChildModels } from "../shared/child-session.ts";
@@ -117,6 +118,8 @@ import { childSessionFactory, projectChildSessionEventForJson, type ChildSession
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
+/** Diagnostic context stays private instead of changing task output/provenance. */
+const recoveryRuntimeByResult = new WeakMap<SingleResult, RecoveryBriefRuntimeSnapshot>();
 
 function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -178,6 +181,8 @@ function persistSingleResultMetadata(input: {
 		effects: target.effects,
 		transcriptPath: target.transcriptPath,
 		transcriptError: target.transcriptError,
+		// Durable evidence for later status/inspection of an abnormal termination.
+		recoveryBrief: target.recoveryBrief,
 		skills: target.skills,
 		skillsWarning: target.skillsWarning,
 		timestamp: Date.now(),
@@ -817,6 +822,12 @@ async function runSingleAttempt(
 
 		const finish = (code: number) => {
 			if (lifecycleFinished) return;
+			if (session) {
+				recoveryRuntimeByResult.set(result, {
+					...recoveryRuntimeByResult.get(result),
+					...captureRecoveryBriefIdentity(session, result.messages),
+				});
+			}
 			lifecycleFinished = true;
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
@@ -1425,6 +1436,9 @@ async function runSingleAttempt(
 					return;
 				}
 				session = created;
+				// Read the existing context before prompting; it contains the original
+				// objective/results when this is a continuation of the same session.
+				recoveryRuntimeByResult.set(result, { priorMessages: created.messages.slice() });
 				created.detached = detached;
 				unsubscribe = created.subscribe((event) => processEvent(event as Parameters<typeof processEvent>[0]));
 				if (abortedBySignal || interruptedByControl || result.timedOut) {
@@ -1949,6 +1963,10 @@ async function runSyncCompletionInner(
 		},
 	};
 	let lastResult: SingleResult | undefined;
+	// Keep references through final settlement so a retry cannot erase earlier
+	// accomplishments from the recovery brief. The task result itself stays intact.
+	const recoveryAttemptMessages: Array<NonNullable<SingleResult["messages"]>> = [];
+	let firstRecoveryRuntime: RecoveryBriefRuntimeSnapshot | undefined;
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 	let recoveryState: LogicalRecoveryState = "unused";
 	let readonlyExpected: SettledReadonlyEvidence | undefined;
@@ -1996,6 +2014,8 @@ async function runSyncCompletionInner(
 				readonlyHandoffAllowed: readonlyExpected ? readonlyHandoffAllowed : undefined,
 			});
 			lastResult = result;
+			if (result.messages) recoveryAttemptMessages.push(result.messages);
+			firstRecoveryRuntime ??= recoveryRuntimeByResult.get(result);
 			if (!recoveringAbort) {
 				if (result.model) attemptedModels.push(result.model);
 				else if (candidate) attemptedModels.push(candidate);
@@ -2228,6 +2248,44 @@ async function runSyncCompletionInner(
 		}
 	}
 	if (isAgentContract(options.agentContract)) attachContractProjections(result);
+	// Recovery brief: one bounded, tool-free summary for an abnormal termination.
+	// Runs after every retry/recovery path settled and after the session/transcript
+	// references are final, but before `redactResultPrompt` (the original task is
+	// the brief's objective) and before `compactForegroundResult` drops `messages`.
+	// `recoveryBriefRequest` is pure: it maps fields only. Evidence is rendered
+	// inside `applyRecoveryBrief` AFTER the trigger guard, so a successful child
+	// never pays for the O(messages) flatten.
+	try {
+		// Interrupt remains meaningful after the child's prompt has settled: it
+		// also cancels the diagnostic inference and suppresses a late brief.
+		const recoverySignal = options.signal && options.interruptSignal
+			? AbortSignal.any([options.signal, options.interruptSignal])
+			: options.signal ?? options.interruptSignal;
+		const applied = await applyRecoveryBrief(recoveryBriefRequest(result, {
+			attemptMessages: recoveryAttemptMessages,
+			runtime: {
+				...recoveryRuntimeByResult.get(result),
+				...(firstRecoveryRuntime?.priorMessages ? { priorMessages: firstRecoveryRuntime.priorMessages } : {}),
+			},
+			...(options.recoveryBrief ? { generator: options.recoveryBrief } : {}),
+			// A configured usage budget means extra spend is not authorized.
+			...(options.usageBudget ? { usageBudgetConfigured: true } : {}),
+			// The authoritative completion of a detached run must not spend on a
+			// second summary; the parent already received the detach receipt.
+			...(detachedReason ? { detached: true } : {}),
+			...(recoverySignal ? { signal: recoverySignal } : {}),
+		}));
+		// Fold the inference's measured spend exactly once. `turns` is untouched:
+		// the brief is not a child execution turn and must not add phantom activity.
+		foldRecoveryBriefUsage(result.usage, applied.usage);
+		if (applied.brief) result.recoveryBrief = applied.brief;
+	} catch (error) {
+		// A brief is diagnostic value only; it must never fail the child's result.
+		console.warn(`[pi-subagents] recovery brief failed for run ${options.runId}: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		// Retained results should not retain an extra copy of the stored context.
+		recoveryRuntimeByResult.delete(result);
+	}
 	redactResultPrompt(result);
 	try {
 		persistResultMetadata(result);

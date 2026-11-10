@@ -97,6 +97,8 @@ export interface ChildSession {
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	readonly modelId: string | undefined;
+	/** Effective session level after defaults and model capability clamping. */
+	readonly thinkingLevel?: string;
 	/** Set by the foreground host once the run detached; `factory.dispose()` leaves such children running. */
 	detached?: boolean;
 	/** Set by `factory.dispose()` before it aborts the child, so the host can report the stop truthfully. */
@@ -325,6 +327,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				get sessionFile() { return session.sessionFile; },
 				get sessionId() { return session.sessionId; },
 				get modelId() { return session.model ? `${session.model.provider}/${session.model.id}` : undefined; },
+				get thinkingLevel() { return session.thinkingLevel; },
 			};
 			if (evidence && session.model) readonlyModels.set(child, {
 				current: toModelInfo(session.model),

@@ -12,6 +12,7 @@ import type { ModelScopeRule } from "../runs/shared/model-scope.ts";
 import type { ResolvedSubagentCapabilityCeiling, SubagentCapabilityAudit } from "../runs/shared/capability-ceiling.ts";
 import type { AuthorityPolicyConfig } from "../policy/authority.ts";
 import type { ThinkingLevel } from "./model-info.ts";
+import type { RecoveryBrief } from "../runs/shared/recovery-brief.ts";
 import type { GlobalMissionIndexRecord, MissionRecord, MissionStoreConfig } from "../missions/types.ts";
 import type { ExtensionBindings } from "../runs/shared/extension-bindings.ts";
 import type { WorkflowChildPermitContext } from "./workflow-child-permit.ts";
@@ -1307,6 +1308,12 @@ export interface SingleResult {
 	effects?: EffectsProjection;
 	transcriptPath?: string;
 	transcriptError?: string;
+	/**
+	 * Recovery brief for an abnormal termination. Kept separate from
+	 * `finalOutput`/`error` so the child's real result, acceptance state and
+	 * file-only output semantics stay untouched.
+	 */
+	recoveryBrief?: RecoveryBrief;
 	children?: NestedRunSummary[];
 	watchdog?: ChildWatchdogProgress;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
@@ -2427,6 +2434,11 @@ export interface RunSyncOptions {
 	modelOrigin?: "explicit" | "inherited" | "configured";
 	/** LLM intent arbiter for the completion mutation guard (rescues read-only review runs). */
 	llmIntentArbiter?: import("../runs/shared/llm-intent-arbiter.ts").TaskMutationArbiter;
+	/**
+	 * Recovery-brief generator for abnormal child terminations.
+	 * When absent, the deterministic evidence brief is used instead.
+	 */
+	recoveryBrief?: import("../runs/shared/recovery-brief.ts").RecoveryBriefGenerator;
 	/** Override the agent's default thinking level for this run */
 	thinkingOverride?: AgentConfig["thinking"];
 	thinkingCeiling?: ThinkingLevel;
