@@ -4,6 +4,9 @@ import test from "node:test";
 
 const configModal = readFileSync("src/renderer/src/ConfigModal.tsx", "utf8");
 const skills = readFileSync("src/renderer/src/config/SkillsTab.tsx", "utf8");
+const skillsQuick = readFileSync("src/renderer/src/components/session/SkillsQuickDialog.tsx", "utf8");
+const subagentSettings = readFileSync("src/renderer/src/components/subagents/SubagentSettingsDialog.tsx", "utf8");
+const dialogPrimitive = readFileSync("src/renderer/src/components/ui-shadcn/dialog.tsx", "utf8");
 const prompts = readFileSync("src/renderer/src/config/PromptsTab.tsx", "utf8");
 const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
 const foundation = readFileSync("src/renderer/src/styles/foundation.css", "utf8");
@@ -134,4 +137,26 @@ test("skill table uses real aligned columns, not a colSpan card", () => {
   // （远端 abb45b39 有意恢复默认高度：选择器仅显示相对路径、单行截断左对齐）
   assert.match(skills, /<SelectTrigger className="w-full">/);
   assert.doesNotMatch(skills, /skill-location-picker/);
+});
+
+test("skills quick dialog reuses the subagent settings dialog shell", () => {
+  // 右侧工具条的两个入口共用同一套弹框骨架：宽度/内边距、标题+说明、内容卡片、
+  // 右下角操作区；避免同一个工具条里出现两种弹框风格。
+  for (const dialog of [skillsQuick, subagentSettings]) {
+    assert.match(dialog, /max-w-\[520px\] gap-4 p-5 sm:max-w-\[520px\]/);
+    assert.match(dialog, /<DialogTitle className="flex items-center gap-2 text-base">/);
+    // 显式 length 声明，避免 text-caption 被 tailwind-merge 当作颜色类丢弃。
+    assert.match(dialog, /<DialogDescription className="text-\[length:var\(--font-size-caption\)\] leading-\[var\(--line-height-caption\)\] text-muted-foreground">/);
+    assert.match(dialog, /closeLabel=\{t\("common\.close"\)\}/);
+  }
+  // 右上角关闭按钮需要本地化读屏文案；保存/写盘期间也要有禁用态。
+  assert.match(dialogPrimitive, /closeLabel = "Close"/);
+  assert.match(dialogPrimitive, /disabled=\{closeDisabled\}/);
+  assert.match(dialogPrimitive, /<span className="sr-only">\{closeLabel\}<\/span>/);
+  assert.match(skillsQuick, /closeDisabled=\{Boolean\(togglingPath\)\}/);
+  assert.match(subagentSettings, /closeDisabled=\{saving\}/);
+  // 技能行与子代理设置项使用同一个 Switch 原语，不再用 Toggle 图标按钮。
+  assert.match(skillsQuick, /import \{ Switch \} from "\.\.\/ui-shadcn\/switch";/);
+  assert.match(skillsQuick, /<Switch/);
+  assert.doesNotMatch(skillsQuick, /ToggleLeft|ToggleRight|showCloseButton=\{false\}/);
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Sparkles, ToggleLeft, ToggleRight, X } from "lucide-react";
+import { Loader2, Sparkles, X } from "lucide-react";
 import {
 	Dialog,
 	DialogContent,
@@ -8,6 +8,8 @@ import {
 	DialogTitle,
 } from "../ui-shadcn/dialog";
 import { Button } from "../ui-shadcn/button";
+import { Switch } from "../ui-shadcn/switch";
+import { cn } from "../../lib/utils";
 import type { PiSkillListResult, PiSkillSummary } from "../../../../shared/types";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
@@ -63,8 +65,11 @@ export function SkillsQuickDialog(props: {
 		};
 	}, [props.open]);
 
+	// 任一 Agent 忙碌 / 列表加载中 / 正在写盘时，整份开关都不可操作。
+	const toggleDisabled = props.locked || loading || Boolean(togglingPath);
+
 	const handleToggle = async (skill: PiSkillSummary) => {
-		if (props.locked || loading || togglingPath) return;
+		if (toggleDisabled) return;
 		setTogglingPath(skill.path);
 		setError(null);
 		// 与 ConfigModal.handleToggleSkill 同语义：目标态（toggle 后的 enabled）。
@@ -96,69 +101,90 @@ export function SkillsQuickDialog(props: {
 		<Dialog
 			open={props.open}
 			onOpenChange={(next) => {
-				// toggle 写盘进行中禁止关闭：防止 SKILL.md 尚未写完就开始 stop Agent。
-				// 不用 DialogClose 自动关窗，关闭动作必须先走 onRequestClose（App 统一判断 changed → stop all）。
+				// 右上角关闭按钮、Esc 与点击外部都会走这里：统一转交 onRequestClose
+				// （App 判断 changed → stop all）。写盘进行中禁止关闭，防止 SKILL.md
+				// 尚未写完就开始 stop Agent。
 				if (!next && !togglingPath) props.onRequestClose();
 			}}
 		>
-			<DialogContent className="max-w-[420px] gap-3 p-5 sm:max-w-[420px]" showCloseButton={false}>
+			{/* 外观与「子代理」弹框对齐：同一宽度/内边距、标题+说明、带边框内容卡片、右下角操作区。 */}
+			<DialogContent
+				className="max-w-[520px] gap-4 p-5 sm:max-w-[520px]"
+				closeLabel={t("common.close")}
+				closeDisabled={Boolean(togglingPath)}
+			>
 				<DialogHeader>
-					<div className="flex items-center justify-between gap-2">
-						<DialogTitle className="flex items-center gap-2 text-base">
-							<Sparkles size={16} strokeWidth={1.8} className="text-text-tertiary" />
-							{t("config.nav.skills")}
-						</DialogTitle>
-						<Button
-							variant="ghost"
-							size="icon-sm"
-							className="size-7"
-							disabled={Boolean(togglingPath)}
-							onClick={props.onRequestClose}
-							title={t("common.close")}
-							aria-label={t("common.close")}
-						>
-							<X size={16} strokeWidth={1.8} />
-						</Button>
-					</div>
-					<DialogDescription>{t("skills.quickDescription")}</DialogDescription>
+					<DialogTitle className="flex items-center gap-2 text-base">
+						<Sparkles size={16} strokeWidth={1.8} className="text-text-tertiary" aria-hidden="true" />
+						{t("config.nav.skills")}
+					</DialogTitle>
+					{/* text-caption 会被 tailwind-merge 当作颜色类丢弃，显式声明 length/line-height 保证 caption 字号生效。 */}
+					<DialogDescription className="text-[length:var(--font-size-caption)] leading-[var(--line-height-caption)] text-muted-foreground">
+						{t("skills.quickDescription")}
+					</DialogDescription>
 				</DialogHeader>
-				{/* 列表内部滚动：弹窗整体不超高，Skill 多时在容器内 overflow-y-auto */}
-				<div className="max-h-[min(50vh,320px)] min-h-0 overflow-y-auto">
-					{loading && data.skills.length === 0 ? (
-						<div className="flex items-center justify-center gap-2 py-10 text-control text-muted-foreground">
-							<Loader2 size={14} className="animate-spin" />
-							<span>{t("common.loading")}</span>
-						</div>
-					) : error ? (
-						<div className="py-6 text-center text-caption text-destructive">{error}</div>
-					) : data.skills.length === 0 ? (
-						<div className="py-10 text-center text-control text-muted-foreground">
-							{t("config.emptySkills")}
-						</div>
-					) : (
-						<ul className="flex flex-col divide-y divide-border/60">
-							{data.skills.map((skill) => (
-								<li key={skill.id} className="flex items-center justify-between gap-3 py-2.5">
-									<strong className="min-w-0 truncate text-control font-medium text-foreground">{skill.name}</strong>
-									<Button
-										variant="ghost"
-										size="icon-sm"
-										className="size-7 shrink-0"
-										disabled={props.locked || loading || Boolean(togglingPath)}
-										onClick={() => void handleToggle(skill)}
-										title={skill.enabled ? t("common.disable") : t("common.enabled")}
-										style={skill.enabled ? { color: "var(--color-accent)" } : undefined}
-									>
-										{skill.enabled ? <ToggleRight size={18} strokeWidth={1.8} /> : <ToggleLeft size={18} strokeWidth={1.8} />}
-									</Button>
-								</li>
-							))}
-						</ul>
+
+				<div className="grid gap-4">
+					{/* 列表内部滚动：弹窗整体不超高，Skill 多时在卡片内 overflow-y-auto */}
+					<div className="max-h-[min(50vh,320px)] min-h-0 overflow-y-auto rounded-md border border-border-subtle">
+						{loading && data.skills.length === 0 ? (
+							<div className="flex items-center justify-center py-6 text-muted-foreground">
+								<Loader2 className="size-4 animate-spin" aria-hidden="true" />
+							</div>
+						) : data.skills.length === 0 ? (
+							error ? (
+								<div className="px-3 py-6 text-center text-caption text-destructive" role="alert">{error}</div>
+							) : (
+								<div className="px-3 py-10 text-center text-control text-muted-foreground">
+									{t("config.emptySkills")}
+								</div>
+							)
+						) : (
+							<ul className="flex flex-col divide-y divide-border-subtle">
+								{data.skills.map((skill) => (
+									<li key={skill.id}>
+										{/* 整行可点击：与「子代理」弹框里的设置卡片一致，不必精确点到开关。 */}
+										<label
+											className={cn(
+												"flex items-center justify-between gap-3 px-3 py-2.5",
+												!toggleDisabled && "cursor-pointer",
+											)}
+										>
+											<span className="min-w-0 truncate text-control font-medium text-foreground" title={skill.name}>
+												{skill.name}
+											</span>
+											<Switch
+												checked={skill.enabled}
+												disabled={toggleDisabled}
+												onCheckedChange={() => void handleToggle(skill)}
+												aria-label={skill.name}
+											/>
+										</label>
+									</li>
+								))}
+							</ul>
+						)}
+					</div>
+					{/* 刷新失败时保留已加载的列表，只在下方提示，避免一次错误把 Skill 全部藏掉。 */}
+					{error && data.skills.length > 0 && (
+						<p className="text-caption text-destructive" role="alert">{error}</p>
 					)}
+					<p className="text-caption leading-relaxed text-muted-foreground">
+						{t("skills.quickApplyHint")}
+					</p>
 				</div>
-				<p className="text-caption leading-relaxed text-muted-foreground">
-					{t("skills.quickApplyHint")}
-				</p>
+
+				<div className="flex items-center justify-end gap-2">
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={Boolean(togglingPath)}
+						onClick={props.onRequestClose}
+					>
+						<X size={14} aria-hidden="true" />
+						{t("common.close")}
+					</Button>
+				</div>
 			</DialogContent>
 		</Dialog>
 	);

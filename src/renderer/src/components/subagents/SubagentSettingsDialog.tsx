@@ -242,13 +242,18 @@ export function SubagentSettingsDialog(props: {
 
 	return (
 		<Dialog open={props.open} onOpenChange={(next) => { if (!next && !saving) props.onClose(); }}>
-			<DialogContent className="max-w-[520px] gap-4 p-5 sm:max-w-[520px]">
+			<DialogContent
+				className="max-w-[520px] gap-4 p-5 sm:max-w-[520px]"
+				closeLabel={t("common.close")}
+				closeDisabled={saving}
+			>
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2 text-base">
 						<Users size={16} strokeWidth={1.8} className="text-text-tertiary" />
 						{t("subagents.title")}
 					</DialogTitle>
-					<DialogDescription className="text-caption text-muted-foreground">
+					{/* text-caption 会被 tailwind-merge 当作颜色类丢弃，显式声明 length/line-height 保证 caption 字号生效。 */}
+					<DialogDescription className="text-[length:var(--font-size-caption)] leading-[var(--line-height-caption)] text-muted-foreground">
 						{t("subagents.description")}
 					</DialogDescription>
 				</DialogHeader>

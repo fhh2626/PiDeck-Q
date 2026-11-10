@@ -56,11 +56,17 @@ function DialogContent({
   size = "default",
   /** 内容 stagger：大弹框（设置/项目管理等）开启，子元素按序轻微级联入场 */
   stagger = false,
+  /** 右上角关闭按钮的读屏文案；默认英文，调用方传入本地化文案 */
+  closeLabel = "Close",
+  /** 保存/写盘等关键操作进行中时禁用右上角关闭 */
+  closeDisabled = false,
   onPointerDownOutside,
   onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  closeLabel?: string
+  closeDisabled?: boolean
   /** 尺寸变体：xl 用于全尺寸工作台弹窗（如设置/项目管理，1300×850） */
   size?: "default" | "xl"
   stagger?: boolean
@@ -92,10 +98,11 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
-            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            disabled={closeDisabled}
+            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{closeLabel}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
