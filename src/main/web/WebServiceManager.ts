@@ -34,6 +34,7 @@ import {
 	WebEventStreamRouter,
 	type PiEvent,
 } from "./WebEventStream";
+import { readCurrentWebStreamTools } from "./webStreamTools";
 import { getAppLogger } from "../logging/sharedLogger";
 import { SessionDeleteBlockedError } from "../sessions/SessionDeleteBlockedError";
 import { authorizeWebRequest } from "./webServiceAuth";
@@ -56,6 +57,8 @@ type WebServiceDependencies = {
 	subscribePiEvents: (
 		handler: (agentId: string, event: PiEvent, streamGeneration?: number) => void,
 	) => () => void;
+	/** Observe runtime lifecycle separately: a killed process cannot emit agent_settled. */
+	subscribeRuntimeChanges: (handler: () => void) => () => void;
 	/** agentId → sessionId 路由，用于把 pi 事件导向对应 session 的 SSE 连接。 */
 	getSessionIdForAgent: (agentId: string) => string | undefined;
 	listProjects: () => Project[];
@@ -205,6 +208,7 @@ export class WebServiceManager {
 	private readonly rendererRoot = join(__dirname, "../renderer");
 
 	private readonly eventStreamRouter: WebEventStreamRouter;
+	private unsubscribeRuntimeChanges: (() => void) | undefined;
 	private lifecycle: Promise<void> = Promise.resolve();
 
 	constructor(private readonly deps: WebServiceDependencies) {
@@ -266,6 +270,8 @@ export class WebServiceManager {
 	}
 
 	private async stopNow() {
+		this.unsubscribeRuntimeChanges?.();
+		this.unsubscribeRuntimeChanges = undefined;
 		// 解绑 pi 事件源，避免服务关闭后仍在转发事件到已失效的 SSE 连接。
 		this.eventStreamRouter.unbindPiSource();
 		if (!this.server) return;
@@ -357,6 +363,11 @@ export class WebServiceManager {
 		this.server = server;
 		this.current = { host, port: this.getPort(server, port) };
 		this.accessToken = accessToken;
+		// Bind only after listen succeeds; stop/restart releases this observer too.
+		this.unsubscribeRuntimeChanges?.();
+		this.unsubscribeRuntimeChanges = this.deps.subscribeRuntimeChanges(() => {
+			this.eventStreamRouter.observeRuntimeStates(this.deps.listSessionRuntimes());
+		});
 		getAppLogger()?.info("web", "Web service started", this.current);
 	}
 
@@ -1582,6 +1593,12 @@ export class WebServiceManager {
 			}
 		};
 
+		// GET reconnect can be the first subscriber after Web was enabled mid-tool.
+		// Recover only a matching live runtime; POST must not replay a prior prompt.
+		const tools = options.finishIfIdle ? readCurrentWebStreamTools(
+			sessionId, this.deps.listSessionRuntimes(), this.deps.getSessionRuntimeMessages(sessionId),
+		) : [];
+
 		// 注册连接；onClose 在客户端断开/服务停止时被调，确保不再向失效 socket 写数据。
 		const close = this.eventStreamRouter.add(
 			sessionId,
@@ -1598,6 +1615,9 @@ export class WebServiceManager {
 			() => {
 				if (!response.writableEnded) response.end();
 			},
+			tools,
+			// GET /stream 只观察已有执行；POST /api/chat 先开流再 dispatch，属于 pending。
+			options.finishIfIdle ? "observe" : "dispatch",
 		);
 
 		// 客户端断开（页面刷新/关闭）时清理；对已结束的请求忽略重复事件。
@@ -1627,15 +1647,12 @@ export class WebServiceManager {
 			request.removeListener("close", onClientClose);
 		});
 
-		// 必须先注册 subscriber，再同步检查 runtime：settled 在检查前则看到 idle 并立即收尾，
+		// 必须先注册 subscriber，再同步应用 runtime 准入策略：settled 在检查前则看到 idle 并立即收尾，
 		// 检查后到达则由已注册 subscriber 收到。这里不能 await，避免再次打开竞态窗口。
-		// POST /api/chat 不做该检查，因为 prompt 发出前 runtime 合法地仍是 idle。
-		if (options.finishIfIdle) {
-			const runtimeRunning = this.deps.listSessionRuntimes().some(
-				(runtime) => runtime.sessionId === sessionId && runtime.status === "running",
-			);
-			if (!runtimeRunning) this.eventStreamRouter.finishSession(sessionId);
-		}
+		// 策略由 run 级准入模式决定（见 webStreamRuntime）：GET 在“没有可观察对象”时立即收尾，
+		// 但已观察到 running/starting 的 run 对同一 session 的所有订阅者保持打开；
+		// POST 在 prompt 发出前不收尾，由 sendSessionPrompt 拒绝路径或后续 run 收尾。
+		this.eventStreamRouter.observeRuntimeStates(this.deps.listSessionRuntimes());
 	}
 
 	private sendError(

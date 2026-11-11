@@ -515,8 +515,8 @@ export class AgentManager {
 		});
 		this.sessionHistoryReader = new SessionHistoryReader({
 			toHostPath: (sessionPath) => this.toSessionHostPath(sessionPath),
-			convertMessages: (agentId, rawMessages, activeEntryIds) =>
-				this.convertAgentMessages(agentId, rawMessages, activeEntryIds),
+			convertMessages: (agentId, rawMessages, activeEntryIds, knownToolResultIds) =>
+				this.convertAgentMessages(agentId, rawMessages, activeEntryIds, knownToolResultIds),
 			trimMessages: (rawMessages, maxTurns) => trimHistoryMessages(rawMessages, maxTurns),
 			translate: this.translate,
 			logger: appLogger,
@@ -1183,6 +1183,11 @@ export class AgentManager {
 		// abort 时 ask_question 的 answer 已被覆写为 null，不再需要跟踪
 		this.abortedDuringAsk.delete(agentId);
 		const currentMessages = this.messages.get(agentId) ?? [];
+		const toolOutcomes = {
+			activeToolCallIds: this.activeToolCallsByAgent.get(agentId),
+			// Explicit edit/delete/resend/switch may intentionally remove a result.
+			preserveObservedOutcomes: options?.preserveHistory !== false,
+		};
 		// 压缩/重连重载（preserveHistory 未显式关闭）时，投影可能早于用户刚发出的
 		// prompt：那条 user 既不在投影里、也不属于被压缩的历史，必须接回尾部，
 		// 否则下一次全量 flush 会让渲染层把它滑出（发送瞬间信息流回滚一条）。
@@ -1196,7 +1201,9 @@ export class AgentManager {
 				projectedMessages,
 				currentMessages,
 				options?.preserveMessagesAfter,
+				toolOutcomes,
 			),
+			toolOutcomes,
 		);
 		// 加载期间新增/就地变化的运行期消息不能被旧快照覆盖：
 		// - 新增 ID（快照发起后才出现）：追加到投影尾部，交由后续事件继续更新；
@@ -5597,8 +5604,9 @@ export class AgentManager {
 		agentId: string,
 		rawMessages: unknown[],
 		activeEntryIds?: string[],
+		knownToolResultIds?: ReadonlySet<string>,
 	): ChatMessage[] {
-		return this.messageProjector.convert(agentId, rawMessages, activeEntryIds);
+		return this.messageProjector.convert(agentId, rawMessages, activeEntryIds, knownToolResultIds);
 	}
 
 	/**

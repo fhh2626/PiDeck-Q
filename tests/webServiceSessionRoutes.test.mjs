@@ -93,6 +93,7 @@ function fixture(overrides = {}) {
 	const deps = {
 		// SSE 流式依赖：测试环境不订阅真实 pi 事件，但必须提供可调用实现满足契约。
 		subscribePiEvents: () => () => undefined,
+		subscribeRuntimeChanges: () => () => undefined,
 		getSessionIdForAgent: () => "session-1",
 		listProjects: () => [{ id: "project-1", name: "Project", path: "C:/project" }],
 		createProject: async (path) => {
@@ -934,6 +935,292 @@ test("SSE /stream endpoint forwards pi agent events as AI SDK UI message frames"
 		},
 	});
 });
+
+for (const transition of ["closed", "removed", "replaced"]) {
+	test(`an open SSE closes truthfully when its runtime is ${transition}, without settled or reconnect`, async () => {
+		const listeners = new Set();
+		let emitPi, current, removed = false;
+		await withServer(async ({ baseUrl, runtime }) => {
+			current = runtime;
+			runtime.status = "running";
+			const controller = new AbortController();
+			const deadline = setTimeout(() => controller.abort(), 2000);
+			try {
+				const response = await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal });
+				emitPi("agent-1", { type: "tool_execution_start", toolCallId: "unfinished", toolName: "subagent", args: {} }, 1);
+				if (transition === "removed") removed = true;
+				else if (transition === "replaced") runtime.runtimeGeneration++;
+				else runtime.status = "closed";
+				for (const listener of listeners) listener();
+				const wire = await response.text();
+				const frames = wire.split("\n\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)));
+				assert.equal(frames.filter((frame) => frame.toolMetadata?.resultMissing).length, 1);
+				assert.equal(frames.filter((frame) => frame.type.startsWith("tool-output-")).length, 0);
+				assert.ok(wire.endsWith("data: [DONE]\n\n"));
+			} finally { clearTimeout(deadline); controller.abort(); }
+		}, {
+			subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+			subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+			listSessionRuntimes: () => removed || !current ? [] : [current],
+		});
+		assert.equal(listeners.size, 0, "server stop releases the runtime observer");
+	});
+}
+
+test("a new POST stream survives initial idle state and closes after an observed run becomes idle", async () => {
+	const listeners = new Set();
+	let emitPi;
+	await withServer(async ({ baseUrl, runtime }) => {
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 2000);
+		try {
+			const response = await authFetch(`${baseUrl}/api/chat`, { method: "POST", signal: controller.signal,
+				headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "session-1", messages: [{ role: "user", content: "fixture" }] }) });
+			for (const listener of listeners) listener(); // idle before prompt startup is legitimate
+			emitPi("agent-1", { type: "tool_execution_start", toolCallId: "post-tool", toolName: "bash", args: {} }, 1);
+			runtime.status = "running";
+			for (const listener of listeners) listener();
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			const wire = await response.text();
+			assert.match(wire, /"toolCallId":"post-tool"/);
+			assert.match(wire, /"resultMissing":true/);
+			assert.ok(wire.endsWith("data: [DONE]\n\n"));
+		} finally { clearTimeout(deadline); controller.abort(); }
+	}, {
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+/** 增量读取一条 SSE 响应：until() 读到标记为止，rest() 读到连接关闭。 */
+function readSse(response) {
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	const pull = async () => {
+		const { done, value } = await reader.read();
+		if (done) return false;
+		buffer += decoder.decode(value, { stream: true });
+		return true;
+	};
+	return {
+		async until(marker) {
+			while (!buffer.includes(marker)) {
+				if (!await pull()) return buffer;
+			}
+			return buffer;
+		},
+		async rest() {
+			while (await pull()) { /* drain until the server closes */ }
+			return buffer;
+		},
+	};
+}
+
+test("a cold GET during starting stays open and still closes when that runtime ends", async () => {
+	const listeners = new Set();
+	let emitPi;
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "starting";
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 4000);
+		try {
+			const stream = readSse(await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal }));
+			// 没被提前收尾：后续 pi 事件仍能到达这条 socket。
+			emitPi("agent-1", { type: "message_start", message: { role: "assistant", id: "m1" } }, 1);
+			emitPi("agent-1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } }, 1);
+			assert.match(await stream.until('"text-delta"'), /"delta":"hi"/);
+			// 激活失败/结束：runtime 回到 idle 时如实收尾，不泄漏长连接。
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			const wire = await stream.rest();
+			assert.match(wire, /"type":"finish"/);
+			assert.ok(wire.endsWith("data: [DONE]\n\n"));
+		} finally { clearTimeout(deadline); controller.abort(); }
+	}, {
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+test("a POST stream survives its own starting-to-idle preparation before dispatch", async () => {
+	const listeners = new Set();
+	let emitPi;
+	await withServer(async ({ baseUrl, runtime }) => {
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 4000);
+		try {
+			const stream = readSse(await authFetch(`${baseUrl}/api/chat`, { method: "POST", signal: controller.signal,
+				headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "session-1", messages: [{ role: "user", content: "fixture" }] }) }));
+			// 激活阶段：starting → idle 都是 prompt 发出前后的合法准备态，不能提前 finish。
+			runtime.status = "starting";
+			for (const listener of listeners) listener();
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			emitPi("agent-1", { type: "message_start", message: { role: "assistant", id: "m2" } }, 1);
+			emitPi("agent-1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "post" } }, 1);
+			assert.match(await stream.until('"text-delta"'), /"delta":"post"/);
+			// 真正观察到 running 后才钉住身份，并在回到 idle 时收尾。
+			runtime.status = "running";
+			for (const listener of listeners) listener();
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			const wire = await stream.rest();
+			assert.match(wire, /"type":"finish"/);
+			assert.ok(wire.endsWith("data: [DONE]\n\n"));
+		} finally { clearTimeout(deadline); controller.abort(); }
+	}, {
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+test("a POST joining a starting GET survives activation idle before its prompt is dispatched", async () => {
+	const listeners = new Set();
+	let emitPi, releaseDispatch;
+	const prepared = new Promise((resolve) => { releaseDispatch = resolve; });
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "starting";
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 4000);
+		try {
+			const observed = readSse(await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal }));
+			const dispatched = readSse(await authFetch(`${baseUrl}/api/chat`, { method: "POST", signal: controller.signal,
+				headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "session-1", messages: [{ role: "user", content: "fixture" }] }) }));
+			// Activation completes before sendSessionPrompt can dispatch. The GET's
+			// earlier starting identity must not end the pending POST (or either socket).
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			releaseDispatch();
+			runtime.status = "running";
+			for (const listener of listeners) listener();
+			emitPi("agent-1", { type: "message_start", message: { role: "assistant", id: "mixed-admission" } }, 1);
+			emitPi("agent-1", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "live-after-activation" } }, 1);
+			for (const stream of [observed, dispatched]) assert.match(await stream.until('"text-delta"'), /live-after-activation/);
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			for (const stream of [observed, dispatched]) assert.ok((await stream.rest()).endsWith("data: [DONE]\n\n"));
+		} finally { releaseDispatch(); clearTimeout(deadline); controller.abort(); }
+	}, {
+		sendSessionPrompt: async () => { await prepared; return { accepted: true, sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 3, requestId: "mixed" }; },
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+test("a POST joining an actually running stream re-pins and still closes on process exit", async () => {
+	const listeners = new Set();
+	let emitPi;
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "running";
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 4000);
+		try {
+			const observed = readSse(await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal }));
+			const dispatched = readSse(await authFetch(`${baseUrl}/api/chat`, { method: "POST", signal: controller.signal,
+				headers: { "content-type": "application/json" }, body: JSON.stringify({ id: "session-1", messages: [{ role: "user", content: "fixture" }] }) }));
+			emitPi("agent-1", { type: "tool_execution_start", toolCallId: "mixed-running", toolName: "subagent", args: {} }, 1);
+			for (const stream of [observed, dispatched]) assert.match(await stream.until('"tool-input-available"'), /mixed-running/);
+			runtime.status = "closed";
+			for (const listener of listeners) listener();
+			for (const stream of [observed, dispatched]) {
+				const wire = await stream.rest();
+				assert.match(wire, /"resultMissing":true/);
+				assert.ok(wire.endsWith("data: [DONE]\n\n"));
+			}
+		} finally { clearTimeout(deadline); controller.abort(); }
+	}, {
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+test("a second GET during a transient starting runtime keeps every observed stream open", async () => {
+	const listeners = new Set();
+	let emitPi;
+	await withServer(async ({ baseUrl, runtime }) => {
+		runtime.status = "running";
+		const controller = new AbortController();
+		const deadline = setTimeout(() => controller.abort(), 4000);
+		try {
+			// A 是已观察到 running 的订阅者，正在等一个长工具。
+			const streamA = readSse(await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal }));
+			emitPi("agent-1", { type: "tool_execution_start", toolCallId: "long-tool", toolName: "subagent", args: {} }, 1);
+			assert.match(await streamA.until('"tool-input-available"'), /"toolCallId":"long-tool"/);
+
+			// 模拟激活/自动重连期间的 starting 过渡：A 不能被新 GET 截断。
+			runtime.status = "starting";
+			for (const listener of listeners) listener();
+
+			// B 在 starting 期间轮询进来：它既不能收掉自己，也不能收掉 A。
+			const streamB = readSse(await authFetch(`${baseUrl}/api/sessions/session-1/stream`, { signal: controller.signal }));
+			assert.match(await streamB.until('"tool-input-available"'), /"toolCallId":"long-tool"/);
+
+			// 执行恢复并真正结束：两条流都必须收到真实结果，而不是被提前 finish 成 resultMissing。
+			runtime.status = "running";
+			for (const listener of listeners) listener();
+			emitPi("agent-1", { type: "tool_execution_end", toolCallId: "long-tool", toolName: "subagent" }, 1);
+			assert.match(await streamA.until('"tool-output-available"'), /"tool-output-available"/);
+			assert.match(await streamB.until('"tool-output-available"'), /"tool-output-available"/);
+
+			// 只有 run 真的结束（runtime 回到 idle）才如实收尾两条流。
+			runtime.status = "idle";
+			for (const listener of listeners) listener();
+			for (const wire of [await streamA.rest(), await streamB.rest()]) {
+				assert.equal(wire.includes('"resultMissing":true'), false, "a transient starting runtime must not fake a missing tool result");
+				assert.ok(wire.endsWith("data: [DONE]\n\n"));
+			}
+		} finally { clearTimeout(deadline); controller.abort(); }
+	}, {
+		subscribePiEvents: (handler) => { emitPi = handler; return () => {}; },
+		subscribeRuntimeChanges: (handler) => { listeners.add(handler); return () => listeners.delete(handler); },
+	});
+	assert.equal(listeners.size, 0);
+});
+
+for (const stale of [false, true]) {
+	test(`SSE reconnect bootstraps a mid-tool runtime only with a matching identity (stale=${stale})`, async () => {
+		let emitPiEvent, currentRuntime;
+		await withServer(async ({ baseUrl, runtime }) => {
+			runtime.status = "running";
+			currentRuntime = runtime;
+			// No tool_execution_start was observed: Web may have been enabled after
+			// the desktop started this long-running subagent.
+			const response = await authFetch(`${baseUrl}/api/sessions/session-1/stream`);
+			emitPiEvent("agent-1", { type: "agent_settled" });
+			const wire = await response.text();
+			const frames = wire.split("\n\n").filter((line) => line.startsWith("data: {")).map((line) => JSON.parse(line.slice(6)));
+			const inputs = frames.filter((frame) => frame.type === "tool-input-available");
+			// Reconnect input is running; settling without tool_execution_end sends
+			// a second input frame with missing-result metadata, never fake success.
+			assert.equal(inputs.length, stale ? 0 : 2);
+			assert.equal(frames.filter((frame) => frame.type === "tool-output-available" || frame.type === "tool-output-error").length, 0);
+			if (!stale) {
+				for (const input of inputs) {
+					assert.equal(input.toolName, "subagent");
+					assert.equal(input.toolCallId, "subagent-current");
+					assert.deepEqual(input.input, { task: "inspect" });
+				}
+				assert.deepEqual(inputs[0].toolMetadata, {});
+				assert.equal(inputs[1].toolMetadata.resultMissing, true);
+			}
+			assert.ok(wire.endsWith("data: [DONE]\n\n"));
+		}, {
+			subscribePiEvents: (handler) => { emitPiEvent = handler; return () => {}; },
+			getSessionRuntimeMessages: () => ({
+				target: { ...currentRuntime, runtimeGeneration: stale ? 2 : 3 },
+				value: [{ id: "running-tool", agentId: "agent-1", role: "tool", text: "subagent", timestamp: 1,
+					meta: { status: "running", toolName: "subagent", toolCallId: "subagent-current", args: '{"task":"inspect"}' } }],
+			}),
+		});
+	});
+}
 
 test("SSE reconnect finishes immediately when the runtime settled before subscribe", async () => {
 	await withServer(async ({ baseUrl, runtime }) => {

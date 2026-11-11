@@ -163,7 +163,7 @@ test("Web timeline does not double-space tool and thinking steps", () => {
 	assert.doesNotMatch(webTimeline, /user-turn group\/user mb-4/);
 	// step 间距唯一真源是 TimelineMarker 默认 pb-1；Web 不再逐卡 override pb-0。
 	assert.match(webTimeline, /<TimelineMarker kind="thinking" tone="neutral">/);
-	assert.match(webTimeline, /<TimelineMarker[\s\S]*?kind="tool"[\s\S]*?tone=\{error \? "error" : running \? "active" : "success"\}>/);
+	assert.match(webTimeline, /<TimelineMarker[\s\S]*?kind="tool"[\s\S]*?tone=\{error \? "error" : running \? "active" : resultMissing \? "neutral" : "success"\}>/);
 	assert.doesNotMatch(webTimeline, /contentClassName="pb-0"/, "Web cards must not override the marker bottom gap");
 	assert.match(webTimeline, /flex min-h-6 max-w-full items-center px-2 py-0\.5/);
 });

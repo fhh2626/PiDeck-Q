@@ -8,6 +8,12 @@ export { buildActiveBranchEntryIds } from "./sessionEntryIds";
 import { buildAskQuestionResultSummary } from "./askQuestionResult";
 import { extractImageContent } from "../../shared/imageContent";
 import { applyImageDisplayBudget } from "../../shared/imageLimits";
+import { TOOL_STATUS_UNKNOWN } from "../../shared/toolOutcome";
+import {
+	collectMissingToolCalls,
+	collectToolResultIds,
+	type DeclaredToolCall,
+} from "./missingToolResultCalls";
 
 export type AgentMessageProjectorDeps = {
 	translate: (
@@ -35,8 +41,19 @@ export class AgentMessageProjector {
 		agentId: string,
 		rawMessages: unknown[],
 		activeEntryIds?: string[],
+		/**
+		 * 整条活动分支里已知的 toolResult toolCallId。分页/压缩归档时本片只带一部分
+		 * 消息，缺了它就会把「结果在别的页」的调用误判成孤儿。
+		 */
+		knownToolResultIds?: ReadonlySet<string>,
 	): ChatMessage[] {
 		const historicalToolCalls = this.collectHistoricalToolCalls(rawMessages);
+		// 结果集合 = 本片内的 toolResult ∪ 调用方给出的全分支结果；只有两边都没有
+		// 对应结果时才是「结果未记录」，绝不因为分页把真实结果判成孤儿。
+		const knownResultIds = collectToolResultIds(rawMessages);
+		// Probe the cached branch set only for calls in this page; do not copy or
+		// scan every historical result again for each small older-page request.
+		const missingToolCalls = collectMissingToolCalls(rawMessages, knownResultIds, knownToolResultIds);
 		const historicalOriginalContentByPath = this.collectHistoricalOriginalContentByPath(
 			rawMessages,
 			historicalToolCalls,
@@ -98,28 +115,41 @@ export class AgentMessageProjector {
 					const text = this.extractText(typed.content);
 					const thinking = this.extractThinking(typed.content);
 					// 无文本、无 thinking、无图片且无展示提示时才是真正的空消息，跳过。
-					if (!text.trim() && !thinking?.trim() && budget.images.length === 0 && !budget.notice) return [];
+					const hasVisibleContent = Boolean(
+						text.trim() || thinking?.trim() || budget.images.length > 0 || budget.notice,
+					);
+					// 结果未记录的工具调用：assistant 只声明了 toolCall、没有对应 toolResult
+					// （异常终止/离线历史）。必须保留调用记录本身，但绝不能声明运行中/成功/失败。
+					// 位置紧跟声明它的 assistant 消息，顺序与 toolCall 块一致。
+					const missingCalls = missingToolCalls.get(index) ?? [];
+					if (!hasVisibleContent && missingCalls.length === 0) return [];
 					// stopReason（provider 归一化）：历史 JSONL 已持久化，
 					// 渲染层据此精确区分中间/最终回复（与 live 路径同源）。
 					const stopReason =
 						typeof typed.stopReason === "string" && typed.stopReason
 							? typed.stopReason
 							: undefined;
-					return [{
-						id: `${agentId}-history-${currentEntryId ?? index}`,
-						agentId,
-						role: "assistant" as const,
-						text,
-						timestamp: typed.timestamp ?? Date.now(),
-						meta: {
-							...(currentEntryId ? { entryId: currentEntryId } : {}),
-							_piDeckMsgSeq: index,
-						},
-						...(thinking ? { thinking } : {}),
-						...(stopReason ? { stopReason } : {}),
-						...(budget.images.length > 0 ? { images: budget.images } : {}),
-						...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
-					}];
+					const rows: ChatMessage[] = hasVisibleContent
+						? [{
+							id: `${agentId}-history-${currentEntryId ?? index}`,
+							agentId,
+							role: "assistant" as const,
+							text,
+							timestamp: typed.timestamp ?? Date.now(),
+							meta: {
+								...(currentEntryId ? { entryId: currentEntryId } : {}),
+								_piDeckMsgSeq: index,
+							},
+							...(thinking ? { thinking } : {}),
+							...(stopReason ? { stopReason } : {}),
+							...(budget.images.length > 0 ? { images: budget.images } : {}),
+							...(budget.notice ? { imageDisplayNotice: budget.notice } : {}),
+						}]
+						: [];
+					for (const call of missingCalls) {
+						rows.push(this.buildMissingResultToolRow(agentId, index, call, currentEntryId));
+					}
+					return rows;
 				}
 				if (typed.role === "toolResult") {
 					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
@@ -240,6 +270,49 @@ export class AgentMessageProjector {
 			.filter((message: ChatMessage) => Boolean(message.text.trim() || message.thinking?.trim() || message.images?.length || message.imageDisplayNotice));
 	}
 
+	/**
+	 * 构造「结果未记录」的工具行。
+	 *
+	 * 三条硬约束：
+	 * 1. 不写 meta.entryId：entryId 是 JSONL 条目身份，通用对账（编辑/删除/重发、
+	 *    接缝去重）按它认行。这条行没有对应的 JSONL 条目，占用 assistant 的 entryId
+	 *    会让两条消息共享同一身份。来源身份另放 meta.sourceEntryId。
+	 * 2. 不写 status=running/done/error、不写 isError、不写 startedAt/durationMs：
+	 *    结果没落盘，耗时与成败都无从得知，编造任何一个都是假信息。
+	 * 3. id 基于 toolCallId 稳定且唯一（同一条 assistant 可声明多个并行调用），
+	 *    分页重叠时同一调用不会变成两张卡；前缀不用 `-history-`，避免被
+	 *    syntheticHistoryEntryId / SessionFileEditor 误解析成真实 entryId。
+	 */
+	private buildMissingResultToolRow(
+		agentId: string,
+		rawIndex: number,
+		call: DeclaredToolCall,
+		sourceEntryId: string | undefined,
+	): ChatMessage {
+		const argsText = call.args === undefined
+			? ""
+			: this.truncateForDetail(this.safeJson(call.args));
+		// detailText 本身已带截断提示（truncateForDetail），但这里不标 meta.truncated：
+		// 没有「完整输出」可加载，不能给用户一个注定失败的「查看完整输出」按钮。
+		const detailText = this.formatToolDetail(call.toolName, call.args, undefined, false, true);
+		return {
+			id: `${agentId}-toolcall-${call.toolCallId}`,
+			agentId,
+			role: "tool" as const,
+			text: `? ${call.toolName}`,
+			timestamp: call.timestamp ?? Date.now(),
+			meta: {
+				status: TOOL_STATUS_UNKNOWN,
+				toolName: call.toolName,
+				toolCallId: call.toolCallId,
+				...(argsText ? { args: argsText } : {}),
+				detailText: this.truncateForDetail(detailText),
+				...(sourceEntryId ? { sourceEntryId } : {}),
+				_piDeckMsgSeq: rawIndex,
+			},
+		};
+	}
+
 	private collectHistoricalToolCalls(rawMessages: unknown[]) {
 		const calls = new Map<string, { name: string; args: unknown; timestamp?: number }>();
 		for (const message of rawMessages) {
@@ -304,6 +377,8 @@ export class AgentMessageProjector {
 		args: unknown,
 		result: unknown,
 		isError: boolean,
+		/** 结果未记录（异常终止/离线历史）：状态行用中性文案，不声称完成或失败。 */
+		missingResult = false,
 	) {
 		const details = this.extractToolDetails(result);
 		// args/结果/details 都先序列化再截断，避免单条工具详情撑大 ChatMessage.meta。
@@ -322,7 +397,9 @@ export class AgentMessageProjector {
 			? this.truncateForDetail(this.extractToolResultText(result) || this.safeJson(result))
 			: "";
 		const detailsText = details ? this.truncateForDetail(this.safeJson(details)) : "";
-		const status = this.deps.translate(isError ? "mainTool.failed" : "mainTool.done");
+		const status = this.deps.translate(
+			missingResult ? "mainTool.unknown" : isError ? "mainTool.failed" : "mainTool.done",
+		);
 		const sections = [
 			this.deps.translate("mainTool.name", { name: toolName ?? "tool" }),
 			this.deps.translate("mainTool.status", { status }),

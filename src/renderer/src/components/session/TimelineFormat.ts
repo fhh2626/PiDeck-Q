@@ -1,4 +1,6 @@
-import type { ChatMessage } from "../../../../shared/types";
+import type { ChatMessage, ToolOutcomeStatus } from "../../../../shared/types";
+// This pure formatter is also loaded directly by Node, which requires an explicit extension.
+import { normalizeToolOutcomeStatus } from "../../../../shared/toolOutcome.ts";
 import type {
 	AgentRunItem,
 } from "../app/AppUtils";
@@ -81,9 +83,12 @@ export function stripThinkingTags(text: string): string {
 
 export function getToolStatus(
   message: ChatMessage,
-): "running" | "done" | "error" {
-  const status = String(message.meta?.status ?? "");
+): ToolOutcomeStatus {
+  // 四态：unknown = 结果未落盘（异常终止/离线历史）。保留调用记录，但不声明成败，
+  // 也不能当成 running（会永远转圈）。契约见 shared/toolOutcome。
+  const status = normalizeToolOutcomeStatus(message.meta?.status);
   if (status === "running") return "running";
+  if (status === "unknown") return "unknown";
   if (status === "error" || message.role === "error") return "error";
   return "done";
 }

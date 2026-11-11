@@ -29,6 +29,8 @@ export type SessionHistoryReaderDeps = {
 		agentId: string,
 		rawMessages: unknown[],
 		activeEntryIds?: string[],
+		/** 整条活动分支已知的 toolResult toolCallId（分页/压缩跨片结果判定）。 */
+		knownToolResultIds?: ReadonlySet<string>,
 	) => ChatMessage[];
 	trimMessages: (rawMessages: unknown[], maxTurns?: number) => unknown[];
 	translate: (
@@ -515,7 +517,9 @@ export class SessionHistoryReader {
 		const entries = index.activeMessageEntries.slice(start, boundedBefore);
 		const rawMessages = await this.readIndexedSessionMessages(index, entries);
 		return {
-			messages: this.deps.convertMessages(agentId, rawMessages, entries.map((entry) => entry.id)),
+			messages: this.deps.convertMessages(
+				agentId, rawMessages, entries.map((entry) => entry.id), index.activeToolResultIds,
+			),
 			total,
 			nextBefore: start > 0 ? start : null,
 		};
@@ -576,7 +580,9 @@ export class SessionHistoryReader {
 		const entries = index.activeMessageEntries.slice(start, boundedBefore);
 		const rawMessages = await this.readIndexedSessionMessages(index, entries);
 		return {
-			messages: this.deps.convertMessages(agentId, rawMessages, entries.map((entry) => entry.id)),
+			messages: this.deps.convertMessages(
+				agentId, rawMessages, entries.map((entry) => entry.id), index.activeToolResultIds,
+			),
 			total,
 			nextBefore: start > 0 ? start : null,
 			nextBeforeEntryId: start > 0 ? index.activeMessageEntries[start]?.id : undefined,
@@ -618,7 +624,7 @@ export class SessionHistoryReader {
 		entryIds: string[],
 		start: number,
 	): Promise<ChatMessage[]> {
-		const messages = this.deps.convertMessages(agentId, rawMessages, entryIds);
+		const messages = this.deps.convertMessages(agentId, rawMessages, entryIds, index.activeToolResultIds);
 		const compactions = index.activeBranch.filter((entry) => entry.type === "compaction");
 		const lastCompaction = compactions[compactions.length - 1];
 		if (!lastCompaction) return messages;

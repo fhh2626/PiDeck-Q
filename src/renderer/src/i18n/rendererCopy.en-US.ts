@@ -2274,6 +2274,7 @@ export const enUS: Record<TranslationKey, string> = {
   "tool.statusError": "Failed",
   "tool.statusRunning": "Running",
   "tool.statusStopped": "Stopped",
+  "tool.statusUnknown": "No result recorded",
   "tool.pending": "Waiting for tool...",
   "tool.durationTitle": "Tool call duration",
   "tool.viewFullOutput": "View full output",

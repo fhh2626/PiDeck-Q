@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../../../../../shared/types";
+import type { ChatMessage, ToolOutcomeStatus } from "../../../../../shared/types";
 
 /**
  * 大型工具组固定分页纯函数。
@@ -97,4 +97,23 @@ export function findRunningToolPage(
 	const runningIndex = toolStatuses.findIndex((s) => s === "running");
 	if (runningIndex === -1) return null;
 	return Math.floor(runningIndex / TOOL_GROUP_PAGE_SIZE);
+}
+
+export type ToolGroupStatus = ToolOutcomeStatus | "stopped";
+
+/**
+ * 工具组状态聚合（纯函数，可单测）：stopped > running > error > unknown > done。
+ *
+ * unknown 必须排在 done 之前：组内只要有一条调用没有落盘结果，就不能把整组
+ * 报成「完成」；也不能因为 unknown 而把组报成运行中（那些工具早已不在执行）。
+ */
+export function resolveToolGroupStatus(
+	toolStatuses: readonly string[],
+	stopped?: boolean,
+): ToolGroupStatus {
+	if (stopped && toolStatuses.includes("running")) return "stopped";
+	if (toolStatuses.includes("running")) return "running";
+	if (toolStatuses.includes("error")) return "error";
+	if (toolStatuses.includes("unknown")) return "unknown";
+	return "done";
 }

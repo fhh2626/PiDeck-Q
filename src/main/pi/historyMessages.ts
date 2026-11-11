@@ -1,7 +1,14 @@
 import type { ChatMessage } from "../../shared/types";
 import { messageFingerprint } from "../../shared/messageFingerprint";
+import { preserveObservedToolOutcomes, type ToolCallIdMembership } from "./missingToolResultCalls";
 
 export { messageFingerprint } from "../../shared/messageFingerprint";
+
+/** Runtime evidence and explicit history edits have different authority over missing results. */
+type HistoryToolOutcomeContext = {
+	activeToolCallIds?: ToolCallIdMembership;
+	preserveObservedOutcomes?: boolean;
+};
 
 /**
  * 消息内容指纹：跨「运行期事件身份（randomUUID）」与「文件投影身份
@@ -49,8 +56,12 @@ export function mergeHistoryWithPreservedMessages(
 	historyMessages: ChatMessage[],
 	currentMessages: ChatMessage[],
 	preserveMessagesAfter?: number,
+	toolOutcomes?: HistoryToolOutcomeContext,
 ): ChatMessage[] {
 	if (!preserveMessagesAfter) return historyMessages;
+	if (toolOutcomes?.preserveObservedOutcomes !== false) {
+		historyMessages = preserveObservedToolOutcomes(historyMessages, currentMessages, toolOutcomes?.activeToolCallIds);
+	}
 	// 投影侧指纹预索引（fingerprint → 未消耗下标队列）：大会话投影几千条时避免
 	// 对每条 preserved 做全表扫描（O(p×n) → O(p + n)），后台加载完成不卡主线程。
 	const fingerprintToHistoryIndices = new Map<string, number[]>();
@@ -71,6 +82,9 @@ export function mergeHistoryWithPreservedMessages(
 		const fingerprint = messageFingerprint(message);
 		const candidates = fingerprintToHistoryIndices.get(fingerprint);
 		if (!candidates) return true;
+		// Exact Pi tool identity does not need a time/tail heuristic: a long call's
+		// declaration, live row and result can be minutes apart but remain one card.
+		if (message.role === "tool" && typeof message.meta?.toolCallId === "string" && message.meta.toolCallId) return false;
 		// 只允许匹配投影尾部窗口内的副本（见 FINGERPRINT_MATCH_TAIL 注释）；
 		// 且时间须在容差内（同一条消息两通道 timestamp 同源）。两者都满足
 		// 才消耗：既避免双份，又不误删加载期间真实新增的同文本消息。
@@ -199,7 +213,11 @@ export function preserveUnprojectedTrailingUserMessages(
 export function stabilizeReloadedMessageIds(
 	previousMessages: ChatMessage[],
 	projectedMessages: ChatMessage[],
+	toolOutcomes?: HistoryToolOutcomeContext,
 ): ChatMessage[] {
+	if (toolOutcomes?.preserveObservedOutcomes !== false) {
+		projectedMessages = preserveObservedToolOutcomes(projectedMessages, previousMessages, toolOutcomes?.activeToolCallIds);
+	}
 	if (previousMessages.length === 0 || projectedMessages.length === 0) {
 		return projectedMessages;
 	}
@@ -222,7 +240,9 @@ export function stabilizeReloadedMessageIds(
 			const prevIndex = candidates[i];
 			if (consumed.has(prevIndex)) continue;
 			const prev = previousMessages[prevIndex];
+			const exactToolIdentity = message.role === "tool" && typeof message.meta?.toolCallId === "string" && Boolean(message.meta.toolCallId);
 			if (
+				!exactToolIdentity &&
 				Math.abs((prev.timestamp ?? 0) - (message.timestamp ?? 0)) >
 				FINGERPRINT_MATCH_TIME_TOLERANCE_MS
 			) {

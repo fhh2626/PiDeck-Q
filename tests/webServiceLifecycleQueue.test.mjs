@@ -32,7 +32,7 @@ function createFixture(failFirstListen = false) {
    },
   },
  });
- const manager = new WebServiceManager({ subscribePiEvents: () => () => undefined, getSessionIdForAgent: () => undefined });
+ const manager = new WebServiceManager({ subscribePiEvents: () => () => undefined, subscribeRuntimeChanges: () => () => undefined, getSessionIdForAgent: () => undefined });
  // 独立兜底清理：即使断言失败或 manager 丢失 listener，也关闭本测试拥有的所有 server。
  async function cleanup() {
   try { await manager.stop(); }

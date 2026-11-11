@@ -324,6 +324,9 @@ export async function createBackend(options: CreateBackendOptions): Promise<Back
 		subscribePiEvents: (handler) => agentManager.addLocalEventListener(
 			(agentId, event, streamGeneration) => handler(agentId, event as never, streamGeneration),
 		),
+		subscribeRuntimeChanges: (handler) => agentManager.onOutput((channel) => {
+			if (channel === ipcChannels.agentsState) handler();
+		}),
 		// agentId → sessionId 路由：pi 事件只有 agentId，SSE 连接按 session 订阅。
 		getSessionIdForAgent: (agentId) => sessionRuntimeCoordinator.getSessionId(agentId),
 		listProjects: () => projectStore.list(),

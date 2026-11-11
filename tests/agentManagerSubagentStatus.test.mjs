@@ -37,7 +37,6 @@ function loadModule(filePath, customRequire, globals = {}) {
 
 const ipc = loadModule("src/shared/ipc.ts");
 const askQuestion = loadModule("src/shared/askQuestion.ts");
-const messageFingerprint = loadModule("src/shared/messageFingerprint.ts");
 const sessionIdentity = loadModule("src/shared/sessionIdentity.ts");
 const messageDeliveryBudget = loadModule("src/main/pi/messageDeliveryBudget.ts");
 const agentUtils = loadModule("src/main/pi/agentUtils.ts", (id) => {
@@ -95,9 +94,7 @@ function loadAgentManager(globals = {}) {
 		if (id.includes("askQuestionResult")) return loadModule("src/main/pi/askQuestionResult.ts", (specifier) => (
 			specifier.includes("askQuestion") ? askQuestion : require(specifier)
 		));
-		if (id.includes("historyMessages")) return loadModule("src/main/pi/historyMessages.ts", (specifier) => (
-			specifier.includes("messageFingerprint") ? messageFingerprint : require(specifier)
-		));
+		if (id.includes("historyMessages")) return loadTsCommonJs("src/main/pi/historyMessages.ts");
 		if (id.includes("agentSessionIdentity")) return loadModule("src/main/pi/agentSessionIdentity.ts", (specifier) => (
 			specifier.includes("sessionIdentity") ? sessionIdentity : require(specifier)
 		));

@@ -2239,6 +2239,8 @@ export const zhCN = {
   "tool.statusError": "失败",
   "tool.statusRunning": "运行中",
   "tool.statusStopped": "已停止",
+  // 结果未落盘（异常终止/离线历史）：保留调用记录但不声称成败
+  "tool.statusUnknown": "未记录结果",
   "tool.pending": "等待工具执行...",
   "tool.durationTitle": "工具调用耗时",
   "tool.viewFullOutput": "查看完整输出",

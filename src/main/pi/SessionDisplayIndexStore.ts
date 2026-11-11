@@ -6,7 +6,7 @@ import { containsSessionSnapshot, hashSessionFilePrefix, readSessionFileRange as
 
 export type SessionDisplayEntry = {
 	id: string; parentId: string | null; type: string; offset: number; byteLength: number; rowDigest: string;
-	hasMessage: boolean; hasTruthyMessage: boolean; role?: string; messageId?: string;
+	hasMessage: boolean; hasTruthyMessage: boolean; role?: string; messageId?: string; toolCallId?: string;
 	summary?: string; firstKeptEntryId?: string; timestamp?: string; tokensBefore?: number;
 };
 export type SessionCompaction = {
@@ -16,6 +16,8 @@ export type SessionDisplayIndex = SessionFileVersion & {
 	hostPath: string; prefixDigest: string; hasCompaction: boolean; endsWithNewline: boolean; rowCount: number;
 	entries: Map<string, SessionDisplayEntry>;
 	activeBranch: SessionDisplayEntry[]; activeMessageEntries: SessionDisplayEntry[];
+	/** 活动分支上所有 toolResult 的 toolCallId：分页投影据此判定「结果在别的页」。 */
+	activeToolResultIds: Set<string>;
 	firstEntries: Map<string, SessionDisplayEntry>; firstMessages: Map<string, SessionDisplayEntry>;
 	compactions: SessionCompaction[];
 };
@@ -42,6 +44,10 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 		hasTruthyMessage: Boolean(value.message),
 		role: typeof message?.role === "string" ? message.role : undefined,
 		messageId: typeof message?.id === "string" ? message.id : undefined,
+		// 只给 toolResult 留 toolCallId：它是工具调用的跨页身份（pi 的 toolCallId），
+		// 体积是一个短字符串，不涉及读取结果正文。
+		toolCallId: message?.role === "toolResult" && typeof message.toolCallId === "string"
+			? message.toolCallId : undefined,
 		summary: typeof value.summary === "string" ? value.summary : undefined,
 		firstKeptEntryId: typeof value.firstKeptEntryId === "string" ? value.firstKeptEntryId : undefined,
 		timestamp: typeof value.timestamp === "string" ? value.timestamp : undefined,
@@ -69,7 +75,14 @@ function finish(hostPath: string, version: SessionFileVersion, parts: IndexParts
 		current = current.parentId ? parts.entries.get(current.parentId) : undefined;
 	}
 	branch.reverse();
+	// 结果 ID 集合必须取自活动分支：废弃分支上的 toolResult 不能把当前分支的
+	// 孤儿调用「洗白」成有结果，压缩归档段则仍在同一父链上，所以跨页结果依然可见。
+	const activeToolResultIds = new Set<string>();
+	for (const entry of branch) {
+		if (entry.type === "message" && entry.role === "toolResult" && entry.toolCallId) activeToolResultIds.add(entry.toolCallId);
+	}
 	return { ...version, ...parts, hostPath, prefixDigest, activeBranch: branch,
+		activeToolResultIds,
 		hasCompaction: branch.some((entry) => entry.type === "compaction"),
 		activeMessageEntries: branch.filter((entry) => entry.type === "message" && entry.hasMessage) };
 }

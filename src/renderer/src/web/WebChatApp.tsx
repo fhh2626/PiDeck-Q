@@ -195,6 +195,7 @@ export function WebChatApp() {
 		});
 		const merged = mergeAuthoritativeUiMessages(current, authoritative, {
 			dropUnmatchedTrailingPlaceholders: applySnapshot,
+			preserveRunningToolCalls: !applySnapshot,
 		});
 		messagesBySessionRef.current[sessionId] = merged;
 		// SSE 或 runtime 仍忙时不要把拆开的尾部快照推进 useChat，否则旧思考/工具会垫底。
@@ -222,6 +223,7 @@ export function WebChatApp() {
 				const cached = messagesBySessionRef.current[sessionId] ?? [];
 				const merged = mergeAuthoritativeUiMessages(cached, history, {
 					dropCoveredLocalSseLeftovers: true,
+					preserveRunningToolCalls: streamingRef.current,
 				});
 				messagesBySessionRef.current[sessionId] = merged;
 				historyMetaRef.current[sessionId] = applyWebHistoryTailPage(
@@ -310,7 +312,7 @@ export function WebChatApp() {
 				const merged = mergeAuthoritativeUiMessages(
 					messagesBySessionRef.current[sessionId] ?? [],
 					authoritative,
-					{ dropUnmatchedTrailingPlaceholders: true },
+					{ dropUnmatchedTrailingPlaceholders: true, preserveRunningToolCalls: runtimeStillRunning },
 				);
 				messagesBySessionRef.current[sessionId] = merged;
 				// 本次重建只刷新尾部权威基线；已向前推进的更早历史游标不得被拽回尾部，

@@ -25,7 +25,10 @@ test("TimelineMarker keeps event kinds and tones explicit", () => {
 
 test("tool cards map execution status to marker tone without changing detail behavior", () => {
   assert.match(toolCard, /kind="tool"/);
-  assert.match(toolCard, /tone=\{tone === "error" \? "error" : tone === "running" \? "active" : "success"\}/);
+  assert.match(toolCard, /tone=\{getToolMarkerTone\(status\)\}/);
+  assert.match(toolCard, /if \(status === "unknown"\) return "neutral";/);
+  assert.match(toolCard, /if \(status === "error"\) return "error";/);
+  assert.match(toolCard, /if \(status === "running"\) return "active";/);
   assert.match(toolCard, /aria-expanded=\{expanded\}/);
   assert.match(toolCard, /getToolDetailText/);
   assert.match(toolCard, /tool-card-copy/);

@@ -11,6 +11,11 @@
  * 需要设置响应头 x-vercel-ai-ui-message-stream: v1 才能被 useChat 识别。
  */
 
+import { readWebAssistantToolCalls, snapshotWebToolInput, type WebStreamToolInput } from "./webStreamTools";
+import { toolResultMissingMetadata } from "../../shared/toolOutcome";
+import type { SessionRuntimeInfo, SessionRuntimeTarget } from "../../shared/types";
+import { reconcileWebStreamRuntime, type WebStreamAdmission } from "./webStreamRuntime";
+
 /** AI SDK UIMessageStream 单个 SSE 帧（data: 后的 JSON 对象）。 */
 export type UiMessageStreamFrame = Record<string, unknown>;
 
@@ -29,6 +34,8 @@ const RUN_OPENING_EVENT_TYPES = new Set([
 	"agent_start",
 	"message_start",
 	"message_update",
+	"message_end",
+	"tool_execution_update",
 	"tool_execution_start",
 	"tool_execution_end",
 ]);
@@ -49,6 +56,12 @@ export type PiEvent = {
 	error?: unknown;
 };
 
+/**
+ * 已宣告工具的运行态：`args` 是给重连回放用的有界快照，`liveInput` 是本次运行
+ * 真实的结构化输入。两者必须分开保存——回放要防内存膨胀，实时帧不能截断。
+ */
+type ActiveWebTool = WebStreamToolInput & { liveInput: unknown };
+
 /** 事件流翻译器：维护消息级游标（text/reasoning/tool 块是否已开启），逐事件产出帧。 */
 export class PiEventToUiMessageStream {
 	private textBlockId: string | null = null;
@@ -58,6 +71,7 @@ export class PiEventToUiMessageStream {
 	private currentMessageId: string | null = null;
 	private readonly startedToolCallIds = new Set<string>();
 	private readonly finishedToolCallIds = new Set<string>();
+	private readonly activeToolCalls = new Map<string, ActiveWebTool>();
 	private lastStartedToolCallId: string | null = null;
 	private finished = false;
 
@@ -78,8 +92,13 @@ export class PiEventToUiMessageStream {
 						(event.message?.id as string | undefined) ?? `msg_${Date.now()}`,
 					);
 					frames.push({ type: "start", messageId: this.currentMessageId });
-				} else {
+				} else if (this.activeToolCalls.size === 0) {
 					// 工具循环的下一跳：同一条 UI 消息里开新 step，不要再发 start 拆气泡。
+					// 但仍有工具在跑时不能开新 step：ai@7 的 updateDynamicToolPart 只在
+					// 「当前 step」里按 toolCallId 找 part，找不到就 push 一条新的。
+					// 跨越 step 的 tool-input-available 会变成「运行中 + 结果未记录」两条重复卡，
+					// 而收尾的 unknown 标记也永远落不到旧 step 的那条 part 上。
+					// 因此 step 边界推迟到本轮工具都收尾之后（真实 pi 顺序本来如此）。
 					frames.push({ type: "start-step" });
 				}
 			}
@@ -90,6 +109,14 @@ export class PiEventToUiMessageStream {
 		if (type === "message_update" && event.assistantMessageEvent) {
 			return this.handleAssistantMessageEvent(event.assistantMessageEvent);
 		}
+
+		// A snapshot may be the first observed evidence of a tool on a cold stream.
+		if (type === "message_end" && event.message?.role === "assistant") {
+			return readWebAssistantToolCalls(event.message.content).flatMap((call) => this.startTool(call));
+		}
+
+		// Progress can arrive after Web was enabled mid-execution, without a start.
+		if (type === "tool_execution_update") return this.startTool(event);
 
 		// 工具执行（pi 在 RPC 模式下还会发顶层 tool_execution_start/end）。
 		if (type === "tool_execution_start") {
@@ -114,6 +141,23 @@ export class PiEventToUiMessageStream {
 
 		// 其余事件（agent_start / tool_execution_start 之前的辅助事件等）不直接产生 UI 帧。
 		return frames;
+	}
+
+	/** Replay only active tool inputs to one new subscriber, never old text or results. */
+	replayActiveTools(snapshot: readonly WebStreamToolInput[] = []): UiMessageStreamFrame[] {
+		for (const call of snapshot) {
+			// The live translator wins over possibly older polling snapshots.
+			if (!this.startedToolCallIds.has(call.toolCallId)) this.startTool(call);
+		}
+		if (!this.currentMessageId && this.activeToolCalls.size) {
+			// A cold translator seeded mid-tool must treat the next assistant as a
+			// new step, not restart the UI message containing the recovered tools.
+			this.currentMessageId = `tool_${this.activeToolCalls.keys().next().value}`;
+		}
+		return [...this.activeToolCalls.values()].flatMap((call) => [
+			{ type: "tool-input-start", toolCallId: call.toolCallId, toolName: call.toolName, dynamic: true },
+			{ type: "tool-input-available", toolCallId: call.toolCallId, toolName: call.toolName, dynamic: true, input: call.args, toolMetadata: {} },
+		]);
 	}
 
 	/** 主动结束当前流（连接断开 / 超时兜底时调用）。 */
@@ -185,28 +229,22 @@ export class PiEventToUiMessageStream {
 			return frames;
 		}
 
-		// 工具调用（message_update 路径：toolcall_start / toolcall_end）。
-		if (eventType === "toolcall_start") {
-			const toolCall = ev.toolCall as Record<string, unknown> | undefined;
-			if (toolCall && typeof toolCall.id === "string" && typeof toolCall.name === "string") {
-				frames.push(...this.ensureToolStarted(toolCall.id, toolCall.name, toolCall.input ?? {}));
-			}
-			return frames;
-		}
-		if (eventType === "toolcall_end") {
-			const toolCall = ev.toolCall as Record<string, unknown> | undefined;
-			const rawId = typeof toolCall?.id === "string" ? toolCall.id : undefined;
-			const toolName = typeof toolCall?.name === "string" ? toolCall.name : "tool";
-			const toolCallId = this.resolveToolCallId(rawId, toolName);
-			if (!toolCallId) return frames;
-			frames.push(...this.finishTool(toolCallId, toolName, toolCall?.input ?? {}, false));
-			return frames;
+		// toolcall_end completes argument generation, NOT execution. Subagent can
+		// run for minutes afterwards; only tool_execution_end may settle its card.
+		if (eventType === "toolcall_start" || eventType === "toolcall_end") {
+			const toolCall = ev.toolCall;
+			if (!toolCall || typeof toolCall !== "object") return frames;
+			return readWebAssistantToolCalls([{ ...toolCall, type: "toolCall" }])
+				.flatMap((call) => this.startTool(call));
 		}
 
 		// message_update 的 done：这一条 assistant 文本/思考结束，不是整轮 run 结束。
 		// 工具调用回合随后还有 tool_execution_* 和下一轮 message_start，绝不能在这里关 SSE。
 		if (eventType === "done") {
-			return this.closeOpenBlocks();
+			const message = ev.message;
+			const calls = message && typeof message === "object"
+				? readWebAssistantToolCalls(Reflect.get(message, "content")) : [];
+			return [...this.closeOpenBlocks(), ...calls.flatMap((call) => this.startTool(call))];
 		}
 
 		return frames;
@@ -216,14 +254,20 @@ export class PiEventToUiMessageStream {
 		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
 		const toolCallId = this.resolveToolCallId(event.toolCallId, toolName);
 		if (!toolCallId) return [];
-		return this.ensureToolStarted(toolCallId, toolName, event.args ?? {});
+		return this.ensureToolStarted(toolCallId, toolName, event.args ?? this.retainedToolInput(toolCallId));
 	}
 
 	private endTool(event: PiEvent): UiMessageStreamFrame[] {
 		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
 		const toolCallId = this.resolveToolCallId(event.toolCallId, toolName);
 		if (!toolCallId) return [];
-		return this.finishTool(toolCallId, toolName, event.args ?? {}, event.isError === true);
+		return this.finishTool(toolCallId, toolName, event.args ?? this.retainedToolInput(toolCallId), event.isError === true);
+	}
+
+	/** 事件没带 args 时沿用上一次真实输入（优先结构化实时值，而不是有界回放快照）。 */
+	private retainedToolInput(toolCallId: string): unknown {
+		const active = this.activeToolCalls.get(toolCallId);
+		return active ? active.liveInput : {};
 	}
 
 	/** 无 ID 的 start/end 共用最近一张工具卡，避免合成 ID 对不上后把 end 丢掉。 */
@@ -234,19 +278,40 @@ export class PiEventToUiMessageStream {
 		return `tool_${toolName}_${Date.now()}`;
 	}
 
-	/** 同一 toolCallId 只开一次 input 帧，避免 end 早到时 useChat 抛错关流。 */
+	/**
+	 * 同一 toolCallId 只开一次 input 帧，避免 end 早到时 useChat 抛错关流。
+	 * 实时帧必须携带真实结构化输入（大参数不能被截断成非法 JSON 字符串）；
+	 * 只有回放用的保留快照才做有界截断（见 replayActiveTools）。
+	 */
 	private ensureToolStarted(
 		toolCallId: string,
 		toolName: string,
 		input: unknown,
 	): UiMessageStreamFrame[] {
 		this.lastStartedToolCallId = toolCallId;
-		if (this.startedToolCallIds.has(toolCallId)) return [];
+		if (this.finishedToolCallIds.has(toolCallId)) return [];
+		const previous = this.activeToolCalls.get(toolCallId);
+		if (previous) {
+			// 已在当前 step 宣告过：只能原地更新，绝不能再发 tool-input-start。
+			// （step 边界在本轮工具收尾前是推迟的，所以活跃工具一定在当前 step 里。）
+			if (previous.liveInput === input) return [];
+			const args = snapshotWebToolInput(input);
+			if (JSON.stringify(previous.args) === JSON.stringify(args)
+				&& JSON.stringify(previous.liveInput) === JSON.stringify(input)) return [];
+			this.activeToolCalls.set(toolCallId, { toolCallId, toolName, args, liveInput: input });
+			return [{ type: "tool-input-available", toolCallId, toolName, dynamic: true, input, toolMetadata: {} }];
+		}
+		this.activeToolCalls.set(toolCallId, {
+			toolCallId, toolName, args: snapshotWebToolInput(input), liveInput: input,
+		});
+		// toolMetadata: {} 显式清掉可能残留的「结果未记录」标记：
+		// AI SDK 的 updateToolPart 只在 toolMetadata !== undefined 时覆盖，
+		// 不主动清就会让历史投影的 unknown 粘到真正开始执行的 part 上。
+		const available = {
+			type: "tool-input-available", toolCallId, toolName, dynamic: true, input, toolMetadata: {},
+		};
 		this.startedToolCallIds.add(toolCallId);
-		return [
-			{ type: "tool-input-start", toolCallId, toolName },
-			{ type: "tool-input-available", toolCallId, toolName, input },
-		];
+		return [{ type: "tool-input-start", toolCallId, toolName, dynamic: true }, available];
 	}
 
 	private finishTool(
@@ -258,9 +323,12 @@ export class PiEventToUiMessageStream {
 		const frames = this.ensureToolStarted(toolCallId, toolName, input);
 		if (this.finishedToolCallIds.has(toolCallId)) return frames;
 		this.finishedToolCallIds.add(toolCallId);
+		this.activeToolCalls.delete(toolCallId);
+		// SDK versions may retain invocation metadata on output frames. Consumers
+		// must treat the real output state as stronger evidence than a stale marker.
 		frames.push(isError
-			? { type: "tool-output-error", toolCallId, errorText: "Tool failed" }
-			: { type: "tool-output-available", toolCallId, output: {} },
+			? { type: "tool-output-error", toolCallId, errorText: "Tool failed", toolMetadata: {} }
+			: { type: "tool-output-available", toolCallId, output: {}, toolMetadata: {} },
 		);
 		return frames;
 	}
@@ -286,11 +354,23 @@ export class PiEventToUiMessageStream {
 		this.finished = true;
 		const frames = this.closeOpenBlocks();
 		// start/end ID 对不上时，收尾把未完成的工具卡关掉，避免一直转圈。
+		// 但绝不能编造 tool-output-available：结果没到就说明我们不知道结果，
+		// 只能回到 input-available 并打上「结果未记录」标记（与桌面投影同一个契约）。
 		for (const toolCallId of this.startedToolCallIds) {
 			if (this.finishedToolCallIds.has(toolCallId)) continue;
 			this.finishedToolCallIds.add(toolCallId);
-			frames.push({ type: "tool-output-available", toolCallId, output: {} });
+			const call = this.activeToolCalls.get(toolCallId);
+			frames.push({
+				type: "tool-input-available",
+				toolCallId,
+				toolName: call?.toolName ?? "tool",
+				dynamic: true,
+				// 用实时输入回填，避免把已经展示的大参数降级成有界截断串。
+				input: call ? call.liveInput : {},
+				toolMetadata: toolResultMissingMetadata(),
+			});
 		}
+		this.activeToolCalls.clear();
 		if (event.error !== undefined) {
 			const errorText = typeof event.error === "string"
 				? event.error
@@ -328,6 +408,10 @@ export type SessionStreamEntry = {
 type SessionRunStream = {
 	adapter: PiEventToUiMessageStream;
 	streamGeneration?: number;
+	runtimeTarget?: SessionRuntimeTarget;
+	/** run 级准入模式：缺省（仅由 pi 事件先建 run）按 dispatch 处理，不凭“当前没有活动 runtime”收尾；
+	 * 一旦有 dispatch 订阅者（POST）则永久粘住，避免 prompt 发出前被提前 finish。 */
+	admission?: WebStreamAdmission;
 	subscribers: Set<SessionStreamEntry>;
 };
 
@@ -347,8 +431,16 @@ export class WebEventStreamRouter {
 		writeRaw: (wire: string) => boolean,
 		onClose: () => void,
 		onFinish?: () => void,
+		tools: readonly WebStreamToolInput[] = [],
+		admission: WebStreamAdmission = "dispatch",
 	): () => void {
 		const run = this.getOrCreateRun(sessionId);
+		// POST may join a GET that pinned a starting runtime. Its starting→idle
+		// preparation is not completion of the new prompt: discard that old fence.
+		// handleStream synchronously re-pins if execution is actually running.
+		if (admission === "dispatch") run.runtimeTarget = undefined;
+		// A later GET must not revoke an earlier POST's pre-dispatch patience.
+		run.admission = admission === "dispatch" || run.admission === "dispatch" ? "dispatch" : "observe";
 		const entry: SessionStreamEntry = {
 			writeRaw,
 			closed: false,
@@ -358,7 +450,22 @@ export class WebEventStreamRouter {
 			onFinish,
 		};
 		run.subscribers.add(entry);
+		// Reconnect during a quiet/long tool must not wait for the next event.
+		// Target only this socket; existing readers must not receive duplicate starts.
+		for (const frame of run.adapter.replayActiveTools(tools)) {
+			if (!this.writeFrame(entry, frame)) { this.closeEntry(run, entry); break; }
+		}
 		return () => this.closeEntry(run, entry);
+	}
+
+	/** Runtime lifecycle is independent of Pi's settled events (e.g. a killed process). */
+	observeRuntimeStates(runtimes: readonly SessionRuntimeInfo[]): void {
+		const bySession = new Map(runtimes.map((runtime) => [runtime.sessionId, runtime]));
+		for (const [sessionId, run] of this.sessionRuns) {
+			const next = reconcileWebStreamRuntime(run.runtimeTarget, bySession.get(sessionId), run.admission ?? "dispatch");
+			run.runtimeTarget = next.target;
+			if (next.finish) this.finishSession(sessionId);
+		}
 	}
 
 	/** runtime 已非 running 时同步结束该 session，覆盖 settled 发生在重订阅之前的竞态。 */
@@ -420,6 +527,7 @@ export class WebEventStreamRouter {
 				run = {
 					adapter: new PiEventToUiMessageStream(),
 					streamGeneration,
+					admission: run.admission,
 					subscribers: run.subscribers,
 				};
 				this.sessionRuns.set(sessionId, run);

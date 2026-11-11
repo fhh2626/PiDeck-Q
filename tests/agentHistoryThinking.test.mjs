@@ -56,6 +56,8 @@ function loadAgentMessageProjectorModule() {
     exports: module.exports,
     require: (specifier) => {
       if (specifier === "./messageContent") return { extractMessageText };
+      if (specifier === "../../shared/toolOutcome") return loadTsCommonJs("src/shared/toolOutcome.ts");
+      if (specifier === "./missingToolResultCalls") return loadTsCommonJs("src/main/pi/missingToolResultCalls.ts");
       if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
       if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./sessionEntryIds") {

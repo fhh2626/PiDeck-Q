@@ -48,6 +48,7 @@ function authFetch(url, init = {}) {
 function makeDeps(devRendererUrl) {
 	return {
 		subscribePiEvents: () => () => undefined,
+		subscribeRuntimeChanges: () => () => undefined,
 		devRendererUrl,
 	};
 }

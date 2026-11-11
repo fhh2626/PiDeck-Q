@@ -4,6 +4,7 @@
 export * from "./types/project";
 export * from "./types/agent";
 export * from "./types/session";
+export * from "./types/tool";
 export * from "./types/terminal";
 export * from "./types/settings";
 export * from "./types/git";

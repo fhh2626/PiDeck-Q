@@ -24,6 +24,7 @@ import {
 	getAskQuestionResultFromMessage,
 	normalizeAskQuestionResultSummary,
 } from "../../../shared/askQuestion";
+import { toolResultMissingMetadata, TOOL_STATUS_UNKNOWN } from "../../../shared/toolOutcome";
 import type { WebState } from "./webTypes";
 import { readWebMessageMetadata, type WebMessageMetadata } from "./webMessageMetadata";
 
@@ -285,6 +286,18 @@ function createWebToolPart(message: ChatMessage): UIMessage["parts"][number] {
 			toolCallId,
 			state: "input-available",
 			input,
+		};
+	}
+	// 结果未记录（异常终止/离线历史）：保留调用记录，但既不是 running 也不是完成。
+	// 用 SDK 原生 toolMetadata 标记，渲染层据此展示中性「未记录结果」而不是转圈/打勾。
+	if (meta?.status === TOOL_STATUS_UNKNOWN) {
+		return {
+			type: "dynamic-tool",
+			toolName,
+			toolCallId,
+			state: "input-available",
+			input,
+			toolMetadata: toolResultMissingMetadata(),
 		};
 	}
 	if (isError) {

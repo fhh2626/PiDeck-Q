@@ -16,7 +16,7 @@ export function useWebStreamMessageCache({ sessionId, streaming, messages, cache
 		if (!sessionId) { lastStreamingSession.current = null; return; }
 		if (streaming) {
 			lastStreamingSession.current = sessionId;
-			cache.current[sessionId] = mergeAuthoritativeUiMessages(cache.current[sessionId] ?? [], messages);
+			cache.current[sessionId] = mergeAuthoritativeUiMessages(cache.current[sessionId] ?? [], messages, { preserveRunningToolCalls: true });
 			return;
 		}
 		const streamEnded = lastStreamingSession.current === sessionId;

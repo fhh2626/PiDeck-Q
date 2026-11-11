@@ -175,11 +175,26 @@ test("assistant done and agent_end do not close the stream before tools finish",
 		toolCallId: "call_1",
 	});
 	assert.equal(tool[0].type, "tool-input-start");
+	// 工具还在跑时不能开新 step：ai@7 的 updateDynamicToolPart 只在当前 step 里按
+	// toolCallId 找 part，跨 step 的 tool-input-available 会被复制成「运行中 + 结果未记录」
+	// 两条卡，unknown 也永远落不到旧 step 的 part 上。step 边界推迟到工具收尾之后。
 	const next = adapter.push({ type: "message_start", message: { role: "assistant", id: "m2" } });
-	assert.equal(next[0].type, "start-step");
+	assert.equal(next.length, 0, "a running tool must not be split by a step boundary");
 
 	const settled = adapter.push({ type: "agent_settled" });
+	assert.deepEqual(Array.from(settled, (frame) => frame.type), ["tool-input-available", "finish"]);
+	assert.equal(settled[0].toolCallId, "call_1");
+	assert.equal(settled[0].toolMetadata.resultMissing, true);
 	assert.equal(settled.at(-1).type, "finish");
+});
+
+test("a genuine second step opens only after the previous tools have settled", () => {
+	const adapter = new PiEventToUiMessageStream();
+	adapter.push({ type: "message_start", message: { role: "assistant", id: "m1" } });
+	adapter.push({ type: "tool_execution_start", toolName: "bash", toolCallId: "call_1" });
+	adapter.push({ type: "tool_execution_end", toolName: "bash", toolCallId: "call_1" });
+	const next = adapter.push({ type: "message_start", message: { role: "assistant", id: "m2" } });
+	assert.deepEqual(Array.from(next, (frame) => frame.type), ["start-step"]);
 });
 
 test("tool_execution_end with isError emits tool-output-error", () => {
@@ -276,6 +291,12 @@ test("WebEventStreamRouter keeps translator state across socket reconnects", () 
 	});
 	emitPiEvent("agent-a", {
 		type: "tool_execution_start",
+		toolName: "read",
+		toolCallId: "resumed-tool",
+	});
+	// 真实 pi 顺序：工具收尾后才会有下一条 assistant 消息，step 边界也才允许出现。
+	emitPiEvent("agent-a", {
+		type: "tool_execution_end",
 		toolName: "read",
 		toolCallId: "resumed-tool",
 	});
@@ -532,7 +553,9 @@ async function withStreamServer(run, { runtimeStatus = "running" } = {}) {
 			emitPiEvent = handler;
 			return () => { emitPiEvent = null; };
 		},
+		subscribeRuntimeChanges: () => () => undefined,
 		getSessionIdForAgent: (agentId) => (agentId === "agent-1" ? "session-1" : undefined),
+		getSessionRuntimeMessages: () => undefined,
 		listSessionRuntimes: () => [{
 			sessionId: "session-1",
 			agentId: "agent-1",
@@ -719,6 +742,7 @@ test("legacy web page inline script is syntactically valid JavaScript", () => {
 	const { WebServiceManager } = loadTsCommonJs("src/main/web/WebServiceManager.ts");
 	const html = new WebServiceManager({
 		subscribePiEvents: () => () => undefined,
+		subscribeRuntimeChanges: () => () => undefined,
 		getSessionIdForAgent: () => undefined,
 	}).renderPage();
 	const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"));
@@ -838,15 +862,65 @@ test("anonymous tool_execution_end reuses the last started toolCallId", () => {
 	assert.equal(end.at(-1).toolCallId, "anon-start");
 });
 
-test("settled closes leftover tool cards that never received an end", () => {
+test("settled closes leftover tool cards without claiming success", () => {
 	const adapter = new PiEventToUiMessageStream();
 	adapter.push({
 		type: "tool_execution_start",
 		toolName: "bash",
 		toolCallId: "orphan-1",
+		args: { command: "ls" },
 	});
 	const settled = adapter.push({ type: "agent_settled" });
-	assert.equal(settled[0].type, "tool-output-available");
+	// 结果没到就说明我们不知道结果：只能回 input-available + 「结果未记录」标记，
+	// 绝不能编造 tool-output-available（那等于向用户声称成功）。
+	assert.equal(settled[0].type, "tool-input-available");
 	assert.equal(settled[0].toolCallId, "orphan-1");
+	assert.equal(settled[0].toolName, "bash");
+	assert.equal(settled[0].input.command, "ls");
+	assert.equal(settled[0].toolMetadata.resultMissing, true);
+	assert.equal(settled.some((frame) => frame.type === "tool-output-available"), false);
+	assert.equal(settled.some((frame) => frame.type === "tool-output-error"), false);
 	assert.equal(settled.at(-1).type, "finish");
+});
+
+test("an unsettled finish never fabricates a successful tool output", async () => {
+	const adapter = new PiEventToUiMessageStream();
+	adapter.push({ type: "message_start", message: { role: "assistant", id: "m1" } });
+	adapter.push({ type: "tool_execution_start", toolName: "subagent", toolCallId: "sub-1", args: { task: "x" } });
+	const frames = adapter.finish();
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const frame of frames) controller.enqueue(frame);
+			controller.close();
+		},
+	});
+	const initial = { id: "m1", role: "assistant", parts: [] };
+	let finalMessage = initial;
+	for await (const message of readUIMessageStream({ message: initial, stream })) finalMessage = message;
+	const part = finalMessage.parts.find((candidate) => candidate.type === "dynamic-tool");
+	assert.ok(part, "the tool part must survive the finish");
+	assert.equal(part.state, "input-available");
+	assert.equal(part.toolMetadata.resultMissing, true);
+	assert.equal(part.output, undefined);
+	assert.equal(part.errorText, undefined);
+});
+
+test("a live tool start clears a stale missing-result marker", () => {
+	const adapter = new PiEventToUiMessageStream();
+	const frames = adapter.push({
+		type: "tool_execution_start",
+		toolName: "bash",
+		toolCallId: "call-clear",
+		args: { command: "ls" },
+	});
+	const available = frames.find((frame) => frame.type === "tool-input-available");
+	// 沙箱对象原型不同，用键集比较：显式空对象 = 清掉历史投影可能残留的标记。
+	assert.deepEqual(Object.keys(available.toolMetadata), [], "live frames must clear the historical marker explicitly");
+	const ended = adapter.push({
+		type: "tool_execution_end",
+		toolName: "bash",
+		toolCallId: "call-clear",
+	});
+	const settled = ended.find((frame) => frame.type === "tool-output-available");
+	assert.deepEqual(Object.keys(settled.toolMetadata), []);
 });

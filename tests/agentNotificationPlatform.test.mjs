@@ -31,7 +31,6 @@ function loadModule(filePath, customRequire) {
 
 const ipc = loadModule("src/shared/ipc.ts");
 const askQuestion = loadModule("src/shared/askQuestion.ts");
-const messageFingerprint = loadModule("src/shared/messageFingerprint.ts");
 const sessionIdentity = loadModule("src/shared/sessionIdentity.ts");
 const messageDeliveryBudget = loadModule("src/main/pi/messageDeliveryBudget.ts");
 const agentUtils = loadModule("src/main/pi/agentUtils.ts", (id) => {
@@ -52,10 +51,7 @@ const askQuestionResult = loadModule("src/main/pi/askQuestionResult.ts", (id) =>
 	if (id.includes("askQuestion")) return askQuestion;
 	return require(id);
 });
-const historyMessages = loadModule("src/main/pi/historyMessages.ts", (id) => {
-	if (id.includes("messageFingerprint")) return messageFingerprint;
-	return require(id);
-});
+const historyMessages = loadTsCommonJs("src/main/pi/historyMessages.ts");
 const agentSessionIdentity = loadModule("src/main/pi/agentSessionIdentity.ts", (id) => {
 	if (id.includes("sessionIdentity")) return sessionIdentity;
 	return require(id);
