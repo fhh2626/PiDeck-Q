@@ -147,6 +147,31 @@ test("sliceLastAgentRuns includes the user and non-boundary system card precedin
   assert.equal(sliced.length, 101);
 });
 
+test("sliceLastUserTurns keeps a todo task with its own answer", () => {
+  const items = [
+    { kind: "message", message: { id: "user1", role: "user" } },
+    runs("run1")[0],
+    { kind: "message", message: { id: "goal", role: "system", meta: { type: "todoTask" } } },
+    runs("run2")[0],
+  ];
+  assert.deepEqual(
+    windowing.sliceLastUserTurns(items, 1).map((item) => item.id ?? item.message?.id),
+    ["goal", "run2"],
+  );
+});
+
+test("sliceLastAgentRuns keeps the todo task that triggered the cutoff run", () => {
+  const items = [
+    { kind: "message", message: { id: "old-user", role: "user" } },
+    runs("old-run")[0],
+    { kind: "message", message: { id: "goal", role: "system", meta: { type: "todoTask" } } },
+    runs("new-run")[0],
+  ];
+  assert.deepEqual(
+    windowing.sliceLastAgentRuns(items, 1).map((item) => item.id ?? item.message?.id),
+    ["goal", "new-run"],
+  );
+});
 test("sliceLastAgentRuns does not pair a run across a compaction boundary", () => {
   const items = [
     { kind: "message", message: { id: "old-user", role: "user" } },

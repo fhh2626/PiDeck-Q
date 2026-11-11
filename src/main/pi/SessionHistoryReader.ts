@@ -1,3 +1,4 @@
+import { piDisplayEntry } from "../../shared/piTaskMessage.ts";
 import { readFile, stat } from "node:fs/promises";
 import { SessionDisplayIndexStore, type SessionDisplayIndex, type SessionDisplayEntry } from "./SessionDisplayIndexStore";
 import { buildActiveBranchEntryIds } from "./sessionEntryIds";
@@ -390,11 +391,12 @@ export class SessionHistoryReader {
 			try {
 				const entry = JSON.parse(line);
 				if (!entry || typeof entry !== "object" || typeof entry.id !== "string") continue;
+				const projected = piDisplayEntry(entry);
 				entries.push({
 					id: entry.id,
 					parentId: typeof entry.parentId === "string" ? entry.parentId : null,
-					type: typeof entry.type === "string" ? entry.type : "",
-					message: entry.message,
+					type: projected.type,
+					message: projected.message,
 					summary: typeof entry.summary === "string" ? entry.summary : undefined,
 					firstKeptEntryId: typeof entry.firstKeptEntryId === "string" ? entry.firstKeptEntryId : undefined,
 					tokensBefore: typeof entry.tokensBefore === "number" ? entry.tokensBefore : undefined,

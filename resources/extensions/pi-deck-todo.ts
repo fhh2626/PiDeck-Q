@@ -7,7 +7,6 @@
  *   - widget 按插入顺序输出全部条目，完成项原位保留（☑ 标记，不按状态分组沉底）
  *   - 完成时不自动清空：上一轮列表保留到用户下一次提交指令，由该轮 input 重置；
  *     运行中插话（steer/followUp）和扩展注入消息不算新指令，不会清空
- *   - /todo 命令用 ctx.ui.notify 输出文本快照（单数命名，避免与 plan-mode 的 /todos 冲突）
  *
  * 状态持久化用 pi.appendEntry 写 custom entry，session_start / session_tree 时读
  * 当前分支最后一条快照重建——比扫描 toolResult.details 更可靠。快照挂在写入时的
@@ -19,9 +18,9 @@
  * ## 让位机制
  * pi 的 registerTool 对同名工具按 Map.set 覆盖语义（后注册覆盖前注册，不抛错）。
  * 本扩展作为内置基线，遇到任何第三方 todo 扩展（如 rpiv-todo）都应让位，避免
- * 死 widget / 重复命令。让位依赖 session_start 时 isOwnTodo() 检测（查 sourceInfo
- * 是否含 "pi-deck-todo"）。若被第三方覆盖则停掉 widget 与状态重建，/todo 命令
- * 转而引导用户使用第三方扩展的命令。
+ * 死 widget。让位依赖 session_start 时 isOwnTodo() 检测（查 sourceInfo 是否含
+ * "pi-deck-todo"）。若被第三方覆盖则停掉 widget 与状态重建。
+ * /todo 与 /todo-goal 只启动本次任务；计划进度仍使用独立的 /plan-progress。
  *
  * @packageDocumentation
  */
@@ -30,24 +29,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
-interface Todo {
-	id: number;
-	text: string;
-	done: boolean;
-}
-
-interface TodoState {
-	todos: Todo[];
-	nextId: number;
-}
+import { registerTodoTasks } from "./pi-deck-todo/runtime.ts";
+import type { Todo, TodoState, TodoAction } from "./pi-deck-todo/task.ts";
 
 // 工具结果 details：携带当前完整状态，便于 LLM 与桌面端渲染时直接读取
 interface TodoDetails extends TodoState {
 	action: TodoAction;
 	error?: string;
 }
-
-type TodoAction = "list" | "add" | "toggle" | "clear";
 
 // Pi 1.5's StringEnum parameter collapses to unknown in registerTool; validate
 // explicitly so unchecked input never reaches TodoDetails.
@@ -73,9 +62,7 @@ export default function (pi: ExtensionAPI) {
 	// 内存状态：session_start / session_tree 时从会话快照重建
 	let todos: Todo[] = [];
 	let nextId = 1;
-	// widget 折叠状态
-	let widgetCollapsed = false;
-	// 是否已让位给第三方 todo 扩展；让位后不显示 widget、不重建状态、命令转引导
+	// 是否已让位给第三方 todo 扩展；让位后不显示 widget、不重建状态
 	let yielded = false;
 	// 状态是否已按当前分支重建；首条用户消息可能先于 session_start 到达。
 	let hydrated = false;
@@ -99,7 +86,6 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * 刷新桌面端 widget：按插入顺序输出全部条目，完成项原位保留（仅换 ☑ 标记），
 	 * 不再按状态分组把已完成项沉底；重置由新一轮 input 自动处理，也可显式 todo clear。
-	 * 折叠态只回一行 "done/total" 摘要。
 	 */
 	function updateWidget(ctx: ExtensionContext): void {
 		if (todos.length === 0) {
@@ -107,13 +93,8 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const lines: string[] = [];
-		if (widgetCollapsed) {
-			const done = todos.filter((t) => t.done).length;
-			lines.push(`${done}/${todos.length}`);
-		} else {
-			for (const t of todos) {
-				lines.push(`${t.done ? "☑" : "☐"} #${t.id} ${t.text}`);
-			}
+		for (const t of todos) {
+			lines.push(`${t.done ? "☑" : "☐"} #${t.id} ${t.text}`);
 		}
 		ctx.ui.setWidget(WIDGET_KEY, lines);
 	}
@@ -164,11 +145,20 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// 任务策略单独拥有状态；清单快照仍只保存 todos/nextId，不恢复自动执行。
+	const tasks = registerTodoTasks(pi, {
+		ownsTodo: isOwnTodo,
+		getTodos: () => todos,
+		resetTodos: resetForNewRound,
+	});
+
 	// 立即注册（运行时初始化后 getAllTools 才能调用，因此无法在 default 里做加载顺序检测）。
 	// 若被后加载的第三方覆盖（Map.set 后注册覆盖前注册），session_start 的 isOwnTodo()
-	// 会判定为 yielded，停掉 widget 并让命令转引导。
+	// 会判定为 yielded，停掉 widget 与状态重建。
 	pi.registerTool({
 		name: "todo",
+		// Pi otherwise pre-validates a parallel batch before any add can commit the lock.
+		executionMode: "sequential",
 		label: "Todo",
 		description:
 			"Manage a todo list. Actions: list (show all), add (text), toggle (id), clear (remove all). Progress is shown in the desktop UI widget.",
@@ -223,7 +213,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				case "clear": {
 					todos = [];
-					nextId = 1;
+					nextId = tasks.nextIdAfterClear(nextId);
 					break;
 				}
 				case "list":
@@ -234,6 +224,7 @@ export default function (pi: ExtensionAPI) {
 
 			// 仅在状态实际变更时持久化；list 与出错仍刷新 widget 以保持桌面端与内存一致
 			if (action !== "list" && !error) {
+				tasks.onMutation(action);
 				persistState();
 			}
 			updateWidget(ctx);
@@ -270,37 +261,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// /todo 命令：用户手动查看当前列表，追加 collapse 参数控制折叠状态
-	pi.registerCommand("todo", {
-		description: "查看/折叠/展开当前分支待办事项",
-		handler: async (args, ctx) => {
-			if (!isOwnTodo()) {
-				ctx.ui.notify("Todo 工具由其他扩展提供，请使用其对应命令（如 /todos）查看。", "info");
-				return;
-			}
-			// /todo collapse / /todo expand
-			if (args === "collapse") {
-				widgetCollapsed = true;
-				updateWidget(ctx);
-				return;
-			}
-			if (args === "expand") {
-				widgetCollapsed = false;
-				updateWidget(ctx);
-				return;
-			}
-			if (todos.length === 0) {
-				ctx.ui.notify("还没有待办事项，可以告诉 AI 添加。", "info");
-				return;
-			}
-			// 与 widget 一致的顺序：按插入顺序输出，完成项原位带 ☑ 标记
-			const done = todos.filter((t) => t.done).length;
-			let msg = `Todos ${done}/${todos.length}`;
-			msg += `\n${todos.map((t) => `${t.done ? "☑" : "☐"} #${t.id} ${t.text}`).join("\n")}`;
-			ctx.ui.notify(msg, "info");
-		},
-	});
-
 	// 新一轮指令入口：把上一轮列表保留到用户看到，再由这里清空。
 	// - source=extension 是扩展自己注入的消息（如系统提醒），不算用户新指令；
 	// - steer/followUp 是运行中插话，仍属于当前这一轮，不能清空；
@@ -309,6 +269,7 @@ export default function (pi: ExtensionAPI) {
 		if (yielded || !isOwnTodo()) return;
 		if (event.source === "extension") return;
 		if (event.streamingBehavior) return;
+		tasks.reset();
 		// 首条用户消息可能先于 session_start：内存里还没有列表时才从当前分支补齐，
 		// 本进程已经建过的列表以内存为准，不能被分支快照覆盖。
 		if (!hydrated) {
@@ -322,6 +283,7 @@ export default function (pi: ExtensionAPI) {
 	// 会话启动 / 分支切换时从快照重建状态、刷新 widget。
 	// 已完成条目不在这里清理：由下一轮 input 统一重置，跨分支恢复同样的完成态。
 	pi.on("session_start", async (_event, ctx) => {
+		tasks.reset();
 		if (!isOwnTodo()) {
 			yielded = true;
 			return;
@@ -333,6 +295,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		tasks.reset();
 		if (yielded || !isOwnTodo()) {
 			yielded = true;
 			return;

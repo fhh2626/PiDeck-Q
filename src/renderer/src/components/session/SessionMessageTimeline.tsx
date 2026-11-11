@@ -487,6 +487,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
       for (let j = i + 1; j < activeMessages.length; j++) {
         const next = activeMessages[j];
         if (next.role === "user") break;
+        if (next.role === "system" && next.meta?.type === "todoTask") break;
         if (next.role === "error") { hasAbortOrError = true; break; }
         if (next.role === "system") {
           const meta = next.meta as Record<string, unknown> | undefined;

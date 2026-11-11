@@ -2255,6 +2255,7 @@ export const zhCN = {
   "timeline.loadEarlierContent": "显示更早内容",
   "timeline.loadMoreHistory": "加载更多历史消息 ({count} 条)",
   "timeline.loadMoreTurns": "加载更多对话",
+  "timeline.todoTaskTitle": "任务",
   "drawer.lazyLoading": "加载中...",
   "drawer.lazyFailed": "面板加载失败，重新打开可重试",
   "diagnostic.errorTitle": "错误诊断",

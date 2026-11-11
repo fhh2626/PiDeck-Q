@@ -48,13 +48,7 @@ function loadAgentManager() {
 		vm.runInNewContext(transpile("src/main/pi/cacheHitStats.ts"), sandbox, { filename: "cacheHitStats.ts" });
 		return sandbox.exports;
 	})();
-	const sessionEntryIds = (() => {
-		const sandbox = { exports: {}, require };
-		vm.runInNewContext(transpile("src/main/pi/sessionEntryIds.ts"), sandbox, {
-			filename: "sessionEntryIds.ts",
-		});
-		return sandbox.exports;
-	})();
+	const sessionEntryIds = loadTsCommonJs("src/main/pi/sessionEntryIds.ts");
 	const calls = {
 		copyFile: [],
 		existsSync: [],
@@ -99,6 +93,7 @@ function loadAgentManager() {
 		module: historyReaderModule,
 		Promise,
 		require: (id) => {
+			if (id === "../../shared/piTaskMessage.ts") return loadTsCommonJs("src/shared/piTaskMessage.ts");
 			if (id === "./SessionDisplayIndexStore") return loadTsCommonJs("src/main/pi/SessionDisplayIndexStore.ts", { stubs: { "node:fs/promises": fsPromises } });
 			if (id === "node:fs/promises") return fsPromises;
 			if (id.includes("imageContent")) return transpileModule("src/shared/imageContent.ts");

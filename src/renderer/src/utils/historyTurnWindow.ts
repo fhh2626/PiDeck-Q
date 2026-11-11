@@ -1,9 +1,14 @@
 import type { ChatMessage } from "../../../shared/types";
 
-/** Only users start turns; summary cards, tools and assistants never consume a turn slot. */
+/** User prompts and read-only task goals start turns; diagnostics, tools and assistants do not. */
+function startsHistoryTurn(message: ChatMessage): boolean {
+  return message.role === "user" || (message.role === "system" && message.meta?.type === "todoTask");
+}
+
+/** Only turn starts consume a history-window slot. */
 export function countUserTurns(messages: readonly ChatMessage[]): number {
   let turns = 0;
-  for (const message of messages) if (message.role === "user") turns++;
+  for (const message of messages) if (startsHistoryTurn(message)) turns++;
   return turns;
 }
 
@@ -15,7 +20,7 @@ export function keepTailTurns(messages: ChatMessage[], turnCount: number): ChatM
   if (turnCount <= 0) return [];
   let seen = 0;
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].role !== "user") continue;
+    if (!startsHistoryTurn(messages[index])) continue;
     if (++seen === turnCount) return messages.slice(index);
   }
   return messages;

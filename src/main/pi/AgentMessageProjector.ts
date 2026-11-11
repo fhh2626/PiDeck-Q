@@ -1,3 +1,4 @@
+import { readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
 import type { ChatMessage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { extractMessageText } from "./messageContent";
@@ -73,6 +74,22 @@ export class AgentMessageProjector {
 				if (!message || typeof message !== "object") return [];
 				const typed = message as any;
 
+				// Keep atomic-start goals visible without pretending the JSONL contains a
+				// user entry that SessionFileEditor could edit or resend.
+				const goal = readTodoTaskGoal(message);
+				if (goal !== undefined) {
+					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
+					entryIndex = taken.nextIndex;
+					const details: unknown = Reflect.get(message, "details");
+					const taskId: unknown = typeof details === "object" && details !== null ? Reflect.get(details, "taskId") : undefined;
+					turnImageBytes = 0;
+					return [{
+						id: `${agentId}-history-${taken.entryId ?? index}`,
+						agentId, role: "system", text: goal, timestamp: typed.timestamp ?? Date.now(),
+						meta: { type: "todoTask", ...(typeof taskId === "string" ? { todoTaskId: taskId } : {}),
+							...(taken.entryId ? { entryId: taken.entryId } : {}), _piDeckMsgSeq: index },
+					}];
+				}
 				if (typed.role === "user") {
 					turnImageBytes = 0;
 					// 先消费 activeEntryIds 槽位，再决定是否渲染。

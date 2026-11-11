@@ -390,13 +390,20 @@ export function groupToolMessages(messages: ChatMessage[]): RenderMessage[] {
 			if (currentRun.length === 0) runStartedAt = message.timestamp;
 			currentTools.push(message);
 		} else if (message.role === "system") {
-			const isCompactionCard =
-				message.meta?.type === "compaction" || message.meta?.type === "branchSummary";
-			if (isCompactionCard) {
-				// 压缩/分支摘要是时间线中的真实边界：先收口前一个 run，
-				// 否则摘要会被 result 提前放到当前 assistant 回答之前。
+			const boundaryType = message.meta?.type;
+			const isTurnBoundary =
+				boundaryType === "compaction" || boundaryType === "branchSummary" || boundaryType === "todoTask";
+			if (isTurnBoundary) {
+				// 压缩摘要和任务目标都会开启新的时间线边界。先收口前一个 run，
+				// 否则卡片会被提前插入，并把前后回答合并到同一轮。
+				if (pendingRun) {
+					currentRun.push(...pendingRun);
+					pendingRun = null;
+				}
 				flushRun();
 				result.push({ kind: "message", message });
+				// 任务目标是只读轮次起点；后续回答的时间锚在目标，而不是上一条用户消息。
+				if (boundaryType === "todoTask") lastUserTimestamp = message.timestamp;
 				continue;
 			}
 			// System 消息（如 askQuestion 卡片）不应中断当前 agent run。
@@ -424,8 +431,10 @@ export function groupToolMessages(messages: ChatMessage[]): RenderMessage[] {
 				currentRun.length > 0 &&
 				currentRun.every((i) => i.kind !== "message" || i.message.role !== "assistant");
 			const lastResult = result[result.length - 1];
+			const precedingType = lastResult?.kind === "message" ? lastResult.message.meta?.type : undefined;
 			const isAnsweringAskQuestion =
-				lastResult?.kind === "message" && lastResult.message.role === "system";
+				lastResult?.kind === "message" && lastResult.message.role === "system" &&
+				precedingType !== "compaction" && precedingType !== "branchSummary" && precedingType !== "todoTask";
 			if (hasToolsWithoutAssistant && isAnsweringAskQuestion) {
 				flushTools();
 				flushThinking();

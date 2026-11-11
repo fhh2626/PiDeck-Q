@@ -200,7 +200,7 @@ export function buildComposerPromptSubmission(
 ): ComposerPromptSubmission {
 	if (mode !== "plan") return { message };
 
-	// 斜线命令原样发送，让 pi 解析执行——plan 模式下也能用 /plan off、/todos 等，
+	// 斜线命令原样发送，让 pi 解析执行——plan 模式下也能用 /plan off、/plan-progress 等，
 	// 否则 plan 标记前缀会让 "/plan off" 变成普通消息发给 LLM，命令无法触发。
 	const trimmed = message.trim();
 	if (trimmed.startsWith("/")) return { message };

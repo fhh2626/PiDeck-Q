@@ -40,6 +40,17 @@ test("countUserTurns only counts user messages", () => {
 	assert.equal(atoms.countUserTurns([]), 0);
 });
 
+test("keepTailTurns treats a todo task card as a turn boundary", () => {
+	const atoms = loadAtoms();
+	const messages = [
+		{ id: "u", role: "user", text: "old", timestamp: 1 },
+		{ id: "a", role: "assistant", text: "old answer", timestamp: 2 },
+		{ id: "g", role: "system", text: "Inspect the parser", timestamp: 3, meta: { type: "todoTask" } },
+		{ id: "a2", role: "assistant", text: "new answer", timestamp: 4 },
+	];
+	assert.equal(atoms.countUserTurns(messages), 2);
+	assert.equal(ids(atoms.keepTailTurns(messages, 1)), ids(messages.slice(2)));
+});
 test("keepTailTurns keeps the last N turns whole", () => {
 	const atoms = loadAtoms();
 	const messages = turns(3);

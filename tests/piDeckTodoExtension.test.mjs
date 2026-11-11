@@ -49,13 +49,16 @@ function toPlain(value) {
 
 function loadExtension({ sourcePath = "resources/extensions/pi-deck-todo.ts" } = {}) {
 	const tools = [];
+	const commands = new Map();
 	const handlers = new Map();
 	const entries = [];
 	const api = {
 		registerTool(definition) {
 			tools.push(definition);
 		},
-		registerCommand() {},
+		registerCommand(name, definition) {
+			commands.set(name, definition);
+		},
 		on(event, handler) {
 			handlers.set(event, handler);
 		},
@@ -71,7 +74,7 @@ function loadExtension({ sourcePath = "resources/extensions/pi-deck-todo.ts" } =
 		},
 	};
 	loadExtensionModule().default(api);
-	return { tools, handlers, entries };
+	return { tools, commands, handlers, entries };
 }
 
 function widgetContext(sessionManager) {
@@ -102,6 +105,14 @@ function todoRunner(extension, sessionManager = { getBranch: () => [] }) {
 			extension.handlers.get("input")({ type: "input", text: "下一条指令", source, ...(streamingBehavior ? { streamingBehavior } : {}) }, ctx),
 	};
 }
+
+test("todo remains an agent tool alongside the new task commands", () => {
+	const { tools, commands } = loadExtension();
+
+	assert.ok(tools.some((definition) => definition.name === "todo"));
+	assert.equal(commands.has("todo"), true);
+	assert.equal(commands.has("todo-goal"), true);
+});
 
 test("branch restore uses the current branch snapshot, not a newer snapshot from another branch", async () => {
 	const { handlers } = loadExtension();

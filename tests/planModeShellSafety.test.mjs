@@ -1,25 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
-
-const require = createRequire(import.meta.url);
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 function loadPlanModeModule() {
-	const source = readFileSync("resources/extensions/pi-deck-plan-mode.ts", "utf8");
-	const { outputText } = ts.transpileModule(source, {
-		compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-	});
-
-	const sandbox = {
-		exports: {},
-		require,
-		console,
-	};
-	vm.runInNewContext(outputText, sandbox, { filename: "pi-deck-plan-mode.ts" });
-	return sandbox.exports;
+	return loadTsCommonJs("resources/extensions/pi-deck-plan-mode.ts");
 }
 
 test("getPlanModeTools disables subagent, edit and write while preserving shell and read tools", () => {

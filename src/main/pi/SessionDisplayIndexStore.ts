@@ -1,3 +1,4 @@
+import { piDisplayEntry, readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import { createHash, type Hash } from "node:crypto";
 import { sessionJsonlRows, type SessionJsonlRow } from "./sessionJsonlRows";
@@ -33,16 +34,18 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 	let value: unknown;
 	try { value = JSON.parse(row.text); } catch { return undefined; }
 	if (!isRecord(value)) return undefined;
-	const message = isRecord(value.message) ? value.message : undefined;
+	const projected = piDisplayEntry(value);
+	const message = isRecord(projected.message) ? projected.message : undefined;
 	const entry: SessionDisplayEntry = {
 		id: typeof value.id === "string" ? value.id : "",
 		parentId: typeof value.parentId === "string" ? value.parentId : null,
-		type: typeof value.type === "string" ? value.type : "",
+		type: projected.type,
 		offset: row.offset, byteLength: row.byteLength,
 		rowDigest: createHash("sha256").update(row.text).digest("hex"),
-		hasMessage: value.message !== undefined && value.message !== null,
-		hasTruthyMessage: Boolean(value.message),
-		role: typeof message?.role === "string" ? message.role : undefined,
+		hasMessage: projected.message !== undefined && projected.message !== null,
+		hasTruthyMessage: Boolean(projected.message),
+		// Treat a visible goal as a turn boundary, but retain its raw custom role in bodies.
+		role: readTodoTaskGoal(message) !== undefined ? "user" : typeof message?.role === "string" ? message.role : undefined,
 		messageId: typeof message?.id === "string" ? message.id : undefined,
 		// 只给 toolResult 留 toolCallId：它是工具调用的跨页身份（pi 的 toolCallId），
 		// 体积是一个短字符串，不涉及读取结果正文。
@@ -194,7 +197,7 @@ export class SessionDisplayIndexStore {
 					if (createHash("sha256").update(text).digest("hex") !== entry.rowDigest) throw new Error("SESSION_HISTORY_CHANGED");
 					const row: unknown = JSON.parse(text);
 					if (!isRecord(row) || (entry.id && row.id !== entry.id)) throw new Error("SESSION_HISTORY_CHANGED");
-					result.push(row.message);
+					result.push(piDisplayEntry(row).message);
 				}
 				from = to;
 			}

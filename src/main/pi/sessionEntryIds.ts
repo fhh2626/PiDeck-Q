@@ -1,3 +1,5 @@
+import { readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
+
 /**
  * 会话 JSONL entryId 对齐与重发截断的纯函数。
  * 抽离出 AgentManager 以便单测覆盖「空 assistant 不消费 slot」这类错位回归。
@@ -24,6 +26,9 @@ export type BranchEntryRef = {
 	parentId: string | null;
 	type?: string;
 	firstKeptEntryId?: string;
+	customType?: string;
+	display?: boolean;
+	content?: unknown;
 };
 
 export function buildActiveBranchEntryIds(
@@ -48,7 +53,7 @@ export function buildActiveBranchEntryIds(
 	// 回溯方向是 leaf→root；一次反转避免逐条头插造成平方级数组搬移。
 	branch.reverse();
 
-	const isMessage = (entry: BranchEntryRef): boolean => entry.type === "message";
+	const isMessage = (entry: BranchEntryRef): boolean => entry.type === "message" || readTodoTaskGoal(entry) !== undefined;
 	// 取活动分支上最靠近叶子的压缩点，而不是输入顺序里的最后一条
 	let compactionIndex = -1;
 	for (let index = branch.length - 1; index >= 0; index -= 1) {

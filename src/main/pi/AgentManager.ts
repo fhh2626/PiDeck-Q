@@ -1072,10 +1072,7 @@ export class AgentManager {
 			// get_entries 失败/未启用（skipEntries）时同样尽力提供数值游标：
 			// 否则渲染层「加载更多对话」因 entryId 锚点与 windowStartFilePos 双缺失而静默放弃，
 			// 表现为点击无反应（2026-02 修复，此前仅 skipEntries 路径走此兑底）。
-			const roleCount = trimmed.reduce<number>((count, message) => {
-				const role = (message as { role?: unknown } | undefined)?.role;
-				return count + (role === "user" || role === "assistant" || role === "toolResult" ? 1 : 0);
-			}, 0);
+			const roleCount = countRoleMessagesBefore(trimmed, trimmed.length);
 			// 最佳努力：文件活动消息数 - 缓存内角色消息数 ≈ 被裁头部长度。
 			// 文件里非角色 message 条目（system 等）会让该值偏大，属极端边角；
 			// entryId 锚点仍是首选路径，此值只作为无 entryId 时的兜底游标。
@@ -4268,6 +4265,16 @@ export class AgentManager {
 			this.handleAssistantMessageEvent(agentId, typed);
 		}
 
+		// Atomic extension starts are custom Pi messages, not user entries. Reuse the
+		// history projection and task identity so reconnects cannot duplicate the card.
+		if (typed.type === "message_end" && typed.message?.role === "custom" && !this.isAgentStreamSealed(agentId)) {
+			const goal = this.convertAgentMessages(agentId, [typed.message]).find((message) => message.meta?.type === "todoTask");
+			if (goal && !(this.messages.get(agentId) ?? []).some((message) => message.meta?.type === "todoTask"
+				&& message.meta.todoTaskId === goal.meta?.todoTaskId && message.text === goal.text)) {
+				this.addMessage(agentId, "system", goal.text, { type: "todoTask", todoTaskId: goal.meta?.todoTaskId });
+			}
+		}
+
 		if (
 			typed.type === "message_end" &&
 			typed.message?.role === "assistant"
@@ -5451,7 +5458,7 @@ export class AgentManager {
 			...(images && images.length > 0 ? { images } : {}),
 		});
 		this.messages.set(agentId, list);
-		if (role === "user" || role === "assistant") this.refreshAutoTitle(agentId);
+		if (role === "user" || role === "assistant" || meta?.type === "todoTask") this.refreshAutoTitle(agentId);
 		this.scheduleMessageEmit(agentId, true);
 	}
 

@@ -162,7 +162,7 @@ function WidgetChip(props: {
 }) {
 	const title = widgetDisplayTitle(props.widgetKey);
 	const { done, total } = widgetProgress(props.lines);
-	// 无 ☑/☐ 行（如 todo 折叠态只回 "2/4" 一行）时，chip 摘要退化为首行文本
+	// 兼容旧版或第三方 widget：没有 ☑/☐ 条目时，chip 摘要回退到首行文本（如 "2/4"）。
 	const summary = total > 0 ? `${done}/${total}` : (props.lines[0] ?? "");
 	const Icon = props.widgetKey === "pi-deck-plan-todos" ? ClipboardList : ListChecks;
 	// 全部完成时用成功色描边提示，一眼可辨无需再点开

@@ -74,6 +74,7 @@ function loadAgentMessageProjectorModule() {
       if (specifier === "./askQuestionResult") {
         return { buildAskQuestionResultSummary: () => undefined };
       }
+      if (specifier === "../../shared/piTaskMessage.ts") return loadTsCommonJs("src/shared/piTaskMessage.ts");
       return nodeRequire(specifier);
     },
     Date,
@@ -128,6 +129,7 @@ function loadAgentManagerModule() {
 			if (id === "./sessionEntryIds") {
 				return { buildActiveBranchEntryIds: realSessionEntryIds.buildActiveBranchEntryIds };
 			}
+			if (id === "../../shared/piTaskMessage.ts") return loadTsCommonJs("src/shared/piTaskMessage.ts");
 			return nodeRequire(id);
 		},
 		Buffer,

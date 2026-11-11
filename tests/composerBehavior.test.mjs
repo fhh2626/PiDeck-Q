@@ -114,6 +114,15 @@ test("wraps plan composer submissions with the hidden PiDeck plan marker", () =>
 	assert.match(submission.agentMessage, /Plan:/);
 });
 
+test("plan composer passes /plan-progress through without a hidden plan marker", () => {
+	const { buildComposerPromptSubmission } = loadComposerBehaviorModule();
+
+	const submission = buildComposerPromptSubmission("/plan-progress", "plan");
+
+	assert.equal(submission.message, "/plan-progress");
+	assert.equal(submission.agentMessage, undefined);
+});
+
 // 复现：普通输入不重渲染 App，live ref 已是全文，但闭包里的 renderedPrompt 仍是旧值。
 // ArrowUp 必须快照 live 草稿，否刕 ArrowDown 会丢掉继续输入的部分。
 test("history navigation snapshots the live draft instead of the last rendered prompt", () => {

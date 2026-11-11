@@ -35,6 +35,7 @@ const sessionIdentity = loadModule("src/shared/sessionIdentity.ts");
 const messageDeliveryBudget = loadModule("src/main/pi/messageDeliveryBudget.ts");
 const agentUtils = loadModule("src/main/pi/agentUtils.ts", (id) => {
 	if (id.includes("messageDeliveryBudget")) return messageDeliveryBudget;
+	if (id.includes("piTaskMessage")) return loadTsCommonJs("src/shared/piTaskMessage.ts");
 	return require(id);
 });
 const wslPaths = loadModule("src/main/wsl/WslPaths.ts");

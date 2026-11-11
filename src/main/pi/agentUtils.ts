@@ -3,6 +3,7 @@
  * Phase 1.3: 从 AgentManager.ts 中提取，无副作用，不依赖实例状态。
  */
 
+import { isPiUserTurn } from "../../shared/piTaskMessage.ts";
 import type { AvailableModel, ChatMessage, Project } from "../../shared/types";
 
 import {
@@ -93,7 +94,7 @@ export function turnTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): number {
 	const userIndices: number[] = [];
 	for (let i = rawMessages.length - 1; i >= 0; i--) {
 		const msg = rawMessages[i] as { role?: unknown } | undefined;
-		if (msg?.role === "user") {
+		if (isPiUserTurn(msg)) {
 			userIndices.unshift(i);
 			if (userIndices.length >= maxTurns) break;
 		}
@@ -121,7 +122,7 @@ export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): numbe
 	const userIndices: number[] = [];
 	for (let i = rawMessages.length - 1; i >= 0; i--) {
 		const msg = rawMessages[i] as { role?: unknown } | undefined;
-		if (msg?.role === "user") {
+		if (isPiUserTurn(msg)) {
 			userIndices.unshift(i);
 			if (userIndices.length >= maxTurns) break;
 		}
@@ -133,7 +134,7 @@ export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): numbe
 }
 
 /**
- * 统计 [0, endIndex) 内会消费 entryId 槽位的角色消息数（user/assistant/toolResult）。
+ * 统计 [0, endIndex) 内会消费 entryId 槽位的消息数（user/assistant/toolResult/可见任务目标）。
  * 与 AgentMessageProjector 的槽位消费规则一致：compactionSummary/branchSummary/非角色条目
  * 不消费槽位。用于 trim 后把 activeEntryIds 与保留消息重新对齐。
  */
@@ -142,7 +143,7 @@ export function countRoleMessagesBefore<T>(rawMessages: T[], endIndex: number): 
 	let count = 0;
 	for (let i = 0; i < bound; i++) {
 		const role = (rawMessages[i] as { role?: unknown } | undefined)?.role;
-		if (role === "user" || role === "assistant" || role === "toolResult") count++;
+		if (role === "assistant" || role === "toolResult" || isPiUserTurn(rawMessages[i])) count++;
 	}
 	return count;
 }
@@ -331,9 +332,9 @@ export function cleanTitle(value?: string): string | undefined {
 	return text.length > 32 ? `${text.slice(0, 32)}…` : text;
 }
 
-/** 从消息列表推断会话标题（取首条 user 或 assistant 消息的清洗后文本）。 */
+/** 从消息列表推断会话标题（优先取首条用户输入/任务目标，否则取 assistant 文本）。 */
 export function inferTitleFromMessages(messages: ChatMessage[]): string | undefined {
-	const firstUserText = messages.find((message) => message.role === "user")?.text;
+	const firstUserText = messages.find((message) => isPiUserTurn(message))?.text;
 	const firstAssistantText = messages.find(
 		(message) => message.role === "assistant",
 	)?.text;

@@ -2289,6 +2289,7 @@ export const enUS: Record<TranslationKey, string> = {
   "timeline.loadEarlierContent": "Show earlier content",
   "timeline.loadMoreHistory": "Load more history messages ({count})",
   "timeline.loadMoreTurns": "Load more conversations",
+  "timeline.todoTaskTitle": "Task",
   "drawer.lazyLoading": "Loading...",
   "drawer.lazyFailed": "Panel failed to load; reopen to retry",
   "diagnostic.errorTitle": "Error diagnostics",

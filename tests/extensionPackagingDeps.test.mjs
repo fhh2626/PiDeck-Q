@@ -97,3 +97,11 @@ test("pideck-q-subagents keeps its runtime files in extraResources", () => {
 	assert.ok(existsSync(join("resources", "extensions", "pideck-q-subagents.ts")));
 });
 
+
+test("todo task control keeps its relative runtime files in the recursively packaged resources", () => {
+	const xmake = readFileSync("xmake.lua", "utf8");
+	assert.match(xmake, /os\.cp\(path\.join\(os\.projectdir\(\), "resources", "\*"\)/);
+	for (const file of ["runtime.ts", "task.ts", "copy.ts", "coordination.ts"]) {
+		assert.ok(existsSync(join("resources", "extensions", "pi-deck-todo", file)));
+	}
+});

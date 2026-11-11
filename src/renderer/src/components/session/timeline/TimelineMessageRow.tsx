@@ -1,5 +1,7 @@
 import { memo, type ReactNode } from "react";
+import { USER_TURN_BUBBLE } from "@/lib/density";
 import type { ChatMessage, ImageContent } from "../../../../../shared/types";
+import { t } from "../../../i18n";
 import { TurnRow } from "../turn/TurnRow";
 import { UserBubble } from "../SurfaceParts";
 import { DiagnosticMessageCard, CompactionCard } from "../TimelineEventCards";
@@ -95,7 +97,21 @@ export const TimelineMessageRow = memo(function TimelineMessageRow(props: Timeli
 			if (meta?.type === "askQuestion") {
 				return null;
 			}
-			if (meta?.type === "compaction" && props.sessionId) {
+			if (meta?.type === "todoTask") {
+				node = (
+					<article
+						key={message.id}
+						className="user-turn mb-4 flex w-full min-w-0 max-w-full flex-col items-end"
+						data-message-id={message.id}
+						data-todo-task="true"
+					>
+						<div className="mb-1 font-mono text-micro text-text-tertiary">{t("timeline.todoTaskTitle")}</div>
+						<div className={USER_TURN_BUBBLE}>
+							<p className="m-0 whitespace-pre-wrap text-chat leading-[1.6] text-text-primary">{message.text}</p>
+						</div>
+					</article>
+				);
+			} else if (meta?.type === "compaction" && props.sessionId) {
 				node = (
 					<CompactionCard
 						key={message.id}

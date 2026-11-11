@@ -1,3 +1,4 @@
+import { readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync } from "node:fs";
@@ -1250,6 +1251,13 @@ export class SessionScanner {
     for (const line of lines) {
       try {
         const entry = JSON.parse(line) as Record<string, unknown>;
+        // The atomic task trigger is a real custom entry, not an editable user message.
+        const taskGoal = readTodoTaskGoal(entry);
+        if (taskGoal !== undefined) {
+          const timestamp = typeof entry.timestamp === "number" ? entry.timestamp : Date.parse(String(entry.timestamp));
+          messages.push({ role: "system", content: taskGoal, timestamp: Number.isFinite(timestamp) ? timestamp : Date.now() });
+          continue;
+        }
         if (entry.type && entry.type !== "message") continue;
         if (entry.sessionName && !entry.message) continue;
         const message = (entry.message ?? (entry.data as Record<string, unknown> | undefined)?.message ?? entry) as Record<string, unknown> | undefined;
@@ -1759,6 +1767,12 @@ export class SessionScanner {
         thinkingLevel = typeof entry.thinkingLevel === "string" ? entry.thinkingLevel : thinkingLevel;
       }
 
+      const taskGoal = readTodoTaskGoal(entry);
+      if (taskGoal !== undefined) {
+        messageCount += 1;
+        if (preview === emptyPreview) preview = taskGoal;
+        firstUserText ||= taskGoal;
+      }
       const message = entry.message ?? entry.data?.message ?? entry;
       if (message?.role) {
         messageCount += 1;

@@ -339,6 +339,37 @@ test("groupToolMessages keeps a compaction card after the preceding assistant ru
 	assert.equal(JSON.stringify(outline), JSON.stringify(["问题 1", "回答 1", "摘要", "问题 2", "回答 2"]));
 });
 
+test("groupToolMessages starts a new turn at a todo task instead of merging it into the previous answer", () => {
+	const { groupToolMessages } = loadAppUtils();
+	const messages = [
+		{ id: "u1", agentId: "a", role: "user", text: "问题 1", timestamp: 1 },
+		{ id: "a1", agentId: "a", role: "assistant", text: "回答 1", timestamp: 2 },
+		{ id: "goal", agentId: "a", role: "system", text: "Inspect the parser", timestamp: 3, meta: { type: "todoTask" } },
+		{ id: "a2", agentId: "a", role: "assistant", text: "回答 2", timestamp: 4 },
+	];
+	const rendered = groupToolMessages(messages);
+	const outline = rendered.map((item) => item.kind === "agent-run"
+		? item.items.filter((child) => child.kind === "message").map((child) => child.message.text).join("/")
+		: item.message?.text ?? item.kind);
+	assert.equal(JSON.stringify(outline), JSON.stringify(["问题 1", "回答 1", "Inspect the parser", "回答 2"]));
+	assert.equal(rendered.at(-1).startedAt, 3, "the new answer belongs to the task, not the previous question");
+});
+
+test("a todo task does not absorb its tool work into the following user turn", () => {
+	const { groupToolMessages } = loadAppUtils();
+	const rendered = groupToolMessages([
+		{ id: "goal", agentId: "a", role: "system", text: "Inspect", timestamp: 1, meta: { type: "todoTask" } },
+		{ id: "think", agentId: "a", role: "assistant", text: "", thinking: "inspect files", timestamp: 2 },
+		{ id: "u", agentId: "a", role: "user", text: "新问题", timestamp: 3 },
+		{ id: "a", agentId: "a", role: "assistant", text: "新回答", timestamp: 4 },
+	]);
+	const outline = rendered.map((item) => item.kind === "agent-run"
+		? item.items.map((child) => child.kind === "thinking-group" ? "thinking" : child.message?.text).join("/")
+		: item.message?.text ?? item.kind);
+	assert.equal(JSON.stringify(outline), JSON.stringify(["Inspect", "thinking", "新问题", "新回答"]));
+});
+
+
 /* ── stopReason 协议信号判定（2026-08 升级）──
  * pi RPC message_end 携带 provider 归一化 stopReason：
  * stop=最终回复 / toolUse=中间回复（工具调用回合）/ pending=message_start 占位。
