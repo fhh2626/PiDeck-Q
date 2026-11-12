@@ -11,7 +11,7 @@ export function createTodoHarness({ branch = [], ownsTodo = true, locale = "en-U
 	const notifications = [];
 	const widgets = [];
 	let revision = 0;
-	const state = { idle: true, pending: false, ownsTodo, answer: undefined };
+	const state = { idle: true, pending: false, ownsTodo, answer: undefined, failSend: false };
 	const ctx = {
 		sessionManager: { getBranch: () => branch, getSessionId: () => "test-session" },
 		isIdle: () => state.idle,
@@ -43,7 +43,12 @@ export function createTodoHarness({ branch = [], ownsTodo = true, locale = "en-U
 			path: state.ownsTodo ? "resources/extensions/pi-deck-todo.ts" : "third-party/todo.ts",
 		} }],
 		appendEntry: (type, data) => snapshots.push({ type, data }),
-		sendMessage: (message, options) => messages.push({ message, options }),
+		sendMessage: (message, options) => {
+			// pi.sendMessage is fire-and-forget in the real runtime; a synchronous throw is
+			// the only failure the extension can observe directly.
+			if (state.failSend) throw new Error("send failed");
+			messages.push({ message, options });
+		},
 		events: {
 			on(channel, handler) {
 				const group = listeners.get(channel) ?? new Set();
@@ -64,8 +69,13 @@ export function createTodoHarness({ branch = [], ownsTodo = true, locale = "en-U
 	return {
 		commands, state, ctx, snapshots, messages, notifications, widgets, emit,
 		pause: (sessionId = "test-session") => { for (const handler of listeners.get("pi-deck-todo:pause") ?? []) handler(sessionId); },
+		releasePlan: (sessionId = "test-session") => { for (const handler of listeners.get("pi-deck-todo:plan-release") ?? []) handler(sessionId); },
+		publishPlanState: (active, sessionId = "test-session") => {
+			for (const handler of listeners.get("pi-deck-todo:plan-state") ?? []) handler({ sessionId, active });
+		},
 		command: (name, args = "") => commands.get(name).handler(args, ctx),
 		run: (params) => tools.get("todo").execute("todo-call", params, undefined, undefined, ctx),
+		runTool: (name, params = {}) => tools.get(name).execute(`${name}-call`, params, undefined, undefined, ctx),
 		ask: () => emit("tool_call", { toolName: "ask_question", input: {} }),
 		async boundary(outcome = "completed", extra = {}) {
 			await emit("turn_end", { messageEntryId: `message-${++revision}`, message: { role: "assistant" } });

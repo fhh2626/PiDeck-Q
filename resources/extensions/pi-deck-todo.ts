@@ -187,6 +187,8 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 			let error: string | undefined;
+			// Captured before a clear so the goal keeps the completed identity it must not repeat.
+			const completedBeforeClear = todos.filter((item) => item.done).map((item) => ({ id: item.id, text: item.text }));
 
 			switch (action) {
 				case "add": {
@@ -224,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 
 			// 仅在状态实际变更时持久化；list 与出错仍刷新 widget 以保持桌面端与内存一致
 			if (action !== "list" && !error) {
-				tasks.onMutation(action);
+				tasks.onMutation(action, completedBeforeClear);
 				persistState();
 			}
 			updateWidget(ctx);
@@ -265,10 +267,12 @@ export default function (pi: ExtensionAPI) {
 	// - source=extension 是扩展自己注入的消息（如系统提醒），不算用户新指令；
 	// - steer/followUp 是运行中插话，仍属于当前这一轮，不能清空；
 	// - 其余 input（含回答 ask_question）视为新指令；列表为空时不写空快照。
+	// - 受阻 goal 的回复是恢复指令，保留清单由任务层在 before_agent_start 接管。
 	pi.on("input", async (event, ctx) => {
 		if (yielded || !isOwnTodo()) return;
 		if (event.source === "extension") return;
 		if (event.streamingBehavior) return;
+		if (tasks.keepsChecklistForUserInput(event.text)) return;
 		tasks.reset();
 		// 首条用户消息可能先于 session_start：内存里还没有列表时才从当前分支补齐，
 		// 本进程已经建过的列表以内存为准，不能被分支快照覆盖。

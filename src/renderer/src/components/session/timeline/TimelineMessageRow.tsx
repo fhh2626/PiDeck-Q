@@ -98,14 +98,20 @@ export const TimelineMessageRow = memo(function TimelineMessageRow(props: Timeli
 				return null;
 			}
 			if (meta?.type === "todoTask") {
+				// Resume guidance is the user's own words that unblocked the goal, so it gets
+				// its own label while sharing the read-only task card.
+				const isResume = meta.todoTaskKind === "resume";
 				node = (
 					<article
 						key={message.id}
 						className="user-turn mb-4 flex w-full min-w-0 max-w-full flex-col items-end"
 						data-message-id={message.id}
 						data-todo-task="true"
+						data-todo-task-kind={isResume ? "resume" : "goal"}
 					>
-						<div className="mb-1 font-mono text-micro text-text-tertiary">{t("timeline.todoTaskTitle")}</div>
+						<div className="mb-1 font-mono text-micro text-text-tertiary">
+							{t(isResume ? "timeline.todoTaskResumeTitle" : "timeline.todoTaskTitle")}
+						</div>
 						<div className={USER_TURN_BUBBLE}>
 							<p className="m-0 whitespace-pre-wrap text-chat leading-[1.6] text-text-primary">{message.text}</p>
 						</div>

@@ -81,6 +81,7 @@ function loadAgentManager(globals = {}) {
 		if (id.includes("recoverRecentHistoryLoad")) return loadTsCommonJs("src/main/pi/recoverRecentHistoryLoad.ts");
 		if (id.includes("monotonicNow")) return loadTsCommonJs("src/main/transport/monotonicNow.ts");
 		if (id.includes("LiveRpcLogBuffer")) return loadTsCommonJs("src/main/pi/LiveRpcLogBuffer.ts");
+		if (id.includes("piTaskMessage")) return loadTsCommonJs("src/shared/piTaskMessage.ts");
 		if (id.includes("imageContent")) return loadModule("src/shared/imageContent.ts");
 		if (id.includes("imageLimits")) return loadModule("src/shared/imageLimits.ts");
 		if (id.includes("runtimeImageBudget")) {

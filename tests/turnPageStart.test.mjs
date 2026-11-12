@@ -72,3 +72,18 @@ test("degenerate inputs return session head", () => {
   assert.equal(findTurnPageStart(e, 0, 3, 1000), 0);
   assert.equal(findTurnPageStart(e, 2, 0, 1000), 0);
 });
+
+test("visible task cards start a turn even though their projected role is not user", () => {
+  // goal 卡片在桌面投影为 system，但它是独立只读轮次；文件索引用 turnBoundary 标记。
+  const e = [
+    { role: "user", byteLength: 100 },
+    { role: "assistant", byteLength: 100 },
+    { role: "custom", byteLength: 100, turnBoundary: true },
+    { role: "assistant", byteLength: 100 },
+    { role: "user", byteLength: 100 },
+    { role: "assistant", byteLength: 100 },
+  ];
+  assert.equal(findTurnPageStart(e, 6, 1, 1_000_000), 4, "last turn starts at the real user message");
+  assert.equal(findTurnPageStart(e, 6, 2, 1_000_000), 2, "the task card is the previous turn start");
+  assert.equal(findTurnPageStart(e, 6, 3, 1_000_000), 0);
+});

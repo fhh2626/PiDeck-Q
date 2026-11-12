@@ -1,4 +1,4 @@
-import { piDisplayEntry, readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
+import { piDisplayEntry, readTodoTaskMessage } from "../../shared/piTaskMessage.ts";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import { createHash, type Hash } from "node:crypto";
 import { sessionJsonlRows, type SessionJsonlRow } from "./sessionJsonlRows";
@@ -8,6 +8,8 @@ import { containsSessionSnapshot, hashSessionFilePrefix, readSessionFileRange as
 export type SessionDisplayEntry = {
 	id: string; parentId: string | null; type: string; offset: number; byteLength: number; rowDigest: string;
 	hasMessage: boolean; hasTruthyMessage: boolean; role?: string; messageId?: string; toolCallId?: string;
+	/** A visible task card starts a turn even though its projected role is `custom`/`system`. */
+	turnBoundary?: boolean;
 	summary?: string; firstKeptEntryId?: string; timestamp?: string; tokensBefore?: number;
 };
 export type SessionCompaction = {
@@ -36,6 +38,7 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 	if (!isRecord(value)) return undefined;
 	const projected = piDisplayEntry(value);
 	const message = isRecord(projected.message) ? projected.message : undefined;
+	const taskBoundary = readTodoTaskMessage(message) !== undefined;
 	const entry: SessionDisplayEntry = {
 		id: typeof value.id === "string" ? value.id : "",
 		parentId: typeof value.parentId === "string" ? value.parentId : null,
@@ -44,8 +47,9 @@ function addRow(parts: IndexParts, row: SessionJsonlRow): SessionDisplayEntry | 
 		rowDigest: createHash("sha256").update(row.text).digest("hex"),
 		hasMessage: projected.message !== undefined && projected.message !== null,
 		hasTruthyMessage: Boolean(projected.message),
-		// Treat a visible goal as a turn boundary, but retain its raw custom role in bodies.
-		role: readTodoTaskGoal(message) !== undefined ? "user" : typeof message?.role === "string" ? message.role : undefined,
+		// Treat any visible task message as a turn boundary, but retain its raw custom role in bodies.
+		role: taskBoundary ? "user" : typeof message?.role === "string" ? message.role : undefined,
+		...(taskBoundary ? { turnBoundary: true } : {}),
 		messageId: typeof message?.id === "string" ? message.id : undefined,
 		// 只给 toolResult 留 toolCallId：它是工具调用的跨页身份（pi 的 toolCallId），
 		// 体积是一个短字符串，不涉及读取结果正文。

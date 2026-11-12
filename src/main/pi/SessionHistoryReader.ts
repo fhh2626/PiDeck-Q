@@ -50,17 +50,20 @@ export type SessionHistoryReaderDeps = {
  * 最新一轮无论多大都整轮保留（宁超预算不拆轮）。
  */
 export function findTurnPageStart(
-	entries: ReadonlyArray<{ role?: string; byteLength: number }>,
+	entries: ReadonlyArray<{ role?: string; byteLength: number; turnBoundary?: boolean }>,
 	before: number,
 	turnCount: number,
 	byteBudget: number,
 ): number {
 	if (before <= 0 || turnCount < 1) return 0;
+	// A visible task card is a turn start even though its projected role is not `user`.
+	const isTurnStart = (entry: { role?: string; turnBoundary?: boolean }): boolean =>
+		entry.role === "user" || entry.turnBoundary === true;
 	// 从 before-1 向前数第 turnCount 个轮次起点（user 消息）
 	let turnsSeen = 0;
 	let start = 0;
 	for (let i = before - 1; i >= 0; i -= 1) {
-		if (entries[i].role === "user") {
+		if (isTurnStart(entries[i])) {
 			turnsSeen += 1;
 			if (turnsSeen === turnCount) {
 				start = i;
@@ -74,7 +77,7 @@ export function findTurnPageStart(
 	else {
 		let hasEarlierUser = false;
 		for (let i = 0; i < start; i += 1) {
-			if (entries[i].role === "user") { hasEarlierUser = true; break; }
+			if (isTurnStart(entries[i])) { hasEarlierUser = true; break; }
 		}
 		if (!hasEarlierUser) start = 0;
 	}
@@ -82,7 +85,7 @@ export function findTurnPageStart(
 	for (let i = start; i < before; i += 1) bytes += entries[i].byteLength;
 	while (bytes > byteBudget) {
 		let next = start + 1;
-		while (next < before && entries[next].role !== "user") next += 1;
+		while (next < before && !isTurnStart(entries[next])) next += 1;
 		if (next >= before) break; // 只剩最新一轮：整轮保留，预算让位
 		for (let i = start; i < next; i += 1) bytes -= entries[i].byteLength;
 		start = next;
@@ -680,7 +683,7 @@ export class SessionHistoryReader {
 	): Promise<{
 		entryIds: string[];
 		leafId?: string;
-		activeMessageEntries: Array<{ id: string; role?: string; messageId?: string }>;
+		activeMessageEntries: Array<{ id: string; role?: string; turnBoundary?: boolean; messageId?: string }>;
 	}> {
 		const index = await this.getSessionDisplayIndex(sessionPath);
 		const leafId = index.activeBranch.length > 0
@@ -694,6 +697,7 @@ export class SessionHistoryReader {
 			activeMessageEntries: index.activeMessageEntries.map((entry) => ({
 				id: entry.id,
 				role: entry.role,
+				...(entry.turnBoundary ? { turnBoundary: true } : {}),
 				messageId: entry.messageId,
 			})),
 		};

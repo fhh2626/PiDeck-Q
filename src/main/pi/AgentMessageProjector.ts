@@ -1,4 +1,4 @@
-import { readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
+import { readTodoTaskMessage, readTodoTaskMessageId, toEpochMs } from "../../shared/piTaskMessage.ts";
 import type { ChatMessage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { extractMessageText } from "./messageContent";
@@ -74,19 +74,26 @@ export class AgentMessageProjector {
 				if (!message || typeof message !== "object") return [];
 				const typed = message as any;
 
-				// Keep atomic-start goals visible without pretending the JSONL contains a
-				// user entry that SessionFileEditor could edit or resend.
-				const goal = readTodoTaskGoal(message);
-				if (goal !== undefined) {
+				// Keep atomic task messages visible without pretending the JSONL contains a
+				// user entry that SessionFileEditor could edit or resend. Resume guidance
+				// shares the read-only card so the user sees what unblocked the goal.
+				const taskMessage = readTodoTaskMessage(message);
+				if (taskMessage !== undefined) {
 					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
 					entryIndex = taken.nextIndex;
 					const details: unknown = Reflect.get(message, "details");
 					const taskId: unknown = typeof details === "object" && details !== null ? Reflect.get(details, "taskId") : undefined;
+					const messageId = readTodoTaskMessageId(message);
+					const timestamp = toEpochMs(typed.timestamp) ?? Date.now();
 					turnImageBytes = 0;
 					return [{
 						id: `${agentId}-history-${taken.entryId ?? index}`,
-						agentId, role: "system", text: goal, timestamp: typed.timestamp ?? Date.now(),
-						meta: { type: "todoTask", ...(typeof taskId === "string" ? { todoTaskId: taskId } : {}),
+						agentId, role: "system", text: taskMessage.text, timestamp,
+						meta: { type: "todoTask", todoTaskKind: taskMessage.kind,
+							...(typeof taskId === "string" ? { todoTaskId: taskId } : {}),
+							...(messageId ? { todoTaskMessageId: messageId } : {}),
+							// Same stamp the live path records, so a replay after a history reload dedupes.
+							todoTaskAt: timestamp,
 							...(taken.entryId ? { entryId: taken.entryId } : {}), _piDeckMsgSeq: index },
 					}];
 				}

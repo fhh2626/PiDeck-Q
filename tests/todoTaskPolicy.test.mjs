@@ -17,15 +17,13 @@ test("goal policy is pure and requires a nonempty successfully-created checklist
 	assert.equal(policy.decideGoalBoundary(created, [], "completed").action, "continue");
 });
 
-test("goal policy counts distinct completed ids, not list churn or failed turns", () => {
+test("normal unfinished responses reset consecutive errors regardless of checklist progress", () => {
 	const initial = policy.recordTodoMutation(policy.createTodoTask("one", "todo-goal", "Task"), "add");
-	const progressed = policy.decideGoalBoundary(initial, [item(1, true), item(2)], "completed").task;
-	assert.equal(progressed.stalls, 0);
-	const failed = policy.decideGoalBoundary(progressed, [item(1, true), item(2, true), item(3)], "error").task;
-	assert.equal(failed.stalls, 1);
-	assert.deepEqual(plain(failed.completedIds), [1, 2]);
-	assert.equal(policy.decideGoalBoundary(failed, [item(1, true), item(2, true), item(3)], "completed").task.stalls, 2);
-	assert.equal(policy.decideGoalBoundary(failed, [item(1, true), item(2, true), item(3, true), item(4)], "completed").task.stalls, 0);
+	const failed = policy.decideGoalBoundary(initial, [item(1), item(2)], "error").task;
+	assert.equal(failed.consecutiveErrors, 1);
+	const recovered = policy.decideGoalBoundary(failed, [item(1), item(2)], "completed");
+	assert.equal(recovered.action, "continue");
+	assert.equal(recovered.task.consecutiveErrors, 0);
 });
 
 test("recent task resolution handles string content, command arguments and explicit command history", () => {
@@ -37,6 +35,29 @@ test("recent task resolution handles string content, command arguments and expli
 		{ type: "message", message: { role: "user", content: "/todo" } },
 	]), "Newer explicit task");
 	assert.equal(policy.recentTodoTask([null, { type: "message", message: { role: "user", content: [{ type: "image" }] } }]), "");
+});
+
+test("resume instructions never ask for a fresh checklist once one exists", () => {
+	const created = policy.recordTodoMutation(policy.createTodoTask("one", "todo-goal", "Task"), "add");
+	const todos = [item(1), item(2)];
+	assert.match(policy.todoTaskInstructions(created, todos), /Continue the existing checklist/);
+	assert.doesNotMatch(policy.todoTaskInstructions(created, todos), /create a fresh checklist/);
+	assert.match(policy.todoTaskInstructions(policy.createTodoTask("two", "todo-goal", "Task"), []), /create a fresh checklist/);
+	assert.match(policy.todoTaskInstructions(created, todos), /do not clear or rebuild/);
+});
+
+test("an authorized clear keeps completed identity and asks for the remaining work only", () => {
+	const created = policy.recordTodoMutation(policy.createTodoTask("one", "todo-goal", "Task"), "add");
+	const cleared = policy.recordTodoMutation(created, "clear", [{ id: 1, text: "Step 1" }]);
+	const instructions = policy.todoTaskInstructions(cleared, []);
+	assert.match(instructions, /already completed and must not be repeated: #1 Step 1/);
+	assert.doesNotMatch(instructions, /create a fresh checklist/);
+	const continuation = policy.todoContinuation(cleared, []);
+	assert.match(continuation, /cleared/);
+	assert.match(continuation, /#1 Step 1/);
+	// Re-adding steps keeps the recorded identity instead of dropping it.
+	assert.deepEqual(plain(policy.recordTodoMutation(cleared, "add").clearedCompleted), [{ id: 1, text: "Step 1" }]);
+	assert.match(policy.todoTaskInstructions(cleared, [item(3)]), /Continue the existing checklist/);
 });
 
 test("extension task copy provides both host-selected languages without importing renderer code", () => {

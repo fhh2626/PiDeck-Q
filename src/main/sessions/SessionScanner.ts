@@ -1,4 +1,4 @@
-import { readTodoTaskGoal } from "../../shared/piTaskMessage.ts";
+import { readTodoTaskGoal, readTodoTaskMessage } from "../../shared/piTaskMessage.ts";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync } from "node:fs";
@@ -43,6 +43,8 @@ type SessionScannerCopyKey = Extract<MainProcessTranslationKey,
   | "session.emptyPreview"
   | "session.copyTitle"
   | "session.imagePlaceholder"
+  | "session.todoGoal"
+  | "session.todoGuidance"
 >;
 
 type SessionScannerCopy = (
@@ -55,6 +57,8 @@ const defaultSessionScannerCopy: Record<SessionScannerCopyKey, string> = {
   "session.emptyPreview": "空会话",
   "session.copyTitle": "{title} copy",
   "session.imagePlaceholder": "[图片]",
+  "session.todoGoal": "Task",
+  "session.todoGuidance": "Guidance",
 };
 
 function defaultTranslate(
@@ -1225,11 +1229,18 @@ export class SessionScanner {
     const rows = raw.split(/\r?\n/).filter(Boolean).map((line) => {
       try {
         const entry = JSON.parse(line) as any;
+        // Visible goal/guidance cards are read-only turns; hidden task rules never ship in an export.
+        const taskMessage = readTodoTaskMessage(entry);
+        if (taskMessage !== undefined) {
+          const label = this.translate(taskMessage.kind === "goal" ? "session.todoGoal" : "session.todoGuidance");
+          return `<section class="msg system"><h2>${this.escapeHtml(label)}</h2><pre>${this.escapeHtml(taskMessage.text)}</pre></section>`;
+        }
+        if (entry.type === "custom_message") return "";
         const message = entry.message ?? entry.data?.message ?? entry;
         if (!message?.role) return "";
         const text = this.extractText(message.content).trim();
         if (!text) return "";
-        return `<section class=\"msg ${this.escapeHtml(message.role)}\"><h2>${this.escapeHtml(message.role)}</h2><pre>${this.escapeHtml(text)}</pre></section>`;
+        return `<section class="msg ${this.escapeHtml(message.role)}"><h2>${this.escapeHtml(message.role)}</h2><pre>${this.escapeHtml(text)}</pre></section>`;
       } catch {
         return "";
       }
@@ -1251,11 +1262,11 @@ export class SessionScanner {
     for (const line of lines) {
       try {
         const entry = JSON.parse(line) as Record<string, unknown>;
-        // The atomic task trigger is a real custom entry, not an editable user message.
-        const taskGoal = readTodoTaskGoal(entry);
-        if (taskGoal !== undefined) {
+        // The atomic task messages are real custom entries, not editable user messages.
+        const taskMessage = readTodoTaskMessage(entry);
+        if (taskMessage !== undefined) {
           const timestamp = typeof entry.timestamp === "number" ? entry.timestamp : Date.parse(String(entry.timestamp));
-          messages.push({ role: "system", content: taskGoal, timestamp: Number.isFinite(timestamp) ? timestamp : Date.now() });
+          messages.push({ role: "system", content: taskMessage.text, timestamp: Number.isFinite(timestamp) ? timestamp : Date.now() });
           continue;
         }
         if (entry.type && entry.type !== "message") continue;

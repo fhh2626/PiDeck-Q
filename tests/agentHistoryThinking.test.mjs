@@ -206,6 +206,7 @@ function loadAgentManagerModule() {
         };
       }
       if (specifier === "../../shared/imageContent") return loadSharedModule("src/shared/imageContent.ts");
+      if (specifier === "../../shared/piTaskMessage") return loadTsCommonJs("src/shared/piTaskMessage.ts");
       if (specifier === "../../shared/imageLimits") return loadSharedModule("src/shared/imageLimits.ts");
       if (specifier === "./LatestByKeyEmitter") return { LatestByKeyEmitter };
       if (specifier === "./streamGate") return streamGateModule.exports;

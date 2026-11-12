@@ -7,12 +7,12 @@ const { mapCachedMessageToEntryCandidates, normalizeMessageTextForMatch } = load
   "src/main/pi/agentUtils.ts",
 );
 
-function cachedMessage(id, role) {
-  return { id, role };
+function cachedMessage(id, role, turnBoundary = false) {
+  return turnBoundary ? { id, role, turnBoundary } : { id, role };
 }
 
-function entry(id, role) {
-  return { id, role };
+function entry(id, role, turnBoundary = false) {
+  return turnBoundary ? { id, role, turnBoundary } : { id, role };
 }
 
 // mapCachedMessageToEntryCandidates 在 vm 沙箱里执行，返回对象原型与测试不同，
@@ -124,6 +124,32 @@ test("mapping returns undefined when the file has fewer turns than the cache cla
 
   assert.equal(mapCachedMessageToEntryCandidates(cached, entries, "u1"), undefined);
   assertUserMapping(mapCachedMessageToEntryCandidates(cached, entries, "u2"), "e-u2");
+});
+
+test("task cards count as turn starts on both sides so earlier users cannot shift", () => {
+  // The desktop projects a task card as `system`, while the file index marks the same entry as a
+  // turn boundary. Counting only `role === "user"` on the cache side shifts every earlier turn.
+  const cached = [
+    cachedMessage("u1", "user"),
+    cachedMessage("a1", "assistant"),
+    cachedMessage("g1", "system", true),
+    cachedMessage("u2", "user"),
+    cachedMessage("a2", "assistant"),
+  ];
+  const entries = [
+    entry("e-u1", "user"),
+    entry("e-a1", "assistant"),
+    entry("e-g1", "user", true),
+    entry("e-u2", "user"),
+    entry("e-a2", "assistant"),
+  ];
+
+  assertUserMapping(mapCachedMessageToEntryCandidates(cached, entries, "u1"), "e-u1");
+  assertUserMapping(mapCachedMessageToEntryCandidates(cached, entries, "u2"), "e-u2");
+  assertAssistantMapping(
+    mapCachedMessageToEntryCandidates(cached, entries, "a2"),
+    ["e-a2"],
+  );
 });
 
 test("non message roles are ignored on both sides", () => {

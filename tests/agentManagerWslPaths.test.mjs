@@ -202,6 +202,7 @@ function loadAgentManager() {
 			if (id === "../../shared/toolRuntimeState") return { updateActiveToolCalls: () => new Map() };
 			if (id === "../wsl/WslPaths") return wslPaths;
 			// 25fd516 起 AgentManager 引入内置扩展参数拼接；WSL 路径测试不涉及扩展加载，透传即可
+			if (id === "../../shared/piTaskMessage") return loadTsCommonJs("src/shared/piTaskMessage.ts");
 			if (id === "../extensions/builtInExtensions") {
 				return { appendBuiltInExtensionArgs: (args) => [...args] };
 			}

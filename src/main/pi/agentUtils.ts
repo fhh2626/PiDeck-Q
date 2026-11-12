@@ -356,7 +356,9 @@ export function isDefaultAgentTitle(
 	);
 }
 
-export type EntryRoleRef = { id: string; role?: string };
+export type EntryRoleRef = { id: string; role?: string; turnBoundary?: boolean };
+/** Live cache rows: task cards are `system` but still start a turn, so the flag travels with them. */
+export type CachedRoleRef = { id: string; role: string; turnBoundary?: boolean };
 
 /**
  * 运行期缓存消息 → 会话文件活动分支条目的映射结果。
@@ -378,34 +380,35 @@ export type MessageEntryMapping =
  * 不比 user 正文：缓存里的用户文本可能被 host instruction、模式或模板改写，与文件不一致。
  */
 export function mapCachedMessageToEntryCandidates(
-	cached: ReadonlyArray<{ id: string; role: string }>,
+	cached: ReadonlyArray<CachedRoleRef>,
 	entries: ReadonlyArray<EntryRoleRef>,
 	messageId: string,
 ): MessageEntryMapping | undefined {
-	const isUser = (role: string | undefined): boolean => role === "user";
+	const isTurnStart = (message: { role?: string; turnBoundary?: boolean }): boolean =>
+		message.role === "user" || message.turnBoundary === true;
 	const isAssistant = (role: string | undefined): boolean => role === "assistant";
 
-	const cachedSequence = cached.filter((message) => isUser(message.role) || isAssistant(message.role));
+	const cachedSequence = cached.filter((message) => isTurnStart(message) || isAssistant(message.role));
 	const targetIndex = cachedSequence.findIndex((message) => message.id === messageId);
 	if (targetIndex < 0) return undefined;
 
 	const fileSequence: EntryRoleRef[] = [];
 	const fileUserIndexes: number[] = [];
 	for (const entry of entries) {
-		if (!isUser(entry.role) && !isAssistant(entry.role)) continue;
-		if (isUser(entry.role)) fileUserIndexes.push(fileSequence.length);
+		if (!isTurnStart(entry) && !isAssistant(entry.role)) continue;
+		if (isTurnStart(entry)) fileUserIndexes.push(fileSequence.length);
 		fileSequence.push(entry);
 	}
 
-	// 缓存里位于 index 之后的 user 条数：用来把「从尾部数第几轮」对齐到文件。
+	// 缓存里位于 index 之后的轮次数：用来把「从尾部数第几轮」对齐到文件。
 	const countUsersAfter = (index: number): number =>
-		cachedSequence.slice(index + 1).filter((message) => isUser(message.role)).length;
+		cachedSequence.slice(index + 1).filter((message) => isTurnStart(message)).length;
 
-	/** 文件里第 pos 个 user 条目在 fileSequence 中的下标。 */
+	/** 文件里第 pos 个轮次起点在 fileSequence 中的下标。 */
 	const fileUserPosition = (pos: number): number | undefined => fileUserIndexes[pos];
 
 	const target = cachedSequence[targetIndex];
-	if (isUser(target.role)) {
+	if (isTurnStart(target)) {
 		const pos = fileUserIndexes.length - 1 - countUsersAfter(targetIndex);
 		const sequenceIndex = fileUserPosition(pos);
 		if (sequenceIndex === undefined) return undefined;
@@ -415,7 +418,7 @@ export function mapCachedMessageToEntryCandidates(
 	// assistant：先找到它本轮所属的 user 锚点，再取锚点之后、下一条 user 之前的全部 assistant。
 	let anchorIndex = -1;
 	for (let index = targetIndex - 1; index >= 0; index -= 1) {
-		if (isUser(cachedSequence[index].role)) {
+		if (isTurnStart(cachedSequence[index])) {
 			anchorIndex = index;
 			break;
 		}
@@ -428,7 +431,7 @@ export function mapCachedMessageToEntryCandidates(
 
 	const candidateIds: string[] = [];
 	for (let index = anchorSequenceIndex + 1; index < fileSequence.length; index += 1) {
-		if (isUser(fileSequence[index].role)) break;
+		if (isTurnStart(fileSequence[index])) break;
 		if (isAssistant(fileSequence[index].role)) candidateIds.push(fileSequence[index].id);
 	}
 	return { role: "assistant", candidateIds };

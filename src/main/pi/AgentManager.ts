@@ -30,6 +30,7 @@ import { SUBAGENT_STATUS_KEY_PREFIX } from "../../shared/types/subagents";
 import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
+import { isTodoTaskCard, toEpochMs } from "../../shared/piTaskMessage.ts";
 import {
 	computeTurnImageUsedBytes,
 	applyRuntimeMessageImageBudget,
@@ -935,7 +936,7 @@ export class AgentManager {
 			Math.max(1, Math.floor(options.turnCount ?? 3)),
 			SessionHistoryReader.maxTurnPageSize(),
 		);
-		const roles = list.map((m) => ({ role: m.role, byteLength: 0 }));
+		const roles = list.map((m) => ({ role: m.role, byteLength: 0, turnBoundary: isTodoTaskCard(m) }));
 		const start = findTurnPageStart(roles, pos, turnCount, Number.MAX_SAFE_INTEGER);
 		if (start >= pos) return null;
 		const page = list.slice(start, pos);
@@ -1223,7 +1224,7 @@ export class AgentManager {
 		this.displayWindowStartByAgent.set(
 			agentId,
 			findTurnPageStart(
-				nextMessages.map((m) => ({ role: m.role, byteLength: 0 })),
+				nextMessages.map((m) => ({ role: m.role, byteLength: 0, turnBoundary: isTodoTaskCard(m) })),
 				nextMessages.length,
 				AgentManager.DISPLAY_WINDOW_TURNS,
 				Number.MAX_SAFE_INTEGER,
@@ -2934,7 +2935,9 @@ export class AgentManager {
 				// 按「轮」锚定而非按 user+assistant 总数对位：abort 会让文件多出一条空 assistant，
 				// 总数对位会整体偏移一位，删除/编辑命中错条目（见 agentUtils.mapCachedMessageToEntryCandidates）。
 				const mapping = mapCachedMessageToEntryCandidates(
-					currentMessages ?? [],
+					(currentMessages ?? []).map((message) => ({
+						id: message.id, role: message.role, turnBoundary: isTodoTaskCard(message),
+					})),
 					identity.activeMessageEntries,
 					messageId,
 				);
@@ -4265,13 +4268,33 @@ export class AgentManager {
 			this.handleAssistantMessageEvent(agentId, typed);
 		}
 
-		// Atomic extension starts are custom Pi messages, not user entries. Reuse the
+		// Atomic extension task messages are custom Pi messages, not user entries. Reuse the
 		// history projection and task identity so reconnects cannot duplicate the card.
 		if (typed.type === "message_end" && typed.message?.role === "custom" && !this.isAgentStreamSealed(agentId)) {
-			const goal = this.convertAgentMessages(agentId, [typed.message]).find((message) => message.meta?.type === "todoTask");
-			if (goal && !(this.messages.get(agentId) ?? []).some((message) => message.meta?.type === "todoTask"
-				&& message.meta.todoTaskId === goal.meta?.todoTaskId && message.text === goal.text)) {
-				this.addMessage(agentId, "system", goal.text, { type: "todoTask", todoTaskId: goal.meta?.todoTaskId });
+			const taskCard = this.convertAgentMessages(agentId, [typed.message]).find((message) => message.meta?.type === "todoTask");
+			// The sender stamps every task message with its own identity, so live and projected
+			// cards dedupe on that identity instead of on text that may legitimately repeat.
+			const cardKey = typeof taskCard?.meta?.todoTaskMessageId === "string" ? taskCard.meta.todoTaskMessageId : undefined;
+			const sentAt = toEpochMs(typed.message.timestamp);
+			const isDuplicate = taskCard !== undefined && (this.messages.get(agentId) ?? []).some((message) => {
+				if (message.meta?.type !== "todoTask") return false;
+				if (message.meta.todoTaskId !== taskCard.meta?.todoTaskId) return false;
+				if (message.meta.todoTaskKind !== taskCard.meta?.todoTaskKind) return false;
+				const existingKey = typeof message.meta.todoTaskMessageId === "string" ? message.meta.todoTaskMessageId : undefined;
+				// An identified message is never matched by text: a history card without an
+				// identity must not swallow a genuinely new resume that repeats the same text.
+				if (cardKey !== undefined) return existingKey === cardKey;
+				// Legacy senders carry no identity; keep the timestamp-bounded text fallback.
+				if (existingKey !== undefined) return false;
+				if (message.text !== taskCard.text) return false;
+				return sentAt === undefined || message.meta.todoTaskAt === sentAt;
+			});
+			if (taskCard && !isDuplicate) {
+				this.addMessage(agentId, "system", taskCard.text, {
+					type: "todoTask", todoTaskKind: taskCard.meta?.todoTaskKind, todoTaskId: taskCard.meta?.todoTaskId,
+					...(cardKey !== undefined ? { todoTaskMessageId: cardKey } : {}),
+					...(sentAt !== undefined ? { todoTaskAt: sentAt } : {}),
+				});
 			}
 		}
 
@@ -6155,7 +6178,7 @@ export class AgentManager {
 		// 渲染层并入历史前缀——否则锚点轮从视口消失且翻页翻不回来（2026-12 回归修复）。
 		const oldWindowStart = this.displayWindowStartByAgent.get(agentId) ?? 0;
 		const newWindowStartInList = findTurnPageStart(
-			list.map((m) => ({ role: m.role, byteLength: 0 })),
+			list.map((m) => ({ role: m.role, byteLength: 0, turnBoundary: isTodoTaskCard(m) })),
 			list.length,
 			AgentManager.DISPLAY_WINDOW_TURNS,
 			Number.MAX_SAFE_INTEGER,
@@ -6172,7 +6195,7 @@ export class AgentManager {
 		this.displayWindowStartByAgent.set(
 			agentId,
 			findTurnPageStart(
-				next.map((m) => ({ role: m.role, byteLength: 0 })),
+				next.map((m) => ({ role: m.role, byteLength: 0, turnBoundary: isTodoTaskCard(m) })),
 				next.length,
 				AgentManager.DISPLAY_WINDOW_TURNS,
 				Number.MAX_SAFE_INTEGER,
