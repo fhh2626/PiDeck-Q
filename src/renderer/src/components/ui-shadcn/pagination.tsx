@@ -4,7 +4,7 @@ import { Button } from "./button";
 import { Input } from "./input";
 import { cn } from "../../lib/utils";
 import { t } from "../../i18n";
-import { paginationWindow } from "../../utils/pagination";
+import { paginationWindow, resolvePaginationJump } from "../../utils/pagination";
 
 /**
  * 共享分页控件：上一页 / 页码窗口（带省略号）/ 下一页 / 跳页输入框。
@@ -26,10 +26,8 @@ export function Pagination(props: {
 
   // 回车跳页：输入须为 1..totalPages 内的整数，否则忽略并清空输入
   const jump = () => {
-    const target = Number(jumpInput);
-    if (Number.isInteger(target) && target >= 1 && target <= totalPages && target !== page) {
-      onPageChange(target);
-    }
+    const target = resolvePaginationJump(jumpInput, page, totalPages);
+    if (target !== null) onPageChange(target);
     setJumpInput("");
   };
 

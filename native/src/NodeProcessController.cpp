@@ -3,6 +3,7 @@
 #include "HostRpcServer.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -145,11 +146,30 @@ bool NodeProcessController::start()
     m_stopFinishedHandlers.clear();
     m_gracefulStopTimer.stop();
     m_postAckStopTimer.stop();
+    QString program = m_paths.sidecarExecutable;
+    QStringList arguments = m_paths.sidecarArguments;
+    // Tests and older callers populate the Node fields directly. Production
+    // paths always fill the sidecar fields in fromEnvironment().
+    if (program.isEmpty() && (m_paths.sidecarKind.isEmpty() || m_paths.sidecarKind == QStringLiteral("node"))) {
+        program = m_paths.nodeExecutable;
+        if (arguments.isEmpty() && !m_paths.nativeNodeEntry.isEmpty()) {
+            arguments = QStringList{m_paths.nativeNodeEntry};
+        }
+    }
+    if (program.isEmpty()) {
+        // A rejected sidecar kind or an unconfigured executable must be diagnosable in the
+        // log; only the kind decision is printed, never the whole environment.
+        qWarning().noquote() << "Sidecar launch rejected:"
+                             << (m_paths.sidecarKindError.isEmpty()
+                                     ? QStringLiteral("no executable configured for sidecar kind \"%1\"").arg(m_paths.sidecarKind)
+                                     : m_paths.sidecarKindError);
+        return false;
+    }
 
 #ifdef Q_OS_WIN
-    // Create the containment boundary before starting Node. The process handle
-    // can only be assigned after QProcess has created the child, so assignment
-    // follows waitForStarted(); all later pi/PTY descendants inherit the Job.
+    // Create the containment boundary before starting the sidecar. The process
+    // handle can only be assigned after QProcess has created the child, so
+    // assignment follows waitForStarted(); later descendants inherit the Job.
     const bool jobReady = createJobObject();
 #endif
 
@@ -165,6 +185,7 @@ bool NodeProcessController::start()
     environment.insert(QStringLiteral("PIDECK_PACKAGED"), m_paths.packaged ? QStringLiteral("1") : QStringLiteral("0"));
     environment.insert(QStringLiteral("PIDECK_RENDERER_ROOT"), m_paths.rendererDir);
     environment.insert(QStringLiteral("PIDECK_NATIVE_NODE_ENTRY"), m_paths.nativeNodeEntry);
+    environment.insert(QStringLiteral("PIDECK_SIDECAR_KIND"), m_paths.sidecarKind);
     const QLocale systemLocale = QLocale::system();
     QStringList preferredLanguages = systemLocale.uiLanguages();
     if (preferredLanguages.isEmpty()) {
@@ -180,8 +201,8 @@ bool NodeProcessController::start()
                       QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(QCoreApplication::arguments())).toJson(QJsonDocument::Compact)));
     m_process.setProcessEnvironment(environment);
     m_process.setWorkingDirectory(m_paths.applicationDir);
-    m_process.setProgram(m_paths.nodeExecutable);
-    m_process.setArguments({m_paths.nativeNodeEntry});
+    m_process.setProgram(program);
+    m_process.setArguments(arguments);
     m_process.start();
     if (!m_process.waitForStarted(5000)) {
         stop();

@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "PiDeck-Q is an open-source desktop workbench supporting the original Pi Agent and Pi_Agent_Rust across local project folders with session history, Git integration, terminal, and config management.",
   "private": true,
   "engines": {
@@ -61,7 +61,7 @@
     "build:webfetch": "node scripts/bundle-webfetch.mjs",
     "build:node": "node scripts/bundle-webfetch.mjs && node scripts/build-native-node.mjs",
     "build:native": "node scripts/build-native.mjs",
-    "pack": "npm run build && npm run build:native && node scripts/verify-build-artifacts.mjs --out release/win-unpacked",
+    "pack": "npm run build && npm run build:native && node scripts/verify-pack-stage.mjs",
     "dist:win": "node scripts/dist-win-native.mjs",
     "dist:win:dev": "node scripts/dev-native.mjs",
     "prepare:pi-latest": "node scripts/prepare-pi-latest.mjs",
@@ -83,7 +83,7 @@
     "make-icon": "node scripts/make-icon.js",
     "verify": "npm run typecheck && npm test && npm run build && npm run build:native",
     "sync:model-specs": "node scripts/sync-model-specs.mjs",
-    "verify:build-artifacts": "node scripts/verify-build-artifacts.mjs --out release/win-unpacked"
+    "verify:build-artifacts": "node scripts/verify-pack-stage.mjs"
   },
   "dependencies": {
     "@tiptap/core": "^3.29.2",

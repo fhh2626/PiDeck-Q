@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT" />
   <img src="https://img.shields.io/badge/Qt-6-41cd52" alt="Qt 6" />
   <img src="https://img.shields.io/badge/React-19-61dafb" alt="React 19" />
-  <img src="https://img.shields.io/badge/version-0.4.3-yellow" alt="Version 0.4.3" />
+  <img src="https://img.shields.io/badge/version-0.5.0-yellow" alt="Version 0.5.0" />
 </p>
 
 ## 项目简介
@@ -27,6 +27,7 @@ PiDeck-Q 基于优秀的 [PiDeck](https://github.com/ayuayue/PiDeck) 项目开�
 ## 主要特点
 
 - 使用原生 **C++ 与 Qt** 实现，取代 Electron ，以减小体积并提升窗体与交互响应。
+- 包内附带**原生 C++ 业务后端**（`PiDeckBackend`），因此便携包不再打包自己的 Node.js 运行时；Node.js 只用于源码构建（以及显式 `PIDECK_SIDECAR_KIND=node` 兼容构建），内置 TypeScript 扩展跑在 Agent 运行时自带的 Node 上。编码 Agent 运行时（Pi Agent / Pi_Agent_Rust / Pi-Bolt）仍是 PiDeck-Q 拉起的外部依赖。
 - 同时支持原版 [Pi Agent](https://pi.dev) 与 Rust 后端 [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust)。Pi_Agent_Rust 目前的功能成熟度暂不及原版 Pi Agent，但内存占用更低，运行也更加流畅。
 - 同时支持 [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt)（原版 Pi Agent 的预编译发行版，与原版 RPC 兼容）。自动模式不会自动发现 `pi-bolt` 命令（自定义 Pi 路径仍可指向它）；建议在「设置 → 开发设置 → Pi 运行时偏好」中显式选择。
 - 移除了飞书机器人、桌面宠物等较少使用的功能，以减小应用体积和内存占用。

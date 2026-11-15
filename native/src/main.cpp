@@ -35,6 +35,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <cstdio>
 #include <functional>
 #include <stdexcept>
 #include <utility>
@@ -221,6 +222,13 @@ int main(int argc, char **argv)
 #endif
     app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", nativeBuildVersion));
     const NativePaths paths = NativePaths::fromEnvironment();
+    // An unsupported sidecar kind is a configuration error, not permission to start the
+    // other backend: refuse before a window or any child process exists.
+    if (!paths.sidecarKindError.isEmpty()) {
+        const QByteArray message = paths.sidecarKindError.toUtf8() + '\n';
+        std::fwrite(message.constData(), 1, static_cast<size_t>(message.size()), stderr);
+        return 1;
+    }
     NativeApplication::configure(paths);
     const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
         && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
@@ -519,6 +527,11 @@ int main(int argc, char **argv)
         if (name == QStringLiteral("application.readyToExit")) {
             node.markReadyToExit();
         }
+        if (!mainWindow) return;
+        if (name == QStringLiteral("window.minimize")) mainWindow->minimizeWindow();
+        else if (name == QStringLiteral("window.toggleMaximize")) mainWindow->toggleMaximize();
+        else if (name == QStringLiteral("window.close")) mainWindow->closeFromHost();
+        else if (name == QStringLiteral("window.alwaysOnTop")) mainWindow->toggleAlwaysOnTop();
     });
 
     // The installer owns the normal registration path; keep startup registration

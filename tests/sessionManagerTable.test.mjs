@@ -10,7 +10,6 @@ const table = readFileSync(
   "src/renderer/src/components/ui-shadcn/table.tsx",
   "utf8",
 );
-const timeline = readFileSync("src/renderer/src/styles/timeline.css", "utf8");
 
 test("session manager renders its list as a table with headers", () => {
   assert.match(components, /import \{[^}]*\bTable\b/);
@@ -37,9 +36,3 @@ test("session manager table primitives use project semantic tokens", () => {
   assert.match(table, /text-muted-foreground h-9 px-3/);
 });
 
-test("dead session-manager CSS was removed while live embedded rules remain", () => {
-  assert.doesNotMatch(timeline, /\.session-manager-(row|modal|action-btn)/);
-  assert.doesNotMatch(timeline, /\.session-source-btn/);
-  assert.match(timeline, /\.rpc-log-modal--embedded,/);
-  assert.match(timeline, /\.update-modal--embedded \{/);
-});

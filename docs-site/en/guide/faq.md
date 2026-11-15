@@ -8,7 +8,7 @@ PiDeck is an open-source desktop workbench supporting the original Pi Agent, Pi_
 
 ### Is PiDeck a fork of pi?
 
-No. PiDeck is a native Qt6/QtWebView host with a Node Sidecar that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
+No. PiDeck is a native Qt6/QtWebView host with a native C++ business backend that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
 
 ### Which platforms are supported?
 
@@ -36,7 +36,7 @@ Type `&` in the composer to search and reference past sessions from the same pro
 
 ### What's the minimum Node.js version?
 
-The manifest requires Node.js 24.19.0 and npm 11+. Native development also needs xmake, a C++20/MSVC toolchain and Qt 6.11.2; see [Development](/en/guide/development).
+The manifest requires Node.js 24.19.0 and npm 11+. Native development also needs xmake, a C++20/MSVC toolchain and Qt 6.11.2; see [Development](/en/guide/development). The packaged app itself runs no Node.js: it ships the C++ backend, and the Node sidecar is only built for the `PIDECK_SIDECAR_KIND=node` compatibility build.
 
 ### Can I use PiDeck with self-hosted models?
 

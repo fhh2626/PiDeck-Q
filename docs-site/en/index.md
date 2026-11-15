@@ -34,7 +34,7 @@ features:
   - title: Built-in Terminal Dock
     details: Agent-scoped terminal tabs with PowerShell/cmd/sh fallback, multiple tabs, theme switching, height resizing, and right-click copy.
   - title: Native Build
-    details: Qt6/QtWebView and a Node Sidecar. Check actual GitHub release files; ordinary browser UI preview is available for development.
+    details: Qt6/QtWebView host with a native C++ business backend; the portable package ships no Node.js runtime. Check actual GitHub release files; ordinary browser UI preview is available for development.
 ---
 
 <script setup>
@@ -42,7 +42,7 @@ import { useData } from 'vitepress'
 const { theme } = useData()
 </script>
 
-Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck](https://github.com/ayuayue/PiDeck). It uses a Qt6/QtWebView host and a Node Sidecar, not Electron. Agent behavior remains in the selected runtime. See [Changelog](/en/changelog) for separately labeled upstream history.
+Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck](https://github.com/ayuayue/PiDeck). It uses a Qt6/QtWebView host with a native C++ business backend (no bundled Node.js runtime), not Electron. Agent behavior remains in the selected runtime. See [Changelog](/en/changelog) for separately labeled upstream history.
 
 <figure class="home-showcase">
   <img src="/images/overview.png" alt="PiDeck workspace and conversation UI">

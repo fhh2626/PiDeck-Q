@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const { resolveChatSessionBootstrap } = loadTsCommonJs(
   "src/renderer/src/utils/chatSessionBootstrap.ts",
 );
-const appSource = readFileSync("src/renderer/src/App.tsx", "utf8");
 
 function resolve(input) {
   // The TypeScript loader executes modules in a VM realm, so normalize the
@@ -18,6 +16,9 @@ test("Chat bootstrap loads a collapsed catalog, then shows the unified guide pag
 	assert.deepEqual(resolve({
 		isChatProject: true,
 		catalogStatus: "idle",
+	}), { kind: "load" });
+	assert.deepEqual(resolve({
+		isChatProject: true,
 	}), { kind: "load" });
 	assert.deepEqual(resolve({
 		isChatProject: true,
@@ -37,7 +38,16 @@ test("Chat bootstrap never replaces an existing selection or non-Chat project", 
   assert.deepEqual(resolve({
     isChatProject: true,
     currentSessionId: "selected",
+    catalogStatus: "idle",
+  }), { kind: "none" });
+  assert.deepEqual(resolve({
+    isChatProject: true,
+    currentSessionId: "selected",
     catalogStatus: "ready",
+  }), { kind: "none" });
+  assert.deepEqual(resolve({
+    isChatProject: false,
+    catalogStatus: "idle",
   }), { kind: "none" });
   assert.deepEqual(resolve({
     isChatProject: false,
@@ -45,7 +55,3 @@ test("Chat bootstrap never replaces an existing selection or non-Chat project", 
   }), { kind: "none" });
 });
 
-test("Chat bootstrap loads its catalog before showing the unified guide page", () => {
-	assert.match(appSource, /action\.kind === "load"[\s\S]*refreshProjectSessions\(activeProject\.id\)/);
-	assert.doesNotMatch(appSource, /selectSessionCommand\(activeProject\.id, action\.sessionId, false\)/);
-});

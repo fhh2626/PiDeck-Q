@@ -1,0 +1,277 @@
+/**
+ * Catalog record mutations: rename (catalog-update), archive and delete.
+ *
+ * Split out of SessionCatalogChannels.cpp because the mutation path is no longer a single
+ * blocking body: it crosses the Qt owner thread twice (the runtime tree verdict and the
+ * live pi rename) and each crossing needs its own explanation.
+ *
+ * Oracle contracts (src/main/sessions/SessionRecordService.ts):
+ *  - `update()`: a title change of a *running* session goes through
+ *    `sessionRuntimeCoordinator.renameRuntime` → `AgentManager.rename` →
+ *    `set_session_name`, awaited; `!renamed.ok` throws `mainAgent.renameFailed` and the
+ *    catalog is never touched. Only a non-running session renames the JSONL, and only
+ *    after `assertTreeIdle` (a running child in the same tree also blocks it).
+ *  - `archive()` / `delete()`: `assertTreeIdle` runs before anything is moved.
+ *
+ * Thread rules (see RuntimeCoordinator.h):
+ *  - the tree verdict and the pi rename answer on the Qt owner thread; the answer is
+ *    handed back to the serial executor for the filesystem work, so the event loop never
+ *    waits on a scan/rename and the runtime maps are never iterated from a worker.
+ */
+#include "SessionChannelSupport.h"
+
+#include "SessionDelete.h"
+
+#include "../fs/TrashHelper.h"
+#include "../process/BackgroundWork.h"
+#include "../runtime/RuntimeCoordinator.h"
+#include "EventHub.h"
+
+#include <QJsonArray>
+#include <QJsonObject>
+
+namespace sessionchannels {
+namespace {
+
+/** Patch fields the catalog stores directly (`model`, `thinkingLevel`). */
+QJsonObject preferencePatch(const QJsonObject &patch)
+{
+    QJsonObject applied;
+    if (patch.contains(QStringLiteral("model"))) {
+        applied.insert(QStringLiteral("model"), patch.value(QStringLiteral("model")));
+    }
+    if (patch.contains(QStringLiteral("thinkingLevel"))) {
+        applied.insert(QStringLiteral("thinkingLevel"),
+                       patch.value(QStringLiteral("thinkingLevel")));
+    }
+    return applied;
+}
+
+/** Persist the collected patch on the serial executor and answer the renderer. */
+void commitUpdate(ChannelServices &services, const QString &sessionId, const QJsonObject &applied,
+                  ChannelResponder responder)
+{
+    background::runBlocking(
+        [&services, sessionId, applied]() -> QJsonValue {
+            return catalogOf(services).update(sessionId, applied);
+        },
+        [&services, responder](background::Outcome outcome) mutable {
+            if (!outcome.ok) {
+                responder.reject(outcome.error);
+                return;
+            }
+            // Only a persisted mutation is announced: a rejected update pushed nothing.
+            notifyCatalogRefreshed(
+                services, outcome.value.toObject().value(QStringLiteral("projectId")).toString());
+            responder.resolve(outcome.value);
+        });
+}
+
+/** Rewrite the JSONL title for a non-running session, then persist the catalog patch. */
+void renameFileThenCommit(ChannelServices &services, const QString &sessionId,
+                          const QString &filePath, const QString &title,
+                          const QJsonObject &applied, ChannelResponder responder)
+{
+    QJsonObject withTitle = applied;
+    withTitle.insert(QStringLiteral("title"), title);
+    if (filePath.isEmpty()) {
+        // A draft has no file: there is nothing pi could own, so the catalog is the only
+        // place the title lives.
+        commitUpdate(services, sessionId, withTitle, responder);
+        return;
+    }
+    runWhenTreeIdle(
+        services, sessionId,
+        [&services, filePath, title]() -> QJsonValue {
+            // Rewriting the JSONL while a child agent in the same tree still appends to it
+            // would corrupt that child's session, so the guard above is the precondition.
+            scannerOf(services).rename(filePath, title);
+            return QJsonValue();
+        },
+        [&services, sessionId, withTitle, responder](background::Outcome outcome) mutable {
+            if (!outcome.ok) {
+                responder.reject(outcome.error);
+                return;
+            }
+            commitUpdate(services, sessionId, withTitle, responder);
+        });
+}
+
+} // namespace
+
+void registerSessionCatalogMutationChannels(ChannelRegistry &registry, ChannelServices &services)
+{
+    registry.addAsync(QStringLiteral("sessions:catalog-update"),
+                      [&services](const QJsonArray &args, ChannelResponder responder) {
+                          const QString sessionId = channels::stringArg(args, 0);
+                          const QJsonObject patch = channels::objectArg(args, 1);
+                          // Phase 1 (executor): validate and decide what has to change. The
+                          // catalog is internally synchronized, so this read is safe here.
+                          background::runBlocking(
+                              [&services, sessionId, patch]() -> QJsonValue {
+                                  const CatalogEntry entry = requireEntry(services, sessionId);
+                                  const QString title = patch.value(QStringLiteral("title")).toString().trimmed();
+                                  QJsonObject plan;
+                                  plan.insert(QStringLiteral("filePath"), entry.filePath);
+                                  plan.insert(QStringLiteral("title"),
+                                              !title.isEmpty() && title != entry.title ? title : QString());
+                                  plan.insert(QStringLiteral("applied"), preferencePatch(patch));
+                                  return plan;
+                              },
+                              [&services, sessionId, responder](background::Outcome outcome) mutable {
+                                  if (!outcome.ok) {
+                                      responder.reject(outcome.error);
+                                      return;
+                                  }
+                                  const QJsonObject plan = outcome.value.toObject();
+                                  const QString title = plan.value(QStringLiteral("title")).toString();
+                                  const QJsonObject applied = plan.value(QStringLiteral("applied")).toObject();
+                                  if (title.isEmpty()) {
+                                      // Model/thinking-only patch: pi must not see a rename.
+                                      commitUpdate(services, sessionId, applied, responder);
+                                      return;
+                                  }
+                                  const QString filePath = plan.value(QStringLiteral("filePath")).toString();
+                                  if (!services.runtimeCoordinator) {
+                                      renameFileThenCommit(services, sessionId, filePath, title, applied,
+                                                           responder);
+                                      return;
+                                  }
+                                  // Phase 2 (owner thread): a live runtime owns the file, so the
+                                  // title has to land through pi before the catalog records it.
+                                  services.runtimeCoordinator->renameRuntimeAsync(
+                                      sessionId, title,
+                                      [&services, sessionId, filePath, title, applied, responder](
+                                          runtime::Coordinator::RenameOutcome result,
+                                          const QString &error) mutable {
+                                          if (result == runtime::Coordinator::RenameOutcome::Failed) {
+                                              responder.reject(error);
+                                              return;
+                                          }
+                                          if (result == runtime::Coordinator::RenameOutcome::Renamed) {
+                                              QJsonObject withTitle = applied;
+                                              withTitle.insert(QStringLiteral("title"), title);
+                                              commitUpdate(services, sessionId, withTitle, responder);
+                                              return;
+                                          }
+                                          // No live runtime: the JSONL fallback.
+                                          renameFileThenCommit(services, sessionId, filePath, title,
+                                                               applied, responder);
+                                      });
+                              });
+                      });
+
+    registry.addAsync(QStringLiteral("sessions:catalog-archive"),
+                      [&services](const QJsonArray &args, ChannelResponder responder) {
+                          const QString sessionId = channels::stringArg(args, 0);
+                          // Oracle `archive()`: `if (!entry?.filePath) return false` runs
+                          // *before* `assertTreeIdle`, so an unknown id or a draft (a record
+                          // with no file) is a plain no-op instead of a busy-runtime refusal.
+                          CatalogEntry entry;
+                          if (!findEntry(services, sessionId, &entry) || entry.filePath.isEmpty()) {
+                              responder.resolve(false);
+                              return;
+                          }
+                          const QString projectId = entry.projectId;
+                          runWhenTreeIdle(
+                              services, sessionId,
+                              [&services, sessionId]() -> QJsonValue {
+                                  CatalogEntry current;
+                                  if (!findEntry(services, sessionId, &current)) return false;
+                                  if (current.filePath.isEmpty()) return false;
+                                  scannerOf(services).archive(current.filePath);
+                                  catalogOf(services).remove(sessionId);
+                                  return true;
+                              },
+                              [&services, projectId, responder](background::Outcome outcome) mutable {
+                                  if (!outcome.ok) {
+                                      responder.reject(outcome.error);
+                                      return;
+                                  }
+                                  // A false answer is a no-op, not a mutation: it is not announced.
+                                  if (outcome.value.toBool()) {
+                                      notifyCatalogRefreshed(services, projectId);
+                                  }
+                                  responder.resolve(outcome.value);
+                              });
+                      });
+
+    registry.addAsync(QStringLiteral("sessions:catalog-delete"),
+                      [&services](const QJsonArray &args, ChannelResponder responder) {
+                          const QString sessionId = channels::stringArg(args, 0);
+                          // Planning is IO-bound (it reads peer sessions to prove artifact
+                          // ownership) so it runs off-thread; the recycle-bin requests must
+                          // stay on the event loop because they are host RPCs. The tree
+                          // verdict that gates both is answered on the owner thread.
+                          runWhenTreeIdle(
+                              services, sessionId,
+                              [&services, sessionId]() -> QJsonValue {
+                                  CatalogEntry entry;
+                                  if (!findEntry(services, sessionId, &entry)) {
+                                      return QJsonObject{{QStringLiteral("missing"), true}};
+                                  }
+                                  SessionScanner &scanner = scannerOf(services);
+                                  QJsonObject plan{{QStringLiteral("missing"), false}};
+                                  plan.insert(QStringLiteral("projectId"), entry.projectId);
+                                  plan.insert(QStringLiteral("wsl"), scanner.fs().wsl());
+                                  plan.insert(QStringLiteral("hasFile"), !entry.filePath.isEmpty());
+                                  if (entry.filePath.isEmpty()) return plan;
+                                  if (scanner.fs().wsl()) {
+                                      const QString bucket = scanner.softDeleteWsl(entry.filePath);
+                                      plan.insert(QStringLiteral("bucket"), bucket);
+                                      return plan;
+                                  }
+                                  const sessiondelete::Plan planned = scanner.planDelete(entry.filePath);
+                                  QJsonArray targets;
+                                  for (const QString &path : planned.backups) targets.append(path);
+                                  for (const QString &path : planned.artifacts) targets.append(path);
+                                  if (planned.hasSibling) targets.append(planned.siblingDir);
+                                  if (planned.hasFile) targets.append(entry.filePath);
+                                  plan.insert(QStringLiteral("targets"), targets);
+                                  return plan;
+                              },
+                              [&services, sessionId, responder](background::Outcome outcome) mutable {
+                                  if (!outcome.ok) {
+                                      responder.reject(outcome.error);
+                                      return;
+                                  }
+                                  const QJsonObject plan = outcome.value.toObject();
+                                  const QString projectId =
+                                      plan.value(QStringLiteral("projectId")).toString();
+                                  auto removeEntry = [&services, sessionId, projectId,
+                                                      responder]() mutable {
+                                      try {
+                                          catalogOf(services).remove(sessionId);
+                                          notifyCatalogRefreshed(services, projectId);
+                                          responder.resolve(true);
+                                      } catch (const std::exception &failure) {
+                                          responder.reject(QString::fromUtf8(failure.what()));
+                                      }
+                                  };
+                                  if (plan.value(QStringLiteral("missing")).toBool()) {
+                                      responder.resolve(false);
+                                      return;
+                                  }
+                                  const QJsonArray targets = plan.value(QStringLiteral("targets")).toArray();
+                                  if (targets.isEmpty() || !services.host) {
+                                      removeEntry();
+                                      return;
+                                  }
+                                  QStringList paths;
+                                  for (const QJsonValue &value : targets) paths.append(value.toString());
+                                  trashhelper::trashAll(
+                                      services.host, paths,
+                                      [removeEntry, responder](bool ok, const QString &error) mutable {
+                                          if (!ok) {
+                                              // A failed recycle-bin move must not drop the catalog
+                                              // record: the file is still on disk.
+                                              responder.reject(error);
+                                              return;
+                                          }
+                                          removeEntry();
+                                      });
+                              });
+                      });
+}
+
+} // namespace sessionchannels

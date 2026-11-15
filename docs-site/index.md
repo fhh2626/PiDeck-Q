@@ -34,7 +34,7 @@ features:
   - title: 配置与插件管理
     details: 可视化编辑 Models、Auth、Settings，全局和项目级 Skills 与 Extension 管理，斜线命令和模板快速插入。
   - title: 原生构建
-    details: Qt6/QtWebView + Node Sidecar。下载以 GitHub Releases 实际文件为准，开发可使用普通浏览器预览 UI。
+    details: Qt6/QtWebView 宿主 + 原生 C++ 业务后端；便携包不附带 Node.js 运行时。下载以 GitHub Releases 实际文件为准，开发可使用普通浏览器预览 UI。
 ---
 
 <figure class="home-showcase">
@@ -51,7 +51,7 @@ const { theme } = useData()
 
 ## 面向本地开发的桌面控制台
 
-`PiDeck-Q` 基于上游 [PiDeck](https://github.com/ayuayue/PiDeck)，不是原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt6/QtWebView 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、配置管理和桌面交互整合起来，Agent 能力仍由所选运行时原生提供。
+`PiDeck-Q` 基于上游 [PiDeck](https://github.com/ayuayue/PiDeck)，不是原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt6/QtWebView 宿主与 C++ 业务后端（便携包不附带 Node.js 运行时），通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、配置管理和桌面交互整合起来，Agent 能力仍由所选运行时原生提供。
 
 <div class="info-strip">
   <div>

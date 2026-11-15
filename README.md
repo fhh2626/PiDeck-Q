@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT" />
   <img src="https://img.shields.io/badge/Qt-6-41cd52" alt="Qt 6" />
   <img src="https://img.shields.io/badge/React-19-61dafb" alt="React 19" />
-  <img src="https://img.shields.io/badge/version-0.4.3-yellow" alt="Version 0.4.3" />
+  <img src="https://img.shields.io/badge/version-0.5.0-yellow" alt="Version 0.5.0" />
 </p>
 
 ## Overview
@@ -27,6 +27,7 @@ As PiDeck-Q aims to remain lightweight and focus dedicatedly on the Pi family of
 ## Highlights
 
 - Native desktop host implemented in **C++ and Qt**, replacing a full Electron shell for a smaller footprint and more responsive windowing.
+- Ships a **native C++ business backend** beside the Qt host, so the portable package bundles no Node.js runtime of its own; Node.js is only needed to build from source (and for the explicit `PIDECK_SIDECAR_KIND=node` compatibility build), while the built-in TypeScript extensions run on the agent runtime's own Node. The coding agent runtime (Pi Agent / Pi_Agent_Rust / Pi-Bolt) remains an external dependency that PiDeck-Q launches.
 - Supports both the original [Pi Agent](https://pi.dev) and the Rust-based [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust). Pi_Agent_Rust is currently less mature than the original Pi Agent, but uses less memory and delivers a smoother experience.
 - Also supports [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), a precompiled distribution of the original Pi Agent that is RPC-compatible with it. Auto mode does not automatically discover the `pi-bolt` command (a custom Pi path can still point to it); select it explicitly under Settings → Developer → Pi Runtime Preference.
 - Removes less commonly used features, such as the Feishu bot and desktop pet, to reduce application size and memory usage.

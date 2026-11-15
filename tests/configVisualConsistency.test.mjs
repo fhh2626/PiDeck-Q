@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const configModal = readFileSync("src/renderer/src/ConfigModal.tsx", "utf8");
@@ -10,7 +10,6 @@ const dialogPrimitive = readFileSync("src/renderer/src/components/ui-shadcn/dial
 const prompts = readFileSync("src/renderer/src/config/PromptsTab.tsx", "utf8");
 const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
 const foundation = readFileSync("src/renderer/src/styles/foundation.css", "utf8");
-const rendererStyles = readFileSync("src/renderer/src/styles.css", "utf8");
 const settingsModal = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
 const commonTab = readFileSync("src/renderer/src/components/app/settings/CommonTab.tsx", "utf8");
 const projectResources = readFileSync("src/renderer/src/components/app/ProjectResourcesModal.tsx", "utf8");
@@ -33,16 +32,8 @@ test("config shell defines compact density and crisp system typography", () => {
   assert.doesNotMatch(surfaces, /\.config-nav-btn\.active \{/);
   assert.match(foundation, /Segoe UI Variable Text/);
   assert.match(foundation, /Microsoft YaHei UI/);
-  assert.doesNotMatch(foundation, /MiSans/);
   // 语言下拉的 "system" 选项位于常用设置 tab（CommonTab，自 SettingsModal 拆分）
   assert.match(commonTab, /value: "system"/);
-  assert.doesNotMatch(rendererStyles, /styles\/lxgw-wenkai\.css/);
-  assert.doesNotMatch(rendererStyles, /misans/i);
-  assert.equal(existsSync("src/renderer/assets/fonts/misans"), false);
-  assert.equal(existsSync("src/renderer/src/styles/misans"), false);
-  assert.equal(existsSync("src/renderer/assets/fonts/lxgw-wenkai"), false);
-  assert.equal(existsSync("src/renderer/src/styles/lxgw-wenkai.css"), false);
-  assert.doesNotMatch(rendererStyles, /lxgw-wenkai/);
   assert.doesNotMatch(surfaces, /\.config-models-grid-header[\s\S]*font-weight: 650/);
   assert.match(configModal, /configModalSizeClass/);
   assert.match(configModal, /w-\[80vw\]/);

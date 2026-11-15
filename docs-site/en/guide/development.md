@@ -11,7 +11,7 @@ Current version: **{{ theme.version }}**, sourced from the root `package.json`.
 
 - Node.js **24.19.0**, npm **11+**, Git and xmake.
 - A C++20 toolchain; MSVC on Windows.
-- Local Xmake package definitions use Qt **6.11.2** and Node runtime **24.19.0**.
+- Local Xmake package definitions use Qt **6.11.2** and Node runtime **24.19.0** (the Node runtime is only required by the `PIDECK_SIDECAR_KIND=node` compatibility build).
 - **WebView2 Runtime** is required for the Windows desktop window.
 - Real Agent use requires Pi Agent, Pi_Agent_Rust or Pi-Bolt plus model/auth configuration.
 
@@ -32,7 +32,8 @@ npm run dev
 | Path | Responsibility |
 | --- | --- |
 | `native/src/main.cpp` | Qt6/QtWebView host entry |
-| `src/native-node/index.ts` | Node Sidecar assembly |
+| `native/backend/` | Native C++ business backend (`PiDeckBackend.exe`, the packaged sidecar) |
+| `src/native-node/index.ts` | Node compatibility sidecar assembly (`PIDECK_SIDECAR_KIND=node`) |
 | `src/main/backend/createBackend.ts` | Business service assembly |
 | `src/main/backend/registerBackendRpc.ts` | Domain IPC registration |
 | `src/main/` | Sessions, pi processes, Git, settings and terminals |
@@ -51,7 +52,7 @@ Qt ↔ Sidecar uses local TCP with length-prefixed JSON. Renderer ↔ Sidecar us
 | `npm run test:browser` | Playwright regression tests |
 | `npm run build` | Type check and build renderer/Sidecar |
 | `npm run build:native` | Xmake native build |
-| `npm run pack` | Build and validate Windows staging |
+| `npm run pack` | Build and validate Windows staging (`release/win-unpacked`; set `PIDECK_STAGE_DIR` to stage somewhere else, e.g. a measurement directory) |
 | `npm run dist:win` | Windows staging and host RPC validation; installer compilation is currently disabled |
 | `npm run test:native-host-rpc` | Native host RPC integration tests |
 | `npm run test:native-gui` | Native GUI integration tests |
@@ -59,7 +60,7 @@ Qt ↔ Sidecar uses local TCP with length-prefixed JSON. Renderer ↔ Sidecar us
 | `npm run docs:build` | Build docs and check internal links |
 | `npm run docs:preview` | Preview generated docs |
 
-There is no current `dist`, `dist:mac`, `dist:linux` or `preview` script. Xmake and `scripts/stage-native-runtime.mjs` stage Qt, Node, renderer, Sidecar and resources, without electron-builder/asar.
+There is no current `dist`, `dist:mac`, `dist:linux` or `preview` script. Xmake and `scripts/stage-native-runtime.mjs` stage Qt, renderer, resources and the matching sidecar (the C++ backend by default; the Node sidecar only for `PIDECK_SIDECAR_KIND=node`), without electron-builder/asar. Xmake and `scripts/verify-pack-stage.mjs` both read `PIDECK_STAGE_DIR`, so `npm run pack` verifies the same directory it staged, and an unsupported `PIDECK_SIDECAR_KIND` is refused instead of falling back.
 
 ## Documentation and contributions
 

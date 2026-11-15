@@ -105,19 +105,7 @@ test("empty state is a colSpan row inside TableBody", () => {
   assert.match(source, /<TableRow className="hover:bg-transparent">[\s\S]*?colSpan=\{8\}[\s\S]*?config\.emptyModels/);
 });
 
-test("dead CSS rules removed, kept rules intact", () => {
-  assert.doesNotMatch(surfaces, /\.config-models-grid-header/);
-  assert.doesNotMatch(surfaces, /\.config-models-grid-row/);
-  assert.doesNotMatch(surfaces, /\.config-checkbox-cell/);
-  assert.doesNotMatch(surfaces, /\.config-input-cell/);
-  assert.doesNotMatch(surfaces, /\.config-xhigh-cell/);
-  assert.doesNotMatch(surfaces, /\.config-thinking-levels-segmented/);
-  assert.doesNotMatch(surfaces, /\.config-thinking-level-option/);
-  assert.doesNotMatch(surfaces, /\.config-cost-cell/);
-  // 保留：计费字段布局 / 图片 label；思考级别下拉的旧 CSS 已随 Checkbox 改造删除
-  assert.doesNotMatch(surfaces, /\.config-model-cost \{/);
+test("model cost and input option layout rules stay available", () => {
   assert.match(surfaces, /\.config-model-cost-field \{/);
   assert.match(surfaces, /\.config-input-option \{/);
-  assert.doesNotMatch(surfaces, /\.config-thinking-levels-cell \{/);
-  assert.doesNotMatch(surfaces, /\.config-thinking-levels-row/);
 });

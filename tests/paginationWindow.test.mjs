@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { paginationWindow } from "../src/renderer/src/utils/pagination.ts";
+import { paginationWindow, resolvePaginationJump } from "../src/renderer/src/utils/pagination.ts";
 
 test("paginationWindow: 总页数较少时返回完整序列，无省略号", () => {
 	assert.deepEqual(paginationWindow(1, 5), [1, 2, 3, 4, 5]);
@@ -34,4 +34,16 @@ test("paginationWindow: 越界页码收敛，总页数 ≤ 0 视为 1 页", () =
 
 test("paginationWindow: 自定义 sibling", () => {
 	assert.deepEqual(paginationWindow(10, 50, 1), [1, "ellipsis-start", 9, 10, 11, "ellipsis-end", 50]);
+});
+
+test("resolvePaginationJump accepts only a different in-range integer", () => {
+	assert.equal(resolvePaginationJump("4", 2, 5), 4);
+	assert.equal(resolvePaginationJump("1", 2, 5), 1);
+	assert.equal(resolvePaginationJump("5", 2, 5), 5);
+	assert.equal(resolvePaginationJump("2", 2, 5), null);
+	assert.equal(resolvePaginationJump("9", 2, 5), null);
+	assert.equal(resolvePaginationJump("0", 2, 5), null);
+	assert.equal(resolvePaginationJump("", 2, 5), null);
+	assert.equal(resolvePaginationJump("4.5", 2, 5), null);
+	assert.equal(resolvePaginationJump("nope", 2, 5), null);
 });

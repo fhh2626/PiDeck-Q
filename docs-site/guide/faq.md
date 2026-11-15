@@ -4,11 +4,11 @@
 
 ## PiDeck 是什么？
 
-**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent、Pi_Agent_Rust 和 Pi-Bolt，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Qt6/QtWebView + Node Sidecar + React/TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
+**PiDeck** 是一个开源的桌面工作台，同时支持原版 Pi Agent、Pi_Agent_Rust 和 Pi-Bolt，用于在本地项目目录中统一管理编码 Agent 会话，并支持导入 Codex、Claude 本地会话以便统一浏览和恢复。它基于 Qt6/QtWebView + 原生 C++ 业务后端（便携包不附带 Node.js 运行时）+ React/TypeScript 构建，提供多项目工作区、AI 会话管理、Git 集成、内置终端、模型配置和插件扩展能力。
 
 ## PiDeck 和 pi 是什么关系？
 
-PiDeck **不是**原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt 宿主与 Node Sidecar，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
+PiDeck **不是**原版 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt 的分支。它使用原生 Qt 宿主与 C++ 业务后端，通过启动兼容的 RPC Agent 进程，把项目管理、会话管理、对话界面、配置管理和工具编排整合到原生桌面应用中；Agent 能力仍由所选运行时提供。
 
 ## 支持哪些 AI 编码助手？
 
@@ -24,7 +24,7 @@ PiDeck 原生支持 **原版 Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**（Pi
 
 ## 从源码运行需要什么环境？
 
-- Node.js 24.19.0、npm 11+
+- Node.js 24.19.0、npm 11+（构建开发与兼容 Sidecar 需要；打包产物本身不运行 Node）
 - xmake、C++20/MSVC 工具链与 Qt 6.11.2（见 [开发与打包](/guide/development)）
 - 系统 `PATH` 中可访问 `pi` 命令
 - 已完成 pi 的 Provider、登录或 API Key 配置

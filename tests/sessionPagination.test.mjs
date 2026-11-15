@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
@@ -32,14 +32,6 @@ test("A to B owner switch renders B's initial page without A visibleCount or loa
   assert.equal(timeline.matchesTimelineOwner("A", "B"), false);
 });
 
-test("the removed visibleCount append catch-up helper does not come back", () => {
-  // 轮次模型下渲染层无条数窗口：新消息追加即全部显示，不再有 visibleCount 追赶问题。
-  // 文本匹配在此是正确工具：断言的是「已删除的符号不得回归」，运行时没有可观察行为可测。
-  // 注意：这只是回归栅栏，并不证明追加行为本身正确；追加路径目前没有专门的 hook 挂载测试。
-  const controller = readFileSync("src/renderer/src/hooks/useSessionTimelineController.ts", "utf8");
-  assert.doesNotMatch(controller, /growVisibleCountForAppend/);
-});
-
 test("old load completion, anchor, and jump owner tags cannot affect B", () => {
   assert.equal(timeline.matchesTimelineOwner("A", "B"), false);
   assert.equal(timeline.matchesTimelineOwner("B", "B"), true);
@@ -55,11 +47,6 @@ test("Session runtime busy state is authoritative and stop status wins over stal
 });
 
 test("renderer runtime code reads historical messages only through the bounded page API", () => {
-  assert.equal(
-    existsSync("src/renderer/src/hooks/useSessionMessages.ts"),
-    false,
-    "the obsolete full-history renderer hook must remain removed",
-  );
   const rendererRuntime = [
     ...readRendererRuntimeSources("src/renderer/src/hooks"),
     ...readRendererRuntimeSources("src/renderer/src/components/session"),

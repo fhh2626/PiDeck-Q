@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QProcess>
 #include <QStandardPaths>
 
 NativePaths NativePaths::fromEnvironment()
@@ -29,6 +30,42 @@ NativePaths NativePaths::fromEnvironment()
 #else
         paths.nodeExecutable = root.filePath("node/bin/node");
 #endif
+    }
+    paths.sidecarKind = qEnvironmentVariable("PIDECK_SIDECAR_KIND").trimmed().toLower();
+    // The build that produced this executable also staged the sidecar beside it, so the
+    // compile-time kind is the default: a packaged release must not need an environment
+    // opt-in, and it must never look for node.exe that the C++ package does not ship.
+    // PIDECK_SIDECAR_KIND still overrides the choice (tests, compatibility runs).
+    if (paths.sidecarKind.isEmpty()) {
+#ifdef PIDECK_DEFAULT_SIDECAR_KIND
+        paths.sidecarKind = QString::fromLatin1(PIDECK_DEFAULT_SIDECAR_KIND);
+#else
+        paths.sidecarKind = QStringLiteral("cpp");
+#endif
+    }
+    if (paths.sidecarKind == QStringLiteral("node")) {
+        paths.sidecarExecutable = paths.nodeExecutable;
+        paths.sidecarArguments = QStringList{paths.nativeNodeEntry};
+    } else if (paths.sidecarKind == QStringLiteral("cpp")) {
+        paths.sidecarExecutable = qEnvironmentVariable("PIDECK_SIDECAR_EXECUTABLE").trimmed();
+        if (paths.sidecarExecutable.isEmpty()) {
+#ifdef Q_OS_WIN
+            paths.sidecarExecutable = root.filePath("PiDeckBackend.exe");
+#else
+            paths.sidecarExecutable = root.filePath("PiDeckBackend");
+#endif
+        }
+        const QString arguments = qEnvironmentVariable("PIDECK_SIDECAR_ARGS");
+        if (!arguments.trimmed().isEmpty()) paths.sidecarArguments = QProcess::splitCommand(arguments);
+    } else {
+        // Neither known sidecar may be substituted for an unknown kind: report the value
+        // (bounded, it is an input string) and leave the process without a sidecar so
+        // main() can refuse to start instead of silently launching the wrong backend.
+        paths.sidecarKindError = QStringLiteral("Unsupported PIDECK_SIDECAR_KIND \"%1\": expected \"cpp\" or \"node\"")
+                                     .arg(qEnvironmentVariable("PIDECK_SIDECAR_KIND").trimmed().left(32));
+        paths.sidecarKind.clear();
+        paths.sidecarExecutable.clear();
+        paths.sidecarArguments.clear();
     }
     paths.resourcesDir = qEnvironmentVariable("PIDECK_RESOURCES_DIR");
     if (paths.resourcesDir.isEmpty()) {

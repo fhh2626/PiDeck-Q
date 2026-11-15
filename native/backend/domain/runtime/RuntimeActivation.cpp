@@ -1,0 +1,503 @@
+#include "RuntimeCoordinator.h"
+
+#include "PiLaunch.h"
+
+#include "../sessions/SessionCatalogStore.h"
+#include "../sessions/SessionChannelSupport.h"
+#include "../sessions/SessionEntryIds.h"
+
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonDocument>
+
+#include <stdexcept>
+
+namespace runtime {
+namespace {
+
+constexpr int kStateTimeoutMs = 30'000;
+constexpr int kMessagesTimeoutMs = 120'000;
+constexpr int kEntriesTimeoutMs = 15'000;
+constexpr int kPromptTimeoutMs = 120'000;
+
+qint64 nowMs()
+{
+    return QDateTime::currentMSecsSinceEpoch();
+}
+
+QJsonObject rejectedResult(const QString &sessionId, const QString &requestId, const QString &error,
+                           bool unknownDelivery = false)
+{
+    QJsonObject result{
+        {QStringLiteral("accepted"), false},
+        {QStringLiteral("delivery"), unknownDelivery ? QStringLiteral("unknown")
+                                                     : QStringLiteral("rejected")},
+        {QStringLiteral("error"), error},
+        {QStringLiteral("i18nKey"), unknownDelivery ? QStringLiteral("diagnostic.promptDeliveryUnknown")
+                                                    : QStringLiteral("diagnostic.promptRejected")},
+        {QStringLiteral("debugDetails"), error},
+        {QStringLiteral("sessionId"), sessionId},
+        {QStringLiteral("requestId"), requestId},
+    };
+    return result;
+}
+
+} // namespace
+
+void Coordinator::activate(const QString &sessionId, std::function<void(QJsonObject)> done)
+{
+    if (m_shutdown) {
+        done(errorResult(CommandError::of(errorcode::kRuntimeUnavailable,
+                                          QStringLiteral("Backend is shutting down"))));
+        return;
+    }
+    if (m_bindings.isReplacingSession(sessionId)) {
+        // A replacement (restart/fork/clone) owns the session for its whole handshake:
+        // creating a second pi here would answer with a success whose target a later bind
+        // silently invalidates while both processes stay alive. Oracle `activate` refuses
+        // with "Session runtime replacement reservation conflict".
+        done(errorResult(CommandError::of(
+            errorcode::kRuntimeChanged,
+            QStringLiteral("Session runtime replacement reservation conflict: %1").arg(sessionId))));
+        return;
+    }
+    if (m_bindings.isActivating(sessionId)) {
+        // A pending activation owns the session; queue instead of spawning a second pi.
+        m_activationWaiters[sessionId].append(std::move(done));
+        return;
+    }
+    m_bindings.beginActivation(sessionId);
+    runActivation(sessionId, [this, sessionId, done](QJsonObject result) {
+        m_bindings.endActivation(sessionId);
+        const QVector<std::function<void(QJsonObject)>> waiters = m_activationWaiters.take(sessionId);
+        for (const auto &waiter : waiters) waiter(result);
+        done(result);
+    });
+}
+
+void Coordinator::runActivation(const QString &sessionId, std::function<void(QJsonObject)> done)
+{
+    CatalogEntry entry;
+    if (!m_deps.services || !m_deps.services->catalog
+        || !m_deps.services->catalog->get(sessionId, &entry)) {
+        done(errorResult(CommandError::of(errorcode::kSessionNotFound,
+                                          QStringLiteral("Session not found: %1").arg(sessionId))));
+        return;
+    }
+
+    Target existing;
+    if (m_bindings.targetForSession(sessionId, &existing)) {
+        AgentSession *bound = agent(existing.agentId);
+        const bool usable = bound && bound->running()
+            && bound->tab().status != QLatin1String("closed")
+            && bound->tab().status != QLatin1String("error");
+        if (usable) {
+            publishState(*bound);
+            done(okResult(runtimeInfoJson(existing, bound->tab())));
+            return;
+        }
+        // A terminal process cannot be reused; drop the binding before creating a new one.
+        m_bindings.unbind(existing.agentId);
+        forgetAgent(existing.agentId);
+    }
+
+    createAgent(entry, [this, sessionId, entry, done](AgentSession *created, const QString &error) {
+        if (!created) {
+            // No process exists yet, but the transient record does.
+            discardFailedActivation(entry, QString());
+            done(errorResult(classifyFailure(error)));
+            return;
+        }
+        const QString agentId = created->tab().id;
+        created->request(QStringLiteral("get_state"), {}, kStateTimeoutMs,
+                         [this, sessionId, agentId, entry, done](bool ok, const QJsonObject &response,
+                                                           const QString &stateError) {
+                             AgentSession *session = agent(agentId);
+                             if (!session) {
+                                 discardFailedActivation(entry, QString());
+                                 done(errorResult(CommandError::of(
+                                     errorcode::kRuntimeUnavailable,
+                                     QStringLiteral("Session runtime stopped during activation"))));
+                                 return;
+                             }
+                             if (!ok || !response.value(QStringLiteral("success")).toBool(false)) {
+                                 const QString failure = !stateError.isEmpty()
+                                     ? stateError
+                                     : response.value(QStringLiteral("error")).toString(
+                                           QStringLiteral("pi get_state failed"));
+                                 session->markError(QStringLiteral("startup"));
+                                 session->transcript().appendError(failure);
+                                 discardFailedActivation(entry, agentId);
+                                 done(errorResult(classifyFailure(failure)));
+                                 return;
+                             }
+                             const QJsonObject data = response.value(QStringLiteral("data")).toObject();
+                             const QString projectPath = resolveProjectPath(entry.projectId);
+                             if (data.value(QStringLiteral("sessionFile")).isString()
+                                 && !data.value(QStringLiteral("sessionFile")).toString().isEmpty()) {
+                                 session->tab().sessionPath = normalizeSessionPath(
+                                     data.value(QStringLiteral("sessionFile")).toString(), projectPath);
+                             }
+                             // pi only reports the file it is writing once the first turn
+                             // exists; an imported session already has one, so keep it.
+                             if (session->tab().sessionPath.isEmpty() && !entry.filePath.isEmpty()) {
+                                 session->tab().sessionPath =
+                                     normalizeSessionPath(entry.filePath, projectPath);
+                             }
+                             if (data.value(QStringLiteral("sessionId")).isString()) {
+                                 session->tab().piSessionId =
+                                     data.value(QStringLiteral("sessionId")).toString();
+                             }
+                             if (data.value(QStringLiteral("sessionName")).isString()
+                                 && !data.value(QStringLiteral("sessionName")).toString().isEmpty()) {
+                                 session->tab().title =
+                                     data.value(QStringLiteral("sessionName")).toString();
+                             }
+                             loadProjection(*session, [this, sessionId, agentId, entry, done]() {
+                                 AgentSession *loaded = agent(agentId);
+                                 if (!loaded) return;
+                                 applyPreferences(*loaded, entry, [this, sessionId, agentId, entry, done]() {
+                                     AgentSession *ready = agent(agentId);
+                                     if (!ready) return;
+                                     int generation = 0;
+                                     try {
+                                         generation = bindSession(sessionId, agentId);
+                                     } catch (const std::exception &failure) {
+                                         discardFailedActivation(entry, agentId);
+                                         done(errorResult(classifyFailure(
+                                             QString::fromUtf8(failure.what()))));
+                                         return;
+                                     }
+                                     ready->tab().runtimeGeneration = generation;
+                                     ready->setStatus(QStringLiteral("idle"));
+                                     if (!ready->tab().sessionPath.isEmpty() && !entry.noSession
+                                         && m_deps.services->catalog) {
+                                         m_deps.services->catalog->attachRuntime(
+                                             sessionId, ready->tab().sessionPath,
+                                             ready->tab().piSessionId);
+                                     }
+                                     publishState(*ready);
+                                     // The initial transcript flush must follow the binding:
+                                     // `agents:message` is enveloped with the runtime identity,
+                                     // and the projection load above ran before it existed.
+                                     agentruntime::flushMessages(*ready, hooksFor(*ready));
+                                     const Target target{sessionId, agentId, generation};
+                                     done(okResult(runtimeInfoJson(target, ready->tab())));
+                                 });
+                             });
+                         });
+    });
+}
+
+void Coordinator::createAgent(const CatalogEntry &entry,
+                              std::function<void(AgentSession *, const QString &)> done)
+{
+    const QString projectPath = resolveProjectPath(entry.projectId);
+    if (projectPath.isEmpty()) {
+        done(nullptr, QStringLiteral("Project not found: %1").arg(entry.projectId));
+        return;
+    }
+    const QJsonObject settings = m_deps.settings ? m_deps.settings() : QJsonObject{};
+    const QString agentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    pilaunch::Request request;
+    request.settings = settings;
+    request.agentDir = m_deps.agentDir;
+    request.resourcesDir = m_deps.resourcesDir;
+    request.projectPath = projectPath;
+    request.sessionPath = entry.filePath;
+    request.noSession = entry.noSession;
+    request.securitySessionId = entry.id;
+    request.securitySnapshotPath = m_deps.securitySnapshotPath;
+    request.uiLocale = m_deps.uiLocale ? m_deps.uiLocale() : QString();
+    request.wslExe = m_deps.services ? m_deps.services->wslExe : QString();
+    bool hasTrustResources = false;
+    request.trustOverride = pilaunch::resolveTrustOverride(m_deps.agentDir, projectPath,
+                                                           &hasTrustResources);
+    auto spawnWith = [this, entry, agentId, projectPath, done](const pilaunch::Launch &launch) {
+        AgentSession::Options options;
+        options.agentId = agentId;
+        options.projectId = entry.projectId;
+        options.cwd = projectPath;
+        options.title = entry.title;
+        options.deckSessionId = entry.id;
+        options.sessionPath = entry.filePath;
+        options.sessionEnvironment = entry.environment;
+        options.sessionSource = entry.source;
+        options.isInternalSubagent = entry.isInternalSubagent;
+        options.wslDistro = entry.wslDistro;
+        options.wslUser = entry.wslUser;
+        options.importedSourceId = entry.importedSourceId;
+        options.noSession = entry.noSession;
+        options.launch = launch;
+        options.translate = m_deps.services ? m_deps.services->translate : maincopy::Translator{};
+        auto session = std::make_unique<AgentSession>(options);
+        session->setChildRegistry(m_deps.services ? m_deps.services->children : nullptr);
+        AgentSession *raw = session.get();
+        // Every channel except the tab list is wrapped in the runtime-event envelope.
+        agentruntime::Emit sink;
+        sink.send = [this, agentId](const QString &channel, const QJsonValue &payload) {
+            if (channel == QLatin1String("agents:state")) {
+                emitState();
+                return;
+            }
+            emitForAgent(agentId, channel, payload);
+        };
+        raw->setEmit(std::move(sink));
+        // pi events and stderr are routed back through the coordinator so the
+        // projector, pending-UI map and envelope all see the same session identity.
+        raw->setEventSink([this, agentId](const QJsonObject &event) {
+            AgentSession *current = agent(agentId);
+            if (!current) return;
+            // The Rust/Pi-Bolt lifecycle serializer is identified from `agent_start` before
+            // the projector runs: it decides the settle-watchdog delay (250 ms vs 5 s).
+            noteRuntimeKind(agentId, event);
+            // Raw observers (LAN web stream) see the event *before* the desktop projector:
+            // `agent_start` hands out the next run generation and the projector's
+            // `openStream()` advances the counter right after, exactly like the oracle's
+            // `emitLocalEvent` → `openAgentStream` order.
+            publishPiEvent(agentId, *current, event);
+            agentruntime::handlePiEvent(*current, event, hooksFor(*current));
+        });
+        raw->setStderrSink([this, agentId](const QString &text) {
+            emitForAgent(agentId, QStringLiteral("agents:log"), QJsonObject{
+                {QStringLiteral("level"), QStringLiteral("stderr")},
+                {QStringLiteral("text"), text},
+            });
+        });
+        // RPC frames: the application sink applies the per-agent recording gate, writes
+        // the daily JSONL and queues the ~80 ms `agents:rpc-log` batch.
+        raw->setRpcLogSink([this, agentId](const QString &direction, const QJsonObject &data) {
+            if (m_deps.recordRpcLog) m_deps.recordRpcLog(agentId, direction, data);
+        });
+        raw->setExitHandler([this, agentId](int code, const QString &reason) {
+            AgentSession *current = agent(agentId);
+            // Oracle `handleProcessExit`: a manual compact owns the exit. The compact
+            // command itself reattaches the same agentId, so unbinding here would
+            // invalidate the renderer's target mid-flight and force a pointless new
+            // generation. The tab still reports `closed` until the reconnect succeeds.
+            if (current && current->manualCompaction()) {
+                current->tab().status = QStringLiteral("closed");
+                emitState();
+                return;
+            }
+            // A clean exit of a session that owns a file is normally pi restarting itself
+            // (auto-compaction, model refresh). Oracle `handleProcessExit` reconnects the
+            // same agentId once instead of dropping the runtime; the flag keeps a genuinely
+            // broken pi from restarting in a loop. Shutdown owns its own teardown.
+            if (!m_shutdown && current && code == 0 && !current->tab().sessionPath.isEmpty()
+                && !current->autoRestartAttempted()) {
+                current->setAutoRestartAttempted(true);
+                const QString sessionId = m_bindings.sessionForAgent(agentId);
+                const Target target{sessionId, agentId, m_bindings.generationForSession(sessionId)};
+                current->tab().status = QStringLiteral("starting");
+                emitState();
+                // Deferred: the transport fails its pending RPCs *before* this handler runs,
+                // so the reconnect must not begin on the exit signal's stack.
+                auto restart = [this, agentId, target]() {
+                    reattachProcess(agentId, target,
+                                    [this, agentId](bool reattached, const QString &error) {
+                                        AgentSession *latest = agent(agentId);
+                                        if (!latest) return;
+                                        if (!reattached) {
+                                            // Same teardown as any other dead process: the
+                                            // renderer must not keep a target for it.
+                                            latest->tab().status = QStringLiteral("closed");
+                                            latest->transcript().appendLocalized(
+                                                QStringLiteral("error"),
+                                                QStringLiteral("diagnostic.processReconnectFailed"),
+                                                QStringLiteral("Agent 进程意外退出，自动重连失败"),
+                                                QJsonObject{});
+                                            agentruntime::flushMessages(*latest, hooksFor(*latest));
+                                            // Oracle `handleProcessExit` clears the per-agent state
+                                            // before the final state frame; the detach below is
+                                            // the C++ binding teardown, not a substitute.
+                                            clearAgentRuntimeState(*latest);
+                                            const QString sessionId =
+                                                m_bindings.sessionForAgent(agentId);
+                                            emitDetach(Target{sessionId, agentId,
+                                                              m_bindings.generationForSession(sessionId)});
+                                            m_bindings.unbind(agentId);
+                                            if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(agentId);
+                                            emitState();
+                                            return;
+                                        }
+                                        latest->tab().status = QStringLiteral("idle");
+                                        latest->transcript().appendLocalized(
+                                            QStringLiteral("system"),
+                                            QStringLiteral("diagnostic.compactReconnected"),
+                                            QStringLiteral("会话压缩完成，Agent 已自动重连"),
+                                            QJsonObject{});
+                                        agentruntime::flushMessages(*latest, hooksFor(*latest));
+                                        emitState();
+                                    });
+                };
+                if (m_deps.post) m_deps.post(std::move(restart));
+                else restart();
+                return;
+            }
+            if (current) {
+                current->tab().status = QStringLiteral("closed");
+                // Oracle `handleProcessExit`: a terminal exit clears the per-agent state
+                // (subagent rows get an empty snapshot, pending asks die, streaming flags
+                // drop) *before* the last `agents:state` frame, so the renderer never keeps
+                // a spinner, a yellow child dot or a dialog for a process that is gone.
+                clearAgentRuntimeState(*current);
+                // `emitState` delivers the closed envelope first; for a `--no-session`
+                // runtime it already unbinds, removes the transient record and emits the
+                // detach (oracle `emitSessionRuntimeEvent`). Re-check the binding before
+                // the generic detach so that path cannot emit a second, empty-target
+                // detach frame.
+                emitState();
+                QString sessionId;
+                int generation = 0;
+                if (m_bindings.bindingForAgent(agentId, &sessionId, &generation)) {
+                    emitDetach(Target{sessionId, agentId, generation});
+                }
+            }
+            m_bindings.unbind(agentId);
+            // A closed (or crashed) process produces no further frames; drop the
+            // per-agent recording gate and any queued batch. The session object itself
+            // must NOT be destroyed here: this runs on the client's own signal stack.
+            if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(agentId);
+            Q_UNUSED(reason);
+        });
+        QString spawnError;
+        if (!raw->spawn(&spawnError)) {
+            done(nullptr, spawnError);
+            return;
+        }
+        m_agents.emplace(agentId, std::move(session));
+        done(raw, QString());
+    };
+
+    // An undetermined decision with project-level resources present must be asked, not
+    // guessed: pi would otherwise silently refuse to load the user's own extensions.
+    if (request.trustOverride == QLatin1String("no-approve") && hasTrustResources
+        && m_deps.requestTrust) {
+        const QString title = entry.title;
+        m_deps.requestTrust(projectPath, title,
+                            [this, request, spawnWith, projectPath](const QString &choice) mutable {
+            if (choice == QLatin1String("trust-remember")) {
+                if (m_deps.rememberTrust) m_deps.rememberTrust(projectPath);
+                request.trustOverride.clear();
+            } else if (choice == QLatin1String("trust-session")) {
+                request.trustOverride = QStringLiteral("approve");
+            } else {
+                request.trustOverride = QStringLiteral("no-approve");
+            }
+            if (!request.trustOverride.isEmpty()) {
+                const pilaunch::Launch probe = pilaunch::build(request);
+                pilaunch::probeVersion(probe,
+                                       [request, spawnWith](const QString &version) mutable {
+                    if (!pilaunch::supportsTrustFlags(version)) request.trustOverride.clear();
+                    spawnWith(pilaunch::build(request));
+                });
+                return;
+            }
+            spawnWith(pilaunch::build(request));
+        });
+        return;
+    }
+
+    if (!request.trustOverride.isEmpty() && hasTrustResources) {
+        // Trust flags only exist on pi >= 0.79; probing first keeps older pi working.
+        const pilaunch::Launch probe = pilaunch::build(request);
+        pilaunch::probeVersion(probe, [this, request, spawnWith](const QString &version) mutable {
+            if (!pilaunch::supportsTrustFlags(version)) request.trustOverride.clear();
+            spawnWith(pilaunch::build(request));
+        });
+        return;
+    }
+    spawnWith(pilaunch::build(request));
+}
+void Coordinator::loadProjection(AgentSession &session, std::function<void()> done)
+{
+    const QString agentId = session.tab().id;
+    const int sequence = session.beginMessageLoad();
+    session.request(QStringLiteral("get_messages"), {}, kMessagesTimeoutMs,
+                    [this, agentId, sequence, done](bool ok, const QJsonObject &response, const QString &) {
+                        AgentSession *current = agent(agentId);
+                        if (!current || current->messageLoadSequence() != sequence) {
+                            if (done) done();
+                            return;
+                        }
+                        if (!ok || !response.value(QStringLiteral("success")).toBool(false)) {
+                            if (done) done();
+                            return;
+                        }
+                        QVector<QJsonValue> raw;
+                        const QJsonArray messages =
+                            response.value(QStringLiteral("data")).toObject()
+                                .value(QStringLiteral("messages")).toArray();
+                        for (const QJsonValue &value : messages) raw.append(value);
+                        current->request(
+                            QStringLiteral("get_entries"), {}, kEntriesTimeoutMs,
+                            [this, agentId, sequence, raw, done](bool entriesOk,
+                                                                 const QJsonObject &entriesResponse,
+                                                                 const QString &) {
+                                AgentSession *latest = agent(agentId);
+                                if (!latest || latest->messageLoadSequence() != sequence) {
+                                    if (done) done();
+                                    return;
+                                }
+                                QStringList entryIds;
+                                if (entriesOk
+                                    && entriesResponse.value(QStringLiteral("success")).toBool(false)) {
+                                    const QJsonObject data =
+                                        entriesResponse.value(QStringLiteral("data")).toObject();
+                                    QVector<QJsonValue> entries;
+                                    for (const QJsonValue &value : data.value(QStringLiteral("entries")).toArray()) {
+                                        entries.append(value);
+                                    }
+                                    entryIds = sessionentryids::buildActiveBranchEntryIds(
+                                        entries, data.value(QStringLiteral("leafId")).toString());
+                                    latest->setEntrySource(QStringLiteral("rpc"));
+                                }
+                                latest->setActiveEntryIds(entryIds);
+                                latest->transcript().applyProjection(
+                                    raw, entryIds, missingtoolcalls::collectToolResultIds(raw));
+                                latest->refreshFileVersion();
+                                agentruntime::flushMessages(*latest, hooksFor(*latest));
+                                if (done) done();
+                            });
+                    });
+}
+
+void Coordinator::applyPreferences(AgentSession &session, const CatalogEntry &entry,
+                                   std::function<void()> done)
+{
+    const QString agentId = session.tab().id;
+    // Model first (the thinking clamp is defined against it), then the thinking level,
+    // which the oracle applies independently of whether a model is stored at all.
+    if (!entry.hasModel || entry.modelProvider.isEmpty() || entry.modelId.isEmpty()) {
+        applyThinkingPreference(session, entry, std::move(done));
+        return;
+    }
+    session.request(QStringLiteral("set_model"),
+                    QJsonObject{{QStringLiteral("provider"), entry.modelProvider},
+                                {QStringLiteral("modelId"), entry.modelId}},
+                    kStateTimeoutMs, [this, agentId, entry, done](bool ok, const QJsonObject &response,
+                                                                 const QString &error) {
+                        AgentSession *current = agent(agentId);
+                        if (!current) return;
+                        if (!ok || !response.value(QStringLiteral("success")).toBool(false)) {
+                            // Preferences are advisory: a model that pi no longer has must
+                            // not make the session unusable.
+                            Q_UNUSED(error);
+                            done();
+                            return;
+                        }
+                        applyThinkingPreference(*current, entry, done);
+                    });
+}
+
+void Coordinator::publishState(AgentSession &session)
+{
+    emitState();
+    emitRuntimeState(session.tab().id);
+    agentruntime::flushMessages(session, hooksFor(session));
+}
+
+} // namespace runtime

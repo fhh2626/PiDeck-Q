@@ -142,6 +142,23 @@ async function stageAcornAt(projectRoot, destinationRoot) {
 }
 
 /**
+ * Sidecar kinds this stager can lay out.
+ *
+ * The packaged product ships the C++ backend (plan §47), so the command-line default is
+ * `cpp`; `node` remains the documented compatibility build. The exported function keeps
+ * `node` as its own default because the older callers stage a Node tree without naming a
+ * kind. An unknown kind is refused instead of silently producing one of the two layouts.
+ */
+export const DEFAULT_PACKAGE_SIDECAR_KIND = "cpp";
+const LEGACY_FUNCTION_SIDECAR_KIND = "node";
+const SIDECAR_KINDS = new Set(["cpp", "node"]);
+
+function normalizeSidecarKind(value) {
+	const kind = String(value ?? "").trim().toLowerCase();
+	return SIDECAR_KINDS.has(kind) ? kind : "";
+}
+
+/**
  * Stage only runtime files for the Node sidecar and built-in extensions.
  * Keeping this boundary explicit prevents a local npm build directory from
  * silently becoming part of the portable release.
@@ -151,13 +168,24 @@ async function stageAcornAt(projectRoot, destinationRoot) {
  * 依赖仓库根 node_modules。
  * acorn 供 change-pi-prompt 与 pi-subagents 的 workflowScript AST parser 使用。
  */
-export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoot } = {}) {
+export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoot, sidecarKind } = {}) {
 	const root = resolve(projectRoot);
 	const output = resolve(stageRoot ?? join(root, "release", "win-unpacked"));
+	// `cpp` (the packaged default) publishes the C++ sidecar: the bundled Node entry and
+	// its npm runtime (node-pty / sql.js / undici under `app/node_modules`) belong to the
+	// Node package only and must not appear in a C++ stage. The built-in TS extensions
+	// still need `resources/extensions/node_modules` (undici + acorn) in both kinds because
+	// pi loads them with its own Node runtime.
+	const requestedKind = sidecarKind ?? process.env.PIDECK_SIDECAR_KIND ?? LEGACY_FUNCTION_SIDECAR_KIND;
+	const kind = normalizeSidecarKind(requestedKind);
+	if (!kind) {
+		throw new Error(`Unsupported sidecar kind "${String(requestedKind).slice(0, 32)}": expected "node" or "cpp"`);
+	}
+	const businessNode = kind === "node";
 	const counts = {
-		nodePty: await stageNodePty(root, output),
-		sqlJs: await stageSqlJs(root, output),
-		undici: await stageUndiciAt(root, join(output, "app", "node_modules", "undici")),
+		nodePty: businessNode ? await stageNodePty(root, output) : 0,
+		sqlJs: businessNode ? await stageSqlJs(root, output) : 0,
+		undici: businessNode ? await stageUndiciAt(root, join(output, "app", "node_modules", "undici")) : 0,
 		extensionUndici: await stageUndiciAt(
 			root,
 			join(output, "resources", "extensions", "node_modules", "undici"),
@@ -167,17 +195,18 @@ export async function stageNativeRuntime({ projectRoot = process.cwd(), stageRoo
 			join(output, "resources", "extensions", "node_modules", "acorn"),
 		),
 	};
-	return { projectRoot: root, stageRoot: output, counts };
+	return { projectRoot: root, stageRoot: output, sidecarKind: kind, counts };
 }
 
 function parseArgs(argv) {
 	const options = {};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
-		if (arg === "--project-root" || arg === "--stage-root") {
+		if (arg === "--project-root" || arg === "--stage-root" || arg === "--sidecar-kind") {
 			const value = argv[index + 1];
 			if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
-			options[arg === "--project-root" ? "projectRoot" : "stageRoot"] = value;
+			options[arg === "--project-root" ? "projectRoot"
+				: arg === "--stage-root" ? "stageRoot" : "sidecarKind"] = value;
 			index += 1;
 		} else if (arg === "--help") {
 			options.help = true;
@@ -194,11 +223,17 @@ if (isMain) {
 	try {
 		const options = parseArgs(process.argv.slice(2));
 		if (options.help) {
-			console.log("Usage: node scripts/stage-native-runtime.mjs [--project-root <path>] [--stage-root <path>]");
+			console.log(`Usage: node scripts/stage-native-runtime.mjs [--project-root <path>] [--stage-root <path>] [--sidecar-kind cpp|node]`);
 		} else {
-			const result = await stageNativeRuntime(options);
+			// Command-line invocation is the packaging path, so it defaults to the kind the
+			// product ships. Xmake passes the kind it built explicitly either way; an explicit
+			// PIDECK_SIDECAR_KIND still wins so a wrong value reaches the validation.
+			const result = await stageNativeRuntime({
+				...options,
+				sidecarKind: options.sidecarKind ?? process.env.PIDECK_SIDECAR_KIND ?? DEFAULT_PACKAGE_SIDECAR_KIND,
+			});
 			const total = Object.values(result.counts).reduce((sum, count) => sum + count, 0);
-			console.log(`Staged native runtime allowlist (${total} files): ${result.stageRoot}`);
+			console.log(`Staged native runtime allowlist (${total} files, sidecar ${result.sidecarKind}): ${result.stageRoot}`);
 		}
 	} catch (error) {
 		console.error(`Native runtime staging failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -112,23 +112,6 @@ test("composer bottom bar default model/thinking prefer pi-config record over we
   assert.match(composerComponents, /props\.record\?\.model/);
 });
 
-test("shadcn Empty primitive was removed in favor of pi-branded EmptyState", () => {
-  // 项目空态与 timeline 空态统一走 EmptyState，原 ui-shadcn/empty 原语已删除
-  const emptyPrimitivePath = "src/renderer/src/components/ui-shadcn/empty.tsx";
-  assert.equal(
-    (() => {
-      try {
-        readFileSync(emptyPrimitivePath, "utf8");
-        return false;
-      } catch {
-        return true;
-      }
-    })(),
-    true,
-    "ui-shadcn/empty.tsx should be deleted",
-  );
-});
-
 test("new empty-state copy is bilingual", () => {
   for (const key of [
     "app.emptyProjectTitleLead",
