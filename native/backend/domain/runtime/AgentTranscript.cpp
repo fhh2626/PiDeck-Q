@@ -89,6 +89,7 @@ void Transcript::configure(const QString &agentId, maincopy::Translator translat
 void Transcript::reset()
 {
     m_messages = QJsonArray();
+    m_diagnosticIds.clear();
     m_activeAssistantId.clear();
     m_toolMessageIds.clear();
     m_thinkingId.clear();
@@ -124,6 +125,57 @@ void Transcript::applyProjection(const QVector<QJsonValue> &rawMessages, const Q
     m_messages = projector::convert(m_agentId, rawMessages, entryIds, toolResultIds, deps);
 }
 
+void Transcript::preserveDiagnosticsSince(quint64 revision, const QJsonArray &previous)
+{
+    // A diagnostic belongs to its original turn, not whichever turn happens to be
+    // last when the asynchronous projection arrives. Only durable entry IDs prove
+    // that correspondence; matching text or ordinal positions can misattribute errors.
+    QString anchor;
+    for (int i = 0; i < previous.size(); ++i) {
+        const QJsonObject row = previous.at(i).toObject();
+        if (isUserTurn(row)) anchor = row.value(QStringLiteral("meta")).toObject()
+                                          .value(QStringLiteral("entryId")).toString();
+        const QString id = row.value(QStringLiteral("id")).toString();
+        if (m_diagnosticIds.value(id, 0) <= revision) continue;
+        if (anchor.isEmpty()) {
+            bool laterTurn = false;
+            for (int j = i + 1; j < previous.size(); ++j) {
+                if (isUserTurn(previous.at(j).toObject())) { laterTurn = true; break; }
+            }
+            // With an intervening turn there is no safe way to identify the origin.
+            if (!laterTurn) m_messages.append(row);
+            continue;
+        }
+        int origin = -1;
+        bool duplicate = false;
+        for (int j = 0; j < m_messages.size(); ++j) {
+            const QJsonObject candidate = m_messages.at(j).toObject();
+            if (isUserTurn(candidate) && candidate.value(QStringLiteral("meta")).toObject()
+                    .value(QStringLiteral("entryId")).toString() == anchor) {
+                if (origin >= 0) duplicate = true;
+                origin = j;
+            }
+        }
+        // Missing/ambiguous anchors include turns removed by compaction or trimming.
+        if (origin < 0 || duplicate) continue;
+        int insertion = origin + 1;
+        while (insertion < m_messages.size() && !isUserTurn(m_messages.at(insertion).toObject())) ++insertion;
+        m_messages.insert(insertion, row);
+    }
+    pruneDiagnosticIds();
+}
+
+void Transcript::pruneDiagnosticIds()
+{
+    QSet<QString> retained;
+    for (const QJsonValue &value : m_messages)
+        retained.insert(value.toObject().value(QStringLiteral("id")).toString());
+    for (auto it = m_diagnosticIds.begin(); it != m_diagnosticIds.end();) {
+        if (!retained.contains(it.key())) it = m_diagnosticIds.erase(it);
+        else ++it;
+    }
+}
+
 int Transcript::indexOfId(const QString &id) const
 {
     if (id.isEmpty()) return -1;
@@ -136,6 +188,11 @@ int Transcript::indexOfId(const QString &id) const
 int Transcript::findSamePiMessageIndex(const QString &role, const QString &text,
                                        const QString &toolCallId) const
 {
+    // Empty assistant skeletons have no content identity. Reusing an earlier empty
+    // tool-use/thinking row writes the eventual answer before the tools, where the
+    // renderer classifies it as foldable interim output. Only toolCallId can identify
+    // an empty row (matching the Node oracle's findSamePiMessageIndex guard).
+    if (toolCallId.isEmpty() && text.trimmed().isEmpty()) return -1;
     for (int index = m_messages.size() - 1; index >= 0; --index) {
         const QJsonObject message = m_messages.at(index).toObject();
         if (message.value(QStringLiteral("role")).toString() != role) continue;
@@ -324,6 +381,8 @@ void Transcript::appendDetailedError(const QString &i18nKey, const QString &fall
     if (!debugDetails.isEmpty()) meta.insert(QStringLiteral("debugDetails"), debugDetails);
     const QString text = m_translate(i18nKey, params);
     appendMessage(QStringLiteral("error"), text.isEmpty() ? fallback : text, meta);
+    const QString id = m_messages.last().toObject().value(QStringLiteral("id")).toString();
+    m_diagnosticIds.insert(id, ++m_diagnosticRevision);
 }
 
 QJsonObject Transcript::retryStatusMeta() const
@@ -388,6 +447,7 @@ void Transcript::upsertRetryStatus(const QString &status, const QString &i18nKey
  */
 bool Transcript::trimToTurns(int turns)
 {
+    ++m_trimRevision;
     if (turns <= 0 || m_messages.isEmpty()) return false;
     QVector<int> userIndices;
     for (int index = m_messages.size() - 1; index >= 0; --index) {
@@ -415,6 +475,7 @@ bool Transcript::trimToTurns(int turns)
     for (int index = start; index < m_messages.size(); ++index) trimmed.append(m_messages.at(index));
     if (trimmed.size() == m_messages.size()) return false;
     m_messages = trimmed;
+    pruneDiagnosticIds();
     return true;
 }
 

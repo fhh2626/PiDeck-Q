@@ -141,6 +141,8 @@ void Coordinator::settleWithoutSettled(AgentSession &session)
     // completion toast stays owned by a real `agent_settled`, exactly like the oracle (which
     // does not call `notifySessionEnd` from the fallback).
     publishLocalSettled(agentId, session);
+    // The local fallback does not pass through the pi event sink's message boundary.
+    tryLoadProjection(agentId);
 }
 
 void Coordinator::publishLocalSettled(const QString &agentId, AgentSession &session)

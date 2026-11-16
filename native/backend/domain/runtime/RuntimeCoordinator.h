@@ -348,7 +348,12 @@ private:
     void discardFailedActivation(const CatalogEntry &entry, const QString &agentId,
                                  bool dropTransientRecord = true);
     void createAgent(const CatalogEntry &entry, std::function<void(AgentSession *, const QString &)> done);
-    void loadProjection(AgentSession &session, std::function<void()> done);
+    /** Queue a boundary-safe refresh. Completion is true only after applying a fresh snapshot. */
+    void loadProjection(AgentSession &session, std::function<void(bool)> done);
+    /** Start/retry a queued read when no assistant message is being updated. */
+    void tryLoadProjection(const QString &agentId);
+    /** Settle queued refresh callbacks once, including runtime teardown. */
+    void finishProjectionLoad(const QString &agentId, quint64 ticket, bool projected = false);
     void applyPreferences(AgentSession &session, const CatalogEntry &entry, std::function<void()> done);
     void publishState(AgentSession &session);
     /** Reload the projection after a session-file mutation (switch_session already ran). */
@@ -402,7 +407,9 @@ private:
      * revived by a stale compaction.
      */
     void reattachProcess(const QString &agentId, const Target &target,
-                         std::function<void(bool ok, const QString &error)> done);
+                         std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done);
+    /** Detach and retire only the exact failed recovery attempt, never its successor. */
+    void discardFailedReattach(const Target &target, quint64 attemptEpoch);
 
     void runTarget(const QJsonObject &target,
                    std::function<void(AgentSession &, const Target &, CommandDone)> operation,
@@ -543,6 +550,21 @@ private:
     cachehit::Reader m_cacheHits;
     std::map<QString, std::unique_ptr<AgentSession>> m_agents;
     QHash<QString, QVector<std::function<void(QJsonObject)>>> m_activationWaiters;
+    struct ProjectionLoad {
+        quint64 ticket = 0;
+        bool inFlight = false;
+        bool refreshAgain = false;
+        quint64 diagnosticRevision = 0;
+        quint64 trimRevision = 0;
+        Target preservationOwner;
+        quint64 preservationEpoch = 0;
+        QVector<std::function<void(bool)>> waiters;
+    };
+    /** Per-agent coalescing; pending callbacks are failed when the runtime is forgotten. */
+    QHash<QString, ProjectionLoad> m_projectionLoads;
+    /** ACKed compactions awaiting the process exit status before choosing recovery. */
+    QHash<QString, std::function<void(bool)>> m_compactProjectionExits;
+    quint64 m_nextProjectionTicket = 0;
     QHash<QString, DeliveryEntry> m_delivery;
     QHash<QString, AgentSession::PendingUi> m_pendingUi;
     QHash<QString, QVector<std::function<void(std::function<void()>)>>> m_historyTails;

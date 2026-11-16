@@ -5,8 +5,13 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
 	extractHtmlResourceReferences,
-	verifyBuildArtifacts,
+	verifyBuildArtifacts as verifyArtifacts,
 } from "../scripts/verify-build-artifacts.mjs";
+
+// Every fixture in this file models the Node sidecar regardless of the caller's environment.
+function verifyBuildArtifacts(options) {
+	return verifyArtifacts({ ...options, sidecarKind: "node" });
+}
 
 async function withTempRepo(run) {
 	const repo = await mkdtemp(join(tmpdir(), "pideck-artifacts-test-"));
@@ -49,6 +54,23 @@ async function createBuildFixture(repo) {
 	await Promise.all(artifactFiles.map((path) => utimes(path, artifactTime, artifactTime)));
 	return { sourceFiles, artifactFiles, indexHtml, webHtml };
 }
+
+test("verifier library preserves kind precedence and rejects unsupported kinds", async (t) => {
+	const previous = process.env.PIDECK_SIDECAR_KIND;
+	t.after(() => {
+		if (previous === undefined) delete process.env.PIDECK_SIDECAR_KIND;
+		else process.env.PIDECK_SIDECAR_KIND = previous;
+	});
+	await withTempRepo(async (repo) => {
+		await createBuildFixture(repo);
+		delete process.env.PIDECK_SIDECAR_KIND;
+		assert.equal((await verifyArtifacts({ repoRoot: repo })).ok, true);
+		process.env.PIDECK_SIDECAR_KIND = "cpp";
+		assert.match((await verifyArtifacts({ repoRoot: repo })).errors.join("\n"), /Missing C\+\+ sidecar/);
+		assert.equal((await verifyArtifacts({ repoRoot: repo, sidecarKind: "node" })).ok, true);
+		assert.match((await verifyArtifacts({ repoRoot: repo, sidecarKind: "bogus" })).errors.join("\n"), /Unsupported sidecar kind/);
+	});
+});
 
 test("an empty build output fails with all required native entry points", async () => {
 	await withTempRepo(async (repo) => {

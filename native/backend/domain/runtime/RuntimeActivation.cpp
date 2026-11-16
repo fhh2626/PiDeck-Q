@@ -4,7 +4,6 @@
 
 #include "../sessions/SessionCatalogStore.h"
 #include "../sessions/SessionChannelSupport.h"
-#include "../sessions/SessionEntryIds.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -17,8 +16,6 @@ namespace runtime {
 namespace {
 
 constexpr int kStateTimeoutMs = 30'000;
-constexpr int kMessagesTimeoutMs = 120'000;
-constexpr int kEntriesTimeoutMs = 15'000;
 constexpr int kPromptTimeoutMs = 120'000;
 
 qint64 nowMs()
@@ -154,9 +151,17 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                  session->tab().title =
                                      data.value(QStringLiteral("sessionName")).toString();
                              }
-                             loadProjection(*session, [this, sessionId, agentId, entry, done]() {
+                             loadProjection(*session, [this, sessionId, agentId, entry, done](bool) {
+                                 // Startup keeps the existing empty-history fallback, but a
+                                 // closed process must never be rebound as a ready runtime.
                                  AgentSession *loaded = agent(agentId);
-                                 if (!loaded) return;
+                                 if (!loaded || !loaded->running()) {
+                                     discardFailedActivation(entry, agentId);
+                                     done(errorResult(CommandError::of(
+                                         errorcode::kRuntimeUnavailable,
+                                         QStringLiteral("Session runtime stopped during activation"))));
+                                     return;
+                                 }
                                  applyPreferences(*loaded, entry, [this, sessionId, agentId, entry, done]() {
                                      AgentSession *ready = agent(agentId);
                                      if (!ready) return;
@@ -259,6 +264,9 @@ void Coordinator::createAgent(const CatalogEntry &entry,
             // `emitLocalEvent` → `openAgentStream` order.
             publishPiEvent(agentId, *current, event);
             agentruntime::handlePiEvent(*current, event, hooksFor(*current));
+            // A deferred projection can now read after message_end/agent_end, without
+            // guessing which old image-only row owns an active empty skeleton.
+            tryLoadProjection(agentId);
         });
         raw->setStderrSink([this, agentId](const QString &text) {
             emitForAgent(agentId, QStringLiteral("agents:log"), QJsonObject{
@@ -280,7 +288,22 @@ void Coordinator::createAgent(const CatalogEntry &entry,
             if (current && current->manualCompaction()) {
                 current->tab().status = QStringLiteral("closed");
                 emitState();
-                return;
+                // If compact already ACKed, its projection may be waiting for a
+                // message boundary which this process can no longer deliver.
+                tryLoadProjection(agentId);
+                // A failed ACKed projection waits for this exit status; pending RPCs
+                // are failed before the exit handler and cannot distinguish a clean exit.
+                auto exit = m_compactProjectionExits.find(agentId);
+                if (exit != m_compactProjectionExits.end()) {
+                    auto complete = std::move(exit.value());
+                    m_compactProjectionExits.erase(exit);
+                    const bool recover = !m_shutdown && m_deps.post && code == 0 && current
+                        && !current->tab().sessionPath.isEmpty() && !current->autoRestartAttempted();
+                    complete(recover);
+                    if (recover) return;
+                }
+                current = agent(agentId);
+                if (current && current->manualCompaction()) return;
             }
             // A clean exit of a session that owns a file is normally pi restarting itself
             // (auto-compaction, model refresh). Oracle `handleProcessExit` reconnects the
@@ -297,9 +320,13 @@ void Coordinator::createAgent(const CatalogEntry &entry,
                 // so the reconnect must not begin on the exit signal's stack.
                 auto restart = [this, agentId, target]() {
                     reattachProcess(agentId, target,
-                                    [this, agentId](bool reattached, const QString &error) {
+                                    [this, agentId, target](bool reattached, const QString &error, quint64 attemptEpoch) {
                                         AgentSession *latest = agent(agentId);
-                                        if (!latest) return;
+                                        QString boundSession;
+                                        int generation = 0;
+                                        if (!latest || attemptEpoch == 0 || latest->clientEpoch() != attemptEpoch
+                                            || !m_bindings.bindingForAgent(agentId, &boundSession, &generation)
+                                            || boundSession != target.sessionId || generation != target.runtimeGeneration) return;
                                         if (!reattached) {
                                             // Same teardown as any other dead process: the
                                             // renderer must not keep a target for it.
@@ -319,6 +346,7 @@ void Coordinator::createAgent(const CatalogEntry &entry,
                                             emitDetach(Target{sessionId, agentId,
                                                               m_bindings.generationForSession(sessionId)});
                                             m_bindings.unbind(agentId);
+                                            tryLoadProjection(agentId);
                                             if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(agentId);
                                             emitState();
                                             return;
@@ -357,6 +385,7 @@ void Coordinator::createAgent(const CatalogEntry &entry,
                 }
             }
             m_bindings.unbind(agentId);
+            tryLoadProjection(agentId);
             // A closed (or crashed) process produces no further frames; drop the
             // per-agent recording gate and any queued batch. The session object itself
             // must NOT be destroyed here: this runs on the client's own signal stack.
@@ -412,59 +441,6 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     }
     spawnWith(pilaunch::build(request));
 }
-void Coordinator::loadProjection(AgentSession &session, std::function<void()> done)
-{
-    const QString agentId = session.tab().id;
-    const int sequence = session.beginMessageLoad();
-    session.request(QStringLiteral("get_messages"), {}, kMessagesTimeoutMs,
-                    [this, agentId, sequence, done](bool ok, const QJsonObject &response, const QString &) {
-                        AgentSession *current = agent(agentId);
-                        if (!current || current->messageLoadSequence() != sequence) {
-                            if (done) done();
-                            return;
-                        }
-                        if (!ok || !response.value(QStringLiteral("success")).toBool(false)) {
-                            if (done) done();
-                            return;
-                        }
-                        QVector<QJsonValue> raw;
-                        const QJsonArray messages =
-                            response.value(QStringLiteral("data")).toObject()
-                                .value(QStringLiteral("messages")).toArray();
-                        for (const QJsonValue &value : messages) raw.append(value);
-                        current->request(
-                            QStringLiteral("get_entries"), {}, kEntriesTimeoutMs,
-                            [this, agentId, sequence, raw, done](bool entriesOk,
-                                                                 const QJsonObject &entriesResponse,
-                                                                 const QString &) {
-                                AgentSession *latest = agent(agentId);
-                                if (!latest || latest->messageLoadSequence() != sequence) {
-                                    if (done) done();
-                                    return;
-                                }
-                                QStringList entryIds;
-                                if (entriesOk
-                                    && entriesResponse.value(QStringLiteral("success")).toBool(false)) {
-                                    const QJsonObject data =
-                                        entriesResponse.value(QStringLiteral("data")).toObject();
-                                    QVector<QJsonValue> entries;
-                                    for (const QJsonValue &value : data.value(QStringLiteral("entries")).toArray()) {
-                                        entries.append(value);
-                                    }
-                                    entryIds = sessionentryids::buildActiveBranchEntryIds(
-                                        entries, data.value(QStringLiteral("leafId")).toString());
-                                    latest->setEntrySource(QStringLiteral("rpc"));
-                                }
-                                latest->setActiveEntryIds(entryIds);
-                                latest->transcript().applyProjection(
-                                    raw, entryIds, missingtoolcalls::collectToolResultIds(raw));
-                                latest->refreshFileVersion();
-                                agentruntime::flushMessages(*latest, hooksFor(*latest));
-                                if (done) done();
-                            });
-                    });
-}
-
 void Coordinator::applyPreferences(AgentSession &session, const CatalogEntry &entry,
                                    std::function<void()> done)
 {

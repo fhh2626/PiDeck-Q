@@ -58,6 +58,9 @@ void Coordinator::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
+    // Deferred refresh callbacks belong to this runtime graph and cannot outlive it.
+    m_projectionLoads.clear();
+    m_compactProjectionExits.clear();
     m_pendingUi.clear();
     for (auto &entry : m_delivery) {
         if (!entry.settled) {
@@ -79,6 +82,10 @@ void Coordinator::shutdown()
 void Coordinator::forgetAgent(const QString &agentId)
 {
     m_agents.erase(agentId);
+    const auto pendingProjection = m_projectionLoads.constFind(agentId);
+    if (pendingProjection != m_projectionLoads.cend()) {
+        finishProjectionLoad(agentId, pendingProjection->ticket);
+    }
     // The runtime-kind flag is per agent id (oracle `rustRuntimeAgents` is cleared with the
     // agent), and every runtime gets a fresh id, so it can never leak to another process.
     m_rustRuntimeAgents.remove(agentId);

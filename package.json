@@ -71,6 +71,7 @@
     "test": "npm run prepare:pi-latest && npm run test:raw",
     "test:serial:raw": "node --test --test-concurrency=1 \"tests/*.test.mjs\" \"resources/extensions/pideck-q-change-pi-prompt/tests/*.test.mjs\"",
     "test:serial": "npm run prepare:pi-latest && npm run test:serial:raw",
+    "test:native-runtime": "node scripts/test-native-runtime.mjs",
     "test:native-host-rpc": "node scripts/test-native-host-rpc.mjs",
     "test:native-gui": "node scripts/test-native-gui.mjs",
     "docs:dev": "vitepress dev docs-site",

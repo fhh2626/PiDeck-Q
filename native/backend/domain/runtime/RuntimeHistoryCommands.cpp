@@ -419,10 +419,10 @@ void Coordinator::reloadProjection(const QString &agentId, CommandDone finish)
         finish(false, QJsonValue(), QStringLiteral("Session runtime stopped during reload"));
         return;
     }
-    loadProjection(*current, [this, agentId, finish]() {
+    loadProjection(*current, [this, agentId, finish](bool projected) {
         AgentSession *latest = agent(agentId);
-        if (!latest) {
-            finish(false, QJsonValue(), QStringLiteral("Session runtime stopped during reload"));
+        if (!projected || !latest || !latest->running()) {
+            finish(false, QJsonValue(), QStringLiteral("Session projection unavailable during reload"));
             return;
         }
         agentruntime::flushMessages(*latest, hooksFor(*latest));

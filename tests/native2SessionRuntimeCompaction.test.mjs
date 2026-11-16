@@ -242,6 +242,140 @@ if (!executable) {
 			assert.equal(after.runtimeGeneration, target.runtimeGeneration);
 		});
 
+		test("compact ACK survives a clean exit during its projection", async (t) => {
+			const { invoke, fake, args, target } = await start(t, {
+				scenario: { responses: {
+					get_messages: [
+						{ data: { messages: [] } },
+						{ exitBeforeReply: true, exitCode: 0 },
+					],
+					compact: { data: { summary: "ok" } },
+				} },
+			});
+			const result = (await invoke("sessions:runtime-compact", args)).payload.result;
+			assert.equal(result.ok, true, JSON.stringify(result));
+			assert.equal(result.value.target.agentId, target.agentId);
+			assert.equal(result.value.target.runtimeGeneration, target.runtimeGeneration);
+			assert.equal(spawns(fake).length, 2, "the compacted session is reattached once");
+		});
+
+		for (const failedReply of [false, true]) {
+			test(`clone is excluded while recovery get_state ${failedReply ? "fails" : "succeeds"}`, async (t) => {
+				const { invoke, fake, args, target } = await start(t, { scenario: { responses: {
+					get_messages: [{ data: { messages: [] } }, { exitBeforeReply: true, exitCode: 0, replyGate: "exit" }],
+					compact: { data: { summary: "ok" } },
+				} } });
+				const compacting = invoke("sessions:runtime-compact", args);
+				await waitForCondition(() => fake.commands().filter((row) => row.command === "get_messages").length === 2);
+				const statesBefore = fake.commands().filter((row) => row.command === "get_state").length;
+				writeFileSync(fake.scenarioPath, JSON.stringify({ responses: {
+					get_state: failedReply
+						? { error: "stale failure", replyGate: "state" }
+						: { data: { sessionId: "stale-id", sessionName: "stale-name" }, replyGate: "state" },
+					clone: { data: { sessionId: "clone-id", sessionName: "clone-name" } },
+				} }));
+				writeFileSync(`${fake.scenarioPath}.exit`, "released");
+				await waitForCondition(() => spawns(fake).length === 2 && fake.commands().filter((row) => row.command === "get_state").length > statesBefore);
+				const clone = (await invoke("sessions:runtime-clone", args)).payload.result;
+				assert.equal(clone.ok, false, JSON.stringify(clone));
+				assert.equal(clone.error.code, "SESSION_RUNTIME_BUSY");
+				assert.equal(fake.commands().filter((row) => row.command === "clone").length, 0);
+				writeFileSync(`${fake.scenarioPath}.state`, "released");
+				const result = (await compacting).payload.result;
+				assert.equal(result.ok, !failedReply, JSON.stringify(result));
+				if (!failedReply) {
+					const retried = (await invoke("sessions:runtime-clone", args)).payload.result;
+					assert.equal(retried.ok, true, JSON.stringify(retried));
+					assert.equal(retried.value.runtimeGeneration, target.runtimeGeneration + 1);
+				}
+			});
+		}
+
+		test("compact ACK survives a clean exit while entries are pending", async (t) => {
+			const { invoke, fake, args } = await start(t, { scenario: { responses: {
+				get_entries: [{ data: { entries: [], leafId: null } }, { exitBeforeReply: true, exitCode: 0 }],
+				compact: { data: { summary: "ok" } },
+			} } });
+			const result = (await invoke("sessions:runtime-compact", args)).payload.result;
+			assert.equal(result.ok, true, JSON.stringify(result));
+			assert.equal(spawns(fake).length, 2);
+		});
+
+		test("compact ACK recovers a clean exit while projection waits for an active assistant", async (t) => {
+			const { invoke, fake, args, record, sse, target } = await start(t, { scenario: {
+				responses: { get_commands: { exitBeforeReply: true, exitCode: 0 } },
+				turns: [{ ack: true, events: [
+					{ event: { type: "agent_start" } },
+					{ event: { type: "message_start", message: { role: "assistant", content: [] } } },
+				] }],
+			} });
+			await invoke("sessions:send-prompt", [{ sessionId: record.id, requestId: "active-compact", message: "start" }]);
+			await waitForCondition(() => runtimeEvents(sse, "agents:message").some((event) =>
+				event.payload.messages.some((row) => row.role === "assistant")));
+			const compacting = invoke("sessions:runtime-compact", args);
+			await waitForCondition(() => fake.commands().some((row) => row.command === "compact"));
+			await invoke("sessions:runtime-commands", args);
+			const result = (await compacting).payload.result;
+			assert.equal(result.ok, true, JSON.stringify(result));
+			assert.equal(result.value.target.agentId, target.agentId);
+			assert.equal(result.value.target.runtimeGeneration, target.runtimeGeneration);
+			assert.equal(spawns(fake).length, 2);
+			assert.deepEqual(runtimeEvents(sse, "sessions:runtime-detach"), []);
+		});
+
+		const recoveryFailures = [false, true].flatMap((beforeAck) =>
+			["get_state", "get_messages"].map((failedCommand) => ({ beforeAck, failedCommand })));
+		for (const { beforeAck, failedCommand } of recoveryFailures) {
+			test(`failed recovery ${beforeAck ? "before ACK" : "after ACK"}/${failedCommand} disposes the reattached process before a fresh activation`, async (t) => {
+				const exit = { exitBeforeReply: true, exitCode: 0, replyGate: "exit" };
+				const { invoke, fake, args, record, sse } = await start(t, {
+					scenario: { responses: {
+						get_messages: beforeAck ? { data: { messages: [] } } : [{ data: { messages: [] } }, exit],
+						compact: beforeAck ? exit : { data: { summary: "ok" } },
+					} },
+				});
+				const pending = invoke("sessions:runtime-compact", args);
+				await waitForCondition(() => fake.commands().filter((row) => row.command === (beforeAck ? "compact" : "get_messages")).length === (beforeAck ? 1 : 2));
+				writeFileSync(fake.scenarioPath, JSON.stringify({ responses: { [failedCommand]: { error: "reconnect failed" } } }));
+				writeFileSync(`${fake.scenarioPath}.exit`, "released");
+				const result = (await pending).payload.result;
+				assert.equal(result.ok, false, JSON.stringify(result));
+				await waitForCondition(() => runtimeEvents(sse, "sessions:runtime-detach").some((event) => event.sessionId === record.id));
+				assert.equal((await invoke("sessions:runtime-list")).payload.result.some((row) => row.sessionId === record.id), false);
+				assert.equal(spawns(fake).length, 2);
+				const pid = spawns(fake)[1].pid;
+				await waitForCondition(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
+				writeFileSync(fake.scenarioPath, JSON.stringify({}));
+				const next = (await invoke("sessions:runtime-activate", [record.id])).payload.result;
+				assert.equal(next.ok, true, JSON.stringify(next));
+				assert.equal(spawns(fake).length, 3);
+			});
+		}
+
+		test("compact ACK reports a live-process projection error", async (t) => {
+			const { invoke, fake, args } = await start(t, {
+				scenario: { responses: {
+					get_messages: [{ data: { messages: [] } }, { error: "read failed" }],
+					compact: { data: { summary: "ok" } },
+				} },
+			});
+			const result = (await invoke("sessions:runtime-compact", args)).payload.result;
+			assert.equal(result.ok, false, JSON.stringify(result));
+			assert.equal(spawns(fake).length, 1);
+		});
+
+		test("compact ACK does not recover a crashing process during projection", async (t) => {
+			const { invoke, fake, args } = await start(t, {
+				scenario: { responses: {
+					get_messages: [{ data: { messages: [] } }, { exitBeforeReply: true }],
+					compact: { data: { summary: "ok" } },
+				} },
+			});
+			const result = (await invoke("sessions:runtime-compact", args)).payload.result;
+			assert.equal(result.ok, false, JSON.stringify(result));
+			assert.equal(spawns(fake).length, 1, "a crash must not trigger clean-exit recovery");
+		});
+
 		test("a compaction failure is reported and releases the manual gates", async (t) => {
 			const { invoke, fake, record, args } = await start(t, {
 				// First attempt fails like pi's "nothing to compact", the retry succeeds.

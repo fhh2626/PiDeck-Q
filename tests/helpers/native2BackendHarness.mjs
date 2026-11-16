@@ -28,7 +28,10 @@ const DEFAULT_BACKEND_PATHS = [
 ];
 
 export function resolveBackendExecutable(repoRoot = process.cwd()) {
-	for (const relative of DEFAULT_BACKEND_PATHS) {
+	// The gate pins the exact output it built; optional callers retain fallback discovery.
+	const pinned = process.env.PIDECK_BACKEND_TEST_EXECUTABLE;
+	const candidates = pinned ? [pinned] : DEFAULT_BACKEND_PATHS;
+	for (const relative of candidates) {
 		const candidate = join(repoRoot, relative);
 		if (existsSync(candidate)) {
 			assertRequiredBackendFresh(candidate, repoRoot);
@@ -39,7 +42,7 @@ export function resolveBackendExecutable(repoRoot = process.cwd()) {
 	// skips still prints "pass" and would be mistaken for parity evidence.
 	if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") {
 		throw new Error(
-			`PIDECK_REQUIRE_BACKEND_TESTS=1 but no backend executable exists (looked for ${DEFAULT_BACKEND_PATHS.join(
+			`PIDECK_REQUIRE_BACKEND_TESTS=1 but no backend executable exists (looked for ${candidates.join(
 				", ",
 			)}); build one with "PIDECK_STAGE_DIR=build/native2-validation-unpacked xmake build -y PiDeckBackend"`,
 		);
@@ -47,7 +50,25 @@ export function resolveBackendExecutable(repoRoot = process.cwd()) {
 	return "";
 }
 
-/** Newest `.cpp`/`.h` under `native/backend`, i.e. the sources the executable is built from. */
+/**
+ * Optional suites must explain why they cannot run, and must never exercise a stale
+ * executable. Required gates retain resolveBackendExecutable's hard failure behavior.
+ */
+export function backendTestAvailability(repoRoot = process.cwd()) {
+	const executable = resolveBackendExecutable(repoRoot);
+	if (!executable) return {
+		executable: "",
+		skip: "PiDeckBackend executable not found; run npm run test:native-runtime",
+	};
+	const source = newestBackendSource(repoRoot);
+	if (source && statSync(executable).mtimeMs < source.mtimeMs) return {
+		executable: "",
+		skip: "PiDeckBackend executable is stale; run npm run test:native-runtime",
+	};
+	return { executable, skip: false };
+}
+
+/** Newest backend source or build definition that can affect the executable. */
 function newestBackendSource(repoRoot) {
 	let newest = null;
 	const walk = (directory) => {
@@ -69,6 +90,11 @@ function newestBackendSource(repoRoot) {
 		}
 	};
 	walk(join(repoRoot, "native", "backend"));
+	const definition = join(repoRoot, "xmake.lua");
+	if (existsSync(definition)) {
+		const mtimeMs = statSync(definition).mtimeMs;
+		if (!newest || mtimeMs > newest.mtimeMs) newest = { path: definition, mtimeMs };
+	}
 	return newest;
 }
 

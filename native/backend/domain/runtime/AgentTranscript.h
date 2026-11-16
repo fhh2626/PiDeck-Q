@@ -38,6 +38,11 @@ public:
     void applyProjection(const QVector<QJsonValue> &rawMessages, const QStringList &entryIds,
                          const QSet<QString> &toolResultIds);
 
+    /** Local-only failed-turn rows and settlement trims since a projection request. */
+    quint64 diagnosticRevision() const { return m_diagnosticRevision; }
+    quint64 trimRevision() const { return m_trimRevision; }
+    void preserveDiagnosticsSince(quint64 revision, const QJsonArray &previous);
+
     /** Streaming assistant row; returns the stable runtime message id. */
     QString upsertAssistant(const QJsonObject &partialMessage, const QString &fallbackDelta,
                             bool allowEmpty);
@@ -134,6 +139,7 @@ public:
     QString lastMessageRole() const;
 
 private:
+    void pruneDiagnosticIds();
     int indexOfId(const QString &id) const;
     /** Rebind a runtime id to an existing projected row with the same pi content. */
     int findSamePiMessageIndex(const QString &role, const QString &text,
@@ -142,6 +148,9 @@ private:
     QString m_agentId;
     maincopy::Translator m_translate;
     QJsonArray m_messages;
+    quint64 m_diagnosticRevision = 0;
+    quint64 m_trimRevision = 0;
+    QHash<QString, quint64> m_diagnosticIds;
     QString m_activeAssistantId;
     QHash<QString, QString> m_toolMessageIds;
     /** Runtime id of this agent's single retry status row (oracle `retryStatusMessageIds`). */

@@ -46,11 +46,11 @@ pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
 }
 
 void Coordinator::reattachProcess(const QString &agentId, const Target &target,
-                                  std::function<void(bool ok, const QString &error)> done)
+                                  std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done)
 {
     AgentSession *session = agent(agentId);
     if (!session) {
-        done(false, QStringLiteral("Session runtime is not available"));
+        done(false, QStringLiteral("Session runtime is not available"), 0);
         return;
     }
     // Declaration fence: the swap must only revive the *same* runtime. A stop/restart
@@ -60,28 +60,46 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
     int generation = 0;
     if (!m_bindings.bindingForAgent(agentId, &boundSession, &generation)
         || boundSession != target.sessionId || generation != target.runtimeGeneration) {
-        done(false, QStringLiteral("Session runtime binding changed"));
+        done(false, QStringLiteral("Session runtime binding changed"), 0);
         return;
     }
     const QString sessionPath = session->tab().sessionPath;
     if (sessionPath.isEmpty()) {
         // Without a session file a second process would start an empty conversation.
-        done(false, QStringLiteral("Session has no session file to reattach"));
+        done(false, QStringLiteral("Session has no session file to reattach"), session->clientEpoch());
         return;
     }
 
     const pilaunch::Launch launch = buildSessionLaunch(*session, sessionPath);
     QString spawnError;
     if (!session->reattach(launch, &spawnError)) {
-        done(false, spawnError);
+        done(false, spawnError, session->clientEpoch());
         return;
     }
 
+    const quint64 attemptEpoch = session->clientEpoch();
+    // Dispose a failed attempt only after leaving its RPC callback stack, and only if
+    // both the binding and the exact spawned transport still belong to this attempt.
+    const auto finish = [this, agentId, target, attemptEpoch, done](bool ok, const QString &error) {
+        if (ok || !m_deps.post) { done(ok, error, attemptEpoch); return; }
+        m_deps.post([this, agentId, target, attemptEpoch, done, error]() {
+            QString sessionId;
+            int generation = 0;
+            AgentSession *current = agent(agentId);
+            if (current && current->clientEpoch() == attemptEpoch
+                && m_bindings.bindingForAgent(agentId, &sessionId, &generation)
+                && sessionId == target.sessionId && generation == target.runtimeGeneration) {
+                current->setExitHandler({});
+                current->kill();
+            }
+            done(false, error, attemptEpoch);
+        });
+    };
     session->request(
         QStringLiteral("get_state"), {}, kStateTimeoutMs,
-        [this, agentId, done](bool ok, const QJsonObject &response, const QString &error) {
+        [this, agentId, attemptEpoch, done = finish](bool ok, const QJsonObject &response, const QString &error) {
             AgentSession *current = agent(agentId);
-            if (!current) {
+            if (!current || current->clientEpoch() != attemptEpoch) {
                 done(false, QStringLiteral("Session runtime stopped during reconnect"));
                 return;
             }
@@ -118,15 +136,47 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
             // The compacted history lives in the session file: reload through the same
             // projection path the runtime always uses (and flush, so the renderer replaces
             // its window instead of keeping pre-compaction rows).
-            loadProjection(*current, [this, agentId, done]() {
+            loadProjection(*current, [this, agentId, attemptEpoch, done](bool projected) {
                 AgentSession *latest = agent(agentId);
-                if (latest) {
-                    latest->refreshFileVersion();
-                    emitState();
+                if (!projected || !latest || latest->clientEpoch() != attemptEpoch || !latest->running()) {
+                    done(false, QStringLiteral("Session projection unavailable after reattach"));
+                    return;
                 }
+                latest->refreshFileVersion();
+                emitState();
                 done(true, QString());
             });
         });
+}
+
+void Coordinator::discardFailedReattach(const Target &target, quint64 attemptEpoch)
+{
+    AgentSession *current = agent(target.agentId);
+    QString sessionId;
+    int generation = 0;
+    if (!current || attemptEpoch == 0 || current->clientEpoch() != attemptEpoch
+        || !m_bindings.bindingForAgent(target.agentId, &sessionId, &generation)
+        || sessionId != target.sessionId || generation != target.runtimeGeneration) return;
+
+    current->tab().status = QStringLiteral("closed");
+    clearAgentRuntimeState(*current);
+    emitDetach(target);
+    m_bindings.unbind(target.agentId);
+    if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(target.agentId);
+    emitState();
+    // Completion can still be on a transport callback stack. Retire on the next
+    // loop turn and recheck both fences in case a newer owner arrived meanwhile.
+    if (m_deps.post) m_deps.post([this, target, attemptEpoch]() {
+        AgentSession *failed = agent(target.agentId);
+        QString reboundSession;
+        int reboundGeneration = 0;
+        if (!failed || failed->clientEpoch() != attemptEpoch
+            || m_bindings.bindingForAgent(target.agentId, &reboundSession, &reboundGeneration)) return;
+        failed->setExitHandler({});
+        failed->close();
+        forgetAgent(target.agentId);
+        emitState();
+    });
 }
 
 } // namespace runtime

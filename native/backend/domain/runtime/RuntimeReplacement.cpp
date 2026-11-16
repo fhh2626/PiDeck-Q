@@ -164,9 +164,17 @@ void Coordinator::refreshAfterReplacement(const Target &target, const QJsonObjec
         return;
     }
     session->tab().runtimeGeneration = generation;
-    loadProjection(*session, [this, agentId, generation, targetSessionId, data, finish]() {
+    loadProjection(*session, [this, agentId, generation, targetSessionId, data, finish](bool projected) {
         AgentSession *latest = agent(agentId);
-        if (!latest) {
+        Target current;
+        // Another replacement may reserve or replace this binding during projection.
+        if (!m_bindings.targetForSession(targetSessionId, &current)
+            || current.agentId != agentId || current.runtimeGeneration != generation) {
+            finish(errorResult(CommandError::of(
+                errorcode::kRuntimeChanged, QStringLiteral("Session runtime binding changed"))));
+            return;
+        }
+        if (!projected || !latest || !latest->running()) {
             finish(errorResult(CommandError::of(
                 errorcode::kRuntimeUnavailable,
                 QStringLiteral("Session runtime stopped during replacement"))));

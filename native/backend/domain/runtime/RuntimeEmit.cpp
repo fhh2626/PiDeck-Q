@@ -330,9 +330,9 @@ EventHooks Coordinator::hooksFor(AgentSession &session)
     hooks.reloadMessages = [this, agentId](bool preserveHistory) {
         AgentSession *current = agent(agentId);
         if (!current) return;
-        loadProjection(*current, [this, agentId]() {
+        loadProjection(*current, [this, agentId](bool projected) {
             AgentSession *latest = agent(agentId);
-            if (!latest) return;
+            if (!projected || !latest || !latest->running()) return;
             agentruntime::flushMessages(*latest, hooksFor(*latest));
         });
         Q_UNUSED(preserveHistory);
@@ -353,6 +353,8 @@ EventHooks Coordinator::hooksFor(AgentSession &session)
         m_pendingUi.remove(deliveryKey(sessionId, requestId));
     };
     hooks.settled = [this, agentId](bool abortSettled) {
+        // A settled event can be the first safe boundary when pi omitted message_end.
+        tryLoadProjection(agentId);
         AgentSession *current = agent(agentId);
         if (!current) return;
         current->refreshFileVersion();

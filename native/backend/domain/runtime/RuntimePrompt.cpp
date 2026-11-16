@@ -340,9 +340,10 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                  session->tab().sessionPath =
                                      data.value(QStringLiteral("sessionFile")).toString();
                              }
-                             loadProjection(*session, [this, target, entry, agentId, failed, done]() {
+                             loadProjection(*session, [this, target, entry, agentId, failed, done](bool) {
+                                 // Restart preserves startup's optional-history fallback.
                                  AgentSession *loaded = agent(agentId);
-                                 if (!loaded) {
+                                 if (!loaded || !loaded->running()) {
                                      failed(agentId,
                                             QStringLiteral("Session runtime stopped during restart"),
                                             done);

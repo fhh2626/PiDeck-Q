@@ -155,6 +155,7 @@ describe("native2 C++ package de-Node gate", () => {
 	test("the real C++ stage verifies and ships the extension dependency tree", async (t) => {
 		const backend = join(REAL_CPP_STAGE, "PiDeckBackend.exe");
 		if (!existsSync(backend)) {
+			assert.notEqual(process.env.PIDECK_REQUIRE_BACKEND_TESTS, "1", `required C++ stage missing at ${REAL_CPP_STAGE}`);
 			t.skip(`no C++ stage at ${REAL_CPP_STAGE} (build with PIDECK_SIDECAR_KIND=cpp PIDECK_STAGE_DIR=...)`);
 			return;
 		}

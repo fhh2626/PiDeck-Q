@@ -39,6 +39,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Some full-suite native tests fail closed when the backend is absent.
+      - name: Build backend for full test suite
+        shell: pwsh
+        env:
+          PIDECK_SIDECAR_KIND: cpp
+        run: |
+          xmake f -p windows -a x64 -m debug -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeckBackend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test
         run: npm test
 
@@ -56,3 +67,28 @@ jobs:
 
       - name: Build renderer, Node sidecar and Qt host
         run: npm run pack
+
+      # The real-stage suites run only after an isolated stage exists; npm test above
+      # cannot establish packaged-product coverage on a clean checkout.
+      - name: Build isolated C++ validation stage
+        shell: pwsh
+        env:
+          PIDECK_SIDECAR_KIND: cpp
+          PIDECK_STAGE_DIR: build/native2-validation-unpacked
+        run: |
+          $env:PIDECK_VERSION = node -p "require('./package.json').version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake f -p windows -a x64 -m release -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -r -y PiDeck-Q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-FakePi2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify isolated packaged stage (required)
+        env:
+          PIDECK_REQUIRE_BACKEND_TESTS: '1'
+        run: node --test tests/native2ArtifactFreshness.test.mjs tests/native2CppStageDeNode.test.mjs tests/native2DefaultSidecarKind.test.mjs tests/native2PackStageEnv.test.mjs tests/native2PackagedHost.test.mjs
+
+      # Rebuild and exercise a fresh backend in required mode for runtime regressions.
+      - name: Test native runtime regressions (fresh backend required)
+        run: npm run test:native-runtime

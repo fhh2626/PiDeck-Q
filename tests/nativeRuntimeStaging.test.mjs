@@ -79,6 +79,23 @@ async function createRuntimeFixture(projectRoot, layout = "build/Release") {
 	return { nodePtyRoot, sqlRoot, undiciRoot, acornRoot };
 }
 
+test("staging library honours explicit kind, environment, and legacy default", async (t) => {
+	const previous = process.env.PIDECK_SIDECAR_KIND;
+	t.after(() => {
+		if (previous === undefined) delete process.env.PIDECK_SIDECAR_KIND;
+		else process.env.PIDECK_SIDECAR_KIND = previous;
+	});
+	await withTempProject(async (projectRoot) => {
+		await createRuntimeFixture(projectRoot);
+		delete process.env.PIDECK_SIDECAR_KIND;
+		assert.equal((await stageNativeRuntime({ projectRoot, stageRoot: join(projectRoot, "default") })).sidecarKind, "node");
+		process.env.PIDECK_SIDECAR_KIND = "cpp";
+		assert.equal((await stageNativeRuntime({ projectRoot, stageRoot: join(projectRoot, "env") })).sidecarKind, "cpp");
+		assert.equal((await stageNativeRuntime({ projectRoot, stageRoot: join(projectRoot, "explicit"), sidecarKind: "node" })).sidecarKind, "node");
+		await assert.rejects(stageNativeRuntime({ projectRoot, sidecarKind: "bogus" }), /Unsupported sidecar kind/);
+	});
+});
+
 test("native runtime staging copies only executable node-pty/sql.js/undici files", async () => {
 	await withTempProject(async (projectRoot) => {
 		const fixture = await createRuntimeFixture(projectRoot);
@@ -86,7 +103,7 @@ test("native runtime staging copies only executable node-pty/sql.js/undici files
 		const stale = join(stageRoot, "app", "node_modules", "node-pty", "stale.pdb");
 		await put(stale, "stale");
 
-		const result = await stageNativeRuntime({ projectRoot, stageRoot });
+		const result = await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		assert.equal(result.counts.nodePty, NODE_PTY_RUNTIME_FILES.length + 3);
 		assert.equal(result.counts.sqlJs, SQL_JS_RUNTIME_FILES.length);
 		assert.equal(result.counts.undici, 3);
@@ -131,7 +148,7 @@ test("native runtime staging supports host prebuilds without Release addons", as
 	await withTempProject(async (projectRoot) => {
 		await createRuntimeFixture(projectRoot, PREBUILT_DIR);
 		const stageRoot = join(projectRoot, "stage");
-		await stageNativeRuntime({ projectRoot, stageRoot });
+		await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		for (const file of WINDOWS_PTY_FILES) {
 			assert.equal(await exists(join(stageRoot, "app/node_modules/node-pty", PREBUILT_DIR, file)), true, file);
 		}
@@ -149,7 +166,7 @@ test("native runtime staging ignores orphan Release DLLs and unrelated builds", 
 		}
 		await put(join(nodePtyRoot, PREBUILT_DIR, "conpty.pdb"));
 		const stageRoot = join(projectRoot, "stage");
-		await stageNativeRuntime({ projectRoot, stageRoot });
+		await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		const output = join(stageRoot, "app/node_modules/node-pty");
 		for (const file of WINDOWS_PTY_FILES) assert.equal(await exists(join(output, PREBUILT_DIR, file)), true);
 		for (const path of ["build", "prebuilds/other-architecture", `${PREBUILT_DIR}/conpty.pdb`]) {
@@ -165,7 +182,7 @@ test("native runtime staging resolves mixed addons independently and prefers Rel
 			await put(join(nodePtyRoot, "build/Release", file), "release");
 		}
 		const stageRoot = join(projectRoot, "stage");
-		await stageNativeRuntime({ projectRoot, stageRoot });
+		await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		const output = join(stageRoot, "app/node_modules/node-pty");
 		for (const file of WINDOWS_PTY_FILES) {
 			const release = ["pty.node", "winpty.dll", "winpty-agent.exe"].includes(file);
@@ -181,7 +198,7 @@ for (const missing of WINDOWS_PTY_FILES) {
 		await withTempProject(async (projectRoot) => {
 			const { nodePtyRoot } = await createRuntimeFixture(projectRoot, PREBUILT_DIR);
 			await rm(join(nodePtyRoot, PREBUILT_DIR, missing));
-			await assert.rejects(stageNativeRuntime({ projectRoot, stageRoot: join(projectRoot, "stage") }), (error) => {
+			await assert.rejects(stageNativeRuntime({ projectRoot, stageRoot: join(projectRoot, "stage"), sidecarKind: "node" }), (error) => {
 				assert.ok(error.message.includes("Missing node-pty runtime file:"));
 				assert.ok(error.message.includes(join(nodePtyRoot, PREBUILT_DIR, missing)));
 				return true;
@@ -195,7 +212,7 @@ test("native runtime staging uses complete prebuilds instead of an incomplete Re
 		const { nodePtyRoot } = await createRuntimeFixture(projectRoot, PREBUILT_DIR);
 		await put(join(nodePtyRoot, "build/Release/conpty.node"));
 		const stageRoot = join(projectRoot, "stage");
-		await stageNativeRuntime({ projectRoot, stageRoot });
+		await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		const output = join(stageRoot, "app/node_modules/node-pty");
 		assert.equal(await exists(join(output, "build/Release/conpty.node")), false, "never ship an addon without its own companions");
 		for (const file of WINDOWS_PTY_FILES) assert.equal(await exists(join(output, PREBUILT_DIR, file)), true, file);
@@ -210,7 +227,7 @@ test("the staged native loader retains its prebuilt fallback when Release cannot
 		const loader = await readFile(new URL("../node_modules/node-pty/lib/utils.js", import.meta.url), "utf8");
 		await put(join(nodePtyRoot, "lib/utils.js"), loader);
 		const stageRoot = join(projectRoot, "stage");
-		await stageNativeRuntime({ projectRoot, stageRoot });
+		await stageNativeRuntime({ projectRoot, stageRoot, sidecarKind: "node" });
 		const output = join(stageRoot, "app/node_modules/node-pty");
 		const exports = {};
 		vm.runInNewContext(await readFile(join(output, "lib/utils.js"), "utf8"), {

@@ -179,10 +179,11 @@ void Coordinator::compact(const QJsonObject &target, const QString &prompt,
                             return;
                         }
                         reattachProcess(agentId, binding,
-                                        [this, agentId, settle](bool reattached,
-                                                                const QString &reattachError) {
+                                        [this, agentId, binding, settle](bool reattached,
+                                                                const QString &reattachError, quint64 attemptEpoch) {
                                             AgentSession *attached = agent(agentId);
-                                            if (!reattached || !attached) {
+                                            if (!reattached || !attached || attached->clientEpoch() != attemptEpoch) {
+                                                discardFailedReattach(binding, attemptEpoch);
                                                 settle(false, reattachError);
                                                 return;
                                             }
@@ -206,10 +207,33 @@ void Coordinator::compact(const QJsonObject &target, const QString &prompt,
                 // (oracle `claimManualCompactionReload`), so a `compaction_end` arriving
                 // mid-reload cannot overwrite the fresh projection with a short snapshot.
                 current->claimManualCompactionReload();
-                loadProjection(*current, [this, agentId, settle]() {
+                loadProjection(*current, [this, binding, agentId, settle](bool projected) {
                     AgentSession *latest = agent(agentId);
                     if (latest) latest->consumeManualCompactionReloadClaim();
-                    settle(true, QString());
+                    if (projected && latest && latest->running()) {
+                        settle(true, QString());
+                        return;
+                    }
+                    if (latest && !latest->running() && !m_shutdown) {
+                        // The transport fails pending reads before it reports the exit
+                        // status. Keep the manual gate until that status decides whether
+                        // the normal clean-exit recovery is allowed.
+                        m_compactProjectionExits.insert(agentId, [this, binding, settle](bool recover) {
+                            if (!recover) {
+                                settle(false, QStringLiteral("Session projection unavailable after compaction"));
+                                return;
+                            }
+                            m_deps.post([this, binding, settle]() {
+                                reattachProcess(binding.agentId, binding,
+                                    [this, binding, settle](bool reattached, const QString &error, quint64 attemptEpoch) {
+                                        if (!reattached) discardFailedReattach(binding, attemptEpoch);
+                                        settle(reattached, error);
+                                    });
+                            });
+                        });
+                        return;
+                    }
+                    settle(false, QStringLiteral("Session projection unavailable after compaction"));
                 });
             });
     }, std::move(done));

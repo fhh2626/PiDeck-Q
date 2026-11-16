@@ -15,7 +15,7 @@
  *     models: [...],            // get_available_models
  *     commands: [...],          // get_commands
  *     forkMessages: [...],      // get_fork_messages
- *     responses: { <command>: data | { error: "..." } | { delayMs, data } | exitBeforeReply },
+ *     responses: { <command>: data | { error: "..." } | { delayMs, data, eventsBeforeReply?, replyGate? } | exitBeforeReply },
  *     turns: [ { ack: true|false, error, delayMs, events: [ { delayMs, event } ] } ],
  *     bySession: { <deckSessionId>: <partial scenario> },
  *     onStart: [ { delayMs, event } ]
@@ -24,7 +24,7 @@
  * Every received command and every emitted event is appended to FAKE_PI_LOG as JSON
  * lines so a test can assert the exact protocol traffic.
  */
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const scenarioPath = process.env.FAKE_PI_SCENARIO ?? "";
@@ -54,6 +54,7 @@ if (argv.includes("--version")) {
 
 log({
 	kind: "spawn",
+	pid: process.pid,
 	argv,
 	env: {
 		PIDECK_SESSION_ID: process.env.PIDECK_SESSION_ID ?? null,
@@ -268,9 +269,12 @@ lines.on("line", (line) => {
 		// compacted history. The desktop must reattach the same agentId, not report a
 		// failed compaction.
 		if (configured?.exitBeforeReply === true) {
-			process.exit(1);
+			process.exit(Number(configured.exitCode ?? 1));
 			return;
 		}
+		// A deterministic RPC/event barrier, including failed replies: tests can place
+		// a newer refresh request before a snapshot error without wall-clock delays.
+		for (const event of configured?.eventsBeforeReply ?? []) emit(event);
 		if (configured && configured.error !== undefined) {
 			respond(message.id, command, configured.error, false);
 			return;
@@ -278,8 +282,27 @@ lines.on("line", (line) => {
 		const data = configured?.data !== undefined ? configured.data : defaultResponse(command);
 		respond(message.id, command, data);
 	};
-	if (delayMs) setTimeout(finish, delayMs);
-	else finish();
+	// A fixture-owned file gate holds only this RPC reply while stdin keeps accepting
+	// commands. Tests release it explicitly to exercise both replacement completion orders.
+	const replyWhenReleased = () => {
+		if (typeof configured?.replyGate === "string"
+			&& !existsSync(`${scenarioPath}.${configured.replyGate}`)) {
+			const timer = setTimeout(() => {
+				timers.delete(timer);
+				replyWhenReleased();
+			}, 10);
+			timers.add(timer);
+			return;
+		}
+		finish();
+	};
+	if (delayMs) {
+		const timer = setTimeout(() => {
+			timers.delete(timer);
+			replyWhenReleased();
+		}, delayMs);
+		timers.add(timer);
+	} else replyWhenReleased();
 });
 
 lines.on("close", () => {
