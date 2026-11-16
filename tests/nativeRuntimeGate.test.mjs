@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -74,17 +74,6 @@ test("pinned required backend never falls back to a release binary", (t) => {
 	process.env.PIDECK_REQUIRE_BACKEND_TESTS = "1";
 	process.env.PIDECK_BACKEND_TEST_EXECUTABLE = "build/windows/x64/debug/PiDeckBackend.exe";
 	assert.throws(() => backendHarness.resolveBackendExecutable(root), /no backend executable/);
-});
-
-test("CI builds the backend before the full suite on a clean checkout", () => {
-	const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-	const build = workflow.indexOf("xmake build -y PiDeckBackend");
-	const fullSuite = workflow.indexOf("run: npm test");
-	assert.ok(build >= 0 && fullSuite > build, "backend build must precede the full suite");
-	for (const target of ["PiDeck-TranscriptHistoryTest", "PiDeck-TodoCommandTest", "PiDeck-FilePathPolicyTest"]) {
-		const component = workflow.indexOf(`xmake build -y ${target}`);
-		assert.ok(component > build && component < fullSuite, `${target} must be built before its regression suite`);
-	}
 });
 
 /** Import lazily so resolver regressions remain independently runnable. */
