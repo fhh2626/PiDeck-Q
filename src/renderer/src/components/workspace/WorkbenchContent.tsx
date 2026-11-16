@@ -32,6 +32,7 @@ export type WorkbenchContentProps = {
 	onToggleEditorMode?: () => void;
 	onCloseEditor: () => void;
 	readContent: (path: string) => Promise<string>;
+	onOpenFile?: (path: string) => void;
 	readOriginalContent: (path: string) => Promise<string>;
 	saveContent: (path: string, content: string) => Promise<void>;
 };
@@ -83,6 +84,7 @@ export function WorkbenchContent(props: WorkbenchContentProps) {
 			onClose={props.onCloseEditor}
 			readContent={props.readContent}
 			readOriginalContent={props.readOriginalContent}
+			onOpenFile={props.onOpenFile}
 			saveContent={
 				props.activeTab.allowSave ? props.saveContent : undefined
 			}

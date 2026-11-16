@@ -1,4 +1,4 @@
-import { readTodoTaskMessage, readTodoTaskMessageId, toEpochMs } from "../../shared/piTaskMessage.ts";
+import { readTodoTaskCommand, readTodoTaskMessage, readTodoTaskMessageId, toEpochMs } from "../../shared/piTaskMessage.ts";
 import type { ChatMessage } from "../../shared/types";
 import type { MainProcessTranslationKey } from "../../shared/i18n/mainProcessCopy";
 import { extractMessageText } from "./messageContent";
@@ -61,24 +61,28 @@ export class AgentMessageProjector {
 		);
 		// 用于生成元消息 id（compaction/branchSummary）的计数器
 		let metaSeq = 0;
-		// entryId 按 active branch 顺序与 rawMessages 一一对应。
-		// 注意：entryIndex 只在 user/assistant/toolResult 时递增，
-		// 因为 compactionSummary/branchSummary 在 get_entries 中无对应 entry，
-		// 同时 activeEntryIds 还包含 model_change/thinking_level_change/custom 等非角色条目。
-		// 因此 currentEntryId 的读取必须放在各个角色块内部，不能在所有条目前统一读取，
-		// 否则非 user/assistant/toolResult 条目会提前消费 entryIndex 槽位。
+		// entryId 对应活动分支中的持久化 message 和可见任务条目。
+		// bashExecution 即使不展示也占一个 message 槽位；压缩/分支摘要是派生卡片，
+		// 不消费槽位。只有各自的持久化角色分支可以推进 index，避免把后续消息绑错。
 		let entryIndex = 0;
 		let turnImageBytes = 0;
 		return rawMessages
 			.flatMap<ChatMessage>((message, index) => {
 				if (!message || typeof message !== "object") return [];
 				const typed = message as any;
+				if (typed.role === "bashExecution") {
+					// !/!! 命令结果有独立的 JSONL message 身份，隐藏它不能让下一条
+					// user/assistant 继承该身份，否则编辑和重发会操作错误条目。
+					entryIndex = takeActiveEntryId(activeEntryIds, entryIndex).nextIndex;
+					return [];
+				}
 
 				// Keep atomic task messages visible without pretending the JSONL contains a
 				// user entry that SessionFileEditor could edit or resend. Resume guidance
 				// shares the read-only card so the user sees what unblocked the goal.
 				const taskMessage = readTodoTaskMessage(message);
 				if (taskMessage !== undefined) {
+					const command = readTodoTaskCommand(message);
 					const taken = takeActiveEntryId(activeEntryIds, entryIndex);
 					entryIndex = taken.nextIndex;
 					const details: unknown = Reflect.get(message, "details");
@@ -88,8 +92,9 @@ export class AgentMessageProjector {
 					turnImageBytes = 0;
 					return [{
 						id: `${agentId}-history-${taken.entryId ?? index}`,
-						agentId, role: "system", text: taskMessage.text, timestamp,
+						agentId, role: "system", text: command ? `/${command.name} ${taskMessage.text}` : taskMessage.text, timestamp,
 						meta: { type: "todoTask", todoTaskKind: taskMessage.kind,
+							...(command ? { todoTaskCommandName: command.name, todoTaskCommandArgs: command.args } : {}),
 							...(typeof taskId === "string" ? { todoTaskId: taskId } : {}),
 							...(messageId ? { todoTaskMessageId: messageId } : {}),
 							// Same stamp the live path records, so a replay after a history reload dedupes.

@@ -146,7 +146,7 @@ export function registerTodoTasks(pi: ExtensionAPI, host: TodoTaskHost) {
 			// leaves no run behind, and the next user run resets this task normally.
 			pi.sendMessage({
 				customType: TASK_START, content: goal, display: true,
-				details: { taskId: task.id, messageId: `${task.id}:start` },
+				details: { taskId: task.id, messageId: `${task.id}:start`, commandName: mode, commandArgs: args.trim() },
 			}, { triggerTurn: true });
 		} catch {
 			if (ticket === generation) {
@@ -229,7 +229,8 @@ export function registerTodoTasks(pi: ExtensionAPI, host: TodoTaskHost) {
 			try {
 				pi.sendMessage({
 					customType: TASK_RESUME, content: args.trim() || copy.resumePrompt, display: true,
-					details: { taskId: current.id, messageId: `${current.id}:resume:${++resumeSeq}` },
+					details: { taskId: current.id, messageId: `${current.id}:resume:${++resumeSeq}`,
+						commandName: "todo-resume", commandArgs: args.trim() },
 				}, { triggerTurn: true });
 			} catch {
 				ctx.ui.notify(copy.startFailed, "error");

@@ -3,6 +3,7 @@
 #include "WebStreamJson.h"
 
 #include <QDateTime>
+#include <QJsonDocument>
 
 namespace webstream {
 namespace {

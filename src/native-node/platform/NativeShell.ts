@@ -13,8 +13,9 @@ export class NativeShell implements PlatformShell {
 		return this.host.request<PlatformOpenPathResult>("shell.openPath", { path });
 	}
 
-	showItemInFolder(path: string): void {
-		void this.host.request("shell.showItemInFolder", { path }).catch(() => undefined);
+	async showItemInFolder(path: string): Promise<void> {
+		const result = await this.host.request<PlatformOpenPathResult>("shell.showItemInFolder", { path });
+		if (!result?.ok) throw new Error(result?.error ?? "Unable to reveal the path");
 	}
 
 	trashItem(path: string): Promise<void> {

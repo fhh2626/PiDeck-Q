@@ -32,7 +32,7 @@ export function defaultUrlTransform(value: string): string {
  */
 export function markdownUrlTransform(url: string): string {
 	// react-markdown 默认会清空 file:// 协议；这里只放行本地文件链接，普通外链仍使用默认安全过滤。
-	return url.startsWith("file://") ? url : defaultUrlTransform(url);
+	return /^file:/i.test(url) ? url : defaultUrlTransform(url);
 }
 
 /**
@@ -51,19 +51,48 @@ export const FILE_PATH_RE =
  */
 export const remarkLinkifyPaths = () => {
 	return (tree: any) => {
-		const visit = (node: any) => {
+		const definitions = new Map<string, string>();
+		// Reference destinations can appear after their use. Resolve them before
+		// HTML serialization encodes spaces and Unicode, preserving literal `%20`.
+		const collectDefinitions = (node: unknown): void => {
+			if (!node || typeof node !== "object") return;
+			const identifier: unknown = Reflect.get(node, "identifier");
+			const url: unknown = Reflect.get(node, "url");
+			if (Reflect.get(node, "type") === "definition" && typeof identifier === "string"
+				&& typeof url === "string" && !definitions.has(identifier.toUpperCase())) {
+				definitions.set(identifier.toUpperCase(), url);
+			}
+			const children: unknown = Reflect.get(node, "children");
+			if (Array.isArray(children)) children.forEach(collectDefinitions);
+		};
+		collectDefinitions(tree);
+		const visit = (node: any, insideLink = false) => {
 			if (!node || typeof node !== "object") return;
 			const type: string = node.type;
 			if (type === "code" || type === "inlineCode") return;
-			if (type === "link") {
+			if (type === "link" || type === "image" || type === "linkReference" || type === "imageReference") {
+				const destination = typeof node.url === "string" ? node.url
+					: typeof node.identifier === "string" ? definitions.get(node.identifier.toUpperCase()) : undefined;
 				// Capture the mdast destination before HTML URL encoding. File URLs must
 				// still go through platform validation, not this raw-path escape hatch.
-				if (typeof node.url === "string" && isLocalPathRef(node.url)) {
-					node.data = { ...node.data, hProperties: { ...node.data?.hProperties, "data-local-path": node.url } };
+				if (typeof destination === "string" && isLocalPathRef(destination)) {
+					// An explicit Markdown destination is a URL reference. Its query and
+					// fragment cannot be passed to the filesystem as part of the name.
+					// Auto-linked disk paths below retain literal `#`, and this raw-path
+					// branch never decodes percent signs that belong to the file name.
+					const suffixIndex = destination.search(/[?#]/);
+					const path = suffixIndex < 0 ? destination : destination.slice(0, suffixIndex);
+					node.data = { ...node.data, hProperties: { ...node.data?.hProperties, "data-local-path": path } };
+				}
+				// A link label may contain images or formatted images. Visit those
+				// destinations without creating nested links from the label's text.
+				if ((type === "link" || type === "linkReference") && Array.isArray(node.children)) {
+					for (const child of node.children) visit(child, true);
 				}
 				return;
 			}
 			if (type === "text" && typeof node.value === "string") {
+				if (insideLink) return;
 				const text: string = node.value;
 				FILE_PATH_RE.lastIndex = 0;
 				const segs: any[] = [];
@@ -117,7 +146,7 @@ export const remarkLinkifyPaths = () => {
 			if (Array.isArray(children)) {
 				const next: any[] = [];
 				for (const child of children) {
-					visit(child);
+					visit(child, insideLink);
 					if (child && (child as any).__segs) {
 						const segs = (child as any).__segs;
 						delete (child as any).__segs;

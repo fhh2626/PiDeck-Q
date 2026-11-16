@@ -7,8 +7,10 @@ import { after, before, describe, test } from "node:test";
 import {
 	createFakePi,
 	resolveBackendExecutable,
+	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { runtimeEnvelopes, waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "runtime-commands";
@@ -182,7 +184,7 @@ if (executable) {
 		});
 
 		test("abort cancels the pending ask and forwards the abort to pi", async (t) => {
-			const { invoke, fake, record, target } = await start(t, {
+			const { invoke, fake, record, target, baseUrl, token } = await start(t, {
 				scenario: {
 					turns: [{
 						ack: true,
@@ -193,6 +195,9 @@ if (executable) {
 					}],
 				},
 			});
+			const sse = new SseClient(`${baseUrl}__pideck/events?token=${encodeURIComponent(token)}`);
+			await sse.connect();
+			t.after(() => sse.close());
 			await invoke("sessions:send-prompt", [{
 				sessionId: record.id,
 				requestId: "abort-turn",
@@ -200,15 +205,12 @@ if (executable) {
 				agentId: target.agentId,
 				runtimeGeneration: target.runtimeGeneration,
 			}]);
-			// Wait until the ask reached the backend before aborting it.
-			const deadline = Date.now() + 5_000;
-			while (Date.now() < deadline) {
-				const pending = await invoke("sessions:runtime-list");
-				void pending;
-				if (fake.commands().some((entry) => entry.command === "prompt")) break;
-				await new Promise((resolve) => setTimeout(resolve, 20));
-			}
-			await new Promise((resolve) => setTimeout(resolve, 150));
+			// A received prompt is not proof that the backend has processed the ask.
+			// Wait for its public pending-request frame before sending the abort.
+			await waitFor(() => runtimeEnvelopes(sse, record.id).some((event) =>
+				event.sourceChannel === "agents:ui-request"
+				&& event.payload.requestId === "ask-abort" && !event.payload.completed),
+				5_000, "pending ask before abort");
 
 			const aborted = await invoke("sessions:runtime-abort", [{
 				sessionId: record.id,
@@ -216,6 +218,10 @@ if (executable) {
 				runtimeGeneration: target.runtimeGeneration,
 			}]);
 			assert.equal(aborted.payload.result.ok, true, JSON.stringify(aborted.payload));
+			// Abort acknowledges local teardown before pi answers. Its ordered stdin
+			// receipt proves both the preceding UI cancellation and abort were delivered.
+			await waitFor(() => fake.commands().some((entry) => entry.command === "abort"),
+				5_000, "pi received abort");
 			const uiResponses = fake.commands().filter((entry) => entry.command === "extension_ui_response");
 			assert.equal(uiResponses.length, 1, "the pending ask must be cancelled, not left hanging");
 			// Node sends `value:null` without `cancelled`: `cancelled:true` makes pi answer

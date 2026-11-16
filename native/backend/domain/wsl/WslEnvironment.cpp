@@ -130,10 +130,13 @@ void Resolver::resolve(const QString &distro, const QString &user,
     const pilaunch::Cli cli = picli::buildCli(m_executable, arguments, childenv::sanitized());
     process->setProcessEnvironment(cli.environment);
     process->setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
     if (!cli.nativeArguments.isEmpty()) {
         process->setNativeArguments(cli.nativeArguments);
         process->start(cli.program);
-    } else {
+    } else
+#endif
+    {
         process->start(cli.program, cli.arguments);
     }
     m_process = process;

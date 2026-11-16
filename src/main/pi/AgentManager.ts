@@ -30,7 +30,7 @@ import { SUBAGENT_STATUS_KEY_PREFIX } from "../../shared/types/subagents";
 import { LiveRpcLogBuffer } from "./LiveRpcLogBuffer";
 import { listActiveBuiltInExtensionPaths } from "../extensions/builtInExtensions";
 import { extractImageContent } from "../../shared/imageContent.ts";
-import { isTodoTaskCard, toEpochMs } from "../../shared/piTaskMessage.ts";
+import { acknowledgeTodoCommand, isTodoTaskCard, toEpochMs } from "../../shared/piTaskMessage.ts";
 import {
 	computeTurnImageUsedBytes,
 	applyRuntimeMessageImageBudget,
@@ -418,6 +418,9 @@ export class AgentManager {
 	 * 再由 agent_start 推进 generation 放行，防止残留 thinking/text delta 串台。
 	 */
 	private readonly streamGates = new Map<string, StreamGateState>();
+	/** Host prompts also change identity before pi emits agent_start. */
+	private readonly promptDispatchSequenceByAgent = new Map<string, number>();
+	private readonly pendingPromptDispatches = new WeakMap<PiProcess, number>();
 
 	/**
 	 * 流式性能计时：以 sendPrompt 发出的请求时刻为起点（而非收到 message_start），
@@ -1668,6 +1671,10 @@ export class AgentManager {
 
 	async sendPrompt(input: SendPromptInput): Promise<SendPromptResult> {
 		const runtime = this.requireRuntime(input.agentId);
+		const promptProcess = runtime.process;
+		const processIsCurrent = () => this.agents.get(input.agentId) === runtime
+			&& runtime.process === promptProcess && !this.stoppingAgents.has(input.agentId)
+			&& promptProcess.isRunning();
 		const trimmed = input.message.trim();
 		const hasImages = input.images && input.images.length > 0;
 		const agentMessage = input.agentMessage?.trim() || trimmed || "Describe this image.";
@@ -1726,6 +1733,9 @@ export class AgentManager {
 		// 静默命令必须是已注册扩展命令；否则会当成普通 prompt 发给模型。
 		if (input.silent) {
 			const isExtensionCommand = await this.promptMatchesRegisteredExtensionCommand(runtime, agentMessage);
+			if (!processIsCurrent()) {
+				return { accepted: false, error: "Session runtime changed before prompt dispatch", i18nKey: "diagnostic.agentStopped" };
+			}
 			if (!isExtensionCommand) {
 				return {
 					accepted: false,
@@ -1742,6 +1752,9 @@ export class AgentManager {
 			}
 		}
 
+		let dispatchSequence = this.advancePromptDispatchSequence(input.agentId);
+		this.pendingPromptDispatches.set(promptProcess, (this.pendingPromptDispatches.get(promptProcess) ?? 0) + 1);
+		let promptDispatched = false;
 		if (!input.silent) {
 			runtime.tab.status = "running";
 			this.emitState();
@@ -1770,6 +1783,9 @@ export class AgentManager {
 		// images 用于传递粘贴/拖拽的图片，pi 会将 base64 图片直接传给支持视觉的模型。
 		try {
 			const promptIsExtensionCommand = await this.promptMatchesRegisteredExtensionCommand(runtime, agentMessage);
+			if (!processIsCurrent()) {
+				return { accepted: false, error: "Session runtime changed before prompt dispatch", i18nKey: "diagnostic.agentStopped" };
+			}
 			const requestPayload: Record<string, unknown> = {
 				type: "prompt",
 				message: agentMessage,
@@ -1793,7 +1809,9 @@ export class AgentManager {
 				agentId: input.agentId,
 				requestId: input.requestId,
 			});
-			const response = await runtime.process.client.request(
+			dispatchSequence = this.advancePromptDispatchSequence(input.agentId);
+			promptDispatched = true;
+			const response = await promptProcess.client.request(
 				requestPayload,
 				this.settingsStore.get().rpcTimeout,
 			);
@@ -1803,11 +1821,15 @@ export class AgentManager {
 				success: response.success,
 				rpcMs: Date.now() - rpcStartedAt,
 			});
+			if (!processIsCurrent()) {
+				return { accepted: false, error: "Session runtime changed during prompt dispatch", delivery: "unknown", i18nKey: "diagnostic.promptDeliveryUnknown" };
+			}
+			const ownsPromptState = this.promptDispatchSequenceByAgent.get(input.agentId) === dispatchSequence;
 			if (!response.success) {
 				// pi RPC 会把不支持图片、忙碌队列参数缺失等前置错误作为 success:false 返回；
 				// 必须显式显示出来，否则 UI 会停在"已发送但无响应"的状态。
 				const errorMessage = response.error ?? "图片消息发送失败";
-				runtime.tab.status = statusBeforePrompt === "running" ? "running" : "idle";
+				if (ownsPromptState) runtime.tab.status = statusBeforePrompt === "running" ? "running" : "idle";
 				if (!input.silent) {
 					this.addLocalizedMessage(
 						input.agentId,
@@ -1818,6 +1840,11 @@ export class AgentManager {
 					);
 				}
 				this.emitState();
+				if (ownsPromptState && statusBeforePrompt === "running") {
+					// The rejected input invalidated the prior command's probe. Confirm
+					// its completion again using the current dispatch identity.
+					this.scheduleIdleCheckAfterExtensionCommand(input.agentId);
+				}
 				return {
 					accepted: false,
 					error: errorMessage,
@@ -1826,7 +1853,7 @@ export class AgentManager {
 				};
 			}
 
-			if (promptIsExtensionCommand) {
+			if (promptIsExtensionCommand && ownsPromptState) {
 				// 机制：Pi 扩展命令可在 prompt 阶段直接执行并返回，不进入 agent run。
 				// 证据：@earendil-works/pi-coding-agent/dist/core/agent-session.js 中 AgentSession.prompt()
 				//      先调用 _tryExecuteExtensionCommand()；命中后 return，不再调用 _runAgentPrompt()。
@@ -1836,16 +1863,18 @@ export class AgentManager {
 			return { accepted: true };
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
-			// prompt RPC 调用前已通过同步 write() 写入 pi stdin；此处所有异常都只说明
-			// preflight 响应未到达，无法证明 pi 没有接收。返回 unknown，renderer 会永久禁用
-			// 该快照的重试/编辑/取消，防止用户把同一条消息提交两次。
-			runtime.tab.status = statusBeforePrompt === "running" ? "running" : "error";
-			if (!input.silent) {
+			// Only failures after the prompt write have unknown delivery. A replaced
+			// process and an older prompt ACK must never rewrite the newer runtime.
+			const currentProcess = processIsCurrent();
+			if (currentProcess && this.promptDispatchSequenceByAgent.get(input.agentId) === dispatchSequence) {
+				runtime.tab.status = statusBeforePrompt === "running" ? "running" : promptDispatched ? "error" : "idle";
+			}
+			if (currentProcess && !input.silent) {
 				this.addLocalizedMessage(
 					input.agentId,
 					"error",
-					"diagnostic.promptDeliveryUnknown",
-					"消息接收结果未知。请先检查当前会话，避免重复发送；必要时重启 Agent。",
+					promptDispatched ? "diagnostic.promptDeliveryUnknown" : "diagnostic.promptRejected",
+					promptDispatched ? "消息接收结果未知。请先检查当前会话，避免重复发送；必要时重启 Agent。" : "消息发送失败。",
 					{ debugDetails: errorMessage },
 				);
 			}
@@ -1853,10 +1882,14 @@ export class AgentManager {
 			return {
 				accepted: false,
 				error: errorMessage,
-				delivery: "unknown",
-				i18nKey: "diagnostic.promptDeliveryUnknown",
+				...(promptDispatched ? { delivery: "unknown" as const } : {}),
+				i18nKey: promptDispatched ? "diagnostic.promptDeliveryUnknown" : "diagnostic.promptRejected",
 				debugDetails: errorMessage,
 			};
+		} finally {
+			const remaining = (this.pendingPromptDispatches.get(promptProcess) ?? 1) - 1;
+			if (remaining > 0) this.pendingPromptDispatches.set(promptProcess, remaining);
+			else this.pendingPromptDispatches.delete(promptProcess);
 		}
 	}
 
@@ -1871,6 +1904,10 @@ export class AgentManager {
 		requestId?: string,
 	): Promise<SendPromptResult> {
 		const runtime = this.requireRuntime(agentId);
+		const promptProcess = runtime.process;
+		const processIsCurrent = () => this.agents.get(agentId) === runtime
+			&& runtime.process === promptProcess && !this.stoppingAgents.has(agentId)
+			&& promptProcess.isRunning();
 		const statusBeforeCommand = runtime.tab.status;
 		
 		// 检查进程是否还活着
@@ -1883,11 +1920,14 @@ export class AgentManager {
 			return { accepted: false, error: errorMessage, i18nKey: "diagnostic.agentStopped" };
 		}
 		
+		const dispatchSequence = this.advancePromptDispatchSequence(agentId);
+		this.pendingPromptDispatches.set(promptProcess, (this.pendingPromptDispatches.get(promptProcess) ?? 0) + 1);
+		let responseReceived = false;
 		runtime.tab.status = "running";
 		this.emitState();
 
 		try {
-			const response = await runtime.process.client.request(
+			const response = await promptProcess.client.request(
 				{
 					type: "bash",
 					command,
@@ -1895,6 +1935,10 @@ export class AgentManager {
 				},
 				60_000,
 			);
+			if (!processIsCurrent()) {
+				return { accepted: false, error: "Session runtime changed during command dispatch", delivery: "unknown", i18nKey: "diagnostic.commandDeliveryUnknown" };
+			}
+			responseReceived = true;
 
 			if (!response.success) {
 				const errorMessage = response.error ?? "命令执行失败";
@@ -1955,14 +1999,18 @@ export class AgentManager {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			// bash 请求也在计时前写入 stdin；异常只能判定响应未知。对于可能有副作用的命令，
 			// 把它标成可重试失败会比保守阻止重试更危险。
-			runtime.tab.status = statusBeforeCommand === "running" ? "running" : "error";
-			this.addLocalizedMessage(
-				agentId,
-				"error",
-				"diagnostic.commandDeliveryUnknown",
-				"命令接收结果未知。请先检查命令输出或工作区状态，避免重复执行。",
-				{ debugDetails: errorMessage },
-			);
+			if (processIsCurrent()) {
+				if (this.promptDispatchSequenceByAgent.get(agentId) === dispatchSequence) {
+					runtime.tab.status = statusBeforeCommand === "running" ? "running" : "error";
+				}
+				this.addLocalizedMessage(
+					agentId,
+					"error",
+					"diagnostic.commandDeliveryUnknown",
+					"命令接收结果未知。请先检查命令输出或工作区状态，避免重复执行。",
+					{ debugDetails: errorMessage },
+				);
+			}
 			return {
 				accepted: false,
 				error: errorMessage,
@@ -1971,10 +2019,18 @@ export class AgentManager {
 				debugDetails: errorMessage,
 			};
 		} finally {
-			if (runtime.tab.status !== "error") {
-				runtime.tab.status = statusBeforeCommand === "running" ? "running" : "idle";
+			const remaining = (this.pendingPromptDispatches.get(promptProcess) ?? 1) - 1;
+			if (remaining > 0) this.pendingPromptDispatches.set(promptProcess, remaining);
+			else this.pendingPromptDispatches.delete(promptProcess);
+			if (processIsCurrent() && this.promptDispatchSequenceByAgent.get(agentId) === dispatchSequence) {
+				if (runtime.tab.status !== "error") {
+					runtime.tab.status = statusBeforeCommand === "running" ? "running" : "idle";
+				}
+				this.emitState();
+				if (responseReceived && statusBeforeCommand === "running") {
+					this.scheduleIdleCheckAfterExtensionCommand(agentId);
+				}
 			}
-			this.emitState();
 		}
 	}
 
@@ -3253,6 +3309,7 @@ export class AgentManager {
 		this.messageLoadSequenceByAgent.delete(agentId);
 		this.consumeManualCompactionReloadClaim(agentId);
 		this.promptRequestedAtByAgent.delete(agentId);
+		this.promptDispatchSequenceByAgent.delete(agentId);
 		this.entrySourceByAgent.delete(agentId);
 		this.rpcLoggingAgents.delete(agentId);
 		this.liveRpcLogs.drop(agentId);
@@ -4094,11 +4151,13 @@ export class AgentManager {
 				void this.emitRuntimeState(agentId);
 				const settledProcess = runtime.process;
 				const settledGeneration = this.getStreamGate(agentId).currentGeneration;
+				const settledPromptSequence = this.promptDispatchSequenceByAgent.get(agentId) ?? 0;
 				const timer = setTimeout(() => {
 					void this.markIdleIfPiReportsNoWork(
 						agentId,
 						settledProcess,
 						settledGeneration,
+						settledPromptSequence,
 					);
 				}, 300);
 				timer.unref?.();
@@ -4199,8 +4258,9 @@ export class AgentManager {
 			const rustSettledFallback = this.rustRuntimeAgents.has(agentId);
 			const settledProcess = runtime?.process;
 			const settledGeneration = this.getStreamGate(agentId).currentGeneration;
+			const settledPromptSequence = this.promptDispatchSequenceByAgent.get(agentId) ?? 0;
 			const settledTimer = setTimeout(() => {
-				void this.markIdleIfPiReportsNoWork(agentId, settledProcess, settledGeneration);
+				void this.markIdleIfPiReportsNoWork(agentId, settledProcess, settledGeneration, settledPromptSequence);
 			}, rustSettledFallback ? AgentManager.RUST_AGENT_SETTLED_TIMEOUT_MS : AgentManager.AGENT_SETTLED_TIMEOUT_MS);
 			settledTimer.unref?.();
 		}
@@ -4290,11 +4350,24 @@ export class AgentManager {
 				return sentAt === undefined || message.meta.todoTaskAt === sentAt;
 			});
 			if (taskCard && !isDuplicate) {
-				this.addMessage(agentId, "system", taskCard.text, {
+				const cardMeta = {
 					type: "todoTask", todoTaskKind: taskCard.meta?.todoTaskKind, todoTaskId: taskCard.meta?.todoTaskId,
+					...(typeof taskCard.meta?.todoTaskCommandName === "string" ? {
+						todoTaskCommandName: taskCard.meta.todoTaskCommandName,
+						todoTaskCommandArgs: taskCard.meta.todoTaskCommandArgs,
+					} : {}),
 					...(cardKey !== undefined ? { todoTaskMessageId: cardKey } : {}),
 					...(sentAt !== undefined ? { todoTaskAt: sentAt } : {}),
-				});
+				};
+				const list = this.messages.get(agentId) ?? [];
+				const acknowledged = acknowledgeTodoCommand(list.at(-1), { ...taskCard, meta: cardMeta });
+				if (acknowledged) {
+					list[list.length - 1] = acknowledged;
+					this.markMessagesDirtyFrom(agentId, list.length - 1);
+					this.scheduleMessageEmit(agentId, true);
+				} else {
+					this.addMessage(agentId, "system", taskCard.text, cardMeta);
+				}
 			}
 		}
 
@@ -5686,12 +5759,20 @@ export class AgentManager {
 		timer.unref?.();
 	}
 
+	/** Invalidates idle snapshots before command lookup and again at the actual write. */
+	private advancePromptDispatchSequence(agentId: string): number {
+		const next = (this.promptDispatchSequenceByAgent.get(agentId) ?? 0) + 1;
+		this.promptDispatchSequenceByAgent.set(agentId, next);
+		return next;
+	}
+
 	private scheduleIdleCheckAfterExtensionCommand(agentId: string) {
 		const runtime = this.agents.get(agentId);
 		const expectedProcess = runtime?.process;
 		const expectedGeneration = this.getStreamGate(agentId).currentGeneration;
+		const expectedPromptSequence = this.promptDispatchSequenceByAgent.get(agentId) ?? 0;
 		const timer = setTimeout(() => {
-			void this.markIdleIfPiReportsNoWork(agentId, expectedProcess, expectedGeneration);
+			void this.markIdleIfPiReportsNoWork(agentId, expectedProcess, expectedGeneration, expectedPromptSequence);
 		}, 100);
 		timer.unref?.();
 	}
@@ -5700,6 +5781,7 @@ export class AgentManager {
 		agentId: string,
 		expectedProcess?: PiProcess,
 		expectedGeneration?: number,
+		expectedPromptSequence?: number,
 	) {
 		const runtime = this.agents.get(agentId);
 		if (!runtime) return;
@@ -5707,8 +5789,10 @@ export class AgentManager {
 		const observedProcess = expectedProcess ?? runtime.process;
 		const observedGeneration =
 			expectedGeneration ?? this.getStreamGate(agentId).currentGeneration;
+		const observedPromptSequence = expectedPromptSequence ?? (this.promptDispatchSequenceByAgent.get(agentId) ?? 0);
 
 		if (runtime.process !== observedProcess) return;
+		if ((this.promptDispatchSequenceByAgent.get(agentId) ?? 0) !== observedPromptSequence) return;
 		const gateBefore = this.getStreamGate(agentId);
 		if (
 			gateBefore.currentGeneration !== observedGeneration ||
@@ -5718,6 +5802,13 @@ export class AgentManager {
 		// 走同一条 get_state 兜底，关闭 Web SSE，但保留桌面端 error 状态。
 		const mayBeSettled = runtime.tab.status === "running" || runtime.tab.status === "error";
 		if (!mayBeSettled) return;
+		if ((this.pendingPromptDispatches.get(observedProcess) ?? 0) > 0) {
+			const timer = setTimeout(() => {
+				void this.markIdleIfPiReportsNoWork(agentId, observedProcess, observedGeneration, observedPromptSequence);
+			}, 100);
+			timer.unref?.();
+			return;
+		}
 		if ((this.pendingUIRequests.get(agentId)?.size ?? 0) > 0) return;
 		if (this.rpcCompactingAgents.has(agentId) || this.compactingAgents.has(agentId)) return;
 		if (this.activeAssistantMessageIds.has(agentId)) return;
@@ -5736,6 +5827,7 @@ export class AgentManager {
 		if (state.isStreaming || state.isCompacting || (state.pendingMessageCount ?? 0) > 0) return;
 		const current = this.agents.get(agentId);
 		if (!current || current.process !== observedProcess) return;
+		if ((this.promptDispatchSequenceByAgent.get(agentId) ?? 0) !== observedPromptSequence) return;
 		const gateAfter = this.getStreamGate(agentId);
 		if (
 			gateAfter.currentGeneration !== observedGeneration ||
@@ -5744,6 +5836,9 @@ export class AgentManager {
 		// 查询期间可能又收到新的 prompt；以查询返回时的实际 runtime 状态为准，
 		// 避免旧的兜底定时器把新一轮运行误发成 settled。
 		if (current.tab.status !== "running" && current.tab.status !== "error") return;
+		if ((this.pendingUIRequests.get(agentId)?.size ?? 0) > 0) return;
+		if (this.rpcCompactingAgents.has(agentId) || this.compactingAgents.has(agentId)) return;
+		if (this.activeAssistantMessageIds.has(agentId) || this.toolExecutingByAgent.get(agentId)) return;
 		const keepError = current.tab.status === "error";
 
 		if (!keepError) runtime.tab.status = "idle";

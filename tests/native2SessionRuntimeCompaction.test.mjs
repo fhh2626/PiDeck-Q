@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -134,6 +134,63 @@ if (!executable) {
 			const index = spawn.argv.indexOf("--session");
 			return index < 0 ? "" : slash(spawn.argv[index + 1]);
 		};
+
+		test("compaction retains visible history and exposes the archived file-page cursor", async (t) => {
+			const entries = [];
+			let parentId = null;
+			for (let turn = 1; turn <= 6; turn += 1) {
+				for (const role of ["user", "assistant"]) {
+					const id = `${role[0]}${turn}`;
+					entries.push({ type: "message", id, parentId,
+						message: { role, content: [{ type: "text", text: id }], timestamp: turn * 10 } });
+					parentId = id;
+				}
+			}
+			const compactedEntries = [...entries, {
+				type: "compaction", id: "compaction", parentId, firstKeptEntryId: "u5", summary: "summary",
+			}];
+			const compactedMessages = [{ role: "compactionSummary", summary: "summary", timestamp: 100 },
+				...entries.slice(8).map((entry) => entry.message)];
+			const { invoke, record, args, sse, filePath, fake } = await start(t, { scenario: {
+				responses: {
+					get_messages: [{ data: { messages: entries.map((entry) => entry.message) } },
+						{ data: { messages: compactedMessages } }],
+					get_entries: [{ data: { entries, leafId: parentId } },
+						{ data: { entries: compactedEntries, leafId: "compaction" } }],
+				},
+			} });
+			const header = JSON.parse(readFileSync(filePath, "utf8").split("\n")[0]);
+			writeFileSync(filePath, `${[header, ...compactedEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+			const result = (await invoke("sessions:runtime-compact", args)).payload.result;
+			assert.equal(result.ok, true, JSON.stringify(result));
+			const frame = await sse.waitFor((candidate) => candidate.payload.channel === "sessions:runtime-event"
+				&& candidate.payload.args[0]?.sourceChannel === "agents:message"
+				&& candidate.payload.args[0]?.payload?.stickyHistory === true
+				&& candidate.payload.args[0]?.payload?.windowStartFilePos === 8);
+			const payload = frame.payload.args[0].payload;
+			assert.equal(payload.preserveHistory, true);
+			assert.equal(payload.windowStartFilePos, 8);
+			assert.deepEqual(payload.messages.filter((message) => message.role !== "system")
+				.map((message) => message.meta.entryId), ["u5", "a5", "u6", "a6"]);
+			const page = (await invoke("sessions:catalog-read-message-page", [record.id, 8, 50, { unit: "turn" }]))
+				.payload.result;
+			assert.deepEqual(page.messages.filter((message) => message.role !== "system")
+				.map((message) => message.text), ["u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]);
+			assert.equal(page.nextBefore, null);
+			writeFileSync(fake.scenarioPath, JSON.stringify({
+				messages: compactedMessages,
+				entries: { entries: compactedEntries, leafId: "compaction" },
+			}));
+			const restarted = (await invoke("sessions:runtime-restart", args)).payload.result;
+			assert.equal(restarted.ok, true, JSON.stringify(restarted));
+			const resumedAgent = restarted.value.runtime.agentId;
+			const resumed = await sse.waitFor((candidate) => candidate.payload.channel === "sessions:runtime-event"
+				&& candidate.payload.args[0]?.agentId === resumedAgent
+				&& candidate.payload.args[0]?.sourceChannel === "agents:message");
+			assert.equal(resumed.payload.args[0].payload.preserveHistory, true,
+				"restarting the same saved session must retain its loaded archive");
+			assert.equal(resumed.payload.args[0].payload.windowStartFilePos, 8);
+		});
 
 		test("compact resolves with the agent runtime state, not pi's reply", async (t) => {
 			const { invoke, record, args } = await start(t, {

@@ -44,8 +44,9 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-webfetch/dist/index.mjs",
 ];
 
-const BACKEND = "PiDeckBackend.exe";
-const HOST = "PiDeck-Q.exe";
+// The verifier selects binary names for its host platform, even for synthetic stages.
+const BACKEND = process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend";
+const HOST = process.platform === "win32" ? "PiDeck-Q.exe" : "PiDeck-Q";
 const SOURCE_TIME = new Date("2026-03-01T00:00:00Z");
 const FRESH_TIME = new Date("2026-03-01T00:10:00Z");
 const STALE_TIME = new Date("2026-02-01T00:00:00Z");

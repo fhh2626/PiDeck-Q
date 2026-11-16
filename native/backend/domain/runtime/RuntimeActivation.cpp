@@ -190,7 +190,7 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                      const Target target{sessionId, agentId, generation};
                                      done(okResult(runtimeInfoJson(target, ready->tab())));
                                  });
-                             });
+                             }, true);
                          });
     });
 }

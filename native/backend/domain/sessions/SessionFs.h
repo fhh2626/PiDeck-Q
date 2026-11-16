@@ -32,7 +32,8 @@ public:
         QString executable;
     };
 
-    explicit SessionFs(Config config = {});
+    SessionFs();
+    explicit SessionFs(Config config);
 
     bool wsl() const { return m_config.wsl; }
     const Config &config() const { return m_config; }

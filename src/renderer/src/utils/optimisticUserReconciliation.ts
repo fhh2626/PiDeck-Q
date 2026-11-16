@@ -145,7 +145,10 @@ export function reconcileOptimisticUserMessages(
     return { messages: previousMessages, droppedIds: [] };
   }
   const previousIds = new Set(previousMessages.map((message) => message.id));
-  const canonicalUsers = canonicalMessages.filter((message) => message.role === "user");
+  // A todo command is acknowledged by its real custom entry, projected as a read-only
+  // system card. Its request identity still confirms the original optimistic user row.
+  const canonicalUsers = canonicalMessages.filter((message) => message.role === "user"
+    || (message.role === "system" && message.meta?.type === "todoTask"));
   const optimisticUsers = previousMessages
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.role === "user" && message.meta?.optimistic === true);
@@ -178,7 +181,8 @@ export function reconcileOptimisticUserMessages(
   // 误删更早的失败气泡。
   const contentCandidates = canonicalUsers.filter(
     (message, index) =>
-      !matchedAuthoritativeIndexes.has(index)
+      message.role === "user"
+      && !matchedAuthoritativeIndexes.has(index)
       && !optimisticRequestId(message)
       && !previousIds.has(message.id),
   );

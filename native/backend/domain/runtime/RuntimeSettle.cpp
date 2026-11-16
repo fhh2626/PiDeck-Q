@@ -8,9 +8,10 @@
 /**
  * Idle confirmation for runtimes that never send `agent_settled`.
  *
- * Port of `AgentManager.markIdleIfPiReportsNoWork` and its two arming points
+ * Port of `AgentManager.markIdleIfPiReportsNoWork` and its arming points
  * (`agent_end` → `AGENT_SETTLED_TIMEOUT_MS`/`RUST_AGENT_SETTLED_TIMEOUT_MS`, `compaction_end`
- * → 300 ms). `pi_agent_rust` (and Pi-Bolt, which shares its lifecycle serializer) emit
+ * → 300 ms, completed extension command → 100 ms). `pi_agent_rust` (and Pi-Bolt, which
+ * shares its lifecycle serializer) emit
  * `agent_end` carrying a `sessionId` and never emit `agent_settled`; without this fallback
  * the tab stays `running` forever — the renderer then hides edit/delete/resend, keeps the
  * sidebar spinner and never finishes a LAN stream.
@@ -32,6 +33,8 @@ constexpr int kTypeScriptSettledTimeoutMs = 5'000;
 constexpr int kRustSettledTimeoutMs = 250;
 /** Oracle `compaction_end` → `markIdleIfPiReportsNoWork` delay. */
 constexpr int kCompactionIdleCheckMs = 300;
+/** Extension commands can finish successfully without emitting an agent lifecycle. */
+constexpr int kExtensionCommandIdleCheckMs = 100;
 
 } // namespace
 
@@ -56,28 +59,42 @@ void Coordinator::scheduleSettledWatchdog(const QString &agentId,
     // a runtime replaced (or a run started) later must not be settled by this timer.
     const quint64 epoch = session->clientEpoch();
     const int generation = session->runGeneration();
+    const quint64 promptSequence = session->promptDispatchSequence();
     const bool rustFamily = m_rustRuntimeAgents.contains(agentId);
-    const int delayMs = reason == agentruntime::SettleWatchdog::CompactionEnd
-        ? kCompactionIdleCheckMs
-        : (rustFamily ? kRustSettledTimeoutMs : kTypeScriptSettledTimeoutMs);
-    QTimer::singleShot(delayMs, context, [this, agentId, epoch, generation]() {
-        markIdleIfPiReportsNoWork(agentId, epoch, generation);
+    int delayMs = rustFamily ? kRustSettledTimeoutMs : kTypeScriptSettledTimeoutMs;
+    if (reason == agentruntime::SettleWatchdog::CompactionEnd) delayMs = kCompactionIdleCheckMs;
+    else if (reason == agentruntime::SettleWatchdog::ExtensionCommandEnd) delayMs = kExtensionCommandIdleCheckMs;
+    QTimer::singleShot(delayMs, context, [this, agentId, epoch, generation, promptSequence]() {
+        markIdleIfPiReportsNoWork(agentId, epoch, generation, promptSequence);
     });
 }
 
 void Coordinator::markIdleIfPiReportsNoWork(const QString &agentId, quint64 clientEpoch,
-                                            int generation)
+                                            int generation, quint64 promptDispatchSequence)
 {
     AgentSession *session = agent(agentId);
     if (!session) return;
-    if (!locallySettled(*session, clientEpoch, generation)) return;
+    if (session->clientEpoch() != clientEpoch || session->runGeneration() != generation
+        || session->promptDispatchSequence() != promptDispatchSequence) return;
+    // A command lookup or prompt ACK can still be pending without any agent_start.
+    // Keep this same probe fenced while dispatch leases drain. Taking a new identity
+    // here would let a delayed command completion claim a newer prompt's lifecycle.
+    if (m_bindings.hasLease(m_bindings.sessionForAgent(agentId), agentId)) {
+        QTimer::singleShot(kExtensionCommandIdleCheckMs, session->timerContext(),
+                          [this, agentId, clientEpoch, generation, promptDispatchSequence]() {
+            markIdleIfPiReportsNoWork(agentId, clientEpoch, generation, promptDispatchSequence);
+        });
+        return;
+    }
+    if (!locallySettled(*session, clientEpoch, generation, promptDispatchSequence)) return;
     // `get_state` is the authority: the local flags only describe what the renderer saw.
     // A failed poll settles nothing (the runtime may be mid-restart), matching the oracle.
     session->request(QStringLiteral("get_state"), {}, kStateTimeoutMs,
-                     [this, agentId, clientEpoch, generation](bool ok,
+                     [this, agentId, clientEpoch, generation, promptDispatchSequence](bool ok,
                                                               const QJsonObject &response,
                                                               const QString &) {
-                         if (!ok) return;
+                         if (!ok || !response.value(QStringLiteral("success")).toBool(false)
+                             || !response.value(QStringLiteral("data")).isObject()) return;
                          const QJsonObject state = response.value(QStringLiteral("data")).toObject();
                          if (state.value(QStringLiteral("isStreaming")).toBool(false)) return;
                          if (state.value(QStringLiteral("isCompacting")).toBool(false)) return;
@@ -86,16 +103,21 @@ void Coordinator::markIdleIfPiReportsNoWork(const QString &agentId, quint64 clie
                          if (!current) return;
                          // Re-fence after the round trip: a prompt sent while the poll was in
                          // flight makes the answer stale (oracle re-checks both).
-                         if (!locallySettled(*current, clientEpoch, generation)) return;
+                         if (!locallySettled(*current, clientEpoch, generation, promptDispatchSequence)) return;
+                         if (m_bindings.hasLease(m_bindings.sessionForAgent(agentId), agentId)) {
+                             markIdleIfPiReportsNoWork(agentId, clientEpoch, generation, promptDispatchSequence);
+                             return;
+                         }
                          settleWithoutSettled(*current);
                      });
 }
 
 bool Coordinator::locallySettled(const AgentSession &session, quint64 clientEpoch,
-                                 int generation) const
+                                 int generation, quint64 promptDispatchSequence) const
 {
     if (session.clientEpoch() != clientEpoch) return false;
     if (session.runGeneration() != generation) return false;
+    if (session.promptDispatchSequence() != promptDispatchSequence) return false;
     // A run that started before the aborted run's settled is still gated: it is not the run
     // this timer was armed for.
     if (session.pendingOpenAfterSettled()) return false;

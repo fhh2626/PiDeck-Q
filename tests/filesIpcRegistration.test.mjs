@@ -59,6 +59,7 @@ test("every files:* channel in shared/ipc.ts has a handler registered by registe
 test("files:show-in-folder authorizes the Windows-converted path before opening the folder", async () => {
   const authorized = [];
   const { registerFilesIpc: register } = loadTsCommonJs("src/main/ipc/filesIpc.ts", {
+    globals: { process: { platform: "win32" } },
     stubs: {
       "../fs/authorizedPaths": {
         assertAuthorizedFilePath: async (target, _roots, operation) => {

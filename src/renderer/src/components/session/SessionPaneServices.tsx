@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { AgentTab, AgentUiResponse, ChatMessage, GitBranchInfo, ImageContent, Project, SessionRuntimeTarget, TerminalTarget } from "../../../../shared/types";
+import type { AgentTab, AgentUiResponse, ChatMessage, GitBranchInfo, ImageContent, Project, SessionMessageCommandTarget, TerminalTarget } from "../../../../shared/types";
 import type { QueuedPrompt } from "../../hooks/useQueuedPrompt";
 import type { NoticeId } from "../../utils/notice";
 import { useStableSessionPaneActions } from "../../hooks/useStableSessionPaneActions";
@@ -34,7 +34,7 @@ export type SessionPaneActions = {
   /** 把某会话从预览 Tab 晋升为常驻 Tab（发消息等主动交互时调用；非预览时幂等） */
   promoteSessionToPermanent: (sessionId: string) => void;
   showToast: (msg: string, dur?: number) => void;
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, basePath?: string) => void;
   onDiffFile: (path: string) => void;
   onPreviewImage: (img: ImageContent | null, images?: ImageContent[]) => void;
   abortAgent: (agentId?: string) => Promise<void>;
@@ -52,10 +52,10 @@ export type SessionPaneActions = {
   ) => boolean;
   insertQuickPrompt: (sessionId: string, message: string) => void;
   ensureSessionId?: (sessionId: string) => Promise<string>;
-  resendUserMessage?: (target: SessionRuntimeTarget, message: ChatMessage) => void;
-  editMessage?: (target: SessionRuntimeTarget, messageId: string, newText: string) => Promise<boolean>;
-  deleteMessage?: (target: SessionRuntimeTarget, messageId: string) => void;
-  forkFromUserMessage?: (target: SessionRuntimeTarget, message: ChatMessage) => void;
+  resendUserMessage?: (target: SessionMessageCommandTarget, message: ChatMessage) => void;
+  editMessage?: (target: SessionMessageCommandTarget, messageId: string, newText: string) => Promise<boolean>;
+  deleteMessage?: (target: SessionMessageCommandTarget, messageId: string) => void;
+  forkFromUserMessage?: (target: SessionMessageCommandTarget, message: ChatMessage) => void;
   openSidebarSessionById?: (projectId: string, sessionId: string) => Promise<void>;
   queueRetract: (sessionId: string, prompt: QueuedPrompt) => void;
   queueDiscard: (sessionId: string, promptId: string) => void;

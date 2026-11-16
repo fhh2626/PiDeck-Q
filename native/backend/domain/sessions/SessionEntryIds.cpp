@@ -17,7 +17,27 @@ TakeResult take(const QStringList &activeEntryIds, int entryIndex)
     return result;
 }
 
-QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId)
+bool consumesMessageEntry(const QJsonValue &message)
+{
+    if (!message.isObject()) return false;
+    const QString role = message.toObject().value(QStringLiteral("role")).toString();
+    pitask::TaskMessage task;
+    return role == QLatin1String("user") || role == QLatin1String("assistant")
+        || role == QLatin1String("toolResult") || role == QLatin1String("bashExecution")
+        || pitask::readTodoTaskMessage(message, &task);
+}
+
+int countMessageEntries(const QVector<QJsonValue> &messages)
+{
+    int count = 0;
+    for (const QJsonValue &message : messages) {
+        if (consumesMessageEntry(message)) ++count;
+    }
+    return count;
+}
+
+QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId,
+                                      bool includeCompacted)
 {
     QHash<QString, QJsonObject> byId;
     for (const QJsonValue &value : entries) {
@@ -57,7 +77,7 @@ QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const 
         }
     }
     QStringList ids;
-    if (compactionIndex < 0) {
+    if (compactionIndex < 0 || includeCompacted) {
         for (const QJsonObject &entry : branch) {
             if (isMessage(entry)) ids.append(entry.value(QStringLiteral("id")).toString());
         }

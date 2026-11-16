@@ -315,6 +315,8 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
 
         pitask::TaskMessage task;
         if (pitask::readTodoTaskMessage(QJsonValue(message), &task)) {
+            pitask::TaskCommand command;
+            const bool hasCommand = pitask::readTodoTaskCommand(message, &command);
             const sessionentryids::TakeResult taken = sessionentryids::take(activeEntryIds, entryIndex);
             entryIndex = taken.nextIndex;
             const QJsonValue details = message.value(QStringLiteral("details"));
@@ -338,6 +340,10 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
             };
             if (taskIdValue.isString()) meta.insert(QStringLiteral("todoTaskId"), taskIdValue);
             if (hasMessageId) meta.insert(QStringLiteral("todoTaskMessageId"), messageId);
+            if (hasCommand) {
+                meta.insert(QStringLiteral("todoTaskCommandName"), command.name);
+                meta.insert(QStringLiteral("todoTaskCommandArgs"), command.args);
+            }
             if (!taken.entryId.isEmpty()) meta.insert(QStringLiteral("entryId"), taken.entryId);
             result.append(QJsonObject{
                 {QStringLiteral("id"),
@@ -345,7 +351,7 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
                                                                                      : taken.entryId)},
                 {QStringLiteral("agentId"), agentId},
                 {QStringLiteral("role"), QStringLiteral("system")},
-                {QStringLiteral("text"), task.text},
+                {QStringLiteral("text"), hasCommand ? QStringLiteral("/%1 %2").arg(command.name, task.text) : task.text},
                 {QStringLiteral("timestamp"), timestamp},
                 {QStringLiteral("meta"), meta},
             });
@@ -354,6 +360,13 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
 
         const QString role = message.value(QStringLiteral("role")).toString();
         const QJsonValue content = message.value(QStringLiteral("content"));
+
+        if (role == QLatin1String("bashExecution")) {
+            // Pi persists !/!! executions as message entries. They have no
+            // timeline row here but must not shift the identities of later turns.
+            entryIndex = sessionentryids::take(activeEntryIds, entryIndex).nextIndex;
+            continue;
+        }
 
         if (role == QLatin1String("user")) {
             turnImageBytes = 0;

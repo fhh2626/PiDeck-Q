@@ -50,6 +50,8 @@ public:
     QString upsertTool(const QJsonObject &event, const QString &status);
 
     void appendMessage(const QString &role, const QString &text, const QJsonObject &meta);
+    /** A task acknowledges its adjacent slash command in place, retaining its request id. */
+    void appendTodoTask(const QString &text, const QJsonObject &meta);
     void appendError(const QString &text);
     void appendLocalized(const QString &role, const QString &i18nKey, const QString &fallback,
                          const QJsonObject &params);
@@ -95,6 +97,12 @@ public:
     /** Full delivery payload; `fileVersion` is the session file `mtime:size` when known. */
     QJsonObject flushPayload(const QString &fileVersion) const;
 
+    /** File-space cursor and one-shot retention policy for an authoritative projection. */
+    void configureHistory(const QStringList &fileEntryIds, int fallbackHead,
+                          bool preserveHistory, bool stickyHistory);
+    /** Consume one-shot fields only after the bound renderer accepted the full payload. */
+    void messageFlushDelivered();
+
     QString activeAssistantId() const { return m_activeAssistantId; }
     void setActiveAssistantId(const QString &id) { m_activeAssistantId = id; }
     void clearActiveAssistant() { m_activeAssistantId.clear(); }
@@ -139,6 +147,8 @@ public:
     QString lastMessageRole() const;
 
 private:
+    void noteHistoryTrim(int start);
+    int firstFilePosition(const QJsonArray &messages) const;
     void pruneDiagnosticIds();
     int indexOfId(const QString &id) const;
     /** Rebind a runtime id to an existing projected row with the same pi content. */
@@ -148,6 +158,16 @@ private:
     QString m_agentId;
     maincopy::Translator m_translate;
     QJsonArray m_messages;
+    QHash<QString, int> m_fileEntryPositions;
+    /** Raw message sequence to role slot, including rows hidden by the projector. */
+    QHash<int, int> m_projectedFilePositions;
+    int m_projectedFileCount = 0;
+    int m_projectionHeadFilePos = -1;
+    int m_windowStart = 0;
+    int m_windowStartFilePos = 0;
+    bool m_preserveHistory = true;
+    bool m_stickyHistory = false;
+    QJsonArray m_pendingSlideOut;
     quint64 m_diagnosticRevision = 0;
     quint64 m_trimRevision = 0;
     QHash<QString, quint64> m_diagnosticIds;

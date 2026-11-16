@@ -2,6 +2,7 @@
 
 #include "ProjectResolver.h"
 #include "SettingsCatalog.h"
+#include "WslFilePaths.h"
 
 #include <QDir>
 
@@ -70,7 +71,19 @@ QStringList authorizedRoots(const ChannelServices &services)
 QString authorizePath(const ChannelServices &services, const QString &path, const QString &operation,
                       pathpolicy::Mode mode)
 {
-    const pathpolicy::Result result = pathpolicy::assertAuthorized(path, authorizedRoots(services), operation, mode);
+    QString target = path;
+    QStringList roots = authorizedRoots(services);
+#ifdef Q_OS_WIN
+    // Convert the target and its roots using one settings snapshot. Applying
+    // this after authorization would reject valid Linux paths from a WSL agent.
+    const QJsonObject settings = readSettingsCatalog(
+        QDir(services.userDataDir).filePath(QStringLiteral("settings.json"))).settings;
+    const bool enabled = settings.value(QStringLiteral("wslEnabled")).toBool();
+    const QString distro = settings.value(QStringLiteral("wslDistro")).toString();
+    target = wsl::toWindowsFilePath(target, enabled, distro);
+    for (QString &root : roots) root = wsl::toWindowsFilePath(root, enabled, distro);
+#endif
+    const pathpolicy::Result result = pathpolicy::assertAuthorized(target, roots, operation, mode);
     if (!result.ok) throw ChannelError(result.error);
     return result.path;
 }

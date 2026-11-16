@@ -273,6 +273,7 @@ export const zhCN = {
   "app.filesRefreshed": "文件列表已刷新",
   "app.openEditorFailed": "打开编辑器失败：{error}",
   "app.openFileFailed": "打开文件失败：{error}",
+  "app.revealFileFailed": "无法在文件夹中显示文件：{error}",
   "app.noExternalEditors": "未检测到外部编辑器",
   "app.openProjectInEditor": "在编辑器中打开项目",
   "app.openWithEditor": "打开方式",

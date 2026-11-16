@@ -69,10 +69,13 @@ void probeVersion(const Launch &launch, std::function<void(const QString &versio
     process->setWorkingDirectory(launch.cwd);
     process->setProcessEnvironment(launch.environment);
     process->setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
     if (!launch.nativeVersionArguments.isEmpty()) {
         // npm shim: the whole cmd.exe command line must stay verbatim.
         process->setNativeArguments(launch.nativeVersionArguments);
-    } else if (launch.viaWsl) {
+    } else
+#endif
+    if (launch.viaWsl) {
         process->setArguments(launch.versionArguments);
     } else {
         process->setArguments(QStringList{QStringLiteral("--version")});

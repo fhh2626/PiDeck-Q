@@ -231,6 +231,9 @@ public:
     bool pendingOpenAfterSettled() const { return m_pendingOpenAfterSettled; }
     /** Monotonic run identity; a new value means "a different agent run". */
     int runGeneration() const { return m_runGeneration; }
+    /** Invalidates idle probes before command lookup and again at actual prompt dispatch. */
+    quint64 advancePromptDispatchSequence() { return ++m_promptDispatchSequence; }
+    quint64 promptDispatchSequence() const { return m_promptDispatchSequence; }
 
     bool recentlyAborted() const { return m_recentlyAborted; }
     void setRecentlyAborted(bool aborted) { m_recentlyAborted = aborted; }
@@ -322,6 +325,7 @@ private:
     int m_messageLoadSequence = 0;
     bool m_turnActive = false;
     int m_runGeneration = 0;
+    quint64 m_promptDispatchSequence = 0;
     /** Generation sealed by the last abort; `-1` when the gate is open. */
     int m_sealedGeneration = -1;
     bool m_waitingForAbortSettled = false;

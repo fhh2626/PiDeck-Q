@@ -26,6 +26,11 @@ struct TaskMessage {
     QString text;
 };
 
+struct TaskCommand {
+    QString name;
+    QString args;
+};
+
 /**
  * Only explicitly visible (`display: true`) task messages are user turns; task rules
  * and continuation prompts stay hidden.
@@ -34,6 +39,13 @@ bool readTodoTaskMessage(const QJsonValue &value, TaskMessage *message);
 
 /** Goal-only reader: session titles and previews keep using the original task. */
 bool readTodoTaskGoal(const QJsonValue &value, QString *goal);
+
+/** Original slash command, kept separate from the neutral model goal by new senders. */
+bool readTodoTaskCommand(const QJsonValue &value, TaskCommand *command);
+
+/** Match only the adjacent host-created command and retain its visible/request identity. */
+bool acknowledgeTodoCommand(const QJsonObject &pending, const QJsonObject &card,
+                            QJsonObject *acknowledged);
 
 /**
  * Sender-provided identity for one task message. Live events and projected history must

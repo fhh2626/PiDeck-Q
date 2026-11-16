@@ -54,10 +54,11 @@ function createAuthorizationStub() {
 	return stub;
 }
 
-function loadFilesIpc(authorization) {
+function loadFilesIpc(authorization, platform = process.platform) {
 	const ipc = loadSharedIpc();
 	const sandbox = {
 		exports: {},
+		process: { platform },
 		require: (id) => {
 			if (id.includes("shared/ipc")) return ipc;
 			if (id.includes("authorizedPaths")) return authorization;
@@ -159,7 +160,7 @@ test("Files IPC: platformShell openPath rejection and success behavior", async (
 
 test("Files IPC: shell only ever receives the authorized canonical host path", async () => {
 	const authorization = createAuthorizationStub();
-	const { registerFilesIpc } = loadFilesIpc(authorization);
+	const { registerFilesIpc } = loadFilesIpc(authorization, "win32");
 
 	const router = createFakeRouter();
 	const openedPaths = [];
@@ -204,6 +205,33 @@ test("Files IPC: shell only ever receives the authorized canonical host path", a
 	assert.equal(openAuth.target, "C:\\project\\file.txt");
 	assert.deepEqual(openedPaths, ["C:/project/file.txt"]);
 });
+
+for (const [platform, input, expected] of [
+	["win32", "/mnt/c", "C:/"],
+	["win32", "/mnt/C/project/a.md", "C:/project/a.md"],
+	["win32", "/C:/project/a.md", "C:/project/a.md"],
+	["win32", String.raw`\\WSL$\ubuntu\home\Foo\a.md`, "//WSL$/ubuntu/home/Foo/a.md"],
+	["linux", "/mnt/c/project/a.md", "/mnt/c/project/a.md"],
+	["darwin", "/home/Foo/a.md", "/home/Foo/a.md"],
+]) {
+	test(`Files IPC: ${platform} opens the real host target for ${input}`, async () => {
+		const authorization = createAuthorizationStub();
+		const { registerFilesIpc } = loadFilesIpc(authorization, platform);
+		const router = createFakeRouter();
+		const opened = [];
+		registerFilesIpc(router, {
+			fileSystemService: {}, projectStore: {},
+			settingsStore: { get: () => ({ wslEnabled: true, wslDistro: "Ubuntu" }) },
+			appLogger: { info() {}, error() {} }, dialogs: {},
+			platformShell: { openPath: async (path) => { opened.push(path); return { ok: true }; } },
+			getAuthorizedRoots: () => [expected],
+		});
+		await router.invoke(ipcChannels.filesOpen, input);
+		assert.equal(authorization.canonicalize(authorization.calls[0].target), expected,
+			"the real host identity must reach authorization before any shell call");
+		assert.deepEqual(opened, [expected]);
+	});
+}
 
 test("Files IPC: copy into an occupied name writes a numbered copy", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pideck-files-copy-"));

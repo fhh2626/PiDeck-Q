@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "MacDockReopenHandler.h"
 #include "NativeApplication.h"
+#include "NativeFileShell.h"
 #include "NativePaths.h"
 #include "NativeTheme.h"
 #include "NodeProcessController.h"
@@ -329,15 +330,7 @@ int main(int argc, char **argv)
         return QJsonValue(QJsonObject{{QStringLiteral("ok"), ok}, {QStringLiteral("error"), ok ? QString{} : QStringLiteral("Unable to open path")}});
     });
     host.registerHandler(QStringLiteral("shell.showItemInFolder"), [](const QJsonObject &params) {
-        const QString path = params.value(QStringLiteral("path")).toString();
-#ifdef Q_OS_WIN
-        QProcess::startDetached(QStringLiteral("explorer.exe"), {
-            QStringLiteral("/select,%1").arg(QDir::toNativeSeparators(path)),
-        });
-#else
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
-#endif
-        return QJsonValue(QJsonValue::Null);
+        return QJsonValue(revealNativeFile(params.value(QStringLiteral("path")).toString()));
     });
     host.registerHandler(QStringLiteral("shell.trashItem"), [](const QJsonObject &params) {
         const bool ok = QFile::moveToTrash(params.value(QStringLiteral("path")).toString());

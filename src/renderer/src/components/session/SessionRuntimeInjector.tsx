@@ -2,6 +2,7 @@ import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { ChatMessage, TerminalTarget } from "../../../../shared/types";
 import { settingsOpenAtom } from "../../atoms";
+import { projectByIdAtomFamily } from "../../atoms/project-atoms";
 import {
   claimSessionRuntimeUiResponseAtom,
   rollbackSessionRuntimeUiResponseAtom,
@@ -11,6 +12,7 @@ import {
   sessionRuntimeUiBySessionIdAtomFamily,
 } from "../../atoms/session-selectors";
 import { useSessionRuntimeController } from "../../hooks/useSessionRuntimeController";
+import { useStoppedSessionHistory } from "../../hooks/useStoppedSessionHistory";
 import {
   createSessionRuntimeUiResponder,
   SessionRuntimeUiOverlay,
@@ -20,6 +22,7 @@ import type { SessionTimelineController } from "../../hooks/useSessionTimelineCo
 import { QueuedPromptPanel } from "./ComposerPanels";
 import { SessionView } from "./SessionView";
 import { useSessionPaneServices } from "./SessionPaneServices";
+import { MarkdownFileBasePathContext } from "./MarkdownFileBasePath";
 import {
   TimelineEditCommandsProvider,
   type TimelineEditCommands,
@@ -135,10 +138,18 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
   const activeAgent = runtime.activeAgentId
     ? services.agents.find((a) => a.id === runtime.activeAgentId)
     : undefined;
+  const sessionProject = useAtomValue(projectByIdAtomFamily(runtime.currentSession?.projectId ?? ""));
+  const fileBasePath = activeAgent?.cwd ?? runtime.currentSession?.projectPath ?? sessionProject?.path ?? "";
+  // Bind the owning pane before opening. Focus can change during a click, and a
+  // stopped session still owns its persisted project directory.
+  const openSessionFile = React.useCallback((path: string) => {
+    services.onOpenFile(path, fileBasePath);
+  }, [services.onOpenFile, fileBasePath]);
   const canMutateActiveMessages = runtime.canMutateActiveMessages;
-  const messageCommandTarget = runtime.runtimeTarget;
+  const messageCommandTarget = runtime.messageCommandTarget;
+  const historyMessagesReady = useStoppedSessionHistory(messageCommandTarget, services.showToast);
   const canDispatchMessageMutation =
-    canMutateActiveMessages && messageCommandTarget !== undefined;
+    canMutateActiveMessages && historyMessagesReady && messageCommandTarget !== undefined;
   // latest-ref：App 每次渲染都会重建 services.* 回调。若把回调本身放进 useMemo 依赖，
   // messageActions 每帧都换引用，TurnRow 按引用比较回调时会在流式期间整列重渲染。
   // ref 让包装函数只在「能否派发 / 目标 runtime / 能力有无」变化时换新，点击时仍调最新实现。
@@ -181,6 +192,7 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
     messageCommandTarget?.sessionId,
     messageCommandTarget?.agentId,
     messageCommandTarget?.runtimeGeneration,
+    messageCommandTarget && "kind" in messageCommandTarget ? messageCommandTarget.filePath : undefined,
     hasResendService,
     hasEditService,
     hasDeleteService,
@@ -204,6 +216,7 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
   }, [messageCommandTarget]);
 
   return (
+    <MarkdownFileBasePathContext.Provider value={fileBasePath}>
     <TimelineEditCommandsProvider value={timelineEditCommands}>
       <SessionView
         sessionId={currentSessionId}
@@ -228,7 +241,7 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
         validCommandNames={services.validCommandNames}
         validFilePaths={services.validFilePaths}
         onPreviewImage={services.onPreviewImage}
-        onOpenFile={services.onOpenFile}
+        onOpenFile={openSessionFile}
         onDiffFile={services.onDiffFile}
         onResendUserMessage={messageActions.onResendUserMessage}
         onEditMessage={messageActions.onEditMessage}
@@ -248,7 +261,7 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
         enqueueSessionPrompt={services.enqueueSessionPrompt}
         gitInfo={services.gitInfo}
         ensureSessionId={services.ensureSessionId}
-        openFilePath={services.onOpenFile}
+        openFilePath={openSessionFile}
         runtimeUi={
           runtimeUiResponder ? (
             <SessionRuntimeUiOverlay
@@ -292,5 +305,6 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
         abortAgent={services.abortAgent}
       />
     </TimelineEditCommandsProvider>
+    </MarkdownFileBasePathContext.Provider>
   );
 });

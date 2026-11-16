@@ -1,9 +1,13 @@
+import type { ChatMessage } from "./types";
+
 /** Desktop projection of the neutral custom messages emitted by the standalone todo extension. */
 export const PI_TODO_TASK_START = "pi-deck-todo-task-start";
 /** User guidance that resumed a blocked goal; same read-only card, different label. */
 export const PI_TODO_TASK_RESUME = "pi-deck-todo-task-resume";
 
 export type TodoTaskMessageKind = "goal" | "resume";
+
+export type TodoTaskCommand = { name: "todo" | "todo-goal" | "todo-resume"; args: string };
 
 /** Only explicitly visible task messages are user turns; rules and continuations stay hidden. */
 export function readTodoTaskMessage(value: unknown): { kind: TodoTaskMessageKind; text: string } | undefined {
@@ -16,6 +20,39 @@ export function readTodoTaskMessage(value: unknown): { kind: TodoTaskMessageKind
 /** Goal-only reader: session titles and previews keep using the original task. */
 export function readTodoTaskGoal(value: unknown): string | undefined {
 	return readVisibleCustom(value, PI_TODO_TASK_START);
+}
+
+/** New senders persist the original command separately from the neutral model goal. */
+export function readTodoTaskCommand(value: unknown): TodoTaskCommand | undefined {
+	const task = readTodoTaskMessage(value);
+	if (!task || typeof value !== "object" || value === null) return undefined;
+	const details: unknown = Reflect.get(value, "details");
+	if (typeof details !== "object" || details === null) return undefined;
+	const name: unknown = Reflect.get(details, "commandName");
+	const args: unknown = Reflect.get(details, "commandArgs");
+	if (typeof args !== "string") return undefined;
+	if (task.kind === "goal" && (name === "todo" || name === "todo-goal")) return { name, args: args.trim() };
+	if (task.kind === "resume" && name === "todo-resume") return { name, args: args.trim() };
+	return undefined;
+}
+
+/**
+ * Replace only the adjacent host-created command that this custom task acknowledges.
+ * A repeated goal or an unrelated user turn must not be swallowed by text matching.
+ */
+export function acknowledgeTodoCommand(pending: ChatMessage | undefined, card: ChatMessage): ChatMessage | undefined {
+	if (!pending || pending.role !== "user" || !isTodoTaskCard(card)) return undefined;
+	const requestId = pending.meta?.optimisticRequestId;
+	if (typeof requestId !== "string" || !requestId) return undefined;
+	const name = card.meta?.todoTaskCommandName;
+	const args = card.meta?.todoTaskCommandArgs;
+	if (typeof name !== "string" || typeof args !== "string") return undefined;
+	const command = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(pending.text.trim());
+	if (!command || command[1] !== name || (command[2] ?? "").trim() !== args) return undefined;
+	return { ...card, id: pending.id,
+		meta: { ...card.meta, optimisticRequestId: requestId,
+			...(pending.meta?.streamingBehavior === "steer" || pending.meta?.streamingBehavior === "followUp"
+				? { streamingBehavior: pending.meta.streamingBehavior } : {}) } };
 }
 
 /** Pi entries store ISO timestamps while chat messages use epoch milliseconds. */

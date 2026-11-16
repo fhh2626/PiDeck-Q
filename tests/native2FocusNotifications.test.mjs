@@ -12,7 +12,7 @@ import {
 	resolveBackendExecutable,
 	rpc,
 	spawnBackend,
-	startBackendSession,
+	startBackendSession as startIsolatedBackendSession,
 	waitForRendererReady,
 } from "./helpers/native2BackendHarness.mjs";
 
@@ -36,6 +36,13 @@ const clipboardHandler = () => ({
 	result: { text: "", html: "", filePaths: [], hasImage: false, sequence: 0 },
 });
 
+/** Single-instance cases require the endpoint even when other suites opt out. */
+function startBackendSession(t, options = {}) {
+	return startIsolatedBackendSession(t, {
+		...options, settings: { singleInstance: true, ...options.settings },
+	});
+}
+
 function readLockFiles(userData) {
 	const directory = join(userData, "instance-locks");
 	if (!existsSync(directory)) return [];
@@ -46,7 +53,7 @@ function readLockFiles(userData) {
 
 /** Isolated directory that is always removed, even when an assertion fails. */
 function createFixture(t, options = {}) {
-	const fixture = createBackendFixture(options);
+	const fixture = createBackendFixture({ ...options, settings: { singleInstance: true, ...options.settings } });
 	t.after(() => rmSync(fixture.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	return fixture;
 }
@@ -345,7 +352,11 @@ if (executable) {
 		});
 	});
 
-	describe("native2 notification producer", () => {
+	// Notifications.cpp advertises toast support only on Windows. Keep the full
+	// interactive contract there and verify the unsupported-host boundary below.
+	describe("native2 notification producer", {
+		skip: process.platform !== "win32" ? "The native toast capability is Windows-only" : false,
+	}, () => {
 		test("a completed turn shows a toast that jumps to the stable session id", async (t) => {
 			const { session, record } = await startCompletedTurn(t);
 			const shown = await session.host.waitForRequest("notification.show");
@@ -500,6 +511,28 @@ if (executable) {
 			assert.equal(fallback.params.body, `“${empty.record.title}” is waiting for your confirmation`);
 		});
 	});
+
+	test("native2 notification producer keeps completed turns quiet outside Windows", {
+		skip: process.platform === "win32" ? "Unsupported notification host contract" : false,
+	}, async (t) => {
+		const completed = await startCompletedTurn(t, { settings: { enableNotifications: true } });
+		await settleQuietly(completed);
+		const runtimes = await completed.session.invoke("sessions:runtime-list", []);
+		assert.equal(runtimes.payload.result.find((runtime) => runtime.sessionId === completed.record.id)?.status, "idle");
+		assert.equal(notificationShows(completed.session).length, 0,
+			"an unsupported platform must not ask the host to show a completion toast");
+	});
+
+	test("native2 notification producer keeps pending asks quiet outside Windows", {
+		skip: process.platform === "win32" ? "Unsupported notification host contract" : false,
+	}, async (t) => {
+		const pending = await startAskTurn(t, { settings: { enableNotifications: true } });
+		await pending.session.invoke("sessions:set-focused-session", [OTHER_RECORD_ID]);
+		await sendTurn(pending.session, pending.record);
+		await waitForAsk(pending.sse, "ask-1");
+		assert.equal(notificationShows(pending.session).length, 0,
+			"a real unfocused ask still cannot advertise unsupported toast delivery");
+	});
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -554,7 +587,8 @@ const assistantTurn = (text) => [
 async function startCompletedTurn(t, { settings = {}, hostHandlers = {}, abortBeforeSettle = false } = {}) {
 	const projectPath = projectDirectory("notify");
 	let fake = null;
-	const session = await startBackendSession(t, {
+	// Notification production does not depend on the cross-process singleton endpoint.
+	const session = await startIsolatedBackendSession(t, {
 		projects: [{ id: "notify", path: projectPath }],
 		settings: { language: "en-US", ...settings },
 		hostHandlers: {
@@ -644,7 +678,7 @@ async function startAskTurn(t, { settings = {}, turnAsks = [["ask-1"]], title = 
 	}));
 	// `agent_start` must precede the ask of its own run: it is what re-arms the reminder.
 	for (const turn of turns) turn.events.unshift({ event: { type: "agent_start" } });
-	const session = await startBackendSession(t, {
+	const session = await startIsolatedBackendSession(t, {
 		projects: [{ id: "ask", path: projectPath }],
 		settings: { language: "en-US", ...settings },
 		hostHandlers: {

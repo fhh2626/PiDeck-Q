@@ -320,6 +320,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
                     isAgentStarting={composer.isStarting}
                     canSend={composer.delivery.canSend}
                     onSend={composer.delivery.send}
+                    onSendSteer={composer.delivery.steer}
                     onSendFollowUp={composer.delivery.followUp}
                     onSendAsk={() => void handleAskSend()}
                     onStop={composer.delivery.abort}

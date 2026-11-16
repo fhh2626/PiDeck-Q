@@ -476,15 +476,17 @@ test("workflow resume inherits workflow usageBudget unless overridden by child",
 	assert.equal(runSyncCalls[0].options.usageBudget?.costUsd?.hard, 42, "workflow-owned usage budget must reach resumed child");
 });
 
-test("workflow resume awaits detached continuation until authoritative onDetachedExit settles", async () => {
+test("workflow resume awaits detached continuation until authoritative onDetachedExit settles", { timeout: 10_000 }, async () => {
 	const fixture = createFixture(graph, "wf-detach");
 	seedCompletedForegroundRun(fixture, { runId: RUN_A });
 	const executor = graph.createSubagentExecutor(fixture.deps);
 
 	let detachedOptions;
+	const detachedReady = Promise.withResolvers();
 	resetDoubles();
 	setRunSyncBehavior(({ options }) => {
 		detachedOptions = options;
+		detachedReady.resolve();
 		return completedResult(fixture, { detached: true, detachedReason: "user request", exitCode: undefined, finalOutput: undefined });
 	});
 
@@ -504,14 +506,24 @@ test("workflow resume awaits detached continuation until authoritative onDetache
 		return res;
 	});
 
-	// Yield event loop to let workflow start and runSync return the detach receipt
-	await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(wfSettled, false, "workflow must NOT settle on provisional detach receipt");
-	assert.equal(typeof detachedOptions?.onDetachedExit, "function");
-
-	// Now trigger authoritative terminal exit
 	const terminal = completedResult(fixture, { detached: undefined, detachedReason: "user request", exitCode: 0, finalOutput: "REAL WORKFLOW TERMINAL OUTPUT" });
-	await detachedOptions.onDetachedExit(terminal);
+	try {
+		// Workflow imports and setup can exceed a fixed delay under the full test load.
+		// Observe the actual runner boundary, then let its provisional receipt propagate.
+		await Promise.race([
+			detachedReady.promise,
+			wfPromise.then(() => assert.fail("workflow settled before reaching the detached runner")),
+		]);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(wfSettled, false, "workflow must NOT settle on provisional detach receipt");
+		assert.equal(typeof detachedOptions?.onDetachedExit, "function");
+	} finally {
+		// Finish this workflow before a later case resets the shared runSync double.
+		if (typeof detachedOptions?.onDetachedExit === "function") {
+			await detachedOptions.onDetachedExit(terminal);
+			await wfPromise;
+		}
+	}
 
 	const wfResult = await wfPromise;
 	assert.equal(wfSettled, true, "workflow must settle once onDetachedExit settles");

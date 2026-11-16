@@ -20,6 +20,9 @@ qint64 monotonicNowMs()
 
 } // namespace
 
+// Construct nested defaults after the enclosing class is complete, as C++ requires.
+EventHub::EventHub() : EventHub(Limits{}) {}
+
 EventHub::EventHub(Limits limits, QObject *parent)
     : QObject(parent), m_limits(limits), m_generation(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {

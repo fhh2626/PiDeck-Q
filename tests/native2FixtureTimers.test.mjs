@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 /**
@@ -19,6 +22,7 @@ import { test } from "node:test";
  */
 
 const helperUrl = new URL("./helpers/native2MockVite.mjs", import.meta.url).href;
+const backendHelperUrl = new URL("./helpers/native2BackendHarness.mjs", import.meta.url).href;
 
 /** Run an ES module snippet in a child and return its JSON stdout. */
 function runChild(source, { timeoutMs = 20_000 } = {}) {
@@ -135,4 +139,44 @@ console.log(JSON.stringify({ message }));
 	// Both endings are bounded refusals: a clean FIN reaches the `close` branch and an RST
 	// surfaces as `ECONNRESET`. What matters is that `connect()` settles instead of hanging.
 	assert.match(result.message, /closed before \/hmr completed the handshake|ECONNRESET/);
+});
+
+test("a missing backend still rejects and its fixture cleanup releases the host listener", async () => {
+	const tempRoot = mkdtempSync(join(tmpdir(), "pideck-failed-backend-start-"));
+	try {
+		const result = await runChild(`
+import { existsSync } from "node:fs";
+import { startBackendSession } from ${JSON.stringify(backendHelperUrl)};
+for (const name of ["TMPDIR", "TEMP", "TMP"]) process.env[name] = ${JSON.stringify(tempRoot)};
+process.env.PIDECK_BACKEND_TEST_EXECUTABLE = "build/intentionally-missing-backend";
+process.env.PIDECK_REQUIRE_BACKEND_TESTS = "0";
+const cleanup = [];
+let fixtureRoot;
+let errorCode;
+let message;
+try {
+	await startBackendSession({ after(callback) { cleanup.push(callback); } }, {
+		prepare(fixture) { fixtureRoot = fixture.root; },
+	});
+} catch (error) {
+	errorCode = error.code;
+	message = error.message;
+}
+for (const callback of cleanup) await callback();
+// Report only after Node confirms that the event loop can finish naturally.
+// A listener left by the failed start prevents this event and hits the child timeout.
+process.once("beforeExit", () => console.log(JSON.stringify({
+	errorCode, message, cleanupCount: cleanup.length,
+	fixtureExists: existsSync(fixtureRoot),
+	listeners: process.getActiveResourcesInfo().filter((name) => name === "TCPServerWrap").length,
+})));
+`);
+		assert.equal(result.errorCode, "ERR_INVALID_ARG_VALUE");
+		assert.match(result.message, /file.*cannot be empty/);
+		assert.equal(result.cleanupCount, 1);
+		assert.equal(result.fixtureExists, false);
+		assert.equal(result.listeners, 0);
+	} finally {
+		rmSync(tempRoot, { recursive: true, force: true });
+	}
 });

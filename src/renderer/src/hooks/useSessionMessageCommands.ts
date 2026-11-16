@@ -3,6 +3,8 @@ import type {
 	AgentTab,
 	ChatMessage,
 	ImageContent,
+	SessionHistoryMessageTarget,
+	SessionMessageCommandTarget,
 	SessionRuntimeTarget,
 } from "../../../shared/types";
 import { desktopApi as api } from "../desktopApi";
@@ -16,6 +18,10 @@ type SessionMessageCommandsInput = {
 	agents: AgentTab[];
 	isRuntimeTargetBusy: (target: SessionRuntimeTarget) => boolean;
 	getRuntimeTargetForSession: (sessionId: string | undefined) => SessionRuntimeTarget | undefined;
+	/** Reads the clicked session, including a non-focused split pane. */
+	getHistoryCommandContext?: (sessionId: string) => { filePath: string; runtimeGeneration: number; projectId?: string } | undefined;
+	getMessageForSession?: (sessionId: string, messageId: string) => ChatMessage | undefined;
+	activateHistoryRuntime?: (target: SessionHistoryMessageTarget) => Promise<SessionRuntimeTarget>;
 	submitPromptSnapshot: (
 		sessionId: string,
 		message: string,
@@ -62,6 +68,16 @@ function translateAgentErrorMessage(message: string): string {
 	return message;
 }
 
+/** Stable file identities survive stopping and replacing the agent process. */
+function stableEntryId(message: ChatMessage | undefined): string | undefined {
+	if (typeof message?.meta?.entryId === "string" && message.meta.entryId) return message.meta.entryId;
+	const marker = message?.id.lastIndexOf("-history-") ?? -1;
+	if (!message || marker < 0) return undefined;
+	const entryId = message.id.slice(marker + "-history-".length).trim();
+	// Older projections used a transient numeric sequence in this slot.
+	return entryId && !/^\d+$/.test(entryId) ? entryId : undefined;
+}
+
 /** Owns user-message mutations and fork/resend guards for the active session. */
 export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 	const resendingIdsRef = useRef<Set<string>>(new Set());
@@ -87,6 +103,35 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		return latest;
 	}
 
+	/** Resolve a saved-history intent before IPC, retaining live generation fences. */
+	async function resolveMessageTarget(
+		expectedTarget: SessionMessageCommandTarget,
+		messageId: string,
+		message?: ChatMessage,
+	): Promise<{ target: SessionRuntimeTarget; messageId: string; entryId?: string }> {
+		const capturedMessage = input.getMessageForSession?.(expectedTarget.sessionId, messageId) ?? message;
+		const entryId = stableEntryId(capturedMessage);
+		if (!("kind" in expectedTarget)) {
+			return {
+				target: requireCurrentRuntimeTarget(expectedTarget),
+				messageId: capturedMessage?.agentId !== expectedTarget.agentId && entryId ? entryId : messageId,
+				entryId,
+			};
+		}
+		const context = input.getHistoryCommandContext?.(expectedTarget.sessionId);
+		if (!context || context.filePath !== expectedTarget.filePath || context.runtimeGeneration !== expectedTarget.runtimeGeneration) {
+			throw new Error(t("sessionCommand.runtimeChanged"));
+		}
+		if (!entryId) throw new Error(t("sessionCommand.messageNotFound"));
+		if (!input.activateHistoryRuntime) throw new Error(t("sessionCommand.runtimeUnavailable"));
+		const activated = await input.activateHistoryRuntime(expectedTarget);
+		const latestContext = input.getHistoryCommandContext?.(expectedTarget.sessionId);
+		if (activated.sessionId !== expectedTarget.sessionId || latestContext?.filePath !== expectedTarget.filePath) {
+			throw new Error(t("sessionCommand.runtimeChanged"));
+		}
+		return { target: requireCurrentRuntimeTarget(activated), messageId: entryId, entryId };
+	}
+
 	function releaseResendLock(messageId: string): void {
 		resendingIdsRef.current.delete(messageId);
 	}
@@ -102,19 +147,11 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		input.showToast(t("app.resendRestoredToComposer"), 6000);
 	}
 
-	function resendUserMessage(expectedTarget: SessionRuntimeTarget, message: ChatMessage): void {
+	function resendUserMessage(expectedTarget: SessionMessageCommandTarget, message: ChatMessage): void {
 		if (resendingIdsRef.current.has(message.id)) return;
-		if (message.agentId && message.agentId !== expectedTarget.agentId) {
+		if (!("kind" in expectedTarget) && message.agentId && message.agentId !== expectedTarget.agentId && !stableEntryId(message)) {
 			// runtime 已被替换：静默 return 会表现为「点了没反应」，必须告知用户
 			input.showToast(t("sessionCommand.runtimeChanged"), 5000);
-			return;
-		}
-
-		let currentTarget: SessionRuntimeTarget;
-		try {
-			currentTarget = requireCurrentRuntimeTarget(expectedTarget);
-		} catch (error) {
-			input.showToast(error instanceof Error ? error.message : String(error), 5000);
 			return;
 		}
 
@@ -131,11 +168,20 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		let preparedText: string | undefined;
 		void (async () => {
 			try {
+				// Keep live prepare dispatch synchronous so its pending operation is
+				// fenced before another runtime replacement can enter the event loop.
+				const resolved = "kind" in expectedTarget
+					? await resolveMessageTarget(expectedTarget, message.id, message)
+					: {
+						target: requireCurrentRuntimeTarget(expectedTarget),
+						messageId: message.agentId !== expectedTarget.agentId ? stableEntryId(message) ?? message.id : message.id,
+					};
+				const currentTarget = requireCurrentRuntimeTarget(resolved.target);
 				const currentSelected = input.getCurrentModelForSession?.(currentTarget.sessionId);
 				const snapshot = requireSessionCommand(
 					await api.sessions.prepareRuntimeResend(
 						currentTarget,
-						message.id,
+						resolved.messageId,
 						currentSelected?.model,
 						currentSelected?.thinkingLevel,
 					),
@@ -161,7 +207,7 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 					input.showToast(errMsg, 5000);
 				}
 				// 仅当文件已被截断（prepare 成功）才恢复正文；prepare 失败时原消息仍在时间线
-				if (preparedText !== undefined) restoreResendText(currentTarget.sessionId, preparedText);
+				if (preparedText !== undefined) restoreResendText(expectedTarget.sessionId, preparedText);
 			} finally {
 				releaseResendLock(message.id);
 				clearTimeout(timer);
@@ -170,11 +216,12 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		})();
 	}
 
-	async function editMessage(expectedTarget: SessionRuntimeTarget, messageId: string, newText: string): Promise<boolean> {
+	async function editMessage(expectedTarget: SessionMessageCommandTarget, messageId: string, newText: string): Promise<boolean> {
 		try {
-			const currentTarget = requireCurrentRuntimeTarget(expectedTarget);
+			const resolved = await resolveMessageTarget(expectedTarget, messageId);
+			const currentTarget = requireCurrentRuntimeTarget(resolved.target);
 			const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
-			requireSessionCommand(await api.sessions.editRuntimeMessage(currentTarget, messageId, newText));
+			requireSessionCommand(await api.sessions.editRuntimeMessage(currentTarget, resolved.messageId, newText));
 			if (refreshSnapshot && input.refreshHistoryAfterMutation) {
 				try {
 					await input.refreshHistoryAfterMutation(refreshSnapshot);
@@ -190,7 +237,9 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		}
 	}
 
-	function deleteMessage(expectedTarget: SessionRuntimeTarget, messageId: string): void {
+	function deleteMessage(expectedTarget: SessionMessageCommandTarget, messageId: string): void {
+		// Capture the entry before a confirmation or activation refresh replaces the row.
+		const capturedMessage = input.getMessageForSession?.(expectedTarget.sessionId, messageId);
 		input.overlays.showConfirm({
 			title: t("message.deleteTitle"),
 			message: t("message.deleteTurnPrompt"),
@@ -200,11 +249,12 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 				input.overlays.clearConfirm();
 				let settleOptimisticDeletion: ((outcome: "committed" | "failed") => void) | undefined;
 				try {
-					const currentTarget = requireCurrentRuntimeTarget(expectedTarget);
+					const resolved = await resolveMessageTarget(expectedTarget, messageId, capturedMessage);
+					const currentTarget = requireCurrentRuntimeTarget(resolved.target);
 					// 隐藏只作用于视图层，缓存原样保留：历史重读快照仍按真实已加载深度计算
 					const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
 					settleOptimisticDeletion = input.beginOptimisticDeletion?.(currentTarget.sessionId, messageId);
-					requireSessionCommand(await api.sessions.deleteRuntimeMessage(currentTarget, messageId));
+					requireSessionCommand(await api.sessions.deleteRuntimeMessage(currentTarget, resolved.messageId));
 					if (refreshSnapshot && input.refreshHistoryAfterMutation) {
 						await input.refreshHistoryAfterMutation(refreshSnapshot);
 					}
@@ -232,20 +282,25 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 		const forkMessages = requireSessionCommand(await api.sessions.getRuntimeForkMessages(target)).value;
 		const targetText = message.text.trim();
 		if (!targetText) return undefined;
-		// 相同正文取最后一条，最接近用户当前点击的消息。
-		for (let index = forkMessages.length - 1; index >= 0; index -= 1) {
-			const item = forkMessages[index];
-			if (item?.entryId && item.text?.trim() === targetText) return item.entryId;
+		// Compatibility rows may lack entryId, but repeated text cannot identify which
+		// turn was clicked. Only a single matching file identity is safe to fork.
+		let matchedEntryId: string | undefined;
+		for (const item of forkMessages) {
+			if (!item?.entryId || item.text?.trim() !== targetText) continue;
+			if (matchedEntryId && matchedEntryId !== item.entryId) return undefined;
+			matchedEntryId = item.entryId;
 		}
-		return undefined;
+		return matchedEntryId;
 	}
 
-	async function forkFromUserMessage(expectedTarget: SessionRuntimeTarget, message: ChatMessage): Promise<void> {
-		if (input.isRuntimeTargetBusy(expectedTarget) || forkingMessageId) return;
+	async function forkFromUserMessage(expectedTarget: SessionMessageCommandTarget, message: ChatMessage): Promise<void> {
+		if ((!("kind" in expectedTarget) && input.isRuntimeTargetBusy(expectedTarget)) || forkingMessageId) return;
 		setForkingMessageId(message.id);
 		try {
-			const currentTarget = requireCurrentRuntimeTarget(expectedTarget);
-			const entryId = await resolveForkEntryId(currentTarget, message);
+			const resolved = await resolveMessageTarget(expectedTarget, message.id, message);
+			const currentTarget = requireCurrentRuntimeTarget(resolved.target);
+			if (input.isRuntimeTargetBusy(currentTarget)) return;
+			const entryId = resolved.entryId ?? await resolveForkEntryId(currentTarget, message);
 			if (!entryId) {
 				input.showToast(t("app.forkMissingEntryId"), 4000);
 				return;
@@ -257,7 +312,9 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 				return;
 			}
 			const promptText = typeof result.text === "string" && result.text.length > 0 ? result.text : message.text;
-			const projectId = input.agents.find((agent) => agent.id === latestTarget.agentId)?.projectId ?? input.activeProjectId;
+			// Activation may finish before the agent inventory reaches this render.
+			const projectId = input.getHistoryCommandContext?.(latestTarget.sessionId)?.projectId
+				?? input.agents.find((agent) => agent.id === latestTarget.agentId)?.projectId ?? input.activeProjectId;
 			await input.openReplacedRuntimeSession(projectId, result.targetSessionId);
 			const draftTarget = result.targetSessionId ?? input.currentSessionIdRef.current ?? latestTarget.agentId;
 			if (result.targetSessionId) input.currentSessionIdRef.current = result.targetSessionId;

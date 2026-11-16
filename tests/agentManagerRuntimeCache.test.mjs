@@ -412,9 +412,13 @@ test("loadMessages keeps messages that changed while the snapshot was in flight 
 
     const result = manager.messages.get("agent-inflight");
     const byId = new Map(result.map((message) => [message.id, message]));
-    // 投影历史仍在（id 由投影器按 agentId-history-N 合成）
-    assert.equal(byId.get("agent-inflight-history-0").text, "old question");
-    assert.equal(byId.get("agent-inflight-history-1").text, "old answer");
+    // 无 entryId 的投影仍保留原始序号，但显示 ID 不再伪装成文件身份。
+    const oldQuestion = result.find((message) => message.meta?._piDeckMsgSeq === 0);
+    const oldAnswer = result.find((message) => message.meta?._piDeckMsgSeq === 1);
+    assert.equal(oldQuestion.text, "old question");
+    assert.equal(oldAnswer.text, "old answer");
+    assert.equal(oldQuestion.id.includes("-history-"), false);
+    assert.equal(oldAnswer.id.includes("-history-"), false);
     assert.equal(byId.get("runtime-streaming").text, "partial + more", "in-flight update must survive the snapshot write");
     assert.equal(byId.get("runtime-late").text, "sent during load");
     // 不重复：同一 ID 只出现一次

@@ -133,8 +133,8 @@ test("replacement restore is gated by full origin identity in main", () => {
   assert.match(coordinator, /replacementBySession/);
 });
 
-test("message mutation commands in SessionRuntimeInjector bind pane runtime target", () => {
-  assert.match(runtimeInjector, /messageCommandTarget = runtime\.runtimeTarget/);
+test("message mutation commands in SessionRuntimeInjector bind the pane's live or saved-history target", () => {
+  assert.match(runtimeInjector, /messageCommandTarget = runtime\.messageCommandTarget/);
   assert.match(runtimeInjector, /canDispatchMessageMutation/);
   assert.match(runtimeInjector, /latestMessageServicesRef\.current\.deleteMessage\?\.\(\s*messageCommandTarget,\s*messageId\s*\)/);
   assert.match(runtimeInjector, /latestMessageServicesRef\.current\.editMessage\?\.\(\s*messageCommandTarget,\s*messageId,\s*newText\s*\)/);

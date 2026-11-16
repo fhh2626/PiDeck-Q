@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { isPathInsideRoot } from "../security/policy";
+import { parseWslUncPath } from "../wsl/WslPaths";
 
 export const FILE_PATH_NOT_AUTHORIZED_CODE = "FILE_PATH_NOT_AUTHORIZED";
 
@@ -13,11 +14,23 @@ export class UnauthorizedFilePathError extends Error {
 	}
 }
 
+/** WSL host aliases share an identity, while names inside the distro retain Linux case. */
+function isPathInsideAuthorizedRoot(target: string, root: string): boolean {
+	const wslTarget = parseWslUncPath(target);
+	const wslRoot = parseWslUncPath(root);
+	if (wslTarget || wslRoot) {
+		if (!wslTarget || !wslRoot || wslTarget.distro.toLowerCase() !== wslRoot.distro.toLowerCase()) return false;
+		const prefix = wslRoot.linuxPath.endsWith("/") ? wslRoot.linuxPath : `${wslRoot.linuxPath}/`;
+		return wslTarget.linuxPath === wslRoot.linuxPath || wslTarget.linuxPath.startsWith(prefix);
+	}
+	return isPathInsideRoot(target, root);
+}
+
 /** 判断规范化后的路径是否位于任一授权根目录内。 */
 export function isPathWithinAuthorizedRoots(target: string, roots: readonly string[]): boolean {
 	if (!target || roots.length === 0) return false;
 	const normalizedTarget = resolve(target);
-	return roots.some((root) => root.length > 0 && isPathInsideRoot(normalizedTarget, resolve(root)));
+	return roots.some((root) => root.length > 0 && isPathInsideAuthorizedRoot(normalizedTarget, resolve(root)));
 }
 
 /** 仅做词法边界检查；真实文件操作必须使用下面的 filesystem-aware assertion。 */
@@ -104,7 +117,7 @@ export async function assertAuthorizedFilePath(
 
 	if (mode === "link") {
 		const realParent = await realpathWithMissingSuffix(dirname(normalizedTarget));
-		if (!resolvedRoots.some((root) => isPathInsideRoot(realParent, root))) {
+		if (!resolvedRoots.some((root) => isPathInsideAuthorizedRoot(realParent, root))) {
 			throw new UnauthorizedFilePathError(operation);
 		}
 		// Inspect the final entry without following it. Deleting/renaming a link is
@@ -122,7 +135,7 @@ export async function assertAuthorizedFilePath(
 	}
 	const existingTarget = await realpathIfPresent(normalizedTarget);
 	const containmentTarget = existingTarget ?? await realpathWithMissingSuffix(normalizedTarget);
-	if (!resolvedRoots.some((root) => isPathInsideRoot(containmentTarget, root))) {
+	if (!resolvedRoots.some((root) => isPathInsideAuthorizedRoot(containmentTarget, root))) {
 		throw new UnauthorizedFilePathError(operation);
 	}
 	return existingTarget ?? normalizedTarget;

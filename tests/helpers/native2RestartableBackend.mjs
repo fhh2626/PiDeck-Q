@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	backendEnvFor,
+	backendFixtureSettings,
 	FakeHost,
 	resolveBackendExecutable,
 	rpc,
@@ -45,7 +46,7 @@ export function createSharedFixture({ projects = [], settings = {} } = {}) {
 	}
 	writeFileSync(join(fixture.renderer, "index.html"), "<!doctype html><html><body>PiDeck shell</body></html>");
 	writeFileSync(join(fixture.renderer, "assets/app.js"), "export const marker = 'pideck-app';\n");
-	writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify({ theme: "system", ...settings }));
+	writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify(backendFixtureSettings(settings)));
 	if (projects.length > 0) {
 		writeFileSync(
 			join(fixture.userData, "projects.json"),
@@ -69,7 +70,7 @@ export function createSharedFixture({ projects = [], settings = {} } = {}) {
  * `t.after` tears the process down, so a test that forgets to stop cannot leak a child.
  */
 export async function startBackend(t, fixture, { settings = {}, env = {} } = {}) {
-	writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify(settings));
+	writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify(backendFixtureSettings(settings)));
 	const host = new FakeHost({
 		token: TOKEN,
 		handlers: {
@@ -78,7 +79,7 @@ export async function startBackend(t, fixture, { settings = {}, env = {} } = {})
 			}),
 			"shell.trashItem": () => ({ result: null }),
 			"shell.openPath": () => ({ result: { ok: true } }),
-			"shell.showItemInFolder": () => ({ result: null }),
+			"shell.showItemInFolder": () => ({ result: { ok: true } }),
 		},
 	});
 	const hostPort = await host.start();

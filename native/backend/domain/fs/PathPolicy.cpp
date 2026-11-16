@@ -1,4 +1,5 @@
 #include "PathPolicy.h"
+#include "WslFilePaths.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -107,6 +108,9 @@ bool isPathInsideRoot(const QString &target, const QString &root)
     const QString normalizedTarget = resolvePolicyPath(target);
     const QString normalizedRoot = resolvePolicyPath(root);
     if (normalizedTarget.isEmpty() || normalizedRoot.isEmpty()) return false;
+    // WSL is a case-sensitive Linux filesystem behind case-insensitive UNC host
+    // and distro names. Compare its identity before ordinary Windows folding.
+    if (const auto insideWsl = wsl::isFilePathInsideRoot(target, root)) return *insideWsl;
     if (normalizedTarget.compare(normalizedRoot, kPathCase) == 0) return true;
     QString prefix = normalizedRoot;
     if (!prefix.endsWith(QLatin1Char('/'))) prefix += QLatin1Char('/');

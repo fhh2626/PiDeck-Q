@@ -145,7 +145,7 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
                 latest->refreshFileVersion();
                 emitState();
                 done(true, QString());
-            });
+            }, true);
         });
 }
 

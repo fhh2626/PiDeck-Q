@@ -110,6 +110,12 @@ async function withQueuedPrompt(run) {
       dispatched,
       toasts,
       setDispatch: (impl) => { dispatchImpl = impl; },
+      startRuntime: () => {
+        store.set(runtimeAtom, {
+          [SESSION_ID]: { agentId: AGENT_ID, status: "running", state: { isStreaming: true } },
+        });
+        options.displayAgentsRef.current = [{ id: AGENT_ID, status: "running" }];
+      },
       /** 模拟 agent 跑完：运行态与 agent 状态一起回到 idle。 */
       settleRuntime: () => {
         store.set(runtimeAtom, {
@@ -147,6 +153,80 @@ test("flushQueuedSteerPrompts dispatches only the queue head per tool-end window
       ["p2", "p3"],
       "the remaining messages stay in the local queue so the user can still retract them",
     );
+  });
+});
+
+test("ordinary followUp tasks survive tool windows and each wait for the preceding run to settle", async () => {
+  await withQueuedPrompt(async ({ api, dispatched, settleRuntime, startRuntime, setDispatch }) => {
+    setDispatch(async (sessionId, message, _images, behavior) => {
+      dispatched.push({ sessionId, message, behavior });
+      startRuntime();
+    });
+    await act(async () => {
+      for (const id of ["p1", "p2", "p3"]) {
+        api().enqueueQueuedPrompt(SESSION_ID, { ...steerPrompt(id), behavior: "followUp" });
+      }
+      for (let tool = 0; tool < 3; tool++) await api().flushQueuedSteerPrompts(SESSION_ID);
+      await api().flushNextQueuedPrompt(SESSION_ID);
+    });
+    assert.equal(dispatched.length, 0, "tool completions do not interrupt the active task with normal queued input");
+
+    for (let completed = 0; completed < 3; completed++) {
+      await act(async () => {
+        settleRuntime();
+        await api().flushNextQueuedPrompt(SESSION_ID);
+      });
+      assert.equal(dispatched.length, completed + 1);
+      await act(async () => {
+        await api().flushQueuedSteerPrompts(SESSION_ID);
+        await api().flushQueuedSteerPrompts(SESSION_ID);
+        await api().flushNextQueuedPrompt(SESSION_ID);
+      });
+      assert.equal(dispatched.length, completed + 1, "the next queued task waits for completion, not a tool boundary");
+    }
+    assert.deepEqual(dispatched.map((call) => call.message), ["expanded:p1", "expanded:p2", "expanded:p3"]);
+    assert.ok(dispatched.every((call) => call.behavior === "followUp"));
+    assert.equal(api().queuedPrompts[SESSION_ID], undefined);
+  });
+});
+
+test("an accepted followUp cannot advance the queue before its delayed busy and settled events", async () => {
+  await withQueuedPrompt(async ({ api, dispatched, settleRuntime, startRuntime }) => {
+    settleRuntime();
+    await act(async () => {
+      for (const id of ["p1", "p2"]) api().enqueueQueuedPrompt(SESSION_ID, { ...steerPrompt(id), behavior: "followUp" });
+      await api().flushNextQueuedPrompt(SESSION_ID);
+      await new Promise((resolve) => setTimeout(resolve, 210));
+    });
+    assert.deepEqual(dispatched.map((call) => call.message), ["expanded:p1"], "accepted does not confirm that the task finished");
+    await act(async () => {
+      startRuntime();
+      await api().flushNextQueuedPrompt(SESSION_ID);
+    });
+    assert.equal(dispatched.length, 1);
+    await act(async () => {
+      settleRuntime();
+      await api().flushNextQueuedPrompt(SESSION_ID);
+    });
+    assert.deepEqual(dispatched.map((call) => call.message), ["expanded:p1", "expanded:p2"]);
+  });
+});
+
+test("a run that starts and settles before accepted still releases the next followUp", async () => {
+  await withQueuedPrompt(async ({ api, dispatched, settleRuntime, startRuntime, setDispatch }) => {
+    settleRuntime();
+    setDispatch(async (_sessionId, message) => {
+      dispatched.push({ message });
+      startRuntime();
+      settleRuntime();
+    });
+    await act(async () => {
+      for (const id of ["p1", "p2"]) api().enqueueQueuedPrompt(SESSION_ID, { ...steerPrompt(id), behavior: "followUp" });
+      await api().flushNextQueuedPrompt(SESSION_ID);
+      const deadline = Date.now() + 2000;
+      while (dispatched.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+    assert.deepEqual(dispatched.map((call) => call.message), ["expanded:p1", "expanded:p2"]);
   });
 });
 

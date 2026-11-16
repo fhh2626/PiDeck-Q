@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -550,6 +550,13 @@ export class SseClient {
  * Isolated backend fixture: user data, renderer shell, session/prompt/skill roots and
  * a project catalog. Nothing here touches a real user profile or repository.
  */
+export function backendFixtureSettings(settings = {}, environment = process.env) {
+	// A sandbox may permit TCP but deny Unix-domain sockets. Runtime/file suites
+	// can explicitly disable the unrelated singleton feature; tests of that feature
+	// must request singleInstance:true and still exercise the real local endpoint.
+	return { theme: "system", ...(environment.PIDECK_TEST_SINGLE_INSTANCE === "0" ? { singleInstance: false } : {}), ...settings };
+}
+
 export function createBackendFixture({ projects = [], settings = {}, prefix = "pideck-native2-" } = {}) {
 	const root = mkdtempSync(join(tmpdir(), prefix));
 	const userData = join(root, "user-data");
@@ -564,7 +571,7 @@ export function createBackendFixture({ projects = [], settings = {}, prefix = "p
 	}
 	writeFileSync(join(renderer, "index.html"), "<!doctype html><html><body>PiDeck shell</body></html>");
 	writeFileSync(join(renderer, "assets/app.js"), "export const marker = 'pideck-app';\n");
-	writeFileSync(join(userData, "settings.json"), JSON.stringify({ theme: "system", ...settings }));
+	writeFileSync(join(userData, "settings.json"), JSON.stringify(backendFixtureSettings(settings)));
 	if (projects.length > 0) {
 		writeFileSync(
 			join(userData, "projects.json"),
@@ -624,6 +631,7 @@ export function createFakePi(fixture, scenario, { repoRoot = process.cwd() } = {
 			? `@echo off\r\nnode "${script}" %*\r\n`
 			: `#!/bin/sh\nexec node "${script}" "$@"\n`,
 	);
+	if (process.platform !== "win32") chmodSync(shim, 0o755);
 	return {
 		shim,
 		scenarioPath,
@@ -667,7 +675,7 @@ export async function startBackendSession(
 		const prepared = prepare(fixture) ?? {};
 		resolvedSettings = { ...settings, ...(prepared.settings ?? {}) };
 		resolvedEnv = { ...env, ...(prepared.env ?? {}) };
-		writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify(resolvedSettings));
+		writeFileSync(join(fixture.userData, "settings.json"), JSON.stringify(backendFixtureSettings(resolvedSettings)));
 	}
 	const trashCalls = [];
 	const handlers = {
@@ -679,20 +687,16 @@ export async function startBackendSession(
 			return { result: null };
 		},
 		"shell.openPath": () => ({ result: { ok: true } }),
-		"shell.showItemInFolder": () => ({ result: null }),
+		"shell.showItemInFolder": () => ({ result: { ok: true } }),
 		"dialog.open": () => ({ result: { canceled: true, filePaths: [] } }),
 		...hostHandlers,
 	};
 	const host = new FakeHost({ token: "parity-test-token", handlers });
-	const hostPort = await host.start();
-	const process_ = spawnBackend({
-		executable: resolveBackendExecutable(),
-		hostPort,
-		token: "parity-test-token",
-		env: backendEnvFor(fixture, resolvedEnv),
-	});
+	let process_;
+	// Resolving or spawning a missing backend can throw after the host starts listening.
+	// Register cleanup first so that a failing test still exits and reports the failure.
 	t.after(async () => {
-		if (process_.child.exitCode === null) {
+		if (process_ && process_.child.exitCode === null) {
 			// Ask the backend to shut down so it closes pi itself: killing it would leave
 			// the pi grandchild holding the fixture cwd and block the temp-dir cleanup.
 			try {
@@ -708,6 +712,13 @@ export async function startBackendSession(
 		}
 		await host.stop();
 		rmSync(fixture.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
+	const hostPort = await host.start();
+	process_ = spawnBackend({
+		executable: resolveBackendExecutable(),
+		hostPort,
+		token: "parity-test-token",
+		env: backendEnvFor(fixture, resolvedEnv),
 	});
 	const ready = await waitForRendererReady(host, 15_000, process_);
 	const baseUrl = ready.url;

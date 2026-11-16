@@ -278,7 +278,12 @@ void registerFileMutationChannels(ChannelRegistry &registry, ChannelServices &se
                 auto request = services.host->request(QStringLiteral("shell.showItemInFolder"), QJsonObject{
                     {QStringLiteral("path"), outcome.value.toString()},
                 });
-                request->then([responder](const QJsonValue &) mutable {
+                request->then([responder](const QJsonValue &value) mutable {
+                    const QJsonObject result = value.toObject();
+                    if (!result.value(QStringLiteral("ok")).toBool()) {
+                        return responder.reject(result.value(QStringLiteral("error")).toString(
+                            QStringLiteral("Unable to reveal the path")));
+                    }
                     responder.resolve(QJsonValue(QJsonValue::Null));
                 });
                 request->fail([responder](const QString &error) mutable { responder.reject(error); });

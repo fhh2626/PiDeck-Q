@@ -116,18 +116,18 @@ test("a failed WSL which is also remembered within the TTL", () => {
 });
 
 test("an absolute Windows .exe is spawned directly instead of through cmd.exe", () => {
-	const root = makeTempDir("pideck-locator-exe-");
-	const exe = join(root, "Pi Bolt", "pi-bolt.exe");
-	mkdirSync(join(root, "Pi Bolt"), { recursive: true });
-	writeFileSync(exe, "", "utf8");
 	const { PiLocator } = loadLocator({ platform: "win32", execFileSync: () => "" });
-	const invocation = new PiLocator().createInvocation(exe, ["--mode", "rpc", "-e", "C:\\a b\\ext.ts"]);
-	assert.equal(invocation.command, exe);
-	// vm 加载的数组属于另一个 realm，用 JSON 比较内容。
-	assert.equal(JSON.stringify(invocation.args), JSON.stringify(["--mode", "rpc", "-e", "C:\\a b\\ext.ts"]));
-	assert.equal(invocation.shell, false);
-	// 直接启动必须交给 Node 做参数转义；verbatim 只属于 cmd /c 手工拼好的命令行。
-	assert.notEqual(invocation.windowsVerbatimArguments, true);
+	// The platform is simulated, so the input must also use Windows syntax on Linux.
+	// Invocation construction does not require the executable to exist on this host.
+	for (const exe of ["C:\\Pi Bolt\\pi-bolt.exe", "\\\\server\\Pi Bolt\\pi-bolt.exe"]) {
+		const invocation = new PiLocator().createInvocation(exe, ["--mode", "rpc", "-e", "C:\\a b\\ext.ts"]);
+		assert.equal(invocation.command, exe);
+		// vm 加载的数组属于另一个 realm，用 JSON 比较内容。
+		assert.equal(JSON.stringify(invocation.args), JSON.stringify(["--mode", "rpc", "-e", "C:\\a b\\ext.ts"]));
+		assert.equal(invocation.shell, false);
+		// 直接启动必须交给 Node 做参数转义；verbatim 只属于 cmd /c 手工拼好的命令行。
+		assert.notEqual(invocation.windowsVerbatimArguments, true);
+	}
 });
 
 test(".cmd shims and bare command names stay wrapped by cmd.exe on Windows", () => {

@@ -4,7 +4,9 @@ import { ArrowLeft, Maximize, Minimize2, Rows2, SquareSplitHorizontal, X, Eye, F
 import { Button } from "../ui-shadcn/button";
 import { cn } from "../../lib/utils";
 import { MarkdownStream } from "../session/MarkdownStream";
-import { defaultUrlTransform } from "../session/MarkdownLinkCore";
+import { desktopApi } from "../../desktopApi";
+import { showNotice } from "../../utils/notice";
+import { fileLinkDirectory } from "../../utils/fileLinks";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 // CodeDiffView 静态链上挂着 @pierre/diffs + shiki（WASM 重库），懒加载后这些模块
 // 移出首屏初始 chunk（约 -500KB 解析量），仅在用户打开 diff 时才拉取。
@@ -39,6 +41,9 @@ export function FileDiffViewer(props: {
 	/** 双击预览 Tab → 常驻 */
 	onPromotePreviewTab?: (id: string) => void;
 	readContent: (path: string) => Promise<string>;
+	/** Open links in the owning workbench; standalone viewers use the OS handler. */
+	onOpenFile?: (path: string) => void;
+	onOpenExternal?: (url: string) => void;
 	/** 从会话消息 meta 中提取的工具执行前原始内容，优先于 Git HEAD。 */
 	originalContent?: string;
 	/** Session-recorded modified content, preferred over disk read for historical sessions. */
@@ -86,6 +91,18 @@ export function FileDiffViewer(props: {
 	// 点「源码」切换按钮才进入源码模式；源码模式即编辑模式，不再需要独立的编辑按钮。
 	const defaultPreview = !isDiffMode && (isMarkdown || isHtml || isSvg);
 	const [preview, setPreview] = useState(defaultPreview);
+	const openLinkedFile = useCallback((path: string) => {
+		if (props.onOpenFile) return props.onOpenFile(path);
+		void desktopApi.files.open(path).catch((error: unknown) => {
+			showNotice(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000, "error");
+		});
+	}, [props.onOpenFile]);
+	const openExternalLink = useCallback((url: string) => {
+		if (props.onOpenExternal) return props.onOpenExternal(url);
+		void desktopApi.app.openExternal(url).catch((error: unknown) => {
+			showNotice(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000, "error");
+		});
+	}, [props.onOpenExternal]);
 
 	useEffect(() => {
 		// 每个 tab 重置编辑状态：view 可编辑（源码即编辑），diff 只读对比无编辑态。
@@ -462,9 +479,9 @@ export function FileDiffViewer(props: {
 							<div className="markdown-body markdown-preview-chrome h-full overflow-y-auto px-6 py-6 text-body text-text-primary font-sans">
 								<MarkdownStream
 									text={content}
-									onOpenExternal={() => undefined}
-									remarkPlugins={[]}
-									urlTransform={defaultUrlTransform}
+									onOpenExternal={openExternalLink}
+									onOpenFile={openLinkedFile}
+									fileBasePath={fileLinkDirectory(props.filePath)}
 								/>
 							</div>
 						)}

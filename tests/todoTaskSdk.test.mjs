@@ -494,12 +494,15 @@ test("real SDK atomic task goals remain visible through the desktop history proj
 	const branch = session.sessionManager.getBranch();
 	const goals = branch.filter((entry) => entry.type === "custom_message" && entry.display);
 	assert.equal(goals.length, 1);
+	assert.equal(goals[0].content, "Inspect the endpoint", "pi keeps the neutral task content");
+	assert.equal(goals[0].details.commandName, "todo");
+	assert.equal(goals[0].details.commandArgs, "Inspect the endpoint");
 	const { AgentMessageProjector } = loadTsCommonJs("src/main/pi/AgentMessageProjector.ts");
 	const projector = new AgentMessageProjector({ translate: (key) => key, isAskAborted: () => false });
 	const messages = projector.convert("agent", session.messages);
 	const displayedGoals = messages.filter((message) => message.meta?.type === "todoTask");
 	assert.equal(displayedGoals.length, 1);
-	assert.equal(displayedGoals[0].text, "Inspect the endpoint");
+	assert.equal(displayedGoals[0].text, "/todo Inspect the endpoint");
 	assert.deepEqual(errors, []);
 });
 

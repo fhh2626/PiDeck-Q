@@ -159,6 +159,97 @@ test("幂等：旧缓存已是投影版时重载不改变 id", () => {
 	);
 });
 
+test("a retained entry keeps its own identity when earlier turns have identical content and timestamps", () => {
+	const previous = [
+		projectedMessage("continue", "earlier", "user"),
+		projectedMessage("continue", "retained", "user", { id: "retained-runtime-id" }),
+	];
+	const projected = [projectedMessage("continue", "retained", "user")];
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+	assert.equal(stabilized[0].id, "retained-runtime-id");
+	assert.equal(stabilized[0].meta.entryId, "retained");
+});
+
+test("a known entry takes priority over an earlier same-text row without an entry identity", () => {
+	const previous = [
+		runtimeMessage("continue", "user"),
+		projectedMessage("continue", "retained", "user", { id: "retained-runtime-id" }),
+	];
+	const projected = [projectedMessage("continue", "retained", "user")];
+	assert.equal(stabilizeReloadedMessageIds(previous, projected)[0].id, "retained-runtime-id");
+});
+
+test("different persisted entries cannot transfer the previous optimistic request identity", () => {
+	const previous = [projectedMessage("continue", "earlier", "user", {
+		meta: { entryId: "earlier", optimisticRequestId: "earlier-request", streamingBehavior: "steer" },
+	})];
+	const projected = [projectedMessage("continue", "newer", "user")];
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+	assert.equal(stabilized[0].id, projected[0].id);
+	assert.equal(stabilized[0].meta.optimisticRequestId, undefined);
+	assert.equal(stabilized[0].meta.streamingBehavior, undefined);
+});
+
+test("an anonymous compacted row keeps the identity with the exact source timestamp", () => {
+	const previous = [
+		projectedMessage("continue", "earlier", "user", { timestamp: 1_000 }),
+		projectedMessage("continue", "retained", "user", { timestamp: 2_000 }),
+	];
+	const projected = [projectedMessage("continue", "0", "user", {
+		timestamp: 2_000, meta: { _piDeckMsgSeq: 0 },
+	})];
+	assert.equal(stabilizeReloadedMessageIds(previous, projected)[0].id, previous[1].id);
+});
+
+test("an anonymous row cannot consume the identity required by a later exact entry", () => {
+	const previous = [
+		projectedMessage("continue", "retained", "user"),
+		runtimeMessage("continue", "user"),
+	];
+	const projected = [
+		projectedMessage("continue", "0", "user", { meta: { _piDeckMsgSeq: 0 } }),
+		projectedMessage("continue", "retained", "user"),
+	];
+	const result = stabilizeReloadedMessageIds(previous, projected);
+	assert.equal(result[1].id, previous[0].id);
+	assert.equal(result[0].id, previous[1].id);
+});
+
+test("exact timestamps reserve identities before other rows use the tolerance fallback", () => {
+	const previous = [
+		runtimeMessage("continue", "user", { timestamp: 2_000 }),
+	];
+	const projected = [
+		projectedMessage("continue", "new", "user", { timestamp: 1_000 }),
+		projectedMessage("continue", "retained", "user", { timestamp: 2_000 }),
+	];
+	const result = stabilizeReloadedMessageIds(previous, projected);
+	assert.equal(result[1].id, previous[0].id);
+	assert.equal(result[0].id, projected[0].id);
+});
+
+test("unmatched fallback rows cannot reuse another snapshot's raw-index identity", () => {
+	const previous = [projectedMessage("archived answer", "0", "assistant", {
+		meta: { _piDeckMsgSeq: 0 },
+	})];
+	const projected = [projectedMessage("new question", "0", "user", {
+		meta: { _piDeckMsgSeq: 0 },
+	})];
+	const stabilized = stabilizeReloadedMessageIds(previous, projected);
+	assert.notEqual(stabilized[0].id, previous[0].id);
+	assert.equal(stabilized[0].id.includes("-history-"), false);
+	assert.equal(stabilized[0].meta.entryId, undefined);
+	assert.equal(stabilized[0].meta._piDeckMsgSeq, 0);
+});
+
+test("a first fallback snapshot already has display-only identities that later snapshots cannot alias", () => {
+	const projected = [projectedMessage("question", "0", "user", { meta: { _piDeckMsgSeq: 0 } })];
+	const first = stabilizeReloadedMessageIds([], projected);
+	const second = stabilizeReloadedMessageIds([], projected);
+	assert.equal(first[0].id.includes("-history-"), false);
+	assert.notEqual(first[0].id, second[0].id);
+});
+
 test("压缩归档的旧消息（投影中已不存在）自然消失，不影响其余消息", () => {
 	// 压缩前有 3 条消息，压缩后头部 1 条被归档：投影只剩 2 条
 	const previous = [

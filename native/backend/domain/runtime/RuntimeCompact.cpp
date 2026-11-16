@@ -234,7 +234,7 @@ void Coordinator::compact(const QJsonObject &target, const QString &prompt,
                         return;
                     }
                     settle(false, QStringLiteral("Session projection unavailable after compaction"));
-                });
+                }, true);
             });
     }, std::move(done));
 }

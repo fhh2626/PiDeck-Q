@@ -207,6 +207,9 @@ void Coordinator::emitForAgent(const QString &agentId, const QString &channel, c
         }
     }
     m_deps.services->events->broadcast(QStringLiteral("sessions:runtime-event"), QJsonArray{event});
+    if (channel == QLatin1String("agents:message")) {
+        if (AgentSession *current = agent(agentId)) current->transcript().messageFlushDelivered();
+    }
 }
 
 void Coordinator::cancelUnboundUiRequest(const QString &agentId, const QJsonObject &request)
@@ -334,8 +337,7 @@ EventHooks Coordinator::hooksFor(AgentSession &session)
             AgentSession *latest = agent(agentId);
             if (!projected || !latest || !latest->running()) return;
             agentruntime::flushMessages(*latest, hooksFor(*latest));
-        });
-        Q_UNUSED(preserveHistory);
+        }, preserveHistory);
     };
     hooks.uiRequest = [this, agentId](const AgentSession::PendingUi &request) {
         Q_UNUSED(agentId);

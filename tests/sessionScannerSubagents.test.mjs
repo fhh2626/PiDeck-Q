@@ -14,10 +14,11 @@ async function removeHome(dir) {
 	rmSync(dir, { recursive: true, force: true });
 }
 
-function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}) {
+function loadSessionScanner(homePath, fsOverrides = {}, childProcessOverrides = {}, globals) {
 	const childProcess = { ...require("node:child_process"), ...childProcessOverrides };
 	const nodeFs = { ...require("node:fs"), ...fsOverrides };
 	const exports = loadSharedSessionScanner(homePath, {
+		globals,
 		stubs: {
 			"node:fs": nodeFs,
 			"node:child_process": childProcess,
@@ -68,25 +69,45 @@ test("validates a local parent session by reading only the bounded file head", a
 	}
 });
 
-test("aborts a hung WSL scan before the renderer watchdog and allows a clean retry", async () => {
+test("aborts a hung WSL scan before the renderer watchdog and allows a clean retry", { timeout: 10_000 }, async () => {
 	const home = mkdtempSync(join(tmpdir(), "pideck-session-scan-timeout-"));
 	try {
-		const { SessionScanner } = loadSessionScanner(home);
+		const deadlines = new Map();
+		const { SessionScanner } = loadSessionScanner(home, {}, {}, {
+			setTimeout(callback, delay, ...args) {
+				if (delay !== 10) return setTimeout(callback, delay, ...args);
+				const handle = {};
+				deadlines.set(handle, () => callback(...args));
+				return handle;
+			},
+			clearTimeout(handle) {
+				if (!deadlines.delete(handle)) clearTimeout(handle);
+			},
+		});
 		const scanner = new SessionScanner();
 		scanner.wslConfig = { distro: "Ubuntu", user: "dev", home: "/home/dev" };
 		scanner.scanTimeoutMs = 10;
 		let attempts = 0;
+		const collecting = Promise.withResolvers();
 		scanner.collectWslJsonl = async (_sessionsDir, signal) => {
 			attempts += 1;
 			if (attempts > 1) return [];
+			collecting.resolve();
 			return new Promise((_resolve, reject) => {
 				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 			});
 		};
 
-		await assert.rejects(scanner.list());
+		const pending = scanner.list();
+		await collecting.promise;
+		assert.equal(deadlines.size, 1);
+		// Trigger the real watchdog callback while collection is still pending.
+		// The retry then uses its own deadline instead of racing a 10 ms wall clock.
+		deadlines.values().next().value();
+		await assert.rejects(pending, /Session scan timed out/);
 		assert.equal((await scanner.list()).length, 0);
 		assert.equal(attempts, 2);
+		assert.equal(deadlines.size, 0, "both scan deadlines must be cleaned up");
 	} finally {
 		await removeHome(home);
 	}

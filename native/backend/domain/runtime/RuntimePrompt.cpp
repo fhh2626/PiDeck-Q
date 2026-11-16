@@ -11,6 +11,7 @@ namespace {
 
 constexpr int kStateTimeoutMs = 30'000;
 constexpr int kPromptTimeoutMs = 120'000;
+constexpr int kCommandsTimeoutMs = 10'000;
 
 qint64 nowMs()
 {
@@ -33,6 +34,41 @@ QJsonObject rejectedResult(const QString &sessionId, const QString &requestId, c
     // an explicit pi rejection carries no `delivery` field at all (SendPromptResult).
     if (unknownDelivery) result.insert(QStringLiteral("delivery"), QStringLiteral("unknown"));
     return result;
+}
+
+/** Only registered extension commands may complete without opening a model turn. */
+void queryExtensionCommand(AgentSession &session, const QString &message,
+                            std::function<void(bool)> done)
+{
+    const QString text = message.trimmed();
+    if (!text.startsWith(QLatin1Char('/'))) {
+        done(false);
+        return;
+    }
+    int end = 1;
+    while (end < text.size() && !text.at(end).isSpace()) ++end;
+    const QString name = text.mid(1, end - 1);
+    if (name.isEmpty()) {
+        done(false);
+        return;
+    }
+    session.request(QStringLiteral("get_commands"), {}, kCommandsTimeoutMs,
+                    [name, done](bool ok, const QJsonObject &response, const QString &) {
+                        bool matched = false;
+                        if (ok && response.value(QStringLiteral("success")).toBool(false)) {
+                            const QJsonArray commands = response.value(QStringLiteral("data")).toObject()
+                                                            .value(QStringLiteral("commands")).toArray();
+                            for (const QJsonValue &value : commands) {
+                                const QJsonObject command = value.toObject();
+                                if (command.value(QStringLiteral("name")).toString() == name
+                                    && command.value(QStringLiteral("source")).toString() == QLatin1String("extension")) {
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                        }
+                        done(matched);
+                    });
 }
 
 } // namespace
@@ -114,6 +150,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             return;
         }
 
+        session->advancePromptDispatchSequence();
         const QString statusBeforePrompt = session->tab().status;
         const bool streaming = statusBeforePrompt == QLatin1String("running");
         QString behavior = input.value(QStringLiteral("streamingBehavior")).toString();
@@ -143,19 +180,36 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         if (!behavior.isEmpty()) payload.insert(QStringLiteral("streamingBehavior"), behavior);
 
         const QString agentId = target.agentId;
+        const quint64 epoch = session->clientEpoch();
+        // Keep the dispatch lease across the command lookup. A stop or reattach
+        // during this await must never send the old input into a replacement process.
+        queryExtensionCommand(*session, promptText,
+            [this, key, lease, target, agentId, sessionId, requestId, silent, statusBeforePrompt,
+             payload, epoch, done](bool extensionCommand) {
+        AgentSession *sending = agent(agentId);
+        if (!sending || !sending->running() || sending->clientEpoch() != epoch || !m_bindings.leaseCurrent(lease)) {
+            m_bindings.releaseLease(lease);
+            const QJsonObject result = rejectedResult(sessionId, requestId,
+                QStringLiteral("Session runtime changed before prompt dispatch"));
+            settleDelivery(key, result);
+            done(result);
+            return;
+        }
         // TTFT origin: the oracle records the sendPrompt time so queueing/pi startup is
         // part of the first-token latency instead of being hidden by event arrival.
-        session->perf().promptRequested(nowMs());
-        session->request(QStringLiteral("prompt"), payload, kPromptTimeoutMs,
+        const quint64 promptSequence = sending->advancePromptDispatchSequence();
+        sending->perf().promptRequested(nowMs());
+        sending->request(QStringLiteral("prompt"), payload, kPromptTimeoutMs,
                          [this, key, lease, target, agentId, sessionId, requestId, silent, statusBeforePrompt,
-                          done](bool ok, const QJsonObject &response, const QString &error) {
+                          extensionCommand, epoch, promptSequence, done](bool ok, const QJsonObject &response, const QString &error) {
                              // The lease only covers dispatch: once pi answered (accepted or
                              // rejected) the runtime must be replaceable again.
+                             const bool currentLease = m_bindings.leaseCurrent(lease);
                              m_bindings.releaseLease(lease);
                              AgentSession *current = agent(agentId);
                              const bool accepted = ok
                                  && response.value(QStringLiteral("success")).toBool(false);
-                             if (!current) {
+                             if (!current || !currentLease || current->clientEpoch() != epoch) {
                                  const QJsonObject result = rejectedResult(
                                      sessionId, requestId,
                                      QStringLiteral("Session runtime stopped during prompt dispatch"),
@@ -164,6 +218,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                                  done(result);
                                  return;
                              }
+                             const bool ownsPromptState = current->promptDispatchSequence() == promptSequence;
                              if (!accepted) {
                                  const QString failure = !error.isEmpty()
                                      ? error
@@ -175,11 +230,11 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                                  // received the prompt — and must stay `unknown` so a retry can
                                  // never duplicate the user's message.
                                  const bool transportFailure = !ok;
-                                 if (transportFailure) {
+                                 if (ownsPromptState && transportFailure) {
                                      current->setStatus(statusBeforePrompt == QLatin1String("running")
                                                             ? QStringLiteral("running")
                                                             : QStringLiteral("error"));
-                                 } else {
+                                 } else if (ownsPromptState) {
                                      current->setStatus(statusBeforePrompt == QLatin1String("running")
                                                             ? QStringLiteral("running")
                                                             : QStringLiteral("idle"));
@@ -196,6 +251,12 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                                          QJsonObject{{QStringLiteral("debugDetails"), failure}});
                                      agentruntime::flushMessages(*current, hooksFor(*current));
                                  }
+                                 if (ownsPromptState && !transportFailure
+                                     && statusBeforePrompt == QLatin1String("running")) {
+                                     // The rejected input invalidated the preceding probe.
+                                     // Ask again so a completed prior command can still settle.
+                                     scheduleSettledWatchdog(agentId, agentruntime::SettleWatchdog::ExtensionCommandEnd);
+                                 }
                                  QJsonObject result =
                                      rejectedResult(sessionId, requestId, failure, transportFailure);
                                  settleDelivery(key, result);
@@ -208,6 +269,11 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                                          sessionId, current->tab().sessionPath,
                                          current->tab().piSessionId);
                                  }
+                             }
+                             if (extensionCommand && ownsPromptState) {
+                                 // Commands that only notify or cancel clarification emit no
+                                 // agent_end. Confirm pi has no work before draining the queue.
+                                 scheduleSettledWatchdog(agentId, agentruntime::SettleWatchdog::ExtensionCommandEnd);
                              }
                              QJsonObject result{
                                  {QStringLiteral("accepted"), true},
@@ -224,6 +290,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                              settleDelivery(key, result);
                              done(result);
                          });
+        });
     });
 }
 
@@ -403,7 +470,7 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                      {QStringLiteral("session"), found ? record : QJsonObject{}},
                                  }));
                                  });
-                             });
+                             }, true);
                          });
     });
 }

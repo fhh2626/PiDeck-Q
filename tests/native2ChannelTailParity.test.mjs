@@ -88,7 +88,8 @@ if (!executable) {
 					// through instead of inventing one. `shell.openPath` additionally needs the host's
 					// real `{ok, error}` shape: the editor fallback only reports success when the OS
 					// handler did, exactly like the oracle (`EditorDetector.openProjectInEditor`).
-					return method === "shell.openPath" ? { result: { ok: true, from: method } } : { result: { from: method } };
+					return ["shell.openPath", "shell.showItemInFolder"].includes(method)
+						? { result: { ok: true, from: method } } : { result: { from: method } };
 				};
 			}
 			const session = await startBackendSession(t, {
@@ -230,6 +231,33 @@ if (!executable) {
 			const denied = await session.invoke("files:open", [outside]);
 			assert.equal(denied.payload.ok, false);
 			assert.equal(session.seen("shell.openPath").length, before);
+		});
+
+		test("file reveal reports a native shell failure through the real RPC boundary", async (t) => {
+			const session = await start(t, {
+				extraHandlers: { "shell.showItemInFolder": () => ({ result: { ok: false, error: "Explorer could not start" } }) },
+			});
+			const response = await session.invoke("files:show-in-folder", [join(projectPath, "README.md")]);
+			assert.equal(response.payload.ok, false);
+			assert.match(response.payload.error.message, /Explorer could not start/);
+			assert.equal(session.seen("shell.showItemInFolder").length, 1);
+		});
+
+		test("Windows file channels normalize WSL mounted drives before authorization", {
+			skip: process.platform !== "win32" ? "Windows host path conversion" : false,
+		}, async (t) => {
+			const file = slash(join(projectPath, "README.md"));
+			assert.match(file, /^[A-Za-z]:\//);
+			const mounted = `/mnt/${file[0].toLowerCase()}/${file.slice(3)}`;
+			const session = await start(t);
+			assert.equal((await session.invoke("files:read-content", [mounted])).payload.result, "# tail\n");
+			assert.equal((await session.invoke("files:show-in-folder", [mounted])).payload.ok, true);
+			assert.equal(slash(session.seen("shell.showItemInFolder").at(-1).params.path), file);
+			const outside = slash(join(root, "outside.md"));
+			writeFileSync(outside, "outside");
+			const denied = await session.invoke("files:open", [`/mnt/${outside[0].toLowerCase()}/${outside.slice(3)}`]);
+			assert.equal(denied.payload.ok, false);
+			assert.equal(session.seen("shell.openPath").length, 0);
 		});
 
 		test("the scratch pad has one owner: migration, CRUD, recycle bin and export dialog", async (t) => {

@@ -339,8 +339,12 @@ void handlePiEvent(AgentSession &session, const QJsonObject &event, const EventH
                     cardMeta.insert(QStringLiteral("todoTaskMessageId"),
                                     meta.value(QStringLiteral("todoTaskMessageId")));
                 }
+                if (meta.contains(QStringLiteral("todoTaskCommandName"))) {
+                    cardMeta.insert(QStringLiteral("todoTaskCommandName"), meta.value(QStringLiteral("todoTaskCommandName")));
+                    cardMeta.insert(QStringLiteral("todoTaskCommandArgs"), meta.value(QStringLiteral("todoTaskCommandArgs")));
+                }
                 if (hasSentAt) cardMeta.insert(QStringLiteral("todoTaskAt"), sentAt);
-                transcript.appendMessage(QStringLiteral("system"), text, cardMeta);
+                transcript.appendTodoTask(text, cardMeta);
                 flushMessages(session, hooks);
             }
         }

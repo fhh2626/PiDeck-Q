@@ -29,6 +29,7 @@ import {
 import { exceedsComposerImagePayloadBudget } from "../utils/composerImages";
 import { buildOptimisticCacheWrite } from "../utils/optimisticSessionCache";
 import { settleOptimisticMessage } from "../utils/optimisticUserReconciliation";
+import { QUEUED_PROMPT_LIMIT } from "../utils/queuedPromptQueue";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -67,7 +68,7 @@ export type UseSessionSendOptions = {
   refreshProject?: (projectId: string) => void;
   showError?: (message: string, duration?: number) => void;
   showUnknown?: () => void;
-  /** Called when streamingBehavior is "steer" before sending. Returns true if enqueued. */
+  /** Called for steer/followUp before sending. Returns true if queued locally. */
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
 };
 
@@ -425,7 +426,14 @@ export function useSessionSend(options: UseSessionSendOptions) {
         sendingSessionIdsRef.current.delete(sourceSessionId);
         return;
       }
-      // Queue full: fall through to direct send.
+      // A full local queue must preserve ordering. Sending directly would let the
+      // newest prompt overtake the earlier tasks that are still retractable here.
+      const errorMessage = t("app.queuedFull", { count: QUEUED_PROMPT_LIMIT });
+      discardOptimisticBubble(sessionId, requestId);
+      setSendState({ sessionId, state: { status: "error", requestId, error: errorMessage } });
+      options.showError?.(errorMessage, 4000);
+      sendingSessionIdsRef.current.delete(sourceSessionId);
+      return;
     }
 
     if (!publishBeforeActivation) {

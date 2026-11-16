@@ -9,6 +9,7 @@ import {
 	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 /**
  * Interactive runtime parity: ask completion, cancellation, prompt delivery classification,
@@ -170,21 +171,24 @@ if (!executable) {
 			assert.equal(answered.payload.result.ok, true, JSON.stringify(answered.payload));
 			assert.ok(elapsed < 5_000, `answering must not await pi's ACK (took ${elapsed}ms)`);
 
-			// The frame pi receives carries the ask id plus the answer, nothing else.
-			const frames = fake.commands().filter((entry) => entry.command === "extension_ui_response");
-			assert.equal(frames.length, 1, JSON.stringify(frames));
-			assert.equal(frames[0].payload.id, "ask-1");
-			assert.equal(frames[0].payload.value, "A");
-			assert.equal("cancelled" in frames[0].payload, false, JSON.stringify(frames[0].payload));
-
 			// The renderer only clears the card on `completed`; without it the overlay stays
-			// busy with every button disabled.
+			// busy with every button disabled. Observe that before waiting for pi's receipt.
 			const completion = await waitForCompletion(sse, "ask-1");
 			const event = completion.payload.args[0];
 			assert.equal(event.payload.value, "A");
 			assert.equal(event.sessionId, record.id);
 			assert.equal(event.agentId, target.agentId);
 			assert.equal(event.runtimeGeneration, target.runtimeGeneration);
+
+			// The raw write and UI completion do not acknowledge pi's stdin receipt.
+			await waitFor(() => fake.commands().some((entry) => entry.command === "extension_ui_response"
+				&& entry.payload.id === "ask-1"), 10_000, "pi receipt of the ask response without its ACK");
+			// The frame pi receives carries the ask id plus the answer, nothing else.
+			const frames = fake.commands().filter((entry) => entry.command === "extension_ui_response");
+			assert.equal(frames.length, 1, JSON.stringify(frames));
+			assert.equal(frames[0].payload.id, "ask-1");
+			assert.equal(frames[0].payload.value, "A");
+			assert.equal("cancelled" in frames[0].payload, false, JSON.stringify(frames[0].payload));
 
 			// A second answer for the same ask is no longer pending.
 			const again = await invoke("sessions:ui-response", [{ ...args[0], requestId: "ask-1", response: { value: "B" } }]);
@@ -214,6 +218,9 @@ if (!executable) {
 			const completion = await waitForCompletion(sse, "ask-timeout");
 			assert.equal(completion.payload.args[0].payload.cancelled, true);
 
+			// The completed event may reach SSE before pi records the cancellation frame.
+			await waitFor(() => fake.commands().some((entry) => entry.command === "extension_ui_response"
+				&& entry.payload.id === "ask-timeout"), 10_000, "pi receipt of the ask timeout cancellation");
 			const frames = fake.commands().filter((entry) => entry.command === "extension_ui_response");
 			assert.equal(frames.length, 1, JSON.stringify(frames));
 			assert.equal(frames[0].payload.id, "ask-timeout");

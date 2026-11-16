@@ -29,6 +29,7 @@ import {
 } from "../atoms/composer-atoms";
 import { PromptDeliveryUnknownError } from "../utils/promptErrors";
 import { t } from "../i18n";
+import { useQueuedPromptSettlement } from "./useQueuedPromptSettlement";
 
 export type QueuedPrompt = QueuedPromptSnapshot;
 
@@ -93,13 +94,31 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
 
   const [queuedPrompts, setQueuedPrompts] = useState<Record<string, QueuedPrompt[]>>({});
   const queuedPromptsRef = useRef<Record<string, QueuedPrompt[]>>({});
+  const retryTimersRef = useRef(new Set<number>());
   // 使用 ref 跟踪组件是否挂载，但必须在 effect 中显式置 true，
   // 避免 StrictMode double-mount 导致 mountedRef 永远为 false。
   const mountedRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      for (const timer of retryTimersRef.current) window.clearTimeout(timer);
+      retryTimersRef.current.clear();
+    };
   }, []);
+  const settlement = useQueuedPromptSettlement(store, (sessionId) => {
+    if (mountedRef.current) void flushNextQueuedPrompt(sessionId);
+  });
+
+  /** Retry only after state delivery catches up; the settlement gate rejects stale idle. */
+  function scheduleIdleCheck(sessionId: string) {
+    if (!mountedRef.current) return;
+    const timer = window.setTimeout(() => {
+      retryTimersRef.current.delete(timer);
+      if (mountedRef.current && canFlushQueuedPrompt(sessionId)) void flushNextQueuedPrompt(sessionId);
+    }, 150);
+    retryTimersRef.current.add(timer);
+  }
 
   function updateQueuedPrompts(
     updater: (current: Record<string, QueuedPrompt[]>) => Record<string, QueuedPrompt[]>,
@@ -194,10 +213,13 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
 
   function isSessionRuntimeBusy(sessionId: string) {
     const runtime = store.get(sessionRuntimeByIdAtom)[sessionId];
+    if (runtime && ["idle", "error", "closed", "detached"].includes(runtime.status)) return false;
     const runtimeAgentId = runtime?.agentId;
     const agent = displayAgentsRef.current.find((item) => item.id === runtimeAgentId);
     const runtimeState = runtime?.state;
     return Boolean(
+      runtime?.status === "starting" ||
+      runtime?.status === "running" ||
       agent?.status === "starting" ||
       agent?.status === "running" ||
       runtimeState?.isStreaming ||
@@ -207,7 +229,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
 
   function canFlushQueuedPrompt(sessionId: string) {
     const runtime = store.get(sessionRuntimeByIdAtom)[sessionId];
-    return runtime?.status === "idle" && !isSessionRuntimeBusy(sessionId);
+    return Boolean(runtime?.agentId && runtime.status === "idle" && !settlement.isWaiting(sessionId));
   }
 
   /**
@@ -219,8 +241,8 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
    *    第一条立刻生效，其余既无法撤回也看不到进度。
    * 2. run 收尾阶段（最后一次 drain 之后、agent_end 之前）到达的 steer 仍会被 accept，
    *    但 agent loop 已退出，这些消息要等下一次 run 才被消费，看起来就像被吞了。
-   * 串行投递让其余消息留在本地队列（仍可撤回/编辑），agent 空闲时再由
-   * flushNextQueuedPrompt 逐条补发，保证每条消息都拿到自己的回合与回复。
+   * 此入口仅接收用户明确选择的 steer。普通发送使用 followUp，始终留在本地队列，
+   * 由 flushNextQueuedPrompt 在当前任务完全结束后逐条补发。
    */
   async function flushQueuedSteerPrompts(sessionId: string) {
     if (queueFlushBySessionRef.current.has(sessionId) || !isSessionRuntimeBusy(sessionId)) return;
@@ -235,6 +257,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
       dispatched = true;
       queuedPromptsRef.current = claimed.queues;
       setQueuedPrompts(claimed.queues);
+      settlement.begin(sessionId);
 
       try {
         const outcome = await withSendTimeout(
@@ -248,6 +271,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
           ),
         );
         if (!outcome.ok) {
+          settlement.cancel(sessionId);
           updateQueuedPrompts((current) =>
             resolveClaimedPrompt(current, sessionId, queuedPrompt.id, {
               type: "unknown",
@@ -263,6 +287,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
           }),
         );
       } catch (error) {
+        settlement.cancel(sessionId);
         const errorMessage = error instanceof Error ? error.message : String(error);
         const deliveryUnknown = error instanceof PromptDeliveryUnknownError;
         updateQueuedPrompts((current) =>
@@ -284,11 +309,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
       // 同时覆盖一种卡死：agent 已经 idle 时 App 的 drain effect 正好被本函数的锁
       // 挡回，之后不再有状态变化，只能靠这里补一次。
       if (dispatched) {
-        window.setTimeout(() => {
-          if (canFlushQueuedPrompt(sessionId)) {
-            void flushNextQueuedPrompt(sessionId);
-          }
-        }, 150);
+        scheduleIdleCheck(sessionId);
       }
     }
   }
@@ -303,6 +324,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
     queuedPromptsRef.current = claimed.queues;
     setQueuedPrompts(claimed.queues);
     queueFlushBySessionRef.current.add(sessionId);
+    settlement.begin(sessionId);
     try {
       const outcome = await withSendTimeout(
         dispatchPromptSnapshot(
@@ -315,6 +337,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
         ),
       );
       if (!outcome.ok) {
+        settlement.cancel(sessionId);
         updateQueuedPrompts((current) =>
           resolveClaimedPrompt(current, sessionId, queuedPrompt.id, {
             type: "unknown",
@@ -330,6 +353,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
         }),
       );
     } catch (error) {
+      settlement.cancel(sessionId);
       const errorMessage = error instanceof Error ? error.message : String(error);
       const deliveryUnknown = error instanceof PromptDeliveryUnknownError;
       updateQueuedPrompts((current) =>
@@ -344,11 +368,7 @@ export function useQueuedPrompt(options: UseQueuedPromptOptions) {
       );
     } finally {
       queueFlushBySessionRef.current.delete(sessionId);
-      window.setTimeout(() => {
-        if (canFlushQueuedPrompt(sessionId)) {
-          void flushNextQueuedPrompt(sessionId);
-        }
-      }, 150);
+      scheduleIdleCheck(sessionId);
     }
   }
 

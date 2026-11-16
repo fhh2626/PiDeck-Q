@@ -307,11 +307,67 @@ target("PiDeck-CopyStreamTest")
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end
 
+-- Production todo projection and optimistic-command acknowledgement, without a pi process.
+-- Never staged; exercised by tests/nativeTodoCommandProjection.test.mjs.
+target("PiDeck-TodoCommandTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/TodoCommandTest.cpp",
+              "native/backend/domain/runtime/AgentTranscript*.cpp",
+              "native/backend/domain/sessions/Projector.cpp",
+              "native/backend/domain/sessions/PiTaskMessage.cpp",
+              "native/backend/domain/sessions/SessionEntryIds.cpp",
+              "native/backend/domain/sessions/AskQuestion.cpp",
+              "native/backend/domain/sessions/ImageContent.cpp",
+              "native/backend/domain/sessions/MessageContent.cpp",
+              "native/backend/domain/sessions/ToolOutcome.cpp")
+    add_includedirs("native/backend/domain/runtime", "native/backend/domain/sessions")
+
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
+-- Production transcript/projector regression, also exercised through the renderer's
+-- real history reducer by tests/native2TranscriptHistory.test.mjs. Never staged.
+target("PiDeck-TranscriptHistoryTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/TranscriptHistoryTest.cpp",
+              "native/backend/domain/runtime/AgentTranscript.cpp",
+              "native/backend/domain/runtime/AgentTranscriptHistory.cpp",
+              "native/backend/domain/sessions/Projector.cpp",
+              "native/backend/domain/sessions/SessionEntryIds.cpp",
+              "native/backend/domain/sessions/PiTaskMessage.cpp",
+              "native/backend/domain/sessions/MessageContent.cpp",
+              "native/backend/domain/sessions/ImageContent.cpp",
+              "native/backend/domain/sessions/AskQuestion.cpp",
+              "native/backend/domain/sessions/ToolOutcome.cpp")
+    add_includedirs("native/backend/domain/runtime", "native/backend/domain/sessions")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
 target("PiDeck-FakePi2")
     set_kind("binary")
     set_default(false)
     add_files("native/tests/Native2FakePi.cpp")
 
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
+-- File mapping and containment use production helpers without a WSL distribution.
+-- Never staged; exercised by tests/nativeFilePathPolicy.test.mjs.
+target("PiDeck-FilePathPolicyTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/FilePathPolicyTest.cpp",
+              "native/backend/domain/fs/PathPolicy.cpp",
+              "native/backend/domain/wsl/WslFilePaths.cpp")
+    add_includedirs("native/backend/domain/fs", "native/backend/domain/wsl")
     if is_plat("windows") then
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end

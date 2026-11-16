@@ -101,7 +101,7 @@ function createMockCommandsEnvironment(customDesktopApiOverrides = {}) {
         },
         forkRuntimeSession: async (target, entryId) => {
           commandEvents.push({ type: "api:fork", target, entryId });
-          return { ok: true, value: { target, value: { targetSessionId: "session-forked", text: "msg-fork" } } };
+          return { ok: true, value: { targetSessionId: "session-forked", text: "msg-fork" } };
         },
         ...customDesktopApiOverrides,
       },
@@ -130,6 +130,122 @@ function createMockCommandsEnvironment(customDesktopApiOverrides = {}) {
     },
   };
 }
+
+function historyCommandsHarness(overrides = {}) {
+  const env = createMockCommandsEnvironment();
+  const historyTarget = { kind: "history", sessionId: "stopped-session", filePath: "/sessions/stopped.jsonl", runtimeGeneration: 4 };
+  const freshTarget = { sessionId: historyTarget.sessionId, agentId: "restarted-agent", runtimeGeneration: 5 };
+  const message = { id: "old-live-message", agentId: "stopped-agent", role: "user", text: "original", meta: { entryId: "stable-entry" } };
+  let currentTarget;
+  let context = { filePath: historyTarget.filePath, runtimeGeneration: 4, projectId: "owning-project" };
+  const commands = env.commandsModule.useSessionMessageCommands({
+    activeAgentStatus: undefined,
+    activeProjectId: "project-1",
+    agents: [],
+    isRuntimeTargetBusy: () => false,
+    getRuntimeTargetForSession: () => currentTarget,
+    getHistoryCommandContext: () => context,
+    getMessageForSession: (_sessionId, id) => id === message.id ? message : undefined,
+    activateHistoryRuntime: async (target) => {
+      env.commandEvents.push({ type: "activate", target });
+      currentTarget = freshTarget;
+      context = { ...context, runtimeGeneration: 5 };
+      return freshTarget;
+    },
+    submitPromptSnapshot: async (sessionId, text) => {
+      env.commandEvents.push({ type: "submit", sessionId, text });
+      return true;
+    },
+    openReplacedRuntimeSession: async (projectId, sessionId) => {
+      env.commandEvents.push({ type: "openFork", projectId, sessionId });
+    },
+    currentSessionIdRef: { current: "a-different-focused-pane" },
+    setPromptForAgent: () => {},
+    showToast: (msg) => env.commandEvents.push({ type: "toast", msg }),
+    overlays: { showConfirm: ({ onConfirm }) => env.setOnConfirm(onConfirm), clearConfirm: () => {} },
+    ...overrides,
+  });
+  return { ...env, commands, historyTarget, freshTarget, message, changeContext: (next) => { context = next; } };
+}
+
+test("stopped session edit activates its own runtime and uses the persistent entry identity", async () => {
+  const env = historyCommandsHarness();
+  assert.equal(await env.commands.editMessage(env.historyTarget, env.message.id, "edited"), true);
+  assert.equal(env.commandEvents[0].type, "activate");
+  const edit = env.commandEvents.find((event) => event.type === "api:edit");
+  assert.deepEqual(edit.target, env.freshTarget);
+  assert.equal(edit.messageId, "stable-entry");
+});
+
+test("stopped session delete activates only after confirmation and keeps its entry identity", async () => {
+  const env = historyCommandsHarness();
+  env.commands.deleteMessage(env.historyTarget, env.message.id);
+  assert.equal(env.commandEvents.length, 0);
+  await env.getOnConfirm()();
+  const deletion = env.commandEvents.find((event) => event.type === "api:delete");
+  assert.ok(deletion);
+  assert.deepEqual(deletion.target, env.freshTarget);
+  assert.equal(deletion.messageId, "stable-entry");
+});
+
+test("stopped session resend resolves a fresh runtime despite the old rendered agent id", async () => {
+  const env = historyCommandsHarness();
+  env.commands.resendUserMessage(env.historyTarget, env.message);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const prepare = env.commandEvents.find((event) => event.type === "api:prepareResend");
+  assert.ok(prepare);
+  assert.deepEqual(prepare.target, env.freshTarget);
+  assert.equal(prepare.messageId, "stable-entry");
+  assert.ok(env.commandEvents.some((event) => event.type === "submit" && event.sessionId === env.historyTarget.sessionId));
+});
+
+test("stopped session fork uses its captured persistent entry after activation", async () => {
+  const env = historyCommandsHarness();
+  await env.commands.forkFromUserMessage(env.historyTarget, env.message);
+  const fork = env.commandEvents.find((event) => event.type === "api:fork");
+  assert.ok(fork);
+  assert.deepEqual(fork.target, env.freshTarget);
+  assert.equal(fork.entryId, "stable-entry");
+  const opened = env.commandEvents.find((event) => event.type === "openFork");
+  assert.equal(opened.projectId, "owning-project");
+  assert.equal(opened.sessionId, "session-forked");
+});
+
+test("stopped session actions reject a changed session file or generation before activation", async () => {
+  for (const change of [{ filePath: "/sessions/replaced.jsonl", runtimeGeneration: 4 }, { filePath: "/sessions/stopped.jsonl", runtimeGeneration: 6 }]) {
+    const env = historyCommandsHarness();
+    env.commands.deleteMessage(env.historyTarget, env.message.id);
+    env.changeContext(change);
+    await env.getOnConfirm()();
+    assert.equal(env.commandEvents.some((event) => event.type === "activate" || event.type === "api:delete"), false);
+    assert.ok(env.commandEvents.some((event) => event.type === "toast" && event.msg.includes("sessionCommand.runtimeChanged")));
+  }
+});
+
+test("stopped session actions reject unresolved entry identity without guessing repeated text", async () => {
+  const env = historyCommandsHarness({ getMessageForSession: () => undefined });
+  assert.equal(await env.commands.editMessage(env.historyTarget, "unknown-live-id", "edited"), false);
+  assert.equal(env.commandEvents.some((event) => event.type === "activate"), false);
+  assert.ok(env.commandEvents.some((event) => event.type === "toast" && event.msg.includes("sessionCommand.messageNotFound")));
+});
+
+test("display-only projection ids cannot become file identities after their runtime stops", async () => {
+  for (const id of ["old-agent-projection-file-10", "old-agent-projection-12345678-1234-4123-8123-123456789012-10"]) {
+    const message = { id, agentId: "old-agent", role: "user", text: "repeated text", meta: { _piDeckMsgSeq: 10 } };
+    const env = historyCommandsHarness({ getMessageForSession: () => message });
+    assert.equal(await env.commands.editMessage(env.historyTarget, id, "edited"), false);
+    env.commands.deleteMessage(env.historyTarget, id);
+    await env.getOnConfirm()();
+    env.commands.resendUserMessage(env.historyTarget, message);
+    await flushMicrotasks();
+    await env.commands.forkFromUserMessage(env.historyTarget, message);
+    assert.equal(env.commandEvents.some((event) => event.type === "activate" || event.type.startsWith("api:")), false,
+      "a display id cannot authorize a file mutation or a text-based fork lookup");
+    const toasts = env.commandEvents.filter((event) => event.type === "toast");
+    assert.equal(toasts.length, 4);
+    assert.ok(toasts.every((event) => event.msg.includes("sessionCommand.messageNotFound")));
+  }
+});
 
 test("deleteMessage: target disappearing before confirm rejects without API call or refresh snapshot", async () => {
   const { commandsModule, commandEvents, setOnConfirm, getOnConfirm } = createMockCommandsEnvironment();
@@ -486,6 +602,43 @@ test("forkFromUserMessage: getRuntimeForkMessages failure does not get swallowed
   assert.doesNotMatch(toasts[0].msg, /app\.forkMissingEntryId/);
 });
 
+for (const ambiguous of [true, false]) {
+  test(`live fork fallback ${ambiguous ? "rejects repeated" : "accepts unique"} text without entry identity`, async () => {
+    const { commandsModule, commandEvents } = createMockCommandsEnvironment({
+      getRuntimeForkMessages: async (target) => ({
+        ok: true,
+        value: { target, value: [
+          { entryId: "earlier-entry", text: "repeated instruction" },
+          { entryId: "later-entry", text: ambiguous ? "repeated instruction" : "another instruction" },
+        ] },
+      }),
+    });
+    const target = { sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1 };
+    const commands = commandsModule.useSessionMessageCommands({
+      activeProjectId: "project-1", agents: [],
+      isRuntimeTargetBusy: () => false,
+      getRuntimeTargetForSession: () => target,
+      submitPromptSnapshot: async () => true,
+      openReplacedRuntimeSession: async () => {},
+      currentSessionIdRef: { current: target.sessionId },
+      setPromptForAgent: () => {},
+      showToast: (msg) => commandEvents.push({ type: "toast", msg }),
+      overlays: { showConfirm: () => {}, clearConfirm: () => {} },
+    });
+    await commands.forkFromUserMessage(target, {
+      id: "agent-1-projection-file-10-digest", agentId: target.agentId,
+      role: "user", text: "repeated instruction", meta: { _piDeckMsgSeq: 10 },
+    });
+    const fork = commandEvents.find((event) => event.type === "api:fork");
+    if (ambiguous) {
+      assert.equal(fork, undefined, "repeated content cannot identify the clicked file entry");
+      assert.ok(commandEvents.some((event) => event.type === "toast" && event.msg.includes("app.forkMissingEntryId")));
+    } else {
+      assert.equal(fork?.entryId, "earlier-entry", "a unique compatibility match remains usable");
+    }
+  });
+}
+
 test("useSessionRuntimeController: real compiled hook correctly evaluates canMutateActiveMessages across full state matrix", () => {
   const store = createStore();
 
@@ -599,6 +752,29 @@ test("useSessionRuntimeController: real compiled hook correctly evaluates canMut
     agents: [{ id: "agent-1", projectId: "proj-1", status: "closed" }],
   });
   assert.equal(controller.canMutateActiveMessages, false, "must be false when bound agent status is closed");
+
+  // Persisted sessions retain the same actions after the process is stopped.
+  store.set(atoms.sessionRecordsAtom, {
+    [sessionId]: { id: sessionId, projectId: "proj-1", title: "Test Session", filePath: "/sessions/saved.jsonl" },
+  });
+  controller = controllerModule.useSessionRuntimeController({
+    ...baseOptions, sessionId,
+    agents: [{ id: "agent-1", projectId: "proj-1", status: "closed" }],
+  });
+  assert.equal(controller.canMutateActiveMessages, true);
+  assert.equal(controller.messageCommandTarget.kind, "history");
+  assert.equal(controller.messageCommandTarget.sessionId, sessionId);
+  assert.equal(controller.messageCommandTarget.agentId, undefined);
+  assert.equal(controller.messageCommandTarget.runtimeGeneration, 1);
+  store.set(atoms.sessionRuntimeByIdAtom, {
+    [sessionId]: { runtimeGeneration: 1, status: "detached" },
+  });
+  controller = controllerModule.useSessionRuntimeController({ ...baseOptions, sessionId, agents: [] });
+  assert.equal(controller.canMutateActiveMessages, true);
+  assert.equal(controller.messageCommandTarget.filePath, "/sessions/saved.jsonl");
+  store.set(atoms.sessionRuntimeByIdAtom, {
+    [sessionId]: { agentId: "agent-1", runtimeGeneration: 1, status: "idle" },
+  });
 
   // 5. Agent 状态为 error（如 API 请求失败，进程仍在） -> canMutateActiveMessages === true
   // 需求变更：error 不再一律视为不可变更。API 失败时 pi 进程仍存活，编辑/删除/重发都应可用；

@@ -55,11 +55,14 @@ Result runOnce(const pilaunch::Cli &cli, const QStringList &arguments, int timeo
     QProcess process;
     process.setProcessEnvironment(cli.environment);
     if (!workingDirectory.isEmpty()) process.setWorkingDirectory(workingDirectory);
+#ifdef Q_OS_WIN
     if (!cli.nativeArguments.isEmpty()) {
         // A batch shim needs the pre-quoted command line; QProcess would re-escape it.
         process.setNativeArguments(cli.nativeArguments);
         process.start(cli.program);
-    } else {
+    } else
+#endif
+    {
         process.start(cli.program, cli.arguments);
     }
     if (!process.waitForStarted(10'000)) return result;

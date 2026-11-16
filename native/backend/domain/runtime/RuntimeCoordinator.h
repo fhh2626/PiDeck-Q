@@ -349,7 +349,8 @@ private:
                                  bool dropTransientRecord = true);
     void createAgent(const CatalogEntry &entry, std::function<void(AgentSession *, const QString &)> done);
     /** Queue a boundary-safe refresh. Completion is true only after applying a fresh snapshot. */
-    void loadProjection(AgentSession &session, std::function<void(bool)> done);
+    void loadProjection(AgentSession &session, std::function<void(bool)> done,
+                        bool preserveHistory = false);
     /** Start/retry a queued read when no assistant message is being updated. */
     void tryLoadProjection(const QString &agentId);
     /** Settle queued refresh callbacks once, including runtime teardown. */
@@ -443,17 +444,19 @@ private:
     /**
      * Arm the idle-confirmation watchdog (`AgentManager.settleTimer`).
      *
-     * Captures the transport epoch and run generation at arm time, so a timer that fires
-     * after a restart/new run is a no-op instead of settling the replacement.
+     * Captures the transport epoch, run generation and prompt dispatch sequence at arm
+     * time, including the interval before pi emits the next agent_start.
      */
     void scheduleSettledWatchdog(const QString &agentId, agentruntime::SettleWatchdog reason);
     /**
      * `AgentManager.markIdleIfPiReportsNoWork`: confirm with `get_state` that pi has no work
      * left and settle the turn without an `agent_settled` event.
      */
-    void markIdleIfPiReportsNoWork(const QString &agentId, quint64 clientEpoch, int generation);
+    void markIdleIfPiReportsNoWork(const QString &agentId, quint64 clientEpoch, int generation,
+                                  quint64 promptDispatchSequence);
     /** Local "the turn ended" gates shared by the poll and its post-round-trip re-check. */
-    bool locallySettled(const AgentSession &session, quint64 clientEpoch, int generation) const;
+    bool locallySettled(const AgentSession &session, quint64 clientEpoch, int generation,
+                        quint64 promptDispatchSequence) const;
     /** Settle a turn whose runtime never reported `agent_settled`. */
     void settleWithoutSettled(AgentSession &session);
     /** Publish a synthetic `agent_settled` to the raw observers only (LAN stream finish). */
@@ -554,6 +557,7 @@ private:
         quint64 ticket = 0;
         bool inFlight = false;
         bool refreshAgain = false;
+        bool preserveHistory = false;
         quint64 diagnosticRevision = 0;
         quint64 trimRevision = 0;
         Target preservationOwner;

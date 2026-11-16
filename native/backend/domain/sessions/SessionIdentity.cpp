@@ -105,9 +105,14 @@ QString toAbsoluteSessionPath(const QString &filePath, const QString &projectPat
     QString relative = filePath;
     while (relative.startsWith(QLatin1Char('/')) || relative.startsWith(QLatin1Char('\\'))) relative.remove(0, 1);
     const QString joined = trimmedBase + QLatin1Char('/') + relative;
-    // Native keeps the backslash form node:path resolve produces so catalog values
-    // match what the scanner writes; WSL keeps POSIX separators.
-    return environment == QLatin1String("wsl") ? joined : QString(joined).replace(QLatin1Char('/'), QLatin1Char('\\'));
+    // Only Windows native paths use backslashes. POSIX hosts and WSL must keep
+    // forward slashes so a project-relative id still names the scanned session.
+#ifdef Q_OS_WIN
+    if (environment != QLatin1String("wsl")) {
+        return QString(joined).replace(QLatin1Char('/'), QLatin1Char('\\'));
+    }
+#endif
+    return joined;
 }
 
 QString normalizeScanPath(const QString &path)

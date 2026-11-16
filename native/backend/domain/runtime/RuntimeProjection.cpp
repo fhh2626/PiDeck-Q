@@ -1,6 +1,11 @@
 #include "RuntimeCoordinator.h"
+#include "ProjectionFilePath.h"
 
 #include "../sessions/SessionEntryIds.h"
+#include "../sessions/JsonlIndex.h"
+#include "BackgroundWork.h"
+
+#include <algorithm>
 
 namespace runtime {
 namespace {
@@ -8,7 +13,8 @@ constexpr int kMessagesTimeoutMs = 120'000;
 constexpr int kEntriesTimeoutMs = 15'000;
 } // namespace
 
-void Coordinator::loadProjection(AgentSession &session, std::function<void(bool)> done)
+void Coordinator::loadProjection(AgentSession &session, std::function<void(bool)> done,
+                                  bool preserveHistory)
 {
     const QString agentId = session.tab().id;
     if (m_shutdown) {
@@ -34,6 +40,7 @@ void Coordinator::loadProjection(AgentSession &session, std::function<void(bool)
     // A compaction/replacement requested after get_messages began needs a newer
     // snapshot even when it did not change a visible transcript row yet.
     if (load.inFlight) load.refreshAgain = true;
+    load.preserveHistory = preserveHistory;
     if (done) {
         // Coalesced callers can belong to different replacement generations. A fresh
         // snapshot satisfies only the identity which requested it, not superseded callers.
@@ -147,25 +154,81 @@ void Coordinator::tryLoadProjection(const QString &agentId)
                         return;
                     }
                     QStringList entryIds;
-                    if (entriesOk && entriesResponse.value(QStringLiteral("success")).toBool(false)) {
+                    QStringList fileEntryIds;
+                    const bool hasEntries = entriesOk && entriesResponse.value(QStringLiteral("success")).toBool(false);
+                    if (hasEntries) {
                         const QJsonObject data = entriesResponse.value(QStringLiteral("data")).toObject();
                         QVector<QJsonValue> entries;
                         for (const auto &value : data.value(QStringLiteral("entries")).toArray()) entries.append(value);
-                        entryIds = sessionentryids::buildActiveBranchEntryIds(
-                            entries, data.value(QStringLiteral("leafId")).toString());
-                        latest->setEntrySource(QStringLiteral("rpc"));
+                        const QString leafId = data.value(QStringLiteral("leafId")).toString();
+                        entryIds = sessionentryids::buildActiveBranchEntryIds(entries, leafId);
+                        fileEntryIds = sessionentryids::buildActiveBranchEntryIds(entries, leafId, true);
                     }
-                    latest->setActiveEntryIds(entryIds);
-                    auto &transcript = latest->transcript();
-                    const QJsonArray previous = transcript.messages();
-                    const bool settledDuringLoad = transcript.trimRevision() != load->trimRevision;
-                    transcript.applyProjection(raw, entryIds, missingtoolcalls::collectToolResultIds(raw));
-                    transcript.preserveDiagnosticsSince(load->diagnosticRevision, previous);
-                    // A projection crossing settlement must retain its 50-turn budget.
-                    if (settledDuringLoad) transcript.trimToTurns(50);
-                    latest->refreshFileVersion();
-                    agentruntime::flushMessages(*latest, hooksFor(*latest));
-                    finishProjectionLoad(agentId, ticket, true);
+                    const int roleCount = sessionentryids::countMessageEntries(raw);
+                    const auto apply = [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad,
+                                        raw, entryIds, hasEntries, roleCount, wasBound, boundSession, boundGeneration](
+                                           const QStringList &fileIds, bool cursorKnown) {
+                        auto load = m_projectionLoads.find(agentId);
+                        if (load == m_projectionLoads.end() || load->ticket != ticket) return;
+                        AgentSession *latest = agent(agentId);
+                        QString currentSession;
+                        int currentGeneration = 0;
+                        const bool isBound = m_bindings.bindingForAgent(agentId, &currentSession, &currentGeneration);
+                        if (!latest || !latest->running() || latest->clientEpoch() != epoch
+                            || latest->messageLoadSequence() != sequence) {
+                            finishProjectionLoad(agentId, ticket);
+                            return;
+                        }
+                        // The optional file cursor read runs on the serial worker. A reply,
+                        // replacement or another refresh while it was queued invalidates
+                        // the projection just as it does during get_entries.
+                        if (isBound != wasBound || (wasBound && (currentSession != boundSession
+                                || currentGeneration != boundGeneration))
+                            || load->refreshAgain || latest->runGeneration() != runGeneration
+                            || !latest->transcript().activeAssistantId().isEmpty()
+                            || latest->transcript().messages() != beforeLoad) {
+                            load->inFlight = false;
+                            tryLoadProjection(agentId);
+                            return;
+                        }
+                        latest->setActiveEntryIds(entryIds);
+                        if (hasEntries) latest->setEntrySource(QStringLiteral("rpc"));
+                        auto &transcript = latest->transcript();
+                        const QJsonArray previous = transcript.messages();
+                        const bool settledDuringLoad = transcript.trimRevision() != load->trimRevision;
+                        transcript.applyProjection(raw, entryIds, missingtoolcalls::collectToolResultIds(raw));
+                        transcript.configureHistory(fileIds,
+                            cursorKnown ? std::max(0, int(fileIds.size()) - roleCount) : -1,
+                            load->preserveHistory, load->preserveHistory);
+                        transcript.preserveDiagnosticsSince(load->diagnosticRevision, previous);
+                        if (settledDuringLoad) transcript.trimToTurns(50);
+                        latest->refreshFileVersion();
+                        agentruntime::flushMessages(*latest, hooksFor(*latest));
+                        finishProjectionLoad(agentId, ticket, true);
+                    };
+                    if (hasEntries && (fileEntryIds.size() >= roleCount)) {
+                        apply(fileEntryIds, true);
+                    } else if (!latest->tab().sessionPath.isEmpty()) {
+                        // Older pi implementations may not implement get_entries. Keep a
+                        // numeric cursor from the complete file branch without blocking the
+                        // event loop or assigning unverified entry ids to the RPC messages.
+                        const QString path = projectionFilePath(latest->tab().sessionPath,
+                            latest->tab().sessionEnvironment, latest->tab().wslDistro);
+                        background::runBlocking([path]() {
+                            const JsonlIndex index = jsonlindex::build(path);
+                            QJsonArray ids;
+                            for (const IndexEntry &entry : index.activeMessageEntries) ids.append(entry.id);
+                            return QJsonValue(ids);
+                        }, [apply](background::Outcome outcome) {
+                            QStringList ids;
+                            if (outcome.ok) {
+                                for (const QJsonValue &id : outcome.value.toArray()) ids.append(id.toString());
+                            }
+                            apply(ids, outcome.ok);
+                        });
+                    } else {
+                        apply({}, false);
+                    }
                 });
         });
 }

@@ -107,6 +107,10 @@ bool wslTest(const SessionFs::Config &config, const QString &flag, const QString
 
 } // namespace
 
+// Keep the native-filesystem default while allowing all C++20 compilers to see
+// the complete nested Config type before its default member initializers run.
+SessionFs::SessionFs() : SessionFs(Config{}) {}
+
 SessionFs::SessionFs(Config config) : m_config(std::move(config)) {}
 
 QString SessionFs::join(const QString &base, const QString &name) const
@@ -228,10 +232,13 @@ bool SessionFs::writeAtomic(const QString &path, const QString &content, QString
                     QStringLiteral("dd"), QStringLiteral("of=") + temp, QStringLiteral("bs=1M")},
         childenv::sanitized());
     process.setProcessEnvironment(cli.environment);
+#ifdef Q_OS_WIN
     if (!cli.nativeArguments.isEmpty()) {
         process.setNativeArguments(cli.nativeArguments);
         process.start(cli.program);
-    } else {
+    } else
+#endif
+    {
         process.start(cli.program, cli.arguments);
     }
     if (!process.waitForStarted(kCommandTimeoutMs)) {

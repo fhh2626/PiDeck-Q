@@ -350,6 +350,7 @@ bool openProjectInEditor(const QString &editorId, const QString &command, const 
     if (editorId == QLatin1String("vscode")) launchArgs.append(QStringLiteral("--new-window"));
     launchArgs.append(resolvedPath);
 
+#ifdef Q_OS_WIN
     const QString suffix = QFileInfo(resolved).suffix().toLower();
     const bool needsCmd = suffix == QLatin1String("cmd") || suffix == QLatin1String("bat");
     if (needsCmd) {
@@ -374,6 +375,7 @@ bool openProjectInEditor(const QString &editorId, const QString &command, const 
         }
         return false;
     }
+#endif
     if (QProcess::startDetached(resolved, launchArgs)) return true;
     if (error) {
         *error = QStringLiteral("Unable to start editor: %1").arg(resolved);

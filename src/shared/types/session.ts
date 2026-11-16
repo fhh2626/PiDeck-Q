@@ -227,6 +227,18 @@ export type SessionRuntimeTarget = {
 	runtimeGeneration: number;
 };
 
+/** Persisted-history intent captured while a session has no usable process. */
+export type SessionHistoryMessageTarget = {
+	kind: "history";
+	sessionId: string;
+	filePath: string;
+	runtimeGeneration: number;
+	agentId?: undefined;
+};
+
+/** UI intent only. History targets must become a fresh runtime target before IPC. */
+export type SessionMessageCommandTarget = SessionRuntimeTarget | SessionHistoryMessageTarget;
+
 export type SessionRuntimeInfo = SessionRuntimeTarget & {
 	projectId: string;
 	cwd: string;

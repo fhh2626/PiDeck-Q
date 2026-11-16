@@ -97,16 +97,20 @@ export function registerFilesIpc(
 	};
 	// 将 WSL Linux 路径转为 Windows 可访问的路径（/mnt/c → C:\，/home/... → \\wsl$\<distro>\...）
 	const toWindowsPath = (linuxPath: string): string => {
+		// WSL mappings only apply on the Windows host. A POSIX installation may
+		// retain imported WSL settings without changing its own filesystem names.
+		if (!isWindowsPathSemantics()) return linuxPath;
+		if (/^\/[A-Za-z]:[\\/]/.test(linuxPath)) return linuxPath.slice(1);
 		if (!linuxPath || /^[A-Za-z]:/.test(linuxPath)) return linuxPath; // 已是 Windows 路径
 		if (/^[\\/]{2}/.test(linuxPath)) return linuxPath; // 已是 UNC/WSL 主机路径
 		// /mnt/c/Users/... → C:\Users\...
-		const mntMatch = linuxPath.match(/^\/mnt\/([a-z])\/(.*)/);
+		const mntMatch = linuxPath.match(/^\/mnt\/([A-Za-z])(?:\/(.*))?$/);
 		if (mntMatch) {
-			return `${mntMatch[1].toUpperCase()}:\\${mntMatch[2].replace(/\//g, "\\")}`;
+			return `${mntMatch[1].toUpperCase()}:\\${(mntMatch[2] ?? "").replace(/\//g, "\\")}`;
 		}
 		// /home/user/... → \\wsl$\<distro>\home\user\...
 		const settings = settingsStore.get();
-		if (settings.wslEnabled && settings.wslDistro) {
+		if (settings.wslEnabled && settings.wslDistro && linuxPath.startsWith("/")) {
 			return `\\\\wsl$\\${settings.wslDistro}\\${linuxPath.replace(/^\//, "").replace(/\//g, "\\")}`;
 		}
 		return linuxPath;
@@ -222,7 +226,7 @@ export function registerFilesIpc(
 	router.handle(ipcChannels.filesShowInFolder, async (path: string) => {
 		// 回归修复（30b6954b 误删）：渲染层「在文件夹中显示」依赖此通道，
 		// 缺失时 invoke 会抛 No handler registered。WSL 路径先转 Windows 再定位。
-		platformShell.showItemInFolder(await authorizePath(path, "show-in-folder", "read"));
+		await platformShell.showItemInFolder(await authorizePath(path, "show-in-folder", "read"));
 	});
 
 	router.handle(ipcChannels.filesReadContent, async (path: string, maxBytes?: number) => {

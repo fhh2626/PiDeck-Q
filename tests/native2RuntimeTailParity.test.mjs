@@ -272,19 +272,30 @@ if (executable) {
 				{ role: "user", content: [{ type: "text", text: "rewritten by host" }], timestamp: 1_767_225_603_000 },
 				{ role: "assistant", content: [{ type: "text", text: "second answer" }], timestamp: 1_767_225_604_000 },
 			];
-			const { invoke, fake, record, filePath, target } = await start(t, {
+			const { invoke, fake, record, filePath, target, baseUrl, token } = await start(t, {
 				scenario: { messages: sourceMessages, entries: { entries: [], leafId: null } },
 			});
 			const before = readEntries(filePath).find((entry) => entry.id === "u2");
 			assert.equal(before.message.content[0].text, "second question");
 
-			// No get_entries -> live ids are `<agentId>-history-<index>`; index 2 is the
-			// rewritten user row. The turn mapping resolves it to file entry u2.
+			const sse = new SseClient(`${baseUrl}__pideck/events?token=${encodeURIComponent(token)}`);
+			await sse.connect();
+			t.after(() => sse.close());
+			await invoke("sessions:runtime-flush-messages", [{
+				sessionId: record.id, agentId: target.agentId, runtimeGeneration: target.runtimeGeneration,
+			}]);
+			const snapshot = await waitForFrame(sse, (frame) => frame.payload.channel === "sessions:runtime-event"
+				&& frame.payload.args[0].agentId === target.agentId
+				&& frame.payload.args[0].sourceChannel === "agents:message");
+			const rewritten = snapshot.payload.args[0].payload.messages.find((message) => message.text === "rewritten by host");
+			assert.ok(rewritten);
+			// The fallback display id stays separate from a JSONL entry id. The turn
+			// mapping still resolves this delivered row to u2 and preserves its live text.
 			const prepared = await invoke("sessions:runtime-prepare-resend", [{
 				sessionId: record.id,
 				agentId: target.agentId,
 				runtimeGeneration: target.runtimeGeneration,
-			}, `${target.agentId}-history-2`, { provider: "anthropic", modelId: "claude-sonnet-4" }, "high"]);
+			}, rewritten.id, { provider: "anthropic", modelId: "claude-sonnet-4" }, "high"]);
 			assert.equal(prepared.payload.result.ok, true, JSON.stringify(prepared.payload));
 			assert.equal(prepared.payload.result.value.value.text, "rewritten by host",
 				"oracle `locateMessageTarget` returns the cached row's text on the mapped path");

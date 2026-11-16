@@ -273,6 +273,7 @@ export const enUS: Record<TranslationKey, string> = {
   "app.openEditorFailed": "Failed to open editor: {error}",
   "app.noExternalEditors": "No external editors detected",
   "app.openFileFailed": "Failed to open file: {error}",
+  "app.revealFileFailed": "Failed to reveal file in its folder: {error}",
   "app.openProjectInEditor": "Open project in editor",
   "app.openWithEditor": "Open with",
   "git.sourceControl": "Source Control",

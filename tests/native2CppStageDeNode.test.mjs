@@ -73,7 +73,7 @@ async function makeStage({ nodeSidecar = false, leftovers = [], extraFiles = [] 
 	tempRoots.push(root);
 	await writeFileAt(root, "app/renderer/index.html", "<!doctype html><html><body>index</body></html>\n");
 	await writeFileAt(root, "app/renderer/web.html", "<!doctype html><html><body>web</body></html>\n");
-	await writeFileAt(root, "PiDeckBackend.exe", "MZfixture\0Qt6Core.dll\0");
+	await writeFileAt(root, process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend", "MZfixture\0Qt6Core.dll\0");
 	await writeFileAt(root, "Qt6Core.dll", "MZfixture\n");
 	for (const file of CHANGE_PROMPT_FILES) await writeFileAt(root, join("resources", file));
 	await writeFileAt(root, "resources/extensions/node_modules/undici/package.json", "{\"name\":\"undici\"}\n");
@@ -102,7 +102,7 @@ describe("native2 C++ package de-Node gate", () => {
 		const result = await verify(stage, "cpp");
 		assert.deepEqual(result.errors, []);
 		assert.equal(result.ok, true);
-		assert.ok(result.checked.some((file) => file.endsWith("PiDeckBackend.exe")));
+		assert.ok(result.checked.some((file) => file.endsWith(process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend")));
 		assert.ok(result.checked.some((file) => file.endsWith("Qt6Core.dll")));
 	});
 

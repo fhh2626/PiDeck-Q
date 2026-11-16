@@ -67,6 +67,51 @@ bool readTodoTaskGoal(const QJsonValue &value, QString *goal)
     return true;
 }
 
+bool readTodoTaskCommand(const QJsonValue &value, TaskCommand *command)
+{
+    TaskMessage task;
+    if (!readTodoTaskMessage(value, &task)) return false;
+    const QJsonObject details = value.toObject().value(QStringLiteral("details")).toObject();
+    const QString name = details.value(QStringLiteral("commandName")).toString();
+    const QJsonValue args = details.value(QStringLiteral("commandArgs"));
+    if (!args.isString()) return false;
+    const bool valid = task.kind == Kind::Goal
+        ? name == QLatin1String("todo") || name == QLatin1String("todo-goal")
+        : name == QLatin1String("todo-resume");
+    if (!valid) return false;
+    if (command) *command = TaskCommand{name, args.toString().trimmed()};
+    return true;
+}
+
+bool acknowledgeTodoCommand(const QJsonObject &pending, const QJsonObject &card,
+                            QJsonObject *acknowledged)
+{
+    if (pending.value(QStringLiteral("role")).toString() != QLatin1String("user")
+        || !isTodoTaskCard(card)) return false;
+    const QJsonObject pendingMeta = pending.value(QStringLiteral("meta")).toObject();
+    const QString requestId = pendingMeta.value(QStringLiteral("optimisticRequestId")).toString();
+    if (requestId.isEmpty()) return false;
+    QJsonObject meta = card.value(QStringLiteral("meta")).toObject();
+    const QJsonValue name = meta.value(QStringLiteral("todoTaskCommandName"));
+    const QJsonValue args = meta.value(QStringLiteral("todoTaskCommandArgs"));
+    if (!name.isString() || !args.isString()) return false;
+    static const QRegularExpression pattern(QStringLiteral("^/(\\S+)(?:\\s+([\\s\\S]*))?$"));
+    const QRegularExpressionMatch match = pattern.match(pending.value(QStringLiteral("text")).toString().trimmed());
+    if (!match.hasMatch() || match.captured(1) != name.toString()
+        || match.captured(2).trimmed() != args.toString()) return false;
+    if (acknowledged) {
+        *acknowledged = card;
+        acknowledged->insert(QStringLiteral("id"), pending.value(QStringLiteral("id")));
+        meta.insert(QStringLiteral("optimisticRequestId"), requestId);
+        const QString behavior = pendingMeta.value(QStringLiteral("streamingBehavior")).toString();
+        if (behavior == QLatin1String("steer") || behavior == QLatin1String("followUp")) {
+            meta.insert(QStringLiteral("streamingBehavior"), behavior);
+        }
+        acknowledged->insert(QStringLiteral("meta"), meta);
+    }
+    return true;
+}
+
 bool readTodoTaskMessageId(const QJsonValue &value, QString *messageId)
 {
     if (!value.isObject()) return false;

@@ -34,10 +34,12 @@ namespace agentruntime {
  *
  * `TurnEnd` uses the per-runtime timeout (250 ms for pi_agent_rust/Pi-Bolt, which never
  * emit `agent_settled`, 5 s otherwise); `CompactionEnd` uses the oracle's fixed 300 ms.
+ * `ExtensionCommandEnd` checks after 100 ms because a command may emit no run events.
  */
 enum class SettleWatchdog {
     TurnEnd,
     CompactionEnd,
+    ExtensionCommandEnd,
 };
 
 struct EventHooks {

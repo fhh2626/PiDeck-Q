@@ -49,6 +49,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeckBackend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-TranscriptHistoryTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-TodoCommandTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-FilePathPolicyTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
         run: npm test

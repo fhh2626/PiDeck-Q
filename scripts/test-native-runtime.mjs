@@ -12,6 +12,7 @@ const RUNTIME_TESTS = [
 	"tests/native2RuntimeWindowParity.test.mjs",
 	"tests/native2SessionRuntimeCompaction.test.mjs",
 	"tests/native2RuntimeAbortRetryParity.test.mjs",
+	"tests/native2ExtensionCommandSettlement.test.mjs",
 	"tests/turnSegments.test.mjs",
 ];
 

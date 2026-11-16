@@ -88,6 +88,27 @@ function runOf(items) {
 	};
 }
 
+test("execution summary counts each tool call inside grouped steps", () => {
+	const groups = [3, 4].map((count, index) => ({
+		kind: "tool-group",
+		id: `count-group-${index}`,
+		messages: Array.from({ length: count }, () => toolMessage()),
+	}));
+	const items = buildTurnDisplay(runOf(groups), { showThinking: true });
+	assert.equal(buildProcessSummary(items).toolCount, 7);
+});
+
+test("execution summary preserves call counts when a persistent ask splits a tool group", () => {
+	const group = {
+		kind: "tool-group",
+		id: "mixed-count-group",
+		messages: [toolMessage(), toolMessage(), ...askQuestionToolGroup().messages, toolMessage()],
+	};
+	const items = buildTurnDisplay(runOf([group]), { showThinking: true });
+	assert.equal(items.filter((item) => item.kind === "ask-result").length, 1);
+	assert.equal(buildProcessSummary(items).toolCount, 3);
+});
+
 /** 提取序列概要：[类型:内容]，便于断言顺序 */
 function outline(items) {
 	return items.map((item) => {

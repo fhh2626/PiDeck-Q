@@ -777,7 +777,7 @@ export function useSessionComposerController(
     if (intent === "send") {
       event.preventDefault();
       // Enter 发送也晋升预览 Tab（promoteAndSend 内部统一处理）
-      void promoteAndSend(isBusy ? "steer" : undefined);
+      void promoteAndSend(isBusy ? "followUp" : undefined);
     }
   }, [
     clearCompletion,
@@ -1360,7 +1360,12 @@ export function useSessionComposerController(
     delivery: {
       // 发送/追问都算主动交互：先把预览 Tab 晋升常驻，再投递（幂等，非预览无副作用）
       send: () => {
-        void promoteAndSend(isBusy ? "steer" : undefined);
+        void promoteAndSend(isBusy ? "followUp" : undefined);
+      },
+      // Interrupting the current task is an explicit menu action. Ordinary sends
+      // remain in the local queue until pi reports that the active run has settled.
+      steer: () => {
+        void promoteAndSend("steer");
       },
       followUp: () => {
         void promoteAndSend("followUp");

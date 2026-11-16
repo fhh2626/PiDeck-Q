@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+	backendFixtureSettings,
 	FakeHost,
 	SseClient,
 	httpRequest,
@@ -38,14 +39,14 @@ function createFixture() {
 	writeFileSync(join(backgrounds, "bg-test.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
 	writeFileSync(
 		join(userData, "settings.json"),
-		JSON.stringify({
+		JSON.stringify(backendFixtureSettings({
 			theme: "dark",
 			useNativeTitleBar: true,
 			closeToTray: false,
 			startupWindowMode: "last",
 			zoomFactor: 1.25,
 			customFlag: "kept",
-		}),
+		})),
 	);
 	writeFileSync(join(userData, "last-window-bounds.json"), JSON.stringify({ width: 1280, height: 720, x: 40, y: 60 }));
 	writeFileSync(join(root, "secret.txt"), "outside the renderer root");

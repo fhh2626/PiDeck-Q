@@ -16,7 +16,7 @@
  *     commands: [...],          // get_commands
  *     forkMessages: [...],      // get_fork_messages
  *     responses: { <command>: data | { error: "..." } | { delayMs, data, eventsBeforeReply?, replyGate? } | exitBeforeReply },
- *     turns: [ { ack: true|false, error, delayMs, events: [ { delayMs, event } ] } ],
+ *     turns: [ { ack: true|false, error, delayMs, replyGate, events: [ { delayMs, event } ] } ],
  *     bySession: { <deckSessionId>: <partial scenario> },
  *     onStart: [ { delayMs, event } ]
  *   }
@@ -210,8 +210,16 @@ function handlePrompt(id, command) {
 		if (turn.crashAfterEvents === true) steps.push({ delayMs: 80, exitWithCode: 1 });
 		runSteps(steps);
 	};
-	if (turn.delayMs) setTimeout(ack, Number(turn.delayMs));
-	else ack();
+	const ackWhenReleased = () => {
+		if (typeof turn.replyGate === "string" && !existsSync(`${scenarioPath}.${turn.replyGate}`)) {
+			const timer = setTimeout(() => { timers.delete(timer); ackWhenReleased(); }, 10);
+			timers.add(timer);
+			return;
+		}
+		ack();
+	};
+	if (turn.delayMs) setTimeout(ackWhenReleased, Number(turn.delayMs));
+	else ackWhenReleased();
 }
 
 const lines = createInterface({ input: process.stdin });

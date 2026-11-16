@@ -24,12 +24,18 @@ struct TakeResult {
 
 TakeResult take(const QStringList &activeEntryIds, int entryIndex);
 
+/** A persisted message consumes a slot even when its role has no display row. */
+bool consumesMessageEntry(const QJsonValue &message);
+int countMessageEntries(const QVector<QJsonValue> &messages);
+
 /**
  * entryIds aligned with pi `get_messages` (root→leaf), honouring the last compaction's
  * `firstKeptEntryId`. Returns an empty list when the anchor is missing so callers fall
  * back to file/serial matching instead of binding ids to the wrong turns.
+ * `includeCompacted` returns the complete file branch for history paging cursors.
  */
-QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId);
+QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId,
+                                      bool includeCompacted = false);
 
 } // namespace sessionentryids
 

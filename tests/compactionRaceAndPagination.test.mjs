@@ -267,6 +267,7 @@ test("compaction pagination: windowStartFilePos fallback passes before=undefined
 function createRaceHarness(agentId, getStateDeferred) {
 	const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
 	const makeProcess = () => ({
+		isRunning: () => true,
 		client: {
 			request: async (req) => (req.type === "get_state" ? getStateDeferred.promise : { success: true, data: {} }),
 		},
@@ -300,6 +301,20 @@ const PI_IDLE_STATE = {
 	success: true,
 	data: { isStreaming: false, isCompacting: false, pendingMessageCount: 0 },
 };
+
+test("an in-flight idle response cannot settle a prompt accepted before agent_start", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const state = deferred();
+	const agentId = "agent-prompt-prestart-race";
+	const { manager, runtime } = createRaceHarness(agentId, state);
+	const pending = manager.markIdleIfPiReportsNoWork(agentId);
+	const sent = await manager.sendPrompt({ agentId, message: "Continue with the next task", requestId: "next-task" });
+	assert.equal(sent.accepted, true);
+	assert.equal(manager.getStreamGate(agentId).currentGeneration, 10, "pi has not opened its next run yet");
+	state.resolve(PI_IDLE_STATE);
+	await pending;
+	assert.equal(runtime.tab.status, "running", "a snapshot predating the prompt cannot authorize idle");
+});
 
 async function flushMicrotasks() {
 	for (let i = 0; i < 10; i += 1) await Promise.resolve();

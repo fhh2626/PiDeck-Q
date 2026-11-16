@@ -212,6 +212,7 @@ export function ComposerSendControls(props: {
   isAgentStarting: boolean;
   canSend: boolean;
   onSend: () => void;
+  onSendSteer: () => void;
   onSendFollowUp: () => void;
   /** 并行发送：独立匿名会话后台处理（不打断当前输出），始终可选 */
   onSendAsk: () => void;
@@ -227,7 +228,8 @@ export function ComposerSendControls(props: {
             variant="default"
             size="icon-sm"
             className="send-behavior-primary size-8 rounded-none shadow-none hover:bg-primary/90"
-            aria-label={t("app.sendSteerTitle")} title={t("app.sendSteerTitle")}
+            aria-label={t(props.isAgentBusy ? "app.sendFollowUpTitle" : "app.send")}
+            title={t(props.isAgentBusy ? "app.sendFollowUpTitle" : "app.send")}
             disabled={props.isAgentStarting || !props.canSend}
             onClick={props.onSend}
           >
@@ -256,7 +258,7 @@ export function ComposerSendControls(props: {
               {props.isAgentBusy && (
                 <DropdownMenuItem
                   className="send-behavior-option steer gap-2"
-                  onClick={props.onSend}
+                  onClick={props.onSendSteer}
                 >
                   <span className="send-behavior-option-dot size-1.5 rounded-full bg-foreground" aria-hidden="true" />
                   <span>{t("app.sendSteerTitle")}</span>

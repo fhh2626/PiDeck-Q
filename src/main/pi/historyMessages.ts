@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "../../shared/types";
 import { messageFingerprint } from "../../shared/messageFingerprint";
 import { preserveObservedToolOutcomes, type ToolCallIdMembership } from "./missingToolResultCalls";
@@ -215,6 +216,18 @@ export function stabilizeReloadedMessageIds(
 	projectedMessages: ChatMessage[],
 	toolOutcomes?: HistoryToolOutcomeContext,
 ): ChatMessage[] {
+	let fallbackNamespace: string | undefined;
+	projectedMessages = projectedMessages.map((message) => {
+		const sequence = message.meta?._piDeckMsgSeq;
+		const entryId = message.meta?.entryId;
+		if ((typeof entryId === "string" && entryId) || typeof sequence !== "number" ||
+			message.id !== `${message.agentId}-history-${sequence}`) return message;
+		// A raw sequence restarts after compaction and cannot identify a different
+		// snapshot. Keep the source sequence for mutation targeting, while reserving
+		// the history-id syntax exclusively for real file entries.
+		fallbackNamespace ??= randomUUID();
+		return { ...message, id: `${message.agentId}-projection-${fallbackNamespace}-${sequence}` };
+	});
 	if (toolOutcomes?.preserveObservedOutcomes !== false) {
 		projectedMessages = preserveObservedToolOutcomes(projectedMessages, previousMessages, toolOutcomes?.activeToolCallIds);
 	}
@@ -223,35 +236,65 @@ export function stabilizeReloadedMessageIds(
 	}
 	// 指纹 → 旧缓存下标队列（同文本高频消息如连发「继续」会共享一个指纹）
 	const fingerprintToPrevIndices = new Map<string, number[]>();
+	const entryToPrevIndices = new Map<string, number[]>();
 	previousMessages.forEach((message, index) => {
 		const fingerprint = messageFingerprint(message);
 		const indices = fingerprintToPrevIndices.get(fingerprint);
 		if (indices) indices.push(index);
 		else fingerprintToPrevIndices.set(fingerprint, [index]);
+		const entryId = message.meta?.entryId;
+		if (typeof entryId === "string" && entryId) {
+			const entries = entryToPrevIndices.get(entryId);
+			if (entries) entries.push(index);
+			else entryToPrevIndices.set(entryId, [index]);
+		}
 	});
 	const consumed = new Set<number>();
-	return projectedMessages.map((message) => {
-		const fingerprint = messageFingerprint(message);
-		const candidates = fingerprintToPrevIndices.get(fingerprint);
-		if (!candidates) return message;
-		// 从最旧往最新一一消耗，保持投影与旧缓存的顺序对应（同文本消息
-		// 如连发「继续」按出现顺序各匹配各的，避免交错串位）
-		for (let i = 0; i < candidates.length; i++) {
-			const prevIndex = candidates[i];
-			if (consumed.has(prevIndex)) continue;
-			const prev = previousMessages[prevIndex];
-			const exactToolIdentity = message.role === "tool" && typeof message.meta?.toolCallId === "string" && Boolean(message.meta.toolCallId);
-			if (
-				!exactToolIdentity &&
-				Math.abs((prev.timestamp ?? 0) - (message.timestamp ?? 0)) >
-				FINGERPRINT_MATCH_TIME_TOLERANCE_MS
-			) {
-				continue;
+	const matchedPrevious = new Map<number, number>();
+	// Reserve all canonical entries first. An earlier anonymous row must not take
+	// a matching row that a later projection can identify exactly.
+	projectedMessages.forEach((message, projectedIndex) => {
+		const entryId = message.meta?.entryId;
+		if (typeof entryId === "string" && entryId) {
+			const exact = entryToPrevIndices.get(entryId)?.find((index) => !consumed.has(index));
+			if (exact !== undefined) {
+				consumed.add(exact);
+				matchedPrevious.set(projectedIndex, exact);
 			}
-			consumed.add(prevIndex);
-			return carryOptimisticUserMetadata(prev, { ...message, id: prev.id });
 		}
-		return message;
+	});
+	// Source timestamps survive a projection without get_entries. Reserve these
+	// matches before tolerance-based candidates so a compacted repeated prompt
+	// cannot inherit an earlier prompt's file or optimistic request identity.
+	for (const exactTimestampOnly of [true, false]) {
+		projectedMessages.forEach((message, projectedIndex) => {
+			if (matchedPrevious.has(projectedIndex)) return;
+			const entryId = message.meta?.entryId;
+			const candidates = fingerprintToPrevIndices.get(messageFingerprint(message));
+			if (!candidates) return;
+			// Equal candidates retain their occurrence order within each priority.
+			for (const prevIndex of candidates) {
+				if (consumed.has(prevIndex)) continue;
+				const prev = previousMessages[prevIndex];
+				const previousEntryId = prev.meta?.entryId;
+				if (typeof previousEntryId === "string" && previousEntryId &&
+					typeof entryId === "string" && entryId && previousEntryId !== entryId) continue;
+				const exactToolIdentity = message.role === "tool" && typeof message.meta?.toolCallId === "string" && Boolean(message.meta.toolCallId);
+				const timeDifference = Math.abs((prev.timestamp ?? 0) - (message.timestamp ?? 0));
+				if (!exactToolIdentity && (exactTimestampOnly
+					? timeDifference !== 0
+					: timeDifference > FINGERPRINT_MATCH_TIME_TOLERANCE_MS)) continue;
+				consumed.add(prevIndex);
+				matchedPrevious.set(projectedIndex, prevIndex);
+				break;
+			}
+		});
+	}
+	return projectedMessages.map((message, projectedIndex) => {
+		const previousIndex = matchedPrevious.get(projectedIndex);
+		if (previousIndex === undefined) return message;
+		const previous = previousMessages[previousIndex];
+		return carryOptimisticUserMetadata(previous, { ...message, id: previous.id });
 	});
 }
 

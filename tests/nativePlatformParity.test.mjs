@@ -325,7 +325,17 @@ test("native notifications release callback state when Windows dismisses a toast
 	assert.match(notifications, /notification\.dismissed/);
 });
 
-test("Explorer receives one /select,<path> argument", () => {
-	assert.match(mainSource, /QStringLiteral\("\/select,%1"\)/);
-	assert.doesNotMatch(mainSource, /QStringLiteral\("\/select,"\),\s*QDir::toNativeSeparators/);
+test("native reveal delegates to the shell and quotes the path inside Explorer's single select option", () => {
+	const shell = readFileSync("native/src/NativeFileShell.cpp", "utf8");
+	assert.match(mainSource, /#include "NativeFileShell\.h"/);
+	assert.match(mainSource, /registerHandler\(QStringLiteral\("shell\.showItemInFolder"\)[\s\S]*?return QJsonValue\(revealNativeFile\(params\.value\(QStringLiteral\("path"\)\)\.toString\(\)\)\)/);
+	assert.match(shell, /setProgram\(QStringLiteral\("explorer\.exe"\)\)/);
+	assert.ok(shell.includes(String.raw`setNativeArguments(QStringLiteral("/select,\"%1\"").arg(QDir::toNativeSeparators(info.absoluteFilePath())))`),
+		"Explorer receives /select followed by one quoted absolute path, including paths containing spaces or commas");
+	assert.doesNotMatch(shell, /QStringLiteral\("\/select,"\),\s*QDir::toNativeSeparators/);
+	assert.doesNotMatch(shell, /cmd\.exe|powershell|setArguments\(/i,
+		"the path is passed to Explorer without a command-shell layer or splitting the select option");
+	assert.match(shell, /const bool ok = explorer\.startDetached\(\)/);
+	assert.match(shell, /explorer\.errorString\(\)/);
+	assert.match(shell, /QStringLiteral\("ok"\), ok/);
 });

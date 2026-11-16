@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import { atomFamily } from "jotai/utils";
-import type { SessionRuntimeTarget } from "../../../shared/types";
+import type { SessionMessageCommandTarget } from "../../../shared/types";
 
 /**
  * 时间线展示状态（Presentation State）。
@@ -30,7 +30,7 @@ export type EditPresentation =
 			editId: string;
 			messageId: string;
 			text: string;
-			runtimeTarget: SessionRuntimeTarget;
+				runtimeTarget?: SessionMessageCommandTarget;
 	  };
 
 export type PinReason = "editing" | "focus" | "selection" | "jump-target";

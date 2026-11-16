@@ -15,10 +15,14 @@ function fixture(t) {
 	mkdirSync(dirname(binary), { recursive: true });
 	writeFileSync(source, "// fixture");
 	const previous = process.env.PIDECK_REQUIRE_BACKEND_TESTS;
+	const previousExecutable = process.env.PIDECK_BACKEND_TEST_EXECUTABLE;
 	delete process.env.PIDECK_REQUIRE_BACKEND_TESTS;
+	delete process.env.PIDECK_BACKEND_TEST_EXECUTABLE;
 	t.after(() => {
 		if (previous === undefined) delete process.env.PIDECK_REQUIRE_BACKEND_TESTS;
 		else process.env.PIDECK_REQUIRE_BACKEND_TESTS = previous;
+		if (previousExecutable === undefined) delete process.env.PIDECK_BACKEND_TEST_EXECUTABLE;
+		else process.env.PIDECK_BACKEND_TEST_EXECUTABLE = previousExecutable;
 	});
 	return { root, source, binary };
 }
@@ -69,7 +73,6 @@ test("pinned required backend never falls back to a release binary", (t) => {
 	writeFileSync(release, "fixture");
 	process.env.PIDECK_REQUIRE_BACKEND_TESTS = "1";
 	process.env.PIDECK_BACKEND_TEST_EXECUTABLE = "build/windows/x64/debug/PiDeckBackend.exe";
-	t.after(() => { delete process.env.PIDECK_BACKEND_TEST_EXECUTABLE; });
 	assert.throws(() => backendHarness.resolveBackendExecutable(root), /no backend executable/);
 });
 
@@ -78,6 +81,10 @@ test("CI builds the backend before the full suite on a clean checkout", () => {
 	const build = workflow.indexOf("xmake build -y PiDeckBackend");
 	const fullSuite = workflow.indexOf("run: npm test");
 	assert.ok(build >= 0 && fullSuite > build, "backend build must precede the full suite");
+	for (const target of ["PiDeck-TranscriptHistoryTest", "PiDeck-TodoCommandTest", "PiDeck-FilePathPolicyTest"]) {
+		const component = workflow.indexOf(`xmake build -y ${target}`);
+		assert.ok(component > build && component < fullSuite, `${target} must be built before its regression suite`);
+	}
 });
 
 /** Import lazily so resolver regressions remain independently runnable. */
@@ -96,6 +103,7 @@ test("native runtime gate builds the resolver's first target before enforcing fr
 	assert.equal(calls[2].options.env.PIDECK_BACKEND_TEST_EXECUTABLE, "build/windows/x64/debug/PiDeckBackend.exe");
 	assert.equal(calls[2].options.env.NODE_TEST_CONTEXT, undefined);
 	assert.ok(calls[2].args.includes("tests/native2FinalAnswerOrder.test.mjs"));
+	assert.ok(calls[2].args.includes("tests/native2ExtensionCommandSettlement.test.mjs"));
 	assert.ok(calls.every((call) => call.options.cwd === resolve(process.cwd())));
 	assert.ok(calls.every((call) => !call.args.includes("PiDeck-Q")), "the gate must not invoke host staging");
 });

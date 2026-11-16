@@ -873,7 +873,8 @@ test('PiDeck standalone marker overrides the executable-name heuristic', () => {
 });
 
 test('without the marker only the stock pi executable names count as standalone', () => {
-  assert.equal(isStandalonePiExecutable('C:\\Pi\\pi.exe', {}), true);
+  // This helper receives process.execPath, whose separators belong to the host.
+  assert.equal(isStandalonePiExecutable(join(tmpdir(), 'Pi', 'pi.exe'), {}), true);
   assert.equal(isStandalonePiExecutable('/usr/local/bin/pi', {}), true);
   assert.equal(isStandalonePiExecutable('C:\\Pi-Bolt\\pi-bolt.exe', {}), false);
   assert.equal(isStandalonePiExecutable('/usr/bin/node', {}), false);

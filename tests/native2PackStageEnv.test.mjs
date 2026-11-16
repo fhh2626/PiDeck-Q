@@ -57,7 +57,7 @@ async function makeCppStage() {
 	const root = await tempDir("pideck-pack-stage-");
 	await put(join(root, "app", "renderer", "index.html"), "<!doctype html><html><body>index</body></html>\n");
 	await put(join(root, "app", "renderer", "web.html"), "<!doctype html><html><body>web</body></html>\n");
-	await put(join(root, "PiDeckBackend.exe"), "MZfixture\0Qt6Core.dll\0");
+	await put(join(root, process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend"), "MZfixture\0Qt6Core.dll\0");
 	await put(join(root, "Qt6Core.dll"), "MZfixture\n");
 	return root;
 }

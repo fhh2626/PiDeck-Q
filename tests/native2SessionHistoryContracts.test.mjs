@@ -7,6 +7,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import {
 	createFakePi,
 	resolveBackendExecutable,
+	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
 
@@ -129,7 +130,10 @@ if (executable) {
 					};
 				},
 			});
-			return { ...session, fake };
+			const sse = new SseClient(`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`);
+			await sse.connect();
+			t.after(() => sse.close());
+			return { ...session, fake, sse };
 		};
 		const catalogRecord = async (invoke, filePath) => {
 			const list = await invoke("sessions:catalog-list", [PROJECT_ID]);
@@ -137,6 +141,13 @@ if (executable) {
 			const record = list.payload.result.find((entry) => slash(entry.filePath) === slash(filePath));
 			assert.ok(record, `session ${filePath} must be in the catalog`);
 			return record;
+		};
+		/** Message actions use identities delivered by the active backend snapshot. */
+		const projectedMessages = async (sse, target) => {
+			const frame = await sse.waitFor((candidate) => candidate.payload.channel === "sessions:runtime-event"
+				&& candidate.payload.args[0]?.agentId === target.agentId
+				&& candidate.payload.args[0]?.sourceChannel === "agents:message");
+			return frame.payload.args[0].payload.messages;
 		};
 
 		test("catalog-copy registers the clone under a new UUID and leaves the source record untouched", async (t) => {
@@ -489,7 +500,7 @@ if (executable) {
 				abortEmptyAssistant: true,
 			});
 			let runtimeFile = "";
-			const { invoke } = await startWithPi(t, scope, (fixture_) => {
+			const { invoke, sse } = await startWithPi(t, scope, (fixture_) => {
 				runtimeFile = join(fixture_.sessions, "edit.jsonl");
 				return {
 					state: { sessionFile: runtimeFile },
@@ -502,19 +513,19 @@ if (executable) {
 			const activated = await invoke("sessions:runtime-activate", [record.id]);
 			assert.equal(activated.payload.ok, true, JSON.stringify(activated.payload));
 			const target = activated.payload.result.value;
-			// No get_entries -> the projection id is the raw message index, so the renderer id
-			// never appears in the JSONL (the real "reconnect before entries load" case).
-			const cached = source.messages.map((message, index) => ({
-				id: `${target.agentId}-history-${index}`,
-				role: message.role,
-			}));
+			// No get_entries leaves a display-only identity. The same delivered row must
+			// still resolve through the turn mapping, including file-only abort rows.
+			const cached = await projectedMessages(sse, target);
 			const fileRoles = [
 				{ id: "u-1", role: "user" }, { id: "a-1", role: "assistant" },
 				{ id: "u-2", role: "user" }, { id: "a-2", role: "assistant" },
 				{ id: "a2-2", role: "assistant" }, { id: "a-abort-2", role: "assistant" },
 				{ id: "u-3", role: "user" }, { id: "a-3", role: "assistant" },
 			];
-			const messageId = `${target.agentId}-history-4`;
+			const messageId = cached[4].id;
+			assert.equal(cached[4].meta.entryId, undefined);
+			assert.equal(messageId.includes("-history-"), false,
+				"fallback display identities must not claim a persisted entry id");
 			const golden = mapCachedMessageToEntryCandidates(cached, fileRoles, messageId);
 			// Cross-realm object: compare fields (the vm realm has a different prototype).
 			assert.equal(golden.role, "user",
@@ -545,7 +556,7 @@ if (executable) {
 				abortEmptyAssistant: true,
 			});
 			let runtimeFile = "";
-			const { invoke } = await startWithPi(t, scope, (fixture_) => {
+			const { invoke, sse } = await startWithPi(t, scope, (fixture_) => {
 				runtimeFile = join(fixture_.sessions, "assistant.jsonl");
 				return {
 					state: { sessionFile: runtimeFile },
@@ -557,11 +568,8 @@ if (executable) {
 			const record = await catalogRecord(invoke, runtimeFile);
 			const activated = await invoke("sessions:runtime-activate", [record.id]);
 			const target = activated.payload.result.value;
-			const cached = source.messages.map((message, index) => ({
-				id: `${target.agentId}-history-${index}`,
-				role: message.role,
-			}));
-			const messageId = `${target.agentId}-history-3`;
+			const cached = await projectedMessages(sse, target);
+			const messageId = cached[3].id;
 			const fileRoles = [
 				{ id: "u-1", role: "user" }, { id: "a-1", role: "assistant" },
 				{ id: "u-2", role: "user" }, { id: "a-2", role: "assistant" },
@@ -602,7 +610,7 @@ if (executable) {
 				abortEmptyAssistant: true,
 			});
 			let runtimeFile = "";
-			const { invoke } = await startWithPi(t, scope, (fixture_) => {
+			const { invoke, sse } = await startWithPi(t, scope, (fixture_) => {
 				runtimeFile = join(fixture_.sessions, "delete.jsonl");
 				return {
 					state: { sessionFile: runtimeFile },
@@ -614,9 +622,10 @@ if (executable) {
 			const record = await catalogRecord(invoke, runtimeFile);
 			const activated = await invoke("sessions:runtime-activate", [record.id]);
 			const target = activated.payload.result.value;
+			const cached = await projectedMessages(sse, target);
 			const deleted = await invoke("sessions:runtime-delete-message", [
 				{ sessionId: record.id, agentId: target.agentId, runtimeGeneration: target.runtimeGeneration },
-				`${target.agentId}-history-3`,
+				cached[3].id,
 			]);
 			assert.equal(deleted.payload.ok, true, JSON.stringify(deleted.payload));
 			assert.equal(deleted.payload.result.ok, true, JSON.stringify(deleted.payload));

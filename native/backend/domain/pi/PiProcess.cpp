@@ -17,12 +17,15 @@ Result run(const pilaunch::Cli &cli, int timeoutMs, const QString &cwd)
     process.setProcessEnvironment(cli.environment);
     if (!cwd.isEmpty()) process.setWorkingDirectory(cwd);
     process.setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
     if (!cli.nativeArguments.isEmpty()) {
         // npm batch shim: the command line produced by pilaunch must stay verbatim,
         // otherwise QProcess would escape the inner quotes cmd.exe /s /c expects.
         process.setNativeArguments(cli.nativeArguments);
         process.start(cli.program);
-    } else {
+    } else
+#endif
+    {
         process.start(cli.program, cli.arguments);
     }
     if (!process.waitForStarted(10'000)) return result;

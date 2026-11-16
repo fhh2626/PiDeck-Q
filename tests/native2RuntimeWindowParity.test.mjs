@@ -167,7 +167,12 @@ if (executable) {
 			const goldenStart = contextTrimStartIndex(cached, 50);
 			assert.equal(goldenStart, 4, "Node golden: 52 turns keep the last 50, dropping the first two");
 			assert.deepEqual(trimmed.messages, cached.slice(goldenStart));
-			assert.equal(trimmed.totalLength, cached.length - goldenStart);
+			assert.equal(trimmed.messages.length, cached.length - goldenStart, "99 rows remain in the active window");
+			// The delivery cursor retains this generation's full extent. The removed
+			// prefix is handed to the renderer so previously loaded history survives.
+			assert.equal(trimmed.windowStart, goldenStart);
+			assert.equal(trimmed.totalLength, cached.length, "the complete projection still spans 103 rows");
+			assert.deepEqual(trimmed.slideOut, cached.slice(0, goldenStart));
 			assert.equal(trimmed.messages[0].text, "question 3");
 		});
 

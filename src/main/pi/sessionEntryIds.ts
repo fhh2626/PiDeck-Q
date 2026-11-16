@@ -78,7 +78,7 @@ export function buildActiveBranchEntryIds(
 /**
  * 从 activeEntryIds 消费一个槽位。
  * 业务规则：get_entries 的 message 型 entry 与 get_messages 的
- * user/assistant/toolResult 一一对应；即使桌面端因空文本跳过渲染，
+ * user/assistant/toolResult/bashExecution 一一对应；即使桌面端跳过渲染，
  * 也必须推进 index，否则后续消息的 entryId 会整体前移错位。
  */
 export function takeActiveEntryId(
@@ -107,11 +107,16 @@ export function alignEntryIdsForDisplayMessages(
 	for (const typed of rawMessages) {
 		if (!typed || typeof typed !== "object") continue;
 		const role = typed.role;
-		if (role !== "user" && role !== "assistant" && role !== "toolResult") continue;
+		if (role !== "user" && role !== "assistant" && role !== "toolResult" && role !== "bashExecution") continue;
 
 		const { entryId, nextIndex } = takeActiveEntryId(activeEntryIds, entryIndex);
 		// 无论是否渲染，message 型 entry 都要消费槽位
 		entryIndex = nextIndex;
+		if (role === "bashExecution") {
+			// 隐藏的命令结果仍是独立的持久化 message，后续可编辑行须越过它。
+			result.push({ role, entryId, skipped: true });
+			continue;
+		}
 
 		if (role === "user" || role === "assistant") {
 			const text = extractText(typed.content);

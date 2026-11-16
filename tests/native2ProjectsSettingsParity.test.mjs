@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import {
+	backendFixtureSettings,
 	resolveBackendExecutable,
 	SseClient,
 	startBackendSession,
@@ -493,7 +494,7 @@ if (executable) {
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
 
 			const oracleFile = join(root, `settings-oracle-${Math.random().toString(16).slice(2)}.json`);
-			writeFileSync(oracleFile, JSON.stringify({ theme: "system", language: "en-US" }));
+			writeFileSync(oracleFile, JSON.stringify(backendFixtureSettings({ language: "en-US" })));
 			const oracle = new SettingsStore({
 				desktopSettingsFile: oracleFile,
 				piAgentSettingsFile: join(home, ".pi", "agent", "settings.json"),
@@ -539,7 +540,7 @@ if (executable) {
 
 			// The whole migrated object must match the oracle, not just the fields above.
 			const oracleFile = join(root, `settings-legacy-${Math.random().toString(16).slice(2)}.json`);
-			writeFileSync(oracleFile, JSON.stringify(legacy));
+			writeFileSync(oracleFile, JSON.stringify(backendFixtureSettings(legacy)));
 			const oracle = new SettingsStore({
 				desktopSettingsFile: oracleFile,
 				piAgentSettingsFile: join(home, ".pi", "agent", "settings.json"),

@@ -9,6 +9,7 @@ import {
 	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "runtime";
@@ -432,6 +433,10 @@ if (executable) {
 				response: { value: "A" },
 			}]);
 			assert.equal(answered.payload.ok, true, JSON.stringify(answered.payload));
+			// The desktop writes this frame without awaiting an ACK. Its RPC reply can
+			// arrive before the separate pi process consumes stdin and records receipt.
+			await waitFor(() => fake.commands().some((entry) => entry.command === "extension_ui_response"
+				&& entry.payload.id === "ask-1"), 10_000, "pi receipt of the ask response");
 			const uiResponses = fake.commands().filter((entry) => entry.command === "extension_ui_response");
 			assert.equal(uiResponses.length, 1);
 			assert.equal(uiResponses[0].payload.value, "A");

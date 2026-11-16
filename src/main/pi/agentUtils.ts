@@ -134,7 +134,7 @@ export function contextTrimStartIndex<T>(rawMessages: T[], maxTurns = 50): numbe
 }
 
 /**
- * 统计 [0, endIndex) 内会消费 entryId 槽位的消息数（user/assistant/toolResult/可见任务目标）。
+ * 统计 [0, endIndex) 内会消费 entryId 槽位的消息数（含隐藏的 bashExecution）。
  * 与 AgentMessageProjector 的槽位消费规则一致：compactionSummary/branchSummary/非角色条目
  * 不消费槽位。用于 trim 后把 activeEntryIds 与保留消息重新对齐。
  */
@@ -143,7 +143,7 @@ export function countRoleMessagesBefore<T>(rawMessages: T[], endIndex: number): 
 	let count = 0;
 	for (let i = 0; i < bound; i++) {
 		const role = (rawMessages[i] as { role?: unknown } | undefined)?.role;
-		if (role === "assistant" || role === "toolResult" || isPiUserTurn(rawMessages[i])) count++;
+		if (role === "assistant" || role === "toolResult" || role === "bashExecution" || isPiUserTurn(rawMessages[i])) count++;
 	}
 	return count;
 }

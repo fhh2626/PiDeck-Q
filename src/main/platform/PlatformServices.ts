@@ -76,7 +76,7 @@ export type PlatformOpenPathResult =
 export interface PlatformShell {
 	openExternal(url: string): Promise<void>;
 	openPath(path: string): Promise<PlatformOpenPathResult>;
-	showItemInFolder(path: string): void;
+	showItemInFolder(path: string): void | Promise<void>;
 	trashItem(path: string): Promise<void>;
 }
 

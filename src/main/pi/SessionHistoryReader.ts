@@ -799,8 +799,9 @@ export class SessionHistoryReader {
 		};
 		// Count, entry identities, compactions and version must describe the same
 		// pinned bodies. A second file query can already include a newly sent prompt.
+		// Hidden bash results remain in those bodies and consume a persisted slot.
 		const roleEntries = index.activeMessageEntries.flatMap((entry, position) => wanted.has(entry)
-			&& (entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult")
+			&& (entry.role === "user" || entry.role === "assistant" || entry.role === "toolResult" || entry.role === "bashExecution")
 			? [{ entry, position }] : []);
 		this.recentSnapshots.set(response, {
 			hostPath: index.hostPath,

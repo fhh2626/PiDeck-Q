@@ -1,6 +1,7 @@
 #include "AgentTranscript.h"
 
 #include "../sessions/PiTaskMessage.h"
+#include "../sessions/SessionEntryIds.h"
 
 #include <QDateTime>
 #include <QJsonDocument>
@@ -89,6 +90,15 @@ void Transcript::configure(const QString &agentId, maincopy::Translator translat
 void Transcript::reset()
 {
     m_messages = QJsonArray();
+    m_fileEntryPositions.clear();
+    m_projectedFilePositions.clear();
+    m_projectedFileCount = 0;
+    m_projectionHeadFilePos = -1;
+    m_windowStart = 0;
+    m_windowStartFilePos = 0;
+    m_preserveHistory = true;
+    m_stickyHistory = false;
+    m_pendingSlideOut = QJsonArray();
     m_diagnosticIds.clear();
     m_activeAssistantId.clear();
     m_toolMessageIds.clear();
@@ -123,6 +133,13 @@ void Transcript::applyProjection(const QVector<QJsonValue> &rawMessages, const Q
     projector::Deps deps;
     deps.translate = m_translate;
     m_messages = projector::convert(m_agentId, rawMessages, entryIds, toolResultIds, deps);
+    m_projectedFilePositions.clear();
+    m_projectedFileCount = 0;
+    for (int index = 0; index < rawMessages.size(); ++index) {
+        if (sessionentryids::consumesMessageEntry(rawMessages.at(index))) {
+            m_projectedFilePositions.insert(index, m_projectedFileCount++);
+        }
+    }
 }
 
 void Transcript::preserveDiagnosticsSince(quint64 revision, const QJsonArray &previous)
@@ -363,6 +380,24 @@ void Transcript::appendMessage(const QString &role, const QString &text, const Q
     m_messages.append(message);
 }
 
+void Transcript::appendTodoTask(const QString &text, const QJsonObject &meta)
+{
+    const QJsonObject card{{QStringLiteral("agentId"), m_agentId},
+                           {QStringLiteral("role"), QStringLiteral("system")},
+                           {QStringLiteral("timestamp"), meta.value(QStringLiteral("todoTaskAt")).isDouble()
+                                ? meta.value(QStringLiteral("todoTaskAt")) : QJsonValue(double(nowMs()))},
+                           {QStringLiteral("text"), text}, {QStringLiteral("meta"), meta}};
+    QJsonObject acknowledged;
+    // The original command is only an optimistic host row; the custom entry owns the
+    // persisted turn. Keep one stable card without consuming other user messages.
+    if (!m_messages.isEmpty()
+        && pitask::acknowledgeTodoCommand(m_messages.last().toObject(), card, &acknowledged)) {
+        m_messages.replace(m_messages.size() - 1, acknowledged);
+    } else {
+        appendMessage(QStringLiteral("system"), text, meta);
+    }
+}
+
 void Transcript::appendError(const QString &text)
 {
     appendMessage(QStringLiteral("error"), text,
@@ -474,7 +509,16 @@ bool Transcript::trimToTurns(int turns)
     }
     for (int index = start; index < m_messages.size(); ++index) trimmed.append(m_messages.at(index));
     if (trimmed.size() == m_messages.size()) return false;
+    noteHistoryTrim(start);
     m_messages = trimmed;
+    const int filePosition = firstFilePosition(m_messages);
+    if (filePosition >= 0) m_windowStartFilePos = filePosition;
+    else if (m_projectionHeadFilePos >= 0 && m_windowStartFilePos >= 0) {
+        // The remaining rows are live additions after the loaded projection. Even
+        // invisible trailing raw entries belong before that new live window.
+        m_windowStartFilePos = std::max(m_windowStartFilePos,
+            m_projectionHeadFilePos + m_projectedFileCount);
+    }
     pruneDiagnosticIds();
     return true;
 }
@@ -484,8 +528,17 @@ QJsonObject Transcript::flushPayload(const QString &fileVersion) const
     QJsonObject payload{
         {QStringLiteral("agentId"), m_agentId},
         {QStringLiteral("messages"), stripToolResults(m_messages)},
-        {QStringLiteral("totalLength"), m_messages.size()},
+        {QStringLiteral("totalLength"), m_messages.size() + m_windowStart},
+        {QStringLiteral("preserveHistory"), m_preserveHistory},
     };
+    if (m_windowStart > 0) payload.insert(QStringLiteral("windowStart"), m_windowStart);
+    if (m_windowStartFilePos >= 0) {
+        payload.insert(QStringLiteral("windowStartFilePos"), m_windowStartFilePos);
+    }
+    if (m_stickyHistory) payload.insert(QStringLiteral("stickyHistory"), true);
+    if (!m_pendingSlideOut.isEmpty()) {
+        payload.insert(QStringLiteral("slideOut"), stripToolResults(m_pendingSlideOut));
+    }
     if (!fileVersion.isEmpty()) payload.insert(QStringLiteral("fileVersion"), fileVersion);
     return payload;
 }

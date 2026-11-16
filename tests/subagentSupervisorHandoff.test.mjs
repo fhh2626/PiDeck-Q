@@ -18,7 +18,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const text = (result) => result.content.map((part) => part.text ?? "").join("\n");
 
 for (const resume of [false, true]) {
-	test(`foreground workflow yields supervisor attention for ${resume ? "resumed" : "new"} child and keeps the original continuation`, async () => {
+	test(`foreground workflow yields supervisor attention for ${resume ? "resumed" : "new"} child and keeps the original continuation`, { timeout: 10_000 }, async () => {
 		const fixture = createFixture(graph, `supervisor-${resume}`);
 		const bus = eventsFor();
 		fixture.deps.pi.events = bus;
@@ -43,7 +43,9 @@ for (const resume of [false, true]) {
 			async: false, output: false, timeoutMs: 2000,
 		}, controller.signal, undefined, fixture.ctx);
 		try {
-			const result = await Promise.race([pending, pause(400).then(() => null)]);
+			// The child cannot complete until the callback below. A needs-attention
+			// result proves the handoff without measuring worker startup latency.
+			const result = await pending;
 			assert.ok(result, "supervisor request must release the parent before waiting for a reply");
 			assert.match(text(result), /needs.attention/i);
 			assert.match(text(result), /ask-1/);
@@ -76,7 +78,7 @@ for (const resume of [false, true]) {
 }
 
 for (const ending of ["timeout", "interrupt", "stop", "session-change"]) {
-	test(`a handed-off workflow settles on ${ending} without launching a later stage or releasing a live child's ownership early`, async () => {
+	test(`a handed-off workflow settles on ${ending} without launching a later stage or releasing a live child's ownership early`, { timeout: 10_000 }, async (t) => {
 		const fixture = createFixture(graph, ending);
 		const events = eventsFor();
 		fixture.deps.pi.events = events;
@@ -89,13 +91,31 @@ for (const ending of ["timeout", "interrupt", "stop", "session-change"]) {
 			return completedResult(fixture, { detached: true, detachedReason: "intercom coordination", exitCode: undefined, finalOutput: undefined });
 		});
 		const owner = new AbortController();
+		let expireWorkflow;
+		if (ending === "timeout") {
+			const realSetTimeout = globalThis.setTimeout;
+			let heldTimer;
+			// Fire the configured deadline after the actual handoff. A real 150 ms
+			// deadline can expire during worker startup under the full test load.
+			t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+				if (delay !== 150) return realSetTimeout(callback, delay, ...args);
+				assert.equal(expireWorkflow, undefined, "one workflow deadline is expected");
+				heldTimer = realSetTimeout(() => {}, 30_000);
+				expireWorkflow = () => { clearTimeout(heldTimer); callback(...args); };
+				return heldTimer;
+			});
+			t.after(() => clearTimeout(heldTimer));
+		}
 		const initial = await executor.executePublic("ending-wf", {
 			workflowScript: 'await runs.run("first", { agent: "worker", task: "first stage", async: false, acceptance: false }); return runs.run("second", { agent: "worker", task: "must not start", async: false });',
 			async: false, output: false, timeoutMs: ending === "timeout" ? 150 : 2000,
 		}, owner.signal, undefined, fixture.ctx);
 		try {
 			assert.match(text(initial), /needs_attention/, "accepted external-intercom detach must also release the parent");
-			if (ending === "interrupt" || ending === "stop") {
+			if (ending === "timeout") {
+				assert.equal(typeof expireWorkflow, "function");
+				expireWorkflow();
+			} else if (ending === "interrupt" || ending === "stop") {
 				const stopped = await executor.executePublic("interrupt-wf", { action: ending, id: initial.details.runId.slice(0, 12) }, new AbortController().signal, undefined, fixture.ctx);
 				assert.notEqual(stopped.isError, true, text(stopped));
 			} else if (ending === "session-change") {

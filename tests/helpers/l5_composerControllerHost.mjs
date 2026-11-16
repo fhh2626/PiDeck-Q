@@ -22,7 +22,7 @@ export async function withComposerController(run, options = {}) {
 					calls.sendPrompt.push(input);
 					return { type: "accepted" };
 				},
-				listRuntimeCommands: async () => ({ ok: true, value: commands }),
+				listRuntimeCommands: async (target) => ({ ok: true, value: { target, value: commands } }),
 			},
 			files: { list: async () => [] },
 			prompts: {

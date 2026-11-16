@@ -47,7 +47,8 @@ import { useProjectRuntimeCapabilities } from "./hooks/useRuntimeCapabilities";
 import { useSessionRuntimeBridge } from "./hooks/useSessionRuntimeBridge";
 import { useAgentLoadNotice } from "./hooks/useAgentLoadNotice";
 import { useSessionLayout } from "./hooks/useSessionLayout";
-import { useFileEditor , resolveFileLinkPath } from "./hooks/useFileEditor";
+import { useFileEditor } from "./hooks/useFileEditor";
+import { resolveLocalFileTarget } from "./utils/fileLinks";
 import { useOverlayActions } from "./hooks/useOverlayActions";
 import { useWorkspacePanels, type WorkspaceDrawerPanel, type WorkspaceExternalEditorAdapter } from "./hooks/useWorkspacePanels";
 import { useDrawerPorts } from "./hooks/useDrawerPorts";
@@ -58,6 +59,7 @@ import { useQueuedPrompt } from "./hooks/useQueuedPrompt";
 import { activeAgentIdAtom } from "./hooks/useSessionRuntimeController";
 import { PromptDeliveryUnknownError } from "./utils/promptErrors";
 import { resolveResendModelSelection } from "./utils/resendModelSelection";
+import { useSessionHistoryMessageServices } from "./hooks/useSessionHistoryMessageServices";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -840,7 +842,7 @@ export function App() {
       message: snapshot.message,
       displayText: snapshot.displayText,
       images: snapshot.images,
-      behavior: snapshot.behavior ?? "steer",
+      behavior: snapshot.behavior ?? "followUp",
       agentMode: snapshot.agentMode as ComposerAgentMode,
       timestamp: Date.now(),
     });
@@ -1148,21 +1150,18 @@ export function App() {
   //（FileDiffViewer 对 .md 默认 preview、.html 用 HtmlPreview 内置渲染）；其他文件 → 编辑器打开。
   // 替代原先的"系统默认应用打开"（.md 会被浏览器接管、体验割裂）
   const handleOpenLinkedFile = useCallback(
-    (path: string) => {
-      const isHandledImage = imagePreview.openLocalImage(
-        path,
-        activeAgent?.cwd ?? activeProject?.path,
-      );
+    (path: string, basePath?: string) => {
+      const target = resolveLocalFileTarget(path, basePath ?? activeAgent?.cwd ?? activeProject?.path);
+      if (!target.ok) {
+        showToast(t("app.fileLinkFormatInvalid"), 3000);
+        return;
+      }
+      const isHandledImage = imagePreview.openLocalImage(target.path);
       if (isHandledImage) return;
-
-      const resolved = resolveFileLinkPath(
-        path,
-        activeAgent?.cwd ?? activeProject?.path,
-      );
       // markdown / html / 其他文本文件：统一抽屉查看
-      viewFilePath(resolved);
+      viewFilePath(target.path);
     },
-    [activeAgent?.cwd, activeProject?.path, imagePreview.openLocalImage, viewFilePath],
+    [activeAgent?.cwd, activeProject?.path, imagePreview.openLocalImage, viewFilePath, showToast],
   );
 
   // 工具抽屉的统一切换语义：当前面板已展开 → 关闭；
@@ -2016,11 +2015,11 @@ export function App() {
     /** prompt 模板匹配到的 description，作为元数据发给 pi agent 标识意图 */
     templateDescription?: string,
   ) {
-    // 非队列入口继续保持原有行为：当前选中 agent 忙碌时默认 steer。
+    // 普通提交等待当前任务完成；只有明确选择加入当前回合才使用 steer。
     // 客户端队列 drain 直接调用 dispatchPromptSnapshot，并显式指定其投递语义。
     const behavior =
       streamingBehavior ??
-      (sessionId === currentSessionId && isAgentCurrentlyBusy() ? "steer" : undefined);
+      (sessionId === currentSessionId && isAgentCurrentlyBusy() ? "followUp" : undefined);
     try {
       await dispatchPromptSnapshot(
         sessionId,
@@ -2041,6 +2040,7 @@ export function App() {
     }
   }
 
+  const historyMessageServices = useSessionHistoryMessageServices();
   const {
     resendUserMessage,
     editMessage,
@@ -2053,6 +2053,7 @@ export function App() {
     agents,
     isRuntimeTargetBusy,
     getRuntimeTargetForSession,
+    ...historyMessageServices,
     submitPromptSnapshot,
     openReplacedRuntimeSession,
     currentSessionIdRef,
@@ -2772,6 +2773,7 @@ export function App() {
       onToggleEditorMode={activeTab?.preserveDrawer ? undefined : toggleEditorMode}
       onCloseEditor={() => { closeEditor(); }}
       readContent={readEditorFileContent}
+      onOpenFile={handleOpenLinkedFile}
       readOriginalContent={readEditorOriginalContent}
       saveContent={saveEditorFileContent}
     />
@@ -3067,11 +3069,15 @@ export function App() {
         }}
         onClose={() => setFileMenu(null)}
         onOpen={() => {
-          void api.files.open(fileMenu.node.path);
+          void api.files.open(fileMenu.node.path).catch((error: unknown) => {
+            showToast(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000);
+          });
           setFileMenu(null);
         }}
         onReveal={() => {
-          void api.files.showInFolder(fileMenu.node.path);
+          void api.files.showInFolder(fileMenu.node.path).catch((error: unknown) => {
+            showToast(t("app.revealFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000);
+          });
           setFileMenu(null);
         }}
         onAttach={() => {

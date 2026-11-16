@@ -47,7 +47,8 @@ public:
         quint64 lastSeq = 0;
     };
 
-    explicit EventHub(Limits limits = {}, QObject *parent = nullptr);
+    EventHub();
+    explicit EventHub(Limits limits, QObject *parent = nullptr);
 
     const QString &generation() const { return m_generation; }
     quint64 eventSeq() const { return m_eventSeq; }

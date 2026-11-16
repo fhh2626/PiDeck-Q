@@ -759,6 +759,8 @@ function requestSessionMessageResync(get: Getter, set: Setter, sessionId: string
 /** 历史前缀/窗口段的去重键：优先 pi entryId（跨下标空间稳定），缺省回退消息 id。 */
 function messageEntryKey(message: ChatMessage): string {
   const entryId = message.meta?.entryId;
+  const summaryKey = summaryEventKey(message);
+  if (summaryKey) return summaryKey;
   return typeof entryId === "string" && entryId ? `e:${entryId}` : `m:${message.id}`;
 }
 
@@ -767,12 +769,175 @@ function isSummaryCard(message: ChatMessage): boolean {
     (message.meta?.type === "compaction" || message.meta?.type === "branchSummary");
 }
 
+function summaryEventKey(message: ChatMessage): string | undefined {
+  if (!isSummaryCard(message)) return undefined;
+  const id = message.meta?.type === "compaction" ? message.meta.compactionId : message.meta?.branchSummaryId;
+  return typeof id === "string" && id ? `s:${message.meta?.type}:${id}` : undefined;
+}
+
+/** Enrich identities without changing runtime slots or mutating existing rows. */
+function inheritSummaryEventIds(
+  messages: ChatMessage[],
+  evidence: ChatMessage[],
+  sameDisplayId = false,
+  claimableKeys?: ReadonlySet<string>,
+): ChatMessage[] {
+  const canonical = evidence.filter((message) => summaryEventKey(message) !== undefined);
+  if (canonical.length === 0) return messages;
+  const anonymous = [...evidence, ...messages].filter((message) => isSummaryCard(message) && !summaryEventKey(message));
+  const claimed = new Set(messages.map(summaryEventKey).filter((key) => key !== undefined));
+  let changed = false;
+  const result = messages.map((message) => {
+    if (!isSummaryCard(message) || summaryEventKey(message)) return message;
+    const matches = new Map<string, ChatMessage>();
+    for (const candidate of canonical) {
+      if ((!sameDisplayId || candidate.id === message.id) && isSameSummaryCard(message, candidate)) {
+        matches.set(summaryEventKey(candidate)!, candidate);
+      }
+    }
+    if (matches.size !== 1) return message;
+    const [key, candidate] = matches.entries().next().value!;
+    if (claimed.has(key) || (claimableKeys && !claimableKeys.has(key))) return message;
+    if (!sameDisplayId) {
+      // Uniqueness must hold in both directions. One canonical event cannot
+      // collapse two legacy occurrences already visible in different segments.
+      const occurrences: ChatMessage[] = [];
+      const versions = canonical.filter((row) => summaryEventKey(row) === key);
+      for (const legacy of anonymous) {
+        if (!versions.some((row) => isSameSummaryCard(legacy, row))) continue;
+        if (occurrences.some((row) => row.id === legacy.id && isSameSummaryCard(row, legacy))) continue;
+        occurrences.push(legacy);
+        if (occurrences.length > 1) return message;
+      }
+    }
+    claimed.add(key);
+    const idKey = message.meta?.type === "compaction" ? "compactionId" : "branchSummaryId";
+    changed = true;
+    return { ...message, meta: { ...message.meta, [idKey]: candidate.meta?.[idKey] } };
+  });
+  return changed ? result : messages;
+}
+
 /** History 是稳定展示状态，不能携带仅属于退出动画生命周期的标记。 */
 function normalizeHistoryMessage(message: ChatMessage): ChatMessage {
   if (message.meta?.slidingOut !== true) return message;
   const meta = { ...message.meta };
   delete meta.slidingOut;
   return { ...message, meta };
+}
+
+/** Preserve separate summary events while preferring the authoritative copy of each event. */
+function filterSupersededSummaryCards(
+  messages: ChatMessage[],
+  authoritative: ChatMessage[],
+  identityEvidence: ChatMessage[] = [],
+  reservedEventKeys: ReadonlySet<string> = new Set(),
+  allowFingerprint = true,
+): ChatMessage[] {
+  const summaries = [...authoritative, ...messages, ...identityEvidence].filter(isSummaryCard);
+  const canonical = summaries.filter((message) => summaryEventKey(message) !== undefined);
+  const ambiguous = new Set<ChatMessage>();
+  for (const message of summaries) {
+    if (summaryEventKey(message)) continue;
+    const matches = new Set<string>();
+    for (const candidate of canonical) {
+      if (isSameSummaryCard(message, candidate)) matches.add(summaryEventKey(candidate)!);
+      if (matches.size > 1) {
+        // A legacy fingerprint cannot identify which of these distinct events
+        // it belongs to. Retain the evidence instead of assigning a guessed ID.
+        ambiguous.add(message);
+        break;
+      }
+    }
+  }
+  const known = authoritative.filter(isSummaryCard).map((message) => {
+    const eventKey = summaryEventKey(message);
+    return { message, eventKey, weakMatched: eventKey !== undefined && reservedEventKeys.has(eventKey) };
+  });
+  const retained = new Set<number>();
+  // Reserve exact event identities across the whole input before anonymous
+  // copies can consume them. Only local match records change, never cached rows.
+  messages.forEach((message, index) => {
+    const eventKey = summaryEventKey(message);
+    if (!eventKey) return;
+    const exact = known.filter((entry) => entry.eventKey === eventKey);
+    if (exact.length > 0) {
+      exact.forEach((entry) => { entry.weakMatched = true; });
+      return;
+    }
+    // Keep strong identity evidence even when an anonymous authoritative card
+    // has the same fingerprint. Otherwise a later page or flush can reuse that
+    // anonymous card to discard another, different canonical event.
+    retained.add(index);
+    known.push({ message, eventKey, weakMatched: false });
+  });
+  messages.forEach((message, index) => {
+    if (!isSummaryCard(message) || summaryEventKey(message)) return;
+    // A sticky flush may repeat the very same anonymous projection row. Its
+    // display ID plus strict fingerprint can identify that copy even when it
+    // cannot identify which canonical event the row represents.
+    const sameLegacyRow = known.find((entry) => !entry.eventKey && !entry.weakMatched &&
+      entry.message.id === message.id && isSameSummaryCard(entry.message, message));
+    const match = sameLegacyRow || (allowFingerprint && !ambiguous.has(message) && known.find((entry) => !entry.weakMatched &&
+      !ambiguous.has(entry.message) && isSameSummaryCard(entry.message, message)));
+    if (match) {
+      match.weakMatched = true;
+      return;
+    }
+    retained.add(index);
+    known.push({ message, eventKey: undefined, weakMatched: false });
+  });
+  return messages.filter((message, index) => !isSummaryCard(message) || retained.has(index));
+}
+
+/** Normalize both sides so a unique match keeps its canonical evidence in the surviving row. */
+function reconcileSummaryCards(messages: ChatMessage[], groups: ChatMessage[][], allowCandidateFingerprint = true) {
+  const evidence = [...groups.flat(), ...messages];
+  const existingKeys = new Set(groups.flat().map(summaryEventKey).filter((key) => key !== undefined));
+  const newKeys = new Set(messages.map(summaryEventKey)
+    .filter((key): key is string => key !== undefined && !existingKeys.has(key)));
+  const reserved = new Set([...groups.slice(1).flat(), ...messages]
+    .map(summaryEventKey).filter((key) => key !== undefined));
+  const keyChanges = new Map<string, string>();
+  const normalized = groups.map((group, index) => {
+    // Existing history occurrences may only gain a newly supplied identity.
+    // An unrelated page must not re-consume them against an old window event.
+    const next = inheritSummaryEventIds(group, evidence, false, index === 0 ? undefined : newKeys);
+    group.forEach((message, index) => {
+      if (next[index] !== message) keyChanges.set(messageEntryKey(message), messageEntryKey(next[index]));
+    });
+    return next;
+  });
+  const known: ChatMessage[] = [];
+  const authoritative = normalized.map((group, index) => {
+    // The first group is the runtime window. Its protocol slots must stay intact.
+    const next = index === 0 ? group : filterSupersededSummaryCards(group, known, evidence, reserved, false);
+    known.push(...next);
+    return next;
+  });
+  return {
+    messages: filterSupersededSummaryCards(messages, known, evidence, reserved, allowCandidateFingerprint),
+    authoritative,
+    keyChanges,
+  };
+}
+
+/** Native projections reuse metadata slots, so an archived event may need its own display row ID. */
+function normalizeHistoryMessages(messages: ChatMessage[], segment: ChatMessage[]): ChatMessage[] {
+  const usedIds = new Set(segment.map((message) => message.id));
+  const reservedIds = new Set([...messages, ...segment].map((message) => message.id));
+  return messages.map((message) => {
+    let normalized = normalizeHistoryMessage(message);
+    if (isSummaryCard(normalized) && usedIds.has(normalized.id)) {
+      let suffix = 1;
+      let id = `${normalized.id}-archived-summary-${suffix}`;
+      while (reservedIds.has(id)) id = `${normalized.id}-archived-summary-${++suffix}`;
+      reservedIds.add(id);
+      normalized = { ...normalized, id };
+    }
+    usedIds.add(normalized.id);
+    return normalized;
+  });
 }
 
 const COMPACTION_FINGERPRINT_TIME_TOLERANCE_MS = 5_000;
@@ -799,42 +964,55 @@ function findCoveredMessageIndexes(
     if (fingerprintIndices) fingerprintIndices.push(index);
     else oldByFingerprint.set(fingerprint, [index]);
   });
+  // A replacement can contain the entire 50-turn window. Its overlap is bounded
+  // by that window's size, rather than a fixed 32-row limit that leaves duplicates
+  // when fallback identities are replaced during runtime activation.
+  const fingerprintWindow = Math.max(32, incomingMessages.filter((message) => !isSummaryCard(message)).length);
   const tailStart = fingerprintTailOnly
-    ? Math.max(0, oldMessages.length - 32)
+    ? Math.max(0, oldMessages.length - fingerprintWindow)
     : 0;
-
-  for (const incoming of incomingMessages) {
-    if (isSummaryCard(incoming)) continue;
-    let matchedIndex: number | undefined;
+  const matchedIncoming = new Set<number>();
+  // Reserve every exact identity before an anonymous row can consume it through
+  // a fingerprint. A per-row exact check cannot protect later incoming entries.
+  incomingMessages.forEach((incoming, incomingIndex) => {
+    if (isSummaryCard(incoming)) return;
     const entryCandidates = oldByEntryKey.get(messageEntryKey(incoming)) ?? [];
     for (let index = entryCandidates.length - 1; index >= 0; index--) {
       const candidate = entryCandidates[index];
       if (!covered.has(candidate)) {
-        matchedIndex = candidate;
+        covered.add(candidate);
+        matchedIncoming.add(incomingIndex);
         break;
       }
     }
-    if (matchedIndex === undefined) {
-      // 指纹只用于压缩改写：运行期副本没有 entryId，投影后 id 会变。
-      // 同一文件版本下的窗口右移不能走指纹——Pi 短回复（「好的」「继续」）
-      // 很容易同文同秒，否则中间那条会从历史前缀里被吃掉。
-      if (!allowFingerprint) continue;
+  });
+  // Ordinary window movement uses exact identities only. Preserved reloads may
+  // bridge runtime and file identities, with source timestamps taking precedence
+  // over the tolerance used for event/flush timestamp differences.
+  if (!allowFingerprint) return covered;
+  for (const exactTimestampOnly of [true, false]) {
+    incomingMessages.forEach((incoming, incomingIndex) => {
+      if (isSummaryCard(incoming) || matchedIncoming.has(incomingIndex)) return;
       const fingerprintCandidates = oldByFingerprint.get(messageFingerprint(incoming)) ?? [];
       for (let index = fingerprintCandidates.length - 1; index >= 0; index--) {
         const candidate = fingerprintCandidates[index];
-        if (
-          covered.has(candidate) ||
-          candidate < tailStart ||
-          Math.abs((oldMessages[candidate].timestamp ?? 0) - (incoming.timestamp ?? 0)) >
-            COMPACTION_FINGERPRINT_TIME_TOLERANCE_MS
-        ) {
-          continue;
-        }
-        matchedIndex = candidate;
+        const previousEntryId = oldMessages[candidate].meta?.entryId;
+        const incomingEntryId = incoming.meta?.entryId;
+        // Known different file entries remain different turns even when the user
+        // repeats the same short prompt within the timestamp tolerance.
+        if (typeof previousEntryId === "string" && previousEntryId &&
+            typeof incomingEntryId === "string" && incomingEntryId &&
+            previousEntryId !== incomingEntryId) continue;
+        if (covered.has(candidate) || candidate < tailStart) continue;
+        const timeDifference = Math.abs((oldMessages[candidate].timestamp ?? 0) - (incoming.timestamp ?? 0));
+        if (exactTimestampOnly
+          ? timeDifference !== 0
+          : timeDifference > COMPACTION_FINGERPRINT_TIME_TOLERANCE_MS) continue;
+        covered.add(candidate);
+        matchedIncoming.add(incomingIndex);
         break;
       }
-    }
-    if (matchedIndex !== undefined) covered.add(matchedIndex);
+    });
   }
   return covered;
 }
@@ -1158,8 +1336,8 @@ function computeCompactionRetainedKeys(
  * 典型场景：切到运行中的会话 → 先从磁盘读到最近 50 轮 → 主进程推来压缩后的小窗口
  * （pi get_messages 压缩后只剩摘要 + 最近一两轮）。不降级的话，磁盘读到的内容会整体消失。
  * 规则：取旧消息中「第一条被新窗口覆盖的消息」之前的部分；完全无重叠时全部保留。
- * 覆盖判定允许指纹（运行时窗口在大历史路径下可能没有 entryId），但只在旧消息尾部 32 条内用指纹，
- * 避免早期的同文短回复（「好的」「继续」）被误判为重叠而截断前缀。
+ * 覆盖判定允许指纹（运行时窗口在大历史路径下可能没有 entryId），范围限制在
+ * 新窗口能够覆盖的旧消息尾部，至少保留 32 条的运行期接缝容差。
  */
 function demoteReplacedMessages(
   oldMessages: ChatMessage[],
@@ -1174,12 +1352,9 @@ function demoteReplacedMessages(
       break;
     }
   }
-  const segmentHasSummary = segment.some(isSummaryCard);
-  return oldMessages
+  return filterSupersededSummaryCards(oldMessages
     .slice(0, end)
-    .filter((message) => message.meta?.slidingOut !== true)
-    // 新窗口已带摘要卡时，旧内容里的摘要卡不再保留，避免出现两张卡片
-    .filter((message) => !(segmentHasSummary && isSummaryCard(message)));
+    .filter((message) => message.meta?.slidingOut !== true), segment);
 }
 
 /**
@@ -1203,8 +1378,8 @@ function reconcileHistoryPrefix(
   historyExplicit = false,
   /** 本次转入历史的上一运行窗口（连续压缩时与旧保留集合并重算） */
   compactionRetainedCandidates?: ChatMessage[],
-): SessionMessageCacheEntry["history"] {
-  if (!history && (!slideOut || slideOut.length === 0)) return undefined;
+): { history: SessionMessageCacheEntry["history"]; segment: ChatMessage[] } {
+  if (!history && (!slideOut || slideOut.length === 0)) return { history: undefined, segment };
   const versionChanged = Boolean(fileVersion && (!history?.version || fileVersion !== history.version));
   // 编辑/删除等改写会让旧前缀失效；压缩只改写上下文边界，旧对话仍是用户已经
   // 看到的 transcript，因此由主进程显式标记 preserveHistory 后继续保留。
@@ -1212,13 +1387,12 @@ function reconcileHistoryPrefix(
   if ((versionChanged && !preserveHistory) || (historyExplicit && !preserveHistory)) {
     history = undefined;
   }
-  const hasCurrentSummaryCard = segment.some(isSummaryCard);
-  // 仅压缩改写（文件版本变了但仍要保留已看过的对话）才允许用内容指纹
-  // 去重；普通窗口右移只认 entryId / 运行期 id。
-  const allowFingerprint = versionChanged && preserveHistory;
-  const slideCandidates = (slideOut ?? []).filter(
-    (message) => !hasCurrentSummaryCard || !isSummaryCard(message),
-  );
+  // A preserved authoritative reload can regain entry IDs without changing the
+  // file version, or compact an anonymous session without any file version. These
+  // explicit snapshots need bounded fingerprint matching across identity formats.
+  // Ordinary window movement still uses exact identities only.
+  const allowFingerprint = (versionChanged || stickyHistory) && preserveHistory;
+  const slideCandidates = slideOut ?? [];
   const coveredSlideIndexes = findCoveredMessageIndexes(
     slideCandidates,
     segment,
@@ -1233,13 +1407,20 @@ function reconcileHistoryPrefix(
     true,
     allowFingerprint,
   );
-  const prefixMessages = prefixCandidates.filter(
-    (message, index) => !coveredPrefixIndexes.has(index) &&
-      !(hasCurrentSummaryCard && isSummaryCard(message)),
+  const summaries = reconcileSummaryCards(
+    prefixCandidates.filter((_message, index) => !coveredPrefixIndexes.has(index)),
+    [segment, slideMessages],
+    // These occurrences were already displayed separately. A refresh can
+    // remove exact event/projection copies, but cannot restart weak matching.
+    false,
   );
-  const historyMessages = [...prefixMessages, ...slideMessages];
-  const messages = historyMessages.map(normalizeHistoryMessage);
-  if (messages.length === 0) return undefined;
+  const [normalizedSegment, normalizedSlide] = summaries.authoritative;
+  segment = normalizedSegment;
+  const historyMessages = [...summaries.messages, ...normalizedSlide];
+  const messages = normalizeHistoryMessages(historyMessages, segment);
+  // A page containing only a boundary summary still owns a continuation cursor
+  // after its card moves into the runtime window. Keep that paging state.
+  if (messages.length === 0 && !history) return { history: undefined, segment };
   // 无滑出轮且前缀未被触碰：保留原对象引用，避免无谓的 atom 更新
   if (
     slideMessages.length === 0 &&
@@ -1249,7 +1430,7 @@ function reconcileHistoryPrefix(
     messages.length === (history?.messages.length ?? 0) &&
     messages.every((message, index) => message === historyMessages[index])
   ) {
-    return history;
+    return { history, segment };
   }
   const nextBefore = history?.nextBefore ?? (
     typeof historyBefore === "number" &&
@@ -1260,7 +1441,8 @@ function reconcileHistoryPrefix(
   // 压缩保留集：只有本次真正有「上一窗口转入」或旧保留集时才重算。
   // 重算输入 = 旧保留消息 + 本次转入候选，取尾部最近 50 轮连续后缀，
   // 保证连续压缩不累加旧集合、不无界增长。
-  const previousRetainedKeys = history?.compactionRetainedKeys ?? [];
+  const previousRetainedKeys = (history?.compactionRetainedKeys ?? [])
+    .map((key) => summaries.keyChanges.get(key) ?? key);
   const hasRetainedCandidates =
     (compactionRetainedCandidates?.length ?? 0) > 0 || previousRetainedKeys.length > 0;
   let retainedKeys: string[] | undefined;
@@ -1271,14 +1453,14 @@ function reconcileHistoryPrefix(
       : [];
     const retained = computeCompactionRetainedKeys(
       previousRetainedMessages,
-      compactionRetainedCandidates ?? [],
+      inheritSummaryEventIds(compactionRetainedCandidates ?? [], [...segment, ...messages]),
     );
     // 只保留仍实际存在于前缀里的 key（去重/清理后已消失的不得残留）
     const presentKeys = new Set(messages.map(messageEntryKey));
     const filtered = retained.filter((key) => presentKeys.has(key));
     if (filtered.length > 0) retainedKeys = filtered;
   }
-  return {
+  return { segment, history: {
     nextBefore,
     ...(history?.nextBeforeEntryId !== undefined
       ? { nextBeforeEntryId: history?.nextBeforeEntryId }
@@ -1288,7 +1470,7 @@ function reconcileHistoryPrefix(
     ...(stickyHistory ? { sticky: true } : {}),
     ...(retainedKeys ? { compactionRetainedKeys: retainedKeys } : {}),
     messages,
-  };
+  } };
 }
 
 /**
@@ -1311,29 +1493,29 @@ export const replaceHistoryPrefixAfterVersionDriftAtom = atom(
     if (current.revision !== input.expectedRevision) return false;
     // 新前缀与当前运行窗口是两个相邻段，重叠消息不得同时留在两处
     // （正常 prepend 路径同样按 messageEntryKey 去重）：
-    // - 窗口已有同 key 的消息（含同 id 的摘要卡）→ 丢弃页里的副本；
+    // - 窗口已有同 key 的普通消息 → 丢弃页里的副本；
     // - 同一摘要事件的跨投影副本去重，但保留不同压缩事件/分支摘要。
     const segmentKeys = new Set(current.messages.map(messageEntryKey));
-    const windowSummaries = current.messages.filter(isSummaryCard);
-    const prefixMessages = input.page.messages.filter((message) => {
-      if (segmentKeys.has(messageEntryKey(message))) return false;
-      if (isSummaryCard(message) && windowSummaries.some((card) => isSameSummaryCard(card, message))) return false;
-      return true;
-    });
+    const summaries = reconcileSummaryCards(
+      input.page.messages.filter((message) => isSummaryCard(message) || !segmentKeys.has(messageEntryKey(message))),
+      [current.messages],
+    );
+    const [windowMessages] = summaries.authoritative;
     set(sessionMessagesCacheAtom, {
       ...get(sessionMessagesCacheAtom),
       [input.sessionId]: {
         ...current,
+        messages: windowMessages,
         history: {
           // 过滤掉的重叠项可导致空前缀：仍要留下游标，用户还能继续往上翻。
-          messages: prefixMessages,
+          messages: normalizeHistoryMessages(summaries.messages, windowMessages),
           nextBefore: input.page.nextBefore,
           ...(input.page.nextBeforeEntryId ? { nextBeforeEntryId: input.page.nextBeforeEntryId } : {}),
           ...(input.page.nextBefore === null ? { exhausted: true } : {}),
           version: input.page.indexVersion,
           // sticky 不继承：重建发生在重新分页时，不属于「刚压缩完」窗口
           ...(current.history?.compactionRetainedKeys
-            ? { compactionRetainedKeys: current.history.compactionRetainedKeys }
+            ? { compactionRetainedKeys: current.history.compactionRetainedKeys.map((key) => summaries.keyChanges.get(key) ?? key) }
             : {}),
         },
         updatedAt: Date.now(),
@@ -1378,7 +1560,9 @@ export const prependSessionHistoryPageAtom = atom(
     if (!current.history && input.before !== undefined) return false;
 
     const segmentKeys = new Set(current.messages.map(messageEntryKey));
-    const pageMessages = input.page.messages.filter((message) => !segmentKeys.has(messageEntryKey(message)));
+    const pageMessages = input.page.messages.filter((message) =>
+      isSummaryCard(message) || !segmentKeys.has(messageEntryKey(message)),
+    );
 
     // 版本漂移（压缩/改写）：本页是基于旧最老游标读到的单页，不能当作新前缀起点，
     // 否则会把已加载的中间段直接丢掉（旧实现置 baseMessages=[]，表现为断层）。
@@ -1394,17 +1578,18 @@ export const prependSessionHistoryPageAtom = atom(
     const baseKeys = new Set(baseMessages.map(messageEntryKey));
     // IPC 文件页使用 sessionId，runtime 使用 agentId：摘要 id 不同但可能是同一事件。
     // 仅匹配摘要事件，不能一见窗口摘要就丢弃页内所有摘要（旧压缩/分支卡片仍有意义）。
-    const knownSummaries = [...current.messages, ...baseMessages].filter(isSummaryCard);
-    const freshMessages = pageMessages.filter((message) =>
-      !baseKeys.has(messageEntryKey(message)) &&
-      !(isSummaryCard(message) && knownSummaries.some((card) => isSameSummaryCard(card, message))),
+    const summaries = reconcileSummaryCards(
+      pageMessages.filter((message) => isSummaryCard(message) || !baseKeys.has(messageEntryKey(message))),
+      [current.messages, baseMessages],
     );
-
-    const merged = [...freshMessages, ...baseMessages];
+    const [windowMessages, historyMessages] = summaries.authoritative;
+    const authoritative = [...windowMessages, ...historyMessages];
+    const merged = [...normalizeHistoryMessages(summaries.messages, authoritative), ...historyMessages];
     set(sessionMessagesCacheAtom, {
       ...get(sessionMessagesCacheAtom),
       [input.sessionId]: {
         ...current,
+        messages: windowMessages,
         // 空页 + nextBefore=null 也要留下 exhausted 前缀：
         // 否则 history 被清掉后 hasMore 会回退到 windowStart>0，顶部按钮反复出现、空翻死循环。
         history: {
@@ -1417,7 +1602,7 @@ export const prependSessionHistoryPageAtom = atom(
               ...(current.history?.sticky ? { sticky: true } : {}),
               // 压缩保留集随前缀一起保留：续页不得冲掉回底清理的保护名单
               ...(current.history?.compactionRetainedKeys
-                ? { compactionRetainedKeys: current.history.compactionRetainedKeys }
+                ? { compactionRetainedKeys: current.history.compactionRetainedKeys.map((key) => summaries.keyChanges.get(key) ?? key) }
                 : {}),
             },
         updatedAt: Date.now(),
@@ -2127,6 +2312,12 @@ export const applySessionRuntimeEventAtom = atom(
         const releaseLiveThinking = () =>
           tryReleaseLiveThinkingAfterHistory(get, set, event.sessionId);
         const current = get(sessionMessagesCacheAtom)[event.sessionId];
+        // History pages may have identified an anonymous RPC summary. Preserve
+        // that knowledge on the same display row through both full and delta
+        // payloads; the strict fingerprint prevents inheriting a newer event.
+        const incomingMessages = inheritSummaryEventIds(
+          messages as ChatMessage[], current?.messages ?? [], true,
+        );
         if (upsertFrom !== undefined && totalLength !== undefined) {
           // 增量合并：upsertFrom 为 runtime 数组绝对下标；本地数组 = [系统卡片(c), 窗口段]，
           // 窗口段首条对应 runtime 下标 W（windowStart），因此本地下标 = upsertFrom − W + c。
@@ -2161,7 +2352,7 @@ export const applySessionRuntimeEventAtom = atom(
             const merged = [
               ...current.messages.slice(0, localOffset)
                 .filter((message) => message.meta?.optimistic !== true),
-              ...(messages as ChatMessage[]),
+              ...incomingMessages,
             ];
             // 长度校验：合并后本地长度 = 卡片 + (totalLength − W) + slidingCount；不满足说明增量已失序
             // （漏事件/trim 未校准），丢弃等待全量
@@ -2170,7 +2361,7 @@ export const applySessionRuntimeEventAtom = atom(
               // 在长度校验通过后清掉已被覆盖的本地乐观气泡，避免它们留到全量快照才滑出。
               const optimisticReconciliation = reconcileOptimisticUserMessages(
                 current.messages,
-                messages as ChatMessage[],
+                incomingMessages,
               );
               const droppedOptimisticIds = new Set(optimisticReconciliation.droppedIds);
               // 权威 user 可能已在 history 前缀（而不是本次 delta）：例如全量先把
@@ -2208,7 +2399,7 @@ export const applySessionRuntimeEventAtom = atom(
                   .slice(0, firstOptimisticIndex >= 0 ? firstOptimisticIndex : 0)
                   .map((message) => message.id),
               );
-              const payloadIds = new Set((messages as ChatMessage[]).map((message) => message.id));
+              const payloadIds = new Set(incomingMessages.map((message) => message.id));
               // merged 的前缀已经排除全部本地乐观气泡；即使 payload 复用了
               // 同一个 id（投影稳定化），也必须保留 payload 里的权威行。
               const mergedBase = merged;
@@ -2260,7 +2451,7 @@ export const applySessionRuntimeEventAtom = atom(
           // 窗口化全量 / 传统全量：替换运行时窗口段；
           // 方案 B：对当前展示的 messages 与新 canonical snapshot 做 diff，
           // 被压缩移出的旧消息标记 slidingOut 并继续保留在 renderer state 中，由 renderer 自行管理退出动画生命周期。
-          const segment = messages as ChatMessage[];
+          let segment = incomingMessages;
           // 卡片数推导：全量载荷 = [卡片(c), 窗口段]，本地长度 = c + (totalLength − W)
           const W = payloadWindowStart ?? 0;
           const cardCount = Math.max(0, segment.length - (totalLength ?? segment.length) + W);
@@ -2283,16 +2474,23 @@ export const applySessionRuntimeEventAtom = atom(
             current?.source === "runtime"
             // 本地乐观气泡不是历史轮次；它参与 compaction retained 计算会
             // 多算一轮并挤掉真正老消息，必须先排除。
-            ? current.messages.filter((message) => message.meta?.optimistic !== true)
+            ? inheritSummaryEventIds(
+                current.messages.filter((message) => message.meta?.optimistic !== true),
+                // A first canonical sticky snapshot identifies the same old
+                // runtime row before it becomes a slide copy. Other history
+                // occurrences must keep their own unresolved identities.
+                segment,
+                true,
+              )
             : undefined;
           const combinedSlideOut = [
             ...(previousWindow ?? []),
             ...(slideOut ?? []),
           ];
           const seenHistoryCandidates = new Set<string>();
-          const historyCandidates = combinedSlideOut.filter((message) => {
+          const historyCandidates = filterSupersededSummaryCards(combinedSlideOut, []).filter((message) => {
             const key = messageEntryKey(message);
-            if (seenHistoryCandidates.has(key)) return false;
+            if (!isSummaryCard(message) && seenHistoryCandidates.has(key)) return false;
             if (droppedOptimisticIds.has(message.id)) return false;
             // 本地乐观气泡不是权威历史；等待中的气泡即使没被配对，也不能被
             // 压缩/粘性窗口提升成 history 前缀，否则会在旧位置残留一份用户消息。
@@ -2370,25 +2568,6 @@ export const applySessionRuntimeEventAtom = atom(
               .slice(0, firstOptimisticIndex >= 0 ? firstOptimisticIndex : 0)
               .map((message) => message.id),
           );
-          const mergedMessages = current?.source === "disk"
-            || (current?.source === "runtime" && !canMergeRuntime)
-            ? insertOptimisticMessagesBeforeNewer(
-                segment,
-                pendingOptimisticMessages,
-                new Set(segment.map((message) => message.id)),
-                previousIdsBeforeOptimistic,
-              )
-            : canMergeRuntime
-              ? mergeCanonicalSnapshotWithSlidingOut(
-                  reconciledMessages,
-                  segment,
-                  promotedHistory,
-                  confirmedRequestIds,
-                  // 未显式声明丢弃历史的全量快照：排在快照尾之后的 user 是
-                  // 「快照比本地旧」的证据，不能滑出（发送瞬间回滚一条的根因）。
-                  { keepUnconfirmedTrailingUserMessages: !explicitDrop },
-                )
-              : segment;
           // 被替换的旧内容降级为历史前缀（见 demoteReplacedMessages）。
           // 显式 preserveHistory === false 表示编辑/删除/重发，旧内容已失效，不降级。
           const replacedMessages: ChatMessage[] = !explicitDrop && current
@@ -2417,6 +2596,40 @@ export const applySessionRuntimeEventAtom = atom(
                 ...(fileVersion ? { version: fileVersion } : {}),
               }
             : current?.history;
+          const reconciledHistory = reconcileHistoryPrefix(
+            baseHistory,
+            segment,
+            fileVersion,
+            promotedHistory,
+            preserveHistory,
+            stickyHistory,
+            payloadWindowStartFilePos,
+            // 显式字段（含 false）才启用编辑/删除清理与保留集重算：
+            // 旧协议缺省载荷仍按“未声明”处理，不误删已有前缀。
+            typeof payload.preserveHistory === "boolean",
+            // 压缩前上一运行窗口：与旧保留集合并后重算最近 50 轮保留集
+            previousWindow,
+          );
+          segment = reconciledHistory.segment;
+          const mergedMessages = current?.source === "disk"
+            || (current?.source === "runtime" && !canMergeRuntime)
+            ? insertOptimisticMessagesBeforeNewer(
+                segment,
+                pendingOptimisticMessages,
+                new Set(segment.map((message) => message.id)),
+                previousIdsBeforeOptimistic,
+              )
+            : canMergeRuntime
+              ? mergeCanonicalSnapshotWithSlidingOut(
+                  reconciledMessages,
+                  segment,
+                  promotedHistory,
+                  confirmedRequestIds,
+                  // 未显式声明丢弃历史的全量快照：排在快照尾之后的 user 是
+                  // 「快照比本地旧」的证据，不能滑出（发送瞬间回滚一条的根因）。
+                  { keepUnconfirmedTrailingUserMessages: !explicitDrop },
+                )
+              : segment;
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
             messages: mergedMessages,
@@ -2424,20 +2637,7 @@ export const applySessionRuntimeEventAtom = atom(
             agentId: event.agentId,
             windowStart: payloadWindowStart,
             cardCount,
-            history: reconcileHistoryPrefix(
-              baseHistory,
-              segment,
-              fileVersion,
-              promotedHistory,
-              preserveHistory,
-              stickyHistory,
-              payloadWindowStartFilePos,
-              // 显式字段（含 false）才启用编辑/删除清理与保留集重算：
-              // 旧协议缺省载荷仍按“未声明”处理，不误删已有前缀。
-              typeof payload.preserveHistory === "boolean",
-              // 压缩前上一运行窗口：与旧保留集合并后重算最近 50 轮保留集
-              previousWindow,
-            ),
+            history: reconciledHistory.history,
             ...(typeof payloadWindowStartFilePos === "number"
               ? { windowStartFilePos: payloadWindowStartFilePos }
               : {}),

@@ -84,10 +84,13 @@ Models runRpcModels(const ChannelServices &services, const QJsonObject &settings
     // Startup diagnostics belong on stderr, never in the JSON-RPC stream; drain it so a
     // chatty pi cannot block on a full pipe.
     process.setProcessChannelMode(QProcess::SeparateChannels);
+#ifdef Q_OS_WIN
     if (!cli.nativeArguments.isEmpty()) {
         process.setNativeArguments(cli.nativeArguments);
         process.start(cli.program);
-    } else {
+    } else
+#endif
+    {
         process.start(cli.program, cli.arguments);
     }
     if (!process.waitForStarted(kStartTimeoutMs)) {
