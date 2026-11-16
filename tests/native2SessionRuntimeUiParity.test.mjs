@@ -347,6 +347,7 @@ if (!executable) {
 		test("manual compaction releases the gate so a later auto-compaction reloads history", async (t) => {
 			const { invoke, fake, record, target, sse, args } = await start(t, {
 				scenario: {
+					commands: [{ name: "fixture-auto-compact", source: "extension" }],
 					messages: [
 						{ role: "user", content: [{ type: "text", text: "m1" }] },
 						{ role: "assistant", content: [{ type: "text", text: "m2" }] },
@@ -374,19 +375,24 @@ if (!executable) {
 			const entry = afterCompact.payload.result.find((candidate) => candidate.sessionId === record.id);
 			assert.equal(entry.status, "idle", JSON.stringify(afterCompact.payload));
 
-			// A silent prompt writes no user bubble, so any projection reload from here on is the
-			// auto-compaction path. `get_messages` is the oracle's reload probe: the renderer-facing
-			// frame alone is not enough because a transport resync re-pushes the cached window.
+			// A registered silent extension command writes no user bubble, so any projection
+			// reload from here on is the auto-compaction path. `get_messages` is the oracle's
+			// reload probe because a transport resync only re-pushes the cached window.
 			const reloadsBefore = fake.commands().filter((entry) => entry.command === "get_messages").length;
-			await invoke("sessions:send-prompt", [{
+			const followUp = await invoke("sessions:send-prompt", [{
 				sessionId: record.id,
 				requestId: "post-compact",
 				message: "",
-				agentMessage: "follow-up",
+				agentMessage: "/fixture-auto-compact",
 				silent: true,
 				agentId: target.agentId,
 				runtimeGeneration: target.runtimeGeneration,
 			}]);
+			assert.equal(followUp.payload.ok, true, JSON.stringify(followUp.payload));
+			assert.equal(followUp.payload.result.accepted, true, JSON.stringify(followUp.payload));
+			const prompts = fake.commands().filter((command) => command.command === "prompt");
+			assert.equal(prompts.length, 2, JSON.stringify(prompts));
+			assert.equal(prompts[1].payload.message, "/fixture-auto-compact");
 			await waitForCondition(() => fake.commands()
 				.filter((entry) => entry.command === "get_messages").length > reloadsBefore);
 		});

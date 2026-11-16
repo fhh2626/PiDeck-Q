@@ -6,11 +6,12 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import {
@@ -21,6 +22,30 @@ import {
 } from "./helpers/native2BackendHarness.mjs";
 
 const executable = resolveBackendExecutable();
+
+/** Deny atomic writes without relying on POSIX rename honoring a target's read-only mode. */
+function blockAtomicSettingsWrite(filePath) {
+	if (process.platform === "win32") {
+		chmodSync(filePath, 0o444);
+		return () => chmodSync(filePath, 0o666);
+	}
+	// A POSIX rename may replace a read-only file. Temporarily obstruct its parent
+	// instead, keeping the entire original directory available for an exact restore.
+	// This also fails for a privileged test runner, unlike chmod on the directory.
+	const directory = dirname(filePath);
+	const savedDirectory = `${directory}.write-blocked`;
+	renameSync(directory, savedDirectory);
+	try {
+		writeFileSync(directory, "settings write blocker\n", { flag: "wx" });
+	} catch (error) {
+		renameSync(savedDirectory, directory);
+		throw error;
+	}
+	return () => {
+		rmSync(directory);
+		renameSync(savedDirectory, directory);
+	};
+}
 
 // The Node modules are the behavioural oracle: the C++ backend must return the same
 // records, write the same bytes to disk and report the same errors for the same input.
@@ -612,21 +637,15 @@ if (executable) {
 			const before = (await session.invoke("settings:get")).payload.result;
 			const beforeBytes = readFileSync(filePath, "utf8");
 
-			// Deny the atomic replace without denying the read: a read-only target is what a
-			// locked/read-only profile looks like on Windows, and it is exactly the case the
-			// read-modify-write path has to report.
-			chmodSync(filePath, 0o444);
-			t.after(() => {
-				try {
-					chmodSync(filePath, 0o666);
-				} catch {
-					// fixture already gone
-				}
-			});
-
-			const failed = await session.invoke("settings:update", [
-				{ theme: "dark", useNativeTitleBar: true },
-			]);
+			const restore = blockAtomicSettingsWrite(filePath);
+			let failed;
+			try {
+				failed = await session.invoke("settings:update", [
+					{ theme: "dark", useNativeTitleBar: true },
+				]);
+			} finally {
+				restore();
+			}
 			assert.equal(failed.payload.ok, false, JSON.stringify(failed.payload));
 			assert.match(failed.payload.error.message, /settings/i);
 
@@ -645,9 +664,11 @@ if (executable) {
 				JSON.stringify(session.host.requests.map((frame) => frame.method)),
 			);
 
-			// Node golden, executed: the same operation on the same kind of read-only file
-			// rejects and keeps its previous snapshot.
-			const oracleFile = join(session.fixture.root, "oracle-readonly-settings.json");
+			// Execute the Node oracle with the same write obstruction and keep both its
+			// in-memory snapshot and the prior persisted bytes under the original assertions.
+			const oracleDirectory = join(session.fixture.root, "oracle-settings");
+			mkdirSync(oracleDirectory);
+			const oracleFile = join(oracleDirectory, "settings.json");
 			writeFileSync(oracleFile, beforeBytes);
 			const oracle = new SettingsStore({
 				desktopSettingsFile: oracleFile,
@@ -656,14 +677,14 @@ if (executable) {
 			});
 			const loaded = await oracle.load();
 			const oracleBytes = readFileSync(oracleFile, "utf8");
-			chmodSync(oracleFile, 0o444);
+			const restoreOracle = blockAtomicSettingsWrite(oracleFile);
 			try {
 				await assert.rejects(() => oracle.update({ theme: "dark" }));
 				assert.equal(oracle.get().theme, loaded.theme);
-				assert.equal(readFileSync(oracleFile, "utf8"), oracleBytes);
 			} finally {
-				chmodSync(oracleFile, 0o666);
+				restoreOracle();
 			}
+			assert.equal(readFileSync(oracleFile, "utf8"), oracleBytes);
 		});
 
 		test("settings:restart-web-service is a real no-op while the LAN service is disabled", async (t) => {

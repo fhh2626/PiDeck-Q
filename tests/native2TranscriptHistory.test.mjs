@@ -7,10 +7,10 @@ import { createStore } from "jotai/vanilla";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
-const candidates = process.env.PIDECK_TRANSCRIPT_TEST_EXECUTABLE
-  ? [process.env.PIDECK_TRANSCRIPT_TEST_EXECUTABLE]
-  : ["build/windows/x64/debug/PiDeck-TranscriptHistoryTest.exe", "build/linux/x64/debug/PiDeck-TranscriptHistoryTest"];
+const pinned = process.env.PIDECK_TRANSCRIPT_TEST_EXECUTABLE;
+const candidates = nativeBuildPaths("PiDeck-TranscriptHistoryTest", { pinned });
 const sources = [
   "native/tests/TranscriptHistoryTest.cpp",
   "xmake.lua",
@@ -19,7 +19,7 @@ const sources = [
 ];
 const executable = candidates.map((path) => resolve(path)).find((path) => existsSync(path)
   && sources.every((source) => statSync(path).mtimeMs >= statSync(source).mtimeMs));
-const required = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
+const required = Boolean(pinned) || process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 
 test("native compaction payloads preserve and page history through the real renderer reducer", {
   skip: !executable && !required ? "Build PiDeck-TranscriptHistoryTest to run native history regression" : false,

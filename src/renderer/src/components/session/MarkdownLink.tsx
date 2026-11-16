@@ -74,7 +74,7 @@ export function MarkdownLink(
 	return (
 		<a
 			{...anchorProps}
-			href={localTarget?.ok && isAbsoluteFilePath(localTarget.path) ? filePathToUri(localTarget.path) : props.href}
+			href={localTarget?.ok && isAbsoluteFilePath(localTarget.path) ? filePathToUri(localTarget.path, platform) : props.href}
 			className={linkClass}
 			onClick={handleClick}
 			title={hoverTitle}

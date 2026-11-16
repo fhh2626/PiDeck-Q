@@ -38,6 +38,24 @@ test("markdown file click resolves against its own document or session directory
   assert.equal(link.props.title, "C:/second-session/images/a%20b.png");
 });
 
+for (const userAgent of ["X11; Linux x86_64", "Macintosh; Intel Mac OS X"]) {
+  test(`the Markdown browser link keeps POSIX backslashes in its href and click target on ${userAgent}`, () => {
+    const { MarkdownLink: PosixMarkdownLink } = loadTsCommonJs("src/renderer/src/components/session/MarkdownLink.tsx", {
+      stubs: { "../../i18n": i18n, "../../utils/notice": notices },
+      globals: { process: undefined, navigator: { userAgent } },
+    });
+    const opened = [];
+    const link = PosixMarkdownLink({
+      href: String.raw`images\copy.png`, basePath: String.raw`/tmp/project\name`,
+      onOpenFile: (path) => opened.push(path),
+      onOpenExternal: () => assert.fail("local image must use the file callback"),
+    });
+    assert.equal(link.props.href, "file:///tmp/project%5Cname/images%5Ccopy.png");
+    link.props.onClick({ preventDefault() {} });
+    assert.deepEqual(opened, [String.raw`/tmp/project\name/images\copy.png`]);
+  });
+}
+
 test("markdown document preview supplies working file and external callbacks and its own directory", async () => {
   const harness = createHookHarness();
   const marker = () => null;

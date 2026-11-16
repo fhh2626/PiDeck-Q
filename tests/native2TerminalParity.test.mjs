@@ -18,7 +18,7 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
  * The oracle is the real production module (src/main/terminal/TerminalSessionManager.ts),
  * loaded through the TS loader with `node-pty` stubbed: only its pure policy functions
  * (owner key, cwd normalization, shell candidates) are compared, because the PTY itself
- * is the thing under test. Every terminal assertion below drives a real ConPTY: output is
+ * is the thing under test. Every terminal assertion below drives the host's real PTY: output is
  * read from the `terminal:data` event stream, never from a console title or a file the
  * test wrote itself.
  */
@@ -38,13 +38,17 @@ const oracle = loadTsCommonJs("src/main/terminal/TerminalSessionManager.ts", {
 });
 
 const PROJECT_ID = "terminal-project";
+const IS_WINDOWS = process.platform === "win32";
+const TEST_SHELL = IS_WINDOWS ? "cmd" : "bash";
+const LINE_END = IS_WINDOWS ? "\r\n" : "\n";
 
 /**
  * Child-side console query. `mode con` is localized (this machine runs a zh-CN
  * console), so the size is read from PowerShell's RawUI instead.
  */
-const SIZE_QUERY =
-	'powershell -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; Write-Host (\\"SIZE=\\" + $s.Width + \\"x\\" + $s.Height)"\r\n';
+const SIZE_QUERY = IS_WINDOWS
+	? 'powershell -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; Write-Host (\\"SIZE=\\" + $s.Width + \\"x\\" + $s.Height)"\r\n'
+	: 'set -- $(stty size); printf "SIZE=%sx%s\\n" "$2" "$1"\n';
 
 /** Fixture with one real project directory the terminal can start in. */
 function projectPrepare(fixture) {
@@ -87,12 +91,13 @@ function collectedData(client, tabId) {
 }
 
 /**
- * Wait until the shell prompt is on screen. Typing before cmd.exe is ready loses the
- * line, so every test that writes input first waits for the prompt (which contains the
- * cwd the terminal was created in).
+ * Wait for the real shell's first prompt before writing input. The POSIX branch accepts
+ * the conventional user or root prompt, and the Windows branch keeps its cwd check.
  */
 function waitForPrompt(client, tabId, projectPath) {
-	return waitForData(client, tabId, (data) => data.includes(`${projectPath.split(/[\\/]/).pop()}>`));
+	return waitForData(client, tabId, (data) => IS_WINDOWS
+		? data.includes(`${projectPath.split(/[\\/]/).pop()}>`)
+		: /[$#] /.test(data));
 }
 
 function waitForData(client, tabId, predicate, timeoutMs = 20_000) {
@@ -100,13 +105,20 @@ function waitForData(client, tabId, predicate, timeoutMs = 20_000) {
 		(frame) =>
 			frame.payload.channel === "terminal:data" &&
 			frame.payload.args?.[0]?.tabId === tabId &&
-			predicate(frame.payload.args[0].data),
+			predicate(collectedData(client, tabId)),
 		timeoutMs,
 	);
 }
 
-/** Process ids whose parent is `parentPid`, via CIM (tasklist has no parent column). */
+/** Read real child identities through the host's process table. */
 function childProcesses(parentPid) {
+	if (!IS_WINDOWS) {
+		const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm="], { encoding: "utf8", timeout: 20_000 });
+		return output.split("\n").flatMap((line) => {
+			const fields = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+			return fields && Number(fields[2]) === parentPid ? [{ ProcessId: Number(fields[1]), Name: fields[3] }] : [];
+		});
+	}
 	const script =
 		`Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | ` +
 		"Select-Object ProcessId,Name | ConvertTo-Json -Compress";
@@ -118,6 +130,18 @@ function childProcesses(parentPid) {
 	if (!output) return [];
 	const parsed = JSON.parse(output);
 	return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+/** Check the original pid even after it has been reparented by backend shutdown. */
+function processExists(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		if (error.code === "ESRCH") return false;
+		if (error.code === "EPERM") return true;
+		throw error;
+	}
 }
 
 if (!executable) {
@@ -141,30 +165,30 @@ if (!executable) {
 
 	test("terminal:create returns a real tab with the oracle's owner key", async (t) => {
 		const { invoke, projectPath, client } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
 		const tab = created.payload.result;
 
 		assert.match(tab.id, UUID_PATTERN);
 		assert.equal(tab.agentId, "");
 		assert.equal(tab.cwd, projectPath);
-		assert.equal(tab.shell, "cmd");
-		assert.equal(tab.title, "cmd 1");
+		assert.equal(tab.shell, TEST_SHELL);
+		assert.equal(tab.title, `${TEST_SHELL} 1`);
 		assert.equal(typeof tab.createdAt, "number");
 		assert.ok(tab.createdAt > 1_600_000_000_000);
 		// Golden: the ownership key is the oracle's, computed from the same cwd.
 		assert.equal(tab.ownerKey, oracle.terminalOwnerKeyFor(projectTarget(projectPath), process.platform));
 
-		// Windows local paths fold case, so a differently-cased cwd is the same owner.
+		// Windows owners fold local path case. POSIX owners preserve it.
 		const sameOwner = await invoke("terminal:list", [projectTarget(projectPath.toUpperCase())]);
 		assert.equal(sameOwner.payload.ok, true, JSON.stringify(sameOwner.payload));
 		assert.deepEqual(
 			sameOwner.payload.result.map((entry) => entry.id),
-			[tab.id],
+			IS_WINDOWS ? [tab.id] : [],
 		);
 
 		// A trailing separator is the same directory.
-		const trailing = await invoke("terminal:list", [projectTarget(`${projectPath}\\`)]);
+		const trailing = await invoke("terminal:list", [projectTarget(`${projectPath}${IS_WINDOWS ? "\\" : "/"}`)]);
 		assert.deepEqual(
 			trailing.payload.result.map((entry) => entry.id),
 			[tab.id],
@@ -175,7 +199,7 @@ if (!executable) {
 
 	test("a live shell accepts input after startup and its output arrives as terminal:data", async (t) => {
 		const { invoke, projectPath, client } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
 		const tabId = created.payload.result.id;
 
@@ -187,7 +211,7 @@ if (!executable) {
 		// actually executed the command. A ConPTY echo of the typed line cannot contain it.
 		const marker = `PIDEK_OUTPUT_${randomUUID()}`;
 		writeFileSync(join(projectPath, "marker.txt"), `${marker}\r\n`);
-		const input = await invoke("terminal:input", [tabId, "type marker.txt\r\n"]);
+		const input = await invoke("terminal:input", [tabId, `${IS_WINDOWS ? "type" : "cat"} marker.txt${LINE_END}`]);
 		assert.equal(input.payload.ok, true, JSON.stringify(input.payload));
 
 		await waitForData(client, tabId, (data) => data.includes(marker));
@@ -198,11 +222,11 @@ if (!executable) {
 
 	test("terminal:exit reports the real child exit code", async (t) => {
 		const { invoke, projectPath, client } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		const tabId = created.payload.result.id;
 		await waitForData(client, tabId, (data) => data.length > 0);
 
-		await invoke("terminal:input", [tabId, "exit 7\r\n"]);
+		await invoke("terminal:input", [tabId, `exit 7${LINE_END}`]);
 		const exit = await client.waitFor(
 			(frame) => frame.payload.channel === "terminal:exit" && frame.payload.args?.[0]?.tabId === tabId,
 			20_000,
@@ -218,7 +242,7 @@ if (!executable) {
 		assert.match(tab.buffer, /\[process exited with code 7\]/);
 
 		// Input to an exited tab is a silent no-op, exactly like the oracle.
-		const afterExit = await invoke("terminal:input", [tabId, "echo ignored\r\n"]);
+		const afterExit = await invoke("terminal:input", [tabId, `echo ignored${LINE_END}`]);
 		assert.equal(afterExit.payload.ok, true, JSON.stringify(afterExit.payload));
 	});
 
@@ -239,13 +263,13 @@ if (!executable) {
 			"ensure must not create a second terminal",
 		);
 
-		const second = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
-		assert.equal(second.payload.result.title, "cmd 2", "the tab index counts the owner bucket");
+		const second = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
+		assert.equal(second.payload.result.title, `${TEST_SHELL} 2`, "the tab index counts the owner bucket");
 		const listed = await invoke("terminal:list", [projectTarget(projectPath)]);
 		assert.equal(listed.payload.result.length, 2);
 		assert.deepEqual(
 			listed.payload.result.map((entry) => entry.title).sort(),
-			[`${defaultShell} 1`, "cmd 2"].sort(),
+			[`${defaultShell} 1`, `${TEST_SHELL} 2`].sort(),
 		);
 		for (const entry of listed.payload.result) {
 			assert.equal(typeof entry.buffer, "string", "list snapshots carry the replay buffer");
@@ -254,7 +278,7 @@ if (!executable) {
 
 	test("terminal:resize reaches the child console", async (t) => {
 		const { invoke, projectPath, client } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		const tabId = created.payload.result.id;
 		await waitForPrompt(client, tabId, projectPath);
 
@@ -263,7 +287,12 @@ if (!executable) {
 		// pseudoconsole itself was resized and cannot be produced by the shell.
 		const clamped = await invoke("terminal:resize", [tabId, 0, 0]);
 		assert.equal(clamped.payload.ok, true, JSON.stringify(clamped.payload));
-		await waitForData(client, tabId, (data) => data.includes("\u001b[8;1;2t"));
+		if (IS_WINDOWS) {
+			await waitForData(client, tabId, (data) => data.includes("\u001b[8;1;2t"));
+		} else {
+			await invoke("terminal:input", [tabId, SIZE_QUERY]);
+			await waitForData(client, tabId, (data) => data.includes("SIZE=2x1"));
+		}
 
 		const resized = await invoke("terminal:resize", [tabId, 100, 40]);
 		assert.equal(resized.payload.ok, true, JSON.stringify(resized.payload));
@@ -279,12 +308,12 @@ if (!executable) {
 		const otherPath = join(fixture.root, "other-project");
 		mkdirSync(otherPath, { recursive: true });
 
-		const first = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
-		const second = await invoke("terminal:create", [projectTarget(otherPath), "cmd"]);
+		const first = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
+		const second = await invoke("terminal:create", [projectTarget(otherPath), TEST_SHELL]);
 		assert.equal(first.payload.ok, true, JSON.stringify(first.payload));
 		assert.equal(second.payload.ok, true, JSON.stringify(second.payload));
 		assert.notEqual(first.payload.result.ownerKey, second.payload.result.ownerKey);
-		assert.equal(second.payload.result.title, "cmd 1", "each owner numbers its own tabs");
+		assert.equal(second.payload.result.title, `${TEST_SHELL} 1`, "each owner numbers its own tabs");
 
 		const firstList = await invoke("terminal:list", [projectTarget(projectPath)]);
 		assert.deepEqual(
@@ -333,35 +362,34 @@ if (!executable) {
 
 	test("the replay buffer is bounded", async (t) => {
 		const { invoke, projectPath, client } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		const tabId = created.payload.result.id;
 		await waitForData(client, tabId, (data) => data.length > 0);
 
 		// ~240k characters of child output, comfortably above the 200k cap.
 		const filler = "0123456789".repeat(6);
+		const marker = `REPLAY_END_${randomUUID()}`;
+		writeFileSync(join(projectPath, "replay-end.txt"), `${marker}${LINE_END}`);
+		const command = IS_WINDOWS
+			? `for /L %i in (1,1,4000) do @echo ${filler}\r\ntype replay-end.txt\r\n`
+			: `for ((i=0; i<4000; i++)); do printf '%s\\n' '${filler}'; done; cat replay-end.txt\n`;
 		await invoke("terminal:input", [
 			tabId,
-			`for /L %i in (1,1,4000) do @echo ${filler}\r\n`,
+			command,
 		]);
-		await waitForData(client, tabId, (data) => data.includes("0123456789"), 30_000);
-		// Wait until the buffer stops growing, then read it through list.
-		let previous = -1;
-		let buffer = "";
-		for (let attempt = 0; attempt < 200; attempt += 1) {
-			const listed = await invoke("terminal:list", [projectTarget(projectPath)]);
-			buffer = listed.payload.result.find((entry) => entry.id === tabId)?.buffer ?? "";
-			if (buffer.length === previous) break;
-			previous = buffer.length;
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		// Only executed file output contains the marker, so the full loop has completed.
+		await waitForData(client, tabId, (data) => data.includes(marker), 30_000);
+		const listed = await invoke("terminal:list", [projectTarget(projectPath)]);
+		const buffer = listed.payload.result.find((entry) => entry.id === tabId)?.buffer ?? "";
 		assert.ok(buffer.length > 0);
 		assert.ok(buffer.length <= 200_000, `replay buffer must stay bounded, saw ${buffer.length}`);
 		assert.ok(buffer.length >= 100_000, `the cap must keep the newest output, saw ${buffer.length}`);
+		assert.ok(buffer.includes(marker), "the newest output must remain in the replay buffer");
 	});
 
 	test("terminal:close kills the process and forgets the tab", async (t) => {
 		const { invoke, projectPath, backend } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		const tabId = created.payload.result.id;
 
 		const before = childProcesses(backend.child.pid);
@@ -376,24 +404,23 @@ if (!executable) {
 		const listed = await invoke("terminal:list", [projectTarget(projectPath)]);
 		assert.deepEqual(listed.payload.result, []);
 
-		const missing = await invoke("terminal:input", [tabId, "echo hi\r\n"]);
+		const missing = await invoke("terminal:input", [tabId, `echo hi${LINE_END}`]);
 		assert.equal(missing.payload.ok, false);
 		assert.match(missing.payload.error.message, new RegExp(`Terminal not found: ${tabId}`));
 
 		// The shell process must be gone, not merely detached from the tab table.
 		let remaining = before;
 		for (let attempt = 0; attempt < 40; attempt += 1) {
-			remaining = childProcesses(backend.child.pid);
-			if (!remaining.some((entry) => before.some((prior) => prior.ProcessId === entry.ProcessId))) break;
+			remaining = before.filter((entry) => processExists(entry.ProcessId));
+			if (remaining.length === 0) break;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
-		const survivors = remaining.filter((entry) => before.some((prior) => prior.ProcessId === entry.ProcessId));
-		assert.deepEqual(survivors, [], "closing a tab must terminate its PTY child");
+		assert.deepEqual(remaining, [], "closing a tab must terminate its PTY child");
 	});
 
 	test("shutdown closes every terminal", async (t) => {
 		const { invoke, projectPath, backend, host } = await startTerminalSession(t);
-		const created = await invoke("terminal:create", [projectTarget(projectPath), "cmd"]);
+		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
 		const before = childProcesses(backend.child.pid);
 		assert.ok(before.length > 0);
@@ -405,7 +432,7 @@ if (!executable) {
 
 		let remaining = before;
 		for (let attempt = 0; attempt < 40; attempt += 1) {
-			remaining = childProcesses(backend.child.pid);
+			remaining = before.filter((entry) => processExists(entry.ProcessId));
 			if (remaining.length === 0) break;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}

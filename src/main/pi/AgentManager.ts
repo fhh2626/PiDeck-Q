@@ -1693,7 +1693,9 @@ export class AgentManager {
 		const isBashExcluded = trimmed.startsWith("!!");
 		const isBashNormal = !isBashExcluded && trimmed.startsWith("!");
 
-		if (isBashExcluded || isBashNormal) {
+		// Silent requests only authorize registered extension commands, including when
+		// their visible input happens to carry a shell shorthand prefix.
+		if (!input.silent && (isBashExcluded || isBashNormal)) {
 			const command = isBashExcluded
 				? trimmed.slice(2).trim()
 				: trimmed.slice(1).trim();
@@ -1743,7 +1745,7 @@ export class AgentManager {
 					i18nKey: "sessionCommand.silentUnavailable",
 				};
 			}
-			if (alreadyBusy) {
+			if (alreadyBusy || runtime.tab.status === "running") {
 				return {
 					accepted: false,
 					error: "Silent commands are locked while generating",
@@ -1752,7 +1754,11 @@ export class AgentManager {
 			}
 		}
 
-		let dispatchSequence = this.advancePromptDispatchSequence(input.agentId);
+		// A rejected silent preflight must preserve the prior turn's settlement probe.
+		// The actual prompt write below advances the sequence for every accepted input.
+		let dispatchSequence = input.silent
+			? (this.promptDispatchSequenceByAgent.get(input.agentId) ?? 0)
+			: this.advancePromptDispatchSequence(input.agentId);
 		this.pendingPromptDispatches.set(promptProcess, (this.pendingPromptDispatches.get(promptProcess) ?? 0) + 1);
 		let promptDispatched = false;
 		if (!input.silent) {
@@ -1785,6 +1791,14 @@ export class AgentManager {
 			const promptIsExtensionCommand = await this.promptMatchesRegisteredExtensionCommand(runtime, agentMessage);
 			if (!processIsCurrent()) {
 				return { accepted: false, error: "Session runtime changed before prompt dispatch", i18nKey: "diagnostic.agentStopped" };
+			}
+			// Command registration and busy state can change during either lookup. A
+			// silent input must never fall through to a hidden model prompt at dispatch.
+			if (input.silent && !promptIsExtensionCommand) {
+				return { accepted: false, error: "Silent command is unavailable", i18nKey: "sessionCommand.silentUnavailable" };
+			}
+			if (input.silent && runtime.tab.status === "running") {
+				return { accepted: false, error: "Silent commands are locked while generating", i18nKey: "sessionCommand.silentBusy" };
 			}
 			const requestPayload: Record<string, unknown> = {
 				type: "prompt",
@@ -3563,6 +3577,8 @@ export class AgentManager {
 		const response = await runtime.process.client
 			.request({ type: "get_commands" }, 10_000)
 			.catch(() => undefined);
+		// A failed RPC cannot authorize a command, even if it carries a stale list.
+		if (response?.success !== true) return false;
 		const commands = (response?.data as { commands?: unknown[] } | undefined)?.commands ?? [];
 		return commands.some((command) => {
 			if (!command || typeof command !== "object") return false;

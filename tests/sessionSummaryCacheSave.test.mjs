@@ -42,9 +42,12 @@ function memoryFs() {
 	};
 }
 
-function load(fs) {
+function load(fs, platform = process.platform) {
+	const runtime = Object.create(process);
+	Object.defineProperty(runtime, "platform", { value: platform });
 	const { SessionSummaryCache } = loadTsCommonJs("src/main/sessions/sessionSummaryCache.ts", {
 		stubs: { "node:fs/promises": fs.module },
+		globals: { process: runtime },
 	});
 	return new SessionSummaryCache("cache.json", "/virtual");
 }
@@ -85,3 +88,57 @@ test("concurrent saves are serialized onto distinct temporary files", async () =
 	assert.deepEqual(diskEntries(fs), ["a", "b", "c"]);
 	assert.deepEqual([...fs.files.keys()], [target], "no temporary files are left behind");
 });
+
+for (const platform of ["linux", "darwin", "win32"]) {
+	test(`${platform} local prune classifies legacy POSIX paths using the host platform`, async () => {
+		const fs = memoryFs();
+		const cache = load(fs, platform);
+		const local = platform === "win32" ? "C:/sessions/kept.jsonl" : "/home/dev/sessions/kept.jsonl";
+		const removed = platform === "win32" ? "C:/sessions/removed.jsonl" : "/home/dev/sessions/removed.jsonl";
+		const legacyPosix = "/home/dev/sessions/legacy.jsonl";
+		cache.set(local, version, { name: "kept" });
+		cache.set(removed, version, { name: "removed" });
+		cache.set(legacyPosix, version, null);
+		cache.prune([local]);
+		await cache.flush();
+		assert.deepEqual(diskEntries(fs), [local, ...(platform === "win32" ? [legacyPosix] : [])].sort());
+		assert.equal(cache.get(removed, version), undefined, "a deleted native session must leave memory too");
+	});
+
+	test(`${platform} local prune preserves explicit WSL identities from a schema-4 cache`, async () => {
+		const fs = memoryFs();
+		const uncLegacy = "\\\\wsl$\\Ubuntu\\home\\dev\\old.jsonl";
+		const uncCurrent = "//WSL.LOCALHOST/Ubuntu/home/dev/current.jsonl";
+		const tagged = "/home/dev/sessions/tagged.jsonl";
+		const entries = {
+			[uncLegacy]: { version, value: null },
+			[uncCurrent]: { version, value: null },
+			[tagged]: { version, value: { name: "WSL session", wsl: true } },
+		};
+		fs.files.set(target, JSON.stringify({ version: 4, entries }));
+		const cache = load(fs, platform);
+		await cache.ensureLoaded();
+		cache.prune([]);
+		await cache.flush();
+		assert.deepEqual(diskEntries(fs), Object.keys(entries).sort());
+		assert.equal(cache.get(uncLegacy, version), null);
+		assert.equal(cache.get(uncCurrent, version), null);
+		assert.equal(cache.get(tagged, version).wsl, true);
+	});
+
+	test(`${platform} WSL prune keeps native paths and removes only absent WSL entries`, async () => {
+		const fs = memoryFs();
+		const cache = load(fs, platform);
+		const drive = "C:/sessions/local.jsonl";
+		const unc = "//server/share/local.jsonl";
+		const legacyPosix = "/home/dev/sessions/legacy.jsonl";
+		const kept = "\\\\wsl.localhost\\Ubuntu\\home\\dev\\kept.jsonl";
+		const removed = "\\\\WSL$\\Ubuntu\\home\\dev\\removed.jsonl";
+		const tagged = "/home/dev/sessions/tagged.jsonl";
+		for (const key of [drive, unc, legacyPosix, kept, removed]) cache.set(key, version, null);
+		cache.set(tagged, version, { name: "old WSL session", wsl: true });
+		cache.prune([kept], "wsl");
+		await cache.flush();
+		assert.deepEqual(diskEntries(fs), [drive, unc, kept, ...(platform === "win32" ? [] : [legacyPosix])].sort());
+	});
+}

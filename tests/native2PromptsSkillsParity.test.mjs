@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
 
@@ -12,6 +13,7 @@ const executable = resolveBackendExecutable();
 const { PromptManager } = loadTsCommonJs(resolve("src/main/prompts/PromptManager.ts"));
 const { SkillManager } = loadTsCommonJs(resolve("src/main/skills/SkillManager.ts"));
 const { ExtensionManager } = loadTsCommonJs(resolve("src/main/extensions/ExtensionManager.ts"));
+const { PiLocator } = loadTsCommonJs(resolve("src/main/pi/PiLocator.ts"));
 const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
 
 /**
@@ -118,15 +120,16 @@ function oracleSkillManager(home) {
 /**
  * The oracle's ExtensionManager resolves its home from `homedir()`, so the fixture home
  * is injected through `configureWsl` (the only public home override). The locator points
- * at the fake `pi` shim and keeps the process environment, because a `.cmd` shim needs
- * `cmd.exe` from PATH.
+ * at the fake `pi` shim and delegates invocation to the real PiLocator, including its
+ * Windows batch quoting and POSIX argument-array behavior.
  */
 function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, piShim, statePath }) {
 	const state = { piDeck: { ...piDeckSettings } };
+	const invocationLocator = new PiLocator();
 	const locator = {
 		check: async () => ({ installed: true, version: "0.79.0" }),
 		resolveCommand: () => piShim,
-		createInvocation: (command, args) => ({ command, args, shell: true }),
+		createInvocation: (command, args) => invocationLocator.createInvocation(command, args),
 		createProcessEnv: () => ({ ...process.env, PIDECK_FAKE_PI_STATE: statePath }),
 	};
 	const manager = new ExtensionManager(
@@ -144,11 +147,10 @@ function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, piSh
 	return { manager, state };
 }
 
-/** Install the fake pi as a `.cmd` shim (npm installs pi that way on Windows). */
+/** Install the fake CLI through the host platform's executable shim. */
 function installFakePi(root) {
 	const script = resolve("tests/fixtures/native2-fake-pi-cli.mjs");
-	const shim = join(root, "pi.cmd");
-	writeFileSync(shim, `@echo off\r\nnode "${script}" %*\r\n`);
+	const shim = writeNodeShim(root, "pi", script);
 	const statePath = join(root, "fake-pi-state.json");
 	writeFileSync(statePath, JSON.stringify({ calls: [], packages: [] }));
 	return { shim, statePath };
@@ -661,7 +663,7 @@ if (executable) {
 			);
 			const oracleHome = mirror(home);
 			const oracleStatePath = join(oracleHome, "fake-pi-state.json");
-			const oracleShim = join(oracleHome, "pi.cmd");
+			const oracleShim = join(oracleHome, process.platform === "win32" ? "pi.cmd" : "pi");
 			// The mirrored state still names the original package path; rewrite it so the
 			// oracle reports paths inside its own home.
 			const mirroredState = JSON.parse(readFileSync(oracleStatePath, "utf8"));

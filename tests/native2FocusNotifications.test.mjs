@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { localSocketSkipReason } from "./helpers/localSocketCapability.mjs";
 import {
 	FakeHost,
 	SseClient,
@@ -27,6 +28,7 @@ import {
 // with.
 
 const executable = resolveBackendExecutable();
+const localSocketSkip = await localSocketSkipReason();
 const VERSION = "0.4.3";
 const RECORD_ID = "11111111-2222-3333-4444-555555555555";
 const OTHER_RECORD_ID = "22222222-3333-4444-5555-666666666666";
@@ -146,7 +148,7 @@ async function exitWithin(process_, timeoutMs = 15_000) {
 
 if (executable) {
 	describe("native2 single instance + focus target", () => {
-		test("a secondary launch forwards its argv, exits 0, and the primary delivers the target", async (t) => {
+		test("a secondary launch forwards its argv, exits 0, and the primary delivers the target", { skip: localSocketSkip }, async (t) => {
 			const session = await startBackendSession(t, {});
 			const sse = startSse(t, session.ready);
 			await sse.connect();
@@ -196,7 +198,7 @@ if (executable) {
 			assert.deepEqual((await session.invoke("app:get-focus-target-pending")).payload.result, target);
 		});
 
-		test("an ACK clears only the handled id; a stale ACK never drops a newer target", async (t) => {
+		test("an ACK clears only the handled id; a stale ACK never drops a newer target", { skip: localSocketSkip }, async (t) => {
 			const session = await startBackendSession(t, {});
 			session.host.emit("window.ready");
 
@@ -238,7 +240,7 @@ if (executable) {
 			assert.equal((await session.invoke("app:get-focus-target-pending")).payload.result, null);
 		});
 
-		test("a legacy pideck://agent link resolves through the live runtime binding", async (t) => {
+		test("a legacy pideck://agent link resolves through the live runtime binding", { skip: localSocketSkip }, async (t) => {
 			const projectPath = projectDirectory("agent");
 			// Activation spawns pi, so the case needs the scripted fake (the desktop must not
 			// depend on a real pi install being present on the test machine).
@@ -275,7 +277,7 @@ if (executable) {
 			assert.equal(target.sessionId, record.id);
 		});
 
-		test("an unresolvable legacy agent link only restores the window and is reported", async (t) => {
+		test("an unresolvable legacy agent link only restores the window and is reported", { skip: localSocketSkip }, async (t) => {
 			const session = await startBackendSession(t, {});
 			session.host.emit("window.ready");
 			const secondary = await spawnInstance(t, {
@@ -293,7 +295,7 @@ if (executable) {
 			assert.equal(logged.detail.agentId, OTHER_RECORD_ID);
 		});
 
-		test("another version never joins this version's instance and keeps its own lock", async (t) => {
+		test("another version never joins this version's instance and keeps its own lock", { skip: localSocketSkip }, async (t) => {
 			const fixture = createFixture(t, {});
 			const first = await spawnInstance(t, { fixture });
 			assert.deepEqual(readLockFiles(fixture.userData), [`${VERSION}.lock`]);
@@ -328,7 +330,7 @@ if (executable) {
 			assert.deepEqual(readLockFiles(fixture.userData), []);
 		});
 
-		test("clean shutdown releases the lock so the next launch can be primary", async (t) => {
+		test("clean shutdown releases the lock so the next launch can be primary", { skip: localSocketSkip }, async (t) => {
 			const fixture = createFixture(t, {});
 			const first = await spawnInstance(t, { fixture });
 			assert.deepEqual(readLockFiles(fixture.userData), [`${VERSION}.lock`]);

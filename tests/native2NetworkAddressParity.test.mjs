@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { isIPv4 } from "node:net";
-import { networkInterfaces } from "node:os";
+import { constants, networkInterfaces } from "node:os";
 import { describe, test } from "node:test";
 
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
@@ -61,20 +61,37 @@ if (!executable) {
 } else {
 	describe("native2 app:network-addresses parity", () => {
 		test("matches the Node oracle element by element, including the contract order", async (t) => {
-			const session = await startBackendSession(t, { projects: [] });
-			const expected = oracleAddresses();
+			let expected;
+			try {
+				expected = oracleAddresses();
+			} catch (error) {
+				// Some sandboxes deny interface enumeration itself. This does not establish
+				// address parity, so report a capability skip before starting the backend.
+				// All other enumeration errors and all backend mismatches must still fail.
+				const permissionCode = error?.code === "EPERM" || error?.code === "EACCES";
+				const errno = Math.abs(error?.info?.errno ?? error?.errno ?? 0);
+				const deniedEnumeration = error?.syscall === "uv_interface_addresses"
+					&& [constants.errno.EPERM, constants.errno.EACCES].includes(errno);
+				if (permissionCode || deniedEnumeration) {
+					t.skip("Environment denies network-interface enumeration; live address parity was not exercised");
+					return;
+				}
+				throw error;
+			}
 			// A machine without a non-loopback IPv4 adapter cannot prove anything; that is a
 			// capability skip, not a pass.
 			if (expected.length === 0) {
 				t.skip("no non-loopback IPv4 interface on this machine");
 				return;
 			}
+			const session = await startBackendSession(t, { projects: [] });
 			const response = await session.invoke("app:network-addresses", []);
 			assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
 			const actual = response.payload.result;
 			assert.deepEqual(actual, expected);
 			// The contract itself: private networks first, otherwise numeric-aware order.
-			assert.equal(actual[0].isPrivate, true, JSON.stringify(actual));
+			// A public-only host is valid. Private addresses lead when the host has any.
+			assert.equal(actual[0].isPrivate, expected.some((address) => address.isPrivate), JSON.stringify(actual));
 			for (let index = 1; index < actual.length; index += 1) {
 				if (!actual[index].isPrivate) continue;
 				assert.equal(actual[index - 1].isPrivate, true,

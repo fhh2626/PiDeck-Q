@@ -174,7 +174,8 @@ export class SessionScanner {
   /** 比 renderer watchdog 更短，确保超时前先终止实际扫描，避免后台请求堆积。 */
   private scanTimeoutMs = 18_000;
   private readonly summaryCache: SessionSummaryCache<SessionSummary | null>;
-  private summaryCacheFileSetKey = "";
+  /** An unscanned environment differs from a completed scan with no session files. */
+  private summaryCacheFileSetKey: string | null = null;
   private readonly readQueue = new ScanReadQueue(4);
   private readonly activeScans = new Set<AbortController>();
   private readonly projectMembership = new Map<string, { version: string; matches: boolean }>();
@@ -220,7 +221,7 @@ export class SessionScanner {
     this.knownSubagentSessionFiles = null;
     this.knownSubagentScanTimestamp = 0;
     // 环境切换时只重置“本轮扫描键”，并从磁盘重新装载缓存；不要把另一环境的磁盘缓存清空。
-    this.summaryCacheFileSetKey = "";
+    this.summaryCacheFileSetKey = null;
     // 环境切换后旧环境的 activeScanRoots 已失效：清空使 listArchived() 等回退到
     // 当前环境的默认根（WSL 用 wslSessionsDir，本地用 this.root），等下一次 list() 再解析。
     this.activeScanRoots = [];
@@ -233,7 +234,7 @@ export class SessionScanner {
     this.wslConfig = null;
     this.knownSubagentSessionFiles = null;
     this.knownSubagentScanTimestamp = 0;
-    this.summaryCacheFileSetKey = "";
+    this.summaryCacheFileSetKey = null;
     this.activeScanRoots = [];
     void this.summaryCache.reloadFromDisk();
   }

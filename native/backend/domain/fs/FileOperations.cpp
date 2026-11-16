@@ -16,6 +16,7 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 namespace fsops {
@@ -83,6 +84,23 @@ void readWindowsFileTimes(const QString &path, double *mtimeMs, double *ctimeMs)
     *mtimeMs = toMilliseconds(info.LastWriteTime.QuadPart);
     *ctimeMs = toMilliseconds(info.ChangeTime.QuadPart);
 }
+#else
+/** Keep stat's sub-millisecond precision, matching the Node file tree sort metadata. */
+void readPosixFileTimes(const QString &path, double *mtimeMs, double *ctimeMs)
+{
+    struct stat info {};
+    if (::stat(QFile::encodeName(path).constData(), &info) != 0) return;
+    const auto toMilliseconds = [](const timespec &value) {
+        return double(value.tv_sec) * 1000.0 + double(value.tv_nsec) / 1e6;
+    };
+#ifdef Q_OS_DARWIN
+    *mtimeMs = toMilliseconds(info.st_mtimespec);
+    *ctimeMs = toMilliseconds(info.st_ctimespec);
+#else
+    *mtimeMs = toMilliseconds(info.st_mtim);
+    *ctimeMs = toMilliseconds(info.st_ctim);
+#endif
+}
 #endif
 
 QJsonArray readDirectory(const QString &root, const QString &current, int depth, int maxDepth)
@@ -117,10 +135,12 @@ QJsonArray readDirectory(const QString &root, const QString &current, int depth,
             double ctimeMs = double(entry.metadataChangeTime().toMSecsSinceEpoch());
 #ifdef Q_OS_WIN
             readWindowsFileTimes(absolutePath, &mtimeMs, &ctimeMs);
+#else
+            readPosixFileTimes(absolutePath, &mtimeMs, &ctimeMs);
 #endif
             node.insert(QStringLiteral("mtimeMs"), mtimeMs);
-            // Node reports the Windows change time as ctime, which is what the drawer
-            // sorts on; QFileInfo only exposes it with millisecond precision.
+            // The drawer sorts on the metadata change time, not the file birth time.
+            // Platform stat APIs preserve the precision that QFileInfo truncates.
             node.insert(QStringLiteral("ctimeMs"), ctimeMs);
             node.insert(QStringLiteral("size"), entry.isDir() ? 0.0 : double(entry.size()));
         }

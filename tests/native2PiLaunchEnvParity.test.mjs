@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -62,6 +62,7 @@ function writeNodeShim(directory, name, script) {
 			? `@echo off\r\nnode "${script}" %*\r\n`
 			: `#!/bin/sh\nexec node "${script}" "$@"\n`,
 	);
+	if (process.platform !== "win32") chmodSync(shim, 0o755);
 	return shim;
 }
 
@@ -157,7 +158,9 @@ if (executable) {
 			assert.equal(spawn.argv.includes("--offline"), false, JSON.stringify(spawn.argv));
 		});
 
-		test("WSL pi gets an inherited marker stripped and every forwarded name registered", async (t) => {
+		test("WSL pi gets an inherited marker stripped and every forwarded name registered", {
+			skip: process.platform !== "win32" && "WSL runtime launch is Windows-only in both native and Node PiLocator",
+		}, async (t) => {
 			const wslRoot = join(root, "wsl");
 			const scenarioPath = join(wslRoot, "scenario.json");
 			const logPath = join(wslRoot, "wsl.log");

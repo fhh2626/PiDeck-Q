@@ -85,6 +85,7 @@ void SessionScanner::configureEnvironment(SessionFs::Config fsConfig, const QStr
         next->generation = (m_environment ? m_environment->generation : 0) + 1;
         m_environment = next;
         if (m_scanCancel) m_scanCancel->store(true, std::memory_order_relaxed);
+        m_hasCacheFileSetKey = false;
         m_cacheFileSetKey.clear();
         m_membership.clear();
     }
@@ -285,13 +286,19 @@ QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const Q
 
     {
         QMutexLocker lock(&m_stateMutex);
+        // Enumeration may finish after the owner thread changed environments. Reject
+        // under the same lock so this scan cannot consume the next environment's first prune.
+        if (!m_environment || m_environment->generation != generation) {
+            throw ChannelError(QStringLiteral("Session scan environment changed"));
+        }
         const QString fileSetKey = files.join(QLatin1Char('\n'));
-        if (fileSetKey != m_cacheFileSetKey) {
+        if (!m_hasCacheFileSetKey || fileSetKey != m_cacheFileSetKey) {
             // Prune only the current environment's vanished files; the other environment's
             // disk entries must survive a local↔WSL toggle.
             m_summaryCache->prune(files, scanFs.wsl() ? summarycache::Cache::Mode::Wsl
                                                      : summarycache::Cache::Mode::Local);
             m_cacheFileSetKey = fileSetKey;
+            m_hasCacheFileSetKey = true;
         }
     }
 

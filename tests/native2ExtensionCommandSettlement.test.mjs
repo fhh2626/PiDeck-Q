@@ -34,6 +34,107 @@ describe("native2 extension command settlement", { skip: backendTestAvailability
 		return { ...session, record, target, runStatuses };
 	}
 
+	for (const [label, text, scenario] of [
+		["ordinary text", "Please work on this", {}],
+		["a shell prefix", "! echo local", {}],
+		["an excluded shell prefix", "!! echo local", {}],
+		["an unregistered command", "/unknown", {}],
+		["a prompt template", "/todo-resume", { commands: [{ name: "todo-resume", source: "prompt" }] }],
+		["a failed command lookup", "/todo-resume", { responses: { get_commands: { error: "lookup failed" } } }],
+	]) {
+		test(`silent dispatch rejects ${label} before writing a prompt`, async (t) => {
+			const session = await start(t, scenario);
+			const sent = await session.invoke("sessions:send-prompt", [{
+				sessionId: session.record.id, requestId: `silent-${label}`,
+				message: text.startsWith("!") ? text : "", agentMessage: text, silent: true,
+			}]);
+			assert.equal(sent.payload.ok, true, JSON.stringify(sent.payload));
+			assert.equal(sent.payload.result.accepted, false, JSON.stringify(sent.payload));
+			assert.equal(sent.payload.result.i18nKey, "sessionCommand.silentUnavailable");
+			assert.notEqual(sent.payload.result.delivery, "unknown");
+			assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 0);
+			assert.deepEqual(session.runStatuses(), []);
+		});
+	}
+
+	test("silent dispatch accepts a registered extension command while idle", async (t) => {
+		const session = await start(t);
+		const sent = await session.invoke("sessions:send-prompt", [{
+			sessionId: session.record.id, requestId: "silent-valid", message: "", agentMessage: "/todo-resume", silent: true,
+		}]);
+		assert.equal(sent.payload.result.accepted, true, JSON.stringify(sent.payload));
+		const prompts = session.fake.commands().filter((row) => row.command === "prompt");
+		assert.equal(prompts.length, 1);
+		assert.equal(prompts[0].payload.message, "/todo-resume");
+		assert.deepEqual(session.runStatuses(), []);
+	});
+
+	test("silent dispatch refuses a registered command while the runtime is busy", async (t) => {
+		const session = await start(t);
+		assert.equal((await session.prompt(session.record, "Work in progress", "busy-task")).payload.result.accepted, true);
+		const sent = await session.invoke("sessions:send-prompt", [{
+			sessionId: session.record.id, requestId: "silent-busy", message: "", agentMessage: "/todo-resume", silent: true,
+		}]);
+		assert.equal(sent.payload.result.accepted, false, JSON.stringify(sent.payload));
+		assert.equal(sent.payload.result.i18nKey, "sessionCommand.silentBusy");
+		assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 1);
+		const runtimes = await session.invoke("sessions:runtime-list", []);
+		assert.equal(runtimes.payload.result.find((runtime) => runtime.sessionId === session.record.id)?.status, "running");
+	});
+
+	test("a failed command lookup keeps ordinary slash prompts available", async (t) => {
+		const session = await start(t, { responses: { get_commands: { error: "lookup failed" } } });
+		const sent = await session.prompt(session.record, "/unregistered", "ordinary-slash");
+		assert.equal(sent.payload.result.accepted, true, JSON.stringify(sent.payload));
+		assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 1);
+	});
+
+	test("silent dispatch rechecks busy state after command lookup", async (t) => {
+		const session = await start(t, { responses: { get_commands: { replyGate: "silent-lookup" } } });
+		const pending = session.invoke("sessions:send-prompt", [{
+			sessionId: session.record.id, requestId: "silent-pending", message: "", agentMessage: "/todo-resume", silent: true,
+		}]);
+		let sent;
+		try {
+			await waitFor(() => session.fake.commands().some((row) => row.command === "get_commands"));
+			assert.equal((await session.prompt(session.record, "New task", "new-task")).payload.result.accepted, true);
+		} finally {
+			writeFileSync(`${session.fake.scenarioPath}.silent-lookup`, "open");
+			sent = await pending;
+		}
+		assert.equal(sent.payload.result.accepted, false, JSON.stringify(sent.payload));
+		assert.equal(sent.payload.result.i18nKey, "sessionCommand.silentBusy");
+		assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 1);
+	});
+
+	test("silent dispatch cannot enter while an ordinary prompt still awaits its ACK", async (t) => {
+		const session = await start(t, { turns: [{ replyGate: "foreground-ack" }] });
+		const pending = session.prompt(session.record, "New task", "foreground-pending");
+		try {
+			await waitFor(() => session.fake.commands().some((row) => row.command === "prompt"));
+			const sent = await session.invoke("sessions:send-prompt", [{
+				sessionId: session.record.id, requestId: "silent-during-ack", message: "", agentMessage: "/todo-resume", silent: true,
+			}]);
+			assert.equal(sent.payload.result.accepted, false, JSON.stringify(sent.payload));
+			assert.equal(sent.payload.result.i18nKey, "sessionCommand.silentBusy");
+			assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 1);
+		} finally {
+			writeFileSync(`${session.fake.scenarioPath}.foreground-ack`, "open");
+			assert.equal((await pending).payload.result.accepted, true);
+		}
+	});
+
+	test("a rejected silent command leaves the previous completion probe valid", async (t) => {
+		const session = await start(t);
+		assert.equal((await session.prompt(session.record, "/todo-resume", "previous-task")).payload.result.accepted, true);
+		const sent = await session.invoke("sessions:send-prompt", [{
+			sessionId: session.record.id, requestId: "silent-invalid", message: "", agentMessage: "/unknown", silent: true,
+		}]);
+		assert.equal(sent.payload.result.accepted, false, JSON.stringify(sent.payload));
+		await waitFor(() => session.runStatuses().includes("idle"), 3_000, "previous command idle");
+		assert.equal(session.fake.commands().filter((row) => row.command === "prompt").length, 1);
+	});
+
 	test("a completed extension command returns to idle without agent lifecycle events", async (t) => {
 		const session = await start(t);
 		const initialPolls = session.fake.commands().filter((row) => row.command === "get_state").length;

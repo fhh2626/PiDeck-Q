@@ -2,55 +2,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
-import vm from "node:vm";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 /**
  * UsageStatsService：双层缓存 / 增量合并 / 目录切换 / 截断重扫。
- * 通过 transpile + vm 沙箱注入 electron stub（sessionScannerSubagents.test.mjs 同款先例）。
+ * 递归转译真实 TypeScript 依赖，只对 electron 的 userData 路径注入本地替身。
  */
 
-const require = createRequire(import.meta.url);
 const SERVICE_PATH = "src/main/usageStats/UsageStatsService.ts";
-const CACHE_PATH = "src/main/sessions/sessionSummaryCache.ts";
-
-function makeSandboxRequire(userDataDir) {
-  return (id) => {
-    if (id === "electron") return { app: { getPath: () => userDataDir } };
-    // SessionSummaryCache 也 transpile 进 vm（其 electron import 不走 Node ESM loader）
-    if (id === "../sessions/sessionSummaryCache") {
-      return loadTranspiled(CACHE_PATH, userDataDir);
-    }
-    if (id.startsWith(".")) {
-      // 相对 import 相对 src/main/usageStats/ 解析（CJS require 需显式 .ts 扩展名）
-      const resolved = id.endsWith(".ts") ? id : `${id}.ts`;
-      return require(join(import.meta.dirname, "../src/main/usageStats", resolved));
-    }
-    return require(id);
-  };
-}
-
-function loadTranspiled(filePath, userDataDir) {
-  const source = readFileSync(filePath, "utf8");
-  const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  });
-  const sandbox = {
-    exports: {},
-    require: makeSandboxRequire(userDataDir),
-    process,
-    setTimeout,
-    clearTimeout,
-  };
-  vm.runInNewContext(outputText, sandbox, { filename: filePath });
-  return sandbox.exports;
-}
 
 function loadService(userDataDir) {
-  return loadTranspiled(SERVICE_PATH, userDataDir).UsageStatsService;
+  return loadTsCommonJs(SERVICE_PATH, {
+    stubs: { electron: { app: { getPath: () => userDataDir } } },
+  }).UsageStatsService;
 }
 
 const line = (tsMs, sid, cost) =>

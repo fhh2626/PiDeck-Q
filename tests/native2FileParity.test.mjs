@@ -26,6 +26,7 @@ const executable = resolveBackendExecutable();
 // The Node filesystem domain is the behavioural oracle: the C++ backend must return
 // the same tree, the same bytes and the same error text for the same inputs.
 const { FileSystemService } = loadTsCommonJs(resolve("src/main/fs/FileSystemService.ts"));
+const { registerFilesIpc } = loadTsCommonJs(resolve("src/main/ipc/filesIpc.ts"));
 const { assertAuthorizedFilePath, UnauthorizedFilePathError } = loadTsCommonJs(
 	resolve("src/main/fs/authorizedPaths.ts"),
 );
@@ -75,6 +76,28 @@ async function expectReject(promise) {
 	throw new Error("expected the oracle to reject");
 }
 
+/** Run the Node move channel against its own tree as the permission-behavior oracle. */
+function oracleMoveHandler(root) {
+	const handlers = new Map();
+	registerFilesIpc({ handle: (channel, handler) => handlers.set(channel, handler) }, {
+		fileSystemService: {}, projectStore: {}, settingsStore: { get: () => ({ wslEnabled: false }) },
+		appLogger: { info() {}, error() {} }, dialogs: {}, platformShell: {},
+		getAuthorizedRoots: () => [root], mainCopy: (key) => key,
+	});
+	return handlers.get("files:move");
+}
+
+/** Restore permissions even when a move fails and leaves both source and copied tree. */
+function restoreReadonlyTree(root) {
+	for (const directory of [root, join(root, "ro-dir"), join(root, "target"), join(root, "target", "ro-dir")]) {
+		if (existsSync(directory)) chmodSync(directory, 0o755);
+	}
+	for (const file of ["ro.txt", "ro-dir/inner.txt", "target/ro.txt", "target/ro-dir/inner.txt"]) {
+		const path = join(root, file);
+		if (existsSync(path)) chmodSync(path, 0o644);
+	}
+}
+
 if (executable) {
 	describe("native2 files domain parity", () => {
 		let root;
@@ -113,6 +136,23 @@ if (executable) {
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
 			assert.deepEqual(normalize(actual.payload.result), expected);
 			assert.ok(actual.payload.result.length > 0);
+		});
+
+		test("files:list keeps the filesystem's fractional millisecond timestamps", async (t) => {
+			const precisionProject = join(root, "precision-project");
+			mkdirSync(precisionProject);
+			const filePath = join(precisionProject, "precise.txt");
+			writeFileSync(filePath, "timestamp precision\n");
+			utimesSync(filePath, 1_767_225_600.123456, 1_767_225_600.123456);
+			const metadata = statSync(filePath);
+			const session = await startBackendSession(t, {
+				projects: [{ id: "file-precision", path: precisionProject }],
+			});
+			const actual = await session.invoke("files:list", ["file-precision"]);
+			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
+			assert.equal(actual.payload.result.length, 1);
+			assert.equal(actual.payload.result[0].mtimeMs, metadata.mtimeMs);
+			assert.equal(actual.payload.result[0].ctimeMs, metadata.ctimeMs);
 		});
 
 		test("files:list rejects an unknown project id", async (t) => {
@@ -553,12 +593,15 @@ if (executable) {
 			assert.ok(!existsSync(join(moveProject, "source")), "the source tree must be removed");
 		});
 
-		test("files:move removes a read-only source instead of failing after the copy", async (t) => {
+		test("files:move removes a read-only source instead of failing after the copy", {
+			skip: process.platform !== "win32" && "Windows read-only attribute retry",
+		}, async (t) => {
 			// Oracle parity: `fs.rm(recursive, force)` runs rimraf's `fixWinEPERM`, which clears
 			// the read-only attribute and retries. A bare `DeleteFileW`/`RemoveDirectoryW` fails
 			// with ERROR_ACCESS_DENIED, so the move threw *after* the destination copy existed and
 			// left both a source and a stray read-only copy behind.
 			const readonlyProject = join(root, "readonly-project");
+			t.after(() => restoreReadonlyTree(readonlyProject));
 			mkdirSync(join(readonlyProject, "target"), { recursive: true });
 			const sourceFile = join(readonlyProject, "ro.txt");
 			writeFileSync(sourceFile, "x\n");
@@ -581,6 +624,50 @@ if (executable) {
 			assert.equal(movedDir.payload.ok, true, JSON.stringify(movedDir.payload));
 			assert.ok(!existsSync(sourceDir), "the read-only source directory must be gone");
 			assert.equal(readFileSync(join(targetDir, "ro-dir", "inner.txt"), "utf8"), "inner\n");
+		});
+
+		test("files:move matches the Node channel for POSIX read-only entries", {
+			skip: process.platform === "win32" && "POSIX directory permissions",
+		}, async (t) => {
+			const createReadonlyTree = (name) => {
+				const directory = join(root, name);
+				mkdirSync(join(directory, "target"), { recursive: true });
+				mkdirSync(join(directory, "ro-dir"));
+				writeFileSync(join(directory, "ro.txt"), "x\n");
+				writeFileSync(join(directory, "ro-dir", "inner.txt"), "inner\n");
+				chmodSync(join(directory, "ro.txt"), 0o444);
+				chmodSync(join(directory, "ro-dir", "inner.txt"), 0o444);
+				chmodSync(join(directory, "ro-dir"), 0o555);
+				t.after(() => restoreReadonlyTree(directory));
+				return directory;
+			};
+			const nativeRoot = createReadonlyTree("readonly-posix-native");
+			const oracleRoot = createReadonlyTree("readonly-posix-oracle");
+			const move = oracleMoveHandler(oracleRoot);
+			const session = await startBackendSession(t, {
+				projects: [{ id: READONLY_PROJECT_ID, path: nativeRoot }],
+				settings: { language: "en-US" },
+			});
+			for (const name of ["ro.txt", "ro-dir"]) {
+				let oracleError;
+				try {
+					await move([join(oracleRoot, name)], join(oracleRoot, "target"));
+				} catch (error) {
+					assert.ok(["EACCES", "EPERM"].includes(error.code), error.message);
+					oracleError = error;
+				}
+				const actual = await session.invoke("files:move", [[join(nativeRoot, name)], join(nativeRoot, "target")]);
+				assert.equal(actual.payload.ok, !oracleError, JSON.stringify(actual.payload));
+				for (const relative of [name, `target/${name}`]) {
+					const expectedPath = join(oracleRoot, relative);
+					const actualPath = join(nativeRoot, relative);
+					assert.equal(existsSync(actualPath), existsSync(expectedPath), relative);
+					if (existsSync(expectedPath)) {
+						const suffix = name === "ro-dir" ? "inner.txt" : "";
+						assert.equal(readFileSync(join(actualPath, suffix), "utf8"), readFileSync(join(expectedPath, suffix), "utf8"));
+					}
+				}
+			}
 		});
 
 		test("files:copy reports an inner-entry failure instead of retrying a partial directory", async (t) => {

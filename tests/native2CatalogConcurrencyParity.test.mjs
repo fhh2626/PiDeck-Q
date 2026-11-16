@@ -28,13 +28,10 @@ import assert from "node:assert/strict";
 
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const REPO = process.cwd();
-const CANDIDATES = [
-	"build/windows/x64/debug/PiDeck-SessionCatalogConcurrencyTest.exe",
-	"build/windows/x64/release/PiDeck-SessionCatalogConcurrencyTest.exe",
-	"build/windows/x64/debug/PiDeck-SessionCatalogConcurrencyTest",
-];
+const CANDIDATES = nativeBuildPaths("PiDeck-SessionCatalogConcurrencyTest");
 const SOURCES = [
 	"native/tests/SessionCatalogConcurrencyTest.cpp",
 	"native/backend/domain/sessions/SessionCatalogStore.cpp",
@@ -51,7 +48,7 @@ function resolveTestExe() {
 		// Stale-binary guard: the assertions must run against the current source, not an
 		// executable left over from before the fix.
 		const built = Math.max(...SOURCES.map((source) => statSync(join(REPO, source)).mtimeMs));
-		return statSync(full).mtimeMs >= built ? full : null;
+		if (statSync(full).mtimeMs >= built) return full;
 	}
 	return null;
 }

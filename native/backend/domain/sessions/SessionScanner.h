@@ -178,6 +178,8 @@ private:
     /** Cancellation token of the scan currently running (null when idle). */
     std::shared_ptr<std::atomic<bool>> m_scanCancel;
     std::unique_ptr<summarycache::Cache> m_summaryCache;
+    /** An unscanned environment differs from a completed scan with an empty file set. */
+    bool m_hasCacheFileSetKey = false;
     QString m_cacheFileSetKey;
     mutable QHash<QString, Membership> m_membership;
 };

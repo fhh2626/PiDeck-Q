@@ -86,14 +86,18 @@ if (!executable) {
 			const archived = byPath(archivedPath);
 			const deleted = byPath(deletedPath);
 
-			const sse = new SseClient(`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`);
+			const sse = new SseClient(`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}&lastEventId=0`);
+			t.after(() => sse.close());
 			await sse.connect();
-			// The startup prewarm scans every project once (3 s after start) and pushes the same
-			// channel; let it land before the mutation, so neither a positive nor a negative
-			// assertion can be satisfied by that frame.
-			await sleep(4_500);
+			await waitForPrewarm(sse);
 			return { ...session, sse, archived, deleted };
 		};
+
+		/** No mutation has run yet, so the replayable project refresh is the startup scan. */
+		const waitForPrewarm = (sse) => sse.waitFor(
+			(frame) => frame.payload.channel === CHANNEL && frame.payload.args?.[0]?.projectId === PROJECT_ID,
+			20_000,
+		);
 
 		const refreshes = (sse, from = 0) =>
 			sse.frames.slice(from).filter((frame) => frame.payload.channel === CHANNEL);
@@ -207,6 +211,14 @@ if (!executable) {
 					};
 				},
 			});
+			const sse = new SseClient(
+				`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}&lastEventId=0`,
+			);
+			t.after(() => sse.close());
+			await sse.connect();
+			// A slow startup scan must finish before anonymous creation emits its own refresh.
+			await waitForPrewarm(sse);
+			const createMark = sse.frames.length;
 			const created = await session.invoke("sessions:create-anonymous", [{ projectId: PROJECT_ID }]);
 			assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
 			const record = created.payload.result.session;
@@ -219,14 +231,7 @@ if (!executable) {
 				"the anonymous record exists before its runtime starts",
 			);
 
-			const sse = new SseClient(
-				`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`,
-			);
-			await sse.connect();
-			t.after(() => sse.close());
-			// Let the startup prewarm scan land first: it pushes the same channel, so the
-			// assertions below must be about the activation and nothing else.
-			await sleep(4_500);
+			await waitRefreshAfter(sse, createMark, "anonymous creation");
 			const mark = sse.frames.length;
 
 			const activated = await session.invoke("sessions:runtime-activate", [record.id]);

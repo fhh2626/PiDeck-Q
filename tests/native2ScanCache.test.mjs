@@ -199,7 +199,7 @@ describe("session summary cache (native)", () => {
 		await stopBackend(third);
 	});
 
-	test("prune drops vanished local entries and keeps the other environment's cache", async (t) => {
+	test("prune drops vanished local entries and keeps explicit WSL cache identities", async (t) => {
 		const fixture = createProjectFixture();
 		const kept = writeSession(fixture.sessions, "--C--work--app--", "kept", {
 			cwd: slash(fixture.project),
@@ -225,15 +225,22 @@ describe("session summary cache (native)", () => {
 		assert.equal(cachedEntry(cache, empty).value, null);
 		await stopBackend(first);
 
-		// A session the user deleted, a bogus local row, and a WSL row: only the bogus local
-		// row and the deleted file may disappear; the other environment's entries must stay.
+		// A slash-only key identifies legacy WSL data only on a Windows host. Explicit
+		// WSL UNC paths and the existing summary flag identify that environment everywhere.
 		unlinkSync(removed);
 		const wslKey = "/home/dev/.pi/agent/sessions/--mnt-c-work-app--/wsl.jsonl";
+		const wslUncKey = "\\\\wsl.localhost\\Ubuntu\\home\\dev\\sessions\\unc.jsonl";
+		const taggedWslKey = "/home/dev/.pi/agent/sessions/--mnt-c-work-app--/tagged.jsonl";
 		const bogusKey = join(fixture.sessions, "--C--work--app--", "gone.jsonl");
 		const edited = readSummaryCache(fixture);
 		edited.entries[wslKey] = {
 			version: { mtimeMs: 1_700_000_000_000, size: 12 },
 			value: null,
+		};
+		edited.entries[wslUncKey] = { version: { mtimeMs: 1_700_000_000_000, size: 12 }, value: null };
+		edited.entries[taggedWslKey] = {
+			version: { mtimeMs: 1_700_000_000_000, size: 12 },
+			value: { ...cachedEntry(edited, kept).value, filePath: taggedWslKey, wsl: true },
 		};
 		edited.entries[bogusKey] = { version: { mtimeMs: 1_700_000_000_000, size: 12 }, value: null };
 		writeFileSync(summaryCachePath(fixture), JSON.stringify(edited));
@@ -249,7 +256,13 @@ describe("session summary cache (native)", () => {
 			const parsed = readSummaryCache(fixture);
 			return parsed && parsed.entries[bogusKey] === undefined ? parsed : null;
 		}, "local mode must prune entries whose file disappeared");
-		assert.ok(pruned.entries[wslKey], "prune must never drop the other environment's entries");
+		if (process.platform === "win32") {
+			assert.ok(pruned.entries[wslKey], "Windows local scans must preserve legacy WSL paths");
+		} else {
+			assert.equal(pruned.entries[wslKey], undefined, "a POSIX path alone is native on this host");
+		}
+		assert.ok(pruned.entries[wslUncKey], "an explicit WSL UNC entry must survive a native scan");
+		assert.ok(pruned.entries[taggedWslKey], "an existing WSL summary flag must survive a native scan");
 		assert.ok(cachedEntry(pruned, kept), "an unchanged session must keep its cached entry");
 		await stopBackend(second);
 	});
@@ -280,6 +293,24 @@ describe("session summary cache (native)", () => {
 		assert.equal(restored.payload.result, true, JSON.stringify(restored.payload));
 		assert.deepEqual((await listSessions(session)).map((entry) => entry.name), ["archivable"]);
 		await stopBackend(session);
+	});
+
+	test("the first empty scan prunes persisted entries for vanished local sessions", async (t) => {
+		const fixture = createProjectFixture();
+		const vanished = join(fixture.sessions, "vanished.jsonl");
+		const otherEnvironment = "\\\\wsl.localhost\\Ubuntu\\home\\dev\\kept.jsonl";
+		writeFileSync(summaryCachePath(fixture), JSON.stringify({
+			version: 4,
+			entries: {
+				[vanished]: { version: { mtimeMs: 1, size: 1 }, value: null },
+				[otherEnvironment]: { version: { mtimeMs: 1, size: 1 }, value: null },
+			},
+		}));
+		const session = await startBackend(t, fixture, { settings: { language: "en-US" } });
+		assert.deepEqual(await listSessions(session), []);
+		// Shutdown flushes dirty cache state, so no timer polling can hide a skipped prune.
+		await stopBackend(session);
+		assert.deepEqual(Object.keys(readSummaryCache(fixture).entries), [otherEnvironment]);
 	});
 
 	test("a version or updatedAt outside qint64 is dropped instead of overflowing", async (t) => {

@@ -7,20 +7,17 @@ import { createTodoHarness } from "./helpers/todoExtensionHarness.mjs";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const pinned = process.env.PIDECK_TODO_COMMAND_TEST_EXECUTABLE;
-const candidate = pinned ? resolve(pinned) : [
-	"build/linux/x64/debug/PiDeck-TodoCommandTest",
-	"build/windows/x64/debug/PiDeck-TodoCommandTest.exe",
-	"build/windows/x64/release/PiDeck-TodoCommandTest.exe",
-].map((path) => resolve(path)).find(existsSync);
+const candidates = nativeBuildPaths("PiDeck-TodoCommandTest", { pinned });
 const sources = ["native/tests/TodoCommandTest.cpp", "xmake.lua", ...[
 	"native/backend/domain/runtime", "native/backend/domain/sessions",
 ].flatMap((directory) => readdirSync(directory).filter((name) => /\.(cpp|h)$/.test(name)).map((name) => `${directory}/${name}`))];
-const fresh = candidate && existsSync(candidate)
-	&& statSync(candidate).mtimeMs >= Math.max(...sources.map((path) => statSync(path).mtimeMs));
-if (pinned && !fresh) throw new Error(`Missing or stale todo command test executable: ${candidate}`);
-const executable = fresh ? candidate : undefined;
+const executable = candidates.map((path) => resolve(path)).find((candidate) => existsSync(candidate)
+	&& statSync(candidate).mtimeMs >= Math.max(...sources.map((path) => statSync(path).mtimeMs)));
+const required = Boolean(pinned) || process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
+if (required && !executable) throw new Error(`Missing or stale todo command test executable: ${candidates.join(", ")}`);
 const skip = executable ? false : "Build PiDeck-TodoCommandTest to run the current production C++ projection";
 const { AgentMessageProjector } = loadTsCommonJs("src/main/pi/AgentMessageProjector.ts");
 const { acknowledgeTodoCommand } = loadTsCommonJs("src/shared/piTaskMessage.ts");

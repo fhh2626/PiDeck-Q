@@ -9,6 +9,7 @@ import {
 	resolveBackendExecutable,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { joinPathParts, writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 // `cmd.exe` quoting parity for every place PiDeck launches a batch shim
 // (oracle `PiLocator.ts`: `needsCmdQuote` / `quoteCmdArgument` / `createInvocation`).
@@ -25,6 +26,8 @@ import {
 // The assertions are public-boundary only: what the child process actually received.
 // No test needs an attacker — the literal payload is a harmless marker file that only
 // appears if cmd.exe executes the text after `&`.
+// Windows runs the real batch parser. POSIX uses an executable shim and verifies the
+// same exact argv contract without claiming to exercise cmd.exe on that host.
 
 const executable = resolveBackendExecutable();
 const RESOURCES = join(process.cwd(), "resources");
@@ -48,25 +51,17 @@ function writeSessionFile(sessionsDir, projectPath, name) {
 }
 
 /**
- * Copy a `.cmd` shim into a directory whose path carries cmd metacharacters.
+ * Copy a platform shim into a directory whose path carries cmd metacharacters.
  *
  * The shim body embeds an absolute script path, so a copy inside `R&D shims` still
  * runs the same fixture — it only changes the *command* part of the command line,
  * which is the branch where the oracle adds one extra outer quote pair.
  */
-function shimIn(directory, sourceShim, name = "pi.cmd") {
+function shimIn(directory, sourceShim, name = process.platform === "win32" ? "pi.cmd" : "pi") {
 	mkdirSync(directory, { recursive: true });
 	const target = join(directory, name);
 	copyFileSync(sourceShim, target);
 	return target;
-}
-
-/** Write a Node-backed `npm` shim (the fixture records argv into FAKE_NPM_LOG). */
-function npmShim(directory, scriptPath) {
-	mkdirSync(directory, { recursive: true });
-	const shim = join(directory, "npm.cmd");
-	writeFileSync(shim, `@echo off\r\nnode "${scriptPath}" %*\r\n`);
-	return shim;
 }
 
 /**
@@ -97,7 +92,7 @@ if (executable) {
 			return path;
 		};
 
-		test("a session launch through a .cmd shim keeps metacharacter paths as one argv", async (t) => {
+		test("a session launch through a platform shim keeps metacharacter paths as one argv", async (t) => {
 			// Both the shim directory and the project/session directory carry `&`, `(`,
 			// `)`, `+` and `=`; the project name additionally proves the cwd path does not
 			// leak into the command line unquoted.
@@ -133,7 +128,7 @@ if (executable) {
 			assert.equal(activated.payload.ok, true, JSON.stringify(activated.payload));
 
 			const spawn = fake.readLog().find((entry) => entry.kind === "spawn" && entry.argv.includes("--mode"));
-			assert.ok(spawn, "pi must have been spawned through the .cmd shim");
+			assert.ok(spawn, "pi must have been spawned through the platform shim");
 			// Exact argv, not a substring check: a split at `&` would either truncate the
 			// value or hand pi a different number of arguments.
 			const sessionIndex = spawn.argv.indexOf("--session");
@@ -164,8 +159,7 @@ if (executable) {
 			// renderer-supplied argument have to be quoted on the same line.
 			const shimDir = join(root, "R&D pi bin");
 			mkdirSync(shimDir, { recursive: true });
-			const shim = join(shimDir, "pi.cmd");
-			writeFileSync(shim, `@echo off\r\nnode "${script}" %*\r\n`);
+			const shim = writeNodeShim(shimDir, "pi", script);
 			const statePath = join(home, "fake-pi-state.json");
 			writeFileSync(statePath, JSON.stringify({ calls: [], packages: [] }));
 			const marker = join(root, "injected-install.txt");
@@ -207,7 +201,7 @@ if (executable) {
 			const npmScript = join(npmDir, "fake-npm.mjs");
 			mkdirSync(npmDir, { recursive: true });
 			copyFileSync(resolve("tests/fixtures/native2-fake-npm.mjs"), npmScript);
-			npmShim(npmDir, npmScript);
+			writeNodeShim(npmDir, "npm", npmScript);
 			const npmLog = join(npmDir, "npm.log");
 			const npmScenario = join(npmDir, "npm-scenario.json");
 			writeFileSync(npmScenario, JSON.stringify({ installStdout: "9.9.9\n" }));
@@ -221,17 +215,16 @@ if (executable) {
 			const cliScript = resolve("tests/fixtures/native2-fake-pi-cli.mjs");
 			const piShimDir = join(root, "R&D pi cli");
 			mkdirSync(piShimDir, { recursive: true });
-			const piShim = join(piShimDir, "pi.cmd");
-			writeFileSync(piShim, `@echo off\r\nnode "${cliScript}" %*\r\n`);
+			const piShim = writeNodeShim(piShimDir, "pi", cliScript);
 			const statePath = join(home, "fake-pi-state.json");
 			writeFileSync(
 				statePath,
 				JSON.stringify({ calls: [], packages: [{ source: payload, scope: "user", path: "" }] }),
 			);
 
-			// `npm` is resolved from PATH (the backend's sanitized env), exactly like the
-			// production call: only the fixture directory is prepended.
-			const pathValue = [qtBinDirectory(), npmDir, process.env.PATH].filter(Boolean).join(";");
+			// Resolve npm through the real PATH boundary while excluding a host npm. A
+			// broken fixture must fail locally instead of reaching an external registry.
+			const pathValue = joinPathParts([npmDir, qtBinDirectory()]);
 			const session = await startBackendSession(t, {
 				settings: { language: "en-US" },
 				env: {

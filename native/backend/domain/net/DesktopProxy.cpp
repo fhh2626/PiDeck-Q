@@ -114,7 +114,9 @@ bool shouldBypass(const QString &hostname, const Config &config)
     for (const QString &raw : rules) {
         QString rule = raw.trimmed();
         if (rule.isEmpty()) continue;
-        if (rule.startsWith(QLatin1String("*."))) rule = rule.mid(1);
+        // Strip the complete wildcard prefix, as Node's /^\*\./ replacement does.
+        // Keeping the dot makes a suffix check search for "..example.com" instead.
+        if (rule.startsWith(QLatin1String("*."))) rule = rule.mid(2);
         rule = rule.toLower();
         if (rule == QLatin1String("<local>")) {
             if (!host.contains(QLatin1Char('.'))) return true;

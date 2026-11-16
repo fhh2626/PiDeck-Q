@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -29,11 +29,23 @@ export function createFakeProcessHost() {
 	};
 }
 
-/** Write an npm-style `name.cmd` batch shim that forwards to a node script. */
+/** Quote one literal POSIX shell word, including paths containing apostrophes. */
+function shellQuote(value) {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** Write the host platform's executable shim using the test runner's Node binary. */
 export function writeNodeShim(directory, name, scriptPath) {
 	mkdirSync(directory, { recursive: true });
-	const shim = join(directory, `${name}.cmd`);
-	writeFileSync(shim, `@echo off\r\nnode "${scriptPath}" %*\r\n`);
+	const windows = process.platform === "win32";
+	const shim = join(directory, windows ? `${name}.cmd` : name);
+	writeFileSync(
+		shim,
+		windows
+			? `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`
+			: `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(scriptPath)} "$@"\n`,
+	);
+	if (!windows) chmodSync(shim, 0o755);
 	return shim;
 }
 

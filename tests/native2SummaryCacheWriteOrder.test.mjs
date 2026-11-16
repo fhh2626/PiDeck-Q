@@ -13,38 +13,38 @@
 // asserts its public output; it never re-implements the rule in JavaScript.
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const REPO = process.cwd();
-const CANDIDATES = [
-	"build/windows/x64/debug/PiDeck-SummaryCacheWriteOrderTest.exe",
-	"build/windows/x64/release/PiDeck-SummaryCacheWriteOrderTest.exe",
-	"build/windows/x64/debug/PiDeck-SummaryCacheWriteOrderTest",
-];
+const pinned = process.env.PIDECK_SUMMARY_CACHE_TEST_EXECUTABLE;
+const CANDIDATES = nativeBuildPaths("PiDeck-SummaryCacheWriteOrderTest", { pinned });
 const SOURCES = [
 	"native/tests/SummaryCacheWriteOrderTest.cpp",
 	"native/backend/domain/sessions/WriteOrdering.cpp",
+	"native/backend/domain/sessions/WriteOrdering.h",
+	"xmake.lua",
 ];
 
 function resolveTestExe() {
-	for (const relative of CANDIDATES) {
-		const full = join(REPO, relative);
+	const built = Math.max(...SOURCES.map((source) => statSync(resolve(REPO, source)).mtimeMs));
+	for (const candidate of CANDIDATES) {
+		const full = resolve(REPO, candidate);
 		if (!existsSync(full)) continue;
 		// Stale-binary guard: the assertion must run against the current source, not an
 		// executable left over from an earlier edit.
-		const built = Math.max(...SOURCES.map((source) => statSync(join(REPO, source)).mtimeMs));
-		return statSync(full).mtimeMs >= built ? full : null;
+		if (statSync(full).mtimeMs >= built) return full;
 	}
 	return null;
 }
 
 const executable = resolveTestExe();
-const required = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
+const required = Boolean(pinned) || process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 const skip = executable
 	? false
 	: required
@@ -55,7 +55,7 @@ describe("native2 summary cache write ordering", { skip }, () => {
 	it("never lets an older snapshot land after a newer one", () => {
 		assert.ok(
 			executable,
-			`PIDECK_REQUIRE_BACKEND_TESTS=1 but no fresh PiDeck-SummaryCacheWriteOrderTest exists (looked for ${CANDIDATES.join(", ")}); build it with "PIDECK_STAGE_DIR=build/native2-validation-unpacked xmake build -y PiDeck-SummaryCacheWriteOrderTest"`,
+			`A fresh PiDeck-SummaryCacheWriteOrderTest is required, but none exists (looked for ${CANDIDATES.join(", ")}); build it with "PIDECK_STAGE_DIR=build/native2-validation-unpacked xmake build -y PiDeck-SummaryCacheWriteOrderTest"`,
 		);
 		// The exe links Qt6Core.dll from the pinned package, which is not deployed next to
 		// it (same reason the backend tests prepend that directory to PATH). Building the

@@ -22,13 +22,21 @@ export function isAbsoluteFilePath(path: string): boolean {
 	return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/") || WINDOWS_UNC_PATH_RE.test(path);
 }
 
+/** A backslash is a filename character on POSIX unless the target explicitly names Windows. */
+function usesWindowsSeparators(path: string, platform: FileLinkPlatform): boolean {
+	return platform === "win32" || /^[A-Za-z]:[\\/]/.test(path) || WINDOWS_UNC_PATH_RE.test(path);
+}
+
 export function resolveFileLinkPath(path: string, basePath?: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
 	// Markdown producers also use /C:/... to keep a drive path URL-shaped.
 	// A POSIX directory can have that exact spelling and must retain its root.
 	if (platform === "win32" && /^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
 	if (!path || isAbsoluteFilePath(path) || !basePath) return path;
-	const separator = basePath.includes("\\") ? "\\" : "/";
-	return `${basePath.replace(/[\\/]+$/, "")}${separator}${path.replace(/^[\\/]+/, "")}`;
+	const windowsSeparators = usesWindowsSeparators(basePath, platform);
+	const separator = windowsSeparators && basePath.includes("\\") ? "\\" : "/";
+	const base = basePath.replace(windowsSeparators ? /[\\/]+$/ : /\/+$/, "");
+	const relative = path.replace(windowsSeparators ? /^[\\/]+/ : /^\/+/, "");
+	return `${base}${separator}${relative}`;
 }
 
 /** Resolve a local target once without decoding literal percent signs in disk paths. */
@@ -42,8 +50,8 @@ export function resolveLocalFileTarget(
 }
 
 /** Directory of a disk path, retaining a drive or POSIX root for sibling links. */
-export function fileLinkDirectory(path: string): string {
-	const normalized = path.replace(/\\/g, "/");
+export function fileLinkDirectory(path: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
+	const normalized = usesWindowsSeparators(path, platform) ? path.replace(/\\/g, "/") : path;
 	const separator = normalized.lastIndexOf("/");
 	if (separator < 0) return ".";
 	if (separator === 0) return "/";
@@ -86,12 +94,12 @@ export function normalizeLocalFilePath(value: string, platform: FileLinkPlatform
 /** Internal hrefs now use standard absolute URIs or raw relative paths, never encoded separators. */
 export function toInternalFileHref(value: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string | null {
 	const path = normalizeLocalFilePath(value, platform);
-	return path === null ? null : filePathToUri(path);
+	return path === null ? null : filePathToUri(path, platform);
 }
 
-export function filePathToUri(filePath: string): string {
+export function filePathToUri(filePath: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
 	if (!isAbsoluteFilePath(filePath)) return filePath;
-	const normalized = filePath.replace(/\\/g, "/");
+	const normalized = usesWindowsSeparators(filePath, platform) ? filePath.replace(/\\/g, "/") : filePath;
 	if (/^[A-Za-z]:\//.test(normalized)) {
 		const drive = normalized.slice(0, 2);
 		const rest = normalized.slice(2);

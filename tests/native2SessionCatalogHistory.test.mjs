@@ -396,7 +396,10 @@ if (executable) {
 
 		test("claude import mirrors the same pi session shape", async (t) => {
 			const { invoke } = await start(t);
-			const claudeDir = join(homeDir, ".claude", "projects", projectPath.replaceAll("\\", "/").replace(/^([A-Za-z]):\/(.+)$/, "$1--$2").replaceAll("/", "-"));
+			// Both importers remove the POSIX root slash before encoding directory separators.
+			const projectDirectory = slash(projectPath).replace(/^([A-Za-z]):\/(.+)$/, "$1--$2")
+				.replace(/^\//, "").replaceAll("/", "-");
+			const claudeDir = join(homeDir, ".claude", "projects", projectDirectory);
 			mkdirSync(claudeDir, { recursive: true });
 			const source = join(claudeDir, "session-1.jsonl");
 			const entries = [

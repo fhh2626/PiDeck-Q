@@ -1,12 +1,14 @@
+import "./helpers/piFixtureResolver.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { waitForSubagents } from "../resources/extensions/pideck-q-subagents/src/runs/background/subagent-wait.ts";
-import { updateActiveRunIndex } from "../resources/extensions/pideck-q-subagents/src/runs/background/active-run-index.ts";
-import { recordWaitCompletion } from "../resources/extensions/pideck-q-subagents/src/runs/background/wait-completions.ts";
-import { registerBackgroundWorkProvider } from "../resources/extensions/pideck-q-subagents/src/api/background-work.ts";
+
+const { waitForSubagents } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-wait.ts");
+const { updateActiveRunIndex } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/active-run-index.ts");
+const { recordWaitCompletion } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/wait-completions.ts");
+const { registerBackgroundWorkProvider } = await import("../resources/extensions/pideck-q-subagents/src/api/background-work.ts");
 
 /** Isolated persisted async status plus a retained foreground VM in the same session. */
 function fixture(t) {

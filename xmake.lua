@@ -372,6 +372,19 @@ target("PiDeck-FilePathPolicyTest")
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end
 
+-- Production proxy policy and installed factory, without DNS or outbound requests.
+-- Never staged; exercised by tests/nativeDesktopProxyPolicy.test.mjs.
+target("PiDeck-DesktopProxyPolicyTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/DesktopProxyPolicyTest.cpp",
+              "native/backend/domain/net/DesktopProxy.cpp")
+    add_includedirs("native/backend/domain/net")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
 target("PiDeck-HostRpcTest")
     set_kind("binary")
     set_default(false)

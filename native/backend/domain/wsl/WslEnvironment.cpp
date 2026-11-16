@@ -6,6 +6,7 @@
 
 #include "ChildEnvironment.h"
 
+#include <QDir>
 #include <QProcess>
 #include <QTimer>
 
@@ -70,6 +71,15 @@ QString linuxPathToWslUnc(const QString &linuxPath, const QString &distro, const
     // An explicit root wins; otherwise the process-wide default (which honours the
     // `PIDECK_WSL_UNC_ROOT` fixture seam) applies.
     const QString root = uncRoot.isEmpty() ? defaultUncRoot() : trimmedUncRoot(uncRoot);
+#ifndef Q_OS_WIN
+    // The explicit test seam may back the distro with a POSIX host directory. Keep
+    // the default UNC representation and Windows behavior unchanged, but do not put
+    // literal backslash filename bytes into the host paths read by those fixtures.
+    if (uncRoot.isEmpty() && !qEnvironmentVariable("PIDECK_WSL_UNC_ROOT").trimmed().isEmpty()
+        && root.startsWith(QLatin1Char('/')) && !root.startsWith(QLatin1String("//"))) {
+        return QDir(root).filePath(distro + (normalized == QLatin1String("/") ? QString() : normalized));
+    }
+#endif
     return suffix.isEmpty() ? root + QLatin1Char('\\') + distro
                             : root + QLatin1Char('\\') + distro + QLatin1Char('\\') + suffix;
 }

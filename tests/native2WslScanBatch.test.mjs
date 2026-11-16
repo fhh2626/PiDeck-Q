@@ -21,10 +21,11 @@ import { startBackendSession } from "./helpers/native2BackendHarness.mjs";
  */
 
 const REPO = process.cwd();
+const BUILD_PLATFORM = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macosx" : process.platform;
+const LAUNCHER_NAME = process.platform === "win32" ? "PiDeck-FakeWsl.exe" : "PiDeck-FakeWsl";
 const LAUNCHER_CANDIDATES = [
-	"build/windows/x64/debug/PiDeck-FakeWsl.exe",
-	"build/windows/x64/release/PiDeck-FakeWsl.exe",
-	"build/windows/x64/debug/PiDeck-FakeWsl",
+	`build/${BUILD_PLATFORM}/${process.arch}/debug/${LAUNCHER_NAME}`,
+	`build/${BUILD_PLATFORM}/${process.arch}/release/${LAUNCHER_NAME}`,
 ];
 const LAUNCHER_SOURCE = "native/tests/FakeWslLauncher.cpp";
 

@@ -48,6 +48,169 @@ function start(t, respond) {
 	return { manager, runtime, calls, makeProcess, send };
 }
 
+for (const [label, text, response] of [
+	["ordinary text", "Please work on this", undefined],
+	["an unregistered command", "/unknown", undefined],
+	["a prompt template", "/todo-resume", { success: true, data: { commands: [{ name: "todo-resume", source: "prompt" }] } }],
+	["a failed command lookup", "/todo-resume", { success: false, error: "lookup failed" }],
+]) {
+	test(`Node silent dispatch rejects ${label} before writing a prompt`, async (t) => {
+		const session = start(t, (request) => request.type === "get_commands" ? response : undefined);
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: text, silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentUnavailable");
+		assert.notEqual(result.delivery, "unknown");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 0);
+		assert.equal(session.runtime.tab.status, "idle");
+	});
+}
+
+for (const failedLookup of [1, 2]) {
+	test(`Node silent dispatch ignores command data from failed lookup ${failedLookup}`, async (t) => {
+		let lookups = 0;
+		const session = start(t, (request) => request.type === "get_commands" && ++lookups === failedLookup
+			? { success: false, error: "registration unavailable", data: COMMANDS.data } : undefined);
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentUnavailable");
+		assert.notEqual(result.delivery, "unknown");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 0);
+		assert.equal(session.runtime.tab.status, "idle");
+	});
+}
+
+test("Node silent dispatch accepts a registered extension command while idle", async (t) => {
+	const session = start(t);
+	const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+	assert.equal(result.accepted, true);
+	const prompts = session.calls.filter((request) => request.type === "prompt");
+	assert.equal(prompts.length, 1);
+	assert.equal(prompts[0].message, "/todo-resume");
+	assert.equal(session.runtime.tab.status, "idle");
+});
+
+for (const prefix of ["!", "!!"]) {
+	test(`Node silent dispatch cannot bypass command validation with ${prefix}`, async (t) => {
+		const session = start(t);
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: `${prefix} echo local`, silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentUnavailable");
+		assert.equal(session.calls.filter((request) => request.type === "prompt" || request.type === "bash").length, 0);
+		assert.equal(session.runtime.tab.status, "idle");
+	});
+}
+
+test("Node silent dispatch refuses a registered command while the runtime is busy", async (t) => {
+	const session = start(t);
+	assert.equal((await session.send("Work in progress")).accepted, true);
+	const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+	assert.equal(result.accepted, false);
+	assert.equal(result.i18nKey, "sessionCommand.silentBusy");
+	assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+	assert.equal(session.runtime.tab.status, "running");
+});
+
+test("Node a failed command lookup keeps ordinary slash prompts available", async (t) => {
+	const session = start(t, (request) => request.type === "get_commands" ? { success: false, error: "lookup failed" } : undefined);
+	assert.equal((await session.send("/unregistered")).accepted, true);
+	assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+});
+
+test("Node ordinary slash dispatch ignores failed command data when scheduling idle", async (t) => {
+	const session = start(t, (request) => request.type === "get_commands"
+		? { success: false, error: "registration unavailable", data: COMMANDS.data } : undefined);
+	assert.equal((await session.send("/todo-resume")).accepted, true);
+	assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+	t.mock.timers.tick(100);
+	await flush();
+	assert.equal(session.runtime.tab.status, "running", "a failed lookup cannot prove the input completed outside a model turn");
+});
+
+for (const blockedLookup of [1, 2]) {
+	test(`Node silent dispatch rechecks busy state after command lookup ${blockedLookup}`, async (t) => {
+		const lookup = deferred();
+		let lookups = 0;
+		const session = start(t, (request) => request.type === "get_commands" && ++lookups === blockedLookup ? lookup.promise : undefined);
+		const pending = session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+		await flush();
+		assert.equal((await session.send("New task")).accepted, true);
+		lookup.resolve(COMMANDS);
+		const result = await pending;
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentBusy");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+		assert.equal(session.runtime.tab.status, "running");
+	});
+}
+
+for (const [label, response] of [
+	["lost registration", { success: true, data: { commands: [] } }],
+	["failed lookup", { success: false, error: "lookup failed" }],
+]) {
+	test(`Node silent dispatch requires registration at the final lookup after ${label}`, async (t) => {
+		let lookups = 0;
+		const session = start(t, (request) => request.type === "get_commands" && ++lookups === 2 ? response : undefined);
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentUnavailable");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 0);
+		assert.equal(session.runtime.tab.status, "idle");
+	});
+}
+
+test("Node a rejected silent command leaves the previous completion probe valid", async (t) => {
+	const session = start(t);
+	assert.equal((await session.send("/todo-resume")).accepted, true);
+	const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/unknown", silent: true });
+	assert.equal(result.accepted, false);
+	t.mock.timers.tick(100);
+	await flush();
+	assert.equal(session.runtime.tab.status, "idle");
+	assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+});
+
+for (const [label, response] of [
+	["lost registration", { success: true, data: { commands: [] } }],
+	["failed lookup", { success: false, error: "registration unavailable", data: COMMANDS.data }],
+]) {
+	test(`Node error settlement survives rejected silent ${label}`, async (t) => {
+		let lookups = 0;
+		const session = start(t, (request) => request.type === "get_commands" && ++lookups === 2 ? response : undefined);
+		const localEvents = [];
+		t.after(session.manager.addLocalEventListener((_agentId, event) => localEvents.push(event)));
+		assert.equal((await session.send("Work")).accepted, true);
+		session.manager.handlePiEvent("agent-1", { type: "agent_end", errorMessage: "Model failed", messages: [] });
+		await flush();
+		assert.equal(session.runtime.tab.status, "error");
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentUnavailable");
+		t.mock.timers.tick(5_000);
+		await flush();
+		assert.equal(session.runtime.tab.status, "error", "settlement retains the failed turn's visible state");
+		assert.equal(localEvents.filter((event) => event.type === "agent_settled").length, 1,
+			"an undispatched silent input must preserve the final event that closes the prior stream");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+	});
+}
+
+test("Node silent dispatch cannot enter while an ordinary prompt still awaits its ACK", async (t) => {
+	const ack = deferred();
+	const session = start(t, (request) => request.type === "prompt" ? ack.promise : undefined);
+	const pending = session.send("New task");
+	await flush();
+	try {
+		const result = await session.manager.sendPrompt({ agentId: "agent-1", message: "", agentMessage: "/todo-resume", silent: true });
+		assert.equal(result.accepted, false);
+		assert.equal(result.i18nKey, "sessionCommand.silentBusy");
+		assert.equal(session.calls.filter((request) => request.type === "prompt").length, 1);
+		assert.equal(session.runtime.tab.status, "running");
+	} finally {
+		ack.resolve({ success: true });
+		assert.equal((await pending).accepted, true);
+	}
+});
+
 test("Node extension timer waits for a newer command lookup", async (t) => {
 	const lookup = deferred();
 	let lookups = 0;

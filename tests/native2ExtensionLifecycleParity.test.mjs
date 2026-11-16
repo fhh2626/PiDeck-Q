@@ -10,9 +10,11 @@ import {
 	resolveBackendExecutable,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
 const { ExtensionManager } = loadTsCommonJs(resolve("src/main/extensions/ExtensionManager.ts"));
+const { PiLocator } = loadTsCommonJs(resolve("src/main/pi/PiLocator.ts"));
 const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
 const translate = (key, params) => mainProcessT("en-US", key, params ?? {});
 
@@ -23,10 +25,11 @@ const plain = (value) => JSON.parse(JSON.stringify(value ?? null));
 /** Real `ExtensionManager` over the twin home, with the pi CLI replaced by the fixture. */
 function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, statePath }) {
 	const state = { piDeck: { ...piDeckSettings } };
+	const invocationLocator = new PiLocator();
 	const locator = {
 		check: async () => ({ installed: true, version: "0.79.0" }),
-		resolveCommand: () => join(home, "pi.cmd"),
-		createInvocation: (command, args) => ({ command, args, shell: true }),
+		resolveCommand: () => join(home, process.platform === "win32" ? "pi.cmd" : "pi"),
+		createInvocation: (command, args) => invocationLocator.createInvocation(command, args),
 		createProcessEnv: () => ({ ...process.env, PIDECK_FAKE_PI_STATE: statePath }),
 	};
 	const manager = new ExtensionManager(
@@ -44,11 +47,10 @@ function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, stat
 	return { manager, state };
 }
 
-/** Install the fake pi CLI as a `.cmd` shim (npm installs pi that way on Windows). */
+/** Install the fake CLI using the host's launcher while preserving Windows batch coverage. */
 function installFakePi(root) {
 	const script = resolve("tests/fixtures/native2-fake-pi-cli.mjs");
-	const shim = join(root, "pi.cmd");
-	writeFileSync(shim, `@echo off\r\nnode "${script}" %*\r\n`);
+	const shim = writeNodeShim(root, "pi", script);
 	const statePath = join(root, "fake-pi-state.json");
 	writeFileSync(statePath, JSON.stringify({ calls: [], packages: [] }));
 	return { shim, statePath };
@@ -66,7 +68,7 @@ function installFakePiRecordingRaw(root) {
 		wrapper,
 		`import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(rawPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");\nawait import(${JSON.stringify(pathToFileURL(resolve("tests/fixtures/native2-fake-pi-cli.mjs")).href)});\n`,
 	);
-	writeFileSync(shim, `@echo off\r\nnode "${wrapper}" %*\r\n`);
+	writeNodeShim(root, "pi", wrapper);
 	return { shim, statePath, rawPath };
 }
 
@@ -176,7 +178,7 @@ if (executable) {
 			});
 			const initial = removedFromSettings(session);
 			const { manager, state } = oracleExtensionManager(oracleHome, {
-				settings: { customPiPath: join(oracleHome, "pi.cmd"), piRuntimePreference: "auto" },
+				settings: { customPiPath: join(oracleHome, process.platform === "win32" ? "pi.cmd" : "pi"), piRuntimePreference: "auto" },
 				piDeckSettings: { removedBuiltInExtensions: initial },
 				statePath: oracleStatePath,
 			});

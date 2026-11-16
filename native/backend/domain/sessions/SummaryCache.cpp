@@ -12,6 +12,7 @@
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QThread>
 #include <QTimer>
 
@@ -24,15 +25,19 @@ namespace {
 constexpr int kDiskSchemaVersion = 4;
 constexpr int kSaveDebounceMs = 800;
 
-/**
- * `key.startsWith("/") && !/^[A-Za-z]:/.test(key)` — a leading slash can never be a drive
- * prefix, but the form is kept so the rule reads the same as the oracle's.
- */
+/** Explicit WSL UNC identities work on any host; legacy POSIX keys need a Windows host. */
 bool isWslPath(const QString &path)
 {
-    if (!path.startsWith(QLatin1Char('/'))) return false;
-    const bool drivePrefixed = path.size() >= 2 && path.at(0).isLetter() && path.at(1) == QLatin1Char(':');
-    return !drivePrefixed;
+    static const QRegularExpression unc(
+        QStringLiteral("^[\\\\/]{2}(?:wsl\\$|wsl\\.localhost)[\\\\/][^\\\\/]+(?:[\\\\/].*)?$"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (unc.match(path).hasMatch()) return true;
+#ifdef Q_OS_WIN
+    // A local SMB share is a native path even when Qt spells its separators as '/'.
+    return path.startsWith(QLatin1Char('/')) && !path.startsWith(QLatin1String("//"));
+#else
+    return false;
+#endif
 }
 
 /** Node's `stat().mtimeMs` is a float; `jsonWholeMillis` decides what is loadable. */
@@ -170,9 +175,9 @@ void Cache::prune(const QStringList &keepPaths, Mode mode)
         const QSet<QString> keep(keepPaths.begin(), keepPaths.end());
         QStringList dropped;
         for (auto iterator = m_store.constBegin(); iterator != m_store.constEnd(); ++iterator) {
-            const bool wslPath = isWslPath(iterator.key());
-            if (mode == Mode::Local && wslPath) continue;
-            if (mode == Mode::Wsl && !wslPath) continue;
+            const bool wslEntry = (iterator->hasSummary && iterator->summary.wsl) || isWslPath(iterator.key());
+            if (mode == Mode::Local && wslEntry) continue;
+            if (mode == Mode::Wsl && !wslEntry) continue;
             if (!keep.contains(iterator.key())) dropped.append(iterator.key());
         }
         for (const QString &key : dropped) m_store.remove(key);

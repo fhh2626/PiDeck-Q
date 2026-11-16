@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { localSocketSkipReason } from "./helpers/localSocketCapability.mjs";
+
+const localSocketSkip = await localSocketSkipReason();
 
 const { acquireVersionSingleInstance } = loadTsCommonJs("src/main/singleInstance.ts", {
 	stubs: {
@@ -12,7 +15,7 @@ const { acquireVersionSingleInstance } = loadTsCommonJs("src/main/singleInstance
 	},
 });
 
-test("secondary instance sends focus payload through the version endpoint", async () => {
+test("secondary instance sends focus payload through the version endpoint", { skip: localSocketSkip }, async () => {
 	const userDataDir = mkdtempSync(join(tmpdir(), "pideck-single-instance-"));
 	const received = [];
 	let primary;
@@ -49,7 +52,7 @@ test("secondary instance sends focus payload through the version endpoint", asyn
 	}
 });
 
-test("focus endpoint rejects payloads larger than 64 KiB", async () => {
+test("focus endpoint rejects payloads larger than 64 KiB", { skip: localSocketSkip }, async () => {
 	const userDataDir = mkdtempSync(join(tmpdir(), "pideck-single-limit-"));
 	let primary;
 	try {
@@ -81,7 +84,7 @@ test("focus endpoint rejects payloads larger than 64 KiB", async () => {
 	}
 });
 
-test("different versions can own separate focus endpoints", async () => {
+test("different versions can own separate focus endpoints", { skip: localSocketSkip }, async () => {
 	const userDataDir = mkdtempSync(join(tmpdir(), "pideck-single-version-"));
 	const instances = [];
 	try {

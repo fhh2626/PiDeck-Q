@@ -30,10 +30,11 @@ import { createSuiteProject, removeSuiteProject, sleep } from "./helpers/native2
  */
 
 const REPO = process.cwd();
+const BUILD_PLATFORM = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macosx" : process.platform;
+const LAUNCHER_NAME = process.platform === "win32" ? "PiDeck-FakeWsl.exe" : "PiDeck-FakeWsl";
 const LAUNCHER_CANDIDATES = [
-	"build/windows/x64/debug/PiDeck-FakeWsl.exe",
-	"build/windows/x64/release/PiDeck-FakeWsl.exe",
-	"build/windows/x64/debug/PiDeck-FakeWsl",
+	`build/${BUILD_PLATFORM}/${process.arch}/debug/${LAUNCHER_NAME}`,
+	`build/${BUILD_PLATFORM}/${process.arch}/release/${LAUNCHER_NAME}`,
 ];
 const LAUNCHER_SOURCE = "native/tests/FakeWslLauncher.cpp";
 const FIXTURE = join(REPO, "tests/fixtures/native2-fake-wsl-fs.mjs");
@@ -228,6 +229,22 @@ if (!executable || !launcher) {
 			assert.equal(record.environment, "wsl", JSON.stringify(record));
 			assert.equal(record.wslDistro, "Ubuntu", JSON.stringify(record));
 			assert.equal(record.wslUser, "dev", JSON.stringify(record));
+		});
+
+		test("an explicit local WSL root maps the resolved home to the host directory", async (t) => {
+			const { session, state } = await startWslBackend(t, {
+				settings: { wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
+			});
+			await sleepUntil(() => appLogText(session.fixture.userData).includes("WSL environment configured"),
+				20_000, "the startup WSL resolution");
+			const listed = await session.invoke("prompts:list");
+			assert.equal(listed.payload.ok, true, JSON.stringify(listed.payload));
+			const expected = join(state.distroHome("Ubuntu"), ".pi", "agent", "prompts");
+			const actual = listed.payload.result.globalDir;
+			// POSIX backslashes are literal filename bytes, so normalizing them in this
+			// assertion would hide a mapper that points the managers at another directory.
+			assert.equal(process.platform === "win32" ? SLASH(actual) : actual,
+				process.platform === "win32" ? SLASH(expected) : expected);
 		});
 
 		/**

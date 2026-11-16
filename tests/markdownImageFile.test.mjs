@@ -13,7 +13,7 @@ function imageHarness(readBase64, userAgent = "Windows NT 10.0") {
       "../../desktopApi": { desktopApi: { files: { readBase64 } } },
       "../../i18n": { t: (key) => key },
     },
-    globals: { navigator: { userAgent } },
+    globals: { process: undefined, navigator: { userAgent } },
   });
   return { ...harness, image: (props) => harness.render(() => MarkdownImage(props)) };
 }
@@ -80,6 +80,27 @@ test("authorization and decode failures are visible for a local Markdown image",
 });
 
 for (const userAgent of ["X11; Linux x86_64", "Macintosh; Intel Mac OS X"]) {
+  test(`a POSIX Markdown image reads and opens literal backslashes on ${userAgent}`, async () => {
+    const reads = [];
+    const opened = [];
+    const harness = imageHarness(async (path) => { reads.push(path); return "aGVsbG8="; }, userAgent);
+    try {
+      const props = {
+        src: String.raw`images\copy.png`, basePath: String.raw`/tmp/project\name`,
+        onOpenFile: (path) => opened.push(path),
+      };
+      harness.image(props);
+      await flush();
+      const image = harness.image(props);
+      assert.equal(image.props.src, "data:image/png;base64,aGVsbG8=");
+      assert.deepEqual(reads, [String.raw`/tmp/project\name/images\copy.png`]);
+      image.props.onClick({ currentTarget: { closest: () => null }, preventDefault() {}, stopPropagation() {} });
+      assert.deepEqual(opened, reads);
+    } finally {
+      harness.unmount();
+    }
+  });
+
   test(`a POSIX Markdown image retains its absolute drive-like directory on ${userAgent}`, async () => {
     const reads = [];
     const harness = imageHarness(async (path) => { reads.push(path); return "aGVsbG8="; }, userAgent);

@@ -150,7 +150,9 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             return;
         }
 
-        session->advancePromptDispatchSequence();
+        // A rejected silent command never dispatched work and must not invalidate an
+        // earlier command's completion probe. Its lease still fences the lookup.
+        if (!silent) session->advancePromptDispatchSequence();
         const QString statusBeforePrompt = session->tab().status;
         const bool streaming = statusBeforePrompt == QLatin1String("running");
         QString behavior = input.value(QStringLiteral("streamingBehavior")).toString();
@@ -191,6 +193,21 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             m_bindings.releaseLease(lease);
             const QJsonObject result = rejectedResult(sessionId, requestId,
                 QStringLiteral("Session runtime changed before prompt dispatch"));
+            settleDelivery(key, result);
+            done(result);
+            return;
+        }
+        if (silent && (!extensionCommand || statusBeforePrompt == QLatin1String("running")
+                       || sending->tab().status == QLatin1String("running"))) {
+            // Silent input must stay an extension command. A template or plain prompt
+            // would start an invisible model turn. Recheck busy after the async lookup.
+            m_bindings.releaseLease(lease);
+            QJsonObject result = rejectedResult(sessionId, requestId, extensionCommand
+                ? QStringLiteral("Silent commands are locked while generating")
+                : QStringLiteral("Silent command is unavailable"));
+            result.insert(QStringLiteral("i18nKey"), extensionCommand
+                ? QStringLiteral("sessionCommand.silentBusy")
+                : QStringLiteral("sessionCommand.silentUnavailable"));
             settleDelivery(key, result);
             done(result);
             return;

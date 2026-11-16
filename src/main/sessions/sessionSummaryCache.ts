@@ -11,6 +11,7 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { renameWithRetry } from "../utils/fsRetry";
+import { parseWslUncPath } from "../wsl/WslPaths";
 
 export interface SessionFileVersion {
   mtimeMs: number;
@@ -35,6 +36,14 @@ const DISK_SCHEMA_VERSION = 4;
 const SAVE_DEBOUNCE_MS = 800;
 /** 进程内 tmp 文件序号：同一进程的多个缓存实例/多次写盘不共用 tmp，避免互相截断。 */
 let tmpSequence = 0;
+
+/** Existing WSL identity wins; a legacy POSIX path is only a WSL hint on Windows. */
+function isWslCacheEntry(path: string, value: unknown): boolean {
+  const explicitlyWsl = value !== null && typeof value === "object" &&
+    "wsl" in value && value.wsl === true;
+  return explicitlyWsl || parseWslUncPath(path) !== null ||
+    (process.platform === "win32" && path.startsWith("/") && !path.startsWith("//"));
+}
 
 export class SessionSummaryCache<V> {
   private readonly store = new Map<string, CacheEntry<V>>();
@@ -96,17 +105,17 @@ export class SessionSummaryCache<V> {
 
   /**
    * 只修剪“当前环境”下已消失的条目。
-   * - local：只动 Windows 路径缓存，保留 WSL 路径
-   * - wsl：只动 Linux 路径缓存，保留 Windows 路径
+   * - local：保留 WSL UNC 或已有 wsl 标记；仅 Windows 宿主把旧 POSIX 路径视为 WSL
+   * - wsl：只动 WSL 缓存，保留宿主文件系统路径
    * 这样切换 WSL/本地时不会互相踩盘。
    */
   prune(keepPaths: Iterable<string>, mode: "local" | "wsl" = "local"): void {
     const keep = new Set(keepPaths);
     let removed = false;
-    for (const key of this.store.keys()) {
-      const isWslPath = key.startsWith("/") && !/^[A-Za-z]:/.test(key);
-      if (mode === "local" && isWslPath) continue;
-      if (mode === "wsl" && !isWslPath) continue;
+    for (const [key, entry] of this.store) {
+      const wslEntry = isWslCacheEntry(key, entry.value);
+      if (mode === "local" && wslEntry) continue;
+      if (mode === "wsl" && !wslEntry) continue;
       if (!keep.has(key)) {
         this.store.delete(key);
         removed = true;

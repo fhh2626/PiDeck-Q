@@ -5,13 +5,10 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const pinned = process.env.PIDECK_FILE_PATH_TEST_EXECUTABLE;
-const candidates = pinned ? [pinned] : [
-  "build/linux/x64/debug/PiDeck-FilePathPolicyTest",
-  "build/windows/x64/debug/PiDeck-FilePathPolicyTest.exe",
-  "build/windows/x64/release/PiDeck-FilePathPolicyTest.exe",
-];
+const candidates = nativeBuildPaths("PiDeck-FilePathPolicyTest", { pinned });
 const sources = [
   "native/tests/FilePathPolicyTest.cpp", "xmake.lua",
   "native/backend/domain/fs/PathPolicy.cpp", "native/backend/domain/fs/PathPolicy.h",

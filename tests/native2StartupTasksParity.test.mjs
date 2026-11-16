@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import {
@@ -47,6 +47,7 @@ function writeFakeWsl(fixture) {
 			? `@echo off\r\nnode "${script}" %*\r\n`
 			: `#!/bin/sh\nexec node "${script}" "$@"\n`,
 	);
+	if (process.platform !== "win32") chmodSync(shim, 0o755);
 	const scenarioPath = join(directory, "scenario.json");
 	return {
 		shim,
@@ -162,7 +163,7 @@ describe("native2 backend startup tasks", () => {
 			settings: { wslEnabled: false },
 			projects: [{ id: "native-project", path: slash(process.cwd()) }],
 			hostHandlers: {
-				"dialog.open": () => ({ result: { canceled: false, filePaths: ["C:\\work\\app"] } }),
+				"dialog.open": () => ({ result: { canceled: false, filePaths: [state.projectPath] } }),
 			},
 			prepare: (fixture) => {
 				const fakePi = createFakePi(fixture, { version: "0.79.0" });
@@ -171,6 +172,10 @@ describe("native2 backend startup tasks", () => {
 				const uncRoot = join(fixture.root, "wsl-unc");
 				const wsl = prepareWslHome(uncRoot);
 				state.wsl = wsl;
+				// The host file picker returns a host absolute path. Windows retains its
+				// drive-to-/mnt assertion, while POSIX needs a real absolute project root.
+				state.projectPath = process.platform === "win32" ? "C:\\work\\app" : join(fixture.root, "wsl-project");
+				if (process.platform !== "win32") mkdirSync(state.projectPath, { recursive: true });
 				writeMarkdownTemplate(join(localHome, ".pi/agent/prompts"), "local-only", "local template");
 				writeSkill(join(localHome, ".pi/agent/skills"), "local-skill", "local skill");
 				mkdirSync(join(localHome, ".pi/agent"), { recursive: true });
@@ -182,7 +187,7 @@ describe("native2 backend startup tasks", () => {
 				);
 				writeSessionFile(join(wsl.agentDir, "sessions"), "--mnt-c-work-app--", {
 					id: "wsl-session",
-					cwd: wslRuntimePath("C:\\work\\app"),
+					cwd: wslRuntimePath(state.projectPath),
 					text: "hello from wsl",
 				});
 				fakeWsl.writeScenario({
@@ -234,7 +239,7 @@ describe("native2 backend startup tasks", () => {
 		// The scanner reads the distro through wsl.exe, and the project path is compared in
 		// its /mnt form, so a WSL session matches a Windows project record.
 		const added = await session.invoke("projects:add");
-		assert.equal(slash(added.payload.result?.path), "C:/work/app");
+		assert.equal(slash(added.payload.result?.path), slash(state.projectPath));
 		const records = await waitFor(async () => {
 			const result = await session.invoke("sessions:catalog-list", [added.payload.result.id]);
 			return result.payload.result?.length ? result.payload.result : null;

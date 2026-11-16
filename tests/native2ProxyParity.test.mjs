@@ -174,6 +174,10 @@ function createHttpStub(routes) {
 				response.end(JSON.stringify({ error: "no stub route" }));
 				return;
 			}
+			if (fixture.disconnect) {
+				request.socket.destroy();
+				return;
+			}
 			response.writeHead(fixture.status ?? 200, { "content-type": "application/json" });
 			response.end(JSON.stringify(fixture.body));
 		});
@@ -575,37 +579,38 @@ describe("desktop proxy policy for outbound HTTP", () => {
 		});
 	});
 
-	test("a user bypass entry keeps the target direct on both sides", async (t) => {
-		await withProxyStub(t, {}, async (proxy) => {
-			const session = await startBackendSession(t, {
-				settings: {
+	// User hostname bypass rules are exercised by nativeDesktopProxyPolicy.test.mjs
+	// against the installed production Qt factory and the real Node adapter. A direct
+	// request to a made-up DNS name would leave the local fixtures and depend on the
+	// machine's resolver/network policy. The loopback and local proxy tests above keep
+	// the actual HTTP plumbing covered without requiring an external connection.
+	test("a direct provider failure preserves the localized model-list error and bypasses the proxy", async (t) => {
+		await withHttpStub(t, { "/v1/models": { disconnect: true }, "/models": { disconnect: true } }, async (target) => {
+			await withProxyStub(t, {}, async (proxy) => {
+				const settings = {
 					language: "zh-CN",
 					desktopProxyEnabled: true,
 					desktopProxyUrl: proxy.url(),
-					desktopProxyBypass: "bypass.test",
-				},
+					desktopProxyBypass: "",
+				};
+				const session = await startBackendSession(t, { settings });
+				const payload = { baseUrl: target.baseUrl, apiKey: "key-3", apiType: "openai-completions" };
+				const reply = await session.invoke("config:fetch-models", [payload]);
+				assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
+				const nodeProxy = new NodeProxy();
+				await applyDesktopProxy(settings, nodeProxy);
+				try {
+					const manager = new ConfigManager(join(session.fixture.userData, ".pi", "agent"), copyFor("zh-CN"), nodeProxy.fetch);
+					const oracle = await manager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
+					assert.deepEqual(comparable(reply.payload.result), comparable(oracle));
+				} finally {
+					await nodeProxy.apply({ mode: "direct" });
+				}
+				assert.equal(reply.payload.result.success, false);
+				assert.equal(reply.payload.result.error, mainProcessT("zh-CN", "mainConfig.fetchModelsFailed"));
+				assert.deepEqual(proxy.records, [], "a direct failed request must not reach the proxy");
+				assert.deepEqual([...new Set(target.requests.map((request) => request.url))].sort(), ["/models", "/v1/models"]);
 			});
-			const payload = { baseUrl: "http://sub.bypass.test", apiKey: "key-3", apiType: "openai-completions" };
-			const reply = await session.invoke("config:fetch-models", [payload]);
-			assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
-
-			const nodeProxy = new NodeProxy();
-			await applyDesktopProxy(
-				{
-					desktopProxyEnabled: true,
-					desktopProxyUrl: proxy.url(),
-					desktopProxyBypass: "bypass.test",
-				},
-				nodeProxy,
-			);
-			const manager = new ConfigManager(join(session.fixture.userData, ".pi", "agent"), copyFor("zh-CN"), nodeProxy.fetch);
-			const oracle = await manager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
-			await nodeProxy.apply({ mode: "direct" });
-
-			assert.deepEqual(comparable(reply.payload.result), comparable(oracle));
-			assert.equal(reply.payload.result.success, false);
-			assert.equal(reply.payload.result.error, mainProcessT("zh-CN", "mainConfig.fetchModelsFailed"));
-			assert.deepEqual(proxy.records, [], "a bypassed target must not reach the proxy");
 		});
 	});
 

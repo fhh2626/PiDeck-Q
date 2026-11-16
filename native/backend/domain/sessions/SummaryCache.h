@@ -75,7 +75,8 @@ public:
 
     /**
      * Drop entries of the current environment that were not part of this scan.
-     * Local mode keeps Linux (`/...`, non-drive) paths and vice versa.
+     * WSL UNC paths and existing summary flags retain their environment identity.
+     * A legacy POSIX key belongs to WSL only on a Windows host.
      */
     void prune(const QStringList &keepPaths, Mode mode);
 

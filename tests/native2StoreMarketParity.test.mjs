@@ -8,6 +8,7 @@ import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
 
@@ -484,15 +485,18 @@ if (executable) {
 				[
 					'import { appendFileSync } from "node:fs";',
 					`appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
-					"process.exit(Number(process.env.PIDECK_FAKE_NPX_EXIT ?? 0));",
+					"const exitCode = Number(process.env.PIDECK_FAKE_NPX_EXIT ?? 0);",
+					'if (exitCode) process.stderr.write("fixture installer failed\\n");',
+					"process.exit(exitCode);",
 				].join("\n"),
 			);
-			writeFileSync(join(binDir, "npx.cmd"), `@echo off\r\nnode "${script}" %*\r\n`);
+			writeNodeShim(binDir, "npx", script);
 
-			// The harness prepends the Qt DLL directory to PATH after merging `env`, so this
-			// override cannot kill the backend at load time (STATUS_DLL_NOT_FOUND).
+			// The shim uses an absolute Node path. Keep only the fixture on PATH so a
+			// broken shim cannot fall through to a real package installer. The harness
+			// separately prepends Qt's runtime directory on Windows.
 			const session = await start(t, home, {
-				env: { PATH: `${binDir};${process.env.PATH}`, PIDECK_FAKE_NPX_EXIT: "0" },
+				env: { PATH: binDir, PIDECK_FAKE_NPX_EXIT: "0" },
 			});
 
 			const installed = await session.invoke("skill-hub:install", ["owner/repo/pdf-tools"]);
@@ -502,8 +506,22 @@ if (executable) {
 				slug: "owner/repo/pdf-tools",
 				installDir: "",
 			});
+			const failedSession = await start(t, home, {
+				env: { PATH: binDir, PIDECK_FAKE_NPX_EXIT: "37" },
+			});
+			const failed = await failedSession.invoke("skill-hub:install", ["owner/repo/failing-tool"]);
+			assert.equal(failed.payload.ok, true, JSON.stringify(failed.payload));
+			assert.deepEqual(plain(failed.payload.result), {
+				success: false,
+				slug: "owner/repo/failing-tool",
+				installDir: "",
+				error: "fixture installer failed",
+			});
 			const calls = readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-			assert.deepEqual(calls[0], ["skills", "add", "owner/repo", "-g", "-s", "pdf-tools", "-y"]);
+			assert.deepEqual(calls, [
+				["skills", "add", "owner/repo", "-g", "-s", "pdf-tools", "-y"],
+				["skills", "add", "owner/repo", "-g", "-s", "failing-tool", "-y"],
+			]);
 		});
 
 		// ── skill-store ─────────────────────────────────────────────────

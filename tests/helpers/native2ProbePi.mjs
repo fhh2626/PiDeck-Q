@@ -7,7 +7,7 @@
 //    existed, not on the absence of a log line).
 // It is a separate fixture on purpose: `native2-fake-pi-runtime.mjs` is asserted on by many
 // suites, and adding fields to its `--version` branch would change their recorded logs.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -29,6 +29,7 @@ export function createProbePi(fixture, { version = "0.79.0", versionDelayMs = 0 
 			? `@echo off\r\nnode "${script}" %*\r\n`
 			: `#!/bin/sh\nexec node "${script}" "$@"\n`,
 	);
+	if (process.platform !== "win32") chmodSync(shim, 0o755);
 	const entries = () => {
 		if (!existsSync(logPath)) return [];
 		return readFileSync(logPath, "utf8")

@@ -56,10 +56,9 @@ Config current();
  * `NodeProxy.shouldBypass`: loopback invariant first, then the user's bypass rules.
  *
  * The rules are matched exactly like the oracle: split on `;`, `,` or whitespace, drop a
- * leading `*.`, and then compare the whole hostname or a `.`-suffix. Note that stripping
- * `*.` leaves a leading dot, so `*.example.com` matches nothing but a literal
- * `.example.com` host — that is the oracle's behaviour and is reproduced on purpose
- * (PiProxyTester's own bypass list uses a different, port-aware matcher).
+ * leading `*.`, and then compare the whole hostname or a `.`-suffix. Both the root
+ * hostname and its subdomains match a wildcard rule, without matching a longer label
+ * such as `notexample.com`. PiProxyTester's bypass list has a separate port-aware matcher.
  */
 bool shouldBypass(const QString &hostname, const Config &config);
 bool shouldBypass(const QString &hostname);
