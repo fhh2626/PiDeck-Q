@@ -36,13 +36,9 @@ export type SidebarActions = {
     changeChatPath?: (project: Project) => Promise<void>;
   };
   sessions: {
-    /** 单击默认 preview；双击传 permanent。侧栏拖拽分屏也会走 open。 */
-    open: (
-      projectId: string,
-      sessionId: string,
-      tabMode?: "preview" | "permanent",
-    ) => Promise<void>;
-    /** 侧栏会话开始拖拽（与 Tab 栏共用 MIME，可拖到聊天区边缘分屏） */
+    /** Select a session from the project tree without creating another navigation entry. */
+    open: (projectId: string, sessionId: string) => Promise<void>;
+    /** 侧栏会话可拖到聊天区边缘分屏。 */
     beginDrag?: (sessionId: string) => void;
     endDrag?: () => void;
     createDraft: (projectId: string) => Promise<void>;

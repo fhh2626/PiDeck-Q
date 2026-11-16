@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {   mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -12,96 +12,10 @@ import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
 
-// The real IPC registration is the oracle: the same router contract, the same handlers.
-//
-// Two reality gaps in the vm realm are bridged here, not in the oracle:
-//  * it has no global `fetch`, so the test process's implementation is injected;
-//  * it has no `AbortSignal`, and every market handler calls `AbortSignal.timeout(...)`
-//    (storeIpc.ts:187/210/271/323). Without it the handler's own catch swallows a
-//    ReferenceError and the oracle reports its localized `store.*Failed` copy, which
-//    would make any comparison meaningless.
-//
-// The oracle also hardcodes its hosts (prompts.chat / www.skills.sh), while the backend
-// honours PIDECK_PROMPT_STORE_BASE / PIDECK_SKILL_HUB_BASE. `market.base` is pointed at
-// the local stub per test so both sides fetch the same fixture instead of the internet.
-const market = { base: "" };
-const marketFetch = (input, init) => {
-	const url = typeof input === "string" ? input : (input?.url ?? String(input));
-	const rewritten = market.base
-		? url
-			.replace("https://prompts.chat/api", `${market.base}/api`)
-			.replace("https://www.skills.sh", market.base)
-		: url;
-	return fetch(rewritten, init);
-};
-const { registerStoreIpc } = loadTsCommonJs(resolve("src/main/ipc/storeIpc.ts"), {
-	globals: { fetch: marketFetch, AbortSignal },
-});
-const { PromptManager } = loadTsCommonJs(resolve("src/main/prompts/PromptManager.ts"));
-const { SkillManager } = loadTsCommonJs(resolve("src/main/skills/SkillManager.ts"));
-const { XuePromptManager } = loadTsCommonJs(resolve("src/main/prompts/XuePromptManager.ts"));
 const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
 
 const copy = (key, params) => mainProcessT("en-US", key, params ?? {});
 const plain = (value) => JSON.parse(JSON.stringify(value ?? null));
-
-/** Minimal `RpcRouter` stand-in: records the handlers so a test can call them directly. */
-function createRouter() {
-	const handlers = new Map();
-	return {
-		handlers,
-		handle(channel, handler) {
-			handlers.set(channel, handler);
-		},
-	};
-}
-
-function normalizePaths(value) {
-	if (typeof value === "string") {
-		if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\")) {
-			return value.replaceAll("\\", "/");
-		}
-		return value;
-	}
-	if (Array.isArray(value)) return Array.from(value, normalizePaths);
-	if (value && typeof value === "object") {
-		const result = {};
-		for (const [key, entry] of Object.entries(value)) result[key] = normalizePaths(entry);
-		return result;
-	}
-	return value;
-}
-
-/** Substitute the fixture home so twin directories compare equal. */
-function stripHome(value, home) {
-	const source = plain(value);
-	const prefixes = (Array.isArray(home) ? home : [home]).map((entry) => ({
-		raw: entry,
-		normalized: normalizePaths(entry),
-	}));
-	const walk = (entry) => {
-		if (typeof entry === "string") {
-			let text = entry;
-			for (const [index, prefix] of prefixes.entries()) {
-				const label = index === 0 ? "<home>" : "<root>";
-				text = text.split(prefix.raw).join(label);
-				text = text.split(prefix.normalized).join(label);
-			}
-			if (text.includes("<home>") || text.includes("<root>")) {
-				return text.replaceAll("\\", "/");
-			}
-			return normalizePaths(text);
-		}
-		if (Array.isArray(entry)) return Array.from(entry, walk);
-		if (entry && typeof entry === "object") {
-			const result = {};
-			for (const [key, child] of Object.entries(entry)) result[key] = walk(child);
-			return result;
-		}
-		return entry;
-	};
-	return walk(source);
-}
 
 /**
  * A real SQLite file with the shipped schema. Rows are written with `node:sqlite` and the
@@ -264,46 +178,6 @@ if (executable) {
 			return home;
 		}
 
-		function mirror(home) {
-			const twin = `${home}-oracle`;
-			cpSync(home, twin, { recursive: true });
-			return twin;
-		}
-
-		/** Build the real oracle handlers against a mirrored home and the same stub. */
-		function oracleFor(home, { databasePath, marketBase = "" } = {}) {
-			// Tests in this file run sequentially, so a module-level routing base is safe and
-			// keeps the injected fetch free of per-handler plumbing.
-			market.base = marketBase;
-			const state = { hiddenBuiltinPromptNames: [] };
-			const promptManager = new PromptManager(
-				home,
-				copy,
-				() => state,
-				async (patch) => {
-					Object.assign(state, patch);
-				},
-				{ openPath: async () => ({ ok: true }), trashPath: async () => undefined },
-				() => [],
-			);
-			promptManager.configureWsl({ distro: "Ubuntu", user: "root", linuxHome: "/home/test", windowsHome: home });
-			const skillManager = new SkillManager(home, copy, {
-				openPath: async () => ({ ok: true }),
-				trashPath: async () => undefined,
-			});
-			skillManager.configureWsl({ distro: "Ubuntu", user: "root", linuxHome: "/home/test", windowsHome: home });
-			const xuePromptManager = new XuePromptManager(home, databasePath);
-			const router = createRouter();
-			registerStoreIpc(router, {
-				promptManager,
-				skillManager,
-				xuePromptManager,
-				extensionManager: {},
-				appLogger: { info() {}, warn() {} },
-				mainCopy: copy,
-			});
-			return { router, promptManager, skillManager };
-		}
 
 		const start = (t, home, extra = {}) =>
 			startBackendSession(t, {
@@ -322,24 +196,19 @@ if (executable) {
 			});
 
 		// ── prompts.chat ────────────────────────────────────────────────
-		test("prompt-store:search forwards the query and flattens like the oracle", async (t) => {
+		test("prompt-store:search forwards the query and flattens returned records", async (t) => {
 			stub = await startMarketStub(() => ({ body: { total: 1, prompts: [PROMPT_ITEM] } }));
 			const home = homeFor();
 			const session = await start(t, home, { promptStoreBase: `${stub.base}/api` });
-			const { router } = oracleFor(mirror(home), { marketBase: stub.base });
 
 			const actual = await session.invoke("prompt-store:search", [
 				"code review",
 				{ limit: 5, type: "TEXT", category: "Coding", tag: "review" },
 			]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await router.handlers.get("prompt-store:search")("code review", {
-				limit: 5,
-				type: "TEXT",
-				category: "Coding",
-				tag: "review",
-			});
-			assert.deepEqual(plain(actual.payload.result), plain(expected));
+			assert.equal(actual.payload.result.count, 1);
+			assert.equal(actual.payload.result.prompts[0].title, "Code Review");
+			assert.equal(actual.payload.result.prompts[0].author, "Ada");
 
 			// The request carries every option the oracle forwards.
 			const request = stub.requests.at(-1);
@@ -357,20 +226,17 @@ if (executable) {
 			stub = await startMarketStub(() => ({ body: PROMPT_ITEM }));
 			const home = homeFor();
 			const session = await start(t, home, { promptStoreBase: `${stub.base}/api` });
-			const { router } = oracleFor(mirror(home), { marketBase: stub.base });
 
 			const id = "owner/slug with space";
 			const actual = await session.invoke("prompt-store:get", [id]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await router.handlers.get("prompt-store:get")(id);
-			assert.deepEqual(plain(actual.payload.result), plain(expected));
 			assert.equal(actual.payload.result.author, "Ada");
 			assert.deepEqual(actual.payload.result.tags, ["review", "code"]);
 			assert.equal(actual.payload.result.votes, 7);
 			assert.equal(stub.requests.at(-1).path, "/api/prompts/owner%2Fslug%20with%20space");
 		});
 
-		test("a failing store reports the oracle's localized error, never an empty list", async (t) => {
+		test("a failing store reports a localized error, never an empty list", async (t) => {
 			stub = await startMarketStub(() => ({ status: 503, body: { error: "down" } }));
 			const home = homeFor();
 			const session = await start(t, home, { promptStoreBase: `${stub.base}/api` });
@@ -386,9 +252,7 @@ if (executable) {
 
 		test("prompt-store:import converts ${name} to positional $1 and writes the frontmatter", async (t) => {
 			const home = homeFor();
-			const oracleHome = mirror(home);
 			const session = await start(t, home);
-			const { router } = oracleFor(oracleHome);
 
 			const input = {
 				title: "  Code Review!! ",
@@ -397,13 +261,9 @@ if (executable) {
 			};
 			const actual = await session.invoke("prompt-store:import", [input]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await router.handlers.get("prompt-store:import")(input);
-			assert.deepEqual(stripHome(actual.payload.result, home), stripHome(expected, oracleHome));
 
 			const backendPath = join(home, ".pi", "agent", "prompts", "code-review.md");
-			const oraclePath = join(oracleHome, ".pi", "agent", "prompts", "code-review.md");
 			const content = readFileSync(backendPath, "utf8");
-			assert.equal(content, readFileSync(oraclePath, "utf8"));
 			// `${file}` → `$1`, `${rules:style}` → `${2:-style}`, and the hint line lists both.
 			assert.match(content, /^---\ndescription: Review a diff\nsource: prompts\.chat\nargument-hint: <file> \[rules:style\]\n---\n\n/);
 			assert.match(content, /Review \$1 against \$\{2:-style\} and \$1 again$/);
@@ -425,7 +285,7 @@ if (executable) {
 		});
 
 		// ── skills.sh ───────────────────────────────────────────────────
-		test("skill-hub:search sorts by installs and matches the oracle shape", async (t) => {
+		test("skill-hub:search sorts by installs and returns normalized records", async (t) => {
 			stub = await startMarketStub(() => ({
 				body: {
 					skills: [
@@ -436,12 +296,9 @@ if (executable) {
 			}));
 			const home = homeFor();
 			const session = await start(t, home, { skillHubBase: stub.base });
-			const { router } = oracleFor(mirror(home), { marketBase: stub.base });
 
 			const actual = await session.invoke("skill-hub:search", [{ query: "pdf", limit: 10 }]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await router.handlers.get("skill-hub:search")({ query: "pdf", limit: 10 });
-			assert.deepEqual(plain(actual.payload.result), plain(expected));
 			assert.deepEqual(
 				actual.payload.result.items.map((item) => item.slug),
 				["owner/high", "owner/low"],
@@ -450,7 +307,7 @@ if (executable) {
 			assert.deepEqual(stub.requests.at(-1).query, { q: "pdf", limit: "10" });
 		});
 
-		test("skill-hub:detail is always null, matching the oracle", async (t) => {
+		test("skill-hub:detail is explicitly unsupported", async (t) => {
 			const home = homeFor();
 			const session = await start(t, home);
 			const actual = await session.invoke("skill-hub:detail", ["owner/skill"]);
@@ -461,13 +318,10 @@ if (executable) {
 		test("skill-hub:install refuses a slug outside the shell-safe allowlist", async (t) => {
 			const home = homeFor();
 			const session = await start(t, home);
-			const { router } = oracleFor(mirror(home));
 
 			for (const slug of ["owner/skill;rm -rf /", "$(whoami)", "a/b`id`"]) {
 				const actual = await session.invoke("skill-hub:install", [slug]);
 				assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-				const expected = await router.handlers.get("skill-hub:install")(slug);
-				assert.deepEqual(plain(actual.payload.result), plain(expected));
 				assert.equal(actual.payload.result.success, false);
 				assert.equal(actual.payload.result.error, copy("store.skillsShInvalidSlug"));
 			}
@@ -525,43 +379,34 @@ if (executable) {
 		});
 
 		// ── skill-store ─────────────────────────────────────────────────
-		test("skill-store:search and import match the oracle", async (t) => {
+		test("skill-store:search and import preserve content", async (t) => {
 			stub = await startMarketStub(() => ({ body: { total: 1, prompts: [PROMPT_ITEM] } }));
 			const home = homeFor();
-			const oracleHome = mirror(home);
 			const session = await start(t, home, { promptStoreBase: `${stub.base}/api` });
-			const { router } = oracleFor(oracleHome, { marketBase: stub.base });
 
 			const search = await session.invoke("skill-store:search", ["code review"]);
 			assert.equal(search.payload.ok, true, JSON.stringify(search.payload));
-			const expectedSearch = await router.handlers.get("skill-store:search")("code review");
-			assert.deepEqual(plain(search.payload.result), plain(expectedSearch));
-
-			const item = plain(expectedSearch).prompts[0];
+			const item = search.payload.result.prompts[0];
+			assert.equal(item.title, "Code Review");
 			const imported = await session.invoke("skill-store:import", [item]);
 			assert.equal(imported.payload.ok, true, JSON.stringify(imported.payload));
-			const expectedImport = await router.handlers.get("skill-store:import")(item);
-			assert.deepEqual(stripHome(imported.payload.result, home), stripHome(expectedImport, oracleHome));
-			assert.equal(
-				readFileSync(join(home, ".pi", "agent", "skills", "code-review", "SKILL.md"), "utf8"),
-				readFileSync(join(oracleHome, ".pi", "agent", "skills", "code-review", "SKILL.md"), "utf8"),
-			);
+			const content = readFileSync(join(home, ".pi", "agent", "skills", "code-review", "SKILL.md"), "utf8");
+			assert.match(content, /^name: code-review$/m);
+			assert.match(content, /Review \$\{file\} against \$\{rules:style\}/);
+
 		});
 
 		// ── yao-prompts (bundled SQLite) ────────────────────────────────
 		test("yao-prompts:list and detail read the shipped schema byte for byte", async (t) => {
 			const home = homeFor();
-			const databasePath = createXuePromptDatabase(join(home, "xueprompts.db"));
+			createXuePromptDatabase(join(home, "xueprompts.db"));
 			const session = await start(t, home, {
 				env: { PIDECK_RESOURCES_PATH: home },
 			});
-			const { router } = oracleFor(mirror(home), { databasePath });
 
 			// Unpaged (legacy) shape.
 			const legacy = await session.invoke("yao-prompts:list");
 			assert.equal(legacy.payload.ok, true, JSON.stringify(legacy.payload));
-			const expectedLegacy = await router.handlers.get("yao-prompts:list")();
-			assert.deepEqual(stripHome(legacy.payload.result, home), stripHome(expectedLegacy, home));
 			assert.equal(legacy.payload.result.prompts.length, 4);
 			assert.deepEqual(
 				legacy.payload.result.categories.map((category) => category.slug),
@@ -571,49 +416,36 @@ if (executable) {
 			// Paged shape with a category slug that must resolve through the subquery.
 			const paged = await session.invoke("yao-prompts:list", [{ category: "marketing-seo", page: 1, pageSize: 1 }]);
 			assert.equal(paged.payload.ok, true, JSON.stringify(paged.payload));
-			const expectedPaged = await router.handlers.get("yao-prompts:list")({
-				category: "marketing-seo",
-				page: 1,
-				pageSize: 1,
-			});
-			assert.deepEqual(stripHome(paged.payload.result, home), stripHome(expectedPaged, home));
 			assert.equal(paged.payload.result.total, 2);
 			assert.equal(paged.payload.result.prompts.length, 1);
 
 			// Search across title and description.
 			const searched = await session.invoke("yao-prompts:list", [{ search: "关键词" }]);
 			assert.equal(searched.payload.ok, true, JSON.stringify(searched.payload));
-			const expectedSearch = await router.handlers.get("yao-prompts:list")({ search: "关键词" });
-			assert.deepEqual(stripHome(searched.payload.result, home), stripHome(expectedSearch, home));
 			assert.equal(searched.payload.result.total, 1);
 
 			// Detail includes the gzip-decoded content and the synthesized frontmatter.
 			for (const slug of ["seo-audit", "story-outline", "legacy-plain"]) {
 				const detail = await session.invoke("yao-prompts:detail", [slug, "any"]);
 				assert.equal(detail.payload.ok, true, `${slug}: ${JSON.stringify(detail.payload)}`);
-				const expected = await router.handlers.get("yao-prompts:detail")(slug, "any");
-				assert.deepEqual(plain(detail.payload.result), plain(expected), slug);
+				const expectedBody = { "seo-audit": "请审计以下网站：${url}\n输出问题清单。", "story-outline": "为 ${theme:成长} 写一个三幕大纲。", "legacy-plain": "未压缩正文" }[slug];
+				assert.equal(detail.payload.result.promptContent, expectedBody);
+				assert.ok(detail.payload.result.fullContent.endsWith(`\n\n${expectedBody}`), JSON.stringify(detail.payload.result));
+				assert.match(detail.payload.result.fullContent, /^source: xueprompt$/m);
 			}
 			const missing = await session.invoke("yao-prompts:detail", ["nope", "any"]);
 			assert.equal(missing.payload.ok, false);
 			assert.equal(missing.payload.error.message, copy("store.yaoDetailFailed"));
 		});
 
-		test("yao-prompts:import writes the oracle's template bytes", async (t) => {
+		test("yao-prompts:import writes the decoded template", async (t) => {
 			const home = homeFor();
-			const databasePath = createXuePromptDatabase(join(home, "xueprompts.db"));
-			const oracleHome = mirror(home);
+			createXuePromptDatabase(join(home, "xueprompts.db"));
 			const session = await start(t, home, { env: { PIDECK_RESOURCES_PATH: home } });
-			const { router } = oracleFor(oracleHome, { databasePath: join(oracleHome, "xueprompts.db") });
 
 			const actual = await session.invoke("yao-prompts:import", ["story-outline", "写作提示词"]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await router.handlers.get("yao-prompts:import")("story-outline", "写作提示词");
-			assert.deepEqual(stripHome(actual.payload.result, home), stripHome(expected, oracleHome));
-			assert.equal(
-				readFileSync(join(home, ".pi", "agent", "prompts", "story-outline.md"), "utf8"),
-				readFileSync(join(oracleHome, ".pi", "agent", "prompts", "story-outline.md"), "utf8"),
-			);
+
 			// The gzipped BLOB content survives the round trip.
 			assert.match(
 				readFileSync(join(home, ".pi", "agent", "prompts", "story-outline.md"), "utf8"),

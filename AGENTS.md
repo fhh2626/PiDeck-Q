@@ -4,7 +4,7 @@
 
 PiDeck-Q 是一个面向本地开发工作的桌面应用，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用于在多个项目目录之间管理和运行编码 Agent。应用提供多项目工作区、会话时间线、历史会话恢复、文件抽屉、Git 面板、模型选择、工具调用展示、中文提示词精选、技能/扩展商店以及打包发布能力，目标是让用户可以在桌面端更稳定地管理多个编码助手会话。
 
-技术栈：C++20/Qt6（桌面宿主 + C++ 业务后端 `PiDeckBackend`） + Node.js（兼容 Sidecar 构建与构建期工具） + React 19 + TypeScript + Vite。
+技术栈：C++20/Qt6（桌面宿主 + C++ 业务后端 `PiDeckBackend`） + Node.js（前端构建、扩展资源打包与自动化测试） + React 19 + TypeScript + Vite。
 
 **核心边界（不可逾越）：**
 
@@ -17,11 +17,9 @@ PiDeck-Q 是一个面向本地开发工作的桌面应用，同时支持原版 P
 本项目只维护项目根目录这一份 `AGENTS.md`；除非用户明确要求，不要再在子目录生成同名规则文件。当前应用版本以 `package.json` 为唯一来源，README 与官网的当前版本展示必须同步。历史上游记录不代表 PiDeck-Q 的当前版本或功能。
 
 - `native/src/` 是 C++20/Qt6 原生桌面宿主层，入口为 `native/src/main.cpp`，负责窗口、QtWebView、原生系统托盘与子进程拉起。Windows 需要 WebView2 Runtime；其它平台的后端不能据此假定。
-- `native/backend/` 是**默认业务后端** `PiDeckBackend.exe`（C++ sidecar）：领域行为按 `native/backend/domain/<域>/` 拆分，通道注册在 `native/backend/domain/*Channels.cpp`，pi 只经 `native/backend/pi/` 的 stdio JSON-RPC 访问。默认 kind 由 `xmake.lua` 的 `PIDECK_DEFAULT_SIDECAR_KIND` 决定；`PIDECK_SIDECAR_KIND=node` 是保留的兼容构建，不是默认产品路径。
-- Qt 宿主与 sidecar（默认 `PiDeckBackend.exe`，兼容 Node Sidecar）通过本地 TCP、token 握手和长度前缀 JSON 通信；渲染层与 sidecar 通过环回 HTTP RPC + 可重放 SSE 通信。这两条桌面通信边界都不直接访问 pi。
-- `src/native-node/` 是 Node **兼容** Sidecar（`PIDECK_SIDECAR_KIND=node`）的入口，入口为 `src/native-node/index.ts`，负责宿主桥接（HostBridge / NativeBackendHost）与渲染服务装配；C++ 后端与它必须保持同一套通道契约（`src/shared/ipc.ts`）。
+- `native/backend/` 是**默认业务后端** `PiDeckBackend.exe`（C++ sidecar）：领域行为按 `native/backend/domain/<域>/` 拆分，通道注册在 `native/backend/domain/*Channels.cpp`，pi 只经 `native/backend/pi/` 的 stdio JSON-RPC 访问。宿主通过 `BackendProcessController` 启动该独立 C++ 进程。
+- Qt 宿主与 sidecar（`PiDeckBackend.exe`）通过本地 TCP、token 握手和长度前缀 JSON 通信；渲染层与 sidecar 通过环回 HTTP RPC + 可重放 SSE 通信。这两条桌面通信边界都不直接访问 pi。
 - `src/shared/` 是跨进程纯契约层：共享类型按 `shared/types/*.ts` 拆分，`shared/types.ts` 仅做兼容导出；IPC 名称只定义在 `shared/ipc.ts`。
-- `src/main/` 是 Node 兼容后端的 TS 领域实现与行为对照基准（`main/<domain>/`），`main/ipc/*Ipc.ts` 只做输入校验和适配，`main/backend/createBackend.ts` 装配兼容业务后端，`main/backend/registerBackendRpc.ts` 装配兼容域 IPC 注册。默认产品的业务变更需同步检查 `native/backend/` 的对应域。
 - `src/renderer/` 是 React 19 前端视图层，通过 `desktopApi`（在原生宿主下通过环回 HTTP RPC / SSE 与 sidecar 桥接，或测试/兼容桩）调用桌面能力。跨组件状态使用 Jotai atom，副作用放 hook，视图放 component；不得直接 import Node/Electron 或新增第二种全局状态方案。
 - `SessionRecord.id` 是跨重启的稳定会话身份（UUID），`agentId` 仅表示当前 pi 子进程。所有 runtime 命令和事件都必须带 `sessionId + agentId + runtimeGeneration`，拒绝旧 runtime 的迟到结果。
 - pi 只通过 stdio JSON-RPC 与 PiDeck 通信；PiDeck 不复刻 pi 的 Agent/工具/会话行为，也不为访问 pi 引入第二条通信通道。
@@ -34,18 +32,6 @@ native/                # C++20 / Qt6 原生桌面宿主 (QtWebView / TCP 宿主�
 ├── backend/           # C++ 业务后端 PiDeckBackend.exe（默认 sidecar：领域/通道/pi stdio RPC）
 └── tests/             # 原生替身与集成测试入口（FakePi/FakeWsl/宿主测试）
 src/
-├── native-node/       # Node 兼容 Sidecar 入口与 HostBridge（PIDECK_SIDECAR_KIND=node）
-├── main/              # Node 兼容后端的 TS 业务实现与行为对照基准
-│   ├── pi/            # pi RPC 进程管理、消息解析
-│   ├── sessions/      # 会话扫描、导入、摘要缓存、SessionRuntimeCoordinator
-│   ├── git/           # GitService（status/diff/commit/cherry-pick 等）
-│   ├── prompts/       # PromptManager（本地模板）+ XuePromptManager（SQLite 中文精选）
-│   ├── skills/        # SkillManager
-│   ├── extensions/    # ExtensionManager
-│   ├── settings/      # SettingsStore + DesktopProxy
-│   ├── terminal/      # 终端会话管理（node-pty）
-│   ├── ipc/           # ★ IPC 域注册（sessionIpc/systemIpc/gitIpc/storeIpc/...）
-│   └── web/           # Web 服务管理
 ├── renderer/
 │   └── src/
 │       ├── atoms/         # Jotai 状态（session-first）
@@ -65,29 +51,29 @@ src/
 
 1. **session-first**：会话是一等公民。新功能优先挂在 session/runtime 链路上，不要退回“围绕 agent tab 堆全局 state”。
 2. **状态管理用 Jotai**：新增跨组件状态放 `atoms/`，按域建 atom；禁止再引入第二种全局状态方案。
-3. **IPC 按域注册**：默认 C++ 后端的 handler 按域放在 `native/backend/domain/*Channels.cpp` 并通过 `ChannelRegistry` 注册，具体业务放在对应域模块；Node 兼容 handler 放在 `src/main/ipc/*Ipc.ts`，`main/backend/registerBackendRpc.ts` 只做装配。通道名以 `shared/ipc.ts` 的集中定义为准，禁止另起一套名称或在调用端散落字面量；两种后端的入参、结果和事件必须保持同一契约。
+3. **IPC 按域注册**：默认 C++ 后端的 handler 按域放在 `native/backend/domain/*Channels.cpp` 并通过 `ChannelRegistry` 注册，具体业务放在对应域模块。通道名以 `shared/ipc.ts` 的集中定义为准，禁止另起一套名称或在调用端散落字面量；前后端的入参、结果和事件必须保持同一契约。
 4. **类型共享走 `shared/types/`**：按域拆文件；业务层、Sidecar、渲染层不得各自重复定义同一结构。
-5. **单向依赖**：跨进程契约统一放在 `shared`；`native-node` 作为 Sidecar 装配入口可以依赖 `main` 的后端与领域服务，`main` 不得反向依赖宿主装配层。`renderer` 通过 `desktopApi`（底层由 `src/shared/desktop/createPiDesktopApi.ts` 暴露）访问主进程，不能直接 import Node/Electron 或 main 代码；main 不得 import renderer 代码；`shared` 不得反向依赖任何运行时层。
+5. **单向依赖**：跨进程契约统一放在 `shared`；C++ 领域服务不得反向依赖 Qt 桌面宿主层。`renderer` 通过 `desktopApi`（底层由 `src/shared/desktop/createPiDesktopApi.ts` 暴露）访问主进程，不能直接 import Node 或 C++ 业务实现；`shared` 不得反向依赖任何运行时层。
 6. **文件体量红线**：
    - 组件/模块单文件目标 ≤ 400 行，超过 600 行必须评估拆分。
-   - `App.tsx`、`src/native-node/index.ts`、`main/backend/createBackend.ts`、`main/backend/registerBackendRpc.ts` 只增装配代码，不增业务逻辑；新业务先建新模块。
+   - `App.tsx`、`native/backend/app/BackendApplication.cpp`、各域通道注册入口 只增装配代码，不增业务逻辑；新业务先建新模块。
    - 为“省一次 import”把逻辑塞回大文件，视为架构倒退，评审应拒绝。
 
 ## 模块内聚与低耦合（硬性）
 
 > 写代码的默认标准：**高内聚、低耦合、可单测、装配层不长胖**。功能能跑不等于结构合格。
 
-1. **一个模块一件事**：状态机/策略/几何/解析放纯函数（`utils/` 或同域 helper），UI 只负责呈现与事件转发，hook 拥有该域状态与命令。禁止把「Tab / 预览 / 分屏 / 拖拽落点」这类完整域逻辑散落在 `App.tsx` 匿名回调里。
-2. **装配层只装配**：`App.tsx`、`src/native-node/index.ts` 与 `main/backend/` 装配入口只做依赖注入与布局拼装。新增交互或状态流转时，优先抽 `hooks/useXxx`、组件宿主或 atoms；若改动让 `App.tsx` 再长出大段 `if/else` 业务，视为未完成拆分。
-3. **按域抽 hook，而不是按屏幕堆 props**：跨多个子树的同一域（例如会话工作区 chrome、composer、timeline）应有明确 owner（如 `useSessionWorkspaceChrome`）。禁止用 30+ 字段的「共享 props 袋」在 App → Pane → Injector → View 之间层层透传；稳定回调与服务用窄接口 / context / 工厂，视图 props 只留身份与 chrome 开关。
-4. **选中 ≠ 呈现**：`selectSession` / 打开会话记录只负责「当前会话是谁」；Tab 预览/常驻、分屏布局、拖拽 MIME 属于 chrome 域。不要把 `preview | permanent | keep` 之类 UI 模式长期渗进通用 selection API；chrome 应在边界组合「选中 + 登记」。
+1. **一个模块一件事**：状态机/策略/几何/解析放纯函数（`utils/` 或同域 helper），UI 只负责呈现与事件转发，hook 拥有该域状态与命令。禁止把「分屏 / 拖拽落点 / 通知聚焦」这类完整域逻辑散落在 `App.tsx` 匿名回调里。
+2. **装配层只装配**：`App.tsx` 与原生业务后端装配入口只做依赖注入与布局拼装。新增交互或状态流转时，优先抽 `hooks/useXxx`、组件宿主或 atoms；若改动让 `App.tsx` 再长出大段 `if/else` 业务，视为未完成拆分。
+3. **按域抽 hook，而不是按屏幕堆 props**：跨多个子树的同一域（例如会话工作区 chrome、composer、timeline）应有明确 owner（如 `useSessionWorkspace`）。禁止用 30+ 字段的「共享 props 袋」在 App → Pane → Injector → View 之间层层透传；稳定回调与服务用窄接口 / context / 工厂，视图 props 只留身份与 chrome 开关。
+4. **选中 ≠ 呈现**：`selectSession` / 打开会话记录只负责「当前会话是谁」；分屏布局和拖拽 MIME 属于工作区域。侧栏是会话导航入口，不维护额外的已打开会话集合。
 5. **多实例必须按 session 订阅**：分屏/多栏挂载时，runtime / messages / sendState 只订本栏 `sessionId` 的 atom family。禁止非聚焦栏订阅 `currentSession*` 全局原子，以免一栏流式更新拖垮另一栏重渲染。
-6. **纯策略可单测**：落点边、预览替换、分屏关闭晋升等规则写成纯函数并配 `tests/*.test.mjs`；闭包回调里的产品策略（「第三个 Tab 替换聚焦栏」）应回到同一 chrome/reducer，禁止只活在 JSX lambda 中。
-7. **异步与拖放用快照/稳定入口**：`drop` / `close` / 定时器不要闭包过期的 `tabs`/`previewId`；用 ref 快照、`useCallback` 稳定命令，或单一 `dispatch`。组件依赖数组禁止写整个 `props` 对象。
-8. **同一 UI 能力一个挂载点**：如会话 Tab 栏、右侧抽屉开关，避免 solo/split 两套父级各挂一份导致「有的栏有、有的栏没有」。共享 chrome 放外层；栏内只保留本会话操作（停/重启等）。
+6. **纯策略可单测**：落点边、分屏退出与删除后的焦点恢复等规则写成纯函数并配 `tests/*.test.mjs`；闭包回调里的产品策略（「分屏中心替换聚焦栏」）应回到同一 chrome/reducer，禁止只活在 JSX lambda 中。
+7. **异步与拖放用快照/稳定入口**：`drop` / `close` / 定时器不要闭包过期的 `splitLayout`/`currentSessionId`；用 ref 快照、`useCallback` 稳定命令，或单一 `dispatch`。组件依赖数组禁止写整个 `props` 对象。
+8. **同一 UI 能力一个挂载点**：如工作区工具栏、右侧抽屉开关，避免 solo/split 两套父级各挂一份导致「有的栏有、有的栏没有」。共享 chrome 放外层；栏内只保留本会话操作（停/重启等）。
 9. **改前自检（合并前过一遍）**：
    - 这个改动是否让 `App.tsx` 更懂业务细节？若是，先抽出。
-   - 新状态是否有单一 owner？还是 App + 侧栏 + Tab 栏各写一份？
+   - 新状态是否有单一 owner？还是 App + 侧栏 + 面板各写一份？
    - 多会话场景下订阅是否按 `sessionId` 隔离？
    - 核心规则能否离开 React 单独测绿？
 
@@ -113,7 +99,7 @@ src/
 
 1. **必过门禁**：任何合并前 `npm run typecheck` 与 `npm test` 必须全绿；不许“先合再修”。
 2. **何时必须写测试**：
-   - 修复 bug：先写复现测试（红），再修到绿。回归测试永久保留。
+   - 修复 bug：先写复现测试（红），再修到绿。有效回归场景永久保留。删除功能时删除其专属测试，跨实现迁移时保留协议和行为覆盖。
    - 新增主进程业务逻辑（sessions/git/settings/extensions/prompts 等）：必须有单测。
    - 新增数据转换/解析/状态机逻辑：必须有单测。
    - 纯 UI 布局调整可不强求，但涉及交互状态流转的 hook 应有测试。
@@ -135,21 +121,20 @@ src/
 
 ## 原生架构开发规范与现行指引
 
-> 本节指导当前 C++20/Qt6 宿主 + C++ 业务后端架构下的开发与 IPC 扩展，同时保留 Node 兼容路径。
+> 本节指导当前 C++20/Qt6 宿主 + C++ 业务后端架构下的开发与 IPC 扩展。
 > - 原生桌面宿主入口：`native/src/`
 > - 默认 C++ 业务后端入口与领域：`native/backend/main.cpp`、`native/backend/app/`、`native/backend/domain/`
-> - Node 兼容进程入口与 TS 领域装配：`src/native-node/`、`src/main/`
 > - 桌面能力统一暴露点：`src/shared/desktop/createPiDesktopApi.ts`（渲染层通过 `desktopApi` 调用）
 
 ### IPC 新增与同步规则（硬性）
 
 新增 IPC 通道必须在以下位置成对同步：
 1. `src/shared/ipc.ts`：定义通道名称常量（采用 `domain:action` 格式）。
-2. `native/backend/domain/*Channels.cpp`：实现并注册默认 C++ handler，负责入参校验与领域错误转换；保留的 Node 兼容 handler（`src/main/ipc/*Ipc.ts`）同步维护同一契约。
+2. `native/backend/domain/*Channels.cpp`：实现并注册默认 C++ handler，负责入参校验与领域错误转换。
 3. `src/shared/desktop/createPiDesktopApi.ts`：在 `desktopApi` 上暴露对应方法并标注强类型。
 4. 涉及跨进程数据结构时同步 `src/shared/types/`，事件订阅接口必须返回 unsubscribe 清理函数。
 
-打包校验入口只有一个：`npm run pack` / `npm run verify:build-artifacts` 都走 `scripts/verify-pack-stage.mjs`。它与 `xmake.lua` 共用 `PIDECK_STAGE_DIR`（默认 `release/win-unpacked`）选择 staging 目录，并用 `PIDECK_SIDECAR_KIND`（默认 `cpp`）选择包定义；未知 kind 必须报错退出，不得回退到另一种包定义。`verify-build-artifacts.mjs` 导出的库函数默认值保持 `node` 以兼容旧调用方，不要在 CLI 层之外改动它。
+打包校验入口只有一个。`npm run pack` / `npm run verify:build-artifacts` 都走 `scripts/verify-pack-stage.mjs`，与 `xmake.lua` 共用 `PIDECK_STAGE_DIR`（默认 `release/win-unpacked`）。只生成和验证原生 C++ 后端包。`scripts/stage-extension-dependencies.mjs` 仅复制 Agent 扩展所需的外部库，不复制 Node 业务代码或解释器。
 
 ## 历史 Electron 经验与参考（仅历史，非当前执行要求）
 
@@ -162,9 +147,9 @@ src/
 1. **启动可诊断**：窗口、页面加载、Sidecar 与 pi 启动关键节点记录结构化脱敏日志；不输出完整命令或环境。
 2. **首帧稳定**：启动窗口大小和用户缩放应在合适的生命周期应用，避免显示后跳变。
 3. **环境与单实例隔离**：开发数据目录与正式数据目录分离；单实例按版本隔离，保持已有混合版本兼容。
-4. **退出清理**：覆盖 pi、默认 ConPTY/PTY（以及 Node 兼容路径的 node-pty）、watcher、timer、连接和单实例资源，保持同模块清理配对。
-5. **部署校验**：默认 C++ 包校验 Qt DLL、插件与 staging 布局，禁止残留 Node 业务运行时；Node 兼容包的原生模块按实际 Node ABI 部署。资源经宿主路径契约解析，禁止裸相对路径假设。`npm run pack` 校验 staging，发版前验证实际目标产物，不把 CI 成功当人工 smoke。
-6. **跨平台边界**：路径与命令使用平台模块，默认后端的 WSL 查询集中在 `native/backend/domain/wsl/`，Node 兼容查询走 `src/main/wsl/wslExe.ts`；平台 workaround 集中管理并说明原因。
+4. **退出清理**：覆盖 pi、ConPTY/PTY、watcher、timer、连接和单实例资源，保持同模块清理配对。
+5. **部署校验**：默认 C++ 包校验 Qt DLL、插件与 staging 布局，禁止残留 Node 业务运行时。资源经宿主路径契约解析，禁止裸相对路径假设。`npm run pack` 校验 staging，发版前验证实际目标产物，不把 CI 成功当人工 smoke。
+6. **跨平台边界**：路径与命令使用平台模块，默认后端的 WSL 查询集中在 `native/backend/domain/wsl/`；平台 workaround 集中管理并说明原因。
 7. **Windows 排查**：路径空格、文件锁、长路径及权限失败需要带上下文的脱敏日志。源码存在跨平台分支不等于已经验证各平台安装包。
 
 ## 稳定性与可扩展性约束

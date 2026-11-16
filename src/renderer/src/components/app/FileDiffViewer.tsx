@@ -58,11 +58,7 @@ export function FileDiffViewer(props: {
 	theme?: "light" | "dark";
 	/** 单个文件超过此大小（MB）时不加载编辑器。默认 5MB。 */
 	maxFileSizeMB?: number;
-	/**
-	 * Tab 已上收到 SessionTabsBar 时为 true：不再渲染内容区内嵌 Tab 栏/重复文件名，
-	 * 只保留右侧动作钮（预览/分屏/关闭）。
-	 */
-	chromeTabsExternal?: boolean;
+
 }) {
 	const maxFileSize = (props.maxFileSizeMB ?? 5) * 1024 * 1024;
 	// 差异模式左侧展示的原始内容：优先使用会话缓存（originalContent），
@@ -254,7 +250,7 @@ export function FileDiffViewer(props: {
 	const displayMode = props.displayMode ?? "drawer";
 	const isWorkbenchPane = displayMode === "split" || displayMode === "maximize";
 	const showInlineTabs =
-		!props.chromeTabsExternal && Boolean(props.tabs && props.tabs.length > 0);
+		Boolean(props.tabs && props.tabs.length > 0);
 	const headerContent = (
 		<>
 			{showInlineTabs && props.tabs && (
@@ -319,10 +315,10 @@ export function FileDiffViewer(props: {
 						<ArrowLeft size={18} />
 					</Button>
 				)}
-				{/* 外置 chrome / 内嵌 Tab：文件名已在 Tab 上，标题槽只留脏标提示 */}
-				{props.chromeTabsExternal || showInlineTabs ? (
+				{/* 内嵌文件标签：文件名已在 Tab 上，标题槽只留脏标提示 */}
+				{showInlineTabs ? (
 					<span className="file-diff-title min-w-0 flex-1 truncate">
-						{dirty && !props.chromeTabsExternal && t("editor.unsavedMarker")}
+						{dirty && t("editor.unsavedMarker")}
 					</span>
 				) : (
 					<span className="file-diff-title" title={props.filePath}>
@@ -383,8 +379,7 @@ export function FileDiffViewer(props: {
 								: <Maximize size={15} />}
 						</Button>
 					)}
-					{/* 关闭按钮：无论 Tab 是否上收总栏都保留，保证 DIFF/文件预览右上角
-					   始终有关闭入口（Tab 栏小叉在窄栏下不易点中）。 */}
+					{/* 关闭按钮始终保留在文件面板右上角，窄面板内也可直接关闭。 */}
 					<Button
 						variant="ghost"
 							size="icon-sm"

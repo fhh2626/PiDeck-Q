@@ -8,7 +8,7 @@ const typescript = require("typescript");
 
 const host = readFileSync("src/renderer/src/components/workspace/WorkspaceDrawerHost.tsx", "utf8");
 const hook = readFileSync("src/renderer/src/hooks/useWorkspacePanels.ts", "utf8");
-const editor = readFileSync("src/renderer/src/components/workspace/EditorSurface.tsx", "utf8");
+
 const external = readFileSync("src/renderer/src/components/workspace/ExternalEditorOverlay.tsx", "utf8");
 
 async function loadPureExports(source, startMarker, endMarker) {
@@ -155,10 +155,10 @@ test("drawer defaults closed on project load; pin restores per project", () => {
   assert.match(hook, /setDrawer\(null\)/);
   assert.match(hook, /saved\?\.pinned/);
   assert.match(hook, /toggleDrawerPinned/);
-  const tabs = readFileSync("src/renderer/src/components/session/SessionTabsBar.tsx", "utf8");
-  assert.match(tabs, /header-drawer-toggle/);
-  assert.match(tabs, /PanelRight/);
-  assert.doesNotMatch(tabs, /onToggleDrawer && !props\.drawerOpen/);
+  const toolbar = readFileSync("src/renderer/src/components/workspace/WorkspaceToolbar.tsx", "utf8");
+  assert.match(toolbar, /header-drawer-toggle/);
+  assert.match(toolbar, /PanelRight/);
+  assert.doesNotMatch(toolbar, /onToggleDrawer && !props\.drawerOpen/);
   const rail = readFileSync("src/renderer/src/components/workspace/WorkspaceDrawerRail.tsx", "utf8");
   assert.doesNotMatch(rail, /drawer-rail-close/);
   const surface = readFileSync("src/renderer/src/components/session/WorkspaceSurface.tsx", "utf8");

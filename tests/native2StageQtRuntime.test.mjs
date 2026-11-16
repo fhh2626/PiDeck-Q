@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, test } from "node:test";
 
 /**
- * `PIDECK_SIDECAR_KIND=cpp` package smoke (read-only inspection).
+ * native package smoke (read-only inspection).
  *
  * The host executable does not import QtSql; only the sidecar does. A stage that ran
  * windeployqt on the host alone starts the window and then fails to load the backend with

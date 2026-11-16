@@ -12,7 +12,7 @@ import {
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
 import { bootServedLegacyPage } from "./helpers/native2LegacyWebClient.mjs";
-import { oracleLegacyPage, oracleWebClientCopy } from "./helpers/native2LegacyWebOracle.mjs";
+import { expectedFallbackPage, expectedWebClientCopy } from "./helpers/lanFallbackFixture.mjs";
 
 /**
  * Embedded legacy web client parity (`WebServiceManager.renderPage()`).
@@ -111,8 +111,8 @@ const textUpdate = (assistantMessageEvent) => ({
 	assistantMessageEvent,
 });
 
-const oracle = oracleLegacyPage();
-const oracleCopy = oracleWebClientCopy();
+const oracle = expectedFallbackPage();
+const oracleCopy = expectedWebClientCopy();
 
 /** Split a served page into `{ dictionaries, raw }` and assert the oracle framing. */
 function splitServedPage(body) {

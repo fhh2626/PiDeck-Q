@@ -12,8 +12,8 @@ import {
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
 // The oracle's own CSV parser and header, not a re-implementation: a C++ sampling run must be
-// readable by scripts/analyze-memory.mjs and by tests/memoryProfileCsv.test.mjs unchanged.
-import { MEMORY_PROFILE_HEADER, parseMemoryCsv } from "../src/main/memory/memoryProfileCsv.ts";
+// readable by the native memory-profile analyzer.
+import { MEMORY_PROFILE_HEADER, parseMemoryCsv } from "../scripts/lib/memoryProfileCsv.ts";
 
 /**
  * Foundation regression suite: the defects the independent foundation review found in the

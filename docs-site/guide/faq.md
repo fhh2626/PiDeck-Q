@@ -24,7 +24,7 @@ PiDeck 原生支持 **原版 Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**（Pi
 
 ## 从源码运行需要什么环境？
 
-- Node.js 24.19.0、npm 11+（构建开发与兼容 Sidecar 需要；打包产物本身不运行 Node）
+- Node.js 24.19.0、npm 11+（前端构建、扩展打包与自动化测试需要；桌面业务后端使用 C++）
 - xmake、C++20/MSVC 工具链与 Qt 6.11.2（见 [开发与打包](/guide/development)）
 - 系统 `PATH` 中可访问 `pi` 命令
 - 已完成 pi 的 Provider、登录或 API Key 配置

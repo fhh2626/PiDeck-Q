@@ -83,6 +83,9 @@ async function mount() {
 					gitDiffDisplayMode={editor.gitDiffDisplayMode} onToggleGitDiffMode={editor.toggleGitDiffDisplayMode}
 					onCloseGitDiff={editor.closeGitDiff} activeTab={editor.activeTab} editorMode={editor.editorMode}
 					onToggleEditorMode={editor.toggleEditorMode} onCloseEditor={editor.closeEditor}
+					editorTabs={editor.editorTabs.map((tab) => ({ ...tab, preview: tab.id === editor.previewEditorTabId }))}
+					onSelectEditorTab={editor.selectEditorTab} onCloseEditorTab={editor.closeEditorTab}
+					onPromoteEditorPreview={editor.promotePreviewEditorTab}
 					readContent={editor.readEditorFileContent} readOriginalContent={editor.readEditorOriginalContent}
 					saveContent={editor.saveEditorFileContent} onOpenFile={editor.viewFilePath} />
 			</div>

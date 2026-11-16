@@ -929,7 +929,7 @@ export function ModelsTab(props: {
 															currentProvider.models,
 														);
 														if (baseModels.length === 0) return;
-														// 并行查规格表（本地 sql.js 内存索引）；查不到的模型留空字段，不阻断保存
+														// 并行查规格表（原生后端本地规格索引）；查不到的模型留空字段，不阻断保存
 														const results = await Promise.all(
 															baseModels.map((m) =>
 																desktopApi.projects.getModelSpec(name, m.id).catch(() => null),
@@ -1275,5 +1275,3 @@ export function ModelsTab(props: {
 		</div>
 	);
 }
-
-

@@ -6,7 +6,7 @@
 #include "NativeFileShell.h"
 #include "NativePaths.h"
 #include "NativeTheme.h"
-#include "NodeProcessController.h"
+#include "BackendProcessController.h"
 #include "ProtocolRegistrar.h"
 #include "TrayController.h"
 #include "WindowsToastNotifier.h"
@@ -223,13 +223,6 @@ int main(int argc, char **argv)
 #endif
     app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", nativeBuildVersion));
     const NativePaths paths = NativePaths::fromEnvironment();
-    // An unsupported sidecar kind is a configuration error, not permission to start the
-    // other backend: refuse before a window or any child process exists.
-    if (!paths.sidecarKindError.isEmpty()) {
-        const QByteArray message = paths.sidecarKindError.toUtf8() + '\n';
-        std::fwrite(message.constData(), 1, static_cast<size_t>(message.size()), stderr);
-        return 1;
-    }
     NativeApplication::configure(paths);
     const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
         && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
@@ -255,7 +248,7 @@ int main(int argc, char **argv)
 
     HostRpcServer host;
     if (!host.start()) return 1;
-    NodeProcessController node(paths, &host);
+    BackendProcessController backendProcess(paths, &host);
     MainWindow *mainWindow = nullptr;
     TrayController *tray = nullptr;
     bool quitting = false;
@@ -270,14 +263,14 @@ int main(int argc, char **argv)
         if (mainWindow) mainWindow->setQuitting(true);
         // Keep the Qt event loop alive until the sidecar has acknowledged that
         // Backend.dispose and the version-lock cleanup are complete.
-        node.stopAsync([&] { app.quit(); });
+        backendProcess.stopAsync([&] { app.quit(); });
     };
 
-    node.setNodeErrorHandler([](const QString &) {
+    backendProcess.setErrorHandler([](const QString &) {
         // Runtime process failures are recovered from QProcess::finished below.
-        // Failed starts are handled synchronously by NodeProcessController::start().
+        // Failed starts are handled synchronously by BackendProcessController::start().
     });
-    node.setNodeExitHandler([&](int, QProcess::ExitStatus) {
+    backendProcess.setExitHandler([&](int, QProcess::ExitStatus) {
         if (quitting) return;
         if (sidecarRestartAttempted) {
             // A sidecar that cannot reach renderer.ready after one restart must
@@ -286,7 +279,7 @@ int main(int argc, char **argv)
             return;
         }
         sidecarRestartAttempted = true;
-        if (node.start()) return;
+        if (backendProcess.start()) return;
 
         // start() already performed its emergency process cleanup, so there is
         // no asynchronous sidecar work left to gate application shutdown on.
@@ -518,7 +511,7 @@ int main(int argc, char **argv)
             return;
         }
         if (name == QStringLiteral("application.readyToExit")) {
-            node.markReadyToExit();
+            backendProcess.markReadyToExit();
         }
         if (!mainWindow) return;
         if (name == QStringLiteral("window.minimize")) mainWindow->minimizeWindow();
@@ -531,7 +524,7 @@ int main(int argc, char **argv)
     // as a repair/fallback for portable copies and upgrades.
     if (paths.packaged) ProtocolRegistrar::registerProtocol(QCoreApplication::applicationFilePath());
 
-    if (!node.start()) return 1;
+    if (!backendProcess.start()) return 1;
     tray = new TrayController(
         QIcon(iconPath),
         [&mainWindow] { if (mainWindow) mainWindow->showWindow(); },
@@ -550,7 +543,7 @@ int main(int argc, char **argv)
         // only covers an OS-level quit event that bypassed those paths.
         quitting = true;
         if (mainWindow) mainWindow->setQuitting(true);
-        node.stop();
+        backendProcess.stop();
     });
 
     const int exitCode = app.exec();

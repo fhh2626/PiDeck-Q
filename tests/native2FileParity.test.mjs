@@ -16,20 +16,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { httpRequest, resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 
 const executable = resolveBackendExecutable();
-
-// The Node filesystem domain is the behavioural oracle: the C++ backend must return
-// the same tree, the same bytes and the same error text for the same inputs.
-const { FileSystemService } = loadTsCommonJs(resolve("src/main/fs/FileSystemService.ts"));
-const { registerFilesIpc } = loadTsCommonJs(resolve("src/main/ipc/filesIpc.ts"));
-const { assertAuthorizedFilePath, UnauthorizedFilePathError } = loadTsCommonJs(
-	resolve("src/main/fs/authorizedPaths.ts"),
-);
 
 const PROJECT_ID = "files";
 // Isolated projects for the cases that mutate a tree a shared fixture must keep clean.
@@ -67,26 +58,6 @@ function normalizePaths(value) {
 	return value;
 }
 
-async function expectReject(promise) {
-	try {
-		await promise;
-	} catch (error) {
-		return error instanceof Error ? error.message : String(error);
-	}
-	throw new Error("expected the oracle to reject");
-}
-
-/** Run the Node move channel against its own tree as the permission-behavior oracle. */
-function oracleMoveHandler(root) {
-	const handlers = new Map();
-	registerFilesIpc({ handle: (channel, handler) => handlers.set(channel, handler) }, {
-		fileSystemService: {}, projectStore: {}, settingsStore: { get: () => ({ wslEnabled: false }) },
-		appLogger: { info() {}, error() {} }, dialogs: {}, platformShell: {},
-		getAuthorizedRoots: () => [root], mainCopy: (key) => key,
-	});
-	return handlers.get("files:move");
-}
-
 /** Restore permissions even when a move fails and leaves both source and copied tree. */
 function restoreReadonlyTree(root) {
 	for (const directory of [root, join(root, "ro-dir"), join(root, "target"), join(root, "target", "ro-dir")]) {
@@ -103,16 +74,11 @@ if (executable) {
 		let root;
 		let projectPath;
 		let session;
-		let oracle;
-		const trashCalls = [];
 
 		before(async () => {
 			root = mkdtempSync(join(tmpdir(), "pideck-native2-files-"));
 			projectPath = join(root, "project");
 			writeTree(projectPath);
-			oracle = new FileSystemService(async (targetPath) => {
-				trashCalls.push(targetPath);
-			});
 		});
 
 		after(() => {
@@ -129,13 +95,19 @@ if (executable) {
 			return session;
 		};
 
-		test("files:list matches the Node tree for the same project", async (t) => {
+		test("files:list returns directories first with nested file metadata", async (t) => {
 			const { invoke } = await start(t);
-			const expected = normalize(await oracle.listTree(projectPath));
+
 			const actual = await invoke("files:list", [PROJECT_ID]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			assert.deepEqual(normalize(actual.payload.result), expected);
-			assert.ok(actual.payload.result.length > 0);
+			assert.deepEqual(actual.payload.result.map(({ name, type }) => ({ name, type })), [
+				{ name: "empty", type: "directory" }, { name: "src", type: "directory" },
+				{ name: ".hidden", type: "file" }, { name: "binary.bin", type: "file" }, { name: "readme.md", type: "file" },
+			]);
+			const nested = actual.payload.result.find((entry) => entry.name === "src").children;
+			assert.deepEqual(nested.map((entry) => entry.relativePath), ["src/index.ts"]);
+			assert.equal(nested[0].size, Buffer.byteLength("export const value = 1;\n"));
+			assert.equal(normalize(nested[0].path), normalize(join(projectPath, "src", "index.ts")));
 		});
 
 		test("files:list keeps the filesystem's fractional millisecond timestamps", async (t) => {
@@ -162,7 +134,7 @@ if (executable) {
 			assert.equal(actual.payload.error.message, "Project not found: missing");
 		});
 
-		test("files:read-content matches the Node read, its ENOENT fallback and the size guard", async (t) => {
+		test("files:read-content returns exact contents, its ENOENT fallback and the size guard", async (t) => {
 			const { invoke } = await start(t);
 			const target = join(projectPath, "readme.md");
 			const actual = await invoke("files:read-content", [target]);
@@ -179,7 +151,7 @@ if (executable) {
 			assert.equal(tooLarge.payload.error.message, `FILE_TOO_LARGE:${size}:4`);
 		});
 
-		test("files:read-base64 matches the Node encoder byte for byte", async (t) => {
+		test("files:read-base64 returns byte-exact base64", async (t) => {
 			const { invoke } = await start(t);
 			const target = join(projectPath, "binary.bin");
 			const actual = await invoke("files:read-base64", [target]);
@@ -191,7 +163,7 @@ if (executable) {
 			assert.match(capped.payload.error.message, /FILE_TOO_LARGE:4:2/);
 		});
 
-		test("files:write-content writes the exact bytes the Node writer would", async (t) => {
+		test("files:write-content writes exact UTF-8 bytes", async (t) => {
 			const { invoke } = await start(t);
 			const target = join(projectPath, "written.txt");
 			const actual = await invoke("files:write-content", [target, "line one\nline two\n"]);
@@ -394,10 +366,6 @@ if (executable) {
 			const { invoke } = await start(t);
 			const outside = join(root, "outside.txt");
 			writeFileSync(outside, "outside\n");
-			const oracleMessage = await expectReject(
-				assertAuthorizedFilePath(outside, [projectPath], "read", "read"),
-			);
-			assert.ok(oracleMessage.includes("not authorized"));
 
 			for (const [channel, args] of [
 				["files:read-content", [outside]],
@@ -425,10 +393,6 @@ if (executable) {
 				t.skip("symlink creation requires Developer Mode or elevation on this machine");
 				return;
 			}
-			const oracleMessage = await expectReject(
-				assertAuthorizedFilePath(link, [projectPath], "read", "read"),
-			);
-			assert.ok(oracleMessage.includes("not authorized"));
 
 			const { invoke } = await start(t);
 			const read = await invoke("files:read-content", [link]);
@@ -451,10 +415,6 @@ if (executable) {
 				return;
 			}
 			const target = join(junction, "escape.txt");
-			const oracleMessage = await expectReject(
-				assertAuthorizedFilePath(target, [projectPath], "read", "read"),
-			);
-			assert.ok(oracleMessage.includes("not authorized"));
 
 			const { invoke } = await start(t);
 			const read = await invoke("files:read-content", [target]);
@@ -516,7 +476,7 @@ if (executable) {
 			);
 		});
 
-		test("files:list skips a directory junction exactly like the Node dirent tree", async (t) => {
+		test("files:list skips a directory junction without following links", async (t) => {
 			// The oracle builds its tree from `readdir(withFileTypes)`, where a Windows junction
 			// is neither a directory nor a file (Node reports it as a link), so it never appears
 			// and its referent is never walked. Qt reports a junction as a plain directory
@@ -541,10 +501,10 @@ if (executable) {
 				projects: [{ id: LIST_LINK_PROJECT_ID, path: listProject }],
 				settings: { language: "en-US" },
 			});
-			const expected = normalize(await oracle.listTree(listProject));
+
 			const actual = await session.invoke("files:list", [LIST_LINK_PROJECT_ID]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			assert.deepEqual(normalize(actual.payload.result), expected);
+			assert.deepEqual(actual.payload.result.map((entry) => entry.name), ["src", "readme.md"]);
 			assert.equal(
 				JSON.stringify(actual.payload.result).includes("escape.txt"),
 				false,
@@ -626,48 +586,23 @@ if (executable) {
 			assert.equal(readFileSync(join(targetDir, "ro-dir", "inner.txt"), "utf8"), "inner\n");
 		});
 
-		test("files:move matches the Node channel for POSIX read-only entries", {
-			skip: process.platform === "win32" && "POSIX directory permissions",
+		test("files:move preserves a POSIX source when removal is denied", {
+			skip: process.platform === "win32" ? "POSIX directory permissions"
+				: process.getuid?.() === 0 ? "root bypasses POSIX permission checks" : false,
 		}, async (t) => {
-			const createReadonlyTree = (name) => {
-				const directory = join(root, name);
-				mkdirSync(join(directory, "target"), { recursive: true });
-				mkdirSync(join(directory, "ro-dir"));
-				writeFileSync(join(directory, "ro.txt"), "x\n");
-				writeFileSync(join(directory, "ro-dir", "inner.txt"), "inner\n");
-				chmodSync(join(directory, "ro.txt"), 0o444);
-				chmodSync(join(directory, "ro-dir", "inner.txt"), 0o444);
-				chmodSync(join(directory, "ro-dir"), 0o555);
-				t.after(() => restoreReadonlyTree(directory));
-				return directory;
-			};
-			const nativeRoot = createReadonlyTree("readonly-posix-native");
-			const oracleRoot = createReadonlyTree("readonly-posix-oracle");
-			const move = oracleMoveHandler(oracleRoot);
+			const nativeRoot = join(root, "readonly-posix");
+			mkdirSync(join(nativeRoot, "target"), { recursive: true });
+			mkdirSync(join(nativeRoot, "ro-dir"));
+			writeFileSync(join(nativeRoot, "ro-dir", "inner.txt"), "inner\n");
+			chmodSync(join(nativeRoot, "ro-dir"), 0o555);
+			t.after(() => restoreReadonlyTree(nativeRoot));
 			const session = await startBackendSession(t, {
-				projects: [{ id: READONLY_PROJECT_ID, path: nativeRoot }],
-				settings: { language: "en-US" },
+				projects: [{ id: READONLY_PROJECT_ID, path: nativeRoot }], settings: { language: "en-US" },
 			});
-			for (const name of ["ro.txt", "ro-dir"]) {
-				let oracleError;
-				try {
-					await move([join(oracleRoot, name)], join(oracleRoot, "target"));
-				} catch (error) {
-					assert.ok(["EACCES", "EPERM"].includes(error.code), error.message);
-					oracleError = error;
-				}
-				const actual = await session.invoke("files:move", [[join(nativeRoot, name)], join(nativeRoot, "target")]);
-				assert.equal(actual.payload.ok, !oracleError, JSON.stringify(actual.payload));
-				for (const relative of [name, `target/${name}`]) {
-					const expectedPath = join(oracleRoot, relative);
-					const actualPath = join(nativeRoot, relative);
-					assert.equal(existsSync(actualPath), existsSync(expectedPath), relative);
-					if (existsSync(expectedPath)) {
-						const suffix = name === "ro-dir" ? "inner.txt" : "";
-						assert.equal(readFileSync(join(actualPath, suffix), "utf8"), readFileSync(join(expectedPath, suffix), "utf8"));
-					}
-				}
-			}
+			const actual = await session.invoke("files:move", [[join(nativeRoot, "ro-dir")], join(nativeRoot, "target")]);
+			assert.equal(actual.payload.ok, false, JSON.stringify(actual.payload));
+			assert.equal(readFileSync(join(nativeRoot, "ro-dir", "inner.txt"), "utf8"), "inner\n");
+			assert.equal(readFileSync(join(nativeRoot, "target", "ro-dir", "inner.txt"), "utf8"), "inner\n");
 		});
 
 		test("files:copy reports an inner-entry failure instead of retrying a partial directory", async (t) => {

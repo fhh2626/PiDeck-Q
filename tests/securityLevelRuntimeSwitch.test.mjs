@@ -37,12 +37,3 @@ test("契约: SecurityLevelMenu 自身仍以 props.disabled 为准（不做运�
   assert.match(menu, /disabled=\{props\.disabled \|\| saving\}/);
   assert.match(menu, /disabled=\{!enabled \|\| saving\}/);
 });
-
-test("契约: 主进程写快照链路无 busy 校验（切换即时生效）", () => {
-  const ipc = readFileSync("src/main/ipc/securityIpc.ts", "utf8");
-  // handler 只做输入校验，不检查会话运行状态
-  assert.doesNotMatch(ipc, /isBusy|isStreaming|runtime/);
-  const store = readFileSync("src/main/security/SecurityStore.ts", "utf8");
-  assert.match(store, /writeSnapshot/);
-  assert.match(store, /security-policy\.json/);
-});

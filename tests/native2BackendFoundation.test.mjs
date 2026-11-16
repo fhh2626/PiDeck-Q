@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
 	backendFixtureSettings,
+	backendEnvFor,
+	stopBackendProcess,
 	FakeHost,
 	SseClient,
 	httpRequest,
@@ -54,15 +56,8 @@ function createFixture() {
 }
 
 function backendEnv(fixture) {
-	return {
-		PIDECK_USER_DATA: fixture.userData,
-		PIDECK_RENDERER_ROOT: fixture.renderer,
-		PIDECK_BACKGROUND_DIR: fixture.backgrounds,
-		PIDECK_SESSIONS_DIR: fixture.sessions,
-		PIDECK_PROMPTS_DIR: fixture.prompts,
-		PIDECK_SKILLS_DIR: fixture.skills,
-		PIDECK_VERSION: "0.4.3",
-	};
+	// Foundation tests must not read or migrate the runner's real Pi profile.
+	return backendEnvFor(fixture);
 }
 
 function defaultHandlers() {
@@ -86,8 +81,7 @@ async function startBackend(t, handlers = defaultHandlers()) {
 	const hostPort = await host.start();
 	const process_ = spawnBackend({ executable, hostPort, token: TOKEN, env: backendEnv(fixture) });
 	t.after(async () => {
-		if (process_.child.exitCode === null) process_.child.kill();
-		await host.stop();
+		await stopBackendProcess(process_, host);
 		rmSync(fixture.root, { recursive: true, force: true });
 	});
 	const ready = await waitForRendererReady(host);
@@ -367,8 +361,7 @@ if (executable) {
 		const hostPort = await host.start();
 		const process_ = spawnBackend({ executable, hostPort, token: TOKEN, env: backendEnv(fixture) });
 		t.after(async () => {
-			if (process_.child.exitCode === null) process_.child.kill();
-			await host.stop();
+			await stopBackendProcess(process_, host);
 			rmSync(fixture.root, { recursive: true, force: true });
 		});
 		await waitForRendererReady(host);
@@ -394,8 +387,7 @@ if (executable) {
 		const hostPort = await host.start();
 		const process_ = spawnBackend({ executable, hostPort, token: TOKEN, env: backendEnv(fixture) });
 		t.after(async () => {
-			if (process_.child.exitCode === null) process_.child.kill();
-			await host.stop();
+			await stopBackendProcess(process_, host);
 			rmSync(fixture.root, { recursive: true, force: true });
 		});
 		await waitForRendererReady(host);

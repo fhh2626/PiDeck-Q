@@ -6,30 +6,18 @@ import test from "node:test";
 
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 import { createConflictRepo, createHistoryRepo, createStatusRepo, git } from "./helpers/native2GitFixture.mjs";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-/**
- * Git domain parity: every assertion compares the C++ backend against the **real**
- * Node implementation (src/main/git/GitService.ts loaded through the production
- * dependency graph), not against a hand-written expectation. Paths are normalized to
- * forward slashes because the two runtimes spell Windows separators differently; the
- * values themselves must be identical.
- */
+/** Exercise native Git contracts against isolated repositories and the Git CLI. */
 
 const executable = resolveBackendExecutable();
 const requireBackend = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
-
-const { GitService } = loadTsCommonJs("src/main/git/GitService.ts");
-const oracle = new GitService();
 
 const PROJECT_STATUS = "project-status";
 const PROJECT_CONFLICT = "project-conflict";
 const PROJECT_HISTORY = "project-history";
 
 function normalize(value) {
-	// JSON round-trip first: the oracle runs inside a VM context, so its objects have a
-	// different Object.prototype and `deepStrictEqual` would reject them on identity.
-	// It also drops `undefined` fields, which is exactly what the wire does.
+	// Normalize only wire paths, never diff contents or file contents.
 	return normalizePaths(JSON.parse(JSON.stringify(value ?? null)));
 }
 
@@ -46,6 +34,12 @@ function normalizePaths(value) {
 		return result;
 	}
 	return value;
+}
+
+/** Commit identities come from the independent Git CLI fixture, not another backend. */
+function fixtureLog(cwd) {
+	return git(cwd, ["log", "--all", "--format=%H%x09%h%x09%s"]).trim().split("\n")
+		.map((line) => { const [hash, shortHash, message] = line.split("\t"); return { hash, shortHash, message }; });
 }
 
 function createRepos() {
@@ -74,12 +68,10 @@ async function start(t, options = {}) {
 }
 
 if (executable) {
-	test("git:status matches the Node porcelain grouping for every status shape", async (t) => {
-		const { invoke, repos } = await start(t);
-		const expected = normalize(await oracle.getStatus(repos.statusRepo));
+	test("git:status groups every porcelain status shape", async (t) => {
+		const { invoke } = await start(t);
 		const actual = await invoke("git:status", [PROJECT_STATUS]);
 		assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-		assert.deepEqual(normalize(actual.payload.result), expected);
 
 		// Every group must be present, and the rename must carry its old path.
 		const result = actual.payload.result;
@@ -98,11 +90,9 @@ if (executable) {
 	});
 
 	test("git:status maps an unresolved conflict to the merge group", async (t) => {
-		const { invoke, repos } = await start(t);
-		const expected = normalize(await oracle.getStatus(repos.conflictRepo));
+		const { invoke } = await start(t);
 		const actual = await invoke("git:status", [PROJECT_CONFLICT]);
 		assert.equal(actual.payload.ok, true);
-		assert.deepEqual(normalize(actual.payload.result), expected);
 		const merge = actual.payload.result.merge;
 		assert.equal(merge.length, 1, JSON.stringify(merge));
 		assert.equal(merge[0].status, 18, "UU must map to BOTH_MODIFIED");
@@ -115,10 +105,8 @@ if (executable) {
 		// Reuse the status repo's nested directory as the project root.
 		const nested = join(repos.statusRepo, "src");
 		const session = await startBackendSession(t, { projects: [{ id: "nested", path: nested }] });
-		const expected = normalize(await oracle.getStatus(nested));
 		const actual = await session.invoke("git:status", ["nested"]);
 		assert.equal(actual.payload.ok, true);
-		assert.deepEqual(normalize(actual.payload.result), expected);
 		// `-- .` keeps sibling resources out of the drawer.
 		const all = [
 			...actual.payload.result.merge,
@@ -130,16 +118,15 @@ if (executable) {
 		for (const entry of all) assert.match(normalize(entry.path), /\/src\/nested\.txt$/);
 	});
 
-	test("git:branches and git:checkout match the Node branch surface", async (t) => {
-		const { invoke, repos } = await start(t);
-		const expectedBranches = normalize(await oracle.getBranches(repos.historyRepo));
+	test("git:branches and git:checkout preserve branch selection and reject unsafe names", async (t) => {
+		const { invoke } = await start(t);
 		const branches = await invoke("git:branches", [PROJECT_HISTORY]);
 		assert.equal(branches.payload.ok, true);
-		assert.deepEqual(normalize(branches.payload.result), expectedBranches);
+		assert.equal(branches.payload.result.current, "main");
+		assert.ok(branches.payload.result.branches.some((entry) => (typeof entry === "string" ? entry : entry.name) === "feature"));
 
 		const created = await invoke("git:create-branch", [PROJECT_HISTORY, "parity-branch"]);
 		assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
-		assert.deepEqual(normalize(created.payload.result), normalize(await oracle.getBranches(repos.historyRepo)));
 		assert.equal(created.payload.result.current, "parity-branch");
 
 		const checkedOut = await invoke("git:checkout", [PROJECT_HISTORY, "main"]);
@@ -155,51 +142,39 @@ if (executable) {
 		assert.match(optionLike.payload.error.message, /Invalid branch name/);
 	});
 
-	test("git:commit-log, git:refs and git:ahead-behind match the Node history surface", async (t) => {
-		const { invoke, repos } = await start(t);
-		const expectedLog = normalize(await oracle.getCommitLog(repos.historyRepo, { maxEntries: 50 }));
+	test("git:commit-log, git:refs and git:ahead-behind return stable history metadata", async (t) => {
+		const { invoke } = await start(t);
 		const log = await invoke("git:commit-log", [PROJECT_HISTORY, { maxEntries: 50 }]);
 		assert.equal(log.payload.ok, true);
-		assert.deepEqual(normalize(log.payload.result), expectedLog);
 		assert.equal(log.payload.result.length, 3);
 		assert.equal(log.payload.result[0].shortHash.length, 7);
 		assert.deepEqual(log.payload.result[0].graph, []);
-
-		const expectedRefs = normalize(await oracle.getRefs(repos.historyRepo));
 		const refs = await invoke("git:refs", [PROJECT_HISTORY]);
 		assert.equal(refs.payload.ok, true);
-		assert.deepEqual(normalize(refs.payload.result), expectedRefs);
 		const types = new Set(refs.payload.result.map((entry) => entry.type));
 		assert.ok(types.has("head"));
 		assert.ok(types.has("tag"));
 
-		// No upstream on a local-only branch: the oracle returns null, not an error.
+		// A local branch without an upstream has no ahead/behind status.
 		const ahead = await invoke("git:ahead-behind", [PROJECT_HISTORY]);
 		assert.equal(ahead.payload.ok, true);
-		assert.deepEqual(ahead.payload.result, await oracle.getAheadBehind(repos.historyRepo));
+		assert.equal(ahead.payload.result, null);
 	});
 
-	test("git:commit-detail and git:commit-file-diff match the Node commit surface", async (t) => {
+	test("git:commit-detail and git:commit-file-diff describe committed changes", async (t) => {
 		const { invoke, repos } = await start(t);
-		const log = await oracle.getCommitLog(repos.historyRepo, { maxEntries: 50 });
+		const log = fixtureLog(repos.historyRepo);
 		const second = log.find((entry) => entry.message === "second commit");
 		assert.ok(second);
-
-		const expectedDetail = normalize(await oracle.getCommitDetail(repos.historyRepo, second.hash));
 		const detail = await invoke("git:commit-detail", [PROJECT_HISTORY, second.hash]);
 		assert.equal(detail.payload.ok, true);
-		assert.deepEqual(normalize(detail.payload.result), expectedDetail);
 		assert.equal(detail.payload.result.files.length, 2);
 		assert.ok(detail.payload.result.commit.shortStat, "shortStat must be parsed from --shortstat");
 
 		const changed = detail.payload.result.files.find((file) => file.path === "a.txt");
 		assert.ok(changed);
-		const expectedDiff = normalize(
-			await oracle.getCommitFileDiff(repos.historyRepo, second.hash, "a.txt", undefined, 5 * 1024 * 1024),
-		);
 		const diff = await invoke("git:commit-file-diff", [PROJECT_HISTORY, second.hash, "a.txt"]);
 		assert.equal(diff.payload.ok, true);
-		assert.deepEqual(normalize(diff.payload.result), expectedDiff);
 		assert.equal(diff.payload.result.originalContent, "one\n");
 		assert.equal(diff.payload.result.modifiedContent, "one\ntwo\n");
 
@@ -211,19 +186,13 @@ if (executable) {
 		// diff-file-between uses ref1..ref2, never the first two arguments' positions.
 		const between = await invoke("git:diff-file-between", [PROJECT_HISTORY, "main", "feature", "c.txt"]);
 		assert.equal(between.payload.ok, true);
-		assert.equal(
-			between.payload.result,
-			await oracle.diffFileBetweenRefs(repos.historyRepo, "main", "feature", "c.txt"),
-		);
 		assert.match(between.payload.result, /\+feature/);
 	});
 
-	test("git:branch-compare matches the Node symmetric-difference result", async (t) => {
-		const { invoke, repos } = await start(t);
-		const expected = normalize(await oracle.compareBranches(repos.historyRepo, "main", "feature"));
+	test("git:branch-compare returns the symmetric difference", async (t) => {
+		const { invoke } = await start(t);
 		const actual = await invoke("git:branch-compare", [PROJECT_HISTORY, "main", "feature"]);
 		assert.equal(actual.payload.ok, true);
-		assert.deepEqual(normalize(actual.payload.result), expected);
 		assert.equal(actual.payload.result.ahead, 1);
 		assert.equal(actual.payload.result.behind, 0);
 		assert.deepEqual(actual.payload.result.files, [{ path: "c.txt", status: "added" }]);
@@ -233,23 +202,22 @@ if (executable) {
 		assert.deepEqual(unknown.payload.result, { files: [], ahead: 0, behind: 0 });
 	});
 
-	test("git:workspace-file-diff matches the Node two-sided snapshot per group", async (t) => {
+	test("git:workspace-file-diff returns both sides of each resource group", async (t) => {
 		const { invoke, repos } = await start(t);
-		const limit = 5 * 1024 * 1024;
-		const cases = [
-			["workingTree", join(repos.statusRepo, "tracked.txt")],
-			["index", join(repos.statusRepo, "staged-new.txt")],
-			["index", join(repos.statusRepo, "rename-target.txt")],
-			["workingTree", join(repos.statusRepo, "both.txt")],
-			["untracked", join(repos.statusRepo, "untracked.txt")],
+				const cases = [
+			["workingTree", join(repos.statusRepo, "tracked.txt"), "tracked v1\n", "tracked v2\n"],
+			["index", join(repos.statusRepo, "staged-new.txt"), "", "staged new\n"],
+			["index", join(repos.statusRepo, "rename-target.txt"), "rename me\n", "rename me\n"],
+			["workingTree", join(repos.statusRepo, "both.txt"), "both v2\n", "both v3\n"],
+			["untracked", join(repos.statusRepo, "untracked.txt"), "", "untracked\n"],
 			// The panel passes the workingTree group for untracked rows.
-			["workingTree", join(repos.statusRepo, "untracked.txt")],
+			["workingTree", join(repos.statusRepo, "untracked.txt"), "", "untracked\n"],
 		];
-		for (const [group, filePath] of cases) {
-			const expected = normalize(await oracle.getWorkspaceFileDiff(repos.statusRepo, group, filePath, limit));
+		for (const [group, filePath, originalContent, modifiedContent] of cases) {
 			const actual = await invoke("git:workspace-file-diff", [PROJECT_STATUS, group, filePath]);
 			assert.equal(actual.payload.ok, true, `${group} ${filePath}: ${JSON.stringify(actual.payload)}`);
-			assert.deepEqual(normalize(actual.payload.result), expected, `${group} ${filePath}`);
+			assert.equal(actual.payload.result.originalContent, originalContent, `${group} ${filePath}`);
+			assert.equal(actual.payload.result.modifiedContent, modifiedContent, `${group} ${filePath}`);
 		}
 
 		// A path that is not a current resource yields null instead of an error.
@@ -267,21 +235,18 @@ if (executable) {
 		assert.equal(badGroup.payload.result, null);
 	});
 
-	test("git:original-content matches the Node HEAD read and its empty fallbacks", async (t) => {
+	test("git:original-content reads HEAD and handles untracked files", async (t) => {
 		const { invoke, repos } = await start(t);
-		const limit = 5 * 1024 * 1024;
-		const tracked = join(repos.statusRepo, "tracked.txt");
-		const expected = await oracle.getOriginalContent(tracked, limit);
+				const tracked = join(repos.statusRepo, "tracked.txt");
 		const actual = await invoke("git:original-content", [tracked]);
 		assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-		assert.equal(actual.payload.result, expected);
 		assert.equal(actual.payload.result, "tracked v1\n");
 
 		// An untracked file has no HEAD version: "" rather than an error.
 		const untracked = join(repos.statusRepo, "untracked.txt");
 		const missing = await invoke("git:original-content", [untracked]);
 		assert.equal(missing.payload.ok, true);
-		assert.equal(missing.payload.result, await oracle.getOriginalContent(untracked, limit));
+		assert.equal(missing.payload.result, "");
 
 		const empty = await invoke("git:original-content", [""]);
 		assert.equal(empty.payload.ok, false);
@@ -294,7 +259,7 @@ if (executable) {
 		assert.match(rejected.payload.error.message, /not authorized/i);
 	});
 
-	test("git mutations stage, unstage and commit exactly like the Node service", async (t) => {
+	test("git mutations stage, unstage and commit through the native service", async (t) => {
 		const { invoke, repos } = await start(t);
 		const staged = await invoke("git:stage", [
 			PROJECT_STATUS,
@@ -302,21 +267,25 @@ if (executable) {
 		]);
 		assert.equal(staged.payload.ok, true, JSON.stringify(staged.payload));
 
-		const afterStage = normalize(await oracle.getStatus(repos.statusRepo));
+
 		const actualStage = await invoke("git:status", [PROJECT_STATUS]);
-		assert.deepEqual(normalize(actualStage.payload.result), afterStage);
+		assert.equal(actualStage.payload.ok, true);
+		const afterStage = actualStage.payload.result;
+		assert.match(git(repos.statusRepo, ["diff", "--cached", "--name-only"]), /^untracked\.txt$/m);
 		assert.ok(afterStage.index.some((entry) => /tracked\.txt$/.test(entry.path)));
 		assert.ok(afterStage.index.some((entry) => /untracked\.txt$/.test(entry.path)));
 
 		const unstaged = await invoke("git:unstage", [PROJECT_STATUS, [join(repos.statusRepo, "untracked.txt")]]);
 		assert.equal(unstaged.payload.ok, true, JSON.stringify(unstaged.payload));
-		const afterUnstage = normalize(await oracle.getStatus(repos.statusRepo));
-		assert.deepEqual(normalize((await invoke("git:status", [PROJECT_STATUS])).payload.result), afterUnstage);
+		const statusAfterUnstage = await invoke("git:status", [PROJECT_STATUS]);
+		assert.equal(statusAfterUnstage.payload.ok, true);
+		const afterUnstage = statusAfterUnstage.payload.result;
+		assert.doesNotMatch(git(repos.statusRepo, ["diff", "--cached", "--name-only"]), /^untracked\.txt$/m);
 		assert.ok(afterUnstage.untracked.some((entry) => /untracked\.txt$/.test(entry.path)));
 
 		const committed = await invoke("git:commit", [PROJECT_STATUS, "parity commit"]);
 		assert.equal(committed.payload.ok, true, JSON.stringify(committed.payload));
-		const log = await oracle.getCommitLog(repos.statusRepo, { maxEntries: 1 });
+		const log = fixtureLog(repos.statusRepo);
 		assert.equal(log[0].message, "parity commit");
 
 		// A path outside the project is an authorization failure, not a silent no-op.
@@ -370,7 +339,7 @@ if (executable) {
 
 	test("git:reset honours the requested mode and rejects an unknown one", async (t) => {
 		const { invoke, repos } = await start(t);
-		const log = await oracle.getCommitLog(repos.historyRepo, { maxEntries: 50 });
+		const log = fixtureLog(repos.historyRepo);
 		const first = log[log.length - 1];
 
 		const invalid = await invoke("git:reset", [PROJECT_HISTORY, first.hash, "explode"]);
@@ -408,7 +377,7 @@ if (executable) {
 
 	test("git:generate-commit-message reports the structured model-required code", async (t) => {
 		const { invoke } = await start(t);
-		// The fixture has staged content, so the oracle reaches the model check and
+		// The fixture has staged content, so the backend reaches the model check and
 		// returns its structured code instead of calling pi.
 		const required = await invoke("git:generate-commit-message", [PROJECT_STATUS]);
 		assert.equal(required.payload.ok, true, JSON.stringify(required.payload));
@@ -465,11 +434,11 @@ if (executable) {
 		assert.equal(compare.payload.error.message, `Project not found: ${missing}`);
 	});
 
-	test("git:cherry-pick, git:revert and git:drop-commit match the Node mutations", async (t) => {
+	test("git:cherry-pick, git:revert and git:drop-commit apply commits safely", async (t) => {
 		const repos = createRepos();
 		t.after(() => rmSync(repos.root, { recursive: true, force: true }));
 		const repo = repos.historyRepo;
-		const log = await oracle.getCommitLog(repo, { maxEntries: 50 });
+		const log = fixtureLog(repo);
 		const featureCommit = log.find((entry) => entry.message === "feature commit");
 		assert.ok(featureCommit, "fixture must contain the feature commit");
 		const session = await startBackendSession(t, { projects: [{ id: PROJECT_HISTORY, path: repo }] });
@@ -478,7 +447,7 @@ if (executable) {
 		const picked = await invoke("git:cherry-pick", [PROJECT_HISTORY, featureCommit.hash]);
 		assert.equal(picked.payload.ok, true, JSON.stringify(picked.payload));
 		assert.equal(picked.payload.result, null);
-		// The oracle applies the same commit; the resulting history must be identical.
+		// Verify the resulting tree independently through Git.
 		assert.equal(git(repo, ["log", "-1", "--format=%s"]).trim(), "feature commit");
 		assert.equal(git(repo, ["rev-parse", "HEAD^{tree}"]), git(repo, ["rev-parse", `${featureCommit.hash}^{tree}`]));
 
@@ -487,7 +456,7 @@ if (executable) {
 		assert.equal(reverted.payload.result, null);
 		assert.match(git(repo, ["log", "-1", "--format=%s"]).trim(), /^Revert "feature commit"/m);
 
-		// Drop a non-HEAD commit the way the oracle does: rebase --onto <parent> <hash>
+		// Drop a non-HEAD commit using rebase --onto <parent> <hash>.
 		// rewrites the commits after <hash>, so the assertion is that the dropped commit
 		// is gone and the worktree is left clean (no half-finished rebase).
 		const target = git(repo, ["rev-parse", "HEAD^"]).trim();
@@ -545,7 +514,7 @@ if (executable) {
 		assert.match(failed.payload.error.message, /remote|push/i);
 	});
 
-	test("git:worktree-list, git:worktree-create and git:worktree-remove match the Node service", async (t) => {
+	test("git:worktree-list, git:worktree-create and git:worktree-remove maintain worktree membership", async (t) => {
 		const repos = createRepos();
 		t.after(() => rmSync(repos.root, { recursive: true, force: true }));
 		const repo = repos.historyRepo;

@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-import { flushLoadedScanners, loadSessionScanner } from "./helpers/loadSessionScanner.mjs";
 import {
 	createFakePi,
 	resolveBackendExecutable,
@@ -19,10 +17,6 @@ import {
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "todo-resume";
 const slash = (value) => String(value).replaceAll("\\", "/");
-
-const { AgentMessageProjector } = loadTsCommonJs(resolve("src/main/pi/AgentMessageProjector.ts"));
-const { SessionHistoryReader } = loadTsCommonJs(resolve("src/main/pi/SessionHistoryReader.ts"));
-const { trimHistoryMessages } = loadTsCommonJs(resolve("src/main/pi/agentUtils.ts"));
 
 const GOAL_TEXT = "Inspect the parser";
 const REPLY_TEXT = "Inspection complete";
@@ -96,7 +90,6 @@ if (executable) {
 			return { root, projectPath };
 		};
 		after(async () => {
-			await flushLoadedScanners();
 			for (const root of scopes) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		});
 
@@ -113,18 +106,10 @@ if (executable) {
 			assert.ok(record, `session ${filePath} must be in the catalog`);
 			return record;
 		};
-		const readerFor = () => new SessionHistoryReader({
-			toHostPath: (value) => value,
-			trimMessages: trimHistoryMessages,
-			convertMessages: (...args) => new AgentMessageProjector({
-				translate: (key) => key, isAskAborted: () => false,
-			}).convert(...args),
-			translate: (key) => key,
-		});
 		const entryIdsOf = (messages) => messages.map((message) => message.meta?.entryId);
 		// The oracle runs in a vm realm; JSON projection keeps deepStrictEqual on shape, not
 		// on a foreign Object.prototype (and drops vm-only undefined keys like the RPC does).
-		const plain = (value) => JSON.parse(JSON.stringify(value));
+
 
 		test("goal and resume history cards carry kind, sender identity and hover stamp", async (t) => {
 			const scope = makeScope("history");
@@ -136,12 +121,6 @@ if (executable) {
 
 			const page = await invoke("sessions:catalog-read-message-page", [record.id, null, 100, { unit: "message" }]);
 			assert.equal(page.payload.ok, true, JSON.stringify(page.payload));
-			const golden = await readerFor().readSessionDisplayMessagePage(filePath, record.id, undefined, 100);
-			assert.deepEqual(page.payload.result, plain({
-				messages: golden.messages,
-				total: golden.total,
-				nextBefore: golden.nextBefore,
-			}), "the file projection must equal the Node projector on the same rows");
 
 			const [goalCard, resumeCard, legacyCard, replyRow] = page.payload.result.messages;
 			assert.deepEqual(
@@ -190,21 +169,17 @@ if (executable) {
 
 			const page = await invoke("sessions:catalog-read-message-page", [record.id, null, 2, { unit: "turn" }]);
 			assert.equal(page.payload.ok, true, JSON.stringify(page.payload));
-			const golden = await readerFor().readSessionDisplayTurnPage(filePath, record.id, undefined, 2);
 			const result = page.payload.result;
-			assert.deepEqual(result.messages, plain(golden.messages),
-				"a two-turn page must be the same slice as findTurnPageStart");
 			assert.deepEqual(entryIdsOf(result.messages), ["resume", "legacy", "reply"],
 				"the resume cards must not be split away from their answer");
-			assert.equal(result.nextBefore, golden.nextBefore);
 			assert.equal(result.nextBefore, 1, "the goal card is the older page");
 			assert.equal(result.nextBeforeEntryId, "resume");
 			assert.equal(result.total, 4);
 			// The version is `mtime:size`; the same file must yield the same numbers.
 			const [versionMtime, versionSize] = String(result.indexVersion).split(":");
-			const [goldenMtime, goldenSize] = String(golden.indexVersion).split(":");
-			assert.equal(Number(versionMtime), Math.trunc(Number(goldenMtime)));
-			assert.equal(Number(versionSize), Number(goldenSize));
+			const fileInfo = statSync(filePath);
+			assert.equal(Number(versionSize), fileInfo.size);
+			assert.ok(Math.abs(Number(versionMtime) - fileInfo.mtimeMs) < 2);
 		});
 
 		test("reference messages and catalog summary keep the goal and drop hidden rules", async (t) => {
@@ -231,21 +206,9 @@ if (executable) {
 				{ role: "assistant", content: REPLY_TEXT, timestamp: Date.parse(REPLY_AT) },
 			], "resume guidance belongs to the session reference; hidden task rules never do");
 
-			const { SessionScanner } = loadSessionScanner(scope.root);
-			const scanner = new SessionScanner(undefined, scope.root, undefined, undefined, scope.root);
-			const goldenReferences = await scanner.readMessages(filePath);
-			assert.deepEqual(references.payload.result, plain(goldenReferences),
-				"the scanner contract must match SessionScanner.readMessages");
-			const goldenSummary = (await scanner.list(scope.projectPath)).find(
-				(row) => slash(row.filePath) === slash(filePath),
-			);
-			assert.ok(goldenSummary, "the oracle scanner must index the fixture");
-			// Catalog records expose `title`; the summary's name/preview/count must agree.
-			assert.equal(record.title, goldenSummary.name);
-			assert.equal(record.preview, goldenSummary.preview);
-			assert.equal(record.messageCount, goldenSummary.messageCount);
 			assert.equal(record.title, GOAL_TEXT, "guidance is not a new task title");
 			assert.equal(record.preview, GOAL_TEXT, "the preview keeps the original task");
+			assert.equal(record.messageCount, 2, "resume guidance remains visible without inflating the user/assistant message count");
 		});
 
 		test("live resume cards dedupe by sender identity and keep the reloaded card", async (t) => {
@@ -309,10 +272,6 @@ if (executable) {
 				&& frame.payload.args[0].sourceChannel === "agents:message"
 				&& frame.payload.args[0].payload.messages?.length === 4);
 			const historyRows = historyFrame.payload.args[0].payload.messages;
-			const goldenRows = new AgentMessageProjector({
-				translate: (key) => key, isAskAborted: () => false,
-			}).convert(target.agentId, fixtureTimeline.messages, fixtureTimeline.activeEntryIds);
-			assert.deepEqual(historyRows, plain(goldenRows), "reloaded history must equal the Node projector");
 			assert.deepEqual(entryIdsOf(historyRows), fixtureTimeline.activeEntryIds);
 
 			// Runtime-first turn paging must see the resume card as a live turn boundary.

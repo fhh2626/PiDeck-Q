@@ -92,25 +92,6 @@ export const CommonTab = memo(function CommonTab(props: CommonTabProps) {
         <SettingRow
           title={
             <>
-              <span>{t("settings.sessionTabOpenMode")}</span>
-              <DirtyMarker dirty={isDirty("sessionTabOpenMode")} label={t("settings.sessionTabOpenMode")} />
-            </>
-          }
-          alignEnd={false}
-        >
-          <Select value={draft.sessionTabOpenMode} onValueChange={(value) =>
-              updateDraft({ sessionTabOpenMode: value as AppSettings["sessionTabOpenMode"] })
-            }>
-            <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="preview">{t("settings.sessionTabOpenModePreview")}</SelectItem>
-              <SelectItem value="permanent">{t("settings.sessionTabOpenModePermanent")}</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingRow>
-        <SettingRow
-          title={
-            <>
               <span>{t("settings.inputShortcut")}</span>
               <DirtyMarker dirty={isDirty("sendShortcut")} label={t("settings.inputShortcut")} />
             </>

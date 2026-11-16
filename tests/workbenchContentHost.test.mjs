@@ -7,45 +7,6 @@ const stage = readFileSync("src/renderer/src/components/workspace/WorkbenchStage
 const content = readFileSync("src/renderer/src/components/workspace/WorkbenchContent.tsx", "utf8");
 const fileEditor = readFileSync("src/renderer/src/hooks/useFileEditor.ts", "utf8");
 const drawer = readFileSync("src/renderer/src/components/workspace/DrawerSurface.tsx", "utf8");
-const settings = readFileSync("src/shared/types/settings.ts", "utf8");
-const store = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
-const settingsModal = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
-const commonTab = readFileSync("src/renderer/src/components/app/settings/CommonTab.tsx", "utf8");
-const zh = readFileSync("src/renderer/src/i18n/rendererCopy.zh-CN.ts", "utf8");
-const en = readFileSync("src/renderer/src/i18n/rendererCopy.en-US.ts", "utf8");
-const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
-
-test("settings expose workspace content open mode; split orientation removed", () => {
-  assert.match(settings, /WorkspaceContentOpenMode = "split" \| "maximize"/);
-  assert.match(settings, /workspaceContentOpenMode: WorkspaceContentOpenMode/);
-  assert.match(store, /workspaceContentOpenMode: "split"/);
-  // workspaceContentOpenMode 设置项位于常用设置 tab（CommonTab，自 SettingsModal 拆分）
-  assert.match(commonTab, /workspaceContentOpenMode/);
-  assert.match(zh, /"settings\.workspaceContentOpenMode"/);
-  assert.match(en, /"settings\.workspaceContentOpenMode"/);
-  // 分屏方向设置已移除：中间栏固定左右分屏，不允许上下分屏
-  assert.doesNotMatch(settings, /WorkspaceSplitOrientation/);
-  assert.doesNotMatch(settings, /workspaceSplitOrientation/);
-  assert.doesNotMatch(store, /workspaceSplitOrientation/);
-  assert.doesNotMatch(settingsModal, /workspaceSplitOrientation/);
-  assert.doesNotMatch(app, /workspaceSplitOrientation/);
-  assert.doesNotMatch(zh, /workspaceSplitOrientation/);
-  assert.doesNotMatch(en, /workspaceSplitOrientation/);
-  assert.match(surfaces, /\.workbench-stage\s*\{/);
-  assert.match(surfaces, /\.workbench-stage-split/);
-  assert.match(surfaces, /\.workbench-stage\s*>\s*\.session-tabs-bar/);
-  assert.match(surfaces, /\.workbench-stage-body/);
-  assert.doesNotMatch(
-    surfaces,
-    /\.workbench-stage-solo\s*>\s*\*\s*\{[^}]*height:\s*100%/,
-    "solo must not force every Fragment child to height 100% (breaks empty-state layout)",
-  );
-  // 文件 Tab 不再用 accent 绿条顶边；并入 session-tabs-bar
-  assert.doesNotMatch(
-    surfaces,
-    /\.file-diff-tab-bar\s*\{[^}]*border-top:\s*2px solid var\(--color-accent\)/,
-  );
-});
 
 test("WorkbenchStage hosts session + content with collapse-safe maximize", () => {
   assert.match(stage, /export function WorkbenchStage/);
@@ -60,7 +21,7 @@ test("WorkbenchStage hosts session + content with collapse-safe maximize", () =>
   assert.match(app, /<WorkbenchStage/);
   assert.match(app, /workbenchHasContent/);
   assert.match(app, /WorkbenchContent/);
-  assert.match(app, /chrome=\{sessionTabsBarNode\}/);
+  assert.match(app, /chrome=\{workspaceToolbarNode\}/);
   // 尺寸必须字符串百分比 + defaultSize 恒定：react-resizable-panels v4 约束派生把
   // 数字按 px 解析（minSize={20} → 2%），且 defaultSize 随 layout 切换会触发 Panel
   // 重注册、丢失 expandToSize，导致 maximize→split 恢复成窄缝（回归点）。
@@ -105,48 +66,4 @@ test("closing git diff dismisses the whole workbench reading surface", () => {
   );
   assert.match(openWorkspace, /setActiveTabId\(null\)/);
   assert.match(openWorkspace, /setEditorTabs\(\[\]\)/);
-});
-
-test("file tabs use preview/permanent strategy owned by useFileEditor", () => {
-  // 策略在 utils/editorTabs；hook 拥有 previewEditorTabId；打开文件不清掉已有 tab
-  assert.match(fileEditor, /from "\.\.\/utils\/editorTabs"/);
-  assert.match(fileEditor, /previewEditorTabId/);
-  assert.match(fileEditor, /openMode: EditorTabOpenMode = "permanent"/);
-  const viewBlock = fileEditor.slice(
-    fileEditor.indexOf("const viewFilePath = useCallback"),
-    fileEditor.indexOf("const diffFilePath = useCallback"),
-  );
-  assert.match(viewBlock, /openMode: EditorTabOpenMode = "preview"/);
-  assert.match(viewBlock, /dismissGitDiffOnly/);
-  assert.doesNotMatch(viewBlock, /dismissWorkbenchContent/);
-
-  // 文件 Tab 并入 SessionTabsBar，内容区不再渲染第二套 Tab 栏
-  const tabsBar = readFileSync(
-    "src/renderer/src/components/session/SessionTabsBar.tsx",
-    "utf8",
-  );
-  assert.match(tabsBar, /editorTabs\?:/);
-  assert.match(tabsBar, /EditorWorkbenchTab/);
-  assert.match(content, /chromeTabsExternal/);
-  assert.match(app, /editorTabs=\{workbenchEditorTabs\}/);
-
-  const viewer = readFileSync(
-    "src/renderer/src/components/app/FileDiffViewer.tsx",
-    "utf8",
-  );
-  // 编辑/退出编辑按钮已移除（diff 只读、view 源码即编辑），不存在退出编辑与关闭叉撞车问题
-  assert.doesNotMatch(viewer, /PencilOff/);
-  assert.doesNotMatch(viewer, /Edit3/);
-  assert.doesNotMatch(viewer, /title=\{t\("app.exitEdit"\)\}/);
-  // 关闭按钮始终渲染：即使 Tab 上收总栏（chromeTabsExternal），右上角也要有
-  // 明确的关闭入口（需求：DIFF/文件预览右上角关闭按钮）。
-  assert.doesNotMatch(viewer, /!props\.chromeTabsExternal && \(/);
-  assert.match(viewer, /onClick=\{handleClose\}/);
-  assert.match(viewer, /aria-label=\{t\("common.close"\)\}/);
-
-  const surface = readFileSync(
-    "src/renderer/src/components/session/DrawerContent.tsx",
-    "utf8",
-  );
-  assert.match(surface, /onViewFile\?\.\(node\.path, "permanent"\)/);
 });

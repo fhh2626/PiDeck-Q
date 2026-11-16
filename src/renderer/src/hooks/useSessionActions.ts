@@ -44,8 +44,7 @@ export interface UseSessionActionsOptions {
 }
 
 /**
- * 会话选择与草稿创建。只负责「当前会话是谁」，不登记 Tab 预览/常驻——
- * 那是 workspace chrome 的事，由 App / 侧栏在边界组合。
+ * 会话选择与草稿创建。共享请求序号保证异步结果不会覆盖用户的后续导航。
  */
 export function useSessionActions(options: UseSessionActionsOptions) {
   const {
@@ -233,6 +232,7 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return undefined;
     creatingSessionDraftRef.current.add(projectId);
+    const requestSequence = ++openSessionRequestRef.current;
     try {
       const session = await api.sessions.createDraft({
         projectId,
@@ -240,7 +240,10 @@ export function useSessionActions(options: UseSessionActionsOptions) {
         ...preferences,
       });
       upsertSession(session);
-      commitSessionSelection(projectId, session.id, true);
+      // Keep the created record available without taking focus from newer navigation.
+      if (requestSequence === openSessionRequestRef.current) {
+        commitSessionSelection(projectId, session.id, true);
+      }
       return session;
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), 4000);
@@ -258,6 +261,7 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return undefined;
     creatingSessionDraftRef.current.add(projectId);
+    const requestSequence = ++openSessionRequestRef.current;
     try {
       const { session } = await api.sessions.createAnonymous({
         projectId,
@@ -265,7 +269,10 @@ export function useSessionActions(options: UseSessionActionsOptions) {
         ...preferences,
       });
       upsertSession(session);
-      commitSessionSelection(projectId, session.id, true);
+      // Keep the created record available without taking focus from newer navigation.
+      if (requestSequence === openSessionRequestRef.current) {
+        commitSessionSelection(projectId, session.id, true);
+      }
       return session;
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), 4000);

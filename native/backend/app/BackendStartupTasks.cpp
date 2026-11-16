@@ -284,6 +284,12 @@ void BackendStartupTasks::prewarmCatalogScans()
     ChannelServices &services = *m_deps.services;
     if (!services.projects || !services.catalogScans) return;
     const QJsonArray projects = services.projects->list();
+    // A bounded diagnostic override lets scan-batch tests keep unrelated startup work
+    // outside their measured foreground request. Normal startup retains its cadence.
+    bool hasDelayOverride = false;
+    const int delayOverride = qEnvironmentVariableIntValue("PIDECK_CATALOG_PREWARM_DELAY_MS", &hasDelayOverride);
+    const int initialDelayMs = hasDelayOverride
+        ? qBound(kCatalogPrewarmDelayMs, delayOverride, 60'000) : kCatalogPrewarmDelayMs;
     // Same cadence as the oracle's startup prewarm: one initial delay, then the projects are
     // scanned one after another so a large catalog never competes with the first render.
     for (int index = 0; index < projects.size(); ++index) {
@@ -309,7 +315,7 @@ void BackendStartupTasks::prewarmCatalogScans()
                                                                 std::move(done));
                 });
         });
-        timer->start(kCatalogPrewarmDelayMs + index * kCatalogPrewarmStaggerMs);
+        timer->start(initialDelayMs + index * kCatalogPrewarmStaggerMs);
     }
 }
 void BackendStartupTasks::ensurePiSettingsDefaultsNow()

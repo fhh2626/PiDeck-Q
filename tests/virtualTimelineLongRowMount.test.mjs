@@ -150,3 +150,30 @@ for (const { kind, initialHeight, offset } of [
 		});
 	});
 }
+
+for (const kind of ["user", "agent-run"]) {
+	test(`resizing after sustained upward input keeps the ${kind} passage mounted in the first commit`, async () => {
+		const items = Array.from({ length: 160 }, (_, index) => index % 2 ? run(`row-${index}`) : user(`row-${index}`));
+		const heights = new Map(items.map((_item, index) => [`row-${index}`, index % 2 ? 2600 : 1900]));
+		await withTimelineLayout({ items, heights, viewportHeight: 620 }, async (timeline) => {
+			await timeline.resizeList(1000);
+			await timeline.settleMeasurements();
+			await timeline.jumpTo(kind === "user" ? "row-140" : "row-141");
+			await timeline.settleMeasurements();
+			await timeline.scrollTo(timeline.viewport().scrollTop + 900);
+			for (let step = 0; step < 40; step += 1) {
+				await timeline.scrollTo(timeline.viewport().scrollTop - 200);
+				await timeline.settleMeasurements();
+			}
+			const { anchor } = timeline.adapter().captureReadingAnchor();
+			const key = timeline.latest().rowModel.rowKeyByMessageId.get(anchor.messageId);
+			const offset = timeline.row(key).getBoundingClientRect().top;
+			for (const [id, height] of heights) heights.set(id, height + 700);
+			await timeline.resizeList(760);
+			assert.ok(timeline.row(key), "the reading row cannot disappear while replacement measurements are pending");
+			assert.equal(timeline.row(key).getBoundingClientRect().top, offset);
+			await timeline.settleMeasurements();
+			assert.equal(timeline.row(key).getBoundingClientRect().top, offset);
+		});
+	});
+}

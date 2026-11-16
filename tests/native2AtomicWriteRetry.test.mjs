@@ -23,7 +23,7 @@ function holdReadShareLock(path, markerPath, holdMs) {
 	const script = [
 		`$f=[System.IO.File]::Open('${path.replaceAll("'", "''")}','Open','Read','Read')`,
 		`[System.IO.File]::WriteAllText('${markerPath.replaceAll("'", "''")}','locked')`,
-		`Start-Sleep -Milliseconds ${holdMs}`,
+		`[System.Threading.Thread]::Sleep(${holdMs})`,
 		"$f.Close()",
 	].join("; ");
 	const child = spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {

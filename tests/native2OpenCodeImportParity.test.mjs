@@ -1,28 +1,16 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, test } from "node:test";
 
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 
-/**
- * OpenCode import parity (`src/main/sessions/OpenCodeSessionImporter.ts`).
- *
- * OpenCode keeps every project's history in one SQLite database, so this is the only
- * importer whose source is not a file tree. The test builds a throwaway database with the
- * real schema, then compares the backend's `scan`/`import` answers — and the JSONL it
- * writes — against the current Node importer run on an identical copy.
- *
- * Two isolated homes are used on purpose: the Node oracle and the backend must not write
- * the same target file, otherwise `overwritten`/`status` would differ for the wrong reason.
- */
+/** Native OpenCode import contracts against a disposable, real-schema SQLite database. */
 
-const { OpenCodeSessionImporter } = loadTsCommonJs(resolve("src/main/sessions/OpenCodeSessionImporter.ts"));
 const executable = resolveBackendExecutable();
-const slash = (value) => String(value).replaceAll("\\", "/");
+
 
 const PROJECT_ID = "opencode";
 
@@ -139,14 +127,12 @@ if (!executable) {
 	describe("native2 OpenCode import parity", () => {
 		let root;
 		let home;
-		let oracleHome;
 		let projectPath;
 		let databasePath;
 
 		before(() => {
 			root = mkdtempSync(join(tmpdir(), "pideck-native2-opencode-"));
 			home = join(root, "home");
-			oracleHome = join(root, "oracle-home");
 			projectPath = join(root, "project");
 			mkdirSync(join(projectPath, "src"), { recursive: true });
 			writeFileSync(join(projectPath, "README.md"), "# opencode\n");
@@ -155,7 +141,7 @@ if (!executable) {
 			createOpenCodeDatabase(seed, projectPath);
 			// Identical copies with identical mtimes: the session estimate and the "current"
 			// status both depend on the database file's metadata.
-			for (const target of [home, oracleHome]) {
+			for (const target of [home]) {
 				const path = join(target, ".local", "share", "opencode", "opencode.db");
 				mkdirSync(join(path, ".."), { recursive: true });
 				copyFileSync(seed, path);
@@ -184,59 +170,20 @@ if (!executable) {
 				env: envFor(target),
 			});
 
-		/**
-		 * Map the oracle home onto the backend home and unify separators. The backend reports
-		 * Qt's `/`-normalised paths; the Node oracle keeps the platform separator. Both open
-		 * the same file, so only the separator differs.
-		 */
-		const normalize = (value) =>
-			JSON.parse(
-				JSON.stringify(value, (key, entry) =>
-					typeof entry === "string" ? slash(entry).split(slash(oracleHome)).join(slash(home)) : entry,
-				),
-			);
-
-		/**
-		 * Read an imported session as comparable entries.
-		 *
-		 * Two fields are volatile by design in the oracle itself: `importedAt` is the import
-		 * wall clock, and the trailing `session_info` card carries `randomUUID().slice(0, 8)`
-		 * plus its own timestamp. Everything else — ids, parents, timestamps, usage, tool
-		 * calls, the raw OpenCode fields — must be identical.
-		 */
-		const parseSession = (path) =>
-			JSON.parse(
-				JSON.stringify(readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))),
-				(key, entry) => {
-					if (typeof entry !== "string") return entry;
-					return slash(entry).split(slash(oracleHome)).join(slash(home));
-				},
-			).map((entry) => {
-				if (entry.type === "opencode_import") delete entry.importedAt;
-				if (entry.type === "session_info") {
-					delete entry.id;
-					delete entry.timestamp;
-				}
-				return entry;
-			});
-
-		test("scan and import match the current Node importer on the same database", async (t) => {
+		test("scan and import preserve model, messages, tools and session identity", async (t) => {
 			const session = await start(t);
-			const oracle = new OpenCodeSessionImporter(undefined, oracleHome);
 
 			// 1. Both matching sessions are listed, newest first, and the other project is
 			//    skipped. Every field is compared, so a wrong `cwd`, estimate or `status`
 			//    fails here instead of in the import wizard.
-			const expectedScan = await oracle.scan(projectPath);
 			const scanned = await session.invoke("opencode-sessions:scan", [PROJECT_ID]);
 			assert.equal(scanned.payload.ok, true, JSON.stringify(scanned.payload));
-			assert.deepEqual(normalize(scanned.payload.result), normalize(expectedScan));
 			assert.deepEqual(
 				scanned.payload.result.map((entry) => entry.id),
 				["ses-a", "ses-b"],
 			);
 			assert.equal(scanned.payload.result[0].status, "new");
-			assert.equal(scanned.payload.result[0].messageCount, expectedScan[0].messageCount);
+			assert.equal(scanned.payload.result[0].messageCount, 2);
 
 			// 2. A missing database is "no OpenCode history", not an error.
 			const emptyHome = join(root, "empty-home");
@@ -247,27 +194,15 @@ if (!executable) {
 				result: [],
 			});
 
-			// 3. Import writes the same bytes the Node importer writes and reports the same
-			//    per-session results.
+			// 3. Import writes one JSONL session per selected database entry.
 			const backendSources = scanned.payload.result.map((entry) => entry.sourcePath);
-			const oracleSources = expectedScan.map((entry) => entry.sourcePath);
-			const expectedReport = await oracle.import(projectPath, oracleSources);
 			const report = await session.invoke("opencode-sessions:import", [PROJECT_ID, backendSources]);
 			assert.equal(report.payload.ok, true, JSON.stringify(report.payload));
-			assert.deepEqual(normalize(report.payload.result), normalize(expectedReport));
 			assert.equal(report.payload.result.imported, 2);
 			assert.equal(report.payload.result.failed, 0);
 			for (const result of report.payload.result.results) {
 				assert.equal(result.success, true, JSON.stringify(result));
 				assert.equal(result.overwritten, false, JSON.stringify(result));
-			}
-
-			for (let index = 0; index < expectedReport.results.length; index += 1) {
-				const expectedPath = expectedReport.results[index].targetPath;
-				const actualPath = report.payload.result.results[index].targetPath;
-				assert.equal(existsSync(expectedPath), true, expectedPath);
-				assert.equal(existsSync(actualPath), true, actualPath);
-				assert.deepEqual(parseSession(actualPath), parseSession(expectedPath));
 			}
 
 			// The imported file is a pi-readable JSONL session, not a JSON blob.
@@ -284,6 +219,15 @@ if (!executable) {
 				lines.filter((line) => line.type === "message").map((line) => line.message.role),
 				["user", "assistant"],
 			);
+
+			const assistant = lines.find((line) => line.type === "message" && line.message.role === "assistant").message;
+			assert.ok(assistant.content.some((block) => block.type === "text" && block.text === "hi, how can I help?"));
+			assert.ok(assistant.content.some((block) => block.type === "thinking" && block.thinking === "the user said hello"));
+			assert.ok(assistant.content.some((block) => block.type === "toolCall" && block.id === "call-1" && block.name === "read"));
+			assert.equal(assistant.usage.input, 12);
+			assert.equal(assistant.usage.output, 7);
+			assert.equal(assistant.usage.cacheRead, 3);
+			assert.equal(assistant.usage.cacheWrite, 1);
 
 			// 4. Re-scanning after the import reports `current`, and importing again is an
 			//    overwrite rather than a second copy under a new name.

@@ -142,12 +142,11 @@ import { ChatSessionPane } from "./components/session/ChatSessionPane";
 import { OutlinePanel } from "./components/session/OutlinePanel";
 import { SkillsQuickDialog } from "./components/session/SkillsQuickDialog";
 import { SessionSplitStage } from "./components/session/SessionSplitStage";
-import { canStopBoundAgent } from "./utils/canStopBoundAgent";
 import { splitLayoutSessionIds } from "./utils/sessionSplitEdge";
-import { SessionTabsBar } from "./components/session/SessionTabsBar";
+import { WorkspaceToolbar } from "./components/workspace/WorkspaceToolbar";
 import { SessionPaneServicesProvider } from "./components/session/SessionPaneServices";
 import { ProjectEmptyState } from "./components/session/ProjectEmptyState";
-import { useSessionWorkspaceChrome } from "./hooks/useSessionWorkspaceChrome";
+import { useSessionWorkspace } from "./hooks/useSessionWorkspace";
 import { ScratchPadOverlay } from "./components/overlays/ScratchPadOverlay";
 import { AskPanelOverlay } from "./components/overlays/AskPanelOverlay";
 import { SessionRuntimeDock } from "./components/session/SessionRuntimeDock";
@@ -183,7 +182,6 @@ import type {
   ImageContent,
   PiCommand,
   Project,
-  SessionLaunchPreferences,
   SessionRecord,
   SessionSummary,
   ComposerAgentMode,
@@ -525,7 +523,6 @@ export function App() {
     piTypescriptPath: "",
     piRustPath: "",
     piBoltPath: "",
-    sessionTabOpenMode: "preview",
     enableGitManagement: true,
     gitCommitMessagePrompt: getDefaultGitCommitMessagePrompt(
       resolveGitCommitMessagePromptLocale(resolveLocale("system")),
@@ -1180,9 +1177,10 @@ export function App() {
     }
   }, [workspace, gitDrawerDiff, closeGitDiff, activeProjectId, refreshFiles]);
 
-  const workspaceChrome = useSessionWorkspaceChrome({
+  const sessionWorkspace = useSessionWorkspace({
     currentSessionId,
     activeProjectId,
+    selectionRequestRef: openSessionRequestRef,
   });
 
   const {
@@ -1215,9 +1213,9 @@ export function App() {
     showToast,
   });
 
-  // 关闭 Tab / 分屏退栏时的焦点切换：只改 currentSession，不碰 Tab 登记
+  // Notifications and split commands share the sidebar selection owner.
   useEffect(() => {
-    workspaceChrome.bindFocusHandlers({
+    sessionWorkspace.bindFocusHandlers({
       focusSession: (projectId, sessionId) => {
         selectSessionCommand(projectId, sessionId, true);
       },
@@ -1225,38 +1223,13 @@ export function App() {
         selectProjectCommand(projectId);
       },
     });
-  }, [workspaceChrome, selectSessionCommand, selectProjectCommand]);
+  }, [sessionWorkspace, selectSessionCommand, selectProjectCommand]);
 
-  /** 新建会话：选中 + 登记常驻 Tab（chrome 与 selection 在 App 边界组合） */
-  const createSessionDraftWithTab = useCallback(
-    async (projectId?: string, preferences: SessionLaunchPreferences = {}) => {
-      const session = await runCreateSessionDraft(projectId, preferences);
-      if (session) workspaceChrome.registerOpenSession(session.id, "permanent");
-      return session;
+  const openSidebarSessionById = useCallback(
+    async (projectId: string, sessionId: string) => {
+      await runOpenSidebarSessionById(projectId, sessionId);
     },
-    [runCreateSessionDraft, workspaceChrome],
-  );
-
-  const createAnonymousSessionWithTab = useCallback(
-    async (projectId?: string, preferences: SessionLaunchPreferences = {}) => {
-      const session = await runCreateAnonymousSession(projectId, preferences);
-      if (session) workspaceChrome.registerOpenSession(session.id, "permanent");
-      return session;
-    },
-    [runCreateAnonymousSession, workspaceChrome],
-  );
-
-  /** 侧栏/分支打开：选中成功后按 preview|permanent 登记 Tab */
-  const openSidebarSessionByIdWithTab = useCallback(
-    async (
-      projectId: string,
-      sessionId: string,
-      tabMode: "preview" | "permanent" = "permanent",
-    ) => {
-      const openedId = await runOpenSidebarSessionById(projectId, sessionId);
-      if (openedId) workspaceChrome.registerOpenSession(openedId, tabMode);
-    },
-    [runOpenSidebarSessionById, workspaceChrome],
+    [runOpenSidebarSessionById],
   );
 
   useEffect(() => {
@@ -1651,8 +1624,7 @@ export function App() {
 
   /**
    * clone / fork 会把同一个 Agent 换绑到新的 SessionRecord。
-   * 必须先刷新 catalog 再登记 Tab：否则 chrome 的 prune 看到 records 里还没有新 id，会立刻清掉刚打开的 Tab。
-   * 选中与登记都在这里组合——selectSession 本身不碰 Tab。
+   * 刷新 catalog 后再选中新身份，确保视图能读取对应会话记录。
    */
   async function openReplacedRuntimeSession(
     projectId: string | undefined,
@@ -1660,7 +1632,6 @@ export function App() {
   ) {
     if (!projectId || !targetSessionId) return;
     await refreshProjectSessions(projectId);
-    workspaceChrome.registerOpenSession(targetSessionId, "permanent");
     selectSessionCommand(projectId, targetSessionId, true);
   }
 
@@ -1765,8 +1736,7 @@ export function App() {
   }
 
   async function closeAgent(agentId: string) {
-    // pending / 无 target 必须抛错：Tab 下拉「关闭会话」成功后才会 closeTab。
-    // 以前这里静默 return，调用方仍关 Tab，标签没了、进程还在。
+    // Pending or detached runtimes must report failure rather than pretending to stop.
     if (isPendingAgentId(agentId)) {
       throw new Error(t("sessionCommand.runtimeBusy"));
     }
@@ -1797,7 +1767,7 @@ export function App() {
    * 只从 agentsRef（agentInventoryAtom，已绑定真实 runtime）取 ID；
    * displayAgents 混有 pendingAgents（无 runtime target），直接 closeAgent 会报 runtime unavailable。
    * Promise.allSettled：一个 Agent stop 失败不能阻止其他 Agent 被关闭。
-   * closeAgent 只 stopRuntime：不 delete SessionRecord、不 removeSessionState、不关 Tab、不 restart。
+   * closeAgent 只 stopRuntime：不 delete SessionRecord、不 removeSessionState、不 restart。
    */
   async function stopAllAgentsAfterSkillsChange() {
     const agentIds = agentsRef.current.map((agent) => agent.id);
@@ -2272,7 +2242,7 @@ export function App() {
       select: (projectId) => {
         selectProjectCommand(projectId);
         // 点开目录只选中项目并显示引导页：不自动创建会话，避免每点一个目录都
-        // 悄悄新建一个 agent 会话 tab。创建由用户手动点「启动 Agent / 临时对话」
+        // 悄悄新建一个 Agent 会话。创建由用户手动点「启动 Agent / 临时对话」
         // 触发；启动时首项目自动选中除外（见 bootstrapProps.onProjectsChanged）。
         // 空项目也可能已经成功加载；用 catalog 状态区分“空结果”和“尚未扫描”。
         const loadState = store.get(sessionCatalogLoadStateAtom)[projectId];
@@ -2304,17 +2274,14 @@ export function App() {
       changeChatPath,
     },
     sessions: {
-      // 侧栏单击模式由设置 sessionTabOpenMode 控制（默认 preview=临时预览，发消息自动晋升常驻）；
-      // 双击仍是显式常驻。tabMode 为 undefined 时用当前设置值。
-      open: (projectId, sessionId, tabMode) =>
-        openSidebarSessionByIdWithTab(projectId, sessionId, tabMode ?? settings.sessionTabOpenMode),
-      beginDrag: workspaceChrome.beginDrag,
-      endDrag: workspaceChrome.endDrag,
+      open: openSidebarSessionById,
+      beginDrag: sessionWorkspace.beginDrag,
+      endDrag: sessionWorkspace.endDrag,
       createDraft: async (projectId) => {
-        await createSessionDraftWithTab(projectId);
+        await runCreateSessionDraft(projectId);
       },
       createAnonymous: async (projectId) => {
-        await createAnonymousSessionWithTab(projectId);
+        await runCreateAnonymousSession(projectId);
       },
       deleteDraft: requestDeleteDraftSession,
       rename: rename.openSessionRename,
@@ -2393,7 +2360,7 @@ export function App() {
 
   // Gate 4.6 — Session view wrapped in SessionRuntimeInjector / ChatSessionPane
 
-  // 会话 Tab 栏始终外置挂载；分屏双栏共享同一条 Tab，单栏也不再嵌入 SessionView。
+  // Sidebar navigation and pane focus select the same stable session identity.
   const focusSessionPane = useCallback((sessionId: string) => {
     const record = store.get(sessionRecordByIdAtomFamily(sessionId));
     if (record) selectSessionCommand(record.projectId, sessionId, true);
@@ -2412,7 +2379,7 @@ export function App() {
     // 分屏内面板间聚焦切换：各栏都已渲染、内容未变，只有聚焦边框亮起；
     // 整区重播淡入微位移会造成「抖/闪」，静默跳过（边框高亮由
     // .session-split-pane-focused 类切换承担，无动画）。
-    const layout = workspaceChrome.splitLayout;
+    const layout = sessionWorkspace.splitLayout;
     const splitIds = layout ? splitLayoutSessionIds(layout) : [];
     const prevInSplit = Boolean(layout && prev && splitIds.includes(prev));
     const nextInSplit = Boolean(
@@ -2428,78 +2395,7 @@ export function App() {
       { duration: 160, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
     );
     return () => anim.cancel();
-  }, [currentSessionId, workspaceChrome.splitLayout]);
-
-  const sessionTabsProps = {
-    tabs: workspaceChrome.sessionTabIds,
-    pinnedTabs: workspaceChrome.pinnedSessionTabIds,
-    previewTabId: workspaceChrome.previewSessionTabId,
-    currentSessionId,
-    onSelect: workspaceChrome.selectTab,
-    onPromotePreview: workspaceChrome.promotePreview,
-    onClose: workspaceChrome.closeTab,
-    onCloseOthers: workspaceChrome.closeOtherTabs,
-    onCloseAll: workspaceChrome.closeAllTabs,
-    // Tab 栏 “+” 下拉的新建目标：聊天对话区置顶，其余按侧栏项目顺序
-    newSessionTargets: projects
-      .map((project) => ({
-        projectId: project.id,
-        label: isChatProject(project) ? t("app.chatProject") : project.name,
-        isChat: isChatProject(project),
-      }))
-      .sort((a, b) => Number(b.isChat) - Number(a.isChat)),
-    onNewSessionInProject: (projectId: string) => {
-      void createSessionDraftWithTab(projectId);
-    },
-    onTogglePin: workspaceChrome.togglePin,
-    onReorder: workspaceChrome.reorderTab,
-    // 分屏组胶囊：分屏内会话聚合为组（颜色标记 + 展开/收起）
-    splitGroupIds: workspaceChrome.splitLayout
-      ? splitLayoutSessionIds(workspaceChrome.splitLayout)
-      : [],
-    splitGroupCollapsed: workspaceChrome.splitGroupCollapsed,
-    onToggleSplitGroup: workspaceChrome.toggleSplitGroupCollapsed,
-    splitGroupName: workspaceChrome.splitGroupConfig.name,
-    splitGroupColor: workspaceChrome.splitGroupConfig.color,
-    onSplitGroupRename: (name: string) =>
-      workspaceChrome.setSplitGroupConfig((config) => ({ ...config, name })),
-    onSplitGroupColorChange: (color: string) =>
-      workspaceChrome.setSplitGroupConfig((config) => ({ ...config, color })),
-    onExitAllSplit: workspaceChrome.exitAllSplit,
-    // Tab 下拉运行控制（织入对方收敛方案）：只对当前会话 Tab 生效。
-    // 关闭会话 = 停止 Agent 运行 + 移除会话 Tab（与“关闭标签页”仅移除 Tab 不同）
-    canStopCurrent: canStopBoundAgent(activeAgent?.status),
-    // 会话从未启动（无绑定 agent）时隐藏“关闭会话”：停止无意义，关闭走“关闭标签页”
-    onStopCurrent: activeAgentId
-      ? () => {
-          const sessionId = currentSessionId;
-          void (async () => {
-            try {
-              // 必须 stopRuntime，不能 abort：abort 只取消当前一轮，pi 进程仍占用会话文件。
-              // closeAgent 失败会抛错，这里不得先关 Tab。
-              await closeAgent(activeAgentId);
-              if (sessionId) workspaceChrome.closeTab(sessionId);
-            } catch (error) {
-              showToast(error instanceof Error ? error.message : String(error), 5000);
-            }
-          })();
-        }
-      : undefined,
-    canRestartCurrent: Boolean(activeAgentId),
-    isRestartingCurrent: restartingAgentId === activeAgentId,
-    // 没有绑定运行时的草稿也有会话 ID，但重启只对已启动 Agent 有意义
-    onRestartCurrent: activeAgentId
-      ? () => void restartActiveAgent(activeAgentId)
-      : undefined,
-    onToggleDrawer: toggleRightDrawer,
-    drawerOpen: Boolean(drawer && !drawerCollapsed),
-    listCollapsed,
-    onToggleListCollapsed: toggleListCollapsed,
-    onDragSessionChange: (sessionId: string | null) => {
-      if (sessionId) workspaceChrome.beginDrag(sessionId);
-      else workspaceChrome.endDrag();
-    },
-  };
+  }, [currentSessionId, sessionWorkspace.splitLayout]);
 
   const paneLayoutRefs = useMemo(
     () => ({
@@ -2515,24 +2411,24 @@ export function App() {
   // 这两个回调引用保持不变，SessionPaneActionsContext 才不会跟着更新。
   // 原为 useMemo 内的 inline function，每次 services 重算都会产生新函数引用。
   const runCreateSessionDraftForPane = useCallback(async () => {
-    await createSessionDraftWithTab();
-  }, [createSessionDraftWithTab]);
+    await runCreateSessionDraft();
+  }, [runCreateSessionDraft]);
 
   const openSidebarSessionByIdForPane = useCallback(
     (projectId: string, sessionId: string) =>
-      openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
-    [openSidebarSessionByIdWithTab],
+      openSidebarSessionById(projectId, sessionId),
+    [openSidebarSessionById],
   );
 
   const sessionPaneServices = useMemo(
     () => ({
       isLanWeb,
-      promoteSessionToPermanent: workspaceChrome.promotePreview,
       showToast,
       onOpenFile: handleOpenLinkedFile,
       onDiffFile: diffFilePath,
       onPreviewImage: imagePreview.openMessageImage,
       abortAgent,
+      stopAgent: closeAgent,
       restartActiveAgent,
       runCreateSessionDraft: runCreateSessionDraftForPane,
       enqueueSessionPrompt,
@@ -2575,7 +2471,7 @@ export function App() {
       changeChatPath,
       jumpToMessageRef,
       layoutRefs: paneLayoutRefs,
-      exitSessionSplit: workspaceChrome.exitSplit,
+      exitSessionSplit: sessionWorkspace.exitSplit,
     }),
     [
       abortAgent,
@@ -2603,6 +2499,7 @@ export function App() {
       queue.queuedPrompts,
       queue.retractQueuedPromptForEdit,
       queueFlushBySessionRef,
+      closeAgent,
       restartActiveAgent,
       restartingAgentId,
       runCreateSessionDraftForPane,
@@ -2622,8 +2519,7 @@ export function App() {
       terminalTarget,
       validCommandNames,
       validFilePaths,
-      workspaceChrome.exitSplit,
-      workspaceChrome.promotePreview,
+      sessionWorkspace.exitSplit,
     ],
   );
 
@@ -2635,13 +2531,13 @@ export function App() {
             layout={
               // 视图投影：焦点会话在布局中 → 显示分屏；不在（新建/打开/退出分屏）→ 全屏 solo，
               // 布局状态保留，点布局内会话即恢复分屏视图
-              workspaceChrome.splitLayout &&
-              splitLayoutSessionIds(workspaceChrome.splitLayout).includes(currentSessionId)
-                ? workspaceChrome.splitLayout
+              sessionWorkspace.splitLayout &&
+              splitLayoutSessionIds(sessionWorkspace.splitLayout).includes(currentSessionId)
+                ? sessionWorkspace.splitLayout
                 : null
             }
-            draggingSessionId={workspaceChrome.draggingSessionId}
-            onDropSplit={workspaceChrome.dropSplit}
+            draggingSessionId={sessionWorkspace.draggingSessionId}
+            onDropSplit={sessionWorkspace.dropSplit}
             solo={
               <ChatSessionPane
                 key={currentSessionId}
@@ -2652,7 +2548,6 @@ export function App() {
               />
             }
             soloSessionId={currentSessionId}
-            tabCount={workspaceChrome.sessionTabIds.length}
             renderSession={(sessionId) => (
               <ChatSessionPane
                 key={sessionId}
@@ -2665,7 +2560,7 @@ export function App() {
           />
         </div>
       ) : (
-        // 无当前会话（普通项目点开 / 所有 Tab 关闭）时，普通项目与 Chat 项目
+        // 无当前会话（普通项目点开 / 会话被删除）时，普通项目与 Chat 项目
         // 共享统一空态；快捷操作新建 Agent / 匿名聊天，无项目时引导添加项目。
         // 引导页同样可以打开项目级终端（owner=project），在空态下方渲染 dock。
         <>
@@ -2673,8 +2568,8 @@ export function App() {
             {/* 无会话空态：启动 Agent / 临时对话入口，创建真实 Catalog 会话后再进时间线。 */}
             <ProjectEmptyState
               activeProject={activeProject}
-              onCreateAgent={(preferences) => void createSessionDraftWithTab(undefined, preferences)}
-              onCreateAnonymous={(preferences) => void createAnonymousSessionWithTab(undefined, preferences)}
+              onCreateAgent={(preferences) => void runCreateSessionDraft(undefined, preferences)}
+              onCreateAnonymous={(preferences) => void runCreateAnonymousSession(undefined, preferences)}
               onAddProject={() => void addProject()}
             />
           </div>
@@ -2718,45 +2613,17 @@ export function App() {
   const workbenchHasContent = workbenchHasGitDiff || workbenchHasEditor;
   const workbenchLayout = workbenchHasGitDiff ? gitDiffDisplayMode : editorMode;
 
-  // 文件/Diff Tab 挂进总 SessionTabsBar：与会话共用一条栏，内容区不再另起绿条 Tab
-  const workbenchEditorTabs = workbenchHasGitDiff && gitDrawerDiff
-    ? [
-        {
-          id: gitDrawerDiff.filePath,
-          label: gitDrawerDiff.label,
-          title: gitDrawerDiff.filePath,
-          active: true,
-        },
-      ]
-    : workbenchHasEditor
-      ? editorTabs.map((tab) => ({
-          id: tab.id,
-          label:
-            tab.label ??
-            tab.filePath.split(/[/\\]/).pop() ??
-            tab.filePath,
-          title: tab.filePath,
-          preview: tab.id === previewEditorTabId,
-          active: tab.id === activeTabId,
-        }))
-      : [];
-
-  const sessionTabsBarNode = (
-    <SessionTabsBar
-      {...sessionTabsProps}
-      editorTabs={workbenchEditorTabs}
-      onSelectEditorTab={(tabId) => {
-        if (workbenchHasGitDiff) return;
-        selectEditorTab(tabId);
-      }}
-      onCloseEditorTab={(tabId) => {
-        if (workbenchHasGitDiff) {
-          closeGitDiff();
-          return;
-        }
-        closeEditorTab(tabId);
-      }}
-      onPromoteEditorPreview={promotePreviewEditorTab}
+  const workspaceToolbarNode = (
+    <WorkspaceToolbar
+      listCollapsed={listCollapsed}
+      onToggleListCollapsed={toggleListCollapsed}
+      drawerOpen={Boolean(drawer && !drawerCollapsed)}
+      onToggleDrawer={toggleRightDrawer}
+      onExitAllSplit={
+        sessionWorkspace.splitLayout && currentSessionId &&
+        splitLayoutSessionIds(sessionWorkspace.splitLayout).includes(currentSessionId)
+          ? sessionWorkspace.exitAllSplit : undefined
+      }
     />
   );
 
@@ -2771,7 +2638,11 @@ export function App() {
       activeTab={workbenchHasEditor && activeTab ? activeTab : null}
       editorMode={editorMode}
       onToggleEditorMode={activeTab?.preserveDrawer ? undefined : toggleEditorMode}
-      onCloseEditor={() => { closeEditor(); }}
+      onCloseEditor={closeEditor}
+      editorTabs={editorTabs.map((tab) => ({ ...tab, preview: tab.id === previewEditorTabId }))}
+      onSelectEditorTab={selectEditorTab}
+      onCloseEditorTab={closeEditorTab}
+      onPromoteEditorPreview={promotePreviewEditorTab}
       readContent={readEditorFileContent}
       onOpenFile={handleOpenLinkedFile}
       readOriginalContent={readEditorOriginalContent}
@@ -2781,7 +2652,7 @@ export function App() {
 
   const chatPaneContentNode = (
     <WorkbenchStage
-      chrome={sessionTabsBarNode}
+      chrome={workspaceToolbarNode}
       layout={workbenchLayout}
       hasContent={workbenchHasContent}
       session={chatPaneSessionNode}
@@ -2827,8 +2698,7 @@ export function App() {
     projects,
     refreshProjectSessions,
     runOpenSidebarSession: async (projectId: string, session: SessionSummary) => {
-      const openedId = await runOpenSidebarSession(projectId, session);
-      if (openedId) workspaceChrome.registerOpenSession(openedId, "permanent");
+      await runOpenSidebarSession(projectId, session);
     },
     isSameSessionPath,
     runCopySession, runExportHistorySession, runDeleteHistorySession,

@@ -12,8 +12,7 @@ export type WorkbenchStageProps = {
 	layout: WorkspaceContentOpenMode;
 	hasContent: boolean;
 	/**
-	 * 顶栏 chrome（SessionTabsBar）。必须挂在分屏之上，才能与文件 Tab
-	 * 共用一条栏，且 maximize 收起会话面板时 Tab 仍可见。
+	 * 工作区工具栏放在分屏外，文件占满时仍可打开侧栏与抽屉。
 	 */
 	chrome?: ReactNode;
 	session: ReactNode;
@@ -23,7 +22,7 @@ export type WorkbenchStageProps = {
 /**
  * 中间栏工作台：会话与文件/Diff 内容宿主。
  *
- * - 顶栏 chrome（会话 + 文件 Tab）始终在分屏外
+ * - 工作区工具栏始终在分屏外
  * - 无内容：会话独占（与改版前一致）
  * - split：可拖拽分屏（固定左右，不做上下分屏）
  * - maximize：内容占满中间栏；会话面板 collapse(0) 但保持挂载，避免丢滚动/流式状态

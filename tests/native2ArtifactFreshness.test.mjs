@@ -19,7 +19,7 @@ import { after, describe, test } from "node:test";
 import { verifyBuildArtifacts } from "../scripts/verify-build-artifacts.mjs";
 
 const REPO_ROOT = process.cwd();
-const REAL_STAGE = join(REPO_ROOT, "build", "native2-validation-unpacked");
+const REAL_STAGE = resolve(REPO_ROOT, process.env.PIDECK_STAGE_DIR || "build/native2-validation-unpacked");
 const VERIFIER = join(REPO_ROOT, "scripts", "verify-build-artifacts.mjs");
 const REQUIRED = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 
@@ -68,7 +68,7 @@ async function put(path, content = "fixture\n", mtime) {
  * Mtimes are explicit, so the result never depends on when the test ran or on checkout
  * metadata.
  */
-async function makeFixture({ nodeSidecar = false } = {}) {
+async function makeFixture() {
 	const root = await mkdtemp(join(tmpdir(), "pideck-native2-freshness-"));
 	tempRoots.push(root);
 	const repo = join(root, "repo");
@@ -92,8 +92,6 @@ async function makeFixture({ nodeSidecar = false } = {}) {
 	await put(join(stage, "resources", "extensions", "node_modules", "undici", "package.json"), '{"name":"undici"}\n', FRESH_TIME);
 	await put(join(stage, "resources", "extensions", "node_modules", "acorn", "package.json"), '{"name":"acorn"}\n', FRESH_TIME);
 	await put(join(stage, "resources", "extensions", "node_modules", "acorn", "dist", "acorn.js"), "module.exports={};\n", FRESH_TIME);
-	// Present only for the Node compatibility definition (the C++ gate rejects it).
-	if (nodeSidecar) await put(join(stage, "app", "native-node", "index.cjs"), "// sidecar\n", FRESH_TIME);
 
 	return {
 		root,
@@ -110,8 +108,8 @@ async function makeFixture({ nodeSidecar = false } = {}) {
 	};
 }
 
-const verify = (fixture, sidecarKind = "cpp") =>
-	verifyBuildArtifacts({ repoRoot: fixture.repo, outDir: fixture.stage, sidecarKind });
+const verify = (fixture) =>
+	verifyBuildArtifacts({ repoRoot: fixture.repo, outDir: fixture.stage });
 
 describe("native2 C++ package freshness", () => {
 	test("fresh backend and host binaries pass the C++ package gate", async () => {
@@ -164,21 +162,12 @@ describe("native2 C++ package freshness", () => {
 		assert.match(result.errors.join("\n"), /Stale cpp-backend artifact/);
 	});
 
-	test("the Node compatibility definition is not judged by the C++ groups", async () => {
-		const fixture = await makeFixture({ nodeSidecar: true });
-		await fixture.stale(BACKEND);
-		await fixture.stale(HOST);
-		const result = await verify(fixture, "node");
-		assert.deepEqual(result.errors, []);
-		assert.equal(result.ok, true);
-	});
-
 	test("the command-line gate reports the stale native binary with exit code 1", async () => {
 		const fixture = await makeFixture();
 		await fixture.stale(BACKEND);
 		const run = spawnSync(
 			process.execPath,
-			[VERIFIER, "--repo-root", fixture.repo, "--out", fixture.stage, "--sidecar-kind", "cpp"],
+			[VERIFIER, "--repo-root", fixture.repo, "--out", fixture.stage],
 			{ encoding: "utf8" },
 		);
 		assert.equal(run.status, 1);
@@ -199,7 +188,6 @@ describe("native2 C++ package freshness", () => {
 		const result = await verifyBuildArtifacts({
 			repoRoot: REPO_ROOT,
 			outDir: REAL_STAGE,
-			sidecarKind: "cpp",
 		});
 		assert.deepEqual(result.errors, [], `the published stage must be fresh against its sources`);
 	});

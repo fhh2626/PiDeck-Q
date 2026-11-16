@@ -7,7 +7,7 @@ import { describe, test } from "node:test";
 import { startBackendSession } from "./helpers/native2BackendHarness.mjs";
 
 /**
- * WSL scan batching (`src/main/sessions/WslScanBatchReader.ts` parity).
+ * WSL scan batching through the native sessions:list contract.
  *
  * Every case drives the real `PiDeckBackend.exe` through `sessions:list` and a real child
  * process: `PIDECK_WSL_EXE` points at `PiDeck-FakeWsl`, a native launcher that forwards the
@@ -148,6 +148,8 @@ async function wslSession(t, { projectPath = SLASH(join(REPO, "src")), files = [
 				settings: { wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
 				env: {
 					PIDECK_WSL_EXE: launcher,
+					// Measure the foreground batch, not the independent startup cache prewarm.
+					PIDECK_CATALOG_PREWARM_DELAY_MS: "60000",
 					PIDECK_WSL_UNC_ROOT: uncRoot,
 					PIDECK_HOST_HOME: join(fixture.root, "local-home"),
 					PIDECK_HOME: join(fixture.root, "local-home"),

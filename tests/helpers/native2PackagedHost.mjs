@@ -27,12 +27,12 @@ import { joinPathParts } from "./native2FakeProcess.mjs";
 export const STAGE_ENV = "PIDECK_NATIVE2_STAGE";
 export const DEFAULT_STAGE = "build/native2-validation-unpacked";
 
-export function requirePackagedHost(repoRoot = process.cwd()) {
-	const relative = process.env[STAGE_ENV] ?? DEFAULT_STAGE;
+export function requirePackagedHost(repoRoot = process.cwd(), environment = process.env) {
+	const relative = environment[STAGE_ENV]?.trim() || environment.PIDECK_STAGE_DIR?.trim() || DEFAULT_STAGE;
 	// Absolute on purpose: the host is spawned with the fixture as its working directory,
 	// and a relative executable path would be resolved against that directory instead.
 	const stage = resolve(repoRoot, relative);
-	const required = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
+	const required = environment.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 	const host = join(stage, process.platform === "win32" ? "PiDeck-Q.exe" : "PiDeck-Q");
 	if (!existsSync(host)) {
 		// A missing package must fail the required gate: a silently skipped suite would be
@@ -40,7 +40,7 @@ export function requirePackagedHost(repoRoot = process.cwd()) {
 		if (required) {
 			throw new Error(
 				`PIDECK_REQUIRE_BACKEND_TESTS=1 but no packaged host exists at ${host}; build it with ` +
-					`"PIDECK_SIDECAR_KIND=cpp PIDECK_STAGE_DIR=${relative} xmake f -m release -y && xmake -r"`,
+					`"PIDECK_STAGE_DIR=${relative} xmake f -m release -y && xmake -r"`,
 			);
 		}
 		return { stage: "", host: "", available: false, relative };
@@ -101,7 +101,7 @@ export function resolveFakePi(repoRoot = process.cwd()) {
 export function verifyPackagedStage(stage) {
 	const verifier = spawnSync(
 		process.execPath,
-		["scripts/verify-build-artifacts.mjs", "--out", stage, "--sidecar-kind", "cpp"],
+		["scripts/verify-build-artifacts.mjs", "--out", stage],
 		{ env: process.env, encoding: "utf8" },
 	);
 	if (verifier.status !== 0) {
@@ -254,11 +254,8 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 		},
 		hostPath,
 	);
-	// The stage decides its sidecar kind at build time (PIDECK_DEFAULT_SIDECAR_KIND, which a
-	// plain build sets to cpp); an inherited override would hide a package that still
-	// defaults to Node. `extraEnv` is applied afterwards so a test can inject exactly one
-	// deliberate override (e.g. an unsupported kind) without inheriting the parent's.
-	delete environment.PIDECK_SIDECAR_KIND;
+	// Exercise the backend shipped beside the host. Inherited test overrides must
+	// not substitute a different executable or command-line arguments.
 	delete environment.PIDECK_SIDECAR_EXECUTABLE;
 	delete environment.PIDECK_SIDECAR_ARGS;
 	// Re-applied through the helper so an override cannot reintroduce a second, case-variant
@@ -276,6 +273,10 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 		output.stderr += chunk.toString("utf8");
 	});
 	const exited = new Promise((resolve) => {
+		child.once("error", (error) => {
+			output.error = error.message;
+			resolve({ code: null, signal: null, at: Date.now(), ...output });
+		});
 		child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now(), ...output }));
 	});
 	const startedAt = Date.now();
@@ -301,37 +302,89 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 
 /** Minimal CDP client: enough for real input events and DOM evaluation. */
 export class Cdp {
-	constructor(socket) {
+	constructor(socket, { timeoutMs = 10_000 } = {}) {
 		this.socket = socket;
+		this.timeoutMs = timeoutMs;
 		this.nextId = 1;
 		this.pending = new Map();
+		const rejectPending = (message) => {
+			for (const waiter of this.pending.values()) {
+				clearTimeout(waiter.timer);
+				waiter.reject(new Error(message));
+			}
+			this.pending.clear();
+		};
+		socket.addEventListener("close", () => rejectPending("CDP target closed"));
+		socket.addEventListener("error", () => rejectPending("CDP socket failed"));
 		socket.addEventListener("message", (event) => {
-			const frame = JSON.parse(event.data);
+			let frame;
+			try {
+				frame = JSON.parse(event.data);
+			} catch {
+				rejectPending("CDP target returned malformed JSON");
+				return;
+			}
 			const waiter = this.pending.get(frame.id);
 			if (!waiter) return;
+			clearTimeout(waiter.timer);
 			this.pending.delete(frame.id);
 			if (frame.error) waiter.reject(new Error(`${frame.error.message} (${frame.error.code})`));
 			else waiter.resolve(frame.result);
 		});
 	}
 
-	static async connect(url) {
+	static async connect(url, { timeoutMs = 5_000 } = {}) {
 		const socket = new WebSocket(url);
-		await new Promise((resolve, reject) => {
-			socket.addEventListener("open", resolve, { once: true });
-			socket.addEventListener("error", () => reject(new Error("CDP socket failed")), { once: true });
-		});
-		const client = new Cdp(socket);
-		await client.send("Runtime.enable");
-		return client;
+		const deadline = Date.now() + timeoutMs;
+		let client;
+		try {
+			await new Promise((resolve, reject) => {
+				const settle = (error) => {
+					clearTimeout(timer);
+					socket.removeEventListener("open", opened);
+					socket.removeEventListener("error", failed);
+					socket.removeEventListener("close", closed);
+					if (error) reject(error);
+					else resolve();
+				};
+				const opened = () => settle();
+				const failed = () => settle(new Error("CDP socket failed"));
+				const closed = () => settle(new Error("CDP target closed during connection"));
+				const timer = setTimeout(() => settle(new Error("CDP connection timed out")), timeoutMs);
+				socket.addEventListener("open", opened, { once: true });
+				socket.addEventListener("error", failed, { once: true });
+				socket.addEventListener("close", closed, { once: true });
+			});
+			client = new Cdp(socket);
+			await client.send("Runtime.enable", {}, { timeoutMs: Math.max(1, deadline - Date.now()) });
+			return client;
+		} catch (error) {
+			if (client) client.close();
+			else socket.close();
+			throw error;
+		}
 	}
 
-	send(method, params = {}) {
+	// A lost WebView target must fail the assertion, not keep the test process alive forever.
+	send(method, params = {}, { timeoutMs = this.timeoutMs } = {}) {
 		return new Promise((resolve, reject) => {
-			const id = this.nextId;
-			this.nextId += 1;
-			this.pending.set(id, { resolve, reject });
-			this.socket.send(JSON.stringify({ id, method, params }));
+			if (this.socket.readyState !== 1) {
+				reject(new Error("CDP target closed"));
+				return;
+			}
+			const id = this.nextId++;
+			const timer = setTimeout(() => {
+				this.pending.delete(id);
+				reject(new Error(`CDP command timed out: ${method}`));
+			}, timeoutMs);
+			this.pending.set(id, { resolve, reject, timer });
+			try {
+				this.socket.send(JSON.stringify({ id, method, params }));
+			} catch (error) {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				reject(error);
+			}
 		});
 	}
 
@@ -342,6 +395,9 @@ export class Cdp {
 			returnByValue: true,
 			userGesture: true,
 		});
+		if (result.exceptionDetails) {
+			throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+		}
 		return result.result?.value;
 	}
 
@@ -413,20 +469,30 @@ export class Cdp {
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Wait for a CDP page target and connect to it. */
-export async function connectPage(port, { timeoutMs = 120_000 } = {}) {
+export async function connectPage(port, { timeoutMs = 120_000, launch } = {}) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
+		if (launch && (launch.child.exitCode !== null || launch.child.signalCode || launch.output.error)) {
+			throw new Error(`packaged host exited before WebView2 was ready: ${JSON.stringify({
+				code: launch.child.exitCode, signal: launch.child.signalCode, ...launch.output,
+			})}`);
+		}
 		try {
-			const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+			const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
+				signal: AbortSignal.timeout(Math.min(2_000, Math.max(1, deadline - Date.now()))),
+			});
 			const targets = await response.json();
 			const page = targets.find((target) => target.type === "page");
-			if (page) return { cdp: await Cdp.connect(page.webSocketDebuggerUrl), target: page };
+			if (page) return {
+				cdp: await Cdp.connect(page.webSocketDebuggerUrl, { timeoutMs: Math.min(5_000, Math.max(1, deadline - Date.now())) }),
+				target: page,
+			};
 		} catch {
 			// host still booting
 		}
 		await sleep(250);
 	}
-	throw new Error(`the packaged host never exposed a CDP page target on port ${port}`);
+	throw new Error(`the packaged host never exposed a CDP page target on port ${port}: ${JSON.stringify(launch?.output ?? {})}`);
 }
 
 export async function waitForText(cdp, needle, { timeoutMs = 60_000, absent = false } = {}) {

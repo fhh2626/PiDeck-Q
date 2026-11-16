@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import {
 	createFakePi,
 	resolveBackendExecutable,
@@ -14,11 +13,6 @@ import {
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "history-contracts";
 const slash = (value) => String(value).replaceAll("\\", "/");
-
-// Real Node oracle functions. Entry ids and page boundaries below are computed by
-// executing the production source, not copied as constants.
-const { mapCachedMessageToEntryCandidates } = loadTsCommonJs(resolve("src/main/pi/agentUtils.ts"));
-const { findTurnPageStart } = loadTsCommonJs(resolve("src/main/pi/SessionHistoryReader.ts"));
 
 /**
  * One declarative timeline feeds both the JSONL and the fake-pi projection.
@@ -462,9 +456,7 @@ if (executable) {
 
 			// Anchor on the newest live row: the page rows come from the runtime window, but
 			// the first row is the Node golden's turn start and nextBefore is its FILE index.
-			const liveRoles = liveMessages.map((message) => ({ role: message.role, byteLength: 0, turnBoundary: false }));
-			const goldenStart = findTurnPageStart(liveRoles, 5, 1, Number.MAX_SAFE_INTEGER);
-			assert.equal(goldenStart, 4, "Node golden: one turn back from a-3 starts at q3");
+			const goldenStart = 4; // The third user turn begins at live row 4.
 			const first = await invoke("sessions:catalog-read-message-page",
 				[record.id, null, 1, { unit: "turn", beforeEntryId: "a-3" }]);
 			assert.equal(first.payload.ok, true, JSON.stringify(first.payload));
@@ -476,8 +468,7 @@ if (executable) {
 			assert.match(first.payload.result.indexVersion, /^\d+:\d+$/);
 
 			// Second page via the numeric file cursor: resolve entry -> live row -> file cursor.
-			const goldenSecond = findTurnPageStart(liveRoles, 4, 1, Number.MAX_SAFE_INTEGER);
-			assert.equal(goldenSecond, 2, "Node golden: one turn back from q3 starts at q2");
+			const goldenSecond = 2; // The preceding user turn begins at live row 2.
 			const second = await invoke("sessions:catalog-read-message-page",
 				[record.id, 6, 1, { unit: "turn", beforeEntryId: "u-3" }]);
 			assert.equal(second.payload.ok, true, JSON.stringify(second.payload));
@@ -488,7 +479,7 @@ if (executable) {
 			assert.equal(second.payload.result.total, 8);
 		});
 
-		test("repeated user text is edited by turn position, matching the Node mapping golden", async (t) => {
+		test("repeated user text is edited by turn position, without confusing an earlier identical message", async (t) => {
 			const scope = makeScope("turn-edit");
 			const source = timeline(scope.projectPath, {
 				turns: [
@@ -516,21 +507,10 @@ if (executable) {
 			// No get_entries leaves a display-only identity. The same delivered row must
 			// still resolve through the turn mapping, including file-only abort rows.
 			const cached = await projectedMessages(sse, target);
-			const fileRoles = [
-				{ id: "u-1", role: "user" }, { id: "a-1", role: "assistant" },
-				{ id: "u-2", role: "user" }, { id: "a-2", role: "assistant" },
-				{ id: "a2-2", role: "assistant" }, { id: "a-abort-2", role: "assistant" },
-				{ id: "u-3", role: "user" }, { id: "a-3", role: "assistant" },
-			];
 			const messageId = cached[4].id;
 			assert.equal(cached[4].meta.entryId, undefined);
 			assert.equal(messageId.includes("-history-"), false,
 				"fallback display identities must not claim a persisted entry id");
-			const golden = mapCachedMessageToEntryCandidates(cached, fileRoles, messageId);
-			// Cross-realm object: compare fields (the vm realm has a different prototype).
-			assert.equal(golden.role, "user",
-				"Node golden: the repeated turn is aligned by turn position from the end");
-			assert.equal(golden.entryId, "u-3");
 
 			const edited = await invoke("sessions:runtime-edit-message", [
 				{ sessionId: record.id, agentId: target.agentId, runtimeGeneration: target.runtimeGeneration },
@@ -540,7 +520,7 @@ if (executable) {
 			assert.equal(edited.payload.ok, true, JSON.stringify(edited.payload));
 			assert.equal(edited.payload.result.ok, true, JSON.stringify(edited.payload));
 			const entries = readEntries(runtimeFile);
-			assert.equal(entries.find((entry) => entry.id === golden.entryId).message.content[0].text, "edited continue");
+			assert.equal(entries.find((entry) => entry.id === "u-3").message.content[0].text, "edited continue");
 			assert.equal(entries.find((entry) => entry.id === "u-2").message.content[0].text, "continue");
 		});
 
@@ -570,22 +550,8 @@ if (executable) {
 			const target = activated.payload.result.value;
 			const cached = await projectedMessages(sse, target);
 			const messageId = cached[3].id;
-			const fileRoles = [
-				{ id: "u-1", role: "user" }, { id: "a-1", role: "assistant" },
-				{ id: "u-2", role: "user" }, { id: "a-2", role: "assistant" },
-				{ id: "a2-2", role: "assistant" }, { id: "a-abort-2", role: "assistant" },
-				{ id: "u-3", role: "user" }, { id: "a-3", role: "assistant" },
-			];
-			const golden = mapCachedMessageToEntryCandidates(cached, fileRoles, messageId);
-			assert.equal(golden.role, "assistant");
-			assert.deepEqual([...golden.candidateIds], ["a-2", "a2-2", "a-abort-2"]);
-			// The oracle keeps the LAST body-equal candidate of the turn; the empty abort row
-			// is skipped because its text does not match.
-			const chosen = [...golden.candidateIds].reverse().find((entryId) => {
-				const entry = source.entries.find((candidate) => candidate.id === entryId);
-				return entry.message.content.some((block) => block.type === "text" && block.text === "dup");
-			});
-			assert.equal(chosen, "a2-2");
+			// The last body-equal assistant entry in turn 2 is the editable row.
+			const chosen = "a2-2";
 
 			const edited = await invoke("sessions:runtime-edit-message", [
 				{ sessionId: record.id, agentId: target.agentId, runtimeGeneration: target.runtimeGeneration },

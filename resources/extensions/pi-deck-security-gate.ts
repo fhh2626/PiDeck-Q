@@ -220,7 +220,7 @@ export function loadSnapshot(targetPath: string): SnapshotLoadResult {
 	}
 }
 
-// ── 纯规则求值（与主进程 src/main/security/policy.ts 语义一致） ──
+// ── 纯规则求值（与原生后端的安全策略语义一致） ──
 
 function getPathModule() {
 	return process.platform === "win32" ? win32 : posix;

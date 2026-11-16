@@ -1219,7 +1219,7 @@ select:focus-visible {
 /* 侧栏折叠后 Tab 栏顶到窗口左缘，必须给红绿灯让位。
    具体 padding 走组件 Tailwind（读这个变量），避免 legacy 被 utilities 压掉。 */
 .wechat-shell.custom-titlebar-enabled.mac-custom-titlebar.list-collapsed {
-  --session-tabs-left-inset: calc(var(--traffic-lights-width) + 8px);
+  --workspace-toolbar-left-inset: calc(var(--traffic-lights-width) + 8px);
 }
 .custom-titlebar-enabled.mac-custom-titlebar .window-drag-layer {
   left: var(--traffic-lights-width);
@@ -1241,7 +1241,7 @@ select:focus-visible {
   top: 0;
   right: 0;
   width: var(--window-controls-width);
-  /* 必须高于 .session-tabs-bar(930)：否则抽屉开关会盖住关闭(X) */
+  /* 必须高于 .workspace-toolbar(930)：否则抽屉开关会盖住关闭(X) */
   z-index: 940;
   display: grid;
   /* 紧凑靠右上角：每键 36px（原 50px） */
@@ -1304,14 +1304,14 @@ select:focus-visible {
   height: var(--window-drag-height);
   -webkit-app-region: drag;
 }
-/* Tab 栏高于拖拽层(900)、低于窗口控件(940)。
+/* 工作区工具栏高于拖拽层(900)、低于窗口控件(940)。
    Electron：drag 矩形命中优先于 z-index；任何与窗口控件重叠的 drag 都会吞掉
    最小化/最大化点击（关闭键靠最右偶尔还能点到）。
    根因不是「用 margin 代替 padding」这么简单——flex 子项默认 min-width:auto，
    Tab 内容会把栏宽撑过「父宽 − margin」并画进控件区。必须同时：
    1) margin 让位（padding 仍属本元素，整段仍是 drag）；
    2) min-width:0 允许栏宽真正收进让位后的槽里。 */
-.custom-titlebar-enabled .session-tabs-bar {
+.custom-titlebar-enabled .workspace-toolbar {
   position: relative;
   z-index: 930;
   min-height: var(--window-drag-height);
@@ -1321,20 +1321,20 @@ select:focus-visible {
   overflow: hidden;
   -webkit-app-region: drag;
 }
-/* 抽屉关闭时聊天区顶到窗口右缘，Tab 栏须给窗口控件让位；
-   抽屉打开后控件叠在抽屉顶上，会话 Tab 不再预留 144px（否则开关会与抽屉 tab 栏隔开）。 */
-.custom-titlebar-enabled:not(.drawer-open) .session-tabs-bar {
+/* 抽屉关闭时聊天区顶到窗口右缘，工具栏须给窗口控件让位；
+   抽屉打开后控件叠在抽屉顶上，工具栏不再预留 144px（否则开关会与抽屉 tab 栏隔开）。 */
+.custom-titlebar-enabled:not(.drawer-open) .workspace-toolbar {
   margin-right: var(--window-controls-width);
 }
-/* 抽屉开关：固定在会话 Tab 栏最右侧 */
-.session-tabs-bar .header-drawer-toggle {
+/* 抽屉开关：固定在工作区工具栏最右侧 */
+.workspace-toolbar .header-drawer-toggle {
   color: var(--color-text-secondary);
 }
-.session-tabs-bar .header-drawer-toggle:hover {
+.workspace-toolbar .header-drawer-toggle:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
-.session-tabs-bar .header-drawer-toggle.active {
+.workspace-toolbar .header-drawer-toggle.active {
   background: var(--color-bg-active);
   color: var(--color-accent);
 }
@@ -1343,9 +1343,8 @@ select:focus-visible {
 .custom-titlebar-enabled .app-badge,
 .custom-titlebar-enabled .search-row,
 .custom-titlebar-enabled .chat-header,
-.custom-titlebar-enabled .session-tabs-bar button,
-.custom-titlebar-enabled .session-tabs-bar [role="tab"],
-.custom-titlebar-enabled .session-tabs-bar a,
+.custom-titlebar-enabled .workspace-toolbar button,
+.custom-titlebar-enabled .workspace-toolbar a,
 .custom-titlebar-enabled .file-diff-header,
 .custom-titlebar-enabled .file-diff-header button,
 .custom-titlebar-enabled .composer,
@@ -1480,7 +1479,7 @@ select:focus-visible {
 }
 
 /*
- * 侧栏完全收起：不留 14px 竖缝；恢复入口改到会话 Tab 栏左侧。
+ * 侧栏完全收起：不留 14px 竖缝；恢复入口改到工作区工具栏左侧。
  */
 .list-collapsed .shell-panel-list {
   overflow: hidden;

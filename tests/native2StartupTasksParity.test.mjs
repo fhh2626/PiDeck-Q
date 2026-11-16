@@ -10,7 +10,7 @@ import {
 } from "./helpers/native2BackendHarness.mjs";
 
 /**
- * Backend startup tasks (`src/main/backend/backendStartupTasks.ts` parity).
+ * Native backend startup tasks and persisted migration contracts.
  *
  * Every test drives the real `PiDeckBackend.exe` through the real host bridge and the
  * loopback RPC/SSE endpoints, so a pass is behavioural evidence rather than a structural
@@ -365,7 +365,15 @@ describe("native2 backend startup tasks", () => {
 		assert.equal(migrated.length, 1, `expected exactly one suffixed backup, got ${backups.join(",")}`);
 		assert.match(readFileSync(join(backupDir, migrated[0]), "utf8"), /registerPromptExtension/);
 
-		const log = appLogText(session.fixture.userData);
+		// Files are migrated on the domain worker before its completion is delivered
+		// to the owner thread. Wait for that notification rather than reading a
+		// partial diagnostic snapshot as soon as the source file disappears.
+		const log = await waitFor(() => {
+			const text = appLogText(session.fixture.userData);
+			return /Removed legacy\/stale extension/.test(text)
+				&& /Backed up legacy built-in extension entry/.test(text)
+				&& /Legacy extension entry left in place/.test(text) ? text : false;
+		}, "the migration completion was not delivered");
 		assert.match(log, /Removed legacy\/stale extension/);
 		assert.match(log, /Backed up legacy built-in extension entry/);
 		assert.match(log, /Legacy extension entry left in place/);

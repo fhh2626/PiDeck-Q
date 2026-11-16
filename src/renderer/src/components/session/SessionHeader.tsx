@@ -1,4 +1,4 @@
-import { HatGlasses, Maximize2 } from "lucide-react";
+import { CircleStop, HatGlasses, Maximize2, RotateCw } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { useMemo, type ReactNode, type RefObject } from "react";
 import type { AgentRuntimeState } from "../../../../shared/types";
@@ -21,18 +21,19 @@ type HeaderActions = {
   compactionCount?: number;
   isAnonymous?: boolean;
   duration?: number;
-  /** 将状态/操作区嵌入 Tab 栏，避免当前会话再单独占一行。 */
-  embedded?: boolean;
-  /** 头部左侧槽位（Todo/Plan 等扩展 widget chips）；会话标题迁走后左侧留空，widget 入口落在这里。 */
+  canStop?: boolean;
+  onStop?: () => void;
+  onRestart?: () => void;
+  isRestarting?: boolean;
+  /** 头部左侧槽位（Todo/Plan 等扩展 widget chips）；与本栏状态及操作共同展示。 */
   widgetChips?: ReactNode;
   /**
-   * 项目目录名（面包屑左段）：多 Tab/分屏时提醒当前会话属于哪个项目。
+   * 项目目录名（面包屑左段）：多项目分屏时提醒当前会话属于哪个项目。
    * legacy 模式由上层传入；session 模式可从会话记录自行解析。
    */
   projectName?: string;
   /**
-   * 分屏栏内显示本栏会话标题，避免「共享顶栏 Tab ↔ 左右栏」对不上号。
-   * 单栏时标题已在外置 Tab 上，通常不传。
+   * 分屏栏可覆盖本栏会话标题。
    */
   paneTitle?: string;
   /** 退出会话分屏（扩大为单栏）；仅分屏时提供 */
@@ -57,12 +58,7 @@ type ModernSessionHeaderProps = HeaderActions & {
 
 export type SessionHeaderProps = LegacySessionHeaderProps | ModernSessionHeaderProps;
 
-/**
- * 渲染会话状态徽章（+ 分屏身份标题）。
- * 会话运行控制（停止/重启）已迁入 Tab 下拉（SessionTabsBar 的 canStopCurrent 链路），
- * 此组件不再承载操作菜单；embedded 模式供 Tab 栏 actions 复用；普通模式保留
- * 分屏 pane 外壳（paneTitle + 退出分屏）。
- */
+/** 会话身份、状态和运行控制，各分屏面板绑定自己的会话。 */
 export function SessionHeader(props: SessionHeaderProps) {
   const sessionMode = props.mode === "session";
   const sessionId = props.sessionId ?? "";
@@ -92,8 +88,7 @@ export function SessionHeader(props: SessionHeaderProps) {
 
   const actions = (
     <div
-      ref={props.embedded ? props.headerRef : undefined}
-      className={`chat-header-actions flex min-w-0 max-w-full shrink items-center justify-end gap-1.5 overflow-hidden${props.embedded ? " h-7 w-auto" : ""}${isStarting ? " loading" : ""}`}
+      className={`chat-header-actions flex min-w-0 max-w-full shrink items-center justify-end gap-1.5 overflow-hidden${isStarting ? " loading" : ""}`}
     >
       {props.widgetChips}
       {isAnonymous && (
@@ -104,16 +99,28 @@ export function SessionHeader(props: SessionHeaderProps) {
       <div className="shrink-0">
         <SessionStatus state={runtimeState} duration={props.duration} cacheHitHistory={cacheStats?.cacheHitHistory} />
       </div>
+      {props.onStop && (
+        <Button type="button" variant="ghost" size="icon-sm" className="size-7 shrink-0"
+          disabled={!props.canStop || props.isRestarting} onClick={props.onStop}
+          title={t("session.stopAgent")} aria-label={t("session.stopAgent")}>
+          <CircleStop className="size-3.5" aria-hidden="true" />
+        </Button>
+      )}
+      {props.onRestart && (
+        <Button type="button" variant="ghost" size="icon-sm" className="size-7 shrink-0"
+          disabled={props.isRestarting} onClick={props.onRestart}
+          title={t(props.isRestarting ? "app.restarting" : "app.restart")}
+          aria-label={t(props.isRestarting ? "app.restarting" : "app.restart")}>
+          <RotateCw className="size-3.5" aria-hidden="true" />
+        </Button>
+      )}
     </div>
   );
-
-  if (props.embedded) return actions;
   return (
     <div
       ref={props.headerRef}
       role="banner"
-      /* 普通模式：分屏 pane 的会话身份行（Tab 已外置）。
-         底部分隔线去掉：分屏身份标题下再叠一条线过于碎。 */
+      /* Keep identity and controls in the pane so cross-project splits remain unambiguous. */
       className="chat-header grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,auto)] items-center gap-2 bg-background px-3 py-1"
     >
       <div className="flex min-w-0 items-center gap-1.5">

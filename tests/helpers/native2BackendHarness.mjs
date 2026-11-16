@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -356,8 +356,53 @@ export function spawnBackend({ executable, hostPort, token, env = {}, cwd = proc
 	});
 	const exited = new Promise((resolve) => {
 		child.once("exit", (code, signal) => resolve({ code, signal, ...output }));
+		child.once("error", () => resolve({ code: null, signal: null, ...output }));
 	});
-	return { child, output, exited };
+	// `exit` precedes stdio closure. A fixture cannot be removed until inherited
+	// streams have also closed and the process no longer owns its working directory.
+	const closed = new Promise((resolve) => {
+		child.once("close", (code, signal) => resolve({ code, signal, ...output }));
+	});
+	return { child, output, exited, closed };
+}
+
+/** Wait for teardown without leaving a timeout alive after the process settles. */
+async function settlesWithin(promise, timeoutMs) {
+	let timer;
+	try {
+		return await Promise.race([
+			promise.then(() => true),
+			new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** Reap the backend before removing its fixture, including the forced-cleanup path. */
+export async function stopBackendProcess(backend, host, { graceMs = 3_000 } = {}) {
+	try {
+		if (!backend) return;
+		if (backend.child.exitCode === null && !backend.output?.spawnError) {
+			try { host.emit("application.prepareQuit"); } catch { /* host already disconnected */ }
+			if (!await settlesWithin(backend.exited, graceMs) && backend.child.exitCode === null) {
+				if (process.platform === "win32" && backend.child.pid) {
+					// Kill this exact fixture's descendants, never other Node or Pi processes.
+					spawnSync("taskkill", ["/PID", String(backend.child.pid), "/T", "/F"], {
+						stdio: "ignore", timeout: 5_000,
+					});
+				} else {
+					backend.child.kill("SIGKILL");
+				}
+			}
+		}
+		if (!await settlesWithin(backend.closed ?? backend.exited, 5_000)) {
+			throw new Error("backend fixture still owns process streams after teardown");
+		}
+	} finally {
+		// A failed teardown must not leave the host TCP server holding the test runner open.
+		await host.stop();
+	}
 }
 
 /**
@@ -696,21 +741,7 @@ export async function startBackendSession(
 	// Resolving or spawning a missing backend can throw after the host starts listening.
 	// Register cleanup first so that a failing test still exits and reports the failure.
 	t.after(async () => {
-		if (process_ && process_.child.exitCode === null) {
-			// Ask the backend to shut down so it closes pi itself: killing it would leave
-			// the pi grandchild holding the fixture cwd and block the temp-dir cleanup.
-			try {
-				host.emit("application.prepareQuit");
-			} catch {
-				// host socket already gone
-			}
-			const exited = await Promise.race([
-				process_.exited.then(() => true),
-				new Promise((resolve) => setTimeout(() => resolve(false), 3_000)),
-			]);
-			if (!exited && process_.child.exitCode === null) process_.child.kill();
-		}
-		await host.stop();
+		await stopBackendProcess(process_, host);
 		rmSync(fixture.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	});
 	const hostPort = await host.start();

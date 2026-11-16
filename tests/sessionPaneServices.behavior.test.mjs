@@ -33,7 +33,7 @@ async function withReactPane(run, options = {}) {
 function services() {
   const noop = () => {};
   return {
-    promoteSessionToPermanent: noop, showToast: noop, onOpenFile: noop, onDiffFile: noop, onPreviewImage: noop,
+    showToast: noop, onOpenFile: noop, onDiffFile: noop, onPreviewImage: noop,
     abortAgent: async () => {}, restartActiveAgent: async () => {}, runCreateSessionDraft: async () => {},
     enqueueSessionPrompt: () => true, insertQuickPrompt: noop, queueRetract: noop, queueDiscard: noop,
     queueFlushBySessionRef: { current: new Set() }, setTerminalOpenForOwner: noop, setTerminalCollapsedForOwner: noop,

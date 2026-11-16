@@ -51,7 +51,7 @@ async function withHost(t, { isolatedPath = true } = {}) {
 		await sleep(1500);
 		fixture.cleanup();
 	});
-	const { cdp } = await connectPage(port);
+	const { cdp } = await connectPage(port, { launch });
 	t.after(() => cdp.close());
 	await waitForText(cdp, "PIDECK-Q", { timeoutMs: 120_000 });
 	await waitForText(cdp, "Loading history sessions", { absent: true, timeoutMs: 120_000 });
@@ -110,7 +110,7 @@ if (!available) {
 			if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") {
 				assert.fail(
 					"PIDECK_REQUIRE_BACKEND_TESTS=1 but the packaged host or the native fake pi is missing; build with " +
-						"PIDECK_SIDECAR_KIND=cpp PIDECK_STAGE_DIR=build/native2-validation-unpacked xmake -r and " +
+						"PIDECK_STAGE_DIR=build/native2-validation-unpacked xmake -r and " +
 						"xmake build -y PiDeck-FakePi2",
 				);
 			}
@@ -129,7 +129,7 @@ if (!available) {
 			}
 			// 2. The TS extensions keep their own dependencies: pi loads them, they are product
 			//    content, not the business Node runtime.
-			for (const dependency of ["acorn", "jiti", "undici", "yaml"]) {
+			for (const dependency of ["acorn", "undici"]) {
 				assert.ok(
 					existsSync(join(stage, "resources", "extensions", "node_modules", dependency)),
 					`extension dependency ${dependency} must stay in the package`,
@@ -171,27 +171,6 @@ if (!available) {
 			assert.ok(memoryBytes > 0, "process-tree memory must be measurable");
 			console.log(
 				`METRICS stage=cpp bootMs=${bootMs} treeMemoryBytes=${memoryBytes} stageFiles=${facts.files} stageBytes=${facts.bytes}`,
-			);
-		});
-
-		test("an unsupported PIDECK_SIDECAR_KIND is refused instead of falling back", async (t) => {
-			// A typo in the sidecar selection must fail the launch, not silently start the other
-			// backend: the packaged host exits before any window or child process exists.
-			const fixture = createHostFixture({ fakePi });
-			const port = findFreePort();
-			const launch = launchHost({ stage: packaged.stage, fixture, port, extraEnv: { PIDECK_SIDECAR_KIND: "bogus" } });
-			t.after(async () => {
-				if (launch.child.exitCode === null) launch.killTree();
-				await sleep(500);
-				fixture.cleanup();
-			});
-			const exit = await Promise.race([launch.exited, sleep(30_000).then(() => null)]);
-			assert.ok(exit, "the host must refuse an unsupported sidecar kind instead of running");
-			assert.equal(exit.code, 1, `expected exit code 1, got ${exit.code} (stderr: ${exit.stderr.slice(0, 400)})`);
-			assert.match(`${exit.stdout}${exit.stderr}`, /Unsupported PIDECK_SIDECAR_KIND/);
-			assert.ok(
-				exit.at - launch.startedAt < 15_000,
-				`a rejected kind must fail fast, took ${exit.at - launch.startedAt} ms`,
 			);
 		});
 

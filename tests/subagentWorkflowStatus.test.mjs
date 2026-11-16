@@ -6,9 +6,6 @@ import {
 	parseWorkflowChildSummary,
 	workflowChildSummary,
 } from "../resources/extensions/pideck-q-subagents/src/workflows/workflow-child-summary.ts";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-
-const { SubagentRunTracker } = loadTsCommonJs("src/main/pi/SubagentRunTracker.ts");
 
 // 跨仓契约：workflowScript 的运行中子代理只出现在 workflowChildren（results[]
 // 要等子代理收尾才填充），因此 PiDeck 的侧栏状态灯必须能从这一行拿到 sessionFile。
@@ -125,29 +122,6 @@ test("terminal rows keep the session link in the final summary", () => {
 	assert.equal(parseWorkflowChildSummary(summary)?.children[0].sessionFile, "C:/sessions/broken.jsonl");
 });
 
-test("a stopped child settles its light instead of leaving it running", () => {
-	const tracker = new SubagentRunTracker();
-	const event = (state) => ({
-		toolName: "subagent",
-		partialResult: {
-			details: {
-				mode: "workflow",
-				results: [],
-				workflowChildren: workflowChildSummary({
-					...runningRow(),
-					trace: [{ operation: "run", key: "factory-stream-review", state }],
-					sessionFiles: new Map([["factory-stream-review", "C:/sessions/stopped.jsonl"]]),
-				}),
-			},
-		},
-	});
-	assert.equal(tracker.observe("agent-1", event("started"), 1_000), true);
-	assert.equal(tracker.snapshot("agent-1", 1_000).length, 1);
-	// stopped/paused 在侧栏没有单独状态，按「不再运行」收灯，不能留黄灯。
-	assert.equal(tracker.observe("agent-1", event("stopped"), 2_000), true);
-	assert.equal(tracker.snapshot("agent-1", 2_000).length, 0);
-});
-
 test("workflow summary carries sessionFile from progress without a separate map", () => {
 	const summary = workflowChildSummary({
 		...runningRow(),
@@ -160,52 +134,4 @@ test("workflow summary carries sessionFile from progress without a separate map"
 
 	assert.equal(summary.children[0].sessionFile, "C:/sessions/progress.jsonl");
 	assert.equal(summary.children[0].activity?.currentTool, "read");
-});
-
-test("the sidebar tracker lights the live workflow child from the real summary shape", () => {
-	const summary = workflowChildSummary({
-		...runningRow(),
-		sessionFiles: new Map([["factory-stream-review", "C:/sessions/child.jsonl"]]),
-	});
-	const tracker = new SubagentRunTracker();
-	const event = {
-		type: "tool_execution_update",
-		toolName: "subagent",
-		toolCallId: PARENT_TOOL_CALL_ID,
-		partialResult: {
-			content: [],
-			details: { mode: "workflow", results: [], workflowChildren: summary },
-		},
-	};
-
-	assert.equal(tracker.observe("agent-1", event, 1_000), true);
-	assert.deepEqual(
-		Array.from(tracker.snapshot("agent-1", 1_000), (run) => `${run.sessionFile}|${run.status}`),
-		["C:/sessions/child.jsonl|running"],
-	);
-
-	const completedSummary = workflowChildSummary({
-		...runningRow(),
-		trace: [{ operation: "run", key: "factory-stream-review", state: "completed" }],
-		children: [{
-			key: "factory-stream-review",
-			ok: true,
-			agent: "readonly",
-			output: "done",
-			artifactPaths: [],
-			results: [{ sessionFile: "C:/sessions/child.jsonl", exitCode: 0 }],
-		}],
-		inventoryComplete: true,
-	});
-	const endEvent = {
-		type: "tool_execution_end",
-		toolName: "subagent",
-		toolCallId: PARENT_TOOL_CALL_ID,
-		result: {
-			content: [],
-			details: { mode: "workflow", results: [], workflowChildren: completedSummary },
-		},
-	};
-	assert.equal(tracker.observe("agent-1", endEvent, 2_000), true);
-	assert.equal(tracker.snapshot("agent-1", 2_000).length, 0);
 });

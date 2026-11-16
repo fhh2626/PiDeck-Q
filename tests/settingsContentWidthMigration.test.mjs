@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 
 // 内容宽度百分比重构契约：contentMaxWidth(px) → chatContentWidthPct(%)
 const settingsType = readFileSync("src/shared/types/settings.ts", "utf8");
-const store = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
 const appShell = readFileSync("src/renderer/src/components/app/AppShell.tsx", "utf8");
 const splitStage = readFileSync(
   "src/renderer/src/components/session/SessionSplitStage.tsx",
@@ -43,22 +42,6 @@ test("settings type keeps legacy contentMaxWidth for read compat and adds chatCo
   assert.match(settingsType, /chatContentWidthPct: number/);
   // 旧字段必须保留（旧 settings.json 读取兼容），不能删成可选（否则全链路 undefined 传播）
   assert.match(settingsType, /@deprecated 由 chatContentWidthPct 取代/);
-});
-
-test("SettingsStore default is 80% (readable width, not full width)", () => {
-  assert.match(store, /chatContentWidthPct: 80/);
-});
-
-test("SettingsStore migrates legacy px via linear mapping on load", () => {
-  // 迁移必须在 load() 的兼容迁移区调用（commit-mono 迁移之后、catch 之前）
-  assert.match(store, /this\.migrateContentWidth\(parsed\)/);
-  // 线性映射公式：px∈[800,1800) → pct∈[60,100)；其余（≤0 或 ≥1800=不限）→ 100
-  assert.match(store, /\(\(legacyPx - 800\) \/ 1000\) \* 40 \+ 60/);
-  assert.match(store, /legacyPx > 0 && legacyPx < 1800/);
-  // 已存在新值（已迁移/用户已设置）时不得覆盖
-  assert.match(store, /if \(typeof pct === "number" && Number\.isFinite\(pct\)\) return/);
-  // 迁移后写回持久化
-  assert.match(store, /this\.save\(\)\.catch/);
 });
 
 test("AppShell always injects --chat-content-pct-set without conditional branch", () => {

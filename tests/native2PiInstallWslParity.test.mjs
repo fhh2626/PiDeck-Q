@@ -12,25 +12,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { joinPathParts, writeNodeShim } from "./helpers/native2FakeProcess.mjs";
-import { createDesktopRpcOracle } from "./helpers/native2DesktopRpcOracle.mjs";
 import {
 	qtBinDirectory,
 	resolveBackendExecutable,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
 
-/**
- * `pi:check` / `pi:check-custom` / `pi:check-npm` / `pi:exec-install` plus
- * `wsl:list-distros` / `wsl:validate-connection` parity.
- *
- * Goldens are the production handlers in `src/main/ipc/systemIpc.ts` (loaded through
- * `createDesktopRpcOracle`), driving the production `PiLocator`. The fixtures are a fake
- * `pi.cmd` that answers `--version`, a fake `npm.cmd` that records argv/env/cwd, and a
- * fake `wsl.cmd` shim: nothing here installs a package, touches the user's network or
- * needs a real WSL distro. Both implementations point at the *same* shims, so the
- * `command` and `searchedDirs` fields can be compared verbatim.
- */
-
+/** Exercise native Pi discovery, installation and WSL contracts using local CLI fixtures. */
 const executable = resolveBackendExecutable();
 const isWindows = process.platform === "win32";
 
@@ -66,7 +54,7 @@ function wire(value) {
 }
 
 if (executable && isWindows) {
-	describe("native2 pi install / WSL parity", () => {
+	describe("native2 pi install / WSL contracts", () => {
 		let root;
 		let home;
 		let appData;
@@ -194,22 +182,16 @@ if (executable && isWindows) {
 		}
 
 		/** Start the backend and build the oracle against the identical environment. */
-		async function startTest(t, { settings = {}, env = {}, modelsConfig } = {}) {
+		async function startTest(t, { settings = {}, env = {} } = {}) {
 			const finalSettings = baseSettings(settings);
 			const finalEnv = envFor(env);
 			const session = await startBackendSession(t, {
 				settings: finalSettings,
 				env: finalEnv,
 			});
-			const oracle = createDesktopRpcOracle({
-				home,
-				settings: finalSettings,
-				env: finalEnv,
-				modelsConfig,
-			});
+
 			return {
 				session,
-				oracle,
 				invoke: (channel, args = []) => session.invoke(channel, args),
 				backendSettings: () =>
 					JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8")),
@@ -220,15 +202,13 @@ if (executable && isWindows) {
 			installWslFixture();
 			const scenarioPath = writePiScenario({ version: "1.2.3" });
 			const shim = writeNodeShim(piBin, "pi", piScript);
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				settings: { piRuntimePreference: "typescript", piTypescriptPath: shim },
 				env: { FAKE_PI_MODELS_SCENARIO: scenarioPath },
 			});
 
 			const actual = await invoke("pi:check");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("pi:check");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.equal(actual.payload.result.installed, true);
 			assert.equal(actual.payload.result.command, shim);
 			assert.equal(actual.payload.result.version, "1.2.3");
@@ -243,12 +223,12 @@ if (executable && isWindows) {
 		test("pi:check resolves a WSL pi marker and probes the distro pi", async (t) => {
 			const shim = installWslFixture();
 			assert.ok(shim);
-			const scenarioPath = writeWslScenario({
+			writeWslScenario({
 				which: "/usr/local/bin/pi",
 				whoami: "dev",
 				piVersion: "1.2.3",
 			});
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				settings: {
 					piRuntimePreference: "auto",
 					wslEnabled: true,
@@ -259,8 +239,6 @@ if (executable && isWindows) {
 
 			const actual = await invoke("pi:check");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("pi:check");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.equal(actual.payload.result.installed, true);
 			assert.equal(actual.payload.result.command, "wsl -d Ubuntu -u dev pi");
 			assert.deepEqual(actual.payload.result.searchedDirs, []);
@@ -272,7 +250,7 @@ if (executable && isWindows) {
 		test("pi:check-custom validates, normalizes and persists the resolved shim", async (t) => {
 			const scenarioPath = writePiScenario({ version: "1.2.3" });
 			const shim = writeNodeShim(piBin, "pi", piScript);
-			const { invoke, oracle, backendSettings } = await startTest(t, {
+			const { invoke, backendSettings } = await startTest(t, {
 				env: { FAKE_PI_MODELS_SCENARIO: scenarioPath },
 			});
 
@@ -280,18 +258,13 @@ if (executable && isWindows) {
 			const pasted = shim.replace(/\.cmd$/, "");
 			const actual = await invoke("pi:check-custom", [pasted]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("pi:check-custom", [pasted]);
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.equal(actual.payload.result.installed, true);
 			assert.equal(actual.payload.result.command, shim);
 			assert.deepEqual(actual.payload.result.searchedDirs, []);
 			assert.equal(backendSettings().customPiPath, shim, "the resolved path is persisted");
-			assert.equal(oracle.settings.customPiPath, shim);
 
 			const missing = join(root, "missing", "pi.cmd");
 			const broken = await invoke("pi:check-custom", [missing]);
-			const brokenExpected = await oracle.invoke("pi:check-custom", [missing]);
-			assert.deepEqual(wire(broken.payload.result), wire(brokenExpected));
 			assert.equal(broken.payload.result.installed, false);
 			assert.equal(broken.payload.result.command, missing);
 			assert.equal(broken.payload.result.error, "Could not run pi CLI. Check its path and installation.");
@@ -301,27 +274,22 @@ if (executable && isWindows) {
 			const npmLog = join(npmBin, "npm.log");
 			truncate(npmLog);
 			const scenarioPath = writeNpmScenario({ version: "10.8.2" });
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				env: { FAKE_NPM_SCENARIO: scenarioPath, FAKE_NPM_LOG: npmLog },
 			});
 
 			const actual = await invoke("pi:check-npm");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("pi:check-npm");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(wire(actual.payload.result), { available: true, version: "10.8.2" });
-			assert.equal(readJsonLines(npmLog).filter((entry) => entry.argv[0] === "--version").length, 2);
+			assert.equal(readJsonLines(npmLog).filter((entry) => entry.argv[0] === "--version").length, 1);
 
 			// A failing npm still answers `{available:false}`; the message itself is
 			// implementation specific, so both sides are required to carry the stderr.
 			truncate(npmLog);
 			writeNpmScenario({ versionExit: 1, versionStderr: "npm exploded\n" });
 			const failure = await invoke("pi:check-npm");
-			const failureExpected = await oracle.invoke("pi:check-npm");
 			assert.equal(failure.payload.result.available, false);
-			assert.equal(failureExpected.available, false);
 			assert.match(String(failure.payload.result.error), /npm exploded/);
-			assert.match(String(failureExpected.error), /npm exploded/);
 		});
 
 		test("pi:exec-install runs the command through cmd with npm network calls disabled", async (t) => {
@@ -331,15 +299,13 @@ if (executable && isWindows) {
 				installStdout: "installed fake package\n",
 				installExit: 0,
 			});
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				env: { FAKE_NPM_SCENARIO: scenarioPath, FAKE_NPM_LOG: npmLog },
 			});
 
 			const command = "npm install -g @earendil-works/pi-coding-agent";
 			const actual = await invoke("pi:exec-install", [command]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("pi:exec-install", [command]);
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(wire(actual.payload.result), {
 				success: true,
 				exitCode: 0,
@@ -348,7 +314,7 @@ if (executable && isWindows) {
 			});
 
 			const entries = readJsonLines(npmLog);
-			assert.equal(entries.length, 2, "one install run per implementation");
+			assert.equal(entries.length, 1, "one native install invocation");
 			for (const entry of entries) {
 				assert.deepEqual(entry.argv, ["install", "-g", "@earendil-works/pi-coding-agent"]);
 				assert.equal(entry.fund, "false");
@@ -359,8 +325,6 @@ if (executable && isWindows) {
 			truncate(npmLog);
 			writeNpmScenario({ installStderr: "install failed: EACCES\n", installExit: 3 });
 			const failure = await invoke("pi:exec-install", [command]);
-			const failureExpected = await oracle.invoke("pi:exec-install", [command]);
-			assert.deepEqual(wire(failure.payload.result), wire(failureExpected));
 			assert.deepEqual(wire(failure.payload.result), {
 				success: false,
 				exitCode: 3,
@@ -369,46 +333,40 @@ if (executable && isWindows) {
 			});
 		});
 
-		test("wsl:list-distros filters binary noise exactly like the oracle", async (t) => {
+		test("wsl:list-distros filters binary noise and invalid distribution names", async (t) => {
 			const wslLog = join(wslBin, "wsl.log");
 			truncate(wslLog);
 			const scenarioPath = writeWslScenario({
 				// UTF-16LE output arrives NUL-laden; the WSL banner contains a backslash.
 				distros: ["Ubuntu", "docker-desktop\\", "Bad\u0000Name", "", "Debian"],
 			});
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				env: { FAKE_WSL_SCENARIO: scenarioPath, FAKE_WSL_LOG: wslLog },
 			});
 
 			const actual = await invoke("wsl:list-distros");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("wsl:list-distros");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(actual.payload.result, ["Ubuntu", "Debian"]);
 			const entries = readJsonLines(wslLog);
-			assert.equal(entries.length, 2);
+			assert.equal(entries.length, 1);
 			assert.deepEqual(entries[0].argv, ["-l", "-q"]);
 
 			truncate(wslLog);
 			writeWslScenario({ distros: ["Ubuntu"], listExit: 3 });
 			const failure = await invoke("wsl:list-distros");
-			const failureExpected = await oracle.invoke("wsl:list-distros");
 			assert.deepEqual(wire(failure.payload.result), []);
-			assert.deepEqual(wire(failureExpected), []);
 		});
 
-		test("wsl:validate-connection reports the whoami/pi states with the oracle's copy", async (t) => {
+		test("wsl:validate-connection reports each connection and Pi availability state", async (t) => {
 			const wslLog = join(wslBin, "wsl.log");
 			truncate(wslLog);
 			writeWslScenario({ whoami: "dev", piVersion: "1.2.3" });
-			const { invoke, oracle } = await startTest(t, {
+			const { invoke } = await startTest(t, {
 				env: { FAKE_WSL_SCENARIO: join(wslBin, "scenario.json"), FAKE_WSL_LOG: wslLog },
 			});
 
 			const connected = await invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
 			assert.equal(connected.payload.ok, true, JSON.stringify(connected.payload));
-			const connectedExpected = await oracle.invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
-			assert.deepEqual(wire(connected.payload.result), wire(connectedExpected));
 			assert.deepEqual(wire(connected.payload.result), {
 				ok: true,
 				whoami: "dev",
@@ -419,8 +377,6 @@ if (executable && isWindows) {
 			// The distro is reachable but pi is missing: ok stays true, the error explains why.
 			writeWslScenario({ whoami: "dev", piExit: 1 });
 			const missingPi = await invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
-			const missingPiExpected = await oracle.invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
-			assert.deepEqual(wire(missingPi.payload.result), wire(missingPiExpected));
 			assert.deepEqual(wire(missingPi.payload.result), {
 				ok: true,
 				whoami: "dev",
@@ -430,8 +386,6 @@ if (executable && isWindows) {
 
 			writeWslScenario({ whoamiExit: 1, whoamiStderr: "no such distro\n" });
 			const disconnected = await invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
-			const disconnectedExpected = await oracle.invoke("wsl:validate-connection", ["Ubuntu", "dev"]);
-			assert.deepEqual(wire(disconnected.payload.result), wire(disconnectedExpected));
 			assert.deepEqual(wire(disconnected.payload.result), {
 				ok: false,
 				whoami: "",

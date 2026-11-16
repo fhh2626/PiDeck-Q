@@ -1,7 +1,7 @@
 #include "ClipboardController.h"
 #include "FileDropController.h"
 #include "HostRpcServer.h"
-#include "NodeProcessController.h"
+#include "BackendProcessController.h"
 #include "StartupWindowBounds.h"
 
 #include <QCoreApplication>
@@ -267,10 +267,10 @@ int main(int argc, char **argv)
     }, nullptr), "event was not delivered to authenticated connection")) return 1;
 
     NativePaths processPaths;
-    processPaths.nodeExecutable = qEnvironmentVariable("ComSpec", QStringLiteral("cmd.exe"));
-    processPaths.nativeNodeEntry = QStringLiteral("/k");
-    NodeProcessController processController(processPaths, &server);
-    if (!require(processController.start(), "NodeProcessController test process failed to start")) return 1;
+    processPaths.sidecarExecutable = qEnvironmentVariable("ComSpec", QStringLiteral("cmd.exe"));
+    processPaths.sidecarArguments = QStringList{QStringLiteral("/k")};
+    BackendProcessController processController(processPaths, &server);
+    if (!require(processController.start(), "BackendProcessController test process failed to start")) return 1;
     int stopCallbacks = 0;
     processController.stopAsync([&stopCallbacks] { ++stopCallbacks; });
     processController.stopAsync([&stopCallbacks] { ++stopCallbacks; });
@@ -282,10 +282,10 @@ int main(int argc, char **argv)
     }
     if (!require(stopCallbacks == 2, "all asynchronous stop callbacks were not delivered")) return 1;
     if (!require(!processController.isRunning(), "stop callback fired before sidecar process exit")) return 1;
-    if (!require(processController.start(), "NodeProcessController failed to restart after process exit")) return 1;
-    if (!require(processController.isRunning(), "restarted NodeProcessController is not running")) return 1;
+    if (!require(processController.start(), "BackendProcessController failed to restart after process exit")) return 1;
+    if (!require(processController.isRunning(), "restarted BackendProcessController is not running")) return 1;
     processController.stop();
-    if (!require(!processController.isRunning(), "restarted NodeProcessController did not stop")) return 1;
+    if (!require(!processController.isRunning(), "restarted BackendProcessController did not stop")) return 1;
 
     FrameClient replacement(server.port());
     if (!require(replacement.connect(), "replacement client failed to connect")) return 1;

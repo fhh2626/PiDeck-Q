@@ -17,7 +17,6 @@ const slash = (value) => String(value).replaceAll("\\", "/");
 
 // Real oracle helpers: the trim index and the task-card date parser are pure functions in
 // the Node sources, so the expected values must come from them, not from this test.
-const { contextTrimStartIndex } = loadTsCommonJs("src/main/pi/agentUtils.ts");
 const { toEpochMs, readTodoTaskMessage } = loadTsCommonJs("src/shared/piTaskMessage.ts");
 
 const writeLines = (path, entries) => {
@@ -70,11 +69,6 @@ async function waitForFrame(sse, predicate, timeoutMs = 10_000) {
 	return sse.frames[index];
 }
 
-const messageFrames = (sse) => sse.frames
-	.map((frame) => frame.payload)
-	.filter((payload) => payload.channel === "sessions:runtime-event")
-	.map((payload) => payload.args[0])
-	.filter((event) => event.sourceChannel === "agents:message");
 
 if (executable) {
 	describe("native2 runtime window + reference messages", () => {
@@ -120,7 +114,7 @@ if (executable) {
 			return { ...session, fake, record, filePath };
 		};
 
-		test("trim keeps 50 turns and matches the oracle's contextTrimStartIndex", async (t) => {
+		test("trim keeps exactly the newest 50 turns and reports the removed prefix", async (t) => {
 			// 51 user turns = 102 rows: one turn too many for the 50-turn cache budget.
 			const messages = [];
 			for (let turn = 1; turn <= 51; turn += 1) {
@@ -164,8 +158,7 @@ if (executable) {
 				&& frame.payload.args[0].payload.messages.length < 103, withOptimisticIndex + 1);
 			const trimmed = sse.frames[trimmedIndex].payload.args[0].payload;
 
-			const goldenStart = contextTrimStartIndex(cached, 50);
-			assert.equal(goldenStart, 4, "Node golden: 52 turns keep the last 50, dropping the first two");
+			const goldenStart = 4; // 52 user turns minus the 50-turn budget removes two pairs.
 			assert.deepEqual(trimmed.messages, cached.slice(goldenStart));
 			assert.equal(trimmed.messages.length, cached.length - goldenStart, "99 rows remain in the active window");
 			// The delivery cursor retains this generation's full extent. The removed
@@ -203,7 +196,6 @@ if (executable) {
 				&& frame.payload.args[0].sourceChannel === "agents:message"
 				&& frame.payload.args[0].payload.messages.length === 21);
 			const rows = activationFrame.payload.args[0].payload.messages;
-			assert.equal(contextTrimStartIndex(rows, 50), 0, "Node golden: 10 turns fit, so nothing is trimmed");
 
 			await invoke("sessions:send-prompt", [{
 				sessionId: record.id,

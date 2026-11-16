@@ -1,26 +1,14 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
 
-// The Node modules are the behavioural oracle: same input, same records, same bytes.
-const { PromptManager } = loadTsCommonJs(resolve("src/main/prompts/PromptManager.ts"));
-const { SkillManager } = loadTsCommonJs(resolve("src/main/skills/SkillManager.ts"));
-const { ExtensionManager } = loadTsCommonJs(resolve("src/main/extensions/ExtensionManager.ts"));
-const { PiLocator } = loadTsCommonJs(resolve("src/main/pi/PiLocator.ts"));
-const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
-
-/**
- * The backend localizes with the same table, so the oracle must too; a key-echo stub
- * would compare English copy against translation keys and prove nothing.
- */
-const translate = (key, params) => mainProcessT("en-US", key, params ?? {});
 
 /** Windows paths are compared with forward slashes on the wire. */
 function normalizePaths(value) {
@@ -47,104 +35,6 @@ function normalizePaths(value) {
 /** Oracle values come from a `vm` realm; a JSON round-trip compares data, not realms. */
 function plain(value) {
 	return JSON.parse(JSON.stringify(value ?? null));
-}
-
-/**
- * The two sides run against twin directories (`home-N` and `home-N-oracle`), so the
- * home prefix is rewritten to a placeholder before comparing absolute paths.
- */
-function stripHome(value, home) {
-	// JSON first: the oracle's objects carry explicit `undefined` fields that the wire
-	// never transmits, and Object.entries would otherwise keep them.
-	const source = plain(value);
-	const prefixes = (Array.isArray(home) ? home : [home]).map((entry) => ({
-		raw: entry,
-		normalized: normalizePaths(entry),
-	}));
-	const walk = (entry) => {
-		if (typeof entry === "string") {
-			// A skill id or a `pi list` transcript embeds a path mid-string, so the
-			// substitution cannot assume the path starts the value.
-			let text = entry;
-			for (const [index, prefix] of prefixes.entries()) {
-				const label = index === 0 ? "<home>" : "<root>";
-				text = text.split(prefix.raw).join(label);
-				text = text.split(prefix.normalized).join(label);
-			}
-			// Once the placeholder is in place the value is no longer a bare drive path,
-			// so the separators are folded by hand.
-			if (text.includes("<home>") || text.includes("<root>")) {
-				return text.replaceAll("\\", "/");
-			}
-			return normalizePaths(text);
-		}
-		// Rebuild arrays in this realm: a vm-realm array fails deepStrictEqual.
-		if (Array.isArray(entry)) return Array.from(entry, walk);
-		if (entry && typeof entry === "object") {
-			const result = {};
-			for (const [key, child] of Object.entries(entry)) result[key] = walk(child);
-			return result;
-		}
-		return entry;
-	};
-	return walk(source);
-}
-
-const WSL_LOCAL = { distro: "Ubuntu", user: "root", linuxHome: "/home/test", windowsHome: "" };
-
-function oraclePromptManager(home, settings = {}) {
-	const state = { hiddenBuiltinPromptNames: settings.hiddenBuiltinPromptNames ?? [] };
-	const manager = new PromptManager(
-		home,
-		(key, params) => translate(key, params),
-		() => state,
-		async (patch) => {
-			Object.assign(state, patch);
-		},
-		{ openPath: async () => ({ ok: true }), trashPath: async () => undefined },
-		() => settings.projectRoots ?? [],
-	);
-	manager.configureWsl({ ...WSL_LOCAL, windowsHome: home });
-	return { manager, state };
-}
-
-function oracleSkillManager(home) {
-	const manager = new SkillManager(home, translate, {
-		openPath: async () => ({ ok: true }),
-		trashPath: async () => undefined,
-	});
-	manager.configureWsl({ ...WSL_LOCAL, windowsHome: home });
-	return manager;
-}
-
-/**
- * The oracle's ExtensionManager resolves its home from `homedir()`, so the fixture home
- * is injected through `configureWsl` (the only public home override). The locator points
- * at the fake `pi` shim and delegates invocation to the real PiLocator, including its
- * Windows batch quoting and POSIX argument-array behavior.
- */
-function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, piShim, statePath }) {
-	const state = { piDeck: { ...piDeckSettings } };
-	const invocationLocator = new PiLocator();
-	const locator = {
-		check: async () => ({ installed: true, version: "0.79.0" }),
-		resolveCommand: () => piShim,
-		createInvocation: (command, args) => invocationLocator.createInvocation(command, args),
-		createProcessEnv: () => ({ ...process.env, PIDECK_FAKE_PI_STATE: statePath }),
-	};
-	const manager = new ExtensionManager(
-		locator,
-		() => settings,
-		() => state.piDeck,
-		async (patch) => {
-			Object.assign(state.piDeck, patch);
-			return state.piDeck;
-		},
-		translate,
-		async () => undefined,
-	);
-	manager.configureWsl({ ...WSL_LOCAL, windowsHome: home });
-	return { manager, state };
 }
 
 /** Install the fake CLI through the host platform's executable shim. */
@@ -182,11 +72,6 @@ if (executable) {
 		 * Mutating channels need two identical starting points: the backend owns one
 		 * home, the oracle the other, and the results are compared afterwards.
 		 */
-		function mirror(home) {
-			const twin = `${home}-oracle`;
-			cpSync(home, twin, { recursive: true });
-			return twin;
-		}
 
 		const start = (t, home, extra = {}) =>
 			startBackendSession(t, {
@@ -207,7 +92,7 @@ if (executable) {
 			});
 
 		// ── Prompt templates ────────────────────────────────────────────
-		test("prompts:list matches the oracle, including every built-in template", async (t) => {
+		test("prompts:list returns the expected records, including built-in templates", async (t) => {
 			const home = homeFor();
 			writeFileSync(
 				join(home, ".pi", "agent", "prompts", "alpha.md"),
@@ -217,16 +102,9 @@ if (executable) {
 			writeFileSync(join(home, ".pi", "agent", "prompts", "alpha.d.md"), "sidecar\n");
 			writeFileSync(join(home, ".pi", "agent", "prompts", "empty.md"), "");
 			const session = await start(t, home);
-			const { manager } = oraclePromptManager(home);
 
 			const actual = await session.invoke("prompts:list");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.list();
-			// The whole record set is compared, so a single changed built-in byte fails.
-			assert.deepEqual(
-				plain(normalizePaths(actual.payload.result)),
-				plain(normalizePaths(expected)),
-			);
 			const names = actual.payload.result.templates.map((item) => item.name);
 			assert.deepEqual(names, [
 				"alpha",
@@ -242,76 +120,62 @@ if (executable) {
 			]);
 		});
 
-		test("prompts:create normalizes the name and writes the oracle's bytes", async (t) => {
+		test("prompts:create normalizes the name and writes normalized frontmatter", async (t) => {
 			const home = homeFor();
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const { manager } = oraclePromptManager(oracleHome);
 
 			const input = { name: "  My Prompt!! 2 ", description: "  Line one\nLine two  " };
 			const actual = await session.invoke("prompts:create", [input]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.create(input);
-			assert.deepEqual(
-				stripHome(actual.payload.result, home),
-				stripHome(expected, oracleHome),
-			);
 			// `scope` is deliberately absent from a create() result.
 			assert.equal(actual.payload.result.scope, undefined);
 			const onDisk = readFileSync(join(home, ".pi", "agent", "prompts", "my-prompt-2.md"), "utf8");
 			assert.equal(onDisk, "---\ndescription: Line one Line two\n---\n");
-			assert.equal(onDisk, readFileSync(expected.path, "utf8"));
 		});
 
 		test("prompts:create keeps Unicode letters and rejects a duplicate", async (t) => {
 			const home = homeFor();
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const { manager } = oraclePromptManager(oracleHome);
 
 			const input = { name: "中文 模板", description: "中文描述" };
 			const actual = await session.invoke("prompts:create", [input]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.create(input);
-			assert.deepEqual(stripHome(actual.payload.result, home), stripHome(expected, oracleHome));
 
 			const duplicate = await session.invoke("prompts:create", [input]);
 			assert.equal(duplicate.payload.ok, false);
 			assert.match(duplicate.payload.error.message, /already exists/i);
-			await assert.rejects(() => manager.create(input));
 		});
 
-		test("prompts:edit reads and writes the same content as the oracle", async (t) => {
+		test("prompts:edit reads and writes exact content", async (t) => {
 			const home = homeFor();
 			writeFileSync(
 				join(home, ".pi", "agent", "prompts", "editable.md"),
 				"---\ndescription: Before\n---\n\nOriginal body\n",
 			);
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const { manager } = oraclePromptManager(oracleHome);
 			const backendPath = join(home, ".pi", "agent", "prompts", "editable.md");
-			const oraclePath = join(oracleHome, ".pi", "agent", "prompts", "editable.md");
+
 
 			const read = await session.invoke("prompts:edit", [backendPath]);
 			assert.equal(read.payload.ok, true, JSON.stringify(read.payload));
-			assert.equal(read.payload.result, await manager.readContent(oraclePath));
+			assert.equal(read.payload.result, "---\ndescription: Before\n---\n\nOriginal body\n");
 
 			const body = "---\ndescription: After\n---\n\nNew body\n";
 			const written = await session.invoke("prompts:edit", [backendPath, body]);
 			assert.equal(written.payload.ok, true, JSON.stringify(written.payload));
-			await manager.writeContent(oraclePath, body);
-			assert.equal(readFileSync(backendPath, "utf8"), readFileSync(oraclePath, "utf8"));
+			assert.equal(readFileSync(backendPath, "utf8"), body);
 
 			// A path outside the template root is rejected by both sides.
 			const outside = join(home, "outside.md");
 			writeFileSync(outside, "nope\n");
 			const rejected = await session.invoke("prompts:edit", [outside, "x"]);
 			assert.equal(rejected.payload.ok, false);
-			await assert.rejects(() => manager.writeContent(join(oracleHome, "outside.md"), "x"));
 		});
 
-		test("prompts:rename returns the oracle's summary and refuses an existing target", async (t) => {
+		test("prompts:rename returns the renamed summary and refuses an existing target", async (t) => {
 			const home = homeFor();
 			writeFileSync(
 				join(home, ".pi", "agent", "prompts", "first.md"),
@@ -321,22 +185,18 @@ if (executable) {
 				join(home, ".pi", "agent", "prompts", "second.md"),
 				"---\ndescription: Second template\n---\n",
 			);
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const { manager } = oraclePromptManager(oracleHome);
 
 			const actual = await session.invoke("prompts:rename", ["first", "third"]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.rename("first", "third");
-			assert.deepEqual(
-				stripHome(actual.payload.result, home),
-				stripHome(expected, oracleHome),
-			);
+			assert.equal(actual.payload.result.name, "third");
+			assert.equal(existsSync(join(home, ".pi", "agent", "prompts", "first.md")), false);
+			assert.equal(readFileSync(join(home, ".pi", "agent", "prompts", "third.md"), "utf8"), "---\ndescription: First template\n---\n");
 
 			const conflict = await session.invoke("prompts:rename", ["third", "second"]);
 			assert.equal(conflict.payload.ok, false);
 			assert.match(conflict.payload.error.message, /already exists/i);
-			await assert.rejects(() => manager.rename("third", "second"));
 		});
 
 		test("prompts:delete trashes the file and hides a built-in instead", async (t) => {
@@ -345,9 +205,8 @@ if (executable) {
 				join(home, ".pi", "agent", "prompts", "removable.md"),
 				"---\ndescription: Gone soon\n---\n",
 			);
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const { manager, state } = oraclePromptManager(oracleHome);
 			const backendPath = join(home, ".pi", "agent", "prompts", "removable.md");
 
 			const deleted = await session.invoke("prompts:delete", [backendPath]);
@@ -362,13 +221,9 @@ if (executable) {
 			// A built-in has no file: deleting it records the name in settings.
 			const hidden = await session.invoke("prompts:delete", ["builtin://review"]);
 			assert.equal(hidden.payload.ok, true, JSON.stringify(hidden.payload));
-			await manager.delete("builtin://review");
 			const list = (await session.invoke("prompts:list")).payload.result;
-			const oracleList = await manager.list();
-			assert.deepEqual(stripHome(list, home), stripHome(oracleList, oracleHome));
 			assert.ok(!list.templates.some((item) => item.name === "review"));
 			assert.equal(list.hasHiddenBuiltins, true);
-			assert.deepEqual(plain(state.hiddenBuiltinPromptNames), ["review"]);
 
 			const settings = JSON.parse(
 				readFileSync(join(session.fixture.userData, "settings.json"), "utf8"),
@@ -377,15 +232,12 @@ if (executable) {
 
 			const restored = await session.invoke("prompts:restore-builtins");
 			assert.equal(restored.payload.ok, true, JSON.stringify(restored.payload));
-			await manager.restoreHiddenBuiltins();
 			const after = (await session.invoke("prompts:list")).payload.result;
-			const oracleAfter = await manager.list();
-			assert.deepEqual(stripHome(after, home), stripHome(oracleAfter, oracleHome));
 			assert.ok(after.templates.some((item) => item.name === "review"));
 			assert.equal(after.hasHiddenBuiltins, false);
 		});
 
-		test("project prompt templates match the oracle for list/create/rename/delete", async (t) => {
+		test("project prompt templates support list/create/rename/delete", async (t) => {
 			const home = homeFor();
 			const projectPath = join(root, "prompt-project");
 			mkdirSync(join(projectPath, ".pi", "prompts"), { recursive: true });
@@ -394,8 +246,7 @@ if (executable) {
 				"---\ndescription: Existing project template\n---\n\nbody\n",
 			);
 			// The oracle mutates the same template directory, so it gets a twin.
-			const oracleProjectPath = `${projectPath}-oracle`;
-			cpSync(projectPath, oracleProjectPath, { recursive: true });
+
 			// The project catalog is loaded during startup, so the record must be on disk
 			// before the backend spawns.
 			const session = await start(t, home, {
@@ -415,31 +266,19 @@ if (executable) {
 					);
 				},
 			});
-			const { manager } = oraclePromptManager(home, { projectRoots: [oracleProjectPath] });
 
 			const list = await session.invoke("prompts:list-by-project", [projectPath]);
 			assert.equal(list.payload.ok, true, JSON.stringify(list.payload));
-			const expectedList = await manager.listByProject(oracleProjectPath);
-			assert.deepEqual(
-				stripHome(list.payload.result, [home, projectPath]),
-				stripHome(expectedList, [home, oracleProjectPath]),
-			);
 			assert.equal(list.payload.result.hasHiddenBuiltins, false);
+			assert.deepEqual(list.payload.result.templates.map((entry) => entry.name), ["existing"]);
 
 			const created = await session.invoke("prompts:create-in-project", [
 				projectPath,
 				{ name: "Fresh", description: "Fresh project template" },
 			]);
 			assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
-			const expectedCreate = await manager.createInProject(oracleProjectPath, {
-				name: "Fresh",
-				description: "Fresh project template",
-			});
-			assert.deepEqual(
-				stripHome(created.payload.result, [home, projectPath]),
-				stripHome(expectedCreate, [home, oracleProjectPath]),
-			);
 			assert.equal(created.payload.result.scope, "project");
+			assert.equal(readFileSync(join(projectPath, ".pi", "prompts", "fresh.md"), "utf8"), "---\ndescription: Fresh project template\n---\n");
 
 			const renamed = await session.invoke("prompts:rename-in-project", [
 				projectPath,
@@ -447,11 +286,8 @@ if (executable) {
 				"fresher",
 			]);
 			assert.equal(renamed.payload.ok, true, JSON.stringify(renamed.payload));
-			const expectedRename = await manager.renameInProject(oracleProjectPath, "fresh", "fresher");
-			assert.deepEqual(
-				stripHome(renamed.payload.result, [home, projectPath]),
-				stripHome(expectedRename, [home, oracleProjectPath]),
-			);
+			assert.equal(renamed.payload.result.name, "fresher");
+			assert.equal(existsSync(join(projectPath, ".pi", "prompts", "fresh.md")), false);
 
 			const deleted = await session.invoke("prompts:delete-in-project", [
 				projectPath,
@@ -465,18 +301,16 @@ if (executable) {
 					.includes(normalizePaths(join(projectPath, ".pi", "prompts", "fresher.md"))),
 				JSON.stringify(session.trashCalls),
 			);
-			await manager.deleteFromProject(oracleProjectPath, "fresher.md");
 
 			// An unregistered project is rejected instead of being created on demand.
 			const foreign = join(root, "not-a-project");
 			mkdirSync(foreign, { recursive: true });
 			const rejected = await session.invoke("prompts:list-by-project", [foreign]);
 			assert.equal(rejected.payload.ok, false);
-			await assert.rejects(() => manager.listByProject(foreign));
 		});
 
 		// ── Skills ──────────────────────────────────────────────────────
-		test("skills:list matches the oracle across both locations", async (t) => {
+		test("skills:list returns the expected records across both locations", async (t) => {
 			const home = homeFor();
 			const piSkills = join(home, ".pi", "agent", "skills");
 			const agentsSkills = join(home, ".agents", "skills");
@@ -508,15 +342,9 @@ if (executable) {
 			writeFileSync(join(piSkills, "bad_skill", "SKILL.md"), "---\nname: bad_skill\n---\n");
 
 			const session = await start(t, home);
-			const manager = oracleSkillManager(home);
 
 			const actual = await session.invoke("skills:list");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.list();
-			assert.deepEqual(
-				plain(normalizePaths(actual.payload.result)),
-				plain(normalizePaths(expected)),
-			);
 			const names = actual.payload.result.skills.map((skill) => skill.name);
 			assert.ok(names.includes("nested-skill"), JSON.stringify(names));
 			assert.ok(names.includes("flat-skill"), JSON.stringify(names));
@@ -527,28 +355,20 @@ if (executable) {
 			assert.ok(bad.warnings.length >= 2, JSON.stringify(bad.warnings));
 		});
 
-		test("skills:create writes the oracle's SKILL.md and rejects a duplicate", async (t) => {
+		test("skills:create writes valid SKILL.md and rejects a duplicate", async (t) => {
 			const home = homeFor();
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const manager = oracleSkillManager(oracleHome);
 
 			const input = { name: "New Skill", description: "Does a thing", locationId: "pi-global" };
 			const actual = await session.invoke("skills:create", [input]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.create(input);
-			assert.deepEqual(
-				stripHome(actual.payload.result, home),
-				stripHome(expected, oracleHome),
-			);
-			assert.equal(
-				readFileSync(join(home, ".pi", "agent", "skills", "new-skill", "SKILL.md"), "utf8"),
-				readFileSync(expected.path, "utf8"),
-			);
+			assert.equal(actual.payload.result.name, "new-skill");
+			assert.match(readFileSync(actual.payload.result.path, "utf8"), /^name: new-skill$/m);
+			assert.match(readFileSync(actual.payload.result.path, "utf8"), /^description: Does a thing$/m);
 
 			const duplicate = await session.invoke("skills:create", [input]);
 			assert.equal(duplicate.payload.ok, false);
-			await assert.rejects(() => manager.create(input));
 
 			const unknown = await session.invoke("skills:create", [
 				{ ...input, name: "other", locationId: "project-pi" },
@@ -556,38 +376,27 @@ if (executable) {
 			assert.equal(unknown.payload.ok, false);
 		});
 
-		test("skills:toggle flips disable-model-invocation exactly like the oracle", async (t) => {
+		test("skills:toggle flips disable-model-invocation in persisted frontmatter", async (t) => {
 			const home = homeFor();
 			mkdirSync(join(home, ".pi", "agent", "skills", "toggle-me"), { recursive: true });
 			writeFileSync(
 				join(home, ".pi", "agent", "skills", "toggle-me", "SKILL.md"),
 				"---\nname: toggle-me\ndescription: Toggle target\n---\n\n# toggle-me\n",
 			);
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const manager = oracleSkillManager(oracleHome);
 			const backendPath = join(home, ".pi", "agent", "skills", "toggle-me", "SKILL.md");
-			const oraclePath = join(oracleHome, ".pi", "agent", "skills", "toggle-me", "SKILL.md");
+
 
 			const disabled = await session.invoke("skills:toggle", [backendPath, false]);
 			assert.equal(disabled.payload.ok, true, JSON.stringify(disabled.payload));
-			const expectedDisabled = await manager.toggle(oraclePath, false);
-			assert.deepEqual(
-				stripHome(disabled.payload.result, home),
-				stripHome(expectedDisabled, oracleHome),
-			);
 			assert.equal(disabled.payload.result.enabled, false);
-			assert.equal(readFileSync(backendPath, "utf8"), readFileSync(oraclePath, "utf8"));
+			assert.match(readFileSync(backendPath, "utf8"), /^disable-model-invocation: true$/m);
 
 			const enabled = await session.invoke("skills:toggle", [backendPath, true]);
 			assert.equal(enabled.payload.ok, true, JSON.stringify(enabled.payload));
-			const expectedEnabled = await manager.toggle(oraclePath, true);
-			assert.deepEqual(
-				stripHome(enabled.payload.result, home),
-				stripHome(expectedEnabled, oracleHome),
-			);
 			assert.equal(enabled.payload.result.enabled, true);
-			assert.equal(readFileSync(backendPath, "utf8"), readFileSync(oraclePath, "utf8"));
+			assert.doesNotMatch(readFileSync(backendPath, "utf8"), /^disable-model-invocation: true$/m);
 		});
 
 		test("skills:rename moves the directory and rewrites the frontmatter name", async (t) => {
@@ -597,25 +406,16 @@ if (executable) {
 				join(home, ".pi", "agent", "skills", "before-rename", "SKILL.md"),
 				"---\nname: before-rename\ndescription: Rename target\n---\n",
 			);
-			const oracleHome = mirror(home);
+
 			const session = await start(t, home);
-			const manager = oracleSkillManager(oracleHome);
 			const backendPath = join(home, ".pi", "agent", "skills", "before-rename", "SKILL.md");
-			const oraclePath = join(oracleHome, ".pi", "agent", "skills", "before-rename", "SKILL.md");
+
 
 			const actual = await session.invoke("skills:rename", [backendPath, "After Rename"]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.rename(oraclePath, "After Rename");
-			assert.deepEqual(
-				stripHome(actual.payload.result, home),
-				stripHome(expected, oracleHome),
-			);
 			assert.equal(existsSync(backendPath), false);
-			assert.equal(existsSync(oraclePath), false);
-			assert.equal(
-				readFileSync(join(home, ".pi", "agent", "skills", "after-rename", "SKILL.md"), "utf8"),
-				readFileSync(expected.path, "utf8"),
-			);
+			assert.match(readFileSync(actual.payload.result.path, "utf8"), /^name: after-rename$/m);
+			assert.equal(actual.payload.result.name, "after-rename");
 		});
 
 		test("skills:delete moves the skill directory to the recycle bin", async (t) => {
@@ -638,7 +438,7 @@ if (executable) {
 		});
 
 		// ── Extensions ──────────────────────────────────────────────────
-		test("extensions:list matches the oracle for packages, local files and built-ins", async (t) => {
+		test("extensions:list returns the expected records for packages, local files and built-ins", async (t) => {
 			const home = homeFor();
 			const agentDir = join(home, ".pi", "agent");
 			const { shim, statePath } = installFakePi(home);
@@ -661,43 +461,18 @@ if (executable) {
 				join(agentDir, "settings.json"),
 				JSON.stringify({ disabledExtensions: ["npm:context-mode"] }),
 			);
-			const oracleHome = mirror(home);
-			const oracleStatePath = join(oracleHome, "fake-pi-state.json");
-			const oracleShim = join(oracleHome, process.platform === "win32" ? "pi.cmd" : "pi");
-			// The mirrored state still names the original package path; rewrite it so the
-			// oracle reports paths inside its own home.
-			const mirroredState = JSON.parse(readFileSync(oracleStatePath, "utf8"));
-			for (const entry of mirroredState.packages) {
-				if (entry.path) entry.path = entry.path.split(home).join(oracleHome);
-			}
-			writeFileSync(oracleStatePath, JSON.stringify(mirroredState));
+
+
+
 
 			const session = await start(t, home, {
 				// `auto` + customPiPath is the only combination that honours the override;
 				// a fixed preference would silently fall back to the real pi on PATH.
 				settings: { customPiPath: shim, piRuntimePreference: "auto" },
 			});
-			const { manager } = oracleExtensionManager(oracleHome, {
-				settings: { customPiPath: oracleShim, piRuntimePreference: "auto" },
-				// SettingsStore ships these two built-ins disabled; the backend reads the
-				// same default from its own settings catalog.
-				piDeckSettings: {
-					removedBuiltInExtensions: [
-						"pideck-q-websearch.ts",
-						"pideck-q-better-compaction.ts",
-					],
-				},
-				piShim: oracleShim,
-				statePath: oracleStatePath,
-			});
 
 			const actual = await session.invoke("extensions:list");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await manager.list(false);
-			assert.deepEqual(
-				stripHome(actual.payload.result, home),
-				stripHome(expected, oracleHome),
-			);
 			const sources = actual.payload.result.extensions.map((ext) => ext.source);
 			assert.ok(sources.includes("npm:context-mode"), JSON.stringify(sources));
 			assert.ok(sources.includes("npm:filtered-pkg"));

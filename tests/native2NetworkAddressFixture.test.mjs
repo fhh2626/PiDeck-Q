@@ -5,9 +5,7 @@ import { constants } from "node:os";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-const { listWebNetworkAddresses } = loadTsCommonJs("src/main/web/WebNetwork.ts");
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const nodeRequire = createRequire(import.meta.url);
 const fixtureCode = ts.transpileModule(readFileSync("tests/native2NetworkAddressParity.test.mjs", "utf8"), {
@@ -39,7 +37,7 @@ async function runFixture(addresses, { enumerationError, backendError, result } 
 			startBackendSession: async () => ({ invoke: async () => {
 				invoked += 1;
 				if (backendError) throw backendError;
-				return { payload: { ok: true, result: result ?? listWebNetworkAddresses(interfaces) } };
+				return { payload: { ok: true, result: result ?? addresses.map(address => ({ address, internal: false, interfaceName: "fixture0", cidr: `${address}/24`, isPrivate: address.startsWith("10.") || address.startsWith("192.168.") })).map(({internal, ...entry}) => entry).sort((a,b) => Number(b.isPrivate) - Number(a.isPrivate) || a.address.localeCompare(b.address, undefined, {numeric:true})) } };
 			} }),
 		},
 	};

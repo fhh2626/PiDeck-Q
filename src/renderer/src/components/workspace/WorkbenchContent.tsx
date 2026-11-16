@@ -31,6 +31,10 @@ export type WorkbenchContentProps = {
 	editorMode: WorkspaceContentOpenMode;
 	onToggleEditorMode?: () => void;
 	onCloseEditor: () => void;
+	editorTabs: (EditorTabLike & { preview?: boolean })[];
+	onSelectEditorTab: (id: string) => void;
+	onCloseEditorTab: (id: string) => void;
+	onPromoteEditorPreview: (id: string) => void;
 	readContent: (path: string) => Promise<string>;
 	onOpenFile?: (path: string) => void;
 	readOriginalContent: (path: string) => Promise<string>;
@@ -40,8 +44,8 @@ export type WorkbenchContentProps = {
 /**
  * 中间栏阅读面：Git Diff / 文件编辑共用 FileDiffViewer。
  *
- * Tab 名单已上收到 SessionTabsBar（与会话 Tab 同一条栏）；这里只渲染内容与顶栏动作。
- * 不用 React.lazy：Vite/Electron 下动态 import 偶发
+ * 文件导航保留在阅读面内部，独立于侧栏会话选择。
+ * 不用 React.lazy：WebView 下动态 import 偶发
  * 「Failed to fetch dynamically imported module」，且 lazy 会缓存 rejected
  * promise，边界「重试」也无法恢复。打开文件是主路径，静态引入更稳。
  */
@@ -59,8 +63,6 @@ export function WorkbenchContent(props: WorkbenchContentProps) {
 				readContent={props.readContent}
 				theme={props.theme}
 				maxFileSizeMB={props.maxFileSizeMB}
-				/* Tab 在总栏；内容区只留动作钮，避免第二套标题/绿条 */
-				chromeTabsExternal
 			/>
 		);
 	}
@@ -90,7 +92,11 @@ export function WorkbenchContent(props: WorkbenchContentProps) {
 			}
 			theme={props.theme}
 			maxFileSizeMB={props.maxFileSizeMB}
-			chromeTabsExternal
+			tabs={props.editorTabs}
+			activeTabId={props.activeTab.id}
+			onSelectTab={props.onSelectEditorTab}
+			onCloseTab={props.onCloseEditorTab}
+			onPromotePreviewTab={props.onPromoteEditorPreview}
 		/>
 	);
 }

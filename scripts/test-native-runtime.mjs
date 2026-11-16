@@ -41,7 +41,7 @@ export async function runNativeRuntimeGate({
 } = {}) {
 	if (platform !== "win32") throw new Error("The native runtime gate currently requires Windows and the Qt/Xmake toolchain");
 	const env = {
-		...environment, PIDECK_SIDECAR_KIND: "cpp", PIDECK_REQUIRE_BACKEND_TESTS: "1",
+		...environment, PIDECK_REQUIRE_BACKEND_TESTS: "1",
 		PIDECK_BACKEND_TEST_EXECUTABLE: "build/windows/x64/debug/PiDeckBackend.exe",
 	};
 	// When invoked by a node:test regression, a nested test runner needs its own context.
@@ -49,7 +49,7 @@ export async function runNativeRuntimeGate({
 	const options = { cwd: resolve(repoRoot), env };
 	await run("xmake.exe", ["f", "-p", "windows", "-a", "x64", "-m", "debug", "-y"], options);
 	await run("xmake.exe", ["build", "-y", "PiDeckBackend"], options);
-	await run(process.execPath, ["--test", "--test-concurrency=4", ...RUNTIME_TESTS], options);
+	await run(process.execPath, ["--import", "./tests/helpers/testEnvironment.mjs", "--test", "--test-concurrency=4", ...RUNTIME_TESTS], options);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

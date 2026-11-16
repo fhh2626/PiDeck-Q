@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 
 const executable = resolveBackendExecutable();
 
-// The Node aggregator is the oracle: same log bytes must produce the same view.
-const { aggregateUsage } = loadTsCommonJs(resolve("src/main/usageStats/usageStatsAggregator.ts"));
-const { UsageLogReader } = loadTsCommonJs(resolve("src/main/usageStats/UsageLogReader.ts"));
-
-/** Oracle values come from a `vm` realm; a JSON round-trip compares data, not realms. */
+/** Compare JSON wire data without prototype differences. */
 function plain(value) {
 	return JSON.parse(JSON.stringify(value ?? null));
 }
@@ -35,15 +30,6 @@ function writeLog(agentDir, lines) {
 	const content = `${serializeLines(lines).join("\n")}\n`;
 	writeFileSync(join(agentDir, "analytics", "usage.jsonl"), content);
 	return join(agentDir, "analytics", "usage.jsonl");
-}
-
-/**
- * The oracle reader defines what a refresh reports: it applies the same in-read dedupe
- * (ts|sid|model) and the same bad-line accounting as the backend.
- */
-async function oracleRead(logPath, previous = null) {
-	const reader = new UsageLogReader();
-	return reader.readIncremental(logPath, previous);
 }
 
 if (executable) {
@@ -79,7 +65,7 @@ if (executable) {
 				},
 			});
 
-		test("usage-stats:get matches the oracle aggregator record for record", async (t) => {
+		test("usage-stats:get aggregates valid records, rejects malformed rows and deduplicates turns", async (t) => {
 			const home = homeFor();
 			const agentDir = join(home, ".pi", "agent");
 			const now = Date.now();
@@ -104,39 +90,53 @@ if (executable) {
 				// A U+2028 inside a JSON string must not split the line.
 				row(now - 4 * DAY, "s-5", "D:/work/line\u2028sep", "anthropic/claude-sonnet-4", 5, 5, 0, 0, 10),
 			];
-			const logPath = writeLog(agentDir, lines);
-			const oracle = await oracleRead(logPath);
+			writeLog(agentDir, lines);
+
 			const session = await start(t, home);
 
 			const refreshed = await session.invoke("usage-stats:refresh");
 			assert.equal(refreshed.payload.ok, true, JSON.stringify(refreshed.payload));
 			assert.deepEqual(plain(refreshed.payload.result), {
-				fullRescan: oracle.fullRescan,
-				parsedRecords: oracle.newRecords.length,
-				skippedLines: oracle.skippedLines,
+				fullRescan: true,
+				parsedRecords: 6,
+				skippedLines: 4,
 			});
-			// The duplicate (ts|sid|model) row is collapsed by both sides.
-			assert.equal(oracle.newRecords.length, 6);
-			assert.equal(oracle.skippedLines, 4);
-
 			const actual = await session.invoke("usage-stats:get");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = aggregateUsage(oracle.newRecords);
+
 			const view = actual.payload.result;
 
-			// Time-independent parts must match exactly.
-			assert.deepEqual(plain(view.totals), plain(expected.totals));
-			assert.deepEqual(plain(view.daily), plain(expected.daily));
-			assert.deepEqual(plain(view.byModel), plain(expected.byModel));
-			assert.deepEqual(plain(view.byProject), plain(expected.byProject));
-			assert.deepEqual(plain(view.window), plain(expected.window));
-			assert.equal(view.recordCount, expected.recordCount);
-			assert.equal(view.activeDays, expected.activeDays);
+			// Values are calculated from the six distinct valid fixture rows. A duplicate
+			// with the same timestamp, session and model must not contribute twice.
+			assert.deepEqual(view.totals, {
+				tokens: 4040, input: 3022, output: 853, cacheRead: 110, cacheWrite: 55,
+				turns: 6, sessions: ["s-1", "s-2", "s-3", "s-5"],
+			});
+			assert.equal(view.recordCount, 6);
+			assert.deepEqual(view.window, { since: now - 4 * DAY, to: now - 1000 });
+			assert.deepEqual(view.byModel, [
+				{ model: "anthropic/claude-opus-4", provider: "anthropic", tokens: 2660, turns: 2, sessions: 1 },
+				{ model: "openai/gpt-5", provider: "openai", tokens: 1200, turns: 1, sessions: 1 },
+				{ model: "anthropic/claude-sonnet-4", provider: "anthropic", tokens: 165, turns: 2, sessions: 2 },
+				{ model: "local-model", provider: "local-model", tokens: 15, turns: 1, sessions: 1 },
+			]);
+			assert.deepEqual(view.byProject, [
+				{ project: "D:/work/alpha", tokens: 2815, turns: 3 },
+				{ project: "D:/work/beta", tokens: 1215, turns: 2 },
+				{ project: "D:/work/line\u2028sep", tokens: 10, turns: 1 },
+			]);
+			assert.equal(view.daily.reduce((sum, day) => sum + day.totals.tokens, 0), 4040);
+			assert.equal(view.daily.reduce((sum, day) => sum + day.totals.turns, 0), 6);
+			assert.equal(view.activeDays, view.daily.filter((day) => day.totals.tokens > 0).length);
+			assert.deepEqual(view.daily.map((day) => day.day), [...view.daily.map((day) => day.day)].sort());
+			for (const day of view.daily) {
+				assert.equal(day.byModel.reduce((sum, entry) => sum + entry.tokens, 0), day.totals.tokens);
+				assert.equal(day.byProvider.reduce((sum, entry) => sum + entry.tokens, 0), day.totals.tokens);
+				assert.equal(day.byProject.reduce((sum, entry) => sum + entry.tokens, 0), day.totals.tokens);
+			}
 
 			// The heatmap is 53 weeks × 7 days and starts on a Monday.
 			assert.equal(view.heatmap.length, 371);
-			assert.equal(expected.heatmap.length, 371);
-			assert.equal(view.heatmapStart, expected.heatmapStart);
 			const startDate = new Date(`${view.heatmapStart}T00:00:00`);
 			assert.equal(startDate.getDay(), 1, "heatmap starts on a Monday");
 			// Every cell carries the documented level thresholds.
@@ -180,7 +180,7 @@ if (executable) {
 				row(now - 1 * DAY, "s-1", "D:/work/alpha", "anthropic/claude-sonnet-4", 20, 5, 0, 0, 25),
 			]);
 
-			// Before any refresh the count is unknown, exactly like the oracle's cold cache.
+			// Before any refresh the count is unknown, while the cache is cold.
 			const cold = await session.invoke("usage-stats:detect");
 			assert.equal(cold.payload.result.installed, true);
 			assert.equal(cold.payload.result.recordCount, null);
@@ -206,13 +206,13 @@ if (executable) {
 				row(now - 1 * DAY, "s-1", "D:/work/alpha", "anthropic/claude-sonnet-4", 20, 5, 0, 0, 25),
 			];
 			const logPath = writeLog(agentDir, first);
-			const initial = await oracleRead(logPath);
+
 			const session = await start(t, home);
 
 			assert.deepEqual(plain((await session.invoke("usage-stats:refresh")).payload.result), {
-				fullRescan: initial.fullRescan,
-				parsedRecords: initial.newRecords.length,
-				skippedLines: initial.skippedLines,
+				fullRescan: true,
+				parsedRecords: 2,
+				skippedLines: 0,
 			});
 			// No change on disk: zero new records, no rescan.
 			assert.deepEqual(plain((await session.invoke("usage-stats:refresh")).payload.result), {
@@ -231,9 +231,11 @@ if (executable) {
 			});
 
 			const merged = await session.invoke("usage-stats:get");
-			const expected = aggregateUsage((await oracleRead(logPath)).newRecords);
-			assert.deepEqual(plain(merged.payload.result.totals), plain(expected.totals));
-			assert.deepEqual(plain(merged.payload.result.daily), plain(expected.daily));
+			assert.deepEqual(merged.payload.result.totals, {
+				tokens: 42, input: 31, output: 11, cacheRead: 0, cacheWrite: 0,
+				turns: 3, sessions: ["s-1", "s-2"],
+			});
+			assert.equal(merged.payload.result.daily.reduce((sum, day) => sum + day.totals.tokens, 0), 42);
 			assert.equal(merged.payload.result.recordCount, 3);
 
 			// Truncation (file shrank) forces a full rescan and must not double count.
@@ -247,7 +249,7 @@ if (executable) {
 			assert.equal(afterTruncate.payload.result.recordCount, 1);
 			assert.deepEqual(
 				plain(afterTruncate.payload.result.totals),
-				plain(aggregateUsage((await oracleRead(logPath)).newRecords).totals),
+				{ tokens: 15, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, turns: 1, sessions: ["s-1"] },
 			);
 
 			// Clearing the file commits an empty state instead of resurrecting old totals.
@@ -259,7 +261,7 @@ if (executable) {
 			assert.equal(cleared.payload.result.activeDays, 0);
 		});
 
-		test("the disk cache survives a restart and stays Node-readable", async (t) => {
+		test("the disk cache preserves its versioned schema across restarts", async (t) => {
 			const home = homeFor();
 			const agentDir = join(home, ".pi", "agent");
 			const now = Date.now();
@@ -275,8 +277,7 @@ if (executable) {
 			const userData = first.fixture.userData;
 			await first.host.emit("application.prepareQuit");
 
-			// The cache file uses the shared SessionSummaryCache layout so the Node
-			// runtime can pick it up after a runtime switch.
+			// The persisted cache schema must stay readable across application upgrades.
 			const cachePath = join(userData, "usage-stats-cache.json");
 			const cache = JSON.parse(readFileSync(cachePath, "utf8"));
 			assert.equal(cache.version, 4);

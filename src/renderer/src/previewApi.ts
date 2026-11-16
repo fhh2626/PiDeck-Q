@@ -94,7 +94,6 @@ let previewSettings: AppSettings = {
 	piTypescriptPath: "",
 	piRustPath: "",
 	piBoltPath: "",
-	sessionTabOpenMode: "preview",
 	enableGitManagement: true,
 	gitCommitMessagePrompt: "",
 	gitCommitMessageProvider: "",

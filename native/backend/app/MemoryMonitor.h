@@ -16,14 +16,14 @@
  * `<userData>/memory-profile/profile-<epochMs>.csv`.
  *
  * The CSV contract (header, column order, quoting, KB units) is shared with
- * src/main/memory/memoryProfileCsv.ts so `scripts/analyze-memory.mjs` can analyse a C++
+ * scripts/lib/memoryProfileCsv.ts so `scripts/analyze-memory.mjs` can analyse a C++
  * backend run without changes. Sampling must never influence the thing being measured:
  * a failed mkdir/open disables the monitor instead of failing backend startup, and a
  * failed append is dropped (the oracle swallows the same error).
  */
 namespace memorymonitor {
 
-/** Byte-identical to `MEMORY_PROFILE_HEADER` in src/main/memory/memoryProfileCsv.ts. */
+/** Byte-identical to `MEMORY_PROFILE_HEADER` in scripts/lib/memoryProfileCsv.ts. */
 extern const char *const kCsvHeader;
 
 /** Physical memory of the current process; `available` is false when unmeasurable. */

@@ -15,7 +15,7 @@ export async function withComposerController(run, options = {}) {
 	// native / clipboardSnapshot 用于驱动原生剪贴板粘贴路径（insertPlainText 的唤起点）。
 	const { sessionId = "s1", seed, commands = [], native = false, clipboardSnapshot } = options;
 	await withHookHost(async (host) => {
-		const calls = { sendPrompt: [], notices: [], promoted: [] };
+		const calls = { sendPrompt: [], notices: [] };
 		const desktopApi = {
 			sessions: {
 				sendPrompt: async (input) => {
@@ -46,7 +46,6 @@ export async function withComposerController(run, options = {}) {
 		const wrap = (node) => host.React.createElement(Provider, { store }, node);
 		const hookProps = (props) => ({
 			sessionId,
-			onPromoteSession: (id) => calls.promoted.push(id),
 			...props,
 		});
 		const mounted = await host.mount(

@@ -8,9 +8,9 @@ import {
 	verifyBuildArtifacts as verifyArtifacts,
 } from "../scripts/verify-build-artifacts.mjs";
 
-// Every fixture in this file models the Node sidecar regardless of the caller's environment.
+// Fixtures use an explicit isolated stage, independent of the shipping default.
 function verifyBuildArtifacts(options) {
-	return verifyArtifacts({ ...options, sidecarKind: "node" });
+  return verifyArtifacts({ ...options, outDir: join(options.repoRoot, "out") });
 }
 
 async function withTempRepo(run) {
@@ -29,20 +29,21 @@ async function put(path, content = "content") {
 
 async function createBuildFixture(repo) {
 	const sourceFiles = [
-		join(repo, "src", "main", "backend.ts"),
-		join(repo, "src", "native-node", "index.ts"),
+		join(repo, "native", "backend", "backend.cpp"),
 		join(repo, "src", "renderer", "src", "main.tsx"),
 		join(repo, "vite.config.ts"),
 		join(repo, "package.json"),
 	];
 	for (const source of sourceFiles) await put(source, "source");
 	const artifactFiles = [
-		join(repo, "out", "native-node", "index.cjs"),
+		join(repo, "out", process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend"),
 		join(repo, "out", "renderer", "assets", "app.js"),
 		join(repo, "out", "renderer", "assets", "web.js"),
 		join(repo, "out", "renderer", "assets", "style.css"),
 	];
 	for (const artifact of artifactFiles) await put(artifact, "artifact");
+	await put(artifactFiles[0], "MZfixture\0Qt6Core.dll\0");
+	await put(join(repo, "out", "Qt6Core.dll"), "MZfixture");
 	const indexHtml = join(repo, "out", "renderer", "index.html");
 	const webHtml = join(repo, "out", "renderer", "web.html");
 	await put(indexHtml, '<link href="/assets/style.css" rel="stylesheet"><script src="/assets/app.js"></script>');
@@ -55,30 +56,13 @@ async function createBuildFixture(repo) {
 	return { sourceFiles, artifactFiles, indexHtml, webHtml };
 }
 
-test("verifier library preserves kind precedence and rejects unsupported kinds", async (t) => {
-	const previous = process.env.PIDECK_SIDECAR_KIND;
-	t.after(() => {
-		if (previous === undefined) delete process.env.PIDECK_SIDECAR_KIND;
-		else process.env.PIDECK_SIDECAR_KIND = previous;
-	});
-	await withTempRepo(async (repo) => {
-		await createBuildFixture(repo);
-		delete process.env.PIDECK_SIDECAR_KIND;
-		assert.equal((await verifyArtifacts({ repoRoot: repo })).ok, true);
-		process.env.PIDECK_SIDECAR_KIND = "cpp";
-		assert.match((await verifyArtifacts({ repoRoot: repo })).errors.join("\n"), /Missing C\+\+ sidecar/);
-		assert.equal((await verifyArtifacts({ repoRoot: repo, sidecarKind: "node" })).ok, true);
-		assert.match((await verifyArtifacts({ repoRoot: repo, sidecarKind: "bogus" })).errors.join("\n"), /Unsupported sidecar kind/);
-	});
-});
-
 test("an empty build output fails with all required native entry points", async () => {
 	await withTempRepo(async (repo) => {
 		await mkdir(join(repo, "out"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.equal(result.errors.length, 3);
-		assert.match(result.errors.join("\n"), /native-node[/\\]index\.cjs/);
+		assert.match(result.errors.join("\n"), /Missing C\+\+ sidecar/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]index\.html/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]web\.html/);
 	});
@@ -89,7 +73,7 @@ test("a complete temporary build fixture passes entry, resource, and freshness c
 		await createBuildFixture(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		assert.equal(result.checked.length, 6);
+		assert.equal(result.checked.length, 7);
 	});
 });
 
@@ -124,7 +108,7 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 		await Promise.all(fixture.artifactFiles.map((path) => utimes(path, staleTime, staleTime)));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.match(result.errors.join("\n"), /Stale native-node artifact/);
+		assert.match(result.errors.join("\n"), /Stale cpp-backend artifact/);
 		assert.match(result.errors.join("\n"), /Stale renderer artifact/);
 	});
 });
@@ -186,8 +170,8 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 14 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 25
-		assert.equal(result.checked.length, 25, JSON.stringify(result.checked));
+		// Native backend, Qt dependency, renderer entries/assets and extension runtime files.
+		assert.equal(result.checked.length, 26, JSON.stringify(result.checked));
 	});
 });
 

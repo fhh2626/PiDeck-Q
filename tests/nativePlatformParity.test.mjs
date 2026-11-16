@@ -5,7 +5,6 @@ import test from "node:test";
 const mainSource = readFileSync("native/src/main.cpp", "utf8");
 const rendererBootstrap = readFileSync("src/renderer/src/native/initializeNativeDesktop.ts", "utf8");
 const rendererMain = readFileSync("src/renderer/src/main.tsx", "utf8");
-const hostSource = readFileSync("src/native-node/host/NativeBackendHost.ts", "utf8");
 const xmake = readFileSync("xmake.lua", "utf8");
 
  test("native dialogs use one explicit file or directory picker", () => {
@@ -30,21 +29,6 @@ test("native renderer token is removed from history and renderer logs", () => {
 test("native memory diagnostics are enabled by bootstrap state, not a URL guess", () => {
 	assert.match(rendererBootstrap, /memoryProfileEnabled/);
 	assert.doesNotMatch(rendererBootstrap, /query\.get\("memoryProfile"\)/);
-});
-
-test("native renderer server has an explicit restart-and-reload recovery path", () => {
-	const server = readFileSync("src/native-node/transport/NativeRendererServer.ts", "utf8");
-	const node = readFileSync("src/native-node/index.ts", "utf8");
-	assert.match(server, /onServerError/);
-	assert.match(server, /eventHistoryBytes = 0/);
-	assert.match(node, /recoverRendererServer/);
-	assert.match(node, /window\.load/);
-});
-
-test("heartbeat watchdog excludes hidden-to-tray windows", () => {
-	assert.match(hostSource, /shouldWatchRendererHeartbeat/);
-	assert.match(hostSource, /windowVisible/);
-	assert.match(readFileSync("src/native-node/index.ts", "utf8"), /shouldWatchRendererHeartbeat\(\)/);
 });
 
 test("release and debug native binaries have explicit packaged defaults", () => {
@@ -202,33 +186,6 @@ test("macOS native chrome keeps system resize and uses the Dock reopen delegate"
 	assert.match(dockDelegate, /forwardingTargetForSelector/);
 });
 
-test("native bootstrap requests clipboard metadata instead of encoding an image", () => {
-	const node = readFileSync("src/native-node/index.ts", "utf8");
-	const clipboard = readFileSync("native/src/ClipboardController.cpp", "utf8");
-	const bootstrapStart = node.indexOf("getBootstrap:");
-	const bootstrapEnd = node.indexOf("onHeartbeat:", bootstrapStart);
-	assert.ok(bootstrapStart >= 0 && bootstrapEnd > bootstrapStart, "native bootstrap handler must exist");
-	const bootstrap = node.slice(bootstrapStart, bootstrapEnd);
-	assert.match(bootstrap, /clipboard\.metadataSnapshot/);
-	assert.doesNotMatch(bootstrap, /clipboard\.snapshot/);
-	assert.match(mainSource, /clipboard\.metadataSnapshot/);
-	assert.match(clipboard, /QJsonObject ClipboardController::metadataSnapshot\(\) const/);
-	assert.doesNotMatch(clipboard.slice(clipboard.indexOf("QJsonObject ClipboardController::metadataSnapshot"), clipboard.indexOf("QJsonObject ClipboardController::snapshot")), /imageDataUrl/);
-	assert.match(node, /externalFileCapabilities\.issueClipboard\(snapshot\.filePaths, snapshot\.sequence\)/);
-	assert.match(node, /issueClipboardCapability\(clipboard\)/);
-});
-
-test("native external file events carry capabilities while copy IPC redeems only the token", () => {
-	const node = readFileSync("src/native-node/index.ts", "utf8");
-	const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
-	assert.match(node, /native\.fileDrop/);
-	assert.match(node, /externalFileCapabilities\.issueDrop\(payload\.paths\)/);
-	assert.match(filesIpc, /ipcChannels\.filesCopyExternal/);
-	assert.match(filesIpc, /consumeCopy\(capabilityId\)/);
-	assert.match(filesIpc, /copyInternal/);
-	assert.match(filesIpc, /copy-source/);
-});
-
 test("native clipboard image snapshots bound the edge before the PNG budget and coalesce work", () => {
 	const clipboard = readFileSync("native/src/ClipboardController.cpp", "utf8");
 	assert.match(clipboard, /kMaxClipboardImageEdge = 2000/);
@@ -287,42 +244,12 @@ test("native restore picks the screen with the largest normal-bounds intersectio
 	assert.match(mainWindow, /QTimer::singleShot\(0, this/);
 });
 
-test("native normal bounds carry and restore the saved window position", () => {
-	const mainWindow = readFileSync("native/src/MainWindow.cpp", "utf8");
-	const node = readFileSync("src/native-node/index.ts", "utf8");
-	const state = readFileSync("src/main/windowState.ts", "utf8");
-	assert.match(mainWindow, /\{QStringLiteral\("x"\), rect\.x\(\)\}/);
-	assert.match(mainWindow, /\{QStringLiteral\("y"\), rect\.y\(\)\}/);
-	assert.match(mainWindow, /hasLastPosition/);
-	assert.match(mainWindow, /bounds\.value\(QStringLiteral\("x"\)\)\.isDouble\(\)/);
-	assert.match(mainWindow, /move\(bounds\.value\(QStringLiteral\("x"\)\)\.toInt\(\)/);
-	assert.match(node, /host\.on<unknown>\("window\.normalBoundsChanged"/);
-	assert.match(node, /isFiniteNumber\(payload\.x\)/);
-	assert.match(node, /nextBounds\.x = payload\.x/);
-	assert.match(node, /nextBounds\.y = payload\.y/);
-	assert.match(node, /isFiniteNumber\(pendingBounds\?\.x\)/);
-	assert.match(node, /nextBounds\.x = pendingBounds\.x/);
-	assert.match(node, /nextBounds\.y = pendingBounds\.y/);
-	assert.match(state, /x\?: number/);
-	assert.match(state, /y\?: number/);
-	assert.match(state, /parsed\.x/);
-});
-
 test("native quit waits asynchronously for the sidecar ACK", () => {
-	const controller = readFileSync("native/src/NodeProcessController.cpp", "utf8");
+	const controller = readFileSync("native/src/BackendProcessController.cpp", "utf8");
 	assert.match(controller, /stopAsync/);
 	assert.match(controller, /m_gracefulStopTimer\.start/);
 	assert.match(controller, /markReadyToExit/);
-	assert.match(mainSource, /node\.stopAsync/);
-});
-
-test("native notifications release callback state when Windows dismisses a toast", () => {
-	const toast = readFileSync("native/src/WindowsToastNotifier.cpp", "utf8");
-	const main = readFileSync("native/src/main.cpp", "utf8");
-	const notifications = readFileSync("src/native-node/platform/NativeNotifications.ts", "utf8");
-	assert.match(toast, /notification\.Dismissed/);
-	assert.match(main, /notification\.dismissed/);
-	assert.match(notifications, /notification\.dismissed/);
+	assert.match(mainSource, /backendProcess\.stopAsync/);
 });
 
 test("native reveal delegates to the shell and quotes the path inside Explorer's single select option", () => {

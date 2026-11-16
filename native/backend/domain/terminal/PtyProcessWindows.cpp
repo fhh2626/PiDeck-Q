@@ -1,5 +1,7 @@
 #include "PtyProcess.h"
 
+#include <QDir>
+
 #ifdef Q_OS_WIN
 
 #define WIN32_LEAN_AND_MEAN
@@ -85,12 +87,10 @@ std::vector<wchar_t> environmentBlock(const QProcessEnvironment &environment)
 
 struct PtyProcess::State {
     HPCON console = nullptr;
-    /** PTY-side pipe ends owned by the pseudoconsole; closed with it. */
-    HANDLE consoleInput = nullptr;
-    HANDLE consoleOutput = nullptr;
     HANDLE inputWrite = nullptr;
     HANDLE outputRead = nullptr;
     HANDLE process = nullptr;
+    HANDLE job = nullptr;
     std::thread reader;
     std::thread waiter;
     std::atomic<bool> exited{false};
@@ -114,14 +114,6 @@ struct PtyProcess::State {
         if (console) {
             ClosePseudoConsole(console);
             console = nullptr;
-        }
-        if (consoleInput) {
-            CloseHandle(consoleInput);
-            consoleInput = nullptr;
-        }
-        if (consoleOutput) {
-            CloseHandle(consoleOutput);
-            consoleOutput = nullptr;
         }
     }
 };
@@ -172,10 +164,9 @@ std::unique_ptr<PtyProcess> PtyProcess::spawn(const QString &command, const QStr
         if (error) *error = QStringLiteral("ConPTY creation failed (0x%1)").arg(quint32(created), 8, 16, QLatin1Char('0'));
         return nullptr;
     }
-    // The PTY-side ends stay open for the whole console lifetime. ConPTY does not
-    // duplicate them: closing the input end makes the child read EOF and exit at once
-    // (cmd.exe exits 0 before it ever prints a prompt). They are closed together with
-    // the console in State::closeConsole().
+    // Keep the temporary console-side handles until the child has been created.
+    // ConPTY owns its own references. Retaining our output writer after startup
+    // would prevent the reader from observing EOF when the console shuts down.
 
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(STARTUPINFOEXW);
@@ -208,7 +199,9 @@ std::unique_ptr<PtyProcess> PtyProcess::spawn(const QString &command, const QStr
     }
 
     QString commandLine;
-    appendQuotedArgument(&commandLine, command);
+    // cmd.exe also parses argv[0]; forward slashes in an unquoted executable
+    // path are interpreted as switches even though CreateProcess accepts them.
+    appendQuotedArgument(&commandLine, QDir::toNativeSeparators(command));
     for (const QString &argument : args) {
         commandLine.append(QLatin1Char(' '));
         appendQuotedArgument(&commandLine, argument);
@@ -229,7 +222,7 @@ std::unique_ptr<PtyProcess> PtyProcess::spawn(const QString &command, const QStr
     PROCESS_INFORMATION process{};
     const BOOL started = CreateProcessW(
         nullptr, commandBuffer.data(), nullptr, nullptr, FALSE,
-        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, environmentData.data(),
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, environmentData.data(),
         workingDirectory.empty() ? nullptr : workingDirectory.data(), &startup.StartupInfo, &process);
     const DWORD startError = started ? 0 : GetLastError();
     DeleteProcThreadAttributeList(startup.lpAttributeList);
@@ -243,15 +236,46 @@ std::unique_ptr<PtyProcess> PtyProcess::spawn(const QString &command, const QStr
         if (error) *error = win32Message(QStringLiteral("terminal command failed to start"), startError);
         return nullptr;
     }
+    // Assign a private job before the shell can spawn commands. Terminating only
+    // the shell leaves children attached to ConPTY, whose close can then block
+    // shutdown past the desktop host's deadline. Nested jobs coexist with the
+    // host's process-tree containment on supported Windows versions.
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    const bool contained = job
+        && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))
+        && AssignProcessToJobObject(job, process.hProcess);
+    const DWORD containmentError = contained ? 0 : GetLastError();
+    const bool resumed = contained && ResumeThread(process.hThread) != DWORD(-1);
+    const DWORD resumeError = resumed ? 0 : GetLastError();
+    if (!resumed) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 1000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        if (job) CloseHandle(job);
+        ClosePseudoConsole(console);
+        CloseHandle(inputRead);
+        CloseHandle(outputWrite);
+        CloseHandle(inputWrite);
+        CloseHandle(outputRead);
+        if (error) *error = win32Message(QStringLiteral("terminal process containment failed"),
+                                         contained ? resumeError : containmentError);
+        return nullptr;
+    }
     CloseHandle(process.hThread);
+    // Only ConPTY may retain these ends. In particular, an extra output writer
+    // keeps ReadFile blocked after the console has closed and delays teardown.
+    CloseHandle(inputRead);
+    CloseHandle(outputWrite);
 
     auto state = std::make_shared<State>();
     state->console = console;
-    state->consoleInput = inputRead;
-    state->consoleOutput = outputWrite;
     state->inputWrite = inputWrite;
     state->outputRead = outputRead;
     state->process = process.hProcess;
+    state->job = job;
     state->callbacks = std::move(callbacks);
 
     // The reader blocks on the PTY. ConPTY renders asynchronously, so a quiet gap is
@@ -274,6 +298,8 @@ std::unique_ptr<PtyProcess> PtyProcess::spawn(const QString &command, const QStr
         DWORD code = 0;
         GetExitCodeProcess(state->process, &code);
         state->exited = true;
+        // A naturally exited shell can also leave background commands attached.
+        if (state->job) TerminateJobObject(state->job, 1);
         state->closeConsole();
         if (state->reader.joinable()) state->reader.join();
         if (state->callbacks.onExit) state->callbacks.onExit(static_cast<int>(code));
@@ -292,9 +318,11 @@ PtyProcess::~PtyProcess()
     if (m_state->inputWrite) CloseHandle(m_state->inputWrite);
     if (m_state->outputRead) CloseHandle(m_state->outputRead);
     if (m_state->process) CloseHandle(m_state->process);
+    if (m_state->job) CloseHandle(m_state->job);
     m_state->inputWrite = nullptr;
     m_state->outputRead = nullptr;
     m_state->process = nullptr;
+    m_state->job = nullptr;
 }
 
 bool PtyProcess::write(const QByteArray &data, QString *error)
@@ -325,7 +353,8 @@ void PtyProcess::kill()
 {
     if (!m_state) return;
     if (m_state->killRequested.exchange(true)) return;
-    if (m_state->process) TerminateProcess(m_state->process, 1);
+    if (m_state->job) TerminateJobObject(m_state->job, 1);
+    else if (m_state->process) TerminateProcess(m_state->process, 1);
 }
 
 bool PtyProcess::running() const

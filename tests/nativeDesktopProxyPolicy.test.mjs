@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
 import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
@@ -30,32 +29,6 @@ function native(fixtures) {
 	return JSON.parse(result.stdout);
 }
 
-/** Capture the production Node adapter's routing decision before any I/O can occur. */
-async function nodeDecisions(fixtures) {
-	const calls = [];
-	const { NodeProxy } = loadTsCommonJs(resolve("src/native-node/platform/NodeProxy.ts"), {
-		globals: {
-			fetch: async (input, init) => {
-				calls.push({ url: String(input), direct: init?.dispatcher === undefined });
-				return new Response("", { status: 200 });
-			},
-			Request, Response, Headers,
-		},
-	});
-	const { buildDesktopProxyConfig } = loadTsCommonJs(resolve("src/main/settings/DesktopProxy.ts"));
-	const proxy = new NodeProxy();
-	try {
-		for (const fixture of fixtures) {
-			await proxy.apply(buildDesktopProxyConfig(fixture.settings));
-			await proxy.fetch(fixture.url);
-		}
-	} finally {
-		await proxy.apply({ mode: "direct" });
-	}
-	assert.deepEqual(calls.map((call) => call.url), fixtures.map((fixture) => fixture.url));
-	return calls.map((call) => call.direct);
-}
-
 const cases = [
 	["exact hostname", "bypass.test", "bypass.test", true],
 	["hostname suffix", "bypass.test", "sub.bypass.test", true],
@@ -78,7 +51,7 @@ const cases = [
 ];
 
 for (const [name, bypass, hostname, direct] of cases) {
-	test(`native desktop proxy matches Node routing for ${name}`, { skip }, async () => {
+	test(`native desktop proxy follows the routing contract for ${name}`, { skip }, async () => {
 		const fixtures = [{
 			settings: { desktopProxyEnabled: true, desktopProxyUrl: "http://127.0.0.1:7890", desktopProxyBypass: bypass },
 			url: `http://${hostname}/v1/models`,
@@ -87,7 +60,6 @@ for (const [name, bypass, hostname, direct] of cases) {
 		assert.equal(actual.bypassed, direct);
 		assert.equal(actual.direct, direct);
 		assert.equal(actual.factoryDirect, direct);
-		assert.deepEqual(await nodeDecisions(fixtures), [direct]);
 		if (!direct) {
 			assert.equal(actual.proxyHost, "127.0.0.1");
 			assert.equal(actual.proxyPort, 7890);
@@ -108,5 +80,4 @@ test("native installed proxy factory observes settings changes without retaining
 	const actual = native(fixtures);
 	assert.deepEqual(actual.map((result) => result.direct), expected);
 	assert.deepEqual(actual.map((result) => result.factoryDirect), expected);
-	assert.deepEqual(await nodeDecisions(fixtures), expected);
 });

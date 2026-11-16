@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-
-const gitIpc = readFileSync("src/main/ipc/gitIpc.ts", "utf8");
-const quickGenerator = readFileSync("src/main/git/QuickGenerator.ts", "utf8");
-const settingsStore = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
-const settingsTypes = readFileSync("src/shared/types/settings.ts", "utf8");
-const settingsModal = readFileSync("src/renderer/src/components/app/SettingsModal.tsx", "utf8");
 const commonTab = readFileSync("src/renderer/src/components/app/settings/CommonTab.tsx", "utf8");
 const gitModelsHook = readFileSync("src/renderer/src/components/app/settings/gitModels.ts", "utf8");
 const fileSortControl = readFileSync("src/renderer/src/components/session/FileSortControl.tsx", "utf8");
@@ -18,35 +12,6 @@ const i18n = [
   readFileSync("src/renderer/src/i18n/rendererCopy.en-US.ts", "utf8"),
   readFileSync("src/shared/i18n/mainProcessCopy.ts", "utf8"),
 ].join("\n");
-
-test("Git summary stores an explicit provider and model without a legacy fallback", () => {
-  assert.match(settingsTypes, /gitCommitMessageProvider:\s*string/);
-  assert.match(settingsTypes, /gitCommitMessageModel:\s*string/);
-  assert.match(settingsStore, /gitCommitMessageProvider:\s*""/);
-  assert.match(settingsStore, /gitCommitMessageModel:\s*""/);
-  assert.match(gitIpc, /gitCommitMessageProvider\.trim\(\)/);
-  assert.match(gitIpc, /gitCommitMessageModel\.trim\(\)/);
-  assert.match(gitIpc, /git\.commitMessageModelRequired/);
-});
-
-test("Git summary selects the configured model while retaining the lightweight RPC flags", () => {
-  assert.match(quickGenerator, /type:\s*"set_model"[\s\S]*provider: model\.provider[\s\S]*modelId: model\.modelId/);
-  for (const flag of [
-    "--no-session",
-    "--no-tools",
-    "--no-extensions",
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--thinking",
-  ]) {
-    assert.match(quickGenerator, new RegExp(`"${flag}"`));
-  }
-  assert.match(quickGenerator, /"--thinking",\s*"off"/);
-  assert.match(quickGenerator, /provider\/model 变化时必须重启轻量进程/);
-  assert.match(quickGenerator, /if \(genProcess === childProcess\) stopGenProcess\(/);
-  assert.match(gitIpc, /quickGenerator\.generate\(project\.path, prompt, \{ provider, modelId \}\)/);
-});
 
 test("File sorting leaves hover state to Radix DropdownMenu", () => {
   assert.match(fileSortControl, /<DropdownMenu open=\{open\} onOpenChange=\{setOpen\}>/);
@@ -70,9 +35,6 @@ test("Shared model picker keeps one model line and supports collapse and selecte
   assert.match(projectEmptyState, /<ThinkingPicker/);
 });
 
-
-const registerBackendRpc = readFileSync("src/main/backend/registerBackendRpc.ts", "utf8");
-
 test("Git summary settings expose the shared command model picker", () => {
   // Git 分区与模型选择器位于常用设置 tab（CommonTab）；数据源 hook 独立成文件（gitModels.ts，
   // 以便 CommonTab lazy 加载）——listModels 调用在 hook 里
@@ -87,9 +49,4 @@ test("Git summary settings expose the shared command model picker", () => {
   assert.equal(i18n.match(/"settings\.gitCommitMessageModel":/g)?.length, 2);
   assert.equal(i18n.match(/"settings\.gitCommitMessageModelUnset":/g)?.length, 2);
   assert.match(i18n, /git\.commitMessageModelRequired/);
-});
-
-test("Git IPC receives the localized settings guidance from the main process", () => {
-  assert.match(gitIpc, /mainCopy: \(key: string/);
-  assert.match(registerBackendRpc, /registerGitIpc\(router,\s*\{[\s\S]*mainCopy: mainCopy/);
 });

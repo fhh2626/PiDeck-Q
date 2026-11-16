@@ -9,17 +9,12 @@ import {
 	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "delivery-budget";
 const slash = (value) => String(value).replaceAll("\\", "/");
 
-// Real oracle functions: the expected page is computed by the Node budget itself.
-const {
-	enforceDeliveryBudgetOnPage,
-	MAX_MESSAGE_DELIVERY_ENVELOPE_BYTES,
-} = loadTsCommonJs("src/main/pi/messageDeliveryBudget.ts");
+const MAX_MESSAGE_DELIVERY_ENVELOPE_BYTES = 30 * 1024 * 1024;
 
 const imageData = (length) => "A".repeat(length);
 
@@ -100,7 +95,7 @@ if (executable) {
 			return { ...session, fake, record, filePath };
 		};
 
-		test("a page that exceeds the budget matches enforceDeliveryBudgetOnPage byte for byte", async (t) => {
+		test("an oversized page offloads only its oldest image and preserves all other fields", async (t) => {
 			const budget = 2_600;
 			const name = `page-${Date.now()}`;
 			const entries = [
@@ -134,12 +129,9 @@ if (executable) {
 				total: 3,
 				nextBefore: null,
 			};
-			const golden = enforceDeliveryBudgetOnPage(goldenPage, budget);
-			assert.equal(golden.ok, true, "the golden must fit after offloading the oldest images");
-			assert.equal(golden.value.messages[0].images, undefined);
-			assert.equal(golden.value.messages[1].images?.length, 1, "only the oldest row loses its images");
-			assert.equal(golden.value.messages[2].images?.length, 1);
-			assert.notDeepEqual(golden.value, goldenPage, "the fixture must actually trigger the offload");
+			const expected = structuredClone(goldenPage);
+			delete expected.messages[0].images;
+			expected.messages[0].imageDisplayNotice = { kind: "delivery-budget-exceeded", count: 1, omitted: 1 };
 
 			const page = await invoke("sessions:catalog-read-message-page", [record.id, null, 3]);
 			assert.equal(page.payload.ok, true, JSON.stringify(page.payload));
@@ -148,14 +140,12 @@ if (executable) {
 			// through JSON keeps the comparison exact (key order is not part of the wire).
 			assert.deepEqual(
 				JSON.parse(JSON.stringify(page.payload.result)),
-				JSON.parse(JSON.stringify(golden.value)),
-				"page output must equal enforceDeliveryBudgetOnPage(page, budget)",
+				expected,
+				"page output must preserve text, identity and cursors while offloading the oldest image",
 			);
 		});
 
 		test("the real 30 MiB page budget offloads a 31 MiB image", async (t) => {
-			assert.equal(MAX_MESSAGE_DELIVERY_ENVELOPE_BYTES, 30 * 1024 * 1024,
-				"oracle constant: the budget is 30 MiB");
 			const name = `huge-${Date.now()}`;
 			const entries = [
 				{ type: "session", version: 3, id: name, timestamp: "2026-01-01T00:00:00.000Z", cwd: projectPath },
@@ -249,4 +239,3 @@ if (executable) {
 		});
 	});
 }
-

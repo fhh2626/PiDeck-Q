@@ -15,10 +15,14 @@ import {
 	resolveBackendExecutable,
 	rpc,
 	spawnBackend,
+	stopBackendProcess,
 	waitForRendererReady,
 } from "./native2BackendHarness.mjs";
 
 const TOKEN = "scan-cache-token";
+// Multiple process lifetimes can share one directory tree. Delete it only after
+// every registered teardown has reaped its own process.
+const fixtureOwners = new WeakMap();
 
 /** Directories a backend needs, all under one root that survives a restart. */
 export function createSharedFixture({ projects = [], settings = {} } = {}) {
@@ -82,44 +86,44 @@ export async function startBackend(t, fixture, { settings = {}, env = {} } = {})
 			"shell.showItemInFolder": () => ({ result: { ok: true } }),
 		},
 	});
+	const handle = { host, backend: null, stopped: false, stopPromise: null };
+	const owners = fixtureOwners.get(fixture) ?? new Set();
+	owners.add(handle);
+	fixtureOwners.set(fixture, owners);
+	t.after(async () => {
+		await stopBackend(handle);
+		owners.delete(handle);
+		if (owners.size === 0) {
+			fixtureOwners.delete(fixture);
+			rmSync(fixture.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		}
+	});
 	const hostPort = await host.start();
-	const backend = spawnBackend({
+	handle.backend = spawnBackend({
 		executable: resolveBackendExecutable(),
 		hostPort,
 		token: TOKEN,
 		env: backendEnvFor(fixture, env),
 	});
-	const handle = { host, backend, stopped: false };
-	t.after(async () => {
-		await stopBackend(handle);
-		rmSync(fixture.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-	});
 	const ready = await waitForRendererReady(host);
-	return {
-		...handle,
+	return Object.assign(handle, {
 		baseUrl: ready.url,
 		token: ready.token,
 		invoke: (channel, args = []) => rpc(ready.url, ready.token, channel, args),
-	};
+	});
 }
 
 /** Ask the backend to quit and wait for the process, so the next start is a real restart. */
 export async function stopBackend(handle) {
-	if (handle.stopped) return;
-	handle.stopped = true;
-	if (handle.backend.child.exitCode === null) {
-		try {
-			handle.host.emit("application.prepareQuit");
-		} catch {
-			// host socket already gone
-		}
-		const exited = await Promise.race([
-			handle.backend.exited.then(() => true),
-			new Promise((resolve) => setTimeout(() => resolve(false), 8_000)),
-		]);
-		if (!exited && handle.backend.child.exitCode === null) handle.backend.child.kill();
+	// Repeated callers must wait for the same cleanup, not observe "stopped" while
+	// the first call is still waiting for inherited streams or the host socket.
+	if (!handle.stopPromise) {
+		handle.stopPromise = (async () => {
+			await stopBackendProcess(handle.backend, handle.host, { graceMs: 8_000 });
+			handle.stopped = true;
+		})();
 	}
-	await handle.host.stop();
+	await handle.stopPromise;
 }
 
 /** Poll `predicate` until it returns a truthy value. */

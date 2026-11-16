@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-
-/**
- * 稳定思考流契约：Live / History 同 id，终态一次落盘，done 不早于 History 可见时卸身份。
- * 对齐 textStreamChannel.test.mjs 风格。
- */
-
-const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
 const atoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "utf8");
 const agentTypes = readFileSync("src/shared/types/agent.ts", "utf8");
 const buildTurn = readFileSync(
@@ -46,107 +39,12 @@ test("ThinkingUpdate payload carries stable id + lifecycle fields", () => {
   );
 });
 
-test("main process: emitThinkingNow sends delta for appends, full text for resets/snapshots", () => {
-  const idx = agentManager.indexOf("private emitThinkingNow");
-  const block = agentManager.slice(idx, idx + 900);
-  // 增量协议：正常 append 只发 delta；非 append 或超过快照间隔补全量（自愈）
-  assert.match(block, /delta: text\.slice\(lastSent\.length\)/);
-  assert.match(block, /lastSentThinkingByAgent/);
-  assert.match(block, /pushCount >= 50/);
-  assert.match(block, /text\.startsWith\(lastSent\)/);
-});
-
-test("main process: emitTextStreamNow sends delta for appends, full text for resets/snapshots", () => {
-  const idx = agentManager.indexOf("private emitTextStreamNow");
-  const block = agentManager.slice(idx, idx + 1000);
-  assert.match(block, /delta: text\.slice\(lastSent\.length\)/);
-  assert.match(block, /lastSentTextByAgent/);
-  assert.match(block, /pushCount >= 50/);
-  assert.match(block, /text\.startsWith\(lastSent\)/);
-  // done 后清空 delta 基准
-  assert.match(block, /lastSentTextByAgent\.delete\(agentId\)/);
-});
-
 test("renderer: streaming atoms merge delta and accept full-text snapshots", () => {
   assert.match(atoms, /typeof payload\.delta === "string"/);
   // text-stream：delta 追加本地累积；text 全量替换
   assert.match(atoms, /\(prev\?\.content \?\? ""\) \+ payload\.delta/);
   // thinking：delta 追加本地累积
   assert.match(atoms, /\(prev\?\.text \?\? ""\) \+ delta/);
-});
-
-test("main process: delta baselines are cleared on thinking end and agent teardown", () => {
-  const finishIdx = agentManager.indexOf("private finishThinkingChannel");
-  const finishBlock = agentManager.slice(finishIdx, finishIdx + 900);
-  assert.match(finishBlock, /lastSentThinkingByAgent\.delete\(agentId\)/);
-  assert.match(finishBlock, /thinkingPushCountByAgent\.delete\(agentId\)/);
-
-  const clearIdx = agentManager.indexOf("private clearAgentState");
-  const clearBlock = agentManager.slice(clearIdx, clearIdx + 1600);
-  assert.match(clearBlock, /lastSentTextByAgent\.delete\(agentId\)/);
-  assert.match(clearBlock, /textPushCountByAgent\.delete\(agentId\)/);
-  assert.match(clearBlock, /lastSentThinkingByAgent\.delete\(agentId\)/);
-  assert.match(clearBlock, /thinkingPushCountByAgent\.delete\(agentId\)/);
-});
-test("main process: live thinking id equals History msg-thinking-* id", () => {
-  assert.match(agentManager, /thinkingSegmentByAgent/);
-  assert.match(agentManager, /id: `msg-thinking-\$\{assistantMessageId\}`/);
-  assert.match(agentManager, /ensureThinkingSegment\(/);
-  assert.match(agentManager, /markThinkingSegmentEnded\(/);
-  assert.match(agentManager, /finalizeThinkingIntoMessage\(/);
-  assert.match(agentManager, /finishThinkingChannel\(/);
-});
-
-test("main process: thinking_delta does not upsert; thinking_end does not write messages", () => {
-  const thinkingDeltaIdx = agentManager.indexOf('if (eventType === "thinking_delta")');
-  const thinkingEndIdx = agentManager.indexOf('if (eventType === "thinking_end")');
-  const messageEndIdx = agentManager.indexOf(
-    'if (eventType === "message_end" || eventType === "done" || eventType === "error")',
-    thinkingEndIdx,
-  );
-  assert.ok(thinkingDeltaIdx >= 0 && thinkingEndIdx > thinkingDeltaIdx);
-  assert.ok(messageEndIdx > thinkingEndIdx);
-
-  const deltaBlock = agentManager.slice(thinkingDeltaIdx, thinkingEndIdx);
-  assert.doesNotMatch(deltaBlock, /this\.upsertAssistantMessage\(/);
-  assert.match(deltaBlock, /this\.thinkingEmitter\.push\(/);
-  assert.match(deltaBlock, /ensureThinkingSegment/);
-
-  const endBlock = agentManager.slice(thinkingEndIdx, messageEndIdx);
-  assert.doesNotMatch(endBlock, /this\.upsertAssistantMessage\(/);
-  assert.doesNotMatch(endBlock, /finalizeThinkingIntoMessage/);
-  assert.match(endBlock, /markThinkingSegmentEnded/);
-});
-
-test("main process: finalize writes message.thinking before done clears live channel", () => {
-  assert.match(agentManager, /private finalizeThinkingIntoMessage\(/);
-  assert.match(agentManager, /private finishThinkingChannel\(/);
-  assert.match(agentManager, /list\[existingIndex\]\.thinking = nextThinking/);
-  assert.match(agentManager, /done:\s*true/);
-
-  const finalizeThenFinish = /finalizeThinkingIntoMessage[\s\S]{0,200}?flushMessageEmit[\s\S]{0,80}?finishThinkingChannel/;
-  assert.match(agentManager, finalizeThenFinish);
-
-  const finishIdx = agentManager.indexOf("private finishThinkingChannel");
-  const finishBlock = agentManager.slice(finishIdx, finishIdx + 800);
-  assert.match(finishBlock, /done:\s*true/);
-  assert.match(finishBlock, /thinkingSegmentByAgent\.delete/);
-});
-
-test("main process: markThinkingSegmentEnded is idempotent after endedAt", () => {
-  const idx = agentManager.indexOf("private markThinkingSegmentEnded");
-  const block = agentManager.slice(idx, idx + 500);
-  assert.match(block, /if \(segment\.endedAt > 0\) return;/);
-});
-
-test("main process: upsertAssistantMessage no longer dual-writes thinking mid-stream", () => {
-  const upsertIdx = agentManager.indexOf("private upsertAssistantMessage(");
-  const nextPrivate = agentManager.indexOf("\tprivate upsertToolMessage(", upsertIdx);
-  const upsertBlock = agentManager.slice(upsertIdx, nextPrivate);
-  assert.doesNotMatch(upsertBlock, /pendingThinking/);
-  assert.doesNotMatch(upsertBlock, /shouldClearThinking/);
-  assert.doesNotMatch(upsertBlock, /existing\.thinking\s*=/);
-  assert.doesNotMatch(upsertBlock, /commitPendingThinking/);
 });
 
 test("renderer: done keeps live identity until History thinking is visible", () => {

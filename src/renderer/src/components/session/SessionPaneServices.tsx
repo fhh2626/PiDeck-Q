@@ -31,13 +31,12 @@ import { projectSessionPaneState } from "../../utils/sessionPaneState";
 
 /** 行为与稳定资源：跨分屏双栏共享、引用尽量稳定的回调 / ref / api。 */
 export type SessionPaneActions = {
-  /** 把某会话从预览 Tab 晋升为常驻 Tab（发消息等主动交互时调用；非预览时幂等） */
-  promoteSessionToPermanent: (sessionId: string) => void;
   showToast: (msg: string, dur?: number) => void;
   onOpenFile: (path: string, basePath?: string) => void;
   onDiffFile: (path: string) => void;
   onPreviewImage: (img: ImageContent | null, images?: ImageContent[]) => void;
   abortAgent: (agentId?: string) => Promise<void>;
+  stopAgent: (agentId: string) => Promise<void>;
   restartActiveAgent: (agentId?: string) => Promise<void>;
   runCreateSessionDraft: () => Promise<void>;
   enqueueSessionPrompt: (

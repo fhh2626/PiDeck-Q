@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, describe, test } from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import {
 	createFakePi,
 	resolveBackendExecutable,
@@ -13,39 +12,12 @@ import {
 import { writeNodeShim } from "./helpers/native2FakeProcess.mjs";
 
 const executable = resolveBackendExecutable();
-const { ExtensionManager } = loadTsCommonJs(resolve("src/main/extensions/ExtensionManager.ts"));
-const { PiLocator } = loadTsCommonJs(resolve("src/main/pi/PiLocator.ts"));
-const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
-const translate = (key, params) => mainProcessT("en-US", key, params ?? {});
 
-const WSL_LOCAL = { distro: "Ubuntu", user: "root", linuxHome: "/home/test", windowsHome: "" };
+
+
+
 const slash = (value) => String(value).replaceAll("\\", "/");
-const plain = (value) => JSON.parse(JSON.stringify(value ?? null));
 
-/** Real `ExtensionManager` over the twin home, with the pi CLI replaced by the fixture. */
-function oracleExtensionManager(home, { settings = {}, piDeckSettings = {}, statePath }) {
-	const state = { piDeck: { ...piDeckSettings } };
-	const invocationLocator = new PiLocator();
-	const locator = {
-		check: async () => ({ installed: true, version: "0.79.0" }),
-		resolveCommand: () => join(home, process.platform === "win32" ? "pi.cmd" : "pi"),
-		createInvocation: (command, args) => invocationLocator.createInvocation(command, args),
-		createProcessEnv: () => ({ ...process.env, PIDECK_FAKE_PI_STATE: statePath }),
-	};
-	const manager = new ExtensionManager(
-		locator,
-		() => settings,
-		() => state.piDeck,
-		async (patch) => {
-			Object.assign(state.piDeck, patch);
-			return state.piDeck;
-		},
-		translate,
-		async () => undefined,
-	);
-	manager.configureWsl({ ...WSL_LOCAL, windowsHome: home });
-	return { manager, state };
-}
 
 /** Install the fake CLI using the host's launcher while preserving Windows batch coverage. */
 function installFakePi(root) {
@@ -139,11 +111,6 @@ if (executable) {
 			return home;
 		}
 
-		function mirror(home) {
-			const twin = `${home}-oracle`;
-			cpSync(home, twin, { recursive: true });
-			return twin;
-		}
 
 		const start = (t, home, extra = {}) =>
 			startBackendSession(t, {
@@ -165,49 +132,33 @@ if (executable) {
 		};
 
 		// ── built-in remove / restore ────────────────────────────────────
-		test("extensions:remove-built-in and restore-built-in match the oracle", async (t) => {
+		test("extensions:remove-built-in and restore-built-in preserve settings and file boundaries", async (t) => {
 			const home = homeFor();
 			const { shim, statePath } = installFakePi(home);
 			// A historical deployment copy must be cleaned by both remove and restore.
 			writeFileSync(join(home, ".pi", "agent", "extensions", "pi-deck-todo.ts"), "export default {};\n");
-			const oracleHome = mirror(home);
-			const oracleStatePath = join(oracleHome, "fake-pi-state.json");
 			const session = await start(t, home, {
 				settings: { customPiPath: shim, piRuntimePreference: "auto" },
 				env: { PIDECK_FAKE_PI_STATE: statePath },
 			});
-			const initial = removedFromSettings(session);
-			const { manager, state } = oracleExtensionManager(oracleHome, {
-				settings: { customPiPath: join(oracleHome, process.platform === "win32" ? "pi.cmd" : "pi"), piRuntimePreference: "auto" },
-				piDeckSettings: { removedBuiltInExtensions: initial },
-				statePath: oracleStatePath,
-			});
+
 
 			const removed = await session.invoke("extensions:remove-built-in", ["pi-deck-todo.ts"]);
 			assert.equal(removed.payload.ok, true, JSON.stringify(removed.payload));
-			await manager.removeBuiltIn("pi-deck-todo.ts");
-			assert.deepEqual(removedFromSettings(session), [...state.piDeck.removedBuiltInExtensions].sort());
 			assert.equal(removedFromSettings(session).includes("pi-deck-todo.ts"), true);
 			assert.equal(existsSync(join(home, ".pi", "agent", "extensions", "pi-deck-todo.ts")), false);
-			assert.equal(existsSync(join(oracleHome, ".pi", "agent", "extensions", "pi-deck-todo.ts")), false);
 
 			// Idempotent: a second remove neither duplicates the entry nor fails.
 			const again = await session.invoke("extensions:remove-built-in", ["pi-deck-todo.ts"]);
 			assert.equal(again.payload.ok, true, JSON.stringify(again.payload));
-			await manager.removeBuiltIn("pi-deck-todo.ts");
-			assert.deepEqual(removedFromSettings(session), [...state.piDeck.removedBuiltInExtensions].sort());
 			assert.equal(removedFromSettings(session).filter((name) => name === "pi-deck-todo.ts").length, 1);
 
 			// Restore drops the marker and still removes a lingering copy.
 			writeFileSync(join(home, ".pi", "agent", "extensions", "pi-deck-todo.ts"), "export default {};\n");
-			writeFileSync(join(oracleHome, ".pi", "agent", "extensions", "pi-deck-todo.ts"), "export default {};\n");
 			const restored = await session.invoke("extensions:restore-built-in", ["pi-deck-todo.ts"]);
 			assert.equal(restored.payload.ok, true, JSON.stringify(restored.payload));
-			await manager.restoreBuiltIn("pi-deck-todo.ts");
-			assert.deepEqual(removedFromSettings(session), [...state.piDeck.removedBuiltInExtensions].sort());
 			assert.equal(removedFromSettings(session).includes("pi-deck-todo.ts"), false);
 			assert.equal(existsSync(join(home, ".pi", "agent", "extensions", "pi-deck-todo.ts")), false);
-			assert.equal(existsSync(join(oracleHome, ".pi", "agent", "extensions", "pi-deck-todo.ts")), false);
 
 			// Only a shipped basename is accepted; a package name or traversal is refused
 			// before any settings write.
@@ -215,7 +166,6 @@ if (executable) {
 				const before = readFileSync(join(session.fixture.userData, "settings.json"), "utf8");
 				const rejected = await session.invoke("extensions:remove-built-in", [source]);
 				assert.equal(rejected.payload.ok, false, `${source} must be rejected`);
-				await assert.rejects(manager.removeBuiltIn(source));
 				assert.equal(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"), before);
 			}
 		});
@@ -238,52 +188,34 @@ if (executable) {
 			const planted = [];
 			try {
 				const { shim, statePath } = installFakePi(home);
-				const oracleHome = mirror(home);
 				const session = await start(t, home, {
 					settings: { customPiPath: shim, piRuntimePreference: "auto" },
 					env: { PIDECK_FAKE_PI_STATE: statePath },
 				});
-				const { manager } = oracleExtensionManager(oracleHome, {
-					settings: { customPiPath: join(oracleHome, "pi.cmd"), piRuntimePreference: "auto" },
-					statePath: join(oracleHome, "fake-pi-state.json"),
-				});
 				const cpp = plantStaleCopy(home);
-				const oracle = plantStaleCopy(oracleHome);
-				planted.push(cpp, oracle);
+				planted.push(cpp);
 				// A stale *empty* directory must survive too: `rm` without `recursive` unlinks (and
 				// unlink of a directory fails), it never rmdir's behind the user's back.
 				const cppEmptyDir = join(home, ".pi", "agent", "extensions", "pi-deck-plan-mode.ts");
-				const oracleEmptyDir = join(oracleHome, ".pi", "agent", "extensions", "pi-deck-plan-mode.ts");
 				mkdirSync(cppEmptyDir, { recursive: true });
-				mkdirSync(oracleEmptyDir, { recursive: true });
 
 				const removed = await session.invoke("extensions:remove-built-in", ["pi-deck-todo.ts"]);
 				assert.equal(removed.payload.ok, true, JSON.stringify(removed.payload));
-				await manager.removeBuiltIn("pi-deck-todo.ts");
 				const emptied = await session.invoke("extensions:remove-built-in", ["pi-deck-plan-mode.ts"]);
 				assert.equal(emptied.payload.ok, true, JSON.stringify(emptied.payload));
-				await manager.removeBuiltIn("pi-deck-plan-mode.ts");
 
-				// Oracle contract: `removeBuiltInFile` is `rm(path, { force: true })` *without*
-				// `recursive` (`src/main/extensions/ExtensionManager.ts`), so a directory is refused
-				// and every caller swallows the rejection. A user directory that carries a built-in
-				// basename therefore survives - with its content - on both sides. Deleting it was
-				// never authorized parity, and `QDir::removeRecursively()` also reported a Windows
-				// junction as a plain directory and deleted the referent's content first.
-				assert.equal(existsSync(oracle.stale), true, "the oracle keeps a directory that carries a built-in name");
+				// Disabling a shipped extension authorizes deleting a stale file only.
+				// A user directory with that basename and all junction referents must survive.
 				assert.equal(existsSync(cpp.stale), true, "the backend must not delete the user's directory");
-				assert.equal(existsSync(oracleEmptyDir), true, "the oracle keeps an empty directory too");
 				assert.equal(existsSync(cppEmptyDir), true, "the backend must not rmdir an empty directory");
 				// Full content parity, not just existence: the junction is still a link and both trees
 				// are byte-for-byte what the fixture planted, referent reached through the link included.
-				assert.deepEqual(snapshotTree(cpp.stale), snapshotTree(oracle.stale));
 				assert.deepEqual(snapshotTree(cpp.stale), {
 					"index.ts": Buffer.byteLength("export default {};\n"),
 					"nested/outside/keep.txt": Buffer.byteLength("outside payload\n"),
 				});
 				assert.equal(lstatSync(join(cpp.stale, "nested", "outside")).isSymbolicLink(), true);
 				assert.equal(readFileSync(join(cpp.sentinel, "keep.txt"), "utf8"), "outside payload\n");
-				assert.equal(readFileSync(join(oracle.sentinel, "keep.txt"), "utf8"), "outside payload\n");
 			} catch (error) {
 				for (const entry of planted) rmSync(entry.stale, { recursive: true, force: true });
 				if (error.code === "EPERM" || error.code === "EACCES") {
@@ -366,38 +298,29 @@ if (executable) {
 		});
 
 		// ── install / update / update-one ───────────────────────────────
-		test("extensions:install, update and update-one match the oracle CLI contract", async (t) => {
+		test("extensions:install, update and update-one use the supported CLI contract", async (t) => {
 			const home = homeFor();
 			const { shim, statePath, rawPath } = installFakePiRecordingRaw(home);
-			const oracleHome = mirror(home);
-			const oracleStatePath = join(oracleHome, "fake-pi-state.json");
 			const session = await start(t, home, {
 				settings: { customPiPath: shim, piRuntimePreference: "auto" },
 				env: { PIDECK_FAKE_PI_STATE: statePath },
 			});
-			const { manager } = oracleExtensionManager(oracleHome, {
-				settings: { customPiPath: join(oracleHome, "pi.cmd"), piRuntimePreference: "auto" },
-				statePath: oracleStatePath,
-			});
 
 			const installed = await session.invoke("extensions:install", ["npm:new-package"]);
 			assert.equal(installed.payload.ok, true, JSON.stringify(installed.payload));
-			assert.equal(installed.payload.result, await manager.install("npm:new-package"));
 
 			const updated = await session.invoke("extensions:update");
 			assert.equal(updated.payload.ok, true, JSON.stringify(updated.payload));
-			assert.deepEqual(plain(updated.payload.result), plain(await manager.updateExtensions()));
 
 			const one = await session.invoke("extensions:update-one", ["npm:new-package"]);
 			assert.equal(one.payload.ok, true, JSON.stringify(one.payload));
-			assert.deepEqual(plain(one.payload.result), plain(await manager.updateExtension("npm:new-package")));
 
 			// The exact argv (including the version-gated `--no-approve`) must match.
 			const calls = (path) =>
 				JSON.parse(readFileSync(path, "utf8"))
 					.calls.filter((call) => call[0] !== "--version")
 					.map((call) => call.join(" "));
-			assert.deepEqual(calls(statePath), calls(oracleStatePath));
+			assert.deepEqual(calls(statePath), ["install npm:new-package", "update --extensions", "update npm:new-package"]);
 			const rawCalls = readFileSync(rawPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 			// The fixture strips --no-approve before recording, so the wrapper proves the flag
 			// really reached the CLI (pi >= 0.79 accepts it).
@@ -411,16 +334,8 @@ if (executable) {
 			// Failure paths are localized identically.
 			const empty = await session.invoke("extensions:install", [""]);
 			assert.equal(empty.payload.ok, false);
-			await assert.rejects(manager.install(""), (error) => {
-				assert.equal(error.message, empty.payload.error.message);
-				return true;
-			});
 			const builtIn = await session.invoke("extensions:uninstall", ["pi-deck-todo.ts", "user"]);
 			assert.equal(builtIn.payload.ok, false);
-			await assert.rejects(manager.uninstall("pi-deck-todo.ts", "user"), (error) => {
-				assert.equal(error.message, builtIn.payload.error.message);
-				return true;
-			});
 		});
 	});
 } else {

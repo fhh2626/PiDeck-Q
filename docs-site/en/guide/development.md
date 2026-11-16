@@ -11,7 +11,7 @@ Current version: **{{ theme.version }}**, sourced from the root `package.json`.
 
 - Node.js **24.19.0**, npm **11+**, Git and xmake.
 - A C++20 toolchain; MSVC on Windows.
-- Local Xmake package definitions use Qt **6.11.2** and Node runtime **24.19.0** (the Node runtime is only required by the `PIDECK_SIDECAR_KIND=node` compatibility build).
+- Local Xmake package definitions use Qt **6.11.2**. Node.js **24.19.0** is a build and test tool.
 - **WebView2 Runtime** is required for the Windows desktop window.
 - Real Agent use requires Pi Agent, Pi_Agent_Rust or Pi-Bolt plus model/auth configuration.
 
@@ -25,7 +25,7 @@ npm run make-icon
 npm run dev
 ```
 
-`dev` builds the renderer, Sidecar and native debug target, then launches `release/win-unpacked/PiDeck-Q.exe`. It is not Electron and does not promise automatic hot reload of every process.
+`dev` builds the renderer, extension resources and native debug target, then launches `release/win-unpacked/PiDeck-Q.exe`. It is not Electron and does not promise automatic hot reload of every process.
 
 ## Structure and transport
 
@@ -33,10 +33,6 @@ npm run dev
 | --- | --- |
 | `native/src/main.cpp` | Qt6/QtWebView host entry |
 | `native/backend/` | Native C++ business backend (`PiDeckBackend.exe`, the packaged sidecar) |
-| `src/native-node/index.ts` | Node compatibility sidecar assembly (`PIDECK_SIDECAR_KIND=node`) |
-| `src/main/backend/createBackend.ts` | Business service assembly |
-| `src/main/backend/registerBackendRpc.ts` | Domain IPC registration |
-| `src/main/` | Sessions, pi processes, Git, settings and terminals |
 | `src/shared/` | IPC names, types and desktop API contracts |
 | `src/renderer/` | React/Jotai desktop and Web views |
 
@@ -60,7 +56,7 @@ Qt ↔ Sidecar uses local TCP with length-prefixed JSON. Renderer ↔ Sidecar us
 | `npm run docs:build` | Build docs and check internal links |
 | `npm run docs:preview` | Preview generated docs |
 
-There is no current `dist`, `dist:mac`, `dist:linux` or `preview` script. Xmake and `scripts/stage-native-runtime.mjs` stage Qt, renderer, resources and the matching sidecar (the C++ backend by default; the Node sidecar only for `PIDECK_SIDECAR_KIND=node`), without electron-builder/asar. Xmake and `scripts/verify-pack-stage.mjs` both read `PIDECK_STAGE_DIR`, so `npm run pack` verifies the same directory it staged, and an unsupported `PIDECK_SIDECAR_KIND` is refused instead of falling back.
+Xmake and `scripts/stage-extension-dependencies.mjs` stage Qt, the renderer, extension resources and the C++ backend. `npm run pack` and `scripts/verify-pack-stage.mjs` share `PIDECK_STAGE_DIR`, which defaults to `release/win-unpacked`. The package contains no Node business backend or bundled Node interpreter.
 
 ## Documentation and contributions
 

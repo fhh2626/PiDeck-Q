@@ -1,30 +1,26 @@
 import { expect, test } from "@playwright/test";
-import { WebEventStreamRouter, type PiEvent } from "../../src/main/web/WebEventStream";
+import streams from "../fixtures/web-tool-resume-streams.json";
 import type { ChatMessage } from "../../src/shared/types";
 import type { WebState } from "../../src/renderer/src/web/webTypes";
 
 for (const outcome of ["done", "unknown", "lost"]) {
 const withResults = outcome === "done";
 test(`opening Web during quiet parent tools restores cards across an assistant boundary (${outcome})`, async ({ page }) => {
-	let emit: ((agent: string, event: PiEvent, generation?: number) => void) | undefined;
-	const router = new WebEventStreamRouter(() => "session");
-	router.bindPiSource((handler) => { emit = handler; return () => {}; });
+	const wireFixture = streams[withResults ? "done" : "unknown"];
 	const names = ["subagent", "bg_wait", "powershell"];
 	const messages: ChatMessage[] = [{ id: "user", agentId: "agent", role: "user", text: "Inspect fixture", timestamp: 1 }];
 	for (const name of names) {
-		emit?.("agent", { type: "tool_execution_start", toolCallId: name, toolName: name, args: { task: "inspect" } }, 1);
 		messages.push({ id: `tool-${name}`, agentId: "agent", role: "tool", text: name, timestamp: 2,
 			meta: { status: "running", toolName: name, toolCallId: name, args: '{"task":"inspect"}' } });
 	}
-	const wires: string[] = [];
-	const close = router.add("session", (wire) => { wires.push(wire); return true; }, () => {});
+	const wires = [...wireFixture.initial];
 	const initialCount = wires.length;
 	let finished = false;
 	let idleStateReads = 0;
 	const errors: string[] = [];
 	page.on("pageerror", (error) => errors.push(error.message));
-	// Route.fulfill cannot hold an SSE body open. Feed the real backend router's
-	// wires through a controlled stream so useChat stays busy during assertions.
+	// A fixed RPC stream contract keeps this browser test independent of backend
+	// implementations. Native stream tests separately exercise the C++ translator.
 	await page.addInitScript(({ initialWires }) => {
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
@@ -72,7 +68,7 @@ test(`opening Web during quiet parent tools restores cards across an assistant b
 		else if (path.endsWith("/messages/turn-page")) await route.fulfill({ json: { messages: [messages[0]], total: 1, nextBefore: null } });
 		else await route.fulfill({ json: {} });
 	});
-	try {
+	{
 		await page.goto("/tests/browser/webPcPromptReconciliation.html");
 		await page.locator(".project-row").first().click();
 		await page.getByRole("button", { name: /Mid-tool parent/ }).click();
@@ -88,24 +84,18 @@ test(`opening Web during quiet parent tools restores cards across an assistant b
 		expect(wires.length).toBe(initialCount);
 		// A missed end followed by another assistant must not split the recovered
 		// calls into a different SDK step and create running + unknown duplicates.
-		emit?.("agent", { type: "message_start", message: { role: "assistant", id: "next-assistant" } }, 1);
-		if (withResults) for (const name of names) emit?.("agent", { type: "tool_execution_end", toolCallId: name, toolName: name }, 1);
 		finished = true;
 		const finalStatus = withResults ? "done" : "unknown";
 		for (const message of messages) if (message.meta) message.meta.status = finalStatus;
-		emit?.("agent", { type: "agent_settled" }, 1);
 		// Simulate losing the connection before all terminal frames when no result
 		// exists: the next idle snapshot must settle cached spinners truthfully.
-		await page.evaluate((terminal) => window.postMessage({ type: "fixture-tool-finish", wires: terminal }, "*"), outcome === "lost" ? [] : wires.slice(initialCount));
+		await page.evaluate((terminal) => window.postMessage({ type: "fixture-tool-finish", wires: terminal }, "*"), outcome === "lost" ? [] : wireFixture.terminal);
 		await expect.poll(() => idleStateReads).toBeGreaterThan(0);
 		for (const name of names) {
 			await expect(page.locator(`[data-tool-name="${name}"]`)).toHaveCount(1);
 			await expect(page.locator(`[data-tool-name="${name}"]`)).toHaveAttribute("data-status", finalStatus);
 		}
 		expect(errors).toEqual([]);
-	} finally {
-		close();
-		router.unbindPiSource();
 	}
 });
 }

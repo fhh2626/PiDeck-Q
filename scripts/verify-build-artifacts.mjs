@@ -5,7 +5,6 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_ENTRIES = {
-	nativeNode: "native-node/index.cjs",
 	index: "renderer/index.html",
 	// Web 服务入口：外部端（浏览器访问 http://host:port）加载的就是它。
 	// 产物缺失时 WebServiceManager 会静默回退到 A1 旧内嵌页（功能可用但体验是旧版），
@@ -49,23 +48,6 @@ const WEBFETCH_ALLOWED_EXTERNALS = new Set([
 	"@sinclair/typebox",
 	"undici",
 ]);
-
-/**
- * Sidecar kinds this gate can validate.
- *
- * The packaged product ships the C++ backend (plan §47), so the command-line default is
- * `cpp`; `node` stays available for the documented compatibility build. The exported
- * function keeps `node` as its own default because older callers hand it a Node layout
- * without naming a kind - an unknown kind is refused rather than guessed.
- */
-export const DEFAULT_PACKAGE_SIDECAR_KIND = "cpp";
-const LEGACY_FUNCTION_SIDECAR_KIND = "node";
-const SIDECAR_KINDS = new Set(["cpp", "node"]);
-
-export function normalizeSidecarKind(value) {
-	const kind = String(value ?? "").trim().toLowerCase();
-	return SIDECAR_KINDS.has(kind) ? kind : "";
-}
 
 async function exists(path) {
 	try {
@@ -125,36 +107,15 @@ async function latestMtime(paths) {
 	return latest;
 }
 
-export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir, sidecarKind } = {}) {
+export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } = {}) {
 	const root = resolve(repoRoot);
-	const output = resolve(outDir ?? join(root, "out"));
-	// `cpp` (the packaged default) publishes the C++ backend instead of the bundled Node
-	// sidecar. The package definition differs per kind, so the gate has to know which one
-	// it is validating: a C++ stage must not ship any business Node code, while the Node
-	// compatibility stage must keep shipping its entry point. An unknown kind is rejected
-	// instead of silently falling back to one of the two definitions.
-	const requestedKind = sidecarKind ?? process.env.PIDECK_SIDECAR_KIND ?? LEGACY_FUNCTION_SIDECAR_KIND;
-	const kind = normalizeSidecarKind(requestedKind);
+	const output = resolve(outDir ?? join(root, "release", "win-unpacked"));
 	const errors = [];
 	const checked = [];
-	if (!kind) {
-		return {
-			ok: false,
-			repoRoot: root,
-			outDir: output,
-			checked,
-			errors: [`Unsupported sidecar kind "${String(requestedKind).slice(0, 32)}": expected "cpp" or "node"`],
-		};
-	}
-	const nodeSidecar = kind === "node";
 	if (!(await exists(output))) {
 		return { ok: false, repoRoot: root, outDir: output, checked, errors: [`Build output directory is missing: ${output}`] };
 	}
-	// Xmake stages the same renderer/sidecar tree under win-unpacked/app, while
-	// local Vite/esbuild output uses out directly. Accept both layouts without
-	// weakening the entry/resource/freshness checks. The marker is the renderer, not the
-	// Node entry point, so a C++ stage (which has no `app/native-node`) resolves to
-	// `app` exactly like the Node stage does.
+	// Resolve renderer resources in the package's app directory, or a synthetic test stage.
 	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.index))
 		? join(output, "app")
 		: output;
@@ -223,7 +184,6 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir, s
 	}
 	const entryPaths = Object.fromEntries(
 		Object.entries(EXPECTED_ENTRIES)
-			.filter(([name]) => nodeSidecar || name !== "nativeNode")
 			.map(([name, path]) => [name, join(artifactRoot, path)]),
 	);
 	for (const [name, path] of Object.entries(entryPaths)) {
@@ -234,57 +194,55 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir, s
 			else checked.push(path);
 		}
 	}
-	// Filled by the C++ branch below and reused by the freshness groups: the backend binary
+	// Reused by the native artifact freshness groups: the backend binary
 	// is the artifact whose build inputs live in `native/backend`.
 	let cppBackendArtifact = "";
-	if (!nodeSidecar) {
-		const backendNames = process.platform === "win32"
-			? ["PiDeckBackend.exe"]
-			: ["PiDeckBackend"];
-		let foundBackend = "";
-		for (const name of backendNames) {
-			const path = join(output, name);
-			if (await exists(path)) {
-				foundBackend = path;
-				break;
-			}
+	const backendNames = process.platform === "win32"
+		? ["PiDeckBackend.exe"]
+		: ["PiDeckBackend"];
+	let foundBackend = "";
+	for (const name of backendNames) {
+		const path = join(output, name);
+		if (await exists(path)) {
+			foundBackend = path;
+			break;
 		}
-		cppBackendArtifact = foundBackend;
-		if (!foundBackend) errors.push(`Missing C++ sidecar executable in ${output}`);
-		else {
-			const info = await stat(foundBackend);
-			if (!info.isFile() || info.size === 0) errors.push(`Empty C++ sidecar executable: ${foundBackend}`);
-			else checked.push(foundBackend);
-			// The sidecar imports Qt modules the host does not (Qt6Sql: OpenCode import,
-			// prompt store, model specs). A stage that only deployed the host's Qt set starts
-			// the window and then fails to load the backend with STATUS_DLL_NOT_FOUND, so the
-			// package gate must prove every Qt DLL the sidecar imports is present.
-			const binary = await readFile(foundBackend);
-			const qtImports = new Set(binary.toString("latin1").match(/Qt6[A-Za-z0-9]+\.dll/g) ?? []);
-			if (qtImports.size === 0) errors.push(`C++ sidecar has no inspectable Qt imports: ${foundBackend}`);
-			for (const dll of qtImports) {
-				const dllPath = join(output, dll);
-				if (!(await exists(dllPath))) {
-					errors.push(`C++ sidecar Qt dependency missing from package: ${dll}`);
-					continue;
-				}
-				checked.push(dllPath);
+	}
+	cppBackendArtifact = foundBackend;
+	if (!foundBackend) errors.push(`Missing C++ sidecar executable in ${output}`);
+	else {
+		const info = await stat(foundBackend);
+		if (!info.isFile() || info.size === 0) errors.push(`Empty C++ sidecar executable: ${foundBackend}`);
+		else checked.push(foundBackend);
+		// The sidecar imports Qt modules the host does not (Qt6Sql: OpenCode import,
+		// prompt store, model specs). A stage that only deployed the host's Qt set starts
+		// the window and then fails to load the backend with STATUS_DLL_NOT_FOUND, so the
+		// package gate must prove every Qt DLL the sidecar imports is present.
+		const binary = await readFile(foundBackend);
+		const qtImports = new Set(binary.toString("latin1").match(/Qt6[A-Za-z0-9]+\.dll/g) ?? []);
+		if (qtImports.size === 0) errors.push(`C++ sidecar has no inspectable Qt imports: ${foundBackend}`);
+		for (const dll of qtImports) {
+			const dllPath = join(output, dll);
+			if (!(await exists(dllPath))) {
+				errors.push(`C++ sidecar Qt dependency missing from package: ${dll}`);
+				continue;
 			}
+			checked.push(dllPath);
 		}
-		const bundledNode = (await walkFiles(output)).filter((file) => file.toLowerCase().endsWith("node.exe") || file.toLowerCase().endsWith("/node") || file.toLowerCase().endsWith("\\node"));
-		if (bundledNode.length > 0) errors.push(`C++ package must not contain a Node runtime: ${bundledNode.join(", ")}`);
+	}
+	const bundledNode = (await walkFiles(output)).filter((file) => file.toLowerCase().endsWith("node.exe") || file.toLowerCase().endsWith("/node") || file.toLowerCase().endsWith("\\node"));
+	if (bundledNode.length > 0) errors.push(`C++ package must not contain a Node runtime: ${bundledNode.join(", ")}`);
 
-		// Plan §11.2 item 1: a C++ package carries no business Node at all - not the
-		// bundled sidecar, not its npm runtime, not even the (empty) `node/` directory the
-		// Node layout uses for node.exe. Only `resources/extensions/node_modules` stays,
-		// because pi loads the built-in TS extensions with its own runtime.
-		const businessNodeLeftovers = [];
-		for (const leftover of ["app/native-node", "app/node_modules", "node"]) {
-			if (await exists(join(output, leftover))) businessNodeLeftovers.push(leftover);
-		}
-		if (businessNodeLeftovers.length > 0) {
-			errors.push(`C++ package must not contain business Node leftovers: ${businessNodeLeftovers.join(", ")}`);
-		}
+	// Plan §11.2 item 1: a C++ package carries no business Node at all - not the
+	// bundled sidecar, not its npm runtime, not even the (empty) `node/` directory the
+	// Node layout uses for node.exe. Only `resources/extensions/node_modules` stays,
+	// because pi loads the built-in TS extensions with its own runtime.
+	const businessNodeLeftovers = [];
+	for (const leftover of ["app/native-node", "app/node_modules", "node"]) {
+		if (await exists(join(output, leftover))) businessNodeLeftovers.push(leftover);
+	}
+	if (businessNodeLeftovers.length > 0) {
+		errors.push(`C++ package must not contain business Node leftovers: ${businessNodeLeftovers.join(", ")}`);
 	}
 
 	const rendererRoot = join(artifactRoot, "renderer");
@@ -333,34 +291,23 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir, s
 	// artifact for the host group and is not judged by it.
 	const cppHostNames = process.platform === "win32" ? ["PiDeck-Q.exe"] : ["PiDeck-Q"];
 	const cppHostArtifacts = [];
-	if (!nodeSidecar) {
-		for (const name of cppHostNames) {
-			for (const base of [output, join(output, "app")]) {
-				const candidate = join(base, name);
-				if (await exists(candidate)) cppHostArtifacts.push(candidate);
-			}
+	for (const name of cppHostNames) {
+		for (const base of [output, join(output, "app")]) {
+			const candidate = join(base, name);
+			if (await exists(candidate)) cppHostArtifacts.push(candidate);
 		}
 	}
 	const freshnessGroups = [
-		...(nodeSidecar
-			? [{ name: "native-node", inputs: [join(root, "src", "main"), join(root, "src", "native-node"), ...commonInputs], artifacts: [entryPaths.nativeNode] }]
-			: [
-				{
-					name: "cpp-backend",
-					inputs: [join(root, "native", "backend"), join(root, "xmake.lua")],
-					artifacts: cppBackendArtifact ? [cppBackendArtifact] : [],
-				},
-				{
-					name: "cpp-host",
-					inputs: [
-						join(root, "native", "src"),
-						join(root, "native", "PiDeck-Q.rc"),
-						join(root, "xmake.lua"),
-						join(root, "package.json"),
-					],
-					artifacts: cppHostArtifacts,
-				},
-			]),
+		{
+			name: "cpp-backend",
+			inputs: [join(root, "native", "backend"), join(root, "xmake.lua")],
+			artifacts: cppBackendArtifact ? [cppBackendArtifact] : [],
+		},
+		{
+			name: "cpp-host",
+			inputs: [join(root, "native", "src"), join(root, "native", "PiDeck-Q.rc"), join(root, "xmake.lua"), join(root, "package.json")],
+			artifacts: cppHostArtifacts,
+		},
 		{
 			name: "renderer",
 			inputs: [join(root, "src", "renderer"), ...commonInputs],
@@ -387,11 +334,10 @@ function parseArgs(argv) {
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--json") options.json = true;
-		else if (arg === "--repo-root" || arg === "--out" || arg === "--sidecar-kind") {
+		else if (arg === "--repo-root" || arg === "--out") {
 			const value = argv[index + 1];
 			if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
-			if (arg === "--sidecar-kind") options.sidecarKind = value;
-			else options[arg === "--out" ? "outDir" : "repoRoot"] = value;
+			options[arg === "--out" ? "outDir" : "repoRoot"] = value;
 			index += 1;
 		} else if (arg === "--help") options.help = true;
 		else throw new Error(`Unknown argument: ${arg}`);
@@ -404,15 +350,9 @@ if (isMain) {
 	try {
 		const options = parseArgs(process.argv.slice(2));
 		if (options.help) {
-			console.log("Usage: node scripts/verify-build-artifacts.mjs [--repo-root <path>] [--out <path>] [--sidecar-kind cpp|node] [--json]");
+			console.log("Usage: node scripts/verify-build-artifacts.mjs [--repo-root <path>] [--out <path>] [--json]");
 		} else {
-			// The command line is the packaging entry point, so it defaults to the kind the
-			// product ships (cpp) instead of requiring an env opt-in. An explicit
-			// PIDECK_SIDECAR_KIND still wins so a wrong value reaches the validation below.
-			const result = await verifyBuildArtifacts({
-				...options,
-				sidecarKind: options.sidecarKind ?? process.env.PIDECK_SIDECAR_KIND ?? DEFAULT_PACKAGE_SIDECAR_KIND,
-			});
+			const result = await verifyBuildArtifacts(options);
 			if (options.json) console.log(JSON.stringify(result, null, 2));
 			else if (result.ok) console.log(`Build artifacts verified (${result.checked.length} files): ${result.outDir}`);
 			else {

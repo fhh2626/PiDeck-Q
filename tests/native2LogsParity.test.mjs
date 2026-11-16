@@ -19,11 +19,7 @@ import {
 	SseClient,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
-import {
-	createLiveBatchOracle,
-	createLogsRpcOracle,
-	createRpcLogSummaryOracle,
-} from "./helpers/native2LogsOracle.mjs";
+
 
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "logs";
@@ -111,7 +107,7 @@ if (executable) {
 			if (root) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		});
 
-		/** Backend + twin oracle directories; `seed(dirs)` runs before either side reads. */
+		/** The fixture seeds native log files before the backend reads them. */
 		const start = async (t, { seed = null, settings = {}, scenario = null, env = {} } = {}) => {
 			let dirs = null;
 			let fake = null;
@@ -120,15 +116,11 @@ if (executable) {
 				settings: { language: "en-US", rpcTimeout: 600_000, ...settings },
 				env,
 				prepare: (fixture) => {
-					const oracleRoot = join(fixture.root, "oracle");
 					dirs = {
 						backendLogs: join(fixture.userData, "logs"),
 						backendRpc: join(fixture.userData, "logs", "rpc"),
-						oracleLogs: join(oracleRoot, "logs"),
-						oracleRpc: join(oracleRoot, "logs", "rpc"),
 					};
 					mkdirSync(dirs.backendRpc, { recursive: true });
-					mkdirSync(dirs.oracleRpc, { recursive: true });
 					if (seed) seed(dirs);
 					// A fake pi is always present so startup tasks never record "pi version not
 					// probed" into today's app log; the seeded read comparison must see only the
@@ -140,12 +132,7 @@ if (executable) {
 					};
 				},
 			});
-			const oracle = createLogsRpcOracle({
-				home: session.fixture.root,
-				logDir: dirs.oracleLogs,
-				rpcLogDir: dirs.oracleRpc,
-			});
-			return { ...session, dirs, fake, oracle };
+			return { ...session, dirs, fake };
 		};
 
 		/** Activate the runtime for one imported session and return its target. */
@@ -170,7 +157,8 @@ if (executable) {
 			}]);
 
 		// ── app logs ────────────────────────────────────────────────────
-		test("app log paging, level, search and date windows match the oracle", async (t) => {
+		test("app log paging, level, search and date windows follow explicit contracts", async (t) => {
+			let seedEntries;
 			const session = await start(t, {
 				seed: (dirs) => {
 					const yesterday = dayStart(1);
@@ -183,6 +171,7 @@ if (executable) {
 						{ id: "a4", time: fourDaysAgo + 86_340_000, level: "debug", scope: "git", message: "commit", detail: [1, 2, 3] },
 						{ id: "a5", time: twoDaysAgo + 32_700_000, level: "info", scope: "SCOPEX", message: "scope match" },
 					];
+					seedEntries = entries;
 					const byDay = new Map();
 					for (const entry of entries) {
 						const day = formatDate(entry.time);
@@ -192,43 +181,46 @@ if (executable) {
 						const lines = dayEntries.map((entry) => JSON.stringify(entry));
 						// A damaged line and a foreign JSON line must both be skipped.
 						lines.push("{not json", JSON.stringify({ foo: 1 }));
-						writeBoth([dirs.backendLogs, dirs.oracleLogs], `app-${day}.log`, `${lines.join("\n")}\n`);
+						writeBoth([dirs.backendLogs], `app-${day}.log`, `${lines.join("\n")}\n`);
 					}
 					// Today's file exists on both sides with no seed rows: the backend's startup
 					// tasks legitimately append to it, and every comparison below is bounded to
 					// yesterday-or-earlier.
-					writeBoth([dirs.backendLogs, dirs.oracleLogs], `app-${formatDate(dayStart(0))}.log`, "");
+					writeBoth([dirs.backendLogs], `app-${formatDate(dayStart(0))}.log`, "");
 				},
 			});
 
 			const bound = dayStart(0) - 1;
+			// Each row fixes filtering, ordering, totals and page-size clamping separately.
+			const all = ["a2", "a1", "a5", "a3", "a4"];
 			const queries = [
-				{ to: bound },
-				{ to: bound, level: "warn" },
-				{ to: bound, level: "all" },
-				{ to: bound, search: "only-in-detail" },
-				{ to: bound, search: "scopex" },
-				{ to: bound, search: "ag-1" },
-				{ from: dayStart(1), to: dayStart(1) + 86_400_000 - 1 },
-				{ from: dayStart(4), to: bound },
-				{ to: bound, page: 0, pageSize: 2 },
-				{ to: bound, page: 1, pageSize: 2 },
-				{ to: bound, page: 2, pageSize: 2 },
-				{ to: bound, page: 0, pageSize: 999 },
-				{ to: bound, page: 0, pageSize: 0 },
-				{ to: bound, limit: 1 },
-				{ to: bound, limit: 0 },
+				[{ to: bound }, all, 5, 50],
+				[{ to: bound, level: "warn" }, ["a2"], 1, 50],
+				[{ to: bound, level: "all" }, all, 5, 50],
+				[{ to: bound, search: "only-in-detail" }, ["a2"], 1, 50],
+				[{ to: bound, search: "scopex" }, ["a5"], 1, 50],
+				[{ to: bound, search: "ag-1" }, ["a1"], 1, 50],
+				[{ from: dayStart(1), to: dayStart(0) - 1 }, ["a2", "a1"], 2, 50],
+				[{ from: dayStart(4), to: bound }, all, 5, 50],
+				[{ to: bound, page: 0, pageSize: 2 }, ["a2", "a1"], 5, 2],
+				[{ to: bound, page: 1, pageSize: 2 }, ["a5", "a3"], 5, 2],
+				[{ to: bound, page: 2, pageSize: 2 }, ["a4"], 5, 2],
+				[{ to: bound, page: 0, pageSize: 999 }, all, 5, 200],
+				[{ to: bound, page: 0, pageSize: 0 }, ["a2"], 5, 1],
+				[{ to: bound, limit: 1 }, ["a2"], 5, 50],
+				[{ to: bound, limit: 0 }, ["a2"], 5, 50],
 			];
-			for (const query of queries) {
+			for (const [query, ids, total, pageSize] of queries) {
+				const expected = ids.map((id) => seedEntries.find((entry) => entry.id === id));
 				const actual = await session.invoke("logs:list", [query]);
-				assert.equal(actual.payload.ok, true, `${JSON.stringify(query)}: ${JSON.stringify(actual.payload)}`);
-				const expected = await session.oracle.invoke("logs:list", [query]);
-				assert.deepEqual(plain(actual.payload.result), plain(expected), `logs:list ${JSON.stringify(query)}`);
-
+				assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
+				assert.deepEqual(actual.payload.result, expected, JSON.stringify(query));
 				const page = await session.invoke("logs:list-page", [query]);
 				assert.equal(page.payload.ok, true, JSON.stringify(page.payload));
-				const expectedPage = await session.oracle.invoke("logs:list-page", [query]);
-				assert.deepEqual(plain(page.payload.result), plain(expectedPage), `logs:list-page ${JSON.stringify(query)}`);
+				assert.deepEqual(page.payload.result, {
+					entries: expected, total, page: query.page ?? 0, pageSize,
+					hasMore: ((query.page ?? 0) + 1) * pageSize < total,
+				});
 			}
 
 			// Unbounded read: the backend's own startup rows are production output, so the
@@ -238,31 +230,31 @@ if (executable) {
 			assert.equal(unbounded.payload.ok, true, JSON.stringify(unbounded.payload));
 			assert.deepEqual(
 				plain(unbounded.payload.result).filter((entry) => seedIds.has(entry.id)),
-				plain(await session.oracle.invoke("logs:list", [{}])),
+				all.map((id) => seedEntries.find((entry) => entry.id === id)),
 			);
 
 			// 14-file read cap: only the newest 14 day files are queried by either side.
 			for (let offset = 5; offset <= 20; offset += 1) {
 				writeBoth(
-					[session.dirs.backendLogs, session.dirs.oracleLogs],
+					[session.dirs.backendLogs],
 					`app-${formatDate(dayStart(offset))}.log`,
 					`${JSON.stringify({ id: `marker-${offset}`, time: dayStart(offset) + 2_000, level: "info", scope: "marker", message: `marker ${offset}` })}\n`,
 				);
 			}
 			const capped = await session.invoke("logs:list-page", [{ to: bound, pageSize: 50 }]);
-			const expectedCapped = await session.oracle.invoke("logs:list-page", [{ to: bound, pageSize: 50 }]);
-			assert.deepEqual(plain(capped.payload.result), plain(expectedCapped));
+			assert.equal(capped.payload.ok, true);
+			assert.equal(capped.payload.result.total, 15);
 			const cappedIds = plain(capped.payload.result.entries).map((entry) => entry.id);
 			assert.equal(cappedIds.includes("marker-5"), true, JSON.stringify(cappedIds));
 			assert.equal(cappedIds.includes("marker-20"), false, JSON.stringify(cappedIds));
 		});
 
-		test("app log write, retention, size, clear and open-folder match the oracle", async (t) => {
+		test("app log write, retention, size, clear and open-folder obey retention and audit contracts", async (t) => {
 			const session = await start(t, {
 				seed: (dirs) => {
 					for (let offset = 0; offset < 15; offset += 1) {
 						writeBoth(
-							[dirs.backendLogs, dirs.oracleLogs],
+							[dirs.backendLogs],
 							`app-${formatDate(dayStart(offset))}.log`,
 							`${JSON.stringify({ id: `old-${offset}`, time: dayStart(offset) + 1_000, level: "info", scope: "seed", message: `day ${offset}` })}\n`,
 						);
@@ -271,36 +263,27 @@ if (executable) {
 			});
 			const size = () => session.invoke("logs:get-size");
 			const list = (query) => session.invoke("logs:list", [query]);
-			const strip = (entries) => plain(entries).map(({ id, time, ...rest }) => rest);
+
 
 			// The first write prunes both directories down to the newest 14 files.
 			await session.invoke("renderer:log", ["warn", "renderer", "composer stalled", { reason: "timeout", attempt: 2 }]);
-			await session.oracle.invoke("renderer:log", ["warn", "renderer", "composer stalled", { reason: "timeout", attempt: 2 }]);
 			assert.equal(listFiles(session.dirs.backendLogs).length, 14, JSON.stringify(listFiles(session.dirs.backendLogs)));
-			assert.deepEqual(listFiles(session.dirs.backendLogs), listFiles(session.dirs.oracleLogs));
 
 			// Clear leaves exactly one audit row on each side; the byte size then matches.
 			await session.invoke("logs:clear");
-			await session.oracle.invoke("logs:clear");
-			assert.deepEqual(listFiles(session.dirs.backendLogs), listFiles(session.dirs.oracleLogs));
 			assert.equal(listFiles(session.dirs.backendLogs).length, 1);
-			assert.equal((await size()).payload.result, (await session.oracle.invoke("logs:get-size")));
+			assert.equal((await size()).payload.result, listFiles(session.dirs.backendLogs).reduce((sum, name) => sum + statSync(join(session.dirs.backendLogs, name)).size, 0));
 			const cleared = await list({});
 			assert.equal(cleared.payload.result.length, 1);
 			assert.equal(cleared.payload.result[0].message, "Logs cleared");
 			assert.equal(cleared.payload.result[0].detail.files, 14);
-			assert.deepEqual(strip(cleared.payload.result), strip(await session.oracle.invoke("logs:list", [{}])));
 
 			// Writes after the clear are compared byte-for-byte in size and semantically in
 			// content (ids and timestamps are backend-owned).
 			await session.invoke("renderer:log", ["warn", "renderer", "composer stalled", { reason: "timeout", attempt: 2 }]);
-			await session.oracle.invoke("renderer:log", ["warn", "renderer", "composer stalled", { reason: "timeout", attempt: 2 }]);
 			// An out-of-enum level degrades to `info` on both sides.
 			await session.invoke("renderer:log", ["trace", "renderer", "bad level"]);
-			await session.oracle.invoke("renderer:log", ["trace", "renderer", "bad level"]);
 			const afterWrite = await list({});
-			const expectedAfterWrite = await session.oracle.invoke("logs:list", [{}]);
-			assert.deepEqual(strip(afterWrite.payload.result), strip(expectedAfterWrite));
 			assert.deepEqual(
 				afterWrite.payload.result.map((entry) => ({ level: entry.level, message: entry.message })),
 				[
@@ -309,17 +292,16 @@ if (executable) {
 					{ level: "info", message: "Logs cleared" },
 				],
 			);
-			assert.equal((await size()).payload.result, (await session.oracle.invoke("logs:get-size")));
+			assert.equal((await size()).payload.result, listFiles(session.dirs.backendLogs).reduce((sum, name) => sum + statSync(join(session.dirs.backendLogs, name)).size, 0));
 
 			await session.invoke("logs:open-folder");
-			await session.oracle.invoke("logs:open-folder");
 			const request = await session.host.waitForRequest("shell.openPath");
 			assert.equal(slash(request.params.path), slash(session.dirs.backendLogs));
-			assert.equal(slash(session.oracle.opened[0]), slash(session.dirs.oracleLogs));
 		});
 
 		// ── rpc logs ────────────────────────────────────────────────────
-		test("rpc log history, size and day/limit clamps match the oracle", async (t) => {
+		test("rpc log history skips corrupt rows and clamps days and limits", async (t) => {
+			let seedEntries;
 			const session = await start(t, {
 				seed: (dirs) => {
 					const today = dayStart(0);
@@ -331,52 +313,53 @@ if (executable) {
 						{ id: "r4", agentId: "agent-a", direction: "recv", summary: "← message_update.text_delta", data: { type: "message_update", assistantMessageEvent: { type: "text_delta" } }, time: yesterday + 32_406_000 },
 						{ id: "r5", agentId: "agent-a", direction: "send", summary: "→ prompt: old", data: { type: "prompt", message: "old" }, time: dayStart(10) + 36_000_000 },
 					];
+					seedEntries = entries;
 					const todayLines = [entries[0], entries[1]].map((entry) => JSON.stringify(entry));
 					todayLines.push(JSON.stringify({ id: "broken" }), "not json");
-					writeBoth([dirs.backendRpc, dirs.oracleRpc], `rpc-agent-a-${formatDate(entries[0].time)}.jsonl`, `${todayLines.join("\n")}\n`);
+					writeBoth([dirs.backendRpc], `rpc-agent-a-${formatDate(entries[0].time)}.jsonl`, `${todayLines.join("\n")}\n`);
 					writeBoth(
-						[dirs.backendRpc, dirs.oracleRpc],
+						[dirs.backendRpc],
 						`rpc-agent-a-${formatDate(entries[3].time)}.jsonl.gz`,
 						gzipSync(`${JSON.stringify(entries[3])}\n`),
 					);
 					writeBoth(
-						[dirs.backendRpc, dirs.oracleRpc],
+						[dirs.backendRpc],
 						`rpc-agent-b-${formatDate(entries[2].time)}.jsonl`,
 						`${JSON.stringify(entries[2])}\n`,
 					);
 					writeBoth(
-						[dirs.backendRpc, dirs.oracleRpc],
+						[dirs.backendRpc],
 						`rpc-agent-a-${formatDate(entries[4].time)}.jsonl`,
 						`${JSON.stringify(entries[4])}\n`,
 					);
 					// Foreign files are ignored by the rpc-<agent>-<date> pattern.
-					writeBoth([dirs.backendRpc, dirs.oracleRpc], "notes.txt", "ignored\n");
+					writeBoth([dirs.backendRpc], "notes.txt", "ignored\n");
 				},
 			});
 
 			const cases = [
-				{},
-				{ days: 1 },
-				{ days: 2 },
-				{ days: 2, limit: 2 },
-				{ days: 1, limit: 1 },
-				{ days: 0 },
-				{ days: 99 },
-				{ limit: 0 },
-				{ limit: 100_000 },
+				[{}, ["r2", "r1", "r4", "r3"]],
+				[{ days: 1 }, ["r2", "r1"]],
+				[{ days: 2 }, ["r2", "r1", "r4", "r3"]],
+				[{ days: 2, limit: 2 }, ["r2", "r1"]],
+				[{ days: 1, limit: 1 }, ["r2"]],
+				[{ days: 0 }, ["r2", "r1"]],
+				[{ days: 99 }, ["r2", "r1", "r4", "r3", "r5"]],
+				[{ limit: 0 }, ["r2"]],
+				[{ limit: 100_000 }, ["r2", "r1", "r4", "r3"]],
 			];
-			for (const options of cases) {
+			for (const [options, ids] of cases) {
 				const actual = await session.invoke("rpc-logs:get", [options]);
-				assert.equal(actual.payload.ok, true, `${JSON.stringify(options)}: ${JSON.stringify(actual.payload)}`);
-				const expected = await session.oracle.invoke("rpc-logs:get", [options]);
-				assert.deepEqual(plain(actual.payload.result), plain(expected), `rpc-logs:get ${JSON.stringify(options)}`);
+				assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
+				assert.deepEqual(actual.payload.result,
+					ids.map((id) => seedEntries.find((entry) => entry.id === id)), JSON.stringify(options));
 			}
 
 			// No target = the global log; the target-scoped read is compared on a real runtime
 			// target in the live test (production validates it against the binding table).
 			const size = await session.invoke("rpc-logs:get-size", []);
 			assert.equal(size.payload.ok, true, JSON.stringify(size.payload));
-			assert.equal(size.payload.result, await session.oracle.invoke("rpc-logs:get-size", []));
+			assert.equal(size.payload.result, listFiles(session.dirs.backendRpc).filter((name) => name.startsWith("rpc-")).reduce((sum, name) => sum + statSync(join(session.dirs.backendRpc, name)).size, 0));
 		});
 
 		test("rpc log save filters renderer junk, de-duplicates and truncates bash commands", async (t) => {
@@ -401,28 +384,21 @@ if (executable) {
 			};
 			const actual = await session.invoke("rpc-logs:save", [payload]);
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await session.oracle.invoke("rpc-logs:save", [payload]);
-			assert.deepEqual(
-				plain(actual.payload.result).map(slash),
-				plain(expected).map((path) => slash(path).replace(slash(session.dirs.oracleRpc), slash(session.dirs.backendRpc))),
-			);
+
 			const fileName = `rpc-agent-save-${formatDate(time)}.jsonl`;
+			assert.deepEqual(actual.payload.result.map(slash), [slash(join(session.dirs.backendRpc, fileName))]);
 			assert.deepEqual(listFiles(session.dirs.backendRpc), [fileName]);
-			assert.deepEqual(listFiles(session.dirs.backendRpc), listFiles(session.dirs.oracleRpc));
 			const backendLines = readFileSync(join(session.dirs.backendRpc, fileName), "utf8").trim().split("\n");
-			const oracleLines = readFileSync(join(session.dirs.oracleRpc, fileName), "utf8").trim().split("\n");
 			// The oracle de-duplicates against the file, not inside one batch: both sides
 			// write the two identical ids and nothing for the junk rows.
-			assert.equal(backendLines.length, oracleLines.length);
 			assert.equal(backendLines.length, 2);
 			const parsed = backendLines.map((line) => JSON.parse(line));
-			assert.deepEqual(plain(parsed), plain(oracleLines.map((line) => JSON.parse(line))));
+			assert.deepEqual(parsed, Array.from({ length: 2 }, () => ({ ...entry, data: { type: "bash", command: "x".repeat(200) } })));
 			assert.equal(parsed[0].data.command.length, 200, "the bash command is truncated on disk");
 
 			// A second save of the same ids writes nothing.
 			const again = await session.invoke("rpc-logs:save", [payload]);
 			assert.deepEqual(plain(again.payload.result), []);
-			assert.deepEqual(plain(await session.oracle.invoke("rpc-logs:save", [payload])), []);
 
 			// Nothing valid in the batch: an empty array, not an error.
 			const junk = await session.invoke("rpc-logs:save", [{ entries: [{ id: 1 }, null, "x"] }]);
@@ -435,34 +411,29 @@ if (executable) {
 				seed: (dirs) => {
 					const today = formatDate(Date.now());
 					writeBoth(
-						[dirs.backendRpc, dirs.oracleRpc],
+						[dirs.backendRpc],
 						`rpc-agent-a-${today}.jsonl`,
 						`${JSON.stringify({ id: "c1", agentId: "agent-a", direction: "send", summary: "→ prompt: a", data: { type: "prompt" }, time: Date.now() })}\n`,
 					);
 					writeBoth(
-						[dirs.backendRpc, dirs.oracleRpc],
+						[dirs.backendRpc],
 						`rpc-agent-b-${today}.jsonl`,
 						`${JSON.stringify({ id: "c2", agentId: "agent-b", direction: "send", summary: "→ prompt: b", data: { type: "prompt" }, time: Date.now() })}\n`,
 					);
 				},
 			});
 			await session.invoke("rpc-logs:clear", [{ sessionId: "s", agentId: "agent-a", runtimeGeneration: 1 }]);
-			await session.oracle.bind("agent-a");
-			await session.oracle.invoke("rpc-logs:clear", [{ sessionId: "s", agentId: "agent-a", runtimeGeneration: 1 }]);
-			assert.deepEqual(listFiles(session.dirs.backendRpc), listFiles(session.dirs.oracleRpc));
 			assert.deepEqual(plain(listFiles(session.dirs.backendRpc)), [`rpc-agent-b-${formatDate(Date.now())}.jsonl`]);
 		});
 
 		// ── live producer ───────────────────────────────────────────────
-		test("agents:rpc-log is gated by rpc-logs:logging-set and carries oracle summaries", async (t) => {
-			const session = await start(t, { scenario: { turns: textTurn() } });
+		test("agents:rpc-log is gated by rpc-logs:logging-set and carries stable summaries", async (t) => {
+			const session = await start(t, { scenario: { turns: [...textTurn(), ...textTurn()] } });
 			const sse = new SseClient(`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`);
 			await sse.connect().catch(() => undefined);
 			t.after(() => sse.close());
 			const { record, target } = await activate(session, `live-${Date.now()}`);
-			const oracle = createRpcLogSummaryOracle();
-			t.after(() => oracle.dispose());
-			await oracle.start();
+
 
 			// Off by default: the frame never reaches the panel and nothing is written.
 			assert.deepEqual(plain((await session.invoke("rpc-logs:get-live", [target.agentId])).payload.result), []);
@@ -477,7 +448,6 @@ if (executable) {
 			assert.equal(enabled.payload.ok, true, JSON.stringify(enabled.payload));
 			assert.equal(enabled.payload.result, true);
 			assert.equal((await session.invoke("rpc-logs:logging-get", [target])).payload.result, true);
-			session.oracle.bind(target.agentId);
 
 			const promptStarted = Date.now();
 			await prompt(session, record, target, "on", "record me");
@@ -487,11 +457,17 @@ if (executable) {
 			assert.ok(batch.entries.length > 0, "a batch must carry the prompt traffic");
 			assert.ok(Date.now() - promptStarted >= 50, "the batch is deferred, not sent per frame");
 
-			// Every summary is produced by the production AgentManager handler for the same
-			// frame; `id`/`time` are the only backend-owned differences.
-			const expected = oracle.summarize(batch.entries.map((entry) => ({ direction: entry.direction, data: entry.data })));
-			const shape = (entry) => ({ direction: entry.direction, summary: entry.summary, data: plain(entry.data) });
-			assert.deepEqual(batch.entries.map(shape), expected.map(shape));
+			for (const entry of batch.entries) {
+				assert.match(entry.id, /^[0-9a-f-]{36}$/i);
+				assert.equal(typeof entry.time, "number");
+				assert.equal(entry.agentId, target.agentId);
+				assert.match(entry.summary, entry.direction === "send" ? /^→ / : /^← /);
+			}
+			const sent = batch.entries.find((entry) => entry.data.type === "prompt");
+			assert.equal(sent?.summary, "→ prompt: record me");
+			const delta = batch.entries.find((entry) => entry.data.type === "message_update");
+			assert.equal(delta?.summary, "← message_update.text_delta");
+
 			const summaries = batch.entries.map((entry) => entry.summary);
 			assert.ok(summaries.some((summary) => summary.startsWith("→ prompt")), JSON.stringify(summaries));
 			assert.ok(summaries.some((summary) => summary.startsWith("← ")), JSON.stringify(summaries));
@@ -524,7 +500,7 @@ if (executable) {
 			assert.equal(statSync(filePath).size, before);
 		});
 
-		test("live batches use the oracle's 80 ms / 100-entry batching", async (t) => {
+		test("live batches are deferred and capped at 100 entries", async (t) => {
 			// The fake pi emits its 200 events synchronously after the prompt ack, so a 300 ms
 			// window turns them into the first flush; the remaining chunks follow on the next
 			// two windows. Batch sizes are then compared with the production buffer.
@@ -566,12 +542,11 @@ if (executable) {
 			// the production buffer produces for the same total.
 			const sizes = batches.map((batch) => batch.entries.length);
 			assert.equal(sizes.slice(0, -1).every((size) => size === 100), true, JSON.stringify(sizes));
-			assert.deepEqual(sizes, createLiveBatchOracle().sizes(total));
+			assert.equal(sizes.length, Math.ceil(total / 100));
+			assert.equal(sizes.at(-1), total % 100 || 100);
 		});
 
-		test("the live queue keeps only the newest 1000 frames per agent", async (t) => {
-			// 1200 events plus the prompt/response frames exceed the oracle's pending budget;
-			// the oldest frames must be dropped, not the newest.
+		test("the live ring retains the newest 1000 frames and batches preserve the burst tail", async (t) => {
 			const events = Array.from({ length: 1_200 }, (_, index) => ({
 				event: {
 					type: "message_update",
@@ -584,31 +559,27 @@ if (executable) {
 				env: { PIDECK_RPC_LOG_FLUSH_MS: "300" },
 			});
 			const sse = new SseClient(`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`);
-			await sse.connect().catch(() => undefined);
+			await sse.connect();
 			t.after(() => sse.close());
 			const { record, target } = await activate(session, `cap-${Date.now()}`);
 			await session.invoke("rpc-logs:logging-set", [target, true]);
 			await prompt(session, record, target, "cap", "cap");
-			const deadline = Date.now() + 30_000;
-			let batches = [];
-			while (Date.now() < deadline) {
-				batches = sse.frames
-					.filter((entry) => entry.payload.channel === "agents:rpc-log")
-					.map((entry) => entry.payload.args[0])
-					.filter((batch) => batch.agentId === target.agentId);
-				if (batches.reduce((sum, batch) => sum + batch.entries.length, 0) >= 1_000) break;
-				await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-			}
-			const total = batches.reduce((sum, batch) => sum + batch.entries.length, 0);
-			assert.equal(total, 1_000, JSON.stringify(batches.map((batch) => batch.entries.length)));
-			assert.deepEqual(batches.map((batch) => batch.entries.length), Array.from({ length: 10 }, () => 100));
-			// The kept frames are the newest ones: the drop window only spans the first ~200
-			// events (prompt/response and early deltas), never the tail.
-			assert.equal(batches[0].entries.every((entry) => entry.data.type === "message_update"), true);
-			const firstDelta = Number(batches[0].entries[0].data.assistantMessageEvent.delta);
-			assert.ok(firstDelta >= 190 && firstDelta <= 250, `first kept delta ${firstDelta}`);
-			const deltas = batches.flatMap((batch) => batch.entries).map((entry) => Number(entry.data.assistantMessageEvent?.delta)).filter((value) => !Number.isNaN(value));
-			assert.equal(Math.max(...deltas), 1_199);
+			await sse.waitFor((entry) => entry.payload.channel === "agents:rpc-log"
+				&& entry.payload.args[0]?.agentId === target.agentId
+				&& entry.payload.args[0].entries.some((frame) => frame.data.type === "agent_settled"), 30_000);
+			const live = await session.invoke("rpc-logs:get-live", [target.agentId]);
+			assert.equal(live.payload.ok, true, JSON.stringify(live.payload));
+			assert.equal(live.payload.result.length, 1_000);
+			const filePath = join(session.dirs.backendRpc, `rpc-${target.agentId}-${formatDate(Date.now())}.jsonl`);
+			const disk = readFileSync(filePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			assert.ok(disk.length > 1_200, "disk retains the complete burst");
+			assert.deepEqual(live.payload.result.map((entry) => entry.id), disk.slice(-1_000).map((entry) => entry.id),
+				"the bounded ring must evict the oldest frames, including startup/control traffic");
+			const batches = sse.frames.filter((entry) => entry.payload.channel === "agents:rpc-log")
+				.map((entry) => entry.payload.args[0]).filter((batch) => batch.agentId === target.agentId);
+			assert.ok(batches.every((batch) => batch.entries.length > 0 && batch.entries.length <= 100));
+			assert.ok(batches.flatMap((batch) => batch.entries)
+				.some((entry) => entry.data.assistantMessageEvent?.delta === "1199"), "the newest delta must reach the viewer");
 		});
 
 		test("per-agent batching isolates frames and live payloads are summarized at 4 KiB", async (t) => {

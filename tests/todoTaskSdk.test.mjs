@@ -6,7 +6,6 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { piFixtureFileUrl } from "../scripts/pi-compatibility-fixture.mjs";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { loadPiCompatibilityModules } from "./helpers/piCompatibilityModules.mjs";
 
 const piEntry = piFixtureFileUrl("dist/index.js");
@@ -484,25 +483,6 @@ test("real SDK cancellation while committing a continuation prevents the next pr
 	t.after(unsubscribe);
 	await submitTask(session, "/todo-goal Implement the endpoint");
 	assert.equal(faux.state.callCount, 2);
-	assert.deepEqual(errors, []);
-});
-
-test("real SDK atomic task goals remain visible through the desktop history projector", { timeout: 20000 }, async (t) => {
-	const { session, faux, errors } = await createSession(t);
-	faux.setResponses([response("Finished")]);
-	await submitTask(session, "/todo Inspect the endpoint");
-	const branch = session.sessionManager.getBranch();
-	const goals = branch.filter((entry) => entry.type === "custom_message" && entry.display);
-	assert.equal(goals.length, 1);
-	assert.equal(goals[0].content, "Inspect the endpoint", "pi keeps the neutral task content");
-	assert.equal(goals[0].details.commandName, "todo");
-	assert.equal(goals[0].details.commandArgs, "Inspect the endpoint");
-	const { AgentMessageProjector } = loadTsCommonJs("src/main/pi/AgentMessageProjector.ts");
-	const projector = new AgentMessageProjector({ translate: (key) => key, isAskAborted: () => false });
-	const messages = projector.convert("agent", session.messages);
-	const displayedGoals = messages.filter((message) => message.meta?.type === "todoTask");
-	assert.equal(displayedGoals.length, 1);
-	assert.equal(displayedGoals[0].text, "/todo Inspect the endpoint");
 	assert.deepEqual(errors, []);
 });
 

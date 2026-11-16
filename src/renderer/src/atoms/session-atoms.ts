@@ -176,9 +176,6 @@ export const sessionRecordsAtom = atom<Record<string, SessionRecord>>({});
 export const discardedTransientSessionIdsAtom = atom<Set<string>>(new Set<string>());
 export const sessionIdsByProjectAtom = atom<Record<string, string[]>>({});
 export const currentSessionIdAtom = atom<string | undefined>(undefined);
-/** 会话 Tab 栏（浏览器式多 Tab）：按打开顺序排列的会话 id 列表。
- *  关闭 Tab 只从列表移除，不 kill Agent；再次打开同一会话时复用已绑定运行时。 */
-export const sessionTabIdsAtom = atom<string[]>([]);
 export const sessionRuntimeByIdAtom = atom<Record<string, SessionRuntimeViewState>>({});
 export const sidebarRuntimeAtom = selectAtom(
   sessionRuntimeByIdAtom,

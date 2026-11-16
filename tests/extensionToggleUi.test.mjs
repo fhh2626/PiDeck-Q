@@ -22,36 +22,7 @@ test("extension menu uses lightweight refresh on entry and after toggles", () =>
 	assert.match(tab, /getExtensionsApi\(\)\.toggle\(extension\.source, enabled\)[\s\S]*?props\.onReload\(\)/);
 });
 
-test("web search is a default-off built-in shown as PiDeck-Q-WebSearch", () => {
-	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
-	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
-	assert.match(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[\s\S]*?"pideck-q-websearch\.ts"/);
-	assert.match(tab, /"pideck-q-websearch\.ts": "PiDeck-Q-WebSearch"/);
-	assert.match(tab, /"pideck-q-websearch": "PiDeck-Q-WebSearch"/);
-});
-
 test("better compaction is shown as PiDeck-Q-Better-Compaction", () => {
 	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
 	assert.match(tab, /"pideck-q-better-compaction\.ts": "PiDeck-Q-Better-Compaction"/);
 });
-
-test("change-pi-prompt is a default-on built-in shown as PiDeck-Q-Change-Pi-Prompt", () => {
-	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
-	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
-	assert.match(builtIns, /"pideck-q-change-pi-prompt\.ts"/);
-	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-change-pi-prompt/);
-	assert.match(tab, /"pideck-q-change-pi-prompt\.ts": "PiDeck-Q-Change-Pi-Prompt"/);
-	assert.match(tab, /"pideck-q-change-pi-prompt": "PiDeck-Q-Change-Pi-Prompt"/);
-});
-
-test("webfetch and subagents are default-on built-ins with display names", () => {
-	const tab = readFileSync("src/renderer/src/config/ExtensionsTab.tsx", "utf8");
-	const builtIns = readFileSync("src/main/extensions/builtInExtensions.ts", "utf8");
-	assert.match(builtIns, /"pideck-q-webfetch\.ts"/);
-	assert.match(builtIns, /"pideck-q-subagents\.ts"/);
-	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-webfetch/);
-	assert.doesNotMatch(builtIns, /DEFAULT_DISABLED_BUILT_IN_EXTENSIONS = \[[^\]]*pideck-q-subagents/);
-	assert.match(tab, /"pideck-q-webfetch\.ts": "PiDeck-Q-WebFetch"/);
-	assert.match(tab, /"pideck-q-subagents\.ts": "PiDeck-Q-Subagents"/);
-});
-

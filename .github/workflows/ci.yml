@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - native
+      - native2
   pull_request:
     branches:
       - main
       - native
+      - native2
 
 permissions:
   contents: read
@@ -28,11 +30,6 @@ jobs:
           node-version: 24.19.0
           cache: npm
 
-      - name: Setup Python for node-pty
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Setup Xmake
         uses: xmake-io/github-action-setup-xmake@v1
 
@@ -42,12 +39,16 @@ jobs:
       # Some full-suite native tests fail closed when the backend is absent.
       - name: Build backend for full test suite
         shell: pwsh
-        env:
-          PIDECK_SIDECAR_KIND: cpp
         run: |
           xmake f -p windows -a x64 -m debug -y
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeckBackend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-FakePi2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-PtyLifecycleTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake run -y PiDeck-PtyLifecycleTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeck-FakeWsl
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -83,7 +84,7 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      - name: Build renderer, Node sidecar and Qt host
+      - name: Build renderer, extensions and native host
         run: npm run pack
 
       # The real-stage suites run only after an isolated stage exists; npm test above
@@ -91,7 +92,6 @@ jobs:
       - name: Build isolated C++ validation stage
         shell: pwsh
         env:
-          PIDECK_SIDECAR_KIND: cpp
           PIDECK_STAGE_DIR: build/native2-validation-unpacked
         run: |
           $env:PIDECK_VERSION = node -p "require('./package.json').version"
@@ -102,11 +102,60 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeck-FakePi2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Verify isolated packaged stage (required)
+      - name: Verify isolated package structure (required)
         env:
           PIDECK_REQUIRE_BACKEND_TESTS: '1'
-        run: node --test tests/native2ArtifactFreshness.test.mjs tests/native2CppStageDeNode.test.mjs tests/native2DefaultSidecarKind.test.mjs tests/native2PackStageEnv.test.mjs tests/native2PackagedHost.test.mjs
+        run: node --import ./tests/helpers/testEnvironment.mjs --test tests/native2ArtifactFreshness.test.mjs tests/native2CppStageDeNode.test.mjs tests/native2PackStageEnv.test.mjs
 
       # Rebuild and exercise a fresh backend in required mode for runtime regressions.
       - name: Test native runtime regressions (fresh backend required)
         run: npm run test:native-runtime
+
+  packaged-ui:
+    name: Packaged WebView2 interactions
+    # The newer Evergreen runtime on windows-latest does not expose the CDP port
+    # used by these tests. Keep native/backend coverage on windows-latest above,
+    # and run every real-window assertion on the verified automation environment.
+    # This changes only the test runner, never the runtime shipped to users.
+    # https://github.com/actions/runner-images/issues/14738
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      PIDECK_STAGE_DIR: release/win-unpacked
+      PIDECK_CPP_STAGE: release/win-unpacked
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup Xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate app icon
+        run: npm run make-icon
+
+      - name: Build and verify native package
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run pack
+
+      - name: Build native Agent fixture
+        shell: pwsh
+        run: |
+          xmake build -y PiDeck-FakePi2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify packaged startup, interactions and shutdown
+        timeout-minutes: 12
+        env:
+          PIDECK_REQUIRE_BACKEND_TESTS: '1'
+        run: node --import ./tests/helpers/testEnvironment.mjs --test --test-timeout=180000 tests/native2ArtifactFreshness.test.mjs tests/native2CppStageDeNode.test.mjs tests/native2PackStageEnv.test.mjs tests/native2PackagedHost.test.mjs

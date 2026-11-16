@@ -12,9 +12,7 @@ import { tmpdir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 
-// 用 esbuild 不行（无依赖），直接用 vite 的构建产物不可行 —— 这里用 node --experimental-strip-types?
-// 项目 tsconfig 是 Electron 主进程 TS；node 24 支持 --experimental-strip-types 直接跑 .ts（仅类型剥离）。
-// 但 memoryProfileCsv.ts 用了 interface 等类型语法，strip-types 可以处理（无 enum/namespace）。
+// Node 24 strips the pure tooling module's TypeScript types.
 import {
 	toProfileCsvRow,
 	parseMemoryCsv,
@@ -22,7 +20,7 @@ import {
 	totalRssSeries,
 	sanitizeRssReadings,
 	MEMORY_PROFILE_HEADER,
-} from "../src/main/memory/memoryProfileCsv.ts";
+} from "../scripts/lib/memoryProfileCsv.ts";
 
 test("toProfileCsvRow 输出表头一致的 10 字段行", () => {
 	const row = {

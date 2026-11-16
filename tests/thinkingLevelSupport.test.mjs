@@ -14,10 +14,6 @@ const {
   noModelThinkingSupport,
 } = loadTsCommonJs("src/shared/thinkingLevelSupport.ts");
 
-const { decorateModelsWithThinkingSupport, resolveModelThinkingSupport } = loadTsCommonJs(
-  "src/main/pi/modelThinkingSupport.ts",
-);
-
 // vm realm 对象与测试 realm 原型不同，deepStrictEqual/Map 比较统一走 JSON。
 function asJson(value) {
   return JSON.parse(JSON.stringify(value));
@@ -145,88 +141,4 @@ test("findModelThinkingSupport matches case-insensitively and treats unknown mod
   assert.deepEqual(asJson(findModelThinkingSupport(models, undefined, "reasoning-model")), asJson(noModelThinkingSupport()));
   assert.equal(isExtendedThinkingLevel("xhigh"), true);
   assert.equal(isExtendedThinkingLevel("high"), false);
-});
-
-test("decorateModelsWithThinkingSupport reads models.json and fails closed", async () => {
-  const models = [
-    { provider: "openai", id: "reasoning-model" },
-    { provider: "openai", id: "plain-model" },
-  ];
-  const config = {
-    getModelsConfig: async () => ({
-      parsed: {
-        providers: {
-          openai: {
-            models: [{ id: "reasoning-model", thinkingLevelMap: { xhigh: "max" } }],
-          },
-        },
-      },
-    }),
-  };
-
-  assert.deepEqual(asJson(await decorateModelsWithThinkingSupport(models, config)), [
-    { provider: "openai", id: "reasoning-model", thinkingLevels: { xhigh: true, max: false } },
-    { provider: "openai", id: "plain-model", thinkingLevels: { xhigh: false, max: false } },
-  ]);
-  // 读取失败：不能把「未知」当支持，否则选择器会出现实际不被 pi 接受的档位
-  assert.deepEqual(
-    asJson(await decorateModelsWithThinkingSupport(models, {
-      getModelsConfig: async () => {
-        throw new Error("models.json unreadable");
-      },
-    })),
-    [
-      { provider: "openai", id: "reasoning-model", thinkingLevels: { xhigh: false, max: false } },
-      { provider: "openai", id: "plain-model", thinkingLevels: { xhigh: false, max: false } },
-    ],
-  );
-});
-
-test("resolveModelThinkingSupport returns the declaration for one model", async () => {
-  const config = {
-    getModelsConfig: async () => ({
-      parsed: {
-        providers: {
-          openai: {
-            models: [{ id: "reasoning-model", thinkingLevelMap: { xhigh: "xhigh", max: "max" } }],
-          },
-        },
-      },
-    }),
-  };
-  assert.deepEqual(asJson(await resolveModelThinkingSupport(config, "openai", "reasoning-model")), {
-    xhigh: true,
-    max: true,
-  });
-  // 可读但未声明：明确按不支持处理（触发 high 降级）
-  assert.deepEqual(asJson(await resolveModelThinkingSupport(config, "openai", "other")), asJson(noModelThinkingSupport()));
-  // 不可读：返回 undefined（未知），调用方不得据此改掉用户偏好
-  assert.equal(
-    await resolveModelThinkingSupport({
-      getModelsConfig: async () => {
-        throw new Error("models.json unreadable");
-      },
-    }, "openai", "reasoning-model"),
-    undefined,
-  );
-  // JSON 损坏：parsed 是 fallback，同样视为未知而不是「未声明」
-  assert.equal(
-    await resolveModelThinkingSupport({
-      getModelsConfig: async () => ({
-        parsed: { providers: {} },
-        diagnostic: { message: "Unexpected token" },
-      }),
-    }, "openai", "reasoning-model"),
-    undefined,
-  );
-  // 文件存在但读取失败（权限/IO）：同样视为未知，不能降级用户偏好
-  assert.equal(
-    await resolveModelThinkingSupport({
-      getModelsConfig: async () => ({
-        parsed: { providers: {} },
-        readError: true,
-      }),
-    }, "openai", "reasoning-model"),
-    undefined,
-  );
 });

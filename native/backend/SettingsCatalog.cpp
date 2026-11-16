@@ -78,7 +78,6 @@ QJsonObject defaultSettings()
         {QStringLiteral("piTypescriptPath"), QStringLiteral("")},
         {QStringLiteral("piRustPath"), QStringLiteral("")},
         {QStringLiteral("piBoltPath"), QStringLiteral("")},
-        {QStringLiteral("sessionTabOpenMode"), QStringLiteral("preview")},
         {QStringLiteral("enableGitManagement"), true},
         // Localized on load so a fresh install matches the UI language.
         {QStringLiteral("gitCommitMessagePrompt"), defaultGitCommitMessagePromptFor(QStringLiteral("zh-CN"))},
@@ -244,7 +243,8 @@ bool migrateBuiltInDefaults(QJsonObject *settings, const QJsonValue &persistedVe
  */
 bool applyMigrations(QJsonObject *settings, const QJsonObject &parsed)
 {
-    bool changed = false;
+    bool changed = settings->contains(QStringLiteral("sessionTabOpenMode"));
+    settings->remove(QStringLiteral("sessionTabOpenMode"));
 
     // The built-in commit prompt follows the UI language; a custom template is kept.
     const QString persistedPrompt = parsed.value(QStringLiteral("gitCommitMessagePrompt")).toString();
@@ -306,6 +306,7 @@ bool writeSettingsFile(const QString &filePath, const QJsonObject &settings, QSt
     QJsonObject persistable = settings;
     persistable.remove(QStringLiteral("showThinking"));
     persistable.remove(QStringLiteral("installationType"));
+    persistable.remove(QStringLiteral("sessionTabOpenMode"));
     return jsonfile::writeJsonAtomic(filePath, persistable, error);
 }
 

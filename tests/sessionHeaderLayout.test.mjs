@@ -14,14 +14,14 @@ const app = readFileSync("src/renderer/src/App.tsx", "utf8");
 const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
 const foundation = readFileSync("src/renderer/src/styles/foundation.css", "utf8");
 
-test("session tabs mount once outside SessionView; pane keeps standalone header", () => {
-  // Tab 栏统一外置；SessionView 只保留会话操作 Header（抽屉开关在共享 Tab 栏）。
+test("workspace controls mount once above the session surface", () => {
+  // 共享工具栏负责抽屉和侧栏，会话操作留在各自面板。
   assert.doesNotMatch(sessionView, /SessionTabsBar/);
-  assert.match(app, /sessionTabsBarNode/);
+  assert.match(app, /workspaceToolbarNode/);
   assert.match(app, /SessionPaneServicesProvider/);
-  // Tab 栏挂在 WorkbenchStage chrome，分屏之上（与文件 Tab 同一条）
-  assert.match(app, /chrome=\{sessionTabsBarNode\}/);
-  assert.doesNotMatch(app, /\{sessionTabsBarNode\}\s*\n\s*\{currentSessionId/);
+  // 工具栏挂在 WorkbenchStage chrome，分屏之上。
+  assert.match(app, /chrome=\{workspaceToolbarNode\}/);
+  assert.doesNotMatch(app, /\{workspaceToolbarNode\}\s*\n\s*\{currentSessionId/);
 
   const headerStart = sessionView.indexOf("<SessionHeader");
   const contentStart = sessionView.indexOf("<ResizablePanelGroup", headerStart);
@@ -56,7 +56,7 @@ test("header action buttons exempt switch, checkbox and select triggers from the
 });
 
 test("session status and new-session controls use the shared medium radius", () => {
-  // Tab 栏右侧嵌入状态徽章；运行控制（停止/重启）在 Tab 下拉，combo 控件已移除。
+  // 状态徽章由会话面板承载，使用统一圆角。
   const statusBlock = surfaces.slice(
     surfaces.indexOf(".session-status span"),
     surfaces.indexOf(".session-status .ctx-chip"),
@@ -64,14 +64,6 @@ test("session status and new-session controls use the shared medium radius", () 
 
   assert.match(statusBlock, /border-radius:\s*var\(--radius-md\)/);
   assert.doesNotMatch(foundation, /\.session-combo-trigger/);
-});
-
-test("restart is offered only when the current session has a bound Agent", () => {
-  // 运行控制已迁入外置 Tab 栏的 Tab 下拉：App 装配 canStopCurrent/canRestartCurrent
-  assert.match(
-    app,
-    /onRestartCurrent: activeAgentId\s*\n\s*\? \(\) => void restartActiveAgent\(activeAgentId\)/,
-  );
 });
 
 test("model-picker restart must light the SessionView overlay via restartActiveAgent", () => {
@@ -102,15 +94,15 @@ test("model-picker restart must light the SessionView overlay via restartActiveA
   assert.doesNotMatch(picker, /desktopApi\.sessions\.restartRuntime/);
 });
 
-test("split panes show per-pane session title in SessionHeader", () => {
-  // 共享顶栏 Tab 时，分屏各栏靠 paneTitle 对上「这栏是谁」；单栏不重复标题。
+test("session header always identifies its session, including solo panes", () => {
+  // 会话标题在单栏与分屏中都可见。
   const header = readFileSync(
     "src/renderer/src/components/session/SessionHeader.tsx",
     "utf8",
   );
   assert.match(header, /paneTitle\?:/);
   assert.match(header, /session-pane-title/);
-  assert.match(sessionView, /paneTitle=\{splitPane \? sessionTitle : undefined\}/);
+  assert.match(sessionView, /title=\{sessionTitle\}/);
 });
 
 test("session header has no bottom border under pane identity row", () => {
@@ -138,9 +130,9 @@ test("split panes expose exit-split expand control on the left", () => {
     sessionView,
     /onExitSplit=\{\s*splitPane \? \(\) => paneServices\.exitSessionSplit\(sessionId\) : undefined\s*\}/,
   );
-  assert.match(app, /exitSessionSplit:\s*workspaceChrome\.exitSplit/);
+  assert.match(app, /exitSessionSplit:\s*sessionWorkspace\.exitSplit/);
   const chrome = readFileSync(
-    "src/renderer/src/hooks/useSessionWorkspaceChrome.ts",
+    "src/renderer/src/hooks/useSessionWorkspace.ts",
     "utf8",
   );
   assert.match(chrome, /const exitSplit = useCallback/);

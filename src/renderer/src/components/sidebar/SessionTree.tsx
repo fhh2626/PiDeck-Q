@@ -11,7 +11,7 @@ import { PathTooltip } from "../ui-shadcn/PathTooltip";
 import type { SidebarActions } from "./SidebarContent";
 import { SessionSourceBadge } from "../session/SessionSourceBadge";
 import { cn } from "../../lib/utils";
-import { SESSION_TAB_DRAG_MIME } from "../../utils/sessionSplitEdge";
+import { SESSION_DRAG_MIME } from "../../utils/sessionSplitEdge";
 
 /** Agent/会话行比 28px 文件夹行紧凑一档，保留 24px 操作按钮的完整命中区域。
  * 只将标题上移 2px，与文件夹内容下移配对；行盒仍相接，不制造按钮重叠或组间距。 */
@@ -137,17 +137,15 @@ export function SessionTree(props: {
   const hasRows = catalogLoading || draftSessions.length > 0 || display.visibleChildren.length > 0 || display.hiddenChildCount > 0;
   if (!hasRows) return null;
 
-  /** 单击走设置默认模式（App 层读 sessionTabOpenMode）；双击显式常驻。
-   *  不设本地默认值：undefined 透传后由 App 的 sessions.open 用设置值兜底 */
-  const openSession = (sessionId: string, tabMode?: "preview" | "permanent") => {
-    void props.actions.sessions.open(props.project.id, sessionId, tabMode);
+  const openSession = (sessionId: string) => {
+    void props.actions.sessions.open(props.project.id, sessionId);
   };
 
   const sessionDragProps = (sessionId: string) => ({
     draggable: true,
     onDragStart: (event: React.DragEvent) => {
       event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData(SESSION_TAB_DRAG_MIME, sessionId);
+      event.dataTransfer.setData(SESSION_DRAG_MIME, sessionId);
       // 部分浏览器要求有 text/plain 才能跨区域 drop
       event.dataTransfer.setData("text/plain", sessionId);
       props.actions.sessions.beginDrag?.(sessionId);
@@ -210,7 +208,6 @@ export function SessionTree(props: {
               session.id === props.currentSessionId && "active bg-accent/20 text-foreground",
             )}
             onClick={() => openSession(session.id)}
-            onDoubleClick={() => openSession(session.id, "permanent")}
             {...sessionDragProps(session.id)}
           >
             {renderRuntimeStatusDot(subagentStatus(session))}
@@ -290,7 +287,6 @@ export function SessionTree(props: {
                 agentSession?.id === props.currentSessionId && "active bg-accent/20 text-foreground",
               )}
               onClick={() => { if (agentSession) openSession(agentSession.id); }}
-              onDoubleClick={() => { if (agentSession) openSession(agentSession.id, "permanent"); }}
               {...(agentSession ? sessionDragProps(agentSession.id) : {})}
             >
               {renderRuntimeStatusDot(child.agent.status)}
@@ -356,7 +352,6 @@ export function SessionTree(props: {
               child.session.id === props.currentSessionId && "active bg-accent/20 text-foreground",
             )}
             onClick={() => openSession(child.session.id)}
-            onDoubleClick={() => openSession(child.session.id, "permanent")}
             {...sessionDragProps(child.session.id)}
           >
           {renderRuntimeStatusDot(runtimeSnapshot?.status)}
@@ -431,7 +426,6 @@ export function SessionTree(props: {
                 session.id === props.currentSessionId && "active bg-accent/20 text-foreground",
               )}
               onClick={() => openSession(session.id)}
-              onDoubleClick={() => openSession(session.id, "permanent")}
               {...sessionDragProps(session.id)}
             >
               <div className="conversation-body min-w-0 flex-1 transition-[padding-right] @max-[255px]:group-hover/row:pr-7 @max-[255px]:group-focus-within/row:pr-7"><div className="conversation-title flex min-w-0 items-center gap-1.5">

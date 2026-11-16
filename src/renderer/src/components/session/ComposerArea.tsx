@@ -67,7 +67,6 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     enqueue: props.enqueue,
     ensureSessionId: props.ensureSessionId,
     // 预览 Tab 里发消息 → 自动晋升常驻（由 App 装配的 SessionPaneServices 提供）
-    onPromoteSession: paneActions.promoteSessionToPermanent,
   });
 
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));

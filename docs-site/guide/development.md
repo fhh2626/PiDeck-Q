@@ -11,7 +11,7 @@ const { theme } = useData()
 
 - Node.js **24.19.0**、npm **11+**、Git、xmake。
 - C++20 编译工具链；Windows 使用 MSVC。
-- Xmake 配置使用 Qt **6.11.2** 和 Node runtime **24.19.0** 的本地 package 定义（Node runtime 仅 `PIDECK_SIDECAR_KIND=node` 兼容构建需要）。
+- Xmake 使用 Qt **6.11.2** 的本地 package 定义。Node.js **24.19.0** 仅作为构建和测试工具。
 - Windows 运行桌面窗口需要 **WebView2 Runtime**。
 - 使用真实 Agent 需安装 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt，并配置模型与认证。
 
@@ -25,7 +25,7 @@ npm run make-icon
 npm run dev
 ```
 
-`dev` 构建 renderer、Sidecar 和原生 debug 目标，再运行 `release/win-unpacked/PiDeck-Q.exe`；不是 Electron，也不承诺所有进程自动热重载。
+`dev` 构建 renderer、扩展资源和原生 debug 目标，再运行 `release/win-unpacked/PiDeck-Q.exe`；不是 Electron，也不承诺所有进程自动热重载。
 
 ## 代码结构与通信
 
@@ -33,10 +33,6 @@ npm run dev
 | --- | --- |
 | `native/src/main.cpp` | Qt6/QtWebView 宿主入口 |
 | `native/backend/` | 原生 C++ 业务后端（`PiDeckBackend.exe`，随包的 sidecar） |
-| `src/native-node/index.ts` | Node 兼容 Sidecar 装配入口（`PIDECK_SIDECAR_KIND=node`） |
-| `src/main/backend/createBackend.ts` | 业务服务装配 |
-| `src/main/backend/registerBackendRpc.ts` | 按域注册 IPC |
-| `src/main/` | 会话、pi 进程、Git、设置、终端等领域 |
 | `src/shared/` | IPC 名称、类型、桌面 API 契约 |
 | `src/renderer/` | React/Jotai 前端与 Web 前端 |
 
@@ -60,7 +56,7 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 | `npm run docs:build` | 文档构建与内部链接检查 |
 | `npm run docs:preview` | 预览文档产物 |
 
-当前没有 `npm run dist`、`dist:mac`、`dist:linux` 或 `preview`。桌面 staging 由 Xmake 与 `scripts/stage-native-runtime.mjs` 完成，包含 Qt、renderer、资源与匹配的 sidecar（默认 C++ 后端；仅 `PIDECK_SIDECAR_KIND=node` 时打 Node Sidecar），不使用 electron-builder/asar。Xmake 与 `scripts/verify-pack-stage.mjs` 都读 `PIDECK_STAGE_DIR`，因此 `npm run pack` 校验的就是它本次 stage 的目录；不支持的 `PIDECK_SIDECAR_KIND` 会直接报错而不是回退到另一种包定义。
+桌面 staging 由 Xmake 与 `scripts/stage-extension-dependencies.mjs` 完成，包含 Qt、renderer、扩展资源和 C++ 后端。`npm run pack` 和 `scripts/verify-pack-stage.mjs` 使用同一 `PIDECK_STAGE_DIR`，默认目录是 `release/win-unpacked`。安装包不包含 Node 业务后端或 Node 解释器。
 
 ## 官网与贡献
 

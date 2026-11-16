@@ -106,7 +106,7 @@ test("ComposerArea injects the desktop session preview action into the composer 
   const h = createHookHarness(), action = () => {}, stop = new Error("controller boundary");
   let options;
   stubs.react = h.react;
-  stubs["./SessionPaneServices"] = { useSessionPaneActions: () => ({ onPreviewImage: action, promoteSessionToPermanent() {} }) };
+  stubs["./SessionPaneServices"] = { useSessionPaneActions: () => ({ onPreviewImage: action }) };
   stubs["../../hooks/useSessionComposerController"] = { useSessionComposerController: (input) => { options = input; throw stop; } };
   const { ComposerArea } = loadTsCommonJs(file, { stubs });
   assert.throws(() => ComposerArea.render({ sessionId: "s1" }, null), (error) => error === stop);

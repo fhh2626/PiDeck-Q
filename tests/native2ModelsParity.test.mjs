@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { joinPathParts, writeNodeShim } from "./helpers/native2FakeProcess.mjs";
-import { createDesktopRpcOracle } from "./helpers/native2DesktopRpcOracle.mjs";
 import {
 	SseClient,
 	qtBinDirectory,
@@ -12,18 +11,7 @@ import {
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
 
-/**
- * `projects:list-models` parity: RPC normalization, text fallback, the empty-result
- * retry, the process-level cache and the `models:changed` push after a pi-runtime
- * settings change.
- *
- * Both sides run the *real* production code: the backend is the built
- * `PiDeckBackend.exe`, and the goldens are produced by loading `systemIpc.ts` (the
- * oracle) in a VM with a fake `process` that sees exactly the environment the backend
- * was spawned with. The fake pi is a `.cmd` shim speaking the real RPC wire protocol and
- * the real `--list-models` table format, so nothing here mocks the behaviour under test.
- */
-
+/** Exercise native model discovery with fake Pi processes and explicit wire contracts. */
 const executable = resolveBackendExecutable();
 
 function readJsonLines(path) {
@@ -75,21 +63,11 @@ const delay = (ms) => new Promise((done) => setTimeout(done, ms));
  * been serialized. Normalising both through JSON is therefore the honest comparison: it
  * asserts absent keys stay absent instead of rejecting the realm difference.
  */
-function wire(value) {
-	return JSON.parse(JSON.stringify(value));
-}
 
-async function waitFor(predicate, timeoutMs = 15_000, stepMs = 25) {
-	const started = Date.now();
-	while (Date.now() - started < timeoutMs) {
-		if (predicate()) return true;
-		await delay(stepMs);
-	}
-	return false;
-}
+
 
 if (executable && process.platform === "win32") {
-	describe("native2 model list parity", () => {
+	describe("native2 model list contracts", () => {
 		let root;
 		let sequence = 0;
 
@@ -109,8 +87,7 @@ if (executable && process.platform === "win32") {
 			sequence += 1;
 			const scopeRoot = join(root, `scope-${sequence}`);
 			const backendHome = join(scopeRoot, "backend-home");
-			const oracleHome = join(scopeRoot, "oracle-home");
-			for (const home of [backendHome, oracleHome]) {
+			for (const home of [backendHome]) {
 				mkdirSync(join(home, ".pi", "agent"), { recursive: true });
 				mkdirSync(join(home, "AppData/Roaming"), { recursive: true });
 				mkdirSync(join(home, "AppData/Local"), { recursive: true });
@@ -124,16 +101,13 @@ if (executable && process.platform === "win32") {
 			return {
 				root: scopeRoot,
 				backendHome,
-				oracleHome,
 				appData,
 				localAppData,
 				miseData,
 				backendPiDir: join(scopeRoot, "backend-pi"),
-				oraclePiDir: join(scopeRoot, "oracle-pi"),
 				path: joinPathParts([
 					qtBinDirectory(),
 					join(scopeRoot, "backend-pi"),
-					join(scopeRoot, "oracle-pi"),
 					process.env.PATH,
 				]),
 			};
@@ -164,63 +138,25 @@ if (executable && process.platform === "win32") {
 		 * Start the backend plus an oracle loaded fresh for this test (the model cache is
 		 * module state, so a shared graph would leak test 1's list into test 2).
 		 */
-		async function startTest(t, scope, scenario, { modelsConfig, backendModels, settings = {} } = {}) {
+		async function startTest(t, scope, scenario, { settings = {} } = {}) {
 			const backendFake = installFakePiModels(scope.backendPiDir, scenario);
-			const oracleFake = installFakePiModels(scope.oraclePiDir, scenario);
-			const finalSettings = {
-				language: "en-US",
-				piRuntimePreference: "typescript",
-				piTypescriptPath: backendFake.shim,
-				...settings,
-			};
 			const session = await startBackendSession(t, {
-				settings: finalSettings,
+				settings: {
+					language: "en-US",
+					piRuntimePreference: "typescript",
+					piTypescriptPath: backendFake.shim,
+					...settings,
+				},
 				env: envFor(scope, {
 					PIDECK_HOME: scope.backendHome,
 					PIDECK_HOST_HOME: scope.backendHome,
 					...fakeEnvFor(backendFake),
 				}),
 			});
-
-			const oracle = createDesktopRpcOracle({
-				home: scope.oracleHome,
-				settings: {
-					...envlessSettings(),
-					language: "en-US",
-					piRuntimePreference: "typescript",
-					piTypescriptPath: oracleFake.shim,
-					...settings,
-				},
-				env: envFor(scope, {
-					ComSpec: process.env.ComSpec ?? "",
-					...fakeEnvFor(oracleFake),
-				}),
-				modelsConfig,
-			});
-			return {
-				session,
-				backendFake,
-				oracleFake,
-				invoke: (channel, args = []) => session.invoke(channel, args),
-				oracle,
-			};
+			return { session, backendFake, invoke: session.invoke };
 		}
 
-		/** Settings keys the production default store would fill in. */
-		function envlessSettings() {
-			return {
-				customPiPath: "",
-				piRustPath: "",
-				piBoltPath: "",
-				piRuntimePreference: "auto",
-				piRpcOffline: true,
-				piProxyEnabled: false,
-				piProxyUrl: "http://127.0.0.1:7890",
-				piProxyBypass: "localhost,127.0.0.1,::1",
-			};
-		}
-
-		test("RPC payload normalizes like the oracle and the list is cached across invokes", async (t) => {
+		test("RPC payload normalizes and deduplicates model records and the list is cached across invokes", async (t) => {
 			const scope = makeScope();
 			const modelsConfig = {
 				parsed: {
@@ -239,7 +175,7 @@ if (executable && process.platform === "win32") {
 				},
 			};
 			writeModels(scope.backendHome, modelsConfig.parsed);
-			const { invoke, oracle, backendFake, oracleFake } = await startTest(
+			const { invoke, backendFake } = await startTest(
 				t,
 				scope,
 				{
@@ -266,8 +202,6 @@ if (executable && process.platform === "win32") {
 
 			const first = await invoke("projects:list-models");
 			assert.equal(first.payload.ok, true, JSON.stringify(first.payload));
-			const expected = await oracle.invoke("projects:list-models");
-			assert.deepEqual(wire(first.payload.result), wire(expected), "model list must match the oracle byte for byte");
 			assert.deepEqual(
 				first.payload.result.map((model) => model.id),
 				["claude-sonnet-4", "gpt-5", "llama"],
@@ -276,15 +210,11 @@ if (executable && process.platform === "win32") {
 			assert.deepEqual(first.payload.result[2].thinkingLevels, { xhigh: false, max: false });
 
 			const backendSpawns = backendFake.spawns().length;
-			const oracleSpawns = oracleFake.spawns().length;
 			assert.equal(backendSpawns, 1, "one pi fork per cold list");
-			assert.equal(oracleSpawns, 1);
 
 			const second = await invoke("projects:list-models");
-			assert.deepEqual(wire(second.payload.result), wire(expected));
+			assert.deepEqual(second.payload.result, first.payload.result);
 			assert.equal(backendFake.spawns().length, backendSpawns, "the second invoke must hit the cache");
-			await oracle.invoke("projects:list-models");
-			assert.equal(oracleFake.spawns().length, oracleSpawns, "the oracle caches the same way");
 		});
 
 		test("a pi without RPC models falls back to the --list-models text table", async (t) => {
@@ -298,15 +228,13 @@ if (executable && process.platform === "win32") {
 				"openai                     gpt-5                  400K     128K     yes       yes",
 				"Showing 3 of 4 providers (use --all to list all) ",
 			].join("\n");
-			const { invoke, oracle, backendFake, oracleFake } = await startTest(t, scope, {
+			const { invoke, backendFake } = await startTest(t, scope, {
 				rpc: { models: [] },
 				text: [`${table}\n`],
 			});
 
 			const actual = await invoke("projects:list-models");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("projects:list-models");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(
 				actual.payload.result.map((model) => `${model.provider}/${model.id}`),
 				["deepseek/deepseek-chat", "grok.weishiair.de copy/grok-4", "openai/gpt-5"],
@@ -314,7 +242,6 @@ if (executable && process.platform === "win32") {
 			assert.equal(actual.payload.result[0].contextWindow, 67_072);
 			assert.equal(actual.payload.result[1].maxTokens, 16_384);
 			assert.equal(backendFake.spawns().length, 2, "one RPC probe plus one text probe");
-			assert.equal(oracleFake.spawns().length, 2);
 		});
 
 		test("an empty model list is retried once before it is reported", async (t) => {
@@ -324,19 +251,16 @@ if (executable && process.platform === "win32") {
 			// A TypeScript selection tries the `--offline` fast set, then the neutral set,
 			// before the empty list is retried: two empty answers for the first attempt and
 			// the table for the retry.
-			const { invoke, oracle, backendFake, oracleFake } = await startTest(t, scope, {
+			const { invoke, backendFake } = await startTest(t, scope, {
 				rpc: { models: [] },
 				text: ["", "", `${table}`],
 			});
 
 			const actual = await invoke("projects:list-models");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("projects:list-models");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(actual.payload.result.map((model) => model.id), ["acme-1"]);
 			const backendSpawns = backendFake.spawns();
 			assert.equal(backendSpawns.length, 5, "RPC + both text arg sets, then RPC + the table");
-			assert.equal(oracleFake.spawns().length, 5);
 			assert.ok(
 				backendSpawns[1].argv.includes("--offline"),
 				"the TypeScript preference tries the --offline set first",
@@ -350,7 +274,7 @@ if (executable && process.platform === "win32") {
 		test("a broken pi yields an empty list instead of a rejected channel", async (t) => {
 			const scope = makeScope();
 			writeModels(scope.backendHome, { providers: {} });
-			const { invoke, oracle } = await startTest(t, scope, {
+			const { invoke } = await startTest(t, scope, {
 				rpc: { error: "model table unavailable" },
 				text: [""],
 			});
@@ -358,15 +282,13 @@ if (executable && process.platform === "win32") {
 			const actual = await invoke("projects:list-models");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
 			assert.deepEqual(actual.payload.result, []);
-			const expected = await oracle.invoke("projects:list-models");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 		});
 
 		test("an unreadable models.json still answers with all-false thinking levels", async (t) => {
 			const scope = makeScope();
 			writeModels(scope.backendHome, "{ this is not json");
 			const models = [{ provider: "acme", id: "acme-1", reasoning: true }];
-			const { invoke, oracle } = await startTest(
+			const { invoke } = await startTest(
 				t,
 				scope,
 				{ rpc: { models } },
@@ -380,22 +302,18 @@ if (executable && process.platform === "win32") {
 
 			const actual = await invoke("projects:list-models");
 			assert.equal(actual.payload.ok, true, JSON.stringify(actual.payload));
-			const expected = await oracle.invoke("projects:list-models");
-			assert.deepEqual(wire(actual.payload.result), wire(expected));
 			assert.deepEqual(actual.payload.result[0].thinkingLevels, { xhigh: false, max: false });
 		});
 
 		test("settings:update re-probes the model list and pushes exactly one models:changed", async (t) => {
 			const scope = makeScope();
 			writeModels(scope.backendHome, { providers: {} });
-			const { session, invoke, oracle, backendFake, oracleFake } = await startTest(t, scope, {
+			const { session, invoke, backendFake } = await startTest(t, scope, {
 				rpc: { models: [{ provider: "acme", id: "acme-1" }] },
 			});
 			// Warm the cache first: the update must invalidate it, not merely refill it.
 			await invoke("projects:list-models");
-			await oracle.invoke("projects:list-models");
 			const backendSpawns = backendFake.spawns().length;
-			const oracleSpawns = oracleFake.spawns().length;
 
 			const client = new SseClient(
 				`${session.baseUrl}__pideck/events?token=${encodeURIComponent(session.token)}`,
@@ -412,36 +330,17 @@ if (executable && process.platform === "win32") {
 				backendSpawns + 1,
 				"the runtime-preference change re-probes the model list once",
 			);
-
-			await oracle.invoke("settings:update", [{ piRuntimePreference: "typescript" }]);
-			assert.ok(
-				await waitFor(() => oracle.sent.includes("models:changed")),
-				"the oracle publishes models:changed for the same patch",
-			);
 			await delay(300);
-			assert.equal(
-				oracle.sent.filter((channel) => channel === "models:changed").length,
-				1,
-			);
-			assert.equal(oracleFake.spawns().length, oracleSpawns + 1);
 
 			// An unrelated setting must neither re-probe nor signal on either side.
 			const frames = () =>
 				client.frames.filter((entry) => entry.payload.channel === "models:changed").length;
 			const framesBefore = frames();
 			const backendSpawnsBefore = backendFake.spawns().length;
-			const oracleSpawnsBefore = oracleFake.spawns().length;
-			const oracleSentBefore = oracle.sent.filter((channel) => channel === "models:changed").length;
 			await invoke("settings:update", [{ theme: "dark" }]);
-			await oracle.invoke("settings:update", [{ theme: "dark" }]);
 			await delay(800);
 			assert.equal(frames(), framesBefore, "an unrelated setting must not push models:changed");
 			assert.equal(backendFake.spawns().length, backendSpawnsBefore);
-			assert.equal(oracleFake.spawns().length, oracleSpawnsBefore);
-			assert.equal(
-				oracle.sent.filter((channel) => channel === "models:changed").length,
-				oracleSentBefore,
-			);
 		});
 	});
 }

@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { after, describe, test } from "node:test";
-import { DEFAULT_PACK_STAGE, resolvePackStage, verifyPackStage } from "../scripts/verify-pack-stage.mjs";
+import { DEFAULT_PACK_STAGE, resolvePackStage } from "../scripts/verify-pack-stage.mjs";
+import { requirePackagedHost } from "./helpers/native2PackagedHost.mjs";
 
 /**
  * `npm run pack` must be able to produce and verify a measurement stage
@@ -14,15 +15,13 @@ import { DEFAULT_PACK_STAGE, resolvePackStage, verifyPackStage } from "../script
  * is absent. Before this wrapper existed the gate hardcoded `--out release/win-unpacked`
  * while xmake already honoured `PIDECK_STAGE_DIR`, so the two could disagree silently.
  *
- * These cases pin the public boundaries: the resolver (env -> stage/kind), the CLI exit
- * codes, and the `package.json` wiring. The library defaults of
- * `verify-build-artifacts.mjs` stay `node` for older callers, which the pre-existing
- * suites continue to cover.
+ * These cases pin the public boundaries: the stage resolver, CLI exit codes, and
+ * package script wiring. The native package definition applies at every entry point.
  */
 
 const REPO_ROOT = process.cwd();
 const WRAPPER = join(REPO_ROOT, "scripts", "verify-pack-stage.mjs");
-const REAL_STAGE = join(REPO_ROOT, "build", "native2-validation-unpacked");
+const REAL_STAGE = resolve(REPO_ROOT, process.env.PIDECK_STAGE_DIR || "build/native2-validation-unpacked");
 
 const tempRoots = [];
 
@@ -41,9 +40,8 @@ async function put(path, content = "fixture\n") {
 	await writeFile(path, content);
 }
 
-function envWithoutKind(extra = {}) {
+function isolatedEnv(extra = {}) {
 	const env = { ...process.env };
-	delete env.PIDECK_SIDECAR_KIND;
 	delete env.PIDECK_STAGE_DIR;
 	return { ...env, ...extra };
 }
@@ -64,17 +62,16 @@ async function makeCppStage() {
 
 describe("native2 pack stage selection (PIDECK_STAGE_DIR)", () => {
 	test("no environment keeps the shipping default release/win-unpacked as a C++ package", () => {
-		const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: envWithoutKind() });
+		const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: isolatedEnv() });
 		assert.equal(stage.stageSource, "default");
 		assert.equal(stage.outDir, resolve(REPO_ROOT, DEFAULT_PACK_STAGE));
 		assert.equal(DEFAULT_PACK_STAGE, "release/win-unpacked");
-		assert.equal(stage.sidecarKind, "cpp");
 	});
 
 	test("PIDECK_STAGE_DIR selects the stage and resolves relative to the repo root", () => {
 		const stage = resolvePackStage({
 			repoRoot: REPO_ROOT,
-			env: envWithoutKind({ PIDECK_STAGE_DIR: "build/native2-validation-unpacked" }),
+			env: isolatedEnv({ PIDECK_STAGE_DIR: "build/native2-validation-unpacked" }),
 		});
 		assert.equal(stage.stageSource, "PIDECK_STAGE_DIR");
 		assert.equal(stage.outDir, join(REPO_ROOT, "build", "native2-validation-unpacked"));
@@ -85,48 +82,33 @@ describe("native2 pack stage selection (PIDECK_STAGE_DIR)", () => {
 
 	test("an absolute PIDECK_STAGE_DIR outside the repo is honoured verbatim", async () => {
 		const external = await tempDir("pideck-pack-stage-external-");
-		const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: envWithoutKind({ PIDECK_STAGE_DIR: external }) });
+		const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: isolatedEnv({ PIDECK_STAGE_DIR: external }) });
 		assert.equal(stage.outDir, resolve(external));
 	});
 
 	test("a blank PIDECK_STAGE_DIR is treated as unset instead of resolving to the repo root", () => {
 		for (const value of ["", "   "]) {
-			const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: envWithoutKind({ PIDECK_STAGE_DIR: value }) });
+			const stage = resolvePackStage({ repoRoot: REPO_ROOT, env: isolatedEnv({ PIDECK_STAGE_DIR: value }) });
 			assert.equal(stage.stageSource, "default");
 			assert.equal(stage.outDir, resolve(REPO_ROOT, DEFAULT_PACK_STAGE));
 		}
 	});
 
-	test("unknown kinds fail closed before any filesystem inspection", async () => {
-		const stage = await makeCppStage();
-		const result = await verifyPackStage({ env: envWithoutKind({ PIDECK_STAGE_DIR: stage, PIDECK_SIDECAR_KIND: "bogus" }) });
-		assert.equal(result.ok, false);
-		assert.deepEqual(result.checked, []);
-		assert.match(result.errors.join("\n"), /Unsupported sidecar kind "bogus"/);
-		// The Node compatibility build stays explicitly selectable.
-		const nodeKind = resolvePackStage({ env: envWithoutKind({ PIDECK_SIDECAR_KIND: "node" }) });
-		assert.equal(nodeKind.sidecarKind, "node");
-	});
-
 	test("CLI verifies the stage named by PIDECK_STAGE_DIR (not release/win-unpacked)", async () => {
 		const stage = await makeCppStage();
-		const result = runCli([], envWithoutKind({ PIDECK_STAGE_DIR: stage }));
+		const result = runCli([], isolatedEnv({ PIDECK_STAGE_DIR: stage }));
 		assert.equal(result.status, 0, `expected pass: ${result.stdout}${result.stderr}`);
 		assert.match(result.stdout, /Build artifacts verified/);
 		assert.ok(result.stdout.includes(stage), `verification must name the env-selected stage: ${result.stdout}`);
 		assert.doesNotMatch(result.stdout, /release[\\/]win-unpacked/);
 	});
 
-	test("CLI fails with a structured error for a missing stage and an unknown kind", async () => {
+	test("CLI fails with a structured error for a missing stage", async () => {
 		const missing = join(REPO_ROOT, "build", "native2-missing-stage-for-test");
-		const missingResult = runCli([], envWithoutKind({ PIDECK_STAGE_DIR: missing }));
+		const missingResult = runCli([], isolatedEnv({ PIDECK_STAGE_DIR: missing }));
 		assert.equal(missingResult.status, 1);
 		assert.match(missingResult.stderr, /Build output directory is missing/);
 
-		const stage = await makeCppStage();
-		const kindResult = runCli([], envWithoutKind({ PIDECK_STAGE_DIR: stage, PIDECK_SIDECAR_KIND: "nope" }));
-		assert.equal(kindResult.status, 1);
-		assert.match(kindResult.stderr, /Unsupported sidecar kind "nope"/);
 	});
 
 	test("package.json routes pack and verify:build-artifacts through the wrapper", async () => {
@@ -142,6 +124,19 @@ describe("native2 pack stage selection (PIDECK_STAGE_DIR)", () => {
 		assert.match(xmake, /os\.getenv\("PIDECK_STAGE_DIR"\)/);
 	});
 
+	test("packaged-host checks follow the selected stage and reject a missing required host", async () => {
+		const root = await tempDir("pideck-host-stage-selection-");
+		const stage = join(root, "selected-stage");
+		const alternate = join(root, "alternate-stage");
+		const executable = process.platform === "win32" ? "PiDeck-Q.exe" : "PiDeck-Q";
+		await put(join(stage, executable), "fixture\n");
+		await put(join(alternate, executable), "fixture\n");
+		const environment = { PIDECK_STAGE_DIR: "selected-stage", PIDECK_REQUIRE_BACKEND_TESTS: "1" };
+		assert.equal(requirePackagedHost(root, environment).stage, stage);
+		assert.equal(requirePackagedHost(root, { ...environment, PIDECK_NATIVE2_STAGE: alternate }).stage, alternate);
+		assert.throws(() => requirePackagedHost(root, { ...environment, PIDECK_STAGE_DIR: "missing" }), /no packaged host exists/);
+	});
+
 	test("the real measurement stage passes the env-selected gate", async (t) => {
 		if (!existsSync(join(REAL_STAGE, "PiDeck-Q.exe"))) {
 			if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") {
@@ -153,7 +148,7 @@ describe("native2 pack stage selection (PIDECK_STAGE_DIR)", () => {
 			t.skip(`no staged package at ${REAL_STAGE}`);
 			return;
 		}
-		const result = runCli([], envWithoutKind({ PIDECK_STAGE_DIR: "build/native2-validation-unpacked" }));
+		const result = runCli([], isolatedEnv({ PIDECK_STAGE_DIR: REAL_STAGE }));
 		assert.equal(result.status, 0, `expected the real stage to pass: ${result.stdout}${result.stderr}`);
 		assert.match(result.stdout, /Build artifacts verified \(\d+ files\)/);
 		assert.ok(result.stdout.includes(REAL_STAGE));

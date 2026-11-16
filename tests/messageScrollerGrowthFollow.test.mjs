@@ -215,22 +215,3 @@ test("TurnRow liveInterimId requires an active text stream", () => {
   // 会话移除时成对清理 family（防 atomFamily Map 泄漏）
   assert.match(atomsSource, /liveTextStreamingBySessionAtom\.remove\(sessionId\)/);
 });
-
-// stopReason 协议信号：主进程两处提取（live upsert + 历史回放），渲染层按
-// stop/toolUse 精确区分中间回复与最终回复（message_end 即确定，永不反复）。
-test("stopReason flows from RPC message_end into ChatMessage", () => {
-  const agentSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-  // live 路径：message_end 更新真实 stopReason，骨架阶段不覆盖旧值；
-  // pending 是骨架占位值，必须被排除（否则 message_end 缺字段时消息永远停 in pending，
-  // 渲染层回退启发式失效——reviewer 指出删掉该守卫测试照样绿的漏洞，故显式断言）。
-  assert.match(agentSource, /extractedStopReason/);
-  assert.match(agentSource, /partialMessage as any\)\.stopReason/);
-  assert.match(agentSource, /existing\.stopReason = finalStopReason/);
-  assert.match(agentSource, /extractedStopReason && extractedStopReason !== "pending"/);
-  // 历史回放路径：JSONL 持久化的 stopReason 透传
-  const projectorSource = readFileSync("src/main/pi/AgentMessageProjector.ts", "utf8");
-  assert.match(projectorSource, /typeof typed\.stopReason === "string"/);
-  assert.match(projectorSource, /stopReason \? \{ stopReason \} : \{\}\)/);
-  // 渲染层判定行为（stop=final / toolUse 永不提升 / 无字段与 pending 回退）由
-  // tests/turnSegments.test.mjs 行为测试覆盖（20 用例），此处不再重复源码断言。
-});

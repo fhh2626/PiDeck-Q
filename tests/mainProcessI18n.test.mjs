@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import {  readFileSync } from "node:fs";
 import test from "node:test";
 
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-import { mainIpcSource } from "./helpers/mainIpcSources.mjs";
-
-// 会话命令错误的唯一转换点（E1 下沉到 bridge，sessionIpc 不再自持）。
-const loadBridgeSource = () => readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
 
 const {
   setI18nLocale,
@@ -47,95 +41,6 @@ test("main-process copy resolves locale and interpolates stable product text", (
   );
 });
 
-test("ConfigManager localizes product errors and does not return unknown provider exceptions", async () => {
-  const { ConfigManager } = loadTsCommonJs("src/main/config/ConfigManager.ts", {
-    stubs: {
-      electron: {
-        net: {
-          fetch: async () => {
-            throw new Error("SECRET_PROVIDER_STACK");
-          },
-        },
-      },
-    },
-    globals: {
-      console: { ...console, error() {}, warn() {} },
-    },
-  });
-  const dir = mkdtempSync(join(tmpdir(), "pideck-main-i18n-"));
-  try {
-    const manager = new ConfigManager(
-      dir,
-      (key, params) => mainProcessT("en-US", key, params),
-    );
-    const invalid = await manager.saveRawConfig("models.json", "{");
-    assert.equal(invalid.error, "The JSON is invalid.");
-    assert.equal(typeof invalid.debugDetails, "string");
-
-    const provider = await manager.fetchProviderModels(
-      "https://provider.example",
-      "secret-key",
-      "openai-completions",
-    );
-    assert.equal(
-      provider.error,
-      "Failed to load the model list. Check the provider configuration and try again.",
-    );
-    assert.equal("debugDetails" in provider, false);
-    assert.doesNotMatch(JSON.stringify(provider), /SECRET_PROVIDER_STACK|secret-key/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("main-process managers use the injected locale for user-visible validation", async () => {
-  const en = (key, params) => mainProcessT("en-US", key, params);
-  const electronStub = { shell: { openPath: async () => "" }, app: { getPath: () => tmpdir() } };
-  const { SkillManager } = loadTsCommonJs("src/main/skills/SkillManager.ts", {
-    stubs: { electron: electronStub },
-  });
-  const { PromptManager } = loadTsCommonJs("src/main/prompts/PromptManager.ts", {
-    stubs: { electron: electronStub },
-  });
-  const { ProjectResourceManager } = loadTsCommonJs("src/main/projects/ProjectResourceManager.ts");
-  const { PiLocator } = loadTsCommonJs("src/main/pi/PiLocator.ts", {
-    stubs: { electron: electronStub },
-  });
-  const { testPiProxy } = loadTsCommonJs("src/main/pi/PiProxyTester.ts");
-
-  await assert.rejects(
-    new SkillManager(tmpdir(), en).create({
-      name: "",
-      description: "description",
-      locationId: "pi-global",
-    }),
-    /skill name is required/i,
-  );
-  await assert.rejects(
-    new PromptManager(tmpdir(), en).create({ name: "", description: "description" }),
-    /template name is required/i,
-  );
-  await assert.rejects(
-    new ProjectResourceManager(
-      () => ({ id: "project", name: "Project", path: tmpdir(), lastOpenedAt: 1 }),
-      en,
-    ).createSkill({ projectId: "project", name: "", description: "description" }),
-    /lowercase letters, numbers, and hyphens/i,
-  );
-  assert.equal(
-    (await new PiLocator(en).validateCustomPath("")).error,
-    "Enter the path to pi.cmd or pi.",
-  );
-  assert.equal(
-    (await testPiProxy({
-      piProxyEnabled: false,
-      piProxyUrl: "",
-      piProxyBypass: "",
-    }, undefined, en)).error,
-    "Enable the pi agent proxy first.",
-  );
-});
-
 test("structured main-process copy translates parameters and preserves fallback behavior", () => {
   setI18nLocale("en-US");
   assert.equal(
@@ -170,43 +75,6 @@ test("diagnostic renderer localizes copy while keeping raw details separate", ()
   assert.match(diagnosticCard, /<StackTrace trace=\{stripAnsi\(debugDetails\)\}/);
 });
 
-test("AgentManager user-visible runtime diagnostics carry i18n descriptors", () => {
-  const manager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-  for (const key of [
-    "diagnostic.historyLoadFailed",
-    "diagnostic.compactReconnected",
-    "diagnostic.processReconnectFailed",
-    "diagnostic.runtimeError",
-    "diagnostic.agentStartFailed",
-    "diagnostic.agentStopped",
-    "diagnostic.promptRejected",
-    "diagnostic.promptDeliveryUnknown",
-    "diagnostic.commandFailed",
-    "diagnostic.commandCancelled",
-    "diagnostic.commandDeliveryUnknown",
-    "diagnostic.compactDone",
-    "diagnostic.extensionError",
-    "diagnostic.requestFailed",
-    "diagnostic.retryScheduled",
-    "diagnostic.retryScheduledAfterDelay",
-    "diagnostic.retrySucceeded",
-    "diagnostic.retryFailed",
-  ]) {
-    assert.match(manager, new RegExp(`"${key.replaceAll(".", "\\.")}"`));
-  }
-  assert.doesNotMatch(manager, /addMessage\([^\n]*"会话压缩完成/);
-  assert.doesNotMatch(manager, /addMessage\([^\n]*"Agent 进程意外退出/);
-  assert.doesNotMatch(manager, /addMessage\([^\n]*"命令已取消/);
-  assert.doesNotMatch(manager, /message\.text = `正在自动重试[^`]*原因：/);
-  assert.doesNotMatch(manager, /message\.text = `自动重试失败[^`]*原因：/);
-  assert.match(manager, /private addLocalizedMessage\(/);
-  assert.match(manager, /this\.translate\("session\.summaryPlaceholder"\)/);
-  assert.match(manager, /this\.translate\("session\.imagePlaceholder"\)/);
-  assert.match(manager, /this\.translate\("session\.historyTitle"/);
-  assert.doesNotMatch(manager, /summary:\s*[^\n]*\|\| "\[摘要\]"/);
-  assert.doesNotMatch(manager, /trimmed \|\| "\[图片\]"/);
-});
-
 test("Session command failures map stable codes to localized renderer keys", () => {
   const source = readFileSync("src/renderer/src/utils/sessionCommands.ts", "utf8");
   const expected = {
@@ -221,63 +89,4 @@ test("Session command failures map stable codes to localized renderer keys", () 
   }
   assert.match(source, /this\.debugDetails = error\.debugDetails/);
   assert.doesNotMatch(source, /super\(error\.debugDetails \|\| error\.code\)/);
-});
-
-test("main-process Session IPC errors expose stable copy and retain diagnostics separately", () => {
-  const { SessionCommandIpcError } = loadTsCommonJs(
-    "src/main/sessions/SessionCommandIpcError.ts",
-  );
-  const error = new SessionCommandIpcError({
-    code: "SESSION_RUNTIME_CHANGED",
-    debugDetails: "SECRET_RUNTIME_BINDING",
-  }, (key, params) => mainProcessT("en-US", key, params));
-
-  assert.equal(error.message, "The session runtime changed. Retry the operation.");
-  assert.equal(error.code, "SESSION_RUNTIME_CHANGED");
-  assert.equal(error.debugDetails, "SECRET_RUNTIME_BINDING");
-  assert.doesNotMatch(error.message, /SECRET_RUNTIME_BINDING/);
-});
-
-test("main-process user surfaces use stable copy and keep caught details in logs", () => {
-  const source = mainIpcSource;
-  for (const key of [
-    "tray.showWindow",
-    "tray.restart",
-    "tray.quit",
-    "dialog.chooseChatHistoryFolder",
-    "dialog.chooseProjectFolder",
-    "wsl.windowsOnly",
-    "wsl.piNotInstalled",
-    "wsl.connectionFailed",
-    "session.inUseDeleteBlocked",
-    "session.stopBeforeDelete",
-    "store.promptSearchFailed",
-    "store.promptDetailFailed",
-    "store.promptImportFailed",
-    "store.skillSearchFailed",
-    "store.skillImportFailed",
-    // 注：store.skillsShInstallFailed 已不再被引用——安装失败改为返回真实错误（npx 输出/网络/权限），
-    // 渲染层 toast 直接展示，不用通用文案；key 定义保留在 mainProcessCopy.ts 以兼容旧调用
-    "store.yaoListFailed",
-    "store.yaoDetailFailed",
-    "store.yaoImportFailed",
-  ]) {
-    assert.match(source, new RegExp(`(?:mainCopy|deps\\.translate)\\("${key.replaceAll(".", "\\.")}"`));
-  }
-  assert.doesNotMatch(source, /label:\s*"(?:显示窗口|退出 PiDeck-Q)"/);
-  assert.doesNotMatch(source, /title:\s*"选择聊天记录目录"/);
-  assert.doesNotMatch(source, /error:\s*`无法连接到 WSL[^`]*\$\{err/);
-  assert.doesNotMatch(source, /throw new Error\(`(?:搜索|获取|导入|读取)[^`]*\$\{message\}`\)/);
-  assert.doesNotMatch(source, /state:\s*"failed",\s*error:\s*error\.message/);
-  assert.match(source, /appLogger\.warn\("wsl", "WSL connection validation failed"/);
-  assert.match(source, /appLogger\.warn\("skill-hub", "Install failed"/);
-  assert.match(source, /"webService\.invalidPort"/);
-  assert.match(source, /"webService\.startFailed"/);
-  // E1 后会话命令错误的转换由 sessionRuntimeBridge 提供（sessionIpc 只经 deps 注入），
-  // 因此断言唯一实现必须带上 bridge，而不是 sessionIpc 自己那份（G1 已删除）。
-  // 注意：systemIpc 里同名的参数是注入回调，不在本断言范围内。
-  assert.match(loadBridgeSource(), /function sessionCommandIpcError\(/);
-  assert.doesNotMatch(readFileSync("src/main/ipc/sessionIpc.ts", "utf8"), /throw sessionCommandIpcError\(/);
-  assert.doesNotMatch(source, /throw new Error\([^\n]*debugDetails \|\|[^\n]*code/);
-  assert.match(source, /"dialog\.chooseProjectFolder"/);
 });

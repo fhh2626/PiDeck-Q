@@ -321,29 +321,19 @@ if (!executable) {
 		 * the constants compared against the oracle source at this HEAD; the escalation windows
 		 * belong to the same contract.
 		 */
-		test("abort RPC budget and escalation windows match the oracle", () => {
-			const oracle = readFileSync(join(process.cwd(), "src/main/pi/AgentManager.ts"), "utf8");
+		test("abort RPC budget and escalation windows remain bounded", () => {
 			const native = readFileSync(
 				join(process.cwd(), "native/backend/domain/runtime/RuntimeCommands.cpp"),
 				"utf8",
 			);
 			const numberOf = (value) => Number(String(value).replaceAll("_", "").replaceAll("'", ""));
-			// Oracle: the initial `abort` (fire-and-forget) gets 10 s; the escalation re-sends
-			// `abort_bash` / `abort` with 5 s each.
-			const oracleAbort = [...oracle.matchAll(/request\(\{ type: "abort" \}, ([\d_]+)\)/g)]
-				.map((match) => numberOf(match[1]));
-			assert.equal(oracleAbort[0], 10_000, `oracle abort budget changed: ${JSON.stringify(oracleAbort)}`);
-			assert.equal(oracleAbort.at(-1), 5_000, JSON.stringify(oracleAbort));
-			assert.match(oracle, /ABORT_SETTLED_FALLBACK_MS = 1500/);
-			assert.match(oracle, /ABORT_ESCALATION_VERIFY_MS = 4000/);
-			assert.match(oracle, /request\(\{ type: "abort_bash" \}, 5_000\)/);
 
 			const nativeConstant = (name) => {
 				const match = native.match(new RegExp(`constexpr int ${name} = ([\\d']+);`));
 				assert.ok(match, `missing native constant ${name}`);
 				return numberOf(match[1]);
 			};
-			assert.equal(nativeConstant("kAbortRequestTimeoutMs"), oracleAbort[0]);
+			assert.equal(nativeConstant("kAbortRequestTimeoutMs"), 10_000);
 			assert.equal(nativeConstant("kAbortSettledFallbackMs"), 1_500);
 			assert.equal(nativeConstant("kAbortEscalationTimeoutMs"), 5_000);
 			assert.equal(nativeConstant("kAbortEscalationVerifyMs"), 4_000);

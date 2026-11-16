@@ -50,6 +50,8 @@ function write(root, relative, content) {
 export function createStatusRepo(root) {
 	mkdirSync(root, { recursive: true });
 	git(root, ["init", "-q", "-b", "main"]);
+	git(root, ["config", "user.name", "PiDeck Test"]);
+	git(root, ["config", "user.email", "test@pideck.invalid"]);
 	write(root, ".gitignore", "ignored.log\n");
 	write(root, "tracked.txt", "tracked v1\n");
 	write(root, "both.txt", "both v1\n");
@@ -90,6 +92,8 @@ export function createStatusRepo(root) {
 export function createConflictRepo(root) {
 	mkdirSync(root, { recursive: true });
 	git(root, ["init", "-q", "-b", "main"]);
+	git(root, ["config", "user.name", "PiDeck Test"]);
+	git(root, ["config", "user.email", "test@pideck.invalid"]);
 	write(root, "conflict.txt", "base\n");
 	git(root, ["add", "-A"]);
 	git(root, ["commit", "-q", "-m", "base"]);
@@ -108,6 +112,8 @@ export function createConflictRepo(root) {
 export function createHistoryRepo(root) {
 	mkdirSync(root, { recursive: true });
 	git(root, ["init", "-q", "-b", "main"]);
+	git(root, ["config", "user.name", "PiDeck Test"]);
+	git(root, ["config", "user.email", "test@pideck.invalid"]);
 	write(root, "a.txt", "one\n");
 	git(root, ["add", "-A"]);
 	git(root, ["commit", "-q", "-m", "first commit"]);

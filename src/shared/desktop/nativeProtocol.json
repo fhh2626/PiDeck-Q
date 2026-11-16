@@ -1,7 +1,5 @@
 {
   "version": 1,
-  "sidecarKinds": ["node", "cpp"],
-  "defaultSidecarKind": "cpp",
   "desktopEndpoints": [
     "POST /__pideck/rpc",
     "GET /__pideck/bootstrap",

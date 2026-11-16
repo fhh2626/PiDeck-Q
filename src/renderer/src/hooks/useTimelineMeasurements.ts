@@ -201,6 +201,11 @@ export function useTimelineMeasurements(params: {
 			// 保留当前已挂载行节点及其 lease，更新其有效 widthEpoch
 			for (const reg of targetContext.nodeMap.values()) {
 				reg.widthEpoch = targetContext.widthEpoch;
+				// These nodes have already reflowed at the new width. Keeping their
+				// actual heights prevents the first estimated render from evicting
+				// the reader's long row before its new observer can report it.
+				const height = reg.node.getBoundingClientRect().height;
+				if (height > 0) targetContext.measuredHeights.set(reg.key, height);
 			}
 
 			// 重建行观察器并重新观察全部挂载行

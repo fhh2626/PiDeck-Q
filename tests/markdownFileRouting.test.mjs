@@ -100,11 +100,3 @@ test("markdown document preview supplies working file and external callbacks and
   assert.deepEqual(external, ["https://example.com/docs"]);
   harness.unmount();
 });
-
-test("native reveal propagates shell refusal and transport failure", async () => {
-  const { NativeShell } = loadTsCommonJs(resolve("src/native-node/platform/NativeShell.ts"));
-  const refused = new NativeShell({ request: async () => ({ ok: false, error: "Cannot reveal file" }) });
-  await assert.rejects(async () => refused.showItemInFolder("C:/repo/a.md"), /Cannot reveal file/);
-  const disconnected = new NativeShell({ request: async () => { throw new Error("Disconnected"); } });
-  await assert.rejects(async () => disconnected.showItemInFolder("C:/repo/a.md"), /Disconnected/);
-});

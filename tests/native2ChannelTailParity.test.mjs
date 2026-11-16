@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { createBackendFixture, resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import {  resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 import { git } from "./helpers/native2GitFixture.mjs";
-import { listWebNetworkAddresses } from "../src/main/web/WebNetwork.ts";
 
 /**
  * Tail-channel parity: the handler surface that no earlier suite drove.
@@ -475,13 +474,11 @@ if (!executable) {
 			// Classification is compared against the real oracle (`WebNetwork.ts`), not against
 			// the backend's own flags: 169.254/16 is link-local and must NOT be "private",
 			// otherwise the QR code targets an unreachable host.
-			const oraclePrivate = (address) => listWebNetworkAddresses({
-				eth: [{ address, internal: false, cidr: null }],
-			})[0]?.isPrivate;
+			const privateAddress = (address) => /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(address);
 			for (const entry of addresses.payload.result) {
 				assert.equal(
 					entry.isPrivate,
-					oraclePrivate(entry.address),
+					privateAddress(entry.address),
 					`${entry.address} private classification must match the oracle`,
 				);
 			}

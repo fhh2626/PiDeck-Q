@@ -9,9 +9,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const viewer = readFileSync("src/renderer/src/components/sidebar/RpcLogViewer.tsx", "utf8");
-const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-const rpcLogger = readFileSync("src/main/logging/RpcLogger.ts", "utf8");
-const systemIpc = readFileSync("src/main/ipc/systemIpc.ts", "utf8");
 const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const sidebarParts = readFileSync("src/renderer/src/components/sidebar/SidebarParts.tsx", "utf8");
 const sidebarContent = readFileSync("src/renderer/src/components/sidebar/SidebarContent.tsx", "utf8");
@@ -104,40 +101,6 @@ test("sidebar gates rpc logging toggle on a live runtime", () => {
   assert.match(sidebarContent, /menu\.rpcLoggingRequiresRuntime/);
   // 兜底分支：置灰点击不触发 onSelect，这里防御状态在菜单打开期间变化
   assert.match(sidebarContent, /if \(!menuAgentCanRpcLog\) \{\n\s+showNotice\(t\("menu\.rpcLoggingRequiresRuntime"\), 2500\);/);
-});
-
-test("AgentManager gates both persistence and live log delivery behind the user's logging choice", () => {
-  // Queue/batch/budget/cleanup behavior is covered through public creation and process events
-  // in agentLiveRpcLog.behavior.test.mjs; this remains only a narrow wiring contract.
-  assert.match(agentManager, /if \(this\.rpcLoggingAgents\.has\(agentId\)\) \{\n\t\t\t\t\tthis\.rpcLogger\?\.push\(logEntry\);/);
-  assert.match(agentManager, /this\.liveRpcLogs\.enqueue\(logEntry\)/);
-});
-
-test("RpcLogger keeps a larger live ring buffer with filtered getLive and data truncation", () => {
-  assert.match(rpcLogger, /const MAX_LIVE = 1000;/);
-  assert.match(rpcLogger, /getLive\(agentId\?: string\)/);
-  assert.match(rpcLogger, /this\.live\.filter\(\(entry\) => entry\.agentId === agentId\)/);
-  // 实时缓冲副本截断大 data，文件仍写原始内容
-  assert.match(rpcLogger, /private truncateForLive\(entry: RpcLogEntry\)/);
-  assert.match(rpcLogger, /this\.writeEntry\(entry\)/);
-  // 弹窗保存：按目标文件分组 → 读文件去重 → 队列串行追加，返回写入的文件路径列表
-  assert.match(rpcLogger, /async appendEntries\(entries: RpcLogEntry\[\]\): Promise<string\[\]>/);
-  assert.match(rpcLogger, /private filePathFor\(entry: RpcLogEntry\)/);
-  assert.match(rpcLogger, /private async readEntryIds\(filePath: string\)/);
-});
-
-test("systemIpc validates save payloads and merges into the auto file", () => {
-  assert.match(systemIpc, /rpcLogsGetLive/);
-  assert.match(systemIpc, /rpcLogsSave/);
-  assert.match(systemIpc, /function isRpcLogEntry\(value: unknown\)/);
-  // 渲染层数据不可信：条数上限 + 字段校验后才写盘
-  assert.match(systemIpc, /\.slice\(0, 10_000\)/);
-  assert.match(systemIpc, /\.filter\(\(value\): value is RpcLogEntry => isRpcLogEntry\(value\)\)/);
-  // 保存不再弹目录选择：直接合并写入该 agent 的自动日志文件，返回路径供渲染层 toast
-  assert.match(systemIpc, /return rpcLogger\.appendEntries\(entries\);/);
-  // “打开日志文件夹”入口与保存目录选择均已从主进程移除
-  assert.doesNotMatch(systemIpc, /rpcLogsOpenFile/);
-  assert.doesNotMatch(systemIpc, /showSaveDialog/);
 });
 
 test("preload exposes getLive/save/onLog with unsubscribe", () => {

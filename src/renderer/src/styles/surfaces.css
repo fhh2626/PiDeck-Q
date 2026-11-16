@@ -3021,7 +3021,7 @@ div.fixed.inset-0.z-50 {
   color: var(--color-text-primary);
 }
 
-/* ── 遗留文件 Tab 样式（内容区已并入 session-tabs-bar；保留关闭按钮等极少引用兜底） ── */
+/* ── 遗留文件 Tab 样式（内容区已并入 workspace-toolbar；保留关闭按钮等极少引用兜底） ── */
 
 .file-diff-tab-bar {
   display: flex;
@@ -3098,7 +3098,7 @@ div.fixed.inset-0.z-50 {
   overflow: hidden;
 }
 /* Tab 栏挂在分屏外：与文件 Tab 同一条 chrome，maximize 时也不被会话面板收走 */
-.workbench-stage > .session-tabs-bar {
+.workbench-stage > .workspace-toolbar {
   flex: 0 0 auto;
   min-width: 0;
 }
@@ -3140,7 +3140,7 @@ div.fixed.inset-0.z-50 {
   width: 100%;
   overflow: hidden;
   background: var(--color-bg-panel);
-  /* 自定义标题栏拖区由上方 session-tabs-bar 承担；阅读面已在 Tab 之下，
+  /* 自定义标题栏拖区由上方 workspace-toolbar 承担；阅读面已在 Tab 之下，
      不再叠 padding-top，避免 Tab 与内容之间空出一条拖拽高度。
      分屏固定左右（不做上下分屏），内容区左侧贴会话面板加分隔线。 */
   border-left: 1px solid var(--color-border-subtle);
@@ -3156,7 +3156,7 @@ div.fixed.inset-0.z-50 {
   min-height: 0;
 }
 
-/* 会话 Tab 拖到边缘分屏：落点预览 + 两层树分屏舞台 */
+/* 侧栏会话拖到边缘分屏：落点预览 + 两层树分屏舞台 */
 .session-split-stage {
   position: relative;
 }

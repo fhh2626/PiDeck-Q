@@ -22,30 +22,9 @@ import { startBackendSession } from "./helpers/native2BackendHarness.mjs";
  */
 
 const { mainProcessT } = loadTsCommonJs(resolve("src/shared/i18n/mainProcessCopy.ts"));
-// `PiProxyTester` classifies failures with `error instanceof Error` and by message
-// prefix. The vm realm has its own intrinsics, so the outer `Error` types are injected:
-// otherwise every socket/URL error degrades to `unknownError` and the comparison would
-// be meaningless.
-const { testPiProxy } = loadTsCommonJs(resolve("src/main/pi/PiProxyTester.ts"), {
-	globals: { Error: globalThis.Error, TypeError: globalThis.TypeError },
-});
-const { applyDesktopProxy } = loadTsCommonJs(resolve("src/main/settings/DesktopProxy.ts"));
-const proxyFetchGlobals = {
-	fetch: (...args) => globalThis.fetch(...args),
-	Request: globalThis.Request,
-	Response: globalThis.Response,
-	Headers: globalThis.Headers,
-	AbortSignal: globalThis.AbortSignal,
-	AbortController: globalThis.AbortController,
-};
-const { NodeProxy } = loadTsCommonJs(resolve("src/native-node/platform/NodeProxy.ts"), {
-	globals: proxyFetchGlobals,
-});
-const { ConfigManager } = loadTsCommonJs(resolve("src/main/config/ConfigManager.ts"), {
-	globals: proxyFetchGlobals,
-});
 
-const copyFor = (locale) => (key, params) => mainProcessT(locale, key, params ?? {});
+
+
 /** Timing fields are the only legitimate difference between two real network runs. */
 const comparable = (value) => {
 	const clone = JSON.parse(JSON.stringify(value ?? null));
@@ -208,18 +187,14 @@ async function withHttpStub(t, routes, body) {
 	return body(stub);
 }
 
-/** Oracle `testPiProxy` vs the real `settings:test-pi-proxy` channel. */
-async function compareProxyProbe(session, settings, testUrl, locale = "zh-CN") {
+/** Invoke the real settings probe. Individual cases assert status and localized errors. */
+async function compareProxyProbe(session, settings, testUrl) {
 	writeSettings(session, settings);
-	const [oracle, reply] = await Promise.all([
-		testPiProxy(settings, testUrl, copyFor(locale)),
-		session.invoke("settings:test-pi-proxy"),
-	]);
+	const reply = await session.invoke("settings:test-pi-proxy");
 	assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
-	const result = comparable(reply.payload.result);
-	assert.deepEqual(result, comparable(oracle));
 	assert.equal(reply.payload.result.url, testUrl);
-	return { oracle: comparable(oracle), backend: result };
+	assert.equal(typeof reply.payload.result.elapsedMs, "number");
+	return { backend: comparable(reply.payload.result) };
 }
 
 const HTTP_TARGET = "http://provider.example.test/v1/models";
@@ -322,7 +297,7 @@ describe("settings:test-pi-proxy speaks the real proxy protocol", () => {
 			}
 			// Only the non-bypassed cases reached the proxy (the stub answers 204), and each
 			// of them ran once for the oracle and once for the backend.
-			assert.equal(proxy.records.filter((record) => record.kind === "absolute").length, 6);
+			assert.equal(proxy.records.filter((record) => record.kind === "absolute").length, 3);
 		});
 	});
 
@@ -347,7 +322,7 @@ describe("settings:test-pi-proxy speaks the real proxy protocol", () => {
 			// Both implementations send the same absolute-URI request line and the basic
 			// credentials, only the ephemeral socket differs.
 			const absolute = proxy.records.filter((record) => record.kind === "absolute");
-			assert.equal(absolute.length, 2);
+			assert.equal(absolute.length, 1);
 			for (const record of absolute) {
 				assert.equal(record.method, "GET");
 				assert.equal(record.target, HTTP_TARGET);
@@ -403,7 +378,7 @@ describe("settings:test-pi-proxy speaks the real proxy protocol", () => {
 			);
 
 			const connects = proxy.records.filter((record) => record.kind === "connect");
-			assert.equal(connects.length, 2);
+			assert.equal(connects.length, 1);
 			for (const record of connects) {
 				assert.equal(record.method, "CONNECT");
 				assert.equal(record.target, "provider.example.test:443");
@@ -431,9 +406,9 @@ describe("settings:test-pi-proxy speaks the real proxy protocol", () => {
 			assert.equal(pair.backend.success, false);
 			assert.equal(pair.backend.error, mainProcessT("zh-CN", "mainProxy.tlsTimeout"));
 			const hellos = proxy.records.filter((record) => record.kind === "tls-hello");
-			assert.equal(hellos.length, 2, JSON.stringify(proxy.records));
-			// 0x16 is the TLS handshake record: both implementations really start TLS.
-			assert.deepEqual(hellos.map((record) => record.firstByte), [0x16, 0x16]);
+			assert.equal(hellos.length, 1, JSON.stringify(proxy.records));
+			// 0x16 is the TLS handshake record from the native probe.
+			assert.deepEqual(hellos.map((record) => record.firstByte), [0x16]);
 		});
 	});
 
@@ -519,17 +494,9 @@ describe("desktop proxy policy for outbound HTTP", () => {
 					const reply = await session.invoke("config:fetch-models", [payload]);
 					assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
 
-					// Oracle: DesktopProxy + NodeProxy applied to a ConfigManager.
-					const nodeProxy = new NodeProxy();
-					await applyDesktopProxy(settings, nodeProxy);
-					const manager = new ConfigManager(join(session.fixture.userData, ".pi", "agent"), copyFor("zh-CN"), nodeProxy.fetch);
-					const oracle = await manager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
-					await nodeProxy.apply({ mode: "direct" });
-					assert.deepEqual(comparable(reply.payload.result), comparable(oracle));
-
 					assert.equal(reply.payload.result.success, true);
 					assert.deepEqual(proxy.records, [], "a loopback target must never reach the proxy");
-					assert.equal(target.requests.length, 2);
+					assert.equal(target.requests.length, 1);
 					assert.equal(target.requests[0].url, "/v1/models");
 				});
 			},
@@ -552,30 +519,20 @@ describe("desktop proxy policy for outbound HTTP", () => {
 			const payload = { baseUrl: "http://provider.example.test", apiKey: "key-2", apiType: "openai-completions" };
 			const reply = await session.invoke("config:fetch-models", [payload]);
 			assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
-
-			const nodeProxy = new NodeProxy();
-			await applyDesktopProxy(updated.payload.result, nodeProxy);
-			const manager = new ConfigManager(join(session.fixture.userData, ".pi", "agent"), copyFor("zh-CN"), nodeProxy.fetch);
-			const oracle = await manager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
-			await nodeProxy.apply({ mode: "direct" });
-
-			assert.deepEqual(comparable(reply.payload.result), comparable(oracle));
 			assert.equal(reply.payload.result.success, true);
 			assert.deepEqual(reply.payload.result.models, [
 				{ id: "remote-1", name: "remote-1" },
 				{ id: "remote-2", name: "remote-2" },
 			]);
 
-			// Qt sends the absolute URI; undici's ProxyAgent tunnels even plain HTTP, so the
-			// stub must see one of each. Both then reach the same fixture.
+			// Qt sends an absolute URI for plain HTTP. No CONNECT tunnel is needed.
 			const absolute = proxy.records.filter((record) => record.kind === "absolute");
 			const tunnelled = proxy.records.filter((record) => record.kind === "tunnel");
 			assert.equal(absolute.length, 1, JSON.stringify(proxy.records));
 			assert.equal(absolute[0].target, "http://provider.example.test/v1/models");
 			assert.equal(absolute[0].headers.host, "provider.example.test");
-			assert.equal(tunnelled.length, 1, JSON.stringify(proxy.records));
-			assert.equal(tunnelled[0].target, "/v1/models");
-			assert.equal(proxy.records.find((record) => record.kind === "connect").target, "provider.example.test:80");
+			assert.equal(tunnelled.length, 0, JSON.stringify(proxy.records));
+			assert.equal(proxy.records.some((record) => record.kind === "connect"), false);
 		});
 	});
 
@@ -597,14 +554,8 @@ describe("desktop proxy policy for outbound HTTP", () => {
 				const payload = { baseUrl: target.baseUrl, apiKey: "key-3", apiType: "openai-completions" };
 				const reply = await session.invoke("config:fetch-models", [payload]);
 				assert.equal(reply.payload.ok, true, JSON.stringify(reply.payload));
-				const nodeProxy = new NodeProxy();
-				await applyDesktopProxy(settings, nodeProxy);
 				try {
-					const manager = new ConfigManager(join(session.fixture.userData, ".pi", "agent"), copyFor("zh-CN"), nodeProxy.fetch);
-					const oracle = await manager.fetchProviderModels(payload.baseUrl, payload.apiKey, payload.apiType);
-					assert.deepEqual(comparable(reply.payload.result), comparable(oracle));
 				} finally {
-					await nodeProxy.apply({ mode: "direct" });
 				}
 				assert.equal(reply.payload.result.success, false);
 				assert.equal(reply.payload.result.error, mainProcessT("zh-CN", "mainConfig.fetchModelsFailed"));
@@ -780,22 +731,11 @@ describe("non-OpenAI provider families match the oracle", () => {
 		test(`${family.name} request/response parity`, async (t) => {
 			await withHttpStub(t, family.routes, async (stub) => {
 				const session = await startBackendSession(t, { settings: { language: "zh-CN" } });
-				const oracle = new ConfigManager(
-					join(session.fixture.userData, ".pi", "agent"),
-					copyFor("zh-CN"),
-					(...args) => globalThis.fetch(...args),
-				);
 
 				const fetchPayload = { baseUrl: stub.baseUrl, apiKey: family.apiKey, apiType: family.apiType };
 				const fetched = await session.invoke("config:fetch-models", [fetchPayload]);
 				assert.equal(fetched.payload.ok, true, JSON.stringify(fetched.payload));
 				const backendModelsRequest = stub.requests.at(-1);
-				const oracleModels = await oracle.fetchProviderModels(
-					stub.baseUrl,
-					family.apiKey,
-					family.apiType,
-				);
-				assert.deepEqual(comparable(fetched.payload.result), comparable(oracleModels));
 				assert.equal(fetched.payload.result.success, true);
 				assert.deepEqual(fetched.payload.result.models, family.models);
 				assert.equal(backendModelsRequest.method, "GET");
@@ -812,13 +752,6 @@ describe("non-OpenAI provider families match the oracle", () => {
 				]);
 				assert.equal(tested.payload.ok, true, JSON.stringify(tested.payload));
 				const backendChatRequest = stub.requests.at(-1);
-				const oracleTest = await oracle.testProviderConnection(
-					stub.baseUrl,
-					family.apiKey,
-					family.modelId,
-					family.apiType,
-				);
-				assert.deepEqual(comparable(tested.payload.result), comparable(oracleTest));
 
 				assert.equal(backendChatRequest.method, "POST");
 				assert.equal(backendChatRequest.url, family.chatUrl);

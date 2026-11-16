@@ -1,17 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-
-const coordinator = readFileSync(
-  "src/main/sessions/SessionRuntimeCoordinator.ts",
-  "utf8",
-);
-const main = readFileSync("src/native-node/index.ts", "utf8");
-const createBackend = readFileSync("src/main/backend/createBackend.ts", "utf8");
-const sessionBridge = readFileSync("src/main/backend/sessionRuntimeBridge.ts", "utf8");
-const agentManager = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-const sessionIpc = readFileSync("src/main/ipc/sessionIpc.ts", "utf8");
-const app = readFileSync("src/renderer/src/App.tsx", "utf8");
 const runtimeInjector = readFileSync(
   "src/renderer/src/components/session/SessionRuntimeInjector.tsx",
   "utf8",
@@ -50,29 +39,6 @@ const surfaceComponents = readFileSync(
   "utf8",
 );
 
-test("catalog scans attach matching existing runtimes in the main process", () => {
-  assert.match(coordinator, /attachCatalogRuntimes\(/);
-  assert.match(createBackend, /attachCatalogRuntimes\(records\)/);
-  assert.match(sessionIpc, /sessionsCatalogList[\s\S]*mergeScanned[\s\S]*attachCatalogRuntimes/);
-});
-
-test("unbound interactive UI is cancelled and cannot be surfaced as Session UI", () => {
-  assert.match(sessionBridge, /cancelUnboundUiRequest/);
-  assert.match(sessionBridge, /"batch_ask"/);
-  assert.match(sessionBridge, /sendUIResponse\([^,]+,[^,]+, \{ cancelled: true \}\)/);
-  assert.doesNotMatch(app, /bindSessionRuntimeAtom|bindSessionRuntime\(/);
-  assert.doesNotMatch(app, /api\.agents\.onUiRequest\(/);
-});
-
-test("Ask Question keeps normalized batch requests pending for the session responder", () => {
-  assert.match(coordinator, /method === "batch_ask"/);
-  assert.match(agentManager, /hasCustomOption/);
-  assert.match(agentManager, /option\.startsWith\("✎"\)/);
-  assert.match(agentManager, /allowOther: typed\.allowOther === true \|\| hasCustomOption/);
-  // AgentManager 把解析出的批量表单原样放进 batch_ask 请求的 batchQuestions 字段
-  assert.match(agentManager, /batchQuestions: batchEnvelope\.questions/);
-});
-
 test("session UI requests remain generation-bound and render in the timeline footer", () => {
   assert.match(runtimeInjector, /createSessionRuntimeUiResponder\(/);
   assert.match(runtimeInjector, /sessionId: currentSessionId/);
@@ -94,43 +60,6 @@ test("session UI requests remain generation-bound and render in the timeline foo
   assert.match(webChatApp, /pendingUiRequest=/);
   assert.match(webChatApp, /onRespondUi=/);
   assert.doesNotMatch(webTimeline, /function WebAskCard\(/);
-});
-
-test("Web wiring is Session-first and exposes no Agent compatibility creation", () => {
-  assert.match(
-    createBackend,
-    /createSessionDraft: async \(input\)[\s\S]*sessionCatalog\.createDraft/,
-  );
-  assert.match(
-    createBackend,
-    /sendSessionPrompt: async \(input\)[\s\S]*sessionRuntimeCoordinator\.send\(input\)/,
-  );
-  // stopSessionRuntime is now a shared helper called from both IPC and the web deps.
-  assert.match(sessionBridge, /async function stopSessionRuntime\([\s\S]*?sessionRuntimeCoordinator\.stopRuntime\(target\)/);
-  assert.doesNotMatch(createBackend, /createAgent:/);
-  assert.doesNotMatch(main, /LEGACY_EXTERNAL_RUNTIME|ipcChannels\.agentsCreate/);
-});
-
-test("catalog deletion rejects bound or activating Session runtimes", () => {
-  // E1：删除/归档/改名的空闲闸门已收口到 SessionRecordService（桌面 IPC 与 Web 共用）；
-  // sessionIpc 只做委托，所以断言“两边都只能走服务”而不是服务内部的实现位置。
-  const recordService = readFileSync("src/main/sessions/SessionRecordService.ts", "utf8");
-  assert.match(sessionIpc, /sessionsCatalogDelete[\s\S]*sessionRecordService\.delete\(sessionId\)/);
-  assert.match(sessionIpc, /sessionsCatalogArchive[\s\S]*sessionRecordService\.archive\(sessionId\)/);
-  // 闸门自身的“忙”判定必须覆盖已绑定 runtime、普通激活与匿名激活三种状态。
-  assert.match(recordService, /isSessionDeleteBlocked\(sessionId, \{[\s\S]*getTarget: [\s\S]*isActivating: [\s\S]*isAnonymousActivating/);
-  // 删除与归档都必须先过 assertTreeIdle（整棵会话树，不只是父会话）。
-  assert.match(recordService, /async delete\(sessionId: string\)[\s\S]*assertTreeIdle\(sessionId\)/);
-  assert.match(recordService, /async archive\(sessionId: string\)[\s\S]*assertTreeIdle\(sessionId\)/);
-  assert.match(createBackend, /deleteSessionRecord: \(sessionId\) => sessionRecordService\.delete\(sessionId\)/);
-  assert.match(coordinator, /isActivating\(sessionId: string\): boolean/);
-});
-
-test("replacement restore is gated by full origin identity in main", () => {
-  assert.match(sessionBridge, /const originKey = originEntry\?\.filePath[\s\S]*buildSessionOriginKey/);
-  assert.match(sessionBridge, /canRestoreOrigin: \(\) => \{[\s\S]*buildSessionOriginKey[\s\S]*\) === originKey;/);
-  assert.match(coordinator, /failClosedRuntimeReplacement/);
-  assert.match(coordinator, /replacementBySession/);
 });
 
 test("message mutation commands in SessionRuntimeInjector bind the pane's live or saved-history target", () => {
@@ -156,27 +85,4 @@ test("edit save dispatches captured callback and never gates on the current onEd
   // 进入编辑必须捕获当次回调（绑定当时 target）
   assert.match(turnRow, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
   assert.match(surfaceComponents, /(?:trackedEditSubmit\.current\.begin\(props\.onEditMessage\)|timelineEdit\.beginEdit\(\))/);
-});
-
-test("silent extension commands keep their generic contract", () => {
-  // 静默命令是 SessionRuntimeCoordinator.send / IPC 的 API 约定，与 composer 的
-  // `!!` 无关——后者是 pi 自己的 shell 命令语法。
-  // Web POST /api/sessions/:id/prompt 会把 body.silent 透传下去，但空 message 会在进入
-  // coordinator 之前被 400 拒掉；空正文只在 IPC 这一层允许。
-  // 契约：正文走 agentMessage，且不进入模型回合（不置 running、不写乐观用户消息、
-  // 不占 TTFT 计时起点），否则会污染下一次真实回复的首字延迟。
-  assert.match(
-    coordinator,
-    /const hasSilentCommand = Boolean\(input\.silent && input\.agentMessage\?\.trim\(\)\);/,
-  );
-  assert.match(
-    coordinator,
-    /if \(!input\.message\.trim\(\) && !input\.images\?\.length && !hasSilentCommand\)/,
-  );
-  // 静默命令必须是已注册扩展命令，否则会被当成普通 prompt 发给模型
-  assert.match(agentManager, /静默命令必须是已注册扩展命令/);
-  assert.match(
-    agentManager,
-    /静默扩展命令不进入模型回合，不能占用首字计时起点[\s\S]{0,400}?if \(!input\.silent\) \{[\s\S]{0,200}?this\.promptRequestedAtByAgent\.set/,
-  );
 });

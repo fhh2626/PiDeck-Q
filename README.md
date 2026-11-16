@@ -27,7 +27,7 @@ As PiDeck-Q aims to remain lightweight and focus dedicatedly on the Pi family of
 ## Highlights
 
 - Native desktop host implemented in **C++ and Qt**, replacing a full Electron shell for a smaller footprint and more responsive windowing.
-- Ships a **native C++ business backend** beside the Qt host, so the portable package bundles no Node.js runtime of its own; Node.js is only needed to build from source (and for the explicit `PIDECK_SIDECAR_KIND=node` compatibility build), while the built-in TypeScript extensions run on the agent runtime's own Node. The coding agent runtime (Pi Agent / Pi_Agent_Rust / Pi-Bolt) remains an external dependency that PiDeck-Q launches.
+- Ships a **native C++ business backend** beside the Qt host, so the portable package bundles no Node.js runtime of its own; Node.js is used for frontend builds, extension resource bundling and automated tests, while the built-in TypeScript extensions run on the agent runtime's own Node. The coding agent runtime (Pi Agent / Pi_Agent_Rust / Pi-Bolt) remains an external dependency that PiDeck-Q launches.
 - Supports both the original [Pi Agent](https://pi.dev) and the Rust-based [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust). Pi_Agent_Rust is currently less mature than the original Pi Agent, but uses less memory and delivers a smoother experience.
 - Also supports [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), a precompiled distribution of the original Pi Agent that is RPC-compatible with it. Auto mode does not automatically discover the `pi-bolt` command (a custom Pi path can still point to it); select it explicitly under Settings → Developer → Pi Runtime Preference.
 - Removes less commonly used features, such as the Feishu bot and desktop pet, to reduce application size and memory usage.
@@ -40,6 +40,11 @@ As PiDeck-Q aims to remain lightweight and focus dedicatedly on the Pi family of
 ![PiDeck-Q conversation workspace](screenshots/1.png)
 
 ![PiDeck-Q project and session management](screenshots/2.png)
+
+
+## Session navigation
+
+Select Agent sessions in the project sidebar. Sessions remain in their projects, without a separate open-session tab list, preview mode or pin state. Drag a sidebar session to a conversation edge to split the view, or into the center of an existing pane to replace it. Each pane owns its stop and restart controls. File editors and terminals retain their own tabs.
 
 ## License
 

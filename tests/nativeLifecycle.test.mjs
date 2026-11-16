@@ -3,8 +3,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const mainSource = readFileSync("native/src/main.cpp", "utf8");
-const nodeController = readFileSync("native/src/NodeProcessController.cpp", "utf8");
-const nodeIndex = readFileSync("src/native-node/index.ts", "utf8");
 const pathsSource = readFileSync("native/src/NativePaths.cpp", "utf8");
 const applicationSource = readFileSync("native/src/NativeApplication.cpp", "utf8");
 const devScript = readFileSync("scripts/dev-native.mjs", "utf8");
@@ -17,25 +15,10 @@ const toast = readFileSync("native/src/WindowsToastNotifier.cpp", "utf8");
 	assert.doesNotMatch(mainSource, /application\.restart[\s\S]{0,800}startDetached/);
 });
 
-test("Qt handles sidecar lifecycle locally and uses the graceful ACK event", () => {
-	assert.match(nodeController, /setNodeExitHandler/);
-	assert.match(nodeController, /setNodeErrorHandler/);
-	assert.match(nodeController, /application\.prepareQuit/);
-	assert.doesNotMatch(nodeController, /sendEvent\(QStringLiteral\("application\.node(?:Error|Exit)"/);
-	assert.match(nodeIndex, /application\.readyToExit/);
-	assert.match(nodeIndex, /closeGracefully/);
-	assert.match(nodeIndex, /host\.onFatal\(\(\) => \{/);
-	assert.match(nodeIndex, /setTimeout\(\(\) => process\.exit\(1\), 1_500\)/);
-	assert.match(nodeIndex, /void stop\(\)\.finally\(\(\) => \{/);
-	assert.match(nodeController, /m_readyToExit/);
-	assert.match(nodeController, /postAckExitTimeoutMs/);
-	assert.match(nodeController, /gracefulTimer/);
-});
-
 test("Qt supervisor restarts one unexpected sidecar exit and reloads the existing window", () => {
 	assert.match(
 		mainSource,
-		/node\.setNodeExitHandler\([\s\S]*?if \(quitting\) return;[\s\S]*?if \(sidecarRestartAttempted\)[\s\S]*?requestQuit\(\);[\s\S]*?sidecarRestartAttempted = true;[\s\S]*?node\.start\(\)/,
+		/backendProcess\.setExitHandler\([\s\S]*?if \(quitting\) return;[\s\S]*?if \(sidecarRestartAttempted\)[\s\S]*?requestQuit\(\);[\s\S]*?sidecarRestartAttempted = true;[\s\S]*?backendProcess\.start\(\)/,
 	);
 	assert.match(
 		mainSource,

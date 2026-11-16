@@ -14,6 +14,7 @@ import type { AgentRuntimeState, GitBranchInfo, ImageContent, TerminalTarget } f
 import type { SessionTimelineController } from "../../hooks/useSessionTimelineController";
 import { isLanWeb, desktopApi as api } from "../../desktopApi";
 import { useNotifyLayoutResized } from "../../hooks/useNotifyLayoutResized";
+import { canStopBoundAgent } from "../../utils/canStopBoundAgent";
 import { SessionHeader } from "./SessionHeader";
 import { SessionBranchBar } from "./SessionBranchBar";
 import { SessionWidgetChips } from "./SessionWidgetChips";
@@ -35,7 +36,7 @@ export type SessionViewProps = {
   sessionId: string;
   sessionTitle: string;
   sessionTimeline: SessionTimelineController;
-  /** 分屏栏：加边框与点击聚焦；单栏 Tab 已外置，同样只渲染 Header */
+  /** 分屏栏：加边框与点击聚焦，操作绑定本栏会话 */
   splitPane?: boolean;
   focused?: boolean;
   onFocusPane?: () => void;
@@ -434,8 +435,7 @@ export function SessionView({
       }
       onMouseDown={splitPane ? () => onFocusPane?.() : undefined}
     >
-      {/* Tab 栏已统一外置；运行控制（停止/重启）在共享 Tab 栏的 Tab 下拉；
-          本栏只保留会话状态徽章与分屏身份标题（抽屉开关在共享 Tab 栏）。 */}
+      {/* Runtime controls always target this pane, including non-focused split sessions. */}
       <SessionHeader
         headerRef={chatHeaderRef}
         sessionId={sessionId}
@@ -450,6 +450,18 @@ export function SessionView({
         runtimeState={activeRuntimeState}
         duration={sessionDuration}
         isStarting={isAgentStarting}
+        canStop={canStopBoundAgent(activeAgent?.status)}
+        isRestarting={isRestarting}
+        onStop={activeAgentId ? () => {
+          void paneServices.stopAgent(activeAgentId).catch((error: unknown) => {
+            onToast(error instanceof Error ? error.message : String(error));
+          });
+        } : undefined}
+        onRestart={activeAgentId ? () => {
+          void paneServices.restartActiveAgent(activeAgentId).catch((error: unknown) => {
+            onToast(error instanceof Error ? error.message : String(error));
+          });
+        } : undefined}
         widgetChips={<SessionWidgetChips sessionId={sessionId} />}
       />
       {/* 分支导航条：仅当当前会话存在 fork 分支关系（父/兄弟/子分支）时显示 */}

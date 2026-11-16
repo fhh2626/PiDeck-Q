@@ -7,7 +7,7 @@ namespace {
 /**
  * Total budget for reaping processes that ignored `terminate()`.
  *
- * Part of the host's 1500 ms force-kill window (native/src/NodeProcessController.cpp), so
+ * Part of the host's 1500 ms force-kill window (native/src/BackendProcessController.cpp), so
  * it is a fixed small number rather than a per-process wait.
  */
 constexpr int kKillBudgetMs = 150;

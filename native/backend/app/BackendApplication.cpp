@@ -38,7 +38,7 @@ constexpr int kHeartbeatTickMs = 3'000;
 constexpr int kLiveResyncWindowMs = 1'000;
 /**
  * Shutdown budgets, sized to fit the host's 1500 ms force-kill window
- * (native/src/NodeProcessController.cpp: m_gracefulStopTimer.start(1500)).
+ * (native/src/BackendProcessController.cpp: m_gracefulStopTimer.start(1500)).
  *
  * The old sequence spent up to 3 s + 1 s per child plus a 250 ms graceful close, so the
  * host killed the backend before `application.readyToExit` and the persisted window

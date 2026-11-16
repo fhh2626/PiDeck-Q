@@ -6,9 +6,10 @@ import { join, resolve } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { verifyBuildArtifacts } from "../scripts/verify-build-artifacts.mjs";
+import { connectPage, verifyPackagedStage } from "./helpers/native2PackagedHost.mjs";
 
 /**
- * Package gate for `PIDECK_SIDECAR_KIND=cpp`: a C++ package must not carry business Node.
+ * Package gate for native: a C++ package must not carry business Node.
  *
  * The C++ backend is a first-class sidecar (plan §11.2), so the staged package definition
  * differs from the Node one: no bundled `app/native-node/index.cjs`, no
@@ -68,7 +69,7 @@ async function writeFileAt(root, relativePath, content = "// fixture\n") {
  * the extension dependency tree that must survive de-Node. `repoRoot` is the temp root,
  * so the freshness groups have no inputs and cannot mask a leftover finding.
  */
-async function makeStage({ nodeSidecar = false, leftovers = [], extraFiles = [] } = {}) {
+async function makeStage({ leftovers = [], extraFiles = [] } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "pideck-cpp-stage-"));
 	tempRoots.push(root);
 	await writeFileAt(root, "app/renderer/index.html", "<!doctype html><html><body>index</body></html>\n");
@@ -79,10 +80,7 @@ async function makeStage({ nodeSidecar = false, leftovers = [], extraFiles = [] 
 	await writeFileAt(root, "resources/extensions/node_modules/undici/package.json", "{\"name\":\"undici\"}\n");
 	await writeFileAt(root, "resources/extensions/node_modules/acorn/package.json", "{\"name\":\"acorn\"}\n");
 	await writeFileAt(root, "resources/extensions/node_modules/acorn/dist/acorn.js", "module.exports={};\n");
-	if (nodeSidecar) {
-		await writeFileAt(root, "app/native-node/index.cjs", "// sidecar\n");
-		await writeFileAt(root, "node/node.exe", "MZfixture\n");
-	}
+
 	for (const leftover of leftovers) {
 		// Directories are created with a file inside so "empty node/ dir" is not the only
 		// shape under test; the verifier checks the path itself.
@@ -92,14 +90,24 @@ async function makeStage({ nodeSidecar = false, leftovers = [], extraFiles = [] 
 	return root;
 }
 
-async function verify(stage, sidecarKind) {
-	return verifyBuildArtifacts({ repoRoot: stage, outDir: stage, sidecarKind });
+async function verify(stage) {
+	return verifyBuildArtifacts({ repoRoot: stage, outDir: stage });
 }
 
 describe("native2 C++ package de-Node gate", () => {
+	test("a dead packaged host fails immediately instead of waiting for CDP", async () => {
+		await assert.rejects(connectPage(1, {
+			launch: { child: { exitCode: 42 }, output: { stderr: "missing dependency" } },
+		}), /exited before WebView2.*42.*missing dependency/);
+	});
+
+	test("packaged-host verification uses the current native-only CLI", async () => {
+		assert.match(verifyPackagedStage(await makeStage()), /verified/i);
+	});
+
 	test("a clean C++ stage passes and requires no Node entry point", async () => {
 		const stage = await makeStage();
-		const result = await verify(stage, "cpp");
+		const result = await verify(stage);
 		assert.deepEqual(result.errors, []);
 		assert.equal(result.ok, true);
 		assert.ok(result.checked.some((file) => file.endsWith(process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend")));
@@ -114,7 +122,7 @@ describe("native2 C++ package de-Node gate", () => {
 		];
 		for (const { leftover, expected } of cases) {
 			const stage = await makeStage({ leftovers: [leftover] });
-			const result = await verify(stage, "cpp");
+			const result = await verify(stage);
 			assert.equal(result.ok, false, `${leftover} must fail the C++ package gate`);
 			assert.ok(
 				result.errors.some((error) => error.includes("business Node leftovers") && error.includes(expected)),
@@ -125,7 +133,7 @@ describe("native2 C++ package de-Node gate", () => {
 
 	test("rejects a node.exe anywhere in a C++ stage", async () => {
 		const stage = await makeStage({ extraFiles: [["resources/extensions/node.exe", "MZfixture\n"]] });
-		const result = await verify(stage, "cpp");
+		const result = await verify(stage);
 		assert.equal(result.ok, false);
 		assert.ok(
 			result.errors.some((error) => error.includes("must not contain a Node runtime")),
@@ -136,33 +144,21 @@ describe("native2 C++ package de-Node gate", () => {
 	test("an empty node/ directory alone is still a violation", async () => {
 		const stage = await makeStage();
 		await mkdir(join(stage, "node"));
-		const result = await verify(stage, "cpp");
+		const result = await verify(stage);
 		assert.equal(result.ok, false);
 		assert.ok(result.errors.some((error) => error.includes("business Node leftovers") && error.includes("node")));
-	});
-
-	test("the Node package definition is unchanged: its entry point and runtime are required", async () => {
-		const withoutEntry = await makeStage();
-		const rejected = await verify(withoutEntry, "node");
-		assert.equal(rejected.ok, false);
-		assert.ok(rejected.errors.some((error) => error.includes("Missing nativeNode entry")));
-
-		const nodeStage = await makeStage({ nodeSidecar: true });
-		const accepted = await verify(nodeStage, "node");
-		assert.deepEqual(accepted.errors, []);
 	});
 
 	test("the real C++ stage verifies and ships the extension dependency tree", async (t) => {
 		const backend = join(REAL_CPP_STAGE, "PiDeckBackend.exe");
 		if (!existsSync(backend)) {
 			assert.notEqual(process.env.PIDECK_REQUIRE_BACKEND_TESTS, "1", `required C++ stage missing at ${REAL_CPP_STAGE}`);
-			t.skip(`no C++ stage at ${REAL_CPP_STAGE} (build with PIDECK_SIDECAR_KIND=cpp PIDECK_STAGE_DIR=...)`);
+			t.skip(`no C++ stage at ${REAL_CPP_STAGE} (build with PIDECK_STAGE_DIR=...)`);
 			return;
 		}
 		const result = await verifyBuildArtifacts({
 			repoRoot: REPO_ROOT,
 			outDir: REAL_CPP_STAGE,
-			sidecarKind: "cpp",
 		});
 		assert.deepEqual(result.errors, [], `stage must satisfy the C++ package definition`);
 		for (const forbidden of ["app/native-node", "app/node_modules", "node", "node.exe"]) {
