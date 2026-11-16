@@ -88,14 +88,28 @@ async function realpathWithMissingSuffix(target: string): Promise<string> {
 	}
 }
 
-async function resolveAuthorizedRoots(roots: readonly string[]): Promise<string[]> {
-	const resolved: string[] = [];
+/** Try likely owners first, but still resolve both sides before granting access. */
+async function isWithinRealAuthorizedRoot(
+	containmentTarget: string,
+	lexicalTarget: string,
+	roots: readonly string[],
+): Promise<boolean> {
+	const preferred: string[] = [];
+	const remaining: string[] = [];
 	for (const root of roots) {
 		if (!root) continue;
-		const realRoot = await realpathIfPresent(resolve(root));
-		if (realRoot) resolved.push(realRoot);
+		const normalized = resolve(root);
+		const candidates = isPathInsideAuthorizedRoot(lexicalTarget, normalized)
+			|| isPathInsideAuthorizedRoot(containmentTarget, normalized) ? preferred : remaining;
+		candidates.push(normalized);
 	}
-	return resolved;
+	// A lexical match only orders I/O. A redirected target still has to be inside
+	// the canonical root. The fallback keeps root junctions and canonical aliases valid.
+	for (const root of [...preferred, ...remaining]) {
+		const realRoot = await realpathIfPresent(root);
+		if (realRoot && isPathInsideAuthorizedRoot(containmentTarget, realRoot)) return true;
+	}
+	return false;
 }
 
 /**
@@ -112,12 +126,11 @@ export async function assertAuthorizedFilePath(
 	mode: AuthorizedPathMode = "read",
 ): Promise<string> {
 	const normalizedTarget = resolve(target);
-	const resolvedRoots = await resolveAuthorizedRoots(roots);
-	if (resolvedRoots.length === 0) throw new UnauthorizedFilePathError(operation);
+	if (!roots.some(Boolean)) throw new UnauthorizedFilePathError(operation);
 
 	if (mode === "link") {
 		const realParent = await realpathWithMissingSuffix(dirname(normalizedTarget));
-		if (!resolvedRoots.some((root) => isPathInsideAuthorizedRoot(realParent, root))) {
+		if (!await isWithinRealAuthorizedRoot(realParent, normalizedTarget, roots)) {
 			throw new UnauthorizedFilePathError(operation);
 		}
 		// Inspect the final entry without following it. Deleting/renaming a link is
@@ -135,7 +148,7 @@ export async function assertAuthorizedFilePath(
 	}
 	const existingTarget = await realpathIfPresent(normalizedTarget);
 	const containmentTarget = existingTarget ?? await realpathWithMissingSuffix(normalizedTarget);
-	if (!resolvedRoots.some((root) => isPathInsideAuthorizedRoot(containmentTarget, root))) {
+	if (!await isWithinRealAuthorizedRoot(containmentTarget, normalizedTarget, roots)) {
 		throw new UnauthorizedFilePathError(operation);
 	}
 	return existingTarget ?? normalizedTarget;

@@ -14,20 +14,19 @@
  * thread and settles the channel back on the main thread, which gives the same
  * externally observable property: the event loop is never blocked by a child process.
  *
- * Execution model: exactly ONE dedicated worker thread ("serial domain executor").
+ * Domain state keeps ONE dedicated worker thread ("serial domain executor").
  *
  * The oracle is single threaded: every domain mutation runs on the JS event loop, so a
  * catalog read-modify-write, an archive index update or a JSONL index cache eviction can
  * never interleave with another one. The C++ backend keeps that guarantee by serialising
- * every blocking domain body instead of spreading them over QThreadPool::globalInstance()
+ * mutable domain bodies instead of spreading them over QThreadPool::globalInstance()
  * (which used to run N bodies concurrently against unsynchronised QHash/QVector state).
  *
- * Consequences that are deliberate, not accidental:
- *  - domain state needs no per-structure locks, and the observable order equals the
- *    oracle's order for the same request sequence;
- *  - a long body (network git, `npx` install) delays *other* domain bodies, but never the
- *    HTTP/SSE/host transport, which all stay on the main thread. That head-of-line cost is
- *    the price of single-owner state, and it is bounded by the child process timeout.
+ * Interactive file reads have a separate single worker. These tasks capture only a
+ * value snapshot and use local filesystem objects; they never access mutable domain
+ * stores. Thus a slow git/install/tree job cannot delay opening a small document,
+ * while every mutation still uses the original FIFO. Both workers share shutdown's
+ * stop phase and one drain deadline.
  *
  * Exceptions thrown by the task (ChannelError included) are captured and reported as
  * `Outcome::ok == false`; they are never rethrown on the main thread, because that
@@ -44,9 +43,12 @@ struct Outcome {
 /** Queue `task` on the serial domain executor; `continuation` always runs on the main thread. */
 void runBlocking(std::function<QJsonValue()> task, std::function<void(Outcome)> continuation);
 
+/** Queue a self-contained file read; its task must capture values rather than mutable domain services. */
+void runInteractiveRead(std::function<QJsonValue()> task, std::function<void(Outcome)> continuation);
+
 /**
- * Stop the executor: refuse new work, drop bodies that are still queued, and let the body
- * in flight finish (then join).
+ * Stop both executors: refuse new work, drop bodies that are still queued, and let
+ * each body in flight finish within one shared deadline (then join).
  *
  * Once this has been called the process is leaving: the event loop is about to stop and the
  * services a continuation captures are about to be destroyed, so

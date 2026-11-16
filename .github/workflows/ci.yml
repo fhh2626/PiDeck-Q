@@ -59,6 +59,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeck-DesktopProxyPolicyTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          xmake build -y PiDeck-BackgroundWorkTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeck-SummaryCacheWriteOrderTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           xmake build -y PiDeck-CopyStreamTest

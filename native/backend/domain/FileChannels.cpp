@@ -120,10 +120,11 @@ void registerFileChannels(ChannelRegistry &registry, ChannelServices &services)
                       [&services](const QJsonArray &args, ChannelResponder responder) {
         const QString path = channels::stringArg(args, 0);
         const qint64 maxBytes = optionalMaxBytes(args, 1);
-        background::runBlocking(
-            [&services, path, maxBytes]() -> QJsonValue {
+        const auto scope = channels::pathAuthorizationScope(services);
+        background::runInteractiveRead(
+            [scope, path, maxBytes]() -> QJsonValue {
                 const QString hostPath =
-                    channels::authorizePath(services, path, QStringLiteral("read"), pathpolicy::Mode::Read);
+                    channels::authorizePath(scope, path, QStringLiteral("read"), pathpolicy::Mode::Read);
                 return fsops::readText(hostPath, maxBytes).content;
             },
             [responder](const Outcome &outcome) mutable { settle(responder, outcome); });
@@ -133,10 +134,11 @@ void registerFileChannels(ChannelRegistry &registry, ChannelServices &services)
                       [&services](const QJsonArray &args, ChannelResponder responder) {
         const QString path = channels::stringArg(args, 0);
         const qint64 maxBytes = optionalMaxBytes(args, 1);
-        background::runBlocking(
-            [&services, path, maxBytes]() -> QJsonValue {
+        const auto scope = channels::pathAuthorizationScope(services);
+        background::runInteractiveRead(
+            [scope, path, maxBytes]() -> QJsonValue {
                 const QString hostPath =
-                    channels::authorizePath(services, path, QStringLiteral("read-base64"), pathpolicy::Mode::Read);
+                    channels::authorizePath(scope, path, QStringLiteral("read-base64"), pathpolicy::Mode::Read);
                 return fsops::readBase64(hostPath, maxBytes).content;
             },
             [responder](const Outcome &outcome) mutable { settle(responder, outcome); });

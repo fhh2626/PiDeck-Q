@@ -66,12 +66,23 @@ export function buildMeasuredHeightAliases(
 	rows: readonly VirtualTimelineRow[],
 ): ReadonlyMap<TimelineRowKey, TimelineRowKey> {
 	const aliases = new Map<TimelineRowKey, TimelineRowKey>();
+	const currentKeys = new Set(rows.map((row) => row.key));
+	const requestCounts = new Map<string, number>();
+	for (const row of rows) {
+		if (row.item.kind !== "message" || row.item.message.role !== "user") continue;
+		const requestId = row.item.message.meta?.optimisticRequestId;
+		if (typeof requestId === "string" && requestId) requestCounts.set(requestId, (requestCounts.get(requestId) ?? 0) + 1);
+	}
 	for (const row of rows) {
 		if (row.item.kind !== "message" || row.item.message.role !== "user") continue;
 		const requestId = row.item.message.meta?.optimisticRequestId;
 		if (typeof requestId !== "string" || !requestId) continue;
 		const optimisticKey = `message:${requestId}`;
-		if (optimisticKey !== row.key) aliases.set(row.key, optimisticKey);
+		// A surviving row owns its own measurement. Ambiguous request reuse cannot
+		// donate that sample to several different rows in the same snapshot.
+		if (optimisticKey !== row.key && !currentKeys.has(optimisticKey) && requestCounts.get(requestId) === 1) {
+			aliases.set(row.key, optimisticKey);
+		}
 	}
 	return aliases;
 }

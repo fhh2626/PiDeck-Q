@@ -12,6 +12,8 @@ import type { DiffFileHandler } from "../ToolCallComponents";
 
 export type TimelineMessageRowProps = {
 	item: RenderMessage;
+	/** The virtual row survives an optimistic user message's authoritative ID takeover. */
+	rowKey?: string;
 	index: number;
 	totalItems: number;
 	sessionId?: string;
@@ -39,6 +41,9 @@ export type TimelineMessageRowProps = {
 
 export const TimelineMessageRow = memo(function TimelineMessageRow(props: TimelineMessageRowProps) {
 	const { item, index, totalItems } = props;
+	const rowKey = props.rowKey ?? (item.kind === "agent-run"
+		? `run:${item.id}`
+		: item.kind === "message" ? `message:${item.message.id}` : `group:${item.id}`);
 	let node: ReactNode = null;
 
 	if (item.kind === "agent-run") {
@@ -71,7 +76,7 @@ export const TimelineMessageRow = memo(function TimelineMessageRow(props: Timeli
 		if (message.role === "user") {
 			node = (
 				<UserBubble
-					key={message.id}
+					key={rowKey}
 					message={message}
 					fresh={props.fresh}
 					onPreviewImage={props.onPreviewImage}
@@ -136,12 +141,6 @@ export const TimelineMessageRow = memo(function TimelineMessageRow(props: Timeli
 
 	if (!node) return null;
 
-	const rowKey =
-		item.kind === "agent-run"
-			? `run:${item.id}`
-			: item.kind === "message"
-				? `message:${item.message.id}`
-				: `group:${item.id}`;
 	const content = props.sessionId ? (
 		<TimelinePresentationProvider sessionId={props.sessionId} rowKey={rowKey}>
 			{node}

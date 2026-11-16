@@ -307,6 +307,19 @@ target("PiDeck-CopyStreamTest")
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end
 
+-- Gated file-read scheduling and shared worker shutdown budget. Never staged.
+-- Exercised by tests/nativeBackgroundWork.test.mjs.
+target("PiDeck-BackgroundWorkTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/BackgroundWorkTest.cpp",
+              "native/backend/process/BackgroundWork.cpp")
+    add_includedirs("native/backend/process")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
 -- Production todo projection and optimistic-command acknowledgement, without a pi process.
 -- Never staged; exercised by tests/nativeTodoCommandProjection.test.mjs.
 target("PiDeck-TodoCommandTest")

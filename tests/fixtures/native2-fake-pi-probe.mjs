@@ -4,7 +4,7 @@
 //
 // Only `--version` is implemented: the suite never activates a runtime, and answering any
 // other call would hide a test that accidentally depends on the real RPC surface.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const scenarioPath = process.env.FAKE_PI_SCENARIO ?? "";
 const logPath = process.env.FAKE_PI_LOG ?? "";
@@ -19,6 +19,14 @@ const argv = process.argv.slice(2);
 if (argv.includes("--version")) {
 	const delayMs = Number(scenario.versionDelayMs ?? 0);
 	log({ kind: "probe-start", pid: process.pid, at: Date.now(), delayMs });
+	if (typeof scenario.versionGate === "string") {
+		// A test-owned gate proves overlap without depending on machine scheduling.
+		const deadline = Date.now() + 15_000;
+		while (!existsSync(scenario.versionGate) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		if (!existsSync(scenario.versionGate)) throw new Error("probe release gate timed out");
+	}
 	if (Number.isFinite(delayMs) && delayMs > 0) {
 		await new Promise((resolve) => setTimeout(resolve, delayMs));
 	}

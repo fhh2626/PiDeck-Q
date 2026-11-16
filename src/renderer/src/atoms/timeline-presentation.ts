@@ -112,18 +112,69 @@ export function getCompactionExpandedAtom(sessionId: string, rowKey: string, com
 }
 
 /** 6. 用户气泡展示状态（长文展开 / vision 展开） */
+type UserBubblePresentation = { messageExpanded: boolean; visionDetailOpen: boolean };
+
 export const userBubblePresentationFamily = atomFamily(
 	(_key: string) =>
-		atom<{ messageExpanded: boolean; visionDetailOpen: boolean }>({
+		atom<UserBubblePresentation>({
 			messageExpanded: false,
 			visionDetailOpen: false,
 		}),
 );
 
-export function getUserBubblePresentationAtom(sessionId: string, rowKey: string) {
+function getUserBubbleStateAtom(sessionId: string, rowKey: string) {
 	const key = makeKey(sessionId, rowKey, "user-bubble");
 	trackPresentationKey(sessionId, userBubblePresentationFamily, key);
 	return userBubblePresentationFamily(key);
+}
+
+// Identity links are Jotai values, so two stores displaying the same session never
+// change each other's bindings. The normal session cleanup removes this family too.
+const userBubbleIdentityAliasesFamily = atomFamily((_sessionId: string) => atom<Record<string, string>>({}));
+
+function getUserBubbleIdentityAliasesAtom(sessionId: string) {
+	trackPresentationKey(sessionId, userBubbleIdentityAliasesFamily, sessionId);
+	return userBubbleIdentityAliasesFamily(sessionId);
+}
+
+type UserBubbleIdentity = { sessionId: string; rowKey: string; previousRowKey: string };
+
+/** Commit a proven row continuation so it survives a later virtualizer remount. */
+export const rememberUserBubblePresentationIdentityAtom = atom(null, (get, set, identity: UserBubbleIdentity) => {
+	const aliasesAtom = getUserBubbleIdentityAliasesAtom(identity.sessionId);
+	const aliases = get(aliasesAtom);
+	if (Object.hasOwn(aliases, identity.rowKey)) return;
+	const previous = aliases[identity.previousRowKey] ?? identity.previousRowKey;
+	set(aliasesAtom, { ...aliases, [identity.rowKey]: previous });
+});
+
+const userBubbleBindingFamily = atomFamily((key: string) => {
+	const value: unknown = JSON.parse(key);
+	if (!Array.isArray(value) || typeof value[0] !== "string" || typeof value[1] !== "string" || typeof value[3] !== "string") {
+		throw new Error("Invalid user bubble presentation key");
+	}
+	const sessionId = value[0];
+	const rowKey = value[1];
+	const previousRowKey = value[3];
+	return atom(
+		(get) => {
+			const aliases = get(getUserBubbleIdentityAliasesAtom(sessionId));
+			return get(getUserBubbleStateAtom(sessionId, aliases[rowKey] ?? aliases[previousRowKey] ?? previousRowKey));
+		},
+		(get, set, update: UserBubblePresentation | ((previous: UserBubblePresentation) => UserBubblePresentation)) => {
+			const aliases = get(getUserBubbleIdentityAliasesAtom(sessionId));
+			const state = getUserBubbleStateAtom(sessionId, aliases[rowKey] ?? aliases[previousRowKey] ?? previousRowKey);
+			set(state, typeof update === "function" ? update(get(state)) : update);
+			set(rememberUserBubblePresentationIdentityAtom, { sessionId, rowKey, previousRowKey });
+		},
+	);
+});
+
+/** Read the same bubble during takeover, then use its store-owned canonical link. */
+export function getUserBubblePresentationAtom(sessionId: string, rowKey: string, previousRowKey = rowKey) {
+	const key = makeKey(sessionId, rowKey, "user-bubble-binding", previousRowKey);
+	trackPresentationKey(sessionId, userBubbleBindingFamily, key);
+	return userBubbleBindingFamily(key);
 }
 
 /** 7. 消息草稿编辑状态（行内编辑器，可序列化判别联合） */

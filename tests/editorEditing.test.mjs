@@ -19,15 +19,17 @@ test("FileDiffViewer: view mode is editable, diff mode is read-only render", () 
 });
 
 test("FileDiffViewer: debounced auto-save with Ctrl+S immediate save", () => {
-  const viewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8");
+  const viewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8")
+    + readFileSync("src/renderer/src/hooks/useFileEditorBuffer.ts", "utf8")
+    + readFileSync("src/renderer/src/atoms/file-editor-saves.ts", "utf8");
   // 自动保存：编辑停止 500ms 后落盘（saveContent 存在时）；内容未变跳过
   assert.match(viewer, /scheduleAutoSave/);
   assert.match(viewer, /setTimeout\(\(\) => \{\n\s*saveTimerRef\.current = null;/);
   assert.match(viewer, /500\);/);
-  assert.match(viewer, /lastSavedRef\.current/);
-  assert.match(viewer, /if \(latest === lastSavedRef\.current\) return/);
+  assert.match(viewer, /const savedDocument = lastSavedRef\.current/);
+  assert.match(viewer, /if \(input\.content !== previousContent\) await input\.saveContent/);
   // 加载完成即建立「已落盘」基准，避免打开后无改动就写盘
-  assert.match(viewer, /lastSavedRef\.current = result/);
+  assert.match(viewer, /lastSavedRef\.current = \{\s*content: result/);
   // Ctrl+S 立即保存（取消挂起 timer），卸载清理 timer（生命周期配对）
   assert.match(viewer, /void saveNow\(\);/);
   assert.match(viewer, /clearTimeout\(saveTimerRef\.current\)/);

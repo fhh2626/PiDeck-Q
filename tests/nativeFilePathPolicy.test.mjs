@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { childPathEnvironment, environmentPath, qtBinDirectory } from "./helpers/native2BackendHarness.mjs";
 import { joinPathParts } from "./helpers/native2FakeProcess.mjs";
@@ -79,4 +80,56 @@ test("runtime file projection chooses the host path from its own session environ
   const result = native({ projectionPaths: inputs.map(([path, environment, distro, windowsHost]) =>
     ({ path, environment, distro, windowsHost })) });
   assert.deepEqual(result.projectionPaths, inputs.map((entry) => entry[4]));
+});
+
+for (const mode of ["read", "write", "link"]) {
+  test(`native ${mode} authorization skips unrelated slow roots and keeps canonical aliases`, { skip }, (t) => {
+    const base = mkdtempSync(join(tmpdir(), "pideck-native-root-latency-"));
+    t.after(() => rmSync(base, { recursive: true, force: true }));
+    const root = join(base, "project");
+    const unrelated = join(base, "unrelated-root");
+    const alias = join(base, "project-alias");
+    mkdirSync(root);
+    mkdirSync(unrelated);
+    symlinkSync(root, alias, "junction");
+    const target = join(root, "document.txt");
+    writeFileSync(target, "document");
+    const [local, canonicalAlias] = native({ authorizations: [
+      { target, roots: [unrelated, root], mode, slowRoot: unrelated.replaceAll("\\", "/"), rootDelayMs: 1500 },
+      { target, roots: [alias], mode },
+    ] }).authorizations;
+    t.diagnostic(`authorization completed in ${local.elapsedMs} ms with a controlled 1500 ms unrelated root`);
+    assert.equal(local.ok, true, JSON.stringify(local));
+    assert.equal(local.rootProbes.some((path) => path === unrelated.replaceAll("\\", "/")), false);
+    assert.equal(canonicalAlias.ok, true, JSON.stringify(canonicalAlias));
+    const expected = mode === "link" ? resolve(target) : realpathSync(target);
+    assert.equal(local.path.replaceAll("\\", "/"), expected.replaceAll("\\", "/"));
+    assert.equal(canonicalAlias.path.replaceAll("\\", "/"), expected.replaceAll("\\", "/"));
+  });
+}
+
+test("native lazy root authorization preserves redirected-parent and missing-path boundaries", { skip }, (t) => {
+  const base = mkdtempSync(join(tmpdir(), "pideck-native-root-boundary-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, "project");
+  const outside = join(base, "project-other");
+  const missingRoot = join(base, "missing-root");
+  mkdirSync(root);
+  mkdirSync(outside);
+  writeFileSync(join(outside, "secret.txt"), "outside");
+  const linked = join(root, "linked");
+  symlinkSync(outside, linked, "junction");
+  const fixtures = [
+    { target: join(linked, "secret.txt"), roots: [root], mode: "read", allowed: false },
+    { target: join(linked, "new.txt"), roots: [root], mode: "write", allowed: false },
+    { target: join(linked, "secret.txt"), roots: [root], mode: "link", allowed: false },
+    { target: linked, roots: [root], mode: "link", allowed: true },
+    { target: join(root, "new-directory", "new.txt"), roots: [root], mode: "write", allowed: true },
+    { target: join(missingRoot, "new.txt"), roots: [missingRoot], mode: "write", allowed: false },
+    { target: join(outside, "secret.txt"), roots: [root], mode: "read", allowed: false },
+  ];
+  const result = native({ authorizations: fixtures }).authorizations;
+  assert.deepEqual(result.map((entry) => entry.ok), fixtures.map((entry) => entry.allowed));
+  assert.equal(result[3].path.replaceAll("\\", "/"), linked.replaceAll("\\", "/"));
+  assert.equal(result[4].path.replaceAll("\\", "/"), fixtures[4].target.replaceAll("\\", "/"));
 });

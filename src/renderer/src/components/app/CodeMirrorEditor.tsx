@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor } from "@codemirror/view";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 import { foldGutter, foldKeymap, indentOnInput, bracketMatching, indentUnit } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
@@ -15,6 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../ui-shadcn/dropdown-menu";
+
+// Prop synchronization must not become a user edit or an undo entry.
+const externalValueChange = Annotation.define<boolean>();
 
 export type CodeMirrorEditorProps = {
 	value: string;
@@ -49,14 +52,16 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const viewRef = useRef<EditorView | null>(null);
 	const readOnlyCompartment = useRef(new Compartment());
+	const languageCompartment = useRef(new Compartment());
 	const readOnlyRef = useRef(readOnly);
 	readOnlyRef.current = readOnly;
 	const onChangeRef = useRef(onChange);
 	onChangeRef.current = onChange;
 	const onAttachSelectionRef = useRef(onAttachSelection);
 	onAttachSelectionRef.current = onAttachSelection;
-	// 外部 value 快照：仅用于跳过「onChange 已同步过」的重复 dispatch
-	const lastValueRef = useRef(value);
+	// The mount effect reads the latest committed input, independently of language loading.
+	const valueRef = useRef(value);
+	valueRef.current = value;
 	const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null);
 
 	// 右键：存在文本选区时接管默认菜单，弹出「引用选中内容」；无选区不拦截（保留浏览器菜单）。
@@ -73,94 +78,79 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 
 	useEffect(() => {
 		if (!hostRef.current) return;
-
-		let cancelled = false;
-		let createdView: EditorView | null = null;
-
-		// 语言包按需 import：等待异步 loader 返回后再创建 EditorView。
-		// 快速切 tab 时 cancelled 防止旧语言 import 完成后又创建旧编辑器（旧视图被销毁）。
-		void loadEditorLanguage(language)
-			.catch(() => null)
-			.then(async (resolvedLanguage) => {
-				if (cancelled || !hostRef.current) return;
-
-				// JSON 语言包（LanguageSupport）的 language 字段为 "json"，用于启用 lint。
-				// 单独动态 import jsonParseLinter，避免 lang-json 被静态拉回初始 bundle。
-				const isJson =
-					resolvedLanguage !== null && "language" in resolvedLanguage &&
-					resolvedLanguage.language.name === "json";
-				let jsonLinter: Extension | null = null;
-				if (isJson) {
-					const { jsonParseLinter } = await import("@codemirror/lang-json");
-					if (cancelled) return;
-					jsonLinter = linter(jsonParseLinter());
-				}
-
-				const view = new EditorView({
-					parent: hostRef.current,
-					state: EditorState.create({
-						doc: value,
-						extensions: [
-							...baseEditorExtensions({ wordWrap: true, language: resolvedLanguage }),
-							readOnlyCompartment.current.of(EditorState.readOnly.of(readOnlyRef.current)),
-							// 与 Monaco 默认一致的编辑体验：行号/折叠/自动换行/括号匹配/补全/查找
-							lineNumbers(),
-							foldGutter(),
-							history(),
-							drawSelection(),
-							dropCursor(),
-							indentOnInput(),
-							bracketMatching(),
-							closeBrackets(),
-							autocompletion(),
-							rectangularSelection(),
-							crosshairCursor(),
-							highlightActiveLine(),
-							highlightActiveLineGutter(),
-							highlightSelectionMatches(),
-							indentUnit.of("  "),
-							// JSON 语法错误即时提示（配置文件编辑高价值；YAML 暂无官方 linter）
-							...(jsonLinter ? [lintGutter(), jsonLinter] : []),
-							keymap.of([
-								...closeBracketsKeymap,
-								...defaultKeymap,
-								...searchKeymap,
-								...historyKeymap,
-								...foldKeymap,
-								...completionKeymap,
-								indentWithTab,
-								// Ctrl+/ 注释/取消注释（语言包支持时）
-								{ key: "Mod-/", run: toggleComment },
-							]),
-							EditorView.updateListener.of((update) => {
-								if (update.docChanged) {
-									const next = update.state.doc.toString();
-									lastValueRef.current = next;
-									onChangeRef.current?.(next);
-								}
-							}),
-						],
+		// Disk content is usable immediately. Optional parsers and JSON diagnostics
+		// configure this view later, without discarding edits, selection or undo.
+		const view = new EditorView({
+			parent: hostRef.current,
+			state: EditorState.create({
+				doc: valueRef.current,
+				extensions: [
+					...baseEditorExtensions({ wordWrap: true }),
+					languageCompartment.current.of([]),
+					readOnlyCompartment.current.of(EditorState.readOnly.of(readOnlyRef.current)),
+					lineNumbers(),
+					foldGutter(),
+					history(),
+					drawSelection(),
+					dropCursor(),
+					indentOnInput(),
+					bracketMatching(),
+					closeBrackets(),
+					autocompletion(),
+					rectangularSelection(),
+					crosshairCursor(),
+					highlightActiveLine(),
+					highlightActiveLineGutter(),
+					highlightSelectionMatches(),
+					indentUnit.of("  "),
+					keymap.of([
+						...closeBracketsKeymap,
+						...defaultKeymap,
+						...searchKeymap,
+						...historyKeymap,
+						...foldKeymap,
+						...completionKeymap,
+						indentWithTab,
+						{ key: "Mod-/", run: toggleComment },
+					]),
+					EditorView.updateListener.of((update) => {
+						if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(externalValueChange))) {
+							onChangeRef.current?.(update.state.doc.toString());
+						}
 					}),
-				});
-
-				createdView = view;
-				viewRef.current = view;
-				lastValueRef.current = value;
-			});
-
+				],
+			}),
+		});
+		viewRef.current = view;
 		return () => {
-			cancelled = true;
-
-			if (createdView) {
-				createdView.destroy();
-			}
-
-			if (viewRef.current === createdView) {
-				viewRef.current = null;
-			}
+			view.destroy();
+			if (viewRef.current === view) viewRef.current = null;
 		};
-	// Only language changes recreate the editor. Saving temporarily locks input;
-	// destroying the view for that lock would discard the user's caret and undo history.
+	}, []);
+
+	useEffect(() => {
+		const view = viewRef.current;
+		if (!view) return;
+		let cancelled = false;
+		// Clear the previous language and its diagnostics together. A slow earlier
+		// import must never reconfigure a replacement document or a destroyed view.
+		view.dispatch({ effects: languageCompartment.current.reconfigure([]) });
+		void loadEditorLanguage(language).then(async (resolvedLanguage) => {
+			if (cancelled || viewRef.current !== view) return;
+			view.dispatch({ effects: languageCompartment.current.reconfigure(resolvedLanguage ?? []) });
+			const isJson = resolvedLanguage !== null && "language" in resolvedLanguage &&
+				resolvedLanguage.language.name === "json";
+			if (isJson) {
+				const { jsonParseLinter } = await import("@codemirror/lang-json");
+				if (cancelled || viewRef.current !== view) return;
+				const jsonLinter: Extension = linter(jsonParseLinter());
+				view.dispatch({ effects: languageCompartment.current.reconfigure([resolvedLanguage, lintGutter(), jsonLinter]) });
+			}
+		}).catch(() => {
+			// A failed optional language/diagnostic import keeps the readable document.
+			// loadEditorLanguage evicts failures so a later open can retry.
+		});
+		return () => { cancelled = true; };
 	}, [language]);
 
 	useEffect(() => {
@@ -171,7 +161,10 @@ export const CodeMirrorEditor = memo(function CodeMirrorEditor({
 	useEffect(() => {
 		const view = viewRef.current;
 		if (!view || view.state.doc.toString() === value) return;
-		view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+		view.dispatch({
+			changes: { from: 0, to: view.state.doc.length, insert: value },
+			annotations: [externalValueChange.of(true), Transaction.addToHistory.of(false)],
+		});
 	}, [value]);
 
 	return <div ref={hostRef} style={{ height, minHeight: 60 }} className="codemirror-host" onContextMenu={handleContextMenu}>

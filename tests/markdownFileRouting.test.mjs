@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
+import { atom, createStore } from "jotai";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { createHookHarness, flush, nodes } from "./helpers/imagePreviewHarness.mjs";
 
@@ -58,12 +59,15 @@ for (const userAgent of ["X11; Linux x86_64", "Macintosh; Intel Mac OS X"]) {
 
 test("markdown document preview supplies working file and external callbacks and its own directory", async () => {
   const harness = createHookHarness();
+  const store = createStore();
   const marker = () => null;
   const opened = [];
   const external = [];
   const { FileDiffViewer } = loadTsCommonJs(resolve("src/renderer/src/components/app/FileDiffViewer.tsx"), {
     stubs: {
       react: harness.react,
+      // This hook-only fixture supplies the same store boundary as a React Provider.
+      jotai: { atom, useStore: () => store },
       "../../i18n": i18n,
       "../../utils/notice": notices,
       "../../desktopApi": { desktopApi: { files: { open: async () => undefined }, app: { openExternal: async () => undefined } } },

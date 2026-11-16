@@ -12,73 +12,22 @@ import {
   sessionMessagesCacheAtom,
   sessionSendStateByIdAtom,
 } from "../../src/renderer/src/atoms";
+import { getUserBubblePresentationAtom } from "../../src/renderer/src/atoms/timeline-presentation";
+import { generate2000Items, generateIntegratedMessages } from "./desktopVirtualTimeline.data";
 import type { ChatMessage, SessionRecord } from "../../src/shared/types";
-
-function generateIntegratedMessages(count = 100, codeLines = 1): ChatMessage[] {
-  const msgs: ChatMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    msgs.push({
-      id: `u-${i}`,
-      agentId: "agent-1",
-      role: "user",
-      text: `用户问题 #${i}: 真实集成装配长会话压力测试，验证 SessionMessageTimeline 与 MessageScroller 的协同表现。`,
-      timestamp: 1700000000000 + i * 2000,
-    });
-    msgs.push({
-      id: `a-${i}`,
-      agentId: "agent-1",
-      role: "assistant",
-      text: `助手回答 #${i}: 真实时间线装配渲染。每轮回答包含 Markdown 与代码块。\n\n\`\`\`ts\n${Array.from({ length: codeLines }, (_, line) => `const turn_${i}_${line} = ${i};`).join("\n")}\n\`\`\``,
-      timestamp: 1700000000000 + i * 2000 + 1000,
-    });
-  }
-  return msgs;
-}
-
-// 构建 2000 行包含多种结构的消息 fixture
-function generate2000Items(): TimelineRowItem[] {
-  const items: TimelineRowItem[] = [];
-  for (let i = 0; i < 2000; i++) {
-    if (i % 2 === 0) {
-      items.push({
-        kind: "message",
-        message: {
-          id: `msg-user-${i}`,
-          agentId: "agent-1",
-          role: "user",
-          text: `用户问题 #${i}: 这是一个虚拟列表滚动的压力测试，用于检验长会话流畅度。`,
-          timestamp: 1700000000000 + i * 1000,
-        },
-      });
-    } else {
-      items.push({
-        kind: "agent-run",
-        id: `run-${i}`,
-        startedAt: 1700000000000 + i * 1000,
-        endedAt: 1700000000000 + i * 1000 + 500,
-        items: [
-          {
-            kind: "message",
-            message: {
-              id: `msg-asst-${i}`,
-              agentId: "agent-1",
-              role: "assistant",
-              text: `助手回答 #${i}: 回答内容具有不同的行高与结构。第 ${i} 行包含了详细的解释与代码片段。\n\n\`\`\`ts\nconst val_${i} = ${i};\n\`\`\``,
-              timestamp: 1700000000000 + i * 1000 + 200,
-            },
-          },
-        ],
-      });
-    }
-  }
-  return items;
-}
 
 function VirtualTimelineTestFixture() {
   const [useIntegrated, setUseIntegrated] = useState(false);
-  // Long-code mode reproduces reading settled history while rows remount.
+  const longRows = new URLSearchParams(location.search).has("longRows");
+  const identityTakeover = new URLSearchParams(location.search).has("identityTakeover");
+  const [timelineMount, setTimelineMount] = useState(0);
+  const [narrow, setNarrow] = useState(false);
+  // Stable long rows exercise remounting without any incoming model output.
   const [integratedMessages, setIntegratedMessages] = useState<ChatMessage[]>(() =>
-    generateIntegratedMessages(100, new URLSearchParams(location.search).has("longCode") ? 40 : 1));
+    generateIntegratedMessages(100, new URLSearchParams(location.search).has("longCode") ? 40 : 1, longRows)
+      .map((message) => identityTakeover && message.id === "u-70"
+        ? { ...message, id: "request-user-70", meta: { optimistic: true, optimisticRequestId: "request-user-70" } }
+        : message));
   const [items, setItems] = useState<TimelineRowItem[]>(() => generate2000Items());
   const [isFollowing] = useState(false);
   const integratedTimelineRef = useRef<HTMLElement | null>(null);
@@ -138,7 +87,8 @@ function VirtualTimelineTestFixture() {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const integratedStore = useMemo(() => {
+  // One store survives timeline remounts and all message updates.
+  const [integratedStore] = useState(() => {
     const store = createStore();
     const sessionId = "fixture-integrated-100";
     store.set(sessionRecordsAtom, {
@@ -180,8 +130,21 @@ function VirtualTimelineTestFixture() {
         updatedAt: Date.now(),
       },
     });
+    if (longRows) {
+      for (const message of integratedMessages) {
+        if (message.role !== "user" || message.id === "request-user-70") continue;
+        store.set(getUserBubblePresentationAtom(sessionId, `message:${message.id}`), { messageExpanded: true, visionDetailOpen: false });
+      }
+    }
     return store;
-  }, [integratedMessages]);
+  });
+  useEffect(() => {
+    const sessionId = "fixture-integrated-100";
+    integratedStore.set(sessionMessagesCacheAtom, (cache) => ({
+      ...cache,
+      [sessionId]: { ...cache[sessionId], messages: integratedMessages, revision: (cache[sessionId]?.revision ?? 0) + 1, source: "disk", updatedAt: Date.now() },
+    }));
+  }, [integratedMessages, integratedStore]);
 
   const virtualTimeline = useVirtualTimeline({
     items,
@@ -291,6 +254,33 @@ function VirtualTimelineTestFixture() {
             >
               追加真实新轮次
             </button>
+            <button id="btn-integrated-reader" onClick={() => {
+              const target = identityTakeover
+                ? integratedMessages.some((message) => message.id === "accepted-user-70") ? "accepted-user-70" : "request-user-70"
+                : "a-70";
+              integratedAdapterRef.current?.jumpToMessage(target);
+            }}>
+              定位长历史消息
+            </button>
+            <button id="btn-integrated-user-reader" onClick={() => integratedAdapterRef.current?.jumpToMessage("u-70")}>
+              定位长用户消息
+            </button>
+            <button id="btn-integrated-narrow" onClick={() => setNarrow((value) => !value)}>
+              切换阅读宽度
+            </button>
+            <button id="btn-integrated-remount" onClick={() => setTimelineMount((value) => value + 1)}>
+              重挂同一会话
+            </button>
+            {identityTakeover && <>
+              <button id="btn-integrated-accept" onClick={() => setIntegratedMessages((messages) => messages.map((message) => message.id === "request-user-70"
+                ? { ...message, id: "accepted-user-70", meta: { optimisticRequestId: "request-user-70" } } : message))}>
+                接管正式消息 ID
+              </button>
+              <button id="btn-integrated-drop-request" onClick={() => setIntegratedMessages((messages) => messages.map((message) => message.id === "accepted-user-70"
+                ? { ...message, meta: undefined } : message))}>
+                更新正式消息
+              </button>
+            </>}
             <span id="integrated-total-turns">集成总轮数: {integratedMessages.length / 2}</span>
           </>
         )}
@@ -299,17 +289,19 @@ function VirtualTimelineTestFixture() {
         <Provider store={integratedStore}>
           <div
             id="integrated-viewport-container"
+            data-timeline-mount={timelineMount}
             style={{
               flex: 1,
               position: "relative",
               height: "calc(100% - 60px)",
-              width: "100%",
+              width: narrow ? "68%" : "100%",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",
             }}
           >
             <SessionMessageTimeline
+              key={timelineMount}
               sessionId="fixture-integrated-100"
               controller={integratedController}
               hasProject={true}

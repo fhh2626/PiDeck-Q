@@ -166,6 +166,17 @@ struct ChannelServices {
 
 namespace channels {
 
+/** Values needed for file authorization, detached from mutable domain services. */
+struct PathAuthorizationScope {
+    QString userDataDir;
+    QString promptsDir;
+    QString skillsDir;
+    QString agentDir;
+};
+
+/** Capture on the owner thread; catalog and canonical-path I/O stays on the worker. */
+PathAuthorizationScope pathAuthorizationScope(const ChannelServices &services);
+
 /** Bounds-safe argument access; missing arguments yield a null value. */
 QJsonValue argAt(const QJsonArray &args, int index);
 QString stringArg(const QJsonArray &args, int index);
@@ -188,9 +199,12 @@ QString resolveProjectPath(const ChannelServices &services, const QString &proje
 
 /** The desktop file authorization scope (projects + prompts + skills + agent + userData). */
 QStringList authorizedRoots(const ChannelServices &services);
+QStringList authorizedRoots(const PathAuthorizationScope &scope);
 
 /** Authorize one renderer-supplied path, throwing the oracle's error on rejection. */
 QString authorizePath(const ChannelServices &services, const QString &path, const QString &operation,
+                      pathpolicy::Mode mode);
+QString authorizePath(const PathAuthorizationScope &scope, const QString &path, const QString &operation,
                       pathpolicy::Mode mode);
 
 /** `maxEditorFileSizeMB` in bytes; the cap every editor-content read honours. */

@@ -3,6 +3,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 /**
  * Desktop path authorization.
  *
@@ -47,8 +49,12 @@ bool isPathInsideRoot(const QString &target, const QString &root);
 /**
  * Filesystem-aware authorization. `roots` may contain paths that do not exist; those
  * entries are ignored (the Node oracle behaves the same way).
+ * `resolveRoot` allows a controlled root probe in filesystem regression tests; the
+ * production default always resolves roots with the operating system.
  */
-Result assertAuthorized(const QString &target, const QStringList &roots, const QString &operation, Mode mode);
+using RootResolver = std::function<QString(const QString &)>;
+Result assertAuthorized(const QString &target, const QStringList &roots, const QString &operation, Mode mode,
+                        const RootResolver &resolveRoot = {});
 
 /**
  * The desktop authorization scope, matching registerBackendRpc.getAuthorizedRoots():

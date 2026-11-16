@@ -357,6 +357,11 @@ SettingsCatalogRead readSettingsCatalog(const QString &filePath, const QString &
     return readInternal(filePath, agentDir, true);
 }
 
+SettingsCatalogRead readSettingsCatalogSnapshot(const QString &filePath, const QString &agentDir)
+{
+    return readInternal(filePath, agentDir, false);
+}
+
 SettingsCatalogRead updateSettingsCatalog(const QString &filePath, const QJsonObject &patch,
                                           const QString &agentDir)
 {

@@ -62,22 +62,37 @@ QString resolveProjectPath(const ChannelServices &services, const QString &proje
 
 QStringList authorizedRoots(const ChannelServices &services)
 {
-    QStringList roots = projectresolver::allPaths(projectsFile(services));
-    roots.append(pathpolicy::authorizedRoots(services.userDataDir, services.promptsDir, services.skillsDir,
-                                             services.agentDir));
+    return authorizedRoots(pathAuthorizationScope(services));
+}
+
+PathAuthorizationScope pathAuthorizationScope(const ChannelServices &services)
+{
+    return {services.userDataDir, services.promptsDir, services.skillsDir, services.agentDir};
+}
+
+QStringList authorizedRoots(const PathAuthorizationScope &scope)
+{
+    QStringList roots = projectresolver::allPaths(QDir(scope.userDataDir).filePath(QStringLiteral("projects.json")));
+    roots.append(pathpolicy::authorizedRoots(scope.userDataDir, scope.promptsDir, scope.skillsDir, scope.agentDir));
     return roots;
 }
 
 QString authorizePath(const ChannelServices &services, const QString &path, const QString &operation,
                       pathpolicy::Mode mode)
 {
+    return authorizePath(pathAuthorizationScope(services), path, operation, mode);
+}
+
+QString authorizePath(const PathAuthorizationScope &scope, const QString &path, const QString &operation,
+                      pathpolicy::Mode mode)
+{
     QString target = path;
-    QStringList roots = authorizedRoots(services);
+    QStringList roots = authorizedRoots(scope);
 #ifdef Q_OS_WIN
     // Convert the target and its roots using one settings snapshot. Applying
     // this after authorization would reject valid Linux paths from a WSL agent.
-    const QJsonObject settings = readSettingsCatalog(
-        QDir(services.userDataDir).filePath(QStringLiteral("settings.json"))).settings;
+    const QJsonObject settings = readSettingsCatalogSnapshot(
+        QDir(scope.userDataDir).filePath(QStringLiteral("settings.json")), scope.agentDir).settings;
     const bool enabled = settings.value(QStringLiteral("wslEnabled")).toBool();
     const QString distro = settings.value(QStringLiteral("wslDistro")).toString();
     target = wsl::toWindowsFilePath(target, enabled, distro);

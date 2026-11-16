@@ -24,6 +24,9 @@ struct SettingsCatalogRead {
  */
 SettingsCatalogRead readSettingsCatalog(const QString &filePath, const QString &agentDir = QString());
 
+/** Read the same normalized values without persisting migrations from a read-only worker. */
+SettingsCatalogRead readSettingsCatalogSnapshot(const QString &filePath, const QString &agentDir = QString());
+
 /**
  * Apply a patch and persist it.
  *

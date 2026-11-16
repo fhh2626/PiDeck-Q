@@ -10,6 +10,7 @@ const fixtures = [
 	["native2CopyStreamWrite.test.mjs", "PiDeck-CopyStreamTest"],
 	["nativeDesktopProxyPolicy.test.mjs", "PiDeck-DesktopProxyPolicyTest", "PIDECK_DESKTOP_PROXY_TEST_EXECUTABLE"],
 	["nativeFilePathPolicy.test.mjs", "PiDeck-FilePathPolicyTest", "PIDECK_FILE_PATH_TEST_EXECUTABLE"],
+	["nativeBackgroundWork.test.mjs", "PiDeck-BackgroundWorkTest", "PIDECK_BACKGROUND_WORK_TEST_EXECUTABLE"],
 	["nativeTodoCommandProjection.test.mjs", "PiDeck-TodoCommandTest", "PIDECK_TODO_COMMAND_TEST_EXECUTABLE"],
 	["native2TranscriptHistory.test.mjs", "PiDeck-TranscriptHistoryTest", "PIDECK_TRANSCRIPT_TEST_EXECUTABLE"],
 	["native2SummaryCacheWriteOrder.test.mjs", "PiDeck-SummaryCacheWriteOrderTest", "PIDECK_SUMMARY_CACHE_TEST_EXECUTABLE"],
@@ -29,6 +30,7 @@ function inspectFixture(file, { platform, arch = "x64", artifacts, env = {} }) {
 	const stubs = {
 		"node:assert/strict": assert,
 		"node:path": path,
+		"node:os": { tmpdir: () => path.resolve("fixture-tmp") },
 		"node:test": register,
 		"node:fs": {
 			existsSync: (name) => available.has(path.resolve(name)),

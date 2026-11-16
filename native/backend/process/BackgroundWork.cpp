@@ -1,6 +1,7 @@
 #include "BackgroundWork.h"
 
 #include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QMetaObject>
 #include <QMutex>
 #include <QMutexLocker>
@@ -17,8 +18,10 @@
 namespace background {
 namespace {
 
+enum class Lane { Domain, InteractiveRead };
+
 /**
- * Single-owner dispatch: one thread, one FIFO queue, no concurrency.
+ * Single-owner dispatch within one lane: one thread and one FIFO queue.
  *
  * The object is intentionally leaked (heap singleton, never destroyed). A static
  * destructor would run after QCoreApplication is gone and could destroy the mutex while
@@ -27,9 +30,13 @@ namespace {
  */
 class SerialExecutor {
 public:
-    static SerialExecutor &instance()
+    static SerialExecutor &instance(Lane lane)
     {
-        static SerialExecutor *executor = new SerialExecutor();
+        if (lane == Lane::InteractiveRead) {
+            static SerialExecutor *reader = new SerialExecutor(QStringLiteral("pideck-file-read"));
+            return *reader;
+        }
+        static SerialExecutor *executor = new SerialExecutor(QStringLiteral("pideck-domain"));
         return *executor;
     }
 
@@ -41,7 +48,14 @@ public:
         m_wake.wakeOne();
     }
 
-    bool drainAndStop(int timeoutMs)
+    void requestStop()
+    {
+        QMutexLocker lock(&m_mutex);
+        m_stopping = true;
+        m_wake.wakeOne();
+    }
+
+    bool joinUntil(QDeadlineTimer deadline)
     {
         {
             QMutexLocker lock(&m_mutex);
@@ -50,11 +64,9 @@ public:
             // here would only delay the exit it promised.
             if (m_joined) return !m_abandoned.load(std::memory_order_acquire);
             if (m_abandoned.load(std::memory_order_acquire)) return false;
-            m_stopping = true;
-            m_wake.wakeOne();
         }
         if (m_thread && m_thread->isRunning()) {
-            if (!m_thread->wait(static_cast<unsigned long>(qMax(1, timeoutMs)))) {
+            if (!m_thread->wait(deadline)) {
                 // The body in flight is still running against application state. Mark the
                 // executor abandoned so nothing is posted into a torn-down QCoreApplication,
                 // and let the caller exit without destructors.
@@ -86,9 +98,8 @@ public:
      */
     void quarantine(std::shared_ptr<void> job)
     {
-        static std::vector<std::shared_ptr<void>> *held = new std::vector<std::shared_ptr<void>>();
         QMutexLocker lock(&m_mutex);
-        held->push_back(std::move(job));
+        m_quarantined.push_back(std::move(job));
     }
 
     /** Worker-thread loop: run queued jobs in submission order until stopped. */
@@ -129,10 +140,10 @@ private:
         SerialExecutor *m_owner;
     };
 
-    SerialExecutor()
+    explicit SerialExecutor(const QString &name)
     {
         auto *worker = new Worker(this);
-        worker->setObjectName(QStringLiteral("pideck-domain"));
+        worker->setObjectName(name);
         m_thread = worker;
         worker->start();
     }
@@ -140,6 +151,7 @@ private:
     mutable QMutex m_mutex;
     QWaitCondition m_wake;
     std::deque<std::function<void()>> m_queue;
+    std::vector<std::shared_ptr<void>> m_quarantined;
     bool m_stopping = false;
     /** Set once drainAndStop joined the worker (or found it never started). */
     bool m_joined = false;
@@ -153,14 +165,13 @@ struct Job {
     Outcome outcome;
 };
 
-} // namespace
-
-void runBlocking(std::function<QJsonValue()> task, std::function<void(Outcome)> continuation)
+void runOnExecutor(SerialExecutor &executor, std::function<QJsonValue()> task,
+                   std::function<void(Outcome)> continuation)
 {
     auto job = std::make_shared<Job>();
     job->task = std::move(task);
     job->continuation = std::move(continuation);
-    SerialExecutor::instance().submit([job]() {
+    executor.submit([job, &executor]() {
         try {
             job->outcome.value = job->task();
             job->outcome.ok = true;
@@ -172,7 +183,6 @@ void runBlocking(std::function<QJsonValue()> task, std::function<void(Outcome)> 
             job->outcome.error = QStringLiteral("Background work failed");
         }
         job->task = nullptr;
-        SerialExecutor &executor = SerialExecutor::instance();
         if (executor.abandoned()) {
             // The drain deadline is gone: the process is exiting and the services this
             // continuation captures may already be destroyed. Never run it, and do not destroy
@@ -193,22 +203,45 @@ void runBlocking(std::function<QJsonValue()> task, std::function<void(Outcome)> 
         // application instance, which always lives in the main thread.
         QMetaObject::invokeMethod(
             application,
-            [job]() {
-                if (job->continuation) job->continuation(job->outcome);
+            [job, &executor]() {
+                if (!executor.stopping() && job->continuation) job->continuation(job->outcome);
                 job->continuation = nullptr;
             },
             Qt::QueuedConnection);
     });
 }
 
+} // namespace
+
+void runBlocking(std::function<QJsonValue()> task, std::function<void(Outcome)> continuation)
+{
+    runOnExecutor(SerialExecutor::instance(Lane::Domain), std::move(task), std::move(continuation));
+}
+
 bool drainAndStop(int timeoutMs)
 {
-    return SerialExecutor::instance().drainAndStop(timeoutMs);
+    SerialExecutor &domain = SerialExecutor::instance(Lane::Domain);
+    SerialExecutor &reads = SerialExecutor::instance(Lane::InteractiveRead);
+    const QDeadlineTimer deadline(qMax(0, timeoutMs));
+    // Stop both queues before joining either one. Otherwise a finishing read could
+    // keep running queued work while shutdown waits for an unrelated domain task.
+    domain.requestStop();
+    reads.requestStop();
+    if (domain.abandoned() || reads.abandoned()) return false;
+    const bool domainStopped = domain.joinUntil(deadline);
+    const bool readsStopped = reads.joinUntil(deadline);
+    return domainStopped && readsStopped;
+}
+
+void runInteractiveRead(std::function<QJsonValue()> task, std::function<void(Outcome)> continuation)
+{
+    runOnExecutor(SerialExecutor::instance(Lane::InteractiveRead), std::move(task), std::move(continuation));
 }
 
 bool abandoned()
 {
-    return SerialExecutor::instance().abandoned();
+    return SerialExecutor::instance(Lane::Domain).abandoned()
+        || SerialExecutor::instance(Lane::InteractiveRead).abandoned();
 }
 
 } // namespace background

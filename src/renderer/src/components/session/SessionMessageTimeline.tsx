@@ -46,6 +46,7 @@ import { MessageScroller } from "../agents/message-scroller";
 import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
 import { useVirtualTimeline } from "../../hooks/useVirtualTimeline";
+import { useTimelinePresentationIdentities } from "../../hooks/useTimelinePresentationIdentities";
 import { useTimelineInteractionPins } from "../../hooks/useTimelineInteractionPins";
 import type { TimelineViewportAdapter } from "./timeline/TimelineViewportAdapter";
 import { TimelineMessageRow } from "./timeline/TimelineMessageRow";
@@ -400,6 +401,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     adapterRef,
     pinnedKeys,
   });
+  useTimelinePresentationIdentities(sessionId, virtualTimeline.rowModel);
 
   // 把已实例化的 adapter 在 layout 阶段稳定注册给 controller
   const registerAdapter = controller.registerViewportAdapter;
@@ -708,6 +710,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                 return (
                   <TimelineMessageRow
                     key={virtualRow.key}
+                    rowKey={virtualRow.key}
                     item={item}
                     index={virtualRow.sourceIndex}
                     totalItems={reconciledRuns.length}

@@ -161,7 +161,8 @@ QStringList authorizedRoots(const QString &userDataDir, const QString &promptsDi
     return roots;
 }
 
-Result assertAuthorized(const QString &target, const QStringList &roots, const QString &operation, Mode mode)
+Result assertAuthorized(const QString &target, const QStringList &roots, const QString &operation, Mode mode,
+                        const RootResolver &resolveRoot)
 {
     Result result;
     const QString normalizedTarget = resolvePolicyPath(target);
@@ -169,22 +170,31 @@ Result assertAuthorized(const QString &target, const QStringList &roots, const Q
         result.error = QStringLiteral("File path is not authorized for %1.").arg(operation);
         return result;
     }
-    QStringList resolvedRoots;
+    QStringList normalizedRoots;
     for (const QString &root : roots) {
         if (root.isEmpty()) continue;
         const QString normalizedRoot = resolvePolicyPath(root);
         if (normalizedRoot.isEmpty()) continue;
-        const QString realRoot = canonicalIfPresent(normalizedRoot);
-        if (!realRoot.isEmpty()) resolvedRoots.append(realRoot);
+        normalizedRoots.append(normalizedRoot);
     }
-    if (resolvedRoots.isEmpty()) {
+    if (normalizedRoots.isEmpty()) {
         result.error = QStringLiteral("File path is not authorized for %1.").arg(operation);
         return result;
     }
 
-    const auto insideAnyRoot = [&resolvedRoots](const QString &candidate) {
-        for (const QString &root : resolvedRoots) {
-            if (isPathInsideRoot(candidate, root)) return true;
+    const auto insideAnyRoot = [&normalizedRoots, &normalizedTarget, &resolveRoot](const QString &candidate) {
+        QStringList preferred;
+        QStringList remaining;
+        for (const QString &root : normalizedRoots) {
+            if (isPathInsideRoot(normalizedTarget, root) || isPathInsideRoot(candidate, root)) preferred.append(root);
+            else remaining.append(root);
+        }
+        // Lexical containment only prioritizes probes. Both the target/parent and
+        // the granting root must still be canonical, so junction escapes stay denied.
+        // Keep the fallback for roots whose own junction aliases the target's tree.
+        for (const QString &root : preferred + remaining) {
+            const QString realRoot = resolveRoot ? resolveRoot(root) : canonicalIfPresent(root);
+            if (!realRoot.isEmpty() && isPathInsideRoot(candidate, realRoot)) return true;
         }
         return false;
     };

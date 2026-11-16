@@ -9,10 +9,11 @@ import {
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
 import {
 	getUserBubblePresentationAtom,
+	rememberUserBubblePresentationIdentityAtom,
 	getEditPresentationAtom,
 } from "../../atoms/timeline-presentation";
 import { MarkdownStream } from "./MarkdownStream";
@@ -479,10 +480,15 @@ export const UserBubble = memo(function UserBubble(props: {
 	const context = useTimelinePresentationContext();
 	const userBubbleAtom = useMemo(() => {
 		if (context?.sessionId && context?.rowKey) {
-			return getUserBubblePresentationAtom(context.sessionId, context.rowKey);
+			return getUserBubblePresentationAtom(context.sessionId, `message:${message.id}`, context.rowKey);
 		}
 		return null;
-	}, [context?.sessionId, context?.rowKey]);
+	}, [context?.sessionId, context?.rowKey, message.id]);
+	const rememberBubbleIdentity = useSetAtom(rememberUserBubblePresentationIdentityAtom);
+	useLayoutEffect(() => {
+		if (!context?.sessionId || !context.rowKey) return;
+		rememberBubbleIdentity({ sessionId: context.sessionId, rowKey: `message:${message.id}`, previousRowKey: context.rowKey });
+	}, [context?.sessionId, context?.rowKey, message.id, rememberBubbleIdentity]);
 
 	const [bubblePresentation, setBubblePresentation] = useAtom(
 		userBubbleAtom ??

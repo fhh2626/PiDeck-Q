@@ -18,11 +18,10 @@ import {
 } from "../components/session/timeline/virtualTimelineGeometry";
 import type { RenderMessage } from "../components/app/AppUtils";
 import { captureMountedTimelineAnchor, resolveMountedTimelineAnchorScrollTop } from "./timelineMountedAnchor";
+import { useTimelineMeasurements } from "./useTimelineMeasurements";
 import {
 	createTimelineSessionContext,
 	type TimelineSessionContext,
-	type RowRegistrationRecord,
-	type PendingEntryRecord,
 } from "./timelineMeasurementRegistry";
 
 /**
@@ -98,6 +97,7 @@ export function useVirtualTimeline(params: {
 
 	// 测量版本号：当测量高度真正更新并导致几何变动时递增
 	const [measurementRevision, setMeasurementRevision] = useState(0);
+	const refreshMeasurements = useCallback(() => setMeasurementRevision((revision) => revision + 1), []);
 
 	// 列表 DOM 节点（支持 callback ref 延迟挂载与 listRef 兼容）
 	const [listNode, setListNode] = useState<HTMLElement | null>(listRef?.current ?? null);
@@ -115,7 +115,9 @@ export function useVirtualTimeline(params: {
 	}, [listRef]);
 
 	// 1. 构建当前最新的行模型
-	const rowModel = useMemo(() => buildTimelineRowModel(items, { sessionId }), [items, sessionId]);
+	const rowModel = useMemo(() => buildTimelineRowModel(items, {
+		sessionId, previousModel: currentContext.committedRowModel,
+	}), [items, sessionId, currentContext]);
 	const rowModelRef = useRef(rowModel);
 	rowModelRef.current = rowModel;
 	const logicalRows = rowModel.rows;
@@ -246,6 +248,23 @@ export function useVirtualTimeline(params: {
 		};
 	}, [currentContext, viewportRef, recordReadingAnchor]);
 
+	// Preserve compositor-applied input before dropping measured heights can shrink
+	// the spacers and clamp scrollTop. Once that happens the two deltas are inseparable.
+	const preservePendingReaderInput = useCallback(() => {
+		const viewport = viewportRef.current;
+		const anchor = currentContext.readingAnchor;
+		const observedTop = currentContext.readingAnchorScrollTop;
+		if (!viewport || !anchor || isFollowingRef.current || observedTop === null) return;
+		const currentTop = viewport.scrollTop;
+		if (currentTop === observedTop) return;
+		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+		// A width change may already have shortened mounted DOM before this callback.
+		// Preserve its saved passage and let the layout correction handle that clamp.
+		if (observedTop > maxScrollTop + 2 && currentTop >= maxScrollTop - 2) return;
+		currentContext.readingAnchor = { ...anchor, offsetTop: anchor.offsetTop + observedTop - currentTop };
+		currentContext.readingAnchorScrollTop = currentTop;
+	}, [currentContext, viewportRef]);
+
 	// 更新可见区间（基于已提交快照纯计算）
 	const updateRangeWithGeometry = useCallback((geom: VirtualTimelineGeometry) => {
 		const viewport = viewportRef.current;
@@ -288,6 +307,7 @@ export function useVirtualTimeline(params: {
 			gap: gapRef.current,
 		};
 		committedSnapshotRef.current = nextSnapshot;
+		currentContext.committedRowModel = rowModel;
 
 		const effectiveList = listNodeRef.current ?? listRef?.current ?? null;
 		const viewport = viewportRef.current;
@@ -313,13 +333,19 @@ export function useVirtualTimeline(params: {
 			// 此时保锚会把底部位置当成阅读位置再写一次，反而把刚恢复的锁底解锁，
 			// 之后内容增长不再跟底（发送后视口停在旧消息上）。
 			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-			if (viewport.scrollTop >= maxScrollTop - 2) {
+			const observedTop = currentContext.readingAnchorScrollTop;
+			// Width invalidation and subsequent row remounts can each shrink the real
+			// scroll range, even while geometry.totalHeight stays unchanged or grows.
+			// A recorded position above the new DOM limit proves a layout clamp and
+			// must not erase or rebase the saved passage within its row.
+			const clampedByLayout = observedTop !== null && observedTop > maxScrollTop + 2
+				&& viewport.scrollTop >= maxScrollTop - 2;
+			if (viewport.scrollTop >= maxScrollTop - 2 && !clampedByLayout) {
 				currentContext.readingAnchor = null;
 			} else {
 				// Honor input that moved the viewport before its scroll event arrived.
 				// Rebase the same row's intent by the input delta, not by changed DOM.
-				const observedTop = currentContext.readingAnchorScrollTop;
-				if (observedTop !== null && observedTop !== viewport.scrollTop) {
+				if (!clampedByLayout && observedTop !== null && observedTop !== viewport.scrollTop) {
 					currentContext.readingAnchor = {
 						...currentContext.readingAnchor,
 						offsetTop: currentContext.readingAnchor.offsetTop + observedTop - viewport.scrollTop,
@@ -381,245 +407,10 @@ export function useVirtualTimeline(params: {
 		};
 	}, [currentContext, recordReadingAnchor, updateRange, viewportRef]);
 
-	// 观察器实例与 token 管理
-	const rowResizeObserverRef = useRef<ResizeObserver | null>(null);
-	const rowObserverTokenRef = useRef(1);
-	const nextLeaseRef = useRef(1);
-
-	// 注册行节点（带 lease 与 cleanup 契约）
-	const registerRowNode = useCallback(
-		(key: string, node: HTMLElement | null): (() => void) | void => {
-			const ro = rowResizeObserverRef.current;
-			const prev = currentContext.nodeMap.get(key);
-
-			if (!node) {
-				if (prev && ro) {
-					ro.unobserve(prev.node);
-				}
-				currentContext.nodeMap.delete(key);
-				currentContext.pendingEntries.delete(key);
-				return;
-			}
-
-			if (prev && prev.node !== node && ro) {
-				ro.unobserve(prev.node);
-				currentContext.pendingEntries.delete(key);
-			}
-
-			const lease = nextLeaseRef.current++;
-			const reg: RowRegistrationRecord = {
-				key,
-				node,
-				lease,
-				contextId: currentContext.id,
-				widthEpoch: currentContext.widthEpoch,
-			};
-			currentContext.nodeMap.set(key, reg);
-
-			if (ro) {
-				ro.observe(node);
-			}
-
-			return () => {
-				const current = currentContext.nodeMap.get(key);
-				if (current && current.lease === lease) {
-					if (rowResizeObserverRef.current) {
-						rowResizeObserverRef.current.unobserve(node);
-					}
-					currentContext.nodeMap.delete(key);
-					currentContext.pendingEntries.delete(key);
-				}
-			};
-		},
-		[currentContext],
-	);
-
-	const updateRangeRef = useRef(updateRange);
-	updateRangeRef.current = updateRange;
-
-	// 创建行观察器 Helper
-	const setupRowObserver = useCallback((targetContext: TimelineSessionContext) => {
-		if (typeof ResizeObserver === "undefined") return;
-
-		const token = ++rowObserverTokenRef.current;
-
-		const ro = new ResizeObserver((entries) => {
-			if (token !== rowObserverTokenRef.current || targetContext.id !== contextRef.current?.id) {
-				return;
-			}
-
-			for (const entry of entries) {
-				const target = entry.target as HTMLElement;
-				const key = target.getAttribute("data-timeline-measure-key") || target.getAttribute("data-timeline-row-key");
-				if (!key) continue;
-
-				const reg = targetContext.nodeMap.get(key);
-				if (
-					!reg ||
-					reg.node !== target ||
-					reg.contextId !== targetContext.id ||
-					reg.widthEpoch !== targetContext.widthEpoch
-				) {
-					continue;
-				}
-
-				if (!rowModelRef.current.rowKeyByMessageId.has(reg.key) && !rowModelRef.current.indexByKey.has(reg.key)) {
-					continue;
-				}
-
-				const h = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
-				if (h > 0) {
-					const oldH = targetContext.measuredHeights.get(key);
-					if (oldH === undefined || Math.abs(oldH - h) >= 0.5) {
-						targetContext.pendingEntries.set(key, {
-							key,
-							node: target,
-							lease: reg.lease,
-							contextId: reg.contextId,
-							widthEpoch: reg.widthEpoch,
-							height: h,
-						});
-					}
-				}
-			}
-
-			if (targetContext.pendingEntries.size > 0 && !targetContext.scheduledRaf) {
-				targetContext.scheduledRaf = requestAnimationFrame(() => {
-					targetContext.scheduledRaf = null;
-					if (token !== rowObserverTokenRef.current || targetContext.id !== contextRef.current?.id) {
-						targetContext.pendingEntries.clear();
-						return;
-					}
-
-					let anyChange = false;
-					for (const pending of targetContext.pendingEntries.values()) {
-						const currentReg = targetContext.nodeMap.get(pending.key);
-						if (
-							currentReg &&
-							currentReg.node === pending.node &&
-							currentReg.lease === pending.lease &&
-							currentReg.contextId === pending.contextId &&
-							currentReg.widthEpoch === pending.widthEpoch
-						) {
-							const prevH = targetContext.measuredHeights.get(pending.key);
-							if (prevH === undefined || Math.abs(prevH - pending.height) >= 0.5) {
-								targetContext.measuredHeights.set(pending.key, pending.height);
-								anyChange = true;
-							}
-						}
-					}
-					targetContext.pendingEntries.clear();
-
-					if (anyChange) {
-						setMeasurementRevision((v) => v + 1);
-					}
-				});
-			}
-		});
-
-		rowResizeObserverRef.current = ro;
-		for (const reg of targetContext.nodeMap.values()) {
-			ro.observe(reg.node);
-		}
-	}, []);
-
-	// 宽度变化处理（步骤 3.1 严格规范）
-	const handleListWidthChange = useCallback(
-		(newWidth: number, targetContext: TimelineSessionContext) => {
-			if (newWidth <= 0) return;
-
-			if (targetContext.lastObservedListWidth === null) {
-				targetContext.lastObservedListWidth = newWidth;
-				return;
-			}
-
-			if (Math.abs(newWidth - targetContext.lastObservedListWidth) < 0.5) {
-				return;
-			}
-
-			targetContext.lastObservedListWidth = newWidth;
-			targetContext.widthEpoch += 1;
-
-			if (targetContext.scheduledRaf) {
-				cancelAnimationFrame(targetContext.scheduledRaf);
-				targetContext.scheduledRaf = null;
-			}
-			targetContext.pendingEntries.clear();
-			targetContext.measuredHeights.clear();
-
-			if (rowResizeObserverRef.current) {
-				rowResizeObserverRef.current.disconnect();
-				rowResizeObserverRef.current = null;
-			}
-
-			// 保留当前已挂载行节点及其 lease，更新其有效 widthEpoch
-			for (const reg of targetContext.nodeMap.values()) {
-				reg.widthEpoch = targetContext.widthEpoch;
-			}
-
-			// 重建行观察器并重新观察全部挂载行
-			setupRowObserver(targetContext);
-
-			// 触发几何估算重刷
-			setMeasurementRevision((v) => v + 1);
-		},
-		[setupRowObserver],
-	);
-
-	// 容器与行观察器连接 LayoutEffect
-	useLayoutEffect(() => {
-		if (typeof ResizeObserver === "undefined") return;
-
-		const targetContext = currentContext;
-
-		// 1. 建立容器观察器：观察视口高度变化与列表宽度基线
-		let lastVpHeight: number | null = viewportRef.current?.clientHeight ?? null;
-		const containerRo = new ResizeObserver((entries) => {
-			let vpChanged = false;
-			for (const entry of entries) {
-				const target = entry.target as HTMLElement;
-				if (target === viewportRef.current) {
-					const h = entry.contentRect.height;
-					if (lastVpHeight === null || Math.abs(h - lastVpHeight) >= 0.5) {
-						vpChanged = true;
-					}
-					lastVpHeight = h;
-				} else if (target === listNodeRef.current || target === listRef?.current) {
-					const w = entry.contentRect.width;
-					handleListWidthChange(w, targetContext);
-				}
-			}
-
-			if (vpChanged) {
-				updateRangeRef.current();
-			}
-		});
-
-		if (viewportRef.current) {
-			containerRo.observe(viewportRef.current);
-		}
-		const effectiveList = listNode ?? listRef?.current;
-		if (effectiveList) {
-			containerRo.observe(effectiveList);
-		}
-
-		// 2. 建立行高观察器
-		setupRowObserver(targetContext);
-
-		return () => {
-			containerRo.disconnect();
-			rowObserverTokenRef.current += 1;
-			if (targetContext.scheduledRaf) {
-				cancelAnimationFrame(targetContext.scheduledRaf);
-				targetContext.scheduledRaf = null;
-			}
-			targetContext.pendingEntries.clear();
-			if (rowResizeObserverRef.current) {
-				rowResizeObserverRef.current.disconnect();
-				rowResizeObserverRef.current = null;
-			}
-		};
-	}, [currentContext, listNode, listRef, viewportRef, handleListWidthChange, setupRowObserver]);
+	const registerRowNode = useTimelineMeasurements({
+		currentContext, contextRef, rowModelRef, viewportRef, listRef, listNode, listNodeRef,
+		updateRange, onBeforeWidthInvalidation: preservePendingReaderInput, onHeightChange: refreshMeasurements,
+	});
 
 	// 暴露稳定 Adapter 给 Controller
 	useLayoutEffect(() => {
