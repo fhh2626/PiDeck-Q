@@ -11,9 +11,9 @@ QVector<sessiontreeguard::LiveAgent> Coordinator::liveTreeAgents() const
     agents.reserve(int(m_agents.size()));
     for (const auto &entry : m_agents) {
         const AgentSession *session = entry.second.get();
-        if (!session) continue;
+        if (!session || !session->running()) continue;
         const Tab &tab = session->tab();
-        if (tab.sessionPath.isEmpty()) continue;
+        if (tab.noSession && tab.sessionPath.isEmpty()) continue;
         sessiontreeguard::LiveAgent agent;
         agent.title = tab.title;
         agent.sessionPath = tab.sessionPath;
@@ -27,6 +27,10 @@ QVector<sessiontreeguard::LiveAgent> Coordinator::liveTreeAgents() const
 
 QJsonObject Coordinator::findSessionTreeBlock(const QString &sessionId) const
 {
+    if (deletionBlocks(sessionId)) {
+        return QJsonObject{{QStringLiteral("kind"), QStringLiteral("deleting")},
+                           {QStringLiteral("sessionId"), sessionId}};
+    }
     if (!m_deps.services || !m_deps.services->catalog) {
         // No catalog owner: only the single-runtime guard can answer, and it can only
         // report "this session is running".

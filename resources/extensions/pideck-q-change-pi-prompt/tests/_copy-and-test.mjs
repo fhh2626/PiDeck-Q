@@ -16,6 +16,7 @@ for (const dest of dests) {
   }
 }
 const result = spawnSync(process.execPath, ['--test', 'resources/extensions/pideck-q-change-pi-prompt/tests/*.test.mjs'], {
+  windowsHide: true,
   cwd: 'D:/Users/Haohao/Documents/GitHub/PiDeck-Pi_Agent_Rust',
   stdio: 'inherit',
   shell: true,

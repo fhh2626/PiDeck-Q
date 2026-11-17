@@ -22,7 +22,7 @@ const skip = executable ? false : "Build PiDeck-TodoCommandTest to run the curre
 /** The fixture invokes real C++ domain classes without requiring a pi process or logging service. */
 function native(fixture) {
 	const env = childPathEnvironment(process.env, joinPathParts([qtBinDirectory(), environmentPath()]));
-	const result = spawnSync(executable, [], { env, input: JSON.stringify(fixture), encoding: "utf8", timeout: 20_000 });
+	const result = spawnSync(executable, [], { windowsHide: true, env, input: JSON.stringify(fixture), encoding: "utf8", timeout: 20_000 });
 	assert.equal(result.status, 0, result.stderr || String(result.error ?? ""));
 	return JSON.parse(result.stdout);
 }

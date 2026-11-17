@@ -15,6 +15,8 @@ struct NativePaths {
     QString downloadsDir;
     QString version;
     bool packaged = false;
+    // Isolated tests must not replace an installed app's protocol or shortcut.
+    bool registerDesktopIntegration = true;
 
     static NativePaths fromEnvironment();
 };

@@ -28,6 +28,8 @@ import type {
 	PickImagesResult,
 	UpdateSessionRecordInput,
 	SessionRecord,
+	SessionDeleteOptions,
+	SessionDeleteResult,
 	SessionProcessEvent,
 	VisionBridgeConfig,
 	CreatePiSkillInput,
@@ -297,8 +299,10 @@ const api = {
 				sessionId,
 				patch,
 			) as Promise<SessionRecord>,
-		deleteRecord: (sessionId: string) =>
-			transport.invoke(ipcChannels.sessionsCatalogDelete, sessionId) as Promise<boolean>,
+		deleteRecord: (sessionId: string, options?: SessionDeleteOptions) =>
+			options === undefined
+				? transport.invoke<SessionDeleteResult>(ipcChannels.sessionsCatalogDelete, sessionId)
+				: transport.invoke<SessionDeleteResult>(ipcChannels.sessionsCatalogDelete, sessionId, options),
 		/** 归档会话（移入 .pideck-archive/ 并从目录移除）；运行中的会话会抛错 */
 		archiveRecord: (sessionId: string) =>
 			transport.invoke(ipcChannels.sessionsCatalogArchive, sessionId) as Promise<boolean>,

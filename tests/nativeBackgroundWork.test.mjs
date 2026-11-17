@@ -20,6 +20,7 @@ const skip = !executable && !required ? "Build PiDeck-BackgroundWorkTest to veri
 function run(mode) {
 	assert.ok(executable, "A fresh PiDeck-BackgroundWorkTest executable is required");
 	const result = spawnSync(executable, [mode], {
+		windowsHide: true,
 		env: childPathEnvironment(process.env, joinPathParts([qtBinDirectory(), environmentPath()])),
 		encoding: "utf8", timeout: 20_000,
 	});

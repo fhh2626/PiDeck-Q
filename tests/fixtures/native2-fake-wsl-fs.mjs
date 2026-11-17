@@ -30,8 +30,8 @@
 //   logTiming      - append `{pid,start,end,argv}` to `FAKE_WSL_TIMING_LOG` on exit, so a
 //                    suite can prove the reader never runs more than four children
 // Every invocation is appended to `FAKE_WSL_LOG` (argv only, never file contents).
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { join, posix } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { basename, dirname, join, posix } from "node:path";
 
 const scenarioPath = process.env.FAKE_WSL_SCENARIO ?? "";
 const logPath = process.env.FAKE_WSL_LOG ?? "";
@@ -63,7 +63,24 @@ function toHost(linuxPath) {
 	if (!linuxPath || !linuxPath.startsWith("/")) fail(`not an absolute path: ${linuxPath}`);
 	if (!root) fail("no backing root configured");
 	if (linuxPath === linuxHome || linuxPath.startsWith(`${linuxHome}/`)) {
-		return join(root, linuxPath.slice(linuxHome.length).replace(/^\/+/, ""));
+		const suffix = linuxPath.slice(linuxHome.length).replace(/^\/+/, "");
+		// Windows path joining collapses '..' before traversing junctions. Model Linux
+		// component traversal explicitly for the symlink/.. ownership regression.
+		if (suffix.split("/").includes("..")) {
+			let current = root;
+			const parts = suffix.split("/");
+			for (let index = 0; index < parts.length; index++) {
+				const part = parts[index];
+				if (!part || part === ".") continue;
+				if (part === "..") current = dirname(current);
+				else {
+					current = join(current, part);
+					if (index < parts.length - 1 && existsSync(current)) current = realpathSync.native(current);
+				}
+			}
+			return current;
+		}
+		return join(root, suffix);
 	}
 	fail(`path outside the fake home: ${linuxPath}`);
 }
@@ -97,7 +114,9 @@ if (argv.includes("-l")) {
 // Strip the `-d <distro> -u <user>` prefix the backend always sends.
 const userIndex = argv.indexOf("-u");
 if (userIndex < 0) fail(`missing -u in ${argv.join(" ")}`);
-const command = argv.slice(userIndex + 2);
+const inner = argv.slice(userIndex + 2);
+// Runtime launches also carry WSL's cwd option before the executable.
+const command = inner[0] === "--cd" ? inner.slice(2) : inner;
 
 const [verb, ...rest] = command;
 switch (verb) {
@@ -124,14 +143,44 @@ switch (verb) {
 		if (scenario.which) process.stdout.write(`${scenario.which}\n`);
 		process.exit(scenario.which ? 0 : 1);
 	case "pi":
-		if (rest[0] === "--version" && scenario.piVersion) {
-			process.stdout.write(`${scenario.piVersion}\n`);
+		if (rest[0] === "--version" && (scenario.piVersion || scenario.runtimePi)) {
+			process.stdout.write(`${scenario.piVersion ?? "0.79.0"}\n`);
 			process.exit(0);
 		}
+		if (scenario.runtimePi) {
+			const { runFakeWslRuntime } = await import("./native2-fake-wsl-runtime.mjs");
+			runFakeWslRuntime(scenario, argv, logPath);
+			break;
+		}
 		process.exit(1);
+	case "realpath": {
+		// Model coreutils -m with the real backing filesystem, including links and
+		// missing suffixes. Authorization decisions remain in production C++.
+		if (!["-m", "-e"].includes(rest[0]) || rest[1] !== "--") fail("unsupported realpath options");
+		if (rest[0] === "-e" && !existsSync(toHost(rest[2]))) process.exit(1);
+		if (scenario.realpathDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(scenario.realpathDelayMs));
+		let current = toHost(rest[2]);
+		const suffix = [];
+		while (!existsSync(current)) {
+			suffix.unshift(basename(current));
+			const parent = dirname(current);
+			if (parent === current) process.exit(1);
+			current = parent;
+		}
+		process.stdout.write(`${toLinux(join(realpathSync.native(current), ...suffix))}\n`);
+		process.exit(0);
+	}
 	case "test": {
 		const [flag, target] = rest;
+		if (scenario.failTestPath === target && scenario.failTestFlag === flag) fail("probe failed");
 		const host = toHost(target);
+		if (flag === "-L") {
+			let linked = false;
+			try { linked = lstatSync(host).isSymbolicLink(); } catch (error) {
+				if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+			}
+			process.exit(linked ? 0 : 1);
+		}
 		const exists = existsSync(host);
 		const stats = exists ? statSync(host) : null;
 		const ok = flag === "-e" ? exists : flag === "-f" ? Boolean(stats?.isFile()) : flag === "-d" ? Boolean(stats?.isDirectory()) : fail(`unsupported test flag: ${flag}`);
@@ -139,6 +188,7 @@ switch (verb) {
 	}
 	case "ls": {
 		const directory = rest.at(-1);
+		if (scenario.failListPath === directory) fail("listing denied");
 		const host = toHost(directory);
 		if (!existsSync(host)) process.exit(1);
 		for (const name of readdirSync(host)) process.stdout.write(`${name}\n`);
@@ -160,6 +210,11 @@ switch (verb) {
 		process.exit(0);
 	}
 	case "stat": {
+		if (rest[0] === "-Lc" && rest[1] === "%d:%i") {
+			const info = statSync(toHost(rest.at(-1)), { bigint: true });
+			process.stdout.write(`${info.dev}:${info.ino}\n`);
+			process.exit(0);
+		}
 		const printfIndex = rest.indexOf("--printf");
 		if (printfIndex >= 0) {
 			// `stat --printf '%n\0%Y\0%s\0' -- <paths…>`: the batched metadata envelope.
@@ -206,6 +261,48 @@ switch (verb) {
 		process.exit(0);
 	}
 	case "sh": {
+		if (rest[0] === "-c" && rest[1].includes("# pideck-root-pin-v1")) {
+			if (scenario.rootPinFailure) fail("root pin failed");
+			const info = statSync(toHost(rest[3]), { bigint: true });
+			emit(`pideck-root-v1\t${process.pid}\t1\t${info.dev}:${info.ino}\n`);
+			// The native launcher forwards stdin unchanged. EOF must reap this holder,
+			// including failure during C++ planning; never detach a fake child.
+			await new Promise((resolve) => { process.stdin.once("end", resolve); process.stdin.once("error", resolve); process.stdin.resume(); });
+			process.exit(0);
+		}
+		if (rest[0] === "-c" && rest[1].includes("# pideck-scoped-trash-v1")) {
+			if (scenario.safeTrashUnavailable) process.exit(42);
+			const { runFakeScopedTrash } = await import("./native2-fake-wsl-trash.mjs");
+			runFakeScopedTrash(rest[3], rest[4], rest.slice(7), toHost);
+			process.exit(0);
+		}
+		if (rest[0] === "-c" && rest[2] === "pideck-delete-identities") {
+			// Model the constant identity script, including strict existing ancestors,
+			// missing leaves, and a process-level failure seam. All data is temporary.
+			if (scenario.identityDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(scenario.identityDelayMs));
+			if (scenario.identityFailure) fail("identity resolution failed");
+			for (const target of rest.slice(3)) {
+				const host = toHost(target);
+				let canonical = "";
+				try { canonical = toLinux(realpathSync.native(host)); }
+				catch {
+					try {
+						const parent = realpathSync.native(dirname(host));
+						let linked = false;
+						try { linked = lstatSync(host).isSymbolicLink(); } catch { /* missing ordinary leaf */ }
+						if (!linked) canonical = toLinux(join(parent, basename(host)));
+					} catch { /* an unknown ancestor is not a trustworthy identity */ }
+				}
+				if (scenario.identityCanonicalOverrides?.[target]) canonical = scenario.identityCanonicalOverrides[target];
+				// Model POSIX command substitution too: plain $(realpath ...) strips all
+				// trailing newlines, while the production sentinel preserves the exact name.
+				if (!rest[1].includes("&& printf .")) canonical = canonical.replace(/\n+$/, "");
+				// Empty identity models EACCES/unknown ancestry, never an absent file.
+				if (scenario.identityUnresolvedPrefix && target.startsWith(scenario.identityUnresolvedPrefix)) canonical = "";
+				emit(`${target}\0${canonical}\0`);
+			}
+			process.exit(0);
+		}
 		// `sh -c <read script> pideck-scan-read <paths…>`: the batched body envelope.
 		if (rest[0] !== "-c" || rest[2] !== "pideck-scan-read") fail(`unsupported sh: ${rest.join(" ")}`);
 		const stallFile = scenario.bodyStallFile ?? "";
@@ -250,8 +347,7 @@ switch (verb) {
 		const source = toHost(from);
 		const destination = toHost(to);
 		if (rest.includes("-n") && existsSync(destination)) process.exit(0);
-		writeFileSync(destination, readFileSync(source));
-		rmSync(source, { force: true });
+		renameSync(source, destination);
 		process.exit(0);
 	}
 	case "dd": {

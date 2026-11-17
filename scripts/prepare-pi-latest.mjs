@@ -45,6 +45,7 @@ export async function readInstalledVersion(packageDir) {
 function runNpm(args, { command, prefixArgs } = createNpmCommand(), cwd = process.cwd()) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, [...prefixArgs, ...args], {
+			windowsHide: true,
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env },

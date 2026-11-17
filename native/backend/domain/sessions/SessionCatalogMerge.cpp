@@ -54,15 +54,25 @@ QJsonValue scanMetadataFor(const SessionSummary &summary)
 
 } // namespace
 
+quint64 SessionCatalogStore::scanGeneration() const
+{
+    QMutexLocker<QRecursiveMutex> lock(&m_mutex);
+    return m_deletionGeneration;
+}
+
 QJsonArray SessionCatalogStore::mergeScanned(const QString &projectId,
                                              const QVector<SessionSummary> &summaries,
-                                             const Context &context)
+                                             const Context &context, std::optional<quint64> generation)
 {
     // One transaction: copy → durable write → assign. A draft created between the copy and
     // the assign used to be dropped by the second write, and the record projection below
     // reads `m_entries` again, so the whole merge must see one stable snapshot.
     QMutexLocker<QRecursiveMutex> lock(&m_mutex);
     assertLoaded();
+    // A host trash response can remove records while the domain thread is still
+    // collecting summaries. Drop that stale batch atomically with the merge so it
+    // cannot recreate a deleted file under a new UUID. A later scan remains allowed.
+    if (generation && *generation != m_deletionGeneration) return listProjectRecords(projectId);
     QVector<CatalogEntry> next = m_entries;
     QHash<QString, int> byOrigin;
     for (int index = 0; index < next.size(); ++index) {
@@ -78,6 +88,9 @@ QJsonArray SessionCatalogStore::mergeScanned(const QString &projectId,
         const QString environment = summary.wsl ? QStringLiteral("wsl") : QStringLiteral("native");
         const QString source = summary.source.isEmpty() ? QStringLiteral("pi") : summary.source;
         int index = byOrigin.value(originKey, -1);
+        // A scan is metadata discovery, not authority to move a record whose
+        // captured identity is currently authorizing an irreversible mutation.
+        if (index >= 0 && m_deletingEntries.contains(next.at(index).id)) continue;
         if (index < 0) {
             CatalogEntry entry;
             entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);

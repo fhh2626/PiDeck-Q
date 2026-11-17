@@ -136,6 +136,7 @@ import {
 } from "./rendererUtils";
 import { useResize } from "./hooks/useResize";
 import { useSessionActions } from "./hooks/useSessionActions";
+import { deleteSessionWithConfirmation } from "./hooks/deleteSessionWithConfirmation";
 import { useScratchPad } from "./hooks/useScratchPad";
 import { useWorktreeActions } from "./hooks/useWorktreeActions";
 import { ChatSessionPane } from "./components/session/ChatSessionPane";
@@ -1211,6 +1212,8 @@ export function App() {
     refreshProjectSessions,
     api,
     showToast,
+    showConfirm: overlays.showConfirm,
+    clearConfirm: overlays.clearConfirm,
   });
 
   // Notifications and split commands share the sidebar selection owner.
@@ -1654,15 +1657,13 @@ export function App() {
   }
 
   async function deleteDraftSession(session: SessionRecord) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      // A false result means another path already removed the catalog record;
-      // clear the stale sidebar row the same way as a successful deletion.
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    await deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.title || session.id,
+      deleteRecord: api.sessions.deleteRecord,
+      showConfirm: overlays.showConfirm, clearConfirm: overlays.clearConfirm,
+      onSuccess: () => { removeSessionState(session.id); removeSessionComposerState(session.id); },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   function updateAfterProjectRemoved(
@@ -2166,15 +2167,18 @@ export function App() {
   }
 
   async function deleteSidebarSession(projectId: string, session: SessionSummary) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-      showToast(t("app.sessionDeleted"), 2200);
-      await refreshProjectSessions(projectId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    await deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.name || session.id,
+      deleteRecord: api.sessions.deleteRecord,
+      showConfirm: overlays.showConfirm, clearConfirm: overlays.clearConfirm,
+      onSuccess: async () => {
+        removeSessionState(session.id);
+        removeSessionComposerState(session.id);
+        showToast(t("app.sessionDeleted"), 2200);
+        await refreshProjectSessions(projectId);
+      },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   /** 归档会话：从列表移除但不销毁文件，可在会话管理弹窗中恢复 */

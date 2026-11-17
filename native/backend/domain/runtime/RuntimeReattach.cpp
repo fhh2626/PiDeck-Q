@@ -63,6 +63,10 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
         done(false, QStringLiteral("Session runtime binding changed"), 0);
         return;
     }
+    if (deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
+        done(false, QStringLiteral("Session deletion is in progress"), 0);
+        return;
+    }
     const QString sessionPath = session->tab().sessionPath;
     if (sessionPath.isEmpty()) {
         // Without a session file a second process would start an empty conversation.
@@ -71,6 +75,20 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
     }
 
     const pilaunch::Launch launch = buildSessionLaunch(*session, sessionPath);
+    CatalogEntry previous;
+    previous.filePath = sessionPath;
+    previous.environment = session->tab().sessionEnvironment;
+    previous.wslDistro = session->tab().wslDistro;
+    previous.wslUser = session->tab().wslUser;
+    const CatalogEntry actual = deletionidentity::forLaunch(previous, launch);
+    if (!deletionidentity::compatibleLaunch(previous, actual) || deletionBlocksEntry(actual)) {
+        done(false, QStringLiteral("Session runtime environment changed during reconnect"), 0);
+        return;
+    }
+    // A user switch stays in the same filesystem namespace, but the tab must name
+    // the actual launch context rather than preserving obsolete catalog metadata.
+    session->tab().wslUser = actual.wslUser;
+    session->tab().wslDistro = actual.wslDistro;
     QString spawnError;
     if (!session->reattach(launch, &spawnError)) {
         done(false, spawnError, session->clientEpoch());
@@ -120,6 +138,10 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
             const QString reported = data.value(QStringLiteral("sessionFile")).toString();
             if (!reported.isEmpty()) {
                 current->tab().sessionPath = normalizeSessionPath(reported, projectPath);
+            }
+            if (deletionBlocksAgent(agentId)) {
+                done(false, QStringLiteral("Session deletion is in progress"));
+                return;
             }
             if (data.value(QStringLiteral("sessionId")).isString()) {
                 current->tab().piSessionId = data.value(QStringLiteral("sessionId")).toString();

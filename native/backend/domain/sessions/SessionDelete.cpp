@@ -5,8 +5,11 @@
 #include "SessionScanner.h"
 
 #include "../ChannelRegistry.h"
+#include "../fs/EntryLink.h"
+#include "../fs/PathPolicy.h"
 
 #include <QDateTime>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -61,15 +64,25 @@ QString outputIdentity(const QString &value)
 
 void addIdentity(QSet<QString> *ids, const QJsonValue &value)
 {
-    if (!value.isString() || !safeIdentity(value.toString())) return;
+    if (value.isUndefined() || value.isNull()) return;
+    if (!value.isString() || !safeIdentity(value.toString()))
+        throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
     ids->insert(value.toString());
     const QString output = outputIdentity(value.toString());
     if (!output.isEmpty()) ids->insert(output);
 }
 
-QStringList safeNames(const SessionFs &fs, const QString &directory)
+QStringList safeNames(const SessionFs &fs, const QString &directory, const QString &root)
 {
-    const QStringList names = fs.listNames(directory);
+    // Authorize on the storage platform: native and WSL discovery both refuse
+    // directory links that could redirect ownership reads outside the session tree.
+    if (!fs.authorizeDeletionPath(directory, {root}, false)) {
+        throw ChannelError(QStringLiteral("Unable to verify session deletion directory"));
+    }
+    QStringList names;
+    if (!fs.listNamesChecked(directory, &names)) {
+        throw ChannelError(QStringLiteral("Unable to verify session deletion directory"));
+    }
     if (names.size() > kDirectoryEntryLimit) {
         throw ChannelError(QStringLiteral("Session deletion directory entry limit exceeded"));
     }
@@ -106,28 +119,45 @@ bool isSubagentRunDirectoryName(const QString &name)
     return pattern.match(name).hasMatch();
 }
 
-QSet<QString> collectSessionRunIdentities(const QString &raw)
+QSet<QString> collectSessionRunIdentities(const QString &raw, bool *uncertain)
 {
     QSet<QString> ids;
     for (const QString &rawLine : raw.split(QLatin1Char('\n'))) {
         const QString line = rawLine.trimmed();
         if (line.isEmpty()) continue;
         const QJsonDocument document = QJsonDocument::fromJson(line.toUtf8());
-        if (!document.isObject()) continue;
+        // A damaged record can conceal ownership; absence of evidence is not proof
+        // that another session does not own the candidate artifacts.
+        if (!document.isObject())
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         const QJsonObject entry = document.object();
         if (entry.value(QStringLiteral("type")).toString() != QLatin1String("message")) continue;
         const QJsonValue messageValue = entry.value(QStringLiteral("message"));
-        if (!isRecord(messageValue)) continue;
+        if (!isRecord(messageValue))
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         const QJsonObject message = messageValue.toObject();
+        if (!message.value(QStringLiteral("role")).isString())
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         if (message.value(QStringLiteral("role")).toString() != QLatin1String("toolResult")) continue;
+        if (!message.value(QStringLiteral("toolName")).isString())
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         if (message.value(QStringLiteral("toolName")).toString() != QLatin1String("subagent")) continue;
         const QJsonValue detailsValue = message.value(QStringLiteral("details"));
-        if (!isRecord(detailsValue)) continue;
+        // pi can persist failed/aborted tool calls without extension details. They
+        // reveal no ownership: retain shared artifacts rather than block deletion.
+        if ((detailsValue.isUndefined() || detailsValue.isNull())
+            && message.value(QStringLiteral("isError")).toBool() && uncertain) {
+            *uncertain = true;
+            continue;
+        }
+        if (!isRecord(detailsValue))
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         const QJsonObject details = detailsValue.toObject();
         const QString mode = details.value(QStringLiteral("mode")).toString();
         if (mode != QLatin1String("single") && mode != QLatin1String("workflow")
-            && mode != QLatin1String("parallel") && mode != QLatin1String("chain")) {
-            continue;
+            && mode != QLatin1String("parallel") && mode != QLatin1String("chain")
+            && mode != QLatin1String("management")) {
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         }
         // Only known identity envelopes are visited: workflow.value, text, prompts and
         // paths are output prose, never ownership evidence.
@@ -139,17 +169,25 @@ QSet<QString> collectSessionRunIdentities(const QString &raw)
             addIdentity(&ids, item.value(QStringLiteral("workflowRunId")));
             for (const char *key : {"results", "children"}) {
                 const QJsonValue children = item.value(QLatin1String(key));
-                if (!children.isArray()) continue;
+                if (children.isUndefined()) continue;
+                if (!children.isArray())
+                    throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
                 const QJsonArray array = children.toArray();
                 if (queue.size() + array.size() > kIdentityEntryLimit) {
                     throw ChannelError(QStringLiteral("Session deletion identity entry limit exceeded"));
                 }
                 for (const QJsonValue &child : array) {
-                    if (isRecord(child)) queue.append(child.toObject());
+                    if (!isRecord(child))
+                        throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
+                    queue.append(child.toObject());
                 }
             }
             const QJsonValue summary = item.value(QStringLiteral("workflowChildren"));
-            if (isRecord(summary)) queue.append(summary.toObject());
+            if (!summary.isUndefined()) {
+                if (!isRecord(summary))
+                    throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
+                queue.append(summary.toObject());
+            }
             if (queue.size() > kIdentityEntryLimit || ids.size() > kIdentityEntryLimit) {
                 throw ChannelError(QStringLiteral("Session deletion identity entry limit exceeded"));
             }
@@ -158,86 +196,198 @@ QSet<QString> collectSessionRunIdentities(const QString &raw)
     return ids;
 }
 
-Plan plan(const SessionFs &fs, const QString &filePath)
+Plan plan(const SessionFs &fs, const QString &inputFilePath, const QString &authorizedRoot)
 {
     Plan result;
+    // Only the configured/verified root may resolve a root link. A session's
+    // immediate parent can be an untrusted descendant of that authority.
+    if (authorizedRoot.isEmpty()) throw ChannelError(QStringLiteral("Missing session deletion authority"));
+    const QString authority = authorizedRoot;
+    if (!fs.wsl()) result.nativeRoot = scopedmutation::captureRoot(authority);
+    const QString filePath = fs.wsl() ? inputFilePath
+        : scopedmutation::mapTarget(result.nativeRoot, authority, inputFilePath);
+    std::unique_ptr<scopedmutation::Parent> planningGuard;
+    if (!fs.wsl()) planningGuard = std::make_unique<scopedmutation::Parent>(result.nativeRoot, filePath);
+    result.sessionFile = filePath;
     const QString directory = fs.dirname(filePath);
     const QString name = fs.basename(filePath);
-    const QStringList entries = safeNames(fs, directory);
+    const QStringList entries = safeNames(fs, directory, directory);
+    // Failed probes are not evidence of absence and must never authorize deletion.
+    const auto probe = [&fs](const QString &path, const QString &flag) {
+        bool present = false;
+        if (!fs.probeChecked(path, flag, &present))
+            throw ChannelError(QStringLiteral("Unable to verify session deletion path"));
+        return present;
+    };
+    const auto exists = [&probe](const QString &path) { return probe(path, QStringLiteral("-e")); };
+    const auto isFile = [&probe](const QString &path) { return probe(path, QStringLiteral("-f")); };
+    const auto isDirectory = [&probe](const QString &path) { return probe(path, QStringLiteral("-d")); };
+
+    // A leaf link grants removal of that entry only, not ownership obtained by
+    // reading its referent. A real directory is never a valid primary JSONL file.
+    if (probe(filePath, QStringLiteral("-L"))) { result.hasFile = true; return result; }
+    if (exists(filePath) && !isFile(filePath))
+        throw ChannelError(QStringLiteral("Session deletion target is not a regular file"));
 
     for (const QString &entry : entries) {
         if (!isSessionEditBackupName(name, entry)) continue;
         const QString candidate = fs.join(directory, entry);
-        if (fs.isFile(candidate)) result.backups.append(candidate);
+        if (isFile(candidate)) result.backups.append(candidate);
     }
 
     const QString sibling = filePath.endsWith(QLatin1String(".jsonl"), Qt::CaseInsensitive)
         ? filePath.left(filePath.size() - 6)
         : QString();
-    if (!sibling.isEmpty() && fs.isDirectory(sibling)) {
+#ifdef Q_OS_WIN
+    const auto caseSensitivity = fs.wsl() ? Qt::CaseSensitive : Qt::CaseInsensitive;
+#else
+    constexpr auto caseSensitivity = Qt::CaseSensitive;
+#endif
+    // A matching stem is not ownership of storage/configuration shared by sessions.
+    // In particular, subagent-artifacts.jsonl must not claim every peer's artifacts.
+    const QString siblingName = fs.basename(sibling);
+    // The default store's encoded-cwd buckets are shared by many independent sessions.
+    bool sharedSibling = siblingName.startsWith("--") && siblingName.endsWith("--");
+    for (const auto reserved : {QLatin1String(kSharedArtifactsDir), QLatin1String(sessionfiles::kTrashDirName),
+                                   QLatin1String(sessionfiles::kArchiveDirName), QLatin1String(".pi"), QLatin1String(".git")}) {
+        if (siblingName.compare(reserved, caseSensitivity) == 0) sharedSibling = true;
+    }
+    if (fs.basename(directory).compare(QLatin1String(kSharedArtifactsDir), caseSensitivity) == 0) {
+        for (const char *nested : kNestedArtifactDirs)
+            if (siblingName.compare(QLatin1String(nested), caseSensitivity) == 0) sharedSibling = true;
+    }
+    if (!sibling.isEmpty() && !sharedSibling && isDirectory(sibling)) {
         result.siblingDir = sibling;
         result.hasSibling = true;
     }
 
     const QString artifactsDir = fs.join(directory, QLatin1String(kSharedArtifactsDir));
-    if (!fs.isDirectory(artifactsDir)) {
-        result.hasFile = fs.exists(filePath);
+    if (!isDirectory(artifactsDir)) {
+        result.hasFile = exists(filePath);
         return result;
     }
 
     qint64 bytesRead = 0;
+    bool uncertainOwnership = false;
     const auto identities = [&](const QString &path) {
         QString raw;
         QString error;
-        if (!fs.readText(path, &raw, &error)) return QSet<QString>{};
-        const qint64 bytes = raw.toUtf8().size();
-        bytesRead += bytes;
-        if (bytes > kDeleteReadLimit || bytesRead > kTotalReadLimit) {
-            throw ChannelError(QStringLiteral("Session deletion ownership read limit exceeded"));
+        // A missing primary file is an idempotent retry. Any other read failure
+        // leaves ownership unproven, so it must never authorize deleting artifacts.
+        if (path == filePath && !exists(path)) return QSet<QString>{};
+        if (!fs.authorizeDeletionPath(path, {directory}, false)) {
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         }
-        return collectSessionRunIdentities(raw);
+        qint64 bytes = 0;
+        const qint64 limit = qMin(kDeleteReadLimit, kTotalReadLimit - bytesRead);
+        if (!fs.readTextBounded(path, limit, &raw, &bytes, &error)) {
+            throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
+        }
+        bytesRead += bytes;
+        return collectSessionRunIdentities(raw, &uncertainOwnership);
     };
 
-    QSet<QString> runIds = identities(filePath);
-    if (result.hasSibling) {
-        for (const QString &candidate : safeNames(fs, sibling)) {
-            if (!isSubagentRunDirectoryName(candidate)) continue;
-            if (fs.isDirectory(fs.join(sibling, candidate))) runIds.insert(candidate);
+    const auto withSiblingIdentities = [&](const QString &path) {
+        QSet<QString> ids = identities(path);
+        const QString companion = path.left(path.size() - 6);
+        if (isDirectory(companion)) {
+            for (const QString &candidate : safeNames(fs, companion, directory)) {
+                if (isSubagentRunDirectoryName(candidate)
+                    && isDirectory(fs.join(companion, candidate))) ids.insert(candidate);
+            }
         }
-    }
-    if (runIds.isEmpty()) {
-        result.hasFile = fs.exists(filePath);
+        return ids;
+    };
+    QSet<QString> runIds = withSiblingIdentities(filePath);
+    if (runIds.isEmpty() || uncertainOwnership) {
+        result.hasFile = exists(filePath);
         return result;
     }
     // Read peers before collecting artifacts: a failed peer read cannot authorize
     // removing data another session may still need.
+    QSet<QString> peerIds;
     for (const QString &peer : entries) {
-        if (peer == name || !peer.endsWith(QLatin1String(".jsonl"))) continue;
+        if (peer == name || !peer.endsWith(QLatin1String(".jsonl"), Qt::CaseInsensitive)) continue;
         const QString peerPath = fs.join(directory, peer);
-        if (!fs.isFile(peerPath)) continue;
-        for (const QString &id : identities(peerPath)) runIds.remove(id);
+        if (!isFile(peerPath)) continue;
+        peerIds.unite(withSiblingIdentities(peerPath));
+        if (peerIds.size() > kIdentityEntryLimit)
+            throw ChannelError(QStringLiteral("Session deletion identity entry limit exceeded"));
     }
 
+    if (uncertainOwnership) {
+        result.hasFile = exists(filePath);
+        return result;
+    }
+
+    // Native Windows names are case-insensitive, unlike WSL/Linux. Apply the same
+    // filesystem semantics to both ownership sets and candidate artifact names.
+    const auto identityKey = [&fs](const QString &value) {
+#ifdef Q_OS_WIN
+        if (!fs.wsl()) return value.toCaseFolded();
+#endif
+        return value;
+    };
+    const auto normalizedIds = [&identityKey](const QSet<QString> &ids) {
+        QSet<QString> normalized;
+        for (const QString &id : ids) normalized.insert(identityKey(id));
+        return normalized;
+    };
+    runIds = normalizedIds(runIds);
+    peerIds = normalizedIds(peerIds);
+    // An artifact can match several identities; retain it if any peer could own it.
+    // Probe only delimiter boundaries instead of multiplying entries by identities.
+    const auto matches = [&identityKey](const QString &name, const QSet<QString> &ids) {
+        const QString entry = identityKey(name);
+        if (ids.contains(entry)) return true;
+        for (qsizetype i = 1; i < entry.size(); ++i) {
+            if ((entry.at(i) == QLatin1Char('_') || entry.at(i) == QLatin1Char('.'))
+                && ids.contains(entry.left(i))) return true;
+        }
+        return false;
+    };
     const auto collect = [&](const QString &dir) {
-        for (const QString &entry : safeNames(fs, dir)) {
-            bool owned = false;
-            for (const QString &runId : runIds) {
-                if (entry == runId || entry.startsWith(runId + QLatin1Char('_'))
-                    || entry.startsWith(runId + QLatin1Char('.'))) {
-                    owned = true;
-                    break;
-                }
-            }
-            if (owned) result.artifacts.append(fs.join(dir, entry));
+        for (const QString &entry : safeNames(fs, dir, directory)) {
+            if (matches(entry, runIds) && !matches(entry, peerIds))
+                result.artifacts.append(fs.join(dir, entry));
         }
     };
     collect(artifactsDir);
     for (const char *nested : kNestedArtifactDirs) {
         const QString nestedDir = fs.join(artifactsDir, QLatin1String(nested));
-        if (fs.isDirectory(nestedDir)) collect(nestedDir);
+        if (isDirectory(nestedDir)) collect(nestedDir);
     }
-    result.hasFile = fs.exists(filePath);
+    result.hasFile = exists(filePath);
     return result;
+}
+
+/** Validate every target before mutation and unlink nested junctions without following them. */
+void removePermanently(const Plan &planned)
+{
+    QStringList paths = planned.backups + planned.artifacts;
+    if (planned.hasSibling) paths.append(planned.siblingDir);
+    if (planned.hasFile) paths.append(planned.sessionFile);
+    const QString root = planned.nativeRoot.path;
+    const auto authorize = [&root](const QString &path) {
+        if (!pathpolicy::assertAuthorized(
+                path, {root}, QStringLiteral("permanent session deletion"), pathpolicy::Mode::Link).ok) {
+            throw ChannelError(QStringLiteral("Unable to authorize permanent session deletion"));
+        }
+    };
+    // Validate the complete plan before any mutation, then retain native operation
+    // guards. A failed authorization is never a recycle-bin refusal.
+    for (const QString &path : paths) {
+        authorize(path);
+        const scopedmutation::Parent guard(planned.nativeRoot, path);
+    }
+    for (const QString &path : paths) {
+#ifdef Q_OS_WIN
+        const scopedmutation::Parent guard(planned.nativeRoot, path);
+        fsops::removeEntryTree(path);
+#else
+        scopedmutation::removeTree(planned.nativeRoot, path);
+#endif
+    }
 }
 
 QString wslTrashBucket(const SessionFs &fs, const QString &root)
@@ -251,53 +401,5 @@ QString wslTrashBucket(const SessionFs &fs, const QString &root)
 
 sessiondelete::Plan SessionScanner::planDelete(const QString &filePath) const
 {
-    return sessiondelete::plan(fs(), filePath);
-}
-
-QString SessionScanner::softDeleteWsl(const QString &filePath)
-{
-    const QString root = findRootForFile(filePath);
-    const sessiondelete::Plan planned = sessiondelete::plan(fs(), filePath);
-    if (!planned.hasFile && !planned.hasSibling && planned.backups.isEmpty()
-        && planned.artifacts.isEmpty()) {
-        return QString();
-    }
-    const QString bucket = sessiondelete::wslTrashBucket(fs(), root);
-    if (!fs().makeDirectory(bucket)) {
-        throw ChannelError(QStringLiteral("Unable to create the session trash directory"));
-    }
-    QString error;
-    const QString artifactsDir = fs().join(fs().dirname(filePath),
-                                                  QLatin1String(sessiondelete::kSharedArtifactsDir));
-    for (const QString &artifact : planned.artifacts) {
-        QString relative = artifact;
-        if (artifact.startsWith(artifactsDir + QLatin1Char('/'))) {
-            relative = artifact.mid(artifactsDir.size() + 1);
-        } else {
-            relative = fs().basename(artifact);
-        }
-        const QString destination = fs().join(
-            fs().join(bucket, QLatin1String(sessiondelete::kSharedArtifactsDir)), relative);
-        fs().makeDirectory(fs().dirname(destination));
-        if (!fs().moveNoClobber(artifact, destination, &error)) throw ChannelError(error);
-    }
-    for (const QString &backup : planned.backups) {
-        if (!fs().moveNoClobber(backup, fs().join(bucket, fs().basename(backup)), &error)) {
-            throw ChannelError(error);
-        }
-    }
-    if (planned.hasSibling) {
-        if (!fs().moveNoClobber(planned.siblingDir,
-                                       fs().join(bucket, fs().basename(planned.siblingDir)),
-                                       &error)) {
-            throw ChannelError(error);
-        }
-    }
-    if (planned.hasFile) {
-        if (!fs().moveNoClobber(filePath, fs().join(bucket, fs().basename(filePath)),
-                                       &error)) {
-            throw ChannelError(error);
-        }
-    }
-    return bucket;
+    return sessiondelete::plan(fs(), filePath, findRootForFile(filePath));
 }

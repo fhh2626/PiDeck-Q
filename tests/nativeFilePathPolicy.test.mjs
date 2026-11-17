@@ -25,7 +25,7 @@ const skip = !executable && !required ? "Build PiDeck-FilePathPolicyTest to run 
 function native(fixture) {
   assert.ok(executable, "A fresh PiDeck-FilePathPolicyTest executable is required");
   const env = childPathEnvironment(process.env, joinPathParts([qtBinDirectory(), environmentPath()]));
-  const result = spawnSync(executable, [], { env, input: JSON.stringify(fixture), encoding: "utf8", timeout: 20_000 });
+  const result = spawnSync(executable, [], { windowsHide: true, env, input: JSON.stringify(fixture), encoding: "utf8", timeout: 20_000 });
   assert.equal(result.status, 0, result.stderr || String(result.error ?? ""));
   return JSON.parse(result.stdout);
 }

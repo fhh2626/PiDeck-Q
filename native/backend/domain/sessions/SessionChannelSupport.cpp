@@ -217,13 +217,14 @@ QJsonValue scanAndMerge(ChannelServices &services, const QString &projectId)
     // scanner, and `scanroots::resolve` maps it back to the host form when it reads
     // project settings.
     const QString runtimePath = runtimeProjectPath(services, projectPath);
+    const quint64 generation = catalogOf(services).scanGeneration();
     const QVector<SessionSummary> summaries = scannerOf(services).list(runtimePath, runtimePath);
     SessionCatalogStore::Context context;
     if (settingsObject(services).value(QStringLiteral("wslEnabled")).toBool(false)) {
         context.wslDistro = settingsObject(services).value(QStringLiteral("wslDistro")).toString();
         context.wslUser = settingsObject(services).value(QStringLiteral("wslUser")).toString();
     }
-    return catalogOf(services).mergeScanned(projectId, summaries, context);
+    return catalogOf(services).mergeScanned(projectId, summaries, context, generation);
 }
 
 void notifyCatalogRefreshed(ChannelServices &services, const QString &projectId)

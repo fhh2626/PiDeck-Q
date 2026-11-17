@@ -25,6 +25,7 @@ const GIT_ENV = {
 export function git(cwd, args, { allowFailure = false } = {}) {
 	try {
 		return execFileSync("git", args, {
+			windowsHide: true,
 			cwd,
 			encoding: "utf8",
 			env: { ...process.env, ...GIT_ENV },

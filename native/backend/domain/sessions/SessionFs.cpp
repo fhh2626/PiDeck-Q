@@ -16,6 +16,7 @@
 #include <QStandardPaths>
 
 #include <cmath>
+#include <filesystem>
 #include <limits>
 
 namespace {
@@ -174,6 +175,36 @@ bool SessionFs::isDirectory(const QString &path) const
     return ok && present;
 }
 
+bool SessionFs::probeChecked(const QString &path, const QString &flag, bool *present) const
+{
+    if (m_config.wsl) {
+        bool ok = false;
+        *present = wslTest(m_config, flag, path, &ok);
+        return ok;
+    }
+    std::error_code error;
+#ifdef Q_OS_WIN
+    // MSVC symlink_status classifies some mount-point junctions as directories.
+    if (flag == QLatin1String("-L") && QFileInfo(path).isJunction()) {
+        *present = true;
+        return true;
+    }
+    const std::filesystem::path nativePath(path.toStdWString());
+#else
+    const std::filesystem::path nativePath(path.toStdString());
+#endif
+    const auto status = flag == QLatin1String("-L")
+        ? std::filesystem::symlink_status(nativePath, error)
+        : std::filesystem::status(nativePath, error);
+    if (error && error != std::errc::no_such_file_or_directory && error != std::errc::not_a_directory) return false;
+    if (flag == QLatin1String("-e")) *present = std::filesystem::exists(status);
+    else if (flag == QLatin1String("-f")) *present = std::filesystem::is_regular_file(status);
+    else if (flag == QLatin1String("-d")) *present = std::filesystem::is_directory(status);
+    else if (flag == QLatin1String("-L")) *present = std::filesystem::is_symlink(status);
+    else return false;
+    return true;
+}
+
 QStringList SessionFs::listNames(const QString &directory) const
 {
     if (!m_config.wsl) return sessionfiles::listNames(directory);
@@ -186,6 +217,57 @@ QStringList SessionFs::listNames(const QString &directory) const
         if (!line.isEmpty()) names.append(line);
     }
     return names;
+}
+
+bool SessionFs::listNamesChecked(const QString &directory, QStringList *names) const
+{
+    names->clear();
+    if (m_config.wsl) {
+        const CommandResult result = runWsl(m_config, {QStringLiteral("ls"), QStringLiteral("-1A"), directory},
+                                            kCommandTimeoutMs, kMaxListOutput);
+        if (!result.ok) return false;
+        *names = result.output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        return true;
+    }
+    // QDir::entryList conflates an empty directory with a failed enumeration.
+    std::error_code error;
+#ifdef Q_OS_WIN
+    const std::filesystem::path dir(directory.toStdWString());
+#else
+    const std::filesystem::path dir(directory.toStdString());
+#endif
+    std::filesystem::directory_iterator it(dir, error), end;
+    if (error) return false;
+    for (; it != end; it.increment(error)) {
+        if (error) return false;
+#ifdef Q_OS_WIN
+        names->append(QString::fromStdWString(it->path().filename().wstring()));
+#else
+        names->append(QString::fromStdString(it->path().filename().string()));
+#endif
+    }
+    return !error;
+}
+
+bool SessionFs::readTextBounded(const QString &path, qint64 maxBytes, QString *content, qint64 *bytes, QString *error) const
+{
+    if (!m_config.wsl) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return false; }
+        const QByteArray data = file.read(maxBytes + 1);
+        if (file.error() != QFileDevice::NoError || data.size() > maxBytes) return false;
+        *bytes = data.size();
+        *content = QString::fromUtf8(data);
+        return true;
+    }
+    const CommandResult result = runWsl(m_config,
+        {QStringLiteral("head"), QStringLiteral("-c"), QString::number(maxBytes + 1), QStringLiteral("--"), path},
+        kReadTimeoutMs, maxBytes + 2);
+    if (!result.ok) { if (error) *error = result.error; return false; }
+    *bytes = result.output.toUtf8().size();
+    if (*bytes > maxBytes) return false;
+    *content = result.output;
+    return true;
 }
 
 bool SessionFs::readText(const QString &path, QString *content, QString *error) const

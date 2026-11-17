@@ -17,7 +17,7 @@ export async function cacheRoot(t) {
 /** A pid that was real a moment ago. It is re-checked so a fast pid reuse cannot make a "dead" owner alive. */
 export function deadPid() {
 	for (let attempt = 0; attempt < 20; attempt++) {
-		const child = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8", timeout: 10000 });
+		const child = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { windowsHide: true, encoding: "utf8", timeout: 10000 });
 		assert.equal(child.status, 0, child.stderr);
 		const pid = Number(child.stdout);
 		try {

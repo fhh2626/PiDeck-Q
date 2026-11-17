@@ -25,7 +25,7 @@ for (const operation of ["host", "steer"]) {
 			}
 			})().catch((error) => { console.error(error); process.exit(45); });
 		`;
-		const child = spawnSync(process.execPath, ["-e", source], { cwd: process.cwd(), encoding: "utf8", timeout: 6000 });
+		const child = spawnSync(process.execPath, ["-e", source], { windowsHide: true, cwd: process.cwd(), encoding: "utf8", timeout: 6000 });
 		assert.equal(child.status, 0, child.stderr || child.error?.message || `exit ${child.status}`);
 	});
 	for (const reason of ["default-abort", "frozen-error"]) {
@@ -53,7 +53,7 @@ for (const operation of ["host", "steer"]) {
 					}
 				})().catch((error) => { console.error(error); process.exit(46); });
 			`;
-			const child = spawnSync(process.execPath, ["-e", source], { cwd: process.cwd(), encoding: "utf8", timeout: 6000 });
+			const child = spawnSync(process.execPath, ["-e", source], { windowsHide: true, cwd: process.cwd(), encoding: "utf8", timeout: 6000 });
 			assert.equal(child.status, 0, child.stderr || child.error?.message || `exit ${child.status}`);
 		});
 	}

@@ -168,7 +168,7 @@ describe("native2 C++ package freshness", () => {
 		const run = spawnSync(
 			process.execPath,
 			[VERIFIER, "--repo-root", fixture.repo, "--out", fixture.stage],
-			{ encoding: "utf8" },
+			{ windowsHide: true, encoding: "utf8" },
 		);
 		assert.equal(run.status, 1);
 		assert.match(`${run.stdout}${run.stderr}`, /Stale cpp-backend artifact/);
@@ -208,7 +208,7 @@ describe("native2 required stage gate", () => {
 		const run = spawnSync(
 			process.execPath,
 			["--test", "--test-concurrency=1", resolve(REPO_ROOT, "tests", "native2StageQtRuntime.test.mjs")],
-			{ cwd: REPO_ROOT, encoding: "utf8", timeout: 120_000, env: childEnv },
+			{ windowsHide: true, cwd: REPO_ROOT, encoding: "utf8", timeout: 120_000, env: childEnv },
 		);
 		const output = `${run.stdout}${run.stderr}`;
 		assert.notEqual(run.status, 0, `a missing stage must fail the required gate, got:\n${output}`);

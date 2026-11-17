@@ -19,7 +19,7 @@ import { describe, test } from "node:test";
 const REPO_ROOT = process.cwd();
 
 function git(args) {
-	return spawnSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
+	return spawnSync("git", args, { windowsHide: true, cwd: REPO_ROOT, encoding: "utf8" });
 }
 
 function gitAvailable() {

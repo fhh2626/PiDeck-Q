@@ -16,6 +16,7 @@ test("the POSIX fake pi launch shim is executable through the real child-process
 	try {
 		const fake = createFakePi(fixture, {});
 		const result = spawnSync(fake.shim, ["--version"], {
+			windowsHide: true,
 			env: { ...process.env, FAKE_PI_SCENARIO: fake.scenarioPath, FAKE_PI_LOG: fake.logPath },
 			encoding: "utf8", timeout: 10_000,
 		});

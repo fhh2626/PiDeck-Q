@@ -7,25 +7,28 @@ import vm from "node:vm";
 const source = readFileSync("src/renderer/src/hooks/useOverlayActions.ts", "utf8");
 
 function compileHook(reactStub, desktopApiStub) {
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-      esModuleInterop: true,
-    },
-    fileName: "src/renderer/src/hooks/useOverlayActions.ts",
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(output, {
-    module,
-    exports: module.exports,
-    require: (specifier) => {
-      if (specifier === "react") return reactStub;
-      if (specifier === "../desktopApi") return desktopApiStub;
-      return {};
-    },
-  }, { filename: "src/renderer/src/hooks/useOverlayActions.ts" });
-  return module.exports;
+  const modules = new Map();
+  function compile(path) {
+    if (modules.has(path)) return modules.get(path);
+    const output = ts.transpileModule(readFileSync(path, "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+      fileName: path,
+    }).outputText;
+    const module = { exports: {} };
+    modules.set(path, module.exports);
+    vm.runInNewContext(output, {
+      module, exports: module.exports,
+      require: (specifier) => {
+        if (specifier === "react") return reactStub;
+        if (specifier === "../desktopApi") return desktopApiStub;
+        if (specifier === "./useConfirmationQueue") return compile("src/renderer/src/hooks/useConfirmationQueue.ts");
+        if (specifier === "../utils/confirmationQueue") return compile("src/renderer/src/utils/confirmationQueue.ts");
+        throw new Error(`Unexpected dependency ${specifier}`);
+      },
+    }, { filename: path });
+    return module.exports;
+  }
+  return compile("src/renderer/src/hooks/useOverlayActions.ts");
 }
 
 function wrapDesktopApi(api) {
@@ -44,9 +47,14 @@ function createOverlayActionsHarness(desktopApiStub) {
       };
       return [states[index], setter];
     },
-    useCallback(fn) {
-      cursor++;
-      return fn;
+    useRef(initial) {
+      const index = cursor++;
+      states[index] ??= { current: initial };
+      return states[index];
+    },
+    useEffect(effect) {
+      const index = cursor++;
+      if (!states[index]) states[index] = { cleanup: effect() };
     },
     useMemo(factory) {
       cursor++;
@@ -92,9 +100,10 @@ test("useOverlayActions has no feedback / homepage / external-link overlay code"
   assert.doesNotMatch(source, /feedback|homepage|openExternal/);
 });
 
-test("showConfirm sets confirmDialog with full config", () => {
+test("showConfirm retains config and confirms at most once", () => {
   const harness = createOverlayActionsHarness();
-  const onConfirm = () => undefined;
+  let confirmations = 0;
+  const onConfirm = () => { confirmations++; };
 
   const r = harness.render();
   r.showConfirm({
@@ -108,7 +117,10 @@ test("showConfirm sets confirmDialog with full config", () => {
   const r2 = harness.render();
   assert.equal(r2.confirmDialog.title, "Delete?");
   assert.equal(r2.confirmDialog.message, "Are you sure?");
-  assert.equal(r2.confirmDialog.onConfirm, onConfirm);
+  r2.confirmDialog.onConfirm();
+  r2.confirmDialog.onConfirm();
+  assert.equal(confirmations, 1);
+  assert.equal(harness.render().confirmDialog, null);
   assert.equal(r2.confirmDialog.danger, true);
   assert.equal(r2.confirmDialog.confirmLabel, "Delete");
 });
@@ -140,9 +152,10 @@ test("trustRequest set and get", () => {
   assert.equal(r2.trustRequest.projectName, "Test");
 });
 
-test("overlayProps.confirm structure when confirmDialog is set", () => {
+test("overlayProps.confirm exposes config and a functioning once-only action", () => {
   const harness = createOverlayActionsHarness();
-  const onConfirm = () => undefined;
+  let confirmations = 0;
+  const onConfirm = () => { confirmations++; };
 
   const r = harness.render();
   assert.equal(r.overlayProps.confirm, undefined);
@@ -153,7 +166,10 @@ test("overlayProps.confirm structure when confirmDialog is set", () => {
   assert.equal(c.open, true);
   assert.equal(c.props.title, "Delete?");
   assert.equal(c.props.message, "Are you sure?");
-  assert.equal(c.props.onConfirm, onConfirm);
+  c.props.onConfirm();
+  c.props.onConfirm();
+  assert.equal(confirmations, 1);
+  assert.equal(harness.render().overlayProps.confirm, undefined);
   assert.equal(c.props.danger, true);
   assert.equal(c.props.confirmLabel, "Delete");
 });

@@ -1,3 +1,7 @@
+/** An explicit recycle-bin refusal is the only result eligible for user-confirmed retry. */
+export type SessionDeleteResult = boolean | { status: "trash-failed" };
+export type SessionDeleteOptions = { permanent: boolean };
+
 export type ChatRole = "user" | "assistant" | "tool" | "system" | "error";
 
 export type I18nParams = Record<string, string | number | boolean | null | undefined>;

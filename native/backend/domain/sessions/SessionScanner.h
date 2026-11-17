@@ -105,6 +105,22 @@ public:
      */
     sessiondelete::Plan planDelete(const QString &filePath) const;
 
+    struct DeletionStorage {
+        SessionFs fs;
+        QString root;
+    };
+    /** Value-only environment captured before asynchronous runtime identity checks. */
+    struct DeletionSnapshot {
+        SessionFs fs;
+        QString sessionsDir;
+    };
+    DeletionSnapshot deletionSnapshot() const;
+    /** Authorize and capture one storage environment for the entire deletion. */
+    DeletionStorage deletionStorage(const QString &filePath, const QString &projectPath,
+                                    const QString &runtimeProjectPath) const;
+    DeletionStorage deletionStorage(const QString &filePath, const QString &projectPath,
+                                    const QString &runtimeProjectPath, const DeletionSnapshot &snapshot) const;
+
     /**
      * WSL soft delete: move the residue, companion directory and file into the
      * environment's `.pideck-trash/<stamp>/` bucket. Returns the bucket path, empty

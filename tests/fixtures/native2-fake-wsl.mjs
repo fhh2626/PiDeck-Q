@@ -49,6 +49,7 @@ if (command[0] === "pi" && scenario.piRuntime && !command.includes("--version"))
 	// it and inherits this process's environment (that is exactly the Windows env the real
 	// wsl.exe would forward through WSLENV). No top-level `return` here: this file is ESM.
 	const child = spawn(process.execPath, [scenario.piRuntime, ...command.slice(1)], {
+		windowsHide: true,
 		stdio: "inherit",
 		env: { ...process.env },
 	});

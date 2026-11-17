@@ -19,7 +19,7 @@ const RUNTIME_TESTS = [
 /** Forward process startup errors, signals and exit codes without shell interpolation. */
 function runCommand(command, args, options) {
 	return new Promise((resolveRun, reject) => {
-		const child = spawn(command, args, { ...options, stdio: "inherit" });
+		const child = spawn(command, args, { ...options, stdio: "inherit", windowsHide: true });
 		child.once("error", reject);
 		child.once("exit", (code, signal) => {
 			if (code === 0) resolveRun();

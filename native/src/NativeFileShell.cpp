@@ -1,4 +1,8 @@
 #include "NativeFileShell.h"
+#include "../common/ScopedMutation.h"
+#include <QFile>
+#include <QDebug>
+#include <stdexcept>
 
 #include <QDesktopServices>
 #include <QDir>
@@ -25,4 +29,22 @@ QJsonObject revealNativeFile(const QString &path)
     const QString error = ok ? QString() : QStringLiteral("Unable to open the containing folder");
 #endif
     return {{QStringLiteral("ok"), ok}, {QStringLiteral("error"), error}};
+}
+
+QJsonValue trashNativeItem(const QJsonObject &params)
+{
+    QFile file(params.value(QStringLiteral("path")).toString());
+    const bool scoped = params.contains(QStringLiteral("scope"));
+    if (scoped && !params.value(QStringLiteral("scope")).isObject())
+        throw std::runtime_error("Invalid session deletion scope");
+    const bool ok = scoped
+        ? scopedmutation::moveToTrash(scopedmutation::Root::fromJson(params.value(QStringLiteral("scope")).toObject()), file.fileName())
+        : file.moveToTrash();
+    if (!ok) {
+        qWarning() << "Unable to move item to trash:" << (scoped ? QStringLiteral("Scoped native trash refused") : file.errorString());
+        if (params.value(QStringLiteral("typedFailure")).toBool())
+            return QJsonObject{{QStringLiteral("status"), QStringLiteral("trash-failed")}};
+        throw std::runtime_error("Unable to move item to trash");
+    }
+    return QJsonValue(QJsonValue::Null);
 }

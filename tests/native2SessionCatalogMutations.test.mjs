@@ -159,6 +159,9 @@ if (!executable) {
 			const deleted = await invoke("sessions:catalog-delete", [record.id]);
 			assert.equal(deleted.payload.ok, false, JSON.stringify(deleted.payload));
 			assert.match(String(deleted.payload.error?.message ?? ""), /Stop the session runtime/i);
+			const permanent = await invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+			assert.equal(permanent.payload.ok, false, JSON.stringify(permanent.payload));
+			assert.match(String(permanent.payload.error?.message ?? ""), /Stop the session runtime/i);
 
 			// The guard is a refusal, not a partial mutation: the record and its file survive.
 			assert.equal(await catalogTitle(invoke, record.id), before);

@@ -16,7 +16,10 @@ public:
     using AsyncHandler = std::function<void(const QJsonObject &params, AsyncResponder respond)>;
     using EventHandler = std::function<void(const QString &name, const QJsonValue &payload)>;
 
-    explicit HostRpcServer(QObject *parent = nullptr);
+    // Injection allows integration tests to exercise expiration without waiting
+    // for the full production authentication deadline.
+    static constexpr int defaultHelloTimeoutMs() { return 5'000; }
+    explicit HostRpcServer(QObject *parent = nullptr, int helloTimeoutMs = defaultHelloTimeoutMs());
 
     bool start();
     quint16 port() const;

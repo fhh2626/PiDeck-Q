@@ -47,7 +47,7 @@ function isolatedEnv(extra = {}) {
 }
 
 function runCli(args, env) {
-	return spawnSync(process.execPath, [WRAPPER, ...args], { cwd: REPO_ROOT, env, encoding: "utf8" });
+	return spawnSync(process.execPath, [WRAPPER, ...args], { windowsHide: true, cwd: REPO_ROOT, env, encoding: "utf8" });
 }
 
 /** Minimal C++ stage that satisfies the shared package definition (same shape as the default-kind suite). */

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SessionFs.h"
+#include "../../../common/ScopedMutation.h"
 
 #include <QSet>
 #include <QString>
@@ -32,9 +33,11 @@ bool isSessionEditBackupName(const QString &sessionFileName, const QString &cand
 bool isSubagentRunDirectoryName(const QString &name);
 
 /** Identities extracted from persisted subagent tool results. */
-QSet<QString> collectSessionRunIdentities(const QString &raw);
+QSet<QString> collectSessionRunIdentities(const QString &raw, bool *uncertain = nullptr);
 
 struct Plan {
+    scopedmutation::Root nativeRoot;
+    QString sessionFile;
     QStringList backups;
     QStringList artifacts;
     QString siblingDir;
@@ -46,9 +49,15 @@ struct Plan {
  * Enumerate everything a delete must move. Runs before any mutation so a failed
  * enumeration leaves the session fully intact and retryable.
  */
-Plan plan(const SessionFs &fs, const QString &filePath);
+Plan plan(const SessionFs &fs, const QString &filePath, const QString &authorizedRoot);
+
+/** Remove only planned local targets; missing targets are already deleted. */
+void removePermanently(const Plan &plan);
 
 /** Destination bucket for a WSL soft delete (`<root>/.pideck-trash/<ts>-<uuid>`). */
 QString wslTrashBucket(const SessionFs &fs, const QString &root);
+
+/** Soft-delete with a captured adapter/root so environment switches cannot retarget IO. */
+QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QString &root);
 
 } // namespace sessiondelete

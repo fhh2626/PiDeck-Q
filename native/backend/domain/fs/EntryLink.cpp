@@ -1,4 +1,5 @@
 #include "EntryLink.h"
+#include "../../../common/ScopedMutation.h"
 
 #include <QDir>
 #include <QFile>
@@ -37,7 +38,18 @@ std::runtime_error failure(const QString &message)
  */
 std::vector<wchar_t> wideBuffer(const QString &path)
 {
-    const QString native = QDir::toNativeSeparators(path);
+    QString native = QDir::toNativeSeparators(path);
+    // Qt enumerates long paths, but its child QFileInfo values can drop an existing
+    // extended prefix. Reapply it at every Win32 boundary so recursive deletion
+    // cannot mistake a long descendant for a missing entry and leave its parent.
+    if (native.size() >= MAX_PATH - 12 && !native.startsWith(QLatin1String("\\\\?\\"))) {
+        if (native.startsWith(QLatin1String("\\\\"))) {
+            native = QStringLiteral("\\\\?\\UNC\\") + native.mid(2);
+        } else if (native.size() >= 3 && native.at(1) == QLatin1Char(':')
+                   && native.at(2) == QLatin1Char('\\')) {
+            native.prepend(QStringLiteral("\\\\?\\"));
+        }
+    }
     std::vector<wchar_t> buffer(static_cast<size_t>(native.size()) + 1, L'\0');
     native.toWCharArray(buffer.data());
     return buffer;
@@ -414,9 +426,17 @@ void removeEntryTree(const QString &path)
         if (!removeEntry(path)) throw failure(QStringLiteral("Unable to remove %1").arg(path));
         return;
     }
+#ifdef Q_OS_WIN
+    // Keep the directory real and immovable for the entire enumeration/recursion.
+    // A metadata probe alone leaves a junction-swap window before QDir opens it.
+    auto directoryLock = scopedmutation::lockDirectory(path);
+#endif
     const QFileInfoList children = QDir(path).entryInfoList(
         QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden, QDir::NoSort);
     for (const QFileInfo &child : children) removeEntryTree(child.absoluteFilePath());
+#ifdef Q_OS_WIN
+    directoryLock.reset(); // Removing the entry does not traverse it; release its delete denial.
+#endif
     if (!removeEntry(path)) throw failure(QStringLiteral("Unable to remove %1").arg(path));
 }
 

@@ -2,6 +2,7 @@
 
 #include "ScanRoots.h"
 #include "SessionIdentity.h"
+#include "SessionRootHistory.h"
 #include "SummaryCache.h"
 #include "SummaryReader.h"
 #include "WslScanBatch.h"
@@ -132,6 +133,45 @@ void SessionScanner::assertEnvironment(quint64 generation) const
     if (environment()->generation != generation) {
         throw ChannelError(QStringLiteral("Session scan environment changed"));
     }
+}
+
+SessionScanner::DeletionSnapshot SessionScanner::deletionSnapshot() const
+{
+    const auto env = environment();
+    return {env->fs, env->sessionsDir};
+}
+
+/** A catalog record is not authority to delete outside its project's session roots. */
+SessionScanner::DeletionStorage SessionScanner::deletionStorage(
+    const QString &filePath, const QString &projectPath, const QString &runtimeProjectPath) const
+{
+    return deletionStorage(filePath, projectPath, runtimeProjectPath, deletionSnapshot());
+}
+
+SessionScanner::DeletionStorage SessionScanner::deletionStorage(
+    const QString &filePath, const QString &projectPath, const QString &runtimeProjectPath,
+    const DeletionSnapshot &snapshot) const
+{
+    const auto *env = &snapshot;
+    if (!filePath.endsWith(QLatin1String(".jsonl"), Qt::CaseInsensitive))
+        throw ChannelError(QStringLiteral("Unable to authorize session deletion"));
+    QStringList roots = scanroots::resolve(env->fs, m_config.hostHome, projectPath,
+                                           runtimeProjectPath, env->sessionsDir);
+    // Only roots previously observed from settings in this exact environment are durable authority.
+    roots.append(sessionroothistory::roots(m_config.userDataDir, env->fs, projectPath, runtimeProjectPath));
+    // Importers always write to the default root even when scanning a custom root.
+    roots.append(scanroots::defaultSessionsRoot(env->fs, m_config.hostHome));
+    // Prefer the most specific configured root for the trash bucket. The captured
+    // adapter must also be used for planning/mutation if settings switch meanwhile.
+    std::sort(roots.begin(), roots.end(), [](const QString &left, const QString &right) {
+        return left.size() > right.size();
+    });
+    for (const QString &root : roots) {
+        if (env->fs.authorizeDeletionPath(filePath, {root}, true)) return {env->fs, root};
+    }
+    // Old catalogs cannot prove former root authority. Keep deletion fail-closed,
+    // but explain the existing settings-and-refresh recovery path to the user.
+    throw ChannelError(m_translate(QStringLiteral("session.deleteRootNotAuthorized"), QJsonObject{}));
 }
 
 QString SessionScanner::findRootForFile(const QString &filePath) const
@@ -266,6 +306,7 @@ QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const Q
     const QStringList roots =
         scanroots::resolve(scanFs, m_config.hostHome, projectPath, runtimeProjectPath, env->sessionsDir);
     publishRoots(generation, roots);
+    sessionroothistory::remember(m_config.userDataDir, scanFs, projectPath, runtimeProjectPath, roots);
 
     // After a restart the disk cache is the difference between "parse every history" and
     // "stat every history"; it is derived data, so a failure is a cold start.

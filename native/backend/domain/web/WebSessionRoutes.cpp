@@ -14,6 +14,20 @@
  * it is a 400 before a manager sees it.
  */
 namespace webdispatch {
+namespace {
+/** Only fixed, path-free recovery copy may cross this otherwise generic error boundary. */
+Reply deletionFailure(const QString &error)
+{
+    for (const QString &suffix : {QStringLiteral("deleteRootNotAuthorized"), QStringLiteral("wslSafeTrashUnavailable")}) {
+        const QString key = QStringLiteral("session.") + suffix;
+        for (const auto locale : {maincopy::Locale::EnUS, maincopy::Locale::ZhCN}) {
+            if (error == maincopy::translate(locale, key))
+                return Reply{400, errorBody(400, QStringLiteral("webError.") + suffix, error)};
+        }
+    }
+    return internalError();
+}
+} // namespace
 
 void handleSessionRecord(const webroute::Match &match, const HttpRequest &request,
                          ChannelServices &services, ChannelRegistry &registry, Callback callback)
@@ -26,6 +40,13 @@ void handleSessionRecord(const webroute::Match &match, const HttpRequest &reques
                           QJsonArray{match.sessionId, patch}, QStringLiteral("session"), callback);
     }
     if (action == QLatin1String("delete")) {
+        QJsonObject options;
+        if (!readJsonObject(request, &options)
+            || (!options.isEmpty()
+                && (options.size() != 1 || !options.value(QStringLiteral("permanent")).isBool()
+                    || !options.value(QStringLiteral("permanent")).toBool()))) {
+            return callback(badRequest(QStringLiteral("webError.invalidDeleteOptions")));
+        }
         // The oracle separates "the session is running" (400, business message) from an
         // IO/recycle-bin failure (500). Answer the running case before delegating so the
         // browser is not told the service broke when the user simply has to stop it.
@@ -36,8 +57,12 @@ void handleSessionRecord(const webroute::Match &match, const HttpRequest &reques
             return callback(Reply{400, errorBody(400, QStringLiteral("webError.deleteSessionBlocked"),
                                                  message)});
         }
-        return invokeInto(registry, QStringLiteral("sessions:catalog-delete"),
-                          QJsonArray{match.sessionId}, QStringLiteral("deleted"), callback);
+        QJsonArray args{match.sessionId};
+        if (!options.isEmpty()) args.append(QJsonObject{{QStringLiteral("permanent"), true}});
+        registry.invoke(QStringLiteral("sessions:catalog-delete"), args, ChannelResponder(
+            [callback](const QJsonValue &value) { callback(Reply{200, QJsonObject{{QStringLiteral("deleted"), value}}}); },
+            [callback](const QString &error) { callback(deletionFailure(error)); }));
+        return;
     }
     if (action == QLatin1String("copy")) {
         return invokeInto(registry, QStringLiteral("sessions:catalog-copy"),

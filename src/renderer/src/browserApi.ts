@@ -9,6 +9,7 @@ import type {
 } from "../../shared/types";
 import { t } from "./i18n";
 import { createPreviewApi } from "./previewApi";
+import { parseSessionDeleteResponse } from "../../shared/sessionDeleteResponse";
 
 type WebState = {
 	projects: Awaited<ReturnType<PiDesktopApi["projects"]["list"]>>;
@@ -219,13 +220,14 @@ export function createBrowserApi(): PiDesktopApi {
 				void refreshState().catch(() => undefined);
 				return result.session;
 			},
-			deleteRecord: async (sessionId) => {
-				const result = await request<{ deleted: boolean }>(
+			deleteRecord: async (sessionId, options) => {
+				const result = await request<unknown>(
 					`/api/sessions/${encodeURIComponent(sessionId)}/delete`,
-					{ method: "POST", body: "{}" },
+					{ method: "POST", body: JSON.stringify(options ?? {}) },
 				);
-				void refreshState().catch(() => undefined);
-				return result.deleted;
+				const deleted = parseSessionDeleteResponse(result);
+				if (typeof deleted === "boolean") void refreshState().catch(() => undefined);
+				return deleted;
 			},
 			copyRecord: async (sessionId) => {
 				const response = await request<{

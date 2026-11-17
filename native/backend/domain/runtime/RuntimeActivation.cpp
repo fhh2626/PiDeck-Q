@@ -49,6 +49,11 @@ void Coordinator::activate(const QString &sessionId, std::function<void(QJsonObj
                                           QStringLiteral("Backend is shutting down"))));
         return;
     }
+    if (deletionBlocks(sessionId)) {
+        done(errorResult(CommandError::of(errorcode::kRuntimeChanged,
+                                          QStringLiteral("Session deletion is in progress"))));
+        return;
+    }
     if (m_bindings.isReplacingSession(sessionId)) {
         // A replacement (restart/fork/clone) owns the session for its whole handshake:
         // creating a second pi here would answer with a success whose target a later bind
@@ -142,6 +147,12 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                  session->tab().sessionPath =
                                      normalizeSessionPath(entry.filePath, projectPath);
                              }
+                             if (deletionBlocksAgent(agentId)) {
+                                 discardFailedActivation(entry, agentId);
+                                 done(errorResult(CommandError::of(errorcode::kRuntimeChanged,
+                                     QStringLiteral("Session deletion is in progress"))));
+                                 return;
+                             }
                              if (data.value(QStringLiteral("sessionId")).isString()) {
                                  session->tab().piSessionId =
                                      data.value(QStringLiteral("sessionId")).toString();
@@ -221,6 +232,17 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     request.trustOverride = pilaunch::resolveTrustOverride(m_deps.agentDir, projectPath,
                                                            &hasTrustResources);
     auto spawnWith = [this, entry, agentId, projectPath, done](const pilaunch::Launch &launch) {
+        // Trust/version probes can yield. Recheck the captured launch identity at the
+        // last point before pi can open its file, not only the current catalog row.
+        const CatalogEntry actual = deletionidentity::forLaunch(entry, launch);
+        if (!deletionidentity::compatibleLaunch(entry, actual)) {
+            done(nullptr, QStringLiteral("Session runtime environment does not match the catalog"));
+            return;
+        }
+        if (m_shutdown || deletionBlocksEntry(actual)) {
+            done(nullptr, QStringLiteral("Session deletion is in progress"));
+            return;
+        }
         AgentSession::Options options;
         options.agentId = agentId;
         options.projectId = entry.projectId;
@@ -228,11 +250,11 @@ void Coordinator::createAgent(const CatalogEntry &entry,
         options.title = entry.title;
         options.deckSessionId = entry.id;
         options.sessionPath = entry.filePath;
-        options.sessionEnvironment = entry.environment;
+        options.sessionEnvironment = actual.environment;
         options.sessionSource = entry.source;
         options.isInternalSubagent = entry.isInternalSubagent;
-        options.wslDistro = entry.wslDistro;
-        options.wslUser = entry.wslUser;
+        options.wslDistro = actual.wslDistro;
+        options.wslUser = actual.wslUser;
         options.importedSourceId = entry.importedSourceId;
         options.noSession = entry.noSession;
         options.launch = launch;

@@ -62,6 +62,8 @@ void Coordinator::shutdown()
     m_projectionLoads.clear();
     m_compactProjectionExits.clear();
     m_pendingUi.clear();
+    m_deletingTrees.clear();
+    m_wslDeletingTrees.clear();
     for (auto &entry : m_delivery) {
         if (!entry.settled) {
             entry.settled = true;
@@ -258,6 +260,11 @@ bool Coordinator::requireTarget(const QJsonObject &targetJson, Target *out, Comm
         || !m_deps.services->catalog->get(target.sessionId, &entry)) {
         *error = CommandError::of(errorcode::kSessionNotFound,
                                   QStringLiteral("Session not found: %1").arg(target.sessionId));
+        return false;
+    }
+    if (deletionBlocks(target.sessionId) || deletionBlocksAgent(target.agentId)) {
+        *error = CommandError::of(errorcode::kRuntimeChanged,
+                                 QStringLiteral("Session deletion is in progress"));
         return false;
     }
     const QString boundAgent = m_bindings.agentForSession(target.sessionId);

@@ -386,6 +386,25 @@ void identityContextIsACoherentPair()
     check(!torn.load(), "an identity context read is never a mix of two publications");
 }
 
+/** A summary collected before deletion must not recreate the removed path under a new id. */
+void staleScanCannotResurrectDeletion()
+{
+    QTemporaryDir directory;
+    SessionCatalogStore store(pathOf(directory), {});
+    store.load();
+    const QVector<SessionSummary> summaries{summaryFor(QStringLiteral("C:/sessions/deleted.jsonl"), 1)};
+    const QJsonArray initial = store.mergeScanned(QStringLiteral("p1"), summaries, {});
+    const quint64 collectedGeneration = store.scanGeneration();
+    // This ordering is the deterministic owner-thread deletion / worker merge race.
+    store.remove(initial.at(0).toObject().value(QStringLiteral("id")).toString());
+    const QJsonArray stale = store.mergeScanned(QStringLiteral("p1"), summaries, {}, collectedGeneration);
+    check(stale.isEmpty(), "a stale scan cannot resurrect a successfully deleted path");
+    check(store.listEntries().isEmpty() && durableIds(pathOf(directory)).isEmpty(),
+          "stale scan rejection also preserves the durable catalog");
+    const QJsonArray fresh = store.mergeScanned(QStringLiteral("p1"), summaries, {}, store.scanGeneration());
+    check(fresh.size() == 1, "a new scan can discover a genuinely recreated session path");
+}
+
 } // namespace
 
 int main()
@@ -394,6 +413,7 @@ int main()
     readersNeverObserveATornCatalog();
     attachAndRemoveStayConsistent();
     identityContextIsACoherentPair();
+    staleScanCannotResurrectDeletion();
 
     if (g_failures != 0) {
         std::printf("%d failure(s)\n", g_failures);

@@ -1,13 +1,6 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { desktopApi as api } from "../desktopApi";
-
-interface ConfirmDialogConfig {
-  title: string;
-  message: string;
-  onConfirm: () => void;
-  danger?: boolean;
-  confirmLabel?: string;
-}
+import { useConfirmationQueue } from "./useConfirmationQueue";
 
 interface TrustRequest {
   requestId: string;
@@ -16,11 +9,8 @@ interface TrustRequest {
 }
 
 export function useOverlayActions() {
-  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogConfig | null>(null);
+  const { confirmDialog, showConfirm, clearConfirm } = useConfirmationQueue();
   const [trustRequest, setTrustRequest] = useState<TrustRequest | null>(null);
-
-  const showConfirm = useCallback((config: ConfirmDialogConfig) => setConfirmDialog(config), []);
-  const clearConfirm = useCallback(() => setConfirmDialog(null), []);
 
   const overlayProps = useMemo(() => ({
     confirm: confirmDialog ? {
@@ -29,7 +19,7 @@ export function useOverlayActions() {
         title: confirmDialog.title,
         message: confirmDialog.message,
         onConfirm: confirmDialog.onConfirm,
-        onCancel: () => setConfirmDialog(null),
+        onCancel: confirmDialog.onCancel ?? clearConfirm,
         danger: confirmDialog.danger,
         confirmLabel: confirmDialog.confirmLabel,
       },
@@ -44,7 +34,7 @@ export function useOverlayActions() {
         setTrustRequest(null);
       },
     } : undefined,
-  }), [confirmDialog, trustRequest]);
+  }), [confirmDialog, trustRequest, clearConfirm]);
 
   return {
     confirmDialog,

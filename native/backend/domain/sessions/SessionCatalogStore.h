@@ -3,6 +3,7 @@
 #include "CatalogTypes.h"
 #include "SessionSummary.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRecursiveMutex>
@@ -10,6 +11,7 @@
 #include <QVector>
 
 #include <functional>
+#include <optional>
 
 /**
  * The durable session catalog: the single owner of stable session identity.
@@ -92,8 +94,16 @@ public:
                             const QString &modelId, bool hasThinkingLevel, const QString &thinkingLevel);
     QJsonObject update(const QString &id, const QJsonObject &patch);
     CatalogEntry attachRuntime(const QString &sessionId, const QString &filePath, const QString &piSessionId);
+    /** Pin a captured filesystem identity across asynchronous deletion and settlement. */
+    bool pinDeletion(const CatalogEntry &expected);
+    void releaseDeletion(const QString &id);
+    bool removePinned(const CatalogEntry &expected);
+    static bool sameDeletionTarget(const CatalogEntry &left, const CatalogEntry &right);
     bool remove(const QString &id);
     bool removeByFilePath(const QString &filePath, const QString &environment);
+
+    /** Capture before reading files; a completed removal invalidates in-flight summaries. */
+    quint64 scanGeneration() const;
 
     /**
      * Fold scanner output into the catalog and return the project's records.
@@ -101,7 +111,7 @@ public:
      * stable id plus user preferences (title/model/thinking) for known files.
      */
     QJsonArray mergeScanned(const QString &projectId, const QVector<SessionSummary> &summaries,
-                            const Context &context);
+                            const Context &context, std::optional<quint64> generation = std::nullopt);
 
     /** Absolute path of the catalog file (used by tests and logging). */
     const QString &filePath() const { return m_filePath; }
@@ -119,6 +129,7 @@ private:
     QString backupFilePath() const;
     QVector<CatalogEntry> readEntries(const QString &path) const;
     void writeSnapshot(const QVector<CatalogEntry> &entries);
+    void assertPinnedTargets(const QVector<CatalogEntry> &entries) const;
 
     QString m_filePath;
     /** Guards every field below plus the durable write (see the class comment). */
@@ -128,6 +139,8 @@ private:
     ProjectPathResolver m_resolveProjectPath;
     QVector<CatalogEntry> m_entries;
     QVector<CatalogEntry> m_transientEntries;
+    QHash<QString, CatalogEntry> m_deletingEntries;
+    quint64 m_deletionGeneration = 0;
     bool m_loaded = false;
     bool m_skipNextBackup = false;
 };

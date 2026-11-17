@@ -29,7 +29,7 @@ target("PiDeck-Q")
     -- without inferring mode from whether a sidecar file happens to exist.
     add_defines(is_mode("release") and "PIDECK_NATIVE_PACKAGED=1" or "PIDECK_NATIVE_PACKAGED=0")
     add_deps("PiDeckBackend")
-    add_files("native/src/**.cpp")
+    add_files("native/src/**.cpp", "native/common/**.cpp")
     add_includedirs("native/src")
 
     if is_plat("windows") then
@@ -142,7 +142,7 @@ target("PiDeckBackend")
         target:add("includedirs", path.join(root, "include"), path.join(root, "include", "QtSql"))
         target:add("linkdirs", path.join(root, "lib"))
     end)
-    add_files("native/backend/**.cpp")
+    add_files("native/backend/**.cpp", "native/common/**.cpp")
     add_includedirs("native/backend", "native/backend/app", "native/backend/domain",
                     "native/backend/domain/fs", "native/backend/domain/git",
                     "native/backend/domain/runtime", "native/backend/domain/sessions", "native/backend/domain/terminal",
@@ -161,6 +161,17 @@ target("PiDeckBackend")
         -- machine's ANSI code page.
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
         add_syslinks("ws2_32", "psapi")
+    end
+
+-- Operation-boundary path-race regressions; QCoreApplication only, no windows.
+target("PiDeck-ScopedMutationTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/ScopedMutationTest.cpp", "native/common/**.cpp",
+              "native/src/NativeFileShell.cpp", "native/backend/domain/fs/EntryLink.cpp")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end
 
 -- Test-only `wsl.exe` stand-in for the WSL scan batch suite. It must be a native
@@ -206,6 +217,7 @@ target("PiDeck-SessionCatalogConcurrencyTest")
     add_packages("pideck-qt")
     add_files("native/tests/SessionCatalogConcurrencyTest.cpp",
               "native/backend/domain/sessions/SessionCatalogStore.cpp",
+              "native/backend/domain/sessions/SessionCatalogDeletion.cpp",
               "native/backend/domain/sessions/SessionCatalogMerge.cpp",
               "native/backend/domain/sessions/CatalogRecords.cpp",
               "native/backend/domain/sessions/CatalogJson.cpp",
@@ -298,6 +310,20 @@ target("PiDeck-FakePi2")
 
     if is_plat("windows") then
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
+-- Test-only process isolation. Never staged or linked into the application.
+-- A private window station isolates HWNDs and clipboard without changing the real
+-- Windows Qt platform or dropping WebView2/geometry assertions.
+target("PiDeck-IsolatedDesktop")
+    set_kind("binary")
+    set_default(false)
+    add_files("native/tests/IsolatedDesktopLauncher.cpp")
+    if is_plat("windows") then
+        -- The launcher must run even with the packaged test's minimal PATH.
+        set_runtimes("MT")
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+        add_syslinks("user32")
     end
 
 -- File mapping and containment use production helpers without a WSL distribution.

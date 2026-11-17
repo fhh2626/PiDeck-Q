@@ -10,11 +10,11 @@ function ignoredPaths(t, paths) {
 	const directory = mkdtempSync(join(tmpdir(), "pideck-log-ignore-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	writeFileSync(join(directory, ".gitignore"), readFileSync(".gitignore", "utf8"));
-	const initialized = spawnSync("git", ["init", "--quiet", directory], { encoding: "utf8" });
+	const initialized = spawnSync("git", ["init", "--quiet", directory], { windowsHide: true, encoding: "utf8" });
 	assert.equal(initialized.status, 0, initialized.error?.message ?? initialized.stderr);
 	const result = spawnSync("git", [
 		"-C", directory, "-c", "core.excludesFile=", "check-ignore", "--no-index", "--stdin", "-z",
-	], { encoding: "utf8", input: `${paths.join("\0")}\0` });
+	], { windowsHide: true, encoding: "utf8", input: `${paths.join("\0")}\0` });
 	assert.ok(result.status === 0 || result.status === 1, result.error?.message ?? result.stderr);
 	return result.stdout.split("\0").filter(Boolean);
 }

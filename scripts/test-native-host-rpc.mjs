@@ -8,6 +8,7 @@ function run(args) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(xmakeCommand, args, {
 			stdio: "inherit",
+			windowsHide: true,
 			env: { ...process.env, PIDECK_VERSION: packageJson.version },
 		});
 		child.once("error", reject);

@@ -29,6 +29,13 @@ void Coordinator::runReplacement(const Target &target, const QString &command,
                                           QStringLiteral("Session runtime is not available"))));
         return;
     }
+    // The destination is not known until pi has already written the replacement.
+    // Resolve ordinary commands narrowly, but do not start an unprovable path change.
+    if (deletionBlocksPathChange(target.agentId)) {
+        done(errorResult(CommandError::of(errorcode::kRuntimeChanged,
+                                          QStringLiteral("Session deletion is in progress"))));
+        return;
+    }
     Bindings::Reservation reservation;
     try {
         reservation = m_bindings.beginReplacement(target.sessionId, target.agentId);

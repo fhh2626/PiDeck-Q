@@ -34,6 +34,9 @@ QString Coordinator::resolveProjectPath(const QString &projectId) const
 QString Coordinator::normalizeSessionPath(const QString &path, const QString &projectPath) const
 {
     if (path.isEmpty()) return QString();
+    // Linux resolves symlinks before '..'. Keep absolute POSIX spellings intact so
+    // both pi and off-thread ownership resolution traverse the identical path.
+    if (path.startsWith(QLatin1Char('/'))) return path;
     if (QFileInfo(path).isAbsolute()) return QDir::cleanPath(path);
     // pi may report a project-relative sessionFile; resolve it against the project so
     // the catalog never stores a relative path (that would duplicate on the next scan).
@@ -42,7 +45,7 @@ QString Coordinator::normalizeSessionPath(const QString &path, const QString &pr
 
 bool Coordinator::isSessionBusy(const QString &sessionId) const
 {
-    if (m_bindings.isActivating(sessionId)) return true;
+    if (m_bindings.isActivating(sessionId) || m_bindings.isReplacingSession(sessionId)) return true;
     const QString agentId = m_bindings.agentForSession(sessionId);
     if (agentId.isEmpty()) return false;
     const AgentSession *session = agent(agentId);
@@ -190,6 +193,8 @@ void Coordinator::observeUiRequest(const Target &target, const AgentSession::Pen
 
 int Coordinator::bindSession(const QString &sessionId, const QString &agentId)
 {
+    if (deletionBlocks(sessionId) || deletionBlocksAgent(agentId))
+        throw ChannelError(QStringLiteral("Session deletion is in progress"));
     const int generation = m_bindings.bind(sessionId, agentId);
     // Oracle `bind` unconditionally drops this session's pending asks: after a rebind the
     // process that asked them is gone or has a new generation, so a late answer must not
@@ -201,6 +206,8 @@ int Coordinator::bindSession(const QString &sessionId, const QString &agentId)
 int Coordinator::completeReplacement(const QString &sessionId, const QString &agentId,
                                     const QString &newSessionId, const QString &newAgentId)
 {
+    if (deletionBlocks(newSessionId) || deletionBlocksAgent(newAgentId))
+        throw ChannelError(QStringLiteral("Session deletion is in progress"));
     const int generation =
         m_bindings.completeReplacement(sessionId, agentId, newSessionId, newAgentId);
     clearPendingUi(newSessionId);

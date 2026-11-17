@@ -14,6 +14,8 @@ import type {
 	ChatMessage,
 	ImageContent,
 	SessionCommandResult,
+	SessionDeleteOptions,
+	SessionDeleteResult,
 	SessionLaunchPreferences,
 	SessionMessagePage,
 	SessionRuntimeTarget,
@@ -25,6 +27,7 @@ import {
 	normalizeAskQuestionResultSummary,
 } from "../../../shared/askQuestion";
 import { toolResultMissingMetadata, TOOL_STATUS_UNKNOWN } from "../../../shared/toolOutcome";
+import { parseSessionDeleteResponse } from "../../../shared/sessionDeleteResponse";
 import type { WebState } from "./webTypes";
 import { readWebMessageMetadata, type WebMessageMetadata } from "./webMessageMetadata";
 
@@ -175,25 +178,26 @@ export async function stopRuntime(target: SessionRuntimeTarget): Promise<Session
 }
 
 /** 删除指定会话记录；会话若处于运行态需先停止才能删除。 */
-export async function deleteSession(sessionId: string): Promise<boolean> {
+export async function deleteSession(sessionId: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
 	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, {
 		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(options ?? {}),
 	});
 	if (!res.ok) {
 		let message = `delete session ${res.status}`;
 		try {
-			const body = (await res.json()) as { error?: string };
-			if (body.error) message = body.error;
+			const body: unknown = await res.json();
+			if (typeof body === "object" && body !== null && "error" in body && typeof body.error === "string") {
+				message = body.error;
+			}
 		} catch {
 			// ignore json parse error
 		}
 		throw new Error(message);
 	}
-	const payload = (await res.json()) as { deleted?: boolean };
-	if (payload.deleted !== true) {
-		throw new Error("delete session failed");
-	}
-	return true;
+	const payload: unknown = await res.json();
+	return parseSessionDeleteResponse(payload);
 }
 
 export async function fetchMessagePage(

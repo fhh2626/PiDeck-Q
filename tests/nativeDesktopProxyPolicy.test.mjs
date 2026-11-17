@@ -23,6 +23,7 @@ function native(fixtures) {
 	assert.ok(executable, "A fresh PiDeck-DesktopProxyPolicyTest executable is required");
 	const env = childPathEnvironment(process.env, joinPathParts([qtBinDirectory(), environmentPath()]));
 	const result = spawnSync(executable, [], {
+		windowsHide: true,
 		env, input: JSON.stringify(fixtures), encoding: "utf8", timeout: 20_000,
 	});
 	assert.equal(result.status, 0, result.stderr || String(result.error ?? ""));

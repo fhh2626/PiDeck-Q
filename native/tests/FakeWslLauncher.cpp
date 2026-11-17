@@ -107,7 +107,8 @@ int main(int argc, char **argv)
         }
     }
     PROCESS_INFORMATION child{};
-    if (!CreateProcessW(nullptr, mutableLine.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
+    // This fixture inherits its pipes but must not allocate a visible console.
+    if (!CreateProcessW(nullptr, mutableLine.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
                         &startup, &child)) {
         std::fprintf(stderr, "fake-wsl: could not start node (%lu)\n", GetLastError());
         return 127;

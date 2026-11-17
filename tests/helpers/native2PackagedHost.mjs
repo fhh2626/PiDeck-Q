@@ -1,7 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isolatedDesktopCommand } from "./isolatedDesktop.mjs";
+import { connectFixturePage } from "./packagedCdpEndpoint.mjs";
 
 import { childPathEnvironment, environmentPath } from "./native2BackendHarness.mjs";
 import { joinPathParts } from "./native2FakeProcess.mjs";
@@ -102,7 +105,7 @@ export function verifyPackagedStage(stage) {
 	const verifier = spawnSync(
 		process.execPath,
 		["scripts/verify-build-artifacts.mjs", "--out", stage],
-		{ env: process.env, encoding: "utf8" },
+		{ env: process.env, encoding: "utf8", windowsHide: true },
 	);
 	if (verifier.status !== 0) {
 		throw new Error(`verify-build-artifacts rejected ${stage}: ${verifier.stdout}${verifier.stderr}`);
@@ -135,7 +138,12 @@ const FAKE_PI_EXE = "pi.exe";
  * `~/.pi`, a fixture project, and the native fake pi in its own PATH directory.
  */
 export function createHostFixture({ fakePi, prefix = "pideck-native2-package-" }) {
-	const root = mkdtempSync(join(tmpdir(), prefix));
+	// Per-desktop drive mappings (for example a developer's RAM-disk TEMP) may not
+	// exist on a noninteractive station. Use the physical per-user temp directory.
+	const tempRoot = process.platform === "win32" && process.env.LOCALAPPDATA
+		? join(process.env.LOCALAPPDATA, "Temp") : tmpdir();
+	mkdirSync(tempRoot, { recursive: true });
+	const root = mkdtempSync(join(tempRoot, prefix));
 	const userData = join(root, "user-data");
 	const webview2 = join(root, "webview2");
 	const piHome = join(root, "pi-home");
@@ -170,6 +178,7 @@ export function createHostFixture({ fakePi, prefix = "pideck-native2-package-" }
 			customPiPath: "",
 			enableNotifications: false,
 			closeToTray: false,
+			singleInstance: false,
 		}),
 	);
 	return {
@@ -181,16 +190,10 @@ export function createHostFixture({ fakePi, prefix = "pideck-native2-package-" }
 		piDirectory,
 		piExecutable,
 		piTrafficLog: join(root, "pi-traffic.log"),
-		cleanup: () => {
-			// WebView2 keeps its own processes (and their profile handles) alive for a moment
-			// after the host dies, so a single rm can race the release. Retry generously and
-			// leave the directory behind rather than failing an otherwise green gate.
-			try {
-				rmSync(root, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 });
-			} catch (error) {
-				console.log(`warning: temp fixture could not be removed: ${String(error)}`);
-			}
-		},
+		// Yield while Windows completes asynchronous process/file-handle teardown.
+		// The sync remover can fail before teardown gets an event-loop turn. A real
+		// resource leak must fail the gate, not silently leave a WebView2 profile.
+		cleanup: () => rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 }),
 	};
 }
 
@@ -200,6 +203,7 @@ export function processTable() {
 		"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize | ConvertTo-Json -Compress";
 	const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
 		encoding: "utf8",
+		windowsHide: true,
 		maxBuffer: 32 * 1024 * 1024,
 	});
 	if (result.status !== 0) throw new Error(`process table unavailable: ${result.stderr}`);
@@ -231,7 +235,7 @@ export function descendants(pid) {
  * Start the packaged host. `PATH` is deliberately minimal; the stage must provide every
  * DLL it needs and nothing may fall back to the machine's Node installation.
  */
-export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv = {} }) {
+export function launchHost({ stage, fixture, isolatedPath = true, extraEnv = {} }) {
 	const host = resolve(stage, process.platform === "win32" ? "PiDeck-Q.exe" : "PiDeck-Q");
 	const pathParts = isolatedPath
 		? ["C:\\Windows\\system32", "C:\\Windows", fixture.piDirectory, stage]
@@ -248,9 +252,12 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 			...process.env,
 			PIDECK_USER_DATA: fixture.userData,
 			PIDECK_HOME: fixture.piHome,
+			PIDECK_REGISTER_DESKTOP_INTEGRATION: "0",
 			FAKE_PI_LOG: fixture.piTrafficLog,
 			WEBVIEW2_USER_DATA_FOLDER: fixture.webview2,
-			WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+			// Noninteractive windows are naturally occluded. Keep animation/timer work
+			// scheduled so CDP tests observe the same renderer as a foreground window.
+			WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=0 --disable-features=CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
 		},
 		hostPath,
 	);
@@ -260,10 +267,19 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 	delete environment.PIDECK_SIDECAR_ARGS;
 	// Re-applied through the helper so an override cannot reintroduce a second, case-variant
 	// search-path entry next to the isolated one.
-	const child = spawn(host, [], {
+	const isolated = isolatedDesktopCommand(host);
+	const child = spawn(isolated.command, isolated.args, {
+		windowsHide: true,
 		cwd: fixture.project,
 		env: childPathEnvironment({ ...environment, ...extraEnv }, environmentPath(extraEnv, hostPath)),
 		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const startedAt = Date.now();
+	let admittedAt;
+	let releaseAdmission;
+	const admitted = new Promise((resolveAdmission) => {
+		releaseAdmission = resolveAdmission;
+		if (process.platform !== "win32") { admittedAt = startedAt; resolveAdmission(true); }
 	});
 	const output = { stdout: "", stderr: "" };
 	child.stdout.on("data", (chunk) => {
@@ -271,28 +287,40 @@ export function launchHost({ stage, fixture, port, isolatedPath = true, extraEnv
 	});
 	child.stderr.on("data", (chunk) => {
 		output.stderr += chunk.toString("utf8");
+		if (!admittedAt && output.stderr.includes("isolated-desktop: noninteractive station established")) {
+			admittedAt = Date.now();
+			releaseAdmission(true);
+		}
 	});
 	const exited = new Promise((resolve) => {
 		child.once("error", (error) => {
 			output.error = error.message;
+			releaseAdmission(false);
 			resolve({ code: null, signal: null, at: Date.now(), ...output });
 		});
-		child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now(), ...output }));
+		child.once("exit", (code, signal) => {
+			releaseAdmission(false);
+			resolve({ code, signal, at: Date.now(), ...output });
+		});
 	});
-	const startedAt = Date.now();
+	const closed = new Promise((resolveClosed) => child.once("close", (code, signal) => resolveClosed({ code, signal })));
 	return {
 		child,
 		exited,
+		closed,
+		admitted,
+		get admittedAt() { return admittedAt ?? startedAt; },
 		output,
 		startedAt,
 		hostPath,
+		debugPortFile: join(fixture.webview2, "EBWebView", "DevToolsActivePort"),
 		kill: () => {
 			if (child.exitCode === null) child.kill();
 		},
 		/** Force-kill the whole tree (test cleanup only; the quit gate never uses this). */
 		killTree: () => {
 			if (process.platform === "win32") {
-				spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+				spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 			} else if (child.exitCode === null) {
 				child.kill("SIGKILL");
 			}
@@ -357,6 +385,7 @@ export class Cdp {
 			});
 			client = new Cdp(socket);
 			await client.send("Runtime.enable", {}, { timeoutMs: Math.max(1, deadline - Date.now()) });
+			await client.send("Emulation.setFocusEmulationEnabled", { enabled: true });
 			return client;
 		} catch (error) {
 			if (client) client.close();
@@ -401,8 +430,10 @@ export class Cdp {
 		return result.result?.value;
 	}
 
-	async text() {
-		return (await this.evaluate("document.body.innerText")) ?? "";
+	/** Polling may observe navigation before body commits; ordinary assertions remain strict. */
+	async text({ allowMissingBody = false } = {}) {
+		const text = await this.evaluate(allowMissingBody ? "document.body?.innerText ?? null" : "document.body.innerText");
+		return text ?? (allowMissingBody ? null : "");
 	}
 
 	async clickSelector(selector) {
@@ -446,9 +477,9 @@ export class Cdp {
 		if (!box) throw new Error("composer was not found");
 		await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
 		await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
-		await sleep(120);
+		await waitFor(this, "document.activeElement?.getAttribute('contenteditable') === 'true'", { label: "composer focus" });
 		await this.send("Input.insertText", { text });
-		await sleep(150);
+		await waitFor(this, `document.querySelector("[contenteditable='true']")?.textContent.includes(${JSON.stringify(text)})`, { label: "composer input" });
 		for (const type of ["keyDown", "keyUp"]) {
 			await this.send("Input.dispatchKeyEvent", {
 				type,
@@ -468,40 +499,32 @@ export class Cdp {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Wait for a CDP page target and connect to it. */
-export async function connectPage(port, { timeoutMs = 120_000, launch } = {}) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (launch && (launch.child.exitCode !== null || launch.child.signalCode || launch.output.error)) {
-			throw new Error(`packaged host exited before WebView2 was ready: ${JSON.stringify({
-				code: launch.child.exitCode, signal: launch.child.signalCode, ...launch.output,
-			})}`);
-		}
-		try {
-			const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
-				signal: AbortSignal.timeout(Math.min(2_000, Math.max(1, deadline - Date.now()))),
-			});
-			const targets = await response.json();
-			const page = targets.find((target) => target.type === "page");
-			if (page) return {
-				cdp: await Cdp.connect(page.webSocketDebuggerUrl, { timeoutMs: Math.min(5_000, Math.max(1, deadline - Date.now())) }),
-				target: page,
-			};
-		} catch {
-			// host still booting
-		}
-		await sleep(250);
-	}
-	throw new Error(`the packaged host never exposed a CDP page target on port ${port}: ${JSON.stringify(launch?.output ?? {})}`);
+/** Clear a losing guard timer instead of keeping the worker alive after a fast exit. */
+export async function within(promise, timeoutMs) {
+	let timer;
+	try {
+		return await Promise.race([promise, new Promise((resolveTimeout) => {
+			timer = setTimeout(() => resolveTimeout(null), timeoutMs);
+		})]);
+	} finally { clearTimeout(timer); }
+}
+
+/** Discover only this launch's dynamically assigned, profile-bound CDP endpoint. */
+export function connectPage(port, options = {}) {
+	return connectFixturePage(port, { ...options, connectClient: Cdp.connect });
 }
 
 export async function waitForText(cdp, needle, { timeoutMs = 60_000, absent = false } = {}) {
 	const deadline = Date.now() + timeoutMs;
 	let text = "";
 	while (Date.now() < deadline) {
-		text = await cdp.text();
-		const present = text.includes(needle);
-		if (absent ? !present : present) return text;
+		const snapshot = await cdp.text({ allowMissingBody: true });
+		// A missing document is not evidence that a loading/error message disappeared.
+		if (snapshot !== null) {
+			text = snapshot;
+			const present = text.includes(needle);
+			if (absent ? !present : present) return text;
+		}
 		await sleep(250);
 	}
 	throw new Error(`timed out waiting for ${absent ? "absence of" : ""} "${needle}"; page said: ${text.slice(0, 600)}`);
@@ -558,26 +581,6 @@ export async function pageRpc(cdp, channel, args = []) {
 		body: JSON.stringify({ channel, args }),
 	});
 	return { status: response.status, payload: await response.json() };
-}
-
-export function findFreePort(start = 9400) {
-	// Deterministic-enough scan: the gate only needs a port nothing else listens on.
-	for (let port = start; port < start + 200; port += 1) {
-		const probe = spawnSync(
-			process.platform === "win32" ? "powershell.exe" : "sh",
-			process.platform === "win32"
-				? [
-						"-NoProfile",
-						"-NonInteractive",
-						"-Command",
-						`if ((Test-NetConnection -ComputerName 127.0.0.1 -Port ${port} -InformationLevel Quiet -WarningAction SilentlyContinue)) { exit 0 } else { exit 1 }`,
-					]
-				: ["-c", `(echo > /dev/tcp/127.0.0.1/${port}) >/dev/null 2>&1 && exit 0 || exit 1`],
-			{ stdio: "ignore" },
-		);
-		if (probe.status !== 0) return port;
-	}
-	throw new Error("no free loopback port found for the CDP endpoint");
 }
 
 export function pathInside(root, candidate) {

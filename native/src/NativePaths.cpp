@@ -43,6 +43,10 @@ NativePaths NativePaths::fromEnvironment()
         ? compiledPackaged
         : packagedOverride == QStringLiteral("1");
 
+    // Window-station isolation does not isolate HKCU or the user's Start Menu.
+    // Keep normal registration, but let unattended fixtures opt out of global
+    // shell integration; its implementations are tested against private targets.
+    paths.registerDesktopIntegration = qEnvironmentVariable("PIDECK_REGISTER_DESKTOP_INTEGRATION") != QStringLiteral("0");
     paths.userDataDir = qEnvironmentVariable("PIDECK_USER_DATA");
     if (paths.userDataDir.isEmpty()) {
         paths.userDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);

@@ -14,6 +14,7 @@ import {
 // The oracle's own CSV parser and header, not a re-implementation: a C++ sampling run must be
 // readable by the native memory-profile analyzer.
 import { MEMORY_PROFILE_HEADER, parseMemoryCsv } from "../scripts/lib/memoryProfileCsv.ts";
+import { appLogLines } from "./helpers/nativeAppLog.mjs";
 
 /**
  * Foundation regression suite: the defects the independent foundation review found in the
@@ -53,25 +54,6 @@ function catalogEntries(fixture) {
 	return JSON.parse(readFileSync(path, "utf8")).sessions ?? [];
 }
 
-/** Read every app-log line written so far (the log is a plain JSON-lines file). */
-function appLogLines(fixture) {
-	const directory = join(fixture.userData, "logs");
-	if (!existsSync(directory)) return [];
-	const lines = [];
-	for (const name of readdirSync(directory)) {
-		if (!name.endsWith(".log")) continue;
-		for (const line of readFileSync(join(directory, name), "utf8").split("\n")) {
-			if (!line.trim()) continue;
-			try {
-				lines.push(JSON.parse(line));
-			} catch {
-				// A partially flushed last line is not interesting here.
-			}
-		}
-	}
-	return lines;
-}
-
 /** One TCP connection that writes each entry of `writes` as its own `write()` call. */
 function writeSegments(port, writes) {
 	return new Promise((resolve, reject) => {
@@ -91,7 +73,12 @@ function writeSegments(port, writes) {
 		socket.on("connect", () => {
 			// Written back to back so the second request is in flight while the first is still
 			// being served: that is the state in which the old parser replayed the first body.
+			// Queue the pipeline together: separate uncorked writes can be held by
+			// Nagle until after the first response closes the connection. Late-byte
+			// delivery has its own explicit in-flight barrier regression.
+			socket.cork();
 			for (const chunk of writes) socket.write(chunk);
+			socket.uncork();
 		});
 		socket.on("data", (chunk) => {
 			received += chunk.toString("utf8");

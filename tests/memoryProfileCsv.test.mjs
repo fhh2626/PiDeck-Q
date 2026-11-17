@@ -204,7 +204,7 @@ test("analyze-memory.mjs 对 fixture 输出聚合报告（脚本侧回归）", a
 		const { stdout } = await execFileAsync(process.execPath, [
 			"scripts/analyze-memory.mjs",
 			csvPath,
-		]);
+		], { windowsHide: true });
 		// 增长排行：渲染窗口#1 涨 100MB 排第一，主进程持平
 		assert.ok(stdout.includes("渲染窗口#1#1 (Tab)"), `缺进程行: ${stdout}`);
 		assert.ok(stdout.includes("100.0 MB"), `缺增长数值: ${stdout}`);

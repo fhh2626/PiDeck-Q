@@ -21,6 +21,13 @@ function loadBrowserApiModule() {
 					t: (key, params) => `${key}:${params?.status ?? ""}:${params?.statusText ?? ""}`,
 				};
 			}
+			if (specifier === "../../shared/sessionDeleteResponse") {
+				const parser = { exports: {} };
+				vm.runInNewContext(ts.transpileModule(readFileSync("src/shared/sessionDeleteResponse.ts", "utf8"), {
+					compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+				}).outputText, parser);
+				return parser.exports;
+			}
 			if (specifier === "./previewApi") {
 				return {
 					createPreviewApi: () => ({

@@ -49,7 +49,13 @@ public:
     bool exists(const QString &path) const;
     bool isFile(const QString &path) const;
     bool isDirectory(const QString &path) const;
+    /** Return false on probe failure; present distinguishes absence from errors. */
+    bool probeChecked(const QString &path, const QString &flag, bool *present) const;
     QStringList listNames(const QString &directory) const;
+    /** Strict enumeration for ownership checks; failures are not empty directories. */
+    bool listNamesChecked(const QString &directory, QStringList *names) const;
+    /** Bounded ownership read; rejects oversized files before decoding. */
+    bool readTextBounded(const QString &path, qint64 maxBytes, QString *content, qint64 *bytes, QString *error) const;
 
     bool readText(const QString &path, QString *content, QString *error) const;
     bool readHead(const QString &path, qint64 maxBytes, QString *content, QString *error) const;
@@ -58,6 +64,9 @@ public:
     bool moveNoClobber(const QString &from, const QString &to, QString *error) const;
     bool removeFile(const QString &path) const;
     bool makeDirectory(const QString &path) const;
+
+    /** Deletion-only containment check; a leaf link may be moved but never followed. */
+    bool authorizeDeletionPath(const QString &path, const QStringList &roots, bool allowLeafLink) const;
 
     QStringList collectJsonl(const QString &root, bool allowArchive) const;
 

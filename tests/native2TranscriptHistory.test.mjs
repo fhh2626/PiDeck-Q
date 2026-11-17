@@ -27,7 +27,7 @@ test("native compaction payloads preserve and page history through the real rend
   assert.ok(executable, "A fresh PiDeck-TranscriptHistoryTest executable is required");
   const env = childPathEnvironment(process.env,
     joinPathParts([qtBinDirectory(), environmentPath(process.env)]));
-  const cases = JSON.parse(execFileSync(executable, [], { env, encoding: "utf8", timeout: 30_000 }));
+  const cases = JSON.parse(execFileSync(executable, [], { windowsHide: true, env, encoding: "utf8", timeout: 30_000 }));
   assert.equal(cases.ordinary.preserveHistory, true,
     "ordinary file-version updates must not discard the loaded history prefix");
   assert.equal(cases.compacted.windowStartFilePos, 8, "cursor uses the complete active branch");

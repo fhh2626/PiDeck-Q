@@ -66,7 +66,7 @@ describe("native2 summary cache write ordering", { skip }, () => {
 			process.env,
 			joinPathParts([qtBinDirectory(REPO), environmentPath(process.env)]),
 		);
-		const output = execFileSync(executable, [], { env, encoding: "utf8", timeout: 60_000 });
+		const output = execFileSync(executable, [], { windowsHide: true, env, encoding: "utf8", timeout: 60_000 });
 
 		const lines = output.split("\n").map((line) => line.trim()).filter(Boolean);
 		assert.equal(lines.filter((line) => line.startsWith("not ok")).length, 0, `unexpected failure:\n${output}`);

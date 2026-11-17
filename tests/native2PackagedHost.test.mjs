@@ -23,7 +23,6 @@ import {
 	connectPage,
 	createHostFixture,
 	descendants,
-	findFreePort,
 	launchHost,
 	pageRpc,
 	pathInside,
@@ -35,6 +34,7 @@ import {
 	verifyPackagedStage,
 	waitFor,
 	waitForText,
+	within,
 } from "./helpers/native2PackagedHost.mjs";
 
 const packaged = requirePackagedHost();
@@ -44,16 +44,18 @@ const available = packaged.available && fakePi !== "" && process.platform === "w
 /** Launch a host for one test and always tear it and the fixture down. */
 async function withHost(t, { isolatedPath = true } = {}) {
 	const fixture = createHostFixture({ fakePi });
-	const port = findFreePort();
-	const launch = launchHost({ stage: packaged.stage, fixture, port, isolatedPath });
+	const launch = launchHost({ stage: packaged.stage, fixture, isolatedPath });
 	t.after(async () => {
 		if (launch.child.exitCode === null) launch.killTree();
-		await sleep(1500);
-		fixture.cleanup();
+		assert.ok(await within(launch.closed, 5_000), "isolated process tree did not close its handles during cleanup");
+		await fixture.cleanup();
 	});
-	const { cdp } = await connectPage(port, { launch });
+	const { cdp } = await connectPage(0, { launch });
 	t.after(() => cdp.close());
 	await waitForText(cdp, "PIDECK-Q", { timeoutMs: 120_000 });
+	// The brand can render before bootstrap data. Wait for this fixture's project
+	// rather than mistaking the initial empty shell for a loaded workspace.
+	await waitFor(cdp, `Boolean([...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "project" || button.textContent.trim() === "fixture-project"))`, { timeoutMs: 120_000, label: "fixture project bootstrap" });
 	await waitForText(cdp, "Loading history sessions", { absent: true, timeoutMs: 120_000 });
 	return { fixture, launch, cdp };
 }
@@ -61,7 +63,7 @@ async function withHost(t, { isolatedPath = true } = {}) {
 /** Create the fixture project's agent through the real sidebar. */
 async function openAgent(cdp) {
 	assert.ok((await cdp.clickByText("fixture-project")) || (await cdp.clickByText("project")), "project row missing");
-	await sleep(1_200);
+	await waitFor(cdp, `Boolean([...document.querySelectorAll("button")].find((button) => !button.disabled && (button.getAttribute("aria-label") === "New Agent" || button.textContent.trim() === "New Agent")))`, { label: "New Agent control readiness" });
 	assert.ok((await cdp.clickByLabel("New Agent")) || (await cdp.clickByText("New Agent")), "New Agent control missing");
 	await waitFor(cdp, "Boolean(document.querySelector(\"[contenteditable='true']\"))", { label: "composer" });
 }
@@ -138,7 +140,7 @@ if (!available) {
 			assert.ok(existsSync(join(stage, "sqldrivers", "qsqlite.dll")), "the QSQLITE driver must be staged");
 
 			const { cdp, launch } = await withHost(t);
-			const bootMs = Date.now() - launch.startedAt;
+			const bootMs = Date.now() - launch.admittedAt;
 
 			// 3. Static bundle + bootstrap + token handling on the real WebView page. The
 			//    visible href is read from the page itself: the host navigates away from the
@@ -221,7 +223,7 @@ if (!available) {
 			// Clean quit through the window control the page owns (closeToTray=false).
 			assert.equal(await cdp.clickByLabel("Close window"), true, "the window close control was not found");
 			const quitStarted = Date.now();
-			const exit = await Promise.race([launch.exited, sleep(20_000).then(() => null)]);
+			const exit = await within(launch.exited, 20_000);
 			assert.ok(exit, "the packaged host did not exit after the window close request");
 			assert.equal(exit.code, 0, `the packaged host exited with ${exit.code}`);
 			const quitMs = Date.now() - quitStarted;

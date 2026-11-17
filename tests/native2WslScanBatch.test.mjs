@@ -208,6 +208,7 @@ describe("native2 WSL scan batches", { skip: launcher ? false : "PiDeck-FakeWsl 
 			const hostile = '/home/dev/a b"q&x(1);$(touch /tmp/nope).jsonl';
 			const argv = ["-d", "Ubuntu", "-u", "dev", "sh", "-c", READ_FILES_SCRIPT, "pideck-scan-read", hostile];
 			const result = spawnSync(launcher, argv, {
+				windowsHide: true,
 				env: { ...process.env, FAKE_WSL_SCRIPT: echo, FAKE_WSL_NODE: process.execPath },
 				encoding: "utf8",
 			});

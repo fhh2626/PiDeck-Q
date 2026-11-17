@@ -23,6 +23,7 @@ import { WebHeader, type WebHeaderStatus } from "./WebHeader";
 import { WebTimeline } from "./WebTimeline";
 import { WebComposer } from "./WebComposer";
 import { useWebStreamMessageCache } from "./useWebStreamMessageCache";
+import { useWebSessionDeletion } from "./useWebSessionDeletion";
 import { sameUiMessages } from "./webMessageMergeHelpers";
 import {
 	respondToUi,
@@ -30,7 +31,6 @@ import {
 	createProject,
 	createSession,
 	deleteProject,
-	deleteSession,
 	fetchTurnPage,
 	fetchModels,
 	fetchState,
@@ -621,23 +621,22 @@ export function WebChatApp() {
 		}
 	};
 
-	const handleDeleteSession = async (sessionId: string) => {
-		setCommandError(null);
-		try {
-			await deleteSession(sessionId);
+	const sessionDeletion = useWebSessionDeletion({
+		sessions: state.sessions,
+		onError: setCommandError,
+		onDeleted: async (sessionId) => {
 			delete messagesBySessionRef.current[sessionId];
 			delete historyMetaRef.current[sessionId];
 			loadedSessionsRef.current.delete(sessionId);
 			deferredHistoryApplyRef.current.delete(sessionId);
-			if (activeSessionId === sessionId) {
+			if (activeSessionIdRef.current === sessionId) {
 				setActiveSessionId("");
 				setMessages([]);
 			}
-			await refreshNow();
-		} catch (error) {
-			setCommandError(error instanceof Error ? error.message : String(error));
-		}
-	};
+			await refreshNow(true);
+		},
+	});
+	const handleDeleteSession = sessionDeletion.handleDeleteSession;
 
 	const updateActiveSessionState = (patch: { model?: { provider: string; modelId: string }; thinkingLevel?: string }) => {
 		setState((current) => ({
@@ -741,7 +740,7 @@ export function WebChatApp() {
 		}
 	};
 
-	const refreshNow = async () => {
+	const refreshNow = async (propagateFailure = false) => {
 		try {
 			const next = await fetchState();
 			setState(next);
@@ -749,10 +748,12 @@ export function WebChatApp() {
 			const nextConnection = markWebStateSuccess();
 			connectionRef.current = nextConnection;
 			setConnected(nextConnection.connected);
-		} catch {
+		} catch (error) {
 			const nextConnection = markWebStateFailure(connectionRef.current);
 			connectionRef.current = nextConnection;
 			setConnected(nextConnection.connected);
+			// A committed deletion must surface refresh failure without suggesting retry.
+			if (propagateFailure) throw error;
 		}
 	};
 
@@ -882,6 +883,7 @@ export function WebChatApp() {
 
 	return (
 		<div className="app wechat-shell flex h-full w-full min-w-0 overflow-hidden bg-background text-foreground">
+			{sessionDeletion.confirmation}
 			<WebSidebar
 				state={state}
 				activeSessionId={activeSessionId}

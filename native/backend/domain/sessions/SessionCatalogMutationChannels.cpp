@@ -20,9 +20,7 @@
  */
 #include "SessionChannelSupport.h"
 
-#include "SessionDelete.h"
-
-#include "../fs/TrashHelper.h"
+#include "SessionDeleteChannels.h"
 #include "../process/BackgroundWork.h"
 #include "../runtime/RuntimeCoordinator.h"
 #include "EventHub.h"
@@ -196,82 +194,7 @@ void registerSessionCatalogMutationChannels(ChannelRegistry &registry, ChannelSe
                               });
                       });
 
-    registry.addAsync(QStringLiteral("sessions:catalog-delete"),
-                      [&services](const QJsonArray &args, ChannelResponder responder) {
-                          const QString sessionId = channels::stringArg(args, 0);
-                          // Planning is IO-bound (it reads peer sessions to prove artifact
-                          // ownership) so it runs off-thread; the recycle-bin requests must
-                          // stay on the event loop because they are host RPCs. The tree
-                          // verdict that gates both is answered on the owner thread.
-                          runWhenTreeIdle(
-                              services, sessionId,
-                              [&services, sessionId]() -> QJsonValue {
-                                  CatalogEntry entry;
-                                  if (!findEntry(services, sessionId, &entry)) {
-                                      return QJsonObject{{QStringLiteral("missing"), true}};
-                                  }
-                                  SessionScanner &scanner = scannerOf(services);
-                                  QJsonObject plan{{QStringLiteral("missing"), false}};
-                                  plan.insert(QStringLiteral("projectId"), entry.projectId);
-                                  plan.insert(QStringLiteral("wsl"), scanner.fs().wsl());
-                                  plan.insert(QStringLiteral("hasFile"), !entry.filePath.isEmpty());
-                                  if (entry.filePath.isEmpty()) return plan;
-                                  if (scanner.fs().wsl()) {
-                                      const QString bucket = scanner.softDeleteWsl(entry.filePath);
-                                      plan.insert(QStringLiteral("bucket"), bucket);
-                                      return plan;
-                                  }
-                                  const sessiondelete::Plan planned = scanner.planDelete(entry.filePath);
-                                  QJsonArray targets;
-                                  for (const QString &path : planned.backups) targets.append(path);
-                                  for (const QString &path : planned.artifacts) targets.append(path);
-                                  if (planned.hasSibling) targets.append(planned.siblingDir);
-                                  if (planned.hasFile) targets.append(entry.filePath);
-                                  plan.insert(QStringLiteral("targets"), targets);
-                                  return plan;
-                              },
-                              [&services, sessionId, responder](background::Outcome outcome) mutable {
-                                  if (!outcome.ok) {
-                                      responder.reject(outcome.error);
-                                      return;
-                                  }
-                                  const QJsonObject plan = outcome.value.toObject();
-                                  const QString projectId =
-                                      plan.value(QStringLiteral("projectId")).toString();
-                                  auto removeEntry = [&services, sessionId, projectId,
-                                                      responder]() mutable {
-                                      try {
-                                          catalogOf(services).remove(sessionId);
-                                          notifyCatalogRefreshed(services, projectId);
-                                          responder.resolve(true);
-                                      } catch (const std::exception &failure) {
-                                          responder.reject(QString::fromUtf8(failure.what()));
-                                      }
-                                  };
-                                  if (plan.value(QStringLiteral("missing")).toBool()) {
-                                      responder.resolve(false);
-                                      return;
-                                  }
-                                  const QJsonArray targets = plan.value(QStringLiteral("targets")).toArray();
-                                  if (targets.isEmpty() || !services.host) {
-                                      removeEntry();
-                                      return;
-                                  }
-                                  QStringList paths;
-                                  for (const QJsonValue &value : targets) paths.append(value.toString());
-                                  trashhelper::trashAll(
-                                      services.host, paths,
-                                      [removeEntry, responder](bool ok, const QString &error) mutable {
-                                          if (!ok) {
-                                              // A failed recycle-bin move must not drop the catalog
-                                              // record: the file is still on disk.
-                                              responder.reject(error);
-                                              return;
-                                          }
-                                          removeEntry();
-                                      });
-                              });
-                      });
+    registerSessionDeleteChannel(registry, services);
 }
 
 } // namespace sessionchannels

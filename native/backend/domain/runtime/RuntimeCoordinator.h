@@ -4,6 +4,7 @@
 #include "AgentSession.h"
 #include "RuntimeBindings.h"
 #include "RuntimeTypes.h"
+#include "DeletionIdentity.h"
 
 #include "../ChannelContext.h"
 #include "../sessions/CatalogTypes.h"
@@ -221,6 +222,18 @@ public:
      * verdict itself reads the live agent table, which only the owner thread may touch.
      */
     void sessionTreeBlockAsync(const QString &sessionId, std::function<void(const QJsonObject &)> done);
+    /** Atomically check idle and reserve the tree until the deletion responder settles. */
+    void reserveDeletionAsync(const CatalogEntry &root, const SessionFs &fs,
+                              std::function<void(const QJsonObject &)> done);
+    /** Release a deletion reservation on the runtime owner thread. */
+    void releaseDeletion(const QString &sessionId);
+    /** Blocks activation/commands for the reserved tree, including overlapping file aliases. */
+    bool deletionBlocks(const QString &sessionId) const;
+    /** Check the actual process path too, including runtimes not yet in the catalog. */
+    bool deletionBlocksAgent(const QString &agentId) const;
+    bool deletionBlocksEntry(const CatalogEntry &candidate) const;
+    /** Path-changing RPCs have an unknown destination until pi replies. */
+    bool deletionBlocksPathChange(const QString &agentId) const;
 
     /**
      * Re-push full renderer state after an event-stream gap.
@@ -549,6 +562,9 @@ private:
      */
     Qt::HANDLE m_ownerThreadId = nullptr;
     Bindings m_bindings;
+    QHash<QString, CatalogEntry> m_deletingTrees;
+    /** Provisional admission becomes a known-path scoped lease after worker resolution. */
+    QHash<QString, deletionidentity::Lease> m_wslDeletingTrees;
     /** (size, mtime) cache for the per-session cache-hit scan (`cacheHitStats.ts`). */
     cachehit::Reader m_cacheHits;
     std::map<QString, std::unique_ptr<AgentSession>> m_agents;

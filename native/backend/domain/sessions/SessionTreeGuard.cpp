@@ -8,14 +8,18 @@ bool sameEnvironment(const CatalogEntry &entry, const LiveAgent &agent)
 {
     if (entry.environment != agent.environment) return false;
     if (entry.environment != QLatin1String("wsl")) return true;
-    return entry.wslDistro == agent.wslDistro && entry.wslUser == agent.wslUser;
+    // WSL users share a distribution's filesystem. Missing distro metadata cannot
+    // prove isolation, and Windows distribution names are case-insensitive.
+    return entry.wslDistro.isEmpty() || agent.wslDistro.isEmpty()
+        || entry.wslDistro.compare(agent.wslDistro, Qt::CaseInsensitive) == 0;
 }
 
 bool sameEnvironment(const CatalogEntry &left, const CatalogEntry &right)
 {
     if (left.environment != right.environment) return false;
     if (left.environment != QLatin1String("wsl")) return true;
-    return left.wslDistro == right.wslDistro && left.wslUser == right.wslUser;
+    return left.wslDistro.isEmpty() || right.wslDistro.isEmpty()
+        || left.wslDistro.compare(right.wslDistro, Qt::CaseInsensitive) == 0;
 }
 
 bool isPathInSessionTree(const QString &rootFile, const QString &candidate, const QString &environment)
@@ -23,7 +27,9 @@ bool isPathInSessionTree(const QString &rootFile, const QString &candidate, cons
     const QString root = sessionidentity::canonicalizeSessionPath(rootFile, environment);
     const QString target = sessionidentity::canonicalizeSessionPath(candidate, environment);
     if (target == root) return true;
-    if (!root.endsWith(QLatin1String(".jsonl"))) return false;
+    // Deletion accepts the suffix regardless of case even on case-sensitive WSL;
+    // only the suffix is folded, never Linux path components.
+    if (!root.endsWith(QLatin1String(".jsonl"), Qt::CaseInsensitive)) return false;
     // The trailing separator is required: without it `same-other.jsonl` would be
     // classified as a child of `same.jsonl`.
     const QString childDir = root.left(root.size() - 6) + QLatin1Char('/');

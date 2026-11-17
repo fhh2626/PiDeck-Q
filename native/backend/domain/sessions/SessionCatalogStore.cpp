@@ -102,6 +102,7 @@ QVector<CatalogEntry> SessionCatalogStore::readEntries(const QString &path) cons
 
 void SessionCatalogStore::writeSnapshot(const QVector<CatalogEntry> &entries)
 {
+    assertPinnedTargets(entries);
     QJsonArray sessions;
     for (const CatalogEntry &entry : entries) sessions.append(catalogjson::toJson(entry));
     const QJsonObject snapshot{
@@ -379,6 +380,8 @@ bool SessionCatalogStore::removeTransient(const QString &id)
 {
     QMutexLocker<QRecursiveMutex> lock(&m_mutex);
     assertLoaded();
+    if (m_deletingEntries.contains(id))
+        throw ChannelError(QStringLiteral("Session deletion is in progress"));
     for (int index = 0; index < m_transientEntries.size(); ++index) {
         if (m_transientEntries.at(index).id == id) {
             m_transientEntries.removeAt(index);
@@ -616,6 +619,7 @@ bool SessionCatalogStore::remove(const QString &id)
         }
         return false;
     });
+    if (removed) ++m_deletionGeneration;
     return removed;
 }
 
@@ -636,5 +640,6 @@ bool SessionCatalogStore::removeByFilePath(const QString &filePath, const QStrin
         }
         return false;
     });
+    if (removed) ++m_deletionGeneration;
     return removed;
 }

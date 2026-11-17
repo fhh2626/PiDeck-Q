@@ -90,7 +90,7 @@ function waitForData(client, tabId, predicate, timeoutMs = 20_000) {
 /** Read real child identities through the host's process table. */
 function childProcesses(parentPid) {
 	if (!IS_WINDOWS) {
-		const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm="], { encoding: "utf8", timeout: 20_000 });
+		const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,comm="], { windowsHide: true, encoding: "utf8", timeout: 20_000 });
 		return output.split("\n").flatMap((line) => {
 			const fields = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
 			return fields && Number(fields[2]) === parentPid ? [{ ProcessId: Number(fields[1]), Name: fields[3] }] : [];
@@ -102,7 +102,7 @@ function childProcesses(parentPid) {
 	const output = execFileSync(
 		"powershell",
 		["-NoProfile", "-NonInteractive", "-Command", script],
-		{ encoding: "utf8", timeout: 20_000 },
+		{ encoding: "utf8", timeout: 20_000, windowsHide: true },
 	).trim();
 	if (!output) return [];
 	const parsed = JSON.parse(output);
@@ -366,13 +366,17 @@ if (!executable) {
 
 	test("terminal:close kills the process and forgets the tab", async (t) => {
 		const { invoke, projectPath, backend } = await startTerminalSession(t);
+		// windowsHide may give the backend its own hidden console. That console
+		// belongs to the backend lifetime, not this terminal; track only children
+		// introduced by creation, retaining both the real shell and its PTY host.
+		const existing = new Set(childProcesses(backend.child.pid).map((entry) => entry.ProcessId));
 		const created = await invoke("terminal:create", [projectTarget(projectPath), TEST_SHELL]);
 		const tabId = created.payload.result.id;
 
-		const before = childProcesses(backend.child.pid);
+		const before = childProcesses(backend.child.pid).filter((entry) => !existing.has(entry.ProcessId));
 		assert.ok(
-			before.some((entry) => entry.ProcessId > 0),
-			"the backend must own the PTY child process",
+			before.some((entry) => entry.ProcessId > 0 && (IS_WINDOWS ? entry.Name.toLowerCase() === "cmd.exe" : /bash$/.test(entry.Name))),
+			"the backend must own this terminal's real shell process",
 		);
 
 		const closed = await invoke("terminal:close", [tabId]);

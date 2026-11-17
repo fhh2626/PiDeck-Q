@@ -23,6 +23,7 @@ import { Input } from "../ui-shadcn/input";
 import { PathTooltip } from "../ui-shadcn/PathTooltip";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
+import type { SessionDeleteOutcome } from "../../hooks/deleteSessionWithConfirmation";
 
 // Button 收口状态（P0 UI 统一）：抽屉头部/文件工具行图标按钮已换 shadcn Button（ghost + 原 tailwind class 保留）。
 // 保留原生 button（内容排版/折叠区块语义 + 自定义 CSS 驱动，P2 CSS 收口时迁移）：
@@ -179,7 +180,7 @@ export function SessionsPanel(props: {
 	onRename: (filePath: string, newName: string) => void | Promise<void>;
 	onCopy: (session: SessionSummary) => void | Promise<void>;
 	onExport: (session: SessionSummary) => void | Promise<void>;
-	onDelete: (session: SessionSummary) => void | Promise<void>;
+	onDelete: (session: SessionSummary) => void | Promise<void | SessionDeleteOutcome>;
 }) {
 	const [renamingPath, setRenamingPath] = useState<string | null>(null);
 	const [editValue, setEditValue] = useState("");
@@ -209,7 +210,7 @@ export function SessionsPanel(props: {
 	async function runSessionAction(
 		session: SessionSummary,
 		actionType: "copy" | "export" | "delete",
-		action: () => void | Promise<void>,
+		action: () => void | Promise<void | SessionDeleteOutcome>,
 		successText: string,
 	) {
 		setSessionActionLoading({ filePath: session.filePath, action: actionType });
@@ -222,8 +223,12 @@ export function SessionsPanel(props: {
 			3500,
 		);
 		try {
-			await action();
-			showNotice(successText, 1600);
+			const outcome = await action();
+			// Deletion owns a second asynchronous confirmation. Cancellation and failure
+			// must settle loading without being translated into a success notice.
+			if (actionType !== "delete" || outcome === undefined || outcome === "deleted") {
+				showNotice(successText, 1600);
+			}
 		} catch (error) {
 			showNotice(
 				error instanceof Error ? error.message : t("drawer.sessionActionFailed"),
@@ -492,7 +497,7 @@ export function SessionHistoryModal(props: {
 	onRename: (filePath: string, newName: string) => void | Promise<void>;
 	onCopy: (session: SessionSummary) => void | Promise<void>;
 	onExport: (session: SessionSummary) => void | Promise<void>;
-	onDelete: (session: SessionSummary) => void | Promise<void>;
+	onDelete: (session: SessionSummary) => void | Promise<void | SessionDeleteOutcome>;
 }) {
 	return (
 		<Dialog open onOpenChange={(next) => !next && props.onClose()}>

@@ -90,6 +90,7 @@ function newestBackendSource(repoRoot) {
 		}
 	};
 	walk(join(repoRoot, "native", "backend"));
+	walk(join(repoRoot, "native", "common"));
 	const definition = join(repoRoot, "xmake.lua");
 	if (existsSync(definition)) {
 		const mtimeMs = statSync(definition).mtimeMs;
@@ -236,7 +237,12 @@ export class FakeHost {
 							}
 						}
 						const handler = this.handlers[frame.method];
-						if (!handler) return;
+						// Missing fixture wiring must not wait for an OS dialog or a full
+						// production timeout. Intentional stalls declare a no-op handler.
+						if (!handler) {
+							this.respondError(frame.id, `Unexpected host request in test: ${frame.method}`);
+							return;
+						}
 						const outcome = handler(frame.params ?? {});
 						if (outcome === undefined) return;
 						socket.write(
@@ -333,6 +339,7 @@ export function spawnBackend({ executable, hostPort, token, env = {}, cwd = proc
 	// its insertion position. A duplicate ambient spelling must not outrank the caller.
 	const childPath = joinPathParts([qtBinDirectory(cwd), environmentPath(env, environmentPath(process.env))]);
 	const child = spawn(executable, [], {
+		windowsHide: true,
 		cwd,
 		env: {
 			...childPathEnvironment(merged, childPath),
@@ -389,7 +396,7 @@ export async function stopBackendProcess(backend, host, { graceMs = 3_000 } = {}
 				if (process.platform === "win32" && backend.child.pid) {
 					// Kill this exact fixture's descendants, never other Node or Pi processes.
 					spawnSync("taskkill", ["/PID", String(backend.child.pid), "/T", "/F"], {
-						stdio: "ignore", timeout: 5_000,
+						stdio: "ignore", timeout: 5_000, windowsHide: true,
 					});
 				} else {
 					backend.child.kill("SIGKILL");

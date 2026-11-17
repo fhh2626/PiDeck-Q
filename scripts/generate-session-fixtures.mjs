@@ -219,6 +219,7 @@ async function defaultWslRunner(command, args, options = {}) {
 		encoding: "utf8",
 		maxBuffer: 4 * 1024 * 1024,
 		...execOptions,
+		windowsHide: true,
 	});
 	if (input !== undefined) {
 		if (!execution.child?.stdin) throw new Error("WSL runner stdin is unavailable");

@@ -27,7 +27,7 @@ async function findPosixShell() {
 	const candidates = [...new Set([process.env.SHELL, "/bin/sh", "sh"].filter(Boolean))];
 	for (const command of candidates) {
 		try {
-			await execFile(command, ["-c", "exit 0"], { encoding: "utf8" });
+			await execFile(command, ["-c", "exit 0"], { windowsHide: true, encoding: "utf8" });
 			return command;
 		} catch {}
 	}
@@ -284,7 +284,7 @@ test("shell quoting and WSL invocation keep shell text out of argument positions
 		const injected = join(root, "injected-by-shell");
 		const payload = `literal; touch ${injected}; echo escaped`;
 		const script = `set -eu; printf %s ${shellQuote(payload)} > ${shellQuote(output)}`;
-		const execution = execFile(shellCommand, ["-s"], { encoding: "utf8" });
+		const execution = execFile(shellCommand, ["-s"], { windowsHide: true, encoding: "utf8" });
 		execution.child.stdin.end(script);
 		await execution;
 		assert.equal(await readFile(output, "utf8"), payload);

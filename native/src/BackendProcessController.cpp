@@ -180,7 +180,10 @@ bool BackendProcessController::start()
     environment.insert(QStringLiteral("PIDECK_LOCALE"), preferredLanguages.constFirst());
     environment.insert(QStringLiteral("PIDECK_PREFERRED_LANGUAGES_JSON"),
                        QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(preferredLanguages)).toJson(QJsonDocument::Compact)));
-    environment.insert(QStringLiteral("PIDECK_HOME"), QDir::homePath());
+    // Acceptance tests and portable profiles explicitly select an agent home.
+    // Replacing it with the real home leaks user sessions/config into the fixture.
+    const QString agentHome = environment.value(QStringLiteral("PIDECK_HOME"));
+    environment.insert(QStringLiteral("PIDECK_HOME"), agentHome.isEmpty() ? QDir::homePath() : agentHome);
     environment.insert(QStringLiteral("PIDECK_ARGV_JSON"),
                       QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(QCoreApplication::arguments())).toJson(QJsonDocument::Compact)));
     m_process.setProcessEnvironment(environment);

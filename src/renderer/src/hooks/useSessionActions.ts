@@ -8,6 +8,8 @@ import type {
 } from "../../../shared/types";
 import { isSameSessionPath } from "../agentListDisplay";
 import { t } from "../i18n";
+import { deleteSessionWithConfirmation } from "./deleteSessionWithConfirmation";
+import type { ConfirmDialogConfig } from "../utils/confirmationQueue";
 
 export type RefreshProjectSessions = (
   projectId: string,
@@ -32,7 +34,7 @@ export interface UseSessionActionsOptions {
     sessions: {
       copyRecord: (sessionId: string) => Promise<{ cancelled?: boolean; targetSessionId?: string }>;
       exportRecordHtml: (sessionId: string) => Promise<{ path: string }>;
-      deleteRecord: (sessionId: string) => Promise<boolean>;
+      deleteRecord: (sessionId: string, options?: import("../../../shared/types").SessionDeleteOptions) => Promise<import("../../../shared/types").SessionDeleteResult>;
       archiveRecord: (sessionId: string) => Promise<boolean>;
       unarchiveRecord: (archivedPath: string) => Promise<boolean>;
       listArchived: () => Promise<SessionSummary[]>;
@@ -41,6 +43,8 @@ export interface UseSessionActionsOptions {
     };
   };
   showToast: (message: string, duration?: number) => void;
+  showConfirm: (config: ConfirmDialogConfig) => void;
+  clearConfirm: () => void;
 }
 
 /**
@@ -63,6 +67,8 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     refreshProjectSessions,
     api,
     showToast,
+    showConfirm,
+    clearConfirm,
   } = options;
 
   function commitSessionSelection(
@@ -109,16 +115,18 @@ export function useSessionActions(options: UseSessionActionsOptions) {
   }
 
   async function deleteHistorySession(session: SessionSummary) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-      showToast(t("app.sessionDeleted"), 2200);
-      const projectId = sessionsProjectId ?? activeProjectId;
-      if (projectId) await refreshProjectSessions(projectId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    const projectId = sessionsProjectId ?? activeProjectId;
+    return deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.name || session.id,
+      deleteRecord: api.sessions.deleteRecord, showConfirm, clearConfirm,
+      onSuccess: async () => {
+        removeSessionState(session.id);
+        removeSessionComposerState(session.id);
+        // The history panel owns its final success notice and waits for this result.
+        if (projectId) await refreshProjectSessions(projectId);
+      },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   /** 归档历史会话：文件移入归档目录并从列表移除（可恢复，区别于删除） */

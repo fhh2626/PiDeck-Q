@@ -35,6 +35,7 @@ const CANDIDATES = nativeBuildPaths("PiDeck-SessionCatalogConcurrencyTest");
 const SOURCES = [
 	"native/tests/SessionCatalogConcurrencyTest.cpp",
 	"native/backend/domain/sessions/SessionCatalogStore.cpp",
+	"native/backend/domain/sessions/SessionCatalogDeletion.cpp",
 	"native/backend/domain/sessions/SessionCatalogStore.h",
 	"native/backend/domain/sessions/SessionCatalogMerge.cpp",
 	"native/backend/domain/sessions/CatalogRecords.cpp",
@@ -86,7 +87,7 @@ describe("native2 session catalog concurrency", { skip }, () => {
 		);
 		let output = "";
 		try {
-			output = execFileSync(executable, [], { env, encoding: "utf8", timeout: 180_000 });
+			output = execFileSync(executable, [], { windowsHide: true, env, encoding: "utf8", timeout: 180_000 });
 		} catch (error) {
 			// A crash is the failure mode of an unsynchronised store, so report its output
 			// (the red evidence) instead of a bare exit status.
@@ -104,11 +105,14 @@ describe("native2 session catalog concurrency", { skip }, () => {
 		assert.match(output, /^ok - every attach either bound the record or reported not-found$/m);
 		assert.match(output, /^ok - a concurrently removed id is really reported as a clean not-found$/m);
 		assert.match(output, /^ok - an identity context read is never a mix of two publications$/m);
+		assert.match(output, /^ok - a stale scan cannot resurrect a successfully deleted path$/m);
+		assert.match(output, /^ok - stale scan rejection also preserves the durable catalog$/m);
+		assert.match(output, /^ok - a new scan can discover a genuinely recreated session path$/m);
 		assert.match(output, /all session catalog concurrency cases passed/);
 
 		// Every documented case must actually have run: a silently shortened suite would
 		// still print the summary line.
 		const okCount = lines.filter((line) => line.startsWith("ok - ")).length;
-		assert.equal(okCount, 16, `expected 16 assertions, saw ${okCount}:\n${output}`);
+		assert.equal(okCount, 19, `expected 19 assertions, saw ${okCount}:\n${output}`);
 	});
 });

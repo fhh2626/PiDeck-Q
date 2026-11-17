@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { holdExclusiveFileLock } from "./helpers/native2FileLock.mjs";
 
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "sessions";
@@ -108,8 +109,9 @@ if (executable) {
 			if (root) rmSync(root, { recursive: true, force: true });
 		});
 
-		const start = async (t) => {
+		const start = async (t, hostHandlers = {}) => {
 			const session = await startBackendSession(t, {
+				hostHandlers,
 				projects: [{ id: PROJECT_ID, path: projectPath }],
 				settings: { language: "en-US" },
 				env: { PIDECK_HOST_HOME: homeDir, PIDECK_DOWNLOADS_DIR: downloadsDir },
@@ -133,6 +135,89 @@ if (executable) {
 
 			const second = await invoke("sessions:catalog-create-draft", [{ projectId: PROJECT_ID, title: "Draft two" }]);
 			assert.notEqual(second.payload.result.id, record.id);
+		});
+
+		test("catalog-delete rejects malformed permanent deletion options without removing the record", async (t) => {
+			const { invoke } = await start(t);
+			const created = await invoke("sessions:catalog-create-draft", [{ projectId: PROJECT_ID, title: "Protected draft" }]);
+			const id = created.payload.result.id;
+			const deleted = await invoke("sessions:catalog-delete", [id, { permanent: "true" }]);
+			assert.equal(deleted.payload.ok, false, JSON.stringify(deleted.payload));
+			const list = await invoke("sessions:catalog-list", [PROJECT_ID, { scan: false }]);
+			assert.ok(list.payload.result.some((record) => record.id === id));
+		});
+
+		test("explicit trash refusal preserves the catalog and a permanent retry removes only owned targets", async (t) => {
+			const calls = [];
+			const { invoke } = await start(t, { "shell.trashItem": (params) => {
+				calls.push(params);
+				if (calls.length === 1) { rmSync(params.path, { recursive: true, force: true }); return { result: null }; }
+				return { result: { status: "trash-failed" } };
+			} });
+			const filePath = writeSessionFile(sessionsDir, projectPath, { name: "trash-failure" });
+			const peerPath = writeSessionFile(sessionsDir, projectPath, { name: "trash-peer" });
+			const backup = `${filePath}.1700000000000-0f0e0d0c-0b0a-4908-8706-050403020100.edit-backup`;
+			writeFileSync(backup, "backup");
+			const artifacts = join(sessionsDir, "subagent-artifacts", "outputs");
+			mkdirSync(artifacts, { recursive: true });
+			const owned = "11111111-2222-4333-8444-555555555555";
+			const shared = "99999999-8888-4777-8666-555555555555";
+			const entry = (runId) => JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "subagent", details: { mode: "single", runId } } });
+			writeFileSync(filePath, `${readFileSync(filePath, "utf8")}${entry(owned)}\n${entry(shared)}\n`);
+			writeFileSync(peerPath, `${readFileSync(peerPath, "utf8")}${entry(shared)}\n`);
+			const ownedPath = join(artifacts, `${owned}_output`);
+			const sharedPath = join(artifacts, `${shared}_output`);
+			const longDir = join(ownedPath, "long-" + "x".repeat(110), "nested-" + "y".repeat(80));
+			mkdirSync(longDir, { recursive: true }); writeFileSync(join(longDir, "result.txt"), "owned");
+			assert.ok(join(longDir, "result.txt").length > 260);
+			mkdirSync(sharedPath); writeFileSync(join(sharedPath, "result.txt"), "shared");
+			const list = await invoke("sessions:catalog-list", [PROJECT_ID]);
+			const record = list.payload.result.find((item) => slash(item.filePath) === slash(filePath));
+			const failed = await invoke("sessions:catalog-delete", [record.id]);
+			assert.deepEqual(failed.payload.result, { status: "trash-failed" });
+			assert.equal(calls[0].typedFailure, true);
+			assert.equal(existsSync(backup), false, "a previously moved target is already absent on retry");
+			assert.ok(existsSync(filePath));
+			const cached = await invoke("sessions:catalog-list", [PROJECT_ID, { scan: false }]);
+			assert.ok(cached.payload.result.some((item) => item.id === record.id));
+			const removed = await invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+			assert.equal(removed.payload.result, true, JSON.stringify(removed.payload));
+			assert.equal(existsSync(filePath), false);
+			assert.equal(existsSync(ownedPath), false);
+			assert.ok(existsSync(sharedPath));
+			assert.ok(existsSync(peerPath));
+			const after = await invoke("sessions:catalog-list", [PROJECT_ID, { scan: false }]);
+			assert.equal(after.payload.result.some((item) => item.id === record.id), false);
+		});
+
+		test("bridge failures are not recycle-bin refusals", async (t) => {
+			const { invoke } = await start(t, { "shell.trashItem": () => ({ ok: false, error: "bridge unavailable" }) });
+			const filePath = writeSessionFile(sessionsDir, projectPath, { name: "bridge-failure" });
+			const list = await invoke("sessions:catalog-list", [PROJECT_ID]);
+			const record = list.payload.result.find((item) => slash(item.filePath) === slash(filePath));
+			const result = await invoke("sessions:catalog-delete", [record.id]);
+			assert.equal(result.payload.ok, false);
+			const after = await invoke("sessions:catalog-list", [PROJECT_ID, { scan: false }]);
+			assert.ok(after.payload.result.some((item) => item.id === record.id));
+		});
+
+		test("a failed permanent deletion keeps its catalog record", { skip: process.platform !== "win32" }, async (t) => {
+			const { invoke } = await start(t, { "shell.trashItem": () => ({ result: { status: "trash-failed" } }) });
+			const filePath = writeSessionFile(sessionsDir, projectPath, { name: "readonly-delete" });
+			const list = await invoke("sessions:catalog-list", [PROJECT_ID]);
+			const record = list.payload.result.find((item) => slash(item.filePath) === slash(filePath));
+			const initial = await invoke("sessions:catalog-delete", [record.id]);
+			assert.deepEqual(initial.payload.result, { status: "trash-failed" });
+			// A real sharing violation remains a failure even when permanent cleanup
+			// can clear ordinary Windows read-only attributes, like the shared fs walker.
+			const release = await holdExclusiveFileLock(t, filePath);
+			try {
+				const result = await invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+				assert.equal(result.payload.ok, false, JSON.stringify(result.payload));
+				assert.ok(existsSync(filePath));
+				const after = await invoke("sessions:catalog-list", [PROJECT_ID, { scan: false }]);
+				assert.ok(after.payload.result.some((item) => item.id === record.id));
+			} finally { await release(); }
 		});
 
 		test("catalog-list merges the scanned file under a stable UUID identity", async (t) => {
