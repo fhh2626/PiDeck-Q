@@ -11,6 +11,10 @@ const linuxHome = "/home/dev";
 const linuxRoot = `${linuxHome}/.pi/agent/sessions`;
 const linuxFile = `${linuxRoot}/protected.jsonl`;
 const runtimePath = process.cwd().replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/mnt/${drive.toLowerCase()}/`);
+// The filesystem fixture runs everywhere, but PiLaunch compiles WSL runtime
+// creation only on Windows. Those cases must not fail before reaching their
+// deletion assertions on a native Linux/macOS backend.
+const wslRuntimeSkip = process.platform === "win32" ? false : "WSL runtime launch requires a Windows backend";
 
 /** A fake distribution backed exclusively by this test's temporary directory. */
 async function fixture(t, outsideRecord = false, foreignRecord = false, uppercaseTree = false, aliasTree = false, reverseAlias = false, otherUser = false, variant = "", language = "en-US") {
@@ -245,7 +249,7 @@ if (resolveBackendExecutable() && launcher) {
     f.patchScenario({ failListPath: `${linuxRoot}/peer` });
     const result = await f.invoke("sessions:catalog-delete", [f.id]);
     assert.equal(result.payload.ok, false, JSON.stringify(result.payload));
-    assert.ok(f.commands().some(({ argv }) => argv.includes("ls") && argv.includes(`${linuxRoot}/peer`)), `peer listing must be attempted: ${JSON.stringify(result.payload)} ${JSON.stringify(f.commands())}`);
+    assert.ok(f.commands().some(({ argv }) => argv.includes("find") && argv.includes("-mindepth") && argv.includes(`${linuxRoot}/peer`)), `peer listing must be attempted: ${JSON.stringify(result.payload)} ${JSON.stringify(f.commands())}`);
     assert.equal(readFileSync(shared, "utf8"), "peer data");
     assert.ok(existsSync(join(f.sessions, "protected.jsonl")));
   });
@@ -270,7 +274,7 @@ if (resolveBackendExecutable() && launcher) {
     assert.ok(existsSync(join(f.sessions, ".pideck-trash", buckets[0], "protected.jsonl")));
   });
   for (const reverse of [false, true]) {
-    test(`already-live WSL alias child blocks deletion (${reverse ? "aliased parent" : "aliased child"})`, async (t) => {
+    test(`already-live WSL alias child blocks deletion (${reverse ? "aliased parent" : "aliased child"})`, { skip: wslRuntimeSkip }, async (t) => {
       const f = await fixture(t, false, false, false, true, reverse);
       f.patchScenario({ runtimePi: true });
       const activation = await f.invoke("sessions:runtime-activate", ["alias-child"]);
@@ -282,7 +286,7 @@ if (resolveBackendExecutable() && launcher) {
       assert.equal(f.commands().some(isStorageMutation), false);
     });
   }
-  test("same-distribution WSL users cannot bypass an active alias child's ownership", async (t) => {
+  test("same-distribution WSL users cannot bypass an active alias child's ownership", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true, false, true);
     f.patchScenario({ runtimePi: true, whoami: "other-user" });
     await f.invoke("settings:update", [{ wslUser: "other-user" }]);
@@ -295,7 +299,7 @@ if (resolveBackendExecutable() && launcher) {
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
   });
   for (const variant of ["dot-alias", "companion-alias"]) {
-    test(`WSL deletion protects a live ${variant} identity`, async (t) => {
+    test(`WSL deletion protects a live ${variant} identity`, { skip: wslRuntimeSkip }, async (t) => {
       const f = await fixture(t, false, false, false, true, false, false, variant);
       f.patchScenario({ runtimePi: true });
       const activation = await f.invoke("sessions:runtime-activate", ["alias-child"]);
@@ -306,7 +310,7 @@ if (resolveBackendExecutable() && launcher) {
       assert.equal(f.commands().some(isStorageMutation), false);
     });
   }
-  test("WSL activation refuses to reinterpret a catalog session in another distribution", async (t) => {
+  test("WSL activation refuses to reinterpret a catalog session in another distribution", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, true);
     f.patchScenario({ runtimePi: true });
     const previous = f.commands().length;
@@ -336,7 +340,7 @@ if (resolveBackendExecutable() && launcher) {
     const retry = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
     assert.equal(retry.payload.result, true, JSON.stringify(retry.payload));
   });
-  test("an unrelated active WSL session stays usable after scoped alias resolution", async (t) => {
+  test("an unrelated active WSL session stays usable after scoped alias resolution", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t);
     f.patchScenario({ runtimePi: true });
     const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
@@ -355,7 +359,35 @@ if (resolveBackendExecutable() && launcher) {
     assert.equal((await deletion).payload.result, true);
     assert.ok(existsSync(join(f.sessions, "unrelated.jsonl")));
   });
-  test("an alias activation already in flight prevents deletion before binding", async (t) => {
+  for (const noSession of [false, true]) {
+    test(`WSL history deletion ${noSession ? "allows an active in-memory session" : "refuses an unknown persistent runtime"}`, { skip: wslRuntimeSkip }, async (t) => {
+      const f = await fixture(t);
+      f.patchScenario({ runtimePi: true });
+      const created = await f.invoke(noSession ? "sessions:create-anonymous" : "sessions:catalog-create-draft", [
+        { projectId: "wsl-safe", title: "Runtime without a session file" },
+      ]);
+      assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
+      const record = noSession ? created.payload.result.session : created.payload.result;
+      assert.equal(record.environment, "wsl");
+      assert.equal(record.filePath ?? "", "");
+      assert.equal(record.noSession ?? false, noSession);
+      const activated = await f.invoke("sessions:runtime-activate", [record.id]);
+      assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+      assert.equal(activated.payload.result.value.sessionPath ?? "", "");
+      const deletion = await f.invoke("sessions:catalog-delete", [f.id]);
+      assert.equal(deletion.payload.ok, noSession, JSON.stringify(deletion.payload));
+      if (noSession) {
+        assert.equal(deletion.payload.result, true);
+        assert.equal(existsSync(join(f.sessions, "protected.jsonl")), false);
+        const stillUsable = await f.invoke("sessions:runtime-state", [activated.payload.result.value]);
+        assert.equal(stillUsable.payload.result.ok, true, JSON.stringify(stillUsable.payload));
+      } else {
+        assert.ok(existsSync(join(f.sessions, "protected.jsonl")));
+        assert.equal(f.commands().some(isStorageMutation), false);
+      }
+    });
+  }
+  test("an alias activation already in flight prevents deletion before binding", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true);
     f.patchScenario({ runtimePi: true, runtimeStateDelayMs: 500 });
     const previous = f.commands().length;
@@ -366,7 +398,7 @@ if (resolveBackendExecutable() && launcher) {
     assert.equal((await activation).payload.result.ok, true);
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
   });
-  test("a live reported alias path is protected before any catalog binding owns it", async (t) => {
+  test("a live reported alias path is protected before any catalog binding owns it", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true);
     const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
     const unrelated = catalog.payload.result.find((row) => row.filePath === `${linuxRoot}/unrelated.jsonl`);
@@ -379,7 +411,7 @@ if (resolveBackendExecutable() && launcher) {
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
     assert.equal((await activation).payload.result.ok, true);
   });
-  test("an in-flight WSL replacement's unproven future destination prevents deletion", async (t) => {
+  test("an in-flight WSL replacement's unproven future destination prevents deletion", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t);
     const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
     const unrelated = catalog.payload.result.find((row) => row.filePath === `${linuxRoot}/unrelated.jsonl`);
@@ -399,7 +431,7 @@ if (resolveBackendExecutable() && launcher) {
     const deletion = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
     assert.equal(deletion.payload.result, true, JSON.stringify(deletion.payload));
   });
-  test("a newline-free alias cannot hide a canonical companion name ending in newline", async (t) => {
+  test("a newline-free alias cannot hide a canonical companion name ending in newline", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true);
     const tree = "/real/dir\n";
     f.patchScenario({ runtimePi: true, identityCanonicalOverrides: {
@@ -414,7 +446,7 @@ if (resolveBackendExecutable() && launcher) {
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
     assert.equal(f.commands().some(isStorageMutation), false);
   });
-  test("an unresolved other-user alias cannot be treated as an unrelated missing leaf", async (t) => {
+  test("an unresolved other-user alias cannot be treated as an unrelated missing leaf", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true, false, true);
     f.patchScenario({ runtimePi: true, identityUnresolvedPrefix: `${linuxHome}/sessions-alias/parent` });
     const activation = await f.invoke("sessions:runtime-activate", ["alias-child"]);

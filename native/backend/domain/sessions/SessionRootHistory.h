@@ -2,11 +2,11 @@
 
 #include "SessionFs.h"
 #include "SessionIdentity.h"
+#include "../fs/PathPolicy.h"
 
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,21 +15,34 @@
 
 /** Durable scan provenance, scoped to the project and exact filesystem environment. */
 namespace sessionroothistory {
+/** Version 2 proves canonical path decoding preserved the filesystem's exact bytes. */
+constexpr int kCanonicalVersion = 2;
+
 inline QString canonicalRoot(const SessionFs &fs, const QString &root)
 {
-    if (!fs.wsl()) return QFileInfo(root).canonicalFilePath();
+    // Qt's Windows canonicalFilePath keeps directory junction names. Resolve
+    // through the existing handle-based policy so retargeting changes identity.
+    if (!fs.wsl()) return pathpolicy::existingRealPath(root);
     const auto result = fs.runCapture({QStringLiteral("realpath"), QStringLiteral("-e"),
                                        QStringLiteral("--"), root}, 10000, 16384);
-    if (!result.ok()) return {};
-    const QString path = result.stdoutText.trimmed();
-    return path.startsWith(QLatin1Char('/')) && !path.contains(QLatin1Char('\n')) ? path : QString();
+    if (!result.ok() || !result.stdoutLosslessUtf8) return {};
+    // Only realpath's terminator is framing. Trimming a valid trailing space/tab
+    // would merge distinct root identities and authorize a retargeted root alias.
+    QString path = result.stdoutText;
+    if (path.endsWith(QLatin1Char('\n'))) path.chop(1);
+    return path.startsWith(QLatin1Char('/')) && !path.contains(QLatin1Char('\n'))
+        && !path.contains(QLatin1Char('\r')) && !path.contains(QChar::Null) ? path : QString();
 }
 
 inline QString key(const SessionFs &fs, const QString &project, const QString &runtimeProject)
 {
     const auto &config = fs.config();
+    // Scans receive the runtime cwd, while deletion starts from the catalog's
+    // Windows project path. Bind both spellings to the existing runtime-keyed
+    // receipt without merging projects or changing the environment scope.
+    const QString scopedProject = fs.wsl() ? sessionidentity::windowsPathToWslBase(project) : project;
     const QJsonArray scope{config.wsl, config.distro, config.user, config.home,
-                           sessionidentity::normalizeScanPath(project), runtimeProject};
+                           sessionidentity::normalizeScanPath(scopedProject), runtimeProject};
     return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(scope).toJson(QJsonDocument::Compact),
                                                        QCryptographicHash::Sha256).toHex());
 }
@@ -61,13 +74,21 @@ inline void remember(const QString &userData, const SessionFs &fs, const QString
         const QString canonical = canonicalRoot(fs, root);
         if (canonical.isEmpty()) continue;
         bool present = false;
-        for (const QJsonValue &entry : entries) {
-            const QJsonObject object = entry.toObject();
+        for (qsizetype index = 0; index < entries.size(); ++index) {
+            QJsonObject object = entries.at(index).toObject();
             if (object.value(QStringLiteral("root")).toString() == root
-                && object.value(QStringLiteral("canonical")).toString() == canonical) { present = true; break; }
+                && object.value(QStringLiteral("canonical")).toString() == canonical) {
+                // Only a fresh settings scan can upgrade an old lossy receipt
+                // to exact physical provenance in the selected filesystem.
+                object.insert(QStringLiteral("canonicalVersion"), kCanonicalVersion);
+                entries[index] = object;
+                present = true;
+                break;
+            }
         }
         if (!present && entries.size() < 256)
-            entries.append(QJsonObject{{QStringLiteral("root"), root}, {QStringLiteral("canonical"), canonical}});
+            entries.append(QJsonObject{{QStringLiteral("root"), root}, {QStringLiteral("canonical"), canonical},
+                                       {QStringLiteral("canonicalVersion"), kCanonicalVersion}});
     }
     all.insert(scope, entries);
     const QByteArray data = QJsonDocument(all).toJson(QJsonDocument::Compact);
@@ -86,6 +107,10 @@ inline QStringList roots(const QString &userData, const SessionFs &fs, const QSt
     const QJsonArray entries = load(path).value(key(fs, project, runtimeProject)).toArray();
     for (const QJsonValue &entry : entries) {
         const QJsonObject object = entry.toObject();
+        // Old receipts may preserve a junction alias, trim path characters, or
+        // replace undecodable bytes with a different real filename. Only a fresh
+        // settings scan can restore exact physical provenance for those roots.
+        if (object.value(QStringLiteral("canonicalVersion")).toInt() != kCanonicalVersion) continue;
         const QString root = object.value(QStringLiteral("root")).toString();
         const QString canonical = object.value(QStringLiteral("canonical")).toString();
         if (!root.isEmpty() && !canonical.isEmpty() && canonicalRoot(fs, root) == canonical) result.append(root);

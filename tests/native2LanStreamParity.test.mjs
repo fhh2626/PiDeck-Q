@@ -12,6 +12,7 @@ import {
 	resolveBackendExecutable,
 	startBackendSession,
 } from "./helpers/native2BackendHarness.mjs";
+import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 /**
  * LAN AI SDK v1 stream parity (`src/main/web/WebEventStream.ts`).
@@ -783,6 +784,10 @@ if (!executable) {
 			});
 			assert.equal(answered.status, 200, answered.body);
 			assert.deepEqual(answered.json, { ok: true });
+			// HTTP success acknowledges the queued stdio write. Observe its consumer
+			// before asserting traffic, since the separate Pi process can still be scheduled later.
+			await waitFor(() => session.fake.commands().some((entry) => entry.command === "extension_ui_response"
+				&& entry.payload.id === "ask-1"), 10_000, "Pi receives the first UI response");
 			const sentAnswers = session.fake.commands().filter((entry) => entry.command === "extension_ui_response");
 			assert.equal(sentAnswers.length, 1, JSON.stringify(session.fake.commands()));
 			assert.equal(sentAnswers[0].payload.id, "ask-1");
@@ -810,6 +815,8 @@ if (!executable) {
 				body: { ...target, requestId: "ask-2", response: batchAnswer },
 			});
 			assert.equal(answeredBatch.status, 200, answeredBatch.body);
+			await waitFor(() => session.fake.commands().some((entry) => entry.command === "extension_ui_response"
+				&& entry.payload.id === "ask-2"), 10_000, "Pi receives the batch UI response");
 			const sentBatch = session.fake
 				.commands()
 				.filter((entry) => entry.command === "extension_ui_response" && entry.payload.id === "ask-2");

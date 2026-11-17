@@ -25,6 +25,8 @@ struct Result {
     QString stderrText;
     bool started = false;
     bool timedOut = false;
+    /** Whether the existing text decoding preserved every stdout byte. */
+    bool stdoutLosslessUtf8 = true;
 
     bool ok() const { return started && !timedOut && exitCode == 0; }
     /** First non-empty stderr line, or a generic message. */

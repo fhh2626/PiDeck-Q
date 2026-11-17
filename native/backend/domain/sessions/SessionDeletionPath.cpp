@@ -24,7 +24,7 @@ QString realPath(const SessionFs &fs, const QString &path)
 {
     const sessioncmd::Result result = fs.runCapture(
         {QStringLiteral("realpath"), QStringLiteral("-m"), QStringLiteral("--"), path}, 10'000, 16 * 1024);
-    if (!result.ok()) return {};
+    if (!result.ok() || !result.stdoutLosslessUtf8) return {};
     QString resolved = result.stdoutText;
     if (resolved.endsWith(QLatin1Char('\n'))) resolved.chop(1);
     return validLinuxPath(resolved) ? resolved : QString();

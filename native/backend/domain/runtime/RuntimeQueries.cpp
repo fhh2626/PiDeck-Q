@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "RuntimeTypes.h"
+#include "../sessions/SessionCatalogStore.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -189,6 +190,14 @@ void Coordinator::observeUiRequest(const Target &target, const AgentSession::Pen
     AgentSession *session = agent(target.agentId);
     const QString title = session ? session->tab().title : QString();
     m_deps.notifyAskPending(target.agentId, title, request.title, target.sessionId);
+}
+
+void Coordinator::persistRuntimeIdentity(const QString &sessionId, const AgentSession &session)
+{
+    const Tab &tab = session.tab();
+    if (tab.noSession || tab.sessionPath.isEmpty() || !m_deps.services || !m_deps.services->catalog) return;
+    m_deps.services->catalog->attachRuntime(sessionId, tab.sessionPath, tab.piSessionId,
+        SessionCatalogStore::RuntimeIdentity{tab.sessionEnvironment, tab.wslDistro, tab.wslUser});
 }
 
 int Coordinator::bindSession(const QString &sessionId, const QString &agentId)

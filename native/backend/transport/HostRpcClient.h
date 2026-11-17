@@ -56,6 +56,9 @@ private:
  */
 class HostRpcClient : public QObject {
 public:
+    /** A sent mutation cannot be cancelled by a local timer; its owner may await the actual reply. */
+    enum class TimeoutPolicy { Deadline, AwaitHostCompletion };
+
     explicit HostRpcClient(QString token, QObject *parent = nullptr);
 
     /** Connect and complete the hello handshake. Returns false on failure. */
@@ -64,7 +67,8 @@ public:
     bool isClosed() const { return m_closed; }
 
     std::shared_ptr<HostRequest> request(const QString &method, const QJsonObject &params = {},
-                                         int timeoutMs = host::kDefaultRequestTimeoutMs);
+                                         int timeoutMs = host::kDefaultRequestTimeoutMs,
+                                         TimeoutPolicy timeoutPolicy = TimeoutPolicy::Deadline);
     void emitEvent(const QString &name, const QJsonValue &payload = QJsonValue(QJsonValue::Null));
     void onEvent(const QString &name, std::function<void(const QJsonValue &)> handler);
     void onFatal(std::function<void(const QString &)> handler);

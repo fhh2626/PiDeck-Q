@@ -24,6 +24,8 @@ struct Result {
     int exitCode = -1;
     QString stdoutText;
     QString stderrText;
+    /** Filename enumeration and physical path identities require lossless stdout decoding. */
+    bool stdoutLosslessUtf8 = true;
 
     /** Clean exit; a missing program, a timeout or an oversized reply is a failure. */
     bool ok() const { return started && !timedOut && !truncated && exitCode == 0; }

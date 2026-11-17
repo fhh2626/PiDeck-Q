@@ -1,4 +1,5 @@
 #include "ScopedMutation.h"
+#include "NativeCanonicalPath.h"
 
 #include <QDir>
 #include <QFile>
@@ -160,7 +161,7 @@ Root captureRoot(const QString &directory)
     root.identity = identity(handle.get());
     root.lifetime = std::move(handle);
 #else
-    const QString canonical = QFileInfo(directory).canonicalFilePath();
+    const QString canonical = nativecanonical::existing(directory).path;
     if (canonical.isEmpty()) unsafe();
     root.path = normalized(canonical);
     Descriptor descriptor(open(QFile::encodeName(root.path).constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));

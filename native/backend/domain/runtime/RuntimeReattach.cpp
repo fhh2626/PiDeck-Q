@@ -64,7 +64,9 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
         return;
     }
     if (deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
-        done(false, QStringLiteral("Session deletion is in progress"), 0);
+        // The binding still owns this exited transport. Its epoch lets callers
+        // retire it instead of leaving a dead runtime stuck in starting state.
+        done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
         return;
     }
     const QString sessionPath = session->tab().sessionPath;
@@ -81,8 +83,12 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
     previous.wslDistro = session->tab().wslDistro;
     previous.wslUser = session->tab().wslUser;
     const CatalogEntry actual = deletionidentity::forLaunch(previous, launch);
+    if (deletionBlocksLaunch(previous) || deletionBlocksLaunch(actual)) {
+        done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
+        return;
+    }
     if (!deletionidentity::compatibleLaunch(previous, actual) || deletionBlocksEntry(actual)) {
-        done(false, QStringLiteral("Session runtime environment changed during reconnect"), 0);
+        done(false, QStringLiteral("Session runtime environment changed during reconnect"), session->clientEpoch());
         return;
     }
     // A user switch stays in the same filesystem namespace, but the tab must name
@@ -115,7 +121,7 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
     };
     session->request(
         QStringLiteral("get_state"), {}, kStateTimeoutMs,
-        [this, agentId, attemptEpoch, done = finish](bool ok, const QJsonObject &response, const QString &error) {
+        [this, agentId, target, attemptEpoch, done = finish](bool ok, const QJsonObject &response, const QString &error) {
             AgentSession *current = agent(agentId);
             if (!current || current->clientEpoch() != attemptEpoch) {
                 done(false, QStringLiteral("Session runtime stopped during reconnect"));
@@ -158,10 +164,22 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
             // The compacted history lives in the session file: reload through the same
             // projection path the runtime always uses (and flush, so the renderer replaces
             // its window instead of keeping pre-compaction rows).
-            loadProjection(*current, [this, agentId, attemptEpoch, done](bool projected) {
+            loadProjection(*current, [this, agentId, target, attemptEpoch, done](bool projected) {
                 AgentSession *latest = agent(agentId);
                 if (!projected || !latest || latest->clientEpoch() != attemptEpoch || !latest->running()) {
                     done(false, QStringLiteral("Session projection unavailable after reattach"));
+                    return;
+                }
+                QString boundSession;
+                int generation = 0;
+                if (!m_bindings.bindingForAgent(agentId, &boundSession, &generation)
+                    || boundSession != target.sessionId || generation != target.runtimeGeneration) {
+                    done(false, QStringLiteral("Session runtime binding changed"));
+                    return;
+                }
+                try { persistRuntimeIdentity(target.sessionId, *latest); }
+                catch (const std::exception &failure) {
+                    done(false, QString::fromUtf8(failure.what()));
                     return;
                 }
                 latest->refreshFileVersion();

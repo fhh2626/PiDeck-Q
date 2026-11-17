@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { backendEnvFor, FakeHost, resolveBackendExecutable, rpc, spawnBackend, startBackendSession, stopBackendProcess, waitForRendererReady } from "./helpers/native2BackendHarness.mjs";
@@ -7,6 +7,14 @@ import { holdExclusiveFileLock } from "./helpers/native2FileLock.mjs";
 
 const executable = resolveBackendExecutable();
 const runId = "11111111-2222-4333-8444-555555555555";
+
+/** Probe this fixture's volume because macOS also supports case-sensitive storage. */
+function isCaseInsensitiveVolume(directory) {
+	const name = "PiDeckCaseProbe";
+	writeFileSync(join(directory, name), "probe");
+	try { return existsSync(join(directory, name.toLowerCase())); }
+	finally { unlinkSync(join(directory, name)); }
+}
 
 /** Minimal catalog fixture with a structured ownership identity, never prose-based ownership. */
 function writeOwnedSession(directory, projectPath, name, identity = runId, extension = ".jsonl") {
@@ -65,6 +73,49 @@ if (executable) {
 			if (owned) assert.equal(existsSync(owned), false);
 		});
 	}
+	for (const name of ["subagent-artifacts", ".pideck-trash", ".pideck-archive", ".pi", ".git", "--peer-project--"]) {
+		test(`shared ${name} directory entries cannot grant session artifact ownership`, async (t) => {
+			const f = await startBackendSession(t, { projects: [{ id: "safe-delete", path: process.cwd() }] });
+			const file = writeOwnedSession(f.fixture.sessions, process.cwd(), name);
+			const foreignRun = "99999999-8888-4777-8666-555555555555";
+			const sharedRun = join(f.fixture.sessions, name, foreignRun);
+			mkdirSync(sharedRun, { recursive: true });
+			const sentinel = join(sharedRun, "peer-data.txt");
+			writeFileSync(sentinel, "peer-owned data");
+			const artifacts = join(f.fixture.sessions, "subagent-artifacts");
+			mkdirSync(artifacts, { recursive: true });
+			const foreignArtifact = join(artifacts, `${foreignRun}_output.txt`);
+			const ownedArtifact = join(artifacts, `${runId}_output.txt`);
+			writeFileSync(foreignArtifact, "foreign output");
+			writeFileSync(ownedArtifact, "owned output");
+			const listed = await f.invoke("sessions:catalog-list", ["safe-delete"]);
+			const record = listed.payload.result.find((row) => row.filePath.replaceAll("\\", "/") === file.replaceAll("\\", "/"));
+			assert.ok(record);
+			const result = await f.invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+			assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+			assert.equal(existsSync(file), false);
+			assert.equal(existsSync(ownedArtifact), false, "structured tool results still establish ownership");
+			assert.equal(readFileSync(foreignArtifact, "utf8"), "foreign output");
+			assert.equal(readFileSync(sentinel, "utf8"), "peer-owned data");
+		});
+	}
+	for (const name of ["subagent-artifacts", ".pi", ".git"]) {
+		test(`case variants cannot claim shared ${name} storage on an insensitive volume`, async (t) => {
+			const f = await startBackendSession(t, { projects: [{ id: "safe-delete", path: process.cwd() }] });
+			if (!isCaseInsensitiveVolume(f.fixture.sessions)) return t.skip("The fixture volume is case sensitive");
+			const file = writeOwnedSession(f.fixture.sessions, process.cwd(), name.toUpperCase());
+			const shared = join(f.fixture.sessions, name);
+			mkdirSync(shared);
+			const sentinel = join(shared, "peer-data.txt"); writeFileSync(sentinel, "peer data");
+			const listed = await f.invoke("sessions:catalog-list", ["safe-delete"]);
+			const record = listed.payload.result.find((row) => row.filePath.replaceAll("\\", "/") === file.replaceAll("\\", "/"));
+			assert.ok(record);
+			const result = await f.invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+			assert.equal(readFileSync(sentinel, "utf8"), "peer data");
+			assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+			assert.equal(existsSync(file), false);
+		});
+	}
 	for (const name of ["", ".", ".."]) {
 		test(`session deletion rejects an unsafe companion stem ${JSON.stringify(name)}`, async (t) => {
 			let path, sentinel;
@@ -80,6 +131,27 @@ if (executable) {
 			assert.equal(result.payload.ok, false, JSON.stringify(result.payload));
 			assert.ok(existsSync(path));
 			assert.equal(readFileSync(sentinel, "utf8"), "keep");
+		});
+	}
+	for (const container of ["outputs", "structured-output"]) {
+		test(`a run identity named ${container} cannot delete the shared artifact container`, async (t) => {
+			const f = await startBackendSession(t, { projects: [{ id: "safe-delete", path: process.cwd() }] });
+			const file = writeOwnedSession(f.fixture.sessions, process.cwd(), "reserved-run", container);
+			writeOwnedSession(f.fixture.sessions, process.cwd(), "peer-run");
+			const directory = join(f.fixture.sessions, "subagent-artifacts", container);
+			mkdirSync(directory, { recursive: true });
+			const ownedArtifact = join(directory, `${container}_owned.txt`);
+			const peerArtifact = join(directory, `${runId}_peer.txt`);
+			writeFileSync(ownedArtifact, "owned output");
+			writeFileSync(peerArtifact, "peer output");
+			const listed = await f.invoke("sessions:catalog-list", ["safe-delete"]);
+			const record = listed.payload.result.find((row) => row.filePath.replaceAll("\\", "/") === file.replaceAll("\\", "/"));
+			assert.ok(record);
+			const result = await f.invoke("sessions:catalog-delete", [record.id, { permanent: true }]);
+			assert.equal(readFileSync(peerArtifact, "utf8"), "peer output");
+			assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+			assert.equal(existsSync(file), false);
+			assert.equal(existsSync(ownedArtifact), false);
 		});
 	}
 	for (const permanent of [false, true]) {
@@ -292,8 +364,18 @@ if (executable) {
 		assert.equal(result.payload.result, true, JSON.stringify(result.payload));
 		assert.equal(readFileSync(shared, "utf8"), "peer data");
 	});
+	test("peer shared companion entries still veto ambiguous artifact deletion", async (t) => {
+		const f = await fixture(t);
+		const peer = writeOwnedSession(f.fixture.sessions, process.cwd(), ".pi", "unrelated");
+		mkdirSync(join(peer.slice(0, -6), runId), { recursive: true });
+		const artifacts = join(f.fixture.sessions, "subagent-artifacts"); mkdirSync(artifacts);
+		const shared = join(artifacts, `${runId}_output.txt`); writeFileSync(shared, "possible peer data");
+		const result = await f.invoke("sessions:catalog-delete", [f.id, { permanent: true }]);
+		assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+		assert.equal(readFileSync(shared, "utf8"), "possible peer data");
+	});
 
-	test("native Windows peer identities use filesystem case semantics", { skip: process.platform !== "win32" }, async (t) => {
+	test("native Windows and macOS peer identities preserve possible case aliases", { skip: !["win32", "darwin"].includes(process.platform) }, async (t) => {
 		const f = await fixture(t);
 		writeOwnedSession(f.fixture.sessions, process.cwd(), "protected", "abc");
 		writeOwnedSession(f.fixture.sessions, process.cwd(), "peer", "ABC");
@@ -304,6 +386,18 @@ if (executable) {
 		const result = await f.invoke("sessions:catalog-delete", [f.id, { permanent: true }]);
 		assert.equal(result.payload.result, true, JSON.stringify(result.payload));
 		assert.equal(readFileSync(shared, "utf8"), "peer data");
+	});
+	test("case-sensitive artifact storage requires exact positive ownership", async (t) => {
+		const f = await fixture(t);
+		if (isCaseInsensitiveVolume(f.fixture.sessions)) return t.skip("The fixture volume is case insensitive");
+		writeOwnedSession(f.fixture.sessions, process.cwd(), "protected", "abc");
+		const artifacts = join(f.fixture.sessions, "subagent-artifacts"); mkdirSync(artifacts);
+		const owned = join(artifacts, "abc_output.txt"), other = join(artifacts, "ABC_output.txt");
+		writeFileSync(owned, "owned data"); writeFileSync(other, "other data");
+		const result = await f.invoke("sessions:catalog-delete", [f.id, { permanent: true }]);
+		assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+		assert.equal(existsSync(owned), false);
+		assert.equal(readFileSync(other, "utf8"), "other data");
 	});
 
 	for (const component of ["subagent-artifacts", "outputs", "structured-output"]) {

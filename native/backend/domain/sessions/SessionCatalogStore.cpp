@@ -476,13 +476,29 @@ QJsonObject SessionCatalogStore::update(const QString &id, const QJsonObject &pa
 }
 
 CatalogEntry SessionCatalogStore::attachRuntime(const QString &sessionId, const QString &filePath,
-                                                const QString &piSessionId)
+                                                const QString &piSessionId,
+                                                std::optional<RuntimeIdentity> identity)
 {
     QMutexLocker<QRecursiveMutex> lock(&m_mutex);
     assertLoaded();
     CatalogEntry updated;
     mutate([&](QVector<CatalogEntry> &entries) {
         CatalogEntry entry = requireEntry(entries, sessionId);
+        bool namespaceUnchanged = true;
+        if (identity) {
+            if (!sessionidentity::isValidEnvironment(identity->environment))
+                throw ChannelError(QStringLiteral("Invalid session runtime environment"));
+            const bool wsl = identity->environment == QLatin1String("wsl");
+            const QString distro = wsl ? identity->wslDistro : QString();
+            const QString user = wsl ? identity->wslUser : QString();
+            namespaceUnchanged = entry.environment == identity->environment
+                && entry.wslDistro == distro && entry.wslUser == user;
+            // Empty drafts may launch after an environment switch. Use the
+            // namespace captured at launch for their first path and origin.
+            entry.environment = identity->environment;
+            entry.wslDistro = distro;
+            entry.wslUser = user;
+        }
         QString resolved = filePath;
         if (!resolved.isEmpty() && m_resolveFilePath) {
             resolved = m_resolveFilePath(entry.projectId, resolved, entry.environment);
@@ -491,7 +507,7 @@ CatalogEntry SessionCatalogStore::attachRuntime(const QString &sessionId, const 
         if (!resolved.isEmpty()) entry.filePath = resolved;
         if (!piSessionId.isEmpty()) entry.piSessionId = piSessionId;
         if (!entry.filePath.isEmpty()) {
-            const bool pathUnchanged = !previousFilePath.isEmpty()
+            const bool pathUnchanged = namespaceUnchanged && !previousFilePath.isEmpty()
                 && sessionidentity::canonicalizeSessionPath(previousFilePath, entry.environment)
                     == sessionidentity::canonicalizeSessionPath(entry.filePath, entry.environment);
             const QString nextOriginKey =

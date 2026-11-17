@@ -385,7 +385,9 @@ export class Cdp {
 			});
 			client = new Cdp(socket);
 			await client.send("Runtime.enable", {}, { timeoutMs: Math.max(1, deadline - Date.now()) });
-			await client.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+			await client.send("Emulation.setFocusEmulationEnabled", { enabled: true }, {
+				timeoutMs: Math.max(1, deadline - Date.now()),
+			});
 			return client;
 		} catch (error) {
 			if (client) client.close();

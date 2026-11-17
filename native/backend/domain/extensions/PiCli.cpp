@@ -89,6 +89,9 @@ Result runOnce(const pilaunch::Cli &cli, const QStringList &arguments, int timeo
     }
     stdoutBytes.append(process.readAllStandardOutput());
     result.stdoutText = QString::fromUtf8(stdoutBytes);
+    // Keep ordinary command output behavior unchanged, while allowing callers
+    // that use stdout as filesystem identity to reject a lossy filename spelling.
+    result.stdoutLosslessUtf8 = result.stdoutText.toUtf8() == stdoutBytes;
     result.stderrText = QString::fromUtf8(process.readAllStandardError());
     result.exitCode = process.exitCode();
     if (process.exitStatus() == QProcess::CrashExit && !result.timedOut) {

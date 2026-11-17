@@ -332,8 +332,8 @@ private:
     bool m_pendingOpenAfterSettled = false;
     /** Identifies the current abort wait so a stale fallback timer cannot open it. */
     quint64 m_gateToken = 0;
-    /** Identifies the current transport so a stale timer cannot act on its replacement. */
-    quint64 m_clientEpoch = 0;
+    /** Transport identity starts at 1; zero is reserved for recovery without an owned transport. */
+    quint64 m_clientEpoch = 1;
     /** Stable QObject for session-scoped timers; survives a process reattach. */
     mutable QObject m_timerContext;
     /**

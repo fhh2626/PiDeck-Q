@@ -42,7 +42,15 @@ private:
                 return finish(Result::Error, QString::fromUtf8(failure.what()));
             }
         }
-        auto request = m_host->request(QStringLiteral("shell.trashItem"), params);
+        // Scoped session deletion owns a runtime/catalog lease. Reporting a
+        // transport timeout as completion would release it while the host can
+        // still move the file. Only its actual reply or fatal bridge loss settles
+        // this request; unrelated host capabilities keep their normal deadline.
+        const auto timeoutPolicy = m_typed && !m_scope.identity.isEmpty()
+            ? HostRpcClient::TimeoutPolicy::AwaitHostCompletion
+            : HostRpcClient::TimeoutPolicy::Deadline;
+        auto request = m_host->request(QStringLiteral("shell.trashItem"), params,
+                                      host::kDefaultRequestTimeoutMs, timeoutPolicy);
         // One file at a time keeps the recycle-bin order deterministic and stops the
         // batch on the first failure, so a partial delete is reported honestly.
         std::shared_ptr<TrashChain> self = shared_from_this();

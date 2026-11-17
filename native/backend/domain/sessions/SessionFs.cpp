@@ -18,6 +18,7 @@
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <string>
 
 namespace {
 
@@ -25,6 +26,16 @@ constexpr int kCommandTimeoutMs = 15'000;
 constexpr int kReadTimeoutMs = 20'000;
 constexpr qint64 kMaxCommandOutput = 64 * 1024 * 1024;
 constexpr qint64 kMaxListOutput = 16 * 1024 * 1024;
+
+#ifdef Q_OS_WIN
+/** Keep STL objects within this module when debug MSVC uses the release Qt DLL. */
+std::filesystem::path nativeFilesystemPath(const QString &path)
+{
+    std::wstring native(size_t(path.size()), L'\0');
+    native.resize(size_t(path.toWCharArray(native.data())));
+    return std::filesystem::path(std::move(native));
+}
+#endif
 
 QString wslExecutable(const QString &override)
 {
@@ -35,6 +46,7 @@ QString wslExecutable(const QString &override)
 
 struct CommandResult {
     bool ok = false;
+    bool stdoutLosslessUtf8 = true;
     QString output;
     QString error;
     int exitCode = -1;
@@ -67,6 +79,7 @@ sessioncmd::Result runWslCapture(const SessionFs::Config &config, const QStringL
     result.exitCode = outcome.exitCode;
     result.stdoutText = outcome.stdoutText;
     result.stderrText = outcome.stderrText;
+    result.stdoutLosslessUtf8 = outcome.stdoutLosslessUtf8;
     if (maxOutput > 0 && !result.timedOut && result.stdoutText.toUtf8().size() > maxOutput) {
         result.truncated = true;
         result.stdoutText.clear();
@@ -82,6 +95,7 @@ CommandResult runWsl(const SessionFs::Config &config, const QStringList &argumen
     CommandResult result;
     result.exitCode = captured.exitCode;
     result.output = captured.stdoutText;
+    result.stdoutLosslessUtf8 = captured.stdoutLosslessUtf8;
     // A timeout keeps its partial stdout (the batch reader needs the complete prefix), but
     // every other failure maps to the child's own diagnostics.
     result.error = captured.timedOut ? QStringLiteral("wsl command timed out")
@@ -189,7 +203,7 @@ bool SessionFs::probeChecked(const QString &path, const QString &flag, bool *pre
         *present = true;
         return true;
     }
-    const std::filesystem::path nativePath(path.toStdWString());
+    const auto nativePath = nativeFilesystemPath(path);
 #else
     const std::filesystem::path nativePath(path.toStdString());
 #endif
@@ -223,16 +237,24 @@ bool SessionFs::listNamesChecked(const QString &directory, QStringList *names) c
 {
     names->clear();
     if (m_config.wsl) {
-        const CommandResult result = runWsl(m_config, {QStringLiteral("ls"), QStringLiteral("-1A"), directory},
-                                            kCommandTimeoutMs, kMaxListOutput);
-        if (!result.ok) return false;
-        *names = result.output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        // A newline in a peer filename must not split it into two missing paths
+        // and hide its artifact ownership. Preserve each actual entry for the
+        // deletion planner's validation, including names it will reject.
+        const CommandResult result = runWsl(m_config,
+            {QStringLiteral("find"), directory, QStringLiteral("-mindepth"), QStringLiteral("1"),
+             QStringLiteral("-maxdepth"), QStringLiteral("1"), QStringLiteral("-printf"), QStringLiteral("%f\\0")},
+            kCommandTimeoutMs, kMaxListOutput);
+        if (!result.ok || !result.stdoutLosslessUtf8) return false;
+        if (result.output.isEmpty()) return true;
+        if (!result.output.endsWith(QChar::Null)) return false;
+        *names = result.output.split(QChar::Null);
+        names->removeLast(); // Remove only the final record delimiter.
         return true;
     }
     // QDir::entryList conflates an empty directory with a failed enumeration.
     std::error_code error;
 #ifdef Q_OS_WIN
-    const std::filesystem::path dir(directory.toStdWString());
+    const auto dir = nativeFilesystemPath(directory);
 #else
     const std::filesystem::path dir(directory.toStdString());
 #endif
@@ -241,9 +263,16 @@ bool SessionFs::listNamesChecked(const QString &directory, QStringList *names) c
     for (; it != end; it.increment(error)) {
         if (error) return false;
 #ifdef Q_OS_WIN
-        names->append(QString::fromStdWString(it->path().filename().wstring()));
+        const std::wstring name = it->path().filename().wstring();
+        names->append(QString::fromWCharArray(name.data(), qsizetype(name.size())));
 #else
-        names->append(QString::fromStdString(it->path().filename().string()));
+        // POSIX names may contain arbitrary bytes. A lossy Unicode spelling could
+        // make a real peer look absent and discard its artifact ownership.
+        const std::string name = it->path().filename().string();
+        const QByteArray bytes(name.data(), qsizetype(name.size()));
+        const QString decoded = QString::fromUtf8(bytes);
+        if (decoded.toUtf8() != bytes) return false;
+        names->append(decoded);
 #endif
     }
     return !error;

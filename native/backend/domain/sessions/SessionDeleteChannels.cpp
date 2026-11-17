@@ -25,11 +25,12 @@ private:
 /** Plan and perform filesystem work off-thread; host trash requests stay on the owner loop. */
 void executeDelete(ChannelServices &services, const CatalogEntry &entry,
                    const SessionScanner::DeletionSnapshot &snapshot, bool permanent,
-                   ChannelResponder responder)
+                   ChannelResponder responder, const deletionidentity::NativeLease &nativeLease = {},
+                   const deletionidentity::Lease &wslLease = {})
 {
     const QString sessionId = entry.id;
     auto nativeScope = std::make_shared<scopedmutation::Root>();
-    background::runBlocking([&services, sessionId, entry, snapshot, permanent, nativeScope]() -> QJsonValue {
+    background::runBlocking([&services, sessionId, entry, snapshot, permanent, nativeScope, nativeLease, wslLease]() -> QJsonValue {
         CatalogEntry current;
         if (!findEntry(services, sessionId, &current))
             return QJsonObject{{QStringLiteral("missing"), true}};
@@ -52,21 +53,29 @@ void executeDelete(ChannelServices &services, const CatalogEntry &entry,
                 throw ChannelError(QStringLiteral("Session deletion environment does not match the catalog"));
             }
         }
+        const auto nativePlan = [&] {
+            const auto planned = sessiondelete::plan(deletion.fs, entry.filePath, deletion.root);
+            // Admission happens before this worker resolves settings/root aliases.
+            // A retarget must fail before either permanent or host trash mutations.
+            if (!nativeLease.matchesPlan(planned.sessionFile))
+                throw ChannelError(QStringLiteral("Session deletion identity changed"));
+            return planned;
+        };
         QJsonObject plan{{QStringLiteral("projectId"), entry.projectId}};
         if (permanent) {
             if (deletion.fs.wsl())
                 throw ChannelError(QStringLiteral("Permanent deletion is unavailable for WSL sessions"));
             if (!entry.filePath.isEmpty())
-                sessiondelete::removePermanently(sessiondelete::plan(deletion.fs, entry.filePath, deletion.root));
+                sessiondelete::removePermanently(nativePlan());
             catalogOf(services).removePinned(entry);
             plan.insert(QStringLiteral("complete"), true);
         } else if (!entry.filePath.isEmpty() && deletion.fs.wsl()) {
-            try { sessiondelete::softDeleteWsl(deletion.fs, entry.filePath, deletion.root); }
+            try { sessiondelete::softDeleteWsl(deletion.fs, entry.filePath, deletion.root, &wslLease); }
             catch (const sessiondelete::WslTrashUnavailable &) {
                 throw ChannelError(translateOf(services)(QStringLiteral("session.wslSafeTrashUnavailable"), {}));
             }
         } else if (!entry.filePath.isEmpty()) {
-            const sessiondelete::Plan planned = sessiondelete::plan(deletion.fs, entry.filePath, deletion.root);
+            const sessiondelete::Plan planned = nativePlan();
             *nativeScope = planned.nativeRoot;
             QJsonArray targets;
             for (const QString &path : planned.backups) targets.append(path);
@@ -182,7 +191,8 @@ void registerSessionDeleteChannel(ChannelRegistry &registry, ChannelServices &se
                             responder.reject(error);
                         });
                     try {
-                        executeDelete(services, entry, snapshot, permanent, reserved);
+                        executeDelete(services, entry, snapshot, permanent, reserved,
+                                      owner->nativeDeletionLease(sessionId), owner->wslDeletionLease(sessionId));
                     } catch (const std::exception &failure) {
                         reserved.reject(QString::fromUtf8(failure.what()));
                     }

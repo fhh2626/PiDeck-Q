@@ -17,10 +17,14 @@ async function portNumber() {
 
 if (executable) test("web deletion validates options and forwards explicit permanent deletion", async (t) => {
 	const port = await portNumber();
+	const trashRequests = [];
 	const f = await startBackendSession(t, {
 		projects: [{ id: "web-delete", path: process.cwd() }],
 		settings: { webServiceEnabled: true, webServiceHost: "127.0.0.1", webServicePort: port, webServiceAccessToken: token },
-		hostHandlers: { "shell.trashItem": () => ({ result: { status: "trash-failed" } }) },
+		hostHandlers: { "shell.trashItem": (params) => {
+			trashRequests.push(params.path);
+			return { result: { status: "trash-failed" } };
+		} },
 	});
 	const file = join(f.fixture.sessions, "web-delete.jsonl");
 	writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "web-delete", cwd: process.cwd(), timestamp: "2026-01-01T00:00:00.000Z" }) + "\n");
@@ -41,15 +45,21 @@ if (executable) test("web deletion validates options and forwards explicit perma
 		assert.equal(result.status, 400, JSON.stringify(result));
 		assert.ok(existsSync(file));
 	}
-	for (const body of [null, "{}"]) {
+	assert.deepEqual(trashRequests, []);
+	for (const body of [null, "{}", '{"permanent":false}']) {
+		const previousTrashCount = trashRequests.length;
 		const result = await request(body);
 		assert.equal(result.status, 200, JSON.stringify(result));
 		assert.deepEqual(result.json.deleted, { status: "trash-failed" });
+		assert.equal(trashRequests.length, previousTrashCount + 1);
+		assert.equal(trashRequests.at(-1).replaceAll("\\", "/"), file.replaceAll("\\", "/"));
 		assert.ok(existsSync(file));
 	}
+	const previousTrashCount = trashRequests.length;
 	const removed = await request('{"permanent":true}');
 	assert.equal(removed.status, 200, JSON.stringify(removed));
 	assert.equal(removed.json.deleted, true);
+	assert.equal(trashRequests.length, previousTrashCount);
 	assert.equal(existsSync(file), false);
 });
 

@@ -56,6 +56,13 @@ public:
         QString wslUser;
     };
 
+    /** The filesystem namespace captured from the process that owns a session file. */
+    struct RuntimeIdentity {
+        QString environment;
+        QString wslDistro;
+        QString wslUser;
+    };
+
     /** Normalizes a pi-reported relative sessionFile against the project cwd. */
     using FilePathResolver = std::function<QString(const QString &projectId, const QString &filePath,
                                                    const QString &environment)>;
@@ -93,7 +100,9 @@ public:
                             const QString &source, bool hasModel, const QString &modelProvider,
                             const QString &modelId, bool hasThinkingLevel, const QString &thinkingLevel);
     QJsonObject update(const QString &id, const QJsonObject &patch);
-    CatalogEntry attachRuntime(const QString &sessionId, const QString &filePath, const QString &piSessionId);
+    /** Attach the path and its actual launch namespace in one catalog transaction. */
+    CatalogEntry attachRuntime(const QString &sessionId, const QString &filePath, const QString &piSessionId,
+                               std::optional<RuntimeIdentity> identity = std::nullopt);
     /** Pin a captured filesystem identity across asynchronous deletion and settlement. */
     bool pinDeletion(const CatalogEntry &expected);
     void releaseDeletion(const QString &id);

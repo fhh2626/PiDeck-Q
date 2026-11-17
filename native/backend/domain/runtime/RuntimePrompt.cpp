@@ -280,13 +280,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
                                  done(result);
                                  return;
                              }
-                             if (!current->tab().sessionPath.isEmpty()) {
-                                 if (m_deps.services->catalog) {
-                                     m_deps.services->catalog->attachRuntime(
-                                         sessionId, current->tab().sessionPath,
-                                         current->tab().piSessionId);
-                                 }
-                             }
+                             persistRuntimeIdentity(sessionId, *current);
                              if (extensionCommand && ownsPromptState) {
                                  // Commands that only notify or cancel clarification emit no
                                  // agent_end. Confirm pi has no work before draining the queue.
@@ -358,6 +352,16 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                           QStringLiteral("Session not found: %1").arg(target.sessionId))));
         return;
     }
+    AgentSession *old = agent(target.agentId);
+    const CatalogEntry next = old
+        ? deletionidentity::forLaunch(entry, buildSessionLaunch(*old, entry.filePath)) : entry;
+    // Refuse before emitting detach or closing a still-usable unrelated process.
+    // A draft can select a different namespace from the one recorded at creation.
+    if (deletionBlocksLaunch(entry) || deletionBlocksLaunch(next)) {
+        done(errorResult(CommandError::of(errorcode::kRuntimeChanged,
+                                          QStringLiteral("Session deletion is in progress"))));
+        return;
+    }
     Bindings::Reservation reservation;
     try {
         reservation = m_bindings.beginReplacement(target.sessionId, target.agentId);
@@ -371,7 +375,6 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
         return;
     }
     emitDetach(target);
-    AgentSession *old = agent(target.agentId);
     if (old) {
         old->close();
         forgetAgent(target.agentId);
@@ -447,6 +450,7 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                  }
                                  int generation = 0;
                                  try {
+                                     persistRuntimeIdentity(target.sessionId, *ready);
                                      // Atomic commit: validates that this restart still owns the
                                      // reserved session and binds the new process in one step, so
                                      // the returned target can never be a stale success.
@@ -458,13 +462,6 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                  }
                                  ready->tab().runtimeGeneration = generation;
                                  ready->setStatus(QStringLiteral("idle"));
-                                 // A --no-session runtime has no persisted identity to attach.
-                                 if (!ready->tab().sessionPath.isEmpty() && !entry.noSession
-                                     && m_deps.services->catalog) {
-                                     m_deps.services->catalog->attachRuntime(
-                                         target.sessionId, ready->tab().sessionPath,
-                                         ready->tab().piSessionId);
-                                 }
                                  publishState(*ready);
                                  // Re-flush after binding: the projection loaded above ran while
                                  // the runtime identity was still being replaced.

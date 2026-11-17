@@ -82,12 +82,60 @@ function toHost(linuxPath) {
 		}
 		return join(root, suffix);
 	}
+	// The identity batch also resolves / and the home ancestors. Bind each to
+	// the corresponding real ancestor of this fixture's backing home.
+	const ancestor = posix.normalize(linuxPath);
+	if (ancestor === "/" || linuxHome.startsWith(`${ancestor}/`)) {
+		let currentLinux = linuxHome, currentHost = root;
+		while (currentLinux !== ancestor) {
+			currentLinux = posix.dirname(currentLinux);
+			currentHost = dirname(currentHost);
+		}
+		return currentHost;
+	}
 	fail(`path outside the fake home: ${linuxPath}`);
 }
 
 function toLinux(hostPath) {
-	const relative = hostPath.slice(root.length).replace(/^[\\/]+/, "");
-	return relative ? posix.join(linuxHome, relative.split("\\").join("/")) : linuxHome;
+	let currentLinux = linuxHome, currentHost = root;
+	while (true) {
+		if (hostPath === currentHost || hostPath.startsWith(`${currentHost}/`) || hostPath.startsWith(`${currentHost}\\`)) {
+			const relative = hostPath.slice(currentHost.length).replace(/^[\\/]+/, "");
+			return relative ? posix.join(currentLinux, relative.split("\\").join("/")) : currentLinux;
+		}
+		if (currentLinux === "/") fail(`path outside the fake namespace: ${hostPath}`);
+		currentLinux = posix.dirname(currentLinux);
+		currentHost = dirname(currentHost);
+	}
+}
+
+/** GNU realpath emits raw filename bytes, including bytes with no UTF-8 spelling. */
+function toLinuxBytes(hostPath) {
+	let currentLinux = linuxHome, currentHost = root;
+	while (true) {
+		const prefix = Buffer.from(currentHost);
+		if (hostPath.subarray(0, prefix.length).equals(prefix)
+			&& (hostPath.length === prefix.length || hostPath[prefix.length] === 47 || hostPath[prefix.length] === 92)) {
+			let start = prefix.length;
+			while (hostPath[start] === 47 || hostPath[start] === 92) start++;
+			const relative = Buffer.from(hostPath.subarray(start));
+			if (process.platform === "win32") for (let index = 0; index < relative.length; index++) {
+				if (relative[index] === 92) relative[index] = 47;
+			}
+			return Buffer.concat([Buffer.from(currentLinux),
+				relative.length ? Buffer.from(currentLinux === "/" ? "" : "/") : Buffer.alloc(0), relative]);
+		}
+		if (currentLinux === "/") fail("raw canonical path outside the fake namespace");
+		currentLinux = posix.dirname(currentLinux);
+		currentHost = dirname(currentHost);
+	}
+}
+
+/** Append ordinary missing components without decoding the existing physical prefix. */
+function canonicalBytes(path, suffix = []) {
+	const canonical = realpathSync.native(path, { encoding: "buffer" });
+	return toLinuxBytes(Buffer.concat([canonical,
+		suffix.length ? Buffer.from(`/${suffix.join("/")}`) : Buffer.alloc(0)]));
 }
 
 function walk(directory, out, filter) {
@@ -167,7 +215,7 @@ switch (verb) {
 			if (parent === current) process.exit(1);
 			current = parent;
 		}
-		process.stdout.write(`${toLinux(join(realpathSync.native(current), ...suffix))}\n`);
+		emit(Buffer.concat([canonicalBytes(current, suffix), Buffer.from("\n")]));
 		process.exit(0);
 	}
 	case "test": {
@@ -283,23 +331,22 @@ switch (verb) {
 			if (scenario.identityFailure) fail("identity resolution failed");
 			for (const target of rest.slice(3)) {
 				const host = toHost(target);
-				let canonical = "";
-				try { canonical = toLinux(realpathSync.native(host)); }
+				let canonical = Buffer.alloc(0);
+				try { canonical = canonicalBytes(host); }
 				catch {
 					try {
-						const parent = realpathSync.native(dirname(host));
 						let linked = false;
 						try { linked = lstatSync(host).isSymbolicLink(); } catch { /* missing ordinary leaf */ }
-						if (!linked) canonical = toLinux(join(parent, basename(host)));
+						if (!linked) canonical = canonicalBytes(dirname(host), [basename(host)]);
 					} catch { /* an unknown ancestor is not a trustworthy identity */ }
 				}
-				if (scenario.identityCanonicalOverrides?.[target]) canonical = scenario.identityCanonicalOverrides[target];
+				if (scenario.identityCanonicalOverrides?.[target]) canonical = Buffer.from(scenario.identityCanonicalOverrides[target]);
 				// Model POSIX command substitution too: plain $(realpath ...) strips all
 				// trailing newlines, while the production sentinel preserves the exact name.
-				if (!rest[1].includes("&& printf .")) canonical = canonical.replace(/\n+$/, "");
+				if (!rest[1].includes("&& printf .")) while (canonical.at(-1) === 10) canonical = canonical.subarray(0, -1);
 				// Empty identity models EACCES/unknown ancestry, never an absent file.
-				if (scenario.identityUnresolvedPrefix && target.startsWith(scenario.identityUnresolvedPrefix)) canonical = "";
-				emit(`${target}\0${canonical}\0`);
+				if (scenario.identityUnresolvedPrefix && target.startsWith(scenario.identityUnresolvedPrefix)) canonical = Buffer.alloc(0);
+				emit(Buffer.concat([Buffer.from(target), Buffer.from([0]), canonical, Buffer.from([0])]));
 			}
 			process.exit(0);
 		}
@@ -360,6 +407,18 @@ switch (verb) {
 	}
 	case "find": {
 		const base = rest[0];
+		if (rest[1] === "-mindepth") {
+			const expected = ["-mindepth", "1", "-maxdepth", "1", "-printf", "%f\\0"];
+			if (rest.length !== expected.length + 1 || expected.some((argument, index) => rest[index + 1] !== argument))
+				fail("unsupported checked directory listing");
+			if (scenario.failListPath === base) fail("listing denied");
+			const directory = toHost(base);
+			if (!existsSync(directory)) process.exit(1);
+			// Match GNU find's entry framing so control characters remain filename
+			// data and the production planner can reject unsafe names itself.
+			for (const name of readdirSync(directory, { encoding: "buffer" })) emit(Buffer.concat([name, Buffer.from([0])]));
+			process.exit(0);
+		}
 		const files = [];
 		walk(toHost(base), files, (host) => host.endsWith(".jsonl"));
 		for (const file of files) process.stdout.write(`${file}\n`);

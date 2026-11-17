@@ -29,6 +29,37 @@ constexpr qint64 kTotalReadLimit = 256 * 1024 * 1024;
 
 const char *const kNestedArtifactDirs[] = {"outputs", "structured-output"};
 
+/** Reserved directories stay protected on both case-sensitive and insensitive macOS volumes. */
+Qt::CaseSensitivity reservedNameSensitivity(const SessionFs &fs)
+{
+    if (fs.wsl()) return Qt::CaseSensitive;
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
+}
+
+bool isArtifactContainer(const SessionFs &fs, const QString &name)
+{
+    for (const char *container : kNestedArtifactDirs)
+        if (name.compare(QLatin1String(container), reservedNameSensitivity(fs)) == 0) return true;
+    return false;
+}
+
+/** A matching stem cannot claim storage shared by sessions or infer ownership from its children. */
+bool isSharedCompanion(const SessionFs &fs, const QString &directory, const QString &name)
+{
+    if (name.startsWith("--") && name.endsWith("--")) return true;
+    const auto sensitivity = reservedNameSensitivity(fs);
+    for (const auto reserved : {QLatin1String(kSharedArtifactsDir), QLatin1String(sessionfiles::kTrashDirName),
+                                   QLatin1String(sessionfiles::kArchiveDirName), QLatin1String(".pi"), QLatin1String(".git")}) {
+        if (name.compare(reserved, sensitivity) == 0) return true;
+    }
+    return fs.basename(directory).compare(QLatin1String(kSharedArtifactsDir), sensitivity) == 0
+        && isArtifactContainer(fs, name);
+}
+
 bool isRecord(const QJsonValue &value)
 {
     return value.isObject();
@@ -238,24 +269,9 @@ Plan plan(const SessionFs &fs, const QString &inputFilePath, const QString &auth
     const QString sibling = filePath.endsWith(QLatin1String(".jsonl"), Qt::CaseInsensitive)
         ? filePath.left(filePath.size() - 6)
         : QString();
-#ifdef Q_OS_WIN
-    const auto caseSensitivity = fs.wsl() ? Qt::CaseSensitive : Qt::CaseInsensitive;
-#else
-    constexpr auto caseSensitivity = Qt::CaseSensitive;
-#endif
     // A matching stem is not ownership of storage/configuration shared by sessions.
     // In particular, subagent-artifacts.jsonl must not claim every peer's artifacts.
-    const QString siblingName = fs.basename(sibling);
-    // The default store's encoded-cwd buckets are shared by many independent sessions.
-    bool sharedSibling = siblingName.startsWith("--") && siblingName.endsWith("--");
-    for (const auto reserved : {QLatin1String(kSharedArtifactsDir), QLatin1String(sessionfiles::kTrashDirName),
-                                   QLatin1String(sessionfiles::kArchiveDirName), QLatin1String(".pi"), QLatin1String(".git")}) {
-        if (siblingName.compare(reserved, caseSensitivity) == 0) sharedSibling = true;
-    }
-    if (fs.basename(directory).compare(QLatin1String(kSharedArtifactsDir), caseSensitivity) == 0) {
-        for (const char *nested : kNestedArtifactDirs)
-            if (siblingName.compare(QLatin1String(nested), caseSensitivity) == 0) sharedSibling = true;
-    }
+    const bool sharedSibling = isSharedCompanion(fs, directory, fs.basename(sibling));
     if (!sibling.isEmpty() && !sharedSibling && isDirectory(sibling)) {
         result.siblingDir = sibling;
         result.hasSibling = true;
@@ -290,7 +306,10 @@ Plan plan(const SessionFs &fs, const QString &inputFilePath, const QString &auth
     const auto withSiblingIdentities = [&](const QString &path) {
         QSet<QString> ids = identities(path);
         const QString companion = path.left(path.size() - 6);
-        if (isDirectory(companion)) {
+        // Shared storage cannot grant positive ownership. For peers its children
+        // may still veto deletion, preserving data whose ownership is ambiguous.
+        if ((path != filePath || !isSharedCompanion(fs, fs.dirname(path), fs.basename(companion)))
+            && isDirectory(companion)) {
             for (const QString &candidate : safeNames(fs, companion, directory)) {
                 if (isSubagentRunDirectoryName(candidate)
                     && isDirectory(fs.join(companion, candidate))) ids.insert(candidate);
@@ -320,25 +339,30 @@ Plan plan(const SessionFs &fs, const QString &inputFilePath, const QString &auth
         return result;
     }
 
-    // Native Windows names are case-insensitive, unlike WSL/Linux. Apply the same
-    // filesystem semantics to both ownership sets and candidate artifact names.
-    const auto identityKey = [&fs](const QString &value) {
+    // Windows owns names case-insensitively. macOS may use either filesystem mode,
+    // so only broaden peer vetoes there: an alias may preserve data, never grant
+    // ownership of a distinct artifact on a case-sensitive volume.
 #ifdef Q_OS_WIN
-        if (!fs.wsl()) return value.toCaseFolded();
+    const bool foldOwned = !fs.wsl();
+#else
+    constexpr bool foldOwned = false;
 #endif
-        return value;
-    };
-    const auto normalizedIds = [&identityKey](const QSet<QString> &ids) {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    const bool foldPeers = !fs.wsl();
+#else
+    constexpr bool foldPeers = false;
+#endif
+    const auto normalizedIds = [](const QSet<QString> &ids, bool fold) {
         QSet<QString> normalized;
-        for (const QString &id : ids) normalized.insert(identityKey(id));
+        for (const QString &id : ids) normalized.insert(fold ? id.toCaseFolded() : id);
         return normalized;
     };
-    runIds = normalizedIds(runIds);
-    peerIds = normalizedIds(peerIds);
+    runIds = normalizedIds(runIds, foldOwned);
+    peerIds = normalizedIds(peerIds, foldPeers);
     // An artifact can match several identities; retain it if any peer could own it.
     // Probe only delimiter boundaries instead of multiplying entries by identities.
-    const auto matches = [&identityKey](const QString &name, const QSet<QString> &ids) {
-        const QString entry = identityKey(name);
+    const auto matches = [](const QString &name, const QSet<QString> &ids, bool fold) {
+        const QString entry = fold ? name.toCaseFolded() : name;
         if (ids.contains(entry)) return true;
         for (qsizetype i = 1; i < entry.size(); ++i) {
             if ((entry.at(i) == QLatin1Char('_') || entry.at(i) == QLatin1Char('.'))
@@ -348,7 +372,10 @@ Plan plan(const SessionFs &fs, const QString &inputFilePath, const QString &auth
     };
     const auto collect = [&](const QString &dir) {
         for (const QString &entry : safeNames(fs, dir, directory)) {
-            if (matches(entry, runIds) && !matches(entry, peerIds))
+            // These are shared containers even if a run id happens to equal their
+            // name. Their children are evaluated separately below.
+            if (dir == artifactsDir && isArtifactContainer(fs, entry)) continue;
+            if (matches(entry, runIds, foldOwned) && !matches(entry, peerIds, foldPeers))
                 result.artifacts.append(fs.join(dir, entry));
         }
     };

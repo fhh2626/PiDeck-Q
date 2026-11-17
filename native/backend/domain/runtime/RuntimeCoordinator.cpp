@@ -63,6 +63,7 @@ void Coordinator::shutdown()
     m_compactProjectionExits.clear();
     m_pendingUi.clear();
     m_deletingTrees.clear();
+    m_nativeDeletingTrees.clear();
     m_wslDeletingTrees.clear();
     for (auto &entry : m_delivery) {
         if (!entry.settled) {

@@ -77,7 +77,8 @@ bool HostRpcClient::connectToHost(quint16 port, int timeoutMs)
     return true;
 }
 
-std::shared_ptr<HostRequest> HostRpcClient::request(const QString &method, const QJsonObject &params, int timeoutMs)
+std::shared_ptr<HostRequest> HostRpcClient::request(const QString &method, const QJsonObject &params,
+                                                 int timeoutMs, TimeoutPolicy timeoutPolicy)
 {
     // No QObject parent: the shared_ptr owns the lifetime, and a parent would
     // double-delete it when the client is destroyed.
@@ -88,12 +89,17 @@ std::shared_ptr<HostRequest> HostRpcClient::request(const QString &method, const
     }
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_pending.insert(id, handle);
-    // A wedged host must not leak the pending entry, so every request owns a timer.
-    QTimer::singleShot(timeoutMs, handle.get(), [this, id, method] {
-        const auto pending = m_pending.take(id);
-        if (!pending) return;
-        pending->reject(QStringLiteral("Native host request timed out: %1").arg(method));
-    });
+    // A timeout cannot retract an already delivered destructive request. Its
+    // caller must retain its mutation reservation until the host replies or the
+    // bridge closes. Connection loss still rejects every pending request and is
+    // fatal to the backend, so no runtime may continue past that shutdown.
+    if (timeoutPolicy == TimeoutPolicy::Deadline) {
+        QTimer::singleShot(timeoutMs, handle.get(), [this, id, method] {
+            const auto pending = m_pending.take(id);
+            if (!pending) return;
+            pending->reject(QStringLiteral("Native host request timed out: %1").arg(method));
+        });
+    }
     send(QJsonObject{
         {QStringLiteral("type"), QStringLiteral("request")},
         {QStringLiteral("id"), id},

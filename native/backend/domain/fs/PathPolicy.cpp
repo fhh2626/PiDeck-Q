@@ -1,5 +1,6 @@
 #include "PathPolicy.h"
 #include "WslFilePaths.h"
+#include "../../../common/NativeCanonicalPath.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -72,10 +73,12 @@ QString canonicalIfPresent(const QString &path)
             return QDir::cleanPath(QDir::fromNativeSeparators(resolved));
         }
     }
-#endif
     const QFileInfo info(path);
     if (!info.exists()) return QString();
     return info.canonicalFilePath();
+#else
+    return nativecanonical::existing(path).path;
+#endif
 }
 
 } // namespace
@@ -119,6 +122,11 @@ bool isPathInsideRoot(const QString &target, const QString &root)
 
 QString realpathWithMissingSuffix(const QString &target)
 {
+#ifndef Q_OS_WIN
+    // Preserve raw traversal order, and never treat a lossy existing entry as
+    // a missing suffix whose lexical spelling would authorize another target.
+    return nativecanonical::withMissingSuffix(target).path;
+#else
     QStringList missing;
     QString current = resolvePolicyPath(target);
     if (current.isEmpty()) current = QDir::cleanPath(withForwardSlashes(target));
@@ -140,6 +148,7 @@ QString realpathWithMissingSuffix(const QString &target)
         missing.append(name);
         current = parent;
     }
+#endif
 }
 
 QString existingRealPath(const QString &target)

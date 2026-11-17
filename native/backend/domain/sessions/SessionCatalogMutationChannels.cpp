@@ -27,6 +27,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QScopeGuard>
 
 namespace sessionchannels {
 namespace {
@@ -80,18 +81,31 @@ void renameFileThenCommit(ChannelServices &services, const QString &sessionId,
     }
     runWhenTreeIdle(
         services, sessionId,
-        [&services, filePath, title]() -> QJsonValue {
+        [&services, sessionId, filePath, title, withTitle]() -> QJsonValue {
+            const CatalogEntry entry = requireEntry(services, sessionId);
+            // The plan crossed the owner thread. Never write its old path and
+            // then apply the new title to a record that now owns another file.
+            if (entry.filePath != filePath)
+                throw ChannelError(translateOf(services)(QStringLiteral("mainAgent.renameFailed"), {}));
+            auto &catalog = catalogOf(services);
+            if (!catalog.pinDeletion(entry))
+                throw ChannelError(translateOf(services)(QStringLiteral("session.deletionInProgress"), {}));
+            const auto releasePin = qScopeGuard([&catalog, sessionId] { catalog.releaseDeletion(sessionId); });
             // Rewriting the JSONL while a child agent in the same tree still appends to it
             // would corrupt that child's session, so the guard above is the precondition.
-            scannerOf(services).rename(filePath, title);
-            return QJsonValue();
+            // Keep the file write and catalog commit in one worker transaction:
+            // owner-thread deletion admission cannot take its pin between them.
+            scannerOf(services).rename(entry.filePath, title);
+            return catalog.update(sessionId, withTitle);
         },
-        [&services, sessionId, withTitle, responder](background::Outcome outcome) mutable {
+        [&services, responder](background::Outcome outcome) mutable {
             if (!outcome.ok) {
                 responder.reject(outcome.error);
                 return;
             }
-            commitUpdate(services, sessionId, withTitle, responder);
+            notifyCatalogRefreshed(
+                services, outcome.value.toObject().value(QStringLiteral("projectId")).toString());
+            responder.resolve(outcome.value);
         });
 }
 
@@ -177,8 +191,16 @@ void registerSessionCatalogMutationChannels(ChannelRegistry &registry, ChannelSe
                                   CatalogEntry current;
                                   if (!findEntry(services, sessionId, &current)) return false;
                                   if (current.filePath.isEmpty()) return false;
+                                  auto &catalog = catalogOf(services);
+                                  // Deletion admission runs on the owner thread while
+                                  // archive IO runs here. Claim the shared pin before
+                                  // moving files so neither operation can interrupt the
+                                  // other's catalog commit after a successful file move.
+                                  if (!catalog.pinDeletion(current))
+                                      throw ChannelError(translateOf(services)(QStringLiteral("session.deletionInProgress"), {}));
+                                  const auto releasePin = qScopeGuard([&catalog, sessionId] { catalog.releaseDeletion(sessionId); });
                                   scannerOf(services).archive(current.filePath);
-                                  catalogOf(services).remove(sessionId);
+                                  catalog.removePinned(current);
                                   return true;
                               },
                               [&services, projectId, responder](background::Outcome outcome) mutable {

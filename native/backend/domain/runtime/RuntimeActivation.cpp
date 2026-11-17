@@ -178,6 +178,7 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                      if (!ready) return;
                                      int generation = 0;
                                      try {
+                                         persistRuntimeIdentity(sessionId, *ready);
                                          generation = bindSession(sessionId, agentId);
                                      } catch (const std::exception &failure) {
                                          discardFailedActivation(entry, agentId);
@@ -187,12 +188,6 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                      }
                                      ready->tab().runtimeGeneration = generation;
                                      ready->setStatus(QStringLiteral("idle"));
-                                     if (!ready->tab().sessionPath.isEmpty() && !entry.noSession
-                                         && m_deps.services->catalog) {
-                                         m_deps.services->catalog->attachRuntime(
-                                             sessionId, ready->tab().sessionPath,
-                                             ready->tab().piSessionId);
-                                     }
                                      publishState(*ready);
                                      // The initial transcript flush must follow the binding:
                                      // `agents:message` is enveloped with the runtime identity,
@@ -235,6 +230,13 @@ void Coordinator::createAgent(const CatalogEntry &entry,
         // Trust/version probes can yield. Recheck the captured launch identity at the
         // last point before pi can open its file, not only the current catalog row.
         const CatalogEntry actual = deletionidentity::forLaunch(entry, launch);
+        // A cached unrelated WSL alias may have been retargeted while deletion is
+        // moving files. Existing bound runtimes remain usable; new writers wait
+        // until the short mutation lease ends, including delayed trust probes.
+        if (deletionBlocksLaunch(entry) || deletionBlocksLaunch(actual)) {
+            done(nullptr, QStringLiteral("Session deletion is in progress"));
+            return;
+        }
         if (!deletionidentity::compatibleLaunch(entry, actual)) {
             done(nullptr, QStringLiteral("Session runtime environment does not match the catalog"));
             return;

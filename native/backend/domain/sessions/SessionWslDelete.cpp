@@ -3,6 +3,7 @@
 #include "SessionWslTrashScript.h"
 #include "SessionWslRootPin.h"
 #include "../ChannelRegistry.h"
+#include "../runtime/DeletionIdentity.h"
 
 #include <QVector>
 
@@ -26,7 +27,7 @@ QString physicalRoot(const SessionFs &fs, const QString &root)
     const auto result = fs.runCapture({QStringLiteral("realpath"), QStringLiteral("-e"), QStringLiteral("--"), root}, 10'000, 16 * 1024);
     QString path = result.stdoutText;
     if (path.endsWith('\n')) path.chop(1);
-    if (!result.ok() || !path.startsWith('/') || path.contains('\n') || path.contains('\r')
+    if (!result.ok() || !result.stdoutLosslessUtf8 || !path.startsWith('/') || path.contains('\n') || path.contains('\r')
         || path.contains('\\') || path.contains(QChar(0)))
         throw ChannelError(QStringLiteral("Unable to authorize session deletion"));
     return path;
@@ -34,7 +35,8 @@ QString physicalRoot(const SessionFs &fs, const QString &root)
 } // namespace
 
 /** One root identity and cwd/descriptor-bound Linux moves, without a check/use RPC gap. */
-QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QString &root)
+QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QString &root,
+                      const deletionidentity::Lease *lease)
 {
     const QString authority = physicalRoot(fs, root);
     const WslRootPin pin(fs.config(), authority);
@@ -43,6 +45,11 @@ QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QStrin
     const QString parent = physicalRoot(fs, fs.dirname(filePath));
     const QString file = fs.join(authority, relativePath(authority, fs.join(parent, fs.basename(filePath))));
     const Plan planned = plan(fs, file, authority);
+    // The runtime fence was admitted before this worker resolved root aliases.
+    // Keep that same physical entry and referents through planning, then rely on
+    // the retained Linux root descriptor for the actual entry-level moves below.
+    if (lease && !lease->matchesPlan(fs, planned.sessionFile))
+        throw ChannelError(QStringLiteral("Session deletion identity changed"));
     if (!planned.hasFile && !planned.hasSibling && planned.backups.isEmpty() && planned.artifacts.isEmpty()) return {};
     const QString bucket = wslTrashBucket(fs, authority);
     const QString source = fs.dirname(file);

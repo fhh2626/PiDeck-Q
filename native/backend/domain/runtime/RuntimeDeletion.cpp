@@ -1,31 +1,10 @@
 #include "RuntimeCoordinator.h"
 
 #include "../sessions/SessionCatalogStore.h"
-#include "../fs/PathPolicy.h"
 #include "../process/BackgroundWork.h"
-
-#include <QDir>
 
 namespace runtime {
 namespace {
-
-/** Overlap is symmetric: a parent mutation must also respect a reserved child tree. */
-bool overlaps(const CatalogEntry &left, const CatalogEntry &right)
-{
-    if (left.id == right.id) return true;
-    if (left.filePath.isEmpty() || right.filePath.isEmpty()
-        || !deletionidentity::sameNamespace(left, right)) return false;
-    QString leftPath = left.filePath;
-    QString rightPath = right.filePath;
-    if (left.environment != QLatin1String("wsl")) {
-        const QString realLeft = pathpolicy::realpathWithMissingSuffix(leftPath);
-        const QString realRight = pathpolicy::realpathWithMissingSuffix(rightPath);
-        if (!realLeft.isEmpty()) leftPath = realLeft;
-        if (!realRight.isEmpty()) rightPath = realRight;
-    }
-    return sessiontreeguard::isPathInSessionTree(leftPath, rightPath, left.environment)
-        || sessiontreeguard::isPathInSessionTree(rightPath, leftPath, left.environment);
-}
 
 /** Convert an unbound runtime into the same narrow filesystem identity as catalog rows. */
 CatalogEntry liveIdentity(const sessiontreeguard::LiveAgent &agent)
@@ -63,9 +42,15 @@ bool Coordinator::deletionBlocksEntry(const CatalogEntry &candidate) const
     for (const auto &lease : m_wslDeletingTrees) {
         if (lease.blocks(candidate)) return true;
     }
-    for (const CatalogEntry &root : m_deletingTrees) {
-        if (root.environment != QLatin1String("wsl") && overlaps(root, candidate)) return true;
-    }
+    for (const auto &lease : m_nativeDeletingTrees)
+        if (lease.blocks(candidate)) return true;
+    return false;
+}
+
+bool Coordinator::deletionBlocksLaunch(const CatalogEntry &candidate) const
+{
+    for (const auto &lease : m_wslDeletingTrees)
+        if (deletionidentity::sameNamespace(lease.root, candidate)) return true;
     return false;
 }
 
@@ -79,13 +64,8 @@ bool Coordinator::deletionBlocksAgent(const QString &agentId) const
     candidate.environment = tab.sessionEnvironment;
     candidate.wslDistro = tab.wslDistro;
     candidate.wslUser = tab.wslUser;
-    for (const auto &lease : m_wslDeletingTrees) {
-        if (lease.blocks(candidate)) return true;
-    }
-    for (const CatalogEntry &root : m_deletingTrees) {
-        if (root.environment != QLatin1String("wsl") && overlaps(root, candidate)) return true;
-    }
-    return false;
+    candidate.noSession = tab.noSession;
+    return deletionBlocksEntry(candidate);
 }
 
 bool Coordinator::deletionBlocksPathChange(const QString &agentId) const
@@ -124,25 +104,37 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
         if (!block.isEmpty()) return done(block);
         const auto entries = m_deps.services->catalog->listEntries();
         if (root.environment != QLatin1String("wsl") || root.filePath.isEmpty()) {
+            const auto lease = deletionidentity::captureNative(root);
             for (const CatalogEntry &entry : entries) {
                 if ((deletionidentity::sameNamespace(root, entry)
                      && m_bindings.isReplacingSession(entry.id))
-                    || (overlaps(root, entry) && isSessionBusy(entry.id)))
+                    || (lease.blocks(entry) && isSessionBusy(entry.id)))
                     return done(blocked(QStringLiteral("session-busy"), entry.id));
             }
             // A replacement can be live before its catalog binding is published; its
             // destination remains unknown until the replacement handshake completes.
             for (const auto &agentEntry : m_agents) {
-                const Tab &tab = agentEntry.second->tab();
+                const AgentSession &session = *agentEntry.second;
+                const Tab &tab = session.tab();
                 CatalogEntry identity;
+                identity.filePath = tab.sessionPath;
                 identity.environment = tab.sessionEnvironment;
                 identity.wslDistro = tab.wslDistro;
+                identity.noSession = tab.noSession;
                 if (deletionidentity::sameNamespace(root, identity)
                     && (m_bindings.isReplacingSession(tab.deckSessionId)
                         || m_bindings.isReplacingSession(m_bindings.sessionForAgent(agentEntry.first))))
                     return done(blocked(QStringLiteral("session-busy"), tab.deckSessionId));
+                // get_state publishes the physical runtime path before projection
+                // loading attaches it to the catalog. Protect that live identity too.
+                if (session.running() && lease.blocks(identity)) {
+                    QJsonObject result = blocked(QStringLiteral("file-in-use"), tab.deckSessionId);
+                    result.insert(QStringLiteral("agentTitle"), tab.title);
+                    return done(result);
+                }
             }
             m_deletingTrees.insert(sessionId, root);
+            m_nativeDeletingTrees.insert(sessionId, lease);
             return done(QJsonObject{});
         }
         if (!fs.wsl() || (!root.wslDistro.isEmpty()
@@ -154,15 +146,18 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
         lease.root = root;
         // Bind empty legacy distro metadata to the captured execution environment.
         lease.root.wslDistro = fs.config().distro;
-        QStringList paths = deletionidentity::pathsFor(root.filePath);
+        // Resolve parents independently both for mutation-entry identity and for
+        // runtime traversal links that lead outside the tree they pass through.
+        const QStringList reservedPaths = deletionidentity::wslPathsFor(root.filePath);
+        QStringList paths = reservedPaths;
         for (const auto &entry : entries) {
             if (deletionidentity::sameNamespace(lease.root, entry))
-                paths.append(deletionidentity::pathsFor(entry.filePath));
+                paths.append(deletionidentity::wslPathsFor(entry.filePath));
         }
         for (const auto &live : liveTreeAgents()) {
             const CatalogEntry entry = liveIdentity(live);
             if (deletionidentity::sameNamespace(lease.root, entry))
-                paths.append(deletionidentity::pathsFor(entry.filePath));
+                paths.append(deletionidentity::wslPathsFor(entry.filePath));
         }
         // No yield between provisional admission and taking the snapshots above. The
         // owner remains responsive while a bounded worker resolves filesystem aliases.
@@ -172,7 +167,7 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
         background::runBlocking([fs, paths, identities]() -> QJsonValue {
             *identities = deletionidentity::resolve(fs, paths);
             return {};
-        }, [this, root, identities, done](background::Outcome outcome) mutable {
+        }, [this, root, identities, reservedPaths, done](background::Outcome outcome) mutable {
             if (m_shutdown || !m_wslDeletingTrees.contains(root.id)) return;
             auto refuse = [this, root, done](const QJsonObject &reason) {
                 releaseDeletion(root.id);
@@ -210,7 +205,7 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
                     return refuse(QJsonObject{{QStringLiteral("kind"), QStringLiteral("file-in-use")},
                                                {QStringLiteral("agentTitle"), live.title}});
             }
-            for (const QString &path : deletionidentity::pathsFor(root.filePath)) {
+            for (const QString &path : reservedPaths) {
                 if (identities->value(path).isEmpty())
                     return refuse(blocked(QStringLiteral("identity-failed")));
             }
@@ -222,10 +217,21 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
     });
 }
 
+deletionidentity::NativeLease Coordinator::nativeDeletionLease(const QString &sessionId) const
+{
+    return m_nativeDeletingTrees.value(sessionId);
+}
+
+deletionidentity::Lease Coordinator::wslDeletionLease(const QString &sessionId) const
+{
+    return m_wslDeletingTrees.value(sessionId);
+}
+
 void Coordinator::releaseDeletion(const QString &sessionId)
 {
     postToOwner([this, sessionId] {
         m_wslDeletingTrees.remove(sessionId);
+        m_nativeDeletingTrees.remove(sessionId);
         m_deletingTrees.remove(sessionId);
     });
 }

@@ -7,6 +7,8 @@
 #include <QString>
 #include <QStringList>
 
+namespace deletionidentity { struct Lease; }
+
 /**
  * Session deletion ownership (ports of sessionDeleteResidue.ts,
  * sessionDeleteOwnership.ts and sessionDeleteCollection.ts).
@@ -58,6 +60,7 @@ void removePermanently(const Plan &plan);
 QString wslTrashBucket(const SessionFs &fs, const QString &root);
 
 /** Soft-delete with a captured adapter/root so environment switches cannot retarget IO. */
-QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QString &root);
+QString softDeleteWsl(const SessionFs &fs, const QString &filePath, const QString &root,
+                      const deletionidentity::Lease *lease = nullptr);
 
 } // namespace sessiondelete

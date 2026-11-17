@@ -43,8 +43,7 @@ void handleSessionRecord(const webroute::Match &match, const HttpRequest &reques
         QJsonObject options;
         if (!readJsonObject(request, &options)
             || (!options.isEmpty()
-                && (options.size() != 1 || !options.value(QStringLiteral("permanent")).isBool()
-                    || !options.value(QStringLiteral("permanent")).toBool()))) {
+                && (options.size() != 1 || !options.value(QStringLiteral("permanent")).isBool()))) {
             return callback(badRequest(QStringLiteral("webError.invalidDeleteOptions")));
         }
         // The oracle separates "the session is running" (400, business message) from an
@@ -58,7 +57,7 @@ void handleSessionRecord(const webroute::Match &match, const HttpRequest &reques
                                                  message)});
         }
         QJsonArray args{match.sessionId};
-        if (!options.isEmpty()) args.append(QJsonObject{{QStringLiteral("permanent"), true}});
+        if (!options.isEmpty()) args.append(options);
         registry.invoke(QStringLiteral("sessions:catalog-delete"), args, ChannelResponder(
             [callback](const QJsonValue &value) { callback(Reply{200, QJsonObject{{QStringLiteral("deleted"), value}}}); },
             [callback](const QString &error) { callback(deletionFailure(error)); }));

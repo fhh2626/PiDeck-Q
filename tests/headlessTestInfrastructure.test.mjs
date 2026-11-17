@@ -138,6 +138,51 @@ test("private endpoint discovery and station admission have independent boot bud
   assert.ok(readDebugEndpoint(launch.debugPortFile).port > 0);
 });
 
+test("CDP focus setup uses the remaining connection deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const runtimeSent = Promise.withResolvers();
+  const focusSent = Promise.withResolvers();
+  const originalWebSocket = globalThis.WebSocket;
+  let socket;
+  // Each reply takes less than the connection budget, but together they exceed it.
+  // Virtual time keeps this regression independent of machine load and scheduling.
+  globalThis.WebSocket = class extends EventTarget {
+    readyState = 1;
+    replyTimer;
+    constructor() {
+      super();
+      socket = this;
+      queueMicrotask(() => this.dispatchEvent(new Event("open")));
+    }
+    send(value) {
+      const frame = JSON.parse(value);
+      this.replyTimer = setTimeout(() => this.dispatchEvent(new MessageEvent("message", {
+        data: JSON.stringify({ id: frame.id, result: {} }),
+      })), 12);
+      if (frame.method === "Runtime.enable") runtimeSent.resolve();
+      else focusSent.resolve();
+    }
+    close() {
+      clearTimeout(this.replyTimer);
+      this.readyState = 3;
+      this.dispatchEvent(new Event("close"));
+    }
+  };
+  t.after(() => {
+    socket?.close();
+    globalThis.WebSocket = originalWebSocket;
+  });
+  const connected = Cdp.connect("ws://127.0.0.1:1/devtools/page/fixture", { timeoutMs: 20 })
+    .then((client) => ({ client }), (error) => ({ error }));
+  await runtimeSent.promise;
+  t.mock.timers.tick(12);
+  await focusSent.promise;
+  t.mock.timers.tick(12);
+  const outcome = await connected;
+  assert.match(outcome.error?.message ?? "", /CDP command timed out: Emulation\.setFocusEmulationEnabled/);
+  assert.equal(socket.readyState, 3, "expired connection setup must close its socket");
+});
+
 test("native UI isolation never falls back when a pinned launcher is missing", { skip: process.platform !== "win32" }, () => {
   assert.throws(() => isolatedDesktopCommand(process.execPath, [], {
     PIDECK_ISOLATED_DESKTOP_EXECUTABLE: "build/definitely-missing-isolation-launcher.exe",

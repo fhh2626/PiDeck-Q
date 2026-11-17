@@ -151,8 +151,16 @@ int main(int argc, char **argv)
     if (argc == 3 && QString::fromLocal8Bit(argv[1]) == QLatin1String("--capture-home")) {
         QFile result(QString::fromLocal8Bit(argv[2]));
         if (!result.open(QIODevice::WriteOnly)) return 2;
-        result.write(qgetenv("PIDECK_HOME"));
-        return 0;
+        // Keep the capture incomplete briefly so waiting only for file creation
+        // deterministically exercises the parent's publication race.
+        QThread::msleep(50);
+        const QByteArray home = qgetenv("PIDECK_HOME");
+        return result.write(home) == home.size() && result.flush() ? 0 : 3;
+    }
+    // Keep the lifecycle fixture alive on every supported platform until the
+    // parent exercises the controller's shutdown and forced cleanup paths.
+    if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QLatin1String("--wait-for-stop")) {
+        return application.exec();
     }
     for (const bool explicitHome : {true, false}) {
         QTemporaryDir fixture;
@@ -171,16 +179,16 @@ int main(int argc, char **argv)
         paths.sidecarArguments = {QStringLiteral("--capture-home"), captured};
         BackendProcessController controller(paths, &host);
         if (!require(controller.start(), "home capture process failed")) return 1;
-        QElapsedTimer timer;
-        timer.start();
-        while (!QFile::exists(captured) && timer.elapsed() < 2'000) {
-            QCoreApplication::processEvents();
-            QThread::msleep(1);
-        }
+        // Creating the file does not publish its contents. Child completion is
+        // the boundary at which both its write and QFile cleanup have finished.
+        QProcess *const child = controller.process();
+        const bool finished = !controller.isRunning() || child->waitForFinished(2'000);
+        if (previous.isNull()) qunsetenv("PIDECK_HOME"); else qputenv("PIDECK_HOME", previous);
+        if (!require(finished && child->exitStatus() == QProcess::NormalExit && child->exitCode() == 0,
+                     "home capture process did not complete successfully")) return 1;
         QFile result(captured);
         const bool opened = result.open(QIODevice::ReadOnly);
         const QByteArray actual = opened ? result.readAll() : QByteArray();
-        if (previous.isNull()) qunsetenv("PIDECK_HOME"); else qputenv("PIDECK_HOME", previous);
         const QString expected = explicitHome ? isolatedHome : QDir::homePath();
         if (!require(opened && actual == expected.toUtf8(),
                      "backend launch did not preserve the explicit home or the normal default")) return 1;
@@ -326,8 +334,9 @@ int main(int argc, char **argv)
     }, nullptr), "event was not delivered to authenticated connection")) return 1;
 
     NativePaths processPaths;
-    processPaths.sidecarExecutable = qEnvironmentVariable("ComSpec", QStringLiteral("cmd.exe"));
-    processPaths.sidecarArguments = QStringList{QStringLiteral("/k")};
+    processPaths.applicationDir = QCoreApplication::applicationDirPath();
+    processPaths.sidecarExecutable = QCoreApplication::applicationFilePath();
+    processPaths.sidecarArguments = QStringList{QStringLiteral("--wait-for-stop")};
     BackendProcessController processController(processPaths, &server);
     if (!require(processController.start(), "BackendProcessController test process failed to start")) return 1;
     int stopCallbacks = 0;

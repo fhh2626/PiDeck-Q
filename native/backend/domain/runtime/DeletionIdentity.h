@@ -7,7 +7,7 @@
 #include <QHash>
 #include <QStringList>
 
-/** Value-only WSL identity resolution. All subprocess work belongs on the domain worker. */
+/** Value-only deletion identities. All WSL subprocess work belongs on the domain worker. */
 namespace deletionidentity {
 
 /** Users share a distribution's filesystem; an unknown distro cannot prove isolation. */
@@ -20,8 +20,23 @@ bool compatibleLaunch(const CatalogEntry &entry, const CatalogEntry &launched);
 bool sameTarget(const CatalogEntry &left, const CatalogEntry &right);
 /** Include companion directories independently, because a JSONL leaf may itself be a link. */
 QStringList pathsFor(const QString &file);
+/** Preserve raw traversal prefixes so aliases cannot hide an entry inside the deleted tree. */
+QStringList wslPathsFor(const QString &file);
 /** Resolve a bounded batch; an empty identity is unproven, never evidence of non-overlap. */
 QHash<QString, QString> resolve(const SessionFs &fs, const QStringList &paths);
+
+/** Freeze native aliases at admission so a later retarget cannot move the runtime fence. */
+struct NativeLease {
+    CatalogEntry root;
+    QStringList physicalPaths;
+    /** Resolve the parent at admission while retaining each leaf entry being removed. */
+    QStringList entryPaths;
+    bool blocks(const CatalogEntry &candidate) const;
+    /** An isolated caller has no lease; otherwise planning must retain admitted physical paths. */
+    bool matchesPlan(const QString &sessionFile) const;
+};
+
+NativeLease captureNative(const CatalogEntry &root);
 
 struct Lease {
     CatalogEntry root;
@@ -29,6 +44,8 @@ struct Lease {
     QHash<QString, QString> identities;
     /** Unknown paths stay fenced only for this lease's lifetime. */
     bool blocks(const CatalogEntry &candidate) const;
+    /** Check entry/referent identity before mutation; filesystem work stays on the worker. */
+    bool matchesPlan(const SessionFs &fs, const QString &sessionFile) const;
 };
 
 } // namespace deletionidentity

@@ -225,6 +225,10 @@ public:
     /** Atomically check idle and reserve the tree until the deletion responder settles. */
     void reserveDeletionAsync(const CatalogEntry &root, const SessionFs &fs,
                               std::function<void(const QJsonObject &)> done);
+    /** Copy the physical native lease on the owner thread before dispatching deletion work. */
+    deletionidentity::NativeLease nativeDeletionLease(const QString &sessionId) const;
+    /** Carry the resolved WSL admission identities into the filesystem worker's plan. */
+    deletionidentity::Lease wslDeletionLease(const QString &sessionId) const;
     /** Release a deletion reservation on the runtime owner thread. */
     void releaseDeletion(const QString &sessionId);
     /** Blocks activation/commands for the reserved tree, including overlapping file aliases. */
@@ -232,6 +236,8 @@ public:
     /** Check the actual process path too, including runtimes not yet in the catalog. */
     bool deletionBlocksAgent(const QString &agentId) const;
     bool deletionBlocksEntry(const CatalogEntry &candidate) const;
+    /** WSL aliases can change after admission; defer new processes for the short mutation lease. */
+    bool deletionBlocksLaunch(const CatalogEntry &candidate) const;
     /** Path-changing RPCs have an unknown destination until pi replies. */
     bool deletionBlocksPathChange(const QString &agentId) const;
 
@@ -374,6 +380,8 @@ private:
     void reloadProjection(const QString &agentId, CommandDone finish);
     /** Bind/rebind a session and drop its pending interactive requests (oracle `bind`). */
     int bindSession(const QString &sessionId, const QString &agentId);
+    /** Persist a reported file together with the namespace of the runtime that opened it. */
+    void persistRuntimeIdentity(const QString &sessionId, const AgentSession &session);
     /**
      * Commit a held replacement reservation (`Bindings::completeReplacement`) and drop the
      * target session's pending asks, exactly like `bindSession` does after a plain bind.
@@ -563,6 +571,7 @@ private:
     Qt::HANDLE m_ownerThreadId = nullptr;
     Bindings m_bindings;
     QHash<QString, CatalogEntry> m_deletingTrees;
+    QHash<QString, deletionidentity::NativeLease> m_nativeDeletingTrees;
     /** Provisional admission becomes a known-path scoped lease after worker resolution. */
     QHash<QString, deletionidentity::Lease> m_wslDeletingTrees;
     /** (size, mtime) cache for the per-session cache-hit scan (`cacheHitStats.ts`). */
