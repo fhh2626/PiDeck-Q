@@ -263,11 +263,25 @@ When enabled, enforces non-interactive background execution for explicit depth-0
 { "timeoutMs": 3600000 }
 ```
 
-Global default runtime deadline, in milliseconds, for subagent runs. It replaces the built-in 30-minute backstop for foreground launches (single, parallel, chain, and workflowScript) and plain single-agent async runs whenever no call-level `timeoutMs`/`maxRuntimeMs` applies. For single-agent launches, selected agent frontmatter `timeoutMs` still wins. This only moves the *default*. Expiring this run-level deadline is terminal and does not trigger `fallbackModels`; only provider/model failures reported before the deadline can fall back.
+Optional global runtime deadline, in milliseconds, for foreground launches and plain single-agent async runs. Explicit call-level `timeoutMs` or `maxRuntimeMs` takes precedence, followed by the selected agent's frontmatter `timeoutMs`. When no applicable setting supplies a deadline, the run has no automatic runtime limit. The previous implicit 30-minute limit has been removed.
 
-Use it when foreground orchestration or plain async single-agent runs need a longer default than 30 minutes. It does not set async composite top-level deadlines, and it does not replace async fan-out child deadlines.
+This setting preserves its existing scope. It does not cap async composite roots (chains, parallel tasks, or scripted workflows), and it does not replace each async runner child's explicit agent deadline. Expiration of an explicit run deadline remains terminal and does not trigger `fallbackModels`. A supervisor's `CONTINUE` decision does not extend that deadline. Previously persisted absolute deadlines are also retained during recovery.
 
-Composite async runs (async chains, parallel tasks, and scripted workflows) stay unbounded at the top level by design. Their runner children are bounded individually by their own agent or runner defaults, so this value does not cap them. Must be a positive integer no greater than `2147483647` (the largest delay a Node.js timer can honor, roughly 24.8 days); invalid or out-of-range values are ignored and the built-in defaults apply.
+The value must be a positive integer no greater than `2147483647`, the largest delay a Node.js timer can honor. Invalid global values are ignored. Invalid call-level or agent values are rejected. External CLI and external-job runs also have no implicit runtime limit. They do not support native run supervision, so use their runner contract or an explicit deadline when a hard limit is needed.
+
+## `control.enabled` and periodic run supervision
+
+```json
+{ "control": { "enabled": true } }
+```
+
+When native parent supervision is available, foreground and background Pi child sessions send a runtime progress snapshot to their parent after each 600-second interval. The snapshot does not require an additional model call and does not interrupt a running tool. The parent answers the native supervisor request with `CONTINUE` or `STOP`.
+
+Automatic reviews use the host's supervisor channel even when `intercomBridge` is off. That setting continues to control the child's optional conversation tools.
+
+`CONTINUE` starts the next 600-second interval. `STOP` uses the child's existing cancellation path. Only one decision request is pending at a time. An unanswered, expired, or failed request does not automatically stop the child. Completion and cancellation clean up the timer and pending request. Set `control.enabled` to `false` to disable automatic run supervision. Explicit run and tool deadlines remain effective regardless of this switch.
+
+The `bg_wait` window, shutdown cleanup, transport timeouts, and tool-specific command deadlines keep their existing behavior.
 
 ## `toolTimeoutMs`
 
@@ -277,7 +291,7 @@ Composite async runs (async chains, parallel tasks, and scripted workflows) stay
 
 Optional hard per-tool-call deadline in milliseconds. When configured, a child that emits `tool_execution_start` but not `tool_execution_end` is terminated with `timedOut: true` and a tool-specific error. The effective value is resolved per child: explicit `subagent` call value, then agent frontmatter, then this config value, then `PI_SUBAGENT_TOOL_TIMEOUT_MS`.
 
-Without a configured value, Pi still applies a five-minute hard timeout to known-fast built-in tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, and `structured_output`. Long-running tools such as `bash`, custom tools, and MCP tools do not get a hard default. They get the normal open-tool attention notice after `activeNoticeAfterMs` and remain bounded by the run-level deadline.
+When all four settings are omitted, there is no per-tool deadline. This includes `read`, `grep`, `find`, `ls`, `edit`, `write`, and `structured_output`. The previous automatic five-minute limit has been removed. Manual stop, run-level deadlines, and timeouts explicitly passed to tools such as `bash` remain available.
 
 The tool timer tracks each active `toolCallId` separately and never extends the run-level deadline: when the remaining run budget is shorter, the ordinary run-level timeout wins. `contact_supervisor`, `intercom`, and `bg_wait` are exempt because their legitimate purpose can be to wait for a human, supervisor, or background run. Use hard tool timeouts only for wedge protection; an elapsed timeout is not a mutation-safe boundary. Configured values must be positive integers no greater than `2147483647`; invalid or out-of-range values are rejected with a visible error rather than silently ignored.
 

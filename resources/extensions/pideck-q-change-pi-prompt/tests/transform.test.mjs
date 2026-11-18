@@ -3,6 +3,8 @@ import test from 'node:test';
 import { stripChildDocumentation, transformSystemPrompt } from '../transform.ts';
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from '../defaults.ts';
 
+const announcement = 'Before each call to the subagent tool, first send the user one brief, visible assistant sentence in the conversation\'s language explaining what the call is about to do, then invoke the tool.';
+
 const identity = 'You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.';
 const doc = `Pi documentation (read only when the user asks about pi itself):
 - Main documentation: /pi/README.md
@@ -106,6 +108,21 @@ test('native default-mode safeguards survive while delegation is added', () => {
   assert.match(result.systemPrompt, /UPDATED delegation/);
   assert.match(result.systemPrompt, /## Delegation/);
   assert.ok(run(fixture([...coreRules, rule]), [tool('subagent', [rule], 'npm:other')]).systemPrompt.includes(rule));
+});
+test('delegation adds one English announcement rule only when the subagent tool is active', () => {
+  const native = tool('subagent', [], 'npm:pi-subagents');
+  const result = run(fixture(), [native]);
+  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
+  assert.doesNotMatch(announcement, /[^\x00-\x7f]/);
+  assert.ok(DEFAULT_PROMPTS.delegation.includes(announcement));
+  assert.ok(!run().systemPrompt.includes(announcement));
+});
+test('delegation preserves an earlier announcement from another extension without duplicating it', () => {
+  const suffix = `\n\n<project_context>KEEP EXACTLY\r\n</project_context>\n\n${announcement}`;
+  const native = tool('subagent', [], 'npm:pi-subagents');
+  const result = run(fixture(coreRules, suffix), [native]);
+  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
+  assert.ok(result.systemPrompt.endsWith(suffix));
 });
 test('disabled optional tools neither contribute replacements nor lose their rules', () => {
   const rule = 'optional plugin constraint';

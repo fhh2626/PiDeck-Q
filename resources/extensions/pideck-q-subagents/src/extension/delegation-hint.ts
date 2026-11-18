@@ -17,6 +17,10 @@ import { resolveSubagentPreferDelegation } from "../agents/agents.ts";
 export const DELEGATION_HINT =
 	"Prefer delegating complex or parallelizable work to subagents; keep the main agent focused on planning, integration, and final verification.";
 
+/** Keep this sentence identical to the independently installable change-pi-prompt extension. */
+export const SUBAGENT_CALL_ANNOUNCEMENT_HINT =
+	"Before each call to the subagent tool, first send the user one brief, visible assistant sentence in the conversation's language explaining what the call is about to do, then invoke the tool.";
+
 /** 子代理进程的环境标记（与 runs/shared/child-runtime-config.ts 的常量同值）。 */
 const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 
@@ -27,10 +31,30 @@ export function appendDelegationHint(systemPrompt: string, enabled: boolean): st
 	return systemPrompt.trim() ? `${systemPrompt}\n\n${DELEGATION_HINT}` : DELEGATION_HINT;
 }
 
+/** Add the announcement rule independently of the optional delegation preference. */
+export function appendSubagentCallAnnouncementHint(systemPrompt: string, enabled: boolean): string {
+	if (!enabled || systemPrompt.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)) return systemPrompt;
+	return systemPrompt.trim()
+		? `${systemPrompt}\n\n${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`
+		: SUBAGENT_CALL_ANNOUNCEMENT_HINT;
+}
+
 /** 当前进程是否是子代理（子代理不注入委派引导）。 */
 export function isSubagentChildProcess(env: NodeJS.ProcessEnv = process.env): boolean {
 	const value = env[SUBAGENT_CHILD_ENV];
 	return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
+/** In-process children use a role marker instead of a process-wide environment variable. */
+export function shouldInjectSubagentCallAnnouncementHint(input: {
+	subagentToolAvailable: boolean;
+	systemPrompt?: string;
+	env?: NodeJS.ProcessEnv;
+}): boolean {
+	if (!input.subagentToolAvailable || isSubagentChildProcess(input.env)) return false;
+	const prompt = input.systemPrompt ?? "";
+	return !/<active_agent\s+name=["'][^"']+["']\s*\/?>/i.test(prompt)
+		&& !prompt.includes("<!-- change-pi-prompt:child-tools:v1 -->");
 }
 
 /**
@@ -40,10 +64,10 @@ export function isSubagentChildProcess(env: NodeJS.ProcessEnv = process.env): bo
 export function shouldInjectDelegationHint(input: {
 	cwd: string;
 	subagentToolAvailable: boolean;
+	systemPrompt?: string;
 	env?: NodeJS.ProcessEnv;
 }): boolean {
-	if (!input.subagentToolAvailable) return false;
-	if (isSubagentChildProcess(input.env)) return false;
+	if (!shouldInjectSubagentCallAnnouncementHint(input)) return false;
 	try {
 		return resolveSubagentPreferDelegation(input.cwd);
 	} catch {

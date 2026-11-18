@@ -21,7 +21,12 @@ import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition 
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, type AgentConfig, type AgentScope } from "../agents/agents.ts";
 import { appendAdvertisedAgentPrompt, buildAdvertisedAgentPrompt } from "../agents/advertised-agent-prompt.ts";
-import { appendDelegationHint, shouldInjectDelegationHint } from "./delegation-hint.ts";
+import {
+	appendDelegationHint,
+	appendSubagentCallAnnouncementHint,
+	shouldInjectDelegationHint,
+	shouldInjectSubagentCallAnnouncementHint,
+} from "./delegation-hint.ts";
 import { clearRuntimeAgentsForPi, listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-agent-registry.ts";
 import { registerRuntimeAgentEventListener } from "../agents/runtime-agent-events.ts";
 import { ensureAccessibleDir } from "../shared/accessible-dir.ts";
@@ -418,6 +423,8 @@ export function projectActiveHerdrRuns(state: SubagentState): HerdrStatusRun[] {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
+	// Preserve the parent identity while in-process children temporarily set this global flag.
+	const promptSessionEnv = { [SUBAGENT_CHILD_ENV]: process.env[SUBAGENT_CHILD_ENV] };
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
 		return;
 	}
@@ -803,27 +810,38 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const selectedTools = event.systemPromptOptions.selectedTools ?? pi.getActiveTools();
+		const announceSubagentCalls = shouldInjectSubagentCallAnnouncementHint({
+			subagentToolAvailable: selectedTools.includes("subagent"),
+			systemPrompt: event.systemPrompt,
+			env: promptSessionEnv,
+		});
 		const sessionId = state.currentSessionId ?? resolveCurrentSessionId(ctx.sessionManager);
-		const advertisedPrompt = selectedTools.includes("subagent")
+		const advertisedPrompt = announceSubagentCalls
 			? buildAdvertisedAgentPrompt(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(sessionId))
 			: undefined;
 		const advertisedSystemPrompt = appendAdvertisedAgentPrompt(event.systemPrompt, advertisedPrompt);
 		// 「优先委派」开关（PiDeck 右侧子代理弹框写入 subagents.preferDelegation）：
 		// 只在父会话 + subagent 工具可用时注入，子代理自身不重复注入。
-		const systemPrompt = appendDelegationHint(
+		const announcedSystemPrompt = appendSubagentCallAnnouncementHint(
 			advertisedSystemPrompt,
+			announceSubagentCalls,
+		);
+		const systemPrompt = appendDelegationHint(
+			announcedSystemPrompt,
 			shouldInjectDelegationHint({
 				cwd: ctx.cwd ?? state.baseCwd,
 				subagentToolAvailable: selectedTools.includes("subagent"),
+				systemPrompt: event.systemPrompt,
+				env: promptSessionEnv,
 			}),
 		);
 		if (systemPrompt !== event.systemPrompt) return { systemPrompt };
 	});
 
-	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs);
+	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs, supervisorChannel.findPendingAsks);
 
 	pi.on("agent_end", async (_event, ctx) => {
-		if (!ctx.hasUI) await drainOutstandingWork({ state, events: pi.events });
+		if (!ctx.hasUI) await drainOutstandingWork({ state, events: pi.events, findPendingAsks: supervisorChannel.findPendingAsks });
 		const ownerSessionId = state.currentSessionId;
 		if (!ownerSessionId) return;
 		goalTurnId += 1;

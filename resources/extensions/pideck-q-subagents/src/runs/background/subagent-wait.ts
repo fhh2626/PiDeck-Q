@@ -100,6 +100,8 @@ export interface WaitEventBus {
 
 export interface SubagentWaitDeps {
 	state: SubagentState;
+	/** Runtime supervision asks are independent of whichever tool the child is executing. */
+	findPendingAsks?: (target: { runId: string; agent: string; childIndex: number }) => readonly string[];
 	/** Stream live wait status into Pi's pending tool row. */
 	onUpdate?: (result: AgentToolResult<Details>) => void;
 	asyncDirRoot?: string;
@@ -234,8 +236,11 @@ function summarizeForegroundChildren(run: ForegroundResumeRun, indices: Set<numb
 	return [...counts.entries()].map(([status, count]) => `${count} ${status}`).join(", ");
 }
 
-function foregroundChildrenNeedingAttention(run: ForegroundResumeRun, indices: Set<number>) {
-	return run.children.filter((child) => indices.has(child.index) && child.status === "detached" && child.activityState === "needs_attention" && child.currentTool === "contact_supervisor");
+function foregroundChildrenNeedingAttention(run: ForegroundResumeRun, indices: Set<number>, deps: SubagentWaitDeps) {
+	return run.children.filter((child) => indices.has(child.index) && child.status === "detached" && (
+		(child.activityState === "needs_attention" && child.currentTool === "contact_supervisor")
+		|| (deps.findPendingAsks?.({ runId: run.runId, agent: child.agent, childIndex: child.index }).length ?? 0) > 0
+	));
 }
 
 function formatForegroundAttention(run: ForegroundResumeRun, children: ReturnType<typeof foregroundChildrenNeedingAttention>, elapsedMs: number): AgentToolResult<Details> {
@@ -254,6 +259,15 @@ function hasSupervisorTool(run: AsyncRunSummary): boolean {
 	return run.currentTool === "contact_supervisor"
 		|| run.currentTool === "intercom"
 		|| run.steps.some((step) => step.currentTool === "contact_supervisor" || step.currentTool === "intercom");
+}
+
+/** Native run reviews can arrive during a normal long tool call without changing its status. */
+function hasPendingSupervisorAsk(run: AsyncRunSummary, deps: SubagentWaitDeps): boolean {
+	return run.steps.some((step) => (deps.findPendingAsks?.({
+		// Workflow rows reference independently launched single children. Their row index
+		// belongs to the workflow display, while the referenced child's own index is zero.
+		runId: step.runId ?? run.id, agent: step.agent, childIndex: step.runId && step.runId !== run.id ? 0 : step.index,
+	}).length ?? 0) > 0);
 }
 
 function backgroundWorkIdentity(item: RegisteredBackgroundWorkItem): string {
@@ -284,7 +298,7 @@ function activeRunsForSession(params: SubagentWaitParams, deps: SubagentWaitDeps
 
 /** Runs (from the initial set) currently flagged needs_attention, for reporting. */
 function attentionRunsForSession(params: SubagentWaitParams, deps: SubagentWaitDeps, initialIds: Set<string>): AsyncRunSummary[] {
-	return activeRunsForSession(params, deps).filter((run) => needsAttention(run) && initialIds.has(run.id));
+	return activeRunsForSession(params, deps).filter((run) => initialIds.has(run.id) && (needsAttention(run) || hasPendingSupervisorAsk(run, deps)));
 }
 
 /** Exact initial runs in any state, for the final summary. */
@@ -520,7 +534,7 @@ async function waitForDetachedForegroundRun(
 			return result(`Remembered foreground run "${run.runId}" disappeared before a terminal child result was recorded. Completion cannot be confirmed; do not launch a replacement without checking the originating child session.`, true);
 		}
 		const pending = current.children.filter((child) => initialDetachedIndices.has(child.index) && child.status === "detached");
-		const attention = foregroundChildrenNeedingAttention(current, initialDetachedIndices);
+		const attention = foregroundChildrenNeedingAttention(current, initialDetachedIndices, deps);
 		if (attention.length > 0) return formatForegroundAttention(current, attention, now() - startedAt);
 		if (pending.length === 0) {
 			const outcome = summarizeForegroundChildren(current, initialDetachedIndices);
@@ -566,6 +580,7 @@ export async function waitForSubagents(
 		? params.timeoutMs
 		: deps.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const startedAt = now();
+	const ownerSessionId = deps.state.currentSessionId;
 	const waitForAll = params.id ? true : params.all === true;
 	if (params.nonBlocking && !params.id) {
 		return result("Non-blocking wait subscriptions require id so the registration can bind one exact run identity.", true);
@@ -635,11 +650,11 @@ export async function waitForSubagents(
 	const initialProviderNames = new Set(providerActive.map((item) => item.provider));
 	const initialCount = initialAsyncIds.size + initialProviderIds.size + workflows.length;
 	const stopOnAttention = params.stopOnAttention ?? deps.stopOnAttention !== false;
-	let attention = active.filter((run) => needsAttention(run));
+	let attention = active.filter((run) => needsAttention(run) || hasPendingSupervisorAsk(run, deps));
 
 	const isDone = (): boolean => {
 		if (workflows.some((run) => run.requests.size > 0)) return true;
-		if (attention.some((run) => initialAsyncIds.has(run.id) && (stopOnAttention || hasSupervisorTool(run)))) return true;
+		if (attention.some((run) => initialAsyncIds.has(run.id) && (stopOnAttention || hasSupervisorTool(run) || hasPendingSupervisorAsk(run, deps)))) return true;
 		const activeAsyncIds = new Set(active.map((run) => run.id));
 		const activeProviderIds = new Set(providerActive.map(backgroundWorkIdentity));
 		if (waitForAll) {
@@ -653,6 +668,7 @@ export async function waitForSubagents(
 	};
 
 	while (!isDone()) {
+		if (deps.state.currentSessionId !== ownerSessionId) return result("Wait stopped because the originating session is no longer active.", true);
 		if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
 		const activeInitialRuns = active.filter((run) => initialAsyncIds.has(run.id));
 		const activeInitialProviderItems = providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item)));
@@ -688,6 +704,7 @@ export async function waitForSubagents(
 		}
 	}
 
+	if (deps.state.currentSessionId !== ownerSessionId) return result("Wait stopped because the originating session is no longer active.", true);
 	if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
 	const workflowAttention = workflows.filter((run) => run.requests.size > 0);
 	if (workflowAttention[0] && initialAsyncIds.size === 0 && initialProviderIds.size === 0) return { ...workflowAttention[0].snapshot(), ...(deps.failOnAttention ? { isError: true } : {}) };
@@ -715,11 +732,13 @@ export async function waitForSubagents(
 	}
 
 	const relevantAttention = attention.filter((run) => initialAsyncIds.has(run.id));
-	const supervisorAttentionHint = relevantAttention.some(hasSupervisorTool)
+	const supervisorAttentionHint = relevantAttention.some((run) => hasSupervisorTool(run) || hasPendingSupervisorAsk(run, deps))
 		? " Reply to any pending supervisor request. If subagent_supervisor({ action: \"pending\" }) is empty, check intercom({ action: \"pending\" }) because an external intercom tool may own the request."
 		: "";
 	const attentionNote = relevantAttention.length > 0
-		? ` ${relevantAttention.length} run(s) need attention: ${relevantAttention.map((run) => run.id).join(", ")} —${supervisorAttentionHint} inspect with subagent({ action: "status" }) then steer a top-level live async child, resume a paused/completed/failed child, or interrupt explicitly.`
+		? ` ${relevantAttention.length} run(s) need attention: ${relevantAttention.map((run) => run.id).join(", ")}.${supervisorAttentionHint}${supervisorAttentionHint
+			? " Answer the pending request, then wait again or inspect status. Do not resume or launch a replacement while the child is still live."
+			: ' Inspect with subagent({ action: "status" }), then steer a top-level live async child, resume a paused/completed/failed child, or interrupt explicitly.'}`
 		: "";
 	const stillRunning = active.filter((run) => initialAsyncIds.has(run.id)).length
 		+ providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item))).length

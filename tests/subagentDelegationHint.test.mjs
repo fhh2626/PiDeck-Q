@@ -10,9 +10,19 @@ const root = process.cwd();
 const load = (relative) =>
 	import(pathToFileURL(join(root, "resources/extensions/pideck-q-subagents/src", relative)).href);
 
-const { DELEGATION_HINT, appendDelegationHint, isSubagentChildProcess, shouldInjectDelegationHint } =
+const {
+	DELEGATION_HINT,
+	SUBAGENT_CALL_ANNOUNCEMENT_HINT,
+	appendDelegationHint,
+	appendSubagentCallAnnouncementHint,
+	isSubagentChildProcess,
+	shouldInjectDelegationHint,
+	shouldInjectSubagentCallAnnouncementHint,
+} =
 	await load("extension/delegation-hint.ts");
 const agentsModule = await load("agents/agents.ts");
+const { DEFAULT_CONFIG, DEFAULT_PROMPTS } = await import("../resources/extensions/pideck-q-change-pi-prompt/defaults.ts");
+const { transformSystemPrompt } = await import("../resources/extensions/pideck-q-change-pi-prompt/transform.ts");
 
 /**
  * 「优先委派」提示词注入：
@@ -30,6 +40,53 @@ test("appendDelegationHint appends one paragraph and stays idempotent", () => {
 	assert.equal(appendDelegationHint(base, false), base);
 	// 空 systemPrompt 只留提示语，不留前导空行
 	assert.equal(appendDelegationHint("   ", true), DELEGATION_HINT);
+});
+
+test("subagent announcements use one English rule independently of the delegation preference", () => {
+	const base = "You are a helpful agent.";
+	const once = appendSubagentCallAnnouncementHint(base, true);
+	assert.equal(once, `${base}\n\n${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`);
+	assert.doesNotMatch(SUBAGENT_CALL_ANNOUNCEMENT_HINT, /[^\x00-\x7f]/);
+	assert.equal(appendSubagentCallAnnouncementHint(once, true), once);
+	assert.equal(appendSubagentCallAnnouncementHint(base, false), base);
+	assert.equal(appendSubagentCallAnnouncementHint("   ", true), SUBAGENT_CALL_ANNOUNCEMENT_HINT);
+	assert.equal(appendDelegationHint(once, false), once);
+	assert.ok(DEFAULT_PROMPTS.delegation.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT));
+});
+
+test("both extension orders preserve exactly one announcement and unrelated prompt text", () => {
+	const suffix = "\n\n<project_context>Keep my project instructions.\r\n</project_context>";
+	const base = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n\nPi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples" + suffix;
+	const transform = systemPrompt => transformSystemPrompt({
+		systemPrompt,
+		tools: [{ name: "subagent", sourceInfo: { source: "npm:pi-subagents" } }],
+		activeTools: ["subagent"],
+		config: DEFAULT_CONFIG,
+		prompts: DEFAULT_PROMPTS,
+		hostOs: "Linux",
+		today: "2026-11-18",
+	}).systemPrompt;
+	for (const result of [
+		transform(appendSubagentCallAnnouncementHint(base, true)),
+		appendSubagentCallAnnouncementHint(transform(base), true),
+	]) {
+		assert.equal(result.split(SUBAGENT_CALL_ANNOUNCEMENT_HINT).length - 1, 1);
+		assert.ok(result.includes(suffix));
+		assert.equal(appendSubagentCallAnnouncementHint(result, true), result);
+	}
+});
+
+test("subagent announcements apply only to a main session with the tool available", () => {
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, env: {} }), true);
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: false, env: {} }), false);
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, env: { PI_SUBAGENT_CHILD: "1" } }), false);
+	for (const systemPrompt of [
+		'<active_agent name="readonly"/>\nYou are a child.',
+		"<active_agent name='writable'>\nYou are a child.",
+		"<!-- change-pi-prompt:child-tools:v1 -->\nYou are a child.",
+	]) {
+		assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, systemPrompt, env: {} }), false);
+	}
 });
 
 test("isSubagentChildProcess reads the child env flag", () => {
@@ -74,6 +131,12 @@ test("shouldInjectDelegationHint gates on tool availability, child process, and 
 	);
 	// 父会话 + 开关开启：注入
 	assert.equal(shouldInjectDelegationHint({ cwd: projectDir, subagentToolAvailable: true, env: {} }), true);
+	assert.equal(shouldInjectDelegationHint({
+		cwd: projectDir,
+		subagentToolAvailable: true,
+		systemPrompt: '<active_agent name="readonly"/>',
+		env: {},
+	}), false);
 
 	// 项目配置覆盖全局：项目显式关闭后不注入
 	writeSettings(projectSettings, { preferDelegation: false });

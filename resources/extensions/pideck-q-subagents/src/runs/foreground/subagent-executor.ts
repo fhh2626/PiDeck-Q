@@ -47,7 +47,7 @@ import {
 	type SequentialStep,
 } from "../../shared/settings.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
-import { buildAsyncRunnerSteps, DEFAULT_ASYNC_TIMEOUT_MS, executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable, workflowAwaitedAsyncResultPath } from "../background/async-execution.ts";
+import { buildAsyncRunnerSteps, executeAsyncChain, executeAsyncSingle, formatAsyncStartedMessage, isAsyncAvailable, workflowAwaitedAsyncResultPath } from "../background/async-execution.ts";
 import { updateActiveRunIndex } from "../background/active-run-index.ts";
 import { steeringReceipt } from "../background/steering.ts";
 import { acquireActiveAsyncCapacity, ActiveAsyncCapacityError, getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession, transferActiveAsyncCapacity, type ActiveAsyncCapacityHandle } from "../background/active-async-capacity.ts";
@@ -375,7 +375,7 @@ export interface SubagentParamsLike {
 	foregroundOnly?: boolean;
 	timeoutMs?: number;
 	maxRuntimeMs?: number;
-	/** Optional hard per-tool-call timeout (ms). Known-fast tools also have a default. */
+	/** Optional hard per-tool-call timeout (ms). Omitted settings leave tools without a deadline. */
 	toolTimeoutMs?: number;
 	toolBudget?: ToolBudgetConfig;
 	usageBudget?: UsageBudgetConfig;
@@ -1783,7 +1783,6 @@ function resolveRequestedResumeTarget(params: SubagentParamsLike, deps: Executor
 	return resolveResumeTarget(params, deps.state, { asyncRequireSessionFile: false });
 }
 
-export const DEFAULT_FOREGROUND_TIMEOUT_MS = 30 * 60 * 1000;
 const CHILD_SESSION_NOT_RUNNING_YET = "Child session is not running yet.";
 
 interface ResumeRunInput {
@@ -1934,7 +1933,7 @@ async function resumeForegroundRun(options: {
 			: options.input.params;
 		const resolvedTimeout = resolveForegroundTimeout(
 			timeoutParams,
-			resolveConfigDefaultTimeoutMs(options.input.deps.config.timeoutMs) ?? DEFAULT_FOREGROUND_TIMEOUT_MS,
+			resolveConfigDefaultTimeoutMs(options.input.deps.config.timeoutMs),
 		);
 		if (resolvedTimeout.error) {
 			return { content: [{ type: "text", text: resolvedTimeout.error }], isError: true, details: { mode: "single", results: [] } };
@@ -1993,7 +1992,7 @@ async function resumeForegroundRun(options: {
 			?? options.recoveryDescriptor?.runFanoutBudget
 			?? (inheritedBudget ? { ...inheritedBudget, parentPath: `${inheritedBudget.parentPath ? `${inheritedBudget.parentPath}/` : ""}${runId}` } : undefined)
 			?? createRunFanoutBudget(runId, resolveMaxSubagentSpawnsPerRun(options.input.deps.config.maxSubagentSpawnsPerRun));
-		const timeoutMs = resolvedTimeout.timeoutMs ?? DEFAULT_FOREGROUND_TIMEOUT_MS;
+		const timeoutMs = resolvedTimeout.timeoutMs;
 		const controlConfig = resolveRevivalControlConfig({
 			globalConfig: options.input.deps.config.control,
 			requestedControl: options.input.params.control,
@@ -3352,16 +3351,6 @@ function applySingleAgentLaunchDefaults(params: SubagentParamsLike, agents: Agen
 	};
 }
 
-// Async single-agent runs also need a wall-clock backstop: a child whose bash
-// tool blocks forever (e.g. a background process inheriting the terminal with
-// no bash `timeout` arg) would otherwise hang the parent indefinitely with
-// zero signal. Same generous default as foreground; explicit timeoutMs/
-// maxRuntimeMs and agent-level defaultTimeoutMs remain authoritative.
-//
-// Deliberately NOT applied at the workflow level: async scripted workflows
-// stay unbounded as a whole, while each runner child has its own deadline.
-export { DEFAULT_ASYNC_TIMEOUT_MS };
-
 /**
  * Maximum delay a Node.js timer accepts. Values above the 32-bit signed integer
  * ceiling overflow `setTimeout`, which silently clamps the delay to ~1ms and
@@ -3373,9 +3362,9 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
  * Resolve the optional global default runtime deadline from extension config
- * (`config.timeoutMs`). Returns undefined for unset or invalid values so callers
- * fall back to the built-in defaults. "Invalid" covers non-positive-integer
- * values and values above `MAX_TIMER_DELAY_MS`; the latter would overflow the
+ * (`config.timeoutMs`). Unset or invalid values do not add a hard deadline.
+ * "Invalid" covers non-positive-integer values and values above
+ * `MAX_TIMER_DELAY_MS`; the latter would overflow the
  * Node.js timer and expire the run almost immediately instead of running long.
  */
 export function resolveConfigDefaultTimeoutMs(raw: unknown): number | undefined {
@@ -3391,8 +3380,8 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
 	}
 	for (const [name, value] of [["timeoutMs", rawTimeout], ["maxRuntimeMs", rawMaxRuntime]] as const) {
 		if (value === undefined) continue;
-		if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-			return { error: `${name} must be a positive integer.` };
+		if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > MAX_TIMER_DELAY_MS) {
+			return { error: `${name} must be a positive integer no larger than ${MAX_TIMER_DELAY_MS}.` };
 		}
 	}
 	if (rawTimeout !== undefined && rawMaxRuntime !== undefined && rawTimeout !== rawMaxRuntime) {
@@ -3403,21 +3392,14 @@ export function resolveForegroundTimeout(params: SubagentParamsLike, defaultTime
 }
 
 /**
- * Resolve the effective launch timeout for a single-agent run, applying the
- * async/foreground default when neither the caller nor the agent set one.
- *
- * A global config default (`config.timeoutMs`, passed as `configDefaultTimeoutMs`)
- * replaces the built-in 30-minute backstop wherever a concrete default is applied.
- * The async default is deliberately applied only to plain single-agent launches.
- * Composite launches keep their top-level execution unbounded when no timeout is
- * set — even with a config default — while their runner children resolve separate
- * deadlines. Exported so the executor wiring is directly testable.
+ * Apply an explicit global default to foreground or plain async single-agent runs.
+ * Unconfigured runs remain live until completion or an explicit stop decision.
+ * Async composite roots retain their existing contract: a global default does
+ * not cap them, and each child resolves its own explicitly configured deadline.
  */
 export function resolveSingleAgentLaunchTimeout(params: SubagentParamsLike, async: boolean, configDefaultTimeoutMs?: number): { timeoutMs?: number; error?: string } {
 	const isComposite = (params.chain?.length ?? 0) > 0 || (params.tasks?.length ?? 0) > 0 || params.workflowScript !== undefined;
-	const foregroundDefault = configDefaultTimeoutMs ?? DEFAULT_FOREGROUND_TIMEOUT_MS;
-	const asyncSingleDefault = configDefaultTimeoutMs ?? DEFAULT_ASYNC_TIMEOUT_MS;
-	const defaultTimeoutMs = !async ? foregroundDefault : isComposite ? undefined : asyncSingleDefault;
+	const defaultTimeoutMs = !async || !isComposite ? configDefaultTimeoutMs : undefined;
 	return resolveForegroundTimeout(params, defaultTimeoutMs);
 }
 
@@ -5667,7 +5649,9 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			// while the parent answers a question, without launching a new async workflow.
 			const asyncWorkflow = requestParams.async === true;
 			const parentCwd = ctx.cwd;
-			const timeout = requestParams.timeoutMs ?? requestParams.maxRuntimeMs ?? (!asyncWorkflow ? resolveConfigDefaultTimeoutMs(deps.config.timeoutMs) ?? DEFAULT_FOREGROUND_TIMEOUT_MS : undefined);
+			const workflowTimeout = resolveForegroundTimeout(requestParams, !asyncWorkflow ? resolveConfigDefaultTimeoutMs(deps.config.timeoutMs) : undefined);
+			if (workflowTimeout.error) return buildRequestedModeError(requestParams, workflowTimeout.error);
+			const timeout = workflowTimeout.timeoutMs;
 			const workflowUsageBudget = validateUsageBudgetConfig(requestParams.usageBudget ?? deps.config.usageBudget, requestParams.usageBudget ? "usageBudget" : "config.usageBudget");
 			if (workflowUsageBudget.error) return buildRequestedModeError(requestParams, workflowUsageBudget.error);
 			const workflowCwd = resolveRequestedCwd(parentCwd, requestParams.cwd);

@@ -65,6 +65,7 @@ import {
 	type ShellToolName,
 } from './shellAvailability.ts';
 import { stripChildDocumentation, transformSystemPrompt } from './transform.ts';
+import { appendSubagentCallAnnouncementHint } from './subagentAnnouncement.ts';
 import { resolveExtensionLocale, shellUnavailableCopy, type ExtensionLocale, type ShellProbeAction } from './copy.ts';
 
 export interface ReconciliationOutcome {
@@ -111,7 +112,14 @@ const BLOCKED_SCHEDULE_ACTIONS = new Set([
 	'schedule.create',
 ]);
 
-export function isChildSession(systemPrompt: string, _options?: { customPrompt?: string }): boolean {
+export function isChildSession(
+	systemPrompt: string,
+	_options?: { customPrompt?: string },
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	// Detached children may start before a role marker has been appended to the prompt.
+	const childFlag = env.PI_SUBAGENT_CHILD;
+	if (childFlag !== undefined && childFlag !== '' && childFlag !== '0' && childFlag !== 'false') return true;
 	// Bundled native children are explicitly tagged by pi-subagents. A generic customPrompt is not
 	// a child identity signal: parent sessions may also use --system-prompt, SYSTEM.md, or templates.
 	if (getActiveAgentName(systemPrompt) !== undefined) return true;
@@ -248,6 +256,9 @@ export function registerPromptExtension(
 	// 每次 registerPromptExtension 只解析一次：语言变更会导致 pi 子进程重启并重新注册。
 	const locale = options.locale ?? resolveExtensionLocale(probeHost.env);
 	const copy = shellUnavailableCopy(locale);
+	// Child creation temporarily changes process.env while loading extensions in the parent
+	// process. Capture this instance's identity before another child opens that environment window.
+	const promptSessionEnv = { PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD };
 
 	let settings: Settings | undefined;
 	let loading: Promise<void> | undefined;
@@ -514,7 +525,7 @@ export function registerPromptExtension(
 		if (!promptExtensionEnabled()) return;
 		try {
 			updateConfirmedSubagentTools();
-			const childSession = isChildSession(event.systemPrompt, event.systemPromptOptions);
+			const childSession = isChildSession(event.systemPrompt, event.systemPromptOptions, promptSessionEnv);
 			childSessionActive = childSession;
 
 			// `subagent:false` means no child-specific prompt/tool adaptation. Ordinary session_start
@@ -638,6 +649,12 @@ export function registerPromptExtension(
 				prompts: settings!.prompts,
 				hostOs: hostOs(), today: localDate(),
 			});
+			// Existing delegation.md and custom parent prompts survive updates, so defaults alone
+			// cannot introduce a new rule. This also works when guideline replacement is disabled.
+			result.systemPrompt = appendSubagentCallAnnouncementHint(
+				result.systemPrompt,
+				subagentAdaptationEnabled() && nativeTools.length > 0,
+			);
 			lastStatus = [...result.diagnostics, ...reconciliationStatus.diagnostics, ...lastShellStatus];
 			if (nativeAsync) {
 				lastStatus.push(nativeAsync.message);

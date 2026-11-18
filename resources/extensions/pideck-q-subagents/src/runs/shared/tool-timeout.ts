@@ -3,18 +3,6 @@ export const TOOL_TIMEOUT_ENV = "PI_SUBAGENT_TOOL_TIMEOUT_MS";
 /** Maximum delay a Node.js timer accepts without overflow. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-export const DEFAULT_FAST_TOOL_TIMEOUT_MS = 300_000;
-
-export const DEFAULT_FAST_TOOL_TIMEOUT_TOOLS = new Set([
-	"read",
-	"grep",
-	"find",
-	"ls",
-	"edit",
-	"write",
-	"structured_output",
-]);
-
 /** Tools whose normal job can be to wait for a person or another run. */
 export const TOOL_TIMEOUT_EXEMPT_TOOLS = new Set(["contact_supervisor", "intercom", "bg_wait"]);
 
@@ -25,15 +13,10 @@ export function isToolTimeoutExempt(toolName: string | undefined): boolean {
 	return toolName !== undefined && TOOL_TIMEOUT_EXEMPT_TOOLS.has(toolName);
 }
 
-export function defaultToolTimeoutMs(toolName: string | undefined): number | undefined {
-	return toolName !== undefined && DEFAULT_FAST_TOOL_TIMEOUT_TOOLS.has(toolName)
-		? DEFAULT_FAST_TOOL_TIMEOUT_MS
-		: undefined;
-}
-
+/** Tool deadlines are opt-in. A slow built-in must not silently abort its child run. */
 export function effectiveToolTimeoutMs(toolName: string | undefined, configuredToolTimeoutMs: number | undefined): number | undefined {
 	if (isToolTimeoutExempt(toolName)) return undefined;
-	return configuredToolTimeoutMs ?? defaultToolTimeoutMs(toolName);
+	return configuredToolTimeoutMs;
 }
 
 export function formatToolTimeoutMessage(toolName: string, timeoutMs: number): string {
@@ -57,7 +40,7 @@ export interface ToolTimeoutResolutionInput {
 	envValue?: string | undefined;
 }
 
-/** Resolve the configured hard timeout. Default fast-tool timeouts apply later per tool name. */
+/** Preserve explicit timeout settings without applying a built-in default. */
 export function resolveToolTimeoutMs(input: ToolTimeoutResolutionInput): { toolTimeoutMs?: number; error?: string } {
 	const candidates: Array<{ label: string; value: unknown }> = [
 		{ label: "toolTimeoutMs", value: input.callValue },

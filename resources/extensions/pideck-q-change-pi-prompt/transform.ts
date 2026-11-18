@@ -3,6 +3,7 @@ import { type Config, type Prompts } from './defaults.ts';
 import { classifyRules, CORE_RULES, hasBatchEdit, isSubagent, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
 import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './shellAvailability.ts';
+import { SUBAGENT_CALL_ANNOUNCEMENT_HINT } from './subagentAnnouncement.ts';
 
 export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
 export interface TransformInput {
@@ -64,7 +65,17 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	if (has('write')) sections.push(p.write);
 	if (has('bash') || has('powershell')) sections.push(p.shell);
 	if (has('ask_question')) sections.push(p.userInput);
-	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);
+	if (input.config.subagent && tools.some(isSubagent)) {
+		// An earlier extension may already have appended this rule outside the rewritten base.
+		// Preserve that suffix and unrelated custom guidance regardless of extension load order.
+		const delegation = input.systemPrompt.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)
+			? p.delegation.split(/\r?\n/).filter(line => (
+				line.trim() !== SUBAGENT_CALL_ANNOUNCEMENT_HINT
+				&& line.trim() !== `- ${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`
+			)).join('\n')
+			: p.delegation;
+		sections.push(delegation);
+	}
 	sections.push(p.validation, p.communication);
 	sections.push(p.environment.replace(/\{\{(hostOs|today)\}\}/g, (_, key: string) => key === 'hostOs' ? input.hostOs : input.today));
 	return joinGuidelineParts(sections);

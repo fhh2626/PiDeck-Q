@@ -2609,20 +2609,19 @@ export interface ExtensionConfig {
 	/** Global cap on simultaneously-running subagent tasks within a single run. Defaults to 20. */
 	globalConcurrencyLimit?: number;
 	/**
-	 * Global default runtime deadline in milliseconds. It replaces the built-in
-	 * 30-minute backstop for single, parallel, and chain launches (foreground, plus
-	 * plain single-agent async runs) when neither the call (`timeoutMs`/`maxRuntimeMs`)
-	 * nor the selected agent provides a timeout. Explicit call values and agent
-	 * frontmatter defaults still win. Composite async runs (chain/parallel/workflow)
-	 * stay unbounded at the top level by design — their children are bounded individually.
-	 * Must be a positive integer; invalid values are ignored.
+	 * Optional global runtime deadline in milliseconds for foreground launches
+	 * and plain single-agent async runs. Explicit call values (`timeoutMs` or
+	 * `maxRuntimeMs`) and agent frontmatter take precedence. Composite async roots
+	 * remain unbounded unless the call supplies a deadline, and their children use
+	 * each agent's explicit timeout. Unconfigured runs have no implicit deadline.
+	 * Must be a positive integer no larger than 2147483647. Invalid values are ignored.
 	 */
 	timeoutMs?: number;
 	/**
 	 * Optional hard per-tool-call timeout in milliseconds. Bounds a single
 	 * subagent tool call inside the child; the run-level timeout remains
-	 * authoritative. Known-fast built-in tools have a five-minute default when
-	 * this is undefined. Precedence: call param > agent frontmatter > this config >
+	 * authoritative. No tool deadline applies when all explicit settings are
+	 * omitted. Precedence: call param > agent frontmatter > this config >
 	 * PI_SUBAGENT_TOOL_TIMEOUT_MS. Must be a positive integer; invalid values
 	 * are rejected with an error.
 	 */

@@ -22,6 +22,9 @@ import { projectChildLifecycle, type ChildLifecycleAction, type ChildLifecycleSt
 import { formatSubagentModelVerificationError } from "../shared/model-fallback.ts";
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
+import { resolveRunSupervisionMetadata } from "../shared/run-supervision-metadata.ts";
+import { createRunSupervision, createRunSupervisionState, type RunSupervisionState } from "../shared/run-supervision.ts";
+import { formatRunSupervisionSnapshot } from "../shared/run-supervision-snapshot.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
 import { projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
@@ -91,6 +94,10 @@ export interface RunChildSessionInput {
 	onChildEvent?: (event: ChildEvent) => void;
 	transcriptWriter?: ChildTranscriptWriter;
 	toolTimeoutMs?: number;
+	/** Share the existing control.enabled switch with periodic run reviews. */
+	runSupervisionEnabled?: boolean;
+	/** The logical step owns this clock across model retries and recovery attempts. */
+	runSupervisionState?: RunSupervisionState;
 	runDeadlineAt?: number;
 	expectedModelForVerification?: string;
 	modelVerificationRegistry?: Array<{ provider: string; id: string; fullId: string }>;
@@ -177,6 +184,7 @@ const UNSETTLED_STOP_ERROR = "Subagent stopped without a result.";
 export function runChildSession(input: RunChildSessionInput): Promise<RunChildSessionResult> {
 	return new Promise((resolve) => {
 		const startedAt = Date.now();
+		const runSupervisionState = input.runSupervisionState ?? createRunSupervisionState(startedAt);
 		const messages: Message[] = [];
 		const usage = emptyUsage();
 		let model: string | undefined;
@@ -185,6 +193,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		let interrupted = false;
 		let timedOut = false;
 		let stopped = false;
+		let supervisorStopped = false;
+		let runSupervision: ReturnType<typeof createRunSupervision> | undefined;
 		let observedMutationAttempt = false;
 		let structuredOutputToolInvoked = false;
 		let structuredOutputMessageStartIndex: number | undefined;
@@ -210,7 +220,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		let childWatchdogState: ChildWatchdogStateSnapshot | undefined;
 		const childLifecycleState: ChildLifecycleState = { compactionRetryActive: false };
 		const timeoutMessage = () => input.timeoutMessage ?? "Subagent timed out.";
-		const stopMessage = () => input.stopMessage ?? "Subagent stopped by user.";
+		const stopMessage = () => supervisorStopped ? "Subagent stopped by supervisor." : input.stopMessage ?? "Subagent stopped by user.";
 
 		type ActiveToolCall = { key: string; tool: string; args?: string; path?: string };
 		let activeToolSequence = 0;
@@ -411,6 +421,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		};
 		const terminateForTimeout = (message: string): void => {
 			if (settled || promptSettled || timedOut || stopped) return;
+			runSupervision?.dispose();
 			timedOut = true;
 			interrupted = false;
 			error = message;
@@ -504,11 +515,13 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 			if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) {
 				if (event.type === "tool_result_end") {
-					clearActiveToolTimeout(event);
-					removeActiveToolCall({
+					// Pi places the completion identity inside the message. Clear only that call's deadline.
+					const completedTool = {
 						toolCallId: (event.message as { toolCallId?: unknown }).toolCallId ?? event.toolCallId,
 						toolName: (event.message as { toolName?: unknown }).toolName ?? event.toolName,
-					});
+					};
+					clearActiveToolTimeout(completedTool);
+					removeActiveToolCall(completedTool);
 				}
 				messages.push(event.message);
 				const text = extractTextFromContent(event.message.content);
@@ -555,6 +568,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 		/** Stops observing the child and returns when its extensions have shut down. */
 		const finish = (): Promise<void> => {
+			runSupervision?.dispose();
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
 			clearUnsettledAgentEndTimers();
@@ -575,6 +589,14 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		/** The child run ended (or was forced to end); fold in the outcome once the child's shutdown work is done. */
 		const settle = (promptError: unknown, forced = false): void => {
 			if (settled) return;
+			// Consume an acknowledged parent decision before revoking the attempt's ask.
+			if (runSupervision?.dispose() === "stop") {
+				supervisorStopped = true;
+				stopped = true;
+				timedOut = false;
+				interrupted = false;
+				error = stopMessage();
+			}
 			settled = true;
 			clearUnsettledAgentEndTimers();
 			const closed = finish();
@@ -624,6 +646,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 		input.registerInterrupt?.(() => {
 			if (settled || promptSettled || timedOut || stopped) return;
+			runSupervision?.dispose();
 			interrupted = true;
 			if (!error) error = "Interrupted. Waiting for explicit next action.";
 			abortChild();
@@ -631,6 +654,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		input.registerTimeout?.(() => terminateForTimeout(timeoutMessage()));
 		input.registerStop?.(() => {
 			if (settled || promptSettled || timedOut || stopped) return;
+			runSupervision?.dispose();
 			stopped = true;
 			interrupted = false;
 			error = stopMessage();
@@ -675,6 +699,24 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				});
 				if (interrupted || timedOut || stopped) abortChild();
 				checkContinuation();
+				runSupervision = createRunSupervision({
+					state: runSupervisionState,
+					metadata: input.runSupervisionEnabled === false ? undefined : resolveRunSupervisionMetadata(input.launch.config),
+					getSnapshot: () => formatRunSupervisionSnapshot({
+						task: input.prompt, startedAt: runSupervisionState.startedAt, currentTools: [...activeToolCalls.values()].map((call) => call.tool),
+						toolCount, tokens: usage.input + usage.output,
+						recentOutput: messages.filter((message) => message.role === "assistant").slice(-5).map((message) => extractTextFromContent(message.content)),
+					}),
+					onStop: () => {
+						if (settled || promptSettled || timedOut || stopped || interrupted) return;
+						supervisorStopped = true;
+						stopped = true;
+						error = stopMessage();
+						clearAllToolTimeouts();
+						abortChild();
+					},
+					onError: (error) => input.writeOutputLine(`Run supervision request failed: ${error instanceof Error ? error.message : String(error)}`),
+				});
 				await created.prompt(input.prompt);
 				promptSettled = true;
 				settle(undefined);

@@ -4,7 +4,9 @@ Where running subagents show up, how to inspect them, and the files and events t
 
 ## Foreground runs
 
-Foreground runs stream progress in the conversation while they run. They default to a generous 30-minute wall-clock timeout when neither the call nor the selected agent provides a timeout; a global [`timeoutMs`](configuration.md#timeoutms) config replaces that default, and explicit `timeoutMs`/`maxRuntimeMs` and agent defaults win.
+Foreground runs stream progress in the conversation while they run. Runs have no implicit wall-clock deadline. Explicit `timeoutMs` or `maxRuntimeMs`, agent defaults, and the applicable global [`timeoutMs`](configuration.md#timeoutms) setting remain available.
+
+Native Pi children with an active parent supervisor send a runtime progress snapshot after 600 seconds. The parent decides `CONTINUE` or `STOP`. Reporting does not call a model or pause the current tool, and only one decision request can be pending. Continuing starts the next 600-second interval. Missing or expired replies leave the work running. Set `control.enabled` to `false` to disable these reports. External CLI and external-job runners use their own contracts and do not support this native supervision protocol.
 
 A foreground child is a pi session created inside the parent Pi process, not a second `pi` process. A run timeout, tool timeout, interrupt, or stop aborts the child session and disposes it. Detach keeps the session running inside the parent and publishes the same receipt and completion notification as before.
 

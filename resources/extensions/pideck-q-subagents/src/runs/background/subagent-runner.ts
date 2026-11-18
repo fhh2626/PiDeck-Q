@@ -95,6 +95,7 @@ import {
 import { applyThinkingSuffix, projectLaunchResolvedChildExtensions, resolvePiLaunchToolPlan } from "../shared/child-tool-plan.ts";
 import type { InheritedChildRuntime } from "../shared/child-launch.ts";
 import { buildRunnerChildLaunch } from "./runner-child-launch.ts";
+import { createRunSupervisionState } from "../shared/run-supervision.ts";
 import { normalizeExtensionBindings } from "../shared/extension-bindings.ts";
 import type { ChildSessionFactory } from "../shared/child-session.ts";
 import { getSettledReadonlyChild, runChildSession, type ChildEvent, type RunChildSessionInput, type RunChildSessionResult, type StepSteerHandler } from "./run-child-session.ts";
@@ -219,7 +220,7 @@ interface SubagentRunConfig {
 	nestedSelf?: { parentRunId: string; parentStepIndex?: number; depth: number; path?: Array<{ runId: string; stepIndex?: number; agent?: string }> };
 	timeoutMs?: number;
 	deadlineAt?: number;
-	/** Resolved configured hard per-tool-call timeout (ms); fast tools still have a default when undefined. */
+	/** Explicit hard per-tool-call timeout (ms); omitted values do not arm a timer. */
 	toolTimeoutMs?: number;
 	toolBudget?: ResolvedToolBudget;
 	usageBudget?: UsageBudgetConfig;
@@ -683,8 +684,10 @@ interface SingleStepContext {
 	stopSignal?: AbortSignal;
 	timeoutMessage?: string;
 	stopMessage?: string;
-	/** Resolved configured hard per-tool-call timeout (ms); fast tools still have a default when undefined. */
+	/** Explicit hard per-tool-call timeout (ms); omitted values do not arm a timer. */
 	toolTimeoutMs?: number;
+	/** The parent's control.enabled switch also governs automatic run reviews. */
+	runSupervisionEnabled?: boolean;
 	/** Effective step deadline (Date.now() + effective timeout) when a run budget exists. */
 	deadlineAt?: number;
 	childIntercomTarget?: string;
@@ -711,6 +714,7 @@ export async function runSingleStepInner(
 	step: SubagentStep,
 	ctx: SingleStepContext,
 ): Promise<StepResult & { completionGuardTriggered?: boolean }> {
+	const runSupervisionState = createRunSupervisionState();
 	if (step.importAsyncRoot) {
 		let importTimedOut = false;
 		let importStopped = false;
@@ -754,7 +758,9 @@ export async function runSingleStepInner(
 			}
 			const stopped = importStopped || imported.stopped === true || ctx.stopSignal?.aborted === true;
 			const timedOut = !stopped && (importTimedOut || imported.timedOut === true || ctx.timeoutSignal?.aborted === true || ctx.skipAcceptance?.() === true);
-			const message = stopped ? ctx.stopMessage ?? "Subagent stopped by user." : ctx.timeoutMessage ?? "Subagent timed out.";
+			const message = stopped
+				? (imported.stopped ? imported.error : undefined) ?? ctx.stopMessage ?? "Subagent stopped by user."
+				: ctx.timeoutMessage ?? "Subagent timed out.";
 			return omitUndefinedProperties({
 				agent: imported.agent,
 				output: timedOut || stopped ? message : imported.output,
@@ -1165,6 +1171,7 @@ export async function runSingleStepInner(
 		fs.writeFileSync(ctx.outputFile, "", "utf-8");
 		const run = await runChildSession(omitUndefinedProperties({
 			factory: ctx.childSessions,
+			runSupervisionState,
 			launch,
 			collectReadonlyEvidence: true,
 			readonlyContinuation,
@@ -1191,6 +1198,7 @@ export async function runSingleStepInner(
 			onChildEvent: ctx.onChildEvent,
 			transcriptWriter,
 			toolTimeoutMs: ctx.toolTimeoutMs,
+			runSupervisionEnabled: ctx.runSupervisionEnabled,
 			runDeadlineAt: ctx.deadlineAt,
 			expectedModelForVerification,
 			modelVerificationRegistry: step.modelVerificationRegistry,
@@ -1451,7 +1459,7 @@ export async function runSingleStepInner(
 		outputForSummary = `${attemptNotes.join("\n")}\n\n${outputForSummary}`.trim();
 	}
 	if (finalResult?.stopped && !outputForSummary.trim()) {
-		outputForSummary = ctx.stopMessage ?? "Subagent stopped by user.";
+		outputForSummary = finalResult.error ?? ctx.stopMessage ?? "Subagent stopped by user.";
 	}
 	const outputForAcceptance = rawOutput;
 	const childWrittenOutput = step.outputPath
@@ -1522,7 +1530,7 @@ export async function runSingleStepInner(
 	const effectiveFinalExitCode = timedOutAfterAcceptance || stoppedAfterAcceptance ? 1 : acceptanceCanFailRun ? 1 : finalResult?.exitCode ?? 1;
 	const intercomDetachReceipt = finalResult?.finalOutput === INTERCOM_DETACH_RECEIPT;
 	const baseFinalError = stoppedAfterAcceptance
-		? ctx.stopMessage ?? "Subagent stopped by user."
+		? (finalResult?.stopped ? finalResult.error : undefined) ?? ctx.stopMessage ?? "Subagent stopped by user."
 		: timedOutAfterAcceptance
 			? finalResult?.error ?? ctx.timeoutMessage ?? "Subagent timed out."
 			: acceptanceCanFailRun
@@ -3680,6 +3688,7 @@ export async function runSubagent(
 					timeoutMessage,
 					stopMessage,
 					toolTimeoutMs: task.toolTimeoutMs ?? config.toolTimeoutMs,
+					runSupervisionEnabled: controlConfig.enabled,
 					onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking, attempt.contextLimit),
 					onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 					onExternalProcess: (process) => updateExternalProcess(fi, process),
@@ -3692,6 +3701,7 @@ export async function runSubagent(
 				const taskEndTime = Date.now();
 				const childInterrupted = singleResult.interrupted === true;
 				const childStopped = singleResult.stopped === true;
+				const childStopMessage = childStopped && !stopped ? singleResult.error ?? stopMessage : stopMessage;
 				requiredStatusStep(statusPayload, fi).status = stopped || childStopped ? "stopped" : timedOut ? "failed" : childInterrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 				requiredStatusStep(statusPayload, fi).endedAt = taskEndTime;
 				requiredStatusStep(statusPayload, fi).durationMs = taskEndTime - taskStartTime;
@@ -3717,7 +3727,7 @@ export async function runSubagent(
 					};
 					refreshUsageBudget();
 				}
-				setOptionalProperty(requiredStatusStep(statusPayload, fi), "error", stopped || childStopped ? stopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
+				setOptionalProperty(requiredStatusStep(statusPayload, fi), "error", stopped || childStopped ? childStopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "transcriptPath", singleResult.transcriptPath ?? requiredStatusStep(statusPayload, fi).transcriptPath);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "transcriptError", singleResult.transcriptError);
 				setOptionalProperty(requiredStatusStep(statusPayload, fi), "agentContract", singleResult.agentContract);
@@ -3747,7 +3757,7 @@ export async function runSubagent(
 		}));
 		if (stopped || childStopped) appendTerminalChildStatusEvent(fi, taskEndTime);
 		if (singleResult.exitCode !== 0 && failFast && !childStopped) aborted = true;
-				return stopped || childStopped ? { ...singleResult, output: stopMessage, error: stopMessage, exitCode: 1, interrupted: false, timedOut: false, stopped: true, skipped: false } : timedOut ? { ...singleResult, output: singleResult.output || (timeoutMessage ?? "Subagent timed out."), error: singleResult.error ?? timeoutMessage ?? "Subagent timed out.", exitCode: 1, interrupted: false, timedOut: true, skipped: false } : { ...singleResult, skipped: false };
+				return stopped || childStopped ? { ...singleResult, output: childStopMessage, error: childStopMessage, exitCode: 1, interrupted: false, timedOut: false, stopped: true, skipped: false } : timedOut ? { ...singleResult, output: singleResult.output || (timeoutMessage ?? "Subagent timed out."), error: singleResult.error ?? timeoutMessage ?? "Subagent timed out.", exitCode: 1, interrupted: false, timedOut: true, skipped: false } : { ...singleResult, skipped: false };
 			}, globalSemaphore);
 
 			flatIndex += dynamicSteps.length;
@@ -4090,6 +4100,7 @@ export async function runSubagent(
 							timeoutMessage,
 							stopMessage,
 							toolTimeoutMs: taskForRun.toolTimeoutMs ?? config.toolTimeoutMs,
+							runSupervisionEnabled: controlConfig.enabled,
 							onAttemptStart: (attempt) => updateStepModel(fi, attempt.model, attempt.thinking, attempt.contextLimit),
 							onChildEvent: (event) => updateStepFromChildEvent(fi, event),
 							onExternalProcess: (process) => updateExternalProcess(fi, process),
@@ -4107,6 +4118,7 @@ export async function runSubagent(
 						const taskDuration = taskEndTime - taskStartTime;
 						const childInterrupted = singleResult.interrupted === true;
 						const childStopped = singleResult.stopped === true;
+						const childStopMessage = childStopped && !stopped ? singleResult.error ?? stopMessage : stopMessage;
 
 						requiredStatusStep(statusPayload, fi).status = stopped || childStopped ? "stopped" : timedOut ? "failed" : childInterrupted ? "paused" : singleResult.exitCode === 0 ? "complete" : "failed";
 						requiredStatusStep(statusPayload, fi).endedAt = taskEndTime;
@@ -4133,7 +4145,7 @@ export async function runSubagent(
 							};
 							refreshUsageBudget();
 						}
-						setOptionalProperty(requiredStatusStep(statusPayload, fi), "error", stopped || childStopped ? stopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
+						setOptionalProperty(requiredStatusStep(statusPayload, fi), "error", stopped || childStopped ? childStopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "transcriptPath", singleResult.transcriptPath ?? requiredStatusStep(statusPayload, fi).transcriptPath);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "transcriptError", singleResult.transcriptError);
 						setOptionalProperty(requiredStatusStep(statusPayload, fi), "agentContract", singleResult.agentContract);
@@ -4177,7 +4189,7 @@ export async function runSubagent(
 						}
 
 						if (singleResult.exitCode !== 0 && failFast && !childStopped) aborted = true;
-						return stopped || childStopped ? { ...singleResult, output: stopMessage, error: stopMessage, exitCode: 1, interrupted: false, timedOut: false, stopped: true, skipped: false } : timedOut ? { ...singleResult, output: singleResult.output || (timeoutMessage ?? "Subagent timed out."), error: singleResult.error ?? timeoutMessage ?? "Subagent timed out.", exitCode: 1, interrupted: false, timedOut: true, skipped: false } : { ...singleResult, skipped: false };
+						return stopped || childStopped ? { ...singleResult, output: childStopMessage, error: childStopMessage, exitCode: 1, interrupted: false, timedOut: false, stopped: true, skipped: false } : timedOut ? { ...singleResult, output: singleResult.output || (timeoutMessage ?? "Subagent timed out."), error: singleResult.error ?? timeoutMessage ?? "Subagent timed out.", exitCode: 1, interrupted: false, timedOut: true, skipped: false } : { ...singleResult, skipped: false };
 					},
 					globalSemaphore,
 				);
@@ -4489,6 +4501,7 @@ export async function runSubagent(
 				timeoutMessage,
 				stopMessage,
 				toolTimeoutMs: seqStep.toolTimeoutMs ?? config.toolTimeoutMs,
+				runSupervisionEnabled: controlConfig.enabled,
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking, attempt.contextLimit),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
 				onExternalProcess: (process) => updateExternalProcess(flatIndex, process),
@@ -4508,6 +4521,7 @@ export async function runSubagent(
 
 			previousOutput = singleResult.output;
 			const childStopped = singleResult.stopped === true;
+			const childStopMessage = childStopped && !stopped ? singleResult.error ?? stopMessage : stopMessage;
 			results.push(omitUndefinedProperties({
 				agent: singleResult.agent,
 				...(singleResult.sessionName ? { sessionName: singleResult.sessionName } : {}),
@@ -4516,9 +4530,9 @@ export async function runSubagent(
 				launchContractDigest: singleResult.launchContractDigest,
 				launchResolvedExtensions: singleResult.launchResolvedExtensions,
 				runtimeAcknowledgedExtensions: singleResult.runtimeAcknowledgedExtensions,
-				output: stopped || childStopped ? stopMessage : timedOut ? singleResult.output || (timeoutMessage ?? "Subagent timed out.") : singleResult.output,
+				output: stopped || childStopped ? childStopMessage : timedOut ? singleResult.output || (timeoutMessage ?? "Subagent timed out.") : singleResult.output,
 				outputState: singleResult.outputState,
-				error: stopped || childStopped ? stopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error,
+				error: stopped || childStopped ? childStopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error,
 				success: !stopped && !childStopped && !timedOut && singleResult.interrupted !== true && singleResult.exitCode === 0,
 				exitCode: stopped || childStopped ? 1 : timedOut ? 1 : singleResult.interrupted === true ? 0 : singleResult.exitCode,
 				sessionFile: singleResult.sessionFile,
@@ -4613,7 +4627,7 @@ export async function runSubagent(
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "modelAttempts", singleResult.modelAttempts);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "contextOverflow", singleResult.contextOverflow);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "totalCost", singleResult.totalCost);
-			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "error", stopped || childStopped ? stopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
+			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "error", stopped || childStopped ? childStopMessage : timedOut ? (timeoutMessage ?? "Subagent timed out.") : singleResult.error);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "transcriptPath", singleResult.transcriptPath ?? requiredStatusStep(statusPayload, flatIndex).transcriptPath);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "transcriptError", singleResult.transcriptError);
 			setOptionalProperty(requiredStatusStep(statusPayload, flatIndex), "agentContract", singleResult.agentContract);

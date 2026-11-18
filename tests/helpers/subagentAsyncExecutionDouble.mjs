@@ -7,8 +7,6 @@
  * otherwise fails loudly so an unintended background launch cannot pass.
  */
 
-export const DEFAULT_ASYNC_TIMEOUT_MS = 30 * 60 * 1000;
-
 function hooks() {
 	return globalThis.__subagentTestAsync ?? {};
 }

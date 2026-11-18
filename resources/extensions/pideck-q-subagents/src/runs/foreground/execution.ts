@@ -55,6 +55,9 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { buildAgentMemoryInjection } from "../../agents/agent-memory.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, resolveToolTimeoutMs, toolTimeoutCallKey, toolTimeoutFromEnv } from "../shared/tool-timeout.ts";
+import { resolveRunSupervisionMetadata } from "../shared/run-supervision-metadata.ts";
+import { createRunSupervision, createRunSupervisionState, type RunSupervisionState } from "../shared/run-supervision.ts";
+import { formatRunSupervisionSnapshot } from "../shared/run-supervision-snapshot.ts";
 import { evaluateCompletionMutationGuard, expectsImplementationMutation, hasMutationToolCapability, validateImplementationToolContract } from "../shared/completion-guard.ts";
 import { planCompletionEvidence } from "../shared/completion-evidence.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
@@ -372,6 +375,7 @@ async function runSingleAttempt(
 		artifactPaths?: ArtifactPaths;
 		transcriptWriter?: ChildTranscriptWriter;
 		attemptNotes: string[];
+		runSupervisionState: RunSupervisionState;
 		outputSnapshot?: SingleOutputSnapshot;
 		originalTask?: string;
 		orcaProgressTab?: OrcaProgressTab;
@@ -627,6 +631,8 @@ async function runSingleAttempt(
 		let activityTimer: NodeJS.Timeout | undefined;
 		let timeoutTimer: NodeJS.Timeout | undefined;
 		let timeoutHardFinishTimer: NodeJS.Timeout | undefined;
+		let runSupervision: ReturnType<typeof createRunSupervision> | undefined;
+		let supervisorStopTimer: ReturnType<typeof setTimeout> | undefined;
 		const clearTimeoutTimers = () => {
 			if (timeoutTimer) {
 				clearTimeout(timeoutTimer);
@@ -813,6 +819,7 @@ async function runSingleAttempt(
 
 		const supervisorBridge = createForegroundSupervisorBridge({
 			events: options.intercomEvents, enabled: options.allowIntercomDetach === true,
+			runSupervisionEnabled: controlConfig.enabled,
 			runId: options.runId, agent: agent.name, childIndex: options.index ?? 0,
 			isLive: () => !sessionSettled && !lifecycleFinished,
 			isDetached: () => detached,
@@ -829,6 +836,8 @@ async function runSingleAttempt(
 				});
 			}
 			lifecycleFinished = true;
+			runSupervision?.dispose();
+			if (supervisorStopTimer) clearTimeout(supervisorStopTimer);
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
 			clearUnsettledAgentEndTimers();
@@ -1259,8 +1268,9 @@ async function runSingleAttempt(
 
 		if (attemptTimeout) {
 			timeoutTimer = setTimeout(() => {
-				if (sessionSettled || lifecycleFinished || interruptedByControl) return;
+				if (sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
 				result.timedOut = true;
+				runSupervision?.dispose();
 				clearAllToolTimeouts();
 				result.error = attemptTimeout.message;
 				result.finalOutput = attemptTimeout.message;
@@ -1309,8 +1319,9 @@ async function runSingleAttempt(
 			}
 		};
 		const terminateForToolTimeout = (message: string): void => {
-			if (sessionSettled || lifecycleFinished || interruptedByControl) return;
+			if (sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
 			result.timedOut = true;
+			runSupervision?.dispose();
 			result.error = message;
 			result.finalOutput = message;
 			progress.status = "failed";
@@ -1346,6 +1357,16 @@ async function runSingleAttempt(
 		/** The child run ended (or was forced to end); fold in the captures and finish. */
 		const settle = (promptError: unknown, forced = false): void => {
 			if (lifecycleFinished || sessionSettled) return;
+			// A parent STOP already on disk must survive prompt completion and model fallback.
+			if (runSupervision?.dispose() === "stop") {
+				result.stopped = true;
+				result.timedOut = undefined;
+				result.interrupted = undefined;
+				interruptedByControl = false;
+				result.error = "Subagent stopped by supervisor.";
+				progress.status = "failed";
+				progress.error = result.error;
+			}
 			sessionSettled = true;
 			clearFinalDrainTimers();
 			clearUnsettledAgentEndTimers();
@@ -1374,6 +1395,7 @@ async function runSingleAttempt(
 			const kill = () => {
 				if (sessionSettled || lifecycleFinished) return;
 				abortedBySignal = true;
+				runSupervision?.dispose();
 				abortChild();
 				const hardTimer = setTimeout(() => {
 					if (sessionSettled || lifecycleFinished) return;
@@ -1391,8 +1413,9 @@ async function runSingleAttempt(
 		if (options.interruptSignal) {
 			const interrupt = () => {
 				if (sessionSettled || lifecycleFinished) return;
-				if (result.timedOut) return;
+				if (result.timedOut || result.stopped) return;
 				interruptedByControl = true;
+				runSupervision?.dispose();
 				clearTimeoutTimers();
 				clearAllToolTimeouts();
 				progress.status = "running";
@@ -1449,6 +1472,30 @@ async function runSingleAttempt(
 				if (shared.readonlyExpected && (!actualReadonlyModel || actualReadonlyModel.fullId !== shared.readonlyModel
 					|| actualReadonlyModel.api !== shared.readonlyExpected.api || created.modelId !== shared.readonlyModel || abortedBySignal || interruptedByControl || result.timedOut
 					|| !shared.readonlyHandoffAllowed?.())) throw new Error("Read-only continuation handoff vetoed.");
+				runSupervision = createRunSupervision({
+					state: shared.runSupervisionState,
+					metadata: controlConfig.enabled ? resolveRunSupervisionMetadata(launch.config) : undefined,
+					getSnapshot: () => formatRunSupervisionSnapshot({
+						task, startedAt: shared.runSupervisionState.startedAt, currentTools: [...activeToolCalls.values()].map((call) => call.tool),
+						toolCount: progress.toolCount, tokens: progress.tokens, recentOutput: progress.recentOutput,
+					}),
+					onStop: () => {
+						if (sessionSettled || lifecycleFinished || result.timedOut || result.stopped || interruptedByControl || abortedBySignal) return;
+						result.stopped = true;
+						result.error = "Subagent stopped by supervisor.";
+						progress.status = "failed";
+						progress.error = result.error;
+						clearTimeoutTimers();
+						clearAllToolTimeouts();
+						fireUpdate();
+						abortChild();
+						supervisorStopTimer = setTimeout(() => {
+							if (!sessionSettled && !lifecycleFinished) settle(undefined, true);
+						}, 3000);
+						supervisorStopTimer.unref?.();
+					},
+					onError: (error) => appendRecentOutput(progress, [`Run supervision request failed: ${error instanceof Error ? error.message : String(error)}`]),
+				});
 				await created.prompt(`Task: ${task}`);
 				settle(undefined);
 			} catch (error) {
@@ -1703,6 +1750,8 @@ async function runSyncCompletionInner(
 	task: string,
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
+	// Model fallback and recovery remain one logical run for periodic parent decisions.
+	const runSupervisionState = createRunSupervisionState();
 	const effectiveCwd = options.cwd ?? runtimeCwd;
 	const cwdError = preflightLaunchCwd(options.requestedCwd ?? effectiveCwd, effectiveCwd);
 	if (cwdError) {
@@ -2001,6 +2050,7 @@ async function runSyncCompletionInner(
 				artifactPaths: artifactPathsResult,
 				transcriptWriter,
 				attemptNotes,
+				runSupervisionState,
 				modelCandidates: candidates
 					.map((modelCandidate) => applyThinkingSuffix(modelCandidate, options.thinkingOverride ?? agent.thinking, options.thinkingOverride !== undefined))
 					.filter((modelCandidate): modelCandidate is string => Boolean(modelCandidate)),
@@ -2107,7 +2157,7 @@ async function runSyncCompletionInner(
 			// Preserve the legacy intercom handoff contract: once this logical run has
 			// been handed to a supervisor, terminating that attempt must not launch a
 			// model fallback. Explicit user detach retains fallback.
-			if (intercomDetached || result.timedOut) break modelAttemptsLoop;
+			if (intercomDetached || result.timedOut || result.stopped || result.interrupted) break modelAttemptsLoop;
 			if (attemptSucceeded) break modelAttemptsLoop;
 
 			const retryableModelFailure = isRetryableModelFailureAttempt({ error: result.error, messages: result.messages, toolCount: result.progressSummary?.toolCount });

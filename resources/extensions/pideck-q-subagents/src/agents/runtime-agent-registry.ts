@@ -139,6 +139,13 @@ function validatePositiveInteger(value: unknown, field: string): number | undefi
 	return value;
 }
 
+/** Node timers overflow above this bound, so accepting a longer deadline would abort immediately. */
+function validateTimeout(value: unknown, field: string): number | undefined {
+	const timeout = validatePositiveInteger(value, field);
+	if (timeout !== undefined && timeout > 2_147_483_647) throw new Error(`${field} must be no larger than 2147483647.`);
+	return timeout;
+}
+
 function validateBoolean(value: unknown, field: string): boolean | undefined {
 	if (value === undefined) return undefined;
 	if (typeof value !== "boolean") throw new Error(`${field} must be a boolean when provided.`);
@@ -227,8 +234,8 @@ function validateDefinition(value: unknown): RuntimeAgentDefinition {
 	const inheritGlobalContext = validateBoolean(definition.inheritGlobalContext, "Runtime agent definition inheritGlobalContext");
 	const inheritSkills = validateBoolean(definition.inheritSkills, "Runtime agent definition inheritSkills");
 	const defaultAsync = validateBoolean(definition.defaultAsync, "Runtime agent definition defaultAsync");
-	const defaultTimeoutMs = validatePositiveInteger(definition.defaultTimeoutMs, "Runtime agent definition defaultTimeoutMs");
-	const defaultToolTimeoutMs = validatePositiveInteger(definition.defaultToolTimeoutMs, "Runtime agent definition defaultToolTimeoutMs");
+	const defaultTimeoutMs = validateTimeout(definition.defaultTimeoutMs, "Runtime agent definition defaultTimeoutMs");
+	const defaultToolTimeoutMs = validateTimeout(definition.defaultToolTimeoutMs, "Runtime agent definition defaultToolTimeoutMs");
 	const defaultAcceptance = validateAcceptance(definition.defaultAcceptance);
 	const runner = validateRunner(definition.runner);
 	const skills = validateStringList(definition.skills, "Runtime agent definition skills");

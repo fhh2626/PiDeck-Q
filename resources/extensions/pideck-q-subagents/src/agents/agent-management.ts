@@ -576,8 +576,8 @@ function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknown>): st
 	}
 	if (hasKey(cfg, "timeoutMs")) {
 		if (cfg.timeoutMs === false || cfg.timeoutMs === "") delete target.defaultTimeoutMs;
-		else if (typeof cfg.timeoutMs === "number" && Number.isInteger(cfg.timeoutMs) && cfg.timeoutMs > 0) target.defaultTimeoutMs = cfg.timeoutMs;
-		else return "config.timeoutMs must be a positive integer or false when provided.";
+		else if (typeof cfg.timeoutMs === "number" && Number.isInteger(cfg.timeoutMs) && cfg.timeoutMs > 0 && cfg.timeoutMs <= 2_147_483_647) target.defaultTimeoutMs = cfg.timeoutMs;
+		else return "config.timeoutMs must be a positive integer no larger than 2147483647, or false when provided.";
 	}
 	if (hasKey(cfg, "acceptance")) {
 		if (cfg.acceptance === "") delete target.defaultAcceptance;

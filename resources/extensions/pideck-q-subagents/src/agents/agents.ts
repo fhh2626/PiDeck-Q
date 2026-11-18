@@ -2073,8 +2073,8 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 		let defaultTimeoutMs: number | undefined;
 		if (frontmatter.timeoutMs !== undefined) {
 			const parsed = Number(frontmatter.timeoutMs);
-			if (!Number.isInteger(parsed) || parsed <= 0) {
-				throw new Error(`Agent '${localName}' has invalid timeoutMs frontmatter; expected a positive integer.`);
+			if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+				throw new Error(`Agent '${localName}' has invalid timeoutMs frontmatter. Expected a positive integer no larger than 2147483647.`);
 			}
 			defaultTimeoutMs = parsed;
 		}

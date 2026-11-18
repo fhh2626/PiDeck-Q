@@ -1,4 +1,6 @@
 /** All user-editable defaults live here; persistent Markdown overrides survive updates. */
+import { SUBAGENT_CALL_ANNOUNCEMENT_HINT } from './subagentAnnouncement.ts';
+
 export const DEFAULT_PROMPTS = {
 	identity: `You are Pi, an open-source and customizable coding, working, and writing agent.`,
 	execution: `## Execution
@@ -24,6 +26,7 @@ export const DEFAULT_PROMPTS = {
 	delegation: `## Delegation
 - Use direct tools for small, focused tasks; delegate substantial exploration or independent work. Do not duplicate delegated work.
 - For multi-step or parallel delegation, use exactly one foreground workflowScript call (async:false), with all children inside it. Follow the subagent tool contract.
+- ${SUBAGENT_CALL_ANNOUNCEMENT_HINT}
 - Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.

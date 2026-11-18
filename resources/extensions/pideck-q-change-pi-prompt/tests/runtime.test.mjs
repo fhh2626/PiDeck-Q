@@ -88,6 +88,79 @@ test('before_agent_start auto-provisions foreground-safe config when absent and 
   assert.equal(notices.some(x => x.includes('asyncByDefault')), false);
 }));
 
+test('parent custom prompts receive the announcement with legacy delegation overrides and remain idempotent', () => harness(async ({ dir, handlers, ctx, pi }) => {
+  await writeConfig(dir);
+  const legacyDelegation = '## Delegation\n- Keep this custom delegation instruction.';
+  await writeFile(join(dir, 'change-pi-prompt/prompts/delegation.md'), legacyDelegation);
+  pi._tools = [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
+  pi._active = ['subagent'];
+  const base = 'You are a custom parent agent. Preserve this instruction.';
+  const options = { customPrompt: base, selectedTools: ['subagent'] };
+  const beforeStart = handlers.get('before_agent_start');
+  const first = await beforeStart({ systemPrompt: base, systemPromptOptions: options }, ctx);
+  assert.ok(first?.systemPrompt.startsWith(base));
+  assert.match(first.systemPrompt, /Before each call to the subagent tool/);
+  assert.equal((first.systemPrompt.match(/Before each call to the subagent tool/g) ?? []).length, 1);
+  assert.equal(await beforeStart({ systemPrompt: first.systemPrompt, systemPromptOptions: options }, ctx), undefined);
+  assert.equal(await readFile(join(dir, 'change-pi-prompt/prompts/delegation.md'), 'utf8'), legacyDelegation);
+}));
+
+test('legacy delegation templates gain the runtime rule without losing custom instructions', () => harness(async ({ dir, handlers, ctx, pi }) => {
+  await writeConfig(dir);
+  await writeFile(join(dir, 'change-pi-prompt/prompts/delegation.md'), '## Delegation\n- Keep this custom delegation instruction.');
+  pi._tools = [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
+  pi._active = ['subagent'];
+  const base = 'You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n\nPi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples';
+  const result = await handlers.get('before_agent_start')({ systemPrompt: base, systemPromptOptions: { selectedTools: ['subagent'] } }, ctx);
+  assert.match(result.systemPrompt, /Keep this custom delegation instruction/);
+  assert.equal((result.systemPrompt.match(/Before each call to the subagent tool/g) ?? []).length, 1);
+}));
+
+test('child role prompts do not receive parent-facing announcements', () => harness(async ({ handlers, ctx, pi }) => {
+  pi._tools = [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
+  pi._active = ['subagent'];
+  const role = '<active_agent name="readonly"/>\nYou are a child agent.';
+  const result = await handlers.get('before_agent_start')({ systemPrompt: role, systemPromptOptions: { customPrompt: role } }, ctx);
+  assert.ok((result?.systemPrompt ?? role).includes(role));
+  assert.ok(!(result?.systemPrompt ?? role).includes('Before each call to the subagent tool'));
+}));
+
+test('announcement respects inactive tools and the subagent adaptation switch', async () => {
+  for (const [subagent, active] of [[true, false], [false, true]]) {
+    await harness(async ({ dir, handlers, ctx, pi }) => {
+      await writeConfig(dir, { subagent });
+      pi._tools = [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
+      pi._active = active ? ['subagent'] : [];
+      const base = 'You are a custom parent agent.';
+      const result = await handlers.get('before_agent_start')({ systemPrompt: base, systemPromptOptions: { customPrompt: base } }, ctx);
+      assert.ok(!(result?.systemPrompt ?? base).includes('Before each call to the subagent tool'));
+    });
+  }
+});
+
+test('child process identity is recognized even without a role marker', () => {
+  assert.equal(isChildSession('You are a child.', undefined, { PI_SUBAGENT_CHILD: '1' }), true);
+  for (const value of [undefined, '', '0', 'false']) {
+    assert.equal(isChildSession('You are a custom parent.', undefined, { PI_SUBAGENT_CHILD: value }), false);
+  }
+});
+
+test('a child startup environment window cannot change an existing parent prompt role', () => harness(async ({ handlers, ctx, pi }) => {
+  pi._tools = [{ name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } }];
+  pi._active = ['subagent'];
+  const previous = process.env.PI_SUBAGENT_CHILD;
+  try {
+    process.env.PI_SUBAGENT_CHILD = '1';
+    const base = 'You are a custom parent agent.';
+    const result = await handlers.get('before_agent_start')({ systemPrompt: base, systemPromptOptions: { customPrompt: base } }, ctx);
+    assert.match(result?.systemPrompt ?? base, /Before each call to the subagent tool/);
+    assert.doesNotMatch(result?.systemPrompt ?? base, /## Child Tool Environment/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_SUBAGENT_CHILD;
+    else process.env.PI_SUBAGENT_CHILD = previous;
+  }
+}));
+
 test('before_provider_request rewrites tool descriptions in the payload', () => harness(async ({ handlers, ctx }) => {
   await handlers.get('session_start')({}, ctx);
   const payload = { tools: [{ function: { name: 'subagent', description: UPSTREAM_ASYNC_DEFAULT_SENTENCE } }] };

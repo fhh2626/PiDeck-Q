@@ -9,6 +9,7 @@ export const DEFAULT_AUTO_DRAIN_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface AutoDrainDeps {
 	state: SubagentState;
+	findPendingAsks?: SubagentWaitDeps["findPendingAsks"];
 	events?: WaitEventBus;
 	timeoutMs?: number;
 	now?: () => number;
@@ -60,6 +61,7 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
 				undefined,
 				{
 					state: deps.state,
+					findPendingAsks: deps.findPendingAsks,
 					events: deps.events,
 					now,
 					stopOnAttention: false,
