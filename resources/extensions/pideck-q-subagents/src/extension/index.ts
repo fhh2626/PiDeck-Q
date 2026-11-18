@@ -21,7 +21,12 @@ import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition 
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, type AgentConfig, type AgentScope } from "../agents/agents.ts";
 import { appendAdvertisedAgentPrompt, buildAdvertisedAgentPrompt } from "../agents/advertised-agent-prompt.ts";
-import { appendDelegationHint, shouldInjectDelegationHint } from "./delegation-hint.ts";
+import {
+	appendDelegationHint,
+	appendSubagentCallAnnouncementHint,
+	shouldInjectDelegationHint,
+	shouldInjectSubagentCallAnnouncementHint,
+} from "./delegation-hint.ts";
 import { clearRuntimeAgentsForPi, listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-agent-registry.ts";
 import { registerRuntimeAgentEventListener } from "../agents/runtime-agent-events.ts";
 import { ensureAccessibleDir } from "../shared/accessible-dir.ts";
@@ -810,8 +815,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const advertisedSystemPrompt = appendAdvertisedAgentPrompt(event.systemPrompt, advertisedPrompt);
 		// 「优先委派」开关（PiDeck 右侧子代理弹框写入 subagents.preferDelegation）：
 		// 只在父会话 + subagent 工具可用时注入，子代理自身不重复注入。
-		const systemPrompt = appendDelegationHint(
+		const announcedSystemPrompt = appendSubagentCallAnnouncementHint(
 			advertisedSystemPrompt,
+			shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: selectedTools.includes("subagent") }),
+		);
+		const systemPrompt = appendDelegationHint(
+			announcedSystemPrompt,
 			shouldInjectDelegationHint({
 				cwd: ctx.cwd ?? state.baseCwd,
 				subagentToolAvailable: selectedTools.includes("subagent"),

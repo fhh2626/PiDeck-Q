@@ -10,8 +10,18 @@ const root = process.cwd();
 const load = (relative) =>
 	import(pathToFileURL(join(root, "resources/extensions/pideck-q-subagents/src", relative)).href);
 
-const { DELEGATION_HINT, appendDelegationHint, isSubagentChildProcess, shouldInjectDelegationHint } =
-	await load("extension/delegation-hint.ts");
+const {
+	DELEGATION_HINT,
+	SUBAGENT_CALL_ANNOUNCEMENT_HINT,
+	appendDelegationHint,
+	appendSubagentCallAnnouncementHint,
+	isSubagentChildProcess,
+	shouldInjectDelegationHint,
+	shouldInjectSubagentCallAnnouncementHint,
+} = await load("extension/delegation-hint.ts");
+const { DEFAULT_PROMPTS } = await import(
+	pathToFileURL(join(root, "resources/extensions/pideck-q-change-pi-prompt/defaults.ts")).href
+);
 const agentsModule = await load("agents/agents.ts");
 
 /**
@@ -30,6 +40,25 @@ test("appendDelegationHint appends one paragraph and stays idempotent", () => {
 	assert.equal(appendDelegationHint(base, false), base);
 	// 空 systemPrompt 只留提示语，不留前导空行
 	assert.equal(appendDelegationHint("   ", true), DELEGATION_HINT);
+});
+
+test("subagent call announcement is visible, unconditional on delegation preference, and not duplicated", () => {
+	const base = "You are a helpful agent.";
+	assert.ok(DEFAULT_PROMPTS.delegation.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT), "both plugins must use the same instruction");
+	const once = appendSubagentCallAnnouncementHint(base, true);
+	assert.equal(once, `${base}\n\n${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`);
+	assert.equal(appendSubagentCallAnnouncementHint(once, true), once);
+	assert.equal(appendSubagentCallAnnouncementHint(base, false), base);
+	assert.equal(appendSubagentCallAnnouncementHint("   ", true), SUBAGENT_CALL_ANNOUNCEMENT_HINT);
+	const changedByPromptPlugin = `${base}\n\n${DEFAULT_PROMPTS.delegation}`;
+	assert.equal(appendSubagentCallAnnouncementHint(changedByPromptPlugin, true), changedByPromptPlugin);
+	assert.equal(appendDelegationHint(once, false), once, "announcement does not require preferDelegation");
+});
+
+test("subagent call announcement applies only to main sessions with the tool enabled", () => {
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, env: {} }), true);
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: false, env: {} }), false);
+	assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, env: { PI_SUBAGENT_CHILD: "1" } }), false);
 });
 
 test("isSubagentChildProcess reads the child env flag", () => {

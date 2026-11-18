@@ -107,6 +107,16 @@ test('native default-mode safeguards survive while delegation is added', () => {
   assert.match(result.systemPrompt, /## Delegation/);
   assert.ok(run(fixture([...coreRules, rule]), [tool('subagent', [rule], 'npm:other')]).systemPrompt.includes(rule));
 });
+test('delegation asks for a single visible announcement before each subagent invocation', () => {
+  const native = tool('subagent', [], 'npm:pi-subagents@0.66.0', '/npm/pi-subagents/src/index.ts');
+  const result = run(fixture(), [tool('read'), native]);
+  const announcement = DEFAULT_PROMPTS.delegation.split('\n').find(line => line.startsWith('- Before each call to the subagent tool, '));
+  assert.ok(announcement, 'default delegation prompt must contain the announcement');
+  assert.ok(result.systemPrompt.includes(announcement));
+  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
+  assert.doesNotMatch(run().systemPrompt, /Before each call to the subagent tool/);
+});
+
 test('disabled optional tools neither contribute replacements nor lose their rules', () => {
   const rule = 'optional plugin constraint';
   const tools = [tool('subagent', [rule], 'npm:pi-subagents')];

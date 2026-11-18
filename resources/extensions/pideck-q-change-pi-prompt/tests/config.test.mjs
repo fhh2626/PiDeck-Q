@@ -45,6 +45,7 @@ test('init creates coordinated delegation guidelines and native Agent descriptio
   assert.match(delegation, /Do not duplicate delegated work/);
   assert.match(delegation, /exactly one foreground workflowScript call \(async:false\), with all children inside it/);
   assert.match(delegation, /Follow the subagent tool contract/);
+  assert.match(delegation, /Before each call to the subagent tool, first send the user one brief, visible assistant sentence/);
   assert.match(delegation, /Verify actual changes and checks before reporting success/);
   assert.equal(description.trim(), SUBAGENT_DESCRIPTION.trim());
   assert.match(description, /readonly: investigation, review, research; cannot edit or write files/);

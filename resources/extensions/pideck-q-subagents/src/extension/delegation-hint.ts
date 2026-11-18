@@ -17,6 +17,10 @@ import { resolveSubagentPreferDelegation } from "../agents/agents.ts";
 export const DELEGATION_HINT =
 	"Prefer delegating complex or parallelizable work to subagents; keep the main agent focused on planning, integration, and final verification.";
 
+/** 每次调用 subagent 之前的用户可见说明，与 change-pi-prompt 默认委派指南一致。 */
+export const SUBAGENT_CALL_ANNOUNCEMENT_HINT =
+	"Before each call to the subagent tool, first send the user one brief, visible assistant sentence in the conversation's language explaining what the call is about to do, then invoke the tool.";
+
 /** 子代理进程的环境标记（与 runs/shared/child-runtime-config.ts 的常量同值）。 */
 const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 
@@ -27,10 +31,26 @@ export function appendDelegationHint(systemPrompt: string, enabled: boolean): st
 	return systemPrompt.trim() ? `${systemPrompt}\n\n${DELEGATION_HINT}` : DELEGATION_HINT;
 }
 
+/** 委派说明独立于 preferDelegation 开关，重复处理同一提示词时保持幂等。 */
+export function appendSubagentCallAnnouncementHint(systemPrompt: string, enabled: boolean): string {
+	if (!enabled || systemPrompt.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)) return systemPrompt;
+	return systemPrompt.trim()
+		? `${systemPrompt}\n\n${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`
+		: SUBAGENT_CALL_ANNOUNCEMENT_HINT;
+}
+
 /** 当前进程是否是子代理（子代理不注入委派引导）。 */
 export function isSubagentChildProcess(env: NodeJS.ProcessEnv = process.env): boolean {
 	const value = env[SUBAGENT_CHILD_ENV];
 	return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
+/** 只在拥有 subagent 工具的主代理会话中提示，避免向子代理注入自我委派指令。 */
+export function shouldInjectSubagentCallAnnouncementHint(input: {
+	subagentToolAvailable: boolean;
+	env?: NodeJS.ProcessEnv;
+}): boolean {
+	return input.subagentToolAvailable && !isSubagentChildProcess(input.env);
 }
 
 /**
