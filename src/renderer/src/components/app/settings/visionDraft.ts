@@ -6,8 +6,10 @@
  * 壳的静态 import 会把整个 tab（含 ModelPicker 等重依赖）拖进首开 chunk。
  */
 import { useCallback, useEffect, useState } from "react";
-import { useSetAtom } from "jotai";
-import type { VisionBridgeConfig, VisionBridgeState } from "../../../../../shared/types";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { modelConfigurationEnvironmentAtom, removedModelReferencesByEnvironmentAtom, sharedRemovedModelReferencesAtom } from "../../../atoms/model-atoms";
+import { isRemovedModel } from "../../../utils/modelSelection";
+import type { ModelReference, VisionBridgeConfig, VisionBridgeState } from "../../../../../shared/types";
 import { desktopApi } from "../../../desktopApi";
 import { t } from "../../../i18n";
 import { showNotice } from "../../../utils/notice";
@@ -30,12 +32,25 @@ export function emptyDraft(): VisionBridgeConfig {
 	return { enabled: true, provider: "", model: "" };
 }
 
+/** The host vision configuration is shared by both model environments. */
+function clearRemovedModel(config: VisionBridgeConfig | null, removedModels: readonly ModelReference[]): VisionBridgeConfig | null {
+	if (!config || !isRemovedModel({ provider: config.provider, modelId: config.model }, removedModels)) return config;
+	const next = { ...config, provider: "", model: "" };
+	// These overrides belong to the deleted provider and must never follow a replacement choice.
+	delete next.api;
+	delete next.baseUrl;
+	delete next.apiKey;
+	return next;
+}
+
 /**
  * 视觉桥草稿状态 hook（设置弹框持有）：与全局设置草稿平行但独立存储
  * （视觉桥写入 pi-deck-vision.json，走独立 IPC，不是 AppSettings 字段），
  * 因此脏标记单独维护，由弹框头部统一保存/取消/关闭确认一并处理。
  */
 export function useVisionBridgeDraft() {
+	const store = useStore();
+	const removedModels = useAtomValue(sharedRemovedModelReferencesAtom);
 	const setVisionConfigRevision = useSetAtom(visionConfigRevisionAtom);
 	const [state, setState] = useState<VisionBridgeState | null>(null);
 	const [draft, setDraft] = useState<VisionBridgeConfig | null>(null);
@@ -44,6 +59,11 @@ export function useVisionBridgeDraft() {
 	const [dirty, setDirty] = useState(false);
 	// 保存失败提示（成功走全局 toast，不在此占位）
 	const [notice, setNotice] = useState<string | null>(null);
+	useEffect(() => {
+		const clear = (config: VisionBridgeConfig | null) => clearRemovedModel(config, removedModels);
+		setDraft(clear);
+		setState((current) => current ? { ...current, config: clear(current.config) } : current);
+	}, [removedModels]);
 
 	// 挂载时拉取当前配置（弹框每次打开都重建 state，无需清理外部资源）
 	useEffect(() => {
@@ -52,8 +72,10 @@ export function useVisionBridgeDraft() {
 			.visionGetConfig()
 			.then((loaded) => {
 				if (!mounted) return;
-				setState(loaded);
-				setDraft(loaded.config ?? emptyDraft());
+				// Read the store at settlement, since removals can precede this initial response.
+				const config = clearRemovedModel(loaded.config, store.get(sharedRemovedModelReferencesAtom));
+				setState({ ...loaded, config });
+				setDraft(config ?? emptyDraft());
 				setLoading(false);
 			})
 			.catch(() => {
@@ -62,7 +84,7 @@ export function useVisionBridgeDraft() {
 		return () => {
 			mounted = false;
 		};
-	}, []);
+	}, [store]);
 
 	/** 表单改动：更新草稿并标记未保存（幂等）。 */
 	const updateDraft = useCallback((patch: Partial<VisionBridgeConfig>) => {
@@ -74,11 +96,28 @@ export function useVisionBridgeDraft() {
 	/** 保存草稿到 pi-deck-vision.json；成功清脏标记并弹 toast，失败保留脏标记（头部按钮可重试）。 */
 	const save = useCallback(async (): Promise<boolean> => {
 		if (!draft) return false;
+		const environment = store.get(modelConfigurationEnvironmentAtom);
+		const selected = { provider: draft.provider, modelId: draft.model };
+		const currentRemovals = store.get(removedModelReferencesByEnvironmentAtom)[environment];
+		if (isRemovedModel(selected, currentRemovals)) {
+			setDraft((current) => clearRemovedModel(current, currentRemovals));
+			setNotice(t("app.modelSelectionRequired"));
+			return false;
+		}
+		const previousRemoval = store.get(sharedRemovedModelReferencesAtom).find(
+			(model) => model.provider === selected.provider && model.modelId === selected.modelId,
+		);
 		setSaving(true);
 		setNotice(null);
 		try {
 			const result = await desktopApi.config.visionSaveConfig(draft);
 			if (result.ok) {
+				// A valid explicit choice can replace a removal from the other environment.
+				// New deletion events replace their entry object, so never erase one received during this save.
+				if (previousRemoval && !isRemovedModel(selected, store.get(removedModelReferencesByEnvironmentAtom)[environment])) {
+					store.set(sharedRemovedModelReferencesAtom, (current) => current.includes(previousRemoval)
+						? current.filter((model) => model !== previousRemoval) : current);
+				}
 				setDirty(false);
 				setVisionConfigRevision((c) => c + 1);
 				showNotice(t("settings.vision.saved"), 3000);
@@ -92,14 +131,14 @@ export function useVisionBridgeDraft() {
 		} finally {
 			setSaving(false);
 		}
-	}, [draft]);
+	}, [draft, store]);
 
 	/** 放弃修改：回退到打开弹框时的磁盘配置快照。 */
 	const reset = useCallback(() => {
-		setDraft(state?.config ?? emptyDraft());
+		setDraft(clearRemovedModel(state?.config ?? null, store.get(sharedRemovedModelReferencesAtom)) ?? emptyDraft());
 		setDirty(false);
 		setNotice(null);
-	}, [state]);
+	}, [state, store]);
 
 	return { draft, loading, saving, dirty, notice, configDir: state?.configDir ?? "", updateDraft, save, reset };
 }

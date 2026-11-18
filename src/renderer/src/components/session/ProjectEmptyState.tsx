@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useStore } from "jotai";
 import { FolderGit2, HatGlasses, Plus, Sparkles } from "lucide-react";
 import type { AvailableModel, Project, SessionLaunchPreferences } from "../../../../shared/types";
 import { t, type TranslationKey } from "../../i18n";
@@ -10,6 +10,9 @@ import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY } from "../../utils/chatSession
 import { EmptyState } from "./SurfaceParts";
 import { THINKING_LEVELS } from "./sessionPickerOptions";
 import { modelListRevisionAtom } from "../../atoms";
+import { modelConfigurationEnvironmentAtom, removedModelReferencesAtom } from "../../atoms/model-atoms";
+import { isRemovedModel } from "../../utils/modelSelection";
+import { showNotice } from "../../utils/notice";
 import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../../shared/thinkingLevelSupport";
 
 const THINKING_LABEL_KEYS: Record<string, TranslationKey> = {};
@@ -49,10 +52,19 @@ export function ProjectEmptyState(props: {
   // 边界不信任远端结构（AGENTS 输入校验在边界、禁止 as 强转绕过类型错误）。
   const [models, setModels] = useState<AvailableModel[]>([]);
   const [modelChoice, setModelChoice] = useState("");
+  const [selectionCleared, setSelectionCleared] = useState(false);
   const [thinkingChoice, setThinkingChoice] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
   const modelListRevision = useAtomValue(modelListRevisionAtom);
+  const store = useStore();
+  const environment = useAtomValue(modelConfigurationEnvironmentAtom);
+  const removedModels = useAtomValue(removedModelReferencesAtom);
+  useEffect(() => {
+    if (!removedModels.some((model) => modelChoice === `${model.provider}/${model.modelId}`)) return;
+    setModelChoice("");
+    setSelectionCleared(true);
+  }, [removedModels, modelChoice]);
   // 模型列表独立拉取：配置页保存 models.json 后主进程广播 models:changed，空态常驻在
   // 配置弹窗后面时也要重取，否则刚勾选的 xhigh/max 要等空态重挂载才会出现在选择器里。
   useEffect(() => {
@@ -63,13 +75,16 @@ export function ProjectEmptyState(props: {
     return () => {
       alive = false;
     };
-  }, [modelListRevision, props.activeProject?.id]);
+  }, [modelListRevision, props.activeProject?.id, environment]);
 
   useEffect(() => {
     let alive = true;
-    const apply = (model: string | undefined, thinking: string | undefined) => {
+    const apply = (model: string | undefined, thinking: string | undefined, explicitlyCleared = false) => {
       if (alive) {
-        setModelChoice(model ?? "");
+        // A save can finish while this initial settings read is in flight.
+        const deleted = store.get(removedModelReferencesAtom).some((ref) => model === `${ref.provider}/${ref.modelId}`);
+        setModelChoice(deleted ? "" : model ?? "");
+        setSelectionCleared(explicitlyCleared || deleted);
         setThinkingChoice(thinking ?? "medium");
       }
     };
@@ -93,6 +108,8 @@ export function ProjectEmptyState(props: {
         if (provider && modelId) {
           // pi 配置同时给全 defaultProvider+defaultModel：直接用它，不再查 models.json。
           apply(`${provider}/${modelId}`, thinking);
+        } else if (parsed.defaultModel === "") {
+          apply(undefined, thinking, true);
         } else {
           // settings 未给全默认模型 → 回退 models.json 首 provider 首 model（与主进程一致）。
           void desktopApi.config
@@ -134,9 +151,20 @@ export function ProjectEmptyState(props: {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [environment, store]);
 
   const hasProject = Boolean(props.activeProject);
+
+  /** Empty or deleted launch choices stay visible until the user selects a replacement. */
+  function launch(anonymous: boolean) {
+    const preferences = readLaunchPreferences(modelChoice, thinkingChoice);
+    if (selectionCleared || isRemovedModel(preferences.model, store.get(removedModelReferencesAtom))) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      setModelPickerOpen(true);
+      return;
+    }
+    (anonymous ? props.onCreateAnonymous : props.onCreateAgent)(preferences);
+  }
   const modelSeparator = modelChoice.indexOf("/");
   const currentModel = modelSeparator > 0
     ? { provider: modelChoice.slice(0, modelSeparator), modelId: modelChoice.slice(modelSeparator + 1) }
@@ -171,7 +199,12 @@ export function ProjectEmptyState(props: {
     : "";
 
   const saveModelChoice = (value: string) => {
+    if (store.get(removedModelReferencesAtom).some((ref) => value === `${ref.provider}/${ref.modelId}`)) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      return;
+    }
     setModelChoice(value);
+    setSelectionCleared(false);
     const model = models.find((item) => `${item.provider}/${item.id}` === value);
     if (!model) return;
     // 切到不支持当前 xhigh/max 的模型时同步降级为 high，避免带着无效档位启动会话。
@@ -202,7 +235,7 @@ export function ProjectEmptyState(props: {
     <div className="flex min-h-0 flex-1 flex-col">
       <EmptyState
         hasProject={hasProject}
-        onCreate={() => props.onCreateAgent(readLaunchPreferences(modelChoice, thinkingChoice))}
+        onCreate={() => launch(false)}
         eyebrow={
           hasProject ? (
             <span className="inline-flex items-center gap-1.5 text-text-secondary">
@@ -216,10 +249,10 @@ export function ProjectEmptyState(props: {
             /* 主从按钮左对齐跟随阅读动线：主按钮用前景/背景反色（浅色下纯黑、暗色下纯白），
                比中性灰 accent 更亮更锐；次按钮降级为下划线文本，hover 一起加深。 */
             <div className="flex flex-wrap items-center gap-6">
-              <Button size="lg" className="h-12 rounded-xl bg-foreground px-7 text-background shadow-[0_8px_24px_-8px_rgb(0_0_0/0.35)] transition-all duration-200 hover:-translate-y-px hover:bg-foreground/85 hover:shadow-[0_12px_32px_-8px_rgb(0_0_0/0.4)]" onClick={() => props.onCreateAgent(readLaunchPreferences(modelChoice, thinkingChoice))}>
+              <Button size="lg" className="h-12 rounded-xl bg-foreground px-7 text-background shadow-[0_8px_24px_-8px_rgb(0_0_0/0.35)] transition-all duration-200 hover:-translate-y-px hover:bg-foreground/85 hover:shadow-[0_12px_32px_-8px_rgb(0_0_0/0.4)]" onClick={() => launch(false)}>
                 <Sparkles className="size-4" aria-hidden="true" />{t("app.createAgent")}
               </Button>
-              <Button variant="ghost" size="lg" className="group h-auto px-0 text-sm font-normal text-text-secondary hover:bg-transparent hover:text-foreground" onClick={() => props.onCreateAnonymous(readLaunchPreferences(modelChoice, thinkingChoice))}>
+              <Button variant="ghost" size="lg" className="group h-auto px-0 text-sm font-normal text-text-secondary hover:bg-transparent hover:text-foreground" onClick={() => launch(true)}>
                 <HatGlasses className="size-4" aria-hidden="true" />
                 <span className="underline decoration-border-strong underline-offset-4 group-hover:decoration-foreground">{t("app.anonymousChatShort")}</span>
               </Button>

@@ -104,6 +104,14 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
         forgetAgent(existing.agentId);
     }
 
+    if (!entry.hasModel && modelSelectionError(sessionId) == QLatin1String("app.modelSelectionRequired")) {
+        // Explicit activation must obey the same empty-default guard as prompt-driven
+        // activation. Otherwise pi could choose another model before the next send.
+        done(errorResult(CommandError::of(errorcode::kModelRequired,
+                                          QStringLiteral("Model selection required"))));
+        return;
+    }
+
     createAgent(entry, [this, sessionId, entry, done](AgentSession *created, const QString &error) {
         if (!created) {
             // No process exists yet, but the transient record does.
@@ -135,6 +143,7 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
                                  return;
                              }
                              const QJsonObject data = response.value(QStringLiteral("data")).toObject();
+                             session->observeModel(data.value(QStringLiteral("model")).toObject());
                              const QString projectPath = resolveProjectPath(entry.projectId);
                              if (data.value(QStringLiteral("sessionFile")).isString()
                                  && !data.value(QStringLiteral("sessionFile")).toString().isEmpty()) {

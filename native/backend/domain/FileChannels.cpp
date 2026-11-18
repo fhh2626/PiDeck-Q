@@ -104,6 +104,26 @@ void registerFileChannels(ChannelRegistry &registry, ChannelServices &services)
     });
 
     // ── Reads ─────────────────────────────────────────────────────────────────
+    registry.addAsync(QStringLiteral("files:stat"), [&services](const QJsonArray &args, ChannelResponder responder) {
+        const QJsonValue pathValue = channels::argAt(args, 0);
+        assertString(pathValue, QStringLiteral("path"));
+        const QString path = pathValue.toString();
+        const auto scope = channels::pathAuthorizationScope(services);
+        background::runInteractiveRead(
+            [scope, path]() -> QJsonValue {
+                // Resolve WSL aliases and symlinks through the same authorization
+                // boundary as file reads before exposing any filesystem metadata.
+                const QString hostPath =
+                    channels::authorizePath(scope, path, QStringLiteral("stat"), pathpolicy::Mode::Read);
+                const QFileInfo info(hostPath);
+                if (!info.exists()) return QJsonValue(QJsonValue::Null);
+                const QString type = info.isDir() ? QStringLiteral("directory")
+                    : info.isFile() ? QStringLiteral("file") : QStringLiteral("other");
+                return QJsonObject{{QStringLiteral("type"), type}};
+            },
+            [responder](const Outcome &outcome) mutable { settle(responder, outcome); });
+    });
+
     registry.addAsync(QStringLiteral("files:list"), [&services](const QJsonArray &args, ChannelResponder responder) {
         const QString projectId = channels::stringArg(args, 0);
         background::runBlocking(

@@ -54,6 +54,13 @@ async function fixture(t, wsl, raw) {
       } };
     },
   });
+  if (wsl) {
+    // renderer.ready precedes the asynchronous startup WSL switch. The settings
+    // response settles after its scanner environment is committed, so the first
+    // catalog scan cannot be cancelled by that still-pending startup transition.
+    const ready = await f.invoke("settings:update", [{ wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" }]);
+    assert.equal(ready.payload.ok, true, JSON.stringify(ready.payload));
+  }
   const expectedPath = wsl ? `${linuxHome}/configured-root/session.jsonl` : portable(join(alias, "session.jsonl"));
   let record;
   const deadline = Date.now() + 10000;

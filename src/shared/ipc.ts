@@ -24,6 +24,7 @@ export const ipcChannels = {
 	editorsChooseExecutable: "editors:choose-executable",
 	editorsOpenProject: "editors:open-project",
 	filesList: "files:list",
+	filesStat: "files:stat",
 	filesOpen: "files:open",
 	filesShowInFolder: "files:show-in-folder",
 	filesReadContent: "files:read-content",

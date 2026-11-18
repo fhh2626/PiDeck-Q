@@ -1,4 +1,7 @@
-import { Component, lazy, memo, Suspense, useCallback, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, memo, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useAtomValue } from "jotai";
+import { sharedRemovedModelReferencesAtom } from "../../atoms/model-atoms";
+import { clearAppModelReferences } from "../../utils/modelSelection";
 import {
 	Settings2,
 	Network,
@@ -187,6 +190,11 @@ function SettingsModalContent(props: SettingsModalProps) {
 	const [dirtyFields, setDirtyFields] = useState<Set<string>>(new Set());
 	/** 打开弹框时的原始设置快照，用于取消时回退 */
 	const baseSnapshotRef = useRef<AppSettings>({ ...props.settings });
+	const removedModels = useAtomValue(sharedRemovedModelReferencesAtom);
+	useEffect(() => {
+		setDraftSettings((current) => clearAppModelReferences(current, removedModels));
+		baseSnapshotRef.current = clearAppModelReferences(baseSnapshotRef.current, removedModels);
+	}, [removedModels]);
 	// ── 视觉桥草稿：独立于全局设置（写 pi-deck-vision.json，走独立 IPC），脏标记/保存/取消由弹框统一管理 ──
 	const visionDraft = useVisionBridgeDraft();
 	/** 各 tab 的局部编辑态（WSL 输入/Web 端口）在取消时通过递增信号重置 */

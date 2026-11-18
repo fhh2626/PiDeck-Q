@@ -251,13 +251,6 @@ export const SessionRuntimeInjector = React.memo(function SessionRuntimeInjector
         onToast={(message: string) => services.showToast(message)}
         onQuickPrompt={(message) => services.insertQuickPrompt(currentSessionId, message)}
         canMutateActiveMessages={canMutateActiveMessages}
-        onOpenBranchSession={
-          services.activeProjectId && services.openSidebarSessionById
-            ? (sessionId: string) => {
-                void services.openSidebarSessionById?.(services.activeProjectId!, sessionId);
-              }
-            : undefined
-        }
         enqueueSessionPrompt={services.enqueueSessionPrompt}
         gitInfo={services.gitInfo}
         ensureSessionId={services.ensureSessionId}

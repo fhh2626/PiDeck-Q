@@ -39,8 +39,8 @@ function createEngineEnv() {
 		disconnect() {}
 	}
 	const frames = [];
-	// 引擎用 setTimeout(…, 1) 延迟判定“用户是否逃逸”。换成可手动推进的假定时器：真实定时器在机器繁忙时
-	// 会让“没有发生逃逸”这类用例在判定尚未执行时误绿，也会让“逃逸”类用例偶发变红。
+	// Keep legacy delayed decisions controllable so event-order regressions fail
+	// deterministically if intent handling is ever deferred again.
 	const timers = [];
 	const globals = {
 		setTimeout: (fn) => {
@@ -86,7 +86,13 @@ async function mountEngine(host, options = { initial: "instant", resize: "instan
 		state,
 		scroll,
 		clock: env.clock,
-		/** 用户把滚动条拖到 top：触发 scroll 事件并等待引擎的 1ms 延迟判定。 */
+		/** Preserve browser event ordering without advancing legacy delayed scroll decisions. */
+		async dispatchScroll(top) {
+			scroll.scrollTop = top;
+			await host.act(async () => scroll.dispatchEvent(new NodeEvent("scroll")));
+		},
+		flushTimers: settle,
+		/** Move the scrollbar to top, then drain any queued work. */
 		async scrollTo(top) {
 			scroll.scrollTop = top;
 			await host.act(async () => scroll.dispatchEvent(new NodeEvent("scroll")));
@@ -124,6 +130,37 @@ test("scrolling up even by a small distance escapes the bottom lock immediately"
 		await engine.scrollTo(BOTTOM - 20);
 		assert.equal(engine.state.escapedFromLock, true, "明确上滚 20px 必须立即进入阅读模式");
 		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("a newer upward wheel cancels any earlier downward scroll before streaming grows", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		await engine.scrollTo(BOTTOM - 100);
+		// The compositor reports a downward move. Its old delayed decision must
+		// never overwrite a wheel-up intent that arrives before timers run.
+		await engine.dispatchScroll(BOTTOM - 50);
+		await engine.wheel(-40);
+		await engine.flushTimers();
+		const readingPosition = engine.scroll.scrollTop;
+		engine.scroll.scrollHeight += 200;
+		await engine.resizeTo(1200);
+		assert.equal(engine.state.isAtBottom, false);
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.scroll.scrollTop, readingPosition, "streaming cannot restore an obsolete downward intent");
+	});
+});
+
+test("scrollbar movement escapes before a resize callback in the same frame", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		await engine.dispatchScroll(BOTTOM - 160);
+		engine.scroll.scrollHeight += 200;
+		await engine.resizeTo(1200);
+		assert.equal(engine.state.isAtBottom, false);
+		assert.equal(engine.scroll.scrollTop, BOTTOM - 160, "the next resize must preserve the scrollbar's new reader position");
 	});
 });
 

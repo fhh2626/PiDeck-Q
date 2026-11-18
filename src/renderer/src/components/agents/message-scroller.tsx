@@ -230,7 +230,7 @@ export function MessageScroller({
         onViewportKeyDown?.(event);
       }}
       className={cn(
-        "h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        "h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:auto] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         viewportClassName,
       )}
     >

@@ -29,6 +29,22 @@ test("workspace controls preserve sidebar restoration, drawer state and explicit
   assert.equal(byLabel(host, "app.collapseDrawer").getAttribute("aria-expanded"), "true");
 }));
 
+test("the former tab area presents the focused session identity without restoring tabs", async () => withHookHost(async (host) => {
+  const { WorkspaceToolbar } = host.load("src/renderer/src/components/workspace/WorkspaceToolbar.tsx", {
+    stubs: { "../../i18n": translations, "@/lib/utils": host.load("src/renderer/src/lib/utils.ts") },
+  });
+  await host.mount(() => undefined, {}, () => host.React.createElement(WorkspaceToolbar, {
+    listCollapsed: false,
+    drawerOpen: false,
+    onToggleListCollapsed: () => undefined,
+    onToggleDrawer: () => undefined,
+    sessionIdentity: host.React.createElement("span", { title: "Focused conversation" }, "Focused conversation"),
+  }));
+  const toolbar = host.window.document.querySelector(".workspace-toolbar");
+  assert.match(toolbar.textContent, /Focused conversation/);
+  assert.equal(toolbar.querySelector('[role="tab"]'), null);
+}));
+
 async function headerFixture(host, props) {
   const { SessionHeader } = host.load("src/renderer/src/components/session/SessionHeader.tsx", {
     stubs: {
@@ -49,6 +65,14 @@ test("a solo session retains its identity and never offers runtime controls with
   assert.match(host.window.document.body.textContent, /Draft session/);
   assert.equal(byLabel(host, "session.stopAgent"), undefined);
   assert.equal(byLabel(host, "app.restart"), undefined);
+}));
+
+test("a solo pane can move its title to the top bar while keeping project and runtime controls", async () => withHookHost(async (host) => {
+  await headerFixture(host, { headerRef: { current: null }, title: "Title in top bar", projectName: "Project A",
+    isStarting: false, showTitle: false, onRestart: () => undefined });
+  assert.match(host.window.document.body.textContent, /Project A/);
+  assert.doesNotMatch(host.window.document.body.textContent, /Title in top bar/);
+  assert.ok(byLabel(host, "app.restart"));
 }));
 
 test("pane runtime buttons call their own actions and remain disabled during restart", async () => withHookHost(async (host) => {

@@ -37,11 +37,12 @@ export function deriveBranchFamily(
 
 	// parentSessionId 由目录按路径解析；父会话不在目录内（其它项目/已删除）时
 	// 退回 parentSessionPath 直接匹配，仍能找到来源链接
-	const parent = record.parentSessionId
-		? records[record.parentSessionId]
-		: record.parentSessionPath
+	const parentById = record.parentSessionId
+		? all.find((candidate) => candidate.id === record.parentSessionId)
+		: undefined;
+	const parent = parentById ?? (record.parentSessionPath
 			? all.find((candidate) => candidate.filePath === record.parentSessionPath)
-			: undefined;
+			: undefined);
 
 	// 兄弟分支：同 parentSessionId 或同 parentSessionPath（解析失败时的兜底），
 	// 用 Map 按 id 去重并保证自身一定在内

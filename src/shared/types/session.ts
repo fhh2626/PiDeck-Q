@@ -264,7 +264,8 @@ export type SessionCommandErrorCode =
 	| "SESSION_RUNTIME_CHANGED"
 	| "SESSION_RUNTIME_BUSY"
 	| "SESSION_COMMAND_FAILED"
-	| "SESSION_MODEL_NOT_FOUND";
+	| "SESSION_MODEL_NOT_FOUND"
+	| "SESSION_MODEL_REQUIRED";
 
 export type SessionCommandError = {
 	code: SessionCommandErrorCode;

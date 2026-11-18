@@ -290,6 +290,7 @@ export function createPreviewApi(): PiDesktopApi {
 			}),
 		},
 		files: {
+			stat: async () => null,
 			list: async () => files,
 			open: async () => undefined,
 			showInFolder: async () => undefined,

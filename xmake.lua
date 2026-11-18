@@ -174,6 +174,17 @@ target("PiDeck-ScopedMutationTest")
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end
 
+-- Validate native directory/file reveal routing without launching a file manager.
+target("PiDeck-NativeFileShellTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/NativeFileShellTest.cpp", "native/common/**.cpp",
+              "native/src/NativeFileShell.cpp", "native/backend/domain/fs/EntryLink.cpp")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
 -- Test-only `wsl.exe` stand-in for the WSL scan batch suite. It must be a native
 -- executable: a `.cmd` shim is re-parsed by cmd.exe, which mangles the `sh -c` body
 -- script the batch reader sends as one argument (see native/tests/FakeWslLauncher.cpp).

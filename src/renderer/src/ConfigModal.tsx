@@ -40,6 +40,9 @@ import { showNotice } from "./utils/notice";
 import { desktopApi } from "./desktopApi";
 import { collectModelSpecPatches } from "./utils/modelSpecAutoFill";
 import { Component, useRef, useState, useEffect, useCallback, type ReactNode } from "react";
+import { useAtomValue, useStore } from "jotai";
+import { modelConfigurationEnvironmentAtom, removedModelReferencesAtom } from "./atoms/model-atoms";
+import { clearPiModelDefaults } from "./utils/modelSelection";
 import { AuthTab } from "./config/AuthTab";
 import { ModelsTab } from "./config/ModelsTab";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
@@ -340,6 +343,13 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [modelsData, setModelsData] = useState<ModelsFile>({ providers: {} });
 	const [authData, setAuthData] = useState<AuthFile>({});
 	const [settingsData, setSettingsData] = useState<SettingsFile>({});
+	const store = useStore();
+	const modelEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
+	const removedModels = useAtomValue(removedModelReferencesAtom);
+	const loadGenerationRef = useRef(0);
+	useEffect(() => {
+		setSettingsData((current) => clearPiModelDefaults(current, removedModels));
+	}, [removedModels]);
 	/** 自动发现的模型：auth-only 供应商通过已知端点获取的模型列表 */
 	const [discoveredModels, setDiscoveredModels] = useState<
 		Record<string, Array<{ id: string; name?: string }>>
@@ -459,18 +469,25 @@ function ConfigModalContent(props: ConfigModalProps) {
 
 	const loadConfig = useCallback(
 		async (target: ConfigTab) => {
+			if (modelEnvironment !== store.get(modelConfigurationEnvironmentAtom)) return;
+			const generation = ++loadGenerationRef.current;
+			// A tab or config-root change makes an older read obsolete, including its errors and loading state.
+			const isCurrent = () => generation === loadGenerationRef.current
+				&& modelEnvironment === store.get(modelConfigurationEnvironmentAtom);
 			setLoading(true);
 			setError(null);
 			setConfigDiagnostic(null);
 			try {
 				if (target === "models") {
 					const res = await api.config.getModels();
+					if (!isCurrent()) return;
 					setModelsData(normalizeModelsFile(res.parsed));
 					setRawContent(res.raw);
 					setRawFileName("models.json");
 					setConfigDiagnostic(res.diagnostic ?? null);
 				} else if (target === "auth") {
 					const res = await api.config.getAuth();
+					if (!isCurrent()) return;
 					setAuthData(res.parsed as AuthFile);
 					setRawContent(res.raw);
 					setRawFileName("auth.json");
@@ -482,7 +499,9 @@ function ConfigModalContent(props: ConfigModalProps) {
 						api.config.getAuth(),
 						api.config.getModels(),
 					]);
-					setSettingsData(settingsRes.parsed as SettingsFile);
+					if (!isCurrent()) return;
+					// Removal may arrive while this request is pending, after the draft-clearing effect already ran.
+					setSettingsData(clearPiModelDefaults(settingsRes.parsed as SettingsFile, store.get(removedModelReferencesAtom)));
 					setAuthData(authRes.parsed as AuthFile);
 					setModelsData(normalizeModelsFile(modelsRes.parsed));
 					setRawContent(settingsRes.raw);
@@ -536,13 +555,14 @@ function ConfigModalContent(props: ConfigModalProps) {
 					if (fetchPromises.length > 0) {
 						// 不 await，在后台获取后更新状态即可
 						void Promise.allSettled(fetchPromises).then(() => {
-							if (Object.keys(discovered).length > 0) {
+							if (isCurrent() && Object.keys(discovered).length > 0) {
 								setDiscoveredModels(discovered);
 							}
 						});
 					}
 				} else if (target === "trust") {
 					const res = await api.config.getTrust();
+					if (!isCurrent()) return;
 					setTrustData(res.parsed as Record<string, boolean>);
 					setRawContent(res.raw);
 					setRawFileName("trust.json");
@@ -566,6 +586,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 								: fileName === "trust.json"
 									? await api.config.getTrust()
 									: await api.config.getSettings();
+					if (!isCurrent()) return;
 					setRawContent(res.raw);
 					setConfigDiagnostic(res.diagnostic ?? null);
 				}
@@ -573,12 +594,12 @@ function ConfigModalContent(props: ConfigModalProps) {
 				// 不清理会残留“假脏”标记：保存后黄点不消失、关闭时误弹未保存确认。
 				for (const key of dirtyKeysClearedByReload(target)) clearDirty(key);
 			} catch (e) {
-				setError(e instanceof Error ? e.message : String(e));
+				if (isCurrent()) setError(e instanceof Error ? e.message : String(e));
 			} finally {
-				setLoading(false);
+				if (isCurrent()) setLoading(false);
 			}
 		},
-		[tab, clearDirty],
+		[tab, clearDirty, modelEnvironment, store],
 	);
 
 	useEffect(() => {
@@ -598,6 +619,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			return;
 		}
 		void loadConfig(tab);
+		return () => { loadGenerationRef.current += 1; };
 	}, [open, section, tab, loadConfig]);
 
 	const showToast = (msg: string) => {

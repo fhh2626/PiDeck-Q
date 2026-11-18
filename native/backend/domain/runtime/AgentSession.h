@@ -11,10 +11,12 @@
 #include "../MainCopy.h"
 
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QObject>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
+#include <QSet>
 
 #include <functional>
 
@@ -80,6 +82,14 @@ public:
     bool reattach(const pilaunch::Launch &launch, QString *error);
     /** Monotonic transport identity; changes on every spawn/reattach. */
     quint64 clientEpoch() const { return m_clientEpoch; }
+    /** Pi's RPC model registry is a startup snapshot; a transport replacement refreshes it. */
+    void invalidateModelConfiguration(const QJsonArray &models, const QJsonArray &providers,
+                                      const QJsonArray &removed, const QJsonArray &available);
+    bool hasStaleModelConfiguration(const QString &provider, const QString &modelId) const;
+    bool wasModelRemoved(const QString &provider, const QString &modelId) const;
+    /** Last actual model reported by get_state, used when the catalog has no explicit preference. */
+    void observeModel(const QJsonObject &model) { m_observedModel = model; }
+    QJsonObject observedModel() const { return m_observedModel; }
     /** Close stdin and let pi exit; the exit handler escalates to kill on a timer. */
     void close();
     void kill();
@@ -334,6 +344,11 @@ private:
     quint64 m_gateToken = 0;
     /** Transport identity starts at 1; zero is reserved for recovery without an owned transport. */
     quint64 m_clientEpoch = 1;
+    quint64 m_modelConfigurationEpoch = 0;
+    QSet<QString> m_staleModels;
+    QSet<QString> m_staleModelProviders;
+    QSet<QString> m_removedModels;
+    QJsonObject m_observedModel;
     /** Stable QObject for session-scoped timers; survives a process reattach. */
     mutable QObject m_timerContext;
     /**

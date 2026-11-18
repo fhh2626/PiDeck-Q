@@ -6,10 +6,13 @@
  * import 会把整个 tab 拖进首开 chunk。
  */
 import { useCallback, useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
+import { modelListRevisionAtom } from "../../../atoms/model-atoms";
 import type { AvailableModel } from "../../../../../shared/types";
 import { desktopApi } from "../../../desktopApi";
 
 export function useGitModels() {
+	const modelListRevision = useAtomValue(modelListRevisionAtom);
 	const [gitModels, setGitModels] = useState<AvailableModel[]>([]);
 	const [gitModelPickerOpen, setGitModelPickerOpen] = useState(false);
 
@@ -25,7 +28,7 @@ export function useGitModels() {
 		return () => {
 			active = false;
 		};
-	}, []);
+	}, [modelListRevision]);
 
 	const openPicker = useCallback(() => setGitModelPickerOpen(true), []);
 	const closePicker = useCallback(() => setGitModelPickerOpen(false), []);

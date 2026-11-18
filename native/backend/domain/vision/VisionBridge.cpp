@@ -34,14 +34,19 @@ int intField(const QJsonValue &value, int maximum, bool allowZero)
 }
 
 /** Whitelist validation; a null return means "reject the save". */
-QJsonObject sanitize(const QJsonValue &input)
+QJsonObject sanitize(const QJsonValue &input, bool allowClearedSelection = false)
 {
     if (!input.isObject()) return {};
     const QJsonObject raw = input.toObject();
     const QString provider = raw.value(QStringLiteral("provider")).toString().trimmed().left(128);
     const QString model = raw.value(QStringLiteral("model")).toString().trimmed().left(128);
-    // Without a provider and a model the bridge cannot resolve an endpoint at all.
-    if (provider.isEmpty() || model.isEmpty()) return {};
+    // A removed selection remains visible when reading so the UI can request a
+    // replacement after restart. New saves must still contain both identifiers.
+    const bool clearedSelection = allowClearedSelection
+        && raw.value(QStringLiteral("provider")).isString()
+        && raw.value(QStringLiteral("model")).isString()
+        && provider.isEmpty() && model.isEmpty();
+    if ((provider.isEmpty() || model.isEmpty()) && !clearedSelection) return {};
 
     QJsonObject next{
         {QStringLiteral("enabled"), raw.value(QStringLiteral("enabled")).toBool(true)},
@@ -49,18 +54,19 @@ QJsonObject sanitize(const QJsonValue &input)
         {QStringLiteral("model"), model},
     };
     const QString api = raw.value(QStringLiteral("api")).toString();
-    if (api == QStringLiteral("openai-completions") || api == QStringLiteral("anthropic-messages")
-        || api == QStringLiteral("google-generative-ai")) {
+    if (!clearedSelection && (api == QStringLiteral("openai-completions")
+        || api == QStringLiteral("anthropic-messages")
+        || api == QStringLiteral("google-generative-ai"))) {
         next.insert(QStringLiteral("api"), api);
     }
     static const QRegularExpression httpUrl(QStringLiteral("^https?://\\S+$"),
                                             QRegularExpression::CaseInsensitiveOption);
     const QString baseUrl = raw.value(QStringLiteral("baseUrl")).toString().trimmed();
-    if (!baseUrl.isEmpty() && httpUrl.match(baseUrl).hasMatch()) {
+    if (!clearedSelection && !baseUrl.isEmpty() && httpUrl.match(baseUrl).hasMatch()) {
         next.insert(QStringLiteral("baseUrl"), baseUrl.left(512));
     }
     const QString apiKey = raw.value(QStringLiteral("apiKey")).toString().trimmed();
-    if (!apiKey.isEmpty()) next.insert(QStringLiteral("apiKey"), apiKey.left(512));
+    if (!clearedSelection && !apiKey.isEmpty()) next.insert(QStringLiteral("apiKey"), apiKey.left(512));
 
     // The file is the extension's only runtime source, so every numeric field is written
     // explicitly: an absent field would look like "not saved" in the settings page.
@@ -136,7 +142,7 @@ QJsonObject state(const QString &agentDir)
     QJsonValue config(QJsonValue::Null);
     if (jsonfile::readJson(QDir(dir).filePath(kConfigFile), &parsed, nullptr)
         == jsonfile::ReadState::Ok) {
-        const QJsonObject sanitized = sanitize(parsed);
+        const QJsonObject sanitized = sanitize(parsed, true);
         if (!sanitized.isEmpty()) config = sanitized;
     }
     return QJsonObject{

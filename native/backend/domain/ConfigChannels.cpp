@@ -2,6 +2,7 @@
 
 #include "ConfigFiles.h"
 #include "JsonFile.h"
+#include "ModelConfigurationChanges.h"
 #include "ProviderProbe.h"
 #include "TrustBroker.h"
 
@@ -72,13 +73,19 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     // ── writes ───────────────────────────────────────────────────────────────
 
     registry.add(QStringLiteral("config:save-models"), [&services](const QJsonArray &args) {
+        const QJsonValue previous = modelconfig::snapshot(services);
         const configfiles::Validation validation = configfiles::saveModels(
             services.configDir, channels::argAt(args, 0), services.translate);
+        if (validation.valid) modelconfig::saved(services, previous);
         return validationJson(validation);
     });
 
     registry.add(QStringLiteral("config:save-auth"), [&services](const QJsonArray &args) {
-        return validationJson(configfiles::saveAuth(services.configDir, channels::argAt(args, 0)));
+        const QJsonValue previous = modelconfig::snapshot(services);
+        const QJsonValue previousAuth = modelconfig::authSnapshot(services);
+        const auto validation = configfiles::saveAuth(services.configDir, channels::argAt(args, 0));
+        if (validation.valid) modelconfig::saved(services, previous, previousAuth);
+        return validationJson(validation);
     });
 
     registry.add(QStringLiteral("config:save-settings"), [&services](const QJsonArray &args) {
@@ -86,8 +93,16 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     });
 
     registry.add(QStringLiteral("config:save-raw"), [&services](const QJsonArray &args) {
-        return validationJson(configfiles::saveRaw(services.configDir, channels::stringArg(args, 0),
-                                                  channels::stringArg(args, 1), services.translate));
+        const QString fileName = channels::stringArg(args, 0);
+        const QJsonValue previous = modelconfig::snapshot(services);
+        const QJsonValue previousAuth = fileName == QLatin1String("auth.json")
+            ? modelconfig::authSnapshot(services) : QJsonValue(QJsonValue::Undefined);
+        const auto validation = configfiles::saveRaw(services.configDir, fileName,
+                                                     channels::stringArg(args, 1), services.translate);
+        if (validation.valid && (fileName == QLatin1String("models.json") || fileName == QLatin1String("auth.json"))) {
+            modelconfig::saved(services, previous, previousAuth);
+        }
+        return validationJson(validation);
     });
 
     registry.add(QStringLiteral("config:export"), [&services](const QJsonArray &) {
@@ -95,8 +110,12 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     });
 
     registry.add(QStringLiteral("config:import"), [&services](const QJsonArray &args) {
-        return validationJson(configfiles::importPackage(
-            services.configDir, channels::stringArg(args, 0), services.translate));
+        const QJsonValue previous = modelconfig::snapshot(services);
+        const QJsonValue previousAuth = modelconfig::authSnapshot(services);
+        const auto validation = configfiles::importPackage(
+            services.configDir, channels::stringArg(args, 0), services.translate);
+        if (validation.valid) modelconfig::saved(services, previous, previousAuth);
+        return validationJson(validation);
     });
 
     // ── provider probes ──────────────────────────────────────────────────────

@@ -95,6 +95,38 @@ if (executable) {
 			return session;
 		};
 
+		test("files:stat distinguishes directories and extensionless files without reading content", async (t) => {
+			const { invoke } = await start(t);
+			writeFileSync(join(projectPath, "LICENSE"), "license text");
+			mkdirSync(join(projectPath, "folder.md"), { recursive: true });
+			t.after(() => {
+				rmSync(join(projectPath, "LICENSE"), { force: true });
+				rmSync(join(projectPath, "folder.md"), { recursive: true, force: true });
+			});
+			for (const [name, type] of [["LICENSE", "file"], ["folder.md", "directory"], ["empty", "directory"]]) {
+				const result = await invoke("files:stat", [join(projectPath, name)]);
+				assert.deepEqual(result.payload, { ok: true, result: { type } });
+			}
+			assert.deepEqual((await invoke("files:stat", [join(projectPath, "missing")])).payload,
+				{ ok: true, result: null });
+		});
+
+		test("files:stat rejects invalid arguments and paths outside the authorized roots", async (t) => {
+			const { invoke } = await start(t);
+			for (const args of [[], [null], [7], [{}], [join(root, "outside")]]) {
+				assert.equal((await invoke("files:stat", args)).payload.ok, false, JSON.stringify(args));
+			}
+		});
+
+		test("files:stat cannot disclose a symlink target outside its project's authority", async (t) => {
+			const { invoke } = await start(t);
+			const outside = join(root, "stat-private"), alias = join(projectPath, "stat-alias");
+			mkdirSync(outside, { recursive: true });
+			symlinkSync(outside, alias, process.platform === "win32" ? "junction" : "dir");
+			t.after(() => rmSync(alias, { recursive: true, force: true }));
+			assert.equal((await invoke("files:stat", [alias])).payload.ok, false);
+		});
+
 		test("files:list returns directories first with nested file metadata", async (t) => {
 			const { invoke } = await start(t);
 

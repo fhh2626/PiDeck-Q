@@ -224,11 +224,11 @@ void registerModelListChannels(ChannelRegistry &registry, ChannelServices &servi
 /**
  * Invalidate + re-probe the model list and push `models:changed` on success.
  *
- * Called by `settings:update` when a pi runtime path/preference changes: a different pi
- * binary can expose a different model set, and the composer must not keep rendering the
- * previous one.
+ * Configuration writes may supply removed/changed model identities for selection
+ * invalidation. Runtime-path changes use the legacy empty payload. No model definition
+ * or credential is sent in the event.
  */
-void publishModelList(ChannelServices &services);
+void publishModelList(ChannelServices &services, const QJsonObject &changes = QJsonObject{});
 
 /** `pi:check`, `pi:check-custom`, `pi:check-npm` and `pi:exec-install`. */
 void registerPiInstallChannels(ChannelRegistry &registry, ChannelServices &services);

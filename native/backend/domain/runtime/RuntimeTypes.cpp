@@ -72,6 +72,11 @@ CommandError classifyFailure(const QString &message, const QString &explicitCode
     error.debugDetails = message;
 
     const QString lower = message.toLower();
+    if (explicitCode == QLatin1String("SESSION_MODEL_REQUIRED")
+        || lower.contains(QStringLiteral("model selection required"))) {
+        error.code = QString::fromLatin1(errorcode::kModelRequired);
+        return error;
+    }
     // "Model not found: provider/model" -> the renderer shows the restart guidance, so
     // the model id is extracted for the i18n `{model}` placeholder.
     const QRegularExpression modelPattern(QStringLiteral("model not found\\s*:?\\s*(.+)$"),

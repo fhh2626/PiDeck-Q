@@ -92,6 +92,17 @@ export type AvailableModel = {
 	thinkingLevels?: ModelThinkingSupport;
 };
 
+/** Exact model identity, including ids that themselves contain a slash. */
+export type ModelReference = { provider: string; modelId: string };
+
+/** Optional models:changed payload. Older hosts send an empty event. */
+export type ModelListChange = {
+	/** Configuration source whose models changed. Omitted by older hosts. */
+	environment?: SessionEnvironment;
+	removedModels: ModelReference[];
+	changedModels: ModelReference[];
+};
+
 export type CreateAgentInput = {
 	projectId: string;
 	title?: string;

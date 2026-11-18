@@ -56,6 +56,12 @@ if (!availability.executable || !launcher) {
           } };
         },
       });
+      // renderer.ready can precede the startup WSL commit and its queued settings
+      // defaults. Settle that transition before the first scan establishes authority.
+      const configured = await f.invoke("settings:update", [{
+        wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev",
+      }]);
+      assert.equal(configured.payload.ok, true, JSON.stringify(configured.payload));
       let record;
       const deadline = Date.now() + 10000;
       while (!record && Date.now() < deadline) {
@@ -83,6 +89,8 @@ if (!availability.executable || !launcher) {
       writeFileSync(settingsFile, "{}");
       unlinkSync(alias); symlinkSync(otherRoot, alias, "dir");
       const deleted = await f.invoke("sessions:catalog-delete", [record.id]);
+      assert.equal(JSON.parse(readFileSync(settingsFile, "utf8")).sessionDir, undefined,
+        "Startup defaults must not restore the root after it is unconfigured");
       assert.equal(deleted.payload.ok, false, JSON.stringify(deleted.payload));
       assert.equal(readFileSync(trustedFile, "utf8"), original);
       assert.equal(readFileSync(otherFile, "utf8"), original);

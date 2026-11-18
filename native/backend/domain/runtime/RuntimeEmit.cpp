@@ -303,6 +303,9 @@ void Coordinator::emitRuntimeState(const QString &agentId)
 QJsonObject Coordinator::buildRuntimeState(const QJsonObject &state, const QJsonObject &stats,
                                            AgentSession &session)
 {
+    if (state.value(QStringLiteral("model")).isObject()) {
+        session.observeModel(state.value(QStringLiteral("model")).toObject());
+    }
     const QString sessionPath = session.tab().sessionPath;
     const cachehit::Stats cacheHits = sessionPath.isEmpty() ? cachehit::Stats{}
                                                             : m_cacheHits.read(sessionPath);
@@ -312,9 +315,20 @@ QJsonObject Coordinator::buildRuntimeState(const QJsonObject &state, const QJson
     // image of `rpcCompactingAgents`. Passing only the former made an auto compaction (and
     // the duplicate-request answer that reports it) claim `isCompacting:false` even though
     // pi was rewriting the context.
-    return runtimeStateJson(state, stats, session.tab(),
+    QJsonObject result = runtimeStateJson(state, stats, session.tab(),
                             session.manualCompaction() || session.manualCompactionEvent(), cacheHits,
                             session.perf().last());
+    CatalogEntry entry;
+    if (m_deps.services && m_deps.services->catalog
+        && m_deps.services->catalog->get(session.tab().deckSessionId, &entry)
+        && entry.hasModel && (entry.modelProvider.isEmpty() || entry.modelId.isEmpty())) {
+        // A still-running pi can report its deleted startup model. The desktop's
+        // explicit empty preference remains authoritative until the user chooses again.
+        result.insert(QStringLiteral("provider"), QString());
+        result.insert(QStringLiteral("modelId"), QString());
+        result.insert(QStringLiteral("modelName"), QString());
+    }
+    return result;
 }
 
 EventHooks Coordinator::hooksFor(AgentSession &session)

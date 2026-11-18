@@ -8,6 +8,7 @@ import { filePathToUri, isAbsoluteFilePath, resolveLocalFileTarget } from "../..
 import { detectRendererPlatform } from "../../lib/detectRendererPlatform";
 import { showNotice } from "../../utils/notice";
 import { t } from "../../i18n";
+import { LocalFileLink } from "./LocalFileLink";
 export {
 	isLocalPathRef,
 	markdownUrlTransform,
@@ -70,11 +71,25 @@ export function MarkdownLink(
 		if (localTarget) return localTarget.ok ? localTarget.path : props.href;
 		return title;
 	})();
+	if (localTarget?.ok) {
+		return (
+			<LocalFileLink
+				{...anchorProps}
+				path={localTarget.path}
+				href={isAbsoluteFilePath(localTarget.path) ? filePathToUri(localTarget.path, platform) : props.href}
+				className={linkClass}
+				onClick={handleClick}
+				title={hoverTitle}
+			>
+				<MarkdownLinkContext.Provider value={true}>{children}</MarkdownLinkContext.Provider>
+			</LocalFileLink>
+		);
+	}
 
 	return (
 		<a
 			{...anchorProps}
-			href={localTarget?.ok && isAbsoluteFilePath(localTarget.path) ? filePathToUri(localTarget.path, platform) : props.href}
+			href={props.href}
 			className={linkClass}
 			onClick={handleClick}
 			title={hoverTitle}

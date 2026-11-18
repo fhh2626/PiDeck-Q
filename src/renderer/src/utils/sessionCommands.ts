@@ -13,6 +13,7 @@ const SESSION_COMMAND_ERROR_KEYS: Record<SessionCommandError["code"], Translatio
 	SESSION_RUNTIME_BUSY: "sessionCommand.runtimeBusy",
 	SESSION_COMMAND_FAILED: "sessionCommand.commandFailed",
 	SESSION_MODEL_NOT_FOUND: "sessionCommand.modelNotFound",
+	SESSION_MODEL_REQUIRED: "app.modelSelectionRequired",
 };
 
 export class SessionCommandFailure extends Error {

@@ -107,6 +107,13 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         }
         return;
     }
+    const QString selectionError = modelSelectionError(sessionId);
+    if (!selectionError.isEmpty()) {
+        QJsonObject result = rejectedResult(sessionId, requestId, selectionError);
+        result.insert(QStringLiteral("i18nKey"), selectionError);
+        done(result);
+        return;
+    }
     DeliveryEntry entry;
     entry.createdAt = nowMs();
     m_delivery.insert(key, entry);
@@ -194,6 +201,19 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             const QJsonObject result = rejectedResult(sessionId, requestId,
                 QStringLiteral("Session runtime changed before prompt dispatch"));
             settleDelivery(key, result);
+            done(result);
+            return;
+        }
+        // A config save can finish while activation/get_commands is outstanding.
+        // Check again at the final RPC boundary so a deleted choice never starts work.
+        const QString selectionError = modelSelectionError(sessionId);
+        if (!selectionError.isEmpty()) {
+            m_bindings.releaseLease(lease);
+            if (!silent) sending->tab().status = statusBeforePrompt;
+            QJsonObject result = rejectedResult(sessionId, requestId, selectionError);
+            result.insert(QStringLiteral("i18nKey"), selectionError);
+            settleDelivery(key, result);
+            emitState();
             done(result);
             return;
         }

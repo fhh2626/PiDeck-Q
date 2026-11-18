@@ -28,22 +28,22 @@ void registerModelListChannels(ChannelRegistry &registry, ChannelServices &servi
     });
 }
 
-void publishModelList(ChannelServices &services)
+void publishModelList(ChannelServices &services, const QJsonObject &changes)
 {
-    // Fire-and-forget, exactly like `publishModelList()`: invalidate, re-probe off the
-    // main thread, and only then tell the renderer to re-read. The signal carries no
-    // payload because a large model table would bloat the event frame; the renderer
-    // calls `projects:list-models` again and hits the fresh cache.
+    // Re-probe off the main thread, then let views read the fresh cache. Configuration
+    // edits carry only removed/changed identities, never model definitions or secrets.
+    // Runtime-path changes keep the legacy empty payload for existing subscribers.
     background::runBlocking(
         [&services]() -> QJsonValue {
             modellist::refresh(services);
             return QJsonValue(QJsonValue::Null);
         },
-        [&services](const background::Outcome &outcome) {
-            // A failed refresh sends no signal (oracle: `.catch(() => undefined)`).
-            if (!outcome.ok) return;
+        [&services, changes](const background::Outcome &) {
+            // Deletions still invalidate selections when pi cannot be probed. The
+            // next list request retries the already-invalidated cache.
             if (services.events) {
-                services.events->broadcast(QStringLiteral("models:changed"), QJsonArray{});
+                services.events->broadcast(QStringLiteral("models:changed"),
+                    changes.isEmpty() ? QJsonArray{} : QJsonArray{changes});
             }
         });
 }

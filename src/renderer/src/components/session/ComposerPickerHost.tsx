@@ -34,6 +34,8 @@ import { usePendingModelApply } from "../../hooks/usePendingModelApply";
 import { clampThinkingLevelForModel, findModelThinkingSupport, isExtendedThinkingLevel } from "../../../../shared/thinkingLevelSupport";
 import type { ComposerPickerKind } from "../../hooks/useSessionComposerController";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY, readWelcomeModelPreference, readWelcomeThinkingPreference } from "../../utils/chatSessionBootstrap";
+import { modelConfigurationEnvironmentAtom, modelListRevisionAtom, removedModelReferencesByEnvironmentAtom } from "../../atoms/model-atoms";
+import { isRemovedModel, resolveSelectedModel } from "../../utils/modelSelection";
 
 export type ComposerPickerHostProps = {
   sessionId: string;
@@ -55,6 +57,10 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   const modelPending = useAtomValue(modelPendingAtomFamily(sessionId));
   const setModelPendingMap = useSetAtom(modelPendingByIdAtom);
   const [models, setModels] = useState<AvailableModel[]>([]);
+  const modelListRevision = useAtomValue(modelListRevisionAtom);
+  const configurationEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
+  const removedByEnvironment = useAtomValue(removedModelReferencesByEnvironmentAtom);
+  const removedModels = removedByEnvironment[record?.environment ?? configurationEnvironment];
   // 按会话订阅：别的会话切模式不应重渲染本栏选择器。
   const composerMode = useAtomValue(sessionComposerModeAtomFamily(sessionId));
   const [favoriteModels, setFavoriteModels] = useState<string[]>([]);
@@ -81,10 +87,12 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   const confirmingRestartRef = useRef(false);
 
   useEffect(() => {
+    let alive = true;
     void desktopApi.settings.get().then((settings) => {
-      setFavoriteModels(settings.favoriteModels ?? []);
+      if (alive) setFavoriteModels(settings.favoriteModels ?? []);
     }).catch(() => undefined);
-  }, []);
+    return () => { alive = false; };
+  }, [modelListRevision]);
 
   useEffect(() => {
     if (props.picker !== "mode") return;
@@ -120,11 +128,25 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
         showNotice(error instanceof Error ? error.message : String(error), 4000);
       }
     });
-  }, [props.picker, record]);
+    return () => { ++modelLoadSequenceRef.current; };
+  }, [props.picker, record?.projectId, modelListRevision, configurationEnvironment]);
+
+  useEffect(() => {
+    if (!restartIntentRef.current || !isRemovedModel(restartIntentRef.current, removedModels)) return;
+    restartIntentRef.current = null;
+    setRestartTarget(null);
+  }, [removedModels]);
 
   function currentHandle() {
     const current = store.get(sessionRuntimeByIdAtom)[sessionId];
     return toSessionRuntimeTarget(sessionId, current);
+  }
+
+  /** Recheck the session's environment at the user action boundary. */
+  function currentRemovedModels() {
+    const currentRecord = store.get(sessionRecordByIdAtomFamily(sessionId));
+    const environment = currentRecord?.environment ?? store.get(modelConfigurationEnvironmentAtom);
+    return store.get(removedModelReferencesByEnvironmentAtom)[environment];
   }
 
   /**
@@ -157,11 +179,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   }
 
   function currentLiveModel() {
-    return {
-      provider: runtime?.state?.provider || record?.model?.provider || "",
-      modelId: runtime?.state?.modelId || record?.model?.modelId || "",
-      modelName: runtime?.state?.modelName,
-    };
+    return resolveSelectedModel(record?.model, runtime?.state);
   }
 
   function markModelPending(model: AvailableModel) {
@@ -267,6 +285,10 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   }
 
   async function pickModel(model: AvailableModel) {
+    if (isRemovedModel({ provider: model.provider, modelId: model.id }, currentRemovedModels())) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      return;
+    }
     // 欢迎页/未启动 Agent（无 record）：把选择存本地偏好，点「启动 Agent」创建会话时应用。
     if (!record) {
       try {
@@ -361,6 +383,10 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   async function confirmRestart() {
     const intent = restartIntentRef.current;
     if (!intent || restarting) return;
+    if (isRemovedModel(intent, currentRemovedModels())) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      return;
+    }
     confirmingRestartRef.current = true;
     setRestarting(true);
     // 先关确认框，避免 AlertDialog 关闭动画盖住 overlay。
@@ -489,11 +515,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     return (
       <ModelPicker
         models={models}
-        current={{
-          provider: runtime?.state?.provider ?? record?.model?.provider ?? welcomeModel?.provider,
-          modelId: runtime?.state?.modelId ?? record?.model?.modelId ?? welcomeModel?.modelId,
-          modelName: runtime?.state?.modelName,
-        }}
+        current={resolveSelectedModel(record?.model ?? welcomeModel, runtime?.state)}
         onClose={props.onClose}
         onPick={(model) => void pickModel(model)}
         favoriteModels={favoriteModels}

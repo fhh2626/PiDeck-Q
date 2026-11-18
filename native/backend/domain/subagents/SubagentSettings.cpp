@@ -73,7 +73,8 @@ QJsonObject readBlock(const QJsonObject &settings)
     QJsonObject result;
     // `defaultModel` is the only signal that a separate model is configured: a provider
     // without a model still inherits the main agent's model.
-    result.insert(QStringLiteral("useOwnModel"), !modelId.isEmpty());
+    result.insert(QStringLiteral("useOwnModel"), !modelId.isEmpty()
+        || (block.contains(QStringLiteral("defaultModel")) && rawModelId.isEmpty()));
     if (!modelId.isEmpty()) {
         QJsonObject model{
             {QStringLiteral("provider"), provider},

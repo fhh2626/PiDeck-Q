@@ -145,6 +145,7 @@ import { SkillsQuickDialog } from "./components/session/SkillsQuickDialog";
 import { SessionSplitStage } from "./components/session/SessionSplitStage";
 import { splitLayoutSessionIds } from "./utils/sessionSplitEdge";
 import { WorkspaceToolbar } from "./components/workspace/WorkspaceToolbar";
+import { WorkspaceSessionTitle } from "./components/workspace/WorkspaceSessionTitle";
 import { SessionPaneServicesProvider } from "./components/session/SessionPaneServices";
 import { ProjectEmptyState } from "./components/session/ProjectEmptyState";
 import { useSessionWorkspace } from "./hooks/useSessionWorkspace";
@@ -2619,6 +2620,9 @@ export function App() {
 
   const workspaceToolbarNode = (
     <WorkspaceToolbar
+      sessionIdentity={
+        <WorkspaceSessionTitle sessionId={currentSessionId} onOpenSession={openSidebarSessionById} onError={showToast} />
+      }
       listCollapsed={listCollapsed}
       onToggleListCollapsed={toggleListCollapsed}
       drawerOpen={Boolean(drawer && !drawerCollapsed)}
@@ -2763,7 +2767,7 @@ export function App() {
 
   // 全局订阅模型列表更新（保存 models.json/auth.json、切换 pi 运行时后主进程广播）：
   // 视觉桥能力判定与模型选择器共用这份数据，只在装配层挂一份。
-  useModelListSync();
+  useModelListSync(setSettings, settings.wslEnabled ? "wsl" : "native");
 
   const nativeWindowChrome = resolveNativeWindowChrome(
     settings.useNativeTitleBar,

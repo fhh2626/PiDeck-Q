@@ -16,7 +16,6 @@ import { isLanWeb, desktopApi as api } from "../../desktopApi";
 import { useNotifyLayoutResized } from "../../hooks/useNotifyLayoutResized";
 import { canStopBoundAgent } from "../../utils/canStopBoundAgent";
 import { SessionHeader } from "./SessionHeader";
-import { SessionBranchBar } from "./SessionBranchBar";
 import { SessionWidgetChips } from "./SessionWidgetChips";
 import { SessionSurfaceStage } from "./SessionSurfaceStage";
 import { ComposerArea } from "./ComposerArea";
@@ -76,8 +75,6 @@ export type SessionViewProps = {
   onToast: (message: string) => void;
   onQuickPrompt?: (prompt: string) => void;
   canMutateActiveMessages: boolean;
-  /** 分支导航条：打开兄弟/父/子分支会话（SessionRuntimeInjector 装配 openSidebarSessionById） */
-  onOpenBranchSession?: (sessionId: string) => void;
 
   // ── Composer ──
   enqueueSessionPrompt: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
@@ -146,7 +143,6 @@ export function SessionView({
   onToast,
   onQuickPrompt,
   canMutateActiveMessages,
-  onOpenBranchSession,
   enqueueSessionPrompt,
   gitInfo,
   openFilePath,
@@ -442,6 +438,7 @@ export function SessionView({
         title={sessionTitle}
         projectName={projectName}
         paneTitle={splitPane ? sessionTitle : undefined}
+        showTitle={splitPane}
         onExitSplit={
           splitPane ? () => paneServices.exitSessionSplit(sessionId) : undefined
         }
@@ -464,8 +461,6 @@ export function SessionView({
         } : undefined}
         widgetChips={<SessionWidgetChips sessionId={sessionId} />}
       />
-      {/* 分支导航条：仅当当前会话存在 fork 分支关系（父/兄弟/子分支）时显示 */}
-      <SessionBranchBar sessionId={sessionId} onOpenSession={onOpenBranchSession} />
       <ResizablePanelGroup
         // 面板数变化（terminal 卸载/挂载）时强制重建：旧 Group 的 3 值布局缓存
         // 不复用，避免 react-resizable-panels 内部 K() 校验「Invalid N panel layout」

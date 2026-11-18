@@ -58,7 +58,8 @@ import type {
 	ImageContent,
 	VisionEventsInfo,
 } from "../../../../shared/types";
-import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
+import { parseRichInputChips } from "./composer/chips";
+import { TimelineFileChip } from "./TimelineFileChip";
 import { useTimelineMessageEdit } from "../../hooks/useTimelineMessageEdit";
 import removeMarkdown from "remove-markdown";
 
@@ -941,15 +942,15 @@ function renderChipText(text: string, onOpenFile?: (path: string) => void, valid
 		if (chip.start > cursor) {
 			nodes.push(text.slice(cursor, chip.start));
 		}
-		const clickable = onOpenFile && chip.kind === "file";
-		nodes.push(
+		if (onOpenFile && chip.kind === "file") {
+			nodes.push(<TimelineFileChip key={`chip-${chip.start}`} chip={chip} onOpenFile={onOpenFile} />);
+		} else nodes.push(
 			<span
 				key={`chip-${chip.start}`}
-				className={`input-chip input-chip--${chip.kind}${clickable ? " clickable" : ""}`}
+				className={`input-chip input-chip--${chip.kind}`}
 				data-type={chip.kind}
 				data-raw={chip.raw}
 				title={chip.raw}
-				onClick={clickable ? () => onOpenFile(unwrapFileChipPath(chip.raw)) : undefined}
 			>
 				<span className="input-chip__icon">
 					{chip.kind === "file" ? "@" : "/"}

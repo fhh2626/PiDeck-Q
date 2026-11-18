@@ -78,6 +78,7 @@ constexpr auto kRuntimeChanged = "SESSION_RUNTIME_CHANGED";
 constexpr auto kRuntimeBusy = "SESSION_RUNTIME_BUSY";
 constexpr auto kCommandFailed = "SESSION_COMMAND_FAILED";
 constexpr auto kModelNotFound = "SESSION_MODEL_NOT_FOUND";
+constexpr auto kModelRequired = "SESSION_MODEL_REQUIRED";
 } // namespace errorcode
 
 /** One failed command; `code` is a SessionCommandErrorCode. */

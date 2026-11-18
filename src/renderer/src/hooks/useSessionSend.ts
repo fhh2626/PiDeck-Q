@@ -21,6 +21,7 @@ import {
   setSessionDraftAtom,
   setSessionSendStateAtom,
   upsertSessionAtom,
+  visionBridgeCapabilitiesAtom,
 } from "../atoms";
 import {
   buildComposerPromptSubmission,
@@ -30,6 +31,8 @@ import { exceedsComposerImagePayloadBudget } from "../utils/composerImages";
 import { buildOptimisticCacheWrite } from "../utils/optimisticSessionCache";
 import { settleOptimisticMessage } from "../utils/optimisticUserReconciliation";
 import { QUEUED_PROMPT_LIMIT } from "../utils/queuedPromptQueue";
+import { buildModelKey, isVisionBridgeConfigured, resolveModelImageSupport } from "../utils/modelImageCapability";
+import { resolveSelectedModel } from "../utils/modelSelection";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -232,6 +235,23 @@ export function useSessionSend(options: UseSessionSendOptions) {
       ? [...attachmentSnapshot]
       : undefined;
     if (!hasComposerSubmission(message, imageSnapshot)) return;
+    const modelChoice = store.get(sessionRecordsAtom)[sourceSessionId]?.model;
+    if (modelChoice && (!modelChoice.provider || !modelChoice.modelId)) {
+      const error = t("app.modelSelectionRequired");
+      setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
+      options.showError?.(error, 4500);
+      return;
+    }
+    const vision = store.get(visionBridgeCapabilitiesAtom);
+    if (imageSnapshot?.length && vision?.config?.enabled && !isVisionBridgeConfigured(vision.config)) {
+      const selected = resolveSelectedModel(modelChoice, store.get(sessionRuntimeByIdAtom)[sourceSessionId]?.state);
+      if (resolveModelImageSupport(vision.models, buildModelKey(selected.provider, selected.modelId)) !== true) {
+        const error = t("app.visionModelSelectionRequired");
+        setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
+        options.showError?.(error, 4500);
+        return;
+      }
+    }
     if (exceedsComposerImagePayloadBudget(imageSnapshot)) {
       const errorMessage = t("app.imagesTotalTooLarge");
       setSendState({

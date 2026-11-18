@@ -33,6 +33,7 @@ import {
 } from "../ui-shadcn/dialog";
 import { cn } from "../../lib/utils";
 import { computeModelDisplay, formatModelRef, type ModelPending } from "../../utils/modelPendingDisplay";
+import { resolveSelectedModel } from "../../utils/modelSelection";
 import { isExtendedThinkingLevel } from "../../../../shared/thinkingLevelSupport";
 import { computeThinkingDisplay, type ThinkingLevelPending } from "../../utils/thinkingDisplay";
 import { CommandPickerGroup, CommandPickerPanel } from "../ui-shadcn/command-picker";
@@ -202,11 +203,7 @@ export function ComposerBottomBar(props: {
 	const modeLabel = isPlanMode
 		? t("app.composerModePlan")
 		: t("app.composerModeNormal");
-	const liveModel = {
-		provider: props.state?.provider ?? props.record?.model?.provider ?? "",
-		modelId: props.state?.modelId ?? props.record?.model?.modelId ?? "",
-		modelName: props.state?.modelName ?? props.record?.model?.modelId,
-	};
+	const liveModel = resolveSelectedModel(props.record?.model, props.state);
 	const modelDisplay = computeModelDisplay(
 		liveModel.modelId ? liveModel : undefined,
 		props.modelPending,

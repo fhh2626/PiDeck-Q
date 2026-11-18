@@ -57,6 +57,11 @@ LaunchDefaults resolveLaunchDefaults(const QString &configDir)
         defaults.hasModel = true;
         defaults.provider = defaultProvider;
         defaults.modelId = defaultModel;
+    } else if (settings.contains(QStringLiteral("defaultModel"))
+               && defaultModel.isEmpty()) {
+        // A deleted default is an explicit empty choice, not permission to pick
+        // another provider's first model. The composer asks for a replacement.
+        defaults.hasModel = true;
     } else {
         const QJsonObject providers = models.value(QStringLiteral("providers")).toObject();
         for (auto iterator = providers.constBegin(); iterator != providers.constEnd(); ++iterator) {

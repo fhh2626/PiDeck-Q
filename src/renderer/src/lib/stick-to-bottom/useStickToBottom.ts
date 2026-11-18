@@ -480,33 +480,28 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         isFollowing: state.isAtBottom,
       });
 
-      setTimeout(() => {
-        if (scrollTop === ignoreScrollToTop) {
-          return;
-        }
-        if (isSelecting()) {
-          cancelScrollAnimation();
-          return;
-        }
-        const isScrollingDown = scrollTop > lastScrollTop;
-        const isScrollingUp = scrollTop < lastScrollTop;
-        if (state.animation?.ignoreEscapes) {
-          state.scrollTop = lastScrollTop;
-          return;
-        }
-        if (isScrollingUp) {
-          if (!isClampedByShrink) {
-            // 用户明确上滚超过 1px 且非高度收缩钳制：立即解除锁底进入阅读状态
-            cancelScrollAnimation();
-          }
-        }
-        if (isScrollingDown) {
-          setEscapedFromLock(false);
-        }
-        if (!state.escapedFromLock && state.isNearBottom) {
-          setIsAtBottom(true);
-        }
-      }, 1);
+      // Decide intent in this event. A deferred downward decision can run after
+      // a newer wheel-up escape and re-lock the reader. A deferred upward
+      // decision also lets ResizeObserver pull a scrollbar drag back first.
+      if (isSelecting()) {
+        cancelScrollAnimation();
+        return;
+      }
+      const isScrollingDown = scrollTop > lastScrollTop;
+      const isScrollingUp = scrollTop < lastScrollTop;
+      if (state.animation?.ignoreEscapes) {
+        state.scrollTop = lastScrollTop;
+        return;
+      }
+      if (isScrollingUp && !isClampedByShrink) {
+        cancelScrollAnimation();
+      }
+      if (isScrollingDown) {
+        setEscapedFromLock(false);
+      }
+      if (!state.escapedFromLock && state.isNearBottom) {
+        setIsAtBottom(true);
+      }
     },
     [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, isSelecting, state],
   );

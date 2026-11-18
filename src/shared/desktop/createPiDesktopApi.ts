@@ -13,6 +13,7 @@ import type {
 	ProcessMetricsSnapshot,
 	AppSettings,
 	AvailableModel,
+	ModelListChange,
 	ModelSpec,
 	CodexImportReport,
 	CodexSessionSummary,
@@ -39,6 +40,7 @@ import type {
 	ExternalEditorId,
 	ExternalEditorSetting,
 	FileTreeNode,
+	FilePathInfo,
 	GitBranchInfo,
 	ImageContent,
 	CommitDetail,
@@ -173,8 +175,8 @@ const api = {
 			transport.invoke(ipcChannels.projectsListModels, projectId) as Promise<
 				AvailableModel[]
 			>,
-		/** 主进程模型缓存已刷新（配置保存/运行时切换）；无负载，收到后自行重读列表。 */
-		onModelsChanged: (callback: () => void) => subscribe(ipcChannels.modelsChanged, callback),
+		/** 主进程模型缓存已刷新。配置保存附带失效模型标识，旧宿主和运行时切换可无负载。 */
+		onModelsChanged: (callback: (change?: ModelListChange) => void) => subscribe(ipcChannels.modelsChanged, callback),
 		// 查询模型规格（context window / 能力，内置 model-specs.db，中转站按 id 匹配）
 		getModelSpec: (providerName: string, modelId: string) =>
 			transport.invoke(ipcChannels.projectsGetModelSpec, providerName, modelId) as Promise<
@@ -207,6 +209,9 @@ const api = {
 			transport.invoke(ipcChannels.projectResourcesRenameSkill, projectId, skillPath, newName) as Promise<PiSkillSummary>,
 	},
 	files: {
+		/** Inspect the type of a path inside the authorized roots. Null means it is missing. */
+		stat: (path: string) =>
+			transport.invoke(ipcChannels.filesStat, path) as Promise<FilePathInfo | null>,
 		list: (projectId: string) =>
 			transport.invoke(ipcChannels.filesList, projectId) as Promise<
 				FileTreeNode[]

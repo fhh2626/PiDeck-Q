@@ -36,6 +36,8 @@ type HeaderActions = {
    * 分屏栏可覆盖本栏会话标题。
    */
   paneTitle?: string;
+  /** Solo panes show their conversation title in the shared workspace titlebar. */
+  showTitle?: boolean;
   /** 退出会话分屏（扩大为单栏）；仅分屏时提供 */
   onExitSplit?: () => void;
 };
@@ -84,7 +86,8 @@ export function SessionHeader(props: SessionHeaderProps) {
   const project = useAtomValue(projectByIdAtomFamily(session?.projectId ?? ""));
   const projectName = props.projectName ?? (project ? displayProjectDirectoryName(project) : undefined);
   // 会话标题：分屏优先用 paneTitle，其次 legacy title / session 模式记录标题。
-  const title = props.paneTitle ?? (sessionMode ? session?.title?.trim() || t("app.chatProject") : props.title);
+  const title = props.showTitle === false ? undefined
+    : props.paneTitle ?? (sessionMode ? session?.title?.trim() || t("app.chatProject") : props.title);
 
   const actions = (
     <div

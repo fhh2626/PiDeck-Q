@@ -302,6 +302,9 @@ public:
                        const QString &thinkingLevel, std::function<void(QJsonObject)> done);
     void setModel(const QJsonObject &target, const QString &provider, const QString &modelId,
                   std::function<void(QJsonObject)> done);
+    /** Prevent an existing pi snapshot from silently using edited/deleted model definitions. */
+    void modelConfigurationChanged(const QJsonArray &modified, const QJsonArray &removed,
+                                   const QJsonArray &authProviders, const QJsonArray &available);
     void setThinking(const QJsonObject &target, const QString &level,
                      std::function<void(QJsonObject)> done);
     void getForkMessages(const QJsonObject &target, std::function<void(QJsonObject)> done);
@@ -405,6 +408,8 @@ private:
 
     // command plumbing
     bool requireTarget(const QJsonObject &target, Target *out, CommandError *error) const;
+    /** Localized UI key for a cleared choice or an outdated pi model snapshot. */
+    QString modelSelectionError(const QString &sessionId) const;
 
     // manual compaction (RuntimeCompact.cpp)
     /**
