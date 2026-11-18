@@ -46,7 +46,7 @@ function loadHook(api, revisions) {
 	return loadTsCommonJs("src/renderer/src/hooks/useVisionBridgeCapabilities.ts", {
 		stubs: {
 			"../desktopApi": { desktopApi: api },
-			"../atoms/model-atoms": { modelListRevisionAtom: revisions.model },
+			"../atoms/model-atoms": { modelListRevisionAtom: revisions.model, modelConfigurationScopeAtom: revisions.scope },
 			"../atoms/session-atoms": { visionConfigRevisionAtom: revisions.config },
 		},
 	}).useVisionBridgeCapabilities;
@@ -54,7 +54,7 @@ function loadHook(api, revisions) {
 
 async function setup(host) {
 	const { api, modelCalls, configCalls } = createDesktopApi();
-	const revisions = { config: atom(0), model: atom(0) };
+	const revisions = { config: atom(0), model: atom(0), scope: atom({ environment: "native" }) };
 	const store = createStore();
 	const useHook = loadHook(api, revisions);
 	const wrap = (node) => host.React.createElement(Provider, { store }, node);
@@ -156,5 +156,34 @@ test("useVisionBridgeCapabilities does not refetch for a remount with the same r
 		assert.equal(modelCalls.length, 1, "同一版本键不得重复拉取模型列表");
 		assert.equal(configCalls.length, 1, "同一版本键不得重复拉取配置");
 		assert.equal(remounted.result().ready, true, "复用已有快照");
+	});
+});
+
+test("vision model capabilities refresh for a different WSL user without a model revision event", async () => {
+	await withHookHost(async (host) => {
+		const { modelCalls, configCalls, revisions, store, mounted } = await setup(host);
+		await resolveAll(host, modelCalls[0], configCalls[0]);
+		await host.act(async () => store.set(revisions.scope, { environment: "wsl", wslDistro: "Ubuntu", wslUser: "alice" }));
+		assert.equal(modelCalls.length, 2);
+		assert.equal(mounted.result().ready, false, "the previous environment cannot describe the new model list");
+		await resolveAll(host, modelCalls[1], configCalls[1]);
+		await host.act(async () => store.set(revisions.scope, { environment: "wsl", wslDistro: "ubuntu", wslUser: "bob" }));
+		assert.equal(modelCalls.length, 3);
+		await resolveAll(host, modelCalls[2], configCalls[2], { models: [{ provider: "bob", id: "model", images: false }] });
+		assert.equal(mounted.result().models[0].provider, "bob");
+	});
+});
+
+test("a late vision capability read from an unmounted scope is discarded before remount", async () => {
+	await withHookHost(async (host) => {
+		const { modelCalls, configCalls, revisions, store, mounted, useHook, wrap } = await setup(host);
+		await mounted.unmount();
+		await host.act(async () => store.set(revisions.scope, { environment: "wsl", wslDistro: "Ubuntu", wslUser: "alice" }));
+		await resolveAll(host, modelCalls[0], configCalls[0]);
+		const remounted = await host.mount(useHook, undefined, wrap);
+		assert.equal(remounted.result().ready, false, "the old response must not become a current ready snapshot");
+		assert.equal(modelCalls.length, 2);
+		await resolveAll(host, modelCalls[1], configCalls[1]);
+		assert.equal(remounted.result().ready, true);
 	});
 });

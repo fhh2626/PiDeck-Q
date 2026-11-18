@@ -33,6 +33,7 @@ import { settleOptimisticMessage } from "../utils/optimisticUserReconciliation";
 import { QUEUED_PROMPT_LIMIT } from "../utils/queuedPromptQueue";
 import { buildModelKey, isVisionBridgeConfigured, resolveModelImageSupport } from "../utils/modelImageCapability";
 import { resolveSelectedModel } from "../utils/modelSelection";
+import { modelConfigurationScopeKey } from "../utils/modelConfigurationScope";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -235,7 +236,8 @@ export function useSessionSend(options: UseSessionSendOptions) {
       ? [...attachmentSnapshot]
       : undefined;
     if (!hasComposerSubmission(message, imageSnapshot)) return;
-    const modelChoice = store.get(sessionRecordsAtom)[sourceSessionId]?.model;
+    const record = store.get(sessionRecordsAtom)[sourceSessionId];
+    const modelChoice = record?.model;
     if (modelChoice && (!modelChoice.provider || !modelChoice.modelId)) {
       const error = t("app.modelSelectionRequired");
       setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
@@ -243,9 +245,13 @@ export function useSessionSend(options: UseSessionSendOptions) {
       return;
     }
     const vision = store.get(visionBridgeCapabilitiesAtom);
-    if (imageSnapshot?.length && vision?.config?.enabled && !isVisionBridgeConfigured(vision.config)) {
+    if (imageSnapshot?.length && vision?.ready && vision.config?.enabled
+      && !isVisionBridgeConfigured(vision.config)
+      && (vision.modelScopeKey ?? "native") === modelConfigurationScopeKey(record ?? {})) {
       const selected = resolveSelectedModel(modelChoice, store.get(sessionRuntimeByIdAtom)[sourceSessionId]?.state);
-      if (resolveModelImageSupport(vision.models, buildModelKey(selected.provider, selected.modelId)) !== true) {
+      // Unknown or differently scoped capabilities are checked against the actual
+      // Pi model at the native dispatch boundary, including queued submissions.
+      if (resolveModelImageSupport(vision.models, buildModelKey(selected.provider, selected.modelId)) === false) {
         const error = t("app.visionModelSelectionRequired");
         setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
         options.showError?.(error, 4500);

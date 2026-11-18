@@ -29,10 +29,17 @@ constexpr int kAbortEscalationVerifyMs = 4'000;
 constexpr int kAbortEscalationTimeoutMs = 5'000;
 
 /** A removed model needs a new selection. An edited snapshot uses the agent restart flow. */
-QString modelConfigurationFailure(const AgentSession *session, const QString &provider, const QString &modelId)
+QString modelConfigurationFailure(const AgentSession *session, const SessionCatalogStore *catalog,
+                                  const QString &provider, const QString &modelId)
 {
     if (!session) return QStringLiteral("Session runtime binding changed");
-    if (session->wasModelRemoved(provider, modelId)) return QStringLiteral("Model selection required");
+    // Fresh processes did not observe earlier deletion broadcasts. The catalog owns
+    // that history for this configuration source until the identity is re-added.
+    if (session->wasModelRemoved(provider, modelId)
+        || (catalog && catalog->isModelRemoved(session->tab().sessionEnvironment,
+            session->tab().wslDistro, session->tab().wslUser, provider, modelId))) {
+        return QStringLiteral("Model selection required");
+    }
     if (session->hasStaleModelConfiguration(provider, modelId)) {
         return QStringLiteral("Model not found: %1/%2").arg(provider, modelId);
     }
@@ -325,7 +332,7 @@ void Coordinator::setModel(const QJsonObject &target, const QString &provider, c
 {
     runTarget(target, [this, provider, modelId](AgentSession &session, const Target &binding,
                                                 CommandDone finish) {
-        const QString configurationError = modelConfigurationFailure(&session, provider, modelId);
+        const QString configurationError = modelConfigurationFailure(&session, m_deps.services->catalog, provider, modelId);
         if (!configurationError.isEmpty()) {
             // The id may still exist, but its current definition is absent from this
             // process's snapshot. Reuse the explicit per-agent restart confirmation.
@@ -351,7 +358,7 @@ void Coordinator::setModel(const QJsonObject &target, const QString &provider, c
                                            : error);
                                 return;
                             }
-                            const QString configurationError = modelConfigurationFailure(agent(binding.agentId), provider, modelId);
+                            const QString configurationError = modelConfigurationFailure(agent(binding.agentId), m_deps.services->catalog, provider, modelId);
                             if (!configurationError.isEmpty()) {
                                 finish(false, QJsonValue(), configurationError);
                                 return;
@@ -391,7 +398,7 @@ void Coordinator::setModel(const QJsonObject &target, const QString &provider, c
                                                               fetchRuntimeState(
                                                                   binding.agentId,
                                                                   [this, binding, provider, modelId, finish](const QJsonObject &state) {
-                                                                      const QString failure = modelConfigurationFailure(agent(binding.agentId), provider, modelId);
+                                                                      const QString failure = modelConfigurationFailure(agent(binding.agentId), m_deps.services->catalog, provider, modelId);
                                                                       if (!failure.isEmpty()) {
                                                                           finish(false, QJsonValue(), failure);
                                                                           return;

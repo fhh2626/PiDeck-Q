@@ -20,6 +20,14 @@ function byCreatedAt(a: SessionRecord, b: SessionRecord): number {
 	return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 }
 
+/** Identical session paths in separate runtimes do not identify the same file. */
+function sameFileEnvironment(a: SessionRecord, b: SessionRecord): boolean {
+	if (a.environment !== b.environment) return false;
+	if (a.environment !== "wsl") return true;
+	return (a.wslDistro ?? "").trim().toLowerCase() === (b.wslDistro ?? "").trim().toLowerCase()
+		&& (a.wslUser ?? "").trim() === (b.wslUser ?? "").trim();
+}
+
 /**
  * 从会话记录派生当前会话的分支族。
  * 记录缺失、或当前会话既无来源也无兄弟/子分支时返回 undefined（导航条不渲染）。
@@ -30,9 +38,12 @@ export function deriveBranchFamily(
 ): BranchFamily | undefined {
 	const record = records[sessionId];
 	if (!record) return undefined;
-	// 只有同项目、已落盘的会话参与分支关系；noSession 是运行时匿名会话，无文件可导航
+	// 只有同项目、同文件环境且已落盘的会话参与分支关系。WSL 的路径还受发行版
+	// 和用户隔离；跨环境匹配会把标题栏的来源和分支按钮指向另一份会话文件。
 	const all = Object.values(records).filter(
-		(candidate) => candidate.projectId === record.projectId && !candidate.noSession,
+		(candidate) => candidate.projectId === record.projectId
+			&& sameFileEnvironment(candidate, record)
+			&& !candidate.noSession,
 	);
 
 	// parentSessionId 由目录按路径解析；父会话不在目录内（其它项目/已删除）时
@@ -63,7 +74,10 @@ export function deriveBranchFamily(
 	const currentIndex = siblings.findIndex((candidate) => candidate.id === record.id);
 
 	const children = all
-		.filter((candidate) => candidate.parentSessionId === record.id)
+		// 恢复或导入时目录可能先收到 parentSessionPath，之后才解析稳定 id。
+		// 和来源链接使用同一回退，父会话的计数与菜单才能立即包含这些分支。
+		.filter((candidate) => candidate.parentSessionId === record.id
+			|| Boolean(record.filePath && candidate.parentSessionPath === record.filePath))
 		.sort(byCreatedAt);
 
 	// 无任何分支关系（无来源、无兄弟、无子分支）时不显示导航条

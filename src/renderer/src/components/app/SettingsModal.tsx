@@ -1,7 +1,9 @@
-import { Component, lazy, memo, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { useAtomValue } from "jotai";
-import { sharedRemovedModelReferencesAtom } from "../../atoms/model-atoms";
-import { clearAppModelReferences } from "../../utils/modelSelection";
+import { Component, lazy, memo, Suspense, useCallback, useState, type ReactNode } from "react";
+import { useStore } from "jotai";
+import { removedModelReferencesAtom } from "../../atoms/model-atoms";
+import { isRemovedModel } from "../../utils/modelSelection";
+import { useSettingsDraft, type SaveAppSettings } from "../../hooks/useSettingsDraft";
+import { showNotice } from "../../utils/notice";
 import {
 	Settings2,
 	Network,
@@ -104,7 +106,7 @@ type SettingsModalProps = {
 	onClearCheckFlag?: () => void;
 	onOpenWebService: (port: string) => void;
 	onClose: () => void;
-	onChange: (patch: Partial<AppSettings>) => void;
+	onChange: SaveAppSettings;
 };
 
 /**
@@ -186,67 +188,36 @@ function SettingsModalContent(props: SettingsModalProps) {
 	// 用 lazy initializer 在挂载时读一次 localStorage，恢复到上次所在 tab。
 	const [activeTab, setActiveTab] = useState<SettingsTabId>(loadLastSettingsTab);
 	// ── 全局设置草稿：进入弹框时快照 props.settings，所有修改在 draft 上操作，保存时统一提交 ──
-	const [draftSettings, setDraftSettings] = useState<AppSettings>(() => ({ ...props.settings }));
-	const [dirtyFields, setDirtyFields] = useState<Set<string>>(new Set());
-	/** 打开弹框时的原始设置快照，用于取消时回退 */
-	const baseSnapshotRef = useRef<AppSettings>({ ...props.settings });
-	const removedModels = useAtomValue(sharedRemovedModelReferencesAtom);
-	useEffect(() => {
-		setDraftSettings((current) => clearAppModelReferences(current, removedModels));
-		baseSnapshotRef.current = clearAppModelReferences(baseSnapshotRef.current, removedModels);
-	}, [removedModels]);
+	const store = useStore();
+	const settingsDraft = useSettingsDraft(props.settings, props.onChange);
+	const { draft: draftSettings, update: updateDraft, isDirty } = settingsDraft;
 	// ── 视觉桥草稿：独立于全局设置（写 pi-deck-vision.json，走独立 IPC），脏标记/保存/取消由弹框统一管理 ──
 	const visionDraft = useVisionBridgeDraft();
 	/** 各 tab 的局部编辑态（WSL 输入/Web 端口）在取消时通过递增信号重置 */
 	const [devTabResetKey, setDevTabResetKey] = useState(0);
 
-	/** 更新草稿并标记对应字段为已修改。调用方传入的 patch 中的每个 key 都会追加到 dirtyFields。 */
-	const updateDraft = useCallback((patch: Partial<AppSettings>) => {
-		setDraftSettings((prev) => ({ ...prev, ...patch }));
-		setDirtyFields((prev) => {
-			const next = new Set(prev);
-			for (const key of Object.keys(patch)) {
-				next.add(key);
-			}
-			return next;
-		});
-	}, []);
-
-	/** 检查指定字段在草稿中是否已被修改（与初始快照比较） */
-	const isDirty = useCallback((field: keyof AppSettings): boolean => {
-		// keyof 含 number/symbol 成员，Set 按 string 存储，统一转字符串比较
-		return dirtyFields.has(String(field));
-	}, [dirtyFields]);
-
 	/** 保存全部已修改内容：全局设置差异提交 + 视觉桥草稿（若有改动）；返回是否全部成功 */
 	const saveAll = async (): Promise<boolean> => {
-		let ok = true;
-		if (dirtyFields.size > 0) {
-			const patch: Partial<AppSettings> = {};
-			for (const key of dirtyFields) {
-				(patch as Record<string, unknown>)[key] = (draftSettings as Record<string, unknown>)[key];
-			}
-			props.onChange(patch);
-			// 更新快照基准为当前草稿值，并清除修改标记
-			baseSnapshotRef.current = { ...baseSnapshotRef.current, ...patch };
-			setDirtyFields(new Set());
-		}
+		const settingsRevision = settingsDraft.getEditRevision();
+		const visionRevision = visionDraft.getEditRevision();
+		const unchanged = () => settingsDraft.getEditRevision() === settingsRevision
+			&& visionDraft.getEditRevision() === visionRevision;
+		let ok = await settingsDraft.save();
+		if (!ok || !unchanged()) return false;
 		if (visionDraft.dirty) {
 			// 视觉桥保存失败（如 API Key 缺失/接口不可达）时保留脏标记，头部按钮可重试
 			ok = await visionDraft.save();
 		}
-		return ok;
+		// Save and Close owns both drafts. A new edit in either domain must keep the dialog open.
+		return ok && unchanged();
 	};
 
 	/** 取消全部修改：将草稿回退到初始快照，丢弃所有未保存变更（含视觉桥草稿与各 tab 局部编辑态） */
 	const cancelAll = () => {
-		setDraftSettings({ ...baseSnapshotRef.current });
-		setDirtyFields(new Set());
+		const baseline = settingsDraft.reset();
 		visionDraft.reset();
 		setPerAreaFontSize(
-			baseSnapshotRef.current.uiFontSize !== null ||
-				baseSnapshotRef.current.chatFontSize !== null ||
-				baseSnapshotRef.current.inputFontSize !== null,
+			baseline.uiFontSize !== null || baseline.chatFontSize !== null || baseline.inputFontSize !== null,
 		);
 		// tab 局部编辑态（WSL 输入、Web 端口）由各自 tab 监听信号重置
 		setDevTabResetKey((k) => k + 1);
@@ -254,7 +225,7 @@ function SettingsModalContent(props: SettingsModalProps) {
 
 	/** 关闭弹框：有未保存变更（全局设置或视觉桥草稿）时弹出确认对话框，无变更时直接关闭 */
 	const handleClose = () => {
-		if (dirtyFields.size > 0 || visionDraft.dirty) {
+		if (settingsDraft.dirty || visionDraft.dirty) {
 			setCloseConfirmOpen(true);
 		} else {
 			props.onClose();
@@ -289,12 +260,16 @@ function SettingsModalContent(props: SettingsModalProps) {
 
 	/** 选择提交信息模型：写入草稿并关闭选择器 */
 	const handlePickGitModel = useCallback((model: AvailableModel) => {
+		if (isRemovedModel({ provider: model.provider, modelId: model.id }, store.get(removedModelReferencesAtom))) {
+			showNotice(t("app.modelSelectionRequired"), 4000);
+			return;
+		}
 		updateDraft({
 			gitCommitMessageProvider: model.provider,
 			gitCommitMessageModel: model.id,
 		});
 		closeGitModelPicker();
-	}, [updateDraft, closeGitModelPicker]);
+	}, [store, updateDraft, closeGitModelPicker]);
 
 	/** 收藏/取消收藏提交信息模型 */
 	const handleToggleGitModelFavorite = useCallback((provider: string, modelId: string) => {
@@ -354,7 +329,7 @@ function SettingsModalContent(props: SettingsModalProps) {
 		},
 	];
 
-	const hasDirtyChanges = dirtyFields.size > 0;
+	const hasDirtyChanges = settingsDraft.dirty;
 	// 视觉桥草稿有未保存改动时，头部保存/取消按钮同样点亮（与全局设置脏标记合并判定）
 	const hasAnyDirtyChanges = hasDirtyChanges || visionDraft.dirty;
 
@@ -365,14 +340,14 @@ function SettingsModalContent(props: SettingsModalProps) {
 					<DialogTitle>{t("settings.title")}</DialogTitle>
 					<div className="flex items-center gap-2">
 						{/* 保存按钮常驻：无未保存改动时禁用，避免用户改完直接关窗丢改动；视觉桥保存中禁用防重复提交 */}
-						<Button variant="default" size="sm" onClick={saveAll} disabled={!hasAnyDirtyChanges || visionDraft.saving}>
+						<Button variant="default" size="sm" onClick={saveAll} disabled={!hasAnyDirtyChanges || settingsDraft.saving || visionDraft.saving}>
 							{t("common.save")}
 						</Button>
 						{hasAnyDirtyChanges ? (
 							/* 放弃更改用 outline（白底描边）而非灰底 secondary：与黑色主按钮形成
 							    清晰的主次层级（shadcn dialog 的 confirm/cancel 惯例），避免一对按钮
 							    都是灰色填充分不出哪个是提交。 */
-							<Button variant="outline" size="sm" onClick={cancelAll}>
+							<Button variant="outline" size="sm" onClick={cancelAll} disabled={settingsDraft.saving}>
 								{t("common.cancel")}
 							</Button>
 						) : undefined}

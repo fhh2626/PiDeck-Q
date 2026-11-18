@@ -153,6 +153,7 @@ function createSendHarness(initial = {}) {
     },
     "../utils/modelSelection": loadTsCommonJs("src/renderer/src/utils/modelSelection.ts"),
     "../utils/modelImageCapability": loadTsCommonJs("src/renderer/src/utils/modelImageCapability.ts"),
+    "../utils/modelConfigurationScope": loadTsCommonJs("src/renderer/src/utils/modelConfigurationScope.ts"),
     "../i18n": { t: (key) => key, translateI18nDescriptor: (_descriptor, fallback) => fallback },
   });
   return {
@@ -205,6 +206,26 @@ test("a removed bridge model still allows text prompts and models with native im
     assert.equal(submitted?.message, "Continue");
     assert.deepEqual(JSON.parse(JSON.stringify(submitted.images ?? [])), attachments);
   }
+});
+
+test("a different environment's model list cannot reject an image before the host checks the active model", async () => {
+  const harness = createSendHarness({
+    drafts: { "session-a": "Describe this image" },
+    attachments: { "session-a": [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] },
+    records: { "session-a": { environment: "native", model: { provider: "shared", modelId: "model" } } },
+    vision: { ready: true, modelScopeKey: '["wsl","ubuntu","alice"]',
+      models: [{ provider: "shared", id: "model", images: false }],
+      config: { enabled: true, provider: "", model: "" }, loadKey: "wsl" },
+  });
+  let submissions = 0;
+  const errors = [];
+  await harness.send({
+    sessionId: "session-a", templates: [], compact: async () => undefined,
+    showError: (message) => errors.push(message),
+    sendPrompt: async () => { submissions += 1; return { accepted: true }; },
+  })();
+  assert.equal(submissions, 1, "the backend has the actual active model's native image capability");
+  assert.deepEqual(errors, []);
 });
 
 test("the real send state machine snapshots multiline atom text", async () => {

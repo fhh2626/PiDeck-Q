@@ -230,6 +230,7 @@ target("PiDeck-SessionCatalogConcurrencyTest")
               "native/backend/domain/sessions/SessionCatalogStore.cpp",
               "native/backend/domain/sessions/SessionCatalogDeletion.cpp",
               "native/backend/domain/sessions/SessionCatalogMerge.cpp",
+              "native/backend/domain/sessions/SessionCatalogModelConfiguration.cpp",
               "native/backend/domain/sessions/CatalogRecords.cpp",
               "native/backend/domain/sessions/CatalogJson.cpp",
               "native/backend/domain/sessions/CatalogMigration.cpp",

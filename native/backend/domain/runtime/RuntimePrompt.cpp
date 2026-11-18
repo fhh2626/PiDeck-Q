@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "VisionBridge.h"
 
 #include "../sessions/SessionCatalogStore.h"
 
@@ -160,6 +161,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         // A rejected silent command never dispatched work and must not invalidate an
         // earlier command's completion probe. Its lease still fences the lookup.
         if (!silent) session->advancePromptDispatchSequence();
+        const quint64 lookupSequence = session->promptDispatchSequence();
         const QString statusBeforePrompt = session->tab().status;
         const bool streaming = statusBeforePrompt == QLatin1String("running");
         QString behavior = input.value(QStringLiteral("streamingBehavior")).toString();
@@ -167,18 +169,8 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         const QString promptText = agentMessage.isEmpty() ? input.value(QStringLiteral("message")).toString()
                                                           : agentMessage;
         if (!silent) {
-            QJsonObject meta;
-            if (!behavior.isEmpty()) meta.insert(QStringLiteral("streamingBehavior"), behavior);
-            if (!requestId.isEmpty()) meta.insert(QStringLiteral("optimisticRequestId"), requestId);
-            session->transcript().appendMessage(
-                QStringLiteral("user"),
-                input.value(QStringLiteral("message")).toString().trimmed().isEmpty()
-                    ? session->translate()(QStringLiteral("session.imagePlaceholder"), QJsonObject{})
-                    : input.value(QStringLiteral("message")).toString(),
-                meta);
             session->tab().status = QStringLiteral("running");
             emitState();
-            agentruntime::flushMessages(*session, hooksFor(*session));
         }
 
         QJsonObject payload{{QStringLiteral("message"), promptText}};
@@ -194,7 +186,7 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         // during this await must never send the old input into a replacement process.
         queryExtensionCommand(*session, promptText,
             [this, key, lease, target, agentId, sessionId, requestId, silent, statusBeforePrompt,
-             payload, epoch, done](bool extensionCommand) {
+             payload, input, epoch, lookupSequence, done](bool extensionCommand) {
         AgentSession *sending = agent(agentId);
         if (!sending || !sending->running() || sending->clientEpoch() != epoch || !m_bindings.leaseCurrent(lease)) {
             m_bindings.releaseLease(lease);
@@ -206,10 +198,19 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
         }
         // A config save can finish while activation/get_commands is outstanding.
         // Check again at the final RPC boundary so a deleted choice never starts work.
-        const QString selectionError = modelSelectionError(sessionId);
+        QString selectionError = modelSelectionError(sessionId);
+        if (selectionError.isEmpty() && !payload.value(QStringLiteral("images")).toArray().isEmpty()
+            && vision::requiresModelSelection(m_deps.agentDir, sending->observedModel())) {
+            selectionError = QStringLiteral("app.visionModelSelectionRequired");
+        }
         if (!selectionError.isEmpty()) {
             m_bindings.releaseLease(lease);
-            if (!silent) sending->tab().status = statusBeforePrompt;
+            // A newer prompt or a settled/error event can change the state during
+            // get_commands. Only undo this lookup's own still-running optimistic state.
+            if (!silent && sending->promptDispatchSequence() == lookupSequence
+                && sending->tab().status == QLatin1String("running")) {
+                sending->tab().status = statusBeforePrompt;
+            }
             QJsonObject result = rejectedResult(sessionId, requestId, selectionError);
             result.insert(QStringLiteral("i18nKey"), selectionError);
             settleDelivery(key, result);
@@ -231,6 +232,21 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             settleDelivery(key, result);
             done(result);
             return;
+        }
+        if (!silent) {
+            // Only record a user message once the final dispatch checks passed.
+            // A rejected lookup must not leave an unsent optimistic row in the timeline.
+            QJsonObject meta;
+            const QString behavior = payload.value(QStringLiteral("streamingBehavior")).toString();
+            if (!behavior.isEmpty()) meta.insert(QStringLiteral("streamingBehavior"), behavior);
+            if (!requestId.isEmpty()) meta.insert(QStringLiteral("optimisticRequestId"), requestId);
+            sending->transcript().appendMessage(
+                QStringLiteral("user"),
+                input.value(QStringLiteral("message")).toString().trimmed().isEmpty()
+                    ? sending->translate()(QStringLiteral("session.imagePlaceholder"), QJsonObject{})
+                    : input.value(QStringLiteral("message")).toString(),
+                meta);
+            agentruntime::flushMessages(*sending, hooksFor(*sending));
         }
         // TTFT origin: the oracle records the sendPrompt time so queueing/pi startup is
         // part of the first-token latency instead of being hidden by event arrival.

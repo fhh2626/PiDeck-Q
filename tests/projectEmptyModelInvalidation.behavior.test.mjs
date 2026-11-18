@@ -45,7 +45,7 @@ test("a late empty-state default cannot restore a removed model or launch throug
 		const pending = deferred();
 		const env = await setup(host, () => pending.promise);
 		await host.act(async () => {
-			env.store.set(env.atoms.removedModelReferencesByEnvironmentAtom, { native: [removed], wsl: [] });
+			env.store.set(env.atoms.removedModelReferencesByScopeAtom, { native: [removed], wsl: [] });
 			pending.resolve({ parsed: { defaultProvider: removed.provider, defaultModel: removed.modelId } });
 		});
 		const modelButton = nodes(env.surface().footer, (node) => node.type === "button")[0];
@@ -85,5 +85,59 @@ test("an empty-state config read from the previous environment cannot replace th
 		await host.act(async () => env.surface().onCreate());
 		assert.equal(env.created[0].model.provider, "wsl");
 		assert.equal(env.created[0].model.modelId, "current");
+	});
+});
+
+test("a late deleted default cannot erase a replacement picked while settings were loading", async () => {
+	await withHookHost(async (host) => {
+		const pending = deferred();
+		const env = await setup(host, () => pending.promise);
+		await host.act(async () => env.store.set(env.atoms.removedModelReferencesByScopeAtom, { native: [removed], wsl: [] }));
+		await host.act(async () => nodes(env.surface().footer, (node) => node.type === "button")[0].props.onClick());
+		await host.act(async () => nodes(env.surface().footer, (node) => node.type === "ModelPicker")[0].props.onPick(replacement));
+		await host.act(async () => pending.resolve({ parsed: { defaultProvider: removed.provider, defaultModel: removed.modelId } }));
+		await host.act(async () => env.surface().onCreate());
+		assert.equal(env.created.length, 1);
+		assert.equal(env.created[0].model.modelId, replacement.id);
+	});
+});
+
+test("changing WSL accounts waits for that account's defaults before creating a session", async () => {
+	await withHookHost(async (host) => {
+		const requests = [];
+		const env = await setup(host, () => { const request = deferred(); requests.push(request); return request.promise; });
+		await host.act(async () => {
+			env.store.set(env.atoms.modelConfigurationEnvironmentAtom, "wsl");
+			env.store.set(env.atoms.modelConfigurationWslIdentityAtom, { wslDistro: "Ubuntu", wslUser: "alice" });
+		});
+		const alice = requests.at(-1);
+		await host.act(async () => alice.resolve({ parsed: { defaultProvider: "alice", defaultModel: "current" } }));
+		await host.act(async () => env.store.set(env.atoms.modelConfigurationWslIdentityAtom, { wslDistro: "Ubuntu", wslUser: "bob" }));
+		assert.notEqual(requests.at(-1), alice);
+		await host.act(async () => env.surface().onCreate());
+		assert.equal(env.created.length, 0);
+		await host.act(async () => requests.at(-1).resolve({ parsed: { defaultProvider: "bob", defaultModel: "new" } }));
+		await host.act(async () => env.surface().onCreate());
+		assert.equal(env.created.length, 1);
+		assert.equal(env.created[0].model.provider, "bob");
+	});
+});
+
+test("a welcome default deleted and re-added during its initial read still requires a new choice", async () => {
+	await withHookHost(async (host) => {
+		const pending = deferred();
+		const env = await setup(host, () => pending.promise);
+		const key = JSON.stringify([removed.provider, removed.modelId]);
+		await host.act(async () => {
+			env.store.set(env.atoms.sharedModelRemovalVersionsAtom, { [key]: 1 });
+			env.store.set(env.atoms.modelConfigurationVersionsByScopeAtom, { native: { [key]: 1 }, wsl: {} });
+			env.store.set(env.atoms.modelRemovalVersionsByScopeAtom, { native: { [key]: 1 }, wsl: {} });
+			env.store.set(env.atoms.removedModelReferencesByScopeAtom, { native: [removed], wsl: [] });
+		});
+		await host.act(async () => env.store.set(env.atoms.removedModelReferencesByScopeAtom, { native: [], wsl: [] }));
+		await host.act(async () => pending.resolve({ parsed: { defaultProvider: removed.provider, defaultModel: removed.modelId } }));
+		await host.act(async () => env.surface().onCreate());
+		assert.equal(env.created.length, 0);
+		assert.equal(env.notices.at(-1), "app.modelSelectionRequired");
 	});
 });

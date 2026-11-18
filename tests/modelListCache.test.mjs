@@ -28,20 +28,8 @@ test("normalizes TypeScript/Rust RPC model payloads", () => {
 // 配置保存触发重取 / spawn 前刷新 / 启动预取 / setModel 的 needsRestart：见 modelListWiring.test.mjs。
 // compact 的 customInstructions 字段：见 agentManagerRuntimeCache.test.mjs。
 
-// 以下两条断言渲染层 .tsx 源码：仓库没有 DOM 测试环境（无 jsdom/testing-library），ComposerPickerHost
-// 的 JSX 交互无法在 node:test 里真实挂载，因此保留为文本契约，仅作回归栅栏，不证明交互正确。
-test("renderer ComposerPickerHost shows restart confirm on needsRestart", () => {
-  assert.match(pickerHost, /needsRestart/);
-  assert.match(pickerHost, /ConfirmDialog/);
-  // 确认后必须走统一重启入口（restartActiveAgent），才能点亮 SessionView overlay；
-  // 禁止选择器自己调 restartRuntime（那条路径不置 restartingAgentId）。
-  assert.match(pickerHost, /restartActiveAgent/);
-  assert.doesNotMatch(pickerHost, /desktopApi\.sessions\.restartRuntime/);
-  // 确认时先写会话记录再重启：setRuntimeModel 失败路径不再写 catalog。
-  assert.match(pickerHost, /updateRecord\(sessionId, \{[\s\S]*?model: \{ provider: intent\.provider, modelId: intent\.modelId \}/);
-  assert.match(pickerHost, /modelRestartTitle/);
-  assert.match(pickerHost, /modelRestartBody/);
-});
+// Restart confirmation and the write-before-restart order are exercised through real
+// React interactions in modelPickerInvalidation.behavior.test.mjs.
 
 test("ComposerPickerHost loads models on welcome page (no record)", () => {
   // 欢迎页/未启动 Agent 时 record 为 undefined，模型列表也必须加载：

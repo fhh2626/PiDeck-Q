@@ -75,6 +75,8 @@ import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useProjectSync } from "./hooks/useProjectSync";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useModelListSync } from "./hooks/useModelListSync";
+import { modelConfigurationVersionsByScopeAtom, sharedModelRemovalVersionsAtom } from "./atoms/model-atoms";
+import { clearAppModelReferences, getModelRemovalsSince } from "./utils/modelSelection";
 import { useSubagentExtensionEnabled } from "./hooks/useSubagentExtensionEnabled";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
@@ -419,6 +421,7 @@ export function App() {
     setProjects,
     setActiveProjectId,
     replaceProjectSessions,
+    captureModelConfigurationVersions: () => store.get(modelConfigurationVersionsByScopeAtom),
     api: {
       projects: { list: api.projects.list },
       git: { worktreeList: api.git.worktreeList, branches: api.git.branches },
@@ -2047,7 +2050,8 @@ export function App() {
       });
     },
   });
-  async function updateSettings(patch: Partial<AppSettings>) {
+  async function updateSettings(patch: Partial<AppSettings>): Promise<boolean> {
+    const removalVersions = store.get(sharedModelRemovalVersionsAtom);
     const changesWebService =
       "webServiceEnabled" in patch ||
       "webServiceHost" in patch ||
@@ -2061,7 +2065,10 @@ export function App() {
       );
     }
     try {
-      const next = await api.settings.update(patch);
+      const saved = await api.settings.update(patch);
+      // A model deletion may be delivered before this older settings response.
+      // Preserve that invalidation even if the same identity has since been re-added.
+      const next = clearAppModelReferences(saved, getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom)));
       setSettings(next);
       let notice = t("app.settingsSaved");
       if (
@@ -2126,9 +2133,16 @@ export function App() {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
       }
       showToast(notice);
+      return true;
     } catch (error) {
-      setSettings(await api.settings.get());
+      try {
+        // The host can roll back a failed web-service start after persisting the
+        // other fields. Reflect its recovery while keeping concurrent deletions.
+        const recovered = await api.settings.get();
+        setSettings(clearAppModelReferences(recovered, getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom))));
+      } catch { /* Keep the current snapshot when the recovery read is unavailable. */ }
       showToast(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       if (changesWebService) setWebServiceChanging(false);
     }
@@ -2767,7 +2781,7 @@ export function App() {
 
   // 全局订阅模型列表更新（保存 models.json/auth.json、切换 pi 运行时后主进程广播）：
   // 视觉桥能力判定与模型选择器共用这份数据，只在装配层挂一份。
-  useModelListSync(setSettings, settings.wslEnabled ? "wsl" : "native");
+  useModelListSync(setSettings, settings.wslEnabled ? "wsl" : "native", { wslDistro: settings.wslDistro, wslUser: settings.wslUser });
 
   const nativeWindowChrome = resolveNativeWindowChrome(
     settings.useNativeTitleBar,

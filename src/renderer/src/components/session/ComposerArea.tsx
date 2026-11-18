@@ -16,6 +16,7 @@ import { useComposerImagePicker } from "../../hooks/useComposerImagePicker";
 import { useVisionBridgeCapabilities } from "../../hooks/useVisionBridgeCapabilities";
 import { getModelImageCapabilityNotice } from "../../utils/modelImageCapability";
 import { resolveSelectedModel } from "../../utils/modelSelection";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
 import { showNotice } from "../../utils/notice";
 import {
   ComposerAttachmentBar,
@@ -90,7 +91,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
   const modelNotice = useMemo(() => {
     if (composer.attachments.length === 0) return undefined;
     // 能力快照未就绪时不要下结论：否则会先闪一句「图片能力未知」再变成正确提示。
-    if (!capabilities.ready) return undefined;
+    if (!capabilities.ready || (capabilities.modelScopeKey ?? "native") !== modelConfigurationScopeKey(composer.record ?? {})) return undefined;
     const { modelId: currentModelId, provider: currentProvider } = resolveSelectedModel(composer.record?.model, composer.runtime?.state);
     if (!currentModelId) return undefined;
 
@@ -116,9 +117,13 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     composer.runtime?.state?.provider,
     composer.record?.model?.modelId,
     composer.record?.model?.provider,
+    composer.record?.environment,
+    composer.record?.wslDistro,
+    composer.record?.wslUser,
     availableModels,
     capabilities.ready,
     capabilities.config,
+    capabilities.modelScopeKey,
   ]);
 
   const onNativeFileDrop = composer.editor.onNativeFileDrop;

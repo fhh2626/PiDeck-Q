@@ -30,7 +30,8 @@ export function usePendingModelApply(input: {
     modelId?: string;
     modelName?: string;
     thinkingLevel?: string;
-  }) => void;
+  }, target: SessionRuntimeTarget) => void;
+  isCurrent: (target: SessionRuntimeTarget, pending: ModelPending) => boolean;
   clearPending: () => void;
   offerRestart: (handle: SessionRuntimeTarget, model: AvailableModel) => void;
 }) {
@@ -62,6 +63,7 @@ export function usePendingModelApply(input: {
       return;
     }
     const pending = current.modelPending;
+    if (!current.isCurrent(handle, pending)) return;
     applyingRef.current = true;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -74,12 +76,12 @@ export function usePendingModelApply(input: {
             pending.to.modelId,
           ),
         );
-        if (cancelled) return;
-        current.applyRuntimeModelState(result.value);
+        if (cancelled || !current.isCurrent(handle, pending)) return;
+        current.applyRuntimeModelState(result.value, handle);
         retryCountRef.current = 0;
         current.clearPending();
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || !current.isCurrent(handle, pending)) return;
         if (error instanceof SessionCommandFailure && error.needsRestart) {
           blockedRef.current = true;
           current.offerRestart(handle, {

@@ -12,13 +12,13 @@ function menuPrimitives(React) {
   };
 }
 
-async function withLink({ path = "C:/project/docs", type = "directory", stat, userAgent = "Windows NT 10.0" } = {}, run) {
+async function withLink({ path = "C:/project/docs", type = "directory", stat, userAgent = "Windows NT 10.0", nativeHost = true } = {}, run) {
   await withHookHost(async (host) => {
     const opened = [], revealed = [], notices = [];
-    host.window.piDesktop = { files: {
+    host.window.piDesktop = nativeHost ? { files: {
       stat: stat ?? (async () => ({ type })),
       showInFolder: async (target) => { revealed.push(target); },
-    } };
+    } } : undefined;
     const { MarkdownLink } = host.load("src/renderer/src/components/session/MarkdownLink.tsx", {
       globals: { navigator: { userAgent } },
       stubs: {
@@ -82,7 +82,25 @@ for (const extra of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) 
       assert.deepEqual(revealed, ["C:/project/report.md"]);
     });
   });
+
+  test(`a modified local click retains the file callback without a native host ${JSON.stringify(extra)}`, async () => {
+    await withLink({ path: "C:/project/report.md", nativeHost: false }, async ({ anchor, click, opened, revealed }) => {
+      const event = await click(anchor, extra);
+      assert.equal(event.defaultPrevented, true);
+      assert.deepEqual(opened, ["C:/project/report.md"]);
+      assert.deepEqual(revealed, []);
+    });
+  });
 }
+
+test("a middle click without a native host uses the file callback instead of a blocked file URL", async () => {
+  await withLink({ path: "C:/project/report.md", nativeHost: false }, async ({ anchor, click, opened, revealed }) => {
+    const event = await click(anchor, { button: 1 }, "auxclick");
+    assert.equal(event.defaultPrevented, true);
+    assert.deepEqual(opened, ["C:/project/report.md"]);
+    assert.deepEqual(revealed, []);
+  });
+});
 
 test("a middle click opens a local file's folder without navigating the WebView", async () => {
   await withLink({ path: "C:/project/report.md", type: "file" }, async ({ anchor, click, opened, revealed }) => {

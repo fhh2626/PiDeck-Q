@@ -108,6 +108,9 @@ test("confirmed model deletion clears current, pending, and welcome selections a
 		assert.equal(refreshed.theme, "dark", "unrelated current settings survive invalidation");
 		await host.act(async () => { listener({ removedModels: [], changedModels: [removed] }); });
 		assert.equal(store.get(removedAtom).length, 0);
+		assert.equal(store.get(modelAtoms.modelRemovalVersionsByScopeAtom).native[JSON.stringify([removed.provider, removed.modelId])], 1,
+			"restoring an identity retains its removal history for older settings reads");
+		assert.equal(Object.keys(store.get(modelAtoms.modelRemovalVersionsByScopeAtom).wsl).length, 0);
 		assert.equal(store.get(recordsAtom).affected.model.modelId, "", "restoring availability does not silently reselect a deleted choice");
 		await mounted.unmount();
 		assert.equal(listener, undefined);
@@ -133,9 +136,9 @@ test("model removal records stay scoped while switching the active configuration
 			(node) => host.React.createElement(Provider, { store }, node));
 		await host.act(async () => { listener({ environment: "native", removedModels: [model], changedModels: [] }); });
 		assert.equal(store.get(modelAtoms.removedModelReferencesAtom).length, 0);
-		assert.deepEqual(Array.from(store.get(modelAtoms.removedModelReferencesByEnvironmentAtom).native), [model]);
+		assert.deepEqual(Array.from(store.get(modelAtoms.removedModelReferencesByScopeAtom).native), [model]);
 		await host.act(async () => { listener({ environment: "wsl", removedModels: [], changedModels: [model] }); });
-		assert.deepEqual(Array.from(store.get(modelAtoms.removedModelReferencesByEnvironmentAtom).native), [model]);
+		assert.deepEqual(Array.from(store.get(modelAtoms.removedModelReferencesByScopeAtom).native), [model]);
 		await mounted.rerender("native");
 		assert.deepEqual(Array.from(store.get(modelAtoms.removedModelReferencesAtom)), [model]);
 		await host.act(async () => { listener({ environment: "native", removedModels: [], changedModels: [model] }); });

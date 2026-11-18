@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useAtomValue, useStore } from "jotai";
 import type { AvailableModel, VisionBridgeConfig } from "../../../shared/types";
-import { modelListRevisionAtom } from "../atoms/model-atoms";
+import { modelConfigurationScopeAtom, modelListRevisionAtom } from "../atoms/model-atoms";
 import { visionConfigRevisionAtom } from "../atoms/session-atoms";
 import {
 	visionBridgeCapabilitiesAtom,
@@ -9,6 +9,7 @@ import {
 	type VisionBridgeCapabilities,
 } from "../atoms/vision-atoms";
 import { desktopApi } from "../desktopApi";
+import { modelConfigurationScopeKey } from "../utils/modelConfigurationScope";
 
 /** 模型列表读取失败（含运行时没有该 API）时降级为空列表：能力未知，交给轮询判定。 */
 async function readModels(): Promise<AvailableModel[]> {
@@ -41,11 +42,13 @@ export function useVisionBridgeCapabilities(): VisionBridgeCapabilities {
 	const capabilities = useAtomValue(visionBridgeCapabilitiesAtom);
 	const configRevision = useAtomValue(visionConfigRevisionAtom);
 	const modelRevision = useAtomValue(modelListRevisionAtom);
+	const scope = useAtomValue(modelConfigurationScopeAtom);
+	const scopeKey = modelConfigurationScopeKey(scope);
 	const store = useStore();
 	// 活性保证：readModels/readConfig 自身吞掉异常（只会 resolve），占位版本键一定能被完成结果清掉；
 	// 即便 IPC 本体卡住，主进程模型列表也自带 20s 子进程超时，不会永久停在「未就绪」。
 	// 两个修订都必须参与：只盯配置会让新增/改动的模型在重启前一直被判为「能力未知」。
-	const loadKey = `${configRevision}:${modelRevision}`;
+	const loadKey = `${configRevision}:${modelRevision}:${scopeKey}`;
 
 	useEffect(() => {
 		// store.get 是同步新读：并发挂载的其它气泡已经登记同一个版本键时直接跳过。
@@ -53,15 +56,20 @@ export function useVisionBridgeCapabilities(): VisionBridgeCapabilities {
 		const seq = store.get(visionBridgeRequestSeqAtom) + 1;
 		store.set(visionBridgeRequestSeqAtom, seq);
 		// 先登记版本键占位，避免同一次渲染里多个气泡重复发请求。
-		store.set(visionBridgeCapabilitiesAtom, (previous) => ({ ...previous, loadKey }));
+		store.set(visionBridgeCapabilitiesAtom, (previous) => ({
+			...previous, loadKey, ready: previous.ready && previous.modelScopeKey === scopeKey,
+		}));
 		void (async () => {
 			// 两个请求互不阻塞：任一失败都降级为「没有该能力」，不阻断会话渲染。
 			const [models, config] = await Promise.all([readModels(), readConfig()]);
 			// 期间又保存了配置/刷新了模型列表：本次结果已过期，交给新请求写入。
-			if (store.get(visionBridgeRequestSeqAtom) !== seq) return;
-			store.set(visionBridgeCapabilitiesAtom, { ready: true, models, config, loadKey });
+			if (store.get(visionBridgeRequestSeqAtom) !== seq
+				|| store.get(visionConfigRevisionAtom) !== configRevision
+				|| store.get(modelListRevisionAtom) !== modelRevision
+				|| modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom)) !== scopeKey) return;
+			store.set(visionBridgeCapabilitiesAtom, { ready: true, models, config, loadKey, modelScopeKey: scopeKey });
 		})();
-	}, [loadKey, store]);
+	}, [loadKey, configRevision, modelRevision, scopeKey, store]);
 
-	return capabilities;
+	return capabilities.modelScopeKey === scopeKey ? capabilities : { ...capabilities, ready: false };
 }

@@ -1,6 +1,7 @@
 #include "ChannelContext.h"
 
 #include "ProjectStore.h"
+#include "ModelPreferenceValidation.h"
 #include "SubagentSettings.h"
 
 #include <QJsonArray>
@@ -47,6 +48,13 @@ void registerSubagentChannels(ChannelRegistry &registry, ChannelServices &servic
             throw ChannelError(QStringLiteral("projectId is required for project scope"));
         }
         try {
+            const QJsonObject input = channels::argAt(args, 2).toObject();
+            const QJsonObject model = input.value(QStringLiteral("model")).toObject();
+            if (input.value(QStringLiteral("useOwnModel")).toBool()
+                && modelconfig::isRemoved(services, model.value(QStringLiteral("provider")).toString(),
+                                           model.value(QStringLiteral("modelId")).toString())) {
+                throw ChannelError(services.translate(QStringLiteral("subagents.modelRequired"), QJsonObject{}));
+            }
             subagents::save(services.agentDir, path, scopeValue.toString(),
                             channels::argAt(args, 2));
         } catch (const std::exception &error) {

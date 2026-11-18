@@ -38,6 +38,9 @@ const SOURCES = [
 	"native/backend/domain/sessions/SessionCatalogDeletion.cpp",
 	"native/backend/domain/sessions/SessionCatalogStore.h",
 	"native/backend/domain/sessions/SessionCatalogMerge.cpp",
+	"native/backend/domain/sessions/SessionCatalogModelConfiguration.cpp",
+	"native/backend/domain/sessions/SessionIdentity.cpp",
+	"native/backend/domain/sessions/SessionIdentity.h",
 	"native/backend/domain/sessions/CatalogRecords.cpp",
 	"native/backend/domain/sessions/SessionFiles.cpp",
 ];

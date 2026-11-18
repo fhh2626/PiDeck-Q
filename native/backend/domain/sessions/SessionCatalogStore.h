@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRecursiveMutex>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -75,6 +76,14 @@ public:
     /** One coherent WSL identity (copy: a reference could be read mid-publication). */
     Context identityContext() const;
 
+    /** Remember confirmed removals so a late model patch cannot resurrect a cleared choice. */
+    void recordModelConfigurationChange(const QString &environment, const QString &wslDistro,
+                                        const QString &wslUser, const QJsonArray &removed,
+                                        const QJsonArray &available);
+    /** Reject only identities this process observed being removed from this exact configuration source. */
+    bool isModelRemoved(const QString &environment, const QString &wslDistro, const QString &wslUser,
+                        const QString &provider, const QString &modelId) const;
+
     /** Load from disk. Throws when the version is unsupported or both copies are corrupt. */
     void load();
 
@@ -134,6 +143,8 @@ private:
     QString originKeyForEntry(const CatalogEntry &entry) const;
     QJsonObject recordFromEntry(const CatalogEntry &entry, const SessionSummary *summary) const;
     QString resolveProjectPath(const CatalogEntry &entry) const;
+    /** Called with the catalog mutex held, in the same transaction as a model preference write. */
+    bool clearRemovedModelPreference(CatalogEntry &entry) const;
 
     QString backupFilePath() const;
     QVector<CatalogEntry> readEntries(const QString &path) const;
@@ -149,6 +160,7 @@ private:
     QVector<CatalogEntry> m_entries;
     QVector<CatalogEntry> m_transientEntries;
     QHash<QString, CatalogEntry> m_deletingEntries;
+    QHash<QString, QSet<QString>> m_removedModelsByEnvironment;
     quint64 m_deletionGeneration = 0;
     bool m_loaded = false;
     bool m_skipNextBackup = false;

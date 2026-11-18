@@ -15,6 +15,9 @@ using Table = QHash<QString, QString>;
 const Table &zhCN()
 {
     static const Table table{
+        {QStringLiteral("app.modelSelectionRequired"), QStringLiteral("当前模型已被删除，请选择新模型后再继续。")},
+        {QStringLiteral("app.visionModelSelectionRequired"), QStringLiteral("视觉桥的模型未配置或已被删除，请在设置中选择新模型后再发送图片。")},
+        {QStringLiteral("subagents.modelRequired"), QStringLiteral("请先选择一个模型，再保存。")},
         {QStringLiteral("mainFile.unsupportedMoveType"), QStringLiteral("此文件类型不支持移动，源文件已保留。")},
         {QStringLiteral("mainFile.unsupportedCopyType"), QStringLiteral("此文件类型不支持复制。")},
         {QStringLiteral("mainFile.renameTargetExists"),
@@ -245,6 +248,9 @@ const Table &zhCN()
 const Table &enUS()
 {
     static const Table table{
+        {QStringLiteral("app.modelSelectionRequired"), QStringLiteral("The selected model was removed. Choose a new model to continue.")},
+        {QStringLiteral("app.visionModelSelectionRequired"), QStringLiteral("The vision bridge model is missing or was removed. Choose a new model in Settings before sending images.")},
+        {QStringLiteral("subagents.modelRequired"), QStringLiteral("Pick a model before saving.")},
         {QStringLiteral("mainFile.unsupportedMoveType"),
          QStringLiteral("This file type cannot be moved. The source has been preserved.")},
         {QStringLiteral("mainFile.unsupportedCopyType"), QStringLiteral("This file type cannot be copied.")},

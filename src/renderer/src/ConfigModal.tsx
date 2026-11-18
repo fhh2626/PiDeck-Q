@@ -41,8 +41,9 @@ import { desktopApi } from "./desktopApi";
 import { collectModelSpecPatches } from "./utils/modelSpecAutoFill";
 import { Component, useRef, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { modelConfigurationEnvironmentAtom, removedModelReferencesAtom } from "./atoms/model-atoms";
-import { clearPiModelDefaults } from "./utils/modelSelection";
+import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedModelReferencesAtom } from "./atoms/model-atoms";
+import { modelConfigurationScopeKey } from "./utils/modelConfigurationScope";
+import { clearPiModelDefaults, getModelRemovalsSince } from "./utils/modelSelection";
 import { AuthTab } from "./config/AuthTab";
 import { ModelsTab } from "./config/ModelsTab";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
@@ -319,12 +320,14 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [error, setError] = useState<string | null>(null);
 	/** 各 tab 未保存修改集合：key 用 sectionTabValue 编码（如 "config:models"/"skills"），顶部保存按钮与关闭确认依赖它 */
 	const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(new Set());
+	const editVersionsRef = useRef<Record<string, number>>({});
 	/** 关闭弹框时存在未保存修改 → 弹出保存确认（借鉴设置页关闭逻辑） */
 	const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
 	const hasDirty = dirtyTabs.size > 0;
 
 	/** 标记某 tab 存在未保存修改（幂等；只用 setDirtyTabs 函数式更新，引用稳定） */
 	const markDirty = useCallback((tabKey: string) => {
+		editVersionsRef.current[tabKey] = (editVersionsRef.current[tabKey] ?? 0) + 1;
 		setDirtyTabs((prev) => (prev.has(tabKey) ? prev : new Set(prev).add(tabKey)));
 	}, []);
 
@@ -344,9 +347,10 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [authData, setAuthData] = useState<AuthFile>({});
 	const [settingsData, setSettingsData] = useState<SettingsFile>({});
 	const store = useStore();
-	const modelEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
+	const modelScopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
 	const removedModels = useAtomValue(removedModelReferencesAtom);
 	const loadGenerationRef = useRef(0);
+	const saveSequenceRef = useRef(0);
 	useEffect(() => {
 		setSettingsData((current) => clearPiModelDefaults(current, removedModels));
 	}, [removedModels]);
@@ -468,12 +472,13 @@ function ConfigModalContent(props: ConfigModalProps) {
 	} | null>(null);
 
 	const loadConfig = useCallback(
-		async (target: ConfigTab) => {
-			if (modelEnvironment !== store.get(modelConfigurationEnvironmentAtom)) return;
+		async (target: ConfigTab, sourceFileName?: string) => {
+			if (modelScopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))) return;
 			const generation = ++loadGenerationRef.current;
+			const removalVersions = store.get(modelRemovalVersionsByScopeAtom)[modelScopeKey] ?? {};
 			// A tab or config-root change makes an older read obsolete, including its errors and loading state.
 			const isCurrent = () => generation === loadGenerationRef.current
-				&& modelEnvironment === store.get(modelConfigurationEnvironmentAtom);
+				&& modelScopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
 			setLoading(true);
 			setError(null);
 			setConfigDiagnostic(null);
@@ -500,8 +505,11 @@ function ConfigModalContent(props: ConfigModalProps) {
 						api.config.getModels(),
 					]);
 					if (!isCurrent()) return;
-					// Removal may arrive while this request is pending, after the draft-clearing effect already ran.
-					setSettingsData(clearPiModelDefaults(settingsRes.parsed as SettingsFile, store.get(removedModelReferencesAtom)));
+					// Re-adding an identity restores availability, but cannot revive a default from a pre-deletion read.
+					setSettingsData(clearPiModelDefaults(settingsRes.parsed as SettingsFile, [
+						...store.get(removedModelReferencesAtom),
+						...getModelRemovalsSince(removalVersions, store.get(modelRemovalVersionsByScopeAtom)[modelScopeKey] ?? {}),
+					]));
 					setAuthData(authRes.parsed as AuthFile);
 					setModelsData(normalizeModelsFile(modelsRes.parsed));
 					setRawContent(settingsRes.raw);
@@ -569,14 +577,14 @@ function ConfigModalContent(props: ConfigModalProps) {
 					setConfigDiagnostic(res.diagnostic ?? null);
 				} else if (target === "raw") {
 					// 源文件 tab 复用当前 tab 对应的文件
-					const fileName =
+					const fileName = sourceFileName ?? (
 						tab === "models"
 							? "models.json"
 							: tab === "auth"
 								? "auth.json"
 								: tab === "trust"
 									? "trust.json"
-									: "settings.json";
+								: "settings.json");
 					setRawFileName(fileName);
 					const res =
 						fileName === "models.json"
@@ -599,7 +607,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 				if (isCurrent()) setLoading(false);
 			}
 		},
-		[tab, clearDirty, modelEnvironment, store],
+		[tab, clearDirty, modelScopeKey, store],
 	);
 
 	useEffect(() => {
@@ -635,16 +643,33 @@ function ConfigModalContent(props: ConfigModalProps) {
 		return (matched?.[1] ?? raw).trim();
 	};
 
+	/** A save owns one draft revision and configuration scope, including any preparatory lookup. */
+	const captureConfigSave = (dirtyKey?: string) => {
+		const generation = loadGenerationRef.current;
+		const version = dirtyKey ? editVersionsRef.current[dirtyKey] : undefined;
+		const sequence = ++saveSequenceRef.current;
+		return {
+			sequence,
+			isCurrent: () => sequence === saveSequenceRef.current
+				&& generation === loadGenerationRef.current
+				&& modelScopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))
+				&& (!dirtyKey || version === editVersionsRef.current[dirtyKey]),
+		};
+	};
+
 	/** 统一保存流程：写盘 → 校验 → toast；成功时清除对应 tab 的未保存标记，返回是否成功。 */
 	const saveAndReload = async (
 		saveFn: () => Promise<{ valid: boolean; error?: string }>,
 		successMessage?: string,
 		dirtyKey?: string,
+		transaction = captureConfigSave(dirtyKey),
 	): Promise<boolean> => {
+		if (!transaction.isCurrent()) return false;
 		setSaving(true);
 		setError(null);
 		try {
 			const result = await saveFn();
+			if (!transaction.isCurrent()) return false;
 			if (!result.valid) {
 				setError(result.error ?? t("config.saveFailed"));
 				return false;
@@ -654,10 +679,10 @@ function ConfigModalContent(props: ConfigModalProps) {
 			if (dirtyKey) clearDirty(dirtyKey);
 			return true;
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			if (transaction.isCurrent()) setError(e instanceof Error ? e.message : String(e));
 			return false;
 		} finally {
-			setSaving(false);
+			if (transaction.sequence === saveSequenceRef.current) setSaving(false);
 		}
 	};
 
@@ -1011,6 +1036,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 	};
 
 	const handleSaveModels = async (): Promise<boolean> => {
+		const transaction = captureConfigSave("config:models");
 		// 保存前按内置规格表批量补全空字段（用户无需逐个失焦）：
 		// 查询只读、补全只填空字段；结果写回 state 与落盘数据，保证保存的就是补全后的值
 		// （onSave 闭包读的是旧 modelsData，不能在 setState 之后再取）。
@@ -1042,12 +1068,13 @@ function ConfigModalContent(props: ConfigModalProps) {
 				? t("config.modelsSavedWithSpecs", { count: filledCount })
 				: t("config.modelsSaved"),
 			"config:models",
+			transaction,
 		);
 		// 保存成功后才把补全值写回 UI：失败时保留原值，下次保存会重新补全（幂等）
 		if (ok && filledCount > 0) {
 			setModelsData(base);
 		}
-		await loadConfig("models");
+		if (ok) await loadConfig("models");
 		return ok;
 	};
 
@@ -1151,7 +1178,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			undefined,
 			"config:auth",
 		);
-		await loadConfig("auth");
+		if (ok) await loadConfig("auth");
 		return ok;
 	};
 
@@ -1163,7 +1190,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			undefined,
 			"config:settings",
 		);
-		await loadConfig("settings");
+		if (ok) await loadConfig("settings");
 		return ok;
 	};
 
@@ -1175,7 +1202,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			undefined,
 			"config:trust",
 		);
-		await loadConfig("trust");
+		if (ok) await loadConfig("trust");
 		return ok;
 	};
 
@@ -1188,6 +1215,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			isModelsFile ? t("config.modelsSaved") : undefined,
 			"config:raw",
 		);
+		if (!ok) return false;
 		if (isModelsFile) {
 			await loadConfig("models");
 		} else if (rawFileName === "auth.json") await loadConfig("auth");
@@ -1199,22 +1227,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 	// 切换源文件时重新加载对应文件内容
 	const handleRawFileChange = async (fileName: string) => {
 		setRawFileName(fileName);
-		setLoading(true);
-		try {
-			const res =
-				fileName === "models.json"
-					? await api.config.getModels()
-					: fileName === "auth.json"
-						? await api.config.getAuth()
-						: fileName === "trust.json"
-							? await api.config.getTrust()
-							: await api.config.getSettings();
-			setRawContent(res.raw);
-		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoading(false);
-		}
+		await loadConfig("raw", fileName);
 	};
 
 	// ── 导出 / 导入 ─────────────────────────────────────

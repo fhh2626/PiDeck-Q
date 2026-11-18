@@ -140,6 +140,25 @@ test("compact branch counters cover child-only and single-parent families", asyn
   assert.equal(host.window.document.querySelector('[aria-haspopup="dialog"]').textContent, "1");
 }));
 
+test("restored path-only branches appear in the titlebar and stay within the session environment", async () => withHookHost(async (host) => {
+  const parent = record("parent", "p1", "Restored source");
+  const child = record("child", "p1", "Restored branch", { parentSessionPath: parent.filePath, createdAt: 2 });
+  const wsl = record("wsl", "p1", "Other environment", {
+    environment: "wsl", wslDistro: "Ubuntu", wslUser: "dev", parentSessionPath: parent.filePath, createdAt: 3,
+  });
+  const opened = [];
+  const ui = await fixture(host, { parent }, "parent", async (projectId, sessionId) => { opened.push([projectId, sessionId]); });
+  assert.equal(host.window.document.querySelector('[aria-haspopup="dialog"]'), null);
+  await ui.update({ parent, child, wsl });
+  const trigger = host.window.document.querySelector('[aria-haspopup="dialog"]');
+  assert.ok(trigger, "restored branches add a titlebar control without reopening the session");
+  assert.equal(trigger.textContent, "1");
+  await openMenu(host);
+  assert.equal(host.window.document.querySelector('[title="Other environment"]'), null);
+  await click(host, host.window.document.querySelector('[title="Restored branch"]'));
+  assert.deepEqual(opened, [["p1", "child"]]);
+}));
+
 test("moving focus to another session closes the old branch menu", async () => withHookHost(async (host) => {
   const records = {
     parent: record("parent", "p1", "Parent"),

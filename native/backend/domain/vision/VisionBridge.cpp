@@ -41,7 +41,8 @@ QJsonObject sanitize(const QJsonValue &input, bool allowClearedSelection = false
     const QString provider = raw.value(QStringLiteral("provider")).toString().trimmed().left(128);
     const QString model = raw.value(QStringLiteral("model")).toString().trimmed().left(128);
     // A removed selection remains visible when reading so the UI can request a
-    // replacement after restart. New saves must still contain both identifiers.
+    // replacement after restart. An explicitly disabled bridge may keep that empty
+    // choice so the user can turn it off without configuring another provider.
     const bool clearedSelection = allowClearedSelection
         && raw.value(QStringLiteral("provider")).isString()
         && raw.value(QStringLiteral("model")).isString()
@@ -154,7 +155,9 @@ QJsonObject state(const QString &agentDir)
 QJsonObject saveConfig(const QString &agentDir, const QJsonValue &input,
                        const QString &modelsConfigDir)
 {
-    QJsonObject next = sanitize(input);
+    const QJsonValue enabled = input.toObject().value(QStringLiteral("enabled"));
+    const bool explicitlyDisabled = enabled.isBool() && !enabled.toBool();
+    QJsonObject next = sanitize(input, explicitlyDisabled);
     if (next.isEmpty()) {
         return QJsonObject{{QStringLiteral("ok"), false},
                            {QStringLiteral("error"),
@@ -180,6 +183,17 @@ QJsonObject saveConfig(const QString &agentDir, const QJsonValue &input,
         return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), error}};
     }
     return QJsonObject{{QStringLiteral("ok"), true}};
+}
+
+bool requiresModelSelection(const QString &agentDir, const QJsonObject &currentModel)
+{
+    const QJsonObject config = state(agentDir).value(QStringLiteral("config")).toObject();
+    if (!config.value(QStringLiteral("enabled")).toBool()) return false;
+    if (!config.value(QStringLiteral("provider")).toString().isEmpty()
+        && !config.value(QStringLiteral("model")).toString().isEmpty()) return false;
+    // Pi returns the actual model in get_state. Use that process's capabilities,
+    // since the desktop's shared model list may belong to another environment.
+    return !currentModel.value(QStringLiteral("input")).toArray().contains(QStringLiteral("image"));
 }
 
 QJsonObject log(const QString &agentDir)

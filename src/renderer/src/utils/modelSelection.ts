@@ -8,6 +8,25 @@ export function isRemovedModel(model: Partial<ModelReference> | undefined, remov
 	));
 }
 
+/** Include deletions that were followed by re-addition while a shared preference request was pending. */
+export function getModelRemovalsSince(
+	previous: Readonly<Record<string, number>>,
+	current: Readonly<Record<string, number>>,
+): ModelReference[] {
+	const removed: ModelReference[] = [];
+	for (const [key, version] of Object.entries(current)) {
+		if (version === (previous[key] ?? 0)) continue;
+		try {
+			const identity: unknown = JSON.parse(key);
+			if (Array.isArray(identity) && identity.length === 2
+				&& typeof identity[0] === "string" && typeof identity[1] === "string") {
+				removed.push({ provider: identity[0], modelId: identity[1] });
+			}
+		} catch { /* Ignore an invalid identity rather than applying it to an unrelated preference. */ }
+	}
+	return removed;
+}
+
 /** An explicit empty saved choice masks pi's old in-memory selection after a deletion. */
 export function resolveSelectedModel(
 	stored: ModelReference | undefined,

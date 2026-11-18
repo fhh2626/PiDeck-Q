@@ -43,7 +43,9 @@ export function LocalFileLink({ path, children, labelClassName, onClick, onConte
 	};
 	const activate = async (event: MouseEvent<HTMLAnchorElement>) => {
 		event.preventDefault();
-		if (event.ctrlKey || event.metaKey || event.shiftKey) {
+		// Browser and preview surfaces still use their normal file callback when
+		// they cannot reveal a path through a native file manager.
+		if (files?.showInFolder && (event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey)) {
 			await reveal();
 			return;
 		}
@@ -64,8 +66,7 @@ export function LocalFileLink({ path, children, labelClassName, onClick, onConte
 			onClick={(event) => { void activate(event); }}
 			onAuxClick={(event) => {
 				if (event.button !== 1) return;
-				event.preventDefault();
-				void reveal();
+				void activate(event);
 			}}
 			onContextMenu={(event) => {
 				onContextMenu?.(event);

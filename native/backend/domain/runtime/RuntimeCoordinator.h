@@ -25,6 +25,7 @@
 namespace modellist {
 struct ThinkingSupport;
 }
+namespace modelconfig { struct Scope; }
 
 /**
  * Multi-session pi runtime owner.
@@ -303,7 +304,7 @@ public:
     void setModel(const QJsonObject &target, const QString &provider, const QString &modelId,
                   std::function<void(QJsonObject)> done);
     /** Prevent an existing pi snapshot from silently using edited/deleted model definitions. */
-    void modelConfigurationChanged(const QJsonArray &modified, const QJsonArray &removed,
+    void modelConfigurationChanged(const modelconfig::Scope &scope, const QJsonArray &modified, const QJsonArray &removed,
                                    const QJsonArray &authProviders, const QJsonArray &available);
     void setThinking(const QJsonObject &target, const QString &level,
                      std::function<void(QJsonObject)> done);

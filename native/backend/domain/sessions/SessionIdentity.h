@@ -15,6 +15,9 @@ namespace sessionidentity {
 /** `native` / `wsl`; the catalog stores this verbatim. */
 bool isValidEnvironment(const QString &environment);
 
+/** Model configuration namespace. Unknown WSL identities only match another unknown identity. */
+QString environmentScopeKey(const QString &environment, const QString &wslDistro, const QString &wslUser);
+
 /**
  * Canonical comparison form: forward slashes, no trailing slash, lower-cased for
  * native paths only. This is the value that goes into an origin key.

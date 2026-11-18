@@ -1,11 +1,15 @@
 import { useEffect, useRef } from "react";
 import { useSetAtom, useStore } from "jotai";
-import type { AppSettings, ModelReference, SessionEnvironment } from "../../../shared/types";
+import type { AppSettings, ModelConfigurationScope, ModelReference, SessionEnvironment } from "../../../shared/types";
 import {
 	modelConfigurationEnvironmentAtom,
+	modelConfigurationVersionsByScopeAtom,
+	modelConfigurationWslIdentityAtom,
 	modelListRevisionAtom,
-	removedModelReferencesByEnvironmentAtom,
+	modelRemovalVersionsByScopeAtom,
+	removedModelReferencesByScopeAtom,
 	sharedRemovedModelReferencesAtom,
+	sharedModelRemovalVersionsAtom,
 } from "../atoms/model-atoms";
 import { sessionRecordsAtom, sessionRuntimeByIdAtom } from "../atoms/session-atoms";
 import { modelPendingByIdAtom } from "../atoms/composer-atoms";
@@ -13,6 +17,7 @@ import { visionBridgeCapabilitiesAtom, visionBridgeRequestSeqAtom } from "../ato
 import { desktopApi } from "../desktopApi";
 import { clearAppModelReferences, clearRemovedModelReferences, isRemovedModel } from "../utils/modelSelection";
 import { readWelcomeModelPreference, WELCOME_MODEL_KEY } from "../utils/chatSessionBootstrap";
+import { modelConfigurationScopeKey } from "../utils/modelConfigurationScope";
 
 /**
  * 订阅主进程的模型列表更新（models:changed），并递增版本号。
@@ -23,6 +28,7 @@ import { readWelcomeModelPreference, WELCOME_MODEL_KEY } from "../utils/chatSess
 export function useModelListSync(
 	onSettingsChange?: (update: (settings: AppSettings) => AppSettings) => void,
 	environment: SessionEnvironment = "native",
+	wslIdentity: Pick<ModelConfigurationScope, "wslDistro" | "wslUser"> = {},
 ): void {
 	const bumpRevision = useSetAtom(modelListRevisionAtom);
 	const store = useStore();
@@ -30,10 +36,15 @@ export function useModelListSync(
 	onSettingsChangeRef.current = onSettingsChange;
 	const environmentRef = useRef(environment);
 	environmentRef.current = environment;
+	const scopeRef = useRef<ModelConfigurationScope>({ environment, ...wslIdentity });
+	scopeRef.current = { environment, ...wslIdentity };
+	const { wslDistro, wslUser } = wslIdentity;
 
 	useEffect(() => {
 		store.set(modelConfigurationEnvironmentAtom, environment);
-	}, [environment, store]);
+		store.set(modelConfigurationWslIdentityAtom, (previous) => previous.wslDistro === wslDistro && previous.wslUser === wslUser
+			? previous : { wslDistro, wslUser });
+	}, [environment, wslDistro, wslUser, store]);
 
 	useEffect(
 		() =>
@@ -41,24 +52,55 @@ export function useModelListSync(
 				bumpRevision((revision) => revision + 1);
 				if (!change) return;
 				const changedEnvironment = change.environment ?? environmentRef.current;
+				const changedScope: ModelConfigurationScope = {
+					environment: changedEnvironment,
+					wslDistro: change.wslDistro,
+					wslUser: change.wslUser,
+				};
+				const scopeKey = modelConfigurationScopeKey(changedScope);
 				const removed = change.removedModels ?? [];
 				const changed = change.changedModels ?? [];
+				// Removal followed by re-adding the same identity must not validate an older command result.
+				store.set(modelConfigurationVersionsByScopeAtom, (previous) => {
+					const versions = { ...previous[scopeKey] };
+					for (const model of [...removed, ...changed]) {
+						const key = JSON.stringify([model.provider, model.modelId]);
+						versions[key] = (versions[key] ?? 0) + 1;
+					}
+					return { ...previous, [scopeKey]: versions };
+				});
 				const updateRemoved = (previous: ModelReference[]) => [
 					...previous.filter((model) => !isRemovedModel(model, changed) && !isRemovedModel(model, removed)),
 					...removed,
 				];
-				store.set(removedModelReferencesByEnvironmentAtom, (previous) => ({
-					...previous, [changedEnvironment]: updateRemoved(previous[changedEnvironment]),
+				store.set(removedModelReferencesByScopeAtom, (previous) => ({
+					...previous, [scopeKey]: updateRemoved(previous[scopeKey] ?? []),
 				}));
 				store.set(sharedRemovedModelReferencesAtom, updateRemoved);
 				if (!removed.length) return;
+				store.set(modelRemovalVersionsByScopeAtom, (previous) => {
+					const versions = { ...previous[scopeKey] };
+					for (const model of removed) {
+						const key = JSON.stringify([model.provider, model.modelId]);
+						versions[key] = (versions[key] ?? 0) + 1;
+					}
+					return { ...previous, [scopeKey]: versions };
+				});
+				store.set(sharedModelRemovalVersionsAtom, (previous) => {
+					const versions = { ...previous };
+					for (const model of removed) {
+						const key = JSON.stringify([model.provider, model.modelId]);
+						versions[key] = (versions[key] ?? 0) + 1;
+					}
+					return versions;
+				});
 				// The initial capability read may still be pending with config === null,
 				// or its consumers may be unmounted. Invalidate it before any new effect runs.
 				store.set(visionBridgeRequestSeqAtom, (previous) => previous + 1);
 				const records = store.get(sessionRecordsAtom);
 				const runtimes = store.get(sessionRuntimeByIdAtom);
 				const affectedRecords = Object.values(records).filter(
-					(record) => (record.environment ?? "native") === changedEnvironment,
+					(record) => modelConfigurationScopeKey(record) === scopeKey,
 				);
 				const affectedIds = new Set(affectedRecords.map((record) => record.id));
 				const pending = store.get(modelPendingByIdAtom);
@@ -88,7 +130,7 @@ export function useModelListSync(
 				}
 				store.set(visionBridgeCapabilitiesAtom, { ...capabilities, config, loadKey: "" });
 				try {
-					if (changedEnvironment === environmentRef.current && isRemovedModel(readWelcomeModelPreference()?.model, removed)) {
+					if (scopeKey === modelConfigurationScopeKey(scopeRef.current) && isRemovedModel(readWelcomeModelPreference()?.model, removed)) {
 						localStorage.removeItem(WELCOME_MODEL_KEY);
 					}
 				} catch { /* Storage can be unavailable in restricted web views. */ }

@@ -95,10 +95,19 @@ export type AvailableModel = {
 /** Exact model identity, including ids that themselves contain a slash. */
 export type ModelReference = { provider: string; modelId: string };
 
+/** Models belong to one native installation or one WSL distro/user configuration. */
+export type ModelConfigurationScope = {
+	environment: SessionEnvironment;
+	wslDistro?: string;
+	wslUser?: string;
+};
+
 /** Optional models:changed payload. Older hosts send an empty event. */
 export type ModelListChange = {
 	/** Configuration source whose models changed. Omitted by older hosts. */
 	environment?: SessionEnvironment;
+	wslDistro?: string;
+	wslUser?: string;
 	removedModels: ModelReference[];
 	changedModels: ModelReference[];
 };

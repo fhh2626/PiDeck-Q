@@ -2,6 +2,7 @@
 
 #include "EventHub.h"
 #include "HostRpcClient.h"
+#include "ModelPreferenceValidation.h"
 #include "SettingsCatalog.h"
 #include "WslController.h"
 #include "logs/AppLogStore.h"
@@ -84,7 +85,7 @@ void registerSettingsChannels(ChannelRegistry &registry, ChannelServices &servic
                       [&services](const QJsonArray &args, ChannelResponder responder) {
         const QJsonObject patch = channels::objectArg(args, 0);
         const SettingsCatalogRead settings =
-            updateSettingsCatalog(settingsPath(services), patch, services.agentDir);
+            modelconfig::updateDesktopSettings(services, settingsPath(services), patch);
         if (!settings.ok) {
             responder.reject(settings.error);
             return;

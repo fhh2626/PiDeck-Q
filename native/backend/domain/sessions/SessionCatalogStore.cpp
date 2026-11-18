@@ -367,6 +367,7 @@ QJsonObject SessionCatalogStore::createAnonymous(const QString &projectId, const
     entry.hasModel = hasModel;
     entry.modelProvider = modelProvider;
     entry.modelId = modelId;
+    clearRemovedModelPreference(entry);
     entry.hasThinkingLevel = hasThinkingLevel;
     entry.thinkingLevel = thinkingLevel;
     entry.createdAt = now;
@@ -414,6 +415,7 @@ QJsonObject SessionCatalogStore::createDraft(const QString &projectId, const QSt
     created.hasModel = hasModel;
     created.modelProvider = modelProvider;
     created.modelId = modelId;
+    clearRemovedModelPreference(created);
     created.hasThinkingLevel = hasThinkingLevel;
     created.thinkingLevel = thinkingLevel;
     created.createdAt = now;
@@ -439,6 +441,7 @@ QJsonObject SessionCatalogStore::update(const QString &id, const QJsonObject &pa
             entry.hasModel = true;
             entry.modelProvider = model.value(QStringLiteral("provider")).toString();
             entry.modelId = model.value(QStringLiteral("modelId")).toString();
+            clearRemovedModelPreference(entry);
         }
         if (patch.contains(QStringLiteral("thinkingLevel"))) {
             entry.hasThinkingLevel = true;
@@ -459,6 +462,7 @@ QJsonObject SessionCatalogStore::update(const QString &id, const QJsonObject &pa
                 entry.hasModel = true;
                 entry.modelProvider = model.value(QStringLiteral("provider")).toString();
                 entry.modelId = model.value(QStringLiteral("modelId")).toString();
+                clearRemovedModelPreference(entry);
             }
             if (patch.contains(QStringLiteral("thinkingLevel"))) {
                 entry.hasThinkingLevel = true;
@@ -539,6 +543,7 @@ CatalogEntry SessionCatalogStore::attachRuntime(const QString &sessionId, const 
                 }
             }
         }
+        clearRemovedModelPreference(entry);
         entry.updatedAt = QDateTime::currentMSecsSinceEpoch();
         for (int index = 0; index < entries.size(); ++index) {
             if (entries.at(index).id == sessionId) entries[index] = entry;

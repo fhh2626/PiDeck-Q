@@ -13,7 +13,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { modelConfigurationEnvironmentAtom, modelListRevisionAtom } from "../../../atoms/model-atoms";
+import { modelConfigurationScopeAtom, modelListRevisionAtom } from "../../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../../utils/modelConfigurationScope";
 import { Check, ChevronsUpDown, RefreshCw, Trash2 } from "lucide-react";
 import { t } from "../../../i18n";
 import { desktopApi } from "../../../desktopApi";
@@ -55,7 +56,8 @@ export function VisionBridgeSettingsTab(props: {
 }) {
 	const { draft, saving, notice, configDir, onChange } = props;
 	const store = useStore();
-	const modelEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
+	const modelScope = useAtomValue(modelConfigurationScopeAtom);
+	const scopeKey = modelConfigurationScopeKey(modelScope);
 	const modelListRevision = useAtomValue(modelListRevisionAtom);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	// 运行日志（诊断“视觉桥走没走”）：挂载时拉一次，用户可手动刷新
@@ -76,7 +78,7 @@ export function VisionBridgeSettingsTab(props: {
 	const loadModels = useCallback(async () => {
 		const generation = ++modelLoadGenerationRef.current;
 		const isCurrent = () => generation === modelLoadGenerationRef.current
-			&& modelEnvironment === store.get(modelConfigurationEnvironmentAtom);
+			&& scopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
 		try {
 			const next = await desktopApi.projects.listModels(undefined);
 			if (isCurrent()) setModels(next);
@@ -84,7 +86,7 @@ export function VisionBridgeSettingsTab(props: {
 			if (isCurrent()) setModels([]);
 		}
 		return isCurrent();
-	}, [modelEnvironment, store]);
+	}, [scopeKey, store]);
 
 	useEffect(() => {
 		void loadLog();

@@ -3,6 +3,7 @@
 #include "ConfigFiles.h"
 #include "JsonFile.h"
 #include "ModelConfigurationChanges.h"
+#include "ModelPreferenceValidation.h"
 #include "ProviderProbe.h"
 #include "TrustBroker.h"
 
@@ -89,11 +90,15 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     });
 
     registry.add(QStringLiteral("config:save-settings"), [&services](const QJsonArray &args) {
+        const auto selection = modelconfig::validateSettingsSelection(services, channels::argAt(args, 0));
+        if (!selection.valid) return validationJson(selection);
         return validationJson(configfiles::saveSettings(services.configDir, channels::argAt(args, 0)));
     });
 
     registry.add(QStringLiteral("config:save-raw"), [&services](const QJsonArray &args) {
         const QString fileName = channels::stringArg(args, 0);
+        const auto selection = modelconfig::validateRawSettingsSelection(services, fileName, channels::stringArg(args, 1));
+        if (!selection.valid) return validationJson(selection);
         const QJsonValue previous = modelconfig::snapshot(services);
         const QJsonValue previousAuth = fileName == QLatin1String("auth.json")
             ? modelconfig::authSnapshot(services) : QJsonValue(QJsonValue::Undefined);
@@ -110,11 +115,18 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     });
 
     registry.add(QStringLiteral("config:import"), [&services](const QJsonArray &args) {
+        const auto selection = modelconfig::validateImportedSettingsSelection(services, channels::stringArg(args, 0));
+        if (!selection.valid) return validationJson(selection);
         const QJsonValue previous = modelconfig::snapshot(services);
         const QJsonValue previousAuth = modelconfig::authSnapshot(services);
         const auto validation = configfiles::importPackage(
             services.configDir, channels::stringArg(args, 0), services.translate);
-        if (validation.valid) modelconfig::saved(services, previous, previousAuth);
+        // Import writes several files in order. A later failure must still reconcile
+        // earlier successful model/auth writes with the discovery cache and live agents.
+        if (validation.valid || modelconfig::snapshot(services) != previous
+            || modelconfig::authSnapshot(services) != previousAuth) {
+            modelconfig::saved(services, previous, previousAuth);
+        }
         return validationJson(validation);
     });
 

@@ -3,6 +3,12 @@
 #include <QRegularExpression>
 
 namespace sessionidentity {
+
+QString environmentScopeKey(const QString &environment, const QString &wslDistro, const QString &wslUser)
+{
+    if (environment != QLatin1String("wsl")) return QStringLiteral("native");
+    return QStringLiteral("wsl") + QChar(0) + wslDistro.trimmed().toLower() + QChar(0) + wslUser.trimmed();
+}
 namespace {
 
 QString collapsedSlashes(const QString &path)

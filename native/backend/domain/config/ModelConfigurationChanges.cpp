@@ -6,9 +6,12 @@
 #include "JsonFile.h"
 #include "ProjectStore.h"
 #include "SessionCatalogStore.h"
+#include "SessionIdentity.h"
 #include "SettingsCatalog.h"
 #include "VisionBridge.h"
+#include "../../app/WslController.h"
 #include "../runtime/RuntimeCoordinator.h"
+#include "../wsl/WslEnvironment.h"
 
 #include <QDir>
 #include <QJsonArray>
@@ -132,7 +135,25 @@ void clearPiSettings(const QString &path, const QJsonArray &removed, const Model
     if (changed) writeObject(path, settings);
 }
 
-void clearStoredReferences(ChannelServices &services, const QJsonArray &removed, const Models &remaining)
+bool projectUsesConfigurationScope(QString path, const Scope &scope)
+{
+    if (scope.environment != QLatin1String("wsl")) return true;
+    path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    // Project defaults belong to the physical folder. A WSL share identifies its
+    // distro, while ordinary host folders can be shared by multiple runtimes.
+    const QStringList roots{wsl::defaultUncRoot(), QStringLiteral("//wsl.localhost"), QStringLiteral("//wsl$")};
+    for (QString root : roots) {
+        root.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        while (root.endsWith(QLatin1Char('/'))) root.chop(1);
+        const QString prefix = root + QLatin1Char('/');
+        if (!path.startsWith(prefix, Qt::CaseInsensitive)) continue;
+        return path.mid(prefix.size()).section(QLatin1Char('/'), 0, 0)
+            .compare(scope.wslDistro.trimmed(), Qt::CaseInsensitive) == 0;
+    }
+    return true;
+}
+
+void clearStoredReferences(ChannelServices &services, const Scope &scope, const QJsonArray &removed, const Models &remaining)
 {
     if (removed.isEmpty()) return;
     QStringList failures;
@@ -146,9 +167,15 @@ void clearStoredReferences(ChannelServices &services, const QJsonArray &removed,
     const QJsonObject appSettings = readSettingsCatalog(
         QDir(services.userDataDir).filePath(QStringLiteral("settings.json")), services.agentDir).settings;
     if (services.projects) {
-        for (const QJsonValue &value : services.projects->visibleRecords(appSettings)) {
+        // Settings can already request another environment while its probe is pending.
+        // Preference cleanup follows the directory that was actually saved.
+        QJsonObject projectVisibility = appSettings;
+        projectVisibility.insert(QStringLiteral("wslEnabled"), scope.environment == QLatin1String("wsl"));
+        for (const QJsonValue &value : services.projects->visibleRecords(projectVisibility)) {
             const QString path = value.toObject().value(QStringLiteral("path")).toString();
-            if (!path.isEmpty()) settingsPaths.insert(QDir(path).filePath(QStringLiteral(".pi/settings.json")));
+            if (!path.isEmpty() && projectUsesConfigurationScope(path, scope)) {
+                settingsPaths.insert(QDir(path).filePath(QStringLiteral(".pi/settings.json")));
+            }
         }
     }
     for (const QString &path : settingsPaths) attempt([&]() { clearPiSettings(path, removed, remaining); });
@@ -199,11 +226,10 @@ void clearStoredReferences(ChannelServices &services, const QJsonArray &removed,
         if (!failures.isEmpty()) throw ChannelError(failures.join(QLatin1Char('\n')));
         return;
     }
-    const QString environment = appSettings.value(QStringLiteral("wslEnabled")).toBool()
-        ? QStringLiteral("wsl") : QStringLiteral("native");
+    const QString namespaceKey = sessionidentity::environmentScopeKey(scope.environment, scope.wslDistro, scope.wslUser);
     QSet<QString> changedProjects;
     for (const CatalogEntry &entry : services.catalog->listEntries()) {
-        if (entry.environment != environment || !entry.hasModel
+        if (sessionidentity::environmentScopeKey(entry.environment, entry.wslDistro, entry.wslUser) != namespaceKey || !entry.hasModel
             || !matches(entry.modelProvider, entry.modelId, removed, remaining)) continue;
         attempt([&]() {
             services.catalog->update(entry.id, QJsonObject{{QStringLiteral("model"),
@@ -222,6 +248,19 @@ void clearStoredReferences(ChannelServices &services, const QJsonArray &removed,
 
 } // namespace
 
+Scope activeScope(const ChannelServices &services)
+{
+    Scope scope;
+    // The requested settings/context can already name a new distro while its probe
+    // is pending. The published environment owns the file that this save actually changed.
+    if (services.wsl && services.wsl->current().isValid()) {
+        scope.environment = QStringLiteral("wsl");
+        scope.wslDistro = services.wsl->current().distro;
+        scope.wslUser = services.wsl->current().user;
+    }
+    return scope;
+}
+
 QJsonValue snapshot(const ChannelServices &services)
 {
     const auto read = configfiles::read(services.configDir, QStringLiteral("models.json"), QJsonObject{});
@@ -236,6 +275,7 @@ QJsonValue authSnapshot(const ChannelServices &services)
 
 void saved(ChannelServices &services, const QJsonValue &previousModels, const QJsonValue &previousAuth)
 {
+    const Scope scope = activeScope(services);
     const Models previous = definitions(previousModels);
     const QJsonValue currentModels = snapshot(services);
     const Models current = definitions(currentModels);
@@ -277,15 +317,22 @@ void saved(ChannelServices &services, const QJsonValue &previousModels, const QJ
     // The model file has already been saved. A failed preference write must not leave
     // a successful configuration change hidden behind the old discovery/runtime cache.
     std::exception_ptr cleanupFailure;
-    try { clearStoredReferences(services, removed, current); }
+    if (services.catalog) {
+        services.catalog->recordModelConfigurationChange(scope.environment, scope.wslDistro, scope.wslUser, removed, changed);
+    }
+    try { clearStoredReferences(services, scope, removed, current); }
     catch (...) { cleanupFailure = std::current_exception(); }
     if (services.runtimeCoordinator) {
-        services.runtimeCoordinator->modelConfigurationChanged(modified, removed, authProviders, changed);
+        try { services.runtimeCoordinator->modelConfigurationChanged(scope, modified, removed, authProviders, changed); }
+        catch (...) { if (!cleanupFailure) cleanupFailure = std::current_exception(); }
     }
-    publishModelList(services, QJsonObject{{QStringLiteral("environment"),
-        channels::settingValue(services, QStringLiteral("wslEnabled")).toBool() ? QStringLiteral("wsl") : QStringLiteral("native")},
-        {QStringLiteral("removedModels"), removed},
-                                          {QStringLiteral("changedModels"), changed}});
+    QJsonObject event{{QStringLiteral("environment"), scope.environment},
+                      {QStringLiteral("removedModels"), removed}, {QStringLiteral("changedModels"), changed}};
+    if (scope.environment == QLatin1String("wsl")) {
+        event.insert(QStringLiteral("wslDistro"), scope.wslDistro);
+        event.insert(QStringLiteral("wslUser"), scope.wslUser);
+    }
+    publishModelList(services, event);
     if (cleanupFailure) std::rethrow_exception(cleanupFailure);
 }
 

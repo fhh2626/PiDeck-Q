@@ -7,6 +7,7 @@ import { desktopApi as api } from "../../desktopApi";
 import type { PiUpdateController } from "../../hooks/usePiUpdate";
 import { t } from "../../i18n";
 import { showNotice } from "../../utils/notice";
+import type { SaveAppSettings } from "../../hooks/useSettingsDraft";
 
 const SettingsModal = lazy(() =>
   import("./SettingsModal").then((module) => ({ default: module.SettingsModal })),
@@ -18,7 +19,7 @@ type SettingsFeatureRootProps = {
   webServiceChanging: boolean;
   onRestartWebService: () => void;
   appInfo: AppInfo;
-  onChange: (patch: Partial<AppSettings>) => void | Promise<void>;
+  onChange: SaveAppSettings;
 };
 
 /** Owns Settings overlay visibility and modal-only commands without mirroring AppSettings. */

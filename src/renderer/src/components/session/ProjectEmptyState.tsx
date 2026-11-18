@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { FolderGit2, HatGlasses, Plus, Sparkles } from "lucide-react";
 import type { AvailableModel, Project, SessionLaunchPreferences } from "../../../../shared/types";
@@ -10,8 +10,9 @@ import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY } from "../../utils/chatSession
 import { EmptyState } from "./SurfaceParts";
 import { THINKING_LEVELS } from "./sessionPickerOptions";
 import { modelListRevisionAtom } from "../../atoms";
-import { modelConfigurationEnvironmentAtom, removedModelReferencesAtom } from "../../atoms/model-atoms";
-import { isRemovedModel } from "../../utils/modelSelection";
+import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedModelReferencesAtom } from "../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
+import { getModelRemovalsSince, isRemovedModel } from "../../utils/modelSelection";
 import { showNotice } from "../../utils/notice";
 import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../../shared/thinkingLevelSupport";
 
@@ -58,7 +59,9 @@ export function ProjectEmptyState(props: {
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
   const modelListRevision = useAtomValue(modelListRevisionAtom);
   const store = useStore();
-  const environment = useAtomValue(modelConfigurationEnvironmentAtom);
+  const scopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
+  const [choiceScopeKey, setChoiceScopeKey] = useState<string>();
+  const choiceRevisionRef = useRef({ model: 0, thinking: 0 });
   const removedModels = useAtomValue(removedModelReferencesAtom);
   useEffect(() => {
     if (!removedModels.some((model) => modelChoice === `${model.provider}/${model.modelId}`)) return;
@@ -69,23 +72,36 @@ export function ProjectEmptyState(props: {
   // 配置弹窗后面时也要重取，否则刚勾选的 xhigh/max 要等空态重挂载才会出现在选择器里。
   useEffect(() => {
     let alive = true;
+    setModels([]);
     void desktopApi.projects.listModels(props.activeProject?.id).then((items) => {
       if (alive) setModels(items);
     }).catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, [modelListRevision, props.activeProject?.id, environment]);
+  }, [modelListRevision, props.activeProject?.id, scopeKey]);
 
   useEffect(() => {
     let alive = true;
+    const revision = { ...choiceRevisionRef.current };
+    const removalVersions = store.get(modelRemovalVersionsByScopeAtom)[scopeKey] ?? {};
+    const isCurrent = () => alive && scopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
+    setModelChoice("");
+    setSelectionCleared(false);
+    setThinkingChoice("");
     const apply = (model: string | undefined, thinking: string | undefined, explicitlyCleared = false) => {
-      if (alive) {
-        // A save can finish while this initial settings read is in flight.
-        const deleted = store.get(removedModelReferencesAtom).some((ref) => model === `${ref.provider}/${ref.modelId}`);
-        setModelChoice(deleted ? "" : model ?? "");
-        setSelectionCleared(explicitlyCleared || deleted);
-        setThinkingChoice(thinking ?? "medium");
+      if (isCurrent()) {
+        // A delete and re-add can both finish while this initial settings read is in flight.
+        const removed = [...store.get(removedModelReferencesAtom),
+          ...getModelRemovalsSince(removalVersions, store.get(modelRemovalVersionsByScopeAtom)[scopeKey] ?? {})];
+        const deleted = removed.some((ref) => model === `${ref.provider}/${ref.modelId}`);
+        // Explicit choices made while loading take precedence over this older default snapshot.
+        if (revision.model === choiceRevisionRef.current.model) {
+          setModelChoice(deleted ? "" : model ?? "");
+          setSelectionCleared(explicitlyCleared || deleted);
+          setChoiceScopeKey(scopeKey);
+        }
+        if (revision.thinking === choiceRevisionRef.current.thinking) setThinkingChoice(thinking ?? "medium");
       }
     };
 
@@ -95,6 +111,7 @@ export function ProjectEmptyState(props: {
     void desktopApi.config
       .getSettings()
       .then(({ parsed }) => {
+        if (!isCurrent()) return;
         // parsed 为 { defaultProvider?: unknown; defaultModel?: unknown; defaultThinkingLevel?: unknown }
         // 逐字段用 typeof 收窄为 string，未命中即视为缺省（返回 undefined）。
         const provider =
@@ -147,18 +164,20 @@ export function ProjectEmptyState(props: {
       })
       .catch(() => {
         // 配置不可读（非 Electron/网络预览环境）时保持默认空；空态不阻塞。
+        apply(undefined, undefined);
       });
     return () => {
       alive = false;
     };
-  }, [environment, store]);
+  }, [scopeKey, store]);
 
   const hasProject = Boolean(props.activeProject);
 
   /** Empty or deleted launch choices stay visible until the user selects a replacement. */
   function launch(anonymous: boolean) {
     const preferences = readLaunchPreferences(modelChoice, thinkingChoice);
-    if (selectionCleared || isRemovedModel(preferences.model, store.get(removedModelReferencesAtom))) {
+    if (choiceScopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))
+      || selectionCleared || isRemovedModel(preferences.model, store.get(removedModelReferencesAtom))) {
       showNotice(t("app.modelSelectionRequired"), 4000);
       setModelPickerOpen(true);
       return;
@@ -199,11 +218,14 @@ export function ProjectEmptyState(props: {
     : "";
 
   const saveModelChoice = (value: string) => {
+    if (scopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))) return;
     if (store.get(removedModelReferencesAtom).some((ref) => value === `${ref.provider}/${ref.modelId}`)) {
       showNotice(t("app.modelSelectionRequired"), 4000);
       return;
     }
     setModelChoice(value);
+    choiceRevisionRef.current.model += 1;
+    setChoiceScopeKey(scopeKey);
     setSelectionCleared(false);
     const model = models.find((item) => `${item.provider}/${item.id}` === value);
     if (!model) return;
@@ -221,6 +243,8 @@ export function ProjectEmptyState(props: {
   };
 
   const saveThinkingChoice = (value: string) => {
+    if (scopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))) return;
+    choiceRevisionRef.current.thinking += 1;
     setThinkingChoice(value);
     try {
       localStorage.setItem(WELCOME_THINKING_KEY, value);

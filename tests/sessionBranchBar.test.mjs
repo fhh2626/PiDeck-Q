@@ -17,7 +17,9 @@ function record(overrides = {}) {
 		projectId: overrides.projectId ?? "p1",
 		title: overrides.title ?? `会话 ${seq}`,
 		source: "pi",
-		environment: "native",
+		environment: overrides.environment ?? "native",
+		wslDistro: overrides.wslDistro,
+		wslUser: overrides.wslUser,
 		filePath: overrides.filePath ?? `/sessions/${overrides.id ?? `s-${seq}`}.jsonl`,
 		parentSessionId: overrides.parentSessionId,
 		parentSessionPath: overrides.parentSessionPath,
@@ -77,6 +79,33 @@ test("parentSessionId 未解析时按 parentSessionPath 兜底匹配来源", () 
 	const family = deriveBranchFamily({ parent, b1: current }, "b1");
 	assert.ok(family);
 	assert.equal(family.parent?.id, "parent");
+});
+
+test("restored child paths count as branches before their catalog parent id is resolved", () => {
+	const parent = record({ id: "parent", filePath: "/sessions/source.jsonl", createdAt: 1 });
+	const child = record({ id: "child", parentSessionPath: parent.filePath, createdAt: 2 });
+	const family = deriveBranchFamily({ parent, child }, "parent");
+	assert.deepEqual(family?.children.map((entry) => entry.id), ["child"]);
+});
+
+test("branch navigation keeps identical paths in separate native and WSL environments", () => {
+	const parent = record({ id: "parent", filePath: "/sessions/source.jsonl", createdAt: 1 });
+	const native = record({ id: "native", parentSessionPath: parent.filePath, createdAt: 2 });
+	const wsl = record({ id: "wsl", environment: "wsl", wslDistro: "Ubuntu", wslUser: "dev", parentSessionPath: parent.filePath, createdAt: 3 });
+	const family = deriveBranchFamily({ parent, native, wsl }, "native");
+	assert.deepEqual(family?.siblings.map((entry) => entry.id), ["native"]);
+	assert.equal(deriveBranchFamily({ parent, native, wsl }, "wsl"), undefined);
+});
+
+test("WSL branch navigation requires the same distribution and user", () => {
+	const base = { environment: "wsl", wslDistro: "Ubuntu", wslUser: "dev" };
+	const parent = record({ id: "parent", ...base, filePath: "/sessions/source.jsonl" });
+	const current = record({ id: "current", ...base, parentSessionPath: parent.filePath });
+	const otherDistro = record({ id: "distro", ...base, wslDistro: "Debian", parentSessionPath: parent.filePath });
+	const otherUser = record({ id: "user", ...base, wslUser: "root", parentSessionPath: parent.filePath });
+	const sameDistro = record({ id: "same", ...base, wslDistro: "ubuntu", parentSessionPath: parent.filePath });
+	const family = deriveBranchFamily({ parent, current, otherDistro, otherUser, sameDistro }, "current");
+	assert.deepEqual(family?.siblings.map((entry) => entry.id), ["current", "same"]);
 });
 
 test("匿名运行时会话（noSession）不参与分支关系", () => {

@@ -11,7 +11,6 @@ import {
   setSessionComposerModeAtom,
   thinkingLevelPendingAtomFamily,
   thinkingLevelPendingByIdAtom,
-  upsertSessionAtom,
 } from "../../atoms";
 import type { PromptTemplateInfo } from "../../composerBehavior";
 import {
@@ -26,15 +25,16 @@ import { t } from "../../i18n";
 import {
   SessionCommandFailure,
   requireSessionCommand,
-  toSessionRuntimeTarget,
 } from "../../utils/sessionCommands";
 import { ConfirmDialog } from "../app/AppParts";
 import { useSessionPaneActions } from "./SessionPaneServices";
 import { usePendingModelApply } from "../../hooks/usePendingModelApply";
-import { clampThinkingLevelForModel, findModelThinkingSupport, isExtendedThinkingLevel } from "../../../../shared/thinkingLevelSupport";
+import { useSessionModelMutations, type ModelSelectionOperation } from "../../hooks/useSessionModelMutations";
+import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../../shared/thinkingLevelSupport";
 import type { ComposerPickerKind } from "../../hooks/useSessionComposerController";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY, readWelcomeModelPreference, readWelcomeThinkingPreference } from "../../utils/chatSessionBootstrap";
-import { modelConfigurationEnvironmentAtom, modelListRevisionAtom, removedModelReferencesByEnvironmentAtom } from "../../atoms/model-atoms";
+import { modelConfigurationScopeAtom, modelListRevisionAtom, removedModelReferencesByScopeAtom } from "../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
 import { isRemovedModel, resolveSelectedModel } from "../../utils/modelSelection";
 
 export type ComposerPickerHostProps = {
@@ -51,16 +51,18 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   const record = useAtomValue(sessionRecordByIdAtomFamily(sessionId));
   const runtime = useAtomValue(sessionRuntimeBySessionIdAtomFamily(sessionId));
   const setMode = useSetAtom(setSessionComposerModeAtom);
-  const upsertSession = useSetAtom(upsertSessionAtom);
+  const { currentHandle, currentRemovedModels, beginModelSelection, isModelSelectionCurrent, isCurrentRuntime,
+    applyModelToRecord, applyRuntimeModelState, commitRuntimeModel, commitThinking } = useSessionModelMutations(sessionId);
   const thinkingPending = useAtomValue(thinkingLevelPendingAtomFamily(sessionId));
   const setThinkingPendingMap = useSetAtom(thinkingLevelPendingByIdAtom);
   const modelPending = useAtomValue(modelPendingAtomFamily(sessionId));
   const setModelPendingMap = useSetAtom(modelPendingByIdAtom);
   const [models, setModels] = useState<AvailableModel[]>([]);
   const modelListRevision = useAtomValue(modelListRevisionAtom);
-  const configurationEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
-  const removedByEnvironment = useAtomValue(removedModelReferencesByEnvironmentAtom);
-  const removedModels = removedByEnvironment[record?.environment ?? configurationEnvironment];
+  const configurationScope = useAtomValue(modelConfigurationScopeAtom);
+  const configurationScopeKey = modelConfigurationScopeKey(configurationScope);
+  const removedByScope = useAtomValue(removedModelReferencesByScopeAtom);
+  const removedModels = removedByScope[modelConfigurationScopeKey(record ?? configurationScope)];
   // 按会话订阅：别的会话切模式不应重渲染本栏选择器。
   const composerMode = useAtomValue(sessionComposerModeAtomFamily(sessionId));
   const [favoriteModels, setFavoriteModels] = useState<string[]>([]);
@@ -83,6 +85,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     agentId: string;
     provider: string;
     modelId: string;
+    operation: ModelSelectionOperation;
   } | null>(null);
   const confirmingRestartRef = useRef(false);
 
@@ -129,25 +132,13 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
       }
     });
     return () => { ++modelLoadSequenceRef.current; };
-  }, [props.picker, record?.projectId, modelListRevision, configurationEnvironment]);
+  }, [props.picker, record?.projectId, modelListRevision, configurationScopeKey]);
 
   useEffect(() => {
-    if (!restartIntentRef.current || !isRemovedModel(restartIntentRef.current, removedModels)) return;
+    if (!restartIntentRef.current || !isRemovedModel(restartIntentRef.current, removedModels ?? [])) return;
     restartIntentRef.current = null;
     setRestartTarget(null);
   }, [removedModels]);
-
-  function currentHandle() {
-    const current = store.get(sessionRuntimeByIdAtom)[sessionId];
-    return toSessionRuntimeTarget(sessionId, current);
-  }
-
-  /** Recheck the session's environment at the user action boundary. */
-  function currentRemovedModels() {
-    const currentRecord = store.get(sessionRecordByIdAtomFamily(sessionId));
-    const environment = currentRecord?.environment ?? store.get(modelConfigurationEnvironmentAtom);
-    return store.get(removedModelReferencesByEnvironmentAtom)[environment];
-  }
 
   /**
    * 运行时代理命令失败时，若错误是「运行时不可用/绑定已变化」（例如 Agent 已被关闭、
@@ -158,14 +149,6 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     return error instanceof SessionCommandFailure &&
       (error.code === "SESSION_RUNTIME_UNAVAILABLE" ||
         error.code === "SESSION_RUNTIME_CHANGED");
-  }
-
-  async function applyModelToRecord(model: AvailableModel, thinkingLevel?: string) {
-    const updated = await desktopApi.sessions.updateRecord(sessionId, {
-      model: { provider: model.provider, modelId: model.id },
-      ...(thinkingLevel ? { thinkingLevel } : {}),
-    });
-    upsertSession(updated);
   }
 
   /** 模型切换/落记录的档位降级：扩展档位未被模型声明时退回 high（主进程同策略兜底）。 */
@@ -179,12 +162,13 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   }
 
   function currentLiveModel() {
-    return resolveSelectedModel(record?.model, runtime?.state);
+    return resolveSelectedModel(store.get(sessionRecordByIdAtomFamily(sessionId))?.model,
+      store.get(sessionRuntimeByIdAtom)[sessionId]?.state);
   }
 
   function markModelPending(model: AvailableModel) {
     const live = currentLiveModel();
-    const from = modelPending?.from ?? {
+    const from = store.get(modelPendingByIdAtom)[sessionId]?.from ?? {
       provider: live.provider,
       modelId: live.modelId,
       modelName: live.modelName,
@@ -206,12 +190,15 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     }));
   }
 
-  function offerModelRestart(handle: SessionRuntimeTarget, model: AvailableModel) {
+  function offerModelRestart(handle: SessionRuntimeTarget, model: AvailableModel,
+    operation = beginModelSelection({ provider: model.provider, modelId: model.id }, handle)) {
+    if (!isModelSelectionCurrent(operation)) return;
     props.onClose();
     restartIntentRef.current = {
       agentId: handle.agentId,
       provider: model.provider,
       modelId: model.id,
+      operation,
     };
     setRestartTarget({
       handle,
@@ -219,45 +206,14 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     });
   }
 
-  function applyRuntimeModelState(agentState: {
-    provider?: string;
-    modelId?: string;
-    modelName?: string;
-    thinkingLevel?: string;
-  }) {
-    const current = store.get(sessionRuntimeByIdAtom)[sessionId];
-    if (current) {
-      store.set(sessionRuntimeByIdAtom, {
-        ...store.get(sessionRuntimeByIdAtom),
-        [sessionId]: {
-          ...current,
-          state: current.state ? { ...current.state, ...agentState } : agentState,
-        },
-      });
-    }
-    // 只同步扩展档位的真实变化（xhigh/max → high，或 pi 拒绝恢复）。
-    // 基础档位不跟 pi 切模型时的默认值走，否则 high 会被写成 low 并在下次启动丢失。
-    const recordNow = store.get(sessionRecordByIdAtomFamily(sessionId));
-    const reportedThinking = agentState.thinkingLevel;
-    if (
-      reportedThinking &&
-      recordNow?.thinkingLevel &&
-      isExtendedThinkingLevel(recordNow.thinkingLevel) &&
-      recordNow.thinkingLevel !== reportedThinking
-    ) {
-      upsertSession({
-        ...recordNow,
-        thinkingLevel: reportedThinking,
-        updatedAt: Date.now(),
-      });
-    }
-  }
-
   usePendingModelApply({
     sessionId,
     runtime,
     modelPending,
     applyRuntimeModelState,
+    isCurrent: (handle, pending) => isCurrentRuntime(handle)
+      && store.get(modelPendingByIdAtom)[sessionId] === pending
+      && !isRemovedModel(pending.to, currentRemovedModels()),
     clearPending: () => setModelPendingMap((prev) => ({ ...prev, [sessionId]: undefined })),
     offerRestart: offerModelRestart,
   });
@@ -266,20 +222,21 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
    * 生成进行中：pi 不支持运行中切模型。快照里已有的模型只写会话记录，
    * 本轮结束后由本组件再调 setRuntimeModel；不在快照里的新加模型走重启确认。
    */
-  async function pickModelWhileBusy(handle: SessionRuntimeTarget, model: AvailableModel) {
+  async function pickModelWhileBusy(handle: SessionRuntimeTarget, model: AvailableModel, operation: ModelSelectionOperation) {
     try {
       const listed = requireSessionCommand(await desktopApi.sessions.listRuntimeModels(handle));
+      if (!isModelSelectionCurrent(operation)) return;
       const snapshotHasModel = listed.value.some(
         (item) => item.provider === model.provider && item.id === model.id,
       );
       if (!snapshotHasModel) {
-        offerModelRestart(handle, model);
+        offerModelRestart(handle, model, operation);
         return;
       }
     } catch {
       // 查快照失败（含生成中 busy）不挡选择：先记下，本轮结束后 setRuntimeModel 再判断要不要重启。
     }
-    await applyModelToRecord(model, clampedThinkingForModel(model));
+    if (!await applyModelToRecord(operation, clampedThinkingForModel(model))) return;
     markModelPending(model);
     props.onClose();
   }
@@ -313,6 +270,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
       return;
     }
     const handle = currentHandle();
+    const operation = beginModelSelection({ provider: model.provider, modelId: model.id }, handle);
     const generationInFlight =
       Boolean(handle) &&
       (runtime?.status === "running" || Boolean(runtime?.state?.isStreaming));
@@ -321,7 +279,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
     const fallbackThinking = clampedThinkingForModel(model);
     try {
       if (handle && generationInFlight) {
-        await pickModelWhileBusy(handle, model);
+        await pickModelWhileBusy(handle, model, operation);
         return;
       }
       if (handle) {
@@ -331,43 +289,23 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
             model.provider,
             model.id,
           ));
-          const reportedThinking = result.value.thinkingLevel;
-          const nextThinking = reportedThinking && reportedThinking.length > 0
-            ? reportedThinking
-            : fallbackThinking;
-          // 与主进程一致：只有扩展档位发生真实变化才改本地记录。
-          // pi 切模型顺手改掉的 low/medium/high 不能覆盖用户原来的选择。
-          const persistThinking = Boolean(
-            nextThinking &&
-            record.thinkingLevel &&
-            isExtendedThinkingLevel(record.thinkingLevel) &&
-            nextThinking !== record.thinkingLevel,
-          );
-          upsertSession({
-            ...record,
-            model: { provider: model.provider, modelId: model.id },
-            ...(persistThinking ? { thinkingLevel: nextThinking } : {}),
-            updatedAt: Date.now(),
-          });
+          if (!commitRuntimeModel(operation, result.value, fallbackThinking)) return;
           setModelPendingMap((prev) => ({ ...prev, [sessionId]: undefined }));
-          // 立即将返回的 AgentRuntimeState 合并到 runtime state atom，
-          // 使底部栏的模型名称、provider 即刻刷新，无需等待 emitState 事件
-          applyRuntimeModelState(result.value);
         } catch (error) {
           // 运行时代理不可用（Agent 已关/绑定已换）时降级写记录，
           // 保证「先选模型、后启动 Agent」的流程始终可用。
           if (!isStaleRuntimeFailure(error)) throw error;
-          await applyModelToRecord(model, fallbackThinking);
+          if (!await applyModelToRecord({ ...operation, target: undefined }, fallbackThinking)) return;
         }
       } else {
-        await applyModelToRecord(model, fallbackThinking);
+        if (!await applyModelToRecord(operation, fallbackThinking)) return;
       }
       props.onClose();
     } catch (error) {
       // 模型在本地 models.json 存在但运行中 Agent 快照未加载（pi set_model 校验失败）：
       // 关闭选择器并提示用户重启 Agent 使新模型生效，而非直接报错。
       if (error instanceof SessionCommandFailure && error.needsRestart && handle) {
-        offerModelRestart(handle, model);
+        offerModelRestart(handle, model, operation);
         return;
       }
       showNotice(error instanceof Error ? error.message : String(error), 4000);
@@ -383,7 +321,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
   async function confirmRestart() {
     const intent = restartIntentRef.current;
     if (!intent || restarting) return;
-    if (isRemovedModel(intent, currentRemovedModels())) {
+    if (!isModelSelectionCurrent(intent.operation)) {
       showNotice(t("app.modelSelectionRequired"), 4000);
       return;
     }
@@ -398,11 +336,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
         provider: intent.provider,
         id: intent.modelId,
       });
-      const updated = await desktopApi.sessions.updateRecord(sessionId, {
-        model: { provider: intent.provider, modelId: intent.modelId },
-        ...(fallbackThinking ? { thinkingLevel: fallbackThinking } : {}),
-      });
-      upsertSession(updated);
+      if (!await applyModelToRecord(intent.operation, fallbackThinking)) return;
       setModelPendingMap((prev) => ({ ...prev, [sessionId]: undefined }));
       await restartActiveAgent(intent.agentId);
     } catch (error) {
@@ -435,7 +369,7 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
           // 记录必须写 pi 实际接受的档位，而不是请求值，否则底栏/下次启动会显示一个未生效的档位。
           const reportedLevel = agentState.thinkingLevel;
           const effectiveLevel = reportedLevel && reportedLevel.length > 0 ? reportedLevel : level;
-          upsertSession({ ...record, thinkingLevel: effectiveLevel, updatedAt: Date.now() });
+          if (!commitThinking(effectiveLevel, handle)) return;
           // 运行中 Agent 的模型快照可能尚未包含刚在配置页勾选的档位：pi 会钳制到支持值，
           // 此时给出与主进程模型切换一致的轻量提示，避免用户以为选择被静默吞掉。
           if (effectiveLevel !== level) {
@@ -453,33 +387,20 @@ export function ComposerPickerHost(props: ComposerPickerHostProps) {
               setThinkingPendingMap((prev) => ({ ...prev, [sessionId]: { from, to: effectiveLevel } }));
             }
           }
-          // 立即将返回的 AgentRuntimeState 合并到 runtime state atom，
-          // 使底部栏的思考强度即刻刷新
-          const current = store.get(sessionRuntimeByIdAtom)[sessionId];
-          if (current) {
-            store.set(sessionRuntimeByIdAtom, {
-              ...store.get(sessionRuntimeByIdAtom),
-              [sessionId]: {
-                ...current,
-                state: current.state
-                  ? { ...current.state, ...agentState }
-                  : agentState,
-              },
-            });
-          }
         } catch (error) {
           // 与模型选择同一策略：运行时不可用时降级为写记录，启动时生效
           if (!isStaleRuntimeFailure(error)) throw error;
+          if (!isCurrentRuntime(undefined)) return;
           const updated = await desktopApi.sessions.updateRecord(sessionId, {
             thinkingLevel: level,
           });
-          upsertSession(updated);
+          if (!commitThinking(updated.thinkingLevel ?? level, undefined)) return;
         }
       } else {
         const updated = await desktopApi.sessions.updateRecord(sessionId, {
           thinkingLevel: level,
         });
-        upsertSession(updated);
+        if (!commitThinking(updated.thinkingLevel ?? level, undefined)) return;
       }
       props.onClose();
     } catch (error) {

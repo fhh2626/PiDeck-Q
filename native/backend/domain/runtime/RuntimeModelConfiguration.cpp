@@ -2,8 +2,11 @@
 #include "SessionCatalogStore.h"
 #include "EventHub.h"
 #include "JsonFile.h"
+#include "ModelConfigurationChanges.h"
+#include "SessionIdentity.h"
 
 #include <QDir>
+#include <exception>
 #include <optional>
 
 namespace runtime {
@@ -21,21 +24,24 @@ std::optional<QString> modelDefault(const QString &path)
 
 } // namespace
 
-void Coordinator::modelConfigurationChanged(const QJsonArray &modified, const QJsonArray &removed,
+void Coordinator::modelConfigurationChanged(const modelconfig::Scope &scope, const QJsonArray &modified, const QJsonArray &removed,
                                             const QJsonArray &authProviders, const QJsonArray &available)
 {
     QJsonArray affected = modified;
     for (const QJsonValue &model : removed) affected.append(model);
     if (affected.isEmpty() && authProviders.isEmpty() && available.isEmpty()) return;
-    const QString environment = m_deps.services
-        && channels::settingValue(*m_deps.services, QStringLiteral("wslEnabled")).toBool()
-        ? QStringLiteral("wsl") : QStringLiteral("native");
+    const QString namespaceKey = sessionidentity::environmentScopeKey(scope.environment, scope.wslDistro, scope.wslUser);
+    std::exception_ptr persistenceFailure;
     // Pi's current RPC surface exposes startup snapshots only. Preserve an active
     // turn, but require the existing per-agent restart flow before the next model use.
-    for (const QString &sessionId : m_bindings.boundSessions()) {
-        AgentSession *current = agent(m_bindings.agentForSession(sessionId));
-        if (!current || current->tab().sessionEnvironment != environment) continue;
+    for (const auto &owned : m_agents) {
+        AgentSession *current = owned.second.get();
+        if (!current->running() || sessionidentity::environmentScopeKey(current->tab().sessionEnvironment,
+            current->tab().wslDistro, current->tab().wslUser) != namespaceKey) continue;
+        // Activation and restart spawn pi before binding it. Those startup snapshots
+        // are equally old, even while get_state or history loading is still pending.
         current->invalidateModelConfiguration(affected, authProviders, removed, available);
+        const QString sessionId = current->tab().deckSessionId;
         CatalogEntry entry;
         const QJsonObject observed = current->observedModel();
         if (m_deps.services && m_deps.services->catalog
@@ -44,14 +50,21 @@ void Coordinator::modelConfigurationChanged(const QJsonArray &modified, const QJ
                                         observed.value(QStringLiteral("id")).toString())) {
             // Old catalog entries can have no explicit model while pi has selected
             // one. Preserve an empty choice so a restart cannot silently choose another.
-            m_deps.services->catalog->update(sessionId, QJsonObject{{QStringLiteral("model"),
-                QJsonObject{{QStringLiteral("provider"), QString()}, {QStringLiteral("modelId"), QString()}}}});
-            if (m_deps.services->events) {
-                m_deps.services->events->broadcast(QStringLiteral("sessions:catalog-refreshed"),
-                    QJsonArray{QJsonObject{{QStringLiteral("projectId"), entry.projectId}}});
+            try {
+                m_deps.services->catalog->update(sessionId, QJsonObject{{QStringLiteral("model"),
+                    QJsonObject{{QStringLiteral("provider"), QString()}, {QStringLiteral("modelId"), QString()}}}});
+                if (m_deps.services->events) {
+                    m_deps.services->events->broadcast(QStringLiteral("sessions:catalog-refreshed"),
+                        QJsonArray{QJsonObject{{QStringLiteral("projectId"), entry.projectId}}});
+                }
+            } catch (...) {
+                // A failed catalog write must not stop invalidation of the remaining
+                // processes. Report the I/O failure after every runtime has been fenced.
+                if (!persistenceFailure) persistenceFailure = std::current_exception();
             }
         }
     }
+    if (persistenceFailure) std::rethrow_exception(persistenceFailure);
 }
 
 QString Coordinator::modelSelectionError(const QString &sessionId) const
@@ -62,18 +75,24 @@ QString Coordinator::modelSelectionError(const QString &sessionId) const
     if (hasEntry && entry.hasModel && (entry.modelProvider.isEmpty() || entry.modelId.isEmpty())) {
         return QStringLiteral("app.modelSelectionRequired");
     }
+    if (hasEntry && entry.hasModel && m_deps.services->catalog->isModelRemoved(
+            entry.environment, entry.wslDistro, entry.wslUser, entry.modelProvider, entry.modelId)) {
+        // The saved model file can change even when persisting the empty preference
+        // fails. That I/O error must never authorize a cold runtime's fallback model.
+        return QStringLiteral("app.modelSelectionRequired");
+    }
     const AgentSession *current = agent(m_bindings.agentForSession(sessionId));
     const QJsonObject observed = current ? current->observedModel() : QJsonObject{};
     const bool hasLiveModel = current && current->running()
         && !observed.value(QStringLiteral("provider")).toString().isEmpty()
         && !observed.value(QStringLiteral("id")).toString().isEmpty();
     if (hasEntry && !entry.hasModel && !hasLiveModel) {
-        const QString environment = channels::settingValue(*m_deps.services, QStringLiteral("wslEnabled")).toBool()
-            ? QStringLiteral("wsl") : QStringLiteral("native");
+        const modelconfig::Scope scope = modelconfig::activeScope(*m_deps.services);
         // Old catalog entries can inherit defaults without saving a model identity.
         // Apply only the matching configuration environment and let project settings
         // override global defaults, as pi does when it starts a fresh process.
-        if (entry.environment == environment) {
+        if (sessionidentity::environmentScopeKey(entry.environment, entry.wslDistro, entry.wslUser)
+            == sessionidentity::environmentScopeKey(scope.environment, scope.wslDistro, scope.wslUser)) {
             const QString projectPath = resolveProjectPath(entry.projectId);
             std::optional<QString> effectiveDefault;
             if (!projectPath.isEmpty()) effectiveDefault = modelDefault(QDir(projectPath).filePath(QStringLiteral(".pi/settings.json")));

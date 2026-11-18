@@ -23,6 +23,9 @@ QString configDir(const QString &agentDir);
 /** `{config, configDir}`; `config` is null when the file is missing or invalid. */
 QJsonObject state(const QString &agentDir);
 
+/** Validate an image dispatch against the current bridge choice and pi's model input capabilities. */
+bool requiresModelSelection(const QString &agentDir, const QJsonObject &currentModel);
+
 /** Whitelist-validated save. Returns `{ok}` or `{ok:false, error}`. */
 QJsonObject saveConfig(const QString &agentDir, const QJsonValue &input,
                        const QString &modelsConfigDir);

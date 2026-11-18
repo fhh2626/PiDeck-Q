@@ -157,6 +157,7 @@ QJsonArray SessionCatalogStore::mergeScanned(const QString &projectId,
             entry.hasModel = true;
             entry.modelProvider = summary.modelProvider;
             entry.modelId = summary.modelId;
+            clearRemovedModelPreference(entry);
             changed = true;
         }
         if (!entry.hasThinkingLevel && summary.hasThinkingLevel) {

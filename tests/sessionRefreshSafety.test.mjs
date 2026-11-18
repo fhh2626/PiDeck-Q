@@ -106,10 +106,12 @@ test("uses request sequence plus latest-applied authority for catalog data", () 
     [
       "const request = (sessionRequestByProjectRef.current[projectId] ?? 0) + 1;",
       "sessionRequestByProjectRef.current[projectId] = request;",
+      "const modelConfigurationVersions = captureModelConfigurationVersions?.();",
+      "api.sessions.listCatalog(projectId)",
       "const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];",
       "if (latestAppliedRequest !== undefined && request < latestAppliedRequest)",
       "result = records;",
-      "replaceProjectSessions({ projectId, sessions: records });",
+      "replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });",
       "sessionLatestAppliedRequestByProjectRef.current[projectId] = request;",
       ".map(sessionRecordToSummary)",
       ".filter((session): session is SessionSummary => Boolean(session))",
@@ -148,9 +150,14 @@ test("catalog-refreshed accepts older success after a newer request fails", () =
   )?.[0] ?? "";
   assert.match(block, /const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef\.current\[projectId\];/);
   assert.doesNotMatch(block, /if \(sessionRequestByProjectRef\.current\[projectId\] !== request\) return;/);
+  assertInOrder(block, [
+    "const modelConfigurationVersions = captureModelConfigurationVersions?.();",
+    ".listCatalog(projectId, { scan: false })",
+    "replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });",
+  ], "capture model versions before the catalog-refreshed request");
   assert.match(
     block,
-    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
+    /replaceProjectSessions\(\{ projectId, sessions: records, modelConfigurationVersions \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
   );
   assert.match(block, /sessionRequestByProjectRef\.current\[projectId\] !== request/);
 });

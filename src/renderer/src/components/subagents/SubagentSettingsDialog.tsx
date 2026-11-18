@@ -8,8 +8,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAtomValue, useStore } from "jotai";
-import { modelConfigurationEnvironmentAtom, modelListRevisionAtom, removedModelReferencesByEnvironmentAtom, sharedRemovedModelReferencesAtom } from "../../atoms/model-atoms";
-import { isRemovedModel } from "../../utils/modelSelection";
+import { modelConfigurationScopeAtom, modelListRevisionAtom, removedModelReferencesByScopeAtom, sharedModelRemovalVersionsAtom, sharedRemovedModelReferencesAtom } from "../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
+import { getModelRemovalsSince, isRemovedModel } from "../../utils/modelSelection";
 import { Check, ChevronsUpDown, Loader2, Users, X } from "lucide-react";
 import {
 	Dialog,
@@ -85,7 +86,7 @@ export function SubagentSettingsDialog(props: {
 }) {
 	const [scope, setScope] = useState<SubagentSettingsScope>("global");
 	const store = useStore();
-	const modelEnvironment = useAtomValue(modelConfigurationEnvironmentAtom);
+	const modelScopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
 	const modelListRevision = useAtomValue(modelListRevisionAtom);
 	const removedModels = useAtomValue(sharedRemovedModelReferencesAtom);
 	const [snapshot, setSnapshot] = useState<SubagentSettingsSnapshot | null>(null);
@@ -116,19 +117,21 @@ export function SubagentSettingsDialog(props: {
 	useEffect(() => {
 		if (!props.open) return;
 		let active = true;
-		const isCurrent = () => active && modelEnvironment === store.get(modelConfigurationEnvironmentAtom);
+		const isCurrent = () => active && modelScopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
+		setModels([]);
 		// This effect owns the list read, including initial load, so an older initial request cannot win later.
 		void desktopApi.projects.listModels(props.projectId).then((next) => {
 			if (isCurrent()) setModels(next);
 		}).catch(() => { if (isCurrent()) setModels([]); });
 		return () => { active = false; };
-	}, [modelEnvironment, modelListRevision, props.open, props.projectId, store]);
+	}, [modelScopeKey, modelListRevision, props.open, props.projectId, store]);
 
 	// 每次打开都重新读取：配置文件是唯一权威状态，不在渲染层做长期缓存。
 	useEffect(() => {
 		if (!props.open) return;
 		loadGenerationRef.current += 1;
 		let cancelled = false;
+		const removalVersions = store.get(sharedModelRemovalVersionsAtom);
 		setLoading(true);
 		setError(null);
 		setSnapshot(null);
@@ -137,7 +140,10 @@ export function SubagentSettingsDialog(props: {
 			.getSettings(props.projectId)
 			.then((next) => {
 				if (cancelled) return;
-				const cleaned = clearRemovedDefaults(next, store.get(sharedRemovedModelReferencesAtom));
+				const cleaned = clearRemovedDefaults(next, [
+					...store.get(sharedRemovedModelReferencesAtom),
+					...getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom)),
+				]);
 				setSnapshot(cleaned);
 				setDrafts({ global: cleaned.global, project: cleaned.project ?? emptyDraft() });
 			})
@@ -223,9 +229,13 @@ export function SubagentSettingsDialog(props: {
 		// 记录本次保存对应的读取代数：保存期间换了项目（重读已发起）就不再写盘，
 		// 否则会把上一个项目的草稿写到新项目上。
 		const generation = loadGenerationRef.current;
-		const environment = store.get(modelConfigurationEnvironmentAtom);
-		const currentRemovals = store.get(removedModelReferencesByEnvironmentAtom)[environment];
+		const scopeKey = modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
+		const isCurrentSave = () => generation === loadGenerationRef.current
+			&& scopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
+		const currentRemovals = store.get(removedModelReferencesByScopeAtom)[scopeKey] ?? [];
 		const previousRemovals = new Set(store.get(sharedRemovedModelReferencesAtom));
+		const removalVersions = store.get(sharedModelRemovalVersionsAtom);
+		const removedDuringSave = () => getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom));
 		// 开关打开却没有模型：不写盘，切到出问题的作用域并提示（主进程同样会拒绝）。
 		const invalid = dirtyScopes.find(
 			(value) => drafts[value].useOwnModel
@@ -241,19 +251,26 @@ export function SubagentSettingsDialog(props: {
 		setError(null);
 		try {
 			for (const value of dirtyScopes) {
-				if (generation !== loadGenerationRef.current) return;
+				if (!isCurrentSave()) return;
 				const selected = drafts[value].useOwnModel ? drafts[value].model : undefined;
-				if (isRemovedModel(selected, store.get(removedModelReferencesByEnvironmentAtom)[environment])) {
+				if (isRemovedModel(selected, [...(store.get(removedModelReferencesByScopeAtom)[scopeKey] ?? []), ...removedDuringSave()])) {
 					setScope(value);
 					setError(t("subagents.modelRequired"));
 					return;
 				}
 				const result = await desktopApi.subagents.saveSettings(value, props.projectId, drafts[value]);
+				if (!isCurrentSave()) return;
+				const invalidated = removedDuringSave();
+				if (isRemovedModel(selected, invalidated)) {
+					setDrafts((current) => ({ ...current, [value]: clearRemovedModel(current[value], invalidated) }));
+					setError(t("subagents.modelRequired"));
+					return;
+				}
 				if (!result.ok) {
 					setError(t("config.saveFailed"));
 					return;
 				}
-				if (selected && !isRemovedModel(selected, store.get(removedModelReferencesByEnvironmentAtom)[environment])) {
+				if (selected && !isRemovedModel(selected, store.get(removedModelReferencesByScopeAtom)[scopeKey] ?? [])) {
 					// Only retire pre-save entries for the successfully written choice; later deletions still win.
 					store.set(sharedRemovedModelReferencesAtom, (current) => {
 						const next = current.filter((model) => !previousRemovals.has(model)
@@ -262,16 +279,16 @@ export function SubagentSettingsDialog(props: {
 					});
 				}
 			}
-			if (generation !== loadGenerationRef.current) return;
+			if (!isCurrentSave()) return;
 			const next = await desktopApi.subagents.getSettings(props.projectId);
-			if (generation !== loadGenerationRef.current) return;
-			const cleaned = clearRemovedDefaults(next, store.get(sharedRemovedModelReferencesAtom));
+			if (!isCurrentSave()) return;
+			const cleaned = clearRemovedDefaults(next, [...store.get(sharedRemovedModelReferencesAtom), ...removedDuringSave()]);
 			setSnapshot(cleaned);
 			setDrafts({ global: cleaned.global, project: cleaned.project ?? emptyDraft() });
 			showNotice(t("subagents.savedToast"));
 			props.onClose();
 		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
+			if (isCurrentSave()) setError(e instanceof Error ? e.message : String(e));
 		} finally {
 			setSaving(false);
 		}

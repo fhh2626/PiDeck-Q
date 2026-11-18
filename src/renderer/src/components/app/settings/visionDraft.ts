@@ -5,15 +5,17 @@
  * 但 VisionBridgeSettingsTab 组件应能 lazy 加载——若 hook 与组件同文件，
  * 壳的静态 import 会把整个 tab（含 ModelPicker 等重依赖）拖进首开 chunk。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
-import { modelConfigurationEnvironmentAtom, removedModelReferencesByEnvironmentAtom, sharedRemovedModelReferencesAtom } from "../../../atoms/model-atoms";
+import { modelConfigurationScopeAtom, removedModelReferencesByScopeAtom, sharedModelRemovalVersionsAtom, sharedRemovedModelReferencesAtom } from "../../../atoms/model-atoms";
 import { isRemovedModel } from "../../../utils/modelSelection";
+import { modelConfigurationScopeKey } from "../../../utils/modelConfigurationScope";
 import type { ModelReference, VisionBridgeConfig, VisionBridgeState } from "../../../../../shared/types";
 import { desktopApi } from "../../../desktopApi";
 import { t } from "../../../i18n";
 import { showNotice } from "../../../utils/notice";
 import { visionConfigRevisionAtom } from "../../../atoms/session-atoms";
+import { commitVisionBridgeConfigAtom, visionBridgeCommittedSaveSequenceAtom, visionBridgeSaveSequenceAtom } from "../../../atoms/vision-atoms";
 
 /** 与扩展 DEFAULT_PROMPT 保持一致（恢复默认按钮用）。 */
 export const DEFAULT_PROMPT =
@@ -52,11 +54,15 @@ export function useVisionBridgeDraft() {
 	const store = useStore();
 	const removedModels = useAtomValue(sharedRemovedModelReferencesAtom);
 	const setVisionConfigRevision = useSetAtom(visionConfigRevisionAtom);
+	const commitConfig = useSetAtom(commitVisionBridgeConfigAtom);
 	const [state, setState] = useState<VisionBridgeState | null>(null);
 	const [draft, setDraft] = useState<VisionBridgeConfig | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [dirty, setDirty] = useState(false);
+	const draftActionRef = useRef({ revision: 0, edited: false });
+	const saveInFlightRef = useRef(false);
+	const getEditRevision = useCallback(() => draftActionRef.current.revision, []);
 	// 保存失败提示（成功走全局 toast，不在此占位）
 	const [notice, setNotice] = useState<string | null>(null);
 	useEffect(() => {
@@ -68,12 +74,17 @@ export function useVisionBridgeDraft() {
 	// 挂载时拉取当前配置（弹框每次打开都重建 state，无需清理外部资源）
 	useEffect(() => {
 		let mounted = true;
+		const removalVersions = store.get(sharedModelRemovalVersionsAtom);
 		desktopApi.config
 			.visionGetConfig()
 			.then((loaded) => {
 				if (!mounted) return;
 				// Read the store at settlement, since removals can precede this initial response.
-				const config = clearRemovedModel(loaded.config, store.get(sharedRemovedModelReferencesAtom));
+				const selected = loaded.config ? { provider: loaded.config.provider, modelId: loaded.config.model } : undefined;
+				const selectionKey = selected ? JSON.stringify([selected.provider, selected.modelId]) : "";
+				const removedDuringRead = selected
+					&& (removalVersions[selectionKey] ?? 0) !== (store.get(sharedModelRemovalVersionsAtom)[selectionKey] ?? 0);
+				const config = clearRemovedModel(loaded.config, removedDuringRead ? [selected] : store.get(sharedRemovedModelReferencesAtom));
 				setState({ ...loaded, config });
 				setDraft(config ?? emptyDraft());
 				setLoading(false);
@@ -88,6 +99,7 @@ export function useVisionBridgeDraft() {
 
 	/** 表单改动：更新草稿并标记未保存（幂等）。 */
 	const updateDraft = useCallback((patch: Partial<VisionBridgeConfig>) => {
+		draftActionRef.current = { revision: draftActionRef.current.revision + 1, edited: true };
 		setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
 		setDirty(true);
 		setNotice(null);
@@ -95,10 +107,10 @@ export function useVisionBridgeDraft() {
 
 	/** 保存草稿到 pi-deck-vision.json；成功清脏标记并弹 toast，失败保留脏标记（头部按钮可重试）。 */
 	const save = useCallback(async (): Promise<boolean> => {
-		if (!draft) return false;
-		const environment = store.get(modelConfigurationEnvironmentAtom);
+		if (!draft || saveInFlightRef.current) return false;
+		const scopeKey = modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
 		const selected = { provider: draft.provider, modelId: draft.model };
-		const currentRemovals = store.get(removedModelReferencesByEnvironmentAtom)[environment];
+		const currentRemovals = store.get(removedModelReferencesByScopeAtom)[scopeKey] ?? [];
 		if (isRemovedModel(selected, currentRemovals)) {
 			setDraft((current) => clearRemovedModel(current, currentRemovals));
 			setNotice(t("app.modelSelectionRequired"));
@@ -107,21 +119,51 @@ export function useVisionBridgeDraft() {
 		const previousRemoval = store.get(sharedRemovedModelReferencesAtom).find(
 			(model) => model.provider === selected.provider && model.modelId === selected.modelId,
 		);
+		const savedRevision = draftActionRef.current.revision;
+		const selectionKey = JSON.stringify([selected.provider, selected.modelId]);
+		const removalVersion = store.get(sharedModelRemovalVersionsAtom)[selectionKey] ?? 0;
+		const saveSequence = store.get(visionBridgeSaveSequenceAtom) + 1;
+		store.set(visionBridgeSaveSequenceAtom, saveSequence);
+		saveInFlightRef.current = true;
 		setSaving(true);
 		setNotice(null);
 		try {
 			const result = await desktopApi.config.visionSaveConfig(draft);
+			if (store.get(visionBridgeCommittedSaveSequenceAtom) > saveSequence) return false;
 			if (result.ok) {
+				store.set(visionBridgeCommittedSaveSequenceAtom, saveSequence);
+				if ((store.get(sharedModelRemovalVersionsAtom)[selectionKey] ?? 0) !== removalVersion) {
+					// Deleting in either environment clears the shared file. Re-adding
+					// the identity cannot validate a response from before that deletion.
+					setState((current) => current ? { ...current, config: clearRemovedModel(current.config, [selected]) } : current);
+					if (draftActionRef.current.revision === savedRevision || !draftActionRef.current.edited) {
+						setDraft((current) => clearRemovedModel(current, [selected]));
+					}
+					setNotice(t("app.visionModelSelectionRequired"));
+					setVisionConfigRevision((c) => c + 1);
+					return false;
+				}
 				// A valid explicit choice can replace a removal from the other environment.
 				// New deletion events replace their entry object, so never erase one received during this save.
-				if (previousRemoval && !isRemovedModel(selected, store.get(removedModelReferencesByEnvironmentAtom)[environment])) {
+				if (previousRemoval && !isRemovedModel(selected, store.get(removedModelReferencesByScopeAtom)[scopeKey] ?? [])) {
 					store.set(sharedRemovedModelReferencesAtom, (current) => current.includes(previousRemoval)
 						? current.filter((model) => model !== previousRemoval) : current);
 				}
-				setDirty(false);
+				const savedConfig = clearRemovedModel(draft, store.get(sharedRemovedModelReferencesAtom));
+				setState((current) => current ? { ...current, config: savedConfig } : current);
+				// Save remains in this dialog. Cancel must return to this confirmed
+				// baseline, while edits made during the write retain their dirty state.
+				const savedCurrentDraft = draftActionRef.current.revision === savedRevision || !draftActionRef.current.edited;
+				if (savedCurrentDraft) {
+					setDraft(savedConfig);
+					setDirty(false);
+					draftActionRef.current.edited = false;
+				}
+				commitConfig(savedConfig);
 				setVisionConfigRevision((c) => c + 1);
 				showNotice(t("settings.vision.saved"), 3000);
-				return true;
+				// The dialog's Save and Close action must stay open for newer unsaved edits.
+				return savedCurrentDraft;
 			}
 			setNotice(`${t("settings.vision.saveFailed")}：${result.error ?? ""}`);
 			return false;
@@ -129,16 +171,18 @@ export function useVisionBridgeDraft() {
 			setNotice(`${t("settings.vision.saveFailed")}：${String(error)}`);
 			return false;
 		} finally {
+			saveInFlightRef.current = false;
 			setSaving(false);
 		}
-	}, [draft, store]);
+	}, [draft, store, commitConfig, setVisionConfigRevision]);
 
-	/** 放弃修改：回退到打开弹框时的磁盘配置快照。 */
+	/** 放弃修改：回退到最近一次确认保存的磁盘配置快照。 */
 	const reset = useCallback(() => {
+		draftActionRef.current = { revision: draftActionRef.current.revision + 1, edited: false };
 		setDraft(clearRemovedModel(state?.config ?? null, store.get(sharedRemovedModelReferencesAtom)) ?? emptyDraft());
 		setDirty(false);
 		setNotice(null);
 	}, [state, store]);
 
-	return { draft, loading, saving, dirty, notice, configDir: state?.configDir ?? "", updateDraft, save, reset };
+	return { draft, loading, saving, dirty, notice, configDir: state?.configDir ?? "", updateDraft, save, reset, getEditRevision };
 }

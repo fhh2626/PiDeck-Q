@@ -21,6 +21,7 @@ import {
   reconcileOptimisticUserMessages,
 } from "../utils/optimisticUserReconciliation";
 import { sameProjectSessionList } from "../utils/sessionRecordIdentity";
+import { clearStaleSessionModel, type SessionModelVersions } from "./session-model-references";
 
 /**
  * 渲染层会话消息缓存上限（LRU）。
@@ -499,13 +500,14 @@ export const replaceSessionRuntimesAtom = atom(
 
 export const replaceProjectSessionsAtom = atom(
   null,
-  (get, set, input: { projectId: string; sessions: SessionRecord[] }) => {
+  (get, set, input: { projectId: string; sessions: SessionRecord[]; modelConfigurationVersions?: SessionModelVersions }) => {
     const discardedTransientIds = get(discardedTransientSessionIdsAtom);
     // A close can race a catalog scan that started before the runtime detached.
     // Do not let that stale response resurrect a no-session row in the sidebar.
+    const previousRecords = get(sessionRecordsAtom);
     const sessions = input.sessions.filter((session) => (
       !session.noSession || !discardedTransientIds.has(session.id)
-    ));
+    )).map((session) => clearStaleSessionModel(get, session, previousRecords[session.id], input.modelConfigurationVersions));
     const previousIds = get(sessionIdsByProjectAtom)[input.projectId] ?? [];
     // 轮询刷新绝大多数轮次内容未变；此时保持 atom 引用稳定，避免整棵侧栏重渲染。
     if (sameProjectSessionList(previousIds, get(sessionRecordsAtom), sessions)) return;
@@ -525,6 +527,7 @@ export const replaceProjectSessionsAtom = atom(
 );
 
 export const upsertSessionAtom = atom(null, (get, set, session: SessionRecord) => {
+  session = clearStaleSessionModel(get, session, get(sessionRecordsAtom)[session.id]);
   if (session.noSession && get(discardedTransientSessionIdsAtom).has(session.id)) {
     const nextDiscarded = new Set(get(discardedTransientSessionIdsAtom));
     nextDiscarded.delete(session.id);
