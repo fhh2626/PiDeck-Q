@@ -420,7 +420,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			for (const key of [...activeToolTimeouts.keys()]) removeToolTimeoutKey(key);
 		};
 		const terminateForTimeout = (message: string): void => {
-			if (settled || promptSettled || timedOut || stopped) return;
+			// An accepted pause owns the outcome even if its shutdown overlaps a deadline.
+			if (settled || promptSettled || interrupted || timedOut || stopped) return;
 			runSupervision?.dispose();
 			timedOut = true;
 			interrupted = false;
@@ -679,6 +680,9 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					void created.dispose();
 					return;
 				}
+				// A delayed timer must not let startup run past an explicit parent
+				// deadline and still begin fresh model or tool work.
+				if (input.runDeadlineAt !== undefined && Date.now() >= input.runDeadlineAt) terminateForTimeout(timeoutMessage());
 				session = created;
 				checkContinuation();
 				if (continuation && (created.modelId !== continuation.modelId || input.launch.capture.completionIntentContext?.()?.model?.api !== continuation.expected.api)) throw new Error("Read-only continuation model changed");
@@ -697,7 +701,13 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 						? { state: "queued", deliveryStatus: "queued", message: "Pi queued the follow-up input." }
 						: { state: "delivered", deliveryStatus: "delivered", message: "Pi accepted the steering input." };
 				});
-				if (interrupted || timedOut || stopped) abortChild();
+				if (interrupted || timedOut || stopped) {
+					// A cancellation received during asynchronous startup owns this
+					// session too. Do not start a prompt after aborting the idle child.
+					abortChild();
+					settle(undefined);
+					return;
+				}
 				checkContinuation();
 				runSupervision = createRunSupervision({
 					state: runSupervisionState,

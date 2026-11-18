@@ -402,13 +402,13 @@ export function createSubagentParamsSchema(): typeof SubagentParams {
 
 const SubagentWaitParamsSchema = Type.Object({
 	id: Type.Optional(Type.String({
-		description: "Async run or remembered detached foreground run id/prefix to wait for one specific run. Ordinary async subagent runs already notify this session natively; use bg_wait for provider, detached, or other background work without native notification, or when same-turn blocking results are truly needed. Omit to wait across every active async run started in this session only when a same-turn wait is truly needed.",
+		description: "Async run, remembered detached foreground run, or retained foreground workflow id/prefix to wait for one specific run. Ordinary async subagent runs already notify this session natively; use bg_wait for provider, detached, or other background work without native notification, or when same-turn blocking results are truly needed. Omit to track the active async runs, detached foreground runs, retained foreground workflows, and provider work in this session when a same-turn wait is truly needed.",
 	})),
 	nonBlocking: Type.Optional(Type.Boolean({
 		description: "When true, resolve id to one exact run, persist a wake subscription, and return immediately. Use this only for provider, detached, or other background work without a native completion notification; ordinary async subagent runs already notify this session natively and do not need a subscription. The originating session is woken on completion, failure, attention, reconciliation failure, or timeout. Requires id and cannot be combined with all.",
 	})),
 	all: Type.Optional(Type.Boolean({
-		description: "Wait for ALL active runs to finish. Ordinary async subagent runs already notify this session natively; use all only when a same-turn result from tracked background work is truly needed. Default false: return when the first tracked run or provider item finishes or needs attention. Ignored when id targets a single run.",
+		description: "Wait for ALL runs, retained workflows, and provider items active when this call begins to finish. Ordinary async subagent runs already notify this session natively; use all only when a same-turn result from tracked background work is truly needed. Default false: return when the first tracked run or provider item finishes or needs attention. Ignored when id targets a single run.",
 	})),
 	timeoutMs: Type.Optional(Type.Integer({
 		minimum: 1,

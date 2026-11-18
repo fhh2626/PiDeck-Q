@@ -531,9 +531,12 @@ function requestRunInactive(request: SupervisorRequest, state: SubagentState): b
 
 	const asyncJob = state.asyncJobs.get(request.runId);
 	if (!asyncJob) return false;
-	if (asyncJob.status === "complete" || asyncJob.status === "failed" || asyncJob.status === "paused") return true;
+	// A terminal status can arrive before a stopped runner removes its request files.
+	// Keep only active states eligible so stopped, rejected and partial results cannot
+	// retain a stale decision or trigger another parent turn.
+	if (asyncJob.status !== "queued" && asyncJob.status !== "running") return true;
 	const stepStatus = asyncJob.steps?.[request.childIndex]?.status;
-	return stepStatus === "complete" || stepStatus === "completed" || stepStatus === "failed" || stepStatus === "paused";
+	return stepStatus !== undefined && stepStatus !== "pending" && stepStatus !== "running";
 }
 
 function requestLifecycle(request: PendingSupervisorRequest, state: SubagentState, now: number, runState: SubagentState): SupervisorRequestLifecycle {

@@ -196,11 +196,12 @@ function formatTimeoutMessage(timeoutMs: number): string {
 	return `Subagent timed out after ${timeoutMs}ms.`;
 }
 
-function resolveAttemptTimeout(options: RunSyncOptions): { timeoutMs: number; remainingMs: number; message: string } | undefined {
+function resolveAttemptTimeout(options: RunSyncOptions): { timeoutMs: number; deadlineAt: number; remainingMs: number; message: string } | undefined {
 	if (options.timeoutMs === undefined) return undefined;
 	const deadlineAt = options.deadlineAt ?? Date.now() + options.timeoutMs;
 	return {
 		timeoutMs: options.timeoutMs,
+		deadlineAt,
 		remainingMs: Math.max(0, deadlineAt - Date.now()),
 		message: formatTimeoutMessage(options.timeoutMs),
 	};
@@ -1266,25 +1267,26 @@ async function runSingleAttempt(
 			activityTimer.unref?.();
 		}
 
+		const terminateForRunTimeout = (): void => {
+			if (!attemptTimeout || sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
+			result.timedOut = true;
+			runSupervision?.dispose();
+			clearAllToolTimeouts();
+			result.error = attemptTimeout.message;
+			result.finalOutput = attemptTimeout.message;
+			progress.status = "failed";
+			progress.error = attemptTimeout.message;
+			progress.durationMs = Date.now() - startTime;
+			fireUpdate();
+			abortChild();
+			timeoutHardFinishTimer = setTimeout(() => {
+				if (sessionSettled || lifecycleFinished) return;
+				settle(undefined, true);
+			}, 4000);
+			timeoutHardFinishTimer.unref?.();
+		};
 		if (attemptTimeout) {
-			timeoutTimer = setTimeout(() => {
-				if (sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
-				result.timedOut = true;
-				runSupervision?.dispose();
-				clearAllToolTimeouts();
-				result.error = attemptTimeout.message;
-				result.finalOutput = attemptTimeout.message;
-				progress.status = "failed";
-				progress.error = attemptTimeout.message;
-				progress.durationMs = Date.now() - startTime;
-				fireUpdate();
-				abortChild();
-				timeoutHardFinishTimer = setTimeout(() => {
-					if (sessionSettled || lifecycleFinished) return;
-					settle(undefined, true);
-				}, 4000);
-				timeoutHardFinishTimer.unref?.();
-			}, attemptTimeout.remainingMs);
+			timeoutTimer = setTimeout(terminateForRunTimeout, attemptTimeout.remainingMs);
 			timeoutTimer.unref?.();
 		}
 
@@ -1458,14 +1460,21 @@ async function runSingleAttempt(
 					void created.dispose();
 					return;
 				}
+				// Startup can occupy the event loop past the deadline before its timer
+				// callback runs. Enforce the same deadline before allowing any prompt.
+				if (attemptTimeout && Date.now() >= attemptTimeout.deadlineAt) terminateForRunTimeout();
 				session = created;
 				// Read the existing context before prompting; it contains the original
 				// objective/results when this is a continuation of the same session.
 				recoveryRuntimeByResult.set(result, { priorMessages: created.messages.slice() });
 				created.detached = detached;
 				unsubscribe = created.subscribe((event) => processEvent(event as Parameters<typeof processEvent>[0]));
-				if (abortedBySignal || interruptedByControl || result.timedOut) {
+				if (abortedBySignal || interruptedByControl || result.timedOut || result.stopped) {
+					// Creation can finish after a stop or deadline. Aborting an idle
+					// session does not prevent a later prompt from starting fresh work.
 					abortChild();
+					settle(undefined);
+					return;
 				}
 				options.onChildSession?.({ steer: (text) => created.steer(text), followUp: (text) => created.followUp(text) });
 				const actualReadonlyModel = shared.readonlyExpected && getReadonlyChildModels(created)?.current;
@@ -1601,7 +1610,11 @@ async function runSingleAttempt(
 	if (!fullOutput.trim() && result.structuredOutput !== undefined) fullOutput = JSON.stringify(result.structuredOutput, null, 2);
 	result.outputState = fullOutput.trim() || result.structuredOutput !== undefined ? "present" : "absent";
 	if (result.timedOut) {
-		const timeoutMessage = formatTimeoutMessage(options.timeoutMs ?? 0);
+		// A per-tool deadline can expire without any run-level limit. Preserve the
+		// actual timeout cause instead of reporting an unrelated or zero runtime.
+		const timeoutMessage = result.error ?? (options.timeoutMs !== undefined
+			? formatTimeoutMessage(options.timeoutMs)
+			: "Subagent timed out.");
 		let requiredOutputMissing: boolean | undefined;
 		if (options.outputMode === "file-only" && options.outputPath) {
 			const outputChanged = hasSingleOutputChangedSinceSnapshot(options.outputPath, shared.outputSnapshot);

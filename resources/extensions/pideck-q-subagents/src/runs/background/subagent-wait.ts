@@ -1,6 +1,6 @@
 /**
- * `bg_wait` tool: block the current turn until outstanding async runs
- * or a named remembered detached foreground run finishes.
+ * `bg_wait` tool: block the current turn until outstanding async or
+ * remembered detached foreground work finishes.
  *
  * Background subagent runs are detached. In an interactive session the parent
  * can end its turn and Pi will wake it with a completion notification. That
@@ -18,7 +18,7 @@
  * manager can use it in a rolling-replacement loop: launch N workers, wait for
  * the next one to finish, spawn its replacement, then call `bg_wait`
  * again — keeping N in flight instead of draining to zero between batches.
- * Pass `all: true` to block until every tracked async run is terminal, or `id`
+ * Pass `all: true` to block until every initially tracked run is terminal, or `id`
  * to block on one specific async or remembered detached foreground run.
  *
  * `bg_wait` also returns when a run needs attention — not just on
@@ -38,7 +38,6 @@
  * polling.
  */
 
-import * as fs from "node:fs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ForegroundWorkflowContinuation } from "../foreground/workflow-handoff.ts";
 import {
@@ -67,6 +66,14 @@ import { toAgentToolUsage } from "../../shared/utils.ts";
 import { collectWaitCompletions } from "./wait-completions.ts";
 import { formatResumeFirstFailedRunsNote } from "./resume-guidance.ts";
 import { formatTimeoutRecoveryLines } from "../shared/mutation-evidence.ts";
+import {
+	activeDetachedForegroundRuns,
+	captureDetachedForegroundWaitTargets,
+	detachedForegroundWaitStatus,
+	formatForegroundAttention,
+	snapshotDetachedForegroundWait,
+	summarizeForegroundChildren,
+} from "./foreground-wait.ts";
 export { WAIT_TOOL_DEFAULT_TIMEOUT_MS_ENV, WAIT_TOOL_ENABLED_ENV, resolveWaitToolConfig, type ResolvedWaitToolConfig } from "./wait-config.ts";
 
 /** States that mean a run is still in flight (not yet resolved). */
@@ -214,40 +221,6 @@ function waitForWake(ms: number, signal: AbortSignal | undefined, deps: Subagent
 
 function matchesId(run: AsyncRunSummary, id: string): boolean {
 	return run.id === id || run.id.startsWith(id);
-}
-
-function activeDetachedForegroundRuns(params: SubagentWaitParams, deps: SubagentWaitDeps): ForegroundResumeRun[] {
-	if (!params.id || !deps.state.foregroundRuns) return [];
-	const sessionId = deps.state.currentSessionId;
-	if (!sessionId) return [];
-	return [...deps.state.foregroundRuns.values()].filter((run) =>
-		(run.runId === params.id || run.runId.startsWith(params.id!))
-		&& run.sessionId === sessionId
-		&& run.children.some((child) => child.status === "detached")
-	);
-}
-
-function summarizeForegroundChildren(run: ForegroundResumeRun, indices: Set<number>): string {
-	const counts = new Map<string, number>();
-	for (const child of run.children) {
-		if (!indices.has(child.index) || child.status === "detached") continue;
-		counts.set(child.status, (counts.get(child.status) ?? 0) + 1);
-	}
-	return [...counts.entries()].map(([status, count]) => `${count} ${status}`).join(", ");
-}
-
-function foregroundChildrenNeedingAttention(run: ForegroundResumeRun, indices: Set<number>, deps: SubagentWaitDeps) {
-	return run.children.filter((child) => indices.has(child.index) && child.status === "detached" && (
-		(child.activityState === "needs_attention" && child.currentTool === "contact_supervisor")
-		|| (deps.findPendingAsks?.({ runId: run.runId, agent: child.agent, childIndex: child.index }).length ?? 0) > 0
-	));
-}
-
-function formatForegroundAttention(run: ForegroundResumeRun, children: ReturnType<typeof foregroundChildrenNeedingAttention>, elapsedMs: number): AgentToolResult<Details> {
-	const childList = children.map((child) => `${child.agent}${child.index !== undefined ? `#${child.index}` : ""}`).join(", ");
-	return result(
-		`Waited ${formatDuration(elapsedMs)} for remembered detached foreground run "${run.runId}"; attention required. ${children.length} child run(s) need attention: ${childList}. Reply to any pending supervisor request, then call bg_wait({ id: "${run.runId}" }) again or inspect status; do not resume or launch a replacement while it remains detached.`,
-	);
 }
 
 /** A running run that has flagged it needs the parent's attention. */
@@ -420,143 +393,6 @@ function asyncWaitUpdate(runs: AsyncRunSummary[], providerCount: number, elapsed
 	return result([headline, runs.length > 0 ? formatAsyncRunList(runs) : ""].filter(Boolean).join("\n"));
 }
 
-const TRANSCRIPT_TAIL_BYTES = 128 * 1024;
-const TRANSCRIPT_PREVIEW_LINES = 3;
-const TRANSCRIPT_PREVIEW_WIDTH = 220;
-
-interface TranscriptActivity {
-	currentTool?: string;
-	currentToolArgs?: string;
-	latestAt?: number;
-	recent: string[];
-}
-
-function compactTranscriptText(value: unknown, maxWidth = TRANSCRIPT_PREVIEW_WIDTH): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const compact = value.replace(/\s+/g, " ").trim();
-	if (!compact) return undefined;
-	return compact.length <= maxWidth ? compact : `${compact.slice(0, Math.max(1, maxWidth - 1))}…`;
-}
-
-function readTranscriptActivity(transcriptPath: string | undefined): TranscriptActivity | undefined {
-	if (!transcriptPath) return undefined;
-	let fd: number | undefined;
-	try {
-		const stat = fs.statSync(transcriptPath);
-		if (!stat.isFile() || stat.size <= 0) return undefined;
-		const start = Math.max(0, stat.size - TRANSCRIPT_TAIL_BYTES);
-		const length = stat.size - start;
-		const buffer = Buffer.allocUnsafe(length);
-		fd = fs.openSync(transcriptPath, "r");
-		const bytesRead = fs.readSync(fd, buffer, 0, length, start);
-		let lines = buffer.subarray(0, bytesRead).toString("utf-8").split(/\r?\n/);
-		if (start > 0) lines = lines.slice(1); // The first tail line may be partial JSON.
-
-		let currentTool: string | undefined;
-		let currentToolArgs: string | undefined;
-		let latestAt: number | undefined;
-		const recent: string[] = [];
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let record: Record<string, unknown>;
-			try {
-				record = JSON.parse(line) as Record<string, unknown>;
-			} catch {
-				continue; // Concurrent append can leave the final line temporarily incomplete.
-			}
-			if (typeof record.ts === "number" && Number.isFinite(record.ts)) latestAt = record.ts;
-			if (record.recordType === "tool_start" && typeof record.toolName === "string") {
-				currentTool = record.toolName;
-				currentToolArgs = compactTranscriptText(record.argsPreview, 140);
-				const preview = currentToolArgs ? `${currentTool}: ${currentToolArgs}` : currentTool;
-				recent.push(`tool: ${preview}`);
-				continue;
-			}
-			if (record.recordType === "tool_end") {
-				currentTool = undefined;
-				currentToolArgs = undefined;
-				continue;
-			}
-			if (record.recordType === "message") {
-				if (record.sourceEventType === "initial_prompt" || record.role === "user") continue;
-				const text = compactTranscriptText(record.text);
-				if (text) recent.push(`${typeof record.role === "string" ? record.role : "message"}: ${text}`);
-				continue;
-			}
-			if (record.recordType === "stdout" || record.recordType === "stderr") {
-				const text = compactTranscriptText(record.text);
-				if (text) recent.push(`${record.recordType}: ${text}`);
-			}
-		}
-		return { currentTool, currentToolArgs, latestAt, recent: recent.slice(-TRANSCRIPT_PREVIEW_LINES) };
-	} catch {
-		return undefined;
-	} finally {
-		if (fd !== undefined) {
-			try { fs.closeSync(fd); } catch { /* best-effort close */ }
-		}
-	}
-}
-
-function detachedForegroundWaitUpdate(run: ForegroundResumeRun, pendingIndices: Set<number>, nowMs: number, elapsedMs: number): AgentToolResult<Details> {
-	const lines = [`Waiting for detached foreground run "${run.runId}" · ${formatDuration(elapsedMs)}`];
-	for (const child of run.children) {
-		if (!pendingIndices.has(child.index) || child.status !== "detached") continue;
-		const activity = readTranscriptActivity(child.transcriptPath);
-		const age = activity?.latestAt !== undefined ? ` · activity ${formatDuration(Math.max(0, nowMs - activity.latestAt))} ago` : "";
-		lines.push(`${child.agent} · working after supervisor handoff${age}`);
-		if (activity?.currentTool) {
-			lines.push(`  current: ${activity.currentTool}${activity.currentToolArgs ? `: ${activity.currentToolArgs}` : ""}`);
-		}
-		for (const preview of activity?.recent ?? []) lines.push(`  ${preview}`);
-		if (!activity && child.transcriptPath) lines.push("  live transcript has no new activity yet");
-		if (!child.transcriptPath) lines.push("  live transcript unavailable; waiting for completion event");
-	}
-	return result(lines.join("\n"));
-}
-
-async function waitForDetachedForegroundRun(
-	run: ForegroundResumeRun,
-	signal: AbortSignal | undefined,
-	deps: SubagentWaitDeps,
-	startedAt: number,
-	now: () => number,
-	pollIntervalMs: number,
-	timeoutMs: number,
-): Promise<AgentToolResult<Details>> {
-	const initialDetachedIndices = new Set(run.children.filter((child) => child.status === "detached").map((child) => child.index));
-	while (true) {
-		if (deps.state.currentSessionId !== run.sessionId) {
-			return result(`Wait stopped because the active session changed while remembered foreground run "${run.runId}" was still detached. Return to the originating session to inspect or wait for it. Reply to any pending supervisor request before resuming or launching a replacement.`, true);
-		}
-		const current = deps.state.foregroundRuns?.get(run.runId);
-		if (!current || current.sessionId !== run.sessionId) {
-			return result(`Remembered foreground run "${run.runId}" disappeared before a terminal child result was recorded. Completion cannot be confirmed; do not launch a replacement without checking the originating child session.`, true);
-		}
-		const pending = current.children.filter((child) => initialDetachedIndices.has(child.index) && child.status === "detached");
-		const attention = foregroundChildrenNeedingAttention(current, initialDetachedIndices, deps);
-		if (attention.length > 0) return formatForegroundAttention(current, attention, now() - startedAt);
-		if (pending.length === 0) {
-			const outcome = summarizeForegroundChildren(current, initialDetachedIndices);
-			return result(
-				`Waited ${formatDuration(now() - startedAt)} for remembered detached foreground run "${run.runId}"; done. Outcome: ${outcome || "no recovered child status"}. Completion event observed; inspect with subagent({ action: "status", id: "${run.runId}" }) for recovered output.`,
-			);
-		}
-		const updateNow = now();
-		deps.onUpdate?.(detachedForegroundWaitUpdate(current, initialDetachedIndices, updateNow, updateNow - startedAt));
-		if (signal?.aborted) {
-			return result(`Wait aborted after ${formatDuration(now() - startedAt)}. Remembered foreground run "${run.runId}" remains detached. Reply to any pending supervisor request before resuming or launching a replacement.`, true);
-		}
-		if (now() - startedAt >= timeoutMs) {
-			return windowElapsedResult(
-				`Wait window elapsed after ${formatDuration(timeoutMs)} with remembered foreground run "${run.runId}" still detached. Reply to any pending supervisor request, then call bg_wait({ id: "${run.runId}" }) again or inspect status; do not resume or launch a replacement while it remains detached.`,
-				[run.runId],
-			);
-		}
-		await waitForWake(pollIntervalMs, signal, deps);
-	}
-}
-
 /**
  * Block until the targeted async or remembered detached foreground run finishes,
  * the timeout elapses, or the turn is aborted. Resolves with a short
@@ -598,7 +434,16 @@ export async function waitForSubagents(
 	let providerSnapshot: BackgroundWorkSnapshot;
 	try {
 		active = activeRunsForSession(params, deps);
-		foreground = activeDetachedForegroundRuns(params, deps);
+		foreground = activeDetachedForegroundRuns(deps.state, params.id);
+		if (!params.id) {
+			// Workflow children are already covered by their retained root. Counting a child
+			// separately would make a rolling wait finish before the workflow's later stages.
+			const workflowRoots = new Set([...workflows.map((run) => run.runId), ...active.map((run) => run.id)]);
+			foreground = foreground.filter((run) => {
+				const parentId = deps.state.foregroundControls.get(run.runId)?.parentWorkflowRunId;
+				return !parentId || !workflowRoots.has(parentId);
+			});
+		}
 		providerSnapshot = params.id ? { providers: [], items: [] } : backgroundWorkForSession(deps, startedAt);
 	} catch (error) {
 		return result(error instanceof Error ? error.message : String(error), true);
@@ -630,41 +475,44 @@ export async function waitForSubagents(
 				return result(error instanceof Error ? error.message : String(error), true);
 			}
 		}
-		if (selected?.kind === "foreground") {
-			return waitForDetachedForegroundRun(selected.run, signal, deps, startedAt, now, pollIntervalMs, timeoutMs);
-		}
+		foreground = selected?.kind === "foreground" ? [selected.run] : [];
 		active = selected?.kind === "async" ? [selected.run] : [];
 		workflows = selected?.kind === "workflow" ? [selected.run] : [];
 		if (selected?.kind === "workflow" && selected.run.result) return selected.run.snapshot();
 	}
 
 	let providerActive = providerSnapshot.items;
-	if (active.length === 0 && providerActive.length === 0 && workflows.length === 0) {
+	if (active.length === 0 && providerActive.length === 0 && workflows.length === 0 && foreground.length === 0) {
 		return result(params.id
 			? `No active run matched "${params.id}". Nothing to wait for.`
-			: "No active async runs or registered provider work in this session. Nothing to wait for.");
+			: "No active async runs, detached foreground runs, workflows, or registered provider work in this session. Nothing to wait for.");
 	}
 	const waitParams = params.id && active[0] ? { ...params, id: active[0].id } : params;
 	const initialAsyncIds = new Set(active.map((run) => run.id));
 	const initialProviderIds = new Set(providerActive.map(backgroundWorkIdentity));
 	const initialProviderNames = new Set(providerActive.map((item) => item.provider));
-	const initialCount = initialAsyncIds.size + initialProviderIds.size + workflows.length;
+	const foregroundTargets = captureDetachedForegroundWaitTargets(foreground, ownerSessionId);
+	let foregroundSnapshots = snapshotDetachedForegroundWait(foregroundTargets, deps.state, deps.findPendingAsks);
+	const initialCount = initialAsyncIds.size + initialProviderIds.size + workflows.length + foregroundTargets.length;
 	const stopOnAttention = params.stopOnAttention ?? deps.stopOnAttention !== false;
 	let attention = active.filter((run) => needsAttention(run) || hasPendingSupervisorAsk(run, deps));
 
 	const isDone = (): boolean => {
 		if (workflows.some((run) => run.requests.size > 0)) return true;
+		if (foregroundSnapshots.some((snapshot) => snapshot.attention.length > 0)) return true;
 		if (attention.some((run) => initialAsyncIds.has(run.id) && (stopOnAttention || hasSupervisorTool(run) || hasPendingSupervisorAsk(run, deps)))) return true;
 		const activeAsyncIds = new Set(active.map((run) => run.id));
 		const activeProviderIds = new Set(providerActive.map(backgroundWorkIdentity));
 		if (waitForAll) {
 			return [...initialAsyncIds].every((id) => !activeAsyncIds.has(id))
 				&& [...initialProviderIds].every((id) => !activeProviderIds.has(id))
-				&& workflows.every((run) => run.result !== undefined);
+				&& workflows.every((run) => run.result !== undefined)
+				&& foregroundSnapshots.every((snapshot) => !snapshot.pending);
 		}
 		return [...initialAsyncIds].some((id) => !activeAsyncIds.has(id))
 			|| [...initialProviderIds].some((id) => !activeProviderIds.has(id))
-			|| workflows.some((run) => run.result !== undefined);
+			|| workflows.some((run) => run.result !== undefined)
+			|| foregroundSnapshots.some((snapshot) => !snapshot.pending);
 	};
 
 	while (!isDone()) {
@@ -672,24 +520,35 @@ export async function waitForSubagents(
 		if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
 		const activeInitialRuns = active.filter((run) => initialAsyncIds.has(run.id));
 		const activeInitialProviderItems = providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item)));
+		const activeForeground = foregroundSnapshots.filter((snapshot) => snapshot.pending);
 		const stillActive = [
 			...activeInitialRuns.map((run) => `${run.id} (${run.state})`),
 			...activeInitialProviderItems.map((item) => `${item.provider}/${item.id}`),
 			...workflows.filter((run) => !run.result).map((run) => `${run.runId} (foreground workflow)`),
+			...activeForeground.map((snapshot) => `${snapshot.run.runId} (detached foreground)`),
 		].join(", ");
-		deps.onUpdate?.(asyncWaitUpdate(activeInitialRuns, activeInitialProviderItems.length, now() - startedAt));
+		if (deps.onUpdate) {
+			const updateNow = now();
+			const update = asyncWaitUpdate(activeInitialRuns, activeInitialProviderItems.length, updateNow - startedAt);
+			update.content.push(...activeForeground.map((snapshot) => ({ type: "text" as const,
+				text: detachedForegroundWaitStatus(snapshot.run, snapshot.indices, updateNow, updateNow - startedAt),
+			})));
+			deps.onUpdate(update);
+		}
 		if (signal?.aborted) {
 			return result(`Wait aborted after ${formatDuration(now() - startedAt)}. Still active: ${stillActive}.`, true);
 		}
 		if (now() - startedAt >= timeoutMs) {
 			return windowElapsedResult(
 				`Wait window elapsed after ${formatDuration(timeoutMs)} with ${activeInitialRuns.length} async run(s) and ${activeInitialProviderItems.length} provider item(s) still active: ${stillActive}. The work keeps going; call bg_wait again or inspect subagent status.`,
-				[...activeInitialRuns.map((run) => run.id), ...workflows.filter((run) => !run.result).map((run) => run.runId)],
+				[...activeInitialRuns.map((run) => run.id), ...workflows.filter((run) => !run.result).map((run) => run.runId), ...activeForeground.map((snapshot) => snapshot.run.runId)],
 				activeInitialProviderItems,
 			);
 		}
 		try {
 			await waitForWake(pollIntervalMs, signal, deps);
+			if (deps.state.currentSessionId !== ownerSessionId) return result("Wait stopped because the originating session is no longer active.", true);
+			foregroundSnapshots = snapshotDetachedForegroundWait(foregroundTargets, deps.state, deps.findPendingAsks, foregroundSnapshots);
 			active = activeRunsForSession(waitParams, deps);
 			attention = attentionRunsForSession(waitParams, deps, initialAsyncIds);
 			providerSnapshot = params.id ? providerSnapshot : backgroundWorkForSession(deps, now());
@@ -707,9 +566,17 @@ export async function waitForSubagents(
 	if (deps.state.currentSessionId !== ownerSessionId) return result("Wait stopped because the originating session is no longer active.", true);
 	if (workflows.some((run) => run.sessionId !== deps.state.currentSessionId)) return result("Wait stopped because the originating foreground workflow session is no longer active.", true);
 	const workflowAttention = workflows.filter((run) => run.requests.size > 0);
-	if (workflowAttention[0] && initialAsyncIds.size === 0 && initialProviderIds.size === 0) return { ...workflowAttention[0].snapshot(), ...(deps.failOnAttention ? { isError: true } : {}) };
+	const foregroundAttention = foregroundSnapshots.filter((snapshot) => snapshot.attention.length > 0);
+	if (params.id && foregroundSnapshots[0]) {
+		const snapshot = foregroundSnapshots[0];
+		return result(snapshot.attention.length > 0
+			? formatForegroundAttention(snapshot, now() - startedAt)
+			: `Waited ${formatDuration(now() - startedAt)} for remembered detached foreground run "${snapshot.run.runId}"; done. Outcome: ${summarizeForegroundChildren(snapshot.run, snapshot.indices)}. Completion event observed; inspect with subagent({ action: "status", id: "${snapshot.run.runId}" }) for recovered output.`,
+			(deps.failOnFailedRuns === true && snapshot.failed) || (deps.failOnAttention === true && snapshot.attention.length > 0));
+	}
+	if (workflowAttention[0] && initialAsyncIds.size === 0 && initialProviderIds.size === 0 && foregroundTargets.length === 0) return { ...workflowAttention[0].snapshot(), ...(deps.failOnAttention ? { isError: true } : {}) };
 	if (params.id && workflows[0]?.result) return workflows[0].snapshot();
-	if (workflows.length > 0 && initialAsyncIds.size === 0 && initialProviderIds.size === 0) {
+	if (workflows.length > 0 && initialAsyncIds.size === 0 && initialProviderIds.size === 0 && foregroundTargets.length === 0) {
 		return { content: workflows.flatMap((run) => run.snapshot().content), isError: workflows.some((run) => run.result?.isError), details: { mode: "workflow", results: workflows.flatMap((run) => run.result?.details.results ?? []) } };
 	}
 	let terminalSummary: string;
@@ -742,37 +609,44 @@ export async function waitForSubagents(
 		: "";
 	const stillRunning = active.filter((run) => initialAsyncIds.has(run.id)).length
 		+ providerActive.filter((item) => initialProviderIds.has(backgroundWorkIdentity(item))).length
-		+ workflows.filter((run) => !run.result).length;
+		+ workflows.filter((run) => !run.result).length
+		+ foregroundSnapshots.filter((snapshot) => snapshot.pending).length;
 	const elapsed = formatDuration(now() - startedAt);
 	const workflowSummary = workflows.map((run) => `Foreground workflow ${run.runId}: ${run.result ? run.result.isError ? "failed" : "complete" : run.requests.size > 0 ? "needs_attention" : "running"}; inspect status for output.`).join(" ");
-	const outcome = `${terminalSummary ? ` Outcome: ${terminalSummary}.` : ""}${workflowSummary ? ` ${workflowSummary}` : ""}`;
+	const foregroundSummary = foregroundSnapshots.map((snapshot) => snapshot.attention.length > 0
+		? formatForegroundAttention(snapshot, now() - startedAt)
+		: `Detached foreground run ${snapshot.run.runId}: ${snapshot.pending ? "running" : summarizeForegroundChildren(snapshot.run, snapshot.indices)}; inspect status for recovered output.`).join(" ");
+	const outcome = `${terminalSummary ? ` Outcome: ${terminalSummary}.` : ""}${workflowSummary ? ` ${workflowSummary}` : ""}${foregroundSummary ? ` ${foregroundSummary}` : ""}`;
 	const recoveryNote = formatCompletionRecovery(completions);
+	const attentionCount = relevantAttention.length + workflowAttention.length + foregroundAttention.length;
+	const failed = failedAsyncCount > 0 || workflows.some((run) => run.result?.isError) || foregroundSnapshots.some((snapshot) => snapshot.failed);
+	const isError = (deps.failOnFailedRuns === true && failed) || (deps.failOnAttention === true && attentionCount > 0);
 
 	if (waitForAll) {
 		const scope = params.id
 			? `run "${params.id}"`
-			: `${initialAsyncIds.size} async run(s)${workflows.length ? ` and ${workflows.length} foreground workflow(s)` : ""}${initialProviderIds.size ? ` and ${initialProviderIds.size} provider item(s)` : ""}`;
-		const status = relevantAttention.length > 0 || workflowAttention.length > 0 ? "attention required" : "done";
+			: `${initialAsyncIds.size} async run(s)${workflows.length ? ` and ${workflows.length} foreground workflow(s)` : ""}${foregroundTargets.length ? ` and ${foregroundTargets.length} detached foreground run(s)` : ""}${initialProviderIds.size ? ` and ${initialProviderIds.size} provider item(s)` : ""}`;
+		const status = attentionCount > 0 ? "attention required" : "done";
 		return appendWorkflowResults(result(
 			`Waited ${elapsed} for ${scope}; ${status}.${outcome}${recoveryNote}${resumeGuidance}${attentionNote} Completion/control events have been observed; inspect status if a notification is not visible yet.`,
-			(deps.failOnFailedRuns === true && (failedAsyncCount > 0 || workflows.some((run) => run.result?.isError))) || (deps.failOnAttention === true && (relevantAttention.length > 0 || workflowAttention.length > 0)),
+			isError,
 			completions,
 		), workflows);
 	}
 
-	const finishedCount = finishedAsyncCount + providerFinishedCount + workflows.filter((run) => run.result).length;
+	const finishedCount = finishedAsyncCount + providerFinishedCount + workflows.filter((run) => run.result).length + foregroundSnapshots.filter((snapshot) => !snapshot.pending).length;
 	const subject = initialProviderIds.size === 0 ? "run(s)" : "item(s)";
 	const remainder = stillRunning > 0
 		? ` ${stillRunning} ${subject} still in flight — call bg_wait again to catch the next one.`
-		: relevantAttention.length > 0
+		: attentionCount > 0
 			? " No other work is waitable until attention is handled."
 			: initialProviderIds.size === 0 ? " No runs remain in flight." : " No work remains in flight.";
-	const progress = relevantAttention.length > 0 && finishedCount === 0
-		? `${relevantAttention.length} of ${initialCount} ${subject} need attention`
+	const progress = attentionCount > 0 && finishedCount === 0
+		? `${attentionCount} of ${initialCount} ${subject} need attention`
 		: `${finishedCount} of ${initialCount} ${subject} finished`;
 	return appendWorkflowResults(result(
 		`Waited ${elapsed}; ${progress}.${outcome}${recoveryNote}${resumeGuidance}${attentionNote}${remainder} Relevant completion/control events have been observed; inspect status if a notification is not visible yet.`,
-		(deps.failOnFailedRuns === true && (failedAsyncCount > 0 || workflows.some((run) => run.result?.isError))) || (deps.failOnAttention === true && (relevantAttention.length > 0 || workflowAttention.length > 0)),
+		isError,
 		completions,
 	), workflows);
 }

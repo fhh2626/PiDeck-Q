@@ -239,6 +239,8 @@ Blocking `bg_wait({ id: "..." })` keeps the current tool call open until that ru
 
 This is different from `waitTool.enabled=false`, which returns immediately without registering any future wake. Provider items remain available only to blocking fleet-wide waits; non-blocking subscriptions require one async or remembered detached foreground run id.
 
+Without `id`, a blocking wait tracks the async runs, remembered detached foreground runs, retained foreground workflows, and provider items active in the current session when the call begins. The default returns after the first tracked item finishes or needs a supervisor decision. `bg_wait({ all: true })` waits for every initially tracked item, while still returning for supervisor decisions. Work started later belongs to the next wait. Headless auto-drain also retains detached foreground work and live workflows until they settle or require a decision.
+
 ## `resultScanLogging`
 
 ```json

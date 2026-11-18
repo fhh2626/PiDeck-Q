@@ -124,6 +124,19 @@ test('delegation preserves an earlier announcement from another extension withou
   assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
   assert.ok(result.systemPrompt.endsWith(suffix));
 });
+test('an earlier announcement is deduplicated without dropping custom guidance on the same template line', () => {
+  const suffix = `\n\n${announcement}`;
+  const native = tool('subagent', [], 'npm:pi-subagents');
+  const custom = 'Keep the launch explanation specific to the current task.';
+  const prompts = {
+    ...DEFAULT_PROMPTS,
+    delegation: DEFAULT_PROMPTS.delegation.replace(announcement, `${announcement} ${custom}`),
+  };
+  const result = run(fixture(coreRules, suffix), [native], { prompts });
+  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
+  assert.ok(result.systemPrompt.includes(custom));
+  assert.ok(result.systemPrompt.endsWith(suffix));
+});
 test('disabled optional tools neither contribute replacements nor lose their rules', () => {
   const rule = 'optional plugin constraint';
   const tools = [tool('subagent', [rule], 'npm:pi-subagents')];

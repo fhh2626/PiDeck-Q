@@ -124,6 +124,7 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 	const factory = { async create() { const next = attempts[creates++]; assert.ok(next, "an unexpected replacement child was created"); return next.child; }, async dispose() {} };
 	const owner = new AbortController();
 	const interrupt = new AbortController();
+	let interruptChild;
 	const detached = Promise.withResolvers();
 	let receipt;
 	let result;
@@ -153,6 +154,7 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 			previousOutput: "", placeholder: "{previous}", cwd, sessionEnabled: false, id: runId, flatIndex: 0, flatStepCount: 1,
 			outputFile: join(cwd, "step.txt"), childSessions: factory, artifactConfig: { enabled: false },
 			orchestratorIntercomTarget: parentSessionId, runSupervisionEnabled: enabled,
+			registerInterrupt(callback) { interruptChild = callback; },
 		});
 	} else {
 		result = runChildSession({
@@ -171,7 +173,7 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	return {
-		receipt, result, notifications, channelDir, interrupt: () => interrupt.abort(), get creates() { return creates; },
+		receipt, result, notifications, channelDir, interrupt() { interrupt.abort(); interruptChild?.(); }, get creates() { return creates; },
 		async pending() { return (await tools.get("subagent_supervisor").execute("pending", { action: "pending" })).details.pending; },
 		rawReply(id, message) { return tools.get("subagent_supervisor").execute("reply", { action: "reply", replyTo: id, message }); },
 		async reply(id, message) {
@@ -286,6 +288,29 @@ test("foreground STOP cannot fall back to another model after a provider error",
 	assert.equal(child.prompts, 1);
 	assert.equal(child.disposals, 1);
 });
+
+for (const host of ["foreground", "background"]) {
+	test(`${host} interrupt cannot start a fallback model after a provider abort error`, async (t) => {
+		const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
+		const { runSingleStepInner } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
+		if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
+		else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
+		const first = childFixture({ tool: false, providerErrorOnAbort: true });
+		const second = childFixture();
+		second.child.modelId = "test/fallback";
+		const run = launch(t, host, first, { fallback: true, attempts: [first, second], stepRunner: runSingleStepInner });
+		await first.started;
+		run.interrupt();
+		const outcome = await Promise.race([
+			run.result.then((terminal) => ({ terminal })),
+			second.started.then(() => ({ replacement: true })),
+		]);
+		assert.equal(outcome.replacement, undefined, "an explicit interrupt must keep the logical child paused");
+		assert.equal(outcome.terminal.interrupted, true);
+		assert.equal(run.creates, 1);
+		assert.equal(first.disposals, 1);
+	});
+}
 
 test("foreground model fallback preserves the logical child's elapsed review window", async (t) => {
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });

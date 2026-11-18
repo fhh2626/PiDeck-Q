@@ -67,12 +67,14 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	if (has('ask_question')) sections.push(p.userInput);
 	if (input.config.subagent && tools.some(isSubagent)) {
 		// An earlier extension may already have appended this rule outside the rewritten base.
-		// Preserve that suffix and unrelated custom guidance regardless of extension load order.
+		// Remove only the known sentence from customized template lines, preserving adjacent
+		// user guidance as well as the earlier extension's suffix regardless of load order.
 		const delegation = input.systemPrompt.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)
-			? p.delegation.split(/\r?\n/).filter(line => (
-				line.trim() !== SUBAGENT_CALL_ANNOUNCEMENT_HINT
-				&& line.trim() !== `- ${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`
-			)).join('\n')
+			? p.delegation.split(/\r?\n/).flatMap(line => {
+				if (!line.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)) return [line];
+				const remaining = line.replaceAll(SUBAGENT_CALL_ANNOUNCEMENT_HINT, '');
+				return remaining.trim() && remaining.trim() !== '-' ? [remaining] : [];
+			}).join('\n')
 			: p.delegation;
 		sections.push(delegation);
 	}

@@ -1373,7 +1373,9 @@ export async function runSingleStepInner(
 				: abortRecovery.diagnostic;
 			if (finalResult) finalResult.abortRecoveryDiagnostic = abortRecovery.diagnostic;
 		}
-		if (run.stopped || run.timedOut || ctx.timeoutSignal?.aborted || ctx.stopSignal?.aborted || ctx.skipAcceptance?.()) break modelAttemptsLoop;
+		// An explicit pause remains terminal for this attempt even if aborting the
+		// provider also produced a retryable error. Only a later resume may restart it.
+		if (run.interrupted || run.stopped || run.timedOut || ctx.timeoutSignal?.aborted || ctx.stopSignal?.aborted || ctx.skipAcceptance?.()) break modelAttemptsLoop;
 		if (abortRecovery?.action === "settle" && abortRecovery.diagnostic) break modelAttemptsLoop;
 		if (attempt.success) break modelAttemptsLoop;
 		// The shared token is consumed before sibling creation; no third dispatch of any kind.
