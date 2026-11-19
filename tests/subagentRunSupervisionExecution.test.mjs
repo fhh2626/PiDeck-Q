@@ -1,4 +1,4 @@
-/** Exercise timed reviews through both production execution hosts and the native parent tools. */
+/** Exercise timed reviews through the foreground execution host and the native parent tools. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -24,8 +24,6 @@ after(() => {
 
 installSubagentGraphLoader();
 const { runSync } = await import("../resources/extensions/pideck-q-subagents/src/runs/foreground/execution.ts");
-const { runChildSession } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/run-child-session.ts");
-const { buildInProcessChildLaunch } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts");
 const { DEFAULT_CONTROL_CONFIG } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/subagent-control.ts");
 const { RUN_SUPERVISION_INTERVAL_MS } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/run-supervision.ts");
 const native = await import("../resources/extensions/pideck-q-subagents/src/intercom/native-supervisor-channel.ts");
@@ -98,7 +96,7 @@ function childFixture({ tool = true, providerErrorOnAbort = false, onAbort } = {
 }
 
 /** The native channel and executor share the same parent identity and transport bus. */
-function launch(t, host, child, { enabled = true, fallback = false, detach = true, attempts = [child], stepRunner, rootRunner, parallel = false } = {}) {
+function launch(t, host, child, { enabled = true, fallback = false, detach = true, attempts = [child] } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "pideck-run-supervision-"));
 	const runId = `review-${host}-${randomUUID()}`;
 	const parentSessionId = `owner-${randomUUID()}`;
@@ -109,9 +107,9 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 	const rememberedChild = { index: 0, agent: "worker", status: "running", currentTool: "read", currentToolStartedAt: Date.now() };
 	const state = {
 		currentSessionId: parentSessionId, supervisorOwnerSessionId: parentSessionId,
-		foregroundControls: new Map(host === "foreground" ? [[runId, { sessionId: parentSessionId }]] : []),
-		foregroundRuns: new Map(host === "foreground" ? [[runId, { runId, children: [rememberedChild] }]] : []),
-		asyncJobs: new Map(host === "background" ? [[runId, { status: "running", steps: [{ status: "running", agent: "worker" }] }]] : []),
+		foregroundControls: new Map([[runId, { sessionId: parentSessionId }]]),
+		foregroundRuns: new Map([[runId, { runId, children: [rememberedChild] }]]),
+		asyncJobs: new Map([]),
 	};
 	events.on("pi-intercom:detach-response", (event) => { if (event.runId === runId && event.accepted) rememberedChild.status = "detached"; });
 	const pi = { events, registerTool(tool) { tools.set(tool.name, tool); }, getAllTools: () => [...tools.values()], sendMessage(message) { notifications.push(message); } };
@@ -124,11 +122,10 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 	const factory = { async create() { const next = attempts[creates++]; assert.ok(next, "an unexpected replacement child was created"); return next.child; }, async dispose() {} };
 	const owner = new AbortController();
 	const interrupt = new AbortController();
-	let interruptChild;
 	const detached = Promise.withResolvers();
 	let receipt;
 	let result;
-	if (host === "foreground") {
+	{
 		receipt = runSync(cwd, [{ name: "worker", description: "Offline review fixture", systemPrompt: "Read the file.", model: "test/model", fallbackModels: fallback ? ["test/fallback"] : undefined, tools: ["read"], completionGuard: false }], "worker", "Read input.txt.", {
 			cwd, runId, index: 0, parentSessionId, orchestratorIntercomTarget: parentSessionId,
 			acceptance: false, artifactConfig: { enabled: false }, childSessionFactory: factory, signal: owner.signal, interruptSignal: interrupt.signal,
@@ -138,31 +135,6 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 			recoveryBrief: async () => ({ ok: false, reason: "Offline test." }),
 		});
 		result = receipt.then((value) => value.detached ? detached.promise : value);
-	} else if (rootRunner) {
-		const asyncDir = join(cwd, "async");
-		const resultPath = join(cwd, "result.json");
-		mkdirSync(asyncDir);
-		const step = { agent: "worker", task: "Read input.txt.", parentSessionId, tools: ["read"], model: "test/model", completionGuard: false };
-		result = rootRunner({ id: runId, cwd, asyncDir, resultPath, placeholder: "{previous}", sessionId: parentSessionId,
-			steps: parallel ? [{ parallel: [step], concurrency: 1 }] : [step],
-			controlIntercomTarget: parentSessionId, controlConfig: { ...DEFAULT_CONTROL_CONFIG, enabled }, artifactConfig: { enabled: false },
-		}, factory).then(() => ({ ...JSON.parse(readFileSync(resultPath, "utf-8")), status: JSON.parse(readFileSync(join(asyncDir, "status.json"), "utf-8")) }));
-	} else if (stepRunner) {
-		result = stepRunner({ agent: "worker", task: "Read input.txt.", parentSessionId, tools: ["read"], model: "test/model",
-			modelCandidates: fallback ? ["test/model", "test/fallback"] : ["test/model"], completionGuard: false,
-		}, {
-			previousOutput: "", placeholder: "{previous}", cwd, sessionEnabled: false, id: runId, flatIndex: 0, flatStepCount: 1,
-			outputFile: join(cwd, "step.txt"), childSessions: factory, artifactConfig: { enabled: false },
-			orchestratorIntercomTarget: parentSessionId, runSupervisionEnabled: enabled,
-			registerInterrupt(callback) { interruptChild = callback; },
-		});
-	} else {
-		result = runChildSession({
-			factory,
-			launch: buildInProcessChildLaunch({ cwd, host: "runner", runId, parentSessionId, orchestratorIntercomTarget: parentSessionId,
-				childAgentName: "worker", childIndex: 0, sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, tools: ["read"], model: "test/model" }),
-			prompt: "Read input.txt.", appendChildEvent() {}, writeOutputLine() {}, runSupervisionEnabled: enabled,
-		});
 	}
 	t.after(async () => {
 		owner.abort();
@@ -173,7 +145,7 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	return {
-		receipt, result, notifications, channelDir, interrupt() { interrupt.abort(); interruptChild?.(); }, get creates() { return creates; },
+		receipt, result, notifications, channelDir, interrupt() { interrupt.abort(); }, get creates() { return creates; },
 		async pending() { return (await tools.get("subagent_supervisor").execute("pending", { action: "pending" })).details.pending; },
 		rawReply(id, message) { return tools.get("subagent_supervisor").execute("reply", { action: "reply", replyTo: id, message }); },
 		async reply(id, message) {
@@ -185,7 +157,7 @@ function launch(t, host, child, { enabled = true, fallback = false, detach = tru
 	};
 }
 
-for (const host of ["foreground", "background"]) {
+for (const host of ["foreground"]) {
 	test(`${host} reviews a live read at 600 seconds and continues the same child until STOP`, async (t) => {
 		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
 		const child = childFixture();
@@ -204,7 +176,7 @@ for (const host of ["foreground", "background"]) {
 		assert.match(requests[0].message, /Read input\.txt/);
 		assert.equal(child.aborts, 0);
 		assert.equal(child.disposals, 0);
-		if (host === "foreground") {
+		{
 			const receipt = await run.receipt;
 			assert.equal(receipt.detached, true, "the parent must receive control before the child has finished");
 			assert.equal(receipt.detachedReason, "intercom coordination");
@@ -289,16 +261,15 @@ test("foreground STOP cannot fall back to another model after a provider error",
 	assert.equal(child.disposals, 1);
 });
 
-for (const host of ["foreground", "background"]) {
+for (const host of ["foreground"]) {
 	test(`${host} interrupt cannot start a fallback model after a provider abort error`, async (t) => {
 		const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
-		const { runSingleStepInner } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
 		if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
 		else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
 		const first = childFixture({ tool: false, providerErrorOnAbort: true });
 		const second = childFixture();
 		second.child.modelId = "test/fallback";
-		const run = launch(t, host, first, { fallback: true, attempts: [first, second], stepRunner: runSingleStepInner });
+		const run = launch(t, host, first, { fallback: true, attempts: [first, second] });
 		await first.started;
 		run.interrupt();
 		const outcome = await Promise.race([
@@ -333,37 +304,6 @@ test("foreground model fallback preserves the logical child's elapsed review win
 	assert.match(requests[0].message, /"elapsedSeconds": 600/);
 	assert.match(requests[0].message, /"currentTools":\s*\[\s*"read"/);
 	assert.equal(second.aborts, 0);
-	await run.reply(requests[0].id, "STOP");
-	const terminal = await run.result;
-	assert.equal(terminal.stopped, true);
-	assert.equal(terminal.modelAttempts.length, 2);
-	assert.equal(second.aborts, 1);
-	assert.equal(second.disposals, 1);
-});
-
-test("background model fallback preserves the logical child's elapsed review window", async (t) => {
-	const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
-	const { runSingleStepInner } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
-	if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
-	else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
-	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-	const first = childFixture({ tool: false });
-	const second = childFixture();
-	second.child.modelId = "test/fallback";
-	const run = launch(t, "background", first, { fallback: true, attempts: [first, second], stepRunner: runSingleStepInner });
-	await first.started;
-	t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS - 1);
-	await flush();
-	assert.equal((await run.pending()).length, 0);
-	first.failProvider();
-	await second.started;
-	assert.equal(first.disposals, 1);
-	assert.equal(run.creates, 2);
-	t.mock.timers.tick(1);
-	await flush();
-	const requests = await run.pending();
-	assert.equal(requests.length, 1, "background fallback must retain the logical child's original deadline");
-	assert.match(requests[0].message, /"elapsedSeconds": 600/);
 	await run.reply(requests[0].id, "STOP");
 	const terminal = await run.result;
 	assert.equal(terminal.stopped, true);
@@ -413,17 +353,16 @@ test("foreground timed review yields a receipt even when the manual intercom bri
 	assert.equal((await run.result).exitCode, 0);
 });
 
-for (const host of ["foreground", "background"]) {
+for (const host of ["foreground"]) {
 	test(`${host} honors an acknowledged STOP when the provider ends before the reply poll`, async (t) => {
 		const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
-		const { runSingleStepInner } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
 		if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
 		else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
 		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
 		const first = childFixture({ tool: false });
 		const second = childFixture();
 		second.child.modelId = "test/fallback";
-		const run = launch(t, host, first, { fallback: true, attempts: [first, second], stepRunner: runSingleStepInner });
+		const run = launch(t, host, first, { fallback: true, attempts: [first, second] });
 		await first.started;
 		t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS);
 		await flush();
@@ -444,57 +383,5 @@ for (const host of ["foreground", "background"]) {
 		assert.equal(run.creates, 1);
 		assert.equal(first.disposals, 1);
 		assert.equal((await run.pending()).length, 0);
-	});
-}
-
-test("background preserves an acknowledged CONTINUE across an immediate provider fallback", async (t) => {
-	const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
-	const { runSingleStepInner } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
-	if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
-	else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
-	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-	const first = childFixture({ tool: false });
-	const second = childFixture();
-	second.child.modelId = "test/fallback";
-	const run = launch(t, "background", first, { fallback: true, attempts: [first, second], stepRunner: runSingleStepInner });
-	await first.started;
-	t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS);
-	await flush();
-	const [request] = await run.pending();
-	assert.equal((await run.rawReply(request.id, "CONTINUE")).isError, undefined);
-	first.failProvider();
-	await second.started;
-	t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS - 1);
-	await flush();
-	assert.equal((await run.pending()).length, 0, "a successful CONTINUE must preserve the full next review window");
-	t.mock.timers.tick(1);
-	await flush();
-	assert.equal((await run.pending()).length, 1);
-	second.complete();
-	assert.equal((await run.result).exitCode, 0);
-});
-
-for (const parallel of [false, true]) {
-	test(`background ${parallel ? "parallel" : "single"} runner keeps the supervisor's stop reason in persisted results`, async (t) => {
-		const previousChildFlag = process.env.PI_SUBAGENT_CHILD;
-		const { runSubagent } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/subagent-runner.ts");
-		if (previousChildFlag === undefined) delete process.env.PI_SUBAGENT_CHILD;
-		else process.env.PI_SUBAGENT_CHILD = previousChildFlag;
-		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-		const child = childFixture({ tool: false });
-		const run = launch(t, "background", child, { rootRunner: runSubagent, parallel });
-		await child.started;
-		t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS);
-		await flush();
-		const [request] = await run.pending();
-		assert.ok(request);
-		assert.equal((await run.rawReply(request.id, "STOP")).isError, undefined);
-		child.failProvider();
-		const terminal = await run.result;
-		assert.equal(terminal.results[0].stopped, true);
-		assert.match(terminal.results[0].error, /stopped by supervisor/);
-		assert.match(terminal.results[0].output, /stopped by supervisor/);
-		assert.match(terminal.status.steps[0].error, /stopped by supervisor/);
-		assert.equal(run.creates, 1);
 	});
 }

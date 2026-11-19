@@ -1,7 +1,7 @@
 /** Automatic host reviews must not depend on the optional child conversation bridge. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -10,6 +10,9 @@ import { installSubagentGraphLoader } from "./helpers/subagentGraphLoader.mjs";
 const modelCacheDir = mkdtempSync(join(tmpdir(), "pideck-review-metadata-models-"));
 const previousExclusionsPath = process.env.PI_MODEL_EXCLUSIONS_PATH;
 const previousTempRoot = process.env.PI_SUBAGENTS_TEMP_ROOT;
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const agentDir = join(modelCacheDir, "agent");
+process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.PI_MODEL_EXCLUSIONS_PATH = join(modelCacheDir, "model-exclusions.json");
 // Fake clock cleanup must not race with live request directories owned by another test file.
 process.env.PI_SUBAGENTS_TEMP_ROOT = join(modelCacheDir, "runtime");
@@ -18,19 +21,20 @@ after(() => {
 	else process.env.PI_MODEL_EXCLUSIONS_PATH = previousExclusionsPath;
 	if (previousTempRoot === undefined) delete process.env.PI_SUBAGENTS_TEMP_ROOT;
 	else process.env.PI_SUBAGENTS_TEMP_ROOT = previousTempRoot;
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	rmSync(modelCacheDir, { recursive: true, force: true });
 });
 
 installSubagentGraphLoader();
 const { runSync } = await import("../resources/extensions/pideck-q-subagents/src/runs/foreground/execution.ts");
-const { runChildSession } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/run-child-session.ts");
-const { buildInProcessChildLaunch } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts");
 const { childSupervisorMetadata } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-runtime-config.ts");
 const { resolveRunSupervisionMetadata } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/run-supervision-metadata.ts");
 const { resolveIntercomBridge, applyIntercomBridgeToAgent } = await import("../resources/extensions/pideck-q-subagents/src/intercom/intercom-bridge.ts");
 const { DEFAULT_CONTROL_CONFIG } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/subagent-control.ts");
 const { RUN_SUPERVISION_INTERVAL_MS } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/run-supervision.ts");
 const native = await import("../resources/extensions/pideck-q-subagents/src/intercom/native-supervisor-channel.ts");
+const { shellPolicySnapshotPath } = await import("../resources/extensions/pideck-q-subagents/src/policy/environment/policySnapshot.ts");
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -74,22 +78,40 @@ function eventBus() {
 	};
 }
 
-/** Install the production child hooks and inspect their public tool and prompt output. */
-async function childToolSurface(input) {
+/** Install the production hooks with the same session lifecycle the Pi SDK supplies. */
+async function childToolSurface(input, sessionId) {
 	const tools = new Map([["read", { name: "read" }]]);
+	let active = [...tools.keys()];
 	const handlers = new Map();
+	const ctx = {
+		cwd: input.cwd, hasUI: false,
+		sessionManager: { getSessionId: () => sessionId, getSessionFile: () => undefined },
+	};
 	const pi = {
-		events: eventBus(), registerTool(tool) { tools.set(tool.name, tool); },
-		getAllTools: () => [...tools.values()], getActiveTools: () => [...tools.keys()],
+		events: eventBus(), registerTool(tool) { tools.set(tool.name, tool); active.push(tool.name); },
+		getAllTools: () => [...tools.values()], getActiveTools: () => [...active],
+		setActiveTools(names) { active = [...names]; },
 		on(name, handler) { const callbacks = handlers.get(name) ?? []; callbacks.push(handler); handlers.set(name, callbacks); },
 	};
 	for (const hook of input.hooks) await hook.factory(pi);
-	let systemPrompt = input.systemPrompt ?? input.appendSystemPrompt ?? "Read the requested file.";
-	for (const handler of handlers.get("before_agent_start") ?? []) {
-		const update = await handler({ systemPrompt });
-		if (update?.systemPrompt !== undefined) systemPrompt = update.systemPrompt;
+	let shutdowns = 0;
+	const dispose = async () => {
+		if (shutdowns) return;
+		shutdowns++;
+		for (const handler of handlers.get("session_shutdown") ?? []) await handler({ type: "session_shutdown", reason: "quit" }, ctx);
+	};
+	try {
+		for (const handler of handlers.get("session_start") ?? []) await handler({ type: "session_start", reason: "startup" }, ctx);
+		let systemPrompt = input.systemPrompt ?? input.appendSystemPrompt ?? "Read the requested file.";
+		for (const handler of handlers.get("before_agent_start") ?? []) {
+			const update = await handler({ type: "before_agent_start", systemPrompt }, ctx);
+			if (update?.systemPrompt !== undefined) systemPrompt = update.systemPrompt;
+		}
+		return { tools, systemPrompt, dispose, get active() { return [...active]; }, get shutdowns() { return shutdowns; } };
+	} catch (error) {
+		await dispose();
+		throw error;
 	}
-	return { tools, systemPrompt };
 }
 
 /** Keep an ordinary read alive through a real native review, then complete it explicitly. */
@@ -97,6 +119,11 @@ async function startWithoutConversationBridge(t, host, mode) {
 	const cwd = mkdtempSync(join(tmpdir(), "pideck-review-metadata-"));
 	const runId = `review-${randomUUID()}`;
 	const parentSessionId = `owner-${randomUUID()}`;
+	// The launching parent has authorized this read, independently of manual contact tools.
+	mkdirSync(join(agentDir, "subagents", "environment"), { recursive: true });
+	writeFileSync(shellPolicySnapshotPath(agentDir, parentSessionId), JSON.stringify({
+		version: 2, platform: process.platform, shell: { bash: false, powershell: false }, parentActiveTools: ["read"],
+	}));
 	const bridge = resolveIntercomBridge({ config: { mode }, context: "fresh", orchestratorTarget: parentSessionId, agentDir: cwd, settingsDir: cwd });
 	assert.equal(bridge.active, false);
 	const agent = applyIntercomBridgeToAgent({ name: "worker", description: "Offline review fixture", systemPrompt: "Read the requested file.", model: "test/model", tools: ["read"], completionGuard: false }, bridge);
@@ -104,9 +131,9 @@ async function startWithoutConversationBridge(t, host, mode) {
 	const parentTools = new Map();
 	const state = {
 		currentSessionId: parentSessionId, supervisorOwnerSessionId: parentSessionId,
-		foregroundControls: new Map(host === "foreground" ? [[runId, { sessionId: parentSessionId }]] : []),
+		foregroundControls: new Map([[runId, { sessionId: parentSessionId }]]),
 		foregroundRuns: new Map(),
-		asyncJobs: new Map(host === "background" ? [[runId, { status: "running", steps: [{ status: "running", agent: "worker" }] }]] : []),
+		asyncJobs: new Map([]),
 	};
 	const idleHandle = { unref() {} };
 	const channel = native.createNativeSupervisorChannel({ events, registerTool(tool) { parentTools.set(tool.name, tool); }, getAllTools: () => [...parentTools.values()], sendMessage() {} }, state, {
@@ -125,11 +152,11 @@ async function startWithoutConversationBridge(t, host, mode) {
 		messages: [], modelId: "test/model", sessionId: `child-${randomUUID()}`,
 		subscribe(callback) { listener = callback; return () => { listener = undefined; }; },
 		async prompt() { listener?.({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "input.txt" } }); started.resolve(); await pending.promise; },
-		async abort() { aborts++; pending.resolve(); }, async dispose() {}, async steer() {}, async followUp() {},
+		async abort() { aborts++; pending.resolve(); }, async dispose() { await childSurface?.dispose(); }, async steer() {}, async followUp() {},
 	};
-	const factory = { async create(input) { childInput = input; childSurface = await childToolSurface(input); return child; }, async dispose() {} };
+	const factory = { async create(input) { childInput = input; childSurface = await childToolSurface(input, child.sessionId); return child; }, async dispose() {} };
 	let result;
-	if (host === "foreground") {
+	{
 		const receipt = runSync(cwd, [agent], "worker", "Read input.txt.", {
 			cwd, runId, index: 0, parentSessionId,
 			orchestratorIntercomTarget: bridge.active ? bridge.orchestratorTarget : undefined,
@@ -138,19 +165,18 @@ async function startWithoutConversationBridge(t, host, mode) {
 			controlConfig: DEFAULT_CONTROL_CONFIG, onDetachedExit(terminal) { detached.resolve(terminal); },
 		});
 		result = receipt.then((value) => value.detached ? detached.promise : value);
-	} else {
-		const launch = buildInProcessChildLaunch({ cwd, host: "runner", parentSessionId, runId, childAgentName: "worker", childIndex: 0,
-			orchestratorIntercomTarget: bridge.active ? bridge.orchestratorTarget : undefined,
-			sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, systemPrompt: agent.systemPrompt, tools: agent.tools, model: agent.model,
-		});
-		result = runChildSession({ factory, launch, prompt: "Read input.txt.", appendChildEvent() {}, writeOutputLine() {}, runSupervisionEnabled: true });
 	}
 	t.after(async () => {
-		owner.abort(); pending.resolve(); await flush(); channel.dispose();
+		owner.abort(); pending.resolve(); await flush(); await childSurface?.dispose(); channel.dispose();
 		rmSync(native.resolveSupervisorChannelDir(runId, "worker", 0), { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
 	});
-	await started.promise;
+	// A hook/setup rejection settles the production host before prompt() runs. Surface that
+	// result instead of waiting forever for an event the failed child cannot emit.
+	await Promise.race([
+		started.promise,
+		result.then((terminal) => { throw new Error(`Child settled before prompt startup: ${terminal.error ?? JSON.stringify(terminal)}`); }),
+	]);
 	return {
 		result, childInput, childSurface, get aborts() { return aborts; },
 		async pendingReviews() { return (await parentTools.get("subagent_supervisor").execute("pending", { action: "pending" })).details.pending; },
@@ -163,7 +189,7 @@ async function startWithoutConversationBridge(t, host, mode) {
 	};
 }
 
-for (const host of ["foreground", "background"]) {
+for (const host of ["foreground"]) {
 	for (const mode of ["off", "fork-only"]) {
 		test(`${host} automatically reviews a fresh child with intercomBridge ${mode} without enabling child contact tools`, async (t) => {
 			t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
@@ -173,6 +199,7 @@ for (const host of ["foreground", "background"]) {
 			assert.equal(originalRuntime.orchestratorTarget, undefined);
 			assert.equal(childSupervisorMetadata(originalRuntime), undefined);
 			assert.equal(run.childSurface.tools.has("contact_supervisor"), false);
+			assert.deepEqual(run.childSurface.active, ["read"]);
 			assert.doesNotMatch(run.childSurface.systemPrompt, /contact_supervisor|INTERCOM_BRIDGE/);
 			t.mock.timers.tick(RUN_SUPERVISION_INTERVAL_MS);
 			await flush();
@@ -184,6 +211,7 @@ for (const host of ["foreground", "background"]) {
 			assert.deepEqual(run.childInput.runtime, originalRuntime, "host supervision must not expand child capabilities");
 			run.complete();
 			assert.equal((await run.result).exitCode, 0);
+			assert.equal(run.childSurface.shutdowns, 1, "the host must release its captured session binding on disposal");
 		});
 	}
 }

@@ -12,7 +12,7 @@
  */
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { type ToolSnapshot } from './contributions.ts';
+import { type ToolSnapshot } from './toolMetadata.ts';
 import type { ShellAvailability } from './shellAvailability.ts';
 
 /**
@@ -66,6 +66,8 @@ export interface ShellPolicySnapshot {
 		powershell: boolean;
 	};
 	parentActiveTools: string[];
+	/** Immediate ancestor for an authorized foreground fanout parent. */
+	parentOwnerKey?: string;
 }
 
 /** Version 1 snapshot published by an older parent: shell ceiling only, no extension tool ceiling. */

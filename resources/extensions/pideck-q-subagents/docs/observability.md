@@ -6,11 +6,10 @@ Where running subagents show up, how to inspect them, and the files and events t
 
 Foreground runs stream progress in the conversation while they run. Runs have no implicit wall-clock deadline. Explicit `timeoutMs` or `maxRuntimeMs`, agent defaults, and the applicable global [`timeoutMs`](configuration.md#timeoutms) setting remain available.
 
-Native Pi children with an active parent supervisor send a runtime progress snapshot after 600 seconds. The parent decides `CONTINUE` or `STOP`. Reporting does not call a model or pause the current tool, and only one decision request can be pending. Continuing starts the next 600-second interval. Missing or expired replies leave the work running. Set `control.enabled` to `false` to disable these reports. External CLI and external-job runners use their own contracts and do not support this native supervision protocol.
+Native Pi children with an active parent supervisor send a runtime progress snapshot after 600 seconds. The parent decides `CONTINUE` or `STOP`. Reporting does not call a model or pause the current tool, and only one decision request can be pending. Continuing starts the next 600-second interval. Missing or expired replies leave the work running. Set `control.enabled` to `false` to disable these reports.
 
-A foreground child is a pi session created inside the parent Pi process, not a second `pi` process. A run timeout, tool timeout, interrupt, or stop aborts the child session and disposes it. Detach keeps the session running inside the parent and publishes the same receipt and completion notification as before.
+A foreground child is a Pi session inside the parent Pi process. Runtime timeout, tool timeout, interrupt, and supervisor `STOP` use the owned child cancellation path. A retained workflow also supports workflow-level `stop`. Detach keeps the child session running inside the parent, with status, wait, and completion delivery still attached to its original identity.
 
-A background child is a pi session created inside the detached runner process. The runner mirrors session events into `events.jsonl`, `output-<index>.log`, and the transcript. Interrupt and stop abort the child session; steer requests are delivered with the session's `steer` or `followUp`.
 
 Live progress shows compact detail for single, chain, and parallel modes: a bounded one-line task, current tool, recent output, token counts, aggregate cost, duration, activity freshness, current-tool duration, and chain graph metadata when available. Workflow `label` metadata wins over raw task text in compact multi-child cards.
 
@@ -18,33 +17,25 @@ Press Pi's configured expand key (`Ctrl+O` by default) to expand the full stream
 
 Sequential chains show a flow line like `done readonly → running writable`. Chains with parallel steps show per-step cards instead. Chain status uses `label` and `phase` metadata when present, while falling back to agent names for older chains.
 
-## Background runs
+## Retained foreground work
 
-Background runs keep working after control returns to you. Inspect them with:
+A supervisor question returns a `needs_attention` handoff while the original workflow VM and its children remain live. Inspect the current pending request, answer it, and continue observing that same run.
 
 ```ts
-subagent({ action: "status" })                 // all active runs
-subagent({ action: "status", id: "..." })      // one run
+subagent_supervisor({ action: "pending" })
+subagent({ action: "status", id: "<workflow-id>" })
+bg_wait({ id: "<workflow-id>" })
 ```
 
-Or ask naturally: "Show me the current async runs."
+A reply lets the retained workflow continue with the authoritative child result. Dependent stages wait for that result. Do not resume or replay the workflow during the handoff. Changing the parent session or reloading the extension aborts the retained continuation.
 
-The under-editor async widget gives a short view while work runs. Its expand key follows your Pi keybinding:
+`bg_wait({ all: true })` tracks work active when the call starts. New supervisor decisions return control even when `stopOnAttention` is `false`. A non-blocking wait subscription can wake the parent for a supported retained run identity, while ordinary completion notifications remain enabled.
 
-```text
-async subagent readonly · background
-● readonly
-  ● Step 1/1: readonly · running
-    task: Review authentication boundaries
-    ⎿  read: src/auth.ts | 2.0s
-    Press configured-expand-key for live detail · Ctrl+Alt+F Fleet
-```
-
-To inspect one background child in text, use `subagent({ action: "status", id: "...", view: "transcript" })`; add `index` for a specific child in a parallel or chain run.
+Use `status` with `view: "transcript"` to inspect child output. Add `index` for a specific child when the run has several children.
 
 ### Reducing status display noise
 
-Chat records tool-call history; FleetView and the async widget show live run/child updates. Separate `subagent({ action: "status", id: "..." })` calls leave separate historical entries even when their `Status target: run …` labels match. A matching run ID identifies the queried run, not the tool call, and is not evidence of duplicate execution. Live Fleet/widget refreshes do not merge those entries.
+Chat records tool-call history; FleetView and the retained-run widget show live run/child updates. Separate `subagent({ action: "status", id: "..." })` calls leave separate historical entries even when their `Status target: run …` labels match. A matching run ID identifies the queried run, not the tool call, and is not evidence of duplicate execution. Live Fleet/widget refreshes do not merge those entries.
 
 For compact chat results with FleetView as the only live editor surface, merge these top-level keys into `~/.pi/agent/extensions/subagent/config.json` (not Pi's `settings.json` or a `subagents` object), then restart Pi:
 
@@ -58,7 +49,7 @@ For compact chat results with FleetView as the only live editor surface, merge t
 
 - `inlineToolDisplay: "summary"` keeps one static result row per call, alongside its call heading. A completed status query is not proof that the queried child has finished.
 - `fleetView: true` retains live progress. Open `/subagents-fleet` or press `Ctrl+Alt+F` for details instead of repeatedly requesting status just to watch progress. Pi's expand key does not expand summary results; keep `"rich"` if you want expandable inline output.
-- `asyncWidget: false` hides only the additional under-editor async widget, leaving FleetView available. This configuration reduces visible surfaces; it does not guarantee ordering relative to other extensions.
+- `asyncWidget: false` hides only the additional under-editor retained-run widget, leaving FleetView available. This configuration reduces visible surfaces; it does not guarantee ordering relative to other extensions.
 
 Thanks to [DraconDev](https://github.com/DraconDev) for reporting the display noise and suggesting summary mode in [#1931](https://github.com/nicobailon/pi-subagents/issues/1931).
 
@@ -82,11 +73,11 @@ After you expand it:
 
 When the focused editor is empty, press `↓` or `←` to expand the summary into `main` plus active children with agent name, state, elapsed time, and token usage. When providers report usage, `window` is the latest assistant turn's input plus cache-read tokens, while `spent` keeps the cumulative input-plus-output total. Old run artifacts without window data keep the existing token-total label. The compact line counts active current-session work and Herdr project panes. Then use `↑`/`↓` or `j`/`k` to select a child and `Enter` to open the Fleet lobby; press `Enter` or `H` there to open its child-specific Herdr inspector. Printable navigation keys are never intercepted before activation.
 
-FleetView and the under-editor async widget are both enabled by default; set `asyncWidget: false` to keep only FleetView. Successful background completions stay quiet so inactive Pi tabs are not marked unread, while failed or paused completions still notify the originating session. Parallel runs show every active child independently. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `tools: subagent` or `allowNestedSubagents: true`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child session.
+FleetView and the under-editor retained-run widget are both enabled by default; set `asyncWidget: false` to keep only FleetView. Successful completion notifications stay quiet so inactive Pi tabs are not marked unread, while failed or paused completions still notify the originating session. Parallel runs show every active child independently. Chains with parallel groups keep their grouped shape in progress and results, so failed or paused agents stay visible next to completed ones. When a child is explicitly allowed to fan out with `tools: subagent` or `allowNestedSubagents: true`, its nested runs appear under that parent child in the main status tree instead of being hidden inside the child session.
 
 ## The fleet inspector
 
-`/subagents-fleet` opens the live fleet inspector with current-session foreground work, recent async children, structured Markdown/tool transcripts, and completed output/session paths.
+`/subagents-fleet` opens the live fleet inspector with current-session foreground work, retained children, structured Markdown/tool transcripts, and completed output/session paths.
 
 Default keys:
 
@@ -96,10 +87,10 @@ Default keys:
 - `x`/`Ctrl+O` — toggle tool details
 - `r` — refresh
 - `Esc` — close
-- `Enter` — open the selected inspectable async child in its child-specific Herdr inspector
-- `s` — compose an acknowledged message to a selected live async child; Tab cycles `steer`, `follow_up`, and `auto`
-- `D` — stop a selected child's top-level async run after confirmation
-- `H` — open the selected active async child in a Herdr inspector pane (Herdr 0.7.5+)
+- `Enter` — open the selected inspectable child in its child-specific Herdr inspector
+- `s` — compose an acknowledged message to a selected live child; Tab cycles `steer`, `follow_up`, and `auto`
+- `D` — stop a selected retained workflow when its status exposes that control
+- `H` — open the selected inspectable child in a Herdr inspector pane (Herdr 0.7.5+)
 
 Set `fleetKeybindings` in the extension config to replace inspector-level keys when a terminal intercepts keys such as `PgUp`, `PgDn`, `Home`, or `End`. Prompt modes keep fixed keys such as `Esc`, `Enter`, `Tab`, and stop-confirmation `Y`/`N`.
 
@@ -131,7 +122,7 @@ If something feels misconfigured, run `/subagents-doctor` or ask: "Check whether
 
 ## Host inspection protocol (RPC)
 
-RPC hosts receive live async status through the bounded `subagent-async` widget
+RPC hosts receive tracked run status through the bounded `subagent-async` widget
 (`PI_SUBAGENT_ASYNC_JSON:` payload). For on-demand detail — a child's delegated
 task, transcript window, or final output — hosts can invoke the extension
 command:
@@ -165,55 +156,21 @@ Inspection properties:
 
 In TUI mode the command only points at the interactive `/subagents` inspector.
 
-## Async run artifacts
+## Lifecycle records and status
 
-Async runs write machine-readable lifecycle artifacts for observability and workflow gates:
+Foreground progress and final results expose bounded run and child metadata, including identity, state, timing, model, usage, output references, and nested children when fanout is enabled. Workflow details include the stable child keys and a terminal receipt. Inspect the returned artifact paths instead of guessing a file location.
 
-```text
-<tmpdir>/pi-subagents-<scope>/async-subagent-runs/<id>/
-  status.json
-  events.jsonl
-  output-<n>.log
-  subagent-log-<id>.md
-```
+Status readers also accept existing persisted lifecycle records. Some compatibility fields and widget names retain `async` in their names, including `asyncDir`, `asyncSnapshot`, and `subagent-async`. These names do not enable independent background execution or workflow replay.
 
-- `status.json` powers the widget and `subagent({ action: "status" })` output.
-- `events.jsonl` contains wrapper events plus child Pi JSON events annotated with run and step metadata, including correlated `subagent.steer.requested`, `scheduled`, `routed`, `queued`, `delivered`, `failed`, and `recovered` events plus failure/partial/recovery notices.
-- `output-<n>.log` is a live human-readable tail.
-- Fallback information is persisted so background runs are debuggable after completion.
+`bg_wait` returns bounded completion metadata for the work it observed. Native completion delivery keeps the originating parent-session identity. A result or output archive records evidence, while live child ownership and the retained workflow VM determine whether a run can still proceed.
 
-For a top-level async run, `details.asyncDir` points at that directory; the final summary is written to Pi's subagent results directory as `<runId>.json`. Nested async runs use the same shape under the nested async root and are discoverable through status projections that read the nested-run registry. These files are append/update artifacts only; interactive foreground behavior is unchanged.
+RPC hosts can subscribe to `subagent:child-status` for low-latency stop hints. The payload includes `type: "subagent.child-status"`, `version: 1`, `runId`, `childId`, `status`, and `ts`, with optional bounded child metadata. Hints can be duplicated. Current status remains authoritative. Child cancellation uses the existing workflow `stop` request with `childId`.
 
-The result file is consumed and deleted once its completion notice is delivered. Before deletion, the watcher writes a versioned replay record under `<resultsDir>/completion-replay/<runId>.json` and a bounded output archive under `<resultsDir>/output-archives/<runId>.json`. Replay records expire with the completion deduplication window and are best-effort temporary state, not a permanent run ledger.
-
-`bg_wait` surfaces a slim projection of each terminal payload it covered in its own tool-result `details.completions` — run identity, per-child agent/`runId`/success, artifact paths, and the bounded `archivePath`, without duplicating output text. It reads the replay when watcher delivery or a watcher restart has removed the one-shot result file and in-memory completion state is unavailable. Durable non-blocking wait subscriptions use the same replay in their delivered details. Workflow result files record each child's `runId` explicitly, since a workflow child's `artifactPaths` entry points at its saved output rather than the artifact files keyed by the id. Extensions observing `tool_result` events can read run and artifact identity from there instead of parsing the text summary.
-
-Output archives reference an existing child output artifact or session file when one is available. For children without either file, the archive stores a per-child `result-tail` entry with `resultIndex`, bounded to 64 KiB per child, and records whether it was truncated. Replay and archive JSON use `version: 1`; consumers must ignore unknown fields.
-
-Nested fanout status is stored as compact sidecar event/registry metadata and merged into parent status views and result/intercom payloads; full recursive status snapshots are not embedded in parent result files.
-
-Consumers should read these JSON files instead of scraping terminal output. Unknown fields and event types should be ignored for forward compatibility.
-
-RPC hosts that need low-latency child-stop UI hints can subscribe to the
-`subagent:child-status` event advertised by RPC `ping` as `events.childStatus`.
-The payload uses `type: "subagent.child-status"`, `version: 1`, `runId`,
-`childId`, `status` (`"stopping"` or `"stopped"`), `ts`, and optional child
-metadata such as `stepIndex`, `agent`, `childRunId`, `workflowKey`, `phase`, and
-`label`. These events are observer hints only. They can duplicate across RPC and
-async replay paths, and they are not replayed after a host restart. Status
-snapshots remain authoritative for recovery and final state. Child stop control
-still uses the normal `stop` request with `childId`; there is no separate child
-stop API.
-
-### Status and result fields
-
-The status/result fields are: `lifecycleArtifactVersion`, `runId`/`id`, `sessionId`, `mode`, `state`, `startedAt`, `lastUpdate`, `endedAt`, `durationMs`, `cwd`, `asyncDir`, `sessionFile`, `outputFile`, `workflowGraph`, `steps`, `results`, `totalTokens`, `totalCost`, `model`/`attemptedModels`/`modelAttempts`, `toolCount`, `turnCount`, optional `launchResolvedExtensions`, optional `runtimeAcknowledgedExtensions`, and nested `children` when a child is allowed to launch subagents.
-
-`launchResolvedExtensions` is parent-resolved launch intent only: it reports opaque extension identifiers and whether ambient extensions were disabled, without exposing raw extension paths or claiming the child runtime acknowledged that those extensions loaded.
+`launchResolvedExtensions` reports parent-resolved extension intent using opaque identifiers. It does not establish that the child acknowledged loading them.
 
 ### Runtime extension acknowledgement
 
-Cooperating child extensions can acknowledge child-runtime registration by emitting `subagent:acknowledge-extension` on the child session's `pi.events` bus with payload `{ id: string }`. The process that hosts the child session (the parent for foreground children, the runner for background children) captures the acknowledgement in memory.
+Cooperating child extensions can acknowledge child-runtime registration by emitting `subagent:acknowledge-extension` on the child session's `pi.events` bus with payload `{ id: string }`. The parent process captures the child session acknowledgement in memory.
 
 Acknowledgement ids are self-declared opaque strings. They must be non-empty, at most 128 characters, contain only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:`, `@`, `+`, or `-`, and must not contain `/`, `\`, or `..`.
 
@@ -225,15 +182,11 @@ The reported `runtimeAcknowledgedExtensions` projection is `{ version: 1, source
 
 ### Process-terminal proof
 
-Lifecycle artifacts include `process-terminal-candidate.json` (private runner evidence) and `process-terminal.json` (the public proof projection).
-
-A proof is `observed` only after the live parent observes the exact detached runner's `close` event and any tracked canonical-session lease is free. Children run inside the runner process, so the candidate records no separate writer processes. If the observer is unavailable, the proof is `unknown`; do not infer process exit from `endedAt`, result-file existence, PID disappearance, or lease-directory absence.
-
-The `subagent:process-terminal` event and RPC `ping.capabilities.processTerminalProof` expose this status. Process proof is point-in-time evidence and remains separate from execution success or stopped/non-resumable state.
+Historical lifecycle records may include `process-terminal.json`, and RPC retains the `processTerminalProof` capability for readers of those records. An absent or unknown proof does not establish process termination. Foreground execution instead releases its owned child only after child-session settlement. A terminal-looking message or a successful stop request is insufficient by itself.
 
 ### Child session events
 
-Both launch paths subscribe to the child session's event stream directly; there is no stdout protocol. The `events.jsonl` artifact mirrors those events with `message_update` dropped, and the transcript records them with `message_update` projected the same way pi's JSON mode prints it. `agent_end.willRetry` defers completion until the child settles, and `agent_settled` is the terminal watermark; a child whose run does not settle shortly after its terminal event is aborted and finished without it.
+Foreground execution subscribes directly to the child session event stream. The `events.jsonl` artifact mirrors those events with `message_update` dropped, and the transcript records them with `message_update` projected the same way pi's JSON mode prints it. `agent_end.willRetry` defers completion until the child settles, and `agent_settled` is the terminal watermark; a child whose run does not settle shortly after its terminal event is aborted and finished without it.
 
 ### Completion notification diagnostics
 
@@ -278,11 +231,11 @@ For npm package projects, project-scoped artifacts need a `.npmignore` rule (or 
 
 ## Sessions
 
-Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from a branched session file produced from the parent's current leaf (foreground children open it in-process; background children receive it as `--session`). That is a real session fork, not an injected summary. An omitted launch `context` that resolves through `defaultContext: fork` uses the same branch when the parent session file and current leaf exist, and otherwise starts fresh.
+Session files are stored under a per-run session directory. With `context: "fork"`, each child starts from a branched session file produced from the parent's current leaf and opens it in-process. That is a real session fork, not an injected summary. An omitted launch `context` that resolves through `defaultContext: fork` uses the same branch when the parent session file and current leaf exist, and otherwise starts fresh.
 
 ## Recovery briefs
 
-Scope: the native foreground pipeline only — single foreground launches, foreground `action: "resume"` runs, and workflow children launched by that pipeline. Background children started by `runs/background/subagent-runner.ts` are a separate pipeline and do not produce recovery briefs.
+Recovery briefs cover native foreground single launches, foreground `action: "resume"` continuations, and workflow children.
 
 When one of those children ends abnormally — a runtime/model error, an unexpected termination, or a timeout — after doing real work, the failed receipt carries one short recovery brief so the parent can decide whether to continue or correct that same child.
 
@@ -303,24 +256,24 @@ The block ends with the authoritative run id, session file, transcript path, and
 
 ## Completion notifications
 
-Async completions belong only to the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to record completion state.
+Completion notifications belong only to the originating session. The result watcher emits `subagent:async-complete`, and the extension consumes that event to record completion state.
 
 Successful sibling completions are held briefly and delivered as a quiet grouped completion when they finish within a short window (see `completionBatch` in [configuration.md](configuration.md)), avoiding unread markers on inactive tabs. Failed and paused completions remain visible and fire immediately.
 
 ## Events
 
-Async events:
+Compatibility event names:
 
 - `subagent:async-started`
 - `subagent:async-complete`
 
-The `subagent:async-started` payload includes `task`, the backwards-compatible first child task truncated to 50 characters, and `goal`, the workflow-level caller task truncated to 120 characters (falling back to the first child task). Companion UI extensions can combine `goal`, `workflowGraph`, and the live lifecycle artifacts under `asyncDir` without scraping terminal output.
+These event names remain available for lifecycle compatibility. Host code should use the advertised projection versions and current run identity, without inferring a detached launcher from an event name.
 
 Intercom delivery events:
 
 - `subagent:control-intercom`
 - `subagent:result-intercom`
 
-`src/extension/index.ts` registers the notification handler that consumes `subagent:async-complete`. Control/attention events are surfaced as visible parent notices and persisted for async runs. Native supervisor requests are delivered only to the exact parent session that spawned the child.
+`src/extension/index.ts` registers the notification handler that consumes `subagent:async-complete`. Control/attention events are surfaced as visible parent notices and recorded with tracked run evidence. Native supervisor requests are delivered only to the exact parent session that spawned the child.
 
 `pi.events` is in-process only. It does not reach separate Pi processes or child subagents; use the file lifecycle artifacts or `pi-intercom` for cross-process coordination.

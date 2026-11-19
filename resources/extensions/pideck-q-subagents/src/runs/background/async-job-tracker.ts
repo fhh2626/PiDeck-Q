@@ -22,7 +22,6 @@ import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { reconcileAsyncRun, reconcileNestedAsyncDescendants } from "./stale-run-reconciler.ts";
 import { findNestedRouteForRootId, hasLiveNestedDescendants, updateAsyncJobNestedProjection } from "../shared/nested-events.ts";
 import { listAsyncRuns, type AsyncRunSummary } from "./async-status.ts";
-import { EXTERNAL_JOB_BRIDGE_REQUEST_DIR, serviceExternalJobBridgeRequests } from "../shared/external-job-bridge.ts";
 import { shouldUseNativeFsWatch } from "../../shared/watch-strategy.ts";
 import { parseWorkflowChildSummary } from "../../workflows/workflow-child-summary.ts";
 import { validHostStepNodes } from "../shared/host-step-status.ts";
@@ -78,23 +77,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	let widgetRerenderTimer: ReturnType<typeof setTimeout> | undefined;
 	const runningJobIds = new Set<string>();
-	const externalJobBridgeRuns = new Set<string>();
 	// Early native failure is visible before its publisher finishes. Retain only
 	// that scoped observation, using the existing liveness sweep to renew delivery.
 	const terminalPublications = new Map<string, { instanceId: string; pending: true } | { pending: false }>();
-	const externalJobBridgeEligibility = (steps: AsyncJobState["steps"]): "required" | "not-required" | "unknown" => {
-		if (!Array.isArray(steps)) return "unknown";
-		for (const step of steps) {
-			const runner = (step as { runner?: unknown } | null)?.runner;
-			if (runner === undefined) continue;
-			if (!runner || typeof runner !== "object" || Array.isArray(runner)) return "unknown";
-			const runnerType = (runner as { type?: unknown }).type;
-			if (typeof runnerType !== "string") return "unknown";
-			if (runnerType === "external-job") return "required";
-			if (runnerType !== "pi" && runnerType !== "external-cli") return "unknown";
-		}
-		return "not-required";
-	};
 	let rootWatcher: fs.FSWatcher | undefined;
 	let nextLivenessAt = Date.now() + livenessIntervalMs;
 	let nextWidgetAnimationAt = Date.now() + WIDGET_ANIMATION_INTERVAL_MS;
@@ -383,7 +368,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (timer) clearTimeout(timer);
 		refreshTimers.delete(asyncId);
 		runningJobIds.delete(asyncId);
-		externalJobBridgeRuns.delete(asyncId);
 		terminalPublications.delete(asyncId);
 	};
 
@@ -399,15 +383,8 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
 			}
 		};
-		let bridgeSweepAttempted = false;
 		try {
 			emitNewControlEvents(job);
-			const bridgeAlreadyRequired = externalJobBridgeRuns.has(job.asyncId) || externalJobBridgeEligibility(job.steps) === "required";
-			if (bridgeAlreadyRequired) {
-				externalJobBridgeRuns.add(job.asyncId);
-				bridgeSweepAttempted = true;
-				serviceExternalJobBridgeRequests(job.asyncDir);
-			}
 			try {
 				if (job.nestedRoute) reconcileNestedAsyncDescendants(job.nestedRoute, { resultsDir, kill: options.kill, now: options.now });
 			} catch (error) {
@@ -433,15 +410,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				},
 			});
 			const status = reconciliation.status ?? readStatus(job.asyncDir);
-			if (!bridgeAlreadyRequired) {
-				const bridgeEligibility = externalJobBridgeEligibility(status?.steps);
-				if (bridgeEligibility === "required") externalJobBridgeRuns.add(job.asyncId);
-				// Missing or ambiguous status retains the legacy sweep for recovery races.
-				if (bridgeEligibility !== "not-required") {
-					bridgeSweepAttempted = true;
-					serviceExternalJobBridgeRequests(job.asyncDir);
-				}
-			}
 			if (status) {
 				const previousStatus = job.status;
 				job.status = status.state;
@@ -538,14 +506,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				runningJobIds.add(job.asyncId);
 			}
 		} catch (error) {
-			if (!bridgeSweepAttempted) {
-				try {
-					bridgeSweepAttempted = true;
-					serviceExternalJobBridgeRequests(job.asyncDir);
-				} catch (bridgeError) {
-					console.error(`Failed to service external job bridge for '${job.asyncDir}':`, bridgeError);
-				}
-			}
 			if (job.status !== "failed") {
 				console.error(`Failed to read async status for '${job.asyncDir}':`, error);
 				job.status = "failed";
@@ -582,7 +542,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 					const rawFileName = file?.toString();
 					const fileName = rawFileName ?? path.basename(watchPath);
 					const nestedEventFile = nestedEventSink && (!rawFileName || rawFileName.endsWith(".json") || rawFileName.endsWith(".jsonl"));
-					if (fileName === "status.json" || fileName === "events.jsonl" || fileName === EXTERNAL_JOB_BRIDGE_REQUEST_DIR || fileName.endsWith(".json") || nestedEventFile) {
+					if (fileName === "status.json" || fileName === "events.jsonl" || fileName.endsWith(".json") || nestedEventFile) {
 						scheduleJobRefresh(job.asyncId);
 					}
 					if (watchPath !== job.asyncDir && !nestedEventSink) {
@@ -609,7 +569,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		const statusWatched = watchPath(statusPath);
 		if (statusWatched && !hadStatusWatcher) scheduleJobRefresh(job.asyncId);
 		watchPath(path.join(job.asyncDir, "events.jsonl"));
-		watchPath(path.join(job.asyncDir, EXTERNAL_JOB_BRIDGE_REQUEST_DIR));
 		if (job.nestedRoute) watchPath(job.nestedRoute.eventSink);
 		if (!statusWatched && active && !watched.retryTimer) {
 			watched.retryTimer = setTimeout(() => {
@@ -694,7 +653,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			: rawAgents;
 		const sessionRoot = state.liveAsyncSessionRoots?.get(info.id);
 		state.liveAsyncSessionRoots?.delete(info.id);
-		externalJobBridgeRuns.delete(info.id);
 		terminalPublications.delete(info.id);
 		state.asyncJobs.set(info.id, {
 			asyncId: info.id,
@@ -775,7 +733,6 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (widgetRerenderTimer) clearTimeout(widgetRerenderTimer);
 		widgetRerenderTimer = undefined;
 		runningJobIds.clear();
-		externalJobBridgeRuns.clear();
 		terminalPublications.clear();
 	};
 

@@ -277,11 +277,9 @@ export const ipcChannels = {
 	projectsTrustResponse: "projects:trust-response",
 
 	configGetModels: "config:get-models",
-	configGetAuth: "config:get-auth",
 	configGetSettings: "config:get-settings",
 	configGetTrust: "config:get-trust",
 	configSaveModels: "config:save-models",
-	configSaveAuth: "config:save-auth",
 	configSaveSettings: "config:save-settings",
 	configSaveRaw: "config:save-raw",
 	configExport: "config:export",

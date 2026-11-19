@@ -7,7 +7,7 @@ import {
 	toKnownHostShells,
 	classifyConfiguredShellKind,
 	defaultInspectShellPath,
-} from '../shellProbe.ts';
+} from '../resources/extensions/pideck-q-subagents/src/policy/environment/shellProbe.ts';
 
 test('non-C ProgramFiles Git installation is discovered as available', () => {
 	const host = {

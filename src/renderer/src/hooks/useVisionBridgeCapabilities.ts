@@ -35,7 +35,7 @@ async function readConfig(): Promise<VisionBridgeConfig | null> {
  *
  * 两个失效信号都会触发重拉：
  * - visionConfigRevisionAtom：设置页保存视觉桥配置；
- * - modelListRevisionAtom：主进程重取模型缓存（保存 models.json/auth.json、切换 pi 运行时）。
+ * - modelListRevisionAtom：主进程重取模型缓存（保存 models.json、切换 pi 运行时）。
  * 多个气泡同时挂载时用 atom 里的版本键占位去重，保证全应用只发一次请求。
  */
 export function useVisionBridgeCapabilities(): VisionBridgeCapabilities {

@@ -1,13 +1,12 @@
+import { filterUnavailableShellToolLines, filterUnavailableSearchToolLines } from '../resources/extensions/pideck-q-change-pi-prompt/activeToolLines.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { join } from 'node:path';
 import {
   bashAvailable,
   classifyConfiguredShellKind,
-  filterUnavailableShellToolLines,
   hideUnavailableShellTools,
   hideUnavailableSearchTools,
-  filterUnavailableSearchToolLines,
   parseShellPathFromSettings,
   powershellAvailable,
   probeShellAvailability,
@@ -16,7 +15,7 @@ import {
   toKnownHostShells,
   probeSearchAvailability,
   resolveShellPath,
-} from '../shellAvailability.ts';
+} from '../resources/extensions/pideck-q-subagents/src/policy/environment/shellAvailability.ts';
 
 function host(platform, files, path = '', options = {}) {
   const set = new Set(files);

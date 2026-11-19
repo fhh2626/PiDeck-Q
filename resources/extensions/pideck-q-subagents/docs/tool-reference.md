@@ -8,7 +8,7 @@ Chaining is code-driven through `workflowScript`. Use `await runs.run(...)` for 
 
 Use `{ action: "validate", workflowScript }` to check statically decidable syntax and structure without launching children. It returns `{ ok, errors }` and fails the tool call when `ok` is false. Literal child `baseRef` values are checked against the runtime ref policy. Dynamic keys and values remain subject to runtime checks; static validation does not guess them.
 
-Use `workflowScriptPath` instead of `workflowScript` to load the same JavaScript statement body from a file. The two fields are mutually exclusive. Relative paths resolve against the request `cwd`, and absolute paths pass through. The host reads the file before validation, scheduling, or sandbox execution. The workflow sandbox still has no filesystem access. Missing, unreadable, and empty files fail as file input errors.
+Use `workflowScriptPath` instead of `workflowScript` to load the same JavaScript statement body from a file. The two fields are mutually exclusive. Relative paths resolve against the request `cwd`, and absolute paths pass through. The host reads the file before validation or sandbox execution. The workflow sandbox still has no filesystem access. Missing, unreadable, and empty files fail as file input errors.
 
 For permission-extension interoperability, use one of the package-owned named resources with bounded `args` instead of caller-supplied workflow text:
 
@@ -22,7 +22,6 @@ The host resolves the script and authority internally and records bounded proven
 ```js
 { workflowScriptPath: "workflows/review.js", cwd: "/path/to/project" }
 { action: "validate", workflowScriptPath: "workflows/review.js" }
-{ action: "schedule.create", every: "6h", workflowScriptPath: "workflows/review.js" }
 ```
 
 ```js
@@ -87,7 +86,7 @@ The complete plain-JSON inventory is validated before the first launch (maximum 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `agent` | string | `writable` | Agent for a single child launch (omitted means `writable`; an unknown name is an error listing the available agents), or the target of management actions. Workflow child agents are set inside `runs.run` or `runs.all`. |
-| `action` | string | - | Offline workflow `validate`, agent management (including `guide`, `children.list`, and `refine`/`refine.show`/`refine.rollback`), lane evidence (`lane.status`, `lane.recordMerge`, `lane.recordSupersession`), mission (`mission.create/list/show/update/resolve-decision/attach-run/close`), Herdr inspector (`inspector.open/status/close`), Herdr project pane (`project.open/status/close`), status/control, plan-only `worktree.cleanup`, schedule, watchdog, or doctor action. |
+| `action` | string | - | Offline workflow `validate`, agent management (including `guide`, `children.list`, and `refine`/`refine.show`/`refine.rollback`), lane evidence (`lane.status`, `lane.recordMerge`, `lane.recordSupersession`), mission (`mission.create/list/show/update/resolve-decision/attach-run/close`), Herdr inspector (`inspector.open/status/close`), Herdr project pane (`project.open/status/close`), status/control, plan-only `worktree.cleanup`, watchdog, or doctor action. |
 | `topic` | `overview \| workflows \| agents \| missions \| observability \| tool-reference \| configuration \| models \| watchdog \| extension-api` | `overview` | Packaged guide topic for `action: "guide"`. |
 | `config` | object/string | - | Agent config for management create/update. |
 | `context` | `fresh \| fork` | global or per-agent default (`fork` for the builtin agents) | Explicit `fresh` or `fork` overrides every workflow child. When omitted, [`defaultSubagentContext`](configuration.md#defaultsubagentcontext) wins over each agent's `defaultContext`; `"fork"` creates a real branched session when the parent session file and current leaf exist, otherwise it falls back to `fresh`. Packaged `worker`, `oracle`, and `advisor` default to `fork`. |
@@ -104,12 +103,12 @@ The complete plain-JSON inventory is validated before the first launch (maximum 
 | `view` | `fleet \| transcript` | - | Optional `status` view for the active fleet surface or transcript tail inspection. |
 | `lines` | number | `80` | Maximum transcript lines for `action: "status", view: "transcript"`; capped at 500. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `capabilities` | boolean | `false` | With `action: "list"`, return compact prompt-free rows and `details.agentCapabilities` machine-readable records for each agent's declared/default routing capabilities. External CLI rows also include their command and passive local availability. |
-| `async` | boolean | foreground by default | Execution mode. Subagents and workflows run in the foreground by default when `async` is omitted or `false`. `async:true` detaches the child as a background runner process and returns a receipt. External CLI and external-job agents have no foreground capability and require explicit `async:true`. |
-| `chatProgress` | `auto \| off \| live-card` | `auto` | WorkflowScript chat projection. `auto` renders a live in-chat card only for watched foreground workflows in the same Git repository, including managed worktrees; it is off otherwise. Explicit `live-card` requires `async:false` and the same Git repository. Async workflows have no inline live card, so omit `chatProgress` or use `auto`/`off`; use `async:false` only when the parent must block. |
+| `capabilities` | boolean | `false` | With `action: "list"`, return compact prompt-free rows and `details.agentCapabilities` machine-readable records for each agent's declared/default routing capabilities. |
+| `async` | false | foreground | Omit this field or set it to `false`. Independent `async: true` launches are rejected, including on workflow child items. Supervisor handoffs retain the existing foreground execution. |
+| `chatProgress` | `auto \| off \| live-card` | `auto` | `auto` renders a live in-chat card for watched foreground workflows in the same Git repository, including managed worktrees. `live-card` requires that repository relationship. `off` hides the card while transport progress remains available. |
 | `isolation` | `none \| worktree` | - | Workflow child isolation. `none` runs in the shared cwd and does not need Git. `worktree` requires a managed Git worktree. Do not combine it with a contradictory `worktree` value. |
 | `baseRef` | string | `HEAD` | `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. The ref must resolve to a commit at worktree allocation; omitted values default to `HEAD` resolved at that time. Source-checkout cleanliness is still checked. For workflowScript, set it on the outer request as a default or on an individual `runs.run`/`runs.all` child to override it. |
-| `timeoutMs` / `maxRuntimeMs` | number | no implicit limit | Optional hard runtime deadline in milliseconds, up to `2147483647`. Explicit call values override agent and applicable global [`timeoutMs`](configuration.md#timeoutms) settings. Async composite roots use only explicit call deadlines. Expiration remains terminal and does not trigger `fallbackModels`. A supervisor's `CONTINUE` decision preserves explicit deadlines. |
+| `timeoutMs` / `maxRuntimeMs` | number | no implicit limit | Optional hard runtime deadline in milliseconds, up to `2147483647`. Explicit call values override agent and applicable global [`timeoutMs`](configuration.md#timeoutms) settings. Expiration remains terminal and does not trigger `fallbackModels`. A supervisor's `CONTINUE` decision preserves explicit deadlines. |
 | `toolTimeoutMs` | number | none | Optional positive hard per-tool-call deadline in milliseconds. Precedence: call value → agent frontmatter → config → `PI_SUBAGENT_TOOL_TIMEOUT_MS`. When configured, the timer starts on `tool_execution_start`, clears on the matching `tool_execution_end`, and terminates the run with `timedOut: true` if the tool remains open. When all four settings are omitted, tools have no automatic deadline. It never extends the run deadline. `contact_supervisor`, `intercom`, and `bg_wait` are exempt. |
 | `toolBudget` | object | none | Optional child tool-call budget `{ soft?, hard, block? }`. At `soft` the child is nudged to finalize. After `hard`, configured tools are blocked; `block` defaults to `read`, `grep`, `find`, and `ls`, while `"*"` blocks every tool call. Final assistant text is never blocked. |
 | `usageBudget` | object | none | Optional root-only reported-usage budget `{ tokens?: { soft?, hard }, costUsd?: { soft?, hard } }`. Soft limits are status-only. Hard limits prevent later child launches after reported usage is reconciled; already-running children are not stopped and no reservations are made. |
@@ -140,7 +139,7 @@ In workflow runs that omit `context`, each `runs.run` child follows the global `
 
 `runs.steer(key, message, options?)` targets a stable key already launched by `runs.run` or `runs.all`. It does not accept a raw run id. Options are `mode?: "steer" | "follow_up" | "auto"`, `index?: number`, and `ackTimeoutMs?: number`. The promise returns `{ key, state, requestId?, deliveryStatus?, targets?, error? }`, where `state` is `queued`, `delivered`, `missed`, or `failed`.
 
-The workflow trace records the attempt and receipt. Always await, return, or include the promise in an awaited standard Promise combinator. Unawaited steering calls reject workflow completion after the side effect settles. `Promise.race` remains the rolling primitive. Foreground children are steered through their in-process session (`steer` and `auto` interrupt at the next safe point and report `delivered`; `follow_up` queues until the run settles and reports `queued`). Async children use the file control inbox. Steering recovery is disabled in both cases.
+The workflow trace records the attempt and receipt. Always await, return, or include the promise in an awaited standard Promise combinator. Unawaited steering calls reject workflow completion after the side effect settles. `Promise.race` remains the rolling primitive. Foreground children are steered through their in-process session (`steer` and `auto` interrupt at the next safe point and report `delivered`; `follow_up` queues until the run settles and reports `queued`). Workflow steering does not automatically revive a settled child.
 
 For advanced rolling fanout, keep the launched `runs.run` promises in ordinary JavaScript data only when every promise is later observed with direct `await`, `Promise.race`, or `Promise.all`. `Promise.race` gives the next completed child, `runs.steer` can challenge a still-running keyed sibling, and `Promise.all` collects the rest. No separate `runs.start`, `runs.next`, or `runs.collect` API is exposed.
 
@@ -186,7 +185,7 @@ Completed workflow children from the current parent session stay addressable as 
 
 Each workflow key identifies one result lane. Use a new stable workflow key for every distinct retained resume pass; same-key calls are reused only when launch parameters are identical, and incompatible parameters are rejected.
 
-Inside `workflowScript`, `await runs.run(key, { resume, task })` waits for the revived child to finish and returns its completed output and new `runId`. Each resume can return a new retained run id, so loops must continue from the latest returned `runId`. Top-level `{ action: "resume" }` continues the child in the foreground in this turn by default; pass explicit `async: true` to resume as a detached background run and receive a background receipt.
+Inside `workflowScript`, `await runs.run(key, { resume, task })` waits for the revived child to finish and returns its completed output and new `runId`. Each resume can return a new retained run id, so loops must continue from the latest returned `runId`. Top-level `{ action: "resume" }` continues a resumable native child in the foreground. A live workflow handoff must be answered through its supervisor request, without replay or resume.
 
 For a simple implementation challenge outside a workflow script, send the challenge through `subagent({ action: "resume", id: "<retained-writer-run>", message: "Reconsider the implementation and make any better current-scope change." })` only when `children.list` reports that retained writer as `resumable`. If no retained writer is resumable, start a same-role fallback challenge and record why it is a fallback. Use workflow `runs.run({ resume })` only when the script must await the revived writer output before the next step. Do not use `steer` as the sole challenge action for a completed retained child; `steer` with `mode: "follow_up"` only queues text for the next `resume`.
 
@@ -247,7 +246,7 @@ Agent definitions are not loaded into context by default. Management actions let
 
 Rules:
 
-- `capabilities: true` changes `action: "list"` to compact one-line rows and adds `details.agentCapabilities: { agents, restrictedCount, capabilityCeilingSources? }`. Each agent row includes source, aliases, runner type/capabilities, tools, MCP direct tools, mutation tools, model/thinking/fallbacks, default async/timeout, output path/mode, skills/extensions, and whether the current capability ceiling allows execution. External CLI rows include `runner.command`, `runner.available`, and a bounded `runner.unavailableReason` when passive PATH/PATHEXT/X_OK lookup cannot find the command. It never includes an agent's system prompt. Rows show declared/default capabilities and command discoverability, not authentication, version compatibility, or successful launch; launch preflight remains authoritative.
+- `capabilities: true` changes `action: "list"` to compact one-line rows and adds `details.agentCapabilities: { agents, restrictedCount, capabilityCeilingSources? }`. Each agent row includes source, aliases, runner type/capabilities, tools, MCP direct tools, mutation tools, model/thinking/fallbacks, default timeout, output path/mode, skills/extensions, and whether the current capability ceiling allows execution. It never includes an agent's system prompt. Rows show declared capabilities. Launch preflight remains authoritative for runtime admission.
 - `create` uses `config.scope`, not `agentScope`.
 - `config.name` is the local frontmatter name; optional `config.package` registers the runtime name as `{package}.{name}` and is saved as separate `name` and `package` frontmatter.
 - `config.aliases` accepts a comma-separated string, string array, or `false` to clear aliases. Aliases resolve to the canonical agent name for execution and are shown by `list`/`get`.
@@ -302,7 +301,7 @@ The manifest stores one of these fail-closed eligibility states: `active` (an ow
 
 A failure in the subagent workflow, child launch, prompt runtime, extension loading, or child tooling setup is a lane infrastructure blocker, not permission to silently change execution mode. Stop and report the exact failure, run/status, and repo/cwd/worktree/branch/ref state. Before a same-protocol retry or asking the owner, verify the worktree is clean or capture the partial diff. Retry or fix the `subagent` path only through a clear same-protocol action.
 
-For backlog lanes and other subagent-governed workflows, external/foreground/CLI fallback requires explicit owner approval. Do not silently switch to `interactive_shell`, `pi -ne`, Codex/Claude/Cursor CLI, a foreground agent, or another external mode. `interactive_shell` remains valid when the user explicitly requests visible foreground/CLI work or the task is outside the governed subagent protocol. Pi core may print a generic `pi -ne` extension-load hint; that out-of-repo hint is not protocol-approved fallback. Configured native model/provider fallback remains governed by its own contract.
+A failed launch should retain its diagnostic and partial work state. Use a supported native retry after resolving the failure. Configured model/provider fallback keeps its own contract.
 
 ```ts
 subagent({ action: "status" })
@@ -324,35 +323,31 @@ subagent({ action: "doctor" })
 
 ### status
 
-`status` resolves exact foreground ids, top-level async ids, and nested run ids before falling back to prefix matching.
+`status` resolves exact foreground, retained workflow, and nested run ids before falling back to prefix matching.
 
 - `view: "fleet"` is an optional read-only active-run surface with transcript commands; it does not add steering or stop controls.
 - `view: "transcript"` tails the selected run's live `output-<index>.log` or persisted session transcript, with `lines` capped at 500.
 - Nested status shows the root/parent path, nested children, session/artifact paths when known, and nested control commands.
-- Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated top-level async runs.
+- Inside child-safe fanout mode, bare `status` requires an id when no local foreground run is active, so children cannot enumerate unrelated runs.
 - Bare `interrupt` still targets only the visible top-level run; interrupting a nested run requires its explicit nested id.
 
 ### resume
 
-`resume` revives a paused, completed, or failed async/foreground child by starting a new child from its stored session file. Stopped runs remain non-resumable, and it does not interrupt a live top-level async child. Use `steer` for acknowledged live async guidance.
+`resume` continues a paused, completed, or failed native child from its stored session. It requires current-session ownership, valid session/recovery metadata, and available remaining limits. `children.list` identifies supported retained targets. Stopped children remain non-resumable.
 
-- Multi-child async runs and remembered foreground single, parallel, or chain runs can be revived by passing `index` to choose the child.
-- Nested runs can be resumed by nested id when their live route or persisted nested session metadata is available.
-- Completed external-job runs can use the same `resume` action as a provider follow-up when the registered provider exposes `followUp(input)`. Running external-job parents fail closed with guidance to wait for completion. Unsupported providers fail with an update/reload message.
-- Revive starts a new child session from the old session context; it does not resume the live session, and it requires the chosen child to have a persisted `.jsonl` session file.
-- Direct revival takes an exclusive cross-process lease on the canonical session file until the new child finishes. A concurrent attempt fails before Pi is spawned and identifies the owning revived run; dead-owner leases are reclaimed only when staleness can be proved.
+- Use `index` when a remembered multi-child run needs an exact child selection.
+- Nested targets use their nested run id and existing session metadata.
+- Revival starts foreground execution under the stored agent, model, tools, and capability ceiling. The source session file is protected by an exclusive lease until the new child settles.
+- Each continuation can return a new run id. Use the latest id for later follow-up.
+- A child still running through a supervisor handoff must continue through its pending request. Do not replay its workflow or start a competing writer.
 
-### stop
+### interrupt and stop
 
-`stop` ends a current-session top-level async run. It is deliberately stronger than `interrupt`:
+`interrupt` targets an active foreground or nested run through its owned cancellation path. Use it for a direct foreground single child. A supervisor `STOP` decision also aborts the selected child.
 
-- It is not a resumable pause; stopped runs should be restarted as new runs.
-- Foreground and nested targets are rejected.
-- Direct id calls execute immediately.
-- `/subagents-stop` without an id opens a selector with confirmation when a TUI is available. Use `↑`/`↓` or `j`/`k` to move through the selector.
-- In non-TUI contexts the slash command prints exact `subagent({ action: "stop", id })` and `/subagents-stop <id>` commands.
-- Pass a child id to stop one child of a multi-child async run or workflow while the rest continue: `/subagents-stop <run-id> <child-id>` (equivalent to `subagent({ action: "stop", id, childId })`). Child ids come from status output, the async status snapshot, or `/subagents-inspect-rpc` replies. Only pending or running children are stoppable; the request is rejected for anything else instead of widening to a run-level stop.
-- Inactive schedules can appear in the selector, but they are labeled as schedules and route through `schedule.pause`, not `stop`.
+`stop` supports retained foreground workflow roots and their active children. Pass `childId` only when status exposes that child as a supported target. Stopping one child keeps unrelated workflow children under their existing ownership. Unknown or ambiguous child targets fail without widening the request to the whole workflow.
+
+`/subagents-stop` retains its status-driven selector and explicit-id command. Stopped work is non-resumable. A stop receipt acknowledges the request, while confirmed child exit determines final ownership release.
 
 ### steer
 
@@ -360,7 +355,7 @@ subagent({ action: "doctor" })
 
 The optional `mode` is `steer` by default and keeps the current interrupt behavior. `follow_up` waits for the next turn boundary. `auto` uses the same native steer delivery path as `steer`, without automatic pause-and-revive recovery after a missed acknowledgment. The retained revival-brief queue holds 20 messages and returns a clear error when full; this is not a live follow-up queue bound. Terminal details report queued messages without recorded delivery. A live follow-up acknowledgment reports queue acceptance, not delivery, and has no later correlated queued-to-delivered receipt. A `follow_up` sent to a completed retained workflow child becomes the first brief for its next `resume`; it does not revive the child by itself.
 
-Only a top-level single run may interrupt after the acknowledgment deadline and recover after a further 15-second pause/revival bound; durable multi-child and nested runs never auto-interrupt. Recovery launches a replacement only after the source is confirmed paused, a valid persisted session exists, and deadline, turn, and tool budgets remain. It preserves the original child contract and remaining limits; otherwise the source stays paused with an explicit failure. Late acceptance is recorded but cannot cancel committed recovery.
+Where the existing single-child steering recovery is available, a missed acknowledgment may lead to a bounded pause/revival attempt. Multi-child and nested runs never auto-interrupt through that recovery path. Recovery launches a replacement only after the source is confirmed paused, a valid persisted session exists, and deadline, turn, and tool budgets remain. It preserves the original child contract and remaining limits; otherwise the source stays paused with an explicit failure. Late acceptance is recorded but cannot cancel committed recovery.
 
 The persisted `steering` ledger retains 20 requests and replaces the old `steerCount`/`lastSteerAt` fields.
 
@@ -368,7 +363,7 @@ The `/subagents-steer <run-id> [--child <child-id>] <message>` slash command is 
 
 ## Acceptance gates
 
-Every run resolves an effective acceptance policy. Callers may omit `acceptance` for the inferred default, or set it on single runs, top-level parallel task items, chain steps, static parallel tasks, and dynamic fanout templates.
+Every run resolves an effective acceptance policy. Callers may omit `acceptance` for the inferred default, or set it on single runs and workflow child items.
 
 ```ts
 {
@@ -399,7 +394,7 @@ Acceptance evidence levels are `auto`, `none`, `attested`, `checked`, and `verif
 
 Review is a separate gate configured with `acceptance.review`:
 
-- Async, risky, and dynamic writer contexts infer checked evidence plus `review: { agent: "readonly", required: true }`.
+- Risky and dynamic writer contexts infer checked evidence plus `review: { agent: "readonly", required: true }`.
 - Reviewer/read-only calls infer no acceptance by default; explicit acceptance requests still apply.
 - Normal writer tasks infer checked evidence without review.
 
@@ -455,28 +450,11 @@ Orca progress tabs are a global, opt-in observer, not an agent runner. Enable th
 { "orcaProgressTabs": { "enabled": true } }
 ```
 
-Foreground and background children keep running through their normal native Pi or `external-cli` path. For each top-level subagent call, the observer asks Orca to create one background terminal tab in the owning worktree and mirrors progress into it. Parallel and chain children share that tab and are separated by child headers. Titles receive a persistent worktree-local sequence number, including across separate workflow calls. Creates for the same worktree are serialized in that sequence so tabs appear to the right in order (`1`, then `2`, then `3`) instead of racing. Model/startup retries reuse the same observer. Attaching an already-running async root does not create a duplicate child tab. Terminal control sequences are removed at the viewer sink across read boundaries. Each mirror is capped at 1 MiB and truncates when the cap or stream backpressure is reached. After the run finishes, its viewer returns to the terminal shell instead of ending the terminal session, so the tab and scrollback remain until the user closes them. Successful native Pi runs with a known session append a safely quoted removal command for the exact verified session path; unsuccessful and sessionless runs append only their terminal status.
+Children keep running through their native Pi foreground session. For each top-level subagent call, the observer asks Orca to create one background terminal tab in the owning worktree and mirrors progress into it. Parallel and chain children share that tab and are separated by child headers. Titles receive a persistent worktree-local sequence number, including across separate workflow calls. Creates for the same worktree are serialized in that sequence so tabs appear to the right in order (`1`, then `2`, then `3`) instead of racing. Model/startup retries reuse the same observer. Attaching an already-tracked run does not create a duplicate child tab. Terminal control sequences are removed at the viewer sink across read boundaries. Each mirror is capped at 1 MiB and truncates when the cap or stream backpressure is reached. After the run finishes, its viewer returns to the terminal shell instead of ending the terminal session, so the tab and scrollback remain until the user closes them. Successful native Pi runs with a known session append a safely quoted removal command for the exact verified session path; unsuccessful and sessionless runs append only their terminal status.
 
 The observer supports macOS and Linux and is disabled on Windows. It requires executable `orca` on `PATH` (or `PI_SUBAGENT_ORCA_BINARY`) and a running Orca runtime that recognizes the cwd. Availability and tab creation are best-effort: failures never fail, stop, or delay the subagent. When possible, the observer writes a passive manifest under `<worktree>/.pi/subagents/views/orca/`; the manifest is display metadata only, not a lifecycle or control source. Set `orcaProgressTabs.enabled` to `false` to guarantee that no Orca command or tab is created.
 
-Agent profile `runner.type` supports native Pi (the default), `external-cli`, and `external-job`. Orca is intentionally not a profile runner and does not own subagent execution, completion, cancellation, artifacts, or result delivery. External-job providers can optionally expose `followUp(input)` so a completed provider job can continue its parent conversation through `subagent({ action: "resume", id: "<run>", message: "..." })`.
-
-## External CLI agent profiles
-
-Agent profiles can opt into a local one-shot command instead of a Pi child. External runners add no install dependency, but the configured executable must exist at runtime. They are async-only, receive one combined system/task prompt over stdin, and use argv arrays without a shell:
-
-```yaml
-runner:
-  type: external-cli
-  command: node
-  args: ["./scripts/local-reviewer.mjs"]
-  promptDelivery: stdin
-async: true
-```
-
-Supported: status artifacts, stdout/stderr logs, timeout, and stop. Full stdout and stderr are written to log files, while the in-memory final stdout response and stderr error are limited to their last 64 KiB.
-
-Intentionally unsupported: native Pi child options such as model override, structured output, acceptance/agent contract, tool budgets, fast mode, fork context, skills, or native Pi tools unless the runner explicitly implements them. Foreground/clarify, steer/resume/interrupt-as-pause, nested subagents, and fallback models are also unsupported.
+Agent profiles use the native Pi runner. Orca only observes progress and does not own execution, cancellation, artifacts, or result delivery.
 
 ## Session sharing
 

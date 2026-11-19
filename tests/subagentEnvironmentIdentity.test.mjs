@@ -3,8 +3,7 @@ import test from "node:test";
 import {
 	isBundledSubagents,
 	isSubagent,
-} from "../resources/extensions/pideck-q-change-pi-prompt/contributions.ts";
-import { isPiSubagentsSkillPath } from "../resources/extensions/pideck-q-change-pi-prompt/config.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/toolMetadata.ts";
 
 test("isSubagent accepts official pi-subagents and bundled pideck-q-subagents, rejects third-party subagents", () => {
 	// 1. 官方 npm 包
@@ -55,18 +54,4 @@ test("isSubagent accepts official pi-subagents and bundled pideck-q-subagents, r
 		sourceInfo: { path: "D:/Users/app/resources/extensions/pideck-q-subagents.ts" },
 	};
 	assert.equal(isSubagent(bashTool), false);
-});
-
-test("isPiSubagentsSkillPath recognizes both npm pi-subagents and bundled pideck-q-subagents skills", () => {
-	// npm 路径
-	assert.equal(isPiSubagentsSkillPath("C:/app/node_modules/pi-subagents/skills"), true);
-	assert.equal(isPiSubagentsSkillPath("C:\\app\\node_modules\\pi-subagents\\skills\\council-mode"), true);
-
-	// 打包内置路径
-	assert.equal(isPiSubagentsSkillPath("D:/PiDeck/resources/extensions/pideck-q-subagents/skills"), true);
-	assert.equal(isPiSubagentsSkillPath("D:\\PiDeck\\resources\\extensions\\pideck-q-subagents\\skills\\pi-subagents"), true);
-
-	// 第三方 skills 路径拒绝
-	assert.equal(isPiSubagentsSkillPath("D:/PiDeck/resources/extensions/other-plugin/skills"), false);
-	assert.equal(isPiSubagentsSkillPath("C:/node_modules/custom-agent/skills"), false);
 });

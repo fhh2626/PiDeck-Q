@@ -80,15 +80,10 @@ test("stock pi.exe is still recognised as standalone without any marker", () => 
 
 // ── 三处独立定义的环境变量名必须一致 ───────────────────────────────
 
-test("the standalone marker name is identical in PiDeck and both bundled extensions", async () => {
+test("the standalone marker name is identical in PiDeck and its subagent runtime", async () => {
 	const { PIDECK_PI_STANDALONE_ENV: host } = loadTsCommonJs("src/shared/piCompatibility.ts");
 	const { PIDECK_PI_STANDALONE_ENV: subagents } = await import(
 		pathToFileURL(join(process.cwd(), "resources/extensions/pideck-q-subagents/src/runs/shared/pi-spawn.ts")).href
 	);
-	const { PIDECK_PI_STANDALONE_ENV: promptRewriter } = await import(
-		pathToFileURL(join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt/runtime.ts")).href
-	);
-	// 扩展随应用独立打包，不能 import src/shared，所以各自保留一份常量；改名时必须三处同步。
 	assert.equal(subagents, host);
-	assert.equal(promptRewriter, host);
 });

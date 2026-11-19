@@ -15,12 +15,7 @@ Configure the AI models available to your agents:
 - **Endpoint** — Custom API endpoint URL (for proxies or self-hosted models).
 - **Parameters** — Temperature, max tokens, top-p, and other model parameters.
 
-### Auth
-
-Manage authentication credentials:
-
-- **API Keys** — Add, remove, and test API keys for each provider.
-- **Environment Variables** — Some keys can be set via environment variables for security.
+Configure authentication through the selected Pi runtime's login or provider setup. PiDeck-Q uses the credentials already configured in that runtime. Configuration import and export include model and settings files.
 
 ### General Settings
 

@@ -3,11 +3,10 @@
  * Manages subagents.agentOverrides.<agent>.subagentOnlyExtensions and, when the host
  * shell set differs from a native agent's declared shells, a managed `tools` allowlist.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { isRecord, type ToolSnapshot } from './contributions.ts';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
+import { isRecord, type ToolSnapshot } from './toolMetadata.ts';
 import {
 	BUILTIN_OR_INTERNAL_CHILD_TOOLS,
 	isShellToolName,
@@ -15,10 +14,11 @@ import {
 	mapDeclaredToolsToHostShells,
 	resolveChildShellSlots,
 	sameToolList,
-	type EffectiveChildPolicy,
 	type EffectiveShellPolicy,
-	type ShellPolicySnapshot,
 } from './childShellPolicy.ts';
+import { writeJsonAtomic } from './policyStorage.ts';
+import { writeEffectiveShellPolicySnapshot } from './policySnapshot.ts';
+export { readEffectiveShellPolicySnapshot, resolveShellPolicyOwnerKey, shellPolicyOwnerToken, shellPolicySnapshotPath, writeEffectiveShellPolicySnapshot, SHELL_POLICY_OWNER_ENV } from './policySnapshot.ts';
 import type { SubagentCatalog } from './subagentCatalog.ts';
 
 export interface ChildAgentCompatibility {
@@ -42,21 +42,9 @@ export interface ReconciliationResult {
 // active-tool ceiling is applied separately, including to builtins.
 const BUILTIN_OR_INTERNAL_TOOLS = BUILTIN_OR_INTERNAL_CHILD_TOOLS;
 
-export function resolveCurrentChangePiPromptPath(baseDir?: string): string {
-	const currentDir = baseDir
-		?? (typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url)));
-
-	const candidates = [
-		resolve(currentDir, '..', 'pideck-q-change-pi-prompt.ts'),
-		resolve(currentDir, '..', '..', 'resources', 'extensions', 'pideck-q-change-pi-prompt.ts'),
-		resolve(currentDir, 'pideck-q-change-pi-prompt.ts'),
-	];
-
-	for (const cand of candidates) {
-		if (existsSync(cand)) return cand;
-	}
-
-	return candidates[0];
+/** Retire the automatically injected prompt optimizer while preserving user-owned paths. */
+function isLegacyPromptProvider(path: string): boolean {
+	return /(?:^|[\\/])(?:pideck-q-)?change-pi-prompt\.ts$/i.test(path);
 }
 
 /**
@@ -114,155 +102,6 @@ interface ManagedStateFile {
 	managedPaths: string[];
 	/** Last tools allowlists this extension wrote; used to avoid clobbering user edits. */
 	managedTools?: Record<string, string[]>;
-}
-
-/**
- * Parent-published shell ceilings live inside the change-pi-prompt state directory.
- *
- * PiDeck runs one pi process per Agent session against a shared agentDir, so a single global file
- * would let two sessions overwrite each other's ceiling and make a child read the other session's
- * shells. Every parent therefore publishes to its own owner-scoped file.
- */
-const SHELL_POLICY_FILE_PREFIX = 'effective-shell-policy';
-/**
- * Carries the owning parent's key to child runtimes. Foreground native children share the parent
- * process, but detached runner children are separate processes; propagating the key keeps both
- * reading the same scoped snapshot instead of falling back to the wider availability/registry
- * policy the parent already narrowed.
- */
-export const SHELL_POLICY_OWNER_ENV = 'CHANGE_PI_PROMPT_SHELL_POLICY_OWNER';
-/** Keys are usually session ids (UUIDv7); anything else is hashed so it can never escape the state dir. */
-const SHELL_POLICY_OWNER_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-/** Owner snapshots are ephemeral; files left behind by long-gone sessions are pruned on write. */
-const SHELL_POLICY_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Filesystem-safe token for an owner key; unvalidated keys are hashed instead of used as a path. */
-export function shellPolicyOwnerToken(ownerKey: string): string {
-	if (SHELL_POLICY_OWNER_KEY_PATTERN.test(ownerKey)) return ownerKey;
-	return `h-${createHash('sha256').update(ownerKey).digest('hex').slice(0, 32)}`;
-}
-
-/** Path of the parent-owned shell ceiling consumed by that parent's children. */
-export function shellPolicySnapshotPath(agentDir: string, ownerKey: string): string {
-	return join(agentDir, 'change-pi-prompt', `${SHELL_POLICY_FILE_PREFIX}.${shellPolicyOwnerToken(ownerKey)}.json`);
-}
-
-/** Owner key published for child runtimes, or undefined when this runtime has no parent context. */
-export function resolveShellPolicyOwnerKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env[SHELL_POLICY_OWNER_ENV];
-	if (typeof value !== 'string') return undefined;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : undefined;
-}
-
-/**
- * Read the child policy published by the parent that owns this runtime.
- * Child runtimes only consume it; a missing owner, missing file, or malformed/foreign-platform
- * snapshot is ignored so the caller falls back to conservative pruning.
- * Version 1 snapshots stay readable: they carry the shell ceiling but no extension tool ceiling.
- */
-export function readEffectiveShellPolicySnapshot(
-	agentDir: string,
-	platform: NodeJS.Platform,
-	ownerKey: string | undefined = resolveShellPolicyOwnerKey(),
-): EffectiveChildPolicy | undefined {
-	if (!ownerKey) return undefined;
-	const snapshotPath = shellPolicySnapshotPath(agentDir, ownerKey);
-	if (!existsSync(snapshotPath)) return undefined;
-	try {
-		const parsed = JSON.parse(readFileSync(snapshotPath, 'utf8'));
-		if (!isRecord(parsed)) return undefined;
-		if (parsed.platform !== platform) return undefined;
-		if (parsed.version === 1) {
-			if (typeof parsed.bash !== 'boolean' || typeof parsed.powershell !== 'boolean') return undefined;
-			return { version: 1, platform, bash: parsed.bash, powershell: parsed.powershell };
-		}
-		if (parsed.version === 2) {
-			if (!isRecord(parsed.shell)) return undefined;
-			const { bash, powershell } = parsed.shell;
-			if (typeof bash !== 'boolean' || typeof powershell !== 'boolean') return undefined;
-			if (!Array.isArray(parsed.parentActiveTools)) return undefined;
-			return {
-				version: 2,
-				platform,
-				shell: { bash, powershell },
-				parentActiveTools: parsed.parentActiveTools.filter((name): name is string => typeof name === 'string'),
-			};
-		}
-		return undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Only the parent runtime writes the policy; children never produce shared state.
- * The owner env var is published *after* the atomic write so a concurrent child either sees no
- * owner (conservative fallback) or a complete snapshot, never a half-written file.
- * `parentActiveTools` must be the parent's final `getActiveTools()` result, never `getAllTools()`.
- */
-export function writeEffectiveShellPolicySnapshot(
-	stateDir: string,
-	platform: NodeJS.Platform,
-	policy: EffectiveShellPolicy,
-	ownerKey: string,
-	parentActiveTools: readonly string[],
-): boolean {
-	try {
-		const snapshot: ShellPolicySnapshot = {
-			version: 2,
-			platform,
-			shell: { bash: policy.bash, powershell: policy.powershell },
-			parentActiveTools: [...new Set(parentActiveTools)],
-		};
-		const snapshotPath = join(stateDir, `${SHELL_POLICY_FILE_PREFIX}.${shellPolicyOwnerToken(ownerKey)}.json`);
-		writeJsonAtomic(snapshotPath, snapshot);
-		process.env[SHELL_POLICY_OWNER_ENV] = ownerKey;
-		pruneStaleShellPolicySnapshots(stateDir, snapshotPath);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/** Remove owner snapshots left behind by sessions that ended long ago; never touch the live one. */
-function pruneStaleShellPolicySnapshots(stateDir: string, keepPath: string): void {
-	try {
-		const keep = basename(keepPath);
-		const now = Date.now();
-		for (const entry of readdirSync(stateDir)) {
-			if (entry === keep) continue;
-			if (!entry.startsWith(`${SHELL_POLICY_FILE_PREFIX}.`) || !entry.endsWith('.json')) continue;
-			try {
-				const filePath = join(stateDir, entry);
-				if (now - statSync(filePath).mtimeMs > SHELL_POLICY_SNAPSHOT_TTL_MS) rmSync(filePath, { force: true });
-			} catch {
-				// Best effort: a file we cannot stat/remove is not worth failing reconciliation over.
-			}
-		}
-	} catch {
-		// Best effort cleanup only.
-	}
-}
-
-/**
- * Temp-file-then-rename JSON write, so a concurrent reader never observes a half-written file.
- * The temp file is always removed: on Windows a failed rename can otherwise leave one locked
- * behind, and a leftover temp file must never be mistaken for a published snapshot.
- */
-function writeJsonAtomic(filePath: string, payload: unknown): void {
-	mkdirSync(dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${Date.now()}.${process.pid}`;
-	try {
-		writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-		renameSync(tmpPath, filePath);
-	} finally {
-		try {
-			if (existsSync(tmpPath)) rmSync(tmpPath, { force: true });
-		} catch {
-			// Best effort: the write/rename outcome is what the caller needs.
-		}
-	}
 }
 
 function readManagedStateFile(statePath: string): { managedPaths: string[]; managedTools: Record<string, string[]> } {
@@ -342,7 +181,7 @@ export interface ReconciliationLockOptions {
 
 /** Path of the reconciliation lock inside the shared state directory. */
 export function reconciliationLockPath(agentDir: string): string {
-	return join(agentDir, 'change-pi-prompt', RECONCILIATION_LOCK_FILE);
+	return join(agentDir, 'subagents', 'environment', RECONCILIATION_LOCK_FILE);
 }
 
 function defaultLockWait(delayMs: number): Promise<void> {
@@ -454,7 +293,6 @@ export async function reconcileChildEnvironments(options: {
 	hostShells?: { bash: boolean; powershell: boolean };
 	/** Identity of this parent runtime; scopes the published shell policy to this session/process. */
 	shellPolicyOwnerKey?: string;
-	changePiPromptPath?: string;
 	lock?: ReconciliationLockOptions;
 }): Promise<ReconciliationResult | undefined> {
 	const locked = await withReconciliationLock(
@@ -475,28 +313,25 @@ function reconcileChildEnvironmentsLocked(options: {
 	shellPolicy: EffectiveShellPolicy;
 	hostShells?: { bash: boolean; powershell: boolean };
 	shellPolicyOwnerKey?: string;
-	changePiPromptPath?: string;
 }): ReconciliationResult {
 	const { agentDir, catalog, parentTools, parentActiveTools, platform, shellPolicy, hostShells } = options;
-	const changePiPromptPath = options.changePiPromptPath ?? resolveCurrentChangePiPromptPath();
 	const compatibilityStatus = new Map<string, ChildAgentCompatibility>();
 	const incompatibleAgents: string[] = [];
 
-	const stateDir = join(agentDir, 'change-pi-prompt');
+	const stateDir = join(agentDir, 'subagents', 'environment');
 	const statePath = join(stateDir, 'managed-child-extensions.json');
-	const previousState = readManagedStateFile(statePath);
+	// Adopt only metadata previously owned by the optimizer. User configuration is never deleted.
+	const previousState = readManagedStateFile(existsSync(statePath) ? statePath
+		: join(agentDir, 'change-pi-prompt', 'managed-child-extensions.json'));
 	const previousManagedPaths = new Set(previousState.managedPaths);
 	const previousManagedTools = previousState.managedTools;
 	const nextManagedTools: Record<string, string[]> = { ...previousManagedTools };
 	/** Managed paths still worth keeping: the union of previous and newly discovered ones. */
 	const nextManagedPaths = new Set<string>();
-	if (changePiPromptPath && existsSync(changePiPromptPath)) {
-		nextManagedPaths.add(changePiPromptPath);
-	}
 	// A previously managed path survives unless its file is really gone. An inactive tool in this
 	// session must never evict a provider another session still loads from the shared superset.
 	for (const path of previousManagedPaths) {
-		if (existsSync(path)) nextManagedPaths.add(path);
+		if (existsSync(path) && !isLegacyPromptProvider(path)) nextManagedPaths.add(path);
 	}
 
 	const settingsPath = join(agentDir, 'settings.json');
@@ -536,9 +371,6 @@ function reconcileChildEnvironmentsLocked(options: {
 			// Check tool compatibility
 			const missingTools: string[] = [];
 			const agentExtensions = new Set<string>();
-			if (changePiPromptPath && existsSync(changePiPromptPath)) {
-				agentExtensions.add(changePiPromptPath);
-			}
 
 			for (const toolName of agent.tools) {
 				// Shell backends are pruned at runtime; they are not missing providers.
@@ -601,7 +433,7 @@ function reconcileChildEnvironmentsLocked(options: {
 			const userCustomPaths = existingList.filter(p => !previousManagedPaths.has(p));
 			const survivingManagedPaths = existingList.filter(p => {
 				if (!previousManagedPaths.has(p)) return false;
-				return nextManagedPaths.has(p) || existsSync(p);
+				return !isLegacyPromptProvider(p) && (nextManagedPaths.has(p) || existsSync(p));
 			});
 			const mergedList = [...new Set([...userCustomPaths, ...survivingManagedPaths, ...agentExtensions])];
 

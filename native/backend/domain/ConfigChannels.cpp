@@ -47,11 +47,6 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
             QJsonObject{{QStringLiteral("providers"), QJsonObject{}}})));
     });
 
-    registry.add(QStringLiteral("config:get-auth"), [&services](const QJsonArray &) {
-        return QJsonValue(fileReadJson(
-            configfiles::read(services.configDir, QStringLiteral("auth.json"), QJsonObject{})));
-    });
-
     registry.add(QStringLiteral("config:get-settings"), [&services](const QJsonArray &) {
         return QJsonValue(fileReadJson(
             configfiles::read(services.configDir, QStringLiteral("settings.json"), QJsonObject{})));
@@ -81,14 +76,6 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
         return validationJson(validation);
     });
 
-    registry.add(QStringLiteral("config:save-auth"), [&services](const QJsonArray &args) {
-        const QJsonValue previous = modelconfig::snapshot(services);
-        const QJsonValue previousAuth = modelconfig::authSnapshot(services);
-        const auto validation = configfiles::saveAuth(services.configDir, channels::argAt(args, 0));
-        if (validation.valid) modelconfig::saved(services, previous, previousAuth);
-        return validationJson(validation);
-    });
-
     registry.add(QStringLiteral("config:save-settings"), [&services](const QJsonArray &args) {
         const auto selection = modelconfig::validateSettingsSelection(services, channels::argAt(args, 0));
         if (!selection.valid) return validationJson(selection);
@@ -100,12 +87,10 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
         const auto selection = modelconfig::validateRawSettingsSelection(services, fileName, channels::stringArg(args, 1));
         if (!selection.valid) return validationJson(selection);
         const QJsonValue previous = modelconfig::snapshot(services);
-        const QJsonValue previousAuth = fileName == QLatin1String("auth.json")
-            ? modelconfig::authSnapshot(services) : QJsonValue(QJsonValue::Undefined);
         const auto validation = configfiles::saveRaw(services.configDir, fileName,
                                                      channels::stringArg(args, 1), services.translate);
-        if (validation.valid && (fileName == QLatin1String("models.json") || fileName == QLatin1String("auth.json"))) {
-            modelconfig::saved(services, previous, previousAuth);
+        if (validation.valid && fileName == QLatin1String("models.json")) {
+            modelconfig::saved(services, previous);
         }
         return validationJson(validation);
     });
@@ -118,14 +103,12 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
         const auto selection = modelconfig::validateImportedSettingsSelection(services, channels::stringArg(args, 0));
         if (!selection.valid) return validationJson(selection);
         const QJsonValue previous = modelconfig::snapshot(services);
-        const QJsonValue previousAuth = modelconfig::authSnapshot(services);
         const auto validation = configfiles::importPackage(
             services.configDir, channels::stringArg(args, 0), services.translate);
         // Import writes several files in order. A later failure must still reconcile
-        // earlier successful model/auth writes with the discovery cache and live agents.
-        if (validation.valid || modelconfig::snapshot(services) != previous
-            || modelconfig::authSnapshot(services) != previousAuth) {
-            modelconfig::saved(services, previous, previousAuth);
+        // earlier successful model writes with the discovery cache and live agents.
+        if (validation.valid || modelconfig::snapshot(services) != previous) {
+            modelconfig::saved(services, previous);
         }
         return validationJson(validation);
     });

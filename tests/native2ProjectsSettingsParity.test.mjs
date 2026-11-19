@@ -761,19 +761,20 @@ if (executable) {
 			const session = await start(t, { home });
 			const dir = join(home, ".pi", "agent");
 			writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: {} }));
-			writeFileSync(join(dir, "auth.json"), "{ broken");
+			writeFileSync(join(dir, "settings.json"), "{ broken");
 			const models = await session.invoke("config:get-models");
 			assert.equal(models.payload.ok, true, JSON.stringify(models.payload));
 			assert.deepEqual(models.payload.result.parsed, { providers: {} });
 			assert.equal(models.payload.result.diagnostic, undefined);
 
-			const auth = await session.invoke("config:get-auth");
-			assert.equal(auth.payload.ok, true);
-			assert.deepEqual(auth.payload.result.parsed, {});
-			assert.equal(auth.payload.result.diagnostic.fileName, "auth.json");
-			assert.equal(auth.payload.result.diagnostic.docsUrl, "https://pi.dev/docs/latest/providers");
-			assert.equal(auth.payload.result.diagnostic.line, 1);
-			assert.ok(auth.payload.result.raw.includes("broken"));
+			const settings = await session.invoke("config:get-settings");
+			assert.equal(settings.payload.ok, true);
+			assert.deepEqual(settings.payload.result.parsed, {});
+			assert.equal(settings.payload.result.diagnostic.fileName, "settings.json");
+			assert.equal(settings.payload.result.diagnostic.docsUrl, "https://pi.dev/docs/latest/settings");
+			assert.equal(settings.payload.result.diagnostic.line, 1);
+			assert.ok(settings.payload.result.raw.includes("broken"));
+			rmSync(join(dir, "settings.json"));
 
 			const missing = await session.invoke("config:get-settings");
 			assert.equal(missing.payload.ok, true);
@@ -799,24 +800,24 @@ if (executable) {
 			assert.match(invalid.payload.result.error, /relay/);
 		});
 
-		test("config:save-auth and config:save-settings validate the same way as the oracle", async (t) => {
+		test("removed auth-management channels and the raw editor cannot change Pi credentials", async (t) => {
 			const home = homeFor();
 			const session = await start(t, { home });
-			const savedAuth = await session.invoke("config:save-auth", [
-				{ relay: { type: "api_key", key: "secret" } },
-			]);
-			assert.equal(savedAuth.payload.result.valid, true);
-			const authFile = JSON.parse(readFileSync(join(home, ".pi", "agent", "auth.json"), "utf8"));
-			assert.deepEqual(authFile, { relay: { type: "api_key", key: "secret" } });
+			const authPath = join(home, ".pi", "agent", "auth.json");
+			const credentials = JSON.stringify({ relay: { type: "api_key", key: "external-key" } });
+			writeFileSync(authPath, credentials);
+			for (const channel of ["config:get-auth", "config:save-auth"]) {
+				const response = await session.invoke(channel, [{}]);
+				assert.equal(response.payload.ok, false, channel);
+			}
+			const raw = await session.invoke("config:save-raw", ["auth.json", "{}"]);
+			assert.equal(raw.payload.result.valid, false);
+			assert.equal(readFileSync(authPath, "utf8"), credentials);
+		});
 
-			// The oracle writes auth.json verbatim (no schema validation) and reports success.
-			const verbatim = await session.invoke("config:save-auth", [{ relay: "nope" }]);
-			assert.equal(verbatim.payload.result.valid, true);
-			assert.deepEqual(
-				JSON.parse(readFileSync(join(home, ".pi", "agent", "auth.json"), "utf8")),
-				{ relay: "nope" },
-			);
-
+		test("config:save-settings preserves Pi settings", async (t) => {
+			const home = homeFor();
+			const session = await start(t, { home });
 			const savedSettings = await session.invoke("config:save-settings", [{ theme: "dark" }]);
 			assert.equal(savedSettings.payload.result.valid, true);
 			const settingsFile = JSON.parse(
@@ -825,7 +826,7 @@ if (executable) {
 			assert.equal(settingsFile.theme, "dark");
 		});
 
-		test("config:save-raw only accepts the four known files and valid JSON", async (t) => {
+		test("config:save-raw only accepts model/settings/trust files and valid JSON", async (t) => {
 			const home = homeFor();
 			const session = await start(t, { home });
 			const badJson = await session.invoke("config:save-raw", ["settings.json", "{ nope"]);
@@ -844,7 +845,7 @@ if (executable) {
 			);
 		});
 
-		test("config:export and config:import round-trip the three files", async (t) => {
+		test("config export/import round-trip models and settings without reading or overwriting credentials", async (t) => {
 			const home = homeFor();
 			const session = await start(t, { home });
 			const dir = join(home, ".pi", "agent");
@@ -856,10 +857,14 @@ if (executable) {
 			assert.equal(pkg.version, 1);
 			assert.match(pkg.exportedAt, /^\d{4}-\d{2}-\d{2}T/);
 			assert.deepEqual(pkg.files["models.json"], { providers: { p: { models: [{ id: "a" }] } } });
-			assert.deepEqual(pkg.files["auth.json"], { p: { type: "api_key", key: "k" } });
+			assert.equal(Object.hasOwn(pkg.files, "auth.json"), false);
+			assert.deepEqual(Object.keys(pkg.files).sort(), ["models.json", "settings.json"]);
+			// Older backups may contain credentials. Restoring them must leave Pi auth intact.
+			pkg.files["auth.json"] = { replacement: { type: "api_key", key: "replacement" } };
 
 			rmSync(join(dir, "models.json"));
-			const imported = await session.invoke("config:import", [exported.payload.result]);
+			const imported = await session.invoke("config:import", [JSON.stringify(pkg)]);
+			assert.deepEqual(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")), { p: { type: "api_key", key: "k" } });
 			assert.equal(imported.payload.result.valid, true);
 			assert.deepEqual(
 				JSON.parse(readFileSync(join(dir, "models.json"), "utf8")),

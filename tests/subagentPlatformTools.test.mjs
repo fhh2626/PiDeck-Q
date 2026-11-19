@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { loadSubagentCatalog, parseAgentFrontmatter } from "../resources/extensions/pideck-q-change-pi-prompt/subagentCatalog.ts";
-import { mapAgentToolsToHostShells } from "../resources/extensions/pideck-q-change-pi-prompt/childShellPolicy.ts";
+import { loadSubagentCatalog, parseAgentFrontmatter } from "../resources/extensions/pideck-q-subagents/src/policy/environment/subagentCatalog.ts";
+import { mapAgentToolsToHostShells } from "../resources/extensions/pideck-q-subagents/src/policy/environment/childShellPolicy.ts";
 
 const agentsDir = new URL("../resources/extensions/pideck-q-subagents/agents/", import.meta.url);
 

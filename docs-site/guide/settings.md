@@ -7,12 +7,11 @@ PiDeck 提供图形化配置入口，减少频繁查找和编辑 Pi Agent / Pi_A
 配置弹窗包含以下页面：
 
 - Models：Provider 卡片、模型网格和连接测试。
-- Auth：API Key 管理。
 - Settings：类型感知的键值编辑器。
-- 源文件：查看和编辑原始 JSON。
+- 源文件：查看和编辑模型、设置和信任配置的原始 JSON。
 - Skills：管理全局 Skills。
 
-<img class="doc-screenshot" src="/images/config.png" alt="配置管理界面">
+认证通过所用 Pi 运行时的登录或供应商配置流程管理。PiDeck-Q 复用运行时已配置的凭据，配置导入导出只处理模型和设置文件。
 
 ## Agent 路径
 

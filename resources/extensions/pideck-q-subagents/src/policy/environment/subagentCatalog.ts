@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fromPackage, isBundledSubagents, isSubagent, type ToolSnapshot } from './contributions.ts';
+import { fromPackage, isBundledSubagents, isSubagent, type ToolSnapshot } from './toolMetadata.ts';
 
 export type AgentRunnerType = 'native' | 'external-cli' | 'external-job' | 'unknown';
 
@@ -169,7 +169,7 @@ export function findSubagentsPackageRoot(
 		?? (typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url)));
 
 	const candidates = [
-		resolve(baseDir, '..', 'pideck-q-subagents'),
+		resolve(baseDir, '..', '..', '..'),
 		resolve(baseDir, '..', '..', 'resources', 'extensions', 'pideck-q-subagents'),
 	];
 

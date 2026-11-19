@@ -1014,12 +1014,6 @@ const api = {
 				parsed: { providers: Record<string, unknown> };
 				diagnostic?: ConfigFileDiagnostic;
 			}>,
-		getAuth: () =>
-			transport.invoke(ipcChannels.configGetAuth) as Promise<{
-				raw: string;
-				parsed: Record<string, unknown>;
-				diagnostic?: ConfigFileDiagnostic;
-			}>,
 		getSettings: () =>
 			transport.invoke(ipcChannels.configGetSettings) as Promise<{
 				raw: string;
@@ -1034,11 +1028,6 @@ const api = {
 			}>,
 		saveModels: (data: unknown) =>
 			transport.invoke(ipcChannels.configSaveModels, data) as Promise<{
-				valid: boolean;
-				error?: string;
-			}>,
-		saveAuth: (data: unknown) =>
-			transport.invoke(ipcChannels.configSaveAuth, data) as Promise<{
 				valid: boolean;
 				error?: string;
 			}>,

@@ -26,17 +26,17 @@ Partition fanout by repository, source seam, decision, or review angle. Each run
 
 Every child packet must stand alone: include the goal, exact repository/cwd/ref, authority and edit boundary, relevant context/evidence, success criteria, validation, expected output, and stop/escalation rules. Do not rely on parent history, an issue number, or a broad glob alone. An orchestration audit by a top-reasoning critic model is read-only and returns at most three cited omissions; use high thinking only as an explicit parent/user escalation, never as an autonomous root or a parallel placeholder.
 
-Use one async `workflowScript` for a coordinated wave. Use `runs.all` for independent lanes and `runs.run` for dependent lane stages. Give cross-repository runs explicit `cwd` values and lane-qualified outputs. Use `outputMode: "file-only"` when a report must survive the run or feed a later stage. Keep scratch outputs relative so they live under subagent artifacts; use absolute paths only for durable memory, approved docs paths, or final handoff files.
+Use one foreground `workflowScript` for a coordinated wave. Use `runs.all` for independent lanes and `runs.run` for dependent lane stages. Give cross-repository runs explicit `cwd` values and lane-qualified outputs. Use `outputMode: "file-only"` when a report must survive the run or feed a later stage. Keep scratch outputs relative so they live under subagent artifacts; use absolute paths only for durable memory, approved docs paths, or final handoff files.
 
 ## Keep independent work moving
 
 While one lane waits, run safe independent preparation, validation, or fresh read-only review lanes. Do not block the parent just because a run is active. If no safe lane remains, record the blocker and the event that will reopen work.
 
-In an ordinary interactive session, completion wakes the parent; after useful
-async lanes are launched or triaged, yield rather than use
-`bg_wait({ all: true })` as a barrier. “Continue/orchestrate/work until
-done” means keep the board moving while safe immediate work remains. If only
-async lanes are running, record the revisit trigger and yield.
+Use `runs.all` for independent lanes and await dependent results in the same
+workflow. If a child asks for a supervisor decision, inspect and answer the
+pending request. The original workflow VM retains its children and sequential
+dependencies. Use `status` or `bg_wait` to observe that run, and do not replay it
+or create a replacement writer while the handoff is live.
 
 An ordinary coordinated workflow has one mission. Use its durable state, artifacts, run records, and receipts for recovery. Treat a receipt as evidence, not as authority or acceptance.
 
@@ -46,8 +46,8 @@ After a writer produces a candidate, run the required fresh-context, read-only r
 
 Use stable lane-qualified artifact paths for reports and review output. A handoff states the lane status, repository and worktree, changed files, validation, open decisions, next action, and artifact or receipt paths. Copy only the final evidence to memory, a mission record, or a PR/comment, then remove scratch files from the active worktree before closing the lane.
 
-For backlog lanes and other subagent-governed workflows, a setup/runtime/tooling failure remains an infrastructure blocker. Preserve the exact failure, run/status, and repository/cwd/worktree/branch/ref state; verify a clean worktree or capture any partial diff before a same-protocol retry or asking the owner. Do not start another writer or switch to an external, foreground, or CLI execution mode without explicit owner approval.
+For backlog lanes and other subagent-governed workflows, a setup/runtime/tooling failure remains an infrastructure blocker. Preserve the exact failure, run/status, and repository/cwd/worktree/branch/ref state; verify a clean worktree or capture any partial diff before a same-protocol retry or asking the owner. Do not start another writer while the failed attempt may still own the worktree.
 
-Keep a worktree until its handoff is durable, no run owns it, and no later gate needs it. Clean up only inside the recorded authority boundary. If a run stops or needs attention, preserve its worktree and artifacts, record the last known state and recovery owner, then resume that run or create one replacement lane from the handoff. Do not start another writer while worktree ownership is uncertain.
+Keep a worktree until its handoff is durable, no run owns it, and no later gate needs it. Clean up only inside the recorded authority boundary. If a run stops or needs attention, preserve its worktree and artifacts and record the last known state. Answer live supervisor requests through the retained workflow. Only a settled child reported as resumable can use native `resume`; stopped children require a separately authorized new task after ownership is released. Do not start another writer while worktree ownership is uncertain.
 
 Before completion, inspect the board. Every lane must be terminal or blocked with a named next action. Confirm one writer per repo/cwd or worktree, required validation, required fresh read-only review, and a durable handoff. The parent reports outcomes, evidence, residual risks, and the next decision.

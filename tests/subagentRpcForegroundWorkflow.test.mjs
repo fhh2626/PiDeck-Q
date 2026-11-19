@@ -1,0 +1,108 @@
+/** RPC stop must reach the original retained foreground continuation. */
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import test from "node:test";
+import { createFixture, resetDoubles, setRunSyncBehavior, runSyncCalls, completedResult } from "./helpers/subagentResumeHarness.mjs";
+
+await import("./helpers/piFixtureResolver.mjs");
+const executionDouble = new URL("./helpers/subagentExecutionDouble.mjs", import.meta.url).href;
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		if (context.parentURL?.includes("pideck-q-subagents") && specifier.endsWith("/execution.ts")) {
+			return { url: executionDouble, shortCircuit: true };
+		}
+		return nextResolve(specifier, context);
+	},
+});
+const graph = await import("../resources/extensions/pideck-q-subagents/src/runs/foreground/subagent-executor.ts");
+const rpc = await import("../resources/extensions/pideck-q-subagents/src/extension/rpc.ts");
+
+function eventsFor() {
+	const listeners = new Map();
+	return {
+		on(name, callback) { const list = listeners.get(name) ?? new Set(); list.add(callback); listeners.set(name, list); return () => list.delete(callback); },
+		emit(name, value) { for (const callback of listeners.get(name) ?? []) callback(value); },
+	};
+}
+const pause = () => new Promise((resolve) => setImmediate(resolve));
+
+function request(events, method, params) {
+	const requestId = `${method}-${Math.random()}`;
+	return new Promise((resolve) => {
+		const off = events.on(rpc.subagentRpcReplyEvent(requestId), (reply) => { off(); resolve(reply); });
+		events.emit(rpc.SUBAGENT_RPC_REQUEST_EVENT, { version: 1, requestId, method, params });
+	});
+}
+
+for (const target of ["workflow", "child"]) {
+	test(`RPC stops the retained ${target} through its original foreground control`, { timeout: 10_000 }, async () => {
+		const fixture = createFixture(graph, `rpc-${target}`);
+		const events = eventsFor();
+		fixture.deps.pi.events = events;
+		const executor = graph.createSubagentExecutor(fixture.deps);
+		const owner = new AbortController();
+		let child;
+		resetDoubles();
+		setRunSyncBehavior(({ options }) => {
+			child = options;
+			events.emit("pi-intercom:detach-request", { requestId: "rpc-ask", runId: options.runId, agent: "worker", childIndex: 0, source: "native" });
+			return completedResult(fixture, { detached: true, detachedReason: "intercom coordination", exitCode: undefined, finalOutput: undefined });
+		});
+		const initial = await executor.executePublic("rpc-workflow", {
+			workflowScript: 'const first = await runs.run("first", { agent: "worker", task: "inspect", acceptance: false }); return runs.run("later", { agent: "worker", task: first.output, acceptance: false });',
+			output: false, timeoutMs: 5000,
+		}, owner.signal, undefined, fixture.ctx);
+		assert.notEqual(initial.isError, true, JSON.stringify(initial));
+		assert.ok(child);
+		const run = fixture.state.foregroundWorkflows.get(initial.details.runId);
+		const bridge = rpc.registerSubagentRpcBridge({ events, getContext: () => fixture.ctx, state: fixture.state, execute: executor.executePublic });
+		try {
+			const invalid = await request(events, "stop", { id: run.runId, childId: {} });
+			assert.equal(invalid.success, false);
+			assert.equal(child.signal.aborted, false);
+			assert.equal(child.interruptSignal.aborted, false);
+			const reply = await request(events, "stop", { id: run.runId.slice(0, 12), ...(target === "child" ? { childId: "first" } : {}) });
+			assert.equal(reply.success, true, JSON.stringify(reply));
+			assert.equal(target === "child" ? child.interruptSignal.aborted : child.signal.aborted, true);
+			assert.equal(fixture.state.foregroundControls.has(child.runId), true, "child ownership remains until its authoritative exit");
+			assert.equal(runSyncCalls.length, 1, "stopping must not replay the workflow");
+			if (target === "child") assert.equal(fixture.state.workflowControllers.get(run.runId).signal.aborted, false);
+			await child.onDetachedExit(completedResult(fixture, { interrupted: true, exitCode: 1, finalOutput: "CHILD STOP CONFIRMED" }));
+			for (let i = 0; i < 100 && !run.result; i++) await pause();
+			assert.equal(run.result?.isError, true);
+			assert.equal(runSyncCalls.length, 1, "the next stage remains cancelled after the late child exit");
+		} finally {
+			bridge.dispose();
+			owner.abort();
+		}
+	});
+}
+
+test("RPC cannot stop a retained workflow owned by another session", async () => {
+	const fixture = createFixture(graph, "rpc-foreign");
+	fixture.state.currentSessionId = fixture.parentSessionFile;
+	let stopped = false;
+	fixture.state.foregroundWorkflows = new Map([["foreign-workflow", { runId: "foreign-workflow", sessionId: "other-session", interrupt() { stopped = true; } }]]);
+	const events = eventsFor();
+	const executor = graph.createSubagentExecutor(fixture.deps);
+	const bridge = rpc.registerSubagentRpcBridge({ events, getContext: () => fixture.ctx, state: fixture.state, execute: executor.executePublic });
+	try {
+		const reply = await request(events, "stop", { id: "foreign-workflow" });
+		assert.equal(reply.success, false);
+		assert.equal(stopped, false);
+	} finally { bridge.dispose(); }
+});
+
+test("RPC rejects removed spawn and schedule management methods", async () => {
+	const fixture = createFixture(graph, "rpc-removed");
+	const events = eventsFor();
+	const executor = graph.createSubagentExecutor(fixture.deps);
+	const bridge = rpc.registerSubagentRpcBridge({ events, getContext: () => fixture.ctx, state: fixture.state, execute: executor.executePublic });
+	try {
+		for (const method of ["spawn", "manage"]) {
+			const reply = await request(events, method, { agent: "worker", task: "do work", action: "schedule.list" });
+			assert.equal(reply.success, false);
+			assert.equal(reply.error.code, "unsupported_method");
+		}
+	} finally { bridge.dispose(); }
+});

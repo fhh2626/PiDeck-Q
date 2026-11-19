@@ -37,7 +37,7 @@ PiDeck 不仅同时支持原版 **Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**
 
 ### 4. 可视化配置管理
 
-直接图形化编辑 Agent 运行时的 `models.json`、`auth.json`、`settings.json`，无需手动编辑 JSON 文件，降低配置门槛。
+直接图形化编辑 Agent 运行时的 `models.json`、`settings.json`，无需手动编辑 JSON 文件，降低配置门槛。
 
 ### 5. 内置终端与文件工具
 

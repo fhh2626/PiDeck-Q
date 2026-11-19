@@ -4,7 +4,7 @@ import {
   UI_LANGUAGE_ENV_NAME,
   resolveExtensionLocale,
   shellUnavailableCopy,
-} from '../copy.ts';
+} from '../resources/extensions/pideck-q-subagents/src/policy/environment/copy.ts';
 
 test('injected PIDECK_UI_LANGUAGE decides the locale', () => {
   assert.equal(resolveExtensionLocale({ [UI_LANGUAGE_ENV_NAME]: 'en-US' }), 'en-US');

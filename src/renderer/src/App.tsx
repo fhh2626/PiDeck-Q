@@ -2779,7 +2779,7 @@ export function App() {
 
   useNativeFileDropCopy({ api, refreshFiles, showToast });
 
-  // 全局订阅模型列表更新（保存 models.json/auth.json、切换 pi 运行时后主进程广播）：
+  // 全局订阅模型列表更新（保存 models.json、切换 pi 运行时后主进程广播）：
   // 视觉桥能力判定与模型选择器共用这份数据，只在装配层挂一份。
   useModelListSync(setSettings, settings.wslEnabled ? "wsl" : "native", { wslDistro: settings.wslDistro, wslUser: settings.wslUser });
 

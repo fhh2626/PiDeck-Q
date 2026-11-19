@@ -17,7 +17,7 @@ import { resolveSubagentPreferDelegation } from "../agents/agents.ts";
 export const DELEGATION_HINT =
 	"Prefer delegating complex or parallelizable work to subagents; keep the main agent focused on planning, integration, and final verification.";
 
-/** Keep this sentence identical to the independently installable change-pi-prompt extension. */
+/** Subagent owns this announcement independently of the prompt optimizer. */
 export const SUBAGENT_CALL_ANNOUNCEMENT_HINT =
 	"Before each call to the subagent tool, first send the user one brief, visible assistant sentence in the conversation's language explaining what the call is about to do, then invoke the tool.";
 
@@ -54,7 +54,8 @@ export function shouldInjectSubagentCallAnnouncementHint(input: {
 	if (!input.subagentToolAvailable || isSubagentChildProcess(input.env)) return false;
 	const prompt = input.systemPrompt ?? "";
 	return !/<active_agent\s+name=["'][^"']+["']\s*\/?>/i.test(prompt)
-		&& !prompt.includes("<!-- change-pi-prompt:child-tools:v1 -->");
+		&& !prompt.includes("<!-- change-pi-prompt:child-tools:v1 -->")
+		&& !prompt.includes("<!-- pideck-subagent:child-tools:v1 -->");
 }
 
 /**

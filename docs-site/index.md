@@ -32,7 +32,7 @@ features:
   - title: 内嵌终端 Dock
     details: 当前 Agent 绑定独立终端 tab，支持 PowerShell/cmd/sh fallback、多 tab、主题切换、拖拽高度、右键复制。
   - title: 配置与插件管理
-    details: 可视化编辑 Models、Auth、Settings，全局和项目级 Skills 与 Extension 管理，斜线命令和模板快速插入。
+    details: 可视化编辑 Models、Settings，全局和项目级 Skills 与 Extension 管理，斜线命令和模板快速插入。
   - title: 原生构建
     details: Qt6/QtWebView 宿主 + 原生 C++ 业务后端；便携包不附带 Node.js 运行时。下载以 GitHub Releases 实际文件为准，开发可使用普通浏览器预览 UI。
 ---
@@ -71,11 +71,6 @@ const { theme } = useData()
 ## 截图预览
 
 <div class="screenshot-grid">
-  <div class="screenshot-card">
-    <img src="/images/config.png" alt="配置管理界面">
-    <strong>配置管理</strong>
-    <span>可视化编辑模型、认证、设置和 Skills。</span>
-  </div>
   <div class="screenshot-card">
     <img src="/images/slash-commands.png" alt="斜线命令与会话历史">
     <strong>命令与历史</strong>

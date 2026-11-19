@@ -101,21 +101,13 @@ test('unknown extension guidance survives byte-for-byte, including multiline rul
   const rule = 'UNRELATED guidance\n  - keep this nested rule';
   assert.ok(run(fixture([...coreRules, rule])).systemPrompt.includes('- ' + rule));
 });
-test('native default-mode safeguards survive while delegation is added', () => {
+test('native subagent safeguards survive without injecting strategy', () => {
   const rule = 'UPDATED delegation guidance';
   const tools = [tool('subagent', [rule], 'npm:pi-subagents@0.66.0', '/npm/pi-subagents/src/index.ts')];
   const result = run(fixture([...coreRules, rule]), tools);
   assert.match(result.systemPrompt, /UPDATED delegation/);
-  assert.match(result.systemPrompt, /## Delegation/);
+  assert.doesNotMatch(result.systemPrompt, /## Delegation/);
   assert.ok(run(fixture([...coreRules, rule]), [tool('subagent', [rule], 'npm:other')]).systemPrompt.includes(rule));
-});
-test('delegation adds one English announcement rule only when the subagent tool is active', () => {
-  const native = tool('subagent', [], 'npm:pi-subagents');
-  const result = run(fixture(), [native]);
-  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
-  assert.doesNotMatch(announcement, /[^\x00-\x7f]/);
-  assert.ok(DEFAULT_PROMPTS.delegation.includes(announcement));
-  assert.ok(!run().systemPrompt.includes(announcement));
 });
 test('delegation preserves an earlier announcement from another extension without duplicating it', () => {
   const suffix = `\n\n<project_context>KEEP EXACTLY\r\n</project_context>\n\n${announcement}`;
@@ -124,36 +116,12 @@ test('delegation preserves an earlier announcement from another extension withou
   assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
   assert.ok(result.systemPrompt.endsWith(suffix));
 });
-test('an earlier announcement is deduplicated without dropping custom guidance on the same template line', () => {
-  const suffix = `\n\n${announcement}`;
-  const native = tool('subagent', [], 'npm:pi-subagents');
-  const custom = 'Keep the launch explanation specific to the current task.';
-  const prompts = {
-    ...DEFAULT_PROMPTS,
-    delegation: DEFAULT_PROMPTS.delegation.replace(announcement, `${announcement} ${custom}`),
-  };
-  const result = run(fixture(coreRules, suffix), [native], { prompts });
-  assert.equal(result.systemPrompt.split(announcement).length - 1, 1);
-  assert.ok(result.systemPrompt.includes(custom));
-  assert.ok(result.systemPrompt.endsWith(suffix));
-});
 test('disabled optional tools neither contribute replacements nor lose their rules', () => {
   const rule = 'optional plugin constraint';
   const tools = [tool('subagent', [rule], 'npm:pi-subagents')];
   const result = run(fixture([...coreRules, rule]), tools, { activeTools: [] });
   assert.ok(result.systemPrompt.includes(rule));
   assert.doesNotMatch(result.systemPrompt, /## Delegation/);
-});
-test('custom mode without prompt metadata still receives delegation by provenance', () => {
-  const native = { name: 'subagent', sourceInfo: { source: 'npm:pi-subagents' } };
-  const result = run(fixture(), [native]);
-  assert.match(result.systemPrompt, /exactly one foreground workflowScript call \(async:false\), with all children inside it/);
-  assert.match(result.systemPrompt, /Follow the subagent tool contract/);
-  assert.doesNotMatch(result.systemPrompt, /run_in_background|subagent_type/);
-});
-test('installed package paths establish provenance without a package source label', () => {
-  const native = tool('subagent', [], 'path', 'C:\\node_modules\\pi-subagents\\index.ts');
-  assert.match(run(fixture(), [native]).systemPrompt, /## Delegation/);
 });
 test('legacy provider and lookalike package names are never adapted', () => {
   for (const candidate of [
@@ -167,7 +135,7 @@ test('legacy provider and lookalike package names are never adapted', () => {
     assert.doesNotMatch(result.systemPrompt, /## Delegation/);
   }
 });
-test('disabled subagent adaptation and companion tools preserve upstream guidance', () => {
+test('subagent and companion tools preserve their own upstream guidance', () => {
   const tools = [tool('subagent', ['NATIVE'], 'npm:pi-subagents'), tool('bg_wait', ['WAIT'], 'npm:pi-subagents'), tool('subagent_supervisor', ['SUPERVISOR'], 'npm:pi-subagents')];
   const result = run(fixture([...coreRules, 'NATIVE', 'WAIT', 'SUPERVISOR']), tools, { config: { ...DEFAULT_CONFIG, subagent: false } });
   assert.doesNotMatch(result.systemPrompt, /## Delegation/);
@@ -206,4 +174,13 @@ test('pruneUnavailableShells false leaves catalog rows even when shells are inac
   const result = run(prompt, [tool('bash'), tool('read')], { activeTools: ['read'], config: { ...DEFAULT_CONFIG, pruneUnavailableShells: false } });
   assert.match(result.systemPrompt, /- bash: Execute a bash command/);
   assert.doesNotMatch(result.diagnostics.join('\n'), /shell-tools/);
+});
+
+test('same-name extension tools retain their own guidance without builtin-only rules', () => {
+  const tools = ['read', 'write', 'bash', 'powershell'].map(name => tool(name, [`CUSTOM ${name} CONTRACT`], 'file', `/extensions/${name}.ts`));
+  const prompt = fixture([...coreRules, ...tools.map(t => t.promptGuidelines[0])]);
+  const result = run(prompt, tools);
+  for (const t of tools) assert.ok(result.systemPrompt.includes(t.promptGuidelines[0]));
+  assert.doesNotMatch(result.systemPrompt, /Use `read` to inspect|Use `write` only|For shell commands/);
+  assert.equal(run(prompt, tools, { config: { ...DEFAULT_CONFIG, enabled: false } }).systemPrompt, prompt);
 });

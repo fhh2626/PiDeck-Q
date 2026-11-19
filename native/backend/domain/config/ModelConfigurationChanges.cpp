@@ -267,13 +267,7 @@ QJsonValue snapshot(const ChannelServices &services)
     return read.hasDiagnostic || read.readError ? QJsonValue(QJsonObject{}) : read.parsed;
 }
 
-QJsonValue authSnapshot(const ChannelServices &services)
-{
-    const auto read = configfiles::read(services.configDir, QStringLiteral("auth.json"), QJsonObject{});
-    return read.hasDiagnostic || read.readError ? QJsonValue(QJsonObject{}) : read.parsed;
-}
-
-void saved(ChannelServices &services, const QJsonValue &previousModels, const QJsonValue &previousAuth)
+void saved(ChannelServices &services, const QJsonValue &previousModels)
 {
     const Scope scope = activeScope(services);
     const Models previous = definitions(previousModels);
@@ -303,16 +297,6 @@ void saved(ChannelServices &services, const QJsonValue &previousModels, const QJ
         // Provider overrides also affect built-in models not enumerated in models[].
         // Appending a model leaves these objects equal and cannot disturb other users.
         if (before != after) authProviders.append(name);
-    }
-    if (!previousAuth.isUndefined()) {
-        const QJsonObject before = previousAuth.toObject();
-        const QJsonObject after = authSnapshot(services).toObject();
-        QSet<QString> providers;
-        for (const QString &key : before.keys()) providers.insert(key);
-        for (const QString &key : after.keys()) providers.insert(key);
-        for (const QString &provider : providers) {
-            if (before.value(provider) != after.value(provider) && !authProviders.contains(provider)) authProviders.append(provider);
-        }
     }
     // The model file has already been saved. A failed preference write must not leave
     // a successful configuration change hidden behind the old discovery/runtime cache.

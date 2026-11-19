@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type EditorComponent, isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { snapshotExternalRuns } from "../api/external-runs.ts";
+
 import { formatModelThinking } from "../shared/formatters.ts";
 import type { AsyncJobState, AsyncJobStep, FleetViewPlacement, HerdrProjectPaneSnapshot, HostStepState, HostStepVerdict, NestedRunSummary, NestedStepSummary, SubagentState } from "../shared/types.ts";
 import { projectAsyncWorkflowRows, type AsyncStatusWorkflowRow } from "../runs/shared/async-status-projection.ts";
@@ -32,7 +32,6 @@ type FleetStatusEntry = {
 	tokens: number;
 	window?: number;
 	state: string;
-	external?: true;
 	projectPane?: HerdrProjectPaneSnapshot;
 	nestedChildren?: NestedRunSummary[];
 	workflowRows?: AsyncStatusWorkflowRow[];
@@ -457,24 +456,7 @@ export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntr
 		}
 	}
 
-	if (state.currentSessionId) {
-		try {
-			for (const run of snapshotExternalRuns(state.currentSessionId, { ignoreMalformed: true, onMalformedRecord: (message) => console.warn(`[pi-subagents] Removed ${message}`) })) {
-				if (!isActiveState(run.state)) continue;
-				entries.push({
-					key: `external:${run.id}`,
-					agent: `external · ${run.label}`,
-					description: run.currentAction ?? `source: ${run.source}`,
-					startedAt: run.startedAt,
-					tokens: 0,
-					state: run.state,
-					external: true,
-				});
-			}
-		} catch (cause) {
-			console.warn(`[pi-subagents] Failed to inspect external jobs: ${cause instanceof Error ? cause.message : String(cause)}`);
-		}
-	}
+
 
 	entries.push(...projectPaneEntries(state));
 	return entries.sort((left, right) => left.startedAt - right.startedAt || left.key.localeCompare(right.key));
@@ -659,16 +641,16 @@ export class SubagentFleetStatus {
 			const workEntries = this.entries.filter((entry) => !entry.surface);
 			const projectEntries = this.entries.filter((entry) => entry.surface === "project-pane");
 			const tokens = workEntries.reduce((total, entry) => total + entry.tokens, 0);
-			const nativeEntries = workEntries.filter((entry) => !entry.external);
+			const nativeEntries = workEntries;
 			const window = nativeEntries.length > 0 && nativeEntries.every((entry) => entry.window !== undefined)
 				? nativeEntries.reduce((total, entry) => total + entry.window!, 0)
 				: undefined;
 			const capacity = this.state.activeAsyncCapacity;
-			const hasNativeRows = workEntries.some((entry) => !entry.external);
+			const hasNativeRows = workEntries.length > 0;
 			const showNativeSummary = hasNativeRows || Boolean(capacity?.used);
 			const asyncRuns = capacity && showNativeSummary && (capacity.used > 0 || capacity.limit > 0) ? `Async runs ${capacity.used}/${capacity.limit || "∞"}` : "";
 			const activeEntries = activeLeafAgentCount(workEntries);
-			const noun = workEntries.some((entry) => entry.external) ? "job" : "agent";
+			const noun = "agent";
 			const agents = activeEntries > 0 ? `${activeEntries} active ${noun}${activeEntries === 1 ? "" : "s"}` : "";
 			const paneAttention = projectEntries.filter((entry) => entry.projectPane && projectPaneNeedsAttention(entry.projectPane)).length;
 			const panes = projectEntries.length > 0 ? `${projectEntries.length} pane${projectEntries.length === 1 ? "" : "s"}${paneAttention ? ` (${paneAttention} ⚠)` : ""}` : "";
@@ -731,7 +713,7 @@ export class SubagentFleetStatus {
 		const elapsed = Date.now() - entry.startedAt;
 		const rightText = entry.projectPane
 			? `${entry.projectPane.summary ?? "—"} · ${formatFleetElapsed(Date.now() - entry.projectPane.refreshedAt)} ago`
-				: entry.external ? formatFleetElapsed(elapsed) : `${formatFleetElapsed(elapsed)} · ${formatFleetTokens(entry.tokens, entry.window)}`;
+				: `${formatFleetElapsed(elapsed)} · ${formatFleetTokens(entry.tokens, entry.window)}`;
 		const right = theme.fg("dim", rightText);
 		return rightAlign(left, right, width);
 	}
@@ -856,7 +838,6 @@ export class SubagentFleetStatus {
 					entry.state,
 					entry.modelThinking,
 					entry.description,
-					entry.external,
 					Math.round((now - entry.startedAt) / 1000),
 					entry.tokens,
 					entry.workflowChecklist ? [
@@ -897,7 +878,7 @@ export class SubagentFleetStatus {
 						row.overflow,
 					]),
 				]
-				: [entry.key, entry.state, entry.external, entry.surface, entry.tokens, entry.projectPane?.refreshedAt, entry.projectPane?.summary]),
+				: [entry.key, entry.state, entry.surface, entry.tokens, entry.projectPane?.refreshedAt, entry.projectPane?.summary]),
 		});
 	}
 

@@ -188,15 +188,6 @@ Validation saveModels(const QString &configDir, const QJsonValue &data, const ma
     return Validation{true, {}, {}};
 }
 
-Validation saveAuth(const QString &configDir, const QJsonValue &data)
-{
-    QString error;
-    if (!jsonfile::writeJsonAtomic(filePath(configDir, QStringLiteral("auth.json")), data, &error)) {
-        return Validation{false, error, {}};
-    }
-    return Validation{true, {}, {}};
-}
-
 Validation saveSettings(const QString &configDir, const QJsonValue &data)
 {
     QString error;
@@ -215,7 +206,7 @@ Validation saveRaw(const QString &configDir, const QString &fileName, const QStr
         return Validation{false, t(QStringLiteral("mainConfig.invalidJson"), {}), error.errorString()};
     }
     static const QStringList allowed = {
-        QStringLiteral("models.json"), QStringLiteral("auth.json"),
+        QStringLiteral("models.json"),
         QStringLiteral("settings.json"), QStringLiteral("trust.json"),
     };
     if (!allowed.contains(fileName)) {
@@ -236,7 +227,6 @@ QString exportPackage(const QString &configDir)
 {
     const FileRead models = read(configDir, QStringLiteral("models.json"),
                                  QJsonObject{{QStringLiteral("providers"), QJsonObject{}}});
-    const FileRead auth = read(configDir, QStringLiteral("auth.json"), QJsonObject{});
     const FileRead settings = read(configDir, QStringLiteral("settings.json"), QJsonObject{});
     const QJsonObject package{
         {QStringLiteral("version"), 1},
@@ -245,7 +235,6 @@ QString exportPackage(const QString &configDir)
         {QStringLiteral("files"),
          QJsonObject{
              {QStringLiteral("models.json"), models.parsed},
-             {QStringLiteral("auth.json"), auth.parsed},
              {QStringLiteral("settings.json"), settings.parsed},
          }},
     };
@@ -265,8 +254,9 @@ Validation importPackage(const QString &configDir, const QString &packageJson,
         return Validation{false, t(QStringLiteral("mainConfig.importFilesRequired"), {}), {}};
     }
     const QJsonObject fileObject = files.toObject();
-    // Only the three known names are restored; anything else in the package is ignored.
-    for (const QString &name : {QStringLiteral("models.json"), QStringLiteral("auth.json"),
+    // Only model/settings files are restored. Legacy packages may include auth.json,
+    // but credentials remain owned by Pi and must never be overwritten here.
+    for (const QString &name : {QStringLiteral("models.json"),
                                 QStringLiteral("settings.json")}) {
         const QJsonValue value = fileObject.value(name);
         if (value.isUndefined() || value.isNull()) continue;

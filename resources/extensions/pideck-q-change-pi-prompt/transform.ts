@@ -1,9 +1,8 @@
 /** Pure, bounded system-prompt transformation; no filesystem, process, or model calls. */
 import { type Config, type Prompts } from './defaults.ts';
-import { classifyRules, CORE_RULES, hasBatchEdit, isSubagent, type ToolSnapshot } from './contributions.ts';
+import { classifyRules, CORE_RULES, hasBatchEdit, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
-import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './shellAvailability.ts';
-import { SUBAGENT_CALL_ANNOUNCEMENT_HINT } from './subagentAnnouncement.ts';
+import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './activeToolLines.ts';
 
 export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
 export interface TransformInput {
@@ -55,7 +54,8 @@ function joinGuidelineParts(parts: string[]): string {
 /** Render only sections supported by the active tool set. Runtime facts stay with providers. */
 function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string {
 	const p = input.prompts;
-	const has = (name: string) => input.activeTools.includes(name);
+	const has = (name: string) => tools.some(tool => tool.name === name && tool.sourceInfo?.source === 'builtin')
+		&& input.activeTools.includes(name);
 	const sections = [p.execution, p.tools];
 	if (has('read')) sections.push(p.read);
 	if (has('edit')) {
@@ -64,20 +64,6 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	}
 	if (has('write')) sections.push(p.write);
 	if (has('bash') || has('powershell')) sections.push(p.shell);
-	if (has('ask_question')) sections.push(p.userInput);
-	if (input.config.subagent && tools.some(isSubagent)) {
-		// An earlier extension may already have appended this rule outside the rewritten base.
-		// Remove only the known sentence from customized template lines, preserving adjacent
-		// user guidance as well as the earlier extension's suffix regardless of load order.
-		const delegation = input.systemPrompt.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)
-			? p.delegation.split(/\r?\n/).flatMap(line => {
-				if (!line.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT)) return [line];
-				const remaining = line.replaceAll(SUBAGENT_CALL_ANNOUNCEMENT_HINT, '');
-				return remaining.trim() && remaining.trim() !== '-' ? [remaining] : [];
-			}).join('\n')
-			: p.delegation;
-		sections.push(delegation);
-	}
 	sections.push(p.validation, p.communication);
 	sections.push(p.environment.replace(/\{\{(hostOs|today)\}\}/g, (_, key: string) => key === 'hostOs' ? input.hostOs : input.today));
 	return joinGuidelineParts(sections);
@@ -119,7 +105,6 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 	const has = (name: string) => input.activeTools.includes(name);
 	const diagnostics = [
 		`powershell: ${has('powershell') ? 'active' : 'absent or inactive'}`,
-		`subagent: ${input.config.subagent && tools.some(isSubagent) ? 'active' : 'absent, inactive, unrecognized or disabled'}`,
 	];
 	const patches: Patch[] = [];
 	const add = (start: number, end: number, replacement: string) => {
@@ -128,10 +113,12 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 	if (input.config.replaceIdentity) add(0, layout.identityEnd, input.prompts.identity);
 	if (input.config.pruneUnavailableShells || input.config.pruneUnavailableSearchTools) {
 		const originalTools = original.slice(layout.toolsStart, layout.toolsEnd);
+		// Provider-owned rows stay byte-for-byte intact even when the tool uses a builtin name.
+		const catalogActive = [...input.activeTools, ...input.tools.filter(tool => tool.sourceInfo?.source !== 'builtin').map(tool => tool.name)];
 		const shellFiltered = input.config.pruneUnavailableShells
-			? filterUnavailableShellToolLines(originalTools, input.activeTools) : originalTools;
+			? filterUnavailableShellToolLines(originalTools, catalogActive) : originalTools;
 		const filtered = input.config.pruneUnavailableSearchTools
-			? filterUnavailableSearchToolLines(shellFiltered, input.activeTools) : shellFiltered;
+			? filterUnavailableSearchToolLines(shellFiltered, catalogActive) : shellFiltered;
 		if (filtered !== originalTools) {
 			add(layout.toolsStart, layout.toolsEnd, filtered);
 			if (shellFiltered !== originalTools) diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');

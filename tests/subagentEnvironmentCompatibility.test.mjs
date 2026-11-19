@@ -7,7 +7,7 @@ import test from "node:test";
 import {
 	loadSubagentCatalog,
 	parseAgentFrontmatter,
-} from "../resources/extensions/pideck-q-change-pi-prompt/subagentCatalog.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/subagentCatalog.ts";
 import {
 	agentInheritsParentTools,
 	reconcileChildEnvironments,
@@ -20,7 +20,7 @@ import {
 	shellPolicySnapshotPath,
 	SHELL_POLICY_OWNER_ENV,
 	withReconciliationLock,
-} from "../resources/extensions/pideck-q-change-pi-prompt/childReconciliation.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/childReconciliation.ts";
 import {
 	getActiveAgentName,
 	isBuiltinOrInternalChildTool,
@@ -30,24 +30,24 @@ import {
 	resolveEffectiveShellPolicy,
 	toParentActiveTools,
 	toShellCeiling,
-} from "../resources/extensions/pideck-q-change-pi-prompt/childShellPolicy.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/childShellPolicy.ts";
 import {
 	bashAvailable,
 	classifyConfiguredShellKind,
 	powershellAvailable,
 	probeShellAvailability,
 	shouldNotifyHiddenShells,
-} from "../resources/extensions/pideck-q-change-pi-prompt/shellAvailability.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/shellAvailability.ts";
 import {
 	buildChildToolEnvironmentBlock,
 	injectChildToolEnvironment,
 	isChildSession,
-	registerPromptExtension,
-} from "../resources/extensions/pideck-q-change-pi-prompt/runtime.ts";
+	registerSubagentEnvironment,
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/runtime.ts";
 import {
 	UI_LANGUAGE_ENV_NAME,
 	resolveExtensionLocale,
-} from "../resources/extensions/pideck-q-change-pi-prompt/copy.ts";
+} from "../resources/extensions/pideck-q-subagents/src/policy/environment/copy.ts";
 import { transformSystemPrompt } from "../resources/extensions/pideck-q-change-pi-prompt/transform.ts";
 import { DEFAULT_CONFIG, DEFAULT_PROMPTS } from "../resources/extensions/pideck-q-change-pi-prompt/defaults.ts";
 
@@ -78,140 +78,6 @@ function createMockPi() {
 		getHandler: (event) => handlers.get(event),
 	};
 }
-
-// 1. enabled=false：完全零行为
-test("enabled=false disables prompt rewrite, tool_call async override, shell prune, and child reconciliation", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-disabled-"));
-	try {
-		// 写入 enabled: false 配置
-		const configDir = join(tempDir, "change-pi-prompt");
-		mkdirSync(configDir, { recursive: true });
-		writeFileSync(join(configDir, "config.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: false }, null, 2), "utf8");
-
-		const { mockPi, setTools, getHandler } = createMockPi();
-		setTools([
-			{ name: "bash", description: "bash shell" },
-			{ name: "subagent", description: "subagent tool", sourceInfo: { source: "npm:pi-subagents", path: "C:/node_modules/pi-subagents/index.js" } },
-		]);
-
-		registerPromptExtension(mockPi, tempDir, {
-			probeHost: { hasCommand: () => false, hasPowerShell: () => false },
-			isStandalone: () => true,
-		});
-
-		// before_agent_start 不改 prompt 也不修剪不可用 shell
-		const beforeStart = getHandler("before_agent_start");
-		const originalPrompt = "You are Pi.\n\n## Available tools\n- bash\n- subagent\n\n## Guidelines\n- Be concise";
-		const promptRes = await beforeStart({ systemPrompt: originalPrompt }, { hasUI: false, ui: { notify: () => {} } });
-		assert.equal(promptRes, undefined, "Must return undefined (keep original prompt) when disabled");
-		assert.deepEqual(mockPi.getActiveTools(), ["bash", "subagent"], "Shell must not be pruned when disabled");
-
-		// context 不改写
-		const contextHandler = getHandler("context");
-		const msgRes = contextHandler({ messages: [{ role: "user", content: "Plugin default is asyncByDefault:true" }] });
-		assert.equal(msgRes, undefined, "Context messages must not be rewritten when disabled");
-
-		// tool_call 不改写 async
-		const toolCallHandler = getHandler("tool_call");
-		const input = { agent: "worker", task: "task", async: true };
-		const callRes = await toolCallHandler({ toolName: "subagent", input });
-		assert.equal(callRes, undefined);
-		assert.equal(input.async, true, "Async must not be mutated when disabled");
-
-		// 不写 settings.json 中的 child override
-		assert.equal(existsSync(join(tempDir, "settings.json")), false, "settings.json must not be created when disabled");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-});
-
-// 2. subagent=false：不处理 subagent，但普通 identity/shell/pwsh 仍工作
-test("subagent=false leaves subagent alone but allows normal prompt/shell handling", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-nosubagent-"));
-	try {
-		const configDir = join(tempDir, "change-pi-prompt");
-		mkdirSync(configDir, { recursive: true });
-		writeFileSync(join(configDir, "config.json"), JSON.stringify({ ...DEFAULT_CONFIG, enabled: true, subagent: false }, null, 2), "utf8");
-
-		const { mockPi, setTools, getHandler } = createMockPi();
-		setTools([
-			{ name: "bash", description: "bash shell" },
-			{ name: "subagent", description: "Run in background unless asyncByDefault:false. Set false only when the parent must block until completion.", sourceInfo: { source: "npm:pi-subagents", path: "C:/node_modules/pi-subagents/index.js" } },
-		]);
-
-		registerPromptExtension(mockPi, tempDir, {
-			probeHost: { hasCommand: () => true, hasPowerShell: () => true },
-			isStandalone: () => true,
-		});
-
-		// tool_call 不拦截也不改写 async
-		const toolCallHandler = getHandler("tool_call");
-		const input = { agent: "worker", task: "task", async: true };
-		const callRes = await toolCallHandler({ toolName: "subagent", input });
-		assert.equal(callRes, undefined);
-		assert.equal(input.async, true, "Async must stay true when subagent adaptation is disabled");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-});
-
-// 3 & 4. standalone vs non-standalone & native vs external-cli
-test("standalone Pi blocks external-cli and forces native async:false, while Node Pi preserves external-cli", async () => {
-	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-runners-"));
-	try {
-		const subagentConfigDir = join(tempDir, "extensions", "subagent");
-		mkdirSync(subagentConfigDir, { recursive: true });
-		writeFileSync(join(subagentConfigDir, "config.json"), JSON.stringify({ asyncByDefault: false }), "utf8");
-
-		// Mock subagent catalog with codex-exec (external-cli) and writable (native)
-		const { mockPi, setTools, getHandler } = createMockPi();
-		setTools([
-			{ name: "subagent", description: "subagent", sourceInfo: { source: "npm:pi-subagents", path: join(process.cwd(), "resources/extensions/pideck-q-subagents/dist/index.js") } },
-			{ name: "bash", description: "bash" },
-		]);
-
-		let standaloneMode = true;
-		registerPromptExtension(mockPi, tempDir, {
-			probeHost: { hasCommand: () => true, hasPowerShell: () => true },
-			isStandalone: () => standaloneMode,
-		});
-
-		const toolCallHandler = getHandler("tool_call");
-
-		// ── Standalone Mode ──
-		standaloneMode = true;
-
-		// 1. 已移除的外部 agent 必须 fail-closed，绝不能强改 async:false
-		const codexInput = { agent: "codex-exec", task: "analyze", async: true };
-		const codexRes = await toolCallHandler({ toolName: "subagent", input: codexInput });
-		assert.ok(codexRes && codexRes.block === true);
-		assert.match(codexRes.reason, /无法确认 Agent "codex-exec" 的 runner 类型/);
-		assert.equal(codexInput.async, true, "Must not convert a removed external agent to async:false");
-
-		// 2. native (writable) 在 standalone 下必须 async:false
-		const workerInput = { agent: "writable", task: "code", async: true };
-		const workerRes = await toolCallHandler({ toolName: "subagent", input: workerInput });
-		assert.equal(workerRes, undefined);
-		assert.equal(workerInput.async, false, "Must force native child to async:false in standalone");
-
-		// ── Non-standalone (Node Pi) Mode ──
-		standaloneMode = false;
-
-		// 3. external-cli 在 Node Pi 下正常放行，保持 async:true
-		const codexNodeInput = { agent: "codex-exec", task: "analyze", async: true };
-		const codexNodeRes = await toolCallHandler({ toolName: "subagent", input: codexNodeInput });
-		assert.equal(codexNodeRes, undefined, "External-cli must not be blocked in normal Node Pi");
-		assert.equal(codexNodeInput.async, true, "Async must be preserved in Node Pi");
-
-		// 4. native 在 Node Pi 下不强制 async:false
-		const workerNodeInput = { agent: "writable", task: "code", async: true };
-		const workerNodeRes = await toolCallHandler({ toolName: "subagent", input: workerNodeInput });
-		assert.equal(workerNodeRes, undefined);
-		assert.equal(workerNodeInput.async, true, "Must not force async:false in normal Node Pi");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-});
 
 // 5. 验证真实 bundled agent catalog 结构与漂移
 test("bundled agents in pideck-q-subagents match expected runner and tool categories", () => {
@@ -310,7 +176,7 @@ test("child prompt mode preserves original role text and injects idempotent chil
 
 	// 再次注入（模拟 before_agent_start 再次触发），必须幂等，不重复追加
 	const injectedAgain = injectChildToolEnvironment(injected, activeToolsWithBash);
-	const occurrences = (injectedAgain.match(/<!-- change-pi-prompt:child-tools:v1 -->/g) || []).length;
+	const occurrences = (injectedAgain.match(/<!-- pideck-subagent:child-tools:v1 -->/g) || []).length;
 	assert.equal(occurrences, 1, "Must not duplicate child-tools block on repeated calls");
 
 	// 无任何 shell 可用时的 block：不得推荐该 agent 实际没有的工具
@@ -326,7 +192,9 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-test-reconcile-"));
 	try {
 		const settingsPath = join(tempDir, "settings.json");
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+		const providerPath = join(tempDir, "bash-provider.ts");
+		writeFileSync(providerPath, "export default () => {};", "utf8");
+
 
 		// 写入已有 settings，包含用户自定义字段与一个 custom subagentOnlyExtension
 		const initialSettings = {
@@ -348,7 +216,7 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
 		const parentTools = [
 			{ name: "read", sourceInfo: { source: "builtin" } },
-			{ name: "bash", sourceInfo: { source: "builtin" } },
+			{ name: "bash", sourceInfo: { source: "file", path: providerPath } },
 		];
 		const parentActiveTools = ["read", "bash"];
 
@@ -358,13 +226,14 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 			parentTools,
 			parentActiveTools,
 			platform: "win32",
+			hostShells: { bash: true, powershell: false },
 			shellPolicy: resolveEffectiveShellPolicy({
 				platform: "win32",
 				availability: { bash: true, powershell: false },
 				parentTools,
 				parentActiveTools,
 			}),
-			changePiPromptPath,
+
 		});
 
 		assert.equal(res.changed, true);
@@ -376,8 +245,8 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 		assert.equal(updated.subagents.agentOverrides.worker.userProp, 123, "User props inside agentOverride must be preserved");
 
 		const workerExts = updated.subagents.agentOverrides.worker.subagentOnlyExtensions;
+		assert.ok(workerExts.includes(providerPath), "The required shell provider must be added");
 		assert.ok(workerExts.includes("C:/my-custom/user-tool.ts"), "User's custom extension must be kept");
-		assert.ok(workerExts.includes(changePiPromptPath), "change-pi-prompt.ts must be injected");
 
 		// delegate 不得被修改（保留 false）
 		assert.equal(updated.subagents.agentOverrides.delegate.subagentOnlyExtensions, false);
@@ -389,13 +258,14 @@ test("reconcileChildEnvironments preserves user settings and updates subagentOnl
 			parentTools,
 			parentActiveTools,
 			platform: "win32",
+			hostShells: { bash: true, powershell: false },
 			shellPolicy: resolveEffectiveShellPolicy({
 				platform: "win32",
 				availability: { bash: true, powershell: false },
 				parentTools,
 				parentActiveTools,
 			}),
-			changePiPromptPath,
+
 		});
 		assert.equal(secondRes.changed, false, "Must be no-op when nothing changed");
 	} finally {
@@ -680,7 +550,7 @@ test("reconcileChildEnvironments does not rewrite bash-only agents on a PowerShe
 				parentActiveTools,
 			}),
 			hostShells,
-			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
+
 		});
 
 		// Ambient tools are selected at child startup; no unavailable shell or search tool is mandatory.
@@ -729,7 +599,7 @@ test("host-shell tools overrides never clobber a user-written tools list", async
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		];
 		const userTools = ["read", "bash", "edit"];
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({
 			subagents: {
 				agentOverrides: {
@@ -752,7 +622,7 @@ test("host-shell tools overrides never clobber a user-written tools list", async
 				parentActiveTools: ["read", "powershell"],
 			}),
 			hostShells,
-			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
+
 		});
 
 		const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
@@ -771,7 +641,7 @@ test("managed host-shell tools overrides update when the host backends change", 
 			{ name: "bash", sourceInfo: { source: "builtin" } },
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		];
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 		const run = (hostShells) => reconcileChildEnvironments({
 			agentDir: tempDir,
 			catalog,
@@ -785,7 +655,7 @@ test("managed host-shell tools overrides update when the host backends change", 
 				parentActiveTools: ["read"],
 			}),
 			hostShells,
-			changePiPromptPath,
+
 		});
 
 		await run({ bash: false, powershell: true });
@@ -811,7 +681,7 @@ test("managed host-shell tools overrides transition: known -> unknown -> known p
 			{ name: "bash", sourceInfo: { source: "builtin" } },
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		];
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 
 		const run = (hostShells, availability) => reconcileChildEnvironments({
 			agentDir: tempDir,
@@ -826,7 +696,7 @@ test("managed host-shell tools overrides transition: known -> unknown -> known p
 				parentActiveTools: ["read", "bash", "powershell"],
 			}),
 			hostShells,
-			changePiPromptPath,
+
 		});
 
 		// Phase 1: PowerShell-only known state
@@ -836,7 +706,7 @@ test("managed host-shell tools overrides transition: known -> unknown -> known p
 		assert.equal(p1Tools.includes("powershell"), true);
 		assert.equal(p1Tools.includes("bash"), false);
 
-		const managedMetaPath = join(tempDir, "change-pi-prompt", "managed-child-extensions.json");
+		const managedMetaPath = join(tempDir, "subagents", "environment", "managed-child-extensions.json");
 		const p1Meta = JSON.parse(readFileSync(managedMetaPath, "utf8"));
 		assert.ok(p1Meta.managedTools?.worker, "worker must be tracked as managedTools in metadata");
 		assert.deepEqual(p1Meta.managedTools?.worker, p1Tools);
@@ -878,7 +748,7 @@ test("user-edited tools during unknown phase is never clobbered", async () => {
 			{ name: "bash", sourceInfo: { source: "builtin" } },
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		];
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 
 		// Phase 1: Initial managed state
 		await reconcileChildEnvironments({
@@ -894,7 +764,7 @@ test("user-edited tools during unknown phase is never clobbered", async () => {
 				parentActiveTools: ["read", "powershell"],
 			}),
 			hostShells: { bash: false, powershell: true },
-			changePiPromptPath,
+
 		});
 
 		// User edits settings.json to custom list
@@ -917,7 +787,7 @@ test("user-edited tools during unknown phase is never clobbered", async () => {
 				parentActiveTools: ["read", "powershell"],
 			}),
 			hostShells: undefined,
-			changePiPromptPath,
+
 		});
 
 		let currentSettings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
@@ -937,7 +807,7 @@ test("user-edited tools during unknown phase is never clobbered", async () => {
 				parentActiveTools: ["read", "bash"],
 			}),
 			hostShells: { bash: true, powershell: false },
-			changePiPromptPath,
+
 		});
 
 		currentSettings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
@@ -959,7 +829,7 @@ test("matrix: reconcileChildEnvironments manages host shells according to backen
 			{ name: "bash", sourceInfo: { source: "builtin" } },
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		];
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 
 		const testScenario = async ({ platform, hostShells, expectedShells }) => {
 			const activeShells = [];
@@ -978,7 +848,7 @@ test("matrix: reconcileChildEnvironments manages host shells according to backen
 					parentActiveTools: ["read", "edit", "write", "contact_supervisor", ...activeShells],
 				}),
 				hostShells,
-				changePiPromptPath,
+
 			});
 			const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
 			const workerTools = settings.subagents?.agentOverrides?.worker?.tools ?? catalog.agents.get("worker").tools;
@@ -1030,7 +900,7 @@ test("host-shell tools override is omitted when it matches the agent frontmatter
 				parentActiveTools: ["read", "edit", "write", "contact_supervisor"],
 			}),
 			hostShells: { bash: false, powershell: false },
-			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
+
 		});
 		const settings = existsSync(join(tempDir, "settings.json"))
 			? JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"))
@@ -1061,7 +931,7 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 			const { mockPi, setTools, getHandler } = createMockPi();
 			setTools(registered);
 			mockPi.setActiveTools(activeTools);
-			mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+			mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 			writeFileSync(
 				shellPolicySnapshotPath(tempDir, `pid-${process.pid}`),
 				JSON.stringify({
@@ -1072,7 +942,7 @@ test("child before_agent_start prunes unavailable shells before rendering the to
 				}),
 				"utf8",
 			);
-			registerPromptExtension(mockPi, tempDir, {
+			registerSubagentEnvironment(mockPi, tempDir, {
 				probeHost: {
 					platform: "win32",
 					env: { Path: "" },
@@ -1209,7 +1079,7 @@ test("session_start on Windows with PowerShell but no Git Bash hides bash withou
 			{ name: "powershell", sourceInfo: { source: "builtin" } },
 		]);
 		const powershellExe = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-		registerPromptExtension(mockPi, tempDir, {
+		registerSubagentEnvironment(mockPi, tempDir, {
 			probeHost: { platform: "win32", env: { Path: "" }, exists: (path) => path === powershellExe },
 			isStandalone: () => true,
 		});
@@ -1238,7 +1108,7 @@ test("session_start with no usable shell notifies with the platform-neutral mess
 				{ name: "bash", sourceInfo: { source: "builtin" } },
 				{ name: "powershell", sourceInfo: { source: "builtin" } },
 			]);
-			registerPromptExtension(mockPi, tempDir, {
+			registerSubagentEnvironment(mockPi, tempDir, {
 				probeHost: { platform, env: platform === "win32" ? { Path: "" } : { PATH: "" }, exists: () => false },
 				isStandalone: () => true,
 				// 固定语言，避免宿主/CI 环境变量影响文案断言
@@ -1271,7 +1141,7 @@ test("shell notification follows the injected UI language", async () => {
 			{ name: "read", sourceInfo: { source: "builtin" } },
 			{ name: "bash", sourceInfo: { source: "builtin" } },
 		]);
-		registerPromptExtension(mockPi, tempDir, {
+		registerSubagentEnvironment(mockPi, tempDir, {
 			// 模拟宿主注入的语言环境变量
 			probeHost: { platform: "win32", env: { Path: "", [UI_LANGUAGE_ENV_NAME]: "en-US" }, exists: () => false },
 			isStandalone: () => true,
@@ -1301,7 +1171,7 @@ test("a child session never runs global reconciliation", async () => {	const tem
 	const previousOwner = process.env[SHELL_POLICY_OWNER_ENV];
 	try {
 		delete process.env[SHELL_POLICY_OWNER_ENV];
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 		const subagentTool = {
 			name: "subagent",
 			description: "subagent",
@@ -1311,10 +1181,10 @@ test("a child session never runs global reconciliation", async () => {	const tem
 
 		const { mockPi, setTools, getHandler } = createMockPi();
 		setTools(tools);
-		registerPromptExtension(mockPi, tempDir, {
+		registerSubagentEnvironment(mockPi, tempDir, {
 			probeHost: { platform: "win32", env: { Path: "" }, exists: () => false },
 			isStandalone: () => true,
-			changePiPromptPath,
+
 		});
 		// mock ctx 没有 sessionManager，owner key 退化为进程级 "pid-<pid>"。
 		const ctx = { hasUI: true, ui: { notify: () => {}, editor: async () => undefined } };
@@ -1330,7 +1200,7 @@ test("a child session never runs global reconciliation", async () => {	const tem
 
 		// 模拟一个早已结束的 session 留下的 owner 快照，验证写入时的过期清理
 		const stalePath = shellPolicySnapshotPath(tempDir, "old-session");
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(stalePath, JSON.stringify({ version: 1, platform: "win32", bash: true, powershell: true }), "utf8");
 		const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
 		utimesSync(stalePath, past, past);
@@ -1339,10 +1209,7 @@ test("a child session never runs global reconciliation", async () => {	const tem
 		mockPi.setActiveTools(["subagent", "read", "bash"]);
 		const parentPrompt = "You are an expert coding assistant operating inside pi, a coding agent harness.\n\nAvailable tools:\n- subagent: Delegate\n\nGuidelines:\n- Be concise in your responses\n";
 		await getHandler("before_agent_start")({ systemPrompt: parentPrompt, systemPromptOptions: { selectedTools: ["subagent", "read", "bash"] } }, ctx);
-		assert.equal(existsSync(join(tempDir, "settings.json")), true, "the parent must still reconcile child overrides");
-
-		const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
-		assert.ok(settings.subagents?.agentOverrides?.writable?.subagentOnlyExtensions?.includes(changePiPromptPath));
+		assert.equal(existsSync(join(tempDir, "settings.json")), false, "Builtin-only children need no injected extension overrides");
 
 		// parent 发布的是 owner-scoped 快照，而不是所有 session 共用一个全局文件
 		const ownerKey = `pid-${process.pid}`;
@@ -1356,9 +1223,9 @@ test("a child session never runs global reconciliation", async () => {	const tem
 			// bash 已因本机无后端被 prune，快照记录的是最终的 getActiveTools() 结果
 			parentActiveTools: ["subagent", "read"],
 		});
-		assert.equal(existsSync(join(tempDir, "change-pi-prompt", "effective-shell-policy.json")), false, "no single global ceiling file may be written");
+		assert.equal(existsSync(join(tempDir, "subagents", "environment", "effective-shell-policy.json")), false, "no single global ceiling file may be written");
 		// 原子写入不得留下半截 temp 文件
-		assert.deepEqual(readdirSync(join(tempDir, "change-pi-prompt")).filter((name) => name.includes(".tmp.")), [], "atomic writes must not leave temp files behind");
+		assert.deepEqual(readdirSync(join(tempDir, "subagents", "environment")).filter((name) => name.includes(".tmp.")), [], "atomic writes must not leave temp files behind");
 		// 过期 owner 快照在写入时被清理，避免文件无限积累
 		assert.equal(existsSync(stalePath), false, "stale owner snapshots must be pruned on write");
 	} finally {
@@ -1379,7 +1246,7 @@ test("effective shell policy snapshots are consumed conservatively", () => {
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", ""), undefined);
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined);
 
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(snapshotPath, "not json", "utf8");
 		assert.equal(readEffectiveShellPolicySnapshot(tempDir, "win32", owner), undefined);
 
@@ -1438,7 +1305,7 @@ test("a parent shell ceiling is scoped to its owning session", () => {
 		assert.notEqual(pathA, pathB);
 
 		// Parent A: bash=false, powershell=true；Parent B 随后覆盖自己的文件
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(pathA, JSON.stringify({ version: 2, platform: "win32", shell: { bash: false, powershell: true }, parentActiveTools: ["read", "powershell"] }), "utf8");
 		writeFileSync(pathB, JSON.stringify({ version: 2, platform: "win32", shell: { bash: true, powershell: false }, parentActiveTools: ["read", "bash"] }), "utf8");
 
@@ -1467,7 +1334,7 @@ test("shell policy owner keys cannot escape the state directory", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "pideck-shell-owner-path-"));
 	try {
 		const traversal = shellPolicySnapshotPath(tempDir, "../../evil");
-		assert.equal(traversal.startsWith(join(tempDir, "change-pi-prompt")), true, "a traversal owner key must stay inside the state directory");
+		assert.equal(traversal.startsWith(join(tempDir, "subagents", "environment")), true, "a traversal owner key must stay inside the state directory");
 		assert.equal(shellPolicyOwnerToken("../../evil").startsWith("h-"), true);
 		assert.notEqual(shellPolicyOwnerToken(".."), "..");
 		assert.equal(shellPolicyOwnerToken("..").startsWith("h-"), true, "reserved names are hashed, not used verbatim");
@@ -1484,7 +1351,7 @@ test("an inactive parent session never evicts another session's provider", async
 		const webSearchPath = join(tempDir, "web-search.ts");
 		writeFileSync(webSearchPath, "// web search", "utf8");
 		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 		const parentTools = [
 			{ name: "read", sourceInfo: { source: "builtin" } },
 			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
@@ -1499,7 +1366,7 @@ test("an inactive parent session never evicts another session's provider", async
 			platform: "linux",
 			shellPolicy: { bash: false, powershell: false },
 			shellPolicyOwnerKey: "session-a",
-			changePiPromptPath,
+
 		});
 		// researcher 还声明了 fetch_content / get_search_content / source_check，本例只关心 web_search：
 		// 以 web_search 是否进入 injectedExtensions 为准，不断言整个 agent 的 ok。
@@ -1517,7 +1384,7 @@ test("an inactive parent session never evicts another session's provider", async
 			platform: "linux",
 			shellPolicy: { bash: false, powershell: false },
 			shellPolicyOwnerKey: "session-b",
-			changePiPromptPath,
+
 		});
 		// 对 B 自己来说 web_search 不可用（permission ceiling 生效）
 		assert.equal(resB.compatibilityStatus.get("researcher").missingTools.includes("web_search"), true);
@@ -1527,7 +1394,7 @@ test("an inactive parent session never evicts another session's provider", async
 			afterB.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath),
 			"an inactive parent must not evict a provider other sessions need",
 		);
-		const managedB = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		const managedB = JSON.parse(readFileSync(join(tempDir, "subagents", "environment", "managed-child-extensions.json"), "utf8"));
 		assert.ok(managedB.managedPaths.includes(webSearchPath), "the managed superset must keep the still-existing provider");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -1542,8 +1409,8 @@ test("a parent whose registry lacks the provider still does not evict it", async
 		const webSearchPath = join(tempDir, "web-search.ts");
 		writeFileSync(webSearchPath, "// web search", "utf8");
 		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
-		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+
+		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false } };
 
 		// Parent A：注册并启用了 web_search，于是它把 provider 写进共享 superset。
 		await reconcileChildEnvironments({
@@ -1577,7 +1444,7 @@ test("a parent whose registry lacks the provider still does not evict it", async
 			afterB.subagents.agentOverrides.researcher.subagentOnlyExtensions.includes(webSearchPath),
 			"a parent that cannot see the provider must not evict it from the shared superset",
 		);
-		const managedB = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		const managedB = JSON.parse(readFileSync(join(tempDir, "subagents", "environment", "managed-child-extensions.json"), "utf8"));
 		assert.ok(managedB.managedPaths.includes(webSearchPath), "managed superset keeps the still-existing provider file");
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
@@ -1593,11 +1460,11 @@ test("provider discoveries from parallel parents union instead of overwriting", 
 		writeFileSync(providerA, "// a", "utf8");
 		writeFileSync(providerB, "// b", "utf8");
 		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 		// researcher 声明了 web_search 与 webfetch
 		const toolsA = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "web_search", sourceInfo: { source: "file", path: providerA } }];
 		const toolsB = [{ name: "read", sourceInfo: { source: "builtin" } }, { name: "webfetch", sourceInfo: { source: "file", path: providerB } }];
-		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+		const base = { agentDir: tempDir, catalog, platform: "linux", shellPolicy: { bash: false, powershell: false } };
 
 		// A 写，然后 B 写
 		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
@@ -1609,14 +1476,14 @@ test("provider discoveries from parallel parents union instead of overwriting", 
 
 		// 反向：B 先写、A 后写（回到空目录）也一样得到并集
 		rmSync(join(tempDir, "settings.json"), { force: true });
-		rmSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), { force: true });
+		rmSync(join(tempDir, "subagents", "environment", "managed-child-extensions.json"), { force: true });
 		await reconcileChildEnvironments({ ...base, parentTools: toolsB, parentActiveTools: ["read", "webfetch"], shellPolicyOwnerKey: "session-b" });
 		await reconcileChildEnvironments({ ...base, parentTools: toolsA, parentActiveTools: ["read", "web_search"], shellPolicyOwnerKey: "session-a" });
 		settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf8"));
 		researcher = settings.subagents.agentOverrides.researcher.subagentOnlyExtensions;
 		assert.ok(researcher.includes(providerA));
 		assert.ok(researcher.includes(providerB));
-		const managed = JSON.parse(readFileSync(join(tempDir, "change-pi-prompt", "managed-child-extensions.json"), "utf8"));
+		const managed = JSON.parse(readFileSync(join(tempDir, "subagents", "environment", "managed-child-extensions.json"), "utf8"));
 		assert.ok(managed.managedPaths.includes(providerA));
 		assert.ok(managed.managedPaths.includes(providerB));
 	} finally {
@@ -1632,13 +1499,13 @@ test("a globally loaded provider does not become active in a session that did no
 		const webSearchPath = join(tempDir, "web-search.ts");
 		writeFileSync(webSearchPath, "// web search", "utf8");
 		const catalog = loadSubagentCatalog(FIXED_TOOL_SUBAGENTS);
-		const changePiPromptPath = join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts");
+
 		const parentTools = [
 			{ name: "read", sourceInfo: { source: "builtin" } },
 			{ name: "grep", sourceInfo: { source: "builtin" } },
 			{ name: "web_search", sourceInfo: { source: "file", path: webSearchPath } },
 		];
-		const base = { agentDir: tempDir, catalog, parentTools, platform: "linux", shellPolicy: { bash: false, powershell: false }, changePiPromptPath };
+		const base = { agentDir: tempDir, catalog, parentTools, platform: "linux", shellPolicy: { bash: false, powershell: false } };
 
 		// 共享 settings 已包含 provider（因为全局 superset 保留它）
 		await reconcileChildEnvironments({ ...base, parentActiveTools: ["read", "grep", "web_search"], shellPolicyOwnerKey: "session-a" });
@@ -1716,7 +1583,7 @@ test("stale managed provider paths are pruned only when the file is really gone"
 		const gonePath = join(tempDir, "gone-provider.ts");
 		writeFileSync(alivePath, "// alive", "utf8");
 		writeFileSync(gonePath, "// gone", "utf8");
-		const stateDir = join(tempDir, "change-pi-prompt");
+		const stateDir = join(tempDir, "subagents", "environment");
 		mkdirSync(stateDir, { recursive: true });
 		writeFileSync(
 			join(stateDir, "managed-child-extensions.json"),
@@ -1741,7 +1608,7 @@ test("stale managed provider paths are pruned only when the file is really gone"
 			platform: "linux",
 			shellPolicy: { bash: false, powershell: false },
 			shellPolicyOwnerKey: "session-a",
-			changePiPromptPath: join(process.cwd(), "resources/extensions/pideck-q-change-pi-prompt.ts"),
+
 		});
 
 		const managed = JSON.parse(readFileSync(join(stateDir, "managed-child-extensions.json"), "utf8"));
@@ -1785,7 +1652,7 @@ test("the reconciliation lock serializes shared writes and reclaims stale locks"
 		assert.equal(existsSync(lockPath), false, "the lock must be released after the callback");
 
 		// stale lock 可回收：createdAt 远早于阈值
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(lockPath, JSON.stringify({ pid: 999999, createdAt: Date.now() - 120_000 }), "utf8");
 		let reclaimed = false;
 		await withReconciliationLock(tempDir, () => { reclaimed = true; });
@@ -1847,7 +1714,7 @@ test("child before_agent_start applies the owner extension ceiling before render
 		writeFileSync(webSearchPath, "// web search", "utf8");
 		const owner = "session-b";
 		// Parent B 的 owner policy：允许 read/grep，不允许 web_search
-		mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+		mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 		writeFileSync(
 			shellPolicySnapshotPath(tempDir, owner),
 			JSON.stringify({ version: 2, platform: "linux", shell: { bash: false, powershell: false }, parentActiveTools: ["read", "grep"] }),
@@ -1866,7 +1733,7 @@ test("child before_agent_start applies the owner extension ceiling before render
 		const { mockPi, setTools, getHandler } = createMockPi();
 		setTools(registeredTools);
 		mockPi.setActiveTools(["read", "grep", "contact_supervisor", "web_search"]);
-		registerPromptExtension(mockPi, tempDir, {
+		registerSubagentEnvironment(mockPi, tempDir, {
 			probeHost: { platform: "linux", env: {}, exists: () => false },
 			isStandalone: () => true,
 		});
@@ -1910,7 +1777,7 @@ test("a tools:'parent' override keeps the copied shell for tools:parent agents a
 			const { mockPi, setTools, getHandler } = createMockPi();
 			setTools(registered);
 			mockPi.setActiveTools(["read", "write", "contact_supervisor", "powershell"]);
-			mkdirSync(join(tempDir, "change-pi-prompt"), { recursive: true });
+			mkdirSync(join(tempDir, "subagents", "environment"), { recursive: true });
 			writeFileSync(
 				shellPolicySnapshotPath(tempDir, "parent-tools-owner"),
 				JSON.stringify({
@@ -1921,7 +1788,7 @@ test("a tools:'parent' override keeps the copied shell for tools:parent agents a
 				}),
 				"utf8",
 			);
-			registerPromptExtension(mockPi, tempDir, {
+			registerSubagentEnvironment(mockPi, tempDir, {
 				probeHost: {
 					platform: "win32",
 					env: { Path: "" },

@@ -6,21 +6,12 @@ import { Key, matchesKey, truncateToWidth, type Component, type KeyId, type TUI 
 import { discoverAgentSnapshot, discoverAgents, findBlockingAgentDiagnostic, formatUnknownAgentError, resolveAgentName, unknownAgentDiagnosticContext, type AgentConfig, type AgentDiscoveryDiagnostic, type AgentScope, type UnknownAgentDiagnosticContext } from "../agents/agents.ts";
 import { listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-agent-registry.ts";
 import { resolveExistingReadPaths } from "../shared/settings.ts";
-import {
-	DEFAULT_PROVIDER_MODELS_MAX_AGE_DAYS,
-	applySubagentProfile,
-	checkSubagentProfile,
-	generateProfilesForProvider,
-	listSubagentProfiles,
-	readSubagentProfile,
-	refreshProviderModelCatalog,
-} from "../profiles/profiles.ts";
+import { DEFAULT_PROVIDER_MODELS_MAX_AGE_DAYS, applySubagentProfile, checkSubagentProfile, generateProfilesForProvider, listSubagentProfiles, readSubagentProfile, refreshProviderModelCatalog } from "../profiles/profiles.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { findModelInfo, toModelInfo } from "../shared/model-info.ts";
 import { formatTokens, shortenPath } from "../shared/formatters.ts";
 import { listAsyncRuns, formatAsyncRunProgressLabel, type AsyncRunSummary } from "../runs/background/async-status.ts";
 import { encodeInspectReply, handleInspectRpcArgs, INSPECT_WIDGET_KEY } from "../runs/background/inspect-rpc.ts";
-import { listScheduledRunSummaries } from "../runs/background/scheduled-runs.ts";
 import { resolveAsyncStatusChild } from "../runs/shared/child-identity.ts";
 import { readStatus } from "../shared/utils.ts";
 import { getArtifactPaths, getArtifactsDir } from "../shared/artifacts.ts";
@@ -31,28 +22,8 @@ import { registerPromptWorkflowCommands } from "./prompt-workflows.ts";
 import { openSubagentsAdmin } from "./subagents-admin.ts";
 import { SUBAGENT_GUIDE_TOPICS } from "../extension/subagent-guide.ts";
 import { openSubagentFleet } from "../tui/fleet.ts";
-import {
-	applySlashUpdate,
-	buildSlashInitialResult,
-	failSlashResult,
-	finalizeSlashResult,
-	resolveSlashMessageDetails,
-} from "./slash-live-state.ts";
-import {
-	SLASH_RESULT_TYPE,
-	SLASH_TEXT_RESULT_TYPE,
-	SLASH_SUBAGENT_CANCEL_EVENT,
-	SLASH_SUBAGENT_REQUEST_EVENT,
-	SLASH_SUBAGENT_RESPONSE_EVENT,
-	SLASH_SUBAGENT_STARTED_EVENT,
-	SLASH_SUBAGENT_UPDATE_EVENT,
-	DIRS,
-	type Details,
-	type FleetKeybindingsConfig,
-	type SingleResult,
-	type SubagentState,
-	type Usage,
-} from "../shared/types.ts";
+import { applySlashUpdate, buildSlashInitialResult, failSlashResult, finalizeSlashResult, resolveSlashMessageDetails } from "./slash-live-state.ts";
+import { SLASH_RESULT_TYPE, SLASH_TEXT_RESULT_TYPE, SLASH_SUBAGENT_CANCEL_EVENT, SLASH_SUBAGENT_REQUEST_EVENT, SLASH_SUBAGENT_RESPONSE_EVENT, SLASH_SUBAGENT_STARTED_EVENT, SLASH_SUBAGENT_UPDATE_EVENT, DIRS, type Details, type FleetKeybindingsConfig, type SingleResult, type SubagentState, type Usage } from "../shared/types.ts";
 
 interface InlineConfig {
 	output?: string | false;
@@ -169,7 +140,7 @@ async function withSlashStatus<T>(
 type Theme = ExtensionContext["ui"]["theme"];
 
 type StopSelectorTarget = {
-	kind: "async" | "scheduled";
+	kind: "async" | "foreground";
 	id: string;
 	label: string;
 	detail: string;
@@ -179,9 +150,7 @@ type StopSelectorTarget = {
 type StopSelectorResult = { confirmed: boolean; target?: StopSelectorTarget };
 
 function commandForTarget(target: StopSelectorTarget): string {
-	return target.kind === "scheduled"
-		? `subagent({ action: "schedule.pause", id: ${JSON.stringify(target.id)} })`
-		: `subagent({ action: "stop", id: ${JSON.stringify(target.id)} })`;
+	return `subagent({ action: "stop", id: ${JSON.stringify(target.id)} })`;
 }
 
 function formatAsyncStopTarget(run: AsyncRunSummary): StopSelectorTarget {
@@ -196,34 +165,22 @@ function formatAsyncStopTarget(run: AsyncRunSummary): StopSelectorTarget {
 	};
 }
 
-function scheduledStopTargets(ctx: ExtensionContext, _state: SubagentState): StopSelectorTarget[] {
-	try {
-		return listScheduledRunSummaries(ctx.cwd)
-			.filter((schedule) => !schedule.paused && !schedule.activeRunId && schedule.trigger.nextRunAt)
-			.sort((left, right) => left.trigger.nextRunAt!.localeCompare(right.trigger.nextRunAt!))
-			.map((schedule) => ({
-				kind: "scheduled" as const,
-				id: schedule.id,
-				label: `${schedule.id} · ${schedule.name}`,
-				detail: `scheduled · ${schedule.trigger.nextRunAt}`,
-				actionLabel: "pause schedule",
-			}));
-	} catch {
-		return [];
-	}
-}
-
 function discoverStopTargets(ctx: ExtensionContext, state: SubagentState): StopSelectorTarget[] {
 	const sessionId = state.currentSessionId ?? ctx.sessionManager.getSessionId() ?? undefined;
 	const asyncTargets = listAsyncRuns(DIRS.async, {
 		states: ["queued", "running"],
 		...(sessionId ? { sessionId } : {}),
 	}).map(formatAsyncStopTarget);
-	return [...asyncTargets, ...scheduledStopTargets(ctx, state)];
+	const foregroundTargets: StopSelectorTarget[] = [];
+	for (const [id, workflow] of state.foregroundWorkflows ?? []) {
+		if (workflow.sessionId !== sessionId || workflow.result) continue;
+		foregroundTargets.push({ kind: "foreground", id, label: id, detail: "Live foreground workflow", actionLabel: "stop workflow" });
+	}
+	return [...new Map([...foregroundTargets, ...asyncTargets].map((target) => [target.id, target])).values()];
 }
 
 function stopFallbackText(targets: StopSelectorTarget[]): string {
-	if (targets.length === 0) return "No active current-session async runs or scheduled subagent runs to stop.";
+	if (targets.length === 0) return "No active current-session subagent runs to stop.";
 	const lines = ["Subagent stop targets:", ""];
 	for (const target of targets) {
 		lines.push(`- ${target.label}`);
@@ -301,7 +258,7 @@ class SubagentsStopSelector implements Component {
 
 	render(width: number): string[] {
 		const contentWidth = Math.max(0, Math.min(this.width, Math.floor(width)));
-		const lines = [this.theme.bold("Stop subagent run"), this.theme.fg("dim", "Select a current-session async run to stop, or a scheduled run to cancel."), ""];
+		const lines = [this.theme.bold("Stop subagent run"), this.theme.fg("dim", "Select a current-session subagent run to stop."), ""];
 		const maxRows = 10;
 		const start = Math.max(0, Math.min(this.selected - maxRows + 1, Math.max(0, this.targets.length - maxRows)));
 		for (let index = start; index < Math.min(this.targets.length, start + maxRows); index++) {
@@ -309,7 +266,7 @@ class SubagentsStopSelector implements Component {
 			const selected = index === this.selected;
 			const marker = selected ? "›" : " ";
 				const actionLabel = target.actionLabel;
-			const action = target.kind === "scheduled" ? this.theme.fg("warning", actionLabel) : this.theme.fg("accent", actionLabel);
+			const action = this.theme.fg("accent", actionLabel);
 			const labelWidth = Math.max(0, contentWidth - marker.length - actionLabel.length - 2);
 			lines.push(`${marker} ${action} ${target.label.slice(0, labelWidth)}`);
 			if (selected) lines.push(this.theme.fg("dim", `  ${target.detail}`.slice(0, contentWidth)));
@@ -874,13 +831,14 @@ export function registerSlashCommands(
 	});
 
 	pi.registerCommand("run", {
-		description: "Run one subagent through workflowScript: /run agent[output=file] [task] [--bg] [--fork]",
+		description: "Run one subagent through workflowScript: /run agent[output=file] [task] [--fork]",
 		getArgumentCompletions: makeAgentCompletions(pi, state),
 		handler: async (args, ctx) => {
 			const { args: cleanedArgs, bg, fork } = extractExecutionFlags(args);
+			if (bg) { ctx.ui.notify("Background subagent launches have been removed. Use /run without --bg.", "error"); return; }
 			const input = cleanedArgs.trim();
 			const firstSpace = input.indexOf(" ");
-			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--bg] [--fork]", "error"); return; }
+			if (!input) { ctx.ui.notify("Usage: /run <agent> [task] [--fork]", "error"); return; }
 			const { name: agentName, config: inline } = parseAgentToken(firstSpace === -1 ? input : input.slice(0, firstSpace));
 			const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
 
@@ -907,7 +865,7 @@ export function registerSlashCommands(
 			if (inline.skill !== undefined) child.skill = inline.skill;
 			if (inline.model) child.model = inline.model;
 			if (fork) child.context = "fork";
-			launchCommand(ctx, { workflowScript: slashRunWorkflowScript("run", child), async: bg ? true : false });
+			launchCommand(ctx, { workflowScript: slashRunWorkflowScript("run", child), async: false });
 		},
 	});
 
@@ -1011,13 +969,13 @@ export function registerSlashCommands(
 
 	if (options.foregroundDetachShortcut) {
 		pi.registerShortcut(options.foregroundDetachShortcut as KeyId, {
-			description: "Detach the active foreground subagent and keep it running in the background",
+			description: "Release the current turn while preserving the active foreground child",
 			handler: async (ctx) => detachForegroundRun("", ctx),
 		});
 	}
 
 	pi.registerCommand("subagents-stop", {
-		description: "Stop a current-session async subagent run, or one child of it with /subagents-stop <run-id> <child-id>",
+		description: "Stop a retained current-session workflow, or one child of it with /subagents-stop <run-id> <child-id>",
 		handler: async (args, ctx) => {
 			const [id, childId, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 			if (extra.length > 0) {
@@ -1042,7 +1000,7 @@ export function registerSlashCommands(
 				return;
 			}
 			if (targets.length === 0) {
-				ctx.ui.notify("No active current-session async runs or scheduled subagent runs to stop.", "info");
+				ctx.ui.notify("No active current-session subagent runs to stop.", "info");
 				return;
 			}
 
@@ -1051,16 +1009,12 @@ export function registerSlashCommands(
 				{ overlay: true, overlayOptions: { anchor: "center", width: 88, maxHeight: "80%" } },
 			);
 			if (!result?.confirmed || !result.target) return;
-			if (result.target.kind === "scheduled") {
-				await runCommand(ctx, { action: "schedule.pause", id: result.target.id });
-				return;
-			}
 			await runCommand(ctx, { action: "stop", id: result.target.id });
 		},
 	});
 
 	pi.registerCommand("subagents-steer", {
-		description: "Steer a live async subagent run with a message, or one child of it with --child <child-id>",
+		description: "Steer a live subagent run with a message, or one child of it with --child <child-id>",
 		handler: async (args, ctx) => {
 			const tokens = args.trim().split(/\s+/).filter(Boolean);
 			const usage = "Usage: /subagents-steer <run-id> [--child <child-id>] <message>";

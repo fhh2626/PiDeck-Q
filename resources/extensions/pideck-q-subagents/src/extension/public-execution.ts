@@ -68,6 +68,9 @@ export function validateWorkflowCapacityOverrides(params: PublicSubagentExecutio
  * Internal runs.run children and structured owned delegation bypass this boundary.
  */
 export function normalizePublicSubagentExecution<T extends PublicSubagentExecutionParams>(params: T): PublicSubagentExecutionNormalization<T> {
+	if (params.async !== undefined && params.async !== false) {
+		return { ok: false, error: "PiDeck-Q runs subagents in the foreground. Independent background launches have been removed; omit async or use async:false.", mode: params.action === undefined ? "workflow" : "management" };
+	}
 	// Default before public validation, using the same rule as workflow admission and internal launch.
 	params = withDefaultAgent(params);
 	for (const field of ["resource", "resourceProvenance", "workflowResource", "workflowResourceProvenance", "workflowResourcePermit", "resourcePermit", "permit"] as const) {
@@ -135,8 +138,11 @@ export function normalizePublicSubagentExecution<T extends PublicSubagentExecuti
 		return { ok: false, error: "action must be a non-empty management/control action, or omit action and use workflowScript.", mode: "management" };
 	}
 	const normalizedAction = typeof action === "string" ? action.trim() : undefined;
-	if (params.baseRef !== undefined && normalizedAction !== undefined && normalizedAction !== "resume" && normalizedAction !== "schedule.create") {
-		return { ok: false, error: "baseRef is only supported for child execution, resume, and schedule.create.", mode: "management" };
+	if (normalizedAction?.startsWith("schedule.") || normalizedAction === "append-step") {
+		return { ok: false, error: "Independent background scheduling and chain append have been removed from PiDeck-Q.", mode: "management" };
+	}
+	if (params.baseRef !== undefined && normalizedAction !== undefined && normalizedAction !== "resume") {
+		return { ok: false, error: "baseRef is only supported for child execution and resume.", mode: "management" };
 	}
 	if (normalizedAction !== undefined && hasNamedWorkflow) {
 		return { ok: false, error: "Named workflow resource execution must omit action.", mode: "management" };
@@ -180,17 +186,8 @@ export function normalizePublicSubagentExecution<T extends PublicSubagentExecuti
 			}
 			return { ok: true, params: { ...params, action: normalizedAction } };
 		}
-		if (normalizedAction === "schedule.create") {
-			if (params.agent !== undefined || params.task !== undefined || params.step !== undefined) {
-				return { ok: false, error: "schedule.create requires workflowScript or workflowScriptPath and does not accept direct agent, task, or step execution fields.", mode: "management" };
-			}
-			if (!hasValidWorkflowInput) {
-				return { ok: false, error: "schedule.create requires a non-empty workflowScript or workflowScriptPath.", mode: "management" };
-			}
-			return { ok: true, params: { ...params, action: normalizedAction } };
-		}
 		if (hasWorkflowInput) {
-			return { ok: false, error: "Workflow execution must omit action; only validate and schedule.create accept action with workflowScript or workflowScriptPath.", mode: "management" };
+			return { ok: false, error: "Workflow execution must omit action; only validate accepts action with workflowScript or workflowScriptPath.", mode: "management" };
 		}
 		if (params.task !== undefined) {
 			return { ok: false, error: "Structured single-child task cannot be combined with a management/control action.", mode: "management" };

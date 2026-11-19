@@ -1,4 +1,4 @@
-/** Exercise both execution hosts without real tools, model requests, or wall-clock waits. */
+/** Exercise foreground execution without real tools, model requests, or wall-clock waits. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,8 +18,6 @@ after(() => {
 
 installSubagentGraphLoader();
 const { runSync } = await import("../resources/extensions/pideck-q-subagents/src/runs/foreground/execution.ts");
-const { runChildSession } = await import("../resources/extensions/pideck-q-subagents/src/runs/background/run-child-session.ts");
-const { buildInProcessChildLaunch } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-launch.ts");
 
 /** A controllable child leaves one read call pending until the test completes or cancels it. */
 function childFixture() {
@@ -62,7 +60,7 @@ function childFixture() {
 	};
 }
 
-/** Launch the production foreground or background execution host with the same child fixture. */
+/** Launch the production foreground execution host with the same child fixture. */
 function launch(t, host, fixture, toolTimeoutMs, creation, timeoutMs) {
 	const cwd = mkdtempSync(join(tmpdir(), "pideck-tool-timeout-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -74,7 +72,7 @@ function launch(t, host, fixture, toolTimeoutMs, creation, timeoutMs) {
 		},
 		async dispose() {},
 	};
-	if (host === "foreground") {
+	{
 		const owner = new AbortController();
 		const interrupt = new AbortController();
 		return {
@@ -94,25 +92,9 @@ function launch(t, host, fixture, toolTimeoutMs, creation, timeoutMs) {
 			}),
 		};
 	}
-	let stop;
-	let interrupt;
-	let timeout;
-	const result = runChildSession({
-		factory,
-		launch: buildInProcessChildLaunch({ cwd, host: "runner", childAgentName: "worker", childIndex: 0, sessionEnabled: false, inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, tools: ["read"], model: "test/model" }),
-		prompt: "Read input.txt.",
-		appendChildEvent() {},
-		writeOutputLine() {},
-		registerStop(callback) { stop = callback; },
-		registerInterrupt(callback) { interrupt = callback; },
-		registerTimeout(callback) { timeout = callback; },
-		runDeadlineAt: timeoutMs === undefined ? undefined : Date.now() + timeoutMs,
-		toolTimeoutMs,
-	});
-	return { result, stop: () => stop?.(), interrupt: () => interrupt?.(), timeout: () => timeout?.() };
 }
 
-for (const host of ["foreground", "background"]) {
+for (const host of ["foreground"]) {
 	test(`${host} tools remain live beyond five minutes by default`, async (t) => {
 		t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
 		const fixture = childFixture();
@@ -211,7 +193,7 @@ for (const host of ["foreground", "background"]) {
 		await creation.started.promise;
 		t.mock.timers.tick(1001);
 		// The background runner owns its run deadline and calls this registered boundary.
-		if (host === "background") run.timeout();
+
 		creation.pending.resolve();
 		const result = await run.result;
 		assert.equal(fixture.prompts, 0);
@@ -252,7 +234,7 @@ for (const host of ["foreground", "background"]) {
 		await new Promise((resolve) => setImmediate(resolve));
 		const promptsBeforeTimeoutCallback = fixture.prompts;
 		t.mock.timers.tick(0);
-		if (host === "background") run.timeout();
+
 		const result = await run.result;
 		assert.equal(promptsBeforeTimeoutCallback, 0, "an expired launch must not start fresh work while its timer callback is pending");
 		assert.equal(result.timedOut, true);

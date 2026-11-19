@@ -310,8 +310,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					try { evidence.start(); } catch (error) { return Promise.reject(error); }
 					return session.prompt(text).then(() => evidence?.settled(), (error) => { evidence?.invalidate(); throw error; });
 				},
-				steer: (text) => { evidence?.invalidate(); return session.steer(text); },
-				followUp: (text) => { evidence?.invalidate(); return session.followUp(text); },
+				steer: async (text) => { evidence?.invalidate(); await session.steer(text); },
+				followUp: async (text) => { evidence?.invalidate(); await session.followUp(text); },
 				abort: () => { evidence?.invalidate(); return session.abort(); },
 				dispose: () => {
 					if (!pending) {

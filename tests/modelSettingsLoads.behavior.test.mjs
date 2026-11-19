@@ -151,7 +151,7 @@ function saveButton(tree) {
 async function mountConfig(host, env, getSettings, options = {}) {
 	const stubs = {
 		...uiStubs("./components/ui-shadcn"),
-		"./desktopApi": { desktopApi: { config: { getSettings, getAuth: async () => ({ parsed: {}, raw: "{}" }), getModels: async () => ({ parsed: { providers: {} }, raw: "{}" }), ...options.config }, projects: options.projects } },
+		"./desktopApi": { desktopApi: { config: { getSettings, getModels: async () => ({ parsed: { providers: {} }, raw: "{}" }), ...options.config }, projects: { listModels: async () => [], ...options.projects } } },
 		"./atoms/model-atoms": env.atoms,
 		"./utils/notice": { showNotice() {} },
 		"./i18n": { t: (key) => key },
@@ -162,7 +162,7 @@ async function mountConfig(host, env, getSettings, options = {}) {
 		"./hooks/usePromptTemplateEditor": { usePromptTemplateEditor: () => ({}) },
 		"./composerBehavior": { translateBuiltinPromptDescription: (value) => value },
 	};
-	for (const name of ["AuthTab", "ModelsTab", "RawTab", "TrustTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) stubs[`./config/${name}`] = primitive(name);
+	for (const name of ["ModelsTab", "RawTab", "TrustTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) stubs[`./config/${name}`] = primitive(name);
 	const { ConfigModal } = host.load("src/renderer/src/ConfigModal.tsx", {
 		stubs,
 		globals: { localStorage: { getItem: () => options.initialTab ?? "config:settings", setItem() {} } },
@@ -171,6 +171,44 @@ async function mountConfig(host, env, getSettings, options = {}) {
 	const content = ConfigModal(props).props.children;
 	return host.mount(content.type, props, env.wrap);
 }
+
+test("Pi settings use runtime model metadata without exposing credential management", async () => {
+	await withHookHost(async (host) => {
+		const env = setup(host);
+		const mounted = await mountConfig(host, env, async () => ({ parsed: { defaultProvider: "external", defaultModel: "runtime-model" }, raw: "{}" }), {
+			projects: { listModels: async () => [{ provider: "external", id: "runtime-model", name: "Available model" }] },
+		});
+		const settings = nodes(mounted.result(), (node) => node.type === "SettingsTab")[0];
+		assert.deepEqual(copy(settings.props.discoveredModels), { external: [{ id: "runtime-model", name: "Available model" }] });
+		assert.equal(Object.hasOwn(settings.props, "authData"), false);
+		assert.equal(settings.props.data.defaultModel, "runtime-model");
+		assert.equal(nodes(mounted.result(), (node) => node.type === "TabsTrigger" && node.props.value === "config:auth").length, 0);
+	});
+});
+
+test("a saved authentication tab migrates to model settings", async () => {
+	await withHookHost(async (host) => {
+		const env = setup(host);
+		const mounted = await mountConfig(host, env, async () => ({ parsed: {}, raw: "{}" }), { initialTab: "config:auth" });
+		assert.equal(nodes(mounted.result(), (node) => node.type === "Tabs")[0].props.value, "config:models");
+		assert.equal(nodes(mounted.result(), (node) => node.type === "ModelsTab").length, 1);
+	});
+});
+
+test("Pi settings ignore runtime models from a previous configuration scope", async () => {
+	await withHookHost(async (host) => {
+		const env = setup(host);
+		const old = deferred();
+		let requests = 0;
+		const mounted = await mountConfig(host, env, async () => ({ parsed: {}, raw: "{}" }), {
+			projects: { listModels: () => ++requests === 1 ? old.promise : Promise.resolve([{ provider: "wsl", id: "current" }]) },
+		});
+		await host.act(async () => env.store.set(env.atoms.modelConfigurationEnvironmentAtom, "wsl"));
+		await host.act(async () => old.resolve([{ provider: "native", id: "stale" }]));
+		const settings = nodes(mounted.result(), (node) => node.type === "SettingsTab")[0];
+		assert.deepEqual(copy(settings.props.discoveredModels), { wsl: [{ id: "current" }] });
+	});
+});
 
 test("late pi settings loads cannot restore deleted defaults or mark untouched settings dirty", async () => {
 	await withHookHost(async (host) => {

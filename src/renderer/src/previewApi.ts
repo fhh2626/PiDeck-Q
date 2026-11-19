@@ -864,18 +864,16 @@ export function createPreviewApi(): PiDesktopApi {
 				raw: '{"providers":{}}',
 				parsed: { providers: {} },
 			}),
-			getAuth: async () => ({ raw: "{}", parsed: {} }),
 			getSettings: async () => ({ raw: "{}", parsed: {} }),
 			getTrust: async () => ({ raw: "{}", parsed: {} }),
 			saveModels: async () => ({ valid: true }),
-			saveAuth: async () => ({ valid: true }),
 			saveSettings: async () => ({ valid: true }),
 			saveRaw: async () => ({ valid: true }),
 			export: async () =>
 				JSON.stringify({
 					version: 1,
 					exportedAt: new Date().toISOString(),
-					files: { "models.json": {}, "auth.json": {}, "settings.json": {} },
+					files: { "models.json": {}, "settings.json": {} },
 				}),
 			import: async () => ({ valid: true }),
 			fetchModels: async () => ({

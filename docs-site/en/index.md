@@ -57,7 +57,7 @@ Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck]
 - **Multi-Tab File Editor** — File editing, diffs and Markdown preview.
 - **Floating Action Bar** — Access Terminal, Files, Git, Scratch Pad and External Editor.
 - **Built-in Terminal Dock** — Agent-scoped terminal tabs with PowerShell/cmd/sh fallback, multiple tabs, theme switching, height resizing, and right-click copy.
-- **Visual Config Management** — Graphical editors for Models, Auth, and Settings. Global and project-level Skills and Extension management.
+- **Visual Config Management** — Graphical editors for Models and Settings. Global and project-level Skills and Extension management.
 - **Context-Aware Input** — `@` file suggestions, `!` shell execution, `/` slash commands, and command history in a single composer.
 - **Web Access** — A separate LAN Web frontend can be enabled in settings; it is not an embedded browser panel.
 - **Downloads** — Check actual GitHub release files and instructions. No built-in application updater is provided.

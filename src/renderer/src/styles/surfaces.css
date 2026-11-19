@@ -1984,38 +1984,14 @@
 }
 
 
-.config-auth-card.editing {
-  /* 与 Models provider 展开态保持一致，Auth 不再像裸表单直接贴在列表中。 */
-  border-color: color-mix(
-    in srgb,
-    var(--color-accent) 32%,
-    var(--color-border-subtle)
-  );
-  box-shadow: var(--shadow-border);
-}
 
 
 
 
 
-/* Auth 使用指南 */
 
 /* Provider 配置指南 */
 
-/* Auth 供应商选择器 */
-/* 服务商选择器中来自 models.json 的分隔线 */
-.config-auth-selector-item.selected {
-  border-color: var(--color-accent);
-  background: color-mix(
-    in srgb,
-    var(--color-accent) 10%,
-    var(--color-bg-panel)
-  );
-  font-weight: 500;
-}
-.config-auth-selector-item.configured {
-  opacity: 0.6;
-}
 
 
 
@@ -2971,7 +2947,6 @@ div.fixed.inset-0.z-50 {
 :root[data-theme="dark"] .config-provider-card,
 :root[data-theme="dark"] .config-model-card,
 :root[data-theme="dark"] .config-model-item,
-:root[data-theme="dark"] .config-auth-card,
 :root[data-theme="dark"] .config-advanced-preserved,
 :root[data-theme="dark"] .config-model-advanced-note,
 :root[data-theme="dark"] .config-diagnostic-card,

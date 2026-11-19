@@ -63,7 +63,6 @@ Each agent gets its own terminal tab:
 Visual editors for all settings:
 
 - **Models** — Configure API endpoints, models, and parameters.
-- **Auth** — Manage API keys and authentication.
 - **Settings** — Global and project-level preferences.
 - **Skills** — Enable, disable, and configure agent Skills.
 - **Extensions** — Manage pi extensions visually.

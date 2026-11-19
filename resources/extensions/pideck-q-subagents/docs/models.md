@@ -89,7 +89,7 @@ For a persistent role override with a backup model for provider failures:
 
 Set `fast: true` on a run, in agent frontmatter, or in `subagents.agentOverrides.<name>.fast` to request the OpenAI priority service tier for supported native OpenAI-Codex children. This can use a higher quota tier or cost more. It is off by default.
 
-Fast mode fails before launch unless every resolved model candidate is on the allowlist. The current allowlist is `openai-codex/gpt-5.6-luna` and `openai-codex/gpt-5.6-sol`. External runners, Anthropic models, and other providers do not use fast mode.
+Fast mode fails before launch unless every resolved model candidate is on the allowlist. The current allowlist is `openai-codex/gpt-5.6-luna` and `openai-codex/gpt-5.6-sol`. Anthropic models and other providers do not use fast mode.
 
 ## Recommended model tiering (optional)
 
@@ -122,21 +122,19 @@ One interaction worth knowing for tier 4: forked context over an Anthropic paren
 
 ### Native read-only continuation after HTTP 429
 
-A native foreground or background child can continue once on an eligible later `fallbackModels` entry after completed read-only tool work and an observed HTTP 429. This is not general mid-run fallback and does not apply to external runners. Current coverage is Pi SDK **0.85.1**, the configured **`baseten` / `openai-completions`** provider and its observed request path, not arbitrary providers, APIs, provider extensions, or error text containing “429”.
+A native foreground child can continue once on an eligible later `fallbackModels` entry after completed read-only tool work and an observed HTTP 429. This is not general mid-run fallback. Current coverage is Pi SDK **0.85.1**, the configured **`baseten` / `openai-completions`** provider and its observed request path, not arbitrary providers, APIs, provider extensions, or error text containing “429”.
 
-Admission requires the default child factory's owned profile: an explicit allowlist containing only builtin `read` and/or `ls`, no ambient or custom extensions/tools or registered background-work providers, and verified idle settlement and shutdown. Wait, supervisor coordination, nested/fanout work, permissions/watchdogs, structured output, fast mode and configured tool budgets exclude this continuation on both hosts. A read-only role name or prompt alone is not enough; default coordinated profiles are excluded.
+Admission requires the default child factory's owned profile: an explicit allowlist containing only builtin `read` and/or `ls`, no ambient or custom extensions/tools or registered background-work providers, and verified idle settlement and shutdown. Wait, supervisor coordination, nested/fanout work, permissions/watchdogs, structured output, fast mode and configured tool budgets exclude this continuation. A read-only role name or prompt alone is not enough; default coordinated profiles are excluded.
 
 Usage-budget admission differs by host:
 
 - **Foreground:** any configured usage budget, including a workflow-owned budget, denies continuation because this host does not certify remaining allowance.
-- **Native background:** an unexhausted token-only budget can qualify only when the run owner's authoritative ledger has received the current attempt's events and has complete coverage, including concurrent work. Configured cost budgets, missing/unknown usage, or unsupported external/import/dynamic coverage deny continuation. This does not introduce new accounting or renew allowances.
 
 The child must have an **exact assigned session file**: either valid persisted history or an initially absent assigned file that the SDK initializes and persists during this attempt. In-memory or directory-only storage is insufficient. A missing or changed checkpoint at handoff fails closed; recovery never repairs it or promotes storage. Normal executor launches assign the child file and pass it to the native host; lower-level directory-only launches remain ineligible. No new storage option is needed.
 
 The next model must resolve through the same configured provider runtime, have the same provider/API and a different, untried model identity, and pass conservative retained-input compatibility checks. Cross-provider candidates are skipped without launch; unknown resolution or unsupported/unknown capacity denies continuation. Both hosts reject images and unknown content; these are conservative checks, not exact token estimates:
 
 - **Foreground:** accepts text and supported assistant tool-call/result history. Its UTF-8 byte ceiling includes retained history, actual system prompt and tool definitions, 4096 bytes of framing/continuation headroom, and the candidate's full output allowance. Equal-window models can qualify if this bound fits.
-- **Native background:** resolves exact registry identities and accepts retained text, thinking and tool-call blocks. It reserves the entire source context window plus retained-context UTF-8 bytes and fixed-prompt bytes, and requires the candidate's positive output allowance to be no larger than the source's. Equal/smaller context windows therefore deny continuation; choose a sufficiently larger same-provider sibling.
 
 The sibling reopens the **same session/file**, preserving the original task, completed tool results and terminal provider error. Its new prompt is a fixed instruction to continue from those results without restarting or repeating completed work; it does not resubmit the original task. One recovery allowance is shared with compaction-abort recovery and consumed before sibling creation. Any sibling outcome ends recovery, including startup failure, abort or another 429; it cannot cascade into startup fallback or change model exclusions. Cancellation, stop/detach and the original run deadline remain authoritative and are rechecked at handoff. Newly billed attempt usage is aggregated, not historical usage restored from the file.
 
@@ -164,14 +162,12 @@ inheritProjectContext: false
 inheritGlobalContext: false
 inheritSkills: false
 allowNestedSubagents: false
-async: false
 ---
 Read the assigned files and return your findings without editing.
 ```
 
-Launch with `subagent({ agent: "reader", task: "Read README.md and summarize it", async: false, context: "fresh", output: false })`. Keep `forceTopLevelAsync` disabled and omit tool/usage budgets and the excluded runtime features above. No new recovery flag is required: these settings make the profile eligible, but continuation still requires actual completed read-only work, observed 429 and all checkpoint/provider/lifecycle checks. This is a trusted-host compatibility boundary, not sandboxing or universal provider attestation.
+Launch with `subagent({ agent: "reader", task: "Read README.md and summarize it", async: false, context: "fresh", output: false })`. Omit tool/usage budgets and the excluded runtime features above. No new recovery flag is required: these settings make the profile eligible, but continuation still requires actual completed read-only work, observed 429 and all checkpoint/provider/lifecycle checks. This is a trusted-host compatibility boundary, not sandboxing or universal provider attestation.
 
-For native background execution, use the same call with `async: true`, which overrides the agent's foreground default. Keep the explicit empty `extensions:` field: omitting it allows ambient extensions in background children and does not certify this profile. Select a fallback model satisfying the stricter background capacity bound above; unconfigured budgets are simplest, while token-only budgets still require the authoritative allowance check. Do not disable needed coordination or ambient capabilities merely to obtain continuation.
 
 ## Delegation preference
 
@@ -215,7 +211,7 @@ Set `subagents.maxThinking` to enforce a hard maximum for every native Pi child.
 }
 ```
 
-Requests above the ceiling fail before child startup; the setting covers frontmatter, `agentOverrides`, per-run overrides, fallback models, parallel/chain children, nested launches, and resumed children. Project settings take precedence over user settings. External runners retain their existing behavior.
+Requests above the ceiling fail before child startup; the setting covers frontmatter, `agentOverrides`, per-run overrides, fallback models, parallel/chain children, nested launches, and resumed children. Project settings take precedence over user settings.
 
 ## Extension defaults
 

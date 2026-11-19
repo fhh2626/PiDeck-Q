@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createWindowsGitDiscoveryProvider } from '../windowsShellDiscovery.ts';
-import { probeShellDetails, toRetentionAvailability, toKnownHostShells } from '../shellProbe.ts';
+import { createWindowsGitDiscoveryProvider } from '../resources/extensions/pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts';
+import { probeShellDetails, toRetentionAvailability, toKnownHostShells } from '../resources/extensions/pideck-q-subagents/src/policy/environment/shellProbe.ts';
 
 test('non-Windows platforms do not execute helper process and return complete with empty roots', async () => {
 	let executed = false;

@@ -1390,7 +1390,7 @@ export interface AgentCapabilityRow {
 	executable: boolean;
 	restrictionSources?: string[];
 	aliases?: string[];
-	runner: { type: "pi" } | { type: "external-cli"; adapter?: string; command: string; available: boolean; unavailableReason?: string; capabilities: ExternalCliCapabilities } | { type: "external-job"; provider: string; available?: boolean; capabilities: ExternalJobRunnerStatus["capabilities"] };
+	runner: { type: "pi" };
 	tools: { ambient: boolean; names: string[]; excludeTools?: string[]; mcpDirectTools: string[]; mutationTools?: string[] };
 	model?: { value?: string; fallbackModels?: string[]; thinking?: string | false };
 	execution?: { defaultAsync?: boolean; timeoutMs?: number };
@@ -1698,23 +1698,9 @@ export interface AsyncStartedEvent {
 	workflowKey?: string;
 }
 
-export type AgentRunnerConfig =
-	| { type: "pi" }
-	| {
-		type: "external-cli";
-		command: string;
-		args?: string[];
-		promptDelivery?: "stdin";
-		capabilities?: ExternalCliCapabilityNarrowing;
-	}
-	| {
-		type: "external-job";
-		provider: string;
-		options?: Record<string, unknown>;
-	};
+export type AgentRunnerConfig = { type: "pi" };
 
-export type ExternalCliCapabilityNarrowing = Partial<Record<"steer" | "resume" | "structuredOutput" | "toolEvents" | "supervisor" | "forkContext" | "extensionBindings", false>>;
-
+// Legacy receipt types remain readable in historical runs; they are not launch configurations.
 export interface ExternalCliCapabilities {
 	stop: true;
 	steer: false;
@@ -2507,12 +2493,6 @@ export interface ProactiveSkillSubagentsConfig {
 export type ToolDescriptionMode = "full" | "compact" | "custom";
 export type InlineToolDisplay = "rich" | "summary";
 
-export interface ScheduledRunsConfig {
-	enabled?: boolean;
-	maxPending?: number;
-	/** Absolute or `~/` root for per-project durable schedules. */
-	storeRoot?: string;
-}
 
 export interface ModelExclusionsConfig {
 	/** Default duration in milliseconds. A lower configured value also shortens active cached exclusions. */
@@ -2656,7 +2636,6 @@ export interface ExtensionConfig {
 	 *  - \"off\": never log slow result-index scans. */
 	resultScanLogging?: "all" | "activity" | "off";
 	proactiveSkillSubagents?: ProactiveSkillSubagentsConfig | false;
-	scheduledRuns?: ScheduledRunsConfig;
 	/** Durable mission behavior. Missions are automatic by default; set enabled:false to disable auto-create. Explicit mission actions/fields still work. */
 	missions?: MissionStoreConfig;
 	/** Small fixed authority policy for the supported operational actions. */
@@ -2765,7 +2744,7 @@ export const POLL_INTERVAL_MS = 250;
 export const WIDGET_ANIMATION_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
-export const SUBAGENT_ACTIONS = ["list", "get", "models", "children.list", "guide", "validate", "create", "update", "delete", "eject", "disable", "enable", "reset", "mission.create", "mission.list", "mission.show", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "worktree.discard", "worktree.cleanup", "lane.status", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.show", "refine.rollback", "inspector.open", "inspector.status", "inspector.close", "project.open", "project.status", "project.close", "status", "debug.run", "grant-spawn-budget", "interrupt", "resume", "steer", "stop", "dismiss", "doctor", "watchdog.status", "watchdog.check", "watchdog.configure", "watchdog.recommend-model", "schedule.create", "schedule.list", "schedule.show", "schedule.history", "schedule.pause", "schedule.resume", "schedule.run", "schedule.run-due", "schedule.delete"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "models", "children.list", "guide", "validate", "create", "update", "delete", "eject", "disable", "enable", "reset", "mission.create", "mission.list", "mission.show", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "worktree.discard", "worktree.cleanup", "lane.status", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.show", "refine.rollback", "inspector.open", "inspector.status", "inspector.close", "project.open", "project.status", "project.close", "status", "debug.run", "grant-spawn-budget", "interrupt", "resume", "steer", "stop", "dismiss", "doctor", "watchdog.status", "watchdog.check", "watchdog.configure", "watchdog.recommend-model"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

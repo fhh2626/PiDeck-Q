@@ -8,7 +8,7 @@ Use the `subagent` tool. Keep the parent session as the loop controller and fina
 
 Default to a maximum of 3 review rounds unless I specify a different cap. Count a review round each time fresh-context reviewers inspect the current diff after a worker pass. Stop early when reviewers find no P0 findings, no P1 fixes worth doing now, and no approved P2 notes that should be handled in this loop.
 
-If the invocation includes an implementation request, first launch one async `writable` agent to implement the approved scope. If the current diff is already the target, start with review. The sequence can be launched up front with `workflowScript` when it is already clear, or continued as follow-up single-agent runs after each async completion. For an initial workflowScript, pass `async: true` so the main chat is unblocked; do not set `clarify: true` unless I explicitly want the foreground clarify UI. Use only one writer against the active worktree at a time unless I explicitly ask for isolated worktrees.
+If the invocation includes an implementation request, first launch one foreground `writable` agent to implement the approved scope. If the current diff is already the target, start with review. The sequence can be launched up front with `workflowScript` when it is already clear, or continued as follow-up single-agent runs after each completed result. Omit `async` or set it to `false`. If the workflow hands off a supervisor question, answer the pending request and retain the original workflow. Do not replay it or create a competing writer. Use `clarify: true` only when I explicitly want the clarify UI. Use only one writer against the active worktree at a time unless I explicitly ask for isolated worktrees.
 
 As a conservative orchestration policy, do not set a hard `toolBudget` or tight `usageBudget` on implementation or fix workers. A default tool budget blocks read/search tools rather than mutation tools, and reported usage has no reservation model, so count or usage limits still do not measure delivery safety. Give each writer a narrow delivery slice and an outer elapsed deadline with enough margin. Before that deadline, request a checkpoint after the current tool returns with changed files, build/test state, remaining work, and commit or PR state. An elapsed timeout is not a mutation-safe boundary and must not be the checkpoint trigger.
 
@@ -26,9 +26,9 @@ After reviewers return, synthesize their feedback into:
 
 Do not blindly apply every reviewer suggestion. If reviewers surface an unapproved product, scope, or architecture decision, pause and ask me before launching a fix worker.
 
-When an async implementation worker completes, treat its handoff as the transition into review, not as final completion, unless I explicitly asked for worker-only work, review-only output, or to stop after implementation.
+When an implementation worker completes, treat its handoff as the transition into review, not as final completion, unless I explicitly asked for worker-only work, review-only output, or to stop after implementation.
 
-When there are fixes worth doing now and the workflow is implementation-authorized, launch one async forked `writable` agent without hard tool-call caps to apply only those synthesized fixes. Ask it to preserve the approved scope, run focused validation, and report changed files, commands run with exit codes, validation evidence, surprises, and anything left undone.
+When there are fixes worth doing now and the workflow is implementation-authorized, launch one foreground forked `writable` agent without hard tool-call caps to apply only those synthesized fixes. Ask it to preserve the approved scope, run focused validation, and report changed files, commands run with exit codes, validation evidence, surprises, and anything left undone.
 
 After a fix worker returns, run another review round only when it made material changes or addressed non-trivial findings. Do not keep looping for optional polish, speculative improvements, or findings already deferred by the parent.
 

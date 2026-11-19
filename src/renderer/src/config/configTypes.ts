@@ -1,4 +1,4 @@
-export type ConfigTab = "models" | "auth" | "settings" | "trust" | "raw";
+export type ConfigTab = "models" | "settings" | "trust" | "raw";
 
 import type { ModelCostTier } from "./modelCostTiers";
 
@@ -48,8 +48,4 @@ export type ProviderConfig = {
 };
 
 export type ModelsFile = { providers: Record<string, ProviderConfig> };
-export type AuthFile = Record<
-	string,
-	{ type?: string; key?: string; [key: string]: unknown }
->;
 export type SettingsFile = Record<string, unknown>;

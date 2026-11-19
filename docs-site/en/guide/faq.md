@@ -54,7 +54,7 @@ Check GitHub Releases and follow the instructions for the actual artifact. There
 
 ### The agent is not responding
 
-1. Check that your API keys are configured correctly in Settings > Auth.
+1. Check authentication through your selected Pi runtime's login or provider setup.
 2. Verify network connectivity to your model provider.
 3. Try restarting the session.
 

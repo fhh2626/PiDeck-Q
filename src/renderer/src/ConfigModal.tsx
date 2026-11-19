@@ -28,7 +28,6 @@ import {
 	Cpu,
 	FileCode2,
 	FileText,
-	KeyRound,
 	Puzzle,
 	Settings2,
 	Shield,
@@ -44,7 +43,6 @@ import { useAtomValue, useStore } from "jotai";
 import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedModelReferencesAtom } from "./atoms/model-atoms";
 import { modelConfigurationScopeKey } from "./utils/modelConfigurationScope";
 import { clearPiModelDefaults, getModelRemovalsSince } from "./utils/modelSelection";
-import { AuthTab } from "./config/AuthTab";
 import { ModelsTab } from "./config/ModelsTab";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
 import { RawTab } from "./config/RawTab";
@@ -60,14 +58,13 @@ import { t } from "./i18n";
 import { CodeMirrorEditor } from "./components/app/CodeMirrorEditor";
 import { translateBuiltinPromptDescription } from "./composerBehavior";
 import type {
-	AuthFile,
 	ConfigTab,
 	ModelItem,
 	ModelsFile,
 	SettingsFile,
 } from "./config/configTypes";
 import type { ConfigFileDiagnostic, PiExtensionListResult, PiExtensionSummary, PiPromptTemplateListResult, PiPromptTemplateSummary, PiSkillListResult, PiSkillLocation, PiSkillSummary } from "../../shared/types";
-import { getProviderHeaders, KNOWN_PROVIDER_ENDPOINTS } from "./config/providerHeaders";
+import { getProviderHeaders } from "./config/providerHeaders";
 import { ALL_CONFIG_DIRTY_KEYS, dirtyKeysClearedByReload } from "./config/configDirtyMarks";
 
 // Native 在 React 挂载前异步完成 transport bootstrap；用 getter 避免模块加载时捕获 preview API。
@@ -102,7 +99,7 @@ const DEFAULT_MODEL_CONFIG: Pick<
 };
 
 // ── 配置弹窗左侧导航 = shadcn Vertical Tabs ──
-// config 组 5 个子页（模型/认证/设置/信任/原始文件）用 "config:<tab>" 复合值，
+// config 组 4 个子页（模型/设置/信任/原始文件）用 "config:<tab>" 复合值，
 // 其余组直接以 section 名作 value；Tabs 受控 value 由此编码，业务仍走 section/tab 双 state，
 // loadConfig 等既有依赖零改动。
 type ConfigSection =
@@ -124,7 +121,7 @@ const CONFIG_LAST_TAB_KEY = "pideck-config-last-tab";
 
 /** 全部合法 section / config 组子 tab，用于校验持久化值（避免版本更新后残留旧值导致无高亮）。 */
 const CONFIG_SECTIONS: readonly ConfigSection[] = ["config", "security", "skills", "prompts", "extensions"];
-const CONFIG_TABS: readonly ConfigTab[] = ["models", "auth", "settings", "trust", "raw"];
+const CONFIG_TABS: readonly ConfigTab[] = ["models", "settings", "trust", "raw"];
 
 /**
  * 读取上次打开的 tab；localStorage 不可用、无记录或值已失效时返回 null（由调用方回退默认值）。
@@ -299,7 +296,7 @@ class ConfigModalErrorBoundary extends Component<
 	}
 }
 
-/** 配置管理弹窗：支持 models/auth/settings 三个 tab 的可视化编辑和源文件编辑 */
+/** 配置管理弹窗：支持 models/settings/trust 三个 tab 的可视化编辑和源文件编辑 */
 export function ConfigModal(props: ConfigModalProps) {
 	return (
 		<ConfigModalErrorBoundary open={props.open} onClose={props.onClose}>
@@ -344,7 +341,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 
 	// 各 tab 的数据
 	const [modelsData, setModelsData] = useState<ModelsFile>({ providers: {} });
-	const [authData, setAuthData] = useState<AuthFile>({});
 	const [settingsData, setSettingsData] = useState<SettingsFile>({});
 	const store = useStore();
 	const modelScopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
@@ -354,7 +350,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 	useEffect(() => {
 		setSettingsData((current) => clearPiModelDefaults(current, removedModels));
 	}, [removedModels]);
-	/** 自动发现的模型：auth-only 供应商通过已知端点获取的模型列表 */
+	/** Pi 运行时发现的可用模型，包含通过外部配置完成认证的供应商 */
 	const [discoveredModels, setDiscoveredModels] = useState<
 		Record<string, Array<{ id: string; name?: string }>>
 	>({});
@@ -401,18 +397,14 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [rawContent, setRawContent] = useState("");
 	const [rawFileName, setRawFileName] = useState("models.json");
 
-	// 展开的 provider / auth 项
+	// 展开的 provider 项
 	const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
-	const [expandedAuth, setExpandedAuth] = useState<string | null>(null);
 	// 新增 provider
 	const [addingProvider, setAddingProvider] = useState(false);
 	const [newProviderName, setNewProviderName] = useState("");
 	// 重命名 provider
 	const [renamingProvider, setRenamingProvider] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState("");
-	// 新增 auth
-	const [addingAuth, setAddingAuth] = useState(false);
-	const [newAuthName, setNewAuthName] = useState("");
 	// 远程拉取模型列表
 	const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
 	const [fetchedModels, setFetchedModels] = useState<
@@ -465,7 +457,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 	>({});
 	// 删除确认对话框
 	const [deleteConfirm, setDeleteConfirm] = useState<{
-		type: "provider" | "model" | "auth" | "batch";
+		type: "provider" | "model" | "batch";
 		title: string;
 		message: string;
 		onConfirm: () => void;
@@ -490,18 +482,10 @@ function ConfigModalContent(props: ConfigModalProps) {
 					setRawContent(res.raw);
 					setRawFileName("models.json");
 					setConfigDiagnostic(res.diagnostic ?? null);
-				} else if (target === "auth") {
-					const res = await api.config.getAuth();
-					if (!isCurrent()) return;
-					setAuthData(res.parsed as AuthFile);
-					setRawContent(res.raw);
-					setRawFileName("auth.json");
-					setConfigDiagnostic(res.diagnostic ?? null);
 				} else if (target === "settings") {
-					// 同时加载 settings、auth 和 models 数据，确保 defaultProvider / defaultModel 下拉能聚合所有可用信息
-					const [settingsRes, authRes, modelsRes] = await Promise.all([
+					// 设置页只读取模型元数据，凭据由 Pi 自己加载。
+					const [settingsRes, modelsRes] = await Promise.all([
 						api.config.getSettings(),
-						api.config.getAuth(),
 						api.config.getModels(),
 					]);
 					if (!isCurrent()) return;
@@ -510,64 +494,26 @@ function ConfigModalContent(props: ConfigModalProps) {
 						...store.get(removedModelReferencesAtom),
 						...getModelRemovalsSince(removalVersions, store.get(modelRemovalVersionsByScopeAtom)[modelScopeKey] ?? {}),
 					]));
-					setAuthData(authRes.parsed as AuthFile);
 					setModelsData(normalizeModelsFile(modelsRes.parsed));
 					setRawContent(settingsRes.raw);
 					setRawFileName("settings.json");
 					setConfigDiagnostic(settingsRes.diagnostic ?? null);
 
-					// 对于 auth 中有但 models 中没有模型的供应商，自动尝试获取模型列表
-					const authProviders = authRes.parsed as AuthFile;
-					const modelsProviders = normalizeModelsFile(modelsRes.parsed).providers;
-					const discovered: Record<string, Array<{ id: string; name?: string }>> = {};
-					const fetchPromises: Array<Promise<void>> = [];
-
-					for (const [providerName, authEntry] of Object.entries(authProviders)) {
-						// 跳过已有模型的供应商
-						if (modelsProviders[providerName]?.models?.length) continue;
-						const apiKey =
-							typeof authEntry.key === "string" ? authEntry.key : "";
-						if (!apiKey) continue;
-
-						// 情况1：从 KNOWN_PROVIDER_ENDPOINTS 获知该供应商的 API 端点
-						const knownEndpoint = KNOWN_PROVIDER_ENDPOINTS[providerName];
-						// 情况2：从 models.json 中该供应商的配置获知 baseUrl
-						const modelsProvider = modelsProviders[providerName];
-						const modelsBaseUrl =
-							modelsProvider && typeof modelsProvider.baseUrl === "string"
-								? modelsProvider.baseUrl
-								: undefined;
-						const baseUrl = knownEndpoint?.baseUrl ?? modelsBaseUrl;
-						if (!baseUrl) continue;
-
-						const apiType =
-							knownEndpoint?.apiType ??
-							(typeof modelsProvider?.api === "string"
-								? modelsProvider.api
-								: undefined);
-
-						fetchPromises.push(
-							api.config
-								.fetchModels(baseUrl, apiKey, apiType)
-								.then((result) => {
-									if (result.success && result.models) {
-										discovered[providerName] = result.models;
-									}
-								})
-								.catch(() => {
-									// 静默失败，不阻塞 UI
-								}),
-						);
-					}
-
-					if (fetchPromises.length > 0) {
-						// 不 await，在后台获取后更新状态即可
-						void Promise.allSettled(fetchPromises).then(() => {
-							if (isCurrent() && Object.keys(discovered).length > 0) {
-								setDiscoveredModels(discovered);
-							}
-						});
-					}
+					// Model discovery can take time. Preserve settings editing while the runtime
+					// resolves its catalog, and discard late results after a tab or scope switch.
+					setDiscoveredModels({});
+					void api.projects.listModels().then((models) => {
+						if (!isCurrent()) return;
+						const grouped = new Map<string, Array<{ id: string; name?: string }>>();
+						for (const model of models) {
+							const providerModels = grouped.get(model.provider) ?? [];
+							providerModels.push({ id: model.id, name: model.name });
+							grouped.set(model.provider, providerModels);
+						}
+						setDiscoveredModels(Object.fromEntries(grouped));
+					}).catch(() => {
+						// Explicit model definitions and existing settings remain editable offline.
+					});
 				} else if (target === "trust") {
 					const res = await api.config.getTrust();
 					if (!isCurrent()) return;
@@ -580,25 +526,21 @@ function ConfigModalContent(props: ConfigModalProps) {
 					const fileName = sourceFileName ?? (
 						tab === "models"
 							? "models.json"
-							: tab === "auth"
-								? "auth.json"
-								: tab === "trust"
-									? "trust.json"
+							: tab === "trust"
+								? "trust.json"
 								: "settings.json");
 					setRawFileName(fileName);
 					const res =
 						fileName === "models.json"
 							? await api.config.getModels()
-							: fileName === "auth.json"
-								? await api.config.getAuth()
-								: fileName === "trust.json"
-									? await api.config.getTrust()
-									: await api.config.getSettings();
+							: fileName === "trust.json"
+								? await api.config.getTrust()
+								: await api.config.getSettings();
 					if (!isCurrent()) return;
 					setRawContent(res.raw);
 					setConfigDiagnostic(res.diagnostic ?? null);
 				}
-				// 加载完成后本地数据与磁盘一致，清除被本次加载覆盖的数据对应的脏标记（含 settings 聚合页顺带重载的 models/auth，以及所有分支都会重写的 rawContent）。
+				// 加载完成后本地数据与磁盘一致，清除被本次加载覆盖的数据对应的脏标记（含 settings 聚合页顺带重载的 models，以及所有分支都会重写的 rawContent）。
 				// 不清理会残留“假脏”标记：保存后黄点不消失、关闭时误弹未保存确认。
 				for (const key of dirtyKeysClearedByReload(target)) clearDirty(key);
 			} catch (e) {
@@ -1078,68 +1020,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 		return ok;
 	};
 
-	// ── Auth 操作 ────────────────────────────────────────
-
-	const handleUpdateAuth = (provider: string, field: string, value: string) => {
-		setAuthData({
-			...authData,
-			[provider]: { ...authData[provider], [field]: value },
-		});
-		markDirty("config:auth");
-	};
-
-	/**
-	 * 添加认证条目。
-	 * name 和 key 从 AuthTab 供应商选择弹窗直接传入，
-	 * 避免 React 闭包中状态尚未刷新的问题，且支持弹窗内直接填写 API Key。
-	 */
-	const handleAddAuth = (name?: string, key?: string) => {
-		const finalName = name ?? newAuthName.trim();
-		if (!finalName) return;
-		setAuthData({
-			...authData,
-			[finalName]: { type: "api_key", key: key ?? "" },
-		});
-		markDirty("config:auth");
-		setExpandedAuth(finalName);
-		setAddingAuth(false);
-		setNewAuthName("");
-	};
-
-	const handleDeleteAuth = (provider: string) => {
-		setDeleteConfirm({
-			type: "auth",
-			title: t("common.deleteConfirm"),
-			message: t("common.deleteConfirmMsg", { name: provider }),
-			onConfirm: () => {
-				const updated = { ...authData };
-				delete updated[provider];
-				setAuthData(updated);
-				markDirty("config:auth");
-				if (expandedAuth === provider) setExpandedAuth(null);
-				setDeleteConfirm(null);
-			},
-		});
-	};
-
-	const handleDuplicateAuth = (provider: string) => {
-		const sourceAuth = authData[provider];
-		if (!sourceAuth) return;
-		const duplicatedAuth = JSON.parse(JSON.stringify(sourceAuth));
-		let newName = `${provider} copy`;
-		let counter = 2;
-		while (authData[newName]) {
-			newName = `${provider} copy ${counter}`;
-			counter++;
-		}
-		setAuthData({
-			...authData,
-			[newName]: duplicatedAuth,
-		});
-		markDirty("config:auth");
-		setExpandedAuth(newName);
-	};
-
 	const handleDeleteProviders = (names: string[]) => {
 		setDeleteConfirm({
 			type: "batch",
@@ -1154,32 +1034,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 				setDeleteConfirm(null);
 			},
 		});
-	};
-
-	const handleDeleteAuths = (providers: string[]) => {
-		setDeleteConfirm({
-			type: "batch",
-			title: t("common.deleteConfirm"),
-			message: t("common.deleteBatchConfirm", { count: providers.length }),
-			onConfirm: () => {
-				const updated = { ...authData };
-				for (const provider of providers) delete updated[provider];
-				setAuthData(updated);
-				markDirty("config:auth");
-				if (providers.includes(expandedAuth ?? "")) setExpandedAuth(null);
-				setDeleteConfirm(null);
-			},
-		});
-	};
-
-	const handleSaveAuth = async (): Promise<boolean> => {
-		const ok = await saveAndReload(
-			() => api.config.saveAuth(authData),
-			undefined,
-			"config:auth",
-		);
-		if (ok) await loadConfig("auth");
-		return ok;
 	};
 
 	// ── Settings 操作 ────────────────────────────────────
@@ -1218,8 +1072,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		if (!ok) return false;
 		if (isModelsFile) {
 			await loadConfig("models");
-		} else if (rawFileName === "auth.json") await loadConfig("auth");
-		else if (rawFileName === "trust.json") await loadConfig("trust");
+		} else if (rawFileName === "trust.json") await loadConfig("trust");
 		else await loadConfig("settings");
 		return ok;
 	};
@@ -1232,7 +1085,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 
 	// ── 导出 / 导入 ─────────────────────────────────────
 
-	/** 将三个配置文件打包为 JSON 并触发浏览器下载。 */
+	/** 将模型和设置文件打包为 JSON 并触发浏览器下载。 */
 	const handleExport = async () => {
 		try {
 			const json = await api.config.export();
@@ -1532,8 +1385,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 		switch (tabKey) {
 			case "config:models":
 				return handleSaveModels();
-			case "config:auth":
-				return handleSaveAuth();
 			case "config:settings":
 				return handleSaveSettings();
 			case "config:trust":
@@ -1591,7 +1442,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 
 	const configNavItems: Array<{ id: ConfigTab; label: string; icon: ReactNode }> = [
 		{ id: "models", label: t("config.nav.models"), icon: <Cpu size={14} aria-hidden="true" /> },
-		{ id: "auth", label: t("config.nav.auth"), icon: <KeyRound size={14} aria-hidden="true" /> },
 		{ id: "settings", label: t("config.nav.settings"), icon: <Settings2 size={14} aria-hidden="true" /> },
 		{ id: "trust", label: t("config.nav.trust"), icon: <ShieldCheck size={14} aria-hidden="true" /> },
 		{ id: "raw", label: t("config.nav.raw"), icon: <FileCode2 size={14} aria-hidden="true" /> },
@@ -1606,7 +1456,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		</>
 	);
 
-	// 配置诊断卡：config 组 5 个子页顶部共用（任意子页打开时都显示）。
+	// 配置诊断卡：config 组 4 个子页顶部共用（任意子页打开时都显示）。
 	const configDiagnosticBlock = configDiagnostic ? (
 		<ConfigDiagnosticCard
 			diagnostic={configDiagnostic}
@@ -1779,38 +1629,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 						</div>
 					</TabsContent>
 
-					<TabsContent value="config:auth" className="config-main min-w-0">
-						<div className="config-content">
-					{statusBlock}
-					{configDiagnosticBlock}
-					{!loading && (
-						<AuthTab
-							data={authData}
-							expandedAuth={expandedAuth}
-							addingAuth={addingAuth}
-							newAuthName={newAuthName}
-							saving={saving}
-							modelsData={modelsData}
-							onToggleAuth={(name) =>
-								setExpandedAuth(expandedAuth === name ? null : name)
-							}
-							onStartAddAuth={() => {
-								setAddingAuth(true);
-								setNewAuthName("");
-							}}
-							onCancelAddAuth={() => setAddingAuth(false)}
-							onChangeNewAuthName={setNewAuthName}
-							onConfirmAddAuth={(name, key) => handleAddAuth(name, key)}
-							onDuplicateAuth={handleDuplicateAuth}
-						onDeleteAuths={handleDeleteAuths}
-						onDeleteAuth={handleDeleteAuth}
-							onUpdate={handleUpdateAuth}
-							onSave={handleSaveAuth}
-						/>
-					)}
-						</div>
-					</TabsContent>
-
 					<TabsContent value="config:settings" className="config-main min-w-0">
 						<div className="config-content">
 					{statusBlock}
@@ -1820,7 +1638,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 							data={settingsData}
 							saving={saving}
 							modelsData={modelsData}
-							authData={authData}
 							discoveredModels={discoveredModels}
 							onChange={(data) => {
 								setSettingsData(data);

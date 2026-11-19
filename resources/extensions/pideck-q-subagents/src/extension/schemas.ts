@@ -288,7 +288,6 @@ const SubagentParamProperties = {
 		description: "Optional management/control action. Use action='validate' with workflowScript or workflowScriptPath for offline checks. Omit this field for structured single-child or workflow execution; otherwise, use it only for management/control actions."
 	})),
 	capabilities: Type.Optional(Type.Boolean({ description: "For action='list', return compact capability rows and structured details without system prompts." })),
-	name: Type.Optional(Type.String({ description: "Human-readable name for action='schedule.create'." })),
 	id: Type.Optional(Type.String({
 		description: "Run id/prefix for status/debug.run, interrupt, steer, or mission.attach-run."
 	})),
@@ -308,7 +307,7 @@ const SubagentParamProperties = {
 	childId: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Stable child identity for child-scoped stop requests." })),
 	view: Type.Optional(Type.String({
 		enum: ["fleet", "transcript"],
-		description: "Optional status view. Use view='fleet' for a read-only active foreground/async fleet surface, or view='transcript' with id/dir (and optional index) to tail a run transcript.",
+		description: "Optional status view. Use view='fleet' for a read-only active foreground fleet surface, or view='transcript' with id/dir (and optional index) to tail a run transcript.",
 	})),
 	lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "Maximum transcript lines for action='status', view='transcript'. Defaults to 80." })),
 	topic: Type.Optional(Type.String()),
@@ -320,13 +319,6 @@ const SubagentParamProperties = {
 	target: Type.Optional(Type.String({ enum: ["main", "children", "child"], description: "Target for watchdog actions." })),
 	focus: Type.Optional(Type.Boolean({ description: "Focus the new Herdr pane for inspector.open or project.open." })),
 	thinking: Type.Optional(Type.Unsafe({ anyOf: [{ type: "string" }, { type: "boolean" }], description: "Thinking level for action='watchdog.configure' only (off/minimal/low/medium/high/xhigh/max, inherit, or false for off; true is invalid). Ignored on dispatch; set per-run child thinking with a suffix on the model string, e.g. model: 'provider/id:high'." })),
-	at: Type.Optional(Type.String({ description: "One-shot trigger for action='schedule.create': a relative delay such as '+10m' or an ISO timestamp with timezone." })),
-	every: Type.Optional(Type.String({ description: "Fixed recurring interval for action='schedule.create', such as '30m', '6h', '2d', or '2w'." })),
-	sessionOnly: Type.Optional(Type.Boolean()),
-	on: Type.Optional(Type.Unsafe({ anyOf: [{ type: "string" }, { type: "integer" }], description: "Calendar selector reserved for a later schedule slice." })),
-	timezone: Type.Optional(Type.String()),
-	overlap: Type.Optional(Type.String({ enum: ["skip"], description: "Overlap policy. This slice supports skip only." })),
-	catchUp: Type.Optional(Type.String({ enum: ["none", "latest"], description: "Missed occurrence policy for recurring schedules. Defaults to latest." })),
 	missionId: Type.Optional(Type.String({ description: "Mission id." })),
 	mission: Type.Optional(Type.Unsafe({ ...MissionLaunchOverride, description: "Mission object, or false for no mission; true is invalid. Set exactly one non-empty title or summary; objective and labels are optional. goal may only be true and then requires budget.tokens." })),
 	missionUpdate: Type.Optional(Type.Unsafe({ ...MissionUpdateOverride, description: "Mission update: objective, goal false or {paused:boolean}, budget, summary, labels, decisions, artifacts, or delivery receipts." })),
@@ -345,12 +337,12 @@ const SubagentParamProperties = {
 	})),
 	workflow: Type.Optional(Type.String({ minLength: 1, description: "Extension-owned workflow resource; resolves its script and authority internally." })),
 	args: Type.Optional(Type.Unsafe({ type: "object", maxProperties: 16, additionalProperties: true, description: "Bounded plain-JSON args for workflow; resource validation applies." })),
-	workflowScript: Type.Optional(Type.String({ minLength: 1, description: "Inline JavaScript statement body with unknown resource provenance. Workflows run in the foreground by default unless async:true is passed. Native Pi subagents must run foreground with async:false. Never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground; if background execution is unavailable in this standalone environment, treat that runner as unavailable. Use explicit return, top-level await, plain helper functions, or explicit Promise chains. Nested async function, arrow, and method helpers are rejected. Globals: runs, emit, console, and mission state when enabled. No filesystem, shell, Pi tools, or host globals except through runs.host." })),
+	workflowScript: Type.Optional(Type.String({ minLength: 1, description: "Inline JavaScript statement body with unknown resource provenance. All workflows and children run in the foreground. Omit async or use async:false. Independent background execution is unavailable. Use explicit return, top-level await, plain helper functions, or explicit Promise chains. Nested async function, arrow, and method helpers are rejected. Globals: runs, emit, console, and mission state when enabled. No filesystem, shell, Pi tools, or host globals except through runs.host." })),
 	workflowScriptPath: Type.Optional(Type.String({ minLength: 1, description: "Path to a JavaScript workflow file with unknown resource provenance. Mutually exclusive with workflowScript and workflow. Relative paths resolve against the request cwd. The host reads the file before the filesystem-free workflow sandbox starts." })),
 	globalConcurrencyLimit: Type.Optional(Type.Integer({ minimum: 1 })),
 	maxSubagentSpawnsPerRun: Type.Optional(Type.Integer({ minimum: 1 })),
 	preflight: Type.Optional(WorkflowPreflightOverride),
-	chatProgress: Type.Optional(Type.String({ enum: ["auto", "off", "live-card"], description: "WorkflowScript chat progress projection. auto shows a live in-chat card only for watched foreground workflows in the same Git repository; it is off otherwise. Explicit live-card requires same-repository async:false; async workflows should omit chatProgress or use auto/off." })),
+	chatProgress: Type.Optional(Type.String({ enum: ["auto", "off", "live-card"], description: "WorkflowScript chat progress projection. auto shows a live in-chat card only for watched foreground workflows in the same Git repository; it is off otherwise. Explicit live-card requires the same repository. Supervisor handoffs keep sidebar status live after the tool yields." })),
 	isolation: Type.Optional(Type.String({ enum: ["none", "worktree"], description: "Workflow child isolation. none runs in the shared cwd; worktree requires managed git worktree isolation." })),
 	worktree: Type.Optional(Type.Boolean({ description: "Managed child isolation. true gives each workflow child a separate git worktree; an individual runs.run/runs.all item can override a workflow default with worktree:false." })),
 	baseRef: Type.Optional(Type.String()),
@@ -359,7 +351,7 @@ const SubagentParamProperties = {
 		enum: ["fresh", "fork", "profile"],
 		description: "'fresh' or 'fork' to branch from parent session, or 'profile' to require the selected agent's declared defaultContext. Explicit fresh/fork overrides every child; profile ignores config defaultSubagentContext and fails when an agent has no defaultContext. If omitted, config defaultSubagentContext wins over each agent defaultContext; implicit fork needs a persisted parent session and leaf, else fresh. Config forkContext may prune resolved forks before spawn without adding another context value.",
 	})),
-	async: Type.Optional(Type.Boolean({ description: "Launch mode: omit or pass async:false to run in the foreground in this turn; pass async:true to detach as a background run. External CLI/job agents have no foreground capability and require explicit async:true. Native Pi subagents must run foreground with async:false. Never omit async for native Pi children. External CLI/job agents follow their runner contract and must not be converted to foreground; if background execution is unavailable in this standalone environment, treat that runner as unavailable." })),
+	async: Type.Optional(Type.Boolean({ description: "Compatibility field. Omit or use false. All children and workflows run in the foreground; true is rejected. Supervisor dialogue may yield control while the same child continues." })),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Optional hard run deadline in milliseconds. No implicit runtime limit. Explicit call values override agent and applicable config defaults. Alias maxRuntimeMs." })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Alias timeoutMs. No implicit runtime limit. Explicit run deadlines remain binding after a supervisor chooses CONTINUE." })),
 	toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647, description: "Optional hard per-tool-call timeout in milliseconds. No tool timeout is applied unless explicitly configured." })),
@@ -402,17 +394,17 @@ export function createSubagentParamsSchema(): typeof SubagentParams {
 
 const SubagentWaitParamsSchema = Type.Object({
 	id: Type.Optional(Type.String({
-		description: "Async run, remembered detached foreground run, or retained foreground workflow id/prefix to wait for one specific run. Ordinary async subagent runs already notify this session natively; use bg_wait for provider, detached, or other background work without native notification, or when same-turn blocking results are truly needed. Omit to track the active async runs, detached foreground runs, retained foreground workflows, and provider work in this session when a same-turn wait is truly needed.",
+		description: "Retained foreground run or workflow id/prefix to wait for its result. Completion normally notifies the originating session. Use bg_wait when this turn needs the result, or when registered provider work has no native notification. Omit id to track the currently active retained runs and provider work in this session.",
 	})),
 	nonBlocking: Type.Optional(Type.Boolean({
-		description: "When true, resolve id to one exact run, persist a wake subscription, and return immediately. Use this only for provider, detached, or other background work without a native completion notification; ordinary async subagent runs already notify this session natively and do not need a subscription. The originating session is woken on completion, failure, attention, reconciliation failure, or timeout. Requires id and cannot be combined with all.",
+		description: "When true, resolve id to one exact retained run, persist a wake subscription, and return immediately. Use for work without a native completion notification. The originating session is woken on completion, failure, attention, reconciliation failure, or timeout. Requires id and cannot be combined with all.",
 	})),
 	all: Type.Optional(Type.Boolean({
-		description: "Wait for ALL runs, retained workflows, and provider items active when this call begins to finish. Ordinary async subagent runs already notify this session natively; use all only when a same-turn result from tracked background work is truly needed. Default false: return when the first tracked run or provider item finishes or needs attention. Ignored when id targets a single run.",
+		description: "Wait for ALL retained runs, workflows, and provider items active when this call begins to finish. Use when this turn needs every result. Default false returns when the first tracked item finishes or needs attention. Supervisor requests always return control for a decision. Ignored when id targets a single run.",
 	})),
 	timeoutMs: Type.Optional(Type.Integer({
 		minimum: 1,
-		description: "Give up waiting after this many milliseconds (the runs keep going regardless). Ordinary async subagent runs already notify this session natively; use a wait timeout only when same-turn results are truly needed for provider, detached, or other background work without native notification. Defaults to config waitTool.defaultTimeoutMs, then 1800000 (30 minutes). Window expiry is a non-error active-work result.",
+		description: "Return after this many milliseconds while the retained runs keep going. Defaults to config waitTool.defaultTimeoutMs, then 1800000 (30 minutes). This only limits the wait window. Window expiry is a non-error active-work result.",
 	})),
 	stopOnAttention: Type.Optional(Type.Boolean({
 		description: "For a blocking wait that is truly needed, stop when a run needs attention by default. Set false to keep waiting through idle or long-thinking attention; supervisor/contact requests still stop the wait.",

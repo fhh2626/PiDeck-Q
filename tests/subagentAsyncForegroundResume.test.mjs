@@ -3,7 +3,7 @@
  *
  * Contract under test:
  *   - Interactive subagent tool calls run in the foreground when `async` is
- *     omitted or false; only explicit `async:true` launches background work.
+ *     omitted or false. Independent `async:true` launches are rejected.
  *   - action:'resume' continues the child in place (same session file, new run)
  *     through runSync and must forward the recovered agent config, budgets and
  *     the effective resume contract.
@@ -12,7 +12,7 @@
  *     onDetachedExit callback.
  *
  * All calls go through the real `createSubagentExecutor(...).executePublic(...)`.
- * Only the runSync / async-execution boundaries are test doubles; session lease,
+ * Only the runSync boundary is a test double; session lease,
  * foreground control, remembered runs, recovery descriptors and dispatch are
  * production code.
  */
@@ -20,21 +20,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import test from "node:test";
-import {
-	asyncStartedResult,
-	completedResult,
-	createFixture,
-	loadSubagentResumeGraph,
-	recoveryDescriptorFor,
-	resetDoubles,
-	runSyncCalls,
-	asyncCalls,
-	seedAsyncRun,
-	seedAwaitedAsyncRootResult,
-	seedCompletedForegroundRun,
-	setAsyncBehaviors,
-	setRunSyncBehavior,
-} from "./helpers/subagentResumeHarness.mjs";
+import { completedResult, createFixture, loadSubagentResumeGraph, recoveryDescriptorFor, resetDoubles, runSyncCalls, seedAsyncRun, seedCompletedForegroundRun, setRunSyncBehavior } from "./helpers/subagentResumeHarness.mjs";
 
 const graph = await loadSubagentResumeGraph();
 
@@ -56,22 +42,10 @@ function textOf(result) {
 	return (result.content ?? []).map((entry) => entry.text ?? "").join("\n");
 }
 
-test("resolveAsyncByDefault defaults to foreground and async:true stays the only background opt-in", () => {
+test("resolveAsyncByDefault remains foreground with legacy background settings", () => {
 	assert.equal(graph.resolveAsyncByDefault({}), false);
-	assert.equal(graph.resolveAsyncByDefault({ asyncByDefault: true }), true);
+	assert.equal(graph.resolveAsyncByDefault({ asyncByDefault: true }), false);
 	assert.equal(graph.resolveAsyncByDefault({ asyncByDefault: false }), false);
-});
-
-test("applyForceTopLevelAsyncOverride never flips an omitted or explicit async:false", () => {
-	const force = { clarify: true, async: true };
-	// Explicit async:true keeps running async but must not stay in clarify mode.
-	assert.deepEqual(graph.applyForceTopLevelAsyncOverride({ async: true, clarify: true }, 0, true), { async: true, clarify: false });
-	// Explicit false and omission are foreground decisions and are never overridden.
-	assert.deepEqual(graph.applyForceTopLevelAsyncOverride({ async: false, clarify: true }, 0, true), { async: false, clarify: true });
-	assert.deepEqual(graph.applyForceTopLevelAsyncOverride({ clarify: true }, 0, true), { clarify: true });
-	// Non-top-level or disabled force leaves params untouched.
-	assert.deepEqual(graph.applyForceTopLevelAsyncOverride(force, 1, true), force);
-	assert.deepEqual(graph.applyForceTopLevelAsyncOverride(force, 0, false), force);
 });
 
 test("action:'resume' with omitted or explicit async:false continues in the foreground via runSync", async () => {
@@ -84,7 +58,7 @@ test("action:'resume' with omitted or explicit async:false continues in the fore
 	const omitted = await executor.executePublic("call-1", { action: "resume", id: RUN_A, message: "continue" }, abortSignal(), undefined, fixture.ctx);
 	assert.notEqual(omitted.isError, true, `resume must succeed: ${textOf(omitted)}`);
 	assert.equal(runSyncCalls.length, 1, "omitted async must run in the foreground exactly once");
-	assert.equal(asyncCalls.length, 0, "omitted async must not launch background work");
+
 	assert.equal(runSyncCalls[0].options.sessionFile, fixture.childSessionFile, "foreground resume continues the stored child session in place");
 	assert.equal(omitted.details.results[0].exitCode, 0);
 
@@ -93,17 +67,15 @@ test("action:'resume' with omitted or explicit async:false continues in the fore
 	const explicitFalse = await executor.executePublic("call-2", { action: "resume", id: RUN_A, message: "continue", async: false }, abortSignal(), undefined, fixture.ctx);
 	assert.notEqual(explicitFalse.isError, true, `resume must succeed: ${textOf(explicitFalse)}`);
 	assert.equal(runSyncCalls.length, 1, "async:false must run in the foreground exactly once");
-	assert.equal(asyncCalls.length, 0, "async:false must not launch background work");
 
-	// Explicit async:true keeps the historical detached background flow.
+
 	resetDoubles();
-	setAsyncBehaviors({ single: (runId) => asyncStartedResult(runId) });
 	const explicitTrue = await executor.executePublic("call-3", { action: "resume", id: RUN_A, message: "continue", async: true }, abortSignal(), undefined, fixture.ctx);
-	assert.notEqual(explicitTrue.isError, true, `async:true resume must start: ${textOf(explicitTrue)}`);
-	assert.equal(runSyncCalls.length, 0, "async:true must not block on a foreground runSync");
-	assert.equal(asyncCalls.length, 1, "async:true must keep the background resume flow");
-	assert.equal(asyncCalls[0].kind, "single");
-	assert.equal(asyncCalls[0].params.sessionFile, fixture.childSessionFile, "background resume also continues the stored child session");
+	assert.equal(explicitTrue.isError, true);
+	assert.match(textOf(explicitTrue), /foreground/);
+	assert.equal(runSyncCalls.length, 0);
+
+
 });
 
 test("foreground resume forwards the recovered agent config to runSync instead of the rediscovered one", async () => {
@@ -383,41 +355,17 @@ test("prepareWorkflowLaunchParams strips workflow-level async default and preser
 	);
 });
 
-test("external-job follow-up requires explicit async:true and otherwise fails closed", async () => {
-	const unregister = graph.registerExternalJobProvider({
-		name: "fake-job",
-		start: () => ({ providerJobId: "job-0", state: "queued" }),
-		status: () => ({ providerJobId: "job-0", state: "completed" }),
-		result: () => ({ providerJobId: "job-0", state: "completed" }),
-		reattach: () => ({ providerJobId: "job-0", state: "completed" }),
-		followUp: () => ({ providerJobId: "job-2", state: "queued" }),
-	});
-	try {
-		const fixture = createFixture(graph, "external-job");
-		const runner = { type: "external-job", provider: "fake-job", options: { queue: "test" } };
-		const externalJob = { provider: "fake-job", options: { queue: "test" }, providerJobId: "job-1", state: "completed" };
-		seedAsyncRun(graph, fixture, { runId: RUN_H, runner, externalJob });
-		const executor = graph.createSubagentExecutor(fixture.deps);
-
+test("legacy external jobs cannot be resumed or redispatched", async () => {
+	for (const async of [undefined, false, true]) {
+		const fixture = createFixture(graph, "removed-external-job");
+		const runner = { type: "external-job", provider: "fake-job", options: {} };
+		seedAsyncRun(graph, fixture, { runId: RUN_H, runner, externalJob: { provider: "fake-job", options: {}, providerJobId: "old-job", state: "completed" } });
 		resetDoubles();
-		const omitted = await executor.executePublic("call-1", { action: "resume", id: RUN_H, message: "follow up" }, abortSignal(), undefined, fixture.ctx);
-		assert.equal(omitted.isError, true, "external-job follow-up without async must be rejected");
-		assert.match(textOf(omitted), /async:true/, "the rejection must state the explicit async:true requirement");
-		assert.equal(asyncCalls.length, 0, "a rejected external-job follow-up must not start a background run");
+		const result = await graph.createSubagentExecutor(fixture.deps).executePublic("resume", { action: "resume", id: RUN_H, message: "follow up", async }, abortSignal(), undefined, fixture.ctx);
+		assert.equal(result.isError, true, textOf(result));
+		assert.match(textOf(result), /removed|foreground/i);
 
-		const explicitFalse = await executor.executePublic("call-2", { action: "resume", id: RUN_H, message: "follow up", async: false }, abortSignal(), undefined, fixture.ctx);
-		assert.equal(explicitFalse.isError, true, "external-job follow-up with async:false must be rejected");
-		assert.equal(asyncCalls.length, 0, "async:false must not start an external-job background run");
-
-		resetDoubles();
-		setAsyncBehaviors({ single: (runId) => asyncStartedResult(runId) });
-		const started = await executor.executePublic("call-3", { action: "resume", id: RUN_H, message: "follow up", async: true }, abortSignal(), undefined, fixture.ctx);
-		assert.notEqual(started.isError, true, `external-job follow-up with async:true must start: ${textOf(started)}`);
-		assert.equal(asyncCalls.length, 1, "async:true keeps the external-job background follow-up flow");
-		assert.equal(asyncCalls[0].kind, "single");
-		assert.equal(started.details.asyncId, asyncCalls[0].runId);
-	} finally {
-		unregister();
+		assert.equal(runSyncCalls.length, 0);
 	}
 });
 
@@ -828,7 +776,7 @@ test("asyncByDefault:true still runs a plain new task in the foreground when asy
 	assert.notEqual(res.isError, true, textOf(res));
 	assert.match(textOf(res), /FOREGROUND UNDER ASYNC DEFAULT/, "an omitted async must follow asyncByDefault and run in the foreground");
 	assert.equal(runSyncCalls.length, 1, "asyncByDefault:true must not divert a plain launch to the async runner");
-	assert.equal(asyncCalls.length, 0, "no async execution must be started for a foreground launch");
+
 	assert.equal(graph.inspectSessionLease(fixture.childSessionFile).state, "free", "the foreground lease must be released after completion");
 });
 
@@ -868,7 +816,7 @@ test("mission workflow child with omitted or false async never writes ghost asyn
 
 	assert.notEqual(wfResult.isError, true, `workflow should succeed: ${textOf(wfResult)}`);
 	assert.equal(runSyncCalls.length, 1, "the workflow child must run in foreground via runSync");
-	assert.equal(asyncCalls.length, 0, "the workflow child must not launch an async run");
+
 
 	const createdGhostAsyncDirs = listGhostAsyncDirs(initialAsyncEntries);
 
@@ -895,7 +843,7 @@ test("mission workflow child with omitted or false async never writes ghost asyn
 	);
 	assert.notEqual(explicitFalseResult.isError, true, textOf(explicitFalseResult));
 	assert.equal(runSyncCalls.length, 1);
-	assert.equal(asyncCalls.length, 0);
+
 	const explicitFalseGhostDirs = listGhostAsyncDirs(beforeExplicitFalse);
 	assert.deepEqual(
 		explicitFalseGhostDirs,
@@ -903,96 +851,14 @@ test("mission workflow child with omitted or false async never writes ghost asyn
 		`explicit async:false child must not pre-write a ghost async mission directory: ${explicitFalseGhostDirs.join(", ")}`,
 	);
 
-	// Explicit async:true DOES attach workflowChildAsyncId and writes mission binding
+	const beforeRejectedChild = new Set(fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : []);
 	resetDoubles();
-	setAsyncBehaviors({
-		single: (runId) => asyncStartedResult(runId),
-	});
-	const explicitAsyncResult = await executor.executePublic(
-		"call-wf-mission-explicit-true",
-		{
-			workflowScript: `return runs.run("child-true", { agent: "worker", task: "explicit true", async: true });`,
-			async: false,
-			mission: { title: "Explicit True Mission" },
-		},
-		abortSignal(),
-		undefined,
-		fixture.ctx,
-	);
-	assert.notEqual(explicitAsyncResult.isError, true, textOf(explicitAsyncResult));
-	assert.equal(asyncCalls.length, 1, "explicit async:true child must trigger async single execution");
-	assert.ok(asyncCalls[0].runId, "explicit async:true child must have an async run id");
-	assert.ok(
-		fs.existsSync(path.join(graph.DIRS.async, asyncCalls[0].runId, "mission.json")),
-		"explicit async:true child must write mission.json in its async directory",
-	);
-});
+	const rejectedChild = await executor.executePublic("rejected-child", { mission: {title:"Rejected child"}, workflowScript: "return runs.run('rejected', {agent:'worker', task:'Read', async:true})" }, abortSignal(), undefined, fixture.ctx);
+	assert.equal(rejectedChild.isError, true, textOf(rejectedChild));
 
-test("async workflow resume keeps the preassigned mission binding directory aligned with the real async run", async () => {
-	const fixture = createFixture(graph, "mission-wf-async-resume");
-	seedCompletedForegroundRun(fixture, { runId: RUN_A });
-	const executor = graph.createSubagentExecutor(fixture.deps);
+	assert.equal(runSyncCalls.length, 0);
+	assert.deepEqual(listGhostAsyncDirs(beforeRejectedChild), []);
 
-	resetDoubles();
-	const beforeEntries = new Set(fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : []);
-	// The workflow rewrites the binding after the child returns (subagent-executor
-	// `writeMissionAsyncBinding(result.details.asyncDir, ...)`), so a post-return
-	// assertion alone cannot prove the prelaunch binding was visible to observers
-	// during the run. Capture what a completion-time observer sees at launch time.
-	let bindingAtLaunch;
-	setAsyncBehaviors({
-		single: (runId) => {
-			const realAsyncDir = path.join(graph.DIRS.async, runId);
-			bindingAtLaunch = graph.readMissionBinding(realAsyncDir);
-			seedAwaitedAsyncRootResult(realAsyncDir, "ASYNC ROOT COMPLETED");
-			return asyncStartedResult(runId, realAsyncDir);
-		},
-	});
-
-	const wfScript = `return runs.run("child-async-resume", { resume: "${RUN_A}", task: "continue asynchronously", async: true });`;
-	const wfResult = await executor.executePublic(
-		"call-wf-mission-async-resume",
-		{
-			workflowScript: wfScript,
-			async: false,
-			mission: { title: "Async Resume Mission" },
-		},
-		abortSignal(),
-		undefined,
-		fixture.ctx,
-	);
-
-	assert.notEqual(wfResult.isError, true, `workflow should succeed: ${textOf(wfResult)}`);
-	assert.equal(asyncCalls.length, 1, "explicit async:true resume must launch async execution");
-	const realRunId = asyncCalls[0].runId;
-	assert.ok(realRunId, "the async resume must have a real run id");
-
-	// The binding must already exist under the real async run id at launch time; a
-	// post-return check alone would also pass thanks to the workflow's later rewrite.
-	assert.equal(
-		bindingAtLaunch?.missionId !== undefined,
-		true,
-		`mission binding must be visible under the real async run directory '${realRunId}' during the run`,
-	);
-
-	// The mission binding written before launch must live in the same directory as the
-	// real async run, so completion-time observers can resolve the mission.
-	assert.ok(
-		fs.existsSync(path.join(graph.DIRS.async, realRunId, "mission.json")),
-		`mission.json must be written into the real async run directory '${realRunId}'`,
-	);
-
-	const ghostDirs = fs.existsSync(graph.DIRS.async)
-		? fs.readdirSync(graph.DIRS.async).filter((entry) => {
-			// DIRS.async is shared across the whole test file, so only inspect entries this
-			// case created; otherwise bindings from earlier cases look like leftovers.
-			if (beforeEntries.has(entry) || entry === realRunId) return false;
-			const entryPath = path.join(graph.DIRS.async, entry);
-			if (!fs.statSync(entryPath).isDirectory()) return false;
-			return fs.existsSync(path.join(entryPath, "mission.json"));
-		})
-		: [];
-	assert.deepEqual(ghostDirs, [], `no mission binding may be left in an unused async directory: ${ghostDirs.join(", ")}`);
 });
 
 test("detach reconciliation failure still settles the awaiting workflow and releases the lease", { timeout: 5000 }, async () => {
@@ -1069,10 +935,9 @@ test("foreground resume rejects a second simultaneous foreground call to a diffe
 		assert.equal(second.isError, true, "a distinct session must not bypass the single foreground-call guard");
 		assert.equal(runSyncCalls.length, 1, "the second foreground resume must not reach runSync");
 
-		setAsyncBehaviors({ single: (runId) => asyncStartedResult(runId) });
 		const background = await executor.executePublic("call-background", { action: "resume", id: RUN_J, message: "background", async: true }, abortSignal(), undefined, fixture.ctx);
-		assert.notEqual(background.isError, true, `explicit async:true resume must remain outside the foreground guard: ${textOf(background)}`);
-		assert.equal(asyncCalls.length, 1);
+		assert.equal(background.isError, true, "removed background resume must be rejected while foreground work is active");
+
 	} finally {
 		releaseFirst();
 		await first;
@@ -1129,52 +994,4 @@ test("foreground resume uses agent timeout before the global default but preserv
 	const conflicting = await executor.executePublic("call-timeout-conflict", { action: "resume", id: RUN_A, message: "continue", timeoutMs: 1000, maxRuntimeMs: 2000 }, abortSignal(), undefined, fixture.ctx);
 	assert.equal(conflicting.isError, true, "conflicting explicit aliases must still be rejected");
 	assert.equal(runSyncCalls.length, 2);
-});
-
-test("nested mission workflow async resume prewrites the binding in the actual nested run directory", async () => {
-	const fixture = createFixture(graph, "mission-wf-nested-async-resume");
-	seedCompletedForegroundRun(fixture, { runId: RUN_A });
-	const route = graph.createNestedRoute(RUN_I);
-	fixture.deps.childRuntime = { depth: 1, maxDepth: 4, nestedRoute: route };
-	const executor = graph.createSubagentExecutor(fixture.deps);
-	const priorTopLevelDirs = new Set(fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : []);
-	let bindingAtLaunch;
-	resetDoubles();
-	setAsyncBehaviors({ single: (runId) => {
-		const actualAsyncDir = path.join(graph.TEMP_ROOT_DIR, "nested-subagent-runs", route.rootRunId, runId);
-		bindingAtLaunch = graph.readMissionBinding(actualAsyncDir);
-		seedAwaitedAsyncRootResult(actualAsyncDir);
-		return asyncStartedResult(runId, actualAsyncDir);
-	} });
-	const result = await executor.executePublic(
-		"call-nested-mission-resume",
-		{ workflowScript: `return runs.run("child-nested", { resume: "${RUN_A}", task: "nested async", async: true });`, async: false, mission: { title: "Nested Async Mission" } },
-		abortSignal(), undefined, fixture.ctx,
-	);
-	assert.notEqual(result.isError, true, textOf(result));
-	assert.equal(asyncCalls.length, 1);
-	assert.ok(bindingAtLaunch?.missionId, "nested async binding must be readable before completion in the actual run directory");
-	assert.ok(graph.readMissionBinding(path.join(graph.TEMP_ROOT_DIR, "nested-subagent-runs", route.rootRunId, asyncCalls[0].runId)));
-	const newTopLevelBindingDirs = (fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : [])
-		.filter((entry) => !priorTopLevelDirs.has(entry) && fs.existsSync(path.join(graph.DIRS.async, entry, "mission.json")));
-	assert.deepEqual(newTopLevelBindingDirs, [], "nested async resume must not prewrite a ghost top-level mission binding");
-
-	resetDoubles();
-	let newTaskBindingAtLaunch;
-	setAsyncBehaviors({ single: (runId) => {
-		const actualAsyncDir = path.join(graph.TEMP_ROOT_DIR, "nested-subagent-runs", route.rootRunId, runId);
-		newTaskBindingAtLaunch = graph.readMissionBinding(actualAsyncDir);
-		return asyncStartedResult(runId, actualAsyncDir);
-	} });
-	const newTask = await executor.executePublic(
-		"call-nested-mission-new-task",
-		{ workflowScript: 'return runs.run("child-new", { agent: "worker", task: "new nested async task", async: true });', async: false, mission: { title: "Nested Async New Task" } },
-		abortSignal(), undefined, fixture.ctx,
-	);
-	assert.notEqual(newTask.isError, true, textOf(newTask));
-	assert.equal(asyncCalls.length, 1);
-	assert.ok(newTaskBindingAtLaunch?.missionId, "a new nested async task also needs its binding in the actual run directory at launch");
-	const newTopLevelAfterTask = (fs.existsSync(graph.DIRS.async) ? fs.readdirSync(graph.DIRS.async) : [])
-		.filter((entry) => !priorTopLevelDirs.has(entry) && fs.existsSync(path.join(graph.DIRS.async, entry, "mission.json")));
-	assert.deepEqual(newTopLevelAfterTask, [], "neither nested launch may leave a top-level mission binding");
 });

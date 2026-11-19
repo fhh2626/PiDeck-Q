@@ -39,6 +39,8 @@
   "include": [
     "resources/extensions/pideck-q-change-pi-prompt.ts",
     "resources/extensions/pideck-q-change-pi-prompt/**/*.ts",
+
+    "resources/extensions/pideck-q-subagents/src/policy/environment/**/*.ts",
     "resources/extensions/pi-deck-todo.ts",
     "resources/extensions/pi-deck-security-gate.ts",
     "resources/extensions/pi-deck-vision.ts"

@@ -133,19 +133,28 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 	}
 	for (const file of [
 		"pideck-q-change-pi-prompt.ts",
-		"pideck-q-change-pi-prompt/runtime.ts",
-		"pideck-q-change-pi-prompt/transform.ts",
-		"pideck-q-change-pi-prompt/config.ts",
-		"pideck-q-change-pi-prompt/defaults.ts",
-		"pideck-q-change-pi-prompt/layout.ts",
-		"pideck-q-change-pi-prompt/contributions.ts",
-		"pideck-q-change-pi-prompt/shellAvailability.ts",
-		"pideck-q-change-pi-prompt/shellProbe.ts",
-		"pideck-q-change-pi-prompt/windowsShellDiscovery.ts",
-		"pideck-q-change-pi-prompt/childShellPolicy.ts",
-		"pideck-q-change-pi-prompt/childReconciliation.ts",
-		"pideck-q-change-pi-prompt/subagentCatalog.ts",
-		"pideck-q-change-pi-prompt/workflowValidation.ts",
+	"pideck-q-change-pi-prompt/runtime.ts",
+	"pideck-q-change-pi-prompt/transform.ts",
+	"pideck-q-change-pi-prompt/config.ts",
+	"pideck-q-change-pi-prompt/defaults.ts",
+	"pideck-q-change-pi-prompt/layout.ts",
+	"pideck-q-change-pi-prompt/contributions.ts",
+	"pideck-q-change-pi-prompt/activeToolLines.ts",
+
+	"pideck-q-subagents/src/policy/environment/runtime.ts",
+	"pideck-q-subagents/src/policy/environment/hostEnvironment.ts",
+	"pideck-q-subagents/src/policy/environment/childRuntime.ts",
+	"pideck-q-subagents/src/policy/environment/childPrompt.ts",
+	"pideck-q-subagents/src/policy/environment/toolMetadata.ts",
+	"pideck-q-subagents/src/policy/environment/childReconciliation.ts",
+	"pideck-q-subagents/src/policy/environment/policySnapshot.ts",
+	"pideck-q-subagents/src/policy/environment/policyStorage.ts",
+	"pideck-q-subagents/src/policy/environment/childShellPolicy.ts",
+	"pideck-q-subagents/src/policy/environment/subagentCatalog.ts",
+	"pideck-q-subagents/src/policy/environment/shellAvailability.ts",
+	"pideck-q-subagents/src/policy/environment/shellProbe.ts",
+	"pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts",
+	"pideck-q-subagents/src/policy/environment/copy.ts",
 	]) {
 		await put(join(base, file), "// packaged");
 	}
@@ -171,24 +180,24 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
 		// Native backend, Qt dependency, renderer entries/assets and extension runtime files.
-		assert.equal(result.checked.length, 26, JSON.stringify(result.checked));
+		assert.equal(result.checked.length, 34, JSON.stringify(result.checked));
 	});
 });
 
-test("missing workflowValidation.ts or subagentCatalog.ts fails verification", async () => {
+test("missing subagent environment runtime dependencies fail verification", async () => {
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "workflowValidation.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "runtime.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.match(result.errors.join("\n"), /workflowValidation\.ts/);
+		assert.match(result.errors.join("\n"), /environment.*runtime\.ts/);
 	});
 
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "subagentCatalog.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "subagentCatalog.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /subagentCatalog\.ts/);
@@ -197,7 +206,7 @@ test("missing workflowValidation.ts or subagentCatalog.ts fails verification", a
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "shellProbe.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "shellProbe.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /shellProbe\.ts/);
@@ -206,7 +215,7 @@ test("missing workflowValidation.ts or subagentCatalog.ts fails verification", a
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "windowsShellDiscovery.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "windowsShellDiscovery.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /windowsShellDiscovery\.ts/);

@@ -238,11 +238,12 @@ test("a partially failed import still invalidates a model file that was written"
 	const { invoke, configDir } = await start(t);
 	const record = (await invoke("sessions:catalog-create-draft", [{ projectId: "project", model }])).payload.result;
 	assert.equal((await invoke("sessions:runtime-activate", [record.id])).payload.result.ok, true);
-	// Import writes models before auth. A directory at the second destination makes only that write fail.
-	mkdirSync(join(configDir, "auth.json"));
+	// Import writes models before settings. A directory at the second destination makes only that write fail.
+	rmSync(join(configDir, "settings.json"));
+	mkdirSync(join(configDir, "settings.json"));
 	const changed = structuredClone(config);
 	changed.providers.custom.baseUrl = "https://written-before-import-failure.invalid/v1";
-	const imported = (await invoke("config:import", [JSON.stringify({ files: { "models.json": changed, "auth.json": {} } })])).payload;
+	const imported = (await invoke("config:import", [JSON.stringify({ files: { "models.json": changed, "settings.json": {} } })])).payload;
 	assert.equal(imported.ok, true, JSON.stringify(imported));
 	assert.equal(imported.result.valid, false);
 	assert.equal(JSON.parse(readFileSync(join(configDir, "models.json"), "utf8")).providers.custom.baseUrl, changed.providers.custom.baseUrl);

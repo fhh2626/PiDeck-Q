@@ -537,6 +537,8 @@ const HIDDEN_DESKTOP_BUILTIN_COMMAND_NAMES = new Set([
 	"resume",
 	"fork",
 	"name",
+	"auth",
+	"login",
 	"logout",
 	"goal",
 	"tree",
@@ -566,8 +568,6 @@ function getBuiltinCommands(): PiCommand[] {
 		{ name: "settings", description: "", source: "builtin" },
 		{ name: "reload", description: "", source: "builtin" },
 		{ name: "hotkeys", description: "", source: "builtin" },
-		{ name: "login", description: "", source: "builtin" },
-		{ name: "logout", description: "", source: "builtin" },
 	];
 }
 

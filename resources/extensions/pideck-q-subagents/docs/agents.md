@@ -43,30 +43,11 @@ Builtins load at the lowest priority, so a user or project agent with the same n
 Both builtins use `tools: parent` (see below), inherit the parent model and thinking level, and default to `context: "fork"`, so they start with the parent conversation. Use `context: "fresh"` for independent review or verification, parallel research, or when the conversation is nearly full. `readonly` restricts file edits by removing `edit` and `write` and by prompt; the shell stays available for reading, so this is a strong guardrail rather than a sandbox. Parallel `writable` children must touch disjoint files or use `worktree: true`.
 
 An unknown agent name is an error that lists the available agents; only a missing `agent` falls back to `writable`.
-### Optional Surf integration
+### Native Pi profiles
 
-When `surf-cli` is installed and loaded, Surf can expose a `gpt-pro` package agent through the `surf-oracle` external-job provider. It starts through the same `subagent({ agent: "gpt-pro" })` mental model as any other agent, but Surf owns the package agent and provider. Surf maps `model: pro` to ChatGPT GPT-5.6 Sol Pro web mode. pi-subagents does not own that model mapping.
+Executable agent profiles use native Pi sessions. Omit `runner` for the default or set `runner.type: pi`. Unsupported runner types are rejected during discovery or management validation.
 
-If you disabled the old bundled `gpt-pro` workaround with `agentOverrides.gpt-pro.disabled`, remove that override before using Surf's package agent.
-
-The Pi async run remains the source of truth for status, artifacts, wake/wait, mission attachment, retention, and diagnostics.
-
-### Advisory runner data boundary
-
-External CLI agents use their own runner contract. They are deliberate execution modes, not implicit recovery paths for a failed native `subagent` workflow. For backlog lanes and other subagent-governed workflows, switching to an external, foreground, or CLI runner requires explicit owner approval after the exact failure/run/worktree state is recorded and the worktree is verified clean or its partial diff is captured. Do not pass native Pi child options such as model override, structured output, acceptance/agent contract, tool budgets, fast mode, fork context, skills, or native Pi tools unless the adapter explicitly implements them.
-
-Bundled Codex, Claude Code, and Cursor profiles (`codex-exec`, `codex-exec-writer`, `claude-code`, `claude-code-writer`, `cursor-agent`, and `cursor-agent-writer`) have been removed. A custom agent may still declare a generic `external-cli` command, but it cannot select those adapter ids.
-
-A native agent runs inside Pi and can use its inherited tools. An external-job agent sends the assembled prompt to its registered provider. Provider options and a prompt digest are persisted in Pi run state. The prompt text is delivered through the local host bridge to the provider and is not stored in the public result payload. Do not place secrets in advisory prompts unless the target provider is approved to receive them.
-
-### External-job state table
-
-| Durable file | Owner | States | Release predicate | Rollback predicate | Stale-head behavior | Fail-closed cases |
-|--------------|-------|--------|-------------------|--------------------|---------------------|-------------------|
-| `status.json` step `runner` and `externalJob` | pi-subagents async runner | `queued`, `running`, `completed`, `failed`, `stopped`, `blocked` | Provider `result` returns terminal data and the async result is written | Provider start/follow-up/status/result/reattach returns an error | If a status file already has a provider job id, recovery calls `reattach` and `result`; it refuses to start a new prompt when the provider, prompt digest, parent job id, request id, request digest, or options differ | Missing provider, unsupported follow-up provider, capacity conflict, malformed provider response, bridge timeout, prompt digest mismatch, parent conversation missing |
-| `result.json` or session result payload | pi-subagents async runner | `complete`, `failed`, `stopped` | All steps reach terminal state and result publication succeeds or is recoverably indexed | Result write fails and pending result repair records the terminal state | Stale status can repair from an existing result file | Unindexed sessionless stale failure |
-| `external-job-requests/` and `external-job-responses/` | Host-mediated provider bridge | pending request, terminal response | Host process writes a matching response and removes the request | Bridge timeout or malformed request response | Requests are operation-scoped. Recovery sends `reattach`/`result`, not `start` or `follow-up`, when job metadata exists. `start` and `follow-up` use durable dispatch claims | Provider not registered, host bridge not loaded, malformed request, provider exception, ambiguous dispatch without a provider job id |
-| Provider artifact path | External provider | provider-defined terminal artifact | Provider returns `artifactPath`, or Pi writes returned text to `external-job-<index>.result.md` | Provider reports failure or no result | Existing artifact path is retained in `status.json` | Missing artifact with no text output returns a terminal message instead of inventing content |
+Child environment compatibility, workflow admission, and tool gates belong to the subagents extension. The prompt optimizer can be enabled or disabled independently.
 
 ## Overriding builtins and custom agents
 
@@ -92,7 +73,7 @@ Supported override fields: `description`, `output`, `outputMode`, `defaultReads`
 
 - `description` replaces the discovered description for builtin and custom agents, which lets list output show deployment-specific routing or model metadata.
 - Use `output: false`, `defaultReads: false`, `defaultContext: false`, or `acceptanceRole: false` to clear an inherited value.
-- Use `tools: "inherit"` when that one role should omit its bundled or frontmatter tool allowlist and receive Pi's normal builtins (plus ambient extensions when it runs as a background child).
+- Use `tools: "inherit"` when that one role should omit its bundled or frontmatter tool allowlist and receive Pi's normal builtins.
 - Use `tools: "parent"` (also valid as the frontmatter value `tools: parent`, which is how the builtin agents are defined) when that one role should mirror the tools the launching session has active right now. The active tool names become the child's strict allowlist, and each extension tool's provider extension is loaded into the child (merged into `subagentOnlyExtensions`), so it works for foreground children too. `excludeTools` is the blacklist: listed names (exact, including `contact_supervisor`) are removed from the copy, and a provider extension is loaded only while at least one non-excluded tool still needs it. Never copied: `subagent` (nested fan-out stays governed by `allowNestedSubagents` and depth ceilings), tools provided by this package, and the pi-mcp-adapter proxy tool; tools with no loadable provider file are skipped. The parent's direct MCP tools are converted to `mcp:<server>` selectors (resolved against the adapter config and metadata cache, so servers that are only configured at runtime cannot be passed on). `contact_supervisor` is always included. If the launching session's tools cannot be read, the child gets no tools rather than the default set. Examples: `{ "subagents": { "agentOverrides": { "security-reviewer": { "tools": "parent" } } } }` copies everything; `{ "tools": "parent", "excludeTools": ["bash", "edit", "write"] }` copies everything except those tools.
 - Project overrides beat user overrides.
 - Matching package, user, and project agents also receive override fields, which replace the same fields declared in their frontmatter. This lets a shared agent keep its persona while local settings choose the effective model, context, tools, or other supported options.
@@ -111,7 +92,7 @@ Disable and restore:
 
 Set `advertise: true` in a specialist's agent file frontmatter for parent-prompt discovery. When the `subagent` tool is active, pi-subagents adds an agent-owned catalog of names and descriptions to the parent system prompt. Disabled agents and agents excluded by the current capability ceiling are omitted. Advertisement is not supported through settings overrides or runtime registration.
 
-Advertisement is opt-in discovery, not automatic routing. The catalog is sorted by name and limited to 16 agents and 12,288 total rendered UTF-8 bytes, including XML escaping, instructions, and omission counts. Descriptions are capped at 512 UTF-8 bytes before escaping. Entries that cannot fit are omitted; canonical agent names are never truncated. The parent still calls `subagent({ action: "list", capabilities: true })` before execution to confirm that the selected agent is executable (including `runner.available === true` for external CLI agents).
+Advertisement is opt-in discovery, not automatic routing. The catalog is sorted by name and limited to 16 agents and 12,288 total rendered UTF-8 bytes, including XML escaping, instructions, and omission counts. Descriptions are capped at 512 UTF-8 bytes before escaping. Entries that cannot fit are omitted; canonical agent names are never truncated. The parent still calls `subagent({ action: "list", capabilities: true })` before execution to confirm that the selected agent is executable.
 
 The file catalog snapshot refreshes at session start/reload and after extension-owned agent-management mutations. External file or settings edits require `/reload`; ordinary turns do not poll the filesystem. Tool availability and capability-ceiling filtering are checked in memory on every prompt. A failed management-triggered refresh withdraws the catalog until a successful refresh, without changing the persisted mutation's result.
 
@@ -159,7 +140,6 @@ skillPath: ./skills, ../shared-skills
 output: context.md
 defaultReads: context.md
 defaultProgress: true
-async: true
 timeoutMs: 900000
 toolTimeoutMs: 600000
 acceptance: {"level":"none","reason":"lightweight lookup"}
@@ -194,10 +174,10 @@ Field notes:
 | `tools` | Strict child tool allowlist. Named extension tools must also have their provider loaded. `mcp:` entries select direct MCP tools when `pi-mcp-adapter` is installed. |
 | `excludeTools` | Optional child tool deny-list applied after normal tool resolution. With an explicit `tools` allowlist, matching names are removed; when `tools` is omitted, the names are excluded from the child session's default tool set. Unknown names are ignored by Pi without making the agent definition invalid. |
 | `allowNestedSubagents` | Set `true` to authorize the child-safe nested `subagent` runtime without making omitted `tools` an allowlist. Inherited depth and capability ceilings remain authoritative. |
-| `extensions` | Omitted means a background child loads the parent's ambient extensions; empty means no ambient extensions; list values load exactly those extensions. Foreground children never load ambient extensions, so for them only listed values apply. |
+| `extensions` | Omitted or empty means no ambient extensions. A list loads exactly those extensions into the foreground child. |
 | `subagentOnlyExtensions` | Extension paths loaded only in this agent's child sessions. Tools registered there are unavailable to the main agent unless also installed through normal Pi extension configuration. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
-| `fallbackModels` | Ordered backup models for retryable provider/model failures before any tool activity. After tool work, only an eligible native foreground or background read-only HTTP 429 can continue once on a compatible same-configured-provider model, reopening the exact retained file with a fixed continuation prompt rather than replaying the task. This shares one recovery allowance with compaction-abort recovery and preserves the original deadline/cancellation. Ordinary task/deadline failures and external runners do not gain this exception. Requires the owned builtin `read`/`ls` profile without wait, coordination, custom tools or configured tool budgets. Foreground denies any configured usage budget; background permits only an authoritative remaining token allowance, not cost or unknown coverage. Retained history alone is insufficient. See [supported configuration and compatibility limits](models.md#native-read-only-continuation-after-http-429). |
+| `fallbackModels` | Ordered backup models for retryable provider/model failures before tool activity. An eligible native read-only HTTP 429 may use one compatible same-provider continuation under the documented lifecycle and budget checks. Explicit deadlines and cancellation remain binding. See [compatibility limits](models.md#native-read-only-continuation-after-http-429). |
 | `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi's base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited repository instruction blocks. |
@@ -209,7 +189,6 @@ Field notes:
 | `output` | Default single-agent output file. |
 | `defaultReads` | Files to read before running the agent. |
 | `defaultProgress` | Maintain `progress.md`. |
-| `async` | Default a single-agent launch to background (`true`) or foreground (`false`) when the call omits `async`. Explicit call values and `forceTopLevelAsync` win. |
 | `timeoutMs` | Optional positive integer runtime deadline in milliseconds, up to `2147483647`. Explicit call-level `timeoutMs` or `maxRuntimeMs` wins, followed by this agent setting and the applicable global setting. There is no implicit 30-minute deadline. A supervisor's `CONTINUE` decision preserves explicit deadlines. |
 | `toolTimeoutMs` | Optional positive integer hard per-tool-call deadline in milliseconds. An explicit call value wins, then this agent default, global `toolTimeoutMs`, and `PI_SUBAGENT_TOOL_TIMEOUT_MS`. When all four settings are omitted, tools have no automatic deadline. It does not extend the run-level deadline. `contact_supervisor`, `intercom`, and `bg_wait` are exempt. |
 | `acceptance` | Acceptance default for single-agent launches. Use a scalar level such as `checked` or an inline/block YAML map such as `{ level: "none", reason: "lightweight lookup" }`. Explicit call values win; chain and parallel acceptance remains task/step configuration. |
@@ -220,7 +199,7 @@ Field notes:
 | `maxSubagentDepth` | Tightens nested delegation for this agent's children. |
 | `memory` | Opt-in role-specific persistent memory. See below. |
 
-When the completion guard would flag missing edits, a model intent arbiter can rescue only a confident read-only task. Foreground uses the parent model; native background uses the child attempt's existing model services after child shutdown. Ordinary completions do not invoke classification or resolve arbiter auth. Disabled arbitration (`PI_SUBAGENTS_LLM_INTENT_ARBITER=0`), unavailable model/auth, errors, ambiguous intent, and tasks over 8,000 characters keep the guard result. The classification prompt has a 10-second timeout; preceding auth and module loading are outside that bound. This does not change capability limits or the v1 contract's default-off guard and explicit missing-effect semantics.
+When the completion guard would flag missing edits, a model intent arbiter can rescue only a confident read-only task. Foreground classification uses the parent model. Ordinary completions do not invoke classification or resolve arbiter auth. Disabled arbitration (`PI_SUBAGENTS_LLM_INTENT_ARBITER=0`), unavailable model/auth, errors, ambiguous intent, and tasks over 8,000 characters keep the guard result. The classification prompt has a 10-second timeout; preceding auth and module loading are outside that bound. This does not change capability limits or the v1 contract's default-off guard and explicit missing-effect semantics.
 
 ## Per-agent persistent memory
 
@@ -281,9 +260,9 @@ How `tools` behaves:
 
 `excludeTools` is applied after this resolution. It can narrow an explicit `tools` allowlist or, when `tools` is omitted, remove names from Pi's default builtin tool set. Runtime-injected tools are excluded only when their exact names are listed. An empty `excludeTools` list has no effect.
 
-An allowlisted name does not load the extension that registers it. Load that provider through `extensions`, `subagentOnlyExtensions`, a path-like `tools` entry, or (background children only) normal Pi extension discovery.
+An allowlisted name does not load the extension that registers it. Load that provider through `extensions`, `subagentOnlyExtensions`, or a path-like `tools` entry.
 
-Ambient extensions depend on where the child runs. Foreground children are sessions inside the parent Pi process and never load the parent's ambient extensions; otherwise the parent would start a second copy of each ambient extension, including this one. Background children are sessions inside the detached runner process and load the ambient extensions unless the agent sets `extensions` or the capability ceiling denies extensions. Foreground direct MCP tools use the SDK's session-local MCP provider with only the resolved server/tool selections; they do not require ambient extension loading or process-global MCP environment variables. For models or other tools from provider extensions, load those providers explicitly through the agent's extension settings.
+Foreground children are sessions inside the parent Pi process. Explicit extension settings control which providers they load, preventing duplicate ambient extension instances. Foreground direct MCP tools use the SDK's session-local MCP provider with only the resolved server/tool selections; they do not require ambient extension loading or process-global MCP environment variables. For models or other tools from provider extensions, load those providers explicitly through the agent's extension settings.
 
 More rules:
 
@@ -295,14 +274,14 @@ More rules:
 
 Examples:
 
-- `tools` omitted and `extensions` omitted: normal builtins; a background child also loads the ambient extensions.
+- `tools` omitted and `extensions` omitted: normal builtins with no ambient extension loading.
 - `tools: mcp:chrome-devtools`: only the resolved direct Chrome DevTools MCP tools.
 - `tools: read, bash, mcp:chrome-devtools`: only `read` and `bash` as builtins, plus direct Chrome DevTools MCP tools.
 - `tools: subagent, read`: a child-safe `subagent` tool is available inside that child so it can run explicitly assigned nested fanout.
-- `allowNestedSubagents: true` with `tools` omitted: normal builtin tools (and, for background children, ambient extensions) remain inherited, and the child-safe nested `subagent` runtime is added.
+- `allowNestedSubagents: true` with `tools` omitted: normal builtin tools remain inherited, and the child-safe nested `subagent` runtime is added.
 - `tools: read, fixture_search` plus `subagentOnlyExtensions: ./tools/fixture-search.ts`: the provider loads only in this agent's child sessions, and the registered `fixture_search` name survives the strict allowlist.
 
-Direct MCP selection uses [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) configuration and cached metadata. Foreground children connect through the SDK MCP factory with a per-child configuration snapshot; ordinary stdio and streamable HTTP servers are supported. Adapter-only settings such as sockets, request-header commands, custom protocol versions, and literal-environment policies fail explicitly instead of being silently dropped or downgraded. Required selected tools still fail startup if the server does not register them. Subagents only receive direct MCP tools when `mcp:` entries are declared (including those resolved by `tools: parent`); global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot (registered at runtime, not persisted) cannot be provided to a child: children are pi sessions inside the parent or the runner process, not `pi` processes that could receive an MCP config argument, so such a launch fails with an error saying that MCP tools must come from an ambient adapter extension in a background child. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
+Direct MCP selection uses [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) configuration and cached metadata. Foreground children connect through the SDK MCP factory with a per-child configuration snapshot; ordinary stdio and streamable HTTP servers are supported. Adapter-only settings such as sockets, request-header commands, custom protocol versions, and literal-environment policies fail explicitly instead of being silently dropped or downgraded. Required selected tools still fail startup if the server does not register them. Subagents only receive direct MCP tools when `mcp:` entries are declared (including those resolved by `tools: parent`); global `directTools: true` in `mcp.json` is not enough by itself. The generic `mcp` proxy tool can still be used for discovery when available. The adapter caches tool metadata at startup, so after connecting a new MCP server for the first time, restart Pi before relying on direct tools. Server `includeTools` and `excludeTools` policies are enforced while resolving cached metadata for children: both accept exact names and `*`/`?` glob patterns against raw, generated-resource, and server/short/none-prefixed names, with `excludeTools` taking precedence. `mcp:` entries must name servers from the adapter's configuration files. A server that exists only in the adapter's runtime snapshot must be made available through supported persisted MCP configuration or an explicitly loaded provider extension before the child can use it. Unsupported runtime-only configuration fails at child startup. An `mcp:` entry named `subagent` does not authorize nested fanout; declare the builtin `subagent` tool or set `allowNestedSubagents: true`. If a resolved direct MCP name is missing from the child registry, pi-subagents keeps the launch failed under the strict allowlist and identifies the condition as a host/pi-mcp-adapter registration problem; verify that the adapter registers the selected tools before child startup.
 
 `extensions` controls child extension loading:
 
@@ -376,7 +355,7 @@ The package bundles a `pi-subagents` skill that is automatically available to th
 
 What it covers:
 
-- **Delegation patterns**: when to launch which agent, whether to use single, parallel, chain, or async mode, and whether to use fresh or forked context.
+- **Delegation patterns**: when to launch which agent, whether to use single, parallel, or sequential workflow composition, and whether to use fresh or forked context.
 - **Prompt workflow recipes**: how to apply the packaged techniques directly with `subagent(...)` when the user describes the workflow in natural language instead of invoking a slash command. This includes parallel review, review-loop, parallel research, parallel context-build, parallel handoff-plan, gather-context-and-clarify, and parallel cleanup.
 - **Role-agent prompting guidance**: compact contract prompts instead of long scripts, what to include in role-specific meta prompts, and retrieval budgets for researchers.
 - **Safety boundaries**: child agents must not run subagents unless their resolved builtin tools explicitly include `subagent`, must not invent intercom targets, and must escalate unapproved decisions.

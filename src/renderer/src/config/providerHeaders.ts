@@ -82,30 +82,3 @@ export function getApiTypeDescription(apiType: string): string {
 	const key = API_TYPE_DESCRIPTION_KEYS[apiType];
 	return key ? t(key) : "";
 }
-
-/**
- * 主流供应商 → API 端点映射。
- * 用于在 settings 中自动发现 auth-only 供应商的模型列表，无需用户手动在 models.json 中配置。
- */
-export const KNOWN_PROVIDER_ENDPOINTS: Record<
-	string,
-	{ baseUrl: string; apiType: string }
-> = {
-	"openai": { baseUrl: "https://api.openai.com/v1", apiType: "openai-completions" },
-	"anthropic": { baseUrl: "https://api.anthropic.com/v1", apiType: "anthropic-messages" },
-	"google": { baseUrl: "https://generativelanguage.googleapis.com/v1beta", apiType: "google-generative-ai" },
-	"deepseek": { baseUrl: "https://api.deepseek.com/v1", apiType: "openai-completions" },
-	"mistral": { baseUrl: "https://api.mistral.ai/v1", apiType: "mistral-conversations" },
-	"nvidia": { baseUrl: "https://integrate.api.nvidia.com/v1", apiType: "openai-completions" },
-	"xai": { baseUrl: "https://api.x.ai/v1", apiType: "openai-completions" },
-	"groq": { baseUrl: "https://api.groq.com/openai/v1", apiType: "openai-completions" },
-	"cerebras": { baseUrl: "https://api.cerebras.ai/v1", apiType: "openai-completions" },
-	"openrouter": { baseUrl: "https://openrouter.ai/api/v1", apiType: "openai-completions" },
-	"together": { baseUrl: "https://api.together.xyz/v1", apiType: "openai-completions" },
-	"fireworks": { baseUrl: "https://api.fireworks.ai/inference/v1", apiType: "openai-completions" },
-	"huggingface": { baseUrl: "https://api-inference.huggingface.co/v1", apiType: "openai-completions" },
-	"opencode": { baseUrl: "https://opencode.ai/zen/v1", apiType: "openai-completions" },
-	"opencode-go": { baseUrl: "https://opencode.ai/zen/go/v1", apiType: "openai-completions" },
-	"minimax": { baseUrl: "https://api.minimax.io/v1", apiType: "openai-completions" },
-	"minimax-cn": { baseUrl: "https://api.minimaxi.com/v1", apiType: "openai-completions" },
-};

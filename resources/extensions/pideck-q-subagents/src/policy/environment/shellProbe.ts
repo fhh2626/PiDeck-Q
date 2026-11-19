@@ -5,7 +5,7 @@
 import { accessSync, constants, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32 as win32Path, posix as posixPath } from 'node:path';
-import { isRecord } from './contributions.ts';
+import { isRecord } from './toolMetadata.ts';
 import type { WindowsGitDiscovery } from './windowsShellDiscovery.ts';
 
 export const SHELL_TOOL_NAMES = ['bash', 'powershell'] as const;

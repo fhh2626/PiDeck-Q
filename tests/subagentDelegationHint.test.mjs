@@ -51,7 +51,7 @@ test("subagent announcements use one English rule independently of the delegatio
 	assert.equal(appendSubagentCallAnnouncementHint(base, false), base);
 	assert.equal(appendSubagentCallAnnouncementHint("   ", true), SUBAGENT_CALL_ANNOUNCEMENT_HINT);
 	assert.equal(appendDelegationHint(once, false), once);
-	assert.ok(DEFAULT_PROMPTS.delegation.includes(SUBAGENT_CALL_ANNOUNCEMENT_HINT));
+	assert.equal(appendSubagentCallAnnouncementHint(appendDelegationHint(base, true), true).split(SUBAGENT_CALL_ANNOUNCEMENT_HINT).length - 1, 1);
 });
 
 test("both extension orders preserve exactly one announcement and unrelated prompt text", () => {
@@ -84,6 +84,7 @@ test("subagent announcements apply only to a main session with the tool availabl
 		'<active_agent name="readonly"/>\nYou are a child.',
 		"<active_agent name='writable'>\nYou are a child.",
 		"<!-- change-pi-prompt:child-tools:v1 -->\nYou are a child.",
+		"<!-- pideck-subagent:child-tools:v1 -->\nYou are a child.",
 	]) {
 		assert.equal(shouldInjectSubagentCallAnnouncementHint({ subagentToolAvailable: true, systemPrompt, env: {} }), false);
 	}

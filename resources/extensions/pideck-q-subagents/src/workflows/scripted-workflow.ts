@@ -1776,7 +1776,7 @@ function setupAbortResumeParams(params: Record<string, unknown>, result: Workflo
 	const childResult = Array.isArray(result.results) && result.results.length === 1 && isRecord(result.results[0]) ? result.results[0] : undefined;
 	const error = typeof childResult?.error === "string" ? childResult.error : result.error;
 	if (error !== "This operation was aborted" || !isZeroUsage(childResult?.usage)) return undefined;
-	const messages = Array.isArray(childResult?.messages) ? childResult.messages : [];
+	const messages: unknown[] = Array.isArray(childResult?.messages) ? childResult.messages : [];
 	const message = messages.findLast((entry) => isRecord(entry) && entry.role === "assistant");
 	if (message !== undefined) {
 		if (!isRecord(message)) return undefined;

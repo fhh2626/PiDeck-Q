@@ -63,7 +63,7 @@ subagent({ workflowScriptPath: "workflows/review.js", cwd: "/path/to/project" })
 subagent({ action: "validate", workflowScriptPath: "workflows/review.js" });
 ```
 
-The fields are mutually exclusive. Relative paths resolve against the request `cwd`; absolute paths pass through. The host reads the file before validation, schedule creation, or workflow sandbox execution. The sandbox still has no filesystem access. Missing, unreadable, and empty files return file input errors instead of script syntax errors.
+The fields are mutually exclusive. Relative paths resolve against the request `cwd`; absolute paths pass through. The host reads the file before validation or workflow sandbox execution. The sandbox still has no filesystem access. Missing, unreadable, and empty files return file input errors instead of script syntax errors.
 
 ### Named workflow resources for permission extensions
 
@@ -96,7 +96,7 @@ subagent({
 - `toolBudget` becomes the default for each child unless that child supplies a narrower value.
 - `usageBudget` accounts for reported usage across completed workflow children. Once exhausted, it rejects later child launches but does not stop children that are already running.
 - Budget and timeout stops return a structured `terminalOutcome` with `state: "partial"` and reason `budget_exhausted` or `timeout`. Workflow receipts keep settled child evidence for recovery.
-- After an async workflow receipt is successfully published, `workflowReceiptPath` exposes its exact path in wait completion details, completion notifications, and exact status/debug details. Text responses also identify the receipt. Pending runs and failed receipt publications omit the reference; older status records are not backfilled. The reference records publication, not a guarantee against later retention cleanup. Raw result files retain `workflowReceipt: { path, receipt }`.
+- Foreground workflow results expose the terminal receipt in `details.workflow.receipt`. Retain each child's returned `runId` for a supported follow-up. A receipt records settled evidence and cannot replay a live workflow.
 
 These controls are opt-in. Avoid tight hard budgets for mutation-capable workers unless the workflow has an explicit checkpoint and handoff path.
 
@@ -203,7 +203,7 @@ subagent({ workflowScript: `
 ` });
 ```
 
-The receipt state is `queued`, `delivered`, `missed`, or `failed`. `delivered` means the child Pi session accepted the input. It does not mean the model followed it. `missed` means the keyed child became terminal or had no live route before delivery. This first slice uses the existing foreground and async steering transports but does not start steering recovery. Workflow traces include one steering attempt entry and one receipt entry.
+The receipt state is `queued`, `delivered`, `missed`, or `failed`. `delivered` means the child Pi session accepted the input. It does not mean the model followed it. `missed` means the keyed child became terminal or had no live route before delivery. This first slice uses the existing foreground steering transport but does not start steering recovery. Workflow traces include one steering attempt entry and one receipt entry.
 
 Always await or return a `runs.steer` promise. The workflow waits for an observed steering side effect to settle before it exits and rejects fire-and-forget calls. Use ordinary `Promise.race` when the first child or steering receipt should advance the script. There is no callback API or child inbox access.
 
@@ -230,7 +230,7 @@ subagent({ workflowScript: `
 ` });
 ```
 
-The workflow trace records the run completions and steering receipt. Scripts still never see raw async directories, inbox paths, or session files. If the keyed child is terminal, stale, or has no live route when `runs.steer` runs, the receipt reports `missed` or `failed` and the script can decide whether to continue.
+The workflow trace records the run completions and steering receipt. Scripts still never see raw lifecycle directories, inbox paths, or session files. If the keyed child is terminal, stale, or has no live route when `runs.steer` runs, the receipt reports `missed` or `failed` and the script can decide whether to continue.
 
 Use named outputs when later workflow steps need structured data or durable references:
 
@@ -354,15 +354,15 @@ known, or for explicit emergency hotfix lanes.
 /prompt-workflow review-release-candidate v0.51.0
 ```
 
-For watched same-repo workflows, pass `async:false` only when the parent must block until completion. That blocking mode also shows the live in-chat workflow card. `chatProgress` can force `off` or `live-card` when the automatic policy is not what you want. Workflows have no implicit runtime limit. Explicit `timeoutMs` or `maxRuntimeMs` and applicable config deadlines remain binding. Native child sessions report to their parent every 600 seconds through run supervision, which preserves the original workflow continuation while the parent decides whether to continue or stop. See the [tool reference](tool-reference.md) for the full parameter list.
+Workflows execute in the foreground. Omit `async` or set it to `false`. Watched workflows in the same repository show a live in-chat workflow card. `chatProgress` can force `off` or `live-card` when the automatic policy is not what you want. Workflows have no implicit runtime limit. Explicit `timeoutMs` or `maxRuntimeMs` and applicable config deadlines remain binding. Native child sessions report to their parent every 600 seconds through run supervision, which preserves the original workflow continuation while the parent decides whether to continue or stop. See the [tool reference](tool-reference.md) for the full parameter list.
 
-Synchronous workflows publish trace and `emit(...)` updates through the tool update callback regardless of `chatProgress`, including RPC/headless and cross-repository runs. These updates include `details.workflow` and `details.workflowChildren`; `chatProgress: "off"` disables the live card, not transport progress. Running foreground child rows additionally expose bounded `activity` (current tool, timing, and counters), plus resolved model/thinking when available, keyed by `childId`. Activity-only updates coalesce over 100 ms; lifecycle updates remain immediate. Activity clears when children settle, and is not persisted for async workflows. Tool names are limited to 256 UTF-8 bytes and each activity object is below 2 KiB (including JSON escaping); arguments and transcripts are not forwarded.
+Synchronous workflows publish trace and `emit(...)` updates through the tool update callback regardless of `chatProgress`, including RPC/headless and cross-repository runs. These updates include `details.workflow` and `details.workflowChildren`; `chatProgress: "off"` disables the live card, not transport progress. Running foreground child rows additionally expose bounded `activity` (current tool, timing, and counters), plus resolved model/thinking when available, keyed by `childId`. Activity-only updates coalesce over 100 ms; lifecycle updates remain immediate. Activity clears when children settle, and belongs to the live foreground projection. Tool names are limited to 256 UTF-8 bytes and each activity object is below 2 KiB (including JSON escaping); arguments and transcripts are not forwarded.
 
 The legacy `/chain`, `/parallel`, and `/run-chain` commands are not registered.
 
 ## Direct commands
 
-Use `/run <agent> [task] [--bg] [--fork]` for one child.
+Use `/run <agent> [task] [--fork]` for one foreground child.
 
 ## Worktree isolation
 
@@ -380,7 +380,7 @@ Each child uses the existing worktree lifecycle: it branches from clean HEAD, jo
 
 A top-level `{ workflowScript, worktree: true }` makes isolation the default for every workflow child. An individual child can override that default with `worktree: false`. Keep one writer when parallel writes are not intentionally isolated.
 
-Use `baseRef` to branch managed worktrees from `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. For example, `{ workflowScript, worktree: true, baseRef: "refs/heads/release" }` applies the release ref to children unless a child supplies its own `baseRef`. If omitted, the default `HEAD` is resolved at worktree allocation, not when the script is validated or a schedule is created. The source checkout must still be clean, and the ref must resolve to a commit before any worktree is allocated.
+Use `baseRef` to branch managed worktrees from `HEAD` or a supported named ref such as `refs/heads/release`, `refs/tags/v1`, or `origin/main`. Full 40/64-character commit IDs and revision expressions such as `HEAD~1` are unsupported. For example, `{ workflowScript, worktree: true, baseRef: "refs/heads/release" }` applies the release ref to children unless a child supplies its own `baseRef`. If omitted, the default `HEAD` is resolved at worktree allocation, not when the script is validated. The source checkout must still be clean, and the ref must resolve to a commit before any worktree is allocated.
 
 Configure the worktree provider, native path layout, base directory, and setup hook in [configuration.md](configuration.md).
 
@@ -398,10 +398,10 @@ display-only; the handoff manifest remains the deletion authority.
 
 | Durable file | Owner | Pending / running / finalized / cleanup states | Release predicate | Rollback predicate | Stale-head behavior | Fail-closed cases |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status.json` | Async runner and workflow status projector | Child step starts `pending`, becomes `running`, then terminal `complete`/`failed`/`paused`/`stopped`; worktree path and branch are copied at launch | Status is terminal and the existing active-run/process proof can release the run marker; lane metadata alone never releases a worktree | Setup or persistence failure keeps the lane unknown; only the existing verified setup rollback may remove a newly created worktree | Recorded status is retained; a base/head mismatch is not repaired or inferred from render-time Git calls | Missing, malformed, or key-mismatched lane data; only one of `worktreePath`/`branch`; unverified process state |
+| `status.json` | Workflow status projector | Child step starts `pending`, becomes `running`, then terminal `complete`/`failed`/`paused`/`stopped`; worktree path and branch are copied at launch | Status is terminal and the existing ownership checks permit releasing the run marker; lane metadata alone never releases a worktree | Setup or persistence failure keeps the lane unknown; only the existing verified setup rollback may remove a newly created worktree | Recorded status is retained; a base/head mismatch is not repaired or inferred from render-time Git calls | Missing, malformed, or key-mismatched lane data; only one of `worktreePath`/`branch`; unverified process state |
 | `handoffs/<run-id>.json` | Existing parallel handoff writer and cleanup engine | Group is `partial` with preserved cleanup tasks while pending/running; finalized groups contain child identity, patch, and cleanup evidence; cleanup is `partial` or `complete` | Only the existing cleanup engine's fresh Git checks and recorded task evidence can release a worktree/branch; #1621 adds no deletion path | Missing diff, failed capture, or cleanup error preserves the task and records the reason | `baseCommit` is retained as evidence; stale or changed heads remain unknown/preserved until an explicit later reconciliation | Missing/invalid manifest, mismatched run/key/task identity, duplicate identity, dirty or uncaptured work |
 | `workflow-receipt.json` | Workflow terminal settlement | No receipt while `pending`/`running`; terminal receipt is finalized with one optional lane block per keyed child | Receipt publication is complete only after every included child entry is serialized; it does not authorize cleanup | Receipt write failure leaves status/handoff evidence authoritative and the workflow reports the missing receipt | Existing receipt is not backfilled or rewritten from a newer head | Invalid version/state, mismatched entry key or lane key, stale continuation lineage |
-| `.active-runs` marker | Existing active-run index | `pending`/`running` while the runner is live; terminal marker remains until observed process proof | Marker removal requires the existing exact-run process-terminal proof | Unknown proof keeps the marker and lane retained for inspection | Marker state is not inferred from Git head or timestamps alone | Missing/unknown process proof, active marker, or foreign run identity |
+| `.active-runs` marker | Existing active-run index | `pending`/`running` while the owned child or workflow is live; retained until cleanup confirms release | Marker removal follows the existing exact-run ownership and cleanup checks | Unknown ownership keeps the marker and lane retained for inspection | Marker state is not inferred from Git head or timestamps alone | Unknown ownership, active marker, or foreign run identity |
 
 Older runs without lane metadata remain readable and retain their existing
 handoff/cleanup behavior. Missing lane, receipt, or handoff metadata is
@@ -422,7 +422,7 @@ Child agents can talk back to the parent Pi session without installing `pi-inter
 Use it for work where the child might need a decision instead of guessing:
 
 ```text
-Run this implementation in the background. If the child gets blocked or needs a product decision, have it ask me through the supervisor channel.
+Run this implementation with a writable subagent. If the child gets blocked or needs a product decision, have it ask me through the supervisor channel.
 ```
 
 ```text
@@ -441,7 +441,7 @@ The parent replies with `subagent_supervisor({ action: "reply", replyTo, message
 
 Child-side routine completion handoffs are not expected. If a child appears stalled, needs-attention notices show up in the parent session with useful next actions, such as checking `subagent({ action: "status" })`, interrupting the run, or nudging the child.
 
-If a `workflowScript` child detaches through `contact_supervisor`, the enclosing async workflow stays `paused` until that child exits. Then the extension reconciles it to `complete` or `failed`. Wait on the child until that happens.
+When a `workflowScript` child needs a decision through `contact_supervisor`, the tool returns `needs_attention` while retaining the original JavaScript VM, child sessions, deadlines, and dependent stages. Read the current pending request and reply to its id. The same workflow continues with the authoritative child result. Use `status` or `bg_wait` to observe it. Do not call `resume`, replay the workflow, or start a replacement writer during this live handoff. `interrupt` or workflow `stop` can cancel it. Parent-session changes and extension reload abort the retained continuation.
 
 If messages do not show up, run `/subagents-doctor`. Advanced users can tune the bridge with `intercomBridge` in [configuration.md](configuration.md).
 
@@ -487,6 +487,6 @@ Then run it through the native adapter:
 /prompt-workflow take-screenshot https://example.com
 ```
 
-The adapter delegates to the named subagent, applies `model`, `skill`, `cwd`, and fork/fresh context metadata, and supports runtime overrides such as `--subagent readonly`, `--fork`, `--fresh`, and `--bg`.
+The adapter delegates to the named subagent in the foreground, applies `model`, `skill`, `cwd`, and fork/fresh context metadata, and supports runtime overrides such as `--subagent readonly`, `--fork`, and `--fresh`.
 
 Prompt templates with `chain:` frontmatter are translated into `workflowScript` and launched through `/prompt-workflow`; `/chain-prompts` is no longer registered.
