@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -9,11 +11,73 @@ import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 const launcher = nativeBuildPaths("PiDeck-FakeWsl").map((path) => join(process.cwd(), path)).find(existsSync);
 const availability = backendTestAvailability();
+if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") assert.ok(launcher, "Build PiDeck-FakeWsl before required native tests");
 const skip = availability.skip || (!launcher ? "PiDeck-FakeWsl executable not found" : false);
 const runtimeSkip = skip || (process.platform !== "win32" ? "WSL runtime launch requires Windows" : false);
 const linuxHome = "/home/dev";
 const rootAlias = `${linuxHome}/root-alias`;
 const candidateAlias = `${linuxHome}/candidate-alias`;
+const fakeFs = join(process.cwd(), "tests/fixtures/native2-fake-wsl-fs.mjs");
+const fileSymlink = (target) => `pideck-fake-wsl-file-symlink:\n${target}`;
+
+test("the fake WSL filesystem distinguishes a file link entry from its referent", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pideck-fake-wsl-link-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const scenario = join(root, "wsl.json");
+  writeFileSync(scenario, JSON.stringify({ root: realpathSync.native(root), linuxHome, fileSymlinks: true }));
+  const target = `${linuxHome}/target.jsonl`;
+  const link = `${linuxHome}/link.jsonl`;
+  const moved = `${linuxHome}/moved.jsonl`;
+  const targetFile = join(root, "target.jsonl");
+  writeFileSync(targetFile, "referent content");
+  writeFileSync(join(root, "link.jsonl"), fileSymlink(target));
+  const run = (args, status = 0) => {
+    const result = spawnSync(process.execPath, [fakeFs, "-d", "Ubuntu", "-u", "dev", ...args], {
+      encoding: "utf8", timeout: 5_000, env: { ...process.env, FAKE_WSL_SCENARIO: scenario, FAKE_WSL_LOG: "" },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, status, result.stderr);
+    return result.stdout;
+  };
+  run(["test", "-L", link]);
+  run(["test", "-f", link]);
+  assert.equal(run(["cat", link]), "referent content");
+  assert.equal(run(["realpath", "-e", "--", link]), `${target}\n`);
+  const identityArgs = ["sh", "-c", "# fixture identity probe", "pideck-delete-identities", link];
+  assert.equal(run(identityArgs), `${link}\0${target}\0`);
+  const { dev, ino } = statSync(targetFile, { bigint: true });
+  assert.equal(run(["stat", "-Lc", "%d:%i", "--", link]), `${dev}:${ino}\n`);
+  assert.equal(Number(run(["stat", "-c", "%Y %s", link]).trim().split(" ")[1]), Buffer.byteLength(target));
+  run(["mv", "--", link, moved]);
+  run(["test", "-L", link], 1);
+  run(["test", "-L", moved]);
+  run(["rm", "--", moved]);
+  run(["test", "-L", moved], 1);
+  assert.equal(readFileSync(targetFile, "utf8"), "referent content");
+  unlinkSync(targetFile);
+  writeFileSync(join(root, "link.jsonl"), fileSymlink(target));
+  run(["test", "-L", link]);
+  run(["test", "-e", link], 1);
+  assert.equal(run(identityArgs), `${link}\0\0`);
+});
+
+test("an unresolved cyclic file link does not suppress later WSL identities", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pideck-fake-wsl-link-cycle-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const scenario = join(root, "wsl.json");
+  writeFileSync(scenario, JSON.stringify({ root: realpathSync.native(root), linuxHome, fileSymlinks: true }));
+  const link = `${linuxHome}/link.jsonl`;
+  const valid = `${linuxHome}/valid.jsonl`;
+  writeFileSync(join(root, "link.jsonl"), fileSymlink(link));
+  writeFileSync(join(root, "valid.jsonl"), "valid entry");
+  const result = spawnSync(process.execPath, [fakeFs, "-d", "Ubuntu", "-u", "dev", "sh", "-c",
+    "# fixture identity probe", "pideck-delete-identities", link, valid], {
+    encoding: "utf8", timeout: 5_000, env: { ...process.env, FAKE_WSL_SCENARIO: scenario, FAKE_WSL_LOG: "" },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${link}\0\0${valid}\0${valid}\0`);
+});
 
 /** Pause the fake mutation itself, retaining the production coordinator's scoped lease. */
 async function fixture(t, ancestor, retarget = false) {
@@ -42,6 +106,7 @@ async function fixture(t, ancestor, retarget = false) {
       symlinkSync(sessions, join(home, "root-alias"), process.platform === "win32" ? "junction" : "dir");
       symlinkSync(sessions, join(home, "candidate-alias"), process.platform === "win32" ? "junction" : "dir");
       let candidatePath;
+      const fileSymlinks = process.platform === "win32" && !ancestor && !retarget;
       if (retarget) {
         preserved = join(outside, "child.jsonl");
         writeFileSync(preserved, content("outside-child"));
@@ -60,7 +125,9 @@ async function fixture(t, ancestor, retarget = false) {
         preserved = join(outside, "child.jsonl");
         writeFileSync(preserved, content("outside-child"));
         mkdirSync(join(outside, "child"));
-        symlinkSync(preserved, join(companion, "child.jsonl"));
+        const child = join(companion, "child.jsonl");
+        if (fileSymlinks) writeFileSync(child, fileSymlink(`${linuxHome}/outside/child.jsonl`));
+        else symlinkSync(preserved, child);
         symlinkSync(join(outside, "child"), join(companion, "child"), process.platform === "win32" ? "junction" : "dir");
         candidatePath = `${candidateAlias}/parent/child.jsonl`;
       }
@@ -70,7 +137,7 @@ async function fixture(t, ancestor, retarget = false) {
       ].map((entry) => ({ ...entry, projectId: "wsl-candidate", title: entry.id, environment: "wsl", source: "pi",
         wslDistro: "Ubuntu", wslUser: "dev", status: "active", originKey: entry.id, createdAt: 1, updatedAt: 1 })) }));
       const scenario = join(directory.root, "wsl.json");
-      writeFileSync(scenario, JSON.stringify({ root: home, linuxHome, home: linuxHome, distros: ["Ubuntu"], runtimePi: true }));
+      writeFileSync(scenario, JSON.stringify({ root: home, linuxHome, home: linuxHome, distros: ["Ubuntu"], runtimePi: true, fileSymlinks }));
       gate = join(directory.root, "release-trash"); entered = join(directory.root, "trash-entered");
       runtimeExit = join(directory.root, "exit-runtime");
       log = join(directory.root, "wsl.log");
@@ -85,7 +152,7 @@ async function fixture(t, ancestor, retarget = false) {
         `  writeFileSync(${JSON.stringify(entered)}, "entered");`,
         `  while (!existsSync(${JSON.stringify(gate)})) await new Promise((resolve) => setTimeout(resolve, 10));`,
         "}",
-        `await import(${JSON.stringify(pathToFileURL(join(process.cwd(), "tests/fixtures/native2-fake-wsl-fs.mjs")).href)});`,
+        `await import(${JSON.stringify(pathToFileURL(fakeFs).href)});`,
       ].join("\n"));
       return { env: { PIDECK_WSL_EXE: launcher, PIDECK_WSL_UNC_ROOT: unc,
         FAKE_WSL_SCRIPT: script, FAKE_WSL_NODE: process.execPath, FAKE_WSL_SCENARIO: scenario, FAKE_WSL_LOG: log } };
@@ -253,8 +320,10 @@ test("a scoped WSL deletion keeps an unrelated runtime reusable while deferring 
   }
   const retry = await f.invoke("sessions:runtime-restart", [target]);
   assert.equal(retry.payload.result.ok, true, JSON.stringify(retry.payload));
-  assert.notEqual(retry.payload.result.value.agentId, target.agentId);
-  assert.ok(retry.payload.result.value.runtimeGeneration > target.runtimeGeneration);
+  const restarted = retry.payload.result.value.runtime;
+  assert.ok(restarted.agentId);
+  assert.notEqual(restarted.agentId, target.agentId);
+  assert.ok(restarted.runtimeGeneration > target.runtimeGeneration);
 });
 
 test("a WSL runtime that exits during an unrelated deletion detaches without spawning a reconnect", { skip: runtimeSkip }, async (t) => {

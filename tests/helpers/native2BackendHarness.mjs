@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { request as nodeRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 
@@ -113,22 +113,28 @@ function assertRequiredBackendFresh(executable, repoRoot) {
 	}
 }
 
-/** Qt DLLs are not deployed next to the build output; add the package bin dir. */
-export function qtBinDirectory(repoRoot = process.cwd()) {
-	const dependency = join(repoRoot, "build/.deps/PiDeckBackend/windows/x64/debug/native/backend/main.cpp.obj.d");
-	if (existsSync(dependency)) {
-		const match = readFileSync(dependency, "utf8").match(/pideck-qt[\\/]+6\.11\.2[\\/]+([A-Za-z0-9]+)/);
-		if (match && process.env.LOCALAPPDATA) {
-			return join(process.env.LOCALAPPDATA, ".xmake", "packages", "p", "pideck-qt", "6.11.2", match[1], "qt", "bin");
+/** Find the Qt DLLs for the selected backend, ignoring stale build metadata. */
+export function qtBinDirectory(repoRoot = process.cwd(), { executable, localAppData = process.env.LOCALAPPDATA } = {}) {
+	const selected = executable || process.env.PIDECK_BACKEND_TEST_EXECUTABLE
+		|| DEFAULT_BACKEND_PATHS.find((candidate) => existsSync(join(repoRoot, candidate)));
+	const hasQt = (directory) => existsSync(join(directory, "Qt6Core.dll"));
+	const deployed = selected && dirname(resolve(repoRoot, selected));
+	if (deployed && hasQt(deployed)) return deployed;
+	if (!localAppData) return "";
+	const packagesRoot = join(localAppData, ".xmake", "packages", "p", "pideck-qt", "6.11.2");
+	if (!existsSync(packagesRoot)) return "";
+	const mode = selected?.match(/[\\/]windows[\\/]x64[\\/](debug|release)[\\/]/i)?.[1]?.toLowerCase();
+	if (mode) {
+		const dependency = join(repoRoot, `build/.deps/PiDeckBackend/windows/x64/${mode}/native/backend/main.cpp.obj.d`);
+		const match = existsSync(dependency) && readFileSync(dependency, "utf8").match(/pideck-qt[\\/]+6\.11\.2[\\/]+([A-Za-z0-9]+)/);
+		if (match) {
+			const candidate = join(packagesRoot, match[1], "qt", "bin");
+			if (hasQt(candidate)) return candidate;
 		}
 	}
-	const packagesRoot = process.env.LOCALAPPDATA
-		? join(process.env.LOCALAPPDATA, ".xmake", "packages", "p", "pideck-qt", "6.11.2")
-		: "";
-	if (!packagesRoot || !existsSync(packagesRoot)) return "";
 	for (const entry of readdirSync(packagesRoot)) {
 		const candidate = join(packagesRoot, entry, "qt", "bin");
-		if (existsSync(candidate)) return candidate;
+		if (hasQt(candidate)) return candidate;
 	}
 	return "";
 }
@@ -337,7 +343,7 @@ export function spawnBackend({ executable, hostPort, token, env = {}, cwd = proc
 	// wins (measured: the later entry wins, the earlier value is discarded).
 	// Resolve overrides separately because replacing an existing object key does not move
 	// its insertion position. A duplicate ambient spelling must not outrank the caller.
-	const childPath = joinPathParts([qtBinDirectory(cwd), environmentPath(env, environmentPath(process.env))]);
+	const childPath = joinPathParts([qtBinDirectory(process.cwd(), { executable: resolve(cwd, executable) }), environmentPath(env, environmentPath(process.env))]);
 	const child = spawn(executable, [], {
 		windowsHide: true,
 		cwd,

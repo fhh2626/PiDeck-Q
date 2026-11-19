@@ -28,17 +28,6 @@
 
 namespace {
 
-std::wstring widen(const char *value)
-{
-    if (!value) return std::wstring();
-    const int size = MultiByteToWideChar(CP_UTF8, 0, value, -1, nullptr, 0);
-    if (size <= 0) return std::wstring();
-    std::wstring wide(size_t(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value, -1, wide.data(), size);
-    wide.resize(size_t(size - 1));
-    return wide;
-}
-
 /**
  * Quote one argv element for CreateProcessW (the same rules the MSVC CRT parses back):
  * wrap in quotes when it contains whitespace or a quote, double the backslashes that
@@ -74,21 +63,23 @@ std::wstring quoteArgument(const std::wstring &argument)
 
 } // namespace
 
-int main(int argc, char **argv)
+// Narrow CRT argv uses the active code page, which can turn U+FFFD into '?'
+// even before we construct the child's command line. Stay wide end to end.
+int wmain(int argc, wchar_t **argv)
 {
-    const char *scriptValue = std::getenv("FAKE_WSL_SCRIPT");
+    const wchar_t *scriptValue = _wgetenv(L"FAKE_WSL_SCRIPT");
     if (!scriptValue || !*scriptValue) {
         std::fprintf(stderr, "fake-wsl: FAKE_WSL_SCRIPT is not set\n");
         return 127;
     }
-    const char *configured = std::getenv("FAKE_WSL_NODE");
-    const std::wstring node = (configured && *configured) ? widen(configured) : L"node";
+    const wchar_t *configured = _wgetenv(L"FAKE_WSL_NODE");
+    const std::wstring node = (configured && *configured) ? configured : L"node";
     std::wstring commandLine = quoteArgument(node);
     commandLine += L' ';
-    commandLine += quoteArgument(widen(scriptValue));
+    commandLine += quoteArgument(scriptValue);
     for (int index = 1; index < argc; ++index) {
         commandLine += L' ';
-        commandLine += quoteArgument(widen(argv[index]));
+        commandLine += quoteArgument(argv[index]);
     }
     std::vector<wchar_t> mutableLine(commandLine.begin(), commandLine.end());
     mutableLine.push_back(L'\0');

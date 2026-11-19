@@ -5,11 +5,11 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { resolveBackendExecutable } from "./helpers/native2BackendHarness.mjs";
 import { createSharedFixture, readSummaryCache, startBackend, stopBackend, summaryCachePath, waitFor } from "./helpers/native2RestartableBackend.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 // Validate before starting the restartable host so stale/missing builds cannot leave a listener open.
 const executable = resolveBackendExecutable();
-const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macosx" : process.platform;
-const launcher = resolve(`build/${platform}/${process.arch}/debug/PiDeck-FakeWsl${process.platform === "win32" ? ".exe" : ""}`);
+const launcher = nativeBuildPaths("PiDeck-FakeWsl").map((path) => resolve(path)).find(existsSync);
 const required = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 
 /** Observe the real owner-thread publication before issuing a WSL scan. */
@@ -20,9 +20,9 @@ function environmentWasPublished(userData) {
 }
 
 test("a superseded empty WSL scan cannot mark the new local environment as scanned", {
-  skip: (!executable || !existsSync(launcher)) && !required ? "Build PiDeckBackend and PiDeck-FakeWsl to run the environment handoff regression" : false,
+  skip: (!executable || !launcher) && !required ? "Build PiDeckBackend and PiDeck-FakeWsl to run the environment handoff regression" : false,
 }, async (t) => {
-  assert.ok(existsSync(launcher), "PiDeck-FakeWsl must be built for this regression");
+  assert.ok(launcher, "PiDeck-FakeWsl must be built for this regression");
   assert.ok(statSync(launcher).mtimeMs >= statSync("native/tests/FakeWslLauncher.cpp").mtimeMs,
     "PiDeck-FakeWsl must match its current source");
   const fixture = createSharedFixture();

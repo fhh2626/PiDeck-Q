@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { createFixture, resetDoubles, setRunSyncBehavior, runSyncCalls, completedResult } from "./helpers/subagentResumeHarness.mjs";
 
 await import("./helpers/piFixtureResolver.mjs");
@@ -24,7 +25,14 @@ function eventsFor() {
 		emit(name, value) { for (const callback of listeners.get(name) ?? []) callback(value); },
 	};
 }
-const pause = () => new Promise((resolve) => setImmediate(resolve));
+// The retained result is published before this terminal notification is sent.
+function workflowCompletion(fixture) {
+	const { promise, resolve } = Promise.withResolvers();
+	fixture.deps.pi.sendMessage = (message) => {
+		if (message.customType === "subagent-workflow-complete") resolve();
+	};
+	return promise;
+}
 
 function request(events, method, params) {
 	const requestId = `${method}-${Math.random()}`;
@@ -35,8 +43,23 @@ function request(events, method, params) {
 }
 
 for (const target of ["workflow", "child"]) {
-	test(`RPC stops the retained ${target} through its original foreground control`, { timeout: 10_000 }, async () => {
+	test(`RPC stops the retained ${target} through its original foreground control`, { timeout: 10_000 }, async (t) => {
+		if (target === "child") {
+			const postMessage = Worker.prototype.postMessage;
+			// Model the workflow worker running later than the test's event-loop turns.
+			// Delay only the failed run response, leaving the real worker and VM in use.
+			t.mock.method(Worker.prototype, "postMessage", function (message, ...args) {
+				if (message.type !== "response" || message.ok !== false) return postMessage.call(this, message, ...args);
+				let remainingTurns = 101;
+				const deliver = () => {
+					if (--remainingTurns > 0) setImmediate(deliver);
+					else postMessage.call(this, message, ...args);
+				};
+				setImmediate(deliver);
+			});
+		}
 		const fixture = createFixture(graph, `rpc-${target}`);
+		const completion = workflowCompletion(fixture);
 		const events = eventsFor();
 		fixture.deps.pi.events = events;
 		const executor = graph.createSubagentExecutor(fixture.deps);
@@ -66,10 +89,21 @@ for (const target of ["workflow", "child"]) {
 			assert.equal(target === "child" ? child.interruptSignal.aborted : child.signal.aborted, true);
 			assert.equal(fixture.state.foregroundControls.has(child.runId), true, "child ownership remains until its authoritative exit");
 			assert.equal(runSyncCalls.length, 1, "stopping must not replay the workflow");
-			if (target === "child") assert.equal(fixture.state.workflowControllers.get(run.runId).signal.aborted, false);
+			if (target === "child") {
+				assert.equal(fixture.state.workflowControllers.get(run.runId).signal.aborted, false);
+				assert.equal(run.result, undefined, "child stop ACK is not terminal workflow output");
+			}
 			await child.onDetachedExit(completedResult(fixture, { interrupted: true, exitCode: 1, finalOutput: "CHILD STOP CONFIRMED" }));
-			for (let i = 0; i < 100 && !run.result; i++) await pause();
+			await completion;
 			assert.equal(run.result?.isError, true);
+			// The call trace can mention the interrupted child even if the worker actually times out.
+			const terminal = run.result.content[0].text.split("\n\nCall trace:", 1)[0];
+			if (target === "child") {
+				assert.match(terminal, /^Workflow failed: Error: Run 'first' failed:/m);
+				assert.match(terminal, /Run paused after interrupt/);
+			} else {
+				assert.match(terminal, /^Workflow failed: [^\r\n]*Foreground workflow interrupted/m);
+			}
 			assert.equal(runSyncCalls.length, 1, "the next stage remains cancelled after the late child exit");
 		} finally {
 			bridge.dispose();
@@ -96,6 +130,7 @@ test("RPC cannot stop a retained workflow owned by another session", async () =>
 for (const mode of ["steer", "follow_up"]) {
 	test(`RPC ${mode} reaches the original child of a retained foreground workflow`, { timeout: 10_000 }, async () => {
 		const fixture = createFixture(graph, `rpc-${mode}`);
+		const completion = workflowCompletion(fixture);
 		const events = eventsFor();
 		fixture.deps.pi.events = events;
 		const executor = graph.createSubagentExecutor(fixture.deps);
@@ -129,9 +164,12 @@ for (const mode of ["steer", "follow_up"]) {
 			assert.equal(retained.result, undefined, "the existing workflow continuation must remain live");
 		} finally {
 			bridge.dispose();
-			await child.onDetachedExit(completedResult(fixture, { finalOutput: "STEERED CHILD COMPLETE" }));
-			for (let i = 0; i < 100 && !retained.result; i++) await pause();
-			owner.abort();
+			try {
+				await child.onDetachedExit(completedResult(fixture, { finalOutput: "STEERED CHILD COMPLETE" }));
+				await completion;
+			} finally {
+				owner.abort();
+			}
 		}
 	});
 }

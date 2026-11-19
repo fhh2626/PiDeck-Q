@@ -4,13 +4,15 @@ import { join } from "node:path";
 import test from "node:test";
 import { resolveBackendExecutable, SseClient, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const executable = resolveBackendExecutable();
-const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macosx" : process.platform;
-const wsl = join(process.cwd(), `build/${platform}/${process.arch}/debug/PiDeck-FakeWsl${process.platform === "win32" ? ".exe" : ""}`);
+const wsl = nativeBuildPaths("PiDeck-FakeWsl").map((path) => join(process.cwd(), path)).find(existsSync);
+if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") assert.ok(wsl, "Build PiDeck-FakeWsl before required native tests");
+const skip = !executable || !wsl;
 const selected = { provider: "custom", modelId: "shared-id" };
 
-test("a WSL model deletion clears only the matching distro and user namespace", { skip: !executable || !existsSync(wsl) }, async (t) => {
+test("a WSL model deletion clears only the matching distro and user namespace", { skip }, async (t) => {
 	const session = await startBackendSession(t, {
 		prepare(fixture) {
 			const project = join(fixture.root, "project");
@@ -57,7 +59,7 @@ test("a WSL model deletion clears only the matching distro and user namespace", 
 	assert.equal(change.wslUser, "dev");
 });
 
-test("a save during a WSL switch cleans the still-published native configuration", { skip: !executable || !existsSync(wsl) }, async (t) => {
+test("a save during a WSL switch cleans the still-published native configuration", { skip }, async (t) => {
 	let configDir;
 	let nativeProject;
 	let wslProject;
@@ -105,7 +107,7 @@ test("a save during a WSL switch cleans the still-published native configuration
 	assert.equal(change.environment, "native");
 });
 
-test("a model deleted in WSL remains selectable as a native Git default and favorite", { skip: !executable || !existsSync(wsl) }, async (t) => {
+test("a model deleted in WSL remains selectable as a native Git default and favorite", { skip }, async (t) => {
 	const session = await startBackendSession(t, {
 		prepare(fixture) {
 			const uncRoot = join(fixture.root, "unc");

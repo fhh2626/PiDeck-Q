@@ -22,6 +22,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 
 import { createProbePi, processAlive } from "./helpers/native2ProbePi.mjs";
@@ -32,7 +33,8 @@ import {
 } from "./helpers/native2RestartableBackend.mjs";
 
 const PROJECT = "shutdown-project";
-/** The host force-kills a sidecar 1500 ms after prepareQuit; anything past this is a hang. */
+// BackendProcessController allows 1.5s for the ACK. Process exit is measured separately.
+const ACK_BUDGET_MS = 1_500;
 const EXIT_BUDGET_MS = 3_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -66,25 +68,26 @@ function seedFixture() {
 	return fixture;
 }
 
-function readyToExitSeen(backend) {
-	return backend.host.frames.some((frame) => frame.type === "event" && frame.name === "application.readyToExit");
-}
-
 /**
  * Quit and assert the process ends from the event loop inside the budget.
  * Returns the exit result so callers can assert more.
  */
-async function quitWithinBudget(backend, label) {
-	const exited = backend.backend.exited;
-	const startedAt = Date.now();
+async function quitWithinBudget(backend, label, now = () => performance.now()) {
+	// Qt flushes the ACK before disconnecting, but Node handles TCP data and child
+	// exit on separate callbacks. Observe both from prepareQuit, without charging
+	// time spent waiting for the TCP callback to the process exit measurement.
+	// The timeout callback itself can be delayed, so timestamp receipt as well.
+	const startedAt = now();
+	const ackedInTime = backend.host.waitForEvent("application.readyToExit", ACK_BUDGET_MS)
+		.then(() => now() - startedAt <= ACK_BUDGET_MS, () => false);
 	backend.host.emit("application.prepareQuit");
-	const result = await Promise.race([exited, sleep(EXIT_BUDGET_MS + 2_000).then(() => null)]);
-	const elapsedMs = Date.now() - startedAt;
+	const result = await Promise.race([backend.backend.exited, delay(EXIT_BUDGET_MS + 2_000, null, { ref: false })]);
+	const elapsedMs = now() - startedAt;
 	if (backend.backend.child.exitCode === null) backend.backend.child.kill();
 	assert.ok(result, `${label}: backend did not exit within ${EXIT_BUDGET_MS + 2_000} ms (host would have had to force-kill it)`);
 	assert.ok(elapsedMs <= EXIT_BUDGET_MS, `${label}: exit took ${elapsedMs} ms, budget is ${EXIT_BUDGET_MS} ms`);
 	assert.equal(result.code, 0, `${label}: exit code ${result.code} (stderr: ${result.stderr.slice(-800)})`);
-	assert.equal(readyToExitSeen(backend), true, `${label}: shutdown did not ACK the host before exiting`);
+	assert.equal(await ackedInTime, true, `${label}: application.readyToExit was not observed within ${ACK_BUDGET_MS} ms of prepareQuit`);
 	return { elapsedMs, result };
 }
 
@@ -96,6 +99,27 @@ async function assertNoSurvivorChildren(probe, label) {
 }
 
 describe("native2 shutdown budget", () => {
+	it("rejects an ACK too late for the real host even if the exit is within the test budget", async () => {
+		let now = 0;
+		const exited = Promise.withResolvers();
+		const ack = Promise.withResolvers();
+		const fake = {
+			backend: { exited: exited.promise, child: { exitCode: 0 } },
+			host: {
+				waitForEvent: () => ack.promise,
+				emit() {
+					now = 100;
+					exited.resolve({ code: 0, stderr: "" });
+					setImmediate(() => {
+						now = 2_000; // Past the real host's cutoff, but still inside the process exit budget.
+						ack.resolve();
+					});
+				},
+			},
+		};
+		await assert.rejects(quitWithinBudget(fake, "late ACK", () => now), /application\.readyToExit was not observed within/);
+	});
+
 	it("a quit while a pi --version probe is in flight exits from the event loop", async (t) => {
 		const fixture = seedFixture();
 		const probe = createProbePi(fixture, { versionDelayMs: 150 });

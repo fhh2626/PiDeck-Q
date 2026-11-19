@@ -76,6 +76,28 @@ test("pinned required backend never falls back to a release binary", (t) => {
 	assert.throws(() => backendHarness.resolveBackendExecutable(root), /no backend executable/);
 });
 
+test("Qt lookup follows the selected backend mode instead of stale debug metadata", (t) => {
+	const { root, binary } = fixture(t);
+	const localAppData = join(root, "local-app-data");
+	const release = join(root, "build/windows/x64/release/PiDeckBackend.exe");
+	const sdk = (hash) => join(localAppData, ".xmake/packages/p/pideck-qt/6.11.2", hash, "qt/bin");
+	for (const [mode, hash, exe] of [["debug", "aaa", binary], ["release", "bbb", release]]) {
+		const dependency = join(root, `build/.deps/PiDeckBackend/windows/x64/${mode}/native/backend/main.cpp.obj.d`);
+		mkdirSync(dirname(dependency), { recursive: true });
+		writeFileSync(dependency, `${sdk(hash)}/../include/QtCore/qglobal.h`);
+		mkdirSync(dirname(exe), { recursive: true });
+		writeFileSync(exe, "fixture");
+		mkdirSync(sdk(hash), { recursive: true });
+		writeFileSync(join(sdk(hash), "Qt6Core.dll"), "fixture");
+	}
+	assert.equal(backendHarness.qtBinDirectory(root, { executable: release, localAppData }), sdk("bbb"));
+	assert.equal(backendHarness.qtBinDirectory(root, { executable: binary, localAppData }), sdk("aaa"));
+	process.env.PIDECK_BACKEND_TEST_EXECUTABLE = "build/windows/x64/release/PiDeckBackend.exe";
+	assert.equal(backendHarness.qtBinDirectory(root, { localAppData }), sdk("bbb"));
+	rmSync(join(sdk("aaa"), "Qt6Core.dll"));
+	assert.equal(backendHarness.qtBinDirectory(root, { executable: binary, localAppData }), sdk("bbb"));
+});
+
 /** Import lazily so resolver regressions remain independently runnable. */
 test("native runtime gate builds the resolver's first target before enforcing fresh tests", async () => {
 	const { runNativeRuntimeGate } = await import("../scripts/test-native-runtime.mjs");

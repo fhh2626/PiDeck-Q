@@ -3,12 +3,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 
 const executable = resolveBackendExecutable();
-const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macosx" : process.platform;
-const wsl = join(process.cwd(), `build/${platform}/${process.arch}/debug/PiDeck-FakeWsl${process.platform === "win32" ? ".exe" : ""}`);
+const wsl = nativeBuildPaths("PiDeck-FakeWsl").map((path) => join(process.cwd(), path)).find(existsSync);
+if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") assert.ok(wsl, "Build PiDeck-FakeWsl before required native tests");
 
-test("deleting a WSL model preserves project defaults in another distribution", { skip: !executable || !existsSync(wsl) }, async (t) => {
+test("deleting a WSL model preserves project defaults in another distribution", { skip: !executable || !wsl }, async (t) => {
 	const selected = { defaultProvider: "custom", defaultModel: "shared-id" };
 	let currentProject;
 	let otherProject;

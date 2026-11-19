@@ -8,6 +8,7 @@ import { writeSessionFile } from "./helpers/native2RuntimeEvents.mjs";
 
 const availability = backendTestAvailability();
 const launcher = nativeBuildPaths("PiDeck-FakeWsl").map((path) => join(process.cwd(), path)).find(existsSync);
+if (process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1") assert.ok(launcher, "Build PiDeck-FakeWsl before required native tests");
 const linuxHome = "/home/dev";
 const portable = (path) => path.replaceAll("\\", "/");
 
@@ -15,6 +16,7 @@ const portable = (path) => path.replaceAll("\\", "/");
 async function fixture(t, wsl, raw) {
   let alias, settingsFile, originalFile, replacementFile, replacementRoot, canonicalReplacement;
   const project = process.cwd();
+  const cwd = wsl ? portable(project).replace(/^([A-Za-z]):\//, (_, drive) => `/mnt/${drive.toLowerCase()}/`) : project;
   const f = await startBackendSession(t, {
     projects: [{ id: "canonical-encoding", path: project }],
     settings: wsl ? { wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" } : {},
@@ -35,7 +37,7 @@ async function fixture(t, wsl, raw) {
       settingsFile = join(agentDir, "settings.json");
       writeFileSync(settingsFile, JSON.stringify({ sessionDir: wsl ? `${linuxHome}/configured-root` : alias }));
       const content = (id) => [
-        { type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: project },
+        { type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd },
         { type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: id }] } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
       originalFile = Buffer.isBuffer(originalRoot)

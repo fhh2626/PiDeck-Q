@@ -114,15 +114,17 @@ for (const transition of ["switch", "reload", "same-session"]) {
 			getEntries: () => [], getBranch: () => [], getLeafId: () => "parent-leaf",
 			openSession: () => ({ createBranchedSession: () => fixture.childSessionFile }),
 		});
-		const model = { provider: "test", id: "fork-model", name: "Fork model", api: "openai-responses", input: ["text"], contextWindow: 100_000, maxTokens: 4096, reasoning: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		const model = { provider: "test", id: `fork-${transition}`, name: "Fork model", api: "openai-responses", input: ["text"], contextWindow: 100_000, maxTokens: 4096, reasoning: false, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		const modelRef = `${model.provider}/${model.id}`;
 		const credentialWait = Promise.withResolvers();
 		const credentialLookup = Promise.withResolvers();
 		Object.assign(fixture.ctx.modelRegistry, {
-			getAvailable: () => [model], find: () => model,
+			getAvailable: () => [model],
+			find: (provider, id) => provider === model.provider && id === model.id ? model : undefined,
 			getApiKeyAndHeaders() { credentialLookup.resolve(); return credentialWait.promise; },
 		});
 		const previousConfig = loadConfig();
-		saveConfig({ forkContext: { mode: "pruned", model: "test/fork-model" } });
+		saveConfig({ forkContext: { mode: "pruned", model: modelRef } });
 		const original = host(fixture.ctx);
 		let replacement;
 		const owner = new AbortController();
@@ -136,8 +138,10 @@ for (const transition of ["switch", "reload", "same-session"]) {
 		await original.emit("session_start", { type: "session_start", reason: "startup" });
 		resetDoubles();
 		setRunSyncBehavior(() => completedResult(fixture, { agent: "writable" }));
+		// Fork summarization and the child launch choose models independently. Keep
+		// both on the fixture registry, regardless of the installed agent defaults.
 		const execution = original.tools.get("subagent").execute(`fork-${transition}`, {
-			agent: "writable", task: "Inspect the assigned file.", context: "fork", acceptance: false, output: false, mission: false,
+			agent: "writable", task: "Inspect the assigned file.", model: modelRef, context: "fork", acceptance: false, output: false, mission: false,
 		}, owner.signal, undefined, fixture.ctx);
 		await credentialLookup.promise;
 		assert.equal(runSyncCalls.length, 0);
@@ -160,6 +164,7 @@ for (const transition of ["switch", "reload", "same-session"]) {
 			assert.equal(outcome.error, undefined);
 			assert.notEqual(outcome.result.isError, true, JSON.stringify(outcome.result));
 			assert.equal(runSyncCalls.length, 1);
+			assert.equal(runSyncCalls[0].options.modelOverride, modelRef);
 		} else {
 			assert.equal(runSyncCalls.length, 0, "preparation owned by an outgoing parent must not create a later child");
 			assert.ok(outcome.error, "the registered tool must report the canceled launch");

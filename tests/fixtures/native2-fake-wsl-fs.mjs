@@ -15,6 +15,7 @@
 //   listDelayMs - delay before answering `wsl -l -q`, so a suite can hold the serial domain
 //                 executor busy while a WSL switch is requested
 //   distros   - answer for `wsl -l -q`
+//   fileSymlinks - opt in to modelling file links using ordinary marker files
 // Batch-scan knobs (the scanner's NUL envelopes):
 //   statBatch      - "fail" makes the `stat --printf` batch exit 1 (per-file fallback)
 //   statCorrupt    - the batch prints one non-numeric `%Y` record, so the whole envelope
@@ -96,6 +97,33 @@ function toHost(linuxPath) {
 	fail(`path outside the fake home: ${linuxPath}`);
 }
 
+// Windows fixtures cannot create file symlinks without extra privileges. A marker
+// inode is the link entry; reading/stat -L/realpath follow its Linux target. Keep
+// rm/mv/scoped trash on the entry itself so deleting or moving it never moves its target.
+const fileSymlinkPrefix = "pideck-fake-wsl-file-symlink:\n";
+function fileSymlinkTarget(host) {
+	if (!scenario.fileSymlinks || !lstatSync(host, { throwIfNoEntry: false })?.isFile()) return null;
+	const text = readFileSync(host, "utf8");
+	return text.startsWith(fileSymlinkPrefix) ? text.slice(fileSymlinkPrefix.length) : null;
+}
+
+function follow(host) {
+	for (let hops = 0; hops < 40; hops++) {
+		const target = fileSymlinkTarget(host);
+		if (target === null) return host;
+		host = toHost(target);
+	}
+	// A failed lookup must be catchable per entry by the batched identity probe.
+	throw new Error("too many fixture file symlinks");
+}
+
+/** Report a marker as a link entry, whose GNU stat size is the target name in bytes. */
+function metadata(host) {
+	const target = fileSymlinkTarget(host);
+	if (target === null) return statSync(host);
+	return { mtimeMs: lstatSync(host).mtimeMs, size: Buffer.byteLength(target) };
+}
+
 function toLinux(hostPath) {
 	let currentLinux = linuxHome, currentHost = root;
 	while (true) {
@@ -143,7 +171,7 @@ function walk(directory, out, filter) {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		const full = join(directory, entry.name);
 		if (entry.isDirectory()) walk(full, out, filter);
-		else if (filter(full)) out.push(toLinux(full));
+		else if (filter(full) && fileSymlinkTarget(full) === null) out.push(toLinux(full));
 	}
 }
 
@@ -205,9 +233,9 @@ switch (verb) {
 		// Model coreutils -m with the real backing filesystem, including links and
 		// missing suffixes. Authorization decisions remain in production C++.
 		if (!["-m", "-e"].includes(rest[0]) || rest[1] !== "--") fail("unsupported realpath options");
-		if (rest[0] === "-e" && !existsSync(toHost(rest[2]))) process.exit(1);
+		if (rest[0] === "-e" && !existsSync(follow(toHost(rest[2])))) process.exit(1);
 		if (scenario.realpathDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(scenario.realpathDelayMs));
-		let current = toHost(rest[2]);
+		let current = follow(toHost(rest[2]));
 		const suffix = [];
 		while (!existsSync(current)) {
 			suffix.unshift(basename(current));
@@ -221,14 +249,15 @@ switch (verb) {
 	case "test": {
 		const [flag, target] = rest;
 		if (scenario.failTestPath === target && scenario.failTestFlag === flag) fail("probe failed");
-		const host = toHost(target);
+		const entry = toHost(target);
 		if (flag === "-L") {
 			let linked = false;
-			try { linked = lstatSync(host).isSymbolicLink(); } catch (error) {
+			try { linked = lstatSync(entry).isSymbolicLink() || fileSymlinkTarget(entry) !== null; } catch (error) {
 				if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
 			}
 			process.exit(linked ? 0 : 1);
 		}
+		const host = follow(entry);
 		const exists = existsSync(host);
 		const stats = exists ? statSync(host) : null;
 		const ok = flag === "-e" ? exists : flag === "-f" ? Boolean(stats?.isFile()) : flag === "-d" ? Boolean(stats?.isDirectory()) : fail(`unsupported test flag: ${flag}`);
@@ -243,7 +272,7 @@ switch (verb) {
 		process.exit(0);
 	}
 	case "cat": {
-		const host = toHost(rest[0]);
+		const host = follow(toHost(rest[0]));
 		if (!existsSync(host)) process.exit(1);
 		process.stdout.write(readFileSync(host));
 		process.exit(0);
@@ -252,14 +281,14 @@ switch (verb) {
 		// `head -c <n> -- <path>`
 		const separator = rest.indexOf("--");
 		const bytes = Number(rest[rest.indexOf("-c") + 1]);
-		const host = toHost(rest[separator + 1]);
+		const host = follow(toHost(rest[separator + 1]));
 		if (!existsSync(host)) process.exit(1);
 		process.stdout.write(readFileSync(host).subarray(0, bytes));
 		process.exit(0);
 	}
 	case "stat": {
 		if (rest[0] === "-Lc" && rest[1] === "%d:%i") {
-			const info = statSync(toHost(rest.at(-1)), { bigint: true });
+			const info = statSync(follow(toHost(rest.at(-1))), { bigint: true });
 			process.stdout.write(`${info.dev}:${info.ino}\n`);
 			process.exit(0);
 		}
@@ -277,7 +306,7 @@ switch (verb) {
 				const host = toHost(target);
 				// A vanished file contributes no record; the caller falls back per file.
 				if (!existsSync(host) || (scenario.statSkipSuffix && target.endsWith(scenario.statSkipSuffix))) continue;
-				const stats = statSync(host);
+				const stats = metadata(host);
 				// One malformed record must invalidate the whole envelope; the reader then
 				// re-stats every path instead of half-trusting the batch.
 				const time = scenario.statCorrupt && first
@@ -300,7 +329,7 @@ switch (verb) {
 		}
 		const host = toHost(rest.at(-1));
 		if (!existsSync(host) || (scenario.statSkipSuffix && rest.at(-1).endsWith(scenario.statSkipSuffix))) process.exit(1);
-		const stats = statSync(host);
+		const stats = metadata(host);
 		// Per-file fallback: `stat -c "%Y %s"`.
 		const time = scenario.statHugeSuffix && rest.at(-1).endsWith(scenario.statHugeSuffix)
 			? "1e308"
@@ -332,11 +361,11 @@ switch (verb) {
 			for (const target of rest.slice(3)) {
 				const host = toHost(target);
 				let canonical = Buffer.alloc(0);
-				try { canonical = canonicalBytes(host); }
+				try { canonical = canonicalBytes(follow(host)); }
 				catch {
 					try {
 						let linked = false;
-						try { linked = lstatSync(host).isSymbolicLink(); } catch { /* missing ordinary leaf */ }
+						try { linked = lstatSync(host).isSymbolicLink() || fileSymlinkTarget(host) !== null; } catch { /* missing ordinary leaf */ }
 						if (!linked) canonical = canonicalBytes(dirname(host), [basename(host)]);
 					} catch { /* an unknown ancestor is not a trustworthy identity */ }
 				}
@@ -356,7 +385,7 @@ switch (verb) {
 		const stallMs = Number(scenario.bodyStallMs ?? 5_000);
 		const stallPartial = String(scenario.bodyStallPartial ?? "");
 		for (const target of rest.slice(3)) {
-			const host = toHost(target);
+			const host = follow(toHost(target));
 			if (stallFile && target.endsWith(stallFile)) {
 				emit(Buffer.concat([Buffer.from(target), Buffer.from([0]), Buffer.from(stallPartial)]));
 				// Block the child past the reader's per-command timeout so the parent kills it
@@ -402,7 +431,7 @@ switch (verb) {
 		const target = rest.find((value) => value.startsWith("of="));
 		if (!target) fail("dd without of=");
 		const bytes = readFileSync(0);
-		writeFileSync(toHost(target.slice(3)), bytes);
+		writeFileSync(follow(toHost(target.slice(3))), bytes);
 		process.exit(0);
 	}
 	case "find": {
