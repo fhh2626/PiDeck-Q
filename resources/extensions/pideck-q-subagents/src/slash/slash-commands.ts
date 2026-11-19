@@ -8,6 +8,7 @@ import { listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-a
 import { resolveExistingReadPaths } from "../shared/settings.ts";
 import { DEFAULT_PROVIDER_MODELS_MAX_AGE_DAYS, applySubagentProfile, checkSubagentProfile, generateProfilesForProvider, listSubagentProfiles, readSubagentProfile, refreshProviderModelCatalog } from "../profiles/profiles.ts";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
+import { currentSessionForegroundControls } from "../runs/foreground/foreground-control.ts";
 import { findModelInfo, toModelInfo } from "../shared/model-info.ts";
 import { formatTokens, shortenPath } from "../shared/formatters.ts";
 import { listAsyncRuns, formatAsyncRunProgressLabel, type AsyncRunSummary } from "../runs/background/async-status.ts";
@@ -192,7 +193,7 @@ function stopFallbackText(targets: StopSelectorTarget[]): string {
 }
 
 function selectForegroundDetachControl(state: SubagentState, requested: string) {
-	const controls = [...state.foregroundControls.values()];
+	const controls = currentSessionForegroundControls(state);
 	if (requested) {
 		const matches = controls.filter((control) => control.runId === requested || control.runId.startsWith(requested));
 		if (matches.length > 1) throw new Error(`Ambiguous foreground run id prefix '${requested}' matched: ${matches.map((control) => control.runId).join(", ")}. Provide a longer id.`);
@@ -200,7 +201,7 @@ function selectForegroundDetachControl(state: SubagentState, requested: string) 
 	}
 	const singleControls = controls.filter((control) => control.mode === "single");
 	if (state.lastForegroundControlId) {
-		const latest = state.foregroundControls.get(state.lastForegroundControlId);
+		const latest = controls.find((control) => control.runId === state.lastForegroundControlId);
 		if (latest?.mode === "single") return latest;
 	}
 	return singleControls.sort((left, right) => right.updatedAt - left.updatedAt)[0];

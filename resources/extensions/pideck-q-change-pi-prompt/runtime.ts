@@ -35,12 +35,19 @@ function errorSummary(error: unknown): string {
 	return error instanceof Error ? error.message : 'Unknown extension error';
 }
 
+/** Optional loader-scoped identity keeps this package independent of the subagent installation. */
+function isNativeChildLoader(pi: ExtensionAPI): boolean {
+	let child = false;
+	pi.events?.emit('pideck-subagents:child-loader-query', { accept: () => { child = true; } });
+	return child;
+}
+
 /** Register only prompt transformation and explicit configuration commands. */
 export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): void {
-	// Native child creation briefly sets process.env while extensions load in the parent process.
-	// An already registered parent must not acquire a child's identity during that window.
+	// Native children answer on their own loader bus, including before a role tag exists.
+	// The process marker remains supported for separate child processes.
 	const childFlag = process.env.PI_SUBAGENT_CHILD;
-	const childInstance = childFlag !== undefined && childFlag !== '' && childFlag !== '0' && childFlag !== 'false';
+	const childInstance = (childFlag !== undefined && childFlag !== '' && childFlag !== '0' && childFlag !== 'false') || isNativeChildLoader(pi);
 	let settings: Settings | undefined;
 	let loading: Promise<void> | undefined;
 	let lastStatus = ['尚未转换提示词'];
@@ -80,7 +87,7 @@ export function registerPromptExtension(pi: ExtensionAPI, agentDir: string): voi
 		try {
 			// A child's role remains owned by subagents. Only Pi's stock documentation is removable.
 			if (childInstance || /<active_agent\s+name=["'][^"']+["']\s*\/?>/i.test(event.systemPrompt)) {
-				const next = stripChildDocumentation(event.systemPrompt, settings.config);
+				const next = stripChildDocumentation(event.systemPrompt, settings.config, event.systemPromptOptions);
 				if (next !== event.systemPrompt) return { systemPrompt: next };
 				return;
 			}

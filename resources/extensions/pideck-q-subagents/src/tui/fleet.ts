@@ -21,6 +21,7 @@ import { readFleetTranscript, renderFleetTranscript, type FleetTranscript } from
 import { handleHerdrInspectorAction } from "../inspectors/herdr/actions.ts";
 import type { HerdrClient } from "../inspectors/herdr/client.ts";
 import { getLivePromptAudit, type LivePromptAudit, type PromptAuditView } from "../runs/foreground/prompt-audit.ts";
+import { currentSessionForegroundControls } from "../runs/foreground/foreground-control.ts";
 
 const REFRESH_MS = 750;
 const MIN_REFRESH_MS = 250;
@@ -204,7 +205,7 @@ export function collectFleetSnapshot(
 		.map((job) => job.asyncId));
 	const workflowForegroundChildCounts = new Map<string, number>();
 	const liveWorkflowForegroundControls = new Set<ForegroundRunControl>();
-	for (const control of state.foregroundControls.values()) {
+	for (const control of currentSessionForegroundControls(state)) {
 		const activeChildCount = control.activeChildren?.size ?? 0;
 		if (!control.parentWorkflowRunId
 			|| !workflowParentIds.has(control.parentWorkflowRunId)
@@ -213,7 +214,7 @@ export function collectFleetSnapshot(
 		liveWorkflowForegroundControls.add(control);
 		workflowForegroundChildCounts.set(control.parentWorkflowRunId, (workflowForegroundChildCounts.get(control.parentWorkflowRunId) ?? 0) + activeChildCount);
 	}
-	for (const control of [...state.foregroundControls.values()].sort((left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId))) {
+	for (const control of currentSessionForegroundControls(state).sort((left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId))) {
 		activeForegroundIds.add(control.runId);
 		if (control.parentWorkflowRunId && workflowParentIds.has(control.parentWorkflowRunId)
 			&& ((workflowForegroundChildCounts.get(control.parentWorkflowRunId) ?? 0) <= 1 || !liveWorkflowForegroundControls.has(control))) continue;
@@ -308,7 +309,7 @@ export function collectFleetSnapshot(
 }
 
 function visibleWorkflowParentKeyForForegroundKey(state: SubagentState, key: string, items: FleetItem[]): string | undefined {
-	for (const control of state.foregroundControls.values()) {
+	for (const control of currentSessionForegroundControls(state)) {
 		if (!control.parentWorkflowRunId) continue;
 		let matches = false;
 		if (control.activeChildren) {

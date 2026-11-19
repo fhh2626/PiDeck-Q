@@ -418,9 +418,10 @@ function reconcileChildEnvironmentsLocked(options: {
 			const overrides = subagents && isRecord(subagents.agentOverrides) ? subagents.agentOverrides : undefined;
 			const agentOverride = overrides && isRecord(overrides[name]) ? overrides[name] : undefined;
 
-			// Respect explicit user setting of subagentOnlyExtensions: false
+			// Clearing optional providers does not disable the mandatory captured policy hooks.
+			// Keep the user's override and reject only agents that need an injected provider.
 			if (agentOverride && agentOverride.subagentOnlyExtensions === false) {
-				incompatibleAgents.push(name);
+				if (agentExtensions.size > 0) incompatibleAgents.push(name);
 				continue;
 			}
 

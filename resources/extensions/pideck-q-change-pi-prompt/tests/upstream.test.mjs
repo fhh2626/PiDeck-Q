@@ -147,3 +147,37 @@ test('real latest Pi builder: customPrompt path stays unmodified end-to-end', as
 	assert.match(result.diagnostics[0], /custom-or-child-prompt/);
 	assert.ok(result.systemPrompt.includes(customPrompt));
 });
+
+test('real latest Pi builder: a forced prompt that resembles Pi stays opaque', async () => {
+	const { buildSystemPrompt } = await import(pathToFileURL(requireBuilder()).href);
+	const options = { cwd: '/project', selectedTools: ['read'], toolSnippets: { read: 'Read file contents' } };
+	options.forceSystemPrompt = buildSystemPrompt(options);
+	const systemPrompt = buildSystemPrompt(options);
+	const result = transformSystemPrompt(makeInput({ systemPrompt, options, tools: defaultTools(), activeTools: ['read'] }));
+	assert.equal(result.systemPrompt, systemPrompt);
+});
+
+test('real latest Pi builder: an extension-owned docs section survives optimization', async () => {
+	const { buildSystemPrompt, buildSystemPromptSections } = await import(pathToFileURL(requireBuilder()).href);
+	const options = { cwd: '/project', selectedTools: ['read'], toolSnippets: { read: 'Read file contents' } };
+	// Extensions can replace a named base section while keeping its recognizable Pi layout.
+	const stockDocs = buildSystemPromptSections(options).docs.slice('<docs>\n'.length, -'\n</docs>'.length);
+	const customDocs = `${stockDocs}\n- Team extension policy: Read /team/provider-guide.md before configuring providers.`;
+	options.sections = { docs: customDocs };
+	const systemPrompt = buildSystemPrompt(options);
+	const result = transformSystemPrompt(makeInput({ systemPrompt, options, tools: defaultTools(), activeTools: ['read'] }));
+	assert.ok(result.systemPrompt.includes(`<docs>\n${customDocs}\n</docs>`));
+});
+
+for (const [section, content] of [
+	['rules', '- Be concise in your responses\n- Show file paths clearly when working with files'],
+	['tools', '- bash: Team-provided command interface\n- read: Read file contents'],
+]) {
+	test(`real latest Pi builder: an extension-owned ${section} section stays exact`, async () => {
+		const { buildSystemPrompt } = await import(pathToFileURL(requireBuilder()).href);
+		const options = { cwd: '/project', selectedTools: ['read'], toolSnippets: { read: 'Read file contents' }, sections: { [section]: content } };
+		const systemPrompt = buildSystemPrompt(options);
+		const result = transformSystemPrompt(makeInput({ systemPrompt, options, tools: defaultTools(), activeTools: ['read'] }));
+		assert.ok(result.systemPrompt.includes(`<${section}>\n${content}\n</${section}>`));
+	});
+}

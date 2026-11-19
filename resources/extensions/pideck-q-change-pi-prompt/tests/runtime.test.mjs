@@ -72,3 +72,18 @@ test('prompt optimizer never registers tool enforcement or rewrites messages', (
   await assert.rejects(readFile(join(dir, 'subagent-tool-description.md')), { code: 'ENOENT' });
   await assert.rejects(readFile(join(dir, 'settings.json')), { code: 'ENOENT' });
 }));
+
+test('child documentation removal preserves an extension-owned docs section', () => harness(async ({ handlers, ctx }) => {
+  const docs = 'Pi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples\n- Child extension policy: Keep /team/child-guide.md available.';
+  const systemPrompt = `You are a coding assistant inside pi.\n\n<tools>\n- read: Read file contents\n</tools>\n\n<rules>\n- Be concise in your responses\n</rules>\n\n<docs>\n${docs}\n</docs>\n\n<active_agent name="readonly"/>\nKeep the child role.`;
+  const result = await handlers.get('before_agent_start')({ systemPrompt, systemPromptOptions: { sections: { docs } } }, ctx);
+  assert.equal(result?.systemPrompt ?? systemPrompt, systemPrompt);
+}));
+
+for (const field of ['customPrompt', 'forceSystemPrompt']) {
+  test(`child documentation removal preserves opaque ${field} text`, () => harness(async ({ handlers, ctx }) => {
+    const systemPrompt = 'You are a coding assistant inside pi.\n\n<tools>\n- read: Read file contents\n</tools>\n\n<rules>\n- Be concise in your responses\n</rules>\n\n<docs>\nPi documentation (read only when the user asks about pi itself):\n- Main documentation: /pi/README.md\n- Additional docs: /pi/docs\n- Examples: /pi/examples\n</docs>\n\n<active_agent name="readonly"/>\nKeep the child role.';
+    const result = await handlers.get('before_agent_start')({ systemPrompt, systemPromptOptions: { [field]: systemPrompt } }, ctx);
+    assert.equal(result?.systemPrompt ?? systemPrompt, systemPrompt);
+  }));
+}

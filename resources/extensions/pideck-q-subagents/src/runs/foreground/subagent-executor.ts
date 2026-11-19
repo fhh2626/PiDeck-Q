@@ -11,7 +11,7 @@ import { getArtifactsDir, getProjectArtifactPackagingWarning, getProjectSubagent
 import { createCapacityResilientJsonWriter } from "../../shared/capacity-resilient-json.ts";
 import { isStorageCapacityError } from "../../shared/file-system-retry.ts";
 import { resolveEffectiveThinking, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
-import { beginForegroundChild, finishForegroundChild, foregroundSchedulingSettled, settleForegroundSchedulingOwner, updateForegroundChild } from "./foreground-control.ts";
+import { beginForegroundChild, claimForegroundDispatch, currentSessionForegroundControls, finishForegroundChild, foregroundSchedulingSettled, settleForegroundSchedulingOwner, updateForegroundChild, withForegroundExecutionOwner } from "./foreground-control.ts";
 import { getLivePromptAudit, rewritePromptWithGuidance, updateLiveEffectivePrompt } from "./prompt-audit.ts";
 import { persistForegroundRunHistory, MAX_REMEMBERED_FOREGROUND_RUNS } from "./foreground-history.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
@@ -66,7 +66,7 @@ import { applySteeringRecoveryAgentConfig, asyncReviveRequiresRecoveryDescriptor
 import { deliverInterruptRequest, readRevivalBriefs, requestAsyncSteer, type SteerDeliveryMode } from "../background/control-channel.ts";
 import { updateSteeringTarget, waitForSteeringAction } from "../background/steering.ts";
 import { canQueueRetainedAsyncFollowUp, steerAsyncRun } from "./async-steering-action.ts";
-import { resolveWorkflowForegroundSteeringTarget, steerWorkflowForegroundTarget, steerWorkflowRun } from "./workflow-foreground-steering.ts";
+import { resolveForegroundSteeringTarget, steerWorkflowForegroundTarget, steerWorkflowRun } from "./workflow-foreground-steering.ts";
 import { stopAsyncRun } from "./async-stop-action.ts";
 import { dismissRecoveredWorkflow } from "./async-dismiss-action.ts";
 import { reconcileDetachedWorkflowChildCompletion } from "./workflow-detach-reconcile.ts";
@@ -323,6 +323,8 @@ interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
 	config: ExtensionConfig;
+	/** Refresh launch permissions for direct extension/bridge calls that bypass Pi tool events. */
+	prepareEnvironment?: (params: SubagentParamsLike, ctx: ExtensionContext) => Promise<{ block: true; reason: string } | undefined>;
 	waitToolEnabled?: boolean;
 	waitToolDefaultTimeoutMs?: number;
 	watchdog?: MainWatchdogRuntime;
@@ -439,13 +441,14 @@ export function removeForegroundControlIfIdle(state: SubagentState, runId: strin
 }
 
 function getForegroundControl(state: SubagentState, runId: string | undefined) {
-	if (runId) return state.foregroundControls.get(runId);
+	const controls = currentSessionForegroundControls(state);
+	if (runId) return controls.find((control) => control.runId === runId);
 	if (state.lastForegroundControlId) {
-		const latest = state.foregroundControls.get(state.lastForegroundControlId);
+		const latest = controls.find((control) => control.runId === state.lastForegroundControlId);
 		if (latest) return latest;
 	}
 	let newest: (SubagentState["foregroundControls"] extends Map<string, infer T> ? T : never) | undefined;
-	for (const control of state.foregroundControls.values()) {
+	for (const control of controls) {
 		if (!newest || control.updatedAt > newest.updatedAt) newest = control;
 	}
 	return newest;
@@ -531,7 +534,7 @@ function withSpawnBudgetStatus(
 }
 
 function hasActiveSubagentChildren(state: SubagentState): boolean {
-	if (state.subagentInProgress || state.foregroundControls.size > 0) return true;
+	if (state.subagentInProgress || currentSessionForegroundControls(state).length > 0) return true;
 	const isActive = (status: string) => status === "queued" || status === "running";
 	return [...state.asyncJobs.values(), ...(state.fleetJobs?.values() ?? [])].some((job) => isActive(job.status));
 }
@@ -4335,7 +4338,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 	const workflowResourcePermits = new WeakMap<object, WorkflowResourcePermit>();
 	const workflowPermitContexts = new WeakMap<object, { root: WorkflowChildPermit } | { child: WorkflowChildPermitContext }>();
 	const warnedArtifactPackageDirs = new Set<string>();
-	const execute = async (
+	const executeOwned = async (
 		_id: string,
 		params: SubagentParamsLike,
 		signal: AbortSignal,
@@ -4349,6 +4352,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (params.async !== undefined && params.async !== false) {
 			return buildRequestedModeError(params, "PiDeck-Q runs subagents in the foreground. Independent background launches have been removed; omit async or use async:false.");
 		}
+		// Retained workflow children use the launching owner's snapshot. Public, delegated
+		// and resume entry points must publish it before discovery or child creation begins.
+		if (!preserveActiveSession && deps.prepareEnvironment) {
+			try {
+				const denied = await deps.prepareEnvironment(params, ctx);
+				if (denied) return buildRequestedModeError(params, denied.reason);
+			} catch {
+				return buildRequestedModeError(params, "[subagent] Unable to prepare the execution environment.");
+			}
+		}
+		if (signal.aborted) return buildRequestedModeError(params, "Subagent execution was canceled before launch.");
 		const workflowLaunchObserver = workflowLaunchObservers.get(params);
 		const inheritedUsageBudget = workflowOwnedUsageBudgets.get(params);
 		const delegatedThinkingOverride = delegatedThinkingOverrides.get(params);
@@ -5226,7 +5240,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					return { content: [{ type: "text", text: `Workflow ${resolved.id} is a retained JavaScript VM, not a model session. Reply to pending supervisor requests or steer a concrete child run id from status; never resume or replay this workflow.` }], isError: true, details: { mode: "management", results: [] } };
 				}
 				if (resolved?.kind === "foreground") {
-					const route = resolveWorkflowForegroundSteeringTarget({ state: deps.state, childRunId: resolved.id, asyncDirRoot: DIRS.async });
+					const route = resolveForegroundSteeringTarget({ state: deps.state, childRunId: resolved.id, asyncDirRoot: DIRS.async });
 					if (!route.ok) return { content: [{ type: "text", text: route.message }], isError: true, details: { mode: "management", results: [] } };
 					return steerWorkflowForegroundTarget({ target: route.target, message, mode: resolveSteerDeliveryMode(paramsWithResolvedCwd.mode), index: paramsWithResolvedCwd.index });
 				}
@@ -5709,6 +5723,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		} catch (error) {
 			return toExecutionErrorResult(effectiveParams, error, contextPolicy.contextSummary);
 		}
+		if (signal.aborted) return buildRequestedModeError(effectiveParams, "Subagent execution was canceled before launch.");
 		const chainBindingsError = validateExecutionChainBindings(effectiveParams, deps.config.chain?.dynamicFanout?.maxItems);
 		if (chainBindingsError) {
 			return withResolvedContext(chainBindingsError, contextPolicy.contextSummary);
@@ -5766,12 +5781,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			return attachMission(spawnBudgetErrorResult(reservation.error, foregroundMode));
 		}
 
+		// Setup may wait for a worktree transaction before a child control exists.
+		// Give the registered scheduling owner its own cancellation path immediately.
+		const schedulingController = new AbortController();
 		const execData: ExecutionContextData = omitUndefinedProperties({
 			params: effectiveParams,
 			effectiveCwd,
 			requestedCwd,
 			ctx,
-			signal,
+			signal: AbortSignal.any([signal, schedulingController.signal]),
 			onUpdate: onUpdateWithContext,
 			agents,
 			unknownAgentDiagnosticContext,
@@ -5827,7 +5845,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				// The outer executor owns scheduling until its finally block settles.
 				schedulingOwners: 1,
 				nestedRoute,
-				interrupt: undefined,
+				interrupt: () => {
+					if (schedulingController.signal.aborted) return false;
+					schedulingController.abort();
+					return true;
+				},
 			});
 		if (foregroundControl) {
 			foregroundControl.promptAuditRedo = async (index, guidance) => {
@@ -6001,6 +6023,16 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		}, contextPolicy.contextSummary);
 	};
 
+	// Capture the caller's owner before environment or fork preparation can yield.
+	// Runtime cleanup cancels this owner even while no foreground control exists yet.
+	const execute: typeof executeOwned = (id, params, signal, onUpdate, ctx, preserveActiveSession, parentModelOverride) => {
+		let sessionId: string | undefined;
+		try { sessionId = resolveCurrentSessionId(ctx.sessionManager); }
+		catch { /* Diagnostic actions still report a missing session through their existing path. */ }
+		return withForegroundExecutionOwner(deps.state, sessionId, signal, (ownedSignal) =>
+			executeOwned(id, params, ownedSignal, onUpdate, ctx, preserveActiveSession, parentModelOverride));
+	};
+
 	const executeWithSingleDispatchGuard = async (
 		id: string,
 		params: SubagentParamsLike,
@@ -6013,12 +6045,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		// Read-only/control actions and explicitly async resume remain outside the foreground
 		// dispatch guard; foreground resume must obey the same one-call limit as a new run.
 		if (normalizedAction && normalizedAction !== "resume") return execute(id, requestParams, signal, onUpdate, ctx).then(withAggregatedToolUsage);
-		if (deps.state.subagentInProgress === true) return duplicateSubagentCallResult(requestParams);
-		deps.state.subagentInProgress = true;
+		let sessionId: string | undefined;
+		try { sessionId = resolveCurrentSessionId(ctx.sessionManager); }
+		catch { /* Execution reports an unavailable session through its existing validation. */ }
+		const releaseDispatch = claimForegroundDispatch(deps.state, sessionId);
+		if (!releaseDispatch) return duplicateSubagentCallResult(requestParams);
 		try {
 			return withAggregatedToolUsage(await execute(id, requestParams, signal, onUpdate, ctx));
 		} finally {
-			deps.state.subagentInProgress = false;
+			releaseDispatch();
 		}
 	};
 

@@ -743,9 +743,8 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.cleanupTimers.clear();
 		state.asyncJobs.clear();
 		state.fleetJobs?.clear();
-		state.foregroundControls?.clear();
+		// Foreground ownership survives async projection resets until the child confirms exit.
 		state.liveAsyncSessionRoots?.clear();
-		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
 		if (ctx?.hasUI) {
 			state.lastUiContext = ctx;

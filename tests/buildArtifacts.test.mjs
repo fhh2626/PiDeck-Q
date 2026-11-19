@@ -155,6 +155,8 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 	"pideck-q-subagents/src/policy/environment/shellProbe.ts",
 	"pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts",
 	"pideck-q-subagents/src/policy/environment/copy.ts",
+	"pideck-q-subagents/src/shared/prompt-sections.ts",
+	"pideck-q-subagents/src/runs/shared/child-loader-identity.ts",
 	]) {
 		await put(join(base, file), "// packaged");
 	}
@@ -180,7 +182,7 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
 		// Native backend, Qt dependency, renderer entries/assets and extension runtime files.
-		assert.equal(result.checked.length, 34, JSON.stringify(result.checked));
+		assert.equal(result.checked.length, 36, JSON.stringify(result.checked));
 	});
 });
 

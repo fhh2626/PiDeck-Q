@@ -12,6 +12,7 @@
  */
 
 import { resolveSubagentPreferDelegation } from "../agents/agents.ts";
+import { publishPromptAddition, type PromptAdditionEvent } from "../shared/prompt-sections.ts";
 
 /** 注入的引导语（英文，与 pi 的 system prompt 语言一致）。 */
 export const DELEGATION_HINT =
@@ -37,6 +38,14 @@ export function appendSubagentCallAnnouncementHint(systemPrompt: string, enabled
 	return systemPrompt.trim()
 		? `${systemPrompt}\n\n${SUBAGENT_CALL_ANNOUNCEMENT_HINT}`
 		: SUBAGENT_CALL_ANNOUNCEMENT_HINT;
+}
+
+/** Keep appended guidance in its own section so other extensions can still identify Pi's stock base. */
+export function publishSubagentPromptAddition(
+	event: PromptAdditionEvent,
+	systemPrompt: string,
+): { systemPrompt: string } | undefined {
+	return publishPromptAddition(event, systemPrompt, "pideck_subagents");
 }
 
 /** 当前进程是否是子代理（子代理不注入委派引导）。 */

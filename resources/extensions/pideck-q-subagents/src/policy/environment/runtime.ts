@@ -12,6 +12,8 @@ import { toKnownHostShells, toRetentionAvailability, type ShellProbeDetails } fr
 import { createHostEnvironment, type HostEnvironmentOptions } from './hostEnvironment.ts';
 import { createChildRuntime, isDelegationExecution } from './childRuntime.ts';
 import { isChildSession } from './childPrompt.ts';
+import { publishPromptAddition } from '../../shared/prompt-sections.ts';
+import { isChildLoader } from '../../runs/shared/child-loader-identity.ts';
 
 export { buildChildToolEnvironmentBlock, injectChildToolEnvironment, isChildSession } from './childPrompt.ts';
 
@@ -25,9 +27,35 @@ export interface SubagentEnvironmentOptions extends HostEnvironmentOptions {
 	lock?: ReconciliationLockOptions;
 }
 
+export interface SubagentEnvironment {
+	/** Direct extension, slash and RPC execution does not pass through Pi's tool_call event. */
+	prepareDelegation(input: unknown, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined>;
+}
+
 /** Prevent accidental repeated installation on the same extension API. Each loaded extension gets its own API. */
-const registered = new WeakSet<ExtensionAPI>();
+const registered = new WeakMap<ExtensionAPI, SubagentEnvironment>();
 const CAPTURED_OWNER_QUERY = 'pideck-subagents:environment-owner-query';
+
+/** Resolve only the mandatory policy bound to this exact SDK session. */
+function capturedEnvironment(pi: ExtensionAPI, ctx: ExtensionContext) {
+	let claimed = false;
+	let guard: SubagentEnvironment['prepareDelegation'] | undefined;
+	pi.events?.emit(CAPTURED_OWNER_QUERY, {
+		sessionManager: ctx.sessionManager,
+		accept: (owner?: SubagentEnvironment) => {
+			claimed = true;
+			if (typeof owner?.prepareDelegation === 'function') guard = owner.prepareDelegation;
+		},
+	});
+	return { claimed, guard };
+}
+
+/** Direct fanout tool execution must use its captured policy even without Pi tool events. */
+export async function prepareCapturedChildDelegation(pi: ExtensionAPI, input: unknown, ctx: ExtensionContext) {
+	const owner = capturedEnvironment(pi, ctx);
+	return owner.guard ? owner.guard(input, ctx)
+		: { block: true as const, reason: '[subagent] The captured child execution guard is not bound to this session.' };
+}
 
 function snapshotTools(pi: ExtensionAPI): ToolSnapshot[] {
 	if (typeof pi.getAllTools !== 'function') return [];
@@ -48,27 +76,25 @@ function sessionIdentity(ctx: ExtensionContext): string | undefined {
 }
 
 /** Register before the extension's child early return so enforcement survives child-only loading. */
-export function registerSubagentEnvironment(pi: ExtensionAPI, agentDir: string, options: SubagentEnvironmentOptions = {}): void {
-	if (registered.has(pi)) return;
-	registered.add(pi);
+export function registerSubagentEnvironment(pi: ExtensionAPI, agentDir: string, options: SubagentEnvironmentOptions = {}): SubagentEnvironment {
+	const existing = registered.get(pi);
+	if (existing) return existing;
 	const host = createHostEnvironment(pi, agentDir, options);
 	// Capture both identities during extension loading. Foreground children restore process.env
 	// immediately afterward, and another session must never change an existing child's owner.
-	const env = { PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD };
+	const env = { PI_SUBAGENT_CHILD: isChildLoader(pi.events) ? '1' : process.env.PI_SUBAGENT_CHILD };
 	const inheritedOwner = options.ownerKey ?? resolveShellPolicyOwnerKey();
 	let boundSession: ExtensionContext['sessionManager'] | undefined;
 	// Resource loaders may load another copy of the package through a provider path. Its API
 	// and module cache differ, so API identity cannot elect one policy. The captured hook claims
 	// only its actual bound SessionManager through the loader bus, even if several loaders share it.
 	const releaseOwner = options.child === true ? pi.events?.on(CAPTURED_OWNER_QUERY, (query: unknown) => {
-		if (boundSession && isRecord(query) && query.sessionManager === boundSession && typeof query.accept === 'function') query.accept();
+		if (boundSession && isRecord(query) && query.sessionManager === boundSession && typeof query.accept === 'function') query.accept(environment);
 	}) : undefined;
-	const capturedOwnerExists = (ctx: ExtensionContext): boolean => {
-		if (options.child === true) return false;
-		let claimed = false;
-		pi.events?.emit(CAPTURED_OWNER_QUERY, { sessionManager: ctx.sessionManager, accept: () => { claimed = true; } });
-		return claimed;
-	};
+	const capturedOwner = (ctx: ExtensionContext) => options.child === true
+		? { claimed: false, guard: undefined }
+		: capturedEnvironment(pi, ctx);
+	const capturedOwnerExists = (ctx: ExtensionContext) => capturedOwner(ctx).claimed;
 	let childActive = options.child === true || isChildSession('', undefined, env);
 	let ownerKey: string | undefined;
 	const child = createChildRuntime({ pi, agentDir, host, ownerKey: inheritedOwner, allowNested: options.allowNested });
@@ -112,7 +138,7 @@ export function registerSubagentEnvironment(pi: ExtensionAPI, agentDir: string, 
 			const tools = snapshotTools(pi);
 			if (childActive) {
 				const next = child.prepare(event.systemPrompt, tools, getCatalog(tools), details);
-				if (next !== undefined && next !== event.systemPrompt) return { systemPrompt: next };
+				if (next !== undefined) return publishPromptAddition(event, next, 'pideck_child_environment');
 				return;
 			}
 			ownerKey = sessionIdentity(ctx) ?? ownerKey ?? `pid-${process.pid}`;
@@ -125,7 +151,7 @@ export function registerSubagentEnvironment(pi: ExtensionAPI, agentDir: string, 
 			host.notify(ctx, 'Unable to prepare the subagent tool environment. Tool execution will fail closed.');
 		}
 	});
-	pi.on('tool_call', async (event, ctx) => {
+	const gate = async (event: { toolName: string; input: unknown }, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined> => {
 		if (capturedOwnerExists(ctx)) return;
 		if (options.child === true && boundSession !== ctx.sessionManager) {
 			if (isChildCoordinationTool(event.toolName)) return;
@@ -178,5 +204,19 @@ export function registerSubagentEnvironment(pi: ExtensionAPI, agentDir: string, 
 		} catch {
 			return { block: true, reason: '[subagent] Unable to reconcile the child tool environment.' };
 		}
-	});
+	};
+	pi.on('tool_call', gate);
+	const environment: SubagentEnvironment = {
+		async prepareDelegation(input, ctx) {
+			const owner = capturedOwner(ctx);
+			// Events visit the captured hook later, but a direct entry must explicitly use it.
+			// A legacy owner without a callable guard cannot authorize a bypass.
+			if (owner.claimed) return owner.guard
+				? owner.guard(input, ctx)
+				: { block: true, reason: '[subagent] The captured child execution guard is unavailable.' };
+			return gate({ toolName: 'subagent', input }, ctx);
+		},
+	};
+	registered.set(pi, environment);
+	return environment;
 }

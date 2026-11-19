@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type EditorComponent, isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import { formatModelThinking } from "../shared/formatters.ts";
+import { currentSessionForegroundControls } from "../runs/foreground/foreground-control.ts";
 import type { AsyncJobState, AsyncJobStep, FleetViewPlacement, HerdrProjectPaneSnapshot, HostStepState, HostStepVerdict, NestedRunSummary, NestedStepSummary, SubagentState } from "../shared/types.ts";
 import { projectAsyncWorkflowRows, type AsyncStatusWorkflowRow } from "../runs/shared/async-status-projection.ts";
 import { contextModeLabel } from "../runs/shared/context-mode.ts";
@@ -332,7 +333,7 @@ export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntr
 		for (const identity of asyncJobIdentityCandidates(job)) childIds.add(identity);
 		materializedChildrenByWorkflow.set(parentKey, childIds);
 	}
-	for (const control of state.foregroundControls.values()) {
+	for (const control of currentSessionForegroundControls(state)) {
 		const linkedParentKey = linkedWorkflowParentKey(control.parentWorkflowRunId, activeWorkflowKeys);
 		if (control.activeChildren) {
 			const nestedChildren = control.nestedChildren ?? [];

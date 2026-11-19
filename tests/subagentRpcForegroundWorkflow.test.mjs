@@ -93,6 +93,96 @@ test("RPC cannot stop a retained workflow owned by another session", async () =>
 	} finally { bridge.dispose(); }
 });
 
+for (const mode of ["steer", "follow_up"]) {
+	test(`RPC ${mode} reaches the original child of a retained foreground workflow`, { timeout: 10_000 }, async () => {
+		const fixture = createFixture(graph, `rpc-${mode}`);
+		const events = eventsFor();
+		fixture.deps.pi.events = events;
+		const executor = graph.createSubagentExecutor(fixture.deps);
+		const owner = new AbortController();
+		const delivered = [];
+		let child;
+		resetDoubles();
+		setRunSyncBehavior(({ options }) => {
+			child = options;
+			options.onChildSession({
+				steer: async (message) => { delivered.push({ mode: "steer", message }); },
+				followUp: async (message) => { delivered.push({ mode: "follow_up", message }); },
+			});
+			events.emit("pi-intercom:detach-request", { requestId: "steer-ask", runId: options.runId, agent: "worker", childIndex: 0, source: "native" });
+			return completedResult(fixture, { detached: true, detachedReason: "intercom coordination", exitCode: undefined, finalOutput: undefined });
+		});
+		const initial = await executor.executePublic(`rpc-${mode}-workflow`, {
+			workflowScript: 'return runs.run("first", { agent: "worker", task: "inspect", acceptance: false });',
+			output: false, timeoutMs: 5000,
+		}, owner.signal, undefined, fixture.ctx);
+		assert.notEqual(initial.isError, true, JSON.stringify(initial));
+		const retained = fixture.state.foregroundWorkflows.get(initial.details.runId);
+		const bridge = rpc.registerSubagentRpcBridge({ events, getContext: () => fixture.ctx, state: fixture.state, execute: executor.executePublic });
+		try {
+			const reply = await request(events, "steer", { id: child.runId.slice(0, 12), mode, message: "Keep the existing work and check the final output." });
+			assert.equal(reply.success, true, JSON.stringify(reply));
+			assert.deepEqual(delivered, [{ mode, message: "Keep the existing work and check the final output." }]);
+			assert.equal(runSyncCalls.length, 1, "steering must use the original child session");
+			assert.equal(child.signal.aborted, false);
+			assert.equal(child.interruptSignal.aborted, false);
+			assert.equal(retained.result, undefined, "the existing workflow continuation must remain live");
+		} finally {
+			bridge.dispose();
+			await child.onDetachedExit(completedResult(fixture, { finalOutput: "STEERED CHILD COMPLETE" }));
+			for (let i = 0; i < 100 && !retained.result; i++) await pause();
+			owner.abort();
+		}
+	});
+}
+
+for (const mode of ["steer", "follow_up"]) {
+	test(`RPC ${mode} reaches a direct detached foreground child`, { timeout: 10_000 }, async () => {
+		const fixture = createFixture(graph, `rpc-direct-${mode}`);
+		const events = eventsFor();
+		fixture.deps.pi.events = events;
+		const executor = graph.createSubagentExecutor(fixture.deps);
+		const owner = new AbortController();
+		const delivered = [];
+		let child;
+		resetDoubles();
+		setRunSyncBehavior(({ options }) => {
+			child = options;
+			options.onChildSession({
+				steer: async (message) => { delivered.push({ mode: "steer", message }); },
+				followUp: async (message) => { delivered.push({ mode: "follow_up", message }); },
+			});
+			return completedResult(fixture, { detached: true, detachedReason: "intercom coordination", exitCode: undefined, finalOutput: undefined });
+		});
+		const initial = await executor.executePublic(`rpc-direct-${mode}`, {
+			agent: "worker", task: "inspect", acceptance: false, output: false,
+		}, owner.signal, undefined, fixture.ctx);
+		assert.notEqual(initial.isError, true, JSON.stringify(initial));
+		const bridge = rpc.registerSubagentRpcBridge({ events, getContext: () => fixture.ctx, state: fixture.state, execute: executor.executePublic });
+		try {
+			const reply = await request(events, "steer", { id: child.runId.slice(0, 12), mode, message: "Check the current output before finishing." });
+			assert.equal(reply.success, true, JSON.stringify(reply));
+			assert.deepEqual(delivered, [{ mode, message: "Check the current output before finishing." }]);
+			assert.equal(runSyncCalls.length, 1);
+			assert.equal(child.signal.aborted, false);
+			assert.equal(child.interruptSignal.aborted, false);
+			fixture.ctx.sessionManager.getSessionFile = () => `${fixture.parentSessionFile}.another-session`;
+			const foreignInterrupt = await request(events, "interrupt", { id: child.runId });
+			assert.equal(foreignInterrupt.success, false, "an exact-id interrupt must refresh ownership from the incoming context");
+			assert.equal(child.interruptSignal.aborted, false);
+			const foreign = await request(events, "steer", { id: child.runId, mode, message: "This must not be delivered." });
+			assert.equal(foreign.success, false, "a new parent session must not steer the retained child");
+			assert.equal(delivered.length, 1);
+			const foreignStatus = await request(events, "status", { id: child.runId });
+			assert.equal(foreignStatus.success, false, "a new parent session must not inspect the retained child");
+		} finally {
+			bridge.dispose();
+			await child.onDetachedExit(completedResult(fixture, { finalOutput: "DIRECT CHILD COMPLETE" }));
+			owner.abort();
+		}
+	});
+}
+
 test("RPC rejects removed spawn and schedule management methods", async () => {
 	const fixture = createFixture(graph, "rpc-removed");
 	const events = eventsFor();

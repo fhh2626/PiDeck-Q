@@ -20,13 +20,14 @@ import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition 
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, type AgentConfig, type AgentScope } from "../agents/agents.ts";
 import { appendAdvertisedAgentPrompt, buildAdvertisedAgentPrompt } from "../agents/advertised-agent-prompt.ts";
-import { appendDelegationHint, appendSubagentCallAnnouncementHint, shouldInjectDelegationHint, shouldInjectSubagentCallAnnouncementHint } from "./delegation-hint.ts";
+import { appendDelegationHint, appendSubagentCallAnnouncementHint, publishSubagentPromptAddition, shouldInjectDelegationHint, shouldInjectSubagentCallAnnouncementHint } from "./delegation-hint.ts";
 import { clearRuntimeAgentsForPi, listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-agent-registry.ts";
 import { registerRuntimeAgentEventListener } from "../agents/runtime-agent-events.ts";
 import { ensureAccessibleDir } from "../shared/accessible-dir.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { interruptForeignForegroundWorkflows } from "../runs/foreground/workflow-handoff.ts";
+import { interruptForegroundControls } from "../runs/foreground/foreground-control.ts";
 import { getAgentDir } from "../shared/utils.ts";
 import { registerSubagentEnvironment } from "../policy/environment/runtime.ts";
 import { isStaleExtensionContextError, withCachedUiContext } from "../shared/extension-context.ts";
@@ -63,6 +64,7 @@ import registerSubagentNotify, { parseSubagentNotifyContent, type SubagentNotify
 import { formatSteeringNotice, handleSubagentSteeringNotice, SUBAGENT_STEERING_MESSAGE_TYPE, type SubagentSteeringMessageDetails } from "./steering-notices.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/child-runtime-config.ts";
 import { disposeChildSessions } from "../runs/shared/child-session.ts";
+import { isChildLoader } from "../runs/shared/child-loader-identity.ts";
 import { resolveCurrentSubagentCapabilityCeiling } from "../runs/shared/capability-ceiling.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { applyModelExclusionsConfig, loadConfig, resolveAsyncByDefault } from "./config.ts";
@@ -391,10 +393,10 @@ export function projectActiveHerdrRuns(state: SubagentState): HerdrStatusRun[] {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	registerSubagentEnvironment(pi, getAgentDir());
-	// Preserve the parent identity while in-process children temporarily set this global flag.
+	const environment = registerSubagentEnvironment(pi, getAgentDir());
+	// Capture the dedicated-process marker once. Foreground children use their loader identity.
 	const promptSessionEnv = { [SUBAGENT_CHILD_ENV]: process.env[SUBAGENT_CHILD_ENV] };
-	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
+	if (process.env[SUBAGENT_CHILD_ENV] === "1" || isChildLoader(pi.events)) {
 		return;
 	}
 	const runtimeRegistry = getRuntimeRegistry();
@@ -566,6 +568,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi,
 		state,
 		config,
+		prepareEnvironment: environment.prepareDelegation,
 		waitToolEnabled: waitToolConfig.enabled,
 		waitToolDefaultTimeoutMs: waitToolConfig.defaultTimeoutMs,
 		watchdog: mainWatchdog,
@@ -777,7 +780,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				env: promptSessionEnv,
 			}),
 		);
-		if (systemPrompt !== event.systemPrompt) return { systemPrompt };
+		return publishSubagentPromptAddition(event, systemPrompt);
 	});
 
 	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs, supervisorChannel.findPendingAsks);
@@ -914,6 +917,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		resultDeliveryOwnership.claimPredecessor(previousSessionFile, previousRuntimeSessionId);
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		interruptForeignForegroundWorkflows(state, state.currentSessionId);
+		interruptForegroundControls(state, state.currentSessionId);
 		state.supervisorOwnerSessionId = ctx.sessionManager.getSessionId() || null;
 		transitionResultDelivery();
 		state.parentSessionFile = ctx.sessionManager.getSessionFile();
@@ -950,7 +954,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		phaseStartedAt = Date.now();
 		cleanupSessionArtifacts(ctx);
 		logSlowPhase("session-artifact-cleanup", phaseStartedAt);
-		state.foregroundControls.clear();
 		retainedNestedRouteTracker?.clear();
 		retainedNestedRouteTracker = undefined;
 		executorDeps.trackRetainedNestedRoute = undefined;
@@ -994,6 +997,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			for (const controller of state.workflowControllers?.values() ?? []) {
 				if (!controller.signal.aborted) controller.abort(new Error("Workflow stopped because the extension session was replaced or reloaded."));
 			}
+			interruptForegroundControls(state);
 			state.workflowControllers?.clear();
 			state.workflowChildStops?.clear();
 			clearRuntimeAgentsForPi(pi);

@@ -102,6 +102,24 @@ test('legacy managed prompt providers migrate without deleting user-owned provid
   assert.equal(existsSync(shellPolicySnapshotPath(dir, 'parent-a')), true);
 }));
 
+test('clearing optional child extensions preserves builtin delegation and mandatory policy hooks', () => withDir(async dir => {
+  const settings = { subagents: { agentOverrides: { readonly: { subagentOnlyExtensions: false } } } };
+  await writeFile(join(dir, 'settings.json'), JSON.stringify(settings));
+  const parent = host(['read', 'subagent']);
+  registerSubagentEnvironment(parent.pi, dir, { probeHost: { platform: process.platform, env: {}, exists: () => false } });
+  const denied = await parent.emit('tool_call', { toolName: 'subagent', input: { agent: 'readonly', task: 'Inspect one file' } });
+  assert.equal(denied, undefined, 'Builtin tools need no optional provider, and captured hooks always load');
+  assert.deepEqual(JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8')), settings);
+
+  const child = host(['read', 'write', 'contact_supervisor'], 'child-a');
+  for (const hook of createChildHooks({ parentSessionId: 'parent-a', depth: 1, fanoutChild: false, fast: false, waitTool: { enabled: false } })) await hook.factory(child.pi);
+  await child.emit('session_start', {});
+  await child.emit('before_agent_start', { systemPrompt: '<active_agent name="readonly"/>\nInspect one file' });
+  assert.deepEqual(child.pi.getActiveTools(), ['read', 'contact_supervisor']);
+  assert.equal(await child.emit('tool_call', { toolName: 'read', input: {} }), undefined);
+  assert.equal((await child.emit('tool_call', { toolName: 'write', input: {} })).block, true);
+}));
+
 test('legacy parent snapshots are readable but a current revoked policy stays authoritative', () => withDir(async dir => {
   await mkdir(join(dir, 'change-pi-prompt'), { recursive: true });
   const payload = { version: 2, platform: process.platform, shell: { bash: false, powershell: false }, parentActiveTools: ['read', 'write'] };

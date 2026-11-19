@@ -56,6 +56,8 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-subagents/src/policy/environment/shellProbe.ts",
 	"extensions/pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts",
 	"extensions/pideck-q-subagents/src/policy/environment/copy.ts",
+	"extensions/pideck-q-subagents/src/shared/prompt-sections.ts",
+	"extensions/pideck-q-subagents/src/runs/shared/child-loader-identity.ts",
 	"extensions/pideck-q-webfetch.ts",
 	"extensions/pideck-q-webfetch/dist/index.mjs",
 ];
