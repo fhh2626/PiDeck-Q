@@ -312,6 +312,13 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [lastTab] = useState(loadLastConfigTab);
 	const [section, setSection] = useState<ConfigSection>(lastTab?.section ?? "config");
 	const [tab, setTab] = useState<ConfigTab>(lastTab?.tab ?? "models");
+	const [securityVisited, setSecurityVisited] = useState(false);
+	// The safety editor owns its draft. Keep it alive after the first visit, and release
+	// it on a real dialog close so discarded rules cannot reappear on the next opening.
+	useEffect(() => {
+		if (!open) setSecurityVisited(false);
+		else if (section === "security") setSecurityVisited(true);
+	}, [open, section]);
 	const [loading, setLoading] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -1423,12 +1430,21 @@ function ConfigModalContent(props: ConfigModalProps) {
 		}
 	};
 
-	/** 关闭确认框选择保存并关闭：保存当前 tab 成功才关；失败留在弹框（错误已展示在内容区）。 */
+	/** Save the current editor and any retained safety draft before closing the dialog. */
 	const handleSaveAndClose = async () => {
 		const tabKey = sectionTabValue(section, tab);
 		if (dirtyTabs.has(tabKey)) {
 			const ok = await saveByKey(tabKey);
 			if (!ok) return;
+		}
+		if (tabKey !== "security" && dirtyTabs.has("security")) {
+			const ok = await saveByKey("security");
+			if (!ok) {
+				// Make validation errors and edits retained during saving visible to the user.
+				setSection("security");
+				setCloseConfirmOpen(false);
+				return;
+			}
 		}
 		setCloseConfirmOpen(false);
 		props.onClose();
@@ -1744,13 +1760,20 @@ function ConfigModalContent(props: ConfigModalProps) {
 						</div>
 					</TabsContent>
 
-					<TabsContent value="security" className="config-main min-w-0">
-						<div className="config-content">
-						<SecuritySection
-							ref={securitySectionRef}
-							onDirtyChange={handleSecurityDirtyChange}
-						/>
-						</div>
+					<TabsContent
+						value="security"
+						forceMount={securityVisited ? true : undefined}
+						hidden={section !== "security"}
+						className="config-main min-w-0 data-[state=inactive]:hidden"
+					>
+						{(securityVisited || section === "security") && (
+							<div className="config-content">
+								<SecuritySection
+									ref={securitySectionRef}
+									onDirtyChange={handleSecurityDirtyChange}
+								/>
+							</div>
+						)}
 					</TabsContent>
 
 					<TabsContent value="config:trust" className="config-main min-w-0">

@@ -30,7 +30,7 @@ struct UpdateResult {
 /** Default configuration (enabled=false keeps the gate fully permissive). */
 QJsonObject defaultConfig();
 
-/** Backward-compatible normalization: built-in levels survive, unknown default falls back. */
+/** Normalize legacy PowerShell fields, preserve built-in levels and resolve unknown defaults. */
 QJsonObject normalizeConfig(const QJsonObject &raw);
 
 /** Validation errors; an empty list means the configuration is usable. */

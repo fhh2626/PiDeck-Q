@@ -475,7 +475,8 @@ test("Scenario B: Dangerous shell commands are intercepted for worker child (bas
 	const gate = await loadChildSecurityGate(childLaunch.session.processEnv);
 
 	try {
-		const ctx = { cwd: tempDir, hasUI: false };
+		// 自动批准确认，让断言区分真正的规则拒绝和 ask 在无 UI 下的保守拒绝。
+		const ctx = { cwd: tempDir, hasUI: true, ui: { select: async () => "允许执行" } };
 
 		// 1. 危险 bash 命令 -> 拦截
 		const dangerousBash = await gate.toolCall({
@@ -499,6 +500,20 @@ test("Scenario B: Dangerous shell commands are intercepted for worker child (bas
 			input: { command: "Get-Content foo.txt | Set-Content bar.txt" },
 		}, ctx);
 		assert.ok(pipelinePwsh?.block, "Worker child running PowerShell write pipeline must be blocked");
+
+		// 子代理保持相同实例，在下次工具调用时读取父会话最新的正则。
+		snapshot.levels[0].denyPowerShellPatterns = ["\\bRestart-Service\\b"];
+		writeFileSync(configPath, JSON.stringify(snapshot));
+		const clearedPattern = await gate.toolCall({
+			toolName: "powershell",
+			input: { command: "Remove-Item -Recurse ./project" },
+		}, ctx);
+		assert.equal(clearedPattern, undefined, "removed PowerShell rules must stop blocking child calls");
+		const updatedPattern = await gate.toolCall({
+			toolName: "powershell",
+			input: { command: "Restart-Service example" },
+		}, ctx);
+		assert.ok(updatedPattern?.block, "new PowerShell rules must apply to the running child");
 	} finally {
 		gate.cleanup();
 		rmSync(tempDir, { recursive: true, force: true });

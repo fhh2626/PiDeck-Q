@@ -376,10 +376,12 @@ function shellAction(
 	tool: ShellTool,
 	command: string,
 ): SecurityAction {
+	const toolAction = level.toolActions[tool] ?? level.defaultAction;
+	// 工具级拒绝优先，命中危险规则不能把拒绝降级为可批准的确认。
+	if (toolAction === "deny") return "deny";
 	const dangerous = tool === "powershell"
 		? matchesPowerShellDeny(level, command)
 		: matchesBashDeny(level, command);
-	const toolAction = level.toolActions[tool] ?? level.defaultAction;
 	if (!dangerous) return toolAction;
 	// 危险命令：显式放行该 shell → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
 	if (toolAction === "allow") return "allow";

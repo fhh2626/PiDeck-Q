@@ -24,6 +24,20 @@ Configure authentication through the selected Pi runtime's login or provider set
 - **Font Size** — Adjust the editor and terminal font size.
 - Session persistence is owned by the selected pi runtime; PiDeck does not implement a separate Agent autosave mechanism.
 
+## Security management
+
+Enable security management in **Pi Manager → Security** to configure Bash and PowerShell tool actions and dangerous command patterns for each level. The PowerShell editor appears below the Bash editor. Enter one regular expression per line. These patterns apply to commands from the `powershell` tool and ignore case.
+
+| Level | Default PowerShell rules and behavior |
+| --- | --- |
+| Off | The pattern list is empty and tool calls are allowed. |
+| Standard | Includes patterns for file deletion and writes, process operations, Git mutations, package installation, and redirection. Commands require confirmation. |
+| Strict | Uses the same dangerous command patterns. Matching commands are denied, and other commands require confirmation. |
+
+A new custom level copies the current Standard level and can be edited independently. Clearing the PowerShell pattern list disables pattern matching while keeping the tool action in effect. Setting the tool action to Deny always blocks that tool. Setting it to Allow permits commands to run.
+
+Saved rules take effect on the next tool call, including subagents that inherit the parent session's security policy. Older configurations receive missing PowerShell defaults while preserving existing custom patterns and explicitly empty lists.
+
 ## Skills
 
 Skills extend the agent's capabilities. PiDeck supports two levels:

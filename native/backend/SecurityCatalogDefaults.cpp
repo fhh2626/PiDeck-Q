@@ -116,9 +116,25 @@ QJsonObject normalizeConfig(const QJsonObject &raw)
     if (raw.isEmpty()) return defaults;
     QJsonArray levels = defaults.value(QStringLiteral("levels")).toArray();
     for (const QJsonValue &value : raw.value(QStringLiteral("levels")).toArray()) {
-        const QJsonObject candidate = value.toObject();
+        QJsonObject candidate = value.toObject();
         const QString id = candidate.value(QStringLiteral("id")).toString();
         if (id.isEmpty()) continue;
+        // Older saved levels predate the separate PowerShell editor. Materialize the
+        // extension's fallback rules so the UI displays the policy it actually enforces.
+        // An explicitly empty list or user-selected action must survive this migration.
+        if (!candidate.contains(QStringLiteral("denyPowerShellPatterns"))) {
+            candidate.insert(QStringLiteral("denyPowerShellPatterns"),
+                             id == QStringLiteral("off") ? QJsonArray{}
+                                                         : toArray(kDefaultDenyPowerShellPatterns));
+        }
+        if ((id == QStringLiteral("standard") || id == QStringLiteral("strict"))
+            && candidate.value(QStringLiteral("toolActions")).isObject()) {
+            QJsonObject actions = candidate.value(QStringLiteral("toolActions")).toObject();
+            if (!actions.contains(QStringLiteral("powershell"))) {
+                actions.insert(QStringLiteral("powershell"), QStringLiteral("ask"));
+                candidate.insert(QStringLiteral("toolActions"), actions);
+            }
+        }
         bool replaced = false;
         for (int index = 0; index < levels.size(); ++index) {
             if (levels.at(index).toObject().value(QStringLiteral("id")).toString() != id) continue;
