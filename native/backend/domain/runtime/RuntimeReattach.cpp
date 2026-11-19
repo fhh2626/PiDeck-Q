@@ -18,12 +18,11 @@ constexpr int kStateTimeoutMs = 30'000;
 
 } // namespace
 
-pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
-                                                 const QString &sessionPath) const
+pilaunch::Request Coordinator::sessionLaunchRequest(const AgentSession &session,
+                                                    const QString &sessionPath) const
 {
     pilaunch::Request request;
     request.settings = m_deps.settings ? m_deps.settings() : QJsonObject{};
-    request.agentDir = m_deps.agentDir;
     request.resourcesDir = m_deps.resourcesDir;
     request.projectPath = session.tab().cwd;
     request.sessionPath = sessionPath;
@@ -32,21 +31,40 @@ pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
     request.securitySnapshotPath = m_deps.securitySnapshotPath;
     request.uiLocale = m_deps.uiLocale ? m_deps.uiLocale() : QString();
     request.wslExe = m_deps.services ? m_deps.services->wslExe : QString();
-    bool hasTrustResources = false;
-    request.trustOverride = pilaunch::resolveTrustOverride(m_deps.agentDir, request.projectPath,
-                                                           &hasTrustResources);
-    const pilaunch::Launch probe = pilaunch::build(request);
-    if (request.trustOverride.isEmpty() || !hasTrustResources) return probe;
-    // Trust flags only exist on pi >= 0.79. The version was probed when this runtime was
-    // activated, so the cached answer decides here instead of forking `pi --version`
-    // again in the middle of a reconnect.
-    if (pilaunch::supportsTrustFlags(pilaunch::cachedVersion(probe))) return probe;
-    request.trustOverride.clear();
+    return request;
+}
+
+pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
+                                                 const QString &sessionPath) const
+{
+    pilaunch::Request request = sessionLaunchRequest(session, sessionPath);
+    request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(
+        pilaunch::cachedVersion(pilaunch::build(request)));
     return pilaunch::build(request);
 }
 
 void Coordinator::reattachProcess(const QString &agentId, const Target &target,
                                   std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done)
+{
+    AgentSession *session = agent(agentId);
+    if (!session) {
+        done(false, QStringLiteral("Session runtime is not available"), 0);
+        return;
+    }
+    const quint64 expectedEpoch = session->clientEpoch();
+    pilaunch::Request request = sessionLaunchRequest(*session, session->tab().sessionPath);
+    // Settings can select a new command while the existing runtime is alive. Probe the
+    // captured command so a cold cache cannot silently drop its project resources.
+    pilaunch::probeVersion(pilaunch::build(request), m_versionProbes,
+        [this, agentId, target, expectedEpoch, request, done](const QString &version) mutable {
+            request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
+            reattachPrepared(agentId, target, expectedEpoch, request.sessionPath, pilaunch::build(request), done);
+        });
+}
+
+void Coordinator::reattachPrepared(const QString &agentId, const Target &target, quint64 expectedEpoch,
+                                   const QString &sessionPath, const pilaunch::Launch &launch,
+                                   std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done)
 {
     AgentSession *session = agent(agentId);
     if (!session) {
@@ -63,20 +81,22 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
         done(false, QStringLiteral("Session runtime binding changed"), 0);
         return;
     }
-    if (deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
+    if (m_shutdown || deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
         // The binding still owns this exited transport. Its epoch lets callers
         // retire it instead of leaving a dead runtime stuck in starting state.
         done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
         return;
     }
-    const QString sessionPath = session->tab().sessionPath;
+    if (session->clientEpoch() != expectedEpoch || session->tab().sessionPath != sessionPath) {
+        done(false, QStringLiteral("Session runtime changed during reconnect"), 0);
+        return;
+    }
     if (sessionPath.isEmpty()) {
         // Without a session file a second process would start an empty conversation.
         done(false, QStringLiteral("Session has no session file to reattach"), session->clientEpoch());
         return;
     }
 
-    const pilaunch::Launch launch = buildSessionLaunch(*session, sessionPath);
     CatalogEntry previous;
     previous.filePath = sessionPath;
     previous.environment = session->tab().sessionEnvironment;

@@ -130,16 +130,18 @@ target("PiDeckBackend")
     set_kind("binary")
     set_default(false)
     add_packages("pideck-qt")
-    -- OpenCode import reads its SQLite history database through Qt Sql. The pinned
-    -- pideck-qt package only publishes the modules the desktop host needs, so the
+    -- OpenCode import reads its SQLite history database through Qt Sql, and
+    -- security pattern validation runs the embedded ECMAScript parser via Qt Qml.
+    -- The pinned pideck-qt package only publishes the modules the desktop host needs, so the
     -- extra module's headers/link dir are added here instead of widening the package.
-    add_links("Qt6Sql", "Qt6Network")
+    add_links("Qt6Sql", "Qt6Network", "Qt6Qml")
     on_load(function (target)
         local pkgs = target:pkgs()
         local qt = pkgs and pkgs["pideck-qt"]
         local root = qt and path.join(qt:installdir(), "qt")
         if not root then return end
-        target:add("includedirs", path.join(root, "include"), path.join(root, "include", "QtSql"))
+        target:add("includedirs", path.join(root, "include"), path.join(root, "include", "QtSql"),
+                   path.join(root, "include", "QtQml"))
         target:add("linkdirs", path.join(root, "lib"))
     end)
     add_files("native/backend/**.cpp", "native/common/**.cpp")
@@ -311,6 +313,18 @@ target("PiDeck-TranscriptHistoryTest")
               "native/backend/domain/sessions/AskQuestion.cpp",
               "native/backend/domain/sessions/ToolOutcome.cpp")
     add_includedirs("native/backend/domain/runtime", "native/backend/domain/sessions")
+    if is_plat("windows") then
+        add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
+    end
+
+-- Version-probe completion and retry regression. Never staged.
+target("PiDeck-PiVersionProbeTest")
+    set_kind("binary")
+    set_default(false)
+    add_packages("pideck-qt")
+    add_files("native/tests/PiVersionProbeTest.cpp",
+              "native/backend/domain/runtime/PiVersionProbe.cpp")
+    add_includedirs("native/backend/domain/runtime")
     if is_plat("windows") then
         add_cxxflags("/utf-8", "/Zc:__cplusplus", {force = true})
     end

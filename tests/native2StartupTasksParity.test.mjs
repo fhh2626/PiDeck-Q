@@ -406,7 +406,7 @@ describe("native2 backend startup tasks", () => {
 		});
 		const settingsPath = join(state.localAgent, "settings.json");
 		await waitFor(
-			() => Promise.resolve(JSON.parse(readFileSync(settingsPath, "utf8")).defaultProjectTrust === "ask"),
+			() => Promise.resolve(JSON.parse(readFileSync(settingsPath, "utf8")).retry?.maxRetries === 3),
 			"the pi settings defaults were never written",
 		);
 		const piSettings = JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -415,7 +415,7 @@ describe("native2 backend startup tasks", () => {
 		// Startup must not fork pi for a version hint, so an already stored value survives
 		// untouched instead of being rewritten from a probe.
 		assert.equal(piSettings.lastChangelogVersion, "0.70.0");
-		assert.equal(piSettings.defaultProjectTrust, "ask");
+		assert.equal(Object.hasOwn(piSettings, "defaultProjectTrust"), false);
 		assert.deepEqual(piSettings.compaction, { enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 });
 		assert.deepEqual(piSettings.retry, { enabled: true, maxRetries: 3 });
 

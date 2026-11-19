@@ -125,6 +125,23 @@ describe("native2 C++ package de-Node gate", () => {
 		assert.ok(result.checked.some((file) => file.endsWith("Qt6Core.dll")));
 	});
 
+	test("the security validator requires the backend's QtQml and QtNetwork libraries", async () => {
+		const backend = process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend";
+		const stage = await makeStage({
+			extraFiles: [[backend, "MZfixture\0Qt6Core.dll\0Qt6Network.dll\0Qt6Qml.dll\0"]],
+		});
+		const missing = await verify(stage);
+		assert.equal(missing.ok, false);
+		assert.ok(missing.errors.some((error) => error.includes("Qt dependency missing") && error.includes("Qt6Qml.dll")));
+		assert.ok(missing.errors.some((error) => error.includes("Qt dependency missing") && error.includes("Qt6Network.dll")));
+		await writeFileAt(stage, "Qt6Network.dll", "MZfixture\n");
+		await writeFileAt(stage, "Qt6Qml.dll", "MZfixture\n");
+		const complete = await verify(stage);
+		assert.deepEqual(complete.errors, []);
+		assert.equal(complete.ok, true);
+		assert.ok(complete.checked.some((file) => file.endsWith("Qt6Qml.dll")));
+	});
+
 	test("rejects every business Node leftover the plan forbids", async () => {
 		const cases = [
 			{ leftover: "app/native-node", expected: "app/native-node" },

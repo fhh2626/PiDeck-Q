@@ -25,12 +25,17 @@ function writeState(state) {
 	writeFileSync(statePath, JSON.stringify(state, null, 2));
 }
 
-const args = process.argv.slice(2).filter((arg) => arg !== "--no-approve");
+const args = process.argv.slice(2).filter((arg) => arg !== "--approve");
 const state = readState();
 state.calls.push(args);
 
 const command = args[0] ?? "";
 if (command === "--version") {
+	if (state.versionFailuresRemaining > 0) {
+		state.versionFailuresRemaining -= 1;
+		writeState(state);
+		process.exit(1);
+	}
 	writeState(state);
 	process.stdout.write("0.79.0\n");
 	process.exit(0);

@@ -14,7 +14,7 @@
  * `pilaunch::buildCli` (settings → custom path / runtime preference / WSL / PATH), so
  * the renderer can never name an executable, and the child environment is sanitized.
  *
- * `--no-approve` is only appended for pi versions that support the flag, and
+ * `--approve` is only appended for pi versions that support the flag, and
  * `PI_OFFLINE=1` is only set for the TypeScript runtime (the Rust build ignores it).
  */
 namespace picli {
@@ -41,9 +41,6 @@ Result run(const QJsonObject &settings, const QStringList &arguments, int timeou
 
 /** `<pi> --version`, cached per resolved command (empty when the probe failed). */
 QString version(const QJsonObject &settings);
-
-/** `piSupportsTrustFlags`: rust has no trust flags; otherwise major>0 or minor>=79. */
-bool supportsTrustFlags(const QString &version);
 
 /**
  * Run an arbitrary executable (npm, npx, wsl) with a sanitized environment and an

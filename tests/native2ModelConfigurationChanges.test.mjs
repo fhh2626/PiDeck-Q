@@ -24,7 +24,6 @@ async function start(t, scenario = {}, legacySessions = []) {
 			if (legacySessions.length) writeFileSync(join(fixture.userData, "session-catalog.json"), JSON.stringify({ version: 1,
 				sessions: legacySessions.map((id) => ({ id, projectId: "project", title: id, environment: "native", status: "active", source: "pi", createdAt: 1, updatedAt: 1 })),
 			}));
-			writeFileSync(join(configDir, "trust.json"), JSON.stringify({ [projectDir]: true }));
 			writeFileSync(join(configDir, "models.json"), JSON.stringify(config));
 			const defaults = { defaultProvider: model.provider, defaultModel: model.modelId, subagents: { defaultProvider: model.provider, defaultModel: model.modelId } };
 			writeFileSync(join(configDir, "settings.json"), JSON.stringify(defaults));

@@ -444,19 +444,6 @@ if (!executable) {
 				result: null,
 			});
 
-			// Trust config is the `{raw, parsed}` pair the settings editor renders.
-			const trust = await session.invoke("config:get-trust");
-			assert.equal(trust.payload.ok, true);
-			assert.deepEqual(Object.keys(trust.payload.result).sort(), ["parsed", "raw"]);
-			assert.equal(typeof trust.payload.result.raw, "string");
-			assert.equal(typeof trust.payload.result.parsed, "object");
-			// An unknown request id or an out-of-range choice is a boundary error.
-			assert.equal((await session.invoke("projects:trust-response", ["", "trust-remember"])).payload.ok, false);
-			assert.equal(
-				(await session.invoke("projects:trust-response", ["req-1", "allow-everything"])).payload.ok,
-				false,
-			);
-
 			// System info: LAN addresses are `{address, interfaceName, cidr, isPrivate}` rows the
 			// settings page/QR code render, ordered private-first like the oracle.
 			const addresses = await session.invoke("app:network-addresses");

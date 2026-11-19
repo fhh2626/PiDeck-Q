@@ -1,12 +1,17 @@
 #include "PiLaunch.h"
 
 #include <QHash>
+#include <QElapsedTimer>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTimer>
 
+#include <memory>
+#include <utility>
+
 /**
- * pi version probing and trust-flag gating (declared in PiLaunch.h).
+ * pi version probing and CLI compatibility (declared in PiLaunch.h).
  *
  * Split out of `PiLaunch.cpp`, which owns launch/argv/env assembly and was already past the
  * file-size budget. Nothing here builds a command line: it only asks the *resolved* launch
@@ -36,7 +41,7 @@ QHash<QString, QString> &probeCache()
 
 } // namespace
 
-bool supportsTrustFlags(const QString &version)
+bool supportsProjectApprovalFlag(const QString &version)
 {
     const QString value = version.trimmed();
     if (value.isEmpty()) return false;
@@ -55,8 +60,43 @@ QString cachedVersion(const Launch &launch)
     return cached == probeCache().constEnd() ? QString() : *cached;
 }
 
-void probeVersion(const Launch &launch, std::function<void(const QString &version)> done)
+VersionProbeOwner::~VersionProbeOwner()
 {
+    cancel();
+}
+
+void VersionProbeOwner::cancel()
+{
+    if (m_cancelled) return;
+    m_cancelled = true;
+    const auto processes = findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly);
+    // Disconnect before killing: QProcess can emit finished synchronously while being
+    // reaped, and shutdown must never re-enter a coordinator that is clearing its graph.
+    for (QProcess *process : processes) {
+        process->disconnect();
+        if (process->state() != QProcess::NotRunning) process->kill();
+    }
+    QElapsedTimer budget;
+    budget.start();
+    for (QProcess *process : processes) {
+        if (process->state() != QProcess::NotRunning) {
+            process->waitForFinished(qMax(0, 150 - int(budget.elapsed())));
+        }
+        if (process->state() == QProcess::NotRunning) {
+            delete process;
+        } else {
+            // Kill has already been sent. Do not let QProcess's destructor extend the
+            // host's shutdown budget if the OS has not acknowledged it yet.
+            process->setParent(nullptr);
+            QObject::connect(process, &QProcess::finished, process, &QObject::deleteLater);
+        }
+    }
+}
+
+void probeVersion(const Launch &launch, VersionProbeOwner &owner,
+                  std::function<void(const QString &version)> done)
+{
+    if (owner.cancelled()) return;
     const QString key = probeCacheKey(launch);
     QHash<QString, QString> &cache = probeCache();
     const auto cached = cache.constFind(key);
@@ -64,7 +104,7 @@ void probeVersion(const Launch &launch, std::function<void(const QString &versio
         done(*cached);
         return;
     }
-    auto *process = new QProcess();
+    auto *process = new QProcess(&owner);
     process->setProgram(launch.program);
     process->setWorkingDirectory(launch.cwd);
     process->setProcessEnvironment(launch.environment);
@@ -80,14 +120,21 @@ void probeVersion(const Launch &launch, std::function<void(const QString &versio
     } else {
         process->setArguments(QStringList{QStringLiteral("--version")});
     }
-    auto finish = [process, key, done](const QString &version) {
-        probeCache().insert(key, version);
+    // Timeout kills the process, which also emits finished. Only one callback may
+    // create a runtime, and a transient probe failure must remain retryable.
+    const auto completed = std::make_shared<bool>(false);
+    auto finish = [process, key, done, completed, owner = QPointer<VersionProbeOwner>(&owner)](const QString &version) {
+        if (std::exchange(*completed, true)) return;
         process->deleteLater();
+        if (!owner || owner->cancelled()) return;
+        if (!version.isEmpty()) probeCache().insert(key, version);
         done(version);
     };
     QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), process,
-                     [process, finish](int, QProcess::ExitStatus) {
-                         finish(QString::fromUtf8(process->readAllStandardOutput()).trimmed());
+                     [process, finish](int exitCode, QProcess::ExitStatus status) {
+                         finish(exitCode == 0 && status == QProcess::NormalExit
+                             ? QString::fromUtf8(process->readAllStandardOutput()).trimmed()
+                             : QString());
                      });
     QObject::connect(process, &QProcess::errorOccurred, process,
                      [process, finish](QProcess::ProcessError error) {

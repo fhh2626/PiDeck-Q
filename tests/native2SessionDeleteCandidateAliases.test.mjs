@@ -20,9 +20,6 @@ async function fixture(t, intermediateLink) {
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: "candidate-alias", path: project, name: "Candidate aliases", environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       configuredAlias = join(directory.root, "configured-session-root-alias-longer-than-default");
       const alternateAlias = join(directory.root, "alternate-session-alias");
       directoryLink(directory.sessions, configuredAlias);
@@ -101,9 +98,6 @@ test("native deletion respects POSIX link and parent traversal in a live session
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: "native-traversal", path: project, name: "Native traversal", environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       parent = writeSessionFile(directory.sessions, project, "parent");
       mkdirSync(parent.slice(0, -6));
       child = writeSessionFile(parent.slice(0, -6), project, "child");

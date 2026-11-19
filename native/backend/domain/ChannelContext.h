@@ -20,7 +20,7 @@ class SessionRuntime;
 class SessionScanner;
 class WebServiceManager;
 namespace jsonlindex { class Store; }
-namespace projects { class Store; class TrustBroker; }
+namespace projects { class Store; }
 namespace prompts { class Manager; }
 namespace skills { class Manager; }
 namespace extensions { class Manager; }
@@ -88,8 +88,6 @@ struct ChannelServices {
      * and the worktree child records, so no other module may read or write the file.
      */
     projects::Store *projects = nullptr;
-    /** Project trust decisions (trust.json) and the interactive trust prompt. */
-    projects::TrustBroker *trust = nullptr;
     /** Global and project prompt templates (`prompts:*`). */
     prompts::Manager *prompts = nullptr;
     /** Global skills (`skills:*`). */
@@ -133,7 +131,7 @@ struct ChannelServices {
     /** Home directory for the active environment (host home; WSL home is in the scanner). */
     QString hostHome;
     /**
-     * pi config directory (`models.json`, `auth.json`, `settings.json`, `trust.json`).
+     * pi config directory (`models.json` and `settings.json` for the desktop editor).
      * Equals `agentDir` until the startup tasks resolve a WSL environment, then points at
      * `<wsl windowsHome>/.pi/agent` so the config UI edits the runtime's real files.
      * Security, vision and usage keep using `agentDir`: the oracle's startup tasks only

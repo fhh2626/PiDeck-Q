@@ -20,9 +20,6 @@ async function fixture(t, holdTrash = false, linkedCompanion = false) {
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: "native-lease", path: project, name: "Native lease", environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       alias = join(directory.root, "configured-session-root-alias-longer-than-default");
       otherRoot = join(directory.root, "replacement-root");
       mkdirSync(otherRoot);

@@ -1,11 +1,9 @@
 #include "ChannelContext.h"
 
 #include "ConfigFiles.h"
-#include "JsonFile.h"
 #include "ModelConfigurationChanges.h"
 #include "ModelPreferenceValidation.h"
 #include "ProviderProbe.h"
-#include "TrustBroker.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -50,20 +48,6 @@ void registerConfigChannels(ChannelRegistry &registry, ChannelServices &services
     registry.add(QStringLiteral("config:get-settings"), [&services](const QJsonArray &) {
         return QJsonValue(fileReadJson(
             configfiles::read(services.configDir, QStringLiteral("settings.json"), QJsonObject{})));
-    });
-
-    // trust.json is owned by the trust broker so the nearest-parent lookup and this raw
-    // view can never disagree.
-    registry.add(QStringLiteral("config:get-trust"), [&services](const QJsonArray &) {
-        if (services.trust) {
-            const QJsonObject trust = services.trust->readConfig();
-            return QJsonValue(QJsonObject{
-                {QStringLiteral("raw"), QString::fromUtf8(jsonfile::prettyJson(trust))},
-                {QStringLiteral("parsed"), trust},
-            });
-        }
-        return QJsonValue(fileReadJson(
-            configfiles::read(services.configDir, QStringLiteral("trust.json"), QJsonObject{})));
     });
 
     // ── writes ───────────────────────────────────────────────────────────────

@@ -1,16 +1,8 @@
-import { useState, useMemo } from "react";
-import { desktopApi as api } from "../desktopApi";
+import { useMemo } from "react";
 import { useConfirmationQueue } from "./useConfirmationQueue";
-
-interface TrustRequest {
-  requestId: string;
-  cwd: string;
-  projectName: string;
-}
 
 export function useOverlayActions() {
   const { confirmDialog, showConfirm, clearConfirm } = useConfirmationQueue();
-  const [trustRequest, setTrustRequest] = useState<TrustRequest | null>(null);
 
   const overlayProps = useMemo(() => ({
     confirm: confirmDialog ? {
@@ -24,24 +16,12 @@ export function useOverlayActions() {
         confirmLabel: confirmDialog.confirmLabel,
       },
     } : undefined,
-    trust: trustRequest ? {
-      open: true as const,
-      requestId: trustRequest.requestId,
-      cwd: trustRequest.cwd,
-      projectName: trustRequest.projectName,
-      onChoose: (choice: "trust-remember" | "trust-session" | "deny") => {
-        api.projects.respondTrustRequest(trustRequest.requestId, choice);
-        setTrustRequest(null);
-      },
-    } : undefined,
-  }), [confirmDialog, trustRequest, clearConfirm]);
+  }), [confirmDialog, clearConfirm]);
 
   return {
     confirmDialog,
     showConfirm,
     clearConfirm,
-    trustRequest,
-    setTrustRequest,
     overlayProps,
   };
 }

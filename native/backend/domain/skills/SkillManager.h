@@ -16,8 +16,8 @@
  * Port of src/main/skills/SkillManager.ts. Two locations are managed and nothing else:
  * `~/.pi/agent/skills` (directory skills plus root-level `.md` skills) and
  * `~/.agents/skills` (directory skills only). Project-level `.pi/skills` and
- * `.agents/skills` are deliberately out of scope, exactly like the oracle: deleting a
- * project asset would bypass the trusted-project rules pi enforces.
+ * `.agents/skills` belong to the project-resources manager, which owns edits to
+ * project assets. This manager changes only user-level skills.
  *
  * A skill is a directory containing `SKILL.md`, or (pi-global only) a single `.md` file.
  * `disable-model-invocation: true` in its frontmatter means "disabled"; PiDeck toggles

@@ -164,9 +164,38 @@ for (const field of ["denyBashPatterns", "denyPowerShellPatterns"]) {
 			assert.equal(result, false);
 			assert.equal(writes.length, 0);
 			assert.equal(section.dirty.at(-1), true);
-			assert.equal(nodes(section.mounted.result(), (node) => node.props?.children === "security.error.validationFailed").length, 1);
+			assert.equal(nodes(section.mounted.result(), (node) => node.props?.children === "security.error.regexUnsupported").length, 1);
 		});
 	});
+	for (const pattern of ["(?i:foo)", "(?<name>a)|(?<name>b)"]) {
+		test(`${field} rejects ECMAScript 2025 pattern ${pattern} and retains its editable draft`, async () => {
+			await withHookHost(async (host) => {
+				const writes = [];
+				const section = await mountSection(host, async (patch) => {
+					writes.push(copy(patch));
+					return { ok: true, config: { ...section.initial, ...patch } };
+				});
+				const input = () => {
+					const card = section.card();
+					return nodes(card.type({ ...card.props, expanded: true }), (node) => node.type === "Textarea")[field === "denyBashPatterns" ? 0 : 1];
+				};
+				const draft = `${pattern}\n`;
+				await host.act(async () => input().props.onChange({ target: { value: draft } }));
+				let result;
+				await host.act(async () => { result = await section.ref.current.save(); });
+				assert.equal(result, false, "a newer renderer cannot publish syntax unsupported by the oldest supported Pi runtime");
+				assert.equal(writes.length, 0);
+				assert.equal(section.dirty.at(-1), true);
+				assert.equal(input().props.value, draft);
+				assert.equal(nodes(section.mounted.result(), (node) => node.props?.children === "security.error.regexUnsupported").length, 1);
+				await host.act(async () => input().props.onChange({ target: { value: "(?<command>foo|bar)\\k<command>" } }));
+				await host.act(async () => { result = await section.ref.current.save(); });
+				assert.equal(result, true, "correcting the pattern to supported syntax must permit saving");
+				assert.equal(writes.length, 1);
+				assert.deepEqual(writes[0].levels.find((level) => level.id === "standard")[field], ["(?<command>foo|bar)\\k<command>"]);
+			});
+		});
+	}
 }
 
 test("security saves preserve PowerShell edits made while the request is pending", async () => {

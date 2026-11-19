@@ -13,6 +13,7 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { RegExpValidator } from "@eslint-community/regexpp";
 import {
 	createDefaultSecurityConfig,
 	DEFAULT_DENY_POWERSHELL_PATTERNS,
@@ -132,14 +133,21 @@ export const SecuritySection = forwardRef<SecuritySectionHandle, SecuritySection
 			if (loading || !loaded) return Promise.resolve(false);
 			const levels = config.levels.map(prepareLevel);
 			try {
-				// Qt accepts PCRE syntax that the extension's JavaScript engine cannot execute.
-				// Validate with the runtime's flags before sending a snapshot for publication.
+				// A newer browser can accept syntax missing from supported Pi runtimes.
+				// Match the backend's ECMAScript 2024 baseline, then check this browser too.
+				const validator = new RegExpValidator({ ecmaVersion: 2024 });
 				for (const level of levels) {
-					for (const pattern of level.denyBashPatterns) new RegExp(pattern);
-					for (const pattern of level.denyPowerShellPatterns ?? []) new RegExp(pattern, "i");
+					for (const pattern of level.denyBashPatterns) {
+						validator.validatePattern(pattern);
+						new RegExp(pattern);
+					}
+					for (const pattern of level.denyPowerShellPatterns ?? []) {
+						validator.validatePattern(pattern);
+						new RegExp(pattern, "i");
+					}
 				}
 			} catch {
-				setError(t("security.error.validationFailed"));
+				setError(t("security.error.regexUnsupported"));
 				return Promise.resolve(false);
 			}
 			const savedRevision = revision.current;

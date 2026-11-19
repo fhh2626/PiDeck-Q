@@ -69,7 +69,6 @@ private:
     void runLegacyMigration();
     /** Step 5b: pi `settings.json` defaults (`lastChangelogVersion` from the probe). */
     void ensurePiSettingsDefaults(const QString &piVersion);
-    /** Step 6: warm the pi `--version` cache the runtime's trust-flag probe uses. */
     /**
      * Warm the session catalog of every project in the background (oracle: 3 s after
      * start, then one project every 1.5 s) and push `sessions:catalog-refreshed` per

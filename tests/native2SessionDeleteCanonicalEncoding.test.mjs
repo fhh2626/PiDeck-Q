@@ -83,9 +83,6 @@ test("a native active companion alias with unrepresentable bytes retains its del
   const f = await startBackendSession(t, {
     projects: [{ id: "raw-live-alias", path: project }],
     prepare(directory) {
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       const fake = createFakePi(directory, {});
       return { settings: { customPiPath: fake.shim }, env: { FAKE_PI_SCENARIO: fake.scenarioPath, FAKE_PI_LOG: fake.logPath } };
     },

@@ -1337,7 +1337,6 @@ export function App() {
       setSettings(next);
       showToast(t("settings.restartNotice"));
     },
-    onTrustRequest: overlays.setTrustRequest,
     onFocusTarget: (target: AppFocusSessionTarget) => {
       const session = store.get(sessionRecordByIdAtomFamily(target.sessionId));
       if (session) selectSessionCommand(session.projectId, session.id, false);

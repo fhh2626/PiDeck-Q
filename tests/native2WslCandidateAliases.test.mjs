@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
 import { backendTestAvailability, SseClient, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { createProbePi } from "./helpers/native2ProbePi.mjs";
 import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
 const launcher = nativeBuildPaths("PiDeck-FakeWsl").map((path) => join(process.cwd(), path)).find(existsSync);
@@ -81,7 +82,7 @@ test("an unresolved cyclic file link does not suppress later WSL identities", (t
 
 /** Pause the fake mutation itself, retaining the production coordinator's scoped lease. */
 async function fixture(t, ancestor, retarget = false) {
-  let gate, entered, preserved, changingAlias, companion, outside, parent, runtimeExit, log;
+  let gate, entered, preserved, changingAlias, companion, outside, parent, runtimeExit, log, probe, versionGate;
   const f = await startBackendSession(t, {
     settings: { wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
     prepare(directory) {
@@ -91,9 +92,9 @@ async function fixture(t, ancestor, retarget = false) {
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: "wsl-candidate", name: "Candidate aliases", path: project, environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
+      probe = createProbePi(directory);
+      versionGate = join(directory.root, "release-version");
+      probe.setScenario({ versionGate });
       const unc = join(directory.root, "wsl-unc");
       const home = join(unc, "Ubuntu", "home", "dev");
       const sessions = join(home, ".pi", "agent", "sessions");
@@ -155,28 +156,32 @@ async function fixture(t, ancestor, retarget = false) {
         `await import(${JSON.stringify(pathToFileURL(fakeFs).href)});`,
       ].join("\n"));
       return { env: { PIDECK_WSL_EXE: launcher, PIDECK_WSL_UNC_ROOT: unc,
-        FAKE_WSL_SCRIPT: script, FAKE_WSL_NODE: process.execPath, FAKE_WSL_SCENARIO: scenario, FAKE_WSL_LOG: log } };
+        FAKE_WSL_SCRIPT: script, FAKE_WSL_NODE: process.execPath, FAKE_WSL_SCENARIO: scenario, FAKE_WSL_LOG: log,
+        FAKE_PI_SCENARIO: probe.scenarioPath, FAKE_PI_LOG: probe.logPath } };
     },
   });
   const ready = await f.invoke("settings:update", [{ wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" }]);
   assert.equal(ready.payload.ok, true, JSON.stringify(ready.payload));
-  return { ...f, entered, gate, preserved, changingAlias, companion, outside, parent, runtimeExit,
+  return { ...f, entered, gate, preserved, changingAlias, companion, outside, parent, runtimeExit, probe, versionGate,
     runtimeSpawns: () => readFileSync(log, "utf8").trim().split("\n").map(JSON.parse)
       .filter((entry) => !entry.rpc && entry.argv.includes("pi") && !entry.argv.includes("--version")),
   };
 }
 
-/** Hold activation at its public trust prompt, before any platform-specific spawn. */
-async function pendingTrustActivation(t, f) {
-  writeFileSync(join(f.fixture.home, ".pi", "agent", "trust.json"), "{}");
-  const events = new SseClient(`${f.baseUrl}__pideck/events?token=${encodeURIComponent(f.token)}`);
-  t.after(() => events.close());
-  await events.connect();
+/** Hold activation during the real version probe, before the runtime spawn check. */
+async function pendingVersionActivation(f) {
+  const configured = await f.invoke("settings:update", [{ customPiPath: f.probe.shim, piRuntimePreference: "auto" }]);
+  assert.equal(configured.payload.ok, true, JSON.stringify(configured.payload));
   const activation = f.invoke("sessions:runtime-activate", ["candidate-child"]);
-  const prompt = await events.waitFor("projects:trust-request");
+  await waitFor(() => f.probe.starts().length > 0, 3000, "activation version probe");
+  assert.equal(f.probe.exits().length, 0, "The activation must remain pending until the version gate opens");
   return {
     activation,
-    answer: () => f.invoke("projects:trust-response", [prompt.payload.args[0].requestId, "trust-remember"]),
+    release: () => writeFileSync(f.versionGate, "release"),
+    restore: async () => {
+      const restored = await f.invoke("settings:update", [{ customPiPath: "" }]);
+      assert.equal(restored.payload.ok, true, JSON.stringify(restored.payload));
+    },
   };
 }
 
@@ -215,10 +220,10 @@ test("a WSL deletion fences a previously unrelated candidate alias retargeted af
 });
 
 for (const ancestor of [false, true]) {
-  test(`an activating WSL candidate's ${ancestor ? "ancestor link" : "leaf links"} prevent deletion before its trust answer`, { skip }, async (t) => {
+  test(`an activating WSL candidate's ${ancestor ? "ancestor link" : "leaf links"} prevent deletion during its version probe`, { skip }, async (t) => {
     const f = await fixture(t, ancestor);
     const original = readFileSync(f.preserved, "utf8");
-    const pending = await pendingTrustActivation(t, f);
+    const pending = await pendingVersionActivation(f);
     let settled;
     const deletion = f.invoke("sessions:catalog-delete", ["candidate-parent"]).then((result) => (settled = result));
     try {
@@ -226,8 +231,9 @@ for (const ancestor of [false, true]) {
     } finally {
       writeFileSync(f.gate, "release");
       await deletion;
-      await pending.answer();
+      pending.release();
       await pending.activation;
+      await pending.restore();
     }
     assert.equal(settled.payload.ok, false, JSON.stringify(settled.payload));
     assert.equal(existsSync(f.entered), false, "Admission must refuse before filesystem mutation");
@@ -279,21 +285,22 @@ for (const ancestor of [false, true]) {
 test("an unrelated pending WSL activation permits deletion but its delayed spawn waits for the lease", { skip }, async (t) => {
   const f = await fixture(t, false, true);
   const original = readFileSync(f.preserved, "utf8");
-  const pending = await pendingTrustActivation(t, f);
+  const pending = await pendingVersionActivation(f);
   const deletion = f.invoke("sessions:catalog-delete", ["candidate-parent"]);
   try {
     // Shared / and /home traversal prefixes must not turn the candidate into an
     // owner of the whole namespace. The unrelated mutation can reach its gate.
     await waitFor(() => existsSync(f.entered), 10000, "unrelated WSL deletion admission");
-    await pending.answer();
+    pending.release();
     const activation = await pending.activation;
     assert.equal(activation.payload.result.ok, false, JSON.stringify(activation.payload));
     assert.match(activation.payload.result.error.debugDetails, /Session deletion is in progress/);
   } finally {
     writeFileSync(f.gate, "release");
     assert.equal((await deletion).payload.result, true);
-    await pending.answer();
+    pending.release();
     await pending.activation;
+    await pending.restore();
   }
   assert.equal(readFileSync(f.preserved, "utf8"), original);
   await assertActivationAfterLease(f);

@@ -5,8 +5,14 @@ import { withHookHost } from "./helpers/l5_hookHost.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 
+function deferred() {
+	let resolve;
+	const promise = new Promise((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
 /** Exercise the real tab lifecycle while keeping each editor behind its public save boundary. */
-async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
+async function withConfigDialog(run, { securitySaveSucceeds = true, securitySave = async () => securitySaveSucceeds, configOverrides = {} } = {}) {
 	await withHookHost(async (host) => {
 		const { React } = host;
 		const { Provider, createStore } = nodeRequire("jotai");
@@ -22,6 +28,7 @@ async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
 			let requestClose;
 			let reopen;
 			let editSecurity;
+			let editSettings;
 			let securityReads = 0;
 			let securityUnmounts = 0;
 			let closes = 0;
@@ -44,7 +51,7 @@ async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
 				React.useImperativeHandle(ref, () => ({
 					save: async () => {
 						securitySaves.push(draft);
-						if (!securitySaveSucceeds) return false;
+						if (!await securitySave()) return false;
 						setDirty(false);
 						return true;
 					},
@@ -76,6 +83,7 @@ async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
 					config: {
 						getSettings: async () => ({ parsed: {}, raw: "{}" }),
 						getModels: async () => ({ parsed: { providers: {} }, raw: "{}" }),
+						...configOverrides,
 					},
 					projects: { listModels: async () => [] },
 				} },
@@ -89,9 +97,13 @@ async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
 				"./hooks/usePromptTemplateEditor": { usePromptTemplateEditor: () => ({}) },
 				"./composerBehavior": { translateBuiltinPromptDescription: (value) => value },
 			};
-			for (const name of ["ModelsTab", "RawTab", "TrustTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) {
+			for (const name of ["ModelsTab", "RawTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) {
 				stubs[`./config/${name}`] = { [name]: empty };
 			}
+			stubs["./config/SettingsTab"] = { SettingsTab: ({ data, onChange }) => {
+				editSettings = onChange;
+				return React.createElement("div", { "data-testid": "settings-draft" }, JSON.stringify(data));
+			} };
 			const { ConfigModal } = host.load("src/renderer/src/ConfigModal.tsx", {
 				stubs,
 				globals: { localStorage: { getItem: () => "config:models", setItem() {} } },
@@ -113,8 +125,10 @@ async function withConfigDialog(run, { securitySaveSucceeds = true } = {}) {
 				act: host.act,
 				navigate: (value) => navigate(value),
 				edit: (value) => editSecurity(value),
+				editSettings: (value) => editSettings(value),
 				close: () => requestClose(), reopen: () => reopen(), click,
 				draft: () => host.window.document.querySelector('[data-testid="security-draft"]'),
+				settingsDraft: () => host.window.document.querySelector('[data-testid="settings-draft"]'),
 				reads: () => securityReads, unmounts: () => securityUnmounts, closes: () => closes,
 				saves: securitySaves,
 			});
@@ -178,4 +192,65 @@ test("a failed background security save keeps the dialog open and returns to the
 		assert.equal(dialog.draft().textContent, "[invalid");
 		assert.equal(dialog.draft().closest('[role="tabpanel"]').dataset.state, "active");
 	}, { securitySaveSucceeds: false });
+});
+
+for (const activePage of ["security", "config:models"]) {
+	test(`a pending ${activePage} Save and Close cannot close a reopened dialog`, async () => {
+		const pending = deferred();
+		await withConfigDialog(async (dialog) => {
+			await dialog.act(async () => dialog.navigate("security"));
+			await dialog.act(async () => dialog.edit("old-rule"));
+			await dialog.act(async () => dialog.navigate(activePage));
+			await dialog.act(async () => dialog.close());
+			await dialog.act(async () => dialog.click("config.saveAndClose"));
+			assert.deepEqual(dialog.saves, ["old-rule"]);
+			await dialog.act(async () => dialog.close());
+			await dialog.act(async () => dialog.click("config.discardChanges"));
+			await dialog.act(async () => dialog.reopen());
+			await dialog.act(async () => dialog.navigate("security"));
+			await dialog.act(async () => dialog.edit("new-draft"));
+			await dialog.act(async () => pending.resolve(true));
+			assert.equal(dialog.closes(), 1, "a response from the previous opening must not close the current dialog");
+			assert.equal(dialog.draft().textContent, "new-draft");
+		}, { securitySave: () => pending.promise });
+	});
+}
+
+test("a pending settings reload after Save and Close cannot close a reopened dialog", async () => {
+	const pending = deferred();
+	let reads = 0;
+	await withConfigDialog(async (dialog) => {
+		await dialog.act(async () => dialog.navigate("config:settings"));
+		await dialog.act(async () => dialog.editSettings({ theme: "saved" }));
+		await dialog.act(async () => dialog.close());
+		await dialog.act(async () => dialog.click("config.saveAndClose"));
+		assert.equal(reads, 2, "the successful write should reload the settings file");
+		await dialog.act(async () => dialog.close());
+		await dialog.act(async () => dialog.reopen());
+		await dialog.act(async () => dialog.editSettings({ theme: "new-draft" }));
+		await dialog.act(async () => pending.resolve({ parsed: { theme: "saved" }, raw: "{}" }));
+		assert.equal(dialog.closes(), 1, "a late reload must not close the next opening");
+		assert.equal(dialog.settingsDraft().textContent, JSON.stringify({ theme: "new-draft" }));
+	}, { configOverrides: {
+		getSettings: async () => {
+			reads += 1;
+			return reads === 2 ? pending.promise : { parsed: {}, raw: "{}" };
+		},
+		saveSettings: async () => ({ valid: true }),
+	} });
+});
+
+test("Save and Close preserves edits made on another page while security is saving", async () => {
+	const pending = deferred();
+	await withConfigDialog(async (dialog) => {
+		await dialog.act(async () => dialog.navigate("security"));
+		await dialog.act(async () => dialog.edit("saved-rule"));
+		await dialog.act(async () => dialog.close());
+		await dialog.act(async () => dialog.click("config.saveAndClose"));
+		await dialog.act(async () => dialog.navigate("config:settings"));
+		await dialog.act(async () => dialog.editSettings({ theme: "new-draft" }));
+		await dialog.act(async () => pending.resolve(true));
+		assert.equal(dialog.closes(), 0, "saving one page must leave newer edits on another page open");
+		assert.equal(dialog.settingsDraft().textContent, JSON.stringify({ theme: "new-draft" }));
+	}, { securitySave: () => pending.promise });
 });

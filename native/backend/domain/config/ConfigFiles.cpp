@@ -207,7 +207,7 @@ Validation saveRaw(const QString &configDir, const QString &fileName, const QStr
     }
     static const QStringList allowed = {
         QStringLiteral("models.json"),
-        QStringLiteral("settings.json"), QStringLiteral("trust.json"),
+        QStringLiteral("settings.json"),
     };
     if (!allowed.contains(fileName)) {
         return Validation{false,

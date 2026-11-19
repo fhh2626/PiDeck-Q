@@ -16,9 +16,6 @@ if (resolveBackendExecutable()) {
 				projects: [{ id: "reservation", path: project }],
 				hostHandlers: { "shell.trashItem": () => ordering === "replacement-first" ? { result: { status: "trash-failed" } } : undefined },
 				prepare: (fixture) => {
-					const agentDir = join(fixture.home, ".pi", "agent");
-					mkdirSync(agentDir, { recursive: true });
-					writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
 					fake = createFakePi(fixture, { responses: { clone: { delayMs: 2000 } } });
 					return { settings: { customPiPath: fake.shim }, env: { FAKE_PI_SCENARIO: fake.scenarioPath, FAKE_PI_LOG: fake.logPath } };
 				},

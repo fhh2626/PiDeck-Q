@@ -23,9 +23,6 @@ async function fixture(t, outsideRecord = false, foreignRecord = false, uppercas
     projects: [{ id: "wsl-safe", path: process.cwd() }],
     settings: { language, wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
     prepare: (fixture) => {
-      const trustDir = join(fixture.home, ".pi", "agent");
-      mkdirSync(trustDir, { recursive: true });
-      writeFileSync(join(trustDir, "trust.json"), JSON.stringify({ [process.cwd()]: true }));
       const uncRoot = join(fixture.root, "wsl-unc");
       home = join(uncRoot, "Ubuntu", "home", "dev");
       sessions = join(home, ".pi", "agent", "sessions");

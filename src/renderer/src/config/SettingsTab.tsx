@@ -80,7 +80,9 @@ export function SettingsTab(props: {
 	onSave: () => void;
 }) {
 	const { data, saving } = props;
-	const entries = Object.entries(data);
+	// Old runtime files may retain this retired gate setting. Keep the data intact,
+	// but do not offer a control for a project trust decision that no longer exists.
+	const entries = Object.entries(data).filter(([key]) => key !== "defaultProjectTrust");
 	// enabledModels 已配置时合并到 entries 前端展示，未配置时通过「添加」按钮单独显示
 	const hasEnabledModels = "enabledModels" in data;
 
@@ -195,7 +197,6 @@ export function SettingsTab(props: {
 			case "disabledSkills": return t("config.label.disabledSkills");
 			case "disabledExtensions": return t("config.label.disabledExtensions");
 			case "noProjectDiscovery": return t("config.label.noProjectDiscovery");
-			case "defaultProjectTrust": return t("config.label.defaultProjectTrust");
 			case "allowProjectChanges": return t("config.label.allowProjectChanges");
 			case "enableSkillCommands": return t("config.label.enableSkillCommands");
 			case "temperature": return t("config.label.temperature");

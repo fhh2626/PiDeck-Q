@@ -464,13 +464,42 @@ export function httpRequest(url, { method = "GET", headers = {}, body = null } =
 			: { "content-length": String(Buffer.byteLength(body)), ...headers };
 		const request = nodeRequest(url, { method, headers: resolvedHeaders }, (response) => {
 			const chunks = [];
-			response.on("data", (chunk) => chunks.push(chunk));
-			response.on("end", () => {
+			let settled = false;
+			const onData = (chunk) => chunks.push(chunk);
+			const fail = (error) => {
+				if (settled) return;
+				settled = true;
+				chunks.length = 0;
+				response.destroy();
+				request.destroy();
+				reject(error);
+			};
+			const onIncomplete = () => fail(Object.assign(
+				new Error("HTTP response closed before completion"), { code: "ECONNRESET" },
+			));
+			const onEnd = () => {
+				if (settled) return;
+				if (!response.complete) return onIncomplete();
+				settled = true;
 				resolve({
 					status: response.statusCode,
 					headers: response.headers,
 					body: Buffer.concat(chunks).toString("utf8"),
 				});
+				chunks.length = 0;
+			};
+			response.on("data", onData);
+			response.once("end", onEnd);
+			response.on("error", fail);
+			response.once("aborted", onIncomplete);
+			response.once("close", () => {
+				if (!settled) onIncomplete();
+				response.off("data", onData);
+				response.off("end", onEnd);
+				response.off("aborted", onIncomplete);
+				// An aborted response can still emit error before close. Keep its error
+				// listener until this terminal event so rejection never becomes uncaught.
+				response.off("error", fail);
 			});
 		});
 		request.on("error", reject);

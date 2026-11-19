@@ -7,7 +7,7 @@
 #include <QString>
 
 /**
- * pi global configuration files (`~/.pi/agent/{models,settings,trust}.json`).
+ * pi global configuration files (`~/.pi/agent/{models,settings}.json`).
  *
  * Port of src/main/config/ConfigManager.ts's read/write/validate surface. The files are
  * shared with pi itself and with the extensions, so the writer must keep the exact
@@ -42,7 +42,7 @@ Validation saveModels(const QString &configDir, const QJsonValue &data, const ma
 /** Write pi's own `settings.json` verbatim. */
 Validation saveSettings(const QString &configDir, const QJsonValue &data);
 
-/** Raw source-editor save: JSON syntax is checked, only model/settings/trust files are allowed. */
+/** Raw source-editor save: JSON syntax is checked, only model/settings files are allowed. */
 Validation saveRaw(const QString &configDir, const QString &fileName, const QString &rawJson,
                     const maincopy::Translator &t);
 

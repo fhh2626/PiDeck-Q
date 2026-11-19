@@ -4,7 +4,7 @@ import {  join } from "node:path";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { pathToFileURL } from "node:url";
-const { detectPiRuntimeKind, piSupportsTrustFlags } = loadTsCommonJs("src/shared/piCompatibility.ts");
+const { detectPiRuntimeKind } = loadTsCommonJs("src/shared/piCompatibility.ts");
 
 // 真实 Pi-Bolt 1.0.2（基于 Pi 1.4.0）在 Windows 上 `--version` 的完整输出。
 const BOLT_VERSION = "1.4.0 (Pi-Bolt 1.0.2, win32-x64-jit, JIT on)";
@@ -21,24 +21,6 @@ test("keeps classifying stock Pi and Rust Pi as before", () => {
 	assert.equal(detectPiRuntimeKind("0.85.1"), "typescript");
 	assert.equal(detectPiRuntimeKind("pi 0.2.0 (unknown abc)"), "rust");
 	assert.equal(detectPiRuntimeKind("development build"), "unknown");
-});
-
-// ── 信任标志版本门槛 ───────────────────────────────────────────────
-
-test("trust flags are supported from Pi 0.79 and across the whole 1.x line", () => {
-	assert.equal(piSupportsTrustFlags("0.78.9"), false);
-	assert.equal(piSupportsTrustFlags("0.79.0"), true);
-	assert.equal(piSupportsTrustFlags("0.85.1"), true);
-	// 回归：次版本号 < 79 的 1.x 曾被误判为不支持。
-	assert.equal(piSupportsTrustFlags("1.0.0"), true);
-	assert.equal(piSupportsTrustFlags("1.4.0"), true);
-	assert.equal(piSupportsTrustFlags(BOLT_VERSION), true);
-});
-
-test("trust flags stay off for Rust Pi and for unparsable versions", () => {
-	assert.equal(piSupportsTrustFlags("pi 0.2.0 (unknown abc)"), false);
-	assert.equal(piSupportsTrustFlags(""), false);
-	assert.equal(piSupportsTrustFlags("development build"), false);
 });
 
 // ── 子代理拉起 Pi 子进程 ───────────────────────────────────────────

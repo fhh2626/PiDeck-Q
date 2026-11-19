@@ -279,22 +279,4 @@ void registerProjectChannels(ChannelRegistry &registry, ChannelServices &service
             channels::stringArg(args, 0), channels::stringArg(args, 1),
             channels::stringArg(args, 2));
     });
-
-    // ── trust ─────────────────────────────────────────────────────────────────
-
-    // The trust prompt is answered by the renderer; the pending request lives in the
-    // runtime coordinator, which is the only owner of the pi process that asked.
-    registry.add(QStringLiteral("projects:trust-response"), [&services](const QJsonArray &args) {
-        const QString requestId = channels::stringArg(args, 0);
-        const QString choice = channels::stringArg(args, 1);
-        if (requestId.isEmpty()) throw ChannelError(QStringLiteral("Invalid trust request id"));
-        if (choice != QStringLiteral("trust-remember") && choice != QStringLiteral("trust-session")
-            && choice != QStringLiteral("deny")) {
-            throw ChannelError(QStringLiteral("Invalid trust choice"));
-        }
-        if (services.runtimeCoordinator) {
-            services.runtimeCoordinator->respondTrustRequest(requestId, choice);
-        }
-        return QJsonValue(QJsonValue::Null);
-    });
 }

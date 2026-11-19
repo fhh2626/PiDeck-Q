@@ -68,20 +68,6 @@ public:
         std::function<QString()> uiLocale;
         QString securitySnapshotPath;
         /**
-         * Interactive project-trust prompt.
-         *
-         * `resolveTrustOverride` fails closed ("no-approve") when a project carries
-         * trust-requiring resources and no decision is recorded. The projects domain owns
-         * the prompt, so the coordinator asks through this hook and waits for the answer
-         * instead of silently refusing to load the user's own extensions.
-         */
-        std::function<void(const QString &cwd, const QString &projectName,
-                           std::function<void(const QString &choice)> done)> requestTrust;
-        /** Record a "trust and remember" decision for a project directory. */
-        std::function<void(const QString &cwd)> rememberTrust;
-        /** Forward a `projects:trust-response` to the pending prompt owner. */
-        std::function<void(const QString &requestId, const QString &choice)> respondTrust;
-        /**
          * Completion toast for a normally finished turn (`AgentManager.notifySessionEnd`).
          *
          * Only the runtime knows whether a settled event was a real completion, so the
@@ -263,9 +249,6 @@ public:
     /** Sessions with an activation in flight (`isSessionActivating`), for `/api/state`. */
     QStringList activatingSessions() const;
 
-    /** Answer a pending project-trust prompt (projects:trust-response). */
-    void respondTrustRequest(const QString &requestId, const QString &choice);
-
     // ── observers (LAN web stream) ───────────────────────────────────────
     /**
      * Raw pi event subscriber, equivalent to `AgentManager.addLocalEventListener`.
@@ -425,6 +408,8 @@ private:
     void fetchRuntimeState(const QString &agentId, std::function<void(QJsonObject)> done);
 
     // pi process swap (oracle `reattachProcess`)
+    /** Snapshot the settings and session file before an asynchronous compatibility probe. */
+    pilaunch::Request sessionLaunchRequest(const AgentSession &session, const QString &sessionPath) const;
     /** Rebuild the launch argv/env for an existing session's *current* session file. */
     pilaunch::Launch buildSessionLaunch(const AgentSession &session, const QString &sessionPath) const;
     /**
@@ -436,6 +421,10 @@ private:
      */
     void reattachProcess(const QString &agentId, const Target &target,
                          std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done);
+    /** Recheck runtime ownership after probing before swapping the transport. */
+    void reattachPrepared(const QString &agentId, const Target &target, quint64 expectedEpoch,
+                          const QString &sessionPath, const pilaunch::Launch &launch,
+                          std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done);
     /** Detach and retire only the exact failed recovery attempt, never its successor. */
     void discardFailedReattach(const Target &target, quint64 attemptEpoch);
 
@@ -610,6 +599,7 @@ private:
     QSet<QString> m_rustRuntimeAgents;
     int m_nextObserverId = 1;
     QString m_focusedSessionId;
+    pilaunch::VersionProbeOwner m_versionProbes;
     bool m_shutdown = false;
 };
 

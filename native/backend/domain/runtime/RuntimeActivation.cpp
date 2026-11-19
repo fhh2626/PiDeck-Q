@@ -223,7 +223,6 @@ void Coordinator::createAgent(const CatalogEntry &entry,
 
     pilaunch::Request request;
     request.settings = settings;
-    request.agentDir = m_deps.agentDir;
     request.resourcesDir = m_deps.resourcesDir;
     request.projectPath = projectPath;
     request.sessionPath = entry.filePath;
@@ -232,16 +231,13 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     request.securitySnapshotPath = m_deps.securitySnapshotPath;
     request.uiLocale = m_deps.uiLocale ? m_deps.uiLocale() : QString();
     request.wslExe = m_deps.services ? m_deps.services->wslExe : QString();
-    bool hasTrustResources = false;
-    request.trustOverride = pilaunch::resolveTrustOverride(m_deps.agentDir, projectPath,
-                                                           &hasTrustResources);
     auto spawnWith = [this, entry, agentId, projectPath, done](const pilaunch::Launch &launch) {
-        // Trust/version probes can yield. Recheck the captured launch identity at the
+        // Version probes can yield. Recheck the captured launch identity at the
         // last point before pi can open its file, not only the current catalog row.
         const CatalogEntry actual = deletionidentity::forLaunch(entry, launch);
         // A cached unrelated WSL alias may have been retargeted while deletion is
         // moving files. Existing bound runtimes remain usable; new writers wait
-        // until the short mutation lease ends, including delayed trust probes.
+        // until the short mutation lease ends, including delayed version probes.
         if (deletionBlocksLaunch(entry) || deletionBlocksLaunch(actual)) {
             done(nullptr, QStringLiteral("Session deletion is in progress"));
             return;
@@ -434,45 +430,13 @@ void Coordinator::createAgent(const CatalogEntry &entry,
         done(raw, QString());
     };
 
-    // An undetermined decision with project-level resources present must be asked, not
-    // guessed: pi would otherwise silently refuse to load the user's own extensions.
-    if (request.trustOverride == QLatin1String("no-approve") && hasTrustResources
-        && m_deps.requestTrust) {
-        const QString title = entry.title;
-        m_deps.requestTrust(projectPath, title,
-                            [this, request, spawnWith, projectPath](const QString &choice) mutable {
-            if (choice == QLatin1String("trust-remember")) {
-                if (m_deps.rememberTrust) m_deps.rememberTrust(projectPath);
-                request.trustOverride.clear();
-            } else if (choice == QLatin1String("trust-session")) {
-                request.trustOverride = QStringLiteral("approve");
-            } else {
-                request.trustOverride = QStringLiteral("no-approve");
-            }
-            if (!request.trustOverride.isEmpty()) {
-                const pilaunch::Launch probe = pilaunch::build(request);
-                pilaunch::probeVersion(probe,
-                                       [request, spawnWith](const QString &version) mutable {
-                    if (!pilaunch::supportsTrustFlags(version)) request.trustOverride.clear();
-                    spawnWith(pilaunch::build(request));
-                });
-                return;
-            }
-            spawnWith(pilaunch::build(request));
-        });
-        return;
-    }
-
-    if (!request.trustOverride.isEmpty() && hasTrustResources) {
-        // Trust flags only exist on pi >= 0.79; probing first keeps older pi working.
-        const pilaunch::Launch probe = pilaunch::build(request);
-        pilaunch::probeVersion(probe, [this, request, spawnWith](const QString &version) mutable {
-            if (!pilaunch::supportsTrustFlags(version)) request.trustOverride.clear();
-            spawnWith(pilaunch::build(request));
-        });
-        return;
-    }
-    spawnWith(pilaunch::build(request));
+    // Pi's RPC mode otherwise ignores project resources when no upstream decision is
+    // stored. Approve this run automatically, gated by version for older Pi and Rust.
+    const pilaunch::Launch probe = pilaunch::build(request);
+    pilaunch::probeVersion(probe, m_versionProbes, [request, spawnWith](const QString &version) mutable {
+        request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
+        spawnWith(pilaunch::build(request));
+    });
 }
 void Coordinator::applyPreferences(AgentSession &session, const CatalogEntry &entry,
                                    std::function<void()> done)

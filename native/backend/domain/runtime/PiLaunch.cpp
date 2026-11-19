@@ -5,15 +5,11 @@
 #include "../wsl/WslEnvironment.h"
 
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
-#include <QHash>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
-#include <QTimer>
 
 namespace pilaunch {
 namespace {
@@ -93,42 +89,6 @@ const QStringList &builtInExtensionNames()
     return names;
 }
 
-QString normalizedTrustKey(const QString &path)
-{
-    QString normalized = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-    while (normalized.endsWith(QLatin1Char('/')) || normalized.endsWith(QLatin1Char('\\'))) {
-        normalized.chop(1);
-    }
-#ifdef Q_OS_WIN
-    normalized = normalized.toLower();
-#endif
-    return normalized;
-}
-
-bool hasTrustRequiringResources(const QString &projectPath)
-{
-    static const QStringList files{
-        QStringLiteral("settings.json"), QStringLiteral("extensions"), QStringLiteral("skills"),
-        QStringLiteral("prompts"),        QStringLiteral("themes"),     QStringLiteral("SYSTEM.md"),
-        QStringLiteral("APPEND_SYSTEM.md"),
-    };
-    const QString configDir = QDir(projectPath).filePath(QStringLiteral(".pi"));
-    for (const QString &file : files) {
-        if (QFileInfo::exists(QDir(configDir).filePath(file))) return true;
-    }
-    // A `.agents/skills` directory anywhere up the chain also requires trust, except the
-    // user-level one (that is the user's own global configuration).
-    const QString userSkills = QDir(QDir::homePath()).filePath(QStringLiteral(".agents/skills"));
-    QString current = QDir::cleanPath(QFileInfo(projectPath).absoluteFilePath());
-    while (true) {
-        const QString skills = QDir(current).filePath(QStringLiteral(".agents/skills"));
-        if (skills != userSkills && QFileInfo::exists(skills)) return true;
-        const QString parent = QFileInfo(current).absolutePath();
-        if (parent == current) return false;
-        current = parent;
-    }
-}
-
 /**
  * Windows: npm installs pi as a `pi.cmd` shim, and CreateProcess cannot execute a
  * batch file, so the shim must go through `cmd.exe /d /s /c`. A bare command name
@@ -196,39 +156,6 @@ QStringList activeBuiltInExtensions(const QString &resourcesDir, const QJsonObje
         paths.append(full);
     }
     return paths;
-}
-
-QString resolveTrustOverride(const QString &agentDir, const QString &projectPath, bool *hasResources)
-{
-    const bool resources = hasTrustRequiringResources(projectPath);
-    if (hasResources) *hasResources = resources;
-    if (!resources) {
-        // A clean project needs no project-level resources, so pi's trust decision is
-        // irrelevant. Recording it keeps the file consistent with the oracle.
-        return QString();
-    }
-    QFile trustFile(QDir(agentDir).filePath(QStringLiteral("trust.json")));
-    if (!trustFile.open(QIODevice::ReadOnly)) return QStringLiteral("no-approve");
-    const QJsonObject trust = QJsonDocument::fromJson(trustFile.readAll()).object();
-    QHash<QString, bool> decisions;
-    for (auto iterator = trust.constBegin(); iterator != trust.constEnd(); ++iterator) {
-        decisions.insert(normalizedTrustKey(iterator.key()), iterator.value().toBool(false));
-    }
-    QString current = normalizedTrustKey(projectPath);
-    while (true) {
-        const auto found = decisions.constFind(current);
-        if (found != decisions.constEnd()) {
-            // An explicit decision is authoritative in both directions.
-            return *found ? QString() : QStringLiteral("no-approve");
-        }
-        const QString parent = QFileInfo(current).absolutePath();
-        if (parent == current) break;
-        current = parent;
-    }
-    // Undetermined with project resources present: fail closed. The interactive trust
-    // prompt is owned by the projects domain; until it is wired the runtime must not
-    // load project-level extensions/skills the user never approved.
-    return QStringLiteral("no-approve");
 }
 
 Launch build(const Request &request)
@@ -327,8 +254,10 @@ Launch build(const Request &request)
     if (!request.sessionPath.isEmpty() && !request.noSession) {
         args << QStringLiteral("--session") << request.sessionPath;
     }
-    if (request.trustOverride == QLatin1String("approve")) args << QStringLiteral("--approve");
-    else if (request.trustOverride == QLatin1String("no-approve")) args << QStringLiteral("--no-approve");
+    // PiDeck always loads project resources. Older Pi and Rust receive no unsupported flag.
+    if (request.approveProjectResources && kind != QLatin1String("rust")) {
+        args << QStringLiteral("--approve");
+    }
 
     launch.cwd = request.projectPath;
     if (launch.viaWsl) {

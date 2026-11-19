@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QObject>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
@@ -20,14 +21,12 @@
  *  - the child environment is `childenv::sanitized()` plus the explicitly allowed
  *    PiDeck variables (security snapshot, session identity, UI language, desktop flag);
  *  - `--session` / `--extension` paths are converted to Linux paths under WSL;
- *  - trust flags are only emitted for pi versions that support them.
+ *  - project resources load automatically on pi versions with an approval flag.
  */
 namespace pilaunch {
 
 struct Request {
     QJsonObject settings;
-    /** `~/.pi/agent`: trust.json lives here and built-in extensions resolve from resources. */
-    QString agentDir;
     /** Packaged/dev `resources` directory that contains `extensions/`. */
     QString resourcesDir;
     /** Project directory (host path) used as the pi working directory. */
@@ -47,8 +46,8 @@ struct Request {
     QString wslExe;
     QString securitySnapshotPath;
     QString uiLocale;
-    /** "approve" | "no-approve" | "" (no override). */
-    QString trustOverride;
+    /** Automatic upstream compatibility flag, enabled after a successful version probe. */
+    bool approveProjectResources = false;
 };
 
 struct Launch {
@@ -72,22 +71,11 @@ struct Launch {
 /** ts | rust | bolt | unknown, derived from the resolved command and the preference. */
 QString runtimeKind(const QJsonObject &settings, const QString &program);
 
-/** `piSupportsTrustFlags`: rust has no trust flags; otherwise major>0 or minor>=79. */
-bool supportsTrustFlags(const QString &version);
+/** Whether this Pi version accepts `--approve` to load project resources without a prompt. */
+bool supportsProjectApprovalFlag(const QString &version);
 
 /** Absolute paths of the built-in extensions to inject with `--extension`. */
 QStringList activeBuiltInExtensions(const QString &resourcesDir, const QJsonObject &settings);
-
-/**
- * Resolve the trust override for a project.
- *
- * Returns "" when pi may decide for itself (already trusted, or the project has no
- * trust-requiring resources and the decision was just recorded). Returns "no-approve"
- * when the project carries project-level resources without a recorded decision: the
- * desktop trust prompt belongs to the projects domain, so the runtime fails closed
- * instead of silently loading untrusted project resources.
- */
-QString resolveTrustOverride(const QString &agentDir, const QString &projectPath, bool *hasResources);
 
 /** Build the launch (program, argv, cwd, env) for one session runtime. */
 Launch build(const Request &request);
@@ -121,11 +109,27 @@ Cli buildCli(const QJsonObject &settings, const QStringList &arguments);
  */
 QString cachedVersion(const Launch &launch);
 
+/** Own pending version probes and cancel their callbacks before the runtime graph is destroyed. */
+class VersionProbeOwner final : public QObject {
+public:
+    explicit VersionProbeOwner(QObject *parent = nullptr) : QObject(parent) {}
+    ~VersionProbeOwner() override;
+    /** Stop all probes within one short reap budget. This owner cannot start new probes afterward. */
+    void cancel();
+    bool cancelled() const { return m_cancelled; }
+
+private:
+    bool m_cancelled = false;
+};
+
 /**
  * Probe `<program> --version` once per command; the callback receives the raw version
- * string (empty when the probe failed). Results are cached for the process lifetime.
+ * string (empty when the probe failed). Successful results are cached for the process
+ * lifetime; failures can be retried. Every active invocation completes exactly once.
+ * Cancelling or destroying its owner stops the child and discards the callback.
  */
-void probeVersion(const Launch &launch, std::function<void(const QString &version)> done);
+void probeVersion(const Launch &launch, VersionProbeOwner &owner,
+                  std::function<void(const QString &version)> done);
 
 /**
  * Win<->WSL path mapping for launch arguments, the pi working directory and the

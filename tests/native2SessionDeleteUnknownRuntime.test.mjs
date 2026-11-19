@@ -19,9 +19,6 @@ async function fixture(t, noSession, holdTrash = false) {
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: PROJECT_ID, path: project, name: "Unknown native runtime", environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       parent = writeSessionFile(directory.sessions, project, "parent");
       mkdirSync(parent.slice(0, -6));
       child = writeSessionFile(parent.slice(0, -6), project, "child");

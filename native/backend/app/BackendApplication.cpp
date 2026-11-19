@@ -178,7 +178,7 @@ BackendApplication::BackendApplication(BackendEnvironment environment, std::uniq
         m_services.wsl = m_wslController.get();
     }
 
-    // Project catalog + trust decisions. The store owns projects.json and
+    // The project catalog owns projects.json and
     // chat-path.json; nothing else may read or write them.
     m_projects = std::make_unique<projects::Store>(
         QDir(m_environment.userDataDir).filePath(QStringLiteral("projects.json")),
@@ -192,8 +192,6 @@ BackendApplication::BackendApplication(BackendEnvironment environment, std::uniq
         qWarning("projects: %s", failure.what());
     }
     m_services.projects = m_projects.get();
-    m_trust = std::make_unique<projects::TrustBroker>(m_environment.agentDir, &m_events);
-    m_services.trust = m_trust.get();
 
     // Store domain: prompt templates, skills, extensions and the bundled prompt library.
     // Each manager is the single owner of its files; the channels only validate input.
@@ -320,19 +318,6 @@ BackendApplication::BackendApplication(BackendEnvironment environment, std::uniq
     const QString securitySnapshot =
         QDir(m_environment.userDataDir).filePath(QStringLiteral("security-policy.json"));
     if (QFileInfo::exists(securitySnapshot)) runtimeDeps.securitySnapshotPath = securitySnapshot;
-    // The interactive trust prompt is owned by the projects domain; the runtime only
-    // asks and records, so one module owns trust.json.
-    runtimeDeps.requestTrust = [this](const QString &cwd, const QString &projectName,
-                                      std::function<void(const QString &)> done) {
-        if (m_trust) m_trust->request(cwd, projectName, std::move(done));
-        else done(QStringLiteral("deny"));
-    };
-    runtimeDeps.rememberTrust = [this](const QString &cwd) {
-        if (m_trust) m_trust->setDecision(cwd, true);
-    };
-    runtimeDeps.respondTrust = [this](const QString &requestId, const QString &choice) {
-        if (m_trust) m_trust->respond(requestId, choice);
-    };
     // Completion toast: the coordinator already decided this was a real completion, so
     // the notification owner only applies the settings/platform gate (AgentManager's
     // notifySessionEnd does the same split).

@@ -2,6 +2,7 @@
 
 #include "JsonFile.h"
 #include "SecurityCatalogInternal.h"
+#include "SecurityRegexValidator.h"
 #include "SettingsCatalog.h"
 
 #include <QDir>
@@ -69,6 +70,7 @@ QStringList validateConfig(const QJsonObject &config)
         return errors;
     }
     QSet<QString> seen;
+    internal::SecurityRegexValidator patternValidator;
     for (const QJsonValue &value : levelsValue.toArray()) {
         if (!value.isObject()) {
             errors.append(QStringLiteral("level 项必须是非空对象"));
@@ -134,8 +136,8 @@ QStringList validateConfig(const QJsonObject &config)
                     errors.append(QStringLiteral("等级 %1 危险命令模式必须是字符串").arg(id));
                     continue;
                 }
-                // An uncompilable pattern would make the extension crash on every command.
-                if (!QRegularExpression(pattern.toString()).isValid()) {
+                // Match the extension's ECMAScript syntax before persisting a rule.
+                if (!patternValidator.isValid(pattern.toString())) {
                     errors.append(QStringLiteral("等级 %1 危险命令正则无法编译: %2")
                                       .arg(id, pattern.toString()));
                 }
@@ -151,7 +153,7 @@ QStringList validateConfig(const QJsonObject &config)
                         errors.append(QStringLiteral("等级 %1 PowerShell 危险命令模式必须是字符串").arg(id));
                         continue;
                     }
-                    if (!QRegularExpression(pattern.toString()).isValid()) {
+                    if (!patternValidator.isValid(pattern.toString())) {
                         errors.append(QStringLiteral("等级 %1 PowerShell 危险命令正则无法编译: %2")
                                           .arg(id, pattern.toString()));
                     }

@@ -324,13 +324,12 @@ void BackendStartupTasks::ensurePiSettingsDefaultsNow()
     const QJsonObject settings = readSettings();
     pilaunch::Request request;
     request.settings = settings;
-    request.agentDir = m_deps.services->agentDir;
     request.resourcesDir = m_deps.services->resourcesDir;
     const pilaunch::Launch launch = pilaunch::build(request);
     // Deliberately no probe here. The oracle warms `--version` at startup, but forking pi
     // during startup breaks the "one pi fork per cold model list" contract that the model
     // list parity test pins, and the answer is only a settings hint. Reuse a version that a
-    // trust-gated launch (or `pi --version`) already probed in this process.
+    // runtime launch already probed in this process.
     const QString version = pilaunch::cachedVersion(launch);
     if (version.isEmpty()) {
         logInfo(QStringLiteral("pi-process"),

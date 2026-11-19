@@ -241,8 +241,6 @@ export function createPreviewApi(): PiDesktopApi {
 			// 预览态没有主进程模型缓存，事件永远不会触发（仅满足接口形状）
 			onModelsChanged: noop,
 			getModelSpec: async () => null,
-			onTrustRequest: noop,
-			respondTrustRequest: async () => undefined,
 		},
 		projectResources: {
 			list: async () => ({ skills: [], extensions: [] }),
@@ -740,7 +738,7 @@ export function createPreviewApi(): PiDesktopApi {
 			removeBuiltIn: async () => undefined,
 			restoreBuiltIn: async () => undefined,
 			update: async () => ({
-				command: "pi update --extensions --no-approve",
+				command: "pi update --extensions",
 				output: "Preview mode: extensions update output",
 				updated: false,
 			}),
@@ -865,7 +863,6 @@ export function createPreviewApi(): PiDesktopApi {
 				parsed: { providers: {} },
 			}),
 			getSettings: async () => ({ raw: "{}", parsed: {} }),
-			getTrust: async () => ({ raw: "{}", parsed: {} }),
 			saveModels: async () => ({ valid: true }),
 			saveSettings: async () => ({ valid: true }),
 			saveRaw: async () => ({ valid: true }),

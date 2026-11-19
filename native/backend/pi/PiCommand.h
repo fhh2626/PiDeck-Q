@@ -11,7 +11,7 @@
  * Subset of src/main/pi/PiLocator.ts covering what the git AI commit-message
  * generator needs: the user's explicit path, the WSL launch form, the runtime
  * preference path, and a PATH search with the runtime-specific binary names. The
- * full locator (version probe, trust flags, login-shell PATH discovery) belongs to
+ * full locator (version probe, compatible CLI flags, login-shell PATH discovery) belongs to
  * the pi runtime stage.
  */
 namespace picommand {

@@ -16,11 +16,6 @@ type GlobalAgentListenerCallbacks = {
   onProjectsChanged?: (projects: Project[]) => void;
   onFocusTarget?: (target: AppFocusSessionTarget) => void;
   onSettingsApplied?: (settings: AppSettings) => void;
-  onTrustRequest?: (request: {
-    requestId: string;
-    cwd: string;
-    projectName: string;
-  }) => void;
 };
 
 export function useGlobalAgentListeners(
@@ -51,16 +46,12 @@ export function useGlobalAgentListeners(
     const offSettings = desktopApi.settings.onApplyWindow((settings) => {
       callbacksRef.current.onSettingsApplied?.(settings);
     });
-    const offTrustRequest = desktopApi.projects.onTrustRequest((request) => {
-      callbacksRef.current.onTrustRequest?.(request);
-    });
 
     return () => {
       disposed = true;
       offProjects();
       offFocusTarget();
       offSettings();
-      offTrustRequest();
     };
   }, [store]);
 }

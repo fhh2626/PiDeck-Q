@@ -23,6 +23,5 @@ export function dirtyKeysClearedByReload(target: ConfigTab): ConfigDirtyKey[] {
 export const ALL_CONFIG_DIRTY_KEYS: readonly ConfigDirtyKey[] = [
 	"config:models",
 	"config:settings",
-	"config:trust",
 	"config:raw",
 ];

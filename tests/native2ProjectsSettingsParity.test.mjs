@@ -815,6 +815,24 @@ if (executable) {
 			assert.equal(readFileSync(authPath, "utf8"), credentials);
 		});
 
+		test("removed project approval APIs cannot read or change legacy Pi decisions", async (t) => {
+			const home = homeFor();
+			const session = await start(t, { home });
+			const trustPath = join(home, ".pi", "agent", "trust.json");
+			const legacy = JSON.stringify({ "/legacy/project": false });
+			writeFileSync(trustPath, legacy);
+			for (const [channel, args] of [
+				["config:get-trust", []],
+				["projects:trust-response", ["old-request", "trust-remember"]],
+			]) {
+				const result = await session.invoke(channel, args);
+				assert.equal(result.payload.ok, false, channel);
+			}
+			const raw = await session.invoke("config:save-raw", ["trust.json", "{}"]);
+			assert.equal(raw.payload.result.valid, false);
+			assert.equal(readFileSync(trustPath, "utf8"), legacy);
+		});
+
 		test("config:save-settings preserves Pi settings", async (t) => {
 			const home = homeFor();
 			const session = await start(t, { home });
@@ -826,7 +844,7 @@ if (executable) {
 			assert.equal(settingsFile.theme, "dark");
 		});
 
-		test("config:save-raw only accepts model/settings/trust files and valid JSON", async (t) => {
+		test("config:save-raw only accepts model/settings files and valid JSON", async (t) => {
 			const home = homeFor();
 			const session = await start(t, { home });
 			const badJson = await session.invoke("config:save-raw", ["settings.json", "{ nope"]);
@@ -837,12 +855,10 @@ if (executable) {
 			assert.equal(badName.payload.result.valid, false);
 			assert.match(badName.payload.result.error, /other\.json/);
 
-			const ok = await session.invoke("config:save-raw", ["trust.json", '{"C:\\\\x":true}']);
+			const raw = '{"theme":"dark"}';
+			const ok = await session.invoke("config:save-raw", ["settings.json", raw]);
 			assert.equal(ok.payload.result.valid, true);
-			assert.equal(
-				readFileSync(join(home, ".pi", "agent", "trust.json"), "utf8"),
-				'{"C:\\\\x":true}',
-			);
+			assert.equal(readFileSync(join(home, ".pi", "agent", "settings.json"), "utf8"), raw);
 		});
 
 		test("config export/import round-trip models and settings without reading or overwriting credentials", async (t) => {

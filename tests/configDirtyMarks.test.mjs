@@ -27,10 +27,6 @@ test("重载 settings 同时清除被顺带重载的 models 脏标记（假脏�
 	);
 });
 
-test("重载 trust 清除自身与 raw", () => {
-	assert.deepEqual(new Set(dirtyKeysClearedByReload("trust")), new Set(["config:trust", "config:raw"]));
-});
-
 test("重载 raw 只清除自身（去重，不产生重复 key）", () => {
 	assert.deepEqual(Array.from(dirtyKeysClearedByReload("raw")), ["config:raw"]);
 });
@@ -40,7 +36,6 @@ test("ALL_CONFIG_DIRTY_KEYS 覆盖全部 config 组文件键（不含 skills/pro
 	assert.deepEqual(Array.from(ALL_CONFIG_DIRTY_KEYS), [
 		"config:models",
 		"config:settings",
-		"config:trust",
 		"config:raw",
 	]);
 });

@@ -24,7 +24,6 @@ async function runtimeWithBridge(t, nativeImages = false) {
 			mkdirSync(configDir, { recursive: true });
 			mkdirSync(project, { recursive: true });
 			writeFileSync(join(fixture.userData, "projects.json"), JSON.stringify([{ id: "p", path: project }]));
-			writeFileSync(join(configDir, "trust.json"), JSON.stringify({ [project]: true }));
 			writeFileSync(join(configDir, "models.json"), JSON.stringify(models));
 			writeFileSync(join(configDir, "pi-deck-vision.json"), JSON.stringify({ enabled: true, provider: "vision", model: "bridge" }));
 			fake = createFakePi(fixture, { models: [main], state: { model: main } });

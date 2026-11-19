@@ -14,9 +14,6 @@ async function fixture(t, holdTrash = false) {
     projects: [{ id: "native-alias", path: process.cwd() }],
     hostHandlers: holdTrash ? { "shell.trashItem": () => undefined } : {},
     prepare: (directory) => {
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [process.cwd()]: true }));
       fake = createFakePi(directory, {});
       return { settings: { customPiPath: fake.shim }, env: { FAKE_PI_SCENARIO: fake.scenarioPath, FAKE_PI_LOG: fake.logPath } };
     },

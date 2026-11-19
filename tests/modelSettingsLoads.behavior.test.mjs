@@ -162,7 +162,7 @@ async function mountConfig(host, env, getSettings, options = {}) {
 		"./hooks/usePromptTemplateEditor": { usePromptTemplateEditor: () => ({}) },
 		"./composerBehavior": { translateBuiltinPromptDescription: (value) => value },
 	};
-	for (const name of ["ModelsTab", "RawTab", "TrustTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) stubs[`./config/${name}`] = primitive(name);
+	for (const name of ["ModelsTab", "RawTab", "SettingsTab", "PromptsTab", "SkillsTab", "ExtensionsTab"]) stubs[`./config/${name}`] = primitive(name);
 	const { ConfigModal } = host.load("src/renderer/src/ConfigModal.tsx", {
 		stubs,
 		globals: { localStorage: { getItem: () => options.initialTab ?? "config:settings", setItem() {} } },
@@ -192,6 +192,16 @@ test("a saved authentication tab migrates to model settings", async () => {
 		const mounted = await mountConfig(host, env, async () => ({ parsed: {}, raw: "{}" }), { initialTab: "config:auth" });
 		assert.equal(nodes(mounted.result(), (node) => node.type === "Tabs")[0].props.value, "config:models");
 		assert.equal(nodes(mounted.result(), (node) => node.type === "ModelsTab").length, 1);
+	});
+});
+
+test("Pi management removes project trust and migrates its saved tab to models", async () => {
+	await withHookHost(async (host) => {
+		const env = setup(host);
+		const mounted = await mountConfig(host, env, async () => ({ parsed: {}, raw: "{}" }), { initialTab: "config:trust" });
+		assert.equal(nodes(mounted.result(), (node) => node.type === "Tabs")[0].props.value, "config:models");
+		assert.equal(nodes(mounted.result(), (node) => node.type === "ModelsTab").length, 1);
+		assert.equal(nodes(mounted.result(), (node) => node.type === "TabsTrigger" && node.props.value === "config:trust").length, 0);
 	});
 });
 

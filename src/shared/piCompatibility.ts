@@ -38,22 +38,6 @@ export function detectPiRuntimeKind(version: string): PiRuntimeKind {
 	return "unknown";
 }
 
-/**
- * `--approve` / `--no-approve` exist from Pi 0.79.0 and in every 1.x release.
- * Rust Pi has no trust system, and an unparsable version is treated as
- * unsupported so we never pass an unknown option that would stop the process.
- * The version numbers compared here are the upstream Pi's, which Pi-Bolt reports first.
- */
-export function piSupportsTrustFlags(version: string): boolean {
-	const value = typeof version === "string" ? version.trim() : "";
-	if (detectPiRuntimeKind(value) === "rust") return false;
-	const match = value.match(/^v?(\d+)\.(\d+)/);
-	if (!match) return false;
-	const major = parseInt(match[1], 10);
-	const minor = parseInt(match[2], 10);
-	return major > 0 || minor >= 79;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? value as Record<string, unknown>

@@ -271,14 +271,9 @@ export const ipcChannels = {
 
 	/** Agent Extension UI 协议：主进程 → 渲染进程，推送扩展的 UI 请求（select/confirm/input/editor） */
 	agentsUiRequest: "agents:ui-request",
-	/** 项目信任确认：主进程 → 渲染进程，启动 Agent 前请求用户对含 .pi 资源的项目做信任决策 */
-	projectsTrustRequest: "projects:trust-request",
-	/** 项目信任确认：渲染进程 → 主进程，回传用户的信任选择（trust-remember/trust-session/deny） */
-	projectsTrustResponse: "projects:trust-response",
 
 	configGetModels: "config:get-models",
 	configGetSettings: "config:get-settings",
-	configGetTrust: "config:get-trust",
 	configSaveModels: "config:save-models",
 	configSaveSettings: "config:save-settings",
 	configSaveRaw: "config:save-raw",

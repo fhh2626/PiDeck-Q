@@ -21,6 +21,7 @@ const NATIVE_FIXTURES = [
 	["PiDeck-SessionCatalogConcurrencyTest"],
 	["PiDeck-CopyStreamTest"],
 	["PiDeck-BackgroundWorkTest", "PIDECK_BACKGROUND_WORK_TEST_EXECUTABLE"],
+	["PiDeck-PiVersionProbeTest", "PIDECK_VERSION_PROBE_TEST_EXECUTABLE"],
 	["PiDeck-TodoCommandTest", "PIDECK_TODO_COMMAND_TEST_EXECUTABLE"],
 	["PiDeck-TranscriptHistoryTest", "PIDECK_TRANSCRIPT_TEST_EXECUTABLE"],
 	["PiDeck-FilePathPolicyTest", "PIDECK_FILE_PATH_TEST_EXECUTABLE"],

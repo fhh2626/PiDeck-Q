@@ -13,7 +13,6 @@ QJsonObject defaults()
     return QJsonObject{
         {QStringLiteral("theme"), QStringLiteral("dark")},
         {QStringLiteral("hideThinkingBlock"), false},
-        {QStringLiteral("defaultProjectTrust"), QStringLiteral("ask")},
         {QStringLiteral("compaction"),
          QJsonObject{{QStringLiteral("enabled"), true},
                      {QStringLiteral("reserveTokens"), 16'384},

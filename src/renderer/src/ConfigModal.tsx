@@ -31,14 +31,13 @@ import {
 	Puzzle,
 	Settings2,
 	Shield,
-	ShieldCheck,
 	Sparkles,
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import { showNotice } from "./utils/notice";
 import { desktopApi } from "./desktopApi";
 import { collectModelSpecPatches } from "./utils/modelSpecAutoFill";
-import { Component, useRef, useState, useEffect, useCallback, type ReactNode } from "react";
+import { Component, useRef, useState, useEffect, useLayoutEffect, useCallback, type ReactNode } from "react";
 import { useAtomValue, useStore } from "jotai";
 import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedModelReferencesAtom } from "./atoms/model-atoms";
 import { modelConfigurationScopeKey } from "./utils/modelConfigurationScope";
@@ -46,7 +45,6 @@ import { clearPiModelDefaults, getModelRemovalsSince } from "./utils/modelSelect
 import { ModelsTab } from "./config/ModelsTab";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
 import { RawTab } from "./config/RawTab";
-import { TrustTab } from "./config/TrustTab";
 import { SettingsTab } from "./config/SettingsTab";
 import { PromptsTab } from "./config/PromptsTab";
 import { createGlobalPromptEditorStorage } from "./config/promptEditorStorage";
@@ -99,7 +97,7 @@ const DEFAULT_MODEL_CONFIG: Pick<
 };
 
 // ── 配置弹窗左侧导航 = shadcn Vertical Tabs ──
-// config 组 4 个子页（模型/设置/信任/原始文件）用 "config:<tab>" 复合值，
+// config 组 3 个子页（模型/设置/原始文件）用 "config:<tab>" 复合值，
 // 其余组直接以 section 名作 value；Tabs 受控 value 由此编码，业务仍走 section/tab 双 state，
 // loadConfig 等既有依赖零改动。
 type ConfigSection =
@@ -121,11 +119,11 @@ const CONFIG_LAST_TAB_KEY = "pideck-config-last-tab";
 
 /** 全部合法 section / config 组子 tab，用于校验持久化值（避免版本更新后残留旧值导致无高亮）。 */
 const CONFIG_SECTIONS: readonly ConfigSection[] = ["config", "security", "skills", "prompts", "extensions"];
-const CONFIG_TABS: readonly ConfigTab[] = ["models", "settings", "trust", "raw"];
+const CONFIG_TABS: readonly ConfigTab[] = ["models", "settings", "raw"];
 
 /**
  * 读取上次打开的 tab；localStorage 不可用、无记录或值已失效时返回 null（由调用方回退默认值）。
- * Radix Dialog 关闭会卸载内容，state 在每次打开时重建，因此需要从外部存储恢复。
+ * 首次挂载从外部存储恢复；同一会话内关闭重开则沿用 ConfigModalContent 的选中状态。
  */
 function loadLastConfigTab(): { section: ConfigSection; tab?: ConfigTab } | null {
 	try {
@@ -296,7 +294,7 @@ class ConfigModalErrorBoundary extends Component<
 	}
 }
 
-/** 配置管理弹窗：支持 models/settings/trust 三个 tab 的可视化编辑和源文件编辑 */
+/** 配置管理弹窗：支持模型、设置的可视化编辑和源文件编辑。 */
 export function ConfigModal(props: ConfigModalProps) {
 	return (
 		<ConfigModalErrorBoundary open={props.open} onClose={props.onClose}>
@@ -307,8 +305,12 @@ export function ConfigModal(props: ConfigModalProps) {
 
 function ConfigModalContent(props: ConfigModalProps) {
 	const { open, onClose, onSaved } = props;
-	// 弹窗每次打开都会重新挂载（Radix Dialog 关闭即卸载内容），
-	// 用 lazy initializer 在挂载时读一次 localStorage，恢复到上次所在 tab。
+	const dialogEpochRef = useRef(0);
+	// A save may settle after the user has closed and reopened the dialog. Invalidate
+	// its close intent at each open transition and unmount before promise callbacks run.
+	useLayoutEffect(() => () => { dialogEpochRef.current += 1; }, [open]);
+	// 用 lazy initializer 在首次挂载时读一次 localStorage，恢复到上次所在 tab。
+	// 关闭弹窗只卸载子页，当前 section/tab 仍由本组件保留。
 	const [lastTab] = useState(loadLastConfigTab);
 	const [section, setSection] = useState<ConfigSection>(lastTab?.section ?? "config");
 	const [tab, setTab] = useState<ConfigTab>(lastTab?.tab ?? "models");
@@ -361,7 +363,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const [discoveredModels, setDiscoveredModels] = useState<
 		Record<string, Array<{ id: string; name?: string }>>
 	>({});
-	const [trustData, setTrustData] = useState<Record<string, boolean>>({});
 	const [skillsData, setSkillsData] = useState<PiSkillListResult>({
 		locations: [],
 		skills: [],
@@ -521,28 +522,17 @@ function ConfigModalContent(props: ConfigModalProps) {
 					}).catch(() => {
 						// Explicit model definitions and existing settings remain editable offline.
 					});
-				} else if (target === "trust") {
-					const res = await api.config.getTrust();
-					if (!isCurrent()) return;
-					setTrustData(res.parsed as Record<string, boolean>);
-					setRawContent(res.raw);
-					setRawFileName("trust.json");
-					setConfigDiagnostic(res.diagnostic ?? null);
 				} else if (target === "raw") {
 					// 源文件 tab 复用当前 tab 对应的文件
 					const fileName = sourceFileName ?? (
 						tab === "models"
 							? "models.json"
-							: tab === "trust"
-								? "trust.json"
-								: "settings.json");
+							: "settings.json");
 					setRawFileName(fileName);
 					const res =
 						fileName === "models.json"
 							? await api.config.getModels()
-							: fileName === "trust.json"
-								? await api.config.getTrust()
-								: await api.config.getSettings();
+							: await api.config.getSettings();
 					if (!isCurrent()) return;
 					setRawContent(res.raw);
 					setConfigDiagnostic(res.diagnostic ?? null);
@@ -1055,18 +1045,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 		return ok;
 	};
 
-	// ── Trust 操作 ────────────────────────────────────────
-
-	const handleSaveTrust = async (): Promise<boolean> => {
-		const ok = await saveAndReload(
-			() => api.config.saveRaw("trust.json", JSON.stringify(trustData, null, 2)),
-			undefined,
-			"config:trust",
-		);
-		if (ok) await loadConfig("trust");
-		return ok;
-	};
-
 	// ── Raw 操作 ─────────────────────────────────────────
 
 	const handleSaveRaw = async (): Promise<boolean> => {
@@ -1079,8 +1057,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		if (!ok) return false;
 		if (isModelsFile) {
 			await loadConfig("models");
-		} else if (rawFileName === "trust.json") await loadConfig("trust");
-		else await loadConfig("settings");
+		} else await loadConfig("settings");
 		return ok;
 	};
 
@@ -1363,7 +1340,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 					return;
 				}
 				onSaved();
-				// 导入会整体替换四个配置文件：当前 tab 由 loadConfig 重载并清标记，其余 tab 的数据在磁盘上已全部变化，
+				// 导入会整体替换模型和设置文件：当前 tab 由 loadConfig 重载并清标记，其余 tab 的数据在磁盘上已全部变化，
 				// 统一清除它们的脏标记，避免残留黄点/关闭误弹确认（skills/prompts 编辑不涉及配置文件，保留）。
 				for (const key of ALL_CONFIG_DIRTY_KEYS) clearDirty(key);
 				await loadConfig(tab);
@@ -1394,8 +1371,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 				return handleSaveModels();
 			case "config:settings":
 				return handleSaveSettings();
-			case "config:trust":
-				return handleSaveTrust();
 			case "config:raw":
 				return handleSaveRaw();
 			case "skills":
@@ -1432,13 +1407,20 @@ function ConfigModalContent(props: ConfigModalProps) {
 
 	/** Save the current editor and any retained safety draft before closing the dialog. */
 	const handleSaveAndClose = async () => {
+		const dialogEpoch = dialogEpochRef.current;
+		const editVersions = { ...editVersionsRef.current };
+		// Other pages remain editable while a save is pending. Their newer drafts
+		// also invalidate this close intent, even if the saved editor itself succeeded.
+		const isCurrent = () => dialogEpoch === dialogEpochRef.current
+			&& Object.entries(editVersionsRef.current).every(([key, version]) => editVersions[key] === version);
 		const tabKey = sectionTabValue(section, tab);
 		if (dirtyTabs.has(tabKey)) {
 			const ok = await saveByKey(tabKey);
-			if (!ok) return;
+			if (!isCurrent() || !ok) return;
 		}
 		if (tabKey !== "security" && dirtyTabs.has("security")) {
 			const ok = await saveByKey("security");
+			if (!isCurrent()) return;
 			if (!ok) {
 				// Make validation errors and edits retained during saving visible to the user.
 				setSection("security");
@@ -1459,7 +1441,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 	const configNavItems: Array<{ id: ConfigTab; label: string; icon: ReactNode }> = [
 		{ id: "models", label: t("config.nav.models"), icon: <Cpu size={14} aria-hidden="true" /> },
 		{ id: "settings", label: t("config.nav.settings"), icon: <Settings2 size={14} aria-hidden="true" /> },
-		{ id: "trust", label: t("config.nav.trust"), icon: <ShieldCheck size={14} aria-hidden="true" /> },
 		{ id: "raw", label: t("config.nav.raw"), icon: <FileCode2 size={14} aria-hidden="true" /> },
 	];
 
@@ -1472,7 +1453,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 		</>
 	);
 
-	// 配置诊断卡：config 组 4 个子页顶部共用（任意子页打开时都显示）。
+	// 配置诊断卡：config 组 3 个子页顶部共用（任意子页打开时都显示）。
 	const configDiagnosticBlock = configDiagnostic ? (
 		<ConfigDiagnosticCard
 			diagnostic={configDiagnostic}
@@ -1774,24 +1755,6 @@ function ConfigModalContent(props: ConfigModalProps) {
 								/>
 							</div>
 						)}
-					</TabsContent>
-
-					<TabsContent value="config:trust" className="config-main min-w-0">
-						<div className="config-content">
-					{statusBlock}
-					{configDiagnosticBlock}
-					{!loading && (
-						<TrustTab
-							data={trustData}
-							saving={saving}
-							onChange={(data) => {
-								setTrustData(data);
-								markDirty("config:trust");
-							}}
-							onSave={handleSaveTrust}
-						/>
-					)}
-						</div>
 					</TabsContent>
 
 					<TabsContent value="config:raw" className="config-main min-w-0">

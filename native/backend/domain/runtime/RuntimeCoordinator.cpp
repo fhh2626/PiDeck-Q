@@ -58,6 +58,7 @@ void Coordinator::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
+    m_versionProbes.cancel();
     // Deferred refresh callbacks belong to this runtime graph and cannot outlive it.
     m_projectionLoads.clear();
     m_compactProjectionExits.clear();
@@ -199,13 +200,6 @@ void Coordinator::resyncLiveState()
         if (!m_bindings.bindingForAgent(entry.first, &sessionId, &generation)) continue;
         agentruntime::flushMessages(*session, hooksFor(*session));
     }
-}
-
-void Coordinator::respondTrustRequest(const QString &requestId, const QString &choice)
-{
-    // The pending prompt lives in the projects domain (TrustBroker); the coordinator only
-    // forwards the renderer's answer so the channel surface stays in one place.
-    if (m_deps.respondTrust) m_deps.respondTrust(requestId, choice);
 }
 
 QString Coordinator::deliveryKey(const QString &sessionId, const QString &requestId) const

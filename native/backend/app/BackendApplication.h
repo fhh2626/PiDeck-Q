@@ -18,7 +18,6 @@
 #include "sessions/SessionCatalogStore.h"
 #include "sessions/SessionScanner.h"
 #include "projects/ProjectStore.h"
-#include "projects/TrustBroker.h"
 #include "terminal/TerminalManager.h"
 #include "extensions/ExtensionManager.h"
 #include "logs/AppLogStore.h"
@@ -152,8 +151,6 @@ private:
     std::unique_ptr<QuickGenerator> m_quickGenerator;
     /** Project catalog owner (projects.json + chat-path.json). */
     std::unique_ptr<projects::Store> m_projects;
-    /** Project trust decisions and the interactive trust prompt. */
-    std::unique_ptr<projects::TrustBroker> m_trust;
     /** Session runtime owner: pi processes, bindings, generations, leases. */
     std::unique_ptr<runtime::Coordinator> m_runtimeCoordinator;
     /**

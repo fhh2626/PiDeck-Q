@@ -104,3 +104,51 @@ test("native security rejects malformed PowerShell rules without changing saved 
 		assert.equal(readFileSync(snapshotPath, "utf8"), originalSnapshot);
 	}
 });
+
+for (const [field, flags] of [["denyBashPatterns", ""], ["denyPowerShellPatterns", "i"]]) {
+	test(`native security accepts ECMAScript patterns in ${field}`, { skip }, async (t) => {
+		const patterns = [
+			String.raw`\u0061`,
+			"(?<=prefix)foo",
+			"(?<!prefix)foo",
+			String.raw`(?<name>foo)\k<name>`,
+			"[]",
+			"[^]",
+		];
+		for (const pattern of patterns) assert.doesNotThrow(() => new RegExp(pattern, flags));
+		const session = await startBackendSession(t);
+		const config = await getConfig(session);
+		config.levels.find((level) => level.id === "standard")[field] = patterns;
+		const saved = await session.invoke("security:update-config", [{ levels: config.levels }]);
+		assert.equal(saved.payload.result.ok, true, JSON.stringify(saved.payload));
+		assert.deepEqual((await getConfig(session)).levels, config.levels);
+		const snapshot = JSON.parse(readFileSync(join(session.fixture.userData, "security-policy.json"), "utf8"));
+		assert.deepEqual(snapshot.levels, config.levels);
+	});
+
+	test(`native security rejects unsupported patterns in ${field} without changing policy`, { skip }, async (t) => {
+		const session = await startBackendSession(t);
+		const initialized = await session.invoke("security:update-config", [{ enabled: true }]);
+		assert.equal(initialized.payload.result.ok, true, JSON.stringify(initialized.payload));
+		const config = await getConfig(session);
+		const settingsPath = join(session.fixture.userData, "settings.json");
+		const snapshotPath = join(session.fixture.userData, "security-policy.json");
+		const originalSettings = readFileSync(settingsPath, "utf8");
+		const originalSnapshot = readFileSync(snapshotPath, "utf8");
+		// Node 22-based Pi runtimes lack the two ECMAScript 2025 features, even
+		// though the repository's Node 24 build runtime accepts them.
+		const unsupported = ["(?i)Remove-Item", "(?|a|b)", "(?>foo)", "foo++", "(?R)",
+			"(?i:foo)", "(?<name>foo)|(?<name>bar)"];
+		for (const pattern of unsupported) {
+			const levels = structuredClone(config.levels);
+			levels.find((level) => level.id === "standard")[field] = [pattern];
+			const result = await session.invoke("security:update-config", [{ levels }]);
+			assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
+			assert.equal(result.payload.result.ok, false, `${field}: ${pattern}`);
+			assert.equal(result.payload.result.code, "VALIDATION_FAILED");
+			assert.deepEqual(await getConfig(session), config);
+			assert.equal(readFileSync(settingsPath, "utf8"), originalSettings);
+			assert.equal(readFileSync(snapshotPath, "utf8"), originalSnapshot);
+		}
+	});
+}

@@ -30,7 +30,7 @@ function installFakePi(root) {
 
 /**
  * Same fake CLI behind a wrapper that records the *raw* argv before the fixture strips
- * `--no-approve`: the version-gated trust flag is part of the launch contract.
+ * `--approve`: the version-gated trust flag is part of the launch contract.
  */
 function installFakePiRecordingRaw(root) {
 	const { shim, statePath } = installFakePi(root);
@@ -297,6 +297,22 @@ if (executable) {
 			assert.deepEqual(snapshotTree(resolve("resources/extensions")), sourceSnapshot);
 		});
 
+		test("extension commands retry a failed Pi version probe before selecting compatible arguments", async (t) => {
+			const home = homeFor();
+			const { shim, statePath, rawPath } = installFakePiRecordingRaw(home);
+			const initial = JSON.parse(readFileSync(statePath, "utf8"));
+			writeFileSync(statePath, JSON.stringify({ ...initial, versionFailuresRemaining: 1 }));
+			const session = await start(t, home, {
+				settings: { customPiPath: shim, piRuntimePreference: "auto" },
+				env: { PIDECK_FAKE_PI_STATE: statePath },
+			});
+			assert.equal((await session.invoke("extensions:install", ["npm:first"])).payload.ok, true);
+			assert.equal((await session.invoke("extensions:install", ["npm:second"])).payload.ok, true);
+			const rawCalls = readFileSync(rawPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			const second = rawCalls.find((call) => call[0] === "install" && call[1] === "npm:second");
+			assert.ok(second?.includes("--approve"), JSON.stringify(rawCalls));
+		});
+
 		// ── install / update / update-one ───────────────────────────────
 		test("extensions:install, update and update-one use the supported CLI contract", async (t) => {
 			const home = homeFor();
@@ -315,18 +331,18 @@ if (executable) {
 			const one = await session.invoke("extensions:update-one", ["npm:new-package"]);
 			assert.equal(one.payload.ok, true, JSON.stringify(one.payload));
 
-			// The exact argv (including the version-gated `--no-approve`) must match.
+			// The exact argv (including the version-gated `--approve`) must match.
 			const calls = (path) =>
 				JSON.parse(readFileSync(path, "utf8"))
 					.calls.filter((call) => call[0] !== "--version")
 					.map((call) => call.join(" "));
 			assert.deepEqual(calls(statePath), ["install npm:new-package", "update --extensions", "update npm:new-package"]);
 			const rawCalls = readFileSync(rawPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-			// The fixture strips --no-approve before recording, so the wrapper proves the flag
+			// The fixture strips --approve before recording, so the wrapper proves the flag
 			// really reached the CLI (pi >= 0.79 accepts it).
 			for (const args of [["install", "npm:new-package"], ["update", "--extensions"], ["update", "npm:new-package"]]) {
 				assert.ok(
-					rawCalls.some((call) => call[0] === args[0] && call[1] === args[1] && call.includes("--no-approve")),
+					rawCalls.some((call) => call[0] === args[0] && call[1] === args[1] && call.includes("--approve")),
 					JSON.stringify(rawCalls),
 				);
 			}

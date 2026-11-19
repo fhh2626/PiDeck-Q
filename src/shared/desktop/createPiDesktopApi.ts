@@ -182,15 +182,6 @@ const api = {
 			transport.invoke(ipcChannels.projectsGetModelSpec, providerName, modelId) as Promise<
 				ModelSpec | null
 			>,
-		onTrustRequest: (callback: (request: {
-			requestId: string;
-			cwd: string;
-			projectName: string;
-		}) => void) => subscribe(ipcChannels.projectsTrustRequest, callback),
-		respondTrustRequest: (
-			requestId: string,
-			choice: "trust-remember" | "trust-session" | "deny",
-		) => transport.invoke(ipcChannels.projectsTrustResponse, requestId, choice) as Promise<void>,
 	},
 	projectResources: {
 		list: (projectId: string) =>
@@ -1016,12 +1007,6 @@ const api = {
 			}>,
 		getSettings: () =>
 			transport.invoke(ipcChannels.configGetSettings) as Promise<{
-				raw: string;
-				parsed: Record<string, unknown>;
-				diagnostic?: ConfigFileDiagnostic;
-			}>,
-		getTrust: () =>
-			transport.invoke(ipcChannels.configGetTrust) as Promise<{
 				raw: string;
 				parsed: Record<string, unknown>;
 				diagnostic?: ConfigFileDiagnostic;

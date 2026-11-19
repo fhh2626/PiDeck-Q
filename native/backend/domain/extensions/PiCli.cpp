@@ -174,15 +174,10 @@ QString Result::errorMessage() const
     return QStringLiteral("pi command failed");
 }
 
-bool supportsTrustFlags(const QString &version)
-{
-    return pilaunch::supportsTrustFlags(version);
-}
-
 QString version(const QJsonObject &settings)
 {
     // Cache per resolved command: a settings change (custom path, runtime preference)
-    // must re-probe, otherwise a stale version decides the trust flags forever.
+    // must re-probe, otherwise a stale version decides CLI compatibility forever.
     static QHash<QString, QString> cache;
     const pilaunch::Cli cli = pilaunch::buildCli(settings, {QStringLiteral("--version")});
     const QString key = cli.program + QLatin1Char('\n') + cli.nativeArguments + QLatin1Char('\n')
@@ -191,16 +186,17 @@ QString version(const QJsonObject &settings)
     if (cached != cache.constEnd()) return cached.value();
     const Result result = runOnce(cli, {}, 20'000);
     const QString detected = result.ok() ? result.stdoutText.trimmed() : QString();
-    cache.insert(key, detected);
+    if (!detected.isEmpty()) cache.insert(key, detected);
     return detected;
 }
 
 Result run(const QJsonObject &settings, const QStringList &arguments, int timeoutMs, bool offline)
-{    QStringList finalArguments = arguments;
+{
+    QStringList finalArguments = arguments;
     const QString preference = settings.value(QStringLiteral("piRuntimePreference")).toString();
-    if (preference != QLatin1String("rust") && supportsTrustFlags(version(settings))) {
-        // `--no-approve` only exists in pi >= 0.79; an older build rejects the option.
-        finalArguments.append(QStringLiteral("--no-approve"));
+    if (preference != QLatin1String("rust") && pilaunch::supportsProjectApprovalFlag(version(settings))) {
+        // Project resources load automatically; pi before 0.79 rejects this option.
+        finalArguments.append(QStringLiteral("--approve"));
     }
 
     pilaunch::Cli cli = pilaunch::buildCli(settings, finalArguments);

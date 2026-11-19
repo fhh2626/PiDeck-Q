@@ -23,7 +23,6 @@ async function start(t, { global = emptyDefault, project = {} } = {}) {
 				id: "old", projectId: "project", title: "Old session without a model", environment: "native",
 				status: "active", source: "pi", createdAt: 1, updatedAt: 1,
 			}] }));
-			writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [projectDir]: true }));
 			writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { custom: { models: [{ id: removed.modelId }] } } }));
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(global));
 			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify(project));

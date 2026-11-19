@@ -18,9 +18,6 @@ async function fixture(t) {
       writeFileSync(join(directory.userData, "projects.json"), JSON.stringify([
         { id: "host-timeout", path: project, name: "Host timeout", environment: "windows" },
       ]));
-      const agentDir = join(directory.home, ".pi", "agent");
-      mkdirSync(agentDir, { recursive: true });
-      writeFileSync(join(agentDir, "trust.json"), JSON.stringify({ [project]: true }));
       file = writeSessionFile(directory.sessions, project, "pending-host-trash");
       const fake = createFakePi(directory, {});
       return { settings: { customPiPath: fake.shim }, env: {
