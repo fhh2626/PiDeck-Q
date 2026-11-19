@@ -134,7 +134,7 @@ public:
      * `{kind:"file-in-use",agentTitle}`.
      */
     QJsonObject findSessionTreeBlock(const QString &sessionId) const;
-    /** Live runtime agents as tree-guard inputs (title + host session path + environment). */
+    /** Live runtimes and pending reconnects as tree-guard inputs (path + environment). */
     QVector<sessiontreeguard::LiveAgent> liveTreeAgents() const;
     /**
      * Runtime-cache-first turn page (`AgentManager.tryReadRuntimeTurnPage`).
@@ -354,6 +354,8 @@ private:
     void discardFailedActivation(const CatalogEntry &entry, const QString &agentId,
                                  bool dropTransientRecord = true);
     void createAgent(const CatalogEntry &entry, std::function<void(AgentSession *, const QString &)> done);
+    /** Verify a launch's captured project and catalog identity again after asynchronous preparation. */
+    QString launchIdentityError(const CatalogEntry &expected, const QString &projectPath) const;
     /** Queue a boundary-safe refresh. Completion is true only after applying a fresh snapshot. */
     void loadProjection(AgentSession &session, std::function<void(bool)> done,
                         bool preserveHistory = false);
@@ -421,9 +423,13 @@ private:
      */
     void reattachProcess(const QString &agentId, const Target &target,
                          std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done);
+    /** Remove the exact reconnect owner before completing its caller, including cancellation. */
+    void finishReattach(const QString &agentId, quint64 ticket, bool ok, const QString &error,
+                        quint64 attemptEpoch);
     /** Recheck runtime ownership after probing before swapping the transport. */
     void reattachPrepared(const QString &agentId, const Target &target, quint64 expectedEpoch,
-                          const QString &sessionPath, const pilaunch::Launch &launch,
+                          const CatalogEntry &entry, const pilaunch::Request &request,
+                          const pilaunch::Launch &launch,
                           std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done);
     /** Detach and retire only the exact failed recovery attempt, never its successor. */
     void discardFailedReattach(const Target &target, quint64 attemptEpoch);
@@ -573,6 +579,13 @@ private:
     cachehit::Reader m_cacheHits;
     std::map<QString, std::unique_ptr<AgentSession>> m_agents;
     QHash<QString, QVector<std::function<void(QJsonObject)>>> m_activationWaiters;
+    struct ReattachAttempt {
+        quint64 ticket = 0;
+        std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> completion;
+    };
+    /** Reconnects own their completion so stop can release command leases before a probe returns. */
+    QHash<QString, ReattachAttempt> m_reattachAttempts;
+    quint64 m_nextReattachTicket = 0;
     struct ProjectionLoad {
         quint64 ticket = 0;
         bool inFlight = false;

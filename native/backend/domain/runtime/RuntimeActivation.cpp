@@ -234,6 +234,11 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     auto spawnWith = [this, entry, agentId, projectPath, done](const pilaunch::Launch &launch) {
         // Version probes can yield. Recheck the captured launch identity at the
         // last point before pi can open its file, not only the current catalog row.
+        const QString identityError = launchIdentityError(entry, projectPath);
+        if (!identityError.isEmpty()) {
+            done(nullptr, identityError);
+            return;
+        }
         const CatalogEntry actual = deletionidentity::forLaunch(entry, launch);
         // A cached unrelated WSL alias may have been retargeted while deletion is
         // moving files. Existing bound runtimes remain usable; new writers wait

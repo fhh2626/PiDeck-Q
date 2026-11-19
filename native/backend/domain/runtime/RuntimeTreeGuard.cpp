@@ -11,7 +11,9 @@ QVector<sessiontreeguard::LiveAgent> Coordinator::liveTreeAgents() const
     agents.reserve(int(m_agents.size()));
     for (const auto &entry : m_agents) {
         const AgentSession *session = entry.second.get();
-        if (!session || !session->running()) continue;
+        // A reconnect has no live transport yet but still reserves its reported file,
+        // which can differ from a catalog path not updated before the process exited.
+        if (!session || (!session->running() && !m_reattachAttempts.contains(entry.first))) continue;
         const Tab &tab = session->tab();
         if (tab.noSession && tab.sessionPath.isEmpty()) continue;
         sessiontreeguard::LiveAgent agent;

@@ -26,10 +26,14 @@ QJsonObject settingsObject(const ChannelServices &services)
         .settings;
 }
 
-/** True when any live pi process belongs to a session of this project. */
+/** Include launch reservations, which can own a project before any pi RPC process exists. */
 bool projectHasRunningAgent(const ChannelServices &services, const QString &projectId)
 {
     if (!services.runtimeCoordinator || !services.catalog) return false;
+    for (const CatalogEntry &entry : services.catalog->listEntries()) {
+        if (entry.projectId == projectId && services.runtimeCoordinator->isSessionBusy(entry.id)) return true;
+    }
+    // Retain protection for a live process whose activation has not published its binding.
     for (const QJsonValue &value : services.runtimeCoordinator->agentProcesses()) {
         const QString sessionId =
             value.toObject().value(QStringLiteral("sessionId")).toString();
@@ -95,8 +99,7 @@ void registerProjectChannels(ChannelRegistry &registry, ChannelServices &service
     registry.add(QStringLiteral("projects:remove"), [&services](const QJsonArray &args) {
         if (!services.projects) throw ChannelError(QStringLiteral("Project catalog is unavailable"));
         const QString projectId = channels::stringArg(args, 0);
-        // A project whose pi process is still running cannot be removed: the process
-        // would keep the folder busy with no UI left to stop it.
+        // A running or pending pi launch keeps its project reachable from the UI.
         if (projectHasRunningAgent(services, projectId)) {
             throw ChannelError(QStringLiteral("PROJECT_HAS_RUNNING_AGENT"));
         }

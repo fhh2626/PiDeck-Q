@@ -49,8 +49,29 @@ bool Coordinator::isSessionBusy(const QString &sessionId) const
     if (m_bindings.isActivating(sessionId) || m_bindings.isReplacingSession(sessionId)) return true;
     const QString agentId = m_bindings.agentForSession(sessionId);
     if (agentId.isEmpty()) return false;
+    if (m_reattachAttempts.contains(agentId)) return true;
     const AgentSession *session = agent(agentId);
     return session && session->running();
+}
+
+QString Coordinator::launchIdentityError(const CatalogEntry &expected, const QString &projectPath) const
+{
+    if (m_shutdown) return QStringLiteral("Backend is shutting down");
+    const QString currentProjectPath = resolveProjectPath(expected.projectId);
+    if (currentProjectPath.isEmpty()) return QStringLiteral("Project not found: %1").arg(expected.projectId);
+    if (currentProjectPath != projectPath) return QStringLiteral("Project path changed during runtime preparation");
+    CatalogEntry current;
+    if (!m_deps.services || !m_deps.services->catalog
+        || !m_deps.services->catalog->get(expected.id, &current)) {
+        return QStringLiteral("Session not found: %1").arg(expected.id);
+    }
+    // Deletion leases are temporary. A completed deletion or catalog retarget must
+    // still invalidate a delayed launch after its lease has already been released.
+    // Compare the captured catalog spelling without requiring a file for drafts.
+    if (!deletionidentity::sameTarget(expected, current) || expected.noSession != current.noSession) {
+        return QStringLiteral("Session runtime identity changed during preparation");
+    }
+    return QString();
 }
 
 QString Coordinator::runtimeSessionPath(const QString &sessionId) const

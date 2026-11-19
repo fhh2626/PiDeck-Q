@@ -126,8 +126,8 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
                         || m_bindings.isReplacingSession(m_bindings.sessionForAgent(agentEntry.first))))
                     return done(blocked(QStringLiteral("session-busy"), tab.deckSessionId));
                 // get_state publishes the physical runtime path before projection
-                // loading attaches it to the catalog. Protect that live identity too.
-                if (session.running() && lease.blocks(identity)) {
+                // attaches it to the catalog. Reconnects retain that identity too.
+                if ((session.running() || m_reattachAttempts.contains(agentEntry.first)) && lease.blocks(identity)) {
                     QJsonObject result = blocked(QStringLiteral("file-in-use"), tab.deckSessionId);
                     result.insert(QStringLiteral("agentTitle"), tab.title);
                     return done(result);

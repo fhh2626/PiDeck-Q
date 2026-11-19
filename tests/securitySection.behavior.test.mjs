@@ -196,6 +196,57 @@ for (const field of ["denyBashPatterns", "denyPowerShellPatterns"]) {
 			});
 		});
 	}
+	for (const { name, pattern } of [
+		{ name: "Unicode 17 capture names", pattern: "(?<\u{11DB0}>a)" },
+		{ name: "more than 32767 capture groups", pattern: "()".repeat(32768) },
+	]) {
+		test(`${field} rejects ${name} while preserving a correctable draft`, async () => {
+			await withHookHost(async (host) => {
+				const writes = [];
+				const section = await mountSection(host, async (patch) => {
+					writes.push(copy(patch));
+					return { ok: true, config: { ...section.initial, ...patch } };
+				});
+				const input = () => {
+					const card = section.card();
+					return nodes(card.type({ ...card.props, expanded: true }), (node) => node.type === "Textarea")[field === "denyBashPatterns" ? 0 : 1];
+				};
+				const draft = `${pattern}\n`;
+				await host.act(async () => input().props.onChange({ target: { value: draft } }));
+				let result;
+				await host.act(async () => { result = await section.ref.current.save(); });
+				assert.equal(result, false, "renderer validation must match the supported Pi runtime");
+				assert.equal(writes.length, 0, "unsupported patterns must not reach the update API");
+				assert.equal(section.dirty.at(-1), true);
+				assert.equal(input().props.value, draft);
+				assert.equal(nodes(section.mounted.result(), (node) => node.props?.children === "security.error.regexUnsupported").length, 1);
+				const corrected = "(?<command>foo|bar)\\k<command>";
+				await host.act(async () => input().props.onChange({ target: { value: corrected } }));
+				await host.act(async () => { result = await section.ref.current.save(); });
+				assert.equal(result, true);
+				assert.equal(writes.length, 1);
+				assert.deepEqual(writes[0].levels.find((level) => level.id === "standard")[field], [corrected]);
+				assert.equal(section.dirty.at(-1), false);
+			});
+		});
+	}
+	test(`${field} accepts Unicode 16 capture names supported by Pi`, async () => {
+		await withHookHost(async (host) => {
+			const writes = [];
+			const section = await mountSection(host, async (patch) => {
+				writes.push(copy(patch));
+				return { ok: true, config: { ...section.initial, ...patch } };
+			});
+			const pattern = "(?<\u{105C0}>a)";
+			await host.act(async () => section.card().props.onChange({ [field]: [pattern] }));
+			let result;
+			await host.act(async () => { result = await section.ref.current.save(); });
+			assert.equal(result, true);
+			assert.equal(writes.length, 1);
+			assert.deepEqual(writes[0].levels.find((level) => level.id === "standard")[field], [pattern]);
+			assert.equal(section.dirty.at(-1), false);
+		});
+	});
 }
 
 test("security saves preserve PowerShell edits made while the request is pending", async () => {

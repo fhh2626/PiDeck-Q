@@ -13,7 +13,7 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { RegExpValidator } from "@eslint-community/regexpp";
+import { isValidSecurityPattern } from "../../../../shared/securityRegex";
 import {
 	createDefaultSecurityConfig,
 	DEFAULT_DENY_POWERSHELL_PATTERNS,
@@ -134,15 +134,14 @@ export const SecuritySection = forwardRef<SecuritySectionHandle, SecuritySection
 			const levels = config.levels.map(prepareLevel);
 			try {
 				// A newer browser can accept syntax missing from supported Pi runtimes.
-				// Match the backend's ECMAScript 2024 baseline, then check this browser too.
-				const validator = new RegExpValidator({ ecmaVersion: 2024 });
+				// Match the native writer's shared rules, then check this browser too.
 				for (const level of levels) {
 					for (const pattern of level.denyBashPatterns) {
-						validator.validatePattern(pattern);
+						if (!isValidSecurityPattern(pattern)) throw new Error("Unsupported security pattern");
 						new RegExp(pattern);
 					}
 					for (const pattern of level.denyPowerShellPatterns ?? []) {
-						validator.validatePattern(pattern);
+						if (!isValidSecurityPattern(pattern)) throw new Error("Unsupported security pattern");
 						new RegExp(pattern, "i");
 					}
 				}

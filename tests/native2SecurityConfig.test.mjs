@@ -112,6 +112,10 @@ for (const [field, flags] of [["denyBashPatterns", ""], ["denyPowerShellPatterns
 			"(?<=prefix)foo",
 			"(?<!prefix)foo",
 			String.raw`(?<name>foo)\k<name>`,
+			String.raw`(?<\u{105C0}>a)`,
+			`(?<${String.fromCodePoint(0x105c0)}>a)`,
+			// Named groups require a second parser pass, which must reset its count.
+			"()".repeat(32766) + "(?<last>)",
 			"[]",
 			"[^]",
 		];
@@ -151,4 +155,30 @@ for (const [field, flags] of [["denyBashPatterns", ""], ["denyPowerShellPatterns
 			assert.equal(readFileSync(snapshotPath, "utf8"), originalSnapshot);
 		}
 	});
+
+	for (const [label, pattern] of [
+		["Unicode 17 group names", String.raw`(?<\u{11DB0}>a)`],
+		["literal Unicode 17 group names", `(?<${String.fromCodePoint(0x11db0)}>a)`],
+		["more than 32767 captures", "()".repeat(32768)],
+	]) {
+		test(`native security rejects ${label} in ${field} without changing policy`, { skip }, async (t) => {
+			const session = await startBackendSession(t);
+			const initialized = await session.invoke("security:update-config", [{ enabled: true }]);
+			assert.equal(initialized.payload.result.ok, true, JSON.stringify(initialized.payload));
+			const config = await getConfig(session);
+			const settingsPath = join(session.fixture.userData, "settings.json");
+			const snapshotPath = join(session.fixture.userData, "security-policy.json");
+			const originalSettings = readFileSync(settingsPath, "utf8");
+			const originalSnapshot = readFileSync(snapshotPath, "utf8");
+			const levels = structuredClone(config.levels);
+			levels.find((level) => level.id === "standard")[field] = [pattern];
+			const result = await session.invoke("security:update-config", [{ levels }]);
+			assert.equal(result.payload.ok, true);
+			assert.equal(result.payload.result.ok, false, label);
+			assert.equal(result.payload.result.code, "VALIDATION_FAILED");
+			assert.deepEqual(await getConfig(session), config);
+			assert.equal(readFileSync(settingsPath, "utf8"), originalSettings);
+			assert.equal(readFileSync(snapshotPath, "utf8"), originalSnapshot);
+		});
+	}
 }

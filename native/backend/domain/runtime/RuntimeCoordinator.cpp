@@ -58,6 +58,8 @@ void Coordinator::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
+    QHash<QString, ReattachAttempt> reattachments;
+    reattachments.swap(m_reattachAttempts);
     m_versionProbes.cancel();
     // Deferred refresh callbacks belong to this runtime graph and cannot outlive it.
     m_projectionLoads.clear();
@@ -81,10 +83,17 @@ void Coordinator::shutdown()
     }
     m_agents.clear();
     m_bindings = Bindings();
+    for (const auto &attempt : reattachments) {
+        if (attempt.completion) attempt.completion(false, QStringLiteral("Backend is shutting down"), 0);
+    }
 }
 
 void Coordinator::forgetAgent(const QString &agentId)
 {
+    // Invalidate callbacks before destruction, then settle after the agent and its
+    // projection are gone. The caller can release its dispatch lease without touching
+    // a partially destroyed AgentSession or waiting for a cancelled version probe.
+    const ReattachAttempt reattachment = m_reattachAttempts.take(agentId);
     m_agents.erase(agentId);
     const auto pendingProjection = m_projectionLoads.constFind(agentId);
     if (pendingProjection != m_projectionLoads.cend()) {
@@ -96,6 +105,9 @@ void Coordinator::forgetAgent(const QString &agentId)
     // Oracle `clearAgentState`: the recording gate is per runtime, so a stopped agent
     // must not keep accepting frames or leave batches queued for delivery.
     if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(agentId);
+    if (reattachment.completion) {
+        reattachment.completion(false, QStringLiteral("Session runtime stopped during reconnect"), 0);
+    }
 }
 
 void Coordinator::clearAgentRuntimeState(AgentSession &session)

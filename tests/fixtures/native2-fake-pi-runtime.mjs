@@ -9,6 +9,7 @@
  * Scenario shape (all keys optional):
  *   {
  *     version: "0.79.0",
+ *     versionGate: "/path/released-by-test", // hold only --version until this file exists
  *     state: { sessionId, sessionFile, sessionName, model, thinkingLevel },
  *     messages: [...],          // get_messages history
  *     entries: { entries: [], leafId: null },
@@ -41,6 +42,16 @@ function log(entry) {
 
 const argv = process.argv.slice(2);
 if (argv.includes("--version")) {
+	if (typeof scenario.versionGate === "string") {
+		// Lifecycle races need a deterministic boundary before the real RPC process
+		// exists. Ordinary scenarios retain their existing log shape.
+		log({ kind: "probe-start", pid: process.pid });
+		const deadline = Date.now() + 10_000;
+		while (!existsSync(scenario.versionGate) && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		if (!existsSync(scenario.versionGate)) throw new Error("version probe gate timed out");
+	}
 	// `versionDelayMs` lets a test occupy a blocking probe for a controlled amount of time
 	// (the summary-cache write-order case scripts the backend's serial executor queue).
 	// Top-level await keeps the process in this branch; `--version` never enters RPC mode.
@@ -48,6 +59,7 @@ if (argv.includes("--version")) {
 	if (Number.isFinite(versionDelayMs) && versionDelayMs > 0) {
 		await new Promise((resolve) => setTimeout(resolve, versionDelayMs));
 	}
+	if (typeof scenario.versionGate === "string") log({ kind: "probe-exit", pid: process.pid });
 	process.stdout.write(`${scenario.version ?? "0.79.0"}\n`);
 	process.exit(0);
 }

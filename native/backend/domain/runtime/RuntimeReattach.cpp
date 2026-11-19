@@ -1,6 +1,9 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "../sessions/SessionCatalogStore.h"
+
+#include <utility>
 
 /**
  * pi process swap for one existing runtime (oracle `AgentManager.reattachProcess`).
@@ -43,6 +46,18 @@ pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
     return pilaunch::build(request);
 }
 
+void Coordinator::finishReattach(const QString &agentId, quint64 ticket, bool ok,
+                                 const QString &error, quint64 attemptEpoch)
+{
+    auto attempt = m_reattachAttempts.find(agentId);
+    if (attempt == m_reattachAttempts.end() || attempt->ticket != ticket) return;
+    auto completion = std::move(attempt->completion);
+    // Completion may synchronously stop or reactivate the session. It must never
+    // erase a later attempt or be reached again by this transport's late callbacks.
+    m_reattachAttempts.erase(attempt);
+    completion(ok, error, attemptEpoch);
+}
+
 void Coordinator::reattachProcess(const QString &agentId, const Target &target,
                                   std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done)
 {
@@ -51,19 +66,50 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
         done(false, QStringLiteral("Session runtime is not available"), 0);
         return;
     }
+    if (m_shutdown) {
+        done(false, QStringLiteral("Backend is shutting down"), 0);
+        return;
+    }
+    QString boundSession;
+    int generation = 0;
+    if (agentId != target.agentId || !m_bindings.bindingForAgent(agentId, &boundSession, &generation)
+        || boundSession != target.sessionId || generation != target.runtimeGeneration) {
+        done(false, QStringLiteral("Session runtime binding changed"), 0);
+        return;
+    }
+    if (m_reattachAttempts.contains(agentId)) {
+        done(false, QStringLiteral("Session runtime reconnect is already in progress"), 0);
+        return;
+    }
+    CatalogEntry entry;
+    if (!m_deps.services || !m_deps.services->catalog
+        || !m_deps.services->catalog->get(target.sessionId, &entry)) {
+        done(false, QStringLiteral("Session not found: %1").arg(target.sessionId), session->clientEpoch());
+        return;
+    }
     const quint64 expectedEpoch = session->clientEpoch();
     pilaunch::Request request = sessionLaunchRequest(*session, session->tab().sessionPath);
+    // A reconnect preserves its generation and the compact command's dispatch lease.
+    // Its separate ticket reserves deletion admission without disabling explicit stop.
+    const quint64 ticket = ++m_nextReattachTicket;
+    m_reattachAttempts.insert(agentId, ReattachAttempt{ticket, std::move(done)});
+    auto finish = [this, agentId, ticket](bool ok, const QString &error, quint64 attemptEpoch) {
+        finishReattach(agentId, ticket, ok, error, attemptEpoch);
+    };
     // Settings can select a new command while the existing runtime is alive. Probe the
     // captured command so a cold cache cannot silently drop its project resources.
     pilaunch::probeVersion(pilaunch::build(request), m_versionProbes,
-        [this, agentId, target, expectedEpoch, request, done](const QString &version) mutable {
+        [this, agentId, target, expectedEpoch, entry, request, ticket, finish](const QString &version) mutable {
+            const auto attempt = m_reattachAttempts.constFind(agentId);
+            if (attempt == m_reattachAttempts.cend() || attempt->ticket != ticket) return;
             request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
-            reattachPrepared(agentId, target, expectedEpoch, request.sessionPath, pilaunch::build(request), done);
+            reattachPrepared(agentId, target, expectedEpoch, entry, request, pilaunch::build(request), finish);
         });
 }
 
 void Coordinator::reattachPrepared(const QString &agentId, const Target &target, quint64 expectedEpoch,
-                                   const QString &sessionPath, const pilaunch::Launch &launch,
+                                   const CatalogEntry &entry, const pilaunch::Request &request,
+                                   const pilaunch::Launch &launch,
                                    std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> done)
 {
     AgentSession *session = agent(agentId);
@@ -81,14 +127,20 @@ void Coordinator::reattachPrepared(const QString &agentId, const Target &target,
         done(false, QStringLiteral("Session runtime binding changed"), 0);
         return;
     }
+    const QString &sessionPath = request.sessionPath;
+    if (session->clientEpoch() != expectedEpoch || session->tab().sessionPath != sessionPath) {
+        done(false, QStringLiteral("Session runtime changed during reconnect"), 0);
+        return;
+    }
     if (m_shutdown || deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
         // The binding still owns this exited transport. Its epoch lets callers
         // retire it instead of leaving a dead runtime stuck in starting state.
         done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
         return;
     }
-    if (session->clientEpoch() != expectedEpoch || session->tab().sessionPath != sessionPath) {
-        done(false, QStringLiteral("Session runtime changed during reconnect"), 0);
+    const QString identityError = launchIdentityError(entry, request.projectPath);
+    if (!identityError.isEmpty()) {
+        done(false, identityError, expectedEpoch);
         return;
     }
     if (sessionPath.isEmpty()) {
