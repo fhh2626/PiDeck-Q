@@ -80,13 +80,35 @@ void registerPiInstallChannels(ChannelRegistry &registry, ChannelServices &servi
         background::runBlocking(
             [&services, customPath]() -> QJsonValue {
                 const QJsonObject settings = readSettings(services);
-                const pilocator::Status status =
+                pilocator::Status status =
                     pilocator::validateCustomPath(services, settings, customPath);
                 if (status.installed && status.hasCommand && !status.command.isEmpty()) {
-                    const SettingsCatalogRead updated = updateSettingsCatalog(
-                        settingsPath(services),
-                        QJsonObject{{QStringLiteral("customPiPath"), status.command}});
-                    if (!updated.ok) throw ChannelError(updated.error);
+                    // Save the confirmed identity with the path. A supported Pi can
+                    // replace an old executable without changing its command name.
+                    const QJsonObject installation{
+                        {QStringLiteral("command"), status.command},
+                        {QStringLiteral("version"), status.version},
+                        {QStringLiteral("runtimeKind"), status.runtimeKind},
+                    };
+                    if (!canPersistCustomPiInstallation(installation)) {
+                        status.installed = false;
+                    } else {
+                        const SettingsCatalogRead updated = updateSettingsCatalog(
+                            settingsPath(services),
+                            QJsonObject{
+                                {QStringLiteral("customPiPath"), status.command},
+                                {QStringLiteral("piInstall"), installation},
+                            });
+                        if (!updated.ok) throw ChannelError(updated.error);
+                        status.installed = updated.settings.value(QStringLiteral("customPiPath")).toString()
+                            == status.command;
+                    }
+                    // Migration may reject a retired installation. Report that outcome
+                    // instead of claiming the discarded command was saved successfully.
+                    if (!status.installed) {
+                        status.hasError = true;
+                        status.error = services.translate(QStringLiteral("mainPi.checkFailed"), QJsonObject{});
+                    }
                 }
                 return status.toJson();
             },

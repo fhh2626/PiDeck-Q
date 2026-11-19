@@ -9,6 +9,7 @@
  * Scenario shape (all keys optional):
  *   {
  *     version: "0.79.0",
+ *     rejectedArguments: ["--offline"], // model a CLI that rejects optional flags
  *     versionGate: "/path/released-by-test", // hold only --version until this file exists
  *     state: { sessionId, sessionFile, sessionName, model, thinkingLevel },
  *     messages: [...],          // get_messages history
@@ -69,6 +70,7 @@ log({
 	pid: process.pid,
 	argv,
 	env: {
+		PI_OFFLINE: process.env.PI_OFFLINE ?? null,
 		PIDECK_SESSION_ID: process.env.PIDECK_SESSION_ID ?? null,
 		PIDECK_DESKTOP: process.env.PIDECK_DESKTOP ?? null,
 		PIDECK_UI_LANGUAGE: process.env.PIDECK_UI_LANGUAGE ?? null,
@@ -80,6 +82,12 @@ log({
 		PIDECK_HOST_PORT: process.env.PIDECK_HOST_PORT ?? null,
 	},
 });
+
+const rejectedArgument = (scenario.rejectedArguments ?? []).find((argument) => argv.includes(argument));
+if (rejectedArgument) {
+	process.stderr.write(`Unexpected argument: ${rejectedArgument}\n`);
+	process.exit(2);
+}
 
 function write(value) {
 	process.stdout.write(`${JSON.stringify(value)}\n`);

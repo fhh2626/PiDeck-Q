@@ -215,10 +215,24 @@ QString inferProjectPathFromFile(const QString &filePath)
 {
     QString normalized = filePath;
     normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    const int marker = normalized.toLower().indexOf(QStringLiteral("/.pi/agent/sessions/"));
+    const QString markerText = QStringLiteral("/.pi/agent/sessions/");
+    const qsizetype marker = normalized.toLower().indexOf(markerText);
     if (marker != -1) {
-        const QString rest = normalized.mid(marker + 21);
-        return sessionidentity::decodeSessionDir(rest.section(QLatin1Char('/'), 0, 0));
+        const QString rest = normalized.mid(marker + markerText.size());
+        const qsizetype separator = rest.indexOf(QLatin1Char('/'));
+        if (separator == -1) return QString();
+        const QString directory = rest.left(separator);
+        // Only an encoded cwd directory provides project identity. A flat filename or
+        // ordinary folder must leave membership to the existing catalog's origin fence.
+        if (directory.size() < 4 || !directory.startsWith(QLatin1String("--"))
+            || !directory.endsWith(QLatin1String("--"))) return QString();
+        QString decoded = sessionidentity::decodeSessionDir(directory);
+        // POSIX cwd tokens omit their leading slash. Drive paths and /mnt paths are
+        // already absolute after decoding, while the empty root token represents '/'.
+        if (!sessionidentity::isAbsoluteSessionPath(decoded, QStringLiteral("native"))) {
+            decoded.prepend(QLatin1Char('/'));
+        }
+        return decoded;
     }
     const int custom = normalized.toLower().lastIndexOf(QStringLiteral("/.pi/sessions/"));
     if (custom != -1) return QDir::fromNativeSeparators(normalized.left(custom));

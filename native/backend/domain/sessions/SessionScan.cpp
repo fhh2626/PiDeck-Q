@@ -271,10 +271,12 @@ bool SessionScanner::isSameProject(const SessionSummary &summary, const QString 
         return true;
     }
     if (isUnderProjectSessionDir(summary.filePath, projectPath)) return true;
-    // The oracle's `normalize(filePath).includes(safePathToken(projectPath))` branch is the
-    // last resort for encoded-cwd directories; `parentSessionPath` has no influence there.
-    return sessionidentity::normalizeScanPath(summary.filePath)
-        .contains(sessionidentity::safePathToken(projectPath));
+    // Encoded cwd directories remain a fallback when decoding loses literal hyphens.
+    // Match a complete ancestor component: --C-- must not claim --C---- or a filename.
+    const QString normalizedFile = sessionidentity::normalizeScanPath(summary.filePath);
+    const QString directoryToken = sessionidentity::safePathToken(projectPath) + QLatin1Char('/');
+    return normalizedFile.startsWith(directoryToken)
+        || normalizedFile.contains(QLatin1Char('/') + directoryToken);
 }
 
 bool SessionScanner::needsScanBody(const QString &path, qint64 mtimeMs, qint64 size,

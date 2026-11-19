@@ -63,7 +63,15 @@ async function checkRuntime(host, status, settings = {}) {
 		showToast() {},
 		api: {
 			pi: { check: async () => status },
-			settings: { update: async (patch) => { writes.push(patch); return { ...settings, ...patch }; } },
+			settings: { update: async (patch) => {
+				// Match the JSON transport and the cache tombstone instead of retaining
+				// an undefined property that the native IPC can never receive.
+				const wirePatch = JSON.parse(JSON.stringify(patch));
+				writes.push(wirePatch);
+				const next = { ...settings, ...wirePatch };
+				if (next.piInstall === null) delete next.piInstall;
+				return next;
+			} },
 		},
 	});
 	await host.act(async () => mounted.result().refreshPiStatus());
@@ -115,6 +123,6 @@ test("failed environment detection clears the previous installation cache", asyn
 			piInstall: { command: "/bin/pi", version: "1.5.2", runtimeKind: "typescript" },
 		});
 		assert.deepEqual(Object.keys(patch), ["piInstall"]);
-		assert.equal(patch.piInstall, undefined);
+		assert.equal(patch.piInstall, null);
 	});
 });

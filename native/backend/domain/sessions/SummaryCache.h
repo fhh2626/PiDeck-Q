@@ -23,7 +23,7 @@ class QTimer;
  * the first list after launch does not re-read every history either.
  *
  * Semantics that matter and are therefore explicit:
- *  - the disk schema is versioned (5). A different version, a corrupt file or a missing
+ *  - the disk schema is versioned (6). A different version, a corrupt file or a missing
  *    file is a silent cold start, never an error: the cache is derived data, and a scan
  *    must keep working when it cannot be loaded.
  *  - `prune` only removes entries of the *current* environment. Switching between local

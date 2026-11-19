@@ -347,27 +347,27 @@ function evaluatePathAction(
 	return "deny";
 }
 
-/** bash 危险命令求值：命中返回 true（动作组合见 filePolicy 注释 / 下方 shellAction） */
-function matchesBashDeny(level: SecurityLevelConfig, command: string): boolean {
-	return level.denyBashPatterns.some((pattern) => {
-		try {
-			return new RegExp(pattern).test(command);
-		} catch {
-			return false;
-		}
-	});
-}
+type ShellPatternResult = "match" | "no-match" | "error";
 
-/** powershell 危险命令求值：命中返回 true */
-function matchesPowerShellDeny(level: SecurityLevelConfig, command: string): boolean {
-	const patterns = level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS;
-	return patterns.some((pattern) => {
+/** 区分未命中与执行失败，后者不能把禁止的命令降级为可批准的确认。 */
+function evaluateShellPatterns(
+	level: SecurityLevelConfig,
+	tool: ShellTool,
+	command: string,
+): ShellPatternResult {
+	const patterns = tool === "powershell"
+		? level.denyPowerShellPatterns ?? DEFAULT_POWERSHELL_DENY_PATTERNS
+		: level.denyBashPatterns;
+	const flags = tool === "powershell" ? "i" : "";
+	for (const pattern of patterns) {
 		try {
-			return new RegExp(pattern, "i").test(command);
+			// V8 可在构造成功后延迟到 test 才编译失败。首条命中仍沿用原有短路语义。
+			if (new RegExp(pattern, flags).test(command)) return "match";
 		} catch {
-			return false;
+			return "error";
 		}
-	});
+	}
+	return "no-match";
 }
 
 /** 计算 shell (bash / powershell) 命令最终动作 */
@@ -377,15 +377,11 @@ function shellAction(
 	command: string,
 ): SecurityAction {
 	const toolAction = level.toolActions[tool] ?? level.defaultAction;
-	// 工具级拒绝优先，命中危险规则不能把拒绝降级为可批准的确认。
-	if (toolAction === "deny") return "deny";
-	const dangerous = tool === "powershell"
-		? matchesPowerShellDeny(level, command)
-		: matchesBashDeny(level, command);
-	if (!dangerous) return toolAction;
-	// 危险命令：显式放行该 shell → 放行；严格兜底(deny) → 直接拒绝；其余 → 先确认
-	if (toolAction === "allow") return "allow";
-	if (level.defaultAction === "deny") return "deny";
+	// 工具级 allow/deny 已确定结果，无需执行只用于细分 ask 的危险命令规则。
+	if (toolAction === "deny" || toolAction === "allow") return toolAction;
+	const matched = evaluateShellPatterns(level, tool, command);
+	if (matched === "error") return "deny";
+	if (matched === "match" && level.defaultAction === "deny") return "deny";
 	return "ask";
 }
 

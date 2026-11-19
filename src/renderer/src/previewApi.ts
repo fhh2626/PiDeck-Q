@@ -832,7 +832,10 @@ export function createPreviewApi(): PiDesktopApi {
 		settings: {
 			get: async (): Promise<AppSettings> => ({ ...previewSettings }),
 			update: async (patch): Promise<AppSettings> => {
-				previewSettings = { ...previewSettings, ...patch };
+				const { piInstall, ...values } = patch;
+				previewSettings = { ...previewSettings, ...values };
+				if (piInstall === null) delete previewSettings.piInstall;
+				else if (piInstall !== undefined) previewSettings.piInstall = piInstall;
 				return { ...previewSettings };
 			},
 			restartWebService: async () => undefined,

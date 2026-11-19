@@ -29,6 +29,7 @@ export type WebNetworkAddress = {
 	cidr: string | null;
 	isPrivate: boolean;
 };
+
 /** 文件/Git Diff 在中间栏的默认打开方式：分屏与会话并排，或占满中间栏 */
 export type WorkspaceContentOpenMode = "split" | "maximize";
 /** 会话 Tab 打开模式：preview=单击为临时预览（发消息后自动晋升常驻），permanent=单击即常驻共存 */
@@ -245,4 +246,9 @@ export type StartupWindowMode =
 	 */
 	securityConfig?: SecurityConfig;
 
+};
+
+/** IPC settings updates use null to delete the installation cache without persisting null. */
+export type AppSettingsPatch = Partial<Omit<AppSettings, "piInstall">> & {
+	piInstall?: AppSettings["piInstall"] | null;
 };

@@ -202,7 +202,8 @@ for (const preference of ["bolt", "auto", "typescript"]) {
 			assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
 			const spawn = fake.readLog().find((entry) => entry.kind === "spawn");
 			assert.ok(spawn, "the temporary RPC child must start");
-			assert.equal(spawn.argv.includes("--offline"), preference === "typescript", JSON.stringify(spawn.argv));
+			assert.equal(spawn.argv.includes("--offline"), false, JSON.stringify(spawn.argv));
+			assert.equal(spawn.env.PI_OFFLINE, "1");
 			assert.ok(fake.commands().some((entry) => entry.command === (command === "copy" ? "clone" : "export_html")));
 		});
 	}

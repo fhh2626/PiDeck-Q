@@ -21,8 +21,8 @@
 namespace summarycache {
 namespace {
 
-/** Version 5 rebuilds summaries after removing retired session-header aliases. */
-constexpr int kDiskSchemaVersion = 5;
+/** Version 6 rebuilds cwd guesses previously made from plain filenames or folders. */
+constexpr int kDiskSchemaVersion = 6;
 constexpr int kSaveDebounceMs = 800;
 
 /** Explicit WSL UNC identities work on any host; legacy POSIX keys need a Windows host. */

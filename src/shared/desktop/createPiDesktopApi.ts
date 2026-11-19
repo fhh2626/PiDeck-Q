@@ -12,6 +12,7 @@ import type {
 	AppLogQuery,
 	ProcessMetricsSnapshot,
 	AppSettings,
+	AppSettingsPatch,
 	AvailableModel,
 	ModelListChange,
 	ModelSpec,
@@ -969,7 +970,7 @@ const api = {
 	settings: {
 		get: () =>
 			transport.invoke(ipcChannels.settingsGet) as Promise<AppSettings>,
-		update: (patch: Partial<AppSettings>) =>
+		update: (patch: AppSettingsPatch) =>
 			transport.invoke(
 				ipcChannels.settingsUpdate,
 				patch,

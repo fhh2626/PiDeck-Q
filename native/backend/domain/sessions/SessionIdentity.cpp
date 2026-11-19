@@ -144,6 +144,11 @@ QString safePathToken(const QString &path)
 
 QString decodeSessionDir(const QString &encoded)
 {
+    // Pi encodes a drive root as --C----. Recognize it before trimming delimiters,
+    // which would otherwise make it indistinguishable from the POSIX /C token --C--.
+    static const QRegularExpression driveRoot(QStringLiteral("^--([A-Za-z])----$"));
+    const QRegularExpressionMatch rootMatch = driveRoot.match(encoded);
+    if (rootMatch.hasMatch()) return rootMatch.captured(1) + QStringLiteral(":\\");
     QString trimmed = encoded;
     while (trimmed.startsWith(QStringLiteral("--"))) trimmed.remove(0, 2);
     while (trimmed.endsWith(QStringLiteral("--"))) trimmed.chop(2);

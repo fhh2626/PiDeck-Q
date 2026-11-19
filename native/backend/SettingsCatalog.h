@@ -37,6 +37,9 @@ SettingsCatalogRead readSettingsCatalogSnapshot(const QString &filePath, const Q
 SettingsCatalogRead updateSettingsCatalog(const QString &filePath, const QJsonObject &patch,
                                           const QString &agentDir = QString());
 
+/** Check a probed custom installation against migrations before replacing an existing setting. */
+bool canPersistCustomPiInstallation(const QJsonObject &installation);
+
 /** `^[A-Za-z0-9_-]{32,128}$` (shared/webServiceAccess.ts). */
 bool isValidWebServiceAccessToken(const QString &value);
 

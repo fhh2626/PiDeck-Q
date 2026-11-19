@@ -1,6 +1,7 @@
 #include "TemporaryPiSession.h"
 
 #include "SessionIdentity.h"
+#include "../runtime/PiLaunch.h"
 
 #include "../../pi/PiCommand.h"
 #include "../../pi/PiEventClient.h"
@@ -11,17 +12,30 @@
 #include <memory>
 
 namespace temporarypi {
+namespace {
+
+/** Keep optional offline behavior in the environment without guessing a CLI implementation. */
+QProcessEnvironment processEnvironment(const QJsonObject &settings, const picommand::Invocation &invocation)
+{
+    QProcessEnvironment environment = picommand::environment(settings, invocation);
+    if (settings.value(QStringLiteral("piRpcOffline")).toBool(true)) {
+        environment.insert(QStringLiteral("PI_OFFLINE"), QStringLiteral("1"));
+        if (invocation.viaWsl) {
+            environment.insert(QStringLiteral("WSLENV"),
+                               pilaunch::appendWslEnvName(environment.value(QStringLiteral("WSLENV")),
+                                                          QStringLiteral("PI_OFFLINE")));
+        }
+    }
+    return environment;
+}
+
+} // namespace
 
 QStringList buildArguments(const QJsonObject &settings, const QString &sessionPath)
 {
     QStringList arguments{QStringLiteral("--mode"), QStringLiteral("rpc"), QStringLiteral("--no-themes")};
-    // Temporary operations do not probe a version. Only an explicit TypeScript choice
-    // can establish support for this optional flag; an auto command named `pi` may be
-    // a standalone build, whose copy/export RPC must still start successfully.
-    const bool offline = settings.value(QStringLiteral("piRpcOffline")).toBool(true);
-    if (offline && settings.value(QStringLiteral("piRuntimePreference")).toString() == QLatin1String("typescript")) {
-        arguments.append(QStringLiteral("--offline"));
-    }
+    // Temporary operations do not probe a version. A stored preference can outlive an
+    // in-place implementation change, so only stable flags belong in this invocation.
     if (settings.value(QStringLiteral("piRpcNoExtensions")).toBool(false)) {
         arguments.append(QStringLiteral("--no-extensions"));
     }
@@ -52,7 +66,7 @@ void run(const QJsonObject &settings, const QString &cwd, const QString &session
         *settled = true;
         done(result);
     };
-    if (!client->start(invocation.program, arguments, cwd, picommand::environment(settings, invocation))) {
+    if (!client->start(invocation.program, arguments, cwd, processEnvironment(settings, invocation))) {
         Result result;
         result.error = QStringLiteral("Unable to start pi");
         finish(result);
@@ -102,7 +116,7 @@ void clone(const QJsonObject &settings, const QString &cwd, const QString &sessi
         client->close(QStringLiteral("done"));
         done(result);
     };
-    if (!client->start(invocation.program, arguments, cwd, picommand::environment(settings, invocation))) {
+    if (!client->start(invocation.program, arguments, cwd, processEnvironment(settings, invocation))) {
         Result result;
         result.error = QStringLiteral("Unable to start pi");
         finish(result);

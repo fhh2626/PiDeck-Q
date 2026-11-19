@@ -103,12 +103,12 @@ describe("session summary cache (native)", () => {
 		assert.equal(firstList.length, 1);
 		assert.equal(firstList[0].name, "alpha");
 
-		// The debounced write must land in userData with schema 5 and the observed version.
+		// The debounced write must land in userData with schema 6 and the observed version.
 		const cache = await waitFor(() => {
 			const parsed = readSummaryCache(fixture);
 			return parsed && cachedEntry(parsed, sessionFile) ? parsed : null;
 		}, "the summary cache was never written");
-		assert.equal(cache.version, 5);
+		assert.equal(cache.version, 6);
 		const entry = cachedEntry(cache, sessionFile);
 		assert.equal(Math.floor(entry.version.mtimeMs), Math.floor(pinned.mtimeMs));
 		assert.equal(entry.version.size, pinned.size);
@@ -147,7 +147,7 @@ describe("session summary cache (native)", () => {
 		const pinned = pinMtime(sessionFile, new Date(1_700_000_100_000));
 		const cachePath = summaryCachePath(fixture);
 		// Truncated JSON: the backend must neither log a fatal error nor drop the session.
-		writeFileSync(cachePath, '{"version":5,"entries":{"broken":');
+		writeFileSync(cachePath, '{"version":6,"entries":{"broken":');
 
 		const first = await startBackend(t, fixture, { settings: { language: "en-US" } });
 		const cold = await listSessions(first);
@@ -158,7 +158,7 @@ describe("session summary cache (native)", () => {
 			const entry = parsed && cachedEntry(parsed, sessionFile);
 			return entry && entry.value?.name === "real" ? parsed : null;
 		}, "the corrupt cache was never rebuilt");
-		assert.equal(rewritten.version, 5);
+		assert.equal(rewritten.version, 6);
 		await stopBackend(first);
 
 		// Schema 3 (the version that could persist wrong parents) must be discarded whole,
@@ -180,11 +180,11 @@ describe("session summary cache (native)", () => {
 		assert.equal(afterOldSchema[0].name, "real", "a schema-3 cache must not be trusted");
 		await stopBackend(second);
 
-		// A schema-5 file with a malformed entry drops only that entry.
+		// A schema-6 file with a malformed entry drops only that entry.
 		writeFileSync(
 			cachePath,
 			JSON.stringify({
-				version: 5,
+				version: 6,
 				entries: {
 					[sessionFile]: {
 						version: { mtimeMs: Math.floor(pinned.mtimeMs), size: pinned.size },
@@ -300,7 +300,7 @@ describe("session summary cache (native)", () => {
 		const vanished = join(fixture.sessions, "vanished.jsonl");
 		const otherEnvironment = "\\\\wsl.localhost\\Ubuntu\\home\\dev\\kept.jsonl";
 		writeFileSync(summaryCachePath(fixture), JSON.stringify({
-			version: 5,
+			version: 6,
 			entries: {
 				[vanished]: { version: { mtimeMs: 1, size: 1 }, value: null },
 				[otherEnvironment]: { version: { mtimeMs: 1, size: 1 }, value: null },
@@ -331,7 +331,7 @@ describe("session summary cache (native)", () => {
 		writeFileSync(
 			cachePath,
 			JSON.stringify({
-				version: 5,
+				version: 6,
 				entries: {
 					[slash(sessionFile)]: {
 						version: { mtimeMs: Math.floor(pinned.mtimeMs), size: pinned.size },
@@ -402,7 +402,7 @@ describe("session summary cache (native)", () => {
 			return parsed && cachedEntry(parsed, firstFile) === undefined ? parsed : null;
 		}, "the removed session must be pruned from the cache");
 		assert.ok(existsSync(summaryCachePath(fixture)));
-		assert.equal(cache.version, 5);
+		assert.equal(cache.version, 6);
 		await stopBackend(session);
 	});
 });

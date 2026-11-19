@@ -35,7 +35,7 @@ test("a superseded empty WSL scan cannot mark the new local environment as scann
   ]));
   const vanished = join(fixture.sessions, "vanished.jsonl");
   writeFileSync(summaryCachePath(fixture), JSON.stringify({
-    version: 5,
+    version: 6,
     entries: { [vanished]: { version: { mtimeMs: 1, size: 1 }, value: null } },
   }));
   const uncRoot = join(fixture.root, "wsl-unc");

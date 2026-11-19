@@ -92,7 +92,7 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
       });
     }
     // 未检测到：清除旧缓存，避免残留上一台机器/旧路径的结果
-    return api.settings.update({ piInstall: undefined });
+    return api.settings.update({ piInstall: null });
   }, [api, settings.piBoltPath, settings.piTypescriptPath]);
 
   const checkPiInstall = useCallback(
@@ -140,7 +140,7 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
         setEnvironmentDialog(true);
         setPiStatus(next);
         // 未检测到：清除旧缓存
-        const saved = await api.settings.update({ piInstall: undefined });
+        const saved = await api.settings.update({ piInstall: null });
         setSettings(saved);
       }
     } finally {
