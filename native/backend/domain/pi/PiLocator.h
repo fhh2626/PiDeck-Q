@@ -36,7 +36,7 @@ QString normalizeCustomPath(const QString &rawPath);
 /** The Windows PowerShell shim is not invoked any more; such a path falls back to auto. */
 bool isUnsupportedPowerShellShim(const QString &path);
 
-/** `pi`, `pi-rust` or `pi-bolt` depending on the runtime preference. */
+/** `pi` or `pi-bolt` depending on the runtime preference. */
 QString runtimeBinaryName(const QString &preference);
 
 /**
@@ -65,7 +65,7 @@ QString commandBinDir(const QString &command);
 QProcessEnvironment createProcessEnv(const ChannelServices &services, const QJsonObject &settings,
                                      const QString &pathPrefix = QString(), bool viaWsl = false);
 
-/** `detectPiRuntimeKind`: "rust" | "bolt" | "typescript" | "unknown" from `pi --version`. */
+/** `detectPiRuntimeKind`: "bolt" | "typescript" | "unknown" from `pi --version`. */
 QString detectRuntimeKind(const QString &version);
 
 /** Parse the `wsl://distro/user/piCommand` marker. Returns false when malformed. */

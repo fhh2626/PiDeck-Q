@@ -1,28 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-const { normalizePiRpcModels } = loadTsCommonJs("src/shared/piCompatibility.ts");
 const pickerHost = readFileSync(
   "src/renderer/src/components/session/ComposerPickerHost.tsx",
   "utf8",
 );
-
-test("normalizes TypeScript/Rust RPC model payloads", () => {
-  const models = normalizePiRpcModels({
-    models: [
-      { provider: "anthropic", id: "claude", name: "Claude", input: ["text", "image"], contextWindow: 200000, maxTokens: 8192, reasoning: true },
-      { provider: "anthropic", id: "claude", name: "duplicate" },
-      { provider: "openai", id: "gpt", images: false },
-    ],
-  });
-  // The transpiled module runs in a VM context; normalize the array/object
-  // prototypes before using strict deep equality in the host test context.
-  assert.deepEqual(Array.from(models, (model) => ({ ...model })), [
-    { provider: "anthropic", id: "claude", name: "Claude", contextWindow: 200000, maxTokens: 8192, reasoning: true, images: true },
-    { provider: "openai", id: "gpt", name: "openai/gpt", contextWindow: undefined, maxTokens: undefined, reasoning: undefined, images: false },
-  ]);
-});
 
 // 缓存命中/强制刷新/空结果重试/配置失效后不被旧结果覆盖：见 modelListCacheBehavior.test.mjs。
 // 配置保存触发重取 / spawn 前刷新 / 启动预取 / setModel 的 needsRestart：见 modelListWiring.test.mjs。

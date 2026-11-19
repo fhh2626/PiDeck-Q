@@ -92,7 +92,6 @@ let previewSettings: AppSettings = {
 	piEnvironmentChecked: true,
 	piRuntimePreference: "auto",
 	piTypescriptPath: "",
-	piRustPath: "",
 	piBoltPath: "",
 	enableGitManagement: true,
 	gitCommitMessagePrompt: "",

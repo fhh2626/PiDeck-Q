@@ -38,7 +38,7 @@ const QStringList kTextFastArgs{
     QStringLiteral("--no-skills"), QStringLiteral("--no-themes"),
 };
 
-/** Neutral text probe: only flags both implementations understand. */
+/** Older Pi releases can reject `--offline`; retry with the stable CLI flags. */
 const QStringList kTextNeutralArgs{
     QStringLiteral("--list-models"), QStringLiteral("--no-extensions"),
     QStringLiteral("--no-skills"), QStringLiteral("--no-themes"),
@@ -155,16 +155,9 @@ Models runRpcModels(const ChannelServices &services, const QJsonObject &settings
 /** CLI text fallback for older/partial pi builds that do not expose the RPC command. */
 Models runTextModels(const ChannelServices &services, const QJsonObject &settings)
 {
-    const QString preference =
-        settings.value(QStringLiteral("piRuntimePreference")).toString().trimmed();
-    // Only a TypeScript-compatible selection may pass `--offline`; in auto mode the
-    // resolved binary could be Rust, which would fail on the unknown flag.
-    QList<QStringList> argumentSets;
-    if (preference == QLatin1String("typescript") || preference == QLatin1String("bolt")) {
-        argumentSets << kTextFastArgs << kTextNeutralArgs;
-    } else {
-        argumentSets << kTextNeutralArgs;
-    }
+    // Try the offline form in every selection mode, including auto. A failed or
+    // empty fast probe retries without the optional flag for older Pi releases.
+    const QList<QStringList> argumentSets{kTextFastArgs, kTextNeutralArgs};
 
     for (int index = 0; index < argumentSets.size(); ++index) {
         const pilaunch::Cli cli = pilaunch::buildCli(settings, argumentSets.at(index));

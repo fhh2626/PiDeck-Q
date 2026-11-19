@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>A desktop workbench for the Pi family of coding agents — the original <a href="https://pi.dev">Pi Agent</a>, the Rust-based <a href="https://github.com/Dicklesworthstone/pi_agent_rust">Pi_Agent_Rust</a> and <a href="https://github.com/opensec-git/Pi-Bolt">Pi-Bolt</a> — designed for managing multiple coding-agent sessions.</strong>
+  <strong>A desktop workbench for managing multiple coding-agent sessions with the original <a href="https://pi.dev">Pi Agent</a> and <a href="https://github.com/opensec-git/Pi-Bolt">Pi-Bolt</a>.</strong>
 </p>
 
 <p align="center">
@@ -22,14 +22,13 @@
 
 PiDeck-Q is based on the excellent [PiDeck](https://github.com/ayuayue/PiDeck) project, a desktop GUI for [Pi Agent](https://pi.dev). Building on that foundation, PiDeck-Q ships a **native C++/Qt** desktop host and places greater emphasis on a **lightweight footprint**, **runtime efficiency**, **responsive interactions**, and **better context management**.
 
-As PiDeck-Q aims to remain lightweight and focus dedicatedly on the Pi family of backends — the original Pi Agent, Pi_Agent_Rust and Pi-Bolt — with no plans to support backends outside the Pi family, PiDeck-Q will no longer sync upstream commits starting from August 17, 2026.
+PiDeck-Q focuses on a lightweight desktop for the original Pi Agent and Pi-Bolt. It stopped syncing upstream commits on August 17, 2026 to maintain that focus.
 
 ## Highlights
 
 - Native desktop host implemented in **C++ and Qt**, replacing a full Electron shell for a smaller footprint and more responsive windowing.
-- Ships a **native C++ business backend** beside the Qt host, so the portable package bundles no Node.js runtime of its own; Node.js is used for frontend builds, extension resource bundling and automated tests, while the built-in TypeScript extensions run on the agent runtime's own Node. The coding agent runtime (Pi Agent / Pi_Agent_Rust / Pi-Bolt) remains an external dependency that PiDeck-Q launches.
-- Supports both the original [Pi Agent](https://pi.dev) and the Rust-based [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust). Pi_Agent_Rust is currently less mature than the original Pi Agent, but uses less memory and delivers a smoother experience.
-- Also supports [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), a precompiled distribution of the original Pi Agent that is RPC-compatible with it. Auto mode does not automatically discover the `pi-bolt` command (a custom Pi path can still point to it); select it explicitly under Settings → Developer → Pi Runtime Preference.
+- Ships a **native C++ business backend** beside the Qt host, so the portable package bundles no Node.js runtime of its own; Node.js is used for frontend builds, extension resource bundling and automated tests, while the built-in TypeScript extensions run on the agent runtime's own Node. The coding agent runtime (Pi Agent / Pi-Bolt) remains an external dependency that PiDeck-Q launches.
+- Supports the original [Pi Agent](https://pi.dev) and [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt), its precompiled RPC-compatible distribution. Select Pi-Bolt under Settings → Developer → Pi Runtime Preference, or set a custom Pi path to its executable in auto mode.
 - Removes less commonly used features, such as the Feishu bot and desktop pet, to reduce application size and memory usage.
 - Significantly improves the responsiveness and interaction performance of the native interface.
 - Removes telemetry.

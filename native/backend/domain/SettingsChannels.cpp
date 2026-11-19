@@ -120,7 +120,6 @@ void registerSettingsChannels(ChannelRegistry &registry, ChannelServices &servic
         // main thread and push `models:changed`; the renderer then re-reads the list.
         if (patch.contains(QStringLiteral("piRuntimePreference"))
             || patch.contains(QStringLiteral("piTypescriptPath"))
-            || patch.contains(QStringLiteral("piRustPath"))
             || patch.contains(QStringLiteral("piBoltPath"))) {
             publishModelList(services);
         }

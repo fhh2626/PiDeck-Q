@@ -131,8 +131,6 @@ QJsonArray parseTextModels(const QString &output)
         }
     }
     static const QRegularExpression whitespace(QStringLiteral("\\s+"));
-    static const QRegularExpression showing(QStringLiteral("^showing$"),
-                                            QRegularExpression::CaseInsensitiveOption);
     QStringList dataLines = lines.mid(headerIndex >= 0 ? headerIndex + 1 : 1);
 
     QJsonArray models;
@@ -140,7 +138,6 @@ QJsonArray parseTextModels(const QString &output)
     for (const QString &line : dataLines) {
         const QStringList parts = line.split(whitespace, Qt::SkipEmptyParts);
         if (parts.size() < 3) continue;
-        if (showing.match(parts.first()).hasMatch()) continue;
 
         QString provider;
         QString modelId;

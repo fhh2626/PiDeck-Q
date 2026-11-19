@@ -148,7 +148,6 @@ bool isUnsupportedPowerShellShim(const QString &path)
 
 QString runtimeBinaryName(const QString &preference)
 {
-    if (preference == QLatin1String("rust")) return QStringLiteral("pi-rust");
     if (preference == QLatin1String("bolt")) return QStringLiteral("pi-bolt");
     return QStringLiteral("pi");
 }
@@ -158,8 +157,6 @@ QStringList candidates(const ChannelServices &services, const QString &preferenc
     QStringList baseNames;
     if (preference == QLatin1String("typescript")) {
         baseNames << QStringLiteral("legacy-pi") << QStringLiteral("pi-ts") << QStringLiteral("pi");
-    } else if (preference == QLatin1String("rust")) {
-        baseNames << QStringLiteral("pi-rust") << QStringLiteral("pi_agent_rust") << QStringLiteral("pi");
     } else if (preference == QLatin1String("bolt")) {
         // Pi-Bolt only publishes `pi-bolt`; falling back to `pi` would silently start
         // the original implementation while the user asked for Bolt.
@@ -189,8 +186,6 @@ QString resolveCommand(const ChannelServices &services, const QJsonObject &setti
     const QString customPath = settingString(settings, QStringLiteral("customPiPath"));
     const QString selectedPath = preference == QLatin1String("typescript")
         ? settingString(settings, QStringLiteral("piTypescriptPath"))
-        : preference == QLatin1String("rust")
-        ? settingString(settings, QStringLiteral("piRustPath"))
         : preference == QLatin1String("bolt") ? settingString(settings, QStringLiteral("piBoltPath"))
                                              : QString();
     const QString normalizedSelected = normalizeCustomPath(selectedPath);
@@ -272,9 +267,6 @@ QString detectRuntimeKind(const QString &version)
 {
     const QString value = version.trimmed();
     if (value.isEmpty()) return QStringLiteral("unknown");
-    static const QRegularExpression rust(QStringLiteral("^pi\\s+v?\\d+\\.\\d+\\.\\d+\\b"),
-                                        QRegularExpression::CaseInsensitiveOption);
-    if (rust.match(value).hasMatch()) return QStringLiteral("rust");
     // Pi-Bolt prints the upstream semver followed by `(Pi-Bolt <ver>, ...)`; the banner
     // is the only reliable marker and must be checked before the generic semver rule.
     static const QRegularExpression bolt(QStringLiteral("^v?\\d+\\.\\d+\\.\\d+\\b.*\\(\\s*Pi-Bolt\\b"),

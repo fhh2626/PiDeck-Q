@@ -53,3 +53,22 @@ for (const mode of ["cancel", "destroy"]) {
 		}
 	});
 }
+
+for (const mode of ["refresh", "refresh-failure", "refresh-timeout"]) {
+	test(`native version probe ${mode} replaces a previously successful cached answer`, { skip }, () => {
+		assert.ok(executable, "A fresh PiDeck-PiVersionProbeTest executable is required");
+		const result = spawnSync(executable, [mode], {
+			windowsHide: true,
+			env: childPathEnvironment(process.env, joinPathParts([qtBinDirectory(), environmentPath()])),
+			encoding: "utf8", timeout: 15_000,
+		});
+		assert.equal(result.status, 0, result.stderr || String(result.error ?? ""));
+		const observed = JSON.parse(result.stdout);
+		assert.deepEqual(observed.initial, ["1.4.0"]);
+		assert.equal(observed.cachedAfterInitial, "1.4.0");
+		assert.equal(observed.cachedDuringRetry, "", "an active replacement probe must discard the former answer");
+		const expected = mode === "refresh" ? "1.5.0" : "";
+		assert.deepEqual(observed.retried, [expected]);
+		assert.equal(observed.cachedAfterRetry, expected, "a failed refresh must not restore the former answer");
+	});
+}

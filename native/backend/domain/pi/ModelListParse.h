@@ -8,8 +8,8 @@
  * Model-list payload parsing (port of `src/main/pi/modelListCache.ts`).
  *
  * Two data sources have to normalise into the same `AvailableModel[]`:
- *  - the implementation-neutral RPC payload (`get_available_models`), where the Rust
- *    implementation calls image capability `input` and older builds expose `images`;
+ *  - the RPC payload (`get_available_models`), where current Pi exposes image
+ *    capabilities through `input` and older builds can expose `images`;
  *  - the human-readable `pi --list-models` table, used as a compatibility fallback.
  *
  * Both parsers are pure and must stay byte-faithful: the renderer renders the returned
@@ -17,7 +17,7 @@
  */
 namespace modellist {
 
-/** `normalizePiRpcModels(data)`: `{models:[...]}` → narrow `AvailableModel[]`. */
+/** Convert `{models:[...]}` RPC data into the shared `AvailableModel[]` contract. */
 QJsonArray normalizeRpcModels(const QJsonValue &data);
 
 /**
@@ -25,8 +25,8 @@ QJsonArray normalizeRpcModels(const QJsonValue &data);
  *
  * Columns are parsed from the right because a provider name may contain spaces (users
  * copy provider ids like "grok.example.com copy"), which would break a left split. The
- * three-column legacy form (`provider model thinking`) is still accepted, and a Rust
- * "Showing N of M providers..." trailer is rejected because it has no yes/no tail.
+ * three-column legacy form (`provider model thinking`) is still accepted. Summary
+ * trailers are ignored because they do not describe a model row.
  */
 QJsonArray parseTextModels(const QString &output);
 

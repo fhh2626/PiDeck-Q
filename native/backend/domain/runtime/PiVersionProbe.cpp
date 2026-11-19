@@ -15,17 +15,16 @@
  *
  * Split out of `PiLaunch.cpp`, which owns launch/argv/env assembly and was already past the
  * file-size budget. Nothing here builds a command line: it only asks the *resolved* launch
- * for `--version` (with the npm-shim/WSL argv forms the launcher already prepared) and
- * caches the answer per resolved command, exactly like `PiProcess.ensureVersionCheck`.
+ * for `--version` (with the npm-shim/WSL argv forms the launcher already prepared).
+ * Runtime creation always probes again because an installed command can be replaced
+ * in place. The last answer is retained only for synchronous launch identity snapshots.
  */
 namespace pilaunch {
 namespace {
 
 /**
- * Keyed by the *probe* command, not by the full launch: `--session`/`--extension` differ
- * per session while the `--version` answer does not. Keying on the whole argv made every
- * session start spawn another probe and made a warm entry impossible to hit. This is the
- * oracle's "cached per resolved command" (PiProcess.ensureVersionCheck).
+ * Synchronous snapshots share the answer for a resolved command. Session paths and
+ * extensions do not identify an installation, so they must not fragment that snapshot.
  */
 QString probeCacheKey(const Launch &launch)
 {
@@ -45,7 +44,6 @@ bool supportsProjectApprovalFlag(const QString &version)
 {
     const QString value = version.trimmed();
     if (value.isEmpty()) return false;
-    if (value.contains(QLatin1String("rust"), Qt::CaseInsensitive)) return false;
     static const QRegularExpression pattern(QStringLiteral("^v?(\\d+)\\.(\\d+)"));
     const QRegularExpressionMatch match = pattern.match(value);
     if (!match.hasMatch()) return false;
@@ -98,12 +96,9 @@ void probeVersion(const Launch &launch, VersionProbeOwner &owner,
 {
     if (owner.cancelled()) return;
     const QString key = probeCacheKey(launch);
-    QHash<QString, QString> &cache = probeCache();
-    const auto cached = cache.constFind(key);
-    if (cached != cache.constEnd()) {
-        done(*cached);
-        return;
-    }
+    // A package manager can replace the target of an unchanged shim. Every actual
+    // launch needs a fresh answer, and a failed probe must not retain its old kind.
+    probeCache().remove(key);
     auto *process = new QProcess(&owner);
     process->setProgram(launch.program);
     process->setWorkingDirectory(launch.cwd);

@@ -99,9 +99,6 @@ void Coordinator::forgetAgent(const QString &agentId)
     if (pendingProjection != m_projectionLoads.cend()) {
         finishProjectionLoad(agentId, pendingProjection->ticket);
     }
-    // The runtime-kind flag is per agent id (oracle `rustRuntimeAgents` is cleared with the
-    // agent), and every runtime gets a fresh id, so it can never leak to another process.
-    m_rustRuntimeAgents.remove(agentId);
     // Oracle `clearAgentState`: the recording gate is per runtime, so a stopped agent
     // must not keep accepting frames or leave batches queued for delivery.
     if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(agentId);

@@ -19,6 +19,7 @@
 // any failure prints `not ok - ...` and exits 1, so
 // `tests/native2CatalogConcurrencyParity.test.mjs` can assert on the public output.
 #include "SessionCatalogStore.h"
+#include "SessionIdentity.h"
 #include "SessionSummary.h"
 
 #include <QDir>
@@ -405,6 +406,95 @@ void staleScanCannotResurrectDeletion()
     check(fresh.size() == 1, "a new scan can discover a genuinely recreated session path");
 }
 
+/** Catalog-only membership is a captured identity, not authority to recreate or move a record. */
+void registeredScanKeepsCapturedIdentity()
+{
+    QTemporaryDir directory;
+    SessionCatalogStore store(pathOf(directory), {});
+    store.load();
+    const QString filePath = QStringLiteral("C:/sessions/registered.jsonl");
+    const QJsonArray initial = store.mergeScanned(
+        QStringLiteral("p1"), {summaryFor(filePath, 1, QStringLiteral("original"))}, {});
+    const QString id = initial.at(0).toObject().value(QStringLiteral("id")).toString();
+    SessionSummary stale = summaryFor(filePath, 9, QStringLiteral("stale refresh"));
+    stale.existingCatalogSessionId = id;
+    stale.existingCatalogOriginKey = sessionidentity::buildSessionOriginKey(
+        QStringLiteral("pi"), QStringLiteral("native"), filePath, QString(), QString(), QString());
+    const quint64 generation = store.scanGeneration();
+    const QJsonArray refreshed = store.mergeScanned(QStringLiteral("p1"), {stale}, {}, generation);
+    check(refreshed.size() == 1 && refreshed.at(0).toObject().value(QStringLiteral("title")) == stale.name,
+          "a registered scan refreshes its unchanged captured identity");
+
+    // A second scan can move the known origin while the first one is still reading.
+    store.mergeScanned(QStringLiteral("p2"), {summaryFor(filePath, 2, QStringLiteral("moved"))}, {});
+    const QJsonArray oldProject = store.mergeScanned(QStringLiteral("p1"), {stale}, {}, generation);
+    check(oldProject.isEmpty(), "a registered scan cannot move a transferred record back to its old project");
+    CatalogEntry moved;
+    check(store.get(id, &moved) && moved.projectId == QLatin1String("p2")
+              && moved.title == QLatin1String("moved") && moved.updatedAt == 2,
+          "a rejected registered scan preserves the transferred record metadata");
+
+    store.attachRuntime(id, QStringLiteral("/home/dev/sessions/registered.jsonl"), QStringLiteral("pi-session"),
+                        SessionCatalogStore::RuntimeIdentity{
+                            QStringLiteral("wsl"), QStringLiteral("Ubuntu"), QStringLiteral("dev")});
+    store.mergeScanned(QStringLiteral("p2"), {stale}, {}, store.scanGeneration());
+    CatalogEntry rebound;
+    check(store.listEntries().size() == 1 && store.get(id, &rebound)
+              && rebound.environment == QLatin1String("wsl") && rebound.wslDistro == QLatin1String("Ubuntu"),
+          "a registered scan cannot recreate a path after its record changes namespace");
+
+    store.remove(id);
+    // Even without the older deletion generation, a captured id cannot create a record.
+    store.mergeScanned(QStringLiteral("p1"), {stale}, {}, store.scanGeneration());
+    check(store.listEntries().isEmpty() && durableIds(pathOf(directory)).isEmpty(),
+          "a registered scan cannot recreate its removed catalog identity");
+
+    const QJsonArray recreated = store.mergeScanned(
+        QStringLiteral("p1"), {summaryFor(filePath, 3, QStringLiteral("replacement"))}, {});
+    const QString replacementId = recreated.at(0).toObject().value(QStringLiteral("id")).toString();
+    store.mergeScanned(QStringLiteral("p1"), {stale}, {}, store.scanGeneration());
+    CatalogEntry replacement;
+    check(replacementId != id && store.get(replacementId, &replacement)
+              && replacement.title == QLatin1String("replacement") && replacement.updatedAt == 3,
+          "a registered scan cannot overwrite a new identity at the same path");
+    check(durableIds(pathOf(directory)) == QSet<QString>{replacementId},
+          "registered scan rejection preserves the durable replacement identity");
+}
+
+/** A settings publication can change merge context before the scanner's namespace is replaced. */
+void registeredWslScanRejectsChangedNamespace()
+{
+    for (const bool changeUser : {false, true}) {
+        QTemporaryDir directory;
+        const SessionCatalogStore::Context before{QStringLiteral("Ubuntu"), QStringLiteral("dev")};
+        const SessionCatalogStore::Context after{
+            changeUser ? QStringLiteral("Ubuntu") : QStringLiteral("Debian"),
+            changeUser ? QStringLiteral("other") : QStringLiteral("dev")};
+        SessionCatalogStore store(pathOf(directory), before);
+        store.load();
+        const QString filePath = QStringLiteral("/home/dev/sessions/same-path.jsonl");
+        SessionSummary original = summaryFor(filePath, 1, QStringLiteral("original"));
+        original.wsl = true;
+        const QJsonArray initial = store.mergeScanned(QStringLiteral("p1"), {original}, before);
+        const QString id = initial.at(0).toObject().value(QStringLiteral("id")).toString();
+        SessionSummary stale = original;
+        stale.name = QStringLiteral("wrong namespace");
+        stale.existingCatalogSessionId = id;
+        stale.existingCatalogOriginKey = sessionidentity::buildSessionOriginKey(
+            QStringLiteral("pi"), QStringLiteral("wsl"), filePath, before.wslDistro, before.wslUser, QString());
+        store.attachRuntime(id, filePath, QStringLiteral("rebound"),
+                            SessionCatalogStore::RuntimeIdentity{
+                                QStringLiteral("wsl"), after.wslDistro, after.wslUser});
+        store.mergeScanned(QStringLiteral("p1"), {stale}, after, store.scanGeneration());
+        CatalogEntry rebound;
+        check(store.listEntries().size() == 1 && store.get(id, &rebound)
+                  && rebound.title == QLatin1String("original")
+                  && rebound.wslDistro == after.wslDistro && rebound.wslUser == after.wslUser,
+              changeUser ? "a registered scan cannot follow the same id and path into another WSL user"
+                         : "a registered scan cannot follow the same id and path into another WSL distro");
+    }
+}
+
 } // namespace
 
 int main()
@@ -414,6 +504,8 @@ int main()
     attachAndRemoveStayConsistent();
     identityContextIsACoherentPair();
     staleScanCannotResurrectDeletion();
+    registeredScanKeepsCapturedIdentity();
+    registeredWslScanRejectsChangedNamespace();
 
     if (g_failures != 0) {
         std::printf("%d failure(s)\n", g_failures);

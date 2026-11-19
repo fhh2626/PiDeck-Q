@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "../pi/PiLocator.h"
 
 #include "../sessions/SessionCatalogStore.h"
 #include "../sessions/SessionChannelSupport.h"
@@ -289,9 +290,6 @@ void Coordinator::createAgent(const CatalogEntry &entry,
         raw->setEventSink([this, agentId](const QJsonObject &event) {
             AgentSession *current = agent(agentId);
             if (!current) return;
-            // The Rust/Pi-Bolt lifecycle serializer is identified from `agent_start` before
-            // the projector runs: it decides the settle-watchdog delay (250 ms vs 5 s).
-            noteRuntimeKind(agentId, event);
             // Raw observers (LAN web stream) see the event *before* the desktop projector:
             // `agent_start` hands out the next run generation and the projector's
             // `openStream()` advances the counter right after, exactly like the oracle's
@@ -436,10 +434,14 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     };
 
     // Pi's RPC mode otherwise ignores project resources when no upstream decision is
-    // stored. Approve this run automatically, gated by version for older Pi and Rust.
+    // stored. Approve this run automatically when its version supports the flag.
     const pilaunch::Launch probe = pilaunch::build(request);
     pilaunch::probeVersion(probe, m_versionProbes, [request, spawnWith](const QString &version) mutable {
         request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
+        const QString kind = pilocator::detectRuntimeKind(version);
+        if (kind != QLatin1String("unknown")) {
+            request.detectedRuntimeKind = kind == QLatin1String("typescript") ? QStringLiteral("ts") : kind;
+        }
         spawnWith(pilaunch::build(request));
     });
 }

@@ -32,8 +32,8 @@ namespace agentruntime {
 /**
  * Why the idle-confirmation watchdog was armed; it decides the delay.
  *
- * `TurnEnd` uses the per-runtime timeout (250 ms for pi_agent_rust/Pi-Bolt, which never
- * emit `agent_settled`, 5 s otherwise); `CompactionEnd` uses the oracle's fixed 300 ms.
+ * `TurnEnd` uses the current launch kind (250 ms for Pi-Bolt, 5 s otherwise).
+ * `CompactionEnd` uses the fixed 300 ms delay.
  * `ExtensionCommandEnd` checks after 100 ms because a command may emit no run events.
  */
 enum class SettleWatchdog {
@@ -79,7 +79,7 @@ struct EventHooks {
      *
      * `agent_end` and `compaction_end` are *not* the final idle signal: pi may still run a
      * retry, a compaction or a queued follow-up. A runtime that never sends
-     * `agent_settled` (pi_agent_rust, Pi-Bolt) therefore needs a bounded poll of
+     * `agent_settled`, such as Pi-Bolt, therefore needs a bounded poll of
      * `get_state`; without it the tab stays `running` forever (no edit/delete/resend, a
      * permanent sidebar spinner and a LAN stream that never finishes).
      */

@@ -84,17 +84,6 @@ QString extractText(const QJsonValue &content)
     return parts.join(QLatin1Char(' '));
 }
 
-QString piSessionParent(const QJsonObject &entry)
-{
-    if (entry.value(QStringLiteral("type")).toString() != QLatin1String("session")) return QString();
-    const QJsonObject header = entry.value(QStringLiteral("header")).toObject();
-    const QStringList keys{QStringLiteral("parentSession"), QStringLiteral("branchedFrom"),
-                           QStringLiteral("parent_session")};
-    QString value = firstString(entry, keys);
-    if (!value.isEmpty()) return value;
-    return firstString(header, keys);
-}
-
 bool isPiSubagentLayoutPath(const SessionFs &fs, const QString &filePath)
 {
     if (fs.basename(filePath) != QLatin1String("session.jsonl")) return false;
@@ -285,7 +274,7 @@ Result read(const QString &filePath, const QString &raw, qint64 mtimeMs, const C
             if (!candidate.isEmpty()) latestSessionInfoName = candidate;
         }
         if (type == QLatin1String("session") && forkParentSession.isEmpty()) {
-            forkParentSession = piSessionParent(entry);
+            forkParentSession = optionalString(entry.value(QStringLiteral("parentSession")));
         }
         const QString customType = entry.value(QStringLiteral("customType")).toString();
         if (type == QLatin1String("custom") && customType.endsWith(QLatin1String(".child-session"))) {
@@ -312,12 +301,10 @@ Result read(const QString &filePath, const QString &raw, qint64 mtimeMs, const C
         if (name.isEmpty()) {
             name = firstString(entry, {QStringLiteral("sessionName"), QStringLiteral("name")});
             if (name.isEmpty()) name = nestedString(entry, QStringLiteral("data"), {QStringLiteral("name")});
-            if (name.isEmpty()) name = nestedString(entry, QStringLiteral("header"), {QStringLiteral("name")});
             if (name.isEmpty()) name = nestedString(entry, QStringLiteral("session"), {QStringLiteral("name")});
         }
         if (projectPath.isEmpty()) {
             projectPath = firstString(entry, {QStringLiteral("cwd"), QStringLiteral("projectPath")});
-            if (projectPath.isEmpty()) projectPath = nestedString(entry, QStringLiteral("header"), {QStringLiteral("cwd")});
             if (projectPath.isEmpty()) projectPath = nestedString(entry, QStringLiteral("data"), {QStringLiteral("cwd")});
             if (projectPath.isEmpty()) projectPath = nestedString(entry, QStringLiteral("session"), {QStringLiteral("cwd")});
             if (projectPath.isEmpty()) {

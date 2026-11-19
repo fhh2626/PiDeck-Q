@@ -55,6 +55,13 @@ async function fixture(t, { gateActivation = false, chatProject = false } = {}) 
 			const changed = await session.invoke("settings:update", [{ customPiPath: replacement }]);
 			assert.equal(changed.payload.ok, true, JSON.stringify(changed.payload));
 		},
+		async selectOriginalCommand() {
+			// Each child reads its scenario once at startup. Future probes are ungated,
+			// while the cancelled reconnect keeps its captured gate until releaseProbe.
+			writeFileSync(fake.scenarioPath, JSON.stringify(scenario));
+			const changed = await session.invoke("settings:update", [{ customPiPath: fake.shim }]);
+			assert.equal(changed.payload.ok, true, JSON.stringify(changed.payload));
+		},
 	};
 }
 
@@ -156,13 +163,17 @@ test("stopping a pending reconnect releases its command lease before a new activ
 	let reactivated;
 	try {
 		await f.waitForProbe();
+		const cancelledProbe = f.fake.readLog().find((entry) => entry.kind === "probe-start");
+		assert.ok(cancelledProbe?.pid > 0);
 		const stopped = await f.invoke("sessions:runtime-stop", [target]);
 		assert.equal(stopped.payload.result.ok, true, JSON.stringify(stopped.payload));
-		// This command already has a cached version. Its new runtime must not wait
-		// for the cancelled reconnect's still-gated compatibility probe.
-		const changed = await f.invoke("settings:update", [{ customPiPath: f.fake.shim }]);
-		assert.equal(changed.payload.ok, true, JSON.stringify(changed.payload));
+		// The successor probes afresh while the cancelled reconnect remains pending.
+		await f.selectOriginalCommand();
 		reactivated = await f.invoke("sessions:runtime-activate", [f.record.id]);
+		assert.equal(processAlive(cancelledProbe.pid), true,
+			"a new activation must complete before the cancelled probe is released or times out");
+		assert.equal(f.fake.readLog().some((entry) => entry.kind === "probe-exit" && entry.pid === cancelledProbe.pid), false,
+			"the cancelled probe must still be gated when its successor activates");
 	} finally {
 		f.releaseProbe();
 	}

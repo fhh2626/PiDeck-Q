@@ -135,10 +135,8 @@ void registerSessionCatalogChannels(ChannelRegistry &registry, ChannelServices &
                                                                    ChannelResponder responder) {
         const QString projectId = channels::stringArg(args, 0);
         sessionchannels::runAsync(responder, [&services, projectId]() -> QJsonValue {
-            const QString projectPath = sessionchannels::requireProjectPath(services, projectId);
-            const QString runtimeProjectPath = sessionchannels::runtimeProjectPath(services, projectPath);
             const QVector<SessionSummary> summaries =
-                sessionchannels::scannerOf(services).list(runtimeProjectPath, runtimeProjectPath);
+                sessionchannels::scanProjectSessions(services, projectId);
             QJsonArray result;
             for (const SessionSummary &summary : summaries) {
                 result.append(sessionchannels::summaryJson(summary));

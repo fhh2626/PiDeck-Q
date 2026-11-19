@@ -1,29 +1,9 @@
 import "./helpers/piFixtureResolver.mjs";
 import assert from "node:assert/strict";
-import {  join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { pathToFileURL } from "node:url";
-const { detectPiRuntimeKind } = loadTsCommonJs("src/shared/piCompatibility.ts");
-
-// 真实 Pi-Bolt 1.0.2（基于 Pi 1.4.0）在 Windows 上 `--version` 的完整输出。
-const BOLT_VERSION = "1.4.0 (Pi-Bolt 1.0.2, win32-x64-jit, JIT on)";
-
-// ── 版本识别 ───────────────────────────────────────────────────────
-
-test("recognises Pi-Bolt by its version banner, not by the underlying Pi semver", () => {
-	assert.equal(detectPiRuntimeKind(BOLT_VERSION), "bolt");
-	assert.equal(detectPiRuntimeKind("1.4.0 (Pi-Bolt 1.0.2, linux-x64, JIT off)"), "bolt");
-});
-
-test("keeps classifying stock Pi and Rust Pi as before", () => {
-	assert.equal(detectPiRuntimeKind("1.4.0"), "typescript");
-	assert.equal(detectPiRuntimeKind("0.85.1"), "typescript");
-	assert.equal(detectPiRuntimeKind("pi 0.2.0 (unknown abc)"), "rust");
-	assert.equal(detectPiRuntimeKind("development build"), "unknown");
-});
-
-// ── 子代理拉起 Pi 子进程 ───────────────────────────────────────────
 
 const { getPiSpawnCommand } = await import(
 	pathToFileURL(join(process.cwd(), "resources/extensions/pideck-q-subagents/src/runs/shared/pi-spawn.ts")).href

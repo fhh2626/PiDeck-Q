@@ -88,6 +88,13 @@ QJsonArray SessionCatalogStore::mergeScanned(const QString &projectId,
         const QString environment = summary.wsl ? QStringLiteral("wsl") : QStringLiteral("native");
         const QString source = summary.source.isEmpty() ? QStringLiteral("pi") : summary.source;
         int index = byOrigin.value(originKey, -1);
+        // Catalog-only membership can refresh its captured record, never create a new
+        // one or move it back after a concurrent project/namespace/path change. A
+        // settings publication can also change the context while retaining the id.
+        if (!summary.existingCatalogSessionId.isEmpty()
+            && (originKey != summary.existingCatalogOriginKey
+                || index < 0 || next.at(index).id != summary.existingCatalogSessionId
+                || next.at(index).projectId != projectId)) continue;
         // A scan is metadata discovery, not authority to move a record whose
         // captured identity is currently authorizing an irreversible mutation.
         if (index >= 0 && m_deletingEntries.contains(next.at(index).id)) continue;

@@ -21,7 +21,6 @@ bool settingBool(const QJsonObject &settings, const QString &key)
 
 QString runtimeBinaryName(const QString &preference)
 {
-    if (preference == QLatin1String("rust")) return QStringLiteral("pi-rust");
     if (preference == QLatin1String("bolt")) return QStringLiteral("pi-bolt");
     return QStringLiteral("pi");
 }
@@ -65,7 +64,6 @@ Invocation resolve(const QJsonObject &settings)
     const QString customPath = settingString(settings, QStringLiteral("customPiPath"));
     const QString selectedPath = preference == QLatin1String("typescript")
         ? settingString(settings, QStringLiteral("piTypescriptPath"))
-        : preference == QLatin1String("rust")   ? settingString(settings, QStringLiteral("piRustPath"))
         : preference == QLatin1String("bolt")   ? settingString(settings, QStringLiteral("piBoltPath"))
                                                 : QString();
 

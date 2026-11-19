@@ -115,6 +115,9 @@ QJsonObject pageJson(const historypager::Page &page);
  */
 void notifyCatalogRefreshed(ChannelServices &services, const QString &projectId);
 
+/** Scan legal roots, retaining registered project membership only for files without a cwd. */
+QVector<SessionSummary> scanProjectSessions(ChannelServices &services, const QString &projectId);
+
 /**
  * One scan + merge for a project (runs on the serial domain executor).
  *

@@ -27,7 +27,6 @@ bool settingBool(const QJsonObject &settings, const QString &key, bool fallback 
 
 QString preferenceBinaryName(const QString &preference)
 {
-    if (preference == QLatin1String("rust")) return QStringLiteral("pi-rust");
     if (preference == QLatin1String("bolt")) return QStringLiteral("pi-bolt");
     return QStringLiteral("pi");
 }
@@ -128,11 +127,9 @@ void wrapBatchShim(Launch *launch, const QString &versionArgument)
 QString runtimeKind(const QJsonObject &settings, const QString &program)
 {
     const QString preference = settingString(settings, QStringLiteral("piRuntimePreference"));
-    if (preference == QLatin1String("rust")) return QStringLiteral("rust");
     if (preference == QLatin1String("bolt")) return QStringLiteral("bolt");
     const QString base = QFileInfo(program).completeBaseName().toLower();
-    if (base.contains(QLatin1String("rust"))) return QStringLiteral("rust");
-    if (base.contains(QLatin1String("bolt"))) return QStringLiteral("bolt");
+    if (base == QLatin1String("pi-bolt")) return QStringLiteral("bolt");
     if (base == QLatin1String("pi") || base == QLatin1String("pi.cmd") || base == QLatin1String("pi.exe")) {
         return QStringLiteral("ts");
     }
@@ -165,7 +162,6 @@ Launch build(const Request &request)
     const QString customPath = settingString(settings, QStringLiteral("customPiPath"));
     const QString selectedPath = preference == QLatin1String("typescript")
         ? settingString(settings, QStringLiteral("piTypescriptPath"))
-        : preference == QLatin1String("rust") ? settingString(settings, QStringLiteral("piRustPath"))
         : preference == QLatin1String("bolt") ? settingString(settings, QStringLiteral("piBoltPath"))
                                               : QString();
 
@@ -220,10 +216,12 @@ Launch build(const Request &request)
         launch.program = found.isEmpty() ? name : found;
     }
 
-    const QString kind = runtimeKind(settings, launch.program);
+    const QString kind = request.detectedRuntimeKind.isEmpty()
+        ? runtimeKind(settings, launch.program) : request.detectedRuntimeKind;
+    launch.runtimeKind = kind;
     QStringList args = launch.viaWsl ? launch.arguments : QStringList{};
     args << QStringLiteral("--mode") << QStringLiteral("rpc") << QStringLiteral("--no-themes");
-    // `--offline` is a TypeScript-pi flag; rust/bolt and unknown runtimes must not get it.
+    // `--offline` is accepted by the original Pi CLI; other runtimes use the neutral form.
     if (settingBool(settings, QStringLiteral("piRpcOffline"), true) && kind == QLatin1String("ts")) {
         args << QStringLiteral("--offline");
     }
@@ -254,8 +252,8 @@ Launch build(const Request &request)
     if (!request.sessionPath.isEmpty() && !request.noSession) {
         args << QStringLiteral("--session") << request.sessionPath;
     }
-    // PiDeck always loads project resources. Older Pi and Rust receive no unsupported flag.
-    if (request.approveProjectResources && kind != QLatin1String("rust")) {
+    // PiDeck always loads project resources when the probed Pi version accepts this flag.
+    if (request.approveProjectResources) {
         args << QStringLiteral("--approve");
     }
 
@@ -379,7 +377,6 @@ Cli buildCli(const QJsonObject &settings, const QStringList &arguments)
     const QString customPath = settingString(settings, QStringLiteral("customPiPath"));
     const QString selectedPath = preference == QLatin1String("typescript")
         ? settingString(settings, QStringLiteral("piTypescriptPath"))
-        : preference == QLatin1String("rust") ? settingString(settings, QStringLiteral("piRustPath"))
         : preference == QLatin1String("bolt") ? settingString(settings, QStringLiteral("piBoltPath"))
                                               : QString();
 
@@ -422,8 +419,6 @@ Cli buildCli(const QJsonObject &settings, const QStringList &arguments)
 
     Cli cli;
     cli.viaWsl = launch.viaWsl;
-    // The kind must be derived before the shim wrap: `cmd.exe` says nothing about pi.
-    cli.runtimeKind = runtimeKind(settings, launch.program);
     wrapBatchShim(&launch, QStringLiteral("--version"));
     cli.program = launch.program;
     cli.arguments = launch.arguments;

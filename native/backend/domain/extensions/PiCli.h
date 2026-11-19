@@ -15,7 +15,7 @@
  * the renderer can never name an executable, and the child environment is sanitized.
  *
  * `--approve` is only appended for pi versions that support the flag, and
- * `PI_OFFLINE=1` is only set for the TypeScript runtime (the Rust build ignores it).
+ * `PI_OFFLINE=1` keeps package operations from refreshing the network when requested.
  */
 namespace picli {
 

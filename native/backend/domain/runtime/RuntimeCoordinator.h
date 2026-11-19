@@ -15,7 +15,6 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QSet>
 #include <QString>
 
 #include <functional>
@@ -456,14 +455,6 @@ private:
 
     // idle fallback (RuntimeSettle.cpp)
     /**
-     * Remember that this runtime never emits `agent_settled` (oracle `rustRuntimeAgents`).
-     *
-     * Witness is `agent_start` carrying a string `sessionId`: pi_agent_rust/Pi-Bolt stamp
-     * it, TypeScript pi does not. The flag decides the watchdog delay (250 ms vs 5 s) and
-     * lives as long as the agent id (a reattach keeps it).
-     */
-    void noteRuntimeKind(const QString &agentId, const QJsonObject &event);
-    /**
      * Arm the idle-confirmation watchdog (`AgentManager.settleTimer`).
      *
      * Captures the transport epoch, run generation and prompt dispatch sequence at arm
@@ -608,8 +599,6 @@ private:
     QHash<QString, QJsonArray> m_commandCache;
     QHash<int, PiEventObserver> m_piObservers;
     QHash<int, std::function<void()>> m_stateObservers;
-    /** Agents whose lifecycle serializer never emits `agent_settled` (oracle set). */
-    QSet<QString> m_rustRuntimeAgents;
     int m_nextObserverId = 1;
     QString m_focusedSessionId;
     pilaunch::VersionProbeOwner m_versionProbes;

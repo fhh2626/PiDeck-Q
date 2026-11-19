@@ -19,8 +19,8 @@ struct ChannelServices;
  *
  * Data source order: the implementation-neutral RPC (`get_available_models`, with the
  * same `--mode rpc --no-session --no-*` argv a runtime uses) and only then the text
- * table. `--offline` is passed as `PI_OFFLINE=1` instead of an argument because `auto`
- * mode may resolve to the Rust build, which does not know the flag.
+ * table. The RPC probe uses `PI_OFFLINE=1` so older custom CLIs can ignore it.
+ * The text probe tries `--offline` first and retries without it on failure or no models.
  *
  * Threading: every entry point runs on the serial domain executor, which replaces the
  * oracle's in-flight promise dedupe (two invokes cannot overlap), so the module-level

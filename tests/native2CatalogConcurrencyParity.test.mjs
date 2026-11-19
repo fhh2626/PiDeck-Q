@@ -37,6 +37,7 @@ const SOURCES = [
 	"native/backend/domain/sessions/SessionCatalogStore.cpp",
 	"native/backend/domain/sessions/SessionCatalogDeletion.cpp",
 	"native/backend/domain/sessions/SessionCatalogStore.h",
+	"native/backend/domain/sessions/SessionSummary.h",
 	"native/backend/domain/sessions/SessionCatalogMerge.cpp",
 	"native/backend/domain/sessions/SessionCatalogModelConfiguration.cpp",
 	"native/backend/domain/sessions/SessionIdentity.cpp",
@@ -111,11 +112,20 @@ describe("native2 session catalog concurrency", { skip }, () => {
 		assert.match(output, /^ok - a stale scan cannot resurrect a successfully deleted path$/m);
 		assert.match(output, /^ok - stale scan rejection also preserves the durable catalog$/m);
 		assert.match(output, /^ok - a new scan can discover a genuinely recreated session path$/m);
+		assert.match(output, /^ok - a registered scan refreshes its unchanged captured identity$/m);
+		assert.match(output, /^ok - a registered scan cannot move a transferred record back to its old project$/m);
+		assert.match(output, /^ok - a rejected registered scan preserves the transferred record metadata$/m);
+		assert.match(output, /^ok - a registered scan cannot recreate a path after its record changes namespace$/m);
+		assert.match(output, /^ok - a registered scan cannot recreate its removed catalog identity$/m);
+		assert.match(output, /^ok - a registered scan cannot overwrite a new identity at the same path$/m);
+		assert.match(output, /^ok - registered scan rejection preserves the durable replacement identity$/m);
+		assert.match(output, /^ok - a registered scan cannot follow the same id and path into another WSL user$/m);
+		assert.match(output, /^ok - a registered scan cannot follow the same id and path into another WSL distro$/m);
 		assert.match(output, /all session catalog concurrency cases passed/);
 
 		// Every documented case must actually have run: a silently shortened suite would
 		// still print the summary line.
 		const okCount = lines.filter((line) => line.startsWith("ok - ")).length;
-		assert.equal(okCount, 19, `expected 19 assertions, saw ${okCount}:\n${output}`);
+		assert.equal(okCount, 28, `expected 28 assertions, saw ${okCount}:\n${output}`);
 	});
 });

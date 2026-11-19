@@ -11,29 +11,15 @@
 #include <memory>
 
 namespace temporarypi {
-namespace {
 
-constexpr int kStateTimeoutMs = 30'000;
-
-QString runtimeKindFor(const QString &program)
-{
-    const QString name = program.section(QLatin1Char('/'), -1).section(QLatin1Char('\\'), -1).toLower();
-    if (name.contains(QLatin1String("pi-rust"))) return QStringLiteral("rust");
-    if (name.contains(QLatin1String("pi-bolt"))) return QStringLiteral("bolt");
-    if (name.contains(QLatin1String("pi"))) return QStringLiteral("typescript");
-    return QStringLiteral("unknown");
-}
-
-} // namespace
-
-QStringList buildArguments(const QJsonObject &settings, const QString &runtimeKind, const QString &sessionPath)
+QStringList buildArguments(const QJsonObject &settings, const QString &sessionPath)
 {
     QStringList arguments{QStringLiteral("--mode"), QStringLiteral("rpc"), QStringLiteral("--no-themes")};
-    // Desktop model lists come from local models.json, so the TypeScript runtime skips
-    // the startup network refresh. pi_agent_rust has no such flag and unknown runtimes
-    // get the neutral form so a wrong guess cannot break startup.
+    // Temporary operations do not probe a version. Only an explicit TypeScript choice
+    // can establish support for this optional flag; an auto command named `pi` may be
+    // a standalone build, whose copy/export RPC must still start successfully.
     const bool offline = settings.value(QStringLiteral("piRpcOffline")).toBool(true);
-    if (offline && runtimeKind != QLatin1String("rust") && runtimeKind != QLatin1String("unknown")) {
+    if (offline && settings.value(QStringLiteral("piRuntimePreference")).toString() == QLatin1String("typescript")) {
         arguments.append(QStringLiteral("--offline"));
     }
     if (settings.value(QStringLiteral("piRpcNoExtensions")).toBool(false)) {
@@ -56,9 +42,8 @@ void run(const QJsonObject &settings, const QString &cwd, const QString &session
         done(result);
         return;
     }
-    const QString runtimeKind = runtimeKindFor(invocation.program);
     QStringList arguments = invocation.arguments;
-    arguments.append(buildArguments(settings, runtimeKind, sessionPath));
+    arguments.append(buildArguments(settings, sessionPath));
 
     auto client = std::make_shared<PiEventClient>();
     auto settled = std::make_shared<bool>(false);
@@ -106,9 +91,8 @@ void clone(const QJsonObject &settings, const QString &cwd, const QString &sessi
         done(result);
         return;
     }
-    const QString runtimeKind = runtimeKindFor(invocation.program);
     QStringList arguments = invocation.arguments;
-    arguments.append(buildArguments(settings, runtimeKind, sessionPath));
+    arguments.append(buildArguments(settings, sessionPath));
 
     auto client = std::make_shared<PiEventClient>();
     auto settled = std::make_shared<bool>(false);

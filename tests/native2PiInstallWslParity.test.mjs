@@ -34,7 +34,6 @@ function baseSettings(extra = {}) {
 	return {
 		customPiPath: "",
 		piTypescriptPath: "",
-		piRustPath: "",
 		piBoltPath: "",
 		piRuntimePreference: "auto",
 		wslEnabled: false,

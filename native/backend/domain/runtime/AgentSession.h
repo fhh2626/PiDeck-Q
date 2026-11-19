@@ -82,6 +82,8 @@ public:
     bool reattach(const pilaunch::Launch &launch, QString *error);
     /** Monotonic transport identity; changes on every spawn/reattach. */
     quint64 clientEpoch() const { return m_clientEpoch; }
+    /** Resolved implementation of the current transport, refreshed on every reattach. */
+    QString runtimeKind() const { return m_options.launch.runtimeKind; }
     /** Pi's RPC model registry is a startup snapshot; a transport replacement refreshes it. */
     void invalidateModelConfiguration(const QJsonArray &models, const QJsonArray &providers,
                                       const QJsonArray &removed, const QJsonArray &available);

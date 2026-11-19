@@ -6,22 +6,16 @@
 #include <QTimer>
 
 /**
- * Idle confirmation for runtimes that never send `agent_settled`.
+ * Confirm idle when a runtime finishes a turn without sending `agent_settled`.
  *
- * Port of `AgentManager.markIdleIfPiReportsNoWork` and its arming points
- * (`agent_end` → `AGENT_SETTLED_TIMEOUT_MS`/`RUST_AGENT_SETTLED_TIMEOUT_MS`, `compaction_end`
- * → 300 ms, completed extension command → 100 ms). `pi_agent_rust` (and Pi-Bolt, which
- * shares its lifecycle serializer) emit
- * `agent_end` carrying a `sessionId` and never emit `agent_settled`; without this fallback
- * the tab stays `running` forever — the renderer then hides edit/delete/resend, keeps the
- * sidebar spinner and never finishes a LAN stream.
+ * Pi-Bolt uses a short watchdog. Stock Pi gets a longer safety window because it
+ * can still begin retries or queued follow-ups after `agent_end`. The resolved
+ * launch identifies the runtime, independently of optional event fields.
  *
- * The fallback is deliberately conservative: it only runs when the *local* view says the
- * turn ended (no pending ask, no compaction in flight, no open tool call, no live
- * assistant row) **and** pi's own `get_state` agrees (not streaming, not compacting, no
- * queued message). Every gate is re-checked after the round trip and fenced on the
- * transport epoch, the run generation and the abort gate, so a stale timer can never
- * settle a replacement run or a run the user just restarted.
+ * The fallback runs only when the local view has no pending ask, compaction, tool
+ * call or live assistant row and pi's `get_state` agrees. Every gate is rechecked
+ * after the round trip and fenced on the transport epoch, run generation and
+ * prompt sequence, so a stale timer cannot settle a replacement run.
  */
 namespace runtime {
 namespace {
@@ -29,24 +23,14 @@ namespace {
 constexpr int kStateTimeoutMs = 10'000;
 /** Oracle `AGENT_SETTLED_TIMEOUT_MS`: TypeScript pi settles on its own in practice. */
 constexpr int kTypeScriptSettledTimeoutMs = 5'000;
-/** Oracle `RUST_AGENT_SETTLED_TIMEOUT_MS`: pi_agent_rust never emits agent_settled. */
-constexpr int kRustSettledTimeoutMs = 250;
+/** Pi-Bolt can finish a turn without sending `agent_settled`. */
+constexpr int kBoltSettledTimeoutMs = 250;
 /** Oracle `compaction_end` → `markIdleIfPiReportsNoWork` delay. */
 constexpr int kCompactionIdleCheckMs = 300;
 /** Extension commands can finish successfully without emitting an agent lifecycle. */
 constexpr int kExtensionCommandIdleCheckMs = 100;
 
 } // namespace
-
-void Coordinator::noteRuntimeKind(const QString &agentId, const QJsonObject &event)
-{
-    // Oracle `rustRuntimeAgents`: the Rust lifecycle serializer stamps `agent_start` with
-    // the pi session id, TypeScript pi does not (its `agent_end` payload is normalized
-    // differently, which is why the *start* event is the witness). The flag lives as long
-    // as the runtime, so a reattach keeps it.
-    if (event.value(QStringLiteral("type")).toString() != QLatin1String("agent_start")) return;
-    if (event.value(QStringLiteral("sessionId")).isString()) m_rustRuntimeAgents.insert(agentId);
-}
 
 void Coordinator::scheduleSettledWatchdog(const QString &agentId,
                                           agentruntime::SettleWatchdog reason)
@@ -60,8 +44,8 @@ void Coordinator::scheduleSettledWatchdog(const QString &agentId,
     const quint64 epoch = session->clientEpoch();
     const int generation = session->runGeneration();
     const quint64 promptSequence = session->promptDispatchSequence();
-    const bool rustFamily = m_rustRuntimeAgents.contains(agentId);
-    int delayMs = rustFamily ? kRustSettledTimeoutMs : kTypeScriptSettledTimeoutMs;
+    int delayMs = session->runtimeKind() == QLatin1String("bolt")
+        ? kBoltSettledTimeoutMs : kTypeScriptSettledTimeoutMs;
     if (reason == agentruntime::SettleWatchdog::CompactionEnd) delayMs = kCompactionIdleCheckMs;
     else if (reason == agentruntime::SettleWatchdog::ExtensionCommandEnd) delayMs = kExtensionCommandIdleCheckMs;
     QTimer::singleShot(delayMs, context, [this, agentId, epoch, generation, promptSequence]() {
@@ -122,8 +106,8 @@ bool Coordinator::locallySettled(const AgentSession &session, quint64 clientEpoc
     // this timer was armed for.
     if (session.pendingOpenAfterSettled()) return false;
     const QString status = session.tab().status;
-    // `error` is allowed through: the Rust runtime also skips `agent_settled` on the final
-    // failure path, and its caches still have to settle (the status itself is preserved).
+    // A failed turn still needs its streaming caches finalized. Preserve the error
+    // status when Pi-Bolt omits the terminal event on its failure path.
     if (status != QLatin1String("running") && status != QLatin1String("error")) return false;
     // Work gates the oracle checks before polling at all.
     if (!session.pendingUi().isEmpty()) return false;

@@ -30,7 +30,8 @@ int main(int argc, char **argv)
         }
         const QString mode = qEnvironmentVariable("PIDECK_TEST_PROBE_MODE");
         if (mode == QLatin1String("timeout")) QThread::msleep(6'000);
-        std::fputs("1.4.0\n", stdout);
+        const QString version = qEnvironmentVariable("PIDECK_TEST_PROBE_VERSION", QStringLiteral("1.4.0"));
+        std::fputs((version + QLatin1Char('\n')).toUtf8().constData(), stdout);
         std::fflush(stdout);
         return mode == QLatin1String("failure") ? 1 : 0;
     }
@@ -89,16 +90,28 @@ int main(int argc, char **argv)
     const QString cachedAfterInitial = pilaunch::cachedVersion(launch);
 
     launch.environment.remove(QStringLiteral("PIDECK_TEST_PROBE_MODE"));
+    if (mode.startsWith(QLatin1String("refresh"))) {
+        // The command path stays fixed while the installed implementation changes.
+        // A failed replacement probe must not leave the former version cached.
+        launch.environment.insert(QStringLiteral("PIDECK_TEST_PROBE_VERSION"), QStringLiteral("1.5.0"));
+        if (mode == QLatin1String("refresh-failure")) {
+            launch.environment.insert(QStringLiteral("PIDECK_TEST_PROBE_MODE"), QStringLiteral("failure"));
+        } else if (mode == QLatin1String("refresh-timeout")) {
+            launch.environment.insert(QStringLiteral("PIDECK_TEST_PROBE_MODE"), QStringLiteral("timeout"));
+        }
+    }
     QEventLoop second;
     pilaunch::probeVersion(launch, owner, [&](const QString &version) {
         retried.append(version);
         QTimer::singleShot(100, &second, &QEventLoop::quit);
     });
+    const QString cachedDuringRetry = pilaunch::cachedVersion(launch);
     QTimer::singleShot(8'000, &second, &QEventLoop::quit);
     second.exec();
     const QJsonObject result{
         {QStringLiteral("initial"), initial},
         {QStringLiteral("retried"), retried},
+        {QStringLiteral("cachedDuringRetry"), cachedDuringRetry},
         {QStringLiteral("cachedAfterInitial"), cachedAfterInitial},
         {QStringLiteral("cachedAfterRetry"), pilaunch::cachedVersion(launch)},
     };

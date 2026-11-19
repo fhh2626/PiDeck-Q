@@ -209,7 +209,7 @@ void runAsync(ChannelResponder responder, std::function<QJsonValue()> task)
     });
 }
 
-QJsonValue scanAndMerge(ChannelServices &services, const QString &projectId)
+QVector<SessionSummary> scanProjectSessions(ChannelServices &services, const QString &projectId)
 {
     const QString projectPath = requireProjectPath(services, projectId);
     // In WSL mode the session JSONL records pi's cwd (`/mnt/c/...`), so the membership
@@ -217,8 +217,24 @@ QJsonValue scanAndMerge(ChannelServices &services, const QString &projectId)
     // scanner, and `scanroots::resolve` maps it back to the host form when it reads
     // project settings.
     const QString runtimePath = runtimeProjectPath(services, projectPath);
+    QHash<QString, QString> existingSessionIds;
+    for (const CatalogEntry &entry : catalogOf(services).listEntries()) {
+        if (entry.projectId != projectId || entry.noSession || entry.filePath.isEmpty()) continue;
+        const QString source = entry.source.isEmpty() ? QStringLiteral("pi") : entry.source;
+        // Use the record's own namespace. Filling missing WSL identity from the active
+        // settings could give a foreign distribution's file this project's membership.
+        const QString originKey = sessionidentity::buildSessionOriginKey(
+            source, entry.environment, entry.filePath, entry.wslDistro, entry.wslUser,
+            source == QLatin1String("codex") ? entry.importedSourceId : QString());
+        existingSessionIds.insert(originKey, entry.id);
+    }
+    return scannerOf(services).list(runtimePath, runtimePath, existingSessionIds);
+}
+
+QJsonValue scanAndMerge(ChannelServices &services, const QString &projectId)
+{
     const quint64 generation = catalogOf(services).scanGeneration();
-    const QVector<SessionSummary> summaries = scannerOf(services).list(runtimePath, runtimePath);
+    const QVector<SessionSummary> summaries = scanProjectSessions(services, projectId);
     SessionCatalogStore::Context context;
     if (settingsObject(services).value(QStringLiteral("wslEnabled")).toBool(false)) {
         context.wslDistro = settingsObject(services).value(QStringLiteral("wslDistro")).toString();

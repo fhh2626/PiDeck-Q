@@ -21,7 +21,7 @@ for (const [version, approve] of [
 	["0.79.0", true],
 	["1.4.0", true],
 	["1.4.0 (Pi-Bolt 1.0.2, linux-x64, JIT off)", true],
-	["pi 0.2.0 (unknown abc)", false],
+	["custom development build", false],
 ]) {
 	test(`project resources start directly with Pi ${version} and compatible arguments`, { skip }, async (t) => {
 		let fake;

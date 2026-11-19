@@ -13,7 +13,7 @@ Current version: **{{ theme.version }}**, sourced from the root `package.json`.
 - A C++20 toolchain; MSVC on Windows.
 - Local Xmake package definitions use Qt **6.11.2**. Node.js **24.19.0** is a build and test tool.
 - **WebView2 Runtime** is required for the Windows desktop window.
-- Real Agent use requires Pi Agent, Pi_Agent_Rust or Pi-Bolt plus model/auth configuration.
+- Real Agent use requires Pi Agent or Pi-Bolt plus model/auth configuration.
 
 The native SDK and staging pipeline are Windows-first. macOS/Linux source branches do not establish verified installers for those platforms.
 

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>一款面向 Pi 系编码 Agent 的桌面工作台，支持原版 <a href="https://pi.dev">Pi Agent</a>、Rust 后端 <a href="https://github.com/Dicklesworthstone/pi_agent_rust">Pi_Agent_Rust</a> 与 <a href="https://github.com/opensec-git/Pi-Bolt">Pi-Bolt</a>，用于管理多个编码 Agent 会话。</strong>
+  <strong>一款面向 Pi 系编码 Agent 的桌面工作台，支持原版 <a href="https://pi.dev">Pi Agent</a> 与 <a href="https://github.com/opensec-git/Pi-Bolt">Pi-Bolt</a>，用于管理多个编码 Agent 会话。</strong>
 </p>
 
 <p align="center">
@@ -22,14 +22,13 @@
 
 PiDeck-Q 基于优秀的 [PiDeck](https://github.com/ayuayue/PiDeck) 项目开发。PiDeck 是 [Pi Agent](https://pi.dev) 的桌面 GUI；在此基础上，PiDeck-Q 采用 **原生C++/Qt 实现**，更加注重**轻量化**、**运行效率**、**交互流畅度**与**更好的上下文管理**。
 
-由于 PiDeck-Q 的目标是坚持保持轻量化、专注于 Pi 系后端——原版 Pi Agent、Pi_Agent_Rust 与 Pi-Bolt（无意支持 Pi 系以外的后端），因此自 2026 年 8 月 17 日起，PiDeck-Q 将不再同步上游的 commit。
+PiDeck-Q 专注于为原版 Pi Agent 与 Pi-Bolt 提供轻量化桌面工作台。为保持这一方向，自 2026 年 8 月 17 日起，PiDeck-Q 不再同步上游的 commit。
 
 ## 主要特点
 
 - 使用原生 **C++ 与 Qt** 实现，取代 Electron ，以减小体积并提升窗体与交互响应。
-- 包内附带**原生 C++ 业务后端**（`PiDeckBackend`），因此便携包不再打包自己的 Node.js 运行时；Node.js 用于前端构建、扩展资源打包和自动化测试，内置 TypeScript 扩展跑在 Agent 运行时自带的 Node 上。编码 Agent 运行时（Pi Agent / Pi_Agent_Rust / Pi-Bolt）仍是 PiDeck-Q 拉起的外部依赖。
-- 同时支持原版 [Pi Agent](https://pi.dev) 与 Rust 后端 [Pi_Agent_Rust](https://github.com/Dicklesworthstone/pi_agent_rust)。Pi_Agent_Rust 目前的功能成熟度暂不及原版 Pi Agent，但内存占用更低，运行也更加流畅。
-- 同时支持 [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt)（原版 Pi Agent 的预编译发行版，与原版 RPC 兼容）。自动模式不会自动发现 `pi-bolt` 命令（自定义 Pi 路径仍可指向它）；建议在「设置 → 开发设置 → Pi 运行时偏好」中显式选择。
+- 包内附带**原生 C++ 业务后端**（`PiDeckBackend`），因此便携包不再打包自己的 Node.js 运行时；Node.js 用于前端构建、扩展资源打包和自动化测试，内置 TypeScript 扩展跑在 Agent 运行时自带的 Node 上。编码 Agent 运行时（Pi Agent / Pi-Bolt）仍是 PiDeck-Q 拉起的外部依赖。
+- 支持原版 [Pi Agent](https://pi.dev) 和 [Pi-Bolt](https://github.com/opensec-git/Pi-Bolt)。Pi-Bolt 是原版 Pi Agent 的预编译发行版，与原版 RPC 兼容。可在「设置 → 开发设置 → Pi 运行时偏好」中选择 Pi-Bolt，也可以在自动模式中将自定义 Pi 路径指向它的可执行文件。
 - 移除了飞书机器人、桌面宠物等较少使用的功能，以减小应用体积和内存占用。
 - 针对原生界面的响应速度与交互流畅度进行了大幅优化。
 - 移除了遥测功能。

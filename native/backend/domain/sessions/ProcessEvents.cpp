@@ -85,12 +85,9 @@ QJsonArray parse(const QString &raw)
         const QString kind = kindFromType(type, customType);
         if (kind.isEmpty()) continue;
 
-        const QJsonObject header = entry.value(QStringLiteral("header")).toObject();
         const QJsonObject data = entry.value(QStringLiteral("data")).toObject();
-        QString cwd = asString(entry.value(QStringLiteral("cwd")));
-        if (cwd.isEmpty()) cwd = asString(header.value(QStringLiteral("cwd")));
-        QString parentSession = asString(entry.value(QStringLiteral("parentSession")));
-        if (parentSession.isEmpty()) parentSession = asString(header.value(QStringLiteral("parentSession")));
+        const QString cwd = asString(entry.value(QStringLiteral("cwd")));
+        const QString parentSession = asString(entry.value(QStringLiteral("parentSession")));
         const QString provider = asString(entry.value(QStringLiteral("provider")));
         const QString modelId = asString(entry.value(QStringLiteral("modelId")));
         const QString thinkingLevel = asString(entry.value(QStringLiteral("thinkingLevel")));

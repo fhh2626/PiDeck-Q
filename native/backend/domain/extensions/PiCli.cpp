@@ -193,16 +193,14 @@ QString version(const QJsonObject &settings)
 Result run(const QJsonObject &settings, const QStringList &arguments, int timeoutMs, bool offline)
 {
     QStringList finalArguments = arguments;
-    const QString preference = settings.value(QStringLiteral("piRuntimePreference")).toString();
-    if (preference != QLatin1String("rust") && pilaunch::supportsProjectApprovalFlag(version(settings))) {
+    if (pilaunch::supportsProjectApprovalFlag(version(settings))) {
         // Project resources load automatically; pi before 0.79 rejects this option.
         finalArguments.append(QStringLiteral("--approve"));
     }
 
     pilaunch::Cli cli = pilaunch::buildCli(settings, finalArguments);
-    if (offline && cli.runtimeKind != QLatin1String("rust")) {
-        // PI_OFFLINE is a TypeScript-pi variable; the Rust build ignores it, so setting
-        // it there would only make the environment lie about the runtime.
+    if (offline) {
+        // Supported Pi CLIs use PI_OFFLINE for package operations without network refresh.
         QProcessEnvironment env = cli.environment;
         env.insert(QStringLiteral("PI_OFFLINE"), QStringLiteral("1"));
         cli.environment = env;

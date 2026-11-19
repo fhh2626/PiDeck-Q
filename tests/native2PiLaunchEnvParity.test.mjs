@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -90,14 +90,14 @@ if (executable) {
 		};
 
 		/** Activate one imported session and return the fake pi spawn record. */
-		const spawnRecord = async (t, { settings = {}, env = {}, prepare = null } = {}) => {
+		const spawnRecord = async (t, { settings = {}, env = {}, prepare = null, version = "0.79.0" } = {}) => {
 			const projectPath = projectDirectory("project");
 			let fake = null;
 			const session = await startBackendSession(t, {
 				projects: [{ id: "env", path: projectPath }],
 				settings: { language: "en-US", ...settings },
 				prepare: (fixture) => {
-					fake = createFakePi(fixture, { turns: oneTurn });
+					fake = createFakePi(fixture, { version, turns: oneTurn });
 					const snapshot = writeSecuritySnapshot(fixture.userData);
 					const prepared = prepare ? prepare(fixture, fake) : {};
 					return {
@@ -150,11 +150,35 @@ if (executable) {
 
 		test("a Pi-Bolt runtime advertises the standalone marker", async (t) => {
 			const { spawn } = await spawnRecord(t, {
+				version: "1.4.0 (Pi-Bolt 1.0.2)",
 				settings: { piRuntimePreference: "bolt" },
 				prepare: (_fixture, fake) => ({ settings: { piRuntimePreference: "bolt", piBoltPath: fake.shim } }),
 			});
 			assert.equal(spawn.env.PIDECK_PI_STANDALONE, "1");
 			// Bolt has no TypeScript `--offline` flag.
+			assert.equal(spawn.argv.includes("--offline"), false, JSON.stringify(spawn.argv));
+		});
+
+		test("an unrelated command name containing bolt stays unknown when its version is unrecognized", async (t) => {
+			const { spawn } = await spawnRecord(t, {
+				version: "custom development build",
+				prepare: (_fixture, fake) => {
+					const command = join(fake.directory, process.platform === "win32" ? "thunderbolt-wrapper.cmd" : "thunderbolt-wrapper");
+					copyFileSync(fake.shim, command);
+					return { settings: { customPiPath: command } };
+				},
+			});
+			assert.equal(spawn.env.PIDECK_PI_STANDALONE, null);
+			assert.equal(spawn.argv.includes("--offline"), false, JSON.stringify(spawn.argv));
+		});
+
+		test("an explicit Pi-Bolt selection retains its launch hints when the version probe is empty", async (t) => {
+			const { spawn } = await spawnRecord(t, {
+				version: "",
+				settings: { piRuntimePreference: "bolt" },
+				prepare: (_fixture, fake) => ({ settings: { piBoltPath: fake.shim } }),
+			});
+			assert.equal(spawn.env.PIDECK_PI_STANDALONE, "1");
 			assert.equal(spawn.argv.includes("--offline"), false, JSON.stringify(spawn.argv));
 		});
 

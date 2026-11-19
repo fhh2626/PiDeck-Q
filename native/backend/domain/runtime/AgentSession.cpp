@@ -21,7 +21,7 @@ constexpr int kCloseGraceMs = 2'000;
 /**
  * Abort-settled fallback (oracle `ABORT_SETTLED_FALLBACK_MS`).
  *
- * Some runtimes (Pi_Agent_Rust) never emit `agent_settled`; without this bound the gate
+ * Pi-Bolt can omit `agent_settled`; without this bound the gate
  * would stay sealed forever and the user's next turn would never stream again.
  */
 constexpr int kAbortSettledFallbackMs = 1'500;

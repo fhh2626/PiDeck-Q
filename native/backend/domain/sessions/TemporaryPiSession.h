@@ -45,6 +45,6 @@ void clone(const QJsonObject &settings, const QString &cwd, const QString &sessi
            const QString &projectPath, const QString &environment, Done done);
 
 /** Build the argv a temporary session uses (exposed for the argv parity test). */
-QStringList buildArguments(const QJsonObject &settings, const QString &runtimeKind, const QString &sessionPath);
+QStringList buildArguments(const QJsonObject &settings, const QString &sessionPath);
 
 } // namespace temporarypi

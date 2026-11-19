@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as nodeHttpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -17,9 +17,8 @@ import {
 /**
  * Settle fallback parity for runtimes that never emit `agent_settled`.
  *
- * Oracle `AgentManager`: `agent_end` arms `AGENT_SETTLED_TIMEOUT_MS` (5 000 ms) —
- * `RUST_AGENT_SETTLED_TIMEOUT_MS` (250 ms) when `agent_start` carried a `sessionId`, i.e.
- * the pi_agent_rust / Pi-Bolt lifecycle serializer — and
+ * `agent_end` arms a 5 000 ms safety window for stock Pi and a 250 ms window
+ * for a Pi-Bolt launch. Event payload shape must not change the runtime identity.
  * `markIdleIfPiReportsNoWork` then confirms with `get_state` (not streaming, not
  * compacting, no queued message) before claiming idle. Gates before the poll: pending ask,
  * compaction in flight, live assistant row, executing tool. The fallback also emits a
@@ -32,6 +31,7 @@ import {
 const executable = resolveBackendExecutable();
 const PROJECT_ID = "settled-fallback";
 const SECRET = "settled-fallback-token-0123456789ABCDEF";
+const BOLT_VERSION = "1.4.0 (Pi-Bolt 1.0.2, linux-x64-jit, JIT on)";
 const slash = (value) => String(value).replaceAll("\\", "/");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -286,23 +286,24 @@ if (executable) {
 			return sse;
 		};
 
-		test("a runtime that never sends agent_settled settles via get_state and finishes the LAN stream", async (t) => {
-			// `sessionId` on agent_start is the oracle's Rust/Pi-Bolt witness: 250 ms budget.
+		test("auto-detected Pi-Bolt settles without a sessionId event field and finishes the LAN stream", async (t) => {
+			// The shim is named pi, so only its version banner identifies Pi-Bolt.
 			const scenario = {
+				version: BOLT_VERSION,
 				turns: [{
 					ack: true,
 					events: [
-						{ event: { type: "agent_start", sessionId: "pi-rust-1" } },
-						{ event: messageStart("msg_rust") },
-						{ delayMs: 20, event: textDelta("rust answer") },
-						{ delayMs: 20, event: messageEnd("rust answer") },
+						{ event: { type: "agent_start" } },
+						{ event: messageStart("msg_bolt") },
+						{ delayMs: 20, event: textDelta("bolt answer") },
+						{ delayMs: 20, event: messageEnd("bolt answer") },
 						// No agent_settled at all — this is the whole point of the case.
 						{ delayMs: 20, event: { type: "agent_end", messages: [] } },
 					],
 				}],
 			};
 			const session = await start(t, { scenario, web: true });
-			const { record } = await activate(session, `rust-${Date.now()}`);
+			const { record } = await activate(session, `bolt-${Date.now()}`);
 			const sse = await connectSse(t, session);
 
 			const stream = openChatStream(session.port, {
@@ -318,7 +319,7 @@ if (executable) {
 			await stream.waitFor("done", 5_000);
 			assert.ok(
 				finishAt < 4_000,
-				`the Rust-class fallback must settle within its 250 ms budget, took ${finishAt} ms`,
+				`the Pi-Bolt fallback must use its 250 ms window, took ${finishAt} ms`,
 			);
 			assert.equal(stream.frames.some((frame) => frame.kind === "frame" && frame.json?.type === "error"), false);
 
@@ -333,7 +334,7 @@ if (executable) {
 			// The reply itself is intact in the projection.
 			const messages = channelEvents(sse, record.id, "agents:message");
 			assert.equal(
-				messages.at(-1).messages.some((row) => row.role === "assistant" && row.text === "rust answer"),
+				messages.at(-1).messages.some((row) => row.role === "assistant" && row.text === "bolt answer"),
 				true,
 				JSON.stringify(messages.at(-1).messages.map((row) => [row.role, row.text])),
 			);
@@ -342,15 +343,14 @@ if (executable) {
 			assert.ok(polls.length > 0, "the fallback must confirm with get_state");
 		});
 
-		test("the TypeScript runtime keeps its 5 s window instead of the 250 ms one", async (t) => {
-			// No `sessionId` on agent_start: the TypeScript lifecycle, which normally settles
-			// itself. The fallback must stay a slow safety net, not a 250 ms race that could
-			// settle a run pi is still continuing (overflow retry / queued follow-up).
+		test("stock Pi keeps its 5 s window when agent_start contains a sessionId", async (t) => {
+			// A session identifier is ordinary protocol data and cannot grant Pi-Bolt
+			// timing to stock Pi, which may still continue a retry or queued follow-up.
 			const scenario = {
 				turns: [{
 					ack: true,
 					events: [
-						{ event: { type: "agent_start" } },
+						{ event: { type: "agent_start", sessionId: "pi-ts" } },
 						{ event: messageStart("msg_ts") },
 						{ delayMs: 20, event: textDelta("ts answer") },
 						{ delayMs: 20, event: messageEnd("ts answer") },
@@ -382,15 +382,67 @@ if (executable) {
 			await waitFor(() => runStatuses(sse, record.id).includes("idle"), 9_000, "5 s fallback idle");
 		});
 
+		test("compaction reattach refreshes the runtime kind instead of retaining the earlier event hint", async (t) => {
+			const initial = {
+				version: BOLT_VERSION,
+				responses: { compact: { exitBeforeReply: true } },
+				turns: [{ ack: true, events: [
+					{ event: { type: "agent_start", sessionId: "initial-bolt" } },
+					{ event: messageStart("initial") },
+					{ delayMs: 20, event: messageEnd("before reconnect") },
+					{ delayMs: 20, event: { type: "agent_settled" } },
+				] }],
+			};
+			const session = await start(t, { scenario: initial });
+			const { record, target } = await activate(session, `reattach-kind-${Date.now()}`);
+			const sse = await connectSse(t, session);
+			await session.invoke("sessions:send-prompt", [{ sessionId: record.id, requestId: "before-swap", message: "first" }]);
+			await waitFor(() => runStatuses(sse, record.id).includes("idle"), 5_000, "first turn idle");
+
+			// A distinct executable gives the replacement its own version-probe cache entry.
+			const replacement = join(session.fake.directory, process.platform === "win32" ? "stock.cmd" : "stock.sh");
+			copyFileSync(session.fake.shim, replacement);
+			if (process.platform !== "win32") chmodSync(replacement, 0o755);
+			writeFileSync(session.fake.scenarioPath, JSON.stringify({
+				version: "0.79.0",
+				turns: [{ ack: true, events: [
+					{ event: { type: "agent_start" } },
+					{ event: messageStart("replacement") },
+					{ delayMs: 20, event: textDelta("after reconnect") },
+					{ delayMs: 20, event: messageEnd("after reconnect") },
+					{ delayMs: 20, event: { type: "agent_end", messages: [] } },
+				] }],
+			}));
+			const updated = await session.invoke("settings:update", [{ customPiPath: replacement }]);
+			assert.equal(updated.payload.ok, true, JSON.stringify(updated.payload));
+			const compacted = (await session.invoke("sessions:runtime-compact", [{
+				sessionId: record.id,
+				agentId: target.agentId,
+				runtimeGeneration: target.runtimeGeneration,
+			}])).payload.result;
+			assert.equal(compacted.ok, true, JSON.stringify(compacted));
+			sse.frames.length = 0;
+			const sent = await session.invoke("sessions:send-prompt", [{ sessionId: record.id, requestId: "after-swap", message: "second" }]);
+			assert.equal(sent.payload.ok, true, JSON.stringify(sent.payload));
+			assert.equal(sent.payload.result.accepted, true, JSON.stringify(sent.payload));
+			await waitFor(() => channelEvents(sse, record.id, "agents:text-stream").some((payload) => payload.done === true),
+				5_000, "replacement reply");
+			await sleep(1_500);
+			assert.equal(runStatuses(sse, record.id).includes("idle"), false,
+				"the replacement stock Pi must retain its 5 s safety window");
+			await waitFor(() => runStatuses(sse, record.id).includes("idle"), 8_000, "replacement fallback idle");
+		});
+
 		test("a pending ask gates the fallback settle", async (t) => {
 			// pi is blocked on `extension_ui_response`; settling the turn would leave a dead
 			// dialog and a runtime the user can no longer answer. Oracle gate:
 			// `pendingUIRequests.size > 0`.
 			const scenario = {
+				version: BOLT_VERSION,
 				turns: [{
 					ack: true,
 					events: [
-						{ event: { type: "agent_start", sessionId: "pi-rust-ask" } },
+						{ event: { type: "agent_start", sessionId: "pi-bolt-ask" } },
 						{ event: messageStart("msg_ask") },
 						{ delayMs: 20, event: textDelta("need input") },
 						{ delayMs: 20, event: { type: "extension_ui_request", id: "ask-1", method: "input", title: "Name?" } },
@@ -412,7 +464,7 @@ if (executable) {
 				10_000,
 				"ask request frame",
 			);
-			// Longer than the 250 ms Rust budget: the ask must hold the turn open.
+			// Longer than the 250 ms Pi-Bolt window: the ask must hold the turn open.
 			await sleep(1_200);
 			assert.equal(
 				runStatuses(sse, record.id).includes("idle"),
@@ -436,7 +488,7 @@ if (executable) {
 			// missing re-arm would leave the second turn `running` forever — the one failure this
 			// case catches deterministically, without racing a stream mid-reply.
 			const reply = (id, text) => [
-				{ event: { type: "agent_start", sessionId: "pi-rust-two" } },
+				{ event: { type: "agent_start", sessionId: "pi-bolt-two" } },
 				{ event: messageStart(id) },
 				{ delayMs: 20, event: textDelta(text) },
 				{ delayMs: 20, event: messageEnd(text) },
@@ -444,6 +496,7 @@ if (executable) {
 				{ delayMs: 20, event: { type: "agent_end", messages: [] } },
 			];
 			const scenario = {
+				version: BOLT_VERSION,
 				turns: [
 					{ ack: true, events: reply("msg_one", "first answer") },
 					{ ack: true, events: reply("msg_two", "second answer") },

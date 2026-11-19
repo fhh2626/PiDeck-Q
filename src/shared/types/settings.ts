@@ -71,12 +71,10 @@ export type StartupWindowMode =
 	piEnvironmentChecked: boolean;
 	/** 最近一次 pi 环境检测成功的结果缓存（命令路径 + 版本），打开设置直接显示，不重复检测 */
 	piInstall?: { command: string; version: string; runtimeKind?: PiRuntimeKind };
-	/** Pi 实现选择：自动检测、原版 TypeScript、pi_agent_rust 或 Pi-Bolt。 */
+	/** Pi 实现选择：自动检测、原版 TypeScript 或 Pi-Bolt。 */
 	piRuntimePreference: PiRuntimePreference;
 	/** 可选的原版 TypeScript Pi 路径；选择对应实现时优先使用。 */
 	piTypescriptPath: string;
-	/** 可选的 pi_agent_rust 路径；选择对应实现时优先使用。 */
-	piRustPath: string;
 	/** 可选的 Pi-Bolt 路径；选择对应实现时优先使用。旧设置文件没有该字段，加载时回填空串。 */
 	piBoltPath: string;
 	/** 会话 Tab 打开模式：preview=单击为临时预览（发消息后自动晋升常驻），permanent=单击即常驻共存 */

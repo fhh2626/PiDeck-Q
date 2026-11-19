@@ -205,11 +205,11 @@ if (!executable) {
 			const { invoke, sse, record } = await startSession(t, {
 				label: "stop-reason",
 				scenario: {
+					version: "1.4.0 (Pi-Bolt 1.0.2, linux-x64-jit, JIT on)",
 					turns: [{
 						ack: true,
 						events: [
-							// `sessionId` makes the fake a Rust-family runtime, so the settle
-							// watchdog polls after 250 ms instead of 5 s.
+							// The detected Pi-Bolt launch uses the 250 ms watchdog window.
 							{ event: { type: "agent_start", sessionId: "pi-s1" } },
 							{ event: messageStart("msg_stop_reason") },
 							{ delayMs: 10, event: textDelta("partial") },

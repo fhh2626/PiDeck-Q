@@ -13,7 +13,7 @@ const { theme } = useData()
 - C++20 编译工具链；Windows 使用 MSVC。
 - Xmake 使用 Qt **6.11.2** 的本地 package 定义。Node.js **24.19.0** 仅作为构建和测试工具。
 - Windows 运行桌面窗口需要 **WebView2 Runtime**。
-- 使用真实 Agent 需安装 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt，并配置模型与认证。
+- 使用真实 Agent 需安装 Pi Agent 或 Pi-Bolt，并配置模型与认证。
 
 当前原生 SDK 与 staging 流程以 Windows 为主。代码有 macOS/Linux 分支，不代表这些平台已有经过验证的完整安装包。
 

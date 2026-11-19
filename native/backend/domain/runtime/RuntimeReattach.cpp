@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "../pi/PiLocator.h"
 #include "../sessions/SessionCatalogStore.h"
 
 #include <utility>
@@ -41,8 +42,12 @@ pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
                                                  const QString &sessionPath) const
 {
     pilaunch::Request request = sessionLaunchRequest(session, sessionPath);
-    request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(
-        pilaunch::cachedVersion(pilaunch::build(request)));
+    const QString version = pilaunch::cachedVersion(pilaunch::build(request));
+    request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
+    const QString kind = pilocator::detectRuntimeKind(version);
+    if (kind != QLatin1String("unknown")) {
+        request.detectedRuntimeKind = kind == QLatin1String("typescript") ? QStringLiteral("ts") : kind;
+    }
     return pilaunch::build(request);
 }
 
@@ -103,6 +108,10 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
             const auto attempt = m_reattachAttempts.constFind(agentId);
             if (attempt == m_reattachAttempts.cend() || attempt->ticket != ticket) return;
             request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
+            const QString kind = pilocator::detectRuntimeKind(version);
+            if (kind != QLatin1String("unknown")) {
+                request.detectedRuntimeKind = kind == QLatin1String("typescript") ? QStringLiteral("ts") : kind;
+            }
             reattachPrepared(agentId, target, expectedEpoch, entry, request, pilaunch::build(request), finish);
         });
 }

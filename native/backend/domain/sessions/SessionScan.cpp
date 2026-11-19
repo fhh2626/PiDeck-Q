@@ -296,7 +296,8 @@ bool SessionScanner::needsScanBody(const QString &path, qint64 mtimeMs, qint64 s
     return found == m_membership.constEnd() || found->mtimeMs != mtimeMs || found->size != size;
 }
 
-QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const QString &runtimeProjectPath)
+QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const QString &runtimeProjectPath,
+                                             const QHash<QString, QString> &existingSessionIds)
 {
     const std::shared_ptr<const Environment> env = environment();
     const quint64 generation = env->generation;
@@ -361,6 +362,26 @@ QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const Q
 
     QVector<SessionSummary> summaries;
     summaries.reserve(files.size());
+    const auto appendForProject = [&](SessionSummary summary, qint64 mtimeMs, qint64 size,
+                                      const QString *raw) {
+        if (!projectPath.isEmpty() && !isSameProject(summary, projectPath, mtimeMs, size, raw)) {
+            // A catalog keeps project identity when a newer parser no longer recognizes
+            // an old header. Only already-enumerated files with no explicit/inferred cwd
+            // may use it, and the scan's captured namespace must match the stored origin.
+            if (summary.hasProjectPath) return;
+            const QString source = summary.source.isEmpty() ? QStringLiteral("pi") : summary.source;
+            const QString originKey = sessionidentity::buildSessionOriginKey(
+                source, scanFs.wsl() ? QStringLiteral("wsl") : QStringLiteral("native"), summary.filePath,
+                scanFs.config().distro, scanFs.config().user,
+                source == QLatin1String("codex") ? summary.codexSessionId : QString());
+            summary.existingCatalogSessionId = existingSessionIds.value(originKey);
+            if (summary.existingCatalogSessionId.isEmpty()) return;
+            summary.existingCatalogOriginKey = originKey;
+        }
+        // This is a copy made after cache.set/get. The catalog fence belongs only to
+        // this scan and must never contaminate a later project's cached summary.
+        summaries.append(summary);
+    };
     if (scanFs.wsl()) {
         wslscan::Options options;
         options.deadlineMs = m_config.wslScanTimeoutMs > 0
@@ -401,11 +422,7 @@ QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const Q
             }
             // Parent-cwd membership consumes the body/version that is still in scope
             // instead of starting another stat + cat for already-read history.
-            if (!projectPath.isEmpty()
-                && !isSameProject(summary, projectPath, read.version.mtimeMs, read.version.size, raw)) {
-                return;
-            }
-            summaries.append(summary);
+            appendForProject(summary, read.version.mtimeMs, read.version.size, raw);
         };
         const wslscan::Outcome outcome = wslscan::readBatches(files, execute, needsBody, consume, options);
         if (outcome == wslscan::Outcome::Cancelled) {
@@ -446,8 +463,7 @@ QVector<SessionSummary> SessionScanner::list(const QString &projectPath, const Q
                 m_summaryCache->set(file, mtimeMs, size, &summary);
                 raw = &rawText;
             }
-            if (!projectPath.isEmpty() && !isSameProject(summary, projectPath, mtimeMs, size, raw)) continue;
-            summaries.append(summary);
+            appendForProject(summary, mtimeMs, size, raw);
         }
     }
     assertEnvironment(generation);

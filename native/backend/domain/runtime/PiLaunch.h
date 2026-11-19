@@ -48,10 +48,14 @@ struct Request {
     QString uiLocale;
     /** Automatic upstream compatibility flag, enabled after a successful version probe. */
     bool approveProjectResources = false;
+    /** Confirmed implementation from the version probe; empty uses the path/preference hint. */
+    QString detectedRuntimeKind;
 };
 
 struct Launch {
     QString program;
+    /** Resolved implementation of this launch (ts | bolt | unknown) for lifecycle policy. */
+    QString runtimeKind;
     QStringList arguments;
     QString cwd;
     QProcessEnvironment environment;
@@ -68,7 +72,7 @@ struct Launch {
     QStringList versionArguments;
 };
 
-/** ts | rust | bolt | unknown, derived from the resolved command and the preference. */
+/** ts | bolt | unknown, derived from the resolved command and the preference. */
 QString runtimeKind(const QJsonObject &settings, const QString &program);
 
 /** Whether this Pi version accepts `--approve` to load project resources without a prompt. */
@@ -94,8 +98,6 @@ struct Cli {
     QStringList arguments;
     QProcessEnvironment environment;
     bool viaWsl = false;
-    /** ts | rust | bolt | unknown, derived from the *resolved* pi (before the shim wrap). */
-    QString runtimeKind;
     /** Raw command line for `cmd.exe /d /s /c` when the resolved pi is a batch shim. */
     QString nativeArguments;
 };
@@ -104,8 +106,9 @@ struct Cli {
 Cli buildCli(const QJsonObject &settings, const QStringList &arguments);
 
 /**
- * The `--version` answer already probed for this command, or an empty string when no
- * probe ran in this process yet. Startup uses it instead of forking pi just for a hint.
+ * The last successful `--version` answer for synchronous launch identity snapshots.
+ * Empty when no successful answer is available or a replacement probe is pending.
+ * Actual runtime creation must use `probeVersion` to identify the current installation.
  */
 QString cachedVersion(const Launch &launch);
 
@@ -123,9 +126,9 @@ private:
 };
 
 /**
- * Probe `<program> --version` once per command; the callback receives the raw version
- * string (empty when the probe failed). Successful results are cached for the process
- * lifetime; failures can be retried. Every active invocation completes exactly once.
+ * Probe the current `<program> --version`; the callback receives the raw version string
+ * (empty when the probe failed). Each invocation clears the previous snapshot and
+ * replaces it after success. Every active invocation completes exactly once.
  * Cancelling or destroying its owner stops the child and discards the callback.
  */
 void probeVersion(const Launch &launch, VersionProbeOwner &owner,

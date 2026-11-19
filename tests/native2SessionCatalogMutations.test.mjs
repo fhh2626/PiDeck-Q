@@ -131,8 +131,7 @@ if (!executable) {
 		const { invoke, record } = await startSession(t, {
 				label: "busy-guard",
 				scenario: {
-					// `sessionId` marks a Rust-family runtime whose turn ends on `agent_settled`;
-					// the long delay keeps the session running while the mutation is attempted.
+					// The delayed terminal event keeps the session running while mutation is attempted.
 					turns: [{
 						ack: true,
 						events: [

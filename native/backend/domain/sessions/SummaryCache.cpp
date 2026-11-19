@@ -21,8 +21,8 @@
 namespace summarycache {
 namespace {
 
-/** Interpretation/field changes bump this; a stale file is dropped, not migrated. */
-constexpr int kDiskSchemaVersion = 4;
+/** Version 5 rebuilds summaries after removing retired session-header aliases. */
+constexpr int kDiskSchemaVersion = 5;
 constexpr int kSaveDebounceMs = 800;
 
 /** Explicit WSL UNC identities work on any host; legacy POSIX keys need a Windows host. */

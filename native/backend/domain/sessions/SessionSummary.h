@@ -13,6 +13,9 @@
  */
 struct SessionSummary {
     QString filePath;
+    /** In-memory scan fence for a catalog-only project match. Never cached or serialized. */
+    QString existingCatalogSessionId;
+    QString existingCatalogOriginKey;
     bool hasProjectPath = false;
     QString projectPath;
     bool hasName = false;

@@ -70,8 +70,10 @@ public:
     /**
      * List summaries for one project.
      * `projectPath` is the host path; `runtimeProjectPath` is what pi runs with.
+     * Existing origin keys allow metadata refresh for registered files without a cwd.
      */
-    QVector<SessionSummary> list(const QString &projectPath, const QString &runtimeProjectPath);
+    QVector<SessionSummary> list(const QString &projectPath, const QString &runtimeProjectPath,
+                                 const QHash<QString, QString> &existingSessionIds = {});
 
     /** Raw JSONL text (used by reference messages, process events, delete ownership). */
     QString readSessionRawText(const QString &filePath) const;

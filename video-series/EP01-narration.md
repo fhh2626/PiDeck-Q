@@ -9,7 +9,7 @@
 你想回看上周写过的方案，却发现那个终端已经关了。
 更别说 Git 状态、文件浏览、模型切换，全都要在终端里敲命令。
 
-PiDeck 是一个桌面工作台，同时支持原版 Pi Agent 和 Pi_Agent_Rust，专门用来管理你的编码 Agent 会话。
+PiDeck 是一个桌面工作台，同时支持原版 Pi Agent 和 Pi-Bolt，专门用来管理你的编码 Agent 会话。
 简单说，它在 pi 前面套了一个 Electron 壳，但你完全不需要管底层发生了什么。
 你只需要理解一件事：
 PiDeck 等于一个统一的地方，管理你所有项目的 AI 对话。
@@ -58,7 +58,7 @@ that terminal is already closed.
 Not to mention Git status, file browsing, and model switching —
 it's all command line, all the time.
 
-PiDeck is a desktop workbench supporting both the original Pi Agent and Pi_Agent_Rust, designed to manage your coding-agent sessions.
+PiDeck is a desktop workbench supporting both the original Pi Agent and Pi-Bolt, designed to manage your coding-agent sessions.
 Simply put, it wraps the selected Agent runtime in an Electron shell,
 but you don't need to worry about what's happening underneath.
 Here's all you need to understand:

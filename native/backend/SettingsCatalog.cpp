@@ -76,7 +76,6 @@ QJsonObject defaultSettings()
         {QStringLiteral("piEnvironmentChecked"), false},
         {QStringLiteral("piRuntimePreference"), QStringLiteral("auto")},
         {QStringLiteral("piTypescriptPath"), QStringLiteral("")},
-        {QStringLiteral("piRustPath"), QStringLiteral("")},
         {QStringLiteral("piBoltPath"), QStringLiteral("")},
         {QStringLiteral("enableGitManagement"), true},
         // Localized on load so a fresh install matches the UI language.
@@ -235,6 +234,96 @@ bool migrateBuiltInDefaults(QJsonObject *settings, const QJsonValue &persistedVe
     return true;
 }
 
+/** Normalize stored command paths without requiring an old installation to still exist. */
+QString comparablePiPath(QString path)
+{
+    path = path.trimmed();
+    while (path.size() >= 2
+           && ((path.front() == QLatin1Char('"') && path.back() == QLatin1Char('"'))
+               || (path.front() == QLatin1Char('\'') && path.back() == QLatin1Char('\'')))) {
+        path = path.mid(1, path.size() - 2).trimmed();
+    }
+    // Locator status uses a display command for WSL, whereas the custom setting uses
+    // a URL. Both identify the same Linux command, whose case must remain significant.
+    static const QRegularExpression wslCommand(
+        QStringLiteral("^wsl\\s+-d\\s+(.+?)\\s+-u\\s+(\\S+)\\s+(.+)$"));
+    const QRegularExpressionMatch wslMatch = wslCommand.match(path);
+    if (wslMatch.hasMatch()) {
+        return QStringLiteral("wsl://%1/%2/%3")
+            .arg(wslMatch.captured(1), wslMatch.captured(2), QDir::cleanPath(wslMatch.captured(3)));
+    }
+    static const QRegularExpression wslUrl(QStringLiteral("^wsl://([^/]+)/([^/]+)/(.+)$"));
+    const QRegularExpressionMatch urlMatch = wslUrl.match(path);
+    if (urlMatch.hasMatch()) {
+        return QStringLiteral("wsl://%1/%2/%3")
+            .arg(urlMatch.captured(1), urlMatch.captured(2), QDir::cleanPath(urlMatch.captured(3)));
+    }
+    if (path.isEmpty() || path.startsWith(QLatin1String("wsl://"))) return path;
+    // Windows paths can be migrated on another host, so a drive/UNC path keeps its
+    // case-insensitive identity even when the current build runs on Linux. A backslash
+    // inside a POSIX filename remains a literal character, not a directory separator.
+#ifdef Q_OS_WIN
+    const bool windowsPath = true;
+#else
+    static const QRegularExpression windowsPrefix(QStringLiteral("^(?:[A-Za-z]:[\\\\/]|\\\\\\\\|//)"));
+    const bool windowsPath = windowsPrefix.match(path).hasMatch();
+#endif
+    if (windowsPath) {
+        path.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        path = path.toLower();
+    }
+    return QDir::cleanPath(path);
+}
+
+/** Remove the retired implementation's settings while keeping unrelated custom commands. */
+bool migrateRetiredPiRuntime(QJsonObject *settings)
+{
+    const QString preference = settings->value(QStringLiteral("piRuntimePreference")).toString().trimmed();
+    const bool retiredPreference = preference.compare(QLatin1String("rust"), Qt::CaseInsensitive) == 0;
+    const QString oldPath = comparablePiPath(settings->value(QStringLiteral("piRustPath")).toString());
+    const QString customPath = comparablePiPath(settings->value(QStringLiteral("customPiPath")).toString());
+    const QJsonObject installed = settings->value(QStringLiteral("piInstall")).toObject();
+    const QString installedPath = comparablePiPath(installed.value(QStringLiteral("command")).toString());
+    static const QRegularExpression retiredName(
+        QStringLiteral("^(?:pi-rust|pi_agent_rust)(?:\\.(?:exe|cmd|bat|sh))?$"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression retiredVersion(
+        QStringLiteral("^pi\\s+v?\\d+\\.\\d+\\.\\d+\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    const bool retiredInstall = installed.value(QStringLiteral("runtimeKind")).toString()
+                                    .compare(QLatin1String("rust"), Qt::CaseInsensitive) == 0
+        || retiredVersion.match(installed.value(QStringLiteral("version")).toString().trimmed()).hasMatch()
+        || retiredName.match(installedPath.section(QLatin1Char('/'), -1)).hasMatch();
+    const QString installedKind = installed.value(QStringLiteral("runtimeKind")).toString();
+    static const QRegularExpression supportedVersion(QStringLiteral("^v?\\d+\\.\\d+\\.\\d+\\b"));
+    const bool supportedCustom = !retiredInstall && !customPath.isEmpty() && customPath == installedPath
+        && (installedKind == QLatin1String("typescript") || installedKind == QLatin1String("bolt")
+            || supportedVersion.match(installed.value(QStringLiteral("version")).toString().trimmed()).hasMatch());
+    // Exact command names or the old dedicated path identify a retired executable.
+    // A directory containing "rust" is ordinary user data and must never trigger this.
+    const bool retiredCustom = !customPath.isEmpty()
+        && (retiredName.match(customPath.section(QLatin1Char('/'), -1)).hasMatch()
+            || (!supportedCustom && !oldPath.isEmpty() && customPath == oldPath)
+            || (retiredInstall && customPath == installedPath));
+
+    bool changed = settings->contains(QStringLiteral("piRustPath"));
+    settings->remove(QStringLiteral("piRustPath"));
+    if (retiredPreference) {
+        settings->insert(QStringLiteral("piRuntimePreference"), QStringLiteral("auto"));
+        changed = true;
+    }
+    if (retiredCustom) {
+        settings->insert(QStringLiteral("customPiPath"), QStringLiteral(""));
+        changed = true;
+    }
+    if (retiredPreference || retiredInstall || retiredCustom) {
+        settings->remove(QStringLiteral("piInstall"));
+        settings->insert(QStringLiteral("piEnvironmentChecked"), false);
+        changed = true;
+    }
+    return changed;
+}
+
 /**
  * Apply every load-time migration; returns true when the file must be rewritten.
  *
@@ -243,7 +332,8 @@ bool migrateBuiltInDefaults(QJsonObject *settings, const QJsonValue &persistedVe
  */
 bool applyMigrations(QJsonObject *settings, const QJsonObject &parsed)
 {
-    bool changed = settings->contains(QStringLiteral("sessionTabOpenMode"));
+    bool changed = migrateRetiredPiRuntime(settings);
+    changed = settings->contains(QStringLiteral("sessionTabOpenMode")) || changed;
     settings->remove(QStringLiteral("sessionTabOpenMode"));
 
     // The built-in commit prompt follows the UI language; a custom template is kept.
@@ -389,6 +479,8 @@ SettingsCatalogRead updateSettingsCatalog(const QString &filePath, const QJsonOb
 
     QJsonObject next = current.settings;
     for (auto it = safePatch.begin(); it != safePatch.end(); ++it) next.insert(it.key(), it.value());
+    // Old renderer snapshots must not restore removed runtime fields on the next save.
+    migrateRetiredPiRuntime(&next);
     // Switching language re-localizes the built-in template but never a custom one.
     if (languageChanged && !promptProvided && promptWasDefault) {
         next.insert(QStringLiteral("gitCommitMessagePrompt"),
