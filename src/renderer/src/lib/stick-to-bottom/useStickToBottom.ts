@@ -23,6 +23,7 @@ import {
 import {
   findNearestVerticalScrollableAncestor,
   isContentShrinkClamp,
+  isVerticalScrollbarPress,
   isTimelineUpwardKeyIntent,
   isNestedScrollEvent,
 } from "./scrollIntent";
@@ -216,6 +217,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         if (scrollRef.current) {
           scrollRef.current.scrollTop = scrollTop;
           state.ignoreScrollToTop = scrollRef.current.scrollTop;
+          // Layout can clamp this write before its first scroll notification.
+          // Keep the range paired with the written position, not a later event.
+          state.lastMaxScrollTop = Math.max(0, scrollRef.current.scrollHeight - scrollRef.current.clientHeight);
         }
       },
       get targetScrollTop() {
@@ -429,6 +433,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         0,
         scrollRef.current.scrollHeight - scrollRef.current.clientHeight,
       );
+      // Replace the old session's range immediately. Its first scroll event may
+      // arrive only after another collapse and append have already changed it.
+      state.lastMaxScrollTop = maxScrollTop;
       if (state.scrollTop >= maxScrollTop - 2) {
         setEscapedFromLock(false);
         setIsAtBottom(true);
@@ -532,6 +539,15 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     [cancelScrollAnimation, state],
   );
 
+  // A scrollbar drag has no wheel event. Record that explicit reader intent
+  // before a concurrent content shrink can otherwise resemble a layout clamp.
+  const handlePointerDown = useCallback((event: PointerEvent) => {
+    if (!event.defaultPrevented && !state.animation?.ignoreEscapes
+      && isVerticalScrollbarPress(event, scrollRef.current)) {
+      cancelScrollAnimation();
+    }
+  }, [cancelScrollAnimation, state]);
+
   const touchStartYRef = useRef<number | null>(null);
   const touchTargetRef = useRef<EventTarget | null>(null);
 
@@ -600,6 +616,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
   const scrollRef = useRefCallback((scroll) => {
     scrollRef.current?.removeEventListener("scroll", handleScroll);
     scrollRef.current?.removeEventListener("wheel", handleWheel);
+    scrollRef.current?.removeEventListener("pointerdown", handlePointerDown);
     scrollRef.current?.removeEventListener("touchstart", handleTouchStart);
     scrollRef.current?.removeEventListener("touchmove", handleTouchMove);
     scrollRef.current?.removeEventListener("touchend", handleTouchEnd);
@@ -608,6 +625,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
 
     scroll?.addEventListener("scroll", handleScroll, { passive: true });
     scroll?.addEventListener("wheel", handleWheel, { passive: true });
+    scroll?.addEventListener("pointerdown", handlePointerDown, { passive: true });
     scroll?.addEventListener("touchstart", handleTouchStart, { passive: true });
     scroll?.addEventListener("touchmove", handleTouchMove, { passive: true });
     scroll?.addEventListener("touchend", handleTouchEnd, { passive: true });
@@ -688,6 +706,13 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
          * 先卸载、History 落库后 settled 再进折叠（折叠内）的两帧高度往返，若无守卫，
          * 负增长帧会把读历史的用户误重锁，随后正增长帧 instant 拽底（先上后下抖动）。
          */
+        // Collapse and append can coalesce into one negative resize. Preserve
+        // an existing follow intent at the actual tail, without re-locking a reader.
+        if (state.isAtBottom) {
+          state.scrollGeneration += 1;
+          state.animation = undefined;
+          state.scrollTop = state.calculatedTargetScrollTop;
+        }
         if (!state.escapedFromLock && state.isNearBottom) {
           setEscapedFromLock(false);
           setIsAtBottom(true);
@@ -739,8 +764,10 @@ function useRefCallback<T extends HTMLElement>(
   // biome-ignore lint/correctness/useExhaustiveDependencies: ref identity must be stable
   const result = useCallback(
     (ref: T | null) => {
+      // The callback must still see the previous node to detach its listeners.
+      const cleanup = callback(ref);
       (result as RefCallbackRef<T>).current = ref;
-      return callback(ref);
+      return cleanup;
     },
     deps,
   ) as unknown as RefCallbackRef<T>;

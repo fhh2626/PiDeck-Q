@@ -85,6 +85,8 @@ function createSendHarness(initial = {}) {
     bindSessionRuntimeAtom: {},
     upsertSessionAtom: {},
     visionBridgeCapabilitiesAtom: {},
+    newTurnCollapseTickByIdAtom: {},
+    bumpNewTurnCollapseTickAtom: {},
   };
   const state = new Map([
     [atoms.sessionDraftByIdAtom, { ...(initial.drafts ?? {}) }],
@@ -94,6 +96,7 @@ function createSendHarness(initial = {}) {
     [atoms.sessionRecordsAtom, { ...(initial.records ?? {}) }],
     [atoms.sessionMessagesCacheAtom, {}],
     [atoms.visionBridgeCapabilitiesAtom, initial.vision ?? { ready: false, models: [], config: null, loadKey: "" }],
+    [atoms.newTurnCollapseTickByIdAtom, { ...(initial.collapseTicks ?? {}) }],
   ]);
   const setAtom = (atom, input) => {
     if (atom === atoms.setSessionDraftAtom) {
@@ -128,6 +131,12 @@ function createSendHarness(initial = {}) {
         updatedAt: Date.now(),
       };
       state.set(atoms.sessionMessagesCacheAtom, next);
+    } else if (atom === atoms.bumpNewTurnCollapseTickAtom) {
+      const ticks = state.get(atoms.newTurnCollapseTickByIdAtom);
+      state.set(atoms.newTurnCollapseTickByIdAtom, {
+        ...ticks,
+        [input]: (ticks[input] ?? 0) + 1,
+      });
     }
   };
   const module = compile("src/renderer/src/hooks/useSessionSend.ts", {
@@ -266,6 +275,51 @@ test("the real send state machine preserves input typed during a rejected delive
   );
   assert.equal(harness.state.get("sendStates")["session-a"].status, "error");
 });
+
+// A collapse signal changes existing timeline geometry. Only an accepted new turn
+// may publish it, while each delivery outcome keeps its existing recovery policy.
+for (const delivery of ["accepted", "rejected", "unknown", "throw"]) {
+  test(`${delivery} delivery only collapses previous turns after confirmed acceptance`, async () => {
+    const image = { type: "image", data: "image", mimeType: "image/png" };
+    const harness = createSendHarness({
+      drafts: { "session-a": "next prompt" },
+      attachments: { "session-a": [image] },
+      collapseTicks: { "session-a": 4, "session-b": 9 },
+    });
+    const deferred = createDeferred();
+    const pending = harness.send({
+      sessionId: "session-a",
+      templates: [],
+      compact: async () => undefined,
+      sendPrompt: async () => deferred.promise,
+    })();
+    assert.equal(harness.state.get(harness.atoms.newTurnCollapseTickByIdAtom)["session-a"], 4);
+    if (delivery === "throw") deferred.reject(new Error("transport failed"));
+    else deferred.resolve({ accepted: delivery === "accepted", delivery, error: "dispatch failed" });
+    await pending;
+
+    const ticks = harness.state.get(harness.atoms.newTurnCollapseTickByIdAtom);
+    assert.equal(ticks["session-a"], delivery === "accepted" ? 5 : 4);
+    assert.equal(ticks["session-b"], 9, "a send cannot collapse another session's turns");
+    const bubble = harness.state.get(harness.atoms.sessionMessagesCacheAtom)["session-a"].messages[0];
+    assert.equal(bubble.text, "next prompt");
+    assert.equal(bubble.meta.optimisticPending, delivery === "rejected" ? undefined : true);
+    assert.deepEqual(JSON.parse(JSON.stringify(bubble.images)), [image]);
+
+    const draft = harness.state.get(harness.atoms.sessionDraftByIdAtom)["session-a"];
+    const attachments = harness.state.get(harness.atoms.sessionAttachmentsByIdAtom)["session-a"];
+    const sendState = harness.state.get("sendStates")["session-a"];
+    assert.equal(draft, delivery === "rejected" ? "next prompt" : undefined);
+    assert.deepEqual(JSON.parse(JSON.stringify(attachments ?? [])), delivery === "rejected" ? [image] : []);
+    if (delivery === "accepted") assert.equal(sendState, undefined);
+    else if (delivery === "rejected") assert.equal(sendState.status, "error");
+    else {
+      assert.equal(sendState.status, "unknown");
+      assert.equal(sendState.unknownSnapshot.message, "next prompt");
+      assert.deepEqual(JSON.parse(JSON.stringify(sendState.unknownSnapshot.images)), [image]);
+    }
+  });
+}
 
 test("the real send state machine handles pure images, double clicks, and unknown delivery", async () => {
   const image = { type: "image", data: "x", mimeType: "image/png" };

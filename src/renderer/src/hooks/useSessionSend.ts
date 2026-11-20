@@ -544,9 +544,6 @@ export function useSessionSend(options: UseSessionSendOptions) {
         ...(description ? { description } : {}),
         ...(streamingBehavior ? { streamingBehavior } : {}),
       });
-      // 新一轮开始：bump 本会话 tick，timeline 侧非最新轮据此收起（设置②）。
-      // sendPrompt resolve = pi 已接受消息，旧轮即将/已经结束，此时收掉最省资源。
-      store.set(bumpNewTurnCollapseTickAtom, sessionId);
       if (result.agentId) {
         bindRuntime({
           sessionId,
@@ -581,6 +578,9 @@ export function useSessionSend(options: UseSessionSendOptions) {
       }
       if (outcome === "accepted") {
         keepOptimisticPending = true;
+        // 只有确认受理才开始新一轮折叠。sendPrompt 也会正常返回 rejected/unknown，
+        // 它们不能收起现有过程，否则发送失败或超时也会改变时间线高度和阅读位置。
+        store.set(bumpNewTurnCollapseTickAtom, sessionId);
         options.recordPromptHistory?.(sessionId, message);
         setSendState({ sessionId, state: { status: "idle" } });
         if (record) options.refreshProject?.(record.projectId);

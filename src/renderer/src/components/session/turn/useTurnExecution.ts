@@ -102,19 +102,21 @@ export function useTurnExecution(opts: {
 		return () => window.clearTimeout(timer);
 	}, [opts.agentRunning, atomState.userOverride, opts.hasFinalAnswer, opts.isLatestRun, setAtomState]);
 
-	// 新一轮信号：collapsePrevRunsOnNewTurn 开启时，非最新轮强制收起
+	// 每轮都记录已观察的新一轮信号，包括最新轮和设置关闭时。
+	// 否则插入下一条乐观 user、重挂虚拟行或重新打开设置，会把旧 tick 当成
+	// 新发送重放，尚未确认受理就收起用户正在查看的过程。
 	useEffect(() => {
-		if (!opts.collapsePrevRunsOnNewTurn) return;
 		const tick = opts.newTurnCollapseTick ?? 0;
-		if (opts.isLatestRun === false && tick > 0 && tick !== atomState.lastCollapseTick) {
-			setAtomState((prev) => ({
+		if (tick === atomState.lastCollapseTick) return;
+		const shouldCollapse = opts.collapsePrevRunsOnNewTurn && opts.isLatestRun === false && tick > 0;
+		setAtomState((prev) => {
+			if (prev.lastCollapseTick === tick) return prev;
+			return {
 				...prev,
-				initialized: true,
-				userOverride: false,
-				stepsVisible: false,
 				lastCollapseTick: tick,
-			}));
-		}
+				...(shouldCollapse ? { initialized: true, userOverride: false, stepsVisible: false } : {}),
+			};
+		});
 	}, [opts.collapsePrevRunsOnNewTurn, opts.isLatestRun, opts.newTurnCollapseTick, atomState.lastCollapseTick, setAtomState]);
 
 	const setStepsVisibleFromUser = useCallback(

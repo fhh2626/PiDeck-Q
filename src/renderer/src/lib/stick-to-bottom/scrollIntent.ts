@@ -38,8 +38,9 @@ export function findNearestVerticalScrollableAncestor(
  *
  * 内容动画/虚拟行替换会让 scrollHeight 缩水，浏览器把 scrollTop 夹到新的
  * maxScrollTop，看起来像用户上滚。判定需要两个证据：原本锁底、scrollTop
- * 紧贴新的底部，且新的 maxScrollTop 确实小于上一帧 scrollTop（内容真的缩短了）。
- * 只看“差 2px 以内”会把用户真实上滚 1–2px 误判成 clamp。
+ * 紧贴新的底部，或先前的位置已超过缩短后的可滚动范围。后者覆盖折叠和
+ * 新气泡插入发生在同一次 scroll 通知之前，夹取后又留出底部空隙的情况。
+ * 已识别的滚轮、触摸、按键和滚动条按压会先退出 following，再走此几何判断。
  */
 export function isContentShrinkClamp(input: {
 	scrollTop: number;
@@ -60,8 +61,36 @@ export function isContentShrinkClamp(input: {
 			|| input.maxScrollTop < input.lastScrollTop;
 	if (!contentShrank) return false;
 	const tolerance = input.tolerancePx ?? 2;
+	// Require both a measured range reduction and an unreachable former position.
+	// Merely being near the bottom must never hide an ordinary upward scroll.
+	const formerPositionWasClamped = input.previousMaxScrollTop !== undefined
+		&& input.maxScrollTop < input.previousMaxScrollTop
+		&& input.lastScrollTop > input.maxScrollTop + tolerance
+		&& input.scrollTop <= input.maxScrollTop;
 	return input.scrollTop < input.lastScrollTop
-		&& Math.abs(input.scrollTop - input.maxScrollTop) <= tolerance;
+		&& (Math.abs(input.scrollTop - input.maxScrollTop) <= tolerance || formerPositionWasClamped);
+}
+
+/** Detect a press in a native vertical scrollbar before its first scroll event. */
+export function isVerticalScrollbarPress(event: PointerEvent, viewport: HTMLElement | null): boolean {
+	if (!viewport || event.target !== viewport || event.button !== 0) return false;
+	if (viewport.scrollHeight <= viewport.clientHeight) return false;
+	const rect = viewport.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0 || viewport.offsetWidth <= 0 || viewport.offsetHeight <= 0) return false;
+	// Renderer zoom scales client coordinates and DOM rectangles, while the
+	// client/offset dimensions remain layout pixels. Compare in that latter space.
+	const x = (event.clientX - rect.left) * viewport.offsetWidth / rect.width;
+	const y = (event.clientY - rect.top) * viewport.offsetHeight / rect.height;
+	if (y < viewport.clientTop || y >= viewport.clientTop + viewport.clientHeight) return false;
+	const style = typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+		? window.getComputedStyle(viewport)
+		: undefined;
+	const borderLeft = Number.parseFloat(style?.borderLeftWidth ?? "0") || 0;
+	const borderRight = Number.parseFloat(style?.borderRightWidth ?? "0") || 0;
+	// clientLeft includes the scrollbar for RTL viewports. A child content press
+	// or a border cannot match this gutter, so clicking either keeps follow intent.
+	return (x >= borderLeft && x < viewport.clientLeft)
+		|| (x >= viewport.clientLeft + viewport.clientWidth && x < viewport.offsetWidth - borderRight);
 }
 
 /**
