@@ -111,6 +111,12 @@ export function isEditableOrInteractiveTarget(target: EventTarget | null): boole
 	return false;
 }
 
+/** Space activates transcript controls, while their arrow/page keys can still scroll. */
+function isSpaceActivationTarget(target: EventTarget | null): boolean {
+	if (typeof window === "undefined" || !(target instanceof window.Element)) return false;
+	return target.closest("button, summary, [role='button'], [role='checkbox'], [role='radio'], [role='switch']") !== null;
+}
+
 /**
  * 判定键盘事件是否包含明确的「向上/翻页阅读」意图。
  * 仅在无 Ctrl/Alt/Meta 组合键、且目标不是输入控件时处理：
@@ -129,20 +135,41 @@ export function isTimelineUpwardKeyIntent(event: KeyboardEvent): boolean {
 		return true;
 	}
 	if (key === " " && event.shiftKey) {
-		return true;
+		return !isSpaceActivationTarget(event.target);
 	}
 	return false;
 }
 
+/** Downward navigation can resume following when layout already put the reader at the bottom. */
+export function isTimelineDownwardKeyIntent(event: KeyboardEvent): boolean {
+	if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return false;
+	if (isEditableOrInteractiveTarget(event.target)) return false;
+	return event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End"
+		|| (event.key === " " && !event.shiftKey && !isSpaceActivationTarget(event.target));
+}
+
 /**
- * 校验 Touch / Pointer / Key 事件是否发生在内部嵌套的可滚动容器中。
- * 若在内部容器内，则手势或按键操作属于内部局部滚动，不应引起外层时间线逃逸。
+ * Decide whether a nested scroll container consumes or blocks a directional input.
+ * A container at its boundary may chain to another ancestor before the timeline.
  */
 export function isNestedScrollEvent(
 	target: EventTarget | null,
 	boundary: HTMLElement | null,
+	direction: "up" | "down" = "up",
 ): boolean {
-	const nested = findNearestVerticalScrollableAncestor(target, boundary);
-	return Boolean(nested && nested !== boundary);
+	if (typeof window === "undefined" || !(target instanceof window.Node)) return false;
+	let current = target instanceof window.Element ? target : target.parentElement;
+	while (current && current !== boundary) {
+		const style = window.getComputedStyle(current);
+		if (style.overflowY === "auto" || style.overflowY === "scroll") {
+			const maxScrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+			const canConsume = direction === "up" ? current.scrollTop > 0 : current.scrollTop < maxScrollTop;
+			// Even a zero-range scroll container can prohibit chaining. Overflow
+			// visible/clip elements do not acquire that ownership from this property.
+			if (canConsume || style.overscrollBehaviorY === "contain" || style.overscrollBehaviorY === "none") return true;
+		}
+		current = current.parentElement;
+	}
+	return false;
 }
 

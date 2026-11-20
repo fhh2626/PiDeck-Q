@@ -143,8 +143,8 @@ test("followOutput and onFollowChange bridge to the stick engine", () => {
 // 会抢先于异步 scroll 解锁事件，把恢复的位置立刻拽回底部（双真相源竞态）。
 test("engine exposes atomic restoreAt: position + unlock + cancel in-flight animation", () => {
   // 引擎 API：restoreAt 在返回的实例上（controller 通过 scrollApiRef 调用）
-  assert.match(engineSource, /export type RestoreAt = \(scrollTop: number\) => void;/);
-  assert.match(engineSource, /const restoreAt = useCallback\(\(scrollTop: number\) => \{/);
+  assert.match(engineSource, /export type RestoreAt = \(scrollTop: number, options\?: \{[\s\S]*?preserveFollowState\?: boolean;[\s\S]*?\}\) => void;/);
+  assert.match(engineSource, /const restoreAt = useCallback<RestoreAt>\(\(scrollTop, options\) => \{/);
   // 原子三件事：取消在途动画（generation++ / animation 清空）→ 解锁（escapedFromLock/isAtBottom）
   assert.match(engineSource, /state\.scrollGeneration \+= 1;/);
   assert.match(engineSource, /state\.animation = undefined;/);
@@ -168,7 +168,7 @@ test("restoreAt resets the shrink-clamp baseline for the new session", () => {
 
 test("MessageScroller forwards restoreAt to timeline controller scroll api", () => {
   // MessageScrollerScrollApi 类型与 api 挂载都要包含 restoreAt
-  assert.match(scrollerSource, /restoreAt: \(scrollTop: number\) => void;/);
+  assert.match(scrollerSource, /restoreAt: RestoreAt;/);
   assert.match(scrollerSource, /const engineRestoreAt = stick\.restoreAt;/);
   assert.match(scrollerSource, /restoreAt: engineRestoreAt,/);
 });
