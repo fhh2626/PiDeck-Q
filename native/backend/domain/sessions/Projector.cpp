@@ -246,7 +246,7 @@ QJsonObject compactionCard(const QString &agentId, const QString &summary, qint6
 
 QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessages,
                    const QStringList &activeEntryIds, const QSet<QString> &knownToolResultIds,
-                   const Deps &deps)
+                   const Deps &deps, EntryIdLayout layout)
 {
     const maincopy::Translator &translate = deps.translate;
 
@@ -310,15 +310,21 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
     QJsonArray result;
 
     for (int index = 0; index < rawMessages.size(); ++index) {
-        if (!rawMessages.at(index).isObject()) continue;
-        const QJsonObject message = rawMessages.at(index).toObject();
+        const QJsonValue &raw = rawMessages.at(index);
+        // Identity is independent of whether a row is rendered. Verified RPC
+        // and file readers provide one slot per raw value, including synthetic rows.
+        sessionentryids::TakeResult taken;
+        if (layout == EntryIdLayout::Matched || sessionentryids::consumesMessageEntry(raw)) {
+            taken = sessionentryids::take(activeEntryIds, entryIndex);
+            entryIndex = taken.nextIndex;
+        }
+        if (!raw.isObject()) continue;
+        const QJsonObject message = raw.toObject();
 
         pitask::TaskMessage task;
-        if (pitask::readTodoTaskMessage(QJsonValue(message), &task)) {
+        if (pitask::readTodoTaskMessage(raw, &task)) {
             pitask::TaskCommand command;
             const bool hasCommand = pitask::readTodoTaskCommand(message, &command);
-            const sessionentryids::TakeResult taken = sessionentryids::take(activeEntryIds, entryIndex);
-            entryIndex = taken.nextIndex;
             const QJsonValue details = message.value(QStringLiteral("details"));
             const QJsonValue taskIdValue =
                 details.isObject() ? details.toObject().value(QStringLiteral("taskId")) : QJsonValue();
@@ -361,17 +367,8 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
         const QString role = message.value(QStringLiteral("role")).toString();
         const QJsonValue content = message.value(QStringLiteral("content"));
 
-        if (role == QLatin1String("bashExecution")) {
-            // Pi persists !/!! executions as message entries. They have no
-            // timeline row here but must not shift the identities of later turns.
-            entryIndex = sessionentryids::take(activeEntryIds, entryIndex).nextIndex;
-            continue;
-        }
-
         if (role == QLatin1String("user")) {
             turnImageBytes = 0;
-            const sessionentryids::TakeResult taken = sessionentryids::take(activeEntryIds, entryIndex);
-            entryIndex = taken.nextIndex;
             const imagecontent::Extraction extraction = imagecontent::extract(content);
             QString text = messagecontent::extractMessageText(content);
             if (text.isEmpty() && !extraction.images.isEmpty()) {
@@ -398,8 +395,6 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
         }
 
         if (role == QLatin1String("assistant")) {
-            const sessionentryids::TakeResult taken = sessionentryids::take(activeEntryIds, entryIndex);
-            entryIndex = taken.nextIndex;
             const imagecontent::Extraction extraction = imagecontent::extract(content);
             const imagebudget::Result budget = imagebudget::apply(extraction.images, turnImageBytes);
             for (const QJsonValue &image : budget.images) {
@@ -465,8 +460,6 @@ QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessage
         }
 
         if (role == QLatin1String("toolResult")) {
-            const sessionentryids::TakeResult taken = sessionentryids::take(activeEntryIds, entryIndex);
-            entryIndex = taken.nextIndex;
             const QString toolCallId = message.value(QStringLiteral("toolCallId")).toString();
             const auto found = historicalCalls.constFind(toolCallId);
             const QString toolName = !message.value(QStringLiteral("toolName")).toString().isEmpty()

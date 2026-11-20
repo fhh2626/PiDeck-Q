@@ -1,6 +1,6 @@
 #include "HistoryPager.h"
 
-#include "PiTaskMessage.h"
+#include "../ChannelRegistry.h"
 
 #include <QDateTime>
 #include <QJsonObject>
@@ -33,7 +33,7 @@ QStringList entryIds(const QVector<IndexEntry> &entries)
  * paged history de-duplicate to one card.
  */
 QJsonArray withCompactionCard(const JsonlIndex &index, const QString &agentId, const QJsonArray &messages,
-                              int start, const maincopy::Translator &translate)
+                              int start, int end, const maincopy::Translator &translate)
 {
     QVector<IndexEntry> compactions;
     for (const IndexEntry &entry : index.activeBranch) {
@@ -41,36 +41,25 @@ QJsonArray withCompactionCard(const JsonlIndex &index, const QString &agentId, c
     }
     if (compactions.isEmpty()) return messages;
     const IndexEntry &last = compactions.last();
+    // Pi can retain a metadata entry. Count message slots preceding the raw branch
+    // anchor; use the checkpoint's position only if the anchor is missing.
     int insertAt = -1;
-    if (!last.firstKeptEntryId.isEmpty()) {
-        for (int position = 0; position < index.activeMessageEntries.size(); ++position) {
-            if (index.activeMessageEntries.at(position).id == last.firstKeptEntryId) {
-                insertAt = position;
-                break;
-            }
+    int afterCheckpoint = index.activeMessageEntries.size();
+    int messageCount = 0;
+    for (const IndexEntry &entry : index.activeBranch) {
+        if (entry.id == last.firstKeptEntryId) {
+            insertAt = messageCount;
+            break;
         }
+        if (messageCount < index.activeMessageEntries.size()
+            && index.activeMessageEntries.at(messageCount).id == entry.id) ++messageCount;
+        if (entry.id == last.id) afterCheckpoint = messageCount;
     }
-    if (insertAt < 0) {
-        // Fall back to "messages after the compaction entry" (same rule as readSessionDisplayMessages).
-        int compactionIndex = -1;
-        for (int position = 0; position < index.activeBranch.size(); ++position) {
-            if (index.activeBranch.at(position).id == last.id) {
-                compactionIndex = position;
-                break;
-            }
-        }
-        if (compactionIndex >= 0) {
-            insertAt = 0;
-            for (int position = 0; position <= compactionIndex; ++position) {
-                const IndexEntry &entry = index.activeBranch.at(position);
-                if (entry.type == QLatin1String("message") && entry.hasTruthyMessage) ++insertAt;
-            }
-        } else {
-            insertAt = index.activeMessageEntries.size();
-        }
-    }
+    if (insertAt < 0) insertAt = afterCheckpoint;
+    // Claim the boundary in file coordinates so adjacent pages do not both render it.
+    if (insertAt < start || insertAt > end
+        || (insertAt == end && end != index.activeMessageEntries.size())) return messages;
     const int relative = insertAt - start;
-    if (relative < 0 || relative > messages.size()) return messages;
     const qint64 timestamp = last.timestamp.isEmpty()
         ? QDateTime::currentMSecsSinceEpoch()
         : QDateTime::fromString(last.timestamp, Qt::ISODateWithMs).toMSecsSinceEpoch();
@@ -81,11 +70,17 @@ QJsonArray withCompactionCard(const JsonlIndex &index, const QString &agentId, c
         timestamp > 0 ? timestamp : QDateTime::currentMSecsSinceEpoch(), last.id, last.firstKeptEntryId,
         last.hasTokensBefore, last.tokensBefore, compactions.size());
     QJsonArray result;
-    for (int position = 0; position < messages.size(); ++position) {
-        if (position == relative) result.append(card);
-        result.append(messages.at(position));
+    bool inserted = false;
+    for (const QJsonValue &message : messages) {
+        const QJsonValue sequence = message.toObject().value(QStringLiteral("meta")).toObject()
+            .value(QStringLiteral("_piDeckMsgSeq"));
+        if (!inserted && sequence.isDouble() && sequence.toInt() >= relative) {
+            result.append(card);
+            inserted = true;
+        }
+        result.append(message);
     }
-    if (relative == messages.size()) result.append(card);
+    if (!inserted) result.append(card);
     return result;
 }
 
@@ -95,9 +90,10 @@ QJsonArray projectSlice(const JsonlIndex &index, const QString &agentId, int sta
     const QVector<IndexEntry> entries = slice(index.activeMessageEntries, start, end);
     const QVector<QJsonValue> raw = jsonlindex::readMessages(index, entries);
     const QJsonArray messages =
-        projector::convert(agentId, raw, entryIds(entries), index.activeToolResultIds, deps);
+        projector::convert(agentId, raw, entryIds(entries), index.activeToolResultIds, deps,
+                           projector::EntryIdLayout::Matched);
     if (!index.hasCompaction) return messages;
-    return withCompactionCard(index, agentId, messages, start, deps.translate);
+    return withCompactionCard(index, agentId, messages, start, end, deps.translate);
 }
 
 } // namespace
@@ -176,20 +172,25 @@ Page readMessagePage(const JsonlIndex &index, const QString &agentId, int before
     return page;
 }
 
-Page readTurnPage(const JsonlIndex &index, const QString &agentId, int before, int turnCount,
+int messageEntryPosition(const JsonlIndex &index, const QString &entryId)
+{
+    if (entryId.isEmpty()) return -1;
+    for (int position = 0; position < index.activeMessageEntries.size(); ++position) {
+        if (index.activeMessageEntries.at(position).id == entryId) return position;
+    }
+    return -1;
+}
+
+Page readTurnPage(const JsonlIndex &index, const QString &agentId, std::optional<int> before, int turnCount,
                   const QString &beforeEntryId, const projector::Deps &deps)
 {
     Page page;
     page.total = index.activeMessageEntries.size();
-    int resolvedBefore = before;
-    if (!beforeEntryId.isEmpty()) {
-        for (int position = 0; position < index.activeMessageEntries.size(); ++position) {
-            if (index.activeMessageEntries.at(position).id != beforeEntryId) continue;
-            resolvedBefore = position;
-            break;
-        }
+    const int anchor = messageEntryPosition(index, beforeEntryId);
+    if (anchor < 0 && !beforeEntryId.isEmpty() && !before) {
+        throw ChannelError(QStringLiteral("HISTORY_CURSOR_NOT_FOUND"));
     }
-    const int boundedBefore = qBound(0, resolvedBefore, page.total);
+    const int boundedBefore = anchor >= 0 ? anchor : qBound(0, before.value_or(page.total), page.total);
     const int boundedTurns = qBound(1, turnCount, kMaxTurnPageSize);
     const int start =
         findTurnPageStart(index.activeMessageEntries, boundedBefore, boundedTurns, kMaxDisplayPageBytes);

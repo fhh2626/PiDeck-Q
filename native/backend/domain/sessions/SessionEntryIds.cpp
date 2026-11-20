@@ -36,12 +36,11 @@ int countMessageEntries(const QVector<QJsonValue> &messages)
     return count;
 }
 
-QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId,
-                                      bool includeCompacted)
+ProjectionIds alignProjection(const QVector<QJsonValue> &entries, const QString &leafId,
+                              const QVector<QJsonValue> &messages)
 {
     QHash<QString, QJsonObject> byId;
     for (const QJsonValue &value : entries) {
-        if (!value.isObject()) continue;
         const QJsonObject entry = value.toObject();
         const QString id = entry.value(QStringLiteral("id")).toString();
         if (!id.isEmpty()) byId.insert(id, entry);
@@ -53,51 +52,117 @@ QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const 
     while (!currentId.isEmpty() && !seen.contains(currentId)) {
         seen.insert(currentId);
         const auto found = byId.constFind(currentId);
-        if (found == byId.constEnd()) {
-            branch.append(QJsonObject{{QStringLiteral("id"), currentId}});
-            break;
-        }
+        if (found == byId.constEnd()) break;
         branch.append(*found);
         currentId = found->value(QStringLiteral("parentId")).toString();
     }
     std::reverse(branch.begin(), branch.end());
 
-    const auto isMessage = [](const QJsonObject &entry) {
-        pitask::TaskMessage task;
-        return entry.value(QStringLiteral("type")).toString() == QLatin1String("message")
-            || pitask::readTodoTaskMessage(QJsonValue(entry), &task);
+    ProjectionIds result;
+    int compactedAt = -1;
+    for (int index = 0; index < branch.size(); ++index) {
+        const QJsonObject &entry = branch.at(index);
+        const QString type = entry.value(QStringLiteral("type")).toString();
+        const QJsonValue body = entry.value(QStringLiteral("message"));
+        if (type == QLatin1String("compaction")) compactedAt = index;
+        if ((type == QLatin1String("message") && !body.isUndefined() && !body.isNull())
+            || pitask::readTodoTaskMessage(entry, nullptr)) {
+            result.fileIds.append(entry.value(QStringLiteral("id")).toString());
+        }
+    }
+    // An incomplete branch can still prove RPC identities for its known suffix,
+    // but it cannot establish the complete file cursor space.
+    if (!currentId.isEmpty()) result.fileIds.clear();
+
+    QStringList ids;
+    ids.reserve(messages.size());
+    const auto match = [&messages, &ids](const QString &role, const QJsonObject &source, const QString &id = {},
+                                         const QJsonValue &replacement = QJsonValue(QJsonValue::Undefined)) {
+        // Only compare content for rows with a persisted source, not synthetic summaries.
+        // Equal roles and timestamps alone cannot distinguish sibling entries.
+        const bool needsTextBlock = role == QLatin1String("assistant") || role == QLatin1String("toolResult");
+        const bool editsContent = needsTextBlock || role == QLatin1String("user") || role == QLatin1String("custom");
+        QJsonValue content = source.value(QStringLiteral("content"));
+        if (!replacement.isUndefined() && editsContent) {
+            content = replacement.toObject().value(QStringLiteral("content"));
+            if (content.isString() && needsTextBlock) {
+                content = QJsonArray{QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                                {QStringLiteral("text"), content}}};
+            }
+        } else if (content.isUndefined() || content.isNull()) {
+            // Pi normalizes older stored rows before returning get_messages.
+            if (role == QLatin1String("system")) content = QStringLiteral("");
+            else if (needsTextBlock || role == QLatin1String("user")) content = QJsonArray{};
+        }
+        if (role.isEmpty() || ids.size() >= messages.size()) return false;
+        const QJsonObject raw = messages.at(ids.size()).toObject();
+        if (raw.value(QStringLiteral("role")).toString() != role) return false;
+        if (!id.isEmpty() && content != raw.value(QStringLiteral("content"))) return false;
+        // Timestamps and tool/extension identities are stable where both snapshots carry them.
+        const auto stamp = source.value(QStringLiteral("timestamp"));
+        const auto rawStamp = raw.value(QStringLiteral("timestamp"));
+        if (stamp.isDouble() && rawStamp.isDouble() && stamp != rawStamp) return false;
+        for (const QString &key : {QStringLiteral("toolCallId"), QStringLiteral("customType")}) {
+            const auto expected = source.value(key);
+            const auto actual = raw.value(key);
+            if (expected.isString() && actual.isString() && expected != actual) return false;
+        }
+        ids.append(id);
+        return true;
     };
 
-    // The compaction nearest the leaf is the one pi's get_messages honours.
-    int compactionIndex = -1;
-    for (int index = branch.size() - 1; index >= 0; --index) {
-        if (branch.at(index).value(QStringLiteral("type")).toString() == QLatin1String("compaction")) {
-            compactionIndex = index;
-            break;
+    int firstKept = 0;
+    if (compactedAt >= 0) {
+        const QJsonObject &checkpoint = branch.at(compactedAt);
+        const QString anchor = checkpoint.value(QStringLiteral("firstKeptEntryId")).toString();
+        while (firstKept < compactedAt && branch.at(firstKept).value(QStringLiteral("id")).toString() != anchor) {
+            ++firstKept;
         }
+        if (firstKept == compactedAt && checkpoint.value(QStringLiteral("id")).toString() != anchor) return result;
+        // A self-anchor means no pre-checkpoint messages survived (for example a fork).
+        // Pi emits the latest checkpoint and summary ahead of its retained messages.
+        // An embedded system message comes from the compaction, not a file message slot.
+        const QJsonObject system = checkpoint.value(QStringLiteral("systemMessage")).toObject();
+        if ((!system.isEmpty() && !match(QStringLiteral("system"), system))
+            || !match(QStringLiteral("compactionSummary"), {})) return result;
     }
-    QStringList ids;
-    if (compactionIndex < 0 || includeCompacted) {
-        for (const QJsonObject &entry : branch) {
-            if (isMessage(entry)) ids.append(entry.value(QStringLiteral("id")).toString());
-        }
-        return ids;
-    }
-    const QString anchorId = branch.at(compactionIndex).value(QStringLiteral("firstKeptEntryId")).toString();
-    if (anchorId.isEmpty()) return {};
-    int anchorIndex = -1;
-    for (int index = 0; index < branch.size(); ++index) {
-        if (branch.at(index).value(QStringLiteral("id")).toString() == anchorId) {
-            anchorIndex = index;
-            break;
-        }
-    }
-    if (anchorIndex < 0) return {};
-    for (int index = anchorIndex; index < branch.size(); ++index) {
+    // Context edits change the RPC rows, not the file cursor space. Use the latest
+    // retained edit as identity evidence for its target without changing any display body.
+    QHash<QString, QJsonValue> replacements;
+    for (int index = firstKept; index < branch.size(); ++index) {
         const QJsonObject &entry = branch.at(index);
-        if (isMessage(entry)) ids.append(entry.value(QStringLiteral("id")).toString());
+        if (entry.value(QStringLiteral("type")).toString() == QLatin1String("context_edit")) {
+            replacements.insert(entry.value(QStringLiteral("targetId")).toString(),
+                                entry.value(QStringLiteral("replacement")));
+        }
     }
-    return ids;
+    for (int index = firstKept; index < branch.size(); ++index) {
+        const QJsonObject &entry = branch.at(index);
+        const QString type = entry.value(QStringLiteral("type")).toString();
+        const QString id = entry.value(QStringLiteral("id")).toString();
+        const QJsonValue replacement = replacements.value(id, QJsonValue(QJsonValue::Undefined));
+        if (type == QLatin1String("message")) {
+            const QJsonObject message = entry.value(QStringLiteral("message")).toObject();
+            const QString role = message.value(QStringLiteral("role")).toString();
+            // Pi omits the old system instructions within a compaction's kept range,
+            // but still emits ordinary system entries recorded after the checkpoint.
+            if (index < compactedAt && role == QLatin1String("system")) continue;
+            if (replacement.isNull()) continue;
+            if (!match(role, message, id, replacement)) return result;
+        } else if (type == QLatin1String("custom_message")) {
+            if (replacement.isNull()) continue;
+            const QString taskId = pitask::readTodoTaskMessage(entry, nullptr) ? id : QString{};
+            if (!match(QStringLiteral("custom"), entry, taskId, replacement)) return result;
+        } else if (type == QLatin1String("branch_summary") && !entry.value(QStringLiteral("summary")).toString().isEmpty()) {
+            if (!match(QStringLiteral("branchSummary"), {})) return result;
+        }
+    }
+    // If the snapshots disagree, keep the RPC bodies but never attach guessed IDs.
+    if (ids.size() == messages.size()) {
+        result.messageIds = ids;
+        result.matched = true;
+    }
+    return result;
 }
 
 } // namespace sessionentryids

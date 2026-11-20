@@ -36,7 +36,8 @@ describe("native2 projection diagnostic ownership", { skip: backendTestAvailabil
 		test(`projection preserves diagnostic turn ownership: ${mode}/${boundary}`, async (t) => {
 			const user = (text) => ({ role: "user", content: [{ type: "text", text }] });
 			const entries = (ids) => ({ data: { entries: ids.map((id, index) => ({
-				type: "message", id, parentId: index ? ids[index - 1] : null, message: user(id),
+				type: "message", id, parentId: index ? ids[index - 1] : null,
+				message: user(id === "u1" ? "first" : "second"),
 			})), leafId: ids.at(-1) ?? null } });
 			const initialEntries = mode === "unanchored" ? entryReply : entries(["u1"]);
 			const finalMessages = mode === "removed" ? [user("second")] : [user("first"), user("second")];

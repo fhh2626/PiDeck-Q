@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QString>
 
+#include <optional>
+
 /**
  * Bounded history paging (port of SessionHistoryReader's page functions).
  *
@@ -40,7 +42,10 @@ int findTurnPageStart(const QVector<IndexEntry> &entries, int before, int turnCo
 Page readMessagePage(const JsonlIndex &index, const QString &agentId, int before, int pageSize,
                      const projector::Deps &deps);
 
-Page readTurnPage(const JsonlIndex &index, const QString &agentId, int before, int turnCount,
+/** Resolve an active file message ID to its cursor position, or -1 if unavailable. */
+int messageEntryPosition(const JsonlIndex &index, const QString &entryId);
+
+Page readTurnPage(const JsonlIndex &index, const QString &agentId, std::optional<int> before, int turnCount,
                   const QString &beforeEntryId, const projector::Deps &deps);
 
 /** Full, unpaged active-branch projection (sessions:catalog-read-messages). */

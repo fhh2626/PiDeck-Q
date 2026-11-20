@@ -107,6 +107,13 @@ void Transcript::noteHistoryTrim(int start)
         ++m_windowStart;
         m_pendingSlideOut.append(message);
         const QJsonObject meta = message.value(QStringLiteral("meta")).toObject();
+        const QString id = meta.value(QStringLiteral("entryId")).toString(
+            meta.value(QStringLiteral("sourceEntryId")).toString());
+        const auto exactPosition = m_fileEntryPositions.constFind(id);
+        if (exactPosition != m_fileEntryPositions.constEnd()) {
+            nextPosition = std::max(nextPosition, *exactPosition + 1);
+            continue;
+        }
         const QJsonValue sequence = meta.value(QStringLiteral("_piDeckMsgSeq"));
         if (sequence.isDouble() && m_projectionHeadFilePos >= 0) {
             const auto position = m_projectedFilePositions.constFind(sequence.toInt());

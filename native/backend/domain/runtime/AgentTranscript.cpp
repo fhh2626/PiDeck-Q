@@ -128,15 +128,20 @@ void Transcript::rememberToolFullText(const QString &messageId, const QString &t
 }
 
 void Transcript::applyProjection(const QVector<QJsonValue> &rawMessages, const QStringList &entryIds,
-                                 const QSet<QString> &toolResultIds)
+                                 const QSet<QString> &toolResultIds, projector::EntryIdLayout layout,
+                                 int verifiedFileSlotsStart)
 {
     projector::Deps deps;
     deps.translate = m_translate;
-    m_messages = projector::convert(m_agentId, rawMessages, entryIds, toolResultIds, deps);
+    m_messages = projector::convert(m_agentId, rawMessages, entryIds, toolResultIds, deps, layout);
     m_projectedFilePositions.clear();
     m_projectedFileCount = 0;
-    for (int index = 0; index < rawMessages.size(); ++index) {
-        if (sessionentryids::consumesMessageEntry(rawMessages.at(index))) {
+    // Matched projections use file IDs directly. A compaction can leave holes
+    // in the file coordinates, so relative raw offsets would be wrong here.
+    if (layout == projector::EntryIdLayout::Matched) return;
+    const int firstSlot = std::max(0, verifiedFileSlotsStart);
+    for (int index = firstSlot; index < rawMessages.size(); ++index) {
+        if (verifiedFileSlotsStart >= 0 || sessionentryids::consumesMessageEntry(rawMessages.at(index))) {
             m_projectedFilePositions.insert(index, m_projectedFileCount++);
         }
     }

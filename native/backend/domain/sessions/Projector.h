@@ -29,9 +29,12 @@ struct Deps {
 /** Maximum characters kept for one tool detail section (oracle: 8000). */
 constexpr int kMaxToolResultChars = 8000;
 
+/** Matched IDs are indexed by raw message; legacy callers supply only ordinary file slots. */
+enum class EntryIdLayout { Legacy, Matched };
+
 QJsonArray convert(const QString &agentId, const QVector<QJsonValue> &rawMessages,
                    const QStringList &activeEntryIds, const QSet<QString> &knownToolResultIds,
-                   const Deps &deps);
+                   const Deps &deps, EntryIdLayout layout = EntryIdLayout::Legacy);
 
 /** Insert one compaction card at the page-relative boundary (pager helper). */
 QJsonObject compactionCard(const QString &agentId, const QString &summary, qint64 timestamp,

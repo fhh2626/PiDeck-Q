@@ -416,6 +416,106 @@ if (executable) {
 			assert.deepEqual(largeBody.payload.result, {});
 		});
 
+		for (const compacted of [false, true]) test(`hidden entries preserve a full paging seam (${compacted ? "compacted" : "ordinary"})`, async (t) => {
+			const scope = makeScope("hidden-history-slot");
+			const source = timeline(scope.projectPath, { turns: [
+				{ index: -1, user: "archived question", assistant: "archived reply" },
+				{ index: 0, user: "earlier question", assistant: "earlier reply" },
+				{ index: 1, user: "first question", assistant: "first reply" },
+				{ index: 2, user: "next question", assistant: "next reply" },
+			] });
+			const entries = source.entries;
+			const question = entries.find((entry) => entry.id === "u-1");
+			const answer = entries.find((entry) => entry.id === "a-1");
+			const row = (id, parentId, message) => ({ type: "message", id, parentId, timestamp: answer.timestamp, message });
+			const text = (value) => [{ type: "text", text: value }];
+			entries.splice(entries.indexOf(question), 0, row("hidden", question.parentId, {
+				role: "system", content: text("hidden instructions"), timestamp: question.message.timestamp - 1,
+			}));
+			question.parentId = "hidden";
+			let parentId = question.id;
+			for (const toolName of ["read", "powershell"]) {
+				const toolCallId = `call-${toolName}`;
+				const call = row(toolCallId, parentId, {
+					role: "assistant", stopReason: "toolUse", timestamp: question.message.timestamp,
+					content: [{ type: "toolCall", id: toolCallId, name: toolName, arguments: {} }],
+				});
+				const result = row(`result-${toolName}`, call.id, {
+					role: "toolResult", toolName, toolCallId, content: text("ok"), timestamp: answer.message.timestamp,
+				});
+				entries.splice(entries.indexOf(answer), 0, call, result);
+				parentId = result.id;
+			}
+			answer.parentId = parentId;
+			answer.message.stopReason = "stop";
+			const earlier = entries.find((entry) => entry.id === "u-0");
+			entries.splice(entries.indexOf(earlier), 0, row("pruned", earlier.parentId, {
+				role: "system", content: text("archive instructions"), timestamp: earlier.message.timestamp - 1,
+			}));
+			earlier.parentId = "pruned";
+			const messages = () => entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
+			let rpcMessages = messages();
+			if (compacted) {
+				entries.splice(entries.indexOf(question), 0, row("custom", question.parentId, {
+					role: "custom", customType: "notice", display: false, content: "hidden custom",
+				}));
+				question.parentId = "custom";
+				const next = entries.find((entry) => entry.id === "u-2");
+				const checkpoint = { role: "system", content: "checkpoint", timestamp: answer.message.timestamp + 1 };
+				entries.splice(entries.indexOf(next), 0, {
+					type: "compaction", id: "compact", parentId: answer.id, timestamp: answer.timestamp,
+					firstKeptEntryId: earlier.id, summary: "archived", systemMessage: checkpoint,
+				});
+				next.parentId = "compact";
+				entries.splice(entries.indexOf(next), 0, row("post-system", "compact", {
+					role: "system", content: text("new instructions"), timestamp: next.message.timestamp - 1,
+				}));
+				next.parentId = "post-system";
+				const retained = entries.slice(entries.indexOf(earlier))
+					.filter((entry) => entry.type === "message" && entry.id !== "hidden");
+				rpcMessages = [checkpoint, { role: "compactionSummary", summary: "archived" },
+					...retained.map((entry) => entry.message)];
+			}
+			let path = "";
+			const { invoke, sse } = await startWithPi(t, scope, (fixture) => {
+				path = join(fixture.sessions, "hidden-system.jsonl");
+				return {
+					state: { sessionFile: path },
+					messages: rpcMessages,
+					entries: { entries, leafId: entries.at(-1).id },
+				};
+			});
+			writeEntries(path, entries);
+			const record = await catalogRecord(invoke, path);
+			const expected = ["u-1", "result-read", "result-powershell", "a-1"];
+			const assertPage = (result, agentId) => {
+				assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
+				const page = result.payload.result;
+				assert.deepEqual(entryIdsOf(page), expected);
+				assert.equal(page.messages[3].text, "first reply");
+				assert.equal(page.messages[3].stopReason, "stop");
+				assert.equal(page.nextBefore, entries.filter((entry) => entry.type === "message").indexOf(question));
+				assert.equal(page.nextBeforeEntryId, question.id);
+				assert.ok(page.messages.every((message) => message.agentId === agentId), "assert the actual data source");
+			};
+			const readOlder = () => invoke("sessions:catalog-read-message-page",
+				[record.id, null, 1, { unit: "turn", beforeEntryId: "u-2" }]);
+			assertPage(await readOlder(), record.id);
+			const activated = await invoke("sessions:runtime-activate", [record.id]);
+			assert.equal(activated.payload.ok, true, JSON.stringify(activated.payload));
+			const target = activated.payload.result.value;
+			const projected = await projectedMessages(sse, target);
+			const prefix = compacted ? [undefined, "u-0", "a-0"] : ["u--1", "a--1", "u-0", "a-0"];
+			assert.deepEqual(projected.map((message) => message.meta?.entryId), [...prefix, ...expected, "u-2", "a-2"]);
+			assertPage(await readOlder(), target.agentId);
+			if (compacted) {
+				const all = await invoke("sessions:catalog-read-messages", [record.id]);
+				assert.equal(all.payload.ok, true, JSON.stringify(all.payload));
+				assert.deepEqual(all.payload.result.map((message) => message.meta?.type === "compaction" ? "summary" : message.meta?.entryId),
+					["u--1", "a--1", "summary", "u-0", "a-0", ...expected, "u-2", "a-2"]);
+			}
+		});
+
 		test("runtime turn paging answers from the live window but keeps file-space cursors", async (t) => {
 			const scope = makeScope("turn-cache");
 			const source = timeline(scope.projectPath, {
@@ -437,7 +537,7 @@ if (executable) {
 					state: { sessionFile: runtimeFile },
 					messages: liveMessages,
 					entries: {
-						entries: liveEntries.map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type })),
+						entries: liveEntries,
 						leafId: liveEntryIds.at(-1),
 					},
 				};
@@ -477,6 +577,156 @@ if (executable) {
 			assert.equal(second.payload.result.nextBefore, 4, "u-2's file index");
 			assert.equal(second.payload.result.nextBeforeEntryId, "u-2");
 			assert.equal(second.payload.result.total, 8);
+
+			const crossing = await invoke("sessions:catalog-read-message-page",
+				[record.id, null, 2, { unit: "turn", beforeEntryId: "u-2" }]);
+			assert.equal(crossing.payload.ok, true, JSON.stringify(crossing.payload));
+			assert.deepEqual(entryIdsOf(crossing.payload.result), ["u-0", "a-0", "u-1", "a-1"]);
+		});
+
+		for (const mode of ["drop", "replace", "stale", "file-start", "legacy-empty", "self-anchor",
+			"legacy-checkpoint", "legacy-post-system", "legacy-unverified-system"]) test(`history review: ${mode}`, async (t) => {
+			const scope = makeScope(`history-${mode}`);
+			const { entries } = timeline(scope.projectPath, { turns: [
+				{ index: 0, user: "q0", assistant: "a0" },
+				{ index: 1, user: "q1", assistant: "left reply" },
+			] });
+			const messages = entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
+			if (mode === "drop" || mode === "replace") {
+				const replacement = mode === "drop" ? null : { content: "edited reply" };
+				entries.push({ type: "context_edit", id: "edit", parentId: "a-1", targetId: "a-0",
+					timestamp: entries.at(-1).timestamp, replacement });
+				if (replacement === null) messages.splice(1, 1);
+				else messages[1] = { ...messages[1], content: [{ type: "text", text: replacement.content }] };
+			} else if (mode === "legacy-empty") {
+				// Real Pi repairs these old rows in get_messages; get_entries returns the originals.
+				const first = entries.find((entry) => entry.id === "u-0");
+				entries.splice(entries.indexOf(first), 0, {
+					type: "message", id: "old-system", parentId: first.parentId,
+					message: { role: "system" },
+				});
+				first.parentId = "old-system";
+				entries.find((entry) => entry.id === "a-0").message.content = null;
+				messages[1] = { ...messages[1], content: [] };
+				messages.unshift({ role: "system", content: "" });
+			} else if (["self-anchor", "legacy-checkpoint", "legacy-post-system", "legacy-unverified-system"].includes(mode)) {
+				const checkpoint = { role: "system", content: "saved instructions", timestamp: 123 };
+				const compact = {
+					type: "compaction", id: "compact", timestamp: entries.at(-1).timestamp,
+					parentId: "a-1", firstKeptEntryId: "u-1", summary: "archived", systemMessage: checkpoint,
+				};
+				if (mode === "self-anchor") {
+					compact.parentId = "a-0";
+					compact.firstKeptEntryId = compact.id;
+					const retained = entries.find((entry) => entry.id === "u-1");
+					retained.parentId = compact.id;
+					entries.splice(entries.indexOf(retained), 0, compact);
+				} else {
+					entries.push(compact);
+				}
+				const system = mode === "legacy-unverified-system" ? { ...checkpoint, content: "another system row" } : checkpoint;
+				messages.splice(0, 2, system, { role: "compactionSummary", summary: compact.summary });
+				if (mode === "legacy-post-system") {
+					const ordinary = { role: "system", content: "new instructions", timestamp: 124 };
+					entries.push({ type: "message", id: "ordinary-system", parentId: compact.id,
+						timestamp: compact.timestamp, message: ordinary });
+					messages.push(ordinary);
+				}
+			} else if (mode === "stale") {
+				const left = entries.at(-1);
+				entries.push({ ...left, id: "right", message: { ...left.message, content: [{ type: "text", text: "right reply" }] } });
+			}
+			let path;
+			const { invoke, sse } = await startWithPi(t, scope, (fixture) => {
+				path = join(fixture.sessions, `${mode}.jsonl`);
+				return {
+					state: { sessionFile: path }, messages, entries: { entries, leafId: entries.at(-1).id },
+					...(["legacy-checkpoint", "legacy-post-system", "legacy-unverified-system"].includes(mode)
+						? { responses: { get_entries: { error: "get_entries is unsupported" } } } : {}),
+				};
+			});
+			writeEntries(path, entries);
+			const record = await catalogRecord(invoke, path);
+			const activated = await invoke("sessions:runtime-activate", [record.id]);
+			assert.equal(activated.payload.ok, true, JSON.stringify(activated.payload));
+			const target = activated.payload.result.value;
+			const frame = await sse.waitFor((candidate) => candidate.payload.channel === "sessions:runtime-event"
+				&& candidate.payload.args[0]?.agentId === target.agentId
+				&& candidate.payload.args[0]?.sourceChannel === "agents:message");
+			const projection = frame.payload.args[0].payload;
+			if (mode === "drop" || mode === "replace") {
+				assert.deepEqual(projection.messages.map((row) => row.meta?.entryId),
+					mode === "drop" ? ["u-0", "u-1", "a-1"] : ["u-0", "a-0", "u-1", "a-1"]);
+				assert.equal(projection.windowStartFilePos, 0);
+				if (mode === "replace") assert.equal(projection.messages[1].text, "edited reply");
+			} else if (mode === "legacy-empty") {
+				assert.deepEqual(projection.messages.map((row) => row.meta?.entryId), ["u-0", "u-1", "a-1"]);
+				assert.equal(projection.windowStartFilePos, 1);
+			} else if (["self-anchor", "legacy-checkpoint", "legacy-post-system", "legacy-unverified-system"].includes(mode)) {
+				assert.deepEqual(projection.messages.map((row) => row.meta?.entryId),
+					mode === "self-anchor" ? [undefined, "u-1", "a-1"] : [undefined, undefined, undefined]);
+				assert.equal(projection.windowStartFilePos, mode === "legacy-unverified-system" ? undefined : 2);
+				if (mode !== "legacy-unverified-system") {
+					const older = await invoke("sessions:catalog-read-message-page", [record.id, projection.windowStartFilePos, 1, { unit: "turn" }]);
+					assert.equal(older.payload.ok, true, JSON.stringify(older.payload));
+					assert.deepEqual(entryIdsOf(older.payload.result), ["u-0", "a-0"]);
+				}
+			} else if (mode === "stale") {
+				assert.equal(projection.messages.at(-1).text, "left reply");
+				assert.equal(projection.messages.at(-1).meta?.entryId, undefined);
+			} else {
+				const result = await invoke("sessions:catalog-read-message-page",
+					[record.id, null, 1, { unit: "turn", beforeEntryId: "u-1" }]);
+				assert.equal(result.payload.ok, true, JSON.stringify(result.payload));
+				assert.deepEqual(entryIdsOf(result.payload.result), ["u-0", "a-0"]);
+				assert.equal(result.payload.result.messages[0].agentId, target.agentId);
+				assert.equal(result.payload.result.nextBefore, null);
+				assert.equal(result.payload.result.nextBeforeEntryId, undefined);
+			}
+		});
+
+		test("history review: inactive ID-only cursor is not a tail read", async (t) => {
+			const scope = makeScope("stale-cursor");
+			const { invoke, fixture } = await startPlain(t, scope);
+			const { entries } = timeline(scope.projectPath, { turns: [
+				{ index: 0, user: "q0", assistant: "a0" },
+				{ index: 1, user: "q1", assistant: "a1" },
+			] });
+			entries.splice(4, 0, { ...entries[4], id: "inactive" });
+			const path = join(fixture.sessions, "inactive-cursor.jsonl");
+			writeEntries(path, entries);
+			const record = await catalogRecord(invoke, path);
+			const options = { unit: "turn", beforeEntryId: "inactive" };
+			const unavailable = await invoke("sessions:catalog-read-message-page", [record.id, null, 1, options]);
+			assert.equal(unavailable.payload.ok, false, JSON.stringify(unavailable.payload));
+			assert.equal(unavailable.payload.error?.message, "HISTORY_CURSOR_NOT_FOUND");
+			const fallback = await invoke("sessions:catalog-read-message-page", [record.id, 2, 1, options]);
+			assert.equal(fallback.payload.ok, true, JSON.stringify(fallback.payload));
+			assert.deepEqual(entryIdsOf(fallback.payload.result), ["u-0", "a-0"]);
+		});
+
+		test("history review: disk puts a metadata-anchored compaction on the retained turn page", async (t) => {
+			const scope = makeScope("metadata-anchor");
+			const { invoke, fixture } = await startPlain(t, scope);
+			const { entries } = timeline(scope.projectPath, { turns: [
+				{ index: 0, user: "q0", assistant: "a0" },
+				{ index: 1, user: "q1", assistant: "a1" },
+			] });
+			entries[4].parentId = "model-anchor";
+			entries.splice(4, 0, { ...entries[1], id: "model-anchor", parentId: "a-0" });
+			entries.push({ type: "compaction", id: "compact", parentId: "a-1", timestamp: entries.at(-1).timestamp,
+				firstKeptEntryId: "model-anchor", summary: "archived" });
+			const path = join(fixture.sessions, "metadata-anchor.jsonl");
+			writeEntries(path, entries);
+			const record = await catalogRecord(invoke, path);
+			const read = (before) => invoke("sessions:catalog-read-message-page", [record.id, before, 1, { unit: "turn" }]);
+			const tail = await read(null);
+			assert.equal(tail.payload.ok, true, JSON.stringify(tail.payload));
+			assert.deepEqual(tail.payload.result.messages.map((row) => row.meta.type === "compaction" ? "summary" : row.meta.entryId),
+				["summary", "u-1", "a-1"]);
+			const older = await read(tail.payload.result.nextBefore);
+			assert.equal(older.payload.ok, true, JSON.stringify(older.payload));
+			assert.deepEqual(entryIdsOf(older.payload.result), ["u-0", "a-0"]);
 		});
 
 		test("repeated user text is edited by turn position, without confusing an earlier identical message", async (t) => {

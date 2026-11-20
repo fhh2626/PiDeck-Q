@@ -34,9 +34,11 @@ public:
     const QJsonArray &messages() const { return m_messages; }
     int size() const { return int(m_messages.size()); }
 
-    /** Replace the transcript from pi `get_messages` + active-branch entry ids. */
+    /** Replace the transcript; a verified legacy suffix has one file slot per raw row from its start. */
     void applyProjection(const QVector<QJsonValue> &rawMessages, const QStringList &entryIds,
-                         const QSet<QString> &toolResultIds);
+                         const QSet<QString> &toolResultIds,
+                         projector::EntryIdLayout layout = projector::EntryIdLayout::Legacy,
+                         int verifiedFileSlotsStart = -1);
 
     /** Local-only failed-turn rows and settlement trims since a projection request. */
     quint64 diagnosticRevision() const { return m_diagnosticRevision; }

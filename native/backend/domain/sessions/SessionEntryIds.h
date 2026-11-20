@@ -24,18 +24,23 @@ struct TakeResult {
 
 TakeResult take(const QStringList &activeEntryIds, int entryIndex);
 
-/** A persisted message consumes a slot even when its role has no display row. */
+/** Count ordinary file slots for legacy RPC responses with no entry metadata. */
 bool consumesMessageEntry(const QJsonValue &message);
 int countMessageEntries(const QVector<QJsonValue> &messages);
 
+struct ProjectionIds {
+    QStringList fileIds;
+    QStringList messageIds;
+    bool matched = false;
+};
+
 /**
- * entryIds aligned with pi `get_messages` (root→leaf), honouring the last compaction's
- * `firstKeptEntryId`. Returns an empty list when the anchor is missing so callers fall
- * back to file/serial matching instead of binding ids to the wrong turns.
- * `includeCompacted` returns the complete file branch for history paging cursors.
+ * Pair `get_messages` with its `get_entries` sources, checking the complete layout.
+ * `fileIds` is the uncompressed branch for paging; `messageIds` is indexed by raw RPC
+ * row, with empty slots for rows with no history ID. On mismatch no IDs are attached.
  */
-QStringList buildActiveBranchEntryIds(const QVector<QJsonValue> &entries, const QString &leafId,
-                                      bool includeCompacted = false);
+ProjectionIds alignProjection(const QVector<QJsonValue> &entries, const QString &leafId,
+                              const QVector<QJsonValue> &messages);
 
 } // namespace sessionentryids
 

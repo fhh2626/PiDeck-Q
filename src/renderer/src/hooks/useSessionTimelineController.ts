@@ -1165,10 +1165,16 @@ export function useSessionTimelineController(options: {
 					anchorFilePos,
 				});
 			})
+			.catch(() => {
+				if (latestLoadBySession.get(sessionId) !== sequence || ownerKeyRef.current !== ownerKey) return;
+				// This request made no insertion, so its scroll anchor cannot be reused.
+				if (loadMoreAnchorRef.current?.ownerKey === ownerKey) loadMoreAnchorRef.current = undefined;
+				showNotice(t("timeline.historyLoadFailed"), 5000, "warning");
+			})
 			.finally(() => {
 				if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
 			});
-	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, prependHistoryPage, runtimeHistory]);
+	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, ownerKey, prependHistoryPage, runtimeHistory]);
 
 	const loadMoreMessages = useCallback(() => {
 		if (diskPage) {

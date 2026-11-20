@@ -2211,6 +2211,7 @@ export const zhCN = {
   "timeline.loadEarlierContent": "显示更早内容",
   "timeline.loadMoreHistory": "加载更多历史消息 ({count} 条)",
   "timeline.loadMoreTurns": "加载更多对话",
+  "timeline.historyLoadFailed": "历史消息加载失败，请重试",
   "timeline.todoTaskTitle": "任务",
   "timeline.todoTaskResumeTitle": "补充",
   "drawer.lazyLoading": "加载中...",

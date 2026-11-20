@@ -2245,6 +2245,7 @@ export const enUS: Record<TranslationKey, string> = {
   "timeline.loadEarlierContent": "Show earlier content",
   "timeline.loadMoreHistory": "Load more history messages ({count})",
   "timeline.loadMoreTurns": "Load more conversations",
+  "timeline.historyLoadFailed": "Could not load conversation history. Please try again.",
   "timeline.todoTaskTitle": "Task",
   "timeline.todoTaskResumeTitle": "Guidance",
   "drawer.lazyLoading": "Loading...",

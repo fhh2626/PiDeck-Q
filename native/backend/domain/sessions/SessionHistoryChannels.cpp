@@ -164,15 +164,14 @@ void registerSessionHistoryChannels(ChannelRegistry &registry, ChannelServices &
                                   }
                               }
                               const JsonlIndex index = sessionchannels::indexFor(services, filePath);
-                              // No `before` means "the newest page": the pager treats it as an
-                              // exclusive end index, so the first call starts at the total.
-                              const int cursor = before.isDouble() ? before.toInt()
-                                                                   : index.activeMessageEntries.size();
+                              const std::optional<int> cursor = before.isDouble()
+                                  ? std::optional<int>(before.toInt()) : std::nullopt;
                               const historypager::Page page = turnUnit
                                   ? historypager::readTurnPage(index, sessionId, cursor,
                                                                effectivePageSize, beforeEntryId,
                                                                sessionchannels::projectorDeps(services))
-                                  : historypager::readMessagePage(index, sessionId, cursor,
+                                  : historypager::readMessagePage(index, sessionId,
+                                                                  cursor.value_or(index.activeMessageEntries.size()),
                                                                   effectivePageSize,
                                                                   sessionchannels::projectorDeps(services));
                               return budgetedPage(sessionchannels::pageJson(page));

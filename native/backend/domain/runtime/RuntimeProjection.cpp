@@ -11,6 +11,44 @@ namespace runtime {
 namespace {
 constexpr int kMessagesTimeoutMs = 120'000;
 constexpr int kEntriesTimeoutMs = 15'000;
+constexpr int kCheckpointPrefixSize = 2;
+
+/** Verify a numeric seam for old RPC implementations that only return messages. */
+int legacyCheckpointHead(const JsonlIndex &index, const QVector<QJsonValue> &raw)
+{
+    const auto roleOf = [](const QJsonValue &value) {
+        return value.toObject().value(QStringLiteral("role")).toString();
+    };
+    if (raw.size() <= kCheckpointPrefixSize || roleOf(raw.at(0)) != QLatin1String("system")
+        || roleOf(raw.at(1)) != QLatin1String("compactionSummary")) return -1;
+    const auto checkpoint = std::find_if(index.activeBranch.crbegin(), index.activeBranch.crend(),
+        [](const IndexEntry &entry) { return entry.type == QLatin1String("compaction"); });
+    if (checkpoint == index.activeBranch.crend() || checkpoint->byteLength > 1024 * 1024
+        || raw.at(1).toObject().value(QStringLiteral("summary")).toString() != checkpoint->summary) return -1;
+
+    const int head = int(index.activeMessageEntries.size()) - int(raw.size()) + kCheckpointPrefixSize;
+    if (head < 0) return -1;
+    int firstKept = 0;
+    bool found = false;
+    for (const IndexEntry &entry : index.activeBranch) {
+        if (entry.id == checkpoint->firstKeptEntryId) { found = true; break; }
+        if (firstKept < index.activeMessageEntries.size()
+            && index.activeMessageEntries.at(firstKept).id == entry.id) ++firstKept;
+    }
+    if (!found || firstKept != head) return -1;
+    for (int i = kCheckpointPrefixSize; i < raw.size(); ++i) {
+        const IndexEntry &entry = index.activeMessageEntries.at(head + i - kCheckpointPrefixSize);
+        const QString role = roleOf(raw.at(i));
+        // Past the two synthetic rows, an ordinary system message consumes a
+        // slot just like any other stored message. Require its file role too.
+        if (role != QLatin1String("system") && !sessionentryids::consumesMessageEntry(raw.at(i))) return -1;
+        if (role != (entry.turnBoundary ? QStringLiteral("custom") : entry.role)) return -1;
+    }
+    // Only a disk-backed checkpoint may be skipped. A real system message at
+    // the front would consume a file slot and make a count-based seam unsafe.
+    const QJsonObject saved = jsonlindex::readEntry(index, *checkpoint).toObject();
+    return saved.value(QStringLiteral("systemMessage")) == raw.at(0) ? head : -1;
+}
 } // namespace
 
 void Coordinator::loadProjection(AgentSession &session, std::function<void(bool)> done,
@@ -153,21 +191,25 @@ void Coordinator::tryLoadProjection(const QString &agentId)
                         tryLoadProjection(agentId);
                         return;
                     }
-                    QStringList entryIds;
-                    QStringList fileEntryIds;
+                    sessionentryids::ProjectionIds projection;
                     const bool hasEntries = entriesOk && entriesResponse.value(QStringLiteral("success")).toBool(false);
                     if (hasEntries) {
                         const QJsonObject data = entriesResponse.value(QStringLiteral("data")).toObject();
                         QVector<QJsonValue> entries;
                         for (const auto &value : data.value(QStringLiteral("entries")).toArray()) entries.append(value);
                         const QString leafId = data.value(QStringLiteral("leafId")).toString();
-                        entryIds = sessionentryids::buildActiveBranchEntryIds(entries, leafId);
-                        fileEntryIds = sessionentryids::buildActiveBranchEntryIds(entries, leafId, true);
+                        projection = sessionentryids::alignProjection(entries, leafId, raw);
                     }
                     const int roleCount = sessionentryids::countMessageEntries(raw);
+                    const bool legacyCursor = projection.fileIds.isEmpty() && std::all_of(raw.begin(), raw.end(), [](const QJsonValue &value) {
+                        const QString role = value.toObject().value(QStringLiteral("role")).toString();
+                        return sessionentryids::consumesMessageEntry(value)
+                            || role == QLatin1String("compactionSummary") || role == QLatin1String("branchSummary");
+                    });
                     const auto apply = [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad,
-                                        raw, entryIds, hasEntries, roleCount, wasBound, boundSession, boundGeneration](
-                                           const QStringList &fileIds, bool cursorKnown) {
+                                        raw, ids = projection.messageIds, matched = projection.matched,
+                                        hasEntries, legacyCursor, roleCount, wasBound, boundSession, boundGeneration](
+                                           const QStringList &fileIds, bool cursorKnown, int checkpointHead = -1) {
                         auto load = m_projectionLoads.find(agentId);
                         if (load == m_projectionLoads.end() || load->ticket != ticket) return;
                         AgentSession *latest = agent(agentId);
@@ -191,40 +233,47 @@ void Coordinator::tryLoadProjection(const QString &agentId)
                             tryLoadProjection(agentId);
                             return;
                         }
-                        latest->setActiveEntryIds(entryIds);
+                        latest->setActiveEntryIds(ids);
                         if (hasEntries) latest->setEntrySource(QStringLiteral("rpc"));
                         auto &transcript = latest->transcript();
                         const QJsonArray previous = transcript.messages();
                         const bool settledDuringLoad = transcript.trimRevision() != load->trimRevision;
-                        transcript.applyProjection(raw, entryIds, missingtoolcalls::collectToolResultIds(raw));
-                        transcript.configureHistory(fileIds,
-                            cursorKnown ? std::max(0, int(fileIds.size()) - roleCount) : -1,
-                            load->preserveHistory, load->preserveHistory);
+                        transcript.applyProjection(raw, ids, missingtoolcalls::collectToolResultIds(raw),
+                            matched ? projector::EntryIdLayout::Matched : projector::EntryIdLayout::Legacy,
+                            checkpointHead >= 0 ? kCheckpointPrefixSize : -1);
+                        // Exact IDs give the history cursor directly. The end of the file
+                        // is only a fallback for rows appended after this projection.
+                        const int fallback = !cursorKnown ? -1 : matched ? int(fileIds.size())
+                            : legacyCursor ? std::max(0, int(fileIds.size()) - roleCount) : checkpointHead;
+                        transcript.configureHistory(fileIds, fallback, load->preserveHistory, load->preserveHistory);
                         transcript.preserveDiagnosticsSince(load->diagnosticRevision, previous);
                         if (settledDuringLoad) transcript.trimToTurns(50);
                         latest->refreshFileVersion();
                         agentruntime::flushMessages(*latest, hooksFor(*latest));
                         finishProjectionLoad(agentId, ticket, true);
                     };
-                    if (hasEntries && (fileEntryIds.size() >= roleCount)) {
-                        apply(fileEntryIds, true);
+                    if (!projection.fileIds.isEmpty()) {
+                        apply(projection.fileIds, true);
                     } else if (!latest->tab().sessionPath.isEmpty()) {
                         // Older pi implementations may not implement get_entries. Keep a
                         // numeric cursor from the complete file branch without blocking the
                         // event loop or assigning unverified entry ids to the RPC messages.
                         const QString path = projectionFilePath(latest->tab().sessionPath,
                             latest->tab().sessionEnvironment, latest->tab().wslDistro);
-                        background::runBlocking([path]() {
+                        background::runBlocking([path, raw, hasEntries, legacyCursor]() {
                             const JsonlIndex index = jsonlindex::build(path);
                             QJsonArray ids;
                             for (const IndexEntry &entry : index.activeMessageEntries) ids.append(entry.id);
-                            return QJsonValue(ids);
+                            const int checkpointHead = !hasEntries && !legacyCursor ? legacyCheckpointHead(index, raw) : -1;
+                            return QJsonValue(QJsonObject{{QStringLiteral("ids"), ids},
+                                                          {QStringLiteral("checkpointHead"), checkpointHead}});
                         }, [apply](background::Outcome outcome) {
+                            const QJsonObject data = outcome.value.toObject();
                             QStringList ids;
                             if (outcome.ok) {
-                                for (const QJsonValue &id : outcome.value.toArray()) ids.append(id.toString());
+                                for (const QJsonValue &id : data.value(QStringLiteral("ids")).toArray()) ids.append(id.toString());
                             }
-                            apply(ids, outcome.ok);
+                            apply(ids, outcome.ok, data.value(QStringLiteral("checkpointHead")).toInt(-1));
                         });
                     } else {
                         apply({}, false);

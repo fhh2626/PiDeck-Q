@@ -161,6 +161,29 @@ test("timeline controller: user scroll-up loads one 3-turn page through the same
 	});
 });
 
+test("timeline controller: a rejected history cursor leaves the window intact and permits another page request", async () => {
+	let attempts = 0;
+	await withTimelineController({ respond: (call) => {
+		if (call.before === 24 && ++attempts === 1) return Promise.reject(new Error("HISTORY_CURSOR_NOT_FOUND"));
+		return respondWithHistory(OLDER_TURN_PAGE)(call);
+	} }, async ({ atoms, store, mount, controller, act }) => {
+		const id = "session-stale-history-cursor";
+		seedCompactedRuntimeWindow(store, atoms, id);
+		await mount(id);
+		const entry = () => store.get(atoms.sessionMessagesCacheAtom)[id];
+		assert.equal(attempts, 1);
+		assert.equal(entry().history, undefined);
+		assert.equal(controller().isLoadingMoreMessages, false);
+		assert.equal(entry().messages.at(-1).text, "最近回答");
+		await act(async () => {
+			controller().loadMoreMessages();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		assert.ok(attempts >= 2);
+		assert.ok(entry().history?.messages.some((message) => message.id === "h1"));
+	});
+});
+
 test("compaction pagination: windowStartFilePos fallback passes before=undefined to atom, establishing history", () => {
 	const atoms = loadAtoms();
 	const store = createStore();

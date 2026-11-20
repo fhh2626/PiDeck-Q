@@ -88,6 +88,9 @@ JsonlIndex build(const QString &hostPath);
  */
 QVector<QJsonValue> readMessages(const JsonlIndex &index, const QVector<IndexEntry> &entries);
 
+/** Read one full entry with the same digest and identity checks as readMessages. */
+QJsonValue readEntry(const JsonlIndex &index, const IndexEntry &entry);
+
 /** LRU + single-flight index cache (32 entries, mirroring the oracle). */
 class Store {
 public:

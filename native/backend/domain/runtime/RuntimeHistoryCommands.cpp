@@ -354,22 +354,13 @@ bool Coordinator::tryReadRuntimeTurnPage(const QString &sessionId, const QString
         return -1;
     };
 
-    int position = -1;
-    if (!beforeEntryId.isEmpty()) {
-        // Entry id is the only cross-space anchor; the renderer sends it on every turn.
-        position = liveIndexForEntryId(beforeEntryId);
-    } else if (hasBefore) {
-        // A numeric cursor is a file index: resolve it to an entry id first, then look
-        // that entry up in the runtime window. Treating the number as a runtime index
-        // would silently page the wrong rows after an abort/trim.
-        const int filePosition = qBound(0, before, index.activeMessageEntries.size());
-        if (filePosition >= index.activeMessageEntries.size()) return false;
-        const QString anchorId = index.activeMessageEntries.at(filePosition).id;
-        position = liveIndexForEntryId(anchorId);
-        // The cache's first row has nothing older behind it; the file owns that history.
-        if (position == 0) return false;
-    }
-    if (position < 0) return false;
+    // Resolve in file space first: a stale live row cannot anchor the active branch.
+    const int filePosition = beforeEntryId.isEmpty() && hasBefore
+        ? qBound(0, before, index.activeMessageEntries.size())
+        : historypager::messageEntryPosition(index, beforeEntryId);
+    if (filePosition < 0 || filePosition >= index.activeMessageEntries.size()) return false;
+    const int position = liveIndexForEntryId(index.activeMessageEntries.at(filePosition).id);
+    if (position <= 0) return false;
 
     const int turns = qBound(1, turnCount, historypager::kMaxTurnPageSize);
     QVector<IndexEntry> roles;
@@ -391,23 +382,19 @@ bool Coordinator::tryReadRuntimeTurnPage(const QString &sessionId, const QString
     QJsonArray messages;
     for (int cursor = start; cursor < position; ++cursor) messages.append(list.at(cursor));
     const QString oldestEntryId = liveEntryIdAt(start);
-    if (oldestEntryId.isEmpty()) return false;
-    int resolvedOldest = -1;
-    for (int cursor = 0; cursor < index.activeMessageEntries.size(); ++cursor) {
-        if (index.activeMessageEntries.at(cursor).id == oldestEntryId) {
-            resolvedOldest = cursor;
-            break;
-        }
-    }
-    // nextBefore must stay in the file index space; without a resolvable anchor the
-    // renderer would be handed a runtime index that no later read can interpret.
-    if (resolvedOldest < 0) return false;
+    const int resolvedOldest = historypager::messageEntryPosition(index, oldestEntryId);
+    if (resolvedOldest < 0 || resolvedOldest >= filePosition) return false;
+    // A turn request can straddle the window head. Let disk supply the whole page
+    // rather than serving a short live prefix when the requested turns begin earlier.
+    const int fileStart = historypager::findTurnPageStart(
+        index.activeMessageEntries, filePosition, turns, historypager::kMaxDisplayPageBytes);
+    if (fileStart < resolvedOldest) return false;
 
     page->messages = messages;
     page->total = index.activeMessageEntries.size();
-    page->hasNextBefore = true;
+    page->hasNextBefore = resolvedOldest > 0;
     page->nextBefore = resolvedOldest;
-    page->nextBeforeEntryId = oldestEntryId;
+    if (page->hasNextBefore) page->nextBeforeEntryId = oldestEntryId;
     page->indexVersion = index.version();
     return true;
 }

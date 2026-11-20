@@ -55,11 +55,12 @@ int main(int argc, char **argv)
     // A physically later abandoned branch must not alter the active file cursor.
     full.entries.append(QJsonObject{{"type", "message"}, {"id", "abandoned"}, {"parentId", "u1"},
                                     {"message", QJsonObject{{"role", "user"}, {"content", "other branch"}}}});
-    const auto activeIds = sessionentryids::buildActiveBranchEntryIds(full.entries, "compact");
-    const auto fileIds = sessionentryids::buildActiveBranchEntryIds(full.entries, "compact", true);
     QVector<QJsonValue> compacted{QJsonObject{{"role", "compactionSummary"}, {"summary", "summary"}, {"timestamp", 100}}};
     for (int i = 8; i < full.messages.size(); ++i) compacted.append(full.messages.at(i));
-    transcript.applyProjection(compacted, activeIds, {});
+    const auto alignment = sessionentryids::alignProjection(full.entries, "compact", compacted);
+    if (!alignment.matched) return 1;
+    const auto &fileIds = alignment.fileIds;
+    transcript.applyProjection(compacted, alignment.messageIds, {}, projector::EntryIdLayout::Matched);
     transcript.configureHistory(fileIds, 8, true, true);
     outputCases.insert("compacted", transcript.flushPayload("2:200"));
     outputCases.insert("undelivered", transcript.flushPayload("2:200"));
@@ -75,7 +76,7 @@ int main(int argc, char **argv)
     fallback.configureHistory(fileIds, 8, true, true);
     outputCases.insert("withoutEntryIds", fallback.flushPayload("2:200"));
     fallback.messageFlushDelivered();
-    fallback.applyProjection(compacted, activeIds, {});
+    fallback.applyProjection(compacted, alignment.messageIds, {}, projector::EntryIdLayout::Matched);
     fallback.configureHistory(fileIds, 8, true, true);
     outputCases.insert("entryIdsRestored", fallback.flushPayload("2:200"));
 

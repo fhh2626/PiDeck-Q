@@ -195,7 +195,8 @@ JsonlIndex build(const QString &hostPath)
     return index;
 }
 
-QVector<QJsonValue> readMessages(const JsonlIndex &index, const QVector<IndexEntry> &entries)
+static QVector<QJsonValue> readPayloads(const JsonlIndex &index, const QVector<IndexEntry> &entries,
+                                        bool messagesOnly)
 {
     QVector<QJsonValue> result;
     if (entries.isEmpty()) return result;
@@ -237,11 +238,21 @@ QVector<QJsonValue> readMessages(const JsonlIndex &index, const QVector<IndexEnt
             if (!entry.id.isEmpty() && row.value(QStringLiteral("id")).toString() != entry.id) {
                 throw ChannelError(QLatin1String(kHistoryChangedCode));
             }
-            result.append(pitask::displayEntry(row).value(QStringLiteral("message")));
+            result.append(messagesOnly ? pitask::displayEntry(row).value(QStringLiteral("message")) : QJsonValue(row));
         }
         from = to;
     }
     return result;
+}
+
+QVector<QJsonValue> readMessages(const JsonlIndex &index, const QVector<IndexEntry> &entries)
+{
+    return readPayloads(index, entries, true);
+}
+
+QJsonValue readEntry(const JsonlIndex &index, const IndexEntry &entry)
+{
+    return readPayloads(index, {entry}, false).first();
 }
 
 Store::Store(int limit) : m_limit(limit) {}
