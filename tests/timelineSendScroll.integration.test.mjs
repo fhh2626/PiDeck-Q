@@ -11,10 +11,10 @@ const message = (id) => ({ id, agentId: "agent", role: "user", text: id, timesta
 const rectangle = (top, height) => ({ x: 0, y: top, top, bottom: top + height, left: 0, right: 800, width: 800, height });
 
 /** Exercise the real controller, scroller and virtualizer with controllable browser layout and event delivery. */
-async function withSendTimeline(run) {
+async function withSendTimeline(run, { busy = true, reducedMotion = true } = {}) {
 	await withHookHost(async ({ React, load, mount, window, act, flushFrames }) => {
 		ControllableResizeObserver.reset();
-		window.matchMedia = () => ({ matches: true });
+		window.matchMedia = () => ({ matches: reducedMotion });
 		const globals = { ResizeObserver: ControllableResizeObserver, Node: window.Node, performance };
 		const atoms = load("src/renderer/src/atoms/index.ts");
 		const { useSessionTimelineController } = load("src/renderer/src/hooks/useSessionTimelineController.ts", {
@@ -29,7 +29,7 @@ async function withSendTimeline(run) {
 			},
 		});
 		const { MessageScroller } = load("src/renderer/src/components/agents/message-scroller.tsx", {
-			globals, stubs: { "motion/react": { useReducedMotion: () => true } },
+			globals, stubs: { "motion/react": { useReducedMotion: () => reducedMotion } },
 		});
 		const { useVirtualTimeline } = load("src/renderer/src/hooks/useVirtualTimeline.ts", { globals });
 		const { VirtualTimelineRows } = load("src/renderer/src/components/session/timeline/VirtualTimelineRows.tsx");
@@ -75,7 +75,9 @@ async function withSendTimeline(run) {
 		function Timeline(props) {
 			controller = useSessionTimelineController({ sessionId: "send-scroll-session", messages: props.messages });
 			const items = React.useMemo(() => props.messages.map((entry) => ({ kind: "message", message: entry })), [props.messages]);
-			const applyReaderScrollTop = React.useCallback((top) => controller.scrollerScrollApiRef.current?.restoreAt(top), []);
+			const applyReaderScrollTop = React.useCallback((top, reason) => controller.scrollerScrollApiRef.current?.restoreAt(
+				top, reason === "preserve-anchor" ? { preserveFollowState: true } : undefined,
+			), []);
 			virtualizer = useVirtualTimeline({
 				items, viewportRef: controller.timelineRef, listRef, adapterRef,
 				isFollowing: controller.autoScroll, applyReaderScrollTop, sessionId: "send-scroll-session",
@@ -84,7 +86,7 @@ async function withSendTimeline(run) {
 			return React.createElement(MessageScroller, {
 				viewportRef: attachViewport, scrollApiRef: controller.scrollerScrollApiRef,
 				initialFollowOutput: controller.autoScroll, onFollowChange: controller.setAutoScrollFromScroller,
-				busy: true, viewportProps: { onScroll: controller.handleTimelineScroll },
+				busy, viewportProps: { onScroll: controller.handleTimelineScroll },
 			}, React.createElement("div", { ref: virtualizer.registerListNode }, React.createElement(VirtualTimelineRows, {
 				renderPlan: virtualizer.renderPlan, registerRowNode: virtualizer.registerRowNode,
 				renderRow: (row) => React.createElement("div", { "data-message-id": row.anchorId }, row.anchorId),
@@ -119,7 +121,7 @@ async function withSendTimeline(run) {
 		await run({
 			controller: () => controller, viewport: () => viewport, adapter: () => adapterRef.current,
 			gap: () => contentHeight() - viewportHeight - currentTop(), heights,
-			append, settle, dispatchScroll, notifyResize,
+			append, settle, dispatchScroll, notifyResize, act,
 			async scrollTo(top) { viewport.scrollTop = top; await dispatchScroll(); },
 			async wheelUp(top) {
 				await act(() => {
@@ -194,3 +196,58 @@ test("a real upward gesture during send wins over collapse compensation and late
 		assert.equal(timeline.controller().autoScroll, false, "explicit reader input must keep priority over delayed layout events");
 	});
 });
+
+test("an idle reader stays unlocked when late row measurements clamp anchor correction to the bottom", async (context) => {
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	await withSendTimeline(async (timeline) => {
+		// Expire the end-of-stream transition so the scroller uses its idle smooth
+		// behavior, while no send or agent output can explain a renewed follow lock.
+		await timeline.act(() => context.mock.timers.tick(151));
+		for (const id of ["old-11", "old-10"]) {
+			const bottom = timeline.viewport().scrollTop;
+			await timeline.wheelUp(bottom - 40);
+			assert.equal(timeline.viewport().scrollTop, bottom - 40, "the first upward gesture must move the transcript");
+			assert.equal(timeline.controller().autoScroll, false);
+			timeline.heights.set(id, 20);
+			await timeline.settle();
+			assert.ok(timeline.gap() <= 2, "the late shrink must clamp the saved reading position to the new bottom");
+			assert.equal(timeline.controller().autoScroll, false, "preserving an anchor must retain the reader's escape from following");
+		}
+		const reading = timeline.adapter().captureReadingAnchor();
+		assert.equal(reading.status, "resolved");
+		const anchorNode = timeline.viewport().querySelector(`[data-message-id="${reading.anchor.messageId}"]`);
+		assert.ok(anchorNode);
+		assert.ok(anchorNode.getBoundingClientRect().top > reading.anchor.offsetTop, "the shorter list cannot currently fit the saved passage at its requested offset");
+		await timeline.append("later-history-row", 220);
+		await timeline.settle();
+		const after = timeline.adapter().captureReadingAnchor();
+		assert.equal(after.status, "resolved");
+		// The temporarily clamped passage can now be restored. Its message and
+		// offset, rather than the clamped absolute position, define reading intent.
+		assert.equal(after.anchor.messageId, reading.anchor.messageId);
+		assert.equal(after.anchor.offsetTop, reading.anchor.offsetTop);
+		const restoredNode = timeline.viewport().querySelector(`[data-message-id="${reading.anchor.messageId}"]`);
+		assert.ok(restoredNode);
+		assert.equal(restoredNode.getBoundingClientRect().top, reading.anchor.offsetTop, "the actual mounted passage must return to the saved reading offset");
+		assert.equal(timeline.controller().autoScroll, false);
+		assert.ok(timeline.gap() > 2, "later layout work must not pull the reader back to the live edge");
+	}, { busy: false, reducedMotion: false });
+});
+
+for (const navigation of ["restoreMessage", "jumpToMessage"]) {
+	test(`an explicit ${navigation} to the live edge resumes following after idle reading`, async () => {
+		await withSendTimeline(async (timeline) => {
+			await timeline.wheelUp(timeline.viewport().scrollTop - 300);
+			assert.equal(timeline.controller().autoScroll, false);
+			await timeline.act(() => {
+				assert.equal(timeline.adapter()[navigation]("old-11", 0), true);
+			});
+			await timeline.settle();
+			assert.equal(timeline.controller().autoScroll, true, "explicit navigation keeps its existing live-edge follow behavior");
+			await timeline.append("after-explicit-navigation", 220);
+			await timeline.settle();
+			assert.equal(timeline.controller().autoScroll, true);
+			assert.ok(timeline.gap() <= 2);
+		}, { busy: false });
+	});
+}
