@@ -58,6 +58,17 @@ Qt ↔ Sidecar uses local TCP with length-prefixed JSON. Renderer ↔ Sidecar us
 
 Xmake and `scripts/stage-extension-dependencies.mjs` stage Qt, the renderer, extension resources and the C++ backend. `npm run pack` and `scripts/verify-pack-stage.mjs` share `PIDECK_STAGE_DIR`, which defaults to `release/win-unpacked`. The package contains no Node business backend or bundled Node interpreter.
 
+## Pi regular expression compatibility
+
+PiDeck supports Pi Agent running on Node.js 22.19.0 or later. Run the full test suite on the repository's Node.js 24.19.0. When changing the security regex validator or upgrading `regexpp`, install dependencies with Node 24, then run these targeted checks with Node 22.19.0:
+
+```bash
+node scripts/security-regex-validator/generate-unicode16.mjs --check
+node --test tests/securityRegexValidatorBundle.test.mjs
+```
+
+The tests use Node 22's native regex engine to check Unicode 16 group names. After changing the shared validator or `regexpp`, run `npm run build:security-regex-validator` with Node 24 to regenerate the embedded C++ resource.
+
 ## Documentation and contributions
 
 VitePress sources live in `docs-site/`. `VITEPRESS_BASE` controls the deployment base and `DOCS_SITE_ORIGIN` the origin; `public/CNAME` retains the custom domain.

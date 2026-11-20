@@ -58,6 +58,17 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 
 桌面 staging 由 Xmake 与 `scripts/stage-extension-dependencies.mjs` 完成，包含 Qt、renderer、扩展资源和 C++ 后端。`npm run pack` 和 `scripts/verify-pack-stage.mjs` 使用同一 `PIDECK_STAGE_DIR`，默认目录是 `release/win-unpacked`。安装包不包含 Node 业务后端或 Node 解释器。
 
+## Pi 正则兼容性
+
+PiDeck 支持使用 Node.js 22.19.0 或更新版本运行的 Pi Agent。全量测试仍使用仓库要求的 Node.js 24.19.0。修改安全规则校验器或升级 `regexpp` 时，先用 Node 24 安装依赖，再单独用 Node 22.19.0 执行：
+
+```bash
+node scripts/security-regex-validator/generate-unicode16.mjs --check
+node --test tests/securityRegexValidatorBundle.test.mjs
+```
+
+这组测试用 Node 22 的原生正则验证 Unicode 16 组名兼容性。更新共享校验器或 `regexpp` 后，用 Node 24 执行 `npm run build:security-regex-validator`，更新 C++ 后端的嵌入产物。
+
 ## 官网与贡献
 
 VitePress 源码位于 `docs-site/`。部署根路径由 `VITEPRESS_BASE` 控制，站点 origin 由 `DOCS_SITE_ORIGIN` 控制，`public/CNAME` 保存自定义域名。

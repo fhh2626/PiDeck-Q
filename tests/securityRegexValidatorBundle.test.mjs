@@ -33,13 +33,33 @@ test("the embedded validator keeps named groups within Node 22's Unicode 16 char
 	runInContext("Object.fromEntries = undefined", context);
 	runInContext(bundle, context);
 	const validatePattern = runInContext("PiDeckSecurityRegex.validatePattern", context);
-	// Unicode 16 names remain valid, including escaped and astral characters.
-	for (const pattern of [String.raw`(?<\u{105C0}>a)`, `(?<${String.fromCodePoint(0x105c0)}>a)`, String.raw`(?<名>a)\k<名>`]) {
-		assert.equal(validatePattern(pattern), true, pattern);
-	}
-	// regexpp 4.12.2 accepts these Unicode 17 names even with ecmaVersion 2024.
-	for (const pattern of [String.raw`(?<\u{11DB0}>a)`, `(?<${String.fromCodePoint(0x11db0)}>a)`, String.raw`(?<a\u{11DB0}>a)`]) {
-		assert.equal(validatePattern(pattern), false, "the published policy must also compile on Node 22");
+	const unicode16Letter = String.fromCodePoint(0x105c0);
+	const unicode17Letter = String.fromCodePoint(0x11db0);
+	const patterns = [
+		[String.raw`(?<\u{105C0}>a)\k<\uD801\uDDC0>`, true],
+		[`(?<${unicode16Letter}>a)\\k<${unicode16Letter}>`, true],
+		[String.raw`(?<\uD801\uDDC0>a)\k<\u{105C0}>`, true],
+		[String.raw`(?<$name_0\u0301\u200C\u200D>a)`, true],
+		[String.raw`(?<_name>a)`, true],
+		[String.raw`(?<名>a)\k<名>`, true],
+		[`(?<name>${unicode17Letter})`, true], // Only group names are restricted.
+		[String.raw`(?<\u{11DB0}>a)`, false],
+		[`(?<${unicode17Letter}>a)`, false],
+		[String.raw`(?<a\u{11DB0}>a)`, false],
+		[String.raw`(?<\uD807\uDDB0>a)\k<\u{11DB0}>`, false],
+		[String.raw`(?<a\u{1ACF}>a)`, false], // A character added only to ID_Continue in Unicode 17.
+		[String.raw`(?<a\u0301>a)`, true],
+		[String.raw`(?<\u0301name>a)`, false],
+		[String.raw`(?<\u200Cname>a)`, false],
+	];
+	for (const [pattern, accepted] of patterns) {
+		assert.equal(validatePattern(pattern), accepted, pattern);
+		if (process.versions.node.startsWith("22.")) {
+			for (const flags of ["", "i"]) {
+				if (accepted) assert.doesNotThrow(() => new RegExp(pattern, flags), pattern);
+				else assert.throws(() => new RegExp(pattern, flags), SyntaxError, pattern);
+			}
+		}
 	}
 });
 

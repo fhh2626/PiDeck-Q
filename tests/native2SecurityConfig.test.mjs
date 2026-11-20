@@ -113,7 +113,8 @@ for (const [field, flags] of [["denyBashPatterns", ""], ["denyPowerShellPatterns
 			"(?<!prefix)foo",
 			String.raw`(?<name>foo)\k<name>`,
 			String.raw`(?<\u{105C0}>a)`,
-			`(?<${String.fromCodePoint(0x105c0)}>a)`,
+			String.raw`(?<${String.fromCodePoint(0x105c0)}>a)\k<\uD801\uDDC0>`,
+			String.raw`(?<a\u0301>a)\k<a\u0301>`,
 			// Named groups require a second parser pass, which must reset its count.
 			"()".repeat(32766) + "(?<last>)",
 			"[]",
@@ -159,6 +160,7 @@ for (const [field, flags] of [["denyBashPatterns", ""], ["denyPowerShellPatterns
 	for (const [label, pattern] of [
 		["Unicode 17 group names", String.raw`(?<\u{11DB0}>a)`],
 		["literal Unicode 17 group names", `(?<${String.fromCodePoint(0x11db0)}>a)`],
+		["Unicode 17 continuation characters in group names", String.raw`(?<a\u{1ACF}>a)`],
 		["more than 32767 captures", "()".repeat(32768)],
 	]) {
 		test(`native security rejects ${label} in ${field} without changing policy`, { skip }, async (t) => {
