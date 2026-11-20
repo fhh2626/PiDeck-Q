@@ -17,7 +17,9 @@ export type SessionProcessEvent = {
 	timestamp: number;
 	summary: string;
 	detail?: string;
+	/** Path as recorded in the Pi JSONL header, without catalog normalization. */
 	cwd?: string;
+	/** Parent path as recorded in the Pi JSONL header, without ancestry resolution. */
 	parentSession?: string;
 	provider?: string;
 	modelId?: string;

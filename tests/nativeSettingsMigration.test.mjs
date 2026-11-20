@@ -13,15 +13,37 @@ const quoteStyles = [
 ];
 
 const backslash = "\\";
+const escapedUncPath = backslash.repeat(4) + ["SERVER", "Share", "Runner"].join(backslash.repeat(2));
 const pathIdentities = [
   ["UNC versus local POSIX", "//server/share/runner", "/server/share/runner", false],
   ["local POSIX versus UNC", "/server/share/runner", "//server/share/runner", false],
   ["UNC separator aliases", backslash.repeat(2) + ["SERVER", "Share", "Runner"].join(backslash),
     "//server/share/bin/../runner", true],
-  ["escaped UNC separator aliases", backslash.repeat(4) + ["SERVER", "Share", "Runner"].join(backslash.repeat(2)),
+  ["escaped UNC separator aliases", escapedUncPath,
     backslash.repeat(2) + ["server", "share", "runner"].join(backslash), true],
+  ["escaped UNC versus forward-slash UNC", escapedUncPath, "//server/share/bin/../runner", true],
+  ["escaped UNC versus local POSIX", escapedUncPath, "/server/share/runner", false],
+  ["local POSIX versus escaped UNC", "/server/share/runner", escapedUncPath, false],
+  ["ambiguous slash prefix versus UNC", "///server/share/runner", "//server/share/runner", false],
+  ["a parent segment cannot cross a UNC share root", "//server/other/../share/runner", "//server/share/runner", false],
+  ["a device UNC path stays distinct from an ordinary share", "//?/UNC/server/share/runner", "//server/share/runner", false],
+  ["a device drive path stays distinct from an ordinary drive path", "//?/C:/Tools/Runner.exe", "C:/Tools/Runner.exe", false],
   ["ordinary POSIX path aliases", "/server/share/runner", "/server//share/./bin/../runner", true],
 ];
+if (process.platform === "win32") {
+  for (const [label, prefix] of [["slash then backslash", "/\\"], ["backslash then slash", "\\/"]]) {
+    pathIdentities.push(
+      [`mixed UNC prefix (${label})`, `${prefix}SERVER/Share/bin/../runner`, "//server/share/runner", true],
+      [`mixed UNC prefix (${label}) cannot cross a share root`, `${prefix}server/other/../share/runner`, "//server/share/runner", false],
+    );
+  }
+} else {
+  pathIdentities.push(
+    ["three leading slashes are local on POSIX", "///server/share/runner", "/server/share/runner", true],
+    ["three leading slashes do not make a POSIX path case-insensitive", "///server/share/Runner", "/server/share/runner", false],
+    ["a leading POSIX backslash component is not a mixed UNC prefix", String.raw`/\server/share/runner`, "//server/share/runner", false],
+  );
+}
 
 test("AppSettings type no longer declares the Electron sandbox option", () => {
   // “已删除功能不得再出现”的静态约束：类型声明里的字段无法靠运行时行为证明缺席。
@@ -45,6 +67,38 @@ for (const update of [false, true]) {
       }
     });
   }
+  for (const [label, customPiPath, command] of [
+    ["an escaped UNC path", escapedUncPath, "//server/share/runner"],
+    ["a device drive path", String.raw`\\?\C:\Tools\Runner.exe`, "//?/c:/tools/runner.exe"],
+    ["a device UNC path", String.raw`\\?\UNC\SERVER\Share\Runner.exe`, "//?/unc/server/share/runner.exe"],
+  ]) {
+    test(`a supported install keeps ${label} on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const cache = { command, version: "1.5.2", runtimeKind: "typescript" };
+      const values = { piRuntimePreference: "auto", piRustPath: customPiPath, customPiPath,
+        piInstall: cache, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, customPiPath);
+        assert.deepEqual(snapshot.piInstall, cache);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+        assert.equal(snapshot.piEnvironmentChecked, true);
+      }
+    });
+  }
+  test(`a device path with a retired command name is removed on ${update ? "update" : "load"}`, { skip }, async (t) => {
+    const values = { customPiPath: String.raw`\\?\C:\Tools\pi-rust.exe`, piRustPath: "" };
+    const session = await startBackendSession(t, { settings: update ? {} : values });
+    const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+    assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+    const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+    for (const snapshot of [response.payload.result, disk]) {
+      assert.equal(snapshot.customPiPath, "");
+      assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+    }
+  });
   for (const [label, quote] of quoteStyles) {
     test(`retired custom paths with ${label} are removed on ${update ? "update" : "load"}`, { skip }, async (t) => {
       const command = "/custom/retired-runner";

@@ -234,6 +234,41 @@ bool migrateBuiltInDefaults(QJsonObject *settings, const QJsonValue &persistedVe
     return true;
 }
 
+/** Compare UNC spellings without using the host's rules for parsing the share root. */
+QString comparableUncPiPath(const QString &path)
+{
+    // Legacy settings can contain four literal backslashes at the start and
+    // doubled separators inside the path. Treat both spellings as UNC only here.
+    const qsizetype prefixLength = path.startsWith(QLatin1String("\\\\\\\\")) ? 4 : 2;
+    QString relative = path.mid(prefixLength);
+    relative.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (relative.startsWith(QLatin1Char('/'))) return path;
+    // Keep device prefixes intact and compare only spelling: extended paths
+    // may have literal dot segments, so don't normalize them as UNC shares.
+    if (relative.startsWith(QLatin1String("?/")) || relative.startsWith(QLatin1String("./"))) {
+        return QLatin1String("//") + relative.toLower();
+    }
+    const QStringList components = relative.toLower().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (components.size() < 2) return path;
+    const auto &server = components[0];
+    const auto &share = components[1];
+    // Keep malformed roots distinct from ordinary shares.
+    if (server == QLatin1String("?") || server == QLatin1String(".") || server == QLatin1String("..")
+        || share == QLatin1String(".") || share == QLatin1String("..")) return path;
+    QStringList normalized{server, share};
+    for (qsizetype i = 2; i < components.size(); ++i) {
+        const auto &part = components[i];
+        if (part == QLatin1String(".")) continue;
+        if (part == QLatin1String("..")) {
+            if (normalized.size() == 2) return path;
+            normalized.removeLast();
+        } else {
+            normalized.append(part);
+        }
+    }
+    return QLatin1String("//") + normalized.join(QLatin1Char('/'));
+}
+
 /** Normalize stored command paths without requiring an old installation to still exist. */
 QString comparablePiPath(QString path)
 {
@@ -263,26 +298,32 @@ QString comparablePiPath(QString path)
             .arg(urlMatch.captured(1), urlMatch.captured(2), QDir::cleanPath(urlMatch.captured(3)));
     }
     if (path.isEmpty() || path.startsWith(QLatin1String("wsl://"))) return path;
-    // Windows paths can be migrated on another host, so a drive/UNC path keeps its
-    // case-insensitive identity even when the current build runs on Linux. A backslash
-    // inside a POSIX filename remains a literal character, not a directory separator.
+#ifdef Q_OS_WIN
+    // Windows also accepts mixed leading separators. Parse their share roots
+    // here instead of letting QDir::cleanPath resolve .. across the share.
+    if (path.startsWith(QLatin1String("/\\")) || path.startsWith(QLatin1String("\\/"))) {
+        return comparableUncPiPath(path);
+    }
+#else
+    // More than two leading slashes on POSIX name an ordinary local path.
+    if (path.startsWith(QLatin1String("///"))) return QDir::cleanPath(path);
+#endif
+    if (path.startsWith(QLatin1String("\\\\")) || path.startsWith(QLatin1String("//"))) {
+        return comparableUncPiPath(path);
+    }
+    // A Windows drive path keeps its case-insensitive identity even on Linux.
+    // A backslash inside a POSIX filename remains a literal character.
 #ifdef Q_OS_WIN
     const bool windowsPath = true;
 #else
-    static const QRegularExpression windowsPrefix(QStringLiteral("^(?:[A-Za-z]:[\\\\/]|\\\\\\\\|//)"));
+    static const QRegularExpression windowsPrefix(QStringLiteral("^[A-Za-z]:[\\\\/]"));
     const bool windowsPath = windowsPrefix.match(path).hasMatch();
 #endif
-    const bool uncPath = windowsPath
-        && (path.startsWith(QLatin1String("\\\\"))
-            || (path.startsWith(QLatin1String("//")) && !path.startsWith(QLatin1String("///"))));
     if (windowsPath) {
         path.replace(QLatin1Char('\\'), QLatin1Char('/'));
         path = path.toLower();
     }
-    const QString cleaned = QDir::cleanPath(path);
-    // Qt on a POSIX host collapses UNC's leading // to /. Preserve that namespace
-    // when comparing old Windows paths so a local /server/share path stays distinct.
-    return uncPath && !cleaned.startsWith(QLatin1String("//")) ? QLatin1Char('/') + cleaned : cleaned;
+    return QDir::cleanPath(path);
 }
 
 /** Remove the retired implementation's settings while keeping unrelated custom commands. */

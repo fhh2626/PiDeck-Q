@@ -31,7 +31,7 @@ async function sessionHeaders(t, parentFields, { cached = false } = {}) {
 			childPath = join(fixture.sessions, "child.jsonl");
 			for (const [path, id, extra, name] of [
 				[parentPath, "parent", {}, "Parent"],
-				[childPath, "child", parentFields(parentPath), "subagent-worker"],
+				[childPath, "child", parentFields(parentPath, projectPath), "subagent-worker"],
 			]) {
 				const entries = [
 					{ type: "session", version: 3, id, cwd: projectPath, timestamp: "2026-01-01T00:00:00.000Z", ...extra },
@@ -63,13 +63,13 @@ async function sessionHeaders(t, parentFields, { cached = false } = {}) {
 	assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
 	const child = response.payload.result.find((entry) => entry.filePath === portable(childPath));
 	assert.ok(child, "The session must remain visible in the catalog");
-	return { ...backend, child, parentPath: portable(parentPath), projectPath: portable(projectPath) };
+	return { ...backend, child, parentPath, projectPath };
 }
 
 test("standard Pi parentSession headers retain subagent ancestry and process metadata", { skip }, async (t) => {
 	const fixture = await sessionHeaders(t, (parentSession) => ({ parentSession }));
 	assert.equal(fixture.child.isInternalSubagent, true);
-	assert.equal(fixture.child.parentSessionPath, fixture.parentPath);
+	assert.equal(fixture.child.parentSessionPath, portable(fixture.parentPath));
 	const events = await fixture.invoke("sessions:catalog-read-process-events", [fixture.child.id]);
 	assert.equal(events.payload.ok, true, JSON.stringify(events.payload));
 	const header = events.payload.result.find((event) => event.kind === "session");
@@ -94,6 +94,21 @@ test("nested headers do not override the standard Pi session header contract", {
 	const header = events.payload.result.find((event) => event.kind === "session");
 	assert.equal(header.parentSession, undefined);
 	assert.equal(header.cwd, fixture.projectPath);
+});
+
+test("process events preserve recorded path spelling for both header fields", { skip }, async (t) => {
+	const parentSession = String.raw`/home/pi/parent\archive.jsonl`;
+	let cwd;
+	const fixture = await sessionHeaders(t, (_parentPath, projectPath) => {
+		const portablePath = portable(projectPath);
+		cwd = `${portablePath.slice(0, portablePath.lastIndexOf("/"))}\\project`;
+		return { parentSession, cwd };
+	});
+	const events = await fixture.invoke("sessions:catalog-read-process-events", [fixture.child.id]);
+	assert.equal(events.payload.ok, true, JSON.stringify(events.payload));
+	const header = events.payload.result.find((event) => event.kind === "session");
+	assert.equal(header.parentSession, parentSession);
+	assert.equal(header.cwd, cwd);
 });
 
 test("cached ancestry from retired header formats is rebuilt from the session file", { skip }, async (t) => {
