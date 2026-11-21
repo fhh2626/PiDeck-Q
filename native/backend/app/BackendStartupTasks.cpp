@@ -36,8 +36,6 @@
 
 namespace {
 
-/** Oracle `ensureRpcTimeoutMinimum`: an accidental 30 s timeout breaks startup. */
-constexpr int kRpcTimeoutFloorMs = 600'000;
 /** Oracle startup prewarm: one initial delay, then one project per stagger step. */
 constexpr int kCatalogPrewarmDelayMs = 3'000;
 constexpr int kCatalogPrewarmStaggerMs = 1'500;
@@ -109,16 +107,10 @@ void BackendStartupTasks::start()
         m_deps.services->web->applySettingsAtStartup(readSettings());
     }
 
-    // 2. `rpcTimeout` floor on the next event-loop turn (`setTimeout(..., 0)`).
-    m_rpcTimeoutTimer = new QTimer(this);
-    m_rpcTimeoutTimer->setSingleShot(true);
-    connect(m_rpcTimeoutTimer, &QTimer::timeout, this, [this] { applyRpcTimeoutFloor(); });
-    m_rpcTimeoutTimer->start(0);
-
-    // 3. First-launch editor detection does not depend on WSL.
+    // 2. First-launch editor detection does not depend on WSL.
     detectExternalEditors();
 
-    // 4. Resolve WSL exactly once through the shared controller. Four owners depend on it
+    // 3. Resolve WSL exactly once through the shared controller. Four owners depend on it
     //    (scanner, skills, prompts, extensions, pi config), and each extra resolution was
     //    another `wsl.exe printenv HOME` (up to 8 s) with a chance of disagreeing. The
     //    same controller serves `settings:update`, so a distro switch no longer needs a
@@ -145,11 +137,6 @@ void BackendStartupTasks::stop()
 {
     if (m_stopped) return;
     m_stopped = true;
-    if (m_rpcTimeoutTimer) {
-        m_rpcTimeoutTimer->stop();
-        m_rpcTimeoutTimer->deleteLater();
-        m_rpcTimeoutTimer = nullptr;
-    }
     for (QTimer *timer : m_prewarmTimers) {
         timer->stop();
         timer->deleteLater();
@@ -168,18 +155,6 @@ void BackendStartupTasks::publishStartupProjects()
         // `args[0]`, so the payload must be one argument that *is* the array.
         services.events->broadcast(QStringLiteral("projects:changed"), QJsonArray{QJsonValue(visible)});
     }
-}
-
-void BackendStartupTasks::applyRpcTimeoutFloor()
-{
-    if (m_stopped) return;
-    const QJsonObject settings = readSettings();
-    const double rpcTimeout = settings.value(QStringLiteral("rpcTimeout")).toDouble();
-    if (rpcTimeout >= kRpcTimeoutFloorMs) return;
-    updateSettingsCatalog(settingsPath(),
-                          QJsonObject{{QStringLiteral("rpcTimeout"), kRpcTimeoutFloorMs}});
-    logInfo(QStringLiteral("settings"), QStringLiteral("Raised rpcTimeout to the 600 s floor"),
-            QJsonObject{{QStringLiteral("previous"), rpcTimeout}});
 }
 
 void BackendStartupTasks::detectExternalEditors()
@@ -380,5 +355,8 @@ void BackendStartupTasks::ensurePiSettingsDefaults(const QString &piVersion)
                               QStringLiteral("Failed to ensure pi settings defaults"),
                               value.toObject());
             }
+            self->logInfo(QStringLiteral("settings"),
+                          QStringLiteral("Pi settings defaults check completed"),
+                          QJsonObject{});
         });
 }

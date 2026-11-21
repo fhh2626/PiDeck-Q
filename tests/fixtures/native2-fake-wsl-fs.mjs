@@ -220,6 +220,10 @@ switch (verb) {
 		process.exit(scenario.which ? 0 : 1);
 	case "pi":
 		if (rest[0] === "--version" && (scenario.piVersion || scenario.runtimePi)) {
+			if (scenario.versionGate) {
+				const { waitForFakeWslGate } = await import("./native2-fake-wsl-runtime.mjs");
+				await waitForFakeWslGate(scenario.versionGate);
+			}
 			process.stdout.write(`${scenario.piVersion ?? "0.79.0"}\n`);
 			process.exit(0);
 		}
@@ -356,6 +360,10 @@ switch (verb) {
 		if (rest[0] === "-c" && rest[2] === "pideck-delete-identities") {
 			// Model the constant identity script, including strict existing ancestors,
 			// missing leaves, and a process-level failure seam. All data is temporary.
+			if (scenario.identityGate) {
+				const { waitForFakeWslGate } = await import("./native2-fake-wsl-runtime.mjs");
+				await waitForFakeWslGate(scenario.identityGate);
+			}
 			if (scenario.identityDelayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(scenario.identityDelayMs));
 			if (scenario.identityFailure) fail("identity resolution failed");
 			for (const target of rest.slice(3)) {

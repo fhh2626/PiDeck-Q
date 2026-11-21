@@ -61,6 +61,7 @@ void Coordinator::shutdown()
     QHash<QString, ReattachAttempt> reattachments;
     reattachments.swap(m_reattachAttempts);
     m_versionProbes.cancel();
+    m_preparingLaunches.clear();
     // Deferred refresh callbacks belong to this runtime graph and cannot outlive it.
     m_projectionLoads.clear();
     m_compactProjectionExits.clear();
@@ -248,7 +249,8 @@ void Coordinator::settleDelivery(const QString &key, const QJsonObject &result)
     for (const auto &waiter : waiters) waiter(result);
 }
 
-bool Coordinator::requireTarget(const QJsonObject &targetJson, Target *out, CommandError *error) const
+bool Coordinator::requireTarget(const QJsonObject &targetJson, Target *out, CommandError *error,
+                                TargetAccess access) const
 {
     Target target;
     target.sessionId = targetJson.value(QStringLiteral("sessionId")).toString();
@@ -266,7 +268,13 @@ bool Coordinator::requireTarget(const QJsonObject &targetJson, Target *out, Comm
                                   QStringLiteral("Session not found: %1").arg(target.sessionId));
         return false;
     }
-    if (deletionBlocks(target.sessionId) || deletionBlocksAgent(target.agentId)) {
+    const auto attempt = m_reattachAttempts.constFind(target.agentId);
+    const AgentSession *session = access == TargetAccess::Stop ? agent(target.agentId) : nullptr;
+    // Stopping the exact dead transport only drops a deferred reconnect. It cannot
+    // start pi or write into the tree. Keep the binding and generation checks below.
+    const bool cancelDeferred = session && !session->running()
+        && attempt != m_reattachAttempts.cend() && attempt->resumeAfterDeletion;
+    if (!cancelDeferred && (deletionBlocks(target.sessionId) || deletionBlocksAgent(target.agentId))) {
         *error = CommandError::of(errorcode::kRuntimeChanged,
                                  QStringLiteral("Session deletion is in progress"));
         return false;

@@ -20,13 +20,11 @@ struct ChannelServices;
  *  1. publish the already loaded project snapshot with the environment filter
  *     (`projects:changed`) — never reload it here: `createBackend` loaded projects before
  *     the catalog migration, and a reload could overwrite an early edit;
- *  2. raise `rpcTimeout` to the 600 s floor on the next event-loop turn;
- *  3. first-launch external-editor detection (independent of WSL);
- *  4. resolve the WSL environment *once*, apply it to the scanner / skills / prompts /
- *     extensions / pi-config owners, then
- *  5. legacy built-in extension migration plus the pi `settings.json` defaults for every
- *     agent directory (local and WSL), and
- *  6. the pi `--version` cache warm-up so the first agent spawn does not have to probe.
+ *  2. first-launch external-editor detection (independent of WSL);
+ *  3. resolve the WSL environment *once* and apply it to the scanner / skills / prompts /
+ *     extensions / pi-config owners;
+ *  4. migrate legacy built-in extensions and fill existing pi `settings.json` defaults;
+ *  5. prewarm project session catalogs.
  *
  * A failure in any step is logged and never stops the others: a broken WSL distro must not
  * hide every skill and prompt behind an error dialog.
@@ -59,15 +57,13 @@ private:
 
     /** Step 1: the startup `projects:changed` frame with the visibility filter. */
     void publishStartupProjects();
-    /** Step 2: `rpcTimeout` floor of 600 s. */
-    void applyRpcTimeoutFloor();
-    /** Step 3: detect editors only when the user has none configured. */
+    /** Step 2: detect editors only when the user has none configured. */
     void detectExternalEditors();
     /** Merge one detection result into settings (main thread). */
     void applyDetectedEditors(const QJsonArray &detected);
-    /** Step 5: stale/legacy built-in extension cleanup for every agent directory. */
+    /** Step 4: stale/legacy built-in extension cleanup for every agent directory. */
     void runLegacyMigration();
-    /** Step 5b: pi `settings.json` defaults (`lastChangelogVersion` from the probe). */
+    /** Fill existing pi settings files, reusing a cached version hint when available. */
     void ensurePiSettingsDefaults(const QString &piVersion);
     /**
      * Warm the session catalog of every project in the background (oracle: 3 s after
@@ -85,7 +81,6 @@ private:
     Deps m_deps;
     /** Staggered prewarm timers (cancelled by `stop()`). */
     QList<QTimer *> m_prewarmTimers;
-    QTimer *m_rpcTimeoutTimer = nullptr;
     /** Detection runs on its own thread; only used to avoid a second run. */
     bool m_editorDetectionStarted = false;
     bool m_started = false;

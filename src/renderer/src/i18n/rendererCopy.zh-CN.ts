@@ -2044,8 +2044,6 @@ export const zhCN = {
   "settings.restartAppDesc":
     "关闭当前窗口并重新打开桌面版，适合应用标题栏或底层设置变更。",
   "settings.restartNotice": "标题栏设置保存后需要重启 PiDeck 生效。",
-  "settings.rpcTimeout": "RPC 超时时间（秒）",
-  "settings.rpcTimeoutDesc": "Agent 执行命令的最长等待时间，默认 600 秒（10 分钟），最小 600 秒",
   "settings.unsavedTitle": "未保存的更改",
   "settings.unsavedMessage": "您有未保存的更改，是否在关闭前保存？",
   "settings.saveAndClose": "保存并关闭",

@@ -24,6 +24,7 @@ const QStringList kLegacyKeys = {
     QStringLiteral("linkOpenMode"),
     QStringLiteral("electronChromiumSandbox"),
     QStringLiteral("disableUpdateCheck"),
+    QStringLiteral("rpcTimeout"),
 };
 
 /** Built-in extensions that ship disabled, and the version that tracks the migration. */
@@ -104,7 +105,6 @@ QJsonObject defaultSettings()
         {QStringLiteral("webServiceHost"), QStringLiteral("0.0.0.0")},
         {QStringLiteral("webServicePort"), 8765},
         {QStringLiteral("webServiceAccessToken"), QStringLiteral("")},
-        {QStringLiteral("rpcTimeout"), 600000},
         {QStringLiteral("workspaceContentOpenMode"), QStringLiteral("split")},
         {QStringLiteral("contentMaxWidth"), 1800},
         {QStringLiteral("chatContentWidthPct"), 80},

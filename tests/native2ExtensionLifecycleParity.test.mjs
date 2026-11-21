@@ -238,7 +238,7 @@ if (executable) {
 			let fake = null;
 			const session = await startBackendSession(t, {
 				projects: [{ id: "ext", path: projectPath }],
-				settings: { language: "en-US", rpcTimeout: 600_000 },
+				settings: { language: "en-US" },
 				env: {
 					PIDECK_HOME: home,
 					PIDECK_HOST_HOME: home,

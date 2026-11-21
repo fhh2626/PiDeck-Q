@@ -113,7 +113,7 @@ if (executable) {
 			let fake = null;
 			const session = await startBackendSession(t, {
 				projects: [{ id: PROJECT_ID, path: projectPath }],
-				settings: { language: "en-US", rpcTimeout: 600_000, ...settings },
+				settings: { language: "en-US", ...settings },
 				env,
 				prepare: (fixture) => {
 					dirs = {

@@ -14,6 +14,8 @@
 namespace temporarypi {
 namespace {
 
+constexpr int kCloneStateTimeoutMs = 600'000;
+
 /** Keep optional offline behavior in the environment without guessing a CLI implementation. */
 QProcessEnvironment processEnvironment(const QJsonObject &settings, const picommand::Invocation &invocation)
 {
@@ -124,7 +126,7 @@ void clone(const QJsonObject &settings, const QString &cwd, const QString &sessi
     }
     // `clone` copies the active branch; the new file path only arrives via `get_state`.
     client->request(QJsonObject{{QStringLiteral("type"), QStringLiteral("clone")}}, 120'000,
-                    [settings, projectPath, environment, client, finish](
+                    [projectPath, environment, client, finish](
                         bool ok, const QJsonObject &response, const QString &error) {
                         if (!ok) {
                             Result result;
@@ -142,13 +144,10 @@ void clone(const QJsonObject &settings, const QString &cwd, const QString &sessi
                             return;
                         }
                         QJsonObject data = response.value(QStringLiteral("data")).toObject();
-                        // The oracle waits with the user-configured RPC timeout, not a
-                        // hard-coded 30 s: a large clone may legitimately take longer.
-                        int stateTimeout = settings.value(QStringLiteral("rpcTimeout")).toInt(600'000);
-                        if (stateTimeout <= 0) stateTimeout = 600'000;
+                        // Keep the former default for this follow-up query only.
                         client->request(
                             QJsonObject{{QStringLiteral("type"), QStringLiteral("get_state")}},
-                            stateTimeout,
+                            kCloneStateTimeoutMs,
                             [projectPath, environment, data, finish](bool stateOk,
                                                                      const QJsonObject &stateResponse,
                                                                      const QString &stateError) mutable {

@@ -138,8 +138,6 @@ export type StartupWindowMode =
 	webServiceAccessToken: string;
 	/** 兼容旧 settings.json 的发行形态字段；当前 PiDeck-Q 固定为 portable。 */
 	installationType?: "portable" | "installed";
-	/** RPC 调用超时时间（毫秒），默认 600000（10 分钟），用于长时间运行的命令 */
-	rpcTimeout: number;
 	/**
 	 * 从文件树 / Git 打开文件或 Diff 时，中间栏默认布局。
 	 * split=与会话分屏；maximize=占满中间栏（会话暂时收起，不进侧栏）。

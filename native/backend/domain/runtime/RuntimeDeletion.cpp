@@ -3,6 +3,8 @@
 #include "../sessions/SessionCatalogStore.h"
 #include "../process/BackgroundWork.h"
 
+#include <utility>
+
 namespace runtime {
 namespace {
 
@@ -15,6 +17,12 @@ CatalogEntry liveIdentity(const sessiontreeguard::LiveAgent &agent)
     entry.wslDistro = agent.wslDistro;
     entry.wslUser = agent.wslUser;
     return entry;
+}
+
+/** Fileless in-memory runtimes cannot own a persisted tree. */
+bool filelessInMemory(const CatalogEntry &entry)
+{
+    return entry.noSession && entry.filePath.isEmpty();
 }
 
 QJsonObject blocked(const QString &kind, const QString &sessionId = QString())
@@ -49,6 +57,7 @@ bool Coordinator::deletionBlocksEntry(const CatalogEntry &candidate) const
 
 bool Coordinator::deletionBlocksLaunch(const CatalogEntry &candidate) const
 {
+    if (filelessInMemory(candidate)) return false;
     for (const auto &lease : m_wslDeletingTrees)
         if (deletionidentity::sameNamespace(lease.root, candidate)) return true;
     return false;
@@ -87,6 +96,66 @@ bool Coordinator::deletionBlocksPathChange(const QString &agentId) const
         if (deletionidentity::sameNamespace(lease.root, candidate)) return true;
     }
     return false;
+}
+
+QJsonObject Coordinator::wslTransitionBlock(const CatalogEntry &root, const QVector<CatalogEntry> &entries) const
+{
+    // A provisional lease fences the whole distro, so it must not interrupt an
+    // earlier handshake that can still acquire or publish a different file path.
+    // Once that handshake settles, ordinary live runtimes use scoped path checks.
+    const auto applies = [&root](const CatalogEntry &identity) {
+        return !filelessInMemory(identity) && deletionidentity::sameNamespace(root, identity);
+    };
+    for (const auto &entry : entries) {
+        if (!deletionidentity::sameNamespace(root, entry)) continue;
+        const QString agentId = m_bindings.agentForSession(entry.id);
+        const AgentSession *session = agent(agentId);
+        if (m_bindings.isReplacingSession(entry.id) || (applies(entry) && session && reconnectOwnsAgent(agentId, *session)))
+            return blocked(QStringLiteral("session-busy"), entry.id);
+    }
+    for (const auto &launch : m_preparingLaunches) {
+        // A draft can select a new distro and has no file to compare yet. A known
+        // path still goes through scoped identity resolution before blocking deletion.
+        if (launch.actual.filePath.isEmpty() && (applies(launch.entry) || applies(launch.actual)))
+            return blocked(QStringLiteral("session-busy"), launch.entry.id);
+    }
+    // A spawned draft may already be in a different namespace from its catalog row.
+    for (const auto &agentEntry : m_agents) {
+        const AgentSession &session = *agentEntry.second;
+        const Tab &tab = session.tab();
+        CatalogEntry identity;
+        identity.environment = tab.sessionEnvironment;
+        identity.wslDistro = tab.wslDistro;
+        identity.noSession = tab.noSession;
+        identity.filePath = tab.sessionPath;
+        if (!deletionidentity::sameNamespace(root, identity)) continue;
+        if (m_bindings.isReplacingSession(tab.deckSessionId)
+            || m_bindings.isReplacingSession(m_bindings.sessionForAgent(agentEntry.first))
+            || (applies(identity) && (m_bindings.isActivating(tab.deckSessionId)
+                                     || reconnectOwnsAgent(agentEntry.first, session))))
+            return blocked(QStringLiteral("session-busy"), tab.deckSessionId);
+    }
+    return {};
+}
+
+bool Coordinator::provisionalWslDeletionBlocks(const PreparingLaunch &launch) const
+{
+    for (const auto &lease : m_wslDeletingTrees) {
+        if (lease.provisional && (lease.blocks(launch.entry) || lease.blocks(launch.actual))) return true;
+    }
+    return false;
+}
+
+void Coordinator::resumePreparedLaunches()
+{
+    const auto preparing = m_preparingLaunches.keys();
+    for (const auto &agentId : preparing) {
+        auto launch = m_preparingLaunches.find(agentId);
+        if (launch == m_preparingLaunches.end() || !launch->resumeAfterResolution
+            || provisionalWslDeletionBlocks(*launch)) continue;
+        auto resume = std::exchange(launch->resumeAfterResolution, {});
+        resume();
+    }
 }
 
 void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs &fs,
@@ -146,6 +215,8 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
         lease.root = root;
         // Bind empty legacy distro metadata to the captured execution environment.
         lease.root.wslDistro = fs.config().distro;
+        const QJsonObject transition = wslTransitionBlock(lease.root, entries);
+        if (!transition.isEmpty()) return done(transition);
         // Resolve parents independently both for mutation-entry identity and for
         // runtime traversal links that lead outside the tree they pass through.
         const QStringList reservedPaths = deletionidentity::wslPathsFor(root.filePath);
@@ -159,6 +230,14 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
             if (deletionidentity::sameNamespace(lease.root, entry))
                 paths.append(deletionidentity::wslPathsFor(entry.filePath));
         }
+        QVector<CatalogEntry> preparing;
+        for (const auto &launch : m_preparingLaunches) {
+            for (const auto *identity : {&launch.entry, &launch.actual}) {
+                if (!deletionidentity::sameNamespace(lease.root, *identity) || filelessInMemory(*identity)) continue;
+                preparing.append(*identity);
+                paths.append(deletionidentity::wslPathsFor(identity->filePath));
+            }
+        }
         // No yield between provisional admission and taking the snapshots above. The
         // owner remains responsive while a bounded worker resolves filesystem aliases.
         m_deletingTrees.insert(sessionId, root);
@@ -167,7 +246,7 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
         background::runBlocking([fs, paths, identities]() -> QJsonValue {
             *identities = deletionidentity::resolve(fs, paths);
             return {};
-        }, [this, root, identities, reservedPaths, done](background::Outcome outcome) mutable {
+        }, [this, root, identities, reservedPaths, preparing, done](background::Outcome outcome) mutable {
             if (m_shutdown || !m_wslDeletingTrees.contains(root.id)) return;
             auto refuse = [this, root, done](const QJsonObject &reason) {
                 releaseDeletion(root.id);
@@ -181,6 +260,9 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
             auto resolved = m_wslDeletingTrees.value(root.id);
             resolved.identities = *identities;
             resolved.provisional = false;
+            for (const auto &identity : preparing) {
+                if (resolved.blocks(identity)) return refuse(blocked(QStringLiteral("session-busy"), identity.id));
+            }
             // Missing/changed/new busy identities are unresolved and therefore blocked.
             // In-flight replacements have an unknown future destination, even when the
             // old path was unrelated. Ordinary unrelated live runtimes remain allowed.
@@ -212,6 +294,7 @@ void Coordinator::reserveDeletionAsync(const CatalogEntry &root, const SessionFs
             // Publish and start deletion in one owner turn. No activation may enter
             // between the final busy verdict and publication of the scoped lease.
             m_wslDeletingTrees.insert(root.id, std::move(resolved));
+            resumePreparedLaunches();
             done(QJsonObject{});
         });
     });
@@ -230,9 +313,20 @@ deletionidentity::Lease Coordinator::wslDeletionLease(const QString &sessionId) 
 void Coordinator::releaseDeletion(const QString &sessionId)
 {
     postToOwner([this, sessionId] {
-        m_wslDeletingTrees.remove(sessionId);
+        const bool releasedWsl = m_wslDeletingTrees.remove(sessionId);
         m_nativeDeletingTrees.remove(sessionId);
         m_deletingTrees.remove(sessionId);
+        if (!releasedWsl || m_shutdown) return;
+        resumePreparedLaunches();
+        // Resume from current tickets, not a copied callback list: cancellation or
+        // another overlapping lease can intervene before a particular ticket resumes.
+        const auto reconnecting = m_reattachAttempts.keys();
+        for (const auto &agentId : reconnecting) {
+            auto attempt = m_reattachAttempts.find(agentId);
+            if (attempt == m_reattachAttempts.end() || !attempt->resumeAfterDeletion) continue;
+            auto resume = std::exchange(attempt->resumeAfterDeletion, {});
+            resume();
+        }
     });
 }
 

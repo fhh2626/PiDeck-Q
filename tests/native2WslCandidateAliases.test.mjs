@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { nativeBuildPaths } from "./helpers/nativeBuildPaths.mjs";
-import { backendTestAvailability, SseClient, startBackendSession } from "./helpers/native2BackendHarness.mjs";
+import { backendTestAvailability, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 import { createProbePi } from "./helpers/native2ProbePi.mjs";
 import { waitFor } from "./helpers/native2RuntimeEvents.mjs";
 
@@ -81,8 +81,8 @@ test("an unresolved cyclic file link does not suppress later WSL identities", (t
 });
 
 /** Pause the fake mutation itself, retaining the production coordinator's scoped lease. */
-async function fixture(t, ancestor, retarget = false) {
-  let gate, entered, preserved, changingAlias, companion, outside, parent, runtimeExit, log, probe, versionGate;
+async function fixture(t, ancestor, retarget = false, holdAdmission = false) {
+  let gate, entered, preserved, changingAlias, companion, outside, parent, runtimeExit, log, probe, versionGate, identityGate;
   const f = await startBackendSession(t, {
     settings: { wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
     prepare(directory) {
@@ -138,7 +138,9 @@ async function fixture(t, ancestor, retarget = false) {
       ].map((entry) => ({ ...entry, projectId: "wsl-candidate", title: entry.id, environment: "wsl", source: "pi",
         wslDistro: "Ubuntu", wslUser: "dev", status: "active", originKey: entry.id, createdAt: 1, updatedAt: 1 })) }));
       const scenario = join(directory.root, "wsl.json");
-      writeFileSync(scenario, JSON.stringify({ root: home, linuxHome, home: linuxHome, distros: ["Ubuntu"], runtimePi: true, fileSymlinks }));
+      identityGate = join(directory.root, "release-identity");
+      writeFileSync(scenario, JSON.stringify({ root: home, linuxHome, home: linuxHome, distros: ["Ubuntu"], runtimePi: true, fileSymlinks,
+        ...(holdAdmission ? { identityGate, versionGate } : {}) }));
       gate = join(directory.root, "release-trash"); entered = join(directory.root, "trash-entered");
       runtimeExit = join(directory.root, "exit-runtime");
       log = join(directory.root, "wsl.log");
@@ -162,10 +164,16 @@ async function fixture(t, ancestor, retarget = false) {
   });
   const ready = await f.invoke("settings:update", [{ wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" }]);
   assert.equal(ready.payload.ok, true, JSON.stringify(ready.payload));
-  return { ...f, entered, gate, preserved, changingAlias, companion, outside, parent, runtimeExit, probe, versionGate,
-    runtimeSpawns: () => readFileSync(log, "utf8").trim().split("\n").map(JSON.parse)
-      .filter((entry) => !entry.rpc && entry.argv.includes("pi") && !entry.argv.includes("--version")),
+  const commands = () => readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  return { ...f, entered, gate, preserved, changingAlias, companion, outside, parent, runtimeExit, probe, versionGate, identityGate, commands,
+    runtimeSpawns: () => commands().filter((entry) => !entry.rpc && entry.argv.includes("pi") && !entry.argv.includes("--version")),
   };
+}
+
+function logged(f, message) {
+  const logs = join(f.fixture.userData, "logs");
+  return readdirSync(logs).filter((name) => name.endsWith(".log"))
+    .some((name) => readFileSync(join(logs, name), "utf8").includes(message));
 }
 
 /** Hold activation during the real version probe, before the runtime spawn check. */
@@ -306,6 +314,45 @@ test("an unrelated pending WSL activation permits deletion but its delayed spawn
   await assertActivationAfterLease(f);
 });
 
+for (const unrelated of [false, true]) test(`a ${unrelated ? "disjoint" : "colliding"} WSL launch finishes probing during provisional deletion`, { skip: runtimeSkip }, async (t) => {
+  const f = await fixture(t, !unrelated, unrelated, true);
+  const previous = f.commands().length;
+  let activationResult;
+  const activation = f.invoke("sessions:runtime-activate", ["candidate-child"])
+    .then((result) => (activationResult = result));
+  let deletion;
+  try {
+    await waitFor(() => f.commands().slice(previous).some(({ argv }) => argv.includes("--version")), 5000, "WSL version probe");
+    deletion = f.invoke("sessions:catalog-delete", ["candidate-parent"]);
+    await waitFor(() => f.commands().slice(previous).some(({ argv }) => argv.includes("pideck-delete-identities")), 5000, "WSL identity probe");
+    writeFileSync(f.versionGate, "release");
+    const waiting = () => logged(f, "Waiting for WSL identity resolution before launching runtime");
+    await waitFor(() => activationResult || waiting(), 5000, "provisional launch verdict");
+    assert.equal(activationResult, undefined, "version completion must not settle a launch before alias resolution");
+    assert.equal(f.runtimeSpawns().length, 0);
+    writeFileSync(f.identityGate, "release");
+    if (unrelated) {
+      await waitFor(() => existsSync(f.entered), 10000, "WSL trash gate");
+      const activated = await activation;
+      assert.equal(activated.payload.result.ok, false, JSON.stringify(activated.payload));
+      assert.match(activated.payload.result.error.debugDetails, /Session deletion is in progress/);
+      assert.equal(f.runtimeSpawns().length, 0);
+    } else {
+      assert.equal((await deletion).payload.ok, false);
+      assert.equal(existsSync(f.entered), false);
+      const activated = await activation;
+      assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+      assert.ok(existsSync(f.parent));
+    }
+  } finally {
+    writeFileSync(f.versionGate, "release");
+    writeFileSync(f.identityGate, "release");
+    writeFileSync(f.gate, "release");
+    await Promise.all([activation, deletion]);
+  }
+  if (unrelated) assert.equal((await deletion).payload.result, true);
+});
+
 test("a scoped WSL deletion keeps an unrelated runtime reusable while deferring its restart", { skip: runtimeSkip }, async (t) => {
   const f = await fixture(t, false, true);
   const activation = await f.invoke("sessions:runtime-activate", ["candidate-child"]);
@@ -333,11 +380,8 @@ test("a scoped WSL deletion keeps an unrelated runtime reusable while deferring 
   assert.ok(restarted.runtimeGeneration > target.runtimeGeneration);
 });
 
-test("a WSL runtime that exits during an unrelated deletion detaches without spawning a reconnect", { skip: runtimeSkip }, async (t) => {
+test("a WSL runtime that exits during scoped deletion reconnects only after mutation", { skip: runtimeSkip }, async (t) => {
   const f = await fixture(t, false, true);
-  const events = new SseClient(`${f.baseUrl}__pideck/events?token=${encodeURIComponent(f.token)}`);
-  t.after(() => events.close());
-  await events.connect();
   const activation = await f.invoke("sessions:runtime-activate", ["candidate-child"]);
   assert.equal(activation.payload.result.ok, true, JSON.stringify(activation.payload));
   const target = activation.payload.result.value;
@@ -346,17 +390,17 @@ test("a WSL runtime that exits during an unrelated deletion detaches without spa
   try {
     await waitFor(() => existsSync(f.entered), 10000, "WSL scoped trash gate");
     writeFileSync(f.runtimeExit, "exit");
-    await events.waitFor((frame) => frame.payload.channel === "sessions:runtime-event"
-      && frame.payload.args[0].sourceChannel === "sessions:runtime-detach"
-      && frame.payload.args[0].sessionId === target.sessionId);
+    await waitFor(() => logged(f, "Waiting for WSL deletion before reconnecting runtime"), 5000, "deferred reconnect");
     assert.equal(f.runtimeSpawns().length, before, "A reconnect must wait until deletion releases its lease");
+    const reuse = await f.invoke("sessions:runtime-activate", ["candidate-child"]);
+    assert.equal(reuse.payload.result.ok, false, JSON.stringify(reuse.payload));
+    assert.match(reuse.payload.result.error.debugDetails, /reconnect is already in progress/);
   } finally {
+    if (existsSync(f.runtimeExit)) unlinkSync(f.runtimeExit);
     writeFileSync(f.gate, "release");
     assert.equal((await deletion).payload.result, true);
-    if (existsSync(f.runtimeExit)) unlinkSync(f.runtimeExit);
   }
-  const retry = await f.invoke("sessions:runtime-activate", ["candidate-child"]);
-  assert.equal(retry.payload.result.ok, true, JSON.stringify(retry.payload));
-  assert.notEqual(retry.payload.result.value.agentId, target.agentId);
-  assert.ok(retry.payload.result.value.runtimeGeneration > target.runtimeGeneration);
+  await waitFor(() => f.runtimeSpawns().length > before, 10000, "reconnected pi spawn");
+  const commands = await f.invoke("sessions:runtime-commands", [target]);
+  assert.equal(commands.payload.result.ok, true, JSON.stringify(commands.payload));
 });

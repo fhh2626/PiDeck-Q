@@ -345,7 +345,7 @@ void Coordinator::stop(const QJsonObject &targetJson, std::function<void(QJsonOb
 {
     Target target;
     CommandError error;
-    if (!requireTarget(targetJson, &target, &error)) {
+    if (!requireTarget(targetJson, &target, &error, TargetAccess::Stop)) {
         done(errorResult(error));
         return;
     }

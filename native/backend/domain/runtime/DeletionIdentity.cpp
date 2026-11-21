@@ -302,9 +302,11 @@ bool Lease::matchesPlan(const SessionFs &fs, const QString &sessionFile) const
 bool Lease::blocks(const CatalogEntry &candidate) const
 {
     if (!sameNamespace(root, candidate)) return false;
-    if (root.id == candidate.id || provisional) return true;
-    // A running in-memory session with no file cannot own this deletion's tree.
+    if (root.id == candidate.id) return true;
+    // Fileless in-memory sessions can run even while aliases are being resolved.
+    // A runtime that reports a file does not get this exemption.
     if (candidate.noSession && candidate.filePath.isEmpty()) return false;
+    if (provisional) return true;
     const QStringList rootPaths = pathsFor(root.filePath);
     const QStringList candidatePaths = pathsFor(candidate.filePath);
     if (rootPaths.size() != 2 || candidatePaths.size() != 2) return true;

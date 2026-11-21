@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "../logs/AppLogStore.h"
 #include "../pi/PiLocator.h"
 
 #include "../sessions/SessionCatalogStore.h"
@@ -98,6 +99,13 @@ void Coordinator::runActivation(const QString &sessionId, std::function<void(QJs
         if (usable) {
             publishState(*bound);
             done(okResult(runtimeInfoJson(existing, bound->tab())));
+            return;
+        }
+        if (bound && reconnectOwnsAgent(existing.agentId, *bound)) {
+            // A reconnect still owns this binding even if a deletion lease keeps its
+            // transport stopped. Activation must not discard that ticket and start over.
+            done(errorResult(CommandError::of(errorcode::kRuntimeChanged,
+                                              QStringLiteral("Session runtime reconnect is already in progress"))));
             return;
         }
         // A terminal process cannot be reused; drop the binding before creating a new one.
@@ -436,13 +444,31 @@ void Coordinator::createAgent(const CatalogEntry &entry,
     // Pi's RPC mode otherwise ignores project resources when no upstream decision is
     // stored. Approve this run automatically when its version supports the flag.
     const pilaunch::Launch probe = pilaunch::build(request);
-    pilaunch::probeVersion(probe, m_versionProbes, [request, spawnWith](const QString &version) mutable {
+    m_preparingLaunches.insert(agentId, PreparingLaunch{entry, deletionidentity::forLaunch(entry, probe), {}});
+    pilaunch::probeVersion(probe, m_versionProbes, [this, agentId, request, spawnWith](const QString &version) mutable {
+        auto preparing = m_preparingLaunches.find(agentId);
+        if (preparing == m_preparingLaunches.end()) return;
         request.approveProjectResources = pilaunch::supportsProjectApprovalFlag(version);
         const QString kind = pilocator::detectRuntimeKind(version);
         if (kind != QLatin1String("unknown")) {
             request.detectedRuntimeKind = kind == QLatin1String("typescript") ? QStringLiteral("ts") : kind;
         }
-        spawnWith(pilaunch::build(request));
+        auto launch = [this, agentId, spawnWith, prepared = pilaunch::build(request)] {
+            // No owner yield before publishing the spawned tab or settling startup.
+            m_preparingLaunches.remove(agentId);
+            spawnWith(prepared);
+        };
+        // Keep the captured identity alive until deletion knows whether it overlaps.
+        // A resolved mutation lease still rejects a delayed spawn as before.
+        if (provisionalWslDeletionBlocks(*preparing)) {
+            preparing->resumeAfterResolution = std::move(launch);
+            if (m_deps.services && m_deps.services->appLog) {
+                m_deps.services->appLog->write(QStringLiteral("info"), QStringLiteral("session"),
+                                              QStringLiteral("Waiting for WSL identity resolution before launching runtime"), {});
+            }
+        } else {
+            launch();
+        }
     });
 }
 void Coordinator::applyPreferences(AgentSession &session, const CatalogEntry &entry,

@@ -27,7 +27,7 @@ test("runtime settings offer auto, stock Pi and Pi-Bolt with their corresponding
 			draft: {
 				piRuntimePreference: "auto", piTypescriptPath: "/bin/pi", piBoltPath: "/bin/pi-bolt",
 				wslUser: "", wslDistro: "", webServiceEnabled: false, webServicePort: 1234,
-				rpcTimeout: 600000, maxEditorFileSizeMB: 5,
+				maxEditorFileSizeMB: 5,
 			},
 			updateDraft: (patch) => writes.push(patch), isDirty: () => false,
 			appInfo: { platform: "linux", version: "0.5.0" },

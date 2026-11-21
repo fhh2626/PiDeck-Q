@@ -119,9 +119,9 @@ async function replayClient(t, baseUrl, token) {
 }
 
 describe("native2 backend startup tasks", () => {
-	test("publishes the environment-filtered project snapshot and raises rpcTimeout to 600 s", async (t) => {
+	test("publishes the environment-filtered project snapshot", async (t) => {
 		const session = await startBackendSession(t, {
-			settings: { rpcTimeout: 30_000, wslEnabled: false },
+			settings: { wslEnabled: false },
 			projects: [],
 			prepare: (fixture) => {
 				const localHome = join(fixture.root, "local-home");
@@ -151,10 +151,22 @@ describe("native2 backend startup tasks", () => {
 		assert.ok(ids.includes("win-project"), "a Windows project stays visible");
 		assert.ok(!ids.includes("wsl-project"), "a WSL project is hidden while WSL is off");
 		assert.ok(ids.includes("builtin-chat"), "the chat project is always visible");
+	});
 
+	test("ignores the retired RPC timeout when loading and saving desktop settings", async (t) => {
+		const session = await startBackendSession(t, {
+			settings: { rpcTimeout: 900_000, maxEditorFileSizeMB: 11 },
+		});
+		const read = await session.invoke("settings:get");
+		assert.equal(read.payload.ok, true);
+		assert.equal(Object.hasOwn(read.payload.result, "rpcTimeout"), false);
+		assert.equal(read.payload.result.maxEditorFileSizeMB, 11);
+
+		const saved = await session.invoke("settings:update", [{ rpcTimeout: 1_200_000, maxEditorFileSizeMB: 12 }]);
+		assert.equal(saved.payload.ok, true);
 		const settings = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
-		assert.equal(settings.rpcTimeout, 600_000);
-		assert.match(appLogText(session.fixture.userData), /Raised rpcTimeout to the 600 s floor/);
+		assert.equal(Object.hasOwn(settings, "rpcTimeout"), false);
+		assert.equal(settings.maxEditorFileSizeMB, 12);
 	});
 
 	test("resolves WSL once and switches prompts, skills, pi config and the session scanner", async (t) => {
@@ -406,8 +418,8 @@ describe("native2 backend startup tasks", () => {
 		});
 		const settingsPath = join(state.localAgent, "settings.json");
 		await waitFor(
-			() => Promise.resolve(JSON.parse(readFileSync(settingsPath, "utf8")).retry?.maxRetries === 3),
-			"the pi settings defaults were never written",
+			() => Promise.resolve(appLogText(session.fixture.userData).includes("Pi settings defaults check completed")),
+			"startup never completed the pi settings defaults pass",
 		);
 		const piSettings = JSON.parse(readFileSync(settingsPath, "utf8"));
 		assert.equal(piSettings.theme, "light", "an existing user value wins");
@@ -429,24 +441,15 @@ describe("native2 backend startup tasks", () => {
 		const bareHome = join(session.fixture.root, "bare-home");
 		mkdirSync(join(bareHome, ".pi/agent"), { recursive: true });
 		const bare = await startBackendSession(t, {
-			settings: { wslEnabled: false, rpcTimeout: 30_000 },
+			settings: { wslEnabled: false },
 			projects: [{ id: "bare-project", path: slash(process.cwd()) }],
 			env: { PIDECK_HOME: bareHome, PIDECK_HOST_HOME: bareHome },
 		});
 		const bareSettings = join(bareHome, ".pi/agent/settings.json");
 		await waitFor(
-			async () => {
-				const read = await bare.invoke("settings:get");
-				return read.payload.result?.rpcTimeout === 600_000;
-			},
-			"startup never applied the rpcTimeout floor",
+			() => Promise.resolve(appLogText(bare.fixture.userData).includes("Pi settings defaults check completed")),
+			"startup never completed the pi settings defaults pass",
 		);
-		// Give the (background) defaults pass the whole stabilization window: any write would
-		// show up here, so a late write cannot slip past the assertion.
-		for (let tick = 0; tick < 12; tick += 1) {
-			if (existsSync(bareSettings)) break;
-			await sleep(50);
-		}
 		assert.equal(existsSync(bareSettings), false, "startup must not create pi's settings.json");
 	});
 

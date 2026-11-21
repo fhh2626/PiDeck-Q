@@ -447,26 +447,6 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
         <SettingRow
           title={
             <>
-              <span>{t("settings.rpcTimeout")}</span>
-              <DirtyMarker dirty={isDirty("rpcTimeout")} label={t("settings.rpcTimeout")} />
-            </>
-          }
-          description={t("settings.rpcTimeoutDesc")}
-          stacked
-        >
-          <Input
-            type="number"
-            className="h-8 max-w-80"
-            value={String(Math.round(draft.rpcTimeout / 1000))}
-            onChange={(e) => {
-              const seconds = Math.max(600, parseInt(e.target.value) || 600);
-              updateDraft({ rpcTimeout: seconds * 1000 });
-            }}
-          />
-        </SettingRow>
-        <SettingRow
-          title={
-            <>
               <span>{t("settings.maxEditorFileSize")}</span>
               <DirtyMarker dirty={isDirty("maxEditorFileSizeMB")} label={t("settings.maxEditorFileSize")} />
             </>

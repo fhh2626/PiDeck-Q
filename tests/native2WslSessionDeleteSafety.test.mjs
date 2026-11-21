@@ -72,6 +72,7 @@ async function fixture(t, outsideRecord = false, foreignRecord = false, uppercas
           child.filePath = `${linuxRoot}/unrelated.jsonl`;
         }
         if (variant === "distro-case") catalog.sessions.find((row) => row.id === "alias-parent").wslDistro = "ubuntu";
+        if (variant === "native-draft") catalog.sessions.push({ id: "native-draft", title: "draft", projectId: "wsl-safe", environment: "native", status: "active" });
         writeFileSync(catalogPath, JSON.stringify(catalog));
       }
       const scenario = join(fixture.root, "wsl-scenario.json");
@@ -116,6 +117,22 @@ async function waitForRpc(f, previous, command) {
   while (!f.commands().slice(previous).some((entry) => entry.rpc === command) && Date.now() < deadline)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(f.commands().slice(previous).some((entry) => entry.rpc === command), `Expected RPC ${command}`);
+}
+
+/** Start deletion while an earlier operation is held. Give the old code a chance to publish its provisional lease. */
+async function overlapDeletion(f, sessionId, previous, identityGate, finishEarlier) {
+  let settled = false;
+  const deletion = f.invoke("sessions:catalog-delete", [sessionId]).finally(() => { settled = true; });
+  const sawProbe = () => f.commands().slice(previous).some(({ argv }) => argv.includes("pideck-delete-identities"));
+  try {
+    const deadline = Date.now() + 5_000;
+    while (!settled && !sawProbe() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(settled || sawProbe(), "deletion must reject admission or reach the held identity probe");
+    await finishEarlier();
+  } finally {
+    writeFileSync(identityGate, "");
+  }
+  return deletion;
 }
 
 if (resolveBackendExecutable() && launcher) {
@@ -318,22 +335,22 @@ if (resolveBackendExecutable() && launcher) {
   });
   test("identity resolution is asynchronous and failed resolution releases admission for retry", async (t) => {
     const f = await fixture(t, false, false, false, true);
-    f.patchScenario({ identityDelayMs: 800, identityFailure: true });
+    const identityGate = join(f.fixture.root, "release-failing-identity");
+    f.patchScenario({ identityGate, identityFailure: true });
     const previous = f.commands().length;
-    const deletion = f.invoke("sessions:catalog-delete", ["alias-parent"]);
-    await waitForCommand(f, previous, "pideck-delete-identities");
-    const started = Date.now();
-    const runtimes = await f.invoke("sessions:runtime-list", []);
-    assert.equal(runtimes.payload.ok, true);
-    assert.ok(Date.now() - started < 500, "Owner RPC must not await the 800ms WSL process");
-    const activation = await f.invoke("sessions:runtime-activate", ["alias-child"]);
-    assert.equal(activation.payload.result.ok, false);
-    assert.match(activation.payload.result.error.debugDetails, /delet/i);
-    const failed = await deletion;
+    const failed = await overlapDeletion(f, "alias-parent", previous, identityGate, async () => {
+      await waitForCommand(f, previous, "pideck-delete-identities");
+      const runtimes = await f.invoke("sessions:runtime-list", []);
+      assert.equal(runtimes.payload.ok, true, "owner RPC must complete before the WSL probe is released");
+      const activation = await f.invoke("sessions:runtime-activate", ["alias-child"]);
+      assert.equal(activation.payload.result.ok, false);
+      assert.match(activation.payload.result.error.debugDetails, /delet/i);
+      assert.equal(existsSync(identityGate), false);
+    });
     assert.equal(failed.payload.ok, false);
     assert.match(failed.payload.error.message, /identity/i);
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
-    f.patchScenario({ identityDelayMs: 0, identityFailure: false });
+    f.patchScenario({ identityGate: undefined, identityFailure: false });
     const retry = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
     assert.equal(retry.payload.result, true, JSON.stringify(retry.payload));
   });
@@ -386,42 +403,173 @@ if (resolveBackendExecutable() && launcher) {
   }
   test("an alias activation already in flight prevents deletion before binding", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true);
-    f.patchScenario({ runtimePi: true, runtimeStateDelayMs: 500 });
+    const runtimeStateGate = join(f.fixture.root, "release-activation-state");
+    const identityGate = join(f.fixture.root, "release-deletion-identity");
+    f.patchScenario({ runtimePi: true, runtimeReplyGates: { get_state: runtimeStateGate }, identityGate });
     const previous = f.commands().length;
     const activation = f.invoke("sessions:runtime-activate", ["alias-child"]);
-    await waitForCommand(f, previous, "pi");
-    const deletion = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
-    assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
-    assert.equal((await activation).payload.result.ok, true);
+    await waitForRpc(f, previous, "get_state");
+    const deleted = await overlapDeletion(f, "alias-parent", previous, identityGate, async () => {
+      writeFileSync(runtimeStateGate, "");
+      await activation;
+    });
+    assert.equal(deleted.payload.ok, false, JSON.stringify(deleted.payload));
+    const activated = await activation;
+    assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+    assert.ok(existsSync(join(f.sessions, "parent.jsonl")));
     assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
+    assert.equal(f.commands().some(isStorageMutation), false);
   });
   test("a live reported alias path is protected before any catalog binding owns it", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t, false, false, false, true);
     const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
     const unrelated = catalog.payload.result.find((row) => row.filePath === `${linuxRoot}/unrelated.jsonl`);
-    f.patchScenario({ runtimePi: true, runtimeReportedPath: `${linuxHome}/sessions-alias/parent/child.jsonl`, runtimeProjectionDelayMs: 800 });
+    const projectionGate = join(f.fixture.root, "release-projection");
+    f.patchScenario({ runtimePi: true, runtimeReportedPath: `${linuxHome}/sessions-alias/parent/child.jsonl`, runtimeReplyGates: { get_messages: projectionGate } });
     const previous = f.commands().length;
     const activation = f.invoke("sessions:runtime-activate", [unrelated.id]);
-    await waitForRpc(f, previous, "get_messages");
-    const deletion = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
-    assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
-    assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
+    try {
+      await waitForRpc(f, previous, "get_messages");
+      const deletion = await f.invoke("sessions:catalog-delete", ["alias-parent"]);
+      assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
+      assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
+    } finally {
+      writeFileSync(projectionGate, "");
+    }
     assert.equal((await activation).payload.result.ok, true);
   });
   test("an in-flight WSL replacement's unproven future destination prevents deletion", { skip: wslRuntimeSkip }, async (t) => {
     const f = await fixture(t);
     const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
     const unrelated = catalog.payload.result.find((row) => row.filePath === `${linuxRoot}/unrelated.jsonl`);
-    f.patchScenario({ runtimePi: true, runtimeReplacementDelayMs: 800 });
+    const cloneGate = join(f.fixture.root, "release-clone");
+    const identityGate = join(f.fixture.root, "release-identity");
+    f.patchScenario({ runtimePi: true, runtimeReplyGates: { clone: cloneGate }, identityGate });
     const activation = await f.invoke("sessions:runtime-activate", [unrelated.id]);
     assert.equal(activation.payload.result.ok, true);
+    const target = activation.payload.result.value;
     const previous = f.commands().length;
-    const replacement = f.invoke("sessions:runtime-clone", [activation.payload.result.value]);
+    const replacement = f.invoke("sessions:runtime-clone", [target]);
     await waitForRpc(f, previous, "clone");
-    const deletion = await f.invoke("sessions:catalog-delete", [f.id]);
+    const deletion = await overlapDeletion(f, f.id, previous, identityGate, async () => {
+      writeFileSync(cloneGate, "");
+      await replacement;
+    });
     assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
     assert.ok(existsSync(join(f.sessions, "protected.jsonl")));
-    assert.equal((await replacement).payload.result.ok, true);
+    assert.equal((await replacement).payload.result.value?.cancelled, true);
+    const runtimes = await f.invoke("sessions:runtime-list", []);
+    const restored = runtimes.payload.result.find((runtime) => runtime.sessionId === target.sessionId);
+    assert.equal(restored?.agentId, target.agentId, "cancelled clone must keep the original process bound");
+    assert.ok(restored.runtimeGeneration > target.runtimeGeneration);
+    assert.equal((await f.invoke("sessions:runtime-state", [restored])).payload.result.ok, true);
+  });
+  test("a fileless WSL activation can finish while an unrelated deletion resolves identities", { skip: wslRuntimeSkip }, async (t) => {
+    const f = await fixture(t);
+    const created = await f.invoke("sessions:create-anonymous", [{ projectId: "wsl-safe", title: "In memory" }]);
+    assert.equal(created.payload.ok, true, JSON.stringify(created.payload));
+    const stateGate = join(f.fixture.root, "release-state");
+    const identityGate = join(f.fixture.root, "release-identity");
+    f.patchScenario({ runtimePi: true, runtimeReplyGates: { get_state: stateGate }, identityGate });
+    const previous = f.commands().length;
+    const activation = f.invoke("sessions:runtime-activate", [created.payload.result.session.id]);
+    await waitForRpc(f, previous, "get_state");
+    const deletion = await overlapDeletion(f, f.id, previous, identityGate, async () => {
+      writeFileSync(stateGate, "");
+      await activation;
+    });
+    assert.equal(deletion.payload.result, true, JSON.stringify(deletion.payload));
+    const activated = await activation;
+    assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+    assert.equal((await f.invoke("sessions:runtime-state", [activated.payload.result.value])).payload.result.ok, true);
+  });
+  test("a native draft preparing its WSL launch reserves the selected distribution", { skip: wslRuntimeSkip }, async (t) => {
+    const f = await fixture(t, false, false, false, true, false, false, "native-draft");
+    const versionGate = join(f.fixture.root, "release-version");
+    const identityGate = join(f.fixture.root, "release-identity");
+    f.patchScenario({ runtimePi: true, versionGate, identityGate });
+    const previous = f.commands().length;
+    const activation = f.invoke("sessions:runtime-activate", ["native-draft"]);
+    await waitForCommand(f, previous, "--version");
+    const deletion = await overlapDeletion(f, "alias-parent", previous, identityGate, async () => {
+      writeFileSync(versionGate, "");
+      await activation;
+    });
+    assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
+    const activated = await activation;
+    assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+    assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
+  });
+  test("an alias reconnect already in flight retains its binding during WSL deletion admission", { skip: wslRuntimeSkip }, async (t) => {
+    const f = await fixture(t, false, false, false, true);
+    const runtimeExitGate = join(f.fixture.root, "exit-initial-pi");
+    const stateGate = join(f.fixture.root, "release-reconnect-state");
+    const identityGate = join(f.fixture.root, "release-identity");
+    f.patchScenario({ runtimePi: true, runtimeExitGate, reconnectReplyGates: { get_state: stateGate }, identityGate });
+    const activated = await f.invoke("sessions:runtime-activate", ["alias-child"]);
+    assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+    const previous = f.commands().length;
+    writeFileSync(runtimeExitGate, "");
+    await waitForRpc(f, previous, "get_state");
+    const deletion = await overlapDeletion(f, "alias-parent", previous, identityGate, async () => {
+      writeFileSync(stateGate, "");
+      await waitForRpc(f, previous, "get_messages");
+    });
+    assert.equal(deletion.payload.ok, false, JSON.stringify(deletion.payload));
+    assert.ok(existsSync(join(f.sessions, "parent", "child.jsonl")));
+    assert.equal((await f.invoke("sessions:runtime-state", [activated.payload.result.value])).payload.result.ok, true);
+  });
+  for (const stop of [false, true]) test(stop
+    ? "Stop cancels a deferred WSL reconnect before the deletion lease is released"
+    : "an unrelated WSL runtime waits for a deletion lease before reconnecting", { skip: wslRuntimeSkip }, async (t) => {
+    const f = await fixture(t);
+    const catalog = await f.invoke("sessions:catalog-list", ["wsl-safe"]);
+    const unrelated = catalog.payload.result.find((row) => row.filePath === `${linuxRoot}/unrelated.jsonl`);
+    const runtimeExitGate = join(f.fixture.root, "exit-initial-pi");
+    const identityGate = join(f.fixture.root, "release-identity");
+    f.patchScenario({ runtimePi: true, runtimeExitGate, identityGate });
+    const activated = await f.invoke("sessions:runtime-activate", [unrelated.id]);
+    assert.equal(activated.payload.result.ok, true, JSON.stringify(activated.payload));
+    const target = activated.payload.result.value;
+    // RPC rows repeat the pi process argv; only raw subprocess rows count as launches.
+    const launchedSession = ({ rpc, argv }) => !rpc && argv.includes("--mode") && argv.includes("--session")
+      && argv[argv.indexOf("--session") + 1] === unrelated.filePath;
+    assert.equal(f.commands().filter(launchedSession).length, 1, "fixture must observe the original pi launch");
+    const previous = f.commands().length;
+    const deletion = await overlapDeletion(f, f.id, previous, identityGate, async () => {
+      await waitForCommand(f, previous, "pideck-delete-identities");
+      writeFileSync(runtimeExitGate, "");
+      const logs = join(f.fixture.userData, "logs");
+      const sawDeferredReconnect = () => readdirSync(logs).filter((name) => name.endsWith(".log"))
+        .some((name) => readFileSync(join(logs, name), "utf8").includes("Waiting for WSL deletion before reconnecting runtime"));
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !sawDeferredReconnect()) {
+        const runtimes = await f.invoke("sessions:runtime-list", []);
+        assert.ok(runtimes.payload.result.some((runtime) => runtime.agentId === target.agentId), "reconnect must not detach the existing binding");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(sawDeferredReconnect(), "reconnect must wait for the deletion lease");
+      assert.equal(f.commands().slice(previous).some((entry) => entry.rpc === "get_state"), false);
+      if (stop) {
+        const stale = await f.invoke("sessions:runtime-stop", [{ ...target, runtimeGeneration: target.runtimeGeneration + 1 }]);
+        assert.equal(stale.payload.result.ok, false, JSON.stringify(stale.payload));
+        const stopped = await f.invoke("sessions:runtime-stop", [target]);
+        assert.equal(stopped.payload.result.ok, true, JSON.stringify(stopped.payload));
+      }
+    });
+    assert.equal(deletion.payload.result, true, JSON.stringify(deletion.payload));
+    assert.equal(existsSync(join(f.sessions, "protected.jsonl")), false);
+    assert.ok(existsSync(join(f.sessions, "unrelated.jsonl")));
+    if (stop) {
+      const runtimes = await f.invoke("sessions:runtime-list", []);
+      assert.equal(runtimes.payload.result.some((runtime) => runtime.sessionId === target.sessionId), false);
+      const launches = f.commands().slice(previous).filter(launchedSession);
+      assert.deepEqual(launches, [], "releasing deletion must not launch the stopped session");
+    } else {
+      await waitForRpc(f, previous, "get_messages");
+      const commands = await f.invoke("sessions:runtime-commands", [target]);
+      assert.equal(commands.payload.result.ok, true, JSON.stringify(commands.payload));
+    }
   });
   test("WSL distribution casing does not change deletion's filesystem namespace", async (t) => {
     const f = await fixture(t, false, false, false, true, false, false, "distro-case");

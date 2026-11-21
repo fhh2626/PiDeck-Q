@@ -392,7 +392,9 @@ private:
     QString normalizeSessionPath(const QString &path, const QString &projectPath) const;
 
     // command plumbing
-    bool requireTarget(const QJsonObject &target, Target *out, CommandError *error) const;
+    enum class TargetAccess { Command, Stop };
+    bool requireTarget(const QJsonObject &target, Target *out, CommandError *error,
+                       TargetAccess access = TargetAccess::Command) const;
     /** Localized UI key for a cleared choice or an outdated pi model snapshot. */
     QString modelSelectionError(const QString &sessionId) const;
 
@@ -425,6 +427,8 @@ private:
     /** Remove the exact reconnect owner before completing its caller, including cancellation. */
     void finishReattach(const QString &agentId, quint64 ticket, bool ok, const QString &error,
                         quint64 attemptEpoch);
+    /** Includes the posted exit recovery before it registers a reconnect ticket. */
+    bool reconnectOwnsAgent(const QString &agentId, const AgentSession &session) const;
     /** Recheck runtime ownership after probing before swapping the transport. */
     void reattachPrepared(const QString &agentId, const Target &target, quint64 expectedEpoch,
                           const CatalogEntry &entry, const pilaunch::Request &request,
@@ -570,9 +574,20 @@ private:
     cachehit::Reader m_cacheHits;
     std::map<QString, std::unique_ptr<AgentSession>> m_agents;
     QHash<QString, QVector<std::function<void(QJsonObject)>>> m_activationWaiters;
+    struct PreparingLaunch {
+        CatalogEntry entry;
+        CatalogEntry actual;
+        std::function<void()> resumeAfterResolution;
+    };
+    /** Protect the captured launch identity until the process exists or startup fails. */
+    QHash<QString, PreparingLaunch> m_preparingLaunches;
+    QJsonObject wslTransitionBlock(const CatalogEntry &root, const QVector<CatalogEntry> &entries) const;
+    bool provisionalWslDeletionBlocks(const PreparingLaunch &launch) const;
+    void resumePreparedLaunches();
     struct ReattachAttempt {
         quint64 ticket = 0;
         std::function<void(bool ok, const QString &error, quint64 attemptEpoch)> completion;
+        std::function<void()> resumeAfterDeletion;
     };
     /** Reconnects own their completion so stop can release command leases before a probe returns. */
     QHash<QString, ReattachAttempt> m_reattachAttempts;

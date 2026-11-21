@@ -1,6 +1,7 @@
 #include "RuntimeCoordinator.h"
 
 #include "PiLaunch.h"
+#include "../logs/AppLogStore.h"
 #include "../pi/PiLocator.h"
 #include "../sessions/SessionCatalogStore.h"
 
@@ -51,6 +52,16 @@ pilaunch::Launch Coordinator::buildSessionLaunch(const AgentSession &session,
     return pilaunch::build(request);
 }
 
+bool Coordinator::reconnectOwnsAgent(const QString &agentId, const AgentSession &session) const
+{
+    // The exit handler must post recovery before it can register the transport ticket.
+    // The binding still belongs to that recovery while the posted callback is pending.
+    return m_reattachAttempts.contains(agentId)
+        || (!session.running() && (session.tab().status == QLatin1String("starting")
+                                  || session.manualCompaction())
+            && !m_bindings.sessionForAgent(agentId).isEmpty());
+}
+
 void Coordinator::finishReattach(const QString &agentId, quint64 ticket, bool ok,
                                  const QString &error, quint64 attemptEpoch)
 {
@@ -97,7 +108,7 @@ void Coordinator::reattachProcess(const QString &agentId, const Target &target,
     // A reconnect preserves its generation and the compact command's dispatch lease.
     // Its separate ticket reserves deletion admission without disabling explicit stop.
     const quint64 ticket = ++m_nextReattachTicket;
-    m_reattachAttempts.insert(agentId, ReattachAttempt{ticket, std::move(done)});
+    m_reattachAttempts.insert(agentId, ReattachAttempt{ticket, std::move(done), {}});
     auto finish = [this, agentId, ticket](bool ok, const QString &error, quint64 attemptEpoch) {
         finishReattach(agentId, ticket, ok, error, attemptEpoch);
     };
@@ -141,12 +152,6 @@ void Coordinator::reattachPrepared(const QString &agentId, const Target &target,
         done(false, QStringLiteral("Session runtime changed during reconnect"), 0);
         return;
     }
-    if (m_shutdown || deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId)) {
-        // The binding still owns this exited transport. Its epoch lets callers
-        // retire it instead of leaving a dead runtime stuck in starting state.
-        done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
-        return;
-    }
     const QString identityError = launchIdentityError(entry, request.projectPath);
     if (!identityError.isEmpty()) {
         done(false, identityError, expectedEpoch);
@@ -164,12 +169,27 @@ void Coordinator::reattachPrepared(const QString &agentId, const Target &target,
     previous.wslDistro = session->tab().wslDistro;
     previous.wslUser = session->tab().wslUser;
     const CatalogEntry actual = deletionidentity::forLaunch(previous, launch);
-    if (deletionBlocksLaunch(previous) || deletionBlocksLaunch(actual)) {
-        done(false, QStringLiteral("Session deletion is in progress"), session->clientEpoch());
+    if (!deletionidentity::compatibleLaunch(previous, actual)) {
+        done(false, QStringLiteral("Session runtime environment changed during reconnect"), expectedEpoch);
         return;
     }
-    if (!deletionidentity::compatibleLaunch(previous, actual) || deletionBlocksEntry(actual)) {
-        done(false, QStringLiteral("Session runtime environment changed during reconnect"), session->clientEpoch());
+    if (deletionBlocksLaunch(entry) || deletionBlocksLaunch(previous) || deletionBlocksLaunch(actual)) {
+        auto attempt = m_reattachAttempts.find(agentId);
+        if (attempt == m_reattachAttempts.end()) return;
+        // The unrelated runtime may have exited after deletion was admitted. Keep its
+        // ticket (and binding), but never reopen a file until the WSL lease is gone.
+        attempt->resumeAfterDeletion = [this, agentId, target, expectedEpoch, entry, request, launch, done] {
+            reattachPrepared(agentId, target, expectedEpoch, entry, request, launch, done);
+        };
+        if (m_deps.services && m_deps.services->appLog) {
+            m_deps.services->appLog->write(QStringLiteral("info"), QStringLiteral("session"),
+                                          QStringLiteral("Waiting for WSL deletion before reconnecting runtime"), {});
+        }
+        return;
+    }
+    if (deletionBlocks(target.sessionId) || deletionBlocksAgent(agentId) || deletionBlocksEntry(actual)) {
+        // The original epoch lets callers retire this exact exited transport.
+        done(false, QStringLiteral("Session deletion is in progress"), expectedEpoch);
         return;
     }
     // A user switch stays in the same filesystem namespace, but the tab must name

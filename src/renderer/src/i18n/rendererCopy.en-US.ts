@@ -2077,8 +2077,6 @@ export const enUS: Record<TranslationKey, string> = {
     "Close the current window and reopen the desktop app. Useful after title bar or shell setting changes.",
   "settings.restartNotice":
     "Title bar changes take effect after restarting PiDeck.",
-  "settings.rpcTimeout": "RPC timeout (seconds)",
-  "settings.rpcTimeoutDesc": "Maximum wait time for agent command execution. Default is 600 seconds (10 minutes), minimum is 600 seconds.",
   "settings.unsavedTitle": "Unsaved Changes",
   "settings.unsavedMessage": "You have unsaved changes. Do you want to save before closing?",
   "settings.saveAndClose": "Save & Close",
