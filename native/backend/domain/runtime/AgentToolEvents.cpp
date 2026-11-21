@@ -15,8 +15,8 @@
  *    `true → false`;
  *  - `tool_execution_update` only touches one transcript row and coalesces its flush
  *    (per-update full state polls were an RPC storm on long outputs);
- *  - the end edge flushes the message window immediately (the user is waiting for the
- *    result) and the start edge coalesces it.
+ *  - tool rows share the message flush window so a burst of completions does not
+ *    repeat image-heavy snapshots; runtime edges are still immediate.
  */
 namespace agentruntime {
 namespace {
@@ -118,10 +118,9 @@ void handleToolEvent(AgentSession &session, const QJsonObject &event, const Even
                    hooks);
     session.tab().status = QStringLiteral("running");
     if (hooks.emitState) hooks.emitState();
-    // Start is coalesced (`scheduleMessageEmit`); end is the terminal result the user is
-    // waiting for, so it flushes immediately (`flushMessageEmit`).
-    if (end) flushMessages(session, hooks);
-    else session.liveChannels().scheduleMessages();
+    // A batch of parallel completions may arrive in one stdout read. Publishing a
+    // full image-bearing transcript for each can overflow the renderer's SSE backlog.
+    session.liveChannels().scheduleMessages(end);
     if (hooks.emitRuntimeState) hooks.emitRuntimeState();
 }
 

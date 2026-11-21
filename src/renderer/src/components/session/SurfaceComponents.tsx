@@ -19,6 +19,7 @@ import {
 import { MarkdownStream } from "./MarkdownStream";
 import "katex/dist/katex.min.css";
 import { MessageImage } from "./MessageImage";
+import { MessageImageGallery } from "./MessageImageGallery";
 import { CopyMenu } from "./MessageCopyMenu";
 export { ImagePreviewModal } from "./MessageImage";
 export { CopyMenu } from "./MessageCopyMenu";
@@ -629,6 +630,7 @@ export const UserBubble = memo(function UserBubble(props: {
 					))}
 				</div>
 			)}
+			{message.imageDisplayNotice && <MessageImageGallery notice={message.imageDisplayNotice} />}
 			{visionBlocks.length > 0 && (
 				<div className="mb-2 flex w-full max-w-[min(82%,64ch)] flex-col items-end gap-1.5">
 					{visionBlocks.map((block, bi) =>

@@ -159,9 +159,6 @@ void handleAgentSettled(AgentSession &session, const QJsonObject &event, const E
     session.tab().isExecutingTool = false;
     session.tab().executingToolName.clear();
     session.activeToolCalls().clear();
-    // Turn end closes any live channel the message_end path could not (a build that
-    // settles without a final message_end still has to release the live bubble).
-    session.liveChannels().settle();
     // `recentlyAborted` marks the abort's settled event; the flag lives only until
     // that point (AgentManager deletes it here too), so the next turn starts clean.
     const bool abortSettled = session.recentlyAborted();
@@ -171,6 +168,11 @@ void handleAgentSettled(AgentSession &session, const QJsonObject &event, const E
     // returns here, otherwise the LAN stream would send `finish` mid-turn.
     const bool lateSettled =
         session.waitingForAbortSettled() && session.pendingOpenAfterSettled();
+    // Publish completed rows and any window trim in one snapshot before closing
+    // the live channels. A late settle must not trim the newly started turn.
+    if (!lateSettled && session.transcript().trimToTurns(50)) flushMessages(session, hooks);
+    else session.liveChannels().flushPendingCompletedRows();
+    session.liveChannels().settle();
     // End the abort wait: a turn that started before this settled is now allowed to
     // stream (the stream gate's only legal unseal point).
     session.noteAbortSettled();
@@ -187,7 +189,6 @@ void handleAgentSettled(AgentSession &session, const QJsonObject &event, const E
         && session.tab().status != QLatin1String("closed")) {
         session.tab().status = QStringLiteral("idle");
     }
-    if (session.transcript().trimToTurns(50)) flushMessages(session, hooks);
     if (hooks.emitState) hooks.emitState();
     if (hooks.emitRuntimeState) hooks.emitRuntimeState();
     if (hooks.settled) hooks.settled(abortSettled);

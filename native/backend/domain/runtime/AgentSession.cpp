@@ -105,8 +105,9 @@ bool AgentSession::spawn(QString *error)
         m_tab.isExecutingTool = false;
         m_tab.executingToolName.clear();
         m_transcript.clearActiveAssistant();
-        // The process is gone: no pending coalesced frame may be published for it (a
-        // late timer would otherwise revive a live bubble on a closed runtime).
+        // stdout was drained before the exit callback. Publish completed rows while
+        // the binding still exists, then cancel all uncommitted live presentation.
+        m_live.flushPendingCompletedRows();
         m_live.reset();
         m_perf.resetOpen();
         const QString reason = status == QProcess::CrashExit
@@ -206,6 +207,7 @@ void AgentSession::close()
     }
     if (!m_client || m_closing) return;
     m_closing = true;
+    m_live.flushPendingCompletedRows();
     // Drop pending live frames on stop: the oracle cancels the coalescers in
     // `clearAgent`/abort, so a stopped runtime cannot repaint a bubble after the detach
     // frame.

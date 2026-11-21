@@ -9,6 +9,7 @@ const RUNTIME_TESTS = [
 	"tests/native2ThinkingSegmentParity.test.mjs",
 	"tests/native2ToolBatchParity.test.mjs",
 	"tests/native2StreamCoalescingParity.test.mjs",
+	"tests/native2UserImageTimeline.test.mjs",
 	"tests/native2RuntimeWindowParity.test.mjs",
 	"tests/native2SessionRuntimeCompaction.test.mjs",
 	"tests/native2RuntimeAbortRetryParity.test.mjs",

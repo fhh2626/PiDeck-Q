@@ -188,9 +188,9 @@ void Coordinator::abort(const QJsonObject &target, std::function<void(QJsonObjec
                                      {QStringLiteral("cancelled"), true}});
         }
         session.setAskAborted(true);
-        // Abort closes the live channels like the oracle: a leftover thinking bubble is
-        // published as done and pending text/message frames are dropped (the transcript
-        // already owns what the user has seen).
+        // Publish completed rows before closing thinking and dropping any
+        // remaining coalesced live progress.
+        session.liveChannels().flushPendingCompletedRows();
         session.liveChannels().settle();
         // A stopped turn owns no tool call any more. Dropping the aggregate and publishing
         // the `false` edge here (oracle `abort` → `emitToolRuntimeTransition(false)`) keeps

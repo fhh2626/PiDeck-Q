@@ -52,12 +52,7 @@ LiveChannels::LiveChannels(AgentSession *session) : m_session(session)
         emitTextFrame(m_pendingText, false);
     });
     m_messageTimer = makeTimer(context, kCoalesceMs);
-    QObject::connect(m_messageTimer, &QTimer::timeout, context, [this]() {
-        if (!m_session) return;
-        m_session->refreshFileVersion();
-        m_session->emitChannel(QStringLiteral("agents:message"),
-                               m_session->transcript().flushPayload(m_session->fileVersion()));
-    });
+    QObject::connect(m_messageTimer, &QTimer::timeout, context, [this]() { flushMessagesNow(); });
 }
 
 LiveChannels::~LiveChannels()
@@ -176,7 +171,12 @@ void LiveChannels::thinkingEnded()
 void LiveChannels::finishThinking()
 {
     if (m_thinkingTimer) m_thinkingTimer->stop();
-    if (!m_thinkingActive) return;
+    if (!m_thinkingActive) {
+        // Pi can provide all the reasoning in its terminal snapshot. The clock
+        // opened by message_start still needs closing, even without live deltas.
+        if (m_session) m_session->transcript().clearThinking();
+        return;
+    }
     const QString text = m_pendingThinking;
     m_thinkingActive = false;
     emitThinkingFrame(text, true);
@@ -199,28 +199,68 @@ void LiveChannels::finishText()
     m_pendingText.clear();
 }
 
-void LiveChannels::scheduleMessages()
+void LiveChannels::scheduleMessages(bool completedRow)
 {
+    m_completedRowPending |= completedRow;
     startMessageTimer();
 }
 
-void LiveChannels::flushMessagesNow()
+void LiveChannels::flushPendingCompletedRows()
 {
+    if (m_completedRowPending) flushMessagesNow();
+}
+
+void LiveChannels::clearAssistantBoundary()
+{
+    m_lastAssistantUpdateMessages = {};
+    m_lastAssistantUpdateFileVersion.clear();
+}
+
+void LiveChannels::publishMessages()
+{
+    m_completedRowPending = false;
     if (m_messageTimer) m_messageTimer->stop();
-    if (!m_session) return;
-    m_session->refreshFileVersion();
     m_session->emitChannel(QStringLiteral("agents:message"),
                            m_session->transcript().flushPayload(m_session->fileVersion()));
 }
 
+void LiveChannels::flushMessagesNow()
+{
+    clearAssistantBoundary();
+    if (!m_session) return;
+    m_session->refreshFileVersion();
+    publishMessages();
+}
+
+void LiveChannels::flushAssistantBoundary(AssistantBoundary boundary)
+{
+    if (!m_session) return;
+    m_session->refreshFileVersion();
+    const auto &messages = m_session->transcript().messages();
+    if (boundary == AssistantBoundary::End) {
+        // A file write or queued tool result still needs a fresh snapshot, even
+        // when the last assistant row's text hasn't changed.
+        const bool alreadyPublished = !m_lastAssistantUpdateMessages.isEmpty()
+            && (!m_messageTimer || !m_messageTimer->isActive())
+            && m_lastAssistantUpdateFileVersion == m_session->fileVersion()
+            && m_lastAssistantUpdateMessages == messages;
+        clearAssistantBoundary();
+        if (alreadyPublished) return;
+    } else {
+        m_lastAssistantUpdateMessages = messages;
+        m_lastAssistantUpdateFileVersion = m_session->fileVersion();
+    }
+    publishMessages();
+}
+
 void LiveChannels::settle()
 {
-    // A turn reached its final stable point. Finish a leftover thinking segment (an
-    // agent_settled without message_end still has to close the live bubble), then drop
-    // every pending text/message frame: the transcript owns the final content.
+    // Callers publish completed rows once before this cleanup, together with any trim.
     finishThinking();
     if (m_textTimer) m_textTimer->stop();
     if (m_messageTimer) m_messageTimer->stop();
+    m_completedRowPending = false;
+    clearAssistantBoundary();
     m_textActive = false;
     m_pendingText.clear();
     m_lastSentText.clear();
@@ -232,6 +272,8 @@ void LiveChannels::reset()
     if (m_thinkingTimer) m_thinkingTimer->stop();
     if (m_textTimer) m_textTimer->stop();
     if (m_messageTimer) m_messageTimer->stop();
+    m_completedRowPending = false;
+    clearAssistantBoundary();
     m_textActive = false;
     m_thinkingActive = false;
     m_pendingText.clear();

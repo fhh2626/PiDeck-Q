@@ -3,6 +3,7 @@
 #include "PiLaunch.h"
 #include "VisionBridge.h"
 
+#include "../sessions/ImageContent.h"
 #include "../sessions/SessionCatalogStore.h"
 
 #include <QDateTime>
@@ -240,12 +241,15 @@ void Coordinator::send(const QJsonObject &input, std::function<void(QJsonObject)
             const QString behavior = payload.value(QStringLiteral("streamingBehavior")).toString();
             if (!behavior.isEmpty()) meta.insert(QStringLiteral("streamingBehavior"), behavior);
             if (!requestId.isEmpty()) meta.insert(QStringLiteral("optimisticRequestId"), requestId);
+            // This row replaces the renderer's local bubble by request ID. Keep the
+            // same displayable attachments as history without changing pi's payload.
+            const auto attachments = imagecontent::extract(payload.value(QStringLiteral("images")));
             sending->transcript().appendMessage(
                 QStringLiteral("user"),
                 input.value(QStringLiteral("message")).toString().trimmed().isEmpty()
                     ? sending->translate()(QStringLiteral("session.imagePlaceholder"), QJsonObject{})
                     : input.value(QStringLiteral("message")).toString(),
-                meta);
+                meta, attachments.images);
             agentruntime::flushMessages(*sending, hooksFor(*sending));
         }
         // TTFT origin: the oracle records the sendPrompt time so queueing/pi startup is
@@ -398,6 +402,9 @@ void Coordinator::restart(const QJsonObject &targetJson, std::function<void(QJso
                                           QStringLiteral("Session deletion is in progress"))));
         return;
     }
+    // The reservation removes the binding, so close() would be too late to publish
+    // a tool result or completed text still held by the coalescer.
+    if (old) old->liveChannels().flushPendingCompletedRows();
     Bindings::Reservation reservation;
     try {
         reservation = m_bindings.beginReplacement(target.sessionId, target.agentId);

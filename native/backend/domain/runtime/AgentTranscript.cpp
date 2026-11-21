@@ -249,13 +249,17 @@ QString Transcript::upsertAssistant(const QJsonObject &partialMessage, const QSt
     }
     const QString stopReason = partialMessage.value(QStringLiteral("stopReason")).toString();
     if (index >= 0) {
-        QJsonObject message = m_messages.at(index).toObject();
+        const QJsonObject previous = m_messages.at(index).toObject();
+        QJsonObject message = previous;
         if (!text.isEmpty() || allowEmpty) message.insert(QStringLiteral("text"), text);
-        message.insert(QStringLiteral("timestamp"), static_cast<double>(nowMs()));
         if (!stopReason.isEmpty() && stopReason != QLatin1String("pending")) {
             message.insert(QStringLiteral("stopReason"), stopReason);
         }
-        m_messages.replace(index, message);
+        // A repeated terminal frame must not change the row just by touching its timestamp.
+        if (message != previous) {
+            message.insert(QStringLiteral("timestamp"), static_cast<double>(nowMs()));
+            m_messages.replace(index, message);
+        }
         return m_activeAssistantId;
     }
     if (text.isEmpty() && !allowEmpty) return m_activeAssistantId;
@@ -372,7 +376,8 @@ QString Transcript::upsertTool(const QJsonObject &event, const QString &status)
     return messageId;
 }
 
-void Transcript::appendMessage(const QString &role, const QString &text, const QJsonObject &meta)
+void Transcript::appendMessage(const QString &role, const QString &text, const QJsonObject &meta,
+                               const QJsonArray &images)
 {
     QJsonObject message{
         {QStringLiteral("id"), newId()},
@@ -382,6 +387,7 @@ void Transcript::appendMessage(const QString &role, const QString &text, const Q
         {QStringLiteral("timestamp"), static_cast<double>(nowMs())},
     };
     if (!meta.isEmpty()) message.insert(QStringLiteral("meta"), meta);
+    if (!images.isEmpty()) message.insert(QStringLiteral("images"), images);
     m_messages.append(message);
 }
 
@@ -606,9 +612,15 @@ void Transcript::finalizeThinking(const QJsonObject &partialMessage)
     if (index >= 0) {
         QJsonObject message = m_messages.at(index).toObject();
         message.insert(QStringLiteral("thinking"), nextThinking);
-        message.insert(QStringLiteral("thinkingStartedAt"), static_cast<double>(startedAt));
-        message.insert(QStringLiteral("thinkingEndedAt"), static_cast<double>(endedAt));
-        m_messages.replace(index, message);
+        // A terminal update may already have finalized this phase and closed its live
+        // clock. The paired message_end must not replace the recorded timings with now.
+        if (m_thinkingStartedAt > 0 || !message.value(QStringLiteral("thinkingStartedAt")).isDouble()) {
+            message.insert(QStringLiteral("thinkingStartedAt"), static_cast<double>(startedAt));
+        }
+        if (m_thinkingStartedAt > 0 || !message.value(QStringLiteral("thinkingEndedAt")).isDouble()) {
+            message.insert(QStringLiteral("thinkingEndedAt"), static_cast<double>(endedAt));
+        }
+        if (m_messages.at(index).toObject() != message) m_messages.replace(index, message);
         return;
     }
     m_messages.append(QJsonObject{

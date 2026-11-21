@@ -36,6 +36,8 @@ void Coordinator::runReplacement(const Target &target, const QString &command,
                                           QStringLiteral("Session deletion is in progress"))));
         return;
     }
+    // Publish any completed rows before the reservation hides the original target.
+    session->liveChannels().flushPendingCompletedRows();
     Bindings::Reservation reservation;
     try {
         reservation = m_bindings.beginReplacement(target.sessionId, target.agentId);

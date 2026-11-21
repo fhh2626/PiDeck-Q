@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
@@ -46,11 +47,15 @@ public:
     void pushText(const QString &text);
     /** `message_end`: flush the pending frame, publish done=true, clear the buffer. */
     void finishText();
-    /** Coalesced `agents:message` window (tool start/update frames). */
-    void scheduleMessages();
+    /** Coalesced `agents:message` window. Completed rows must survive shutdown of the window. */
+    void scheduleMessages(bool completedRow = false);
+    void flushPendingCompletedRows();
     /** Cancel a pending message window and publish the current transcript now. */
     void flushMessagesNow();
-    /** A turn ended: finish leftover thinking, drop pending text/message frames. */
+    /** `message_update(done|error)` can be followed by an identical `message_end`. */
+    enum class AssistantBoundary { Update, End };
+    void flushAssistantBoundary(AssistantBoundary boundary);
+    /** A turn ended: cancel pending frames and finish leftover thinking. */
     void settle();
     /** Abort/stop/exit: drop every pending frame without emitting. */
     void reset();
@@ -61,11 +66,17 @@ private:
     void startMessageTimer();
     void emitThinkingFrame(const QString &text, bool done);
     void emitTextFrame(const QString &text, bool done);
+    void publishMessages();
+    void clearAssistantBoundary();
 
     AgentSession *m_session = nullptr;
     QTimer *m_thinkingTimer = nullptr;
     QTimer *m_textTimer = nullptr;
     QTimer *m_messageTimer = nullptr;
+    bool m_completedRowPending = false;
+    // Copy-on-write, kept only until the paired terminal frame or the next flush.
+    QJsonArray m_lastAssistantUpdateMessages;
+    QString m_lastAssistantUpdateFileVersion;
     /** Latest pushed values; empty when no delta has arrived for the current reply. */
     QString m_pendingThinking;
     QString m_pendingText;

@@ -51,7 +51,8 @@ public:
     /** Tool row keyed by toolCallId; `status` is running|done|error. */
     QString upsertTool(const QJsonObject &event, const QString &status);
 
-    void appendMessage(const QString &role, const QString &text, const QJsonObject &meta);
+    void appendMessage(const QString &role, const QString &text, const QJsonObject &meta,
+                       const QJsonArray &images = {});
     /** A task acknowledges its adjacent slash command in place, retaining its request id. */
     void appendTodoTask(const QString &text, const QJsonObject &meta);
     void appendError(const QString &text);

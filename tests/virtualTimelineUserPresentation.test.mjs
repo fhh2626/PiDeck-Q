@@ -21,7 +21,7 @@ test(`real UserBubble keeps expansion through ${takeoverOffscreen ? "offscreen "
 			"katex/dist/katex.min.css": {},
 			"@/lib/density": { USER_TURN_BUBBLE: "user-bubble" },
 			"./MarkdownStream": { MarkdownStream: noContent },
-			"./MessageImage": { MessageImage: noContent, ImagePreviewModal: noContent },
+			"./MessageImage": { MessageImage: ({ src, alt }) => React.createElement("img", { src, alt }), ImagePreviewModal: noContent },
 			"./MessageCopyMenu": { CopyMenu: noContent },
 			"./EmptyState": { EmptyState: noContent },
 			"../ui-shadcn/textarea": { Textarea: noContent },
@@ -58,9 +58,9 @@ test(`real UserBubble keeps expansion through ${takeoverOffscreen ? "offscreen "
 		const sessionId = "accepted-bubble-remount";
 		const store = createStore();
 		const viewportRef = { current: null };
-		const user = (id, requestId) => ({ kind: "message", message: {
+		const user = (id, requestId, attachment = {}) => ({ kind: "message", message: {
 			id, agentId: "agent", role: "user", text: Array.from({ length: 80 }, (_, line) => `Line ${line}`).join("\n"), timestamp: 1,
-			...(requestId ? { meta: { optimisticRequestId: requestId } } : {}),
+			...(requestId ? { meta: { optimisticRequestId: requestId } } : {}), ...attachment,
 		} });
 		Object.defineProperties(window.HTMLElement.prototype, {
 			clientHeight: { configurable: true, get() { return this.classList.contains("line-clamp-8") ? 200 : 1200; } },
@@ -82,13 +82,20 @@ test(`real UserBubble keeps expansion through ${takeoverOffscreen ? "offscreen "
 		function Timeline({ currentStore = store, ...props }) {
 			return React.createElement(Provider, { store: currentStore }, React.createElement(TimelineContent, props));
 		}
-		const probe = await mount(() => undefined, { item: user("request-1") }, (child) => React.createElement(Timeline, child.props.hookProps));
+		const images = [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }];
+		const notice = { imageDisplayNotice: { kind: "delivery-budget-exceeded", count: 1, omitted: 1 } };
+		const probe = await mount(() => undefined, { item: user("request-1", undefined, { images }) }, (child) => React.createElement(Timeline, child.props.hookProps));
+		assert.equal(window.document.querySelector(".user-turn img")?.getAttribute("src"), "data:image/png;base64,aGVsbG8=");
 		const toggle = () => window.document.querySelector("button[aria-expanded]");
 		assert.equal(toggle()?.getAttribute("aria-expanded"), "false");
 		await act(() => toggle().dispatchEvent(new window.Event("click", { bubbles: true })));
 		assert.equal(toggle()?.getAttribute("aria-expanded"), "true");
 		if (takeoverOffscreen) await probe.rerender({ item: user("request-1"), showBubble: false });
-		await probe.rerender({ item: user("accepted-1", "request-1"), showBubble: !takeoverOffscreen });
+		await probe.rerender({ item: user("accepted-1", "request-1", notice), showBubble: !takeoverOffscreen });
+		if (!takeoverOffscreen) {
+			assert.equal(window.document.querySelector(".user-turn img"), null);
+			assert.match(window.document.querySelector(".user-turn").textContent, /tool\.images\.notice\.deliveryBudget/);
+		}
 		assert.equal(toggle()?.getAttribute("aria-expanded"), takeoverOffscreen ? undefined : "true");
 		await probe.rerender({ item: user("accepted-1"), showBubble: !takeoverOffscreen });
 		assert.equal(toggle()?.getAttribute("aria-expanded"), takeoverOffscreen ? undefined : "true");

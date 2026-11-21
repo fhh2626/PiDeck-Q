@@ -153,10 +153,14 @@ void handlePiEvent(AgentSession &session, const QJsonObject &event, const EventH
         session.perf().messageStarted(nowMs());
         transcript.beginThinking(transcript.activeAssistantId());
         transcript.upsertAssistant(message, QString(), true);
-        // Oracle order: flag patch, then the message flush (`beginAssistantMessage` →
-        // `setStreamingAgent(true)` → `flushMessageEmit`).
+        // Preserve the streaming edge. Let a same-burst answer replace its empty
+        // skeleton before sending a full transcript with the user's image bytes.
         setStreamingState(session, true, hooks);
-        flushMessages(session, hooks);
+        if (message.value(QStringLiteral("content")).toArray().isEmpty()) {
+            session.liveChannels().scheduleMessages();
+        } else {
+            flushMessages(session, hooks);
+        }
         return;
     }
 
@@ -223,7 +227,12 @@ void handlePiEvent(AgentSession &session, const QJsonObject &event, const EventH
             return;
         }
         if (updateType == QLatin1String("text_end")) {
-            if (!partial.isEmpty()) transcript.upsertAssistant(partial, QString(), true);
+            if (!partial.isEmpty()) {
+                transcript.upsertAssistant(partial, QString(), true);
+                // Some runtimes settle directly after text_end. Keep the finished
+                // segment pending even if neither terminal reply event arrives.
+                session.liveChannels().scheduleMessages(true);
+            }
             return;
         }
         if (updateType == QLatin1String("done") || updateType == QLatin1String("error")) {
@@ -234,7 +243,7 @@ void handlePiEvent(AgentSession &session, const QJsonObject &event, const EventH
             if (!transcript.activeAssistantId().isEmpty()) {
                 transcript.finalizeThinking(partial);
                 transcript.upsertAssistant(partial, QString(), true);
-                flushMessages(session, hooks);
+                if (hooks.send) session.liveChannels().flushAssistantBoundary(LiveChannels::AssistantBoundary::Update);
                 session.liveChannels().finishThinking();
             }
             // Oracle order (`message_end|done|error`): `setStreamingAgent(false)` comes
@@ -259,7 +268,7 @@ void handlePiEvent(AgentSession &session, const QJsonObject &event, const EventH
             if (!transcript.activeAssistantId().isEmpty()) {
                 transcript.finalizeThinking(message);
                 transcript.upsertAssistant(message, QString(), true);
-                flushMessages(session, hooks);
+                if (hooks.send) session.liveChannels().flushAssistantBoundary(LiveChannels::AssistantBoundary::End);
                 // Thinking first (History row + done frame), then perf settle, then the
                 // body channel: the order the oracle's message_end branch encodes.
                 session.liveChannels().finishThinking();
