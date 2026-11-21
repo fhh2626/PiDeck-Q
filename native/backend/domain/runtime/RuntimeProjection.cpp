@@ -133,9 +133,10 @@ void Coordinator::tryLoadProjection(const QString &agentId)
     QString boundSession;
     int boundGeneration = 0;
     const bool wasBound = m_bindings.bindingForAgent(agentId, &boundSession, &boundGeneration);
+    const quint64 mutationRevision = m_historyMutationRevisions.value(boundSession).committed;
     const QJsonArray beforeLoad = session->transcript().messages();
     session->request(QStringLiteral("get_messages"), {}, kMessagesTimeoutMs,
-        [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad, wasBound, boundSession, boundGeneration](
+        [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad, wasBound, boundSession, boundGeneration, mutationRevision](
             bool ok, const QJsonObject &response, const QString &) {
             auto load = m_projectionLoads.find(agentId);
             if (load == m_projectionLoads.end() || load->ticket != ticket) return;
@@ -160,7 +161,7 @@ void Coordinator::tryLoadProjection(const QString &agentId)
             for (const auto &value : response.value(QStringLiteral("data")).toObject()
                      .value(QStringLiteral("messages")).toArray()) raw.append(value);
             current->request(QStringLiteral("get_entries"), {}, kEntriesTimeoutMs,
-                [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad, raw, wasBound, boundSession, boundGeneration](
+                [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad, raw, wasBound, boundSession, boundGeneration, mutationRevision](
                     bool entriesOk, const QJsonObject &entriesResponse, const QString &) {
                     auto load = m_projectionLoads.find(agentId);
                     if (load == m_projectionLoads.end() || load->ticket != ticket) return;
@@ -208,7 +209,7 @@ void Coordinator::tryLoadProjection(const QString &agentId)
                     });
                     const auto apply = [this, agentId, ticket, sequence, epoch, runGeneration, beforeLoad,
                                         raw, ids = projection.messageIds, matched = projection.matched,
-                                        hasEntries, legacyCursor, roleCount, wasBound, boundSession, boundGeneration](
+                                        hasEntries, legacyCursor, roleCount, wasBound, boundSession, boundGeneration, mutationRevision](
                                            const QStringList &fileIds, bool cursorKnown, int checkpointHead = -1) {
                         auto load = m_projectionLoads.find(agentId);
                         if (load == m_projectionLoads.end() || load->ticket != ticket) return;
@@ -245,7 +246,15 @@ void Coordinator::tryLoadProjection(const QString &agentId)
                         // is only a fallback for rows appended after this projection.
                         const int fallback = !cursorKnown ? -1 : matched ? int(fileIds.size())
                             : legacyCursor ? std::max(0, int(fileIds.size()) - roleCount) : checkpointHead;
-                        transcript.configureHistory(fileIds, fallback, load->preserveHistory, load->preserveHistory);
+                        bool preserveHistory = load->preserveHistory;
+                        const auto mutation = m_historyMutationRevisions.find(boundSession);
+                        if (mutation != m_historyMutationRevisions.end() && mutationRevision > mutation->projected) {
+                            // A later preserving read can satisfy this mutation, but cannot
+                            // revive rows from before it, even after a failed projection.
+                            mutation->projected = mutationRevision;
+                            preserveHistory = false;
+                        }
+                        transcript.configureHistory(fileIds, fallback, preserveHistory, preserveHistory);
                         transcript.preserveDiagnosticsSince(load->diagnosticRevision, previous);
                         if (settledDuringLoad) transcript.trimToTurns(50);
                         latest->refreshFileVersion();

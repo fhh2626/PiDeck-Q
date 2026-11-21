@@ -611,6 +611,12 @@ private:
     QHash<QString, DeliveryEntry> m_delivery;
     QHash<QString, AgentSession::PendingUi> m_pendingUi;
     QHash<QString, QVector<std::function<void(std::function<void()>)>>> m_historyTails;
+    /** Keep committed edits pending until a projection actually includes them. */
+    struct HistoryMutationRevision {
+        quint64 committed = 0;
+        quint64 projected = 0;
+    };
+    QHash<QString, HistoryMutationRevision> m_historyMutationRevisions;
     QHash<QString, QJsonArray> m_commandCache;
     QHash<int, PiEventObserver> m_piObservers;
     QHash<int, std::function<void()>> m_stateObservers;

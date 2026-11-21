@@ -2033,7 +2033,7 @@ export function App() {
     showToast,
     overlays,
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
-    refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
+    refreshHistoryAfterMutation: (snapshot, projection) => refreshHistoryAfterMutation({ store }, snapshot, projection),
     beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
     // 重发要沿用的是「当前选中的模型」，而底栏展示顺序就是 pending > runtime.state > record：
     // 两端必须同源，否则 /model 轮换或在途切换会把旧模型写回去。策略见 resolveResendModelSelection。

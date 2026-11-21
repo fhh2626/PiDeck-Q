@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
-import { createStore } from "jotai/vanilla";
+import { atom, createStore } from "jotai/vanilla";
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -65,7 +65,7 @@ function setupEnvironment(pages) {
     },
   };
   const controllerModule = compileModule("src/renderer/src/hooks/useSessionTimelineController.ts", {
-    "../atoms": atoms,
+    "../atoms": { ...atoms, sessionRuntimeBySessionIdAtomFamily: (id) => atom((get) => get(atoms.sessionRuntimeByIdAtom)[id]) },
     "../i18n": { t: (key) => key },
     "../utils/notice": { showNotice: () => {} },
     "../utils/sessionCommands": { toSessionRuntimeTarget: () => undefined },
@@ -161,6 +161,128 @@ test("version-drift rebuild replaces the stale prefix once after reading from th
     pageSize: 3,
     beforeEntryId: "n1",
   });
+});
+
+test("an in-flight history rebuild cannot resurrect the prefix after an edit", async () => {
+  let release;
+  const page = new Promise((resolve) => { release = resolve; });
+  const { atoms, controllerModule, requests } = setupEnvironment([page]);
+  const store = createStore();
+  seedSession(store, atoms, {
+    agentId: "agent",
+    history: { messages: [{ id: "old", role: "user", text: "before edit" }], nextBefore: 2, version: "before" },
+  });
+  const rebuilding = controllerModule.rebuildHistoryPrefixAfterVersionDrift({
+    sessionId: "session-drift", sequence: 0, store, targetTurnCount: 1, isCurrent: () => true,
+  });
+  assert.equal(requests.length, 1);
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-drift", agentId: "agent", runtimeGeneration: 1, sourceChannel: "agents:message",
+    payload: {
+      messages: store.get(atoms.sessionMessagesCacheAtom)["session-drift"].messages,
+      preserveHistory: false, fileVersion: "after",
+    },
+  });
+  release({ messages: [{ id: "old", role: "user", text: "before edit" }], total: 4, nextBefore: null, indexVersion: "before" });
+  assert.equal(await rebuilding, false);
+  assert.equal(store.get(atoms.sessionMessagesCacheAtom)["session-drift"].history, undefined);
+});
+
+test("mutation reread restarts at the new seam when the HTTP reply beats the edit snapshot", async () => {
+  let release;
+  const firstPage = new Promise((resolve) => { release = resolve; });
+  const updatedHistory = [{ id: "updated", role: "user", text: "edited history" }];
+  const { atoms, controllerModule, requests } = setupEnvironment([
+    firstPage,
+    { messages: updatedHistory, total: 2, nextBefore: null, indexVersion: "after" },
+  ]);
+  const store = createStore();
+  seedSession(store, atoms, {
+    agentId: "agent",
+    history: { messages: [{ id: "old", role: "user", text: "cached history" }], nextBefore: 2 },
+  });
+  const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-drift");
+  const refreshing = controllerModule.refreshHistoryAfterMutation({ store }, snapshot);
+  assert.equal(requests[0].beforeEntryId, "e5");
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-drift", agentId: "agent", runtimeGeneration: 1, sourceChannel: "agents:message",
+    payload: { messages: [{ id: "new-window", role: "user", text: "new seam", meta: { entryId: "e6" } }],
+      preserveHistory: false, fileVersion: "after", historyMutationRevision: 1 },
+  });
+  release({ messages: [{ id: "stale", role: "user", text: "stale response" }], total: 4, nextBefore: null, indexVersion: "before" });
+  await refreshing;
+  assert.deepEqual(requests.map((request) => request.beforeEntryId), ["e5", "e6"]);
+  assert.deepEqual(Array.from(store.get(atoms.sessionMessagesCacheAtom)["session-drift"].history.messages), updatedHistory);
+});
+
+test("mutation reread waits for the acknowledged replacement before reading any pages", async () => {
+  const updatedHistory = [{ id: "updated", role: "user", text: "edited history" }];
+  const { atoms, controllerModule, requests } = setupEnvironment([
+    { messages: updatedHistory, total: 2, nextBefore: null, indexVersion: "after" },
+  ]);
+  const store = createStore();
+  seedSession(store, atoms, {
+    agentId: "agent",
+    history: { messages: [{ id: "old", role: "user", text: "cached history" }], nextBefore: 2 },
+  });
+  const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-drift");
+  const refreshing = controllerModule.refreshHistoryAfterMutation({ store }, snapshot, { historyMutationRevision: 1 });
+  assert.deepEqual(requests, [], "history must not be read from the old seam after HTTP wins the race");
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-drift", agentId: "agent", runtimeGeneration: 1, sourceChannel: "agents:message",
+    payload: { messages: [{ id: "new-window", role: "user", text: "new seam", meta: { entryId: "e6" } }],
+      preserveHistory: false, fileVersion: "after", historyMutationRevision: 1 },
+  });
+  await refreshing;
+  assert.deepEqual(requests.map((request) => request.beforeEntryId), ["e6"]);
+  assert.deepEqual(Array.from(store.get(atoms.sessionMessagesCacheAtom)["session-drift"].history.messages), updatedHistory);
+});
+
+test("waiting for a mutation snapshot cancels immediately when its runtime detaches", async () => {
+  const { atoms, controllerModule, requests } = setupEnvironment([]);
+  const store = createStore();
+  seedSession(store, atoms, {
+    agentId: "agent",
+    history: { messages: [{ id: "old", role: "user", text: "cached history" }], nextBefore: 2 },
+  });
+  store.set(atoms.sessionRuntimeByIdAtom, { "session-drift": { agentId: "agent", runtimeGeneration: 1, status: "idle" } });
+  const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-drift");
+  const refreshing = controllerModule.refreshHistoryAfterMutation({ store }, snapshot, { historyMutationRevision: 1 });
+  store.set(atoms.applySessionRuntimeEventAtom, {
+    kind: "detach", sessionId: "session-drift", agentId: "agent", runtimeGeneration: 1,
+    sourceChannel: "sessions:runtime-detach", payload: null,
+  });
+  let timer;
+  try {
+    const result = await Promise.race([refreshing.then(() => "cancelled"), new Promise((resolve) => {
+      timer = setTimeout(() => resolve("still waiting"), 100);
+    })]);
+    assert.equal(result, "cancelled");
+    assert.deepEqual(requests, []);
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+test("a history reread cannot write after its runtime is replaced under the same agent id", async () => {
+  let release;
+  const page = new Promise((resolve) => { release = resolve; });
+  const { atoms, controllerModule, requests } = setupEnvironment([page]);
+  const store = createStore();
+  seedSession(store, atoms, {
+    agentId: "agent", historyMutationRevision: 1,
+    history: { messages: [{ id: "valid", role: "user", text: "cached history" }], nextBefore: 2 },
+  });
+  store.set(atoms.sessionRuntimeByIdAtom, { "session-drift": { agentId: "agent", runtimeGeneration: 1, status: "idle" } });
+  const snapshot = controllerModule.captureHistoryMutationRefresh(store, "session-drift");
+  const refreshing = controllerModule.refreshHistoryAfterMutation({ store }, snapshot, { historyMutationRevision: 1 });
+  assert.equal(requests.length, 1);
+  store.set(atoms.sessionRuntimeByIdAtom, { "session-drift": { agentId: "agent", runtimeGeneration: 2, status: "idle" } });
+  release({ messages: [{ id: "late", role: "user", text: "old runtime response" }], total: 2, nextBefore: null });
+  await refreshing;
+  assert.equal(store.get(atoms.sessionMessagesCacheAtom)["session-drift"].history.messages[0].id, "valid");
+  await controllerModule.refreshHistoryAfterMutation({ store }, snapshot, { historyMutationRevision: 1 });
+  assert.equal(requests.length, 1, "a late HTTP acknowledgement must not start a read against the replacement");
 });
 
 test("version-drift rebuild aborts when a page fails and keeps the old prefix (2026-12)", async () => {

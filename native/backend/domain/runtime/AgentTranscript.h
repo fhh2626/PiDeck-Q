@@ -97,6 +97,9 @@ public:
     /** Keep only the last `turns` user turns (plus leading system summary cards). */
     bool trimToTurns(int turns);
 
+    /** Stable window coordinates for full push and polling snapshots. */
+    QJsonObject windowMetadata() const;
+
     /** Full delivery payload; `fileVersion` is the session file `mtime:size` when known. */
     QJsonObject flushPayload(const QString &fileVersion) const;
 

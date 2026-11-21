@@ -62,8 +62,9 @@ void Coordinator::shutdown()
     reattachments.swap(m_reattachAttempts);
     m_versionProbes.cancel();
     m_preparingLaunches.clear();
-    // Deferred refresh callbacks belong to this runtime graph and cannot outlive it.
-    m_projectionLoads.clear();
+    // Hold deferred projection callbacks until all agents are gone. Completing
+    // them then releases command leases without reviving a partially shut down agent.
+    const auto pendingProjections = std::exchange(m_projectionLoads, {});
     m_compactProjectionExits.clear();
     m_pendingUi.clear();
     m_deletingTrees.clear();
@@ -83,6 +84,9 @@ void Coordinator::shutdown()
         if (m_deps.disposeRpcLog) m_deps.disposeRpcLog(entry.first);
     }
     m_agents.clear();
+    for (const ProjectionLoad &projection : pendingProjections) {
+        for (const auto &done : projection.waiters) if (done) done(false);
+    }
     m_bindings = Bindings();
     for (const auto &attempt : reattachments) {
         if (attempt.completion) attempt.completion(false, QStringLiteral("Backend is shutting down"), 0);
@@ -353,12 +357,15 @@ void Coordinator::startNextHistoryMutation(const QString &sessionId)
 {
     auto found = m_historyTails.find(sessionId);
     if (found == m_historyTails.end()) return;
-    if (found->isEmpty()) {
-        m_historyTails.erase(found);
-        return;
-    }
-    const auto task = found->takeFirst();
-    task([this, sessionId]() { startNextHistoryMutation(sessionId); });
+    // Keep the slot for the active task until its asynchronous reload or rollback
+    // finishes. Otherwise the next enqueue sees an empty queue and starts a second write.
+    const auto task = std::move(found->first());
+    task([this, sessionId]() {
+        auto queue = m_historyTails.find(sessionId);
+        queue->removeFirst();
+        if (queue->isEmpty()) m_historyTails.erase(queue);
+        else startNextHistoryMutation(sessionId);
+    });
 }
 
 void Coordinator::runHistoryMutation(
@@ -368,6 +375,12 @@ void Coordinator::runHistoryMutation(
 {
     const QString sessionId = targetJson.value(QStringLiteral("sessionId")).toString();
     queueHistoryMutation(sessionId, [this, targetJson, operation, done](std::function<void()> finished) {
+        if (m_shutdown) {
+            done(errorResult(CommandError::of(errorcode::kRuntimeUnavailable,
+                                              QStringLiteral("Backend is shutting down"))));
+            finished();
+            return;
+        }
         runTarget(targetJson, operation, [done, finished](QJsonObject result) {
             done(result);
             finished();

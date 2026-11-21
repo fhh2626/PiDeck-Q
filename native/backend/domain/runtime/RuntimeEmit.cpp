@@ -175,8 +175,15 @@ void Coordinator::emitForAgent(const QString &agentId, const QString &channel, c
             return QJsonObject{{QStringLiteral("channel"), QStringLiteral("sessions:runtime-event")},
                                {QStringLiteral("args"), QJsonArray{QJsonValue(envelope)}}};
         };
+        QJsonObject snapshot = payload.toObject();
+        const quint64 mutationRevision = m_historyMutationRevisions.value(sessionId).projected;
+        if (mutationRevision > 0) {
+            // Keep this marker after preserveHistory is consumed, so full resync can
+            // invalidate a renderer that missed the mutation event in SSE replay.
+            snapshot.insert(QStringLiteral("historyMutationRevision"), static_cast<double>(mutationRevision));
+        }
         const deliverybudget::Outcome budget = deliverybudget::enforcePayload(
-            payload.toObject(), wrap, deliverybudget::configuredMaxBytes());
+            snapshot, wrap, deliverybudget::configuredMaxBytes());
         if (!budget.ok) {
             // Even after stripping every image the envelope does not fit. The oracle does
             // not send the oversized event: it publishes a blocked status so the renderer
@@ -184,9 +191,11 @@ void Coordinator::emitForAgent(const QString &agentId, const QString &channel, c
             QJsonObject blocked = event;
             blocked.insert(QStringLiteral("sourceChannel"),
                            QStringLiteral("sessions:message-delivery-status"));
-            blocked.insert(QStringLiteral("payload"),
-                           QJsonObject{{QStringLiteral("status"), QStringLiteral("blocked")},
-                                       {QStringLiteral("code"), budget.code}});
+            QJsonObject status{{QStringLiteral("status"), QStringLiteral("blocked")},
+                               {QStringLiteral("code"), budget.code}};
+            if (mutationRevision > 0) status.insert(QStringLiteral("historyMutationRevision"),
+                                                    static_cast<double>(mutationRevision));
+            blocked.insert(QStringLiteral("payload"), status);
             m_deps.services->events->broadcast(QStringLiteral("sessions:runtime-event"),
                                                QJsonArray{blocked});
             return;
@@ -347,11 +356,8 @@ EventHooks Coordinator::hooksFor(AgentSession &session)
     hooks.reloadMessages = [this, agentId](bool preserveHistory) {
         AgentSession *current = agent(agentId);
         if (!current) return;
-        loadProjection(*current, [this, agentId](bool projected) {
-            AgentSession *latest = agent(agentId);
-            if (!projected || !latest || !latest->running()) return;
-            agentruntime::flushMessages(*latest, hooksFor(*latest));
-        }, preserveHistory);
+        // Projection application already publishes the snapshot before notifying waiters.
+        loadProjection(*current, {}, preserveHistory);
     };
     hooks.uiRequest = [this, agentId](const AgentSession::PendingUi &request) {
         Q_UNUSED(agentId);

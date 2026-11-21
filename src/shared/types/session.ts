@@ -225,6 +225,18 @@ export type SessionRuntimeEvent = {
 	payload: unknown;
 };
 
+/** Identifies the authoritative replacement shared by history mutation replies and timeline events. */
+export type SessionHistoryMutationProjection = {
+	historyMutationRevision?: number;
+};
+
+/** Coordinates of a full runtime window, excluding one-shot SSE-only flags. */
+export type SessionRuntimeMessageWindow = SessionHistoryMutationProjection & {
+	totalLength?: number;
+	windowStart?: number;
+	windowStartFilePos?: number;
+};
+
 export type SessionRuntimeTarget = {
 	sessionId: string;
 	agentId: string;

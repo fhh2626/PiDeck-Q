@@ -534,18 +534,22 @@ bool Transcript::trimToTurns(int turns)
     return true;
 }
 
+QJsonObject Transcript::windowMetadata() const
+{
+    QJsonObject metadata{{QStringLiteral("totalLength"), m_messages.size() + m_windowStart}};
+    if (m_windowStart > 0) metadata.insert(QStringLiteral("windowStart"), m_windowStart);
+    if (m_windowStartFilePos >= 0) {
+        metadata.insert(QStringLiteral("windowStartFilePos"), m_windowStartFilePos);
+    }
+    return metadata;
+}
+
 QJsonObject Transcript::flushPayload(const QString &fileVersion) const
 {
-    QJsonObject payload{
-        {QStringLiteral("agentId"), m_agentId},
-        {QStringLiteral("messages"), stripToolResults(m_messages)},
-        {QStringLiteral("totalLength"), m_messages.size() + m_windowStart},
-        {QStringLiteral("preserveHistory"), m_preserveHistory},
-    };
-    if (m_windowStart > 0) payload.insert(QStringLiteral("windowStart"), m_windowStart);
-    if (m_windowStartFilePos >= 0) {
-        payload.insert(QStringLiteral("windowStartFilePos"), m_windowStartFilePos);
-    }
+    QJsonObject payload = windowMetadata();
+    payload.insert(QStringLiteral("agentId"), m_agentId);
+    payload.insert(QStringLiteral("messages"), stripToolResults(m_messages));
+    payload.insert(QStringLiteral("preserveHistory"), m_preserveHistory);
     if (m_stickyHistory) payload.insert(QStringLiteral("stickyHistory"), true);
     if (!m_pendingSlideOut.isEmpty()) {
         payload.insert(QStringLiteral("slideOut"), stripToolResults(m_pendingSlideOut));

@@ -99,7 +99,7 @@ function sseFrames(body) {
 }
 
 /** Minimal pi session file so a real runtime can be activated in the fixture. */
-function writeSessionFile(sessionsDir, projectPath, name) {
+function writeSessionFile(sessionsDir, projectPath, name, { olderTurn = false } = {}) {
 	const entries = [
 		{ type: "session", version: 3, id: name, timestamp: "2026-01-01T00:00:00.000Z", cwd: projectPath },
 		{ type: "model_change", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", provider: "anthropic", modelId: "claude-sonnet-4" },
@@ -123,6 +123,13 @@ function writeSessionFile(sessionsDir, projectPath, name) {
 			},
 		},
 	];
+	if (olderTurn) {
+		entries[2].parentId = "older-user";
+		entries.splice(2, 0, {
+			type: "message", id: "older-user", parentId: "m1", timestamp: "2026-01-01T00:00:00.500Z",
+			message: { role: "user", content: [{ type: "text", text: "older question" }], timestamp: 1_767_225_600_500 },
+		});
+	}
 	const path = join(sessionsDir, `${name}.jsonl`);
 	writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 	return path;
@@ -306,6 +313,7 @@ if (!executable) {
 			assert.equal(state.status, 200);
 			assert.deepEqual(Object.keys(state.json).sort(), [
 				"activatingSessionIds",
+				"messageWindowsBySession",
 				"messagesBySession",
 				"pendingUiRequests",
 				"projects",
@@ -562,7 +570,7 @@ if (!executable) {
 				commands: [],
 			};
 			const { port, invoke, fixture, fake } = await start(t, { scenario });
-			const filePath = writeSessionFile(fixture.sessions, projectPath, `web-${Date.now()}`);
+			const filePath = writeSessionFile(fixture.sessions, projectPath, `web-${Date.now()}`, { olderTurn: true });
 
 			const listed = await invoke("sessions:catalog-list", [PROJECT_ID]);
 			assert.equal(listed.payload.ok, true, JSON.stringify(listed.payload));
@@ -627,6 +635,24 @@ if (!executable) {
 			const messages = await api(port, `/api/sessions/${record.id}/messages`);
 			assert.equal(messages.status, 200);
 			assert.ok(messages.json.messages.length >= 2, JSON.stringify(messages.json));
+			const original = messages.json.messages.find((row) => row.text === "older question");
+			const edit = await api(port, `/api/sessions/${record.id}/runtime/edit-message`, {
+				method: "POST", body: { target, messageId: original.id, newText: "edited older question" },
+			});
+			assert.equal(edit.json.result.ok, true, JSON.stringify(edit.json));
+			const revision = edit.json.result.value.value.historyMutationRevision;
+			assert.ok(revision > 0);
+			const afterEdit = (await api(port, "/api/state")).json;
+			assert.equal(afterEdit.messageWindowsBySession[record.id].historyMutationRevision, revision);
+			assert.equal(afterEdit.messageWindowsBySession[record.id].totalLength, state.json.messagesBySession[record.id].length);
+			const seam = afterEdit.messageWindowsBySession[record.id].windowStartFilePos;
+			assert.equal(seam, 1);
+			assert.deepEqual(afterEdit.messagesBySession[record.id], state.json.messagesBySession[record.id]);
+			for (const cursor of [`before=${seam}`, "beforeEntryId=u1"]) {
+				const older = await api(port, `/api/sessions/${record.id}/messages/turn-page?turnCount=1&${cursor}`);
+				assert.equal(older.status, 200);
+				assert.deepEqual(older.json.messages.map((row) => row.text), ["edited older question"]);
+			}
 
 			// Deleting a running session is a business rejection (400), not a broken service.
 			const blocked = await api(port, `/api/sessions/${record.id}/delete`, { method: "POST" });

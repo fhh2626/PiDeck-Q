@@ -89,6 +89,7 @@ export function useSessionRuntimeBridge(callbacks: RuntimeBridgeCallbacks = {}):
         }
       }
       if (event.sourceChannel === "sessions:message-delivery-status") {
+        store.set(applySessionRuntimeEventAtom, event);
         showNotice(t("session.messageDeliveryTooLarge"), Number.POSITIVE_INFINITY, "error");
         return;
       }

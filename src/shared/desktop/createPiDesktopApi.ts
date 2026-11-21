@@ -77,6 +77,7 @@ import type {
 	SessionRuntimeInfo,
 	SessionRuntimeReplacement,
 	SessionRuntimeTarget,
+	SessionHistoryMutationProjection,
 	SessionTargetedValue,
 	SessionUiResponseInput,
 	SessionSummary,
@@ -423,13 +424,13 @@ const api = {
 				target,
 				messageId,
 				newText,
-			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection | void>>>,
 		deleteRuntimeMessage: (target: SessionRuntimeTarget, messageId: string) =>
 			transport.invoke(
 				ipcChannels.sessionsRuntimeDeleteMessage,
 				target,
 				messageId,
-			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection | void>>>,
 		prepareRuntimeResend: (
 			target: SessionRuntimeTarget,
 			messageId: string,
@@ -442,7 +443,7 @@ const api = {
 				messageId,
 				model,
 				thinkingLevel,
-			) as Promise<SessionCommandResult<SessionTargetedValue<{
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection & {
 				text: string;
 				images?: ImageContent[];
 			}>>>,

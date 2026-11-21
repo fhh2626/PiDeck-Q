@@ -531,11 +531,69 @@ test("an explicit preserveHistory=false snapshot still drops the trailing user r
   // 编辑/删除/重发：显式声明旧内容失效
   emitFull(atoms, store, [user], { preserveHistory: false });
   const messages = store.get(atoms.sessionMessagesCacheAtom)["session-1"].messages;
-  assert.equal(
-    messages.find((item) => item.id === "user-2")?.meta?.slidingOut,
-    true,
-    "显式删除路径不得被尾部 user 保护挡住",
-  );
+  assert.deepEqual([...messages.map((item) => item.id)], ["user-1"]);
+});
+
+test("an edited user row does not return on the next history-preserving snapshot", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const prefix = message("kept", { role: "assistant", text: "prior answer", timestamp: 1_000 });
+  const original = message("live-user", { text: "original question", timestamp: 2_000 });
+  const edited = message("file-user", { text: "edited question", timestamp: 2_000, meta: { entryId: "u1" } });
+  const readIds = () => [...store.get(atoms.sessionMessagesCacheAtom)["session-1"].messages.map((item) => item.id)];
+
+  emitFull(atoms, store, [prefix, original]);
+  emitFull(atoms, store, [prefix, edited], { preserveHistory: false, fileVersion: "after-edit" });
+  const idsImmediatelyAfterEdit = readIds();
+  emitFull(atoms, store, [prefix, edited], { preserveHistory: true, fileVersion: "after-edit" });
+  store.set(atoms.removeSessionSlidingOutMessagesAtom, { sessionId: "session-1", messageIds: [original.id] });
+
+  assert.deepEqual(readIds(), [prefix.id, edited.id], "the old row must not outlive the animation timer");
+  assert.deepEqual(idsImmediatelyAfterEdit, [prefix.id, edited.id], "the old row must stop being actionable immediately");
+});
+
+test("a replay-gap snapshot recovers missed edits without dropping an in-flight send", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const prefix = message("kept", { role: "assistant", text: "prior answer", timestamp: 1_000 });
+  const original = message("live-user", { text: "original question", timestamp: 2_000 });
+  const edited = message("file-user", { text: "edited question", timestamp: 2_000, meta: { entryId: "u1" } });
+  const pending = message("pending", { text: "another question", timestamp: 3_000,
+    meta: { optimistic: true, optimisticPending: true, optimisticRequestId: "next" } });
+  const entry = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
+  emitFull(atoms, store, [prefix, original]);
+  store.set(atoms.cacheSessionMessagesAtom, { sessionId: "session-1", source: "runtime",
+    messages: [...entry().messages, pending], history: {
+      messages: [message("obsolete-history", { text: "obsolete prefix" })], nextBefore: null,
+    } });
+
+  // The invalidating frame fell out of SSE replay. The resync carries the same
+  // mutation revision as that frame, even though it now preserves history.
+  emitFull(atoms, store, [prefix, edited], { preserveHistory: true, historyMutationRevision: 1 });
+  assert.deepEqual([...entry().messages.map((item) => item.id)], [prefix.id, edited.id, pending.id]);
+  assert.equal(entry().history, undefined);
+  emitFull(atoms, store, [prefix, edited], { preserveHistory: true, historyMutationRevision: 1 });
+  assert.deepEqual([...entry().messages.map((item) => item.id)], [prefix.id, edited.id, pending.id]);
+});
+
+test("blocked delivery retires stale rows only when it reports a newer mutation", () => {
+  const atoms = loadAtoms();
+  const store = createStore();
+  const cache = () => store.get(atoms.sessionMessagesCacheAtom)["session-1"];
+  const emitBlocked = (historyMutationRevision) => store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId: "session-1", agentId: "agent-1", runtimeGeneration: 1,
+    sourceChannel: "sessions:message-delivery-status",
+    payload: { status: "blocked", code: "MESSAGE_DELIVERY_TOO_LARGE", historyMutationRevision },
+  });
+  emitFull(atoms, store, [message("old", { text: "before edit" })]);
+  emitBlocked(undefined);
+  assert.equal(cache().messages[0]?.id, "old");
+  emitBlocked(1);
+  assert.equal(cache().messages.length, 0);
+  emitFull(atoms, store, [message("edited", { text: "after edit" })],
+    { preserveHistory: true, historyMutationRevision: 1 });
+  emitBlocked(1);
+  assert.deepEqual([...cache().messages.map((item) => item.id)], ["edited"]);
 });
 
 test("a stale snapshot does not keep a trailing user that was persisted under another id", () => {

@@ -4,6 +4,7 @@ import type {
 	ChatMessage,
 	ImageContent,
 	SessionHistoryMessageTarget,
+	SessionHistoryMutationProjection,
 	SessionMessageCommandTarget,
 	SessionRuntimeTarget,
 } from "../../../shared/types";
@@ -45,7 +46,7 @@ type SessionMessageCommandsInput = {
 		clearConfirm: () => void;
 	};
 	captureHistoryMutationRefresh?: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
-	refreshHistoryAfterMutation?: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
+	refreshHistoryAfterMutation?: (snapshot: HistoryMutationRefreshSnapshot | null, projection?: SessionHistoryMutationProjection | void) => Promise<void>;
 	/**
 	 * 确认删除后立即隐藏将被删的消息段，返回结算函数（committed / failed）。
 	 * 主进程删除大会话要数秒，没有即时反馈时用户会误以为没删掉。
@@ -178,6 +179,7 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 					};
 				const currentTarget = requireCurrentRuntimeTarget(resolved.target);
 				const currentSelected = input.getCurrentModelForSession?.(currentTarget.sessionId);
+				const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
 				const snapshot = requireSessionCommand(
 					await api.sessions.prepareRuntimeResend(
 						currentTarget,
@@ -187,10 +189,9 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 					),
 				).value;
 				preparedText = snapshot.text;
-				const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
 				// prepare 已完成文件变更；提交前刷新历史，避免截断后界面还显示已删的回复
 				if (refreshSnapshot && input.refreshHistoryAfterMutation) {
-					await input.refreshHistoryAfterMutation(refreshSnapshot);
+					await input.refreshHistoryAfterMutation(refreshSnapshot, snapshot);
 				}
 				// resend 是两阶段操作：prepare（旧 target 上完成文件 mutation）→ 重新提交。
 				// 提交前必须重新校验 target：prepare 期间 runtime 可能已被替换，
@@ -221,10 +222,10 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 			const resolved = await resolveMessageTarget(expectedTarget, messageId);
 			const currentTarget = requireCurrentRuntimeTarget(resolved.target);
 			const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
-			requireSessionCommand(await api.sessions.editRuntimeMessage(currentTarget, resolved.messageId, newText));
+			const result = requireSessionCommand(await api.sessions.editRuntimeMessage(currentTarget, resolved.messageId, newText));
 			if (refreshSnapshot && input.refreshHistoryAfterMutation) {
 				try {
-					await input.refreshHistoryAfterMutation(refreshSnapshot);
+					await input.refreshHistoryAfterMutation(refreshSnapshot, result?.value);
 				} catch {
 					input.showToast(t("diagnostic.historyLoadFailed"), 4000);
 				}
@@ -254,9 +255,9 @@ export function useSessionMessageCommands(input: SessionMessageCommandsInput) {
 					// 隐藏只作用于视图层，缓存原样保留：历史重读快照仍按真实已加载深度计算
 					const refreshSnapshot = input.captureHistoryMutationRefresh?.(currentTarget.sessionId) ?? null;
 					settleOptimisticDeletion = input.beginOptimisticDeletion?.(currentTarget.sessionId, messageId);
-					requireSessionCommand(await api.sessions.deleteRuntimeMessage(currentTarget, resolved.messageId));
+					const result = requireSessionCommand(await api.sessions.deleteRuntimeMessage(currentTarget, resolved.messageId));
 					if (refreshSnapshot && input.refreshHistoryAfterMutation) {
-						await input.refreshHistoryAfterMutation(refreshSnapshot);
+						await input.refreshHistoryAfterMutation(refreshSnapshot, result?.value);
 					}
 					// 删除已提交：隐藏保持到权威快照里这些消息消失为止（事件与命令响应不保证先后）
 					settleOptimisticDeletion?.("committed");

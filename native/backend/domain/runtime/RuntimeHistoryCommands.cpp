@@ -140,11 +140,12 @@ void Coordinator::editMessage(const QJsonObject &target, const QString &messageI
             return;
         }
         reloadAfterMutation(session, filePath, result.backupPath,
-                            [this, agentId, finish](bool ok, const QString &error) {
+                            [this, sessionId = binding.sessionId, agentId, finish](bool ok, const QString &error) {
                                 if (!ok) {
                                     finish(false, QJsonValue(), error);
                                     return;
                                 }
+                                ++m_historyMutationRevisions[sessionId].committed;
                                 reloadProjection(agentId, finish);
                             });
     }, std::move(done));
@@ -173,11 +174,12 @@ void Coordinator::deleteMessage(const QJsonObject &target, const QString &messag
             return;
         }
         reloadAfterMutation(session, filePath, result.backupPath,
-                            [this, agentId, finish](bool ok, const QString &error) {
+                            [this, sessionId = binding.sessionId, agentId, finish](bool ok, const QString &error) {
                                 if (!ok) {
                                     finish(false, QJsonValue(), error);
                                     return;
                                 }
+                                ++m_historyMutationRevisions[sessionId].committed;
                                 reloadProjection(agentId, finish);
                             });
     }, std::move(done));
@@ -213,6 +215,7 @@ void Coordinator::prepareResend(const QJsonObject &target, const QString &messag
                                     finish(false, QJsonValue(), error);
                                     return;
                                 }
+                                ++m_historyMutationRevisions[binding.sessionId].committed;
                                 QJsonObject value{
                                     {QStringLiteral("text"), mutation.text},
                                 };
@@ -222,13 +225,16 @@ void Coordinator::prepareResend(const QJsonObject &target, const QString &messag
                                 // switch_session resets pi's in-memory model/thinking to the
                                 // historical values; re-apply the current selection.
                                 auto finishReload = [this, agentId, value, finish]() {
-                                    CommandDone settled = [value, finish](bool ok, const QJsonValue &,
+                                    CommandDone settled = [value, finish](bool ok, const QJsonValue &projection,
                                                                          const QString &error) {
                                         if (!ok) {
                                             finish(false, QJsonValue(), error);
                                             return;
                                         }
-                                        finish(true, value, QString());
+                                        QJsonObject prepared = value;
+                                        prepared.insert(QStringLiteral("historyMutationRevision"),
+                                                        projection.toObject().value(QStringLiteral("historyMutationRevision")));
+                                        finish(true, prepared, QString());
                                     };
                                     reloadProjection(agentId, std::move(settled));
                                 };
@@ -412,8 +418,11 @@ void Coordinator::reloadProjection(const QString &agentId, CommandDone finish)
             finish(false, QJsonValue(), QStringLiteral("Session projection unavailable during reload"));
             return;
         }
-        agentruntime::flushMessages(*latest, hooksFor(*latest));
-        finish(true, QJsonValue(QJsonValue::Null), QString());
+        // loadProjection already published the replacement, but the HTTP response
+        // and SSE travel on independent connections. Give the caller the revision
+        // to wait for before it reads pages from the new window seam.
+        const auto revision = m_historyMutationRevisions.value(m_bindings.sessionForAgent(agentId)).projected;
+        finish(true, QJsonObject{{QStringLiteral("historyMutationRevision"), static_cast<double>(revision)}}, QString());
     });
 }
 

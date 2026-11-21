@@ -5,6 +5,7 @@ import type {
 	SessionRecord,
 	SessionRuntimeEvent,
 	SessionRuntimeInfo,
+	SessionRuntimeMessageWindow,
 	SessionRuntimeTarget,
 } from "../../shared/types";
 import { t } from "./i18n";
@@ -16,6 +17,7 @@ type WebState = {
 	sessions: SessionRecord[];
 	runtimes: SessionRuntimeInfo[];
 	messagesBySession: Record<string, ChatMessage[]>;
+	messageWindowsBySession?: Record<string, unknown>;
 };
 
 const base = createPreviewApi();
@@ -43,8 +45,21 @@ function isWebState(value: unknown): value is WebState {
 		Array.isArray(value.projects) &&
 		Array.isArray(value.sessions) &&
 		Array.isArray(value.runtimes) &&
-		isRecord(value.messagesBySession)
+		isRecord(value.messagesBySession) &&
+		(value.messageWindowsBySession === undefined || isRecord(value.messageWindowsBySession))
 	);
+}
+
+/** Read only the stable coordinates; older web services may omit the entire window. */
+function readMessageWindow(value: unknown): SessionRuntimeMessageWindow | undefined {
+	if (!isRecord(value)) return undefined;
+	const { totalLength, windowStart, windowStartFilePos, historyMutationRevision } = value;
+	return {
+		totalLength: typeof totalLength === "number" ? totalLength : undefined,
+		windowStart: typeof windowStart === "number" ? windowStart : undefined,
+		windowStartFilePos: typeof windowStartFilePos === "number" ? windowStartFilePos : undefined,
+		historyMutationRevision: typeof historyMutationRevision === "number" ? historyMutationRevision : undefined,
+	};
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -107,7 +122,9 @@ async function refreshState() {
 			}
 		}
 		const messages = state.messagesBySession[runtime.sessionId] ?? [];
-		const messageKey = `${runtime.agentId}:${runtime.runtimeGeneration}:${JSON.stringify(messages)}`;
+		const window = readMessageWindow(state.messageWindowsBySession?.[runtime.sessionId]);
+		// An edit outside the live window can change the revision without changing its rows.
+		const messageKey = `${runtime.agentId}:${runtime.runtimeGeneration}:${JSON.stringify(window)}:${JSON.stringify(messages)}`;
 		if (lastSessionMessages.get(runtime.sessionId) !== messageKey) {
 			lastSessionMessages.set(runtime.sessionId, messageKey);
 			for (const listener of runtimeListeners) {
@@ -116,7 +133,7 @@ async function refreshState() {
 					agentId: runtime.agentId,
 					runtimeGeneration: runtime.runtimeGeneration,
 					sourceChannel: "sessions:messages",
-					payload: { agentId: runtime.agentId, messages },
+					payload: { agentId: runtime.agentId, messages, ...window },
 				});
 			}
 		}
@@ -254,13 +271,16 @@ export function createBrowserApi(): PiDesktopApi {
 				);
 				return result.messages;
 			},
-			readRecordMessagePage: async (sessionId, before, pageSize) => {
+			readRecordMessagePage: async (sessionId, before, pageSize, options) => {
+				const turns = options?.unit === "turn";
 				const params = new URLSearchParams();
 				if (before !== undefined) params.set("before", String(before));
-				if (pageSize !== undefined) params.set("pageSize", String(pageSize));
+				if (pageSize !== undefined) params.set(turns ? "turnCount" : "pageSize", String(pageSize));
+				// The turn pager resolves a file-entry seam even when no numeric offset is known.
+				if (turns && options.beforeEntryId) params.set("beforeEntryId", options.beforeEntryId);
 				const suffix = params.size ? `?${params}` : "";
 				return request<Awaited<ReturnType<PiDesktopApi["sessions"]["readRecordMessagePage"]>>>(
-					`/api/sessions/${encodeURIComponent(sessionId)}/messages/page${suffix}`,
+					`/api/sessions/${encodeURIComponent(sessionId)}/messages/${turns ? "turn-page" : "page"}${suffix}`,
 				);
 			},
 			readProcessEvents: async () => [],

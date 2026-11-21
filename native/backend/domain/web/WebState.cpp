@@ -53,6 +53,7 @@ QJsonObject build(const ChannelServices &services)
     QJsonArray runtimes;
     QSet<QString> visibleRuntimeSessions;
     QJsonObject messagesBySession;
+    QJsonObject messageWindowsBySession;
     QStringList activating;
     if (services.runtimeCoordinator) {
         for (const QJsonValue &value : services.runtimeCoordinator->listRuntimes().toArray()) {
@@ -80,6 +81,7 @@ QJsonObject build(const ChannelServices &services)
             }
             if (!matches) continue;
             messagesBySession.insert(sessionId, snapshot.value(QStringLiteral("value")));
+            messageWindowsBySession.insert(sessionId, snapshot.value(QStringLiteral("window")));
         }
         for (const QString &sessionId : services.runtimeCoordinator->activatingSessions()) {
             if (visibleIds.contains(sessionId)) activating.append(sessionId);
@@ -89,6 +91,7 @@ QJsonObject build(const ChannelServices &services)
     state.insert(QStringLiteral("activatingSessionIds"),
                  QJsonArray::fromStringList(activating));
     state.insert(QStringLiteral("messagesBySession"), messagesBySession);
+    state.insert(QStringLiteral("messageWindowsBySession"), messageWindowsBySession);
 
     QJsonArray pending;
     if (services.runtimeCoordinator) {

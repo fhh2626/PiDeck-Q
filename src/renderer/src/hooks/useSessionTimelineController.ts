@@ -10,7 +10,7 @@ import {
 import { atom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { selectAtom } from "jotai/utils";
 import { desktopApi } from "../desktopApi";
-import type { AgentRuntimeState, ChatMessage } from "../../../shared/types";
+import type { AgentRuntimeState, ChatMessage, SessionHistoryMutationProjection, SessionRuntimeTarget } from "../../../shared/types";
 import {
 	cacheSessionMessagesAtom,
 	clearSessionHistoryAtom,
@@ -27,11 +27,13 @@ import {
 	sessionMessageCacheBySessionIdAtomFamily,
 	sessionMessageLoadStateBySessionIdAtomFamily,
 	sessionMessageResyncRequestAtom,
+	sessionRuntimeByIdAtom,
 	sessionRuntimeBySessionIdAtomFamily,
 	saveSessionScrollAnchorAtom,
 	sessionScrollAnchorByIdAtom,
 	setSessionMessageLoadStateAtom,
 	touchSessionMessagesAtom,
+	type SessionMessageCacheEntry,
 	type SessionScrollAnchor,
 } from "../atoms";
 import { t } from "../i18n";
@@ -110,6 +112,24 @@ export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
  */
 export const HISTORY_REBUILD_MAX_PAGES = 20;
 
+/** Ordinary stream updates can advance the cache revision without invalidating a history read. */
+function ownsHistoryRead(start: SessionMessageCacheEntry, current: SessionMessageCacheEntry | undefined) {
+  return current?.source === "runtime" && current.agentId === start.agentId && current.historyReset === start.historyReset;
+}
+
+/** A usable page may return after its runtime detached or reused the same agent id. */
+function historyReadTarget(store: ReturnType<typeof useStore>, sessionId: string): SessionRuntimeTarget | undefined {
+  const runtime = store.get(sessionRuntimeByIdAtom)[sessionId];
+  if (!runtime?.agentId || runtime.status === "detached" || runtime.status === "closed") return undefined;
+  return { sessionId, agentId: runtime.agentId, runtimeGeneration: runtime.runtimeGeneration };
+}
+
+function historyReadTargetCurrent(store: ReturnType<typeof useStore>, expected?: SessionRuntimeTarget) {
+  if (!expected) return true;
+  const current = historyReadTarget(store, expected.sessionId);
+  return current?.agentId === expected.agentId && current.runtimeGeneration === expected.runtimeGeneration;
+}
+
 /**
  * 增量续页遇到文件版本漂移（压缩改写）时，从当前 runtime 接缝重新读取一批连续页，
  * 恢复到早先已加载的深度。
@@ -131,6 +151,7 @@ export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
   const isCurrent = deps.isCurrent ?? (() => latestLoadBySession.get(sessionId) === sequence);
   const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
   if (!entryAtStart || entryAtStart.source !== "runtime") return false;
+  const target = historyReadTarget(store, sessionId);
   const anchorMessage = entryAtStart.messages.find((m) => typeof m.meta?.entryId === "string");
   const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
     ? anchorMessage.meta.entryId
@@ -161,7 +182,7 @@ export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
       const result = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
       if (!isCurrent()) return false;
       const latest = store.get(sessionMessagesCacheAtom)[sessionId];
-      if (!latest || latest.source !== "runtime") return false;
+      if (!historyReadTargetCurrent(store, target) || !ownsHistoryRead(entryAtStart, latest)) return false;
       if (rebuildVersion === undefined) {
         rebuildVersion = result.indexVersion;
       } else if (result.indexVersion !== rebuildVersion) {
@@ -362,6 +383,7 @@ export function isLatestTimelineRunBusy(
 export type HistoryMutationRefreshSnapshot = {
 	sessionId: string;
 	expectedMutationSequence: number;
+	target?: SessionRuntimeTarget;
 	loadedHistoryTurnCount: number;
 	loadedHistoryMessageCount: number;
 	anchorMessageId?: string;
@@ -410,6 +432,7 @@ export function captureHistoryMutationRefresh(
 	return {
 		sessionId,
 		expectedMutationSequence: nextSequence,
+		target: historyReadTarget(store, sessionId),
 		loadedHistoryTurnCount: countLoadedHistoryTurns(entry.history.messages),
 		loadedHistoryMessageCount: entry.history.messages.length,
 		anchorMessageId: anchor?.messageId,
@@ -427,10 +450,12 @@ export function captureHistoryMutationRefresh(
 export async function refreshHistoryAfterMutation(
 	deps: { store: ReturnType<typeof useStore> },
 	snapshot: HistoryMutationRefreshSnapshot | null,
+	projection?: SessionHistoryMutationProjection | void,
 ): Promise<void> {
 	if (!snapshot) return;
 	const { store } = deps;
 	const { sessionId } = snapshot;
+	if (!historyReadTargetCurrent(store, snapshot.target)) return;
 
 	// 若已有更新的 mutation 成功激活，此较旧 mutation 视为过时直接放弃
 	const currentActive = activeMutationSequenceBySession.get(sessionId) ?? 0;
@@ -439,29 +464,90 @@ export async function refreshHistoryAfterMutation(
 	// 激活本 mutation sequence，并写入 cache entry 供后续 runtime flush 继承
 	activeMutationSequenceBySession.set(sessionId, snapshot.expectedMutationSequence);
 	const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
-	if (entryAtStart?.source === "runtime") {
-		store.set(sessionMessagesCacheAtom, {
-			...store.get(sessionMessagesCacheAtom),
-			[sessionId]: {
-				...entryAtStart,
-				mutationSequence: snapshot.expectedMutationSequence,
-			},
-		});
-	}
+	if (entryAtStart?.source !== "runtime") return;
+	store.set(sessionMessagesCacheAtom, {
+		...store.get(sessionMessagesCacheAtom),
+		[sessionId]: {
+			...entryAtStart,
+			mutationSequence: snapshot.expectedMutationSequence,
+		},
+	});
 
+	const expectedRevision = projection?.historyMutationRevision;
+	let readStart = entryAtStart;
+	if (expectedRevision !== undefined && (readStart.historyMutationRevision ?? 0) < expectedRevision) {
+		const projected = await waitForHistoryMutationProjection(store, snapshot, entryAtStart.agentId, expectedRevision);
+		if (!projected) return;
+		readStart = projected;
+	}
+	const firstResult = await rereadHistoryAfterMutation(store, snapshot, readStart);
+	if (firstResult === "retry") {
+		const latest = store.get(sessionMessagesCacheAtom)[sessionId];
+		// The HTTP completion can overtake its SSE replacement. Discard the pages
+		// from the old seam and retry once at the current seam, unless superseded.
+		if (latest?.source === "runtime" && latest.agentId === entryAtStart.agentId
+			&& latest.mutationSequence === snapshot.expectedMutationSequence
+			&& activeMutationSequenceBySession.get(sessionId) === snapshot.expectedMutationSequence) {
+			await rereadHistoryAfterMutation(store, snapshot, latest);
+		}
+	}
+}
+
+/** RPC and SSE are independent. Never start a reread on the old seam while SSE catches up. */
+function waitForHistoryMutationProjection(
+	store: ReturnType<typeof useStore>,
+	{ sessionId, expectedMutationSequence, target }: HistoryMutationRefreshSnapshot,
+	agentId: string | undefined,
+	expectedRevision: number,
+): Promise<SessionMessageCacheEntry | undefined> {
+	const entryAtom = sessionMessageCacheBySessionIdAtomFamily(sessionId);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (entry?: SessionMessageCacheEntry) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			unsubscribeEntry();
+			unsubscribeRuntime?.();
+			resolve(entry);
+		};
+		const check = () => {
+			const entry = store.get(entryAtom);
+			if (!historyReadTargetCurrent(store, target) || entry?.source !== "runtime"
+				|| entry.agentId !== agentId || entry.mutationSequence !== expectedMutationSequence) {
+				finish();
+			} else if ((entry.historyMutationRevision ?? 0) >= expectedRevision) {
+				finish(entry);
+			}
+		};
+		const timer = setTimeout(() => {
+			showNotice(t("message.mutationHistoryRefreshFailed"), 5000, "warning");
+			finish();
+		}, 5_000);
+		const unsubscribeEntry = store.sub(entryAtom, check);
+		const unsubscribeRuntime = target ? store.sub(sessionRuntimeBySessionIdAtomFamily(sessionId), check) : undefined;
+		check();
+	});
+}
+
+/** Reads one continuous prefix against the window that owned the starting cursor. */
+async function rereadHistoryAfterMutation(
+	store: ReturnType<typeof useStore>,
+	snapshot: HistoryMutationRefreshSnapshot,
+	entryAtStart: SessionMessageCacheEntry,
+): Promise<"retry" | void> {
+	const { sessionId, target } = snapshot;
+	if (!historyReadTargetCurrent(store, target)) return;
 	try {
-		// 首页锚点：以当前 runtime 窗口首条有 entryId 的消息为锚（接缝），
-		// 不能看已加载的 history.messages（否则会错选成已加载历史的最老一条）。
-		const currentEntryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
-		if (!currentEntryAtStart || currentEntryAtStart.source !== "runtime") return; // 会话已卸载
-		const anchorMessage = currentEntryAtStart.messages.find(
+		// 首页锚点：以当前 runtime 窗口首条有 entryId 的消息为锚（接缝）。
+		const anchorMessage = entryAtStart.messages.find(
 			(m) => typeof m.meta?.entryId === "string",
 		);
 		const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
 			? anchorMessage.meta.entryId
 			: undefined;
-		const anchorFilePos = !anchorEntryId && typeof currentEntryAtStart.windowStartFilePos === "number"
-			? currentEntryAtStart.windowStartFilePos
+		const anchorFilePos = !anchorEntryId && typeof entryAtStart.windowStartFilePos === "number"
+			? entryAtStart.windowStartFilePos
 			: undefined;
 		if (!anchorEntryId && anchorFilePos === undefined) throw new Error("no-history-anchor");
 
@@ -475,8 +561,8 @@ export async function refreshHistoryAfterMutation(
 		while (freshTurns < snapshot.loadedHistoryTurnCount && !exhausted) {
 			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
 			const page = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
-			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
-			if (store.get(sessionMessagesCacheAtom)[sessionId]?.source !== "runtime") return; // 会话已卸载/降级
+			if (!historyReadTargetCurrent(store, target) || activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			if (!ownsHistoryRead(entryAtStart, store.get(sessionMessagesCacheAtom)[sessionId])) return "retry";
 			freshPages.push(page);
 			for (const message of page.messages) {
 				if (message.role === "user") freshTurns += 1;
@@ -524,13 +610,9 @@ export async function refreshHistoryAfterMutation(
 	} catch {
 		// 防御：若当前 entry 已被更新的成功 mutation 接管，不得清空新 mutation 刚刷好的历史
 		const entry = store.get(sessionMessagesCacheAtom)[sessionId];
-		if (
-			entry?.source !== "runtime" ||
-			entry.mutationSequence !== snapshot.expectedMutationSequence ||
-			activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence
-		) {
-			return;
-		}
+		if (!historyReadTargetCurrent(store, target) || entry?.mutationSequence !== snapshot.expectedMutationSequence ||
+			activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+		if (!ownsHistoryRead(entryAtStart, entry)) return "retry";
 
 		if (entry.history) {
 			store.set(clearSessionHistoryAtom, sessionId);
@@ -584,7 +666,7 @@ export type SessionTimelineController = {
   /** 编辑/删除发起前捕获刷新快照：await 前调用，固定原 sessionId/revision/已加载深度。 */
   captureHistoryMutationRefresh: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
   /** mutation 成功后的历史重读 + 原子替换（编辑/删除共用同一路径）。null 快照直接跳过。 */
-  refreshHistoryAfterMutation: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
+  refreshHistoryAfterMutation: (snapshot: HistoryMutationRefreshSnapshot | null, projection?: SessionHistoryMutationProjection | void) => Promise<void>;
 };
 
 export function useSessionTimelineController(options: {
@@ -1307,8 +1389,8 @@ export function useSessionTimelineController(options: {
   );
 
   const refreshHistoryAfterMutationCallback = useCallback(
-    (snapshot: HistoryMutationRefreshSnapshot | null) =>
-      refreshHistoryAfterMutation({ store }, snapshot),
+    (snapshot: HistoryMutationRefreshSnapshot | null, projection?: SessionHistoryMutationProjection | void) =>
+      refreshHistoryAfterMutation({ store }, snapshot, projection),
     [store],
   );
 

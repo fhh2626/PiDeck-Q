@@ -118,6 +118,10 @@ export type SessionMessageCacheEntry = {
 	cardCount?: number;
 	/** 窗口首条消息的文件消息下标（2026-11）：窗口缺 entryId 时作为首次补历史的数值游标 */
 	windowStartFilePos?: number;
+	/** Last authoritative mutation received, including when replay resumes after a gap. */
+	historyMutationRevision?: number;
+	/** Fences local history reads started before the last destructive replacement. */
+	historyReset?: symbol;
 	/**
 	 * disk 历史前缀（仅 runtime 窗口会话）：prepend-only 轮次页，
 	 * 与运行时窗口段的接缝按 meta.entryId/内容指纹去重；普通改写时旧前缀失效，
@@ -591,6 +595,8 @@ export const cacheSessionMessagesAtom = atom(
 		/** 显式移除本地 pending（会话提升迁移源）时放行 disk 写入。 */
 		allowPendingRemoval?: boolean;
 		history?: SessionMessageCacheEntry["history"];
+		historyMutationRevision?: number;
+		historyReset?: symbol;
 		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
 		mutationSequence?: number;
   }) => {
@@ -675,6 +681,8 @@ export const cacheSessionMessagesAtom = atom(
 			...(input.source === "runtime" ? {
 				windowStart: input.windowStart && input.windowStart > 0 ? input.windowStart : undefined,
 				history: input.history,
+				historyMutationRevision: input.historyMutationRevision ?? current?.historyMutationRevision,
+				historyReset: input.historyReset ?? current?.historyReset,
 				// mutation 代际：runtime flush 不改变它，只有显式传入（refresh 落地）才更新。
 				// 缺省继承旧值，保证在途 refresh 不因无关 runtime 更新被误判为陈旧。
 				mutationSequence: input.mutationSequence ?? current?.mutationSequence,
@@ -2289,10 +2297,11 @@ export const applySessionRuntimeEventAtom = atom(
       }
       return;
     } else if (
-      (event.sourceChannel === "agents:message" || event.sourceChannel === "sessions:messages") &&
-      payload
+      (event.sourceChannel === "agents:message" || event.sourceChannel === "sessions:messages"
+        || event.sourceChannel === "sessions:message-delivery-status") && payload
     ) {
-      const messages = payload.messages;
+      const blocked = event.sourceChannel === "sessions:message-delivery-status";
+      const messages = blocked ? [] : payload.messages;
       // 增量 flush 协议（2026-08 渲染卡顿优化）：主进程节流 flush 只发尾部增量
       // （upsertFrom + totalLength），终态 immediate flush 永远全量。
       // 激活显示窗口（2026-08 激活分页）：全量快照只含窗口段 [windowStart..]，
@@ -2304,14 +2313,29 @@ export const applySessionRuntimeEventAtom = atom(
         ? payload.windowStartFilePos
         : undefined;
       const fileVersion = typeof payload.fileVersion === "string" ? payload.fileVersion : undefined;
-      const preserveHistory = payload.preserveHistory === true;
-      const stickyHistory = payload.stickyHistory === true;
+      const historyMutationRevision = typeof payload.historyMutationRevision === "number"
+        ? payload.historyMutationRevision : undefined;
       if (Array.isArray(messages)) {
         // Keep the release operation named near the message branch; the actual
         // call remains after the full/incremental cache update below.
         const releaseLiveThinking = () =>
           tryReleaseLiveThinkingAfterHistory(get, set, event.sessionId);
         const current = get(sessionMessagesCacheAtom)[event.sessionId];
+        const knownMutationRevision = current?.historyMutationRevision ?? 0;
+        if (historyMutationRevision !== undefined && historyMutationRevision < knownMutationRevision) return;
+        const missedMutation = (historyMutationRevision ?? 0) > knownMutationRevision;
+        // A blocked mutation must not leave its old rows actionable. Ordinary
+        // delivery failures, or repeats after this revision, keep the valid cache.
+        if (blocked && !missedMutation) return;
+        const destructiveSnapshot = !blocked && payload.preserveHistory === false;
+        const explicitDrop = destructiveSnapshot || missedMutation;
+        const preserveHistory = !explicitDrop && payload.preserveHistory === true;
+        const stickyHistory = !explicitDrop && payload.stickyHistory === true;
+        // A new mutation revision cannot be applied to the old window by delta.
+        if (explicitDrop && upsertFrom !== undefined && totalLength !== undefined) {
+          requestSessionMessageResync(get, set, event.sessionId);
+          return;
+        }
         // History pages may have identified an anonymous RPC summary. Preserve
         // that knowledge on the same display row through both full and delta
         // payloads; the strict fingerprint prevents inheriting a newer event.
@@ -2532,23 +2556,18 @@ export const applySessionRuntimeEventAtom = atom(
           for (const messageId of confirmedLocalIds) {
             droppedOptimisticIds.add(messageId);
           }
-          const explicitDrop = payload.preserveHistory === false;
           const canMergeRuntime = !bindingChanged &&
             current?.source === "runtime" &&
             (!current.agentId || current.agentId === event.agentId);
-          const reconciledMessages = optimisticReconciliation.messages.filter((message) =>
-            !confirmedLocalIds.has(message.id)
-            && !(explicitDrop && message.meta?.optimistic === true)
-          );
           // binding 切换时 cache 会整体换成新 runtime 的 segment；cache 里的
           // agentId 可能还停留在旧 runtime（乐观写入继承旧值），不能因此丢掉
           // 显式在途的 pending 气泡。pending 生命周期由发送结果和权威配对管理。
           // disk 来源同样需要接回：磁盘页不是 runtime 下标空间，增量会等待全量，
           // 全量接管时若不接回，本地气泡会凭空消失。
-          const pendingOptimisticMessages = !explicitDrop && (
-            current?.source === "disk"
-            || (current?.source === "runtime" && !canMergeRuntime)
-          )
+          const restorePending = !destructiveSnapshot && (
+            missedMutation || current?.source === "disk" || (current?.source === "runtime" && !canMergeRuntime)
+          );
+          const pendingOptimisticMessages = restorePending && current
             ? current.messages
                 .filter((message) =>
                   isPendingOptimisticMessage(message)
@@ -2606,30 +2625,31 @@ export const applySessionRuntimeEventAtom = atom(
             payloadWindowStartFilePos,
             // 显式字段（含 false）才启用编辑/删除清理与保留集重算：
             // 旧协议缺省载荷仍按“未声明”处理，不误删已有前缀。
-            typeof payload.preserveHistory === "boolean",
+            explicitDrop || typeof payload.preserveHistory === "boolean",
             // 压缩前上一运行窗口：与旧保留集合并后重算最近 50 轮保留集
             previousWindow,
           );
           segment = reconciledHistory.segment;
-          const mergedMessages = current?.source === "disk"
-            || (current?.source === "runtime" && !canMergeRuntime)
-            ? insertOptimisticMessagesBeforeNewer(
-                segment,
-                pendingOptimisticMessages,
-                new Set(segment.map((message) => message.id)),
-                previousIdsBeforeOptimistic,
-              )
-            : canMergeRuntime
-              ? mergeCanonicalSnapshotWithSlidingOut(
-                  reconciledMessages,
-                  segment,
-                  promotedHistory,
-                  confirmedRequestIds,
-                  // 未显式声明丢弃历史的全量快照：排在快照尾之后的 user 是
-                  // 「快照比本地旧」的证据，不能滑出（发送瞬间回滚一条的根因）。
-                  { keepUnconfirmedTrailingUserMessages: !explicitDrop },
-                )
-              : segment;
+          let mergedMessages = segment;
+          // 编辑/删除/重发已让旧行失效，不能保留为滑出行：紧随其后的普通快照
+          // 会把尾部旧 user 当成尚未确认的发送，重新留在信息流中。
+          if (restorePending) {
+            mergedMessages = insertOptimisticMessagesBeforeNewer(
+              segment,
+              pendingOptimisticMessages,
+              new Set(segment.map((message) => message.id)),
+              previousIdsBeforeOptimistic,
+            );
+          } else if (!explicitDrop && canMergeRuntime) {
+            mergedMessages = mergeCanonicalSnapshotWithSlidingOut(
+              optimisticReconciliation.messages.filter((message) => !confirmedLocalIds.has(message.id)),
+              segment,
+              promotedHistory,
+              confirmedRequestIds,
+              // 排在普通快照尾部之后的新 user 可能尚未被快照覆盖，保持其可见。
+              { keepUnconfirmedTrailingUserMessages: true },
+            );
+          }
           set(cacheSessionMessagesAtom, {
             sessionId: event.sessionId,
             messages: mergedMessages,
@@ -2638,6 +2658,8 @@ export const applySessionRuntimeEventAtom = atom(
             windowStart: payloadWindowStart,
             cardCount,
             history: reconciledHistory.history,
+            historyMutationRevision,
+            ...(explicitDrop ? { historyReset: Symbol() } : {}),
             ...(typeof payloadWindowStartFilePos === "number"
               ? { windowStartFilePos: payloadWindowStartFilePos }
               : {}),

@@ -180,8 +180,10 @@ QJsonObject Coordinator::runtimeMessages(const QString &sessionId) const
     // Same projection the desktop window is built from: the web client renders this
     // snapshot and then patches it from the event stream, so a second projection here
     // would drift from what the desktop tab shows.
-    // Shape is `SessionTargetedValue<ChatMessage[]>`, i.e. `{target, value}` with no
-    // command envelope: the web client diffs this snapshot against the live stream.
+    // Polling clients need the same cursor as SSE, but not its one-shot fields.
+    QJsonObject window = session->transcript().windowMetadata();
+    window.insert(QStringLiteral("historyMutationRevision"),
+                  static_cast<double>(m_historyMutationRevisions.value(sessionId).projected));
     return QJsonObject{
         {QStringLiteral("target"),
          QJsonObject{
@@ -190,6 +192,7 @@ QJsonObject Coordinator::runtimeMessages(const QString &sessionId) const
              {QStringLiteral("runtimeGeneration"), target.runtimeGeneration},
          }},
         {QStringLiteral("value"), session->transcript().messages()},
+        {QStringLiteral("window"), window},
     };
 }
 
