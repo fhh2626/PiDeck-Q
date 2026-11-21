@@ -63,7 +63,7 @@ QJsonObject editorDefaults()
 QJsonObject defaultSettings()
 {
     return QJsonObject{
-        {QStringLiteral("useNativeTitleBar"), false},
+        {QStringLiteral("useNativeTitleBar"), true},
         {QStringLiteral("showNativeMenu"), false},
         {QStringLiteral("sendShortcut"), QStringLiteral("enter-send")},
         {QStringLiteral("theme"), QStringLiteral("system")},
@@ -394,6 +394,14 @@ bool applyMigrations(QJsonObject *settings, const QJsonObject &parsed)
     changed = settings->contains(QStringLiteral("sessionTabOpenMode")) || changed;
     settings->remove(QStringLiteral("sessionTabOpenMode"));
 
+    // An old null or non-boolean must not make the renderer draw custom chrome
+    // while the window host falls back to its system frame.
+    const QString titleBarKey = QStringLiteral("useNativeTitleBar");
+    if (!settings->value(titleBarKey).isBool()) {
+        settings->insert(titleBarKey, true);
+        changed = true;
+    }
+
     // The built-in commit prompt follows the UI language; a custom template is kept.
     const QString persistedPrompt = parsed.value(QStringLiteral("gitCommitMessagePrompt")).toString();
     const bool customPrompt = !persistedPrompt.isEmpty()
@@ -535,6 +543,9 @@ SettingsCatalogRead updateSettingsCatalog(const QString &filePath, const QJsonOb
     safePatch.remove(QStringLiteral("installationType"));
     safePatch.remove(QStringLiteral("showThinking"));
     for (const QString &legacy : kLegacyKeys) safePatch.remove(legacy);
+    // Only a boolean can override the user's current chrome preference.
+    const QString titleBarKey = QStringLiteral("useNativeTitleBar");
+    if (!safePatch.value(titleBarKey).isBool()) safePatch.remove(titleBarKey);
     // A weak or empty token must not silently downgrade the web service.
     if (safePatch.contains(QStringLiteral("webServiceAccessToken"))
         && !isValidWebServiceAccessToken(

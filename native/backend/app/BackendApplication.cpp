@@ -646,7 +646,7 @@ QJsonObject BackendApplication::startupSettings() const
     const QJsonObject values = settings.settings;
     return QJsonObject{
         {QStringLiteral("theme"), values.value(QStringLiteral("theme")).toString(QStringLiteral("system"))},
-        {QStringLiteral("useNativeTitleBar"), values.value(QStringLiteral("useNativeTitleBar")).toBool(false)},
+        {QStringLiteral("useNativeTitleBar"), values.value(QStringLiteral("useNativeTitleBar")).toBool(true)},
         {QStringLiteral("closeToTray"), values.value(QStringLiteral("closeToTray")).toBool(true)},
         {QStringLiteral("startupWindowMode"),
          values.value(QStringLiteral("startupWindowMode")).toString(QStringLiteral("last"))},

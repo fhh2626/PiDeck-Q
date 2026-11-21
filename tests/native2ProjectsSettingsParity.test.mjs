@@ -510,17 +510,28 @@ if (executable) {
 			await sse.connect().catch(() => undefined);
 			t.after(() => sse.close());
 
-			const chrome = await session.invoke("settings:update", [{ useNativeTitleBar: true }]);
+			const chrome = await session.invoke("settings:update", [{ useNativeTitleBar: false }]);
 			assert.equal(chrome.payload.ok, true, JSON.stringify(chrome.payload));
+			assert.equal(chrome.payload.result.useNativeTitleBar, false);
 			// Title-bar changes are a host capability, not a renderer event.
 			const request = await session.host.waitForRequest("window.applySettings");
-			assert.equal(request.params.useNativeTitleBar, true);
+			assert.equal(request.params.useNativeTitleBar, false);
 
 			const zoom = await session.invoke("settings:update", [{ zoomFactor: 1.25 }]);
 			assert.equal(zoom.payload.ok, true, JSON.stringify(zoom.payload));
 			const event = await sse.waitFor("settings:apply-window");
 			assert.equal(event.payload.channel, "settings:apply-window");
 			assert.equal(event.payload.args[0].zoomFactor, 1.25);
+		});
+
+		test("settings:update ignores malformed title bar input without losing the saved choice", async (t) => {
+			const session = await start(t, { settings: { useNativeTitleBar: false } });
+			const updated = await session.invoke("settings:update", [{ useNativeTitleBar: "true", closeToTray: false }]);
+			assert.equal(updated.payload.ok, true, JSON.stringify(updated.payload));
+			assert.equal(updated.payload.result.useNativeTitleBar, false);
+			assert.equal((await session.host.waitForRequest("window.applySettings")).params.useNativeTitleBar, false);
+			const stored = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+			assert.equal(stored.useNativeTitleBar, false);
 		});
 
 		test("settings:update ignores a weak web service token", async (t) => {
@@ -545,7 +556,7 @@ if (executable) {
 			let failed;
 			try {
 				failed = await session.invoke("settings:update", [
-					{ theme: "dark", useNativeTitleBar: true },
+					{ theme: "dark", useNativeTitleBar: false },
 				]);
 			} finally {
 				restore();

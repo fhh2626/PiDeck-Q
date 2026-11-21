@@ -23,7 +23,7 @@ const requireBackend = process.env.PIDECK_REQUIRE_BACKEND_TESTS === "1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = "foundation-test-token";
 
-function createFixture() {
+function createFixture(settings = {}) {
 	const root = mkdtempSync(join(tmpdir(), "pideck-native2-foundation-"));
 	const userData = join(root, "user-data");
 	const renderer = join(root, "renderer");
@@ -43,11 +43,11 @@ function createFixture() {
 		join(userData, "settings.json"),
 		JSON.stringify(backendFixtureSettings({
 			theme: "dark",
-			useNativeTitleBar: true,
 			closeToTray: false,
 			startupWindowMode: "last",
 			zoomFactor: 1.25,
 			customFlag: "kept",
+			...settings,
 		})),
 	);
 	writeFileSync(join(userData, "last-window-bounds.json"), JSON.stringify({ width: 1280, height: 720, x: 40, y: 60 }));
@@ -75,8 +75,8 @@ function defaultHandlers() {
 	};
 }
 
-async function startBackend(t, handlers = defaultHandlers()) {
-	const fixture = createFixture();
+async function startBackend(t, handlers = defaultHandlers(), settings) {
+	const fixture = createFixture(settings);
 	const host = new FakeHost({ token: TOKEN, handlers });
 	const hostPort = await host.start();
 	const process_ = spawnBackend({ executable, hostPort, token: TOKEN, env: backendEnv(fixture) });
@@ -96,6 +96,7 @@ if (executable) {
 		assert.equal(ready.token, TOKEN);
 		assert.equal(ready.startup.theme, "dark");
 		assert.equal(ready.startup.useNativeTitleBar, true);
+		assert.equal((await rpc(baseUrl, token, "settings:get")).payload.result.useNativeTitleBar, true);
 		assert.equal(ready.startup.closeToTray, false);
 		assert.equal(ready.startup.startupWindowMode, "last");
 		assert.deepEqual(ready.startup.lastWindowBounds, { width: 1280, height: 720, x: 40, y: 60 });
@@ -143,6 +144,22 @@ if (executable) {
 		assert.equal(payload.settings.memoryProfileEnabled, false);
 		assert.equal(typeof payload.eventSeq, "number");
 		assert.match(payload.eventSourceGeneration, UUID_PATTERN);
+	});
+
+	test("a saved custom title bar overrides the system-title-bar default", async (t) => {
+		const { ready, baseUrl, token } = await startBackend(t, undefined, { useNativeTitleBar: false });
+		assert.equal(ready.startup.useNativeTitleBar, false);
+		const response = await rpc(baseUrl, token, "settings:get");
+		assert.equal(response.payload.result.useNativeTitleBar, false);
+	});
+
+	test("an invalid saved title bar preference uses the same default at startup and on update", async (t) => {
+		const { ready, baseUrl, token, host } = await startBackend(t, undefined, { useNativeTitleBar: null });
+		assert.equal(ready.startup.useNativeTitleBar, true);
+		assert.equal((await rpc(baseUrl, token, "settings:get")).payload.result.useNativeTitleBar, true);
+		const changed = await rpc(baseUrl, token, "settings:update", [{ closeToTray: true }]);
+		assert.equal(changed.payload.result.useNativeTitleBar, true);
+		assert.equal((await host.waitForRequest("window.applySettings")).params.useNativeTitleBar, true);
 	});
 
 	test("C++ backend enforces token auth and a hardened HTTP parser", async (t) => {

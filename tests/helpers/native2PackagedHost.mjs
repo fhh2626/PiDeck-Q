@@ -137,7 +137,7 @@ const FAKE_PI_EXE = "pi.exe";
  * user-data folder, a private `PIDECK_HOME` so pi sessions/prompts never touch the real
  * `~/.pi`, a fixture project, and the native fake pi in its own PATH directory.
  */
-export function createHostFixture({ fakePi, prefix = "pideck-native2-package-" }) {
+export function createHostFixture({ fakePi, prefix = "pideck-native2-package-", useNativeTitleBar }) {
 	// Per-desktop drive mappings (for example a developer's RAM-disk TEMP) may not
 	// exist on a noninteractive station. Use the physical per-user temp directory.
 	const tempRoot = process.platform === "win32" && process.env.LOCALAPPDATA
@@ -177,6 +177,7 @@ export function createHostFixture({ fakePi, prefix = "pideck-native2-package-" }
 			piInstall: { command: piExecutable, version: "0.79.0", runtimeKind: "typescript" },
 			customPiPath: "",
 			enableNotifications: false,
+			useNativeTitleBar,
 			closeToTray: false,
 			singleInstance: false,
 		}),

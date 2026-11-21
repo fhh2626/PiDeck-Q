@@ -42,8 +42,8 @@ const fakePi = packaged.available ? resolveFakePi() : "";
 const available = packaged.available && fakePi !== "" && process.platform === "win32";
 
 /** Launch a host for one test and always tear it and the fixture down. */
-async function withHost(t, { isolatedPath = true } = {}) {
-	const fixture = createHostFixture({ fakePi });
+async function withHost(t, { isolatedPath = true, useNativeTitleBar } = {}) {
+	const fixture = createHostFixture({ fakePi, useNativeTitleBar });
 	const launch = launchHost({ stage: packaged.stage, fixture, isolatedPath });
 	t.after(async () => {
 		if (launch.child.exitCode === null) launch.killTree();
@@ -150,6 +150,11 @@ if (!available) {
 			assert.match(href, /runtime=native/);
 			assert.ok(!href.includes("token="), `the bootstrap token must be stripped, saw ${href}`);
 			assert.ok((await cdp.evaluate("document.styleSheets.length")) > 0, "the packaged renderer CSS must load");
+			const settings = await pageRpc(cdp, "settings:get");
+			assert.equal(settings.payload.ok, true);
+			assert.equal(settings.payload.result.useNativeTitleBar, true, "a fresh packaged profile defaults to system chrome");
+			assert.equal(await cdp.evaluate('document.documentElement.classList.contains("pideck-custom-titlebar")'), false,
+				"the packaged renderer must not draw a custom title bar in system chrome mode");
 			// The sidebar renders the seeded project (its display name is the directory name)
 			// and the history scan finished, so bootstrap RPC + SSE really round-tripped.
 			assert.ok(
@@ -177,7 +182,8 @@ if (!available) {
 		});
 
 		test("a packaged turn renders thinking, text, a tool card and an interactive ask, then quits cleanly", async (t) => {
-			const { cdp, fixture, launch } = await withHost(t);
+			// This test clicks the renderer-owned close button, available in custom title bar mode.
+			const { cdp, fixture, launch } = await withHost(t, { useNativeTitleBar: false });
 			await openAgent(cdp);
 			await cdp.sendPrompt("hello from the gate");
 

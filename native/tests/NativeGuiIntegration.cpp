@@ -194,7 +194,6 @@ int main(int argc, char **argv)
 
     const QJsonObject fixedBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("normal-compact")},
-        {QStringLiteral("useNativeTitleBar"), true},
         {QStringLiteral("closeToTray"), true},
         {QStringLiteral("lastWindowBounds"), QJsonObject{
             {QStringLiteral("width"), 1800},
@@ -202,6 +201,8 @@ int main(int argc, char **argv)
         }},
     };
     MainWindow fixed(nullptr, fixedBounds);
+    if (!require(!fixed.windowFlags().testFlag(Qt::FramelessWindowHint),
+                 "a missing title bar preference did not use the system frame")) return 1;
     const QSize compactSize(qMin(1100, availableGeometry.width()),
                             qMin(720, availableGeometry.height()));
     if (!require(startupWindowSize(QStringLiteral("normal-compact")) == QSize(1100, 720)
