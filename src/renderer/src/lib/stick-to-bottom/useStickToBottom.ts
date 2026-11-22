@@ -108,6 +108,8 @@ export type StopScroll = () => void;
 export type RestoreAt = (scrollTop: number, options?: {
   /** Layout compensation must preserve the engine's latest reader/follow intent. */
   preserveFollowState?: boolean;
+  /** A persisted reading position stays unlocked even if layout clamps it to the bottom. */
+  forceReading?: boolean;
 }) => void;
 
 export interface StickToBottomState {
@@ -416,8 +418,8 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     state.resizeDifference = 0;
     state.lastMaxScrollTop = undefined;
     /**
-     * 恢复位置正好在底部（会话切回 / 保锚把视口放回尾部）：用户并没有上滚读历史，
-     * 不能留在“已解锁”状态。
+     * 普通导航正好落在底部时恢复跟随。已有阅读锚点则保持解锁，
+     * 即使当前内容太短，暂时只能将位置夹到底部。
      *
      * 否则会同时坏两件事：
      * 1. 下一次内容增长（发送后新气泡）时 RO 的 `if (state.isAtBottom)` 不成立，
@@ -449,7 +451,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         setEscapedFromLock(wasEscapedFromLock);
         return;
       }
-      if (state.scrollTop >= maxScrollTop - 2) {
+      if (!options?.forceReading && state.scrollTop >= maxScrollTop - 2) {
         setEscapedFromLock(false);
         setIsAtBottom(true);
       }
@@ -675,11 +677,12 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       const difference = height - (previousHeight ?? height);
       state.resizeDifference = difference;
       /**
-       * Sometimes the browser can overscroll past the target,
-       * so check for this and adjust appropriately.
+       * The follow target is one pixel above the physical limit. A reader
+       * clamped to that limit needs no follow-target adjustment or scroll event.
        */
-      if (state.scrollTop > state.targetScrollTop) {
-        state.scrollTop = state.targetScrollTop;
+      const scrollLimit = state.isAtBottom ? state.targetScrollTop : Math.max(0, state.targetScrollTop + 1);
+      if (state.scrollTop > scrollLimit) {
+        state.scrollTop = scrollLimit;
       }
       setIsNearBottom(state.isNearBottom);
       if (difference >= 0) {

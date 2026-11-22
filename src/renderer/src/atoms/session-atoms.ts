@@ -261,6 +261,8 @@ export type SessionScrollAnchor = {
 	messageId: string;
 	/** 锚点行顶边相对视口顶部的偏移（px），恢复时按此对齐 */
 	offsetTop: number;
+	/** When present, restore the row bottom at this offset from the viewport top. */
+	offsetBottom?: number;
 	/** 切走时分页窗口大小（visibleCount），恢复历史窗口避免锚点被裁剪 */
 	visibleCount: number;
 	/** 保存时间戳，防止乱序事件用陈旧状态覆盖新状态 */
@@ -269,7 +271,7 @@ export type SessionScrollAnchor = {
 
 export const sessionScrollAnchorByIdAtom = atom<Record<string, SessionScrollAnchor>>({});
 
-/** 锚点内容比较：messageId/offsetTop/visibleCount 相同视为未变化（savedAt 不计入）。
+/** 锚点内容比较：消息、偏移与窗口相同视为未变化（savedAt 不计入）。
  *  滚动节流写入时，内容不变则跳过——引用稳定，订阅者不会因无效写入重渲染。 */
 export function sameSessionScrollAnchor(
 	a: SessionScrollAnchor | undefined,
@@ -280,6 +282,7 @@ export function sameSessionScrollAnchor(
 	return (
 		a.messageId === b.messageId &&
 		a.offsetTop === b.offsetTop &&
+		a.offsetBottom === b.offsetBottom &&
 		a.visibleCount === b.visibleCount
 	);
 }

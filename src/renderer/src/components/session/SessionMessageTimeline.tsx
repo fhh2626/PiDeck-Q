@@ -388,7 +388,8 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   const applyReaderScrollTop = useCallback<ApplyReaderScrollTop>((top, reason) => {
     const api = controller.scrollerScrollApiRef.current;
     if (api?.restoreAt) {
-      api.restoreAt(top, reason === "preserve-anchor" ? { preserveFollowState: true } : undefined);
+      api.restoreAt(top, reason === "preserve-anchor" ? { preserveFollowState: true }
+        : reason === "restore-reading" ? { forceReading: true } : undefined);
     }
   }, [controller.scrollerScrollApiRef]);
 

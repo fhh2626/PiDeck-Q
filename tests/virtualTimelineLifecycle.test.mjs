@@ -731,7 +731,7 @@ test("entering follow mode clears a stale reading anchor before the user scrolls
 // 跟底状态回传滞后（onFollowChange 是 passive effect）时，保锚不得把底部位置
 // 当成阅读位置再写一次——那会把刚恢复的锁底解锁，之后内容增长不再跟底。
 async function mountAnchorProbe(host) {
-	const { load, mount } = host;
+	const { React, load, mount } = host;
 	ControllableResizeObserver.reset();
 	globalThis.ResizeObserver = ControllableResizeObserver;
 	host.window.ResizeObserver = ControllableResizeObserver;
@@ -740,6 +740,9 @@ async function mountAnchorProbe(host) {
 		globals: { ResizeObserver: ControllableResizeObserver },
 	});
 	const { useVirtualTimeline } = mod;
+	const { useStickToBottom } = load("src/renderer/src/lib/stick-to-bottom/useStickToBottom.ts", {
+		globals: { ResizeObserver: ControllableResizeObserver, Node: host.window.Node },
+	});
 
 	const viewport = host.window.document.createElement("div");
 	Object.defineProperty(viewport, "scrollTop", { value: 0, writable: true });
@@ -755,15 +758,25 @@ async function mountAnchorProbe(host) {
 		{ kind: "message", message: { id: "m-3", role: "user", text: "msg 3", timestamp: 4 } },
 	];
 	const scrollCalls = [];
-	let hookResult;
+	let hookResult, engine;
+	const viewportRef = { current: viewport };
 
 	const probe = await mount(
 		(props) => {
+			engine = useStickToBottom({ initial: false });
+			const scrollRef = engine.scrollRef;
+			React.useLayoutEffect(() => {
+				scrollRef(viewport);
+				return () => scrollRef(null);
+			}, [scrollRef]);
 			hookResult = useVirtualTimeline({
 				items: props.items,
-				viewportRef: { current: viewport },
+				viewportRef,
 				isFollowing: props.isFollowing,
-				applyReaderScrollTop: (top, reason) => scrollCalls.push({ top, reason }),
+				applyReaderScrollTop: (top, reason) => {
+					scrollCalls.push({ top, reason });
+					engine.restoreAt(top, { preserveFollowState: reason === "preserve-anchor" });
+				},
 				sessionId: "sess-bottom-guard",
 			});
 			return hookResult;
@@ -771,22 +784,22 @@ async function mountAnchorProbe(host) {
 		{ items: firstItems, isFollowing: false },
 	);
 
-	return { probe, hookResult: () => hookResult, scrollCalls, viewport, firstItems, nextItems };
+	return { probe, hookResult: () => hookResult, engine: () => engine, scrollCalls, viewport, firstItems, nextItems };
 }
 
-test("preserve-anchor is skipped while the viewport is already at the bottom", async () => {
+test("a late reader correction leaves the restored live edge and following intact", async () => {
 	await withHookHost(async (host) => {
-		const { probe, hookResult, scrollCalls, viewport, nextItems } = await mountAnchorProbe(host);
+		const { probe, hookResult, engine, viewport, firstItems, nextItems } = await mountAnchorProbe(host);
 		assert.equal(hookResult().captureReadingAnchor().status, "resolved");
-		const before = scrollCalls.length;
+		await host.act(() => engine().restoreAt(800));
+		assert.equal(engine().state.isAtBottom, true);
 
-		// 贴底恢复后同一帧：跟底状态还没回传（isFollowing 仍是 false）
-		viewport.scrollTop = 800;
-		await probe.rerender({ items: nextItems, isFollowing: false });
+		// The viewport follows again, but the virtualizer hasn't received that
+		// state yet. A prepend would move its older reading anchor by one row.
+		await probe.rerender({ items: [nextItems.at(-1), ...firstItems], isFollowing: false });
 		await host.flushFrames();
-
-		const preserveCalls = scrollCalls.slice(before).filter((call) => call.reason === "preserve-anchor");
-		assert.deepEqual(preserveCalls, [], "贴底时不得再按阅读位置写一次（会把刚恢复的锁底解锁）");
+		assert.equal(viewport.scrollTop, 800);
+		assert.equal(engine().state.isAtBottom, true);
 	});
 });
 

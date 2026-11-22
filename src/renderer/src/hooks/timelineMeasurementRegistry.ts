@@ -14,14 +14,20 @@ export interface TimelineSessionContext {
 	committedRowModel: TimelineRowModel | null;
 	measuredHeights: Map<string, number>;
 	nodeMap: Map<string, RowRegistrationRecord>;
-	/** DOM captures must be restored in DOM space while height caches catch up.
-	 * Missing source keeps explicit restore/jump and older geometry anchors compatible. */
-	readingAnchor: { rowKey: string; offsetTop: number; coordinateSource?: "dom" | "geometry" } | null;
+	/** DOM captures stay in DOM space. An upward landing in a spacer temporarily
+	 * measures its offset from the row end through lazy expansion. */
+	readingAnchor: {
+		rowKey: string;
+		offsetTop: number;
+		coordinateSource?: "dom" | "geometry" | "geometry-end";
+		/** Height when the end was last aligned with settled content. */
+		settledHeight?: number;
+	} | null;
 	/** Raw position last included in intent; catches input whose scroll event is still queued. */
 	readingAnchorScrollTop: number | null;
 	/** Last applied correction; its native notifications are not new reader intent. */
 	programmaticScrollTop: number | null;
-	pendingRestore: { messageId: string; offsetTop: number } | null;
+	pendingRestore: { messageId: string; offsetTop: number; keepReading?: boolean; offsetBottom?: number } | null;
 	scheduledRaf: number | null;
 	pendingEntries: Map<string, PendingEntryRecord>;
 }

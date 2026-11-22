@@ -25,7 +25,8 @@ export type AnchorReading =
 export interface TimelineViewportAdapter {
 	ownerKey?: string;
 	containsMessage(messageId: string): boolean;
-	captureReadingAnchor(): AnchorReading;
-	restoreMessage(messageId: string, offsetTop: number): boolean;
+	/** At the save boundary, sample any scroll whose native notification is still pending. */
+	captureReadingAnchor(options?: { departing?: boolean; following?: boolean }): AnchorReading;
+	restoreMessage(messageId: string, offsetTop: number, options?: { keepReading?: boolean; offsetBottom?: number }): boolean;
 	jumpToMessage(messageId: string): boolean;
 }

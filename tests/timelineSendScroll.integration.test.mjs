@@ -11,18 +11,18 @@ const message = (id) => ({ id, agentId: "agent", role: "user", text: id, timesta
 const rectangle = (top, height) => ({ x: 0, y: top, top, bottom: top + height, left: 0, right: 800, width: 800, height });
 
 /** Exercise the real controller, scroller and virtualizer with controllable browser layout and event delivery. */
-async function withSendTimeline(run, { busy = true, reducedMotion = true } = {}) {
+async function withSendTimeline(run, { busy = true, reducedMotion = true, restoreSessions = false, waitingForHistory = false, rowCount = 12, seedAnchor, fallbackAtTop = false } = {}) {
 	await withHookHost(async ({ React, load, mount, window, act, flushFrames }) => {
 		ControllableResizeObserver.reset();
 		window.matchMedia = () => ({ matches: reducedMotion });
-		const globals = { ResizeObserver: ControllableResizeObserver, Node: window.Node, performance };
+		const globals = { ResizeObserver: ControllableResizeObserver, Node: window.Node, performance, CSS: { escape: (value) => value } };
 		const atoms = load("src/renderer/src/atoms/index.ts");
 		const { useSessionTimelineController } = load("src/renderer/src/hooks/useSessionTimelineController.ts", {
 			globals,
 			stubs: {
 				"../atoms": atoms,
 				"../desktopApi": { desktopApi: { sessions: {
-					readRecordMessagePage: async () => ({ messages: [], total: 0, nextBefore: null }),
+					readRecordMessagePage: () => waitingForHistory ? new Promise(() => {}) : Promise.resolve({ messages: [], total: 0, nextBefore: null }),
 				} } },
 				"../i18n": { t: (key) => key },
 				"../utils/notice": { showNotice() {} },
@@ -35,8 +35,21 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true } = {})
 		const { VirtualTimelineRows } = load("src/renderer/src/components/session/timeline/VirtualTimelineRows.tsx");
 		const store = createStore();
 		const listRef = { current: null }, adapterRef = { current: null };
-		const heights = new Map(Array.from({ length: 12 }, (_, index) => [`old-${index}`, 180]));
+		const heights = new Map(Array.from({ length: rowCount }, (_, index) => [`old-${index}`, 180]));
 		let messages = [...heights.keys()].map(message);
+		const sessionId = "send-scroll-session";
+		const otherSessionId = "another-agent-session";
+		const otherMessages = [message("other-agent-message")];
+		const previouslySaved = { messageId: "not-loaded-yet", offsetTop: -35, savedAt: 1, visibleCount: 0 };
+		const cache = () => store.set(atoms.cacheSessionMessagesAtom, { sessionId, messages, source: "runtime" });
+		if (restoreSessions) {
+			store.set(atoms.cacheSessionMessagesAtom, { sessionId: otherSessionId, messages: otherMessages, source: "runtime" });
+			heights.set("other-agent-message", 180);
+			if (waitingForHistory || seedAnchor) store.set(atoms.saveSessionScrollAnchorAtom, {
+				sessionId, anchor: seedAnchor ? { ...previouslySaved, ...seedAnchor } : previouslySaved,
+			});
+			if (!waitingForHistory) cache();
+		}
 		let controller, virtualizer, viewport, scrollTop = 0;
 		const viewportHeight = 500;
 		const rowHeight = (row) => heights.get(row.querySelector("[data-message-id]")?.getAttribute("data-message-id")) ?? 0;
@@ -56,6 +69,7 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true } = {})
 		window.HTMLElement.prototype.getBoundingClientRect = function () {
 			if (this === viewport) return rectangle(0, viewportHeight);
 			if (this === listRef.current) return rectangle(-currentTop(), contentHeight());
+			if (this.hasAttribute("data-virtual-spacer")) return rectangle(blockTop(this), blockHeight(this));
 			const row = this.closest("[data-timeline-row-key]");
 			return row ? rectangle(blockTop(row), this === row ? blockHeight(row) : rowHeight(row)) : rectangle(0, 0);
 		};
@@ -64,36 +78,46 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true } = {})
 		const attachViewport = (node) => {
 			viewport = node;
 			controller.timelineRef.current = node;
-			if (!node) return;
+			if (!node) {
+				scrollTop = 0;
+				return;
+			}
 			Object.defineProperties(node, {
 				scrollTop: { configurable: true, get: currentTop, set: (top) => { scrollTop = Math.max(0, Math.min(top, contentHeight() - viewportHeight)); } },
+				scrollTo: { configurable: true, value: ({ top }) => { node.scrollTop = top; } },
 				clientTop: { configurable: true, value: 0 },
 				clientHeight: { configurable: true, value: viewportHeight },
 				scrollHeight: { configurable: true, get: contentHeight },
 			});
 		};
 		function Timeline(props) {
-			controller = useSessionTimelineController({ sessionId: "send-scroll-session", messages: props.messages });
-			const items = React.useMemo(() => props.messages.map((entry) => ({ kind: "message", message: entry })), [props.messages]);
+			controller = useSessionTimelineController({ sessionId: props.sessionId, messages: restoreSessions ? undefined : props.messages });
+			const source = restoreSessions ? controller.visibleMessages : props.messages;
+			const items = React.useMemo(() => source.map((entry) => ({ kind: "message", message: entry })), [source]);
 			const applyReaderScrollTop = React.useCallback((top, reason) => controller.scrollerScrollApiRef.current?.restoreAt(
-				top, reason === "preserve-anchor" ? { preserveFollowState: true } : undefined,
+				top, reason === "preserve-anchor" ? { preserveFollowState: true } : reason === "restore-reading" ? { forceReading: true } : undefined,
 			), []);
 			virtualizer = useVirtualTimeline({
 				items, viewportRef: controller.timelineRef, listRef, adapterRef,
-				isFollowing: controller.autoScroll, applyReaderScrollTop, sessionId: "send-scroll-session",
+				isFollowing: controller.autoScroll, applyReaderScrollTop, sessionId: props.sessionId,
 			});
-			React.useLayoutEffect(() => controller.registerViewportAdapter(adapterRef.current), []);
+			React.useLayoutEffect(() => {
+				if (!fallbackAtTop) return controller.registerViewportAdapter(adapterRef.current);
+			}, []);
 			return React.createElement(MessageScroller, {
 				viewportRef: attachViewport, scrollApiRef: controller.scrollerScrollApiRef,
-				initialFollowOutput: controller.autoScroll, onFollowChange: controller.setAutoScrollFromScroller,
+				initialFollowOutput: fallbackAtTop || controller.autoScroll, onFollowChange: controller.setAutoScrollFromScroller,
 				busy, viewportProps: { onScroll: controller.handleTimelineScroll },
 			}, React.createElement("div", { ref: virtualizer.registerListNode }, React.createElement(VirtualTimelineRows, {
 				renderPlan: virtualizer.renderPlan, registerRowNode: virtualizer.registerRowNode,
 				renderRow: (row) => React.createElement("div", { "data-message-id": row.anchorId }, row.anchorId),
 			})));
 		}
-		const mounted = await mount(() => undefined, { messages }, (child) => React.createElement(Provider, { store },
-			React.createElement(Timeline, child.props.hookProps)));
+		const mounted = await mount(() => undefined, { messages }, (child) => {
+			const { away, ...props } = child.props.hookProps;
+			const owner = away ? otherSessionId : sessionId;
+			return React.createElement(Provider, { store }, React.createElement(Timeline, { ...props, sessionId: owner, key: owner }));
+		});
 		const notifyResize = async () => act(() => {
 			for (const observer of ControllableResizeObserver.instances) {
 				observer.dispatchEntries(Array.from(observer.observed).map((node) => ControllableResizeObserver.createEntry(node, {
@@ -111,17 +135,32 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true } = {})
 				await dispatchScroll();
 			}
 		};
-		await settle();
-		assert.equal(controller.autoScroll, true);
+		if (!waitingForHistory && !seedAnchor) {
+			await settle();
+			assert.equal(controller.autoScroll, true);
+		}
 		const append = async (id, height = 48) => {
 			heights.set(id, height);
 			messages = [...messages, message(id)];
+			if (restoreSessions) await act(cache);
 			await mounted.rerender({ messages });
 		};
 		await run({
 			controller: () => controller, viewport: () => viewport, adapter: () => adapterRef.current,
 			gap: () => contentHeight() - viewportHeight - currentTop(), heights,
-			append, settle, dispatchScroll, notifyResize, act,
+			geometry: () => virtualizer.geometry,
+			append, settle, dispatchScroll, notifyResize, flushFrames, act, previouslySaved,
+			async publishOptimisticSend(id) {
+				heights.set(id, 90);
+				messages = [...messages, { ...message(id), meta: { optimistic: true, optimisticPending: true, optimisticRequestId: id } }];
+				await act(() => {
+					store.set(atoms.sessionSendStateByIdAtom, { [sessionId]: { status: "activating", requestId: id } });
+					store.set(atoms.cacheSessionMessagesAtom, { sessionId, messages, source: "optimistic" });
+				});
+			},
+			async switchAway() { await mounted.rerender({ messages, away: true }); },
+			async switchBack() { await mounted.rerender({ messages }); await settle(); },
+			savedAnchor: () => store.get(atoms.sessionScrollAnchorByIdAtom)[sessionId],
 			async scrollTo(top) { viewport.scrollTop = top; await dispatchScroll(); },
 			async wheelUp(top) {
 				await act(() => {
@@ -154,6 +193,144 @@ test("sending after a browser-clamped collapse keeps the real timeline following
 		assert.equal(timeline.controller().autoScroll, true);
 		assert.ok(timeline.gap() <= 2, "the next send must also remain visible");
 	});
+});
+
+test("switching away during an explicit return to the live edge discards the old anchor", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.wheelUp(timeline.viewport().scrollTop - 450);
+		await timeline.flushFrames();
+		await timeline.append("sent-before-switch", 90);
+		// The engine has already received the return instruction, but the next scroll
+		// event and the controller's deferred reading sample have not run yet.
+		await timeline.act(() => timeline.controller().scrollToBottom());
+		await timeline.switchAway();
+		assert.ok(!timeline.savedAnchor(), "the older reading position must not be written back");
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, true);
+		await timeline.append("reply-after-switch", 220);
+		await timeline.settle();
+		assert.ok(timeline.gap() <= 2);
+	}, { restoreSessions: true });
+});
+
+test("sending at the live edge and immediately switching agents keeps following on return", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.wheelUp(timeline.viewport().scrollTop - 450);
+		await timeline.flushFrames();
+		await timeline.scrollTo(timeline.viewport().scrollHeight);
+		assert.equal(timeline.controller().autoScroll, true);
+		await timeline.publishOptimisticSend("composer-send");
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor(), undefined);
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, true);
+		await timeline.append("streamed-reply", 220);
+		await timeline.settle();
+		assert.ok(timeline.gap() <= 2);
+	}, { restoreSessions: true });
+});
+
+test("sending while reading and immediately switching restores the latest reading passage", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.wheelUp(timeline.viewport().scrollTop - 450);
+		await timeline.flushFrames();
+		await timeline.scrollTo(timeline.viewport().scrollTop - 250);
+		const reading = timeline.adapter().captureReadingAnchor();
+		assert.equal(reading.status, "resolved");
+		await timeline.publishOptimisticSend("send-from-history");
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor().messageId, reading.anchor.messageId);
+		assert.equal(timeline.savedAnchor().offsetTop, reading.anchor.offsetTop);
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, false);
+		const restored = timeline.adapter().captureReadingAnchor();
+		assert.equal(restored.anchor.messageId, reading.anchor.messageId);
+		assert.equal(restored.anchor.offsetTop, reading.anchor.offsetTop);
+	}, { restoreSessions: true });
+});
+
+for (const stage of ["before scroll", "after scroll", "after resize settles"]) {
+	test(`switching after a layout clamp preserves the reading offset (${stage})`, async () => {
+		await withSendTimeline(async (timeline) => {
+			await timeline.wheelUp(timeline.viewport().scrollTop - 100);
+			await timeline.flushFrames();
+			const reading = timeline.adapter().captureReadingAnchor();
+			assert.equal(reading.status, "resolved");
+			timeline.heights.set("old-11", 20);
+			assert.ok(timeline.gap() <= 2);
+			if (stage === "after scroll") await timeline.dispatchScroll();
+			if (stage === "after resize settles") await timeline.settle();
+			await timeline.switchAway();
+			assert.equal(timeline.savedAnchor().messageId, reading.anchor.messageId);
+			assert.equal(timeline.savedAnchor().offsetTop, reading.anchor.offsetTop);
+			await timeline.switchBack();
+			assert.equal(timeline.controller().autoScroll, false, "a clamped restore must not resume following");
+			await timeline.append("reply-after-clamped-restore", 220);
+			await timeline.settle();
+			assert.equal(timeline.controller().autoScroll, false);
+			const anchorNode = timeline.viewport().querySelector(`[data-message-id="${reading.anchor.messageId}"]`);
+			assert.equal(anchorNode.getBoundingClientRect().top, reading.anchor.offsetTop);
+		}, { restoreSessions: true });
+	});
+}
+
+test("an upward landing in a spacer survives switching away before scroll delivery", async () => {
+	await withSendTimeline(async (timeline) => {
+		const viewport = timeline.viewport();
+		await timeline.wheelUp(viewport.scrollTop - 100);
+		const geometry = timeline.geometry();
+		assert.equal(viewport.querySelector('[data-message-id="old-2"]'), null);
+		assert.equal(geometry.heights[2], 180);
+		timeline.heights.set("old-2", 900);
+		viewport.scrollTop = geometry.prefixOffsets[2] + geometry.heights[2] - 40;
+		await timeline.switchAway();
+		await timeline.switchBack();
+		const restoredRow = timeline.viewport().querySelector('[data-message-id="old-2"]');
+		assert.equal(restoredRow.getBoundingClientRect().bottom, 40);
+		assert.equal(timeline.controller().autoScroll, false);
+	}, { restoreSessions: true, rowCount: 44 });
+});
+
+test("returning to the bottom cancels a restore waiting for its history row", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.flushFrames();
+		await timeline.returnToBottom();
+		await timeline.append(timeline.previouslySaved.messageId, 180);
+		await timeline.settle();
+		assert.equal(timeline.controller().autoScroll, true);
+		assert.ok(timeline.gap() <= 2);
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor(), undefined);
+	}, { restoreSessions: true, waitingForHistory: true });
+});
+
+test("an explicit message jump supersedes a restore scheduled for the next frame", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.act(() => timeline.controller().jumpToMessage("old-8"));
+		await timeline.settle();
+		assert.equal(timeline.adapter().captureReadingAnchor().anchor.messageId, "old-8");
+	}, { restoreSessions: true, seedAnchor: { messageId: "old-3", offsetBottom: 25 } });
+});
+
+test("a DOM fallback restore unlocks following even if the position is unchanged", async () => {
+	await withSendTimeline(async (timeline) => {
+		assert.equal(timeline.viewport().scrollTop, 0);
+		await timeline.settle();
+		assert.equal(timeline.controller().scrollerScrollApiRef.current.isFollowing(), false);
+		await timeline.append("new-output", 800);
+		await timeline.settle();
+		assert.equal(timeline.viewport().scrollTop, 0);
+	}, { restoreSessions: true, rowCount: 1, seedAnchor: { messageId: "old-0", offsetTop: 0 }, fallbackAtTop: true });
+});
+
+test("switching before history loads leaves the unresolved saved anchor intact", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.flushFrames();
+		await timeline.dispatchScroll();
+		await timeline.flushFrames();
+		await timeline.switchAway();
+		assert.deepEqual(timeline.savedAnchor(), timeline.previouslySaved);
+	}, { restoreSessions: true, waitingForHistory: true });
 });
 
 test("sending while reading preserves the passage until the reader explicitly returns to the bottom", async () => {

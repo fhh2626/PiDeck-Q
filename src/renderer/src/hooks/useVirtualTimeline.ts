@@ -11,13 +11,12 @@ import {
 	resolveAnchorScrollTop,
 	DEFAULT_TIMELINE_ROW_GAP,
 	type VirtualTimelineGeometry,
-	type VirtualTimelineRow,
 	type TimelineRowKey,
 	type TimelineRenderEntry,
 	type TimelineRowModel,
 } from "../components/session/timeline/virtualTimelineGeometry";
 import type { RenderMessage } from "../components/app/AppUtils";
-import { captureMountedTimelineAnchor, resolveMountedTimelineAnchorScrollTop } from "./timelineMountedAnchor";
+import { captureMountedTimelineAnchor, readMountedTimelineRow, readTimelineSpacerLanding, resolveMountedTimelineAnchorScrollTop } from "./timelineMountedAnchor";
 import { useTimelineMeasurements } from "./useTimelineMeasurements";
 import {
 	createTimelineSessionContext,
@@ -38,6 +37,22 @@ interface CommittedVirtualTimelineSnapshot {
 	gap: number;
 }
 
+/** A browser clamp caused by layout is not pending reader input. */
+function wasClampedByLayout(viewport: HTMLElement, observedTop: number): boolean {
+	const maxTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+	return observedTop > maxTop + 2 && viewport.scrollTop >= maxTop - 2;
+}
+
+/** Find the estimated row containing the viewport top, including its trailing gap. */
+function rowAtViewportTop(geometry: VirtualTimelineGeometry, localTop: number): number {
+	return findVisibleRowRange(geometry, localTop, 1, 0).startIndex;
+}
+
+/** Match the browser's position read back immediately after the correction. */
+function matchesProgrammaticScroll(context: TimelineSessionContext, top: number): boolean {
+	return context.programmaticScrollTop === top;
+}
+
 /**
  * 虚拟列表 Hook：管理几何模型、ResizeObserver 测量、可见区间以及阅读位置唯一纠偏。
  */
@@ -46,7 +61,7 @@ export function useVirtualTimeline(params: {
 	viewportRef: RefObject<HTMLElement | null>;
 	listRef?: RefObject<HTMLElement | null>;
 	isFollowing: boolean;
-	applyReaderScrollTop: (top: number, reason: "preserve-anchor" | "restore-session" | "jump-message") => void;
+	applyReaderScrollTop: (top: number, reason: "preserve-anchor" | "restore-reading" | "restore-session" | "jump-message") => void;
 	sessionId?: string;
 	adapterRef?: { current: TimelineViewportAdapter | null };
 	pinnedKeys?: ReadonlySet<TimelineRowKey>;
@@ -160,15 +175,16 @@ export function useVirtualTimeline(params: {
 	});
 
 	// Only actual scroll handling (or first-read initialization) records new intent.
-	const recordReadingAnchor = useCallback((): AnchorReading => {
+	const recordReadingAnchor = useCallback((movingUp = false, following = isFollowingRef.current): AnchorReading => {
 		const snapshot = committedSnapshotRef.current;
 		const viewport = viewportRef.current;
 		if (!viewport || snapshot.geometry.rows.length === 0) {
 			return { status: "unresolved" };
 		}
 
-		if (isFollowingRef.current) {
+		if (following) {
 			currentContext.readingAnchor = null;
+			currentContext.readingAnchorScrollTop = null;
 			return { status: "at-bottom" };
 		}
 
@@ -176,47 +192,50 @@ export function useVirtualTimeline(params: {
 		const listOrigin = calculateListOrigin(effectiveList, viewport);
 		const viewportTopInList = viewport.scrollTop - listOrigin;
 
-		let targetRow: VirtualTimelineRow | undefined;
-		let rowStart = 0;
-		for (let i = 0; i < snapshot.geometry.rows.length; i += 1) {
-			const end = snapshot.geometry.prefixOffsets[i + 1];
-			if (end > viewportTopInList) {
-				targetRow = snapshot.geometry.rows[i];
-				rowStart = snapshot.geometry.prefixOffsets[i];
-				break;
-			}
-		}
-
-		if (!targetRow) {
-			targetRow = snapshot.geometry.rows[snapshot.geometry.rows.length - 1];
-			rowStart = snapshot.geometry.prefixOffsets[snapshot.geometry.rows.length - 1] ?? 0;
-		}
-
-		if (!targetRow) {
-			return { status: "unresolved" };
-		}
-
 		// The DOM may already contain a newly mounted tall code block while
 		// prefixOffsets still await the measurement batch. Anchor what is visible
 		// now so committing that batch does not double-correct the user's scroll.
-		const mountedAnchor = captureMountedTimelineAnchor({
-			geometry: snapshot.geometry,
-			nodes: currentContext.nodeMap,
-			viewport,
-			contextId: snapshot.contextId,
-			widthEpoch: snapshot.widthEpoch,
-		});
-		if (mountedAnchor) {
-			const mountedIndex = snapshot.geometry.indexByKey.get(mountedAnchor.rowKey);
-			if (mountedIndex !== undefined) targetRow = snapshot.geometry.rows[mountedIndex];
+		const mountedRows = { nodes: currentContext.nodeMap, viewport, contextId: snapshot.contextId, widthEpoch: snapshot.widthEpoch };
+		const mountedAnchor = captureMountedTimelineAnchor({ ...mountedRows, geometry: snapshot.geometry });
+		const prior = currentContext.readingAnchor;
+		// A lower DOM hit does not rule out a spacer at the viewport top.
+		const spacer = (movingUp || prior?.coordinateSource === "geometry-end") && (!mountedAnchor || mountedAnchor.offsetTop > 1)
+			? readTimelineSpacerLanding(snapshot.geometry, effectiveList, viewport) : null;
+		const index = spacer?.index ?? rowAtViewportTop(snapshot.geometry, viewportTopInList);
+		const estimatedRow = snapshot.geometry.rows[index];
+		// A reversal inside the same unresolved row changes the distance, not
+		// the edge the reader entered from.
+		const fromEnd = !!spacer && (prior?.rowKey === estimatedRow.key
+			? prior.coordinateSource === "geometry-end" : movingUp);
+		let domAnchor = fromEnd ? null : mountedAnchor;
+		const observedTop = currentContext.readingAnchorScrollTop;
+		if (!fromEnd && prior?.coordinateSource === "dom" && observedTop !== null) {
+			const rect = readMountedTimelineRow(mountedRows, prior.rowKey);
+			const offsetTop = prior.offsetTop + observedTop - viewport.scrollTop;
+			// A preceding row may have grown before the native scroll event. If
+			// the prior passage should still cover the top or border the row gap,
+			// apply only the user's delta and compensate the growth separately.
+			if (rect && snapshot.geometry.indexByKey.has(prior.rowKey) && offsetTop <= snapshot.geometry.gap && offsetTop + rect.height > 0) {
+				const actualTop = rect.top - viewport.getBoundingClientRect().top - viewport.clientTop;
+				if (Math.abs(actualTop - offsetTop) >= 1) domAnchor = { rowKey: prior.rowKey, offsetTop };
+			}
 		}
-		const offsetTop = mountedAnchor?.offsetTop ?? -(viewportTopInList - rowStart);
-		currentContext.readingAnchor = { rowKey: targetRow.key, offsetTop, coordinateSource: mountedAnchor ? "dom" : "geometry" };
+		const targetIndex = domAnchor ? snapshot.geometry.indexByKey.get(domAnchor.rowKey) ?? index : index;
+		const targetRow = snapshot.geometry.rows[targetIndex];
+		const offsetTop = domAnchor?.offsetTop ?? snapshot.geometry.prefixOffsets[index] - (spacer?.localTop ?? viewportTopInList);
+		// When entering an unmounted row from below, a taller measurement adds
+		// content above the approach edge. Keep that edge fixed, not the row top.
+		currentContext.readingAnchor = {
+			rowKey: targetRow.key,
+			offsetTop: fromEnd ? offsetTop + snapshot.geometry.heights[index] : offsetTop,
+			coordinateSource: domAnchor ? "dom" : fromEnd ? "geometry-end" : "geometry",
+		};
 		currentContext.readingAnchorScrollTop = viewport.scrollTop;
 
 		const anchor: SessionScrollAnchor = {
 			messageId: targetRow.anchorId,
 			offsetTop,
+			...(fromEnd ? { offsetBottom: currentContext.readingAnchor.offsetTop } : {}),
 			visibleCount: 0,
 			savedAt: Date.now(),
 		};
@@ -229,19 +248,31 @@ export function useVirtualTimeline(params: {
 
 	// Controller persistence reads must not overwrite the pending compensation
 	// baseline after DOM growth but before the measurement batch commits.
-	const captureReadingAnchor = useCallback((): AnchorReading => {
+	const captureReadingAnchor = useCallback((options?: Parameters<TimelineViewportAdapter["captureReadingAnchor"]>[0]): AnchorReading => {
+		const viewport = viewportRef.current;
 		const snapshot = committedSnapshotRef.current;
-		if (!viewportRef.current || snapshot.geometry.rows.length === 0) return { status: "unresolved" };
+		if (!viewport || snapshot.contextId !== currentContext.id || snapshot.geometry.rows.length === 0) return { status: "unresolved" };
 		const saved = currentContext.readingAnchor;
 		const index = saved ? snapshot.geometry.indexByKey.get(saved.rowKey) : undefined;
-		if (isFollowingRef.current || !saved || index === undefined) return recordReadingAnchor();
+		const following = options?.following ?? isFollowingRef.current;
+		const priorTop = currentContext.readingAnchorScrollTop ?? viewport.scrollTop;
+		const ignoreDelta = wasClampedByLayout(viewport, priorTop) || matchesProgrammaticScroll(currentContext, viewport.scrollTop);
+		if (following || !saved || index === undefined || (options?.departing && !ignoreDelta && priorTop !== viewport.scrollTop)) {
+			return recordReadingAnchor(priorTop > viewport.scrollTop, following);
+		}
+		const mountedRow = saved.coordinateSource === "geometry-end" ? readMountedTimelineRow({
+			nodes: currentContext.nodeMap, viewport, contextId: currentContext.id, widthEpoch: currentContext.widthEpoch,
+		}, saved.rowKey) : null;
+		const delta = ignoreDelta ? 0 : priorTop - viewport.scrollTop;
+		const offsetTop = saved.offsetTop - (saved.coordinateSource === "geometry-end" ? mountedRow?.height ?? snapshot.geometry.heights[index] : 0);
 		return {
 			status: "resolved",
 			anchor: {
 				messageId: snapshot.geometry.rows[index].anchorId,
 				// A compositor scroll can precede the native scroll notification.
 				// Include only that raw delta, without recapturing post-growth DOM.
-				offsetTop: saved.offsetTop + (currentContext.readingAnchorScrollTop ?? viewportRef.current.scrollTop) - viewportRef.current.scrollTop,
+				offsetTop: offsetTop + delta,
+				...(saved.coordinateSource === "geometry-end" ? { offsetBottom: saved.offsetTop + delta } : {}),
 				visibleCount: 0,
 				savedAt: Date.now(),
 			},
@@ -256,14 +287,35 @@ export function useVirtualTimeline(params: {
 		const observedTop = currentContext.readingAnchorScrollTop;
 		if (!viewport || !anchor || isFollowingRef.current || observedTop === null) return;
 		const currentTop = viewport.scrollTop;
-		if (currentTop === observedTop) return;
-		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-		// A width change may already have shortened mounted DOM before this callback.
-		// Preserve its saved passage and let the layout correction handle that clamp.
-		if (observedTop > maxScrollTop + 2 && currentTop >= maxScrollTop - 2) return;
-		currentContext.readingAnchor = { ...anchor, offsetTop: anchor.offsetTop + observedTop - currentTop };
+		if (currentTop === observedTop || matchesProgrammaticScroll(currentContext, currentTop) || wasClampedByLayout(viewport, observedTop)) return;
+		const snapshot = committedSnapshotRef.current;
+		// The native scroll event may not have arrived before a layout commit.
+		// Only switch anchors if the viewport really crossed into a spacer.
+		const spacer = snapshot.contextId === currentContext.id && currentTop < observedTop
+			? readTimelineSpacerLanding(snapshot.geometry, listNodeRef.current ?? listRef?.current ?? null, viewport) : null;
+		if (spacer && spacer.index < (snapshot.geometry.indexByKey.get(anchor.rowKey) ?? -1)) {
+			const { index, localTop } = spacer;
+			currentContext.readingAnchor = {
+				rowKey: snapshot.geometry.rows[index].key,
+				offsetTop: snapshot.geometry.prefixOffsets[index] + snapshot.geometry.heights[index] - localTop,
+				coordinateSource: "geometry-end",
+			};
+		} else {
+			currentContext.readingAnchor = { ...anchor, offsetTop: anchor.offsetTop + observedTop - currentTop };
+		}
 		currentContext.readingAnchorScrollTop = currentTop;
-	}, [currentContext, viewportRef]);
+	}, [currentContext, viewportRef, listRef]);
+
+	const beforeWidthInvalidation = useCallback(() => {
+		preservePendingReaderInput();
+		const anchor = currentContext.readingAnchor;
+		if (anchor?.coordinateSource !== "geometry-end" || anchor.settledHeight === undefined) return;
+		const row = currentContext.nodeMap.get(anchor.rowKey);
+		if (!row || row.node.querySelector("[data-md-plain-stream]")) return;
+		// Only convert after a previous correction aligned the settled content.
+		// The current DOM can already have expanded before the observer fires.
+		currentContext.readingAnchor = { rowKey: anchor.rowKey, coordinateSource: "dom", offsetTop: anchor.offsetTop - anchor.settledHeight };
+	}, [currentContext, preservePendingReaderInput]);
 
 	// 更新可见区间（基于已提交快照纯计算）
 	const updateRangeWithGeometry = useCallback((geom: VirtualTimelineGeometry) => {
@@ -288,11 +340,37 @@ export function useVirtualTimeline(params: {
 		updateRangeWithGeometry(committedSnapshotRef.current.geometry);
 	}, [updateRangeWithGeometry]);
 
+	/** Navigate in DOM space once the destination is mounted, with virtual geometry as the fallback. */
+	const alignExplicitAnchor = useCallback((geom: VirtualTimelineGeometry, index: number, offsetTop: number,
+		reason: "restore-reading" | "restore-session" | "jump-message", offsetBottom?: number) => {
+		const anchor: NonNullable<TimelineSessionContext["readingAnchor"]> = {
+			rowKey: geom.rows[index].key, offsetTop: offsetBottom ?? offsetTop,
+			coordinateSource: offsetBottom === undefined ? "dom" : "geometry-end",
+		};
+		const viewport = viewportRef.current;
+		const mountedRows = viewport ? { viewport, nodes: currentContext.nodeMap, contextId: currentContext.id, widthEpoch: currentContext.widthEpoch } : null;
+		const mountedTop = mountedRows ? resolveMountedTimelineAnchorScrollTop({
+			...mountedRows, anchor, edge: offsetBottom === undefined ? undefined : "bottom",
+		}) : null;
+		if (offsetBottom !== undefined && mountedRows && mountedTop !== null) {
+			const node = currentContext.nodeMap.get(anchor.rowKey)?.node;
+			if (node && !node.querySelector("[data-md-plain-stream]")) {
+				anchor.settledHeight = readMountedTimelineRow(mountedRows, anchor.rowKey)?.height;
+			}
+		}
+		const list = listNodeRef.current ?? listRef?.current ?? null;
+		const estimatedTopOffset = offsetBottom === undefined ? offsetTop : offsetBottom - geom.heights[index];
+		applyReadingScrollTop(mountedTop ?? resolveAnchorScrollTop(geom, index, estimatedTopOffset, calculateListOrigin(list, viewport)), reason);
+		currentContext.pendingRestore = null;
+		currentContext.readingAnchor = anchor;
+	}, [applyReadingScrollTop, currentContext, listRef, viewportRef]);
+
 	// 跟底时不存在需要保留的阅读锚点。若不清掉，用户之后上滚/内容变化时
 	// 可能拿一个陈旧的锚点执行 preserve-anchor，造成时间线被拉回旧位置。
 	useLayoutEffect(() => {
 		if (!isFollowing) return;
 		currentContext.readingAnchor = null;
+		currentContext.readingAnchorScrollTop = null;
 	}, [isFollowing, currentContext]);
 
 	// layout 阶段：更新提交快照，并按照计划优先级执行至多一次纠偏（显式 pending restore > preserve-anchor）
@@ -306,6 +384,7 @@ export function useVirtualTimeline(params: {
 			geometry,
 			gap: gapRef.current,
 		};
+		preservePendingReaderInput();
 		committedSnapshotRef.current = nextSnapshot;
 		currentContext.committedRowModel = rowModel;
 
@@ -314,89 +393,65 @@ export function useVirtualTimeline(params: {
 
 		// 优先级 1: 显式 pending restore（会话恢复/跳转未完成项优先）
 		if (currentContext.pendingRestore) {
-			const { messageId, offsetTop } = currentContext.pendingRestore;
+			const { messageId, offsetTop, keepReading, offsetBottom } = currentContext.pendingRestore;
 			const rowKey = rowModel.rowKeyByMessageId.get(messageId);
-			if (rowKey) {
-				const idx = geometry.rows.findIndex((r) => r.key === rowKey);
-				if (idx !== -1 && viewport) {
-					const listOrigin = calculateListOrigin(effectiveList, viewport);
-					const targetTop = resolveAnchorScrollTop(geometry, idx, offsetTop, listOrigin);
-					applyReadingScrollTop(targetTop, "restore-session");
-					currentContext.pendingRestore = null;
-					currentContext.readingAnchor = { rowKey, offsetTop };
-				}
-			}
+			const index = rowKey === undefined ? undefined : geometry.indexByKey.get(rowKey);
+			if (index !== undefined && viewport) alignExplicitAnchor(geometry, index, offsetTop, keepReading ? "restore-reading" : "restore-session", offsetBottom);
 		}
 		// 优先级 2: 阅读者模式下的阅读锚点保锚（仅当无显式 pending restore 时执行至多一次）
 		else if (!isFollowingRef.current && currentContext.readingAnchor && viewport) {
-			// 视口已经在底部：跟底状态还没回传（onFollowChange 是 passive effect），
-			// 此时保锚会把底部位置当成阅读位置再写一次，反而把刚恢复的锁底解锁，
-			// 之后内容增长不再跟底（发送后视口停在旧消息上）。
-			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-			const observedTop = currentContext.readingAnchorScrollTop;
-			// Width invalidation and subsequent row remounts can each shrink the real
-			// scroll range, even while geometry.totalHeight stays unchanged or grows.
-			// A recorded position above the new DOM limit proves a layout clamp and
-			// must not erase or rebase the saved passage within its row.
-			const clampedByLayout = observedTop !== null && observedTop > maxScrollTop + 2
-				&& viewport.scrollTop >= maxScrollTop - 2;
-			if (viewport.scrollTop >= maxScrollTop - 2 && !clampedByLayout) {
-				currentContext.readingAnchor = null;
-			} else {
-				// Honor input that moved the viewport before its scroll event arrived.
-				// Rebase the same row's intent by the input delta, not by changed DOM.
-				if (!clampedByLayout && observedTop !== null && observedTop !== viewport.scrollTop) {
-					currentContext.readingAnchor = {
-						...currentContext.readingAnchor,
-						offsetTop: currentContext.readingAnchor.offsetTop + observedTop - viewport.scrollTop,
-					};
+			// A reader can be clamped to the physical bottom. Keep the requested
+			// passage; the engine rejects late corrections once following resumes.
+			const { rowKey, offsetTop, coordinateSource } = currentContext.readingAnchor;
+			const rowIndex = geometry.indexByKey.get(rowKey);
+			if (rowIndex !== undefined) {
+				// Do not mix a real DOM offset with a still-estimated row prefix.
+				const mountedRows = { nodes: currentContext.nodeMap, viewport, contextId: currentContext.id, widthEpoch: currentContext.widthEpoch };
+				const fromEnd = coordinateSource === "geometry-end";
+				const mountedRow = fromEnd ? readMountedTimelineRow(mountedRows, rowKey) : null;
+				const topOffset = fromEnd ? offsetTop - geometry.heights[rowIndex] : offsetTop;
+				const mountedTop = mountedRow
+					? viewport.scrollTop + mountedRow.bottom - (viewport.getBoundingClientRect().top + viewport.clientTop) - offsetTop
+					: coordinateSource === "dom" ? resolveMountedTimelineAnchorScrollTop({ ...mountedRows, anchor: currentContext.readingAnchor }) : null;
+				const targetTop = mountedTop ?? resolveAnchorScrollTop(geometry, rowIndex, topOffset, calculateListOrigin(effectiveList, viewport));
+				// Initial mount can still be a lazy Markdown shell. Keep the end
+				// anchor through its later expansion, until new reader input.
+				applyReadingScrollTop(targetTop, "preserve-anchor");
+				if (mountedRow) {
+					const node = currentContext.nodeMap.get(rowKey)?.node;
+					currentContext.readingAnchor.settledHeight = node?.querySelector("[data-md-plain-stream]") ? undefined : mountedRow.height;
 				}
-				currentContext.readingAnchorScrollTop = viewport.scrollTop;
-				const { rowKey, offsetTop, coordinateSource } = currentContext.readingAnchor;
-				const rowIndex = geometry.rows.findIndex((r) => r.key === rowKey);
-				if (rowIndex !== -1) {
-					// Do not mix a real DOM offset with a still-estimated row prefix.
-					// Tail updates can commit before the queued height measurements do.
-					const mountedTop = coordinateSource === "dom" ? resolveMountedTimelineAnchorScrollTop({
-						anchor: currentContext.readingAnchor,
-						nodes: currentContext.nodeMap,
-						viewport,
-						contextId: currentContext.id,
-						widthEpoch: currentContext.widthEpoch,
-					}) : null;
-					const targetTop = mountedTop ?? resolveAnchorScrollTop(geometry, rowIndex, offsetTop, calculateListOrigin(effectiveList, viewport));
+			} else {
+				// 行被删除或折叠消失：对齐到同位置后继或前驱，并同步更新内部阅读锚点
+				const prevIndex = prevSnapshot.geometry.indexByKey.get(rowKey);
+				if (prevIndex !== undefined && geometry.rows.length > 0) {
+					const fallbackIndex = Math.min(prevIndex, geometry.rows.length - 1);
+					const fallbackRow = geometry.rows[fallbackIndex];
+					const listOrigin = calculateListOrigin(effectiveList, viewport);
+					const targetTop = resolveAnchorScrollTop(geometry, fallbackIndex, 0, listOrigin);
 					applyReadingScrollTop(targetTop, "preserve-anchor");
-				} else {
-					// 行被删除或折叠消失：对齐到同位置后继或前驱，并同步更新内部阅读锚点
-					const prevIndex = prevSnapshot.geometry.rows.findIndex((r) => r.key === rowKey);
-					if (prevIndex !== -1 && geometry.rows.length > 0) {
-						const fallbackIndex = Math.min(prevIndex, geometry.rows.length - 1);
-						const fallbackRow = geometry.rows[fallbackIndex];
-						const listOrigin = calculateListOrigin(effectiveList, viewport);
-						const targetTop = resolveAnchorScrollTop(geometry, fallbackIndex, 0, listOrigin);
-						applyReadingScrollTop(targetTop, "preserve-anchor");
-						if (fallbackRow) {
-							currentContext.readingAnchor = { rowKey: fallbackRow.key, offsetTop: 0 };
-						}
+					if (fallbackRow) {
+						currentContext.readingAnchor = { rowKey: fallbackRow.key, offsetTop: 0 };
 					}
 				}
 			}
 		}
 
 		updateRangeWithGeometry(geometry);
-	}, [geometry, logicalRows, rowModel, sessionId, currentContext, updateRangeWithGeometry, viewportRef, listRef, applyReadingScrollTop]);
+	}, [geometry, rowModel, sessionId, currentContext, updateRangeWithGeometry, viewportRef, listRef, applyReadingScrollTop, preservePendingReaderInput, alignExplicitAnchor]);
 
 	// 监听视口滚动
 	useEffect(() => {
 		const viewport = viewportRef.current;
 		if (!viewport) return;
 
+		let lastScrollTop = viewport.scrollTop;
 		const onScroll = () => {
-			const appliedTop = currentContext.programmaticScrollTop;
-			const ownNotification = appliedTop !== null && Math.abs(viewport.scrollTop - appliedTop) <= 1;
-			if (!ownNotification) {
+			const priorTop = currentContext.readingAnchorScrollTop ?? lastScrollTop;
+			lastScrollTop = viewport.scrollTop;
+			if (!matchesProgrammaticScroll(currentContext, viewport.scrollTop)) {
 				currentContext.programmaticScrollTop = null;
-				if (!isFollowingRef.current) recordReadingAnchor();
+				if (!isFollowingRef.current && !wasClampedByLayout(viewport, priorTop)) recordReadingAnchor(priorTop > viewport.scrollTop);
 			}
 			updateRange();
 		};
@@ -409,7 +464,7 @@ export function useVirtualTimeline(params: {
 
 	const registerRowNode = useTimelineMeasurements({
 		currentContext, contextRef, rowModelRef, viewportRef, listRef, listNode, listNodeRef,
-		updateRange, onBeforeWidthInvalidation: preservePendingReaderInput, onHeightChange: refreshMeasurements,
+		updateRange, onBeforeWidthInvalidation: beforeWidthInvalidation, onHeightChange: refreshMeasurements,
 	});
 
 	// 暴露稳定 Adapter 给 Controller
@@ -421,27 +476,21 @@ export function useVirtualTimeline(params: {
 			containsMessage(messageId: string) {
 				return committedSnapshotRef.current.rowModel.rowKeyByMessageId.has(messageId);
 			},
-			captureReadingAnchor() {
-				return captureReadingAnchor();
+			captureReadingAnchor(options) {
+				return captureReadingAnchor(options);
 			},
-			restoreMessage(messageId: string, offsetTop: number): boolean {
+			restoreMessage(messageId, offsetTop, options): boolean {
 				const snapshot = committedSnapshotRef.current;
 				const rowKey = snapshot.rowModel.rowKeyByMessageId.get(messageId);
 				if (!rowKey) return false;
 
-				const rowIndex = snapshot.geometry.rows.findIndex((r) => r.key === rowKey);
-				if (rowIndex === -1) {
-					targetContext.pendingRestore = { messageId, offsetTop };
+				const rowIndex = snapshot.geometry.indexByKey.get(rowKey);
+				if (rowIndex === undefined) {
+					targetContext.pendingRestore = { messageId, offsetTop, keepReading: options?.keepReading, offsetBottom: options?.offsetBottom };
 					return true;
 				}
 
-				const viewport = viewportRef.current;
-				const effectiveList = listNodeRef.current ?? listRef?.current ?? null;
-				const listOrigin = calculateListOrigin(effectiveList, viewport);
-				const targetTop = resolveAnchorScrollTop(snapshot.geometry, rowIndex, offsetTop, listOrigin);
-				applyReadingScrollTop(targetTop, "restore-session");
-				targetContext.pendingRestore = null;
-				targetContext.readingAnchor = { rowKey, offsetTop };
+				alignExplicitAnchor(snapshot.geometry, rowIndex, offsetTop, options?.keepReading ? "restore-reading" : "restore-session", options?.offsetBottom);
 				updateRange();
 				return true;
 			},
@@ -450,16 +499,10 @@ export function useVirtualTimeline(params: {
 				const rowKey = snapshot.rowModel.rowKeyByMessageId.get(messageId);
 				if (!rowKey) return false;
 
-				const rowIndex = snapshot.geometry.rows.findIndex((r) => r.key === rowKey);
-				if (rowIndex === -1) return false;
+				const rowIndex = snapshot.geometry.indexByKey.get(rowKey);
+				if (rowIndex === undefined) return false;
 
-				const viewport = viewportRef.current;
-				const effectiveList = listNodeRef.current ?? listRef?.current ?? null;
-				const listOrigin = calculateListOrigin(effectiveList, viewport);
-				const targetTop = resolveAnchorScrollTop(snapshot.geometry, rowIndex, 0, listOrigin);
-				applyReadingScrollTop(targetTop, "jump-message");
-				targetContext.pendingRestore = null;
-				targetContext.readingAnchor = { rowKey, offsetTop: 0 };
+				alignExplicitAnchor(snapshot.geometry, rowIndex, 0, "jump-message");
 				updateRange();
 				return true;
 			},
@@ -471,7 +514,7 @@ export function useVirtualTimeline(params: {
 				adapterRef.current = null;
 			}
 		};
-	}, [adapterRef, sessionId, currentContext, captureReadingAnchor, updateRange, viewportRef, listRef, applyReadingScrollTop]);
+	}, [adapterRef, sessionId, currentContext, captureReadingAnchor, updateRange, alignExplicitAnchor]);
 
 	// 派生离散渲染计划
 	const renderPlan: readonly TimelineRenderEntry[] = useMemo(() => {

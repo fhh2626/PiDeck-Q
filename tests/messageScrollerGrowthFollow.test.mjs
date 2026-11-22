@@ -183,7 +183,7 @@ test("timeline controller restores via engine restoreAt and keeps negative offse
   assert.doesNotMatch(source, /offsetTop: Math\.max\(0, rect\.top - viewportRect\.top\)/);
   // 恢复走引擎原子 API（引擎未挂上时回退原生定位）
   assert.match(source, /api\?\.restoreAt/);
-  assert.match(source, /api\.restoreAt\(targetTop\)/);
+  assert.match(source, /api\.restoreAt\(targetTop, \{ forceReading: true \}\)/);
   // autoScroll 初始值按锚点决定：有锚点不跟底，避免第一帧滚底再纠正
   assert.match(source, /return !store\.get\(sessionScrollAnchorByIdAtom\)\[sessionId\];/);
 });

@@ -124,6 +124,9 @@ export function useTimelineMeasurements(params: {
 							widthEpoch: reg.widthEpoch,
 							height: h,
 						});
+					} else {
+						// The latest observation supersedes an earlier change in this batch.
+						targetContext.pendingEntries.delete(key);
 					}
 				}
 			}

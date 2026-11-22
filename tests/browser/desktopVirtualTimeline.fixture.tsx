@@ -272,6 +272,10 @@ function VirtualTimelineTestFixture() {
               重挂同一会话
             </button>
             {identityTakeover && <>
+              {/* Use the production restore API for a named passage while the expansion is still settling. */}
+              <button id="btn-integrated-identity-passage" onClick={() => integratedAdapterRef.current?.restoreMessage("request-user-70", -900, { keepReading: true })}>
+                定位展开段落
+              </button>
               <button id="btn-integrated-accept" onClick={() => setIntegratedMessages((messages) => messages.map((message) => message.id === "request-user-70"
                 ? { ...message, id: "accepted-user-70", meta: { optimisticRequestId: "request-user-70" } } : message))}>
                 接管正式消息 ID

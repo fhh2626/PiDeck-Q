@@ -37,7 +37,8 @@ async function openLongTimeline(page: Page, identityTakeover = false) {
 	return viewport;
 }
 
-async function enterPassage(viewport: Locator, messageId: string, offset = 900) {
+async function enterPassage(viewport: Locator, messageId: string, navigate?: () => Promise<void>) {
+	const offset = 900;
 	await viewport.evaluate((element, target) => {
 		const message = Array.from(element.querySelectorAll("[data-message-id]"))
 			.find((candidate) => candidate.getAttribute("data-message-id") === target.messageId);
@@ -45,8 +46,11 @@ async function enterPassage(viewport: Locator, messageId: string, offset = 900) 
 		if (!measured || measured.getBoundingClientRect().height <= target.offset + element.clientHeight) {
 			throw new Error("The target must be a genuinely long, mounted message");
 		}
-		element.scrollTop += measured.getBoundingClientRect().top - element.getBoundingClientRect().top - element.clientTop + target.offset;
-	}, { messageId, offset });
+		if (target.rawScroll) {
+			element.scrollTop += measured.getBoundingClientRect().top - element.getBoundingClientRect().top - element.clientTop + target.offset;
+		}
+	}, { messageId, offset, rawScroll: !navigate });
+	await navigate?.();
 	await expect.poll(async () => Math.abs((await readingSample(viewport)).top + offset)).toBeLessThan(4);
 }
 
@@ -84,7 +88,7 @@ test("an expanded user passage survives authoritative ID takeover and same-store
 	const toggleName = /^(展开全文|Show full message|收起|Collapse)$/;
 	await optimistic.getByRole("button", { name: toggleName }).click();
 	await expect(optimistic.getByRole("button", { name: toggleName })).toHaveAttribute("aria-expanded", "true");
-	await enterPassage(viewport, "request-user-70");
+	await enterPassage(viewport, "request-user-70", () => page.locator("#btn-integrated-identity-passage").dispatchEvent("click"));
 	const before = await readingSample(viewport);
 	await page.locator("#btn-integrated-accept").click();
 	const accepted = viewport.locator('[data-message-id="accepted-user-70"]');
