@@ -174,16 +174,17 @@ QSet<QString> collectSessionRunIdentities(const QString &raw, bool *uncertain)
             throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
         if (message.value(QStringLiteral("toolName")).toString() != QLatin1String("subagent")) continue;
         const QJsonValue detailsValue = message.value(QStringLiteral("details"));
-        // pi can persist failed/aborted tool calls without extension details. They
-        // reveal no ownership: retain shared artifacts rather than block deletion.
-        if ((detailsValue.isUndefined() || detailsValue.isNull())
-            && message.value(QStringLiteral("isError")).toBool() && uncertain) {
+        const QJsonObject details = detailsValue.toObject();
+        // Pi can persist failed/aborted tool calls with an empty details object
+        // as well as missing details. None proves ownership, so keep shared artifacts.
+        if (uncertain && message.value(QStringLiteral("isError")).toBool()
+            && (detailsValue.isUndefined() || detailsValue.isNull()
+                || (detailsValue.isObject() && details.isEmpty()))) {
             *uncertain = true;
             continue;
         }
         if (!isRecord(detailsValue))
             throw ChannelError(QStringLiteral("Unable to verify session artifact ownership"));
-        const QJsonObject details = detailsValue.toObject();
         const QString mode = details.value(QStringLiteral("mode")).toString();
         if (mode != QLatin1String("single") && mode != QLatin1String("workflow")
             && mode != QLatin1String("parallel") && mode != QLatin1String("chain")

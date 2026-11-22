@@ -10,7 +10,6 @@ const runId = "11111111-2222-4333-8444-555555555555";
 const linuxHome = "/home/dev";
 const linuxRoot = `${linuxHome}/.pi/agent/sessions`;
 const linuxFile = `${linuxRoot}/protected.jsonl`;
-const runtimePath = process.cwd().replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/mnt/${drive.toLowerCase()}/`);
 // The filesystem fixture runs everywhere, but PiLaunch compiles WSL runtime
 // creation only on Windows. Those cases must not fail before reaching their
 // deletion assertions on a native Linux/macOS backend.
@@ -20,9 +19,12 @@ const wslRuntimeSkip = process.platform === "win32" ? false : "WSL runtime launc
 async function fixture(t, outsideRecord = false, foreignRecord = false, uppercaseTree = false, aliasTree = false, reverseAlias = false, otherUser = false, variant = "", language = "en-US") {
   let home, sessions, log, scenarioPath;
   const f = await startBackendSession(t, {
-    projects: [{ id: "wsl-safe", path: process.cwd() }],
     settings: { language, wslEnabled: true, wslDistro: "Ubuntu", wslUser: "dev" },
     prepare: (fixture) => {
+      const project = join(fixture.root, "project");
+      mkdirSync(project);
+      writeFileSync(join(fixture.userData, "projects.json"), JSON.stringify([{ id: "wsl-safe", name: "fixture", path: project, environment: "windows" }]));
+      const runtimePath = project.replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/mnt/${drive.toLowerCase()}/`);
       const uncRoot = join(fixture.root, "wsl-unc");
       home = join(uncRoot, "Ubuntu", "home", "dev");
       sessions = join(home, ".pi", "agent", "sessions");
@@ -266,6 +268,27 @@ if (resolveBackendExecutable() && launcher) {
     assert.ok(f.commands().some(({ argv }) => argv.includes("find") && argv.includes("-mindepth") && argv.includes(`${linuxRoot}/peer`)), `peer listing must be attempted: ${JSON.stringify(result.payload)} ${JSON.stringify(f.commands())}`);
     assert.equal(readFileSync(shared, "utf8"), "peer data");
     assert.ok(existsSync(join(f.sessions, "protected.jsonl")));
+  });
+  test("failed WSL peer subagent result with empty details preserves shared artifacts during trash", async (t) => {
+    const f = await fixture(t);
+    const target = join(f.sessions, "protected.jsonl");
+    const original = readFileSync(target, "utf8");
+    const peer = join(f.sessions, "unrelated.jsonl");
+    const failure = JSON.stringify({ type: "message", id: "r2", message: { role: "toolResult", toolName: "subagent", isError: true, details: {} } });
+    const peerContent = readFileSync(peer, "utf8") + failure + "\n";
+    writeFileSync(peer, peerContent);
+    const artifacts = join(f.sessions, "subagent-artifacts");
+    mkdirSync(artifacts);
+    const shared = join(artifacts, `${runId}_output.txt`);
+    writeFileSync(shared, "uncertain ownership");
+    const result = await f.invoke("sessions:catalog-delete", [f.id]);
+    assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+    assert.equal(existsSync(target), false);
+    assert.equal(readFileSync(peer, "utf8"), peerContent);
+    assert.equal(readFileSync(shared, "utf8"), "uncertain ownership");
+    const trash = join(f.sessions, ".pideck-trash");
+    const [bucket] = readdirSync(trash);
+    assert.equal(readFileSync(join(trash, bucket, "protected.jsonl"), "utf8"), original);
   });
   test("an environment switch cannot retarget an in-flight WSL deletion", async (t) => {
     const f = await fixture(t);

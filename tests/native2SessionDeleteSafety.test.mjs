@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { backendEnvFor, FakeHost, resolveBackendExecutable, rpc, spawnBackend, startBackendSession, stopBackendProcess, waitForRendererReady } from "./helpers/native2BackendHarness.mjs";
 import { holdExclusiveFileLock } from "./helpers/native2FileLock.mjs";
@@ -27,12 +27,17 @@ function writeOwnedSession(directory, projectPath, name, identity = runId, exten
 	return path;
 }
 
-async function fixture(t) {
+async function fixture(t, trash = () => ({ result: { status: "trash-failed" } })) {
+	let project;
 	const session = await startBackendSession(t, {
-		projects: [{ id: "safe-delete", path: process.cwd() }],
-		hostHandlers: { "shell.trashItem": () => ({ result: { status: "trash-failed" } }) },
+		prepare: ({ root, userData }) => {
+			project = join(root, "project");
+			mkdirSync(project);
+			writeFileSync(join(userData, "projects.json"), JSON.stringify([{ id: "safe-delete", name: "fixture", path: project, environment: "windows" }]));
+		},
+		hostHandlers: { "shell.trashItem": trash },
 	});
-	const file = writeOwnedSession(session.fixture.sessions, process.cwd(), "protected");
+	const file = writeOwnedSession(session.fixture.sessions, project, "protected");
 	const list = await session.invoke("sessions:catalog-list", ["safe-delete"]);
 	const record = list.payload.result.find((item) => item.filePath.replaceAll("\\", "/") === file.replaceAll("\\", "/"));
 	assert.ok(record);
@@ -293,20 +298,47 @@ if (executable) {
 			assert.equal(result.payload.result, true, JSON.stringify(result.payload));
 		});
 	}
-	for (const failureTarget of [true, false]) {
-		test(`details-less failed subagent result in ${failureTarget ? "target" : "peer"} preserves uncertain artifacts`, async (t) => {
-			const f = await fixture(t);
-			const path = failureTarget ? f.file : join(f.fixture.sessions, "peer.jsonl");
-			const message = { type: "message", message: { role: "toolResult", toolName: "subagent", isError: true, content: [{ type: "text", text: "Tool execution aborted" }] } };
-			if (failureTarget) writeFileSync(path, readFileSync(path, "utf8") + JSON.stringify(message) + "\n");
-			else writeFileSync(path, JSON.stringify(message) + "\n");
-			const artifacts = join(f.fixture.sessions, "subagent-artifacts"); mkdirSync(artifacts);
-			const shared = join(artifacts, `${runId}_output.txt`); writeFileSync(shared, "uncertain ownership");
-			const result = await f.invoke("sessions:catalog-delete", [f.id, { permanent: true }]);
-			assert.equal(result.payload.result, true, JSON.stringify(result.payload));
-			assert.equal(readFileSync(shared, "utf8"), "uncertain ownership");
-		});
+	for (const [kind, details] of [["missing", undefined], ["null", null], ["empty", {}]]) {
+		for (const failureTarget of [true, false]) {
+			test(`failed subagent result with ${kind} details in ${failureTarget ? "target" : "peer"} preserves shared artifacts`, async (t) => {
+				const f = await fixture(t);
+				const path = failureTarget ? f.file : join(f.fixture.sessions, "peer.jsonl");
+				const failure = JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "subagent", isError: true, details } }) + "\n";
+				writeFileSync(path, failureTarget ? readFileSync(path, "utf8") + failure : failure);
+				const artifacts = join(f.fixture.sessions, "subagent-artifacts"); mkdirSync(artifacts);
+				const shared = join(artifacts, `${runId}_output.txt`); writeFileSync(shared, "uncertain ownership");
+				const result = await f.invoke("sessions:catalog-delete", [f.id, { permanent: true }]);
+				assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+				assert.equal(existsSync(f.file), false);
+				assert.equal(readFileSync(shared, "utf8"), "uncertain ownership");
+				if (!failureTarget) assert.equal(readFileSync(path, "utf8"), failure);
+			});
+		}
 	}
+	test("failed peer subagent result with empty details only sends the requested session to native trash", async (t) => {
+		const trashPaths = [];
+		const f = await fixture(t, ({ path }) => {
+			assert.equal(basename(path), basename(f.file));
+			assert.equal(realpathSync(dirname(path)), realpathSync(dirname(f.file)));
+			trashPaths.push(basename(path));
+			renameSync(f.file, join(f.fixture.root, "trashed.jsonl"));
+			return { result: null };
+		});
+		const original = readFileSync(f.file, "utf8");
+		const peer = join(f.fixture.sessions, "peer.jsonl");
+		const failure = JSON.stringify({ type: "message", message: { role: "toolResult", toolName: "subagent", isError: true, details: {} } }) + "\n";
+		writeFileSync(peer, failure);
+		const artifacts = join(f.fixture.sessions, "subagent-artifacts", "outputs");
+		mkdirSync(artifacts, { recursive: true });
+		const shared = join(artifacts, `${runId}_output.txt`); writeFileSync(shared, "uncertain ownership");
+		const result = await f.invoke("sessions:catalog-delete", [f.id]);
+		assert.equal(result.payload.result, true, JSON.stringify(result.payload));
+		assert.deepEqual(trashPaths, [basename(f.file)]);
+		assert.equal(existsSync(f.file), false);
+		assert.equal(readFileSync(join(f.fixture.root, "trashed.jsonl"), "utf8"), original);
+		assert.equal(readFileSync(peer, "utf8"), failure);
+		assert.equal(readFileSync(shared, "utf8"), "uncertain ownership");
+	});
 	test("oversized ownership file is rejected without deleting any data", async (t) => {
 		const f = await fixture(t);
 		const peer = join(f.fixture.sessions, "peer.jsonl");
@@ -337,6 +369,9 @@ if (executable) {
 		["child", { type: "message", message: { role: "toolResult", toolName: "subagent", details: { mode: "single", children: [runId] } } }],
 		["identity", { type: "message", message: { role: "toolResult", toolName: "subagent", details: { mode: "single", runId: [runId] } } }],
 		["workflow summary", { type: "message", message: { role: "toolResult", toolName: "subagent", details: { mode: "workflow", workflowChildren: [runId] } } }],
+		["successful result with empty details", { type: "message", message: { role: "toolResult", toolName: "subagent", isError: false, details: {} } }],
+		["failed result with array details", { type: "message", message: { role: "toolResult", toolName: "subagent", isError: true, details: [] } }],
+		["failed result with nonempty details but no mode", { type: "message", message: { role: "toolResult", toolName: "subagent", isError: true, details: { runId } } }],
 	]) {
 		test(`malformed peer ${label} envelope cannot authorize shared artifact deletion`, async (t) => {
 			const f = await fixture(t);
