@@ -737,6 +737,9 @@ void BackendApplication::wireHostEvents()
         drop.insert(QStringLiteral("externalFileCapabilityId"), m_capabilities.issueDrop(paths));
         broadcastHostPayload(QStringLiteral("native.fileDrop"), drop);
     });
+    m_host->onEvent(QStringLiteral("window.visibilityChanged"), [this](const QJsonValue &payload) {
+        if (payload.isBool()) m_events.broadcast(QStringLiteral("app:window-visibility-changed"), QJsonArray{payload});
+    });
     m_host->onEvent(QStringLiteral("window.maximizedChanged"), [this](const QJsonValue &payload) {
         const bool maximized = payload.toObject().value(QStringLiteral("maximized")).toBool(payload.toBool());
         m_state.windowMaximized = maximized;

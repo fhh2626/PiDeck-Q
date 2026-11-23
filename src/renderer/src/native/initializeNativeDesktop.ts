@@ -38,6 +38,8 @@ export function reloadDesktopRenderer(): void {
 
 /** 事件通道健康度变化时在 window 上派发的事件名（detail: NativeEventChannelHealthDetail）。 */
 export const NATIVE_EVENT_CHANNEL_HEALTH_EVENT = "pideck-native-event-channel-health";
+/** Snapshot readers revalidate on replay completion or reported event loss. */
+export const NATIVE_EVENT_SNAPSHOT_INVALIDATED = "pideck-native-event-snapshot-invalidated";
 
 export interface NativeEventChannelHealthDetail {
 	healthy: boolean;
@@ -114,13 +116,18 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 	} finally {
 		window.clearTimeout(bootstrapTimer);
 	}
+	const invalidateSnapshot = () => window.dispatchEvent(new Event(NATIVE_EVENT_SNAPSHOT_INVALIDATED));
 	const transport = new NativeDesktopTransport(baseUrl, token, {
+		onEventChannelReady: invalidateSnapshot,
 		// 事件流断层（SSE 历史被裁 / 超大帧被丢弃）由 sidecar 补发全量状态自愈，
 		// 这里绝不导航：整页重载会丢掉滚动位置与正在输入的内容。
 		// 正常断层载荷是对象（{ reason, eventSeq } / { channel, bytes }），只有
 		// 形态不对的畸形载荷才走重载兜底。
 		onResyncRequired: (payload) => {
-			if (isUnknownRecord(payload)) return;
+			if (isUnknownRecord(payload)) {
+				invalidateSnapshot();
+				return;
+			}
 			reloadNativeRenderer(token);
 		},
 		initialEventSeq: bootstrap.eventSeq ?? 0,

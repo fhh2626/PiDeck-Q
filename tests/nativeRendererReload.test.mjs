@@ -42,14 +42,28 @@ test("array and primitive resync payloads are treated as malformed and trigger t
 	}
 });
 
-test("structured resync gap keeps the page: no navigation of any kind", async () => {
-	const { module, navigation, transports } = loadNativeBootstrapForReload();
+test("structured resync gaps invalidate snapshots without navigating", async () => {
+	const { module, navigation, transports, window } = loadNativeBootstrapForReload();
 	await module.initializeNativeDesktop();
+	let invalidations = 0;
+	window.addEventListener(module.NATIVE_EVENT_SNAPSHOT_INVALIDATED, () => { invalidations++; });
 	// 正常断层载荷是对象；整页重载会丢滚动位置与输入内容，只有畸形载荷才允许兜底重载
 	transports[0].options.onResyncRequired({ reason: "history-trimmed", eventSeq: 9 });
 	transports[0].options.onResyncRequired({ channel: "x", bytes: 5 });
+	assert.equal(invalidations, 2);
 	assert.deepEqual(navigation.replaced, []);
 	assert.equal(navigation.reloads, 0);
+});
+
+test("event channel readiness invalidates snapshots again after reconnect", async () => {
+	const { module, transports, window } = loadNativeBootstrapForReload();
+	await module.initializeNativeDesktop();
+	let invalidations = 0;
+	window.addEventListener(module.NATIVE_EVENT_SNAPSHOT_INVALIDATED, () => { invalidations++; });
+	transports[0].options.onEventChannelReady();
+	assert.equal(invalidations, 1);
+	transports[0].options.onEventChannelReady();
+	assert.equal(invalidations, 2);
 });
 
 test("bootstrap strips the token from the address bar before any reload can happen", async () => {

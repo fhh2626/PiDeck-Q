@@ -859,6 +859,9 @@ const api = {
 			transport.invoke(ipcChannels.appWindowToggleMaximize) as Promise<boolean>,
 		isWindowMaximized: () =>
 			transport.invoke(ipcChannels.appWindowIsMaximized) as Promise<boolean>,
+		isWindowVisible: () => transport.invoke(ipcChannels.appWindowIsVisible) as Promise<boolean>,
+		onWindowVisibilityChange: (callback: (visible: boolean) => void) =>
+			subscribe(ipcChannels.appWindowVisibilityChanged, callback),
 		onWindowMaximizedChange: (callback: (maximized: boolean) => void) =>
 			subscribe(ipcChannels.appWindowMaximizedChanged, callback),
 		toggleAlwaysOnTopWindow: () =>

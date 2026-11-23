@@ -73,6 +73,8 @@ import { resolveNativeWindowChrome } from "./native/nativeWindowChrome";
 
 import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useProjectSync } from "./hooks/useProjectSync";
+import { useVisiblePoll } from "./hooks/useVisiblePoll";
+import { useNativeWindowVisibility } from "./hooks/useNativeWindowVisibility";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useModelListSync } from "./hooks/useModelListSync";
 import { modelConfigurationVersionsByScopeAtom, sharedModelRemovalVersionsAtom } from "./atoms/model-atoms";
@@ -1610,16 +1612,11 @@ export function App() {
     }
   }, [activeProjectId, currentSessionId, displayAgents.length]);
 
-  useEffect(() => {
-    if (!activeProjectId) return;
-    // 请求序号与项目身份校验由 useProjectSync 统一持有；慢请求即使跨过
-    // 下一次轮询或项目切换才结束，也不会把旧分支写回当前工作区。
-    const timer = window.setInterval(
-      () => void refreshGitInfo(activeProjectId, "poll").catch(() => undefined),
-      4000,
-    );
-    return () => window.clearInterval(timer);
-  }, [activeProjectId]);
+  useNativeWindowVisibility(isNativeRuntime, api.app);
+  // Project selection already loads the branch list; refresh again on return to the window.
+  useVisiblePoll(activeProjectId, 30_000, (cause, whenVisible) => {
+    void refreshGitInfo(activeProjectId, cause === "visible" ? { whenVisible } : "poll").catch(() => undefined);
+  }, false);
 
   /** 统一通知：普通消息默认 1.5 秒，异常由 kind 映射为 3 秒；Ask 使用持久 warning toast。 */
   function showToast(message: string, duration?: number, kind?: "info" | "warning" | "error") {

@@ -656,6 +656,8 @@ export function createPreviewApi(): PiDesktopApi {
 			minimizeWindow: async () => undefined,
 			toggleMaximizeWindow: async () => false,
 			isWindowMaximized: async () => false,
+			isWindowVisible: async () => true,
+			onWindowVisibilityChange: () => () => undefined,
 			onWindowMaximizedChange: () => () => undefined,
 			toggleAlwaysOnTopWindow: async () => false,
 			closeWindow: async () => undefined,

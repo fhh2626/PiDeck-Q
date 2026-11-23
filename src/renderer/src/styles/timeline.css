@@ -32,12 +32,6 @@
 .timeline-marker-node-active {
   color: var(--color-accent);
   background: var(--color-accent);
-  animation: timeline-node-pulse 1.8s ease-in-out infinite;
-}
-@keyframes timeline-node-pulse {
-  0%,
-  100% { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 28%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 12%, transparent); }
 }
 .timeline-marker-node-success {
   color: var(--color-success);
@@ -78,8 +72,7 @@
   line-height: var(--chat-body-line-height);
 }
 
-/* 会话生命周期状态：节点与内容使用同一条节奏，运行中只保留轻微呼吸感，
- * 避免每个工具都持续跳动导致用户无法判断真正发生了什么。 */
+/* 运行背景保持静态。等待输出时，不为整个回合持续合成动画帧。 */
 .turn-row--running {
   position: relative;
 }
@@ -90,8 +83,6 @@
   pointer-events: none;
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-accent) 3%, transparent);
-  opacity: 0;
-  animation: turn-running-breathe 2.2s ease-in-out infinite;
 }
 .user-turn {
   transition: opacity 180ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -122,13 +113,6 @@
 @keyframes assistant-answer-settle {
   from { opacity: 0.35; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-/* turn-row--running::before 的呼吸背景（见上方会话生命周期注释） */
-@keyframes turn-running-breathe {
-  0%,
-  100% { opacity: 0; }
-  50% { opacity: 1; }
 }
 
 @keyframes timeline-step-enter {
@@ -494,11 +478,6 @@
 }
 .tool-card--running .tool-card-icon {
   color: var(--color-warning);
-  animation: tool-icon-breathe 1.6s ease-in-out infinite;
-}
-@keyframes tool-icon-breathe {
-  0%, 100% { opacity: 0.66; transform: scale(0.96); }
-  50% { opacity: 1; transform: scale(1.04); }
 }
 .tool-card-header.has-diff {
   gap: var(--space-2);
@@ -535,21 +514,9 @@
 }
 .tool-group-card.tone-running .tool-group-card-dot {
   background: var(--color-warning);
-  animation: toolGroupDotPulse 1.4s ease-in-out infinite;
 }
 .tool-group-card.tone-error .tool-group-card-dot {
   background: var(--color-danger);
-}
-@keyframes toolGroupDotPulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.25);
-    opacity: 0.7;
-  }
 }
 .tool-group-card-chevron.open {
   transform: rotate(180deg);
@@ -627,8 +594,6 @@
   .tool-group-card,
   .ask-inline-bar,
   .session-runtime-ui,
-  .turn-row--running::before,
-  .timeline-marker-node-active,
   .timeline-marker-row,
   .user-turn,
   .turn-row--fresh .assistant-text,
@@ -639,10 +604,6 @@
     transition: none !important;
   }
 
-  .turn-row--running::before {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* ---------- 用户消息：UserBubble（右对齐窄气泡） ---------- */
@@ -1982,7 +1943,6 @@ body.ask-dialog-open .ask-question-card.pending {
   background: color-mix(in srgb, var(--color-warning) 16%, var(--color-bg-panel));
   color: var(--color-warning);
   cursor: wait;
-  animation: compact-pulse 1.2s ease-in-out infinite;
 }
 .composer-bottom-bar .composer-bar-btn.compacting:disabled {
   opacity: 0.7;
@@ -1991,15 +1951,6 @@ body.ask-dialog-open .ask-question-card.pending {
   pointer-events: none;
 }
 
-@keyframes compact-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.65;
-  }
-}
 @container (max-width: 620px) {
   /* 底栏恒单行：left(模式/模板/附件) + center(模型/思考/compact) + right(发送)。
      不再 wrap —— 旧规则在窄栏把 center 整行折到第二行（模型选型掉到发送按钮

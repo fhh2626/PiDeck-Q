@@ -5,8 +5,9 @@ import { hangingFetch, loadNativeTransport, okJsonResponse } from "./helpers/l1b
 const BASE_URL = "http://127.0.0.1:1234/";
 /** 与生产 NATIVE_READ_RPC_TIMEOUT_MS 对应；只读 RPC 的截止时间是用户可感知的契约。 */
 const READ_TIMEOUT_MS = 60_000;
+const WINDOW_VISIBILITY_TIMEOUT_MS = 5_000;
 
-/** 显式只读白名单（键为 ipcChannels 字段名）；其余通道一律不设超时。 */
+/** 使用常规截止时间的只读通道；短截止时间的通道单独断言。 */
 const READONLY_CHANNEL_KEYS = [
 	"projectsList",
 	"sessionsCatalogList",
@@ -41,6 +42,21 @@ test("bounded read RPC aborts the in-flight fetch and reports a timeout naming t
 	harness.fireTimer(deadline);
 	assert.equal(harness.fetchCalls[0].init.signal.aborted, true, "deadline must abort the request");
 	await assert.rejects(pending, new RegExp(`Native RPC timed out after ${READ_TIMEOUT_MS}ms: ${channel}`));
+	transport.dispose();
+});
+
+test("window visibility RPC aborts an unresponsive request after its short deadline", async () => {
+	const harness = loadNativeTransport();
+	harness.setFetch(hangingFetch());
+	const transport = createTransport(harness);
+	const channel = harness.ipcChannels.appWindowIsVisible;
+
+	const pending = transport.invoke(channel);
+	const [deadline] = harness.pendingTimers(WINDOW_VISIBILITY_TIMEOUT_MS);
+	assert.ok(deadline, "visibility recovery must not wait on a hung request");
+	harness.fireTimer(deadline);
+	assert.equal(harness.fetchCalls[0].init.signal.aborted, true);
+	await assert.rejects(pending, new RegExp(`Native RPC timed out after ${WINDOW_VISIBILITY_TIMEOUT_MS}ms: ${channel}`));
 	transport.dispose();
 });
 
@@ -102,6 +118,7 @@ test("nativeRpcTimeoutMs bounds exactly the explicit read-only allowlist", () =>
 		harness.NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS,
 	);
 	assert.equal(harness.NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS, 5_000);
+	assert.equal(harness.nativeRpcTimeoutMs(harness.ipcChannels.appWindowIsVisible), WINDOW_VISIBILITY_TIMEOUT_MS);
 });
 
 test("only allowlisted channels are bounded; every other channel in the contract stays unbounded", () => {
@@ -111,6 +128,7 @@ test("only allowlisted channels are bounded; every other channel in the contract
 	const bounded = new Map([
 		...READONLY_CHANNEL_KEYS.map((key) => [harness.ipcChannels[key], READ_TIMEOUT_MS]),
 		[harness.ipcChannels.nativeClipboardSnapshot, harness.NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS],
+		[harness.ipcChannels.appWindowIsVisible, WINDOW_VISIBILITY_TIMEOUT_MS],
 	]);
 	const channels = Object.values(harness.ipcChannels);
 	assert.ok(channels.length > 50, "the contract should contain the full channel set");

@@ -94,6 +94,7 @@ test("every desktopApi method talks to a declared IPC channel, and every subscri
 	assert.deepEqual(subscribers.map(({ name }) => name).sort(), [
 		"app.onFocusSessionTarget",
 		"app.onWindowMaximizedChange",
+		"app.onWindowVisibilityChange",
 		"projects.onChanged",
 		"projects.onModelsChanged",
 		"rpcLogs.onLog",

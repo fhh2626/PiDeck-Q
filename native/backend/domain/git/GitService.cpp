@@ -38,18 +38,51 @@ bool isGitRepo(const QString &cwd)
 
 QJsonObject getBranches(const QString &cwd)
 {
-    const gitexec::Result currentResult =
-        gitexec::run(cwd, QStringList{QStringLiteral("branch"), QStringLiteral("--show-current")});
-    const gitexec::Result localResult = gitexec::run(
-        cwd, QStringList{QStringLiteral("branch"), QStringLiteral("--format=%(refname:short)")},
+    // HEAD and the full local ref share one process and one snapshot. Keep the
+    // old ref-list budget available even when the extra columns exceed it.
+    const auto localResult = gitexec::run(
+        cwd, QStringList{QStringLiteral("branch"), QStringLiteral("--no-color"), QStringLiteral("--list"),
+                         QStringLiteral("--format=%(HEAD)%09%(refname)")},
         gitexec::kDefaultTimeoutMs, kBranchMaxBytes);
-    if (!currentResult.ok() || !localResult.ok()) return emptyBranches();
+    if (!localResult.ok() && !localResult.truncated) return emptyBranches();
 
-    const QString current = currentResult.stdoutText.trimmed();
+    QString current;
     QStringList branches;
-    for (const QString &line : localResult.stdoutText.split(QLatin1Char('\n'))) {
-        const QString trimmed = line.trimmed();
-        if (!trimmed.isEmpty()) branches.append(trimmed);
+    bool hasHead = false;
+    const auto withoutCarriageReturn = [](QString line) {
+        if (line.endsWith(QLatin1Char('\r'))) line.chop(1);
+        return line;
+    };
+    if (localResult.ok()) {
+        const QString localPrefix = QStringLiteral("\trefs/heads/");
+        for (const QString &line : localResult.stdoutText.split(QLatin1Char('\n'))) {
+            if (line.size() < 2 || line.at(1) != QLatin1Char('\t')) continue;
+            const bool head = line.at(0) == QLatin1Char('*');
+            hasHead |= head;
+            // A detached/rebasing HEAD can be marked but has no local branch ref.
+            if (!QStringView(line).sliced(1).startsWith(localPrefix)) continue;
+            const QString name = withoutCarriageReturn(line.mid(1 + localPrefix.size()));
+            branches.append(name);
+            if (head) current = name;
+        }
+    } else {
+        // Keep branch.sort, but omit the detached pseudo-row and column overhead.
+        const auto shortList = gitexec::run(
+            cwd, QStringList{QStringLiteral("branch"), QStringLiteral("--no-color"), QStringLiteral("--list"),
+                             QStringLiteral("--format=%(if:equals=refs)%(refname:rstrip=-1)%(then)%(refname:lstrip=2)%(end)")},
+            gitexec::kDefaultTimeoutMs, kBranchMaxBytes);
+        if (!shortList.ok()) return emptyBranches();
+        for (const QString &line : shortList.stdoutText.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString name = withoutCarriageReturn(line);
+            if (!name.isEmpty()) branches.append(name);
+        }
+    }
+    // An unborn branch has no ref to mark, including after checkout --orphan.
+    if (!hasHead) {
+        const auto result = gitexec::run(cwd, QStringList{QStringLiteral("branch"), QStringLiteral("--show-current")});
+        if (!result.ok()) return emptyBranches();
+        current = result.stdoutText.section(QLatin1Char('\n'), 0, 0);
+        current = withoutCarriageReturn(current);
     }
     // The current branch is listed first so the panel shows it without extra sorting.
     QStringList sorted;

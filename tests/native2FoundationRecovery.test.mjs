@@ -441,6 +441,30 @@ if (executable) {
 		assert.equal(stateFrames.length, 2, `expected 2 coalesced re-pushes, got ${stateFrames.length}`);
 	});
 
+	test("the renderer can query native window visibility and observe changes", async (t) => {
+		let visible = false;
+		const session = await startBackendSession(t, {
+			hostHandlers: { "window.isVisible": () => ({ result: visible }) },
+		});
+		const { baseUrl, token } = session;
+		const sse = new SseClient(`${baseUrl}__pideck/events?token=${token}&lastEventId=0`);
+		t.after(() => sse.close());
+		await sse.connect();
+		const initial = await session.invoke("app:window-is-visible", []);
+		assert.equal(initial.payload.ok, true);
+		assert.equal(initial.payload.result, false);
+		const invalid = await session.invoke("app:window-is-visible", [true]);
+		assert.equal(invalid.payload.ok, false);
+		visible = true;
+		session.host.emit("window.visibilityChanged", visible);
+		const restored = await sse.waitFor("app:window-visibility-changed");
+		assert.deepEqual(restored.payload.args, [true]);
+		visible = false;
+		session.host.emit("window.visibilityChanged", visible);
+		const hidden = await sse.waitFor((frame) => frame.payload.channel === "app:window-visibility-changed" && frame.id > restored.id);
+		assert.deepEqual(hidden.payload.args, [false]);
+	});
+
 	test("the heartbeat watchdog reloads a page whose heartbeats stopped", async (t) => {
 		const session = await startBackendSession(t, {
 			env: {

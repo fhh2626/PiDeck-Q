@@ -142,6 +142,31 @@ if (executable) {
 		assert.match(optionLike.payload.error.message, /Invalid branch name/);
 	});
 
+	test("git:branches preserves exact local names and handles detached and unborn HEAD", async (t) => {
+		const { invoke, repos } = await start(t);
+		const cwd = repos.historyRepo;
+		const exact = "topic\u00a0";
+		git(cwd, ["checkout", "-b", exact]);
+		git(cwd, ["tag", exact]); // Git's :short format would disambiguate with heads/.
+		const read = async () => {
+			const { payload } = await invoke("git:branches", [PROJECT_HISTORY]);
+			assert.equal(payload.ok, true, JSON.stringify(payload));
+			return payload.result;
+		};
+		const attached = await read();
+		assert.equal(attached.current, exact);
+		assert.equal(attached.branches[0], exact);
+		assert.equal(attached.branches.filter((name) => name.includes("topic")).length, 1);
+		git(cwd, ["checkout", "--detach"]);
+		const detached = await read();
+		assert.equal(detached.current, null);
+		assert.deepEqual(new Set(detached.branches), new Set(attached.branches));
+		git(cwd, ["checkout", "--orphan", "unborn"]);
+		const unborn = await read();
+		assert.equal(unborn.current, "unborn");
+		assert.equal(unborn.branches[0], "unborn");
+	});
+
 	test("git:commit-log, git:refs and git:ahead-behind return stable history metadata", async (t) => {
 		const { invoke } = await start(t);
 		const log = await invoke("git:commit-log", [PROJECT_HISTORY, { maxEntries: 50 }]);

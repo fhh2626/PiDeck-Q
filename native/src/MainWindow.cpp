@@ -603,7 +603,9 @@ void MainWindow::emitMaximizedState()
 
 void MainWindow::emitMinimizedState()
 {
-    if (m_host) m_host->sendEvent(QStringLiteral("window.minimizedChanged"), isMinimized());
+    if (!m_host) return;
+    m_host->sendEvent(QStringLiteral("window.minimizedChanged"), isMinimized());
+    m_host->sendEvent(QStringLiteral("window.visibilityChanged"), isVisible() && !isMinimized());
 }
 
 void MainWindow::emitFullScreenState()
@@ -630,7 +632,9 @@ void MainWindow::emitBounds()
 
 void MainWindow::emitVisible(bool visible)
 {
-    if (m_host) m_host->sendEvent(QStringLiteral("window.visibleChanged"), visible);
+    if (!m_host) return;
+    m_host->sendEvent(QStringLiteral("window.visibleChanged"), visible);
+    m_host->sendEvent(QStringLiteral("window.visibilityChanged"), visible && !isMinimized());
 }
 
 QRect MainWindow::currentNormalGeometry() const

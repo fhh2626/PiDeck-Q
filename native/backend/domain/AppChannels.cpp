@@ -166,6 +166,10 @@ void registerAppChannels(ChannelRegistry &registry, ChannelServices &services)
     registry.addAsync(QStringLiteral("app:window-toggle-maximize"), [&services](const QJsonArray &, ChannelResponder responder) {
         hostRequest(services, QStringLiteral("window.toggleMaximize"), {}, responder);
     });
+    registry.addAsync(QStringLiteral("app:window-is-visible"), [&services](const QJsonArray &args, ChannelResponder responder) {
+        if (!args.isEmpty()) return responder.reject(QStringLiteral("Expected no arguments"));
+        hostRequest(services, QStringLiteral("window.isVisible"), {}, responder);
+    });
     registry.addAsync(QStringLiteral("app:window-is-maximized"), [&services](const QJsonArray &, ChannelResponder responder) {
         hostRequest(services, QStringLiteral("window.isMaximized"), {}, responder);
     });

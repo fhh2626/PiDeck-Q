@@ -2149,6 +2149,7 @@ export const zhCN = {
   "agent.loading.executing1": "执行工具",
   "agent.loading.executing2": "读取文件",
   "agent.loading.executing3": "应用改动",
+  "agent.loading.responding": "正在回应",
   "agent.loading.responding1": "思考中",
   "agent.loading.responding2": "组织回答",
   "agent.loading.responding3": "撰写回复",

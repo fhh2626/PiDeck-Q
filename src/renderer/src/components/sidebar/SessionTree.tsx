@@ -77,7 +77,6 @@ function renderRuntimeStatusDot(status?: string | null) {
       className={cn(
         "size-1.5 shrink-0 rounded-full relative -top-0.5",
         dotClass,
-        status === "error" ? "" : "animate-pulse",
       )}
       aria-label={label}
       title={label}
@@ -252,7 +251,7 @@ export function SessionTree(props: {
       onClick={(event) => { event.stopPropagation(); props.controller.toggleSubagentGroup(key); }}
     >
       {/* 分组默认折叠：折叠态也必须能看出子代理在跑，否则状态灯等于不存在 */}
-      {activity && <span className="size-1.5 shrink-0 rounded-full bg-warning animate-pulse" aria-hidden="true" />}
+      {activity && <span className="size-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true" />}
       <ChevronDown size={8} className={props.controller.expandedSubagentGroups.has(key) ? "expanded" : ""} />
       {/* 子 Agent 数量：统一 pill 样式（与项目行会话数徽标同尺寸同圆角），紧凑档 */}
       <span className="subagent-inline-count inline-flex h-3.5 shrink-0 items-center rounded-full px-1 text-[10px] font-medium tabular-nums">{count}</span>

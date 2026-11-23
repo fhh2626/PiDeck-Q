@@ -4,7 +4,7 @@ import test from "node:test";
 
 /**
  * 低成本体验包（借鉴 Vercel AI Elements）：
- * 1. Shimmer 微光文本——RespondingIndicator 进行态标签用渐变扫光提示活动进行中；
+ * 1. Shimmer 是可选视觉组件，等待中的 RespondingIndicator 不使用持续动画；
  * 2. 思考耗时人性化——ThinkingBlock 展示「思考了 Xs / Thought for Xs」，不再裸显工程化数字。
  */
 
@@ -37,7 +37,7 @@ test("shimmer-sweep keyframes 定义在 timeline.css（规则允许 keyframes）
 	assert.match(timelineCss, /@keyframes shimmer-sweep/);
 });
 
-test("RespondingIndicator 使用 beUI ReasoningText（swap）轮播状态短语", () => {
+test("RespondingIndicator keeps translated status labels without rotation", () => {
 	const fnStart = cardsSource.indexOf("export function RespondingIndicator");
 	const fn = cardsSource.slice(
 		fnStart,
@@ -48,19 +48,17 @@ test("RespondingIndicator 使用 beUI ReasoningText（swap）轮播状态短语"
 	assert.doesNotMatch(cardsSource, /const RESPONDING_PHRASES/);
 	assert.match(fn, /agent\.loading\.starting1/);
 	assert.match(fn, /agent\.loading\.executing1/);
-	assert.match(fn, /agent\.loading\.responding1/);
+	assert.match(fn, /"agent\.loading\.responding"/);
 	assert.match(fn, /agent\.loading\.waiting/);
-	// 组件使用 beUI ReasoningText + swap 变体；状态切换 key 重建从第一条重新轮播
-	assert.match(fn, /ReasoningText/);
-	assert.match(fn, /variant="swap"/);
-	assert.match(fn, /key=\{kind\}/);
+	assert.match(fn, /data-kind=\{kind\} role="status"/);
+	assert.doesNotMatch(fn, /ReasoningText|<Loader|interval=|animate-/);
 	// 状态判定保留
 	assert.match(fn, /kind = "starting"/);
 	assert.match(fn, /kind = "waiting"/);
 });
 
-test("RespondingIndicator 轮播短语文案中英同步", () => {
-	for (const suffix of ["starting1", "starting2", "starting3", "executing1", "executing2", "executing3", "responding1", "responding2", "responding3", "waiting"]) {
+test("RespondingIndicator 静态状态文案中英同步", () => {
+	for (const suffix of ["starting1", "executing1", "responding", "waiting"]) {
 		const key = `agent.loading.${suffix}`;
 		assert.match(zhCN, new RegExp(`"${key}":`));
 		assert.match(enUS, new RegExp(`"${key}":`));
