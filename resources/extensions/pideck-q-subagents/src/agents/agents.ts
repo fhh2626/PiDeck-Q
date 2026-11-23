@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, AcceptanceRole, AgentRunnerConfig, OutputMode, ToolBudgetConfig } from "../shared/types.ts";
-import { REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
+import { validateNativeRunner } from "./native-runner.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
 import { expandHomePath } from "../shared/settings.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
@@ -200,6 +200,8 @@ interface SubagentSettings {
 	disableBuiltins?: boolean;
 	disableThinking?: boolean;
 	modelScope?: ModelScopeConfig;
+	/** 在系统提示词中引导主代理优先委派复杂任务（PiDeck 右侧「子代理」弹框写入）。 */
+	preferDelegation?: boolean;
 }
 
 const EMPTY_SUBAGENT_SETTINGS: SubagentSettings = { overrides: {}, providerOverrides: {} };
@@ -1158,6 +1160,14 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 			throw new Error(`Subagent settings in '${filePath}' have invalid 'defaultProvider'; expected a non-empty string.`);
 		}
 	}
+	let preferDelegation: boolean | undefined;
+	if ("preferDelegation" in subagentsObject) {
+		if (typeof subagentsObject.preferDelegation === "boolean") {
+			preferDelegation = subagentsObject.preferDelegation;
+		} else {
+			throw new Error(`Subagent settings in '${filePath}' have invalid 'preferDelegation'; expected a boolean.`);
+		}
+	}
 	let defaultThinking: string | undefined;
 	if ("defaultThinking" in subagentsObject) {
 		if (typeof subagentsObject.defaultThinking === "string" && subagentsObject.defaultThinking.trim()) {
@@ -1208,6 +1218,7 @@ function readSubagentSettings(filePath: string | null): SubagentSettings {
 		...(disableBuiltins !== undefined ? { disableBuiltins } : {}),
 		...(disableThinking !== undefined ? { disableThinking } : {}),
 		...(modelScope !== undefined ? { modelScope } : {}),
+		...(preferDelegation !== undefined ? { preferDelegation } : {}),
 	};
 	if (agentOverrides && typeof agentOverrides === "object" && !Array.isArray(agentOverrides)) {
 		for (const [name, value] of Object.entries(agentOverrides)) {
@@ -1282,6 +1293,17 @@ function applySubagentDefaultModel(agents: AgentConfig[], defaultModel: AgentMod
 		if (frontmatterFields) agentFrontmatterFields.set(next, frontmatterFields);
 		return next;
 	});
+}
+
+/**
+ * 读取「优先委派」偏好：项目 settings 覆盖用户 settings。
+ * 供 extension/delegation-hint.ts 在 before_agent_start 里决定是否注入引导语。
+ */
+export function resolveSubagentPreferDelegation(cwd: string): boolean {
+	const user = readSubagentSettings(getUserAgentSettingsPath());
+	const projectPath = getProjectAgentSettingsPath(cwd);
+	const project = projectPath ? readSubagentSettings(projectPath) : EMPTY_SUBAGENT_SETTINGS;
+	return project.preferDelegation ?? user.preferDelegation ?? false;
 }
 
 function resolveSubagentDefaultThinking(
@@ -1853,14 +1875,6 @@ function isLegacyAgentSkillPath(rootDir: string, filePath: string): boolean {
 	return parts.some((part, index) => part === ".agents" && parts[index + 1] === "skills");
 }
 
-function isJsonSerializable(value: unknown): boolean {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-	if (typeof value === "number") return Number.isFinite(value);
-	if (Array.isArray(value)) return value.every(isJsonSerializable);
-	if (value && typeof value === "object") return Object.values(value).every(isJsonSerializable);
-	return false;
-}
-
 function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string): AgentRunnerConfig | undefined {
 	if (raw === undefined || !raw.trim()) return undefined;
 	let parsed: unknown;
@@ -1872,61 +1886,7 @@ function parseAgentRunnerFrontmatter(raw: string | undefined, agentName: string)
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		throw new Error(`Agent '${agentName}' has invalid runner frontmatter; expected an object.`);
 	}
-	const runner = parsed as Record<string, unknown>;
-	if (runner.type === "pi") {
-		if (Object.keys(runner).some((key) => key !== "type")) throw new Error(`Agent '${agentName}' has invalid Pi runner frontmatter; only 'type' is supported.`);
-		return { type: "pi" };
-	}
-	if (runner.type === "external-job") {
-		if (typeof runner.provider !== "string" || !runner.provider.trim() || runner.provider.trim() !== runner.provider) {
-			throw new Error(`Agent '${agentName}' external-job runner requires a non-empty trimmed provider string.`);
-		}
-		if (runner.options !== undefined && (!runner.options || typeof runner.options !== "object" || Array.isArray(runner.options) || !isJsonSerializable(runner.options))) {
-			throw new Error(`Agent '${agentName}' external-job runner options must be a JSON-serializable object.`);
-		}
-		const supported = new Set(["type", "provider", "options"]);
-		const unknown = Object.keys(runner).filter((key) => !supported.has(key));
-		if (unknown.length > 0) throw new Error(`Agent '${agentName}' external-job runner has unsupported fields: ${unknown.join(", ")}.`);
-		return {
-			type: "external-job",
-			provider: runner.provider,
-			...(runner.options ? { options: runner.options as Record<string, unknown> } : {}),
-		};
-	}
-	if (runner.type !== "external-cli") {
-		throw new Error(`Agent '${agentName}' has invalid runner.type; expected 'pi', 'external-cli', or 'external-job'.`);
-	}
-	if (typeof runner.command !== "string" || !runner.command.trim()) {
-		throw new Error(`Agent '${agentName}' external-cli runner requires a non-empty command string.`);
-	}
-	if (runner.args !== undefined && (!Array.isArray(runner.args) || runner.args.some((arg) => typeof arg !== "string"))) {
-		throw new Error(`Agent '${agentName}' external-cli runner args must be an array of strings.`);
-	}
-	if (runner.adapter !== undefined) throw new Error(`Agent '${agentName}' external-cli runner adapter is not supported. ${REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE}`);
-	if (runner.promptDelivery !== undefined && runner.promptDelivery !== "stdin") {
-		throw new Error(`Agent '${agentName}' external-cli runner promptDelivery must be 'stdin'.`);
-	}
-	const capabilities = parseExternalCliCapabilityNarrowing(runner.capabilities, `Agent '${agentName}' external-cli runner capabilities`);
-	const supported = new Set(["type", "adapter", "command", "args", "promptDelivery", "capabilities"]);
-	const unknown = Object.keys(runner).filter((key) => !supported.has(key));
-	if (unknown.length > 0) throw new Error(`Agent '${agentName}' external-cli runner has unsupported fields: ${unknown.join(", ")}.`);
-	const runnerArgs = Array.isArray(runner.args) ? runner.args.filter((arg): arg is string => typeof arg === "string") : undefined;
-	return {
-		type: "external-cli",
-		command: runner.command.trim(),
-		...(runnerArgs?.length ? { args: runnerArgs } : {}),
-		...(runner.promptDelivery ? { promptDelivery: "stdin" as const } : {}),
-		...(capabilities ? { capabilities } : {}),
-	};
-}
-
-function validateExternalRunnerProfile(frontmatter: Record<string, string>, agentName: string, runner: AgentRunnerConfig | undefined): void {
-	if (runner?.type !== "external-cli" && runner?.type !== "external-job") return;
-	const unsupported = ["tools", "excludeTools", "allowNestedSubagents", "model", "fallbackModels", "thinking", "extensions", "subagentOnlyExtensions", "mutationTools", "maxSubagentDepth", "completionGuard", "skills", "skill", "skillPath", "toolBudget", "permission", "permissions"]
-		.filter((field) => frontmatter[field] !== undefined);
-	if (unsupported.length > 0) {
-		throw new Error(`Agent '${agentName}' uses runner.type='${runner.type}' and declares unsupported Pi-only fields: ${unsupported.join(", ")}.`);
-	}
+	return validateNativeRunner(parsed, `Agent '${agentName}' runner`);
 }
 
 function parseAgentAcceptanceFrontmatter(raw: string | undefined, agentName: string): AcceptanceInput | undefined {
@@ -1999,7 +1959,6 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 		runtimeName = buildRuntimeName(localName, packageName);
 
 		const runner = parseAgentRunnerFrontmatter(frontmatter.runner, localName);
-		validateExternalRunnerProfile(frontmatter, localName, runner);
 		let advertise: boolean | undefined;
 		if (frontmatter.advertise !== undefined) {
 			if (frontmatter.advertise === "true") advertise = true;
@@ -2015,8 +1974,6 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 		const excludeTools = parseFrontmatterList(frontmatter.excludeTools);
 		const defaultReads = parseFrontmatterList(frontmatter.defaultReads);
 		const aliases = normalizeAgentAliases(parseFrontmatterList(frontmatter.aliases ?? frontmatter.alias), runtimeName);
-		const profileError = validateCodeOwnedProfileRunner({ name: runtimeName, localName, aliases, runner });
-		if (profileError) throw new Error(profileError);
 		const skillStr = frontmatter.skill || frontmatter.skills;
 		const skills = parseFrontmatterList(skillStr);
 		const skillPath = parseFrontmatterList(frontmatter.skillPath);
@@ -2044,15 +2001,16 @@ function loadAgentsFromDefinitionFiles(files: AgentDefinitionFile[], source: Age
 				: undefined;
 		let defaultAsync: boolean | undefined;
 		if (frontmatter.async !== undefined) {
-			if (frontmatter.async === "true") defaultAsync = true;
+			// Read legacy background defaults as foreground without rewriting user files.
+			if (frontmatter.async === "true") defaultAsync = false;
 			else if (frontmatter.async === "false") defaultAsync = false;
 			else throw new Error(`Agent '${localName}' has invalid async frontmatter; expected true or false.`);
 		}
 		let defaultTimeoutMs: number | undefined;
 		if (frontmatter.timeoutMs !== undefined) {
 			const parsed = Number(frontmatter.timeoutMs);
-			if (!Number.isInteger(parsed) || parsed <= 0) {
-				throw new Error(`Agent '${localName}' has invalid timeoutMs frontmatter; expected a positive integer.`);
+			if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+				throw new Error(`Agent '${localName}' has invalid timeoutMs frontmatter. Expected a positive integer no larger than 2147483647.`);
 			}
 			defaultTimeoutMs = parsed;
 		}

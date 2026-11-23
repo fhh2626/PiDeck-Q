@@ -1,135 +1,87 @@
-<p>
-  <img src="https://raw.githubusercontent.com/nicobailon/pi-subagents/main/banner.png" alt="pi-subagents" width="1100">
-</p>
+# PiDeck-Q Subagents
 
-# pi-subagents
+This bundled extension lets the parent Pi session delegate focused work to native Pi child sessions. It supports investigation, implementation, parallel review, scripted workflows, and supervised follow-up while PiDeck-Q keeps the live child state visible.
 
-`pi-subagents` lets Pi delegate work to focused child agents. Use it for code review, investigation, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
+## Try it
 
-<https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1>
-
-## Install
-
-```bash
-pi install npm:pi-subagents
-```
-
-That is the only required step. Background children require pi installed as the npm package (`@earendil-works/pi-coding-agent`): the detached runner imports pi's packages from that package directory. A standalone single-file pi binary has no package directory and cannot run background children; foreground children (`async: false`) still work there.
-
-## Try this first
-
-You do not need to create agents, write config, or learn slash commands. After installing, ask Pi in plain language:
+Ask the parent in ordinary language.
 
 ```text
 Use a readonly subagent to review this diff.
 ```
 
 ```text
-Ask a readonly subagent for a second opinion on my current plan. Challenge assumptions and tell me what I might be missing.
+Run parallel reviewers for correctness, tests, and unnecessary complexity.
 ```
 
 ```text
-Use a readonly subagent to understand this code based on our discussion, then ask me clarification questions.
+Have a writable subagent implement this plan, then run fresh readonly reviewers and apply the accepted fixes.
 ```
 
-```text
-Run parallel reviewers: one for correctness, one for tests, and one for unnecessary complexity.
-```
+The parent chooses the agent and composes the workflow. A single task uses `{ agent, task }`. Sequential and parallel work use `workflowScript` with `runs.run(...)`, `runs.all(...)`, or `runs.lanes(...)`.
 
-That is enough to start. Pi decides whether to call the `subagent` tool, which agent to use, and how to compose the work.
+## Execution and supervision
 
-## How it works
+Children run in the foreground inside the parent Pi process. Omit `async` or set it to `false`. The public tool and workflow child calls reject `async: true`.
 
-Pi is the parent session. A subagent is a focused child Pi session with its own job.
+Every 600 seconds, native run supervision asks the parent for a `CONTINUE` or `STOP` decision. `CONTINUE` keeps the existing child and any explicit deadline. An unanswered check continues the child under the existing supervision policy. `STOP` cancels the child through its owned runtime controls.
 
-When you ask for a subagent, Pi starts the child, gives it the task, and brings the result back. Foreground children run as sessions inside the parent Pi process and stream in the conversation. Background children run as sessions inside a detached runner process that keeps working and can be checked later.
+When a child needs a supervisor decision, the foreground workflow returns a `needs_attention` handoff so the parent can answer. The original JavaScript VM, child sessions, deadlines, and sequential dependencies remain live.
 
-### Supervisor decisions in foreground workflows
+1. Read the current question and request id with `subagent_supervisor({ action: "pending" })`. A queued notification may be stale. If a child explicitly uses an installed intercom provider, inspect that provider's pending requests.
+2. Reply to the current request id. The same workflow continues and waits for the child's final result before executing dependent stages.
+3. Read `subagent({ action: "status", id: "<workflow-id>" })` or wait with `bg_wait({ id: "<workflow-id>" })`. Completion also sends a parent notification.
 
-When a child needs a supervisor decision, a foreground workflow returns an explicit `needs_attention` handoff immediately so the parent can answer. The original in-memory JavaScript VM, child sessions, deadlines, and sequential dependencies remain live; this is not an empty task result or a new background runner.
+A handoff does not make the live workflow resumable. Do not replay it, call `resume` on it, or launch a replacement writer while its children are live. `interrupt` and `stop` can cancel retained foreground work. Ownership is released after child exit is confirmed. Changing the parent session or reloading the extension aborts the retained continuation. At most 50 live or retained foreground workflows are held, with terminal entries evicted first.
 
-1. Inspect the indicated provider's pending requests for the authoritative question and current request id: `subagent_supervisor({ action: "pending" })` for native supervisor questions, or `intercom({ action: "pending" })` for external intercom questions. A queued notification can be stale.
-2. Reply to that id. The original workflow continues with the child's authoritative exit result; later stages do not consume a provisional detach receipt.
-3. Use `subagent({ action: "status", id: "<workflow-id>" })` or `bg_wait({ id: "<workflow-id>" })` for the final output. New decisions interrupt waits even with `all: true` or `stopOnAttention: false`. Completion also sends a notification.
-
-Do not resume/replay the workflow or start a replacement writer while its children are live. `interrupt` or `stop` can cancel the retained workflow, but child ownership is released only on confirmed child exit. Continuations are memory-only: changing the parent session or reloading the extension aborts them rather than replaying old code. At most 50 live/retained foreground workflows are held; terminal entries are evicted first.
-
-External attention is tied to the owned intercom tool call and clears when that call settles; an old tool completion cannot clear a later ask. Mixed waits preserve async/provider completions and failure evidence alongside foreground output. A live retained VM keeps a compatible host session alive even between model children; terminal history does not pin the session.
-
-Workflow cleanup waits at most one second for host/steer callbacks after abort. If a callback ignores cancellation, the failure explicitly warns that the operation may still be live; inspect it before retrying rather than assuming timeout means successful termination. Read-only agents report checks that would write files as verification limitations instead of repeatedly asking for permission to break their role.
-
-Installing the extension does not start an automatic review in the background. It gives Pi a delegation tool. If you want every implementation reviewed, say so in your prompt or project instructions:
-
-```text
-When you finish implementing, run a readonly review subagent before summarizing.
-```
+`bg_wait` tracks retained foreground workflows and detached foreground children. `all: true` waits for the initially tracked work, while new supervisor questions still return control to the parent. `nonBlocking: true` registers a wake subscription for one supported run identity. Normal subagent completion notifications remain available without a subscription.
 
 ## Builtin agents
 
-The extension ships with two agents:
+| Agent | Purpose |
+| --- | --- |
+| `readonly` | Investigation, research, and review. It cannot edit files, and its prompt forbids file-modifying shell commands. |
+| `writable` | Implementation and commands. This is the default when a launch omits the agent name. |
 
-| Agent | Use it when you want... |
-|-------|--------------------------|
-| `readonly` | Investigation, review, and research. Cannot edit or write files; its prompt also forbids file-modifying shell commands. |
-| `writable` | The default. Edits files and runs commands. Used whenever a launch does not name an agent. |
+Both inherit the parent model and thinking level and default to forked conversation context. Use `context: "fresh"` for an independent review. Custom profiles can select tools, models, context, output paths, and explicit extensions. All executable profiles use native Pi sessions.
 
-Both inherit the parent session's tools, model, and thinking level, and start with the parent conversation (`context: "fork"`). Ask for `context: "fresh"` when you want an independent review or verification. See [Agents](docs/agents.md).
+The subagents extension owns child environment policy, child tool gates, supervisor coordination, and workflow validation. The prompt optimizer only transforms the main prompt. See [Agents](docs/agents.md) and [Models](docs/models.md).
+
 ## Common workflows
 
-The package includes `/council` and `council-mode`, plus documented model-based
-`council-*` profile examples that you add in your own agent directory.
+| Goal | Prompt or command |
+| --- | --- |
+| Inspect a design | Ask a readonly child to challenge the current plan. |
+| Implement and review | Use one writable child, then fresh readonly reviewers. |
+| Review until clean | Use `/review-loop` with a bounded number of rounds. |
+| Compare a material decision | Use `/council` with native model-based advisor profiles. |
+| Review several areas | Use `/parallel-review` with distinct review angles. |
+| Inspect available agents | `subagent({ action: "list" })` |
+| Inspect active work | `subagent({ action: "status" })` or `/subagents-fleet` |
+| Diagnose setup | `/subagents-doctor` |
 
-| Want | Ask naturally |
-|------|---------------|
-| Get a second opinion | "Ask a readonly subagent to review this plan and challenge assumptions." |
-| Solve a hard problem | "Use a readonly subagent to investigate this bug before we edit." |
-| Review a diff | "Use a readonly subagent to review this diff." |
-| Run parallel reviewers | "Run reviewers for correctness, tests, and cleanup." |
-| Debate a material decision | "Use `/council` with model-based advisors to compare this decision." |
-| Implement then review | "Implement this, then review it." |
-| Review until clean | "Run a review loop on this change with a max of 3 rounds." |
-| Execute a plan carefully | "Have a writable subagent implement this approved plan, then run readonly reviewers and apply the feedback." |
-| Investigate before planning | "Use a readonly subagent to inspect the auth flow before planning." |
-| Run in the background | "Run this in the background." |
-| Use a saved workflow | "Run the review chain on this branch." |
-| Browse agents | "Show me the available subagents." |
-| See running work | "Show active async runs." or "Show the subagent fleet." |
-| Check setup | "Check whether subagents are configured correctly." |
+Keep one writer per working directory unless independent worktrees are explicitly part of the workflow. Readonly children should report checks that require writes as validation limitations.
 
-For implementation work, the recommended loop is `clarify → readonly scan → writable → fresh readonly reviewers → writable`. Packaged prompt shortcuts like `/parallel-review` and `/review-loop` make these patterns repeatable — see [Workflows](https://github.com/nicobailon/pi-subagents/blob/main/docs/workflows.md).
+## Status, controls, and follow-up
 
-## Where running work shows up
+Foreground runs stream progress into the conversation. FleetView and the fleet inspector expose child activity and controls. Use `status` for run details and `steer` for live guidance. A direct foreground child uses `interrupt` or a supervisor `STOP` decision for cancellation. Retained workflow roots and their active children also support `stop`.
 
-Foreground runs stream progress in the conversation. Background runs keep working after control returns to you.
+After a child settles, `children.list` reports whether it is resumable. A supported native `resume` starts a foreground continuation from the retained session under the same model and tool contract. Stopped children remain non-resumable. A live supervisor handoff continues through its pending request and retained VM.
 
-In the TUI, a persistent FleetView below the editor keeps active work visible. `/subagents-fleet` opens a live inspector where you can browse children, read transcripts, steer a running child, or stop a run. You can also just ask: "Show me the current async runs."
+`maxSubagentSpawnsPerRun` defaults to 64 logical children in a run tree. This budget is separate from active concurrency and the optional cumulative session budget.
 
-Details, keybindings, and the machine-readable run artifacts are in [Observability](https://github.com/nicobailon/pi-subagents/blob/main/docs/observability.md).
+## Packaged guides
 
-For bounded orchestration, `maxSubagentSpawnsPerRun` limits cumulative logical children in one run tree. It defaults to 64 and stays separate from active concurrency and the session-wide cumulative spawn budget. See [Configuration](https://github.com/nicobailon/pi-subagents/blob/main/docs/configuration.md#maxsubagentspawnsperrun).
+Use `/subagents-guide [topic]` or `subagent({ action: "guide", topic: "workflows" })` to read the installed version's guide. The default topic is `overview`.
 
-## If something feels off
-
-```text
-/subagents-doctor
-```
-
-or ask: "Check whether subagents and intercom are set up correctly."
-
-For installed-version help, use `/subagents-guide [topic]` or `subagent({ action: "guide", topic: "workflows" })`. The default topic is `overview`; available topics are `overview`, `workflows`, `agents`, `missions`, `observability`, `tool-reference`, `configuration`, `models`, `watchdog`, and `extension-api`.
-
-## Documentation
-
-The full reference lives in `docs/`:
-
-| Doc | What's in it |
-|-----|--------------|
-| [Agents](https://github.com/nicobailon/pi-subagents/blob/main/docs/agents.md) | Custom agents, frontmatter reference, overriding builtins, tools, extensions, skills, per-agent memory. |
-| [Models](https://github.com/nicobailon/pi-subagents/blob/main/docs/models.md) | Default models, per-role overrides, recommended tiering, fallbacks, thinking levels, model scope enforcement, profiles. |
-| [Workflows](https://github.com/nicobailon/pi-subagents/blob/main/docs/workflows.md) | Orchestration patterns, prompt shortcuts, scripted workflows, worktree isolation, child-to-parent coordination, the recursion guard. |
-| [Watchdog](https://github.com/nicobailon/pi-subagents/blob/main/docs/watchdog.md) | The opt-in adversarial change reviewer, scope monitoring, LSP checks, and child tool permissions. |
-| [Tool reference](https://github.com/nicobailon/pi-subagents/blob/main/docs/tool-reference.md) | Every `subagent` parameter, management actions, status/control actions, acceptance gates, external CLI runners. |
-| [Observability](https://github.com/nicobailon/pi-subagents/blob/main/docs/observability.md) | FleetView, the fleet inspector, lifecycle artifacts, events, logs, session sharing. |
-| [Missions and schedules](https://github.com/nicobailon/pi-subagents/blob/main/docs/missions.md) | Durable mission records, delivery receipts, timed and recurring runs. |
-| [Configuration](https://github.com/nicobailon/pi-subagents/blob/main/docs/configuration.md) | Every `config.json` key and environment variable. |
-| [Extension API](https://github.com/nicobailon/pi-subagents/blob/main/docs/extension-api.md) | The RPC, delegation API, preflight, capability ceilings, [trusted workflow resources](docs/extension-api.md#trusted-workflow-resources), background-work providers, Herdr integration. |
+| Guide | Contents |
+| --- | --- |
+| [Agents](docs/agents.md) | Custom profiles, frontmatter, tools, skills, extensions, and memory. |
+| [Models](docs/models.md) | Model selection, fallbacks, thinking, and profiles. |
+| [Workflows](docs/workflows.md) | Sequential and parallel composition, worktrees, and supervisor handoffs. |
+| [Watchdog](docs/watchdog.md) | Optional change review, scope checks, and child tool permissions. |
+| [Tool reference](docs/tool-reference.md) | Execution parameters, management, status, controls, and acceptance gates. |
+| [Observability](docs/observability.md) | FleetView, progress, lifecycle artifacts, and logs. |
+| [Missions](docs/missions.md) | Durable work records and delivery receipts. |
+| [Configuration](docs/configuration.md) | Supported settings and environment variables. |
+| [Extension API](docs/extension-api.md) | Control RPC, delegation, preflight, capability ceilings, and trusted workflow resources. |

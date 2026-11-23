@@ -1,10 +1,13 @@
 #include "ClipboardController.h"
 #include "FileDropController.h"
 #include "HostRpcServer.h"
-#include "NodeProcessController.h"
+#include "BackendProcessController.h"
 #include "StartupWindowBounds.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -143,6 +146,64 @@ bool require(bool condition, const char *message)
 int main(int argc, char **argv)
 {
     QCoreApplication application(argc, argv);
+    // A child of the real controller records only its selected home. It never
+    // opens a session or a user's agent directory.
+    if (argc == 3 && QString::fromLocal8Bit(argv[1]) == QLatin1String("--capture-home")) {
+        QFile result(QString::fromLocal8Bit(argv[2]));
+        if (!result.open(QIODevice::WriteOnly)) return 2;
+        // Keep the capture incomplete briefly so waiting only for file creation
+        // deterministically exercises the parent's publication race.
+        QThread::msleep(50);
+        const QByteArray home = qgetenv("PIDECK_HOME");
+        return result.write(home) == home.size() && result.flush() ? 0 : 3;
+    }
+    // Keep the lifecycle fixture alive on every supported platform until the
+    // parent exercises the controller's shutdown and forced cleanup paths.
+    if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QLatin1String("--wait-for-stop")) {
+        return application.exec();
+    }
+    for (const bool explicitHome : {true, false}) {
+        QTemporaryDir fixture;
+        if (!require(fixture.isValid(), "home isolation fixture unavailable")) return 1;
+        const QByteArray previous = qgetenv("PIDECK_HOME");
+        const QString isolatedHome = fixture.filePath(QStringLiteral("agent-home"));
+        if (explicitHome) qputenv("PIDECK_HOME", isolatedHome.toUtf8());
+        else qunsetenv("PIDECK_HOME");
+        HostRpcServer host;
+        if (!require(host.start(), "home isolation host unavailable")) return 1;
+        NativePaths paths;
+        paths.applicationDir = QCoreApplication::applicationDirPath();
+        paths.sidecarExecutable = QCoreApplication::applicationFilePath();
+        paths.userDataDir = fixture.path();
+        const QString captured = fixture.filePath(QStringLiteral("home.txt"));
+        paths.sidecarArguments = {QStringLiteral("--capture-home"), captured};
+        BackendProcessController controller(paths, &host);
+        if (!require(controller.start(), "home capture process failed")) return 1;
+        // Creating the file does not publish its contents. Child completion is
+        // the boundary at which both its write and QFile cleanup have finished.
+        QProcess *const child = controller.process();
+        const bool finished = !controller.isRunning() || child->waitForFinished(2'000);
+        if (previous.isNull()) qunsetenv("PIDECK_HOME"); else qputenv("PIDECK_HOME", previous);
+        if (!require(finished && child->exitStatus() == QProcess::NormalExit && child->exitCode() == 0,
+                     "home capture process did not complete successfully")) return 1;
+        QFile result(captured);
+        const bool opened = result.open(QIODevice::ReadOnly);
+        const QByteArray actual = opened ? result.readAll() : QByteArray();
+        const QString expected = explicitHome ? isolatedHome : QDir::homePath();
+        if (!require(opened && actual == expected.toUtf8(),
+                     "backend launch did not preserve the explicit home or the normal default")) return 1;
+    }
+    {
+        const QByteArray previous = qgetenv("PIDECK_REGISTER_DESKTOP_INTEGRATION");
+        qunsetenv("PIDECK_REGISTER_DESKTOP_INTEGRATION");
+        const bool defaultRegistration = NativePaths::fromEnvironment().registerDesktopIntegration;
+        qputenv("PIDECK_REGISTER_DESKTOP_INTEGRATION", "0");
+        const bool isolatedRegistration = NativePaths::fromEnvironment().registerDesktopIntegration;
+        if (previous.isNull()) qunsetenv("PIDECK_REGISTER_DESKTOP_INTEGRATION");
+        else qputenv("PIDECK_REGISTER_DESKTOP_INTEGRATION", previous);
+        if (!require(defaultRegistration && !isolatedRegistration,
+                     "isolated native hosts must opt out of real desktop registration without changing the default")) return 1;
+    }
     QMimeData mimeData;
     mimeData.setUrls({QUrl::fromLocalFile(QStringLiteral("C:/one/same.txt")),
                       QUrl::fromLocalFile(QStringLiteral("D:/two/same.txt"))});
@@ -225,9 +286,15 @@ int main(int argc, char **argv)
     if (!require(!rejected.value(QStringLiteral("ok")).toBool(), "invalid token was accepted")) return 1;
     if (!require(candidate.waitForDisconnected(), "invalid candidate remained connected")) return 1;
 
-    FrameClient pending(server.port());
+    // Exercise the real timer/transport with a short injected deadline; retain a
+    // separate assertion for the production security deadline.
+    if (!require(HostRpcServer::defaultHelloTimeoutMs() == 5'000,
+                 "production handshake timeout changed")) return 1;
+    HostRpcServer deadlineServer(nullptr, 50);
+    if (!require(deadlineServer.start(), "deadline server failed to listen")) return 1;
+    FrameClient pending(deadlineServer.port());
     if (!require(pending.connect(), "pending authentication client failed to connect")) return 1;
-    if (!require(pending.waitForDisconnected(6'000),
+    if (!require(pending.waitForDisconnected(2'000),
                  "unauthenticated client was not closed after the handshake timeout")) return 1;
 
     std::vector<std::unique_ptr<FrameClient>> pendingClients;
@@ -267,10 +334,11 @@ int main(int argc, char **argv)
     }, nullptr), "event was not delivered to authenticated connection")) return 1;
 
     NativePaths processPaths;
-    processPaths.nodeExecutable = qEnvironmentVariable("ComSpec", QStringLiteral("cmd.exe"));
-    processPaths.nativeNodeEntry = QStringLiteral("/k");
-    NodeProcessController processController(processPaths, &server);
-    if (!require(processController.start(), "NodeProcessController test process failed to start")) return 1;
+    processPaths.applicationDir = QCoreApplication::applicationDirPath();
+    processPaths.sidecarExecutable = QCoreApplication::applicationFilePath();
+    processPaths.sidecarArguments = QStringList{QStringLiteral("--wait-for-stop")};
+    BackendProcessController processController(processPaths, &server);
+    if (!require(processController.start(), "BackendProcessController test process failed to start")) return 1;
     int stopCallbacks = 0;
     processController.stopAsync([&stopCallbacks] { ++stopCallbacks; });
     processController.stopAsync([&stopCallbacks] { ++stopCallbacks; });
@@ -282,10 +350,10 @@ int main(int argc, char **argv)
     }
     if (!require(stopCallbacks == 2, "all asynchronous stop callbacks were not delivered")) return 1;
     if (!require(!processController.isRunning(), "stop callback fired before sidecar process exit")) return 1;
-    if (!require(processController.start(), "NodeProcessController failed to restart after process exit")) return 1;
-    if (!require(processController.isRunning(), "restarted NodeProcessController is not running")) return 1;
+    if (!require(processController.start(), "BackendProcessController failed to restart after process exit")) return 1;
+    if (!require(processController.isRunning(), "restarted BackendProcessController is not running")) return 1;
     processController.stop();
-    if (!require(!processController.isRunning(), "restarted NodeProcessController did not stop")) return 1;
+    if (!require(!processController.isRunning(), "restarted BackendProcessController did not stop")) return 1;
 
     FrameClient replacement(server.port());
     if (!require(replacement.connect(), "replacement client failed to connect")) return 1;

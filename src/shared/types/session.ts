@@ -1,3 +1,7 @@
+/** An explicit recycle-bin refusal is the only result eligible for user-confirmed retry. */
+export type SessionDeleteResult = boolean | { status: "trash-failed" };
+export type SessionDeleteOptions = { permanent: boolean };
+
 export type ChatRole = "user" | "assistant" | "tool" | "system" | "error";
 
 export type I18nParams = Record<string, string | number | boolean | null | undefined>;
@@ -175,17 +179,6 @@ export type ImageContent = {
 	mimeType: string; // 如 "image/png", "image/jpeg", "image/gif", "image/webp"
 };
 
-export type ContextControllerState = {
-	/** 丢掉全部 toolCall + toolResult（早于最近 keepRecentCount 条的调用） */
-	clearToolHistory: boolean;
-	/** stub read 正文（早于最近 keepRecentCount 条的调用） */
-	clearReadContent: boolean;
-	/** stub 非 read 正文（早于最近 keepRecentCount 条的调用） */
-	clearCommandContent: boolean;
-	/** 保留最近 N 条工具结果原文不裁剪（默认 10，范围 0-99） */
-	keepRecentCount: number;
-};
-
 export type SendPromptInput = {
 	agentId: string;
 	message: string;
@@ -232,11 +225,35 @@ export type SessionRuntimeEvent = {
 	payload: unknown;
 };
 
+/** Identifies the authoritative replacement shared by history mutation replies and timeline events. */
+export type SessionHistoryMutationProjection = {
+	historyMutationRevision?: number;
+};
+
+/** Coordinates of a full runtime window, excluding one-shot SSE-only flags. */
+export type SessionRuntimeMessageWindow = SessionHistoryMutationProjection & {
+	totalLength?: number;
+	windowStart?: number;
+	windowStartFilePos?: number;
+};
+
 export type SessionRuntimeTarget = {
 	sessionId: string;
 	agentId: string;
 	runtimeGeneration: number;
 };
+
+/** Persisted-history intent captured while a session has no usable process. */
+export type SessionHistoryMessageTarget = {
+	kind: "history";
+	sessionId: string;
+	filePath: string;
+	runtimeGeneration: number;
+	agentId?: undefined;
+};
+
+/** UI intent only. History targets must become a fresh runtime target before IPC. */
+export type SessionMessageCommandTarget = SessionRuntimeTarget | SessionHistoryMessageTarget;
 
 export type SessionRuntimeInfo = SessionRuntimeTarget & {
 	projectId: string;
@@ -259,7 +276,8 @@ export type SessionCommandErrorCode =
 	| "SESSION_RUNTIME_CHANGED"
 	| "SESSION_RUNTIME_BUSY"
 	| "SESSION_COMMAND_FAILED"
-	| "SESSION_MODEL_NOT_FOUND";
+	| "SESSION_MODEL_NOT_FOUND"
+	| "SESSION_MODEL_REQUIRED";
 
 export type SessionCommandError = {
 	code: SessionCommandErrorCode;

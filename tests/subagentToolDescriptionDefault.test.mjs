@@ -192,10 +192,12 @@ test("built-in default description embeds the missing safety guidance", () => {
 	const module = loadDescriptionModule();
 	// 这些内容原先只在强制安全块里；默认描述也必须覆盖，否则没有 custom 文件时会退回弱化版本。
 	for (const phrase of [
-		"background children are unavailable",
+		"Independent background launches are unavailable",
+		"every 600 seconds",
+		"CONTINUE or STOP",
 		"Each workflow key identifies one result lane",
 		"not orchestrators",
-		"status.json",
+		"run id",
 		"Use the 'readonly' agent",
 		"For expert consultation",
 	]) {

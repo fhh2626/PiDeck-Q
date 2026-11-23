@@ -12,7 +12,8 @@ import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
 import { createSubagentParamsSchema } from "./schemas.ts";
 import { finalizeToolResult } from "./tool-result.ts";
-import { loadConfig, resolveAsyncByDefault } from "./config.ts";
+import { loadConfig } from "./config.ts";
+import { prepareCapturedChildDelegation } from "../policy/environment/runtime.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
@@ -161,7 +162,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI, c
 		pi,
 		state,
 		config,
-		asyncByDefault: resolveAsyncByDefault(config),
+		prepareEnvironment: (params, ctx) => prepareCapturedChildDelegation(pi, params, ctx),
 		waitToolEnabled: waitToolConfig.enabled,
 		waitToolDefaultTimeoutMs: waitToolConfig.defaultTimeoutMs,
 		tempArtifactsDir: getArtifactsDir(null),

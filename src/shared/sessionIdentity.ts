@@ -71,7 +71,7 @@ function isAbsolutePath(filePath: string, environment: SessionEnvironment): bool
 /**
  * Windows 盘符路径 → WSL /mnt/<drive>/… 基址（仅覆盖 WslPaths.toWslLinuxPath 的盘符分支；
  * 已以 / 开头的路径原样返回，无法识别的路径原样返回由调用方兜底）。
- * 与 `src/main/wsl/WslPaths.ts` 保持同一换算语义。
+ * 与原生后端的 WSL 路径转换保持同一语义。
  */
 function windowsPathToWslBase(path: string): string {
 	const drive = path.match(/^([A-Za-z]):(?:[\\/](.*))?$/);

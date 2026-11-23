@@ -9,7 +9,7 @@ const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
 test("native package exposes a complete reproducible build chain", () => {
 	assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 	assert.equal(packageLock.packages[""].version, packageJson.version);
-	for (const script of ["build:renderer", "build:node", "build:native", "test", "typecheck", "dist:win"]) {
+	for (const script of ["build:renderer", "build:webfetch", "build:native", "test", "typecheck", "dist:win"]) {
 		assert.equal(typeof packageJson.scripts?.[script], "string", `missing npm script: ${script}`);
 	}
 	assert.equal(packageJson.main, undefined);
@@ -66,10 +66,10 @@ test("native Windows distribution keeps staging independent from NSIS", () => {
 
 test("packaged built-in extensions receive undici beside their own files", () => {
 	const xmake = readFileSync("xmake.lua", "utf8");
-	const runtimeStager = readFileSync("scripts/stage-native-runtime.mjs", "utf8");
-	assert.match(xmake, /stage-native-runtime\.mjs/);
-	assert.match(runtimeStager, /resources.*extensions.*node_modules.*undici/s);
-	assert.match(runtimeStager, /node_modules.*node-pty/s);
+	const runtimeStager = readFileSync("scripts/stage-extension-dependencies.mjs", "utf8");
+	assert.match(xmake, /stage-extension-dependencies\.mjs/);
+	assert.match(runtimeStager, /stageUndiciAt/);
+	assert.doesNotMatch(runtimeStager, /node-pty/);
 	const verifier = readFileSync("scripts/verify-build-artifacts.mjs", "utf8");
 	assert.match(verifier, /resources.*extensions.*node_modules.*undici.*package\.json/s);
 });

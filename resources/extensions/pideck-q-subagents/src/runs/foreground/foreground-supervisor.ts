@@ -4,6 +4,8 @@ import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, SUPERVIS
 export function createForegroundSupervisorBridge(input: {
 	events?: IntercomEventBus;
 	enabled: boolean;
+	/** Automatic native reviews remain usable when the optional conversational bridge is off. */
+	runSupervisionEnabled?: boolean;
 	runId?: string;
 	agent: string;
 	childIndex: number;
@@ -19,12 +21,14 @@ export function createForegroundSupervisorBridge(input: {
 		input.events?.emit(SUPERVISOR_REQUEST_SETTLED_EVENT, { requestId, runId: input.runId, agent: input.agent, childIndex: input.childIndex, source: "external", lifecycle });
 	};
 	const unsubscribe = input.events?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-		if (disposed || !input.enabled || !input.isLive() || !payload || typeof payload !== "object") return;
+		if (disposed || !input.isLive() || !payload || typeof payload !== "object") return;
 		if (!("requestId" in payload) || typeof payload.requestId !== "string" || !payload.requestId) return;
 		if ("runId" in payload && payload.runId !== input.runId) return;
 		if ("agent" in payload && payload.agent !== input.agent) return;
 		if ("childIndex" in payload && payload.childIndex !== input.childIndex) return;
 		const native = "source" in payload && payload.source === "native";
+		const runtimeReview = native && "replyFormat" in payload && payload.replyFormat === "run_decision";
+		if (!input.enabled && !(runtimeReview && input.runSupervisionEnabled)) return;
 		let toolKey: string | undefined;
 		if (native) {
 			// Native requests are settled by the native channel, and must name their owner in full.

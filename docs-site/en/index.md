@@ -4,7 +4,7 @@ layout: home
 hero:
   name: PiDeck-Q
   text: Desktop Workbench for the Pi Family of Agents
-  tagline: Manage original Pi Agent, Pi_Agent_Rust and Pi-Bolt sessions, configs, Git and terminals in a native Qt workspace. The current build pipeline is Windows-first; other platform artifacts depend on actual releases.
+  tagline: Manage original Pi Agent and Pi-Bolt sessions, configs, Git and terminals in a native Qt workspace. The current build pipeline is Windows-first; other platform artifacts depend on actual releases.
   actions:
     - theme: brand
       text: Download Latest
@@ -18,7 +18,7 @@ hero:
 
 features:
   - title: Multi-Project Workspace
-    details: Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent, Pi_Agent_Rust or Pi-Bolt.
+    details: Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent or Pi-Bolt.
   - title: Session History & Restore
     details: Restore previous conversations, browse tool calls and answers by timeline, and review file changes in past sessions. Import Codex and Claude sessions.
   - title: Git Integration
@@ -34,7 +34,7 @@ features:
   - title: Built-in Terminal Dock
     details: Agent-scoped terminal tabs with PowerShell/cmd/sh fallback, multiple tabs, theme switching, height resizing, and right-click copy.
   - title: Native Build
-    details: Qt6/QtWebView and a Node Sidecar. Check actual GitHub release files; ordinary browser UI preview is available for development.
+    details: Qt6/QtWebView host with a native C++ business backend; the portable package ships no Node.js runtime. Check actual GitHub release files; ordinary browser UI preview is available for development.
 ---
 
 <script setup>
@@ -42,14 +42,14 @@ import { useData } from 'vitepress'
 const { theme } = useData()
 </script>
 
-Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck](https://github.com/ayuayue/PiDeck). It uses a Qt6/QtWebView host and a Node Sidecar, not Electron. Agent behavior remains in the selected runtime. See [Changelog](/en/changelog) for separately labeled upstream history.
+Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck](https://github.com/ayuayue/PiDeck). It uses a Qt6/QtWebView host with a native C++ business backend (no bundled Node.js runtime), not Electron. Agent behavior remains in the selected runtime. See [Changelog](/en/changelog) for separately labeled upstream history.
 
 <figure class="home-showcase">
   <img src="/images/overview.png" alt="PiDeck workspace and conversation UI">
   <figcaption>Workspace, sessions, file drawer, Git branches, and tool calls — all in one desktop window.</figcaption>
 </figure>
 
-- **Multi-Project Workspace** — Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent, Pi_Agent_Rust or Pi-Bolt.
+- **Multi-Project Workspace** — Add, search, drag-sort, and switch local project folders. Run several agents at once with per-project isolation, on your choice of Pi Agent or Pi-Bolt.
 - **Session History & Restore** — Restore previous conversations, browse tool calls and answers by timeline, and review file changes in past sessions. Import local Codex and Claude sessions.
 - **Git Integration** — Real-time branch display and switching, VS Code-style 3-panel view (Changes/History/Compare), AI commit message generation, branch graph visualization, cherry-pick/revert/reset/drop, file tree with Git status, worktree support.
 - **Session Reference (&)** — Type & in composer to search and reference past sessions across the same project. Inject full context or select specific messages.
@@ -57,7 +57,7 @@ Current version: **{{ theme.version }}**. PiDeck-Q is based on upstream [PiDeck]
 - **Multi-Tab File Editor** — File editing, diffs and Markdown preview.
 - **Floating Action Bar** — Access Terminal, Files, Git, Scratch Pad and External Editor.
 - **Built-in Terminal Dock** — Agent-scoped terminal tabs with PowerShell/cmd/sh fallback, multiple tabs, theme switching, height resizing, and right-click copy.
-- **Visual Config Management** — Graphical editors for Models, Auth, and Settings. Global and project-level Skills and Extension management.
+- **Visual Config Management** — Graphical editors for Models and Settings. Global and project-level Skills and Extension management.
 - **Context-Aware Input** — `@` file suggestions, `!` shell execution, `/` slash commands, and command history in a single composer.
 - **Web Access** — A separate LAN Web frontend can be enabled in settings; it is not an embedded browser panel.
 - **Downloads** — Check actual GitHub release files and instructions. No built-in application updater is provided.

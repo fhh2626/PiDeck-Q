@@ -13,27 +13,6 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Exact package identity or scoped package directory; a same-name tool is insufficient. */
-export function fromPackage(tool: ToolSnapshot, packageName: string): boolean {
-	const source = tool.sourceInfo?.source ?? '';
-	if (source === `npm:${packageName}` || source.startsWith(`npm:${packageName}@`)) return true;
-	const path = (tool.sourceInfo?.path ?? '').replace(/\\/g, '/');
-	return path.includes(`/node_modules/${packageName}/`);
-}
-
-export function isBundledSubagents(tool: ToolSnapshot): boolean {
-	const source = (tool.sourceInfo?.source ?? '').toLowerCase();
-	const path = (tool.sourceInfo?.path ?? '').replace(/\\/g, '/').toLowerCase();
-	const isBundledPath = /(?:^|\/)pideck-q-subagents(?:\.ts|\/|$)/.test(path);
-	const isBundledSource = source.includes('pideck-q-subagents');
-	return isBundledPath || isBundledSource;
-}
-
-export function isSubagent(tool: ToolSnapshot): boolean {
-	if (tool.name !== 'subagent') return false;
-	return fromPackage(tool, 'pi-subagents') || isBundledSubagents(tool);
-}
-
 /** Schema shape gates batch-specific guidance; names alone do not establish semantics. */
 export function hasBatchEdit(tool: ToolSnapshot): boolean {
 	if (tool.name !== 'edit' || tool.sourceInfo?.source !== 'builtin') return false;
@@ -58,9 +37,6 @@ export function normalizeRule(text: string): string {
 
 /** Only claim built-ins whose replacement is emitted; preserve all other sources. */
 function claimed(tool: ToolSnapshot, config: Config): boolean {
-	// Native default-mode guidelines contain execution safeguards absent from its short description.
-	// Preserve them; custom mode omits this metadata and appends safety in the description instead.
-	if (isSubagent(tool)) return false;
 	if (tool.sourceInfo?.source !== 'builtin') return false;
 	if (tool.name === 'edit') return hasBatchEdit(tool);
 	return ['read', 'write', 'bash', 'powershell'].includes(tool.name);

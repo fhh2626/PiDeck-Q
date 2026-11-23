@@ -15,6 +15,8 @@ import { useSessionComposerController } from "../../hooks/useSessionComposerCont
 import { useComposerImagePicker } from "../../hooks/useComposerImagePicker";
 import { useVisionBridgeCapabilities } from "../../hooks/useVisionBridgeCapabilities";
 import { getModelImageCapabilityNotice } from "../../utils/modelImageCapability";
+import { resolveSelectedModel } from "../../utils/modelSelection";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
 import { showNotice } from "../../utils/notice";
 import {
   ComposerAttachmentBar,
@@ -67,7 +69,6 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     enqueue: props.enqueue,
     ensureSessionId: props.ensureSessionId,
     // 预览 Tab 里发消息 → 自动晋升常驻（由 App 装配的 SessionPaneServices 提供）
-    onPromoteSession: paneActions.promoteSessionToPermanent,
   });
 
   const sessionRecord = useAtomValue(sessionRecordByIdAtomFamily(props.sessionId));
@@ -76,8 +77,9 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
   const capabilities = useVisionBridgeCapabilities();
   const availableModels = capabilities.models;
 
-  const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
-  const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
+  const selectedModel = resolveSelectedModel(composer.record?.model, composer.runtime?.state);
+  const currentModelId = selectedModel.modelId;
+  const currentProvider = selectedModel.provider;
 
   const imagePicker = useComposerImagePicker({
     sessionId: props.sessionId,
@@ -89,9 +91,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
   const modelNotice = useMemo(() => {
     if (composer.attachments.length === 0) return undefined;
     // 能力快照未就绪时不要下结论：否则会先闪一句「图片能力未知」再变成正确提示。
-    if (!capabilities.ready) return undefined;
-    const currentModelId = composer.runtime?.state?.modelId ?? composer.record?.model?.modelId;
-    const currentProvider = composer.runtime?.state?.provider ?? composer.record?.model?.provider;
+    if (!capabilities.ready || (capabilities.modelScopeKey ?? "native") !== modelConfigurationScopeKey(composer.record ?? {})) return undefined;
+    const { modelId: currentModelId, provider: currentProvider } = resolveSelectedModel(composer.record?.model, composer.runtime?.state);
     if (!currentModelId) return undefined;
 
     const matchedModel = availableModels.find(
@@ -103,6 +104,8 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     switch (notice.kind) {
       case "vision-bridge-active":
         return t("composer.modelNotice.visionBridge");
+      case "vision-bridge-model-required":
+        return t("app.visionModelSelectionRequired");
       case "unsupported-suggest-vision":
         return t("composer.modelNotice.suggestVision");
       case "unknown-capability":
@@ -114,9 +117,13 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     composer.runtime?.state?.provider,
     composer.record?.model?.modelId,
     composer.record?.model?.provider,
+    composer.record?.environment,
+    composer.record?.wslDistro,
+    composer.record?.wslUser,
     availableModels,
     capabilities.ready,
     capabilities.config,
+    capabilities.modelScopeKey,
   ]);
 
   const onNativeFileDrop = composer.editor.onNativeFileDrop;
@@ -320,6 +327,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
                     isAgentStarting={composer.isStarting}
                     canSend={composer.delivery.canSend}
                     onSend={composer.delivery.send}
+                    onSendSteer={composer.delivery.steer}
                     onSendFollowUp={composer.delivery.followUp}
                     onSendAsk={() => void handleAskSend()}
                     onStop={composer.delivery.abort}

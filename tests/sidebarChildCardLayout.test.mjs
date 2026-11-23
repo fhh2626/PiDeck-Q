@@ -21,14 +21,6 @@ const agentListDisplay = readFileSync(
   "src/renderer/src/agentListDisplay.ts",
   "utf8",
 );
-const tabBar = readFileSync(
-  "src/renderer/src/components/session/SessionTabsBar.tsx",
-  "utf8",
-);
-const sessionView = readFileSync(
-  "src/renderer/src/components/session/SessionView.tsx",
-  "utf8",
-);
 const sourceBadge = readFileSync(
   "src/renderer/src/components/session/SessionSourceBadge.tsx",
   "utf8",
@@ -65,7 +57,7 @@ test("sidebar child titles truncate via component classes", () => {
 });
 
 test("session status indicators stay on the concrete session row", () => {
-  // Tab 与侧栏会话行共享蓝/黄/红状态点语义。
+  // 会话行显示蓝、黄、红状态点。
   assert.match(agentListDisplay, /export function sessionStatusDotClass/);
   assert.match(agentListDisplay, /case "idle"/);
   assert.match(agentListDisplay, /return "bg-info"/);
@@ -81,11 +73,6 @@ test("session status indicators stay on the concrete session row", () => {
   assert.match(sessionTree, /sessionStatusDotClass\(status\)/);
   assert.match(sessionTree, /renderRuntimeStatusDot\(child\.agent\.status\)/);
   assert.match(sessionTree, /renderRuntimeStatusDot\(runtimeSnapshot\?\.status\)/);
-  // Tab 同样未启动不显示徽章，已启动按状态映射渲染（beui AnimatedBadge 替换裸圆点）。
-  assert.match(tabBar, /function sessionStatusBadge\(/);
-  assert.match(tabBar, /AnimatedBadge/);
-  assert.match(tabBar, /badge &&/);
-  assert.doesNotMatch(tabBar, /dotClass &&/);
 });
 
 test("project children use spacing without connector lines and chat uses the shared row", () => {
@@ -95,7 +82,7 @@ test("project children use spacing without connector lines and chat uses the sha
   assert.doesNotMatch(styles, /\.project-group\.chat-project-group/);
 });
 
-test("sidebar omits the redundant projects heading and tabs shrink to their titles", () => {
+test("sidebar uses compact project and session rows without a duplicate heading", () => {
   const sidebarContent = readFileSync(
     "src/renderer/src/components/sidebar/SidebarContent.tsx",
     "utf8",
@@ -103,11 +90,6 @@ test("sidebar omits the redundant projects heading and tabs shrink to their titl
 
   assert.doesNotMatch(sidebarContent, /FolderTree/);
   assert.doesNotMatch(sidebarContent, /app\.sidebarProjects/);
-  // 固定 Tab 与普通 Tab 同宽策略：不再用 w-20 固定宽度（Pin 图标挤占标题空间）
-  assert.match(tabBar, /"w-fit max-w-32",/);
-  assert.doesNotMatch(tabBar, /pinned \? "w-20"/);
-  assert.match(tabBar, /session-tabs-scroll (?:relative )?flex min-w-0 flex-1/);
-  assert.match(tabBar, /session-tabs-actions flex shrink-0/);
   assert.match(sidebarContent, /sidebar-body flex min-h-0 flex-1 flex-col gap-1 px-2 pt-1 pb-1/);
   assert.match(sessionTree, /min-h-6 w-full/);
   assert.match(sessionTree, /history-session-row mx-0 min-h-6 pl-2 pr-2 py-0/);
@@ -126,13 +108,4 @@ test("sidebar omits the redundant projects heading and tabs shrink to their titl
   assert.doesNotMatch(sourceBadge, />\{label\}<\//);
   assert.doesNotMatch(sessionTree, /session-source-badge/);
   assert.doesNotMatch(sourceBadge, /bg-(?:indigo|amber|emerald)-/);
-});
-
-test("session tabs stay outside SessionView; header is standalone in pane", () => {
-  assert.match(tabBar, /actions\?: ReactNode/);
-  assert.match(tabBar, /props\.onToggleDrawer \? \(/);
-  // Tab 栏外置后，SessionView 只渲染独立 Header，不再把操作嵌入 Tab 的 actions 槽。
-  assert.doesNotMatch(sessionView, /SessionTabsBar/);
-  assert.match(sessionView, /widgetChips/);
-  assert.doesNotMatch(sessionView, /embedded/);
 });

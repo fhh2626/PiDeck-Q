@@ -4,7 +4,7 @@
  * - preview：单击打开；至多一个预览 Tab，再点其它文件会替换它
  * - permanent：双击打开，或对预览 Tab 再双击晋升；不再被预览替换挤掉
  *
- * 与 sessionTabs 同语义；身份用 tabId（打开时由 hook 生成），path 用于「同一文件已在栏内」判断。
+ * 文件身份用 tabId（打开时由 hook 生成），path 用于「同一文件已在栏内」判断。
  */
 
 export type EditorTabOpenMode = "preview" | "permanent";

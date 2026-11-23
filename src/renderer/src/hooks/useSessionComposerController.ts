@@ -50,7 +50,7 @@ import {
   PI_FILE_PATH_DRAG_MIME,
   readFileNodeDragPayload,
 } from "../components/app/AppUtils";
-import { SESSION_TAB_DRAG_MIME } from "../utils/sessionSplitEdge";
+import { SESSION_DRAG_MIME } from "../utils/sessionSplitEdge";
 import {
   formatFilePathRef,
   parseRichInputChips,
@@ -133,8 +133,6 @@ export type UseSessionComposerControllerOptions = {
   sessionId: string;
   onOpenFile?: (path: string) => void;
   ensureSessionId?: (sessionId: string) => Promise<string>;
-  /** 用户主动发消息时回调（预览 Tab 晋升常驻）；来自 SessionPaneServices 装配。 */
-  onPromoteSession?: (sessionId: string) => void;
   /** Passed through to useSessionSend.enqueue. */
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
 };
@@ -585,17 +583,6 @@ export function useSessionComposerController(
     enqueue,
   });
 
-  // 统一发送入口：先晋升预览 Tab 再投递（幂等，非预览无副作用）。
-  // 发送按钮 / 追问按钮 / Enter 键 / 无 Agent 时的 /compact 直发都会走这里，
-  // 避免新增发送路径时漏掉 promote 导致预览 Tab 不常驻（曾因此回归）。
-  const promoteAndSend = useCallback(
-    (behavior?: "steer" | "followUp") => {
-      options.onPromoteSession?.(sessionId);
-      return send(behavior);
-    },
-    [options.onPromoteSession, send, sessionId],
-  );
-
   const commitCompletion = useCallback((completionId: number, value: string) => {
     const active = completionRef.current;
     if (!active || active.id !== completionId || active.dismissed) return;
@@ -776,8 +763,7 @@ export function useSessionComposerController(
     const intent = getComposerEnterIntent(event, sendShortcut);
     if (intent === "send") {
       event.preventDefault();
-      // Enter 发送也晋升预览 Tab（promoteAndSend 内部统一处理）
-      void promoteAndSend(isBusy ? "steer" : undefined);
+      void send(isBusy ? "followUp" : undefined);
     }
   }, [
     clearCompletion,
@@ -789,7 +775,7 @@ export function useSessionComposerController(
     getPromptHistory,
     historyIndex,
     isBusy,
-    promoteAndSend,
+    send,
     savedDraft,
     selectedSuggestionIndex,
     sendShortcut,
@@ -1257,7 +1243,7 @@ export function useSessionComposerController(
       clearCompletion();
       setDraft("/compact");
       caretRef.current = { pos: "/compact".length, forValue: "/compact" };
-      void promoteAndSend();
+      void send();
       return;
     }
     try {
@@ -1268,7 +1254,7 @@ export function useSessionComposerController(
       const message = friendlyCompactError(error);
       if (message) showNotice(message, 6000);
     }
-  }, [clearCompletion, runtime?.agentId, runtime?.runtimeGeneration, sessionId, setDraft, promoteAndSend]);
+  }, [clearCompletion, runtime?.agentId, runtime?.runtimeGeneration, sessionId, setDraft, send]);
 
   const openPicker = useCallback((kind: ComposerPickerKind) => {
     if (kind === "template") void loadTemplates();
@@ -1324,8 +1310,8 @@ export function useSessionComposerController(
       onDrop,
       onNativeFileDrop: (paths: string[]) => insertFilePathRefs(paths),
       onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
-        // 会话 Tab / 侧栏分屏拖拽交给 SessionSplitStage（capture），composer 不抢落点
-        if (event.dataTransfer.types.includes(SESSION_TAB_DRAG_MIME)) return;
+        // 侧栏会话分屏拖拽交给 SessionSplitStage（capture），composer 不抢落点
+        if (event.dataTransfer.types.includes(SESSION_DRAG_MIME)) return;
         event.preventDefault();
         // 文件树拖拽的 effectAllowed 含 move（内部移动语义），拖入 composer 时
         // 显式声明 copy，避免光标显示为“移动”，实际行为是插入引用
@@ -1360,10 +1346,15 @@ export function useSessionComposerController(
     delivery: {
       // 发送/追问都算主动交互：先把预览 Tab 晋升常驻，再投递（幂等，非预览无副作用）
       send: () => {
-        void promoteAndSend(isBusy ? "steer" : undefined);
+        void send(isBusy ? "followUp" : undefined);
+      },
+      // Interrupting the current task is an explicit menu action. Ordinary sends
+      // remain in the local queue until pi reports that the active run has settled.
+      steer: () => {
+        void send("steer");
       },
       followUp: () => {
-        void promoteAndSend("followUp");
+        void send("followUp");
       },
       abort: () => void abort(),
       compact: () => void compact(),

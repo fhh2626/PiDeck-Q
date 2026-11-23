@@ -14,7 +14,6 @@ import {
 import { updateActiveRunIndex } from "../background/active-run-index.ts";
 import { resultFilePath, writeAsyncResultFile } from "../background/result-files.ts";
 import { resolveAsyncResumeTarget } from "../background/async-resume.ts";
-import { externalCliReceiptMetadata, normalizeExternalCliRunnerStatus } from "../shared/external-cli-contract.ts";
 import { outputPathMappingFromTask } from "../shared/single-output.ts";
 import { readWorkflowReceipt, workflowReceiptPath, writeWorkflowReceipt, type WorkflowReceipt } from "../../workflows/workflow-receipt.ts";
 import {
@@ -113,10 +112,8 @@ function reconcileWorkflowReceipt(status: AsyncStatus, childRunId: string, resul
 	}
 	const outputReference = result.savedOutputPath ?? result.outputReference?.path ?? entry.outputReference;
 	const childStatus = readStatus(path.join(DIRS.async, childRunId));
-	const externalStep = childStatus?.steps?.length === 1 && childStatus.steps[0]?.runner?.type === "external-cli" ? childStatus.steps[0] : undefined;
-	const externalRunner = normalizeExternalCliRunnerStatus(result.runner?.type === "external-cli" ? result.runner : externalStep?.runner);
-	const externalProcess = result.externalProcess ?? externalStep?.externalProcess;
-	const externalAdapter = externalRunner ? externalCliReceiptMetadata({ runner: externalRunner, externalProcess, outputReference }) : entry.externalAdapter;
+	// Historical receipts remain readable without reactivating removed external adapters.
+	const externalAdapter = entry.externalAdapter;
 	const childTerminalOutcome = workflowTerminalOutcomeForResult(result) ?? entry.terminalOutcome;
 	if (externalAdapter) resumability = { state: "not-resumable", reason: externalAdapter.nonResumableReason };
 	const updatedEntry: WorkflowReceipt["entries"][string] = resumability.state === "resumable"

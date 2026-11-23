@@ -9,8 +9,8 @@
 
 ```
 【项目地址】
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-Release 下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+Release 下载：https://github.com/fhh2626/PiDeck-Q/releases
 
 【相关】
 pi 官方文档：https://pi.dev/docs/latest
@@ -20,15 +20,15 @@ Node.js 下载：https://nodejs.org/zh-cn/download
 QQ 群：1026218644
 
 【说明】
-PiDeck 是同时支持原版 Pi Agent 和 Pi_Agent_Rust 的桌面工作台（非任一 Agent 分支），开源免费。
+PiDeck 是同时支持原版 Pi Agent 和 Pi-Bolt 的桌面工作台（非任一 Agent 分支），开源免费。
 系列作者：caoayu
 ```
 
 **短版页脚（字数紧时用）：**
 
 ```
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 ```
 
@@ -48,13 +48,13 @@ QQ 群：1026218644
 
 ```
 PiDeck 全流程教学：安装 · 配模型 · 加项目 · 高效对话
-用桌面工作台管理 Pi Agent 与 Pi_Agent_Rust：PiDeck 上手合集
+用桌面工作台管理 Pi Agent 与 Pi-Bolt：PiDeck 上手合集
 ```
 
 ### 简介
 
 ```
-PiDeck 是一个开源的本地 AI 编程工作台，同时支持原版 Pi Agent 和 Pi_Agent_Rust，用来统一管理多个项目的编码 Agent 会话。
+PiDeck 是一个开源的本地 AI 编程工作台，同时支持原版 Pi Agent 和 Pi-Bolt，用来统一管理多个项目的编码 Agent 会话。
 本合集从「是什么」讲到安装、环境检测、模型配置、第一次对话和进阶功能，跟着做就能跑通。
 
 目录：
@@ -65,8 +65,8 @@ EP04  添加项目与第一次对话
 EP05  对话进阶（@ 引用 / 斜线命令 / Shell）
 EP06  进阶功能总览（多项目 / Git / 终端 / 历史）
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #AI编程 #pi #Cursor #开发者工具 #效率工具
@@ -93,16 +93,16 @@ PiDeck,AI编程,pi,Cursor,Claude Code,开发者工具,效率工具,本地Agent,�
 **简介**
 
 ```
-如果你已经在用 Pi Agent、Pi_Agent_Rust、Cursor 或 Claude Code，多项目、多会话、回看历史全靠命令行会很痛苦。
+如果你已经在用 Pi Agent、Pi-Bolt、Cursor 或 Claude Code，多项目、多会话、回看历史全靠命令行会很痛苦。
 这一集讲清楚：PiDeck 是什么、解决什么问题、适合谁用。
 
 下一集：安装 Node、Agent runtime、PiDeck，并完成环境检测。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
-#PiDeck #AI编程 #PiAgent #PiAgentRust #开发者工具
+#PiDeck #AI编程 #PiAgent #PiBolt #开发者工具
 ```
 
 **封面大字建议：** `PiDeck 是什么` / `为什么需要它`
@@ -129,8 +129,8 @@ pi 文档：https://pi.dev/docs/latest
 
 下一集：配置模型与认证（Models / Auth）。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #安装教程 #Nodejs #AI编程
@@ -161,8 +161,8 @@ https://www.bilibili.com/video/BV1NRTK6LE5z
 
 下一集：添加本地项目、启动 Agent、发出第一条消息。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #模型配置 #APIKey #OpenCode #DeepSeek
@@ -191,8 +191,8 @@ QQ 群：1026218644
 
 下一集：@ 文件引用、斜线命令、Shell 与高效工作流。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #第一次对话 #AI编程助手
@@ -222,8 +222,8 @@ QQ 群：1026218644
 
 下一集：多项目、Git、终端、历史与设置总览。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #AI编程 #效率技巧 #Shell
@@ -254,8 +254,8 @@ QQ 群：1026218644
 
 系列到此收官。欢迎 Star 与加群交流。
 
-GitHub：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust
-下载：https://github.com/fhh2626/PiDeck-Pi_Agent_Rust/releases
+GitHub：https://github.com/fhh2626/PiDeck-Q
+下载：https://github.com/fhh2626/PiDeck-Q/releases
 QQ 群：1026218644
 
 #PiDeck #Git #终端 #开源项目

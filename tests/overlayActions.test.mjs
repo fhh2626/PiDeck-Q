@@ -6,33 +6,31 @@ import vm from "node:vm";
 
 const source = readFileSync("src/renderer/src/hooks/useOverlayActions.ts", "utf8");
 
-function compileHook(reactStub, desktopApiStub) {
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-      esModuleInterop: true,
-    },
-    fileName: "src/renderer/src/hooks/useOverlayActions.ts",
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(output, {
-    module,
-    exports: module.exports,
-    require: (specifier) => {
-      if (specifier === "react") return reactStub;
-      if (specifier === "../desktopApi") return desktopApiStub;
-      return {};
-    },
-  }, { filename: "src/renderer/src/hooks/useOverlayActions.ts" });
-  return module.exports;
+function compileHook(reactStub) {
+  const modules = new Map();
+  function compile(path) {
+    if (modules.has(path)) return modules.get(path);
+    const output = ts.transpileModule(readFileSync(path, "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+      fileName: path,
+    }).outputText;
+    const module = { exports: {} };
+    modules.set(path, module.exports);
+    vm.runInNewContext(output, {
+      module, exports: module.exports,
+      require: (specifier) => {
+        if (specifier === "react") return reactStub;
+        if (specifier === "./useConfirmationQueue") return compile("src/renderer/src/hooks/useConfirmationQueue.ts");
+        if (specifier === "../utils/confirmationQueue") return compile("src/renderer/src/utils/confirmationQueue.ts");
+        throw new Error(`Unexpected dependency ${specifier}`);
+      },
+    }, { filename: path });
+    return module.exports;
+  }
+  return compile("src/renderer/src/hooks/useOverlayActions.ts");
 }
 
-function wrapDesktopApi(api) {
-  return { desktopApi: api };
-}
-
-function createOverlayActionsHarness(desktopApiStub) {
+function createOverlayActionsHarness() {
   const states = [];
   let cursor = 0;
   const react = {
@@ -44,19 +42,21 @@ function createOverlayActionsHarness(desktopApiStub) {
       };
       return [states[index], setter];
     },
-    useCallback(fn) {
-      cursor++;
-      return fn;
+    useRef(initial) {
+      const index = cursor++;
+      states[index] ??= { current: initial };
+      return states[index];
+    },
+    useEffect(effect) {
+      const index = cursor++;
+      if (!states[index]) states[index] = { cleanup: effect() };
     },
     useMemo(factory) {
       cursor++;
       return factory();
     },
   };
-  const hooks = compileHook(
-    react,
-    desktopApiStub ?? wrapDesktopApi({ projects: { respondTrustRequest: () => undefined } }),
-  );
+  const hooks = compileHook(react);
   function render() {
     cursor = 0;
     return hooks.useOverlayActions();
@@ -64,26 +64,19 @@ function createOverlayActionsHarness(desktopApiStub) {
   return { render, states };
 }
 
-test("useOverlayActions owns only confirm and trust state", () => {
+test("useOverlayActions exposes confirmation state without a project trust gate", () => {
   const harness = createOverlayActionsHarness();
   const r = harness.render();
   r.showConfirm({ title: "X", message: "Y", onConfirm: () => undefined });
-  r.setTrustRequest({ requestId: "r1", cwd: "/tmp", projectName: "Test" });
 
-  // 行为面：返回值只暴露 confirm / trust 两个域的状态与命令，
-  // overlayProps 只可能出现 confirm / trust 两个浮层。
   const r2 = harness.render();
-  // 命令确实改写了各自的状态（而不仅是 key 存在）。
   assert.equal(r2.confirmDialog.title, "X");
-  assert.deepEqual({ ...r2.trustRequest }, { requestId: "r1", cwd: "/tmp", projectName: "Test" });
-  assert.deepEqual(Object.keys(r2.overlayProps).sort(), ["confirm", "trust"]);
+  assert.deepEqual(Object.keys(r2.overlayProps), ["confirm"]);
   assert.deepEqual(Object.keys(r2).sort(), [
     "clearConfirm",
     "confirmDialog",
     "overlayProps",
-    "setTrustRequest",
     "showConfirm",
-    "trustRequest",
   ]);
 });
 
@@ -92,9 +85,10 @@ test("useOverlayActions has no feedback / homepage / external-link overlay code"
   assert.doesNotMatch(source, /feedback|homepage|openExternal/);
 });
 
-test("showConfirm sets confirmDialog with full config", () => {
+test("showConfirm retains config and confirms at most once", () => {
   const harness = createOverlayActionsHarness();
-  const onConfirm = () => undefined;
+  let confirmations = 0;
+  const onConfirm = () => { confirmations++; };
 
   const r = harness.render();
   r.showConfirm({
@@ -108,7 +102,10 @@ test("showConfirm sets confirmDialog with full config", () => {
   const r2 = harness.render();
   assert.equal(r2.confirmDialog.title, "Delete?");
   assert.equal(r2.confirmDialog.message, "Are you sure?");
-  assert.equal(r2.confirmDialog.onConfirm, onConfirm);
+  r2.confirmDialog.onConfirm();
+  r2.confirmDialog.onConfirm();
+  assert.equal(confirmations, 1);
+  assert.equal(harness.render().confirmDialog, null);
   assert.equal(r2.confirmDialog.danger, true);
   assert.equal(r2.confirmDialog.confirmLabel, "Delete");
 });
@@ -126,23 +123,10 @@ test("clearConfirm sets confirmDialog to null", () => {
   assert.equal(r3.confirmDialog, null);
 });
 
-test("trustRequest set and get", () => {
+test("overlayProps.confirm exposes config and a functioning once-only action", () => {
   const harness = createOverlayActionsHarness();
-  const req = { requestId: "r1", cwd: "/tmp", projectName: "Test" };
-
-  const r = harness.render();
-  assert.equal(r.trustRequest, null);
-  r.setTrustRequest(req);
-
-  const r2 = harness.render();
-  assert.equal(r2.trustRequest.requestId, "r1");
-  assert.equal(r2.trustRequest.cwd, "/tmp");
-  assert.equal(r2.trustRequest.projectName, "Test");
-});
-
-test("overlayProps.confirm structure when confirmDialog is set", () => {
-  const harness = createOverlayActionsHarness();
-  const onConfirm = () => undefined;
+  let confirmations = 0;
+  const onConfirm = () => { confirmations++; };
 
   const r = harness.render();
   assert.equal(r.overlayProps.confirm, undefined);
@@ -153,7 +137,10 @@ test("overlayProps.confirm structure when confirmDialog is set", () => {
   assert.equal(c.open, true);
   assert.equal(c.props.title, "Delete?");
   assert.equal(c.props.message, "Are you sure?");
-  assert.equal(c.props.onConfirm, onConfirm);
+  c.props.onConfirm();
+  c.props.onConfirm();
+  assert.equal(confirmations, 1);
+  assert.equal(harness.render().overlayProps.confirm, undefined);
   assert.equal(c.props.danger, true);
   assert.equal(c.props.confirmLabel, "Delete");
 });
@@ -169,73 +156,4 @@ test("overlayProps.confirm onCancel clears confirmDialog", () => {
   const r3 = harness.render();
   assert.equal(r3.confirmDialog, null);
   assert.equal(r3.overlayProps.confirm, undefined);
-});
-
-test("overlayProps.trust structure when trustRequest is set", () => {
-  let trustChoice;
-  const desktopApi = wrapDesktopApi({
-    projects: {
-      respondTrustRequest: (requestId, choice) => { trustChoice = { requestId, choice }; },
-    },
-  });
-  const harness = createOverlayActionsHarness(desktopApi);
-
-  const r = harness.render();
-  assert.equal(r.overlayProps.trust, undefined);
-  r.setTrustRequest({ requestId: "r1", cwd: "/tmp/proj", projectName: "Test" });
-
-  const r2 = harness.render();
-  const trust = r2.overlayProps.trust;
-  assert.equal(trust.open, true);
-  assert.equal(trust.requestId, "r1");
-  assert.equal(trust.cwd, "/tmp/proj");
-  assert.equal(trust.projectName, "Test");
-  assert.equal(typeof trust.onChoose, "function");
-
-  trust.onChoose("trust-remember");
-  assert.deepEqual(trustChoice, { requestId: "r1", choice: "trust-remember" });
-
-  const r3 = harness.render();
-  assert.equal(r3.trustRequest, null);
-  assert.equal(r3.overlayProps.trust, undefined);
-});
-
-test("overlayProps.trust onChoose supports all three trust choices", () => {
-  const choices = [];
-  const desktopApi = wrapDesktopApi({
-    projects: {
-      respondTrustRequest: (_requestId, choice) => choices.push(choice),
-    },
-  });
-  const harness = createOverlayActionsHarness(desktopApi);
-
-  const r = harness.render();
-  r.setTrustRequest({ requestId: "r1", cwd: "/tmp", projectName: "T" });
-  const r2 = harness.render();
-  r2.overlayProps.trust.onChoose("trust-remember");
-
-  r2.setTrustRequest({ requestId: "r2", cwd: "/tmp", projectName: "T" });
-  const r3 = harness.render();
-  r3.overlayProps.trust.onChoose("trust-session");
-
-  r3.setTrustRequest({ requestId: "r3", cwd: "/tmp", projectName: "T" });
-  const r4 = harness.render();
-  r4.overlayProps.trust.onChoose("deny");
-
-  assert.deepEqual(choices, ["trust-remember", "trust-session", "deny"]);
-});
-
-test("overlayProps combines confirm and trust overlays simultaneously", () => {
-  const harness = createOverlayActionsHarness();
-  const r = harness.render();
-  r.showConfirm({ title: "Delete?", message: "Confirm delete", onConfirm: () => undefined });
-  r.setTrustRequest({ requestId: "r1", cwd: "/tmp", projectName: "Test" });
-
-  const r2 = harness.render();
-  const props = r2.overlayProps;
-  assert.equal(props.feedback, undefined);
-  assert.equal(props.confirm.open, true);
-  assert.equal(props.confirm.props.title, "Delete?");
-  assert.equal(props.trust.open, true);
-  assert.equal(props.trust.requestId, "r1");
 });

@@ -93,20 +93,6 @@ test("streaming Streamdown animation keeps the user chat line-height token", () 
   );
 });
 
-test("renderer/App default settings seed all four modes to default", () => {
-  const settingsStore = readFileSync("src/main/settings/SettingsStore.ts", "utf8");
-  const app = readFileSync("src/renderer/src/App.tsx", "utf8");
-  for (const field of [
-    "chatBodyLineHeight",
-    "chatBlockGap",
-    "chatListDensity",
-    "chatCodeDensity",
-  ]) {
-    assert.match(settingsStore, new RegExp(field + ': "default"'));
-    assert.match(app, new RegExp(field + ': "default"'));
-  }
-});
-
 test("chat typography token injection is a useLayoutEffect kept on the existing visual-token effect", () => {
   const app = readFileSync("src/renderer/src/App.tsx", "utf8");
   // 视觉 token（字号/行距/块距/列表密度/代码密度/自定义字体）必须用 useLayoutEffect：

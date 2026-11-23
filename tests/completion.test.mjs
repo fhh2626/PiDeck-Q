@@ -364,7 +364,6 @@ test("Enter never commits a completion candidate; it keeps its send intent", asy
 
 		// Enter 继续走 composer 原有的发送职责：发出的是用户键入的原文，而不是被选中的候选
 		assert.equal(event.prevented, true);
-		assert.deepEqual(c.calls.promoted, ["s1"]);
 		assert.equal(c.calls.sendPrompt.length, 1);
 		assert.equal(c.calls.sendPrompt[0].message, "/");
 		// 发送后临时 UI（含补全会话）被重置

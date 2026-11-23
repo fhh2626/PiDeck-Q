@@ -1,21 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { discoverAgentsAll, type AgentSource } from "../agents/agents.ts";
-import { isAsyncAvailable } from "../runs/background/async-execution.ts";
 import { formatSpawnBudgetSummary, getSpawnBudgetSnapshot } from "../runs/shared/spawn-budget.ts";
-import { getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession } from "../runs/background/active-async-capacity.ts";
+
 
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
-import {
-	DIRS,
-	CHAIN_RUNS_DIR,
-	TEMP_ROOT_DIR,
-	type ExtensionConfig,
-	type SubagentState,
-	normalizeMaxSubagentSpawnsPerRun,
-	resolveMaxSubagentSpawnsPerRun,
-} from "../shared/types.ts";
+import { DIRS, CHAIN_RUNS_DIR, TEMP_ROOT_DIR, type ExtensionConfig, type SubagentState, normalizeMaxSubagentSpawnsPerRun, resolveMaxSubagentSpawnsPerRun } from "../shared/types.ts";
 
 interface DoctorPaths {
 	tempRootDir: string;
@@ -25,7 +16,6 @@ interface DoctorPaths {
 }
 
 interface DoctorDeps {
-	isAsyncAvailable: () => boolean;
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
 	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
@@ -56,7 +46,6 @@ function defaultPaths(): DoctorPaths {
 }
 
 const DEFAULT_DEPS: DoctorDeps = {
-	isAsyncAvailable,
 	discoverAgentsAll,
 	discoverAvailableSkills,
 	diagnoseIntercomBridge,
@@ -185,19 +174,7 @@ function formatRunFanoutSection(input: DoctorReportInput): string[] {
 	return [`- configured limit: ${configured} (${source})`, "- usage: available after a run starts", "- reset boundary: cumulative claims are never released; a new top-level run creates a new budget"];
 }
 
-function formatActiveAsyncCapacitySection(input: DoctorReportInput): string[] {
-	const limit = resolveMaxActiveAsyncRunsPerSession(input.config.maxActiveAsyncRunsPerSession);
-	const sessionId = input.currentSessionId ?? input.state.currentSessionId;
-	const snapshot = sessionId
-		? getActiveAsyncCapacitySnapshot(sessionId, limit, { liveWorkflowRunIds: new Set(input.state.workflowControllers?.keys() ?? []), abandonedSlotReleaseAfterMs: resolveAbandonedSlotReleaseAfterMs(input.config.capacity?.abandonedSlotReleaseAfterMs) })
-		: { used: 0, limit: limit ?? 0 };
-	input.state.activeAsyncCapacity = snapshot;
-	return [
-		`- usage: ${snapshot.used}/${snapshot.limit || "unlimited"} used`,
-		"- scope: top-level async runs in the current parent session; foreground and nested workflow children are not charged again",
-		"- release: terminal state plus matching observed process-terminal proof, or abandoned-timeout for failed runs with a dead runner PID and stale activity when enabled; false keeps unknown-proof slots",
-	];
-}
+
 
 function formatPermissionSystemSection(): string[] {
 	const lines: string[] = [];
@@ -206,7 +183,7 @@ function formatPermissionSystemSection(): string[] {
 	if (trimmed) {
 		lines.push(`- parent session: set (${trimmed})`);
 	} else {
-		lines.push("- parent session: not set — ask forwarding from background children will not reach a parent UI");
+		lines.push("- parent session: not set — supervisor requests from children will not reach a parent UI");
 	}
 	const isChild = process.env["PI_SUBAGENT_CHILD"] === "1";
 	lines.push(`- subagent process: ${isChild ? "yes (PI_SUBAGENT_CHILD=1)" : "no"}`);
@@ -231,7 +208,7 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Runtime",
 		`- cwd: ${input.cwd}`,
-		lineFromCheck("async support", () => `- async support: ${deps.isAsyncAvailable() ? "available" : "unavailable"}`),
+		"- execution: native foreground with live supervisor handoffs",
 		...formatSessionLines(input),
 		"",
 		"Filesystem",
@@ -248,9 +225,6 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 		"",
 		"Run fan-out budget",
 		...formatRunFanoutSection(input),
-		"",
-		"Active async capacity",
-		...formatActiveAsyncCapacitySection(input),
 		"",
 		"Workflow script",
 		...formatWorkflowScriptSection(),

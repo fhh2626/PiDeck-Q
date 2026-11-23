@@ -1,3 +1,5 @@
+import { registerSubagentEnvironment } from '../../policy/environment/runtime.ts';
+import { getAgentDir } from '../../shared/utils.ts';
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listBackgroundWorkProviders } from "../../api/background-work.ts";
 import { ReadonlyDrainObservation } from "./readonly-drain-observation.ts";
@@ -160,10 +162,16 @@ function childHooks(config: ChildRuntimeConfig, capture?: OwnedCapture): ChildHo
 	const proof: PromptProof | undefined = snapshot === undefined ? undefined : { config, snapshot, capture };
 	const hooks: ChildHookExtension[] = [
 		{ name: "pi-subagents:prompt-runtime", factory: function promptRuntime(pi) {
-			if (!proof?.observeNext) return registerSubagentPromptRuntime(pi, config);
-			proof.observation = proof.observeNext;
-			proof.observeNext = undefined;
-			registerSubagentPromptRuntime(pi, config, proof.observation);
+			if (proof?.observeNext) {
+				proof.observation = proof.observeNext;
+				proof.observeNext = undefined;
+				registerSubagentPromptRuntime(pi, config, proof.observation);
+			} else {
+				registerSubagentPromptRuntime(pi, config);
+			}
+			// Publish authoritative tool facts after role/context pruning, which may remove a
+			// trailing inherited section together with any text already appended to it.
+			registerSubagentEnvironment(pi, getAgentDir(), { child: true, allowNested: config.fanoutChild, ownerKey: config.parentSessionId ?? config.orchestratorSessionId });
 		} },
 	];
 	if (proof) {

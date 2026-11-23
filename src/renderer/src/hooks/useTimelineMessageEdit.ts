@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from "react";
 import { useAtom } from "jotai";
-import type { SessionRuntimeTarget } from "../../../shared/types";
 import { useTimelinePresentationContext } from "../components/session/timeline/timelinePresentationContext";
 import { useTimelineEditCommands } from "../components/session/timeline/timelineEditCommandsContext";
 import {
@@ -61,11 +60,7 @@ export function useTimelineMessageEdit(params: {
 			editId,
 			messageId,
 			text: initialText,
-			runtimeTarget: target ?? {
-				sessionId: sessionId ?? "",
-				agentId: "",
-				runtimeGeneration: 0,
-			},
+			runtimeTarget: target,
 		});
 
 		if (rowKey) {
@@ -104,7 +99,7 @@ export function useTimelineMessageEdit(params: {
 
 		let success = false;
 		try {
-			if (editCommands) {
+			if (editCommands && runtimeTarget) {
 				success = await editCommands.submitEditMessage(runtimeTarget, messageId, text);
 			} else if (onLegacyEditMessage) {
 				const res = await onLegacyEditMessage(messageId, text);

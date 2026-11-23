@@ -55,9 +55,13 @@ import {
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { buildAgentMemoryInjection } from "../../agents/agent-memory.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, resolveToolTimeoutMs, toolTimeoutCallKey, toolTimeoutFromEnv } from "../shared/tool-timeout.ts";
+import { resolveRunSupervisionMetadata } from "../shared/run-supervision-metadata.ts";
+import { createRunSupervision, createRunSupervisionState, type RunSupervisionState } from "../shared/run-supervision.ts";
+import { formatRunSupervisionSnapshot } from "../shared/run-supervision-snapshot.ts";
 import { evaluateCompletionMutationGuard, expectsImplementationMutation, hasMutationToolCapability, validateImplementationToolContract } from "../shared/completion-guard.ts";
 import { planCompletionEvidence } from "../shared/completion-evidence.ts";
 import { planAbortRecovery } from "../shared/abort-recovery.ts";
+import { applyRecoveryBrief, captureRecoveryBriefIdentity, foldRecoveryBriefUsage, recoveryBriefRequest, type RecoveryBriefRuntimeSnapshot } from "../shared/recovery-brief.ts";
 import { planReadonlyModelContinuation, type LogicalRecoveryState } from "../shared/readonly-model-continuation.ts";
 import { getReadonlySessionEvidence, requestReadonlySessionEvidence, type SettledReadonlyEvidence } from "../shared/readonly-session-evidence.ts";
 import { getReadonlyChildModels } from "../shared/child-session.ts";
@@ -117,6 +121,8 @@ import { childSessionFactory, projectChildSessionEventForJson, type ChildSession
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
 const acceptanceOutputByResult = new WeakMap<SingleResult, string>();
+/** Diagnostic context stays private instead of changing task output/provenance. */
+const recoveryRuntimeByResult = new WeakMap<SingleResult, RecoveryBriefRuntimeSnapshot>();
 
 function emptyUsage(): Usage {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -178,6 +184,8 @@ function persistSingleResultMetadata(input: {
 		effects: target.effects,
 		transcriptPath: target.transcriptPath,
 		transcriptError: target.transcriptError,
+		// Durable evidence for later status/inspection of an abnormal termination.
+		recoveryBrief: target.recoveryBrief,
 		skills: target.skills,
 		skillsWarning: target.skillsWarning,
 		timestamp: Date.now(),
@@ -188,11 +196,12 @@ function formatTimeoutMessage(timeoutMs: number): string {
 	return `Subagent timed out after ${timeoutMs}ms.`;
 }
 
-function resolveAttemptTimeout(options: RunSyncOptions): { timeoutMs: number; remainingMs: number; message: string } | undefined {
+function resolveAttemptTimeout(options: RunSyncOptions): { timeoutMs: number; deadlineAt: number; remainingMs: number; message: string } | undefined {
 	if (options.timeoutMs === undefined) return undefined;
 	const deadlineAt = options.deadlineAt ?? Date.now() + options.timeoutMs;
 	return {
 		timeoutMs: options.timeoutMs,
+		deadlineAt,
 		remainingMs: Math.max(0, deadlineAt - Date.now()),
 		message: formatTimeoutMessage(options.timeoutMs),
 	};
@@ -367,6 +376,7 @@ async function runSingleAttempt(
 		artifactPaths?: ArtifactPaths;
 		transcriptWriter?: ChildTranscriptWriter;
 		attemptNotes: string[];
+		runSupervisionState: RunSupervisionState;
 		outputSnapshot?: SingleOutputSnapshot;
 		originalTask?: string;
 		orcaProgressTab?: OrcaProgressTab;
@@ -622,6 +632,8 @@ async function runSingleAttempt(
 		let activityTimer: NodeJS.Timeout | undefined;
 		let timeoutTimer: NodeJS.Timeout | undefined;
 		let timeoutHardFinishTimer: NodeJS.Timeout | undefined;
+		let runSupervision: ReturnType<typeof createRunSupervision> | undefined;
+		let supervisorStopTimer: ReturnType<typeof setTimeout> | undefined;
 		const clearTimeoutTimers = () => {
 			if (timeoutTimer) {
 				clearTimeout(timeoutTimer);
@@ -808,6 +820,7 @@ async function runSingleAttempt(
 
 		const supervisorBridge = createForegroundSupervisorBridge({
 			events: options.intercomEvents, enabled: options.allowIntercomDetach === true,
+			runSupervisionEnabled: controlConfig.enabled,
 			runId: options.runId, agent: agent.name, childIndex: options.index ?? 0,
 			isLive: () => !sessionSettled && !lifecycleFinished,
 			isDetached: () => detached,
@@ -817,7 +830,15 @@ async function runSingleAttempt(
 
 		const finish = (code: number) => {
 			if (lifecycleFinished) return;
+			if (session) {
+				recoveryRuntimeByResult.set(result, {
+					...recoveryRuntimeByResult.get(result),
+					...captureRecoveryBriefIdentity(session, result.messages),
+				});
+			}
 			lifecycleFinished = true;
+			runSupervision?.dispose();
+			if (supervisorStopTimer) clearTimeout(supervisorStopTimer);
 			clearFinalDrainTimers();
 			clearWatchdogTailTimer();
 			clearUnsettledAgentEndTimers();
@@ -1246,24 +1267,26 @@ async function runSingleAttempt(
 			activityTimer.unref?.();
 		}
 
+		const terminateForRunTimeout = (): void => {
+			if (!attemptTimeout || sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
+			result.timedOut = true;
+			runSupervision?.dispose();
+			clearAllToolTimeouts();
+			result.error = attemptTimeout.message;
+			result.finalOutput = attemptTimeout.message;
+			progress.status = "failed";
+			progress.error = attemptTimeout.message;
+			progress.durationMs = Date.now() - startTime;
+			fireUpdate();
+			abortChild();
+			timeoutHardFinishTimer = setTimeout(() => {
+				if (sessionSettled || lifecycleFinished) return;
+				settle(undefined, true);
+			}, 4000);
+			timeoutHardFinishTimer.unref?.();
+		};
 		if (attemptTimeout) {
-			timeoutTimer = setTimeout(() => {
-				if (sessionSettled || lifecycleFinished || interruptedByControl) return;
-				result.timedOut = true;
-				clearAllToolTimeouts();
-				result.error = attemptTimeout.message;
-				result.finalOutput = attemptTimeout.message;
-				progress.status = "failed";
-				progress.error = attemptTimeout.message;
-				progress.durationMs = Date.now() - startTime;
-				fireUpdate();
-				abortChild();
-				timeoutHardFinishTimer = setTimeout(() => {
-					if (sessionSettled || lifecycleFinished) return;
-					settle(undefined, true);
-				}, 4000);
-				timeoutHardFinishTimer.unref?.();
-			}, attemptTimeout.remainingMs);
+			timeoutTimer = setTimeout(terminateForRunTimeout, attemptTimeout.remainingMs);
 			timeoutTimer.unref?.();
 		}
 
@@ -1298,8 +1321,9 @@ async function runSingleAttempt(
 			}
 		};
 		const terminateForToolTimeout = (message: string): void => {
-			if (sessionSettled || lifecycleFinished || interruptedByControl) return;
+			if (sessionSettled || lifecycleFinished || interruptedByControl || result.stopped || result.timedOut || abortedBySignal) return;
 			result.timedOut = true;
+			runSupervision?.dispose();
 			result.error = message;
 			result.finalOutput = message;
 			progress.status = "failed";
@@ -1335,6 +1359,16 @@ async function runSingleAttempt(
 		/** The child run ended (or was forced to end); fold in the captures and finish. */
 		const settle = (promptError: unknown, forced = false): void => {
 			if (lifecycleFinished || sessionSettled) return;
+			// A parent STOP already on disk must survive prompt completion and model fallback.
+			if (runSupervision?.dispose() === "stop") {
+				result.stopped = true;
+				result.timedOut = undefined;
+				result.interrupted = undefined;
+				interruptedByControl = false;
+				result.error = "Subagent stopped by supervisor.";
+				progress.status = "failed";
+				progress.error = result.error;
+			}
 			sessionSettled = true;
 			clearFinalDrainTimers();
 			clearUnsettledAgentEndTimers();
@@ -1363,6 +1397,7 @@ async function runSingleAttempt(
 			const kill = () => {
 				if (sessionSettled || lifecycleFinished) return;
 				abortedBySignal = true;
+				runSupervision?.dispose();
 				abortChild();
 				const hardTimer = setTimeout(() => {
 					if (sessionSettled || lifecycleFinished) return;
@@ -1380,8 +1415,9 @@ async function runSingleAttempt(
 		if (options.interruptSignal) {
 			const interrupt = () => {
 				if (sessionSettled || lifecycleFinished) return;
-				if (result.timedOut) return;
+				if (result.timedOut || result.stopped) return;
 				interruptedByControl = true;
+				runSupervision?.dispose();
 				clearTimeoutTimers();
 				clearAllToolTimeouts();
 				progress.status = "running";
@@ -1424,17 +1460,51 @@ async function runSingleAttempt(
 					void created.dispose();
 					return;
 				}
+				// Startup can occupy the event loop past the deadline before its timer
+				// callback runs. Enforce the same deadline before allowing any prompt.
+				if (attemptTimeout && Date.now() >= attemptTimeout.deadlineAt) terminateForRunTimeout();
 				session = created;
+				// Read the existing context before prompting; it contains the original
+				// objective/results when this is a continuation of the same session.
+				recoveryRuntimeByResult.set(result, { priorMessages: created.messages.slice() });
 				created.detached = detached;
 				unsubscribe = created.subscribe((event) => processEvent(event as Parameters<typeof processEvent>[0]));
-				if (abortedBySignal || interruptedByControl || result.timedOut) {
+				if (abortedBySignal || interruptedByControl || result.timedOut || result.stopped) {
+					// Creation can finish after a stop or deadline. Aborting an idle
+					// session does not prevent a later prompt from starting fresh work.
 					abortChild();
+					settle(undefined);
+					return;
 				}
 				options.onChildSession?.({ steer: (text) => created.steer(text), followUp: (text) => created.followUp(text) });
 				const actualReadonlyModel = shared.readonlyExpected && getReadonlyChildModels(created)?.current;
 				if (shared.readonlyExpected && (!actualReadonlyModel || actualReadonlyModel.fullId !== shared.readonlyModel
 					|| actualReadonlyModel.api !== shared.readonlyExpected.api || created.modelId !== shared.readonlyModel || abortedBySignal || interruptedByControl || result.timedOut
 					|| !shared.readonlyHandoffAllowed?.())) throw new Error("Read-only continuation handoff vetoed.");
+				runSupervision = createRunSupervision({
+					state: shared.runSupervisionState,
+					metadata: controlConfig.enabled ? resolveRunSupervisionMetadata(launch.config) : undefined,
+					getSnapshot: () => formatRunSupervisionSnapshot({
+						task, startedAt: shared.runSupervisionState.startedAt, currentTools: [...activeToolCalls.values()].map((call) => call.tool),
+						toolCount: progress.toolCount, tokens: progress.tokens, recentOutput: progress.recentOutput,
+					}),
+					onStop: () => {
+						if (sessionSettled || lifecycleFinished || result.timedOut || result.stopped || interruptedByControl || abortedBySignal) return;
+						result.stopped = true;
+						result.error = "Subagent stopped by supervisor.";
+						progress.status = "failed";
+						progress.error = result.error;
+						clearTimeoutTimers();
+						clearAllToolTimeouts();
+						fireUpdate();
+						abortChild();
+						supervisorStopTimer = setTimeout(() => {
+							if (!sessionSettled && !lifecycleFinished) settle(undefined, true);
+						}, 3000);
+						supervisorStopTimer.unref?.();
+					},
+					onError: (error) => appendRecentOutput(progress, [`Run supervision request failed: ${error instanceof Error ? error.message : String(error)}`]),
+				});
 				await created.prompt(`Task: ${task}`);
 				settle(undefined);
 			} catch (error) {
@@ -1540,7 +1610,11 @@ async function runSingleAttempt(
 	if (!fullOutput.trim() && result.structuredOutput !== undefined) fullOutput = JSON.stringify(result.structuredOutput, null, 2);
 	result.outputState = fullOutput.trim() || result.structuredOutput !== undefined ? "present" : "absent";
 	if (result.timedOut) {
-		const timeoutMessage = formatTimeoutMessage(options.timeoutMs ?? 0);
+		// A per-tool deadline can expire without any run-level limit. Preserve the
+		// actual timeout cause instead of reporting an unrelated or zero runtime.
+		const timeoutMessage = result.error ?? (options.timeoutMs !== undefined
+			? formatTimeoutMessage(options.timeoutMs)
+			: "Subagent timed out.");
 		let requiredOutputMissing: boolean | undefined;
 		if (options.outputMode === "file-only" && options.outputPath) {
 			const outputChanged = hasSingleOutputChangedSinceSnapshot(options.outputPath, shared.outputSnapshot);
@@ -1689,6 +1763,8 @@ async function runSyncCompletionInner(
 	task: string,
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
+	// Model fallback and recovery remain one logical run for periodic parent decisions.
+	const runSupervisionState = createRunSupervisionState();
 	const effectiveCwd = options.cwd ?? runtimeCwd;
 	const cwdError = preflightLaunchCwd(options.requestedCwd ?? effectiveCwd, effectiveCwd);
 	if (cwdError) {
@@ -1949,6 +2025,10 @@ async function runSyncCompletionInner(
 		},
 	};
 	let lastResult: SingleResult | undefined;
+	// Keep references through final settlement so a retry cannot erase earlier
+	// accomplishments from the recovery brief. The task result itself stays intact.
+	const recoveryAttemptMessages: Array<NonNullable<SingleResult["messages"]>> = [];
+	let firstRecoveryRuntime: RecoveryBriefRuntimeSnapshot | undefined;
 	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
 	let recoveryState: LogicalRecoveryState = "unused";
 	let readonlyExpected: SettledReadonlyEvidence | undefined;
@@ -1983,6 +2063,7 @@ async function runSyncCompletionInner(
 				artifactPaths: artifactPathsResult,
 				transcriptWriter,
 				attemptNotes,
+				runSupervisionState,
 				modelCandidates: candidates
 					.map((modelCandidate) => applyThinkingSuffix(modelCandidate, options.thinkingOverride ?? agent.thinking, options.thinkingOverride !== undefined))
 					.filter((modelCandidate): modelCandidate is string => Boolean(modelCandidate)),
@@ -1996,6 +2077,8 @@ async function runSyncCompletionInner(
 				readonlyHandoffAllowed: readonlyExpected ? readonlyHandoffAllowed : undefined,
 			});
 			lastResult = result;
+			if (result.messages) recoveryAttemptMessages.push(result.messages);
+			firstRecoveryRuntime ??= recoveryRuntimeByResult.get(result);
 			if (!recoveringAbort) {
 				if (result.model) attemptedModels.push(result.model);
 				else if (candidate) attemptedModels.push(candidate);
@@ -2087,7 +2170,7 @@ async function runSyncCompletionInner(
 			// Preserve the legacy intercom handoff contract: once this logical run has
 			// been handed to a supervisor, terminating that attempt must not launch a
 			// model fallback. Explicit user detach retains fallback.
-			if (intercomDetached || result.timedOut) break modelAttemptsLoop;
+			if (intercomDetached || result.timedOut || result.stopped || result.interrupted) break modelAttemptsLoop;
 			if (attemptSucceeded) break modelAttemptsLoop;
 
 			const retryableModelFailure = isRetryableModelFailureAttempt({ error: result.error, messages: result.messages, toolCount: result.progressSummary?.toolCount });
@@ -2228,6 +2311,44 @@ async function runSyncCompletionInner(
 		}
 	}
 	if (isAgentContract(options.agentContract)) attachContractProjections(result);
+	// Recovery brief: one bounded, tool-free summary for an abnormal termination.
+	// Runs after every retry/recovery path settled and after the session/transcript
+	// references are final, but before `redactResultPrompt` (the original task is
+	// the brief's objective) and before `compactForegroundResult` drops `messages`.
+	// `recoveryBriefRequest` is pure: it maps fields only. Evidence is rendered
+	// inside `applyRecoveryBrief` AFTER the trigger guard, so a successful child
+	// never pays for the O(messages) flatten.
+	try {
+		// Interrupt remains meaningful after the child's prompt has settled: it
+		// also cancels the diagnostic inference and suppresses a late brief.
+		const recoverySignal = options.signal && options.interruptSignal
+			? AbortSignal.any([options.signal, options.interruptSignal])
+			: options.signal ?? options.interruptSignal;
+		const applied = await applyRecoveryBrief(recoveryBriefRequest(result, {
+			attemptMessages: recoveryAttemptMessages,
+			runtime: {
+				...recoveryRuntimeByResult.get(result),
+				...(firstRecoveryRuntime?.priorMessages ? { priorMessages: firstRecoveryRuntime.priorMessages } : {}),
+			},
+			...(options.recoveryBrief ? { generator: options.recoveryBrief } : {}),
+			// A configured usage budget means extra spend is not authorized.
+			...(options.usageBudget ? { usageBudgetConfigured: true } : {}),
+			// The authoritative completion of a detached run must not spend on a
+			// second summary; the parent already received the detach receipt.
+			...(detachedReason ? { detached: true } : {}),
+			...(recoverySignal ? { signal: recoverySignal } : {}),
+		}));
+		// Fold the inference's measured spend exactly once. `turns` is untouched:
+		// the brief is not a child execution turn and must not add phantom activity.
+		foldRecoveryBriefUsage(result.usage, applied.usage);
+		if (applied.brief) result.recoveryBrief = applied.brief;
+	} catch (error) {
+		// A brief is diagnostic value only; it must never fail the child's result.
+		console.warn(`[pi-subagents] recovery brief failed for run ${options.runId}: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		// Retained results should not retain an extra copy of the stored context.
+		recoveryRuntimeByResult.delete(result);
+	}
 	redactResultPrompt(result);
 	try {
 		persistResultMetadata(result);

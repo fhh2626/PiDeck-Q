@@ -5,9 +5,7 @@ import { Textarea } from "../components/ui-shadcn/textarea";
 
 const RAW_FILE_OPTIONS = [
 	{ value: "models.json", label: "models.json" },
-	{ value: "auth.json", label: "auth.json" },
 	{ value: "settings.json", label: "settings.json" },
-	{ value: "trust.json", label: "trust.json" },
 ];
 
 export function RawTab(props: {

@@ -1,32 +1,78 @@
+import { detectRendererPlatform } from "../lib/detectRendererPlatform.ts";
+
 const WINDOWS_DRIVE_PATH_RE = /^\/?[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH_RE = /^\\\\[^\\/]+[\\/][^\\/]+/;
 const RELATIVE_PATH_RE = /^(?:\.\.?[\\/]|[^\\/:*?"<>|]+[\\/])/;
 const FILE_EXTENSION_RE = /\.[A-Za-z0-9][A-Za-z0-9._-]*(?::\d+(?::\d+)?)?$/;
+
+type FileLinkPlatform = "win32" | "linux" | "darwin";
+
+/** Browser callers need their host platform before the app-info IPC has completed. */
+function defaultFileLinkPlatform(): FileLinkPlatform {
+	if (typeof navigator !== "undefined" && /Windows|Mac|Linux/i.test(navigator.userAgent)) {
+		const detected = detectRendererPlatform(navigator.userAgent);
+		return detected === "linux" || detected === "darwin" ? detected : "win32";
+	}
+	return typeof process !== "undefined" && (process.platform === "linux" || process.platform === "darwin")
+		? process.platform : "win32";
+}
 
 export function isAbsoluteFilePath(path: string): boolean {
 	if (!path) return false;
 	return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/") || WINDOWS_UNC_PATH_RE.test(path);
 }
 
-export function resolveFileLinkPath(path: string, basePath?: string): string {
+/** A backslash is a filename character on POSIX unless the target explicitly names Windows. */
+function usesWindowsSeparators(path: string, platform: FileLinkPlatform): boolean {
+	return platform === "win32" || /^[A-Za-z]:[\\/]/.test(path) || WINDOWS_UNC_PATH_RE.test(path);
+}
+
+export function resolveFileLinkPath(path: string, basePath?: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
+	// Markdown producers also use /C:/... to keep a drive path URL-shaped.
+	// A POSIX directory can have that exact spelling and must retain its root.
+	if (platform === "win32" && /^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
 	if (!path || isAbsoluteFilePath(path) || !basePath) return path;
-	const separator = basePath.includes("\\") ? "\\" : "/";
-	return `${basePath.replace(/[\\/]+$/, "")}${separator}${path.replace(/^[\\/]+/, "")}`;
+	const windowsSeparators = usesWindowsSeparators(basePath, platform);
+	const separator = windowsSeparators && basePath.includes("\\") ? "\\" : "/";
+	const base = basePath.replace(windowsSeparators ? /[\\/]+$/ : /\/+$/, "");
+	const relative = path.replace(windowsSeparators ? /^[\\/]+/ : /^\/+/, "");
+	return `${base}${separator}${relative}`;
+}
+
+/** Resolve a local target once without decoding literal percent signs in disk paths. */
+export function resolveLocalFileTarget(
+	value: string,
+	basePath?: string,
+	platform: FileLinkPlatform = defaultFileLinkPlatform(),
+): LocalFileTargetResult {
+	const target = normalizeLocalFileTarget(value, platform);
+	return target.ok ? { ok: true, path: resolveFileLinkPath(target.path, basePath, platform) } : target;
+}
+
+/** Directory of a disk path, retaining a drive or POSIX root for sibling links. */
+export function fileLinkDirectory(path: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
+	const normalized = usesWindowsSeparators(path, platform) ? path.replace(/\\/g, "/") : path;
+	const separator = normalized.lastIndexOf("/");
+	if (separator < 0) return ".";
+	if (separator === 0) return "/";
+	return separator === 2 && /^[A-Za-z]:/.test(normalized)
+		? normalized.slice(0, 3)
+		: normalized.slice(0, separator);
 }
 
 export function stripFileLocation(path: string): string {
 	return path.replace(/:\d+(?::\d+)?$/, "");
 }
 
-export function normalizeLocalFilePath(value: string): string | null {
+export function normalizeLocalFilePath(value: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string | null {
 	if (!value) return null;
 
-	const target = normalizeLocalFileTarget(value);
+	const target = normalizeLocalFileTarget(value, platform);
 	if (!target.ok) return null;
 	let path = target.path;
 
 	// Pi agents commonly emit /C:/... links so one Markdown form works across renderers.
-	if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
+	if (platform === "win32" && /^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
 
 	const withoutLocation = stripFileLocation(path);
 	const isWindowsPath = WINDOWS_DRIVE_PATH_RE.test(path) || WINDOWS_UNC_PATH_RE.test(path);
@@ -46,14 +92,14 @@ export function normalizeLocalFilePath(value: string): string | null {
 }
 
 /** Internal hrefs now use standard absolute URIs or raw relative paths, never encoded separators. */
-export function toInternalFileHref(value: string): string | null {
-	const path = normalizeLocalFilePath(value);
-	return path === null ? null : filePathToUri(path);
+export function toInternalFileHref(value: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string | null {
+	const path = normalizeLocalFilePath(value, platform);
+	return path === null ? null : filePathToUri(path, platform);
 }
 
-export function filePathToUri(filePath: string): string {
+export function filePathToUri(filePath: string, platform: FileLinkPlatform = defaultFileLinkPlatform()): string {
 	if (!isAbsoluteFilePath(filePath)) return filePath;
-	const normalized = filePath.replace(/\\/g, "/");
+	const normalized = usesWindowsSeparators(filePath, platform) ? filePath.replace(/\\/g, "/") : filePath;
 	if (/^[A-Za-z]:\//.test(normalized)) {
 		const drive = normalized.slice(0, 2);
 		const rest = normalized.slice(2);
@@ -76,7 +122,7 @@ export function filePathFromHref(href: string | null | undefined, platform?: "wi
 	if (!href) return null;
 	const res = normalizeLocalFileTarget(href, platform);
 	if (!res.ok) return null;
-	return /^file:/i.test(href) ? res.path : normalizeLocalFilePath(res.path);
+	return /^file:/i.test(href) ? res.path : normalizeLocalFilePath(res.path, platform);
 }
 
 export type LocalFileTargetResult =
@@ -88,7 +134,7 @@ export type LocalFileTargetResult =
  */
 export function normalizeLocalFileTarget(
 	input: string,
-	platform: "win32" | "linux" | "darwin" = typeof process !== "undefined" && process.platform && (process.platform === "win32" || process.platform === "linux" || process.platform === "darwin") ? process.platform : "win32",
+	platform: FileLinkPlatform = defaultFileLinkPlatform(),
 ): LocalFileTargetResult {
 	if (!input || typeof input !== "string") {
 		return { ok: false, error: "Empty path target", code: "INVALID_URL" };
@@ -115,7 +161,11 @@ export function normalizeLocalFileTarget(
 			const legacyWinDriveMatch = trimmed.match(/^file:\/\/([A-Za-z]:[\\/].*)$/);
 			if (legacyWinDriveMatch) {
 				try {
-					const decoded = decodeURIComponent(legacyWinDriveMatch[1]);
+					// This legacy spelling still follows URL query/fragment semantics.
+					// Split before decoding so encoded hashes remain in the disk name.
+					const encodedPath = legacyWinDriveMatch[1];
+					const suffixIndex = encodedPath.search(/[?#]/);
+					const decoded = decodeURIComponent(suffixIndex < 0 ? encodedPath : encodedPath.slice(0, suffixIndex));
 					return { ok: true, path: decoded };
 				} catch {
 					return { ok: false, error: "Invalid percent encoding in legacy file URL", code: "INVALID_ENCODING" };

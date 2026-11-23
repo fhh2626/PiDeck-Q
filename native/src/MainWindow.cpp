@@ -100,7 +100,7 @@ MainWindow::MainWindow(HostRpcServer *host, const QJsonObject &startup,
     }
 
     const bool useNativeTitleBar = nativeWindowUsesSystemTitleBar(
-        startup.value(QStringLiteral("useNativeTitleBar")).toBool(false));
+        startup.value(QStringLiteral("useNativeTitleBar")).toBool(true));
     if (!useNativeTitleBar) {
         setWindowFlag(Qt::FramelessWindowHint, true);
     }

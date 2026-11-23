@@ -16,7 +16,7 @@ test("inventory preserves identity and does not notify for runtime capability/st
   const before = store.get(atoms.agentInventoryAtom);
   let notifications = 0;
   const unsubscribe = store.sub(atoms.agentInventoryAtom, () => notifications++);
-  store.set(atoms.applySessionRuntimeEventAtom, event("agents:runtime-state", { state: { isStreaming: true, contextTokens: 100, cost: 0.2 } }));
+  store.set(atoms.applySessionRuntimeEventAtom, event("agents:runtime-state", { state: { isStreaming: true, contextTokens: 100 } }));
   assert.equal(store.get(atoms.agentInventoryAtom), before);
   assert.equal(notifications, 0);
   unsubscribe();

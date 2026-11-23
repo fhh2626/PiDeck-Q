@@ -1,12 +1,12 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { SessionRuntimeTarget } from "../../../../../shared/types";
+import type { SessionMessageCommandTarget } from "../../../../../shared/types";
 
 export interface TimelineEditCommands {
-	/** 当前可用于发起新编辑的运行时目标 */
-	currentRuntimeTarget: SessionRuntimeTarget | undefined;
+	/** Captures either an existing runtime or a saved session awaiting activation. */
+	currentRuntimeTarget: SessionMessageCommandTarget | undefined;
 	/** 提交编辑变更，必须原样传入开始编辑时捕获的 expectedTarget */
 	submitEditMessage: (
-		expectedTarget: SessionRuntimeTarget,
+		expectedTarget: SessionMessageCommandTarget,
 		messageId: string,
 		newText: string,
 	) => Promise<boolean>;

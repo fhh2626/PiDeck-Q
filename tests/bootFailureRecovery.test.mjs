@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { requestWithFallback } from "../src/native-node/host/requestWithFallback.ts";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
 /**
@@ -11,37 +10,6 @@ import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
  */
 
 const read = (path) => readFileSync(path, "utf8");
-
-test("requestWithFallback：正常返回时不降级", async () => {
-	const result = await requestWithFallback(async () => "live", "fallback", 200);
-	assert.deepEqual(result, { value: "live", degraded: false });
-});
-
-test("requestWithFallback：宿主请求永不返回时按超时降级，而不是无限等待", async () => {
-	const startedAt = Date.now();
-	const result = await requestWithFallback(() => new Promise(() => {}), "fallback", 50);
-	assert.deepEqual(result, { value: "fallback", degraded: true });
-	assert.ok(Date.now() - startedAt < 1_000);
-});
-
-test("requestWithFallback：宿主请求失败时降级，且迟到的拒绝不会产生未处理拒绝", async () => {
-	let rejectLate;
-	const late = new Promise((_, reject) => {
-		rejectLate = reject;
-	});
-	const unhandled = [];
-	const onUnhandled = (reason) => unhandled.push(reason);
-	process.on("unhandledRejection", onUnhandled);
-	try {
-		const result = await requestWithFallback(() => late, "fallback", 20);
-		assert.equal(result.degraded, true);
-		rejectLate(new Error("late failure"));
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		assert.deepEqual(unhandled, []);
-	} finally {
-		process.off("unhandledRejection", onUnhandled);
-	}
-});
 
 function createFakeDom() {
 	const makeElement = (tag = "div") => ({
@@ -160,11 +128,4 @@ test("启动失败后 logo 循环动画停止并定格为完整 logo", () => {
 	const logo = read("src/renderer/src/boot-logo.ts");
 	assert.match(logo, /overlay\?\.dataset\.failed !== "true"/);
 	assert.match(logo, /if \(overlay\.isConnected && overlay\.dataset\.failed === "true"\) \{\s*paintCells\(canvas, finalLogoCells\(settledLogoColor\(\)\), size\);/);
-});
-
-test("Sidecar 的 bootstrap 不依赖无超时的宿主剪贴板请求", () => {
-	const index = read("src/native-node/index.ts");
-	assert.match(index, /requestWithFallback<NativeClipboardMetadata>\(/);
-	assert.match(index, /BOOTSTRAP_CLIPBOARD_TIMEOUT_MS/);
-	assert.doesNotMatch(index, /const clipboard = await host\.request<NativeClipboardMetadata>\("clipboard\.metadataSnapshot"\);\s*const externalFileCapabilityId = issueClipboardCapability\(clipboard\);\s*return \{/);
 });

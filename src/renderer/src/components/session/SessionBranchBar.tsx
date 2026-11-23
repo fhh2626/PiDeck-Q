@@ -5,6 +5,7 @@ import { sessionRecordsAtom } from "../../atoms/session-atoms";
 import { t } from "../../i18n";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui-shadcn/popover";
 import { deriveBranchFamily } from "./branchFamily";
+import { SessionBranchMenu } from "./SessionBranchMenu";
 
 /**
  * 会话分支导航条（借鉴 AI Elements MessageBranch 的 ◀ i/N ▶ 分页器）。
@@ -18,6 +19,8 @@ import { deriveBranchFamily } from "./branchFamily";
 export function SessionBranchBar(props: {
 	sessionId: string;
 	onOpenSession?: (sessionId: string) => void;
+	/** Inline titlebar mode keeps branch navigation in a single compact row. */
+	compact?: boolean;
 }) {
 	const records = useAtomValue(sessionRecordsAtom);
 	const family = useMemo(
@@ -27,14 +30,22 @@ export function SessionBranchBar(props: {
 	if (!family || !props.onOpenSession) return null;
 	const { parent, siblings, currentIndex, children } = family;
 	const open = props.onOpenSession;
+	if (props.compact) {
+		// A focus change must close the previous session's menu immediately.
+		return <SessionBranchMenu key={props.sessionId} family={family} onOpenSession={open} />;
+	}
 
 	return (
-		<div className="flex min-w-0 items-center gap-2 border-b border-border-subtle px-3 py-1 text-xs text-muted-foreground">
+		<div
+			data-no-window-drag
+			className="flex min-w-0 items-center gap-2 border-b border-border-subtle px-3 py-1 text-xs text-muted-foreground"
+		>
 			{parent && (
 				<button
 					type="button"
 					className="inline-flex min-w-0 items-center gap-1 rounded-sm px-1 py-0.5 transition-colors hover:bg-accent hover:text-foreground"
 					title={parent.title}
+					aria-label={t("branch.parent", { title: parent.title })}
 					onClick={() => open(parent.id)}
 				>
 					<CornerUpLeft size={12} className="shrink-0" aria-hidden="true" />

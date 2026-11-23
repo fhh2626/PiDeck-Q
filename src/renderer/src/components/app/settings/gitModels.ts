@@ -6,29 +6,34 @@
  * import 会把整个 tab 拖进首开 chunk。
  */
 import { useCallback, useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
+import { modelConfigurationScopeAtom, modelListRevisionAtom } from "../../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../../utils/modelConfigurationScope";
 import type { AvailableModel } from "../../../../../shared/types";
 import { desktopApi } from "../../../desktopApi";
 
 export function useGitModels() {
-	const [gitModels, setGitModels] = useState<AvailableModel[]>([]);
+	const modelListRevision = useAtomValue(modelListRevisionAtom);
+	const scopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
+	const [loaded, setLoaded] = useState<{ scopeKey: string; models: AvailableModel[] }>({ scopeKey, models: [] });
 	const [gitModelPickerOpen, setGitModelPickerOpen] = useState(false);
 
 	useEffect(() => {
 		let active = true;
 		void desktopApi.projects.listModels()
 			.then((models) => {
-				if (active) setGitModels(models);
+				if (active) setLoaded({ scopeKey, models });
 			})
 			.catch(() => {
-				if (active) setGitModels([]);
+				if (active) setLoaded({ scopeKey, models: [] });
 			});
 		return () => {
 			active = false;
 		};
-	}, []);
+	}, [modelListRevision, scopeKey]);
 
 	const openPicker = useCallback(() => setGitModelPickerOpen(true), []);
 	const closePicker = useCallback(() => setGitModelPickerOpen(false), []);
 
-	return { gitModels, gitModelPickerOpen, openPicker, closePicker };
+	return { gitModels: loaded.scopeKey === scopeKey ? loaded.models : [], gitModelPickerOpen, openPicker, closePicker };
 }

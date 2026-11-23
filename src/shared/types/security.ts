@@ -10,7 +10,7 @@
  * 设计原则：
  * 1. 默认不改变行为：enabled=false 时扩展完全放行，老用户零感知；
  * 2. 等级（Level）是一等公民：内置 off/standard/strict 三档 + 用户自定义；
- * 3. 每个等级独立声明「工具动作」「bash 危险命令」「文件目录边界」「兜底动作」；
+ * 3. 每个等级独立声明「工具动作」「Bash / PowerShell 危险命令」「文件目录边界」「兜底动作」；
  * 4. 会话级覆盖：sessionId → levelId，输入框切换即时生效（快照重读）。
  */
 
@@ -56,18 +56,20 @@ export type SecurityLevelConfig = {
 	builtin?: boolean;
 	/**
 	 * 工具级动作表：tool → allow/ask/deny。
-	 * 未列出的工具默认「放行」——但 bash 例外：
-	 * bash 命中 denyBashPatterns 时，行为取 toolActions.bash ?? defaultAction（拒绝优先）。
+	 * 未列出的工具回退 defaultAction。shell 的显式 allow/deny 优先；
+	 * shell 动作为 ask 时，命中危险命令且 defaultAction=deny 则直接拒绝。
 	 */
 	toolActions: Partial<Record<SecurityToolName, SecurityAction>>;
 	/**
 	 * bash 危险命令正则（正则源字符串，扩展侧 new RegExp）。
-	 * 命中后动作 = toolActions.bash 若为 deny/ask 则取之，否则 defaultAction。
-	 * 为空数组表示该等级不拦截任何 bash 命令。
+	 * 与 toolActions.bash / defaultAction 组合求值，遵循上方工具动作优先级。
+	 * 空数组关闭危险命令匹配，工具级动作仍然生效。
 	 */
 	denyBashPatterns: string[];
 	/**
-	 * powershell 危险命令正则（可选，不传时扩展内部使用默认规则）。
+	 * PowerShell 危险命令正则，按大小写不敏感方式匹配，仅对 powershell 工具生效。
+	 * 动作优先级与 Bash 一致，空数组只关闭危险命令匹配。
+	 * 可选以兼容旧配置，后端补齐缺省规则，扩展也保留默认规则回退。
 	 */
 	denyPowerShellPatterns?: string[];
 	/** 文件访问边界：workspace=仅工作目录；custom=工作目录 + customAllowDirs；unrestricted=不限制 */
@@ -157,8 +159,8 @@ export function createDefaultSecurityLevels(): SecurityLevelConfig[] {
 			description: "所有命令先确认；危险命令和敏感文件受保护，目录不限制。",
 			builtin: true,
 			toolActions: { bash: "ask", powershell: "ask" },
-			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
-			denyPowerShellPatterns: DEFAULT_DENY_POWERSHELL_PATTERNS,
+			denyBashPatterns: [...DEFAULT_DENY_BASH_PATTERNS],
+			denyPowerShellPatterns: [...DEFAULT_DENY_POWERSHELL_PATTERNS],
 			pathPolicy: "unrestricted",
 			customAllowDirs: [],
 			denyDirs: [],
@@ -181,8 +183,8 @@ export function createDefaultSecurityLevels(): SecurityLevelConfig[] {
 				powershell: "ask",
 				ask_question: "allow",
 			},
-			denyBashPatterns: DEFAULT_DENY_BASH_PATTERNS,
-			denyPowerShellPatterns: DEFAULT_DENY_POWERSHELL_PATTERNS,
+			denyBashPatterns: [...DEFAULT_DENY_BASH_PATTERNS],
+			denyPowerShellPatterns: [...DEFAULT_DENY_POWERSHELL_PATTERNS],
 			pathPolicy: "workspace",
 			customAllowDirs: [],
 			denyDirs: [],

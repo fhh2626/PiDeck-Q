@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { snapshotBackgroundWork } from "../../api/background-work.ts";
 import { DIRS, type Details, type SubagentState } from "../../shared/types.ts";
 import { listAsyncRuns } from "./async-status.ts";
+import { hasOutstandingForegroundWork } from "./foreground-wait.ts";
 import type { ReadonlyDrainObservation } from "../shared/readonly-drain-observation.ts";
 import { waitForSubagents, type SubagentWaitDeps, type SubagentWaitParams, type WaitEventBus } from "./subagent-wait.ts";
 
@@ -9,6 +10,7 @@ export const DEFAULT_AUTO_DRAIN_TIMEOUT_MS = 30 * 60 * 1000;
 
 export interface AutoDrainDeps {
 	state: SubagentState;
+	findPendingAsks?: SubagentWaitDeps["findPendingAsks"];
 	events?: WaitEventBus;
 	timeoutMs?: number;
 	now?: () => number;
@@ -48,7 +50,10 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
 		const wait = deps.wait ?? waitForSubagents;
 
 		while (true) {
-			const work = hasWork(sessionId, now());
+			if (deps.state.currentSessionId !== sessionId) throw new Error("Cannot auto-drain work after the originating session changed.");
+			// Supervisor handoffs retain live foreground children and workflow VMs in memory.
+			// They must keep a headless turn alive even when no async runner exists on disk.
+			const work = hasOutstandingForegroundWork(deps.state, sessionId) || hasWork(sessionId, now());
 			observation?.predicate(work);
 			if (!work) break;
 			const remainingMs = deadlineAt - now();
@@ -60,6 +65,7 @@ export async function drainOutstandingWork(deps: AutoDrainDeps, observation?: Re
 				undefined,
 				{
 					state: deps.state,
+					findPendingAsks: deps.findPendingAsks,
 					events: deps.events,
 					now,
 					stopOnAttention: false,

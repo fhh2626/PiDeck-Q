@@ -1,3 +1,4 @@
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -55,6 +56,7 @@ function loadTimelineHelpers() {
 function loadSessionAtoms() {
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   return compileModule("src/renderer/src/atoms/session-atoms.ts", {
+    "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
     "../utils/agentRuntimeState": compileModule(
       "src/renderer/src/utils/agentRuntimeState.ts",
     ),

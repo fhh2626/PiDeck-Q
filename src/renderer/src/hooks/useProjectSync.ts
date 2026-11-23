@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { Project, FileTreeNode, GitBranchInfo, WorktreeEntry, SessionSummary, SessionRecord } from "../../../shared/types";
 import type { SessionLoadState } from "../atoms/session-atoms";
+import type { SessionModelVersions } from "../atoms/session-model-references";
 import { sessionRecordToSummary } from "../atoms/session-selectors";
 import { requestProjectInventory } from "../utils/projectInventoryRequests";
 import { ProjectGitRefresh, type GitRefreshIntent } from "../utils/projectGitRefresh";
@@ -33,7 +34,8 @@ type UseProjectSyncInput = {
   activeProjectId: string | undefined;
   setProjects: (projects: Project[]) => void;
   setActiveProjectId: (id: string) => void;
-  replaceProjectSessions: (input: { projectId: string; sessions: SessionRecord[] }) => void;
+  replaceProjectSessions: (input: { projectId: string; sessions: SessionRecord[]; modelConfigurationVersions?: SessionModelVersions }) => void;
+  captureModelConfigurationVersions?: () => SessionModelVersions;
   api: {
     projects: { list: () => Promise<Project[]> };
     git: { worktreeList: (projectId: string) => Promise<WorktreeEntry[]>; branches: (projectId: string) => Promise<{ current: string | null; branches: string[] }> };
@@ -74,6 +76,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
     setProjects,
     setActiveProjectId,
     replaceProjectSessions,
+    captureModelConfigurationVersions,
     api,
     showToast,
     setSessionCatalogLoadState,
@@ -175,6 +178,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
         setSessionCatalogLoadState?.({ projectId, state: { status: "loading" } });
         await new Promise<void>((r) => setTimeout(r, 0));
       }
+      const modelConfigurationVersions = captureModelConfigurationVersions?.();
       const records = await withTimeout(
         api.sessions.listCatalog(projectId),
         SESSION_REFRESH_TIMEOUT_MS,
@@ -185,7 +189,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
         // 新请求已经成功应用时，旧请求只能完成自己的 Promise，不能回写数据或状态。
         result = records;
       } else {
-        replaceProjectSessions({ projectId, sessions: records });
+        replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });
         sessionLatestAppliedRequestByProjectRef.current[projectId] = request;
         setSessionCatalogLoadState?.({ projectId, state: { status: "ready" } });
         const sorted = records
@@ -260,12 +264,13 @@ export function useProjectSync(input: UseProjectSyncInput) {
     const unsubscribe = api.sessions.onCatalogRefreshed(({ projectId }) => {
       const request = (sessionRequestByProjectRef.current[projectId] ?? 0) + 1;
       sessionRequestByProjectRef.current[projectId] = request;
+      const modelConfigurationVersions = captureModelConfigurationVersions?.();
       void api.sessions
         .listCatalog(projectId, { scan: false })
         .then((records) => {
           const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];
           if (latestAppliedRequest !== undefined && request < latestAppliedRequest) return;
-          replaceProjectSessions({ projectId, sessions: records });
+          replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });
           sessionLatestAppliedRequestByProjectRef.current[projectId] = request;
           setSessionCatalogLoadState?.({ projectId, state: { status: "ready" } });
         })

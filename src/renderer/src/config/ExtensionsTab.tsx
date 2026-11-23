@@ -37,8 +37,6 @@ const PIDEK_BUILTIN_SOURCE: Record<string, string> = {
 	"pi-deck-plan-mode": "pi-deck-plan-mode.ts",
 	"PiDeck-Q-Ask-Question": "pideck-q-ask-question.ts",
 	"pi-deck-nul-redirect-fix": "pi-deck-nul-redirect-fix.ts",
-	"pi-deck-context-controller": "pideck-q-context-controller.ts",
-	"PiDeck-Q-context-controller": "pideck-q-context-controller.ts",
 };
 
 /** 推荐扩展包：描述走 i18n（descriptionKey），不在组件里硬编码中英文案。 */
@@ -48,16 +46,6 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 		name: "pi-deck-todo",
 		descriptionKey: "config.extRecommended.piDeckTodo",
 		installCmd: "npm:@earendil-works/pi-deck-todo",
-		tags: ["extension"],
-		downloads: "",
-		updated: "",
-		npmUrl: "",
-		repoUrl: "https://github.com/fhh2626/PiDeck-Q",
-	},
-	{
-		name: "PiDeck-Q-context-controller",
-		descriptionKey: "config.extRecommended.piDeckContextController",
-		installCmd: "npm:@earendil-works/pi-deck-context-controller",
 		tags: ["extension"],
 		downloads: "",
 		updated: "",
@@ -140,8 +128,6 @@ const RECOMMENDED_PACKAGES: RecommendedPackage[] = [
 const BUILT_IN_DISPLAY_NAME: Record<string, string> = {
 	"pideck-q-ask-question.ts": "PiDeck-Q-Ask-Question",
 	"pideck-q-ask-question": "PiDeck-Q-Ask-Question",
-	"pideck-q-context-controller.ts": "PiDeck-Q-context-controller",
-	"pideck-q-context-controller": "PiDeck-Q-context-controller",
 	"pideck-q-websearch.ts": "PiDeck-Q-WebSearch",
 	"pideck-q-websearch": "PiDeck-Q-WebSearch",
 	"pideck-q-better-compaction.ts": "PiDeck-Q-Better-Compaction",

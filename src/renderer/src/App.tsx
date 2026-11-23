@@ -21,6 +21,7 @@ import {
   Terminal,
   GitBranch,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { showNotice } from "./utils/notice";
 import {
@@ -29,11 +30,14 @@ import {
   isNativeRuntime,
   missingElectronPreload,
 } from "./desktopApi";
-import { contextControllerSettingsAtom, turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
+import { turnFlowSettingsAtom } from "./atoms/app-ui-atoms";
 import {
   useImagePreviewController,
 } from "./hooks/useImagePreviewController";
 const ConfigModal = lazy(() => import("./ConfigModal").then((m) => ({ default: m.ConfigModal })));
+const SubagentSettingsDialog = lazy(() =>
+  import("./components/subagents/SubagentSettingsDialog").then((m) => ({ default: m.SubagentSettingsDialog })),
+);
 import { type SidebarActions } from "./components/sidebar/SidebarContent";
 import { AppSidebar } from "./components/sidebar/AppSidebar";
 import { AppBootstrap } from "./components/app/AppBootstrap";
@@ -43,7 +47,8 @@ import { useProjectRuntimeCapabilities } from "./hooks/useRuntimeCapabilities";
 import { useSessionRuntimeBridge } from "./hooks/useSessionRuntimeBridge";
 import { useAgentLoadNotice } from "./hooks/useAgentLoadNotice";
 import { useSessionLayout } from "./hooks/useSessionLayout";
-import { useFileEditor , resolveFileLinkPath } from "./hooks/useFileEditor";
+import { useFileEditor } from "./hooks/useFileEditor";
+import { resolveLocalFileTarget } from "./utils/fileLinks";
 import { useOverlayActions } from "./hooks/useOverlayActions";
 import { useWorkspacePanels, type WorkspaceDrawerPanel, type WorkspaceExternalEditorAdapter } from "./hooks/useWorkspacePanels";
 import { useDrawerPorts } from "./hooks/useDrawerPorts";
@@ -54,6 +59,7 @@ import { useQueuedPrompt } from "./hooks/useQueuedPrompt";
 import { activeAgentIdAtom } from "./hooks/useSessionRuntimeController";
 import { PromptDeliveryUnknownError } from "./utils/promptErrors";
 import { resolveResendModelSelection } from "./utils/resendModelSelection";
+import { useSessionHistoryMessageServices } from "./hooks/useSessionHistoryMessageServices";
 import {
   requireSessionCommand,
   toSessionRuntimeTarget,
@@ -69,6 +75,9 @@ import { usePiUpdate } from "./hooks/usePiUpdate";
 import { useProjectSync } from "./hooks/useProjectSync";
 import { useNativeFileDropCopy } from "./hooks/useNativeFileDropCopy";
 import { useModelListSync } from "./hooks/useModelListSync";
+import { modelConfigurationVersionsByScopeAtom, sharedModelRemovalVersionsAtom } from "./atoms/model-atoms";
+import { clearAppModelReferences, getModelRemovalsSince } from "./utils/modelSelection";
+import { useSubagentExtensionEnabled } from "./hooks/useSubagentExtensionEnabled";
 import { useProjectCommands } from "./hooks/useProjectCommands";
 import { useSessionMessageCommands } from "./hooks/useSessionMessageCommands";
 import {
@@ -129,18 +138,19 @@ import {
 } from "./rendererUtils";
 import { useResize } from "./hooks/useResize";
 import { useSessionActions } from "./hooks/useSessionActions";
+import { deleteSessionWithConfirmation } from "./hooks/deleteSessionWithConfirmation";
 import { useScratchPad } from "./hooks/useScratchPad";
 import { useWorktreeActions } from "./hooks/useWorktreeActions";
 import { ChatSessionPane } from "./components/session/ChatSessionPane";
 import { OutlinePanel } from "./components/session/OutlinePanel";
 import { SkillsQuickDialog } from "./components/session/SkillsQuickDialog";
 import { SessionSplitStage } from "./components/session/SessionSplitStage";
-import { canStopBoundAgent } from "./utils/canStopBoundAgent";
 import { splitLayoutSessionIds } from "./utils/sessionSplitEdge";
-import { SessionTabsBar } from "./components/session/SessionTabsBar";
+import { WorkspaceToolbar } from "./components/workspace/WorkspaceToolbar";
+import { WorkspaceSessionTitle } from "./components/workspace/WorkspaceSessionTitle";
 import { SessionPaneServicesProvider } from "./components/session/SessionPaneServices";
 import { ProjectEmptyState } from "./components/session/ProjectEmptyState";
-import { useSessionWorkspaceChrome } from "./hooks/useSessionWorkspaceChrome";
+import { useSessionWorkspace } from "./hooks/useSessionWorkspace";
 import { ScratchPadOverlay } from "./components/overlays/ScratchPadOverlay";
 import { AskPanelOverlay } from "./components/overlays/AskPanelOverlay";
 import { SessionRuntimeDock } from "./components/session/SessionRuntimeDock";
@@ -176,7 +186,6 @@ import type {
   ImageContent,
   PiCommand,
   Project,
-  SessionLaunchPreferences,
   SessionRecord,
   SessionSummary,
   ComposerAgentMode,
@@ -412,6 +421,7 @@ export function App() {
     setProjects,
     setActiveProjectId,
     replaceProjectSessions,
+    captureModelConfigurationVersions: () => store.get(modelConfigurationVersionsByScopeAtom),
     api: {
       projects: { list: api.projects.list },
       git: { worktreeList: api.git.worktreeList, branches: api.git.branches },
@@ -516,9 +526,7 @@ export function App() {
     piEnvironmentChecked: false,
     piRuntimePreference: "auto",
     piTypescriptPath: "",
-    piRustPath: "",
     piBoltPath: "",
-    sessionTabOpenMode: "preview",
     enableGitManagement: true,
     gitCommitMessagePrompt: getDefaultGitCommitMessagePrompt(
       resolveGitCommitMessagePromptLocale(resolveLocale("system")),
@@ -550,7 +558,6 @@ export function App() {
     webServiceHost: "0.0.0.0",
     webServicePort: 8765,
     webServiceAccessToken: "",
-    rpcTimeout: 600_000,
     workspaceContentOpenMode: "split",
     contentMaxWidth: 1800,
     chatContentWidthPct: 80,
@@ -591,18 +598,6 @@ export function App() {
     settings.expandInterimDuringStream,
     settings.collapsePrevRunsOnNewTurn,
     setTurnFlowSettings,
-  ]);
-
-  const setContextControllerSettings = useSetAtom(contextControllerSettingsAtom);
-  useEffect(() => {
-    setContextControllerSettings({
-      piRpcNoExtensions: Boolean(settings.piRpcNoExtensions),
-      removedBuiltInExtensions: settings.removedBuiltInExtensions ?? [],
-    });
-  }, [
-    settings.piRpcNoExtensions,
-    settings.removedBuiltInExtensions,
-    setContextControllerSettings,
   ]);
 
   // Guard: hide git drawer when git management is disabled.
@@ -847,7 +842,7 @@ export function App() {
       message: snapshot.message,
       displayText: snapshot.displayText,
       images: snapshot.images,
-      behavior: snapshot.behavior ?? "steer",
+      behavior: snapshot.behavior ?? "followUp",
       agentMode: snapshot.agentMode as ComposerAgentMode,
       timestamp: Date.now(),
     });
@@ -1155,21 +1150,18 @@ export function App() {
   //（FileDiffViewer 对 .md 默认 preview、.html 用 HtmlPreview 内置渲染）；其他文件 → 编辑器打开。
   // 替代原先的"系统默认应用打开"（.md 会被浏览器接管、体验割裂）
   const handleOpenLinkedFile = useCallback(
-    (path: string) => {
-      const isHandledImage = imagePreview.openLocalImage(
-        path,
-        activeAgent?.cwd ?? activeProject?.path,
-      );
+    (path: string, basePath?: string) => {
+      const target = resolveLocalFileTarget(path, basePath ?? activeAgent?.cwd ?? activeProject?.path);
+      if (!target.ok) {
+        showToast(t("app.fileLinkFormatInvalid"), 3000);
+        return;
+      }
+      const isHandledImage = imagePreview.openLocalImage(target.path);
       if (isHandledImage) return;
-
-      const resolved = resolveFileLinkPath(
-        path,
-        activeAgent?.cwd ?? activeProject?.path,
-      );
       // markdown / html / 其他文本文件：统一抽屉查看
-      viewFilePath(resolved);
+      viewFilePath(target.path);
     },
-    [activeAgent?.cwd, activeProject?.path, imagePreview.openLocalImage, viewFilePath],
+    [activeAgent?.cwd, activeProject?.path, imagePreview.openLocalImage, viewFilePath, showToast],
   );
 
   // 工具抽屉的统一切换语义：当前面板已展开 → 关闭；
@@ -1188,9 +1180,10 @@ export function App() {
     }
   }, [workspace, gitDrawerDiff, closeGitDiff, activeProjectId, refreshFiles]);
 
-  const workspaceChrome = useSessionWorkspaceChrome({
+  const sessionWorkspace = useSessionWorkspace({
     currentSessionId,
     activeProjectId,
+    selectionRequestRef: openSessionRequestRef,
   });
 
   const {
@@ -1221,11 +1214,13 @@ export function App() {
     refreshProjectSessions,
     api,
     showToast,
+    showConfirm: overlays.showConfirm,
+    clearConfirm: overlays.clearConfirm,
   });
 
-  // 关闭 Tab / 分屏退栏时的焦点切换：只改 currentSession，不碰 Tab 登记
+  // Notifications and split commands share the sidebar selection owner.
   useEffect(() => {
-    workspaceChrome.bindFocusHandlers({
+    sessionWorkspace.bindFocusHandlers({
       focusSession: (projectId, sessionId) => {
         selectSessionCommand(projectId, sessionId, true);
       },
@@ -1233,38 +1228,13 @@ export function App() {
         selectProjectCommand(projectId);
       },
     });
-  }, [workspaceChrome, selectSessionCommand, selectProjectCommand]);
+  }, [sessionWorkspace, selectSessionCommand, selectProjectCommand]);
 
-  /** 新建会话：选中 + 登记常驻 Tab（chrome 与 selection 在 App 边界组合） */
-  const createSessionDraftWithTab = useCallback(
-    async (projectId?: string, preferences: SessionLaunchPreferences = {}) => {
-      const session = await runCreateSessionDraft(projectId, preferences);
-      if (session) workspaceChrome.registerOpenSession(session.id, "permanent");
-      return session;
+  const openSidebarSessionById = useCallback(
+    async (projectId: string, sessionId: string) => {
+      await runOpenSidebarSessionById(projectId, sessionId);
     },
-    [runCreateSessionDraft, workspaceChrome],
-  );
-
-  const createAnonymousSessionWithTab = useCallback(
-    async (projectId?: string, preferences: SessionLaunchPreferences = {}) => {
-      const session = await runCreateAnonymousSession(projectId, preferences);
-      if (session) workspaceChrome.registerOpenSession(session.id, "permanent");
-      return session;
-    },
-    [runCreateAnonymousSession, workspaceChrome],
-  );
-
-  /** 侧栏/分支打开：选中成功后按 preview|permanent 登记 Tab */
-  const openSidebarSessionByIdWithTab = useCallback(
-    async (
-      projectId: string,
-      sessionId: string,
-      tabMode: "preview" | "permanent" = "permanent",
-    ) => {
-      const openedId = await runOpenSidebarSessionById(projectId, sessionId);
-      if (openedId) workspaceChrome.registerOpenSession(openedId, tabMode);
-    },
-    [runOpenSidebarSessionById, workspaceChrome],
+    [runOpenSidebarSessionById],
   );
 
   useEffect(() => {
@@ -1365,7 +1335,6 @@ export function App() {
       setSettings(next);
       showToast(t("settings.restartNotice"));
     },
-    onTrustRequest: overlays.setTrustRequest,
     onFocusTarget: (target: AppFocusSessionTarget) => {
       const session = store.get(sessionRecordByIdAtomFamily(target.sessionId));
       if (session) selectSessionCommand(session.projectId, session.id, false);
@@ -1659,8 +1628,7 @@ export function App() {
 
   /**
    * clone / fork 会把同一个 Agent 换绑到新的 SessionRecord。
-   * 必须先刷新 catalog 再登记 Tab：否则 chrome 的 prune 看到 records 里还没有新 id，会立刻清掉刚打开的 Tab。
-   * 选中与登记都在这里组合——selectSession 本身不碰 Tab。
+   * 刷新 catalog 后再选中新身份，确保视图能读取对应会话记录。
    */
   async function openReplacedRuntimeSession(
     projectId: string | undefined,
@@ -1668,7 +1636,6 @@ export function App() {
   ) {
     if (!projectId || !targetSessionId) return;
     await refreshProjectSessions(projectId);
-    workspaceChrome.registerOpenSession(targetSessionId, "permanent");
     selectSessionCommand(projectId, targetSessionId, true);
   }
 
@@ -1691,15 +1658,13 @@ export function App() {
   }
 
   async function deleteDraftSession(session: SessionRecord) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      // A false result means another path already removed the catalog record;
-      // clear the stale sidebar row the same way as a successful deletion.
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    await deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.title || session.id,
+      deleteRecord: api.sessions.deleteRecord,
+      showConfirm: overlays.showConfirm, clearConfirm: overlays.clearConfirm,
+      onSuccess: () => { removeSessionState(session.id); removeSessionComposerState(session.id); },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   function updateAfterProjectRemoved(
@@ -1773,8 +1738,7 @@ export function App() {
   }
 
   async function closeAgent(agentId: string) {
-    // pending / 无 target 必须抛错：Tab 下拉「关闭会话」成功后才会 closeTab。
-    // 以前这里静默 return，调用方仍关 Tab，标签没了、进程还在。
+    // Pending or detached runtimes must report failure rather than pretending to stop.
     if (isPendingAgentId(agentId)) {
       throw new Error(t("sessionCommand.runtimeBusy"));
     }
@@ -1790,12 +1754,22 @@ export function App() {
   const [skillsQuickOpen, setSkillsQuickOpen] = useState(false);
   const skillsQuickChangedRef = useRef(false);
 
+  // 子代理偏好弹框：配置写入 pi settings.json 的 subagents 块，由扩展消费。
+  // 扩展未启用时入口置灰（配置写了也不会生效），用配置弹框开关作为重新探测的 key。
+  const [subagentsOpen, setSubagentsOpen] = useState(false);
+  const subagentsExtensionEnabled = useSubagentExtensionEnabled(!isLanWeb, configOpen);
+  // 探测未完成（undefined）时按「检查中」置灰：不能对已安装的插件谎报「需要安装」。
+  const subagentsAvailable = subagentsExtensionEnabled === true;
+  const subagentsLabel = subagentsExtensionEnabled === undefined
+    ? t("subagents.checking")
+    : subagentsAvailable ? t("subagents.title") : t("subagents.unavailable");
+
   /**
    * Skills 修改完成后停止所有当前真实 Agent runtime。
    * 只从 agentsRef（agentInventoryAtom，已绑定真实 runtime）取 ID；
    * displayAgents 混有 pendingAgents（无 runtime target），直接 closeAgent 会报 runtime unavailable。
    * Promise.allSettled：一个 Agent stop 失败不能阻止其他 Agent 被关闭。
-   * closeAgent 只 stopRuntime：不 delete SessionRecord、不 removeSessionState、不关 Tab、不 restart。
+   * closeAgent 只 stopRuntime：不 delete SessionRecord、不 removeSessionState、不 restart。
    */
   async function stopAllAgentsAfterSkillsChange() {
     const agentIds = agentsRef.current.map((agent) => agent.id);
@@ -2013,11 +1987,11 @@ export function App() {
     /** prompt 模板匹配到的 description，作为元数据发给 pi agent 标识意图 */
     templateDescription?: string,
   ) {
-    // 非队列入口继续保持原有行为：当前选中 agent 忙碌时默认 steer。
+    // 普通提交等待当前任务完成；只有明确选择加入当前回合才使用 steer。
     // 客户端队列 drain 直接调用 dispatchPromptSnapshot，并显式指定其投递语义。
     const behavior =
       streamingBehavior ??
-      (sessionId === currentSessionId && isAgentCurrentlyBusy() ? "steer" : undefined);
+      (sessionId === currentSessionId && isAgentCurrentlyBusy() ? "followUp" : undefined);
     try {
       await dispatchPromptSnapshot(
         sessionId,
@@ -2038,6 +2012,7 @@ export function App() {
     }
   }
 
+  const historyMessageServices = useSessionHistoryMessageServices();
   const {
     resendUserMessage,
     editMessage,
@@ -2050,6 +2025,7 @@ export function App() {
     agents,
     isRuntimeTargetBusy,
     getRuntimeTargetForSession,
+    ...historyMessageServices,
     submitPromptSnapshot,
     openReplacedRuntimeSession,
     currentSessionIdRef,
@@ -2057,7 +2033,7 @@ export function App() {
     showToast,
     overlays,
     captureHistoryMutationRefresh: (sessionId) => captureHistoryMutationRefresh(store, sessionId),
-    refreshHistoryAfterMutation: (snapshot) => refreshHistoryAfterMutation({ store }, snapshot),
+    refreshHistoryAfterMutation: (snapshot, projection) => refreshHistoryAfterMutation({ store }, snapshot, projection),
     beginOptimisticDeletion: (sessionId, messageId) => beginOptimisticMessageDeletion(store, sessionId, messageId),
     // 重发要沿用的是「当前选中的模型」，而底栏展示顺序就是 pending > runtime.state > record：
     // 两端必须同源，否则 /model 轮换或在途切换会把旧模型写回去。策略见 resolveResendModelSelection。
@@ -2071,7 +2047,8 @@ export function App() {
       });
     },
   });
-  async function updateSettings(patch: Partial<AppSettings>) {
+  async function updateSettings(patch: Partial<AppSettings>): Promise<boolean> {
+    const removalVersions = store.get(sharedModelRemovalVersionsAtom);
     const changesWebService =
       "webServiceEnabled" in patch ||
       "webServiceHost" in patch ||
@@ -2085,7 +2062,10 @@ export function App() {
       );
     }
     try {
-      const next = await api.settings.update(patch);
+      const saved = await api.settings.update(patch);
+      // A model deletion may be delivered before this older settings response.
+      // Preserve that invalidation even if the same identity has since been re-added.
+      const next = clearAppModelReferences(saved, getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom)));
       setSettings(next);
       let notice = t("app.settingsSaved");
       if (
@@ -2144,15 +2124,21 @@ export function App() {
       if (
         "piRuntimePreference" in patch ||
         "piTypescriptPath" in patch ||
-        "piRustPath" in patch ||
         "piBoltPath" in patch
       ) {
         void api.pi.check().then((next) => setPiStatus(next)).catch(() => undefined);
       }
       showToast(notice);
+      return true;
     } catch (error) {
-      setSettings(await api.settings.get());
+      try {
+        // The host can roll back a failed web-service start after persisting the
+        // other fields. Reflect its recovery while keeping concurrent deletions.
+        const recovered = await api.settings.get();
+        setSettings(clearAppModelReferences(recovered, getModelRemovalsSince(removalVersions, store.get(sharedModelRemovalVersionsAtom))));
+      } catch { /* Keep the current snapshot when the recovery read is unavailable. */ }
       showToast(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       if (changesWebService) setWebServiceChanging(false);
     }
@@ -2192,15 +2178,18 @@ export function App() {
   }
 
   async function deleteSidebarSession(projectId: string, session: SessionSummary) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-      showToast(t("app.sessionDeleted"), 2200);
-      await refreshProjectSessions(projectId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    await deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.name || session.id,
+      deleteRecord: api.sessions.deleteRecord,
+      showConfirm: overlays.showConfirm, clearConfirm: overlays.clearConfirm,
+      onSuccess: async () => {
+        removeSessionState(session.id);
+        removeSessionComposerState(session.id);
+        showToast(t("app.sessionDeleted"), 2200);
+        await refreshProjectSessions(projectId);
+      },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   /** 归档会话：从列表移除但不销毁文件，可在会话管理弹窗中恢复 */
@@ -2268,7 +2257,7 @@ export function App() {
       select: (projectId) => {
         selectProjectCommand(projectId);
         // 点开目录只选中项目并显示引导页：不自动创建会话，避免每点一个目录都
-        // 悄悄新建一个 agent 会话 tab。创建由用户手动点「启动 Agent / 临时对话」
+        // 悄悄新建一个 Agent 会话。创建由用户手动点「启动 Agent / 临时对话」
         // 触发；启动时首项目自动选中除外（见 bootstrapProps.onProjectsChanged）。
         // 空项目也可能已经成功加载；用 catalog 状态区分“空结果”和“尚未扫描”。
         const loadState = store.get(sessionCatalogLoadStateAtom)[projectId];
@@ -2300,17 +2289,14 @@ export function App() {
       changeChatPath,
     },
     sessions: {
-      // 侧栏单击模式由设置 sessionTabOpenMode 控制（默认 preview=临时预览，发消息自动晋升常驻）；
-      // 双击仍是显式常驻。tabMode 为 undefined 时用当前设置值。
-      open: (projectId, sessionId, tabMode) =>
-        openSidebarSessionByIdWithTab(projectId, sessionId, tabMode ?? settings.sessionTabOpenMode),
-      beginDrag: workspaceChrome.beginDrag,
-      endDrag: workspaceChrome.endDrag,
+      open: openSidebarSessionById,
+      beginDrag: sessionWorkspace.beginDrag,
+      endDrag: sessionWorkspace.endDrag,
       createDraft: async (projectId) => {
-        await createSessionDraftWithTab(projectId);
+        await runCreateSessionDraft(projectId);
       },
       createAnonymous: async (projectId) => {
-        await createAnonymousSessionWithTab(projectId);
+        await runCreateAnonymousSession(projectId);
       },
       deleteDraft: requestDeleteDraftSession,
       rename: rename.openSessionRename,
@@ -2389,7 +2375,7 @@ export function App() {
 
   // Gate 4.6 — Session view wrapped in SessionRuntimeInjector / ChatSessionPane
 
-  // 会话 Tab 栏始终外置挂载；分屏双栏共享同一条 Tab，单栏也不再嵌入 SessionView。
+  // Sidebar navigation and pane focus select the same stable session identity.
   const focusSessionPane = useCallback((sessionId: string) => {
     const record = store.get(sessionRecordByIdAtomFamily(sessionId));
     if (record) selectSessionCommand(record.projectId, sessionId, true);
@@ -2408,7 +2394,7 @@ export function App() {
     // 分屏内面板间聚焦切换：各栏都已渲染、内容未变，只有聚焦边框亮起；
     // 整区重播淡入微位移会造成「抖/闪」，静默跳过（边框高亮由
     // .session-split-pane-focused 类切换承担，无动画）。
-    const layout = workspaceChrome.splitLayout;
+    const layout = sessionWorkspace.splitLayout;
     const splitIds = layout ? splitLayoutSessionIds(layout) : [];
     const prevInSplit = Boolean(layout && prev && splitIds.includes(prev));
     const nextInSplit = Boolean(
@@ -2424,78 +2410,7 @@ export function App() {
       { duration: 160, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
     );
     return () => anim.cancel();
-  }, [currentSessionId, workspaceChrome.splitLayout]);
-
-  const sessionTabsProps = {
-    tabs: workspaceChrome.sessionTabIds,
-    pinnedTabs: workspaceChrome.pinnedSessionTabIds,
-    previewTabId: workspaceChrome.previewSessionTabId,
-    currentSessionId,
-    onSelect: workspaceChrome.selectTab,
-    onPromotePreview: workspaceChrome.promotePreview,
-    onClose: workspaceChrome.closeTab,
-    onCloseOthers: workspaceChrome.closeOtherTabs,
-    onCloseAll: workspaceChrome.closeAllTabs,
-    // Tab 栏 “+” 下拉的新建目标：聊天对话区置顶，其余按侧栏项目顺序
-    newSessionTargets: projects
-      .map((project) => ({
-        projectId: project.id,
-        label: isChatProject(project) ? t("app.chatProject") : project.name,
-        isChat: isChatProject(project),
-      }))
-      .sort((a, b) => Number(b.isChat) - Number(a.isChat)),
-    onNewSessionInProject: (projectId: string) => {
-      void createSessionDraftWithTab(projectId);
-    },
-    onTogglePin: workspaceChrome.togglePin,
-    onReorder: workspaceChrome.reorderTab,
-    // 分屏组胶囊：分屏内会话聚合为组（颜色标记 + 展开/收起）
-    splitGroupIds: workspaceChrome.splitLayout
-      ? splitLayoutSessionIds(workspaceChrome.splitLayout)
-      : [],
-    splitGroupCollapsed: workspaceChrome.splitGroupCollapsed,
-    onToggleSplitGroup: workspaceChrome.toggleSplitGroupCollapsed,
-    splitGroupName: workspaceChrome.splitGroupConfig.name,
-    splitGroupColor: workspaceChrome.splitGroupConfig.color,
-    onSplitGroupRename: (name: string) =>
-      workspaceChrome.setSplitGroupConfig((config) => ({ ...config, name })),
-    onSplitGroupColorChange: (color: string) =>
-      workspaceChrome.setSplitGroupConfig((config) => ({ ...config, color })),
-    onExitAllSplit: workspaceChrome.exitAllSplit,
-    // Tab 下拉运行控制（织入对方收敛方案）：只对当前会话 Tab 生效。
-    // 关闭会话 = 停止 Agent 运行 + 移除会话 Tab（与“关闭标签页”仅移除 Tab 不同）
-    canStopCurrent: canStopBoundAgent(activeAgent?.status),
-    // 会话从未启动（无绑定 agent）时隐藏“关闭会话”：停止无意义，关闭走“关闭标签页”
-    onStopCurrent: activeAgentId
-      ? () => {
-          const sessionId = currentSessionId;
-          void (async () => {
-            try {
-              // 必须 stopRuntime，不能 abort：abort 只取消当前一轮，pi 进程仍占用会话文件。
-              // closeAgent 失败会抛错，这里不得先关 Tab。
-              await closeAgent(activeAgentId);
-              if (sessionId) workspaceChrome.closeTab(sessionId);
-            } catch (error) {
-              showToast(error instanceof Error ? error.message : String(error), 5000);
-            }
-          })();
-        }
-      : undefined,
-    canRestartCurrent: Boolean(activeAgentId),
-    isRestartingCurrent: restartingAgentId === activeAgentId,
-    // 没有绑定运行时的草稿也有会话 ID，但重启只对已启动 Agent 有意义
-    onRestartCurrent: activeAgentId
-      ? () => void restartActiveAgent(activeAgentId)
-      : undefined,
-    onToggleDrawer: toggleRightDrawer,
-    drawerOpen: Boolean(drawer && !drawerCollapsed),
-    listCollapsed,
-    onToggleListCollapsed: toggleListCollapsed,
-    onDragSessionChange: (sessionId: string | null) => {
-      if (sessionId) workspaceChrome.beginDrag(sessionId);
-      else workspaceChrome.endDrag();
-    },
-  };
+  }, [currentSessionId, sessionWorkspace.splitLayout]);
 
   const paneLayoutRefs = useMemo(
     () => ({
@@ -2511,24 +2426,24 @@ export function App() {
   // 这两个回调引用保持不变，SessionPaneActionsContext 才不会跟着更新。
   // 原为 useMemo 内的 inline function，每次 services 重算都会产生新函数引用。
   const runCreateSessionDraftForPane = useCallback(async () => {
-    await createSessionDraftWithTab();
-  }, [createSessionDraftWithTab]);
+    await runCreateSessionDraft();
+  }, [runCreateSessionDraft]);
 
   const openSidebarSessionByIdForPane = useCallback(
     (projectId: string, sessionId: string) =>
-      openSidebarSessionByIdWithTab(projectId, sessionId, "permanent"),
-    [openSidebarSessionByIdWithTab],
+      openSidebarSessionById(projectId, sessionId),
+    [openSidebarSessionById],
   );
 
   const sessionPaneServices = useMemo(
     () => ({
       isLanWeb,
-      promoteSessionToPermanent: workspaceChrome.promotePreview,
       showToast,
       onOpenFile: handleOpenLinkedFile,
       onDiffFile: diffFilePath,
       onPreviewImage: imagePreview.openMessageImage,
       abortAgent,
+      stopAgent: closeAgent,
       restartActiveAgent,
       runCreateSessionDraft: runCreateSessionDraftForPane,
       enqueueSessionPrompt,
@@ -2571,7 +2486,7 @@ export function App() {
       changeChatPath,
       jumpToMessageRef,
       layoutRefs: paneLayoutRefs,
-      exitSessionSplit: workspaceChrome.exitSplit,
+      exitSessionSplit: sessionWorkspace.exitSplit,
     }),
     [
       abortAgent,
@@ -2599,6 +2514,7 @@ export function App() {
       queue.queuedPrompts,
       queue.retractQueuedPromptForEdit,
       queueFlushBySessionRef,
+      closeAgent,
       restartActiveAgent,
       restartingAgentId,
       runCreateSessionDraftForPane,
@@ -2618,8 +2534,7 @@ export function App() {
       terminalTarget,
       validCommandNames,
       validFilePaths,
-      workspaceChrome.exitSplit,
-      workspaceChrome.promotePreview,
+      sessionWorkspace.exitSplit,
     ],
   );
 
@@ -2631,13 +2546,13 @@ export function App() {
             layout={
               // 视图投影：焦点会话在布局中 → 显示分屏；不在（新建/打开/退出分屏）→ 全屏 solo，
               // 布局状态保留，点布局内会话即恢复分屏视图
-              workspaceChrome.splitLayout &&
-              splitLayoutSessionIds(workspaceChrome.splitLayout).includes(currentSessionId)
-                ? workspaceChrome.splitLayout
+              sessionWorkspace.splitLayout &&
+              splitLayoutSessionIds(sessionWorkspace.splitLayout).includes(currentSessionId)
+                ? sessionWorkspace.splitLayout
                 : null
             }
-            draggingSessionId={workspaceChrome.draggingSessionId}
-            onDropSplit={workspaceChrome.dropSplit}
+            draggingSessionId={sessionWorkspace.draggingSessionId}
+            onDropSplit={sessionWorkspace.dropSplit}
             solo={
               <ChatSessionPane
                 key={currentSessionId}
@@ -2648,7 +2563,6 @@ export function App() {
               />
             }
             soloSessionId={currentSessionId}
-            tabCount={workspaceChrome.sessionTabIds.length}
             renderSession={(sessionId) => (
               <ChatSessionPane
                 key={sessionId}
@@ -2661,7 +2575,7 @@ export function App() {
           />
         </div>
       ) : (
-        // 无当前会话（普通项目点开 / 所有 Tab 关闭）时，普通项目与 Chat 项目
+        // 无当前会话（普通项目点开 / 会话被删除）时，普通项目与 Chat 项目
         // 共享统一空态；快捷操作新建 Agent / 匿名聊天，无项目时引导添加项目。
         // 引导页同样可以打开项目级终端（owner=project），在空态下方渲染 dock。
         <>
@@ -2669,8 +2583,8 @@ export function App() {
             {/* 无会话空态：启动 Agent / 临时对话入口，创建真实 Catalog 会话后再进时间线。 */}
             <ProjectEmptyState
               activeProject={activeProject}
-              onCreateAgent={(preferences) => void createSessionDraftWithTab(undefined, preferences)}
-              onCreateAnonymous={(preferences) => void createAnonymousSessionWithTab(undefined, preferences)}
+              onCreateAgent={(preferences) => void runCreateSessionDraft(undefined, preferences)}
+              onCreateAnonymous={(preferences) => void runCreateAnonymousSession(undefined, preferences)}
               onAddProject={() => void addProject()}
             />
           </div>
@@ -2714,45 +2628,20 @@ export function App() {
   const workbenchHasContent = workbenchHasGitDiff || workbenchHasEditor;
   const workbenchLayout = workbenchHasGitDiff ? gitDiffDisplayMode : editorMode;
 
-  // 文件/Diff Tab 挂进总 SessionTabsBar：与会话共用一条栏，内容区不再另起绿条 Tab
-  const workbenchEditorTabs = workbenchHasGitDiff && gitDrawerDiff
-    ? [
-        {
-          id: gitDrawerDiff.filePath,
-          label: gitDrawerDiff.label,
-          title: gitDrawerDiff.filePath,
-          active: true,
-        },
-      ]
-    : workbenchHasEditor
-      ? editorTabs.map((tab) => ({
-          id: tab.id,
-          label:
-            tab.label ??
-            tab.filePath.split(/[/\\]/).pop() ??
-            tab.filePath,
-          title: tab.filePath,
-          preview: tab.id === previewEditorTabId,
-          active: tab.id === activeTabId,
-        }))
-      : [];
-
-  const sessionTabsBarNode = (
-    <SessionTabsBar
-      {...sessionTabsProps}
-      editorTabs={workbenchEditorTabs}
-      onSelectEditorTab={(tabId) => {
-        if (workbenchHasGitDiff) return;
-        selectEditorTab(tabId);
-      }}
-      onCloseEditorTab={(tabId) => {
-        if (workbenchHasGitDiff) {
-          closeGitDiff();
-          return;
-        }
-        closeEditorTab(tabId);
-      }}
-      onPromoteEditorPreview={promotePreviewEditorTab}
+  const workspaceToolbarNode = (
+    <WorkspaceToolbar
+      sessionIdentity={
+        <WorkspaceSessionTitle sessionId={currentSessionId} onOpenSession={openSidebarSessionById} onError={showToast} />
+      }
+      listCollapsed={listCollapsed}
+      onToggleListCollapsed={toggleListCollapsed}
+      drawerOpen={Boolean(drawer && !drawerCollapsed)}
+      onToggleDrawer={toggleRightDrawer}
+      onExitAllSplit={
+        sessionWorkspace.splitLayout && currentSessionId &&
+        splitLayoutSessionIds(sessionWorkspace.splitLayout).includes(currentSessionId)
+          ? sessionWorkspace.exitAllSplit : undefined
+      }
     />
   );
 
@@ -2767,8 +2656,13 @@ export function App() {
       activeTab={workbenchHasEditor && activeTab ? activeTab : null}
       editorMode={editorMode}
       onToggleEditorMode={activeTab?.preserveDrawer ? undefined : toggleEditorMode}
-      onCloseEditor={() => { closeEditor(); }}
+      onCloseEditor={closeEditor}
+      editorTabs={editorTabs.map((tab) => ({ ...tab, preview: tab.id === previewEditorTabId }))}
+      onSelectEditorTab={selectEditorTab}
+      onCloseEditorTab={closeEditorTab}
+      onPromoteEditorPreview={promotePreviewEditorTab}
       readContent={readEditorFileContent}
+      onOpenFile={handleOpenLinkedFile}
       readOriginalContent={readEditorOriginalContent}
       saveContent={saveEditorFileContent}
     />
@@ -2776,7 +2670,7 @@ export function App() {
 
   const chatPaneContentNode = (
     <WorkbenchStage
-      chrome={sessionTabsBarNode}
+      chrome={workspaceToolbarNode}
       layout={workbenchLayout}
       hasContent={workbenchHasContent}
       session={chatPaneSessionNode}
@@ -2822,8 +2716,7 @@ export function App() {
     projects,
     refreshProjectSessions,
     runOpenSidebarSession: async (projectId: string, session: SessionSummary) => {
-      const openedId = await runOpenSidebarSession(projectId, session);
-      if (openedId) workspaceChrome.registerOpenSession(openedId, "permanent");
+      await runOpenSidebarSession(projectId, session);
     },
     isSameSessionPath,
     runCopySession, runExportHistorySession, runDeleteHistorySession,
@@ -2882,9 +2775,9 @@ export function App() {
 
   useNativeFileDropCopy({ api, refreshFiles, showToast });
 
-  // 全局订阅模型列表更新（保存 models.json/auth.json、切换 pi 运行时后主进程广播）：
+  // 全局订阅模型列表更新（保存 models.json、切换 pi 运行时后主进程广播）：
   // 视觉桥能力判定与模型选择器共用这份数据，只在装配层挂一份。
-  useModelListSync();
+  useModelListSync(setSettings, settings.wslEnabled ? "wsl" : "native", { wslDistro: settings.wslDistro, wslUser: settings.wslUser });
 
   const nativeWindowChrome = resolveNativeWindowChrome(
     settings.useNativeTitleBar,
@@ -3004,6 +2897,18 @@ export function App() {
             },
             icon: <Sparkles size={14} />,
           } : undefined}
+          // 子代理偏好：与 Skills 入口同一安全边界——LAN Web 不允许改宿主机全局配置；
+          // 扩展未启用时置灰并说明原因（配置写了也不会生效）。
+          subagentsAction={!isLanWeb ? {
+            active: subagentsOpen,
+            disabled: !subagentsAvailable,
+            label: subagentsLabel,
+            onClick: () => {
+              if (!subagentsAvailable) return;
+              setSubagentsOpen(true);
+            },
+            icon: <Users size={14} />,
+          } : undefined}
         />
       }
       setListCollapsed={setListCollapsed}
@@ -3052,11 +2957,15 @@ export function App() {
         }}
         onClose={() => setFileMenu(null)}
         onOpen={() => {
-          void api.files.open(fileMenu.node.path);
+          void api.files.open(fileMenu.node.path).catch((error: unknown) => {
+            showToast(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000);
+          });
           setFileMenu(null);
         }}
         onReveal={() => {
-          void api.files.showInFolder(fileMenu.node.path);
+          void api.files.showInFolder(fileMenu.node.path).catch((error: unknown) => {
+            showToast(t("app.revealFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000);
+          });
           setFileMenu(null);
         }}
         onAttach={() => {
@@ -3243,6 +3152,18 @@ export function App() {
 
     {/* Scratch Pad（草稿本）：根级渲染，避免受 chat-pane grid 影响定位 */}
     <ScratchPadOverlay controller={scratchPad} />
+
+    {/* 子代理偏好弹框：全局/项目配置，根级渲染；扩展未启用时入口已置灰，这里再兜一层。 */}
+    {!isLanWeb && subagentsAvailable && (
+      <Suspense fallback={null}>
+        <SubagentSettingsDialog
+          open={subagentsOpen}
+          projectId={activeProjectId}
+          projectName={activeProject?.name}
+          onClose={() => setSubagentsOpen(false)}
+        />
+      </Suspense>
+    )}
 
     {/* Skills 快捷管理小窗口：全局配置，根级渲染，不随某个 session pane 的 mount/unmount 卸载。
         locked 用 skillsRuntimeBusy（不含 skillsStoppingAgents 自身）+ stopping，保证 stop 过程中 toggle 全禁。 */}

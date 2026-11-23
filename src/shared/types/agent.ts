@@ -57,7 +57,6 @@ export type AgentRuntimeState = {
 	cacheHitAveragePercent?: number | null;
 	/** 参与平均统计的 assistant 消息条数（与 cacheHitAveragePercent 同源） */
 	cacheHitSampleCount?: number;
-	cost?: number;
 	/** 最近一次 assistant 回复的首 token 延迟（ms；message_start → 首个 text/thinking delta），由主进程本地计时 */
 	ttftMs?: number;
 	/** 最近一次 assistant 回复的总耗时（ms；message_start → message_end/done/error） */
@@ -66,6 +65,16 @@ export type AgentRuntimeState = {
 	tps?: number;
 	/** 性能指标结算时刻（Date.now()），渲染层据此判断是否为近期数据 */
 	perfAt?: number;
+};
+
+/**
+ * models.json 声明的扩展思考档位（xhigh/max）支持位。
+ * 只有勾选过 thinkingLevelMap 对应键的模型才为 true；主进程按配置注入，
+ * 渲染层据此决定思考级别选择器是否出现这两个档位。
+ */
+export type ModelThinkingSupport = {
+	xhigh: boolean;
+	max: boolean;
 };
 
 export type AvailableModel = {
@@ -79,6 +88,28 @@ export type AvailableModel = {
 	reasoning?: boolean;
 	/** 是否支持图片输入（来自 images 列；undefined = pi 未提供该列） */
 	images?: boolean;
+	/** 扩展思考档位支持（来自本地 models.json；undefined = 未经 decorate 注入） */
+	thinkingLevels?: ModelThinkingSupport;
+};
+
+/** Exact model identity, including ids that themselves contain a slash. */
+export type ModelReference = { provider: string; modelId: string };
+
+/** Models belong to one native installation or one WSL distro/user configuration. */
+export type ModelConfigurationScope = {
+	environment: SessionEnvironment;
+	wslDistro?: string;
+	wslUser?: string;
+};
+
+/** Optional models:changed payload. Older hosts send an empty event. */
+export type ModelListChange = {
+	/** Configuration source whose models changed. Omitted by older hosts. */
+	environment?: SessionEnvironment;
+	wslDistro?: string;
+	wslUser?: string;
+	removedModels: ModelReference[];
+	changedModels: ModelReference[];
 };
 
 export type CreateAgentInput = {

@@ -5,7 +5,6 @@ import type { AppFocusSessionTarget, AppSettings, Project } from "../../../../sh
 interface AppBootstrapProps {
   onProjectsChanged: (projects: Project[]) => void;
   onSettingsApplied: (settings: AppSettings) => void;
-  onTrustRequest: (req: { requestId: string; cwd: string; projectName: string }) => void;
   onFocusTarget: (target: AppFocusSessionTarget) => void;
 }
 
@@ -14,7 +13,6 @@ export const AppBootstrap = React.memo(function AppBootstrap(props: AppBootstrap
   useGlobalAgentListeners({
     onProjectsChanged: props.onProjectsChanged,
     onSettingsApplied: props.onSettingsApplied,
-    onTrustRequest: props.onTrustRequest,
     onFocusTarget: props.onFocusTarget,
   });
 

@@ -12,6 +12,7 @@ import type { ModelScopeRule } from "../runs/shared/model-scope.ts";
 import type { ResolvedSubagentCapabilityCeiling, SubagentCapabilityAudit } from "../runs/shared/capability-ceiling.ts";
 import type { AuthorityPolicyConfig } from "../policy/authority.ts";
 import type { ThinkingLevel } from "./model-info.ts";
+import type { RecoveryBrief } from "../runs/shared/recovery-brief.ts";
 import type { GlobalMissionIndexRecord, MissionRecord, MissionStoreConfig } from "../missions/types.ts";
 import type { ExtensionBindings } from "../runs/shared/extension-bindings.ts";
 import type { WorkflowChildPermitContext } from "./workflow-child-permit.ts";
@@ -200,6 +201,8 @@ export interface WorkflowChildSummary {
 		agent?: string;
 		/** Human-readable display name for the child session, when derived at launch. */
 		sessionName?: string;
+		/** Absolute child session file; PiDeck uses it to bind live sidebar status. */
+		sessionFile?: string;
 		model?: string;
 		thinking?: string;
 		/** Present only while a synchronous foreground child is running. */
@@ -1305,6 +1308,12 @@ export interface SingleResult {
 	effects?: EffectsProjection;
 	transcriptPath?: string;
 	transcriptError?: string;
+	/**
+	 * Recovery brief for an abnormal termination. Kept separate from
+	 * `finalOutput`/`error` so the child's real result, acceptance state and
+	 * file-only output semantics stay untouched.
+	 */
+	recoveryBrief?: RecoveryBrief;
 	children?: NestedRunSummary[];
 	watchdog?: ChildWatchdogProgress;
 	capabilityCeiling?: ResolvedSubagentCapabilityCeiling;
@@ -1381,7 +1390,7 @@ export interface AgentCapabilityRow {
 	executable: boolean;
 	restrictionSources?: string[];
 	aliases?: string[];
-	runner: { type: "pi" } | { type: "external-cli"; adapter?: string; command: string; available: boolean; unavailableReason?: string; capabilities: ExternalCliCapabilities } | { type: "external-job"; provider: string; available?: boolean; capabilities: ExternalJobRunnerStatus["capabilities"] };
+	runner: { type: "pi" };
 	tools: { ambient: boolean; names: string[]; excludeTools?: string[]; mcpDirectTools: string[]; mutationTools?: string[] };
 	model?: { value?: string; fallbackModels?: string[]; thinking?: string | false };
 	execution?: { defaultAsync?: boolean; timeoutMs?: number };
@@ -1689,23 +1698,9 @@ export interface AsyncStartedEvent {
 	workflowKey?: string;
 }
 
-export type AgentRunnerConfig =
-	| { type: "pi" }
-	| {
-		type: "external-cli";
-		command: string;
-		args?: string[];
-		promptDelivery?: "stdin";
-		capabilities?: ExternalCliCapabilityNarrowing;
-	}
-	| {
-		type: "external-job";
-		provider: string;
-		options?: Record<string, unknown>;
-	};
+export type AgentRunnerConfig = { type: "pi" };
 
-export type ExternalCliCapabilityNarrowing = Partial<Record<"steer" | "resume" | "structuredOutput" | "toolEvents" | "supervisor" | "forkContext" | "extensionBindings", false>>;
-
+// Legacy receipt types remain readable in historical runs; they are not launch configurations.
 export interface ExternalCliCapabilities {
 	stop: true;
 	steer: false;
@@ -2425,6 +2420,11 @@ export interface RunSyncOptions {
 	modelOrigin?: "explicit" | "inherited" | "configured";
 	/** LLM intent arbiter for the completion mutation guard (rescues read-only review runs). */
 	llmIntentArbiter?: import("../runs/shared/llm-intent-arbiter.ts").TaskMutationArbiter;
+	/**
+	 * Recovery-brief generator for abnormal child terminations.
+	 * When absent, the deterministic evidence brief is used instead.
+	 */
+	recoveryBrief?: import("../runs/shared/recovery-brief.ts").RecoveryBriefGenerator;
 	/** Override the agent's default thinking level for this run */
 	thinkingOverride?: AgentConfig["thinking"];
 	thinkingCeiling?: ThinkingLevel;
@@ -2493,12 +2493,6 @@ export interface ProactiveSkillSubagentsConfig {
 export type ToolDescriptionMode = "full" | "compact" | "custom";
 export type InlineToolDisplay = "rich" | "summary";
 
-export interface ScheduledRunsConfig {
-	enabled?: boolean;
-	maxPending?: number;
-	/** Absolute or `~/` root for per-project durable schedules. */
-	storeRoot?: string;
-}
 
 export interface ModelExclusionsConfig {
 	/** Default duration in milliseconds. A lower configured value also shortens active cached exclusions. */
@@ -2595,20 +2589,19 @@ export interface ExtensionConfig {
 	/** Global cap on simultaneously-running subagent tasks within a single run. Defaults to 20. */
 	globalConcurrencyLimit?: number;
 	/**
-	 * Global default runtime deadline in milliseconds. It replaces the built-in
-	 * 30-minute backstop for single, parallel, and chain launches (foreground, plus
-	 * plain single-agent async runs) when neither the call (`timeoutMs`/`maxRuntimeMs`)
-	 * nor the selected agent provides a timeout. Explicit call values and agent
-	 * frontmatter defaults still win. Composite async runs (chain/parallel/workflow)
-	 * stay unbounded at the top level by design — their children are bounded individually.
-	 * Must be a positive integer; invalid values are ignored.
+	 * Optional global runtime deadline in milliseconds for foreground launches
+	 * and plain single-agent async runs. Explicit call values (`timeoutMs` or
+	 * `maxRuntimeMs`) and agent frontmatter take precedence. Composite async roots
+	 * remain unbounded unless the call supplies a deadline, and their children use
+	 * each agent's explicit timeout. Unconfigured runs have no implicit deadline.
+	 * Must be a positive integer no larger than 2147483647. Invalid values are ignored.
 	 */
 	timeoutMs?: number;
 	/**
 	 * Optional hard per-tool-call timeout in milliseconds. Bounds a single
 	 * subagent tool call inside the child; the run-level timeout remains
-	 * authoritative. Known-fast built-in tools have a five-minute default when
-	 * this is undefined. Precedence: call param > agent frontmatter > this config >
+	 * authoritative. No tool deadline applies when all explicit settings are
+	 * omitted. Precedence: call param > agent frontmatter > this config >
 	 * PI_SUBAGENT_TOOL_TIMEOUT_MS. Must be a positive integer; invalid values
 	 * are rejected with an error.
 	 */
@@ -2643,7 +2636,6 @@ export interface ExtensionConfig {
 	 *  - \"off\": never log slow result-index scans. */
 	resultScanLogging?: "all" | "activity" | "off";
 	proactiveSkillSubagents?: ProactiveSkillSubagentsConfig | false;
-	scheduledRuns?: ScheduledRunsConfig;
 	/** Durable mission behavior. Missions are automatic by default; set enabled:false to disable auto-create. Explicit mission actions/fields still work. */
 	missions?: MissionStoreConfig;
 	/** Small fixed authority policy for the supported operational actions. */
@@ -2752,7 +2744,7 @@ export const POLL_INTERVAL_MS = 250;
 export const WIDGET_ANIMATION_INTERVAL_MS = 1000;
 export const MAX_WIDGET_JOBS = 4;
 export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
-export const SUBAGENT_ACTIONS = ["list", "get", "models", "children.list", "guide", "validate", "create", "update", "delete", "eject", "disable", "enable", "reset", "mission.create", "mission.list", "mission.show", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "worktree.discard", "worktree.cleanup", "lane.status", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.show", "refine.rollback", "inspector.open", "inspector.status", "inspector.close", "project.open", "project.status", "project.close", "status", "debug.run", "grant-spawn-budget", "interrupt", "resume", "steer", "stop", "dismiss", "doctor", "watchdog.status", "watchdog.check", "watchdog.configure", "watchdog.recommend-model", "schedule.create", "schedule.list", "schedule.show", "schedule.history", "schedule.pause", "schedule.resume", "schedule.run", "schedule.run-due", "schedule.delete"] as const;
+export const SUBAGENT_ACTIONS = ["list", "get", "models", "children.list", "guide", "validate", "create", "update", "delete", "eject", "disable", "enable", "reset", "mission.create", "mission.list", "mission.show", "mission.update", "mission.resolve-decision", "mission.attach-run", "mission.close", "worktree.discard", "worktree.cleanup", "lane.status", "lane.recordMerge", "lane.recordSupersession", "refine", "refine.show", "refine.rollback", "inspector.open", "inspector.status", "inspector.close", "project.open", "project.status", "project.close", "status", "debug.run", "grant-spawn-budget", "interrupt", "resume", "steer", "stop", "dismiss", "doctor", "watchdog.status", "watchdog.check", "watchdog.configure", "watchdog.recommend-model"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =
 	"You are a delegated subagent running from a fork of the parent session. " +

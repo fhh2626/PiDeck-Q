@@ -1,171 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	createDefaultSecurityConfig,
 	createDefaultSecurityLevels,
 } from "../src/shared/types/security.ts";
-import {
-	buildSnapshot,
-	evaluatePathAction,
-	isPathInsideRoot,
-	matchBashDenyPatterns,
-	matchPowerShellDenyPatterns,
-	matchesSensitivePath,
-	resolveLevel,
-	resolveLevelId,
-	validateSecurityConfig,
-} from "../src/main/security/policy.ts";
-
-/**
- * 安全策略纯函数测试：
- * - 等级解析（会话覆盖 > 全局默认 > 兜底）
- * - 危险 bash 命令匹配
- * - 文件访问边界（黑名单/敏感文件/目录边界）
- * - 配置校验与快照生成
- */
-
-test("resolveLevelId: session override wins over global default", () => {
-	const config = createDefaultSecurityConfig();
-	config.defaultLevelId = "standard";
-	config.sessionOverrides["/proj/session.md"] = "strict";
-	assert.equal(resolveLevelId(config, "/proj/session.md"), "strict");
-	assert.equal(resolveLevelId(config, "/other/session.md"), "standard");
-	// 无会话身份（匿名会话）时走全局默认
-	assert.equal(resolveLevelId(config, undefined), "standard");
-});
-
-test("resolveLevelId: unknown default falls back to standard", () => {
-	const config = createDefaultSecurityConfig();
-	config.defaultLevelId = "";
-	assert.equal(resolveLevelId(config, undefined), "standard");
-});
-
-test("resolveLevel: missing level falls back to standard, then first level", () => {
-	const config = createDefaultSecurityConfig();
-	const standard = resolveLevel(config, "standard");
-	assert.equal(standard.id, "standard");
-	// 不存在的等级回退 standard
-	assert.equal(resolveLevel(config, "no-such-level").id, "standard");
-	// standard 也缺失时回退第一个等级
-	const broken = { ...config, levels: [config.levels[0]] };
-	assert.equal(resolveLevel(broken, "nope").id, config.levels[0].id);
-});
-
-test("matchBashDenyPatterns: detects dangerous commands per level", () => {
-	const config = createDefaultSecurityConfig();
-	const strict = resolveLevel(config, "strict");
-	assert.ok(matchBashDenyPatterns(strict, "rm -rf /tmp/foo"));
-	assert.ok(matchBashDenyPatterns(strict, "sudo apt install x"));
-	assert.ok(matchBashDenyPatterns(strict, "git push origin main"));
-	assert.ok(matchBashDenyPatterns(strict, "npm install lodash"));
-	assert.ok(matchBashDenyPatterns(strict, "cat a.txt >> b.txt"));
-	assert.equal(matchBashDenyPatterns(strict, "ls -la"), null);
-	assert.equal(matchBashDenyPatterns(strict, "grep foo bar.txt"), null);
-	// off 等级无危险模式
-	const off = resolveLevel(config, "off");
-	assert.equal(matchBashDenyPatterns(off, "rm -rf /"), null);
-});
-
-test("isPathInsideRoot: containment with Windows case-insensitivity", () => {
-	assert.ok(isPathInsideRoot("C:/proj/src/a.ts", "C:/proj", "win32"));
-	assert.ok(isPathInsideRoot("c:\\proj\\a.ts", "C:/proj", "win32"));
-	assert.ok(isPathInsideRoot("C:/proj", "C:/proj", "win32"));
-	assert.ok(!isPathInsideRoot("C:/proj2/a.ts", "C:/proj", "win32"));
-	assert.ok(!isPathInsideRoot("D:/proj/a.ts", "C:/proj", "win32"));
-	// 空 root 视为不授权
-	assert.ok(!isPathInsideRoot("anything", "", "win32"));
-});
-
-test("matchesSensitivePath: .env / .git / key files", () => {
-	assert.ok(matchesSensitivePath("C:/proj/.env"));
-	assert.ok(matchesSensitivePath("C:/proj/config/.env.local"));
-	assert.ok(matchesSensitivePath("C:/proj/.git/config"));
-	assert.ok(matchesSensitivePath("C:/proj/keys/id_rsa"));
-	assert.ok(matchesSensitivePath("C:/proj/cert.pem"));
-	assert.ok(!matchesSensitivePath("C:/proj/environment.js"));
-	assert.ok(!matchesSensitivePath("C:/proj/src/App.tsx"));
-});
-
-test("evaluatePathAction: denyDirs blacklist wins", () => {
-	const config = createDefaultSecurityConfig();
-	const strict = resolveLevel(config, "strict");
-	strict.denyDirs = ["C:/proj/node_modules"];
-	assert.equal(evaluatePathAction(strict, "C:/proj/node_modules/x.js", "C:/proj", "win32"), "deny");
-});
-
-test("evaluatePathAction: workspace boundary denies outside reads", () => {
-	const config = createDefaultSecurityConfig();
-	const strict = resolveLevel(config, "strict");
-	// strict 默认 pathPolicy=workspace
-	assert.equal(evaluatePathAction(strict, "C:/proj/src/a.ts", "C:/proj", "win32"), null);
-	assert.equal(evaluatePathAction(strict, "C:/other/b.ts", "C:/proj", "win32"), "deny");
-});
-
-test("evaluatePathAction: custom allows extra dirs", () => {
-	const config = createDefaultSecurityConfig();
-	const custom = resolveLevel(config, "strict");
-	custom.pathPolicy = "custom";
-	custom.customAllowDirs = ["C:/shared-data"];
-	assert.equal(evaluatePathAction(custom, "C:/shared-data/x.json", "C:/proj", "win32"), null);
-	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj", "win32"), "deny");
-	// unrestricted 不限制
-	custom.pathPolicy = "unrestricted";
-	assert.equal(evaluatePathAction(custom, "C:/elsewhere/y.json", "C:/proj", "win32"), null);
-});
-
-test("evaluatePathAction: sensitive protection when enabled", () => {
-	const config = createDefaultSecurityConfig();
-	const standard = resolveLevel(config, "standard");
-	// standard 默认 protectSensitivePaths=true
-	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj", "win32"), "deny");
-	assert.equal(evaluatePathAction(standard, "C:/proj/src/a.ts", "C:/proj", "win32"), null);
-	// 关闭保护后放行
-	standard.protectSensitivePaths = false;
-	assert.equal(evaluatePathAction(standard, "C:/proj/.env", "C:/proj", "win32"), null);
-});
-
-test("validateSecurityConfig: rejects duplicate ids / missing default / bad regex", () => {
-	const config = createDefaultSecurityConfig();
-	assert.deepEqual(validateSecurityConfig(config), []);
-	// 重复 id
-	const dup = createDefaultSecurityConfig();
-	dup.levels[1].id = "off";
-	assert.ok(validateSecurityConfig(dup).some((e) => e.includes("重复")));
-	// 默认等级不存在
-	const missingDefault = createDefaultSecurityConfig();
-	missingDefault.defaultLevelId = "ghost";
-	assert.ok(validateSecurityConfig(missingDefault).some((e) => e.includes("默认等级不存在")));
-	// 非法正则
-	const badRegex = createDefaultSecurityConfig();
-	badRegex.levels[1].denyBashPatterns = ["([unclosed"];
-	assert.ok(validateSecurityConfig(badRegex).some((e) => e.includes("无法编译")));
-	// 未知工具
-	const badTool = createDefaultSecurityConfig();
-	badTool.levels[1].toolActions = { web_search: "allow" };
-	assert.ok(validateSecurityConfig(badTool).some((e) => e.includes("未知工具")));
-});
-
-test("buildSnapshot: exposes exactly the fields the extension reads", () => {
-	const config = createDefaultSecurityConfig();
-	config.sessionOverrides["/s.md"] = "strict";
-	const snapshot = buildSnapshot(config);
-	assert.equal(snapshot.schemaVersion, 1);
-	assert.equal(snapshot.enabled, false);
-	assert.equal(snapshot.defaultLevelId, "standard");
-	assert.equal(snapshot.sessionLevels["/s.md"], "strict");
-	// 扩展读取的字段必须齐全
-	for (const level of snapshot.levels) {
-		assert.equal(typeof level.id, "string");
-		assert.equal(typeof level.name, "string");
-		assert.equal(typeof level.pathPolicy, "string");
-		assert.ok(Array.isArray(level.denyBashPatterns));
-		assert.ok(Array.isArray(level.customAllowDirs));
-		assert.ok(Array.isArray(level.denyDirs));
-		assert.equal(typeof level.protectSensitivePaths, "boolean");
-		assert.ok(["allow", "ask", "deny"].includes(level.defaultAction));
-		assert.equal(typeof level.toolActions, "object");
-	}
-});
 
 test("built-in levels satisfy the strict->standard->off severity order", () => {
 	const levels = createDefaultSecurityLevels();
@@ -177,6 +14,7 @@ test("built-in levels satisfy the strict->standard->off severity order", () => {
 	assert.equal(off.defaultAction, "allow");
 	assert.equal(off.protectSensitivePaths, false);
 	assert.deepEqual(off.denyBashPatterns, []);
+	assert.deepEqual(off.denyPowerShellPatterns, []);
 	// 标准：默认放行 + 危险命令确认 + 敏感保护
 	assert.equal(standard.defaultAction, "allow");
 	assert.equal(standard.toolActions.bash, "ask");
@@ -188,42 +26,41 @@ test("built-in levels satisfy the strict->standard->off severity order", () => {
 	assert.equal(strict.defaultAction, "deny");
 	assert.equal(strict.pathPolicy, "workspace");
 	assert.equal(strict.protectSensitivePaths, true);
+	assert.equal(strict.toolActions.powershell, "ask");
+	assert.ok(strict.denyPowerShellPatterns.length > 0);
 });
 
-test("matchPowerShellDenyPatterns: detects dangerous PowerShell commands per level", () => {
-	const config = createDefaultSecurityConfig();
-	const strict = resolveLevel(config, "strict");
-	assert.ok(matchPowerShellDenyPatterns(strict, "Remove-Item -Recurse ./foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "rm ./foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "del ./foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "Set-Content ./a.txt 'hello'"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "New-Item -ItemType File ./a.txt"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "git push origin main"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "git commit -m 'test'"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "npm install foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "pnpm add foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "yarn add foo"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "git restore --staged file.ts"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "winget install Git.Git"));
-	assert.ok(matchPowerShellDenyPatterns(strict, "pwsh -Command Remove-Item foo"));
+for (const key of ["denyBashPatterns", "denyPowerShellPatterns"]) {
+	test(`editing a default level's ${key} leaves other levels and future defaults unchanged`, () => {
+		const levels = createDefaultSecurityLevels();
+		const standard = levels.find((level) => level.id === "standard");
+		const strict = levels.find((level) => level.id === "strict");
+		const original = [...standard[key]];
+		try {
+			standard[key].push("custom-test-pattern");
+			assert.deepEqual(strict[key], original);
+			assert.deepEqual(createDefaultSecurityLevels().find((level) => level.id === "standard")[key], original);
+		} finally {
+			// Keep a failing pre-fix run from corrupting the exported defaults for another test.
+			standard[key].splice(0, standard[key].length, ...original);
+		}
+	});
+}
 
-	// 安全读取命令不命中
-	assert.equal(matchPowerShellDenyPatterns(strict, "Get-Content ./a.txt"), null);
-	assert.equal(matchPowerShellDenyPatterns(strict, "Get-ChildItem -Recurse"), null);
-	assert.equal(matchPowerShellDenyPatterns(strict, "Select-String -Pattern foo bar.txt"), null);
-	assert.equal(matchPowerShellDenyPatterns(strict, "git status"), null);
-	assert.equal(matchPowerShellDenyPatterns(strict, "git diff"), null);
-});
-
-
-test("POSIX paths retain case sensitivity and workspace/custom boundaries", () => {
- const level = resolveLevel(createDefaultSecurityConfig(), "strict");
- assert.equal(isPathInsideRoot("/workspace/src/a", "/workspace", "posix"), true);
- assert.equal(isPathInsideRoot("/Workspace/a", "/workspace", "posix"), false);
- assert.equal(evaluatePathAction(level, "src/a", "/workspace", "posix"), null);
- assert.equal(evaluatePathAction(level, "../outside/a", "/workspace", "posix"), "deny");
- level.pathPolicy = "custom";
- level.customAllowDirs = ["/shared"];
- assert.equal(evaluatePathAction(level, "/shared/a", "/workspace", "posix"), null);
- assert.equal(evaluatePathAction(level, "/Shared/a", "/workspace", "posix"), "deny");
+test("default PowerShell rules match destructive commands regardless of case", () => {
+	const standard = createDefaultSecurityLevels().find((level) => level.id === "standard");
+	const patterns = standard.denyPowerShellPatterns.map((source) => new RegExp(source, "i"));
+	for (const command of [
+		"Remove-Item -Recurse ./cache",
+		"remove-item -force file.txt",
+		"SET-CONTENT output.txt payload",
+		"Start-Process powershell",
+		"git reset --hard",
+		"Write-Output payload > output.txt",
+	]) {
+		assert.ok(patterns.some((pattern) => pattern.test(command)), command);
+	}
+	for (const command of ["Get-Content file.txt", "Get-ChildItem", "git status", "Write-Output 'hello'"]) {
+		assert.equal(patterns.some((pattern) => pattern.test(command)), false, command);
+	}
 });

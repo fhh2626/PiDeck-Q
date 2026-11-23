@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
+
 import * as path from "node:path";
 import { Key } from "@earendil-works/pi-tui";
 import { FLEET_KEYBINDING_ACTIONS, type ArtifactDirPreference, type ExtensionConfig } from "../shared/types.ts";
@@ -45,21 +45,6 @@ function isValidKeyId(value: string): boolean {
 	return parts.length <= KEY_MODIFIERS.size
 		&& new Set(parts).size === parts.length
 		&& parts.every((modifier) => KEY_MODIFIERS.has(modifier));
-}
-
-export function resolveScheduledStoreRoot(value: string): string {
-	const expanded = value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
-	if (!path.isAbsolute(expanded)) throw new Error(`config.scheduledRuns.storeRoot must be an absolute path or "~/...", got ${JSON.stringify(value)}`);
-	return path.normalize(expanded);
-}
-
-function validateScheduledRunsConfig(value: unknown): void {
-	if (value === undefined) return;
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("config.scheduledRuns must be a JSON object");
-	const storeRoot = (value as Record<string, unknown>).storeRoot;
-	if (storeRoot === undefined) return;
-	if (typeof storeRoot !== "string" || !storeRoot.trim()) throw new Error("config.scheduledRuns.storeRoot must be a non-empty string");
-	resolveScheduledStoreRoot(storeRoot);
 }
 
 function validateFleetKeybindingsConfig(value: unknown): void {
@@ -173,7 +158,6 @@ function validateConfig(config: Record<string, unknown>): void {
 	validateMissionStoreConfig(config.missions);
 	validateAuthorityPolicy(config.authorityPolicy);
 	validatePermissionConfig(config.permissions);
-	validateScheduledRunsConfig(config.scheduledRuns);
 	validateFleetKeybindingsConfig(config.fleetKeybindings);
 	validateArtifactConfig(config.artifactConfig);
 	validateCapacityConfig(config.capacity);
@@ -233,7 +217,8 @@ export function applyModelExclusionsConfig(config: Pick<ExtensionConfig, "modelE
 }
 
 export function resolveAsyncByDefault(config: Pick<ExtensionConfig, "asyncByDefault">): boolean {
-	return config.asyncByDefault === true;
+	// Keep old settings readable while retiring independent background execution.
+	return false;
 }
 
 export function loadConfig(): ExtensionConfig {

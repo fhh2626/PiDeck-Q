@@ -13,19 +13,19 @@ const engineSource = readFileSync(
 
 // 用户反馈 bug：点击「收起思考」后视口突兀弹到最底端。
 // 根因（旧手写实现）：ResizeObserver 对内容「收缩」也触发跟随滚动（scrollToEnd smooth）。
-// 换用 use-stick-to-bottom 引擎后，该语义由引擎内置：只有内容「增长」才锁底跟随，
-// 收缩（negative resize）只保留当前视口，不主动滚动。
+// 引擎区分增长和收缩。已经跟底时，收缩后同步保持新底部；已经进入阅读模式时，
+// 收缩不能重新夺取阅读意图。真实布局与输入时序由 stickToBottomLayoutClamp 覆盖。
 //
 // 2026-08 补充守卫：收缩仅在「未逃逸」时维持锁底。流式中中间回复 message_end 时
 // live 挂载点（折叠外）先卸载、History 落库后 settled 再进折叠（折叠内），两帧高度
 // 往返；已上滚读历史的用户若在近底圈内，会被这个负增长误重锁，随后正增长帧
 // instant 拽底（「先上去再下来」抖动）。与 handleScroll 的重锁路径（已带
 // !escapedFromLock 守卫）对齐：逃逸用户不被任何 resize 拽回锁底。
-test("follow scroll only on content growth, not on shrink", () => {
+test("resize follow ownership distinguishes content changes from an escaped reader", () => {
   // 引擎在 ResizeObserver 回调里区分正/负 resize：增长才 scrollToBottom
   assert.match(engineSource, /const difference = height - \(previousHeight \?\? height\);/);
   assert.match(engineSource, /if \(difference >= 0\) \{/);
-  // 收缩（negative resize）：不主动滚动；仅在「已近底且用户未逃逸」时维持锁底状态，
+  // 收缩（negative resize）：已有锁底意图同步对齐；仅在「已近底且用户未逃逸」时恢复锁底状态，
   // 逃逸用户（上滚读历史）不被负增长误重锁（与 handleScroll 的守卫规则一致）。
   // 断言锚定到负增长分支（} else {）内，避免误匹配 handleScroll 里已有的同形守卫。
   assert.match(
@@ -143,8 +143,8 @@ test("followOutput and onFollowChange bridge to the stick engine", () => {
 // 会抢先于异步 scroll 解锁事件，把恢复的位置立刻拽回底部（双真相源竞态）。
 test("engine exposes atomic restoreAt: position + unlock + cancel in-flight animation", () => {
   // 引擎 API：restoreAt 在返回的实例上（controller 通过 scrollApiRef 调用）
-  assert.match(engineSource, /export type RestoreAt = \(scrollTop: number\) => void;/);
-  assert.match(engineSource, /const restoreAt = useCallback\(\(scrollTop: number\) => \{/);
+  assert.match(engineSource, /export type RestoreAt = \(scrollTop: number, options\?: \{[\s\S]*?preserveFollowState\?: boolean;[\s\S]*?\}\) => void;/);
+  assert.match(engineSource, /const restoreAt = useCallback<RestoreAt>\(\(scrollTop, options\) => \{/);
   // 原子三件事：取消在途动画（generation++ / animation 清空）→ 解锁（escapedFromLock/isAtBottom）
   assert.match(engineSource, /state\.scrollGeneration \+= 1;/);
   assert.match(engineSource, /state\.animation = undefined;/);
@@ -168,7 +168,7 @@ test("restoreAt resets the shrink-clamp baseline for the new session", () => {
 
 test("MessageScroller forwards restoreAt to timeline controller scroll api", () => {
   // MessageScrollerScrollApi 类型与 api 挂载都要包含 restoreAt
-  assert.match(scrollerSource, /restoreAt: \(scrollTop: number\) => void;/);
+  assert.match(scrollerSource, /restoreAt: RestoreAt;/);
   assert.match(scrollerSource, /const engineRestoreAt = stick\.restoreAt;/);
   assert.match(scrollerSource, /restoreAt: engineRestoreAt,/);
 });
@@ -183,7 +183,7 @@ test("timeline controller restores via engine restoreAt and keeps negative offse
   assert.doesNotMatch(source, /offsetTop: Math\.max\(0, rect\.top - viewportRect\.top\)/);
   // 恢复走引擎原子 API（引擎未挂上时回退原生定位）
   assert.match(source, /api\?\.restoreAt/);
-  assert.match(source, /api\.restoreAt\(targetTop\)/);
+  assert.match(source, /api\.restoreAt\(targetTop, \{ forceReading: true \}\)/);
   // autoScroll 初始值按锚点决定：有锚点不跟底，避免第一帧滚底再纠正
   assert.match(source, /return !store\.get\(sessionScrollAnchorByIdAtom\)\[sessionId\];/);
 });
@@ -214,23 +214,4 @@ test("TurnRow liveInterimId requires an active text stream", () => {
   assert.match(atomsSource, /map\[sessionId\]\?\.streaming === true/);
   // 会话移除时成对清理 family（防 atomFamily Map 泄漏）
   assert.match(atomsSource, /liveTextStreamingBySessionAtom\.remove\(sessionId\)/);
-});
-
-// stopReason 协议信号：主进程两处提取（live upsert + 历史回放），渲染层按
-// stop/toolUse 精确区分中间回复与最终回复（message_end 即确定，永不反复）。
-test("stopReason flows from RPC message_end into ChatMessage", () => {
-  const agentSource = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-  // live 路径：message_end 更新真实 stopReason，骨架阶段不覆盖旧值；
-  // pending 是骨架占位值，必须被排除（否则 message_end 缺字段时消息永远停 in pending，
-  // 渲染层回退启发式失效——reviewer 指出删掉该守卫测试照样绿的漏洞，故显式断言）。
-  assert.match(agentSource, /extractedStopReason/);
-  assert.match(agentSource, /partialMessage as any\)\.stopReason/);
-  assert.match(agentSource, /existing\.stopReason = finalStopReason/);
-  assert.match(agentSource, /extractedStopReason && extractedStopReason !== "pending"/);
-  // 历史回放路径：JSONL 持久化的 stopReason 透传
-  const projectorSource = readFileSync("src/main/pi/AgentMessageProjector.ts", "utf8");
-  assert.match(projectorSource, /typeof typed\.stopReason === "string"/);
-  assert.match(projectorSource, /stopReason \? \{ stopReason \} : \{\}\)/);
-  // 渲染层判定行为（stop=final / toolUse 永不提升 / 无字段与 pending 回退）由
-  // tests/turnSegments.test.mjs 行为测试覆盖（20 用例），此处不再重复源码断言。
 });

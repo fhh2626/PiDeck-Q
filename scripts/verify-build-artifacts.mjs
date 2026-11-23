@@ -5,7 +5,6 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_ENTRIES = {
-	nativeNode: "native-node/index.cjs",
 	index: "renderer/index.html",
 	// Web 服务入口：外部端（浏览器访问 http://host:port）加载的就是它。
 	// 产物缺失时 WebServiceManager 会静默回退到 A1 旧内嵌页（功能可用但体验是旧版），
@@ -29,13 +28,24 @@ const CHANGE_PROMPT_FILES = [
 	"extensions/pideck-q-change-pi-prompt/defaults.ts",
 	"extensions/pideck-q-change-pi-prompt/layout.ts",
 	"extensions/pideck-q-change-pi-prompt/contributions.ts",
-	"extensions/pideck-q-change-pi-prompt/shellAvailability.ts",
-	"extensions/pideck-q-change-pi-prompt/shellProbe.ts",
-	"extensions/pideck-q-change-pi-prompt/windowsShellDiscovery.ts",
-	"extensions/pideck-q-change-pi-prompt/childShellPolicy.ts",
-	"extensions/pideck-q-change-pi-prompt/childReconciliation.ts",
-	"extensions/pideck-q-change-pi-prompt/subagentCatalog.ts",
-	"extensions/pideck-q-change-pi-prompt/workflowValidation.ts",
+	"extensions/pideck-q-change-pi-prompt/activeToolLines.ts",
+
+	"extensions/pideck-q-subagents/src/policy/environment/runtime.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/hostEnvironment.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/childRuntime.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/childPrompt.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/toolMetadata.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/childReconciliation.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/policySnapshot.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/policyStorage.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/childShellPolicy.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/subagentCatalog.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/shellAvailability.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/shellProbe.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts",
+	"extensions/pideck-q-subagents/src/policy/environment/copy.ts",
+	"extensions/pideck-q-subagents/src/shared/prompt-sections.ts",
+	"extensions/pideck-q-subagents/src/runs/shared/child-loader-identity.ts",
 ];
 
 const WEBFETCH_FILES = [
@@ -110,16 +120,14 @@ async function latestMtime(paths) {
 
 export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } = {}) {
 	const root = resolve(repoRoot);
-	const output = resolve(outDir ?? join(root, "out"));
+	const output = resolve(outDir ?? join(root, "release", "win-unpacked"));
 	const errors = [];
 	const checked = [];
 	if (!(await exists(output))) {
 		return { ok: false, repoRoot: root, outDir: output, checked, errors: [`Build output directory is missing: ${output}`] };
 	}
-	// Xmake stages the same renderer/sidecar tree under win-unpacked/app, while
-	// local Vite/esbuild output uses out directly. Accept both layouts without
-	// weakening the entry/resource/freshness checks.
-	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.nativeNode))
+	// Resolve renderer resources in the package's app directory, or a synthetic test stage.
+	const artifactRoot = await exists(join(output, "app", EXPECTED_ENTRIES.index))
 		? join(output, "app")
 		: output;
 	const extensionUndiciPackage = join(output, "resources", "extensions", "node_modules", "undici", "package.json");
@@ -186,7 +194,8 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		}
 	}
 	const entryPaths = Object.fromEntries(
-		Object.entries(EXPECTED_ENTRIES).map(([name, path]) => [name, join(artifactRoot, path)]),
+		Object.entries(EXPECTED_ENTRIES)
+			.map(([name, path]) => [name, join(artifactRoot, path)]),
 	);
 	for (const [name, path] of Object.entries(entryPaths)) {
 		if (!(await exists(path))) errors.push(`Missing ${name} entry: ${path}`);
@@ -195,6 +204,56 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 			if (!info.isFile() || info.size === 0) errors.push(`Empty or invalid ${name} entry: ${path}`);
 			else checked.push(path);
 		}
+	}
+	// Reused by the native artifact freshness groups: the backend binary
+	// is the artifact whose build inputs live in `native/backend`.
+	let cppBackendArtifact = "";
+	const backendNames = process.platform === "win32"
+		? ["PiDeckBackend.exe"]
+		: ["PiDeckBackend"];
+	let foundBackend = "";
+	for (const name of backendNames) {
+		const path = join(output, name);
+		if (await exists(path)) {
+			foundBackend = path;
+			break;
+		}
+	}
+	cppBackendArtifact = foundBackend;
+	if (!foundBackend) errors.push(`Missing C++ sidecar executable in ${output}`);
+	else {
+		const info = await stat(foundBackend);
+		if (!info.isFile() || info.size === 0) errors.push(`Empty C++ sidecar executable: ${foundBackend}`);
+		else checked.push(foundBackend);
+		// The sidecar imports Qt modules the host does not (Qt6Sql: OpenCode import,
+		// prompt store, model specs). A stage that only deployed the host's Qt set starts
+		// the window and then fails to load the backend with STATUS_DLL_NOT_FOUND, so the
+		// package gate must prove every Qt DLL the sidecar imports is present.
+		const binary = await readFile(foundBackend);
+		const qtImports = new Set(binary.toString("latin1").match(/Qt6[A-Za-z0-9]+\.dll/g) ?? []);
+		if (qtImports.size === 0) errors.push(`C++ sidecar has no inspectable Qt imports: ${foundBackend}`);
+		for (const dll of qtImports) {
+			const dllPath = join(output, dll);
+			if (!(await exists(dllPath))) {
+				errors.push(`C++ sidecar Qt dependency missing from package: ${dll}`);
+				continue;
+			}
+			checked.push(dllPath);
+		}
+	}
+	const bundledNode = (await walkFiles(output)).filter((file) => file.toLowerCase().endsWith("node.exe") || file.toLowerCase().endsWith("/node") || file.toLowerCase().endsWith("\\node"));
+	if (bundledNode.length > 0) errors.push(`C++ package must not contain a Node runtime: ${bundledNode.join(", ")}`);
+
+	// Plan §11.2 item 1: a C++ package carries no business Node at all - not the
+	// bundled sidecar, not its npm runtime, not even the (empty) `node/` directory the
+	// Node layout uses for node.exe. Only `resources/extensions/node_modules` stays,
+	// because pi loads the built-in TS extensions with its own runtime.
+	const businessNodeLeftovers = [];
+	for (const leftover of ["app/native-node", "app/node_modules", "node"]) {
+		if (await exists(join(output, leftover))) businessNodeLeftovers.push(leftover);
+	}
+	if (businessNodeLeftovers.length > 0) {
+		errors.push(`C++ package must not contain business Node leftovers: ${businessNodeLeftovers.join(", ")}`);
 	}
 
 	const rendererRoot = join(artifactRoot, "renderer");
@@ -228,9 +287,38 @@ export async function verifyBuildArtifacts({ repoRoot = process.cwd(), outDir } 
 		}
 	}
 
-	const commonInputs = [join(root, "vite.config.ts"), join(root, "xmake.lua"), join(root, "package.json")];
+	// Inputs of the TypeScript bundles. `xmake.lua` is deliberately absent here: it only
+	// defines the native targets, so treating a native build-definition edit as a renderer /
+	// Sidecar input reported "stale renderer" for a bundle whose content was current.
+	const commonInputs = [join(root, "vite.config.ts"), join(root, "package.json")];
+	// A C++ package publishes two native binaries whose sources live outside the renderer
+	// tree (`native/backend/**` builds PiDeckBackend.exe, `native/src/**` + the target
+	// definition build PiDeck-Q.exe). Without freshness groups for them a stage whose
+	// binaries predated their own sources still passed because "the exe exists" - exactly
+	// the blind spot that let an old stage satisfy the packaged gate. `xmake.lua` is the
+	// build definition of both targets (kind default, defines, source lists) and the host
+	// embeds the package version, so those files are inputs for the matching artifact only.
+	// A package that does not ship the host binary (a plain `out/` dev tree) simply has no
+	// artifact for the host group and is not judged by it.
+	const cppHostNames = process.platform === "win32" ? ["PiDeck-Q.exe"] : ["PiDeck-Q"];
+	const cppHostArtifacts = [];
+	for (const name of cppHostNames) {
+		for (const base of [output, join(output, "app")]) {
+			const candidate = join(base, name);
+			if (await exists(candidate)) cppHostArtifacts.push(candidate);
+		}
+	}
 	const freshnessGroups = [
-		{ name: "native-node", inputs: [join(root, "src", "main"), join(root, "src", "native-node"), ...commonInputs], artifacts: [entryPaths.nativeNode] },
+		{
+			name: "cpp-backend",
+			inputs: [join(root, "native", "backend"), join(root, "xmake.lua")],
+			artifacts: cppBackendArtifact ? [cppBackendArtifact] : [],
+		},
+		{
+			name: "cpp-host",
+			inputs: [join(root, "native", "src"), join(root, "native", "PiDeck-Q.rc"), join(root, "xmake.lua"), join(root, "package.json")],
+			artifacts: cppHostArtifacts,
+		},
 		{
 			name: "renderer",
 			inputs: [join(root, "src", "renderer"), ...commonInputs],

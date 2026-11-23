@@ -12,10 +12,10 @@ import type {
 	AvailableModel,
 	AskQuestionResultSummary,
 	ChatMessage,
-	ContextControllerState,
 	ImageContent,
-	SendSessionPromptResult,
 	SessionCommandResult,
+	SessionDeleteOptions,
+	SessionDeleteResult,
 	SessionLaunchPreferences,
 	SessionMessagePage,
 	SessionRuntimeTarget,
@@ -26,6 +26,8 @@ import {
 	getAskQuestionResultFromMessage,
 	normalizeAskQuestionResultSummary,
 } from "../../../shared/askQuestion";
+import { toolResultMissingMetadata, TOOL_STATUS_UNKNOWN } from "../../../shared/toolOutcome";
+import { parseSessionDeleteResponse } from "../../../shared/sessionDeleteResponse";
 import type { WebState } from "./webTypes";
 import { readWebMessageMetadata, type WebMessageMetadata } from "./webMessageMetadata";
 
@@ -63,32 +65,6 @@ export async function fetchModels(): Promise<AvailableModel[]> {
 	if (!res.ok) throw new Error(`models ${res.status}`);
 	const result = (await res.json()) as { models?: AvailableModel[] };
 	return result.models ?? [];
-}
-
-/** 读取会话 JSONL 中最后一条上下文控制器快照；与桌面 IPC 同源。 */
-export async function fetchContextControllerState(sessionId: string): Promise<ContextControllerState> {
-	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/context-controller-state`);
-	if (!res.ok) throw new Error(`context-controller-state ${res.status}`);
-	return res.json() as Promise<ContextControllerState>;
-}
-
-/**
- * 静默下发上下文开关命令。不走 /prompt，避免占用 Web 生成锁。
- * 桌面与 Web 最终都进入同一条 sendSessionPrompt(silent) 路径，JSONL 快照共享。
- */
-export async function sendContextControllerCommand(
-	sessionId: string,
-	command: string,
-): Promise<SendSessionPromptResult> {
-	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/context-controller`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ command }),
-	});
-	if (!res.ok) throw new Error(`context-controller ${res.status}`);
-	const payload = (await res.json()) as { result?: SendSessionPromptResult };
-	if (!payload.result) throw new Error("context-controller: missing result");
-	return payload.result;
 }
 
 /** 按项目新建会话（对应桌面端「新建 Agent」入口）。返回新会话 id。 */
@@ -202,25 +178,26 @@ export async function stopRuntime(target: SessionRuntimeTarget): Promise<Session
 }
 
 /** 删除指定会话记录；会话若处于运行态需先停止才能删除。 */
-export async function deleteSession(sessionId: string): Promise<boolean> {
+export async function deleteSession(sessionId: string, options?: SessionDeleteOptions): Promise<SessionDeleteResult> {
 	const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, {
 		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(options ?? {}),
 	});
 	if (!res.ok) {
 		let message = `delete session ${res.status}`;
 		try {
-			const body = (await res.json()) as { error?: string };
-			if (body.error) message = body.error;
+			const body: unknown = await res.json();
+			if (typeof body === "object" && body !== null && "error" in body && typeof body.error === "string") {
+				message = body.error;
+			}
 		} catch {
 			// ignore json parse error
 		}
 		throw new Error(message);
 	}
-	const payload = (await res.json()) as { deleted?: boolean };
-	if (payload.deleted !== true) {
-		throw new Error("delete session failed");
-	}
-	return true;
+	const payload: unknown = await res.json();
+	return parseSessionDeleteResponse(payload);
 }
 
 export async function fetchMessagePage(
@@ -313,6 +290,18 @@ function createWebToolPart(message: ChatMessage): UIMessage["parts"][number] {
 			toolCallId,
 			state: "input-available",
 			input,
+		};
+	}
+	// 结果未记录（异常终止/离线历史）：保留调用记录，但既不是 running 也不是完成。
+	// 用 SDK 原生 toolMetadata 标记，渲染层据此展示中性「未记录结果」而不是转圈/打勾。
+	if (meta?.status === TOOL_STATUS_UNKNOWN) {
+		return {
+			type: "dynamic-tool",
+			toolName,
+			toolCallId,
+			state: "input-available",
+			input,
+			toolMetadata: toolResultMissingMetadata(),
 		};
 	}
 	if (isError) {

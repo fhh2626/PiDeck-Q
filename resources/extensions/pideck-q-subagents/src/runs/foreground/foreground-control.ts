@@ -1,4 +1,4 @@
-import type { AgentProgress, ForegroundChildControl, ForegroundRunControl } from "../../shared/types.ts";
+import type { AgentProgress, ForegroundChildControl, ForegroundRunControl, SubagentState } from "../../shared/types.ts";
 import { registerLivePromptAudit, removeLivePromptAudit, type PromptAuditRerunContract } from "./prompt-audit.ts";
 
 interface BeginForegroundChildInput {
@@ -15,6 +15,80 @@ interface BeginForegroundChildInput {
 	interrupt: () => boolean;
 	detach?: () => boolean;
 	steer?: ForegroundChildControl["steer"];
+}
+
+interface ForegroundExecutionOwner {
+	sessionId: string | undefined;
+	controller: AbortController;
+}
+
+type ForegroundExecutionState = Pick<SubagentState, "foregroundControls" | "subagentInProgress">;
+const foregroundExecutionOwners = new WeakMap<ForegroundExecutionState, Set<ForegroundExecutionOwner>>();
+const foregroundDispatchOwners = new WeakMap<ForegroundExecutionState, Pick<ForegroundExecutionOwner, "sessionId">>();
+
+/** Claim one foreground call for this parent without letting an outgoing call release its successor. */
+export function claimForegroundDispatch(state: ForegroundExecutionState, sessionId: string | undefined): (() => void) | undefined {
+	const previous = foregroundDispatchOwners.get(state);
+	// An unavailable incoming identity cannot prove that the active parent changed.
+	if (previous && (sessionId === undefined || previous.sessionId === sessionId)) return undefined;
+	const owner = { sessionId };
+	foregroundDispatchOwners.set(state, owner);
+	state.subagentInProgress = true;
+	return () => {
+		if (foregroundDispatchOwners.get(state) !== owner) return;
+		foregroundDispatchOwners.delete(state);
+		state.subagentInProgress = false;
+	};
+}
+
+/** Own preparation from entry until the executor returns, including before any child control exists. */
+export async function withForegroundExecutionOwner<T>(
+	state: ForegroundExecutionState,
+	sessionId: string | undefined,
+	signal: AbortSignal,
+	execute: (ownedSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const owners = foregroundExecutionOwners.get(state) ?? new Set<ForegroundExecutionOwner>();
+	foregroundExecutionOwners.set(state, owners);
+	const owner = { sessionId, controller: new AbortController() };
+	owners.add(owner);
+	try {
+		return await execute(AbortSignal.any([signal, owner.controller.signal]));
+	} finally {
+		owners.delete(owner);
+		if (owners.size === 0) foregroundExecutionOwners.delete(state);
+	}
+}
+
+/** Keep outgoing ownership in memory while exposing only the active parent's controls. */
+export function currentSessionForegroundControls(state: Pick<SubagentState, "currentSessionId" | "foregroundControls">): ForegroundRunControl[] {
+	if (!state.currentSessionId) return [];
+	return [...state.foregroundControls.values()].filter((control) => control.sessionId === state.currentSessionId);
+}
+
+/** Cancel outgoing children without releasing their controls before authoritative completion. */
+export function interruptForegroundControls(state: ForegroundExecutionState, keepSessionId?: string | null): void {
+	const dispatchOwner = foregroundDispatchOwners.get(state);
+	if (dispatchOwner && (!keepSessionId || dispatchOwner.sessionId !== keepSessionId)) {
+		foregroundDispatchOwners.delete(state);
+		state.subagentInProgress = false;
+	}
+	for (const owner of foregroundExecutionOwners.get(state) ?? []) {
+		if (!keepSessionId || owner.sessionId !== keepSessionId) owner.controller.abort();
+	}
+	for (const control of state.foregroundControls.values()) {
+		if (keepSessionId && control.sessionId === keepSessionId) continue;
+		const children = [...(control.activeChildren?.values() ?? [])];
+		const interrupts = children.length > 0 ? children.map((child) => child.interrupt) : [control.interrupt];
+		for (const interrupt of interrupts) {
+			try {
+				interrupt?.();
+			} catch (error) {
+				// One failed child cancellation must not leave its siblings running after teardown.
+				console.error("Failed to interrupt a foreground child during session cleanup:", error);
+			}
+		}
+	}
 }
 
 function copyProgress(target: ForegroundChildControl, progress: AgentProgress | undefined): void {

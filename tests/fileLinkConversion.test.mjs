@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-const { toInternalFileHref, filePathFromHref, filePathToUri } = loadTsCommonJs("src/renderer/src/utils/fileLinks.ts");
+const { toInternalFileHref, filePathFromHref, filePathToUri, fileLinkDirectory, resolveFileLinkPath } = loadTsCommonJs("src/renderer/src/utils/fileLinks.ts");
 for (const path of ["src/项目/图.png", String.raw`src\folder\a.png`, "src/literal%20.png", "src/literal%5c.png", "../docs/a.md", "settings.json"]) {
   test(`relative internal href preserves raw disk target ${path}`, () => {
     assert.equal(toInternalFileHref(path), path);
@@ -23,3 +23,23 @@ for (const href of [undefined, null, "", "https://example.com/a.png", "#heading"
   test(`invalid/external input remains rejected: ${href}`, () => assert.equal(filePathFromHref(href, "win32"), null));
 }
 test("UNC remote URI is rejected on POSIX", () => assert.equal(filePathFromHref(filePathToUri(String.raw`\\server\share\a.png`), "linux"), null));
+
+for (const platform of ["linux", "darwin"]) {
+  test(`${platform} absolute file URLs preserve literal backslashes in file and directory names`, () => {
+    const path = String.raw`/tmp/project\name/image\copy.png`;
+    const href = "file:///tmp/project%5Cname/image%5Ccopy.png";
+    assert.equal(filePathToUri(path, platform), href);
+    assert.equal(toInternalFileHref(path, platform), href);
+    assert.equal(filePathFromHref(href, platform), path);
+  });
+
+  test(`${platform} sibling file targets retain literal backslashes in the document directory`, () => {
+    const directory = String.raw`/tmp/project\name`;
+    const relative = String.raw`images\copy.png`;
+    assert.equal(fileLinkDirectory(`${directory}/guide.md`, platform), directory);
+    assert.equal(fileLinkDirectory(`${directory}/${relative}`, platform), directory);
+    assert.equal(resolveFileLinkPath(relative, directory, platform), `${directory}/${relative}`);
+    const trailingBackslash = `${directory}/folder\\`;
+    assert.equal(resolveFileLinkPath(relative, trailingBackslash, platform), `${trailingBackslash}/${relative}`);
+  });
+}

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAtomValue, useStore } from "jotai";
 import { FolderGit2, HatGlasses, Plus, Sparkles } from "lucide-react";
 import type { AvailableModel, Project, SessionLaunchPreferences } from "../../../../shared/types";
 import { t, type TranslationKey } from "../../i18n";
@@ -8,6 +9,12 @@ import { ModelPicker, ThinkingPicker } from "./ComposerComponents";
 import { WELCOME_MODEL_KEY, WELCOME_THINKING_KEY } from "../../utils/chatSessionBootstrap";
 import { EmptyState } from "./SurfaceParts";
 import { THINKING_LEVELS } from "./sessionPickerOptions";
+import { modelListRevisionAtom } from "../../atoms";
+import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedModelReferencesAtom } from "../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../utils/modelConfigurationScope";
+import { getModelRemovalsSince, isRemovedModel } from "../../utils/modelSelection";
+import { showNotice } from "../../utils/notice";
+import { clampThinkingLevelForModel, findModelThinkingSupport } from "../../../../shared/thinkingLevelSupport";
 
 const THINKING_LABEL_KEYS: Record<string, TranslationKey> = {};
 for (const level of THINKING_LEVELS) {
@@ -46,18 +53,55 @@ export function ProjectEmptyState(props: {
   // 边界不信任远端结构（AGENTS 输入校验在边界、禁止 as 强转绕过类型错误）。
   const [models, setModels] = useState<AvailableModel[]>([]);
   const [modelChoice, setModelChoice] = useState("");
+  const [selectionCleared, setSelectionCleared] = useState(false);
   const [thinkingChoice, setThinkingChoice] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [thinkingPickerOpen, setThinkingPickerOpen] = useState(false);
+  const modelListRevision = useAtomValue(modelListRevisionAtom);
+  const store = useStore();
+  const scopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
+  const [choiceScopeKey, setChoiceScopeKey] = useState<string>();
+  const choiceRevisionRef = useRef({ model: 0, thinking: 0 });
+  const removedModels = useAtomValue(removedModelReferencesAtom);
+  useEffect(() => {
+    if (!removedModels.some((model) => modelChoice === `${model.provider}/${model.modelId}`)) return;
+    setModelChoice("");
+    setSelectionCleared(true);
+  }, [removedModels, modelChoice]);
+  // 模型列表独立拉取：配置页保存 models.json 后主进程广播 models:changed，空态常驻在
+  // 配置弹窗后面时也要重取，否则刚勾选的 xhigh/max 要等空态重挂载才会出现在选择器里。
   useEffect(() => {
     let alive = true;
+    setModels([]);
     void desktopApi.projects.listModels(props.activeProject?.id).then((items) => {
       if (alive) setModels(items);
     }).catch(() => undefined);
-    const apply = (model: string | undefined, thinking: string | undefined) => {
-      if (alive) {
-        setModelChoice(model ?? "");
-        setThinkingChoice(thinking ?? "medium");
+    return () => {
+      alive = false;
+    };
+  }, [modelListRevision, props.activeProject?.id, scopeKey]);
+
+  useEffect(() => {
+    let alive = true;
+    const revision = { ...choiceRevisionRef.current };
+    const removalVersions = store.get(modelRemovalVersionsByScopeAtom)[scopeKey] ?? {};
+    const isCurrent = () => alive && scopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
+    setModelChoice("");
+    setSelectionCleared(false);
+    setThinkingChoice("");
+    const apply = (model: string | undefined, thinking: string | undefined, explicitlyCleared = false) => {
+      if (isCurrent()) {
+        // A delete and re-add can both finish while this initial settings read is in flight.
+        const removed = [...store.get(removedModelReferencesAtom),
+          ...getModelRemovalsSince(removalVersions, store.get(modelRemovalVersionsByScopeAtom)[scopeKey] ?? {})];
+        const deleted = removed.some((ref) => model === `${ref.provider}/${ref.modelId}`);
+        // Explicit choices made while loading take precedence over this older default snapshot.
+        if (revision.model === choiceRevisionRef.current.model) {
+          setModelChoice(deleted ? "" : model ?? "");
+          setSelectionCleared(explicitlyCleared || deleted);
+          setChoiceScopeKey(scopeKey);
+        }
+        if (revision.thinking === choiceRevisionRef.current.thinking) setThinkingChoice(thinking ?? "medium");
       }
     };
 
@@ -67,6 +111,7 @@ export function ProjectEmptyState(props: {
     void desktopApi.config
       .getSettings()
       .then(({ parsed }) => {
+        if (!isCurrent()) return;
         // parsed 为 { defaultProvider?: unknown; defaultModel?: unknown; defaultThinkingLevel?: unknown }
         // 逐字段用 typeof 收窄为 string，未命中即视为缺省（返回 undefined）。
         const provider =
@@ -80,6 +125,8 @@ export function ProjectEmptyState(props: {
         if (provider && modelId) {
           // pi 配置同时给全 defaultProvider+defaultModel：直接用它，不再查 models.json。
           apply(`${provider}/${modelId}`, thinking);
+        } else if (parsed.defaultModel === "") {
+          apply(undefined, thinking, true);
         } else {
           // settings 未给全默认模型 → 回退 models.json 首 provider 首 model（与主进程一致）。
           void desktopApi.config
@@ -117,17 +164,53 @@ export function ProjectEmptyState(props: {
       })
       .catch(() => {
         // 配置不可读（非 Electron/网络预览环境）时保持默认空；空态不阻塞。
+        apply(undefined, undefined);
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [scopeKey, store]);
 
   const hasProject = Boolean(props.activeProject);
+
+  /** Empty or deleted launch choices stay visible until the user selects a replacement. */
+  function launch(anonymous: boolean) {
+    const preferences = readLaunchPreferences(modelChoice, thinkingChoice);
+    if (choiceScopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))
+      || selectionCleared || isRemovedModel(preferences.model, store.get(removedModelReferencesAtom))) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      setModelPickerOpen(true);
+      return;
+    }
+    (anonymous ? props.onCreateAnonymous : props.onCreateAgent)(preferences);
+  }
   const modelSeparator = modelChoice.indexOf("/");
   const currentModel = modelSeparator > 0
     ? { provider: modelChoice.slice(0, modelSeparator), modelId: modelChoice.slice(modelSeparator + 1) }
     : undefined;
+  const currentProvider = currentModel?.provider;
+  const currentModelId = currentModel?.modelId;
+  // 引导页也按 models.json 勾选状态过滤 xhigh/max：与主界面/Web 同一套规则。
+  const thinkingSupport = findModelThinkingSupport(models, currentProvider, currentModelId);
+  // 初始档位可能来自 pi settings（如 xhigh），但默认模型未在 models.json 声明该档位：
+  // 启动前面板与主进程 applyPreferences 的降级结果保持一致，避免显示一个不会生效的档位。
+  useEffect(() => {
+    if (models.length === 0 || !currentProvider || !currentModelId) return;
+    // 模型列表里没有当前默认模型（未认证/配置不完整）时支持位是未知的，不要凭未知降级。
+    const targetProvider = currentProvider.toLowerCase();
+    const targetModelId = currentModelId.toLowerCase();
+    const modelExists = models.some(
+      (model) =>
+        model.provider.toLowerCase() === targetProvider &&
+        model.id.toLowerCase() === targetModelId,
+    );
+    if (!modelExists) return;
+    const support = findModelThinkingSupport(models, currentProvider, currentModelId);
+    setThinkingChoice((previous) => {
+      const next = clampThinkingLevelForModel(previous, support);
+      return next && next !== previous ? next : previous;
+    });
+  }, [models, currentProvider, currentModelId]);
 
   // 取路径末段作为页眉右侧的项目名，与侧栏项目行的命名口径一致。
   const activeProjectName = props.activeProject
@@ -135,9 +218,23 @@ export function ProjectEmptyState(props: {
     : "";
 
   const saveModelChoice = (value: string) => {
+    if (scopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))) return;
+    if (store.get(removedModelReferencesAtom).some((ref) => value === `${ref.provider}/${ref.modelId}`)) {
+      showNotice(t("app.modelSelectionRequired"), 4000);
+      return;
+    }
     setModelChoice(value);
+    choiceRevisionRef.current.model += 1;
+    setChoiceScopeKey(scopeKey);
+    setSelectionCleared(false);
     const model = models.find((item) => `${item.provider}/${item.id}` === value);
     if (!model) return;
+    // 切到不支持当前 xhigh/max 的模型时同步降级为 high，避免带着无效档位启动会话。
+    const nextThinking = clampThinkingLevelForModel(
+      thinkingChoice,
+      findModelThinkingSupport(models, model.provider, model.id),
+    );
+    if (nextThinking && nextThinking !== thinkingChoice) saveThinkingChoice(nextThinking);
     try {
       localStorage.setItem(WELCOME_MODEL_KEY, JSON.stringify({ provider: model.provider, modelId: model.id }));
     } catch {
@@ -146,6 +243,8 @@ export function ProjectEmptyState(props: {
   };
 
   const saveThinkingChoice = (value: string) => {
+    if (scopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))) return;
+    choiceRevisionRef.current.thinking += 1;
     setThinkingChoice(value);
     try {
       localStorage.setItem(WELCOME_THINKING_KEY, value);
@@ -160,7 +259,7 @@ export function ProjectEmptyState(props: {
     <div className="flex min-h-0 flex-1 flex-col">
       <EmptyState
         hasProject={hasProject}
-        onCreate={() => props.onCreateAgent(readLaunchPreferences(modelChoice, thinkingChoice))}
+        onCreate={() => launch(false)}
         eyebrow={
           hasProject ? (
             <span className="inline-flex items-center gap-1.5 text-text-secondary">
@@ -174,10 +273,10 @@ export function ProjectEmptyState(props: {
             /* 主从按钮左对齐跟随阅读动线：主按钮用前景/背景反色（浅色下纯黑、暗色下纯白），
                比中性灰 accent 更亮更锐；次按钮降级为下划线文本，hover 一起加深。 */
             <div className="flex flex-wrap items-center gap-6">
-              <Button size="lg" className="h-12 rounded-xl bg-foreground px-7 text-background shadow-[0_8px_24px_-8px_rgb(0_0_0/0.35)] transition-all duration-200 hover:-translate-y-px hover:bg-foreground/85 hover:shadow-[0_12px_32px_-8px_rgb(0_0_0/0.4)]" onClick={() => props.onCreateAgent(readLaunchPreferences(modelChoice, thinkingChoice))}>
+              <Button size="lg" className="h-12 rounded-xl bg-foreground px-7 text-background shadow-[0_8px_24px_-8px_rgb(0_0_0/0.35)] transition-all duration-200 hover:-translate-y-px hover:bg-foreground/85 hover:shadow-[0_12px_32px_-8px_rgb(0_0_0/0.4)]" onClick={() => launch(false)}>
                 <Sparkles className="size-4" aria-hidden="true" />{t("app.createAgent")}
               </Button>
-              <Button variant="ghost" size="lg" className="group h-auto px-0 text-sm font-normal text-text-secondary hover:bg-transparent hover:text-foreground" onClick={() => props.onCreateAnonymous(readLaunchPreferences(modelChoice, thinkingChoice))}>
+              <Button variant="ghost" size="lg" className="group h-auto px-0 text-sm font-normal text-text-secondary hover:bg-transparent hover:text-foreground" onClick={() => launch(true)}>
                 <HatGlasses className="size-4" aria-hidden="true" />
                 <span className="underline decoration-border-strong underline-offset-4 group-hover:decoration-foreground">{t("app.anonymousChatShort")}</span>
               </Button>
@@ -232,6 +331,7 @@ export function ProjectEmptyState(props: {
                   {thinkingPickerOpen && (
                     <ThinkingPicker
                       current={thinkingChoice}
+                      support={thinkingSupport}
                       onClose={() => setThinkingPickerOpen(false)}
                       onPick={(level) => {
                         saveThinkingChoice(level);

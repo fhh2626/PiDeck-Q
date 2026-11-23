@@ -4,11 +4,11 @@
 
 ### What is PiDeck?
 
-PiDeck is an open-source desktop workbench supporting the original Pi Agent, Pi_Agent_Rust and Pi-Bolt (the Pi family of backends) across local project folders. It provides a unified interface for coding-agent sessions, Git, terminal, and configuration management.
+PiDeck is an open-source desktop workbench supporting the original Pi Agent and Pi-Bolt (the Pi family of backends) across local project folders. It provides a unified interface for coding-agent sessions, Git, terminal, and configuration management.
 
 ### Is PiDeck a fork of pi?
 
-No. PiDeck is a native Qt6/QtWebView host with a Node Sidecar that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
+No. PiDeck is a native Qt6/QtWebView host with a native C++ business backend that launches compatible RPC agent processes. The agent capabilities are provided by the selected runtime — PiDeck manages the project and session layer on top.
 
 ### Which platforms are supported?
 
@@ -18,7 +18,7 @@ The native SDK/staging pipeline is Windows-first and requires WebView2 Runtime. 
 
 ### Can I run multiple agents at the same time?
 
-Yes. Each running session has its own independent RPC agent process, so you can run several agents within one project or across projects. The Pi runtime (Pi Agent, Pi_Agent_Rust or Pi-Bolt) is a global preference, not a per-project or per-session choice. Newly started agents use the current setting; changing it does not switch processes that are already running.
+Yes. Each running session has its own independent RPC agent process, so you can run several agents within one project or across projects. The Pi runtime (Pi Agent or Pi-Bolt) is a global preference, not a per-project or per-session choice. Newly started agents use the current setting; changing it does not switch processes that are already running.
 
 ### How do I recover a previous session?
 
@@ -36,7 +36,7 @@ Type `&` in the composer to search and reference past sessions from the same pro
 
 ### What's the minimum Node.js version?
 
-The manifest requires Node.js 24.19.0 and npm 11+. Native development also needs xmake, a C++20/MSVC toolchain and Qt 6.11.2; see [Development](/en/guide/development).
+The manifest requires Node.js 24.19.0 and npm 11+. Native development also needs xmake, a C++20/MSVC toolchain and Qt 6.11.2; see [Development](/en/guide/development). The packaged app itself runs no Node.js: it ships the C++ backend. The external Pi Agent runtime may independently use Node.
 
 ### Can I use PiDeck with self-hosted models?
 
@@ -54,7 +54,7 @@ Check GitHub Releases and follow the instructions for the actual artifact. There
 
 ### The agent is not responding
 
-1. Check that your API keys are configured correctly in Settings > Auth.
+1. Check authentication through your selected Pi runtime's login or provider setup.
 2. Verify network connectivity to your model provider.
 3. Try restarting the session.
 

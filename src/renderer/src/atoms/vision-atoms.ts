@@ -12,6 +12,8 @@ export type VisionBridgeCapabilities = {
 	/** 模型列表与视觉桥配置都已就绪；未就绪时调用方不应据此抑制或显示转换提示 */
 	ready: boolean;
 	models: AvailableModel[];
+	/** Configuration source for the model list. Vision configuration itself is shared. */
+	modelScopeKey?: string;
 	config: VisionBridgeConfig | null;
 	/** 已请求（或已完成）加载对应的版本键（配置修订 + 模型列表修订）；空串 = 从未请求 */
 	loadKey: string;
@@ -33,3 +35,15 @@ export const visionBridgeCapabilitiesAtom = atom<VisionBridgeCapabilities>(
  * 在途的旧请求结束时据此丢弃自己的结果，避免旧的 config 覆盖新的。
  */
 export const visionBridgeRequestSeqAtom = atom(0);
+
+/** Saves can outlive their dialog, so a reopened dialog must supersede earlier write replies. */
+export const visionBridgeSaveSequenceAtom = atom(0);
+
+/** Failed writes do not supersede an earlier successful configuration. */
+export const visionBridgeCommittedSaveSequenceAtom = atom(0);
+
+/** Publish a confirmed config write before any delayed capability read can settle. */
+export const commitVisionBridgeConfigAtom = atom(null, (get, set, config: VisionBridgeConfig | null) => {
+	set(visionBridgeRequestSeqAtom, get(visionBridgeRequestSeqAtom) + 1);
+	set(visionBridgeCapabilitiesAtom, (previous) => ({ ...previous, config, loadKey: "" }));
+});

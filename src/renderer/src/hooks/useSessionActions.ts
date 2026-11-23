@@ -8,6 +8,8 @@ import type {
 } from "../../../shared/types";
 import { isSameSessionPath } from "../agentListDisplay";
 import { t } from "../i18n";
+import { deleteSessionWithConfirmation } from "./deleteSessionWithConfirmation";
+import type { ConfirmDialogConfig } from "../utils/confirmationQueue";
 
 export type RefreshProjectSessions = (
   projectId: string,
@@ -32,7 +34,7 @@ export interface UseSessionActionsOptions {
     sessions: {
       copyRecord: (sessionId: string) => Promise<{ cancelled?: boolean; targetSessionId?: string }>;
       exportRecordHtml: (sessionId: string) => Promise<{ path: string }>;
-      deleteRecord: (sessionId: string) => Promise<boolean>;
+      deleteRecord: (sessionId: string, options?: import("../../../shared/types").SessionDeleteOptions) => Promise<import("../../../shared/types").SessionDeleteResult>;
       archiveRecord: (sessionId: string) => Promise<boolean>;
       unarchiveRecord: (archivedPath: string) => Promise<boolean>;
       listArchived: () => Promise<SessionSummary[]>;
@@ -41,11 +43,12 @@ export interface UseSessionActionsOptions {
     };
   };
   showToast: (message: string, duration?: number) => void;
+  showConfirm: (config: ConfirmDialogConfig) => void;
+  clearConfirm: () => void;
 }
 
 /**
- * 会话选择与草稿创建。只负责「当前会话是谁」，不登记 Tab 预览/常驻——
- * 那是 workspace chrome 的事，由 App / 侧栏在边界组合。
+ * 会话选择与草稿创建。共享请求序号保证异步结果不会覆盖用户的后续导航。
  */
 export function useSessionActions(options: UseSessionActionsOptions) {
   const {
@@ -64,6 +67,8 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     refreshProjectSessions,
     api,
     showToast,
+    showConfirm,
+    clearConfirm,
   } = options;
 
   function commitSessionSelection(
@@ -110,16 +115,18 @@ export function useSessionActions(options: UseSessionActionsOptions) {
   }
 
   async function deleteHistorySession(session: SessionSummary) {
-    try {
-      await api.sessions.deleteRecord(session.id);
-      removeSessionState(session.id);
-      removeSessionComposerState(session.id);
-      showToast(t("app.sessionDeleted"), 2200);
-      const projectId = sessionsProjectId ?? activeProjectId;
-      if (projectId) await refreshProjectSessions(projectId);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : String(error), 4000);
-    }
+    const projectId = sessionsProjectId ?? activeProjectId;
+    return deleteSessionWithConfirmation({
+      sessionId: session.id, sessionTitle: session.name || session.id,
+      deleteRecord: api.sessions.deleteRecord, showConfirm, clearConfirm,
+      onSuccess: async () => {
+        removeSessionState(session.id);
+        removeSessionComposerState(session.id);
+        // The history panel owns its final success notice and waits for this result.
+        if (projectId) await refreshProjectSessions(projectId);
+      },
+      onError: (error) => showToast(error instanceof Error ? error.message : String(error), 4000),
+    });
   }
 
   /** 归档历史会话：文件移入归档目录并从列表移除（可恢复，区别于删除） */
@@ -233,6 +240,7 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return undefined;
     creatingSessionDraftRef.current.add(projectId);
+    const requestSequence = ++openSessionRequestRef.current;
     try {
       const session = await api.sessions.createDraft({
         projectId,
@@ -240,7 +248,10 @@ export function useSessionActions(options: UseSessionActionsOptions) {
         ...preferences,
       });
       upsertSession(session);
-      commitSessionSelection(projectId, session.id, true);
+      // Keep the created record available without taking focus from newer navigation.
+      if (requestSequence === openSessionRequestRef.current) {
+        commitSessionSelection(projectId, session.id, true);
+      }
       return session;
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), 4000);
@@ -258,6 +269,7 @@ export function useSessionActions(options: UseSessionActionsOptions) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return undefined;
     creatingSessionDraftRef.current.add(projectId);
+    const requestSequence = ++openSessionRequestRef.current;
     try {
       const { session } = await api.sessions.createAnonymous({
         projectId,
@@ -265,7 +277,10 @@ export function useSessionActions(options: UseSessionActionsOptions) {
         ...preferences,
       });
       upsertSession(session);
-      commitSessionSelection(projectId, session.id, true);
+      // Keep the created record available without taking focus from newer navigation.
+      if (requestSequence === openSessionRequestRef.current) {
+        commitSessionSelection(projectId, session.id, true);
+      }
       return session;
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), 4000);

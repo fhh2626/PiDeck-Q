@@ -1,3 +1,4 @@
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -36,6 +37,7 @@ function loadAtoms() {
   const sessionRecordIdentity = compileModule("src/renderer/src/utils/sessionRecordIdentity.ts");
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const sessions = compileModule("src/renderer/src/atoms/session-atoms.ts", {
+    "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
     "../utils/agentRuntimeState": runtimeState,
     "../utils/optimisticUserReconciliation": compileModule(
       "src/renderer/src/utils/optimisticUserReconciliation.ts",
@@ -674,9 +676,10 @@ test("windowed full reconciles disk history prefix and preserves it across compa
   assert.deepEqual([...entry().history.messages.map((m) => m.meta.entryId)], ["e1"]);
 
   // 压缩改写 JSONL：fileVersion 变化，但压缩只改变上下文边界，已加载前缀必须保留。
+  // 同一条保留的回复仍使用 e4。相同文本但不同 entryId 是另一条持久消息。
   emit({ agentId: "agent-a", windowStart: 1, totalLength: 3, fileVersion: "200:800", messages: [
     { id: "c1", role: "user", text: "after-compaction", meta: { entryId: "n1" } },
-    { id: "c2", role: "assistant", text: "a", meta: { entryId: "n2" } },
+    { id: "c2", role: "assistant", text: "a", meta: { entryId: "e4" } },
   ], preserveHistory: true, stickyHistory: true });
   assert.deepEqual(
     [...entry().history.messages.map((m) => m.meta.entryId)],

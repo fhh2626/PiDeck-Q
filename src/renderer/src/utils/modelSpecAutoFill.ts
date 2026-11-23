@@ -49,7 +49,7 @@ export async function collectModelSpecPatches(
 ): Promise<{ providers: Record<string, ProviderConfig>; filledCount: number }> {
 	const providers: Record<string, ProviderConfig> = {};
 	let filledCount = 0;
-	// 并行查询全部模型（规格表是本地 sql.js 内存索引，数量级为几十个 provider × 个位数模型）
+	// 并行查询全部模型（规格表是原生后端本地规格索引，数量级为几十个 provider × 个位数模型）
 	const entries = Object.entries(models.providers).flatMap(([providerName, provider]) =>
 		provider.models.map((model, index) => ({ providerName, provider, model, index })),
 	);

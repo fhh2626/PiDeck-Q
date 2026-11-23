@@ -2,6 +2,7 @@ import type { AvailableModel, VisionBridgeConfig } from "../../../shared/types";
 
 export type ModelImageNoticeKind =
 	| "vision-bridge-active"
+	| "vision-bridge-model-required"
 	| "unsupported-suggest-vision"
 	| "unknown-capability";
 
@@ -117,6 +118,7 @@ export function shouldShowVisionConvertingHint(input: {
 /**
  * 评估当前模型与视觉桥配置，决定是否需要向用户提示图片支持情况。
  * - model.images === true：原生支持图片，无提示 (null)；
+ * - 视觉桥已启用但模型被清空：提示先重新选择视觉桥模型；
  * - model.images === false 且视觉桥已配置并启用：提示将通过视觉桥接转换为文字；
  * - model.images === false 且未启用视觉桥：建议切换视觉模型或配置视觉桥；
  * - model.images === undefined：提示模型图片能力未知。
@@ -127,6 +129,9 @@ export function getModelImageCapabilityNotice(
 ): ModelImageCapabilityNotice | null {
 	if (!model) return null;
 	if (model.images === true) return null;
+	if (visionBridge?.enabled && !isVisionBridgeConfigured(visionBridge)) {
+		return { kind: "vision-bridge-model-required" };
+	}
 
 	if (model.images === false) {
 		if (isVisionBridgeConfigured(visionBridge)) {

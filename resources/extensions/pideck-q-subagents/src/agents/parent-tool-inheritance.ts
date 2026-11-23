@@ -7,7 +7,7 @@
  * ask_question, todo, web_search, ...) would be missing. Here the parent's active tool names
  * become the strict allowlist and each tool's provider extension path is added to the agent's
  * `subagentOnlyExtensions`, which the launch plan already loads into the child (and de-duplicates
- * against providers the change-pi-prompt reconciler injected).
+ * against providers the subagent environment reconciler injected).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -63,6 +63,13 @@ export function findOwnPackageRoot(fromDir: string = path.dirname(fileURLToPath(
 function isInside(root: string, candidate: string): boolean {
 	const relative = path.relative(path.resolve(root), path.resolve(candidate));
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** The bundled entry is a sibling of its package, but still provides parent-owned tools. */
+function isOwnProvider(packageRoot: string, providerPath: string): boolean {
+	if (isInside(packageRoot, providerPath)) return true;
+	return path.basename(packageRoot) === 'pideck-q-subagents'
+		&& path.resolve(providerPath) === path.resolve(packageRoot, '../pideck-q-subagents.ts');
 }
 
 /**
@@ -144,7 +151,7 @@ export function selectParentTools(context: ParentToolContext, excludeTools: read
 			skipped.push({ name, reason: "no-loadable-provider" });
 			continue;
 		}
-		if (context.ownPackageRoot && isInside(context.ownPackageRoot, providerPath)) {
+		if (context.ownPackageRoot && isOwnProvider(context.ownPackageRoot, providerPath)) {
 			skipped.push({ name, reason: "subagent-owned" });
 			continue;
 		}

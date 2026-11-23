@@ -92,9 +92,7 @@ let previewSettings: AppSettings = {
 	piEnvironmentChecked: true,
 	piRuntimePreference: "auto",
 	piTypescriptPath: "",
-	piRustPath: "",
 	piBoltPath: "",
-	sessionTabOpenMode: "preview",
 	enableGitManagement: true,
 	gitCommitMessagePrompt: "",
 	gitCommitMessageProvider: "",
@@ -124,7 +122,6 @@ let previewSettings: AppSettings = {
 	webServiceHost: "0.0.0.0",
 	webServicePort: 8765,
 	webServiceAccessToken: "",
-	rpcTimeout: 600_000,
 	workspaceContentOpenMode: "split",
 	contentMaxWidth: 1800,
 	chatContentWidthPct: 80,
@@ -242,8 +239,6 @@ export function createPreviewApi(): PiDesktopApi {
 			// 预览态没有主进程模型缓存，事件永远不会触发（仅满足接口形状）
 			onModelsChanged: noop,
 			getModelSpec: async () => null,
-			onTrustRequest: noop,
-			respondTrustRequest: async () => undefined,
 		},
 		projectResources: {
 			list: async () => ({ skills: [], extensions: [] }),
@@ -291,6 +286,7 @@ export function createPreviewApi(): PiDesktopApi {
 			}),
 		},
 		files: {
+			stat: async () => null,
 			list: async () => files,
 			open: async () => undefined,
 			showInFolder: async () => undefined,
@@ -407,12 +403,6 @@ export function createPreviewApi(): PiDesktopApi {
 				{ role: "user", content: "Preview user message", timestamp: Date.now() - 60000 },
 				{ role: "assistant", content: "Preview assistant response", timestamp: Date.now() - 30000 },
 			],
-			getContextControllerState: async () => ({
-				clearToolHistory: false,
-				clearReadContent: false,
-				clearCommandContent: false,
-				keepRecentCount: 10,
-			}),
 			sendPrompt: async (input) => ({
 				accepted: true,
 				sessionId: input.sessionId,
@@ -531,6 +521,14 @@ export function createPreviewApi(): PiDesktopApi {
 				skippedLines: 0,
 			}),
 			get: async () => null as unknown as import("../../shared/types").UsageAggregated,
+		},
+		// 预览环境没有主进程：返回空配置，保存为 no-op，避免 UI 报错。
+		subagents: {
+			getSettings: async () => ({
+				global: { useOwnModel: false, preferDelegation: false },
+				project: null,
+			}),
+			saveSettings: async () => ({ ok: true }),
 		},
 		codexSessions: {
 			scan: async () => [],
@@ -738,7 +736,7 @@ export function createPreviewApi(): PiDesktopApi {
 			removeBuiltIn: async () => undefined,
 			restoreBuiltIn: async () => undefined,
 			update: async () => ({
-				command: "pi update --extensions --no-approve",
+				command: "pi update --extensions",
 				output: "Preview mode: extensions update output",
 				updated: false,
 			}),
@@ -833,7 +831,10 @@ export function createPreviewApi(): PiDesktopApi {
 		settings: {
 			get: async (): Promise<AppSettings> => ({ ...previewSettings }),
 			update: async (patch): Promise<AppSettings> => {
-				previewSettings = { ...previewSettings, ...patch };
+				const { piInstall, ...values } = patch;
+				previewSettings = { ...previewSettings, ...values };
+				if (piInstall === null) delete previewSettings.piInstall;
+				else if (piInstall !== undefined) previewSettings.piInstall = piInstall;
 				return { ...previewSettings };
 			},
 			restartWebService: async () => undefined,
@@ -862,18 +863,15 @@ export function createPreviewApi(): PiDesktopApi {
 				raw: '{"providers":{}}',
 				parsed: { providers: {} },
 			}),
-			getAuth: async () => ({ raw: "{}", parsed: {} }),
 			getSettings: async () => ({ raw: "{}", parsed: {} }),
-			getTrust: async () => ({ raw: "{}", parsed: {} }),
 			saveModels: async () => ({ valid: true }),
-			saveAuth: async () => ({ valid: true }),
 			saveSettings: async () => ({ valid: true }),
 			saveRaw: async () => ({ valid: true }),
 			export: async () =>
 				JSON.stringify({
 					version: 1,
 					exportedAt: new Date().toISOString(),
-					files: { "models.json": {}, "auth.json": {}, "settings.json": {} },
+					files: { "models.json": {}, "settings.json": {} },
 				}),
 			import: async () => ({ valid: true }),
 			fetchModels: async () => ({

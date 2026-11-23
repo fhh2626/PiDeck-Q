@@ -29,10 +29,10 @@ export type WebNetworkAddress = {
 	cidr: string | null;
 	isPrivate: boolean;
 };
+
 /** 文件/Git Diff 在中间栏的默认打开方式：分屏与会话并排，或占满中间栏 */
 export type WorkspaceContentOpenMode = "split" | "maximize";
 /** 会话 Tab 打开模式：preview=单击为临时预览（发消息后自动晋升常驻），permanent=单击即常驻共存 */
-export type SessionTabOpenMode = "preview" | "permanent";
 export type AppFontSizeMode = "compact" | "default" | "medium" | "large" | "xlarge";
 export type AppFontBaseMode = "system" | "sans" | "serif" | "custom";
 export type AppFontMonoMode = "system-mono" | "custom";
@@ -72,16 +72,13 @@ export type StartupWindowMode =
 	piEnvironmentChecked: boolean;
 	/** 最近一次 pi 环境检测成功的结果缓存（命令路径 + 版本），打开设置直接显示，不重复检测 */
 	piInstall?: { command: string; version: string; runtimeKind?: PiRuntimeKind };
-	/** Pi 实现选择：自动检测、原版 TypeScript、pi_agent_rust 或 Pi-Bolt。 */
+	/** Pi 实现选择：自动检测、原版 TypeScript 或 Pi-Bolt。 */
 	piRuntimePreference: PiRuntimePreference;
 	/** 可选的原版 TypeScript Pi 路径；选择对应实现时优先使用。 */
 	piTypescriptPath: string;
-	/** 可选的 pi_agent_rust 路径；选择对应实现时优先使用。 */
-	piRustPath: string;
 	/** 可选的 Pi-Bolt 路径；选择对应实现时优先使用。旧设置文件没有该字段，加载时回填空串。 */
 	piBoltPath: string;
 	/** 会话 Tab 打开模式：preview=单击为临时预览（发消息后自动晋升常驻），permanent=单击即常驻共存 */
-	sessionTabOpenMode: SessionTabOpenMode;
 	/** 是否启用会话右侧的 Git 源代码管理入口与面板，默认开启以保持升级前行为。 */
 	enableGitManagement: boolean;
 	/** Git 提交摘要生成提示词模板，{diff} 会被替换为实际 diff 内容 */
@@ -141,8 +138,6 @@ export type StartupWindowMode =
 	webServiceAccessToken: string;
 	/** 兼容旧 settings.json 的发行形态字段；当前 PiDeck-Q 固定为 portable。 */
 	installationType?: "portable" | "installed";
-	/** RPC 调用超时时间（毫秒），默认 600000（10 分钟），用于长时间运行的命令 */
-	rpcTimeout: number;
 	/**
 	 * 从文件树 / Git 打开文件或 Diff 时，中间栏默认布局。
 	 * split=与会话分屏；maximize=占满中间栏（会话暂时收起，不进侧栏）。
@@ -249,4 +244,9 @@ export type StartupWindowMode =
 	 */
 	securityConfig?: SecurityConfig;
 
+};
+
+/** IPC settings updates use null to delete the installation cache without persisting null. */
+export type AppSettingsPatch = Partial<Omit<AppSettings, "piInstall">> & {
+	piInstall?: AppSettings["piInstall"] | null;
 };

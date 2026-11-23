@@ -1,0 +1,36 @@
+{
+  "done": {
+    "initial": [
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"subagent\",\"toolName\":\"subagent\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"subagent\",\"toolName\":\"subagent\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"bg_wait\",\"toolName\":\"bg_wait\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"bg_wait\",\"toolName\":\"bg_wait\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"powershell\",\"toolName\":\"powershell\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"powershell\",\"toolName\":\"powershell\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n"
+    ],
+    "terminal": [
+      "data: {\"type\":\"tool-output-available\",\"toolCallId\":\"subagent\",\"output\":{},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-output-available\",\"toolCallId\":\"bg_wait\",\"output\":{},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-output-available\",\"toolCallId\":\"powershell\",\"output\":{},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"finish\"}\n\n",
+      "data: [DONE]\n\n"
+    ]
+  },
+  "unknown": {
+    "initial": [
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"subagent\",\"toolName\":\"subagent\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"subagent\",\"toolName\":\"subagent\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"bg_wait\",\"toolName\":\"bg_wait\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"bg_wait\",\"toolName\":\"bg_wait\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n",
+      "data: {\"type\":\"tool-input-start\",\"toolCallId\":\"powershell\",\"toolName\":\"powershell\",\"dynamic\":true}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"powershell\",\"toolName\":\"powershell\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{}}\n\n"
+    ],
+    "terminal": [
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"subagent\",\"toolName\":\"subagent\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{\"resultMissing\":true}}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"bg_wait\",\"toolName\":\"bg_wait\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{\"resultMissing\":true}}\n\n",
+      "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"powershell\",\"toolName\":\"powershell\",\"dynamic\":true,\"input\":{\"task\":\"inspect\"},\"toolMetadata\":{\"resultMissing\":true}}\n\n",
+      "data: {\"type\":\"finish\"}\n\n",
+      "data: [DONE]\n\n"
+    ]
+  }
+}

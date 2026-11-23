@@ -3,7 +3,7 @@
  *
  * Electron can honor `-webkit-app-region: drag` on overlapping chrome.
  * Qt WebView does not, so the renderer must start a system move from the
- * real pointer target. Logo / session tabs sit above `.window-drag-layer`
+ * real pointer target. Logo / workspace toolbar sit above `.window-drag-layer`
  * (z-index 930 vs 900); a capture-phase listener uses this helper so those
  * visible regions still drag the window without swallowing buttons or tabs.
  */
@@ -25,7 +25,7 @@ const INTERACTIVE_SELECTOR = [
 const TITLEBAR_SELECTOR = [
 	".window-drag-layer",
 	".list-toolbar",
-	".session-tabs-bar",
+	".workspace-toolbar",
 	".app-badge",
 ].join(",");
 

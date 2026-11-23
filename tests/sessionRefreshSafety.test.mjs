@@ -6,11 +6,6 @@ const projectSync = readFileSync("src/renderer/src/hooks/useProjectSync.ts", "ut
 const app = readFileSync("src/renderer/src/App.tsx", "utf8");
 const sessionActions = readFileSync("src/renderer/src/hooks/useSessionActions.ts", "utf8");
 const importFlow = readFileSync("src/renderer/src/hooks/useImportFlow.ts", "utf8");
-const i18n = [
-  readFileSync("src/renderer/src/i18n/rendererCopy.zh-CN.ts", "utf8"),
-  readFileSync("src/renderer/src/i18n/rendererCopy.en-US.ts", "utf8"),
-].join("\n");
-const scanner = readFileSync("src/main/sessions/SessionScanner.ts", "utf8");
 
 function refreshSessionsBlock() {
   const match = projectSync.match(/async function refreshSessions\(projectId = activeProjectId\): Promise<SessionSummary\[]> \{[\s\S]*?\n  \}\n\n  async function runProjectSessionRefresh/);
@@ -27,12 +22,6 @@ function refreshProjectSessionsBlock() {
 function runProjectSessionRefreshBlock() {
   const match = projectSync.match(/async function runProjectSessionRefresh\([\s\S]*?\n  \}\n\n  function startProjectSessionRefresh/);
   assert.ok(match, "runProjectSessionRefresh implementation should be discoverable");
-  return match[0];
-}
-
-function withTimeoutBlock() {
-  const match = projectSync.match(/function withTimeout<T>\([\s\S]*?\n\}\n/);
-  assert.ok(match, "withTimeout implementation should be discoverable");
   return match[0];
 }
 
@@ -109,23 +98,6 @@ test("shares one deferred completion across initial, collision, and retry cycles
   assert.doesNotMatch(projectSync, /ProjectSessionRefreshCycle|ProjectSessionRefreshPhase|sessionRefreshPendingRetryRef/);
 });
 
-test("bounds catalog requests and retains timeout cleanup", () => {
-  const block = runProjectSessionRefreshBlock();
-  const timeoutBlock = withTimeoutBlock();
-  assert.match(projectSync, /const SESSION_REFRESH_TIMEOUT_MS = 20_000;/);
-  assert.match(timeoutBlock, /Promise\.race\(\[promise, timeout\]\)\.finally\(\(\) => \{/);
-  assert.match(timeoutBlock, /if \(timer\) clearTimeout\(timer\);/);
-  assert.match(
-    block,
-    /withTimeout\(\s*api\.sessions\.listCatalog\(projectId\),\s*SESSION_REFRESH_TIMEOUT_MS,\s*t\("app\.sessionRefreshTimeout"\),?\s*\)/,
-  );
-  assert.match(i18n, /"app\.sessionRefreshTimeout"/);
-  assert.match(scanner, /private scanTimeoutMs = 18_000;/);
-  assert.match(scanner, /new AbortController\(\)/);
-  assert.match(scanner, /controller\.abort\(new Error\("Session scan timed out"\)\)/);
-  assert.match(scanner, /clearTimeout\(scanTimer\)/);
-});
-
 test("uses request sequence plus latest-applied authority for catalog data", () => {
   const block = runProjectSessionRefreshBlock();
   assert.match(projectSync, /const sessionLatestAppliedRequestByProjectRef = useRef<Record<string, number \| undefined>>\(\{\}\);/);
@@ -134,10 +106,12 @@ test("uses request sequence plus latest-applied authority for catalog data", () 
     [
       "const request = (sessionRequestByProjectRef.current[projectId] ?? 0) + 1;",
       "sessionRequestByProjectRef.current[projectId] = request;",
+      "const modelConfigurationVersions = captureModelConfigurationVersions?.();",
+      "api.sessions.listCatalog(projectId)",
       "const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef.current[projectId];",
       "if (latestAppliedRequest !== undefined && request < latestAppliedRequest)",
       "result = records;",
-      "replaceProjectSessions({ projectId, sessions: records });",
+      "replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });",
       "sessionLatestAppliedRequestByProjectRef.current[projectId] = request;",
       ".map(sessionRecordToSummary)",
       ".filter((session): session is SessionSummary => Boolean(session))",
@@ -176,9 +150,14 @@ test("catalog-refreshed accepts older success after a newer request fails", () =
   )?.[0] ?? "";
   assert.match(block, /const latestAppliedRequest = sessionLatestAppliedRequestByProjectRef\.current\[projectId\];/);
   assert.doesNotMatch(block, /if \(sessionRequestByProjectRef\.current\[projectId\] !== request\) return;/);
+  assertInOrder(block, [
+    "const modelConfigurationVersions = captureModelConfigurationVersions?.();",
+    ".listCatalog(projectId, { scan: false })",
+    "replaceProjectSessions({ projectId, sessions: records, modelConfigurationVersions });",
+  ], "capture model versions before the catalog-refreshed request");
   assert.match(
     block,
-    /replaceProjectSessions\(\{ projectId, sessions: records \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
+    /replaceProjectSessions\(\{ projectId, sessions: records, modelConfigurationVersions \}\);\s*sessionLatestAppliedRequestByProjectRef\.current\[projectId\] = request;\s*setSessionCatalogLoadState\?\.\(\{ projectId, state: \{ status: "ready" \} \}\);/,
   );
   assert.match(block, /sessionRequestByProjectRef\.current\[projectId\] !== request/);
 });

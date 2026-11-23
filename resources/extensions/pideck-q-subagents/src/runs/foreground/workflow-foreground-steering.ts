@@ -9,7 +9,7 @@ import { currentCompletionOwnerId } from "../../shared/completion-owner.ts";
 
 export interface WorkflowForegroundSteeringTarget {
 	control: ForegroundRunControl;
-	workflowRunId: string;
+	workflowRunId?: string;
 	sourceRunId: string;
 }
 
@@ -20,6 +20,13 @@ export type WorkflowForegroundSteeringResolution =
 function activeWorkflowError(state: SubagentState, workflowRunId: string, asyncDirRoot: string): string | undefined {
 	if (!state.currentSessionId) return "Workflow steering requires an active parent session.";
 	if (!state.workflowControllers?.has(workflowRunId)) return `Workflow '${workflowRunId}' has no live foreground child.`;
+	const retained = state.foregroundWorkflows?.get(workflowRunId);
+	if (retained) {
+		// A foreground handoff retains its live VM in memory and has no async status file.
+		// Its original owner and terminal result are authoritative for child steering.
+		if (retained.sessionId !== state.currentSessionId) return `Workflow '${workflowRunId}' was not found in the active session.`;
+		return retained.result ? `Workflow '${workflowRunId}' has no live foreground child.` : undefined;
+	}
 	const status = readStatus(path.join(asyncDirRoot, workflowRunId));
 	if (!status || status.mode !== "workflow" || (status.state !== "running" && status.state !== "queued")) {
 		return `Workflow '${workflowRunId}' has no live foreground child.`;
@@ -32,6 +39,23 @@ function controlIsLiveInWorkflow(control: ForegroundRunControl, workflowRunId: s
 	return control.parentWorkflowRunId === workflowRunId
 		&& control.sessionId === sessionId
 		&& (control.activeChildren?.size ?? 0) > 0;
+}
+
+/** Route direct foreground children through their owned live session, including after a handoff. */
+export function resolveForegroundSteeringTarget(input: {
+	state: SubagentState;
+	childRunId: string;
+	asyncDirRoot: string;
+}): WorkflowForegroundSteeringResolution {
+	const control = input.state.foregroundControls.get(input.childRunId);
+	if (control?.parentWorkflowRunId) return resolveWorkflowForegroundSteeringTarget(input);
+	if (!input.state.currentSessionId || control?.sessionId !== input.state.currentSessionId) {
+		return { ok: false, message: `Foreground run '${input.childRunId}' was not found in the active session.` };
+	}
+	if ((control.activeChildren?.size ?? 0) === 0) {
+		return { ok: false, message: `Foreground run '${input.childRunId}' has no live child session.` };
+	}
+	return { ok: true, target: { control, sourceRunId: input.childRunId } };
 }
 
 export function resolveWorkflowForegroundSteeringTarget(input: {

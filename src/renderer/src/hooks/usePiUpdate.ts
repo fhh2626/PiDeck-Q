@@ -79,11 +79,9 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
         ? {}
         : status.runtimeKind === "typescript" && !settings.piTypescriptPath
           ? { piTypescriptPath: status.command }
-          : status.runtimeKind === "rust" && !settings.piRustPath
-            ? { piRustPath: status.command }
-            : status.runtimeKind === "bolt" && !settings.piBoltPath
-              ? { piBoltPath: status.command }
-              : {};
+          : status.runtimeKind === "bolt" && !settings.piBoltPath
+            ? { piBoltPath: status.command }
+            : {};
       return api.settings.update({
         piInstall: {
           command: status.command,
@@ -94,8 +92,8 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
       });
     }
     // 未检测到：清除旧缓存，避免残留上一台机器/旧路径的结果
-    return api.settings.update({ piInstall: undefined });
-  }, [api, settings.piBoltPath, settings.piRustPath, settings.piTypescriptPath]);
+    return api.settings.update({ piInstall: null });
+  }, [api, settings.piBoltPath, settings.piTypescriptPath]);
 
   const checkPiInstall = useCallback(
     async (source: "startup" | "manual" = "manual") => {
@@ -142,7 +140,7 @@ export function usePiUpdate(options: UsePiUpdateOptions) {
         setEnvironmentDialog(true);
         setPiStatus(next);
         // 未检测到：清除旧缓存
-        const saved = await api.settings.update({ piInstall: undefined });
+        const saved = await api.settings.update({ piInstall: null });
         setSettings(saved);
       }
     } finally {

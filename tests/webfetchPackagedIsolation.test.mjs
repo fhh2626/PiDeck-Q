@@ -105,6 +105,7 @@ test("WebFetch loads in an isolated packaged environment without root node_modul
 		);
 
 		const result = spawnSync(process.execPath, [testScript], {
+			windowsHide: true,
 			cwd: tempDir,
 			encoding: "utf8",
 			env: {

@@ -15,12 +15,7 @@ Configure the AI models available to your agents:
 - **Endpoint** — Custom API endpoint URL (for proxies or self-hosted models).
 - **Parameters** — Temperature, max tokens, top-p, and other model parameters.
 
-### Auth
-
-Manage authentication credentials:
-
-- **API Keys** — Add, remove, and test API keys for each provider.
-- **Environment Variables** — Some keys can be set via environment variables for security.
+Configure authentication through the selected Pi runtime's login or provider setup. PiDeck-Q uses the credentials already configured in that runtime. Configuration import and export include model and settings files.
 
 ### General Settings
 
@@ -28,6 +23,20 @@ Manage authentication credentials:
 - **Theme** — Light, dark, or system theme.
 - **Font Size** — Adjust the editor and terminal font size.
 - Session persistence is owned by the selected pi runtime; PiDeck does not implement a separate Agent autosave mechanism.
+
+## Security management
+
+Enable security management in **Pi Manager → Security** to configure Bash and PowerShell tool actions and dangerous command patterns for each level. The PowerShell editor appears below the Bash editor. Enter one regular expression per line. These patterns apply to commands from the `powershell` tool and ignore case.
+
+| Level | Default PowerShell rules and behavior |
+| --- | --- |
+| Off | The pattern list is empty and tool calls are allowed. |
+| Standard | Includes patterns for file deletion and writes, process operations, Git mutations, package installation, and redirection. Commands require confirmation. |
+| Strict | Uses the same dangerous command patterns. Matching commands are denied, and other commands require confirmation. |
+
+A new custom level copies the current Standard level and can be edited independently. Clearing the PowerShell pattern list disables pattern matching while keeping the tool action in effect. Setting the tool action to Deny always blocks that tool. Setting it to Allow permits commands to run.
+
+Saved rules take effect on the next tool call, including subagents that inherit the parent session's security policy. Older configurations receive missing PowerShell defaults while preserving existing custom patterns and explicitly empty lists.
 
 ## Skills
 

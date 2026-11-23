@@ -11,6 +11,46 @@ export function isWebToolPart(part: UIMessage["parts"][number]): boolean {
 		|| (typeof part.type === "string" && part.type.startsWith("tool-"));
 }
 
+/** Real terminal evidence wins; pending states use event order so a live restart clears unknown. */
+function webToolPartStrength(part: UIMessage["parts"][number]): number {
+	if (!isWebToolPart(part)) return 0;
+	const state = Reflect.get(part, "state");
+	if (state === "output-available" || state === "output-error") return 3;
+	return 1;
+}
+
+/**
+ * 同一 toolCallId 在一条 UI 消息里只能保留一个 part。
+ *
+ * 背景：ai@7 的 tool-input-* 帧只在「当前 step」里按 toolCallId 查找 part，跨 step 的
+ * 更新会 push 出第二条 part（典型：重连回放到一半的工具 + 收尾的「结果未记录」标记），
+ * 于是同一个调用同时显示成「运行中」和「未知」。翻译层已经不让 step 边界切开活跃工具，
+ * 这里再做一层纯展示收口：位置取首次出现（保持真实时序），内容取证据最强的一条。
+ */
+export function collapseDuplicateWebToolParts(
+	parts: UIMessage["parts"],
+): UIMessage["parts"] {
+	const positions = new Map<string, number>();
+	const kept: UIMessage["parts"] = [];
+	for (const part of parts) {
+		const toolCallId = isWebToolPart(part) ? Reflect.get(part, "toolCallId") : undefined;
+		if (typeof toolCallId !== "string" || !toolCallId) {
+			kept.push(part);
+			continue;
+		}
+		const first = positions.get(toolCallId);
+		if (first === undefined) {
+			positions.set(toolCallId, kept.length);
+			kept.push(part);
+			continue;
+		}
+		// Equal-strength updates use the latest observation, including real live
+		// input after unknown. An input/unknown replay can never erase a result.
+		if (webToolPartStrength(part) >= webToolPartStrength(kept[first])) kept[first] = part;
+	}
+	return kept.length === parts.length ? parts : kept;
+}
+
 /** Compare message content including attachments, ignoring transport-only text state/steps. */
 export function webMessageContentKey(message: UIMessage): string {
 	return JSON.stringify(message.parts.filter((part) => part.type !== "step-start")
@@ -43,7 +83,8 @@ export function mergeAdjacentWebMessageParts(
 		}
 		merged.push(part);
 	}
-	return merged;
+	// 同一 toolCallId 的重复 part（跨 step 复制）只能留一条，否则 UI 会同时转圈和报未知。
+	return collapseDuplicateWebToolParts(merged);
 }
 
 /** 消息仍在流时，只有最后一段未完成 reasoning 扫光；前面的思考卡保持结束态。 */

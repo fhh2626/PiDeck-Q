@@ -9,15 +9,17 @@ import {
 	type PointerEvent as ReactPointerEvent,
 	type ReactNode,
 } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { useTimelinePresentationContext } from "./timeline/timelinePresentationContext";
 import {
 	getUserBubblePresentationAtom,
+	rememberUserBubblePresentationIdentityAtom,
 	getEditPresentationAtom,
 } from "../../atoms/timeline-presentation";
 import { MarkdownStream } from "./MarkdownStream";
 import "katex/dist/katex.min.css";
 import { MessageImage } from "./MessageImage";
+import { MessageImageGallery } from "./MessageImageGallery";
 import { CopyMenu } from "./MessageCopyMenu";
 export { ImagePreviewModal } from "./MessageImage";
 export { CopyMenu } from "./MessageCopyMenu";
@@ -57,7 +59,8 @@ import type {
 	ImageContent,
 	VisionEventsInfo,
 } from "../../../../shared/types";
-import { parseRichInputChips, unwrapFileChipPath } from "./composer/chips";
+import { parseRichInputChips } from "./composer/chips";
+import { TimelineFileChip } from "./TimelineFileChip";
 import { useTimelineMessageEdit } from "../../hooks/useTimelineMessageEdit";
 import removeMarkdown from "remove-markdown";
 
@@ -91,13 +94,7 @@ import { MultiSelectModal } from "./MessageShareModal";
 
 
 
-/**
- * 美元→人民币估算汇率：仅用于费用提示的便捷换算（约合金额），非实时牌价。
- * 如需跟随实时汇率或用户自定义，可升级为设置项（usdToCnyRate）。
- */
-export const USD_TO_CNY_RATE = 7.2;
-
-export type SessionDetailRow = { label: string; value: string; emphasis?: boolean };
+export type SessionDetailRow = { label: string; value: string };
 
 export type SessionStatusDetail = {
 	detailRows: SessionDetailRow[];
@@ -117,7 +114,7 @@ export function buildSessionStatusDetail(
 				| "contextPercent" | "contextTokens" | "contextWindow"
 				| "inputTokens" | "outputTokens"
 				| "cacheRead" | "cacheWrite" | "cacheTotal" | "cacheHitPercent"
-				| "ttftMs" | "totalMs" | "tps" | "cost"
+				| "ttftMs" | "totalMs" | "tps"
 		  >
 		| undefined,
 	averageCacheHit: number | undefined,
@@ -126,11 +123,6 @@ export function buildSessionStatusDetail(
 	const detailRows: SessionDetailRow[] = [];
 	const replyPerfRows: SessionDetailRow[] = [];
 	if (!state) return { detailRows, replyPerfRows, hasDetail: false };
-	// 美元→人民币估算汇率（仅用于费用提示的便捷换算，非实时牌价；
-	// 如后续需要跟随实时汇率，可升级为设置项 usdToCnyRate）
-	const cnyAmount = state.cost != null
-		? `¥${(state.cost * USD_TO_CNY_RATE).toFixed(2)}`
-		: undefined;
 
 	if (state.contextPercent != null || state.contextTokens != null) {
 		detailRows.push({
@@ -165,7 +157,7 @@ export function buildSessionStatusDetail(
 	if (averageCacheHit != null) {
 		detailRows.push({
 			label: t("ctx.detail.hitAverage"),
-			value: `${averageCacheHit.toFixed(1)}% (${averageCacheHitSampleCount} ${t("ctx.detail.snapshots")})`,
+			value: `${averageCacheHit.toFixed(1)}% (${averageCacheHitSampleCount} ${t("ctx.detail.samples")})`,
 		});
 	}
 	// 这些值来自 AgentManager 的 lastPerfByAgent，只代表最近一条 assistant 回复，
@@ -178,10 +170,6 @@ export function buildSessionStatusDetail(
 	}
 	if (state.tps != null) {
 		replyPerfRows.push({ label: t("ctx.detail.tps"), value: `${state.tps.toFixed(0)} tok/s` });
-	}
-	if (state.cost != null) {
-		detailRows.push({ label: t("ctx.detail.cost"), value: `$${state.cost.toFixed(3)}`, emphasis: true });
-		detailRows.push({ label: t("ctx.detail.costCny"), value: cnyAmount ?? "-", emphasis: true });
 	}
 	return { detailRows, replyPerfRows, hasDetail: detailRows.length > 0 || replyPerfRows.length > 0 };
 }
@@ -208,10 +196,6 @@ export function SessionStatus(props: {
 		averageCacheHit,
 		averageCacheHitSampleCount,
 	);
-	// cost-chip 悬浮提示里的人民币估算（与明细行共用同一汇率常量）
-	const cnyAmount = state.cost != null
-		? `¥${(state.cost * USD_TO_CNY_RATE).toFixed(2)}`
-		: undefined;
 
 	const statusInner = (
 		<div className="session-status">
@@ -223,18 +207,9 @@ export function SessionStatus(props: {
 					% / {formatCompact(state.contextWindow)}
 				</span>
 			)}
-			{(state.cacheHitPercent != null) && (
-				<span className="cache-chip">
-					{t("app.cacheHit")}: {state.cacheHitPercent?.toFixed?.(0) ?? state.cacheHitPercent}%
-				</span>
-			)}
-			{/* 平均命中率只在悬停明细中展示（ctx.detail.hitAverage），头部不再显示单独 chip */}
-			{state.cost != null && (
-				<span className="cost-chip" title={t("app.totalCostCny", {
-					usd: `$${state.cost.toFixed(3)}`,
-					cny: cnyAmount ?? "-",
-				})}>
-					${state.cost.toFixed(3)}
+			{averageCacheHit != null && (
+				<span className="cache-chip" title={t("ctx.detail.hitAverageTitle")}>
+					{t("app.cacheHit")}: {averageCacheHit.toFixed(1)}%
 				</span>
 			)}
 		</div>
@@ -261,7 +236,7 @@ export function SessionStatus(props: {
 						{detailRows.map((row) => (
 							<div
 								key={row.label}
-								className={`flex items-baseline justify-between gap-4 px-1 py-0.5 text-caption leading-5${row.emphasis ? " mt-1 border-t border-border/70 pt-1.5" : ""}`}
+								className="flex items-baseline justify-between gap-4 px-1 py-0.5 text-caption leading-5"
 							>
 								<span className="shrink-0 text-muted-foreground">{row.label}</span>
 								<span className="min-w-0 text-right font-mono font-semibold tabular-nums text-popover-foreground">{row.value}</span>
@@ -507,10 +482,15 @@ export const UserBubble = memo(function UserBubble(props: {
 	const context = useTimelinePresentationContext();
 	const userBubbleAtom = useMemo(() => {
 		if (context?.sessionId && context?.rowKey) {
-			return getUserBubblePresentationAtom(context.sessionId, context.rowKey);
+			return getUserBubblePresentationAtom(context.sessionId, `message:${message.id}`, context.rowKey);
 		}
 		return null;
-	}, [context?.sessionId, context?.rowKey]);
+	}, [context?.sessionId, context?.rowKey, message.id]);
+	const rememberBubbleIdentity = useSetAtom(rememberUserBubblePresentationIdentityAtom);
+	useLayoutEffect(() => {
+		if (!context?.sessionId || !context.rowKey) return;
+		rememberBubbleIdentity({ sessionId: context.sessionId, rowKey: `message:${message.id}`, previousRowKey: context.rowKey });
+	}, [context?.sessionId, context?.rowKey, message.id, rememberBubbleIdentity]);
 
 	const [bubblePresentation, setBubblePresentation] = useAtom(
 		userBubbleAtom ??
@@ -650,6 +630,7 @@ export const UserBubble = memo(function UserBubble(props: {
 					))}
 				</div>
 			)}
+			{message.imageDisplayNotice && <MessageImageGallery notice={message.imageDisplayNotice} />}
 			{visionBlocks.length > 0 && (
 				<div className="mb-2 flex w-full max-w-[min(82%,64ch)] flex-col items-end gap-1.5">
 					{visionBlocks.map((block, bi) =>
@@ -963,15 +944,15 @@ function renderChipText(text: string, onOpenFile?: (path: string) => void, valid
 		if (chip.start > cursor) {
 			nodes.push(text.slice(cursor, chip.start));
 		}
-		const clickable = onOpenFile && chip.kind === "file";
-		nodes.push(
+		if (onOpenFile && chip.kind === "file") {
+			nodes.push(<TimelineFileChip key={`chip-${chip.start}`} chip={chip} onOpenFile={onOpenFile} />);
+		} else nodes.push(
 			<span
 				key={`chip-${chip.start}`}
-				className={`input-chip input-chip--${chip.kind}${clickable ? " clickable" : ""}`}
+				className={`input-chip input-chip--${chip.kind}`}
 				data-type={chip.kind}
 				data-raw={chip.raw}
 				title={chip.raw}
-				onClick={clickable ? () => onOpenFile(unwrapFileChipPath(chip.raw)) : undefined}
 			>
 				<span className="input-chip__icon">
 					{chip.kind === "file" ? "@" : "/"}
@@ -1016,6 +997,8 @@ export function ConversationOutline(props: {
 	gitAction?: EntryAction;
 	editorsAction?: EntryAction & { anchorRef?: React.RefObject<HTMLButtonElement | null> };
 	skillsAction?: EntryAction;
+	/** 子代理偏好入口：扩展未启用时 disabled + 提示文案。 */
+	subagentsAction?: EntryAction;
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const [dragging, setDragging] = useState(false);
@@ -1180,6 +1163,28 @@ export function ConversationOutline(props: {
 				>
 					{props.skillsAction.icon}
 				</button>
+			)}
+			{/* 复用 skills-entry 的入口外观：右侧工具条这一排共用同一套 legacy 视觉，
+			    新增 .subagents-entry 只会再复制一份手写 CSS。
+			    提示文案挂在外层 span：disabled 按钮不派发鼠标事件，原生 title 不会弹出，
+			    悬停子元素时浏览器会显示最近祖先的 title。 */}
+			{props.subagentsAction && (
+				<span
+					className={`inline-flex${props.subagentsAction.disabled ? " cursor-not-allowed" : ""}`}
+					title={props.subagentsAction.label}
+				>
+					<button
+						type="button"
+						// pointer-events-none：disabled 按钮自己吃掉 hover，外层 span 就收不到，
+						// title 也就不会弹；把命中让给 span 才能显示「需要安装并启用插件」。
+						className={`skills-entry${props.subagentsAction.active ? " active" : ""}${props.subagentsAction.disabled ? " pointer-events-none" : ""}`}
+						aria-label={props.subagentsAction.label}
+						disabled={props.subagentsAction.disabled}
+						onClick={props.subagentsAction.onClick}
+					>
+						{props.subagentsAction.icon}
+					</button>
+				</span>
 			)}
 		</div>
 	);

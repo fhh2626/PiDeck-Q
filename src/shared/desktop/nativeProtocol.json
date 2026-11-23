@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "desktopEndpoints": [
+    "POST /__pideck/rpc",
+    "GET /__pideck/bootstrap",
+    "GET /__pideck/events",
+    "POST /__pideck/heartbeat",
+    "POST /__pideck/diagnostics/memory",
+    "GET /__pideck/background/<name>"
+  ],
+  "limits": {
+    "maxRpcBodyBytes": 33554432,
+    "maxEventFrameBytes": 33554432,
+    "maxComposerTotalImageBase64Bytes": 25165824
+  }
+}

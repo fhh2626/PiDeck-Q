@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-import { createFakeRouter, runBackendRpcWiring } from "./helpers/l3_ipcHarness.mjs";
 
 /**
  * 用量统计跨层契约护栏：
@@ -11,7 +10,6 @@ import { createFakeRouter, runBackendRpcWiring } from "./helpers/l3_ipcHarness.m
  */
 
 const { ipcChannels } = loadTsCommonJs("src/shared/ipc.ts");
-const { registerUsageStatsIpc } = loadTsCommonJs("src/main/ipc/usageStatsIpc.ts");
 const { createPiDesktopApi } = loadTsCommonJs("src/shared/desktop/createPiDesktopApi.ts");
 const { createPreviewApi } = loadTsCommonJs("src/renderer/src/previewApi.ts");
 const { zhCN } = loadTsCommonJs("src/renderer/src/i18n/rendererCopy.zh-CN.ts");
@@ -29,37 +27,6 @@ test("usage-stats channels are declared in shared/ipc.ts with domain:action name
   }
   const declared = Object.keys(ipcChannels).filter((key) => key.startsWith("usageStats"));
   assert.deepEqual(declared.sort(), Object.keys(EXPECTED_CHANNELS).sort(), "no undeclared usage-stats channel");
-});
-
-test("main handler registers every usage-stats channel and delegates to the service", async () => {
-  const router = createFakeRouter();
-  const calls = [];
-  registerUsageStatsIpc(router, {
-    detect: async () => { calls.push("detect"); return "detected"; },
-    refresh: async () => { calls.push("refresh"); return "refreshed"; },
-    getAggregated: async () => { calls.push("getAggregated"); return "aggregated"; },
-  });
-  assert.deepEqual([...router.handlers.keys()].sort(), Object.values(EXPECTED_CHANNELS).sort());
-  assert.equal(await router.invoke(ipcChannels.usageStatsDetect), "detected");
-  assert.equal(await router.invoke(ipcChannels.usageStatsRefresh), "refreshed");
-  assert.equal(await router.invoke(ipcChannels.usageStatsGet), "aggregated");
-  assert.deepEqual(calls, ["detect", "refresh", "getAggregated"]);
-});
-
-test("backend wiring registers usage-stats IPC with the shared usage service", () => {
-  const { captured, services, router } = runBackendRpcWiring();
-  const usage = captured.get("usageStats");
-  assert.equal(usage.router, router);
-  // registerUsageStatsIpc 的第二个参数就是服务本身（可为 null），而不是依赖袋
-  assert.equal(usage.deps, services.usageStatsService);
-});
-
-test("main handlers return a structured error when the service failed to assemble", async () => {
-  const router = createFakeRouter();
-  registerUsageStatsIpc(router, null);
-  for (const channel of Object.values(EXPECTED_CHANNELS)) {
-    await assert.rejects(router.invoke(channel), /Usage stats service is not available/, channel);
-  }
 });
 
 test("desktop api exposes usageStats detect/refresh/get on the matching channels", async () => {

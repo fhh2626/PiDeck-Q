@@ -46,6 +46,7 @@ import { MessageScroller } from "../agents/message-scroller";
 import { resolveFreshTailIds } from "../../lib/pinTurnScroll";
 import { chatContentWidthStyle } from "./chatContentWidth";
 import { useVirtualTimeline } from "../../hooks/useVirtualTimeline";
+import { useTimelinePresentationIdentities } from "../../hooks/useTimelinePresentationIdentities";
 import { useTimelineInteractionPins } from "../../hooks/useTimelineInteractionPins";
 import type { TimelineViewportAdapter } from "./timeline/TimelineViewportAdapter";
 import { TimelineMessageRow } from "./timeline/TimelineMessageRow";
@@ -54,6 +55,7 @@ import { exportSelectedMessagesToImage } from "./timeline/TimelineImageExport";
 
 type TurnRowProps = ComponentProps<typeof TurnRow>;
 type UserBubbleProps = ComponentProps<typeof UserBubble>;
+type ApplyReaderScrollTop = Parameters<typeof useVirtualTimeline>[0]["applyReaderScrollTop"];
 
 // ── 失败/重试提示：时间线不再渲染卡片，改为 toast ──
 // 主进程以 role=error / role=system 消息携带这些 i18nKey（见 AgentManager 的
@@ -176,7 +178,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     ),
     [sessionId],
   );
-  // 与 SessionHeader / ContextControllerSwitches / ComposerArea 共用同一个按会话选择器。
+  // 与 SessionHeader / ComposerArea 共用同一个按会话选择器。
   const sendState = useAtomValue(sessionSendStateAtomFamily(sessionId));
   const messageLoadState = useAtomValue(messageLoadStateSelector);
   const internalController = useSessionTimelineController({
@@ -381,11 +383,13 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
   }, [renderedRuns]);
   const adapterRef = useRef<TimelineViewportAdapter | null>(null);
 
-  // 稳定阅读位置纠偏回调（只调用当前 engine 的 restoreAt，未挂上时不写原生 DOM）
-  const applyReaderScrollTop = useCallback((top: number) => {
+  // 保锚只修正布局，不重新决定跟随意图。内容收缩把阅读位置夹到底部时，
+  // 应保留用户已作出的上滚选择；显式恢复会话或跳转仍可在底部恢复跟随。
+  const applyReaderScrollTop = useCallback<ApplyReaderScrollTop>((top, reason) => {
     const api = controller.scrollerScrollApiRef.current;
     if (api?.restoreAt) {
-      api.restoreAt(top);
+      api.restoreAt(top, reason === "preserve-anchor" ? { preserveFollowState: true }
+        : reason === "restore-reading" ? { forceReading: true } : undefined);
     }
   }, [controller.scrollerScrollApiRef]);
 
@@ -400,6 +404,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     adapterRef,
     pinnedKeys,
   });
+  useTimelinePresentationIdentities(sessionId, virtualTimeline.rowModel);
 
   // 把已实例化的 adapter 在 layout 阶段稳定注册给 controller
   const registerAdapter = controller.registerViewportAdapter;
@@ -487,6 +492,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
       for (let j = i + 1; j < activeMessages.length; j++) {
         const next = activeMessages[j];
         if (next.role === "user") break;
+        if (next.role === "system" && next.meta?.type === "todoTask") break;
         if (next.role === "error") { hasAbortOrError = true; break; }
         if (next.role === "system") {
           const meta = next.meta as Record<string, unknown> | undefined;
@@ -707,6 +713,7 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
                 return (
                   <TimelineMessageRow
                     key={virtualRow.key}
+                    rowKey={virtualRow.key}
                     item={item}
                     index={virtualRow.sourceIndex}
                     totalItems={reconciledRuns.length}

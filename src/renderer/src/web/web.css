@@ -143,7 +143,7 @@ body {
     align-items: flex-start;
     padding-top: max(0.5rem, env(safe-area-inset-top));
   }
-  /* 手机宽度不够时改成两行：开关组在上，模型/思考/状态在下，避免文案被挤成竖排。 */
+  /* 手机宽度不够时改成两行：标题在上，模型/思考/状态在下，避免控件被挤成竖排。 */
   .app.wechat-shell .chat-header-actions {
     flex: 1 1 100%;
     width: 100%;
@@ -153,7 +153,6 @@ body {
     overflow: visible;
     row-gap: 0.25rem;
   }
-  .app.wechat-shell .chat-context-checks,
   .app.wechat-shell .chat-header-runtime {
     flex: 1 1 100%;
     width: 100%;

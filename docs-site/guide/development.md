@@ -11,9 +11,9 @@ const { theme } = useData()
 
 - Node.js **24.19.0**、npm **11+**、Git、xmake。
 - C++20 编译工具链；Windows 使用 MSVC。
-- Xmake 配置使用 Qt **6.11.2** 和 Node runtime **24.19.0** 的本地 package 定义。
+- Xmake 使用 Qt **6.11.2** 的本地 package 定义。Node.js **24.19.0** 仅作为构建和测试工具。
 - Windows 运行桌面窗口需要 **WebView2 Runtime**。
-- 使用真实 Agent 需安装 Pi Agent、Pi_Agent_Rust 或 Pi-Bolt，并配置模型与认证。
+- 使用真实 Agent 需安装 Pi Agent 或 Pi-Bolt，并配置模型与认证。
 
 当前原生 SDK 与 staging 流程以 Windows 为主。代码有 macOS/Linux 分支，不代表这些平台已有经过验证的完整安装包。
 
@@ -25,17 +25,14 @@ npm run make-icon
 npm run dev
 ```
 
-`dev` 构建 renderer、Sidecar 和原生 debug 目标，再运行 `release/win-unpacked/PiDeck-Q.exe`；不是 Electron，也不承诺所有进程自动热重载。
+`dev` 构建 renderer、扩展资源和原生 debug 目标，再运行 `release/win-unpacked/PiDeck-Q.exe`；不是 Electron，也不承诺所有进程自动热重载。
 
 ## 代码结构与通信
 
 | 路径 | 职责 |
 | --- | --- |
 | `native/src/main.cpp` | Qt6/QtWebView 宿主入口 |
-| `src/native-node/index.ts` | Node Sidecar 装配入口 |
-| `src/main/backend/createBackend.ts` | 业务服务装配 |
-| `src/main/backend/registerBackendRpc.ts` | 按域注册 IPC |
-| `src/main/` | 会话、pi 进程、Git、设置、终端等领域 |
+| `native/backend/` | 原生 C++ 业务后端（`PiDeckBackend.exe`，随包的 sidecar） |
 | `src/shared/` | IPC 名称、类型、桌面 API 契约 |
 | `src/renderer/` | React/Jotai 前端与 Web 前端 |
 
@@ -51,7 +48,7 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 | `npm run test:browser` | Playwright 浏览器回归 |
 | `npm run build` | 类型检查、renderer 和 Sidecar 构建 |
 | `npm run build:native` | Xmake 原生构建 |
-| `npm run pack` | 构建并校验 Windows staging 目录 |
+| `npm run pack` | 构建并校验 Windows staging 目录（默认 `release/win-unpacked`；设 `PIDECK_STAGE_DIR` 可落到隔离的测量目录） |
 | `npm run dist:win` | Windows staging 与宿主 RPC 验证；安装器编译目前关闭 |
 | `npm run test:native-host-rpc` | 原生宿主 RPC 集成验证 |
 | `npm run test:native-gui` | 原生 GUI 集成验证 |
@@ -59,7 +56,18 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 | `npm run docs:build` | 文档构建与内部链接检查 |
 | `npm run docs:preview` | 预览文档产物 |
 
-当前没有 `npm run dist`、`dist:mac`、`dist:linux` 或 `preview`。桌面 staging 由 Xmake 与 `scripts/stage-native-runtime.mjs` 完成，包含 Qt、Node、renderer、Sidecar 和资源，不使用 electron-builder/asar。
+桌面 staging 由 Xmake 与 `scripts/stage-extension-dependencies.mjs` 完成，包含 Qt、renderer、扩展资源和 C++ 后端。`npm run pack` 和 `scripts/verify-pack-stage.mjs` 使用同一 `PIDECK_STAGE_DIR`，默认目录是 `release/win-unpacked`。安装包不包含 Node 业务后端或 Node 解释器。
+
+## Pi 正则兼容性
+
+PiDeck 支持使用 Node.js 22.19.0 或更新版本运行的 Pi Agent。全量测试仍使用仓库要求的 Node.js 24.19.0。修改安全规则校验器或升级 `regexpp` 时，先用 Node 24 安装依赖，再单独用 Node 22.19.0 执行：
+
+```bash
+node scripts/security-regex-validator/generate-unicode16.mjs --check
+node --test tests/securityRegexValidatorBundle.test.mjs
+```
+
+这组测试用 Node 22 的原生正则验证 Unicode 16 组名兼容性。更新共享校验器或 `regexpp` 后，用 Node 24 执行 `npm run build:security-regex-validator`，更新 C++ 后端的嵌入产物。
 
 ## 官网与贡献
 

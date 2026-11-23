@@ -20,7 +20,8 @@ export function buildProcessSummary(items: TurnDisplayItem[]): ProcessSummary {
 		// final-answer 与 ask-result 都是常驻内容，不参与「执行过程」统计。
 		if (item.kind === "final-answer" || item.kind === "ask-result") continue;
 		if (item.kind === "process-entry") {
-			if (item.entry.kind === "tool-entry") toolCount += 1;
+			// A display entry can contain several consecutive tool invocations.
+			if (item.entry.kind === "tool-entry") toolCount += item.entry.group.messages.length;
 			else thinkingCount += 1;
 		} else if (item.kind === "interim-answer") {
 			// 只数有文本的中间回复：空文本骨架是 live 挂载点 / 模型 error 占位

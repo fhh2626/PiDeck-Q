@@ -27,8 +27,8 @@ test("a nested logo node still starts a window drag", () => {
 	);
 	assert.equal(
 		shouldBeginWindowDragFromAncestors([
-			{ tagName: "div", className: "session-tabs-scroll" },
-			{ tagName: "div", className: "session-tabs-bar" },
+			{ tagName: "div", className: "workspace-toolbar-space" },
+			{ tagName: "div", className: "workspace-toolbar" },
 		]),
 		true,
 	);
@@ -58,7 +58,7 @@ test("tabs and toolbar buttons do not start a window drag", () => {
 		shouldBeginWindowDragFromAncestors([
 			{ tagName: "span" },
 			{ tagName: "button", role: "tab" },
-			{ tagName: "div", className: "session-tabs-bar" },
+			{ tagName: "div", className: "workspace-toolbar" },
 		]),
 		false,
 	);
@@ -67,15 +67,15 @@ test("tabs and toolbar buttons do not start a window drag", () => {
 			{ tagName: "svg" },
 			{ tagName: "button", className: "tab-close" },
 			{ tagName: "div", role: "tab" },
-			{ tagName: "div", className: "session-tabs-bar" },
+			{ tagName: "div", className: "workspace-toolbar" },
 		]),
 		false,
 	);
 	assert.equal(
 		shouldBeginWindowDragFromAncestors([
-			{ tagName: "span", className: "session-tab-badge" },
+			{ tagName: "span", className: "file-tab-label" },
 			{ tagName: "button", role: "tab" },
-			{ tagName: "div", className: "session-tabs-bar" },
+			{ tagName: "div", className: "workspace-toolbar" },
 		]),
 		false,
 	);

@@ -124,6 +124,11 @@ export async function initializeNativeDesktop(): Promise<NativeDesktopRuntime> {
 			reloadNativeRenderer(token);
 		},
 		initialEventSeq: bootstrap.eventSeq ?? 0,
+		// 代次随握手一起带上：首次心跳早于 eventChannelReady 时，空代次会被
+		// 当成“换服务器”而把游标重置为 0，服务端随即重放整个事件历史。
+		...(typeof bootstrap.eventSourceGeneration === "string"
+			? { initialEventSourceGeneration: bootstrap.eventSourceGeneration }
+			: {}),
 		// 事件通道持续连不上时页面仍可操作，但实时更新已停：这里写日志，入口负责提示用户。
 		onEventChannelHealthChange: (healthy, info) => {
 			if (healthy) logEventChannel("info", "Native event channel recovered");

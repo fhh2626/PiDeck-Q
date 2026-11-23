@@ -17,7 +17,9 @@ function record(overrides = {}) {
 		projectId: overrides.projectId ?? "p1",
 		title: overrides.title ?? `会话 ${seq}`,
 		source: "pi",
-		environment: "native",
+		environment: overrides.environment ?? "native",
+		wslDistro: overrides.wslDistro,
+		wslUser: overrides.wslUser,
 		filePath: overrides.filePath ?? `/sessions/${overrides.id ?? `s-${seq}`}.jsonl`,
 		parentSessionId: overrides.parentSessionId,
 		parentSessionPath: overrides.parentSessionPath,
@@ -79,6 +81,33 @@ test("parentSessionId 未解析时按 parentSessionPath 兜底匹配来源", () 
 	assert.equal(family.parent?.id, "parent");
 });
 
+test("restored child paths count as branches before their catalog parent id is resolved", () => {
+	const parent = record({ id: "parent", filePath: "/sessions/source.jsonl", createdAt: 1 });
+	const child = record({ id: "child", parentSessionPath: parent.filePath, createdAt: 2 });
+	const family = deriveBranchFamily({ parent, child }, "parent");
+	assert.deepEqual(family?.children.map((entry) => entry.id), ["child"]);
+});
+
+test("branch navigation keeps identical paths in separate native and WSL environments", () => {
+	const parent = record({ id: "parent", filePath: "/sessions/source.jsonl", createdAt: 1 });
+	const native = record({ id: "native", parentSessionPath: parent.filePath, createdAt: 2 });
+	const wsl = record({ id: "wsl", environment: "wsl", wslDistro: "Ubuntu", wslUser: "dev", parentSessionPath: parent.filePath, createdAt: 3 });
+	const family = deriveBranchFamily({ parent, native, wsl }, "native");
+	assert.deepEqual(family?.siblings.map((entry) => entry.id), ["native"]);
+	assert.equal(deriveBranchFamily({ parent, native, wsl }, "wsl"), undefined);
+});
+
+test("WSL branch navigation requires the same distribution and user", () => {
+	const base = { environment: "wsl", wslDistro: "Ubuntu", wslUser: "dev" };
+	const parent = record({ id: "parent", ...base, filePath: "/sessions/source.jsonl" });
+	const current = record({ id: "current", ...base, parentSessionPath: parent.filePath });
+	const otherDistro = record({ id: "distro", ...base, wslDistro: "Debian", parentSessionPath: parent.filePath });
+	const otherUser = record({ id: "user", ...base, wslUser: "root", parentSessionPath: parent.filePath });
+	const sameDistro = record({ id: "same", ...base, wslDistro: "ubuntu", parentSessionPath: parent.filePath });
+	const family = deriveBranchFamily({ parent, current, otherDistro, otherUser, sameDistro }, "current");
+	assert.deepEqual(family?.siblings.map((entry) => entry.id), ["current", "same"]);
+});
+
 test("匿名运行时会话（noSession）不参与分支关系", () => {
 	const parent = record({ id: "parent", createdAt: 1 });
 	const anon = record({ id: "anon", parentSessionId: "parent", noSession: true, createdAt: 10 });
@@ -100,7 +129,31 @@ test("跨项目的同 parentSessionId 记录不混入兄弟分支", () => {
 	assert.deepEqual(family.siblings.map((r) => r.id), ["b1"]);
 });
 
-/* ── 集成断言：分支条装配在会话头部下方，数据走 sessionRecordsAtom ── */
+test("跨项目的父会话记录不会生成当前项目无法打开的来源按钮", () => {
+	const parent = record({ id: "parent", projectId: "p2", createdAt: 1 });
+	const b1 = record({ id: "b1", parentSessionId: "parent", createdAt: 10 });
+	const b2 = record({ id: "b2", parentSessionId: "parent", createdAt: 20 });
+	const family = deriveBranchFamily({ parent, b1, b2 }, "b1");
+	assert.ok(family);
+	assert.equal(family.parent, undefined);
+	assert.deepEqual(family.siblings.map((r) => r.id), ["b1", "b2"]);
+});
+
+test("父会话 id 失效时仍可按同项目的父路径恢复来源", () => {
+	const alien = record({ id: "alien", projectId: "p2", createdAt: 1 });
+	const parent = record({ id: "parent", filePath: "/sessions/source.jsonl", createdAt: 2 });
+	const child = record({ id: "child", parentSessionId: "alien", parentSessionPath: parent.filePath, createdAt: 10 });
+	const family = deriveBranchFamily({ alien, parent, child }, "child");
+	assert.equal(family?.parent?.id, "parent");
+});
+
+test("匿名父运行时也不会作为可打开的来源会话", () => {
+	const parent = record({ id: "parent", noSession: true, createdAt: 1 });
+	const child = record({ id: "child", parentSessionId: "parent", createdAt: 10 });
+	assert.equal(deriveBranchFamily({ parent, child }, "child"), undefined);
+});
+
+/* 分支导航跟随聚焦会话放入工作区标题栏，数据仍走 sessionRecordsAtom。 */
 
 const barSource = readFileSync(
 	"src/renderer/src/components/session/SessionBranchBar.tsx",
@@ -125,11 +178,12 @@ test("SessionBranchBar 读 sessionRecordsAtom 派生分支族，分页器边界�
 	assert.match(barSource, /Popover/);
 });
 
-test("分支条渲染在 SessionHeader 之下、时间线之上", () => {
-	const headerIndex = viewSource.indexOf("<SessionHeader");
-	const barIndex = viewSource.indexOf("<SessionBranchBar");
-	const timelineIndex = viewSource.indexOf("<ResizablePanelGroup");
-	assert.ok(headerIndex > 0 && barIndex > headerIndex && barIndex < timelineIndex);
+test("分支导航与当前会话标题共同渲染在原标签栏位置", () => {
+	const title = readFileSync("src/renderer/src/components/workspace/WorkspaceSessionTitle.tsx", "utf8");
+	const app = readFileSync("src/renderer/src/App.tsx", "utf8");
+	assert.doesNotMatch(viewSource, /<SessionBranchBar/);
+	assert.match(title, /<SessionBranchBar[\s\S]*?sessionId=\{session\.id\}/);
+	assert.match(app, /sessionIdentity=\{\s*<WorkspaceSessionTitle sessionId=\{currentSessionId\}/);
 });
 
 test("分支导航 i18n 键中英同步", () => {
@@ -140,6 +194,8 @@ test("分支导航 i18n 键中英同步", () => {
 		"branch.next",
 		"branch.children",
 		"branch.childrenTitle",
+		"branch.navigation",
+		"branch.siblingsTitle",
 	]) {
 		assert.ok(zhCN.includes(`"${key}"`), `zh-CN missing ${key}`);
 		assert.ok(enUS.includes(`"${key}"`), `en-US missing ${key}`);

@@ -1,18 +1,17 @@
 /**
  * Subagent Tool
  *
- * Full-featured subagent with sync and async modes.
+ * Native foreground subagents with retained supervisor handoffs.
  * - Sync (default): Streams output, renders markdown, tracks usage
- * - Async: Background execution, emits events when done
+ * - Supervisor handoffs retain the same live child and publish its eventual result
  *
  * Public execution mode: workflow (workflowScript)
- * Toggle: async parameter (default: false / foreground; pass async: true for detached background execution)
+ * Execution stays in the foreground. Supervisor dialogue can yield control while the same child remains live.
  *
  * Config file: ~/.pi/agent/extensions/subagent/config.json
- *   { "asyncByDefault": false, "defaultSubagentContext": "fork", "forkContext": { "mode": "pruned", "model": "provider/model" }, "forceTopLevelAsync": false, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
+ *   { "defaultSubagentContext": "fork", "forkContext": { "mode": "pruned", "model": "provider/model" }, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
-import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,13 +20,16 @@ import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition 
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { clearAgentDiscoveryCache, discoverAgentSnapshot, discoverAgents, type AgentConfig, type AgentScope } from "../agents/agents.ts";
 import { appendAdvertisedAgentPrompt, buildAdvertisedAgentPrompt } from "../agents/advertised-agent-prompt.ts";
+import { appendDelegationHint, appendSubagentCallAnnouncementHint, publishSubagentPromptAddition, shouldInjectDelegationHint, shouldInjectSubagentCallAnnouncementHint } from "./delegation-hint.ts";
 import { clearRuntimeAgentsForPi, listRuntimeAgentConfigs, mergeRuntimeAgents } from "../agents/runtime-agent-registry.ts";
 import { registerRuntimeAgentEventListener } from "../agents/runtime-agent-events.ts";
 import { ensureAccessibleDir } from "../shared/accessible-dir.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { interruptForeignForegroundWorkflows } from "../runs/foreground/workflow-handoff.ts";
+import { interruptForegroundControls } from "../runs/foreground/foreground-control.ts";
 import { getAgentDir } from "../shared/utils.ts";
+import { registerSubagentEnvironment } from "../policy/environment/runtime.ts";
 import { isStaleExtensionContextError, withCachedUiContext } from "../shared/extension-context.ts";
 import { currentCompletionOwnerId } from "../shared/completion-owner.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
@@ -42,19 +44,12 @@ import { cleanupResultIndexes, missionObserverResultCandidateFiles } from "../ru
 import { ASYNC_RETENTION_DELAY_MS, cleanupAsyncRetention } from "../runs/background/async-retention.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
-import { createScheduledRunManager } from "../runs/background/scheduled-runs.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerMainWatchdog } from "../watchdog/register-main.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { createNativeSupervisorChannel } from "../intercom/native-supervisor-channel.ts";
-import {
-	renderSupervisorReply,
-	renderSupervisorRequest,
-	SUPERVISOR_REPLY_ENTRY_TYPE,
-	SUPERVISOR_REQUEST_MESSAGE_TYPE,
-	type SupervisorRequestMessageDetails,
-} from "../intercom/supervisor-ui.ts";
+import { renderSupervisorReply, renderSupervisorRequest, SUPERVISOR_REPLY_ENTRY_TYPE, SUPERVISOR_REQUEST_MESSAGE_TYPE, type SupervisorRequestMessageDetails } from "../intercom/supervisor-ui.ts";
 import { registerHerdrStatusBridge, type HerdrStatusRun } from "../integrations/herdr-status.ts";
 import { hasLiveSubagentWork, registerPiWebSessionLiveness } from "../integrations/pi-web-session-liveness.ts";
 import { createRetainedNestedRouteTracker } from "../runs/background/retained-nested-route-tracker.ts";
@@ -69,9 +64,10 @@ import registerSubagentNotify, { parseSubagentNotifyContent, type SubagentNotify
 import { formatSteeringNotice, handleSubagentSteeringNotice, SUBAGENT_STEERING_MESSAGE_TYPE, type SubagentSteeringMessageDetails } from "./steering-notices.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/child-runtime-config.ts";
 import { disposeChildSessions } from "../runs/shared/child-session.ts";
+import { isChildLoader } from "../runs/shared/child-loader-identity.ts";
 import { resolveCurrentSubagentCapabilityCeiling } from "../runs/shared/capability-ceiling.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
-import { applyModelExclusionsConfig, loadConfig, resolveAsyncByDefault, resolveScheduledStoreRoot } from "./config.ts";
+import { applyModelExclusionsConfig, loadConfig, resolveAsyncByDefault } from "./config.ts";
 import { buildSubagentToolDescription, buildSubagentToolPromptMetadata } from "./tool-description.ts";
 import { formatWorkflowPreflightSummary, normalizeWorkflowPreflight } from "../workflows/workflow-preflight.ts";
 import { finalizeToolResult } from "./tool-result.ts";
@@ -79,28 +75,8 @@ import { collectGoalContinuationNotices } from "../missions/goal-driver.ts";
 import { restoreForegroundRunHistory } from "../runs/foreground/foreground-history.ts";
 import { resolveMissionStoreLocation } from "../missions/store.ts";
 import { listRetainedChildren } from "../runs/background/retained-children.ts";
-import {
-	type Details,
-	type MainWindowRendererConfig,
-	type SubagentState,
-	DIRS,
-	DEFAULT_ARTIFACT_CONFIG,
-	SLASH_RESULT_TYPE,
-	SLASH_TEXT_RESULT_TYPE,
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	SUBAGENT_ASYNC_STARTED_EVENT,
-	SUBAGENT_PROCESS_TERMINAL_EVENT,
-	SUBAGENT_CONTROL_EVENT,
-	SUBAGENT_STEERING_NOTICE_EVENT,
-	WIDGET_KEY,
-	resolveMaxSubagentSpawnsPerSession,
-} from "../shared/types.ts";
-import {
-	formatSubagentControlNotice,
-	handleSubagentControlNotice,
-	SUBAGENT_CONTROL_MESSAGE_TYPE,
-	type SubagentControlMessageDetails,
-} from "./control-notices.ts";
+import { type Details, type MainWindowRendererConfig, type SubagentState, DIRS, DEFAULT_ARTIFACT_CONFIG, SLASH_RESULT_TYPE, SLASH_TEXT_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_PROCESS_TERMINAL_EVENT, SUBAGENT_CONTROL_EVENT, SUBAGENT_STEERING_NOTICE_EVENT, WIDGET_KEY, resolveMaxSubagentSpawnsPerSession } from "../shared/types.ts";
+import { formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 
 export { loadConfig, resolveAsyncByDefault } from "./config.ts";
 
@@ -276,8 +252,8 @@ function formatWorkflowPreflightCall(input: unknown): string {
 function formatWorkflowManifest(script: string, async: unknown, clarify: unknown, preflightInput?: unknown): string {
 	if (clarify === true) return "workflow script · rejected: clarify UI unsupported";
 	const keys = workflowLaneKeys(script);
-	// The workflow executor starts background work unless callers pass async:false.
-	const mode = async === false ? "foreground" : "background";
+	// Supervisor handoffs do not change the workflow launch mode.
+	const mode = "foreground";
 	const preflight = formatWorkflowPreflightCall(preflightInput);
 	if (keys.length === 0) return `workflow script · ${mode}${preflight ? ` · ${preflight}` : ""}`;
 	const visibleKeys = keys.slice(0, 4).join(", ");
@@ -417,7 +393,10 @@ export function projectActiveHerdrRuns(state: SubagentState): HerdrStatusRun[] {
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
-	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
+	const environment = registerSubagentEnvironment(pi, getAgentDir());
+	// Capture the dedicated-process marker once. Foreground children use their loader identity.
+	const promptSessionEnv = { [SUBAGENT_CHILD_ENV]: process.env[SUBAGENT_CHILD_ENV] };
+	if (process.env[SUBAGENT_CHILD_ENV] === "1" || isChildLoader(pi.events)) {
 		return;
 	}
 	const runtimeRegistry = getRuntimeRegistry();
@@ -430,7 +409,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	// Apply the process-wide exclusion TTL before any child launch can record a model failure.
 	applyModelExclusionsConfig(config);
 	const waitToolConfig = resolveWaitToolConfig(config.waitTool);
-	const asyncByDefault = resolveAsyncByDefault(config);
 	const fleetViewEnabled = config.fleetView !== false;
 	const fleetViewPlacement = resolveFleetViewPlacement(config.fleetViewPlacement);
 	const asyncWidgetEnabled = config.asyncWidget !== false;
@@ -491,9 +469,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, run);
 	};
 
-	const supervisorChannel = createNativeSupervisorChannel(pi, state, {
-		getCurrentOwnerStates: () => executor.getCurrentSupervisorOwnerStates(),
-	});
+	const supervisorChannel = createNativeSupervisorChannel(pi, state);
 	const waitSubscriptionManager = createWaitSubscriptionManager(pi, state);
 	const mainWatchdog = registerMainWatchdog(pi);
 	const resultDeliveryOwnership = createResultDeliveryOwnership(state);
@@ -514,26 +490,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			}
 		}, { placement: fleetViewPlacement })
 		: undefined;
-	let executorScheduled: ((id: string, params: SubagentParamsLike, signal: AbortSignal, ctx: ExtensionContext) => Promise<AgentToolResult<Details>>) | undefined;
 	let goalTurnId = 0;
 	let parentSessionEnvValue: string | null = null;
 	let releaseHostSessionLiveness = () => {};
-	const scheduledStoreRoot = config.scheduledRuns?.storeRoot === undefined ? undefined : resolveScheduledStoreRoot(config.scheduledRuns.storeRoot);
-	const scheduledRunManager = createScheduledRunManager({
-		config,
-		storeRoot: scheduledStoreRoot,
-		launch: (params, ctx, signal) => {
-			if (!executorScheduled) {
-				return Promise.resolve({
-					content: [{ type: "text", text: "Scheduled subagent launch is unavailable (executor not ready)." }],
-					isError: true,
-					details: { mode: "management" as const, results: [] },
-				});
-			}
-			return executorScheduled(randomUUID(), params, signal, ctx);
-		},
-		resolveCapabilityCeiling: (sessionId) => resolveCurrentSubagentCapabilityCeiling(sessionId),
-	});
 	let refreshResultDelivery = () => {};
 	let advertisedAgents: AgentConfig[] = [];
 	let advertisedContext: Pick<ExtensionContext, "cwd" | "model"> | undefined;
@@ -547,7 +506,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const hasResultDeliveryDemand = () => {
 		if ([...state.asyncJobs.values()].some((job) => job.status === "queued" || job.status === "running")) return true;
 		if (state.foregroundControls.size > 0) return true;
-		if (scheduledRunManager.observedCompletionRunIds().size > 0) return true;
 		return missionObserverResultCandidateFiles(DIRS.results).length > 0;
 	};
 	const discoverAgentsForRuntime = (cwd: string, scope: AgentScope, preferredModelProvider?: string) => {
@@ -581,8 +539,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		{
 			notifier: completionNotifier,
 			ownership: resultDeliveryOwnership,
-			observeCompletion: (result) => scheduledRunManager.handleAsyncCompletion(result),
-			observedCompletionRunIds: () => scheduledRunManager.observedCompletionRunIds(),
 			hasDeliveryDemand: hasResultDeliveryDemand,
 			deliverIntercomResults: config.intercomBridge?.resultDelivery === true,
 			resultScanLogging: config.resultScanLogging,
@@ -600,7 +556,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				protectedRunIds: new Set([
 					...state.asyncJobs.keys(),
 					...(state.workflowControllers?.keys() ?? []),
-					...scheduledRunManager.referencedAsyncRunIds(),
 				]),
 			});
 		} catch (error) {
@@ -613,10 +568,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		pi,
 		state,
 		config,
-		asyncByDefault,
+		prepareEnvironment: environment.prepareDelegation,
 		waitToolEnabled: waitToolConfig.enabled,
 		waitToolDefaultTimeoutMs: waitToolConfig.defaultTimeoutMs,
-		handleScheduledRunAction: (params, ctx) => scheduledRunManager.handleToolCall(params, ctx),
 		watchdog: mainWatchdog,
 		tempArtifactsDir,
 		getSubagentSessionRoot,
@@ -636,7 +590,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		trackRetainedNestedRoute: undefined,
 	};
 	const executor = createSubagentExecutor(executorDeps);
-	executorScheduled = executor.executeScheduled;
 
 	pi.registerMessageRenderer<SupervisorRequestMessageDetails>(SUPERVISOR_REQUEST_MESSAGE_TYPE, renderSupervisorRequest);
 	const registerEntryRenderer = (pi as unknown as {
@@ -802,18 +755,38 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const selectedTools = event.systemPromptOptions.selectedTools ?? pi.getActiveTools();
+		const announceSubagentCalls = shouldInjectSubagentCallAnnouncementHint({
+			subagentToolAvailable: selectedTools.includes("subagent"),
+			systemPrompt: event.systemPrompt,
+			env: promptSessionEnv,
+		});
 		const sessionId = state.currentSessionId ?? resolveCurrentSessionId(ctx.sessionManager);
-		const advertisedPrompt = selectedTools.includes("subagent")
+		const advertisedPrompt = announceSubagentCalls
 			? buildAdvertisedAgentPrompt(advertisedAgents, resolveCurrentSubagentCapabilityCeiling(sessionId))
 			: undefined;
-		const systemPrompt = appendAdvertisedAgentPrompt(event.systemPrompt, advertisedPrompt);
-		if (systemPrompt !== event.systemPrompt) return { systemPrompt };
+		const advertisedSystemPrompt = appendAdvertisedAgentPrompt(event.systemPrompt, advertisedPrompt);
+		// 「优先委派」开关（PiDeck 右侧子代理弹框写入 subagents.preferDelegation）：
+		// 只在父会话 + subagent 工具可用时注入，子代理自身不重复注入。
+		const announcedSystemPrompt = appendSubagentCallAnnouncementHint(
+			advertisedSystemPrompt,
+			announceSubagentCalls,
+		);
+		const systemPrompt = appendDelegationHint(
+			announcedSystemPrompt,
+			shouldInjectDelegationHint({
+				cwd: ctx.cwd ?? state.baseCwd,
+				subagentToolAvailable: selectedTools.includes("subagent"),
+				systemPrompt: event.systemPrompt,
+				env: promptSessionEnv,
+			}),
+		);
+		return publishSubagentPromptAddition(event, systemPrompt);
 	});
 
-	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs);
+	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs, supervisorChannel.findPendingAsks);
 
 	pi.on("agent_end", async (_event, ctx) => {
-		if (!ctx.hasUI) await drainOutstandingWork({ state, events: pi.events });
+		if (!ctx.hasUI) await drainOutstandingWork({ state, events: pi.events, findPendingAsks: supervisorChannel.findPendingAsks });
 		const ownerSessionId = state.currentSessionId;
 		if (!ownerSessionId) return;
 		goalTurnId += 1;
@@ -869,7 +842,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		handleComplete(payload);
 		refreshResultDelivery();
 		refreshActiveAsyncCapacity();
-		scheduledRunManager.handleAsyncCompletion(payload);
 		fleetStatus?.refresh();
 	};
 	const eventUnsubscribes = [
@@ -945,6 +917,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		resultDeliveryOwnership.claimPredecessor(previousSessionFile, previousRuntimeSessionId);
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 		interruptForeignForegroundWorkflows(state, state.currentSessionId);
+		interruptForegroundControls(state, state.currentSessionId);
 		state.supervisorOwnerSessionId = ctx.sessionManager.getSessionId() || null;
 		transitionResultDelivery();
 		state.parentSessionFile = ctx.sessionManager.getSessionFile();
@@ -981,7 +954,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		phaseStartedAt = Date.now();
 		cleanupSessionArtifacts(ctx);
 		logSlowPhase("session-artifact-cleanup", phaseStartedAt);
-		state.foregroundControls.clear();
 		retainedNestedRouteTracker?.clear();
 		retainedNestedRouteTracker = undefined;
 		executorDeps.trackRetainedNestedRoute = undefined;
@@ -995,9 +967,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		phaseStartedAt = Date.now();
 		restoreActiveJobs(ctx);
 		logSlowPhase("active-job-restore", phaseStartedAt);
-		phaseStartedAt = Date.now();
-		scheduledRunManager.bindSession(ctx);
-		logSlowPhase("scheduled-runs", phaseStartedAt);
 		phaseStartedAt = Date.now();
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		logSlowPhase("slash-snapshots", phaseStartedAt);
@@ -1028,6 +997,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			for (const controller of state.workflowControllers?.values() ?? []) {
 				if (!controller.signal.aborted) controller.abort(new Error("Workflow stopped because the extension session was replaced or reloaded."));
 			}
+			interruptForegroundControls(state);
 			state.workflowControllers?.clear();
 			state.workflowChildStops?.clear();
 			clearRuntimeAgentsForPi(pi);
@@ -1038,7 +1008,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			resultDeliveryOwnership.clear();
 			completionNotifier.dispose();
 			mainWatchdog.dispose();
-			scheduledRunManager.stop();
 			supervisorChannel.dispose();
 			waitSubscriptionManager.dispose();
 			fleetStatus?.dispose();

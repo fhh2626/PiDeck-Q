@@ -13,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "../../shared/utils.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { prepareReadonlySessionEvidence } from "./readonly-session-evidence.ts";
+import { registerChildLoaderIdentity } from "./child-loader-identity.ts";
 import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 
 // Private runtime authority for host continuation planning; injected factories have none.
@@ -97,6 +98,8 @@ export interface ChildSession {
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	readonly modelId: string | undefined;
+	/** Effective session level after defaults and model capability clamping. */
+	readonly thinkingLevel?: string;
 	/** Set by the foreground host once the run detached; `factory.dispose()` leaves such children running. */
 	detached?: boolean;
 	/** Set by `factory.dispose()` before it aborts the child, so the host can report the stop truthfully. */
@@ -123,9 +126,29 @@ export interface DefaultChildSessionFactoryOptions {
 }
 
 type ModelRuntimeInstance = Awaited<ReturnType<PiCodingAgentModule["ModelRuntime"]["create"]>>;
+type AgentSessionInstance = Awaited<ReturnType<PiCodingAgentModule["createAgentSession"]>>["session"];
 
-/** One launch at a time from env application through `session_start`, so parallel launches never observe each other's `processEnv` while their extensions load and start. */
-let loading: Promise<unknown> = Promise.resolve();
+const CHILD_STARTUP_QUEUE = Symbol.for("pideck-q-subagents.child-session-startup-queue.v1");
+interface ChildStartupQueue { pending: Promise<void>; }
+
+/** Accept only the queue shape shared by copies of this module. */
+function isChildStartupQueue(value: unknown): value is ChildStartupQueue {
+	return typeof value === "object" && value !== null && "pending" in value && value.pending instanceof Promise;
+}
+
+/** SDK reloads replace extension modules, while every surviving factory still shares process.env. */
+function childStartupQueue(): ChildStartupQueue {
+	const existing: unknown = Reflect.get(globalThis, CHILD_STARTUP_QUEUE);
+	if (existing !== undefined) {
+		if (!isChildStartupQueue(existing)) {
+			throw new Error("Invalid child session startup queue.");
+		}
+		return existing;
+	}
+	const queue: ChildStartupQueue = { pending: Promise.resolve() };
+	Object.defineProperty(globalThis, CHILD_STARTUP_QUEUE, { value: queue });
+	return queue;
+}
 
 /**
  * pi caches extension factories per process and clears that cache only when a
@@ -200,10 +223,15 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const settingsManager = pi.SettingsManager.create(launch.cwd, agentDir);
 			// Headless sessions skip Pi's CLI theme setup; extensions still need ctx.ui.theme.
 			if (typeof pi.initTheme === "function") pi.initTheme(settingsManager.getTheme());
-			const loader = new pi.DefaultResourceLoader({
+			const eventBus = pi.createEventBus();
+			const releaseIdentity = registerChildLoaderIdentity(eventBus);
+			const disposeEvents = () => { releaseIdentity(); eventBus.clear(); };
+			let loader: InstanceType<PiCodingAgentModule["DefaultResourceLoader"]>;
+			try { loader = new pi.DefaultResourceLoader({
 				cwd: launch.cwd,
 				agentDir,
 				settingsManager,
+				eventBus,
 				noExtensions: !launch.ambientExtensions,
 				noSkills: launch.noSkills,
 				noPromptTemplates: true,
@@ -213,7 +241,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				extensionFactories: launch.hooks,
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),
-			});
+			}); } catch (error) { disposeEvents(); throw error; }
 			const open = async () => {
 				const envSnapshot: Record<string, string | undefined> = {};
 				if (launch.processEnv) {
@@ -275,12 +303,22 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					if (launch.processEnv && !launch.ambientExtensions) applyProcessEnv(envSnapshot);
 				}
 			};
-			const opened = loading.catch(() => {}).then(open);
-			loading = opened;
-			const session = await opened;
+			// One process-wide window covers environment application through session_start,
+			// including factories kept alive across SDK/Jiti module reloads.
+			let session: AgentSessionInstance;
+			try {
+				const startup = childStartupQueue();
+				const opened = startup.pending.catch(() => {}).then(open);
+				// Keep only completion state globally, so the queue retains neither sessions nor errors.
+				startup.pending = opened.then(() => {}, () => {});
+				session = await opened;
+			} catch (error) { disposeEvents(); throw error; }
 			let evidence: ReturnType<NonNullable<typeof observeReadonly>["observe"]>;
 			try { evidence = observeReadonly?.observe(pi, modelRuntime, session); }
-			catch (error) { session.dispose(); throw error; }
+			catch (error) {
+				try { session.dispose(); } finally { disposeEvents(); }
+				throw error;
+			}
 			let pending: Promise<void> | undefined;
 			// pi's own hosts emit `session_shutdown` before disposing a session so the
 			// extensions loaded into it (ambient extensions included) release their
@@ -297,7 +335,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					evidence?.invalidate();
 					launch.onExtensionError?.({ extensionPath: "<session>", event: "session_shutdown", error });
 				} finally {
-					session.dispose();
+					try { session.dispose(); } finally { disposeEvents(); }
 					evidence?.finish(child);
 				}
 			};
@@ -308,8 +346,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					try { evidence.start(); } catch (error) { return Promise.reject(error); }
 					return session.prompt(text).then(() => evidence?.settled(), (error) => { evidence?.invalidate(); throw error; });
 				},
-				steer: (text) => { evidence?.invalidate(); return session.steer(text); },
-				followUp: (text) => { evidence?.invalidate(); return session.followUp(text); },
+				steer: async (text) => { evidence?.invalidate(); await session.steer(text); },
+				followUp: async (text) => { evidence?.invalidate(); await session.followUp(text); },
 				abort: () => { evidence?.invalidate(); return session.abort(); },
 				dispose: () => {
 					if (!pending) {
@@ -325,6 +363,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				get sessionFile() { return session.sessionFile; },
 				get sessionId() { return session.sessionId; },
 				get modelId() { return session.model ? `${session.model.provider}/${session.model.id}` : undefined; },
+				get thinkingLevel() { return session.thinkingLevel; },
 			};
 			if (evidence && session.model) readonlyModels.set(child, {
 				current: toModelInfo(session.model),

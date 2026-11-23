@@ -201,7 +201,7 @@ export function DrawerSurface(props: DrawerSurfaceProps) {
 
   return (
     <>
-      {/* 各面板不再挂「标题 + ×」顶栏：关闭/切换改走会话 Tab 栏右侧活动图标。 */}
+      {/* 各面板不再挂「标题 + ×」顶栏：关闭由工作区工具栏控制，切换使用抽屉内活动图标。 */}
       {drawer === "editor" && !drawerCollapsed ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <SquarePen size={28} className="text-muted-foreground/50" aria-hidden="true" />

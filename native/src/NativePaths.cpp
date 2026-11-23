@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QProcess>
 #include <QStandardPaths>
 
 NativePaths NativePaths::fromEnvironment()
@@ -18,18 +19,16 @@ NativePaths NativePaths::fromEnvironment()
     if (paths.rendererDir.isEmpty()) {
         paths.rendererDir = QDir(paths.appDir).filePath("renderer");
     }
-    paths.nativeNodeEntry = qEnvironmentVariable("PIDECK_NATIVE_NODE_ENTRY");
-    if (paths.nativeNodeEntry.isEmpty()) {
-        paths.nativeNodeEntry = QDir(paths.appDir).filePath("native-node/index.cjs");
-    }
-    paths.nodeExecutable = qEnvironmentVariable("PIDECK_NODE_EXECUTABLE");
-    if (paths.nodeExecutable.isEmpty()) {
+    paths.sidecarExecutable = qEnvironmentVariable("PIDECK_SIDECAR_EXECUTABLE").trimmed();
+    if (paths.sidecarExecutable.isEmpty()) {
 #ifdef Q_OS_WIN
-        paths.nodeExecutable = root.filePath("node/node.exe");
+        paths.sidecarExecutable = root.filePath("PiDeckBackend.exe");
 #else
-        paths.nodeExecutable = root.filePath("node/bin/node");
+        paths.sidecarExecutable = root.filePath("PiDeckBackend");
 #endif
     }
+    const QString arguments = qEnvironmentVariable("PIDECK_SIDECAR_ARGS");
+    if (!arguments.trimmed().isEmpty()) paths.sidecarArguments = QProcess::splitCommand(arguments);
     paths.resourcesDir = qEnvironmentVariable("PIDECK_RESOURCES_DIR");
     if (paths.resourcesDir.isEmpty()) {
         paths.resourcesDir = root.filePath("resources");
@@ -44,6 +43,10 @@ NativePaths NativePaths::fromEnvironment()
         ? compiledPackaged
         : packagedOverride == QStringLiteral("1");
 
+    // Window-station isolation does not isolate HKCU or the user's Start Menu.
+    // Keep normal registration, but let unattended fixtures opt out of global
+    // shell integration; its implementations are tested against private targets.
+    paths.registerDesktopIntegration = qEnvironmentVariable("PIDECK_REGISTER_DESKTOP_INTEGRATION") != QStringLiteral("0");
     paths.userDataDir = qEnvironmentVariable("PIDECK_USER_DATA");
     if (paths.userDataDir.isEmpty()) {
         paths.userDataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);

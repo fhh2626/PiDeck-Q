@@ -40,6 +40,7 @@ test("fixture location is independent of the caller working directory", async (t
 	const root = await fixture(t);
 	const helper = new URL("../scripts/pi-compatibility-fixture.mjs", import.meta.url).href;
 	const result = spawnSync(process.execPath, ["--input-type=module", "-e", `const { getPiFixtureDir } = await import(${JSON.stringify(helper)}); console.log(getPiFixtureDir());`], {
+		windowsHide: true,
 		cwd: root, encoding: "utf8", timeout: 10000,
 	});
 	assert.equal(result.status, 0, result.stderr);

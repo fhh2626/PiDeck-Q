@@ -5,7 +5,7 @@ export type AgentTodoItem = TodoItem;
 
 // 内置扩展（resources/extensions/pi-deck-todo.ts / pi-deck-plan-mode.ts）的 widget 行格式
 // 是数据契约而非 UI 文案，解析侧硬编码这些字面量是合理的（不经过 i18n）。
-/** todo 折叠态只回 "2/4" 一行；plan 折叠态回 "计划进度 1/3"。 */
+/** 兼容旧版或第三方 widget 的纯进度摘要（如 "2/4"），不将其解析为任务项。 */
 const SUMMARY_LINE = /^\d+\/\d+$/;
 /** plan 扩展首行进度摘要（如 "计划进度 1/3"），不是列表项。 */
 const PLAN_PROGRESS_LINE = /^计划进度\s*\d+\/\d+$/;
@@ -20,7 +20,7 @@ const IN_PROGRESS_MARKER = /^(?:◐|⏳)/;
  * 将 pi 扩展的轻量 widget 行转换为官方 BeUI TodoItem 数据模型。
  *
  * 规则：
- * - 跳过空行、折叠摘要（"2/4" / "计划进度 1/3"）、分组标题（"── 待办 ──"）——
+ * - 跳过空行、进度摘要（"2/4" / "计划进度 1/3"）、分组标题（"── 待办 ──"）——
  *   旧实现会把标题行误解析成 pending 项，这里按真实扩展格式修正；
  * - 状态映射：☑/[x]/[X] → completed，◐/⏳ → in-progress，其余（含 ☐）→ pending；
  * - 标题剥离标记与前缀：todo 的 "#3"、plan 的 "1." / "1)" 均不进标题，

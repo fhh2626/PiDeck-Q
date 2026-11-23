@@ -5,8 +5,13 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
 	extractHtmlResourceReferences,
-	verifyBuildArtifacts,
+	verifyBuildArtifacts as verifyArtifacts,
 } from "../scripts/verify-build-artifacts.mjs";
+
+// Fixtures use an explicit isolated stage, independent of the shipping default.
+function verifyBuildArtifacts(options) {
+  return verifyArtifacts({ ...options, outDir: join(options.repoRoot, "out") });
+}
 
 async function withTempRepo(run) {
 	const repo = await mkdtemp(join(tmpdir(), "pideck-artifacts-test-"));
@@ -24,20 +29,21 @@ async function put(path, content = "content") {
 
 async function createBuildFixture(repo) {
 	const sourceFiles = [
-		join(repo, "src", "main", "backend.ts"),
-		join(repo, "src", "native-node", "index.ts"),
+		join(repo, "native", "backend", "backend.cpp"),
 		join(repo, "src", "renderer", "src", "main.tsx"),
 		join(repo, "vite.config.ts"),
 		join(repo, "package.json"),
 	];
 	for (const source of sourceFiles) await put(source, "source");
 	const artifactFiles = [
-		join(repo, "out", "native-node", "index.cjs"),
+		join(repo, "out", process.platform === "win32" ? "PiDeckBackend.exe" : "PiDeckBackend"),
 		join(repo, "out", "renderer", "assets", "app.js"),
 		join(repo, "out", "renderer", "assets", "web.js"),
 		join(repo, "out", "renderer", "assets", "style.css"),
 	];
 	for (const artifact of artifactFiles) await put(artifact, "artifact");
+	await put(artifactFiles[0], "MZfixture\0Qt6Core.dll\0");
+	await put(join(repo, "out", "Qt6Core.dll"), "MZfixture");
 	const indexHtml = join(repo, "out", "renderer", "index.html");
 	const webHtml = join(repo, "out", "renderer", "web.html");
 	await put(indexHtml, '<link href="/assets/style.css" rel="stylesheet"><script src="/assets/app.js"></script>');
@@ -56,7 +62,7 @@ test("an empty build output fails with all required native entry points", async 
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.equal(result.errors.length, 3);
-		assert.match(result.errors.join("\n"), /native-node[/\\]index\.cjs/);
+		assert.match(result.errors.join("\n"), /Missing C\+\+ sidecar/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]index\.html/);
 		assert.match(result.errors.join("\n"), /renderer[/\\]web\.html/);
 	});
@@ -67,7 +73,7 @@ test("a complete temporary build fixture passes entry, resource, and freshness c
 		await createBuildFixture(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		assert.equal(result.checked.length, 6);
+		assert.equal(result.checked.length, 7);
 	});
 });
 
@@ -102,7 +108,7 @@ test("artifacts older than relevant source inputs are reported as stale", async 
 		await Promise.all(fixture.artifactFiles.map((path) => utimes(path, staleTime, staleTime)));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.match(result.errors.join("\n"), /Stale native-node artifact/);
+		assert.match(result.errors.join("\n"), /Stale cpp-backend artifact/);
 		assert.match(result.errors.join("\n"), /Stale renderer artifact/);
 	});
 });
@@ -127,19 +133,30 @@ async function putChangePromptFiles(repo, { withUndici = true, withAcorn = true,
 	}
 	for (const file of [
 		"pideck-q-change-pi-prompt.ts",
-		"pideck-q-change-pi-prompt/runtime.ts",
-		"pideck-q-change-pi-prompt/transform.ts",
-		"pideck-q-change-pi-prompt/config.ts",
-		"pideck-q-change-pi-prompt/defaults.ts",
-		"pideck-q-change-pi-prompt/layout.ts",
-		"pideck-q-change-pi-prompt/contributions.ts",
-		"pideck-q-change-pi-prompt/shellAvailability.ts",
-		"pideck-q-change-pi-prompt/shellProbe.ts",
-		"pideck-q-change-pi-prompt/windowsShellDiscovery.ts",
-		"pideck-q-change-pi-prompt/childShellPolicy.ts",
-		"pideck-q-change-pi-prompt/childReconciliation.ts",
-		"pideck-q-change-pi-prompt/subagentCatalog.ts",
-		"pideck-q-change-pi-prompt/workflowValidation.ts",
+	"pideck-q-change-pi-prompt/runtime.ts",
+	"pideck-q-change-pi-prompt/transform.ts",
+	"pideck-q-change-pi-prompt/config.ts",
+	"pideck-q-change-pi-prompt/defaults.ts",
+	"pideck-q-change-pi-prompt/layout.ts",
+	"pideck-q-change-pi-prompt/contributions.ts",
+	"pideck-q-change-pi-prompt/activeToolLines.ts",
+
+	"pideck-q-subagents/src/policy/environment/runtime.ts",
+	"pideck-q-subagents/src/policy/environment/hostEnvironment.ts",
+	"pideck-q-subagents/src/policy/environment/childRuntime.ts",
+	"pideck-q-subagents/src/policy/environment/childPrompt.ts",
+	"pideck-q-subagents/src/policy/environment/toolMetadata.ts",
+	"pideck-q-subagents/src/policy/environment/childReconciliation.ts",
+	"pideck-q-subagents/src/policy/environment/policySnapshot.ts",
+	"pideck-q-subagents/src/policy/environment/policyStorage.ts",
+	"pideck-q-subagents/src/policy/environment/childShellPolicy.ts",
+	"pideck-q-subagents/src/policy/environment/subagentCatalog.ts",
+	"pideck-q-subagents/src/policy/environment/shellAvailability.ts",
+	"pideck-q-subagents/src/policy/environment/shellProbe.ts",
+	"pideck-q-subagents/src/policy/environment/windowsShellDiscovery.ts",
+	"pideck-q-subagents/src/policy/environment/copy.ts",
+	"pideck-q-subagents/src/shared/prompt-sections.ts",
+	"pideck-q-subagents/src/runs/shared/child-loader-identity.ts",
 	]) {
 		await put(join(base, file), "// packaged");
 	}
@@ -164,25 +181,25 @@ test("a build with the full change-pi-prompt runtime set passes", async () => {
 		await putChangePromptFiles(repo);
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, true, result.errors.join("\n"));
-		// 14 个 prompt 文件 + 2 个 webfetch 文件 + 3 个入口 + 3 个 HTML 资源 + 3 个 extension deps (undici + acorn pkg + acorn dist) = 25
-		assert.equal(result.checked.length, 25, JSON.stringify(result.checked));
+		// Native backend, Qt dependency, renderer entries/assets and extension runtime files.
+		assert.equal(result.checked.length, 36, JSON.stringify(result.checked));
 	});
 });
 
-test("missing workflowValidation.ts or subagentCatalog.ts fails verification", async () => {
+test("missing subagent environment runtime dependencies fail verification", async () => {
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "workflowValidation.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "runtime.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
-		assert.match(result.errors.join("\n"), /workflowValidation\.ts/);
+		assert.match(result.errors.join("\n"), /environment.*runtime\.ts/);
 	});
 
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "subagentCatalog.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "subagentCatalog.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /subagentCatalog\.ts/);
@@ -191,7 +208,7 @@ test("missing workflowValidation.ts or subagentCatalog.ts fails verification", a
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "shellProbe.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "shellProbe.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /shellProbe\.ts/);
@@ -200,7 +217,7 @@ test("missing workflowValidation.ts or subagentCatalog.ts fails verification", a
 	await withTempRepo(async (repo) => {
 		await createBuildFixture(repo);
 		await putChangePromptFiles(repo);
-		await rm(join(repo, "out", "resources", "extensions", "pideck-q-change-pi-prompt", "windowsShellDiscovery.ts"));
+		await rm(join(repo, "out", "resources", "extensions", "pideck-q-subagents", "src", "policy", "environment", "windowsShellDiscovery.ts"));
 		const result = await verifyBuildArtifacts({ repoRoot: repo });
 		assert.equal(result.ok, false);
 		assert.match(result.errors.join("\n"), /windowsShellDiscovery\.ts/);

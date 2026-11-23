@@ -1,5 +1,5 @@
 /**
- * 会话 Tab 拖到聊天区时的分屏落点解析与布局变换（两层树模型）。
+ * 侧栏会话拖到聊天区时的分屏落点解析与布局变换（两层树模型）。
  *
  * 布局模型：根层是 1..3 个面板的行/列分屏（真多栏，左中右/上中下）；
  * 每个面板可以是会话，也可以是切分面板（nested，固定 2 会话，终端式）。
@@ -47,8 +47,8 @@ export type SessionSplitDropTarget =
   | { kind: "session-edge"; sessionId: string; edge: SessionSplitEdge }
   | { kind: "session-center"; sessionId: string };
 
-/** 与 SessionTabsBar 共用的拖拽 MIME，便于跨组件识别会话 Tab 拖拽。 */
-export const SESSION_TAB_DRAG_MIME = "text/pideck-session-tab";
+/** Sidebars and the split stage share a session identity, without an open-tab registry. */
+export const SESSION_DRAG_MIME = "text/pideck-session";
 
 /** 边缘热区占面板宽/高的比例（外 28%）。 */
 export const SESSION_SPLIT_EDGE_THRESHOLD = 0.28;
@@ -165,24 +165,6 @@ export function buildSplitLayoutFromDrop(input: {
 }
 
 /**
- * 单栏分屏时的宿主会话：另一栏要保留谁。
- * - 拖的不是当前焦点 → 宿主 = 被拖拽命中的唯一面板（当前焦点）
- * - 拖的就是当前焦点 → 宿主 = Tab 栏里另一个会话（否则「当前 Tab 无法分屏」）
- * - 只有自己一个 Tab 且拖的是自己 → 无法分屏，返回 null
- */
-export function resolveSplitHostSessionId(input: {
-  draggedSessionId: string;
-  hitSessionId: string;
-  tabIds: readonly string[];
-}): string | null {
-  const { draggedSessionId, hitSessionId, tabIds } = input;
-  if (!draggedSessionId || !hitSessionId) return null;
-  if (hitSessionId !== draggedSessionId) return hitSessionId;
-  const other = tabIds.find((id) => id && id !== draggedSessionId);
-  return other ?? null;
-}
-
-/**
  * 会话所属根层面板的下标：根层会话 → 自身下标；切分面板内会话 → 所在面板下标；
  * 不在布局 → -1。用于「嵌套面板外缘也能根层插入」的定位（命中内层会话的边缘
  * 等价于命中外层根面板的边缘）。
@@ -203,7 +185,7 @@ export function findRootPaneIndexForSession(
 
 /**
  * 落点是否可接受（预览门控 = drop 接受条件，供 Stage 预览与 chrome 最终校验共用）：
- * - 单栏（layout=null）：中心落点无效；边缘落点有效，但拖自己时需 Tab 栏还有其它宿主
+ * - 单栏（layout=null）：中心落点无效；只有不同会话之间的边缘落点有效
  * - 已分屏：中心=替换任意层会话（拖入会话不在布局且目标在布局）；
  *   边缘=拖入会话不在布局，同向插入需根层 <3 栏，垂直切分需目标是根层面板且总屏 <4
  */
@@ -213,18 +195,15 @@ export function canAcceptSplitDrop(input: {
   sessionId: string;
   /** null 表示中心落点 */
   edge: SessionSplitEdge | null;
-  /** Tab 栏会话总数（单栏拖自己时判断是否有其它宿主可用） */
-  tabCount: number;
 }): boolean {
-  const { layout, draggedSessionId, sessionId, edge, tabCount } = input;
+  const { layout, draggedSessionId, sessionId, edge } = input;
   if (!draggedSessionId || !sessionId) return false;
   if (!layout) {
     if (!edge) return false;
-    // 单栏拖当前会话自己：需要 Tab 栏里还有其它会话当宿主
-    return draggedSessionId !== sessionId || tabCount > 1;
+    return draggedSessionId !== sessionId;
   }
   const ids = splitLayoutSessionIds(layout);
-  if (ids.includes(draggedSessionId)) return false;
+  if (ids.includes(draggedSessionId) || !ids.includes(sessionId)) return false;
   if (!edge) {
     // 中心替换：目标必须在布局内
     return ids.includes(sessionId);
@@ -358,4 +337,18 @@ export function resolveSplitAfterClose(
     };
   }
   return { layout: { ...layout, panels: remaining } };
+}
+
+/** Remove unavailable records without discarding surviving split panes. */
+export function pruneSessionSplitLayout(
+  layout: SessionSplitLayout,
+  availableIds: ReadonlySet<string>,
+): SessionSplitLayout | null {
+  let next: SessionSplitLayout | null = layout;
+  for (const id of splitLayoutSessionIds(layout)) {
+    if (availableIds.has(id) || !next) continue;
+    const result = resolveSplitAfterClose(next, id);
+    next = result && "layout" in result ? result.layout : null;
+  }
+  return next;
 }

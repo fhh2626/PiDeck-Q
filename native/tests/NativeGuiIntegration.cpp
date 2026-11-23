@@ -188,13 +188,12 @@ int main(int argc, char **argv)
                  "off-screen restore changed the restored window size")) return 1;
 
     const int savedX = availableGeometry.left() + 24;
-    // 1200×760 leaves little vertical slack on the Windows test desktop;
-    // choose a position that remains inside the available work area after clamp.
+    // Saved bounds may exceed a small or high-DPI CI desktop. The host must
+    // restore the requested rectangle subject to the actual work-area clamp.
     const int savedY = availableGeometry.top() + 5;
 
     const QJsonObject fixedBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("normal-compact")},
-        {QStringLiteral("useNativeTitleBar"), true},
         {QStringLiteral("closeToTray"), true},
         {QStringLiteral("lastWindowBounds"), QJsonObject{
             {QStringLiteral("width"), 1800},
@@ -202,8 +201,13 @@ int main(int argc, char **argv)
         }},
     };
     MainWindow fixed(nullptr, fixedBounds);
-    if (!require(fixed.size() == QSize(1100, 720),
-                 "fixed startup preset was overridden by last bounds")) return 1;
+    if (!require(!fixed.windowFlags().testFlag(Qt::FramelessWindowHint),
+                 "a missing title bar preference did not use the system frame")) return 1;
+    const QSize compactSize(qMin(1100, availableGeometry.width()),
+                            qMin(720, availableGeometry.height()));
+    if (!require(startupWindowSize(QStringLiteral("normal-compact")) == QSize(1100, 720)
+                     && fixed.size() == compactSize,
+                 "fixed startup preset did not respect the compact preset and work area")) return 1;
 
     const QJsonObject lastBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
@@ -216,10 +220,12 @@ int main(int argc, char **argv)
         }},
     };
     MainWindow last(nullptr, lastBounds);
-    if (!require(last.size() == QSize(1200, 760),
-                 "last startup mode did not use the saved bounds")) return 1;
-    if (!require(last.x() == savedX && last.y() == savedY,
-                 "last startup mode did not restore the saved position")) return 1;
+    const QRect expectedLast = clampRestoredNormalGeometry(
+        QRect(savedX, savedY, 1200, 760), availableGeometry);
+    if (!require(last.size() == expectedLast.size(),
+                 "last startup mode did not use the screen-bounded saved size")) return 1;
+    if (!require(last.x() == expectedLast.x() && last.y() == expectedLast.y(),
+                 "last startup mode did not restore the screen-bounded saved position")) return 1;
     const QJsonObject oversizedBounds{
         {QStringLiteral("startupWindowMode"), QStringLiteral("last")},
         {QStringLiteral("useNativeTitleBar"), false},
@@ -265,11 +271,11 @@ int main(int argc, char **argv)
                 && oversizedMinMaxInfo.ptMaxSize.y == oversizedWork.bottom - oversizedWork.top,
             "frameless maximize did not use the Windows monitor work area")) return 1;
 #endif
-    const QRect knownNormal(
+    const QRect knownNormal = clampRestoredNormalGeometry(QRect(
         availableGeometry.left() + 48,
         availableGeometry.top() + 36,
-        qMin(1100, availableGeometry.width() - 96),
-        qMin(720, availableGeometry.height() - 72));
+        qMax(oversized.minimumWidth(), qMin(1100, availableGeometry.width() - 96)),
+        qMax(oversized.minimumHeight(), qMin(720, availableGeometry.height() - 72))), availableGeometry);
     oversized.setGeometry(knownNormal);
     processGuiEvents();
     const QRect preMaximizeGeometry = oversized.geometry();
@@ -344,11 +350,11 @@ int main(int argc, char **argv)
     processGuiEvents();
     sizeOnly.showNormal();
     processGuiEvents();
-    const QRect sizeOnlyKnownNormal(
+    const QRect sizeOnlyKnownNormal = clampRestoredNormalGeometry(QRect(
         availableGeometry.left() + 64,
         availableGeometry.top() + 48,
-        qMin(1100, availableGeometry.width() - 128),
-        qMin(720, availableGeometry.height() - 96));
+        qMax(sizeOnly.minimumWidth(), qMin(1100, availableGeometry.width() - 128)),
+        qMax(sizeOnly.minimumHeight(), qMin(720, availableGeometry.height() - 96))), availableGeometry);
     sizeOnly.setGeometry(sizeOnlyKnownNormal);
     processGuiEvents();
     const QRect sizeOnlyBeforeMaximize = sizeOnly.geometry();

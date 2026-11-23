@@ -8,9 +8,9 @@ import type { ChildToolDiagnostic } from "./tool-availability.ts";
 import type { ResolvedSubagentCapabilityCeiling } from "./capability-ceiling.ts";
 
 /**
- * Set in processes that host child sessions (the async runner). The extension
- * entry point registers nothing when it sees it, so an ambient copy of
- * pi-subagents loaded into a child session stays inert.
+ * Legacy identity for a process dedicated to child sessions. Foreground children
+ * use their loader's event bus so a concurrent parent reload cannot inherit this
+ * marker. Captured hooks own the child's tools and policy.
  */
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 /** Root parent session id the parent publishes for pi-permission-system ask forwarding. */

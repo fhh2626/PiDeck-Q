@@ -38,8 +38,9 @@ export function findNearestVerticalScrollableAncestor(
  *
  * 内容动画/虚拟行替换会让 scrollHeight 缩水，浏览器把 scrollTop 夹到新的
  * maxScrollTop，看起来像用户上滚。判定需要两个证据：原本锁底、scrollTop
- * 紧贴新的底部，且新的 maxScrollTop 确实小于上一帧 scrollTop（内容真的缩短了）。
- * 只看“差 2px 以内”会把用户真实上滚 1–2px 误判成 clamp。
+ * 紧贴新的底部，或先前的位置已超过缩短后的可滚动范围。后者覆盖折叠和
+ * 新气泡插入发生在同一次 scroll 通知之前，夹取后又留出底部空隙的情况。
+ * 已识别的滚轮、触摸、按键和滚动条按压会先退出 following，再走此几何判断。
  */
 export function isContentShrinkClamp(input: {
 	scrollTop: number;
@@ -60,8 +61,36 @@ export function isContentShrinkClamp(input: {
 			|| input.maxScrollTop < input.lastScrollTop;
 	if (!contentShrank) return false;
 	const tolerance = input.tolerancePx ?? 2;
+	// Require both a measured range reduction and an unreachable former position.
+	// Merely being near the bottom must never hide an ordinary upward scroll.
+	const formerPositionWasClamped = input.previousMaxScrollTop !== undefined
+		&& input.maxScrollTop < input.previousMaxScrollTop
+		&& input.lastScrollTop > input.maxScrollTop + tolerance
+		&& input.scrollTop <= input.maxScrollTop;
 	return input.scrollTop < input.lastScrollTop
-		&& Math.abs(input.scrollTop - input.maxScrollTop) <= tolerance;
+		&& (Math.abs(input.scrollTop - input.maxScrollTop) <= tolerance || formerPositionWasClamped);
+}
+
+/** Detect a press in a native vertical scrollbar before its first scroll event. */
+export function isVerticalScrollbarPress(event: PointerEvent, viewport: HTMLElement | null): boolean {
+	if (!viewport || event.target !== viewport || event.button !== 0) return false;
+	if (viewport.scrollHeight <= viewport.clientHeight) return false;
+	const rect = viewport.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0 || viewport.offsetWidth <= 0 || viewport.offsetHeight <= 0) return false;
+	// Renderer zoom scales client coordinates and DOM rectangles, while the
+	// client/offset dimensions remain layout pixels. Compare in that latter space.
+	const x = (event.clientX - rect.left) * viewport.offsetWidth / rect.width;
+	const y = (event.clientY - rect.top) * viewport.offsetHeight / rect.height;
+	if (y < viewport.clientTop || y >= viewport.clientTop + viewport.clientHeight) return false;
+	const style = typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+		? window.getComputedStyle(viewport)
+		: undefined;
+	const borderLeft = Number.parseFloat(style?.borderLeftWidth ?? "0") || 0;
+	const borderRight = Number.parseFloat(style?.borderRightWidth ?? "0") || 0;
+	// clientLeft includes the scrollbar for RTL viewports. A child content press
+	// or a border cannot match this gutter, so clicking either keeps follow intent.
+	return (x >= borderLeft && x < viewport.clientLeft)
+		|| (x >= viewport.clientLeft + viewport.clientWidth && x < viewport.offsetWidth - borderRight);
 }
 
 /**
@@ -82,6 +111,12 @@ export function isEditableOrInteractiveTarget(target: EventTarget | null): boole
 	return false;
 }
 
+/** Space activates transcript controls, while their arrow/page keys can still scroll. */
+function isSpaceActivationTarget(target: EventTarget | null): boolean {
+	if (typeof window === "undefined" || !(target instanceof window.Element)) return false;
+	return target.closest("button, summary, [role='button'], [role='checkbox'], [role='radio'], [role='switch']") !== null;
+}
+
 /**
  * 判定键盘事件是否包含明确的「向上/翻页阅读」意图。
  * 仅在无 Ctrl/Alt/Meta 组合键、且目标不是输入控件时处理：
@@ -100,20 +135,41 @@ export function isTimelineUpwardKeyIntent(event: KeyboardEvent): boolean {
 		return true;
 	}
 	if (key === " " && event.shiftKey) {
-		return true;
+		return !isSpaceActivationTarget(event.target);
 	}
 	return false;
 }
 
+/** Downward navigation can resume following when layout already put the reader at the bottom. */
+export function isTimelineDownwardKeyIntent(event: KeyboardEvent): boolean {
+	if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return false;
+	if (isEditableOrInteractiveTarget(event.target)) return false;
+	return event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End"
+		|| (event.key === " " && !event.shiftKey && !isSpaceActivationTarget(event.target));
+}
+
 /**
- * 校验 Touch / Pointer / Key 事件是否发生在内部嵌套的可滚动容器中。
- * 若在内部容器内，则手势或按键操作属于内部局部滚动，不应引起外层时间线逃逸。
+ * Decide whether a nested scroll container consumes or blocks a directional input.
+ * A container at its boundary may chain to another ancestor before the timeline.
  */
 export function isNestedScrollEvent(
 	target: EventTarget | null,
 	boundary: HTMLElement | null,
+	direction: "up" | "down" = "up",
 ): boolean {
-	const nested = findNearestVerticalScrollableAncestor(target, boundary);
-	return Boolean(nested && nested !== boundary);
+	if (typeof window === "undefined" || !(target instanceof window.Node)) return false;
+	let current = target instanceof window.Element ? target : target.parentElement;
+	while (current && current !== boundary) {
+		const style = window.getComputedStyle(current);
+		if (style.overflowY === "auto" || style.overflowY === "scroll") {
+			const maxScrollTop = Math.max(0, current.scrollHeight - current.clientHeight);
+			const canConsume = direction === "up" ? current.scrollTop > 0 : current.scrollTop < maxScrollTop;
+			// Even a zero-range scroll container can prohibit chaining. Overflow
+			// visible/clip elements do not acquire that ownership from this property.
+			if (canConsume || style.overscrollBehaviorY === "contain" || style.overscrollBehaviorY === "none") return true;
+		}
+		current = current.parentElement;
+	}
+	return false;
 }
 

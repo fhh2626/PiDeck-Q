@@ -2,9 +2,9 @@ import { canonicalizeSessionPath, getSessionEnvironment } from "../../shared/ses
 import type { AgentTab, SessionEnvironment, SessionSummary, SubagentLiveRun } from "../../shared/types";
 
 /**
- * 会话/Agent 行的状态点 Tailwind bg 类（跨 Sidebar SessionTree 与会话 Tab 复用）。
+ * 会话/Agent 行的状态点 Tailwind bg 类（供侧栏会话树复用）。
  * 用户语义：idle=蓝、starting/运行中=黄、error=红；未启动（无 runtime）不显示点。
- * 该 helper 同时供会话 Tab 与侧栏会话行使用，确保蓝/黄/红状态语义一致。
+ * 该 helper 供侧栏会话行使用，确保蓝/黄/红状态语义一致。
  */
 export function sessionStatusDotClass(status?: string | null): string | undefined {
 	// detached 视为未真正运行：不渲染色点，与未启动会话一致

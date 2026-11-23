@@ -159,22 +159,26 @@ export function sliceLastAgentRuns<T extends { kind: string } & { items?: readon
 }
 
 /**
- * 顶层条目是否为「触发某 run 的用户提问」（kind=message 且 message.role=user）。
+ * 顶层条目是否开启一轮：用户消息，或只读任务目标。
  * 泛型 T 只声明 kind，message 字段按运行时结构收窄（对应 groupToolMessages 产出的
  * MessageItem 形状）。仅在渲染窗口切片起点使用，不影响分组逻辑。
  */
-function isUserMessageItem(item: { kind: string } & { items?: readonly unknown[] } | undefined): boolean {
-	if (!item || item.kind !== "message") return false;
-	const message = (item as { message?: { role?: unknown } }).message;
-	return message?.role === "user";
+function timelineMessage(item: { kind: string } | undefined): { role?: unknown; meta?: { type?: unknown } } | undefined {
+	if (!item || item.kind !== "message") return undefined;
+	return (item as { message?: { role?: unknown; meta?: { type?: unknown } } }).message;
 }
 
-/** 非摘要 system 卡片可出现在用户提问与回答之间；摘要必须阻断回溯。 */
+/** 用户消息和只读任务目标都开启一轮；普通系统卡片不算轮次。 */
+function isUserMessageItem(item: { kind: string } & { items?: readonly unknown[] } | undefined): boolean {
+	const message = timelineMessage(item);
+	return message?.role === "user" || (message?.role === "system" && message.meta?.type === "todoTask");
+}
+
+/** 非边界 system 卡片可出现在提问与回答之间；摘要和任务目标必须阻断回溯。 */
 function isNonBoundarySystemMessageItem(item: { kind: string } & { items?: readonly unknown[] } | undefined): boolean {
-	if (!item || item.kind !== "message") return false;
-	const message = (item as { message?: { role?: unknown; meta?: { type?: unknown } } }).message;
+	const message = timelineMessage(item);
 	return message?.role === "system" &&
-		message.meta?.type !== "compaction" && message.meta?.type !== "branchSummary";
+		message.meta?.type !== "compaction" && message.meta?.type !== "branchSummary" && message.meta?.type !== "todoTask";
 }
 
 /**

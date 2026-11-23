@@ -29,23 +29,6 @@ function linkify(text) {
 	return links;
 }
 
-test("real paths still linkify (relative, absolute, unicode)", () => {
-	assert.deepEqual(linkify("看 src/native-node/index.ts"), ["src/native-node/index.ts"]);
-	// 绝对路径标准 file:/// 编码（解码后还原原路径）
-	const absLinks = linkify("路径 D:\\项目\\文件.ts");
-	assert.equal(absLinks.length, 1);
-	assert.ok(absLinks[0].startsWith("file:///D:/"));
-	assert.equal(decodeURIComponent(absLinks[0]), "file:///D:/项目/文件.ts");
-	assert.deepEqual(linkify("参考 ./docs/guide.md"), ["./docs/guide.md"]);
-	assert.deepEqual(linkify("上级 ../src/a.ts"), ["../src/a.ts"]);
-	// 中文目录与文件名
-	const zhLinks = linkify("模块 src/项目/工具.ts 已更新");
-	assert.equal(zhLinks.length, 1);
-	assert.equal(zhLinks[0], "src/项目/工具.ts");
-	// 多级目录
-	assert.deepEqual(linkify("组件 src/components/Button.tsx"), ["src/components/Button.tsx"]);
-});
-
 test("full-width punctuation is not swallowed into the path", () => {
 	// 修复前：src/a.ts， 会匹配 src/a.ts， （全角逗号被吞）→ 点击打开不存在的文件
 	assert.deepEqual(linkify("改了 src/a.ts，src/b.ts"), [

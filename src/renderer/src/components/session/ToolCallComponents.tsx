@@ -15,6 +15,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   CircleCheck,
+  CircleHelp,
   CircleX,
   FileText,
   Folder,
@@ -40,6 +41,8 @@ import { TimelineMarker } from "./TimelineMarker";
 import {
   resolveToolGroupPage,
   resolveToolGroupPageWithAnchor,
+  resolveToolGroupStatus,
+  type ToolGroupStatus,
   findRunningToolPage,
   TOOL_GROUP_PAGE_SIZE,
 } from "./timeline/toolGroupPage";
@@ -154,12 +157,23 @@ function getReadSkillName(message: ChatMessage): string | undefined {
 
 /** 计算工具的语气色：running 黄、error 红、其余 ok。
  * 工具内部命令失败（exitCode != 0）不影响工具调用本身的成功状态，
- * 因此不根据 exitCode 变色，只有工具调用层面出错才标红。 */
+ * 因此不根据 exitCode 变色，只有工具调用层面出错才标红。
+ * unknown（结果未记录）走 ok：tone-ok 无任何颜色规则，即保持中性，不声称成功也不报警。 */
 function getToolTone(message: ChatMessage): "running" | "error" | "ok" {
 	const status = getToolStatus(message);
 	if (status === "running") return "running";
 	if (status === "error" || message.meta?.isError === true) return "error";
 	return "ok";
+}
+
+/** 时间线轨道节点语气：unknown 用 neutral（不亮绿点、不亮红点，也不做运行中脉冲）。 */
+function getToolMarkerTone(
+	status: ToolGroupStatus,
+): "active" | "success" | "error" | "neutral" {
+	if (status === "error") return "error";
+	if (status === "running") return "active";
+	if (status === "unknown") return "neutral";
+	return "success";
 }
 
 /** pi 内置工具名集合，用于与 MCP / 扩展工具区分。 */
@@ -334,6 +348,16 @@ export const ToolCard = memo(function ToolCard(props: {
 				</Badge>
 			);
 		}
+		if (status === "unknown") {
+			// 结果未记录：中性灰徽章 + 问号图标。既不转圈，也不打勾/打叉——
+			// 会话异常终止时我们确实不知道结果，不能编造。
+			return (
+				<Badge variant="outline" className="gap-1 border-border-subtle px-1 py-0 text-micro text-text-tertiary">
+					<CircleHelp size={9} aria-hidden="true" />
+					{t("tool.statusUnknown")}
+				</Badge>
+			);
+		}
 		return (
 			<Badge variant="secondary" className="gap-1 px-1 py-0 text-micro">
 				<CircleCheck size={9} aria-hidden="true" />
@@ -346,7 +370,7 @@ export const ToolCard = memo(function ToolCard(props: {
 	return (
 		<TimelineMarker
 			kind="tool"
-			tone={tone === "error" ? "error" : tone === "running" ? "active" : "success"}
+			tone={getToolMarkerTone(status)}
 		>
 		<section
 			// 圆角不走 Tailwind rounded-md（6px 会压过 .tool-card 的 token 圆角，
@@ -442,7 +466,7 @@ export const ToolCard = memo(function ToolCard(props: {
 						showHeader={false}
 						tool={toolIcon(toolName)}
 						title={toolName}
-						status={status === "running" ? "running" : status === "error" ? "error" : "success"}
+						status={status === "running" ? "running" : status === "error" ? "error" : status === "unknown" ? undefined : "success"}
 						kind={toolName.toLowerCase().includes("bash") || toolName.toLowerCase().includes("shell") ? "terminal" : "custom"}
 						maxHeight={320}
 						copyText={displayText}
@@ -565,9 +589,10 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 
 	const total = props.group.messages.length;
 	const statuses = props.group.messages.map((message) => getToolStatus(message));
-	const status = props.stopped && statuses.includes("running")
-		? "stopped"
-		: statuses.includes("running") ? "running" : statuses.includes("error") ? "error" : "done";
+	// 组状态优先级：stopped > running > error > unknown > done（纯函数，见 toolGroupPage）。
+	// unknown（结果未记录）必须排在 done 之前：组内只要有一条调用没有结果，
+	// 就不能把整组报成「完成」。
+	const status = resolveToolGroupStatus(statuses, props.stopped);
 
 	// 收集组内工具消息中的图片与提示（供折叠态下直接预览）
 	const groupImages = props.mountMedia !== false
@@ -594,7 +619,13 @@ export const ToolGroupCard = memo(function ToolGroupCard(props: {
 				<span className="font-medium">{t("tool.group.title", { count: total })}</span>
 				{expanded ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
 				<Badge variant={status === "error" ? "outline" : status === "running" ? "outline" : "secondary"} className="px-1 py-0 text-micro">
-					{t(status === "stopped" ? "tool.statusStopped" : status === "running" ? "tool.statusRunning" : status === "error" ? "tool.statusError" : "tool.statusDone")}
+					{t(status === "stopped"
+						? "tool.statusStopped"
+						: status === "running"
+							? "tool.statusRunning"
+							: status === "error"
+								? "tool.statusError"
+								: status === "unknown" ? "tool.statusUnknown" : "tool.statusDone")}
 				</Badge>
 			</button>
 			{!expanded && groupImages.length > 0 && (

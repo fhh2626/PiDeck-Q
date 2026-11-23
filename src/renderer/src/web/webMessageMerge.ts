@@ -179,13 +179,15 @@ export function mergeAuthoritativeUiMessages(
 	options?: {
 		dropUnmatchedTrailingPlaceholders?: boolean;
 		dropCoveredLocalSseLeftovers?: boolean;
+		/** Only active runtime/stream evidence may keep a running call over an unknown snapshot. */
+		preserveRunningToolCalls?: boolean;
 	},
 ): UIMessage[] {
 	if (authoritative.length === 0) return current;
 	const reconciled = reconcileWebMessageIdentities(current, authoritative);
 	// A final SSE bubble can settle tools that are still running in the cached snapshot.
-	current = preserveSettledWebTools(reconciled.incoming, reconciled.current);
-	authoritative = preserveSettledWebTools(current, reconciled.incoming);
+	current = preserveSettledWebTools(reconciled.incoming, reconciled.current, options?.preserveRunningToolCalls);
+	authoritative = preserveSettledWebTools(current, reconciled.incoming, options?.preserveRunningToolCalls);
 	const merged = [...current];
 	const matchedCurrent = new Set<number>();
 	let changed = false;

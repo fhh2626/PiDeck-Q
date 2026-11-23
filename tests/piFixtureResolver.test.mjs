@@ -34,7 +34,7 @@ const hookUrl = new URL("./helpers/piFixtureResolveHook.mjs", import.meta.url).h
 const loaderUrl = new URL("./helpers/subagentGraphLoader.mjs", import.meta.url).href;
 
 function runChild(script) {
-	return spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 20000 });
+	return spawnSync(process.execPath, ["--input-type=module", "-e", script], { windowsHide: true, encoding: "utf8", timeout: 20000 });
 }
 
 test("extension sources resolve Pi-hosted packages from the fixture, not a root decoy", async (t) => {

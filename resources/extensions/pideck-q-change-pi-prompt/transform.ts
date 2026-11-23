@@ -1,10 +1,15 @@
 /** Pure, bounded system-prompt transformation; no filesystem, process, or model calls. */
 import { type Config, type Prompts } from './defaults.ts';
-import { classifyRules, CORE_RULES, hasBatchEdit, isSubagent, type ToolSnapshot } from './contributions.ts';
+import { classifyRules, CORE_RULES, hasBatchEdit, type ToolSnapshot } from './contributions.ts';
 import { parseLayout } from './layout.ts';
-import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './shellAvailability.ts';
+import { filterUnavailableSearchToolLines, filterUnavailableShellToolLines } from './activeToolLines.ts';
 
-export interface PromptOptions { customPrompt?: string; appendSystemPrompt?: string }
+export interface PromptOptions {
+	customPrompt?: string;
+	forceSystemPrompt?: string;
+	appendSystemPrompt?: string;
+	sections?: Record<string, string>;
+}
 export interface TransformInput {
 	systemPrompt: string;
 	options?: PromptOptions;
@@ -19,6 +24,16 @@ export interface TransformResult { systemPrompt: string; diagnostics: string[] }
 export const OWN_START = '<!-- change-pi-prompt:v1 -->';
 export const OWN_END = '<!-- /change-pi-prompt:v1 -->';
 interface Patch { start: number; end: number; expected: string; replacement: string }
+
+/** Pi applies nonempty section overrides after its defaults, so their text belongs to the caller. */
+function hasCustomSection(options: PromptOptions | undefined, name: string): boolean {
+	return !!options?.sections && Object.hasOwn(options.sections, name) && !!options.sections[name];
+}
+
+/** A full caller-supplied prompt has no stock sections, even when its text resembles Pi's layout. */
+function hasOpaquePrompt(options: PromptOptions | undefined): boolean {
+	return !!options?.customPrompt || options?.forceSystemPrompt !== undefined;
+}
 
 /** Every patch is checked against the same original input and cannot overlap. */
 function applyPatches(original: string, patches: Patch[]): string {
@@ -54,7 +69,8 @@ function joinGuidelineParts(parts: string[]): string {
 /** Render only sections supported by the active tool set. Runtime facts stay with providers. */
 function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string {
 	const p = input.prompts;
-	const has = (name: string) => input.activeTools.includes(name);
+	const has = (name: string) => tools.some(tool => tool.name === name && tool.sourceInfo?.source === 'builtin')
+		&& input.activeTools.includes(name);
 	const sections = [p.execution, p.tools];
 	if (has('read')) sections.push(p.read);
 	if (has('edit')) {
@@ -63,8 +79,6 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
 	}
 	if (has('write')) sections.push(p.write);
 	if (has('bash') || has('powershell')) sections.push(p.shell);
-	if (has('ask_question')) sections.push(p.userInput);
-	if (input.config.subagent && tools.some(isSubagent)) sections.push(p.delegation);
 	sections.push(p.validation, p.communication);
 	sections.push(p.environment.replace(/\{\{(hostOs|today)\}\}/g, (_, key: string) => key === 'hostOs' ? input.hostOs : input.today));
 	return joinGuidelineParts(sections);
@@ -77,8 +91,8 @@ function renderGuidelines(input: TransformInput, tools: ToolSnapshot[]): string 
  * carries it with "Third-party apps now draw from your extra usage", so a child keeping it fails
  * while its parent succeeds. Unknown layouts are returned unchanged.
  */
-export function stripChildDocumentation(systemPrompt: string, config: Pick<Config, 'enabled' | 'removeDocumentation'>): string {
-	if (!config.enabled || !config.removeDocumentation) return systemPrompt;
+export function stripChildDocumentation(systemPrompt: string, config: Pick<Config, 'enabled' | 'removeDocumentation'>, options?: PromptOptions): string {
+	if (!config.enabled || !config.removeDocumentation || hasOpaquePrompt(options) || hasCustomSection(options, 'docs')) return systemPrompt;
 	const layout = parseLayout(systemPrompt);
 	if (!layout) return systemPrompt;
 	const before = systemPrompt.slice(0, layout.docsStart).replace(/\s+$/, '');
@@ -93,7 +107,7 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 	if (!input.config.enabled) return unchanged('disabled');
 	if (original.startsWith(OWN_START + '\n') || original.startsWith(OWN_START + '\r\n')) return unchanged('already-transformed');
 	// Subagents use customPrompt too. Preserve their role, active_agent tag, memory and inherited prefix.
-	if (input.options?.customPrompt) return unchanged('custom-or-child-prompt: skipped');
+	if (hasOpaquePrompt(input.options)) return unchanged('custom-or-child-prompt: skipped');
 	const layout = parseLayout(original);
 	if (!layout) return unchanged('unsupported-layout: original preserved');
 	// APPEND_SYSTEM is user-owned even if it resembles our documentation/list syntax.
@@ -106,26 +120,27 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 	const has = (name: string) => input.activeTools.includes(name);
 	const diagnostics = [
 		`powershell: ${has('powershell') ? 'active' : 'absent or inactive'}`,
-		`subagent: ${input.config.subagent && tools.some(isSubagent) ? 'active' : 'absent, inactive, unrecognized or disabled'}`,
 	];
 	const patches: Patch[] = [];
 	const add = (start: number, end: number, replacement: string) => {
 		patches.push({ start, end, replacement, expected: original.slice(start, end) });
 	};
 	if (input.config.replaceIdentity) add(0, layout.identityEnd, input.prompts.identity);
-	if (input.config.pruneUnavailableShells || input.config.pruneUnavailableSearchTools) {
+	if ((input.config.pruneUnavailableShells || input.config.pruneUnavailableSearchTools) && !hasCustomSection(input.options, 'tools')) {
 		const originalTools = original.slice(layout.toolsStart, layout.toolsEnd);
+		// Provider-owned rows stay byte-for-byte intact even when the tool uses a builtin name.
+		const catalogActive = [...input.activeTools, ...input.tools.filter(tool => tool.sourceInfo?.source !== 'builtin').map(tool => tool.name)];
 		const shellFiltered = input.config.pruneUnavailableShells
-			? filterUnavailableShellToolLines(originalTools, input.activeTools) : originalTools;
+			? filterUnavailableShellToolLines(originalTools, catalogActive) : originalTools;
 		const filtered = input.config.pruneUnavailableSearchTools
-			? filterUnavailableSearchToolLines(shellFiltered, input.activeTools) : shellFiltered;
+			? filterUnavailableSearchToolLines(shellFiltered, catalogActive) : shellFiltered;
 		if (filtered !== originalTools) {
 			add(layout.toolsStart, layout.toolsEnd, filtered);
 			if (shellFiltered !== originalTools) diagnostics.push('shell-tools: pruned unavailable bash/powershell from Available tools');
 			if (filtered !== shellFiltered) diagnostics.push('search-tools: pruned unavailable grep/find from Available tools');
 		}
 	}
-	if (input.config.replaceGuidelines) {
+	if (input.config.replaceGuidelines && !hasCustomSection(input.options, 'rules')) {
 		const ownership = classifyRules(tools, input.config);
 		const preserved: string[] = [];
 		let unknown = 0;
@@ -140,7 +155,7 @@ export function transformSystemPrompt(input: TransformInput): TransformResult {
 		const retained = preserved.length ? '\n\n## Additional tool and extension guidance\n' + preserved.join('\n') : '';
 		add(layout.guidelinesStart, layout.guidelinesEnd, renderGuidelines(input, tools) + retained);
 	}
-	if (input.config.removeDocumentation) add(layout.docsStart, layout.docsEnd, '');
+	if (input.config.removeDocumentation && !hasCustomSection(input.options, 'docs')) add(layout.docsStart, layout.docsEnd, '');
 	if (!patches.length) return unchanged('all-targets-disabled');
 	// Wrap only the known base, never AGENTS.md/skills/appended instructions. These markers ensure
 	// inherited/repeated inputs remain idempotent; Pi normally rebuilds its base on each user turn.

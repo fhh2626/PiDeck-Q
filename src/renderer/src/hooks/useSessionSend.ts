@@ -21,6 +21,7 @@ import {
   setSessionDraftAtom,
   setSessionSendStateAtom,
   upsertSessionAtom,
+  visionBridgeCapabilitiesAtom,
 } from "../atoms";
 import {
   buildComposerPromptSubmission,
@@ -29,6 +30,10 @@ import {
 import { exceedsComposerImagePayloadBudget } from "../utils/composerImages";
 import { buildOptimisticCacheWrite } from "../utils/optimisticSessionCache";
 import { settleOptimisticMessage } from "../utils/optimisticUserReconciliation";
+import { QUEUED_PROMPT_LIMIT } from "../utils/queuedPromptQueue";
+import { buildModelKey, isVisionBridgeConfigured, resolveModelImageSupport } from "../utils/modelImageCapability";
+import { resolveSelectedModel } from "../utils/modelSelection";
+import { modelConfigurationScopeKey } from "../utils/modelConfigurationScope";
 import { t, translateI18nDescriptor } from "../i18n";
 
 export type EnqueuePromptSnapshot = {
@@ -67,7 +72,7 @@ export type UseSessionSendOptions = {
   refreshProject?: (projectId: string) => void;
   showError?: (message: string, duration?: number) => void;
   showUnknown?: () => void;
-  /** Called when streamingBehavior is "steer" before sending. Returns true if enqueued. */
+  /** Called for steer/followUp before sending. Returns true if queued locally. */
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
 };
 
@@ -231,6 +236,28 @@ export function useSessionSend(options: UseSessionSendOptions) {
       ? [...attachmentSnapshot]
       : undefined;
     if (!hasComposerSubmission(message, imageSnapshot)) return;
+    const record = store.get(sessionRecordsAtom)[sourceSessionId];
+    const modelChoice = record?.model;
+    if (modelChoice && (!modelChoice.provider || !modelChoice.modelId)) {
+      const error = t("app.modelSelectionRequired");
+      setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
+      options.showError?.(error, 4500);
+      return;
+    }
+    const vision = store.get(visionBridgeCapabilitiesAtom);
+    if (imageSnapshot?.length && vision?.ready && vision.config?.enabled
+      && !isVisionBridgeConfigured(vision.config)
+      && (vision.modelScopeKey ?? "native") === modelConfigurationScopeKey(record ?? {})) {
+      const selected = resolveSelectedModel(modelChoice, store.get(sessionRuntimeByIdAtom)[sourceSessionId]?.state);
+      // Unknown or differently scoped capabilities are checked against the actual
+      // Pi model at the native dispatch boundary, including queued submissions.
+      if (resolveModelImageSupport(vision.models, buildModelKey(selected.provider, selected.modelId)) === false) {
+        const error = t("app.visionModelSelectionRequired");
+        setSendState({ sessionId: sourceSessionId, state: { status: "error", error } });
+        options.showError?.(error, 4500);
+        return;
+      }
+    }
     if (exceedsComposerImagePayloadBudget(imageSnapshot)) {
       const errorMessage = t("app.imagesTotalTooLarge");
       setSendState({
@@ -425,7 +452,14 @@ export function useSessionSend(options: UseSessionSendOptions) {
         sendingSessionIdsRef.current.delete(sourceSessionId);
         return;
       }
-      // Queue full: fall through to direct send.
+      // A full local queue must preserve ordering. Sending directly would let the
+      // newest prompt overtake the earlier tasks that are still retractable here.
+      const errorMessage = t("app.queuedFull", { count: QUEUED_PROMPT_LIMIT });
+      discardOptimisticBubble(sessionId, requestId);
+      setSendState({ sessionId, state: { status: "error", requestId, error: errorMessage } });
+      options.showError?.(errorMessage, 4000);
+      sendingSessionIdsRef.current.delete(sourceSessionId);
+      return;
     }
 
     if (!publishBeforeActivation) {
@@ -510,9 +544,6 @@ export function useSessionSend(options: UseSessionSendOptions) {
         ...(description ? { description } : {}),
         ...(streamingBehavior ? { streamingBehavior } : {}),
       });
-      // 新一轮开始：bump 本会话 tick，timeline 侧非最新轮据此收起（设置②）。
-      // sendPrompt resolve = pi 已接受消息，旧轮即将/已经结束，此时收掉最省资源。
-      store.set(bumpNewTurnCollapseTickAtom, sessionId);
       if (result.agentId) {
         bindRuntime({
           sessionId,
@@ -547,6 +578,9 @@ export function useSessionSend(options: UseSessionSendOptions) {
       }
       if (outcome === "accepted") {
         keepOptimisticPending = true;
+        // 只有确认受理才开始新一轮折叠。sendPrompt 也会正常返回 rejected/unknown，
+        // 它们不能收起现有过程，否则发送失败或超时也会改变时间线高度和阅读位置。
+        store.set(bumpNewTurnCollapseTickAtom, sessionId);
         options.recordPromptHistory?.(sessionId, message);
         setSendState({ sessionId, state: { status: "idle" } });
         if (record) options.refreshProject?.(record.projectId);

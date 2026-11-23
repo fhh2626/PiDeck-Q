@@ -39,8 +39,8 @@ function createEngineEnv() {
 		disconnect() {}
 	}
 	const frames = [];
-	// 引擎用 setTimeout(…, 1) 延迟判定“用户是否逃逸”。换成可手动推进的假定时器：真实定时器在机器繁忙时
-	// 会让“没有发生逃逸”这类用例在判定尚未执行时误绿，也会让“逃逸”类用例偶发变红。
+	// Keep legacy delayed decisions controllable so event-order regressions fail
+	// deterministically if intent handling is ever deferred again.
 	const timers = [];
 	const globals = {
 		setTimeout: (fn) => {
@@ -86,7 +86,13 @@ async function mountEngine(host, options = { initial: "instant", resize: "instan
 		state,
 		scroll,
 		clock: env.clock,
-		/** 用户把滚动条拖到 top：触发 scroll 事件并等待引擎的 1ms 延迟判定。 */
+		/** Preserve browser event ordering without advancing legacy delayed scroll decisions. */
+		async dispatchScroll(top) {
+			scroll.scrollTop = top;
+			await host.act(async () => scroll.dispatchEvent(new NodeEvent("scroll")));
+		},
+		flushTimers: settle,
+		/** Move the scrollbar to top, then drain any queued work. */
 		async scrollTo(top) {
 			scroll.scrollTop = top;
 			await host.act(async () => scroll.dispatchEvent(new NodeEvent("scroll")));
@@ -99,6 +105,11 @@ async function mountEngine(host, options = { initial: "instant", resize: "instan
 				event.deltaY = deltaY;
 				scroll.dispatchEvent(event);
 			});
+		},
+		/** 原子恢复位置（会话切回 / 保锚纠偏）。 */
+		async restoreAt(top, options) {
+			await host.act(async () => mounted.result().restoreAt(top, options));
+			await settle();
 		},
 		/** 内容高度变化（ResizeObserver 回调）。 */
 		async resizeTo(height) {
@@ -119,6 +130,37 @@ test("scrolling up even by a small distance escapes the bottom lock immediately"
 		await engine.scrollTo(BOTTOM - 20);
 		assert.equal(engine.state.escapedFromLock, true, "明确上滚 20px 必须立即进入阅读模式");
 		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("a newer upward wheel cancels any earlier downward scroll before streaming grows", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		await engine.scrollTo(BOTTOM - 100);
+		// The compositor reports a downward move. Its old delayed decision must
+		// never overwrite a wheel-up intent that arrives before timers run.
+		await engine.dispatchScroll(BOTTOM - 50);
+		await engine.wheel(-40);
+		await engine.flushTimers();
+		const readingPosition = engine.scroll.scrollTop;
+		engine.scroll.scrollHeight += 200;
+		await engine.resizeTo(1200);
+		assert.equal(engine.state.isAtBottom, false);
+		assert.equal(engine.state.escapedFromLock, true);
+		assert.equal(engine.scroll.scrollTop, readingPosition, "streaming cannot restore an obsolete downward intent");
+	});
+});
+
+test("scrollbar movement escapes before a resize callback in the same frame", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.resizeTo(1000);
+		await engine.dispatchScroll(BOTTOM - 160);
+		engine.scroll.scrollHeight += 200;
+		await engine.resizeTo(1200);
+		assert.equal(engine.state.isAtBottom, false);
+		assert.equal(engine.scroll.scrollTop, BOTTOM - 160, "the next resize must preserve the scrollbar's new reader position");
 	});
 });
 
@@ -306,5 +348,99 @@ test("content shrinking never re-locks a reader who escaped upward", async () =>
 		await engine.resizeTo(900); // 负增长（折叠内外高度往返的其中一帧）
 		assert.equal(engine.state.escapedFromLock, true);
 		assert.equal(engine.state.isAtBottom, false, "负增长帧不得把读历史的用户误重锁");
+	});
+});
+
+// ── 贴底恢复不得留在“已解锁”状态 ──
+// 显式会话恢复把视口放回尾部时，restoreAt 无条件解锁会让下一次内容增长不跟底
+// （发送后视口停在旧消息上），内容收缩时又会因 isFollowing=false 拒绝识别 clamp。
+
+test("restoring exactly at the bottom keeps the bottom lock", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 300);
+		assert.equal(engine.state.isAtBottom, false, "前置：先进入阅读状态");
+
+		await engine.restoreAt(BOTTOM);
+		assert.equal(engine.state.escapedFromLock, false, "贴底恢复不得留在已解锁状态");
+		assert.equal(engine.state.isAtBottom, true);
+	});
+});
+
+test("restoring above the bottom keeps the reader state", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.restoreAt(BOTTOM - 50);
+		assert.equal(engine.state.escapedFromLock, true, "近底但不在底部仍是阅读位置");
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("content growth after a bottom restore still follows the bottom", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 300);
+		await engine.restoreAt(BOTTOM);
+		engine.scroll.scrollHeight = 2400;
+		await engine.resizeTo(1000);
+		await engine.resizeTo(1100);
+		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.scroll.scrollTop, 2400 - 1 - 500, "贴底恢复后增长必须继续跟底");
+	});
+});
+
+test("anchor compensation at the bottom preserves an escaped reader through later growth", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 40);
+		await engine.restoreAt(BOTTOM, { preserveFollowState: true });
+		assert.equal(engine.state.isAtBottom, false, "layout compensation cannot replace the reader's upward intent");
+		assert.equal(engine.state.escapedFromLock, true);
+		await engine.dispatchScroll(BOTTOM);
+		engine.scroll.scrollHeight = 2400;
+		await engine.resizeTo(2400);
+		assert.equal(engine.scroll.scrollTop, BOTTOM, "later content growth must preserve the compensated reading position");
+		assert.equal(engine.state.isAtBottom, false);
+	});
+});
+
+test("anchor compensation preserves a newer follow intent while its controller mirror catches up", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		assert.equal(engine.state.isAtBottom, true);
+		const currentTop = engine.scroll.scrollTop;
+		await engine.restoreAt(BOTTOM - 40, { preserveFollowState: true });
+		assert.equal(engine.state.isAtBottom, true, "compensation must retain the engine's current intent");
+		assert.equal(engine.state.escapedFromLock, false);
+		assert.equal(engine.scroll.scrollTop, currentTop, "an obsolete reader correction must not move a following viewport");
+		engine.scroll.scrollHeight = 2400;
+		await engine.resizeTo(2400);
+		assert.equal(engine.scroll.scrollTop, 1899);
+	});
+});
+
+test("a downward wheel at the actual bottom resumes following without a scroll notification", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 40);
+		// A layout shrink can leave an escaped reader exactly at the new limit.
+		// A further downward wheel cannot move the viewport or emit a scroll event.
+		engine.scroll.scrollHeight -= 40;
+		await engine.wheel(40);
+		assert.equal(engine.state.isAtBottom, true);
+		assert.equal(engine.state.escapedFromLock, false);
+		engine.scroll.scrollHeight += 400;
+		await engine.resizeTo(engine.scroll.scrollHeight);
+		assert.equal(engine.scroll.scrollTop, engine.scroll.scrollHeight - engine.scroll.clientHeight - 1);
+	});
+});
+
+test("a downward wheel above the actual bottom waits for movement before restoring follow", async () => {
+	await withHookHost(async (host) => {
+		const engine = await mountEngine(host);
+		await engine.scrollTo(BOTTOM - 40);
+		await engine.wheel(40);
+		assert.equal(engine.state.isAtBottom, false, "a near-bottom wheel alone must not pull the reader to the tail");
+		assert.equal(engine.state.escapedFromLock, true);
 	});
 });

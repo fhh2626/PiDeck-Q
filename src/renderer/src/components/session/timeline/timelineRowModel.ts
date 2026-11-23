@@ -40,6 +40,8 @@ export interface VirtualTimelineRow {
 	item: TimelineRowItem;
 	sourceIndex: number;
 	messageIds: readonly string[];
+	/** Internal continuity evidence; replaced request IDs are never public message aliases. */
+	optimisticRequestId?: string;
 }
 
 export interface TimelineRowModel {
@@ -80,16 +82,70 @@ export function isRenderableTimelineItem(item: RenderMessage, sessionId?: string
 	return false;
 }
 
+/** Keep an existing user row only when its exact ID or unique request identity continues. */
+function continuedUserRows(
+	items: readonly RenderMessage[],
+	previousModel?: TimelineRowModel | null,
+): ReadonlyMap<string, VirtualTimelineRow> {
+	const previousById = new Map<string, VirtualTimelineRow>();
+	const previousByRequest = new Map<string, Set<VirtualTimelineRow>>();
+	for (const row of previousModel?.rows ?? []) {
+		if (row.item.kind !== "message" || row.item.message.role !== "user") continue;
+		previousById.set(row.item.message.id, row);
+		const requestId = row.optimisticRequestId ?? row.item.message.meta?.optimisticRequestId;
+		const identities = new Set(row.messageIds);
+		if (typeof requestId === "string" && requestId) identities.add(requestId);
+		for (const id of identities) {
+			const candidates = previousByRequest.get(id) ?? new Set<VirtualTimelineRow>();
+			candidates.add(row);
+			previousByRequest.set(id, candidates);
+		}
+	}
+	const currentIds = new Set<string>();
+	const reservedKeys = new Set<string>();
+	const requestCounts = new Map<string, number>();
+	for (const item of items) {
+		if (item.kind !== "message") continue;
+		currentIds.add(item.message.id);
+		reservedKeys.add(`message:${item.message.id}`);
+		const requestId = item.message.role === "user" ? item.message.meta?.optimisticRequestId : undefined;
+		if (typeof requestId === "string" && requestId) requestCounts.set(requestId, (requestCounts.get(requestId) ?? 0) + 1);
+	}
+	const continued = new Map<string, VirtualTimelineRow>();
+	// Reserve every surviving exact identity before considering request-based replacements.
+	for (const item of items) {
+		if (item.kind !== "message" || item.message.role !== "user") continue;
+		const previous = previousById.get(item.message.id);
+		if (previous && (previous.key === `message:${item.message.id}` || !reservedKeys.has(previous.key))) {
+			continued.set(item.message.id, previous);
+			reservedKeys.add(previous.key);
+		}
+	}
+	for (const item of items) {
+		if (item.kind !== "message" || item.message.role !== "user" || continued.has(item.message.id)) continue;
+		const requestId = item.message.meta?.optimisticRequestId;
+		if (typeof requestId !== "string" || requestCounts.get(requestId) !== 1) continue;
+		const candidates = [...(previousByRequest.get(requestId) ?? [])].filter((row) => !currentIds.has(row.anchorId));
+		if (candidates.length !== 1) continue;
+		const previous = candidates[0];
+		if (reservedKeys.has(previous.key) && previous.key !== `message:${item.message.id}`) continue;
+		continued.set(item.message.id, previous);
+		reservedKeys.add(previous.key);
+	}
+	return continued;
+}
+
 /**
  * 构建稳定顶层行模型。
  */
 export function buildTimelineRowModel(
 	items: readonly RenderMessage[],
-	options: { sessionId?: string } = {},
+	options: { sessionId?: string; previousModel?: TimelineRowModel | null } = {},
 ): TimelineRowModel {
 	const rows: VirtualTimelineRow[] = [];
 	const indexByKey = new Map<TimelineRowKey, number>();
 	const rowKeyByMessageId = new Map<string, TimelineRowKey>();
+	const continuedUsers = continuedUserRows(items, options.previousModel);
 
 	let lastAgentRunKey: TimelineRowKey | null = null;
 	let latestItemKey: TimelineRowKey | null = null;
@@ -136,8 +192,10 @@ export function buildTimelineRowModel(
 			rowIndex += 1;
 		} else if (item.kind === "message") {
 			const message = item.message;
-			const rowKey: TimelineRowKey = `message:${message.id}`;
+			const previous = continuedUsers.get(message.id);
+			const rowKey: TimelineRowKey = previous?.key ?? `message:${message.id}`;
 			const messageIdsArr = Object.freeze([message.id]);
+			const requestId = message.meta?.optimisticRequestId ?? previous?.optimisticRequestId;
 
 			const row: VirtualTimelineRow = {
 				key: rowKey,
@@ -145,11 +203,13 @@ export function buildTimelineRowModel(
 				item,
 				sourceIndex: i,
 				messageIds: messageIdsArr,
+				...(message.role === "user" && typeof requestId === "string" && requestId
+					? { optimisticRequestId: requestId } : {}),
 			};
 
 			rows.push(row);
 			indexByKey.set(rowKey, rowIndex);
-			rowKeyByMessageId.set(message.id, rowKey);
+			for (const id of messageIdsArr) rowKeyByMessageId.set(id, rowKey);
 
 			latestItemKey = rowKey;
 			rowIndex += 1;

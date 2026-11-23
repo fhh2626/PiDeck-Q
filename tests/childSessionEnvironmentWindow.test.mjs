@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import "./helpers/piFixtureResolver.mjs";
+import { piFixtureFileUrl } from "../scripts/pi-compatibility-fixture.mjs";
 
 const { createDefaultChildSessionFactory } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-session.ts");
+const { isChildLoader } = await import("../resources/extensions/pideck-q-subagents/src/runs/shared/child-loader-identity.ts");
+const { createEventBus } = await import(piFixtureFileUrl("dist/core/event-bus.js"));
 const KEY = "PIDECK_TEST_CHILD_WINDOW";
 const ABSENT = "PIDECK_TEST_CHILD_ABSENT";
 
 /** Only the Pi SDK is substituted; the actual child-session factory owns env application/serialization. */
-function fakePi(stage, snapshots = [], pauseReload) {
+function fakePi(stage, snapshots = [], pauseReload, buses = []) {
 	const fail = (name) => { if (stage === name) throw new Error(`fixture ${name}`); };
 	const runtime = {
 		registerProvider() { fail("provider"); },
@@ -21,10 +24,12 @@ function fakePi(stage, snapshots = [], pauseReload) {
 		extensionRunner: { hasHandlers() { return false; } },
 	};
 	return {
+		createEventBus,
 		ModelRuntime: { async create() { return runtime; } },
 		SettingsManager: { create() { return { getTheme() { return "fixture"; } }; } },
 		DefaultResourceLoader: class {
 			loaded = false;
+			constructor(options) { buses.push(options.eventBus); fail("construct-loader"); }
 			async reload() {
 				snapshots.push(["loading", process.env[KEY]]);
 				fail("reload");
@@ -69,14 +74,17 @@ async function withEnvironment(action) {
 	}
 }
 
-for (const stage of ["reload", "get-extensions", "provider", "native-provider", "refresh", "storage", "resolve", "resolve-error", "create", "bind"]) {
+for (const stage of ["construct-loader", "reload", "get-extensions", "provider", "native-provider", "refresh", "storage", "resolve", "resolve-error", "create", "bind"]) {
 	test(`foreground child restores its environment after ${stage} fails`, async () => {
 		await withEnvironment(async () => {
-			const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => fakePi(stage) });
+			const buses = [];
+			const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => fakePi(stage, [], undefined, buses) });
 			try { await assert.rejects(factory.create(launch()), new RegExp(`fixture ${stage}`)); }
 			finally { await factory.dispose(); }
 			assert.equal(process.env[KEY], "parent");
 			assert.equal(process.env[ABSENT], undefined, "new child-only env keys must be removed");
+			assert.equal(buses.length, 1);
+			assert.equal(isChildLoader(buses[0]), false, "failed launches must release their loader identity");
 		});
 	});
 }
@@ -97,13 +105,16 @@ test("partial environment application failure restores already-applied keys", as
 test("foreground success uses child env through bind, then restores the parent", async () => {
 	await withEnvironment(async () => {
 		const snapshots = [];
-		const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => fakePi(undefined, snapshots) });
+		const buses = [];
+		const factory = createDefaultChildSessionFactory({ loadPiCodingAgent: async () => fakePi(undefined, snapshots, undefined, buses) });
 		try {
 			await factory.create(launch());
 			assert.deepEqual(snapshots, [["loading", "child"], ["binding", "child"]]);
 			assert.equal(process.env[KEY], "parent");
 			assert.equal(process.env[ABSENT], undefined);
+			assert.equal(isChildLoader(buses[0]), true, "a live child keeps its loader identity for reloads");
 		} finally { await factory.dispose(); }
+		assert.equal(isChildLoader(buses[0]), false, "child disposal must release its loader identity");
 	});
 });
 

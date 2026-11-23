@@ -9,7 +9,7 @@
  * 代理优先级：--proxy 参数 > HTTPS_PROXY/HTTP_PROXY 环境变量（国内构建机拉不动时用）。
  * 输出: resources/model-specs.db（带 synced_at 同步时间与条数统计）。
  *
- * 运行期由 ModelSpecsStore（src/main/pi/modelSpecsStore.ts）只读加载；
+ * 运行期由 native/backend/domain/projects/ModelSpecs.cpp 只读加载；
  * 表结构变更需同步修改 store 的 SELECT 列。
  */
 
@@ -289,7 +289,7 @@ async function fetchJson(url, dispatcher) {
 	}
 }
 
-/** 裁剪 OpenRouter 响应：只保留填充需要的字段（见 modelSpecsIndex.ts 消费方） */
+/** 裁剪 OpenRouter 响应：只保留填充需要的字段（由原生模型规格查询消费） */
 function trimOpenRouter(data) {
 	const out = [];
 	for (const m of data ?? []) {

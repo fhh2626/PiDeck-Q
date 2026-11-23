@@ -10,7 +10,7 @@ import {
 import { atom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { selectAtom } from "jotai/utils";
 import { desktopApi } from "../desktopApi";
-import type { AgentRuntimeState, ChatMessage } from "../../../shared/types";
+import type { AgentRuntimeState, ChatMessage, SessionHistoryMutationProjection, SessionRuntimeTarget } from "../../../shared/types";
 import {
 	cacheSessionMessagesAtom,
 	clearSessionHistoryAtom,
@@ -27,11 +27,13 @@ import {
 	sessionMessageCacheBySessionIdAtomFamily,
 	sessionMessageLoadStateBySessionIdAtomFamily,
 	sessionMessageResyncRequestAtom,
+	sessionRuntimeByIdAtom,
 	sessionRuntimeBySessionIdAtomFamily,
 	saveSessionScrollAnchorAtom,
 	sessionScrollAnchorByIdAtom,
 	setSessionMessageLoadStateAtom,
 	touchSessionMessagesAtom,
+	type SessionMessageCacheEntry,
 	type SessionScrollAnchor,
 } from "../atoms";
 import { t } from "../i18n";
@@ -110,6 +112,24 @@ export const RUNTIME_HISTORY_TURN_PAGE_SIZE = 3;
  */
 export const HISTORY_REBUILD_MAX_PAGES = 20;
 
+/** Ordinary stream updates can advance the cache revision without invalidating a history read. */
+function ownsHistoryRead(start: SessionMessageCacheEntry, current: SessionMessageCacheEntry | undefined) {
+  return current?.source === "runtime" && current.agentId === start.agentId && current.historyReset === start.historyReset;
+}
+
+/** A usable page may return after its runtime detached or reused the same agent id. */
+function historyReadTarget(store: ReturnType<typeof useStore>, sessionId: string): SessionRuntimeTarget | undefined {
+  const runtime = store.get(sessionRuntimeByIdAtom)[sessionId];
+  if (!runtime?.agentId || runtime.status === "detached" || runtime.status === "closed") return undefined;
+  return { sessionId, agentId: runtime.agentId, runtimeGeneration: runtime.runtimeGeneration };
+}
+
+function historyReadTargetCurrent(store: ReturnType<typeof useStore>, expected?: SessionRuntimeTarget) {
+  if (!expected) return true;
+  const current = historyReadTarget(store, expected.sessionId);
+  return current?.agentId === expected.agentId && current.runtimeGeneration === expected.runtimeGeneration;
+}
+
 /**
  * 增量续页遇到文件版本漂移（压缩改写）时，从当前 runtime 接缝重新读取一批连续页，
  * 恢复到早先已加载的深度。
@@ -131,6 +151,7 @@ export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
   const isCurrent = deps.isCurrent ?? (() => latestLoadBySession.get(sessionId) === sequence);
   const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
   if (!entryAtStart || entryAtStart.source !== "runtime") return false;
+  const target = historyReadTarget(store, sessionId);
   const anchorMessage = entryAtStart.messages.find((m) => typeof m.meta?.entryId === "string");
   const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
     ? anchorMessage.meta.entryId
@@ -161,7 +182,7 @@ export async function rebuildHistoryPrefixAfterVersionDrift(deps: {
       const result = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
       if (!isCurrent()) return false;
       const latest = store.get(sessionMessagesCacheAtom)[sessionId];
-      if (!latest || latest.source !== "runtime") return false;
+      if (!historyReadTargetCurrent(store, target) || !ownsHistoryRead(entryAtStart, latest)) return false;
       if (rebuildVersion === undefined) {
         rebuildVersion = result.indexVersion;
       } else if (result.indexVersion !== rebuildVersion) {
@@ -362,6 +383,7 @@ export function isLatestTimelineRunBusy(
 export type HistoryMutationRefreshSnapshot = {
 	sessionId: string;
 	expectedMutationSequence: number;
+	target?: SessionRuntimeTarget;
 	loadedHistoryTurnCount: number;
 	loadedHistoryMessageCount: number;
 	anchorMessageId?: string;
@@ -410,6 +432,7 @@ export function captureHistoryMutationRefresh(
 	return {
 		sessionId,
 		expectedMutationSequence: nextSequence,
+		target: historyReadTarget(store, sessionId),
 		loadedHistoryTurnCount: countLoadedHistoryTurns(entry.history.messages),
 		loadedHistoryMessageCount: entry.history.messages.length,
 		anchorMessageId: anchor?.messageId,
@@ -427,10 +450,12 @@ export function captureHistoryMutationRefresh(
 export async function refreshHistoryAfterMutation(
 	deps: { store: ReturnType<typeof useStore> },
 	snapshot: HistoryMutationRefreshSnapshot | null,
+	projection?: SessionHistoryMutationProjection | void,
 ): Promise<void> {
 	if (!snapshot) return;
 	const { store } = deps;
 	const { sessionId } = snapshot;
+	if (!historyReadTargetCurrent(store, snapshot.target)) return;
 
 	// 若已有更新的 mutation 成功激活，此较旧 mutation 视为过时直接放弃
 	const currentActive = activeMutationSequenceBySession.get(sessionId) ?? 0;
@@ -439,29 +464,90 @@ export async function refreshHistoryAfterMutation(
 	// 激活本 mutation sequence，并写入 cache entry 供后续 runtime flush 继承
 	activeMutationSequenceBySession.set(sessionId, snapshot.expectedMutationSequence);
 	const entryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
-	if (entryAtStart?.source === "runtime") {
-		store.set(sessionMessagesCacheAtom, {
-			...store.get(sessionMessagesCacheAtom),
-			[sessionId]: {
-				...entryAtStart,
-				mutationSequence: snapshot.expectedMutationSequence,
-			},
-		});
-	}
+	if (entryAtStart?.source !== "runtime") return;
+	store.set(sessionMessagesCacheAtom, {
+		...store.get(sessionMessagesCacheAtom),
+		[sessionId]: {
+			...entryAtStart,
+			mutationSequence: snapshot.expectedMutationSequence,
+		},
+	});
 
+	const expectedRevision = projection?.historyMutationRevision;
+	let readStart = entryAtStart;
+	if (expectedRevision !== undefined && (readStart.historyMutationRevision ?? 0) < expectedRevision) {
+		const projected = await waitForHistoryMutationProjection(store, snapshot, entryAtStart.agentId, expectedRevision);
+		if (!projected) return;
+		readStart = projected;
+	}
+	const firstResult = await rereadHistoryAfterMutation(store, snapshot, readStart);
+	if (firstResult === "retry") {
+		const latest = store.get(sessionMessagesCacheAtom)[sessionId];
+		// The HTTP completion can overtake its SSE replacement. Discard the pages
+		// from the old seam and retry once at the current seam, unless superseded.
+		if (latest?.source === "runtime" && latest.agentId === entryAtStart.agentId
+			&& latest.mutationSequence === snapshot.expectedMutationSequence
+			&& activeMutationSequenceBySession.get(sessionId) === snapshot.expectedMutationSequence) {
+			await rereadHistoryAfterMutation(store, snapshot, latest);
+		}
+	}
+}
+
+/** RPC and SSE are independent. Never start a reread on the old seam while SSE catches up. */
+function waitForHistoryMutationProjection(
+	store: ReturnType<typeof useStore>,
+	{ sessionId, expectedMutationSequence, target }: HistoryMutationRefreshSnapshot,
+	agentId: string | undefined,
+	expectedRevision: number,
+): Promise<SessionMessageCacheEntry | undefined> {
+	const entryAtom = sessionMessageCacheBySessionIdAtomFamily(sessionId);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (entry?: SessionMessageCacheEntry) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			unsubscribeEntry();
+			unsubscribeRuntime?.();
+			resolve(entry);
+		};
+		const check = () => {
+			const entry = store.get(entryAtom);
+			if (!historyReadTargetCurrent(store, target) || entry?.source !== "runtime"
+				|| entry.agentId !== agentId || entry.mutationSequence !== expectedMutationSequence) {
+				finish();
+			} else if ((entry.historyMutationRevision ?? 0) >= expectedRevision) {
+				finish(entry);
+			}
+		};
+		const timer = setTimeout(() => {
+			showNotice(t("message.mutationHistoryRefreshFailed"), 5000, "warning");
+			finish();
+		}, 5_000);
+		const unsubscribeEntry = store.sub(entryAtom, check);
+		const unsubscribeRuntime = target ? store.sub(sessionRuntimeBySessionIdAtomFamily(sessionId), check) : undefined;
+		check();
+	});
+}
+
+/** Reads one continuous prefix against the window that owned the starting cursor. */
+async function rereadHistoryAfterMutation(
+	store: ReturnType<typeof useStore>,
+	snapshot: HistoryMutationRefreshSnapshot,
+	entryAtStart: SessionMessageCacheEntry,
+): Promise<"retry" | void> {
+	const { sessionId, target } = snapshot;
+	if (!historyReadTargetCurrent(store, target)) return;
 	try {
-		// 首页锚点：以当前 runtime 窗口首条有 entryId 的消息为锚（接缝），
-		// 不能看已加载的 history.messages（否则会错选成已加载历史的最老一条）。
-		const currentEntryAtStart = store.get(sessionMessagesCacheAtom)[sessionId];
-		if (!currentEntryAtStart || currentEntryAtStart.source !== "runtime") return; // 会话已卸载
-		const anchorMessage = currentEntryAtStart.messages.find(
+		// 首页锚点：以当前 runtime 窗口首条有 entryId 的消息为锚（接缝）。
+		const anchorMessage = entryAtStart.messages.find(
 			(m) => typeof m.meta?.entryId === "string",
 		);
 		const anchorEntryId = typeof anchorMessage?.meta?.entryId === "string"
 			? anchorMessage.meta.entryId
 			: undefined;
-		const anchorFilePos = !anchorEntryId && typeof currentEntryAtStart.windowStartFilePos === "number"
-			? currentEntryAtStart.windowStartFilePos
+		const anchorFilePos = !anchorEntryId && typeof entryAtStart.windowStartFilePos === "number"
+			? entryAtStart.windowStartFilePos
 			: undefined;
 		if (!anchorEntryId && anchorFilePos === undefined) throw new Error("no-history-anchor");
 
@@ -475,8 +561,8 @@ export async function refreshHistoryAfterMutation(
 		while (freshTurns < snapshot.loadedHistoryTurnCount && !exhausted) {
 			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
 			const page = await readRuntimeHistoryTurnPage(sessionId, RUNTIME_HISTORY_TURN_PAGE_SIZE, cursor);
-			if (activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
-			if (store.get(sessionMessagesCacheAtom)[sessionId]?.source !== "runtime") return; // 会话已卸载/降级
+			if (!historyReadTargetCurrent(store, target) || activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+			if (!ownsHistoryRead(entryAtStart, store.get(sessionMessagesCacheAtom)[sessionId])) return "retry";
 			freshPages.push(page);
 			for (const message of page.messages) {
 				if (message.role === "user") freshTurns += 1;
@@ -524,13 +610,9 @@ export async function refreshHistoryAfterMutation(
 	} catch {
 		// 防御：若当前 entry 已被更新的成功 mutation 接管，不得清空新 mutation 刚刷好的历史
 		const entry = store.get(sessionMessagesCacheAtom)[sessionId];
-		if (
-			entry?.source !== "runtime" ||
-			entry.mutationSequence !== snapshot.expectedMutationSequence ||
-			activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence
-		) {
-			return;
-		}
+		if (!historyReadTargetCurrent(store, target) || entry?.mutationSequence !== snapshot.expectedMutationSequence ||
+			activeMutationSequenceBySession.get(sessionId) !== snapshot.expectedMutationSequence) return;
+		if (!ownsHistoryRead(entryAtStart, entry)) return "retry";
 
 		if (entry.history) {
 			store.set(clearSessionHistoryAtom, sessionId);
@@ -584,7 +666,7 @@ export type SessionTimelineController = {
   /** 编辑/删除发起前捕获刷新快照：await 前调用，固定原 sessionId/revision/已加载深度。 */
   captureHistoryMutationRefresh: (sessionId: string | undefined) => HistoryMutationRefreshSnapshot | null;
   /** mutation 成功后的历史重读 + 原子替换（编辑/删除共用同一路径）。null 快照直接跳过。 */
-  refreshHistoryAfterMutation: (snapshot: HistoryMutationRefreshSnapshot | null) => Promise<void>;
+  refreshHistoryAfterMutation: (snapshot: HistoryMutationRefreshSnapshot | null, projection?: SessionHistoryMutationProjection | void) => Promise<void>;
 };
 
 export function useSessionTimelineController(options: {
@@ -641,10 +723,8 @@ export function useSessionTimelineController(options: {
   // 滚动节流直接写 per-session atom（内容不变跳过 → 引用稳定 → 零订阅重渲染）；
   // 恢复 = 切换时从 atom 读一次快照执行，不订阅（后续滚动写 atom 不打扰已恢复的视口）。
   const saveScrollAnchor = useSetAtom(saveSessionScrollAnchorAtom);
-  // 最后已知锚点缓存：供 cleanup 兜底落盘（250ms 节流窗口内切走不丢）。
-  // 不能用 cleanup 读 DOM——会话切换复用同一组件实例（无 key），cleanup 执行时
-  // timeline 的 children 可能已替换为新会话消息，读 DOM 会串数据。
-  const currentAnchorRef = useRef<SessionScrollAnchor | null>(null);
+  // undefined means no valid sample yet. Only null clears a stored anchor.
+  const currentAnchorRef = useRef<SessionScrollAnchor | null | undefined>(undefined);
   const scrollAnchorFrameRef = useRef<number | undefined>(undefined);
   const scrollSaveTimerRef = useRef<number | undefined>(undefined);
   // 锚点行被渲染窗口裁掉时的扩窗找回：待恢复锚点 + 已扩窗次数（上限在纯策略里）。
@@ -663,17 +743,20 @@ export function useSessionTimelineController(options: {
    * unresolved = 命中测试不可用/屏顶被骨架或浮层占住，调用方保留上一次锚点。
    * 这里不得退回全表扫描，否则拖动时每帧仍是一次 O(挂载行数) 的强制布局。
    */
-  const readCurrentAnchor = useCallback((): AnchorReading => {
-    // 优先从虚拟 Adapter 获取锚点快照（Adapter 原生返回三态 AnchorReading）
-    if (viewportAdapterRef.current?.captureReadingAnchor) {
-      const virtReading = viewportAdapterRef.current.captureReadingAnchor();
+  const readCurrentAnchor = useCallback((departing = false): AnchorReading => {
+    // Until a pending restore finishes, the initial viewport is not reader intent.
+    if (pendingAnchorRestoreRef.current?.ownerKey === ownerKeyRef.current) return { status: "unresolved" };
+    const followIntent = scrollerScrollApiRef.current?.isFollowing?.();
+    const adapter = viewportAdapterRef.current;
+    if (adapter) {
+      const virtReading = adapter.captureReadingAnchor({ departing, following: followIntent });
       anchorReadingRef.current = virtReading;
       return virtReading;
     }
 
     const timeline = timelineRef.current;
     if (!timeline) return { status: "unresolved" };
-    if (isTimelineAtBottom(timeline.scrollTop, timeline.scrollHeight, timeline.clientHeight)) {
+    if (followIntent ?? isTimelineAtBottom(timeline.scrollTop, timeline.scrollHeight, timeline.clientHeight)) {
       const atBottom: AnchorReading = { status: "at-bottom" };
       anchorReadingRef.current = atBottom;
       return atBottom;
@@ -700,7 +783,8 @@ export function useSessionTimelineController(options: {
   /** 把当前锚点写入 atom（节流）。内容未变化由 atom 侧跳过，引用保持稳定。 */
   const persistCurrentAnchor = useCallback((sessionId: string) => {
     scrollSaveTimerRef.current = undefined;
-    saveScrollAnchor({ sessionId, anchor: currentAnchorRef.current });
+    const anchor = currentAnchorRef.current;
+    if (anchor !== undefined) saveScrollAnchor({ sessionId, anchor });
   }, [saveScrollAnchor]);
 
   /** 透传给 MessageScroller viewport 的滚动回调（SessionMessageTimeline 接线）。
@@ -725,7 +809,7 @@ export function useSessionTimelineController(options: {
       }
       // 节流写 atom：只排一个 timer，期间连续滚动不重复写；
       // 内容未变时 atom 侧跳过（引用稳定，订阅者零重渲染）。
-      if (scrollSaveTimerRef.current != null) return;
+      if (reading.status === "unresolved" || scrollSaveTimerRef.current != null) return;
       scrollSaveTimerRef.current = window.setTimeout(() => {
         persistCurrentAnchor(sessionId);
       }, 250);
@@ -928,7 +1012,9 @@ export function useSessionTimelineController(options: {
       autoScrollRef.current = false;
       setAutoScroll(false);
       setShowScrollToBottom(true);
-      viewportAdapterRef.current.restoreMessage(anchor.messageId, anchor.offsetTop);
+      viewportAdapterRef.current.restoreMessage(anchor.messageId, anchor.offsetTop, {
+        keepReading: true, offsetBottom: anchor.offsetBottom,
+      });
       currentAnchorRef.current = anchor;
       anchorReadingRef.current = { status: "resolved", anchor };
       pendingAnchorRestoreRef.current = undefined;
@@ -957,9 +1043,9 @@ export function useSessionTimelineController(options: {
     setShowScrollToBottom(true);
     // 位置没变就不立抑制标记：没有 scroll 事件时标记会一直为 true，
     // 下一次用户滚到顶会被自动翻页监听吞掉。变了则事件先消费标记，rAF 只清残留。
-    const writeProgrammaticScrollTop = (nextTop: number, write: () => void) => {
+    const writeProgrammaticScrollTop = (write: () => void) => {
       const before = timeline.scrollTop;
-      if (before === nextTop) return;
+      // Even without movement, the engine must cancel following and its animation.
       if (programmaticScrollClearRef.current != null) {
         cancelAnimationFrame(programmaticScrollClearRef.current);
         programmaticScrollClearRef.current = undefined;
@@ -984,10 +1070,11 @@ export function useSessionTimelineController(options: {
       const api = scrollerScrollApiRef.current;
       // 夹零只作用于最终落点：offsetTop 允许为负（锚点行顶在视口上方），截断它会把
       // 行顶对齐视口顶、整体偏下（高大行偏差明显）。
-      const targetTop = Math.max(0, elTop - anchor.offsetTop);
-      writeProgrammaticScrollTop(targetTop, () => {
+      const topOffset = anchor.offsetBottom === undefined ? anchor.offsetTop : anchor.offsetBottom - rowBox.height;
+      const targetTop = Math.max(0, elTop - topOffset);
+      writeProgrammaticScrollTop(() => {
         if (api?.restoreAt) {
-          api.restoreAt(targetTop);
+          api.restoreAt(targetTop, { forceReading: true });
         } else {
           // 引擎未挂上（会话切换首帧等）时回退原生定位
           timeline.scrollTop = targetTop;
@@ -1010,11 +1097,11 @@ export function useSessionTimelineController(options: {
     }
     // 已不在数据里或扩窗到上限：贴窗口顶部。窗口是尾部 N 轮，锚点不在窗口里只能
     // 意味着它比窗口最旧一行更旧：贴顶差几轮、贴底差几十轮，且顶部「显示更早」仍可上溯。
-    // 失效锚点不能写回 currentAnchorRef：进入时已清成 null，写回会在切走时再次落盘，
-    // 下次进入重复扩窗再贴顶。本次仍不跟底（上面已关掉 autoScroll）。
+    // Clear the invalid anchor. The next sample may record the new passage at
+    // the window top, but must not restore the removed row on another visit.
     pendingAnchorRestoreRef.current = undefined;
     currentAnchorRef.current = null;
-    writeProgrammaticScrollTop(0, () => {
+    writeProgrammaticScrollTop(() => {
       timeline.scrollTop = 0;
     });
     return true;
@@ -1041,11 +1128,19 @@ export function useSessionTimelineController(options: {
   /** 当前视口锚点快照（未成功读取过时为 unresolved，调用方不得凭它猜位置）。 */
   const peekViewportAnchor = useCallback((): AnchorReading => anchorReadingRef.current, []);
 
+  const cancelPendingNavigation = useCallback(() => {
+    // An explicit destination supersedes older navigation waiting for history.
+    pendingAnchorRestoreRef.current = undefined;
+    pendingJumpRef.current = undefined;
+  }, []);
+
   const scrollToBottom = useCallback(() => {
     const requestOwnerKey = ownerKey;
     if (ownerKeyRef.current !== requestOwnerKey) return;
+    cancelPendingNavigation();
     programmaticScrollRef.current = true;
     autoScrollRef.current = true;
+    currentAnchorRef.current = null;
     setAutoScroll(true);
     setShowScrollToBottom(false);
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -1063,10 +1158,11 @@ export function useSessionTimelineController(options: {
       top: timeline.scrollHeight,
       behavior: reduceMotion ? "instant" : "smooth",
     });
-  }, [ownerKey]);
+  }, [cancelPendingNavigation, ownerKey]);
 
   const setAutoScrollFromScroller = useCallback((following: boolean) => {
     autoScrollRef.current = following;
+    if (following && !pendingAnchorRestoreRef.current) currentAnchorRef.current = null;
     setAutoScroll(following);
     setShowScrollToBottom(!following);
   }, []);
@@ -1165,10 +1261,16 @@ export function useSessionTimelineController(options: {
 					anchorFilePos,
 				});
 			})
+			.catch(() => {
+				if (latestLoadBySession.get(sessionId) !== sequence || ownerKeyRef.current !== ownerKey) return;
+				// This request made no insertion, so its scroll anchor cannot be reused.
+				if (loadMoreAnchorRef.current?.ownerKey === ownerKey) loadMoreAnchorRef.current = undefined;
+				showNotice(t("timeline.historyLoadFailed"), 5000, "warning");
+			})
 			.finally(() => {
 				if (latestLoadBySession.get(sessionId) === sequence) setIsLoadingMessagePage(false);
 			});
-	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, prependHistoryPage, runtimeHistory]);
+	}, [cachedEntry?.revision, cachedEntry?.windowStartFilePos, captureLoadMoreAnchor, isLoadingMessagePage, messages, options.sessionId, ownerKey, prependHistoryPage, runtimeHistory]);
 
 	const loadMoreMessages = useCallback(() => {
 		if (diskPage) {
@@ -1301,8 +1403,8 @@ export function useSessionTimelineController(options: {
   );
 
   const refreshHistoryAfterMutationCallback = useCallback(
-    (snapshot: HistoryMutationRefreshSnapshot | null) =>
-      refreshHistoryAfterMutation({ store }, snapshot),
+    (snapshot: HistoryMutationRefreshSnapshot | null, projection?: SessionHistoryMutationProjection | void) =>
+      refreshHistoryAfterMutation({ store }, snapshot, projection),
     [store],
   );
 
@@ -1313,6 +1415,7 @@ export function useSessionTimelineController(options: {
 
     // 优先通过虚拟 Adapter 跳转
     if (viewportAdapterRef.current?.containsMessage(messageId)) {
+      cancelPendingNavigation();
       autoScrollRef.current = false;
       setAutoScroll(false);
       setShowScrollToBottom(true);
@@ -1330,17 +1433,19 @@ export function useSessionTimelineController(options: {
       `[data-message-id="${CSS.escape(messageId)}"]`,
     ) as HTMLElement | null;
     if (existing) {
+      cancelPendingNavigation();
       existing.scrollIntoView({ behavior: "smooth", block: "start" });
       highlightMessage(existing, requestOwnerKey);
       return;
     }
     const index = combinedMessages.findIndex((message) => message.id === messageId);
     if (index < 0) return;
+    cancelPendingNavigation();
     autoScrollRef.current = false;
     setAutoScroll(false);
     setShowScrollToBottom(true);
     pendingJumpRef.current = { ownerKey: requestOwnerKey, value: messageId };
-  }, [highlightMessage, combinedMessages, ownerKey]);
+  }, [cancelPendingNavigation, highlightMessage, combinedMessages, ownerKey]);
 
   useEffect(() => {
     loadMoreAnchorRef.current = undefined;
@@ -1358,9 +1463,9 @@ export function useSessionTimelineController(options: {
     return clearHighlightTimers;
   }, [clearHighlightTimers, ownerKey]);
 
-  // 切走落盘：cleanup 把滚动时已算好的 ref 锚点写入 atom，不读 DOM
-  // （会话切换复用同一组件实例，cleanup 时 timeline children 可能已是新会话）。
-  // 在底部跟流时 ref 为 null → 清除锚点，切回继续跟底。
+  // The pane can leave before its next animation-frame sample. At unmount,
+  // read the departing viewport while its owner is still current. A reused
+  // controller can already be rendering another session: never read that DOM.
   useLayoutEffect(() => {
     const sessionId = ownerKey;
     return () => {
@@ -1373,12 +1478,17 @@ export function useSessionTimelineController(options: {
         scrollSaveTimerRef.current = undefined;
       }
       if (sessionId && sessionId !== LEGACY_OWNER_KEY) {
-        saveScrollAnchor({ sessionId, anchor: currentAnchorRef.current });
+        const adapter = viewportAdapterRef.current;
+        const canRead = ownerKeyRef.current === sessionId && (!adapter || adapter.ownerKey === sessionId);
+        const reading: AnchorReading = canRead ? readCurrentAnchor(true) : { status: "unresolved" };
+        const anchor = reading.status === "resolved" ? reading.anchor
+          : reading.status === "at-bottom" ? null : currentAnchorRef.current;
+        if (anchor !== undefined) saveScrollAnchor({ sessionId, anchor });
       }
-      currentAnchorRef.current = null;
+      currentAnchorRef.current = undefined;
       anchorReadingRef.current = { status: "unresolved" };
     };
-  }, [ownerKey, saveScrollAnchor]);
+  }, [ownerKey, readCurrentAnchor, saveScrollAnchor]);
 
   useEffect(() => {
     if (!controllerEnabled) return;

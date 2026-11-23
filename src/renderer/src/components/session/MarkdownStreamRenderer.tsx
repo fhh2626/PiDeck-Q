@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useContext, useMemo } from "react";
 import {
 	Streamdown,
 	defaultRehypePlugins,
@@ -12,6 +12,8 @@ import { createMathPlugin } from "@streamdown/math";
 import { MarkdownLink, remarkLinkifyPaths } from "./MarkdownLink";
 import { markdownUrlTransform } from "./MarkdownLinkCore";
 import type { MarkdownStreamProps } from "./MarkdownStreamProps";
+import { MarkdownFileBasePathContext } from "./MarkdownFileBasePath";
+import { MarkdownImage } from "./MarkdownImage";
 
 /**
  * 数学公式插件（KaTeX）。@streamdown/math 默认 singleDollarTextMath: false，
@@ -31,6 +33,8 @@ export const MarkdownStreamRenderer = memo(function MarkdownStreamRenderer(
 	const isDark = typeof document !== "undefined" &&
 		document.documentElement.dataset.theme === "dark";
 	const effectiveLight = Boolean(props.light);
+	const inheritedFileBasePath = useContext(MarkdownFileBasePathContext);
+	const fileBasePath = props.fileBasePath ?? inheritedFileBasePath;
 	// 显式传入插件时沿用旧契约（替换默认集合），避免静态预览行为随懒加载改动。
 	const resolvedRemarkPlugins = props.remarkPlugins ?? [
 		defaultRemarkPlugins.gfm,
@@ -41,17 +45,21 @@ export const MarkdownStreamRenderer = memo(function MarkdownStreamRenderer(
 
 	// useMemo 依赖回调 props：回调引用变化时 components 重建，避免链接处理闭包捕获旧值。
 	const components: Components = useMemo(
-		() =>
-			props.components ?? {
+		() => ({
 				a: (linkProps) => (
 					<MarkdownLink
 						{...(linkProps as unknown as React.AnchorHTMLAttributes<HTMLAnchorElement>)}
 						onOpenExternal={props.onOpenExternal}
 						onOpenFile={props.onOpenFile}
+						basePath={fileBasePath}
 					/>
 				),
-			},
-		[props.components, props.onOpenExternal, props.onOpenFile],
+				img: (imageProps) => (
+					<MarkdownImage {...imageProps} basePath={fileBasePath} onOpenFile={props.onOpenFile} />
+				),
+				...props.components,
+			}),
+		[props.components, props.onOpenExternal, props.onOpenFile, fileBasePath],
 	);
 
 	return (

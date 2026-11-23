@@ -19,6 +19,7 @@ import { formatNestedRunStatusLines } from "../shared/nested-render.ts";
 import { contextModeLabel, summarizeContextModes } from "../shared/context-mode.ts";
 import { formatAsyncRunOutputPath, formatAsyncRunProgressLabel, listAsyncRuns, type AsyncRunSummary } from "./async-status.ts";
 import { isTrustedRecordedSessionFile } from "../../shared/session-file-trust.ts";
+import { currentSessionForegroundControls } from "../foreground/foreground-control.ts";
 
 const DEFAULT_TRANSCRIPT_LINES = 80;
 const MAX_TRANSCRIPT_LINES = 500;
@@ -398,7 +399,7 @@ export function inspectSubagentFleet(_params: FleetViewParams, deps: FleetViewDe
 		return { content: [{ type: "text", text: message }], isError: true, details: { mode: "management", results: [] } };
 	}
 
-	const foregroundControls = deps.state ? [...deps.state.foregroundControls.values()] : [];
+	const foregroundControls = deps.state ? currentSessionForegroundControls(deps.state) : [];
 	const activeForegroundIds = new Set(foregroundControls.map((control) => control.runId));
 	const detachedForegroundRuns = deps.state?.foregroundRuns
 		? [...deps.state.foregroundRuns.values()].filter((run) => run.sessionId === deps.state?.currentSessionId && !activeForegroundIds.has(run.runId) && run.children.some((child) => child.status === "detached"))

@@ -13,7 +13,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const PI_DECK_PLAN_MODE_MARKER = "__PI_DECK_PLAN_MODE__";
+import { PI_DECK_PLAN_MODE_MARKER, pauseTodoTask, publishTodoPlanState, releaseTodoPlanPause } from "./pi-deck-todo/coordination.ts";
 
 // Plan 模式禁止直接写工具和 subagent。
 // subagent 可能拥有自己的 edit/write/bash，因此不能在只读规划阶段继续暴露。
@@ -334,9 +334,17 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 		todoItems = [];
 		if (enabled) {
 			enablePlanModeTools();
+			// Plan mode owns the turn: suspend any running or paused goal so its automatic
+			// continuation cannot resume inside a read-only plan turn.
+			pauseTodoTask(pi, ctx);
+			publishTodoPlanState(pi, ctx, true);
 			ctx.ui.notify("PiDeck 计划模式已启用。启用期间只能执行只读命令，不能修改文件。", "info");
 		} else {
 			restoreNormalModeTools();
+			// Leaving plan mode releases only the plan-owned pause; the goal stays paused
+			// until the user resumes it, so no turn starts from this notification.
+			releaseTodoPlanPause(pi, ctx);
+			publishTodoPlanState(pi, ctx, false);
 			ctx.ui.notify("PiDeck 计划模式已禁用。已恢复写权限。", "info");
 		}
 		updateWidget(ctx);
@@ -353,7 +361,8 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("todos", {
+	// 计划进度使用独立命令名，避免与 Agent 的 todo 工具混淆。
+	pi.registerCommand("plan-progress", {
 		description: "查看当前计划进度",
 		handler: async (_args, ctx) => {
 			if (todoItems.length === 0) {
@@ -372,7 +381,8 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 			// 用户发了一条普通消息（无 plan 标记）：若仍处于 plan 模式且非执行中，
 			// 视为退出 plan——composer 切回 normal 发消息即退出只读模式。
 			// pi-desktop RPC 模式下 /plan 命令不路由，这里作为会话内退出的兜底。
-			if (planModeEnabled && !executionMode) {
+			// 扩展为当前任务注入的消息（如 /todo）不代表用户退出只读模式。
+			if (planModeEnabled && !executionMode && event.source !== "extension") {
 				setPlanMode(ctx, false);
 			}
 			return;
@@ -383,6 +393,9 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 		executionMode = false;
 		todoItems = [];
 		enablePlanModeTools();
+		// The composer path enters plan mode without the /plan command, so pause here too.
+		pauseTodoTask(pi, ctx);
+		publishTodoPlanState(pi, ctx, true);
 		updateWidget(ctx);
 		persistState();
 		return {
@@ -519,6 +532,9 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 				planModeEnabled = false;
 				executionMode = true;
 				restoreNormalModeTools();
+				// Approval authorizes execution of the suspended goal before queuing the plan work.
+				releaseTodoPlanPause(pi, ctx, true);
+				publishTodoPlanState(pi, ctx, false);
 				updateWidget(ctx);
 				persistState();
 				pi.sendMessage(
@@ -547,10 +563,12 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 				}
 				// 取消或空内容 → 不设 actionTaken，while 循环重新弹出三选一
 			} else if (choice?.startsWith("先不执行") || choice?.startsWith("继续规划")) {
-				// 结束本轮、保持 plan 只读；不 triggerTurn，用户再发消息才会继续
+				// 结束本轮、保持 plan 只读；用户暂停优先于其他扩展的自动续跑。
+				pauseTodoTask(pi, ctx);
 				actionTaken = true;
 			} else {
-				// 关闭选单（X / Esc）→ 退出 plan 模式；不会默认选「开始执行」
+				// 先暂停 goal，再恢复工具，避免关闭确认框后自动开始有写权限的下一轮。
+				pauseTodoTask(pi, ctx);
 				setPlanMode(ctx, false);
 				actionTaken = true;
 			}
@@ -570,6 +588,8 @@ export default function piDeckPlanModeExtension(pi: ExtensionAPI): void {
 			toolsBeforePlanMode = planModeEntry.data.toolsBeforePlanMode ?? toolsBeforePlanMode;
 		}
 		planModeEnabled = false;
+		// Plan mode is never restored across sessions; publish that so no goal stays suspended.
+		publishTodoPlanState(pi, ctx, false);
 		updateWidget(ctx);
 	});
 }

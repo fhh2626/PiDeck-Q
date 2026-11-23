@@ -28,9 +28,6 @@
   font-size: var(--font-size-micro);
   color: var(--color-text-tertiary);
 }
-.usage-stats-unknown {
-  color: var(--color-warning);
-}
 .usage-stats-path {
   font-family: var(--font-family-business);
   font-size: var(--font-size-micro);

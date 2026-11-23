@@ -1,6 +1,6 @@
 # 功能介绍
 
-PiDeck-Q 的核心目标是把 Pi Agent、Pi_Agent_Rust 与 Pi-Bolt 会话收拢到一个稳定的原生 Qt 桌面工作台里；Codex/Claude 仅通过历史导入提供浏览与恢复入口。
+PiDeck-Q 的核心目标是把 Pi Agent 与 Pi-Bolt 会话收拢到一个稳定的原生 Qt 桌面工作台里；Codex/Claude 仅通过历史导入提供浏览与恢复入口。
 
 ## 多项目工作区
 
@@ -65,6 +65,10 @@ Windows 下编辑器检测会依次尝试 PATH、常见安装目录、Windows �
 ## Web 与平台边界
 
 可选开启局域网 Web 前端，与桌面共用会话/runtime 服务。它不是内置浏览器面板；外链由系统浏览器打开。当前原生 staging 以 Windows 为主，Windows 需要 WebView2 Runtime，其它平台安装产物以实际发布与验证为准。
+
+## 子代理
+
+右侧工具条的「子代理」入口用于配置 pideck-q-subagents 扩展：可以让子代理使用与主代理不同的模型和思考强度，也可以开启「优先把复杂任务交给子代理」，让主代理专注规划、整合与验收。配置写入 pi 的 `settings.json`（`subagents` 块），支持全局与当前项目两级；扩展未启用时该入口置灰并提示先安装启用。
 
 ## 终端 Dock
 

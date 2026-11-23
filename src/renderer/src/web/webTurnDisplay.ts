@@ -12,7 +12,7 @@ import type { UIMessage } from "ai";
 import type { ProcessSummary } from "../components/session/timeline/segmentSummary";
 import { readWebMessageMetadata } from "./webMessageMetadata";
 import { isWebReasoningPartRunning, mergeAdjacentWebMessageParts } from "./webMessageParts";
-import { groupWebAssistantParts, isWebAskQuestionToolPart, type WebToolPart } from "./webToolGroups";
+import { groupWebAssistantParts, isWebLiveAskQuestionToolPart, type WebToolPart } from "./webToolGroups";
 
 export type WebTurnStep =
 	| { kind: "reasoning"; key: string; text: string; running: boolean }
@@ -58,7 +58,7 @@ export function buildWebTurnDisplay(
 				const key = item.part.toolCallId || `${message.id}:${item.originalIndex}`;
 				flat.push({
 					alwaysVisible,
-					step: isWebAskQuestionToolPart(item.part)
+					step: isWebLiveAskQuestionToolPart(item.part)
 						? { kind: "ask-tool", key, part: item.part }
 						: { kind: "tools", key, parts: [item.part] },
 				});

@@ -19,15 +19,17 @@ test("FileDiffViewer: view mode is editable, diff mode is read-only render", () 
 });
 
 test("FileDiffViewer: debounced auto-save with Ctrl+S immediate save", () => {
-  const viewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8");
+  const viewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8")
+    + readFileSync("src/renderer/src/hooks/useFileEditorBuffer.ts", "utf8")
+    + readFileSync("src/renderer/src/atoms/file-editor-saves.ts", "utf8");
   // 自动保存：编辑停止 500ms 后落盘（saveContent 存在时）；内容未变跳过
   assert.match(viewer, /scheduleAutoSave/);
   assert.match(viewer, /setTimeout\(\(\) => \{\n\s*saveTimerRef\.current = null;/);
   assert.match(viewer, /500\);/);
-  assert.match(viewer, /lastSavedRef\.current/);
-  assert.match(viewer, /if \(latest === lastSavedRef\.current\) return/);
+  assert.match(viewer, /const savedDocument = lastSavedRef\.current/);
+  assert.match(viewer, /if \(input\.content !== previousContent\) await input\.saveContent/);
   // 加载完成即建立「已落盘」基准，避免打开后无改动就写盘
-  assert.match(viewer, /lastSavedRef\.current = result/);
+  assert.match(viewer, /lastSavedRef\.current = \{\s*content: result/);
   // Ctrl+S 立即保存（取消挂起 timer），卸载清理 timer（生命周期配对）
   assert.match(viewer, /void saveNow\(\);/);
   assert.match(viewer, /clearTimeout\(saveTimerRef\.current\)/);
@@ -57,32 +59,6 @@ test("FileDiffViewer: markdown preview reuses .markdown-body + markdown-preview-
   assert.doesNotMatch(surfaces, /\.file-diff-preview/);
   // HTML 预览 iframe 改用 Tailwind 类，不再依赖 legacy 类
   assert.doesNotMatch(viewer, /className="file-diff-preview"/);
-});
-
-test("FileDiffViewer: image/PDF get inline preview via base64 Blob URL", () => {
-  const viewer = readFileSync("src/renderer/src/components/app/FileDiffViewer.tsx", "utf8");
-  const textFile = readFileSync("src/renderer/src/utils/isTextFile.ts", "utf8");
-  const ipc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
-  // 判定函数：图片/PDF 从二进制集合中单独识别
-  assert.match(textFile, /export function isImageFile/);
-  assert.match(textFile, /export function isPdfFile/);
-  assert.match(textFile, /IMAGE_EXTENSIONS = new Set/);
-  // view 模式图片/PDF 走二进制预览分支；diff 模式维持不支持提示
-  assert.match(viewer, /!isDiffMode && \(isImageFile\(props\.filePath\) \|\| isPdfFile\(props\.filePath\)\)/);
-  // 不用 file:// 直链：dev 模式 http 页面加载 file:// 子资源会被 Chromium webSecurity 拦截
-  // （"Not allowed to load local resource"）；改为主进程读 base64 → Blob URL
-  assert.doesNotMatch(viewer, /file:\/\/\//);
-  assert.match(viewer, /readBase64/);
-  assert.match(viewer, /URL\.createObjectURL/);
-  assert.match(viewer, /URL\.revokeObjectURL/);
-  assert.match(viewer, /mimeFromImageExt/);
-  assert.match(viewer, /className="file-diff-media-preview"/);
-  assert.match(viewer, /className="file-diff-pdf-preview"/);
-  assert.match(viewer, /editor\.pdfPreview/);
-  // 主进程 handler：读文件转 base64，ENOENT 返回空串（渲染层走「不支持」提示）
-  assert.match(ipc, /filesReadBase64/);
-  assert.match(ipc, /buffer\.toString\("base64"\)/);
-  assert.match(ipc, /hasNodeErrorCode\(error, "ENOENT"\)/);
 });
 
 test("FileDiffViewer: SVG preview via content data URL, media fills the pane", () => {

@@ -2,13 +2,13 @@
  * Behavioral harness for the subagent foreground-resume tests.
  *
  * The pi-subagents extension sources are loaded as real TypeScript modules via
- * `subagentGraphLoader.mjs` (only the runSync / async-execution boundaries and
+ * `subagentGraphLoader.mjs` (only the runSync boundaries and
  * the missing bare packages are replaced by doubles). This harness owns:
  *   - environment isolation (temp roots must be set before the graph computes
  *     its directory constants),
  *   - fixture construction (fake deps/ctx, seeded remembered foreground runs
  *     and on-disk async run fixtures),
- *   - the runSync / async-execution call recorders the tests assert against.
+ *   - the runSync call recorders the tests assert against.
  *
  * Everything under test (resume dispatch, session lease, foreground control,
  * remembered runs, recovery descriptors) is the production implementation.
@@ -40,13 +40,11 @@ export async function loadSubagentResumeGraph() {
 	if (loadedGraph) return loadedGraph;
 	const { installSubagentGraphLoader } = await import("./subagentGraphLoader.mjs");
 	installSubagentGraphLoader();
-	const [executor, config, topAsync, lease, types, externalJob, fanout, missions, nested] = await Promise.all([
+	const [executor, config, lease, types, fanout, missions, nested] = await Promise.all([
 		import(`${EXT}/runs/foreground/subagent-executor.ts`),
 		import(`${EXT}/extension/config.ts`),
-		import(`${EXT}/runs/background/top-level-async.ts`),
 		import(`${EXT}/runs/shared/session-lease.ts`),
 		import(`${EXT}/shared/types.ts`),
-		import(`${EXT}/api/external-job-provider.ts`),
 		import(`${EXT}/runs/shared/run-fanout-budget.ts`),
 		import(`${EXT}/missions/lifecycle.ts`),
 		import(`${EXT}/runs/shared/nested-events.ts`),
@@ -56,13 +54,11 @@ export async function loadSubagentResumeGraph() {
 		createSubagentExecutor: executor.createSubagentExecutor,
 		prepareWorkflowLaunchParams: executor.prepareWorkflowLaunchParams,
 		resolveAsyncByDefault: config.resolveAsyncByDefault,
-		applyForceTopLevelAsyncOverride: topAsync.applyForceTopLevelAsyncOverride,
 		inspectSessionLease: lease.inspectSessionLease,
 		DIRS: types.DIRS,
 		TEMP_ROOT_DIR: types.TEMP_ROOT_DIR,
 		createNestedRoute: nested.createNestedRoute,
 		SUBAGENT_CONTROL_EVENT: types.SUBAGENT_CONTROL_EVENT,
-		registerExternalJobProvider: externalJob.registerExternalJobProvider,
 		createRunFanoutBudget: fanout.createRunFanoutBudget,
 		// Mission binding reads are production code: tests use them to prove the
 		// prelaunch binding is observable at the real async run id.
@@ -73,54 +69,24 @@ export async function loadSubagentResumeGraph() {
 	return loadedGraph;
 }
 
-// ── runSync / async-execution call recorders ─────────────────────────────────
+// ── runSync call recorders ─────────────────────────────────
 export const runSyncCalls = [];
-export const asyncCalls = [];
 let runSyncBehavior;
-let asyncSingleBehavior;
-let asyncChainBehavior;
 
 /** Install the next runSync behavior (the double records every call). */
 export function setRunSyncBehavior(behavior) {
 	runSyncBehavior = behavior;
 }
 
-export function setAsyncBehaviors({ single, chain } = {}) {
-	asyncSingleBehavior = single;
-	asyncChainBehavior = chain;
-}
-
 export function resetDoubles() {
 	runSyncCalls.length = 0;
-	asyncCalls.length = 0;
 	runSyncBehavior = undefined;
-	asyncSingleBehavior = undefined;
-	asyncChainBehavior = undefined;
 }
 
 globalThis.__subagentTestRunSync = (cwd, agents, agentName, task, options) => {
 	runSyncCalls.push({ cwd, agents, agentName, task, options });
 	if (!runSyncBehavior) throw new Error("runSync test double called without an installed setRunSyncBehavior handler.");
 	return runSyncBehavior({ cwd, agents, agentName, task, options });
-};
-
-globalThis.__subagentTestAsync = {
-	executeAsyncSingle(runId, params) {
-		asyncCalls.push({ kind: "single", runId, params });
-		// The real runner owns the capacity slot; release it like a completed launch
-		// so later tests never inherit leaked slots.
-		params?.activeAsyncCapacity?.rollback?.();
-		if (!asyncSingleBehavior) throw new Error("executeAsyncSingle test double called without an installed setAsyncBehaviors handler.");
-		return asyncSingleBehavior(runId, params);
-	},
-	executeAsyncChain(runId, params) {
-		asyncCalls.push({ kind: "chain", runId, params });
-		if (!asyncChainBehavior) throw new Error("executeAsyncChain test double called without an installed setAsyncBehaviors handler.");
-		return asyncChainBehavior(runId, params);
-	},
-	buildAsyncRunnerSteps() {
-		return [];
-	},
 };
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -165,7 +131,6 @@ export function createFixture(graph, label = "fx") {
 		},
 		state,
 		config,
-		asyncByDefault: false,
 		tempArtifactsDir: path.join(dir, "temp-artifacts"),
 		getSubagentSessionRoot: () => path.join(dir, "sessions"),
 		expandTilde: (value) => value,
@@ -265,27 +230,6 @@ export function recoveryDescriptorFor(graph, fixture, runId, extras = {}) {
 		runFanoutBudget: graph.createRunFanoutBudget(runId, 4),
 		...extras,
 	};
-}
-
-/** A background-launch success result matching executeAsyncSingle's contract. */
-export function asyncStartedResult(runId, asyncDirOverride) {
-	const asyncDir = asyncDirOverride ?? path.join(HARNESS_ROOT, `async-dir-${runId}`);
-	return { content: [{ type: "text", text: `Async run '${runId}' started.` }], isError: false, details: { mode: "single", results: [], asyncId: runId, asyncDir } };
-}
-
-/**
- * Seed the minimal on-disk scene a workflow-owned async child leaves behind so
- * `waitForImportedAsyncRoot` can resolve it: the awaited root result file in the
- * real async run directory returned to the workflow. The file name mirrors the
- * production `workflowAwaitedAsyncResultPath` contract.
- */
-export function seedAwaitedAsyncRootResult(asyncDir, output = "ASYNC ROOT COMPLETED") {
-	fs.mkdirSync(asyncDir, { recursive: true });
-	fs.writeFileSync(
-		path.join(asyncDir, "workflow-result.json"),
-		JSON.stringify({ state: "complete", success: true, summary: output }, null, 2),
-		"utf8",
-	);
 }
 
 /** A completed SingleResult shape for the runSync double. */

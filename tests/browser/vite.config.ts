@@ -4,6 +4,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
 export default defineConfig({
+	// Worker-only dynamic imports are not discovered by the HTML scan. Prebundle
+	// Shiki before tests start so its first use cannot reload the fixture mid-probe.
+	optimizeDeps: { entries: ["tests/browser/*.html"], include: ["shiki"] },
 	server: {
 		host: "127.0.0.1",
 		port: 5189,

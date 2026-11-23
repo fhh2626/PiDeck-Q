@@ -1,4 +1,6 @@
 import type { UIMessage } from "ai";
+import type { ToolOutcomeStatus } from "../../../shared/types";
+import { hasToolResultMissingMetadata } from "../../../shared/toolOutcome";
 import { getWebAskQuestionResult } from "./webApi";
 import { readWebMessageMetadata } from "./webMessageMetadata";
 
@@ -30,6 +32,56 @@ export function isWebAskQuestionToolPart(part: unknown): boolean {
 	return false;
 }
 
+/**
+ * 结果未落盘的工具 part（异常终止/离线历史）：保留调用记录，但不能当作运行中、
+ * 也不能当作已完成。
+ *
+ * 只对未结束的 state 生效：AI SDK 的 updateToolPart 只在 `toolMetadata !== undefined`
+ * 时才覆盖，所以标记可能粘在已经 output-available/output-error 的 part 上；
+ * 那时状态本身就是结论，旧标记必须被忽略，否则「已知结果」会被降级成「未知」。
+ */
+export function isWebToolResultMissing(part: unknown): boolean {
+	if (!part || typeof part !== "object") return false;
+	const state = Reflect.get(part, "state");
+	if (state !== undefined && state !== "input-available" && state !== "input-streaming") return false;
+	return hasToolResultMissingMetadata(Reflect.get(part, "toolMetadata"));
+}
+
+/**
+ * 仍在等待回答的 ask_question：只有它才算「活提问表单/问答卡边界」。
+ * 结果未记录的 ask_question 只是一条历史调用记录，不能再渲染成活提问。
+ */
+export function isWebLiveAskQuestionToolPart(part: unknown): boolean {
+	return isWebAskQuestionToolPart(part) && !isWebToolResultMissing(part);
+}
+
+export type WebToolPartStatus = ToolOutcomeStatus;
+
+/**
+ * 单个工具 part 的展示状态（纯函数，可单测）。
+ * unknown 优先于 running：结果未记录的 part 也是 input-available，但工具早已不在执行，
+ * 不能继续转圈，也不能报成功/失败。
+ */
+export function resolveWebToolPartStatus(part: WebToolPart): WebToolPartStatus {
+	if (isWebToolResultMissing(part)) return "unknown";
+	const state = part.state ?? "input-streaming";
+	if (state === "output-error" || state === "error" || Boolean(part.errorText)) return "error";
+	if (state === "input-streaming" || state === "input-available") return "running";
+	return "done";
+}
+
+/**
+ * 工具组状态聚合（纯函数，可单测）：running > error > unknown > done。
+ * 组内只要有一条调用没有结果，就不能把整组报成「完成」。
+ */
+export function resolveWebToolGroupStatus(parts: readonly WebToolPart[]): WebToolPartStatus {
+	const statuses = parts.map(resolveWebToolPartStatus);
+	if (statuses.includes("running")) return "running";
+	if (statuses.includes("error")) return "error";
+	if (statuses.includes("unknown")) return "unknown";
+	return "done";
+}
+
 export function isPureToolMessage(message: UIMessage): boolean {
 	if (message.role !== "assistant") return false;
 	if (getWebAskQuestionResult(message)) return false;
@@ -37,7 +89,7 @@ export function isPureToolMessage(message: UIMessage): boolean {
 
 	let hasRealTool = false;
 	for (const part of message.parts) {
-		if (isWebAskQuestionToolPart(part)) return false; // 未回答的提问也是边界，不能作为历史纯工具组
+		if (isWebLiveAskQuestionToolPart(part)) return false; // 未回答的提问也是边界，不能作为历史纯工具组
 		if (isWebToolPart(part)) {
 			hasRealTool = true;
 		} else if (part.type === "step-start") {
@@ -74,7 +126,7 @@ export function groupWebAssistantParts(
 	// 优先选真正的提问工具承载已完成问答卡；若无明确 ask 工具则回退到首个工具（旧数据兼容）
 	let selectedAskIndex = -1;
 	if (askResult) {
-		const trueAskIndex = displayParts.findIndex((part) => isWebAskQuestionToolPart(part));
+		const trueAskIndex = displayParts.findIndex((part) => isWebLiveAskQuestionToolPart(part));
 		if (trueAskIndex !== -1) {
 			selectedAskIndex = trueAskIndex;
 		} else {
@@ -124,8 +176,9 @@ export function groupWebAssistantParts(
 			continue;
 		}
 
-		// 任何提问工具（未回答，或多个提问工具中的其余项）：独立渲染 tool-single，并切断工具组
-		if (isWebAskQuestionToolPart(part)) {
+		// 任何活提问工具（未回答，或多个提问工具中的其余项）：独立渲染 tool-single，并切断工具组。
+		// 结果未记录的 ask_question 不是活提问，按普通工具处理（可并入工具组）。
+		if (isWebLiveAskQuestionToolPart(part)) {
 			flushTools();
 			items.push({
 				kind: "tool-single",

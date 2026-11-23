@@ -38,3 +38,10 @@ export function paginationWindow(
 	}
 	return items;
 }
+
+/** 跳页输入：仅接受范围内、且不同于当前页的整数；非法输入返回 null。 */
+export function resolvePaginationJump(raw: string, page: number, totalPages: number): number | null {
+	const target = Number(raw);
+	if (Number.isInteger(target) && target >= 1 && target <= totalPages && target !== page) return target;
+	return null;
+}

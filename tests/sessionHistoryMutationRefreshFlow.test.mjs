@@ -1,3 +1,4 @@
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -43,6 +44,7 @@ function setupTestEnvironment() {
   const sessionRecordIdentity = compileModule("src/renderer/src/utils/sessionRecordIdentity.ts");
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const atoms = compileModule("src/renderer/src/atoms/session-atoms.ts", {
+    "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
     "../utils/agentRuntimeState": runtimeState,
     "../utils/optimisticUserReconciliation": compileModule(
       "src/renderer/src/utils/optimisticUserReconciliation.ts",
@@ -550,7 +552,7 @@ test("resend refreshes history after prepare and before submitting again", async
   });
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  assert.deepEqual(events, ["prepare", "capture:session-1", "refresh", "submit:retry text"]);
+  assert.deepEqual(events, ["capture:session-1", "prepare", "refresh", "submit:retry text"]);
 });
 
 // runtime 已被替换（agentId 不再匹配）时不能静默返回：用户会以为按钮坏了。
@@ -605,11 +607,11 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
       sessions: {
         editRuntimeMessage: async (target, messageId, newText) => {
           commandEvents.push({ type: "api:edit", target, messageId, newText });
-          return { success: true };
+          return { value: { historyMutationRevision: 7 } };
         },
         deleteRuntimeMessage: async (target, messageId) => {
           commandEvents.push({ type: "api:delete", target, messageId });
-          return { success: true };
+          return { value: { historyMutationRevision: 8 } };
         },
       },
     },
@@ -667,9 +669,9 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
       commandEvents.push({ type: "capture", sessionId });
       return snap;
     },
-    refreshHistoryAfterMutation: async (snapshot) => {
+    refreshHistoryAfterMutation: async (snapshot, projection) => {
       refreshedSnapshots.push(snapshot);
-      commandEvents.push({ type: "refresh", snapshot });
+      commandEvents.push({ type: "refresh", snapshot, revision: projection?.historyMutationRevision });
     },
   });
 
@@ -679,6 +681,7 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
   assert.equal(commandEvents[1].type, "api:edit");
   assert.deepEqual(commandEvents[1].target, target);
   assert.equal(commandEvents[2].type, "refresh", "refresh must be called after api call");
+  assert.equal(commandEvents[2].revision, 7);
 
   commandEvents.length = 0;
 
@@ -690,6 +693,7 @@ test("useSessionMessageCommands: editMessage and deleteMessage both capture befo
   assert.equal(commandEvents[1].type, "api:delete");
   assert.deepEqual(commandEvents[1].target, target);
   assert.equal(commandEvents[2].type, "refresh", "delete must refresh after api call");
+  assert.equal(commandEvents[2].revision, 8);
 });
 
 test("refreshHistoryAfterMutation survives runtime flushes that arrive while awaiting API", async () => {

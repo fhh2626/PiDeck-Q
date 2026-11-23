@@ -1,67 +1,191 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { resolveBackendExecutable, startBackendSession } from "./helpers/native2BackendHarness.mjs";
 
-const { SettingsStore } = loadTsCommonJs("src/main/settings/SettingsStore.ts");
+const skip = !resolveBackendExecutable() && "PiDeckBackend executable not found";
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const quoteStyles = [
+  ["curved double quotes", (path) => `“${path}”`],
+  ["curved single quotes", (path) => `‘${path}’`],
+  ["nested ASCII and curved quotes", (path) => `"  ‘ “ '${path}' ” ’  "`],
+];
 
-/** load() 里的清理落盘是 fire-and-forget；轮询磁盘直到条件成立。 */
-async function waitForFile(file, predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (predicate(parsed)) return parsed;
-    } catch {
-      // 文件尚未写出（或正在原子替换）：继续轮询
-    }
-    await sleep(20);
+const backslash = "\\";
+const escapedUncPath = backslash.repeat(4) + ["SERVER", "Share", "Runner"].join(backslash.repeat(2));
+const pathIdentities = [
+  ["UNC versus local POSIX", "//server/share/runner", "/server/share/runner", false],
+  ["local POSIX versus UNC", "/server/share/runner", "//server/share/runner", false],
+  ["UNC separator aliases", backslash.repeat(2) + ["SERVER", "Share", "Runner"].join(backslash),
+    "//server/share/bin/../runner", true],
+  ["escaped UNC separator aliases", escapedUncPath,
+    backslash.repeat(2) + ["server", "share", "runner"].join(backslash), true],
+  ["escaped UNC versus forward-slash UNC", escapedUncPath, "//server/share/bin/../runner", true],
+  ["escaped UNC versus local POSIX", escapedUncPath, "/server/share/runner", false],
+  ["local POSIX versus escaped UNC", "/server/share/runner", escapedUncPath, false],
+  ["ambiguous slash prefix versus UNC", "///server/share/runner", "//server/share/runner", false],
+  ["a parent segment cannot cross a UNC share root", "//server/other/../share/runner", "//server/share/runner", false],
+  ["a device UNC path stays distinct from an ordinary share", "//?/UNC/server/share/runner", "//server/share/runner", false],
+  ["a device drive path stays distinct from an ordinary drive path", "//?/C:/Tools/Runner.exe", "C:/Tools/Runner.exe", false],
+  ["ordinary POSIX path aliases", "/server/share/runner", "/server//share/./bin/../runner", true],
+];
+if (process.platform === "win32") {
+  for (const [label, prefix] of [["slash then backslash", "/\\"], ["backslash then slash", "\\/"]]) {
+    pathIdentities.push(
+      [`mixed UNC prefix (${label})`, `${prefix}SERVER/Share/bin/../runner`, "//server/share/runner", true],
+      [`mixed UNC prefix (${label}) cannot cross a share root`, `${prefix}server/other/../share/runner`, "//server/share/runner", false],
+    );
   }
-  return JSON.parse(await readFile(file, "utf8"));
+} else {
+  pathIdentities.push(
+    ["three leading slashes are local on POSIX", "///server/share/runner", "/server/share/runner", true],
+    ["three leading slashes do not make a POSIX path case-insensitive", "///server/share/Runner", "/server/share/runner", false],
+    ["a leading POSIX backslash component is not a mixed UNC prefix", String.raw`/\server/share/runner`, "//server/share/runner", false],
+  );
 }
-
-function createStore(directory) {
-  return new SettingsStore({
-    desktopSettingsFile: join(directory, "settings.json"),
-    piAgentSettingsFile: join(directory, "pi-settings.json"),
-    getSystemLocale: () => "en-US",
-  });
-}
-
-test("legacy Electron sandbox setting is ignored and removed without resetting settings", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "pideck-l3-settings-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const file = join(directory, "settings.json");
-
-  // 先让新版本自己写出一份完整、已迁移的 settings.json（排除其它迁移触发落盘的干扰）
-  const seed = createStore(directory);
-  await seed.load();
-  // update 与 load() 里 fire-and-forget 的清理落盘共用同一条写队列：等到这次 update 返回，
-  // 说明此前排队的写入都已完成，之后再注入旧字段就不会被迟到的写入覆盖（不靠 sleep 猜时间）。
-  await seed.update({ theme: "dark" });
-  const settled = JSON.parse(await readFile(file, "utf8"));
-  // 模拟旧版本遗留：同时带着用户自定义项与已删除的 Electron 沙箱开关
-  await writeFile(file, JSON.stringify({ ...settled, theme: "dark", electronChromiumSandbox: true }), "utf8");
-  // 前置条件自检：旧字段确实在磁盘上，否则后面“被清掉”的断言会空过。
-  assert.equal(JSON.parse(await readFile(file, "utf8")).electronChromiumSandbox, true);
-
-  const store = createStore(directory);
-  await store.load();
-
-  // 旧字段被忽略，用户的其它设置不能因迁移而被重置
-  assert.equal("electronChromiumSandbox" in store.get(), false);
-  assert.equal(store.get().theme, "dark");
-  // 旧字段必须单独就能触发一次落盘，把磁盘残留清掉
-  const rewritten = await waitForFile(file, (value) => !("electronChromiumSandbox" in value));
-  assert.equal("electronChromiumSandbox" in rewritten, false);
-  assert.equal(rewritten.theme, "dark");
-});
 
 test("AppSettings type no longer declares the Electron sandbox option", () => {
   // “已删除功能不得再出现”的静态约束：类型声明里的字段无法靠运行时行为证明缺席。
   assert.doesNotMatch(readFileSync("src/shared/types/settings.ts", "utf8"), /electronChromiumSandbox\s*:/);
 });
+
+for (const update of [false, true]) {
+  for (const [name, retiredPath, customPiPath, sameIdentity] of pathIdentities) {
+    test(`${name} retain their filesystem identity on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const values = { piRuntimePreference: "auto", piRustPath: retiredPath, customPiPath,
+        piInstall: { command: retiredPath, version: "pi 0.2.0", runtimeKind: "rust" }, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, sameIdentity ? "" : customPiPath);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+        assert.equal(Object.hasOwn(snapshot, "piInstall"), false);
+        assert.equal(snapshot.piEnvironmentChecked, false);
+      }
+    });
+  }
+  for (const [label, customPiPath, command] of [
+    ["an escaped UNC path", escapedUncPath, "//server/share/runner"],
+    ["a device drive path", String.raw`\\?\C:\Tools\Runner.exe`, "//?/c:/tools/runner.exe"],
+    ["a device UNC path", String.raw`\\?\UNC\SERVER\Share\Runner.exe`, "//?/unc/server/share/runner.exe"],
+  ]) {
+    test(`a supported install keeps ${label} on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const cache = { command, version: "1.5.2", runtimeKind: "typescript" };
+      const values = { piRuntimePreference: "auto", piRustPath: customPiPath, customPiPath,
+        piInstall: cache, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, customPiPath);
+        assert.deepEqual(snapshot.piInstall, cache);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+        assert.equal(snapshot.piEnvironmentChecked, true);
+      }
+    });
+  }
+  test(`a device path with a retired command name is removed on ${update ? "update" : "load"}`, { skip }, async (t) => {
+    const values = { customPiPath: String.raw`\\?\C:\Tools\pi-rust.exe`, piRustPath: "" };
+    const session = await startBackendSession(t, { settings: update ? {} : values });
+    const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+    assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+    const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+    for (const snapshot of [response.payload.result, disk]) {
+      assert.equal(snapshot.customPiPath, "");
+      assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+    }
+  });
+  for (const [label, quote] of quoteStyles) {
+    test(`retired custom paths with ${label} are removed on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const command = "/custom/retired-runner";
+      const values = { piRuntimePreference: "auto", piRustPath: command, customPiPath: quote(command),
+        piInstall: { command, version: "pi 0.2.0 (unknown abc)", runtimeKind: "rust" }, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, "");
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+        assert.equal(Object.hasOwn(snapshot, "piInstall"), false);
+        assert.equal(snapshot.piEnvironmentChecked, false);
+      }
+    });
+
+    test(`supported cached identities protect paths with ${label} on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const command = "/custom/current-runner";
+      const customPiPath = quote(command);
+      const cache = { command, version: "1.5.2", runtimeKind: "typescript" };
+      const values = { piRuntimePreference: "auto", piRustPath: customPiPath, customPiPath,
+        piInstall: cache, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, customPiPath);
+        assert.deepEqual(snapshot.piInstall, cache);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+        assert.equal(snapshot.piEnvironmentChecked, true);
+      }
+    });
+  }
+  for (const legacy of [false, true]) {
+    test(`a retired command name ${legacy ? "with" : "without"} old setting evidence is migrated conservatively on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      // Old settings persisted the dedicated field even when its value was empty.
+      // Current custom wrappers can reuse the name after that one-time cleanup.
+      const values = { customPiPath: "/custom/pi-rust", ...(legacy ? { piRustPath: "" } : {}) };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, legacy ? "" : values.customPiPath);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+      }
+    });
+  }
+  for (const [runtimeKind, version, command] of [
+    ["typescript", "1.5.2", "/custom/pi-rust"],
+    ["bolt", "1.4.0 (Pi-Bolt 1.0.2)", "C:\\custom\\pi_agent_rust.exe"],
+  ]) {
+    test(`confirmed ${runtimeKind} keeps a reused retired command name on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const cache = { command, version, runtimeKind };
+      const values = { piRuntimePreference: "auto", customPiPath: command, piRustPath: command,
+        piInstall: cache, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, command);
+        assert.deepEqual(snapshot.piInstall, cache);
+        assert.equal(snapshot.piEnvironmentChecked, true);
+        assert.equal(Object.hasOwn(snapshot, "piRustPath"), false);
+      }
+    });
+  }
+
+  for (const cache of [
+    { command: "/custom/runner", version: "1.5.2", runtimeKind: "rust" },
+    { command: "/custom/runner", version: "pi 0.2.0 (unknown abc)", runtimeKind: "typescript" },
+  ]) {
+    test(`explicit retired metadata still clears a conflicting ${cache.runtimeKind} cache on ${update ? "update" : "load"}`, { skip }, async (t) => {
+      const values = { piRuntimePreference: "auto", customPiPath: cache.command,
+        piInstall: cache, piEnvironmentChecked: true };
+      const session = await startBackendSession(t, { settings: update ? {} : values });
+      const response = await session.invoke(update ? "settings:update" : "settings:get", update ? [values] : []);
+      assert.equal(response.payload.ok, true, JSON.stringify(response.payload));
+      const disk = JSON.parse(readFileSync(join(session.fixture.userData, "settings.json"), "utf8"));
+      for (const snapshot of [response.payload.result, disk]) {
+        assert.equal(snapshot.customPiPath, "");
+        assert.equal(Object.hasOwn(snapshot, "piInstall"), false);
+        assert.equal(snapshot.piEnvironmentChecked, false);
+      }
+    });
+  }
+}

@@ -12,7 +12,6 @@
 namespace {
 constexpr quint32 kMaxFrameBytes = 32U * 1024U * 1024U;
 constexpr qint64 kMaxPendingWriteBytes = 8LL * 1024LL * 1024LL;
-constexpr int kHelloTimeoutMs = 5'000;
 constexpr int kMaxUnauthenticatedConnections = 16;
 
 QString randomToken()
@@ -44,11 +43,11 @@ bool constantTimeEquals(const QString &left, const QString &right)
 }
 }
 
-HostRpcServer::HostRpcServer(QObject *parent)
+HostRpcServer::HostRpcServer(QObject *parent, int helloTimeoutMs)
     : QTcpServer(parent),
       m_token(randomToken())
 {
-    connect(this, &QTcpServer::newConnection, this, [this] {
+    connect(this, &QTcpServer::newConnection, this, [this, helloTimeoutMs] {
         while (hasPendingConnections()) {
             auto *socket = nextPendingConnection();
             if (unauthenticatedConnectionCount() >= kMaxUnauthenticatedConnections) {
@@ -57,7 +56,7 @@ HostRpcServer::HostRpcServer(QObject *parent)
                 continue;
             }
             m_connections.insert(socket, ConnectionState{});
-            QTimer::singleShot(kHelloTimeoutMs, socket, [this, socket] {
+            QTimer::singleShot(helloTimeoutMs, socket, [this, socket] {
                 const auto connection = m_connections.constFind(socket);
                 if (connection != m_connections.constEnd() && !connection->authenticated) {
                     socket->disconnectFromHost();

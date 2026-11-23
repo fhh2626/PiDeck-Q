@@ -21,9 +21,10 @@ import {
   mergeAnimations,
 } from "./mergeAnimations";
 import {
-  findNearestVerticalScrollableAncestor,
   isContentShrinkClamp,
+  isVerticalScrollbarPress,
   isTimelineUpwardKeyIntent,
+  isTimelineDownwardKeyIntent,
   isNestedScrollEvent,
 } from "./scrollIntent";
 
@@ -104,7 +105,12 @@ export type StopScroll = () => void;
  *  与原生 scrollTop 赋值的区别：定位 + 解锁锁底 + 取消在途动画一次完成，
  *  不依赖异步 scroll 事件让引擎「猜」意图——busy 场景 ResizeObserver 高频贴底
  *  会抢先于解锁事件，导致恢复位置被立刻拽回底部（双真相源竞态）。 */
-export type RestoreAt = (scrollTop: number) => void;
+export type RestoreAt = (scrollTop: number, options?: {
+  /** Layout compensation must preserve the engine's latest reader/follow intent. */
+  preserveFollowState?: boolean;
+  /** A persisted reading position stays unlocked even if layout clamps it to the bottom. */
+  forceReading?: boolean;
+}) => void;
 
 export interface StickToBottomState {
   scrollTop: number;
@@ -216,6 +222,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         if (scrollRef.current) {
           scrollRef.current.scrollTop = scrollTop;
           state.ignoreScrollToTop = scrollRef.current.scrollTop;
+          // Layout can clamp this write before its first scroll notification.
+          // Keep the range paired with the written position, not a later event.
+          state.lastMaxScrollTop = Math.max(0, scrollRef.current.scrollHeight - scrollRef.current.clientHeight);
         }
       },
       get targetScrollTop() {
@@ -394,7 +403,11 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
    * - state.scrollTop 写入会设置 ignoreScrollToTop，后续 scroll 事件被引擎忽略，
    *   不会误判为「用户滚动」重新锁底。
    */
-  const restoreAt = useCallback((scrollTop: number) => {
+  const restoreAt = useCallback<RestoreAt>((scrollTop, options) => {
+    // A newer return-to-bottom wins over a delayed reader correction. Leave its
+    // position and in-flight animation intact instead of only restoring its flag.
+    if (options?.preserveFollowState && state.isAtBottom) return;
+    const wasEscapedFromLock = state.escapedFromLock;
     cancelScrollAnimation();
     if (Number.isFinite(scrollTop)) {
       state.scrollTop = Math.max(0, scrollTop);
@@ -404,7 +417,46 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     state.lastScrollTop = state.scrollTop;
     state.resizeDifference = 0;
     state.lastMaxScrollTop = undefined;
-  }, [cancelScrollAnimation, state]);
+    /**
+     * 普通导航正好落在底部时恢复跟随。已有阅读锚点则保持解锁，
+     * 即使当前内容太短，暂时只能将位置夹到底部。
+     *
+     * 否则会同时坏两件事：
+     * 1. 下一次内容增长（发送后新气泡）时 RO 的 `if (state.isAtBottom)` 不成立，
+     *    不跟底——用户看到视口停在旧消息上，新消息在折叠下方；
+     * 2. 内容收缩时 `isContentShrinkClamp` 因 `isFollowing=false` 拒绝识别 clamp，
+     *    浏览器的底部夹取被当成用户上滚，永久逃逸。
+     *
+     * 只认贴底（≤ 2px）：25~70px 的近底带仍按阅读状态处理，
+     * 不把正在读历史的人拽回底部。
+     * 已知副作用：跳到最后一行的场景也会因此恢复跟底——那本来就是实时边缘，
+     * 用户再上滚一次就会重新进入阅读状态。
+     */
+    if (scrollRef.current) {
+      // 用 scrollHeight - clientHeight（真实最大滚动距离）而不是 state.targetScrollTop：
+      // 后者在内容容器未挂载时返回 0，会把任意位置误判成贴底。
+      // 比较对象是本次恢复请求的落点（state.scrollTop 是引擎写入值，不是回读值），
+      // 所以“请求到底部或越过底部”都算贴底——越过底部只可能是内容比预期短，
+      // 此时浏览器已经夹到底部，跟底才是正确姿势。
+      const maxScrollTop = Math.max(
+        0,
+        scrollRef.current.scrollHeight - scrollRef.current.clientHeight,
+      );
+      // Replace the old session's range immediately. Its first scroll event may
+      // arrive only after another collapse and append have already changed it.
+      state.lastMaxScrollTop = maxScrollTop;
+      if (options?.preserveFollowState) {
+        // A shorter list can clamp a reader to the physical bottom. That layout
+        // result is not a request to follow future output.
+        setEscapedFromLock(wasEscapedFromLock);
+        return;
+      }
+      if (!options?.forceReading && state.scrollTop >= maxScrollTop - 2) {
+        setEscapedFromLock(false);
+        setIsAtBottom(true);
+      }
+    }
+  }, [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, state]);
 
   const handleScroll = useCallback(
     ({ target }: Event) => {
@@ -450,43 +502,54 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         isFollowing: state.isAtBottom,
       });
 
-      setTimeout(() => {
-        if (scrollTop === ignoreScrollToTop) {
-          return;
-        }
-        if (isSelecting()) {
-          cancelScrollAnimation();
-          return;
-        }
-        const isScrollingDown = scrollTop > lastScrollTop;
-        const isScrollingUp = scrollTop < lastScrollTop;
-        if (state.animation?.ignoreEscapes) {
-          state.scrollTop = lastScrollTop;
-          return;
-        }
-        if (isScrollingUp) {
-          if (!isClampedByShrink) {
-            // 用户明确上滚超过 1px 且非高度收缩钳制：立即解除锁底进入阅读状态
-            cancelScrollAnimation();
-          }
-        }
-        if (isScrollingDown) {
-          setEscapedFromLock(false);
-        }
-        if (!state.escapedFromLock && state.isNearBottom) {
-          setIsAtBottom(true);
-        }
-      }, 1);
+      // Decide intent in this event. A deferred downward decision can run after
+      // a newer wheel-up escape and re-lock the reader. A deferred upward
+      // decision also lets ResizeObserver pull a scrollbar drag back first.
+      if (isSelecting()) {
+        cancelScrollAnimation();
+        return;
+      }
+      const isScrollingDown = scrollTop > lastScrollTop;
+      const isScrollingUp = scrollTop < lastScrollTop;
+      if (state.animation?.ignoreEscapes) {
+        state.scrollTop = lastScrollTop;
+        return;
+      }
+      if (isScrollingUp && !isClampedByShrink) {
+        cancelScrollAnimation();
+      }
+      if (isScrollingDown) {
+        setEscapedFromLock(false);
+      }
+      if (!state.escapedFromLock && state.isNearBottom) {
+        setIsAtBottom(true);
+      }
     },
     [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, isSelecting, state],
   );
 
+  /** A bottomed reader cannot generate a scroll event by moving farther down. */
+  const resumeFollowingAtBottom = useCallback(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (viewport.scrollTop >= maxScrollTop - 2) {
+      setEscapedFromLock(false);
+      setIsAtBottom(true);
+    }
+  }, [setEscapedFromLock, setIsAtBottom]);
+
   const handleWheel = useCallback(
     (event: WheelEvent) => {
       const { target, deltaY } = event;
-      // 检查是否属于内部嵌套可滚动容器（如代码块/工具卡内滚动）
-      const nested = findNearestVerticalScrollableAncestor(target, scrollRef.current);
-      if (nested && nested !== scrollRef.current) {
+      // Pinch/zoom, horizontal-wheel modifiers and prevented default actions do
+      // not express vertical timeline navigation.
+      if (!deltaY || event.defaultPrevented || event.ctrlKey || event.shiftKey || event.metaKey) return;
+      const direction = deltaY < 0 ? "up" : "down";
+      if (isNestedScrollEvent(target, scrollRef.current, direction)) return;
+      if (state.animation?.ignoreEscapes) return;
+      if (direction === "down") {
+        resumeFollowingAtBottom();
         return;
       }
 
@@ -498,14 +561,22 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       if (
         deltaY < 0 &&
         scrollRef.current &&
-        scrollRef.current.scrollHeight > scrollRef.current.clientHeight &&
-        !state.animation?.ignoreEscapes
+        scrollRef.current.scrollHeight > scrollRef.current.clientHeight
       ) {
         cancelScrollAnimation();
       }
     },
-    [cancelScrollAnimation, state],
+    [cancelScrollAnimation, resumeFollowingAtBottom, state],
   );
+
+  // A scrollbar drag has no wheel event. Record that explicit reader intent
+  // before a concurrent content shrink can otherwise resemble a layout clamp.
+  const handlePointerDown = useCallback((event: PointerEvent) => {
+    if (!event.defaultPrevented && !state.animation?.ignoreEscapes
+      && isVerticalScrollbarPress(event, scrollRef.current)) {
+      cancelScrollAnimation();
+    }
+  }, [cancelScrollAnimation, state]);
 
   const touchStartYRef = useRef<number | null>(null);
   const touchTargetRef = useRef<EventTarget | null>(null);
@@ -525,15 +596,19 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       if (touchStartYRef.current === null || event.touches.length !== 1) {
         return;
       }
-      // 检查触摸起点是否属于内部嵌套可滚动容器
-      if (isNestedScrollEvent(touchTargetRef.current, scrollRef.current)) {
-        return;
-      }
-      if (state.animation?.ignoreEscapes) {
-        return;
-      }
       const currentY = event.touches[0].clientY;
       const delta = currentY - touchStartYRef.current;
+      if (Math.abs(delta) <= 2) return;
+      // Keep tracking through an escape or a bottom resume. The same gesture can
+      // reverse direction, including after scrolling a nested container to its edge.
+      touchStartYRef.current = currentY;
+      if (event.defaultPrevented || state.animation?.ignoreEscapes) return;
+      const direction = delta > 0 ? "up" : "down";
+      if (isNestedScrollEvent(touchTargetRef.current, scrollRef.current, direction)) return;
+      if (direction === "down") {
+        resumeFollowingAtBottom();
+        return;
+      }
       // 手指向下移动 > 2px 意味着视图内容向上移动（向上阅读历史）
       if (
         delta > 2 &&
@@ -541,11 +616,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         scrollRef.current.scrollHeight > scrollRef.current.clientHeight
       ) {
         cancelScrollAnimation();
-        touchStartYRef.current = null;
-        touchTargetRef.current = null;
       }
     },
-    [cancelScrollAnimation, state],
+    [cancelScrollAnimation, resumeFollowingAtBottom, state],
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -555,26 +628,28 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (isNestedScrollEvent(event.target, scrollRef.current)) {
-        return;
-      }
-      if (state.animation?.ignoreEscapes) {
+      const direction = isTimelineUpwardKeyIntent(event) ? "up"
+        : isTimelineDownwardKeyIntent(event) ? "down" : undefined;
+      if (!direction || state.animation?.ignoreEscapes) return;
+      if (isNestedScrollEvent(event.target, scrollRef.current, direction)) return;
+      if (direction === "down") {
+        resumeFollowingAtBottom();
         return;
       }
       if (
         scrollRef.current &&
-        scrollRef.current.scrollHeight > scrollRef.current.clientHeight &&
-        isTimelineUpwardKeyIntent(event)
+        scrollRef.current.scrollHeight > scrollRef.current.clientHeight
       ) {
         cancelScrollAnimation();
       }
     },
-    [cancelScrollAnimation, state],
+    [cancelScrollAnimation, resumeFollowingAtBottom, state],
   );
 
   const scrollRef = useRefCallback((scroll) => {
     scrollRef.current?.removeEventListener("scroll", handleScroll);
     scrollRef.current?.removeEventListener("wheel", handleWheel);
+    scrollRef.current?.removeEventListener("pointerdown", handlePointerDown);
     scrollRef.current?.removeEventListener("touchstart", handleTouchStart);
     scrollRef.current?.removeEventListener("touchmove", handleTouchMove);
     scrollRef.current?.removeEventListener("touchend", handleTouchEnd);
@@ -583,6 +658,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
 
     scroll?.addEventListener("scroll", handleScroll, { passive: true });
     scroll?.addEventListener("wheel", handleWheel, { passive: true });
+    scroll?.addEventListener("pointerdown", handlePointerDown, { passive: true });
     scroll?.addEventListener("touchstart", handleTouchStart, { passive: true });
     scroll?.addEventListener("touchmove", handleTouchMove, { passive: true });
     scroll?.addEventListener("touchend", handleTouchEnd, { passive: true });
@@ -601,11 +677,12 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       const difference = height - (previousHeight ?? height);
       state.resizeDifference = difference;
       /**
-       * Sometimes the browser can overscroll past the target,
-       * so check for this and adjust appropriately.
+       * The follow target is one pixel above the physical limit. A reader
+       * clamped to that limit needs no follow-target adjustment or scroll event.
        */
-      if (state.scrollTop > state.targetScrollTop) {
-        state.scrollTop = state.targetScrollTop;
+      const scrollLimit = state.isAtBottom ? state.targetScrollTop : Math.max(0, state.targetScrollTop + 1);
+      if (state.scrollTop > scrollLimit) {
+        state.scrollTop = scrollLimit;
       }
       setIsNearBottom(state.isNearBottom);
       if (difference >= 0) {
@@ -663,6 +740,13 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
          * 先卸载、History 落库后 settled 再进折叠（折叠内）的两帧高度往返，若无守卫，
          * 负增长帧会把读历史的用户误重锁，随后正增长帧 instant 拽底（先上后下抖动）。
          */
+        // Collapse and append can coalesce into one negative resize. Preserve
+        // an existing follow intent at the actual tail, without re-locking a reader.
+        if (state.isAtBottom) {
+          state.scrollGeneration += 1;
+          state.animation = undefined;
+          state.scrollTop = state.calculatedTargetScrollTop;
+        }
         if (!state.escapedFromLock && state.isNearBottom) {
           setEscapedFromLock(false);
           setIsAtBottom(true);
@@ -714,8 +798,10 @@ function useRefCallback<T extends HTMLElement>(
   // biome-ignore lint/correctness/useExhaustiveDependencies: ref identity must be stable
   const result = useCallback(
     (ref: T | null) => {
+      // The callback must still see the previous node to detach its listeners.
+      const cleanup = callback(ref);
       (result as RefCallbackRef<T>).current = ref;
-      return callback(ref);
+      return cleanup;
     },
     deps,
   ) as unknown as RefCallbackRef<T>;

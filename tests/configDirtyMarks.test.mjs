@@ -20,16 +20,11 @@ test("重载 models 清除自身与 raw（rawContent 被重写），不动其他
 	assert.deepEqual(new Set(dirtyKeysClearedByReload("models")), new Set(["config:models", "config:raw"]));
 });
 
-test("重载 settings 同时清除被顺带重载的 models/auth 脏标记（假脏标记根因）", () => {
+test("重载 settings 同时清除被顺带重载的 models 脏标记（假脏标记根因）", () => {
 	assert.deepEqual(
 		new Set(dirtyKeysClearedByReload("settings")),
-		new Set(["config:settings", "config:raw", "config:models", "config:auth"]),
+		new Set(["config:settings", "config:raw", "config:models"]),
 	);
-});
-
-test("重载 auth/trust 清除自身与 raw", () => {
-	assert.deepEqual(new Set(dirtyKeysClearedByReload("auth")), new Set(["config:auth", "config:raw"]));
-	assert.deepEqual(new Set(dirtyKeysClearedByReload("trust")), new Set(["config:trust", "config:raw"]));
 });
 
 test("重载 raw 只清除自身（去重，不产生重复 key）", () => {
@@ -40,9 +35,7 @@ test("ALL_CONFIG_DIRTY_KEYS 覆盖全部 config 组文件键（不含 skills/pro
 	// vm 沙箱中的 Array 原型与测试域不同，展开成原生数组后再比较
 	assert.deepEqual(Array.from(ALL_CONFIG_DIRTY_KEYS), [
 		"config:models",
-		"config:auth",
 		"config:settings",
-		"config:trust",
 		"config:raw",
 	]);
 });

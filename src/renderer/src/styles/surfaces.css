@@ -706,14 +706,6 @@
   flex: 0 0 auto;
   border-color: var(--color-border-subtle);
 }
-.session-status .cost-chip {
-  max-width: none;
-  flex: 0 0 auto;
-  border-color: var(--color-border-subtle);
-  font-weight: 600;
-  font-family: var(--font-family-business);
-  font-variant-numeric: tabular-nums;
-}
 
 /* Agent 状态徽章 */
 
@@ -1992,38 +1984,14 @@
 }
 
 
-.config-auth-card.editing {
-  /* 与 Models provider 展开态保持一致，Auth 不再像裸表单直接贴在列表中。 */
-  border-color: color-mix(
-    in srgb,
-    var(--color-accent) 32%,
-    var(--color-border-subtle)
-  );
-  box-shadow: var(--shadow-border);
-}
 
 
 
 
 
-/* Auth 使用指南 */
 
 /* Provider 配置指南 */
 
-/* Auth 供应商选择器 */
-/* 服务商选择器中来自 models.json 的分隔线 */
-.config-auth-selector-item.selected {
-  border-color: var(--color-accent);
-  background: color-mix(
-    in srgb,
-    var(--color-accent) 10%,
-    var(--color-bg-panel)
-  );
-  font-weight: 500;
-}
-.config-auth-selector-item.configured {
-  opacity: 0.6;
-}
 
 
 
@@ -2279,147 +2247,6 @@
   outline: none;
   border-color: var(--color-accent);
   box-shadow: var(--focus-ring);
-}
-
-/* ── 信任目录 ─────────────────────────────────────────── */
-
-.config-trust-tab .config-toolbar {
-  align-items: flex-start;
-  gap: var(--space-4);
-}
-
-.config-trust-tab .config-toolbar strong {
-  display: block;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-heading);
-  line-height: var(--line-height-heading);
-}
-
-.config-trust-tab .config-toolbar p {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
-.config-trust-add {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-
-.config-trust-input {
-  height: var(--control-height-md);
-  min-width: 0;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-panel);
-  color: var(--color-text-primary);
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-caption);
-}
-
-.config-trust-input:focus {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow: var(--focus-ring);
-}
-
-.config-trust-list {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.config-trust-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid
-    color-mix(in srgb, var(--color-border-subtle) 72%, transparent);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-bg-panel) 84%, transparent);
-  transition:
-    background-color 0.15s,
-    border-color 0.15s;
-}
-
-.config-trust-row:hover {
-  border-color: var(--color-border-subtle);
-  background: var(--color-bg-panel);
-}
-
-.config-trust-row[data-trusted="true"] {
-  border-color: color-mix(
-    in srgb,
-    var(--color-accent) 18%,
-    var(--color-border-subtle)
-  );
-  background: color-mix(in srgb, var(--color-accent) 3%, var(--color-bg-panel));
-}
-
-.config-trust-toggle {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  cursor: pointer;
-}
-
-.config-trust-toggle input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--color-accent);
-}
-
-.config-trust-path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-primary);
-  font-family: var(--font-family-mono);
-  font-size: var(--font-size-caption);
-}
-
-.config-trust-status {
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-hover);
-  color: var(--color-text-tertiary);
-  font-family: var(--font-family-business);
-  font-size: var(--font-size-micro);
-  white-space: nowrap;
-}
-
-.config-trust-row[data-trusted="true"] .config-trust-status {
-  background: color-mix(in srgb, var(--color-success) 12%, transparent);
-  color: var(--color-success);
-}
-
-.config-trust-empty {
-  display: grid;
-  place-items: center;
-  gap: var(--space-1);
-  min-height: 160px;
-  border: 1px dashed var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  color: var(--color-text-tertiary);
-  text-align: center;
-}
-
-.config-trust-empty strong {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-body);
-}
-
-.config-trust-empty span {
-  font-size: var(--font-size-caption);
 }
 
 /* ── 图片预览区域 ──────────────────────────────────────── */
@@ -2979,7 +2806,6 @@ div.fixed.inset-0.z-50 {
 :root[data-theme="dark"] .config-provider-card,
 :root[data-theme="dark"] .config-model-card,
 :root[data-theme="dark"] .config-model-item,
-:root[data-theme="dark"] .config-auth-card,
 :root[data-theme="dark"] .config-advanced-preserved,
 :root[data-theme="dark"] .config-model-advanced-note,
 :root[data-theme="dark"] .config-diagnostic-card,
@@ -3029,7 +2855,7 @@ div.fixed.inset-0.z-50 {
   color: var(--color-text-primary);
 }
 
-/* ── 遗留文件 Tab 样式（内容区已并入 session-tabs-bar；保留关闭按钮等极少引用兜底） ── */
+/* ── 遗留文件 Tab 样式（内容区已并入 workspace-toolbar；保留关闭按钮等极少引用兜底） ── */
 
 .file-diff-tab-bar {
   display: flex;
@@ -3106,7 +2932,7 @@ div.fixed.inset-0.z-50 {
   overflow: hidden;
 }
 /* Tab 栏挂在分屏外：与文件 Tab 同一条 chrome，maximize 时也不被会话面板收走 */
-.workbench-stage > .session-tabs-bar {
+.workbench-stage > .workspace-toolbar {
   flex: 0 0 auto;
   min-width: 0;
 }
@@ -3148,7 +2974,7 @@ div.fixed.inset-0.z-50 {
   width: 100%;
   overflow: hidden;
   background: var(--color-bg-panel);
-  /* 自定义标题栏拖区由上方 session-tabs-bar 承担；阅读面已在 Tab 之下，
+  /* 自定义标题栏拖区由上方 workspace-toolbar 承担；阅读面已在 Tab 之下，
      不再叠 padding-top，避免 Tab 与内容之间空出一条拖拽高度。
      分屏固定左右（不做上下分屏），内容区左侧贴会话面板加分隔线。 */
   border-left: 1px solid var(--color-border-subtle);
@@ -3164,7 +2990,7 @@ div.fixed.inset-0.z-50 {
   min-height: 0;
 }
 
-/* 会话 Tab 拖到边缘分屏：落点预览 + 两层树分屏舞台 */
+/* 侧栏会话拖到边缘分屏：落点预览 + 两层树分屏舞台 */
 .session-split-stage {
   position: relative;
 }
@@ -3511,37 +3337,8 @@ div.fixed.inset-0.z-50 {
   }
 }
 
-/* 思考级别映射：两个 ConfigSelect 垂直排列（xhigh + max） */
-.config-thinking-levels-cell {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.config-thinking-levels-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.config-thinking-levels-key {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-  flex-shrink: 0;
-  width: 26px;
-}
-
-
-.config-thinking-levels-row .config-select-trigger > span {
-  font-size: 11px;
-}
-
-.config-thinking-levels-row .config-select-value {
-  font-size: 11px;
-}
+/* 思考级别映射：Popover 内部改由 Tailwind utility 布局（xhigh/max 两个 Checkbox）。
+   旧 .config-thinking-levels-* 样式随下拉改勾选框一并移除，避免与 utility 抢属性。 */
 
 /* 壁纸模式下业务弹框只保留 DialogContent 这一层底色；布局容器透明，
    否则 header 是一层、body 又叠一层同色面板，最终看起来像两个透明度。 */

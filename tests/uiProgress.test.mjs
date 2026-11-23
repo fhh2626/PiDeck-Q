@@ -1,26 +1,36 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { mountReact } from "./helpers/mountReact.mjs";
 
-const progress = readFileSync(
-  "src/renderer/src/components/ui-shadcn/progress.tsx",
-  "utf8",
-);
-const surfaces = readFileSync("src/renderer/src/styles/surfaces.css", "utf8");
-
-test("shadcn Progress exposes value through aria semantics", () => {
-  assert.match(progress, /ProgressPrimitive\.Root/);
-  // value 必须传给 Radix Root，由 Radix 生成 aria-valuenow；同时驱动 Indicator 位移。
-  assert.match(progress, /value=\{value\}/);
-  assert.match(progress, /bg-primary h-full w-full flex-1 transition-all/);
-  assert.match(progress, /`translateX\(-\$\{100 - \(value \|\| 0\)\}%\)`/);
+test("Progress exposes the value to assistive tech and moves the indicator", async () => {
+	await mountReact(async ({ React, act, root, document }) => {
+		const { Progress } = loadTsCommonJs("src/renderer/src/components/ui-shadcn/progress.tsx");
+		await act(() => {
+			root.render(React.createElement(Progress, { value: 40 }));
+		});
+		const bar = document.querySelector("[data-slot='progress']");
+		const indicator = document.querySelector("[data-slot='progress-indicator']");
+		assert.ok(bar, "progress root must render");
+		assert.equal(bar.getAttribute("aria-valuenow"), "40");
+		assert.equal(indicator.style.transform, "translateX(-60%)");
+	});
 });
 
-test("legacy update progress track CSS is removed", () => {
-  // AppUpdateOverlay 已随 0.2.1 移除，手写进度条 class 全部随之清掉；
-  // 守门：新组件若要进度条，应引 shadcn Progress 而不是重新手写一套。
-  assert.doesNotMatch(surfaces, /\.update-progress-track/);
-  assert.doesNotMatch(surfaces, /\.update-progress-bar/);
-  assert.doesNotMatch(surfaces, /\.update-progress-header/);
-  assert.doesNotMatch(surfaces, /\.update-download-progress/);
+test("Progress treats a missing value as an empty indicator", async () => {
+	await mountReact(async ({ React, act, root, document }) => {
+		const { Progress } = loadTsCommonJs("src/renderer/src/components/ui-shadcn/progress.tsx");
+		await act(() => {
+			root.render(React.createElement(Progress, {}));
+		});
+		const missing = document.querySelector("[data-slot='progress-indicator']");
+		assert.equal(missing.style.transform, "translateX(-100%)");
+		await act(() => {
+			root.render(React.createElement(Progress, { value: 0 }));
+		});
+		assert.equal(
+			document.querySelector("[data-slot='progress-indicator']").style.transform,
+			"translateX(-100%)",
+		);
+	});
 });

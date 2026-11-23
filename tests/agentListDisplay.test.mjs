@@ -279,16 +279,16 @@ test("groups Pi child sessions under a parent using normalized paths", () => {
 	assert.equal(display.children[0].piSubagents[0].name, "Worker");
 });
 
-test("keeps a Rust branched child out of the top-level Agent list", () => {
+test("keeps a branched Pi child out of the top-level Agent list", () => {
 	const { getProjectAgentSessionDisplay } = loadModule();
 	const parentPath = "C:\\Users\\Dev\\.pi\\agent\\sessions\\parent.jsonl";
-	const childPath = "C:\\Users\\Dev\\.pi\\agent\\sessions\\rust-child.jsonl";
+	const childPath = "C:\\Users\\Dev\\.pi\\agent\\sessions\\branched-child.jsonl";
 	const display = getProjectAgentSessionDisplay({
 		agents: [{
-			id: "rust-child-runtime",
+			id: "branched-child-runtime",
 			projectId: "p1",
 			cwd: "C:\\project",
-			title: "Rust child",
+			title: "Branched child",
 			status: "running",
 			sessionPath: childPath,
 			createdAt: 20,
@@ -297,7 +297,7 @@ test("keeps a Rust branched child out of the top-level Agent list", () => {
 			session({ filePath: parentPath, name: "Parent", source: "pi", updatedAt: 10 }),
 			session({
 				filePath: childPath,
-				name: "Rust child",
+				name: "Branched child",
 				source: "pi",
 				updatedAt: 12,
 				parentSessionPath: parentPath,

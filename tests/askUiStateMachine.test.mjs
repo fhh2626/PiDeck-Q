@@ -131,13 +131,6 @@ test("SessionRuntimeUiOverlay 使用提取的纯逻辑与语义字号 token", ()
 	assert.doesNotMatch(source, /text-\[11px\]/);
 });
 
-test("AgentManager select 无选项降级为 input（不静默取消）", () => {
-	const source = readFileSync("src/main/pi/AgentManager.ts", "utf8");
-	assert.match(source, /select 无有效选项时降级为 input/);
-	assert.match(source, /effectiveMethod/);
-	assert.doesNotMatch(source, /select 无选项时自动取消，不等用户响应/);
-});
-
 test("渲染层不再用 find 取第一个 pending 请求", () => {
 	const source = readFileSync("src/renderer/src/components/overlays/SessionRuntimeUiOverlay.tsx", "utf8");
 	assert.doesNotMatch(source, /Object\.values\(ui\.requests\)\.find/);

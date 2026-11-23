@@ -16,6 +16,10 @@ build/.objs/
 build/windows/
 build/macosx/
 build/linux/
+# Local native2 package stages used by the C++ backend gate/measurement. They are full
+# unpacked packages (~110 MB each) rebuilt on demand, so they must never be staged by
+# `git add -A`. Tracked packager icons under build/ are unaffected by this pattern.
+build/native2-*/
 docs-site/.vitepress/cache/
 docs-site/.vitepress/dist/
 *.asar
@@ -24,8 +28,8 @@ docs-site/.vitepress/dist/
 .vite/
 .cache/
 
-# Logs
-logs/
+# Ignore runtime logs and Markdown notes, not source code in directories named logs.
+**/logs/**/*.md
 *.log
 npm-debug.log*
 yarn-debug.log*

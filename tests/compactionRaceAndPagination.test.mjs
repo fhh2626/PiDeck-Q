@@ -1,3 +1,4 @@
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -5,7 +6,6 @@ import test from "node:test";
 import ts from "typescript";
 import vm from "node:vm";
 import { createStore } from "jotai/vanilla";
-import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 import { withTimelineController } from "./helpers/l6_timelineControllerHarness.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
@@ -38,6 +38,7 @@ function loadAtoms() {
 	const sessionRecordIdentity = compileModule("src/renderer/src/utils/sessionRecordIdentity.ts");
 	const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
 	const sessions = compileModule("src/renderer/src/atoms/session-atoms.ts", {
+    "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
 		"../utils/agentRuntimeState": runtimeState,
 		"../utils/optimisticUserReconciliation": compileModule(
 			"src/renderer/src/utils/optimisticUserReconciliation.ts",
@@ -47,16 +48,6 @@ function loadAtoms() {
 		"../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
 	});
 	return sessions;
-}
-
-function deferred() {
-	let resolve;
-	let reject;
-	const promise = new Promise((res, rej) => {
-		resolve = res;
-		reject = rej;
-	});
-	return { promise, resolve, reject };
 }
 
 // ── 1. 压缩后分页加载测试 ──
@@ -170,6 +161,29 @@ test("timeline controller: user scroll-up loads one 3-turn page through the same
 	});
 });
 
+test("timeline controller: a rejected history cursor leaves the window intact and permits another page request", async () => {
+	let attempts = 0;
+	await withTimelineController({ respond: (call) => {
+		if (call.before === 24 && ++attempts === 1) return Promise.reject(new Error("HISTORY_CURSOR_NOT_FOUND"));
+		return respondWithHistory(OLDER_TURN_PAGE)(call);
+	} }, async ({ atoms, store, mount, controller, act }) => {
+		const id = "session-stale-history-cursor";
+		seedCompactedRuntimeWindow(store, atoms, id);
+		await mount(id);
+		const entry = () => store.get(atoms.sessionMessagesCacheAtom)[id];
+		assert.equal(attempts, 1);
+		assert.equal(entry().history, undefined);
+		assert.equal(controller().isLoadingMoreMessages, false);
+		assert.equal(entry().messages.at(-1).text, "最近回答");
+		await act(async () => {
+			controller().loadMoreMessages();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		assert.ok(attempts >= 2);
+		assert.ok(entry().history?.messages.some((message) => message.id === "h1"));
+	});
+});
+
 test("compaction pagination: windowStartFilePos fallback passes before=undefined to atom, establishing history", () => {
 	const atoms = loadAtoms();
 	const store = createStore();
@@ -256,256 +270,4 @@ test("compaction pagination: windowStartFilePos fallback passes before=undefined
 	assert.equal(continuationResult, true, "continuation page with matching cursor must succeed");
 	assert.equal(entry().history.nextBefore, null);
 	assert.equal(entry().history.messages.length, 3);
-});
-
-// ── 2. Compaction race 测试 ──
-
-/**
- * 构造一个已推进到 generation=10、get_state 由测试控制的 AgentManager。
- * 必须在加载 AgentManager 之前启用 mock timers：vm 沙箱在加载时捕获 setTimeout。
- */
-function createRaceHarness(agentId, getStateDeferred) {
-	const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
-	const makeProcess = () => ({
-		client: {
-			request: async (req) => (req.type === "get_state" ? getStateDeferred.promise : { success: true, data: {} }),
-		},
-	});
-	const manager = new AgentManager(
-		() => ({ id: "project-1", name: "Project", path: "C:/project" }),
-		() => null,
-		{ get: () => ({}) },
-		{},
-	);
-	const runtime = {
-		tab: {
-			id: agentId,
-			projectId: "project-1",
-			cwd: "C:/project",
-			title: "Race Test Session",
-			status: "running",
-			sessionPath: "C:/project/session.jsonl",
-			sessionEnvironment: "native",
-			sessionSource: "pi",
-			createdAt: 1,
-		},
-		process: makeProcess(),
-	};
-	manager.agents.set(agentId, runtime);
-	for (let i = 0; i < 10; i += 1) manager.openAgentStream(agentId);
-	return { manager, runtime, makeProcess };
-}
-
-const PI_IDLE_STATE = {
-	success: true,
-	data: { isStreaming: false, isCompacting: false, pendingMessageCount: 0 },
-};
-
-async function flushMicrotasks() {
-	for (let i = 0; i < 10; i += 1) await Promise.resolve();
-}
-
-test("compaction_end fallback timer: a newer generation started before the timer fires is not idled", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const getStateDeferred = deferred();
-	const { manager, runtime } = createRaceHarness("agent-compaction-end-gen", getStateDeferred);
-	assert.equal(manager.getStreamGate("agent-compaction-end-gen").currentGeneration, 10);
-
-	// 真实事件入口：compaction_end 在 generation 10 排一个 300ms 兜底 idle 检查。
-	manager.handlePiEvent("agent-compaction-end-gen", { type: "compaction_end", reason: "threshold" });
-	// 事件之后、兜底定时器触发之前新任务启动（generation 11）：定时器必须使用事件时快照的
-	// generation 10，而不是触发时再取当前值，否则会把新一轮误判为已结束。
-	manager.openAgentStream("agent-compaction-end-gen");
-	runtime.tab.status = "running";
-	t.mock.timers.tick(300);
-	await flushMicrotasks();
-	// 旧 generation 的 get_state 返回“无工作”。
-	getStateDeferred.resolve(PI_IDLE_STATE);
-	await flushMicrotasks();
-
-	assert.equal(runtime.tab.status, "running", "newer generation must not be settled by the stale check");
-});
-
-test("compaction_end fallback timer: a process restarted before the timer fires is not idled", async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const getStateDeferred = deferred();
-	const { manager, runtime, makeProcess } = createRaceHarness("agent-compaction-end-proc", getStateDeferred);
-
-	manager.handlePiEvent("agent-compaction-end-proc", { type: "compaction_end", reason: "threshold" });
-	// 事件之后、兜底定时器触发之前进程被重启（新的 PiProcess）：定时器必须绑定事件时的旧进程，
-	// 不能在触发时重新取 runtime.process，否则新进程会被旧事件的兜底检查收口。
-	runtime.process = makeProcess();
-	runtime.tab.status = "running";
-	t.mock.timers.tick(300);
-	await flushMicrotasks();
-	getStateDeferred.resolve(PI_IDLE_STATE);
-	await flushMicrotasks();
-
-	assert.equal(runtime.tab.status, "running", "restarted process must not be settled by the old process' state");
-});
-
-test("compaction_end fallback timer still settles an unchanged run when Pi reports no work", async (t) => {
-	// 反向对照：无并发变化时兜底检查应当收口为 idle，证明上面两个用例不是因为兜底整体失效而通过。
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const getStateDeferred = deferred();
-	const { manager, runtime } = createRaceHarness("agent-compaction-end-ok", getStateDeferred);
-
-	manager.handlePiEvent("agent-compaction-end-ok", { type: "compaction_end", reason: "threshold" });
-	t.mock.timers.tick(300);
-	getStateDeferred.resolve(PI_IDLE_STATE);
-	await flushMicrotasks();
-
-	assert.notEqual(runtime.tab.status, "running");
-});
-
-test("compaction race: in-flight get_state from old generation does not settle new generation run", async () => {
-	const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
-
-	const getStateDeferred = deferred();
-	let clientRequestCalls = 0;
-
-	const mockProcess = {
-		client: {
-			request: async (req) => {
-				if (req.type === "get_state") {
-					clientRequestCalls++;
-					return getStateDeferred.promise;
-				}
-				return { success: true, data: {} };
-			},
-		},
-	};
-
-	const manager = new AgentManager(
-		() => ({ id: "project-1", name: "Project", path: "C:/project" }),
-		() => null,
-		{ get: () => ({}) },
-		{},
-	);
-
-	const agentId = "agent-compaction-race";
-	const runtime = {
-		tab: {
-			id: agentId,
-			projectId: "project-1",
-			cwd: "C:/project",
-			title: "Race Test Session",
-			status: "running",
-			sessionPath: "C:/project/session.jsonl",
-			sessionEnvironment: "native",
-			sessionSource: "pi",
-			createdAt: 1,
-		},
-		process: mockProcess,
-	};
-	manager.agents.set(agentId, runtime);
-
-	// 1. 模拟 generation 10
-	manager.openAgentStream(agentId); // gen 1
-	for (let i = 2; i <= 10; i++) {
-		manager.openAgentStream(agentId);
-	}
-	const gen10 = manager.getStreamGate(agentId).currentGeneration;
-	assert.equal(gen10, 10);
-
-	// 2. 模拟 compaction_end 触发 markIdleIfPiReportsNoWork (generation 10)
-	const idleCheckPromise = manager.markIdleIfPiReportsNoWork(
-		agentId,
-		mockProcess,
-		gen10,
-	);
-
-	// 此时 get_state 已经在途
-	assert.equal(clientRequestCalls, 1);
-
-	// 3. 在 get_state 返回前，新任务启动 (generation 11)
-	manager.openAgentStream(agentId);
-	const gen11 = manager.getStreamGate(agentId).currentGeneration;
-	assert.equal(gen11, 11);
-	runtime.tab.status = "running";
-
-	// 4. 旧的 get_state (gen 10) 结果返回：Pi 报告无工作
-	getStateDeferred.resolve({
-		success: true,
-		data: {
-			isStreaming: false,
-			isCompacting: false,
-			pendingMessageCount: 0,
-		},
-	});
-
-	await idleCheckPromise;
-
-	// 5. 验证：新 generation 11 没有被错误置为 idle，状态依然是 running
-	assert.equal(runtime.tab.status, "running", "runtime tab status must remain 'running'");
-});
-
-test("markIdleIfPiReportsNoWork snapshots process and generation at call time when not explicitly passed", async () => {
-	const { AgentManager } = loadTsCommonJs("src/main/pi/AgentManager.ts");
-
-	const getStateDeferred = deferred();
-
-	const mockProcess = {
-		client: {
-			request: async (req) => {
-				if (req.type === "get_state") {
-					return getStateDeferred.promise;
-				}
-				return { success: true, data: {} };
-			},
-		},
-	};
-
-	const manager = new AgentManager(
-		() => ({ id: "project-1", name: "Project", path: "C:/project" }),
-		() => null,
-		{ get: () => ({}) },
-		{},
-	);
-
-	const agentId = "agent-snapshot-test";
-	const runtime = {
-		tab: {
-			id: agentId,
-			projectId: "project-1",
-			cwd: "C:/project",
-			title: "Snapshot Test Session",
-			status: "running",
-			sessionPath: "C:/project/session.jsonl",
-			sessionEnvironment: "native",
-			sessionSource: "pi",
-			createdAt: 1,
-		},
-		process: mockProcess,
-	};
-	manager.agents.set(agentId, runtime);
-
-	// Generation 5
-	for (let i = 1; i <= 5; i++) {
-		manager.openAgentStream(agentId);
-	}
-	assert.equal(manager.getStreamGate(agentId).currentGeneration, 5);
-
-	// 调用时未显式传 process 和 generation
-	const idlePromise = manager.markIdleIfPiReportsNoWork(agentId);
-
-	// 在 RPC 返回前晋升 generation 到 6
-	manager.openAgentStream(agentId);
-	assert.equal(manager.getStreamGate(agentId).currentGeneration, 6);
-	runtime.tab.status = "running";
-
-	// 旧 get_state 响应
-	getStateDeferred.resolve({
-		success: true,
-		data: {
-			isStreaming: false,
-			isCompacting: false,
-			pendingMessageCount: 0,
-		},
-	});
-
-	await idlePromise;
-
-	// 即使没有显式传参，内部默认 snapshot 也保护了新 generation 不被关闭
-	assert.equal(runtime.tab.status, "running", "runtime status must remain running even when called without explicit args");
 });

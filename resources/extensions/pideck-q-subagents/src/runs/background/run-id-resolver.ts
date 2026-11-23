@@ -6,6 +6,7 @@ import { findAsyncRunPrefixMatches, type AsyncRunLocation } from "./async-resume
 import { resultCandidateFilesForToolCall, resultFilePath, resultPayloadPathForIndexedRun } from "./result-files.ts";
 import { readActiveRunToolCallIndex } from "./active-run-index.ts";
 import { assertSafeNestedId, findNestedRunMatchesById, type NestedRoute, type NestedRunMatch, type NestedRunResolutionScope } from "../shared/nested-events.ts";
+import { currentSessionForegroundControls } from "../foreground/foreground-control.ts";
 
 export type ResolvedSubagentRunId =
 	| { kind: "foreground"; id: string }
@@ -93,12 +94,12 @@ function foregroundIds(state: SubagentState | undefined): string[] {
 			.map((run) => run.runId)
 		: [];
 	const workflows = [...(state.foregroundWorkflows?.values() ?? [])].filter((run) => run.sessionId === state.currentSessionId).map((run) => run.runId);
-	return [...new Set([...state.foregroundControls.keys(), ...remembered, ...workflows])];
+	return [...new Set([...currentSessionForegroundControls(state).map((control) => control.runId), ...remembered, ...workflows])];
 }
 
 function hasExactForegroundId(state: SubagentState | undefined, id: string): boolean {
 	if (!state) return false;
-	if (state.foregroundControls.has(id)) return true;
+	if (state.currentSessionId && state.foregroundControls.get(id)?.sessionId === state.currentSessionId) return true;
 	const workflow = state.foregroundWorkflows?.get(id);
 	if (workflow && workflow.sessionId === state.currentSessionId) return true;
 	const remembered = state.foregroundRuns?.get(id);
@@ -132,7 +133,7 @@ function nestedScopeFromState(state: SubagentState | undefined): NestedRunResolu
 		seen.add(key);
 		routes.push(route);
 	};
-	for (const control of state.foregroundControls.values()) add(control.nestedRoute as NestedRoute | undefined);
+	for (const control of currentSessionForegroundControls(state)) add(control.nestedRoute as NestedRoute | undefined);
 	for (const job of state.asyncJobs.values()) add(job.nestedRoute as NestedRoute | undefined);
 	return { routes };
 }

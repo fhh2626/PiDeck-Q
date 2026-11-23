@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   useStickToBottom,
+  type RestoreAt,
   type ScrollToBottom,
   type StopScroll,
 } from "@/lib/stick-to-bottom";
@@ -24,8 +25,10 @@ import {
 /** 供时间线 controller 调用的引擎滚动 API（回底弹簧 / 原子恢复位置）。 */
 export type MessageScrollerScrollApi = {
   scrollToBottom: ScrollToBottom;
-  /** 原子恢复历史位置：定位 + 解锁锁底 + 取消在途动画（见引擎 restoreAt）。 */
-  restoreAt: (scrollTop: number) => void;
+  /** Synchronous engine intent, even before the React follow-state notification. */
+  isFollowing: () => boolean;
+  /** 原子恢复历史位置；纯布局保锚可保留引擎已有的跟随意图（见 restoreAt）。 */
+  restoreAt: RestoreAt;
   /** 解锁锁底并取消在途弹簧，发送置顶动画插入垫片前必须先调，否则 RO 会瞬间贴底。 */
   stopScroll: StopScroll;
 };
@@ -110,6 +113,7 @@ export function MessageScroller({
   const engineContentRef = stick.contentRef;
   const engineScrollToBottom = stick.scrollToBottom;
   const engineIsAtBottom = stick.isAtBottom;
+  const engineState = stick.state;
   const engineRestoreAt = stick.restoreAt;
   const engineStopScroll = stick.stopScroll;
 
@@ -119,6 +123,7 @@ export function MessageScroller({
     if (!scrollApiRef) return;
     const api: MessageScrollerScrollApi = {
       scrollToBottom: engineScrollToBottom,
+      isFollowing: () => engineState.isAtBottom,
       restoreAt: engineRestoreAt,
       stopScroll: engineStopScroll,
     };
@@ -135,7 +140,7 @@ export function MessageScroller({
         scrollApiRef.current = null;
       }
     };
-  }, [scrollApiRef, engineScrollToBottom, engineRestoreAt, engineStopScroll]);
+  }, [scrollApiRef, engineScrollToBottom, engineState, engineRestoreAt, engineStopScroll]);
 
   const setViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -230,7 +235,7 @@ export function MessageScroller({
         onViewportKeyDown?.(event);
       }}
       className={cn(
-        "h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        "h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:auto] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         viewportClassName,
       )}
     >

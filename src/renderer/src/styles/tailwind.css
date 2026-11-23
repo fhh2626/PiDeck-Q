@@ -245,11 +245,11 @@
  * 这些连续纯色小块用 bg-background（/80）或 --color-bg-panel，叠在半透明面板
  * （chat-pane/detail-drawer 同为 panelMix 白）上形成双层半透明白（≈47-51% 白），
  * 比主区单层（30%）实一档，观感像磨砂灰白补丁；透明后透出底层单层，与主区同档。
- * 必须放 utilities 层：session-tabs-bar 的 bg-background/80、chat-header/drawer-
+ * 必须放 utilities 层：workspace-toolbar 的 bg-background/80、chat-header/drawer-
  * activity-rail 的 bg-background 都是 utility，legacy 层规则压不过（层序）。
  * .window-controls 的 background 原在 legacy 层（foundation.css），此处一并收口。 */
 @layer utilities {
-  :root[data-bg-image="on"] .session-tabs-bar,
+  :root[data-bg-image="on"] .workspace-toolbar,
   :root[data-bg-image="on"] .chat-header,
   :root[data-bg-image="on"] .drawer-activity-rail,
   :root[data-bg-image="on"] .window-controls {

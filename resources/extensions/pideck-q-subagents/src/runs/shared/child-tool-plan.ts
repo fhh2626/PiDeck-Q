@@ -199,14 +199,13 @@ function hasPermissionRules(rules: PermissionRules | undefined): boolean {
 }
 
 /**
- * Children are pi sessions inside the parent or the runner process; a spawned
- * `pi` received extra MCP server definitions as a CLI argument, but a session
- * has no such input. Selecting a server that exists only in pi-mcp-adapter's
- * runtime snapshot therefore cannot work and fails the launch.
+ * Foreground children are Pi sessions inside the parent process. Selecting a
+ * server that exists only in pi-mcp-adapter's runtime snapshot cannot supply
+ * the connection configuration required by the child SDK provider.
  */
 export function formatRuntimeSnapshotMcpServersError(agentName: string | undefined, serverNames: readonly string[]): string {
 	const subject = agentName ? `Agent '${agentName}'` : "Subagent";
-	return `${subject} selects MCP tools from servers that exist only in pi-mcp-adapter's runtime snapshot (${serverNames.join(", ")}). MCP servers from the runtime snapshot cannot be provided to in-process children; MCP tools must come from an ambient adapter extension in a background child (\`async: true\`), so add the server to the adapter's configuration file instead.`;
+	return `${subject} selects MCP tools from servers that exist only in pi-mcp-adapter's runtime snapshot (${serverNames.join(", ")}). Add these servers to the adapter's configuration file so the foreground child can load their connection settings.`;
 }
 
 export function projectLaunchResolvedChildExtensions(

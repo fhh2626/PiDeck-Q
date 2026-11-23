@@ -145,10 +145,14 @@ test("deleteSession rejects on 500 internal error", async () => {
 	assert.match(error.message, /internal error/);
 });
 
-test("deleteSession rejects when deleted flag is not true", async () => {
+test("deleteSession accepts already absent records as an idempotent result", async () => {
 	fetchImpl = async () => jsonResponse({ deleted: false });
+	assert.equal(await deleteSession("session-1"), false);
+});
 
+test("deleteSession rejects an invalid deleted flag", async () => {
+	fetchImpl = async () => jsonResponse({ deleted: "true" });
 	const error = await captureRejection(() => deleteSession("session-1"));
 	assert.ok(error);
-	assert.match(error.message, /delete session failed/);
+	assert.match(error.message, /Invalid session deletion response/);
 });

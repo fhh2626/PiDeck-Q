@@ -3,9 +3,10 @@
 #include "MainWindow.h"
 #include "MacDockReopenHandler.h"
 #include "NativeApplication.h"
+#include "NativeFileShell.h"
 #include "NativePaths.h"
 #include "NativeTheme.h"
-#include "NodeProcessController.h"
+#include "BackendProcessController.h"
 #include "ProtocolRegistrar.h"
 #include "TrayController.h"
 #include "WindowsToastNotifier.h"
@@ -35,6 +36,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <cstdio>
 #include <functional>
 #include <stdexcept>
 #include <utility>
@@ -222,7 +224,8 @@ int main(int argc, char **argv)
     app.setApplicationVersion(qEnvironmentVariable("PIDECK_VERSION", nativeBuildVersion));
     const NativePaths paths = NativePaths::fromEnvironment();
     NativeApplication::configure(paths);
-    const bool nativeNotificationsAvailable = WindowsToastNotifier::initialize()
+    const bool nativeNotificationsAvailable = paths.registerDesktopIntegration
+        && WindowsToastNotifier::initialize()
         && WindowsToastNotifier::registerApplication(QCoreApplication::applicationFilePath());
     const bool trayNotificationsAvailable = QSystemTrayIcon::isSystemTrayAvailable()
         && QSystemTrayIcon::supportsMessages();
@@ -246,7 +249,7 @@ int main(int argc, char **argv)
 
     HostRpcServer host;
     if (!host.start()) return 1;
-    NodeProcessController node(paths, &host);
+    BackendProcessController backendProcess(paths, &host);
     MainWindow *mainWindow = nullptr;
     TrayController *tray = nullptr;
     bool quitting = false;
@@ -261,14 +264,14 @@ int main(int argc, char **argv)
         if (mainWindow) mainWindow->setQuitting(true);
         // Keep the Qt event loop alive until the sidecar has acknowledged that
         // Backend.dispose and the version-lock cleanup are complete.
-        node.stopAsync([&] { app.quit(); });
+        backendProcess.stopAsync([&] { app.quit(); });
     };
 
-    node.setNodeErrorHandler([](const QString &) {
+    backendProcess.setErrorHandler([](const QString &) {
         // Runtime process failures are recovered from QProcess::finished below.
-        // Failed starts are handled synchronously by NodeProcessController::start().
+        // Failed starts are handled synchronously by BackendProcessController::start().
     });
-    node.setNodeExitHandler([&](int, QProcess::ExitStatus) {
+    backendProcess.setExitHandler([&](int, QProcess::ExitStatus) {
         if (quitting) return;
         if (sidecarRestartAttempted) {
             // A sidecar that cannot reach renderer.ready after one restart must
@@ -277,7 +280,7 @@ int main(int argc, char **argv)
             return;
         }
         sidecarRestartAttempted = true;
-        if (node.start()) return;
+        if (backendProcess.start()) return;
 
         // start() already performed its emergency process cleanup, so there is
         // no asynchronous sidecar work left to gate application shutdown on.
@@ -321,21 +324,9 @@ int main(int argc, char **argv)
         return QJsonValue(QJsonObject{{QStringLiteral("ok"), ok}, {QStringLiteral("error"), ok ? QString{} : QStringLiteral("Unable to open path")}});
     });
     host.registerHandler(QStringLiteral("shell.showItemInFolder"), [](const QJsonObject &params) {
-        const QString path = params.value(QStringLiteral("path")).toString();
-#ifdef Q_OS_WIN
-        QProcess::startDetached(QStringLiteral("explorer.exe"), {
-            QStringLiteral("/select,%1").arg(QDir::toNativeSeparators(path)),
-        });
-#else
-        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
-#endif
-        return QJsonValue(QJsonValue::Null);
+        return QJsonValue(revealNativeFile(params.value(QStringLiteral("path")).toString()));
     });
-    host.registerHandler(QStringLiteral("shell.trashItem"), [](const QJsonObject &params) {
-        const bool ok = QFile::moveToTrash(params.value(QStringLiteral("path")).toString());
-        if (!ok) throw std::runtime_error("Unable to move item to trash");
-        return QJsonValue(QJsonValue::Null);
-    });
+    host.registerHandler(QStringLiteral("shell.trashItem"), trashNativeItem);
     host.registerHandler(QStringLiteral("theme.setSource"), [&setNativeThemeSource](const QJsonObject &params) {
         setNativeThemeSource(params.value(QStringLiteral("source")).toString());
         return QJsonValue(QJsonValue::Null);
@@ -517,15 +508,21 @@ int main(int argc, char **argv)
             return;
         }
         if (name == QStringLiteral("application.readyToExit")) {
-            node.markReadyToExit();
+            backendProcess.markReadyToExit();
         }
+        if (!mainWindow) return;
+        if (name == QStringLiteral("window.minimize")) mainWindow->minimizeWindow();
+        else if (name == QStringLiteral("window.toggleMaximize")) mainWindow->toggleMaximize();
+        else if (name == QStringLiteral("window.close")) mainWindow->closeFromHost();
+        else if (name == QStringLiteral("window.alwaysOnTop")) mainWindow->toggleAlwaysOnTop();
     });
 
     // The installer owns the normal registration path; keep startup registration
     // as a repair/fallback for portable copies and upgrades.
-    if (paths.packaged) ProtocolRegistrar::registerProtocol(QCoreApplication::applicationFilePath());
+    if (paths.packaged && paths.registerDesktopIntegration)
+        ProtocolRegistrar::registerProtocol(QCoreApplication::applicationFilePath());
 
-    if (!node.start()) return 1;
+    if (!backendProcess.start()) return 1;
     tray = new TrayController(
         QIcon(iconPath),
         [&mainWindow] { if (mainWindow) mainWindow->showWindow(); },
@@ -544,7 +541,7 @@ int main(int argc, char **argv)
         // only covers an OS-level quit event that bypassed those paths.
         quitting = true;
         if (mainWindow) mainWindow->setQuitting(true);
-        node.stop();
+        backendProcess.stop();
     });
 
     const int exitCode = app.exec();

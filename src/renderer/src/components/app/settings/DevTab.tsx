@@ -356,21 +356,21 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
             避免「manual divider + row 自带 border」双重分隔线。 */}
         <div className="mt-2 border-t border-border-subtle pt-2">
           <SettingRow title={<span>{t("settings.piRuntimePreference")}</span>} description={t("settings.piRuntimePreferenceHint")}>
-            <Select value={draft.piRuntimePreference} onValueChange={(value) => updateDraft({ piRuntimePreference: value as AppSettings["piRuntimePreference"] })}>
+            <Select value={draft.piRuntimePreference} onValueChange={(value) => {
+              if (value === "auto" || value === "typescript" || value === "bolt") {
+                updateDraft({ piRuntimePreference: value });
+              }
+            }}>
               <SelectTrigger size="sm" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="auto">{t("settings.piRuntimePreferenceAuto")}</SelectItem>
                 <SelectItem value="typescript">{t("settings.piRuntimePreferenceTypescript")}</SelectItem>
-                <SelectItem value="rust">{t("settings.piRuntimePreferenceRust")}</SelectItem>
                 <SelectItem value="bolt">{t("settings.piRuntimePreferenceBolt")}</SelectItem>
               </SelectContent>
             </Select>
           </SettingRow>
           <SettingRow title={<span>{t("settings.piTypescriptPath")}</span>} description={t("settings.piTypescriptPathHint")} stacked>
             <Input className="h-8" type="text" value={draft.piTypescriptPath} placeholder={t("settings.piTypescriptPathPlaceholder")} onChange={(event) => updateDraft({ piTypescriptPath: event.target.value })} />
-          </SettingRow>
-          <SettingRow title={<span>{t("settings.piRustPath")}</span>} description={t("settings.piRustPathHint")} stacked>
-            <Input className="h-8" type="text" value={draft.piRustPath} placeholder={t("settings.piRustPathPlaceholder")} onChange={(event) => updateDraft({ piRustPath: event.target.value })} />
           </SettingRow>
           <SettingRow title={<span>{t("settings.piBoltPath")}</span>} description={t("settings.piBoltPathHint")} stacked>
             <Input className="h-8" type="text" value={draft.piBoltPath} placeholder={t("settings.piBoltPathPlaceholder")} onChange={(event) => updateDraft({ piBoltPath: event.target.value })} />
@@ -444,26 +444,6 @@ export const DevTab = memo(function DevTab(props: DevTabProps) {
 
       {/* 运行 */}
       <SettingsSection title={t("settings.sectionRuntime")}>
-        <SettingRow
-          title={
-            <>
-              <span>{t("settings.rpcTimeout")}</span>
-              <DirtyMarker dirty={isDirty("rpcTimeout")} label={t("settings.rpcTimeout")} />
-            </>
-          }
-          description={t("settings.rpcTimeoutDesc")}
-          stacked
-        >
-          <Input
-            type="number"
-            className="h-8 max-w-80"
-            value={String(Math.round(draft.rpcTimeout / 1000))}
-            onChange={(e) => {
-              const seconds = Math.max(600, parseInt(e.target.value) || 600);
-              updateDraft({ rpcTimeout: seconds * 1000 });
-            }}
-          />
-        </SettingRow>
         <SettingRow
           title={
             <>

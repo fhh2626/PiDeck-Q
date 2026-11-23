@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import React from "react";
 import test from "node:test";
 import { collectSessionFileChanges, collectRunFileChanges, fileChangeToDiffLines } from "../src/renderer/src/components/session/TimelineFormat.ts";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { mountReact } from "./helpers/mountReact.mjs";
 
 /**
  * 会话文件修改汇总收集逻辑测试：
@@ -124,11 +126,59 @@ test("fileChangeToDiffLines: write yields all-added lines, edit yields removed+a
 	]);
 });
 
-test("file changes are per-turn: TurnRow mounts TurnFileChanges and global summary is gone", () => {
-	// 每轮展示改为固定在 TurnRow 底部（TurnFileChanges），时间线不再做全局汇总
-	const timeline = readFileSync("src/renderer/src/components/session/SessionMessageTimeline.tsx", "utf8");
-	assert.ok(!timeline.includes("SessionFileSummary"), "timeline should not render global summary");
-	assert.ok(!timeline.includes("lastRunMessages"), "timeline should not compute lastRunMessages");
-	const turnRow = readFileSync("src/renderer/src/components/session/turn/TurnRow.tsx", "utf8");
-	assert.match(turnRow, /TurnFileChanges/);
+test("TurnFileChanges lists the run's files and collapses them without dropping the toggle", async () => {
+	const run = {
+		kind: "agent-run",
+		id: "run-1",
+		startedAt: 1000,
+		endedAt: 2000,
+		items: [{
+			kind: "tool-group",
+			id: "tg-1",
+			messages: [
+				toolMessage({ path: "src/a.ts", args: { file_path: "src/a.ts", content: "v1" } }),
+			],
+		}],
+	};
+	await mountReact(async ({ act, root, document, click }) => {
+		const { TurnFileChanges } = loadTsCommonJs(
+			"src/renderer/src/components/session/turn/TurnFileChanges.tsx",
+			{
+				stubs: {
+					"../../../i18n": { t: (key) => key },
+					"../../ui-shadcn/button": {
+						Button: (props) => React.createElement("button", {
+							type: "button",
+							"aria-label": props["aria-label"],
+							onClick: props.onClick,
+						}, props.children),
+					},
+					"./TurnFileChangeRow": {
+						TurnFileChangeRow: (props) => React.createElement("div", { "data-path": props.path }, props.path),
+					},
+					"lucide-react": {
+						ChevronDown: () => null,
+						ChevronUp: () => null,
+						Files: () => null,
+					},
+				},
+			},
+		);
+		await act(() => {
+			root.render(React.createElement(TurnFileChanges, { run }));
+		});
+		assert.equal(document.querySelector("[data-path='src/a.ts']")?.textContent, "src/a.ts");
+		await click(document.querySelector("button[aria-label='common.collapse']"));
+		assert.equal(document.querySelector("[data-path='src/a.ts']"), null);
+		await click(document.querySelector("button[aria-label='common.expand']"));
+		assert.equal(document.querySelector("[data-path='src/a.ts']")?.textContent, "src/a.ts");
+
+		await act(() => {
+			root.render(React.createElement(TurnFileChanges, {
+				run: { ...run, items: [] },
+			}));
+		});
+		assert.equal(document.querySelector("[data-path]"), null);
+		assert.equal(document.querySelector("button"), null);
+	});
 });

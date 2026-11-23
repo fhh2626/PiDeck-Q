@@ -1,6 +1,6 @@
 上集我们安装了 PiDeck，也跑通了第一个项目。但如果你留意一下，会发现每个项目后面都有一个状态点。这背后到底发生了什么？这集我们就来搞清楚。
 
-首先你要理解一个核心概念：PiDeck 不是原版 Pi Agent 或 Pi_Agent_Rust 的分支，它是一个外壳。PiDeck 本身不提供 AI 能力。它做的是管理 Agent 运行时进程，然后把运行时的能力包装成图形界面。你可以把 PiDeck 想象成一个浏览器，而 Agent 运行时是背后的搜索引擎。浏览器本身不搜索，但它让搜索变得好用。
+首先你要理解一个核心概念：PiDeck 不是原版 Pi Agent 或 Pi-Bolt 的分支，它是一个外壳。PiDeck 本身不提供 AI 能力。它做的是管理 Agent 运行时进程，然后把运行时的能力包装成图形界面。你可以把 PiDeck 想象成一个浏览器，而 Agent 运行时是背后的搜索引擎。浏览器本身不搜索，但它让搜索变得好用。
 
 更具体地说，PiDeck 里每一个 Agent Tab，都对应一个独立的 RPC Agent 进程。这意味着项目 A 和项目 B 是完全隔离的。它们的上下文、会话历史、环境变量，全部独立。你在项目 A 里聊到一半，切换到项目 B，再切回来，项目 A 的上下文还在。这就是为什么 PiDeck 可以同时管理多个项目，而不会互相干扰。如果你想验证这一点，打开任务管理器，你会看到每个运行中的项目都对应一个 Agent 进程。
 
@@ -20,7 +20,7 @@
 
 Last episode we installed PiDeck and ran our first project. But if you look closely, you will notice a small status dot next to each project. What is actually happening behind the scenes? That is what we are covering in this episode.
 
-First, you need to understand one core concept: PiDeck is not a fork of the original Pi Agent or Pi_Agent_Rust. It is a shell. PiDeck does not provide AI capabilities itself. What it does is manage Agent runtime processes and wrap their capabilities into a graphical interface. You can think of PiDeck as a browser, and the Agent runtime as the search engine behind it. The browser does not search, but it makes searching usable.
+First, you need to understand one core concept: PiDeck is not a fork of the original Pi Agent or Pi-Bolt. It is a shell. PiDeck does not provide AI capabilities itself. What it does is manage Agent runtime processes and wrap their capabilities into a graphical interface. You can think of PiDeck as a browser, and the Agent runtime as the search engine behind it. The browser does not search, but it makes searching usable.
 
 More specifically, every Agent Tab in PiDeck corresponds to an independent pi RPC process. This means Project A and Project B are completely isolated. Their contexts, session histories, and environment variables are all separate. If you are in the middle of a conversation in Project A, switch to Project B, and then switch back, Project A's context is still there. That is why PiDeck can manage multiple projects simultaneously without them interfering with each other. If you want to verify this, open Task Manager and you will see a separate pi process for each running project.
 

@@ -42,7 +42,7 @@ function isTransparentInUtilities(selector) {
 test("wallpaper chrome + content blocks become transparent in utilities layer", () => {
   // chrome 小块（tab 栏/标题/抽屉 tab 栏/窗口控制条）+ 内容层磨砂块（输入框/用户气泡/工具卡片）
   const targets = [
-    ".session-tabs-bar",
+    ".workspace-toolbar",
     ".chat-header",
     ".drawer-activity-rail",
     ".window-controls",
@@ -82,7 +82,7 @@ test("transparency rules live only in the intended layer", () => {
   // utilities 层选择器不得在 utilities 层外（legacy）重复声明 transparent
   const outside = tailwindCss.replace(/@layer\s+utilities\s*\{[\s\S]*?\}/g, "");
   for (const sel of [
-    ".session-tabs-bar",
+    ".workspace-toolbar",
     ".chat-header",
     ".drawer-activity-rail",
     ".window-controls",

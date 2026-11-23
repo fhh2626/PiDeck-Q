@@ -1,47 +1,117 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { readRendererStyles } from "./helpers/rendererStyles.mjs";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
+import { mountReact } from "./helpers/mountReact.mjs";
 
-const pagination = readFileSync(
-  "src/renderer/src/components/ui-shadcn/pagination.tsx",
-  "utf8",
-);
-const yao = readFileSync("src/renderer/src/config/YaoPromptTab.tsx", "utf8");
-const styles = readRendererStyles();
+function loadPagination(React, inputHandlers) {
+	return loadTsCommonJs("src/renderer/src/components/ui-shadcn/pagination.tsx", {
+		stubs: {
+			"../../i18n": { t: (key, params) => (params?.page ? `${key}:${params.page}` : key) },
+			"@/lib/utils": { cn: (...values) => values.filter(Boolean).join(" ") },
+			"lucide-react": {
+				ChevronLeft: () => null,
+				ChevronRight: () => null,
+			},
+			"./input": {
+				Input: (props) => {
+					if (inputHandlers) inputHandlers.current = props;
+					return React.createElement("input", {
+						"aria-label": props["aria-label"],
+						value: props.value ?? "",
+						onChange: props.onChange,
+						onKeyDown: props.onKeyDown,
+						onBlur: props.onBlur,
+					});
+				},
+			},
+		},
+	});
+}
 
-test("shared Pagination provides labeled prev/next, page window and jump input", () => {
-  assert.match(pagination, /export function Pagination/);
-  assert.match(pagination, /aria-label=\{t\("pagination\.previous"\)\}/);
-  assert.match(pagination, /aria-label=\{t\("pagination\.next"\)\}/);
-  // 页码窗口来自纯函数（配单测），中间页码与省略号由此渲染
-  assert.match(pagination, /paginationWindow\(page, totalPages\)/);
-  assert.match(pagination, /t\("pagination\.page", \{ page: String\(item\) \}\)/);
-  // 跳页输入框：回车跳转 + aria 标签
-  assert.match(pagination, /t\("pagination\.jumpTo"\)/);
-  assert.match(pagination, /Math\.max\(1, page - 1\)/);
-  assert.match(pagination, /Math\.min\(totalPages, page \+ 1\)/);
+function pageLabels(document) {
+	return [...document.querySelectorAll("button[aria-label^='pagination.page']")]
+		.map((button) => button.textContent);
+}
+
+test("Pagination renders the page window and moves with previous and next", async () => {
+	const pages = [];
+	await mountReact(async ({ React, act, root, document, click }) => {
+		const { Pagination } = loadPagination(React);
+		const renderAt = async (page) => {
+			await act(() => {
+				root.render(React.createElement(Pagination, {
+					page,
+					totalPages: 20,
+					onPageChange: (next) => pages.push(next),
+				}));
+			});
+		};
+		await renderAt(10);
+		assert.deepEqual(pageLabels(document), ["1", "8", "9", "10", "11", "12", "20"]);
+		assert.equal(document.querySelector("[aria-current='page']").textContent, "10");
+		assert.deepEqual(
+			[...document.querySelectorAll("span")].map((node) => node.textContent).filter((text) => text === "…"),
+			["…", "…"],
+		);
+
+		await click(document.querySelector("button[aria-label='pagination.previous']"));
+		await click(document.querySelector("button[aria-label='pagination.next']"));
+		assert.deepEqual(pages, [9, 11]);
+
+		await renderAt(1);
+		assert.equal(document.querySelector("button[aria-label='pagination.previous']").disabled, true);
+		assert.ok(document.querySelector("input[aria-label='pagination.jumpTo']"));
+		await renderAt(20);
+		assert.equal(document.querySelector("button[aria-label='pagination.next']").disabled, true);
+	});
 });
 
-test("YaoPrompt pagination uses the shared component and no legacy CSS remains", () => {
-  assert.match(yao, /<Pagination[\s\S]*page=\{page\}[\s\S]*totalPages=\{totalPages\}[\s\S]*onPageChange=\{setPage\}/);
-  assert.doesNotMatch(yao, /yao-pagination/);
-  assert.doesNotMatch(styles, /\.yao-pagination\b/);
-  assert.doesNotMatch(styles, /\.yao-pagination-info/);
-});
+test("Pagination jump uses the typed value, ignores invalid input, and clears the field", async () => {
+	const pages = [];
+	const inputHandlers = { current: null };
+	await mountReact(async ({ React, act, root }) => {
+		const { Pagination } = loadPagination(React, inputHandlers);
+		const renderAt = async (page) => {
+			await act(() => {
+				root.render(React.createElement(Pagination, {
+					page,
+					totalPages: 5,
+					onPageChange: (next) => pages.push(next),
+				}));
+			});
+		};
+		const type = async (value) => {
+			await act(() => {
+				inputHandlers.current.onChange({ target: { value } });
+			});
+		};
+		const pressEnter = async () => {
+			await act(() => {
+				inputHandlers.current.onKeyDown({ key: "Enter" });
+			});
+		};
 
-test("dead CSS sweep removed unreferenced classes from style files", () => {
-  for (const dead of [
-    "git-pane-header-actions",
-    "git-file-icon",
-    "git-ref-branch",
-    "git-commit-hover-author-text",
-    "config-model-chip-list",
-    "math-copy-btn--inline",
-    "archived-message-text",
-  ]) {
-    assert.doesNotMatch(styles, new RegExp(`\\.${dead}\\b`), `${dead} should be removed`);
-  }
-  // git-resource-group-actions 例外：与活类 .git-resource-group.open 共用选择器列表，按共享规则保守保留。
-  assert.match(styles, /\.git-resource-group\.open \.git-resource-group-actions/);
+		await renderAt(2);
+		await type("4");
+		assert.equal(inputHandlers.current.value, "4");
+		await pressEnter();
+		assert.deepEqual(pages, [4]);
+		assert.equal(inputHandlers.current.value, "");
+
+		await type("9");
+		await pressEnter();
+		await type("4.5");
+		await pressEnter();
+		await type("2");
+		await pressEnter();
+		assert.deepEqual(pages, [4]);
+		assert.equal(inputHandlers.current.value, "");
+
+		await type("3");
+		await act(() => {
+			inputHandlers.current.onBlur();
+		});
+		assert.equal(inputHandlers.current.value, "");
+		assert.deepEqual(pages, [4]);
+	});
 });

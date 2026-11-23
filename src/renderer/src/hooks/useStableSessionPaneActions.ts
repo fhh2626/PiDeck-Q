@@ -23,12 +23,12 @@ export function useLatestPaneCommand<Args extends unknown[], Result>(command: ((
 export function useStableSessionPaneActions(value: SessionPaneActions): SessionPaneActions {
   // Hook order is explicit and fixed, including optional capabilities.
   const commands = {
-    promoteSessionToPermanent: useLatestPaneCommand(value.promoteSessionToPermanent),
     showToast: useLatestPaneCommand(value.showToast),
     onOpenFile: useLatestPaneCommand(value.onOpenFile),
     onDiffFile: useLatestPaneCommand(value.onDiffFile),
     onPreviewImage: useLatestPaneCommand(value.onPreviewImage),
     abortAgent: useLatestPaneCommand(value.abortAgent),
+    stopAgent: useLatestPaneCommand(value.stopAgent),
     restartActiveAgent: useLatestPaneCommand(value.restartActiveAgent),
     runCreateSessionDraft: useLatestPaneCommand(value.runCreateSessionDraft),
     enqueueSessionPrompt: useLatestPaneCommand(value.enqueueSessionPrompt),
@@ -50,8 +50,8 @@ export function useStableSessionPaneActions(value: SessionPaneActions): SessionP
   };
   return useMemo(() => ({ ...commands, queueFlushBySessionRef: value.queueFlushBySessionRef,
     api: value.api, jumpToMessageRef: value.jumpToMessageRef }), [
-    commands.promoteSessionToPermanent, commands.showToast, commands.onOpenFile, commands.onDiffFile,
-    commands.onPreviewImage, commands.abortAgent, commands.restartActiveAgent, commands.runCreateSessionDraft,
+    commands.showToast, commands.onOpenFile, commands.onDiffFile,
+    commands.onPreviewImage, commands.abortAgent, commands.stopAgent, commands.restartActiveAgent, commands.runCreateSessionDraft,
     commands.enqueueSessionPrompt, commands.insertQuickPrompt, commands.ensureSessionId, commands.resendUserMessage,
     commands.editMessage, commands.deleteMessage, commands.forkFromUserMessage, commands.openSidebarSessionById,
     commands.queueRetract, commands.queueDiscard, commands.setTerminalOpenForOwner, commands.setTerminalCollapsedForOwner,

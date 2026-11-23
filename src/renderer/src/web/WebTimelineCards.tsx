@@ -11,7 +11,7 @@ import { CARD_BODY_PADDING, CARD_PREVIEW_PADDING, DASHED_SURFACE, THINKING_HEADE
 import { MarkdownStream } from "@/components/session/MarkdownStream";
 import { SingleLinePreview } from "@/components/session/SingleLinePreview";
 import { TimelineMarker } from "../components/session/TimelineMarker";
-import type { WebToolPart } from "./webToolGroups";
+import { resolveWebToolPartStatus, resolveWebToolGroupStatus, type WebToolPart } from "./webToolGroups";
 
 /** 思考折叠卡片（复用桌面 ThinkingBlock 视觉：Brain 图标 + 可折叠正文）。
  * 默认折叠成单行预览（deepseek-harness ReasoningRow 模式：流式中 tail -f 显示最新行 + 扫光，
@@ -95,10 +95,12 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart;
 		(typeof part.type === "string" && part.type.startsWith("tool-")
 			? part.type.slice("tool-".length)
 			: "tool");
-	const state = part.state ?? "input-streaming";
-	const running = state === "input-streaming" || state === "input-available";
-	const error = state === "output-error" || state === "error" || Boolean(part.errorText);
-	const preview = formatToolPreview(error ? part.errorText : running ? (part as any).input : part.output);
+	// Keep the view aligned with grouping/reconciliation's tested status policy.
+	const status = resolveWebToolPartStatus(part);
+	const resultMissing = status === "unknown";
+	const running = status === "running";
+	const error = status === "error";
+	const preview = formatToolPreview(error ? part.errorText : running || resultMissing ? part.input : part.output);
 	const cardSection = (
 		<section
 			className={cn(
@@ -106,7 +108,7 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart;
 				running && "tone-running",
 				error && "tone-error",
 			)}
-			data-status={error ? "error" : running ? "running" : "done"}
+			data-status={status}
 			data-tool-name={toolName}
 		>
 			<div className="flex min-h-6 max-w-full items-center px-2 py-0.5">
@@ -123,6 +125,8 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart;
 							</span>
 						) : error ? (
 							<span className="inline-flex items-center gap-1.5">{t("tool.statusError")}</span>
+						) : resultMissing ? (
+							<span className="inline-flex items-center gap-1.5">{t("tool.statusUnknown")}</span>
 						) : (
 							<span className="inline-flex items-center gap-1.5">{t("tool.statusDone")}</span>
 						)}
@@ -140,7 +144,7 @@ export const WebToolCard = memo(function WebToolCard(props: { part: WebToolPart;
 	}
 
 	return (
-		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : "success"}>
+		<TimelineMarker kind="tool" tone={error ? "error" : running ? "active" : resultMissing ? "neutral" : "success"}>
 			{cardSection}
 		</TimelineMarker>
 	);
@@ -158,18 +162,10 @@ export const WebToolGroupCard = memo(function WebToolGroupCard(props: {
 		return parts[0] ? <WebToolCard part={parts[0]} /> : null;
 	}
 
-	const hasRunning = parts.some((p) => {
-		const s = p.state ?? "input-streaming";
-		return s === "input-streaming" || s === "input-available";
-	});
-	const hasError = parts.some((p) => {
-		const s = p.state ?? "input-streaming";
-		return s === "output-error" || s === "error" || Boolean(p.errorText);
-	});
-	const status = hasRunning ? "running" : hasError ? "error" : "done";
+	const status = resolveWebToolGroupStatus(parts);
 
 	return (
-		<TimelineMarker kind="tool" tone={hasError ? "error" : hasRunning ? "active" : "success"}>
+		<TimelineMarker kind="tool" tone={status === "error" ? "error" : status === "running" ? "active" : status === "unknown" ? "neutral" : "success"}>
 			<section
 				className="tool-group-card w-full min-w-0 overflow-hidden rounded-md border border-border-subtle bg-bg-panel"
 				data-group-id={groupId}
@@ -194,7 +190,7 @@ export const WebToolGroupCard = memo(function WebToolGroupCard(props: {
 								? "tool.statusRunning"
 								: status === "error"
 									? "tool.statusError"
-									: "tool.statusDone"
+									: status === "unknown" ? "tool.statusUnknown" : "tool.statusDone"
 						)}
 					</Badge>
 				</button>

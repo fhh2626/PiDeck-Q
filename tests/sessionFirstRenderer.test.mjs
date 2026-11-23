@@ -108,12 +108,12 @@ test("typing in the current Composer prewarms its runtime once", () => {
 });
 
 
-test("forking a user message opens the new session as a permanent tab", () => {
+test("forking and cloning select the replacement session after refreshing the catalog", () => {
   const body = functionBody("forkFromUserMessage", messageCommandsSource);
-  // fork 做于 Tab 栏之前：只刷新列表不切焦点/不登记，新会话会出现但点 Tab 对不上 runtime。
+  // 运行时换绑后，刷新目录并聚焦稳定的会话身份。
   assert.match(body, /openReplacedRuntimeSession\(/);
   assert.match(body, /result\.targetSessionId \?\? input\.currentSessionIdRef/);
-  assert.match(functionBody("openReplacedRuntimeSession"), /registerOpenSession\(targetSessionId, "permanent"\)/);
+  assert.match(functionBody("openReplacedRuntimeSession"), /await refreshProjectSessions\(projectId\)/);
   assert.match(functionBody("openReplacedRuntimeSession"), /selectSessionCommand\(projectId, targetSessionId, true\)/);
   assert.match(functionBody("cloneAgentSession"), /openReplacedRuntimeSession\(/);
 });

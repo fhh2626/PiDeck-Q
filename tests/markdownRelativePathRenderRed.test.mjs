@@ -26,13 +26,21 @@ function clickRenderedLink(markdown) {
   anchors[0].props.onClick({ preventDefault() {}, ctrlKey: false, metaKey: false });
   return { opened, external };
 }
-for (const path of ["src/项目/图.png", String.raw`src\folder\image.png`, "src/literal%20name.png", "src/image#1.png"]) {
+for (const path of ["src/项目/图.png", String.raw`src\folder\image.png`, "src/literal%20name.png"]) {
   for (const explicit of [false, true]) {
     test(`Streamdown actual MarkdownLink click preserves ${explicit ? "explicit" : "bare"} ${path}`, () => {
       assert.deepEqual(clickRenderedLink(explicit ? `[image](${path})` : path).opened, [path]);
     });
   }
 }
+test("Streamdown keeps hashes in bare disk names and decodes literal hashes in file URLs", () => {
+  assert.deepEqual(clickRenderedLink("src/image#1.png").opened, ["src/image#1.png"]);
+  assert.deepEqual(clickRenderedLink("[image](file:///C:/repo/src/image%231.png)").opened, ["C:/repo/src/image#1.png"]);
+});
+test("Streamdown treats hashes in explicit Markdown destinations as URL fragments", () => {
+  assert.deepEqual(clickRenderedLink("[guide](docs/guide.md#section)").opened, ["docs/guide.md"]);
+  assert.deepEqual(clickRenderedLink("[image](src/image#1.png)").opened, ["src/image"]);
+});
 test("Streamdown file URI still validates encoded separators rather than trusting metadata", () => {
   assert.deepEqual(clickRenderedLink("[image](file:///C:/bad%5cname.png)").opened, []);
   assert.ok(notices.length);

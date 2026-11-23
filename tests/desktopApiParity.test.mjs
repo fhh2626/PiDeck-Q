@@ -96,7 +96,6 @@ test("every desktopApi method talks to a declared IPC channel, and every subscri
 		"app.onWindowMaximizedChange",
 		"projects.onChanged",
 		"projects.onModelsChanged",
-		"projects.onTrustRequest",
 		"rpcLogs.onLog",
 		"sessions.onCatalogRefreshed",
 		"sessions.onRuntimeEvent",

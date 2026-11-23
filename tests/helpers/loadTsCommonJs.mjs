@@ -57,6 +57,10 @@ export function loadTsCommonJs(filePath, options = {}) {
 
     const localRequire = (specifier) => {
       if (Object.hasOwn(stubs, specifier)) return stubs[specifier];
+      // Shared UI primitives use the same renderer alias as the Vite build.
+      if (specifier.startsWith("@/")) {
+        return load(resolveLocalModule(resolve("src/renderer/src/index.ts"), `./${specifier.slice(2)}`));
+      }
       if (specifier.startsWith(".") || specifier.startsWith("/")) {
         return load(resolveLocalModule(absolutePath, specifier));
       }

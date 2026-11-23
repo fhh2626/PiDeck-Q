@@ -24,6 +24,7 @@ export const ipcChannels = {
 	editorsChooseExecutable: "editors:choose-executable",
 	editorsOpenProject: "editors:open-project",
 	filesList: "files:list",
+	filesStat: "files:stat",
 	filesOpen: "files:open",
 	filesShowInFolder: "files:show-in-folder",
 	filesReadContent: "files:read-content",
@@ -63,8 +64,6 @@ export const ipcChannels = {
 	/** 会话 JSONL 过程事件（session/model/thinking/custom/compaction），供轨迹复盘，不进聊天时间线。 */
 	sessionsCatalogReadProcessEvents: "sessions:catalog-read-process-events",
 	sessionsCatalogReadReferenceMessages: "sessions:catalog-read-reference-messages",
-	/** 读取会话文件中最近保存的上下文控制器状态（开关初始化用） */
-	sessionsCatalogGetContextControllerState: "sessions:catalog-get-context-controller-state",
 	/** 按需读取单条消息完整文本（工具结果截断后的「查看完整输出」入口）。 */
 	sessionsCatalogReadMessageFullText: "sessions:catalog-read-message-full-text",
 	/** 为长图导出读取未截断的工具参数与结果完整载荷 */
@@ -272,17 +271,10 @@ export const ipcChannels = {
 
 	/** Agent Extension UI 协议：主进程 → 渲染进程，推送扩展的 UI 请求（select/confirm/input/editor） */
 	agentsUiRequest: "agents:ui-request",
-	/** 项目信任确认：主进程 → 渲染进程，启动 Agent 前请求用户对含 .pi 资源的项目做信任决策 */
-	projectsTrustRequest: "projects:trust-request",
-	/** 项目信任确认：渲染进程 → 主进程，回传用户的信任选择（trust-remember/trust-session/deny） */
-	projectsTrustResponse: "projects:trust-response",
 
 	configGetModels: "config:get-models",
-	configGetAuth: "config:get-auth",
 	configGetSettings: "config:get-settings",
-	configGetTrust: "config:get-trust",
 	configSaveModels: "config:save-models",
-	configSaveAuth: "config:save-auth",
 	configSaveSettings: "config:save-settings",
 	configSaveRaw: "config:save-raw",
 	configExport: "config:export",
@@ -291,6 +283,12 @@ export const ipcChannels = {
 	configFetchModels: "config:fetch-models",
 	/** 快速测试 provider 连接：发送一条最小请求验证 baseUrl/apiKey/模型 是否正常 */
 	configTestProvider: "config:test-provider",
+
+	// ===== 子代理偏好（pideck-q-subagents 扩展的 settings.json subagents 块） =====
+	/** 读取全局 + 当前项目的子代理偏好 */
+	subagentsGetSettings: "subagents:get-settings",
+	/** 写入指定作用域的子代理偏好（只改 subagents 块，保留其余键） */
+	subagentsSaveSettings: "subagents:save-settings",
 
 	// ===== 安全管理（SecurityStore + pi-deck-security-gate 扩展） =====
 	/** 拉取完整安全配置（等级/默认等级/会话覆盖） */

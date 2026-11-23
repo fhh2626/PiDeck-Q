@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { atom, useAtomValue } from "jotai";
 import { selectAtom } from "jotai/utils";
-import type { AgentTab, SessionRecord, SessionRuntimeTarget } from "../../../shared/types";
+import type { AgentTab, SessionRecord, SessionRuntimeTarget, SessionMessageCommandTarget } from "../../../shared/types";
 import {
   currentSessionIdAtom,
   currentSessionRuntimeAtom,
@@ -51,6 +51,7 @@ export interface SessionRuntimeController {
   activeAgentId: string | undefined;
   activeRuntimeState: RuntimeStateLike | undefined;
   runtimeTarget: SessionRuntimeTarget | undefined;
+  messageCommandTarget: SessionMessageCommandTarget | undefined;
   activeConversationStatus: "starting" | "running" | "idle" | undefined;
   hasActiveConversation: boolean;
   isAgentStarting: boolean;
@@ -176,12 +177,22 @@ export function useSessionRuntimeController(
       ? activeAgent.id
       : undefined;
 
-  const canMutateActiveMessages = Boolean(
-    currentSessionId &&
-    currentSession &&
-    runtimeTarget &&
-    currentSessionLiveAgentId,
-  );
+  // History actions belong to the saved session. A stopped process is created
+  // lazily when the user executes one, with a newly validated runtime binding.
+  const messageCommandTarget: SessionMessageCommandTarget | undefined =
+    currentSessionId && currentSession
+      ? runtimeTarget && currentSessionLiveAgentId
+        ? runtimeTarget
+        : currentSession.filePath
+          ? {
+              kind: "history",
+              sessionId: currentSessionId,
+              filePath: currentSession.filePath,
+              runtimeGeneration: currentSessionRuntime?.runtimeGeneration ?? 0,
+            }
+          : undefined
+      : undefined;
+  const canMutateActiveMessages = Boolean(messageCommandTarget);
 
   // ── SessionView shortcuts ──
 
@@ -269,6 +280,7 @@ export function useSessionRuntimeController(
     activeAgentId,
     activeRuntimeState,
     runtimeTarget,
+    messageCommandTarget,
     activeConversationStatus,
     hasActiveConversation,
     isAgentStarting,

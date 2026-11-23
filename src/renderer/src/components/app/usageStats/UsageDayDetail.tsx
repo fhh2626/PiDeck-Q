@@ -2,7 +2,7 @@
  * 按天用量明细（今日概览 + 按天搜索）。
  *
  * 顶部工具栏：日期选择（日历单选）+「回今日」快捷；默认聚焦今日，当日数据最醒目。
- * 明细区：当日 4 卡（tokens/费用/轮次/会话数）+ provider 堆叠条与图例 + 当日模型表 + 当日项目表。
+ * 明细区：当日 3 卡（tokens/轮次/会话数）+ provider 堆叠条与图例 + 当日模型表 + 当日项目表。
  * 选中天无记录时显示空态（日历仍可继续选其他天）。
  *
  * 数据来自主进程聚合的 daily 行（UsageDayRow 已含 byModel/byProject 明细），
@@ -21,7 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../ui-shadcn/popover
 import { SettingsSection } from "../settings/SettingsStorageTab";
 import { colorForProvider } from "./providerColors";
 import { UsageTable } from "./UsageTable";
-import { formatCost, formatTokens } from "./format";
+import { formatTokens } from "./format";
 
 /** 本地时区日键 "YYYY-MM-DD"。 */
 function dayKeyOf(d: Date): string {
@@ -47,9 +47,9 @@ function DayCard(props: { label: string; value: React.ReactNode; sub?: string })
   );
 }
 
-/** 当日 provider 堆叠条：色块宽度 = tokens 占比，hover 显示 provider/tokens/费用。 */
+/** 当日 provider 堆叠条：色块宽度 = tokens 占比，hover 显示 provider/tokens。 */
 function ProviderBar(props: {
-  providers: Array<{ provider: string; tokens: number; cost: number }>;
+  providers: Array<{ provider: string; tokens: number }>;
 }) {
   const { providers } = props;
   const total = providers.reduce((acc, p) => acc + p.tokens, 0);
@@ -66,19 +66,18 @@ function ProviderBar(props: {
             width: `${Math.max(1, (p.tokens / total) * 100)}%`,
             backgroundColor: colorForProvider(p.provider),
           }}
-          title={`${p.provider} · ${formatTokens(p.tokens)} · ${formatCost(p.cost)}`}
+          title={`${p.provider} · ${formatTokens(p.tokens)}`}
         />
       ))}
     </div>
   );
 }
 
-/** 当日 provider 图例（名称 + tokens + 费用，tokens 降序）。 */
+/** 当日 provider 图例（名称 + tokens，tokens 降序）。 */
 function ProviderLegend(props: {
-  providers: Array<{ provider: string; tokens: number; cost: number }>;
-  costKnown: boolean;
+  providers: Array<{ provider: string; tokens: number }>;
 }) {
-  const { providers, costKnown } = props;
+  const { providers } = props;
   return (
     <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1.5">
       {providers.map((p) => (
@@ -90,18 +89,14 @@ function ProviderLegend(props: {
           />
           <span className="max-w-56 truncate">{p.provider}</span>
           <span className="tabular-nums text-muted-foreground">{formatTokens(p.tokens)}</span>
-          <span className="tabular-nums text-muted-foreground">
-            {formatCost(p.cost)}
-            {!costKnown && <span className="usage-stats-unknown"> *</span>}
-          </span>
         </li>
       ))}
     </ul>
   );
 }
 
-export function UsageDayDetail(props: { rows: UsageDayRow[]; costKnown: boolean }) {
-  const { rows, costKnown } = props;
+export function UsageDayDetail(props: { rows: UsageDayRow[] }) {
+  const { rows } = props;
   const today = dayKeyOf(new Date());
   const [selected, setSelected] = useState<string>(today);
   const locale = getI18nLocale() === "zh-CN" ? zhCN : enUS;
@@ -156,15 +151,6 @@ export function UsageDayDetail(props: { rows: UsageDayRow[]; costKnown: boolean 
               label={t("usageStats.dayDetail.cards.tokens")}
               value={formatTokens(row.totals.tokens)}
             />
-            <DayCard
-              label={t("usageStats.dayDetail.cards.cost")}
-              value={
-                <span title={costKnown ? undefined : t("usageStats.cards.costUnknown")}>
-                  {formatCost(row.totals.cost)}
-                  {!costKnown && <span className="usage-stats-unknown"> *</span>}
-                </span>
-              }
-            />
             <DayCard label={t("usageStats.dayDetail.cards.turns")} value={String(row.totals.turns)} />
             <DayCard
               label={t("usageStats.dayDetail.cards.sessions")}
@@ -175,7 +161,7 @@ export function UsageDayDetail(props: { rows: UsageDayRow[]; costKnown: boolean 
           {row.byProvider.length > 1 && (
             <>
               <ProviderBar providers={row.byProvider} />
-              <ProviderLegend providers={row.byProvider} costKnown={costKnown} />
+              <ProviderLegend providers={row.byProvider} />
             </>
           )}
 
@@ -190,13 +176,11 @@ export function UsageDayDetail(props: { rows: UsageDayRow[]; costKnown: boolean 
                   headers={[
                     t("usageStats.models.col.model"),
                     t("usageStats.models.col.tokens"),
-                    t("usageStats.models.col.cost"),
                     t("usageStats.models.col.turns"),
                   ]}
                   rows={row.byModel.map((m) => [
                     m.model,
                     formatTokens(m.tokens),
-                    formatCost(m.cost),
                     String(m.turns),
                   ])}
                 />
@@ -209,13 +193,11 @@ export function UsageDayDetail(props: { rows: UsageDayRow[]; costKnown: boolean 
                   headers={[
                     t("usageStats.projects.col.project"),
                     t("usageStats.models.col.tokens"),
-                    t("usageStats.models.col.cost"),
                     t("usageStats.models.col.turns"),
                   ]}
                   rows={row.byProject.map((p) => [
                     p.project,
                     formatTokens(p.tokens),
-                    formatCost(p.cost),
                     String(p.turns),
                   ])}
                 />

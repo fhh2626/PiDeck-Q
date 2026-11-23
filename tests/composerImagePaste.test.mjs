@@ -53,33 +53,11 @@ test("dataUrlToFile 解码 base64 字节、MIME 与文件名正确", async () =>
   assert.equal(file.size, 3);
   assert.deepEqual(Array.from(new Uint8Array(await file.arrayBuffer())), [65, 66, 67]);
 });
-
-// ── 源码级接线断言：对话框 properties 与粘贴分支 ──
-
-const filesIpc = readFileSync("src/main/ipc/filesIpc.ts", "utf8");
 const preload = readFileSync("src/shared/desktop/createPiDesktopApi.ts", "utf8");
 const controller = readFileSync(
   "src/renderer/src/hooks/useSessionComposerController.ts",
   "utf8",
 );
-
-test("附件选择器默认仅选文件，includeDirectories 切换到明确目录模式", () => {
-  // Qt/Windows 不能在同一个 picker 中混合文件和目录，目录请求必须是单独模式。
-  assert.match(
-    filesIpc,
-    /properties: options\?\.includeDirectories\s*\?\s*\["openDirectory"\]\s*:\s*\["openFile", "multiSelections"\]/,
-  );
-  assert.match(
-    preload,
-    /pickFiles: \(options\?:\s*\{ title\?: string; includeDirectories\?: boolean \}\)/,
-  );
-});
-
-test("readBase64 支持 maxBytes 预检，粘贴图片超大时主进程拦截", () => {
-  assert.match(filesIpc, /filesReadBase64, async \(path: string, maxBytes\?: number\)/);
-  assert.match(filesIpc, /FILE_TOO_LARGE/);
-  assert.match(preload, /readBase64: \(path: string, maxBytes\?: number\)/);
-});
 
 test("onPaste 图片文件走预览分支，失败回退 @path 引用", () => {
   assert.match(controller, /clipboardPaths\.every\(isImageFilePath\)/);

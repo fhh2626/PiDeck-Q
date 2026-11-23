@@ -11,13 +11,13 @@ export type ChatSessionPaneProps = {
   sessionId: string;
   focused: boolean;
   onFocusPane: () => void;
-  /** 分屏双栏时为 true（边框高亮）；单栏 Tab 外置时为 false */
+  /** 分屏双栏时为 true（边框高亮）；单栏时为 false */
   splitPane?: boolean;
 };
 
 /**
  * 单个会话聊天栏：自持 timeline + runtime 注入。
- * 共享服务来自 SessionPaneServices；Tab 栏由 App 外置统一挂载。
+ * 共享服务来自 SessionPaneServices，身份和操作保留在各栏。
  */
 export function ChatSessionPane(props: ChatSessionPaneProps) {
   const onFocusPane = useLatestPaneCommand(props.onFocusPane);

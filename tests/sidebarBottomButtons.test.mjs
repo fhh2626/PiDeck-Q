@@ -17,7 +17,6 @@ test("v3 sidebar bottom buttons are shadcn ghost icons without CSS border rules"
   assert.match(sidebar, /variant="ghost"/);
   assert.match(sidebar, /settings-icon/);
   assert.match(sidebar, /config-icon/);
-  assert.doesNotMatch(sidebar, /feedback-icon|homepage-icon|onOpenFeedback|onOpenHomepage/);
   // 两个保留的底栏动作都走 size-8 icon button。
   assert.equal((sidebar.match(/className="icon-button [a-z-]+ size-8[^"]*"/g) || []).length, 2);
 });

@@ -11,7 +11,10 @@
  * 本组件只负责表单呈现与模型选择；保存成功提示走全局 toast（底部绿字太隐蔽，用户
  * 要求改 toast），失败提示就近展示（与头部保存按钮对照），底部保留运行日志诊断区。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomValue, useStore } from "jotai";
+import { modelConfigurationScopeAtom, modelListRevisionAtom } from "../../../atoms/model-atoms";
+import { modelConfigurationScopeKey } from "../../../utils/modelConfigurationScope";
 import { Check, ChevronsUpDown, RefreshCw, Trash2 } from "lucide-react";
 import { t } from "../../../i18n";
 import { desktopApi } from "../../../desktopApi";
@@ -52,6 +55,10 @@ export function VisionBridgeSettingsTab(props: {
 	onChange: (patch: Partial<VisionBridgeConfig>) => void;
 }) {
 	const { draft, saving, notice, configDir, onChange } = props;
+	const store = useStore();
+	const modelScope = useAtomValue(modelConfigurationScopeAtom);
+	const scopeKey = modelConfigurationScopeKey(modelScope);
+	const modelListRevision = useAtomValue(modelListRevisionAtom);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	// 运行日志（诊断“视觉桥走没走”）：挂载时拉一次，用户可手动刷新
 	const [logInfo, setLogInfo] = useState<VisionLogInfo | null>(null);
@@ -67,26 +74,35 @@ export function VisionBridgeSettingsTab(props: {
 	// 打开模型选择器时拉取全量模型（复用现有 ModelPicker 的数据源）；
 	// 挂载时也拉一次（模型列表有全局缓存，开销小），用于展示当前已选模型的能力
 	const [models, setModels] = useState<AvailableModel[]>([]);
+	const modelLoadGenerationRef = useRef(0);
 	const loadModels = useCallback(async () => {
+		const generation = ++modelLoadGenerationRef.current;
+		const isCurrent = () => generation === modelLoadGenerationRef.current
+			&& scopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
 		try {
-			setModels(await desktopApi.projects.listModels(undefined));
+			const next = await desktopApi.projects.listModels(undefined);
+			if (isCurrent()) setModels(next);
 		} catch {
-			setModels([]);
+			if (isCurrent()) setModels([]);
 		}
-	}, []);
+		return isCurrent();
+	}, [scopeKey, store]);
 
 	useEffect(() => {
-		loadLog();
-		loadModels();
-	}, [loadLog, loadModels]);
+		void loadLog();
+	}, [loadLog]);
+	useEffect(() => {
+		void loadModels();
+		// Revision refresh, environment changes and unmount all invalidate older successes and errors.
+		return () => { modelLoadGenerationRef.current += 1; };
+	}, [loadModels, modelListRevision]);
 
 	const updateDraft = (patch: Partial<VisionBridgeConfig>) => {
 		onChange(patch);
 	};
 
 	const openPicker = async () => {
-		await loadModels();
-		setPickerOpen(true);
+		if (await loadModels()) setPickerOpen(true);
 	};
 
 	const onPickModel = (model: AvailableModel) => {

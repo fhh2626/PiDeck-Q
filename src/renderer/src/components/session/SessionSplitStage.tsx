@@ -7,7 +7,7 @@ import {
 import { t } from "../../i18n";
 import { useNotifyLayoutResized } from "../../hooks/useNotifyLayoutResized";
 import {
-  SESSION_TAB_DRAG_MIME,
+  SESSION_DRAG_MIME,
   canAcceptSplitDrop,
   resolveSessionSplitEdge,
   type SessionSplitDropTarget,
@@ -19,7 +19,7 @@ import {
 export type SessionSplitStageProps = {
   /** 当前分屏布局；null 表示单栏 */
   layout: SessionSplitLayout | null;
-  /** 正在拖拽的会话 Tab id；无拖拽时不显示落点预览 */
+  /** 正在拖拽的侧栏会话 id；无拖拽时不显示落点预览 */
   draggingSessionId: string | null;
   /**
    * 落点回调：target 为「会话面板内边缘」或「会话面板中心」。
@@ -30,16 +30,14 @@ export type SessionSplitStageProps = {
   solo: ReactNode;
   /** 单栏时的当前会话 id：供 solo 容器标记落点（单栏拖拽 → 根层双栏） */
   soloSessionId: string | undefined;
-  /** Tab 栏会话总数：单栏拖当前会话自己时，判断是否有其它宿主可组双栏 */
-  tabCount: number;
   /** 渲染单个会话栏（focused / onFocusPane 由调用方组合） */
   renderSession: (sessionId: string) => ReactNode;
 };
 
-function isSessionTabDrag(event: React.DragEvent, draggingSessionId: string | null): boolean {
+function isSessionDrag(event: React.DragEvent, draggingSessionId: string | null): boolean {
   if (draggingSessionId) return true;
   // dragover 阶段自定义 MIME 可读 types（getData 在部分浏览器为空）
-  return event.dataTransfer.types.includes(SESSION_TAB_DRAG_MIME);
+  return event.dataTransfer.types.includes(SESSION_DRAG_MIME);
 }
 
 type HoverState = {
@@ -86,7 +84,6 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
     onDropSplit,
     solo,
     soloSessionId,
-    tabCount,
     renderSession,
   } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -100,7 +97,7 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
     setHover(null);
   }, [layout]);
 
-  // Tab/侧栏的 dragend 发生在舞台外；chrome 清 draggingSessionId 时必须同步清预览，
+  // 侧栏的 dragend 发生在舞台外；chrome 清 draggingSessionId 时必须同步清预览，
   // 否则取消拖拽后落点遮罩可能残留。
   useEffect(() => {
     if (!draggingSessionId) setHover(null);
@@ -108,7 +105,7 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
 
   const handleDragOverCapture = useCallback(
     (event: React.DragEvent) => {
-      if (!isSessionTabDrag(event, draggingSessionId)) return;
+      if (!isSessionDrag(event, draggingSessionId)) return;
       const root = rootRef.current;
       if (!root) return;
       const el = event.target instanceof Element ? event.target : null;
@@ -118,7 +115,7 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
         setHover(null);
         return;
       }
-      // capture 阶段阻断冒泡，避免 composer 的 drop/dragOver 抢走会话 Tab 拖拽
+      // capture 阶段阻断冒泡，避免 composer 的 drop/dragOver 抢走侧栏会话拖拽
       event.stopPropagation();
 
       const sessionId = hit.getAttribute("data-split-session-id") ?? "";
@@ -141,7 +138,6 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
           draggedSessionId: draggingSessionId,
           sessionId,
           edge,
-          tabCount,
         })
       ) {
         setHover(null);
@@ -177,16 +173,16 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
           : next,
       );
     },
-    [draggingSessionId, tabCount],
+    [draggingSessionId],
   );
 
   const handleDropCapture = useCallback(
     (event: React.DragEvent) => {
-      if (!isSessionTabDrag(event, draggingSessionId)) return;
+      if (!isSessionDrag(event, draggingSessionId)) return;
       event.preventDefault();
       event.stopPropagation();
       const dragged =
-        event.dataTransfer.getData(SESSION_TAB_DRAG_MIME) || draggingSessionId || "";
+        event.dataTransfer.getData(SESSION_DRAG_MIME) || draggingSessionId || "";
       const root = rootRef.current;
       // drop 时按最新指针位置重新计算落点，避免 hover 预览与落点不一致
       let target: SessionSplitDropTarget | null = null;
@@ -204,7 +200,6 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
               draggedSessionId: dragged,
               sessionId,
               edge,
-              tabCount,
             })
           ) {
             target = edge
@@ -217,7 +212,7 @@ export function SessionSplitStage(props: SessionSplitStageProps) {
       if (!dragged || !target) return;
       onDropSplit(dragged, target);
     },
-    [draggingSessionId, onDropSplit, tabCount],
+    [draggingSessionId, onDropSplit],
   );
 
   /** 渲染单个会话面板容器：标记落点 id + 填满面板空间 */

@@ -12,7 +12,9 @@ import type {
 	AppLogQuery,
 	ProcessMetricsSnapshot,
 	AppSettings,
+	AppSettingsPatch,
 	AvailableModel,
+	ModelListChange,
 	ModelSpec,
 	CodexImportReport,
 	CodexSessionSummary,
@@ -28,6 +30,8 @@ import type {
 	PickImagesResult,
 	UpdateSessionRecordInput,
 	SessionRecord,
+	SessionDeleteOptions,
+	SessionDeleteResult,
 	SessionProcessEvent,
 	VisionBridgeConfig,
 	CreatePiSkillInput,
@@ -37,6 +41,7 @@ import type {
 	ExternalEditorId,
 	ExternalEditorSetting,
 	FileTreeNode,
+	FilePathInfo,
 	GitBranchInfo,
 	ImageContent,
 	CommitDetail,
@@ -72,9 +77,13 @@ import type {
 	SessionRuntimeInfo,
 	SessionRuntimeReplacement,
 	SessionRuntimeTarget,
+	SessionHistoryMutationProjection,
 	SessionTargetedValue,
 	SessionUiResponseInput,
 	SessionSummary,
+	SubagentSettings,
+	SubagentSettingsScope,
+	SubagentSettingsSnapshot,
 	TerminalDataEvent,
 	TerminalExitEvent,
 	TerminalTab,
@@ -168,22 +177,13 @@ const api = {
 			transport.invoke(ipcChannels.projectsListModels, projectId) as Promise<
 				AvailableModel[]
 			>,
-		/** 主进程模型缓存已刷新（配置保存/运行时切换）；无负载，收到后自行重读列表。 */
-		onModelsChanged: (callback: () => void) => subscribe(ipcChannels.modelsChanged, callback),
+		/** 主进程模型缓存已刷新。配置保存附带失效模型标识，旧宿主和运行时切换可无负载。 */
+		onModelsChanged: (callback: (change?: ModelListChange) => void) => subscribe(ipcChannels.modelsChanged, callback),
 		// 查询模型规格（context window / 能力，内置 model-specs.db，中转站按 id 匹配）
 		getModelSpec: (providerName: string, modelId: string) =>
 			transport.invoke(ipcChannels.projectsGetModelSpec, providerName, modelId) as Promise<
 				ModelSpec | null
 			>,
-		onTrustRequest: (callback: (request: {
-			requestId: string;
-			cwd: string;
-			projectName: string;
-		}) => void) => subscribe(ipcChannels.projectsTrustRequest, callback),
-		respondTrustRequest: (
-			requestId: string,
-			choice: "trust-remember" | "trust-session" | "deny",
-		) => transport.invoke(ipcChannels.projectsTrustResponse, requestId, choice) as Promise<void>,
 	},
 	projectResources: {
 		list: (projectId: string) =>
@@ -202,6 +202,9 @@ const api = {
 			transport.invoke(ipcChannels.projectResourcesRenameSkill, projectId, skillPath, newName) as Promise<PiSkillSummary>,
 	},
 	files: {
+		/** Inspect the type of a path inside the authorized roots. Null means it is missing. */
+		stat: (path: string) =>
+			transport.invoke(ipcChannels.filesStat, path) as Promise<FilePathInfo | null>,
 		list: (projectId: string) =>
 			transport.invoke(ipcChannels.filesList, projectId) as Promise<
 				FileTreeNode[]
@@ -294,8 +297,10 @@ const api = {
 				sessionId,
 				patch,
 			) as Promise<SessionRecord>,
-		deleteRecord: (sessionId: string) =>
-			transport.invoke(ipcChannels.sessionsCatalogDelete, sessionId) as Promise<boolean>,
+		deleteRecord: (sessionId: string, options?: SessionDeleteOptions) =>
+			options === undefined
+				? transport.invoke<SessionDeleteResult>(ipcChannels.sessionsCatalogDelete, sessionId)
+				: transport.invoke<SessionDeleteResult>(ipcChannels.sessionsCatalogDelete, sessionId, options),
 		/** 归档会话（移入 .pideck-archive/ 并从目录移除）；运行中的会话会抛错 */
 		archiveRecord: (sessionId: string) =>
 			transport.invoke(ipcChannels.sessionsCatalogArchive, sessionId) as Promise<boolean>,
@@ -352,11 +357,6 @@ const api = {
 				ipcChannels.sessionsCatalogReadReferenceMessages,
 				sessionId,
 			) as Promise<Array<{ role: string; content: string; timestamp: number }>>,
-		getContextControllerState: (sessionId: string) =>
-			transport.invoke(
-				ipcChannels.sessionsCatalogGetContextControllerState,
-				sessionId,
-			) as Promise<import("../types").ContextControllerState>,
 		copyRecord: (sessionId: string) =>
 			transport.invoke(ipcChannels.sessionsCatalogCopy, sessionId) as Promise<{
 				cancelled?: boolean;
@@ -424,13 +424,13 @@ const api = {
 				target,
 				messageId,
 				newText,
-			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection | void>>>,
 		deleteRuntimeMessage: (target: SessionRuntimeTarget, messageId: string) =>
 			transport.invoke(
 				ipcChannels.sessionsRuntimeDeleteMessage,
 				target,
 				messageId,
-			) as Promise<SessionCommandResult<SessionTargetedValue<void>>>,
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection | void>>>,
 		prepareRuntimeResend: (
 			target: SessionRuntimeTarget,
 			messageId: string,
@@ -443,7 +443,7 @@ const api = {
 				messageId,
 				model,
 				thinkingLevel,
-			) as Promise<SessionCommandResult<SessionTargetedValue<{
+			) as Promise<SessionCommandResult<SessionTargetedValue<SessionHistoryMutationProjection & {
 				text: string;
 				images?: ImageContent[];
 			}>>>,
@@ -499,6 +499,24 @@ const api = {
 			transport.invoke(ipcChannels.usageStatsGet) as Promise<
 				import("../types").UsageAggregated
 			>,
+	},
+	// 子代理偏好：落盘在 pi settings.json 的 subagents 块，扩展侧消费同一份配置。
+	subagents: {
+		getSettings: (projectId?: string) =>
+			transport.invoke(ipcChannels.subagentsGetSettings, projectId) as Promise<
+				SubagentSettingsSnapshot
+			>,
+		saveSettings: (
+			scope: SubagentSettingsScope,
+			projectId: string | undefined,
+			settings: SubagentSettings,
+		) =>
+			transport.invoke(
+				ipcChannels.subagentsSaveSettings,
+				scope,
+				projectId,
+				settings,
+			) as Promise<{ ok: boolean }>,
 	},
 	codexSessions: {
 		scan: (projectId: string) =>
@@ -953,7 +971,7 @@ const api = {
 	settings: {
 		get: () =>
 			transport.invoke(ipcChannels.settingsGet) as Promise<AppSettings>,
-		update: (patch: Partial<AppSettings>) =>
+		update: (patch: AppSettingsPatch) =>
 			transport.invoke(
 				ipcChannels.settingsUpdate,
 				patch,
@@ -989,31 +1007,14 @@ const api = {
 				parsed: { providers: Record<string, unknown> };
 				diagnostic?: ConfigFileDiagnostic;
 			}>,
-		getAuth: () =>
-			transport.invoke(ipcChannels.configGetAuth) as Promise<{
-				raw: string;
-				parsed: Record<string, unknown>;
-				diagnostic?: ConfigFileDiagnostic;
-			}>,
 		getSettings: () =>
 			transport.invoke(ipcChannels.configGetSettings) as Promise<{
 				raw: string;
 				parsed: Record<string, unknown>;
 				diagnostic?: ConfigFileDiagnostic;
 			}>,
-		getTrust: () =>
-			transport.invoke(ipcChannels.configGetTrust) as Promise<{
-				raw: string;
-				parsed: Record<string, unknown>;
-				diagnostic?: ConfigFileDiagnostic;
-			}>,
 		saveModels: (data: unknown) =>
 			transport.invoke(ipcChannels.configSaveModels, data) as Promise<{
-				valid: boolean;
-				error?: string;
-			}>,
-		saveAuth: (data: unknown) =>
-			transport.invoke(ipcChannels.configSaveAuth, data) as Promise<{
 				valid: boolean;
 				error?: string;
 			}>,

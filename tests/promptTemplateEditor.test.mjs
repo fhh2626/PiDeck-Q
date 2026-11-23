@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 function deferred() {
 	let resolve;
@@ -154,45 +151,6 @@ test("builtin user copy is retained after a failed write and reused for every la
 	assert.equal(await h.editor.save(), true);
 	assert.equal(creates, 1);
 	assert.deepEqual(targets, ["/prompts/copy.md", "/prompts/copy.md", "/prompts/copy.md"]);
-});
-
-test("reverting to builtin body after a failed copy write stays dirty and can retry against the real file", async () => {
-	const { PromptManager } = loadTsCommonJs("src/main/prompts/PromptManager.ts");
-	const { createGlobalPromptEditorStorage } = loadTsCommonJs("src/renderer/src/config/promptEditorStorage.ts");
-	const home = await mkdtemp(join(tmpdir(), "pideck-prompt-baseline-"));
-	try {
-		const manager = new PromptManager(home);
-		const builtin = (await manager.list()).templates.find((item) => !item.userCreated);
-		assert.ok(builtin, "use an actual builtin rather than a fake copy contract");
-		let creates = 0;
-		let writes = 0;
-		const h = harness({ storage: createGlobalPromptEditorStorage({
-			create: async (input) => { creates++; return manager.create(input); },
-			edit: async (path, content) => {
-				if (content === undefined) return manager.readContent(path);
-				if (++writes === 1) throw new Error("temporary file lock");
-				await manager.writeContent(path, content);
-			},
-		}) });
-		await h.editor.open(builtin);
-		h.editor.change(`${builtin.content}\nChanged body`);
-		assert.equal(await h.editor.save(), false);
-		const copyPath = h.editor.state.template.path;
-		const persistedCopy = await manager.readContent(copyPath);
-		assert.notEqual(persistedCopy, builtin.content, "create writes only frontmatter, not the builtin body");
-		assert.equal(h.editor.state.savedContent, persistedCopy);
-		h.editor.change(persistedCopy);
-		assert.equal(h.editor.dirty, false, "matching the actual new file is clean");
-		h.editor.change(builtin.content);
-		assert.equal(h.editor.dirty, true, "the builtin body still has not been saved into the user copy");
-		assert.equal(await h.editor.save(), true);
-		assert.equal(await manager.readContent(copyPath), builtin.content);
-		assert.equal(h.editor.dirty, false);
-		assert.equal(creates, 1);
-		assert.equal(writes, 2);
-	} finally {
-		await rm(home, { recursive: true, force: true });
-	}
 });
 
 test("refresh failure reports saved-with-warning, not a failed write or dirty draft", async () => {

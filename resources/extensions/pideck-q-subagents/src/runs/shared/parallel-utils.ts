@@ -10,13 +10,6 @@ export interface RunnerSubagentStep {
 	sessionName?: string;
 	task: string;
 	runner?: ResolvedRunnerConfig;
-	externalJobFollowUp?: {
-		sourceRunId: string;
-		sourceStepIndex: number;
-		parentProviderJobId: string;
-		requestId: string;
-		requestDigest: string;
-	};
 	/** Resolved launch context for this child. */
 	context?: "fresh" | "fork";
 	importAsyncRoot?: {
@@ -64,7 +57,7 @@ export interface RunnerSubagentStep {
 	sessionFile?: string;
 	maxSubagentDepth?: number;
 	timeoutMs?: number;
-	/** Resolved configured hard per-tool-call timeout (ms); fast tools still have a default when undefined. */
+	/** Resolved configured hard per-tool-call timeout (ms). Undefined leaves tools without a deadline. */
 	toolTimeoutMs?: number;
 	waitToolEnabled?: boolean;
 	waitToolDefaultTimeoutMs?: number;

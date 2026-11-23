@@ -336,7 +336,8 @@ export function AppShell(props: AppShellProps) {
         beginWindowResize={beginWindowResize}
         enableNativeResize={enableNativeResize}
       />
-      <ResizablePanelGroup orientation="horizontal" className="shell-panel-group" elementRef={groupRef} onLayoutChanged={handleLayoutChanged}>
+      {/* Keep scrollbars inside the 6px window resize strip rendered by AppHeader. */}
+      <ResizablePanelGroup orientation="horizontal" className={cn("shell-panel-group", enableNativeResize && "pr-1.5")} elementRef={groupRef} onLayoutChanged={handleLayoutChanged}>
         <ResizablePanel
           id="list"
           panelRef={listPanelRef}

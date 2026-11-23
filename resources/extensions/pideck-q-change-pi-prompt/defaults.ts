@@ -1,4 +1,5 @@
 /** All user-editable defaults live here; persistent Markdown overrides survive updates. */
+
 export const DEFAULT_PROMPTS = {
 	identity: `You are Pi, an open-source and customizable coding, working, and writing agent.`,
 	execution: `## Execution
@@ -17,14 +18,6 @@ export const DEFAULT_PROMPTS = {
 - Each \`edits[].oldText\` matches the original file, not earlier edits in that call. Keep matches exact, unique, minimal, and non-overlapping; merge nearby changes.`,
 	write: `- Use \`write\` only for new files or complete rewrites.`,
 	shell: `- For shell commands, follow the runtime and syntax stated in the active tool description; do not infer the runtime from a tool name or the local OS.`,
-	pwsh: `- For \`bash\`, follow the runtime version and syntax stated in its tool description. Invoke Bash explicitly for Bash-only syntax; do not infer the runtime from the tool name or local OS.`,
-	userInput: `## User Input
-- Whenever clarification or confirmation is needed, use \`ask_question\` rather than plain-text questions.
-- Choose the appropriate input type and batch related questions when supported by the active schema.`,
-	delegation: `## Delegation
-- Use direct tools for small, focused tasks; delegate substantial exploration or independent work. Do not duplicate delegated work.
-- For multi-step or parallel delegation, use exactly one foreground workflowScript call (async:false), with all children inside it. Follow the subagent tool contract.
-- Verify actual changes and checks before reporting success; summarize results for the user.`,
 	validation: `## Validation
 - After changes, run relevant existing tests, checks, linters, or builds when practical.
 - Do not fix unrelated failures or weaken tests just to make them pass; report such failures.
@@ -48,11 +41,9 @@ export interface Config {
 	replaceIdentity: boolean;
 	replaceGuidelines: boolean;
 	removeDocumentation: boolean;
-	pwsh: boolean;
-	subagent: boolean;
-	/** Hide bash/powershell whose backends are missing, and omit their prompt sections. */
+	/** Omit inactive builtin shell rows from the base prompt. Does not change active tools. */
 	pruneUnavailableShells: boolean;
-	/** Hide grep/find when rg/fd is absent from PATH and Pi's managed bin directory. */
+	/** Omit inactive builtin grep/find rows from the base prompt. Does not probe backends. */
 	pruneUnavailableSearchTools: boolean;
 	unknownGuidelines: "preserve" | "skip";
 }
@@ -62,37 +53,7 @@ export const DEFAULT_CONFIG: Config = {
 	replaceIdentity: true,
 	replaceGuidelines: true,
 	removeDocumentation: true,
-	pwsh: true,
-	subagent: true,
 	pruneUnavailableShells: true,
 	pruneUnavailableSearchTools: true,
 	unknownGuidelines: "preserve",
 };
-
-/** pi-subagents 0.66 custom description; upstream appends its mandatory safety guidance. */
-export const SUBAGENT_DESCRIPTION = `Delegate to configured subagents.
-
-## Agents
-- readonly: investigation, review, research; cannot edit or write files. writable (default when agent is omitted): can edit files and run commands.
-- Children default to context:"fork" (inherit this conversation). Use context:"fresh" only for independent review or verification, parallel research, or when this conversation is nearly full.
-- Parallel writable children must touch disjoint files or use worktree:true.
-
-## Execution
-- In standalone Pi, use either {agent,task,async:false} or {workflowScript,async:false}; never combine them. Omit action for execution. External runners, workflowScriptPath, and named workflows are unavailable.
-- For multi-step or parallel work, use one top-level workflowScript call. Every new child inside it must set async:false; agent may be omitted (defaults to writable).
-- Agent names must be string literals ("readonly" or "writable"). Child configs must be object literals; batch/stage lists must be array literals. No spreads, computed keys, or duplicate keys.
-- One child: return await runs.run("a",{agent:"readonly",task:"...",async:false}).
-- Parallel: return await runs.all([{key:"a",agent:"readonly",task:"...",async:false},{key:"b",agent:"readonly",task:"...",async:false}]). Results are an ordered array, not a key map.
-- Use top-level await and return useful results. Observe every launched promise; no nested async helpers.
-- Scripts have no filesystem, shell, or arbitrary Pi tools; host access requires authorized runs.host calls.
-- Resume-only calls may omit agent/async. Read the workflows guide for lanes and advanced usage.
-- Use {action:"validate",workflowScript:"..."} to check without launching children.
-
-## Isolation and runners
-- For managed Git isolation, set worktree:true on the workflow or child; parallel children receive separate worktrees. The source checkout must be clean.
-- baseRef accepts HEAD or supported named refs such as refs/heads/main, not commit hashes or expressions such as HEAD~1. Omitted baseRef resolves HEAD at worktree allocation.
-- External CLI agents follow their runner contract and must not be converted to foreground; in standalone Pi, external runners are unavailable. Unless explicitly supported, native Pi options do not apply: model override, structured output, acceptance/agent contract, tool budget, fast mode, fork context, skills, or native Pi tools.
-
-## Reference
-Use {action:"guide",topic:"workflows"} or the pi-subagents skill for advanced workflows; use topic:"tool-reference" for management actions.
-`;

@@ -7,6 +7,7 @@
 
 - Add the `readonly` and `writable` builtin agents. Both use `tools: parent` (the frontmatter form of the `tools: "parent"` override), inherit the parent's model and thinking, and default to forked context. `readonly` excludes `edit` and `write` and carries a strict read-only prompt.
 - Run a single new launch as `writable` when no `agent` is given; an unknown agent name now fails with the list of available agents.
+- Add `subagents.preferDelegation`: when enabled, one sentence is appended to the parent system prompt so complex or parallelizable work goes to subagents. The hint is skipped when the `subagent` tool is unavailable and inside child processes. PiDeck-Q exposes it as the third row of the right-side "Subagents" dialog.
 
 ### Changed
 - Make the default `subagent` tool description prefer `subagent-tool-description.md` when present, falling back to the built-in default description (not `full` or `compact`) when no valid file is found.

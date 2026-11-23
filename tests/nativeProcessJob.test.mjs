@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync("native/src/NodeProcessController.cpp", "utf8");
-const header = readFileSync("native/src/NodeProcessController.h", "utf8");
+const source = readFileSync("native/src/BackendProcessController.cpp", "utf8");
+const header = readFileSync("native/src/BackendProcessController.h", "utf8");
 
 test("native sidecar owns a Windows Job Object with kill-on-close semantics", () => {
 	assert.match(source, /CreateJobObjectW/);

@@ -10,6 +10,7 @@ for (const mode of ["native", "immutable", "nohooks", "immutable-nohooks"]) {
 			"--require", fileURLToPath(new URL("./helpers/immutableWorkflowIntrinsics.mjs", import.meta.url)),
 			fileURLToPath(new URL("./helpers/workflowPromiseCompatibilityRunner.mjs", import.meta.url)),
 		], {
+			windowsHide: true,
 			env: { ...process.env, PIDECK_TEST_PROMISE_MODE: mode },
 			encoding: "utf8", timeout: 55000,
 		});

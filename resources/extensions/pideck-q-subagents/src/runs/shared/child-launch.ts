@@ -32,7 +32,7 @@ import {
 	supervisorChannelDir,
 	type PiLaunchToolPlan,
 } from "./child-tool-plan.ts";
-import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
+import { SUBAGENT_CHILD_ENV, type ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { createCapturedChildHooks, withChildSessionErrorReporting } from "./child-hooks.ts";
 import { createForegroundMcpHook } from "./foreground-mcp.ts";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
@@ -111,10 +111,10 @@ export interface BuildInProcessChildLaunchInput {
 	securitySessionId?: string;
 	securityGateExtensionPath?: string;
 	/**
-	 * Which process hosts the session. The parent never loads ambient extensions
-	 * or writes child environment values (it shares its process with the parent
-	 * session); the runner loads ambient extensions when the tool plan allows
-	 * them and exposes the child environment external extensions read.
+	 * Which process hosts the session. The parent never loads ambient extensions.
+	 * Explicit providers recognize a child through its loader's own event bus.
+	 * Security environment values use the factory's serialized loading/binding window.
+	 * The runner also exposes adapter environment values and may load ambient extensions.
 	 */
 	host: "parent" | "runner";
 }
@@ -183,7 +183,7 @@ export function isSecurityPolicyActive(configPath: string | undefined): boolean 
 
 /** Environment values external child extensions read; only the runner applies them. */
 function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaunchToolPlan): Record<string, string | undefined> {
-	const env: Record<string, string | undefined> = {};
+	const env: Record<string, string | undefined> = { [SUBAGENT_CHILD_ENV]: "1" };
 	env[PI_SUBAGENT_EXTENSION_BINDINGS_ENV] = encodeExtensionBindings(input.extensionBindings);
 	if (!toolPlan.capabilityCeiling && input.mcpDirectTools?.length) env[MCP_DIRECT_TOOLS_ENV] = input.mcpDirectTools.join(",");
 	else if (toolPlan.capabilityCeiling && toolPlan.effectiveMcpSelections.length && !toolPlan.capabilityCeiling.denyExtensions) {

@@ -1,0 +1,164 @@
+#include "RuntimeCoordinator.h"
+
+#include "AgentEvents.h"
+
+#include <QJsonObject>
+#include <QTimer>
+
+/**
+ * Confirm idle when a runtime finishes a turn without sending `agent_settled`.
+ *
+ * Pi-Bolt uses a short watchdog. Stock Pi gets a longer safety window because it
+ * can still begin retries or queued follow-ups after `agent_end`. The resolved
+ * launch identifies the runtime, independently of optional event fields.
+ *
+ * The fallback runs only when the local view has no pending ask, compaction, tool
+ * call or live assistant row and pi's `get_state` agrees. Every gate is rechecked
+ * after the round trip and fenced on the transport epoch, run generation and
+ * prompt sequence, so a stale timer cannot settle a replacement run.
+ */
+namespace runtime {
+namespace {
+
+constexpr int kStateTimeoutMs = 10'000;
+/** Oracle `AGENT_SETTLED_TIMEOUT_MS`: TypeScript pi settles on its own in practice. */
+constexpr int kTypeScriptSettledTimeoutMs = 5'000;
+/** Pi-Bolt can finish a turn without sending `agent_settled`. */
+constexpr int kBoltSettledTimeoutMs = 250;
+/** Oracle `compaction_end` → `markIdleIfPiReportsNoWork` delay. */
+constexpr int kCompactionIdleCheckMs = 300;
+/** Extension commands can finish successfully without emitting an agent lifecycle. */
+constexpr int kExtensionCommandIdleCheckMs = 100;
+
+} // namespace
+
+void Coordinator::scheduleSettledWatchdog(const QString &agentId,
+                                          agentruntime::SettleWatchdog reason)
+{
+    AgentSession *session = agent(agentId);
+    if (!session) return;
+    QObject *context = session->timerContext();
+    if (!context) return;
+    // Captured at arm time, exactly like the oracle's `settledProcess`/`settledGeneration`:
+    // a runtime replaced (or a run started) later must not be settled by this timer.
+    const quint64 epoch = session->clientEpoch();
+    const int generation = session->runGeneration();
+    const quint64 promptSequence = session->promptDispatchSequence();
+    int delayMs = session->runtimeKind() == QLatin1String("bolt")
+        ? kBoltSettledTimeoutMs : kTypeScriptSettledTimeoutMs;
+    if (reason == agentruntime::SettleWatchdog::CompactionEnd) delayMs = kCompactionIdleCheckMs;
+    else if (reason == agentruntime::SettleWatchdog::ExtensionCommandEnd) delayMs = kExtensionCommandIdleCheckMs;
+    QTimer::singleShot(delayMs, context, [this, agentId, epoch, generation, promptSequence]() {
+        markIdleIfPiReportsNoWork(agentId, epoch, generation, promptSequence);
+    });
+}
+
+void Coordinator::markIdleIfPiReportsNoWork(const QString &agentId, quint64 clientEpoch,
+                                            int generation, quint64 promptDispatchSequence)
+{
+    AgentSession *session = agent(agentId);
+    if (!session) return;
+    if (session->clientEpoch() != clientEpoch || session->runGeneration() != generation
+        || session->promptDispatchSequence() != promptDispatchSequence) return;
+    // A command lookup or prompt ACK can still be pending without any agent_start.
+    // Keep this same probe fenced while dispatch leases drain. Taking a new identity
+    // here would let a delayed command completion claim a newer prompt's lifecycle.
+    if (m_bindings.hasLease(m_bindings.sessionForAgent(agentId), agentId)) {
+        QTimer::singleShot(kExtensionCommandIdleCheckMs, session->timerContext(),
+                          [this, agentId, clientEpoch, generation, promptDispatchSequence]() {
+            markIdleIfPiReportsNoWork(agentId, clientEpoch, generation, promptDispatchSequence);
+        });
+        return;
+    }
+    if (!locallySettled(*session, clientEpoch, generation, promptDispatchSequence)) return;
+    // `get_state` is the authority: the local flags only describe what the renderer saw.
+    // A failed poll settles nothing (the runtime may be mid-restart), matching the oracle.
+    session->request(QStringLiteral("get_state"), {}, kStateTimeoutMs,
+                     [this, agentId, clientEpoch, generation, promptDispatchSequence](bool ok,
+                                                              const QJsonObject &response,
+                                                              const QString &) {
+                         if (!ok || !response.value(QStringLiteral("success")).toBool(false)
+                             || !response.value(QStringLiteral("data")).isObject()) return;
+                         const QJsonObject state = response.value(QStringLiteral("data")).toObject();
+                         if (state.value(QStringLiteral("isStreaming")).toBool(false)) return;
+                         if (state.value(QStringLiteral("isCompacting")).toBool(false)) return;
+                         if (state.value(QStringLiteral("pendingMessageCount")).toInt(0) > 0) return;
+                         AgentSession *current = agent(agentId);
+                         if (!current) return;
+                         // Re-fence after the round trip: a prompt sent while the poll was in
+                         // flight makes the answer stale (oracle re-checks both).
+                         if (!locallySettled(*current, clientEpoch, generation, promptDispatchSequence)) return;
+                         if (m_bindings.hasLease(m_bindings.sessionForAgent(agentId), agentId)) {
+                             markIdleIfPiReportsNoWork(agentId, clientEpoch, generation, promptDispatchSequence);
+                             return;
+                         }
+                         settleWithoutSettled(*current);
+                     });
+}
+
+bool Coordinator::locallySettled(const AgentSession &session, quint64 clientEpoch,
+                                 int generation, quint64 promptDispatchSequence) const
+{
+    if (session.clientEpoch() != clientEpoch) return false;
+    if (session.runGeneration() != generation) return false;
+    if (session.promptDispatchSequence() != promptDispatchSequence) return false;
+    // A run that started before the aborted run's settled is still gated: it is not the run
+    // this timer was armed for.
+    if (session.pendingOpenAfterSettled()) return false;
+    const QString status = session.tab().status;
+    // A failed turn still needs its streaming caches finalized. Preserve the error
+    // status when Pi-Bolt omits the terminal event on its failure path.
+    if (status != QLatin1String("running") && status != QLatin1String("error")) return false;
+    // Work gates the oracle checks before polling at all.
+    if (!session.pendingUi().isEmpty()) return false;
+    if (session.manualCompaction() || session.manualCompactionEvent()) return false;
+    if (!session.transcript().activeAssistantId().isEmpty()) return false;
+    if (session.tab().isExecutingTool || !session.activeToolCalls().isEmpty()) return false;
+    return true;
+}
+
+void Coordinator::settleWithoutSettled(AgentSession &session)
+{
+    const QString agentId = session.tab().id;
+    session.setRecentlyAborted(false);
+    // Same finalization as the `agent_settled` branch: an `error` status is preserved
+    // (sidebar failure marker, no completion toast), everything else becomes `idle`. The
+    // cache flush and the live-channel close matter for both — a leftover streaming
+    // flag/live bubble keeps the renderer from offering edit/delete/resend.
+    if (session.tab().status != QLatin1String("error")
+        && session.tab().status != QLatin1String("closed")) {
+        session.tab().status = QStringLiteral("idle");
+    }
+    session.setTurnActive(false);
+    session.tab().isStreaming = false;
+    session.tab().isExecutingTool = false;
+    session.tab().executingToolName.clear();
+    session.activeToolCalls().clear();
+    session.liveChannels().settle();
+    session.transcript().trimToTurns(50);
+    // Unconditional flush, like `settleRuntimeCaches` (`finalizeThinkingIntoMessage` →
+    // `flushMessageEmit`): the fallback also covers a turn whose `message_end` never made it
+    // out of the pipe, and a trimmed cache must reach the renderer with its `windowStart`.
+    agentruntime::flushMessages(session, hooksFor(session));
+    emitState();
+    emitRuntimeState(agentId);
+    // Oracle `emitLocalEvent(agentId, {type:"agent_settled"})`: the browser stream needs a
+    // terminal event or the phone waits forever. This is a *local* event only — the desktop
+    // completion toast stays owned by a real `agent_settled`, exactly like the oracle (which
+    // does not call `notifySessionEnd` from the fallback).
+    publishLocalSettled(agentId, session);
+    // The local fallback does not pass through the pi event sink's message boundary.
+    tryLoadProjection(agentId);
+}
+
+void Coordinator::publishLocalSettled(const QString &agentId, AgentSession &session)
+{
+    if (m_piObservers.isEmpty()) return;
+    const QJsonObject event{{QStringLiteral("type"), QStringLiteral("agent_settled")}};
+    const int generation = session.runGeneration();
+    for (const auto &observer : m_piObservers) {
+        if (observer) observer(agentId, event, generation);
+    }
+}
+
+} // namespace runtime

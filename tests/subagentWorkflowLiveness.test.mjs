@@ -1,6 +1,8 @@
+import "./helpers/piFixtureResolver.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasLiveSubagentWork, registerPiWebSessionLiveness, PI_WEB_SESSION_LIVENESS_REGISTRY_KEY } from "../resources/extensions/pideck-q-subagents/src/integrations/pi-web-session-liveness.ts";
+
+const { hasLiveSubagentWork, registerPiWebSessionLiveness, PI_WEB_SESSION_LIVENESS_REGISTRY_KEY } = await import("../resources/extensions/pideck-q-subagents/src/integrations/pi-web-session-liveness.ts");
 
 /** The retained VM can be waiting on a host step after its last model child has exited. */
 function fixture() {

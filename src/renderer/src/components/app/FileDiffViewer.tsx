@@ -4,8 +4,12 @@ import { ArrowLeft, Maximize, Minimize2, Rows2, SquareSplitHorizontal, X, Eye, F
 import { Button } from "../ui-shadcn/button";
 import { cn } from "../../lib/utils";
 import { MarkdownStream } from "../session/MarkdownStream";
-import { defaultUrlTransform } from "../session/MarkdownLinkCore";
+import { desktopApi } from "../../desktopApi";
+import { showNotice } from "../../utils/notice";
+import { fileLinkDirectory } from "../../utils/fileLinks";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
+import { loadEditorLanguage } from "../../utils/codemirrorSetup";
+import { useFileEditorBuffer } from "../../hooks/useFileEditorBuffer";
 // CodeDiffView 静态链上挂着 @pierre/diffs + shiki（WASM 重库），懒加载后这些模块
 // 移出首屏初始 chunk（约 -500KB 解析量），仅在用户打开 diff 时才拉取。
 const CodeDiffView = lazy(() =>
@@ -39,6 +43,9 @@ export function FileDiffViewer(props: {
 	/** 双击预览 Tab → 常驻 */
 	onPromotePreviewTab?: (id: string) => void;
 	readContent: (path: string) => Promise<string>;
+	/** Open links in the owning workbench; standalone viewers use the OS handler. */
+	onOpenFile?: (path: string) => void;
+	onOpenExternal?: (url: string) => void;
 	/** 从会话消息 meta 中提取的工具执行前原始内容，优先于 Git HEAD。 */
 	originalContent?: string;
 	/** Session-recorded modified content, preferred over disk read for historical sessions. */
@@ -51,14 +58,9 @@ export function FileDiffViewer(props: {
 	theme?: "light" | "dark";
 	/** 单个文件超过此大小（MB）时不加载编辑器。默认 5MB。 */
 	maxFileSizeMB?: number;
-	/**
-	 * Tab 已上收到 SessionTabsBar 时为 true：不再渲染内容区内嵌 Tab 栏/重复文件名，
-	 * 只保留右侧动作钮（预览/分屏/关闭）。
-	 */
-	chromeTabsExternal?: boolean;
+
 }) {
 	const maxFileSize = (props.maxFileSizeMB ?? 5) * 1024 * 1024;
-	const [content, setContent] = useState("");
 	// 差异模式左侧展示的原始内容：优先使用会话缓存（originalContent），
 	// 没有则从 Git HEAD 读取。新增/未跟踪文件为空字符串。
 	const [original, setOriginal] = useState("");
@@ -66,8 +68,9 @@ export function FileDiffViewer(props: {
 	const [error, setError] = useState<string | null>(null);
 	const [sideBySide, setSideBySide] = useState(props.displayMode !== "drawer");
 	// diff 模式为只读对比视图（第三方渲染库），无需编辑态切换
-	const [dirty, setDirty] = useState(false);
-	const [saving, setSaving] = useState(false);
+	const { content, dirty, beginRead, setLoadedContent, handleEditorChange, saveNow } = useFileEditorBuffer({
+		filePath: props.filePath, saveContent: props.saveContent, onError: setError,
+	});
 	// 二进制预览（图片/PDF）的 Blob URL：切换文件/卸载时 revoke，防止内存泄漏
 	const [mediaUrl, setMediaUrl] = useState<string | null>(null);
 	const mediaUrlRef = useRef<string | null>(null);
@@ -86,10 +89,21 @@ export function FileDiffViewer(props: {
 	// 点「源码」切换按钮才进入源码模式；源码模式即编辑模式，不再需要独立的编辑按钮。
 	const defaultPreview = !isDiffMode && (isMarkdown || isHtml || isSvg);
 	const [preview, setPreview] = useState(defaultPreview);
+	const openLinkedFile = useCallback((path: string) => {
+		if (props.onOpenFile) return props.onOpenFile(path);
+		void desktopApi.files.open(path).catch((error: unknown) => {
+			showNotice(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000, "error");
+		});
+	}, [props.onOpenFile]);
+	const openExternalLink = useCallback((url: string) => {
+		if (props.onOpenExternal) return props.onOpenExternal(url);
+		void desktopApi.app.openExternal(url).catch((error: unknown) => {
+			showNotice(t("app.openFileFailed", { error: error instanceof Error ? error.message : String(error) }), 4000, "error");
+		});
+	}, [props.onOpenExternal]);
 
 	useEffect(() => {
 		// 每个 tab 重置编辑状态：view 可编辑（源码即编辑），diff 只读对比无编辑态。
-		setDirty(false);
 		setPreview(defaultPreview);
 		// 清掉上一个文件的 Blob URL（媒体预览随 tab 切换失效）
 		revokeMediaUrl();
@@ -98,22 +112,25 @@ export function FileDiffViewer(props: {
 
 	useEffect(() => {
 		let cancelled = false;
+		const finishRead = beginRead();
 		async function load() {
 			setLoading(true);
 			setError(null);
-			setDirty(false);
 			try {
 				// 图片/PDF：仅 view 模式读取二进制转 Blob URL 预览（不文本读取）；
 				// diff 模式无法展示二进制差异，维持「不支持编辑」提示。
 				if (isBinaryExtension(props.filePath)) {
 					if (!isDiffMode && (isImageFile(props.filePath) || isPdfFile(props.filePath))) {
-						await loadMediaPreview(cancelled);
+						await loadMediaPreview();
 						return;
 					}
 					setError(t("editor.binaryFileNotSupported", { ext }));
 					setLoading(false);
 					return;
 				}
+				// Warm the cached parser alongside I/O. The editor still renders plain text
+				// immediately if this optional import is slower than the file read.
+				if (!isDiffMode && !defaultPreview) void loadEditorLanguage(ext).catch(() => undefined);
 				// 差异模式优先使用会话缓存原始内容（originalContent），
 				// 没有时降级到 Git HEAD；两者都无则左侧显示空（新增文件）。
 				// 修改后内容优先使用会话记录（modifiedContent），历史会话恢复时磁盘可能已变化。
@@ -143,9 +160,7 @@ export function FileDiffViewer(props: {
 						setLoading(false);
 						return;
 					}
-					setContent(result);
-					// 自动保存基准快照：加载完成即视为「已落盘」状态，避免打开后无改动就触发写盘
-					lastSavedRef.current = result;
+					setLoadedContent(result);
 					setOriginal(originalResult);
 				}
 			} catch (e) {
@@ -158,16 +173,16 @@ export function FileDiffViewer(props: {
 		// 为什么不用 file:// 直链：dev 模式页面走 http:// 加载，Chromium webSecurity
 		// 会以 "Not allowed to load local resource" 拦截 file:// 子资源；
 		// blob: 与 CSP（img-src/frame-src 均允许 blob:）匹配且 dev/prod 行为一致。
-		async function loadMediaPreview(isCancelled: boolean) {
+		async function loadMediaPreview() {
 			const readBinary = window.piDesktop?.files?.readBase64;
 			if (!readBinary) {
-				if (!isCancelled) setError(t("editor.binaryFileNotSupported", { ext }));
+				if (!cancelled) setError(t("editor.binaryFileNotSupported", { ext }));
 				return;
 			}
 			try {
 				const base64 = await readBinary(props.filePath);
-				if (isCancelled || !base64) {
-					if (!isCancelled) setError(t("editor.binaryFileNotSupported", { ext }));
+				if (cancelled || !base64) {
+					if (!cancelled) setError(t("editor.binaryFileNotSupported", { ext }));
 					return;
 				}
 				const mime = isPdf ? "application/pdf" : mimeFromImageExt(ext);
@@ -177,11 +192,11 @@ export function FileDiffViewer(props: {
 				mediaUrlRef.current = url;
 				setMediaUrl(url);
 			} catch (e) {
-				if (!isCancelled) setError(e instanceof Error ? e.message : String(e));
+				if (!cancelled) setError(e instanceof Error ? e.message : String(e));
 			}
 		}
 		void load();
-		return () => { cancelled = true; };
+		return () => { cancelled = true; finishRead(); };
 	// readContent/readOriginalContent 是稳定的 API 回调（上层已 useCallback），
 	// 不参与 effect deps，避免父组件因其他状态变化重渲染时反复加载文件导致编辑器重置到顶部。
 	// 两侧缓存内容都需要监听：同一路径可在多个历史提交 Diff tab 之间切换。
@@ -199,45 +214,6 @@ export function FileDiffViewer(props: {
 		}
 	}
 
-	// 从当前内容 state 取最新值（编辑器 onChange 已实时同步；CM6 无 Monaco 的实例取值路径）
-	const getLatestContent = useCallback(() => content, [content]);
-
-	// 自动保存：编辑停止 500ms 后静默落盘（仅 allowSave 的文件），Ctrl+S 立即保存并取消挂起的自动保存。
-	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	// 最近一次落盘内容快照：内容未变时跳过保存，避免重复写盘
-	const lastSavedRef = useRef("");
-
-	const saveNow = useCallback(async () => {
-		if (saveTimerRef.current) {
-			clearTimeout(saveTimerRef.current);
-			saveTimerRef.current = null;
-		}
-		if (!props.saveContent) return;
-		const latest = getLatestContent();
-		if (latest === lastSavedRef.current) return;
-		setSaving(true);
-		try {
-			await props.saveContent(props.filePath, latest);
-			lastSavedRef.current = latest;
-			setContent(latest);
-			setDirty(false);
-		} catch (e) {
-			// 保存失败保留 dirty，用户可继续编辑后由下一次自动保存/Ctrl+S 重试
-			setError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setSaving(false);
-		}
-	}, [getLatestContent, props.saveContent, props.filePath]);
-
-	const scheduleAutoSave = useCallback(() => {
-		if (!props.saveContent) return;
-		if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-		saveTimerRef.current = setTimeout(() => {
-			saveTimerRef.current = null;
-			void saveNow();
-		}, 500);
-	}, [props.saveContent, saveNow]);
-
 	// Ctrl+S / Cmd+S：立即保存（取消挂起的自动保存，避免重复写盘）。
 	// 仅 view 模式生效：diff 是只读对比，不存在保存。
 	const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -254,22 +230,12 @@ export function FileDiffViewer(props: {
 		}
 	}, [isDiffMode, handleKeyDown]);
 
-	// 卸载时取消挂起的自动保存 timer + 释放媒体 Blob URL（生命周期配对）
+	// Media URLs belong to this viewer; the buffer hook owns save-timer cleanup.
 	useEffect(() => {
 		return () => {
-			if (saveTimerRef.current) {
-				clearTimeout(saveTimerRef.current);
-				saveTimerRef.current = null;
-			}
 			revokeMediaUrl();
 		};
 	}, []);
-
-	const handleEditorChange = useCallback((value: string) => {
-		setContent(value);
-		setDirty(true);
-		scheduleAutoSave();
-	}, [scheduleAutoSave]);
 
 	// 编辑器选中文本 → 右键「引用选中内容」：以 pi 的 read 语法 @path:start-end 派发到输入框。
 	// 与文件树右键 onAttach 共用同一追加语义（composer-attach-refs 由 App 监听后插入 draft）。
@@ -284,7 +250,7 @@ export function FileDiffViewer(props: {
 	const displayMode = props.displayMode ?? "drawer";
 	const isWorkbenchPane = displayMode === "split" || displayMode === "maximize";
 	const showInlineTabs =
-		!props.chromeTabsExternal && Boolean(props.tabs && props.tabs.length > 0);
+		Boolean(props.tabs && props.tabs.length > 0);
 	const headerContent = (
 		<>
 			{showInlineTabs && props.tabs && (
@@ -349,10 +315,10 @@ export function FileDiffViewer(props: {
 						<ArrowLeft size={18} />
 					</Button>
 				)}
-				{/* 外置 chrome / 内嵌 Tab：文件名已在 Tab 上，标题槽只留脏标提示 */}
-				{props.chromeTabsExternal || showInlineTabs ? (
+				{/* 内嵌文件标签：文件名已在 Tab 上，标题槽只留脏标提示 */}
+				{showInlineTabs ? (
 					<span className="file-diff-title min-w-0 flex-1 truncate">
-						{dirty && !props.chromeTabsExternal && t("editor.unsavedMarker")}
+						{dirty && t("editor.unsavedMarker")}
 					</span>
 				) : (
 					<span className="file-diff-title" title={props.filePath}>
@@ -413,8 +379,7 @@ export function FileDiffViewer(props: {
 								: <Maximize size={15} />}
 						</Button>
 					)}
-					{/* 关闭按钮：无论 Tab 是否上收总栏都保留，保证 DIFF/文件预览右上角
-					   始终有关闭入口（Tab 栏小叉在窄栏下不易点中）。 */}
+					{/* 关闭按钮始终保留在文件面板右上角，窄面板内也可直接关闭。 */}
 					<Button
 						variant="ghost"
 							size="icon-sm"
@@ -462,9 +427,9 @@ export function FileDiffViewer(props: {
 							<div className="markdown-body markdown-preview-chrome h-full overflow-y-auto px-6 py-6 text-body text-text-primary font-sans">
 								<MarkdownStream
 									text={content}
-									onOpenExternal={() => undefined}
-									remarkPlugins={[]}
-									urlTransform={defaultUrlTransform}
+									onOpenExternal={openExternalLink}
+									onOpenFile={openLinkedFile}
+									fileBasePath={fileLinkDirectory(props.filePath)}
 								/>
 							</div>
 						)}
@@ -475,6 +440,7 @@ export function FileDiffViewer(props: {
 						{!isDiffMode && !preview && (
 							<div style={{ height: "100%", flexDirection: "column" }}>
 								<CodeMirrorEditor
+									key={props.filePath}
 									value={content}
 									language={language}
 									readOnly={false}

@@ -25,7 +25,7 @@ Register in `session_start` using **`ctx.sessionManager.getSessionId()`**, not t
 
 `resolve` must do synchronous, bounded validation and string construction, without I/O, SDK calls, timers or process work. Core deep-copies plain JSON args: at most 16 KiB encoded, nesting depth 8, 16 fields per object, 64 items per array, finite numbers, and nonempty strings of at most 16 KiB. The extension must additionally reject unsupported fields and validate resource-specific semantics. Throws, promises/thenables and malformed expansions fail before authority is issued; errors are bounded to 4096 characters.
 
-Host grants bind **exact key/trimmed-command pairs**, not independent sets of keys and commands. At most 32 grants are accepted, with unique safe workflow keys and nonempty commands bounded to 16 KiB without NUL. Omitted grants give no host authority. Core snapshots the expansion and grants at resolution. Disposing stops future lookup, but already-admitted workflows retain captured grants, even after replacement. Use existing stop/deadline controls for cancellation; this does not promise survival of host shutdown or durable named scheduling. Existing child admission and capability ceilings still apply.
+Host grants bind **exact key/trimmed-command pairs**, not independent sets of keys and commands. At most 32 grants are accepted, with unique safe workflow keys and nonempty commands bounded to 16 KiB without NUL. Omitted grants give no host authority. Core snapshots the expansion and grants at resolution. Disposing stops future lookup, but already-admitted workflows retain captured grants, even after replacement. Use existing stop/deadline controls for cancellation; this does not promise survival of host shutdown. Existing child admission and capability ceilings still apply.
 
 ### Mixed child and finite host example
 
@@ -77,13 +77,12 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-Invoke through the public `subagent` tool (use `async: false` for foreground):
+Invoke through the public `subagent` tool:
 
 ```json
 {
   "workflow": "acme.review-check",
-  "args": { "task": "Review the current change; return findings only.", "check": "quick" },
-  "async": true
+  "args": { "task": "Review the current change; return findings only.", "check": "quick" }
 }
 ```
 
@@ -95,7 +94,7 @@ The existing shell runner uses workflow cwd and inherited environment. Exact mat
 
 ## In-process event-bus RPC
 
-Other Pi extensions can use the in-process event-bus RPC instead of scraping slash output or calling internal modules. Listen for `subagents:rpc:v1:ready`, send requests on `subagents:rpc:v1:request`, and read replies from `subagents:rpc:v1:reply:<requestId>`.
+PiDeck-Q and other loaded host integrations can inspect and control existing runs through the process-local event bus. Listen for `subagents:rpc:v1:ready`, send requests on `subagents:rpc:v1:request`, and read replies from `subagents:rpc:v1:reply:<requestId>`.
 
 ```typescript
 const requestId = crypto.randomUUID();
@@ -106,38 +105,22 @@ pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply) => {
 pi.events.emit("subagents:rpc:v1:request", {
   version: 1,
   requestId,
-  method: "spawn",
-  params: {
-    workflowScript: `return runs.run("main", { agent: "readonly", task: "Review the current diff" })`,
-    context: "fresh"
-  }
+  method: "status",
+  params: { id: runId }
 });
 ```
 
-The RPC methods are `ping`, `status`, `manage`, `spawn`, `steer`, `interrupt`, `stop`, and `resume`. `status`, `manage`, `steer`, `interrupt`, and `resume` reuse normal package-owned actions.
+The supported methods are `ping`, `status`, `steer`, `interrupt`, `stop`, and `resume`.
 
-Method notes:
+- `status` resolves targeted run details or a bounded current-session fleet projection. Successful replies retain `text`, `details`, `fleet`, and `asyncSnapshot` when available. Targeted `view`, `lines`, and `index` remain supported.
+- `steer` requires a run target and non-empty `message`. Optional modes are `steer`, `follow_up`, and `auto`. Receipts report `deliveryStatus: "delivered" | "queued"`. RPC steering disables automatic pause-and-revive recovery so it keeps the original target identity.
+- `interrupt` uses the package-owned foreground or nested-run cancellation path.
+- `stop` cancels a retained foreground workflow, optionally targeting one active child by `childId`. An ordinary foreground single child uses `interrupt` or its supervisor's `STOP` decision.
+- `resume` requires a settled, resumable native child and a non-empty `message`. It validates ownership, stored session metadata, capability ceilings, and the exclusive session lease before starting a foreground continuation. Optional `output` can request a file-only result. A live supervisor handoff must continue through its existing request and VM.
 
-- `manage` exposes a narrow schedule-only allowlist: `schedule.list`, `schedule.show`, `schedule.history`, `schedule.pause`, `schedule.resume`, `schedule.run`, and `schedule.delete`. All actions except `schedule.list` require `id`. Mission, agent, config, worktree, and arbitrary management actions are rejected before executor dispatch. `ping.capabilities.managementActions` advertises the exact allowlist.
-- `spawn` accepts structured single-child execution (`agent`, `task?`), inline `workflowScript`, or `workflowScriptPath` and is async-only: omit `async` or set `async: true`, omit `clarify`, and do not pass management `action` values. Relative script paths resolve against the request `cwd`. It goes through the same executor as the `subagent` tool, so agent discovery, validation, session attribution, configured spawn caps, child-safety depth, artifacts, and async status all behave the same.
-- `steer` requires an async run `id` (plus optional child `index`) and a non-empty `message`; its reply preserves the normal acknowledged-delivery result. Optional `mode` values are `steer` (default), `follow_up`, and `auto`, and receipts include `deliveryStatus: "delivered" | "queued"`. RPC steering disables the direct tool's pause-and-revive recovery in every mode so an extension keeps authority over the exact child it spawned; `ping.capabilities.nonRecoveringSteer` advertises this guarantee.
-- `resume` requires a run target and non-empty `message`. It delegates to the existing revival path, which validates current-session ownership, persisted session/recovery metadata, stopped/live state, capability ceilings, and the exclusive session lease before returning the new async run details. Callers may request a `file-only` output path for the revived result without overriding its model, tools, or budgets. `ping.capabilities.resume` advertises this seam.
-- `stop` targets current-session top-level async runs through the stop control channel and records a `stopped` lifecycle instead of reporting a timeout.
-- `status` keeps targeted and rich requests on the executor-backed path. A request with no `id`, `runId`, `dir`, `index`, `view`, or `lines` may use the restored in-memory projections and a short summary; when the live state is missing, stale, session-mismatched, or not restored, it falls back to normal executor status. Status `view`, `lines`, and `index` are forwarded for targeted transcript/fleet requests. Successful replies retain `text`, `details`, `fleet`, and `asyncSnapshot`; the short summary intentionally omits canonical filesystem details, wait subscriptions, and budget annotations.
+`ping` advertises the exact supported methods and projection versions. `nonRecoveringSteer`, `resume`, `statusProjection`, and `fleetStatus` describe the contracts above. `launchResolvedExtensions` and `runtimeAcknowledgedExtensions` describe bounded extension diagnostics. `processTerminalProof` and the `asyncComplete` event name remain compatibility fields for recorded lifecycle data. Their presence does not enable independent background launches.
 
-Capability advertisements on `ping`:
-
-- `events.asyncComplete` — exact process-local completion correlation after RPC `spawn`.
-- `managementActions` — exact schedule management actions accepted by RPC `manage`.
-- `launchResolvedExtensions` — the optional launch-resolved extension projection in status details.
-- `runtimeAcknowledgedExtensions` — the optional child-runtime acknowledgement projection and event name.
-- `processTerminalProof` — the process-terminal proof status (see [observability.md](observability.md#process-terminal-proof)).
-- `nonRecoveringSteer` — RPC steering never pauses-and-revives.
-- `resume` — the revival seam described above.
-- `statusProjection: { version: 1, untargeted: "in-memory-when-ready", targeted: "executor" }` — untargeted status may use restored bounded projections; targeted or rich status remains executor-backed.
-- `fleetStatus: { version: 1 }` — successful `status` replies additionally include `data.fleet`.
-
-Structured delegation progress updates carry `runId` as soon as foreground execution allocates it, so a caller can retain the package-owned revival target even if its own tool turn is interrupted before the terminal response. Foreground `details.results[]` rows also include a numeric `index` that is unique within the run and stable across partial progress snapshots and the final result; use `(runId, index)` instead of row position to correlate single, counted parallel, and chain children.
+Structured delegation progress includes `runId` as soon as the foreground run allocates it. Foreground `details.results[]` rows include a stable numeric `index`. Use `(runId, index)` to correlate progress and terminal results.
 
 ### Fleet status DTO
 
@@ -147,7 +130,7 @@ Entries are bounded, current-session public display records with an opaque recon
 
 The DTO intentionally never exposes run, async, or tool IDs. Clients must ignore unknown fields and fall back to status text when the capability is absent.
 
-`data.asyncSnapshot` is a separate bounded projection included on successful status replies when available. Its `runs[].id` contains the async run id; unlike the fleet DTO, it is not an opaque display key. Fleet keys remain opaque and must not be interpreted as run or async identifiers.
+`data.asyncSnapshot` is a separate bounded projection included on successful status replies when available. Its `runs[].id` contains the tracked run id; unlike the fleet DTO, it is not an opaque display key. Fleet keys remain opaque and must not be interpreted as run or async identifiers.
 
 ### Scope
 
@@ -192,42 +175,6 @@ The installed owner applies the existing runtime-agent validation, collision che
 
 This contract is process-local. It does not register agents in child sessions or other Pi processes, and it does not change package discovery or package resolution.
 
-## External jobs in FleetView
-
-Use `pi-subagents/external-runs` to publish display-only current-session jobs owned by another extension:
-
-```ts
-import {
-  registerExternalRun,
-  updateExternalRun,
-  unregisterExternalRun,
-} from "pi-subagents/external-runs";
-
-registerExternalRun({
-  id: "dependency-review",
-  sessionId: ctx.sessionManager.getSessionId(),
-  source: "interactive-shell",
-  label: "Dependency review",
-  state: "running",
-  startedAt: Date.now(),
-  currentAction: "Inspecting package metadata",
-});
-
-updateExternalRun(ctx.sessionManager.getSessionId(), "dependency-review", {
-  state: "completed",
-  updatedAt: Date.now(),
-  endedAt: Date.now(),
-  preview: "No dependency blockers found.",
-  reportPath: "/tmp/dependency-review.md",
-});
-
-unregisterExternalRun(ctx.sessionManager.getSessionId(), "dependency-review");
-```
-
-The API validates and caches bounded display fields when the caller registers or updates a job. FleetView reads that cache only. It does not poll caller code. `snapshotExternalRuns(sessionId)` and `listExternalRuns(sessionId)` return bounded current-session snapshots. Snapshots filter the session-qualified cache key before inspecting record fields; API-written records avoid repeated normalization through module-private provenance, while records replaced or mutated through the process-local registry are validated on demand. By default, malformed records for the requested session throw with the validation error. Display-only Fleet callers can pass `{ ignoreMalformed: true, onMalformedRecord }` to remove bad records and keep rendering with a programmatic diagnostic.
-
-External jobs are observational. The caller owns execution, persistence, cancellation, and result delivery. FleetView does not expose stop, steer, resume, cancel, or Herdr controls for them. Supplied report and transcript paths are shown as bounded text only; FleetView does not read arbitrary external paths.
-
 ## Launch contract preflight
 
 Use `pi-subagents/preflight` when an extension needs to inspect the resolved child launch contract before deciding whether to run anything:
@@ -260,14 +207,14 @@ Preflight covers ordinary single-agent launch resolution:
 - Fresh/fork context, effective model and thinking, skill and tool resolution, direct MCP selections, runtime/configured extensions.
 - Artifact/session paths, async lifecycle/status/result/event/process-terminal paths, package/lifecycle versions, capability-ceiling audit data, and stable digests.
 
-`launchContractDigest` is the canonical digest of the caller task, effective system prompt, model candidates, effective tools/extensions/MCP (including inherited capability ceilings), output binding, and structured-output schema that ordinary foreground and async execution report in results/status/events and metadata.
+`launchContractDigest` is the canonical digest of the caller task, effective system prompt, model candidates, effective tools/extensions/MCP (including inherited capability ceilings), output binding, and structured-output schema that foreground execution report in results/status/events and metadata.
 
 Boundaries:
 
 - Runtime acceptance prose and output-task annotations are intentionally excluded because side-effect-free preflight does not resolve those host/runtime augmentations; the launch and task digests make that boundary explicit.
 - Raw prompts are not exposed in public contract output.
 - It is side-effect-free for launch state: it does not create child sessions, temp prompt files, structured-output runtimes, tool-diagnostic files, or run artifacts.
-- Some host-owned facts, such as exact fork snapshots, nested async roots, and live model registries, can only be proven by the Pi host; those appear as `host_required` diagnostics instead of silently pretending to be exact.
+- Some host-owned facts, such as exact fork snapshots, nested run ownership, and live model registries, can only be proven by the Pi host; those appear as `host_required` diagnostics instead of silently pretending to be exact.
 - Preflight reads the extension config, so `defaultSubagentContext: "fresh"` or `"fork"` affects omitted context in the same way as execution. Explicit `context` still wins.
 
 ## Structured delegation API
@@ -336,7 +283,7 @@ Constraints:
 
 - Delegation requires an active extension context. Emit requests from a supported event callback or queued application step, not by recursively invoking the `subagent` tool inside another tool's `tool_call` hook.
 - The caller selects a configured agent, but agent discovery and effective tools remain package-owned. A request cannot grant arbitrary tools, and tool restrictions are not an operating-system sandbox.
-- The detached RPC remains async-only; this API is foreground-only.
+- Delegation launches one native foreground leaf under the same child policy as the public tool.
 
 Unversioned prompt-template payloads with `requestId`, `agent`, `task`, `context`, `model`, and `cwd` are rejected as legacy direct delegation. New integrations must use the structured owned-leaf request above. `pi-subagents/delegation` is the canonical contract for extension integrations.
 
@@ -366,13 +313,13 @@ Semantics:
 - An explicit empty list means no caller-facing tools or launchable agents for that field; an omitted list does not restrict names.
 - `allowedAgents` entries are canonical agent names and are case-sensitive.
 - Launching a non-allowlisted agent fails before spawn, and `{ action: "list" }` keeps restricted agents visible in a separate non-executable section instead of silently hiding them.
-- The resolved snapshot is propagated monotonically to nested and async children and is retained for recovery.
+- The resolved snapshot is propagated monotonically to nested children and is retained for recovery.
 - `structured_output` may remain as a package-owned internal protocol tool when an output schema requires it; it is not a caller capability.
 - A denied lazy-skill `read` requirement fails before spawn rather than widening the ceiling.
 
 `denyExtensions` suppresses ambient, configured, and MCP provider extensions while retaining the package runtime needed for child protocol enforcement. This is a same-process policy boundary, not a sandbox against malicious code already running in the parent process.
 
-Schedules created while a ceiling is active are rejected until durable schedule persistence is available; unrestricted schedules remain subject to any policy active when they fire. Public status exposes bounded audit counts and sources, never full extension paths.
+Public status exposes bounded capability audit counts and sources, never full extension paths.
 
 ## Background-work provider API
 
@@ -402,38 +349,15 @@ Semantics:
 
 Children do not gain provider tools or extensions automatically. Add `bg_wait` to the child agent's `tools` allowlist and load each provider through `extensions` or `subagentOnlyExtensions`. The parent's effective `waitTool` setting reaches every child through its typed runtime config; `PI_SUBAGENT_WAIT_TOOL_ENABLED` keeps precedence in the parent.
 
-Foreground children never load the parent's ambient extensions: they share the parent's process, and loading them would start a second copy of every ambient extension, including this one, inside it. Agents that need MCP tools (`mcpDirectTools`, or MCP tools from an ambient adapter such as pi-mcp-adapter) or models from a provider extension must run as background children (`async: true`), which load the ambient extensions inside the detached runner process unless the agent sets `extensions` or the capability ceiling denies extensions.
-
-## External job provider bridge
-
-Extensions that own long-running advisor jobs can register a process-local provider for `runner.type: external-job` agents:
-
-```ts
-import { registerExternalJobProvider } from "pi-subagents/external-job-provider";
-
-const dispose = registerExternalJobProvider({
-  name: "surf-oracle",
-  start: ({ prompt, promptDigest, cwd, runId, stepIndex, agent, options }) => startSurfJob({ prompt, promptDigest, cwd, runId, stepIndex, agent, options }),
-  followUp: ({ prompt, parentProviderJobId, requestId, requestDigest, options }) => followUpSurfJob({ prompt, parentProviderJobId, requestId, requestDigest, options }),
-  status: (providerJobId) => getSurfJobStatus(providerJobId),
-  result: (providerJobId) => getSurfJobResult(providerJobId),
-  reattach: (providerJobId) => reattachSurfJob(providerJobId),
-});
-```
-
-The provider returns handles with `providerJobId`, `state`, optional `handleUrl`/`conversationUrl`, optional `failureCode`/`failureMessage`, and optional `blockingJobId` for capacity conflicts. `result` can also return `output` and/or `artifactPath`.
-
-`followUp(input)` is optional. When it is present, a completed external-job run can be continued with `subagent({ action: "resume", id: "<run>", message: "..." })`. Pi sends the completed parent provider job id plus a stable `requestId` and `requestDigest`. The provider must continue that parent conversation or fail closed. It must not open a fresh thread when the parent conversation is missing.
-
-The async runner process does not import provider internals. It writes operation requests into its async run directory. The parent Pi process services those requests against the registered provider and writes operation responses. If the provider is not registered, the bridge fails closed with an actionable error. If a run is recovered after provider job metadata exists, the runner calls `reattach` and `result`; it does not call `start` or `follow-up` again.
+Foreground children use explicit extension settings. Direct MCP tools use the SDK session-local MCP provider with resolved server/tool selections. Load model or other tool providers explicitly through the agent settings. Capability ceilings remain authoritative.
 
 ## Herdr integration
 
-When Pi runs inside [Herdr](https://herdr.dev), pi-subagents automatically reports active async-run counts through Herdr pane metadata.
+When Pi runs inside [Herdr](https://herdr.dev), pi-subagents automatically reports tracked run counts through Herdr pane metadata.
 
 - The bridge is enabled only when Herdr supplies `HERDR_ENV=1` and `HERDR_PANE_ID`; outside Herdr it registers no listeners or timers.
 - It restores current-session active runs after `/reload` or `/resume`, refreshes metadata while work is active, and clears it on completion or shutdown.
-- The bridge uses Herdr's existing `herdr:blocked` sibling event when an async child needs attention, and emits `herdr:busy` while async work remains. Herdr versions that support the sibling event keep the pane's semantic state `working`; older versions ignore it safely and still display the metadata label while the Pi integration remains the lifecycle authority.
+- The bridge uses Herdr's existing `herdr:blocked` sibling event when a child needs attention, and emits `herdr:busy` while tracked work remains. Herdr versions that support the sibling event keep the pane's semantic state `working`; older versions ignore it safely and still display the metadata label while the Pi integration remains the lifecycle authority.
 - The owning Pi session is the only publisher for its own pane metadata. When an active workflow has an explicit bounded `label`, the newest active label appears in the summary and compact `title-suffix`; overlapping completion restores the previous active label. Raw task and goal prompts never enter Herdr metadata. Without a label, one active run uses its agent name and two or more use the active-run count. Attention adds `⚠`, and the suffix is cleared when active work reaches zero.
 
 To show the reported label in the expanded Agent sidebar, include `state_text` or `$summary` in its row layout:
@@ -448,7 +372,7 @@ rows = [
 
 ### Inspector panes
 
-Herdr 0.7.5+ can open an on-demand inspector for an existing async run:
+Herdr 0.7.5+ can open an on-demand inspector for an existing inspectable run:
 
 ```ts
 subagent({ action: "inspector.open", id: "<run-id>", index: 0, focus: true })
@@ -458,7 +382,7 @@ subagent({ action: "inspector.close", id: "<run-id>", index: 0 })
 
 The inspector is a raw dashboard pane, not the child session and not a literal attach. It reads lifecycle/status/output/mission artifacts and sends `steer` or `stop` through pi-subagents' existing control inbox. Closing it never stops the run.
 
-Herdr remains optional. Ordinary launches stay headless, and missing/older Herdr versions affect only Herdr-specific inspector and project-pane actions. FleetView opens the selected active async child with `H`. Use `focus` only with `inspector.open`; Herdr 0.7.5 cannot focus an arbitrary existing raw pane id.
+Herdr remains optional. Ordinary launches stay headless, and missing/older Herdr versions affect only Herdr-specific inspector and project-pane actions. FleetView opens the selected inspectable child with `H`. Use `focus` only with `inspector.open`; Herdr 0.7.5 cannot focus an arbitrary existing raw pane id.
 
 ### Project panes
 
@@ -497,25 +421,13 @@ The API returns discriminated structured results with canonical project root, bi
 
 ## Host session lifetime and completion wakes
 
-A host that embeds this extension owns whether completion wakes can be delivered at all.
+A host must keep the current parent session alive while a foreground workflow retains its VM, children, or completion delivery. Native completion notifications use `registerSubagentNotify` and `sendCompletion` to deliver through `pi.sendMessage(..., { triggerTurn })`. Non-blocking `bg_wait` subscriptions have a separate wake path.
 
-Ordinary async and foreground completion wakes use `registerSubagentNotify` and `sendCompletion`. They listen for completion events and deliver through `pi.sendMessage(..., { triggerTurn })`. Session shutdown stops the result watcher and disposes this completion notifier. `createWaitSubscriptionManager` is separate: it is the explicit non-blocking `bg_wait` subscription path for work without native notification, not the ordinary completion wake path.
+A supervisor handoff is live work even while the parent is answering the question. The original JavaScript VM retains its sequential dependencies, child ownership, and deadline. Session changes and extension shutdown abort that continuation. A persisted receipt cannot replay it.
 
-Detached children do not stop when the session does. They are the host process's children, not the session's, so the run keeps going, completes, and notifies nobody. What is lost is the notification, not the work.
+In a compatible pi-web host, `Symbol.for("@agegr/pi-web/session-liveness/v1")` receives a provider for current-session live work. It accounts for active nested descendants, foreground controls with an owner or active child, retained workflows, and pending completion delivery. Terminal history and wait subscriptions alone do not keep a session alive. Registration is replaced on session changes and released during shutdown or reload.
 
-This matters because "is the parent busy?" is the wrong idle signal. A parent that launches a detached run and hands control back — which is what the async launch output tells it to do — is not prompting, streaming, compacting, or running a shell command. A host that reaps sessions on those signals alone will dispose exactly the session that was waiting to be woken.
-
-When pi-subagents runs inside a compatible pi-web host, it discovers the versioned `Symbol.for("@agegr/pi-web/session-liveness/v1")` registry and registers one provider for the current session. The provider reports live `queued`/`running` async jobs, active nested descendants (including foreground routes retained after their direct parent settles), foreground controls that still have a scheduling owner or active child, and completion notifications waiting for their batch-delivery timer. Retained terminal history, future schedules, and wait subscriptions do not make a session live by themselves. The registration is replaced on session changes and released during runtime shutdown or reload; other hosts remain unaffected.
-
-If your host reclaims idle sessions, keep a session alive while it still has live detached work:
-
-- Read run state from the status files under the async run directory rather than from event traffic. A long, quiet workflow sends almost nothing to the parent, so recent-activity heuristics conclude the wrong thing.
-- Treat `queued` and `running` as live, matching `isActiveAsyncState`. An interrupted run that is `paused` is finalized. A workflow that paused because a child used `contact_supervisor` still has a live child; keep that parent session until reconcile writes `complete` or `failed`.
-- Do not treat `lastUpdate` as a heartbeat. The runner advances it in memory every second but only rewrites `status.json` when the activity classification changes, so a live run inside one long quiet tool call leaves a stale file behind. Judging liveness by file age will reap exactly the run you meant to protect.
-- Prefer the recorded runner `pid`, which stays true through a silent tool call and goes false when the runner dies. Keep file age only as a fallback for runs that record no pid, and give it a wide window.
-- Match `sessionId` in `status.json` against both forms. It is resolved as `getSessionFile() ?? getSessionId()`, so it is normally the parent's session *file path*, but a session that is not persisted records a bare session id instead.
-
-The symptom when this is missed is quiet and easy to misattribute: subagents appear never to report back, which looks like a fault in this extension rather than in the host that disposed the listener.
+Use current run state and owned controls when deciding whether to reclaim a session. A quiet child or a workflow between dependent stages can still be live. File age or the absence of recent model output does not establish that the work has finished.
 
 ## Runtime files
 
@@ -528,16 +440,12 @@ The main runtime files in this repository:
 | `src/agents/agents.ts` | Agent and chain discovery, frontmatter parsing. |
 | `src/runs/foreground/subagent-executor.ts` | Main execution routing for single, parallel, chain, management, status, interrupt, and doctor actions. |
 | `src/runs/foreground/execution.ts` | Core foreground `runSync` handling: drives one in-process child session per attempt. |
-| `src/runs/shared/child-session.ts` | In-process child session factory (`createAgentSession` behind an injectable seam) and the shared model runtime; used by both launch paths. |
-| `src/runs/shared/child-launch.ts` | Builds the tool plan, typed child runtime config, and session launch for a child in either host process. |
+| `src/runs/shared/child-session.ts` | In-process child session factory (`createAgentSession` behind an injectable seam) and the shared model runtime; used by foreground children. |
+| `src/runs/shared/child-launch.ts` | Builds the tool plan, typed child runtime config, and session launch for a native foreground child. |
 | `src/runs/shared/child-tool-plan.ts` | Tool, MCP, and extension resolution for a child launch. |
 | `src/runs/shared/child-runtime-config.ts` | `ChildRuntimeConfig`: everything the child-side hooks need. |
 | `src/runs/shared/child-hooks.ts` | The inline hook extensions every child gets (prompt runtime, fast mode, fanout). |
-| `src/runs/background/subagent-runner.ts` | Detached async runner; hosts background child sessions in its own process. |
-| `src/runs/background/run-child-session.ts` | Drives one background child session and mirrors its events into the run artifacts. |
-| `src/runs/background/runner-aliases.ts` | Aliases the host peer packages to the installed pi package for the runner (`JITI_ALIAS`). |
-| `src/runs/background/async-execution.ts` | Background launch support. |
-| `src/runs/background/async-status.ts` | Status discovery and formatting for async runs. |
+| `src/runs/background/async-status.ts` | Status discovery and formatting for retained run records. |
 | `src/workflows/scripted-workflow.ts` / `src/runs/foreground/subagent-executor.ts` | Scripted workflow orchestration and child launch routing. |
 | `src/shared/settings.ts` | Chain behavior, instructions, and config helpers. |
 | `src/runs/shared/worktree.ts` | Git worktree isolation. |

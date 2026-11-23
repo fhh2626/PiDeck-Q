@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AcceptanceInput, AcceptanceRole, AgentRunnerConfig, OutputMode, ToolBudgetConfig } from "../shared/types.ts";
-import { REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
+import { validateNativeRunner } from "./native-runner.ts";
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import { validatePermissionRules, type PermissionRules } from "../runs/shared/permissions.ts";
 import { validateToolBudgetConfig } from "../runs/shared/tool-budget.ts";
@@ -139,47 +139,21 @@ function validatePositiveInteger(value: unknown, field: string): number | undefi
 	return value;
 }
 
+/** Node timers overflow above this bound, so accepting a longer deadline would abort immediately. */
+function validateTimeout(value: unknown, field: string): number | undefined {
+	const timeout = validatePositiveInteger(value, field);
+	if (timeout !== undefined && timeout > 2_147_483_647) throw new Error(`${field} must be no larger than 2147483647.`);
+	return timeout;
+}
+
 function validateBoolean(value: unknown, field: string): boolean | undefined {
 	if (value === undefined) return undefined;
 	if (typeof value !== "boolean") throw new Error(`${field} must be a boolean when provided.`);
 	return value;
 }
 
-function isJsonSerializable(value: unknown): boolean {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-	if (typeof value === "number") return Number.isFinite(value);
-	if (Array.isArray(value)) return value.every(isJsonSerializable);
-	if (value && typeof value === "object") return Object.values(value).every(isJsonSerializable);
-	return false;
-}
-
 function validateRunner(value: unknown): AgentRunnerConfig | undefined {
-	if (value === undefined) return undefined;
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Runtime agent definition runner must be an object when provided.");
-	const runner = value as Record<string, unknown>;
-	if (runner.type === "pi") {
-		if (Object.keys(runner).some((key) => key !== "type")) throw new Error("Runtime agent definition Pi runner supports only 'type'.");
-		return { type: "pi" };
-	}
-	if (runner.type === "external-job") {
-		if (typeof runner.provider !== "string" || !runner.provider.trim() || runner.provider.trim() !== runner.provider) throw new Error("Runtime agent definition external-job runner requires a non-empty trimmed provider string.");
-		if (runner.options !== undefined && (!runner.options || typeof runner.options !== "object" || Array.isArray(runner.options) || !isJsonSerializable(runner.options))) throw new Error("Runtime agent definition external-job runner options must be a JSON-serializable object.");
-		const supported = new Set(["type", "provider", "options"]);
-		const unknown = Object.keys(runner).filter((key) => !supported.has(key));
-		if (unknown.length > 0) throw new Error(`Runtime agent definition external-job runner has unsupported fields: ${unknown.join(", ")}.`);
-		return { type: "external-job", provider: runner.provider, ...(runner.options ? { options: runner.options as Record<string, unknown> } : {}) };
-	}
-	if (runner.type !== "external-cli") throw new Error("Runtime agent definition runner.type must be 'pi', 'external-cli', or 'external-job'.");
-	if (typeof runner.command !== "string" || !runner.command.trim()) throw new Error("Runtime agent definition external-cli runner requires a non-empty command string.");
-	if (runner.args !== undefined && (!Array.isArray(runner.args) || runner.args.some((arg) => typeof arg !== "string"))) throw new Error("Runtime agent definition external-cli runner args must be an array of strings.");
-	if (runner.adapter !== undefined) throw new Error(`Runtime agent definition external-cli runner adapter is not supported. ${REMOVED_EXTERNAL_CLI_ADAPTER_MESSAGE}`);
-	if (runner.promptDelivery !== undefined && runner.promptDelivery !== "stdin") throw new Error("Runtime agent definition external-cli runner promptDelivery must be 'stdin'.");
-	const capabilities = parseExternalCliCapabilityNarrowing(runner.capabilities, "Runtime agent definition external-cli runner capabilities");
-	const supported = new Set(["type", "adapter", "command", "args", "promptDelivery", "capabilities"]);
-	const unknown = Object.keys(runner).filter((key) => !supported.has(key));
-	if (unknown.length > 0) throw new Error(`Runtime agent definition external-cli runner has unsupported fields: ${unknown.join(", ")}.`);
-	const args = runner.args as string[] | undefined;
-	return { type: "external-cli", command: runner.command.trim(), ...(args?.length ? { args } : {}), ...(runner.promptDelivery ? { promptDelivery: "stdin" as const } : {}), ...(capabilities ? { capabilities } : {}) };
+	return validateNativeRunner(value, "Runtime agent definition runner");
 }
 
 function validateAcceptance(value: unknown): AcceptanceInput | undefined {
@@ -227,8 +201,9 @@ function validateDefinition(value: unknown): RuntimeAgentDefinition {
 	const inheritGlobalContext = validateBoolean(definition.inheritGlobalContext, "Runtime agent definition inheritGlobalContext");
 	const inheritSkills = validateBoolean(definition.inheritSkills, "Runtime agent definition inheritSkills");
 	const defaultAsync = validateBoolean(definition.defaultAsync, "Runtime agent definition defaultAsync");
-	const defaultTimeoutMs = validatePositiveInteger(definition.defaultTimeoutMs, "Runtime agent definition defaultTimeoutMs");
-	const defaultToolTimeoutMs = validatePositiveInteger(definition.defaultToolTimeoutMs, "Runtime agent definition defaultToolTimeoutMs");
+	if (defaultAsync === true) throw new Error("Runtime agents support foreground execution only; defaultAsync must be false.");
+	const defaultTimeoutMs = validateTimeout(definition.defaultTimeoutMs, "Runtime agent definition defaultTimeoutMs");
+	const defaultToolTimeoutMs = validateTimeout(definition.defaultToolTimeoutMs, "Runtime agent definition defaultToolTimeoutMs");
 	const defaultAcceptance = validateAcceptance(definition.defaultAcceptance);
 	const runner = validateRunner(definition.runner);
 	const skills = validateStringList(definition.skills, "Runtime agent definition skills");
@@ -372,8 +347,6 @@ export function registerRuntimeAgent(input: RegisterRuntimeAgentInput): RuntimeA
 	const name = validateString(input.name, "Runtime agent name", MAX_AGENT_NAME_LENGTH);
 	const definition = validateDefinition(input.definition);
 	const agent = toAgentConfig(name, definition);
-	const profileError = validateCodeOwnedProfileRunner(agent);
-	if (profileError) throw new Error(profileError);
 	assertNoBuiltinCollision(agent);
 	const current = registry();
 	const records = current.byPi.get(pi) ?? [];

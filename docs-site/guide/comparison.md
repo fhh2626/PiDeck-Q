@@ -25,7 +25,7 @@
 
 ### 2. 统一管理多个 AI 编码助手
 
-PiDeck 不仅同时支持原版 **Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**，还可以通过会话导入功能将 **Codex** 和 **Claude** 的本地会话导入为统一的历史记录，方便在一个界面中回顾所有 AI 编码工作。
+PiDeck 不仅同时支持原版 **Pi Agent** 和 **Pi-Bolt**，还可以通过会话导入功能将 **Codex** 和 **Claude** 的本地会话导入为统一的历史记录，方便在一个界面中回顾所有 AI 编码工作。
 
 ### 3. 桌面原生体验
 
@@ -37,7 +37,7 @@ PiDeck 不仅同时支持原版 **Pi Agent**、**Pi_Agent_Rust** 和 **Pi-Bolt**
 
 ### 4. 可视化配置管理
 
-直接图形化编辑 Agent 运行时的 `models.json`、`auth.json`、`settings.json`，无需手动编辑 JSON 文件，降低配置门槛。
+直接图形化编辑 Agent 运行时的 `models.json`、`settings.json`，无需手动编辑 JSON 文件，降低配置门槛。
 
 ### 5. 内置终端与文件工具
 

@@ -7,7 +7,7 @@ test("native dev script builds renderer, sidecar and launches Xmake", () => {
 	// 这里守的是脚本的构建步骤清单与「不得回到 Electron 工具链」的配置内容契约。
 	const source = readFileSync("scripts/dev-native.mjs", "utf8");
 	assert.match(source, /build:renderer/);
-	assert.match(source, /build:node/);
+	assert.match(source, /build:webfetch/);
 	assert.match(source, /xmake/);
 	assert.doesNotMatch(source, /electron-vite|electron\.exe/);
 });

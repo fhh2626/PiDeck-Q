@@ -39,6 +39,15 @@ test("getModelImageCapabilityNotice: returns unknown-capability when model.image
 	});
 });
 
+test("an enabled bridge with an empty model asks for a replacement only when the image needs the bridge", () => {
+	const bridge = { enabled: true, provider: "", model: "" };
+	assert.deepEqual(toPlain(getModelImageCapabilityNotice({ id: "text", provider: "custom", images: false }, bridge)),
+		{ kind: "vision-bridge-model-required" });
+	assert.deepEqual(toPlain(getModelImageCapabilityNotice({ id: "unknown", provider: "custom" }, bridge)),
+		{ kind: "vision-bridge-model-required" });
+	assert.equal(getModelImageCapabilityNotice({ id: "vision", provider: "custom", images: true }, bridge), null);
+});
+
 const activeBridge = { enabled: true, provider: "openai", model: "gpt-4o-mini" };
 
 /** 构造轮询判定输入；默认是一条刚发出、带图、视觉桥已就绪的实时消息。 */

@@ -243,7 +243,7 @@ export function renderSupervisorRequest(
 
 export function renderSupervisorReply(
 	entry: SupervisorEntryLike,
-	options: EntryRenderOptions,
+	options: Pick<EntryRenderOptions, "expanded">,
 	theme: Theme,
 ): Component | undefined {
 	const data = replyData(entry.data);

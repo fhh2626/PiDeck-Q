@@ -23,6 +23,7 @@ import { WebHeader, type WebHeaderStatus } from "./WebHeader";
 import { WebTimeline } from "./WebTimeline";
 import { WebComposer } from "./WebComposer";
 import { useWebStreamMessageCache } from "./useWebStreamMessageCache";
+import { useWebSessionDeletion } from "./useWebSessionDeletion";
 import { sameUiMessages } from "./webMessageMergeHelpers";
 import {
 	respondToUi,
@@ -30,7 +31,6 @@ import {
 	createProject,
 	createSession,
 	deleteProject,
-	deleteSession,
 	fetchTurnPage,
 	fetchModels,
 	fetchState,
@@ -51,6 +51,7 @@ import {
 } from "./webConnection";
 import { canRequestWebHistoryPage, hasMoreWebHistory, applyWebHistoryOlderPage, applyWebHistoryTailPage, decideHistoryApply, needsWebHistoryTopUp, resolveDeferredHistoryMessages, WEB_HISTORY_TOP_UP_MAX_ATTEMPTS, type WebHistoryMeta } from "./webHistory";
 import { WEB_TIMELINE_TURN_LIMIT, WEB_TIMELINE_MIN_DISPLAY_ITEMS, countWebDisplayItems } from "./webTurnWindow";
+import { clampThinkingLevelForModel, findModelThinkingSupport, isExtendedThinkingLevel } from "../../../shared/thinkingLevelSupport";
 import {
 	isWebChatStreaming,
 	isWebComposerBusy,
@@ -194,6 +195,7 @@ export function WebChatApp() {
 		});
 		const merged = mergeAuthoritativeUiMessages(current, authoritative, {
 			dropUnmatchedTrailingPlaceholders: applySnapshot,
+			preserveRunningToolCalls: !applySnapshot,
 		});
 		messagesBySessionRef.current[sessionId] = merged;
 		// SSE 或 runtime 仍忙时不要把拆开的尾部快照推进 useChat，否则旧思考/工具会垫底。
@@ -221,6 +223,7 @@ export function WebChatApp() {
 				const cached = messagesBySessionRef.current[sessionId] ?? [];
 				const merged = mergeAuthoritativeUiMessages(cached, history, {
 					dropCoveredLocalSseLeftovers: true,
+					preserveRunningToolCalls: streamingRef.current,
 				});
 				messagesBySessionRef.current[sessionId] = merged;
 				historyMetaRef.current[sessionId] = applyWebHistoryTailPage(
@@ -309,7 +312,7 @@ export function WebChatApp() {
 				const merged = mergeAuthoritativeUiMessages(
 					messagesBySessionRef.current[sessionId] ?? [],
 					authoritative,
-					{ dropUnmatchedTrailingPlaceholders: true },
+					{ dropUnmatchedTrailingPlaceholders: true, preserveRunningToolCalls: runtimeStillRunning },
 				);
 				messagesBySessionRef.current[sessionId] = merged;
 				// 本次重建只刷新尾部权威基线；已向前推进的更早历史游标不得被拽回尾部，
@@ -618,23 +621,22 @@ export function WebChatApp() {
 		}
 	};
 
-	const handleDeleteSession = async (sessionId: string) => {
-		setCommandError(null);
-		try {
-			await deleteSession(sessionId);
+	const sessionDeletion = useWebSessionDeletion({
+		sessions: state.sessions,
+		onError: setCommandError,
+		onDeleted: async (sessionId) => {
 			delete messagesBySessionRef.current[sessionId];
 			delete historyMetaRef.current[sessionId];
 			loadedSessionsRef.current.delete(sessionId);
 			deferredHistoryApplyRef.current.delete(sessionId);
-			if (activeSessionId === sessionId) {
+			if (activeSessionIdRef.current === sessionId) {
 				setActiveSessionId("");
 				setMessages([]);
 			}
-			await refreshNow();
-		} catch (error) {
-			setCommandError(error instanceof Error ? error.message : String(error));
-		}
-	};
+			await refreshNow(true);
+		},
+	});
+	const handleDeleteSession = sessionDeletion.handleDeleteSession;
 
 	const updateActiveSessionState = (patch: { model?: { provider: string; modelId: string }; thinkingLevel?: string }) => {
 		setState((current) => ({
@@ -647,14 +649,22 @@ export function WebChatApp() {
 
 	const handleModelChange = async (model: AvailableModel) => {
 		if (!activeSessionId) {
-			// 首页无会话：选择暂存为待用偏好，新建会话时生效
+			// 首页无会话：选择暂存为待用偏好，新建会话时生效；当前档位不支持时同步降级。
 			setPendingModel({ provider: model.provider, modelId: model.id });
+			const nextThinking = clampThinkingLevelForModel(
+				pendingThinkingLevel ?? undefined,
+				findModelThinkingSupport(models, model.provider, model.id),
+			);
+			if (nextThinking && nextThinking !== pendingThinkingLevel) setPendingThinkingLevel(nextThinking);
 			return;
 		}
 		setCommandError(null);
 		try {
+			let nextThinking: string | undefined;
 			if (activeRuntime) {
-				await setRuntimeModel(
+				// 主进程在 setRuntimeModel 内完成档位降级，并回传降级后的 state；
+				// 这里同步 thinkingLevel，避免按钮/下拉继续显示已失效的 xhigh。
+				const state = await setRuntimeModel(
 					{
 						sessionId: activeRuntime.sessionId,
 						agentId: activeRuntime.agentId,
@@ -663,12 +673,36 @@ export function WebChatApp() {
 					model.provider,
 					model.id,
 				);
+				const level = state && typeof state === "object"
+					? Reflect.get(state, "thinkingLevel")
+					: undefined;
+				const currentLevel = activeSession?.thinkingLevel;
+				// 只采纳扩展档位的变化。基础档位被 pi 切模型重置时不写本地状态，
+				// 避免把 high 显示成 low；服务端 catalog 也只在扩展档位上改。
+				if (
+					typeof level === "string" &&
+					level.length > 0 &&
+					currentLevel &&
+					isExtendedThinkingLevel(currentLevel) &&
+					level !== currentLevel
+				) nextThinking = level;
 			} else {
+				// 已有会话只按它自己的档位降级；pendingThinkingLevel 属于首页新建会话偏好，
+				// 不能因为切换模型就写进一个原本没有档位的会话记录。
+				const fallback = clampThinkingLevelForModel(
+					activeSession?.thinkingLevel ?? undefined,
+					findModelThinkingSupport(models, model.provider, model.id),
+				);
+				if (fallback && fallback !== activeSession?.thinkingLevel) nextThinking = fallback;
 				await updateSessionRecord(activeSessionId, {
 					model: { provider: model.provider, modelId: model.id },
+					...(nextThinking ? { thinkingLevel: nextThinking } : {}),
 				});
 			}
-			updateActiveSessionState({ model: { provider: model.provider, modelId: model.id } });
+			updateActiveSessionState({
+				model: { provider: model.provider, modelId: model.id },
+				...(nextThinking ? { thinkingLevel: nextThinking } : {}),
+			});
 		} catch (error) {
 			setCommandError(error instanceof Error ? error.message : String(error));
 		}
@@ -682,8 +716,9 @@ export function WebChatApp() {
 		}
 		setCommandError(null);
 		try {
+			let effectiveLevel = level;
 			if (activeRuntime) {
-				await setRuntimeThinking(
+				const state = await setRuntimeThinking(
 					{
 						sessionId: activeRuntime.sessionId,
 						agentId: activeRuntime.agentId,
@@ -691,16 +726,21 @@ export function WebChatApp() {
 					},
 					level,
 				);
+				// pi 会按运行中模型快照钳制档位：本地状态跟实际值走，避免下拉显示未生效的档位。
+				const reported = state && typeof state === "object"
+					? Reflect.get(state, "thinkingLevel")
+					: undefined;
+				if (typeof reported === "string" && reported) effectiveLevel = reported;
 			} else {
 				await updateSessionRecord(activeSessionId, { thinkingLevel: level });
 			}
-			updateActiveSessionState({ thinkingLevel: level });
+			updateActiveSessionState({ thinkingLevel: effectiveLevel });
 		} catch (error) {
 			setCommandError(error instanceof Error ? error.message : String(error));
 		}
 	};
 
-	const refreshNow = async () => {
+	const refreshNow = async (propagateFailure = false) => {
 		try {
 			const next = await fetchState();
 			setState(next);
@@ -708,10 +748,12 @@ export function WebChatApp() {
 			const nextConnection = markWebStateSuccess();
 			connectionRef.current = nextConnection;
 			setConnected(nextConnection.connected);
-		} catch {
+		} catch (error) {
 			const nextConnection = markWebStateFailure(connectionRef.current);
 			connectionRef.current = nextConnection;
 			setConnected(nextConnection.connected);
+			// A committed deletion must surface refresh failure without suggesting retry.
+			if (propagateFailure) throw error;
 		}
 	};
 
@@ -841,6 +883,7 @@ export function WebChatApp() {
 
 	return (
 		<div className="app wechat-shell flex h-full w-full min-w-0 overflow-hidden bg-background text-foreground">
+			{sessionDeletion.confirmation}
 			<WebSidebar
 				state={state}
 				activeSessionId={activeSessionId}
@@ -862,7 +905,6 @@ export function WebChatApp() {
 				<WebHeader
 					title={activeSession?.title || t("web.chooseSession")}
 					status={headerStatus}
-					sessionId={activeSessionId}
 					onOpenSidebar={() => setMobileSidebarOpen(true)}
 					model={activeSession?.model ?? pendingModel ?? undefined}
 					thinkingLevel={activeSession?.thinkingLevel ?? pendingThinkingLevel ?? undefined}
