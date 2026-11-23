@@ -95,6 +95,7 @@ void Transcript::configureHistory(const QStringList &fileEntryIds, int fallbackH
     m_windowStartFilePos = position >= 0 ? position : fallbackHead;
     m_preserveHistory = preserveHistory;
     m_stickyHistory = preserveHistory && stickyHistory;
+    m_preservedProjectionId = m_stickyHistory ? projectionId : QString();
     if (!preserveHistory) m_pendingSlideOut = QJsonArray();
 }
 

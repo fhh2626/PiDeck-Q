@@ -11,6 +11,7 @@ import type {
   SessionRecord,
   SessionRuntimeEvent,
   SessionRuntimeInfo,
+  SessionRuntimePreservedProjection,
 } from "../../../shared/types";
 import { isSameSummaryCard, messageFingerprint } from "../../../shared/messageFingerprint";
 import { mergeAgentRuntimeState } from "../utils/agentRuntimeState";
@@ -22,6 +23,7 @@ import {
 } from "../utils/optimisticUserReconciliation";
 import { sameProjectSessionList } from "../utils/sessionRecordIdentity";
 import { clearStaleSessionModel, type SessionModelVersions } from "./session-model-references";
+import { recoverRuntimeWindowHistory, settleRuntimeAssistantShell } from "./timelineRuntimeRecovery";
 
 /**
  * 渲染层会话消息缓存上限（LRU）。
@@ -101,12 +103,13 @@ export type SessionLoadState = {
   error?: string;
 };
 
-export type SessionMessageCacheEntry = {
+export type SessionMessageCacheEntry = SessionRuntimePreservedProjection & {
 	messages: ChatMessage[];
 	revision: number;
 	source: "disk" | "runtime";
 	updatedAt: number;
 	agentId?: string;
+	runtimeGeneration?: number;
 	/** Present only for paged historical reads; runtime owns an authoritative full snapshot. */
 	page?: Pick<SessionMessagePage, "total" | "nextBefore">;
 	/** 激活显示窗口起点（runtime 数组下标空间，2026-08 激活分页）；>0 表示窗口前还有历史。 */
@@ -324,6 +327,15 @@ export type StreamingTextState = {
 export const streamingTextByIdAtom = atom<
 	Record<string, StreamingTextState>
 >({});
+
+function clearSessionLiveText(get: Getter, set: Setter, sessionId: string) {
+  const streams = get(streamingTextByIdAtom);
+  if (!streams[sessionId]) return;
+  const next = { ...streams };
+  delete next[sessionId];
+  set(streamingTextByIdAtom, next);
+}
+
 /**
  * Live 思考正文通道（镜像 text-stream）：key = msg-thinking-${assistantMessageId}。
  * ThinkingStep 叶子订阅；timeline 只订 liveThinkingIdBySessionAtom，避免 50ms 戳醒整树。
@@ -486,6 +498,7 @@ export const replaceSessionRuntimesAtom = atom(
       if (existing && existing.runtimeGeneration > runtime.runtimeGeneration) continue;
       const bindingChanged = existing?.agentId !== runtime.agentId ||
         existing.runtimeGeneration !== runtime.runtimeGeneration;
+      if (bindingChanged) clearSessionLiveText(get, set, runtime.sessionId);
       next[runtime.sessionId] = {
         ...(bindingChanged ? {} : existing),
         agentId: runtime.agentId,
@@ -598,6 +611,8 @@ export const cacheSessionMessagesAtom = atom(
 		/** 显式移除本地 pending（会话提升迁移源）时放行 disk 写入。 */
 		allowPendingRemoval?: boolean;
 		history?: SessionMessageCacheEntry["history"];
+		/** Full snapshot metadata; local and incremental writes leave it unchanged. */
+		runtimeSnapshot?: SessionRuntimePreservedProjection & { generation: number };
 		historyMutationRevision?: number;
 		historyReset?: symbol;
 		/** mutation 刷新代际：仅 replaceSessionHistoryAfterMutationAtom 落地路径写入新值 */
@@ -684,6 +699,8 @@ export const cacheSessionMessagesAtom = atom(
 			...(input.source === "runtime" ? {
 				windowStart: input.windowStart && input.windowStart > 0 ? input.windowStart : undefined,
 				history: input.history,
+				runtimeGeneration: input.runtimeSnapshot?.generation ?? current?.runtimeGeneration,
+				preservedProjectionId: input.runtimeSnapshot ? input.runtimeSnapshot.preservedProjectionId : current?.preservedProjectionId,
 				historyMutationRevision: input.historyMutationRevision ?? current?.historyMutationRevision,
 				historyReset: input.historyReset ?? current?.historyReset,
 				// mutation 代际：runtime flush 不改变它，只有显式传入（refresh 落地）才更新。
@@ -2069,6 +2086,7 @@ export const applySessionRuntimeEventAtom = atom(
       delete nextUiById[event.sessionId];
       set(sessionRuntimeUiByIdAtom, nextUiById);
       clearSessionLiveThinking(get, set, event.sessionId);
+      clearSessionLiveText(get, set, event.sessionId);
       set(sessionRuntimeByIdAtom, {
         ...get(sessionRuntimeByIdAtom),
         [event.sessionId]: {
@@ -2096,6 +2114,7 @@ export const applySessionRuntimeEventAtom = atom(
     // 写 sessionRuntimeByIdAtom，导致 timeline 等订阅者 100/s 全量重渲染——
     // 主进程侧已停止转发，这里双保险拦截（防其他生产者误发）。
     if (event.sourceChannel === "agents:event") return;
+    if (bindingChanged) clearSessionLiveText(get, set, event.sessionId);
 
     let nextRuntime: SessionRuntimeViewState = {
       ...(bindingChanged
@@ -2265,32 +2284,31 @@ export const applySessionRuntimeEventAtom = atom(
       }
       return;
     } else if (event.sourceChannel === "agents:text-stream" && payload) {
-      // Live 正文：只更新 streamingTextByIdAtom。
-      // 绑定未变时不写 sessionRuntimeByIdAtom，避免每帧戳醒 timeline/composer 订阅者。
-      const prev = get(streamingTextByIdAtom)[event.sessionId];
+      // Only streamed deltas use the hot leaf subscription. A failed handoff
+      // can update one existing canonical slot when the terminal frame arrives.
+      const streams = get(streamingTextByIdAtom);
+      const prev = streams[event.sessionId];
       const messageId = typeof payload.messageId === "string" ? payload.messageId : (prev?.messageId ?? "");
-      // 增量协议（2026-08 治理）：主进程正常 append 只推 delta，渲染层追加到
-      // 本地累积；text 全量快照（非 append 重置 / 2.5s 自愈）整体替换。
+      const sameMessage = prev?.messageId === messageId;
+      const previousText = sameMessage ? prev?.content ?? "" : "";
       const text = typeof payload.delta === "string"
-        ? (prev?.content ?? "") + payload.delta
-        : typeof payload.text === "string"
-          ? payload.text
-          : prev?.content ?? "";
+        ? previousText + payload.delta
+        : typeof payload.text === "string" ? payload.text : previousText;
       const done = payload.done === true;
-      const streaming = !done && text.length > 0;
-      if (!prev || prev.messageId !== messageId || prev.content !== text || prev.streaming !== streaming) {
-        set(streamingTextByIdAtom, {
-          ...get(streamingTextByIdAtom),
-          [event.sessionId]: { messageId, content: text, streaming },
-        });
-      }
       if (done) {
-        set(streamingTextByIdAtom, (prevMap) => {
-          if (!(event.sessionId in prevMap)) return prevMap;
-          const nextMap = { ...prevMap };
-          delete nextMap[event.sessionId];
-          return nextMap;
-        });
+        // A delayed terminal frame may belong to the previous assistant. A
+        // blocked handoff can also precede the very first (coalesced) live frame.
+        if (sameMessage) {
+          const cache = get(sessionMessagesCacheAtom);
+          const settled = settleRuntimeAssistantShell(cache[event.sessionId], event, messageId, text || previousText);
+          if (settled) set(sessionMessagesCacheAtom, { ...cache, [event.sessionId]: settled });
+          clearSessionLiveText(get, set, event.sessionId);
+        }
+      } else {
+        const streaming = text.length > 0;
+        if (!sameMessage || prev?.content !== text || prev.streaming !== streaming) {
+          set(streamingTextByIdAtom, { ...streams, [event.sessionId]: { messageId, content: text, streaming } });
+        }
       }
       if (bindingChanged) {
         set(sessionRuntimeByIdAtom, {
@@ -2332,8 +2350,10 @@ export const applySessionRuntimeEventAtom = atom(
         if (blocked && !missedMutation) return;
         const destructiveSnapshot = !blocked && payload.preserveHistory === false;
         const explicitDrop = destructiveSnapshot || missedMutation;
+        if (explicitDrop) clearSessionLiveText(get, set, event.sessionId);
         const preserveHistory = !explicitDrop && payload.preserveHistory === true;
-        const stickyHistory = !explicitDrop && payload.stickyHistory === true;
+        const preservedProjectionId = typeof payload.preservedProjectionId === "string" && payload.preservedProjectionId
+          ? payload.preservedProjectionId : undefined;
         // A new mutation revision cannot be applied to the old window by delta.
         if (explicitDrop && upsertFrom !== undefined && totalLength !== undefined) {
           requestSessionMessageResync(get, set, event.sessionId);
@@ -2484,9 +2504,12 @@ export const applySessionRuntimeEventAtom = atom(
           const cardCount = Math.max(0, segment.length - (totalLength ?? segment.length) + W);
           // trim 窗口右移的滑出轮：主进程把旧窗口头部（不再被新窗口覆盖的轮次）
           // 随全量 flush 下发，并入历史前缀，避免「锚点轮从视口消失且翻不回来」
-          const slideOut = Array.isArray(payload.slideOut)
-            ? (payload.slideOut as ChatMessage[])
-            : undefined;
+          const slideOut = Array.isArray(payload.slideOut) ? (payload.slideOut as ChatMessage[]) : undefined;
+          const { stickyHistory, trimmedPrefix } = recoverRuntimeWindowHistory({
+            current, owner: event, preserveHistory, preservedProjectionId, windowStart: W, isSummaryCard,
+            deliveredSlideOutCount: slideOut?.length ?? 0,
+            stickyHistory: !explicitDrop && payload.stickyHistory === true,
+          });
           // 本地乐观用户气泡与本次权威 user 消息配对：配对成功时先从旧数组移除，
           // 避免 merge 把它标记为 slidingOut 后在 280ms 后删除造成底部回滚。
           const optimisticReconciliation = reconcileOptimisticUserMessages(
@@ -2494,8 +2517,8 @@ export const applySessionRuntimeEventAtom = atom(
             segment,
           );
           const droppedOptimisticIds = new Set(optimisticReconciliation.droppedIds);
-          // 压缩后的 canonical snapshot 只保留总结与当前窗口；把压缩前的运行期窗口
-          // 作为 history candidates，reconcile 会剔除仍被新 segment 覆盖的消息。
+          // Explicit sticky snapshots also preserve history across restarts.
+          // Gap recovery may infer sticky only when the old window has the same owner.
           const previousWindow = preserveHistory &&
             stickyHistory &&
             current?.source === "runtime"
@@ -2512,6 +2535,7 @@ export const applySessionRuntimeEventAtom = atom(
             : undefined;
           const combinedSlideOut = [
             ...(previousWindow ?? []),
+            ...(trimmedPrefix ?? []),
             ...(slideOut ?? []),
           ];
           const seenHistoryCandidates = new Set<string>();
@@ -2661,6 +2685,7 @@ export const applySessionRuntimeEventAtom = atom(
             windowStart: payloadWindowStart,
             cardCount,
             history: reconciledHistory.history,
+            runtimeSnapshot: { generation: event.runtimeGeneration, preservedProjectionId },
             historyMutationRevision,
             ...(explicitDrop ? { historyReset: Symbol() } : {}),
             ...(typeof payloadWindowStartFilePos === "number"

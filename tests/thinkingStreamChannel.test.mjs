@@ -39,11 +39,8 @@ test("ThinkingUpdate payload carries stable id + lifecycle fields", () => {
   );
 });
 
-test("renderer: streaming atoms merge delta and accept full-text snapshots", () => {
+test("renderer: thinking atoms merge streamed deltas", () => {
   assert.match(atoms, /typeof payload\.delta === "string"/);
-  // text-stream：delta 追加本地累积；text 全量替换
-  assert.match(atoms, /\(prev\?\.content \?\? ""\) \+ payload\.delta/);
-  // thinking：delta 追加本地累积
   assert.match(atoms, /\(prev\?\.text \?\? ""\) \+ delta/);
 });
 

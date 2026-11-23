@@ -33,6 +33,7 @@ function loadAtoms() {
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   return compileModule("src/renderer/src/atoms/session-atoms.ts", {
     "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
+    "./timelineRuntimeRecovery": loadTsCommonJs("src/renderer/src/atoms/timelineRuntimeRecovery.ts"),
     "../utils/agentRuntimeState": compileModule(
       "src/renderer/src/utils/agentRuntimeState.ts",
     ),

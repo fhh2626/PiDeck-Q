@@ -173,6 +173,8 @@ private:
     int m_windowStartFilePos = 0;
     bool m_preserveHistory = true;
     bool m_stickyHistory = false;
+    // Survives broadcast so a replay-gap snapshot can identify a missed projection.
+    QString m_preservedProjectionId;
     QJsonArray m_pendingSlideOut;
     quint64 m_diagnosticRevision = 0;
     quint64 m_trimRevision = 0;

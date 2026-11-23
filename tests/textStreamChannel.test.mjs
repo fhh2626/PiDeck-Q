@@ -1,21 +1,31 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createStore } from "jotai/vanilla";
+import { loadTsCommonJs } from "./helpers/loadTsCommonJs.mjs";
 
-test("renderer: streamingTextByIdAtom updates from agents:text-stream without runtime bump", () => {
-  const atoms = readFileSync("src/renderer/src/atoms/session-atoms.ts", "utf8");
-  assert.match(atoms, /export const streamingTextByIdAtom = atom/);
-  assert.match(atoms, /Record<string, StreamingTextState>/);
-  assert.match(atoms, /event\.sourceChannel === "agents:text-stream"/);
-  assert.match(atoms, /const streaming = !done && text\.length > 0/);
-  assert.match(atoms, /delete nextMap\[event\.sessionId\]/);
-
-  // text-stream 分支必须 early return，避免无条件写 sessionRuntimeByIdAtom
-  const textStreamIdx = atoms.indexOf('event.sourceChannel === "agents:text-stream"');
-  const messagesIdx = atoms.indexOf('event.sourceChannel === "agents:message"');
-  assert.ok(textStreamIdx >= 0 && messagesIdx > textStreamIdx);
-  const textStreamBlock = atoms.slice(textStreamIdx, messagesIdx);
-  assert.match(textStreamBlock, /\breturn;/);
+test("renderer: the live text stream updates and clears without waking runtime or history", () => {
+  const atoms = loadTsCommonJs("src/renderer/src/atoms/session-atoms.ts");
+  const store = createStore();
+  const sessionId = "text-stream-session";
+  const agentId = "agent";
+  const emit = (sourceChannel, payload) => store.set(atoms.applySessionRuntimeEventAtom, {
+    sessionId, agentId, runtimeGeneration: 1, sourceChannel, payload,
+  });
+  emit("agents:message", { messages: [] });
+  const runtime = store.get(atoms.sessionRuntimeByIdAtom);
+  const history = store.get(atoms.sessionMessagesCacheAtom);
+  emit("agents:text-stream", { messageId: "reply", text: "First" });
+  emit("agents:text-stream", { messageId: "reply", delta: " part" });
+  const live = () => store.get(atoms.streamingTextByIdAtom)[sessionId];
+  assert.equal(live().content, "First part");
+  assert.equal(live().streaming, true);
+  emit("agents:text-stream", { messageId: "reply", text: "fresh full snapshot" });
+  assert.equal(live().content, "fresh full snapshot");
+  emit("agents:text-stream", { messageId: "reply", done: true });
+  assert.equal(live(), undefined);
+  assert.equal(store.get(atoms.sessionRuntimeByIdAtom), runtime);
+  assert.equal(store.get(atoms.sessionMessagesCacheAtom), history);
 });
 
 test("UI: AnswerOutput live path; TurnRow does not subscribe streaming atom", () => {

@@ -230,6 +230,11 @@ export type SessionHistoryMutationProjection = {
 	historyMutationRevision?: number;
 };
 
+/** Durable identity of a preserving history projection in a full runtime event. */
+export type SessionRuntimePreservedProjection = {
+	preservedProjectionId?: string;
+};
+
 /** Coordinates of a full runtime window, excluding one-shot SSE-only flags. */
 export type SessionRuntimeMessageWindow = SessionHistoryMutationProjection & {
 	totalLength?: number;

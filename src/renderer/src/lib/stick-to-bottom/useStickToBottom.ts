@@ -28,6 +28,8 @@ import {
   isNestedScrollEvent,
 } from "./scrollIntent";
 
+import { createScrollRangeFloor } from "./scrollRangeFloor";
+
 export type { Animation, SpringAnimation } from "./mergeAnimations";
 
 const STICK_TO_BOTTOM_OFFSET_PX = 70;
@@ -143,8 +145,12 @@ export interface StickToBottomState {
 export interface StickToBottomInstance {
   contentRef: React.MutableRefObject<HTMLElement | null> & React.RefCallback<HTMLElement>;
   scrollRef: React.MutableRefObject<HTMLElement | null> & React.RefCallback<HTMLElement>;
+  /** Optional out-of-flow guard for MessageScroller's native viewport. */
+  rangeFloorRef: React.RefCallback<HTMLElement>;
   scrollToBottom: ScrollToBottom;
   stopScroll: StopScroll;
+  /** Sample a committed layout before a later commit can hide its clamp. */
+  reconcileLayoutClamp: () => void;
   /** 原子恢复位置：写 scrollTop 的同时解除锁底并取消在途弹簧动画。 */
   restoreAt: RestoreAt;
   isAtBottom: boolean;
@@ -172,6 +178,8 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
   const [isNearBottom, setIsNearBottom] = useState(false);
   const optionsRef = useRef<StickToBottomOptions | null>(null);
   optionsRef.current = options;
+  const floor = useMemo(createScrollRangeFloor, []);
+  const viewportObserver = useRef<ResizeObserver | null>(null);
 
   const isSelecting = useCallback(() => {
     if (!mouseDown) {
@@ -190,6 +198,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
 
   const setIsAtBottom = useCallback(
     (isAtBottom: boolean) => {
+      if (state.isAtBottom !== isAtBottom) floor.hold(isAtBottom ? state.scrollTop : 0);
       state.isAtBottom = isAtBottom;
       updateIsAtBottom(isAtBottom);
     },
@@ -225,6 +234,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
           // Layout can clamp this write before its first scroll notification.
           // Keep the range paired with the written position, not a later event.
           state.lastMaxScrollTop = Math.max(0, scrollRef.current.scrollHeight - scrollRef.current.clientHeight);
+          if (state.isAtBottom) floor.hold(state.ignoreScrollToTop);
         }
       },
       get targetScrollTop() {
@@ -331,7 +341,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
                 behavior.mass;
               state.accumulated += state.velocity * tickDelta;
               state.scrollTop += state.accumulated;
-              if (state.scrollTop !== scrollTop) {
+              if (state.ignoreScrollToTop !== scrollTop) {
                 state.accumulated = 0;
               }
             }
@@ -371,11 +381,19 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     [setIsAtBottom, isSelecting, state],
   );
 
+  const layoutClampFrameRef = useRef<number | undefined>(undefined);
+  const cancelLayoutClampFrame = useCallback(() => {
+    if (layoutClampFrameRef.current === undefined) return;
+    cancelAnimationFrame(layoutClampFrameRef.current);
+    layoutClampFrameRef.current = undefined;
+  }, []);
+
   /**
    * 原子停止在途动画并进入阅读状态（读者模式）。
    * 必须按顺序使代数过期、清除动画、清空物理速度与累加量、更新状态镜像。
    */
   const cancelScrollAnimation = useCallback(() => {
+    cancelLayoutClampFrame();
     state.scrollGeneration += 1;
     state.animation = undefined;
     state.lastTick = undefined;
@@ -386,7 +404,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     if (scrollRef.current) {
       state.lastScrollTop = scrollRef.current.scrollTop;
     }
-  }, [setEscapedFromLock, setIsAtBottom, state]);
+  }, [cancelLayoutClampFrame, setEscapedFromLock, setIsAtBottom, state]);
 
   const stopScroll = useCallback(() => {
     cancelScrollAnimation();
@@ -458,6 +476,30 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     }
   }, [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, state]);
 
+  /** Record a proven browser clamp while the old position is still unreachable. */
+  const reconcileLayoutClamp = useCallback(() => {
+    const viewport = scrollRef.current;
+    const previousTop = state.ignoreScrollToTop ?? state.lastScrollTop;
+    if (!viewport || !state.isAtBottom || previousTop === undefined) return;
+    const top = viewport.scrollTop;
+    if (top >= previousTop - 2) return;
+    const maxTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (previousTop <= maxTop + 2 || top < maxTop - 1) return;
+
+    state.lastScrollTop = top;
+    state.lastMaxScrollTop = maxTop;
+    state.ignoreScrollToTop = undefined;
+    // A second commit can restore the original height without a resize event.
+    // Check the live edge once, unless newer input or animation took ownership.
+    cancelLayoutClampFrame();
+    const generation = state.scrollGeneration;
+    layoutClampFrameRef.current = requestAnimationFrame(() => {
+      layoutClampFrameRef.current = undefined;
+      if (scrollRef.current !== viewport || generation !== state.scrollGeneration || !state.isAtBottom || isSelecting()) return;
+      if (state.scrollDifference > 1) state.scrollTop = state.calculatedTargetScrollTop;
+    });
+  }, [cancelLayoutClampFrame, isSelecting, state]);
+
   const handleScroll = useCallback(
     ({ target }: Event) => {
       if (target !== scrollRef.current) {
@@ -493,7 +535,10 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
        */
       const previousMaxScrollTop = state.lastMaxScrollTop;
       state.lastMaxScrollTop = maxScrollTop;
-      const isClampedByShrink = scrollEl !== null && isContentShrinkClamp({
+      // If the floor still covers the former offset, layout could not clamp it.
+      const formerOffsetProtected = floor.offset > 0
+        && lastScrollTop <= floor.offset && maxScrollTop >= floor.offset;
+      const isClampedByShrink = !formerOffsetProtected && scrollEl !== null && isContentShrinkClamp({
         scrollTop,
         lastScrollTop,
         maxScrollTop,
@@ -524,8 +569,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
       if (!state.escapedFromLock && state.isNearBottom) {
         setIsAtBottom(true);
       }
+      if (state.isAtBottom) floor.hold(scrollTop);
     },
-    [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, isSelecting, state],
+    [cancelScrollAnimation, setEscapedFromLock, setIsAtBottom, floor, isSelecting, state],
   );
 
   /** A bottomed reader cannot generate a scroll event by moving farther down. */
@@ -646,7 +692,28 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     [cancelScrollAnimation, resumeFollowingAtBottom, state],
   );
 
+  /** Before measuring a real resize, drop the guard if it might mask the new tail. */
+  const exposeResizedRange = useCallback((viewport: HTMLElement) => {
+    if (!floor.offset) return false;
+    const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    // A native scrollbar can move before its scroll event and without pointerdown.
+    // The old offset is still reachable with the guard, so don't overwrite that move.
+    if (!state.animation?.ignoreEscapes && max >= floor.offset && viewport.scrollTop < floor.offset - 1) {
+      cancelScrollAnimation();
+    } else if (max <= floor.offset + 1) {
+      floor.hold(0);
+      return true;
+    }
+    return false;
+  }, [cancelScrollAnimation, floor, state]);
+
   const scrollRef = useRefCallback((scroll) => {
+    if (scroll !== scrollRef.current) {
+      cancelLayoutClampFrame();
+      floor.hold(0);
+    }
+    viewportObserver.current?.disconnect();
+    viewportObserver.current = null;
     scrollRef.current?.removeEventListener("scroll", handleScroll);
     scrollRef.current?.removeEventListener("wheel", handleWheel);
     scrollRef.current?.removeEventListener("pointerdown", handlePointerDown);
@@ -664,18 +731,41 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     scroll?.addEventListener("touchend", handleTouchEnd, { passive: true });
     scroll?.addEventListener("touchcancel", handleTouchEnd, { passive: true });
     scroll?.addEventListener("keydown", handleKeyDown, { passive: true });
+
+    if (!scroll || typeof ResizeObserver === "undefined") return;
+    let previousHeight: number | undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      if (viewportObserver.current !== observer) return;
+      const height = entry.contentRect.height;
+      const changed = previousHeight !== undefined && previousHeight !== height;
+      previousHeight = height;
+      if (!contentRef.current) return;
+      const releasedFloor = exposeResizedRange(scroll);
+      if (!changed && !releasedFloor) return;
+      if (state.isAtBottom && !isSelecting()) {
+        // Resize of the viewport is a change to the viewing window, not output
+        // growth: keep the edge visible before paint (e.g. the composer grew).
+        state.scrollTop = state.calculatedTargetScrollTop;
+      }
+      setIsNearBottom(state.isNearBottom);
+    });
+    viewportObserver.current = observer;
+    observer.observe(scroll);
   }, []);
 
   const contentRef = useRefCallback((content) => {
     state.resizeObserver?.disconnect();
+    state.resizeObserver = undefined;
     if (!content) {
       return;
     }
     let previousHeight: number | undefined;
-    state.resizeObserver = new ResizeObserver(([entry]) => {
+    const observer = new ResizeObserver(([entry]) => {
+      if (state.resizeObserver !== observer || contentRef.current !== content) return;
       const { height } = entry.contentRect;
       const difference = height - (previousHeight ?? height);
       state.resizeDifference = difference;
+      const releasedFloor = scrollRef.current && exposeResizedRange(scrollRef.current);
       /**
        * The follow target is one pixel above the physical limit. A reader
        * clamped to that limit needs no follow-target adjustment or scroll event.
@@ -752,6 +842,9 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
           setIsAtBottom(true);
         }
       }
+      // A subpixel reflow can release the floor without moving the rounded
+      // spring target. Protect the current offset even if the spring never writes.
+      if (releasedFloor && state.isAtBottom && !floor.offset) floor.hold(state.scrollTop);
       previousHeight = height;
       /**
        * Reset the resize difference after the scroll event
@@ -768,14 +861,17 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
         }, 1);
       });
     });
-    state.resizeObserver?.observe(content);
+    state.resizeObserver = observer;
+    observer.observe(content);
   }, []);
 
   return {
     contentRef,
     scrollRef,
+    rangeFloorRef: floor.attach,
     scrollToBottom,
     stopScroll,
+    reconcileLayoutClamp,
     restoreAt,
     /**
      * 对外「是否锁底跟随」只用严格 isAtBottom。

@@ -393,12 +393,17 @@ export function SessionMessageTimeline(props: SessionMessageTimelineProps) {
     }
   }, [controller.scrollerScrollApiRef]);
 
+  const reconcileLayoutClamp = useCallback(() => {
+    controller.scrollerScrollApiRef.current?.reconcileLayoutClamp();
+  }, [controller.scrollerScrollApiRef]);
+
   // 接入虚拟列表
   const virtualTimeline = useVirtualTimeline({
     items: reconciledRuns,
     viewportRef: timelineRef,
     listRef,
     isFollowing: controller.autoScroll,
+    reconcileLayoutClamp,
     applyReaderScrollTop,
     sessionId,
     adapterRef,

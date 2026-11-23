@@ -98,6 +98,7 @@ void Transcript::reset()
     m_windowStartFilePos = 0;
     m_preserveHistory = true;
     m_stickyHistory = false;
+    m_preservedProjectionId.clear();
     m_pendingSlideOut = QJsonArray();
     m_diagnosticIds.clear();
     m_activeAssistantId.clear();
@@ -551,6 +552,9 @@ QJsonObject Transcript::flushPayload(const QString &fileVersion) const
     payload.insert(QStringLiteral("messages"), stripToolResults(m_messages));
     payload.insert(QStringLiteral("preserveHistory"), m_preserveHistory);
     if (m_stickyHistory) payload.insert(QStringLiteral("stickyHistory"), true);
+    if (!m_preservedProjectionId.isEmpty()) {
+        payload.insert(QStringLiteral("preservedProjectionId"), m_preservedProjectionId);
+    }
     if (!m_pendingSlideOut.isEmpty()) {
         payload.insert(QStringLiteral("slideOut"), stripToolResults(m_pendingSlideOut));
     }

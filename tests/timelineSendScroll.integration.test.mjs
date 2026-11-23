@@ -97,9 +97,10 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true, restor
 			const applyReaderScrollTop = React.useCallback((top, reason) => controller.scrollerScrollApiRef.current?.restoreAt(
 				top, reason === "preserve-anchor" ? { preserveFollowState: true } : reason === "restore-reading" ? { forceReading: true } : undefined,
 			), []);
+			const reconcileLayoutClamp = React.useCallback(() => controller.scrollerScrollApiRef.current?.reconcileLayoutClamp(), []);
 			virtualizer = useVirtualTimeline({
 				items, viewportRef: controller.timelineRef, listRef, adapterRef,
-				isFollowing: controller.autoScroll, applyReaderScrollTop, sessionId: props.sessionId,
+				isFollowing: controller.autoScroll, reconcileLayoutClamp, applyReaderScrollTop, sessionId: props.sessionId,
 			});
 			React.useLayoutEffect(() => {
 				if (!fallbackAtTop) return controller.registerViewportAdapter(adapterRef.current);
@@ -192,6 +193,51 @@ test("sending after a browser-clamped collapse keeps the real timeline following
 		await timeline.settle();
 		assert.equal(timeline.controller().autoScroll, true);
 		assert.ok(timeline.gap() <= 2, "the next send must also remain visible");
+	});
+});
+
+for (const growth of [0, 100]) {
+	test(`following survives two commits that clamp then ${growth ? "extend" : "restore"} the scroll range before notification`, async () => {
+		await withSendTimeline(async (timeline) => {
+			const viewport = timeline.viewport();
+			const before = viewport.scrollHeight;
+			const originalTop = viewport.scrollTop;
+			timeline.heights.set("old-11", 20);
+			await timeline.append("interim-output", 20);
+			const clamped = viewport.scrollTop;
+			assert.ok(clamped < originalTop - 100);
+			assert.equal(timeline.gap(), 0);
+			const restoredHeight = before - viewport.scrollHeight - 12;
+			await timeline.append("resumed-output", restoredHeight + growth);
+			assert.equal(viewport.scrollHeight, before + growth);
+			assert.equal(viewport.scrollTop, clamped);
+			await timeline.dispatchScroll();
+			assert.equal(timeline.controller().autoScroll, true, "the delayed layout scroll must not become reader intent");
+			// Equal final height can mean no ResizeObserver notification at all.
+			for (let frame = 0; frame < 4; frame += 1) await timeline.flushFrames();
+			assert.ok(timeline.gap() <= 2, "following must return to the new tail without waiting for a resize signal");
+			await timeline.append("next-output", 220);
+			await timeline.settle();
+			assert.ok(timeline.gap() <= 2);
+		});
+	});
+}
+
+test("upward input after a layout clamp cancels the pending follow correction", async () => {
+	await withSendTimeline(async (timeline) => {
+		const viewport = timeline.viewport();
+		timeline.heights.set("old-11", 20);
+		await timeline.append("interim-output", 20);
+		await timeline.wheelUp(viewport.scrollTop - 100);
+		const reading = timeline.adapter().captureReadingAnchor();
+		assert.equal(reading.status, "resolved");
+		await timeline.append("resumed-output", 220);
+		await timeline.settle();
+		assert.equal(timeline.controller().autoScroll, false);
+		const after = timeline.adapter().captureReadingAnchor();
+		assert.equal(after.status, "resolved");
+		assert.equal(after.anchor.messageId, reading.anchor.messageId);
+		assert.equal(after.anchor.offsetTop, reading.anchor.offsetTop);
 	});
 });
 
