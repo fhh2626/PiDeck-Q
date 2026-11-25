@@ -6,13 +6,13 @@ const timelineStyles = readFileSync("src/renderer/src/styles/timeline.css", "utf
 const events = readFileSync("src/renderer/src/components/session/TimelineEventCards.tsx", "utf8");
 const surface = readFileSync("src/renderer/src/components/session/EmptyState.tsx", "utf8");
 
-test("responding indicator reserves stable space across status changes", () => {
+test("responding indicator is an inline status, without a frame or a looping loader", () => {
   assert.match(events, /data-kind=\{kind\}/);
   // 容器改为无框融入消息流：不得有 border/背景/固定宽度
   assert.doesNotMatch(timelineStyles, /\.responding-indicator\{[\s\S]*?border:/);
   assert.doesNotMatch(timelineStyles, /\.responding-indicator\{[\s\S]*?background:/);
-  // 容器内部改为 beUI ReasoningText（自带最长短语占位防宽度跳动）
-  assert.match(events, /ReasoningText/);
+  assert.match(events, /data-kind=\{kind\} role="status"/);
+  assert.doesNotMatch(events, /<ReasoningText|variant="dot-matrix"/);
 });
 
 test("starting state has a distinct indicator before response states", () => {
@@ -26,10 +26,7 @@ test("reduced motion keeps response state readable without animation", () => {
   assert.match(timelineStyles, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(timelineStyles, /animation:\s*none !important/);
   assert.match(timelineStyles, /transition:\s*none !important/);
-  // 动画降级由 beUI ReasoningText 内部 useReducedMotion 处理（官方组件自带）
-  const reasoning = readFileSync("src/renderer/src/components/agents/loading-states/reasoning-text.tsx", "utf8");
-  assert.match(reasoning, /useReducedMotion/);
-  assert.match(reasoning, /reduce/);
+  assert.match(events, /<span>\{label\[kind\]\}<\/span>/);
 });
 
 test("empty state exposes whether a project can be created", () => {

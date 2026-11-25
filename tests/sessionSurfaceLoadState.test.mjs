@@ -23,6 +23,7 @@ function compile(filePath, imports = {}) {
 const messageFingerprint = compile("src/shared/messageFingerprint.ts");
 const sessionAtoms = compile("src/renderer/src/atoms/session-atoms.ts", {
     "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
+    "./timelineRuntimeRecovery": loadTsCommonJs("src/renderer/src/atoms/timelineRuntimeRecovery.ts"),
   "../utils/agentRuntimeState": compile("src/renderer/src/utils/agentRuntimeState.ts"),
   "../utils/optimisticUserReconciliation": compile(
     "src/renderer/src/utils/optimisticUserReconciliation.ts",

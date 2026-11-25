@@ -111,9 +111,20 @@ describe("native2 pack stage selection (PIDECK_STAGE_DIR)", () => {
 
 	});
 
+	test("the lockfile and README badges match the application version", async () => {
+		const manifest = JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8"));
+		const lockfile = JSON.parse(await readFile(join(REPO_ROOT, "package-lock.json"), "utf8"));
+		assert.equal(lockfile.version, manifest.version);
+		assert.equal(lockfile.packages[""].version, manifest.version);
+		for (const file of ["README.md", "README.zh-CN.md"]) {
+			const readme = await readFile(join(REPO_ROOT, file), "utf8");
+			const badge = readme.match(/badge\/version-([^\s"]+)-yellow" alt="Version ([^\s"]+)"/);
+			assert.deepEqual(badge?.slice(1), [manifest.version, manifest.version], `${file} version badge`);
+		}
+	});
+
 	test("package.json routes pack and verify:build-artifacts through the wrapper", async () => {
 		const manifest = JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8"));
-		assert.equal(manifest.version, "0.5.0");
 		for (const script of ["pack", "verify:build-artifacts"]) {
 			assert.match(manifest.scripts[script], /scripts\/verify-pack-stage\.mjs/, `${script} must use the env-aware wrapper`);
 			assert.doesNotMatch(manifest.scripts[script], /--out release[\\/]win-unpacked/, `${script} must not hardcode the stage`);

@@ -151,7 +151,7 @@ if (!executable) {
 			}];
 			const compactedMessages = [{ role: "compactionSummary", summary: "summary", timestamp: 100 },
 				...entries.slice(8).map((entry) => entry.message)];
-			const { invoke, record, args, sse, filePath, fake } = await start(t, { scenario: {
+			const { invoke, record, args, sse, filePath, fake, baseUrl, token, host } = await start(t, { scenario: {
 				responses: {
 					get_messages: [{ data: { messages: entries.map((entry) => entry.message) } },
 						{ data: { messages: compactedMessages } }],
@@ -169,6 +169,7 @@ if (!executable) {
 				&& candidate.payload.args[0]?.payload?.windowStartFilePos === 8);
 			const payload = frame.payload.args[0].payload;
 			assert.equal(payload.preserveHistory, true);
+			assert.ok(payload.preservedProjectionId);
 			assert.equal(payload.windowStartFilePos, 8);
 			assert.deepEqual(payload.messages.filter((message) => message.role !== "system")
 				.map((message) => message.meta.entryId), ["u5", "a5", "u6", "a6"]);
@@ -177,6 +178,23 @@ if (!executable) {
 			assert.deepEqual(page.messages.filter((message) => message.role !== "system")
 				.map((message) => message.text), ["u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]);
 			assert.equal(page.nextBefore, null);
+
+			// Skip the one-shot sticky snapshot by reconnecting beyond the replay ring.
+			for (let sequence = 0; sequence < 4_200; sequence += 1) {
+				host.emit("native.clipboard", { text: "replay gap", html: "", filePaths: [], hasImage: false, sequence });
+			}
+			await waitForCondition(() => sse.frames.some((frame) => frame.payload.channel === "native.clipboard"
+				&& frame.payload.args[0].sequence === 4_199));
+			const recovered = new SseClient(`${baseUrl}__pideck/events?token=${encodeURIComponent(token)}&lastEventId=0`);
+			await recovered.connect();
+			t.after(() => recovered.close());
+			await recovered.waitFor("native.resyncRequired", 5_000);
+			const snapshot = await recovered.waitFor((candidate) => candidate.payload.channel === "sessions:runtime-event"
+				&& candidate.payload.args[0]?.sessionId === record.id
+				&& candidate.payload.args[0]?.sourceChannel === "agents:message");
+			assert.equal(snapshot.payload.args[0].payload.stickyHistory, undefined);
+			assert.equal(snapshot.payload.args[0].payload.preservedProjectionId, payload.preservedProjectionId);
+
 			writeFileSync(fake.scenarioPath, JSON.stringify({
 				messages: compactedMessages,
 				entries: { entries: compactedEntries, leafId: "compaction" },

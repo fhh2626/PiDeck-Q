@@ -106,6 +106,37 @@ test("explicit mutations during a refresh schedule one non-overlapping follow-up
   assert.equal(h.states[3].value.current, "feature");
 });
 
+test("a restore while a branch read is pending makes one post-restore read", async () => {
+  const stale = deferred();
+  let observed = null;
+  let calls = 0;
+  const latest = { current: "external-change", branches: ["main", "external-change"] };
+  const gate = new ProjectGitRefresh(() => ++calls === 1 ? stale.promise : Promise.resolve(latest), (_project, value) => { observed = value; });
+  gate.select("a");
+  const pending = gate.refresh("a", "poll");
+  const restored = gate.refresh("a", { whenVisible: () => true });
+  const again = gate.refresh("a", { whenVisible: () => true });
+  assert.equal(calls, 1, "do not overlap Git branch queries on restore");
+  stale.resolve(main());
+  await Promise.all([pending, restored, again]);
+  assert.equal(observed, latest);
+  assert.equal(calls, 2);
+});
+
+test("a restored branch read is deferred only while that window epoch is visible", async () => {
+  const stale = deferred();
+  let calls = 0;
+  let visible = true;
+  const gate = new ProjectGitRefresh(() => { calls++; return stale.promise; }, () => {});
+  gate.select("a");
+  const pending = gate.refresh("a", "poll");
+  const restored = gate.refresh("a", { whenVisible: () => visible });
+  visible = false;
+  stale.resolve(main());
+  await Promise.all([pending, restored]);
+  assert.equal(calls, 1, "do not launch a deferred read in a hidden window");
+});
+
 test("A-to-B-to-A rejects the old epoch while allowing the new A result", async () => {
   const old = deferred(); const next = deferred(); let calls = 0;
   const h = harness(() => ++calls === 1 ? old.promise : next.promise);

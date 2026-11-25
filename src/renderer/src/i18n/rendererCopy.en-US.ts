@@ -2184,6 +2184,7 @@ export const enUS: Record<TranslationKey, string> = {
   "agent.loading.executing1": "Running tool",
   "agent.loading.executing2": "Reading files",
   "agent.loading.executing3": "Applying changes",
+  "agent.loading.responding": "Responding",
   "agent.loading.responding1": "Thinking",
   "agent.loading.responding2": "Drafting",
   "agent.loading.responding3": "Writing reply",

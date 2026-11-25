@@ -61,6 +61,7 @@ export function useVirtualTimeline(params: {
 	viewportRef: RefObject<HTMLElement | null>;
 	listRef?: RefObject<HTMLElement | null>;
 	isFollowing: boolean;
+	reconcileLayoutClamp?: () => void;
 	applyReaderScrollTop: (top: number, reason: "preserve-anchor" | "restore-reading" | "restore-session" | "jump-message") => void;
 	sessionId?: string;
 	adapterRef?: { current: TimelineViewportAdapter | null };
@@ -71,6 +72,7 @@ export function useVirtualTimeline(params: {
 		viewportRef,
 		listRef,
 		isFollowing,
+		reconcileLayoutClamp,
 		applyReaderScrollTop,
 		sessionId,
 		adapterRef,
@@ -437,8 +439,10 @@ export function useVirtualTimeline(params: {
 			}
 		}
 
+		// This commit can shrink the scroll range before another commit grows it.
+		reconcileLayoutClamp?.();
 		updateRangeWithGeometry(geometry);
-	}, [geometry, rowModel, sessionId, currentContext, updateRangeWithGeometry, viewportRef, listRef, applyReadingScrollTop, preservePendingReaderInput, alignExplicitAnchor]);
+	}, [geometry, rowModel, sessionId, currentContext, reconcileLayoutClamp, updateRangeWithGeometry, viewportRef, listRef, applyReadingScrollTop, preservePendingReaderInput, alignExplicitAnchor]);
 
 	// 监听视口滚动
 	useEffect(() => {

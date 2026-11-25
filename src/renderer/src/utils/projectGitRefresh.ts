@@ -1,6 +1,6 @@
 import type { GitBranchInfo } from "../../../shared/types";
 
-export type GitRefreshIntent = "poll" | "explicit";
+export type GitRefreshIntent = "poll" | "explicit" | { whenVisible: () => boolean };
 
 /** Owns branch-refresh concurrency, project epochs and failure backoff without React state. */
 export class ProjectGitRefresh {
@@ -8,6 +8,7 @@ export class ProjectGitRefresh {
 	private epoch = 0;
 	private running: { epoch: number; promise: Promise<void> } | undefined;
 	private followUp = false;
+	private restoreFollowUp: (() => boolean) | undefined;
 	private closed = false;
 	private failures = 0;
 	private nextPollAt = 0;
@@ -25,6 +26,7 @@ export class ProjectGitRefresh {
 		this.epoch += 1;
 		this.running = undefined;
 		this.followUp = false;
+		this.restoreFollowUp = undefined;
 		this.failures = 0;
 		this.nextPollAt = 0;
 	}
@@ -38,14 +40,18 @@ export class ProjectGitRefresh {
 		this.epoch += 1;
 		this.running = undefined;
 		this.followUp = false;
+		this.restoreFollowUp = undefined;
 	}
 
 	refresh(projectId: string, intent: GitRefreshIntent): Promise<void> {
 		if (this.closed || this.projectId !== projectId) return Promise.resolve();
+		const whenVisible = typeof intent === "object" ? intent.whenVisible : undefined;
+		if (whenVisible && !whenVisible()) return Promise.resolve();
 		if (this.running) {
-			// Poll ticks must not make slow results obsolete or create endless reruns.
-			// A mutation, unlike a poll, needs one read started after that mutation.
+			// Interval ticks only join. Explicit mutations and window restores need
+			// one read started after the event, with restore scoped to visibility.
 			if (intent === "explicit") this.followUp = true;
+			if (whenVisible) this.restoreFollowUp = whenVisible;
 			return this.running.promise;
 		}
 		if (intent === "poll" && this.now() < this.nextPollAt) return Promise.resolve();
@@ -53,9 +59,7 @@ export class ProjectGitRefresh {
 		let response: Promise<GitBranchInfo>;
 		try { response = this.read(projectId); }
 		catch (error) { response = Promise.reject(error); }
-		const promise = this.run(projectId, epoch, response).finally(() => {
-			if (this.running?.epoch === epoch) this.running = undefined;
-		});
+		const promise = this.run(projectId, epoch, response);
 		this.running = { epoch, promise };
 		return promise;
 	}
@@ -64,31 +68,39 @@ export class ProjectGitRefresh {
 		return !this.closed && epoch === this.epoch;
 	}
 
-	/** Drain only explicit follow-ups, while settling every caller on success or failure. */
+	/** Drain requested follow-ups, while settling every caller on success or failure. */
 	private async run(projectId: string, epoch: number, response: Promise<GitBranchInfo>): Promise<void> {
 		let failed = false;
 		let lastError: unknown;
-		while (true) {
-			try {
-				const next = await response;
+		try {
+			while (true) {
+				try {
+					const next = await response;
+					if (!this.isCurrent(epoch)) return;
+					this.failures = 0;
+					this.nextPollAt = 0;
+					this.apply(projectId, next);
+					failed = false;
+				} catch (error) {
+					if (!this.isCurrent(epoch)) return;
+					lastError = error;
+					failed = true;
+					this.failures += 1;
+					this.nextPollAt = this.now() + Math.min(30_000, 4_000 * 2 ** Math.min(this.failures - 1, 3));
+					this.apply(projectId, { current: null, branches: [] });
+				}
 				if (!this.isCurrent(epoch)) return;
-				this.failures = 0;
-				this.nextPollAt = 0;
-				this.apply(projectId, next);
-				failed = false;
-			} catch (error) {
-				if (!this.isCurrent(epoch)) return;
-				lastError = error;
-				failed = true;
-				this.failures += 1;
-				this.nextPollAt = this.now() + Math.min(30_000, 4_000 * 2 ** Math.min(this.failures - 1, 3));
-				this.apply(projectId, { current: null, branches: [] });
+				const followUp = this.followUp || this.restoreFollowUp?.();
+				this.followUp = false;
+				this.restoreFollowUp = undefined;
+				if (!followUp) break;
+				try { response = this.read(projectId); }
+				catch (error) { response = Promise.reject(error); }
 			}
-			if (!this.isCurrent(epoch) || !this.followUp) break;
-			this.followUp = false;
-			try { response = this.read(projectId); }
-			catch (error) { response = Promise.reject(error); }
+			if (failed) throw lastError;
+		} finally {
+			// Release ownership in the same microtask that checks follow-ups.
+			if (this.running?.epoch === epoch) this.running = undefined;
 		}
-		if (failed) throw lastError;
 	}
 }

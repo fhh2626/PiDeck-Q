@@ -346,6 +346,9 @@ int main(int argc, char **argv)
     host.registerHandler(QStringLiteral("window.toggleMaximize"), [&mainWindow](const QJsonObject &) {
         return QJsonValue(mainWindow ? mainWindow->toggleMaximize() : false);
     });
+    host.registerHandler(QStringLiteral("window.isVisible"), [&mainWindow](const QJsonObject &) {
+        return QJsonValue(mainWindow && mainWindow->isVisible() && !mainWindow->isMinimized());
+    });
     host.registerHandler(QStringLiteral("window.isMaximized"), [&mainWindow](const QJsonObject &) {
         return QJsonValue(mainWindow && mainWindow->isMaximizedWindow());
     });

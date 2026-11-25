@@ -562,8 +562,18 @@ int main(int argc, char **argv)
     reloadStateWindow.showNormal();
     reloadStateWindow.resize(1'010, 710);
     processGuiEvents();
+    const auto waitForExposure = [&](bool visible) {
+        return waitForHostFrame(lifecycleClient, lifecycleBuffer, [visible](const QJsonObject &frame) {
+            const auto payload = frame.value(QStringLiteral("payload"));
+            return frame.value(QStringLiteral("name")).toString() == QStringLiteral("window.visibilityChanged")
+                && payload.isBool() && payload.toBool() == visible;
+        });
+    };
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
     reloadStateWindow.showMinimized();
     processGuiEvents();
+    if (!require(waitForExposure(false), "minimizing did not suspend renderer polling")) return 1;
     const QRect expectedMinimizedNormalBounds = reloadStateWindow.normalGeometry();
     lifecycleBuffer.clear();
     lifecycleClient.readAll();
@@ -579,10 +589,20 @@ int main(int argc, char **argv)
                 && bounds.value(QStringLiteral("height")).toInt() == expectedMinimizedNormalBounds.height();
         }), "minimized window state sync did not preserve normal restore bounds")) return 1;
 
-    // A real move event must publish the complete normal rectangle, including
-    // x/y; this is the runtime half of the persistence contract.
+    lifecycleBuffer.clear();
+    lifecycleClient.readAll();
     reloadStateWindow.showNormal();
     processGuiEvents();
+    if (!require(waitForExposure(true), "restoring a minimized window did not resume renderer polling")) return 1;
+    reloadStateWindow.hide();
+    processGuiEvents();
+    if (!require(waitForExposure(false), "hiding to tray did not suspend renderer polling")) return 1;
+    reloadStateWindow.show();
+    processGuiEvents();
+    if (!require(waitForExposure(true), "showing from tray did not resume renderer polling")) return 1;
+
+    // A real move event must publish the complete normal rectangle, including
+    // x/y; this is the runtime half of the persistence contract.
     const QRect moveArea = reloadStateWindow.windowHandle() && reloadStateWindow.windowHandle()->screen()
         ? reloadStateWindow.windowHandle()->screen()->availableGeometry()
         : availableGeometry;

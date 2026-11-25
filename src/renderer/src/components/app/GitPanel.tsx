@@ -32,6 +32,7 @@ import {
 } from "../ui-shadcn/context-menu";
 import { ConfirmDialog } from "./AppParts";
 import { dismissNotice, showNotice, type NoticeId } from "../../utils/notice";
+import { useVisiblePoll } from "../../hooks/useVisiblePoll";
 import { htmlToPlainText, readClipboardHtmlConsistent, readClipboardText } from "../../utils/clipboard";
 import type {
   BranchDiffResult,
@@ -422,10 +423,8 @@ export function GitPanel(props: GitPanelProps) {
   const projectIdRef = useRef(props.projectId);
   projectIdRef.current = props.projectId;
   const statusRequestRef = useRef(0);
-  const statusRunningRequestRef = useRef<{
-    projectId: string;
-    request: number;
-  } | null>(null);
+  const statusRunningRequestRef = useRef<{ projectId: string } | null>(null);
+  const pendingStatusRestoreRef = useRef<(() => boolean) | undefined>(undefined);
   const mutationRequestRef = useRef(0);
   const mutationRunningRef = useRef(false);
   const [availableHeight, setAvailableHeight] = useState(720);
@@ -510,11 +509,14 @@ export function GitPanel(props: GitPanelProps) {
   useEffect(() => {
     // 项目切换会复用同一个 GitPanel 实例；递增序号让旧项目进行中的 status/mutation 结果失效。
     statusRequestRef.current += 1;
+    statusRunningRequestRef.current = null;
+    pendingStatusRestoreRef.current = undefined;
     mutationRequestRef.current += 1;
     const next = readPaneState(props.projectId);
     setPaneState({ ...next, heights: fitPaneHeights(next, availableHeight) });
     setGroups(EMPTY_GROUPS);
     setError(null);
+    setLoading(false);
     setCommitMessage("");
     setCommitting(false);
     mutationRunningRef.current = false;
@@ -559,17 +561,17 @@ export function GitPanel(props: GitPanelProps) {
    *                 用于后台轮询，避免闪烁和打断用户正在查看的 Diff 内容。
    */
   const refresh = useCallback(
-    async (silent = false) => {
-      // 静默轮询不打断 mutation，也不与前一个 status 请求重叠；否则慢于 5 秒的请求会彼此作废，列表永久不更新。
-      if (
-        silent &&
-        (mutationRunningRef.current ||
-          statusRunningRequestRef.current?.projectId === props.projectId)
-      )
-        return;
-      const request = ++statusRequestRef.current;
+    async function refreshStatus(silent = false, whenVisible?: () => boolean): Promise<void> {
       const projectId = props.projectId;
-      const runningRequest = { projectId, request };
+      if (projectId !== projectIdRef.current || (whenVisible && !whenVisible())) return;
+      if (silent && (statusRunningRequestRef.current?.projectId === projectId || mutationRunningRef.current)) {
+        // A restore needs a newer snapshot; overlapping interval ticks only skip.
+        if (whenVisible) pendingStatusRestoreRef.current = whenVisible;
+        return;
+      }
+      if (!mutationRunningRef.current) pendingStatusRestoreRef.current = undefined;
+      const request = ++statusRequestRef.current;
+      const runningRequest = { projectId };
       statusRunningRequestRef.current = runningRequest;
       if (!silent) {
         setLoading(true);
@@ -612,34 +614,26 @@ export function GitPanel(props: GitPanelProps) {
           // 静默失败不影响已展示的旧分组数据；不做错误信息变更。
         }
       } finally {
-        if (statusRunningRequestRef.current === runningRequest)
-          statusRunningRequestRef.current = null;
-        if (
-          request === statusRequestRef.current &&
-          projectId === projectIdRef.current &&
-          !silent
-        )
-          setLoading(false);
+        const ownsRequest = statusRunningRequestRef.current === runningRequest;
+        if (ownsRequest) statusRunningRequestRef.current = null;
+        if (request === statusRequestRef.current && projectId === projectIdRef.current) {
+          if (!silent) setLoading(false);
+          const restore = pendingStatusRestoreRef.current;
+          if (ownsRequest && !mutationRunningRef.current && restore) {
+            pendingStatusRestoreRef.current = undefined;
+            await refreshStatus(true, restore);
+          }
+        }
       }
     },
     [props.getStatus, props.projectId],
   );
 
-  // 打开 Git drawer 时首次加载；依赖 refresh 引用稳定。
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // 静默轮询：每 5 秒拉取一次最新工作区状态，不显示 loading 动画、不覆盖错误。
-  // 非 git 仓库 / 未安装 git 时暂停轮询——状态恢复（git init / 安装 git）后由
-  // refresh 成功路径清标记，interval 随依赖重建自动恢复。
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (notAGitRepo || gitNotInstalled) return;
-      void refresh(true);
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [refresh, notAGitRepo, gitNotInstalled]);
+  // The worktree scan is tied to the visible drawer, not just a mounted panel.
+  useVisiblePoll(props.projectId, 15_000, (cause, whenVisible) => {
+    if (cause === "interval" && (notAGitRepo || gitNotInstalled)) return;
+    void refresh(cause !== "mount", cause === "visible" ? whenVisible : undefined);
+  });
 
   /**
    * 刷新 push/pull 角标：先 fetch 远程跟踪引用，再对比本地差距。
@@ -658,17 +652,11 @@ export function GitPanel(props: GitPanelProps) {
     }
   }, [props.fetch, props.aheadBehind, props.projectId]);
 
-  // 定时 fetch 远程：每 5 分钟刷新一次 ahead/behind 角标；首次挂载也立即刷一次。
-  // 非 git 仓库 / 未安装 git 时暂停（fetch 同样会 spawn git 报错）。
-  useEffect(() => {
-    if (!props.fetch || !props.aheadBehind) return;
+  useVisiblePoll(props.fetch && props.aheadBehind ? props.projectId : undefined, 5 * 60_000, (cause) => {
+    // The first attempt belongs to this project, even before the prior error flags reset.
+    if (cause !== "mount" && (notAGitRepo || gitNotInstalled)) return;
     void refreshAheadBehind();
-    const timer = window.setInterval(() => {
-      if (notAGitRepo || gitNotInstalled) return;
-      void refreshAheadBehind();
-    }, 5 * 60_000);
-    return () => window.clearInterval(timer);
-  }, [refreshAheadBehind, props.fetch, props.aheadBehind, notAGitRepo, gitNotInstalled]);
+  }, true, false);
 
   const toggleResource = (key: keyof typeof resourceOpen) => {
     setResourceOpen((current) => ({ ...current, [key]: !current[key] }));
@@ -761,6 +749,23 @@ export function GitPanel(props: GitPanelProps) {
     setCollapsedChangeDirs(new Set());
   }, []);
 
+  // A successful mutation's own status read also satisfies any earlier restore.
+  const refreshAfterMutation = async (request: number) => {
+    if (request !== mutationRequestRef.current) return;
+    pendingStatusRestoreRef.current = undefined;
+    await refresh();
+  };
+
+  const finishMutation = (request: number, projectId: string, clearBusy: () => void) => {
+    if (request !== mutationRequestRef.current) return;
+    mutationRunningRef.current = false;
+    if (projectId !== projectIdRef.current) return;
+    clearBusy();
+    const restore = pendingStatusRestoreRef.current;
+    pendingStatusRestoreRef.current = undefined;
+    if (restore) void refresh(true, restore);
+  };
+
   const act = async (operation: () => Promise<void>) => {
     if (mutationRunningRef.current || committing) return;
     const mutationRequest = ++mutationRequestRef.current;
@@ -769,15 +774,12 @@ export function GitPanel(props: GitPanelProps) {
     const projectId = props.projectId;
     try {
       await operation();
-      if (projectId === projectIdRef.current) await refresh();
+      if (projectId === projectIdRef.current) await refreshAfterMutation(mutationRequest);
     } catch (caught) {
       // Do not let refresh clear the mutation error before the user can read it.
       if (projectId === projectIdRef.current) setError(errorMessage(caught));
     } finally {
-      if (mutationRequest === mutationRequestRef.current) {
-        mutationRunningRef.current = false;
-        if (projectId === projectIdRef.current) setMutating(false);
-      }
+      finishMutation(mutationRequest, projectId, () => setMutating(false));
     }
   };
 
@@ -804,14 +806,11 @@ export function GitPanel(props: GitPanelProps) {
       await props.commit(projectId, message);
       if (projectId !== projectIdRef.current) return;
       setCommitMessage("");
-      await refresh();
+      await refreshAfterMutation(mutationRequest);
     } catch (caught) {
       if (projectId === projectIdRef.current) setError(errorMessage(caught));
     } finally {
-      if (mutationRequest === mutationRequestRef.current) {
-        mutationRunningRef.current = false;
-        if (projectId === projectIdRef.current) setCommitting(false);
-      }
+      finishMutation(mutationRequest, projectId, () => setCommitting(false));
     }
   };
 
@@ -935,7 +934,7 @@ export function GitPanel(props: GitPanelProps) {
     try {
       await props.push(projectId);
       if (projectId !== projectIdRef.current) return;
-      await refresh();
+      await refreshAfterMutation(mutationRequest);
       await refreshAheadBehind();
     } catch (caught) {
       if (projectId === projectIdRef.current) {
@@ -944,10 +943,7 @@ export function GitPanel(props: GitPanelProps) {
         showNotice(msg, 10000, "error");
       }
     } finally {
-      if (mutationRequest === mutationRequestRef.current) {
-        mutationRunningRef.current = false;
-        if (projectId === projectIdRef.current) setPushing(false);
-      }
+      finishMutation(mutationRequest, projectId, () => setPushing(false));
     }
   };
 
@@ -961,7 +957,7 @@ export function GitPanel(props: GitPanelProps) {
     try {
       await props.pull(projectId);
       if (projectId !== projectIdRef.current) return;
-      await refresh();
+      await refreshAfterMutation(mutationRequest);
       await refreshAheadBehind();
     } catch (caught) {
       if (projectId === projectIdRef.current) {
@@ -970,10 +966,7 @@ export function GitPanel(props: GitPanelProps) {
         showNotice(msg, 10000, "error");
       }
     } finally {
-      if (mutationRequest === mutationRequestRef.current) {
-        mutationRunningRef.current = false;
-        if (projectId === projectIdRef.current) setPulling(false);
-      }
+      finishMutation(mutationRequest, projectId, () => setPulling(false));
     }
   };
 

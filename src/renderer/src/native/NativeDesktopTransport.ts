@@ -17,6 +17,7 @@ const NATIVE_EVENT_RECONNECT_MAX_DELAY_MS = 30_000;
 /** EventSource.CLOSED；用字面量避免依赖运行环境上的静态常量。 */
 const EVENT_SOURCE_CLOSED = 2;
 const NATIVE_READ_RPC_TIMEOUT_MS = 60_000;
+const NATIVE_WINDOW_VISIBILITY_TIMEOUT_MS = 5_000;
 export const NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS = 5_000;
 const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.projectsList,
@@ -32,14 +33,15 @@ const NATIVE_READONLY_RPC_CHANNELS: ReadonlySet<string> = new Set([
 	ipcChannels.filesReadBase64,
 	ipcChannels.filesReadBase64External,
 	ipcChannels.nativeClipboardSnapshot,
+	ipcChannels.appWindowIsVisible,
 ]);
 
 export function nativeRpcTimeoutMs(channel: string): number | undefined {
-	// Clipboard paste has already cancelled the browser default action, so it
-	// gets a short deadline and can still use the event's image fallback. Other
-	// idempotent reads keep the longer deadline; mutations remain unbounded so a
-	// local abort cannot report an ambiguous mutation as an ordinary failure.
+	// Use short deadlines for clipboard paste (which can use the event fallback)
+	// and visibility recovery (which can retry). Other allowlisted reads keep the
+	// longer deadline. Mutations stay unbounded to avoid ambiguous results.
 	if (channel === ipcChannels.nativeClipboardSnapshot) return NATIVE_CLIPBOARD_SNAPSHOT_TIMEOUT_MS;
+	if (channel === ipcChannels.appWindowIsVisible) return NATIVE_WINDOW_VISIBILITY_TIMEOUT_MS;
 	return NATIVE_READONLY_RPC_CHANNELS.has(channel)
 		? NATIVE_READ_RPC_TIMEOUT_MS
 		: undefined;
@@ -73,6 +75,8 @@ type QueuedEvent = {
 
 type NativeDesktopTransportOptions = {
 	onResyncRequired?: (payload: unknown) => void;
+	/** Called after replay on every SSE connection, even if health did not change. */
+	onEventChannelReady?: () => void;
 	/** Bootstrap supplies the snapshot boundary before the first SSE connection. */
 	initialEventSeq?: number;
 	/**
@@ -245,6 +249,7 @@ export class NativeDesktopTransport implements DesktopRpcTransport {
 			this.commitEventSeq(readySeq);
 			this.markEventChannelReady();
 			this.settleReady();
+			this.options.onEventChannelReady?.();
 			return;
 		}
 		if (frameHasSeq && this.isStaleEventFrame(seq, frame)) return;

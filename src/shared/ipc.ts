@@ -225,6 +225,8 @@ export const ipcChannels = {
 
 	appWindowMinimize: "app:window-minimize",
 	appWindowToggleMaximize: "app:window-toggle-maximize",
+	appWindowIsVisible: "app:window-is-visible",
+	appWindowVisibilityChanged: "app:window-visibility-changed",
 	appWindowIsMaximized: "app:window-is-maximized",
 	/** 主进程 → 渲染：最大化状态变化（含双击标题栏等非按钮路径） */
 	appWindowMaximizedChanged: "app:window-maximized-changed",

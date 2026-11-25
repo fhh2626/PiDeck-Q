@@ -332,7 +332,7 @@ export function useProjectSync(input: UseProjectSyncInput) {
     if (!silent) showToast(t("app.filesRefreshed", {}), 1800);
   }
 
-  /** Polling joins in-flight reads; explicit mutation refreshes request one subsequent read. */
+  /** Polling joins in-flight reads; mutation and window restore can request a fresh snapshot. */
   async function refreshGitInfo(projectId = activeProjectId, intent: GitRefreshIntent = "explicit") {
     if (!projectId || activeProjectIdRef.current !== projectId) return;
     gitRefreshRef.current?.select(activeProjectIdRef.current);

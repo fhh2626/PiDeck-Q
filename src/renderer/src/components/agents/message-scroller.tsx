@@ -27,6 +27,8 @@ export type MessageScrollerScrollApi = {
   scrollToBottom: ScrollToBottom;
   /** Synchronous engine intent, even before the React follow-state notification. */
   isFollowing: () => boolean;
+  /** Let a virtual list report committed layout before the next scroll event. */
+  reconcileLayoutClamp: () => void;
   /** 原子恢复历史位置；纯布局保锚可保留引擎已有的跟随意图（见 restoreAt）。 */
   restoreAt: RestoreAt;
   /** 解锁锁底并取消在途弹簧，发送置顶动画插入垫片前必须先调，否则 RO 会瞬间贴底。 */
@@ -116,6 +118,7 @@ export function MessageScroller({
   const engineState = stick.state;
   const engineRestoreAt = stick.restoreAt;
   const engineStopScroll = stick.stopScroll;
+  const engineReconcileLayoutClamp = stick.reconcileLayoutClamp;
 
   // 在 layout effect 中同步发布 engine API 给外部，避免首帧恢复时拿不到或被异步打乱
   const currentApiRef = useRef<MessageScrollerScrollApi | null>(null);
@@ -124,6 +127,7 @@ export function MessageScroller({
     const api: MessageScrollerScrollApi = {
       scrollToBottom: engineScrollToBottom,
       isFollowing: () => engineState.isAtBottom,
+      reconcileLayoutClamp: engineReconcileLayoutClamp,
       restoreAt: engineRestoreAt,
       stopScroll: engineStopScroll,
     };
@@ -140,7 +144,7 @@ export function MessageScroller({
         scrollApiRef.current = null;
       }
     };
-  }, [scrollApiRef, engineScrollToBottom, engineState, engineRestoreAt, engineStopScroll]);
+  }, [scrollApiRef, engineScrollToBottom, engineState, engineReconcileLayoutClamp, engineRestoreAt, engineStopScroll]);
 
   const setViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -235,7 +239,7 @@ export function MessageScroller({
         onViewportKeyDown?.(event);
       }}
       className={cn(
-        "h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:auto] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        "relative h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:auto] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
         viewportClassName,
       )}
     >
@@ -250,6 +254,7 @@ export function MessageScroller({
       >
         {children}
       </div>
+      <div ref={stick.rangeFloorRef} aria-hidden="true" className="pointer-events-none invisible absolute start-0 top-0 size-px" />
     </section>
   );
 

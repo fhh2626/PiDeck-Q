@@ -2,7 +2,7 @@ import { loadTsCommonJs } from "./loadTsCommonJs.mjs";
 
 /**
  * 加载真实的 initializeNativeDesktop（含真实 nativeReloadUrl），把 transport/window/fetch 换成替身，
- * 用来观察“断层重载 / 重载保留 token”这类导航行为。
+ * 用来观察断层恢复时的页面事件，以及重载是否保留 token。
  */
 export function loadNativeBootstrapForReload({ href = "http://127.0.0.1:1234/?runtime=native&token=secret&foo=bar#section" } = {}) {
 	const navigation = { replaced: [], reloads: 0, historyUrls: [] };
@@ -32,7 +32,7 @@ export function loadNativeBootstrapForReload({ href = "http://127.0.0.1:1234/?ru
 		activateAfter() {}
 	}
 	const url = new URL(href);
-	const window = {
+	const window = Object.assign(new EventTarget(), {
 		location: {
 			href,
 			search: url.search,
@@ -47,9 +47,7 @@ export function loadNativeBootstrapForReload({ href = "http://127.0.0.1:1234/?ru
 		clearTimeout: () => undefined,
 		setInterval: () => 1,
 		clearInterval: () => undefined,
-		addEventListener: () => undefined,
-		dispatchEvent: () => true,
-	};
+	});
 	const module = loadTsCommonJs("src/renderer/src/native/initializeNativeDesktop.ts", {
 		stubs: {
 			"@shared/desktop/createPiDesktopApi": { createPiDesktopApi: () => ({ fake: true }) },
@@ -61,8 +59,9 @@ export function loadNativeBootstrapForReload({ href = "http://127.0.0.1:1234/?ru
 		globals: {
 			window,
 			fetch: async () => ({ ok: true, status: 200, json: async () => ({ eventSeq: 0, clipboard: {}, settings: {} }) }),
-			CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
+			Event,
+			CustomEvent,
 		},
 	});
-	return { module, navigation, transports };
+	return { module, navigation, transports, window };
 }

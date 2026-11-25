@@ -53,24 +53,6 @@ function loadTimelineHelpers() {
   });
 }
 
-function loadSessionAtoms() {
-  const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
-  return compileModule("src/renderer/src/atoms/session-atoms.ts", {
-    "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
-    "../utils/agentRuntimeState": compileModule(
-      "src/renderer/src/utils/agentRuntimeState.ts",
-    ),
-    "../utils/optimisticUserReconciliation": compileModule(
-      "src/renderer/src/utils/optimisticUserReconciliation.ts",
-    ),
-    "../utils/sessionRecordIdentity": compileModule(
-      "src/renderer/src/utils/sessionRecordIdentity.ts",
-    ),
-    "../../../shared/messageFingerprint": messageFingerprint,
-    "../utils/historyTurnWindow": compileModule("src/renderer/src/utils/historyTurnWindow.ts"),
-  });
-}
-
 test("timeline pagination restores the load-more anchor instead of jumping the viewport", () => {
   const { restoreTimelineAnchor } = loadTimelineHelpers();
   assert.equal(restoreTimelineAnchor(240, 600), 840);
@@ -98,7 +80,7 @@ test("timeline owns paging, delegated scroll follow, and outline jump lifecycle"
 });
 
 test("background Session cache changes retain the selected timeline slice", () => {
-  const { sessionMessagesCacheAtom } = loadSessionAtoms();
+  const { sessionMessagesCacheAtom } = loadTsCommonJs("src/renderer/src/atoms/session-atoms.ts");
   const store = createStore();
   const currentMessages = [{ id: "current" }];
   const selectedMessages = selectAtom(

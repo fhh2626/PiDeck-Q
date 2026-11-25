@@ -42,6 +42,7 @@ function setupEnvironment(pages) {
   const messageFingerprint = compileModule("src/shared/messageFingerprint.ts");
   const atoms = compileModule("src/renderer/src/atoms/session-atoms.ts", {
     "./session-model-references": loadTsCommonJs("src/renderer/src/atoms/session-model-references.ts"),
+    "./timelineRuntimeRecovery": loadTsCommonJs("src/renderer/src/atoms/timelineRuntimeRecovery.ts"),
     "../utils/agentRuntimeState": runtimeState,
     "../utils/optimisticUserReconciliation": compileModule(
       "src/renderer/src/utils/optimisticUserReconciliation.ts",
