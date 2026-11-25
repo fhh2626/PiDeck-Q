@@ -1,11 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { nativeBuildVersion } from "./lib/release-version.mjs";
 
 const npmPackage = JSON.parse(await readFile("package.json", "utf8"));
-const version = npmPackage.version;
-if (typeof version !== "string" || !/^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/.test(version)) {
-	throw new Error(`Invalid package version: ${String(version)}`);
-}
+const version = nativeBuildVersion(npmPackage.version, process.env.PIDECK_RELEASE_VERSION);
 
 const xmakeCommand = process.platform === "win32" ? "xmake.exe" : "xmake";
 function run(args) {

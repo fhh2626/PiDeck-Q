@@ -1,0 +1,181 @@
+name: Release Windows ZIP
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to GitHub Releases (leave off to build a preview ZIP)
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark this release as a prerelease
+        type: boolean
+        default: false
+      release_notes:
+        description: Summary of the main changes (required when publishing)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows
+  cancel-in-progress: false
+
+jobs:
+  drafts:
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The Releases API only returns drafts to callers with push access. This
+    # job never checks out or runs repository code with its write token.
+    permissions:
+      contents: write
+    outputs:
+      tags: ${{ steps.list.outputs.tags }}
+    steps:
+      - name: Validate publish inputs and read draft tags
+        id: list
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'Publish from main. Other branches can build a preview ZIP.' >&2
+            exit 1
+          fi
+          if [[ -z "${RELEASE_NOTES//[[:space:]]/}" ]]; then
+            echo 'Enter a summary of the main changes before publishing.' >&2
+            exit 1
+          fi
+          tags=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -c '[.[][] | select(.draft) | .tag_name]')
+          printf 'tags=%s\n' "$tags" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: drafts
+    # A preview does not need the write-enabled draft lookup.
+    if: ${{ !cancelled() && (needs.drafts.result == 'success' || (!inputs.publish && needs.drafts.result == 'skipped')) }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      filename: ${{ steps.plan.outputs.filename }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      zip_sha256: ${{ steps.zip.outputs.sha256 }}
+    steps:
+      - name: Validate build branch
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -notin @('refs/heads/main', 'refs/heads/native2')) {
+            throw 'Select main or native2 for a release build.'
+          }
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: package.json
+          cache: npm
+      - name: Select the release version
+        id: plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_TAGS: ${{ needs.drafts.outputs.tags }}
+        run: |
+          $refs = git ls-remote --tags --refs origin
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $releases = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tagNames = @($refs | ForEach-Object { ($_ -split '\trefs/tags/', 2)[1] }) + @($releases)
+          # Draft releases may not have a Git tag yet. Reserve their names too.
+          if ($env:DRAFT_TAGS) { $tagNames += @(ConvertFrom-Json -InputObject $env:DRAFT_TAGS) }
+          # Write stdin even for a repository with no tags or releases.
+          (($tagNames -join "`n") + "`n") | node scripts/plan-windows-release.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Add 7-Zip to PATH for the Qt SDK and archive steps
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:ProgramFiles '7-Zip'
+          if (-not (Test-Path -LiteralPath (Join-Path $directory '7z.exe') -PathType Leaf)) {
+            throw '7-Zip is required on the Windows runner.'
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $directory
+      - uses: xmake-io/github-action-setup-xmake@3a1a5dddfc7fa625d9a698738334bf55655a861a # v1
+        with:
+          xmake-version: '3.0.8'
+      - run: npm ci
+      - run: npm test
+      - name: Build and verify the Windows x64 package
+        env:
+          PIDECK_RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: npm run pack
+      - name: Compress and test the ZIP
+        id: zip
+        shell: pwsh
+        env:
+          ZIP_NAME: ${{ steps.plan.outputs.filename }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP $env:ZIP_NAME
+          Push-Location 'release/win-unpacked'
+          try {
+            7z a -tzip -mx=5 $zip '.\*'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+          7z t $zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sha256 = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha256=$sha256"
+      - name: Save the ZIP for download and publishing
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-zip-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ steps.plan.outputs.filename }}
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified ZIP from this build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows.outputs.artifact_id }}
+          path: release-asset
+          merge-multiple: true
+      - name: Create a release for the tested commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows.outputs.version }}
+          ZIP_NAME: ${{ needs.windows.outputs.filename }}
+          ZIP_SHA256: ${{ needs.windows.outputs.zip_sha256 }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          asset="release-asset/$ZIP_NAME"
+          printf '%s  %s\n' "$ZIP_SHA256" "$asset" | sha256sum --check --strict
+          # Recheck drafts too, then reserve the tag atomically. A collision from
+          # outside this workflow must fail, never overwrite or retag a release.
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if grep -Fxq -- "$VERSION" <<< "$releases"; then
+            echo "Release $VERSION already exists; rerun the build to select a new version." >&2
+            exit 1
+          fi
+          gh api --silent --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$VERSION" -f "sha=$GITHUB_SHA"
+          if [[ "$PRERELEASE" == true ]]; then flags=(--prerelease); else flags=(--latest); fi
+          # gh stages the upload on a draft and publishes that same release by ID.
+          gh release create "$VERSION" "$asset" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$VERSION" --notes "$RELEASE_NOTES" --generate-notes "${flags[@]}"

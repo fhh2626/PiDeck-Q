@@ -58,6 +58,14 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 
 桌面 staging 由 Xmake 与 `scripts/stage-extension-dependencies.mjs` 完成，包含 Qt、renderer、扩展资源和 C++ 后端。`npm run pack` 和 `scripts/verify-pack-stage.mjs` 使用同一 `PIDECK_STAGE_DIR`，默认目录是 `release/win-unpacked`。安装包不包含 Node 业务后端或 Node 解释器。
 
+## 通过 GitHub Actions 发布 Windows ZIP
+
+工作流合入默认分支 `main` 后，进入 **Actions → Release Windows ZIP → Run workflow**。可从 `main` 或已包含该工作流的 `native2` 构建预览 ZIP，默认只将 ZIP 保存到该次运行的 Artifacts，不创建标签或 Release。正式发布只能从 `main` 触发。发布前，先下载 `main` 的预览 ZIP，在 Windows 上解压并运行 `PiDeck-Q.exe`。确认后从 `main` 勾选 `publish`，填写 `release_notes`，按需勾选 `prerelease`。
+
+工作流先运行 `npm test`，再运行 `npm run pack`。版本来自所选提交的 `package.json`。如果该版本已有标签或 Release，就在同一版本系列的最大编号上递增，例如从 `0.5.1` 到 `0.5.1.1`。后缀只用于发布标签、ZIP 文件名和本次构建的原生版本号，仓库的 manifest 和锁文件保持不变。附件沿用 `PiDeck-Q-<版本>-win.zip`，解压后可直接运行。
+
+发布任务会把标签指向通过测试的提交，并在 ZIP 上传成功后才公开 Release。如果创建标签后上传失败，已经创建的标签或草稿会保留。可检查并完成该草稿，或重新运行以选用下一个编号。
+
 ## Pi 正则兼容性
 
 PiDeck 支持使用 Node.js 22.19.0 或更新版本运行的 Pi Agent。全量测试仍使用仓库要求的 Node.js 24.19.0。修改安全规则校验器或升级 `regexpp` 时，先用 Node 24 安装依赖，再单独用 Node 22.19.0 执行：
