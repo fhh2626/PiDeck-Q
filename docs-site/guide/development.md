@@ -60,11 +60,11 @@ Qt ↔ Sidecar 使用本地 TCP 长度前缀 JSON；renderer ↔ Sidecar 使用�
 
 ## 通过 GitHub Actions 发布 Windows ZIP
 
-工作流合入默认分支 `main` 后，进入 **Actions → Release Windows ZIP → Run workflow**。可从 `main` 或已包含该工作流的 `native2` 构建预览 ZIP，默认只将 ZIP 保存到该次运行的 Artifacts，不创建标签或 Release。正式发布只能从 `main` 触发。发布前，先下载 `main` 的预览 ZIP，在 Windows 上解压并运行 `PiDeck-Q.exe`。确认后从 `main` 勾选 `publish`，填写 `release_notes`，按需勾选 `prerelease`。
+工作流合入默认分支 `main` 后，进入 **Actions → Release Windows ZIP → Run workflow**。从 `main` 或已包含工作流的 `native2` 构建预览时，保持 `publish` 未勾选。ZIP 保存到该次运行的 Artifacts，不创建标签或 Release。
 
-工作流先运行 `npm test`，再运行 `npm run pack`。版本来自所选提交的 `package.json`。如果该版本已有标签或 Release，就在同一版本系列的最大编号上递增，例如从 `0.5.1` 到 `0.5.1.1`。后缀只用于发布标签、ZIP 文件名和本次构建的原生版本号，仓库的 manifest 和锁文件保持不变。附件沿用 `PiDeck-Q-<版本>-win.zip`，解压后可直接运行。
+预览先运行 `npm test`，再运行 `npm run pack`。版本来自所选提交的 `package.json`。如果该版本已有标签或 Release，就在同一版本系列的最大编号上递增，例如从 `0.5.1` 到 `0.5.1.1`。后缀用于发布标签、`PiDeck-Q-<版本>-win.zip` 和原生版本号，仓库的 manifest 和锁文件保持不变。验证包时，在装有 WebView2 Runtime 和 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe) 的机器上解压并运行 `PiDeck-Q.exe`。
 
-发布任务会把标签指向通过测试的提交，并在 ZIP 上传成功后才公开 Release。如果创建标签后上传失败，已经创建的标签或草稿会保留。可检查并完成该草稿，或重新运行以选用下一个编号。
+正式发布只能从 `main` 触发。试跑成功后再次运行工作流，勾选 `publish`，填写 `preview_run_id`、试跑 ZIP 的 `zip_sha256`（可在预览摘要中核对）和 `release_notes`，按需勾选 `prerelease`。发布会下载并校验同一份 ZIP，不重新构建。若 `main` 已推进或标签已占用，请构建并试跑新预览。上传失败后标签可能保留，GitHub CLI 可能清理草稿，请先确认远端状态。建议通过仓库规则禁止更新或删除已创建的发布标签。
 
 ## Pi 正则兼容性
 

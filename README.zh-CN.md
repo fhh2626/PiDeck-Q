@@ -34,6 +34,10 @@ PiDeck-Q 专注于为原版 Pi Agent 与 Pi-Bolt 提供轻量化桌面工作台�
 - 移除了遥测功能。
 - 支持上下文中的工具调用与输出裁剪，以及类 Codex 的上下文压缩。
 
+## Windows 安装
+
+从 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 下载便携 ZIP，解压后运行 `PiDeck-Q.exe`。Windows x64 版需要 Microsoft Edge WebView2 Runtime 和 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。
+
 ## 界面预览
 
 ![PiDeck-Q 会话工作区](screenshots/1.png)

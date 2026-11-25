@@ -34,6 +34,10 @@ PiDeck-Q focuses on a lightweight desktop for the original Pi Agent and Pi-Bolt.
 - Removes telemetry.
 - Supports in-context tool trimming and Codex-like context compression.
 
+## Windows setup
+
+Download the portable ZIP from [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases), extract it, and run `PiDeck-Q.exe`. The Windows x64 build requires Microsoft Edge WebView2 Runtime and the [Microsoft Visual C++ x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
+
 ## Screenshots
 
 ![PiDeck-Q conversation workspace](screenshots/1.png)

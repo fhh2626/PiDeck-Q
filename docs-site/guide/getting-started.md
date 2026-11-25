@@ -13,7 +13,7 @@ PiDeck-Q 同时支持 [Pi Agent](https://pi.dev) 和 [Pi-Bolt](https://github.co
 
 从 [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) 查看实际发布的文件与平台说明，不假定每个版本都有安装器或所有平台产物。当前仓库的 staging 流程以 Windows 为主，安装器编译暂时关闭。
 
-Windows 桌面运行需要 WebView2 Runtime。macOS/Linux 的源码分支不能视作经过验证的安装包。
+Windows 桌面运行需要 WebView2 Runtime 和 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。macOS/Linux 的源码分支不能视作经过验证的安装包。
 
 先按运行时官方文档安装 Pi Agent 或 Pi-Bolt，配置 Provider/认证。验证对应命令（原版 Pi 使用 `pi`，Pi-Bolt 使用 `pi-bolt`）。自动模式不会自动发现 `pi-bolt` 命令（自定义 Pi 路径仍可指向它）；建议在「设置 → 开发设置 → Pi 运行时偏好」中选择 Pi-Bolt，并按需填写 Pi-Bolt 运行时路径：
 

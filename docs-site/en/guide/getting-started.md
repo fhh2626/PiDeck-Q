@@ -13,7 +13,7 @@ PiDeck-Q supports [Pi Agent](https://pi.dev) and [Pi-Bolt](https://github.com/op
 
 Check [GitHub Releases](https://github.com/fhh2626/PiDeck-Q/releases) for actual files and platform instructions. Do not assume every release has an installer or artifacts for every platform. The current staging pipeline is Windows-first and installer compilation is disabled.
 
-Windows desktop use requires WebView2 Runtime. macOS/Linux source branches do not establish verified installers.
+Windows desktop use requires WebView2 Runtime and the [Microsoft Visual C++ x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe). macOS/Linux source branches do not establish verified installers.
 
 Install Pi Agent or Pi-Bolt using its official instructions, and configure providers/auth. Verify the selected command (Pi Agent uses `pi`; Pi-Bolt uses `pi-bolt`). Auto mode does not automatically discover the `pi-bolt` command (a custom Pi path can still point to it): select it under Settings → Developer → Pi Runtime Preference and set the Pi-Bolt runtime path if needed:
 

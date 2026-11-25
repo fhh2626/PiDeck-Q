@@ -60,11 +60,11 @@ Xmake and `scripts/stage-extension-dependencies.mjs` stage Qt, the renderer, ext
 
 ## Publish a Windows ZIP with GitHub Actions
 
-Once the workflow is on the default branch (`main`), open **Actions → Release Windows ZIP → Run workflow**. Build a preview on `main` or on `native2` if it contains the workflow. By default, the ZIP appears under the run's Artifacts without creating a tag or release. Publishing is restricted to `main`. Before publishing, download a preview built from `main`, extract it on Windows, and run `PiDeck-Q.exe`. Then select `main`, enable `publish`, enter `release_notes`, and enable `prerelease` if appropriate.
+Once the workflow is on the default branch (`main`), open **Actions → Release Windows ZIP → Run workflow**. Leave `publish` unchecked to build a preview on `main` or on `native2` if it contains the workflow. The ZIP appears under the run's Artifacts without creating a tag or release.
 
-The workflow runs `npm test`, then `npm run pack`. It takes the version from `package.json` at the selected commit. If the version is already taken by a tag or release, the workflow adds the next rebuild number, for example `0.5.1.1` after `0.5.1`. The suffix applies to the tag, ZIP name, and native build version for that run. It does not modify the committed manifest or lockfile. The asset follows the existing `PiDeck-Q-<version>-win.zip` format and is ready to run after extraction.
+A preview runs `npm test` and then `npm run pack`. It takes the base version from the selected commit's `package.json`. If a tag or release already uses that version, it adds the next rebuild number, such as `0.5.1.1` after `0.5.1`. The suffix applies to the tag, `PiDeck-Q-<version>-win.zip`, and the native build version. The committed manifest and lockfile stay unchanged. To verify the package, extract it and run `PiDeck-Q.exe` on a Windows machine with WebView2 Runtime and the [Microsoft Visual C++ x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
 
-The publish job tags the tested commit and makes the release public only after the ZIP is attached. If publishing fails after the tag is created, any tag or draft already created is left in place. Inspect and finish the draft, or rerun the workflow to use the next rebuild number.
+To publish, dispatch from `main`, enable `publish`, enter `preview_run_id`, the tested ZIP's `zip_sha256` (shown in the preview summary), and `release_notes`. Enable `prerelease` if appropriate. The publish job verifies and uploads that exact ZIP without rebuilding. If `main` has advanced or the tag is taken, build and test a fresh preview. A failed upload may leave the reserved tag, and GitHub CLI may remove its draft. Inspect the release before retrying. Configure repository rules to block updates or deletion of published version tags.
 
 ## Pi regular expression compatibility
 
