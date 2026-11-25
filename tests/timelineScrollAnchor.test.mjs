@@ -6,16 +6,33 @@ import {
 	anchorRowStillInData,
 	findAnchorRow,
 	pickAnchorRow,
+	resolveAnchorMessageId,
 	resolveAnchorRestore,
 	resolveAnchorRow,
 	resolveTimelineWindowShift,
 	scrollTopForRetainedRow,
+	timelineAnchorIdentity,
 } from "../src/renderer/src/hooks/timelineScrollAnchor.ts";
 
 /**
  * 长会话拖动治理：锚点行必须用命中测试定位，不能每帧遍历全部挂载行。
  * 用最小化的元素替身（只需 getAttribute / parentElement）验证向上查找规则。
  */
+
+test("a disk reading anchor follows its saved entry into the runtime history projection", () => {
+	const disk = { id: "session-history-entry-17", role: "user", meta: { entryId: "entry-17" } };
+	const live = { ...disk, id: "agent-history-entry-17" };
+	const anchor = { messageId: disk.id, identity: timelineAnchorIdentity(disk) };
+	assert.equal(resolveAnchorMessageId(anchor, [live]), live.id);
+});
+
+test("a reused compaction slot restores the archived summary the reader was viewing", () => {
+	const old = { id: "agent-meta-1", role: "system", meta: { type: "compaction", compactionId: "before" } };
+	const incoming = { ...old, meta: { ...old.meta, compactionId: "after" } };
+	const archive = { ...old, id: "agent-meta-1-archived-summary-1" };
+	const anchor = { messageId: old.id, identity: timelineAnchorIdentity(old) };
+	assert.equal(resolveAnchorMessageId(anchor, [incoming, archive]), archive.id);
+});
 
 function fakeNode(id, parent = null) {
 	return {

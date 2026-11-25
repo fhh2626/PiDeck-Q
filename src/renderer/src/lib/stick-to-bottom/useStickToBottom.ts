@@ -151,6 +151,8 @@ export interface StickToBottomInstance {
   stopScroll: StopScroll;
   /** Sample a committed layout before a later commit can hide its clamp. */
   reconcileLayoutClamp: () => void;
+  /** Consume browser movement before a synchronous transcript append changes its meaning. */
+  samplePendingScroll: () => boolean;
   /** 原子恢复位置：写 scrollTop 的同时解除锁底并取消在途弹簧动画。 */
   restoreAt: RestoreAt;
   isAtBottom: boolean;
@@ -501,7 +503,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
   }, [cancelLayoutClampFrame, isSelecting, state]);
 
   const handleScroll = useCallback(
-    ({ target }: Event) => {
+    ({ target }: Pick<Event, "target">) => {
       if (target !== scrollRef.current) {
         return;
       }
@@ -865,6 +867,17 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     observer.observe(content);
   }, []);
 
+  const samplePendingScroll = useCallback(() => {
+    const viewport = scrollRef.current;
+    const observedTop = state.ignoreScrollToTop ?? state.lastScrollTop;
+    // No offset change means there is no pending user movement. In particular,
+    // an explicit reading restore or a clamp to the bottom must stay unlocked.
+    if (viewport && observedTop !== undefined && Math.abs(viewport.scrollTop - observedTop) > 1) {
+      handleScroll({ target: viewport });
+    }
+    return state.isAtBottom;
+  }, [handleScroll, state]);
+
   return {
     contentRef,
     scrollRef,
@@ -872,6 +885,7 @@ export const useStickToBottom = (options: StickToBottomOptions = {}): StickToBot
     scrollToBottom,
     stopScroll,
     reconcileLayoutClamp,
+    samplePendingScroll,
     restoreAt,
     /**
      * 对外「是否锁底跟随」只用严格 isAtBottom。

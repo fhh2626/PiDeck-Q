@@ -17,6 +17,7 @@ import {
 } from "../components/session/timeline/virtualTimelineGeometry";
 import type { RenderMessage } from "../components/app/AppUtils";
 import { captureMountedTimelineAnchor, readMountedTimelineRow, readTimelineSpacerLanding, resolveMountedTimelineAnchorScrollTop } from "./timelineMountedAnchor";
+import { matchesTimelineAnchorIdentity } from "./timelineScrollAnchor";
 import { useTimelineMeasurements } from "./useTimelineMeasurements";
 import {
 	createTimelineSessionContext,
@@ -236,6 +237,7 @@ export function useVirtualTimeline(params: {
 
 		const anchor: SessionScrollAnchor = {
 			messageId: targetRow.anchorId,
+			...(targetRow.anchorIdentity ? { identity: targetRow.anchorIdentity } : {}),
 			offsetTop,
 			...(fromEnd ? { offsetBottom: currentContext.readingAnchor.offsetTop } : {}),
 			visibleCount: 0,
@@ -259,7 +261,7 @@ export function useVirtualTimeline(params: {
 		const following = options?.following ?? isFollowingRef.current;
 		const priorTop = currentContext.readingAnchorScrollTop ?? viewport.scrollTop;
 		const ignoreDelta = wasClampedByLayout(viewport, priorTop) || matchesProgrammaticScroll(currentContext, viewport.scrollTop);
-		if (following || !saved || index === undefined || (options?.departing && !ignoreDelta && priorTop !== viewport.scrollTop)) {
+		if (following || !saved || index === undefined || (options?.samplePendingScroll && !ignoreDelta && priorTop !== viewport.scrollTop)) {
 			return recordReadingAnchor(priorTop > viewport.scrollTop, following);
 		}
 		const mountedRow = saved.coordinateSource === "geometry-end" ? readMountedTimelineRow({
@@ -267,10 +269,12 @@ export function useVirtualTimeline(params: {
 		}, saved.rowKey) : null;
 		const delta = ignoreDelta ? 0 : priorTop - viewport.scrollTop;
 		const offsetTop = saved.offsetTop - (saved.coordinateSource === "geometry-end" ? mountedRow?.height ?? snapshot.geometry.heights[index] : 0);
+		const row = snapshot.geometry.rows[index];
 		return {
 			status: "resolved",
 			anchor: {
-				messageId: snapshot.geometry.rows[index].anchorId,
+				messageId: row.anchorId,
+				...(row.anchorIdentity ? { identity: row.anchorIdentity } : {}),
 				// A compositor scroll can precede the native scroll notification.
 				// Include only that raw delta, without recapturing post-growth DOM.
 				offsetTop: offsetTop + delta,
@@ -404,8 +408,24 @@ export function useVirtualTimeline(params: {
 		else if (!isFollowingRef.current && currentContext.readingAnchor && viewport) {
 			// A reader can be clamped to the physical bottom. Keep the requested
 			// passage; the engine rejects late corrections once following resumes.
-			const { rowKey, offsetTop, coordinateSource } = currentContext.readingAnchor;
-			const rowIndex = geometry.indexByKey.get(rowKey);
+			const anchor = currentContext.readingAnchor;
+			const { offsetTop, coordinateSource } = anchor;
+			const prevIndex = prevSnapshot.geometry.indexByKey.get(anchor.rowKey);
+			let rowIndex = geometry.indexByKey.get(anchor.rowKey);
+			const identity = prevIndex === undefined ? undefined : prevSnapshot.geometry.rows[prevIndex].anchorIdentity;
+			// A sticky compaction can reuse the live summary's key while moving
+			// the original passage to a new archive key.
+			if (identity?.kind === "compaction" || identity?.kind === "branch-summary" || identity?.kind === "legacy-summary") {
+				const matches = (row: TimelineRowModel["rows"][number]) =>
+					row.item.kind === "message" && matchesTimelineAnchorIdentity(row.item.message, identity);
+				// Anonymous identity needs a unique match, even if the original key survives.
+				if (identity.kind === "legacy-summary" || rowIndex === undefined || !matches(geometry.rows[rowIndex])) {
+					const first = geometry.rows.findIndex(matches);
+					rowIndex = first >= 0 && first === geometry.rows.findLastIndex(matches) ? first : undefined;
+				}
+			}
+			const rowKey = rowIndex === undefined ? anchor.rowKey : geometry.rows[rowIndex].key;
+			anchor.rowKey = rowKey;
 			if (rowIndex !== undefined) {
 				// Do not mix a real DOM offset with a still-estimated row prefix.
 				const mountedRows = { nodes: currentContext.nodeMap, viewport, contextId: currentContext.id, widthEpoch: currentContext.widthEpoch };
@@ -425,7 +445,6 @@ export function useVirtualTimeline(params: {
 				}
 			} else {
 				// 行被删除或折叠消失：对齐到同位置后继或前驱，并同步更新内部阅读锚点
-				const prevIndex = prevSnapshot.geometry.indexByKey.get(rowKey);
 				if (prevIndex !== undefined && geometry.rows.length > 0) {
 					const fallbackIndex = Math.min(prevIndex, geometry.rows.length - 1);
 					const fallbackRow = geometry.rows[fallbackIndex];

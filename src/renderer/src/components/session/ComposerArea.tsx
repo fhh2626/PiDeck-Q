@@ -55,6 +55,7 @@ export type ComposerAreaProps = {
   onContentHeightChange?: (extraHeight: number) => void;
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
   ensureSessionId?: (sessionId: string) => Promise<string>;
+  beforeOptimisticAppend?: (sessionId: string) => void;
 };
 
 export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function ComposerArea(
@@ -68,6 +69,7 @@ export const ComposerArea = forwardRef<HTMLElement, ComposerAreaProps>(function 
     onOpenFile: props.onOpenFile,
     enqueue: props.enqueue,
     ensureSessionId: props.ensureSessionId,
+    beforeOptimisticAppend: props.beforeOptimisticAppend,
     // 预览 Tab 里发消息 → 自动晋升常驻（由 App 装配的 SessionPaneServices 提供）
   });
 

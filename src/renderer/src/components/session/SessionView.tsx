@@ -527,6 +527,7 @@ export function SessionView({
                 onOpenFile={openFilePath}
                 enqueue={enqueueSessionPrompt}
                 ensureSessionId={ensureSessionId}
+                beforeOptimisticAppend={sessionTimeline.beforeOptimisticAppend}
                 queuePanel={queuePanel}
               />
             </ResizablePanel>

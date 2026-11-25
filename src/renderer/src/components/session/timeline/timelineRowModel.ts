@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../../../../../shared/types";
 import type { RenderMessage } from "../../app/AppUtils";
+import { timelineAnchorIdentity } from "../../../hooks/timelineScrollAnchor.ts";
 
 export const FLOATING_FAILURE_KEYS = new Set([
 	"diagnostic.requestFailed",
@@ -40,6 +41,7 @@ export interface VirtualTimelineRow {
 	item: TimelineRowItem;
 	sourceIndex: number;
 	messageIds: readonly string[];
+	anchorIdentity?: ReturnType<typeof timelineAnchorIdentity>;
 	/** Internal continuity evidence; replaced request IDs are never public message aliases. */
 	optimisticRequestId?: string;
 }
@@ -161,14 +163,16 @@ export function buildTimelineRowModel(
 			const rowKey: TimelineRowKey = `run:${item.id}`;
 			const messageIds = new Set<string>();
 			messageIds.add(item.id);
-
+			let anchorIdentity: VirtualTimelineRow["anchorIdentity"];
+			const addMessageId = (message: ChatMessage) => {
+				messageIds.add(message.id);
+				if (message.id === item.id) anchorIdentity = timelineAnchorIdentity(message);
+			};
 			for (const sub of item.items) {
 				if (sub.kind === "message") {
-					messageIds.add(sub.message.id);
-				} else if (sub.kind === "tool-group") {
-					for (const m of sub.messages) messageIds.add(m.id);
-				} else if (sub.kind === "thinking-group") {
-					for (const m of sub.messages) messageIds.add(m.id);
+					addMessageId(sub.message);
+				} else if (sub.kind === "tool-group" || sub.kind === "thinking-group") {
+					for (const m of sub.messages) addMessageId(m);
 				}
 			}
 
@@ -179,6 +183,7 @@ export function buildTimelineRowModel(
 				item,
 				sourceIndex: i,
 				messageIds: messageIdsArr,
+				anchorIdentity,
 			};
 
 			rows.push(row);
@@ -203,6 +208,7 @@ export function buildTimelineRowModel(
 				item,
 				sourceIndex: i,
 				messageIds: messageIdsArr,
+				anchorIdentity: timelineAnchorIdentity(message),
 				...(message.role === "user" && typeof requestId === "string" && requestId
 					? { optimisticRequestId: requestId } : {}),
 			};

@@ -47,7 +47,7 @@ import {
 } from "../components/session/timeline/turnRenderWindow";
 import {
   anchorRowId,
-  anchorRowStillInData,
+  resolveAnchorMessageId,
   resolveAnchorRestore,
   resolveAnchorRow,
 } from "./timelineScrollAnchor";
@@ -643,6 +643,7 @@ export type SessionTimelineController = {
   peekViewportAnchor: () => AnchorReading;
   jumpToMessage: (messageId: string) => void;
   scrollToBottom: () => void;
+  beforeOptimisticAppend: (sessionId: string) => void;
   /** 滚动回调（MessageScroller viewport 接线）：维护会话切换的滚动锚点。 */
   handleTimelineScroll: () => void;
   autoScroll: boolean;
@@ -749,7 +750,7 @@ export function useSessionTimelineController(options: {
     const followIntent = scrollerScrollApiRef.current?.isFollowing?.();
     const adapter = viewportAdapterRef.current;
     if (adapter) {
-      const virtReading = adapter.captureReadingAnchor({ departing, following: followIntent });
+      const virtReading = adapter.captureReadingAnchor({ samplePendingScroll: departing, following: followIntent });
       anchorReadingRef.current = virtReading;
       return virtReading;
     }
@@ -1005,10 +1006,13 @@ export function useSessionTimelineController(options: {
     }
     const timeline = timelineRef.current;
     if (!timeline) return false;
-    const anchor = pending.value;
+    const saved = pending.value;
+    const messageId = resolveAnchorMessageId(saved, combinedMessages);
+    const anchor = messageId && messageId !== saved.messageId ? { ...saved, messageId } : saved;
+    const canUseId = messageId !== undefined || !saved.identity;
 
     // 若 Adapter 已挂载且包含该消息，优先通过虚拟 Adapter 纯几何对齐
-    if (viewportAdapterRef.current?.containsMessage(anchor.messageId)) {
+    if (canUseId && viewportAdapterRef.current?.containsMessage(anchor.messageId)) {
       autoScrollRef.current = false;
       setAutoScroll(false);
       setShowScrollToBottom(true);
@@ -1021,9 +1025,9 @@ export function useSessionTimelineController(options: {
       return true;
     }
 
-    const anchorRow = timeline.querySelector(
+    const anchorRow = canUseId ? timeline.querySelector<HTMLElement>(
       `[data-message-id="${CSS.escape(anchor.messageId)}"]`,
-    ) as HTMLElement | null;
+    ) : null;
     const rowBox = anchorRow?.getBoundingClientRect();
     // 行在 DOM 里但不可见（折叠正文被卸载 / display:none 时矩形全零）一律当未挂载：
     // 拿全零矩形对齐会算出接近 0 的 scrollTop，就是「跳到以前的消息」。
@@ -1033,7 +1037,7 @@ export function useSessionTimelineController(options: {
       // 「有缓存条目」= 读取已返回（即使空会话），与起始页判定同一约定；
       // 不能用 combinedMessages.length>0：空会话的旧锚点会被当成「还在加载」永远等待。
       dataLoaded: cachedEntry !== undefined,
-      stillInData: anchorRowStillInData(anchor.messageId, combinedMessages),
+      stillInData: messageId !== undefined,
       widenings: anchorWideningsRef.current,
     });
     if (step === "wait-for-data") return false;
@@ -1166,6 +1170,16 @@ export function useSessionTimelineController(options: {
     setAutoScroll(following);
     setShowScrollToBottom(!following);
   }, []);
+
+  const beforeOptimisticAppend = useCallback((sessionId: string) => {
+    if (ownerKeyRef.current !== sessionId || pendingAnchorRestoreRef.current) return;
+    const following = scrollerScrollApiRef.current?.samplePendingScroll();
+    if (following !== undefined && following !== autoScrollRef.current) {
+      setAutoScrollFromScroller(following);
+    }
+    // Record the reader's pending native scroll against the pre-append rows.
+    viewportAdapterRef.current?.captureReadingAnchor({ samplePendingScroll: true, following });
+  }, [setAutoScrollFromScroller]);
 
   /** 计算垫片高度：让「用户消息顶 + 视口高 == 内容总高」，滚到底时用户消息正好钉在顶部。 */
 
@@ -1665,6 +1679,7 @@ export function useSessionTimelineController(options: {
     autoScroll,
     showScrollToBottom,
     setAutoScrollFromScroller,
+    beforeOptimisticAppend,
     scrollerScrollApiRef,
     scrolledWindowTurns,
     scrolledWindowItems,

@@ -13,6 +13,69 @@
  * 长会话里那等于每次都触发旧瓶颈。
  */
 
+import type { ChatMessage } from "../../../shared/types";
+import type { SessionScrollAnchor } from "../atoms/session-atoms";
+
+type AnchorIdentity = NonNullable<SessionScrollAnchor["identity"]>;
+const ANCHOR_IDENTITY_KINDS = ["compaction", "branch-summary", "entry", "request", "legacy-summary"] as const;
+
+/** The archived copy retains these fields even when its ordinal ID changes. */
+function legacySummaryFingerprint(message: ChatMessage): string | undefined {
+	const meta = message.meta;
+	if (message.role !== "system" || (meta?.type !== "compaction" && meta?.type !== "branchSummary")) return;
+	return JSON.stringify([meta.type, message.timestamp, message.text, meta.tokensBefore,
+		meta.type === "compaction" ? meta.firstKeptEntryId : meta.fromId]);
+}
+
+function identityValue(message: ChatMessage, kind: AnchorIdentity["kind"]): unknown {
+	const meta = message.meta;
+	switch (kind) {
+		// The native todo card acknowledges the same send as the pending user bubble.
+		case "request": return message.role === "user" || (message.role === "system" && meta?.type === "todoTask")
+			? meta?.optimisticRequestId : undefined;
+		case "legacy-summary": return legacySummaryFingerprint(message);
+		case "entry": return meta?.entryId;
+		case "compaction": return message.role === "system" && meta?.type === "compaction" ? meta.compactionId : undefined;
+		case "branch-summary": return message.role === "system" && meta?.type === "branchSummary" ? meta.branchSummaryId : undefined;
+	}
+}
+
+/** Prefer durable identity; only anonymous summary cards require a fingerprint. */
+export function timelineAnchorIdentity(message: ChatMessage): AnchorIdentity | undefined {
+	for (const kind of ANCHOR_IDENTITY_KINDS) {
+		const id = identityValue(message, kind);
+		if (typeof id === "string" && id) return { kind, id };
+	}
+}
+
+/** A legacy summary can still match once the same card learns its durable ID. */
+export function matchesTimelineAnchorIdentity(message: ChatMessage, identity: AnchorIdentity): boolean {
+	return identityValue(message, identity.kind) === identity.id;
+}
+
+/** Resolve a saved reading position within the same session after IDs change. */
+export function resolveAnchorMessageId(anchor: SessionScrollAnchor, messages: readonly ChatMessage[]): string | undefined {
+	const { identity, messageId } = anchor;
+	if (!identity) return anchorRowStillInData(messageId, messages) ? messageId : undefined;
+	const legacySummary = identity.kind === "legacy-summary";
+	const summary = legacySummary || identity.kind === "compaction" || identity.kind === "branch-summary";
+	let candidate: string | undefined;
+	let ambiguous = false;
+	for (const message of messages) {
+		if (message.meta?.slidingOut === true) continue;
+		// Summary slots can be reused by compaction. Other IDs are unique within
+		// the session and can survive revisions that enrich the row's metadata.
+		const currentIdentity = identityValue(message, identity.kind);
+		const matches = currentIdentity === identity.id;
+		// A legacy fingerprint must be unique even if one match still occupies the old slot.
+		if (!legacySummary && message.id === messageId && (matches || (!summary && currentIdentity === undefined))) return messageId;
+		if (!matches) continue;
+		if (candidate !== undefined && candidate !== message.id) ambiguous = true;
+		candidate = message.id;
+	}
+	return ambiguous ? undefined : candidate;
+}
+
 /** 命中探针相对视口顶部的偏移（px）。落在行间空隙/浮层时由后面的探针兜住。 */
 const ANCHOR_PROBE_OFFSETS = [1, 16, 48] as const;
 

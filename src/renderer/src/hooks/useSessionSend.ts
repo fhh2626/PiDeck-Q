@@ -65,6 +65,8 @@ export type UseSessionSendOptions = {
   ensureSessionId?: (sessionId: string) => Promise<string>;
   templates: PromptTemplate[];
   prepareMessage?: (message: string) => Promise<string>;
+  /** Sample the owning viewport before an optimistic bubble moves the live edge. */
+  beforeOptimisticAppend?: (sessionId: string) => void;
   onDraftMutation?: (sessionId: string) => void;
   compact: (target: SessionRuntimeTarget, prompt?: string) => Promise<void>;
   resetComposerUi?: () => void;
@@ -281,6 +283,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
     // 让输入反馈与后台准备解耦，避免用户把冷启动时间误判成点击无效。
     // 队列和 /compact 保留原路径，因为它们分别需要排队快照或运行时命令语义。
     const publishOptimisticSubmission = (targetSessionId: string) => {
+      options.beforeOptimisticAppend?.(targetSessionId);
       setSendState({
         sessionId: targetSessionId,
         state: { status: "activating", requestId },
@@ -463,6 +466,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
     }
 
     if (!publishBeforeActivation) {
+      if (!isCompactCommand) options.beforeOptimisticAppend?.(sessionId);
       setSendState({
         sessionId,
         state: {
@@ -535,6 +539,7 @@ export function useSessionSend(options: UseSessionSendOptions) {
     }
 
     try {
+      const runtimeBeforeSend = store.get(sessionRuntimeByIdAtom)[sessionId];
       const result = await options.sendPrompt({
         sessionId,
         requestId,
@@ -544,7 +549,16 @@ export function useSessionSend(options: UseSessionSendOptions) {
         ...(description ? { description } : {}),
         ...(streamingBehavior ? { streamingBehavior } : {}),
       });
-      if (result.agentId) {
+      // Activation publishes idle on the new binding before dispatch. Only
+      // that pre-dispatch view may be advanced by acceptance; a running event
+      // (even if followed by idle), detach, or different binding wins over HTTP.
+      const currentRuntime = store.get(sessionRuntimeByIdAtom)[sessionId];
+      const onlyActivated = result.accepted && currentRuntime?.status === "idle"
+        && currentRuntime.agentId === result.agentId
+        && currentRuntime.runtimeGeneration === result.runtimeGeneration
+        && (runtimeBeforeSend?.agentId !== currentRuntime.agentId || runtimeBeforeSend?.runtimeGeneration !== currentRuntime.runtimeGeneration)
+        && !currentRuntime.hasRunningEvent;
+      if (result.agentId && (currentRuntime === runtimeBeforeSend || onlyActivated)) {
         bindRuntime({
           sessionId,
           agentId: result.agentId,

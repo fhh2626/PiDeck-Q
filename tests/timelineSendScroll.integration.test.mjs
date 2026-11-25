@@ -28,6 +28,11 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true, restor
 				"../utils/notice": { showNotice() {} },
 			},
 		});
+		const { useSessionSend } = load("src/renderer/src/hooks/useSessionSend.ts", {
+			globals: { crypto: globalThis.crypto }, stubs: { "../atoms": atoms, "../i18n": { t: (key) => key } },
+		});
+		let send;
+		let submit = async () => ({ accepted: true });
 		const { MessageScroller } = load("src/renderer/src/components/agents/message-scroller.tsx", {
 			globals, stubs: { "motion/react": { useReducedMotion: () => reducedMotion } },
 		});
@@ -92,6 +97,10 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true, restor
 		};
 		function Timeline(props) {
 			controller = useSessionTimelineController({ sessionId: props.sessionId, messages: restoreSessions ? undefined : props.messages });
+			send = useSessionSend({
+				sessionId: props.sessionId, templates: [], compact: async () => {},
+				sendPrompt: (input) => submit(input), beforeOptimisticAppend: controller.beforeOptimisticAppend,
+			});
 			const source = restoreSessions ? controller.visibleMessages : props.messages;
 			const items = React.useMemo(() => source.map((entry) => ({ kind: "message", message: entry })), [source]);
 			const applyReaderScrollTop = React.useCallback((top, reason) => controller.scrollerScrollApiRef.current?.restoreAt(
@@ -151,8 +160,18 @@ async function withSendTimeline(run, { busy = true, reducedMotion = true, restor
 			gap: () => contentHeight() - viewportHeight - currentTop(), heights,
 			geometry: () => virtualizer.geometry,
 			append, settle, dispatchScroll, notifyResize, flushFrames, act, previouslySaved,
-			async publishOptimisticSend(id) {
-				heights.set(id, 90);
+			startSend(prompt, sendPrompt) {
+				submit = sendPrompt;
+				store.set(atoms.setSessionDraftAtom, { sessionId, value: prompt });
+				return send();
+			},
+			runtime: () => store.get(atoms.sessionRuntimeByIdAtom)[sessionId],
+			emit(sourceChannel, payload, runtimeGeneration = 1) {
+				store.set(atoms.applySessionRuntimeEventAtom, { sessionId, agentId: "agent", runtimeGeneration,
+					sourceChannel, payload: { agentId: "agent", ...payload } });
+			},
+			async publishOptimisticSend(id, height = 90) {
+				heights.set(id, height);
 				messages = [...messages, { ...message(id), meta: { optimistic: true, optimisticPending: true, optimisticRequestId: id } }];
 				await act(() => {
 					store.set(atoms.sessionSendStateByIdAtom, { [sessionId]: { status: "activating", requestId: id } });
@@ -273,6 +292,246 @@ test("sending at the live edge and immediately switching agents keeps following 
 		await timeline.append("streamed-reply", 220);
 		await timeline.settle();
 		assert.ok(timeline.gap() <= 2);
+	}, { restoreSessions: true });
+});
+
+test("a return to bottom is honored when Send beats the native scroll event", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.wheelUp(timeline.viewport().scrollTop - 450);
+		await timeline.flushFrames();
+		timeline.viewport().scrollTop = timeline.viewport().scrollHeight;
+		assert.equal(timeline.gap(), 0);
+		assert.equal(timeline.controller().autoScroll, false, "the event for the last scroll is still pending");
+		let requestId;
+		await timeline.act(async () => {
+			await timeline.startSend("sent before native scroll", (input) => {
+				requestId = input.requestId;
+				timeline.heights.set(requestId, 102);
+				return Promise.resolve({ accepted: true });
+			});
+		});
+		await timeline.dispatchScroll();
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor(), undefined);
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, true);
+		assert.ok(timeline.gap() <= 2);
+	}, { restoreSessions: true });
+});
+
+test("a real send preserves a reading position even when layout has clamped it to the bottom", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.wheelUp(timeline.viewport().scrollTop - 100);
+		await timeline.flushFrames();
+		const before = timeline.adapter().captureReadingAnchor().anchor;
+		timeline.heights.set("old-11", 20);
+		assert.ok(timeline.gap() <= 2);
+		await timeline.act(async () => {
+			await timeline.startSend("send from the clamped reading position", (input) => {
+				timeline.heights.set(input.requestId, 102);
+				return Promise.resolve({ accepted: true });
+			});
+		});
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor().messageId, before.messageId);
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, false);
+		assert.equal(timeline.adapter().captureReadingAnchor().anchor.messageId, before.messageId);
+	}, { restoreSessions: true });
+});
+
+test("Send preserves a cross-row scroll whose native event is still pending", async () => {
+	await withSendTimeline(async (timeline) => {
+		const topOf = (id) => timeline.viewport().querySelector(`[data-message-id="${id}"]`).getBoundingClientRect().top;
+		await timeline.wheelUp(timeline.geometry().prefixOffsets[4]);
+		assert.equal(timeline.adapter().captureReadingAnchor().anchor.messageId, "old-4");
+		timeline.viewport().scrollTop = timeline.geometry().prefixOffsets[6];
+		assert.equal(topOf("old-6"), 0);
+		await timeline.act(() => timeline.startSend("send ahead of scroll event", ({ requestId }) => {
+			timeline.heights.set(requestId, 102);
+			return Promise.resolve({ accepted: true });
+		}));
+		assert.equal(topOf("old-6"), 0);
+		await timeline.dispatchScroll();
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor().messageId, "old-6");
+		timeline.heights.set("old-5", 400);
+		await timeline.switchBack();
+		assert.equal(topOf("old-6"), 0);
+	}, { restoreSessions: true, rowCount: 24 });
+});
+
+test("a reading anchor on a pending bubble restores to the confirmed row after switching agents", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.publishOptimisticSend("request-id", 720);
+		await timeline.settle();
+		await timeline.wheelUp(timeline.viewport().scrollTop - 120);
+		await timeline.switchAway();
+		assert.equal(timeline.savedAnchor().messageId, "request-id");
+		const offset = timeline.savedAnchor().offsetTop;
+		timeline.heights.set("native-uuid", 720);
+		await timeline.act(() => timeline.emit("agents:message", { messages: [
+			...Array.from({ length: 12 }, (_, index) => message(`old-${index}`)),
+			{ ...message("native-uuid"), text: "request-id", meta: { optimisticRequestId: "request-id" } },
+		] }));
+		await timeline.switchBack();
+		assert.equal(timeline.controller().autoScroll, false);
+		const anchor = timeline.adapter().captureReadingAnchor().anchor;
+		assert.equal(anchor.messageId, "native-uuid");
+		assert.equal(anchor.offsetTop, offset);
+	}, { restoreSessions: true });
+});
+
+for (const switchBeforeSnapshot of [true, false]) {
+test(`a sticky snapshot preserves the archived summary when switching ${switchBeforeSnapshot ? "before" : "after"} the snapshot`, async () => {
+	await withSendTimeline(async (timeline) => {
+		const retained = Array.from({ length: 12 }, (_, index) => message(`old-${index}`));
+		const summary = { ...message("agent-meta-1"), role: "system", text: "Previous summary",
+			meta: { type: "compaction", tokensBefore: 200 } };
+		const archiveId = `${summary.id}-archived-summary-1`;
+		timeline.heights.set(summary.id, 720);
+		timeline.heights.set(archiveId, 720);
+		await timeline.act(() => timeline.emit("agents:message", {
+			messages: [...retained.slice(0, 10), summary, ...retained.slice(10)],
+			windowStartFilePos: 8, fileVersion: "1:1",
+		}));
+		await timeline.settle();
+		await timeline.wheelUp(timeline.viewport().scrollTop - 120);
+		const before = timeline.adapter().captureReadingAnchor().anchor;
+		assert.equal(before.messageId, summary.id);
+		if (switchBeforeSnapshot) {
+			await timeline.switchAway();
+			assert.equal(timeline.savedAnchor().messageId, summary.id);
+		}
+		await timeline.act(() => timeline.emit("agents:message", {
+			messages: [{ ...summary, text: "New summary", timestamp: 2 }, ...retained.slice(10)],
+			stickyHistory: true, preserveHistory: true, windowStartFilePos: 16, fileVersion: "2:2",
+		}));
+		if (!switchBeforeSnapshot) {
+			await timeline.switchAway();
+			assert.equal(timeline.savedAnchor().messageId, archiveId);
+		}
+		await timeline.switchBack();
+		assert.ok(timeline.controller().visibleMessages.some((row) => row.id === archiveId && row.text === summary.text));
+		const anchor = timeline.adapter().captureReadingAnchor().anchor;
+		assert.equal(anchor.messageId, archiveId);
+		assert.equal(anchor.offsetTop, before.offsetTop);
+	}, { restoreSessions: true });
+});
+}
+
+test("learning a compaction ID keeps the position within the already visible summary", async () => {
+	await withSendTimeline(async (timeline) => {
+		const retained = Array.from({ length: 12 }, (_, index) => message(`old-${index}`));
+		const summary = { ...message("agent-meta-1"), role: "system", text: "Summary awaiting its history ID",
+			meta: { type: "compaction", tokensBefore: 200 } };
+		timeline.heights.set(summary.id, 720);
+		const publish = (card) => timeline.emit("agents:message", {
+			messages: [...retained.slice(0, 10), card, ...retained.slice(10)],
+			windowStartFilePos: 8, fileVersion: "1:1",
+		});
+		await timeline.act(() => publish(summary));
+		await timeline.settle();
+		await timeline.wheelUp(timeline.viewport().scrollTop - 120);
+		const before = timeline.adapter().captureReadingAnchor().anchor;
+		assert.equal(before.messageId, summary.id);
+		assert.ok(before.offsetTop < 0);
+		await timeline.act(() => publish({ ...summary, meta: { ...summary.meta, compactionId: "compaction-entry" } }));
+		await timeline.switchAway();
+		await timeline.switchBack();
+		const after = timeline.adapter().captureReadingAnchor().anchor;
+		assert.equal(after.messageId, summary.id);
+		assert.equal(after.identity.id, "compaction-entry");
+		assert.equal(after.offsetTop, before.offsetTop);
+	}, { restoreSessions: true });
+});
+
+for (const command of ["/todo", "/todo-goal"]) {
+	test(`a reading anchor on a pending ${command} bubble restores to its acknowledged task card`, async () => {
+		await withSendTimeline(async (timeline) => {
+			let requestId;
+			await timeline.act(() => timeline.startSend(`${command} ${"Long task description ".repeat(50)}`, (input) => {
+				requestId = input.requestId;
+				timeline.heights.set(requestId, 720);
+				return Promise.resolve({ accepted: true });
+			}));
+			await timeline.settle();
+			await timeline.wheelUp(timeline.viewport().scrollTop - 120);
+			await timeline.switchAway();
+			assert.ok(requestId);
+			assert.equal(timeline.savedAnchor().messageId, requestId);
+			const card = { ...message("task-card"), role: "system",
+				meta: { type: "todoTask", optimisticRequestId: requestId } };
+			timeline.heights.set(card.id, 720);
+			await timeline.act(() => timeline.emit("agents:message", { messages: [
+				...Array.from({ length: 12 }, (_, index) => message(`old-${index}`)), card,
+			] }));
+			await timeline.switchBack();
+			assert.ok(!timeline.controller().visibleMessages.some((row) => row.id === requestId));
+			assert.equal(timeline.adapter().captureReadingAnchor().anchor.messageId, card.id);
+		}, { restoreSessions: true });
+	});
+}
+
+test("a send HTTP acknowledgement cannot make an already-settled Agent busy again", async () => {
+	await withSendTimeline(async (timeline) => {
+		let accept, pending;
+		await timeline.act(() => {
+			timeline.emit("agents:state", { status: "idle" });
+			pending = timeline.startSend("fast prompt", () => new Promise((resolve) => { accept = resolve; }));
+		});
+		await timeline.switchAway();
+		await timeline.act(() => {
+			timeline.emit("agents:state", { status: "running" });
+			timeline.emit("agents:state", { status: "idle" });
+		});
+		assert.equal(timeline.runtime().status, "idle");
+		await timeline.act(async () => {
+			accept({ accepted: true, agentId: "agent", runtimeGeneration: 1 });
+			await pending;
+		});
+		await timeline.switchBack();
+		assert.equal(timeline.runtime().status, "idle");
+	}, { restoreSessions: true });
+});
+
+for (const scenario of [
+	{ name: "an activation idle event alone does not suppress the accepted-send busy fallback", generation: 1, settled: false, expected: "running" },
+	{ name: "an acknowledgement cannot revive a turn that settled on the prewarmed binding", generation: 1, settled: true, expected: "idle" },
+	{ name: "an acknowledgement cannot make a replacement generation busy", generation: 2, settled: false, expected: "idle" },
+]) {
+	test(scenario.name, async () => {
+		await withSendTimeline(async (timeline) => {
+			let accept, pending;
+			await timeline.act(() => {
+				pending = timeline.startSend("prewarming prompt", () => new Promise((resolve) => { accept = resolve; }));
+			});
+			await timeline.switchAway();
+			await timeline.act(() => {
+				timeline.emit("agents:state", { status: "idle" }, scenario.generation);
+				if (scenario.settled) {
+					timeline.emit("agents:state", { status: "running" }, scenario.generation);
+					timeline.emit("agents:state", { status: "idle" }, scenario.generation);
+				}
+			});
+			assert.equal(timeline.runtime().status, "idle");
+			await timeline.act(async () => {
+				accept({ accepted: true, agentId: "agent", runtimeGeneration: 1 });
+				await pending;
+			});
+			assert.equal(timeline.runtime().runtimeGeneration, scenario.generation);
+			assert.equal(timeline.runtime().status, scenario.expected);
+		}, { restoreSessions: true });
+	});
+}
+
+test("an acknowledgement still binds a newly started Agent when its events have not arrived", async () => {
+	await withSendTimeline(async (timeline) => {
+		await timeline.act(async () => {
+			await timeline.startSend("cold prompt", async () => ({ accepted: true, agentId: "agent", runtimeGeneration: 1 }));
+		});
+		assert.equal(timeline.runtime().agentId, "agent");
+		assert.equal(timeline.runtime().status, "running");
 	}, { restoreSessions: true });
 });
 

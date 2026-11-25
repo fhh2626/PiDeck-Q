@@ -133,6 +133,7 @@ export type UseSessionComposerControllerOptions = {
   sessionId: string;
   onOpenFile?: (path: string) => void;
   ensureSessionId?: (sessionId: string) => Promise<string>;
+  beforeOptimisticAppend?: (sessionId: string) => void;
   /** Passed through to useSessionSend.enqueue. */
   enqueue?: (sessionId: string, snapshot: EnqueuePromptSnapshot) => boolean;
 };
@@ -556,6 +557,7 @@ export function useSessionComposerController(
     ensureSessionId,
     templates,
     prepareMessage: resolveSessionReferences,
+    beforeOptimisticAppend: options.beforeOptimisticAppend,
     onDraftMutation: markDraftMutation,
     compact: async (target, prompt) => {
       // /compact 与 chip 共用同一友好错误映射（nothing-to-do / too-small / 静默取消）

@@ -38,6 +38,8 @@ export type SessionRuntimeViewState = {
   agentId?: string;
   runtimeGeneration: number;
   status: AgentStatus | "detached";
+  /** A running event distinguishes a settled turn from the activation idle snapshot. */
+  hasRunningEvent?: boolean;
   state?: AgentRuntimeState;
   updatedAt: number;
   projectId?: string;
@@ -61,6 +63,7 @@ export function sameSessionRuntimeView(
     a.agentId === b.agentId &&
     a.runtimeGeneration === b.runtimeGeneration &&
     a.status === b.status &&
+    a.hasRunningEvent === b.hasRunningEvent &&
     a.state === b.state &&
     a.projectId === b.projectId &&
     a.cwd === b.cwd &&
@@ -262,6 +265,8 @@ export const timelinePresentationCleanupRegistry: TimelinePresentationCleanupReg
 export type SessionScrollAnchor = {
 	/** 锚点行 id（timeline 内 [data-message-id] 的值：可能是 run id 或消息 id） */
 	messageId: string;
+	/** Session-local identity or strict legacy summary fingerprint, independent of presentation ID. */
+	identity?: { kind: "request" | "entry" | "compaction" | "branch-summary" | "legacy-summary"; id: string };
 	/** 锚点行顶边相对视口顶部的偏移（px），恢复时按此对齐 */
 	offsetTop: number;
 	/** When present, restore the row bottom at this offset from the viewport top. */
@@ -284,6 +289,8 @@ export function sameSessionScrollAnchor(
 	if (!a || !b) return false;
 	return (
 		a.messageId === b.messageId &&
+		a.identity?.kind === b.identity?.kind &&
+		a.identity?.id === b.identity?.id &&
 		a.offsetTop === b.offsetTop &&
 		a.offsetBottom === b.offsetBottom &&
 		a.visibleCount === b.visibleCount
@@ -2154,6 +2161,7 @@ export const applySessionRuntimeEventAtom = atom(
         nextRuntime = {
           ...nextRuntime,
           status,
+          ...(status === "running" ? { hasRunningEvent: true } : {}),
           projectId: typeof payload.projectId === "string" ? payload.projectId : nextRuntime.projectId,
           cwd: typeof payload.cwd === "string" ? payload.cwd : nextRuntime.cwd,
           title: typeof payload.title === "string" ? payload.title : nextRuntime.title,
@@ -2732,6 +2740,7 @@ export const applySessionRuntimeEventAtom = atom(
       currentRuntime.agentId === nextRuntime.agentId &&
       currentRuntime.runtimeGeneration === nextRuntime.runtimeGeneration &&
       currentRuntime.status === nextRuntime.status &&
+      currentRuntime.hasRunningEvent === nextRuntime.hasRunningEvent &&
       currentRuntime.state === nextRuntime.state &&
       currentRuntime.projectId === nextRuntime.projectId &&
       currentRuntime.cwd === nextRuntime.cwd &&
@@ -2843,6 +2852,7 @@ export const bindSessionRuntimeAtom = atom(
     set(sessionRuntimeByIdAtom, {
       ...get(sessionRuntimeByIdAtom),
       [input.sessionId]: {
+        ...(current?.agentId === input.agentId && (input.runtimeGeneration ?? currentGeneration) === currentGeneration ? current : undefined),
         agentId: input.agentId,
         runtimeGeneration: input.runtimeGeneration ?? currentGeneration,
         status: input.status ?? (bindingChanged ? "idle" : current?.status) ?? "idle",

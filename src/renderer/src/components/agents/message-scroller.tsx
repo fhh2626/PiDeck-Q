@@ -27,6 +27,7 @@ export type MessageScrollerScrollApi = {
   scrollToBottom: ScrollToBottom;
   /** Synchronous engine intent, even before the React follow-state notification. */
   isFollowing: () => boolean;
+  samplePendingScroll: () => boolean;
   /** Let a virtual list report committed layout before the next scroll event. */
   reconcileLayoutClamp: () => void;
   /** 原子恢复历史位置；纯布局保锚可保留引擎已有的跟随意图（见 restoreAt）。 */
@@ -119,6 +120,7 @@ export function MessageScroller({
   const engineRestoreAt = stick.restoreAt;
   const engineStopScroll = stick.stopScroll;
   const engineReconcileLayoutClamp = stick.reconcileLayoutClamp;
+  const engineSamplePendingScroll = stick.samplePendingScroll;
 
   // 在 layout effect 中同步发布 engine API 给外部，避免首帧恢复时拿不到或被异步打乱
   const currentApiRef = useRef<MessageScrollerScrollApi | null>(null);
@@ -127,6 +129,7 @@ export function MessageScroller({
     const api: MessageScrollerScrollApi = {
       scrollToBottom: engineScrollToBottom,
       isFollowing: () => engineState.isAtBottom,
+      samplePendingScroll: engineSamplePendingScroll,
       reconcileLayoutClamp: engineReconcileLayoutClamp,
       restoreAt: engineRestoreAt,
       stopScroll: engineStopScroll,
@@ -144,7 +147,7 @@ export function MessageScroller({
         scrollApiRef.current = null;
       }
     };
-  }, [scrollApiRef, engineScrollToBottom, engineState, engineReconcileLayoutClamp, engineRestoreAt, engineStopScroll]);
+  }, [scrollApiRef, engineScrollToBottom, engineState, engineReconcileLayoutClamp, engineSamplePendingScroll, engineRestoreAt, engineStopScroll]);
 
   const setViewportRef = useCallback(
     (node: HTMLElement | null) => {
