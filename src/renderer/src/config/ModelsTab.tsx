@@ -2,7 +2,6 @@ import { Button } from "../components/ui-shadcn/button";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Brain, Check, ChevronDown, ChevronRight, Coins, Copy, ExternalLink, Plus, SquarePen, Trash2, X } from "lucide-react";
 import { t } from "../i18n";
-import { desktopApi } from "../desktopApi";
 import type { ModelsFile } from "./configTypes";
 import { ApiTypeInput, ConfigSelect, openDocsInSystemBrowser, SecretInput } from "./ConfigShared";
 import { emptyTierDraft, normalizeTiers, toTierDrafts, type CostTierDraft } from "./modelCostTiers";
@@ -12,16 +11,12 @@ import {
 	getHeaderValue,
 	setHeaderValue,
 } from "./providerHeaders";
-import { buildModelsFromFetchedSelection } from "./modelsUtils";
 import { Checkbox } from "../components/ui-shadcn/checkbox";
 import { Input } from "../components/ui-shadcn/input";
 import { Label } from "../components/ui-shadcn/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui-shadcn/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui-shadcn/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui-shadcn/popover";
-import { showNotice } from "../utils/notice";
-import { computeModelSpecPatches } from "../utils/modelSpecAutoFill";
-import type { ModelSpec } from "../../../shared/types/modelSpecs";
 
 type FetchedModel = { id: string; name?: string };
 
@@ -198,6 +193,7 @@ export function ModelsTab(props: {
 		field: string,
 		value: unknown,
 	) => void;
+	onModelIdBlur: (providerName: string, index: number, modelId: string) => void;
 	onUpdateModelThinkingLevel: (
 		providerName: string,
 		index: number,
@@ -206,6 +202,7 @@ export function ModelsTab(props: {
 	) => void;
 	onDeleteModel: (providerName: string, index: number) => void;
 	onFetchModels: (providerName: string) => void;
+	onAddFetchedModels: (providerName: string, selectedIds: string[]) => Promise<boolean>;
 	onTestProvider: (providerName: string) => void;
 	onChangeTestModelId: (providerName: string, modelId: string) => void;
 	onClearTestResult: () => void;
@@ -245,37 +242,6 @@ export function ModelsTab(props: {
 			if (changed) props.onUpdateModel(providerName, index, "cost", nextCost);
 		}
 	}, [costDialogKey]);
-
-	/**
-	 * 模型 id 失焦时按内置规格表自动填充空字段（contextWindow/maxTokens/reasoning/input）。
-	 * 数据来自 resources/model-specs.db（发版前 scripts/sync-model-specs.mjs 同步），
-	 * 按模型 id 匹配——中转站模型 id 与官方一致即可命中；只填空字段，手填不覆盖。
-	 */
-	const applyModelSpecAutoFill = async (providerName: string, index: number, modelId: string) => {
-		const trimmed = modelId.trim();
-		if (!trimmed) return;
-		const spec = await desktopApi.projects.getModelSpec(providerName, trimmed);
-		// 未匹配时用空规格兜底：computeModelSpecPatches 仍会填保守默认值（128000/8192），
-		// 保证空字段始终有值；matchedId 用用户输入，toast 展示命中来源
-		const fallback = spec ?? ({ source: "models-dev", matchedId: trimmed } satisfies ModelSpec);
-		// 失焦时手填已完成：以最新渲染的 model 为准，逐个判断空字段（有值不覆盖）
-		const model = data.providers[providerName]?.models[index];
-		if (!model) return;
-		// 补全规则（只填空字段）集中在 utils/modelSpecAutoFill.ts，保存时的批量补全复用同一套逻辑
-		const updates = computeModelSpecPatches(model, fallback);
-		for (const [field, value] of updates) {
-			props.onUpdateModel(providerName, index, field, value);
-		}
-		if (updates.length > 0) {
-			showNotice(
-				t("config.modelSpecAutoFilled", {
-					model: fallback.matchedId ?? trimmed,
-					source: fallback.source === "openrouter" ? "OpenRouter" : "models.dev",
-				}),
-				3000,
-			);
-		}
-	};
 
 	const [pendingModelFocusKey, setPendingModelFocusKey] = useState<string | null>(null);
 	const [showGuide, setShowGuide] = useState(false);
@@ -918,41 +884,9 @@ export function ModelsTab(props: {
 												<div className="flex justify-end border-t border-border-subtle pt-2">
 													<Button variant="default" size="sm"
 														onClick={async () => {
-														const currentProvider = data.providers[name];
-														if (!currentProvider) return;
-														const selectedIds = selectedFetchedModelIds[name] ?? [];
-														// 选中模型只带 id/name，规格字段为空；保存的同一时刻按内置规格表补全，
-														// 避免硬编码默认值误导（且非空值会被「只填空字段」规则永久跳过）
-														const baseModels = buildModelsFromFetchedSelection(
-															props.fetchedModels[name],
-															selectedIds,
-															currentProvider.models,
-														);
-														if (baseModels.length === 0) return;
-														// 并行查规格表（原生后端本地规格索引）；查不到的模型留空字段，不阻断保存
-														const results = await Promise.all(
-															baseModels.map((m) =>
-																desktopApi.projects.getModelSpec(name, m.id).catch(() => null),
-															),
-														);
-														let filledCount = 0;
-														const newModels = baseModels.map((m, i) => {
-															const spec = results[i];
-															if (!spec) return m;
-															const updates = computeModelSpecPatches(m, spec);
-															if (updates.length === 0) return m;
-															filledCount++;
-															const next = { ...m };
-															for (const [field, value] of updates) next[field] = value;
-															return next;
-														});
-														props.onChangeProvider(name, "models", [
-																...currentProvider.models,
-																...newModels,
-															]);
-														setSelectedFetchedModels(name, []);
-															if (filledCount > 0) {
-																showNotice(t("config.modelsSavedWithSpecs", { count: filledCount }), 3000);
+															const selectedIds = selectedFetchedModelIds[name] ?? [];
+															if (await props.onAddFetchedModels(name, selectedIds)) {
+																setSelectedFetchedModels(name, []);
 															}
 													}}
 													disabled={(selectedFetchedModelIds[name] ?? []).length === 0}
@@ -1029,8 +963,8 @@ export function ModelsTab(props: {
 														onChange={(e) =>
 															props.onUpdateModel(name, i, "id", e.target.value)
 														}
-														// 失焦按内置规格表自动填充空字段（仅 model id 变化时生效，见 applyModelSpecAutoFill）
-														onBlur={(e) => void applyModelSpecAutoFill(name, i, e.target.value)}
+														// 失焦按内置规格表自动填充当前草稿的空字段。
+														onBlur={(e) => void props.onModelIdBlur(name, i, e.target.value)}
 														placeholder="model-id"
 														className="h-8 min-w-0"
 													/>
@@ -1078,8 +1012,8 @@ export function ModelsTab(props: {
 																	: undefined,
 																)
 														}
-														// 与 contextWindow 一样保持纯数字，避免提示值看起来能输入但实际被 number 控件拒绝。
-														placeholder="128000"
+														// 未设置时提示 Pi 的默认上限；占位文字不写入配置。
+														placeholder="16384"
 														className="h-8 min-w-0"
 													/>
 												</TableCell>

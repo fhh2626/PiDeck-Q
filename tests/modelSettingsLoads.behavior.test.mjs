@@ -167,9 +167,26 @@ async function mountConfig(host, env, getSettings, options = {}) {
 		stubs,
 		globals: { localStorage: { getItem: () => options.initialTab ?? "config:settings", setItem() {} } },
 	});
-	const props = { open: true, onClose() {}, onSaved() {} };
+	const props = { open: true, onClose: options.onClose ?? (() => {}), onSaved() {} };
 	const content = ConfigModal(props).props.children;
-	return host.mount(content.type, props, env.wrap);
+	if (!options.realModels) return host.mount(content.type, props, env.wrap);
+	const { ModelsTab } = host.load("src/renderer/src/config/ModelsTab.tsx", { stubs: {
+		...uiStubs("../components/ui-shadcn"),
+		"../components/ui-shadcn/checkbox": primitive("Checkbox"),
+		"../components/ui-shadcn/label": primitive("Label"),
+		"../components/ui-shadcn/table": primitive("Table", "TableBody", "TableCell", "TableHead", "TableHeader", "TableRow"),
+		"./ConfigShared": { ...primitive("ApiTypeInput", "ConfigSelect", "SecretInput"), ...stubs["./config/ConfigShared"] },
+		"../desktopApi": stubs["./desktopApi"],
+		"../utils/notice": stubs["./utils/notice"],
+		"../i18n": stubs["./i18n"],
+	} });
+	// Run both production render functions in the hook probe, keeping the visual primitives opaque.
+	return host.mount((props) => {
+		const modal = content.type(props);
+		const tab = nodes(modal, (node) => node.type === "ModelsTab")[0];
+		const models = ModelsTab(tab?.props ?? { data: { providers: {} } });
+		return { modal, models };
+	}, props, env.wrap);
 }
 
 test("Pi settings use runtime model metadata without exposing credential management", async () => {
@@ -338,6 +355,313 @@ test("Git model lists refresh on configuration scope changes and hide the previo
 		await host.act(async () => requests.at(-1).resolve([model("bob")]));
 		await host.act(async () => alice.resolve([model("alice")]));
 		assert.equal(mounted.result().gitModels[0].id, "bob");
+	});
+});
+
+test("a new model without a known output limit leaves maxTokens unset when saved", async () => {
+	await withHookHost(async (host) => {
+		const env = setup(host);
+		const writes = [];
+		const mounted = await mountConfig(host, env, async () => ({ parsed: {}, raw: "{}" }), {
+			initialTab: "config:models",
+			config: {
+				getModels: async () => ({ parsed: writes.at(-1) ?? { providers: { custom: { models: [{ id: "existing", maxTokens: 128000 }] } } }, raw: "{}" }),
+				saveModels: async (value) => { writes.push(copy(value)); return { valid: true }; },
+			},
+			projects: { getModelSpec: async () => null },
+		});
+		const models = () => nodes(mounted.result(), (node) => node.type === "ModelsTab")[0].props;
+		await host.act(() => models().onAddModel("custom"));
+		await host.act(() => models().onUpdateModel("custom", 1, "id", "custom-model"));
+		await host.act(async () => models().onSave());
+		assert.equal(writes.length, 1);
+		assert.equal(writes[0].providers.custom.models[0].maxTokens, 128000);
+		assert.equal(Object.hasOwn(writes[0].providers.custom.models[1], "maxTokens"), false);
+
+		await host.act(() => models().onUpdateModel("custom", 1, "maxTokens", 16384));
+		await host.act(async () => models().onSave());
+		assert.equal(writes.length, 2);
+		assert.equal(writes[1].providers.custom.models[1].maxTokens, 16384, "entering the fallback explicitly still saves it");
+	});
+});
+
+const catalogSpec = { source: "models-dev", matchedId: "gpt-4o", maxTokens: 16384, contextWindow: 128000 };
+
+/** Drive the model inputs and dialog Save button with only the persistence/catalog boundary mocked. */
+async function openModelEditor(host, getModelSpec, initialModels = [], beforeRead = () => {}, options = {}) {
+	const writes = [];
+	const mounted = await mountConfig(host, setup(host), async () => ({ parsed: {}, raw: "{}" }), {
+		initialTab: "config:models",
+		realModels: true,
+		onClose: options.onClose,
+		config: {
+			getModels: async () => {
+				beforeRead(writes.length);
+				return { parsed: writes.at(-1) ?? { providers: {
+					openai: { baseUrl: "https://openai.example", apiKey: "mock", models: initialModels },
+					...options.providers,
+				} }, raw: "{}" };
+			},
+			saveModels: async (value) => { writes.push(copy(value)); return { valid: true }; },
+			fetchModels: async () => ({ success: true, models: [{ id: "gpt-4o" }] }),
+		},
+		projects: { getModelSpec },
+	});
+	const find = (predicate) => nodes(mounted.result().models, predicate)[0].props;
+	const input = (placeholder) => find((node) => node.type === "Input" && node.props.placeholder === placeholder);
+	const change = (placeholder, value) => host.act(() => input(placeholder).onChange({ target: { value } }));
+	await host.act(() => find((node) => node.type === "div" && node.props.className?.startsWith("flex cursor-pointer items-center justify-between")).onClick());
+	const click = (label) => host.act(() => find((node) => node.type === "Button"
+		&& (node.props.title === label || node.props.children?.includes?.(label))).onClick({ stopPropagation() {} }));
+	if (initialModels.length === 0 && !options.skipManualAdd) {
+		await click("config.addModelManual");
+		await change("model-id", "gpt-4o");
+	}
+	return {
+		writes,
+		change,
+		duplicate: () => click("config.duplicateProvider"),
+		requestDeletion: (kind) => host.act(() => {
+			const tab = nodes(mounted.result().modal, (node) => node.type === "ModelsTab")[0].props;
+			if (kind === "model") tab.onDeleteModel("openai", 0);
+			else if (kind === "provider") tab.onDeleteProvider("unrelated");
+			else tab.onDeleteProviders(["unrelated", "another"]);
+		}),
+		confirmDeletion: () => host.act(() => nodes(mounted.result().modal,
+			(node) => node.type === "ConfirmDialog" && node.props.confirmLabel === "common.delete")[0].props.onConfirm()),
+		addFetched: async () => {
+			await click("config.fetchModels");
+			await host.act(() => find((node) => typeof node.type === "function" && node.props.existingModelIds).onChange(["gpt-4o"]));
+			await host.act(() => { void find((node) => node.type === "Button" && node.props.children === "config.saveSelectedModels").onClick(); });
+		},
+		value: (placeholder) => input(placeholder).value,
+		blur: () => host.act(() => input("model-id").onBlur({ target: { value: input("model-id").value } })),
+		save: () => host.act(() => saveButton(mounted.result().modal).props.onClick()),
+		saveAndClose: async () => {
+			await host.act(() => nodes(mounted.result().modal, (node) => node.type === "Dialog")[0].props.onOpenChange(false));
+			await host.act(() => nodes(mounted.result().modal, (node) => node.type === "AlertDialogAction"
+				&& node.props.children === "config.saveAndClose")[0].props.onClick());
+		},
+	};
+}
+
+for (const kind of ["model", "provider", "batch"]) {
+	test(`confirming a ${kind} deletion preserves fetched models appended while confirmation is open`, async () => {
+		await withHookHost(async (host) => {
+			const pending = deferred();
+			const editor = await openModelEditor(host, (_provider, id) => id === "gpt-4o" ? pending.promise : Promise.resolve(null),
+				[{ id: "existing", maxTokens: 2048 }], undefined,
+				{ providers: { unrelated: { models: [] }, another: { models: [] } } });
+			await editor.addFetched();
+			await editor.requestDeletion(kind);
+			await host.act(() => pending.resolve(catalogSpec));
+			await editor.confirmDeletion();
+			await editor.save();
+			const { providers } = editor.writes[0];
+			assert.deepEqual(providers.openai.models.map(({ id, maxTokens }) => [id, maxTokens]),
+				kind === "model" ? [["gpt-4o", 16384]] : [["existing", 2048], ["gpt-4o", 16384]]);
+			assert.equal(Object.hasOwn(providers, "unrelated"), kind === "model");
+			assert.equal(Object.hasOwn(providers, "another"), kind !== "batch");
+		});
+	});
+}
+
+for (const [placeholder, value, expected] of [["16384", "2048", 2048], ["model-id", "unknown-b", "unknown-b"]]) {
+	test(`a late model spec does not overwrite the edited ${placeholder === "model-id" ? "identity" : "output limit"}`, async () => {
+		await withHookHost(async (host) => {
+			const pending = deferred();
+			const editor = await openModelEditor(host, (_provider, id) => id === "gpt-4o" ? pending.promise : Promise.resolve(null));
+			await editor.blur();
+			await editor.change(placeholder, value);
+			await host.act(() => pending.resolve(catalogSpec));
+			assert.equal(editor.value(placeholder), expected);
+			await editor.save();
+			const saved = editor.writes[0].providers.openai.models[0];
+			assert.equal(saved.maxTokens, placeholder === "model-id" ? undefined : 2048);
+		});
+	});
+}
+
+test("an unsaved catalog limit does not follow a corrected model ID", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async (_provider, id) => id === "gpt-4o" ? catalogSpec : null);
+		await editor.blur();
+		assert.equal(editor.value("16384"), 16384);
+		await editor.change("model-id", "unknown-b");
+		await editor.blur();
+		await editor.save();
+		const saved = editor.writes[0].providers.openai.models[0];
+		assert.equal(saved.id, "unknown-b");
+		assert.equal(Object.hasOwn(saved, "maxTokens"), false);
+	});
+});
+
+test("saving a known model keeps the settings of an unrelated empty provider", async () => {
+	await withHookHost(async (host) => {
+		const vendor = {
+			baseUrl: "https://proxy.example", models: [],
+			compat: { supportsDeveloperRole: true, supportsReasoningEffort: false },
+		};
+		const editor = await openModelEditor(host, async () => catalogSpec, [], undefined, { providers: { vendor } });
+		await editor.save();
+		const { providers } = editor.writes[0];
+		assert.equal(providers.openai.models[0].maxTokens, 16384);
+		assert.deepEqual(providers.vendor, vendor);
+	});
+});
+
+for (const origin of ["fetched", "duplicated"]) {
+	test(`correcting a ${origin} model ID drops its unsaved catalog limit`, async () => {
+		await withHookHost(async (host) => {
+			const editor = await openModelEditor(host, async (_provider, id) => id === "gpt-4o"
+				? { ...catalogSpec, maxTokens: 30123 } : null, [], undefined, { skipManualAdd: origin === "fetched" });
+			if (origin === "fetched") await editor.addFetched();
+			else {
+				await editor.blur();
+				await editor.duplicate();
+			}
+			assert.equal(editor.value("16384"), 30123);
+			await editor.change("model-id", "unknown-b");
+			await editor.save();
+			const saved = editor.writes[0].providers[origin === "fetched" ? "openai" : "openai copy"].models[0];
+			assert.equal(saved.id, "unknown-b");
+			assert.equal(Object.hasOwn(saved, "maxTokens"), false);
+		});
+	});
+}
+
+test("a fetched add completing after an output limit edit retains the edit", async () => {
+	await withHookHost(async (host) => {
+		const lookup = deferred();
+		const editor = await openModelEditor(host, (_provider, id) => id === "gpt-4o" ? lookup.promise : Promise.resolve(null),
+			[{ id: "existing-model", maxTokens: 256 }]);
+		await editor.addFetched();
+		await editor.change("16384", "2048");
+		await host.act(() => lookup.resolve(catalogSpec));
+		await editor.save();
+		assert.deepEqual(editor.writes[0].providers.openai.models.map(({ id, maxTokens }) => [id, maxTokens]),
+			[["existing-model", 2048], ["gpt-4o", 16384]]);
+	});
+});
+
+for (const action of ["save", "saveAndClose"]) {
+	test(`${action} includes an already selected fetched model before refreshing the draft`, async () => {
+		await withHookHost(async (host) => {
+			const fetched = deferred();
+			let closes = 0;
+			const editor = await openModelEditor(host, (_provider, id) => id === "gpt-4o" ? fetched.promise : Promise.resolve(null),
+				[{ id: "existing-model", maxTokens: 256 }], undefined, { onClose: () => { closes++; } });
+			await editor.change("16384", "2048");
+			await editor.addFetched();
+			await editor[action]();
+			const wroteBeforeLookup = editor.writes.length;
+			await host.act(() => fetched.resolve(catalogSpec));
+			assert.equal(wroteBeforeLookup, 0);
+			assert.deepEqual(editor.writes[0]?.providers.openai.models.map(({ id, maxTokens }) => [id, maxTokens]),
+				[["existing-model", 2048], ["gpt-4o", 16384]]);
+			assert.equal(editor.writes.length, 1);
+			assert.equal(closes, action === "saveAndClose" ? 1 : 0);
+		});
+	});
+}
+
+test("a fetched add invalidates a Save still preparing an older model list", async () => {
+	await withHookHost(async (host) => {
+		const fetched = deferred();
+		const saving = deferred();
+		const editor = await openModelEditor(host, (_provider, id) => id === "gpt-4o" ? fetched.promise : saving.promise,
+			[{ id: "existing-model", maxTokens: 256 }]);
+		await editor.change("16384", "2048");
+		await editor.save();
+		await editor.addFetched();
+		await host.act(() => {
+			saving.resolve(null);
+			fetched.resolve(catalogSpec);
+		});
+		assert.deepEqual(editor.writes, []);
+		await editor.save();
+		assert.deepEqual(editor.writes[0].providers.openai.models.map(({ id }) => id), ["existing-model", "gpt-4o"]);
+	});
+});
+
+test("editing an auto-filled limit makes it explicit across a subsequent ID correction", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async (_provider, id) => id === "gpt-4o" ? catalogSpec : null);
+		await editor.blur();
+		await editor.change("16384", "2048");
+		await editor.change("model-id", "unknown-b");
+		await editor.save();
+		assert.equal(editor.writes[0].providers.openai.models[0].maxTokens, 2048);
+	});
+});
+
+test("correcting a persisted model ID preserves its saved limit", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async () => null, [{ id: "gpt-4o", maxTokens: 128000 }]);
+		await editor.change("model-id", "unknown-b");
+		await editor.save();
+		assert.equal(editor.writes[0].providers.openai.models[0].maxTokens, 128000);
+	});
+});
+
+test("a successfully persisted limit survives an ID correction even if the save refresh failed", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async (_provider, id) => id === "gpt-4o" ? catalogSpec : null, [], (writeCount) => {
+			if (writeCount === 1) throw new Error("mock config refresh failure");
+		});
+		await editor.blur();
+		await editor.save();
+		assert.equal(editor.writes[0].providers.openai.models[0].maxTokens, 16384);
+		await editor.change("model-id", "unknown-b");
+		await editor.save();
+		assert.equal(editor.writes[1].providers.openai.models[0].maxTokens, 16384);
+	});
+});
+
+test("the first Save persists a known model while its blur lookup is pending", async () => {
+	await withHookHost(async (host) => {
+		const blur = deferred();
+		const save = deferred();
+		let lookup = 0;
+		const editor = await openModelEditor(host, () => (++lookup === 1 ? blur : save).promise);
+		await editor.blur();
+		await editor.save();
+		await host.act(() => blur.resolve(catalogSpec));
+		await host.act(() => save.resolve(catalogSpec));
+		assert.deepEqual(editor.writes.map((value) => value.providers.openai.models[0].maxTokens), [16384]);
+	});
+});
+
+test("a user edit still invalidates a model Save awaiting the catalog", async () => {
+	await withHookHost(async (host) => {
+		const pending = deferred();
+		const editor = await openModelEditor(host, () => pending.promise);
+		await editor.save();
+		await editor.change("16384", "2048");
+		await host.act(() => pending.resolve(catalogSpec));
+		assert.equal(editor.writes.length, 0);
+		assert.equal(editor.value("16384"), 2048);
+		await editor.save();
+		assert.deepEqual(editor.writes.map((value) => value.providers.openai.models[0].maxTokens), [2048]);
+	});
+});
+
+test("the ID input can repair a model row loaded without an ID", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async () => catalogSpec, [{ name: "Model without ID" }]);
+		await editor.change("model-id", "gpt-4o");
+		await editor.blur();
+		assert.equal(editor.value("model-id"), "gpt-4o");
+		assert.equal(editor.value("16384"), 16384);
+	});
+});
+
+test("one blur applies all catalog fields to an incomplete model row", async () => {
+	await withHookHost(async (host) => {
+		const editor = await openModelEditor(host, async () => catalogSpec, [{ id: "gpt-4o" }]);
+		await editor.blur();
+		assert.equal(editor.value("1000000"), 128000);
+		assert.equal(editor.value("16384"), 16384);
 	});
 });
 

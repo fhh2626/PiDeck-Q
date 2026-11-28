@@ -77,6 +77,7 @@ struct Index {
     QHash<QString, QList<OpenRouterEntry>> openrouterByTailLower;
     QHash<QString, ModelsDevEntry> modelsDevById;
     QHash<QString, ModelsDevEntry> modelsDevByIdLower;
+    QHash<QString, qint64> modelsDevOutputByQualifiedId;
     QList<OpenRouterEntry> openrouterContains;
     QList<ModelsDevEntry> modelsDevContains;
     QSet<QString> knownProviders;
@@ -260,6 +261,13 @@ Index buildIndex(const QString &dbPath)
         index.knownProviders.insert(entry.provider);
     }
     for (const ModelsDevEntry &entry : modelsDev) {
+        // Index limits before merging vendors, so a stripped ID cannot borrow another vendor's limit.
+        if (!entry.provider.isEmpty() && entry.maxTokens > 0) {
+            const QString key = (entry.provider + QLatin1Char('/') + entry.id).toLower();
+            if (!index.modelsDevOutputByQualifiedId.contains(key)) {
+                index.modelsDevOutputByQualifiedId.insert(key, entry.maxTokens);
+            }
+        }
         const auto existing = index.modelsDevById.find(entry.id);
         if (existing == index.modelsDevById.end()) {
             index.modelsDevById.insert(entry.id, entry);
@@ -335,6 +343,25 @@ QJsonValue lookup(const QString &resourcesDir, const QString &providerName, cons
         const auto byLower = index.openrouterByIdLower.constFind(trimmed.toLower());
         if (byLower != index.openrouterByIdLower.constEnd()) orEntry = &byLower.value();
     }
+    const QString trimmedLower = trimmed.toLower();
+    // Use verified aliases, including bare IDs exposed by relays. A different
+    // explicit vendor prefix is not evidence that its model is the same one.
+    if (!orEntry) {
+        static const QHash<QString, QString> aliases{
+            {QStringLiteral("claude-sonnet-4-5-20250929"), QStringLiteral("anthropic/claude-sonnet-4.5")},
+            {QStringLiteral("claude-sonnet-4-5"), QStringLiteral("anthropic/claude-sonnet-4.5")},
+            {QStringLiteral("claude-sonnet-4-6"), QStringLiteral("anthropic/claude-sonnet-4.6")},
+        };
+        const QString anthropicPrefix = QStringLiteral("anthropic/");
+        const QString aliasKey = trimmedLower.startsWith(anthropicPrefix)
+            ? trimmedLower.mid(anthropicPrefix.size()) : trimmedLower;
+        const QString target = trimmedLower == QStringLiteral("google/gemini-flash-latest")
+            ? QStringLiteral("~google/gemini-flash-latest") : aliases.value(aliasKey);
+        if (!target.isEmpty()) {
+            const auto alias = index.openrouterById.constFind(target);
+            if (alias != index.openrouterById.constEnd()) orEntry = &alias.value();
+        }
+    }
     const OpenRouterEntry *orTailEntry = nullptr;
     if (!orEntry && !trimmed.contains(QLatin1Char('/'))) {
         const auto tail = index.openrouterByTail.constFind(trimmed);
@@ -368,7 +395,6 @@ QJsonValue lookup(const QString &resourcesDir, const QString &providerName, cons
         }
     }
 
-    const QString trimmedLower = trimmed.toLower();
     const OpenRouterEntry *orContains = findLongestContains(index.openrouterContains, trimmedLower);
     if (!orContains) {
         orContains = findLongestContains(index.openrouterContains,
@@ -387,13 +413,22 @@ QJsonValue lookup(const QString &resourcesDir, const QString &providerName, cons
                 orResolved ? orResolved->id : (mdEntry ? mdEntry->id : mdContains->id));
 
     qint64 contextWindow = orResolved ? orResolved->contextWindow : 0;
-    qint64 maxTokens = orResolved ? orResolved->maxTokens : 0;
     const qint64 mdContext =
         mdEntry ? mdEntry->contextWindow : (mdContains ? mdContains->contextWindow : 0);
-    const qint64 mdMaxTokens =
-        mdEntry ? mdEntry->maxTokens : (mdContains ? mdContains->maxTokens : 0);
     if (contextWindow == 0) contextWindow = mdContext;
-    if (maxTokens == 0) maxTokens = mdMaxTokens;
+    // A substring hit is not enough to set a persisted output limit for a different model.
+    const OpenRouterEntry *orIdentity = orEntry ? orEntry : orTailEntry;
+    qint64 maxTokens = orIdentity ? orIdentity->maxTokens : 0;
+    if (maxTokens == 0 && !trimmed.contains(QLatin1Char('/'))) {
+        if (mdEntry) maxTokens = mdEntry->maxTokens;
+    } else if (maxTokens == 0) {
+        // An exact qualified catalog ID is valid even when listed by a reseller.
+        const auto qualified = index.modelsDevById.constFind(trimmed);
+        const auto qualifiedLower = index.modelsDevByIdLower.constFind(trimmedLower);
+        if (qualified != index.modelsDevById.constEnd()) maxTokens = qualified.value().maxTokens;
+        else if (qualifiedLower != index.modelsDevByIdLower.constEnd()) maxTokens = qualifiedLower.value().maxTokens;
+        if (maxTokens == 0) maxTokens = index.modelsDevOutputByQualifiedId.value(trimmedLower);
+    }
     if (contextWindow > 0) spec.insert(QStringLiteral("contextWindow"), double(contextWindow));
     if (maxTokens > 0) spec.insert(QStringLiteral("maxTokens"), double(maxTokens));
 

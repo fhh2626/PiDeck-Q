@@ -1036,6 +1036,52 @@ if (executable) {
 			assert.equal(unknown.payload.ok, true);
 			assert.equal(unknown.payload.result, null);
 		});
+
+		test("projects:get-model-spec requires the vendor namespace to match for output limits", async (t) => {
+			const session = await start(t);
+			const lookup = async (id) => {
+				const { payload } = await session.invoke("projects:get-model-spec", ["custom-gateway", id]);
+				assert.equal(payload.ok, true, JSON.stringify(payload));
+				return payload.result;
+			};
+			assert.equal((await lookup("SenseChat")).maxTokens, 4096);
+			assert.equal((await lookup("sensenova/SenseChat")).maxTokens, 4096);
+			assert.equal((await lookup("openai/SenseChat"))?.maxTokens, undefined);
+		});
+
+		test("projects:get-model-spec preserves output limits for verified catalog aliases", async (t) => {
+			const session = await start(t);
+			const lookup = async (provider, id) => {
+				const { payload } = await session.invoke("projects:get-model-spec", [provider, id]);
+				assert.equal(payload.ok, true, JSON.stringify(payload));
+				return payload.result;
+			};
+			for (const [id, limit] of [["claude-sonnet-4-5-20250929", 64000], ["claude-sonnet-4-5", 64000], ["claude-sonnet-4-6", 128000]]) {
+				assert.equal((await lookup("anthropic", id))?.maxTokens, limit, id);
+				assert.equal((await lookup("custom-gateway", id))?.maxTokens, limit, id);
+				assert.equal((await lookup("custom-gateway", `anthropic/${id}`))?.maxTokens, limit, id);
+				assert.equal((await lookup("custom-gateway", `openai/${id}`))?.maxTokens, undefined, id);
+			}
+			assert.equal((await lookup("custom-gateway", "google/gemini-flash-latest"))?.maxTokens, 65536);
+			assert.equal((await lookup("custom-gateway", "openai/gemini-flash-latest"))?.maxTokens, undefined);
+		});
+
+		test("projects:get-model-spec does not supply an output limit for a substring-only match", async (t) => {
+			const session = await start(t);
+			const lookup = async (provider, id) => {
+				const { payload } = await session.invoke("projects:get-model-spec", [provider, id]);
+				assert.equal(payload.ok, true, JSON.stringify(payload));
+				return payload.result;
+			};
+			const id = "openai/gpt-4o-2024-05-13";
+			const exact = await lookup("custom-gateway", id);
+			assert.ok(exact.maxTokens > 0);
+			assert.equal((await lookup("openai", "gpt-4o-2024-05-13")).maxTokens, exact.maxTokens);
+			assert.ok((await lookup("custom-gateway", "gpt-4o-2024-05-13")).maxTokens > 0);
+			const guess = await lookup("custom-gateway", `team/${id}-private-model`);
+			assert.equal(guess?.matchedId, id);
+			assert.equal(Object.hasOwn(guess, "maxTokens"), false, `guessed ${guess.maxTokens} from ${guess.matchedId}`);
+		});
 	});
 } else {
 	describe("native2 projects / settings / config parity", () => {

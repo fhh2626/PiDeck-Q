@@ -43,6 +43,8 @@ import { modelConfigurationScopeAtom, modelRemovalVersionsByScopeAtom, removedMo
 import { modelConfigurationScopeKey } from "./utils/modelConfigurationScope";
 import { clearPiModelDefaults, getModelRemovalsSince } from "./utils/modelSelection";
 import { ModelsTab } from "./config/ModelsTab";
+import { useModelsDraft } from "./config/useModelsDraft";
+import { buildModelsFromFetchedSelection } from "./config/modelsUtils";
 import { openDocsInSystemBrowser } from "./config/ConfigShared";
 import { RawTab } from "./config/RawTab";
 import { SettingsTab } from "./config/SettingsTab";
@@ -59,6 +61,7 @@ import type {
 	ConfigTab,
 	ModelItem,
 	ModelsFile,
+	ProviderConfig,
 	SettingsFile,
 } from "./config/configTypes";
 import type { ConfigFileDiagnostic, PiExtensionListResult, PiExtensionSummary, PiPromptTemplateListResult, PiPromptTemplateSummary, PiSkillListResult, PiSkillLocation, PiSkillSummary } from "../../shared/types";
@@ -88,10 +91,10 @@ const api = {
 };
 const DEFAULT_MODEL_CONFIG: Pick<
 	ModelItem,
-	"contextWindow" | "maxTokens" | "reasoning" | "input"
+	"contextWindow" | "reasoning" | "input"
 > = {
+	// Leave maxTokens unset so Pi can apply its default unless the limit is known or explicitly set.
 	contextWindow: 1000000,
-	maxTokens: 128000,
 	reasoning: true,
 	input: ["text", "image"],
 };
@@ -349,13 +352,18 @@ function ConfigModalContent(props: ConfigModalProps) {
 	/* toast 已改用 sonner 实现 */
 
 	// 各 tab 的数据
-	const [modelsData, setModelsData] = useState<ModelsFile>({ providers: {} });
+	const {
+		modelsData, setModelsData, current: modelsDraft, editModel, fillModelSpec,
+		copyCatalogProvenance, appendFetchedModels, markModelsPersisted, prepareModelDeletion, prepareProviderDeletion,
+	} = useModelsDraft();
 	const [settingsData, setSettingsData] = useState<SettingsFile>({});
 	const store = useStore();
 	const modelScopeKey = modelConfigurationScopeKey(useAtomValue(modelConfigurationScopeAtom));
 	const removedModels = useAtomValue(removedModelReferencesAtom);
 	const loadGenerationRef = useRef(0);
 	const saveSequenceRef = useRef(0);
+	const modelSaveRef = useRef<{ isCurrent: () => boolean } | null>(null);
+	const pendingModelAddsRef = useRef(new Set<{ result: Promise<number | null>; isCurrent: () => boolean }>());
 	useEffect(() => {
 		setSettingsData((current) => clearPiModelDefaults(current, removedModels));
 	}, [removedModels]);
@@ -546,7 +554,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 				if (isCurrent()) setLoading(false);
 			}
 		},
-		[tab, clearDirty, modelScopeKey, store],
+		[tab, clearDirty, modelScopeKey, setModelsData, store],
 	);
 
 	useEffect(() => {
@@ -674,21 +682,15 @@ function ConfigModalContent(props: ConfigModalProps) {
 		setRenameValue("");
 	};
 
-	const handleDeleteProvider = (name: string) => {
-		setDeleteConfirm({
-			type: "provider",
-			title: t("common.deleteConfirm"),
-			message: t("common.deleteConfirmMsg", { name }),
-			onConfirm: () => {
-				const providers = { ...modelsData.providers };
-				delete providers[name];
-				setModelsData({ ...modelsData, providers });
-				markDirty("config:models");
-				if (expandedProvider === name) setExpandedProvider(null);
-				setDeleteConfirm(null);
-			},
-		});
+	/** A delayed confirmation may not change a different dialog, load, or model scope. */
+	const captureModelConfirmation = () => {
+		const generation = loadGenerationRef.current;
+		const epoch = dialogEpochRef.current;
+		return () => generation === loadGenerationRef.current && epoch === dialogEpochRef.current
+			&& modelScopeKey === modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom));
 	};
+
+	const handleDeleteProvider = (name: string) => handleDeleteProviders([name], true);
 
 	const handleDuplicateProvider = (name: string) => {
 		const sourceProvider = modelsData.providers[name];
@@ -703,7 +705,8 @@ function ConfigModalContent(props: ConfigModalProps) {
 		}
 		
 		// 深拷贝 provider 配置，包括 models 数组
-		const duplicatedProvider = JSON.parse(JSON.stringify(sourceProvider));
+		const duplicatedProvider: ProviderConfig = JSON.parse(JSON.stringify(sourceProvider));
+		sourceProvider.models.forEach((model, index) => copyCatalogProvenance(model, duplicatedProvider.models[index]));
 		
 		setModelsData({
 			...modelsData,
@@ -747,7 +750,7 @@ function ConfigModalContent(props: ConfigModalProps) {
 			markDirty("config:models");
 			return true;
 		},
-		[markDirty],
+		[markDirty, setModelsData],
 	);
 
 	// 从 provider 的 baseUrl + apiKey 拉取可用模型列表
@@ -808,6 +811,31 @@ function ConfigModalContent(props: ConfigModalProps) {
 			}));
 		} finally {
 			setFetchingProvider(null);
+		}
+	};
+
+	/** Add selections to this dialog's current provider only while its configuration is still active. */
+	const handleAddFetchedModels = async (providerName: string, selectedIds: string[]) => {
+		const provider = modelsDraft.current.providers[providerName];
+		if (!provider) return false;
+		const candidates = buildModelsFromFetchedSelection(fetchedModels[providerName] ?? [], selectedIds, provider.models);
+		const isCurrent = captureModelConfirmation();
+		if (!candidates.length || !isCurrent()) return false;
+		// Count the user's selection once, when it invalidates any older save.
+		// Its completion is part of that same edit, including for Save and Close.
+		markDirty("config:models");
+		const result = appendFetchedModels(providerName, candidates,
+			(name, id) => api.projects.getModelSpec(name, id), isCurrent,
+		);
+		const pending = { result, isCurrent };
+		pendingModelAddsRef.current.add(pending);
+		try {
+			const filledCount = await result;
+			if (filledCount === null) return false;
+			if (filledCount > 0) showNotice(t("config.modelsSavedWithSpecs", { count: filledCount }), 3000);
+			return true;
+		} finally {
+			pendingModelAddsRef.current.delete(pending);
 		}
 	};
 
@@ -889,18 +917,33 @@ function ConfigModalContent(props: ConfigModalProps) {
 		field: string,
 		value: unknown,
 	) => {
-		const provider = modelsData.providers[providerName];
-		if (!provider) return;
+		const draft = modelsDraft.current;
+		const provider = draft.providers[providerName];
+		const model = provider?.models[index];
+		if (!model) return;
 		const models = [...provider.models];
-		models[index] = { ...models[index], [field]: value };
-		setModelsData({
-			...modelsData,
-			providers: {
-				...modelsData.providers,
-				[providerName]: { ...provider, models },
-			},
-		});
+		models[index] = editModel(model, { [field]: value });
+		setModelsData({ ...draft, providers: { ...draft.providers, [providerName]: { ...provider, models } } });
 		markDirty("config:models");
+	};
+
+	/** Resolve an ID blur without writing into another row, scope, or active save. */
+	const handleModelIdBlur = async (providerName: string, index: number, value: string) => {
+		const id = value.trim();
+		const model = modelsDraft.current.providers[providerName]?.models[index];
+		if (!id || typeof model?.id !== "string" || model.id.trim() !== id || modelSaveRef.current?.isCurrent()) return;
+		const generation = loadGenerationRef.current;
+		const epoch = dialogEpochRef.current;
+		const spec = await api.projects.getModelSpec(providerName, id).catch(() => null);
+		if (!spec || generation !== loadGenerationRef.current || epoch !== dialogEpochRef.current
+			|| modelScopeKey !== modelConfigurationScopeKey(store.get(modelConfigurationScopeAtom))
+			|| modelSaveRef.current?.isCurrent()) return;
+		if (!fillModelSpec(providerName, index, model, spec)) return;
+		markDirty("config:models");
+		showNotice(t("config.modelSpecAutoFilled", {
+			model: spec.matchedId ?? id,
+			source: spec.source === "openrouter" ? "OpenRouter" : "models.dev",
+		}), 3000);
 	};
 
 	const handleUpdateModelThinkingLevel = (
@@ -909,7 +952,8 @@ function ConfigModalContent(props: ConfigModalProps) {
 		key: "xhigh" | "max",
 		value: "" | "xhigh" | "max",
 	) => {
-		const provider = modelsData.providers[providerName];
+		const draft = modelsDraft.current;
+		const provider = draft.providers[providerName];
 		const currentModel = provider?.models[index];
 		if (!provider || !currentModel) return;
 		const models = [...provider.models];
@@ -918,11 +962,8 @@ function ConfigModalContent(props: ConfigModalProps) {
 		};
 		if (value) nextThinkingLevelMap[key] = value;
 		else delete nextThinkingLevelMap[key];
-		const nextModel = {
-			...currentModel,
-			// xhigh/max 只有 reasoning 模型才有意义；打开映射时同步开启。
-			reasoning: value ? true : currentModel.reasoning,
-		};
+		// xhigh/max 只有 reasoning 模型才有意义；打开映射时同步开启。
+		const nextModel = editModel(currentModel, value ? { reasoning: true } : {});
 		if (Object.keys(nextThinkingLevelMap).length > 0) {
 			nextModel.thinkingLevelMap = nextThinkingLevelMap;
 		} else {
@@ -941,9 +982,9 @@ function ConfigModalContent(props: ConfigModalProps) {
 			}
 			: { ...provider };
 		setModelsData({
-			...modelsData,
+			...draft,
 			providers: {
-				...modelsData.providers,
+				...draft.providers,
 				[providerName]: { ...nextProvider, models },
 			},
 		});
@@ -951,39 +992,48 @@ function ConfigModalContent(props: ConfigModalProps) {
 	};
 
 	const handleDeleteModel = (providerName: string, index: number) => {
-		const provider = modelsData.providers[providerName];
-		if (!provider) return;
-		const model = provider.models[index];
+		const model = modelsData.providers[providerName]?.models[index];
 		if (!model) return;
+		const remove = prepareModelDeletion(providerName, model);
+		const isCurrent = captureModelConfirmation();
 		setDeleteConfirm({
 			type: "model",
 			title: t("common.deleteConfirm"),
 			message: t("common.deleteConfirmMsg", { name: `${providerName}/${model.id}` }),
 			onConfirm: () => {
-				const models = provider.models.filter((_, i) => i !== index);
-				setModelsData({
-					...modelsData,
-					providers: {
-						...modelsData.providers,
-						[providerName]: { ...provider, models },
-					},
-				});
-				markDirty("config:models");
+				if (isCurrent() && remove()) markDirty("config:models");
 				setDeleteConfirm(null);
 			},
 		});
 	};
 
 	const handleSaveModels = async (): Promise<boolean> => {
+		const isCurrent = captureModelConfirmation();
+		const sequence = saveSequenceRef.current;
+		// Take the snapshot after already-requested adds, while still in the same dialog and scope.
+		while (isCurrent() && sequence === saveSequenceRef.current) {
+			const pending = [...pendingModelAddsRef.current].filter((entry) => entry.isCurrent());
+			if (!pending.length) break;
+			await Promise.allSettled(pending.map((entry) => entry.result));
+		}
+		if (!isCurrent() || sequence !== saveSequenceRef.current) return false;
 		const transaction = captureConfigSave("config:models");
-		// 保存前按内置规格表批量补全空字段（用户无需逐个失焦）：
-		// 查询只读、补全只填空字段；结果写回 state 与落盘数据，保证保存的就是补全后的值
-		// （onSave 闭包读的是旧 modelsData，不能在 setState 之后再取）。
+		// Save owns catalog completion from the start, not just once persistence starts.
+		modelSaveRef.current = transaction;
+		try {
+			return await saveModelsDraft(modelsDraft.current, transaction);
+		} finally {
+			if (modelSaveRef.current === transaction) modelSaveRef.current = null;
+		}
+	};
+
+	/** Fill the save snapshot without mutating the editable draft while the lookup is pending. */
+	const saveModelsDraft = async (draft: ModelsFile, transaction: ReturnType<typeof captureConfigSave>) => {
 		const { providers: filledProviders, filledCount } = await collectModelSpecPatches(
-			modelsData,
+			draft,
 			(providerName, modelId) => api.projects.getModelSpec(providerName, modelId),
 		);
-		const base = filledCount > 0 ? { ...modelsData, providers: filledProviders } : modelsData;
+		const base = filledCount > 0 ? { ...draft, providers: filledProviders } : draft;
 		// 保存前规范化所有供应商的 compat 字段，确保布尔值显式写入而不依赖后端默认值
 		const normalizedData = {
 			...base,
@@ -1010,24 +1060,28 @@ function ConfigModalContent(props: ConfigModalProps) {
 			transaction,
 		);
 		// 保存成功后才把补全值写回 UI：失败时保留原值，下次保存会重新补全（幂等）
-		if (ok && filledCount > 0) {
-			setModelsData(base);
+		if (ok) {
+			markModelsPersisted();
+			if (filledCount > 0) setModelsData(base);
+			await loadConfig("models");
 		}
-		if (ok) await loadConfig("models");
 		return ok;
 	};
 
-	const handleDeleteProviders = (names: string[]) => {
+	const handleDeleteProviders = (names: string[], single = false) => {
+		const remove = prepareProviderDeletion(names);
+		const isCurrent = captureModelConfirmation();
 		setDeleteConfirm({
-			type: "batch",
+			type: single ? "provider" : "batch",
 			title: t("common.deleteConfirm"),
-			message: t("common.deleteBatchConfirm", { count: names.length }),
+			message: single ? t("common.deleteConfirmMsg", { name: names[0] })
+				: t("common.deleteBatchConfirm", { count: names.length }),
 			onConfirm: () => {
-				const providers = { ...modelsData.providers };
-				for (const name of names) delete providers[name];
-				setModelsData({ ...modelsData, providers });
-				markDirty("config:models");
-				if (names.includes(expandedProvider ?? "")) setExpandedProvider(null);
+				const removed = isCurrent() ? remove() : [];
+				if (removed.length) {
+					markDirty("config:models");
+					setExpandedProvider((name) => name && removed.includes(name) ? null : name);
+				}
 				setDeleteConfirm(null);
 			},
 		});
@@ -1597,9 +1651,11 @@ function ConfigModalContent(props: ConfigModalProps) {
 							onDeleteProviders={handleDeleteProviders}
 							onAddModel={handleAddModel}
 							onUpdateModel={handleUpdateModel}
+							onModelIdBlur={handleModelIdBlur}
 							onUpdateModelThinkingLevel={handleUpdateModelThinkingLevel}
 							onDeleteModel={handleDeleteModel}
 							onFetchModels={handleFetchModels}
+							onAddFetchedModels={handleAddFetchedModels}
 							onTestProvider={handleTestProvider}
 							onChangeTestModelId={(providerName, modelId) =>
 								setTestModelIdByProvider((current) => ({

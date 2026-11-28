@@ -47,7 +47,7 @@ export async function collectModelSpecPatches(
 	models: ModelsFile,
 	lookup: ModelSpecLookup,
 ): Promise<{ providers: Record<string, ProviderConfig>; filledCount: number }> {
-	const providers: Record<string, ProviderConfig> = {};
+	const providers = { ...models.providers };
 	let filledCount = 0;
 	// 并行查询全部模型（规格表是原生后端本地规格索引，数量级为几十个 provider × 个位数模型）
 	const entries = Object.entries(models.providers).flatMap(([providerName, provider]) =>
@@ -61,11 +61,6 @@ export async function collectModelSpecPatches(
 	for (let i = 0; i < entries.length; i++) {
 		const { providerName, provider, model, index } = entries[i];
 		const spec = results[i];
-		const existing = providers[providerName];
-		if (!existing) {
-			// 浅拷贝 provider，仅 models 数组会被替换，其余字段共享引用
-			providers[providerName] = { ...provider, models: [...provider.models] };
-		}
 		// 空 id 模型无意义，跳过（不发查询、不填默认值）
 		if (!model.id) continue;
 		// 未匹配或查询失败时不猜测模型上限，保留 provider/pi 的默认行为。
@@ -73,6 +68,10 @@ export async function collectModelSpecPatches(
 		const updates = computeModelSpecPatches(model, spec);
 		if (updates.length === 0) continue;
 		filledCount++;
+		// Clone on the first patch, keeping even providers with no model entries.
+		if (providers[providerName] === provider) {
+			providers[providerName] = { ...provider, models: [...provider.models] };
+		}
 		const next = { ...model };
 		for (const [field, value] of updates) next[field] = value;
 		providers[providerName].models[index] = next;

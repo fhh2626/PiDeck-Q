@@ -32,7 +32,7 @@ test("model row uses TableRow/TableCell with edit controls", () => {
   assert.ok(cellCount >= 8, `expected >= 8 TableCells, got ${cellCount}`);
   assert.match(source, /<Input[\s\S]*?placeholder="model-id"[\s\S]*?className="h-8 min-w-0"/);
   assert.match(source, /placeholder="1000000"[\s\S]*?className="h-8 min-w-0"/);
-  assert.match(source, /placeholder="128000"[\s\S]*?className="h-8 min-w-0"/);
+  assert.match(source, /value=\{m\.maxTokens \?\? ""\}[\s\S]*?placeholder="16384"[\s\S]*?className="h-8 min-w-0"/);
   // 删除按钮在操作列
   assert.match(source, /onDeleteModel\(name, i\)/);
 });
